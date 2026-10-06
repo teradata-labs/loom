@@ -96,10 +96,10 @@ func Run(ctx context.Context, p Program, lim Limits, h Host) (res *RunResult) {
 	if d, ok := ctx.Deadline(); ok && d.Before(start.Add(lim.Wall)) {
 		s.parentDeadlineBinds = true
 	}
-	return s.execute(p, start)
+	return s.execute(p)
 }
 
-func (s *run) execute(p Program, start time.Time) *RunResult {
+func (s *run) execute(p Program) *RunResult {
 	r, cleanup := s.newRuntime()
 	s.r = r
 	defer func() {
@@ -113,10 +113,10 @@ func (s *run) execute(p Program, start time.Time) *RunResult {
 		return s.result(&RunResult{Outcome: OutcomeScriptError, Error: cleanError(err)})
 	}
 
-	wallMillis := uint64(time.Until(start.Add(s.lim.Wall)).Milliseconds())
-	if d, ok := s.ctx.Deadline(); ok {
-		wallMillis = uint64(max(time.Until(d).Milliseconds(), 1))
-	}
+	// The run context carries the sooner of the caller's deadline and the
+	// wall budget; golua enforces the same instant from inside the VM.
+	deadline, _ := s.ctx.Deadline()
+	wallMillis := uint64(max(time.Until(deadline).Milliseconds(), 1))
 	thread := r.MainThread()
 	var ret rt.Value
 	ctx, err := thread.CallContext(rt.RuntimeContextDef{HardLimits: rt.RuntimeResources{
@@ -136,6 +136,10 @@ func (s *run) execute(p Program, start time.Time) *RunResult {
 	}
 
 	switch {
+	case s.term.outcome != "":
+		// The engine ended the run. That stands even if golua reported a
+		// clean return because its context had already closed.
+		res.Outcome, res.Limit, res.Error = s.term.outcome, s.term.limit, s.term.msg
 	case err == nil:
 		res.Outcome = OutcomeOK
 		conv := newGoConv(s.lim.MaxResultBytes, true, s.null)
@@ -150,8 +154,6 @@ func (s *run) execute(p Program, start time.Time) *RunResult {
 		if conv.nonFinite > 0 {
 			_, _ = fmt.Fprintf(s.out, "warning: %d NaN or infinite numbers in the return value became null\n", conv.nonFinite)
 		}
-	case s.term.outcome != "":
-		res.Outcome, res.Limit, res.Error = s.term.outcome, s.term.limit, s.term.msg
 	case ctx != nil && ctx.Status() == rt.StatusKilled:
 		res.Outcome, res.Error = OutcomeBudgetExceeded, cleanError(err)
 		res.Limit = limitFromMessage(res.Error)

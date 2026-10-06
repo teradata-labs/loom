@@ -335,6 +335,13 @@ jobs:
 
           echo "✅ Observability package fuzz tests completed" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Run fuzz tests (luasandbox package)
+        run: |
+          set -euo pipefail
+          go test -tags fts5 -run=^$ -fuzz='^FuzzRun$' -fuzztime=30s ./pkg/luasandbox
+
+          echo "✅ Lua script engine fuzz tests completed" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Run fuzz tests with hawk (observability privacy)
         run: |
           set -euo pipefail

@@ -93,6 +93,7 @@ System design documentation for developers extending Loom.
 - **[Judge System](architecture/judge-system.md)** - Evaluation framework
 - **[Artifacts](architecture/artifacts.md)** - File storage system
 - **[MCP Apps](architecture/mcp-apps.md)** - Declarative UI app compilation from JSON specs
+- **[Lua Script Engine](architecture/lua-script-engine.md)** - In-process Lua scripts with hard limits that call tools through a host
 - **[Docker Backend](architecture/docker-backend.md)** - Container execution
 - **[Observability](architecture/observability.md)** - Tracing and monitoring
 
@@ -132,6 +133,7 @@ API specifications and command documentation.
 - **[Patterns](reference/patterns.md)** - Pattern YAML format
 - **[Pattern Recommendations](reference/pattern-recommendations.md)** - Best practices
 - **[Tool Registry](reference/tool-registry.md)** - Available tools
+- **[Lua Script API](reference/lua-script-api.md)** - `pkg/luasandbox` Go API, Lua functions, limits and error codes
 - **[Meta-Agent Tools](reference/meta-agent-tools.md)** - Weaver-specific tools
 - **[Presentation Tools](reference/presentation-tools.md)** - Output formatting tools
 - **[MCP Apps](reference/mcp-apps.md)** - Declarative MCP app spec format

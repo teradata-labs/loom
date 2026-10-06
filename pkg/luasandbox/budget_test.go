@@ -26,7 +26,7 @@ import (
 )
 
 // These cases are the probes behind the design's safety claims
-// (docs/architecture/lua-script-tool.md). Each must end the run with the
+// (docs/architecture/lua-script-engine.md). Each must end the run with the
 // named budget, inside the time bound, without the process allocating
 // unbounded memory.
 func TestBudgetsStopHostileScripts(t *testing.T) {

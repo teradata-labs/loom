@@ -104,7 +104,7 @@ func TestConcurrentRunsShareNothing(t *testing.T) {
 
 // TestForbiddenAPIs keeps the package away from the golua calls and
 // libraries the design rules out. Each one was measured to hang, leak or
-// open I/O (docs/architecture/lua-script-tool.md).
+// open I/O (docs/architecture/lua-script-engine.md).
 func TestForbiddenAPIs(t *testing.T) {
 	forbiddenCalls := []string{"SetStopLevel", "KillContext"}
 	forbiddenImports := []string{

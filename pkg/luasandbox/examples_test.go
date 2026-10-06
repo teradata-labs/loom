@@ -23,8 +23,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The scripts below are the worked examples from the design document
-// (docs/architecture/lua-script-tool.md, "Examples"). Keeping them as tests
+// The scripts below are the worked examples from the API reference
+// (docs/reference/lua-script-api.md, "Examples"). Keeping them as tests
 // keeps the documentation honest.
 
 func TestExampleBatchAndJoin(t *testing.T) {

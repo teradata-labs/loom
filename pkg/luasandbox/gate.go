@@ -95,9 +95,10 @@ const (
 	minDerivedMemory = 16 << 20
 )
 
-// DeriveCapacity sizes the gate from the process memory limit so that
-// MaxSlots concurrent runs, each at its worst-case peak, use at most
-// ScriptMemoryShare of memLimit. When even MinSlots runs do not fit at
+// DeriveCapacity sizes the gate from the process memory limit: as many
+// concurrent runs (MinSlots to MaxSlots) as fit when every one sits at its
+// worst-case peak (PeakMemoryOverhead times its budget) and together they use
+// at most ScriptMemoryShare of memLimit. When even MinSlots runs do not fit at
 // perRunBytes, it lowers the per-run budget instead of the slot count.
 func DeriveCapacity(memLimit, perRunBytes uint64) (slots int, runBytes uint64) {
 	if perRunBytes == 0 {
