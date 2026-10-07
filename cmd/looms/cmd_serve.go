@@ -1751,7 +1751,20 @@ func runServe(cmd *cobra.Command, args []string) {
 		time.Second,
 		hitlNotifier(),
 	)
-	admissionChain, err := createAdmissionChain(config, shuttle.ChainDeps{Perm: permissionChecker, Ask: askResolver, Custom: shuttle.ProcessCustomHookRegistry()}, logger)
+	// Jailed shell mode (tools.shell_execute.mode: jailed): pin programs, run
+	// the self-test, and install the runner before any agent registers
+	// shell_execute. A failure aborts startup rather than fall back to bash.
+	commandPolicy, err := setupShellJail(context.Background(), config, loomconfig.GetLoomDataDir(), logger)
+	if err != nil {
+		logger.Fatal("Failed to start the jailed shell", zap.Error(err))
+	}
+
+	admissionChain, err := createAdmissionChain(config, shuttle.ChainDeps{
+		Perm:          permissionChecker,
+		Ask:           askResolver,
+		Custom:        shuttle.ProcessCustomHookRegistry(),
+		CommandPolicy: commandPolicy,
+	}, logger)
 	if err != nil {
 		logger.Fatal("Failed to build admission chain", zap.Error(err))
 	}

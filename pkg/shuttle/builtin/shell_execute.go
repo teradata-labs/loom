@@ -9,19 +9,22 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/config"
 	"github.com/teradata-labs/loom/pkg/session"
+	"github.com/teradata-labs/loom/pkg/shelljail"
+	"github.com/teradata-labs/loom/pkg/shellpolicy"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
@@ -53,7 +56,22 @@ type ShellExecuteTool struct {
 	// passEnv names sensitive-looking server variables that commands still
 	// receive; set from LOOM_SHELL_PASS_ENV or SetPassEnv.
 	passEnv map[string]bool
+	// jail, when set, runs commands in the jailed runner instead of bash
+	// (tools.shell_execute.mode: jailed).
+	jail *shelljail.Runner
 }
+
+// defaultJail is the runner every ShellExecuteTool created after SetShellJail
+// uses. serve sets it once at startup, before any agent is built.
+var defaultJail atomic.Pointer[shelljail.Runner]
+
+// SetShellJail makes every ShellExecuteTool created from now on run commands
+// in r (jailed mode); nil restores bash. Tools already created keep the
+// runner they were created with.
+func SetShellJail(r *shelljail.Runner) { defaultJail.Store(r) }
+
+// ShellJail returns the runner SetShellJail installed, or nil.
+func ShellJail() *shelljail.Runner { return defaultJail.Load() }
 
 // NewShellExecuteTool creates a new shell execution tool.
 // If baseDir is empty, uses current working directory.
@@ -68,8 +86,12 @@ func NewShellExecuteTool(baseDir string) *ShellExecuteTool {
 		restrictWrites: true,                       // Default to restricted writes
 		restrictReads:  "session",                  // Default to session-only reads
 		passEnv:        parsePassEnv(os.Getenv(PassEnvVar)),
+		jail:           defaultJail.Load(),
 	}
 }
+
+// SetJail makes this tool run commands in r; nil means bash.
+func (t *ShellExecuteTool) SetJail(r *shelljail.Runner) { t.jail = r }
 
 // SetPassEnv replaces the list of sensitive-looking server variables that
 // commands still receive. Names match exactly.
@@ -178,6 +200,39 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	workingDir := config.GetLoomSandboxDir()
 	if wd, ok := params["working_dir"].(string); ok && wd != "" {
 		workingDir = wd // Explicit override always wins
+	}
+
+	// Jailed mode resolves the working directory and the read/write roots the
+	// same way the command-policy hook did when it admitted the call: the
+	// session scratchpad by default, relative paths against it.
+	var jailOpt shellpolicy.Options
+	if t.jail != nil {
+		if st, ok := params["shell"].(string); ok && st != "" && st != "default" && st != "bash" && st != "sh" {
+			return &shuttle.Result{
+				Success: false,
+				Error: &shuttle.Error{
+					Code:       "INVALID_PARAMS",
+					Message:    fmt.Sprintf("shell %q is not available: commands run in the jailed bash-compatible interpreter", st),
+					Suggestion: "Omit the shell parameter",
+				},
+				ExecutionTimeMs: time.Since(start).Milliseconds(),
+			}, nil
+		}
+		wd, _ := params["working_dir"].(string)
+		opt, err := t.jail.Options(sessionID, wd)
+		if err != nil {
+			return &shuttle.Result{
+				Success: false,
+				Error: &shuttle.Error{
+					Code:       "JAIL_UNAVAILABLE",
+					Message:    fmt.Sprintf("the jailed shell cannot run this call: %v", err),
+					Suggestion: "Run the command inside a session",
+				},
+				ExecutionTimeMs: time.Since(start).Milliseconds(),
+			}, nil
+		}
+		jailOpt = opt
+		workingDir = opt.WorkingDir
 	}
 
 	timeoutSeconds := DefaultShellTimeout
@@ -295,38 +350,72 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 		// No additional restriction needed - agents can read from LOOM_DATA_DIR as intended
 	}
 
-	// Detect shell binary
-	shellBinary, shellArgs, actualShellType, err := detectShell(shellType, command)
-	if err != nil {
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:       "SHELL_NOT_FOUND",
-				Message:    fmt.Sprintf("Shell not found: %v", err),
-				Suggestion: "Ensure bash/sh (Unix) or PowerShell/cmd (Windows) is installed",
-			},
-			ExecutionTimeMs: time.Since(start).Milliseconds(),
-		}, nil
+	var cmd *exec.Cmd
+	var child *shelljail.Child
+	var jailEnvDropped []string
+	actualShellType := "jailed"
+	if t.jail != nil {
+		// The jail child: the interpreter in a process of its own, judging
+		// every launch against the policy and what a person approved for this
+		// call (the admission grants), with an environment built from scratch.
+		sessionVars := map[string]string{"LOOM_DATA_DIR": loomDataDir, "SESSION_ID": sessionID}
+		if d, err := artifacts.GetArtifactDir(sessionID, artifacts.SourceAgent); err == nil {
+			sessionVars["SESSION_ARTIFACT_DIR"] = d
+		}
+		if d, err := artifacts.GetScratchpadDir(sessionID); err == nil {
+			sessionVars["SESSION_SCRATCHPAD_DIR"] = d
+		}
+		env, dropped := t.jail.BaseEnv(jailOpt.WorkingDir, sessionVars, envVars)
+		jailEnvDropped = dropped
+		grant := shellpolicy.MergeGrants(shuttle.AdmissionGrantsFromContext(ctx))
+		spec := t.jail.Spec(command, jailOpt, grant, env, time.Duration(timeoutSeconds)*time.Second)
+		c, err := t.jail.Command(spec)
+		if err != nil {
+			return &shuttle.Result{
+				Success:         false,
+				Error:           &shuttle.Error{Code: "JAIL_UNAVAILABLE", Message: fmt.Sprintf("cannot start the jailed shell: %v", err)},
+				ExecutionTimeMs: time.Since(start).Milliseconds(),
+			}, nil
+		}
+		child = c
+		cmd = c.Cmd
+		defer child.Started() // idempotent safety net; Started is also called right after Start
+	} else {
+		// Detect shell binary
+		shellBinary, shellArgs, detected, err := detectShell(shellType, command)
+		if err != nil {
+			return &shuttle.Result{
+				Success: false,
+				Error: &shuttle.Error{
+					Code:       "SHELL_NOT_FOUND",
+					Message:    fmt.Sprintf("Shell not found: %v", err),
+					Suggestion: "Ensure bash/sh (Unix) or PowerShell/cmd (Windows) is installed",
+				},
+				ExecutionTimeMs: time.Since(start).Milliseconds(),
+			}, nil
+		}
+		actualShellType = detected
+
+		// Create command (we'll handle timeout manually for better control)
+		cmd = exec.Command(shellBinary, shellArgs...) // #nosec G204 -- shellBinary is validated against allowlist above
+		cmd.Dir = cleanWorkingDir
+		// Own process group, so a timeout, cancellation or output overflow can kill
+		// everything the shell started, not only the shell (killProcessTree).
+		setProcessGroup(cmd)
+
+		// Set environment variables: the server's environment minus anything that
+		// looks like a credential (unless the operator passed it by name), then
+		// the call's own variables, filtered the same way.
+		cmd.Env = inheritedEnv(os.Environ(), t.passEnv)
+		filteredEnv := filterSensitiveEnvVars(envVars)
+		for k, v := range filteredEnv {
+			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+		}
 	}
 
-	// Create command (we'll handle timeout manually for better control)
-	cmd := exec.Command(shellBinary, shellArgs...) // #nosec G204 -- shellBinary is validated against allowlist above
-	cmd.Dir = cleanWorkingDir
-	// Own process group, so a timeout, cancellation or output overflow can kill
-	// everything the shell started, not only the shell (killProcessTree).
-	setProcessGroup(cmd)
-
-	// Set environment variables: the server's environment minus anything that
-	// looks like a credential (unless the operator passed it by name), then
-	// the call's own variables, filtered the same way.
-	cmd.Env = inheritedEnv(os.Environ(), t.passEnv)
-	filteredEnv := filterSensitiveEnvVars(envVars)
-	for k, v := range filteredEnv {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
-	}
-
-	// Add session-specific environment variables if session exists
-	if sessionID != "" && loomDataDir != "" {
+	// Add session-specific environment variables if session exists (bash mode;
+	// the jail built its own above)
+	if child == nil && sessionID != "" && loomDataDir != "" {
 		cmd.Env = append(cmd.Env,
 			fmt.Sprintf("LOOM_DATA_DIR=%s", loomDataDir),
 			fmt.Sprintf("SESSION_ID=%s", sessionID),
@@ -367,7 +456,11 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	}
 
 	// Start command
-	if err := cmd.Start(); err != nil {
+	startErr := cmd.Start()
+	if child != nil {
+		child.Started()
+	}
+	if err := startErr; err != nil {
 		return &shuttle.Result{
 			Success: false,
 			Error: &shuttle.Error{
@@ -489,6 +582,19 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 		stop()
 	}
 
+	// The jailed shell leaves nothing running: whatever the command started in
+	// the background dies with the call. Then collect what the jail reported.
+	var jailResult *shelljail.Result
+	if child != nil {
+		killProcessTree(cmd)
+		res := child.Result()
+		res.EnvDropped = mergeNames(jailEnvDropped, res.EnvDropped)
+		if timedOut && res.Limit == "" {
+			res.Limit = "timeout"
+		}
+		jailResult = &res
+	}
+
 	// The scanners may still be running if stop() gave up on them, so every
 	// read of what they write happens under their lock.
 	mu.Lock()
@@ -500,7 +606,7 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 
 	// Check for output overflow (detected during streaming)
 	if overflowErr != nil {
-		return &shuttle.Result{
+		overflow := &shuttle.Result{
 			Success: false,
 			Error: &shuttle.Error{
 				Code:       "OUTPUT_OVERFLOW",
@@ -508,7 +614,11 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 				Suggestion: "Increase max_output_bytes or reduce command output",
 			},
 			ExecutionTimeMs: time.Since(start).Milliseconds(),
-		}, nil
+		}
+		if jailResult != nil {
+			overflow.Data = map[string]interface{}{"jail": jailData(jailResult)}
+		}
+		return overflow, nil
 	}
 
 	// Determine exit code
@@ -549,6 +659,7 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 				"shell":       actualShellType,
 				"working_dir": cleanWorkingDir,
 				"timed_out":   true,
+				"jail":        jailData(jailResult),
 			},
 			ExecutionTimeMs: time.Since(start).Milliseconds(),
 		}, nil
@@ -576,6 +687,9 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 		},
 		ExecutionTimeMs: time.Since(start).Milliseconds(),
 	}
+	if jailResult != nil {
+		result.Data.(map[string]interface{})["jail"] = jailData(jailResult)
+	}
 
 	// Add error for non-zero exit codes
 	if !success {
@@ -584,6 +698,14 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 			Message:    fmt.Sprintf("Command exited with code %d", exitCode),
 			Suggestion: "Check stderr output for details",
 			Retryable:  true, // Non-zero exit might be transient
+		}
+		if jailResult != nil && len(jailResult.Blocked) > 0 {
+			result.Error.Message += "; the shell policy blocked: " + describeBlocked(jailResult.Blocked)
+			result.Error.Suggestion = "A program that is not on the shell allowlist runs only with a person's approval, and only when the command names it literally. Call again with it written out (not computed through a variable or substitution) so it can be approved, or use an allowed program."
+		}
+		if jailResult != nil && jailResult.Limit != "" {
+			result.Error.Message += "; the command hit the jail's " + jailResult.Limit + " limit"
+			result.Error.Retryable = false
 		}
 	}
 
@@ -602,6 +724,53 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 
 func (t *ShellExecuteTool) Backend() string {
 	return "" // Backend-agnostic
+}
+
+// jailData renders a jail result for the tool's Data.
+func jailData(r *shelljail.Result) map[string]interface{} {
+	if r == nil {
+		return nil
+	}
+	blocked := make([]map[string]interface{}, 0, len(r.Blocked))
+	for _, b := range r.Blocked {
+		blocked = append(blocked, map[string]interface{}{"name": b.Name, "reason": b.Reason, "pos": b.Pos})
+	}
+	out := map[string]interface{}{"blocked": blocked, "env_dropped": r.EnvDropped, "limit": r.Limit}
+	if r.Error != "" {
+		out["error"] = r.Error
+	}
+	return out
+}
+
+// describeBlocked lists blocked items for an error message, at most five.
+func describeBlocked(blocked []shelljail.Blocked) string {
+	parts := make([]string, 0, 5)
+	for i, b := range blocked {
+		if i == 5 {
+			parts = append(parts, fmt.Sprintf("and %d more", len(blocked)-5))
+			break
+		}
+		at := ""
+		if b.Pos != "" {
+			at = " (" + b.Pos + ")"
+		}
+		parts = append(parts, b.Name+at+": "+b.Reason)
+	}
+	return strings.Join(parts, "; ")
+}
+
+// mergeNames returns the sorted union of two name lists.
+func mergeNames(a, b []string) []string {
+	set := map[string]bool{}
+	for _, n := range append(append([]string{}, a...), b...) {
+		set[n] = true
+	}
+	out := make([]string, 0, len(set))
+	for n := range set {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // detectShell determines which shell to use based on OS and user preference.
@@ -766,53 +935,14 @@ func inheritedEnv(environ []string, passEnv map[string]bool) []string {
 	return out
 }
 
-// sensitiveEnvNames are withheld from commands by exact (upper-cased) name.
-var sensitiveEnvNames = map[string]bool{
-	"DATABASE_PASSWORD": true,
-	"DB_PASS":           true,
-}
-
-// sensitiveEnvSubstrings are withheld wherever they appear in a name.
-var sensitiveEnvSubstrings = []string{"SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "APIKEY", "PRIVATE_KEY"}
-
-// sensitiveEnvSegments are withheld when they are a whole underscore-separated
-// part of a name, so GH_TOKEN and AWS_ACCESS_KEY_ID match while
-// TOKENIZERS_PARALLELISM and KEYBOARD_LAYOUT do not.
-var sensitiveEnvSegments = map[string]bool{"TOKEN": true, "KEY": true, "PASS": true, "DSN": true}
-
 // isSensitiveEnvName reports whether an environment variable's name looks like
-// it holds a credential. Names are compared upper-cased.
-func isSensitiveEnvName(name string) bool {
-	upper := strings.ToUpper(name)
-	if sensitiveEnvNames[upper] || strings.HasSuffix(upper, "DATABASE_URL") {
-		return true
-	}
-	for _, sub := range sensitiveEnvSubstrings {
-		if strings.Contains(upper, sub) {
-			return true
-		}
-	}
-	for _, seg := range strings.Split(upper, "_") {
-		if sensitiveEnvSegments[seg] {
-			return true
-		}
-	}
-	return false
-}
+// it holds a credential. The rules live in shelljail so bash mode and jailed
+// mode withhold the same names.
+func isSensitiveEnvName(name string) bool { return shelljail.SensitiveEnvName(name) }
 
 // hasURLCredentials reports whether value is a URL with a password in its
 // userinfo (postgres://user:pw@host, http://user:pw@proxy).
-func hasURLCredentials(value string) bool {
-	if !strings.Contains(value, "://") || !strings.Contains(value, "@") {
-		return false
-	}
-	u, err := url.Parse(value)
-	if err != nil || u.User == nil {
-		return false
-	}
-	_, hasPassword := u.User.Password()
-	return hasPassword
-}
+func hasURLCredentials(value string) bool { return shelljail.URLHasPassword(value) }
 
 // resolvedAbs returns path made absolute and with its symlinks resolved. When
 // resolution fails (the path does not exist yet), it returns the cleaned
