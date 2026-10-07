@@ -54,6 +54,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Shell command policy: the `command-policy` hook kind and `pkg/shellpolicy`
+- **`kind: command-policy`** (`policy:` required, `enforcement: runtime|static`) judges a shell tool's `command` param before it runs, using a named policy: Allow, Ask (the approval card shows each off-list program, builtin or path with its position; approving grants exactly those for the call, as a `*shellpolicy.Grant` in `Decision.Grant`) or Deny. The host supplies the decision body through `ChainDeps.CommandPolicy` (`shellpolicy.Factory`), so `pkg/shuttle` carries no shell parser; a binding with none wired fails the build. An Ask whose params would be cut on the approval card (over `ApprovalParamsMaxBytes`) is a Deny instead.
+- **`pkg/shellpolicy`**: the policy model, the built-in `readonly` policy (read-only programs with per-program argument rules, and a hardened git profile verified against repository-config exec vectors), the static analyzer over the bash AST (`mvdan.cc/sh/v3`, BSD-3-Clause; walks substitutions, functions, here-documents and literal `eval`/`trap` arguments), and the per-launch checks a jailed runner will call. Not yet wired into `looms serve`. Reference: `docs/reference/shell-command-policy.md`.
+
 #### Admission grants: a tool body learns what a person approved
 - **`Decision.Grant`** lets a hook that answers `Ask` attach what the person is being asked to approve (for example, the programs a shell command names that are off its allowlist). When the call's Ask is resolved to Allow — by the `AskResolver` or by an approved `AskGrant` on park resume — the executor hands the `Grant` of **every** matched Ask decision, in hook order, to the tool body: `shuttle.AdmissionGrantsFromContext(ctx)`. The fold keeps one decision, but the grants of a second asking hook are not dropped. A call allowed outright carries none, and `Preflight` never resolves, so it never reports an approval.
 - **`AdmissionResult.Approved` and `AdmissionResult.Grants`** report the same on the chain's result.
