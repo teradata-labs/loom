@@ -45,6 +45,10 @@ type Policy struct {
 	// Never are programs no approval can lift, matched on the program's base
 	// name (so /usr/bin/sudo is sudo).
 	Never map[string]bool
+
+	// flat is this policy as additions to Readonly, so a separate process
+	// (the jail) can rebuild it from data (FromSpec).
+	flat Spec
 }
 
 // Roots are the directories commands may read and write. Paths must be
@@ -147,13 +151,19 @@ func (g *Grant) empty() bool {
 
 // Extend returns a copy of p named name, with extra programs allowed (each
 // with path confinement only and no other argument rules) and extra programs
-// on the never list. A program on both lists is never allowed.
+// on the never list. Never always wins: a program on either policy's never
+// list is not allowed, whatever allow says.
 func (p *Policy) Extend(name string, allow, never []string) *Policy {
 	out := &Policy{
 		Name:     name,
 		Builtins: make(map[string]bool, len(p.Builtins)),
 		Programs: make(map[string]*Profile, len(p.Programs)+len(allow)),
 		Never:    make(map[string]bool, len(p.Never)+len(never)),
+		flat: Spec{
+			Name:  name,
+			Allow: append(append([]string{}, p.flat.Allow...), allow...),
+			Never: append(append([]string{}, p.flat.Never...), never...),
+		},
 	}
 	for k, v := range p.Builtins {
 		out.Builtins[k] = v
@@ -164,14 +174,14 @@ func (p *Policy) Extend(name string, allow, never []string) *Policy {
 	for k, v := range p.Never {
 		out.Never[k] = v
 	}
-	for _, n := range allow {
-		if _, ok := out.Programs[n]; !ok {
-			out.Programs[n] = &Profile{MaxPositional: -1}
-		}
-	}
 	for _, n := range never {
 		out.Never[n] = true
 		delete(out.Programs, n)
+	}
+	for _, n := range allow {
+		if _, ok := out.Programs[n]; !ok && !out.Never[n] {
+			out.Programs[n] = &Profile{MaxPositional: -1}
+		}
 	}
 	return out
 }

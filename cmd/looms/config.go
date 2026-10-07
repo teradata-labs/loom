@@ -782,6 +782,48 @@ type ShellExecuteConfig struct {
 
 	// EnablePathValidation enables path traversal validation (default: true)
 	EnablePathValidation bool `mapstructure:"enable_path_validation"`
+
+	// Mode selects how commands run: "bash" (default: bash -c) or "jailed"
+	// (a pure-Go shell interpreter in a child process that checks every
+	// program launch against Policy; see docs/reference/shell-command-policy.md).
+	Mode string `mapstructure:"mode"`
+
+	// Policy names the shell policy jailed commands run under (default
+	// "readonly"). A command-policy hook binding scoped to shell_execute must
+	// name the same policy.
+	Policy string `mapstructure:"policy"`
+
+	// Policies defines named policies beyond the built-in "readonly", each
+	// extending readonly or another of these.
+	Policies map[string]ShellPolicyConfig `mapstructure:"policies"`
+
+	// SearchPath lists the directories allowlisted programs are resolved in,
+	// once at startup (default /usr/local/bin, /usr/bin, /bin).
+	SearchPath []string `mapstructure:"search_path"`
+
+	// MemoryBytes and FileBytes bound each jailed command (defaults 512 MiB
+	// and 256 MiB). Memory is a hard limit on Linux and a watchdog elsewhere.
+	MemoryBytes uint64 `mapstructure:"memory_bytes"`
+	FileBytes   uint64 `mapstructure:"file_bytes"`
+
+	// Strict runs jailed commands with set -u (default: true).
+	Strict bool `mapstructure:"strict"`
+
+	// ReadRoots and WriteRoots add directories jailed commands may read and
+	// write, beyond LOOM_DATA_DIR and /tmp (read) and the session's
+	// scratchpad and artifact directories (write).
+	ReadRoots  []string `mapstructure:"read_roots"`
+	WriteRoots []string `mapstructure:"write_roots"`
+}
+
+// ShellPolicyConfig is one named shell policy.
+type ShellPolicyConfig struct {
+	// Extends names the policy this one builds on (default "readonly").
+	Extends string `mapstructure:"extends"`
+	// Allow adds programs that run without approval (path confinement only).
+	Allow []string `mapstructure:"allow"`
+	// Never adds programs no approval can lift.
+	Never []string `mapstructure:"never"`
 }
 
 // ToolPermissionsConfig holds tool permission settings.
@@ -1317,6 +1359,9 @@ func setDefaults() {
 	viper.SetDefault("tools.shell_execute.restrict_writes", true)        // Enforce write restrictions
 	viper.SetDefault("tools.shell_execute.restrict_reads", "session")    // Session-only reads by default
 	viper.SetDefault("tools.shell_execute.enable_path_validation", true) // Enable path validation
+	viper.SetDefault("tools.shell_execute.mode", "bash")                 // jailed is opt-in
+	viper.SetDefault("tools.shell_execute.policy", "readonly")           // the jail's runtime policy
+	viper.SetDefault("tools.shell_execute.strict", true)                 // set -u in jailed mode (D10)
 
 	// Embedding defaults
 	viper.SetDefault("embedding.enabled", false)
@@ -1625,6 +1670,10 @@ func (c *Config) Validate() error {
 	}
 
 	if err := c.validateAuth(); err != nil {
+		return err
+	}
+
+	if err := c.validateShellExecute(); err != nil {
 		return err
 	}
 

@@ -11,14 +11,31 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-package main
 
-import "github.com/teradata-labs/loom/pkg/shelljail"
+//go:build windows
 
-func main() {
-	// Must run before anything else: when this process was started as a
-	// jailed shell child (tools.shell_execute.mode: jailed), it runs the jail
-	// and exits here.
-	shelljail.Main()
-	Execute()
+package shelljail
+
+import (
+	"io"
+	"os/exec"
+)
+
+// Jailed mode needs an inherited result descriptor and process groups with a
+// group kill; NewRunner refuses on Windows.
+const supported = false
+
+func resultFile() io.Writer { return nil }
+
+func signalNumber(*exec.ExitError) int { return 0 }
+
+func newProcessGroup(*exec.Cmd) {}
+
+func applyLimits(Limits) error { return nil }
+
+// KillGroup kills the child.
+func KillGroup(cmd *exec.Cmd) {
+	if cmd != nil && cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
 }
