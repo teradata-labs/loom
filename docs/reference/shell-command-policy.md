@@ -1,6 +1,6 @@
 # Shell Command Policy Reference
 
-The `command-policy` admission hook decides, before a shell command runs, whether it may run without a person's approval. It parses the command, finds every program, builtin, redirect and path it names, and judges each against a named policy:
+`shell_execute` can run in **jailed mode**: commands run in a pure-Go shell interpreter in a child process, where every program launch, file the shell opens and directory a glob lists is checked against a policy on its real, expanded arguments. The `command-policy` admission hook decides, before a command runs, whether it may run without a person's approval. It parses the command, finds every program, builtin, redirect and path it names, and judges each against a named policy:
 
 - **Allow:** every part is within the policy.
 - **Ask:** some literal part needs approval. The approval card shows the reason, and approving runs the call with a grant naming exactly what was flagged.
@@ -12,7 +12,9 @@ The hook decides what starts. It does not contain what a started program does.
 |---|---|
 | ✅ | `pkg/shellpolicy`: the policy model, the built-in `readonly` policy, the static analyzer (`Policy.Analyze`), the per-launch checks (`CheckLaunch`, `CheckBuiltin`, `CheckOpen`, `CheckListDir`) and the hook factory (`shellpolicy.Factory`). |
 | ✅ | The `command-policy` hook kind in `pkg/shuttle` (`HookBinding.Policy`, `HookBinding.Enforcement`, `ChainDeps.CommandPolicy`). |
-| 📋 | Wiring into `looms serve`, together with a `tools.shell` config block and the jailed runner that calls the per-launch checks. Until then, `serve` passes no `ChainDeps.CommandPolicy`, so a `command-policy` binding fails the chain build (fail-closed). |
+| ✅ | `pkg/shelljail`: the jailed runner, and `tools.shell_execute.mode: jailed` in `looms serve` (see [Jailed mode](#jailed-mode)). |
+| ✅ | Linux and macOS. On Windows, jailed mode refuses to start. |
+| 📋 | Lua scripts calling `shell_execute`. It stays on the default `tools.lua` deny list until the registry rule in design §7 lands (step S4). |
 
 Design: Teradata-PE/avmo-tera-cloud `docs/design/lua-script-tool/06-shell-command-policy.md`.
 
@@ -146,6 +148,72 @@ With the hardening applied, git 2.50.1 ran no program from the repository's own 
 
 `Policy.Extend(name, allow, never)` derives a policy. Added programs get path confinement only. A program on both lists is never allowed. `Policy.Validate` rejects a policy with no name, an allowlisted name containing `/`, or a name that is both allowed and never allowed.
 
+## Jailed mode
+
+```yaml
+tools:
+  shell_execute:
+    mode: jailed              # bash (default) | jailed
+    policy: readonly          # the policy every jailed command runs under (default readonly)
+    policies:                 # optional named policies
+      dev:
+        extends: readonly     # default readonly
+        allow: [make, go]     # path confinement only
+        never: [curl]         # never wins over allow, at any level
+    search_path: [/usr/local/bin, /usr/bin, /bin]   # default
+    memory_bytes: 536870912   # default 512 MiB
+    file_bytes: 268435456     # default 256 MiB
+    strict: true              # set -u (default true)
+    read_roots: []            # added to LOOM_DATA_DIR and /tmp
+    write_roots: []           # added to the session's scratchpad and artifact directories
+  hooks:
+    - kind: command-policy    # optional; without it, off-list programs are blocked and never approvable
+      scope: shell_execute
+      policy: readonly        # must equal tools.shell_execute.policy
+```
+
+**Startup** (`serve`). The following abort startup:
+
+- an unknown `mode`;
+- a `policies` entry that is undefined, loops, redefines `readonly`, or fails `Validate`;
+- a `command-policy` binding on `shell_execute` while `mode` is `bash`, because nothing would enforce what the hook approves;
+- a binding naming a different policy than `tools.shell_execute.policy`;
+- a failed self-test.
+
+In jailed mode, `serve` also:
+
+1. **Pins programs.** It resolves every allowlisted program once on `search_path` and logs each one it cannot find. A missing program fails with exit 127.
+2. **Checks git.** It drops git when git does not accept `--attr-source`, so that git calls need approval rather than running without the hardening.
+3. **Runs a self-test.** It runs `echo` through the jail. A binary that does not call `shelljail.Main()` first in `main()` fails this check.
+
+**A call**:
+
+| | Jailed mode |
+|---|---|
+| Interpreter | `mvdan.cc/sh/v3/interp`, bash dialect, in a child process (the host binary re-executed with `LOOM_SHELLJAIL_CHILD=1`). The command spec goes on stdin, never argv. |
+| Session | Required. Without one, the result is `JAIL_UNAVAILABLE`. |
+| Working directory | The session scratchpad. A relative `working_dir` resolves against it. |
+| `shell` param | Only `default`, `bash` or `sh`. Anything else is `INVALID_PARAMS`. |
+| Program launch | `CheckLaunch` on the expanded argv and current directory. A bare name runs only from its pinned path, and a name containing `/` only when granted. A refusal fails that one command with exit 126; the shell continues, and `set -e` stops it. |
+| Builtins, redirects, globs | `CheckBuiltin`, `CheckOpen` and `CheckListDir`. |
+| What a person approved | The call's admission grants (`shellpolicy.MergeGrants(shuttle.AdmissionGrantsFromContext(ctx))`). |
+| Environment | Built from scratch. No server variable reaches a command. The interpreter starts with `PATH` (`search_path`), `HOME` (scratchpad), `TERM=dumb`, `NO_COLOR=1`, `LANG`/`LC_ALL`/`TZ` from the server, `LOOM_DATA_DIR`, `SESSION_ID`, `SESSION_ARTIFACT_DIR`, `SESSION_SCRATCHPAD_DIR`, and the call's `env`. Each program gets the shell's exported variables with `PATH` forced to `search_path`. Credential names (as in bash mode) and names that change what a program executes (`LD_*`, `DYLD_*`, `GIT_*`, `PYTHON*`, `BASH_FUNC_*`, `PAGER`, `EDITOR`, `VISUAL`, `BASH_ENV`, `ENV`, `LESSOPEN`, `NODE_OPTIONS`, `PERL5OPT`, `RUBYOPT`, …) are dropped and reported. |
+| Limits | Linux: `RLIMIT_DATA` (`memory_bytes`), `RLIMIT_FSIZE` (`file_bytes`), `RLIMIT_CPU` (timeout + 5 s) and `RLIMIT_CORE` = 0, all inherited by every program, plus `oom_score_adj` = 1000. Every OS: a heap watchdog that stops the interpreter at a third of `memory_bytes`, with exit 137 and `limit: memory`. macOS rejects `RLIMIT_DATA`, so there the watchdog is the only memory bound. |
+| End of call | The child's whole process group is killed, so a jailed command leaves nothing running, background jobs included. |
+| Unsupported | `coproc`, redirects on descriptors above 2, `kill`, `umask`, `ulimit` and other builtins the interpreter does not implement. `printf -v` is not supported: it prints `-v` and sets nothing. `$!` names an interpreter job (`g1`), not a process ID. |
+
+**Result.** `Data` gains a `jail` block:
+
+```json
+"jail": {
+  "blocked": [{"name": "rm", "reason": "not on the shell allowlist and not approved for this call", "pos": "1:7"}],
+  "env_dropped": ["GH_TOKEN", "LD_PRELOAD"],
+  "limit": ""
+}
+```
+
+`limit` is `memory`, `timeout`, or empty. When anything was blocked, the error message lists it, and the suggestion tells the model to write the program out literally so it can be approved. A program computed at run time can never be approved.
+
 ## Run-time checks
 
 These are for a runner that executes the command and sees each launch with its expanded arguments.
@@ -160,6 +228,16 @@ These are for a runner that executes the command and sees each launch with its e
 Each returns a `*shellpolicy.LaunchError{Name, Reason}`, or nil.
 
 ## Tests
+
+- `pkg/shelljail` (87.8% coverage):
+  - the corpus, through a real child and in-process under `-race`;
+  - git runs nothing from repository config;
+  - a timeout kills background programs;
+  - the memory bomb is stopped (on Linux, by `RLIMIT_DATA`, in 0.05 s);
+  - policy and jail agree on fully literal commands;
+  - the self-test catches a binary that is not a jail.
+- `pkg/shuttle/builtin`: the full hook → approval → jail path through the executor.
+- `cmd/looms`: config decoding, validation and `serve` setup.
 
 - `pkg/shellpolicy`: 94.7% statement coverage.
 - **Corpus:** the design's bypass corpus, about 80 commands, each run under both enforcement modes.

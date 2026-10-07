@@ -524,6 +524,7 @@ Note: `restrictReads` and `restrictWrites` fields exist on the struct and have s
 | **Process tree kill** | The shell runs in its own process group. A timeout, a cancelled turn, or output past `max_output_bytes` kills the whole group (`taskkill /T /F` on Windows), so background jobs and their children do not outlive the call. A process that calls `setsid` leaves the group. Normal completion kills nothing, so `server > log 2>&1 &` keeps running |
 | **Output limit** | Output past `max_output_bytes` (default 1 MiB) stops the command at once and returns `OUTPUT_OVERFLOW` |
 | **Command size limit** | Commands >40KB (~10k tokens) rejected to prevent output token exhaustion |
+| **Jailed mode** (`tools.shell_execute.mode: jailed`, opt-in) | Commands run in a pure-Go shell interpreter in a child process that checks every program launch, redirect and glob against a shell policy; the working directory is the session scratchpad, writes are confined to the session's scratchpad and artifact directories, and nothing outlives the call. See `docs/reference/shell-command-policy.md` |
 
 **Environment Variables** (injected into shell commands when session exists):
 ```bash
