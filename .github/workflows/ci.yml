@@ -342,6 +342,13 @@ jobs:
 
           echo "✅ Lua script engine fuzz tests completed" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Run fuzz tests (shellpolicy package)
+        run: |
+          set -euo pipefail
+          go test -run=^$ -fuzz='^FuzzAnalyze$' -fuzztime=30s ./pkg/shellpolicy
+
+          echo "✅ Shellpolicy package fuzz tests completed" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Run fuzz tests with hawk (observability privacy)
         run: |
           set -euo pipefail

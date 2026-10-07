@@ -11,14 +11,19 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
 package main
 
-import "github.com/teradata-labs/loom/pkg/shelljail"
+import (
+	"os"
+	"testing"
 
-func main() {
-	// Must run before anything else: when this process was started as a
-	// jailed shell child (tools.shell_execute.mode: jailed), it runs the jail
-	// and exits here.
+	"github.com/teradata-labs/loom/pkg/shelljail"
+)
+
+// TestMain lets this test binary serve as the jailed shell's child, as the
+// looms binary does (main calls shelljail.Main first).
+func TestMain(m *testing.M) {
 	shelljail.Main()
-	Execute()
+	os.Exit(m.Run())
 }
