@@ -521,3 +521,34 @@ func TestChildRejectsABadSpec(t *testing.T) {
 	require.NoError(t, json.Unmarshal(result.Bytes(), &res))
 	assert.Contains(t, res.Error, "cannot decode")
 }
+
+// BenchmarkJailedCall measures one jailed command end to end (spec, child
+// start, interpreter, a pinned program, result), against bash -c for the same
+// command. Recorded in design 06 §13 (S3).
+func BenchmarkJailedCall(b *testing.B) {
+	data := b.TempDir()
+	b.Setenv("LOOM_DATA_DIR", data)
+	r, _, err := NewRunner(Config{Policy: shellpolicy.Readonly(), LoomDataDir: data, Strict: true})
+	require.NoError(b, err)
+	opt, err := r.Options(testSession, "")
+	require.NoError(b, err)
+	env, _ := r.BaseEnv(opt.WorkingDir, nil, nil)
+	for _, tc := range []struct{ name, cmd string }{{"builtin", "true"}, {"program", "ls >/dev/null"}} {
+		b.Run("jailed/"+tc.name, func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				child, err := r.Command(r.Spec(tc.cmd, opt, nil, env, 10*time.Second))
+				require.NoError(b, err)
+				require.NoError(b, child.Cmd.Start())
+				child.Started()
+				require.NoError(b, child.Cmd.Wait())
+				KillGroup(child.Cmd)
+				_ = child.Result()
+			}
+		})
+		b.Run("bash/"+tc.name, func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				require.NoError(b, exec.Command("bash", "-c", tc.cmd).Run()) // #nosec G204 -- benchmark baseline
+			}
+		})
+	}
+}
