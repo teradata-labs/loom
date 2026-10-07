@@ -14,7 +14,7 @@ The hook decides what starts. It does not contain what a started program does.
 | ✅ | The `command-policy` hook kind in `pkg/shuttle` (`HookBinding.Policy`, `HookBinding.Enforcement`, `ChainDeps.CommandPolicy`). |
 | ✅ | `pkg/shelljail`: the jailed runner, and `tools.shell_execute.mode: jailed` in `looms serve` (see [Jailed mode](#jailed-mode)). |
 | ✅ | Linux and macOS. On Windows, jailed mode refuses to start. |
-| 📋 | Lua scripts calling `shell_execute`. It stays on the default `tools.lua` deny list until the registry rule in design §7 lands (step S4). |
+| ✅ | Lua scripts calling `shell_execute`: only when it runs jailed under a `command-policy` binding, and never from shared scripts (see [lua-script-api.md](lua-script-api.md)). |
 
 Design: Teradata-PE/avmo-tera-cloud `docs/design/lua-script-tool/06-shell-command-policy.md`.
 

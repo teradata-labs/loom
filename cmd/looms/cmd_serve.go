@@ -1775,11 +1775,14 @@ func runServe(cmd *cobra.Command, args []string) {
 	// run_lua wiring (tools.lua, off by default): one policy and one run gate
 	// for the whole server, sized from the process memory limit. A malformed
 	// tool pattern aborts startup, like a malformed hook binding.
-	luaRT, err := newLuaRuntime(config.Tools.Lua, luasandbox.ProcessMemoryLimit(), loomconfig.GetLoomDataDir())
+	luaRT, err := newLuaRuntime(config.Tools.Lua, luasandbox.ProcessMemoryLimit(), loomconfig.GetLoomDataDir(), scriptShellGoverned(config))
 	if err != nil {
 		logger.Fatal("Invalid tools.lua configuration", zap.Error(err))
 	}
 	if luaRT != nil {
+		for _, w := range luaRT.warnings {
+			logger.Warn("tools.lua", zap.String("detail", w))
+		}
 		logger.Info("Lua scripts enabled (run_lua)",
 			zap.Int("run_slots", luaRT.slots),
 			zap.Int("runs_per_agent", luaRT.perKey),
