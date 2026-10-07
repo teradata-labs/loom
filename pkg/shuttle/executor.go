@@ -352,6 +352,9 @@ func (e *Executor) Execute(ctx context.Context, toolName string, params map[stri
 	if denied != nil {
 		return denied, nil
 	}
+	// The tool body sees the grants of an approved Ask, and never grants or an
+	// AskGrant inherited from an enclosing call.
+	ctx = toolBodyContext(ctx, admRes)
 
 	// Handle large parameters: store in shared memory to prevent context bloat
 	referencedParams, err := e.handleLargeParameters(ctx, normalizedParams)
@@ -427,6 +430,7 @@ func (e *Executor) ExecuteWithTool(ctx context.Context, tool Tool, params map[st
 	if denied != nil {
 		return denied, nil
 	}
+	ctx = toolBodyContext(ctx, admRes)
 
 	// Handle large parameters: store in shared memory to prevent context bloat
 	referencedParams, err := e.handleLargeParameters(ctx, normalizedParams)
