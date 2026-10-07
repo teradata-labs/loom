@@ -70,6 +70,7 @@ require (
 	golang.org/x/term v0.46.0
 	gopkg.in/cenkalti/backoff.v1 v1.1.0
 	modernc.org/sqlite v1.59.0
+	mvdan.cc/sh/v3 v3.14.1
 )
 
 require (
