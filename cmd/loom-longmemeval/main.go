@@ -86,7 +86,7 @@ temporal reasoning, knowledge updates, and abstention.`,
 	rootCmd.AddCommand(infoCmd())
 
 	if err := rootCmd.Execute(); err != nil {
-		os.Exit(1)
+		os.Exit(exitCodeFor(err))
 	}
 }
 
@@ -258,8 +258,54 @@ PASS/PARTIAL/FAIL verdicts with scores and explanations.`,
 	return cmd
 }
 
+// DatasetTypeCount is one question type and how many entries carry it.
+type DatasetTypeCount struct {
+	Type  string `json:"type"`
+	Count int    `json:"count"`
+}
+
+// DatasetStats is the machine-readable form of `info`. The AKS slice loop
+// (deploy/longmemeval/runner-script.yaml) derives its per-type chunk counts
+// from this instead of hardcoding them, so a dataset revision that shifts a
+// count cannot silently drive the loop past the last entry (a hard error) or
+// stop it early and omit questions from a published number.
+//
+// QuestionTypes is ordered by QuestionTypes(), so consumers iterate
+// deterministically.
+type DatasetStats struct {
+	Dataset       string             `json:"dataset"`
+	Entries       int                `json:"entries"`
+	QuestionTypes []DatasetTypeCount `json:"question_types"`
+	TotalSessions int                `json:"total_sessions"`
+	TotalTurns    int                `json:"total_turns"`
+}
+
+// ComputeDatasetStats summarizes a loaded dataset.
+func ComputeDatasetStats(path string, entries []Entry) DatasetStats {
+	stats := DatasetStats{
+		Dataset:       path,
+		Entries:       len(entries),
+		QuestionTypes: []DatasetTypeCount{},
+	}
+
+	typeCounts := make(map[string]int)
+	for _, e := range entries {
+		typeCounts[e.QuestionType]++
+		stats.TotalSessions += len(e.HaystackSessions)
+		for _, s := range e.HaystackSessions {
+			stats.TotalTurns += len(s)
+		}
+	}
+	for _, t := range QuestionTypes(entries) {
+		stats.QuestionTypes = append(stats.QuestionTypes, DatasetTypeCount{Type: t, Count: typeCounts[t]})
+	}
+	return stats
+}
+
 func infoCmd() *cobra.Command {
-	return &cobra.Command{
+	var asJSON bool
+
+	cmd := &cobra.Command{
 		Use:   "info [dataset-path]",
 		Short: "Show dataset statistics",
 		Args:  cobra.MaximumNArgs(1),
@@ -273,38 +319,43 @@ func infoCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			stats := ComputeDatasetStats(path, entries)
 
-			fmt.Printf("Dataset:  %s\n", path)
-			fmt.Printf("Entries:  %d\n", len(entries))
+			if asJSON {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(stats)
+			}
+
+			fmt.Printf("Dataset:  %s\n", stats.Dataset)
+			fmt.Printf("Entries:  %d\n", stats.Entries)
 			fmt.Println()
 
-			types := QuestionTypes(entries)
-			typeCounts := make(map[string]int)
-			for _, e := range entries {
-				typeCounts[e.QuestionType]++
-			}
-
 			fmt.Println("Question Types:")
-			for _, t := range types {
-				fmt.Printf("  %-30s %d\n", t, typeCounts[t])
+			for _, tc := range stats.QuestionTypes {
+				fmt.Printf("  %-30s %d\n", tc.Type, tc.Count)
 			}
 
-			// Session stats
-			var totalSessions, totalTurns int
-			for _, e := range entries {
-				totalSessions += len(e.HaystackSessions)
-				for _, s := range e.HaystackSessions {
-					totalTurns += len(s)
-				}
-			}
-			fmt.Printf("\nTotal sessions: %d (avg %.1f/entry)\n",
-				totalSessions, float64(totalSessions)/float64(len(entries)))
-			fmt.Printf("Total turns:    %d (avg %.1f/session)\n",
-				totalTurns, float64(totalTurns)/float64(totalSessions))
+			fmt.Printf("\nTotal sessions: %d (avg %s/entry)\n",
+				stats.TotalSessions, ratio(stats.TotalSessions, stats.Entries))
+			fmt.Printf("Total turns:    %d (avg %s/session)\n",
+				stats.TotalTurns, ratio(stats.TotalTurns, stats.TotalSessions))
 
 			return nil
 		},
 	}
+
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit statistics as JSON (used by the AKS slice loop to derive per-type counts)")
+	return cmd
+}
+
+// ratio formats an average, reporting "n/a" rather than NaN when the
+// denominator is zero (an empty or session-less dataset).
+func ratio(num, denom int) string {
+	if denom == 0 {
+		return "n/a"
+	}
+	return fmt.Sprintf("%.1f", float64(num)/float64(denom))
 }
 
 func runBenchmark(cmd *cobra.Command, args []string) error {
@@ -427,13 +478,25 @@ func runBenchmark(cmd *cobra.Command, args []string) error {
 
 	// An aborted run (e.g. the server rejects occurred_at) must exit
 	// non-zero so callers don't mistake a results file full of failed rows
-	// for a completed run. A user interrupt (SIGINT/SIGTERM) still exits
-	// cleanly with whatever finished.
-	if runErr != nil && !errors.Is(runErr, context.Canceled) {
-		return fmt.Errorf("benchmark run aborted: %w", runErr)
+	// for a completed run. A run whose only failures are transient (server
+	// unavailable, deadline, load shedding) exits ExitTransient so the AKS
+	// slice loop retries it without charging its deterministic-failure
+	// budget. A user interrupt (SIGINT/SIGTERM) still exits cleanly with
+	// whatever finished.
+	outcome := classifyOutcome(results, runErr)
+	var transient *TransientFailureError
+	if errors.As(outcome, &transient) {
+		logger.Warn("run finished with only transient entry failures",
+			zap.Int("failed", transient.Failed),
+			zap.Int("results", transient.Total),
+			zap.Int("exit_code", ExitTransient))
 	}
-
-	return nil
+	if outcome != nil {
+		// The results are already written and the cause logged; cobra's
+		// usage dump would only bury it.
+		cmd.SilenceUsage = true
+	}
+	return outcome
 }
 
 // resolveDatasetPath finds a dataset file, trying args first, then data-dir.
@@ -451,8 +514,14 @@ func resolveDatasetPath(args []string) string {
 	return ""
 }
 
-// downloadFile downloads a URL to a local path.
-func downloadFile(url, destPath string) error {
+// downloadFile downloads a URL to destPath atomically: the body streams to
+// destPath+".tmp", which is renamed onto destPath only after the whole body
+// arrived and the file was flushed and closed. On any error the .tmp is
+// removed and destPath is left untouched. The download command skips a
+// destPath that already exists, so a truncated file written in place (e.g.
+// by a connection reset mid-stream) would otherwise be cached forever and
+// fail every later load.
+func downloadFile(url, destPath string) (err error) {
 	resp, err := http.Get(url) // #nosec G107 -- URL is constructed from hardcoded base + known dataset names
 	if err != nil {
 		return fmt.Errorf("HTTP GET: %w", err)
@@ -463,15 +532,30 @@ func downloadFile(url, destPath string) error {
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
 	}
 
-	f, err := os.Create(destPath)
+	tmpPath := destPath + ".tmp"
+	f, err := os.Create(tmpPath) // truncates a .tmp left by a killed earlier attempt
 	if err != nil {
 		return fmt.Errorf("create file: %w", err)
 	}
-	defer func() { _ = f.Close() }()
+	defer func() {
+		if err != nil {
+			_ = f.Close() // no-op error if already closed
+			_ = os.Remove(tmpPath)
+		}
+	}()
 
 	written, err := io.Copy(f, resp.Body)
 	if err != nil {
 		return fmt.Errorf("write file: %w", err)
+	}
+	if err = f.Sync(); err != nil {
+		return fmt.Errorf("sync file: %w", err)
+	}
+	if err = f.Close(); err != nil {
+		return fmt.Errorf("close file: %w", err)
+	}
+	if err = os.Rename(tmpPath, destPath); err != nil {
+		return fmt.Errorf("rename %s -> %s: %w", tmpPath, destPath, err)
 	}
 
 	fmt.Printf("  Downloaded %d bytes\n", written)

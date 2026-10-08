@@ -338,7 +338,10 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 	}
 
 	if finalResult.err != nil {
-		return status.Errorf(codes.Internal, "agent error: %v", finalResult.err)
+		// Same status mapping as Weave and the multi-agent StreamWeave:
+		// cancellation, deadline, and provider capacity failures keep
+		// retryable codes instead of collapsing into Internal.
+		return wrapAgentError(finalResult.err)
 	}
 
 	// Send final completion event with result and context state
