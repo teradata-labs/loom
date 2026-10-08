@@ -1,0 +1,385 @@
+// Modified for loom, 2026: init positions saturate and gsub formats integers in 64 bits (golua PR #136).
+// See third_party/golua/README.md for the list of changes from upstream.
+
+package stringlib
+
+import (
+	"errors"
+	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
+
+	"github.com/teradata-labs/loom/third_party/golua/lib/stringlib/pattern"
+	"github.com/teradata-labs/loom/third_party/golua/luastrings"
+	rt "github.com/teradata-labs/loom/third_party/golua/runtime"
+)
+
+func find(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
+	var (
+		s, ptn string
+		init   int64 = 1
+		plain  bool
+	)
+	err := c.CheckNArgs(2)
+	if err == nil {
+		s, err = c.StringArg(0)
+	}
+	if err == nil {
+		ptn, err = c.StringArg(1)
+	}
+	if err == nil && c.NArgs() >= 3 {
+		init, err = c.IntArg(2)
+		if err == nil && c.NArgs() >= 4 {
+			plain = rt.Truth(c.Arg(3))
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	si := luastrings.StringNormPos(s, rt.ClampToInt(init)) - 1
+	if si < 0 {
+		si = 0
+	}
+	next := c.Next()
+	switch {
+	case si < 0 || si > len(s):
+		t.Push1(next, rt.NilValue)
+	case plain || len(ptn) == 0:
+		// strings.Index is linear
+		t.RequireCPU(uint64(len(s) - si))
+		i := strings.Index(s[si:], ptn)
+		if i == -1 {
+			t.Push1(next, rt.NilValue)
+		} else {
+			t.Push1(next, rt.IntValue(int64(i+1)))
+			t.Push1(next, rt.IntValue(int64(i+len(ptn))))
+		}
+	default:
+		pat, err := pattern.New(string(ptn))
+		if err != nil {
+			return nil, err
+		}
+		captures, usedCPU := pat.MatchFromStart(string(s), si, t.UnusedCPU())
+		t.RequireCPU(usedCPU)
+		if len(captures) == 0 {
+			t.Push1(next, rt.NilValue)
+		} else {
+			first := captures[0]
+			t.Push1(next, rt.IntValue(int64(first.Start()+1)))
+			t.Push1(next, rt.IntValue(int64(first.End())))
+			pushExtraCaptures(t.Runtime, captures, s, next)
+		}
+	}
+	return next, nil
+}
+
+func match(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
+	var (
+		s, ptn string
+		init   int64 = 1
+	)
+	err := c.CheckNArgs(2)
+	if err == nil {
+		s, err = c.StringArg(0)
+	}
+	if err == nil {
+		ptn, err = c.StringArg(1)
+	}
+	if err == nil && c.NArgs() >= 3 {
+		init, err = c.IntArg(2)
+	}
+	if err != nil {
+		return nil, err
+	}
+	si := luastrings.StringNormPos(s, rt.ClampToInt(init)) - 1
+	if si < 0 {
+		si = 0
+	}
+	next := c.Next()
+	pat, ptnErr := pattern.New(string(ptn))
+	if ptnErr != nil {
+		return nil, ptnErr
+	}
+	captures, usedCPU := pat.MatchFromStart(string(s), si, t.UnusedCPU())
+	t.RequireCPU(usedCPU)
+	pushCaptures(t.Runtime, captures, s, next)
+	return next, nil
+}
+
+func pushCaptures(r *rt.Runtime, captures []pattern.Capture, s string, next rt.Cont) {
+	switch len(captures) {
+	case 0:
+		r.Push1(next, rt.NilValue)
+	case 1:
+		c := captures[0]
+		r.RequireBytes(c.End() - c.Start())
+		r.Push1(next, rt.StringValue(s[c.Start():c.End()]))
+	default:
+		pushExtraCaptures(r, captures, s, next)
+	}
+}
+
+func pushExtraCaptures(r *rt.Runtime, captures []pattern.Capture, s string, next rt.Cont) {
+	if len(captures) < 2 {
+		return
+	}
+	for _, c := range captures[1:] {
+		r.Push1(next, captureValue(r, c, s))
+	}
+}
+
+func captureValue(r *rt.Runtime, c pattern.Capture, s string) rt.Value {
+	if c.IsEmpty() {
+		return rt.IntValue(int64(c.Start() + 1))
+	}
+	r.RequireBytes(c.End() - c.Start())
+	return rt.StringValue(s[c.Start():c.End()])
+}
+
+func gmatch(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
+	var (
+		s, ptn string
+		err          = c.CheckNArgs(2)
+		init   int64 = 1
+	)
+	if err == nil {
+		s, err = c.StringArg(0)
+	}
+	if err == nil {
+		ptn, err = c.StringArg(1)
+	}
+	if err == nil && c.NArgs() >= 3 {
+		init, err = c.IntArg(2)
+	}
+	if err != nil {
+		return nil, err
+	}
+	pat, ptnErr := pattern.New(string(ptn))
+	if ptnErr != nil {
+		return nil, ptnErr
+	}
+	si := luastrings.StringNormPos(s, rt.ClampToInt(init)) - 1
+	if si < 0 {
+		si = 0
+	}
+	allowEmpty := true
+	var iterator = func(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
+		next := c.Next()
+		var (
+			captures []pattern.Capture
+			usedCPU  uint64
+		)
+		for {
+			captures, usedCPU = pat.Match(s, si, t.UnusedCPU())
+			t.RequireCPU(usedCPU)
+			if len(captures) == 0 {
+				break
+			}
+			gc := captures[0]
+			start, end := gc.Start(), gc.End()
+			if allowEmpty || start != si || end != si {
+				allowEmpty = start >= end
+				if allowEmpty {
+					si = start + 1
+				} else {
+					si = end
+				}
+				break
+			}
+			si++
+			allowEmpty = true
+		}
+		pushCaptures(t.Runtime, captures, s, next)
+		return next, nil
+	}
+	iterGof := t.NewGoFunction(iterator, "gmatchiterator", 0, false)
+	iterGof.SolemnlyDeclareCompliance(rt.ComplyCpuSafe | rt.ComplyMemSafe | rt.ComplyTimeSafe | rt.ComplyIoSafe)
+	return c.PushingNext(t.Runtime, rt.FunctionValue(iterGof)), nil
+}
+
+func gsub(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
+	var (
+		s, ptn string
+		n      int64 = -1
+		repl   rt.Value
+	)
+	err := c.CheckNArgs(3)
+	if err == nil {
+		s, err = c.StringArg(0)
+	}
+	if err == nil {
+		ptn, err = c.StringArg(1)
+	}
+	if err == nil && c.NArgs() >= 4 {
+		n, err = c.IntArg(3)
+	}
+	if err != nil {
+		return nil, err
+	}
+	repl = c.Arg(2)
+	pat, ptnErr := pattern.New(string(ptn))
+	if ptnErr != nil {
+		return nil, ptnErr
+	}
+
+	// replF will be the function that does the substitution of the match given
+	// the captures in the match.  It must require the memory for the
+	// substitution string.  It returns the substituted string, true if a
+	// substitution was actually made, and a non-nil error if something went
+	// wrong.
+	var replF func([]pattern.Capture) (string, bool, error)
+
+	if replString, ok := repl.TryString(); ok {
+		replF = func(captures []pattern.Capture) (string, bool, error) {
+			cStrings := [10]string{}
+			maxIndex := len(captures) - 1
+			for i, c := range captures {
+				v := captureValue(t.Runtime, c, s)
+				switch v.Type() {
+				case rt.StringType:
+					cStrings[i] = v.AsString()
+				case rt.IntType:
+					cStrings[i] = strconv.FormatInt(v.AsInt(), 10)
+				}
+			}
+			if len(captures) == 1 {
+				cStrings[1] = cStrings[0]
+				maxIndex = 1
+			}
+			var err error
+			t.RequireCPU(uint64(len(replString)))
+			t.RequireBytes(len(replString))
+			return gsubPtn.ReplaceAllStringFunc(replString, func(x string) string {
+				if err != nil {
+					return ""
+				}
+				b := x[1]
+				switch {
+				case '0' <= b && b <= '9':
+					idx := int(b - '0')
+					if idx > maxIndex {
+						err = pattern.ErrInvalidCaptureIdx(idx)
+						return ""
+					}
+					s := cStrings[b-'0']
+					if len(s) > 2 {
+						t.RequireBytes(len(s) - 2)
+					}
+					return s
+				case b == '%':
+					return x[1:]
+				default:
+					err = pattern.ErrInvalidPct
+				}
+				return x[1:]
+			}), false, err
+		}
+	} else if replTable, ok := repl.TryTable(); ok {
+		replF = func(captures []pattern.Capture) (string, bool, error) {
+			gc := captures[0]
+			i := 0
+			if len(captures) >= 2 {
+				i = 1
+			}
+			c := captures[i]
+			val, err := rt.Index(t, rt.TableValue(replTable), captureValue(t.Runtime, c, s))
+			if err != nil {
+				return "", false, err
+			}
+			return subToString(t.Runtime, s[gc.Start():gc.End()], val)
+		}
+	} else if replC, ok := repl.TryCallable(); ok {
+		replF = func(captures []pattern.Capture) (string, bool, error) {
+			term := rt.NewTerminationWith(c, 1, false)
+			cont := replC.Continuation(t, term)
+			gc := captures[0]
+			i := 0
+			if len(captures) >= 2 {
+				i = 1
+			}
+			for _, c := range captures[i:] {
+				t.Push1(cont, captureValue(t.Runtime, c, s))
+			}
+			err := t.RunContinuation(cont)
+			if err != nil {
+				return "", false, err
+			}
+			return subToString(t.Runtime, s[gc.Start():gc.End()], term.Get(0))
+		}
+	} else {
+		return nil, errors.New("#3 must be a string, table or function")
+	}
+	var (
+		si         int             // Index in s where to start finding the next match
+		sj         int             // Index in s of the first byte not yet copied
+		sb         strings.Builder // Build the result string into this
+		matchCount int64
+		allowEmpty = true
+	)
+	// We require memory for the string we build as we go along.  In order to
+	// save allocations in case there are no substitutions, we do not start
+	// copying the string until one substitution has actually taken place.  This
+	// is achieved by keeping the variable sj the same until bytes are written
+	// in the string builder.
+	for ; matchCount != n; matchCount++ {
+		captures, usedCPU := pat.Match(string(s), si, t.UnusedCPU())
+		t.RequireCPU(usedCPU)
+		if len(captures) == 0 {
+			break
+		}
+		gc := captures[0]
+		start, end := gc.Start(), gc.End()
+		if allowEmpty || start != si || end != si {
+			sub, same, err := replF(captures)
+			if err != nil {
+				return nil, err
+			}
+			if !same {
+				t.RequireBytes(start - sj)
+				// No need to require memory for sub as that has been done already
+				// by replF
+				_, _ = sb.WriteString(s[sj:start])
+				_, _ = sb.WriteString(sub)
+				sj = end
+			}
+		}
+		allowEmpty = start >= end
+		if allowEmpty {
+			si = start + 1
+		} else {
+			si = end
+		}
+	}
+	var res rt.Value
+	switch {
+	case sb.Len() == 0:
+		// We return the input string to save an allocation.
+		res = c.Arg(0)
+	case sj < len(s):
+		t.RequireBytes(len(s) - sj)
+		_, _ = sb.WriteString(s[sj:])
+		fallthrough
+	default:
+		res = rt.StringValue(sb.String())
+	}
+	next := c.Next()
+	// Already required memory for the string below.
+	t.Push1(next, res)
+	t.Push1(next, rt.IntValue(matchCount))
+	return next, nil
+}
+
+var gsubPtn = regexp.MustCompile("%.")
+
+func subToString(r *rt.Runtime, key string, val rt.Value) (string, bool, error) {
+	if !rt.Truth(val) {
+		return key, true, nil
+	}
+	res, ok := val.ToString()
+	if ok {
+		r.RequireBytes(len(res))
+		return res, false, nil
+	}
+	return "", false, fmt.Errorf("invalid replacement value (a %s)", val.TypeName())
+}
