@@ -14,11 +14,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
@@ -108,4 +111,32 @@ func TestRunHitlExpire_RetiresStrandedRow(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "timeout", got.Status, "the stranded row is terminally retired")
 	require.Contains(t, got.RespondedBy, "operator:", "the closing actor is the operator")
+}
+
+func TestHITLListLabel(t *testing.T) {
+	assert.Equal(t, `shell_execute command=rm notes.txt`, hitlListLabel(&shuttle.HumanRequest{
+		Question: `Approve tool call "shell_execute"?`, Summary: `shell_execute command=rm notes.txt`}),
+		"an approval lists its call digest, not the generic question")
+	assert.Equal(t, "What is the deadline?", hitlListLabel(&shuttle.HumanRequest{Question: "What is the deadline?"}))
+	long := hitlListLabel(&shuttle.HumanRequest{Question: strings.Repeat("é", 100)})
+	assert.Equal(t, 70, len([]rune(long)), "cut on a rune boundary")
+	assert.True(t, strings.HasSuffix(long, "..."))
+}
+
+func TestWriteHITLParams(t *testing.T) {
+	var buf bytes.Buffer
+	writeHITLParams(&buf, &shuttle.HumanRequest{Params: map[string]interface{}{"command": "rm notes.txt && echo removed", "timeout_seconds": 3}})
+	out := buf.String()
+	assert.Contains(t, out, "Parameters:")
+	assert.Contains(t, out, `"command": "rm notes.txt && echo removed"`)
+	assert.Contains(t, out, `"timeout_seconds": 3`)
+	assert.NotContains(t, out, "too large")
+
+	buf.Reset()
+	writeHITLParams(&buf, &shuttle.HumanRequest{Params: map[string]interface{}{"a": 1}, ParamsTruncated: true})
+	assert.Contains(t, buf.String(), "too large for the approval record")
+
+	buf.Reset()
+	writeHITLParams(&buf, &shuttle.HumanRequest{})
+	assert.Empty(t, buf.String(), "a question carries no parameters")
 }
