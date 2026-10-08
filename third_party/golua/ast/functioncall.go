@@ -1,3 +1,6 @@
+// Modified for loom, 2026: HWrite renders names as text, not their structs (golua PR #138).
+// See third_party/golua/README.md for the list of changes from upstream.
+
 package ast
 
 // TODO: the FunctionCall / BFunctionCall distinction is awkward.  Find a better
@@ -96,7 +99,7 @@ func (f BFunctionCall) HWrite(w HWriter) {
 	// w.Dedent()
 	if f.Method.Val != "" {
 		w.Next()
-		w.Writef("method: %s", f.Method)
+		w.Writef("method: %s", f.Method.Val)
 	}
 	for i, arg := range f.Args {
 		w.Next()

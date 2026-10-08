@@ -1,3 +1,6 @@
+// Modified for loom, 2026: HWrite renders names as text, not their structs (golua PR #138).
+// See third_party/golua/README.md for the list of changes from upstream.
+
 package ast
 
 import (
@@ -32,7 +35,7 @@ func (n Name) ProcessVar(p VarProcessor) {
 
 // HWrite prints a tree representation of the node.
 func (n Name) HWrite(w HWriter) {
-	w.Writef(n.Val)
+	w.Writef("%s", n.Val)
 }
 
 // FunctionName returns the string associated with the name.
