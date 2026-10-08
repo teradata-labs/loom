@@ -23,6 +23,7 @@ import "loom/v1/agent_config.proto";
 import "loom/v1/apps.proto";
 import "loom/v1/bus.proto";
 import "loom/v1/communication.proto";
+import "loom/v1/lua_script.proto";
 import "loom/v1/orchestration.proto";
 import "loom/v1/server.proto";
 import "loom/v1/shared_memory.proto";
@@ -634,6 +635,32 @@ service LoomService {
   // DeleteUIApp deletes a dynamic UI app.
   rpc DeleteUIApp(DeleteUIAppRequest) returns (DeleteUIAppResponse) {
     option (google.api.http) = {delete: "/v1/apps/{name}"};
+  }
+
+  // Lua scripts (tools.lua). Every call returns FailedPrecondition when the
+  // server has Lua scripts disabled.
+
+  // ListLuaScripts lists saved Lua scripts, without their source.
+  rpc ListLuaScripts(ListLuaScriptsRequest) returns (ListLuaScriptsResponse) {
+    option (google.api.http) = {get: "/v1/lua-scripts"};
+  }
+
+  // GetLuaScript reads one saved Lua script, including its source.
+  rpc GetLuaScript(GetLuaScriptRequest) returns (GetLuaScriptResponse) {
+    option (google.api.http) = {get: "/v1/lua-scripts/{name}"};
+  }
+
+  // SaveLuaScript saves a Lua script. The source must compile.
+  rpc SaveLuaScript(SaveLuaScriptRequest) returns (SaveLuaScriptResponse) {
+    option (google.api.http) = {
+      post: "/v1/lua-scripts"
+      body: "*"
+    };
+  }
+
+  // DeleteLuaScript deletes a saved Lua script and its attachments.
+  rpc DeleteLuaScript(DeleteLuaScriptRequest) returns (DeleteLuaScriptResponse) {
+    option (google.api.http) = {delete: "/v1/lua-scripts/{name}"};
   }
 
   // ListComponentTypes returns the catalog of available component types

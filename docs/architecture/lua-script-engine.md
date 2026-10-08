@@ -3,8 +3,8 @@
 **Status**: ✅ engine implemented with tests (`pkg/luasandbox`), on a vendored, patched
 golua (`third_party/golua`). ✅ the agent bridge (`Agent.NewLuaHost`) and the builtin
 `run_lua` tool (`pkg/agent`), registered only when `tools.lua.enabled` is true (default
-false). 📋 Planned: saved scripts and script-backed tools (`manage_lua_scripts`,
-`lua_<name>`).
+false). ✅ saved scripts: the store (`pkg/luasandbox/store`, file store in
+`store/filestore`), `manage_lua_scripts`, `lua_<name>` tools and the Lua script RPCs.
 
 ## Overview
 
@@ -256,6 +256,22 @@ one gate for the server. The gate is sized by `DeriveCapacity` from the process 
 limit, and `max_concurrent_runs` can only lower it. `run_lua` registers on agents that
 list it in `tools.builtin`, through serve's own agent loops and through
 `RegistryConfig.RunLuaTool` for registry-built agents.
+
+### Saved scripts
+
+`store.ScriptStore` is the interface hosts implement; loom's is `filestore` (one directory,
+temp-file-and-rename writes). One persistence mutex serializes each write, and the index
+lock is held only for map operations, so reads never wait on file I/O and no lock is held
+while a script runs. `luasandbox.Check` compiles a script without running it, and saves
+must pass it.
+
+Publishing (a flag on the script) and attaching (an entry per agent) are separate. An agent
+registers `lua_<name>` for each published script attached to it, or named by a `lua://`
+custom tool, through `Agent.RegisterLuaScriptTools`. The registry calls it after its
+builtin-tool filter. A `ScriptTool` re-reads the script on every call, so unpublishing or
+deleting takes effect on every agent at once without rebuilding them. It runs through the
+same path as `run_lua` (`runResolved`), with the script's `requires` as the visible-set
+bound.
 
 ## Guarantees and their tests
 

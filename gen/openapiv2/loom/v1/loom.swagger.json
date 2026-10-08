@@ -1102,6 +1102,121 @@
         ]
       }
     },
+    "/v1/lua-scripts": {
+      "get": {
+        "summary": "ListLuaScripts lists saved Lua scripts, without their source.",
+        "operationId": "LoomService_ListLuaScripts",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ListLuaScriptsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "LoomService"
+        ]
+      },
+      "post": {
+        "summary": "SaveLuaScript saves a Lua script. The source must compile.",
+        "operationId": "LoomService_SaveLuaScript",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1SaveLuaScriptResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "SaveLuaScriptRequest saves a script. The source must compile; it is never\nrun by this call.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1SaveLuaScriptRequest"
+            }
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
+    "/v1/lua-scripts/{name}": {
+      "get": {
+        "summary": "GetLuaScript reads one saved Lua script, including its source.",
+        "operationId": "LoomService_GetLuaScript",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetLuaScriptResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      },
+      "delete": {
+        "summary": "DeleteLuaScript deletes a saved Lua script and its attachments.",
+        "operationId": "LoomService_DeleteLuaScript",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1DeleteLuaScriptResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
     "/v1/mcp/servers": {
       "get": {
         "summary": "ListMCPServers lists all configured MCP servers.",
@@ -5087,6 +5202,15 @@
       },
       "description": "DeleteArtifactResponse confirms deletion."
     },
+    "v1DeleteLuaScriptResponse": {
+      "type": "object",
+      "properties": {
+        "deleted": {
+          "type": "boolean"
+        }
+      },
+      "description": "DeleteLuaScriptResponse reports whether a script was deleted."
+    },
     "v1DeleteMCPServerResponse": {
       "type": "object",
       "properties": {
@@ -5413,6 +5537,15 @@
         }
       },
       "description": "GetArtifactStatsResponse returns artifact storage stats."
+    },
+    "v1GetLuaScriptResponse": {
+      "type": "object",
+      "properties": {
+        "script": {
+          "$ref": "#/definitions/v1LuaScript"
+        }
+      },
+      "description": "GetLuaScriptResponse carries the script with its source."
     },
     "v1GetScheduleHistoryResponse": {
       "type": "object",
@@ -6195,6 +6328,19 @@
       },
       "description": "ListComponentTypesResponse returns the full catalog of component types."
     },
+    "v1ListLuaScriptsResponse": {
+      "type": "object",
+      "properties": {
+        "scripts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1LuaScript"
+          }
+        }
+      },
+      "description": "ListLuaScriptsResponse returns saved scripts, name-sorted, without source."
+    },
     "v1ListMCPServerToolsResponse": {
       "type": "object",
       "properties": {
@@ -6481,6 +6627,74 @@
         }
       },
       "description": "LoadPatternsResponse confirms pattern loading."
+    },
+    "v1LuaScript": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Script name: ^[a-z][a-z0-9_]{2,40}$. Unique per server."
+        },
+        "description": {
+          "type": "string",
+          "description": "One or two sentences on what the script does."
+        },
+        "source": {
+          "type": "string",
+          "description": "Lua 5.4 source. Empty in ListLuaScripts responses."
+        },
+        "manifest": {
+          "$ref": "#/definitions/v1LuaScriptManifest",
+          "description": "Inputs and needs; unset when the script has no manifest."
+        },
+        "version": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Incremented on every save."
+        },
+        "published": {
+          "type": "boolean",
+          "description": "Whether the script may be used as a tool named lua_\u003cname\u003e."
+        },
+        "owner": {
+          "type": "string",
+          "description": "The agent that saved the script, or \"server\" for scripts saved over RPC."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the script was last saved."
+        },
+        "attachedAgents": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Agents that have lua_\u003cname\u003e attached."
+        }
+      },
+      "description": "LuaScript is a saved Lua script that run_lua can run by name."
+    },
+    "v1LuaScriptManifest": {
+      "type": "object",
+      "properties": {
+        "parameters": {
+          "type": "object",
+          "description": "JSON Schema (type object) for the script's args when it runs as a tool.\nAt most 20 properties and 4 KiB; no $ref."
+        },
+        "requires": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tool names the script calls. When set, the script may call only these."
+        },
+        "returns": {
+          "type": "string",
+          "description": "One line describing the return value."
+        }
+      },
+      "description": "LuaScriptManifest describes a saved script's inputs and needs. It is\nrequired before the script can be published as a tool."
     },
     "v1MCPServerHealth": {
       "type": "object",
@@ -7951,6 +8165,41 @@
         }
       },
       "description": "SQLiteStorageConfig configures the SQLite storage backend."
+    },
+    "v1SaveLuaScriptRequest": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "manifest": {
+          "$ref": "#/definitions/v1LuaScriptManifest"
+        },
+        "overwrite": {
+          "type": "boolean",
+          "description": "Replace an existing script with the same name. Without it, a name that\nis taken is AlreadyExists."
+        }
+      },
+      "description": "SaveLuaScriptRequest saves a script. The source must compile; it is never\nrun by this call."
+    },
+    "v1SaveLuaScriptResponse": {
+      "type": "object",
+      "properties": {
+        "script": {
+          "$ref": "#/definitions/v1LuaScript"
+        },
+        "created": {
+          "type": "boolean",
+          "description": "Whether the name was new (false: an existing script was replaced)."
+        }
+      },
+      "description": "SaveLuaScriptResponse carries the saved script."
     },
     "v1ScheduleConfig": {
       "type": "object",

@@ -1,8 +1,8 @@
 # Lua Script API Reference
 
-**Status**: ✅ implemented: the engine and Lua-facing API (`pkg/luasandbox`) and the
-builtin `run_lua` tool (`pkg/agent`), off by default (`tools.lua.enabled`). 📋 Planned:
-saved scripts (`manage_lua_scripts`, `lua_<name>` tools). Design and rationale:
+**Status**: ✅ implemented, off by default (`tools.lua.enabled`): the engine and Lua-facing
+API (`pkg/luasandbox`), the builtin `run_lua` tool, and saved scripts (`manage_lua_scripts`,
+`lua_<name>` tools, the `LoomService` Lua script RPCs). Design and rationale:
 [architecture/lua-script-engine.md](../architecture/lua-script-engine.md).
 
 **Interpreter**: `github.com/arnodel/golua` v0.3.0, Lua 5.4.
@@ -53,7 +53,7 @@ loom's tool with `agent.WithoutBuiltinTool("run_lua")` and register their own.
 | Parameter | Type | Meaning |
 |---|---|---|
 | `script` | string | Lua source to run. Exactly one of `script` and `name`. |
-| `name` | string | Name or id of a saved script (needs a host `ScriptResolver`; loom has none yet). |
+| `name` | string | Name of a saved script (see "Saved scripts" below). |
 | `args` | object | Becomes the global table `args`. |
 | `timeout_seconds` | integer | Lowers the wall budget for this run; it can never raise it. |
 
@@ -86,6 +86,76 @@ running, and the model should make it directly.
 `Result.Metadata["lua.run"]` always carries the run record: outcome, limit, usage, the
 call ledger (`tool`, `ok`, `code`, `millis`, `decision`), output and truncation flags.
 The nested calls are not tool rows of their own; the `run_lua` call is one row.
+
+## Saved scripts
+
+A loom server keeps saved scripts in `tools.lua.scripts_dir` (default
+`<LOOM_DATA_DIR>/lua_scripts`): `<name>.lua` holds the source, `<name>.json` the metadata
+(description, manifest, version, published flag, owner), and `attachments.json` which agents
+have which script tools. Writes are atomic (temp file and rename). A corrupt file is skipped
+and logged at startup. Every agent on the server shares the store.
+
+```yaml
+tools:
+  lua:
+    enabled: true
+    scripts_dir: ""                  # default <LOOM_DATA_DIR>/lua_scripts
+    scripts:
+      save_enabled: true             # agents that list manage_lua_scripts may manage scripts
+      publish_as_tool_enabled: false # allow publishing a script as a lua_<name> tool
+```
+
+`run_lua` can run any saved script by `name` whenever Lua is enabled.
+
+### `manage_lua_scripts`
+
+Registered on agents that list it in `tools.builtin` and also have `run_lua`, when
+`scripts.save_enabled` is true.
+
+| Action | Does |
+|---|---|
+| `save` | Validates the name (`^[a-z][a-z0-9_]{2,40}$`), a description, the manifest, and that the source compiles (it is never run), then stores it. An existing name is `DUPLICATE` unless `overwrite` is true; a new version keeps its published state and attachments. Returns `{name, version, tool_name, published}`. |
+| `get` | Returns the script with its source, manifest, version, owner and `updated_at`. |
+| `list` | Returns up to 200 scripts, name-sorted, without source. |
+| `delete` | Deletes the script and every attachment of it. |
+| `publish` | Needs `publish_as_tool_enabled` and a manifest with `parameters`. Every `requires` entry must be a tool scripts on this agent can call (`TOOL_NOT_VISIBLE` otherwise). Marks the script published, attaches it to this agent, and registers `lua_<name>` at once. |
+| `unpublish` | Clears the published flag. The tool leaves this agent at once, and every other agent's copy refuses its next call. Attachments are kept, so publishing again restores them. |
+| `detach` | Removes `lua_<name>` from this agent only. |
+
+The manifest:
+
+| Field | Meaning |
+|---|---|
+| `parameters` | JSON Schema with `type: object` for the tool's arguments: at most 20 properties and 4 KiB, no `$ref`. |
+| `requires` | The tools the script calls. When set, the script may call only these. |
+| `returns` | One line describing the return value. |
+
+### `lua_<name>` tools
+
+A published script attached to an agent becomes a tool named `lua_<name>`. Its description
+is `Saved Lua script. <description> Returns: <returns>`, and its input schema is
+`manifest.parameters`. The tool's arguments become the script's `args`. A call re-reads the
+script, so the newest version runs, and a deleted or unpublished script refuses. It runs the
+same way as `run_lua`: same gate, same bridge, with the script's `requires`. Scripts can
+never call `lua_*` tools.
+
+An agent gets `lua_<name>` from its attachments, or from a custom tool in its YAML:
+
+```yaml
+tools:
+  builtin: [run_lua]
+  custom:
+    - name: weekly_report
+      implementation: lua://weekly_report   # must name a published script
+```
+
+### RPCs
+
+`LoomService.ListLuaScripts`, `GetLuaScript`, `SaveLuaScript` and `DeleteLuaScript`
+(`GET/POST /v1/lua-scripts`, `GET/DELETE /v1/lua-scripts/{name}`) work on the same store.
+They return `FailedPrecondition` while `tools.lua.enabled` is false. Saves over RPC record
+the owner `server`, and validation failures are `InvalidArgument`. A taken name without
+`overwrite` is `AlreadyExists`. Publishing is done with `manage_lua_scripts`.
 
 ## Go API
 
