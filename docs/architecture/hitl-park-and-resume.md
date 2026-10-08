@@ -122,7 +122,17 @@ else.
 
 The grant lives only on the derived context handed to the parked batch's
 dispatch. The loop re-entry that follows runs ungranted, so a new ask in the
-continuation parks again.
+continuation parks again. Inside the dispatch, the grant is spent on each call's
+admission and is not on the context the tool body receives, so a tool that
+calls other tools through the executor cannot lift their asks with it.
+
+What the tool body does receive is the call's **admission grants**: the
+`Decision.Grant` of every hook that asked, collected in hook order whenever the
+call's Ask resolved to Allow (`shuttle.AdmissionGrantsFromContext`). On resume
+the hooks re-evaluate the same parameters, so the grants are recomputed rather
+than stored. A tool that enforces policy while it runs (a shell runner that must
+allow exactly the programs the person saw) reads them; a call allowed outright,
+or a nested call, gets none.
 
 ### 3.3 Claiming the decision
 
@@ -287,10 +297,12 @@ closed.
   the approver is the literal string `"human"`, so nothing records *who*
   approved. (The embedder-recorded flow does not have this problem — there the
   row is decided first and its status overrides the payload.)
-- 📋 **`AskGrant` is a blanket context value.** It lifts any `Ask` downstream of
-  the granted call's context, not just that call. No in-tree tool re-enters the
-  executor, so it is unreachable today — but a code-mode or agent-delegation
-  tool would inherit approve-all under one approval.
+- ✅ **`AskGrant` no longer reaches nested calls** (was: a blanket context value
+  that lifted any `Ask` downstream of the granted call's context). The executor
+  withholds the grant from every tool body once the call's own admission has used
+  it (`toolBodyContext` in `pkg/shuttle/admission_grants.go`), so a code-mode or
+  agent-delegation tool that re-enters the executor gets its nested calls asked
+  afresh. Tested by `TestAskGrant_NotInheritedByNestedCalls`.
 - 📋 No proto/gRPC surface for resume; park is a library API for embedders.
   Whether loom should expose resume over gRPC is a product decision, not an
   oversight — every other conversation entry point reaches clients through the
