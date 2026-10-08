@@ -37,12 +37,23 @@ tools:
     tools:
       allow: []                   # empty = every tool the model can see
       deny: [shell_execute, shell_execute_sandbox, agent_management, project_manager, git_contribute, propose_skill_edit]
-      deny_for_shared: [http_request, web_browse, web_search, file_write, files, workspace]
+      deny_for_shared: [http_request, web_browse, web_search, file_write, files, workspace, shell_execute]
 ```
 
 `shell_execute` is denied to scripts by default. It runs real programs with the server's
 permissions, and a script could run many of them without the model or a person seeing each
-one. Remove it from `deny` only when an admission hook governs `shell_execute`.
+one. Scripts get it only when both of these hold:
+
+- `tools.shell_execute.mode` is `jailed`, so every program a command starts is checked on
+  its real arguments; and
+- a `kind: command-policy` hook binding governs `shell_execute`, so each call is judged
+  before it runs (see [shell-command-policy.md](shell-command-policy.md)).
+
+Then removing `shell_execute` from `deny` gives it to the runner's own scripts. A command
+that needs approval returns `approval_required` to the script, and the model makes the call
+itself so a person can approve it. If either condition is missing, serve keeps
+`shell_execute` hidden from scripts whatever `deny` says, and logs a warning. Shared scripts
+never get it: `deny_for_shared` lists it by default.
 
 A malformed tool pattern in `tools.lua.tools` aborts `looms serve`. Hosts embedding loom
 call `Agent.RegisterRunLuaTool(agent.RunLuaToolOptions{...})` themselves, or suppress

@@ -8,6 +8,8 @@ package builtin
 import (
 	"os"
 	"testing"
+
+	"github.com/teradata-labs/loom/pkg/shelljail"
 )
 
 // TestMain isolates the builtin tool tests from the ambient environment.
@@ -20,6 +22,9 @@ import (
 // a live Tavily request and dereference a nil error. Clearing the keys once,
 // here, keeps every test in the package deterministic regardless of who runs it.
 func TestMain(m *testing.M) {
+	// The jailed shell_execute tests re-execute this binary as the jail.
+	shelljail.Main()
+
 	for _, key := range []string{
 		"TAVILY_API_KEY",
 		"BRAVE_API_KEY",

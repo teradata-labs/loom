@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"path/filepath"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/luasandbox"
 	"github.com/teradata-labs/loom/pkg/luasandbox/store/filestore"
+	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
 // LuaToolsConfig is the tools.lua block: the run_lua tool, off by default.
@@ -88,14 +90,55 @@ type LuaToolListsConfig struct {
 
 // Default lists, from the design (01 §6): tools that are slow, hold locks,
 // manage agents or skills, or (for shared scripts) can send data out.
-// shell_execute is loom's own unsandboxed shell: a script calling it in a loop
-// would run commands nobody sees one by one, and under the default YOLO
-// permissions nothing checks them. It stays denied until a command-policy
-// hook governs it; an operator who binds one can remove it from the list.
+// shell_execute is loom's own shell: a script calling it in a loop would run
+// commands nobody sees one by one, and under the default YOLO permissions
+// nothing checks them. It stays denied unless it runs jailed under a
+// command-policy hook (design 06 §7): an operator who sets that up can remove
+// it from deny, and newLuaRuntime puts it back otherwise. Shared scripts never
+// get it (deny_for_shared): someone else's script does not run commands as its
+// runner, even allowed ones.
 var (
 	defaultLuaDeny          = []string{"shell_execute", "shell_execute_sandbox", "agent_management", "project_manager", "git_contribute", "propose_skill_edit"}
-	defaultLuaDenyForShared = []string{"http_request", "web_browse", "web_search", "file_write", "files", "workspace"}
+	defaultLuaDenyForShared = []string{"http_request", "web_browse", "web_search", "file_write", "files", "workspace", "shell_execute"}
 )
+
+// scriptShellGoverned reports whether scripts may be given loom's
+// shell_execute: only when it runs jailed and a command-policy binding governs
+// it, so every script call is judged by the hook and enforced by the runner.
+func scriptShellGoverned(config *Config) bool {
+	if config == nil || config.Tools.ShellExecute.Mode != "jailed" {
+		return false
+	}
+	req := shuttle.AdmissionRequest{ToolName: "shell_execute"}
+	for _, b := range config.Tools.Hooks.Bindings {
+		if b.Kind == "command-policy" && req.MatchesTool(shuttle.NewToolScope(b.Scope)) {
+			return true
+		}
+	}
+	return false
+}
+
+// keepShellDenied returns deny with shell_execute put back when the operator
+// removed it but nothing governs it, and the warning to log. A deny entry that
+// still matches shell_execute (an exact name or a pattern such as "shell_*")
+// leaves the list unchanged.
+func keepShellDenied(deny []string, governed bool) ([]string, string) {
+	for _, pat := range deny {
+		if pat == "shell_execute" {
+			return deny, ""
+		}
+		if ok, err := path.Match(pat, "shell_execute"); err == nil && ok {
+			return deny, ""
+		}
+	}
+	if governed {
+		return deny, ""
+	}
+	return append(append([]string{}, deny...), "shell_execute"),
+		"tools.lua.tools.deny does not list shell_execute, but scripts get it only when " +
+			"tools.shell_execute.mode is jailed and a command-policy hook binding governs shell_execute; " +
+			"it stays hidden from scripts"
+}
 
 // setLuaDefaults registers the tools.lua defaults.
 func setLuaDefaults() {
@@ -136,6 +179,8 @@ type luaRuntime struct {
 	slots   int
 	perKey  int
 	runMem  uint64
+	// warnings are configuration problems serve logs (not fatal).
+	warnings []string
 }
 
 // newLuaRuntime builds the run_lua wiring from tools.lua. It returns nil when
@@ -143,14 +188,18 @@ type luaRuntime struct {
 // directory, which aborts serve like a malformed hook binding (fail closed).
 // memLimit is the process memory limit used to size the gate; dataDir is the
 // default parent of the scripts directory.
-func newLuaRuntime(c LuaToolsConfig, memLimit uint64, dataDir string) (*luaRuntime, error) {
+//
+// shellGoverned is scriptShellGoverned(config): when it is false, shell_execute
+// is hidden from scripts even if tools.lua.tools.deny no longer lists it.
+func newLuaRuntime(c LuaToolsConfig, memLimit uint64, dataDir string, shellGoverned bool) (*luaRuntime, error) {
 	if !c.Enabled {
 		return nil, nil
 	}
+	deny, shellWarning := keepShellDenied(c.Tools.Deny, shellGoverned)
 	pol := luasandbox.Policy{
 		Limits:        c.Limits.limits(),
 		Allow:         c.Tools.Allow,
-		Deny:          c.Tools.Deny,
+		Deny:          deny,
 		DenyForShared: c.Tools.DenyForShared,
 	}
 	if err := pol.Validate(); err != nil {
@@ -184,11 +233,22 @@ func newLuaRuntime(c LuaToolsConfig, memLimit uint64, dataDir string) (*luaRunti
 			SaveEnabled:    c.Scripts.SaveEnabled,
 			PublishEnabled: c.Scripts.PublishAsToolEnabled,
 		},
-		store:  st,
-		slots:  slots,
-		perKey: perKey,
-		runMem: runMem,
+		store:    st,
+		slots:    slots,
+		perKey:   perKey,
+		runMem:   runMem,
+		warnings: nonEmpty(shellWarning),
 	}, nil
+}
+
+func nonEmpty(s ...string) []string {
+	var out []string
+	for _, v := range s {
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // scriptsRegistryOptions returns the saved-script wiring for

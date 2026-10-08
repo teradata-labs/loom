@@ -51,7 +51,7 @@ func TestLuaTools_DefaultOff(t *testing.T) {
 	assert.Empty(t, cfg.Tools.Lua.Tools.Allow)
 	assert.Equal(t, 2, cfg.Tools.Lua.Limits.MaxConcurrentRunsPerKey)
 
-	rt, err := newLuaRuntime(cfg.Tools.Lua, 4<<30, t.TempDir())
+	rt, err := newLuaRuntime(cfg.Tools.Lua, 4<<30, t.TempDir(), false)
 	require.NoError(t, err)
 	assert.Nil(t, rt, "a disabled tools.lua builds no runtime")
 	assert.Nil(t, rt.registryOptions())
@@ -62,7 +62,7 @@ func TestNewLuaRuntime(t *testing.T) {
 	base := LuaToolsConfig{Enabled: true, Limits: LuaLimitsConfig{MaxConcurrentRunsPerKey: 2}}
 
 	t.Run("derived slots at the default budget", func(t *testing.T) {
-		rt, err := newLuaRuntime(base, 4*gib, t.TempDir())
+		rt, err := newLuaRuntime(base, 4*gib, t.TempDir(), false)
 		require.NoError(t, err)
 		assert.Equal(t, 4, rt.slots, "4 GiB pod at 128 MiB per run")
 		assert.Equal(t, 2, rt.perKey)
@@ -74,17 +74,17 @@ func TestNewLuaRuntime(t *testing.T) {
 	t.Run("a configured slot count only lowers", func(t *testing.T) {
 		c := base
 		c.Limits.MaxConcurrentRuns = 16
-		rt, err := newLuaRuntime(c, 4*gib, t.TempDir())
+		rt, err := newLuaRuntime(c, 4*gib, t.TempDir(), false)
 		require.NoError(t, err)
 		assert.Equal(t, 4, rt.slots, "16 configured cannot exceed the 4 derived")
 		c.Limits.MaxConcurrentRuns = 1
-		rt, err = newLuaRuntime(c, 4*gib, t.TempDir())
+		rt, err = newLuaRuntime(c, 4*gib, t.TempDir(), false)
 		require.NoError(t, err)
 		assert.Equal(t, 1, rt.slots)
 		assert.Equal(t, 1, rt.perKey, "per-agent runs never exceed the total")
 	})
 	t.Run("small pods lower the per-run budget", func(t *testing.T) {
-		rt, err := newLuaRuntime(base, gib, t.TempDir())
+		rt, err := newLuaRuntime(base, gib, t.TempDir(), false)
 		require.NoError(t, err)
 		assert.Equal(t, 2, rt.slots)
 		assert.Less(t, rt.runMem, uint64(128<<20))
@@ -97,7 +97,7 @@ func TestNewLuaRuntime(t *testing.T) {
 		c.Limits.WallSeconds = 30
 		c.Limits.MemoryBytes = 8 << 30 // above the 512 MiB ceiling
 		c.Limits.MaxToolCalls = 5
-		rt, err := newLuaRuntime(c, 64*gib, t.TempDir())
+		rt, err := newLuaRuntime(c, 64*gib, t.TempDir(), false)
 		require.NoError(t, err)
 		pol, err := rt.options.Policy(context.Background())
 		require.NoError(t, err)
@@ -109,7 +109,7 @@ func TestNewLuaRuntime(t *testing.T) {
 	t.Run("a malformed pattern fails closed", func(t *testing.T) {
 		c := base
 		c.Tools.Deny = []string{"web_["}
-		_, err := newLuaRuntime(c, 4*gib, t.TempDir())
+		_, err := newLuaRuntime(c, 4*gib, t.TempDir(), false)
 		assert.Error(t, err)
 	})
 }
@@ -128,7 +128,7 @@ func guardedAgent(opts ...agent.Option) *agent.Agent {
 
 func enabledLuaRuntime(t *testing.T) *luaRuntime {
 	t.Helper()
-	rt, err := newLuaRuntime(LuaToolsConfig{Enabled: true, Limits: LuaLimitsConfig{MaxConcurrentRunsPerKey: 2}}, 4<<30, t.TempDir())
+	rt, err := newLuaRuntime(LuaToolsConfig{Enabled: true, Limits: LuaLimitsConfig{MaxConcurrentRunsPerKey: 2}}, 4<<30, t.TempDir(), false)
 	require.NoError(t, err)
 	return rt
 }
@@ -205,7 +205,7 @@ func TestLuaTools_ScriptDefaults(t *testing.T) {
 
 func TestNewLuaRuntime_OpensTheScriptStore(t *testing.T) {
 	dataDir := t.TempDir()
-	rt, err := newLuaRuntime(LuaToolsConfig{Enabled: true, Scripts: LuaScriptsConfig{SaveEnabled: true}}, 4<<30, dataDir)
+	rt, err := newLuaRuntime(LuaToolsConfig{Enabled: true, Scripts: LuaScriptsConfig{SaveEnabled: true}}, 4<<30, dataDir, false)
 	require.NoError(t, err)
 	require.NotNil(t, rt.store)
 	assert.DirExists(t, filepath.Join(dataDir, "lua_scripts"), "default scripts_dir")
@@ -215,7 +215,7 @@ func TestNewLuaRuntime_OpensTheScriptStore(t *testing.T) {
 	assert.NotNil(t, rt.scriptsRegistryOptions())
 
 	custom := t.TempDir()
-	rt, err = newLuaRuntime(LuaToolsConfig{Enabled: true, ScriptsDir: custom}, 4<<30, dataDir)
+	rt, err = newLuaRuntime(LuaToolsConfig{Enabled: true, ScriptsDir: custom}, 4<<30, dataDir, false)
 	require.NoError(t, err)
 	_, _, err = rt.store.Save(context.Background(), store.Script{Name: "abc", Description: "d", Source: "return 1"}, false)
 	require.NoError(t, err)
@@ -223,13 +223,13 @@ func TestNewLuaRuntime_OpensTheScriptStore(t *testing.T) {
 
 	file := filepath.Join(t.TempDir(), "not-a-dir")
 	require.NoError(t, os.WriteFile(file, nil, 0o600))
-	_, err = newLuaRuntime(LuaToolsConfig{Enabled: true, ScriptsDir: file}, 4<<30, dataDir)
+	_, err = newLuaRuntime(LuaToolsConfig{Enabled: true, ScriptsDir: file}, 4<<30, dataDir, false)
 	assert.Error(t, err, "an unusable scripts_dir aborts startup")
 }
 
 func TestRegisterLuaTools_SavedScripts(t *testing.T) {
 	rt, err := newLuaRuntime(LuaToolsConfig{Enabled: true, Scripts: LuaScriptsConfig{SaveEnabled: true},
-		Limits: LuaLimitsConfig{MaxConcurrentRunsPerKey: 2}}, 4<<30, t.TempDir())
+		Limits: LuaLimitsConfig{MaxConcurrentRunsPerKey: 2}}, 4<<30, t.TempDir(), false)
 	require.NoError(t, err)
 	ctx := context.Background()
 	params := map[string]any{"type": "object", "properties": map[string]any{}}
@@ -267,10 +267,87 @@ func TestLuaTools_DefaultPolicyHidesTheShell(t *testing.T) {
 	var cfg Config
 	require.NoError(t, viper.Unmarshal(&cfg))
 	cfg.Tools.Lua.Enabled = true
-	rt, err := newLuaRuntime(cfg.Tools.Lua, 4<<30, t.TempDir())
+	rt, err := newLuaRuntime(cfg.Tools.Lua, 4<<30, t.TempDir(), false)
 	require.NoError(t, err)
 	pol, err := rt.options.Policy(context.Background())
 	require.NoError(t, err)
 	visible := pol.Visible([]string{"shell_execute", "file_read", "shell_execute_sandbox"}, luasandbox.TrustOwn)
 	assert.Equal(t, []string{"file_read"}, visible)
+}
+
+func TestKeepShellDenied(t *testing.T) {
+	for name, tc := range map[string]struct {
+		deny     []string
+		governed bool
+		want     []string
+		warns    bool
+	}{
+		"listed stays":                {deny: []string{"shell_execute", "x"}, want: []string{"shell_execute", "x"}},
+		"a pattern covers it":         {deny: []string{"shell_*"}, want: []string{"shell_*"}},
+		"removed and ungoverned":      {deny: []string{"x"}, want: []string{"x", "shell_execute"}, warns: true},
+		"removed and governed":        {deny: []string{"x"}, governed: true, want: []string{"x"}},
+		"empty list, ungoverned":      {deny: nil, want: []string{"shell_execute"}, warns: true},
+		"listed and governed is fine": {deny: []string{"shell_execute"}, governed: true, want: []string{"shell_execute"}},
+	} {
+		got, warning := keepShellDenied(tc.deny, tc.governed)
+		assert.Equal(t, tc.want, got, name)
+		assert.Equal(t, tc.warns, warning != "", name)
+	}
+}
+
+func TestScriptShellGoverned(t *testing.T) {
+	binding := shuttle.HookBinding{Kind: "command-policy", Scope: "shell_execute", Policy: "readonly"}
+	for name, tc := range map[string]struct {
+		mode     string
+		bindings []shuttle.HookBinding
+		want     bool
+	}{
+		"jailed with a binding":     {mode: "jailed", bindings: []shuttle.HookBinding{binding}, want: true},
+		"jailed with a wildcard":    {mode: "jailed", bindings: []shuttle.HookBinding{{Kind: "command-policy", Scope: "shell_*", Policy: "readonly"}}, want: true},
+		"jailed without a binding":  {mode: "jailed"},
+		"bash with a binding":       {mode: "bash", bindings: []shuttle.HookBinding{binding}},
+		"binding on another tool":   {mode: "jailed", bindings: []shuttle.HookBinding{{Kind: "command-policy", Scope: "shell_execute_sandbox", Policy: "p"}}},
+		"another kind on the shell": {mode: "jailed", bindings: []shuttle.HookBinding{{Kind: "ask", Scope: "shell_execute"}}},
+	} {
+		c := &Config{}
+		c.Tools.ShellExecute.Mode = tc.mode
+		c.Tools.Hooks.Bindings = tc.bindings
+		assert.Equal(t, tc.want, scriptShellGoverned(c), name)
+	}
+	assert.False(t, scriptShellGoverned(nil))
+}
+
+// Removing shell_execute from tools.lua.tools.deny gives it to the runner's
+// own scripts only when it is governed, and never to shared scripts.
+func TestLuaTools_ShellForScripts(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	setDefaults()
+	var cfg Config
+	require.NoError(t, viper.Unmarshal(&cfg))
+	cfg.Tools.Lua.Enabled = true
+	var deny []string
+	for _, d := range cfg.Tools.Lua.Tools.Deny {
+		if d != "shell_execute" {
+			deny = append(deny, d)
+		}
+	}
+	cfg.Tools.Lua.Tools.Deny = deny
+	assert.Contains(t, cfg.Tools.Lua.Tools.DenyForShared, "shell_execute", "shared scripts never get the shell by default")
+
+	tools := []string{"shell_execute", "file_read"}
+	ungoverned, err := newLuaRuntime(cfg.Tools.Lua, 4<<30, t.TempDir(), false)
+	require.NoError(t, err)
+	require.Len(t, ungoverned.warnings, 1)
+	pol, err := ungoverned.options.Policy(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"file_read"}, pol.Visible(tools, luasandbox.TrustOwn), "ungoverned: hidden even from own scripts")
+
+	governed, err := newLuaRuntime(cfg.Tools.Lua, 4<<30, t.TempDir(), true)
+	require.NoError(t, err)
+	assert.Empty(t, governed.warnings)
+	pol, err = governed.options.Policy(context.Background())
+	require.NoError(t, err)
+	assert.ElementsMatch(t, tools, pol.Visible(tools, luasandbox.TrustOwn), "governed: the runner's own scripts get the shell")
+	assert.Equal(t, []string{"file_read"}, pol.Visible(tools, luasandbox.TrustShared), "shared scripts never do")
 }

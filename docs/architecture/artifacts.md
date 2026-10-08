@@ -518,10 +518,13 @@ Note: `restrictReads` and `restrictWrites` fields exist on the struct and have s
 
 | Check | Behavior |
 |-------|----------|
-| **Working directory boundary** | Must be within `$LOOM_DATA_DIR` or `/tmp` (PATH_RESTRICTED error otherwise) |
-| **Blocked system directories** | `/etc`, `/bin`, `/sbin`, `/boot`, `/sys`, `/proc`, etc. blocked (UNSAFE_PATH error) |
-| **Sensitive env vars filtered** | AWS secrets, API keys, database passwords blocked from user-provided env |
+| **Working directory boundary** | Must be within `$LOOM_DATA_DIR` or `/tmp` (PATH_RESTRICTED error otherwise). Judged on the symlink-resolved path, by whole path components: a link inside `$LOOM_DATA_DIR` that points elsewhere is refused, and `/tmpfoo` is not inside `/tmp` |
+| **Blocked system directories** | `/etc`, `/bin`, `/sbin`, `/boot`, `/sys`, `/proc`, etc. blocked (UNSAFE_PATH error), checked on the path as given and on where its symlinks lead |
+| **Sensitive env vars withheld** | Applies to the server environment the command inherits **and** to the call's `env` param. Withheld: names containing `SECRET`, `PASSWORD`, `PASSWD`, `CREDENTIAL`, `APIKEY` or `PRIVATE_KEY`; names with a whole `TOKEN`, `KEY`, `PASS` or `DSN` part (`GH_TOKEN`, `AWS_ACCESS_KEY_ID`, but not `TOKENIZERS_PARALLELISM`); names ending in `DATABASE_URL`; `DATABASE_PASSWORD`, `DB_PASS`; and any value that is a URL with a password (`postgres://u:pw@h`). `LOOM_SHELL_PASS_ENV=GH_TOKEN,NPM_TOKEN` passes the named server variables anyway |
+| **Process tree kill** | The shell runs in its own process group. A timeout, a cancelled turn, or output past `max_output_bytes` kills the whole group (`taskkill /T /F` on Windows), so background jobs and their children do not outlive the call. A process that calls `setsid` leaves the group. Normal completion kills nothing, so `server > log 2>&1 &` keeps running |
+| **Output limit** | Output past `max_output_bytes` (default 1 MiB) stops the command at once and returns `OUTPUT_OVERFLOW` |
 | **Command size limit** | Commands >40KB (~10k tokens) rejected to prevent output token exhaustion |
+| **Jailed mode** (`tools.shell_execute.mode: jailed`, opt-in) | Commands run in a pure-Go shell interpreter in a child process that checks every program launch, redirect and glob against a shell policy; the working directory is the session scratchpad, writes are confined to the session's scratchpad and artifact directories, and nothing outlives the call. See `docs/reference/shell-command-policy.md` |
 
 **Environment Variables** (injected into shell commands when session exists):
 ```bash
@@ -537,11 +540,11 @@ $SESSION_SCRATCHPAD_DIR    # $LOOM_DATA_DIR/artifacts/sessions/<session>/scratch
 ```go
 // Shell execute validates that the working directory is within LOOM_DATA_DIR or /tmp.
 // If outside these boundaries, the command is rejected with PATH_RESTRICTED error.
-absWorkingDir, _ := filepath.Abs(cleanWorkingDir)
-absLoomDataDir, _ := filepath.Abs(loomDataDir)
-isAllowed := strings.HasPrefix(absWorkingDir, absLoomDataDir)
+// Both sides are symlink-resolved; withinDir compares whole path components.
+resolvedWorkingDir := resolvedAbs(cleanWorkingDir)
+isAllowed := withinDir(resolvedAbs(loomDataDir), resolvedWorkingDir)
 // Also allows /tmp for temporary file operations
-if !isAllowed && strings.HasPrefix(absWorkingDir, "/tmp") {
+if !isAllowed && withinDir(resolvedAbs("/tmp"), resolvedWorkingDir) {
     isAllowed = true
 }
 ```
