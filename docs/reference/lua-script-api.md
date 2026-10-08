@@ -1,12 +1,91 @@
 # Lua Script API Reference
 
-**Status**: ✅ implemented in `pkg/luasandbox` (engine and Lua-facing API). 📋 Planned:
-the builtin `run_lua` tool that exposes it to models. Design and rationale:
+**Status**: ✅ implemented: the engine and Lua-facing API (`pkg/luasandbox`) and the
+builtin `run_lua` tool (`pkg/agent`), off by default (`tools.lua.enabled`). 📋 Planned:
+saved scripts (`manage_lua_scripts`, `lua_<name>` tools). Design and rationale:
 [architecture/lua-script-engine.md](../architecture/lua-script-engine.md).
 
 **Interpreter**: `github.com/arnodel/golua` v0.3.0, Lua 5.4.
 
 ---
+
+## The `run_lua` tool
+
+### Enabling it
+
+Three things must all hold for an agent to have `run_lua`:
+
+1. The server sets `tools.lua.enabled: true` (env `LOOM_TOOLS_LUA_ENABLED`). Default
+   `false`.
+2. The agent lists `run_lua` in `tools.builtin`.
+3. The agent's executor has an admission chain or a permission checker
+   (`tools.hooks` or `tools.permissions`). Otherwise `run_lua` is not registered and
+   serve logs one warning naming the reason. loom's default YOLO permission checker
+   counts, and admits every call; configure `tools.hooks` before enabling Lua on a
+   shared server.
+
+```yaml
+tools:
+  lua:
+    enabled: true
+    limits:                       # zero = engine default; capped at the engine ceilings
+      wall_seconds: 120
+      memory_bytes: 134217728     # 128 MiB per run, counted as total allocation
+      max_tool_calls: 100
+      max_concurrent_runs: 0      # 0 = derived from the process memory limit; a value only lowers it
+      max_concurrent_runs_per_key: 2
+    tools:
+      allow: []                   # empty = every tool the model can see
+      deny: [shell_execute, shell_execute_sandbox, agent_management, project_manager, git_contribute, propose_skill_edit]
+      deny_for_shared: [http_request, web_browse, web_search, file_write, files, workspace]
+```
+
+`shell_execute` is denied to scripts by default. It runs real programs with the server's
+permissions, and a script could run many of them without the model or a person seeing each
+one. Remove it from `deny` only when an admission hook governs `shell_execute`.
+
+A malformed tool pattern in `tools.lua.tools` aborts `looms serve`. Hosts embedding loom
+call `Agent.RegisterRunLuaTool(agent.RunLuaToolOptions{...})` themselves, or suppress
+loom's tool with `agent.WithoutBuiltinTool("run_lua")` and register their own.
+
+### Parameters
+
+| Parameter | Type | Meaning |
+|---|---|---|
+| `script` | string | Lua source to run. Exactly one of `script` and `name`. |
+| `name` | string | Name or id of a saved script (needs a host `ScriptResolver`; loom has none yet). |
+| `args` | object | Becomes the global table `args`. |
+| `timeout_seconds` | integer | Lowers the wall budget for this run; it can never raise it. |
+
+Any other parameter is `INVALID_PARAMS`.
+
+### What a script can call
+
+Only the tools the model was shown for the provider call that requested the run, minus
+the engine's hard-deny list, the reserved names (`run_lua`, `manage_lua_scripts`,
+`lua_*`), `tools.lua.tools.deny`, and `deny_for_shared` for scripts the runner did not
+write; `allow`, when set, narrows further. Each call runs through the agent's admission
+chain like a direct call. A call that needs approval returns `approval_required` without
+running, and the model should make it directly.
+
+### Results
+
+| Run outcome | `Success` | `Data` or `Error.Code` |
+|---|---|---|
+| returned a value | true | the value |
+| returned nothing | true | `{"output": "<print capture>", "calls": N}` |
+| Lua error | false | `SCRIPT_ERROR`: position and message, the last 512 bytes of output, calls made |
+| a budget fired | false | `BUDGET_EXCEEDED`: the limit and the usage so far |
+| the turn was cancelled | false | `CANCELLED` |
+| every run slot busy | false | `LUA_BUSY` (retryable) |
+| refused (no session, no projection, no guard, policy unavailable) | false | `POLICY_DENIED` |
+| saved-script lookup | false | `SCRIPT_NOT_FOUND`, `AMBIGUOUS_SCRIPT`, `SCRIPT_NOT_ACCEPTED` |
+| bad parameters | false | `INVALID_PARAMS` |
+| host or engine failure | false | `HOST_ERROR` or `ENGINE_ERROR`; details only in the server log |
+
+`Result.Metadata["lua.run"]` always carries the run record: outcome, limit, usage, the
+call ledger (`tool`, `ok`, `code`, `millis`, `decision`), output and truncation flags.
+The nested calls are not tool rows of their own; the `run_lua` call is one row.
 
 ## Go API
 
@@ -17,8 +96,9 @@ func Run(ctx context.Context, p Program, lim Limits, h Host) *RunResult
 ```
 
 Runs `p` on the caller's goroutine. Never returns nil, never panics. Returns when the
-script finishes, a limit fires, or `ctx` ends (seen at the script's next host call or
-`pcall` return; CPU and wall budgets bound everything else).
+script finishes, a limit fires, or `ctx` ends. When `ctx` ends the script stops at its
+next interpreter step, even when it only computes; a single string pattern match takes
+its CPU budget up front and is not interrupted part way.
 
 ### `Program`
 
