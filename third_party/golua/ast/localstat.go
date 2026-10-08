@@ -1,3 +1,6 @@
+// Modified for loom, 2026: HWrite renders names as text, not their structs (golua PR #138).
+// See third_party/golua/README.md for the list of changes from upstream.
+
 package ast
 
 // LocalStat is a statement node representing the declaration / definition of a
@@ -49,7 +52,7 @@ func (s LocalStat) HWrite(w HWriter) {
 	w.Indent()
 	for i, nameAttrib := range s.NameAttribs {
 		w.Next()
-		w.Writef("name_%d: %s", i, nameAttrib)
+		w.Writef("name_%d: %s", i, nameAttrib.hwriteString())
 	}
 	for i, val := range s.Values {
 		w.Next()
@@ -77,5 +80,21 @@ func NewNameAttrib(name Name, attrib *DeclAttrib) NameAttrib {
 		Location: loc,
 		Name:     name,
 		Attrib:   attrib,
+	}
+}
+
+// hwriteString renders a NameAttrib for HWrite: the name, followed by its
+// attribute (" <const>" or " <close>") when it has one.
+func (n NameAttrib) hwriteString() string {
+	if n.Attrib == nil {
+		return n.Name.Val
+	}
+	switch n.Attrib.Type {
+	case ConstAttrib:
+		return n.Name.Val + " <const>"
+	case CloseAttrib:
+		return n.Name.Val + " <close>"
+	default:
+		return n.Name.Val
 	}
 }
