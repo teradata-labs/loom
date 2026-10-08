@@ -30,3 +30,20 @@ func TestWithStreamActivity_NilHookLeavesContextUnchanged(t *testing.T) {
 	assert.Equal(t, parent, WithStreamActivity(parent, nil))
 	assert.False(t, NotifyStreamActivity(WithStreamActivity(parent, nil)))
 }
+
+func TestNotifyToolInputProgress_NoHookIsNoOp(t *testing.T) {
+	assert.False(t, NotifyToolInputProgress(context.Background(), ToolInputProgress{Index: 0}))
+}
+
+func TestNotifyToolInputProgress_PassesPayloadToHook(t *testing.T) {
+	var got []ToolInputProgress
+	ctx := WithToolInputProgress(context.Background(), func(p ToolInputProgress) { got = append(got, p) })
+
+	assert.True(t, NotifyToolInputProgress(ctx, ToolInputProgress{Index: 1, ToolCallID: "call_1", ToolName: "files", Bytes: 12}))
+	assert.Equal(t, []ToolInputProgress{{Index: 1, ToolCallID: "call_1", ToolName: "files", Bytes: 12}}, got)
+}
+
+func TestWithToolInputProgress_NilHookLeavesContextUnchanged(t *testing.T) {
+	parent := context.Background()
+	assert.Equal(t, parent, WithToolInputProgress(parent, nil))
+}

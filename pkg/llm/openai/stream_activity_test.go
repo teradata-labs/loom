@@ -52,3 +52,38 @@ func TestClient_ChatStream_ToolCallDeltasNotifyStreamActivity(t *testing.T) {
 	assert.Equal(t, "<div></div>", resp.ToolCalls[0].Input["html"])
 	assert.Equal(t, "tool_use", resp.StopReason)
 }
+
+// TestClient_ChatStream_ToolCallDeltasReportProgress pins that each tool_calls
+// delta reports the call's id, name and argument bytes so far, including when
+// the id and name arrive after the first argument fragment.
+func TestClient_ChatStream_ToolCallDeltasReportProgress(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		chunks := []string{
+			`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"files","arguments":"{\"path\":"}}]}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":" \"a.ipynb\"}"}}]},"finish_reason":"tool_calls"}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{"}}]}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_2","function":{"name":"read_notebook","arguments":"}"}}]}}]}`,
+		}
+		for _, chunk := range chunks {
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", chunk)
+		}
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{APIKey: "test-key", Endpoint: server.URL})
+
+	var got []types.ToolInputProgress
+	ctx := types.WithToolInputProgress(context.Background(), func(p types.ToolInputProgress) { got = append(got, p) })
+
+	_, err := client.ChatStream(ctx, []types.Message{{Role: "user", Content: "go"}}, nil, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, []types.ToolInputProgress{
+		{Index: 0, ToolCallID: "call_1", ToolName: "files", Bytes: 8},
+		{Index: 0, ToolCallID: "call_1", ToolName: "files", Bytes: 19},
+		{Index: 1, ToolCallID: "", ToolName: "", Bytes: 1},
+		{Index: 1, ToolCallID: "call_2", ToolName: "read_notebook", Bytes: 2},
+	}, got)
+}

@@ -25,7 +25,11 @@ type StreamingLLMProvider = types.StreamingLLMProvider
 
 // Stream-activity hook for deltas that never reach TokenCallback (tool-input
 // JSON). See types.WithStreamActivity.
+type ToolInputProgress = types.ToolInputProgress
+
 var (
-	WithStreamActivity   = types.WithStreamActivity
-	NotifyStreamActivity = types.NotifyStreamActivity
+	WithStreamActivity      = types.WithStreamActivity
+	NotifyStreamActivity    = types.NotifyStreamActivity
+	WithToolInputProgress   = types.WithToolInputProgress
+	NotifyToolInputProgress = types.NotifyToolInputProgress
 )
