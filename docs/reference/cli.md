@@ -55,8 +55,8 @@ Command reference for `loom` (client) and `looms` (server).
 | `looms config get-key` | Retrieve secret from keyring | `<key-name>` |
 | `looms config delete-key` | Delete secret from keyring | `<key-name>` |
 | `looms config list-keys` | List available secret keys | |
-| `looms hitl list` | List pending HITL requests | `--session`, `--agent`, `--db` |
-| `looms hitl show` | Show HITL request details | `<request-id>`, `--db` |
+| `looms hitl list` | List pending HITL requests (an approval is labelled with its call digest, e.g. `shell_execute command=rm notes.txt`) | `--session`, `--agent`, `--db` |
+| `looms hitl show` | Show HITL request details; for an approval, also the held call's parameters as JSON (for `shell_execute`, the whole command), noting any left out for size | `<request-id>`, `--db` |
 | `looms hitl respond` | Respond to HITL request | `<request-id>`, `--status`, `--message` |
 | `looms upgrade` | Upgrade database schema | `--dry-run`, `--no-backup`, `--yes` |
 | `looms pattern create` | Create a new pattern | `<name>`, `--thread`, `--file` |
