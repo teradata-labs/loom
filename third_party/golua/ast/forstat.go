@@ -1,3 +1,6 @@
+// Modified for loom, 2026: HWrite renders names as text, not their structs (golua PR #138).
+// See third_party/golua/README.md for the list of changes from upstream.
+
 package ast
 
 import (
@@ -30,7 +33,7 @@ func NewForStat(startTok, endTok *token.Token, itervar Name, params []ExpNode, b
 
 // HWrite prints a tree representation of the node.
 func (s ForStat) HWrite(w HWriter) {
-	w.Writef("for %s", s.Var)
+	w.Writef("for %s", s.Var.Val)
 	w.Indent()
 	if s.Start != nil {
 		w.Next()
