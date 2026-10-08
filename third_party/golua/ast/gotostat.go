@@ -1,3 +1,6 @@
+// Modified for loom, 2026: HWrite renders names as text, not their structs (golua PR #138).
+// See third_party/golua/README.md for the list of changes from upstream.
+
 package ast
 
 import (
@@ -27,5 +30,5 @@ func (s GotoStat) ProcessStat(p StatProcessor) {
 
 // HWrite prints a tree representation of the node.
 func (s GotoStat) HWrite(w HWriter) {
-	w.Writef("goto %s", s.Label)
+	w.Writef("goto %s", s.Label.Val)
 }

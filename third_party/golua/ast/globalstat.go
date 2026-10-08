@@ -1,3 +1,6 @@
+// Modified for loom, 2026: HWrite renders names as text, not their structs (golua PR #138).
+// See third_party/golua/README.md for the list of changes from upstream.
+
 package ast
 
 // GlobalStat is a statement node representing the declaration / definition of a
@@ -49,7 +52,7 @@ func (s GlobalStat) HWrite(w HWriter) {
 	w.Indent()
 	for i, nameAttrib := range s.NameAttribs {
 		w.Next()
-		w.Writef("name_%d: %s", i, nameAttrib)
+		w.Writef("name_%d: %s", i, nameAttrib.hwriteString())
 	}
 	for i, val := range s.Values {
 		w.Next()
