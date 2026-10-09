@@ -136,6 +136,14 @@ type SegmentedMemory struct {
 	pressureOffload     map[string]bool
 	pressureOffloadTurn int64
 
+	// compressorFailedThisPass records that a fold's compressor already
+	// failed in the current relief pass, so later folds in the same pass skip
+	// it instead of re-paying the attempts. A failing compressor costs up to
+	// three 120s calls per fold and a pass can fold several regions, so
+	// without this one broken provider can hold a pass for minutes and then
+	// still abort. Reset at the start of every pass; guarded by mu.
+	compressorFailedThisPass bool
+
 	// estimateCalibration scales relief's tiktoken estimate toward the
 	// provider's own prompt count (ObservePromptTokens). Zero reads as 1.0.
 	estimateCalibration float64

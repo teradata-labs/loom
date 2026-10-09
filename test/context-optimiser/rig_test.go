@@ -16,11 +16,12 @@
 // and captures the exact context handed to the provider at every call, so the
 // resulting stages can be read against what the context OUGHT to be.
 //
-// It is an instrument, not a gate: nothing in CI depends on it, and it skips
-// unless LOOM_CONTEXT_OPTIMISER=1 is set. It still compiles in CI so the routes
-// cannot rot silently when an API they drive changes.
+// The routes assert the relief machinery's behaviour — fold, offload,
+// eviction, the cache-marker budget, skill deactivation — and run in CI. Each
+// dispatched context is also written to LOOM_DEBUG_DIR so a failing route can
+// be read stage by stage.
 //
-//	LOOM_CONTEXT_OPTIMISER=1 go test -tags fts5 ./test/context-optimiser/
+//	go test -tags fts5 ./test/context-optimiser/
 //
 // The suite drives the agent from OUTSIDE pkg/agent — only exported API — so a
 // route sees what a real consumer sees.
@@ -48,12 +49,13 @@ const (
 	envGate = "LOOM_CONTEXT_OPTIMISER"
 )
 
-// requireGate skips unless the suite was asked for explicitly. Keeps the routes
-// out of every ordinary `go test ./...` while leaving them compiled.
+// requireGate reserves a slot for a route that needs an opt-in. The suite runs
+// by default; LOOM_CONTEXT_OPTIMISER=0 holds it back where a machine cannot
+// give it the processes it spawns.
 func requireGate(t *testing.T) {
 	t.Helper()
-	if os.Getenv(envGate) == "" {
-		t.Skipf("context-optimiser is an instrument, not a gate: set %s=1 to run it", envGate)
+	if os.Getenv(envGate) == "0" {
+		t.Skipf("held back by %s=0", envGate)
 	}
 }
 
@@ -82,7 +84,7 @@ metadata:
   domain: general
   risk_level: LOW
 trigger:
-  mode: MANUAL
+  mode: HYBRID
 prompt:
   instructions: |
     ` + skillBodyMarker + `
@@ -102,7 +104,7 @@ metadata:
   domain: general
   risk_level: LOW
 trigger:
-  mode: MANUAL
+  mode: HYBRID
 prompt:
   instructions: |
     ` + auditBodyMarker + `
@@ -421,12 +423,13 @@ type dumpTool struct {
 // dumpMessage mirrors types.Message as it lands on disk. That type carries no
 // json tags, so it marshals under its Go field names — these must match exactly.
 type dumpMessage struct {
-	Role       string
-	Content    string
-	ToolUseID  string
-	ToolCalls  []types.ToolCall
-	ToolResult *json.RawMessage
-	AgentID    string
+	Role            string
+	Content         string
+	ToolUseID       string
+	ToolCalls       []types.ToolCall
+	ToolResult      *json.RawMessage
+	AgentID         string
+	CacheBreakpoint bool
 }
 
 // stage is one provider call: the exact context dispatched at that moment.

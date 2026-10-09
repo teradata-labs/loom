@@ -338,7 +338,7 @@ func TestServer_ListTools_OnlyLoadPatternBaseTool(t *testing.T) {
 		names[i] = tl.Name
 	}
 	if len(names) != len(expected) {
-		t.Errorf("Expected the three base tools, got: %v", names)
+		t.Errorf("Expected the four base tools, got: %v", names)
 	}
 	for _, n := range names {
 		if !expected[n] {

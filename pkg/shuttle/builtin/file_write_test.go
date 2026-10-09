@@ -302,3 +302,207 @@ func TestFileWriteTool_Modes(t *testing.T) {
 		}
 	})
 }
+
+// files batch writes every entry in one call with per-file report lines.
+func TestFileWriteTool_BatchWrite(t *testing.T) {
+	dir := t.TempDir()
+	tool := NewFileWriteTool(dir)
+	res, err := tool.Execute(context.Background(), map[string]interface{}{
+		"files": []interface{}{
+			map[string]interface{}{"path": "models/a.sql", "content": "select 1"},
+			map[string]interface{}{"path": "models/b.sql", "content": "select 2"},
+		},
+	})
+	if err != nil || !res.Success {
+		t.Fatalf("batch write failed: %v %+v", err, res)
+	}
+	out := res.Data.(string)
+	if !strings.Contains(out, "created models/a.sql") || !strings.Contains(out, "created models/b.sql") {
+		t.Fatalf("per-file lines missing: %q", out)
+	}
+	for _, f := range []string{"a.sql", "b.sql"} {
+		if _, statErr := os.Stat(filepath.Join(dir, "models", f)); statErr != nil {
+			t.Fatalf("file %s not written: %v", f, statErr)
+		}
+	}
+}
+
+// A failing entry does not stop the rest; failures name their path.
+func TestFileWriteTool_BatchPartialFailure(t *testing.T) {
+	dir := t.TempDir()
+	tool := NewFileWriteTool(dir)
+	res, err := tool.Execute(context.Background(), map[string]interface{}{
+		"files": []interface{}{
+			map[string]interface{}{"path": "/etc/evil.txt", "content": "x"},
+			map[string]interface{}{"path": "good.txt", "content": "y"},
+		},
+	})
+	if err != nil || !res.Success {
+		t.Fatalf("partial batch must succeed: %v %+v", err, res)
+	}
+	out := res.Data.(string)
+	if !strings.Contains(out, "FAILED /etc/evil.txt") || !strings.Contains(out, "created good.txt") {
+		t.Fatalf("expected mixed report: %q", out)
+	}
+}
+
+// Single-file form defaults to overwrite: writing an existing path succeeds.
+func TestFileWriteTool_DefaultCreateRefusesExisting(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f.txt")
+	if err := os.WriteFile(path, []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	tool := NewFileWriteTool(dir)
+	res, err := tool.Execute(context.Background(), map[string]interface{}{
+		"path": "f.txt", "content": "new",
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if res.Success {
+		t.Fatalf("default mode must refuse an existing file; got success %+v", res)
+	}
+	got, _ := os.ReadFile(path)
+	if string(got) != "old" {
+		t.Fatalf("content = %q, want the original untouched", got)
+	}
+}
+
+// An unrecognized mode is refused rather than guessed. The write path used to
+// be the switch's default, so a model sending "replace" or "Create" clobbered
+// a file it had not read.
+func TestFileWriteRejectsUnknownMode(t *testing.T) {
+	dir := t.TempDir()
+	tool := NewFileWriteTool(dir)
+	f := filepath.Join(dir, "a.txt")
+	for _, mode := range []string{"Create", "write", "replace", "OVERWRITE", "truncate"} {
+		if err := os.WriteFile(f, []byte("ORIGINAL"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tool.writeOne(f, "CLOBBERED", mode); err == nil {
+			t.Errorf("mode %q was accepted", mode)
+		}
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(b) != "ORIGINAL" {
+			t.Errorf("mode %q clobbered the file", mode)
+		}
+	}
+}
+
+// create means O_EXCL. A dangling symlink reads as "does not exist" to Stat,
+// so a check-then-write would follow it and write wherever it points.
+func TestFileWriteCreateRefusesDanglingSymlink(t *testing.T) {
+	dir := t.TempDir()
+	tool := NewFileWriteTool(dir)
+	link := filepath.Join(dir, "dangle")
+	if err := os.Symlink(filepath.Join(dir, "absent"), link); err != nil {
+		t.Skip("symlinks unsupported")
+	}
+	if _, err := tool.writeOne(link, "X", "create"); err == nil {
+		t.Error("create wrote through a dangling symlink")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "absent")); err == nil {
+		t.Error("the symlink target was created")
+	}
+}
+
+// Through Execute, which is the shape a model sends. The earlier tests called
+// writeOne directly and so could not see that the single-path form carried its
+// own copy of the mode handling.
+func TestFileWriteExecuteSinglePathHonoursModes(t *testing.T) {
+	dir := t.TempDir()
+	tool := NewFileWriteTool(dir)
+	ctx := context.Background()
+	f := filepath.Join(dir, "a.txt")
+
+	for _, mode := range []string{"Create", "write", "replace", "OVERWRITE", " create", "truncate"} {
+		if err := os.WriteFile(f, []byte("ORIGINAL"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		res, err := tool.Execute(ctx, map[string]interface{}{
+			"path": f, "content": "CLOBBERED", "mode": mode,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Success {
+			t.Errorf("mode %q was accepted", mode)
+		}
+		b, rerr := os.ReadFile(f)
+		if rerr != nil {
+			t.Fatal(rerr)
+		}
+		if string(b) != "ORIGINAL" {
+			t.Errorf("mode %q clobbered the file", mode)
+		}
+	}
+
+	// create refuses an existing file and says why.
+	res, err := tool.Execute(ctx, map[string]interface{}{"path": f, "content": "X"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Success || res.Error.Code != "FILE_EXISTS" {
+		t.Errorf("an omitted mode must not clobber: %+v", res)
+	}
+
+	// overwrite replaces, and the result still carries the single form's shape.
+	res, err = tool.Execute(ctx, map[string]interface{}{
+		"path": f, "content": "NEW", "mode": "overwrite",
+	})
+	if err != nil || !res.Success {
+		t.Fatalf("overwrite failed: %v %+v", err, res)
+	}
+	data := res.Data.(map[string]interface{})
+	if data["bytes_written"] != 3 || data["mode"] != "overwrite" || data["created"] != false {
+		t.Errorf("result shape changed: %+v", data)
+	}
+}
+
+// create is O_EXCL through Execute too, so a dangling symlink is refused
+// rather than written through to its target.
+func TestFileWriteExecuteCreateRefusesDanglingSymlink(t *testing.T) {
+	dir := t.TempDir()
+	tool := NewFileWriteTool(dir)
+	link := filepath.Join(dir, "dangle")
+	target := filepath.Join(dir, "absent")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skip("symlinks unsupported")
+	}
+	res, err := tool.Execute(context.Background(), map[string]interface{}{
+		"path": link, "content": "X",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Success {
+		t.Error("create wrote through a dangling symlink")
+	}
+	if _, serr := os.Stat(target); serr == nil {
+		t.Error("the symlink target was created")
+	}
+}
+
+// Safe mode confines the single-path form as well, including a write aimed
+// through a symlinked directory.
+func TestFileWriteExecuteSafeModeConfinesSinglePath(t *testing.T) {
+	t.Setenv("LOOM_FILE_SAFE_MODE", "1")
+	base := t.TempDir()
+	tool := NewFileWriteTool(base)
+	res, err := tool.Execute(context.Background(), map[string]interface{}{
+		"path": "../../../../../../tmp-escape-probe.txt", "content": "X",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Success {
+		t.Error("a traversal out of the workspace was written")
+	}
+	if res.Error.Code != "UNSAFE_PATH" {
+		t.Errorf("code = %s, want UNSAFE_PATH", res.Error.Code)
+	}
+}

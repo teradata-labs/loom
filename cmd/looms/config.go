@@ -793,6 +793,15 @@ type ToolPermissionsConfig struct {
 	// Can be enabled via --yolo flag or LOOM_YOLO=true env var
 	YOLO bool `mapstructure:"yolo"`
 
+	// SafeFiles confines the file tools (file_read, file_write, edit_files) to
+	// the workspace — the tool's working directory, the sandbox dir, the loom
+	// data dir and temp. Off by default, for the same reason YOLO permissions
+	// are on by default: an agent works in its own tree and an absolute path
+	// its caller holds is not an escape. Turn it on where the agent is driven
+	// against paths the deployment does not trust.
+	// --safe-files flag, tools.permissions.safe_files, or LOOM_FILE_SAFE_MODE.
+	SafeFiles bool `mapstructure:"safe_files"`
+
 	// AllowedTools is a list of tool names that are always allowed without prompts
 	// Empty list means all tools require approval (if RequireApproval is true)
 	AllowedTools []string `mapstructure:"allowed_tools"`

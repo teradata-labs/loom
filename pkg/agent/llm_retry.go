@@ -14,6 +14,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -140,6 +141,48 @@ func (a *Agent) observeSchedulerOutcome(err error) {
 	}
 }
 
+// providerCtx returns the context for one provider call, suppressing extended
+// thinking when this history cannot be sent with it on.
+//
+// Thinking blocks are turn-scoped replay material and are never persisted, so
+// a turn rebuilt from the session store — a HITL park resumed mid tool loop —
+// replays its assistant tool_use rows without the blocks that accompanied
+// them. Anthropic rejects that pairing, which would kill the turn on resume.
+//
+// Both conditions are required. A resumed turn whose rows still carry their
+// blocks (the park never left the process) needs no suppression, and a missing
+// block outside a resume is not this problem — compile strips blocks from
+// SETTLED turns by design, and a model may simply have returned none.
+func (a *Agent) providerCtx(ctx Context, messages []Message) context.Context {
+	if isResumedTurn(ctx) && rebuiltToolTurn(messages) {
+		return llm.ContextSuppressThinking(ctx)
+	}
+	return ctx
+}
+
+// rebuiltToolTurn reports whether the newest turn present holds an assistant
+// message with tool calls but no thinking blocks — the shape a store rebuild
+// produces. Only the newest turn is examined: settled turns render without
+// their blocks on purpose.
+func rebuiltToolTurn(messages []Message) bool {
+	var newest int64
+	for i := range messages {
+		if messages[i].Turn > newest {
+			newest = messages[i].Turn
+		}
+	}
+	for i := range messages {
+		m := &messages[i]
+		if m.Turn != newest || m.Role != "assistant" || len(m.ToolCalls) == 0 {
+			continue
+		}
+		if len(m.ThinkingBlocks) == 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // dispatchChat routes one LLM call to streaming, direct, or the retry loop.
 func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.Tool) (*LLMResponse, error) {
 	// Check if provider supports streaming and we have a progress callback
@@ -155,7 +198,7 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 	// Non-streaming path with retry logic
 	// If retry is disabled, call LLM directly
 	if !a.config.Retry.Enabled || a.config.Retry.MaxRetries == 0 {
-		return a.llm.Chat(ctx, messages, tools)
+		return a.llm.Chat(a.providerCtx(ctx, messages), messages, tools)
 	}
 
 	var lastErr error
@@ -163,7 +206,7 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 
 	for attempt := 0; attempt <= a.config.Retry.MaxRetries; attempt++ {
 		// Attempt LLM call
-		response, err := a.llm.Chat(ctx, messages, tools)
+		response, err := a.llm.Chat(a.providerCtx(ctx, messages), messages, tools)
 		if err == nil {
 			// Success! Log if we had previous failures
 			if attempt > 0 {
@@ -239,7 +282,7 @@ func (a *Agent) chatWithStreaming(ctx Context, messages []Message, tools []shutt
 	streamingProvider, ok := a.llm.(llmtypes.StreamingLLMProvider)
 	if !ok {
 		// Fallback to non-streaming (should never happen due to check in chatWithRetry)
-		return a.llm.Chat(ctx, messages, tools)
+		return a.llm.Chat(a.providerCtx(ctx, messages), messages, tools)
 	}
 
 	// Token buffering state
@@ -306,7 +349,9 @@ func (a *Agent) chatWithStreaming(ctx Context, messages []Message, tools []shutt
 	// NotifyStreamActivity; emit them as a throttled, content-free progress
 	// event so they count as activity without leaking JSON into the text.
 	var lastToolInputEmit time.Time
-	streamCtx := llmtypes.WithStreamActivity(ctx, func() {
+	// Same suppression as the non-streaming path: a resumed turn's rebuilt
+	// rows carry no thinking blocks, and the provider rejects that pairing.
+	streamCtx := llmtypes.WithStreamActivity(a.providerCtx(ctx, messages), func() {
 		now := time.Now()
 		if now.Sub(lastToolInputEmit) < toolInputActivityInterval {
 			return

@@ -77,6 +77,20 @@ func GetLoomSandboxDir() string {
 	return GetLoomDataDir()
 }
 
+// FileScopeEnforced reports whether the file tools confine themselves to the
+// workspace — the tool's base directory, the sandbox dir, the loom data dir,
+// and temp. Off by default, matching the product's autonomous stance (YOLO
+// permissions default on): the file tools reach what the process can reach,
+// and the deny list of sensitive paths is the only boundary.
+//
+// Safe mode turns the boundary on, for a deployment that runs agents against
+// paths it does not fully trust. Read from the environment, like the path
+// accessors above, so the builtin tools see it without a config dependency.
+func FileScopeEnforced() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("LOOM_FILE_SAFE_MODE")))
+	return v == "1" || v == "true" || v == "yes"
+}
+
 // GetLoomSubDir returns a subdirectory within the Loom data directory.
 // Example: GetLoomSubDir("agents") returns ~/.loom/agents
 func GetLoomSubDir(subdir string) string {

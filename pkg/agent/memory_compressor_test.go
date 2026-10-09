@@ -103,11 +103,12 @@ func TestLLMCompressor_CompressMessages_LLMError(t *testing.T) {
 		{Role: "assistant", Content: "Test response"},
 	}
 
-	// Should fall back to simple compression on error
+	// A failed call is reported. The fold's contract is that a fold without a
+	// real summary is amnesia, so it must be able to tell failure from
+	// success — a keyword stub returned with a nil error cannot be told apart.
 	summary, err := compressor.CompressMessages(context.Background(), messages)
-	require.NoError(t, err) // Fallback means no error propagated
-	assert.NotEmpty(t, summary)
-	assert.Contains(t, summary, "User:")
+	require.Error(t, err)
+	assert.Empty(t, summary)
 }
 
 func TestLLMCompressor_CompressMessages_EmptySummary(t *testing.T) {
@@ -122,10 +123,10 @@ func TestLLMCompressor_CompressMessages_EmptySummary(t *testing.T) {
 		{Role: "user", Content: "Test"},
 	}
 
-	// Should fall back to simple compression when LLM returns empty
+	// An empty reply is a failure too, and reported as one.
 	summary, err := compressor.CompressMessages(context.Background(), messages)
-	require.NoError(t, err)
-	assert.NotEmpty(t, summary)
+	require.Error(t, err)
+	assert.Empty(t, summary)
 }
 
 func TestLLMCompressor_CompressMessages_NoLLM(t *testing.T) {

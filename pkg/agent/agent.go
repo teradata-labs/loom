@@ -846,30 +846,27 @@ func (a *Agent) enforceRequiredSkillTools(sessionID string) {
 		}
 		for _, name := range as.Skill.Tools.RequiredTools {
 			if !a.tools.IsRegistered(name) {
-				tool := builtin.ByName(name)
-				if tool == nil {
-					zap.L().Warn("skill required tool not available; skipping",
+				if tool := builtin.ByName(name); tool != nil {
+					a.tools.Register(tool)
+					zap.L().Debug("skill required tool auto-registered (builtin)",
 						zap.String("skill", as.Skill.Name),
 						zap.String("tool", name))
+				} else if err := a.resolveSkillTool(name, as.Skill.Tools.MCPServers); err != nil {
+					// A non-builtin (MCP/registry) tool that does not
+					// resolve is logged and skipped; the turn continues
+					// without it.
+					zap.L().Warn("skill required tool not resolvable; skipping",
+						zap.String("skill", as.Skill.Name),
+						zap.String("tool", name),
+						zap.Strings("mcp_servers", as.Skill.Tools.MCPServers),
+						zap.Error(err))
 					continue
 				}
-				a.tools.Register(tool)
-				zap.L().Debug("skill required tool auto-registered",
-					zap.String("skill", as.Skill.Name),
-					zap.String("tool", name))
 			}
 			// Advertise the required tool into THIS session even when another
 			// session registered the definition first. Base tools are ignored
 			// by registerSessionTool, so requiring one never hides it elsewhere.
 			a.registerSessionTool(sessionID, name)
-		}
-		// Surface MCP-server requests so operators see when a skill has
-		// declared servers that aren't yet honored. Logged once per turn
-		// per skill rather than per server to avoid log spam.
-		if len(as.Skill.Tools.MCPServers) > 0 {
-			zap.L().Debug("skill declares mcp_servers; activation not yet supported",
-				zap.String("skill", as.Skill.Name),
-				zap.Int("count", len(as.Skill.Tools.MCPServers)))
 		}
 	}
 }
@@ -1095,6 +1092,42 @@ func (a *Agent) SetToolRegistryForDynamicDiscovery(toolRegistry shuttle.ToolRegi
 // GetDescription returns the agent description from configuration.
 func (a *Agent) GetDescription() string {
 	return a.config.Description
+}
+
+// SetSkillMCPResolver installs a host resolver for skill-declared MCP tools.
+// The host (e.g. the cloud runtime) owns MCP resolution — per-user auth,
+// endpoint routing — which loom cannot perform itself. Safe to call after
+// construction, once the host's accessible-server map is built. When unset,
+// enforceRequiredSkillTools falls back to the executor's own resolver.
+func (a *Agent) SetSkillMCPResolver(fn func(ctx context.Context, name string, servers []string) error) {
+	a.skillMCPResolverMu.Lock()
+	defer a.skillMCPResolverMu.Unlock()
+	a.skillMCPResolver = fn
+}
+
+// skillMCPResolverFn reads the installed resolver under the lock. The host may
+// install it after construction while turns are already running, so the field
+// is never read bare.
+func (a *Agent) skillMCPResolverFn() func(ctx context.Context, name string, servers []string) error {
+	a.skillMCPResolverMu.RLock()
+	defer a.skillMCPResolverMu.RUnlock()
+	return a.skillMCPResolver
+}
+
+// resolveSkillTool mounts a non-builtin skill-required tool by name, bounded to
+// the skill's declared mcp_servers. A host resolver, if installed, owns
+// resolution; otherwise loom's executor resolves the tool from the dynamic tool
+// registry. Uses a background context: resolution is an index lookup plus a
+// cached MCP client, with no request-scoped cancellation to honor.
+func (a *Agent) resolveSkillTool(name string, servers []string) error {
+	if fn := a.skillMCPResolverFn(); fn != nil {
+		return fn(context.Background(), name, servers)
+	}
+	if a.executor == nil {
+		return fmt.Errorf("no skill tool resolver available")
+	}
+	_, err := a.executor.ResolveAndRegister(context.Background(), name, servers)
+	return err
 }
 
 // GetConfig returns a copy of the agent configuration.
@@ -2131,8 +2164,11 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 
 	// Add assistant response to history
 	a.appendMessage(ctx, session, Message{
-		Role:       "assistant",
+		Role: "assistant",
+		// Turn-ending message: thinking text rides for persistence; blocks
+		// would be stripped by the next turn's compile, so none are carried.
 		Content:    response.Content,
+		Thinking:   response.Thinking,
 		AgentID:    a.GetID(), // Track which agent generated this response
 		Timestamp:  time.Now(),
 		TokenCount: response.Usage.TotalTokens,
@@ -2667,16 +2703,25 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			}
 		}
 
-		// withReminder appends the turn's soft reminder as a trailing system
-		// message on a copy — transient, past every cache breakpoint, never
-		// stored — so both the normal send and the recovery resend carry it.
+		// withReminder appends the transient tail — the turn's soft reminder —
+		// as one trailing message on a copy: transient, past every cache
+		// breakpoint, never stored, carried by both the normal send and the
+		// recovery resend.
 		withReminder := func(msgs []Message) []Message {
-			if softReminder == "" {
+			tail := strings.TrimSpace(softReminder)
+			if tail == "" {
 				return msgs
 			}
 			out := make([]Message, len(msgs), len(msgs)+1)
 			copy(out, msgs)
-			return append(out, Message{Role: "system", Content: strings.TrimSpace(softReminder)})
+			// USER role, never system: gateways fold trailing system-role
+			// messages into the Anthropic system parameter at the HEAD of the
+			// request, where this mutating block would invalidate every cache
+			// segment on every call. A trailing user message stays in place —
+			// after the till-NOW breakpoint, outside every cached segment.
+			// The reminder tag marks it as harness state, not a user ask.
+			return append(out, Message{Role: "user",
+				Content: "<system-reminder>\n" + tail + "\n</system-reminder>"})
 		}
 
 		// Call LLM. Relief is proactive (above) — loom keeps the context under its
@@ -2970,13 +3015,15 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 
 		// Add assistant message with tool calls to history FIRST (required by Anthropic API)
 		_, assistantPersisted := a.appendMessage(ctx, session, Message{
-			Role:       "assistant",
-			Content:    llmResp.Content,
-			ToolCalls:  llmResp.ToolCalls,
-			AgentID:    a.GetID(), // Track which agent generated this response
-			TokenCount: llmResp.Usage.TotalTokens,
-			CostUSD:    llmResp.Usage.CostUSD,
-			Timestamp:  time.Now(),
+			Role:           "assistant",
+			Content:        llmResp.Content,
+			ToolCalls:      llmResp.ToolCalls,
+			Thinking:       llmResp.Thinking,
+			ThinkingBlocks: llmResp.ThinkingBlocks,
+			AgentID:        a.GetID(), // Track which agent generated this response
+			TokenCount:     llmResp.Usage.TotalTokens,
+			CostUSD:        llmResp.Usage.CostUSD,
+			Timestamp:      time.Now(),
 		}, false)
 
 		// HITL park pre-scan (park.go): with park enabled and the batch's

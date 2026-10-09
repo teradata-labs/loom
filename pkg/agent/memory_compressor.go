@@ -53,7 +53,13 @@ func NewLLMCompressor(llmCaller LLMCaller) *LLMCompressor {
 }
 
 // CompressMessages compresses a slice of messages into a concise summary.
-// Uses LLM if available, otherwise falls back to simple extraction.
+//
+// A failure is REPORTED, never papered over. The caller that matters is the
+// fold (foldLocked), whose contract is that a fold without a real summary is
+// task amnesia: it retries, then aborts and lets the relief ladder move on.
+// Returning a keyword-extraction stub with a nil error made that contract
+// unreachable — a failed compressor committed a bag of words as the session's
+// memory, and nothing downstream could tell the difference.
 //
 // LLM compression typically achieves:
 // - 50-80% token reduction
@@ -61,7 +67,9 @@ func NewLLMCompressor(llmCaller LLMCaller) *LLMCompressor {
 // - Preservation of key context (tables, queries, findings)
 func (c *LLMCompressor) CompressMessages(ctx context.Context, messages []Message) (string, error) {
 	if !c.enabled {
-		// Fallback to simple compression
+		// Not configured to call a model: the keyword extraction is all this
+		// compressor has, and it is honest about which it is because the
+		// caller asked a disabled compressor.
 		return c.simpleCompress(messages), nil
 	}
 
@@ -75,13 +83,11 @@ func (c *LLMCompressor) CompressMessages(ctx context.Context, messages []Message
 	// Use LLM to create compressed summary
 	summary, err := c.llmCaller.CompressConversation(ctx, conversationText)
 	if err != nil {
-		// Fall back to simple compression on error
-		return c.simpleCompress(messages), nil
+		return "", fmt.Errorf("compressor call failed: %w", err)
 	}
 
 	if summary == "" {
-		// Fallback if LLM returned nothing
-		return c.simpleCompress(messages), nil
+		return "", fmt.Errorf("compressor returned an empty summary")
 	}
 
 	return strings.TrimSpace(summary), nil
