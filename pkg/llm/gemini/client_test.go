@@ -507,6 +507,122 @@ func TestConvertMessages_EmptyPartsSkipped(t *testing.T) {
 	}
 }
 
+func TestConvertSchema_ConstraintOnlyAlternatives(t *testing.T) {
+	for _, schemaJSON := range []string{
+		`{"type":"INTEGER","anyOf":[{"minimum":1},{}]}`,
+		`{"type":"OBJECT","anyOf":[{"properties":{"count":{"minimum":1}}}]}`,
+	} {
+		schema, err := shuttle.FromJSON([]byte(schemaJSON))
+		require.NoError(t, err)
+		converted := convertSchema(schema)
+		data, err := json.Marshal(converted)
+		require.NoError(t, err)
+		assert.JSONEq(t, schemaJSON, string(data))
+	}
+}
+
+func TestConvertSchema_NilSchemas(t *testing.T) {
+	t.Run("nil schema", func(t *testing.T) {
+		assert.Equal(t, Schema{}, convertSchema(nil))
+	})
+	t.Run("nil nested property", func(t *testing.T) {
+		schema := &shuttle.JSONSchema{
+			Type:       "object",
+			Properties: map[string]*shuttle.JSONSchema{"optional": nil},
+		}
+		assert.Equal(t, Schema{
+			Type:       "OBJECT",
+			Properties: map[string]Schema{"optional": {}},
+		}, convertSchema(schema))
+	})
+}
+
+func TestClient_ToolSchemaRequest(t *testing.T) {
+	const schemaJSON = `{"type":"OBJECT","description":"Task input","required":["tasks"],"properties":{
+		"tasks":{"type":"ARRAY","description":"Tasks to create","items":{
+			"type":"OBJECT","description":"A task","required":["idx","subject","details"],"properties":{
+				"idx":{"type":"INTEGER","description":"1-based task number","minimum":0,"maximum":100},
+				"subject":{"type":"STRING","description":"Short task title","minLength":0,"maxLength":80,"format":"text","pattern":"^[A-Z]","enum":["Task"],"default":"Task"},
+				"details":{"type":"OBJECT","required":["active"],"properties":{"active":{"type":"BOOLEAN","default":false}}},
+				"nullable":{"anyOf":[{"type":"INTEGER"},{"type":"NULL"}]},
+				"bounded":{"type":"INTEGER","anyOf":[{"minimum":1},{}]},
+				"matrix":{"type":"ARRAY","items":{"type":"ARRAY","description":"Row","items":{"type":"STRING","description":"Cell","enum":["a","b"]}}}
+			}
+		}}
+	}}`
+	for _, mode := range []string{"chat", "stream"} {
+		t.Run(mode, func(t *testing.T) {
+			captured := make(chan map[string]interface{}, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request map[string]interface{}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Error(err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				captured <- request
+				const response = `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`
+				if mode == "stream" {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = w.Write([]byte("data: " + response + "\n\n"))
+				} else {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(response))
+				}
+			}))
+			defer server.Close()
+			schema, err := shuttle.FromJSON([]byte(schemaJSON))
+			require.NoError(t, err)
+			schema.Type = ""
+			schema.Properties["tasks"].Type = ""
+			schema.Properties["tasks"].Items.Type = ""
+			schema.Properties["tasks"].Items.Properties["subject"].Type = ""
+			schema.Properties["tasks"].Items.Properties["matrix"].Type = ""
+			schema.Properties["tasks"].Items.Properties["matrix"].Items.Type = ""
+			schema.Properties["tasks"].Items.Properties["nullable"].AnyOf[1].Type = "null"
+			subject := schema.Properties["tasks"].Items.Properties["subject"]
+			subject.OneOf = []*shuttle.JSONSchema{{Type: "string"}}
+			subject.AllOf = []*shuttle.JSONSchema{{Type: "string"}}
+			subject.Not = &shuttle.JSONSchema{Type: "null"}
+			inputTools := []shuttle.Tool{
+				&mockShuttleTool{name: "create_tasks", schema: schema},
+				&mockShuttleTool{name: "no_arguments", schema: &shuttle.JSONSchema{}},
+				&mockShuttleTool{name: "description_only", schema: &shuttle.JSONSchema{Description: "No arguments"}},
+			}
+			client := NewClient(Config{APIKey: "test-key", Model: "gemini-3-flash-preview"})
+			client.httpClient.Transport = &mockTransport{baseURL: server.URL, original: server.Client().Transport}
+			messages := []types.Message{{Role: "user", Content: "Create tasks"}}
+			if mode == "stream" {
+				_, err = client.ChatStream(context.Background(), messages, inputTools, nil)
+			} else {
+				_, err = client.Chat(context.Background(), messages, inputTools)
+			}
+			require.NoError(t, err)
+			request := <-captured
+			tools := request["tools"].([]interface{})
+			require.Len(t, tools, 1)
+			declarations := tools[0].(map[string]interface{})["functionDeclarations"].([]interface{})
+			require.Len(t, declarations, 3)
+			data, err := json.Marshal(declarations[0].(map[string]interface{})["parameters"])
+			require.NoError(t, err)
+			var expected map[string]interface{}
+			require.NoError(t, json.Unmarshal([]byte(schemaJSON), &expected))
+			properties := expected["properties"].(map[string]interface{})
+			item := properties["tasks"].(map[string]interface{})["items"].(map[string]interface{})
+			expectedSubject := item["properties"].(map[string]interface{})["subject"].(map[string]interface{})
+			expectedSubject["minLength"] = "0"
+			expectedSubject["maxLength"] = "80"
+			expectedJSON, err := json.Marshal(expected)
+			require.NoError(t, err)
+			assert.JSONEq(t, string(expectedJSON), string(data))
+			assert.Equal(t, map[string]interface{}{"type": "OBJECT"}, declarations[1].(map[string]interface{})["parameters"])
+			assert.Equal(t, map[string]interface{}{"type": "OBJECT", "description": "No arguments"}, declarations[2].(map[string]interface{})["parameters"])
+			assert.Empty(t, inputTools[1].InputSchema().Type)
+			assert.Empty(t, inputTools[2].InputSchema().Type)
+		})
+	}
+}
+
 func TestThoughtSignature_RoundTrip(t *testing.T) {
 	// Simulates the full round-trip:
 	// 1. Gemini returns a function call with a thoughtSignature at Part level
@@ -747,7 +863,8 @@ func TestConvertTools(t *testing.T) {
 	require.Len(t, declarations, 1)
 	assert.Equal(t, "get_weather", declarations[0].Name)
 	assert.Equal(t, "Get weather information", declarations[0].Description)
-	assert.Equal(t, "object", declarations[0].Parameters.Type)
+	assert.Equal(t, "OBJECT", declarations[0].Parameters.Type)
+	assert.Equal(t, "STRING", declarations[0].Parameters.Properties["location"].Type)
 	assert.Len(t, declarations[0].Parameters.Properties, 2)
 	assert.Contains(t, declarations[0].Parameters.Required, "location")
 }
@@ -790,14 +907,14 @@ func TestConvertTools_EmptyPropertyTypes(t *testing.T) {
 	props := declarations[0].Parameters.Properties
 
 	// Empty type defaults to "string"
-	assert.Equal(t, "string", props["query"].Type, "empty type should default to string")
+	assert.Equal(t, "STRING", props["query"].Type, "empty type should default to string")
 
 	// Empty type with properties defaults to "object"
-	assert.Equal(t, "object", props["nested"].Type, "empty type with properties should become object")
+	assert.Equal(t, "OBJECT", props["nested"].Type, "empty type with properties should become object")
 
 	// Empty type with items defaults to "array"
-	assert.Equal(t, "array", props["tags"].Type, "empty type with items should become array")
-	assert.Equal(t, "string", props["tags"].Items.Type, "empty item type should default to string")
+	assert.Equal(t, "ARRAY", props["tags"].Type, "empty type with items should become array")
+	assert.Equal(t, "STRING", props["tags"].Items.Type, "empty item type should default to string")
 }
 
 // Mock implementations for testing

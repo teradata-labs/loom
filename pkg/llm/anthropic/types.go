@@ -142,6 +142,37 @@ type InputSchema struct {
 	Type       string                            `json:"type"`
 	Properties map[string]map[string]interface{} `json:"properties,omitempty"`
 	Required   []string                          `json:"required,omitempty"`
+	keywords   map[string]interface{}
+}
+
+// MarshalJSON retains all schema keywords while preserving the public input fields.
+func (s InputSchema) MarshalJSON() ([]byte, error) {
+	if s.keywords == nil {
+		type alias InputSchema
+		return json.Marshal(alias(s))
+	}
+	result := make(map[string]interface{}, len(s.keywords))
+	for keyword, value := range s.keywords {
+		result[keyword] = value
+	}
+	if s.Type != "" {
+		result["type"] = s.Type
+	} else {
+		delete(result, "type")
+	}
+	if s.Properties != nil {
+		result["properties"] = s.Properties
+	} else if s.Type == "object" {
+		result["properties"] = map[string]interface{}{}
+	} else {
+		delete(result, "properties")
+	}
+	if len(s.Required) > 0 {
+		result["required"] = s.Required
+	} else {
+		delete(result, "required")
+	}
+	return json.Marshal(result)
 }
 
 // Usage represents token usage information.

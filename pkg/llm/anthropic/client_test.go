@@ -19,11 +19,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/types"
+	"github.com/xeipuuv/gojsonschema"
 )
 
 func TestNewClient(t *testing.T) {
@@ -263,6 +266,105 @@ func TestClient_ConvertMessages_SkillBodySidecarCoalesces(t *testing.T) {
 	}
 	if last.Content[1].Type != "text" || last.Content[1].Text != "ALPHA SKILL BODY" {
 		t.Errorf("second block must be the sidecar text, got %+v", last.Content[1])
+	}
+}
+
+func TestInputSchema_MarshalJSON(t *testing.T) {
+	tests := []struct {
+		name   string
+		schema InputSchema
+		want   string
+	}{
+		{
+			name: "legacy public fields without keyword map",
+			schema: InputSchema{
+				Type: "object",
+				Properties: map[string]map[string]interface{}{
+					"name": {"type": "string", "description": "Name"},
+				},
+				Required: []string{"name"},
+			},
+			want: `{"type":"object","properties":{"name":{"type":"string","description":"Name"}},"required":["name"]}`,
+		},
+		{
+			name: "nil object properties become empty object",
+			schema: InputSchema{
+				Type:     "object",
+				keywords: map[string]interface{}{"type": "object", "description": "Metadata"},
+			},
+			want: `{"type":"object","description":"Metadata","properties":{}}`,
+		},
+		{
+			name: "explicit empty properties replace stale properties",
+			schema: InputSchema{
+				Type:       "object",
+				Properties: map[string]map[string]interface{}{},
+				keywords: map[string]interface{}{
+					"type":       "object",
+					"properties": map[string]interface{}{"old": map[string]interface{}{"type": "string"}},
+					"required":   []string{"old"},
+				},
+			},
+			want: `{"type":"object","properties":{}}`,
+		},
+		{
+			name: "clearing public fields retains only composite keywords",
+			schema: InputSchema{
+				keywords: map[string]interface{}{
+					"type":       "integer",
+					"properties": map[string]interface{}{},
+					"required":   []string{"old"},
+					"anyOf":      []map[string]interface{}{{"type": "integer"}, {"type": "null"}},
+				},
+			},
+			want: `{"anyOf":[{"type":"integer"},{"type":"null"}]}`,
+		},
+		{
+			name: "public fields override keywords while preserving description",
+			schema: InputSchema{
+				Type: "object",
+				Properties: map[string]map[string]interface{}{
+					"name": {"type": "string"},
+				},
+				Required: []string{"name"},
+				keywords: map[string]interface{}{
+					"type":        "array",
+					"properties":  map[string]interface{}{"old": map[string]interface{}{"type": "integer"}},
+					"required":    []string{"old"},
+					"description": "Input",
+				},
+			},
+			want: `{"type":"object","description":"Input","properties":{"name":{"type":"string"}},"required":["name"]}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			before, err := json.Marshal(test.schema.keywords)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(test.schema)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got, want map[string]interface{}
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal([]byte(test.want), &want); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(want, got) {
+				t.Errorf("want %s, got %s", test.want, data)
+			}
+			after, err := json.Marshal(test.schema.keywords)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(before) != string(after) {
+				t.Errorf("marshaling mutated source keywords: before %s, after %s", before, after)
+			}
+		})
 	}
 }
 
@@ -515,6 +617,122 @@ data: {"type":"message_stop"}
 	// Verify stop reason
 	if resp.StopReason != "tool_use" {
 		t.Errorf("Expected stop_reason 'tool_use', got %q", resp.StopReason)
+	}
+}
+
+func TestClient_ToolSchemaRequest(t *testing.T) {
+	const schemaJSON = `{"type":"object","description":"Task input","required":["tasks"],"allOf":[{"type":"object","properties":{},"not":{"required":["forbidden"]}}],"properties":{
+		"tasks":{"type":"array","description":"Tasks to create","items":{
+			"type":"object","description":"A task","required":["idx","subject","details"],"properties":{
+				"idx":{"type":"integer","description":"1-based task number","minimum":0,"maximum":100},
+				"subject":{"type":"string","description":"Short task title","minLength":0,"maxLength":80,"pattern":"^[A-Z]","format":"text","enum":["Task"],"default":"Task"},
+				"details":{"type":"object","required":["active"],"properties":{"active":{"type":"boolean","default":false}}},
+				"matrix":{"type":"array","items":{"type":"array","items":{"type":"integer"}}},
+				"nullable":{"anyOf":[{"type":"integer"},{"type":"null"}]},
+				"choice":{"oneOf":[{"type":"string"},{"type":"number"}]},
+				"excluded":{"not":{"type":"null"}},
+				"empty":{"type":"object","properties":{}}
+			}
+		}}
+	}}`
+	for _, mode := range []string{"chat", "stream"} {
+		t.Run(mode, func(t *testing.T) {
+			captured := make(chan map[string]interface{}, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request map[string]interface{}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Error(err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				captured <- request
+				if mode == "stream" {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = w.Write([]byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
+				} else {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}`))
+				}
+			}))
+			defer server.Close()
+			schema, err := shuttle.FromJSON([]byte(schemaJSON))
+			if err != nil {
+				t.Fatal(err)
+			}
+			inputTools := []shuttle.Tool{
+				&mockTool{name: "create_tasks", schema: schema},
+				&mockTool{name: "no_arguments", schema: &shuttle.JSONSchema{}},
+				&mockTool{name: "description_only", schema: &shuttle.JSONSchema{Description: "No arguments"}},
+			}
+			client := NewClient(Config{APIKey: "test-key", Endpoint: server.URL})
+			messages := []types.Message{{Role: "user", Content: "Create tasks"}}
+			if mode == "stream" {
+				_, err = client.ChatStream(context.Background(), messages, inputTools, nil)
+			} else {
+				_, err = client.Chat(context.Background(), messages, inputTools)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := <-captured
+			tools, ok := request["tools"].([]interface{})
+			if !ok || len(tools) != 3 {
+				t.Fatalf("expected three tools, got %v", request["tools"])
+			}
+			var want map[string]interface{}
+			if err := json.Unmarshal([]byte(schemaJSON), &want); err != nil {
+				t.Fatal(err)
+			}
+			want["not"] = want["allOf"].([]interface{})[0].(map[string]interface{})["not"]
+			delete(want, "allOf")
+			got := tools[0].(map[string]interface{})["input_schema"]
+			if !reflect.DeepEqual(want, got) {
+				t.Errorf("expected full nested schema, got %v", got)
+			}
+			for _, forbidden := range []bool{false, true} {
+				sample := map[string]interface{}{"tasks": []interface{}{}}
+				if forbidden {
+					sample["forbidden"] = true
+				}
+				validation, err := gojsonschema.Validate(gojsonschema.NewGoLoader(got), gojsonschema.NewGoLoader(sample))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if validation.Valid() == forbidden {
+					t.Errorf("outgoing schema lost its prohibition for %v", sample)
+				}
+			}
+			for index := 1; index < len(tools); index++ {
+				expected := map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
+				if index == 2 {
+					expected["description"] = "No arguments"
+				}
+				if !reflect.DeepEqual(expected, tools[index].(map[string]interface{})["input_schema"]) {
+					t.Errorf("unexpected no-argument schema: %v", tools[index])
+				}
+				if inputTools[index].InputSchema().Type != "" {
+					t.Error("serialization mutated the root schema type")
+				}
+			}
+			for _, keyword := range []string{"anyOf", "oneOf"} {
+				invalid, err := shuttle.FromJSON([]byte(`{"` + keyword + `":[{"type":"object"}]}`))
+				if err != nil {
+					t.Fatal(err)
+				}
+				invalidTools := []shuttle.Tool{&mockTool{name: "ambiguous", schema: invalid}}
+				if mode == "stream" {
+					_, err = client.ChatStream(context.Background(), messages, invalidTools, nil)
+				} else {
+					_, err = client.Chat(context.Background(), messages, invalidTools)
+				}
+				if err == nil || !strings.Contains(err.Error(), `tool "ambiguous" schema:`) || !strings.Contains(err.Error(), "root "+keyword) {
+					t.Fatalf("expected an explicit schema error, got %v", err)
+				}
+				if len(captured) != 0 {
+					t.Fatal("unsupported schema made an HTTP request")
+				}
+			}
+		})
 	}
 }
 
