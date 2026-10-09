@@ -2008,16 +2008,8 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// route in. A message that names no known command is left alone.
 	a.loadSkillFromSlashCommand(ctx, session, userMessage)
 
-	// Fire graph memory extraction on the incoming user message immediately,
-	// in parallel with the LLM processing it. The user message is where the
-	// information lives — extract entities/facts before the response comes back.
-	if a.enableGraphMemoryExtraction {
-		a.graphExtractionWG.Add(1)
-		go func() {
-			defer a.graphExtractionWG.Done()
-			a.extractGraphMemoryAsync(ctx, sessionID)
-		}()
-	}
+	// Graph memory extraction of this message starts in runConversationLoop,
+	// after recall, so the turn's own facts are never recalled as past memory.
 
 	// Store progressCallback in context so nested operations (tools, backends) can access it.
 	// This enables sub-agent progress reporting (e.g., weaver's sub-agents).
@@ -2536,6 +2528,18 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	// the turn carrying the human-approved action with no recall at all.
 	if !isResumedTurn(ctx) || !hasGraphMemoryContext(session) {
 		a.injectGraphMemoryContext(ctx, session)
+	}
+
+	// Extract the incoming user message only after recall, in parallel with the LLM
+	// call. A resume has no new user message, so it must not extract again.
+	// WithoutCancel: the turn may return before extraction ends; its own timeout bounds it.
+	if a.enableGraphMemoryExtraction && !isResumedTurn(ctx) {
+		extractCtx := context.WithoutCancel(ctx)
+		a.graphExtractionWG.Add(1)
+		go func() {
+			defer a.graphExtractionWG.Done()
+			a.extractGraphMemoryAsync(extractCtx, session.ID)
+		}()
 	}
 
 	// Conversation loop
