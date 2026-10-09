@@ -1437,6 +1437,7 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 
 			// Include tool lifecycle fields if present
 			applyToolLifecycleFields(protoProgress, event)
+			applyToolInputStreamFields(protoProgress, event)
 
 			// Send to client
 			if err := stream.Send(protoProgress); err != nil {

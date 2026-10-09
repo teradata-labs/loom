@@ -10285,11 +10285,20 @@
         },
         "toolCallId": {
           "type": "string",
-          "title": "Unique identifier correlating started/completed events for the same tool call"
+          "description": "Unique identifier correlating started/completed events for the same tool\ncall; also set on is_tool_input_stream events so they match the later\nstarted event."
         },
         "contextState": {
           "$ref": "#/definitions/v1ContextState",
           "title": "Context window state (included in completion event)"
+        },
+        "isToolInputStream": {
+          "type": "boolean",
+          "description": "True while the model is still writing a tool call's arguments. Carries no\nargument content; tool_name, tool_call_id and tool_input_bytes identify the\ncall when the provider reports them."
+        },
+        "toolInputBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Bytes of tool-call argument JSON received so far (when is_tool_input_stream).\nEvents are throttled, so the last value can lag the final size."
         }
       },
       "description": "WeaveProgress streams incremental updates during execution."

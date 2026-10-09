@@ -866,11 +866,22 @@ message WeaveProgress {
   // Tool execution duration in milliseconds (when is_tool_completed)
   int64 tool_duration_ms = 19;
 
-  // Unique identifier correlating started/completed events for the same tool call
+  // Unique identifier correlating started/completed events for the same tool
+  // call; also set on is_tool_input_stream events so they match the later
+  // started event.
   string tool_call_id = 20;
 
   // Context window state (included in completion event)
   ContextState context_state = 21;
+
+  // True while the model is still writing a tool call's arguments. Carries no
+  // argument content; tool_name, tool_call_id and tool_input_bytes identify the
+  // call when the provider reports them.
+  bool is_tool_input_stream = 22;
+
+  // Bytes of tool-call argument JSON received so far (when is_tool_input_stream).
+  // Events are throttled, so the last value can lag the final size.
+  int64 tool_input_bytes = 23;
 }
 
 // HITLRequestInfo carries information about a human-in-the-loop request.

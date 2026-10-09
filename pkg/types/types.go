@@ -532,7 +532,8 @@ type ProgressEvent struct {
 	IsToolInputStream bool
 
 	// ToolInputBytes is the length of the tool-call argument JSON received so
-	// far; set only on IsToolInputStream events.
+	// far; set only on IsToolInputStream events. Events are throttled, so the
+	// last value a consumer sees can lag the final size until tool-started.
 	ToolInputBytes int64
 
 	// TokenCount is the running count of tokens received
