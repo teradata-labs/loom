@@ -36,3 +36,41 @@ func NotifyStreamActivity(ctx context.Context) bool {
 	fn()
 	return true
 }
+
+// ToolInputProgress describes a tool call whose arguments are still streaming.
+// Providers report it alongside NotifyStreamActivity so consumers can show the
+// call (by name) before its arguments are complete.
+type ToolInputProgress struct {
+	// Index is the call's position within the response, stable for the stream.
+	Index int
+	// ToolCallID and ToolName stay empty until the provider has sent them;
+	// some proxies send arguments first.
+	ToolCallID string
+	ToolName   string
+	// Bytes is the length of the argument JSON received so far for this call.
+	Bytes int
+}
+
+type toolInputProgressKey struct{}
+
+// WithToolInputProgress returns a context carrying fn, which streaming
+// providers invoke (via NotifyToolInputProgress) for every tool-input delta.
+// Like the stream-activity hook it runs inline on the goroutine reading the
+// stream, so fn must be cheap and non-blocking.
+func WithToolInputProgress(ctx context.Context, fn func(ToolInputProgress)) context.Context {
+	if fn == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, toolInputProgressKey{}, fn)
+}
+
+// NotifyToolInputProgress invokes the hook registered with
+// WithToolInputProgress, if any, and reports whether one was present.
+func NotifyToolInputProgress(ctx context.Context, p ToolInputProgress) bool {
+	fn, ok := ctx.Value(toolInputProgressKey{}).(func(ToolInputProgress))
+	if !ok || fn == nil {
+		return false
+	}
+	fn(p)
+	return true
+}

@@ -23,9 +23,14 @@ type HealthChecker = types.HealthChecker
 type TokenCallback = types.TokenCallback
 type StreamingLLMProvider = types.StreamingLLMProvider
 
+// ToolInputProgress describes a tool call whose arguments are still streaming.
+type ToolInputProgress = types.ToolInputProgress
+
 // Stream-activity hook for deltas that never reach TokenCallback (tool-input
 // JSON). See types.WithStreamActivity.
 var (
-	WithStreamActivity   = types.WithStreamActivity
-	NotifyStreamActivity = types.NotifyStreamActivity
+	WithStreamActivity      = types.WithStreamActivity
+	NotifyStreamActivity    = types.NotifyStreamActivity
+	WithToolInputProgress   = types.WithToolInputProgress
+	NotifyToolInputProgress = types.NotifyToolInputProgress
 )

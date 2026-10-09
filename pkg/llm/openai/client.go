@@ -1077,7 +1077,6 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			// Extract tool call deltas. They never reach tokenCallback (text
 			// only), so report them as stream activity.
 			if len(choice.Delta.ToolCalls) > 0 {
-				llmtypes.NotifyStreamActivity(ctx)
 				for _, tcDelta := range choice.Delta.ToolCalls {
 					idx := tcDelta.Index
 					if _, exists := toolCallMap[idx]; !exists {
@@ -1105,7 +1104,15 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 							tc.Input["_args"] = tcDelta.Function.Arguments
 						}
 					}
+					argsSoFar, _ := tc.Input["_args"].(string)
+					llmtypes.NotifyToolInputProgress(ctx, llmtypes.ToolInputProgress{
+						Index:      idx,
+						ToolCallID: tc.ID,
+						ToolName:   tc.Name,
+						Bytes:      len(argsSoFar),
+					})
 				}
+				llmtypes.NotifyStreamActivity(ctx)
 			}
 
 			// Extract finish reason
