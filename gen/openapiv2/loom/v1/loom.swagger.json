@@ -10298,7 +10298,7 @@
         "toolInputBytes": {
           "type": "string",
           "format": "int64",
-          "description": "Bytes of tool-call argument JSON received so far (when is_tool_input_stream).\nEvents are throttled, so the last value can lag the final size."
+          "description": "Bytes of tool-call argument JSON received so far (when is_tool_input_stream).\nEvents are throttled, so the last value can lag the final size. A bare pulse\nfrom a provider that does not report sizes has no tool_call_id or tool_name\nand a size of 0; with either set, 0 means no arguments have arrived yet."
         }
       },
       "description": "WeaveProgress streams incremental updates during execution."

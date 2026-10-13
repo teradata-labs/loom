@@ -880,7 +880,9 @@ message WeaveProgress {
   bool is_tool_input_stream = 22;
 
   // Bytes of tool-call argument JSON received so far (when is_tool_input_stream).
-  // Events are throttled, so the last value can lag the final size.
+  // Events are throttled, so the last value can lag the final size. A bare pulse
+  // from a provider that does not report sizes has no tool_call_id or tool_name
+  // and a size of 0; with either set, 0 means no arguments have arrived yet.
   int64 tool_input_bytes = 23;
 }
 

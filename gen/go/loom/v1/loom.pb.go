@@ -639,7 +639,9 @@ type WeaveProgress struct {
 	// call when the provider reports them.
 	IsToolInputStream bool `protobuf:"varint,22,opt,name=is_tool_input_stream,json=isToolInputStream,proto3" json:"is_tool_input_stream,omitempty"`
 	// Bytes of tool-call argument JSON received so far (when is_tool_input_stream).
-	// Events are throttled, so the last value can lag the final size.
+	// Events are throttled, so the last value can lag the final size. A bare pulse
+	// from a provider that does not report sizes has no tool_call_id or tool_name
+	// and a size of 0; with either set, 0 means no arguments have arrived yet.
 	ToolInputBytes int64 `protobuf:"varint,23,opt,name=tool_input_bytes,json=toolInputBytes,proto3" json:"tool_input_bytes,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
