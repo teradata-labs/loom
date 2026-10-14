@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -402,7 +403,12 @@ func TestPipeline_PartialResultsCostAndDuration(t *testing.T) {
 		},
 	})
 
-	ag := createMockAgent(t, "cost-agent", newMockLLMProvider("output"))
+	// The mock LLM answers in well under a millisecond, and DurationMs has
+	// millisecond resolution, so an instant stage legitimately reports 0. The
+	// stage takes a few milliseconds here so the assertion below tests that the
+	// duration is carried, not how fast the machine is (without -race it failed
+	// 4 runs in 5).
+	ag := createMockAgent(t, "cost-agent", slowLLM{newMockLLMProvider("output"), 5 * time.Millisecond})
 	orch.RegisterAgent("cost-agent", ag)
 
 	pattern := &loomv1.WorkflowPattern{
@@ -485,4 +491,15 @@ func TestPipeline_PartialResultsMessageFormat(t *testing.T) {
 	require.Equal(t, 2, len(pipelineEvents))
 	assert.Equal(t, "Stage 1 of 2 completed", pipelineEvents[0].Message)
 	assert.Equal(t, "Stage 2 of 2 completed", pipelineEvents[1].Message)
+}
+
+// slowLLM delays every Chat call, so a stage takes measurable time.
+type slowLLM struct {
+	*mockLLMProvider
+	delay time.Duration
+}
+
+func (s slowLLM) Chat(ctx context.Context, messages []llmtypes.Message, tools []shuttle.Tool) (*llmtypes.LLMResponse, error) {
+	time.Sleep(s.delay)
+	return s.mockLLMProvider.Chat(ctx, messages, tools)
 }
