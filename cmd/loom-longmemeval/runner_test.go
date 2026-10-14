@@ -195,6 +195,8 @@ type fakeLoomClient struct {
 	mu                 sync.Mutex
 	weaveReqs          []*loomv1.WeaveRequest
 	weaveErr           error
+	createSessionErr   error
+	createAgentErr     error
 	deleteAgentCtxErrs []error
 
 	// ignoreReplay simulates a server that predates replay_assistant_message
@@ -205,6 +207,9 @@ type fakeLoomClient struct {
 }
 
 func (f *fakeLoomClient) CreateSession(_ context.Context, _ *loomv1.CreateSessionRequest, _ ...grpc.CallOption) (*loomv1.Session, error) {
+	if f.createSessionErr != nil {
+		return nil, f.createSessionErr
+	}
 	return &loomv1.Session{Id: "sess-fake"}, nil
 }
 
@@ -213,6 +218,9 @@ func (f *fakeLoomClient) DeleteSession(_ context.Context, _ *loomv1.DeleteSessio
 }
 
 func (f *fakeLoomClient) CreateAgentFromConfig(_ context.Context, _ *loomv1.CreateAgentRequest, _ ...grpc.CallOption) (*loomv1.AgentInfo, error) {
+	if f.createAgentErr != nil {
+		return nil, f.createAgentErr
+	}
 	return &loomv1.AgentInfo{Id: "agent-fake"}, nil
 }
 

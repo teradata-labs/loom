@@ -100,8 +100,11 @@ type EntryResult struct {
 	Sessions     int           `json:"sessions_ingested"`
 	Error        string        `json:"error,omitempty"`
 
-	// grpcCode carries the gRPC status code of a failed Weave call so the
-	// runner can decide whether to abort the whole run. Unexported — never
+	// grpcCode carries the gRPC status code of the failed RPC (Weave,
+	// CreateSession, CreateAgentFromConfig) so the runner can decide whether
+	// to abort the whole run and the CLI can tell a transient outage from a
+	// deterministic failure (classifyOutcome). codes.OK on an entry with an
+	// Error means the failure did not come from an RPC. Unexported — never
 	// serialized to results.
 	grpcCode codes.Code
 
@@ -317,6 +320,7 @@ func (r *Runner) runEntry(ctx context.Context, entry Entry) EntryResult {
 		id, err := r.createTempAgent(ctx, entry.QuestionID)
 		if err != nil {
 			result.Error = fmt.Sprintf("create temp agent: %v", err)
+			result.grpcCode = status.Code(err)
 			result.Duration = time.Since(start)
 			return result
 		}
@@ -511,6 +515,7 @@ func (r *Runner) runIngestWith(ctx context.Context, entry Entry, sessions []Sess
 	sessionID, err := r.createSession(ctx, fmt.Sprintf("lme-%s", entry.QuestionID), agentID)
 	if err != nil {
 		result.Error = fmt.Sprintf("create session: %v", err)
+		result.grpcCode = status.Code(err)
 		return result
 	}
 
@@ -561,6 +566,7 @@ func (r *Runner) runMultiSessionWith(ctx context.Context, entry Entry, sessions 
 		sessionID, err := r.createSession(ctx, sessName, agentID)
 		if err != nil {
 			result.Error = fmt.Sprintf("create session %d: %v", i, err)
+			result.grpcCode = status.Code(err)
 			return result
 		}
 
@@ -586,6 +592,7 @@ func (r *Runner) runMultiSessionWith(ctx context.Context, entry Entry, sessions 
 	questionSessionID, err := r.createSession(ctx, fmt.Sprintf("lme-%s-q", entry.QuestionID), agentID)
 	if err != nil {
 		result.Error = fmt.Sprintf("create question session: %v", err)
+		result.grpcCode = status.Code(err)
 		return result
 	}
 
@@ -613,6 +620,7 @@ func (r *Runner) runContextStuffingWith(ctx context.Context, entry Entry, sessio
 	sessionID, err := r.createSession(ctx, fmt.Sprintf("lme-%s-cs", entry.QuestionID), agentID)
 	if err != nil {
 		result.Error = fmt.Sprintf("create session: %v", err)
+		result.grpcCode = status.Code(err)
 		return result
 	}
 	defer r.deleteSession(ctx, sessionID)

@@ -117,6 +117,12 @@ Judge-Scored Results:
 
 Files are downloaded to `./data/longmemeval/` by default and are in `.gitignore`.
 
+`download` skips a dataset file that already exists. Each file is written to
+`<name>.tmp` and renamed into place only after the whole body arrived, so an
+interrupted download leaves nothing behind and the next `download` fetches it
+again. (A truncated file written by a build older than this change is not
+detected — delete it by hand.)
+
 ### Run the Benchmark
 
 Run every question in the oracle set (500 total):
@@ -138,6 +144,33 @@ Run a specific question range (offset + limit):
   --output /tmp/range.jsonl \
   --detailed /tmp/range.json
 ```
+
+Exit status of `run` (results files are written in every case that gets as
+far as running entries):
+
+| Status | Meaning |
+|--------|---------|
+| 0 | Run finished. Entries may still have failed — check the `error` fields in `--detailed`. A user interrupt (Ctrl-C) also exits 0 unless rule 75 applies. |
+| 1 | Could not start (bad flags, dataset missing, server health check failed) or aborted (the server rejects `occurred_at`). |
+| 75 | Run finished and at least one entry failed, but **every** failure carries a retryable gRPC status (`Unavailable`, `DeadlineExceeded`, `ResourceExhausted`). Retry the same range. |
+
+A provider throttle or outage that outlasts the server's own LLM retries comes
+back with a retryable status, so it counts toward 75: a throttle is
+`ResourceExhausted`; a temporary provider server fault (HTTP 500, 502, 503,
+504 or 529, Bedrock `InternalServerException`/`ServiceUnavailableException`/
+`ModelNotReadyException`, or an `overloaded_error` from the Anthropic SDK that
+the Bedrock client uses for Claude) is `Unavailable`. A
+deterministic provider refusal (a validation error or any other 4xx) is
+`Internal` and is an ordinary entry failure (exit 0).
+
+Limitation: the server only recognises a 5xx that the provider client typed.
+Both Bedrock clients do (AWS SDK and Anthropic SDK errors carry the status).
+The direct HTTP clients (Anthropic API, OpenAI, Azure OpenAI, Gemini, Ollama)
+currently report a 5xx as a plain `API error (status 503)` message, which the
+server does not parse, so against those providers a 5xx outage still comes
+back as `Internal` (exit 0). Throttling is recognised for every provider:
+the HTTP clients type a 429, and the SDK clients' throttling errors carry the
+status or a recognisable message.
 
 ### Score Results
 
@@ -188,6 +221,15 @@ Question Types:
 
 Total sessions: 948 (avg 1.9/entry)
 Total turns:    10960 (avg 11.6/session)
+```
+
+`--json` emits the same statistics machine-readably (`entries`,
+`question_types` as an ordered `{type, count}` array, `total_sessions`,
+`total_turns`). The AKS slice loop uses it to derive its per-type chunk counts
+from the dataset instead of hardcoding them:
+
+```bash
+./bin/loom-longmemeval info --json | jq -r '.question_types[] | [.type, .count] | @tsv'
 ```
 
 ## Run Modes
