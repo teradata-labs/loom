@@ -497,6 +497,42 @@ func TestClient_CalculateCost_ModelPricing(t *testing.T) {
 			outputTokens: tokens,
 			wantCost:     18.0, // $3 + $15
 		},
+		// --- Claude 5 family ---
+		{
+			name:         "fable 5 cross-region",
+			modelID:      "us.anthropic.claude-fable-5",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     60.0, // $10 + $50
+		},
+		{
+			name:         "fable 5.1 uncataloged profile",
+			modelID:      "global.anthropic.claude-fable-5-1",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     60.0, // $10 + $50 via the family fallback
+		},
+		{
+			name:         "opus 5.5 must not match opus 5",
+			modelID:      "us.anthropic.claude-opus-5-5",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     24.0, // $4 + $20
+		},
+		{
+			name:         "opus 5 cross-region",
+			modelID:      "us.anthropic.claude-opus-5",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     30.0, // $5 + $25
+		},
+		{
+			name:         "sonnet 5 global",
+			modelID:      "global.anthropic.claude-sonnet-5",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     12.0, // $2 + $10
+		},
 		// --- Unknown model falls back to Sonnet ---
 		{
 			name:         "unknown model defaults to sonnet pricing",
@@ -531,6 +567,27 @@ func TestSDKClient_CalculateCost_ModelPricing(t *testing.T) {
 		cacheCreationTokens int
 		wantCost            float64
 	}{
+		// --- Claude 5 family (this client used to skip the catalog) ---
+		{
+			name:         "sonnet 5 no cache",
+			modelID:      "us.anthropic.claude-sonnet-5",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     12.0, // $2 + $10
+		},
+		{
+			name:         "opus 5.5 no cache",
+			modelID:      "us.anthropic.claude-opus-5-5",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     24.0, // $4 + $20
+		},
+		{
+			name:            "fable 5 cache read",
+			modelID:         "us.anthropic.claude-fable-5",
+			cacheReadTokens: tokens,
+			wantCost:        1.0, // $10 * 0.10
+		},
 		// --- Opus 4.1 (most expensive) ---
 		{
 			name:         "opus 4.1 no cache",

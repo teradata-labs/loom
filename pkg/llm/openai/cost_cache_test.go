@@ -42,6 +42,10 @@ func TestGatewayProxiedClaudeIsNotPricedAsGPT(t *testing.T) {
 		{"coding-agent/claude-haiku-4-5", 1.0, 5.0},
 		{"claude-opus-4-1", 15.0, 75.0},
 		{"anything/claude-opus-4-6", 5.0, 25.0},
+		{"coding-agent/claude-fable-5-1", 10.0, 50.0}, // was priced as gpt-4o
+		{"coding-agent/claude-opus-5-5", 4.0, 20.0},
+		{"coding-agent/claude-opus-5", 5.0, 25.0},
+		{"coding-agent/claude-sonnet-5", 2.0, 10.0},
 	} {
 		in, out, matched := anthropicFallbackPricing(tc.id)
 		if !matched || in != tc.in || out != tc.out {
@@ -50,6 +54,19 @@ func TestGatewayProxiedClaudeIsNotPricedAsGPT(t *testing.T) {
 	}
 	if _, _, matched := anthropicFallbackPricing("gpt-4o"); matched {
 		t.Fatal("gpt-4o must not match the Anthropic family")
+	}
+}
+
+// A gateway-proxied Fable takes Anthropic's cache multipliers, not OpenAI's:
+// before the shared matcher it was not recognised as Claude at all, so it was
+// priced at gpt-4o rates with the 0.5x OpenAI cache-read discount.
+func TestGatewayProxiedFableUsesAnthropicRatesAndCacheTiers(t *testing.T) {
+	c := &Client{model: "coding-agent/claude-fable-5-1"}
+	const promptTokens, cacheRead, output = 1_000_000, 800_000, 10_000
+	got := c.calculateCost(promptTokens, output, cacheRead, 0)
+	want := (200_000*10.0 + 800_000*10.0*0.10 + output*50.0) / 1e6
+	if math.Abs(got-want) > 1e-9 {
+		t.Fatalf("fable cost = %.6f, want %.6f", got, want)
 	}
 }
 

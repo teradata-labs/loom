@@ -796,35 +796,15 @@ func (c *Client) convertResponse(resp *bedrockResponse) *llmtypes.LLMResponse {
 // the three buckets are additive (unlike the OpenAI-compatible shape, where
 // prompt_tokens includes them). Mirrors SDKClient.calculateCost.
 func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int) float64 {
-	// The catalog (pkg/llm/catalog) is the source of truth for pricing. Fall back
-	// to substring matching only for model ids it does not list.
-	// IMPORTANT: in the fallback, check "opus-4-1" BEFORE "opus-4" because
-	// strings.Contains("opus-4-5", "opus-4") is true. Opus 4.1 is the expensive
-	// model ($15/$75); Opus 4.5/4.6 are cheaper ($5/$25).
+	// The catalog (pkg/llm/catalog) is the source of truth; catalog.ClaudeFamilyPricing
+	// prices any Claude profile id it does not list, and anything unrecognised
+	// gets the Sonnet 4 rate.
 	inputPricePerMillion, outputPricePerMillion, ok := catalog.LookupPricing("bedrock", c.modelID)
 	if !ok {
-		switch {
-		case strings.Contains(c.modelID, "claude-opus-4-1"):
-			// Claude Opus 4.1: $15 per 1M input, $75 per 1M output
-			inputPricePerMillion = 15.0
-			outputPricePerMillion = 75.0
-		case strings.Contains(c.modelID, "claude-opus-4"):
-			// Claude Opus 4.5/4.6: $5 per 1M input, $25 per 1M output
-			inputPricePerMillion = 5.0
-			outputPricePerMillion = 25.0
-		case strings.Contains(c.modelID, "claude-haiku-4"):
-			// Claude Haiku 4: $1 per 1M input, $5 per 1M output
-			inputPricePerMillion = 1.0
-			outputPricePerMillion = 5.0
-		case strings.Contains(c.modelID, "claude-sonnet-4"):
-			// Claude Sonnet 4: $3 per 1M input, $15 per 1M output
-			inputPricePerMillion = 3.0
-			outputPricePerMillion = 15.0
-		default:
-			// Default to Sonnet pricing for unknown models
-			inputPricePerMillion = 3.0
-			outputPricePerMillion = 15.0
-		}
+		inputPricePerMillion, outputPricePerMillion, ok = catalog.ClaudeFamilyPricing(c.modelID)
+	}
+	if !ok {
+		inputPricePerMillion, outputPricePerMillion = 3.0, 15.0
 	}
 
 	inputCost := float64(inputTokens) * inputPricePerMillion / 1_000_000
