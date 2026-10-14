@@ -241,7 +241,11 @@ func (c *SDKClient) Chat(ctx context.Context, messages []llmtypes.Message, tools
 	var toolNameMap map[string]string
 	if len(tools) > 0 {
 		var sdkTools []anthropic.ToolParam
-		sdkTools, toolNameMap = c.convertToolsToSDK(tools)
+		var conversionErr error
+		sdkTools, toolNameMap, conversionErr = c.convertToolsToSDK(tools)
+		if conversionErr != nil {
+			return nil, conversionErr
+		}
 		// Mark the last tool with cache_control so the entire tool list is cached
 		if len(sdkTools) > 0 {
 			sdkTools[len(sdkTools)-1].CacheControl = anthropic.NewCacheControlEphemeralParam()
@@ -435,7 +439,7 @@ func appendUserOrCoalesceSDK(msgs []anthropic.MessageParam, blocks []anthropic.C
 // convertToolsToSDK converts tools to SDK format and returns this request's
 // sanitized→original tool-name mapping alongside them. The mapping is returned
 // rather than stored on the client so concurrent requests stay independent.
-func (c *SDKClient) convertToolsToSDK(tools []shuttle.Tool) ([]anthropic.ToolParam, map[string]string) {
+func (c *SDKClient) convertToolsToSDK(tools []shuttle.Tool) ([]anthropic.ToolParam, map[string]string, error) {
 	var sdkTools []anthropic.ToolParam
 	toolNameMap := make(map[string]string, len(tools))
 
@@ -452,21 +456,25 @@ func (c *SDKClient) convertToolsToSDK(tools []shuttle.Tool) ([]anthropic.ToolPar
 		schema := tool.InputSchema()
 		if schema != nil {
 			// Marshal and unmarshal to get proper anthropic.ToolInputSchemaParam
-			schemaMap := map[string]interface{}{
-				"type":       schema.Type,
-				"properties": schema.Properties,
-				"required":   schema.Required,
+			schemaMap, err := llm.NormalizeObjectToolSchema(schema)
+			if err != nil {
+				return nil, nil, fmt.Errorf("tool %q schema: %w", originalName, err)
 			}
-			schemaJSON, _ := json.Marshal(schemaMap)
+			schemaJSON, err := json.Marshal(schemaMap)
+			if err != nil {
+				return nil, nil, fmt.Errorf("tool %q schema encoding: %w", originalName, err)
+			}
 			var inputSchema anthropic.ToolInputSchemaParam
-			_ = json.Unmarshal(schemaJSON, &inputSchema)
+			if err := json.Unmarshal(schemaJSON, &inputSchema); err != nil {
+				return nil, nil, fmt.Errorf("tool %q SDK schema: %w", originalName, err)
+			}
 			sdkTool.InputSchema = inputSchema
 		}
 
 		sdkTools = append(sdkTools, sdkTool)
 	}
 
-	return sdkTools, toolNameMap
+	return sdkTools, toolNameMap, nil
 }
 
 // convertResponseFromSDK converts Anthropic SDK response to agent format.
@@ -587,7 +595,11 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	var toolNameMap map[string]string
 	if len(tools) > 0 {
 		var sdkTools []anthropic.ToolParam
-		sdkTools, toolNameMap = c.convertToolsToSDK(tools)
+		var conversionErr error
+		sdkTools, toolNameMap, conversionErr = c.convertToolsToSDK(tools)
+		if conversionErr != nil {
+			return nil, conversionErr
+		}
 		// Mark the last tool with cache_control so the entire tool list is cached
 		if len(sdkTools) > 0 {
 			sdkTools[len(sdkTools)-1].CacheControl = anthropic.NewCacheControlEphemeralParam()

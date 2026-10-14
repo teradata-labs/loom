@@ -20,6 +20,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -29,6 +30,7 @@ import (
 	"github.com/stretchr/testify/require"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"github.com/xeipuuv/gojsonschema"
 )
 
 // sdkTestServer captures whether each request asked for streaming and serves
@@ -188,11 +190,13 @@ func TestSDKClient_ToolNameMap_RequestLocal(t *testing.T) {
 	c := &SDKClient{modelID: "us.anthropic.claude-sonnet-4-5-20250929-v1:0", maxTokens: 1024}
 
 	// Request A: tool with a colon-namespaced name.
-	_, mapA := c.convertToolsToSDK([]shuttle.Tool{&mockTool{name: "server:read"}})
+	_, mapA, err := c.convertToolsToSDK([]shuttle.Tool{&mockTool{name: "server:read"}})
+	require.NoError(t, err)
 	require.Equal(t, "server:read", mapA["server_read"])
 
 	// Request B converts before A's response arrives, with a colliding name.
-	_, mapB := c.convertToolsToSDK([]shuttle.Tool{&mockTool{name: "server_read"}})
+	_, mapB, err := c.convertToolsToSDK([]shuttle.Tool{&mockTool{name: "server_read"}})
+	require.NoError(t, err)
 	require.Equal(t, "server_read", mapB["server_read"])
 
 	msg := toolUseMessage(t, "server_read")
@@ -211,6 +215,91 @@ func TestSDKClient_ToolNameMap_RequestLocal(t *testing.T) {
 	respNil := c.convertResponseFromSDK(msg, nil)
 	require.Len(t, respNil.ToolCalls, 1)
 	assert.Equal(t, "server_read", respNil.ToolCalls[0].Name)
+}
+
+func TestSDKClient_ToolSchemaRequest(t *testing.T) {
+	const schemaJSON = `{"type":"object","description":"Task input","required":["tasks"],"allOf":[{"type":"object","properties":{},"not":{"required":["forbidden"]}}],"properties":{
+		"tasks":{"type":"array","description":"Tasks","items":{"type":"object","description":"A task","required":["idx","subject"],"properties":{
+			"idx":{"type":"integer","description":"Task number","minimum":1},
+			"subject":{"type":"string","description":"Title","maxLength":80},
+			"nullable":{"anyOf":[{"type":"integer"},{"type":"null"}]}
+		}}}
+	}}`
+	for _, mode := range []string{"chat", "stream"} {
+		t.Run(mode, func(t *testing.T) {
+			captured := make(chan map[string]interface{}, 1)
+			responses := &sdkTestServer{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Error(err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				var request map[string]interface{}
+				if err := json.Unmarshal(body, &request); err != nil {
+					t.Error(err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				captured <- request
+				r.Body = io.NopCloser(strings.NewReader(string(body)))
+				responses.handler(w, r)
+			}))
+			defer server.Close()
+			schema, err := shuttle.FromJSON([]byte(schemaJSON))
+			require.NoError(t, err)
+			client := &SDKClient{
+				client:  anthropic.NewClient(option.WithBaseURL(server.URL), option.WithAPIKey("test-key")),
+				modelID: DefaultBedrockModelID, maxTokens: 1024, temperature: 1.0,
+			}
+			tools := []shuttle.Tool{
+				&mockTool{name: "create_tasks", schema: schema},
+				&mockTool{name: "no_arguments", schema: &shuttle.JSONSchema{}},
+				&mockTool{name: "description_only", schema: &shuttle.JSONSchema{Description: "No arguments"}},
+			}
+			messages := []llmtypes.Message{{Role: "user", Content: "Create tasks"}}
+			if mode == "stream" {
+				_, err = client.ChatStream(context.Background(), messages, tools, nil)
+			} else {
+				_, err = client.Chat(context.Background(), messages, tools)
+			}
+			require.NoError(t, err)
+			requestTools := (<-captured)["tools"].([]interface{})
+			require.Len(t, requestTools, 3)
+			var expected map[string]interface{}
+			require.NoError(t, json.Unmarshal([]byte(schemaJSON), &expected))
+			expected["not"] = expected["allOf"].([]interface{})[0].(map[string]interface{})["not"]
+			delete(expected, "allOf")
+			assert.Equal(t, expected, requestTools[0].(map[string]interface{})["input_schema"])
+			for _, forbidden := range []bool{false, true} {
+				sample := map[string]interface{}{"tasks": []interface{}{}}
+				if forbidden {
+					sample["forbidden"] = true
+				}
+				validation, err := gojsonschema.Validate(gojsonschema.NewGoLoader(requestTools[0].(map[string]interface{})["input_schema"]), gojsonschema.NewGoLoader(sample))
+				require.NoError(t, err)
+				assert.Equal(t, !forbidden, validation.Valid(), "outgoing schema lost its prohibition for %v", sample)
+			}
+			assert.Equal(t, map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}, requestTools[1].(map[string]interface{})["input_schema"])
+			assert.Equal(t, map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "description": "No arguments"}, requestTools[2].(map[string]interface{})["input_schema"])
+			assert.Empty(t, tools[1].InputSchema().Type)
+			assert.Empty(t, tools[2].InputSchema().Type)
+			for _, keyword := range []string{"anyOf", "oneOf"} {
+				invalid, err := shuttle.FromJSON([]byte(`{"` + keyword + `":[{"type":"object"}]}`))
+				require.NoError(t, err)
+				invalidTools := []shuttle.Tool{&mockTool{name: "ambiguous", schema: invalid}}
+				if mode == "stream" {
+					_, err = client.ChatStream(context.Background(), messages, invalidTools, nil)
+				} else {
+					_, err = client.Chat(context.Background(), messages, invalidTools)
+				}
+				require.ErrorContains(t, err, `tool "ambiguous" schema:`)
+				require.ErrorContains(t, err, "root "+keyword)
+				assert.Empty(t, captured, "unsupported schema made an HTTP request")
+			}
+		})
+	}
 }
 
 func TestSDKClient_ChatStream_ToolNameMapRequestLocal(t *testing.T) {

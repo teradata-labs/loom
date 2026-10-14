@@ -16,6 +16,7 @@ package shuttle
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 )
 
@@ -181,6 +182,173 @@ func TestJSONSchema_ToJSON(t *testing.T) {
 
 	if result["type"] != "object" {
 		t.Error("Expected type 'object' in JSON")
+	}
+}
+
+func TestJSONSchema_ToMap(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name: "nested keywords",
+			input: `{"type":"object","description":"Task input","required":["tasks"],"properties":{
+				"tasks":{"type":"array","description":"Tasks to create","items":{
+					"type":"object","description":"A task","required":["idx","subject","details"],"properties":{
+						"idx":{"type":"integer","description":"1-based task number","minimum":0,"maximum":100},
+						"subject":{"type":"string","description":"Short task title","minLength":0,"maxLength":80,"pattern":"^[A-Z]","format":"text","enum":["Task"],"default":"Task"},
+						"details":{"type":"object","required":["active"],"properties":{"active":{"type":"boolean","default":false}}},
+						"empty":{"type":"object","properties":{}},
+						"matrix":{"type":"array","items":{"type":"array","items":{"type":"integer"}}},
+						"nullable":{"anyOf":[{"type":"integer"},{"type":"null"}]},
+						"choice":{"oneOf":[{"type":"string"},{"type":"number"}]},
+						"combined":{"allOf":[{"type":"string","minLength":1},{"not":{"type":"null"}}]},
+						"excluded":{"not":{"type":"string"}},
+						"explicit":{"type":"integer","anyOf":[{"type":"integer","minimum":1}]}
+					}
+				}}
+			}}`,
+		},
+		{name: "empty object", input: `{"type":"object"}`, want: `{"type":"object","properties":{}}`},
+		{name: "infer object", input: `{"properties":{"name":{"description":"Name"}}}`, want: `{"type":"object","properties":{"name":{"type":"string","description":"Name"}}}`},
+		{name: "infer empty object", input: `{"properties":{}}`, want: `{"type":"object","properties":{}}`},
+		{name: "infer array", input: `{"items":{"items":{"type":"integer"}}}`, want: `{"type":"array","items":{"type":"array","items":{"type":"integer"}}}`},
+		{name: "infer string", input: `{}`, want: `{"type":"string"}`},
+		{name: "constraint-only composite", input: `{"type":"integer","allOf":[{"minimum":1}]}`},
+		{name: "unconstrained alternative", input: `{"anyOf":[{},{"type":"integer"}]}`},
+		{name: "constraint-only negation", input: `{"type":"integer","not":{"minimum":1}}`},
+		{name: "constraint-only property in composite", input: `{"type":"object","allOf":[{"properties":{"count":{"minimum":1}}}]}`, want: `{"type":"object","properties":{},"allOf":[{"properties":{"count":{"minimum":1}}}]}`},
+		{name: "composite with properties", input: `{"anyOf":[{"type":"null"}],"properties":{}}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			schema, err := FromJSON([]byte(test.input))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.want == "" {
+				test.want = test.input
+			}
+			var want interface{}
+			if err := json.Unmarshal([]byte(test.want), &want); err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(schema.ToMap())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got interface{}
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(want, got) {
+				t.Errorf("want %s, got %s", test.want, data)
+			}
+			parsed, err := FromJSON(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(schema.ToMap(), parsed.ToMap()) {
+				t.Error("schema changed after round-trip")
+			}
+		})
+	}
+	var schema *JSONSchema
+	if schema.ToMap() != nil {
+		t.Error("nil schema must serialize to nil")
+	}
+}
+
+func TestJSONSchema_MarshalJSONPreservesTypes(t *testing.T) {
+	tests := []struct {
+		name   string
+		schema *JSONSchema
+		want   string
+	}{
+		{name: "empty", schema: &JSONSchema{}, want: `{"type":""}`},
+		{name: "description only", schema: &JSONSchema{Description: "Any value"}, want: `{"type":"","description":"Any value"}`},
+		{name: "empty object", schema: &JSONSchema{Type: "object"}, want: `{"type":"object","properties":{}}`},
+		{
+			name: "untyped nested property",
+			schema: &JSONSchema{
+				Type: "object", Properties: map[string]*JSONSchema{"value": {}},
+			},
+			want: `{"type":"object","properties":{"value":{"type":""}}}`,
+		},
+		{
+			name: "untyped array item",
+			schema: &JSONSchema{
+				Type: "array", Items: &JSONSchema{},
+			},
+			want: `{"type":"array","items":{"type":""}}`,
+		},
+		{
+			name: "nullable composite",
+			schema: &JSONSchema{
+				AnyOf: []*JSONSchema{{Type: "integer"}, {Type: "null"}},
+			},
+			want: `{"type":"","anyOf":[{"type":"integer"},{"type":"null"}]}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			data, err := json.Marshal(test.schema)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got, want interface{}
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal([]byte(test.want), &want); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(want, got) {
+				t.Errorf("want %s, got %s", test.want, data)
+			}
+		})
+	}
+}
+
+func TestJSONSchema_ToMapDoesNotAliasSlices(t *testing.T) {
+	schema := &JSONSchema{Type: "object", Required: []string{"name"}, Enum: []interface{}{"value"}}
+	result := schema.ToMap()
+	result["required"].([]string)[0] = "changed"
+	result["enum"].([]interface{})[0] = "changed"
+	if schema.Required[0] != "name" || schema.Enum[0] != "value" {
+		t.Error("changing the returned slices mutated the schema")
+	}
+}
+
+func TestJSONSchema_ToToolMap(t *testing.T) {
+	for _, schema := range []*JSONSchema{
+		{},
+		{Description: "No arguments"},
+		{Properties: map[string]*JSONSchema{}},
+		{AnyOf: []*JSONSchema{{Type: "object"}}},
+		{OneOf: []*JSONSchema{{Type: "object"}}},
+		{AllOf: []*JSONSchema{{Type: "object"}}},
+		{Not: &JSONSchema{Type: "null"}},
+	} {
+		got := schema.ToToolMap()
+		if got["type"] != "object" {
+			t.Errorf("tool root must default to object, got %v", got)
+		}
+		properties, ok := got["properties"].(map[string]interface{})
+		if !ok || properties == nil || len(properties) != 0 {
+			t.Errorf("empty object must have empty properties, got %v", got)
+		}
+		if schema.Type != "" {
+			t.Error("serialization mutated the root schema type")
+		}
+		if schema.Description != "" && got["description"] != schema.Description {
+			t.Error("serialization dropped the root description")
+		}
+	}
+	var schema *JSONSchema
+	if schema.ToToolMap() != nil {
+		t.Error("nil tool schema must serialize to nil")
 	}
 }
 
