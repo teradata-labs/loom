@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/artifacts"
+	"github.com/teradata-labs/loom/pkg/decision"
 	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
 	"github.com/teradata-labs/loom/pkg/llm/azureopenai"
@@ -117,6 +118,11 @@ type Registry struct {
 	// tool surfacing — see suppressedBuiltinTools below. Protected by mu.
 	graphMemoryStore    memory.GraphMemoryStore
 	graphMemoryEmbedder memory.Embedder
+
+	// decisionShadowStore is the server-level store for typed-decision shadow
+	// rows (pkg/decision). Every agent built through buildAgent receives it
+	// with its DecisionConfig; nil means shadows are traced but not persisted.
+	decisionShadowStore decision.ShadowStore
 
 	// suppressedBuiltinTools is the server-level tool-surface policy. Each
 	// agent built through buildAgent receives WithoutBuiltinTool for every
@@ -279,6 +285,16 @@ func (r *Registry) SetGraphMemoryStore(store memory.GraphMemoryStore, embedder m
 	r.logger.Info("Graph memory store configured in registry",
 		zap.Bool("store_present", store != nil),
 		zap.Bool("embedder_present", embedder != nil))
+}
+
+// SetDecisionShadowStore configures the server-level decision shadow store.
+// Agents built afterwards persist their shadow comparisons to it.
+func (r *Registry) SetDecisionShadowStore(store decision.ShadowStore) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.decisionShadowStore = store
+	r.logger.Info("Decision shadow store configured in registry",
+		zap.Bool("store_present", store != nil))
 }
 
 // SetSuppressedBuiltinTools configures the server-level tool-surface policy.
@@ -587,6 +603,14 @@ func (r *Registry) CreateAgent(ctx context.Context, name string) (*Agent, error)
 
 // buildAgent creates an agent instance from proto configuration
 func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (*Agent, error) {
+	// Decision layer config is validated here as well as in
+	// ValidateAgentConfig: RegisterConfig accepts a config without
+	// validating it, and an agent-chosen decider endpoint must fail the
+	// build rather than be dropped quietly.
+	if err := decision.ValidateConfig(config.GetDecision()); err != nil {
+		return nil, fmt.Errorf("agent %q: %w", config.GetName(), err)
+	}
+
 	// Create LLM provider from config.
 	//
 	// AgentConfig.ActiveProvider is the named-pool selector for the primary
@@ -782,8 +806,13 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 	taskDec := r.taskDecomposer
 	gmStore := r.graphMemoryStore
 	gmEmbedder := r.graphMemoryEmbedder
+	shadowStore := r.decisionShadowStore
 	suppressedTools := append([]string(nil), r.suppressedBuiltinTools...)
 	r.mu.RUnlock()
+
+	// Decision layer: the agent resolves the configured decider against its
+	// own LLMs after options apply; nil config means off.
+	opts = append(opts, WithDecisionConfig(config.GetDecision(), shadowStore))
 	if taskMgr != nil {
 		tbCfg := config.GetMemory().GetTaskBoard()
 		if tbCfg == nil {
@@ -984,7 +1013,9 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 		// No backward compatibility: tool_search must be explicitly listed in config
 
 		if shouldRegisterToolSearch {
-			st := toolregistry.NewSearchTool(r.toolRegistry)
+			// The agent's own decision layer (if any) travels with its
+			// SearchTool; the shared tool registry holds no router.
+			st := toolregistry.NewSearchTool(r.toolRegistry, agent.SearchToolOptions()...)
 			// Hide tools the agent's permission policy would refuse, so the model
 			// never discovers (and then calls) a disabled tool via tool_search.
 			// Read lazily so it reflects the checker regardless of wiring order.
@@ -2268,6 +2299,25 @@ func (r *Registry) loadAgentsFromDB() error {
 // Close closes the registry and cleans up resources
 func (r *Registry) Close() error {
 	return errors.Join(r.watcher.Close(), r.db.Close())
+}
+
+// WaitDecisionShadows blocks until every registered agent's in-flight
+// decision shadow evaluations have been recorded. Shadows run in background
+// goroutines detached from the turn that produced them, so a short-lived
+// process (looms workflow run) calls this before exit or it loses the rows
+// its last turn produced. A long-lived server never needs to.
+func (r *Registry) WaitDecisionShadows() {
+	r.mu.RLock()
+	agents := make([]*Agent, 0, len(r.agents))
+	for _, a := range r.agents {
+		if a != nil {
+			agents = append(agents, a)
+		}
+	}
+	r.mu.RUnlock()
+	for _, a := range agents {
+		a.WaitDecisionShadows()
+	}
 }
 
 // DB returns the registry's underlying SQLite handle. Exported so peer

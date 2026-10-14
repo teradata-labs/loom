@@ -23,6 +23,7 @@ import (
 	"github.com/spf13/viper"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
+	"github.com/teradata-labs/loom/pkg/decision/jev"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/zalando/go-keyring"
@@ -105,6 +106,11 @@ type Config struct {
 	// Embedding configures vector embeddings for hybrid semantic memory search.
 	Embedding EmbeddingConfig `mapstructure:"embedding"`
 
+	// Decision holds the server-level settings of the typed decision layer
+	// (pkg/decision). Agent and judge configs choose the provider, model and
+	// bands; only this block (or TYPESAFE_BASE_URL) chooses the endpoint.
+	Decision DecisionServerConfig `mapstructure:"decision"`
+
 	// SkipEmbeddedAgents disables auto-installation of guide, weaver, and bundled
 	// skills into the agents/skills directories on startup. Set to true for runtime
 	// pods that should only serve the explicitly configured agent(s).
@@ -114,6 +120,40 @@ type Config struct {
 	// Per-agent metadata["patterns_dir"] overrides this; agents fall back to
 	// $LOOM_DATA_DIR/patterns when both are empty.
 	PatternsDir string `mapstructure:"patterns_dir"`
+}
+
+// DecisionServerConfig is the operator's decider endpoint. The endpoint
+// decides where the server's decider credential (TYPESAFE_API_KEY,
+// AI_GATEWAY_API_KEY, JEV_API_KEY) is sent, which is why agent and judge
+// configs cannot set it.
+//
+//	decision:
+//	  base_url: https://ai-gateway.vercel.sh/typesafe   # LOOM_DECISION_BASE_URL
+//	  allow_insecure_http: false                         # LOOM_DECISION_ALLOW_INSECURE_HTTP
+type DecisionServerConfig struct {
+	// BaseURL overrides TYPESAFE_BASE_URL and the provider defaults. Must be
+	// https.
+	BaseURL string `mapstructure:"base_url"`
+	// AllowInsecureHTTP permits an http:// endpoint on a loopback host (a
+	// local proxy or mock decider in development). Non-loopback http is
+	// refused even with it set.
+	AllowInsecureHTTP bool `mapstructure:"allow_insecure_http"`
+}
+
+// endpoint converts the block to the jev package's server endpoint.
+func (d DecisionServerConfig) endpoint() jev.ServerEndpoint {
+	return jev.ServerEndpoint{BaseURL: d.BaseURL, AllowInsecureHTTP: d.AllowInsecureHTTP}
+}
+
+// applyDecisionServerConfig installs the server-level decider endpoint for
+// this process. Every looms command runs it once the config is loaded, so
+// serve, workflow run and eval all build deciders against the same
+// operator-chosen endpoint.
+func applyDecisionServerConfig(c *Config) error {
+	if err := jev.SetServerEndpoint(c.Decision.endpoint()); err != nil {
+		return fmt.Errorf("decision: %w", err)
+	}
+	return nil
 }
 
 // EmbeddingConfig configures the vector embedding provider for hybrid memory search.
@@ -1132,6 +1172,11 @@ func setDefaults() {
 	viper.SetDefault("skip_embedded_agents", false)
 	viper.SetDefault("patterns_dir", "")
 
+	// Decision layer server-level endpoint (registered so AutomaticEnv binds
+	// LOOM_DECISION_BASE_URL and LOOM_DECISION_ALLOW_INSECURE_HTTP).
+	viper.SetDefault("decision.base_url", "")
+	viper.SetDefault("decision.allow_insecure_http", false)
+
 	// Clarification defaults
 	viper.SetDefault("server.clarification.rpc_timeout_seconds", 5)
 	viper.SetDefault("server.clarification.channel_send_timeout_ms", 100)
@@ -1626,6 +1671,10 @@ func (c *Config) Validate() error {
 
 	if err := c.validateAuth(); err != nil {
 		return err
+	}
+
+	if err := c.Decision.endpoint().Validate(); err != nil {
+		return fmt.Errorf("decision.base_url: %w", err)
 	}
 
 	// Validate LLM config
