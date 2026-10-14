@@ -1,0 +1,532 @@
+package runtime
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/teradata-labs/loom/third_party/golua/ast"
+	"github.com/teradata-labs/loom/third_party/golua/astcomp"
+	"github.com/teradata-labs/loom/third_party/golua/code"
+	"github.com/teradata-labs/loom/third_party/golua/ir"
+	"github.com/teradata-labs/loom/third_party/golua/ircomp"
+	"github.com/teradata-labs/loom/third_party/golua/parsing"
+	"github.com/teradata-labs/loom/third_party/golua/scanner"
+)
+
+// RawGet returns the item in a table for the given key, or nil if t is nil.  It
+// doesn't check the metatable of t.
+func RawGet(t *Table, k Value) Value {
+	if t == nil {
+		return NilValue
+	}
+	return t.Get(k)
+}
+
+const maxIndexChainLength = 100
+const maxCallChainLength = 15 // Lua 5.5: limit __call metamethod chain
+
+// Index returns the item in a collection for the given key k, using the
+// '__index' metamethod if appropriate.
+// Index always consumes CPU.
+func Index(t *Thread, coll Value, k Value) (Value, error) {
+	for i := 0; i < maxIndexChainLength; i++ {
+		t.RequireCPU(1)
+		tbl, ok := coll.TryTable()
+		if ok {
+			if val := RawGet(tbl, k); !val.IsNil() {
+				return val, nil
+			}
+		}
+		metaIdx := t.metaGetS(coll, "__index")
+		if metaIdx.IsNil() {
+			if ok {
+				return NilValue, nil
+			}
+			return NilValue, indexError(coll)
+		}
+		if _, ok := metaIdx.TryTable(); ok {
+			coll = metaIdx
+		} else {
+			res := NewTerminationWith(t.CurrentCont(), 1, false)
+			if err := Call(t, metaIdx, []Value{coll, k}, res); err != nil {
+				return NilValue, err
+			}
+			return res.Get(0), nil
+		}
+	}
+	return NilValue, fmt.Errorf("'__index' chain too long; possible loop")
+}
+
+func indexError(coll Value) error {
+	return fmt.Errorf("attempt to index a %s value", coll.CustomTypeName())
+}
+
+// SetIndex sets the item in a collection for the given key, using the
+// '__newindex' metamethod if appropriate.  SetIndex always consumes CPU if it
+// doesn't return an error.
+func SetIndex(t *Thread, coll Value, idx Value, val Value) error {
+	if idx.IsNil() {
+		return errors.New("index is nil")
+	}
+	for i := 0; i < maxIndexChainLength; i++ {
+		t.RequireCPU(1)
+		tbl, isTable := coll.TryTable()
+		if isTable && idx.IsNaN() {
+			return errTableIndexIsNaN
+		}
+		if isTable && tbl.Reset(idx, val) {
+			return nil
+		}
+		metaNewIndex := t.metaGetS(coll, "__newindex")
+		if metaNewIndex.IsNil() {
+			if isTable {
+				// No need to call SetTableCheck
+				t.SetTable(tbl, idx, val)
+				return nil
+			}
+			return fmt.Errorf(
+				"attempt to index %s value without __newindex", coll.TypeName())
+		}
+		if _, ok := metaNewIndex.TryTable(); ok {
+			coll = metaNewIndex
+		} else {
+			return Call(t, metaNewIndex, []Value{coll, idx, val}, NewTermination(t.CurrentCont(), nil, nil))
+		}
+	}
+	return fmt.Errorf("'__newindex' chain too long; possible loop")
+}
+
+// Truth returns true if v is neither nil nor a false boolean.
+func Truth(v Value) bool {
+	if v.IsNil() {
+		return false
+	}
+	b, ok := v.TryBool()
+	return !ok || b
+}
+
+// Metacall calls the metamethod called method on obj with the given arguments
+// args, pushing the result to the continuation next.
+func Metacall(t *Thread, obj Value, method string, args []Value, next Cont) (error, bool) {
+	if f := t.metaGetS(obj, method); !f.IsNil() {
+		return Call(t, f, args, next), true
+	}
+	return nil, false
+}
+
+// Continue tries to continue the value f or else use its '__call'
+// metamethod and returns the continuations that needs to be run to get the
+// results.
+func Continue(t *Thread, f Value, next Cont) (Cont, error) {
+	callable, ok := f.TryCallable()
+	if ok {
+		return callable.Continuation(t, next), nil
+	}
+	// Not callable, need to use __call metamethod
+	// Check if we've exceeded the chain limit (Lua 5.5)
+	if t.metacallChainDepth >= maxCallChainLength {
+		return nil, errors.New("'__call' chain too long")
+	}
+	// Increment chain depth before recursive call
+	t.metacallChainDepth++
+	defer func() { t.metacallChainDepth-- }()
+
+	cont, err, ok := metacont(t, f, "__call", next)
+	if !ok {
+		return nil, fmt.Errorf("attempt to call a %s value", f.CustomTypeName())
+	}
+	if cont != nil {
+		t.Push1(cont, f)
+	}
+	return cont, err
+}
+
+// Call calls f with arguments args, pushing the results on next.  It may use
+// the metamethod '__call' if f is not callable.
+func Call(t *Thread, f Value, args []Value, next Cont) error {
+	if f.IsNil() {
+		return errors.New("attempt to call a nil value")
+	}
+	callable, ok := f.TryCallable()
+	if ok {
+		return t.call(callable, args, next)
+	}
+	// Not callable, need to use __call metamethod
+	// Check if we've exceeded the chain limit (Lua 5.5)
+	if t.metacallChainDepth >= maxCallChainLength {
+		return errors.New("'__call' chain too long")
+	}
+	// Increment chain depth before recursive call
+	t.metacallChainDepth++
+	defer func() { t.metacallChainDepth-- }()
+
+	err, ok := Metacall(t, f, "__call", append([]Value{f}, args...), next)
+	if ok {
+		return err
+	}
+	return fmt.Errorf("attempt to call a %s value", f.CustomTypeName())
+}
+
+// Call1 is a convenience method that calls f with arguments args and returns
+// exactly one value.
+func Call1(t *Thread, f Value, args ...Value) (Value, error) {
+	term := NewTerminationWith(t.CurrentCont(), 1, false)
+	if err := Call(t, f, args, term); err != nil {
+		return NilValue, err
+	}
+	return term.Get(0), nil
+}
+
+// Concat returns x .. y, possibly calling the '__concat' metamethod.
+func Concat(t *Thread, x, y Value) (Value, error) {
+	var sx, sy string
+	var okx, oky bool
+	if sx, okx = x.ToString(); okx {
+		if sy, oky = y.ToString(); oky {
+			t.RequireBytes(len(sx) + len(sy))
+			return StringValue(sx + sy), nil
+		}
+	}
+	res, err, ok := metabin(t, "__concat", x, y)
+	if ok {
+		return res, err
+	}
+	return NilValue, concatError(x, y, okx, oky)
+}
+
+func concatError(x, y Value, okx, oky bool) error {
+	var wrongVal Value
+	switch {
+	case oky:
+		wrongVal = x
+	case okx:
+		wrongVal = y
+	default:
+		return fmt.Errorf("attempt to concatenate a %s value with a %s value", x.CustomTypeName(), y.CustomTypeName())
+	}
+	return fmt.Errorf("attempt to concatenate a %s value", wrongVal.CustomTypeName())
+}
+
+// IntLen returns the length of v as an int64, possibly calling the '__len'
+// metamethod.  This is an optimization of Len for an integer output.
+func IntLen(t *Thread, v Value) (int64, error) {
+	if s, ok := v.TryString(); ok {
+		return int64(len(s)), nil
+	}
+	res := NewTerminationWith(t.CurrentCont(), 1, false)
+	err, ok := Metacall(t, v, "__len", []Value{v}, res)
+	if ok {
+		if err != nil {
+			return 0, err
+		}
+		l, ok := ToInt(res.Get(0))
+		if !ok {
+			err = errors.New("len should return an integer")
+		}
+		return l, err
+	}
+	if tbl, ok := v.TryTable(); ok {
+		return tbl.Len(), nil
+	}
+	return 0, lenError(v)
+}
+
+// Len returns the length of v, possibly calling the '__len' metamethod.
+func Len(t *Thread, v Value) (Value, error) {
+	if s, ok := v.TryString(); ok {
+		return IntValue(int64(len(s))), nil
+	}
+	res := NewTerminationWith(t.CurrentCont(), 1, false)
+	err, ok := Metacall(t, v, "__len", []Value{v}, res)
+	if ok {
+		if err != nil {
+			return NilValue, err
+		}
+		return res.Get(0), nil
+	}
+	if tbl, ok := v.TryTable(); ok {
+		return IntValue(tbl.Len()), nil
+	}
+	return NilValue, lenError(v)
+}
+
+func lenError(x Value) error {
+	return fmt.Errorf("attempt to get length of a %s value", x.CustomTypeName())
+}
+
+// SetEnv sets the item in the table t for a string key.  Useful when writing
+// libraries
+func (r *Runtime) SetEnv(t *Table, name string, v Value) {
+	r.SetTable(t, StringValue(name), v)
+}
+
+// SetEnvGoFunc sets the item in the table t for a string key to be a GoFunction
+// defined by f.  Useful when writing libraries
+func (r *Runtime) SetEnvGoFunc(t *Table, name string, f GoFunctionFunc, nArgs int, hasEtc bool) *GoFunction {
+	gof := &GoFunction{
+		f:      f,
+		name:   name,
+		nArgs:  nArgs,
+		hasEtc: hasEtc,
+	}
+	r.SetTable(t, StringValue(name), FunctionValue(gof))
+	return gof
+}
+
+// scannerOptions returns scanner options based on the runtime configuration.
+func (r *Runtime) scannerOptions() []scanner.Option {
+	var opts []scanner.Option
+	if r.reservedGlobal {
+		opts = append(opts, scanner.WithReservedGlobal())
+	}
+	return opts
+}
+
+// ParseLuaChunk parses a string as a Lua statement and returns the AST.
+func (r *Runtime) ParseLuaChunk(name string, source []byte, scannerOptions ...scanner.Option) (stat *ast.BlockStat, statSize uint64, err error) {
+	scannerOptions = append(r.scannerOptions(), scannerOptions...)
+	s := scanner.New(name, source, scannerOptions...)
+
+	// Account for CPU and memory used to make the AST.  This is an estimate,
+	// but statSize is proportional to the size of the source.
+	statSize = uint64(len(source))
+	r.LinearRequire(4, uint64(len(source))) // 4 is a factor pulled out of thin air
+
+	stat = new(ast.BlockStat)
+	*stat, err = parsing.ParseChunk(s)
+	if err != nil {
+		r.ReleaseMem(statSize)
+		var parseErr parsing.Error
+		if !errors.As(err, &parseErr) {
+			return nil, 0, err
+		}
+		return nil, 0, NewSyntaxError(name, parseErr)
+	}
+	return
+}
+
+// ParseLuaExp parses a string as a Lua expression and returns the AST.
+func (r *Runtime) ParseLuaExp(name string, source []byte, scannerOptions ...scanner.Option) (stat *ast.BlockStat, statSize uint64, err error) {
+	scannerOptions = append(r.scannerOptions(), scannerOptions...)
+	s := scanner.New(name, source, scannerOptions...)
+
+	// Account for CPU and memory used to make the AST.  This is an estimate,
+	// but statSize is proportional to the size of the source.
+	statSize = uint64(len(source))
+	r.LinearRequire(4, uint64(len(source))) // 4 is a factor pulled out of thin air
+
+	exp, err := parsing.ParseExp(s)
+	if err != nil {
+		r.ReleaseMem(statSize)
+		var parseErr parsing.Error
+		if !errors.As(err, &parseErr) {
+			return nil, 0, err
+		}
+		return nil, 0, NewSyntaxError(name, parseErr)
+	}
+	stat = new(ast.BlockStat)
+	*stat = ast.NewBlockStat(nil, []ast.ExpNode{exp})
+	return
+}
+
+func (r *Runtime) compileLuaStat(name string, stat *ast.BlockStat, statSize uint64) (*code.Unit, uint64, error) {
+	// In any event the AST goes out of scope when leaving this function
+	defer func() { r.ReleaseMem(statSize) }()
+
+	// Account for CPU and memory needed to compile the AST to IR.  This is an
+	// estimate, but constsSize is proportional to the size of the AST.
+	constsSize := statSize
+	r.LinearRequire(4, constsSize) // 4 is a factor pulled out of thin air
+
+	// The IR consts go out of scope when we leave the function
+	defer r.ReleaseMem(constsSize)
+
+	// Compile ast to ir
+	kidx, constants, err := astcomp.CompileLuaChunk(name, *stat)
+
+	// We no longer need the AST (whether that succeeded or not)
+	r.ReleaseMem(statSize)
+
+	if err != nil {
+		return nil, 0, fmt.Errorf("%s:%s", name, err)
+	}
+
+	statSize = 0 // So that the deferred function above doesn't release the memory again.
+
+	// "Optimise" the ir code
+	constants = ir.FoldConstants(constants, ir.DefaultFold)
+
+	// Set up the IR to code compiler
+	kc := ircomp.NewConstantCompiler(constants, code.NewBuilder(name))
+	kc.QueueConstant(kidx)
+
+	// Account for CPU and memory needed to compile IR to a code unit.  This is
+	// an estimate, but unitSize is proportional to the size of the IR consts.
+	unitSize := constsSize
+	r.LinearRequire(4, unitSize) // 4 is a factor pulled out of thin air
+
+	// Compile IR to code
+	unit, err := kc.CompileQueue()
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// We no longer need the constants
+	return unit, unitSize, nil
+}
+
+func (r *Runtime) CompileLuaChunkOrExp(name string, source []byte, scannerOptions ...scanner.Option) (unit *code.Unit, sz uint64, err error) {
+	var statErr error
+	stat, statSize, expErr := r.ParseLuaExp(name, source, scannerOptions...)
+	if expErr != nil {
+		stat, statSize, statErr = r.ParseLuaChunk(name, source, scannerOptions...)
+	}
+	if expErr != nil && statErr != nil {
+		// If parsing as expression or chunk failed, then try to return the error that showed the most parsing
+		expSyntaxErr, okExp := AsSyntaxError(expErr)
+		statSyntaxErr, okStat := AsSyntaxError(statErr)
+		switch {
+		case !okStat:
+			err = expErr
+		case !okExp:
+			err = statErr
+		case expSyntaxErr.Err.Got.Pos.Offset >= statSyntaxErr.Err.Got.Offset:
+			err = expErr
+		default:
+			err = statErr
+		}
+		return
+	}
+	return r.compileLuaStat(name, stat, statSize)
+}
+
+// CompileLuaChunk parses and compiles the source as a Lua Chunk and returns the
+// compile code Unit.
+func (r *Runtime) CompileLuaChunk(name string, source []byte, scannerOptions ...scanner.Option) (*code.Unit, uint64, error) {
+	stat, statSize, err := r.ParseLuaChunk(name, source, scannerOptions...)
+	if err != nil {
+		return nil, 0, err
+	}
+	return r.compileLuaStat(name, stat, statSize)
+}
+
+// CompileAndLoadLuaChunk parses, compiles and loads a Lua chunk from source and
+// returns the closure that runs the chunk in the given global environment.
+func (r *Runtime) CompileAndLoadLuaChunkOrExp(name string, source []byte, env Value, scannerOptions ...scanner.Option) (*Closure, error) {
+	unit, unitSize, err := r.CompileLuaChunkOrExp(name, source, scannerOptions...)
+	defer r.ReleaseMem(unitSize)
+	if err != nil {
+		return nil, err
+	}
+	return r.LoadLuaUnit(unit, env), nil
+}
+
+// CompileAndLoadLuaChunk parses, compiles and loads a Lua chunk from source and
+// returns the closure that runs the chunk in the given global environment.
+func (r *Runtime) CompileAndLoadLuaChunk(name string, source []byte, env Value, scannerOptions ...scanner.Option) (*Closure, error) {
+	unit, unitSize, err := r.CompileLuaChunk(name, source, scannerOptions...)
+	defer r.ReleaseMem(unitSize)
+	if err != nil {
+		return nil, err
+	}
+	return r.LoadLuaUnit(unit, env), nil
+}
+
+// LoadFromSourceOrCode loads the given source, compiling it if it is source
+// code or unmarshaling it if it is dumped code.  It returns the closure that
+// runs the chunk in the given global environment.
+func (r *Runtime) LoadFromSourceOrCode(name string, source []byte, mode string, env Value, stripComment bool) (*Closure, error) {
+	var (
+		canBeBinary      = strings.IndexByte(mode, 'b') >= 0
+		canBeText        = strings.IndexByte(mode, 't') >= 0
+		firstLineSkipped = false
+	)
+	if stripComment {
+		source, firstLineSkipped = stripFirstLineComment(source)
+	}
+
+	switch {
+	case canBeBinary && HasMarshalPrefix(source):
+		buf := bytes.NewBuffer(source)
+		k, used, err := UnmarshalConst(buf, r.LinearUnused(10))
+		r.LinearRequire(10, used)
+		if err != nil {
+			return nil, err
+		}
+		code, ok := k.TryCode()
+		if !ok {
+			return nil, errors.New("Expected function to load")
+		}
+		clos := NewClosure(r, code)
+		if code.UpvalueCount > 0 {
+			clos.AddUpvalue(newCell(env))
+			r.RequireCPU(uint64(code.UpvalueCount))
+			for i := int16(1); i < code.UpvalueCount; i++ {
+				clos.AddUpvalue(newCell(NilValue))
+			}
+		}
+		return clos, nil
+	case HasMarshalPrefix(source):
+		return nil, errors.New("attempt to load a binary chunk")
+	case !canBeText:
+		return nil, errors.New("attempt to load a text chunk")
+	default:
+		var opts []scanner.Option
+		if firstLineSkipped {
+			opts = append(opts, scanner.WithStartLine(2))
+		}
+		return r.CompileAndLoadLuaChunk(name, source, env, opts...)
+	}
+}
+
+func stripFirstLineComment(chunk []byte) ([]byte, bool) {
+	// Skip BOM
+	if bytes.HasPrefix(chunk, []byte{0xEF, 0xBB, 0xBF}) {
+		chunk = chunk[3:]
+	}
+	if len(chunk) == 0 || chunk[0] != '#' {
+		return chunk, false
+	}
+	for i, b := range chunk {
+		if b == '\n' || b == '\r' {
+			return chunk[i+1:], true
+		}
+	}
+	return nil, true
+}
+
+func metacont(t *Thread, obj Value, method string, next Cont) (Cont, error, bool) {
+	f := t.metaGetS(obj, method)
+	if f.IsNil() {
+		return nil, nil, false
+	}
+	cont, err := Continue(t, f, next)
+	if err != nil {
+		return nil, err, true
+	}
+	return cont, nil, true
+}
+
+func metabin(t *Thread, f string, x Value, y Value) (Value, error, bool) {
+	xy := []Value{x, y}
+	res := NewTerminationWith(t.CurrentCont(), 1, false)
+	err, ok := Metacall(t, x, f, xy, res)
+	if !ok {
+		err, ok = Metacall(t, y, f, xy, res)
+	}
+	if ok {
+		return res.Get(0), err, true
+	}
+	return NilValue, nil, false
+}
+
+func metaun(t *Thread, f string, x Value) (Value, error, bool) {
+	res := NewTerminationWith(t.CurrentCont(), 1, false)
+	err, ok := Metacall(t, x, f, []Value{x}, res)
+	if ok {
+		return res.Get(0), err, true
+	}
+	return NilValue, nil, false
+}
