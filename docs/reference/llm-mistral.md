@@ -897,7 +897,9 @@ Error: Mistral API error (503): Service temporarily unavailable. Please try agai
 3. **Fallback**: Switch to alternate model or provider
 4. **Monitor**: Set up alerting for service health
 
-**Retry behavior**: Retryable with exponential backoff (transient error)
+**Retry behavior**: Retryable with exponential backoff (transient error). With
+`RateLimiterConfig.Enabled`, the client retries 500/502/503/504/529 itself
+under the limiter's `MaxRetries` budget (see Rate Limiting below).
 
 
 ### ERR_TIMEOUT
@@ -1001,7 +1003,13 @@ client := mistral.NewClient(mistral.Config{
 - Requests are queued and admitted at the configured request rate
   (`RequestsPerSecond`, `BurstCapacity`, `MinDelay`)
 - 429 responses are retried inside the limiter with jittered exponential
-  backoff, honoring the server's `Retry-After`
+  backoff, honoring the server's `Retry-After` (capped at 5 minutes)
+- 500, 502, 503, 504 and 529 responses whose status is known before any
+  content streams are retried under the same budget and backoff as a 429;
+  other 4xx/5xx are not retried, and retried 5xx are counted apart from
+  throttling (`RateLimiterMetrics.TransientRequests`) and do not feed the
+  scheduler's throttle signal. Once the budget is spent the error surfaces as
+  `llm.RetriesExhaustedError`; the agent loop does not retry it again
 - `TokensPerMinute` is **observational only today**: token consumption is
   tracked and reported in rate-limiter metrics, but it is never enforced —
   size `RequestsPerSecond` against your TPM quota instead
