@@ -25,6 +25,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/types"
 	"github.com/xeipuuv/gojsonschema"
@@ -214,7 +215,7 @@ func TestClient_ConvertTools(t *testing.T) {
 		},
 	}
 
-	apiTools, err := client.convertTools([]shuttle.Tool{mockTool})
+	apiTools, err := client.convertTools(context.Background(), []shuttle.Tool{mockTool})
 	require.NoError(t, err)
 
 	require.Len(t, apiTools, 1)
@@ -242,6 +243,7 @@ func TestClient_ConvertTools(t *testing.T) {
 }
 
 func TestClient_ToolSchemaRequest(t *testing.T) {
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "")
 	const schemaJSON = `{"type":"object","description":"Task input","required":["tasks"],"allOf":[{"type":"object","properties":{},"not":{"required":["forbidden"]}}],"properties":{
 		"tasks":{"type":"array","description":"Tasks to create","items":{
 			"type":"object","description":"A task","required":["idx","subject","details"],"properties":{
@@ -281,6 +283,7 @@ func TestClient_ToolSchemaRequest(t *testing.T) {
 				&mockTool{name: "create_tasks", schema: schema},
 				&mockTool{name: "no_arguments", schema: &shuttle.JSONSchema{}},
 				&mockTool{name: "description_only", schema: &shuttle.JSONSchema{Description: "No arguments"}},
+				&mockTool{name: "incompatible", schema: &shuttle.JSONSchema{AnyOf: []*shuttle.JSONSchema{{Type: "object"}}}},
 			}
 			client := &Client{
 				client: bedrockruntime.New(bedrockruntime.Options{
@@ -293,15 +296,19 @@ func TestClient_ToolSchemaRequest(t *testing.T) {
 				maxTokens: DefaultBedrockMaxTokens,
 			}
 			messages := []types.Message{{Role: "user", Content: "Create tasks"}}
+			span := &observability.Span{}
+			ctx := observability.ContextWithSpan(context.Background(), span)
 			switch mode {
 			case "stream":
-				_, err = client.ChatStream(context.Background(), messages, inputTools, nil)
+				_, err = client.ChatStream(ctx, messages, inputTools, nil)
 			case "converse":
-				_, err = client.ChatConverse(context.Background(), messages, inputTools)
+				_, err = client.ChatConverse(ctx, messages, inputTools)
 			default:
-				_, err = client.Chat(context.Background(), messages, inputTools)
+				_, err = client.Chat(ctx, messages, inputTools)
 			}
 			require.NoError(t, err)
+			require.Len(t, span.Events, 1)
+			assert.Equal(t, "incompatible", span.Events[0].Attributes["tool"])
 			request := <-captured
 			var inputSchema interface{}
 			var noArgumentSchemas []interface{}
@@ -345,6 +352,7 @@ func TestClient_ToolSchemaRequest(t *testing.T) {
 			assert.Equal(t, map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "description": "No arguments"}, noArgumentSchemas[1])
 			assert.Empty(t, inputTools[1].InputSchema().Type)
 			assert.Empty(t, inputTools[2].InputSchema().Type)
+			client.strictToolSchemas = true
 			for _, keyword := range []string{"anyOf", "oneOf"} {
 				invalid, err := shuttle.FromJSON([]byte(`{"` + keyword + `":[{"type":"object"}]}`))
 				require.NoError(t, err)
@@ -361,76 +369,19 @@ func TestClient_ToolSchemaRequest(t *testing.T) {
 				require.ErrorContains(t, err, "root "+keyword)
 				assert.Empty(t, captured, "unsupported schema made an HTTP request")
 			}
-		})
-	}
-}
-
-func TestClient_ConvertSchemaProperties(t *testing.T) {
-	maxLength := 80
-	tests := []struct {
-		name     string
-		input    map[string]*shuttle.JSONSchema
-		expected map[string]interface{}
-	}{
-		{
-			name:     "nil properties",
-			input:    nil,
-			expected: nil,
-		},
-		{
-			name: "simple string property",
-			input: map[string]*shuttle.JSONSchema{
-				"name": {Type: "string", Description: "User name"},
-			},
-			expected: map[string]interface{}{
-				"name": map[string]interface{}{
-					"type":        "string",
-					"description": "User name",
-				},
-			},
-		},
-		{
-			name: "property with enum",
-			input: map[string]*shuttle.JSONSchema{
-				"status": {
-					Type: "string",
-					Enum: []interface{}{"active", "inactive"},
-				},
-			},
-			expected: map[string]interface{}{
-				"status": map[string]interface{}{
-					"type": "string",
-					"enum": []interface{}{"active", "inactive"},
-				},
-			},
-		},
-		{
-			name: "array of objects with required fields and constraints",
-			input: map[string]*shuttle.JSONSchema{
-				"tasks": shuttle.NewArraySchema("Tasks", &shuttle.JSONSchema{
-					Type: "object", Description: "A task", Required: []string{"subject"},
-					Properties: map[string]*shuttle.JSONSchema{
-						"subject": {Type: "string", Description: "Title", MaxLength: &maxLength},
-					},
-				}),
-			},
-			expected: map[string]interface{}{
-				"tasks": map[string]interface{}{
-					"type": "array", "description": "Tasks",
-					"items": map[string]interface{}{
-						"type": "object", "description": "A task", "required": []string{"subject"},
-						"properties": map[string]interface{}{
-							"subject": map[string]interface{}{"type": "string", "description": "Title", "maxLength": 80},
-						},
-					},
-				},
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := convertSchemaProperties(tt.input)
-			assert.Equal(t, tt.expected, result)
+			client.strictToolSchemas = false
+			switch mode {
+			case "stream":
+				_, err = client.ChatStream(context.Background(), messages, inputTools[3:], nil)
+			case "converse":
+				_, err = client.ChatConverse(context.Background(), messages, inputTools[3:])
+			default:
+				_, err = client.Chat(context.Background(), messages, inputTools[3:])
+			}
+			require.NoError(t, err)
+			emptyRequest := <-captured
+			assert.NotContains(t, emptyRequest, "tools")
+			assert.NotContains(t, emptyRequest, "toolConfig")
 		})
 	}
 }

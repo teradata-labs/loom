@@ -1,14 +1,76 @@
 package llm
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/xeipuuv/gojsonschema"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
+
+func TestPrepareToolSchema(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		input      string
+		strict     bool
+		disallowed []string
+		keep       bool
+		wantError  bool
+	}{
+		{name: "compatible conjunction", input: `{"allOf":[{"properties":{"count":{"type":"integer"}}}]}`, keep: true},
+		{name: "skip alternative", input: `{"anyOf":[{"type":"object"}]}`},
+		{name: "strict alternative", input: `{"oneOf":[{"type":"object"}]}`, strict: true, wantError: true},
+		{name: "anthropic prohibition", input: `{"not":{"required":["blocked"]}}`, keep: true},
+		{name: "openai prohibition", input: `{"not":{"required":["blocked"]}}`, disallowed: []string{"enum", "not"}},
+		{name: "openai enum", input: `{"enum":[{}]}`, disallowed: []string{"enum", "not"}},
+		{name: "strict openai enum", input: `{"enum":[{}]}`, strict: true, disallowed: []string{"enum", "not"}, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			core, logs := observer.New(zap.WarnLevel)
+			previous := zap.L()
+			zap.ReplaceGlobals(zap.New(core))
+			t.Cleanup(func() { zap.ReplaceGlobals(previous) })
+			span := &observability.Span{}
+			ctx := observability.ContextWithSpan(context.Background(), span)
+			schema, err := shuttle.FromJSON([]byte(test.input))
+			require.NoError(t, err)
+			result, keep, err := PrepareToolSchema(ctx, "problem_tool", schema, test.strict, test.disallowed...)
+			assert.Equal(t, test.keep, keep)
+			if test.wantError {
+				require.ErrorContains(t, err, `tool "problem_tool" schema:`)
+			} else {
+				require.NoError(t, err)
+			}
+			if test.keep {
+				assert.NotNil(t, result)
+			} else {
+				assert.Nil(t, result)
+			}
+			if !test.keep && !test.strict {
+				require.Equal(t, 1, logs.Len())
+				assert.Equal(t, "problem_tool", logs.All()[0].ContextMap()["tool"])
+				assert.Contains(t, logs.All()[0].ContextMap()["error"], "schema:")
+				require.Len(t, span.Events, 1)
+				assert.Equal(t, "llm.tool.schema.skipped", span.Events[0].Name)
+				assert.Equal(t, "problem_tool", span.Events[0].Attributes["tool"])
+				assert.Contains(t, span.Events[0].Attributes["reason"], "schema:")
+			} else {
+				assert.Empty(t, logs.All())
+				assert.Empty(t, span.Events)
+			}
+		})
+	}
+	result, keep, err := PrepareToolSchema(context.Background(), "no_schema", nil, false)
+	require.NoError(t, err)
+	assert.True(t, keep)
+	assert.Nil(t, result)
+}
 
 func TestNormalizeObjectToolSchemaPreservesProhibition(t *testing.T) {
 	const input = `{"type":"object","properties":{"environment":{"type":"string"}},"required":["environment"],"allOf":[
@@ -71,6 +133,16 @@ func TestNormalizeObjectToolSchemaSemantics(t *testing.T) {
 				{"allOf":[{"properties":{"count":{"minimum":0}}},{"properties":{"count":{"maximum":5}}}]}
 			]}`,
 			samples: []string{`{"count":0}`, `{"count":3}`, `{"count":-1}`, `{"count":6}`, `{"count":"3"}`, `{}`},
+		},
+		{
+			name:    "untyped root properties do not become strings",
+			input:   `{"type":"object","properties":{"count":{"minimum":1}}}`,
+			samples: []string{`{"count":0}`, `{"count":3}`, `{"count":"3"}`, `{"count":true}`, `{"count":null}`, `{}`},
+		},
+		{
+			name:    "untyped branch properties follow the root rule",
+			input:   `{"type":"object","allOf":[{"properties":{"count":{"minimum":1}}}]}`,
+			samples: []string{`{"count":0}`, `{"count":3}`, `{"count":"3"}`, `{"count":true}`, `{"count":null}`, `{}`},
 		},
 		{
 			name:    "nested field composites stay untyped",

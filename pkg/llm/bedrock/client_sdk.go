@@ -36,12 +36,13 @@ import (
 // SDKClient implements the LLMProvider interface using the official Anthropic SDK for Bedrock.
 // This is simpler and better maintained than the direct AWS SDK approach.
 type SDKClient struct {
-	client      anthropic.Client
-	modelID     string
-	region      string
-	maxTokens   int64
-	temperature float64
-	rateLimiter *llm.RateLimiter
+	strictToolSchemas bool
+	client            anthropic.Client
+	modelID           string
+	region            string
+	maxTokens         int64
+	temperature       float64
+	rateLimiter       *llm.RateLimiter
 }
 
 // NewSDKClient creates a new Bedrock client using the Anthropic SDK.
@@ -173,12 +174,13 @@ func NewSDKClient(cfg Config) (*SDKClient, error) {
 	)
 
 	return &SDKClient{
-		client:      client,
-		modelID:     cfg.ModelID,
-		region:      cfg.Region,
-		maxTokens:   int64(cfg.MaxTokens),
-		temperature: cfg.Temperature,
-		rateLimiter: rateLimiter,
+		strictToolSchemas: cfg.StrictToolSchemas,
+		client:            client,
+		modelID:           cfg.ModelID,
+		region:            cfg.Region,
+		maxTokens:         int64(cfg.MaxTokens),
+		temperature:       cfg.Temperature,
+		rateLimiter:       rateLimiter,
 	}, nil
 }
 
@@ -242,7 +244,7 @@ func (c *SDKClient) Chat(ctx context.Context, messages []llmtypes.Message, tools
 	if len(tools) > 0 {
 		var sdkTools []anthropic.ToolParam
 		var conversionErr error
-		sdkTools, toolNameMap, conversionErr = c.convertToolsToSDK(tools)
+		sdkTools, toolNameMap, conversionErr = c.convertToolsToSDK(ctx, tools)
 		if conversionErr != nil {
 			return nil, conversionErr
 		}
@@ -257,7 +259,9 @@ func (c *SDKClient) Chat(ctx context.Context, messages []llmtypes.Message, tools
 				OfTool: &sdkTools[i],
 			}
 		}
-		params.Tools = toolUnions
+		if len(toolUnions) > 0 {
+			params.Tools = toolUnions
+		}
 	}
 
 	// Call API with rate limiting if configured
@@ -439,12 +443,19 @@ func appendUserOrCoalesceSDK(msgs []anthropic.MessageParam, blocks []anthropic.C
 // convertToolsToSDK converts tools to SDK format and returns this request's
 // sanitized→original tool-name mapping alongside them. The mapping is returned
 // rather than stored on the client so concurrent requests stay independent.
-func (c *SDKClient) convertToolsToSDK(tools []shuttle.Tool) ([]anthropic.ToolParam, map[string]string, error) {
+func (c *SDKClient) convertToolsToSDK(ctx context.Context, tools []shuttle.Tool) ([]anthropic.ToolParam, map[string]string, error) {
 	var sdkTools []anthropic.ToolParam
 	toolNameMap := make(map[string]string, len(tools))
 
 	for _, tool := range tools {
 		originalName := tool.Name()
+		schemaMap, keep, err := llm.PrepareToolSchema(ctx, originalName, tool.InputSchema(), c.strictToolSchemas)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !keep {
+			continue
+		}
 		sanitizedName := llm.SanitizeToolName(originalName)
 		toolNameMap[sanitizedName] = originalName
 
@@ -453,13 +464,8 @@ func (c *SDKClient) convertToolsToSDK(tools []shuttle.Tool) ([]anthropic.ToolPar
 			Description: anthropic.String(tool.Description()),
 		}
 
-		schema := tool.InputSchema()
-		if schema != nil {
+		if schemaMap != nil {
 			// Marshal and unmarshal to get proper anthropic.ToolInputSchemaParam
-			schemaMap, err := llm.NormalizeObjectToolSchema(schema)
-			if err != nil {
-				return nil, nil, fmt.Errorf("tool %q schema: %w", originalName, err)
-			}
 			schemaJSON, err := json.Marshal(schemaMap)
 			if err != nil {
 				return nil, nil, fmt.Errorf("tool %q schema encoding: %w", originalName, err)
@@ -596,7 +602,7 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	if len(tools) > 0 {
 		var sdkTools []anthropic.ToolParam
 		var conversionErr error
-		sdkTools, toolNameMap, conversionErr = c.convertToolsToSDK(tools)
+		sdkTools, toolNameMap, conversionErr = c.convertToolsToSDK(ctx, tools)
 		if conversionErr != nil {
 			return nil, conversionErr
 		}
@@ -610,7 +616,9 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				OfTool: &sdkTools[i],
 			}
 		}
-		params.Tools = toolUnions
+		if len(toolUnions) > 0 {
+			params.Tools = toolUnions
+		}
 	}
 
 	// Acquire rate limit slot before initiating the stream to prevent Bedrock throttling.

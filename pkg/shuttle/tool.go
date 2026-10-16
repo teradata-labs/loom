@@ -130,38 +130,28 @@ type JSONSchema struct {
 }
 
 // ToMap recursively serializes every supported JSON Schema keyword.
-// Missing types are inferred outside composite subtrees.
+// Missing types remain unspecified; ToToolMap supplies only the tool-root fallback.
 func (s *JSONSchema) ToMap() map[string]interface{} {
-	return s.toMap(true, true)
+	return s.toMap(true)
 }
 
-func (s *JSONSchema) toMap(inferTypes, inferCurrentType bool) map[string]interface{} {
+func (s *JSONSchema) toMap(providerFacing bool) map[string]interface{} {
 	if s == nil {
 		return nil
 	}
 
 	result := make(map[string]interface{})
 	schemaType := s.Type
-	if inferTypes && inferCurrentType && schemaType == "" && len(s.AnyOf) == 0 && len(s.OneOf) == 0 && len(s.AllOf) == 0 && s.Not == nil {
-		switch {
-		case s.Properties != nil:
-			schemaType = "object"
-		case s.Items != nil:
-			schemaType = "array"
-		default:
-			schemaType = "string"
-		}
-	}
-	if schemaType != "" || !inferTypes {
+	if schemaType != "" || !providerFacing {
 		result["type"] = schemaType
 	}
 	if s.Description != "" {
 		result["description"] = s.Description
 	}
-	if len(s.Properties) > 0 || schemaType == "object" || inferTypes && s.Properties != nil {
+	if len(s.Properties) > 0 || schemaType == "object" || providerFacing && s.Properties != nil {
 		properties := make(map[string]interface{}, len(s.Properties))
 		for name, property := range s.Properties {
-			properties[name] = property.toMap(inferTypes, inferCurrentType)
+			properties[name] = property.toMap(providerFacing)
 		}
 		result["properties"] = properties
 	}
@@ -169,7 +159,7 @@ func (s *JSONSchema) toMap(inferTypes, inferCurrentType bool) map[string]interfa
 		result["required"] = slices.Clone(s.Required)
 	}
 	if s.Items != nil {
-		result["items"] = s.Items.toMap(inferTypes, inferCurrentType)
+		result["items"] = s.Items.toMap(providerFacing)
 	}
 	if len(s.Enum) > 0 {
 		result["enum"] = slices.Clone(s.Enum)
@@ -196,24 +186,24 @@ func (s *JSONSchema) toMap(inferTypes, inferCurrentType bool) map[string]interfa
 		result["maxLength"] = *s.MaxLength
 	}
 	if len(s.AnyOf) > 0 {
-		result["anyOf"] = schemaAlternativesToMaps(s.AnyOf, inferTypes)
+		result["anyOf"] = schemaAlternativesToMaps(s.AnyOf, providerFacing)
 	}
 	if len(s.OneOf) > 0 {
-		result["oneOf"] = schemaAlternativesToMaps(s.OneOf, inferTypes)
+		result["oneOf"] = schemaAlternativesToMaps(s.OneOf, providerFacing)
 	}
 	if len(s.AllOf) > 0 {
-		result["allOf"] = schemaAlternativesToMaps(s.AllOf, inferTypes)
+		result["allOf"] = schemaAlternativesToMaps(s.AllOf, providerFacing)
 	}
 	if s.Not != nil {
-		result["not"] = s.Not.toMap(inferTypes, false)
+		result["not"] = s.Not.toMap(providerFacing)
 	}
 	return result
 }
 
-func schemaAlternativesToMaps(schemas []*JSONSchema, inferTypes bool) []map[string]interface{} {
+func schemaAlternativesToMaps(schemas []*JSONSchema, providerFacing bool) []map[string]interface{} {
 	alternatives := make([]map[string]interface{}, len(schemas))
 	for index, schema := range schemas {
-		alternatives[index] = schema.toMap(inferTypes, false)
+		alternatives[index] = schema.toMap(providerFacing)
 	}
 	return alternatives
 }
@@ -232,7 +222,7 @@ func (s *JSONSchema) ToToolMap() map[string]interface{} {
 
 // MarshalJSON preserves declared types and emits empty object properties for Bedrock.
 func (s *JSONSchema) MarshalJSON() ([]byte, error) {
-	return json.Marshal(s.toMap(false, false))
+	return json.Marshal(s.toMap(false))
 }
 
 // ToJSON converts the schema to JSON bytes.

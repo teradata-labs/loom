@@ -461,25 +461,56 @@ func TestClient_ToolSchemaRequest(t *testing.T) {
 				&mockShuttleTool{name: "create_tasks", schema: schema},
 				&mockShuttleTool{name: "no_arguments", schema: &shuttle.JSONSchema{}},
 				&mockShuttleTool{name: "description_only", schema: &shuttle.JSONSchema{Description: "No arguments"}},
+				&mockShuttleTool{name: "incompatible", schema: &shuttle.JSONSchema{AnyOf: []*shuttle.JSONSchema{{Type: "object"}}}},
 			}
 			client, err := NewClient(Config{APIKey: "test-key", Endpoint: server.URL, DeploymentID: "gpt-4o", ModelName: "gpt-4o"})
 			require.NoError(t, err)
 			messages := []types.Message{{Role: "user", Content: "Create tasks"}}
+			span := &observability.Span{}
+			ctx := observability.ContextWithSpan(context.Background(), span)
 			if mode == "stream" {
-				_, err = client.ChatStream(context.Background(), messages, inputTools, nil)
+				_, err = client.ChatStream(ctx, messages, inputTools, nil)
 			} else {
-				_, err = client.Chat(context.Background(), messages, inputTools)
+				_, err = client.Chat(ctx, messages, inputTools)
 			}
 			require.NoError(t, err)
+			require.Len(t, span.Events, 1)
+			assert.Equal(t, "incompatible", span.Events[0].Attributes["tool"])
 			request := <-captured
 			require.Len(t, request.Tools, 3)
 			data, err := json.Marshal(request.Tools[0].Function.Parameters)
 			require.NoError(t, err)
-			assert.JSONEq(t, schemaJSON, string(data))
+			var expected map[string]interface{}
+			require.NoError(t, json.Unmarshal([]byte(schemaJSON), &expected))
+			delete(expected, "allOf")
+			expectedJSON, err := json.Marshal(expected)
+			require.NoError(t, err)
+			assert.JSONEq(t, string(expectedJSON), string(data))
 			assert.Equal(t, map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}, request.Tools[1].Function.Parameters)
 			assert.Equal(t, map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "description": "No arguments"}, request.Tools[2].Function.Parameters)
 			assert.Empty(t, inputTools[1].InputSchema().Type)
 			assert.Empty(t, inputTools[2].InputSchema().Type)
+			client.strictToolSchemas = true
+			for _, input := range []string{`{"anyOf":[{}]}`, `{"oneOf":[{}]}`, `{"not":{}}`, `{"enum":[{}]}`} {
+				invalid, err := shuttle.FromJSON([]byte(input))
+				require.NoError(t, err)
+				invalidTools := []shuttle.Tool{&mockShuttleTool{name: "ambiguous", schema: invalid}}
+				if mode == "stream" {
+					_, err = client.ChatStream(context.Background(), messages, invalidTools, nil)
+				} else {
+					_, err = client.Chat(context.Background(), messages, invalidTools)
+				}
+				require.ErrorContains(t, err, `tool "ambiguous" schema:`)
+				assert.Empty(t, captured, "strict schema rejection made an HTTP request")
+			}
+			client.strictToolSchemas = false
+			if mode == "stream" {
+				_, err = client.ChatStream(context.Background(), messages, inputTools[3:], nil)
+			} else {
+				_, err = client.Chat(context.Background(), messages, inputTools[3:])
+			}
+			require.NoError(t, err)
+			assert.Empty(t, (<-captured).Tools)
 		})
 	}
 }
@@ -684,7 +715,8 @@ func TestConvertTools_WithNilProperties(t *testing.T) {
 	}
 
 	nameMap := make(map[string]string)
-	apiTools := convertTools([]shuttle.Tool{mockTool}, nameMap)
+	apiTools, err := convertTools(context.Background(), []shuttle.Tool{mockTool}, nameMap, false)
+	require.NoError(t, err)
 
 	require.Len(t, apiTools, 1)
 	tool := apiTools[0]
@@ -735,7 +767,8 @@ func TestConvertTools_TopLevelNilProperties(t *testing.T) {
 	}
 
 	nameMap := make(map[string]string)
-	apiTools := convertTools([]shuttle.Tool{mockTool}, nameMap)
+	apiTools, err := convertTools(context.Background(), []shuttle.Tool{mockTool}, nameMap, false)
+	require.NoError(t, err)
 
 	require.Len(t, apiTools, 1)
 	tool := apiTools[0]

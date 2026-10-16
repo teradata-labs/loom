@@ -18,7 +18,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -608,8 +611,15 @@ func TestClient_ToolSchemaRequest(t *testing.T) {
 			var expected map[string]interface{}
 			require.NoError(t, json.Unmarshal([]byte(schemaJSON), &expected))
 			properties := expected["properties"].(map[string]interface{})
-			item := properties["tasks"].(map[string]interface{})["items"].(map[string]interface{})
+			expectedTasks := properties["tasks"].(map[string]interface{})
+			delete(expectedTasks, "type")
+			item := expectedTasks["items"].(map[string]interface{})
+			delete(item, "type")
 			expectedSubject := item["properties"].(map[string]interface{})["subject"].(map[string]interface{})
+			delete(expectedSubject, "type")
+			expectedMatrix := item["properties"].(map[string]interface{})["matrix"].(map[string]interface{})
+			delete(expectedMatrix, "type")
+			delete(expectedMatrix["items"].(map[string]interface{}), "type")
 			expectedSubject["minLength"] = "0"
 			expectedSubject["maxLength"] = "80"
 			expectedJSON, err := json.Marshal(expected)
@@ -620,6 +630,33 @@ func TestClient_ToolSchemaRequest(t *testing.T) {
 			assert.Empty(t, inputTools[1].InputSchema().Type)
 			assert.Empty(t, inputTools[2].InputSchema().Type)
 		})
+	}
+}
+
+func TestClient_LiveToolSchema(t *testing.T) {
+	if testing.Short() || os.Getenv("LOOM_LIVE_SCHEMA_TESTS") != "1" {
+		t.Skip("live schema probes require LOOM_LIVE_SCHEMA_TESTS=1 and may incur API charges")
+	}
+	apiKey := os.Getenv("GEMINI_API_KEY")
+	if apiKey == "" {
+		apiKey = os.Getenv("GOOGLE_API_KEY")
+	}
+	if apiKey == "" {
+		t.Skip("GEMINI_API_KEY and GOOGLE_API_KEY are not set")
+	}
+	schema := &shuttle.JSONSchema{
+		Type: "object",
+		Properties: map[string]*shuttle.JSONSchema{
+			"uri": {Type: "string", Format: "uri"},
+		},
+		Required: []string{"uri"},
+	}
+	client := NewClient(Config{APIKey: apiKey, Model: os.Getenv("GEMINI_SCHEMA_TEST_MODEL"), MaxTokens: 128})
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	_, err := client.Chat(ctx, []types.Message{{Role: "user", Content: "Reply OK without calling tools."}}, []shuttle.Tool{&mockShuttleTool{name: "schema_probe", description: "Inspect a URI", schema: schema}})
+	if err != nil {
+		t.Fatal(strings.ReplaceAll(err.Error(), apiKey, "[redacted]"))
 	}
 }
 
@@ -883,13 +920,13 @@ func TestConvertTools_EmptyPropertyTypes(t *testing.T) {
 					Description: "Search query",
 				},
 				"nested": {
-					Type: "", // empty type but has properties → should become "object"
+					Type: "",
 					Properties: map[string]*shuttle.JSONSchema{
 						"field": {Type: "string"},
 					},
 				},
 				"tags": {
-					Type: "", // empty type but has items → should become "array"
+					Type: "",
 					Items: &shuttle.JSONSchema{
 						Type: "", // empty item type
 					},
@@ -906,15 +943,11 @@ func TestConvertTools_EmptyPropertyTypes(t *testing.T) {
 	require.Len(t, declarations, 1)
 	props := declarations[0].Parameters.Properties
 
-	// Empty type defaults to "string"
-	assert.Equal(t, "STRING", props["query"].Type, "empty type should default to string")
-
-	// Empty type with properties defaults to "object"
-	assert.Equal(t, "OBJECT", props["nested"].Type, "empty type with properties should become object")
-
-	// Empty type with items defaults to "array"
-	assert.Equal(t, "ARRAY", props["tags"].Type, "empty type with items should become array")
-	assert.Equal(t, "STRING", props["tags"].Items.Type, "empty item type should default to string")
+	assert.Empty(t, props["query"].Type)
+	assert.Empty(t, props["nested"].Type)
+	assert.Equal(t, "STRING", props["nested"].Properties["field"].Type)
+	assert.Empty(t, props["tags"].Type)
+	assert.Empty(t, props["tags"].Items.Type)
 }
 
 // Mock implementations for testing

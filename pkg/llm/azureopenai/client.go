@@ -36,6 +36,7 @@ import (
 // Client implements the LLMProvider interface for Azure OpenAI.
 // Azure OpenAI uses deployment-based routing and supports dual authentication.
 type Client struct {
+	strictToolSchemas bool
 	// Azure-specific configuration
 	endpoint     string // https://{resource}.openai.azure.com
 	deploymentID string // User's deployment name (not model name)
@@ -67,6 +68,7 @@ type Client struct {
 
 // Config holds configuration for the Azure OpenAI client.
 type Config struct {
+	StrictToolSchemas bool
 	// Required: Azure OpenAI endpoint
 	// Format: https://{resource-name}.openai.azure.com
 	Endpoint string
@@ -144,16 +146,17 @@ func NewClient(config Config) (*Client, error) {
 	entraToken := strings.TrimPrefix(config.EntraToken, "Bearer ")
 
 	return &Client{
-		endpoint:     config.Endpoint,
-		deploymentID: config.DeploymentID,
-		apiVersion:   config.APIVersion,
-		apiKey:       config.APIKey,
-		entraToken:   entraToken,
-		maxTokens:    config.MaxTokens,
-		temperature:  config.Temperature,
-		modelName:    modelName,
-		rateLimiter:  rateLimiter,
-		capacity:     config.CapacityObserver,
+		strictToolSchemas: config.StrictToolSchemas,
+		endpoint:          config.Endpoint,
+		deploymentID:      config.DeploymentID,
+		apiVersion:        config.APIVersion,
+		apiKey:            config.APIKey,
+		entraToken:        entraToken,
+		maxTokens:         config.MaxTokens,
+		temperature:       config.Temperature,
+		modelName:         modelName,
+		rateLimiter:       rateLimiter,
+		capacity:          config.CapacityObserver,
 		httpClient: &http.Client{
 			Timeout: config.Timeout,
 		},
@@ -224,7 +227,10 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 	// Convert tools to OpenAI format with name sanitization
 	// Azure OpenAI requires names matching ^[a-zA-Z0-9_.\-]+$ (no colons)
 	c.toolNameMap = make(map[string]string)
-	apiTools := convertTools(tools, c.toolNameMap)
+	apiTools, err := convertTools(ctx, tools, c.toolNameMap, c.strictToolSchemas)
+	if err != nil {
+		return nil, err
+	}
 
 	// Sanitize tool schemas to remove problematic fields
 	// Azure OpenAI is strict about: empty arrays, empty defaults, etc.
@@ -604,11 +610,18 @@ func convertMessages(messages []llmtypes.Message) []openai.ChatMessage {
 	return apiMessages
 }
 
-func convertTools(tools []shuttle.Tool, nameMap map[string]string) []openai.Tool {
+func convertTools(ctx context.Context, tools []shuttle.Tool, nameMap map[string]string, strict bool) ([]openai.Tool, error) {
 	var apiTools []openai.Tool
 
 	for _, tool := range tools {
 		originalName := tool.Name()
+		parameters, keep, err := llm.PrepareToolSchema(ctx, originalName, tool.InputSchema(), strict, "enum", "not")
+		if err != nil {
+			return nil, err
+		}
+		if !keep {
+			continue
+		}
 		sanitizedName := llm.SanitizeToolName(originalName)
 
 		// Store mapping for reverse lookup in responses
@@ -624,15 +637,12 @@ func convertTools(tools []shuttle.Tool, nameMap map[string]string) []openai.Tool
 			},
 		}
 
-		schema := tool.InputSchema()
-		if schema != nil {
-			apiTool.Function.Parameters = schema.ToToolMap()
-		}
+		apiTool.Function.Parameters = parameters
 
 		apiTools = append(apiTools, apiTool)
 	}
 
-	return apiTools
+	return apiTools, nil
 }
 
 // ChatStream implements token-by-token streaming for Azure OpenAI.
@@ -643,7 +653,10 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	// Build request (same as non-streaming)
 	apiMessages := convertMessages(messages)
 	c.toolNameMap = make(map[string]string)
-	apiTools := convertTools(tools, c.toolNameMap)
+	apiTools, err := convertTools(ctx, tools, c.toolNameMap, c.strictToolSchemas)
+	if err != nil {
+		return nil, err
+	}
 
 	// Sanitize tool schemas (same as non-streaming)
 	apiTools = SanitizeToolSchemas(apiTools)

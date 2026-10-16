@@ -37,11 +37,12 @@ import (
 // preventing AWS Bedrock throttling when multiple agents make concurrent requests.
 // Client implements the LLMProvider interface for AWS Bedrock.
 type Client struct {
-	client      *bedrockruntime.Client
-	modelID     string
-	region      string
-	maxTokens   int
-	temperature float64
+	strictToolSchemas bool
+	client            *bedrockruntime.Client
+	modelID           string
+	region            string
+	maxTokens         int
+	temperature       float64
 	// toolNameMap maps sanitized tool names (used by Bedrock) to original names (used by agent)
 	// This is needed because Bedrock requires tool names to match ^[a-zA-Z0-9_-]{1,64}$
 	// but MCP tools use names like "filesystem:read_file"
@@ -52,6 +53,7 @@ type Client struct {
 
 // Config holds configuration for the Bedrock client.
 type Config struct {
+	StrictToolSchemas bool
 	// AWS Configuration
 	Region          string // Required: AWS region (e.g., us-east-1, us-west-2)
 	AccessKeyID     string // Optional: if not using IAM role/profile
@@ -195,13 +197,14 @@ func NewClient(cfg Config) (*Client, error) {
 	}
 
 	return &Client{
-		client:      bedrockruntime.NewFromConfig(awsCfg),
-		modelID:     cfg.ModelID,
-		region:      cfg.Region,
-		maxTokens:   cfg.MaxTokens,
-		temperature: cfg.Temperature,
-		toolNameMap: make(map[string]string),
-		rateLimiter: rateLimiter,
+		strictToolSchemas: cfg.StrictToolSchemas,
+		client:            bedrockruntime.NewFromConfig(awsCfg),
+		modelID:           cfg.ModelID,
+		region:            cfg.Region,
+		maxTokens:         cfg.MaxTokens,
+		temperature:       cfg.Temperature,
+		toolNameMap:       make(map[string]string),
+		rateLimiter:       rateLimiter,
 	}, nil
 }
 
@@ -241,11 +244,13 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 
 	// Add tools if provided
 	if len(tools) > 0 {
-		apiTools, err := c.convertTools(tools)
+		apiTools, err := c.convertTools(ctx, tools)
 		if err != nil {
 			return nil, err
 		}
-		request["tools"] = apiTools
+		if len(apiTools) > 0 {
+			request["tools"] = apiTools
+		}
 	}
 
 	// Marshal request
@@ -347,11 +352,13 @@ func (c *Client) chatStreamDisabled(ctx context.Context, messages []llmtypes.Mes
 
 	// Add tools if provided
 	if len(tools) > 0 {
-		apiTools, err := c.convertTools(tools)
+		apiTools, err := c.convertTools(ctx, tools)
 		if err != nil {
 			return nil, err
 		}
-		request["tools"] = apiTools
+		if len(apiTools) > 0 {
+			request["tools"] = apiTools
+		}
 	}
 
 	// Marshal request
@@ -640,7 +647,7 @@ func (c *Client) convertMessages(messages []llmtypes.Message) (string, []map[str
 
 // convertTools converts shuttle tools to Bedrock/Anthropic format.
 // Uses standard Anthropic Messages API format with sanitized tool names.
-func (c *Client) convertTools(tools []shuttle.Tool) ([]map[string]interface{}, error) {
+func (c *Client) convertTools(ctx context.Context, tools []shuttle.Tool) ([]map[string]interface{}, error) {
 	var apiTools []map[string]interface{}
 
 	// Clear previous mapping
@@ -648,6 +655,13 @@ func (c *Client) convertTools(tools []shuttle.Tool) ([]map[string]interface{}, e
 
 	for _, tool := range tools {
 		originalName := tool.Name()
+		schemaMap, keep, err := llm.PrepareToolSchema(ctx, originalName, tool.InputSchema(), c.strictToolSchemas)
+		if err != nil {
+			return nil, err
+		}
+		if !keep {
+			continue
+		}
 		sanitizedName := llm.SanitizeToolName(originalName)
 
 		// Store mapping for later conversion back
@@ -658,12 +672,7 @@ func (c *Client) convertTools(tools []shuttle.Tool) ([]map[string]interface{}, e
 			"description": tool.Description(),
 		}
 
-		schema := tool.InputSchema()
-		if schema != nil {
-			schemaMap, err := llm.NormalizeObjectToolSchema(schema)
-			if err != nil {
-				return nil, fmt.Errorf("tool %q schema: %w", originalName, err)
-			}
+		if schemaMap != nil {
 			apiTool["input_schema"] = schemaMap
 		}
 
@@ -671,19 +680,6 @@ func (c *Client) convertTools(tools []shuttle.Tool) ([]map[string]interface{}, e
 	}
 
 	return apiTools, nil
-}
-
-// convertSchemaProperties converts JSONSchema properties to Anthropic/Bedrock format.
-func convertSchemaProperties(props map[string]*shuttle.JSONSchema) map[string]interface{} {
-	if props == nil {
-		return nil
-	}
-
-	result := make(map[string]interface{})
-	for key, schema := range props {
-		result[key] = schema.ToMap()
-	}
-	return result
 }
 
 // convertResponse converts Bedrock response to agent format.

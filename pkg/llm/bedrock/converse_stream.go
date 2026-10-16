@@ -216,7 +216,7 @@ func appendUserOrCoalesceConverse(msgs []bedrocktypes.Message, blocks []bedrockt
 }
 
 // convertToolsToConverse converts shuttle tools to Bedrock Converse ToolConfiguration.
-func (c *Client) convertToolsToConverse(tools []shuttle.Tool) (*bedrocktypes.ToolConfiguration, error) {
+func (c *Client) convertToolsToConverse(ctx context.Context, tools []shuttle.Tool) (*bedrocktypes.ToolConfiguration, error) {
 	var converseTools []bedrocktypes.Tool
 
 	// Clear previous mapping
@@ -224,21 +224,23 @@ func (c *Client) convertToolsToConverse(tools []shuttle.Tool) (*bedrocktypes.Too
 
 	for _, tool := range tools {
 		originalName := tool.Name()
+		schemaMap, keep, err := llm.PrepareToolSchema(ctx, originalName, tool.InputSchema(), c.strictToolSchemas)
+		if err != nil {
+			return nil, err
+		}
+		if !keep {
+			continue
+		}
 		sanitizedName := llm.SanitizeToolName(originalName)
 
 		// Store mapping for later conversion back
 		c.toolNameMap[sanitizedName] = originalName
 
 		// Convert input schema
-		schema := tool.InputSchema()
 		var inputSchema bedrocktypes.ToolInputSchema
 
-		if schema != nil {
+		if schemaMap != nil {
 			// Build JSON schema document
-			schemaMap, err := llm.NormalizeObjectToolSchema(schema)
-			if err != nil {
-				return nil, fmt.Errorf("tool %q schema: %w", originalName, err)
-			}
 
 			// Debug: Log the schema map before converting to document
 			if os.Getenv("LOOM_DEBUG_BEDROCK") == "1" {
@@ -264,6 +266,9 @@ func (c *Client) convertToolsToConverse(tools []shuttle.Tool) (*bedrocktypes.Too
 		})
 	}
 
+	if len(converseTools) == 0 {
+		return nil, nil
+	}
 	return &bedrocktypes.ToolConfiguration{
 		Tools: converseTools,
 	}, nil

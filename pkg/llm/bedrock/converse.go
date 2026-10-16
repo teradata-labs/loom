@@ -101,7 +101,7 @@ func (c *Client) ChatConverse(ctx context.Context, messages []llmtypes.Message, 
 
 	// Add tools if provided
 	if len(tools) > 0 {
-		toolConfig, err := c.convertToolsToConverse(tools)
+		toolConfig, err := c.convertToolsToConverse(ctx, tools)
 		if err != nil {
 			return nil, err
 		}

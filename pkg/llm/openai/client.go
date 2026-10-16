@@ -39,6 +39,7 @@ import (
 
 // Client implements the LLMProvider interface for OpenAI's API.
 type Client struct {
+	strictToolSchemas      bool
 	apiKey                 string
 	model                  string
 	endpoint               string
@@ -62,10 +63,11 @@ const DefaultCatalogProvider = "openai"
 
 // Config holds configuration for the OpenAI client.
 type Config struct {
-	APIKey   string
-	Model    string        // Default: gpt-4o
-	Endpoint string        // Default: https://api.openai.com/v1/chat/completions
-	Timeout  time.Duration // Default: 60s
+	StrictToolSchemas bool
+	APIKey            string
+	Model             string        // Default: gpt-4o
+	Endpoint          string        // Default: https://api.openai.com/v1/chat/completions
+	Timeout           time.Duration // Default: 60s
 	// StreamFirstByteTimeout limits the wait for the first response-body bytes in
 	// ChatStream. StreamIdleTimeout limits silence during subsequent network
 	// reads. Non-positive values use DefaultOpenAIStreamFirstByteTimeout and
@@ -182,6 +184,7 @@ func NewClient(config Config) *Client {
 	}
 
 	return &Client{
+		strictToolSchemas:      config.StrictToolSchemas,
 		apiKey:                 config.APIKey,
 		model:                  config.Model,
 		endpoint:               config.Endpoint,
@@ -369,7 +372,10 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 
 	// Convert tools to OpenAI format with name sanitization
 	c.toolNameMap = make(map[string]string)
-	apiTools := c.convertTools(tools)
+	apiTools, err := c.convertTools(ctx, tools)
+	if err != nil {
+		return nil, err
+	}
 
 	// Build request
 	req := &ChatCompletionRequest{
@@ -587,11 +593,18 @@ func withCacheControl(content interface{}) interface{} {
 // convertTools converts shuttle tools to OpenAI format.
 // Tool names are sanitized to replace colons (MCP namespace separator)
 // with underscores for provider compatibility.
-func (c *Client) convertTools(tools []shuttle.Tool) []Tool {
+func (c *Client) convertTools(ctx context.Context, tools []shuttle.Tool) ([]Tool, error) {
 	var apiTools []Tool
 
 	for _, tool := range tools {
 		originalName := tool.Name()
+		parameters, keep, err := llm.PrepareToolSchema(ctx, originalName, tool.InputSchema(), c.strictToolSchemas, "enum", "not")
+		if err != nil {
+			return nil, err
+		}
+		if !keep {
+			continue
+		}
 		sanitizedName := llm.SanitizeToolName(originalName)
 		if c.toolNameMap != nil {
 			c.toolNameMap[sanitizedName] = originalName
@@ -606,15 +619,12 @@ func (c *Client) convertTools(tools []shuttle.Tool) []Tool {
 		}
 
 		// Convert JSONSchema to OpenAI's parameters format
-		schema := tool.InputSchema()
-		if schema != nil {
-			apiTool.Function.Parameters = schema.ToToolMap()
-		}
+		apiTool.Function.Parameters = parameters
 
 		apiTools = append(apiTools, apiTool)
 	}
 
-	return apiTools
+	return apiTools, nil
 }
 
 // convertResponse converts OpenAI response to agent format.
@@ -912,7 +922,10 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	// 1. Build request body (reuse existing message and tool conversion)
 	apiMessages := c.convertMessages(messages)
 	c.toolNameMap = make(map[string]string)
-	apiTools := c.convertTools(tools)
+	apiTools, err := c.convertTools(ctx, tools)
+	if err != nil {
+		return nil, err
+	}
 
 	req := &ChatCompletionRequest{
 		Model:         c.model,

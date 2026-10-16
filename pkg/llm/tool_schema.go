@@ -1,12 +1,41 @@
 package llm
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"slices"
 
+	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"go.uber.org/zap"
 )
+
+// PrepareToolSchema omits incompatible tools unless strict validation is enabled.
+// Providers may additionally disallow keywords that remain at the normalized root.
+func PrepareToolSchema(ctx context.Context, name string, schema *shuttle.JSONSchema, strict bool, disallowedRootKeywords ...string) (map[string]interface{}, bool, error) {
+	normalized, err := NormalizeObjectToolSchema(schema)
+	if err == nil {
+		for _, keyword := range disallowedRootKeywords {
+			if _, present := normalized[keyword]; present {
+				err = fmt.Errorf("unsupported tool schema root %s; place the constraint inside an object property", keyword)
+				break
+			}
+		}
+	}
+	if err == nil {
+		return normalized, true, nil
+	}
+	err = fmt.Errorf("tool %q schema: %w", name, err)
+	if strict {
+		return nil, false, err
+	}
+	zap.L().Warn("omitting tool with incompatible input schema", zap.String("tool", name), zap.Error(err))
+	if span := observability.SpanFromContext(ctx); span != nil {
+		span.AddEvent("llm.tool.schema.skipped", map[string]interface{}{"tool": name, "reason": err.Error()})
+	}
+	return nil, false, nil
+}
 
 // NormalizeObjectToolSchema losslessly merges object-root allOf schemas.
 // Root alternatives and incompatible constraints return errors instead of being dropped.

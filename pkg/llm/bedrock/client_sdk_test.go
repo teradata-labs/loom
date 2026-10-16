@@ -29,6 +29,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
+	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/xeipuuv/gojsonschema"
 )
@@ -190,12 +191,12 @@ func TestSDKClient_ToolNameMap_RequestLocal(t *testing.T) {
 	c := &SDKClient{modelID: "us.anthropic.claude-sonnet-4-5-20250929-v1:0", maxTokens: 1024}
 
 	// Request A: tool with a colon-namespaced name.
-	_, mapA, err := c.convertToolsToSDK([]shuttle.Tool{&mockTool{name: "server:read"}})
+	_, mapA, err := c.convertToolsToSDK(context.Background(), []shuttle.Tool{&mockTool{name: "server:read"}})
 	require.NoError(t, err)
 	require.Equal(t, "server:read", mapA["server_read"])
 
 	// Request B converts before A's response arrives, with a colliding name.
-	_, mapB, err := c.convertToolsToSDK([]shuttle.Tool{&mockTool{name: "server_read"}})
+	_, mapB, err := c.convertToolsToSDK(context.Background(), []shuttle.Tool{&mockTool{name: "server_read"}})
 	require.NoError(t, err)
 	require.Equal(t, "server_read", mapB["server_read"])
 
@@ -257,14 +258,19 @@ func TestSDKClient_ToolSchemaRequest(t *testing.T) {
 				&mockTool{name: "create_tasks", schema: schema},
 				&mockTool{name: "no_arguments", schema: &shuttle.JSONSchema{}},
 				&mockTool{name: "description_only", schema: &shuttle.JSONSchema{Description: "No arguments"}},
+				&mockTool{name: "incompatible", schema: &shuttle.JSONSchema{AnyOf: []*shuttle.JSONSchema{{Type: "object"}}}},
 			}
 			messages := []llmtypes.Message{{Role: "user", Content: "Create tasks"}}
+			span := &observability.Span{}
+			ctx := observability.ContextWithSpan(context.Background(), span)
 			if mode == "stream" {
-				_, err = client.ChatStream(context.Background(), messages, tools, nil)
+				_, err = client.ChatStream(ctx, messages, tools, nil)
 			} else {
-				_, err = client.Chat(context.Background(), messages, tools)
+				_, err = client.Chat(ctx, messages, tools)
 			}
 			require.NoError(t, err)
+			require.Len(t, span.Events, 1)
+			assert.Equal(t, "incompatible", span.Events[0].Attributes["tool"])
 			requestTools := (<-captured)["tools"].([]interface{})
 			require.Len(t, requestTools, 3)
 			var expected map[string]interface{}
@@ -285,6 +291,7 @@ func TestSDKClient_ToolSchemaRequest(t *testing.T) {
 			assert.Equal(t, map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "description": "No arguments"}, requestTools[2].(map[string]interface{})["input_schema"])
 			assert.Empty(t, tools[1].InputSchema().Type)
 			assert.Empty(t, tools[2].InputSchema().Type)
+			client.strictToolSchemas = true
 			for _, keyword := range []string{"anyOf", "oneOf"} {
 				invalid, err := shuttle.FromJSON([]byte(`{"` + keyword + `":[{"type":"object"}]}`))
 				require.NoError(t, err)
@@ -298,6 +305,14 @@ func TestSDKClient_ToolSchemaRequest(t *testing.T) {
 				require.ErrorContains(t, err, "root "+keyword)
 				assert.Empty(t, captured, "unsupported schema made an HTTP request")
 			}
+			client.strictToolSchemas = false
+			if mode == "stream" {
+				_, err = client.ChatStream(context.Background(), messages, tools[3:], nil)
+			} else {
+				_, err = client.Chat(context.Background(), messages, tools[3:])
+			}
+			require.NoError(t, err)
+			assert.NotContains(t, <-captured, "tools")
 		})
 	}
 }
