@@ -98,16 +98,15 @@ func startWeaveSpan(
 	return tracer.StartSpan(ctx, spanName, opts...)
 }
 
-// effectiveTurnUsage returns the full-turn token and cost totals from resp,
-// falling back to resp.Usage if TurnUsage was left zero by a synthetic fixture.
-func effectiveTurnUsage(resp *agent.Response) agent.Usage {
+// turnUsage returns the turn's token and cost totals: every successful LLM
+// call of the conversation loop, including a final synthesis call. Loom's own
+// memory calls (graph-memory extraction, recall query and rerank) are not
+// part of it; their llm.completion spans carry their cost.
+func turnUsage(resp *agent.Response) agent.Usage {
 	if resp == nil {
 		return agent.Usage{}
 	}
-	if resp.TurnUsage != (agent.Usage{}) {
-		return resp.TurnUsage
-	}
-	return resp.Usage
+	return resp.TurnUsage
 }
 
 // recordWeaveSpanUsage records the completed turn's response length and
@@ -116,7 +115,7 @@ func recordWeaveSpanUsage(span *observability.Span, resp *agent.Response) {
 	if span == nil || resp == nil {
 		return
 	}
-	usage := effectiveTurnUsage(resp)
+	usage := turnUsage(resp)
 	span.SetAttribute("response.length", len(resp.Content))
 	span.SetAttribute("usage.input_tokens", usage.InputTokens)
 	span.SetAttribute("usage.output_tokens", usage.OutputTokens)
@@ -144,10 +143,10 @@ func resolveWeaveTraceID(span *observability.Span, resp *agent.Response) string 
 	return ""
 }
 
-// buildWeaveCostInfo constructs CostInfo from the full turn's accumulated
-// usage (resp.TurnUsage) rather than only the final LLM call.
+// buildWeaveCostInfo constructs CostInfo from the turn's accumulated usage
+// (resp.TurnUsage) rather than only the final LLM call.
 func buildWeaveCostInfo(provider, model string, resp *agent.Response) *loomv1.CostInfo {
-	usage := effectiveTurnUsage(resp)
+	usage := turnUsage(resp)
 	return &loomv1.CostInfo{
 		TotalCostUsd: usage.CostUSD,
 		LlmCost: &loomv1.LLMCost{
@@ -169,7 +168,9 @@ func buildExecutionMetadata(resp *agent.Response, contextState *loomv1.ContextSt
 	if resp == nil {
 		return nil
 	}
-	llmCalls, _ := resp.Metadata["turns"].(int)
+	// llm_calls counts the calls TurnUsage sums; "turns" counts loop
+	// iterations, which happen to match it today.
+	llmCalls, _ := resp.Metadata["llm_calls"].(int)
 	toolExecs, ok := resp.Metadata["tool_executions"].(int)
 	if !ok {
 		toolExecs = len(resp.ToolExecutions)

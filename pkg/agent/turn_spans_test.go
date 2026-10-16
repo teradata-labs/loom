@@ -115,3 +115,35 @@ func TestTurnSpans(t *testing.T) {
 		assert.Equal(t, chat.TraceID, resp.Metadata["trace_id"])
 	})
 }
+
+// TestResponse_LLMCallsCountsTurnUsageCalls checks that Metadata["llm_calls"]
+// counts the calls TurnUsage sums, including the final synthesis call made
+// when the loop runs out of turns.
+func TestResponse_LLMCallsCountsTurnUsageCalls(t *testing.T) {
+	llmProvider := &mockLLMProvider{
+		name:  "test-llm",
+		model: "test-model",
+		responses: []agent.LLMResponse{
+			{StopReason: "tool_use", ToolCalls: []llmtypes.ToolCall{{ID: "call_1", Name: "lookup", Input: map[string]interface{}{}}},
+				Usage: llmtypes.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15, CostUSD: 0.001}},
+			{Content: "summary", StopReason: "end_turn",
+				Usage: llmtypes.Usage{InputTokens: 20, OutputTokens: 5, TotalTokens: 25, CostUSD: 0.002}},
+		},
+	}
+	tool := &shuttle.MockTool{MockName: "lookup", MockBackend: "test",
+		MockExecute: func(context.Context, map[string]interface{}) (*shuttle.Result, error) {
+			return &shuttle.Result{Success: true, Data: "x"}, nil
+		}}
+	cfg := agent.DefaultConfig()
+	cfg.MaxTurns = 1
+	cfg.PatternConfig = agent.DefaultPatternConfig()
+	cfg.PatternConfig.UseLLMClassifier = false
+	ag := builder.NewInstrumentedAgent(&mockBackend{}, llmProvider, observability.NewMockTracer(), agent.WithConfig(cfg))
+	ag.RegisterTool(tool)
+
+	resp, err := ag.Chat(context.Background(), "calls-session", "look it up")
+	require.NoError(t, err)
+	assert.Equal(t, true, resp.Metadata["synthesized"])
+	assert.Equal(t, 2, resp.Metadata["llm_calls"], "the loop's call plus the synthesis call")
+	assert.Equal(t, 40, resp.TurnUsage.TotalTokens)
+}

@@ -805,10 +805,10 @@ func (m *twoCallToolLLM) Model() string { return "claude-sonnet-4-5" }
 
 type noopTestTool struct{}
 
-func (noopTestTool) Name() string                               { return "noop_tool" }
-func (noopTestTool) Description() string                        { return "no-op tool for tests" }
-func (noopTestTool) Backend() string                            { return "" }
-func (noopTestTool) InputSchema() *shuttle.JSONSchema           { return &shuttle.JSONSchema{Type: "object"} }
+func (noopTestTool) Name() string                     { return "noop_tool" }
+func (noopTestTool) Description() string              { return "no-op tool for tests" }
+func (noopTestTool) Backend() string                  { return "" }
+func (noopTestTool) InputSchema() *shuttle.JSONSchema { return &shuttle.JSONSchema{Type: "object"} }
 func (noopTestTool) Execute(context.Context, map[string]interface{}) (*shuttle.Result, error) {
 	return &shuttle.Result{Success: true, Data: "ok"}, nil
 }
@@ -1050,4 +1050,3 @@ func TestExtractWeaveContextMetadata_BoundsRunesAndFiltersKeys(t *testing.T) {
 	assert.Equal(t, 256, len([]rune(md["condition"])))
 	assert.Equal(t, strings.Repeat("界", 256), md["condition"])
 }
-
