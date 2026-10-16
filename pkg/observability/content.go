@@ -13,7 +13,10 @@
 // limitations under the License.
 package observability
 
-import "sync/atomic"
+import (
+	"context"
+	"sync/atomic"
+)
 
 // DefaultMaxContentLength is the number of runes TruncateContent keeps when
 // no limit has been configured.
@@ -43,6 +46,33 @@ func SetMaxContentLength(n int) {
 // 0 means unlimited.
 func MaxContentLength() int {
 	return int(maxContentLength.Load())
+}
+
+type spanMetadataKey struct{}
+
+// ContextWithSpanMetadata returns ctx carrying string tags (for example an
+// experiment's condition and replication) that turn spans started under it
+// record in their OpenInference metadata attribute. The map is copied.
+func ContextWithSpanMetadata(ctx context.Context, md map[string]string) context.Context {
+	c := make(map[string]string, len(md))
+	for k, v := range md {
+		c[k] = v
+	}
+	return context.WithValue(ctx, spanMetadataKey{}, c)
+}
+
+// SpanMetadataFromContext returns a copy of the tags ContextWithSpanMetadata
+// stored in ctx, or nil.
+func SpanMetadataFromContext(ctx context.Context) map[string]string {
+	md, _ := ctx.Value(spanMetadataKey{}).(map[string]string)
+	if md == nil {
+		return nil
+	}
+	c := make(map[string]string, len(md))
+	for k, v := range md {
+		c[k] = v
+	}
+	return c
 }
 
 // TruncateContent bounds content recorded on spans. It keeps the first

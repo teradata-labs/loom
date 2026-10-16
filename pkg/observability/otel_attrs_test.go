@@ -119,13 +119,28 @@ func TestExportAttributes_Golden(t *testing.T) {
 		{
 			name: "tool span",
 			span: "agent.tool_execution",
+			// The attributes Agent.dispatchOneCall sets (setToolSpanInput, then
+			// the result).
 			attrs: map[string]interface{}{
-				"tool_name":         "file_read",
-				"success":           true,
-				"execution_time_ms": int64(5),
+				"tool_name":             "file_read",
+				"tool.name":             "file_read",
+				"gen_ai.operation.name": "execute_tool",
+				"gen_ai.tool.call.id":   "call_1",
+				"input.value":           `{"path":"a.txt"}`,
+				"input.mime_type":       "application/json",
+				"output.value":          "secret",
+				"success":               true,
+				"execution_time_ms":     int64(5),
 			},
 			want: map[string]interface{}{
 				"loom.tool_name":          "file_read",
+				"gen_ai.tool.name":        "file_read",
+				"tool.name":               "file_read",
+				"gen_ai.operation.name":   "execute_tool",
+				"gen_ai.tool.call.id":     "call_1",
+				"input.value":             `{"path":"a.txt"}`,
+				"input.mime_type":         "application/json",
+				"output.value":            "secret",
 				"loom.success":            true,
 				"loom.execution_time_ms":  int64(5),
 				"openinference.span.kind": "TOOL",

@@ -94,6 +94,9 @@ var loomAlsoExport = map[string]string{ //nolint:gochecknoglobals
 	"llm.provider": "gen_ai.provider.name",
 	// OpenInference agent.name (passthrough) plus the OTel GenAI key.
 	"agent.name": "gen_ai.agent.name",
+	// OTel GenAI gen_ai.tool.name (primary) plus the OpenInference key that
+	// names a TOOL span's tool.
+	"tool.name": "tool.name",
 }
 
 // openInferencePassthrough lists keys (exact, or prefixes ending in ".")
