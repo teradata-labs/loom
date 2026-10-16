@@ -604,7 +604,7 @@ exportAttributes(spanName string, attrs map[string]interface{}) []attribute.KeyV
 
 **Consequences**:
 - Two code paths to maintain (OTelTracer + optional OTLPSpanExporter)
-- Option A cannot simultaneously write to embedded storage — hybrid mode requires Option B
+- Option A can also keep the embedded `eval_runs` record through an `EvalRunRecorder` (Decision 4); Option B remains the path for exporting spans from `EmbeddedTracer` to non-OTLP stores
 
 ---
 
@@ -646,6 +646,36 @@ exportAttributes(spanName string, attrs map[string]interface{}) []attribute.KeyV
 - Binary size remains smaller (one exporter package vs. two)
 - Can add `otlptracegrpc` later without breaking the interface
 
+
+### Decision 4: Local eval_runs Record During OTLP Export
+
+**Problem**: `observability.mode` selects exactly one tracer. Experiment analysis reads `eval_runs` rows (one per span, Loom-native attribute names in `configuration_json`) from the embedded SQLite store, so switching a deployment to `mode: otel` stops the rows that analysis depends on.
+
+**Chosen approach**: `EvalRunRecorder` holds the storage half of `EmbeddedTracer` (span-to-row conversion, the per-session `evals` row, the `eval_metrics` flush loop, shutdown). `EmbeddedTracer` delegates to it, and `OTelTracer` calls the same recorder from `EndSpan` when `OTelConfig.Recorder` is set (`observability.otlp_record_eval_runs`).
+
+```
+                      OTelTracer.EndSpan(span)
+                               │
+             ┌─────────────────┴──────────────────┐
+             ▼                                    ▼
+   EvalRunRecorder.Record(span)        redactOTelSpan → exportAttributes
+   (as recorded: unredacted,                       │
+    Loom-native keys, unfiltered)                  ▼
+             │                         SDK span → filteringSpanProcessor
+             ▼                                    → BatchSpanProcessor → OTLP
+   {eval_runs row} in SQLite
+```
+
+**Invariant**: for the same span, the row written under `mode: otel` with a recorder equals the row `mode: embedded` writes, except for `id` (the OTel span ID instead of a UUID), `eval_id` and timing columns. A golden test (`TestEvalRunRecorder_RowParityWithEmbedded`) checks this.
+
+**Alternatives considered**:
+- **OTLPSpanExporter on `EmbeddedTracer`** (Decision 1, Option B): embedded mode stays the tracer, spans are forwarded over OTLP. Rejected for this purpose because span identity and parent linkage (synced OTel IDs, late children after a parent ends) live in `OTelTracer`; an exporter would rebuild them from UUIDs.
+- **A fan-out tracer** wrapping both tracers: each span would get two independent ID sets, so the context could carry only one of them and the record and the export would disagree on IDs.
+- **Phoenix as the only record**: rejected because existing analysis would need porting and batches recorded before and after the switch would live in different stores.
+
+**Consequences**: the recorder writes before redaction, matching `mode: embedded`; operators who enable it keep an unredacted local file next to a redacted export. Recording runs on the `EndSpan` path, so a slow SQLite write delays the caller as it does in embedded mode.
+
+---
 
 ## Constraints and Limitations
 

@@ -14,11 +14,42 @@
 package main
 
 import (
+	"fmt"
 	"os"
+	"time"
 
 	"github.com/teradata-labs/loom/pkg/observability"
 	"go.uber.org/zap"
 )
+
+// Default eval_metrics flush intervals for embedded storage when
+// observability.flush_interval is unset or invalid.
+const (
+	serveEmbeddedFlushInterval    = 30 * time.Second
+	workflowEmbeddedFlushInterval = 5 * time.Second // shorter runs
+)
+
+// embeddedStorageConfig builds the embedded storage settings from obs:
+// storage_type (default memory), sqlite_path and flush_interval (default
+// defaultFlush when unset or unparsable).
+func embeddedStorageConfig(obs ObservabilityConfig, defaultFlush time.Duration, logger *zap.Logger) *observability.EmbeddedConfig {
+	storageType := obs.StorageType
+	if storageType == "" {
+		storageType = "memory"
+	}
+	flushInterval := defaultFlush
+	if obs.FlushInterval != "" {
+		if duration, err := time.ParseDuration(obs.FlushInterval); err == nil {
+			flushInterval = duration
+		}
+	}
+	return &observability.EmbeddedConfig{
+		StorageType:   storageType,
+		SQLitePath:    obs.SQLitePath,
+		FlushInterval: flushInterval,
+		Logger:        logger,
+	}
+}
 
 // applyOTLPEnvOverride inspects standard and Loom OTLP endpoint environment
 // variables when OTLP was selected in configuration, then overrides the
@@ -65,12 +96,22 @@ func firstConfiguredEnv(keys ...string) string {
 }
 
 // newOTLPTracer applies the process-wide OTLP settings from obs and builds
-// the OTel tracer that looms serve and looms workflow export through.
-func newOTLPTracer(obs ObservabilityConfig, serviceName, serviceVersion string) (*observability.OTelTracer, error) {
+// the OTel tracer that looms serve and looms workflow export through. With
+// otlp_record_eval_runs it also opens the embedded eval_runs record, which
+// the tracer closes on Shutdown.
+func newOTLPTracer(obs ObservabilityConfig, serviceName, serviceVersion string, defaultFlush time.Duration, logger *zap.Logger) (*observability.OTelTracer, error) {
 	if obs.OTLPMaxContentLength != nil {
 		observability.SetMaxContentLength(*obs.OTLPMaxContentLength)
 	}
-	return observability.NewOTelTracer(observability.OTelConfig{
+	var recorder *observability.EvalRunRecorder
+	if obs.OTLPRecordEvalRuns {
+		var err error
+		recorder, err = observability.NewEvalRunRecorder(embeddedStorageConfig(obs, defaultFlush, logger), logger)
+		if err != nil {
+			return nil, fmt.Errorf("opening eval_runs record: %w", err)
+		}
+	}
+	tracer, err := observability.NewOTelTracer(observability.OTelConfig{
 		Endpoint:       obs.OTLPEndpoint,
 		Headers:        obs.OTLPHeaders,
 		Insecure:       obs.OTLPInsecure,
@@ -83,7 +124,12 @@ func newOTLPTracer(obs ObservabilityConfig, serviceName, serviceVersion string) 
 		SpanFilter: observability.SpanFilterConfig{
 			IncludePrefixes: obs.OTLPIncludeSpans,
 		},
+		Recorder: recorder,
 	})
+	if err != nil && recorder != nil {
+		_ = recorder.Close()
+	}
+	return tracer, err
 }
 
 func otlpServiceName(defaultName string) string {

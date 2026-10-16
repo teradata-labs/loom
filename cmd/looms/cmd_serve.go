@@ -1225,24 +1225,7 @@ func runServe(cmd *cobra.Command, args []string) {
 				zap.String("storage_type", config.Observability.StorageType),
 				zap.String("sqlite_path", config.Observability.SQLitePath))
 
-			storageType := config.Observability.StorageType
-			if storageType == "" {
-				storageType = "memory"
-			}
-
-			flushInterval := 30 * time.Second
-			if config.Observability.FlushInterval != "" {
-				if duration, err := time.ParseDuration(config.Observability.FlushInterval); err == nil {
-					flushInterval = duration
-				}
-			}
-
-			embeddedTracer, err := observability.NewEmbeddedTracer(&observability.EmbeddedConfig{
-				StorageType:   storageType,
-				SQLitePath:    config.Observability.SQLitePath,
-				FlushInterval: flushInterval,
-				Logger:        logger,
-			})
+			embeddedTracer, err := observability.NewEmbeddedTracer(embeddedStorageConfig(config.Observability, serveEmbeddedFlushInterval, logger))
 			if err != nil {
 				logger.Warn("Failed to create embedded tracer, using no-op tracer", zap.Error(err))
 				tracer = observability.NewNoOpTracer()
@@ -1269,7 +1252,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		case "otel":
 			logger.Info("Observability enabled with OTLP export",
 				zap.String("endpoint", config.Observability.OTLPEndpoint))
-			otelTracer, err := newOTLPTracer(config.Observability, "looms", rootCmd.Version)
+			otelTracer, err := newOTLPTracer(config.Observability, "looms", rootCmd.Version, serveEmbeddedFlushInterval, logger)
 			if err != nil {
 				logger.Warn("Failed to create OTLP tracer, using no-op tracer", zap.Error(err))
 				tracer = observability.NewNoOpTracer()

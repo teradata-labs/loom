@@ -15,6 +15,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -22,7 +23,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/teradata-labs/loom/internal/sqlitedriver"
 	"github.com/teradata-labs/loom/pkg/observability"
+	"go.uber.org/zap"
 )
 
 func loadOTLPTestConfig(t *testing.T, extra string) *Config {
@@ -78,7 +81,7 @@ func TestNewOTLPTracer_AppliesMaxContentLength(t *testing.T) {
 		OTLPEndpoint:         "http://127.0.0.1:6006/v1/traces",
 		OTLPInsecure:         true,
 		OTLPMaxContentLength: &limit,
-	}, "looms", "test")
+	}, "looms", "test", serveEmbeddedFlushInterval, zap.NewNop())
 	require.NoError(t, err)
 	shutdown(tr)
 	assert.Equal(t, 32768, observability.MaxContentLength())
@@ -87,8 +90,64 @@ func TestNewOTLPTracer_AppliesMaxContentLength(t *testing.T) {
 	tr, err = newOTLPTracer(ObservabilityConfig{
 		OTLPEndpoint: "http://127.0.0.1:6006/v1/traces",
 		OTLPInsecure: true,
-	}, "looms", "test")
+	}, "looms", "test", serveEmbeddedFlushInterval, zap.NewNop())
 	require.NoError(t, err)
 	shutdown(tr)
 	assert.Equal(t, observability.DefaultMaxContentLength, observability.MaxContentLength(), "unset key keeps the default")
+}
+
+func TestLoadConfig_OTLPRecordEvalRuns(t *testing.T) {
+	t.Run("default off", func(t *testing.T) {
+		cfg := loadOTLPTestConfig(t, "")
+		assert.False(t, cfg.Observability.OTLPRecordEvalRuns)
+	})
+	t.Run("sqlite record validates", func(t *testing.T) {
+		cfg := loadOTLPTestConfig(t, "  otlp_record_eval_runs: true\n  storage_type: sqlite\n  sqlite_path: ./observability.db\n")
+		assert.True(t, cfg.Observability.OTLPRecordEvalRuns)
+		require.NoError(t, cfg.Validate())
+	})
+	t.Run("requires sqlite storage", func(t *testing.T) {
+		for _, extra := range []string{
+			"  otlp_record_eval_runs: true\n",
+			"  otlp_record_eval_runs: true\n  storage_type: memory\n",
+			"  otlp_record_eval_runs: true\n  storage_type: sqlite\n",
+		} {
+			cfg := loadOTLPTestConfig(t, extra)
+			err := cfg.Validate()
+			require.Error(t, err, extra)
+			assert.Contains(t, err.Error(), "otlp_record_eval_runs")
+		}
+	})
+}
+
+func TestNewOTLPTracer_RecordsEvalRuns(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "observability.db")
+	tr, err := newOTLPTracer(ObservabilityConfig{
+		OTLPEndpoint:       "http://127.0.0.1:6006/v1/traces",
+		OTLPInsecure:       true,
+		OTLPRecordEvalRuns: true,
+		StorageType:        "sqlite",
+		SQLitePath:         dbPath,
+	}, "looms", "test", serveEmbeddedFlushInterval, zap.NewNop())
+	require.NoError(t, err)
+
+	_, span := tr.StartSpan(context.Background(), "agent.chat")
+	span.SetAttribute("session.id", "smoke-1")
+	tr.EndSpan(span)
+
+	// The OTLP endpoint is not running; Shutdown still closes the recorder.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = tr.Shutdown(ctx)
+
+	db, err := sql.Open("sqlite3", sqlitedriver.DSN(dbPath, sqlitedriver.Options{}))
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	var rows int
+	var sessionID, status string
+	require.NoError(t, db.QueryRow(`SELECT count(*), max(session_id) FROM eval_runs`).Scan(&rows, &sessionID))
+	assert.Equal(t, 1, rows, "the span is recorded in the configured sqlite_path")
+	assert.Equal(t, "smoke-1", sessionID)
+	require.NoError(t, db.QueryRow(`SELECT status FROM evals`).Scan(&status))
+	assert.Equal(t, "completed", status, "Shutdown closes the recorder")
 }

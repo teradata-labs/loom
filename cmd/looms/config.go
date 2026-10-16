@@ -639,6 +639,10 @@ type ObservabilityConfig struct {
 	// spans, in runes, while OTLP export is active. nil keeps the default
 	// (observability.DefaultMaxContentLength); 0 keeps content whole.
 	OTLPMaxContentLength *int `mapstructure:"otlp_max_content_length"`
+	// OTLPRecordEvalRuns keeps writing the embedded-mode eval_runs record
+	// (storage_type: sqlite, sqlite_path, flush_interval) while spans are
+	// exported over OTLP. Default false.
+	OTLPRecordEvalRuns bool `mapstructure:"otlp_record_eval_runs"`
 }
 
 // LoggingConfig holds logging configuration.
@@ -1951,6 +1955,10 @@ func (c *Config) Validate() error {
 			}
 			if n := c.Observability.OTLPMaxContentLength; n != nil && *n < 0 {
 				return fmt.Errorf("observability.otlp_max_content_length must be 0 (unlimited) or positive (got: %d)", *n)
+			}
+			if c.Observability.OTLPRecordEvalRuns &&
+				(c.Observability.StorageType != "sqlite" || c.Observability.SQLitePath == "") {
+				return fmt.Errorf("observability.otlp_record_eval_runs requires storage_type: sqlite and a sqlite_path")
 			}
 		case "none":
 			// No-op mode: no validation needed

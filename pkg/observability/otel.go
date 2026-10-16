@@ -38,6 +38,7 @@ type OTelTracer struct {
 	tracer      oteltrace.Tracer
 	activeSpans sync.Map // loom SpanID (string) → oteltrace.Span
 	privacy     PrivacyConfig
+	recorder    *EvalRunRecorder // optional local eval_runs record (OTelConfig.Recorder)
 }
 
 // NewOTelTracer creates a tracer that exports via OTLP HTTP.
@@ -91,6 +92,7 @@ func NewOTelTracer(cfg OTelConfig) (*OTelTracer, error) {
 		provider: provider,
 		tracer:   provider.Tracer("loom"),
 		privacy:  cfg.Privacy,
+		recorder: cfg.Recorder,
 	}, nil
 }
 
@@ -159,6 +161,10 @@ func (t *OTelTracer) EndSpan(span *Span) {
 	}
 	otelSpan, _ := raw.(oteltrace.Span)
 
+	// Local record first, from the span as Loom recorded it: the same row
+	// mode: embedded writes (unredacted, Loom-native keys, unfiltered).
+	t.recorder.Record(span)
+
 	redacted := redactOTelSpan(span, t.privacy)
 
 	// Translate span attributes and add the derived OpenInference attributes.
@@ -199,15 +205,29 @@ func (t *OTelTracer) RecordMetric(_ string, _ float64, _ map[string]string) {}
 // RecordEvent is a no-op. Point-in-time events should be attached to spans via span.AddEvent.
 func (t *OTelTracer) RecordEvent(_ context.Context, _ string, _ map[string]interface{}) {}
 
-// Flush forces immediate export of all buffered spans and blocks until done.
+// Flush forces immediate export of all buffered spans and blocks until done,
+// then updates the local recorder's eval_metrics when one is configured.
 func (t *OTelTracer) Flush(ctx context.Context) error {
-	return t.provider.ForceFlush(ctx)
+	if err := t.provider.ForceFlush(ctx); err != nil {
+		return err
+	}
+	if t.recorder != nil {
+		return t.recorder.Flush(ctx)
+	}
+	return nil
 }
 
-// Shutdown gracefully drains buffered spans and stops the exporter.
+// Shutdown gracefully drains buffered spans and stops the exporter, then
+// closes the local recorder when one is configured.
 // Call this on server shutdown after Flush.
 func (t *OTelTracer) Shutdown(ctx context.Context) error {
-	return t.provider.Shutdown(ctx)
+	err := t.provider.Shutdown(ctx)
+	if t.recorder != nil {
+		if rerr := t.recorder.Close(); rerr != nil && err == nil {
+			err = rerr
+		}
+	}
+	return err
 }
 
 // buildOTelSpanContext constructs an OTel SpanContext from Loom UUID-based IDs.
