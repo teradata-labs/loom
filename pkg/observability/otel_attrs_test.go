@@ -305,3 +305,118 @@ func TestOTelTracerExportsOpenInference(t *testing.T) {
 		t.Error("llm.completion still exports the misspelled gen_ai.usage.cache_read_input_tokens")
 	}
 }
+
+func TestExportAttributes_EachKeyOnce(t *testing.T) {
+	t.Run("OpenInference metadata passes through; metadata.* stays prefixed", func(t *testing.T) {
+		got := attrMap(t, exportAttributes("server.Weave", map[string]interface{}{
+			"metadata":      `{"condition":"memory_on"}`,
+			"metadata.keys": 3,
+		}))
+		if got["metadata"] != `{"condition":"memory_on"}` {
+			t.Errorf("metadata = %v", got["metadata"])
+		}
+		if _, ok := got["loom.metadata"]; ok {
+			t.Error("metadata must not be loom-prefixed")
+		}
+		if got["loom.metadata.keys"] != int64(3) {
+			t.Errorf("loom.metadata.keys = %v", got["loom.metadata.keys"])
+		}
+	})
+	t.Run("explicit llm.cost.total is exported as set", func(t *testing.T) {
+		got := attrMap(t, exportAttributes("llm.completion", map[string]interface{}{
+			"llm.cost.usd":   0.2,
+			"llm.cost.total": 0.5,
+		}))
+		if got["llm.cost.total"] != 0.5 {
+			t.Errorf("llm.cost.total = %v, want the explicit 0.5", got["llm.cost.total"])
+		}
+		if got["gen_ai.usage.cost"] != 0.2 {
+			t.Errorf("gen_ai.usage.cost = %v", got["gen_ai.usage.cost"])
+		}
+		if _, ok := got["loom.llm.cost.total"]; ok {
+			t.Error("llm.cost.total must not be loom-prefixed")
+		}
+	})
+	t.Run("explicit prompt count keeps the derived completion and total", func(t *testing.T) {
+		got := attrMap(t, exportAttributes("llm.completion", map[string]interface{}{
+			"llm.tokens.input":       10,
+			"llm.tokens.output":      5,
+			"llm.token_count.prompt": 100,
+		}))
+		want := map[string]int64{
+			"llm.token_count.prompt":     100,
+			"llm.token_count.completion": 5,
+			"llm.token_count.total":      105,
+		}
+		for k, v := range want {
+			if got[k] != v {
+				t.Errorf("%s = %v, want %d", k, got[k], v)
+			}
+		}
+	})
+	t.Run("empty explicit span kind falls back to the span name", func(t *testing.T) {
+		got := attrMap(t, exportAttributes("agent.chat", map[string]interface{}{
+			"openinference.span.kind": "",
+		}))
+		if got["openinference.span.kind"] != "AGENT" {
+			t.Errorf("kind = %v, want AGENT", got["openinference.span.kind"])
+		}
+	})
+	t.Run("aliases resolve the same way every time", func(t *testing.T) {
+		attrs := map[string]interface{}{
+			"tool.name":     "from tool.name",
+			"mcp.tool.name": "from mcp.tool.name",
+			"agent_id":      "from agent_id",
+			"agent.id":      "from agent.id",
+		}
+		for i := 0; i < 50; i++ {
+			got := attrMap(t, exportAttributes("mcp.tools.call", attrs))
+			if got["gen_ai.tool.name"] != "from mcp.tool.name" || got["gen_ai.agent.id"] != "from agent.id" {
+				t.Fatalf("run %d: gen_ai.tool.name = %v, gen_ai.agent.id = %v", i, got["gen_ai.tool.name"], got["gen_ai.agent.id"])
+			}
+		}
+	})
+	t.Run("a key set under its exported name wins over a mapped alias", func(t *testing.T) {
+		got := attrMap(t, exportAttributes("agent.tool_execution", map[string]interface{}{
+			"tool.name":        "mapped",
+			"gen_ai.tool.name": "direct",
+		}))
+		if got["gen_ai.tool.name"] != "direct" {
+			t.Errorf("gen_ai.tool.name = %v, want direct", got["gen_ai.tool.name"])
+		}
+	})
+	t.Run("output is sorted by key", func(t *testing.T) {
+		kvs := exportAttributes("llm.completion", map[string]interface{}{
+			"llm.model": "m", "llm.tokens.input": 1, "zeta": "z", "alpha": "a",
+		})
+		for i := 1; i < len(kvs); i++ {
+			if kvs[i-1].Key >= kvs[i].Key {
+				t.Fatalf("not sorted at %d: %s >= %s", i, kvs[i-1].Key, kvs[i].Key)
+			}
+		}
+	})
+}
+
+func TestToOTelAttr_TypedValues(t *testing.T) {
+	tests := []struct {
+		name string
+		in   interface{}
+		want attribute.KeyValue
+	}{
+		{name: "string slice", in: []string{"file_read", "graph_memory"}, want: attribute.StringSlice("k", []string{"file_read", "graph_memory"})},
+		{name: "int slice", in: []int{1, 2}, want: attribute.IntSlice("k", []int{1, 2})},
+		{name: "int64 slice", in: []int64{3}, want: attribute.Int64Slice("k", []int64{3})},
+		{name: "float64 slice", in: []float64{0.5}, want: attribute.Float64Slice("k", []float64{0.5})},
+		{name: "bool slice", in: []bool{true}, want: attribute.BoolSlice("k", []bool{true})},
+		{name: "map as JSON", in: map[string]interface{}{"a": 1}, want: attribute.String("k", `{"a":1}`)},
+		{name: "interface slice as JSON", in: []interface{}{"a", 1}, want: attribute.String("k", `["a",1]`)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := toOTelAttr("k", tt.in)
+			if got.Value.Type() != tt.want.Value.Type() || got.Value.Emit() != tt.want.Value.Emit() {
+				t.Errorf("toOTelAttr = %s %q, want %s %q", got.Value.Type(), got.Value.Emit(), tt.want.Value.Type(), tt.want.Value.Emit())
+			}
+		})
+	}
+}

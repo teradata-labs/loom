@@ -14,7 +14,9 @@
 package observability
 
 import (
+	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -111,6 +113,8 @@ var openInferencePassthrough = []string{ //nolint:gochecknoglobals
 	"retrieval.documents.",
 	"graph.node.id",
 	"agent.name",
+	"metadata", // one JSON object string; metadata.* keys are Loom's own and stay prefixed
+	"llm.cost.",
 	"gen_ai.",
 }
 
@@ -177,55 +181,100 @@ const (
 	attrLoomResponsePreview = "response.preview"
 )
 
-// exportAttributes returns the OTel attributes exported for a Loom span:
-// each Loom attribute under its OTel name (or "loom."-prefixed), followed by
-// the OpenInference attributes derived from the span name and attributes.
+// exportAttributes returns the OTel attributes exported for a Loom span,
+// one per key and sorted by key: each Loom attribute under its OTel name (or
+// "loom."-prefixed), plus the OpenInference attributes derived from the span
+// name and attributes for keys the span does not already export.
+//
+// When several Loom keys export to the same OTel key, a key the span sets
+// under that exact name (an OpenInference or gen_ai.* passthrough) wins over
+// a mapped one; otherwise the lexically first Loom key wins. The result does
+// not depend on map iteration order.
 func exportAttributes(spanName string, attrs map[string]interface{}) []attribute.KeyValue {
-	out := make([]attribute.KeyValue, 0, len(attrs)+8)
-	for k, v := range attrs {
-		otelKey := k
-		if mapped, ok := loomToGenAI[k]; ok {
-			otelKey = mapped
-		} else if !isPassthrough(k) && !strings.HasPrefix(k, loomAttrPrefix) {
-			otelKey = loomAttrPrefix + k
+	type exported struct {
+		kv     attribute.KeyValue
+		direct bool
+	}
+	out := make(map[string]exported, len(attrs)+8)
+	put := func(key string, v interface{}, direct bool) {
+		if prev, ok := out[key]; ok && (prev.direct || !direct) {
+			return
 		}
+		out[key] = exported{kv: toOTelAttr(key, v), direct: direct}
+	}
+
+	keys := make([]string, 0, len(attrs))
+	for k := range attrs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if k == attrOpenInferenceKind {
+			continue // exported once below, from this value or the span name
+		}
+		v := attrs[k]
 		if k == AttrLLMProvider {
 			v = normalizeGenAISystem(v)
 		}
-		out = append(out, toOTelAttr(otelKey, v))
+		otelKey, direct := exportKey(k)
+		put(otelKey, v, direct)
 		if extra, ok := loomAlsoExport[k]; ok {
-			out = append(out, toOTelAttr(extra, v))
+			put(extra, v, false)
 		}
 	}
-	return append(out, deriveOpenInferenceAttrs(spanName, attrs)...)
+	for _, kv := range deriveOpenInferenceAttrs(spanName, attrs) {
+		if _, ok := out[string(kv.Key)]; !ok {
+			out[string(kv.Key)] = exported{kv: kv}
+		}
+	}
+
+	exportedKeys := make([]string, 0, len(out))
+	for k := range out {
+		exportedKeys = append(exportedKeys, k)
+	}
+	sort.Strings(exportedKeys)
+	result := make([]attribute.KeyValue, 0, len(out))
+	for _, k := range exportedKeys {
+		result = append(result, out[k].kv)
+	}
+	return result
+}
+
+// exportKey returns the OTel key a Loom attribute exports under and whether
+// that is the attribute's own name.
+func exportKey(k string) (string, bool) {
+	if mapped, ok := loomToGenAI[k]; ok {
+		return mapped, mapped == k
+	}
+	if isPassthrough(k) || strings.HasPrefix(k, loomAttrPrefix) {
+		return k, true
+	}
+	return loomAttrPrefix + k, false
 }
 
 // deriveOpenInferenceAttrs computes the OpenInference attributes Phoenix
 // needs and cannot synthesize from the gen_ai.* keys: the span kind, token
 // counts that include cached prompt tokens, input/output values and the
-// LLM cost. Keys the span already carries are left alone.
+// LLM cost. exportAttributes drops a derived key the span already exports;
+// derived totals use the span's explicit counts where it sets them.
 //
 // llm.provider, llm.system and llm.model_name are not set: Phoenix derives
 // them from gen_ai.provider.name / gen_ai.system and gen_ai.request.model,
 // and an explicit value would override its OpenInference mapping.
 func deriveOpenInferenceAttrs(spanName string, attrs map[string]interface{}) []attribute.KeyValue {
-	var out []attribute.KeyValue
-	has := func(k string) bool { _, ok := attrs[k]; return ok }
-
 	kind := oiKindChain
+	if mapped, ok := openInferenceSpanKinds[spanName]; ok {
+		kind = mapped
+	}
 	if explicit, ok := attrs[attrOpenInferenceKind].(string); ok && explicit != "" {
 		kind = explicit
-	} else {
-		if mapped, ok := openInferenceSpanKinds[spanName]; ok {
-			kind = mapped
-		}
-		out = append(out, attribute.String(attrOpenInferenceKind, kind))
 	}
+	out := []attribute.KeyValue{attribute.String(attrOpenInferenceKind, kind)}
 
-	if s, ok := attrs[attrLoomMessagePreview].(string); ok && !has(attrOIInputValue) {
+	if s, ok := attrs[attrLoomMessagePreview].(string); ok {
 		out = append(out, attribute.String(attrOIInputValue, s))
 	}
-	if s, ok := attrs[attrLoomResponsePreview].(string); ok && !has(attrOIOutputValue) {
+	if s, ok := attrs[attrLoomResponsePreview].(string); ok {
 		out = append(out, attribute.String(attrOIOutputValue, s))
 	}
 
@@ -236,24 +285,31 @@ func deriveOpenInferenceAttrs(spanName string, attrs map[string]interface{}) []a
 	// Loom's llm.tokens.input is the uncached remainder for every provider,
 	// while OpenInference's prompt count includes cached reads and writes.
 	// Phoenix would otherwise copy gen_ai.usage.input_tokens as the prompt.
-	if input, ok := attrInt64(attrs, attrLoomTokensInput); ok && !has(attrOITokenPrompt) {
-		cacheRead, _ := attrInt64(attrs, attrLoomTokensCacheRead)
-		cacheWrite, _ := attrInt64(attrs, attrLoomTokensCacheWrt)
+	if input, ok := attrInt64(attrs, attrLoomTokensInput); ok {
+		cacheRead, hasCacheRead := attrInt64(attrs, attrLoomTokensCacheRead)
+		cacheWrite, hasCacheWrite := attrInt64(attrs, attrLoomTokensCacheWrt)
 		output, _ := attrInt64(attrs, attrLoomTokensOutput)
 		prompt := input + cacheRead + cacheWrite
+		if explicit, ok := attrInt64(attrs, attrOITokenPrompt); ok {
+			prompt = explicit
+		}
+		completion := output
+		if explicit, ok := attrInt64(attrs, attrOITokenCompletion); ok {
+			completion = explicit
+		}
 		out = append(out,
 			attribute.Int64(attrOITokenPrompt, prompt),
-			attribute.Int64(attrOITokenCompletion, output),
-			attribute.Int64(attrOITokenTotal, prompt+output),
+			attribute.Int64(attrOITokenCompletion, completion),
+			attribute.Int64(attrOITokenTotal, prompt+completion),
 		)
-		if has(attrLoomTokensCacheRead) {
+		if hasCacheRead {
 			out = append(out, attribute.Int64(attrOITokenCacheRead, cacheRead))
 		}
-		if has(attrLoomTokensCacheWrt) {
+		if hasCacheWrite {
 			out = append(out, attribute.Int64(attrOITokenCacheWrite, cacheWrite))
 		}
 	}
-	if cost, ok := attrFloat64(attrs, attrLoomCostUSD); ok && !has(attrOICostTotal) {
+	if cost, ok := attrFloat64(attrs, attrLoomCostUSD); ok {
 		out = append(out, attribute.Float64(attrOICostTotal, cost))
 	}
 	return out
@@ -328,6 +384,21 @@ func toOTelAttr(key string, v interface{}) attribute.KeyValue {
 		return attribute.Float64(key, val)
 	case bool:
 		return attribute.Bool(key, val)
+	case []string:
+		return attribute.StringSlice(key, val)
+	case []int:
+		return attribute.IntSlice(key, val)
+	case []int64:
+		return attribute.Int64Slice(key, val)
+	case []float64:
+		return attribute.Float64Slice(key, val)
+	case []bool:
+		return attribute.BoolSlice(key, val)
+	case map[string]interface{}, map[string]string, []interface{}:
+		if b, err := json.Marshal(val); err == nil {
+			return attribute.String(key, string(b))
+		}
+		return attribute.String(key, fmt.Sprintf("%v", val))
 	default:
 		return attribute.String(key, fmt.Sprintf("%v", val))
 	}
