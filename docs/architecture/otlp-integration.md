@@ -492,15 +492,17 @@ Loom attribute keys (set in `pkg/llm/instrumented_provider.go`, `pkg/agent`, `pk
 | `session.id`, `user.id`, `trace.id` | | unchanged | |
 | `error.message` / `error.type` / `error.stack` | | `exception.message` / `exception.type` / `exception.stacktrace` | OTel exception semconv |
 | `conversation.tokens.*`, `conversation.cost.usd` | | `loom.conversation.*` | agent-level totals; deliberately **not** `gen_ai.usage.*`, which backends sum over a trace |
-| keys starting `openinference.`, `input.`, `output.`, `llm.token_count.`, `llm.input_messages.`, `llm.output_messages.`, `retrieval.documents.`, `gen_ai.`, and `llm.invocation_parameters`, `tool.parameters`, `tool.description`, `tool.id`, `graph.node.id` | | unchanged | already OpenInference / OTel names |
+| keys starting `openinference.`, `input.`, `output.`, `llm.token_count.`, `llm.cost.`, `llm.input_messages.`, `llm.output_messages.`, `retrieval.documents.`, `gen_ai.`, and `llm.invocation_parameters`, `tool.parameters`, `tool.description`, `tool.id`, `graph.node.id`, `metadata` | | unchanged | already OpenInference / OTel names. `metadata` is OpenInference's JSON object string; Loom's own `metadata.*` keys (for example `metadata.keys`, a count) stay `loom.`-prefixed |
 | anything else | | `loom.<key>` | no data dropped |
 
-**Derived OpenInference attributes** (`deriveOpenInferenceAttrs`), added to every exported span unless the span already carries the key:
+**Collisions and value types.** Each OTel key is exported once. When several Loom keys export to the same key (`tool.name` and `mcp.tool.name`; `agent_id` and `agent.id`; a mapped key and an attribute the span already sets under the `gen_ai.*` name), the key set under its exported name wins, otherwise the lexically first Loom key, so the exported value does not depend on map iteration order. List values (`[]string`, `[]int`, `[]int64`, `[]float64`, `[]bool`) export as OTLP arrays; maps and `[]interface{}` export as JSON strings.
+
+**Derived OpenInference attributes** (`deriveOpenInferenceAttrs`), exported for every key the span does not already export (an empty explicit `openinference.span.kind` counts as absent). Derived totals use the span's explicit counts where it sets them:
 
 | Attribute | Rule |
 |---|---|
 | `openinference.span.kind` | by span name: `llm.completion` → `LLM`; `agent.chat`, `agent.chat_with_progress`, `agent.chat_with_content_blocks`, `agent.conversation.resume` → `AGENT`; `agent.tool_execution`, `tool.execute`, `mcp.tools.call` → `TOOL`; `graph_memory.recall`, `memory.search_messages` → `RETRIEVER`; `memory.rerank_search_results` → `RERANKER`; everything else → `CHAIN` |
-| `input.value` / `output.value` | from `message.preview` / `response.preview` |
+| `input.value` / `output.value` | from `message.preview` / `response.preview`. `llm.completion` spans set them explicitly where the previews would mislead: `input.value` holds the messages after the last assistant message (tool results, or messages added after the user message) as `role: text` lines, and `output.value` holds a tool-calling response's text plus one `name(arguments JSON)` line per call |
 | `llm.token_count.prompt` | LLM spans only: `llm.tokens.input + cache_read + cache_write` (OpenInference counts cached prompt tokens; Loom's input does not) |
 | `llm.token_count.completion` / `llm.token_count.total` | `llm.tokens.output` / prompt + completion |
 | `llm.token_count.prompt_details.cache_read` / `.cache_write` | when the Loom cache attribute is present |
@@ -562,21 +564,21 @@ EndSpan(span):
 
 ```
 exportAttributes(spanName string, attrs map[string]interface{}) []attribute.KeyValue:
-  for key, value in attrs:
-    if otelKey = loomToGenAI[key]; otelKey != "":
-      emit(otelKey, value)
-    else if isPassthrough(key):
-      emit(key, value)                              // already OpenInference/OTel
-    else:
-      emit("loom." + key, value)                    // preserve with namespace
+  out = {}                                          // exported key -> (value, direct)
+  for key in sorted(keys(attrs)):
+    if key == "openinference.span.kind": continue   // exported once, below
+    otelKey, direct = exportKey(key)                // loomToGenAI, passthrough, or "loom." + key
+    put(out, otelKey, attrs[key], direct)           // direct beats mapped; else first key wins
     if extra = loomAlsoExport[key]; extra != "":
-      emit(extra, value)
-  emit(deriveOpenInferenceAttrs(spanName, attrs)...)
+      put(out, extra, attrs[key], false)
+  for kv in deriveOpenInferenceAttrs(spanName, attrs):
+    if kv.Key not in out: out[kv.Key] = kv          // derive only what the span does not export
+  return values(out) sorted by key
 ```
 
 `loomToGenAI` is a `map[string]string` constant defined in `otel_attrs.go`. Lookups are O(1). The table is initialised once at package init.
 
-**Invariant**: Every Loom attribute is represented in the exported OTel span — either under its canonical `gen_ai.*` name or under a `loom.*` prefixed fallback. No data is silently dropped.
+**Invariant**: Every Loom attribute key is represented in the exported OTel span, under its canonical name or a `loom.*` prefixed fallback, and each exported key appears once. Loom keys that export to the same OTel key contribute one value, chosen by the precedence rule in the Span Mapping Table; credential keys removed by redaction are the only other omission.
 
 
 ## Design Trade-offs
@@ -666,14 +668,14 @@ exportAttributes(spanName string, attrs map[string]interface{}) []attribute.KeyV
    {eval_runs row} in SQLite
 ```
 
-**Invariant**: for the same span, the row written under `mode: otel` with a recorder equals the row `mode: embedded` writes, except for `id` (the OTel span ID instead of a UUID), `eval_id` and timing columns. A golden test (`TestEvalRunRecorder_RowParityWithEmbedded`) checks this.
+**Invariant**: for the same span, the row written under `mode: otel` with a recorder equals the row `mode: embedded` writes, except for `id` (the OTel span ID instead of a UUID), `eval_id` and timing columns. A golden test (`TestEvalRunRecorder_RowParityWithEmbedded`) checks this. Previews are bounded when a span records them (Content Bounds), so with `otlp_max_content_length` raised the rows carry the longer previews too: at 32768 a single preview attribute in `configuration_json` can hold up to 32,768 runes.
 
 **Alternatives considered**:
 - **OTLPSpanExporter on `EmbeddedTracer`** (Decision 1, Option B): embedded mode stays the tracer, spans are forwarded over OTLP. Rejected for this purpose because span identity and parent linkage (synced OTel IDs, late children after a parent ends) live in `OTelTracer`; an exporter would rebuild them from UUIDs.
 - **A fan-out tracer** wrapping both tracers: each span would get two independent ID sets, so the context could carry only one of them and the record and the export would disagree on IDs.
 - **Phoenix as the only record**: rejected because existing analysis would need porting and batches recorded before and after the switch would live in different stores.
 
-**Consequences**: the recorder writes before redaction, matching `mode: embedded`; operators who enable it keep an unredacted local file next to a redacted export. Recording runs on the `EndSpan` path, so a slow SQLite write delays the caller as it does in embedded mode.
+**Consequences**: the recorder writes before redaction, matching `mode: embedded`; operators who enable it keep an unredacted local file next to a redacted export. Recording runs on the `EndSpan` path, so a slow SQLite write delays the caller as it does in embedded mode, and rows keep the order in which spans ended. `Close` (called by `OTelTracer.Shutdown`) waits for the periodic metrics flush and for writes already in progress before the final flush and closing the storage; a span that ends after that is not recorded.
 
 ---
 
@@ -804,11 +806,15 @@ The `OTelTracer` follows the same best-effort strategy as `HawkTracer`:
 
 `PrivacyConfig` is applied by `redactOTelSpan` in `OTelTracer.EndSpan` before attributes are passed to the OTel SDK. Credential and PII redaction default to enabled when no privacy configuration is supplied.
 
+Span attributes and span event attributes are treated alike. Keys that name credentials (an exact list such as `password`, `api_key` and `token`, plus any key containing `password`, `secret`, or both `api` and `key`) are dropped. The email, phone, SSN and card patterns are replaced in string values, in each element of a string slice, and in maps and lists, which are then exported as their redacted JSON. With PII redaction the span status message is redacted too, since error messages can carry user input. Keys in `AllowedAttributes` are exported unchanged. Resource attributes (`service.name` and the like) are not redacted.
+
 The redaction function operates on a copy so exporting a span does not mutate the caller-owned span or event attributes.
 
 ### Content Bounds
 
-Message, response and recall-query previews are bounded where they are recorded, by `observability.TruncateContent`, before they become span attributes: the first `MaxContentLength()` runes are kept and `…` is appended. The default is 200 runes for every tracer. When OTLP export is selected, `observability.otlp_max_content_length` replaces the bound process-wide at startup (0 keeps content whole); embedded-only deployments keep the default.
+Message, response and recall-query previews are bounded where they are recorded, by `observability.TruncateContent`, before they become span attributes: the first `MaxContentLength()` runes are kept and `…` is appended. The default is 200 runes for every tracer. When OTLP export is selected, `observability.otlp_max_content_length` replaces the bound process-wide at startup (0 keeps content whole); embedded-only deployments keep the default. The bound is applied each time the OTLP tracer is built, so a start without the key uses the default rather than a bound an earlier start set. The `input.value` and `output.value` the instrumented LLM provider sets are bounded the same way.
+
+One exception: the `llm.thinking` span event carries a model's full extended-thinking text and is not bounded. It is exported, after redaction, with the span.
 
 Bounding at the source rather than in `EndSpan` keeps one limit for every consumer of the span (OTLP export, the embedded store, and exporters attached to `EmbeddedTracer`). Redaction still runs at export on whatever length was recorded, so raising the bound increases the text the PII patterns scan but does not bypass them.
 

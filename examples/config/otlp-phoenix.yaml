@@ -34,11 +34,17 @@ observability:
   # otlp_include_spans is omitted so every span is exported. A prefix filter
   # drops parents such as agent.conversation_loop and orphans their children.
   #
-  # Exported content: message and response previews are truncated to 200
-  # characters, and PII patterns (email, phone-shaped and 16-digit numbers,
-  # SSN-shaped strings) are redacted before export. Both are fixed in code
-  # today; a configurable otlp_max_content_length key is planned (research
-  # runs will set 32768). Redaction stays on.
+  # Exported content: message, response and tool-call previews are bounded
+  # to otlp_max_content_length runes (default 200; research runs set 32768),
+  # and PII patterns (email, phone-shaped and 16-digit numbers, SSN-shaped
+  # strings) are redacted before export. Redaction stays on.
+  # otlp_max_content_length: 32768
+  #
+  # otlp_record_eval_runs also writes the embedded eval_runs record (Loom
+  # attribute names, unredacted) while exporting; it needs SQLite storage.
+  # otlp_record_eval_runs: true
+  # storage_type: sqlite
+  # sqlite_path: ./observability.db
 
 storage:
   backend: sqlite
