@@ -15,6 +15,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -96,8 +97,15 @@ func (p *InstrumentedProvider) Chat(ctx context.Context, messages []llmtypes.Mes
 	}
 
 	// Last user message — maps to gen_ai.prompt → Opik input column.
-	if preview := lastUserMessagePreview(messages); preview != "" {
+	preview := lastUserMessagePreview(messages)
+	if preview != "" {
 		span.SetAttribute("message.preview", preview)
+	}
+	// OpenInference input.value is derived from message.preview on export,
+	// unless the request's newest input is something else (tool results after
+	// a tool call, or messages added after the user message).
+	if input := newInputPreview(messages); input != "" && input != preview {
+		span.SetAttribute("input.value", input)
 	}
 
 	// Record event: LLM call started
@@ -174,6 +182,12 @@ func (p *InstrumentedProvider) Chat(ctx context.Context, messages []llmtypes.Mes
 	// Bounded response preview — maps to gen_ai.completion → Opik output column.
 	if preview := observability.TruncateContent(resp.Content); preview != "" {
 		span.SetAttribute("response.preview", preview)
+	}
+	// A response that calls tools has its calls in OpenInference output.value,
+	// which is otherwise derived from response.preview (empty for a call-only
+	// response).
+	if output := toolCallOutputPreview(resp); output != "" {
+		span.SetAttribute("output.value", output)
 	}
 
 	// Capture content length (for analysis)
@@ -288,8 +302,15 @@ func (p *InstrumentedProvider) ChatStream(ctx context.Context, messages []llmtyp
 	}
 
 	// Last user message — maps to gen_ai.prompt → Opik input column.
-	if preview := lastUserMessagePreview(messages); preview != "" {
+	preview := lastUserMessagePreview(messages)
+	if preview != "" {
 		span.SetAttribute("message.preview", preview)
+	}
+	// OpenInference input.value is derived from message.preview on export,
+	// unless the request's newest input is something else (tool results after
+	// a tool call, or messages added after the user message).
+	if input := newInputPreview(messages); input != "" && input != preview {
+		span.SetAttribute("input.value", input)
 	}
 
 	// Record event: streaming started
@@ -420,6 +441,12 @@ func (p *InstrumentedProvider) ChatStream(ctx context.Context, messages []llmtyp
 	if preview := observability.TruncateContent(resp.Content); preview != "" {
 		span.SetAttribute("response.preview", preview)
 	}
+	// A response that calls tools has its calls in OpenInference output.value,
+	// which is otherwise derived from response.preview (empty for a call-only
+	// response).
+	if output := toolCallOutputPreview(resp); output != "" {
+		span.SetAttribute("output.value", output)
+	}
 
 	// Capture content length (for analysis)
 	span.SetAttribute("llm.content.length", len(resp.Content))
@@ -509,18 +536,68 @@ func lastUserMessagePreview(messages []llmtypes.Message) string {
 		if m.Role != "user" {
 			continue
 		}
-		if m.Content != "" {
-			return observability.TruncateContent(m.Content)
-		}
-		var parts []string
-		for _, b := range m.ContentBlocks {
-			if b.Type == "text" && b.Text != "" {
-				parts = append(parts, b.Text)
-			}
-		}
-		return observability.TruncateContent(strings.Join(parts, " "))
+		return observability.TruncateContent(messageText(m))
 	}
 	return ""
+}
+
+// newInputPreview returns a bounded preview of the input the model has not
+// seen yet: the messages after the last assistant message. A lone user
+// message is rendered as its text; several messages, or one that is not a user
+// message, are rendered one per line as "role: text".
+func newInputPreview(messages []llmtypes.Message) string {
+	start := len(messages)
+	for start > 0 && messages[start-1].Role != "assistant" {
+		start--
+	}
+	newest := messages[start:]
+	if len(newest) == 0 {
+		return ""
+	}
+	if len(newest) == 1 && newest[0].Role == "user" {
+		return observability.TruncateContent(messageText(newest[0]))
+	}
+	lines := make([]string, 0, len(newest))
+	for _, m := range newest {
+		lines = append(lines, m.Role+": "+messageText(m))
+	}
+	return observability.TruncateContent(strings.Join(lines, "\n"))
+}
+
+// messageText returns a message's text: its Content, else its text blocks
+// joined by spaces (image blocks are skipped).
+func messageText(m llmtypes.Message) string {
+	if m.Content != "" {
+		return m.Content
+	}
+	var parts []string
+	for _, b := range m.ContentBlocks {
+		if b.Type == "text" && b.Text != "" {
+			parts = append(parts, b.Text)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+// toolCallOutputPreview returns a bounded preview of a response that calls
+// tools: its text, then one line per call as name(arguments as JSON). It
+// returns "" for a response without tool calls.
+func toolCallOutputPreview(resp *llmtypes.LLMResponse) string {
+	if resp == nil || len(resp.ToolCalls) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, len(resp.ToolCalls)+1)
+	if resp.Content != "" {
+		lines = append(lines, resp.Content)
+	}
+	for _, tc := range resp.ToolCalls {
+		args, err := json.Marshal(tc.Input)
+		if err != nil {
+			args = []byte(fmt.Sprintf("%v", tc.Input))
+		}
+		lines = append(lines, tc.Name+"("+string(args)+")")
+	}
+	return observability.TruncateContent(strings.Join(lines, "\n"))
 }
 
 // Ensure InstrumentedProvider implements LLMProvider interface
