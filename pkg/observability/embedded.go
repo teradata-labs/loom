@@ -312,31 +312,3 @@ func (t *EmbeddedTracer) GetStorage() storage.Storage {
 
 // Compile-time interface check
 var _ Tracer = (*EmbeddedTracer)(nil)
-
-// safeInt32 converts an int to int32, capping at MaxInt32/MinInt32 to prevent overflow.
-// This is a local copy to avoid import cycle with pkg/types.
-func safeInt32(n int) int32 {
-	const maxInt32 = 2147483647  // math.MaxInt32
-	const minInt32 = -2147483648 // math.MinInt32
-	if n > maxInt32 {
-		return maxInt32
-	}
-	if n < minInt32 {
-		return minInt32
-	}
-	return int32(n) // #nosec G115 -- bounds checked above
-}
-
-// safeInt32FromFloat64 converts a float64 to int32, capping at MaxInt32/MinInt32 to prevent overflow.
-// This is a local copy to avoid import cycle with pkg/types.
-func safeInt32FromFloat64(f float64) int32 {
-	const maxInt32 = 2147483647  // math.MaxInt32
-	const minInt32 = -2147483648 // math.MinInt32
-	if f > maxInt32 {
-		return maxInt32
-	}
-	if f < minInt32 {
-		return minInt32
-	}
-	return int32(f) // #nosec G115 -- bounds checked above
-}
