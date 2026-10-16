@@ -86,14 +86,21 @@ func TestNewOTLPTracer_AppliesMaxContentLength(t *testing.T) {
 	shutdown(tr)
 	assert.Equal(t, 32768, observability.MaxContentLength())
 
-	observability.SetMaxContentLength(observability.DefaultMaxContentLength)
+	// A start without the key restores the default rather than keeping the
+	// bound an earlier start set.
 	tr, err = newOTLPTracer(ObservabilityConfig{
 		OTLPEndpoint: "http://127.0.0.1:6006/v1/traces",
 		OTLPInsecure: true,
 	}, "looms", "test", serveEmbeddedFlushInterval, zap.NewNop())
 	require.NoError(t, err)
 	shutdown(tr)
-	assert.Equal(t, observability.DefaultMaxContentLength, observability.MaxContentLength(), "unset key keeps the default")
+	assert.Equal(t, observability.DefaultMaxContentLength, observability.MaxContentLength(), "unset key means the default")
+
+	// A start that fails leaves the bound unchanged.
+	observability.SetMaxContentLength(512)
+	_, err = newOTLPTracer(ObservabilityConfig{OTLPMaxContentLength: &limit}, "looms", "test", serveEmbeddedFlushInterval, zap.NewNop())
+	require.Error(t, err, "no endpoint")
+	assert.Equal(t, 512, observability.MaxContentLength())
 }
 
 func TestLoadConfig_OTLPRecordEvalRuns(t *testing.T) {

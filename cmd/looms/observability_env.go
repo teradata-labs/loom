@@ -95,14 +95,12 @@ func firstConfiguredEnv(keys ...string) string {
 	return ""
 }
 
-// newOTLPTracer applies the process-wide OTLP settings from obs and builds
-// the OTel tracer that looms serve and looms workflow export through. With
+// newOTLPTracer builds the OTel tracer that looms serve and looms workflow
+// export through and, once it is built, applies the process-wide content
+// bound from obs (the default when otlp_max_content_length is unset). With
 // otlp_record_eval_runs it also opens the embedded eval_runs record, which
 // the tracer closes on Shutdown.
 func newOTLPTracer(obs ObservabilityConfig, serviceName, serviceVersion string, defaultFlush time.Duration, logger *zap.Logger) (*observability.OTelTracer, error) {
-	if obs.OTLPMaxContentLength != nil {
-		observability.SetMaxContentLength(*obs.OTLPMaxContentLength)
-	}
 	var recorder *observability.EvalRunRecorder
 	if obs.OTLPRecordEvalRuns {
 		var err error
@@ -126,10 +124,19 @@ func newOTLPTracer(obs ObservabilityConfig, serviceName, serviceVersion string, 
 		},
 		Recorder: recorder,
 	})
-	if err != nil && recorder != nil {
-		_ = recorder.Close()
+	if err != nil {
+		if recorder != nil {
+			_ = recorder.Close()
+		}
+		return nil, err
 	}
-	return tracer, err
+
+	maxContent := observability.DefaultMaxContentLength
+	if obs.OTLPMaxContentLength != nil {
+		maxContent = *obs.OTLPMaxContentLength
+	}
+	observability.SetMaxContentLength(maxContent)
+	return tracer, nil
 }
 
 func otlpServiceName(defaultName string) string {
