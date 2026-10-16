@@ -33,6 +33,12 @@ observability:
     x-project-name: loom-dev
   # otlp_include_spans is omitted so every span is exported. A prefix filter
   # drops parents such as agent.conversation_loop and orphans their children.
+  #
+  # Exported content: message and response previews are truncated to 200
+  # characters, and PII patterns (email, phone-shaped and 16-digit numbers,
+  # SSN-shaped strings) are redacted before export. Both are fixed in code
+  # today; a configurable otlp_max_content_length key is planned (research
+  # runs will set 32768). Redaction stays on.
 
 storage:
   backend: sqlite
