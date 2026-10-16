@@ -23,6 +23,7 @@ Architecture for exporting Loom traces via OpenTelemetry Protocol (OTLP), enabli
 - [Key Interactions](#key-interactions)
   - [Span Export Flow](#span-export-flow)
   - [Attribute Translation Flow](#attribute-translation-flow)
+  - [Turn Span Tree](#turn-span-tree)
 - [Data Structures](#data-structures)
   - [OTelConfig](#otelconfig-struct)
   - [Span Mapping Table](#span-mapping-table)
@@ -440,6 +441,36 @@ Loom Span.Attributes        exportAttributes()      OTel Span
 
 **Privacy-first ordering**: Redaction runs before translation. Attributes removed by the redactor are never passed to `exportAttributes`, and derived values such as `input.value` are computed from the redacted attributes.
 
+
+### Turn Span Tree
+
+One `Weave` turn exports as one trace. The agent opens a span for each stage and runs the stage under it, so a span's children are the work that stage caused:
+
+```
+server.Weave                          (CHAIN)
+└── agent.chat                        (AGENT)  agent.id, agent.name, session.id,
+    │                                          session.turn, metadata
+    └── agent.conversation_loop       (CHAIN)
+        ├── graph_memory.recall       (RETRIEVER)  input.value = search query,
+        │   ├── llm.completion        (LLM, llm.role = memory_query)
+        │   └── llm.completion        (LLM, llm.role = memory_rerank)
+        ├── llm.completion            (LLM, llm.role = agent)
+        ├── agent.tool_execution      (TOOL)   input.value = arguments,
+        │   └── mcp.tools.call / ...           output.value = result
+        ├── llm.completion            (LLM, llm.role = agent)
+        ├── memory.release_pressure   (CHAIN)  when a pass sheds
+        │   └── llm.completion        (LLM, llm.role = memory_compress)
+        └── graph_memory.extract      (CHAIN)  may end after the turn
+            └── llm.completion        (LLM, llm.role = memory_extract)
+```
+
+`agent.conversation_loop` runs under its own span through a copy of the agent `Context` whose embedded `context.Context` carries the span (`withSpanContext`); the caller's `Context` is not changed, so the parallel tool calls of one batch each get their own copy. `agent.tool_execution` passes its span to the tool the same way, and ends after the tool row is committed. Extraction and the task-close salience boost run on `context.WithoutCancel` copies of the turn context: they may end after the turn, and with the synchronized span IDs (Loom-to-OTel Span Bridge) they still join its trace. The skill-eviction salience boost has no request context (`Orchestrator.ActivateSkill` takes none) and is a trace of its own.
+
+**`llm.role`.** Each `llm.completion` names the job of the call. A provider gets a role where it is built (`agent`, `compressor`, `classifier`, `judge`, `orchestrator`), and the calls Loom makes for itself set a purpose role where they are made (`memory_query`, `memory_rerank`, `memory_extract`, `memory_compress`, `memory_search_rerank`, `skills_router`). The second kind is needed because an agent without a `compressor_llm` sends those calls through its own provider. `NewInstrumentedProvider` does not wrap an already instrumented provider on the same tracer again, since every layer would trace the same call as another `llm.completion`.
+
+**`metadata`.** `agent.chat` and `agent.conversation.resume` carry one OpenInference `metadata` attribute, a JSON object with `graph_memory_enabled` and the tags of `observability.ContextWithSpanMetadata`.
+
+**`session.id` stays on `server.Weave` and `agent.chat`.** The memory spans join the session through their trace. The experiment analysis reads `eval_runs` rows, which carry no span name or parent, and assigns rows without a session to sessions by row order; `session.id` on spans that can end after the turn would move those boundaries.
 
 ## Data Structures
 

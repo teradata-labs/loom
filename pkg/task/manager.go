@@ -903,19 +903,24 @@ func (m *Manager) rememberTaskCompletion(ctx context.Context, t *Task) {
 	// Boost salience on related entities asynchronously. This leverages
 	// existing FTS search + TouchMemories (zero LLM calls) to strengthen
 	// the relevance signal for entities related to the completed task.
-	go m.boostRelatedEntitySalience(t) // #nosec G118 -- intentional: background worker must outlive the request context
+	// WithoutCancel: the boost outlives the request but keeps its trace, so its
+	// span joins the trace of the turn that closed the task.
+	go m.boostRelatedEntitySalience(context.WithoutCancel(ctx), t) // #nosec G118 -- intentional: background worker must outlive the request context
 }
 
 // boostRelatedEntitySalience searches graph memory for entities related to
 // the task's subject matter and touches their memories to bump access count
 // and last-accessed timestamp (which the salience ranking function uses).
 // Best-effort, never blocks the caller, zero LLM calls.
-func (m *Manager) boostRelatedEntitySalience(t *Task) {
+func (m *Manager) boostRelatedEntitySalience(ctx context.Context, t *Task) {
 	if t == nil || !m.MemoryRecordingAllowed(t.OwnerAgentID) {
 		return
 	}
 
-	ctx := context.Background()
+	ctx, span := m.tracer.StartSpan(ctx, "graph_memory.salience_boost")
+	defer m.tracer.EndSpan(span)
+	span.SetAttribute("salience.trigger", "task_close")
+	span.SetAttribute("task.id", t.ID)
 
 	// Build a search query from the task's title + objective.
 	query := t.Title
@@ -982,7 +987,9 @@ func (m *Manager) boostRelatedEntitySalience(t *Task) {
 		}
 	}
 
+	span.SetAttribute("salience.memories_touched", len(deduped))
 	if err := m.graphMemory.TouchMemories(ctx, deduped); err != nil {
+		span.RecordError(err)
 		m.logger.Debug("salience boost: TouchMemories failed",
 			zap.String("task_id", t.ID),
 			zap.Int("memory_count", len(deduped)),

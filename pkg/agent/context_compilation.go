@@ -832,6 +832,25 @@ func (sm *SegmentedMemory) ReleasePressure(ctx context.Context, penalty int) (sh
 	sm.reliefInFlight = true
 	defer func() { sm.reliefInFlight = false }()
 
+	// One span per pass that sheds. The compressor's llm.completion is its
+	// child (ctx flows into the ops). The deferred end reads the named
+	// results, which a return statement has already set.
+	ctx, span := sm.tracer.StartSpan(ctx, "memory.release_pressure")
+	var evicted, folded, offloaded int // operations that changed something
+	defer func() {
+		span.SetAttribute("pressure.shed", shed)
+		span.SetAttribute("pressure.end_tokens", estimate)
+		span.SetAttribute("pressure.evict_ops", evicted)
+		span.SetAttribute("pressure.fold_ops", folded)
+		span.SetAttribute("pressure.offload_ops", offloaded)
+		sm.tracer.EndSpan(span)
+	}()
+	span.SetAttribute("pressure.turn", sm.currentTurnLocked())
+	span.SetAttribute("pressure.start_tokens", startEstimate)
+	span.SetAttribute("pressure.start_mark", sm.startMarkLocked(penalty))
+	span.SetAttribute("pressure.target_mark", sm.releaseMarkLocked(penalty))
+	span.SetAttribute("pressure.penalty", penalty)
+
 	t := sm.currentTurnLocked()
 	k := int64(sm.protectedRecentTurns)
 	if k <= 0 {
@@ -890,6 +909,14 @@ func (sm *SegmentedMemory) ReleasePressure(ctx context.Context, penalty int) (sh
 				// An operation that changed nothing (its rows were already
 				// flagged by an earlier pressure event) passes to the next.
 				continue
+			}
+			switch op.name {
+			case "evict":
+				evicted++
+			case "fold":
+				folded++
+			case "offload_current_turn":
+				offloaded++
 			}
 			estimate = sm.estimateLocked()
 			zap.L().Info("releasePressure: operation complete",

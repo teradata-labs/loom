@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -39,14 +40,76 @@ type InstrumentedProvider struct {
 
 	// tracer is used for creating spans
 	tracer observability.Tracer
+
+	// role is recorded as llm.role on every span ("" records none).
+	role string
 }
 
-// NewInstrumentedProvider creates a new instrumented LLM provider.
-func NewInstrumentedProvider(provider llmtypes.LLMProvider, tracer observability.Tracer) *InstrumentedProvider {
-	return &InstrumentedProvider{
-		provider: provider,
-		tracer:   tracer,
+// LLM call roles recorded as llm.role on llm.completion spans. The first five
+// name the job a provider was configured for. The rest name the purpose of a
+// call Loom makes for itself, set where the call is made, so that memory and
+// routing calls through the agent's own provider are not reported as the
+// agent's.
+const (
+	RoleAgent              = "agent"
+	RoleCompressor         = "compressor"
+	RoleClassifier         = "classifier"
+	RoleJudge              = "judge"
+	RoleOrchestrator       = "orchestrator"
+	RoleSkillsRouter       = "skills_router"
+	RoleMemoryExtract      = "memory_extract"
+	RoleMemoryQuery        = "memory_query"
+	RoleMemoryRerank       = "memory_rerank"
+	RoleMemoryCompress     = "memory_compress"
+	RoleMemorySearchRerank = "memory_search_rerank"
+)
+
+// InstrumentedOption configures an InstrumentedProvider.
+type InstrumentedOption func(*InstrumentedProvider)
+
+// WithRole records role as llm.role on the provider's spans.
+func WithRole(role string) InstrumentedOption {
+	return func(p *InstrumentedProvider) { p.role = role }
+}
+
+// NewInstrumentedProvider creates a new instrumented LLM provider. A provider
+// that is already instrumented with the same tracer is not wrapped again (each
+// layer would trace the same call as its own llm.completion span); a copy of it
+// with opts applied is returned instead.
+func NewInstrumentedProvider(provider llmtypes.LLMProvider, tracer observability.Tracer, opts ...InstrumentedOption) *InstrumentedProvider {
+	var p *InstrumentedProvider
+	if inner, ok := provider.(*InstrumentedProvider); ok && sameTracer(inner.tracer, tracer) {
+		c := *inner
+		p = &c
+	} else {
+		p = &InstrumentedProvider{provider: provider, tracer: tracer}
 	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p
+}
+
+// ForRole returns a copy of p that records role as llm.role.
+func (p *InstrumentedProvider) ForRole(role string) *InstrumentedProvider {
+	c := *p
+	c.role = role
+	return &c
+}
+
+// Role returns the llm.role p records, or "".
+func (p *InstrumentedProvider) Role() string {
+	return p.role
+}
+
+// sameTracer reports whether a and b are the same tracer. Tracers of a
+// non-comparable dynamic type are treated as different rather than compared.
+func sameTracer(a, b observability.Tracer) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	ta := reflect.TypeOf(a)
+	return ta == reflect.TypeOf(b) && ta.Comparable() && a == b
 }
 
 // Name returns the underlying provider name.
@@ -82,6 +145,9 @@ func (p *InstrumentedProvider) Chat(ctx context.Context, messages []llmtypes.Mes
 	span.SetAttribute(observability.AttrLLMProvider, p.provider.Name())
 	span.SetAttribute(observability.AttrLLMModel, p.provider.Model())
 	span.SetAttribute("llm.operation", "chat") // gen_ai.operation.name — required by OTel GenAI spec
+	if p.role != "" {
+		span.SetAttribute("llm.role", p.role)
+	}
 
 	// Capture request details
 	span.SetAttribute("llm.messages.count", len(messages))
@@ -286,6 +352,9 @@ func (p *InstrumentedProvider) ChatStream(ctx context.Context, messages []llmtyp
 	span.SetAttribute(observability.AttrLLMProvider, p.provider.Name())
 	span.SetAttribute(observability.AttrLLMModel, p.provider.Model())
 	span.SetAttribute("llm.operation", "chat") // gen_ai.operation.name — required by OTel GenAI spec
+	if p.role != "" {
+		span.SetAttribute("llm.role", p.role)
+	}
 	span.SetAttribute("llm.streaming", true)
 
 	// Capture request details

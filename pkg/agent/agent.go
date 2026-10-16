@@ -146,7 +146,7 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		if a.classifierLLM != nil {
 			classifierProvider = a.classifierLLM
 		}
-		llmClassifierConfig := patterns.DefaultLLMClassifierConfig(classifierProvider)
+		llmClassifierConfig := patterns.DefaultLLMClassifierConfig(llmForRole(classifierProvider, roleClassifier))
 		llmClassifier := patterns.NewLLMIntentClassifier(llmClassifierConfig)
 		a.orchestrator.SetIntentClassifier(llmClassifier)
 	}
@@ -399,8 +399,16 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	if a.skillOrchestrator != nil && a.graphMemoryStore != nil {
 		store := a.graphMemoryStore
 		agentName := a.graphMemoryKey()
+		tracer := a.tracer
 		a.skillOrchestrator.SetOnSkillEviction(func(sessionID string, skill *skills.Skill, activeFor time.Duration) {
-			ctx := context.Background()
+			// No request context reaches an eviction (Orchestrator.ActivateSkill
+			// takes none), so the boost is a trace of its own; its span groups
+			// the store calls that would otherwise each be a root.
+			ctx, span := tracer.StartSpan(context.Background(), "graph_memory.salience_boost")
+			defer tracer.EndSpan(span)
+			span.SetAttribute("salience.trigger", "skill_eviction")
+			span.SetAttribute("skill.name", skill.Name)
+			span.SetAttribute("agent.name", agentName)
 
 			// Build search query from skill name + first 3 keywords.
 			query := skill.Name
@@ -450,7 +458,9 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 				}
 			}
 
+			span.SetAttribute("salience.memories_touched", len(deduped))
 			if touchErr := store.TouchMemories(ctx, deduped); touchErr != nil {
+				span.RecordError(touchErr)
 				zap.L().Debug("eviction salience boost: TouchMemories failed",
 					zap.String("skill", skill.Name),
 					zap.Error(touchErr))
@@ -4254,6 +4264,7 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 	// (az512h). One span, outcome always set.
 	ctx, span := a.tracer.StartSpan(ctx, "graph_memory.recall")
 	defer a.tracer.EndSpan(span)
+	span.SetAttribute("agent.name", a.config.Name)
 	// Which memory partition this recall queries; differs from the agent name
 	// when GraphMemoryAgentID is set.
 	span.SetAttribute("graph_memory.agent_key", a.graphMemoryKey())
@@ -4297,6 +4308,7 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 		return
 	}
 	span.SetAttribute("recall.query", observability.TruncateContent(searchQuery))
+	span.SetAttribute("input.value", observability.TruncateContent(searchQuery))
 
 	// Gather candidate memories from multiple sources.
 	seen := make(map[string]bool)
@@ -4364,6 +4376,9 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 	// visible instead of being hidden behind a successful injection.
 	span.SetAttribute("recall.store_error", storeFailed)
 	span.SetAttribute("recall.candidates", len(candidates))
+	if len(candidates) > 0 {
+		span.SetAttribute("recall.candidate_ids", memoryIDs(candidates))
+	}
 
 	// Dedicated lesson lane (PR #357): verified working knowledge rides
 	// regardless of the echo-memory ranking below. Fleet-shared only when
@@ -4398,6 +4413,7 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 	span.SetAttribute("recall.injected", len(relevant)+len(lessons))
 	span.SetAttribute("recall.injected_memories", len(relevant))
 	span.SetAttribute("recall.injected_lessons", len(lessons))
+	span.SetAttribute("recall.selected_ids", memoryIDs(relevant))
 
 	var sb strings.Builder
 	if len(lessons) > 0 {
@@ -4427,11 +4443,34 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 		sb.WriteString("\n")
 	}
 
+	injected := sb.String()
+	tc := a.tokenCounter
+	if tc == nil {
+		tc = GetTokenCounter()
+	}
+	span.SetAttribute("recall.injected_tokens", tc.CountTokens(injected))
+	span.SetAttribute("output.value", observability.TruncateContent(injected))
+	// OpenInference retriever documents, which Phoenix lists on the span.
+	for i, m := range relevant {
+		prefix := fmt.Sprintf("retrieval.documents.%d.document.", i)
+		span.SetAttribute(prefix+"id", m.ID)
+		span.SetAttribute(prefix+"content", observability.TruncateContent(m.Content))
+	}
+
 	session.AddMessage(ctx, types.Message{
 		Role:    "system",
-		Content: graphMemoryContextMarker + "\n" + sb.String(),
+		Content: graphMemoryContextMarker + "\n" + injected,
 	})
 	outcome = "injected"
+}
+
+// memoryIDs returns the IDs of memories, in order.
+func memoryIDs(memories []*memory.Memory) []string {
+	ids := make([]string, len(memories))
+	for i, m := range memories {
+		ids[i] = m.ID
+	}
+	return ids
 }
 
 // multiHopRecall finds the user entity and traverses 2 hops outward to collect
@@ -4542,6 +4581,7 @@ func (a *Agent) rerankMemories(ctx context.Context, userMessage string, candidat
 	if a.compressorLLM != nil {
 		llmProvider = a.compressorLLM
 	}
+	llmProvider = llmForRole(llmProvider, roleMemoryRerank)
 
 	resp, err := llmProvider.Chat(rerankCtx, []types.Message{
 		{Role: "user", Content: sb.String()},
@@ -4598,6 +4638,7 @@ func (a *Agent) extractSearchQuery(ctx context.Context, userMessage string) (que
 	if a.compressorLLM != nil {
 		llmProvider = a.compressorLLM
 	}
+	llmProvider = llmForRole(llmProvider, roleMemoryQuery)
 
 	resp, err := llmProvider.Chat(extractCtx, []types.Message{
 		{Role: "user", Content: prompt},
@@ -4994,7 +5035,7 @@ func (a *Agent) SetLLMProviderForRole(role loomv1.LLMRole, llm LLMProvider) {
 		a.classifierLLM = llm
 		// Update the orchestrator's intent classifier if pattern classification is enabled
 		if a.orchestrator != nil && a.config.PatternConfig.UseLLMClassifier && llm != nil {
-			llmClassifierConfig := patterns.DefaultLLMClassifierConfig(llm)
+			llmClassifierConfig := patterns.DefaultLLMClassifierConfig(llmForRole(llm, roleClassifier))
 			llmClassifier := patterns.NewLLMIntentClassifier(llmClassifierConfig)
 			a.orchestrator.SetIntentClassifier(llmClassifier)
 		}
