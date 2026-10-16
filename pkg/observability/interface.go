@@ -106,8 +106,12 @@ const (
 
 // ContextWithTraceID returns a new context with an explicit trace ID.
 // When StartSpan creates a root span (no parent span in context), it will
-// use this trace ID instead of generating a new one. If a parent span exists
-// in the context, the parent's trace ID takes priority and this value is ignored.
+// use this trace ID instead of generating a new one. Under OTelTracer, only
+// a valid 32-character hex OTel trace ID is adopted as the trace ID; any
+// other string (such as a dashed UUID) is recorded on the root span under
+// "loom.trace_id_override" while the OTel SDK assigns a valid 32-hex trace ID.
+// If a parent span exists in the context, the parent's trace ID takes priority
+// and this value is ignored.
 func ContextWithTraceID(ctx context.Context, traceID string) context.Context {
 	return context.WithValue(ctx, traceIDContextKey, traceID)
 }
