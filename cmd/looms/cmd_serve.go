@@ -2433,6 +2433,16 @@ func runServe(cmd *cobra.Command, args []string) {
 	loomv1.RegisterJudgeServiceServer(grpcServer, judgeServer)
 	logger.Info("Judge service registered")
 
+	// Judge scores go to Arize Phoenix as trace annotations when
+	// observability.phoenix_base_url is set.
+	phoenixClient, err := newPhoenixClient(config.Observability, logger)
+	if err != nil {
+		logger.Warn("Phoenix annotations disabled", zap.Error(err))
+	} else if phoenixClient != nil {
+		judgeServer.SetPhoenixClient(phoenixClient)
+		logger.Info("Phoenix annotations enabled", zap.String("url", config.Observability.PhoenixBaseURL))
+	}
+
 	// Register SkillsImportService — the gRPC surface for the skills
 	// importer (BulkImportSkills streaming + AddSkill + ClassifySkill).
 	// Peer service alongside MultiAgentServer per the "keep skills as
@@ -3817,6 +3827,15 @@ func runServe(cmd *cobra.Command, args []string) {
 				logger.Warn("Error shutting down OTLP tracer", zap.Error(err))
 			} else {
 				logger.Info("OTLP tracer flushed and shut down")
+			}
+		}
+
+		// Send queued Phoenix annotations after the spans they annotate.
+		if phoenixClient != nil {
+			stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := phoenixClient.Stop(stopCtx); err != nil {
+				logger.Warn("Error sending queued Phoenix annotations", zap.Error(err))
 			}
 		}
 

@@ -139,6 +139,24 @@ func newOTLPTracer(obs ObservabilityConfig, serviceName, serviceVersion string, 
 	return tracer, nil
 }
 
+// newPhoenixClient builds the Phoenix annotation client when
+// observability.phoenix_base_url is set, and returns nil otherwise. The API
+// key comes from phoenix_api_key (keyring or env), else PHOENIX_API_KEY.
+func newPhoenixClient(obs ObservabilityConfig, logger *zap.Logger) (*observability.PhoenixClient, error) {
+	if obs.PhoenixBaseURL == "" {
+		return nil, nil
+	}
+	apiKey := obs.PhoenixAPIKey
+	if apiKey == "" {
+		apiKey = os.Getenv("PHOENIX_API_KEY")
+	}
+	return observability.NewPhoenixClient(observability.PhoenixClientConfig{
+		BaseURL: obs.PhoenixBaseURL,
+		APIKey:  apiKey,
+		Logger:  logger,
+	})
+}
+
 func otlpServiceName(defaultName string) string {
 	if serviceName := os.Getenv("OTEL_SERVICE_NAME"); serviceName != "" {
 		return serviceName

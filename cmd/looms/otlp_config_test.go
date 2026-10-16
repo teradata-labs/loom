@@ -16,8 +16,11 @@ package main
 import (
 	"context"
 	"database/sql"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -157,4 +160,44 @@ func TestNewOTLPTracer_RecordsEvalRuns(t *testing.T) {
 	assert.Equal(t, "smoke-1", sessionID)
 	require.NoError(t, db.QueryRow(`SELECT status FROM evals`).Scan(&status))
 	assert.Equal(t, "completed", status, "Shutdown closes the recorder")
+}
+
+func TestLoadConfig_PhoenixBaseURL(t *testing.T) {
+	t.Run("loads and validates", func(t *testing.T) {
+		cfg := loadOTLPTestConfig(t, "  phoenix_base_url: http://127.0.0.1:6006\n")
+		assert.Equal(t, "http://127.0.0.1:6006", cfg.Observability.PhoenixBaseURL)
+		require.NoError(t, cfg.Validate())
+	})
+	t.Run("rejects a URL without scheme", func(t *testing.T) {
+		cfg := loadOTLPTestConfig(t, "  phoenix_base_url: 127.0.0.1:6006\n")
+		err := cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "phoenix_base_url")
+	})
+}
+
+func TestNewPhoenixClient_FromConfig(t *testing.T) {
+	client, err := newPhoenixClient(ObservabilityConfig{}, zap.NewNop())
+	require.NoError(t, err)
+	assert.Nil(t, client, "no base URL, no client")
+
+	var mu sync.Mutex
+	var auth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		auth = r.Header.Get("Authorization")
+		mu.Unlock()
+	}))
+	defer srv.Close()
+	t.Setenv("PHOENIX_API_KEY", "env-key")
+	client, err = newPhoenixClient(ObservabilityConfig{PhoenixBaseURL: srv.URL}, zap.NewNop())
+	require.NoError(t, err)
+	require.NotNil(t, client)
+	require.NoError(t, client.AnnotateTraces([]observability.PhoenixAnnotation{{
+		TargetID: "t1", Name: "loom.quality", AnnotatorKind: observability.PhoenixAnnotatorLLM,
+	}}))
+	require.NoError(t, client.Stop(context.Background()))
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, "Bearer env-key", auth, "PHOENIX_API_KEY is the fallback key")
 }

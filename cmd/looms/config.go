@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -643,6 +644,12 @@ type ObservabilityConfig struct {
 	// (storage_type: sqlite, sqlite_path, flush_interval) while spans are
 	// exported over OTLP. Default false.
 	OTLPRecordEvalRuns bool `mapstructure:"otlp_record_eval_runs"`
+
+	// Arize Phoenix REST API, for annotations (judge scores on traces).
+	// PhoenixBaseURL is Phoenix's HTTP address, for example
+	// http://127.0.0.1:6006; empty turns annotations off. Independent of mode.
+	PhoenixBaseURL string `mapstructure:"phoenix_base_url"`
+	PhoenixAPIKey  string `mapstructure:"phoenix_api_key"` // From keyring or env only
 }
 
 // LoggingConfig holds logging configuration.
@@ -1544,6 +1551,11 @@ func GetSecretMappings() []SecretMapping {
 			IsSet:      func(c *Config) bool { return c.Observability.HawkAPIKey != "" },
 		},
 		{
+			KeyringKey: "phoenix_api_key",
+			Setter:     func(c *Config, val string) { c.Observability.PhoenixAPIKey = val },
+			IsSet:      func(c *Config) bool { return c.Observability.PhoenixAPIKey != "" },
+		},
+		{
 			KeyringKey: "supabase_jwt_secret",
 			Setter:     func(c *Config, val string) { c.Server.Auth.Supabase.JWTSecret = val },
 			IsSet:      func(c *Config) bool { return c.Server.Auth.Supabase.JWTSecret != "" },
@@ -1964,6 +1976,11 @@ func (c *Config) Validate() error {
 			// No-op mode: no validation needed
 		default:
 			return fmt.Errorf("observability.mode must be 'embedded', 'service', 'otel', or 'none' (got: %s)", mode)
+		}
+		if u := c.Observability.PhoenixBaseURL; u != "" {
+			if parsed, err := url.Parse(u); err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+				return fmt.Errorf("observability.phoenix_base_url must be an http or https URL (got: %s)", u)
+			}
 		}
 	}
 
