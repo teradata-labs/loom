@@ -1,0 +1,68 @@
+# Loom + Arize Phoenix OTLP configuration for experiment runs (Bedrock)
+#
+# Differences from otlp-phoenix.yaml: whole prompts and responses up to
+# 32768 runes, the embedded eval_runs record kept for the trace_reports
+# analysis, judge scores posted to Phoenix, and its own Phoenix project.
+#
+# Phoenix version: 20.22.0 (pip: arize-phoenix==20.22.0, Docker: arizephoenix/phoenix:version-20.22.0).
+# Re-run the Phase 0 smoke test after changing the Phoenix version.
+#
+# Usage:
+#   phoenix serve                     # listens on 127.0.0.1:6006 by default
+#   looms serve --config examples/config/otlp-phoenix-research.yaml
+#
+# Phoenix assigns spans to the project named by the x-project-name header,
+# falling back to the openinference.project.name resource attribute, then "default".
+
+server:
+  port: 60051
+  host: 127.0.0.1
+  enable_reflection: true
+
+llm:
+  provider: bedrock
+  bedrock_region: us-west-2
+  bedrock_model_id: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+  # Uncomment to use a named AWS profile instead of AWS_* environment variables:
+  # bedrock_profile: default
+  temperature: 1.0
+  max_tokens: 4096
+
+observability:
+  enabled: true
+  mode: otel
+  otlp_endpoint: "http://127.0.0.1:6006/v1/traces"
+  otlp_insecure: true
+  otlp_headers:
+    x-project-name: loom-research
+  # otlp_include_spans is omitted so every span is exported. A prefix filter
+  # drops parents such as agent.conversation_loop and orphans their children.
+  #
+  # Exported content: message, response and tool-call previews keep up to
+  # 32768 runes; PII patterns (email, phone-shaped and 16-digit numbers,
+  # SSN-shaped strings) are redacted before export. Redaction stays on.
+  otlp_max_content_length: 32768
+  #
+  # Keep writing the embedded eval_runs record (Loom attribute names,
+  # unredacted) while exporting, so the trace_reports analysis works as
+  # with mode: embedded. Previews in it are up to 32768 runes as well.
+  otlp_record_eval_runs: true
+  storage_type: sqlite
+  sqlite_path: ./observability.db
+  #
+  # Judge scores become trace annotations (API key: keyring key
+  # phoenix_api_key, or PHOENIX_API_KEY).
+  phoenix_base_url: http://127.0.0.1:6006
+
+storage:
+  backend: sqlite
+  sqlite:
+    path: ./loom-phoenix-dev.db
+
+logging:
+  level: info
+  format: text
+
+tools:
+  permissions:
+    yolo: true

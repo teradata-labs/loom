@@ -24,6 +24,7 @@ Architecture for exporting Loom traces via OpenTelemetry Protocol (OTLP), enabli
   - [Span Export Flow](#span-export-flow)
   - [Attribute Translation Flow](#attribute-translation-flow)
   - [Turn Span Tree](#turn-span-tree)
+  - [Phoenix Annotations](#phoenix-annotations)
 - [Data Structures](#data-structures)
   - [OTelConfig](#otelconfig-struct)
   - [Span Mapping Table](#span-mapping-table)
@@ -471,6 +472,18 @@ server.Weave                          (CHAIN)
 **`metadata`.** `agent.chat` and `agent.conversation.resume` carry one OpenInference `metadata` attribute, a JSON object with `graph_memory_enabled` and the tags of `observability.ContextWithSpanMetadata`.
 
 **`session.id` stays on `server.Weave` and `agent.chat`.** The memory spans join the session through their trace. The experiment analysis reads `eval_runs` rows, which carry no span name or parent, and assigns rows without a session to sessions by row order; `session.id` on spans that can end after the turn would move those boundaries.
+
+### Phoenix Annotations
+
+Scores reach Phoenix on a second path, Phoenix's REST API, because OTLP carries spans only. `observability.PhoenixClient` posts to `/v1/trace_annotations`, `/v1/span_annotations` and `/v1/session_annotations`:
+
+```
+JudgeServer.EvaluateWithJudges ──▶ LLMJudge.Evaluate ──▶ judge.evaluation span (score, verdict)
+                                          │
+                                          └─ AnnotateTraces(trace_id) ─ ─ ─▶ queue ─▶ worker ─▶ POST /v1/trace_annotations
+```
+
+The `Annotate*` calls only validate and enqueue; one worker sends, so an unreachable Phoenix costs the caller nothing and is logged. The client uses Phoenix's asynchronous mode: the synchronous mode answers 404 for a trace the OTLP batch processor has not exported yet, while the asynchronous one keeps the annotation and retries (Phoenix 20.22.0: 60 attempts, 10 s apart). Each annotation has an identifier (judge ID and dimension), so a repeated evaluation upserts instead of adding rows. Label and explanation are PII-redacted like span attributes. `looms serve` stops the client after the OTLP flush, so queued annotations follow their spans.
 
 ## Data Structures
 

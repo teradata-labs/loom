@@ -7,6 +7,8 @@
 #   phoenix serve                     # listens on 127.0.0.1:6006 by default
 #   looms serve --config examples/config/otlp-phoenix.yaml
 #
+# For experiment runs use otlp-phoenix-research.yaml instead.
+#
 # Phoenix assigns spans to the project named by the x-project-name header,
 # falling back to the openinference.project.name resource attribute, then "default".
 
@@ -45,6 +47,10 @@ observability:
   # otlp_record_eval_runs: true
   # storage_type: sqlite
   # sqlite_path: ./observability.db
+  #
+  # phoenix_base_url posts judge scores to Phoenix as trace annotations
+  # (the API key comes from the keyring key phoenix_api_key or PHOENIX_API_KEY).
+  # phoenix_base_url: http://127.0.0.1:6006
 
 storage:
   backend: sqlite
