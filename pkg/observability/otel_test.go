@@ -125,19 +125,13 @@ func TestLoomToGenAIMappings(t *testing.T) {
 		"llm.tokens.input":       "gen_ai.usage.input_tokens",
 		"llm.tokens.output":      "gen_ai.usage.output_tokens",
 		"llm.tokens.total":       "gen_ai.usage.total_tokens",
-		"llm.tokens.cache_read":  "gen_ai.usage.cache_read_input_tokens",
-		"llm.tokens.cache_write": "gen_ai.usage.cache_creation_input_tokens",
+		"llm.tokens.cache_read":  "gen_ai.usage.cache_read.input_tokens",
+		"llm.tokens.cache_write": "gen_ai.usage.cache_creation.input_tokens",
 		"llm.stop_reason":        "gen_ai.response.finish_reasons",
 		"llm.cost.usd":           "gen_ai.usage.cost",
 		// Input/Output columns (Opik + standard content representation)
 		"message.preview":  "gen_ai.prompt",
 		"response.preview": "gen_ai.completion",
-		// Conversation span token aggregates
-		"conversation.tokens.input":  "gen_ai.usage.input_tokens",
-		"conversation.tokens.output": "gen_ai.usage.output_tokens",
-		"conversation.tokens.total":  "gen_ai.usage.total_tokens",
-		"conversation.cost.usd":      "gen_ai.usage.cost",
-		"conversation.stop_reason":   "gen_ai.response.finish_reasons",
 		// Tool/MCP
 		"tool.name":     "gen_ai.tool.name",
 		"mcp.tool.name": "gen_ai.tool.name",
@@ -147,6 +141,7 @@ func TestLoomToGenAIMappings(t *testing.T) {
 		"mcp.server.version": "server.version",
 		// Agent identity (OTel GenAI agent semconv, draft)
 		"agent_id": "gen_ai.agent.id",
+		"agent.id": "gen_ai.agent.id",
 		// Error / exception semconv
 		"error.message": "exception.message",
 		"error.type":    "exception.type",
@@ -160,6 +155,16 @@ func TestLoomToGenAIMappings(t *testing.T) {
 			t.Errorf("loomToGenAI[%q] = %q, want %q", loomKey, got, otelKey)
 		}
 	}
+	// Agent-level conversation totals must not map to gen_ai.usage.*: they
+	// would be counted again on top of the llm.completion spans they sum.
+	for _, k := range []string{
+		"conversation.tokens.input", "conversation.tokens.output", "conversation.tokens.total",
+		"conversation.cost.usd", "conversation.stop_reason",
+	} {
+		if mapped, ok := loomToGenAI[k]; ok {
+			t.Errorf("loomToGenAI[%q] = %q, want unmapped (exported as loom.%s)", k, mapped, k)
+		}
+	}
 }
 
 func TestGenAISystemNormalization(t *testing.T) {
@@ -167,14 +172,14 @@ func TestGenAISystemNormalization(t *testing.T) {
 		provider string
 		want     string
 	}{
-		{"anthropic", "anthropic"},         // already matches spec — no normalization
-		{"openai", "openai"},               // already matches spec
-		{"ollama", "ollama"},               // community convention, kept as-is
-		{"mistral", "mistral"},             // kept as-is
-		{"bedrock", "aws.bedrock"},         // normalized
-		{"azure-openai", "azure_openai"},   // normalized
-		{"gemini", "google.generative_ai"}, // normalized
-		{"huggingface", "hugging_face"},    // normalized
+		{"anthropic", "anthropic"},          // already matches spec — no normalization
+		{"openai", "openai"},                // already matches spec
+		{"ollama", "ollama"},                // community convention, kept as-is
+		{"mistral", "mistral_ai"},           // normalized
+		{"bedrock", "aws.bedrock"},          // normalized
+		{"azure-openai", "azure.ai.openai"}, // normalized
+		{"gemini", "gcp.gemini"},            // normalized
+		{"huggingface", "hugging_face"},     // normalized
 	}
 	for _, tc := range tests {
 		t.Run(tc.provider, func(t *testing.T) {

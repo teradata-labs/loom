@@ -161,8 +161,8 @@ func (t *OTelTracer) EndSpan(span *Span) {
 
 	redacted := redactOTelSpan(span, t.privacy)
 
-	// Translate span attributes.
-	translateAttrs(otelSpan, redacted.Attributes)
+	// Translate span attributes and add the derived OpenInference attributes.
+	otelSpan.SetAttributes(exportAttributes(span.Name, redacted.Attributes)...)
 
 	// Forward resource attributes (service.name, agent.id, session.id, etc.).
 	for k, v := range redacted.ResourceAttributes {

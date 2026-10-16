@@ -227,7 +227,7 @@ The `OTelTracer` owns an OTel `TracerProvider` internally. On `StartSpan`, it cr
 │    1. Calculate duration (same as all tracers)       │
 │    2. Apply privacy redaction                        │
 │    3. Load otelSpan from activeSpans                 │
-│    4. Call translateAttrs(otelSpan, span.Attributes) │
+│    4. SetAttributes(exportAttributes(name, attrs))   │
 │    5. Set OTel span status from span.Status          │
 │    6. Call otelSpan.End()                            │
 │                                                      │
@@ -403,7 +403,7 @@ Agent Code      OTelTracer       OTel SDK          OTLP HTTP
     ├─ EndSpan ─────▶│                │                  │
     │               ├─ calcDuration   │                  │
     │               ├─ redact(span)   │                  │
-    │               ├─ translateAttrs │                  │
+    │               ├─ exportAttrs    │                  │
     │               ├─ load otelSpan  │                  │
     │               ├─ otelSpan.SetAttributes            │
     │               ├─ otelSpan.SetStatus                │
@@ -423,22 +423,22 @@ Agent Code      OTelTracer       OTel SDK          OTLP HTTP
 ### Attribute Translation Flow
 
 ```
-Loom Span.Attributes        translateAttrs()        OTel Span
-  {                               │                  .SetAttribute(
-    "llm.provider": "anthropic"   ├── gen_ai.system      "gen_ai.system", "anthropic")
-    "llm.model": "claude-..."     ├── gen_ai.request.model  "claude-...")
-    "llm.tokens.input": 1234      ├── gen_ai.usage.input_tokens  1234)
-    "llm.tokens.output": 567      ├── gen_ai.usage.output_tokens  567)
-    "llm.cost": 0.0023            ├── (pass-through as "loom.llm.cost")
-    "tool.name": "query_db"       ├── gen_ai.tool.name  "query_db")
-    "session.id": "abc-123"       ├── session.id  "abc-123")
-    "error.message": "timeout"    └── exception.message  "timeout")
-  }
+Loom Span.Attributes        exportAttributes()      OTel Span
+  {                               │                  .SetAttributes(
+    "llm.provider": "anthropic"   ├── gen_ai.system, gen_ai.provider.name  "anthropic"
+    "llm.model": "claude-..."     ├── gen_ai.request.model  "claude-..."
+    "llm.tokens.input": 100       ├── gen_ai.usage.input_tokens  100
+    "llm.tokens.cache_read": 900  ├── gen_ai.usage.cache_read.input_tokens  900
+    "llm.cost.usd": 0.0023        ├── gen_ai.usage.cost  0.0023
+    "pattern.name": "sql"         ├── loom.pattern.name  "sql"
+    "session.id": "abc-123"       └── session.id  "abc-123"
+  }                               + derived: openinference.span.kind "LLM",
+                                    llm.token_count.prompt 1000, ...
 ```
 
-**Pass-through rule**: Loom attributes with no OTel equivalent are forwarded with a `loom.` prefix. This preserves Loom-specific metadata (e.g., `loom.llm.cost`, `loom.pattern.name`) without polluting the `gen_ai.*` namespace.
+**Pass-through rule**: Loom attributes with no OTel equivalent are forwarded with a `loom.` prefix. This preserves Loom-specific metadata (e.g., `loom.pattern.name`, `loom.conversation.turns`) without polluting the `gen_ai.*` namespace. Keys that are already OpenInference or OTel names (see the table) are exported unchanged.
 
-**Privacy-first ordering**: Redaction runs before translation. Attributes removed by the redactor are never passed to `translateAttrs`.
+**Privacy-first ordering**: Redaction runs before translation. Attributes removed by the redactor are never passed to `exportAttributes`, and derived values such as `input.value` are computed from the redacted attributes.
 
 
 ## Data Structures
@@ -469,27 +469,44 @@ MaxBatchSize > 0                 (defaults to 512 if zero)
 
 ### Span Mapping Table
 
-Loom attribute constants (`pkg/observability/instrumentation.go`) → OTel GenAI semantic conventions (OTel semconv v1.28+):
+Loom attribute keys (set in `pkg/llm/instrumented_provider.go`, `pkg/agent`, `pkg/server`) → exported OTel attributes, as defined by `loomToGenAI`, `loomAlsoExport` and `openInferencePassthrough` in `pkg/observability/otel_attrs.go`:
 
-| Loom Constant | Loom Value | OTel Attribute | Notes |
+| Loom key | Example | Exported as | Notes |
 |---|---|---|---|
-| `AttrLLMProvider` | `"anthropic"` | `gen_ai.system` | |
-| `AttrLLMModel` | `"claude-sonnet-4-5"` | `gen_ai.request.model` | |
-| `AttrLLMInputTokens` | `1234` | `gen_ai.usage.input_tokens` | |
-| `AttrLLMOutputTokens` | `567` | `gen_ai.usage.output_tokens` | |
-| `AttrLLMCacheReadTokens` | `890` | `gen_ai.usage.cache_read_input_tokens` | |
-| `AttrLLMTemperature` | `0.7` | `gen_ai.request.temperature` | |
-| `AttrLLMMaxTokens` | `4096` | `gen_ai.request.max_tokens` | |
-| `AttrLLMStopReason` | `"end_turn"` | `gen_ai.response.finish_reasons` | wrapped as array |
-| `AttrToolName` | `"query_db"` | `gen_ai.tool.name` | |
-| `AttrSessionID` | `"sess-abc"` | `session.id` | resource attr |
-| `AttrAgentID` | `"agent-1"` | `loom.agent.id` | no OTel equiv → prefix |
-| `AttrLLMCost` | `0.0023` | `loom.llm.cost` | no OTel equiv → prefix |
-| `AttrPatternName` | `"sql-analysis"` | `loom.pattern.name` | no OTel equiv → prefix |
-| `AttrErrorMessage` | `"timeout"` | `exception.message` | OTel exception semconv |
-| `AttrErrorType` | `"DeadlineExceeded"` | `exception.type` | |
-| `ResourceAttrServiceName` | `"looms"` | `service.name` | resource attribute |
-| `ResourceAttrServiceVersion` | `"1.3.0"` | `service.version` | resource attribute |
+| `llm.provider` | `"bedrock"` | `gen_ai.system` and `gen_ai.provider.name` | value normalized by `genAISystemNorm`: `bedrock`→`aws.bedrock`, `azure-openai`→`azure.ai.openai`, `gemini`→`gcp.gemini`, `mistral`→`mistral_ai`, `huggingface`→`hugging_face` |
+| `llm.model` | `"claude-sonnet-4-5"` | `gen_ai.request.model` | |
+| `llm.operation` | `"chat"` | `gen_ai.operation.name` | |
+| `llm.tokens.input` | `100` | `gen_ai.usage.input_tokens` | Loom reports the uncached remainder |
+| `llm.tokens.output` | `20` | `gen_ai.usage.output_tokens` | |
+| `llm.tokens.total` | `120` | `gen_ai.usage.total_tokens` | |
+| `llm.tokens.cache_read` | `900` | `gen_ai.usage.cache_read.input_tokens` | set only when non-zero |
+| `llm.tokens.cache_write` | `176` | `gen_ai.usage.cache_creation.input_tokens` | set only when non-zero |
+| `llm.temperature` / `llm.max_tokens` | `0.7` / `4096` | `gen_ai.request.temperature` / `gen_ai.request.max_tokens` | |
+| `llm.stop_reason` | `"end_turn"` | `gen_ai.response.finish_reasons` | |
+| `llm.cost.usd` | `0.0023` | `gen_ai.usage.cost` | |
+| `message.preview` / `response.preview` | text | `gen_ai.prompt` / `gen_ai.completion` | Opik Input/Output columns |
+| `tool.name`, `mcp.tool.name` | `"query_db"` | `gen_ai.tool.name` | |
+| `mcp.tool.args` | JSON | `gen_ai.tool.call.arguments` | |
+| `agent_id`, `agent.id` | GUID | `gen_ai.agent.id` | |
+| `agent.name` | `"phoenix-smoke"` | `agent.name` and `gen_ai.agent.name` | OpenInference + OTel |
+| `session.id`, `user.id`, `trace.id` | | unchanged | |
+| `error.message` / `error.type` / `error.stack` | | `exception.message` / `exception.type` / `exception.stacktrace` | OTel exception semconv |
+| `conversation.tokens.*`, `conversation.cost.usd` | | `loom.conversation.*` | agent-level totals; deliberately **not** `gen_ai.usage.*`, which backends sum over a trace |
+| keys starting `openinference.`, `input.`, `output.`, `llm.token_count.`, `llm.input_messages.`, `llm.output_messages.`, `retrieval.documents.`, `gen_ai.`, and `llm.invocation_parameters`, `tool.parameters`, `tool.description`, `tool.id`, `graph.node.id` | | unchanged | already OpenInference / OTel names |
+| anything else | | `loom.<key>` | no data dropped |
+
+**Derived OpenInference attributes** (`deriveOpenInferenceAttrs`), added to every exported span unless the span already carries the key:
+
+| Attribute | Rule |
+|---|---|
+| `openinference.span.kind` | by span name: `llm.completion` → `LLM`; `agent.chat`, `agent.chat_with_progress`, `agent.chat_with_content_blocks`, `agent.conversation.resume` → `AGENT`; `agent.tool_execution`, `tool.execute`, `mcp.tools.call` → `TOOL`; `graph_memory.recall`, `memory.search_messages` → `RETRIEVER`; `memory.rerank_search_results` → `RERANKER`; everything else → `CHAIN` |
+| `input.value` / `output.value` | from `message.preview` / `response.preview` |
+| `llm.token_count.prompt` | LLM spans only: `llm.tokens.input + cache_read + cache_write` (OpenInference counts cached prompt tokens; Loom's input does not) |
+| `llm.token_count.completion` / `llm.token_count.total` | `llm.tokens.output` / prompt + completion |
+| `llm.token_count.prompt_details.cache_read` / `.cache_write` | when the Loom cache attribute is present |
+| `llm.cost.total` | from `llm.cost.usd` |
+
+`llm.provider`, `llm.system` and `llm.model_name` are not set: Arize Phoenix derives them from `gen_ai.provider.name` / `gen_ai.system` and `gen_ai.request.model`, and an explicit value would replace its OpenInference mapping (for example `aws.bedrock` → `aws`).
 
 **Span name pass-through**: Loom span names (`llm.completion`, `tool.execute`, `agent.chat`, etc.) are forwarded as-is to OTel. These are already meaningful; backends display them in their trace UIs without transformation.
 
@@ -509,6 +526,8 @@ StartSpan(ctx, name, opts):
     trace.WithTimestamp(loomSpan.StartTime),
     trace.WithSpanKind(spanKindFor(name)),
   )
+  loomSpan.TraceID = otelSpan.SpanContext().TraceID().String()   // adopt exported IDs
+  loomSpan.SpanID  = otelSpan.SpanContext().SpanID().String()
   t.activeSpans.Store(loomSpan.SpanID, otelSpan)
   return ContextWithSpan(otelCtx, loomSpan), loomSpan
 
@@ -519,7 +538,7 @@ EndSpan(span):
   raw, ok = t.activeSpans.LoadAndDelete(span.SpanID)
   if !ok: return                                   // span was never started (no-op)
   otelSpan = raw.(trace.Span)
-  translateAttrs(otelSpan, redacted.Attributes)
+  otelSpan.SetAttributes(exportAttributes(span.Name, redacted.Attributes)...)
   for _, event := range redacted.Events:
     otelSpan.AddEvent(event.Name, ...)
   if span.Status.Code == StatusError:
@@ -542,12 +561,17 @@ EndSpan(span):
 **Solution**: Static lookup table applied at `EndSpan`.
 
 ```
-translateAttrs(otelSpan trace.Span, attrs map[string]interface{}):
+exportAttributes(spanName string, attrs map[string]interface{}) []attribute.KeyValue:
   for key, value in attrs:
     if otelKey = loomToGenAI[key]; otelKey != "":
-      otelSpan.SetAttribute(otelKey, value)
+      emit(otelKey, value)
+    else if isPassthrough(key):
+      emit(key, value)                              // already OpenInference/OTel
     else:
-      otelSpan.SetAttribute("loom." + key, value)   // preserve with namespace
+      emit("loom." + key, value)                    // preserve with namespace
+    if extra = loomAlsoExport[key]; extra != "":
+      emit(extra, value)
+  emit(deriveOpenInferenceAttrs(spanName, attrs)...)
 ```
 
 `loomToGenAI` is a `map[string]string` constant defined in `otel_attrs.go`. Lookups are O(1). The table is initialised once at package init.
