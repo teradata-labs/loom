@@ -575,6 +575,24 @@ func TestInstrumentedProvider_InputAndOutputValues(t *testing.T) {
 			wantInput: "user: What broke?\nsystem: Relevant memories: the volatile table overflowed.",
 		},
 		{
+			name: "session start: system context before the user message",
+			messages: []llmtypes.Message{
+				{Role: "system", Content: "# START HERE: agent operating guide"},
+				{Role: "user", Content: "Say hello"},
+			},
+			response: &llmtypes.LLMResponse{Content: "Hello"},
+		},
+		{
+			name: "session start with a memory block after the user message",
+			messages: []llmtypes.Message{
+				{Role: "system", Content: "# START HERE: agent operating guide"},
+				{Role: "user", Content: "What broke?"},
+				{Role: "system", Content: "[Graph Memory Context] the volatile table overflowed."},
+			},
+			response:  &llmtypes.LLMResponse{Content: "The volatile table."},
+			wantInput: "user: What broke?\nsystem: [Graph Memory Context] the volatile table overflowed.",
+		},
+		{
 			name:       "text and tool calls in one response",
 			messages:   []llmtypes.Message{{Role: "user", Content: "Read the file"}},
 			response:   &llmtypes.LLMResponse{Content: "Reading it now.", ToolCalls: toolCallResponse.ToolCalls[1:]},
@@ -605,7 +623,7 @@ func TestInstrumentedProvider_InputAndOutputValues(t *testing.T) {
 
 				assert.Equal(t, tt.wantInput, attrs["input.value"])
 				assert.Equal(t, tt.wantOutput, attrs["output.value"])
-				assert.Equal(t, observability.TruncateContent(tt.messages[0].Content), attrs["message.preview"],
+				assert.Equal(t, observability.TruncateContent(lastUserContent(tt.messages)), attrs["message.preview"],
 					"message.preview stays the last user message")
 			})
 		}
@@ -629,4 +647,13 @@ func TestInstrumentedProvider_ToolCallOutputIsBounded(t *testing.T) {
 	out, ok := tracer.spans[0].Attributes["output.value"].(string)
 	require.True(t, ok)
 	assert.Equal(t, observability.DefaultMaxContentLength+1, len([]rune(out)), "bounded, plus the ellipsis")
+}
+
+func lastUserContent(messages []llmtypes.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			return messages[i].Content
+		}
+	}
+	return ""
 }

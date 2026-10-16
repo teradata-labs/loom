@@ -542,13 +542,18 @@ func lastUserMessagePreview(messages []llmtypes.Message) string {
 }
 
 // newInputPreview returns a bounded preview of the input the model has not
-// seen yet: the messages after the last assistant message. A lone user
-// message is rendered as its text; several messages, or one that is not a user
-// message, are rendered one per line as "role: text".
+// seen yet: the messages after the last assistant message, without the system
+// messages that lead them (the system prompt and session context at the start
+// of a session, which are not new input). A lone user message is rendered as
+// its text; several messages, or one that is not a user message, are rendered
+// one per line as "role: text".
 func newInputPreview(messages []llmtypes.Message) string {
 	start := len(messages)
 	for start > 0 && messages[start-1].Role != "assistant" {
 		start--
+	}
+	for start < len(messages) && messages[start].Role == "system" {
+		start++
 	}
 	newest := messages[start:]
 	if len(newest) == 0 {
