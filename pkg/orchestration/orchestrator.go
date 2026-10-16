@@ -40,16 +40,66 @@ type WorkflowProgressEvent struct {
 	// HITL gate awaiting a human decision (set when a gate fires, right
 	// before the workflow suspends or an inline handler is consulted)
 	HITLRequest *loomv1.HITLGateRequest
+
+	// Where a state machine is, outermost state first. An interface needs the
+	// position itself, not a sentence describing it.
+	StatePath []string
+
+	// Which run this is about. The callback is set on the orchestrator, and a
+	// run that delegates has children running through the same orchestrator —
+	// so without saying who is speaking, a parent's walk fills up with its
+	// children's states.
+	WorkflowID string
 }
 
 // WorkflowProgressCallback is called during workflow execution to report progress.
 type WorkflowProgressCallback func(event WorkflowProgressEvent)
+
+// RunObserver is told what a state machine is doing as it does it.
+//
+// A delegated child is a state machine of its own — its own id, directory,
+// budget and walk — nested inside a parent's state. Both are reported the same
+// way, so the owner of the runs sees the whole tree and not only its root.
+type RunObserver interface {
+	// ChildStarted is called when a state delegates to a child, before the
+	// child's first state runs. parentID and parentState say who delegated;
+	// the child's own id, spec and directory are on the pattern.
+	ChildStarted(ctx context.Context, parentID, parentState string, child *loomv1.WorkflowPattern)
+	// Transitioned is called after a state completes and the next state is
+	// decided, for the top machine and every child. vars is what the run has
+	// worked out so far; cost is what the completed state spent.
+	Transitioned(ctx context.Context, workflowID, from, signal, entering string, vars map[string]string, cost float64)
+	// ChildEnded is called when a delegated child reaches a terminal, with the
+	// terminal it reached and the parent's vars as they now stand — which is
+	// where the parent keeps which of its children have finished.
+	ChildEnded(ctx context.Context, parentID, parentState, childID, terminal string, parentVars map[string]string)
+}
+
+// StopObserver hears each visit that ended without a transition, for the top
+// machine and every child: the state finished and the walk stopped there — at
+// a gate, an escalation, a ceiling, a signal it could not route — or a person
+// sent it back. With Transitioned it gives every visit exactly one record,
+// carrying all the visit spent. A state stopped part-way — its model could not
+// be reached, a child it handed work to is waiting — has not ended its visit
+// and is not reported; the visit is recorded, with what it spent before the
+// stop, when it ends. An observer that does not implement it is not told.
+type StopObserver interface {
+	Stopped(ctx context.Context, workflowID, state, signal string, cost float64)
+}
 
 // Orchestrator coordinates multiple agents using workflow patterns.
 // It provides a fluent API for building and executing multi-agent workflows
 // like debates, pipelines, and parallel execution.
 type Orchestrator struct {
 	mu sync.RWMutex
+
+	// observer, when set, is told every child started and every transition made.
+	observer RunObserver
+	// places keeps runs' records when the observer keeps none.
+	places *memRecords
+
+	// resolver finds a workflow a state delegates to by name.
+	resolver WorkflowResolver
 
 	// Agents registered with the orchestrator
 	agents map[string]*agent.Agent
@@ -88,6 +138,11 @@ type Orchestrator struct {
 	// HITLHandler for inline gate decisions (optional). When nil, HITL gates
 	// suspend the workflow with a checkpoint instead (the durable default).
 	hitlHandler HITLHandler
+
+	// Tool executor for state-machine tool states and edge hooks (optional).
+	// The same executor an agent's tool calls go through, so a walker's tool
+	// call is admitted, sandboxed and audited exactly as a model's would be.
+	toolExecutor ToolExecutor
 }
 
 // taskTrackingKey is a context key to prevent recursive task tracking.
@@ -126,10 +181,31 @@ type Config struct {
 	// providing persistence, resume capability, and progress visibility.
 	TaskManager *task.Manager
 
+	// RunObserver, when set, is told what every state machine the orchestrator
+	// walks is doing — the top one and every child a state delegates to — as
+	// it happens. Whoever owns the runs keeps the record; this is how a walk
+	// that dies is picked up from where it was, at every level.
+	RunObserver RunObserver
+
 	// HITLHandler decides HITL gates inline (optional). Leave nil to have
 	// gates suspend with a durable WorkflowCheckpoint (see ResumeWorkflow).
 	HITLHandler HITLHandler
+
+	// ToolExecutor runs a state machine's tool states and edge hooks. Usually
+	// an agent's *shuttle.Executor: the walker goes through the same door a
+	// model's tool call does.
+	ToolExecutor ToolExecutor
+
+	// WorkflowResolver finds the workflow a state delegates to by name
+	// (optional). Without one, a state can only delegate to a workflow written
+	// into it.
+	WorkflowResolver WorkflowResolver
 }
+
+// WorkflowResolver finds a workflow by the name a state delegates to. The
+// engine asks each time such a state is entered: where workflows are kept,
+// and what a name means, is the host's to say.
+type WorkflowResolver func(ctx context.Context, name string) (*loomv1.WorkflowPattern, error)
 
 // NewOrchestrator creates a new orchestrator instance.
 func NewOrchestrator(config Config) *Orchestrator {
@@ -141,6 +217,9 @@ func NewOrchestrator(config Config) *Orchestrator {
 	}
 
 	o := &Orchestrator{
+		observer:         config.RunObserver,
+		places:           newMemRecords(),
+		resolver:         config.WorkflowResolver,
 		agents:           make(map[string]*agent.Agent),
 		registry:         config.Registry,
 		llmProvider:      config.LLMProvider,
@@ -152,12 +231,60 @@ func NewOrchestrator(config Config) *Orchestrator {
 		llmSemaphore:     config.LLMSemaphore,
 		taskManager:      config.TaskManager,
 		hitlHandler:      config.HITLHandler,
+		toolExecutor:     config.ToolExecutor,
 	}
 
 	// Initialize collaboration engine with orchestrator as provider
 	o.collaborationEngine = collaboration.NewEngineWithObservability(o, config.Tracer, config.Logger)
 
 	return o
+}
+
+// registeredAgents returns a snapshot of the registered agents. Used by
+// state-machine dismissal, which must reach every live session of a run.
+func (o *Orchestrator) registeredAgents() []*agent.Agent {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	out := make([]*agent.Agent, 0, len(o.agents))
+	for _, ag := range o.agents {
+		out = append(out, ag)
+	}
+	return out
+}
+
+// SetToolExecutor sets or updates the tool executor. Hosts that build the
+// orchestrator before their tool registry exists can wire it afterwards.
+func (o *Orchestrator) SetToolExecutor(exec ToolExecutor) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.toolExecutor = exec
+}
+
+// SetWorkflowResolver sets or updates how a workflow delegated to by name is
+// found. Hosts that build the orchestrator before they know where workflows
+// are kept can wire it afterwards.
+func (o *Orchestrator) SetWorkflowResolver(find WorkflowResolver) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.resolver = find
+}
+
+// workflowNamed finds the workflow of a name, as it is defined now.
+func (o *Orchestrator) workflowNamed(ctx context.Context, name string) (*loomv1.WorkflowPattern, error) {
+	o.mu.RLock()
+	find := o.resolver
+	o.mu.RUnlock()
+	if find == nil {
+		return nil, fmt.Errorf("no workflow %q: this engine was given no way to find a workflow by name", name)
+	}
+	found, err := find(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	if found == nil {
+		return nil, fmt.Errorf("no workflow %q", name)
+	}
+	return found, nil
 }
 
 // SetProgressCallback sets or updates the progress callback.
@@ -327,6 +454,7 @@ func (o *Orchestrator) ExecutePattern(ctx context.Context, pattern *loomv1.Workf
 	// Emit initial progress
 	o.emitProgress(WorkflowProgressEvent{
 		PatternType: patternType,
+		WorkflowID:  pattern.GetWorkflowId(),
 		Message:     fmt.Sprintf("Starting %s workflow execution", patternType),
 		Progress:    0,
 	})
@@ -352,6 +480,7 @@ func (o *Orchestrator) ExecutePattern(ctx context.Context, pattern *loomv1.Workf
 	// Emit progress after initialization
 	o.emitProgress(WorkflowProgressEvent{
 		PatternType: patternType,
+		WorkflowID:  pattern.GetWorkflowId(),
 		Message:     "Executing workflow pattern",
 		Progress:    20,
 	})
@@ -386,6 +515,11 @@ func (o *Orchestrator) ExecutePattern(ctx context.Context, pattern *loomv1.Workf
 		executor := NewIterativePipelineExecutor(o, p.Iterative, o.messageBus, wfID)
 		result, err = executor.Execute(ctx)
 
+	case *loomv1.WorkflowPattern_StateMachine:
+		wfID := o.resolveWorkflowID("state-machine", pattern)
+		executor := NewStateMachineExecutor(o, p.StateMachine, wfID)
+		result, err = executor.Execute(ctx)
+
 	case *loomv1.WorkflowPattern_Swarm:
 		wfID := o.resolveWorkflowID("swarm", pattern)
 		executor := NewSwarmExecutor(o, p.Swarm, wfID)
@@ -399,6 +533,7 @@ func (o *Orchestrator) ExecutePattern(ctx context.Context, pattern *loomv1.Workf
 		// Emit error progress
 		o.emitProgress(WorkflowProgressEvent{
 			PatternType: patternType,
+			WorkflowID:  pattern.GetWorkflowId(),
 			Message:     fmt.Sprintf("Workflow failed: %v", err),
 			Progress:    0,
 		})
@@ -408,6 +543,7 @@ func (o *Orchestrator) ExecutePattern(ctx context.Context, pattern *loomv1.Workf
 	// Emit completion progress
 	o.emitProgress(WorkflowProgressEvent{
 		PatternType:    patternType,
+		WorkflowID:     pattern.GetWorkflowId(),
 		Message:        "Workflow completed successfully",
 		Progress:       100,
 		PartialResults: result.AgentResults,

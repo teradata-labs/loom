@@ -32,10 +32,11 @@ import (
 )
 
 // TestAuditLog_LoadSession_NotFound verifies that loading a non-existent session
-// (or one blocked by RLS) produces a WARN-level audit log entry.
+// (or one blocked by RLS) is logged with the session and the operation — at
+// Debug, because a miss is the common path before a new session is created.
 func TestAuditLog_LoadSession_NotFound(t *testing.T) {
 	pool := testPool(t)
-	core, logs := observer.New(zapcore.WarnLevel)
+	core, logs := observer.New(zapcore.DebugLevel)
 	logger := zap.New(core)
 
 	store := NewSessionStore(pool, observability.NewNoOpTracer(), logger)
@@ -49,11 +50,11 @@ func TestAuditLog_LoadSession_NotFound(t *testing.T) {
 	assert.Nil(t, sess, "session should be nil for non-existent ID")
 
 	// Verify the audit log was emitted
-	entries := logs.FilterMessage("session not found (possible RLS denial)")
+	entries := logs.FilterMessage("session not found on load; will be created if new")
 	require.Equal(t, 1, entries.Len(), "expected exactly one audit log entry")
 
 	entry := entries.All()[0]
-	assert.Equal(t, zapcore.WarnLevel, entry.Level)
+	assert.Equal(t, zapcore.DebugLevel, entry.Level)
 
 	// Check structured fields
 	fields := make(map[string]string)
@@ -70,7 +71,7 @@ func TestAuditLog_LoadSession_NotFound(t *testing.T) {
 // User A creates a session, User B tries to load it -- should produce audit log.
 func TestAuditLog_LoadSession_RLSDenied(t *testing.T) {
 	pool := testPool(t)
-	core, logs := observer.New(zapcore.WarnLevel)
+	core, logs := observer.New(zapcore.DebugLevel)
 	logger := zap.New(core)
 
 	store := NewSessionStore(pool, observability.NewNoOpTracer(), logger)
@@ -89,7 +90,7 @@ func TestAuditLog_LoadSession_RLSDenied(t *testing.T) {
 	assert.Nil(t, sess, "User B should not see User A's session")
 
 	// Verify the audit log was emitted
-	entries := logs.FilterMessage("session not found (possible RLS denial)")
+	entries := logs.FilterMessage("session not found on load; will be created if new")
 	require.Equal(t, 1, entries.Len(), "expected audit log for RLS-denied access")
 
 	entry := entries.All()[0]

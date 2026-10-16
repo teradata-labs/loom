@@ -575,7 +575,7 @@ func TestResumeWorkflow_RejectsUnsupportedPatterns(t *testing.T) {
 	_, err := orch.ResumeWorkflow(context.Background(), pattern, &loomv1.WorkflowCheckpoint{CheckpointVersion: 1},
 		&loomv1.GateDecision{Action: loomv1.GateAction_GATE_ACTION_APPROVE})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "does not support HITL gates")
+	assert.Contains(t, err.Error(), "cannot suspend")
 }
 
 func TestIterativeGate_SuspendAndResume(t *testing.T) {

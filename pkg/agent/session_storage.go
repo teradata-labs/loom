@@ -25,6 +25,17 @@ type SessionStorage interface {
 	ListSessions(ctx context.Context) ([]string, error)
 	DeleteSession(ctx context.Context, sessionID string) error
 	LoadAgentSessions(ctx context.Context, agentID string) ([]string, error)
+	// StampRunID binds a session to the loop run that created it, once. A
+	// caller that stamps twice with different values silently keeps the
+	// first (the SQL WHERE requires an empty run_id). Empty runID is a no-op.
+	// This is what makes "cost of loop R" a SUM over session_id joined on
+	// sessions.run_id = R, and does not exist to record anything else.
+	StampRunID(ctx context.Context, sessionID, runID string) error
+
+	// SessionsInRun returns every session bound to a loop run (the ones
+	// StampRunID stamped). Empty for a runID no session was stamped with.
+	// The caller aggregates cost/tokens across the returned ids.
+	SessionsInRun(ctx context.Context, runID string) ([]string, error)
 
 	// SessionExists reports whether any session row has this id, regardless
 	// of owner. It is an authorization primitive, not a data read: resume
@@ -51,22 +62,51 @@ type SessionStorage interface {
 	LoadMessagesForAgent(ctx context.Context, agentID string) ([]Message, error)
 	LoadMessagesFromParentSession(ctx context.Context, sessionID string) ([]Message, error)
 
+	// Routing
+	//
+	// Holding is which run has a conversation, and it is read on every message
+	// that arrives — when it names a run, delivery is this read and nothing
+	// else. "" means nobody, so the conversation's own agent answers.
+	//
+	// It is set only on a conversation's root session, and only by the router.
+	// A second writer would let the conversation be in two places at once.
+	SetHolding(ctx context.Context, sessionID, runID string) error
+	Holding(ctx context.Context, sessionID string) (string, error)
+
 	// Search (backend-agnostic: FTS5 for SQLite, tsvector for PostgreSQL)
 	SearchMessages(ctx context.Context, sessionID, query string, limit int) ([]Message, error)
 	SearchMessagesByAgent(ctx context.Context, agentID, query string, limit int) ([]Message, error)
 
 	// Tool executions
 	SaveToolExecution(ctx context.Context, sessionID string, exec ToolExecution) error
+	// ToolExecutions is what a session's tools did: which, how long, how much came
+	// back, and what failed.
+	//
+	// The write side has been here since the beginning and nothing could read it,
+	// so the most actionable record the product keeps — every tool failure, with
+	// its error and its duration — was write-only. Ordered oldest first, because a
+	// sequence of calls is how a stuck agent shows itself.
+	ToolExecutions(ctx context.Context, sessionID string) ([]ToolRecord, error)
 
 	// Relief transactions (HLD §5.2 — write-once flags, one transaction per
 	// operation, set only inside releasePressure):
 	//
-	// MarkEvicted sets evicted=true on the given rows in one transaction.
-	MarkEvicted(ctx context.Context, sessionID string, seqs []int64) error
 	// FoldMessages writes summary version n (snapshot_type='fold', content =
 	// JSON {"n","text"}) and sets the region's folded flags in ONE transaction
 	// (HLD §5.4.6) — a fold never stands in memory without its row.
 	FoldMessages(ctx context.Context, sessionID string, seqs []int64, n int, text string) error
+
+	// Rewind. Distinct from relief above: relief shrinks what a turn costs
+	// while keeping it in the history, whereas a rewind removes exchanges that
+	// should not have happened.
+	//
+	// TruncateFrom deletes every message from the given turn onward and
+	// reports the row count. Turn is the unit because turn already groups a
+	// user message with every assistant message and tool call it caused, so a
+	// truncation cannot orphan a tool call from its result.
+	TruncateFrom(ctx context.Context, sessionID string, turn int) (int, error)
+	// MaxTurn reports the highest turn in a session, 0 when it has none.
+	MaxTurn(ctx context.Context, sessionID string) (int, error)
 
 	// Memory snapshots
 	SaveMemorySnapshot(ctx context.Context, sessionID, snapshotType, content string, tokenCount int) error

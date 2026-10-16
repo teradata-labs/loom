@@ -842,6 +842,14 @@ func parkSummary(items []parkItem) string {
 // post-resume loop only — the parked batch's executions are authoritative in
 // the persisted tool rows and tool-execution records.
 func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkDecision, progressCallback types.ProgressCallback) (*Response, error) {
+	// The resumed turn is a turn like any other: claimed before the session
+	// is loaded or written, released on every way out.
+	endTurn, err := a.takeTurn(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer endTurn()
+
 	if a.hitlPark == nil {
 		return nil, ErrParkDisabled
 	}
@@ -870,9 +878,9 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	span.SetAttribute("resume.request_id", decision.RequestID)
 	span.SetAttribute("resume.approved", decision.Approved)
 
-	// NO DropTurnPayloads / dropInTurnSQLite — the parked turn is still the
-	// current turn. NO user append — resuming is not a new turn. NO graph
-	// extraction goroutine — there is no new user message to extract from.
+	// The parked turn is still the current turn. NO user append — resuming is
+	// not a new turn. NO graph extraction goroutine — there is no new user
+	// message to extract from.
 
 	if progressCallback != nil {
 		ctx = ContextWithProgressCallback(ctx, progressCallback)
@@ -1146,12 +1154,21 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	}
 
 	a.appendMessage(ctx, sess, Message{
-		Role:       "assistant",
-		Content:    response.Content,
-		AgentID:    a.GetID(),
-		Timestamp:  time.Now(),
-		TokenCount: response.Usage.TotalTokens,
-		CostUSD:    response.Usage.CostUSD,
+		Role:              "assistant",
+		Content:           response.Content,
+		AgentID:           a.GetID(),
+		Timestamp:         time.Now(),
+		TokenCount:        response.Usage.TotalTokens,
+		CostUSD:           response.Usage.CostUSD,
+		InputTokens:       response.Usage.InputTokens,
+		OutputTokens:      response.Usage.OutputTokens,
+		CacheReadTokens:   response.Usage.CacheReadInputTokens,
+		CacheCreateTokens: response.Usage.CacheCreationInputTokens,
+
+		CacheCreate1hTokens: response.Usage.CacheCreation1hInputTokens,
+		CacheCreate5mTokens: response.Usage.CacheCreation5mInputTokens,
+		ThinkingTokens:      response.Usage.ThinkingTokens,
+		Effort:              response.Usage.Effort,
 	}, false)
 
 	if err := a.memory.PersistSession(ctx, sess); err != nil {

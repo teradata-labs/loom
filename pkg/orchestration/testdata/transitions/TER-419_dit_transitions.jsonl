@@ -1,0 +1,2 @@
+{"seq": 1, "at": "2026-07-19T10:25:59Z", "loop": "DEPLOY:delta", "iter": 1, "from": "DEPLOY", "worker": "tool", "skill": "deploy", "signal": "env", "session": null, "mint": null, "in_tok": null, "out_tok": null, "usd": 0.0, "dur_s": 0.0}
+{"seq": 2, "at": "2026-07-19T10:28:54Z", "loop": "DEPLOY:delta", "iter": 1, "from": "DEPLOY", "worker": "dm", "skill": "framework", "signal": "hitl", "session": null, "mint": null, "in_tok": null, "out_tok": null, "usd": 0.6269, "dur_s": 268.0}

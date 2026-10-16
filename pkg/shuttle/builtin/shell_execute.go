@@ -6,9 +6,9 @@
 package builtin
 
 import (
-	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,7 +17,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/config"
@@ -26,10 +25,22 @@ import (
 )
 
 const (
-	// DefaultShellTimeout is the default execution timeout (5 minutes).
-	DefaultShellTimeout = 300
+	// DefaultShellTimeout is a command's own wall clock (4:30). Sized to stay
+	// inside the conversation-cache lifetime: a call that outlives the cache
+	// costs a full context re-send at write price, far more than the call
+	// itself saved. A batch gives every command this budget in parallel, so
+	// the batch as a whole still lands inside it.
+	DefaultShellTimeout = perCommandTimeoutSecs
 
-	// MaxShellTimeout is the maximum allowed timeout (10 minutes).
+	// batchDriverSlack is the head-room the driver needs on top of a command's
+	// own budget to replay the finished sections. Only reached if a command
+	// ignores its own timeout.
+	batchDriverSlack = 20
+
+	// MaxShellTimeout is the ceiling a caller may ask for. Reachable only by
+	// passing timeout_seconds, which is not advertised: the tool names it in
+	// the timed-out result, where it is the right answer for a step that
+	// genuinely cannot be split.
 	MaxShellTimeout = 600
 
 	// DefaultMaxOutputBytes limits output size to prevent memory issues (1MB).
@@ -40,25 +51,61 @@ const (
 // Supports Unix (bash/sh) and Windows (PowerShell/cmd).
 // With session-based path restrictions for security.
 type ShellExecuteTool struct {
-	baseDir        string // Base directory for resolving relative paths
-	loomDataDir    string // LOOM_DATA_DIR for boundary checking
-	restrictWrites bool   // Enforce write restrictions (default: true)
-	restrictReads  string // Read restriction level: "session" or "all_sessions"
+	baseDir        string   // Base directory for resolving relative paths
+	placed         bool     // Built with a base directory: commands start there
+	loomDataDir    string   // LOOM_DATA_DIR for boundary checking
+	restrictWrites bool     // Enforce write restrictions (default: true)
+	restrictReads  string   // Read restriction level: "session" or "all_sessions"
+	also           []string // Folders beyond its own a placed tool may run in
 }
 
 // NewShellExecuteTool creates a new shell execution tool.
-// If baseDir is empty, uses current working directory.
+// A tool built with a baseDir starts its commands there: whoever builds the
+// tool says where its agent works. Built with none, commands start in
+// LOOM_SANDBOX_DIR and relative paths resolve against the current directory.
 // Defaults: restrictWrites=true, restrictReads="session"
 func NewShellExecuteTool(baseDir string) *ShellExecuteTool {
-	if baseDir == "" {
+	placed := baseDir != ""
+	if placed {
+		// Absolute, so it is the same place wherever it is resolved from.
+		if abs, err := filepath.Abs(baseDir); err == nil {
+			baseDir = abs
+		}
+	} else {
 		baseDir, _ = os.Getwd()
 	}
 	return &ShellExecuteTool{
 		baseDir:        baseDir,
+		placed:         placed,
 		loomDataDir:    os.Getenv("LOOM_DATA_DIR"), // Will be set from config in agent initialization
 		restrictWrites: true,                       // Default to restricted writes
 		restrictReads:  "session",                  // Default to session-only reads
 	}
+}
+
+// Allow lets a placed tool run commands in more folders than its own.
+func (t *ShellExecuteTool) Allow(dirs ...string) {
+	for _, d := range dirs {
+		if abs, err := filepath.Abs(d); err == nil {
+			t.also = append(t.also, abs)
+		}
+	}
+}
+
+// pathWithin reports whether path is dir itself or sits beneath it. A bare
+// strings.HasPrefix accepts a sibling whose name merely starts the same way —
+// /work/proj also admitting /work/proj-evil — so containment is tested on
+// whole path segments.
+func pathWithin(path, dir string) bool {
+	if dir == "" || path == "" {
+		return false
+	}
+	path = filepath.Clean(path)
+	dir = filepath.Clean(dir)
+	if path == dir {
+		return true
+	}
+	return strings.HasPrefix(path, dir+string(filepath.Separator))
 }
 
 // SetLoomDataDir sets the LOOM_DATA_DIR for path validation.
@@ -85,37 +132,40 @@ func (t *ShellExecuteTool) Name() string {
 // Deprecated: Description loaded from PromptRegistry (prompts/tools/shell_execute.yaml).
 // This fallback is used only when prompts are not configured.
 func (t *ShellExecuteTool) Description() string {
-	return `Executes shell commands on the local system — general-purpose. Supports bash/sh on Unix and PowerShell/cmd on Windows.
-Prefer file_read for reading and searching files, and file_write/edit_files for changing them; use shell for everything else: dbt, builds, scripts, OS operations.
-Security: validates working directories, filters sensitive env vars, enforces timeouts.`
+	return `Run shell commands. One call can run up to 5: pass "commands" (an array) and they run in PARALLEL, each in its own shell — cd and variables do NOT carry between them, so use working_dir, absolute paths, or chain with && inside a single command. The result is one text with a "== label ==" section per command, always in the order you listed them. A failing command is an "ERROR: exit N" section and the others still run.
+
+Reading code is a batch. Locate, then read the regions you need, across several files, in one call:
+  commands: [
+    {"command": "grep -n 'def run_handlers\\|_pending_handler' lib/ansible/plugins/strategy/__init__.py", "label": "locate"},
+    {"command": "sed -n '300,420p' lib/ansible/executor/play_iterator.py", "label": "play_iterator 300-420"},
+    {"command": "sed -n '40,120p' lib/ansible/playbook/handler.py", "label": "handler 40-120"}
+  ]
+Read a region rather than a whole file unless the file is small; what you read stays in context while you work on it.
+
+Each command's output is guaranteed a byte budget (default 64K, or its own max_output_bytes). A cut section says how many bytes were cut and how to narrow.
+
+Independent work is a batch: several greps, git status and diff. Dependent steps chain with && inside one command: build && test.
+
+Single command: "command". Working directory: "working_dir".`
 }
 
 func (t *ShellExecuteTool) InputSchema() *shuttle.JSONSchema {
 	return shuttle.NewObjectSchema(
 		"Parameters for shell command execution",
 		map[string]*shuttle.JSONSchema{
-			"command": shuttle.NewStringSchema("Shell command to execute (required)"),
-			"working_dir": shuttle.NewStringSchema(
-				"Working directory for command execution.",
+			"command": shuttle.NewStringSchema("One shell command."),
+			"commands": shuttle.NewArraySchema(
+				fmt.Sprintf("Up to %d commands, run in parallel, one section per command in the order you list them. Items: string or {command, label?, max_output_bytes?}.", batchMaxCommands),
+				shuttle.NewStringSchema("shell command"),
 			),
-			"env": shuttle.NewObjectSchema(
-				"Environment variables to set (merged with system environment)",
-				nil,
-				nil,
-			),
-			"timeout_seconds": shuttle.NewNumberSchema(
-				"Maximum execution time in seconds (default: 300, max: 600)",
-			).WithDefault(DefaultShellTimeout).
-				WithRange(intPtr(1), intPtr(MaxShellTimeout)),
-			"shell": shuttle.NewStringSchema(
-				"Shell to use.",
-			).WithEnum("default", "bash", "sh", "powershell", "cmd").
-				WithDefault("default"),
+			"working_dir": shuttle.NewStringSchema("Working directory."),
+			"env":         shuttle.NewObjectSchema("Extra environment variables.", nil, nil),
+			"shell":       shuttle.NewStringSchema("Shell.").WithEnum("default", "bash", "sh", "powershell", "cmd").WithDefault("default"),
 			"max_output_bytes": shuttle.NewNumberSchema(
-				"Maximum output size in bytes.",
-			).WithDefault(DefaultMaxOutputBytes),
+				"Output budget per command in bytes (default 65536).",
+			).WithDefault(defaultCommandBudget),
 		},
-		[]string{"command"},
+		nil,
 	)
 }
 
@@ -129,6 +179,36 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	loomDataDir := t.loomDataDir
 	if loomDataDir == "" {
 		loomDataDir = config.GetLoomDataDir()
+	}
+
+	// Output budget per command: the rendered guarantee, with a self-describing
+	// footer when cut. Replaces the old head/tail elision.
+	commandBudget := defaultCommandBudget
+	if mob, ok := params["max_output_bytes"].(float64); ok && mob > 0 {
+		commandBudget = int(mob)
+	}
+
+	// Batch mode: 'commands' → one driver program running them in parallel.
+	batchCmds, batchMode, batchErr := parseBatchCommands(params, commandBudget)
+	if batchMode && batchErr != nil {
+		return &shuttle.Result{
+			Success: false,
+			Error: &shuttle.Error{
+				Code:       "INVALID_PARAMS",
+				Message:    batchErr.Error(),
+				Suggestion: "commands: [\"grep -n handler lib/a.py\", {\"command\": \"sed -n '40,120p' lib/a.py\", \"label\": \"a.py 40-120\"}]",
+			},
+			ExecutionTimeMs: time.Since(start).Milliseconds(),
+		}, nil
+	}
+	if batchMode {
+		params["command"] = buildBatchDriver(batchCmds)
+		// Each command polices its own clock inside the driver. The call-level
+		// timer is only a backstop for a command that ignores its own, so it
+		// sits just above one command's budget — never at a multiple of it.
+		if _, asked := params["timeout_seconds"]; !asked {
+			params["timeout_seconds"] = float64(perCommandTimeoutSecs + batchDriverSlack)
+		}
 	}
 
 	// Extract and validate command
@@ -146,9 +226,21 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	}
 
 	// Determine working directory
-	// Priority: 1) explicit working_dir param, 2) LOOM_SANDBOX_DIR (agent execution context)
+	// Priority: 1) explicit working_dir param, 2) the turn's working
+	// directory, 3) the directory the tool was built with,
+	// 4) LOOM_SANDBOX_DIR (agent execution context).
+	// LOOM_SANDBOX_DIR is one value for the process; where one agent's
+	// commands start is that agent's own, so a placed tool does not take it.
+	// A relative working_dir is beneath whichever of 2 and 3 applies.
 	// Note: LOOM_SANDBOX_DIR defaults to LOOM_DATA_DIR (see config.GetLoomSandboxDir)
+	baseDir := t.baseDir
 	workingDir := config.GetLoomSandboxDir()
+	if t.placed {
+		workingDir = baseDir
+	}
+	if dir := shuttle.WorkDirFromContext(ctx); dir != "" {
+		baseDir, workingDir = dir, dir
+	}
 	if wd, ok := params["working_dir"].(string); ok && wd != "" {
 		workingDir = wd // Explicit override always wins
 	}
@@ -185,7 +277,7 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	}
 
 	// Validate and resolve working directory
-	cleanWorkingDir, err := resolveWorkingDir(workingDir, t.baseDir)
+	cleanWorkingDir, err := resolveWorkingDir(workingDir, baseDir)
 	if err != nil {
 		return &shuttle.Result{
 			Success: false,
@@ -232,11 +324,24 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 		absLoomDataDir, _ := filepath.Abs(loomDataDir)
 
 		// Check if path is within LOOM_DATA_DIR or a whitelisted directory.
-		// LOOM_SANDBOX_DIR is the agent execution context (the workspace) and
-		// is honored exactly as this guard's Suggestion advertises — without
-		// it, an anchored workspace outside the data dir rejects every call.
+		// A placed tool runs where it was placed, where the turn it serves
+		// was placed — a loop's step works where its spec says — and in what
+		// it was allowed besides: all of it its agent's own, which nothing
+		// else in the process can widen or narrow. A tool built with no place
+		// runs in LOOM_SANDBOX_DIR, the agent execution context, exactly as
+		// this guard's Suggestion advertises.
 		isAllowed := pathWithin(absWorkingDir, absLoomDataDir)
-		if !isAllowed {
+		if !isAllowed && t.placed {
+			isAllowed = pathWithin(absWorkingDir, t.baseDir)
+			if turn := shuttle.WorkDirFromContext(ctx); turn != "" {
+				absTurn, _ := filepath.Abs(turn)
+				isAllowed = isAllowed || pathWithin(absWorkingDir, absTurn)
+			}
+			for _, d := range t.also {
+				isAllowed = isAllowed || pathWithin(absWorkingDir, d)
+			}
+		}
+		if !isAllowed && !t.placed {
 			absSandboxDir, _ := filepath.Abs(config.GetLoomSandboxDir())
 			if pathWithin(absWorkingDir, absSandboxDir) {
 				isAllowed = true
@@ -291,6 +396,18 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	}
 
 	// Create command (we'll handle timeout manually for better control)
+	if batchMode && actualShellType != "bash" && actualShellType != "sh" {
+		return &shuttle.Result{
+			Success: false,
+			Error: &shuttle.Error{
+				Code:       "INVALID_PARAMS",
+				Message:    fmt.Sprintf("batch mode ('commands') needs bash or sh; shell is %s", actualShellType),
+				Suggestion: "Use 'command' for a single command on this shell",
+			},
+			ExecutionTimeMs: time.Since(start).Milliseconds(),
+		}, nil
+	}
+
 	cmd := exec.Command(shellBinary, shellArgs...) // #nosec G204 -- shellBinary is validated against allowlist above
 	cmd.Dir = cleanWorkingDir
 
@@ -355,56 +472,28 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 		}, nil
 	}
 
-	// Stream output concurrently
+	// Stream stdout/stderr concurrently. Each pipe is drained to EOF via
+	// io.Copy into a capturedOutput sink that keeps only the first
+	// maxOutputBytes and silently consumes the rest. Because the sink NEVER
+	// stops reading (Write always returns len(p), nil), the child can never
+	// block on a full pipe — so a command that emits a huge single line
+	// (e.g. grep matching a 1.6MB one-line manifest.json) is truncated here,
+	// not deadlocked until the wall-clock timeout kills it.
+	//
+	// A line-scanner cannot give that guarantee: it stops reading once the
+	// budget is spent, and its max-line-size bounds how much of a single line
+	// it will take at all. Lines are recovered from the captured text after
+	// the drain, so batch parsing still sees the per-command sections.
 	var stdoutLines, stderrLines []string
 	var outputBytes int64
-	var outputErr error
-	var mu sync.Mutex
 	var wg sync.WaitGroup
 
+	stdoutCap := &capturedOutput{max: maxOutputBytes}
+	stderrCap := &capturedOutput{max: maxOutputBytes}
+
 	wg.Add(2)
-
-	// Read stdout
-	go func() {
-		defer wg.Done()
-		scanner := bufio.NewScanner(stdoutPipe)
-		buf := make([]byte, 64*1024)   // 64KB line buffer
-		scanner.Buffer(buf, 1024*1024) // 1MB max line size
-
-		for scanner.Scan() {
-			line := scanner.Text()
-			mu.Lock()
-			outputBytes += int64(len(line)) + 1 // +1 for newline
-			if outputBytes > maxOutputBytes {
-				outputErr = fmt.Errorf("output exceeded maximum size (%d bytes)", maxOutputBytes)
-				mu.Unlock()
-				break
-			}
-			stdoutLines = append(stdoutLines, line)
-			mu.Unlock()
-		}
-	}()
-
-	// Read stderr
-	go func() {
-		defer wg.Done()
-		scanner := bufio.NewScanner(stderrPipe)
-		buf := make([]byte, 64*1024)   // 64KB line buffer
-		scanner.Buffer(buf, 1024*1024) // 1MB max line size
-
-		for scanner.Scan() {
-			line := scanner.Text()
-			mu.Lock()
-			outputBytes += int64(len(line)) + 1 // +1 for newline
-			if outputBytes > maxOutputBytes {
-				outputErr = fmt.Errorf("output exceeded maximum size (%d bytes)", maxOutputBytes)
-				mu.Unlock()
-				break
-			}
-			stderrLines = append(stderrLines, line)
-			mu.Unlock()
-		}
-	}()
+	go func() { defer wg.Done(); _, _ = io.Copy(stdoutCap, stdoutPipe) }()
+	go func() { defer wg.Done(); _, _ = io.Copy(stderrCap, stderrPipe) }()
 
 	// Wait for pipe scanners to finish, then call cmd.Wait() to get the exit code.
 	// IMPORTANT: Per Go docs, all reads from StdoutPipe/StderrPipe must complete
@@ -484,23 +573,14 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 		}
 	}
 
-	// Check for output overflow (detected during streaming)
-	if outputErr != nil {
-		// Kill the process if still running
-		if cmd.Process != nil {
-			// Best-effort kill; process may have already exited
-			_ = cmd.Process.Kill()
-		}
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:       "OUTPUT_OVERFLOW",
-				Message:    outputErr.Error(),
-				Suggestion: "Increase max_output_bytes or reduce command output",
-			},
-			ExecutionTimeMs: time.Since(start).Milliseconds(),
-		}, nil
-	}
+	// Recover lines from the captured text now that both pipes are drained.
+	// Oversize output is truncated by the sink and reported as such, rather
+	// than failing the call: what a command did manage to print is the most
+	// useful thing to hand back, and the old OUTPUT_OVERFLOW path threw all
+	// of it away.
+	stdoutLines = splitCapturedLines(stdoutCap.String())
+	stderrLines = splitCapturedLines(stderrCap.String())
+	outputBytes = stdoutCap.Total() + stderrCap.Total()
 
 	// Determine exit code
 	exitCode := 0
@@ -523,19 +603,31 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 		}
 	}
 
-	// Handle timeout
+	// Handle timeout. This is the one moment the tool talks about time, so the
+	// advice has to reach the model — which means it goes in Data: Error.Message
+	// and Error.Suggestion are not part of the rendered tool result, so a payload
+	// carrying only timed_out=true tells the model nothing and it abandons the
+	// step instead of narrowing it.
 	if timedOut {
+		partialOut := firstOf(budgetOutput(strings.Join(stdoutLines, "\n"), commandBudget))
+		partialErr := firstOf(budgetOutput(strings.Join(stderrLines, "\n"), commandBudget))
+		text := timedOutAdvice(timeoutSeconds)
+		if partialOut != "" {
+			text = partialOut + "\n" + text
+		}
 		return &shuttle.Result{
 			Success: false,
 			Error: &shuttle.Error{
-				Code:       "TIMEOUT",
-				Message:    fmt.Sprintf("Command execution timeout after %d seconds", timeoutSeconds),
-				Suggestion: "Increase timeout_seconds or optimize the command",
+				Code:    "TIMEOUT",
+				Message: fmt.Sprintf("Command execution timeout after %d seconds", timeoutSeconds),
+				// Split first; raising the limit is the last resort, not the first.
+				Suggestion: "Split the command into smaller steps and send them as one parallel batch; raise timeout_seconds only if the step genuinely cannot be split",
 				Retryable:  false,
 			},
 			Data: map[string]interface{}{
-				"stdout":      compactShellOutput(strings.Join(stdoutLines, "\n")),
-				"stderr":      compactShellOutput(strings.Join(stderrLines, "\n")),
+				"result":      text,
+				"stdout":      partialOut,
+				"stderr":      partialErr,
 				"exit_code":   -1,
 				"shell":       actualShellType,
 				"working_dir": cleanWorkingDir,
@@ -546,8 +638,34 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	}
 
 	// Build result
-	stdout := compactShellOutput(strings.Join(stdoutLines, "\n"))
-	stderr := compactShellOutput(strings.Join(stderrLines, "\n"))
+	if batchMode {
+		secs := parseBatchOutput(stdoutLines, stderrLines, len(batchCmds))
+		text, failed, firstExit := renderBatch(batchCmds, secs, false)
+		return &shuttle.Result{
+			Success: true, // errors are sections; the batch itself ran
+			Data: map[string]interface{}{
+				"result":      text,
+				"commands":    len(batchCmds),
+				"failed":      failed,
+				"exit_code":   firstExit,
+				"shell":       actualShellType,
+				"working_dir": cleanWorkingDir,
+				"timed_out":   false,
+			},
+			Metadata: map[string]interface{}{
+				"command":      fmt.Sprintf("batch of %d", len(batchCmds)),
+				"shell_type":   actualShellType,
+				"shell_os":     runtime.GOOS,
+				"output_bytes": outputBytes,
+				"exit_code":    firstExit,
+				"failed":       failed,
+			},
+			ExecutionTimeMs: time.Since(start).Milliseconds(),
+		}, nil
+	}
+
+	stdout, _ := budgetOutput(strings.Join(stdoutLines, "\n"), commandBudget)
+	stderr, _ := budgetOutput(strings.Join(stderrLines, "\n"), commandBudget)
 	success := exitCode == 0
 
 	result := &shuttle.Result{
@@ -785,12 +903,6 @@ func sanitizeCommandForTracing(command string) string {
 	return sanitized
 }
 
-// intPtr returns a pointer to an int (helper for schema ranges).
-func intPtr(i int) *float64 {
-	f := float64(i)
-	return &f
-}
-
 // checkCommandTokenSize validates that a command isn't too large to execute safely.
 // Large commands (especially heredocs) can cause output token exhaustion and infinite error loops.
 //
@@ -825,72 +937,61 @@ func checkCommandTokenSize(command string) error {
 	return nil
 }
 
-// pathWithin reports whether path is dir itself or sits beneath it. A bare
-// strings.HasPrefix accepts a sibling whose name merely starts the same way —
-// /work/proj also admitting /work/proj-evil — so containment is tested on
-// whole path segments.
-func pathWithin(path, dir string) bool {
-	if dir == "" || path == "" {
-		return false
-	}
-	path = filepath.Clean(path)
-	dir = filepath.Clean(dir)
-	if path == dir {
-		return true
-	}
-	return strings.HasPrefix(path, dir+string(filepath.Separator))
+// firstOf drops the byte count from budgetOutput for callers that only want the text.
+func firstOf(s string, _ int) string { return s }
+
+// capturedOutput is an io.Writer that keeps the first max bytes and counts the
+// rest. Write ALWAYS reports the full length as accepted, so a reader copying
+// into it never stops: that is what keeps the child process from blocking on a
+// full pipe when it emits more than the budget, which a line scanner cannot
+// promise because it stops reading once the budget is spent.
+type capturedOutput struct {
+	mu        sync.Mutex
+	buf       []byte
+	total     int64
+	max       int64
+	truncated bool
 }
 
-// ansiEscape matches CSI/OSC terminal escape sequences — pure rendering bytes
-// that inflate build-tool output (dbt colorizes every line) without carrying
-// information.
-var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07`)
-
-const (
-	// shellOutputCap bounds one stream's bytes in the result.
-	shellOutputCap = 12 * 1024
-	// shellOutputHead / shellOutputTail split the cap: build tools put
-	// failures inline and the summary at the end, so the tail gets the bulk.
-	shellOutputHead = 4 * 1024
-	shellOutputTail = 8 * 1024
-)
-
-// compactShellOutput strips terminal escape sequences and, past the cap,
-// keeps the head and tail of the stream with an explicit elision marker. The
-// cuts land on rune boundaries: a byte-offset slice through a multi-byte rune
-// puts invalid UTF-8 into the result, which every downstream encoder then has
-// to repair.
-func compactShellOutput(s string) string {
-	s = ansiEscape.ReplaceAllString(s, "")
-	if len(s) <= shellOutputCap {
-		return s
+func (c *capturedOutput) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.total += int64(len(p))
+	if room := c.max - int64(len(c.buf)); room > 0 {
+		if room > int64(len(p)) {
+			room = int64(len(p))
+		}
+		c.buf = append(c.buf, p[:room]...)
 	}
-	head := runeBoundaryBefore(s, shellOutputHead)
-	tail := runeBoundaryAfter(s, len(s)-shellOutputTail)
-	elided := tail - head
-	return s[:head] +
-		fmt.Sprintf("\n[... %d bytes elided — rerun with a filter (grep/tail) to see the middle ...]\n", elided) +
-		s[tail:]
+	if c.total > c.max {
+		c.truncated = true
+	}
+	return len(p), nil
 }
 
-// runeBoundaryBefore returns the largest index <= i that starts a rune.
-func runeBoundaryBefore(s string, i int) int {
-	if i >= len(s) {
-		return len(s)
+func (c *capturedOutput) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.truncated {
+		return string(c.buf) + fmt.Sprintf("\n[output truncated at %d bytes]", c.max)
 	}
-	for i > 0 && !utf8.RuneStart(s[i]) {
-		i--
-	}
-	return i
+	return string(c.buf)
 }
 
-// runeBoundaryAfter returns the smallest index >= i that starts a rune.
-func runeBoundaryAfter(s string, i int) int {
-	if i < 0 {
-		return 0
+// Total is how many bytes the stream actually produced, truncation included —
+// what the caller reports as output_bytes.
+func (c *capturedOutput) Total() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.total
+}
+
+// splitCapturedLines turns captured text back into the lines the batch parser
+// and the budget helpers expect. Empty input yields no lines rather than one
+// empty line, so an empty stream renders as absent instead of blank.
+func splitCapturedLines(s string) []string {
+	if s == "" {
+		return nil
 	}
-	for i < len(s) && !utf8.RuneStart(s[i]) {
-		i++
-	}
-	return i
+	return strings.Split(strings.TrimSuffix(s, "\n"), "\n")
 }

@@ -235,6 +235,8 @@ func convertToProto(config *WorkflowConfig, logger *zap.Logger) (*loomv1.Workflo
 		return convertIterativePattern(config.Spec, logger)
 	case "swarm":
 		return convertSwarmPattern(config.Spec, logger)
+	case "state-machine":
+		return convertStateMachinePattern(config.Spec, logger)
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedPattern, patternType)
 	}
@@ -769,6 +771,277 @@ func convertSwarmPattern(spec map[string]interface{}, logger *zap.Logger) (*loom
 			},
 		},
 	}, nil
+}
+
+// convertStateMachinePattern converts spec to StateMachinePattern proto.
+//
+// The graph is checked here rather than at the first bad transition: a route
+// naming a state that does not exist, or a machine with no way to finish, is
+// an authoring mistake and should cost nothing to find.
+func convertStateMachinePattern(spec map[string]interface{}, logger *zap.Logger) (*loomv1.WorkflowPattern, error) {
+	entry, ok := spec["entry_state"].(string)
+	if !ok || entry == "" {
+		return nil, fmt.Errorf("%w: state-machine pattern requires 'entry_state'", ErrInvalidWorkflow)
+	}
+	statesRaw, ok := spec["states"].(map[string]interface{})
+	if !ok || len(statesRaw) == 0 {
+		return nil, fmt.Errorf("%w: state-machine pattern requires a non-empty 'states' map", ErrInvalidWorkflow)
+	}
+
+	machine := &loomv1.StateMachinePattern{
+		EntryState: entry,
+		States:     make(map[string]*loomv1.WorkflowState, len(statesRaw)),
+	}
+	if v, ok := spec["max_transitions"]; ok {
+		machine.MaxTransitions = toInt32(v)
+	}
+	if v, ok := spec["max_cost_usd"]; ok {
+		machine.MaxCostUsd = toFloat64(v)
+	}
+	machine.Dir, _ = spec["dir"].(string)
+	machine.AgentDir, _ = spec["agent_dir"].(string)
+	if seat, ok := spec["logic_seat"].(string); ok {
+		machine.LogicSeat = strings.TrimSpace(seat)
+	}
+	if raw, ok := spec["loopback_states"].([]interface{}); ok {
+		for _, v := range raw {
+			machine.LoopbackStates = append(machine.LoopbackStates, fmt.Sprintf("%v", v))
+		}
+	}
+	if raw, ok := spec["bubble_signals"].([]interface{}); ok {
+		for _, v := range raw {
+			machine.BubbleSignals = append(machine.BubbleSignals, strings.ToLower(fmt.Sprintf("%v", v)))
+		}
+	}
+	if raw, ok := spec["signal_fields"].(map[string]interface{}); ok {
+		machine.SignalFields = map[string]*loomv1.SignalFields{}
+		for signal, fields := range raw {
+			list, ok := fields.([]interface{})
+			if !ok {
+				return nil, fmt.Errorf("%w: signal_fields[%q] must be a list", ErrInvalidWorkflow, signal)
+			}
+			sf := &loomv1.SignalFields{}
+			for _, f := range list {
+				sf.Fields = append(sf.Fields, fmt.Sprintf("%v", f))
+			}
+			machine.SignalFields[strings.ToLower(signal)] = sf
+		}
+	}
+
+	terminals := 0
+	for name, raw := range statesRaw {
+		stateMap, ok := raw.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("%w: state %q must be an object", ErrInvalidWorkflow, name)
+		}
+		st := &loomv1.WorkflowState{}
+		st.Terminal, _ = stateMap["terminal"].(bool)
+		if st.Terminal {
+			terminals++
+		}
+
+		bodies := 0
+		if raw, ok := stateMap["agent"].(map[string]interface{}); ok {
+			bodies++
+			id, _ := raw["agent_id"].(string)
+			if id == "" {
+				return nil, fmt.Errorf("%w: state %q agent body requires 'agent_id'", ErrInvalidWorkflow, name)
+			}
+			// A state's instructions are one text, sent on the seat's first entry.
+			// A spec still written with the two-prompt keys is refused by name, so
+			// a stale file fails here rather than walking with its text missing.
+			for _, gone := range []string{"mint_prompt", "resume_prompt"} {
+				if _, stale := raw[gone]; stale {
+					return nil, fmt.Errorf("%w: state %q uses %q; a state's text is 'instructions'", ErrInvalidWorkflow, name, gone)
+				}
+			}
+			body := &loomv1.AgentState{AgentId: id}
+			body.Instructions, _ = raw["instructions"].(string)
+			body.SessionKeySuffix, _ = raw["session_key_suffix"].(string)
+			body.ForkOf, _ = raw["fork_of"].(string)
+			st.Body = &loomv1.WorkflowState_Agent{Agent: body}
+		}
+		if raw, ok := stateMap["tool"].(map[string]interface{}); ok {
+			bodies++
+			body, err := parseToolState(raw)
+			if err != nil {
+				return nil, fmt.Errorf("%w: state %q tool body: %s", ErrInvalidWorkflow, name, err)
+			}
+			st.Body = &loomv1.WorkflowState_Tool{Tool: body}
+		}
+		if raw, ok := stateMap["delegate"].(map[string]interface{}); ok {
+			bodies++
+			// A child is written into the state, or named: a name is found when
+			// the state runs, by whoever hosts the engine.
+			body := &loomv1.DelegateState{}
+			switch wf := raw["workflow"].(type) {
+			case map[string]interface{}:
+				child, err := convertToProto(&WorkflowConfig{Spec: wf}, logger)
+				if err != nil {
+					return nil, fmt.Errorf("state %q delegated workflow: %w", name, err)
+				}
+				body.Workflow = child
+			case string:
+				body.WorkflowName = strings.TrimSpace(wf)
+			}
+			if body.Workflow == nil && body.WorkflowName == "" {
+				return nil, fmt.Errorf("%w: state %q delegates but names no workflow", ErrInvalidWorkflow, name)
+			}
+			body.ItemsKey, _ = raw["items_key"].(string)
+			body.DirTemplate, _ = raw["dir_template"].(string)
+			if v, ok := raw["step"].(bool); ok {
+				body.Step = v
+			}
+			if v, ok := raw["max_parallel"]; ok {
+				body.MaxParallel = toInt32(v)
+			}
+			if v, ok := raw["min_budget_usd"]; ok {
+				body.MinBudgetUsd = toFloat64(v)
+			}
+			if v, ok := raw["vars"].(map[string]interface{}); ok {
+				body.Vars = map[string]string{}
+				for k, val := range v {
+					body.Vars[k] = fmt.Sprint(val)
+				}
+			}
+			st.Body = &loomv1.WorkflowState_Delegate{Delegate: body}
+		}
+		if bodies > 1 {
+			return nil, fmt.Errorf("%w: state %q declares more than one body", ErrInvalidWorkflow, name)
+		}
+		if bodies == 0 && !st.Terminal {
+			return nil, fmt.Errorf("%w: state %q has no body and is not terminal", ErrInvalidWorkflow, name)
+		}
+
+		if raw, ok := stateMap["vocab"].([]interface{}); ok {
+			for _, v := range raw {
+				st.Vocab = append(st.Vocab, strings.ToLower(fmt.Sprintf("%v", v)))
+			}
+		}
+
+		gate, err := parseHITLGate(stateMap)
+		if err != nil {
+			return nil, fmt.Errorf("state %q: %w", name, err)
+		}
+		st.HitlGate = gate
+
+		if routeRaw, ok := stateMap["route"].(map[string]interface{}); ok {
+			st.Route = make(map[string]*loomv1.Transition, len(routeRaw))
+			for signal, traw := range routeRaw {
+				tr, err := parseTransition(traw)
+				if err != nil {
+					return nil, fmt.Errorf("state %q signal %q: %w", name, signal, err)
+				}
+				st.Route[strings.ToLower(signal)] = tr
+			}
+		}
+		machine.States[name] = st
+	}
+
+	if _, ok := machine.States[entry]; !ok {
+		return nil, fmt.Errorf("%w: entry_state %q is not a declared state", ErrInvalidWorkflow, entry)
+	}
+	if terminals == 0 {
+		return nil, fmt.Errorf("%w: state machine has no terminal state - a walk could never end", ErrInvalidWorkflow)
+	}
+	for name, st := range machine.States {
+		for signal, tr := range st.Route {
+			if next := tr.GetNextState(); next != "" {
+				if _, ok := machine.States[next]; !ok {
+					return nil, fmt.Errorf("%w: state %q signal %q routes to unknown state %q", ErrInvalidWorkflow, name, signal, next)
+				}
+			}
+		}
+	}
+
+	return &loomv1.WorkflowPattern{
+		Pattern: &loomv1.WorkflowPattern_StateMachine{StateMachine: machine},
+	}, nil
+}
+
+// parseTransition reads one edge. A bare string is the common case - the
+// destination and nothing else - so it stays writable as one.
+func parseTransition(raw interface{}) (*loomv1.Transition, error) {
+	if next, ok := raw.(string); ok {
+		return &loomv1.Transition{Target: &loomv1.Transition_NextState{NextState: next}}, nil
+	}
+	m, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("transition must be a state name or an object")
+	}
+	tr := &loomv1.Transition{}
+	next, _ := m["next_state"].(string)
+	computed, hasComputed := m["next_tool"].(map[string]interface{})
+	switch {
+	case next != "" && hasComputed:
+		return nil, fmt.Errorf("transition names both a destination and a tool to compute one")
+	case next != "":
+		tr.Target = &loomv1.Transition_NextState{NextState: next}
+	case hasComputed:
+		tool, err := parseToolState(computed)
+		if err != nil {
+			return nil, fmt.Errorf("next_tool: %s", err)
+		}
+		tr.Target = &loomv1.Transition_NextTool{NextTool: tool}
+	default:
+		return nil, fmt.Errorf("transition needs next_state or next_tool")
+	}
+	tr.Checkpoint, _ = m["checkpoint"].(bool)
+	tr.Enter, _ = m["enter"].(string)
+	if hook, ok := m["hook"].(map[string]interface{}); ok {
+		tool, err := parseToolState(hook)
+		if err != nil {
+			return nil, fmt.Errorf("hook: %s", err)
+		}
+		tr.Hook = tool
+	}
+	if dismiss, ok := m["dismiss"].([]interface{}); ok {
+		for _, d := range dismiss {
+			tr.Dismiss = append(tr.Dismiss, fmt.Sprintf("%v", d))
+		}
+	}
+	return tr, nil
+}
+
+// parseToolState reads a tool invocation: a name and its arguments.
+func parseToolState(raw map[string]interface{}) (*loomv1.ToolState, error) {
+	name, _ := raw["name"].(string)
+	if name == "" {
+		return nil, fmt.Errorf("requires 'name'")
+	}
+	tool := &loomv1.ToolState{Tool: name, Params: map[string]string{}}
+	if params, ok := raw["params"].(map[string]interface{}); ok {
+		for k, v := range params {
+			tool.Params[k] = fmt.Sprintf("%v", v)
+		}
+	}
+	return tool, nil
+}
+
+func toInt32(v interface{}) int32 {
+	switch n := v.(type) {
+	case int:
+		return types.SafeInt32(n)
+	case int32:
+		return n
+	case int64:
+		return types.SafeInt32FromInt64(n)
+	case float64:
+		return int32(n) // #nosec G115 -- YAML bounds here are small
+	}
+	return 0
+}
+
+func toFloat64(v interface{}) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case int:
+		return float64(n)
+	case int64:
+		return float64(n)
+	}
+	return 0
 }
 
 // parseVotingStrategy converts string to VotingStrategy enum

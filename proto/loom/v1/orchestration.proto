@@ -26,6 +26,7 @@ message WorkflowPattern {
     PairProgrammingPattern pair_programming = 7;
     TeacherStudentPattern teacher_student = 8;
     IterativeWorkflowPattern iterative = 9;
+    StateMachinePattern state_machine = 11;
   }
 
   // Stable workflow ID for session determinism across scheduled executions.
@@ -216,6 +217,10 @@ message HITLGateRequest {
 
   // Suggested decision options for the UI (e.g. approve, revise, reject).
   repeated string options = 8;
+
+  // Dotted state path for state-machine gates ("DEV.P_REVIEW"). Empty for
+  // pipeline/iterative, where stage_agent_id and stage_number locate the gate.
+  string state_path = 9;
 }
 
 // GateAction is the human's decision at a gate.
@@ -257,9 +262,11 @@ message WorkflowCheckpoint {
   int32 checkpoint_version = 1;
 
   // SHA-256 (hex) of the deterministically-marshaled WorkflowPattern this
-  // checkpoint was taken against. Resume MUST verify this matches the
-  // pattern it is resuming with — resuming against an edited workflow is
-  // how unreviewed changes would get executed.
+  // checkpoint was taken against, for a pipeline or iterative workflow.
+  // Resume MUST verify this matches the pattern it is resuming with —
+  // resuming against an edited workflow is how unreviewed changes would get
+  // executed. Empty for a state machine, whose checkpoint is a position in
+  // the machine and is resumed on the machine as it is defined then.
   string config_fingerprint = 2;
 
   // Resolved workflow ID of the original run (keeps stage session IDs
@@ -304,6 +311,36 @@ message WorkflowCheckpoint {
 
   // Checkpoint creation time (Unix milliseconds).
   int64 created_at_ms = 14;
+
+  // Position as a path, outermost state first. A single element for a flat
+  // machine; deeper when a nested body suspended. Empty for pipeline and
+  // iterative, whose position is next_stage_index.
+  repeated string state_path = 15;
+
+  // Why the run suspended. UNSPECIFIED on pipeline/iterative checkpoints,
+  // which suspend only at gates.
+  SuspendReason suspend_reason = 16;
+
+  // Checkpoint of the nested pattern when suspend_reason is NESTED.
+  WorkflowCheckpoint nested_checkpoint = 17;
+
+  // Cumulative USD this run is permitted to spend, raised by one further
+  // max_cost_usd each time a COST_CAP suspension is approved. 0 = the
+  // pattern's max_cost_usd applies unmodified. Checkpoint state, not pattern
+  // state, so granting more budget never changes config_fingerprint.
+  double granted_cost_usd = 18;
+
+  // Total transitions permitted, raised the same way on an approved
+  // MAX_TRANSITIONS suspension. 0 = the pattern's value applies.
+  int32 granted_transitions = 19;
+
+  // Run state: what the loop keeps across states — the items it is working
+  // through, what its children finished as, where its cursor is. Restored on
+  // resume, so a list survives a park exactly as a position does.
+  map<string, string> vars = 20;
+
+  // What went wrong, when suspend_reason is ERROR.
+  string error = 21;
 }
 
 // CheckpointStageSnapshot is the latest full output of one completed stage.
@@ -910,3 +947,275 @@ message ScheduleStats {
   // Last error message (if failed)
   string last_error = 6;
 }
+
+// ---------------------------------------------------------------------------
+// State machine — a cyclic process, not a one-shot composition.
+//
+// The other patterns arrange agents into a finite shape that runs once. A state
+// machine is a fixed graph of named states walked an unbounded number of times:
+// the pattern is the graph, a run is the path. Routing is a map lookup on a
+// signal the state already emitted, so a healthy transition costs nothing and
+// no model participates in it.
+// ---------------------------------------------------------------------------
+
+message StateMachinePattern {
+  // Where the walk begins. Must name a key in states.
+  string entry_state = 1;
+
+  // The graph. Keys are state names; they are the routing vocabulary's targets.
+  map<string, WorkflowState> states = 2;
+
+  // Safety bound on how many times a loopback state may be re-entered
+  // (default: 100). Exceeding it suspends with MAX_TRANSITIONS so a graph that
+  // is turning without converging parks for a human rather than running forever.
+  int32 max_transitions = 3;
+
+  // States whose re-entry counts toward that bound. A run that legitimately
+  // walks two hundred states is not stalling; a plan revised six times is, and
+  // only the states in a cycle can tell the difference. Empty = every state.
+  repeated string loopback_states = 8;
+
+  // Cumulative USD ceiling across the whole walk. 0 = uncapped. Exceeding it
+  // suspends with COST_CAP.
+  double max_cost_usd = 4;
+
+  // Signals that park immediately and bubble to the OWNING scope when this
+  // machine runs as a nested body. Whoever started the run decides them; the
+  // run itself must not, and no inline handler is consulted.
+  repeated string bubble_signals = 5;
+
+  // The working directory this run acts on. The world a process operates on is
+  // a directory: tool states run in it, and a child run gets one beneath it.
+  string dir = 7;
+
+  // The directory this machine's agent states work in: where an agent's
+  // commands start and its relative paths resolve, and what each of its steps
+  // is told. Written with the run's variables ({loom_dir} is the run's own
+  // directory); a relative value is beneath the run's directory. Empty leaves
+  // an agent where it was built.
+  string agent_dir = 9;
+
+  // The state that is this machine's manager: where a step that cannot go on
+  // is sent, and from where the machine is sent back to a step by its name.
+  // An agent step's escalation and a single child machine's every end but done
+  // go to it unless the step routes them itself; its own escalation is the
+  // only way anything leaves the machine. Empty for a machine with none.
+  string logic_seat = 10;
+
+  // signal -> the payload fields that signal must carry. A signal arriving
+  // without them is an answer the machine cannot use: it goes back to the
+  // agent once, naming what is missing, and still without them it is the
+  // step's escalation.
+  map<string, SignalFields> signal_fields = 6;
+}
+
+message SignalFields {
+  repeated string fields = 1;
+}
+
+message WorkflowState {
+  // What running this state does. Exactly one must be set on a non-terminal
+  // state; a terminal state may omit it and simply end the run.
+  oneof body {
+    // An agent turn. The only body that costs tokens.
+    AgentState agent = 1;
+
+    // Work that needs no judgement — publish, deliver, validate, deploy, or
+    // starting a child run. Free, reproducible, and the dominant state kind in
+    // a real process.
+    ToolState tool = 2;
+
+    // Hand the work to another workflow — once, or once per item.
+    DelegateState delegate = 3;
+  }
+
+  // signal -> transition. The keys ARE the legal signal vocabulary: a signal
+  // absent from this map is unroutable by definition, which is what makes
+  // "escalate to a human" decidable rather than a judgement call.
+  map<string, Transition> route = 4;
+
+  // Optional human gate evaluated after the body, before routing.
+  HITLGate hitl_gate = 5;
+
+  // Terminal states end the run and return their output. route is ignored.
+  bool terminal = 6;
+
+  // Signals this state may legitimately emit. Empty = the route keys.
+  //
+  // The distinction from route matters. A signal OUTSIDE this set is a
+  // malfunction — the worker ended without a usable signal — and earns one
+  // retry naming the legal ones. A signal INSIDE it but absent from route is
+  // deliberate egress: the state judged its own situation and chose to
+  // escalate, and retrying that would only loop the judgement.
+  repeated string vocab = 7;
+}
+
+// An agent turn.
+message AgentState {
+  string agent_id = 1;
+
+  // What the seat is to do in this state. Sent the first time the seat enters
+  // the state in its conversation; a return to the state carries only what came
+  // back, because the conversation already holds these instructions.
+  string instructions = 2;
+
+  reserved 3;
+  reserved "resume_prompt";
+
+  // Optional session discriminator template, e.g. "{suite}". One role fanned
+  // across surfaces is several conversations, not one.
+  string session_key_suffix = 4;
+
+  // The seat of this run whose conversation this seat continues, by agent id:
+  // a test architect that thinks on from the creator's design. The spec says
+  // it, because which mind a seat carries is the loop's shape, not a word a
+  // seat emits. A run var "fork:<agent_id>" naming a session takes precedence.
+  string fork_of = 5;
+}
+
+// A tool invocation: work that needs no judgement.
+//
+// It goes through the same executor an agent's tool calls go through — same
+// registry, same admission chain, same sandbox, same audit. A model is upstream
+// of that door, not part of it, so a walker can go through it without asking
+// anyone. A second execution path would be a second idea of what is permitted.
+message ToolState {
+  // Tool name in the registry.
+  string tool = 1;
+
+  // Arguments. Values interpolate against the run's own state, so a parameter
+  // can name whichever surface or task is active now.
+  map<string, string> params = 2;
+}
+
+// Delegate to another workflow.
+//
+// One child or a hundred is the same step: a single child is a set of one.
+// Building the single case on its own is what hides the questions a set asks —
+// which items are in play, where each runs, what each may spend, and what they
+// all finished as — and every one of those is the parent's own state, not
+// something a tool could answer.
+//
+// Delegation is re-enterable. A child already at its terminal is not run again,
+// so a second round costs only what actually moved, and a parent resumed after
+// a park does not redo its finished children.
+message DelegateState {
+  // The workflow each child runs, written into the state. A state gives this
+  // or workflow_name.
+  WorkflowPattern workflow = 1;
+
+  // The workflow each child runs, by name. The engine asks its host for the
+  // workflow of that name each time the state is entered, so the child that
+  // runs is the one defined then.
+  string workflow_name = 9;
+
+  // The field on the signal line of the seat before this state that names
+  // what to delegate over: a comma-separated list of items, or a JSON array of
+  // {"item": …, "dir": …} entries when each child works somewhere of its own.
+  // A list arriving with a transition into this state is a fresh walk; a
+  // re-entry without one continues the walk in progress. Empty delegates once.
+  string items_key = 2;
+
+  // Each child's directory, relative to the parent's. "{item}" interpolates.
+  // Empty runs the child in the parent's own directory.
+  string dir_template = 3;
+
+  // How many children run at once. 0 = all of them.
+  int32 max_parallel = 4;
+
+  // The least a child may be given. The parent's unspent balance is divided
+  // between the children that still have to run; below this floor the engine
+  // says so rather than starving a child into failing halfway.
+  double min_budget_usd = 5;
+
+  // How the children finished is the message handed to the state after this
+  // one, one "<item>=<terminal>" per line; field 6 once named a run-state key
+  // for it.
+  reserved 6;
+  reserved "outcomes_key";
+
+  // What every child of this state is told beside what it inherits: the
+  // constants that make this delegation the particular one it is — which
+  // environment a verification proves, which suite. A child also always
+  // receives its own item as `item`.
+  map<string, string> vars = 7;
+
+  // Walk the list one entry at a time and end after each: the signal is
+  // "stepped" with that entry's outcome as the message, and re-entering the
+  // state runs the next entry. When nothing is left the state ends "fanned".
+  // A serial list whose every entry is judged by the state after it.
+  bool step = 8;
+}
+
+// An edge. Deterministic work fires before the move; the destination may be a
+// named state or computed by the host.
+message Transition {
+  oneof target {
+    // A state name in StateMachinePattern.states.
+    string next_state = 1;
+
+    // A tool that computes the destination from run state — walking a task
+    // DAG, bounded replans, aggregation. Its signal is the next state's name,
+    // validated against states before the move: deterministic is not trusted.
+    ToolState next_tool = 2;
+  }
+
+  // Agent sessions to end on this edge, resetting their context. "*" ends all
+  // of them; "{suite}" is interpolated from run variables. Dismissal is what
+  // bounds session growth across an unbounded walk.
+  repeated string dismiss = 3;
+
+  // Side effect fired before the move, as a tool call.
+  ToolState hook = 4;
+
+  // Write a checkpoint before the move. The engine's own, not a tool: it
+  // captures the sessions a resumed run will still find, which is why it
+  // happens before any dismissal on the same edge.
+  bool checkpoint = 5;
+
+  // Where the child loop of the state this edge enters takes up, when that
+  // child ran to done before: the step named here, which runs its last child
+  // again. A delivered piece of work sent back is taken up at its proof, not
+  // walked again from its first step.
+  string enter = 6;
+}
+
+// Why a run suspended. Every value is a place a human or supervising agent
+// takes over; none of them is a failure.
+enum SuspendReason {
+  SUSPEND_REASON_UNSPECIFIED = 0;
+
+  // A state's hitl_gate fired.
+  SUSPEND_REASON_GATE = 1;
+
+  // The state emitted a signal its route does not contain.
+  SUSPEND_REASON_UNROUTABLE = 2;
+
+  // Cumulative cost passed max_cost_usd.
+  SUSPEND_REASON_COST_CAP = 3;
+
+  // Transition count passed max_transitions.
+  SUSPEND_REASON_MAX_TRANSITIONS = 4;
+
+  // A nested pattern suspended; see nested_checkpoint.
+  SUSPEND_REASON_NESTED = 5;
+
+  // A signal the machine declares as bubbling was emitted inside a nested run.
+  // It parks unconditionally and rises to the scope that started the run.
+  SUSPEND_REASON_BUBBLED = 6;
+
+  // A state's body could not run to a signal: the model could not be reached,
+  // a tool failed, a credential expired. The walk stops AT that state with
+  // everything before it kept, and `error` says what happened. Approving
+  // re-enters the state; nothing earlier is paid for again.
+  SUSPEND_REASON_ERROR = 7;
+}
+
+// Handed to the host's ActionHandler when an action state runs.
+// Reserved parameter names the engine supplies to every tool call, so a tool
+// knows where it is running and what the previous state handed it.
+//
+//   loom_dir      the run's working directory
+//   loom_state    the state being run, or left
+//   loom_signal   on an edge, the signal that selected it
+//   loom_message  the prose the previous state handed forward

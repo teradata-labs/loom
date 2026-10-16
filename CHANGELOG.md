@@ -9,11 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### State-machine workflows: loops with a manager seat
+- **A workflow can be a graph.** The `state-machine` pattern (`entry_state`, `states`, per-state `route` tables) walks states of four kinds — agent, tool, delegate, terminal — and routes on the signal a state produced. A healthy transition is a map lookup: no LLM call, no cost. Models appear only inside agent-bodied states and at the exceptions the route table cannot resolve. Suspension happens only between states, so a checkpoint is a position, not a copy of the machine, and a run resumes on the pattern as it stands now.
+- **A machine names its manager.** `logic_seat` names the agent that handles the machine's trouble: every agent step's escalation and every child machine's non-done end route to it, and it may send the walk back to any step by naming it. The manager's own escalation is the park — the only way anything leaves the machine.
+- **Delegation.** A `delegate` state hands work to a child workflow once or once per item (fanned, or stepping one entry at a time), each child on its own run record, with `min_budget_usd` refusing children the budget cannot carry. `max_cost_usd` budgets a run; the checkpoint carries `granted_cost_usd`.
+- **Run record and run variables.** Every run, top or child, has one record of where it stands and what it has worked out. `{loom_dir}`, `{loom_state}`, `{loom_signal}` and `{loom_message}` interpolate everywhere a state speaks; `fork:<agent>` seats an agent in a copy of an earlier conversation, `session:<agent>` in the conversation itself.
+- **The rest of the engine knows the pattern**: `validation`, the config loader's agent collection, HITL gates (a state has a path, not a number), interpolation, and the task board (one task per state; a machine is a graph, not an order).
+- **`pkg/loops`**: the run store — loop runs and agent runs in one table, steps with per-state cost, lease, checkpoint and status — over SQLite.
+- **`pkg/workspace`**: workspaces as rows — a body of work, the repositories it spans, its sessions — with a repo pool, worktrees and a personal workspace per owner.
+
+#### Sessions: one turn at a time, routing, accounting
+- **One turn at a time per session.** A turn claims its session row before it touches it and releases it when it ends, on every path; a second turn is refused with `ErrSessionBusy`, and a claim left by a dead process is taken over. The claim is on the row (`turn_holder`, `turn_since`, `turns`), so it holds across agent objects and processes.
+- **Holding.** `sessions.holding` names the run that currently has a conversation; read on every arriving message, set only on the root session, only by the router.
+- **Cost of a run is a sum over its sessions.** `StampRunID` binds a session to the loop run that created it, once; `SessionsInRun` lists them.
+- **Every billed message carries what it cost.** `model`, `effort`, input/output, cache-create split by TTL (1h/5m), cache-read and thinking tokens, on the assistant row the LLM call produced (migrations 000026, 000028, 000029).
+- **A conversation spread across agents reads back in order.** `LoadThreadMessages` gathers a root session and the sessions of every agent that was handed it, ordered as it happened. `ToolExecutions` reads back what a session's tools did — the write side had no reader.
+- **`task_list`**: the session's checklist, registered by default. It lives on the session object, outside Messages, so relief cannot touch it; when an item completes, the transcript span it occupied folds to the item's completion summary.
+- **In-loop fold.** When the estimate crosses the start mark, the next call carries one transient fold instruction; the agent itself answers with the summary, on its own warm cache, and the harness performs the collapse. The compressor subsystem remains as the failsafe.
+
+#### Tools
+- **`shell_execute` batch mode.** Up to a fixed number of commands in one call, each in its own shell, all in parallel, rendered in submission order so the same batch renders the same bytes; each command has its own wall-clock budget and output byte budget.
+- **A turn says where it works.** `shuttle.ContextWithWorkDir` installs the turn's working directory on the context; `file_read`, `file_write` and `shell_execute` stand there instead of the directory they were built with.
+- **`table_profile`**: a table's shape in one call — row count, per-column profile, sample rows — composed from `ExecutionBackend` primitives and constructed by the embedder with its backend (not in `builtin.ByName`).
+- **`file_read` no longer cuts at 1000 lines by default**; `max_lines` is the caller's narrowing knob, and the arrival-time row bound is the one bounding point for context.
+
+#### Models and providers
+- **Catalog**: Claude Opus 5 and Sonnet 5 direct; on Bedrock, Opus 5, Sonnet 5 and Fable 5 (`us.` and `global.` routes) and the non-Anthropic Converse families (GLM-5, GLM-4.7, GLM-4.7 Flash, DeepSeek V3.2, V3, R1) at the published on-demand rates.
+- **Bedrock stamps the effort a call was made at** on the usage record, from the model's thinking level.
+- **OpenAI cached-input discount by model generation**: gpt-5 and the o-series bill a cached token at 0.10×; the gpt-4 generation keeps its rate. Agentic workloads read cache for most of their input, so the wrong rate overstated a run several-fold.
+- **Anthropic cache marker lands on the last block that can carry one**: thinking blocks cannot, so a turn ending in thinking no longer loses its breakpoint.
+
 #### Tool-call progress while arguments stream
 - **Providers can report which tool call is being written, and how much.** `types.ToolInputProgress` (index, id, name, argument bytes so far) is reported through `types.WithToolInputProgress` / `NotifyToolInputProgress`, alongside the existing content-free stream-activity pulse. The OpenAI-compatible client (so LiteLLM, Mistral and HuggingFace too) reports it per tool-call delta; other providers still send only the bare pulse. `chatWithStreaming` emits it as `ProgressEvent.IsToolInputStream` with `ToolCallID`, `ToolName` and the new `ToolInputBytes`: the first delta of each call, and the delta that first supplies its name or id, immediately, later ones at most once a second per call.
 - **`WeaveProgress` carries it to gRPC clients.** New fields `is_tool_input_stream` (22) and `tool_input_bytes` (23); `tool_call_id` is now also set on these events, so a non-empty `tool_call_id` no longer implies the tool started. See `docs/reference/streaming.md`.
 
 ### Fixed
+
+#### LLM transport
+- **Streaming calls are retried like plain ones.** The streaming path bypassed retry ("streaming already handles errors" — it did not), so one transient provider failure killed the conversation. Both paths now run under one fixed policy; a refusal identified as context-too-long is never retried, relief answers that.
+- **Bedrock Converse tool arguments decoded through the smithy document decoder.** `json.Marshal` on a `document.Interface` yields `{}`, which is how tool calls silently arrived with empty inputs.
 
 #### Relief: a turn whose own tool results exceed the window is shed, not refused
 - **Relief never touched the current turn, so a turn that was itself too large ended on the provider's refusal.** Every evict and fold rung stops at T−1, and a current-turn result renders whole unless it is over the offload threshold. A single response fanning out hundreds of parallel calls, each result under the threshold, therefore left the pass with nothing to shed: in production a Bedrock Sonnet session reached ~1.46M tokens with a relief estimate of 1.17M after the pass, and the turn ended `context_exhausted`. Relief now has a last-resort rung, taken only after every prior-turn evict and fold has failed to reach the release mark: it renders the current turn's results as §5.5 offload stubs, oldest first, on the same halving ladder (keep the newest n/2, n/4 … 0 whole). Nothing is lost within the turn — each stub carries its `query_tool_result` door and the payload stays in L1 — and nothing is persisted: the set is render state scoped to the turn, so once the turn advances the rows are ordinary prior-turn rows for the evict ladder. The rung overrides `SetOffloadExemptTools`, since the alternative is a turn that cannot be sent; storeless rows (no durable id) fall back to the evicted stub. A `releasePressure: offload current turn` warning names the rows offloaded.
@@ -38,6 +72,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The schema-lookup result cache no longer stores an empty answer (`{"columns":[]}`, `[]`, or an object whose array fields are all empty). A `describe_table` that found nothing — because the server was handed a name it could not resolve — was cached and then served to every later caller with the same arguments, so one bad lookup became "a table with no columns" for a whole fleet. The empty answer is still returned to the caller that got it; the next caller reaches the server again.
 
 ### Breaking Changes
+
+- **Tool results are bounded once, at arrival, and nothing is stubbed or evicted later.** Above the threshold a result enters the conversation as its first bytes plus a tail that says where the rest is (the workspace snapshot file, or a narrower re-run). What enters memory, what is stored and what the model is sent are the same bytes; relief is fold-only. Removed with the offload/evict machinery: `Agent.SetOffloadExemptTools` (and on `Memory`/`SegmentedMemory`), `SessionStore.MarkEvicted`, `SegmentedMemory.DropTurnPayloads` / `CurrentTurnOverflow`, `Agent.InTurnPayload`, the `query_tool_result` tool (`NewQueryToolResultTool`) and its prompt, and the in-turn SQLite behind its `sql=` mode.
+- **The LLM retry policy is fixed, not configured.** `Config.Retry` and `RetryConfig` are gone; every call runs under the same backoff.
+- **`file_write` defaults to `overwrite`** (was `create`).
+- **Postgres migrations 000025–000030 are new.** `000024_task_attribution` keeps its number.
 
 - **An undeclared `trigger.mode` now loads as `HYBRID`, not `MANUAL`.** With the mode enforced, the old default would have withheld from the model every skill that omits the field — in practice nearly all of them, since nothing read the mode before and no author chose `MANUAL` by writing nothing. `HYBRID` preserves how those skills behave today (the model may pull them; a slash command also invokes them). An embedder that wants a skill withheld must now declare `mode: MANUAL` on it.
 

@@ -108,7 +108,7 @@ External triggers fire runs (Osmani's "automations — the heartbeat").
 - ✅ Cron scheduler: `pkg/scheduler/` (robfig/cron, 5-field) triggers workflow executions on schedule, persisted in `scheduler.db`, wired into `looms serve`
 - ✅ API triggers: `Weave`/`StreamWeave` over gRPC/HTTP — any external system can fire a run
 - ✅ MCP bridge: `loom_weave` exposes the loop as an MCP tool to external clients (`pkg/mcp/server/bridge_tools.go`)
-- ✅ Durable suspend/resume: HITL gates raise `WorkflowSuspended` with a `WorkflowCheckpoint` (shared memory + stage outputs snapshotted); hosts persist it and later call `ResumeWorkflow` with a `GateDecision`; a workflow fingerprint check refuses resume against edited definitions (`pkg/orchestration/hitl_gate.go`, `resume.go`, `proto/loom/v1/orchestration.proto`) — long-lived loops survive process restarts
+- ✅ Durable suspend/resume: HITL gates raise `WorkflowSuspended` with a `WorkflowCheckpoint` (shared memory + stage outputs snapshotted); hosts persist it and later call `ResumeWorkflow` with a `GateDecision`; a pipeline or iterative workflow is fingerprint-checked and refuses resume against an edited definition, while a state machine's checkpoint is a position and resumes on the definition as it stands, refused only when it stands in a state the definition no longer has (`pkg/orchestration/hitl_gate.go`, `resume.go`, `state_machine_executor.go`, `proto/loom/v1/orchestration.proto`) — long-lived loops survive process restarts
 - ✅ Inter-agent events: communication bus topics with auto-subscription; inbound messages injected into agent context
 
 **What Loom lacks:**
@@ -157,7 +157,7 @@ Synthesized principles from the literature, scored against Loom:
 | 7 | Manage the attention budget every iteration (Anthropic) | ✅ | Token counting, layered memory, pre-call enforcement, LLM compaction default-on, system-slot minimalism (ROM + L2 only) |
 | 8 | Single-threaded default; share full traces if parallel (Cognition) | ⚠️ | Single loop is the default ✅; multi-agent shares messages via bus, not full traces |
 | 9 | Sandbox + least privilege + scoped credentials (Willison) | ✅ | Docker executor, guardrails, `allow_code_execution`/`allowed_domains` config, high-risk skill approval gating |
-| 10 | Transactional, idempotent, auditable loop actions (Cockroach Labs) | ⚠️ | Every step persisted + span-traced; workflow checkpoints are fingerprint-verified; tool actions themselves have no idempotency/transaction contract |
+| 10 | Transactional, idempotent, auditable loop actions (Cockroach Labs) | ⚠️ | Every step persisted + span-traced; pipeline and iterative checkpoints are fingerprint-verified; tool actions themselves have no idempotency/transaction contract |
 | 11 | Retries must adapt, not repeat (Masood) | ✅ | Consecutive-failure escalation in-loop; stage retries with feedback templates and FRESH/ESCALATE session modes |
 | 12 | Stay the engineer — observability against comprehension debt (Osmani) | ✅ | Span taxonomy per iteration/LLM/tool call; OTLP export with GenAI semconv (`pkg/observability/otel.go`); exact per-call context dumps (`context_dump.go`) |
 

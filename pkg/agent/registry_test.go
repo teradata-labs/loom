@@ -1109,7 +1109,6 @@ func TestToolFiltering(t *testing.T) {
 		Builtin: []string{
 			"shell_execute",
 			// Note: tool_search requires ToolRegistry to be configured (not in basic test setup)
-			"query_tool_result",
 			// Note: get_tool_result removed - inline metadata makes it unnecessary
 			// Note: recall_conversation removed in scratchpad experiment
 		},
@@ -1132,7 +1131,6 @@ func TestToolFiltering(t *testing.T) {
 	// Verify only specified tools are registered
 	expectedTools := map[string]bool{
 		"shell_execute": true,
-		// query_tool_result uses progressive disclosure (registered after first large result)
 		// get_tool_result removed - inline metadata makes it unnecessary
 		// recall_conversation removed in scratchpad experiment
 	}
@@ -1189,10 +1187,10 @@ func TestToolFiltering_NoToolsSection(t *testing.T) {
 	t.Logf("Registered tools (no tools section): %v", registeredTools)
 
 	// An agent with NO tools section registers exactly the base verbs:
-	// load_pattern (pattern library always configured) plus query_tool_result
-	// and recall (registered always — HLD §6/§7.1). No shell_execute, no other
-	// builtins, and workspace registers only with an artifact store.
-	assert.ElementsMatch(t, []string{"load_pattern", "query_tool_result", "recall"}, registeredTools,
+	// load_pattern (pattern library always configured) plus recall (registered
+	// always — HLD §6). No shell_execute, no
+	// other builtins, and workspace registers only with an artifact store.
+	assert.ElementsMatch(t, []string{"load_pattern", "recall", "task_list"}, registeredTools,
 		"Expected only the base verbs with no tools section and no artifact store")
 
 	// Verify no unexpected tools

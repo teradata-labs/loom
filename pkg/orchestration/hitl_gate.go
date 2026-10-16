@@ -56,6 +56,10 @@ type WorkflowSuspended struct {
 
 // Error implements the error interface.
 func (s *WorkflowSuspended) Error() string {
+	if s.Checkpoint.GetSuspendReason() == loomv1.SuspendReason_SUSPEND_REASON_ERROR {
+		return fmt.Sprintf("workflow waiting at %v, which could not run: %s",
+			s.Checkpoint.GetStatePath(), s.Checkpoint.GetError())
+	}
 	gate := s.Checkpoint.GetPendingGate()
 	return fmt.Sprintf("workflow suspended awaiting human decision at stage %d (%s)",
 		gate.GetStageNumber(), gate.GetStageAgentId())
@@ -116,28 +120,53 @@ func iterativePatternFingerprint(p *loomv1.IterativeWorkflowPattern) (string, er
 // buildGateRequest renders the HITLGateRequest handed to the host when a gate
 // fires on the given stage.
 func buildGateRequest(workflowID string, stage *loomv1.PipelineStage, stageNum int, output string) *loomv1.HITLGateRequest {
-	gate := stage.HitlGate
+	return buildGateRequestFor(gateRequestSubject{
+		WorkflowID: workflowID,
+		Gate:       stage.HitlGate,
+		AgentID:    stage.AgentId,
+		Ordinal:    stageNum,
+		Descriptor: fmt.Sprintf("stage %d (%s)", stageNum, stage.AgentId),
+		Output:     output,
+	})
+}
 
-	question := gate.PromptTemplate
+// gateRequestSubject is the unit a gate fired on. A pipeline names a numbered
+// stage; a state machine names a state, which has no number and no position in
+// a list. Descriptor is what the default question calls it.
+type gateRequestSubject struct {
+	WorkflowID string
+	Gate       *loomv1.HITLGate
+	AgentID    string
+	StatePath  string
+	Ordinal    int
+	Descriptor string
+	Output     string
+}
+
+// buildGateRequestFor renders the HITLGateRequest handed to the host, for
+// either kind of subject.
+func buildGateRequestFor(s gateRequestSubject) *loomv1.HITLGateRequest {
+	question := s.Gate.PromptTemplate
 	if question == "" {
-		question = fmt.Sprintf("Review the output of stage %d (%s). Approve to continue, revise with feedback, or reject to stop.", stageNum, stage.AgentId)
+		question = fmt.Sprintf("Review the output of %s. Approve to continue, revise with feedback, or reject to stop.", s.Descriptor)
 	}
-	question = strings.ReplaceAll(question, "{{output}}", output)
+	question = strings.ReplaceAll(question, "{{output}}", s.Output)
 
-	requestType := gate.RequestType
+	requestType := s.Gate.RequestType
 	if requestType == "" {
 		requestType = "approval"
 	}
 
 	return &loomv1.HITLGateRequest{
-		WorkflowId:     workflowID,
-		StageAgentId:   stage.AgentId,
-		StageNumber:    int32(stageNum), // #nosec G115 -- stage counts are tiny
+		WorkflowId:     s.WorkflowID,
+		StageAgentId:   s.AgentID,
+		StageNumber:    int32(s.Ordinal), // #nosec G115 -- stage and transition counts are tiny
 		Question:       question,
-		StageOutput:    output,
+		StageOutput:    s.Output,
 		RequestType:    requestType,
-		TimeoutSeconds: gate.TimeoutSeconds,
+		TimeoutSeconds: s.Gate.TimeoutSeconds,
 		Options:        []string{"approve", "revise", "reject"},
+		StatePath:      s.StatePath,
 	}
 }
 
@@ -351,6 +380,21 @@ func validateGatePlacement(pattern *loomv1.WorkflowPattern) error {
 			return check(p.Iterative.Pipeline.Stages)
 		}
 		return nil
+	case *loomv1.WorkflowPattern_StateMachine:
+		// A machine's gate names a state to revise to, not a stage at or
+		// before a position: a cyclic graph has no "before".
+		for name, st := range p.StateMachine.GetStates() {
+			gate := st.GetHitlGate()
+			if gate == nil {
+				continue
+			}
+			if target := gate.GetReviseTargetStageId(); target != "" {
+				if _, ok := p.StateMachine.GetStates()[target]; !ok {
+					return fmt.Errorf("state %q gate names unknown revise target %q", name, target)
+				}
+			}
+		}
+		return nil
 	case *loomv1.WorkflowPattern_Conditional:
 		for name, branch := range p.Conditional.Branches {
 			if hasHITLGate(branch) {
@@ -371,6 +415,17 @@ func validateGatePlacement(pattern *loomv1.WorkflowPattern) error {
 
 // hasHITLGate reports whether any pipeline stage in the pattern declares a gate.
 func hasHITLGate(pattern *loomv1.WorkflowPattern) bool {
+	if sm, ok := pattern.Pattern.(*loomv1.WorkflowPattern_StateMachine); ok {
+		// A machine's gates hang off states, which this function's stage scan
+		// cannot see. Missing this would let validateGatePlacement's default
+		// arm admit them without ever checking their revise targets.
+		for _, st := range sm.StateMachine.GetStates() {
+			if st.GetHitlGate() != nil {
+				return true
+			}
+		}
+		return false
+	}
 	var stages []*loomv1.PipelineStage
 	switch p := pattern.Pattern.(type) {
 	case *loomv1.WorkflowPattern_Pipeline:

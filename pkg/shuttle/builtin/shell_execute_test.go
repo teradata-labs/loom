@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -42,15 +43,23 @@ func TestShellExecuteTool_InputSchema(t *testing.T) {
 	require.NotNil(t, schema)
 
 	// Check required fields
-	assert.Contains(t, schema.Required, "command")
+	assert.Empty(t, schema.Required, "either command or commands; neither is required alone")
 
 	// Check properties exist
 	assert.NotNil(t, schema.Properties["command"])
+	assert.NotNil(t, schema.Properties["commands"])
 	assert.NotNil(t, schema.Properties["working_dir"])
 	assert.NotNil(t, schema.Properties["env"])
-	assert.NotNil(t, schema.Properties["timeout_seconds"])
 	assert.NotNil(t, schema.Properties["shell"])
 	assert.NotNil(t, schema.Properties["max_output_bytes"])
+
+	// timeout_seconds is honoured but never advertised: almost no command needs
+	// it, and a caller who raises it can outlive the conversation cache. The
+	// tool names it only in the result of a command it just stopped.
+	assert.Nil(t, schema.Properties["timeout_seconds"])
+	// stop_on_error is gone with sequential batches — dependent steps chain
+	// with && inside one command.
+	assert.Nil(t, schema.Properties["stop_on_error"])
 }
 
 func TestShellExecuteTool_Execute(t *testing.T) {
@@ -383,15 +392,14 @@ func TestShellExecuteTool_LargeOutput(t *testing.T) {
 	// Should succeed since we're under the limit
 	assert.True(t, result.Success, "Large output within limits should succeed")
 
-	// Large streams come back as a head+tail view with an explicit elision
-	// marker — the result is a bounded rendering, not the raw firehose.
+	// Large streams come back bounded by the command budget, head kept, with a
+	// footer that says what was cut and how to narrow.
 	if result.Data != nil {
 		data := result.Data.(map[string]interface{})
 		stdout := data["stdout"].(string)
-		assert.LessOrEqual(t, len(stdout), shellOutputCap+200, "stdout must be compacted")
-		assert.Contains(t, stdout, "bytes elided", "elision must be explicit")
+		assert.LessOrEqual(t, len(stdout), defaultCommandBudget+300, "stdout must be bounded by the budget")
+		assert.Contains(t, stdout, "bytes cut at a", "the cut must be explicit")
 		assert.Contains(t, stdout, "line-1-", "head preserved")
-		assert.Contains(t, stdout, "line-5000-", "tail preserved")
 	}
 }
 
@@ -725,23 +733,248 @@ func TestFilterSensitiveEnvVars(t *testing.T) {
 
 // ANSI escapes are stripped from output; oversized streams keep head and tail
 // with an explicit elision marker.
-func TestShellOutputCompaction(t *testing.T) {
-	in := "\x1b[0m10:06:32  \x1b[33mWARNING\x1b[0m: test line"
-	if got := compactShellOutput(in); got != "10:06:32  WARNING: test line" {
-		t.Fatalf("ANSI not stripped: %q", got)
+// TestBudgetOutput — output is bounded by a per-command budget with a footer
+// that says what was cut and how to narrow; small output passes untouched.
+func TestBudgetOutput(t *testing.T) {
+	small := "10:06:32  WARNING: test line"
+	if got, cut := budgetOutput(small, defaultCommandBudget); got != small || cut != 0 {
+		t.Fatalf("small output must pass untouched, got %q cut=%d", got, cut)
 	}
-	big := strings.Repeat("A", 5*1024) + strings.Repeat("B", 5*1024) + strings.Repeat("C", 5*1024)
-	got := compactShellOutput(big)
-	if len(got) > shellOutputCap+200 {
-		t.Fatalf("cap not applied: %d bytes", len(got))
+	big := strings.Repeat("line of output\n", 10000)
+	got, cut := budgetOutput(big, 4096)
+	if cut == 0 || len(got) > 4096+300 || !strings.Contains(got, "bytes cut at a 4096-byte budget") {
+		t.Fatalf("big output must be cut to the budget with a footer, got %d bytes cut=%d", len(got), cut)
 	}
-	if !strings.HasPrefix(got, "A") || !strings.HasSuffix(got, "C") || !strings.Contains(got, "bytes elided") {
-		t.Fatalf("head/tail/marker shape wrong: %q…%q", got[:20], got[len(got)-20:])
+}
+
+// TestShellExecute_BatchSections — several commands in one call each run in
+// their OWN shell (so a cd applies only inside the command that issued it),
+// render as labelled sections in submission order, and a failing command is an
+// ERROR section while its siblings still run.
+func TestShellExecute_BatchSections(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash batch")
 	}
-	small := "plain output, no escapes"
-	if compactShellOutput(small) != small {
-		t.Fatal("small clean output must pass through untouched")
+	dir := t.TempDir()
+	tool := NewShellExecuteTool(dir)
+	tool.SetRestrictWrites(false)
+	// A batch renders a labelled section per command, and one command failing
+	// leaves the others untouched — they are independent shells, not a chain.
+	res, err := tool.Execute(context.Background(), map[string]interface{}{
+		"working_dir": dir,
+		"commands": []interface{}{
+			"echo first",
+			map[string]interface{}{"command": "echo second", "label": "labelled"},
+			"false",
+			"echo after-failure",
+		},
+	})
+	if err != nil || res == nil || !res.Success {
+		t.Fatalf("batch must run: err=%v res=%+v", err, res)
 	}
+	data, _ := res.Data.(map[string]interface{})
+	text, _ := data["result"].(string)
+	for _, want := range []string{"== command 1 ==\nfirst", "== labelled ==\nsecond", "== command 3 ==\nERROR: exit 1", "== command 4 ==\nafter-failure"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q in:\n%s", want, text)
+		}
+	}
+	if data["failed"] != 1 {
+		t.Fatalf("one failure expected, got %v", data["failed"])
+	}
+
+	// Each command is its own shell: a cd in one is not visible to another.
+	// Dependent steps are expressed by chaining inside a single command.
+	res, _ = tool.Execute(context.Background(), map[string]interface{}{
+		"working_dir": dir,
+		"commands": []interface{}{
+			"mkdir -p sub && cd sub && pwd | xargs basename",
+			"pwd | xargs basename",
+		},
+	})
+	data, _ = res.Data.(map[string]interface{})
+	text, _ = data["result"].(string)
+	if !strings.Contains(text, "== command 1 ==\nsub") {
+		t.Fatalf("a cd chained inside one command must apply to that command:\n%s", text)
+	}
+	if strings.Contains(text, "== command 2 ==\nsub") {
+		t.Fatalf("a cd must NOT leak into a sibling command:\n%s", text)
+	}
+}
+
+// Commands in a batch run at the same time, so a batch costs about as long as
+// its slowest command rather than the sum. This is what keeps a batch inside
+// the conversation-cache lifetime.
+func TestShellExecute_BatchRunsInParallel(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash batch")
+	}
+	dir := t.TempDir()
+	tool := NewShellExecuteTool(dir)
+	tool.SetRestrictWrites(false)
+	started := time.Now()
+	res, err := tool.Execute(context.Background(), map[string]interface{}{
+		"working_dir": dir,
+		"commands":    []interface{}{"sleep 2; echo a", "sleep 2; echo b", "sleep 2; echo c"},
+	})
+	elapsed := time.Since(started)
+	if err != nil || res == nil || !res.Success {
+		t.Fatalf("batch must run: err=%v res=%+v", err, res)
+	}
+	data, _ := res.Data.(map[string]interface{})
+	text, _ := data["result"].(string)
+	for _, want := range []string{"a", "b", "c"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("every command must still report: missing %q in:\n%s", want, text)
+		}
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("three 2s commands took %v — they ran in sequence, not in parallel", elapsed)
+	}
+}
+
+// Sections render in the order the caller listed them, whatever order the
+// commands actually finish in. Identical input must produce identical bytes, or
+// a cached prefix is invalidated on every call.
+func TestShellExecute_BatchRendersInSubmissionOrder(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash batch")
+	}
+	dir := t.TempDir()
+	tool := NewShellExecuteTool(dir)
+	tool.SetRestrictWrites(false)
+	res, err := tool.Execute(context.Background(), map[string]interface{}{
+		"working_dir": dir,
+		"commands": []interface{}{
+			map[string]interface{}{"command": "sleep 2; echo slow", "label": "listed-first"},
+			map[string]interface{}{"command": "echo fast", "label": "listed-second"},
+		},
+	})
+	if err != nil || res == nil || !res.Success {
+		t.Fatalf("batch must run: err=%v res=%+v", err, res)
+	}
+	data, _ := res.Data.(map[string]interface{})
+	text, _ := data["result"].(string)
+	first := strings.Index(text, "== listed-first ==")
+	second := strings.Index(text, "== listed-second ==")
+	if first < 0 || second < 0 {
+		t.Fatalf("both sections must render:\n%s", text)
+	}
+	if first > second {
+		t.Fatalf("the command listed first must render first even though it finished last:\n%s", text)
+	}
+}
+
+// A batch is capped at batchMaxCommands. Commands past the cap simply do not
+// run, and the model reads that off the sections it gets back.
+func TestShellExecute_BatchCapsCommandCount(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash batch")
+	}
+	dir := t.TempDir()
+	tool := NewShellExecuteTool(dir)
+	tool.SetRestrictWrites(false)
+	var cmds []interface{}
+	for i := 1; i <= batchMaxCommands+3; i++ {
+		cmds = append(cmds, fmt.Sprintf("echo cmd%d", i))
+	}
+	res, err := tool.Execute(context.Background(), map[string]interface{}{
+		"working_dir": dir, "commands": cmds,
+	})
+	if err != nil || res == nil || !res.Success {
+		t.Fatalf("batch must run: err=%v res=%+v", err, res)
+	}
+	data, _ := res.Data.(map[string]interface{})
+	if data["commands"] != batchMaxCommands {
+		t.Fatalf("expected %d commands to run, got %v", batchMaxCommands, data["commands"])
+	}
+	text, _ := data["result"].(string)
+	if !strings.Contains(text, fmt.Sprintf("cmd%d", batchMaxCommands)) {
+		t.Fatalf("command %d must run:\n%s", batchMaxCommands, text)
+	}
+	if strings.Contains(text, fmt.Sprintf("cmd%d", batchMaxCommands+1)) {
+		t.Fatalf("command %d is past the cap and must not run:\n%s", batchMaxCommands+1, text)
+	}
+}
+
+// A single command that times out must come back with the advice the model can
+// act on, in the rendered payload. Error.Message and Error.Suggestion are not
+// part of the rendered tool result, so a payload carrying only timed_out=true
+// tells the model nothing and it abandons the step instead of narrowing it.
+func TestShellExecute_SingleCommandTimeoutCarriesAdviceAndPartialOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash timeout")
+	}
+	dir := t.TempDir()
+	tool := NewShellExecuteTool(dir)
+	tool.SetRestrictWrites(false)
+
+	res, err := tool.Execute(context.Background(), map[string]interface{}{
+		"working_dir":     dir,
+		"command":         "echo produced-before-the-kill; sleep 30",
+		"timeout_seconds": float64(2),
+	})
+	if err != nil {
+		t.Fatalf("a timeout is a result, not a transport error: %v", err)
+	}
+	data, _ := res.Data.(map[string]interface{})
+	if to, _ := data["timed_out"].(bool); !to {
+		t.Fatalf("the command must be reported as timed out: %+v", data)
+	}
+	text, _ := data["result"].(string)
+	if !strings.Contains(text, "TIMED OUT after 2s") {
+		t.Fatalf("the advice must state the budget that actually applied, not a constant:\n%s", text)
+	}
+	if !strings.Contains(text, "Split it into smaller steps") {
+		t.Fatalf("splitting must be offered before raising the limit:\n%s", text)
+	}
+	if !strings.Contains(text, "produced-before-the-kill") {
+		t.Fatalf("output produced before the kill must survive:\n%s", text)
+	}
+}
+
+// The batch path states its own per-command budget, so the two paths never
+// disagree about which limit was hit.
+func TestShellExecute_BatchTimeoutStatesPerCommandBudget(t *testing.T) {
+	if !strings.Contains(timedOutAdvice(perCommandTimeoutSecs), "TIMED OUT after 270s") {
+		t.Fatalf("batch advice must name the per-command budget: %s", timedOutAdvice(perCommandTimeoutSecs))
+	}
+}
+
+// A shell built with a directory starts its commands there, whatever
+// LOOM_SANDBOX_DIR says: the sandbox is one value for the process, and where
+// one agent's commands start is that agent's own. A relative working_dir
+// resolves against it. Built with none, commands start in the sandbox.
+func TestShellExecuteTool_StartsWhereItWasBuilt(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pwd")
+	}
+	sandbox, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	own := filepath.Join(sandbox, "units", "u-1")
+	require.NoError(t, os.MkdirAll(filepath.Join(own, "repo"), 0o755))
+	t.Setenv("LOOM_SANDBOX_DIR", sandbox)
+
+	pwd := func(tool *ShellExecuteTool, params map[string]interface{}) string {
+		params["command"] = "pwd -P"
+		res, err := tool.Execute(context.Background(), params)
+		require.NoError(t, err)
+		require.True(t, res.Success, "%+v", res.Error)
+		return strings.TrimSpace(res.Data.(map[string]interface{})["stdout"].(string))
+	}
+
+	assert.Equal(t, own, pwd(NewShellExecuteTool(own), map[string]interface{}{}),
+		"a placed shell started somewhere other than its own directory")
+	assert.Equal(t, filepath.Join(own, "repo"), pwd(NewShellExecuteTool(own), map[string]interface{}{"working_dir": "repo"}),
+		"a relative working_dir did not resolve against the shell's own directory")
+	assert.Equal(t, sandbox, pwd(NewShellExecuteTool(""), map[string]interface{}{}),
+		"an unplaced shell did not start in the sandbox")
+
+	// Built with a relative directory, it is that directory as seen from where
+	// the tool was built.
+	t.Chdir(sandbox)
+	assert.Equal(t, own, pwd(NewShellExecuteTool(filepath.Join("units", "u-1")), map[string]interface{}{}),
+		"a shell built with a relative directory started somewhere else")
 }
 
 // Containment is tested on whole path segments: a sibling directory whose name
