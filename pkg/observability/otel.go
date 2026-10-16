@@ -16,6 +16,7 @@ package observability
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -266,89 +267,111 @@ func buildOTelSpanContext(loomTraceID, loomSpanID string) (oteltrace.SpanContext
 	return sc, sc.IsValid()
 }
 
-// redactOTelSpan applies privacy rules before attributes are exported.
-// PII patterns (emailPattern, phonePattern, etc.) are defined in privacy.go.
+// redactOTelSpan applies privacy rules before attributes are exported, to
+// span and event attributes alike: credential-like keys are dropped, and PII
+// patterns (emailPattern, phonePattern, etc., defined in privacy.go) are
+// replaced in string values, in each element of string slices, and in maps and
+// lists, which are exported as JSON. With RedactPII the status message is
+// redacted too. Keys in AllowedAttributes are exported unchanged. The caller's
+// span is not modified.
 func redactOTelSpan(span *Span, cfg PrivacyConfig) *Span {
 	if !cfg.RedactCredentials && !cfg.RedactPII {
 		return span
 	}
-
-	redacted := *span
-	redacted.Attributes = make(map[string]interface{}, len(span.Attributes))
-	for k, v := range span.Attributes {
-		redacted.Attributes[k] = v
-	}
-	redacted.Events = make([]Event, len(span.Events))
-	for i, event := range span.Events {
-		redacted.Events[i] = event
-		redacted.Events[i].Attributes = make(map[string]interface{}, len(event.Attributes))
-		for k, v := range event.Attributes {
-			redacted.Events[i].Attributes[k] = v
-		}
-	}
-	span = &redacted
 
 	allowed := make(map[string]bool, len(cfg.AllowedAttributes))
 	for _, k := range cfg.AllowedAttributes {
 		allowed[k] = true
 	}
 
-	if cfg.RedactCredentials {
-		credKeys := []string{
-			"password", "api_key", "token", "secret", "authorization",
-			"access_token", "refresh_token", "bearer", "apikey",
-			"client_secret", "private_key", "ssh_key", "aws_secret",
-		}
-		for _, k := range credKeys {
-			if !allowed[k] {
-				delete(span.Attributes, k)
-			}
-		}
-		for k := range span.Attributes {
-			kl := strings.ToLower(k)
-			if !allowed[k] {
-				if strings.Contains(kl, "password") || strings.Contains(kl, "secret") ||
-					(strings.Contains(kl, "key") && strings.Contains(kl, "api")) {
-					delete(span.Attributes, k)
-				}
-			}
-		}
+	redacted := *span
+	redacted.Attributes = redactAttributes(span.Attributes, cfg, allowed)
+	redacted.Events = make([]Event, len(span.Events))
+	for i, event := range span.Events {
+		redacted.Events[i] = event
+		redacted.Events[i].Attributes = redactAttributes(event.Attributes, cfg, allowed)
 	}
-
 	if cfg.RedactPII {
-		for k, v := range span.Attributes {
-			if allowed[k] {
-				continue
-			}
-			if s, ok := v.(string); ok {
-				r := emailPattern.ReplaceAllString(s, "[EMAIL_REDACTED]")
-				r = phonePattern.ReplaceAllString(r, "[PHONE_REDACTED]")
-				r = ssnPattern.ReplaceAllString(r, "[SSN_REDACTED]")
-				r = creditCardPattern.ReplaceAllString(r, "[CARD_REDACTED]")
-				if r != s {
-					span.Attributes[k] = r
-				}
-			}
-		}
-		for i := range span.Events {
-			for k, v := range span.Events[i].Attributes {
-				if allowed[k] {
-					continue
-				}
-				if s, ok := v.(string); ok {
-					r := emailPattern.ReplaceAllString(s, "[EMAIL_REDACTED]")
-					r = phonePattern.ReplaceAllString(r, "[PHONE_REDACTED]")
-					r = ssnPattern.ReplaceAllString(r, "[SSN_REDACTED]")
-					r = creditCardPattern.ReplaceAllString(r, "[CARD_REDACTED]")
-					if r != s {
-						span.Events[i].Attributes[k] = r
-					}
-				}
-			}
+		redacted.Status.Message = redactPIIString(span.Status.Message)
+	}
+	return &redacted
+}
+
+// redactAttributes returns a redacted copy of attrs (see redactOTelSpan).
+func redactAttributes(attrs map[string]interface{}, cfg PrivacyConfig, allowed map[string]bool) map[string]interface{} {
+	out := make(map[string]interface{}, len(attrs))
+	for k, v := range attrs {
+		switch {
+		case allowed[k]:
+			out[k] = v
+		case cfg.RedactCredentials && isCredentialKey(k):
+			// dropped
+		case cfg.RedactPII:
+			out[k] = redactPIIValue(v)
+		default:
+			out[k] = v
 		}
 	}
+	return out
+}
 
-	return span
+// credentialKeys are attribute keys dropped by RedactCredentials.
+var credentialKeys = map[string]bool{ //nolint:gochecknoglobals
+	"password": true, "api_key": true, "token": true, "secret": true, "authorization": true,
+	"access_token": true, "refresh_token": true, "bearer": true, "apikey": true,
+	"client_secret": true, "private_key": true, "ssh_key": true, "aws_secret": true,
+}
+
+// isCredentialKey reports whether an attribute key names a credential: one
+// of credentialKeys, or a key containing "password", "secret", or both "api"
+// and "key" (case-insensitive).
+func isCredentialKey(k string) bool {
+	if credentialKeys[k] {
+		return true
+	}
+	kl := strings.ToLower(k)
+	return strings.Contains(kl, "password") || strings.Contains(kl, "secret") ||
+		(strings.Contains(kl, "key") && strings.Contains(kl, "api"))
+}
+
+// redactPIIValue replaces PII patterns in a string, in each element of a
+// string slice (copied before it is changed), and in a map or list, which is
+// returned as the JSON string toOTelAttr would export. Other values are
+// returned as they are.
+func redactPIIValue(v interface{}) interface{} {
+	switch val := v.(type) {
+	case string:
+		return redactPIIString(val)
+	case []string:
+		var out []string
+		for i, s := range val {
+			if r := redactPIIString(s); r != s {
+				if out == nil {
+					out = append([]string(nil), val...)
+				}
+				out[i] = r
+			}
+		}
+		if out == nil {
+			return val
+		}
+		return out
+	case map[string]interface{}, map[string]string, []interface{}:
+		b, err := json.Marshal(val)
+		if err != nil {
+			return v
+		}
+		return redactPIIString(string(b))
+	default:
+		return v
+	}
+}
+
+func redactPIIString(s string) string {
+	r := emailPattern.ReplaceAllString(s, "[EMAIL_REDACTED]")
+	r = phonePattern.ReplaceAllString(r, "[PHONE_REDACTED]")
+	r = ssnPattern.ReplaceAllString(r, "[SSN_REDACTED]")
+	return creditCardPattern.ReplaceAllString(r, "[CARD_REDACTED]")
 }
 
 // Ensure OTelTracer implements Tracer.

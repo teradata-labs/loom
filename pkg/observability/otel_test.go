@@ -751,3 +751,61 @@ func TestResolveOTelConfigInsecure(t *testing.T) {
 func TestOTelTracerImplementsTracer(t *testing.T) {
 	var _ Tracer = (*OTelTracer)(nil) // compile-time check duplicated for clarity
 }
+
+func TestRedactOTelSpan_ListsEventsAndStatus(t *testing.T) {
+	cfg := PrivacyConfig{RedactCredentials: true, RedactPII: true}
+
+	t.Run("each string slice element is redacted on a copy", func(t *testing.T) {
+		names := []string{"ok", "mail user@test.org"}
+		out := redactOTelSpan(&Span{Attributes: map[string]interface{}{"recall.selected_ids": names}}, cfg)
+		got, ok := out.Attributes["recall.selected_ids"].([]string)
+		if !ok || len(got) != 2 || got[0] != "ok" || strings.Contains(got[1], "user@test.org") {
+			t.Fatalf("redacted slice = %#v", out.Attributes["recall.selected_ids"])
+		}
+		if names[1] != "mail user@test.org" {
+			t.Error("caller slice was mutated")
+		}
+	})
+	t.Run("credential keys are dropped from events", func(t *testing.T) {
+		out := redactOTelSpan(&Span{Events: []Event{{Attributes: map[string]interface{}{
+			"api_key": "k", "x_secret_value": "s", "tool": "file_read",
+		}}}}, cfg)
+		ev := out.Events[0].Attributes
+		for _, k := range []string{"api_key", "x_secret_value"} {
+			if _, ok := ev[k]; ok {
+				t.Errorf("event attribute %q must be dropped", k)
+			}
+		}
+		if ev["tool"] != "file_read" {
+			t.Errorf("tool = %v", ev["tool"])
+		}
+	})
+	t.Run("maps are exported as redacted JSON", func(t *testing.T) {
+		out := redactOTelSpan(&Span{Attributes: map[string]interface{}{
+			"tool.args": map[string]interface{}{"to": "user@test.org"},
+		}}, cfg)
+		got, ok := out.Attributes["tool.args"].(string)
+		if !ok || strings.Contains(got, "user@test.org") || !strings.Contains(got, "[EMAIL_REDACTED]") {
+			t.Fatalf("tool.args = %#v", out.Attributes["tool.args"])
+		}
+	})
+	t.Run("status message is redacted", func(t *testing.T) {
+		span := &Span{Status: Status{Code: StatusError, Message: "no account for user@test.org"}}
+		out := redactOTelSpan(span, cfg)
+		if strings.Contains(out.Status.Message, "user@test.org") {
+			t.Errorf("status message = %q", out.Status.Message)
+		}
+		if span.Status.Message != "no account for user@test.org" {
+			t.Error("caller status was mutated")
+		}
+	})
+	t.Run("allowed keys are kept in events", func(t *testing.T) {
+		out := redactOTelSpan(&Span{Events: []Event{{Attributes: map[string]interface{}{
+			"password": "kept", "content": "user@test.org",
+		}}}}, PrivacyConfig{RedactCredentials: true, RedactPII: true, AllowedAttributes: []string{"password", "content"}})
+		ev := out.Events[0].Attributes
+		if ev["password"] != "kept" || ev["content"] != "user@test.org" {
+			t.Errorf("allowed event attributes changed: %v", ev)
+		}
+	})
+}
