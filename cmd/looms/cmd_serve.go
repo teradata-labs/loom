@@ -1269,20 +1269,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		case "otel":
 			logger.Info("Observability enabled with OTLP export",
 				zap.String("endpoint", config.Observability.OTLPEndpoint))
-			otelTracer, err := observability.NewOTelTracer(observability.OTelConfig{
-				Endpoint:       config.Observability.OTLPEndpoint,
-				Headers:        config.Observability.OTLPHeaders,
-				Insecure:       config.Observability.OTLPInsecure,
-				ServiceName:    otlpServiceName("looms"),
-				ServiceVersion: rootCmd.Version,
-				Privacy: observability.PrivacyConfig{
-					RedactCredentials: true,
-					RedactPII:         true,
-				},
-				SpanFilter: observability.SpanFilterConfig{
-					IncludePrefixes: config.Observability.OTLPIncludeSpans,
-				},
-			})
+			otelTracer, err := newOTLPTracer(config.Observability, "looms", rootCmd.Version)
 			if err != nil {
 				logger.Warn("Failed to create OTLP tracer, using no-op tracer", zap.Error(err))
 				tracer = observability.NewNoOpTracer()

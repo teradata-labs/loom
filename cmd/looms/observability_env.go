@@ -64,6 +64,28 @@ func firstConfiguredEnv(keys ...string) string {
 	return ""
 }
 
+// newOTLPTracer applies the process-wide OTLP settings from obs and builds
+// the OTel tracer that looms serve and looms workflow export through.
+func newOTLPTracer(obs ObservabilityConfig, serviceName, serviceVersion string) (*observability.OTelTracer, error) {
+	if obs.OTLPMaxContentLength != nil {
+		observability.SetMaxContentLength(*obs.OTLPMaxContentLength)
+	}
+	return observability.NewOTelTracer(observability.OTelConfig{
+		Endpoint:       obs.OTLPEndpoint,
+		Headers:        obs.OTLPHeaders,
+		Insecure:       obs.OTLPInsecure,
+		ServiceName:    otlpServiceName(serviceName),
+		ServiceVersion: serviceVersion,
+		Privacy: observability.PrivacyConfig{
+			RedactCredentials: true,
+			RedactPII:         true,
+		},
+		SpanFilter: observability.SpanFilterConfig{
+			IncludePrefixes: obs.OTLPIncludeSpans,
+		},
+	})
+}
+
 func otlpServiceName(defaultName string) string {
 	if serviceName := os.Getenv("OTEL_SERVICE_NAME"); serviceName != "" {
 		return serviceName

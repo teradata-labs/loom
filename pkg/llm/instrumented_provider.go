@@ -172,7 +172,7 @@ func (p *InstrumentedProvider) Chat(ctx context.Context, messages []llmtypes.Mes
 	}
 
 	// Bounded response preview — maps to gen_ai.completion → Opik output column.
-	if preview := truncatePreview(resp.Content); preview != "" {
+	if preview := observability.TruncateContent(resp.Content); preview != "" {
 		span.SetAttribute("response.preview", preview)
 	}
 
@@ -417,7 +417,7 @@ func (p *InstrumentedProvider) ChatStream(ctx context.Context, messages []llmtyp
 	}
 
 	// Bounded response preview — maps to gen_ai.completion → Opik output column.
-	if preview := truncatePreview(resp.Content); preview != "" {
+	if preview := observability.TruncateContent(resp.Content); preview != "" {
 		span.SetAttribute("response.preview", preview)
 	}
 
@@ -501,17 +501,6 @@ func (p *InstrumentedProvider) ChatStream(ctx context.Context, messages []llmtyp
 	return resp, nil
 }
 
-const maxPreviewRunes = 200
-
-// truncatePreview bounds content exported to observability backends.
-func truncatePreview(content string) string {
-	runes := []rune(content)
-	if len(runes) <= maxPreviewRunes {
-		return content
-	}
-	return string(runes[:maxPreviewRunes]) + "…"
-}
-
 // lastUserMessagePreview returns a bounded preview of the last user message.
 // For multi-modal messages it concatenates text blocks, skipping image blocks.
 func lastUserMessagePreview(messages []llmtypes.Message) string {
@@ -521,7 +510,7 @@ func lastUserMessagePreview(messages []llmtypes.Message) string {
 			continue
 		}
 		if m.Content != "" {
-			return truncatePreview(m.Content)
+			return observability.TruncateContent(m.Content)
 		}
 		var parts []string
 		for _, b := range m.ContentBlocks {
@@ -529,7 +518,7 @@ func lastUserMessagePreview(messages []llmtypes.Message) string {
 				parts = append(parts, b.Text)
 			}
 		}
-		return truncatePreview(strings.Join(parts, " "))
+		return observability.TruncateContent(strings.Join(parts, " "))
 	}
 	return ""
 }

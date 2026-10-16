@@ -776,6 +776,12 @@ The `OTelTracer` follows the same best-effort strategy as `HawkTracer`:
 
 The redaction function operates on a copy so exporting a span does not mutate the caller-owned span or event attributes.
 
+### Content Bounds
+
+Message, response and recall-query previews are bounded where they are recorded, by `observability.TruncateContent`, before they become span attributes: the first `MaxContentLength()` runes are kept and `…` is appended. The default is 200 runes for every tracer. When OTLP export is selected, `observability.otlp_max_content_length` replaces the bound process-wide at startup (0 keeps content whole); embedded-only deployments keep the default.
+
+Bounding at the source rather than in `EndSpan` keeps one limit for every consumer of the span (OTLP export, the embedded store, and exporters attached to `EmbeddedTracer`). Redaction still runs at export on whatever length was recorded, so raising the bound increases the text the PII patterns scan but does not bypass them.
+
 ### Transport Security
 
 - HTTPS is strongly recommended for the `otlp_endpoint` in any non-local deployment

@@ -1935,19 +1935,6 @@ func hasTextBlock(blocks []ContentBlock) bool {
 	return false
 }
 
-// maxPreviewLen is the maximum number of runes recorded in span preview attributes
-// to avoid bloating OTLP traces with large message bodies.
-const maxPreviewLen = 200
-
-// truncatePreview returns up to maxPreviewLen runes of s, appending "…" when truncated.
-func truncatePreview(s string) string {
-	runes := []rune(s)
-	if len(runes) <= maxPreviewLen {
-		return s
-	}
-	return string(runes[:maxPreviewLen]) + "…"
-}
-
 // chat runs the full conversation lifecycle — span setup, user-message
 // persistence, graph-memory kick-off, the conversation loop, and success/error
 // telemetry — shared by the three public chat entry points. See chatParams for
@@ -1994,7 +1981,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// Set initial attributes
 	span.SetAttribute(observability.AttrSessionID, sessionID)
 	span.SetAttribute("message.length", len(userMessage))
-	span.SetAttribute("message.preview", truncatePreview(userMessage))
+	span.SetAttribute("message.preview", observability.TruncateContent(userMessage))
 	if p.reportContentBlocks {
 		span.SetAttribute("message.content_blocks", len(p.contentBlocks))
 	}
@@ -2270,7 +2257,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	span.SetAttribute("conversation.cost.usd", response.TurnUsage.CostUSD)
 	span.SetAttribute("conversation.stop_reason", response.Metadata["stop_reason"])
 	span.SetAttribute("response.length", len(response.Content))
-	span.SetAttribute("response.preview", truncatePreview(response.Content))
+	span.SetAttribute("response.preview", observability.TruncateContent(response.Content))
 
 	// Check if we hit limits
 	if maxTurnsHit, ok := response.Metadata["max_turns_hit"].(bool); ok && maxTurnsHit {
@@ -4222,7 +4209,7 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 		outcome = "no_query"
 		return
 	}
-	span.SetAttribute("recall.query", truncatePreview(searchQuery))
+	span.SetAttribute("recall.query", observability.TruncateContent(searchQuery))
 
 	// Gather candidate memories from multiple sources.
 	seen := make(map[string]bool)
