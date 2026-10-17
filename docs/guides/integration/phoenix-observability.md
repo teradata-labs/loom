@@ -203,9 +203,26 @@ Run this after changing Loom's tracing code or the Phoenix version. Use a three-
 7. With the research preset, `observability.db` has one `eval_runs` row per finished span, and after a clean shutdown its `evals` row is `completed`.
 8. A judge evaluation with the turn's `traceId` (Task 3) shows the `loom.*` annotations on that trace.
 
+### Last run
+
+2026-10-16, Loom built from `feat/phoenix-observability` merged with `feat/agent-tools-none` and `fix/extraction-without-cancel`; Phoenix 20.22.0 (pip, SQLite) on Windows; Bedrock Claude Sonnet 4.5; `otlp-phoenix-research.yaml` settings (32768-rune previews, `otlp_record_eval_runs`, `phoenix_base_url`). Five turns on one session: turn 2 read a file with `file_read`, turn 4 ran while Phoenix was stopped.
+
+| # | Result |
+| --- | --- |
+| 1 | ✅ Every `traceId` is 32-hex. Turns 1, 2 and 5 are complete traces in Phoenix (18, 52 and 31 spans). |
+| 2 | ✅ Turn 2 matches the tree above: `graph_memory.recall` RETRIEVER (with its `memory_query` LLM call), `llm.completion` agent, `agent.tool_execution` TOOL, `graph_memory.extract` CHAIN with its `memory_extract` LLM call and `sqlite.graph_memory.*` store spans, all under `agent.conversation_loop`. The builtin `file_read` runs in-process, so the tool span has no children. No orphan in any complete trace. |
+| 3 | ✅ Phoenix's session totals equal the sum of the `llm.completion` spans: 26,243 / 1,146 prompt / completion tokens for the session, 1,363 / 105 for a zero-tool agent, 35,698 / 5,623 for a Mastermind game. No non-LLM span carries token counts. |
+| 4 | ✅ `input.value` and `output.value` on 12 of 12 `agent.chat`, 55 of 55 `llm.completion` and the tool span; recall spans have `input.value` on all 13 and `output.value` on the 7 that injected memories. Longest value 12,029 runes, under the 32,768 bound. |
+| 5 | ✅ The complete traces share `session.id`; only `server.Weave` and `agent.chat` carry it. |
+| 6 | ✅ Turn 4 answered in 5.9 s with Phoenix stopped (turns 1, 3 and 5: 5.7 s median), no error in the server log; turn 5 exported completely after the restart. ⚠️ Spans in flight when Phoenix stopped were dropped, not re-sent: all of turn 4 and the unflushed part of turn 3 (its `server.Weave` and `agent.chat`), so Phoenix shows the session with three traces. The server log has no warning for the failed exports. |
+| 7 | ✅ `eval_runs` holds every span Phoenix received (339 of 339 span IDs) plus 47 it never received, including turn 4; the `evals` row is `completed` after shutdown. `analyze_mastermind.py --compare-batches --observability-db --loom-db` and the `trace_scripts` session and turn queries ran on a one-game Mastermind run recorded this way and on a second game recorded with `mode: embedded`, with the same columns; turns of the same shape count the same calls (one agent call plus memory query, rerank and extract). ⚠️ Both scripts assign rows to turns by position: the LLM calls of the server's startup skills-index rebuild (`llm.role = skills_router`) landed inside the first session's range and were counted as agent calls. The rows carry `llm.role`, which the scripts do not read yet. |
+| 8 | ✅ `loom.overall`, `loom.correctness`, `loom.completeness`, `loom.quality` and `loom.safety` (LLM annotator) on turn 2's trace; a CODE session annotation on the session. |
+
+Also checked: an agent created through the API with `tools: {none: true}` and graph memory on made three LLM calls with `loom.llm.tools.count = 0` and no TOOL span. Its reply still named artifact tools, taken from the ROM text in its system prompt; experiment agents should keep `rom: none`. Each server start also exports its skills-index rebuild LLM calls (`loom.llm.role = skills_router`) without their parent span.
+
 ## VM Rollout
 
-📋 Not run yet. Planned layout: Phoenix and PostgreSQL in Docker on a private network, Phoenix reachable only on the VM's loopback address, and the workstation connecting through an SSH tunnel.
+📋 Not run yet. The build for it exists (the merge above, built with `go build -tags fts5` for `linux/amd64` with `CGO_ENABLED=0`; record its commit and SHA-256 with the run). Planned layout: Phoenix and PostgreSQL in Docker on a private network, Phoenix reachable only on the VM's loopback address, and the workstation connecting through an SSH tunnel. Back up the Loom databases and the previous binary and configuration first, and do not restart Loom while an experiment is running.
 
 ```bash
 docker network create phoenix-net
