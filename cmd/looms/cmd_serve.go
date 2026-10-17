@@ -3339,13 +3339,17 @@ func runServe(cmd *cobra.Command, args []string) {
 			agentOpts = append(agentOpts, agent.WithIdentityResolver(postgres.UserIDFromContext))
 			agentOpts = append(agentOpts, agent.WithEventLog(executionLog))
 
-			// Wrap LLM provider with instrumentation for observability
+			// Wrap LLM provider with instrumentation for observability. A
+			// reload-local variable keeps the shared llmProvider unwrapped:
+			// assigning the wrapper back to it made every later reload and
+			// every later use of llmProvider see an agent-role wrapper.
+			reloadLLM := llmProvider
 			if tracer != nil {
-				llmProvider = llm.NewInstrumentedProvider(llmProvider, tracer, llm.WithRole(llm.RoleAgent))
+				reloadLLM = llm.NewInstrumentedProvider(reloadLLM, tracer, llm.WithRole(llm.RoleAgent))
 			}
 
 			// Create new agent
-			newAgent := agent.NewAgent(backend, llmProvider, agentOpts...)
+			newAgent := agent.NewAgent(backend, reloadLLM, agentOpts...)
 
 			// Wire pattern effectiveness tracker for metrics collection
 			if patternTracker != nil {

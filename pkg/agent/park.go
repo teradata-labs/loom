@@ -1120,6 +1120,7 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	// recovering the SAME index is what makes the resume rebind to the task the
 	// parked half recorded instead of describing a different turn.
 	turnIndex, turnUserMessage := parkedTurnIdentity(sess)
+	span.SetAttribute("session.turn", turnIndex)
 
 	batch, rowless, positions, err := locateParkedBatch(sess, itemIDs)
 	if err != nil {
@@ -1540,8 +1541,11 @@ func (a *Agent) completeParkedBatch(ctx Context, sess *Session, batch Message, r
 	var resumeExecs []ToolExecution
 	tools := a.advertisedTools(sess)
 	var recovery *recoveryOrchestrator
-	_, span := ctx.Tracer().StartSpan(ctx, "agent.resume_batch")
+	batchCtx, span := ctx.Tracer().StartSpan(ctx, "agent.resume_batch")
 	defer ctx.Tracer().EndSpan(span)
+	// Tool executions of the resumed batch nest under agent.resume_batch, as
+	// a normal turn's nest under agent.conversation_loop.
+	ctx = withSpanContext(ctx, batchCtx)
 	if a.config.EnableSelfHealing {
 		recovery = newRecoveryOrchestrator(a.config.RecoveryConfig, span)
 	}

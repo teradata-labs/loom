@@ -163,7 +163,7 @@ func TestEvalRunRecorder_CloseWaitsForInFlightRecord(t *testing.T) {
 	<-closed
 
 	ev := g.eventLog()
-	if run, calc, cl := indexOf(ev, "create_eval_run"), indexOf(ev, "calculate_metrics"), indexOf(ev, "close"); !(run < calc && calc < cl) {
+	if run, calc, cl := indexOf(ev, "create_eval_run"), indexOf(ev, "calculate_metrics"), indexOf(ev, "close"); run >= calc || calc >= cl {
 		t.Fatalf("want the in-flight row, then the final metrics, then storage close; got %v", ev)
 	}
 }
