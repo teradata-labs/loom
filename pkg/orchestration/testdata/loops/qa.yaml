@@ -1,0 +1,92 @@
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: qa
+  description: Generated from the qa LoopSpec — do not edit by hand.
+spec:
+  type: state-machine
+  entry_state: REFERENCE
+  loopback_states:
+    - PLAN
+    - PLAN_CHECK
+    - REFERENCE
+    - REF_CHECK
+  states:
+    DELTA:
+      tool:
+        name: delta
+      vocab:
+        - changed
+        - nothing
+      route:
+        changed: PLAN
+        nothing: VERDICT
+    FAN_REPOS:
+      tool:
+        name: fan-repos
+      vocab:
+        - fanned
+        - stuck
+      route:
+        fanned: VERDICT
+        stuck: ESCALATED
+    PLAN:
+      agent:
+        agent_id: planner
+        instructions: plan
+      vocab:
+        - bounce
+        - planned
+      route:
+        planned: PLAN_CHECK
+    PLAN_CHECK:
+      agent:
+        agent_id: plan_checker
+        instructions: plan-check
+      vocab:
+        - revise
+        - sound
+      route:
+        revise:
+          next_tool:
+            name: "advance:replan"
+        sound: FAN_REPOS
+    REFERENCE:
+      agent:
+        agent_id: ref_extractor
+        instructions: extract-reference
+      vocab:
+        - extracted
+        - none
+      route:
+        extracted: REF_CHECK
+        none: DELTA
+    REF_CHECK:
+      agent:
+        agent_id: ref_checker
+        instructions: reference-check
+      vocab:
+        - revise
+        - sound
+      route:
+        revise: REFERENCE
+        sound: DELTA
+    VERDICT:
+      tool:
+        name: verdict
+      vocab:
+        - clear
+        - escalate
+        - open
+      route:
+        clear: ASSURED
+        escalate: ESCALATED
+        open:
+          next_tool:
+            name: "advance:open"
+    ASSURED:
+      terminal: true
+    DELTAS:
+      terminal: true
+    ESCALATED:
+      terminal: true

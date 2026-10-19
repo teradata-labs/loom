@@ -102,16 +102,17 @@ func TestPark_ConcurrentResumesExecuteTheBatchOnce(t *testing.T) {
 
 	// Exactly one resume may succeed; the other must say so rather than
 	// silently returning success for work it did not do. Which terminal the
-	// loser gets depends on where it lost — refused at the claim
-	// (ErrUnknownRequest), or arriving after the winner finished the turn
-	// (ErrNothingParked). Both are correct refusals; silence is not.
+	// loser gets depends on where it lost — refused at the turn claim
+	// (ErrSessionBusy), at the request claim (ErrUnknownRequest), or arriving
+	// after the winner finished the turn (ErrNothingParked). All are correct
+	// refusals; silence is not.
 	succeeded := 0
 	for i, e := range errs {
 		if e == nil {
 			succeeded++
 			continue
 		}
-		if !errors.Is(e, ErrUnknownRequest) && !errors.Is(e, ErrNothingParked) {
+		if !errors.Is(e, ErrSessionBusy) && !errors.Is(e, ErrUnknownRequest) && !errors.Is(e, ErrNothingParked) {
 			t.Errorf("resume %d failed with %v, want nil or a terminal refusal", i, e)
 		}
 	}

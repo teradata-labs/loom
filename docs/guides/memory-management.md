@@ -372,7 +372,7 @@ memory:
 **Default behavior:**
 - Max L1 messages: 8 (~6400 tokens at 800 tokens/message)
 - Min L1 messages: 4 (minimum preserved for recency)
-- Thresholds: 60%/75% (changed from 70%/85%)
+- Thresholds: 60%/90% (balanced profile water marks)
 - Max tool results in kernel: 5
 
 These changes provide better compression defaults while maintaining reasonable context preservation.

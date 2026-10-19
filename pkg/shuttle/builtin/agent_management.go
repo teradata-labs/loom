@@ -746,7 +746,7 @@ func (t *AgentManagementTool) executeDelete(ctx context.Context, configType stri
 // here so create/update tool validation doesn't false-flag them.
 var autoInjectedOrSpecialTools = map[string]bool{
 	"tool_search": true, "task_board": true, "graph_memory": true, "workspace": true,
-	"query_tool_result": true, "recall": true, "manage_ephemeral_agents": true,
+	"recall": true, "manage_ephemeral_agents": true,
 }
 
 // declaredBuiltinTools extracts the builtin tool names from an agent spec,

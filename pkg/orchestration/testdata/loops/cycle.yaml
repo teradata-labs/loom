@@ -1,0 +1,78 @@
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: cycle
+  description: Generated from the cycle LoopSpec — do not edit by hand.
+spec:
+  type: state-machine
+  entry_state: STAGE
+  states:
+    DEV:
+      tool:
+        name: DEV
+      vocab:
+        - built
+        - failed
+        - gate
+      route:
+        built: TEST
+    MERGE:
+      tool:
+        name: MERGE
+      vocab:
+        - failed
+        - gate
+        - merged
+      route:
+        merged: QA
+    PLAN:
+      tool:
+        name: PLAN
+      vocab:
+        - failed
+        - gate
+        - planned
+      route:
+        planned: DEV
+    QA:
+      tool:
+        name: QA
+      vocab:
+        - assured
+        - failed
+        - gate
+      route:
+        assured: RELEASE
+    RELEASE:
+      tool:
+        name: RELEASE
+      vocab:
+        - failed
+        - gate
+        - released
+      route:
+        released: DONE
+    STAGE:
+      tool:
+        name: STAGE
+      vocab:
+        - failed
+        - gate
+        - staged
+      route:
+        staged: PLAN
+    TEST:
+      tool:
+        name: TEST
+      vocab:
+        - failed
+        - gate
+        - tested
+      route:
+        tested: MERGE
+    BOUNCED:
+      terminal: true
+    DONE:
+      terminal: true
+    ESCALATED:
+      terminal: true

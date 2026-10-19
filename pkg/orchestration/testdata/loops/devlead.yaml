@@ -1,0 +1,167 @@
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: devlead
+  description: Generated from the devlead LoopSpec — do not edit by hand.
+spec:
+  type: state-machine
+  entry_state: P_CREATE
+  loopback_states:
+    - DELIVER_TASK
+    - EXCEPTION
+    - P_CREATE
+    - P_REVIEW
+    - TASK_ACCEPT
+    - VERIFY
+  bubble_signals:
+    - hitl
+  signal_fields:
+    bounce:
+      - problem
+    escalate:
+      - problem
+    redesign:
+      - problem
+  states:
+    CHECK_EPIC_TESTS:
+      agent:
+        agent_id: test_lead
+        instructions: check-epic-tests
+      vocab:
+        - converged
+        - deltas
+      route:
+        converged:
+          next_state: VERIFY
+          hook:
+            name: epic-tests=commit
+        deltas: WRITE_EPIC_TESTS
+    DELIVER_TASK:
+      tool:
+        name: deliver-task
+      vocab:
+        - delivered
+        - failed
+        - hitl
+        - skipped
+      route:
+        delivered:
+          next_state: TASK_ACCEPT
+          checkpoint: true
+        failed: EXCEPTION
+        skipped:
+          next_tool:
+            name: "advance:tasks"
+    EXCEPTION:
+      agent:
+        agent_id: devlead
+        instructions: handle-exception
+      vocab:
+        - escalate
+        - redesign
+        - replan
+        - resolved
+      route:
+        replan: P_CREATE
+        resolved: DELIVER_TASK
+    PLAN_EPIC_TESTS:
+      agent:
+        agent_id: test_lead
+        instructions: plan-epic-tests
+      vocab:
+        - bounce
+        - no-change
+        - planned
+      route:
+        no-change: VERIFY
+        planned: WRITE_EPIC_TESTS
+    PUBLISH:
+      tool:
+        name: publish
+      vocab:
+        - published
+      route:
+        published:
+          next_state: DELIVER_TASK
+          hook:
+            name: task=first
+    P_CREATE:
+      agent:
+        agent_id: devlead
+        instructions: plan-create
+      vocab:
+        - bounce
+        - planned
+      route:
+        planned: P_REVIEW
+    P_REVIEW:
+      agent:
+        agent_id: plan_reviewer
+        instructions: plan-review
+      vocab:
+        - bounce
+        - converged
+        - deltas
+      route:
+        converged: PUBLISH
+        deltas: P_CREATE
+    TASK_ACCEPT:
+      agent:
+        agent_id: devlead
+        instructions: accept-task
+      vocab:
+        - accepted
+        - bounce
+        - refined
+        - replan
+        - task-deltas
+      route:
+        accepted:
+          next_tool:
+            name: "advance:tasks"
+        refined: P_REVIEW
+        replan: P_CREATE
+        task-deltas:
+          next_state: DELIVER_TASK
+          hook:
+            name: task=fix
+    VALIDATE:
+      tool:
+        name: validate
+      vocab:
+        - env
+        - validated
+      route:
+        validated: PLAN_EPIC_TESTS
+    VERIFY:
+      tool:
+        name: triage
+      vocab:
+        - bubble
+        - env
+        - fix
+        - pass
+      route:
+        fix:
+          next_state: DELIVER_TASK
+          hook:
+            name: task=first
+        pass:
+          next_state: DONE
+          dismiss:
+            - "*"
+          checkpoint: true
+    WRITE_EPIC_TESTS:
+      agent:
+        agent_id: feature_tester
+        instructions: write-epic-tests
+      vocab:
+        - tests-ready
+      route:
+        tests-ready: CHECK_EPIC_TESTS
+    BOUNCED:
+      terminal: true
+    DONE:
+      terminal: true
+    ESCALATED:
+      terminal: true

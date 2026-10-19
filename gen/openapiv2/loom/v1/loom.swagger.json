@@ -4156,6 +4156,27 @@
       },
       "description": "AgentResult represents the output from a single agent in a workflow."
     },
+    "v1AgentState": {
+      "type": "object",
+      "properties": {
+        "agentId": {
+          "type": "string"
+        },
+        "instructions": {
+          "type": "string",
+          "description": "What the seat is to do in this state. Sent the first time the seat enters\nthe state in its conversation; a return to the state carries only what came\nback, because the conversation already holds these instructions."
+        },
+        "sessionKeySuffix": {
+          "type": "string",
+          "description": "Optional session discriminator template, e.g. \"{suite}\". One role fanned\nacross surfaces is several conversations, not one."
+        },
+        "forkOf": {
+          "type": "string",
+          "description": "The seat of this run whose conversation this seat continues, by agent id:\na test architect that thinks on from the creator's design. The spec says\nit, because which mind a seat carries is the loop's shape, not a word a\nseat emits. A run var \"fork:\u003cagent_id\u003e\" naming a session takes precedence."
+        }
+      },
+      "description": "An agent turn."
+    },
     "v1AgentTask": {
       "type": "object",
       "properties": {
@@ -5062,6 +5083,49 @@
       ],
       "default": "DECOMPOSE_STRATEGY_UNSPECIFIED",
       "description": "DecomposeStrategy controls how the LLM decomposes a goal.\n\n - DECOMPOSE_STRATEGY_BACKWARD: Walk backward from the goal to prerequisites (beads model).\n - DECOMPOSE_STRATEGY_FORWARD: Plan sequentially from current state toward the goal.\n - DECOMPOSE_STRATEGY_PARALLEL: Maximize tasks that can run concurrently."
+    },
+    "v1DelegateState": {
+      "type": "object",
+      "properties": {
+        "workflow": {
+          "$ref": "#/definitions/v1WorkflowPattern",
+          "description": "The workflow each child runs, written into the state. A state gives this\nor workflow_name."
+        },
+        "workflowName": {
+          "type": "string",
+          "description": "The workflow each child runs, by name. The engine asks its host for the\nworkflow of that name each time the state is entered, so the child that\nruns is the one defined then."
+        },
+        "itemsKey": {
+          "type": "string",
+          "description": "The field on the signal line of the seat before this state that names\nwhat to delegate over: a comma-separated list of items, or a JSON array of\n{\"item\": …, \"dir\": …} entries when each child works somewhere of its own.\nA list arriving with a transition into this state is a fresh walk; a\nre-entry without one continues the walk in progress. Empty delegates once."
+        },
+        "dirTemplate": {
+          "type": "string",
+          "description": "Each child's directory, relative to the parent's. \"{item}\" interpolates.\nEmpty runs the child in the parent's own directory."
+        },
+        "maxParallel": {
+          "type": "integer",
+          "format": "int32",
+          "description": "How many children run at once. 0 = all of them."
+        },
+        "minBudgetUsd": {
+          "type": "number",
+          "format": "double",
+          "description": "The least a child may be given. The parent's unspent balance is divided\nbetween the children that still have to run; below this floor the engine\nsays so rather than starving a child into failing halfway."
+        },
+        "vars": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "What every child of this state is told beside what it inherits: the\nconstants that make this delegation the particular one it is — which\nenvironment a verification proves, which suite. A child also always\nreceives its own item as `item`."
+        },
+        "step": {
+          "type": "boolean",
+          "description": "Walk the list one entry at a time and end after each: the signal is\n\"stepped\" with that entry's outcome as the message, and re-entering the\nstate runs the next entry. When nothing is left the state ends \"fanned\".\nA serial list whose every entry is judged by the state after it."
+        }
+      },
+      "description": "Delegate to another workflow.\n\nOne child or a hundred is the same step: a single child is a set of one.\nBuilding the single case on its own is what hides the questions a set asks —\nwhich items are in play, where each runs, what each may spend, and what they\nall finished as — and every one of those is the parent's own state, not\nsomething a tool could answer.\n\nDelegation is re-enterable. A child already at its terminal is not run again,\nso a second round costs only what actually moved, and a parent resumed after\na park does not redo its finished children."
     },
     "v1DeleteAgentResponse": {
       "type": "object",
@@ -8662,6 +8726,17 @@
       },
       "description": "SharedMemoryValue represents a versioned value in shared memory.\nSupports optimistic concurrency control via version field."
     },
+    "v1SignalFields": {
+      "type": "object",
+      "properties": {
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
     "v1SkillBinding": {
       "type": "object",
       "properties": {
@@ -8911,6 +8986,65 @@
       "default": "SPAWN_TRIGGER_TYPE_UNSPECIFIED",
       "description": "- CONSENSUS_NOT_REACHED: Spawn when consensus is not reached in debate/swarm\n - CONFIDENCE_BELOW: Spawn when average confidence falls below threshold\n - TIE_DETECTED: Spawn when voting results in a tie\n - ESCALATION_REQUESTED: Spawn when agent explicitly requests escalation\n - ALWAYS: Spawn unconditionally (for testing)\n - CUSTOM: Custom condition evaluated at runtime",
       "title": "SpawnTriggerType enumerates trigger conditions"
+    },
+    "v1StateMachinePattern": {
+      "type": "object",
+      "properties": {
+        "entryState": {
+          "type": "string",
+          "description": "Where the walk begins. Must name a key in states."
+        },
+        "states": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/v1WorkflowState"
+          },
+          "description": "The graph. Keys are state names; they are the routing vocabulary's targets."
+        },
+        "maxTransitions": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Safety bound on how many times a loopback state may be re-entered\n(default: 100). Exceeding it suspends with MAX_TRANSITIONS so a graph that\nis turning without converging parks for a human rather than running forever."
+        },
+        "loopbackStates": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "States whose re-entry counts toward that bound. A run that legitimately\nwalks two hundred states is not stalling; a plan revised six times is, and\nonly the states in a cycle can tell the difference. Empty = every state."
+        },
+        "maxCostUsd": {
+          "type": "number",
+          "format": "double",
+          "description": "Cumulative USD ceiling across the whole walk. 0 = uncapped. Exceeding it\nsuspends with COST_CAP."
+        },
+        "bubbleSignals": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Signals that park immediately and bubble to the OWNING scope when this\nmachine runs as a nested body. Whoever started the run decides them; the\nrun itself must not, and no inline handler is consulted."
+        },
+        "dir": {
+          "type": "string",
+          "description": "The working directory this run acts on. The world a process operates on is\na directory: tool states run in it, and a child run gets one beneath it."
+        },
+        "agentDir": {
+          "type": "string",
+          "description": "The directory this machine's agent states work in: where an agent's\ncommands start and its relative paths resolve, and what each of its steps\nis told. Written with the run's variables ({loom_dir} is the run's own\ndirectory); a relative value is beneath the run's directory. Empty leaves\nan agent where it was built."
+        },
+        "logicSeat": {
+          "type": "string",
+          "description": "The state that is this machine's manager: where a step that cannot go on\nis sent, and from where the machine is sent back to a step by its name.\nAn agent step's escalation and a single child machine's every end but done\ngo to it unless the step routes them itself; its own escalation is the\nonly way anything leaves the machine. Empty for a machine with none."
+        },
+        "signalFields": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/v1SignalFields"
+          },
+          "description": "signal -\u003e the payload fields that signal must carry. A signal arriving\nwithout them is an answer the machine cannot use: it goes back to the\nagent once, naming what is missing, and still without them it is the\nstep's escalation."
+        }
+      }
     },
     "v1StepResult": {
       "type": "object",
@@ -9853,6 +9987,23 @@
       },
       "description": "ToolPrerequisite describes a requirement for using the tool."
     },
+    "v1ToolState": {
+      "type": "object",
+      "properties": {
+        "tool": {
+          "type": "string",
+          "description": "Tool name in the registry."
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Arguments. Values interpolate against the run's own state, so a parameter\ncan name whichever surface or task is active now."
+        }
+      },
+      "description": "A tool invocation: work that needs no judgement.\n\nIt goes through the same executor an agent's tool calls go through — same\nregistry, same admission chain, same sandbox, same audit. A model is upstream\nof that door, not part of it, so a walker can go through it without asking\nanyone. A second execution path would be a second idea of what is permitted."
+    },
     "v1ToolUseCase": {
       "type": "object",
       "properties": {
@@ -9978,6 +10129,39 @@
         }
       },
       "description": "Trace contains execution trace for observability."
+    },
+    "v1Transition": {
+      "type": "object",
+      "properties": {
+        "nextState": {
+          "type": "string",
+          "description": "A state name in StateMachinePattern.states."
+        },
+        "nextTool": {
+          "$ref": "#/definitions/v1ToolState",
+          "description": "A tool that computes the destination from run state — walking a task\nDAG, bounded replans, aggregation. Its signal is the next state's name,\nvalidated against states before the move: deterministic is not trusted."
+        },
+        "dismiss": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Agent sessions to end on this edge, resetting their context. \"*\" ends all\nof them; \"{suite}\" is interpolated from run variables. Dismissal is what\nbounds session growth across an unbounded walk."
+        },
+        "hook": {
+          "$ref": "#/definitions/v1ToolState",
+          "description": "Side effect fired before the move, as a tool call."
+        },
+        "checkpoint": {
+          "type": "boolean",
+          "description": "Write a checkpoint before the move. The engine's own, not a tool: it\ncaptures the sessions a resumed run will still find, which is why it\nhappens before any dismissal on the same edge."
+        },
+        "enter": {
+          "type": "string",
+          "description": "Where the child loop of the state this edge enters takes up, when that\nchild ran to done before: the step named here, which runs its last child\nagain. A delivered piece of work sent back is taken up at its proof, not\nwalked again from its first step."
+        }
+      },
+      "description": "An edge. Deterministic work fires before the move; the destination may be a\nnamed state or computed by the host."
     },
     "v1UIApp": {
       "type": "object",
@@ -10507,6 +10691,9 @@
         "iterative": {
           "$ref": "#/definitions/v1IterativeWorkflowPattern"
         },
+        "stateMachine": {
+          "$ref": "#/definitions/v1StateMachinePattern"
+        },
         "workflowId": {
           "type": "string",
           "description": "Stable workflow ID for session determinism across scheduled executions.\nIf set, executors use this as the workflowID prefix instead of generating a random UUID.\nThis makes agent session IDs deterministic (e.g., \"{workflow_id}-stage1-{agent_id}\"),\nenabling conversation continuity across cron ticks.\nIf empty, executors generate a random UUID (default behavior)."
@@ -10618,6 +10805,45 @@
         }
       },
       "description": "WorkflowResult contains the execution results from a workflow pattern."
+    },
+    "v1WorkflowState": {
+      "type": "object",
+      "properties": {
+        "agent": {
+          "$ref": "#/definitions/v1AgentState",
+          "description": "An agent turn. The only body that costs tokens."
+        },
+        "tool": {
+          "$ref": "#/definitions/v1ToolState",
+          "description": "Work that needs no judgement — publish, deliver, validate, deploy, or\nstarting a child run. Free, reproducible, and the dominant state kind in\na real process."
+        },
+        "delegate": {
+          "$ref": "#/definitions/v1DelegateState",
+          "description": "Hand the work to another workflow — once, or once per item."
+        },
+        "route": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/v1Transition"
+          },
+          "description": "signal -\u003e transition. The keys ARE the legal signal vocabulary: a signal\nabsent from this map is unroutable by definition, which is what makes\n\"escalate to a human\" decidable rather than a judgement call."
+        },
+        "hitlGate": {
+          "$ref": "#/definitions/v1HITLGate",
+          "description": "Optional human gate evaluated after the body, before routing."
+        },
+        "terminal": {
+          "type": "boolean",
+          "description": "Terminal states end the run and return their output. route is ignored."
+        },
+        "vocab": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Signals this state may legitimately emit. Empty = the route keys.\n\nThe distinction from route matters. A signal OUTSIDE this set is a\nmalfunction — the worker ended without a usable signal — and earns one\nretry naming the legal ones. A signal INSIDE it but absent from route is\ndeliberate egress: the state judged its own situation and chose to\nescalate, and retrying that would only loop the judgement."
+        }
+      }
     },
     "v1WorkflowSummary": {
       "type": "object",

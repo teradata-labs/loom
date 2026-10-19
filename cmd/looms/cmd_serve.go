@@ -120,7 +120,7 @@ func toolsNoneActive() bool {
 //	                    (the two progressive-disclosure tools that previously
 //	                    over-coupled to subsystem wiring)
 //	tools.none=true    → also suppress the retrieval tools
-//	                    (query_tool_result, recall) and the agent-coupling tools
+//	                    (recall) and the agent-coupling tools
 //	                    wired by MultiAgentServer.prepareAgent /
 //	                    UpdateAgent (send_message, publish,
 //	                    shared_memory_read, shared_memory_write).
@@ -133,8 +133,7 @@ func builtinToolsToSuppress() []string {
 	suppressed := []string{"graph_memory", "task_board"}
 	if toolsNoneActive() {
 		suppressed = append(suppressed,
-			// Retrieval tools registered by default at agent construction.
-			"query_tool_result",
+			// Retrieval tool registered by default at agent construction.
 			"recall",
 			// Communication + presentation tools wired by builtin.CommunicationTools,
 			// which MultiAgentServer.prepareAgent / UpdateAgent register on every

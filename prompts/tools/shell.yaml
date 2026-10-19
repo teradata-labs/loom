@@ -5,50 +5,32 @@ namespace: loom.shell
 prompts:
   - id: shell_execute
     content: |
-      Execute shell commands to interact with the filesystem, run programs, and perform system operations.
-      Provides full access to the command line with streaming output and error handling.
+      Run shell commands. One call can run up to 5: pass `commands` (an
+      array) and they run in PARALLEL, each in its own shell — `cd` and
+      variables do NOT carry between them, so use `working_dir`, absolute
+      paths, or chain with `&&` inside a single command. The result is one
+      text with a `== label ==` section per command, always in the order you
+      listed them. A failing command is an `ERROR: exit N` section and the
+      others still run.
 
-      Prefer file_read for reading and searching files, and file_write/edit_files
-      for changing them; use shell for everything else.
+      Reading code is a batch. Locate, then read the regions you need,
+      across several files, in one call:
+        commands: [
+          {"command": "grep -n 'def run_handlers\|_pending_handler' lib/ansible/plugins/strategy/__init__.py", "label": "locate"},
+          {"command": "sed -n '300,420p' lib/ansible/executor/play_iterator.py", "label": "play_iterator 300-420"},
+          {"command": "sed -n '40,120p' lib/ansible/playbook/handler.py", "label": "handler 40-120"}
+        ]
+      Read a region rather than a whole file unless the file is small; what
+      you read stays in context while you work on it.
 
-      Use this tool to:
-      - Execute scripts and programs
-      - Interact with git, dbt, npm, docker, and other tools
-      - Process files with standard Unix utilities
-      - Chain commands with pipes and redirects
+      Each command's output is guaranteed a byte budget (default 64K, or its
+      own `max_output_bytes`). A cut section says how many bytes were cut and
+      how to narrow.
 
-      Features:
-      - Streaming output (see results as they arrive)
-      - Separate stdout and stderr capture
-      - Exit code reporting
-      - Working directory persistence across commands
-      - Environment variable support
+      Independent work is a batch: several greps, git status and diff.
+      Dependent steps chain with `&&` inside one command: build && test.
 
-      Best practices:
-      - Use absolute paths when possible
-      - Quote paths with spaces (e.g., "path with spaces/file.txt")
-      - Check exit codes before assuming success
-      - Use && to chain dependent commands
-      - Use ; to run commands sequentially regardless of errors
-
-      Common patterns:
-      - File operations: cat file.txt, echo "content" > file.txt
-      - Git operations: git status, git add ., git commit -m "message"
-      - Docker: docker ps, docker logs container_id
-      - Process management: ps aux | grep process, kill -9 PID
-      - File search: find . -name "*.go" -type f
-
-      Safety:
-      - Commands run with your user permissions
-      - No sudo/elevation by default
-      - Sensitive paths (like /etc) may be restricted
-      - Long-running commands may timeout
-
-      Examples:
-      - List files: shell_execute(command="ls -la")
-      - Git status: shell_execute(command="git status")
-      - Read file: shell_execute(command="cat README.md")
-      - Chain commands: shell_execute(command="cd src && go test ./...")
+      Single command: `command`. Working directory: `working_dir`.
 
     tags:
       - tool

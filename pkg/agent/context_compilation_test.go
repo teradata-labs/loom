@@ -35,23 +35,23 @@ import (
 func TestTruncateToolRowContent_Bounds(t *testing.T) {
 	threshold := 1024
 	content := strings.Repeat("x", 5000)
-	stored := truncateToolRowContent(content, threshold)
+	stored := truncateToolRowContent(content, threshold, "")
 	require.LessOrEqual(t, len(stored), threshold,
 		"a truncated row must never itself exceed the threshold (§4.1)")
-	assert.True(t, strings.HasSuffix(stored, "Re-run the call above if this data is needed again.]"),
+	assert.True(t, strings.HasSuffix(stored, "and re-run to see more.]"),
 		"the normative tail closes the stored row")
 	assert.Contains(t, stored, "of 5000 bytes shown")
 	// Below the bound: unchanged.
 	small := strings.Repeat("y", 100)
-	assert.Equal(t, small, truncateToolRowContent(small, threshold))
+	assert.Equal(t, small, truncateToolRowContent(small, threshold, ""))
 	// At the bound exactly: unchanged (stored = threshold is legal).
 	exact := strings.Repeat("z", threshold)
-	assert.Equal(t, exact, truncateToolRowContent(exact, threshold))
+	assert.Equal(t, exact, truncateToolRowContent(exact, threshold, ""))
 }
 
 func TestTruncateToolRowContent_RuneBoundary(t *testing.T) {
 	content := strings.Repeat("é", 4000) // 2-byte runes
-	stored := truncateToolRowContent(content, 1024)
+	stored := truncateToolRowContent(content, 1024, "")
 	require.LessOrEqual(t, len(stored), 1024)
 	core := stored[:strings.LastIndex(stored, "[truncated: ")]
 	assert.True(t, strings.HasSuffix(core, "é") || core == "",
@@ -78,36 +78,12 @@ func newCompileMemory(t *testing.T) *SegmentedMemory {
 	return sm
 }
 
-func TestCompile_OffloadStubForCurrentTurnOversizeResult(t *testing.T) {
-	sm := newCompileMemory(t)
-	big := strings.Repeat("d", 5000)
-	sm.AddMessage(context.Background(), Message{Role: "user", Content: "q", Turn: 1})
-	sm.AddMessage(context.Background(), Message{Role: "assistant", Turn: 1,
-		ToolCalls: []ToolCall{{ID: "c1", Name: "web_search", Input: map[string]interface{}{"q": "x"}}}})
-	sm.AddMessage(context.Background(), Message{Role: "tool", ID: "42", ToolUseID: "c1", Content: big, Turn: 1})
-
-	out := sm.GetMessagesForLLM()
-	var rendered string
-	for _, m := range out {
-		if m.Role == "tool" {
-			rendered = m.Content
-		}
-	}
-	meta, tabular := previewMeta(big)
-	format := offloadStubOpaqueFormat
-	if tabular {
-		format = offloadStubFormat
-	}
-	want := fmt.Sprintf(format, "web_search", tokenFigure(len(big)), int64(42), "", meta)
-	assert.Equal(t, want, rendered, "the §5.5 offload stub, byte-exact")
-}
-
 func TestCompile_AtThresholdRendersFull(t *testing.T) {
 	sm := newCompileMemory(t)
 	page := strings.Repeat("p", 1024) // exactly at the threshold
 	sm.AddMessage(context.Background(), Message{Role: "user", Content: "q", Turn: 1})
 	sm.AddMessage(context.Background(), Message{Role: "assistant", Turn: 1,
-		ToolCalls: []ToolCall{{ID: "c1", Name: "query_tool_result"}}})
+		ToolCalls: []ToolCall{{ID: "c1", Name: "shell_execute"}}})
 	sm.AddMessage(context.Background(), Message{Role: "tool", ID: "7", ToolUseID: "c1", Content: page, Turn: 1})
 
 	out := sm.GetMessagesForLLM()
@@ -201,228 +177,17 @@ func TestCompile_TwoCompilesAreByteIdentical(t *testing.T) {
 	}
 }
 
-func TestCompile_LegacyOversizePriorTurnRendersEvictedStub(t *testing.T) {
+func TestCompile_LegacyEvictedFlagRendersWhole(t *testing.T) {
 	sm := newCompileMemory(t)
-	big := strings.Repeat("L", 5000)
-	sm.AddMessage(context.Background(), Message{Role: "assistant", Turn: 1,
-		ToolCalls: []ToolCall{{ID: "c1", Name: "execute_sql"}}})
-	sm.AddMessage(context.Background(), Message{Role: "tool", ID: "3", ToolUseID: "c1", Content: big, Turn: 1})
-	sm.AddMessage(context.Background(), Message{Role: "user", Content: "next", Turn: 2})
-
-	out := sm.GetMessagesForLLM()
-	var rendered string
-	for _, m := range out {
-		if m.Role == "tool" {
-			rendered = m.Content
-		}
-	}
-	evMeta, _ := previewMeta(big)
-	want := fmt.Sprintf(evictedStubFormat, "execute_sql", tokenFigure(len(big)), "", evMeta)
-	assert.Equal(t, want, rendered, "a legacy unbounded prior-turn row renders the evicted stub")
-}
-
-// --- §5.2 step 6: offload-exempt carve-out -----------------------------------
-
-func TestCompile_OffloadExemptToolRendersWholeCurrentTurn(t *testing.T) {
-	sm := newCompileMemory(t)
-	sm.SetOffloadExemptTools([]string{"reference_lookup"})
-	exemptBig := strings.Repeat("e", 5000)
-	plainBig := strings.Repeat("p", 5000)
-	sm.AddMessage(context.Background(), Message{Role: "user", Content: "q", Turn: 1})
-	sm.AddMessage(context.Background(), Message{Role: "assistant", Turn: 1,
-		ToolCalls: []ToolCall{
-			{ID: "c1", Name: "reference_lookup"},
-			{ID: "c2", Name: "web_search"},
-		}})
-	sm.AddMessage(context.Background(), Message{Role: "tool", ID: "41", ToolUseID: "c1", Content: exemptBig, Turn: 1})
-	sm.AddMessage(context.Background(), Message{Role: "tool", ID: "42", ToolUseID: "c2", Content: plainBig, Turn: 1})
-
-	rendered := map[string]string{}
-	for _, m := range sm.GetMessagesForLLM() {
-		if m.Role == "tool" {
-			rendered[m.ToolUseID] = m.Content
-		}
-	}
-	assert.Equal(t, exemptBig, rendered["c1"],
-		"an exempt tool's current-turn oversize result renders whole")
-	plainMeta, _ := previewMeta(plainBig)
-	want := fmt.Sprintf(offloadStubOpaqueFormat, "web_search", tokenFigure(len(plainBig)), int64(42), "", plainMeta)
-	assert.Equal(t, want, rendered["c2"],
-		"a non-exempt tool in the same compile still renders the offload stub")
-}
-
-func TestCompile_OffloadExemptPriorTurnStillRendersEvictedStub(t *testing.T) {
-	sm := newCompileMemory(t)
-	sm.SetOffloadExemptTools([]string{"reference_lookup"})
-	big := strings.Repeat("e", 5000)
-	sm.AddMessage(context.Background(), Message{Role: "assistant", Turn: 1,
-		ToolCalls: []ToolCall{{ID: "c1", Name: "reference_lookup"}}})
-	sm.AddMessage(context.Background(), Message{Role: "tool", ID: "3", ToolUseID: "c1", Content: big, Turn: 1})
-	sm.AddMessage(context.Background(), Message{Role: "user", Content: "next", Turn: 2})
-
-	var rendered string
-	for _, m := range sm.GetMessagesForLLM() {
-		if m.Role == "tool" {
-			rendered = m.Content
-		}
-	}
-	bigMeta, _ := previewMeta(big)
-	want := fmt.Sprintf(evictedStubFormat, "reference_lookup", tokenFigure(len(big)), "", bigMeta)
-	assert.Equal(t, want, rendered,
-		"exemption is a render condition of the producing turn only — prior turns evict as usual")
-}
-
-func TestCompile_OffloadExemptEvictedFlagStillRendersEvictedStub(t *testing.T) {
-	sm := newCompileMemory(t)
-	sm.SetOffloadExemptTools([]string{"reference_lookup"})
-	big := strings.Repeat("e", 5000)
-	sm.AddMessage(context.Background(), Message{Role: "user", Content: "q", Turn: 1})
-	sm.AddMessage(context.Background(), Message{Role: "assistant", Turn: 1,
-		ToolCalls: []ToolCall{{ID: "c1", Name: "reference_lookup"}}})
-	sm.AddMessage(context.Background(), Message{Role: "tool", ID: "5", ToolUseID: "c1", Content: big, Turn: 1, Evicted: true})
-
-	var rendered string
-	for _, m := range sm.GetMessagesForLLM() {
-		if m.Role == "tool" {
-			rendered = m.Content
-		}
-	}
-	bigMeta, _ := previewMeta(big)
-	want := fmt.Sprintf(evictedStubFormat, "reference_lookup", tokenFigure(len(big)), "", bigMeta)
-	assert.Equal(t, want, rendered,
-		"relief's evicted flag wins over exemption — the exempt set never blocks pressure release")
-}
-
-func TestSetOffloadExemptTools_ReplaceClearsAndSkipsEmptyNames(t *testing.T) {
-	sm := newCompileMemory(t)
-	big := strings.Repeat("e", 5000)
-	addBig := func() {
-		sm.AddMessage(context.Background(), Message{Role: "user", Content: "q", Turn: 1})
-		sm.AddMessage(context.Background(), Message{Role: "assistant", Turn: 1,
-			ToolCalls: []ToolCall{{ID: "c1", Name: "reference_lookup"}}})
-		sm.AddMessage(context.Background(), Message{Role: "tool", ID: "9", ToolUseID: "c1", Content: big, Turn: 1})
-	}
-	toolContent := func() string {
-		var s string
-		for _, m := range sm.GetMessagesForLLM() {
-			if m.Role == "tool" {
-				s = m.Content
-			}
-		}
-		return s
-	}
-
-	addBig()
-	sm.SetOffloadExemptTools([]string{"", "reference_lookup"})
-	assert.Equal(t, big, toolContent(), "empty names are skipped, real names apply")
-
-	sm.SetOffloadExemptTools([]string{"other_tool"})
-	assert.NotEqual(t, big, toolContent(), "SetOffloadExemptTools replaces the set — the old name no longer exempts")
-
-	sm.SetOffloadExemptTools(nil)
-	assert.NotEqual(t, big, toolContent(), "a nil slice clears the set")
-}
-
-func TestMemory_SetOffloadExemptTools_PropagatesToExistingAndFutureSessions(t *testing.T) {
-	m := NewMemory()
-	m.SetThresholdBytes(1024)
-	big := strings.Repeat("e", 5000)
-
-	existing := m.GetOrCreateSession(context.Background(), "sess-existing")
-	m.SetOffloadExemptTools([]string{"reference_lookup"})
-	future := m.GetOrCreateSession(context.Background(), "sess-future")
-
-	for name, session := range map[string]*Session{"existing": existing, "future": future} {
-		segMem, ok := session.SegmentedMem.(*SegmentedMemory)
-		require.True(t, ok, "%s session carries a SegmentedMemory", name)
-		segMem.AddMessage(context.Background(), Message{Role: "user", Content: "q", Turn: 1})
-		segMem.AddMessage(context.Background(), Message{Role: "assistant", Turn: 1,
-			ToolCalls: []ToolCall{{ID: "c1", Name: "reference_lookup"}}})
-		segMem.AddMessage(context.Background(), Message{Role: "tool", ID: "11", ToolUseID: "c1", Content: big, Turn: 1})
-		var rendered string
-		for _, msg := range segMem.GetMessagesForLLM() {
-			if msg.Role == "tool" {
-				rendered = msg.Content
-			}
-		}
-		assert.Equal(t, big, rendered, "%s session honors the exempt set", name)
-	}
-}
-
-func TestAgent_SetOffloadExemptTools_ForwardsToMemory(t *testing.T) {
-	a := &Agent{memory: NewMemory()}
-	a.memory.SetThresholdBytes(1024)
-	a.SetOffloadExemptTools([]string{"reference_lookup"})
-
-	session := a.memory.GetOrCreateSession(context.Background(), "sess-agent")
-	segMem, ok := session.SegmentedMem.(*SegmentedMemory)
-	require.True(t, ok)
-	big := strings.Repeat("e", 5000)
-	segMem.AddMessage(context.Background(), Message{Role: "user", Content: "q", Turn: 1})
-	segMem.AddMessage(context.Background(), Message{Role: "assistant", Turn: 1,
-		ToolCalls: []ToolCall{{ID: "c1", Name: "reference_lookup"}}})
-	segMem.AddMessage(context.Background(), Message{Role: "tool", ID: "12", ToolUseID: "c1", Content: big, Turn: 1})
-	var rendered string
-	for _, msg := range segMem.GetMessagesForLLM() {
-		if msg.Role == "tool" {
-			rendered = msg.Content
-		}
-	}
-	assert.Equal(t, big, rendered, "the agent-level setter reaches sessions through Memory")
-
-	// nil memory must not panic.
-	(&Agent{}).SetOffloadExemptTools([]string{"reference_lookup"})
-}
-
-// TestCompile_CurrentTurnQueryPairSitsBehindCacheBreakpoint proves the frozen
-// fallback breakpoint sits BEFORE a current-turn query_tool_result call/result
-// pair. That pair is ephemeral (§4.3) and pruned when the turn settles, so the
-// prefix that survives settle must end before it — the lastStable marker is
-// what the next turn's first call falls back to. The pair itself additionally
-// sits under the till-NOW marker (§5.2 step 8 addendum): within the turn it is
-// append-only-stable, so caching up to the tip is read back until settle.
-func TestCompile_CurrentTurnQueryPairSitsBehindCacheBreakpoint(t *testing.T) {
-	sm := newCompileMemory(t)
-	// Turn 1 settled.
-	sm.AddMessage(context.Background(), Message{Role: "user", Content: "q1", Turn: 1})
-	sm.AddMessage(context.Background(), Message{Role: "assistant", Content: "a1", Turn: 1})
-	// Turn 2 current: a bare query_tool_result pair, no offload stub before it.
-	sm.AddMessage(context.Background(), Message{Role: "user", Content: "q2", Turn: 2})
-	sm.AddMessage(context.Background(), Message{Role: "assistant", Turn: 2,
-		ToolCalls: []ToolCall{{ID: "c1", Name: "query_tool_result"}}})
-	sm.AddMessage(context.Background(), Message{Role: "tool", ID: "1", ToolUseID: "c1",
-		Content: "error: not_this_turn", Turn: 2})
-
-	out := sm.GetMessagesForLLM()
-	queryIdx, fallbackIdx := -1, -1
-	for i, m := range out {
-		if m.Role == "assistant" && len(m.ToolCalls) == 1 && m.ToolCalls[0].Name == "query_tool_result" {
-			queryIdx = i
-		}
-		if i >= 1 && m.CacheBreakpoint && (queryIdx == -1 || i < queryIdx) { // i>=1 skips the ROM breakpoint at idx 0
-			fallbackIdx = i
-		}
-	}
-	require.NotEqual(t, -1, queryIdx, "the query_tool_result call is present")
-	require.NotEqual(t, -1, fallbackIdx, "a fallback breakpoint was placed before the pair")
-	assert.Less(t, fallbackIdx, queryIdx,
-		"the fallback breakpoint freezes before the ephemeral query pair — the prefix that survives settle ends there")
-	assert.False(t, out[queryIdx].CacheBreakpoint, "the query call itself is never a breakpoint")
-	assert.True(t, out[queryIdx+1].CacheBreakpoint,
-		"the till-NOW marker rides the tip — the pair is cached intra-turn and falls away at settle")
-}
-
-func TestCompile_EvictedFlagRendersEvictedStub(t *testing.T) {
-	sm := newCompileMemory(t)
-	content := strings.Repeat("e", 900) // under threshold, but flagged
+	content := strings.Repeat("e", 900) // under threshold, flagged by an older run
 	sm.AddMessage(context.Background(), Message{Role: "assistant", Turn: 1,
 		ToolCalls: []ToolCall{{ID: "c1", Name: "shell"}}})
 	sm.AddMessage(context.Background(), Message{Role: "tool", ID: "9", ToolUseID: "c1", Content: content, Turn: 1, Evicted: true})
 
-	out := sm.GetMessagesForLLM()
-	for _, m := range out {
+	for _, m := range sm.GetMessagesForLLM() {
 		if m.Role == "tool" {
-			assert.Contains(t, m.Content, "evicted from context — re-run the call above", "flag is write-once; render is permanent")
+			assert.Equal(t, content, m.Content,
+				"eviction was removed: a row carrying the legacy flag renders the content the store still holds")
 		}
 	}
 }
@@ -444,15 +209,22 @@ func TestCompile_SyntheticFailedResultForMissingPair(t *testing.T) {
 	assert.Equal(t, syntheticFailedResult, got.Content)
 }
 
-func TestCompile_SummaryEmittedAsSystemMessage(t *testing.T) {
+func TestCompile_SummaryEmittedAsConversationReminder(t *testing.T) {
+	// The summary is the folded PAST — conversation content, not system. It
+	// renders as a user-role reminder with no cache breakpoint of its own, so
+	// it never consumes a marker slot (a system summary block displaced the
+	// till-NOW marker and uncached the session tail after every fold).
 	sm := newCompileMemory(t)
 	sm.setSummary(2, "covers msg:1-9\nstate of work")
 	out := sm.GetMessagesForLLM()
 	require.GreaterOrEqual(t, len(out), 2)
 	assert.Equal(t, "system", out[0].Role)
 	assert.Equal(t, "ROM-CONTENT", out[0].Content)
-	assert.Equal(t, "system", out[1].Role)
-	assert.Equal(t, "covers msg:1-9\nstate of work", out[1].Content)
+	assert.Equal(t, "user", out[1].Role)
+	assert.Contains(t, out[1].Content, "Session summary")
+	assert.Contains(t, out[1].Content, "covers msg:1-9\nstate of work")
+	// The summary carries no DEDICATED marker; the walk may still park the
+	// ordinary lastStable marker on it — that is budget-neutral.
 }
 
 // --- §5.2 releasePressure over a real store ----------------------------------
@@ -464,7 +236,7 @@ func (f *foldCompressor) CompressMessages(ctx context.Context, messages []Messag
 }
 func (f *foldCompressor) IsEnabled() bool { return true }
 
-func TestReleasePressure_EvictsThenFolds(t *testing.T) {
+func TestReleasePressure_FoldsUnderPressure(t *testing.T) {
 	store, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
@@ -473,12 +245,11 @@ func TestReleasePressure_EvictsThenFolds(t *testing.T) {
 	const sessionID = "sess-relief"
 	require.NoError(t, store.SaveSession(ctx, &Session{ID: sessionID, Context: map[string]interface{}{}}))
 
-	// Window sized so the release mark (60% of usable 5400 = 3240) clears the
-	// irreducible current turn (~1740-token tool row) — otherwise eviction can
-	// never reach target and the pass always escalates to fold, folding the
-	// evicted rows out of view.
+	// Window sized so seven turns of whole tool rows cross the start mark and
+	// the release mark (60% of usable 5400 = 3240) sits above the irreducible
+	// current turn (~1740-token tool row), so the pass has a reachable target.
 	sm := NewSegmentedMemory("ROM", 6000, 600)
-	sm.SetThreshold(6000) // > the ~5KB tool rows, so they render WHOLE (evictable), not stubs
+	sm.SetThreshold(6000) // > the ~5KB tool rows, so they render WHOLE, not stubs
 	sm.SetSessionStore(store, sessionID)
 	sm.SetCompressor(&foldCompressor{out: "covers msg:1-4\nsummary of the old turns"})
 
@@ -490,15 +261,14 @@ func TestReleasePressure_EvictsThenFolds(t *testing.T) {
 		return m
 	}
 	for turn := 1; turn <= 7; turn++ {
-		// The whole tool rows (5000 B, under the 6000 threshold) are the pressure
-		// AND the eviction targets: their sum crosses the start mark, and evicting
-		// them reaches target without any fold — so the evicted rows stay visible.
+		// The whole tool rows (5000 B, under the 6000 threshold) are the pressure:
+		// their sum crosses the start mark, so the pass must fold to reach target.
 		persist("user", fmt.Sprintf("question %d", turn), "", nil, true)
 		callID := fmt.Sprintf("c%d", turn)
 		persist("assistant", "", "", []ToolCall{{ID: callID, Name: "bulk_scan", Input: map[string]interface{}{}}}, false)
-		// Token-DENSE content (varied, ~4 B/tok), so evicting a whole row to a stub
-		// actually sheds tokens — a compressible run like "rrrr" tokenizes so
-		// cheaply that eviction saves nothing and the pass escalates to fold.
+		// Token-DENSE content (varied, ~4 B/tok) so the estimate reflects real
+		// weight — a compressible run like "rrrr" tokenizes so cheaply that seven
+		// turns never reach the start mark and no relief fires at all.
 		persist("tool", strings.Repeat("scan 12,345 db=SALES cpu=678 io=9; ", 145), callID, nil, false)
 	}
 	require.Equal(t, int64(7), sm.CurrentTurn())
@@ -511,30 +281,20 @@ func TestReleasePressure_EvictsThenFolds(t *testing.T) {
 	// Rows of the current turn are never touched.
 	for _, m := range sm.GetMessages() {
 		if m.Turn == 7 {
-			assert.False(t, m.Evicted, "turn T is untouchable")
-			assert.False(t, m.Folded)
+			assert.False(t, m.Folded, "turn T is untouchable")
 		}
 	}
 
-	// Eviction flags landed in the store (write-once, one transaction).
+	// Fold is the only shedding mechanism: folded rows leave the database read,
+	// and the summary version row persisted in the same transaction.
+	require.True(t, sm.HasL2Content(), "shedding this much can only have been a fold")
 	rows, err := store.LoadMessages(ctx, sessionID)
 	require.NoError(t, err)
-	evicted := 0
-	for _, m := range rows {
-		if m.Evicted {
-			evicted++
-			assert.Equal(t, "tool", m.Role, "eviction is one-sided: only results are stubbed")
-		}
-	}
-	assert.Greater(t, evicted, 0, "evict marked prior-turn tool rows")
-
-	// If a fold ran, the summary version row exists and folded rows left the read.
-	if sm.HasL2Content() {
-		snaps, err := store.LoadMemorySnapshots(ctx, sessionID, "fold", 0)
-		require.NoError(t, err)
-		require.NotEmpty(t, snaps, "the fold's version row persisted in the same transaction")
-		assert.Contains(t, sm.GetL2Summary(), "covers msg:")
-	}
+	assert.Less(t, len(rows), 21, "folded rows are filtered at the read")
+	snaps, err := store.LoadMemorySnapshots(ctx, sessionID, "fold", 0)
+	require.NoError(t, err)
+	require.NotEmpty(t, snaps, "the fold's version row persisted in the same transaction")
+	assert.Contains(t, sm.GetL2Summary(), "covers msg:")
 }
 
 // --- §8: re-fire on the durable key ------------------------------------------
@@ -568,33 +328,44 @@ func TestReFireOnRestore_DurableKey(t *testing.T) {
 		"re-fire keys on the manage_skills load call paired with a 'Skill loaded: ' confirmation")
 }
 
-func TestPressureMarks_UsableBase(t *testing.T) {
-	// Marks are percentages of usable = window − output reservation, never of
-	// the full window: a mark above usable would sit beyond the provider's
-	// refusal line and never fire.
-	sm := NewSegmentedMemory("ROM", 200000, 64000)
-	usable := 200000 - 64000
+func TestPressureMarks_GrowthBudget(t *testing.T) {
+	// The configured MaxTokens IS G — the growth budget. The start mark is G
+	// itself; the output reservation plays no part in the marks (the
+	// provider's refusal backstop owns the real ceiling).
+	sm := NewSegmentedMemory("ROM", 50000, 64000)
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	assert.Equal(t, 90*usable/100, sm.startMarkLocked(0))
-	assert.Equal(t, 60*usable/100, sm.releaseMarkLocked(0))
-	// The recovery pass lowers both marks by the penalty on the same base, so
-	// a refused prompt can never sit above the recovery start mark.
-	assert.Equal(t, 70*usable/100, sm.startMarkLocked(pressureRecoveryPenalty))
-	assert.Equal(t, 40*usable/100, sm.releaseMarkLocked(pressureRecoveryPenalty))
+	assert.Equal(t, 50000, sm.startMarkLocked(0))
+	assert.Equal(t, 60*50000/100, sm.releaseMarkLocked(0))
+	// The recovery pass lowers both marks by the penalty on the same base.
+	assert.Equal(t, 80*50000/100, sm.startMarkLocked(pressureRecoveryPenalty))
+	assert.Equal(t, 40*50000/100, sm.releaseMarkLocked(pressureRecoveryPenalty))
+}
+
+func TestMarks_IgnoreOutputReservation(t *testing.T) {
+	// G semantics: the start mark is the configured budget itself. The output
+	// reservation is a wire concern (the request's max_tokens); it must not
+	// bend the fold policy. The provider's refusal backstop owns the ceiling.
+	const g = 50000
+	for _, reserve := range []int{0, 20000, 64000, 128000} {
+		sm := NewSegmentedMemory("ROM", g, reserve)
+		sm.mu.Lock()
+		assert.Equal(t, g, sm.startMarkLocked(0),
+			"reserve=%d must not move the start mark", reserve)
+		sm.mu.Unlock()
+	}
 }
 
 func TestPressureMarks_ProfileDrivenWithFallback(t *testing.T) {
-	usable := 100000 - 10000
 
-	// The profile's critical/warning thresholds ARE the marks.
+	// Start is always G; the profile's warning threshold sets shed depth.
 	custom := ProfileDefaults[loomv1.WorkloadProfile_WORKLOAD_PROFILE_BALANCED]
 	custom.CriticalThresholdPercent = 80
 	custom.WarningThresholdPercent = 50
 	sm := NewSegmentedMemoryWithCompression("ROM", 100000, 10000, custom)
 	sm.mu.Lock()
-	assert.Equal(t, 80*usable/100, sm.startMarkLocked(0))
-	assert.Equal(t, 50*usable/100, sm.releaseMarkLocked(0))
+	assert.Equal(t, 100000, sm.startMarkLocked(0))
+	assert.Equal(t, 50*100000/100, sm.releaseMarkLocked(0))
 	sm.mu.Unlock()
 
 	// A hand-built profile with a missing or inverted pair falls back to 90/60.
@@ -609,8 +380,8 @@ func TestPressureMarks_ProfileDrivenWithFallback(t *testing.T) {
 		p.WarningThresholdPercent = bad.warning
 		sm := NewSegmentedMemoryWithCompression("ROM", 100000, 10000, p)
 		sm.mu.Lock()
-		assert.Equal(t, 90*usable/100, sm.startMarkLocked(0), "critical=%d warning=%d", bad.critical, bad.warning)
-		assert.Equal(t, 60*usable/100, sm.releaseMarkLocked(0), "critical=%d warning=%d", bad.critical, bad.warning)
+		assert.Equal(t, 100000, sm.startMarkLocked(0), "critical=%d warning=%d", bad.critical, bad.warning)
+		assert.Equal(t, 60*100000/100, sm.releaseMarkLocked(0), "critical=%d warning=%d", bad.critical, bad.warning)
 		sm.mu.Unlock()
 	}
 }
@@ -767,7 +538,7 @@ func TestThresholdFloor_AllConsumers(t *testing.T) {
 		"the compile-time offload bound clamps to the floor")
 
 	// The invariant the floor exists to protect, at the clamped value.
-	stored := truncateToolRowContent(strings.Repeat("x", 5000), m.thresholdOrDefault())
+	stored := truncateToolRowContent(strings.Repeat("x", 5000), m.thresholdOrDefault(), "")
 	assert.LessOrEqual(t, len(stored), m.thresholdOrDefault(),
 		"a truncated row never exceeds its own bound")
 }
@@ -842,73 +613,6 @@ func TestPressureMarks_PenaltyNeverGoesNegative(t *testing.T) {
 		"the recovery start mark must stay positive")
 	assert.LessOrEqual(t, sm.releaseMarkLocked(pressureRecoveryPenalty), sm.startMarkLocked(pressureRecoveryPenalty),
 		"the band must not invert under the penalty")
-}
-
-// --- §5.5: previewMeta — metadata-shaped stub previews -----------------------
-
-func TestPreviewMeta_TabularEnvelope(t *testing.T) {
-	content := `{"ok":true,"columns":["DataBaseName","TableName"],"rows":[["agentic_demo","t1"],["agentic_demo","t2"]],"row_count":2,"total_row_count":1004}`
-	meta, tabular := previewMeta(content)
-	assert.True(t, tabular, "the drain envelope is tabular — the sql door applies")
-	assert.Contains(t, meta, "columns: [DataBaseName, TableName]")
-	assert.Contains(t, meta, "rows: 2 of 1004", "partial payloads state N of M — the you-have-not-seen-this signal")
-	assert.NotContains(t, meta, "agentic_demo",
-		"the line says what the payload is, never what it contains — a real row is data, and data invites answering from the fragment")
-}
-
-// previewMeta is a pure function of its input and is called for every stubbed
-// row on every render and every estimate pass, so it is memoized. A changed
-// payload must never read a previous one's line.
-func TestPreviewMeta_MemoizedPerPayload(t *testing.T) {
-	a := `{"columns":["x"],"rows":[["1"]],"row_count":1}`
-	b := `{"columns":["y"],"rows":[["2"]],"row_count":1}`
-
-	first, _ := previewMeta(a)
-	again, _ := previewMeta(a)
-	assert.Equal(t, first, again, "the same payload yields the same line")
-
-	other, _ := previewMeta(b)
-	assert.NotEqual(t, first, other, "a different payload must not read the cached line")
-	assert.Contains(t, other, "columns: [y]")
-}
-
-func TestPreviewMeta_UniformObjects(t *testing.T) {
-	content := `[{"b":1,"a":"x"},{"b":2,"a":"y"}]`
-	meta, tabular := previewMeta(content)
-	assert.True(t, tabular)
-	assert.Contains(t, meta, "columns: [a, b]", "object-array columns are sorted — byte-stable")
-	assert.Contains(t, meta, "rows: 2")
-}
-
-func TestPreviewMeta_JSONShape(t *testing.T) {
-	content := `{"jobs":[1,2,3],"status":"ok","meta":{"a":1,"b":2}}`
-	meta, tabular := previewMeta(content)
-	assert.False(t, tabular, "non-tabular JSON gets no sql door")
-	assert.Contains(t, meta, "shape: {jobs: [3 items], meta: {2 keys}, status: str}",
-		"sorted keys, kinds not values")
-}
-
-func TestPreviewMeta_OpaqueTextHeadAndTail(t *testing.T) {
-	content := strings.Repeat("log line about nothing\n", 100) + "FATAL: the actual conclusion"
-	meta, tabular := previewMeta(content)
-	assert.False(t, tabular)
-	assert.Contains(t, meta, "preview: log line")
-	assert.Contains(t, meta, "tail:", "conclusions live at the end of opaque text")
-	assert.Contains(t, meta, "the actual conclusion")
-}
-
-func TestPreviewMeta_Deterministic(t *testing.T) {
-	contents := []string{
-		`{"ok":true,"columns":["c"],"rows":[[1]],"total_row_count":50}`,
-		`{"z":1,"a":{"n":true},"list":[1,2]}`,
-		strings.Repeat("opaque ", 200),
-	}
-	for _, c := range contents {
-		m1, t1 := previewMeta(c)
-		m2, t2 := previewMeta(c)
-		assert.Equal(t, m1, m2, "previewMeta must be byte-stable across compiles (cache safety)")
-		assert.Equal(t, t1, t2)
-	}
 }
 
 // flakyCompressor fails its first failN calls, then returns out. Counts calls.

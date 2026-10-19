@@ -129,11 +129,11 @@ func assertSystemSlotROMOnly(t *testing.T, recs []contextDumpRecord) {
 				}
 				continue
 			}
-			// The only system-slot content beyond the ROM is the cumulative L2
-			// summary.
-			assert.True(t, strings.HasPrefix(m.Content, l2SummaryPrefix),
-				"turn %d: system slot carries only ROM + L2 summary, got a system message %q",
-				rec.Turn, head(m.Content, 80))
+			// The system slot is ROM-only: the L2 summary renders as a
+			// user-role reminder in the conversation region (the folded past
+			// is conversation, not system).
+			assert.Fail(t, "system slot must be ROM-only",
+				"turn %d: unexpected extra system message %q", rec.Turn, head(m.Content, 80))
 		}
 	}
 }
@@ -143,7 +143,7 @@ func assertSystemSlotROMOnly(t *testing.T, recs []contextDumpRecord) {
 func someRecordHasL2(recs []contextDumpRecord) bool {
 	for _, rec := range recs {
 		for _, m := range rec.Messages {
-			if m.Role == "system" && strings.HasPrefix(m.Content, l2SummaryPrefix) {
+			if m.Role == "user" && strings.Contains(m.Content, "Session summary") && strings.Contains(m.Content, l2SummaryPrefix) {
 				return true
 			}
 		}

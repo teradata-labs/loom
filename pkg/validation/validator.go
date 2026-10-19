@@ -316,7 +316,7 @@ func validateWorkflowStructure(content string) []ValidationError {
 // validator, pkg/orchestration's converter guard, and the agent registry
 // loader (pinned by its contract test) all accept exactly this set.
 func CanonicalWorkflowPatternTypes() []string {
-	return []string{"debate", "fork-join", "pipeline", "parallel", "conditional", "iterative", "swarm"}
+	return []string{"debate", "fork-join", "pipeline", "parallel", "conditional", "iterative", "swarm", "state-machine"}
 }
 
 // validateOrchestrationWorkflowStructure validates structure for orchestration workflows.
@@ -549,6 +549,35 @@ func validatePatternSpecificFields(spec map[string]interface{}, patternType stri
 				Message:  "agent_ids cannot be empty",
 				Expected: "At least one agent ID",
 				Fix:      "Add agent IDs to the list",
+			})
+		}
+
+	case "state-machine":
+		// state-machine requires: entry_state, states
+		if _, ok := spec["entry_state"]; !ok {
+			errors = append(errors, ValidationError{
+				Level:    LevelStructure,
+				Field:    "spec.entry_state",
+				Message:  "Missing required field for state-machine pattern",
+				Expected: "entry_state: string (the state the walk begins in)",
+				Fix:      "Add 'entry_state: P_CREATE' under spec",
+			})
+		}
+		if states, ok := spec["states"]; !ok {
+			errors = append(errors, ValidationError{
+				Level:    LevelStructure,
+				Field:    "spec.states",
+				Message:  "Missing required field for state-machine pattern",
+				Expected: "states: a map of state name to {agent|action|nested, route}",
+				Fix:      "Add a 'states:' block under spec",
+			})
+		} else if stateMap, ok := states.(map[string]interface{}); ok && len(stateMap) == 0 {
+			errors = append(errors, ValidationError{
+				Level:    LevelStructure,
+				Field:    "spec.states",
+				Message:  "states cannot be empty",
+				Expected: "At least an entry state and a terminal state",
+				Fix:      "Declare the states the machine walks",
 			})
 		}
 

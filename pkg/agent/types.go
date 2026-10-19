@@ -15,10 +15,8 @@ package agent
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"sync"
-	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
@@ -191,12 +189,6 @@ type Agent struct {
 	// Token counter for accurate token estimation
 	tokenCounter *TokenCounter
 
-	// In-turn SQLite databases backing query_tool_result's sql mode (HLD §7.1):
-	// per (session, message), lazily built, dropped at turn end. Guarded by
-	// inTurnSQLMu.
-	inTurnSQL   map[inTurnSQLKey]*sql.DB
-	inTurnSQLMu sync.Mutex
-
 	// Workflow communication context (injected dynamically for workflow agents)
 	workflowCommContext *WorkflowCommunicationContext
 
@@ -210,8 +202,8 @@ type Agent struct {
 	lazyToolSets []lazyToolSet
 
 	// suppressedBuiltinTools blocks agent-internal registrations (graph_memory,
-	// task_board, manage_skills, load_pattern) and the retrieval tools
-	// (query_tool_result, recall) from surfacing to the LLM. Subsystems
+	// task_board, manage_skills, load_pattern) and the retrieval tool
+	// (recall) from surfacing to the LLM. Subsystems
 	// themselves (extractor, task manager) keep running.
 	//
 	// Populated by WithoutBuiltinTool options. The server (cmd/looms) is
@@ -338,9 +330,6 @@ type Config struct {
 	// Backend configuration
 	BackendConfig map[string]interface{}
 
-	// Retry configuration for LLM calls
-	Retry RetryConfig
-
 	// MaxContextTokens is the model's context window size (0 = use defaults/auto-detect)
 	MaxContextTokens int
 
@@ -409,24 +398,6 @@ type PatternConfig struct {
 	UseLLMClassifier bool
 }
 
-// RetryConfig configures exponential backoff retry logic for LLM calls
-type RetryConfig struct {
-	// MaxRetries is the maximum number of retry attempts (0 = no retries)
-	MaxRetries int
-
-	// InitialDelay is the initial delay before the first retry
-	InitialDelay time.Duration
-
-	// MaxDelay is the maximum delay between retries
-	MaxDelay time.Duration
-
-	// Multiplier is the exponential backoff multiplier (e.g., 2.0 for doubling)
-	Multiplier float64
-
-	// Enabled enables retry logic
-	Enabled bool
-}
-
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
@@ -437,13 +408,6 @@ func DefaultConfig() *Config {
 		EnableTracing:     true,
 		EnableSelfHealing: true,
 		BackendConfig:     make(map[string]interface{}),
-		Retry: RetryConfig{
-			Enabled:      true,
-			MaxRetries:   3,
-			InitialDelay: 100 * time.Millisecond,
-			MaxDelay:     5 * time.Second,
-			Multiplier:   2.0,
-		},
 	}
 }
 

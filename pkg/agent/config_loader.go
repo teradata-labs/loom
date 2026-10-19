@@ -1887,6 +1887,25 @@ func (c *workflowAgentCollector) collect(spec map[string]interface{}) error {
 			}
 		}
 
+	case "state-machine":
+		states, _ := spec["states"].(map[string]interface{})
+		for name, raw := range states {
+			stateMap, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if body, ok := stateMap["agent"].(map[string]interface{}); ok {
+				if id, ok := body["agent_id"].(string); ok {
+					c.add(id)
+				}
+			}
+			if body, ok := stateMap["nested"].(map[string]interface{}); ok {
+				if err := c.collect(body); err != nil {
+					return fmt.Errorf("state %s nested workflow: %w", name, err)
+				}
+			}
+		}
+
 	default:
 		return fmt.Errorf("unsupported workflow pattern type: %s", patternType)
 	}

@@ -49,6 +49,16 @@ func ExtractAgentIDs(pattern *loomv1.WorkflowPattern) []string {
 			ids = append(ids, p.Debate.ModeratorAgentId)
 		}
 
+	case *loomv1.WorkflowPattern_StateMachine:
+		for _, st := range p.StateMachine.GetStates() {
+			if b := st.GetAgent(); b != nil {
+				ids = append(ids, b.GetAgentId())
+			}
+			if d := st.GetDelegate(); d != nil {
+				ids = append(ids, ExtractAgentIDs(d.GetWorkflow())...)
+			}
+		}
+
 	case *loomv1.WorkflowPattern_Conditional:
 		if p.Conditional.ConditionAgentId != "" {
 			ids = append(ids, p.Conditional.ConditionAgentId)

@@ -813,16 +813,16 @@ func TestAgent_ToolRegistration(t *testing.T) {
 	ag := NewAgent(mockBackend, mockLLM, WithConfig(cfg))
 
 	// Base tools at construction: load_pattern (a pattern library is always
-	// configured), plus query_tool_result and recall — registered always (HLD
-	// §6/§7.1: their doors are printed by the offload stub and the summary's
-	// citations). shell_execute is not auto-registered; get_tool_result,
+	// configured), plus recall — registered always (HLD §6: its door is
+	// printed by the summary's citations).
+	// shell_execute is not auto-registered; get_tool_result,
 	// get_error_details and record_finding are removed.
 	tools := ag.RegisteredTools()
 	names := make([]string, len(tools))
 	for i, tl := range tools {
 		names[i] = tl.Name()
 	}
-	expected := map[string]bool{"load_pattern": true, "query_tool_result": true, "recall": true}
+	expected := map[string]bool{"load_pattern": true, "recall": true, "task_list": true}
 	if len(tools) != len(expected) {
 		t.Fatalf("Expected the four base tools at construction, got: %v", names)
 	}

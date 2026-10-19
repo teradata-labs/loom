@@ -263,6 +263,83 @@ func (ScheduledSessionMode) EnumDescriptor() ([]byte, []int) {
 	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{3}
 }
 
+// Why a run suspended. Every value is a place a human or supervising agent
+// takes over; none of them is a failure.
+type SuspendReason int32
+
+const (
+	SuspendReason_SUSPEND_REASON_UNSPECIFIED SuspendReason = 0
+	// A state's hitl_gate fired.
+	SuspendReason_SUSPEND_REASON_GATE SuspendReason = 1
+	// The state emitted a signal its route does not contain.
+	SuspendReason_SUSPEND_REASON_UNROUTABLE SuspendReason = 2
+	// Cumulative cost passed max_cost_usd.
+	SuspendReason_SUSPEND_REASON_COST_CAP SuspendReason = 3
+	// Transition count passed max_transitions.
+	SuspendReason_SUSPEND_REASON_MAX_TRANSITIONS SuspendReason = 4
+	// A nested pattern suspended; see nested_checkpoint.
+	SuspendReason_SUSPEND_REASON_NESTED SuspendReason = 5
+	// A signal the machine declares as bubbling was emitted inside a nested run.
+	// It parks unconditionally and rises to the scope that started the run.
+	SuspendReason_SUSPEND_REASON_BUBBLED SuspendReason = 6
+	// A state's body could not run to a signal: the model could not be reached,
+	// a tool failed, a credential expired. The walk stops AT that state with
+	// everything before it kept, and `error` says what happened. Approving
+	// re-enters the state; nothing earlier is paid for again.
+	SuspendReason_SUSPEND_REASON_ERROR SuspendReason = 7
+)
+
+// Enum value maps for SuspendReason.
+var (
+	SuspendReason_name = map[int32]string{
+		0: "SUSPEND_REASON_UNSPECIFIED",
+		1: "SUSPEND_REASON_GATE",
+		2: "SUSPEND_REASON_UNROUTABLE",
+		3: "SUSPEND_REASON_COST_CAP",
+		4: "SUSPEND_REASON_MAX_TRANSITIONS",
+		5: "SUSPEND_REASON_NESTED",
+		6: "SUSPEND_REASON_BUBBLED",
+		7: "SUSPEND_REASON_ERROR",
+	}
+	SuspendReason_value = map[string]int32{
+		"SUSPEND_REASON_UNSPECIFIED":     0,
+		"SUSPEND_REASON_GATE":            1,
+		"SUSPEND_REASON_UNROUTABLE":      2,
+		"SUSPEND_REASON_COST_CAP":        3,
+		"SUSPEND_REASON_MAX_TRANSITIONS": 4,
+		"SUSPEND_REASON_NESTED":          5,
+		"SUSPEND_REASON_BUBBLED":         6,
+		"SUSPEND_REASON_ERROR":           7,
+	}
+)
+
+func (x SuspendReason) Enum() *SuspendReason {
+	p := new(SuspendReason)
+	*p = x
+	return p
+}
+
+func (x SuspendReason) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SuspendReason) Descriptor() protoreflect.EnumDescriptor {
+	return file_loom_v1_orchestration_proto_enumTypes[4].Descriptor()
+}
+
+func (SuspendReason) Type() protoreflect.EnumType {
+	return &file_loom_v1_orchestration_proto_enumTypes[4]
+}
+
+func (x SuspendReason) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SuspendReason.Descriptor instead.
+func (SuspendReason) EnumDescriptor() ([]byte, []int) {
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{4}
+}
+
 // WorkflowPattern defines orchestration patterns for multi-agent coordination.
 // This message uses a oneof to represent different workflow patterns,
 // enabling type-safe pattern selection and composition.
@@ -279,6 +356,7 @@ type WorkflowPattern struct {
 	//	*WorkflowPattern_PairProgramming
 	//	*WorkflowPattern_TeacherStudent
 	//	*WorkflowPattern_Iterative
+	//	*WorkflowPattern_StateMachine
 	Pattern isWorkflowPattern_Pattern `protobuf_oneof:"pattern"`
 	// Stable workflow ID for session determinism across scheduled executions.
 	// If set, executors use this as the workflowID prefix instead of generating a random UUID.
@@ -408,6 +486,15 @@ func (x *WorkflowPattern) GetIterative() *IterativeWorkflowPattern {
 	return nil
 }
 
+func (x *WorkflowPattern) GetStateMachine() *StateMachinePattern {
+	if x != nil {
+		if x, ok := x.Pattern.(*WorkflowPattern_StateMachine); ok {
+			return x.StateMachine
+		}
+	}
+	return nil
+}
+
 func (x *WorkflowPattern) GetWorkflowId() string {
 	if x != nil {
 		return x.WorkflowId
@@ -455,6 +542,10 @@ type WorkflowPattern_Iterative struct {
 	Iterative *IterativeWorkflowPattern `protobuf:"bytes,9,opt,name=iterative,proto3,oneof"`
 }
 
+type WorkflowPattern_StateMachine struct {
+	StateMachine *StateMachinePattern `protobuf:"bytes,11,opt,name=state_machine,json=stateMachine,proto3,oneof"`
+}
+
 func (*WorkflowPattern_Debate) isWorkflowPattern_Pattern() {}
 
 func (*WorkflowPattern_ForkJoin) isWorkflowPattern_Pattern() {}
@@ -472,6 +563,8 @@ func (*WorkflowPattern_PairProgramming) isWorkflowPattern_Pattern() {}
 func (*WorkflowPattern_TeacherStudent) isWorkflowPattern_Pattern() {}
 
 func (*WorkflowPattern_Iterative) isWorkflowPattern_Pattern() {}
+
+func (*WorkflowPattern_StateMachine) isWorkflowPattern_Pattern() {}
 
 // DebatePattern orchestrates multiple agents to debate a topic and reach consensus.
 // Agents see each other's responses from previous rounds and build on them.
@@ -963,7 +1056,10 @@ type HITLGateRequest struct {
 	// Advisory decision timeout in seconds (from HITLGate.timeout_seconds).
 	TimeoutSeconds int32 `protobuf:"varint,7,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
 	// Suggested decision options for the UI (e.g. approve, revise, reject).
-	Options       []string `protobuf:"bytes,8,rep,name=options,proto3" json:"options,omitempty"`
+	Options []string `protobuf:"bytes,8,rep,name=options,proto3" json:"options,omitempty"`
+	// Dotted state path for state-machine gates ("DEV.P_REVIEW"). Empty for
+	// pipeline/iterative, where stage_agent_id and stage_number locate the gate.
+	StatePath     string `protobuf:"bytes,9,opt,name=state_path,json=statePath,proto3" json:"state_path,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1054,6 +1150,13 @@ func (x *HITLGateRequest) GetOptions() []string {
 	return nil
 }
 
+func (x *HITLGateRequest) GetStatePath() string {
+	if x != nil {
+		return x.StatePath
+	}
+	return ""
+}
+
 // GateDecision carries the human's decision back into the executor.
 type GateDecision struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1129,9 +1232,11 @@ type WorkflowCheckpoint struct {
 	// Checkpoint schema version for forward evolution. Current version: 1.
 	CheckpointVersion int32 `protobuf:"varint,1,opt,name=checkpoint_version,json=checkpointVersion,proto3" json:"checkpoint_version,omitempty"`
 	// SHA-256 (hex) of the deterministically-marshaled WorkflowPattern this
-	// checkpoint was taken against. Resume MUST verify this matches the
-	// pattern it is resuming with — resuming against an edited workflow is
-	// how unreviewed changes would get executed.
+	// checkpoint was taken against, for a pipeline or iterative workflow.
+	// Resume MUST verify this matches the pattern it is resuming with —
+	// resuming against an edited workflow is how unreviewed changes would get
+	// executed. Empty for a state machine, whose checkpoint is a position in
+	// the machine and is resumed on the machine as it is defined then.
 	ConfigFingerprint string `protobuf:"bytes,2,opt,name=config_fingerprint,json=configFingerprint,proto3" json:"config_fingerprint,omitempty"`
 	// Resolved workflow ID of the original run (keeps stage session IDs
 	// deterministic across suspend/resume).
@@ -1163,7 +1268,30 @@ type WorkflowCheckpoint struct {
 	// stage_snapshots). Restored on resume.
 	SharedMemory []*CheckpointMemoryEntry `protobuf:"bytes,13,rep,name=shared_memory,json=sharedMemory,proto3" json:"shared_memory,omitempty"`
 	// Checkpoint creation time (Unix milliseconds).
-	CreatedAtMs   int64 `protobuf:"varint,14,opt,name=created_at_ms,json=createdAtMs,proto3" json:"created_at_ms,omitempty"`
+	CreatedAtMs int64 `protobuf:"varint,14,opt,name=created_at_ms,json=createdAtMs,proto3" json:"created_at_ms,omitempty"`
+	// Position as a path, outermost state first. A single element for a flat
+	// machine; deeper when a nested body suspended. Empty for pipeline and
+	// iterative, whose position is next_stage_index.
+	StatePath []string `protobuf:"bytes,15,rep,name=state_path,json=statePath,proto3" json:"state_path,omitempty"`
+	// Why the run suspended. UNSPECIFIED on pipeline/iterative checkpoints,
+	// which suspend only at gates.
+	SuspendReason SuspendReason `protobuf:"varint,16,opt,name=suspend_reason,json=suspendReason,proto3,enum=loom.v1.SuspendReason" json:"suspend_reason,omitempty"`
+	// Checkpoint of the nested pattern when suspend_reason is NESTED.
+	NestedCheckpoint *WorkflowCheckpoint `protobuf:"bytes,17,opt,name=nested_checkpoint,json=nestedCheckpoint,proto3" json:"nested_checkpoint,omitempty"`
+	// Cumulative USD this run is permitted to spend, raised by one further
+	// max_cost_usd each time a COST_CAP suspension is approved. 0 = the
+	// pattern's max_cost_usd applies unmodified. Checkpoint state, not pattern
+	// state, so granting more budget never changes config_fingerprint.
+	GrantedCostUsd float64 `protobuf:"fixed64,18,opt,name=granted_cost_usd,json=grantedCostUsd,proto3" json:"granted_cost_usd,omitempty"`
+	// Total transitions permitted, raised the same way on an approved
+	// MAX_TRANSITIONS suspension. 0 = the pattern's value applies.
+	GrantedTransitions int32 `protobuf:"varint,19,opt,name=granted_transitions,json=grantedTransitions,proto3" json:"granted_transitions,omitempty"`
+	// Run state: what the loop keeps across states — the items it is working
+	// through, what its children finished as, where its cursor is. Restored on
+	// resume, so a list survives a park exactly as a position does.
+	Vars map[string]string `protobuf:"bytes,20,rep,name=vars,proto3" json:"vars,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// What went wrong, when suspend_reason is ERROR.
+	Error         string `protobuf:"bytes,21,opt,name=error,proto3" json:"error,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1294,6 +1422,55 @@ func (x *WorkflowCheckpoint) GetCreatedAtMs() int64 {
 		return x.CreatedAtMs
 	}
 	return 0
+}
+
+func (x *WorkflowCheckpoint) GetStatePath() []string {
+	if x != nil {
+		return x.StatePath
+	}
+	return nil
+}
+
+func (x *WorkflowCheckpoint) GetSuspendReason() SuspendReason {
+	if x != nil {
+		return x.SuspendReason
+	}
+	return SuspendReason_SUSPEND_REASON_UNSPECIFIED
+}
+
+func (x *WorkflowCheckpoint) GetNestedCheckpoint() *WorkflowCheckpoint {
+	if x != nil {
+		return x.NestedCheckpoint
+	}
+	return nil
+}
+
+func (x *WorkflowCheckpoint) GetGrantedCostUsd() float64 {
+	if x != nil {
+		return x.GrantedCostUsd
+	}
+	return 0
+}
+
+func (x *WorkflowCheckpoint) GetGrantedTransitions() int32 {
+	if x != nil {
+		return x.GrantedTransitions
+	}
+	return 0
+}
+
+func (x *WorkflowCheckpoint) GetVars() map[string]string {
+	if x != nil {
+		return x.Vars
+	}
+	return nil
+}
+
+func (x *WorkflowCheckpoint) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
 }
 
 // CheckpointStageSnapshot is the latest full output of one completed stage.
@@ -3570,11 +3747,755 @@ func (x *ScheduleStats) GetLastError() string {
 	return ""
 }
 
+type StateMachinePattern struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Where the walk begins. Must name a key in states.
+	EntryState string `protobuf:"bytes,1,opt,name=entry_state,json=entryState,proto3" json:"entry_state,omitempty"`
+	// The graph. Keys are state names; they are the routing vocabulary's targets.
+	States map[string]*WorkflowState `protobuf:"bytes,2,rep,name=states,proto3" json:"states,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Safety bound on how many times a loopback state may be re-entered
+	// (default: 100). Exceeding it suspends with MAX_TRANSITIONS so a graph that
+	// is turning without converging parks for a human rather than running forever.
+	MaxTransitions int32 `protobuf:"varint,3,opt,name=max_transitions,json=maxTransitions,proto3" json:"max_transitions,omitempty"`
+	// States whose re-entry counts toward that bound. A run that legitimately
+	// walks two hundred states is not stalling; a plan revised six times is, and
+	// only the states in a cycle can tell the difference. Empty = every state.
+	LoopbackStates []string `protobuf:"bytes,8,rep,name=loopback_states,json=loopbackStates,proto3" json:"loopback_states,omitempty"`
+	// Cumulative USD ceiling across the whole walk. 0 = uncapped. Exceeding it
+	// suspends with COST_CAP.
+	MaxCostUsd float64 `protobuf:"fixed64,4,opt,name=max_cost_usd,json=maxCostUsd,proto3" json:"max_cost_usd,omitempty"`
+	// Signals that park immediately and bubble to the OWNING scope when this
+	// machine runs as a nested body. Whoever started the run decides them; the
+	// run itself must not, and no inline handler is consulted.
+	BubbleSignals []string `protobuf:"bytes,5,rep,name=bubble_signals,json=bubbleSignals,proto3" json:"bubble_signals,omitempty"`
+	// The working directory this run acts on. The world a process operates on is
+	// a directory: tool states run in it, and a child run gets one beneath it.
+	Dir string `protobuf:"bytes,7,opt,name=dir,proto3" json:"dir,omitempty"`
+	// The directory this machine's agent states work in: where an agent's
+	// commands start and its relative paths resolve, and what each of its steps
+	// is told. Written with the run's variables ({loom_dir} is the run's own
+	// directory); a relative value is beneath the run's directory. Empty leaves
+	// an agent where it was built.
+	AgentDir string `protobuf:"bytes,9,opt,name=agent_dir,json=agentDir,proto3" json:"agent_dir,omitempty"`
+	// The state that is this machine's manager: where a step that cannot go on
+	// is sent, and from where the machine is sent back to a step by its name.
+	// An agent step's escalation and a single child machine's every end but done
+	// go to it unless the step routes them itself; its own escalation is the
+	// only way anything leaves the machine. Empty for a machine with none.
+	LogicSeat string `protobuf:"bytes,10,opt,name=logic_seat,json=logicSeat,proto3" json:"logic_seat,omitempty"`
+	// signal -> the payload fields that signal must carry. A signal arriving
+	// without them is an answer the machine cannot use: it goes back to the
+	// agent once, naming what is missing, and still without them it is the
+	// step's escalation.
+	SignalFields  map[string]*SignalFields `protobuf:"bytes,6,rep,name=signal_fields,json=signalFields,proto3" json:"signal_fields,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StateMachinePattern) Reset() {
+	*x = StateMachinePattern{}
+	mi := &file_loom_v1_orchestration_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StateMachinePattern) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StateMachinePattern) ProtoMessage() {}
+
+func (x *StateMachinePattern) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_orchestration_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StateMachinePattern.ProtoReflect.Descriptor instead.
+func (*StateMachinePattern) Descriptor() ([]byte, []int) {
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *StateMachinePattern) GetEntryState() string {
+	if x != nil {
+		return x.EntryState
+	}
+	return ""
+}
+
+func (x *StateMachinePattern) GetStates() map[string]*WorkflowState {
+	if x != nil {
+		return x.States
+	}
+	return nil
+}
+
+func (x *StateMachinePattern) GetMaxTransitions() int32 {
+	if x != nil {
+		return x.MaxTransitions
+	}
+	return 0
+}
+
+func (x *StateMachinePattern) GetLoopbackStates() []string {
+	if x != nil {
+		return x.LoopbackStates
+	}
+	return nil
+}
+
+func (x *StateMachinePattern) GetMaxCostUsd() float64 {
+	if x != nil {
+		return x.MaxCostUsd
+	}
+	return 0
+}
+
+func (x *StateMachinePattern) GetBubbleSignals() []string {
+	if x != nil {
+		return x.BubbleSignals
+	}
+	return nil
+}
+
+func (x *StateMachinePattern) GetDir() string {
+	if x != nil {
+		return x.Dir
+	}
+	return ""
+}
+
+func (x *StateMachinePattern) GetAgentDir() string {
+	if x != nil {
+		return x.AgentDir
+	}
+	return ""
+}
+
+func (x *StateMachinePattern) GetLogicSeat() string {
+	if x != nil {
+		return x.LogicSeat
+	}
+	return ""
+}
+
+func (x *StateMachinePattern) GetSignalFields() map[string]*SignalFields {
+	if x != nil {
+		return x.SignalFields
+	}
+	return nil
+}
+
+type SignalFields struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Fields        []string               `protobuf:"bytes,1,rep,name=fields,proto3" json:"fields,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SignalFields) Reset() {
+	*x = SignalFields{}
+	mi := &file_loom_v1_orchestration_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SignalFields) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SignalFields) ProtoMessage() {}
+
+func (x *SignalFields) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_orchestration_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SignalFields.ProtoReflect.Descriptor instead.
+func (*SignalFields) Descriptor() ([]byte, []int) {
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *SignalFields) GetFields() []string {
+	if x != nil {
+		return x.Fields
+	}
+	return nil
+}
+
+type WorkflowState struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// What running this state does. Exactly one must be set on a non-terminal
+	// state; a terminal state may omit it and simply end the run.
+	//
+	// Types that are valid to be assigned to Body:
+	//
+	//	*WorkflowState_Agent
+	//	*WorkflowState_Tool
+	//	*WorkflowState_Delegate
+	Body isWorkflowState_Body `protobuf_oneof:"body"`
+	// signal -> transition. The keys ARE the legal signal vocabulary: a signal
+	// absent from this map is unroutable by definition, which is what makes
+	// "escalate to a human" decidable rather than a judgement call.
+	Route map[string]*Transition `protobuf:"bytes,4,rep,name=route,proto3" json:"route,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Optional human gate evaluated after the body, before routing.
+	HitlGate *HITLGate `protobuf:"bytes,5,opt,name=hitl_gate,json=hitlGate,proto3" json:"hitl_gate,omitempty"`
+	// Terminal states end the run and return their output. route is ignored.
+	Terminal bool `protobuf:"varint,6,opt,name=terminal,proto3" json:"terminal,omitempty"`
+	// Signals this state may legitimately emit. Empty = the route keys.
+	//
+	// The distinction from route matters. A signal OUTSIDE this set is a
+	// malfunction — the worker ended without a usable signal — and earns one
+	// retry naming the legal ones. A signal INSIDE it but absent from route is
+	// deliberate egress: the state judged its own situation and chose to
+	// escalate, and retrying that would only loop the judgement.
+	Vocab         []string `protobuf:"bytes,7,rep,name=vocab,proto3" json:"vocab,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WorkflowState) Reset() {
+	*x = WorkflowState{}
+	mi := &file_loom_v1_orchestration_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkflowState) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkflowState) ProtoMessage() {}
+
+func (x *WorkflowState) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_orchestration_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkflowState.ProtoReflect.Descriptor instead.
+func (*WorkflowState) Descriptor() ([]byte, []int) {
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *WorkflowState) GetBody() isWorkflowState_Body {
+	if x != nil {
+		return x.Body
+	}
+	return nil
+}
+
+func (x *WorkflowState) GetAgent() *AgentState {
+	if x != nil {
+		if x, ok := x.Body.(*WorkflowState_Agent); ok {
+			return x.Agent
+		}
+	}
+	return nil
+}
+
+func (x *WorkflowState) GetTool() *ToolState {
+	if x != nil {
+		if x, ok := x.Body.(*WorkflowState_Tool); ok {
+			return x.Tool
+		}
+	}
+	return nil
+}
+
+func (x *WorkflowState) GetDelegate() *DelegateState {
+	if x != nil {
+		if x, ok := x.Body.(*WorkflowState_Delegate); ok {
+			return x.Delegate
+		}
+	}
+	return nil
+}
+
+func (x *WorkflowState) GetRoute() map[string]*Transition {
+	if x != nil {
+		return x.Route
+	}
+	return nil
+}
+
+func (x *WorkflowState) GetHitlGate() *HITLGate {
+	if x != nil {
+		return x.HitlGate
+	}
+	return nil
+}
+
+func (x *WorkflowState) GetTerminal() bool {
+	if x != nil {
+		return x.Terminal
+	}
+	return false
+}
+
+func (x *WorkflowState) GetVocab() []string {
+	if x != nil {
+		return x.Vocab
+	}
+	return nil
+}
+
+type isWorkflowState_Body interface {
+	isWorkflowState_Body()
+}
+
+type WorkflowState_Agent struct {
+	// An agent turn. The only body that costs tokens.
+	Agent *AgentState `protobuf:"bytes,1,opt,name=agent,proto3,oneof"`
+}
+
+type WorkflowState_Tool struct {
+	// Work that needs no judgement — publish, deliver, validate, deploy, or
+	// starting a child run. Free, reproducible, and the dominant state kind in
+	// a real process.
+	Tool *ToolState `protobuf:"bytes,2,opt,name=tool,proto3,oneof"`
+}
+
+type WorkflowState_Delegate struct {
+	// Hand the work to another workflow — once, or once per item.
+	Delegate *DelegateState `protobuf:"bytes,3,opt,name=delegate,proto3,oneof"`
+}
+
+func (*WorkflowState_Agent) isWorkflowState_Body() {}
+
+func (*WorkflowState_Tool) isWorkflowState_Body() {}
+
+func (*WorkflowState_Delegate) isWorkflowState_Body() {}
+
+// An agent turn.
+type AgentState struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	AgentId string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
+	// What the seat is to do in this state. Sent the first time the seat enters
+	// the state in its conversation; a return to the state carries only what came
+	// back, because the conversation already holds these instructions.
+	Instructions string `protobuf:"bytes,2,opt,name=instructions,proto3" json:"instructions,omitempty"`
+	// Optional session discriminator template, e.g. "{suite}". One role fanned
+	// across surfaces is several conversations, not one.
+	SessionKeySuffix string `protobuf:"bytes,4,opt,name=session_key_suffix,json=sessionKeySuffix,proto3" json:"session_key_suffix,omitempty"`
+	// The seat of this run whose conversation this seat continues, by agent id:
+	// a test architect that thinks on from the creator's design. The spec says
+	// it, because which mind a seat carries is the loop's shape, not a word a
+	// seat emits. A run var "fork:<agent_id>" naming a session takes precedence.
+	ForkOf        string `protobuf:"bytes,5,opt,name=fork_of,json=forkOf,proto3" json:"fork_of,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AgentState) Reset() {
+	*x = AgentState{}
+	mi := &file_loom_v1_orchestration_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AgentState) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AgentState) ProtoMessage() {}
+
+func (x *AgentState) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_orchestration_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AgentState.ProtoReflect.Descriptor instead.
+func (*AgentState) Descriptor() ([]byte, []int) {
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *AgentState) GetAgentId() string {
+	if x != nil {
+		return x.AgentId
+	}
+	return ""
+}
+
+func (x *AgentState) GetInstructions() string {
+	if x != nil {
+		return x.Instructions
+	}
+	return ""
+}
+
+func (x *AgentState) GetSessionKeySuffix() string {
+	if x != nil {
+		return x.SessionKeySuffix
+	}
+	return ""
+}
+
+func (x *AgentState) GetForkOf() string {
+	if x != nil {
+		return x.ForkOf
+	}
+	return ""
+}
+
+// A tool invocation: work that needs no judgement.
+//
+// It goes through the same executor an agent's tool calls go through — same
+// registry, same admission chain, same sandbox, same audit. A model is upstream
+// of that door, not part of it, so a walker can go through it without asking
+// anyone. A second execution path would be a second idea of what is permitted.
+type ToolState struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Tool name in the registry.
+	Tool string `protobuf:"bytes,1,opt,name=tool,proto3" json:"tool,omitempty"`
+	// Arguments. Values interpolate against the run's own state, so a parameter
+	// can name whichever surface or task is active now.
+	Params        map[string]string `protobuf:"bytes,2,rep,name=params,proto3" json:"params,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ToolState) Reset() {
+	*x = ToolState{}
+	mi := &file_loom_v1_orchestration_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ToolState) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ToolState) ProtoMessage() {}
+
+func (x *ToolState) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_orchestration_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ToolState.ProtoReflect.Descriptor instead.
+func (*ToolState) Descriptor() ([]byte, []int) {
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{39}
+}
+
+func (x *ToolState) GetTool() string {
+	if x != nil {
+		return x.Tool
+	}
+	return ""
+}
+
+func (x *ToolState) GetParams() map[string]string {
+	if x != nil {
+		return x.Params
+	}
+	return nil
+}
+
+// Delegate to another workflow.
+//
+// One child or a hundred is the same step: a single child is a set of one.
+// Building the single case on its own is what hides the questions a set asks —
+// which items are in play, where each runs, what each may spend, and what they
+// all finished as — and every one of those is the parent's own state, not
+// something a tool could answer.
+//
+// Delegation is re-enterable. A child already at its terminal is not run again,
+// so a second round costs only what actually moved, and a parent resumed after
+// a park does not redo its finished children.
+type DelegateState struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The workflow each child runs, written into the state. A state gives this
+	// or workflow_name.
+	Workflow *WorkflowPattern `protobuf:"bytes,1,opt,name=workflow,proto3" json:"workflow,omitempty"`
+	// The workflow each child runs, by name. The engine asks its host for the
+	// workflow of that name each time the state is entered, so the child that
+	// runs is the one defined then.
+	WorkflowName string `protobuf:"bytes,9,opt,name=workflow_name,json=workflowName,proto3" json:"workflow_name,omitempty"`
+	// The field on the signal line of the seat before this state that names
+	// what to delegate over: a comma-separated list of items, or a JSON array of
+	// {"item": …, "dir": …} entries when each child works somewhere of its own.
+	// A list arriving with a transition into this state is a fresh walk; a
+	// re-entry without one continues the walk in progress. Empty delegates once.
+	ItemsKey string `protobuf:"bytes,2,opt,name=items_key,json=itemsKey,proto3" json:"items_key,omitempty"`
+	// Each child's directory, relative to the parent's. "{item}" interpolates.
+	// Empty runs the child in the parent's own directory.
+	DirTemplate string `protobuf:"bytes,3,opt,name=dir_template,json=dirTemplate,proto3" json:"dir_template,omitempty"`
+	// How many children run at once. 0 = all of them.
+	MaxParallel int32 `protobuf:"varint,4,opt,name=max_parallel,json=maxParallel,proto3" json:"max_parallel,omitempty"`
+	// The least a child may be given. The parent's unspent balance is divided
+	// between the children that still have to run; below this floor the engine
+	// says so rather than starving a child into failing halfway.
+	MinBudgetUsd float64 `protobuf:"fixed64,5,opt,name=min_budget_usd,json=minBudgetUsd,proto3" json:"min_budget_usd,omitempty"`
+	// What every child of this state is told beside what it inherits: the
+	// constants that make this delegation the particular one it is — which
+	// environment a verification proves, which suite. A child also always
+	// receives its own item as `item`.
+	Vars map[string]string `protobuf:"bytes,7,rep,name=vars,proto3" json:"vars,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Walk the list one entry at a time and end after each: the signal is
+	// "stepped" with that entry's outcome as the message, and re-entering the
+	// state runs the next entry. When nothing is left the state ends "fanned".
+	// A serial list whose every entry is judged by the state after it.
+	Step          bool `protobuf:"varint,8,opt,name=step,proto3" json:"step,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DelegateState) Reset() {
+	*x = DelegateState{}
+	mi := &file_loom_v1_orchestration_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DelegateState) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DelegateState) ProtoMessage() {}
+
+func (x *DelegateState) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_orchestration_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DelegateState.ProtoReflect.Descriptor instead.
+func (*DelegateState) Descriptor() ([]byte, []int) {
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{40}
+}
+
+func (x *DelegateState) GetWorkflow() *WorkflowPattern {
+	if x != nil {
+		return x.Workflow
+	}
+	return nil
+}
+
+func (x *DelegateState) GetWorkflowName() string {
+	if x != nil {
+		return x.WorkflowName
+	}
+	return ""
+}
+
+func (x *DelegateState) GetItemsKey() string {
+	if x != nil {
+		return x.ItemsKey
+	}
+	return ""
+}
+
+func (x *DelegateState) GetDirTemplate() string {
+	if x != nil {
+		return x.DirTemplate
+	}
+	return ""
+}
+
+func (x *DelegateState) GetMaxParallel() int32 {
+	if x != nil {
+		return x.MaxParallel
+	}
+	return 0
+}
+
+func (x *DelegateState) GetMinBudgetUsd() float64 {
+	if x != nil {
+		return x.MinBudgetUsd
+	}
+	return 0
+}
+
+func (x *DelegateState) GetVars() map[string]string {
+	if x != nil {
+		return x.Vars
+	}
+	return nil
+}
+
+func (x *DelegateState) GetStep() bool {
+	if x != nil {
+		return x.Step
+	}
+	return false
+}
+
+// An edge. Deterministic work fires before the move; the destination may be a
+// named state or computed by the host.
+type Transition struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Target:
+	//
+	//	*Transition_NextState
+	//	*Transition_NextTool
+	Target isTransition_Target `protobuf_oneof:"target"`
+	// Agent sessions to end on this edge, resetting their context. "*" ends all
+	// of them; "{suite}" is interpolated from run variables. Dismissal is what
+	// bounds session growth across an unbounded walk.
+	Dismiss []string `protobuf:"bytes,3,rep,name=dismiss,proto3" json:"dismiss,omitempty"`
+	// Side effect fired before the move, as a tool call.
+	Hook *ToolState `protobuf:"bytes,4,opt,name=hook,proto3" json:"hook,omitempty"`
+	// Write a checkpoint before the move. The engine's own, not a tool: it
+	// captures the sessions a resumed run will still find, which is why it
+	// happens before any dismissal on the same edge.
+	Checkpoint bool `protobuf:"varint,5,opt,name=checkpoint,proto3" json:"checkpoint,omitempty"`
+	// Where the child loop of the state this edge enters takes up, when that
+	// child ran to done before: the step named here, which runs its last child
+	// again. A delivered piece of work sent back is taken up at its proof, not
+	// walked again from its first step.
+	Enter         string `protobuf:"bytes,6,opt,name=enter,proto3" json:"enter,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Transition) Reset() {
+	*x = Transition{}
+	mi := &file_loom_v1_orchestration_proto_msgTypes[41]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Transition) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Transition) ProtoMessage() {}
+
+func (x *Transition) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_orchestration_proto_msgTypes[41]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Transition.ProtoReflect.Descriptor instead.
+func (*Transition) Descriptor() ([]byte, []int) {
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{41}
+}
+
+func (x *Transition) GetTarget() isTransition_Target {
+	if x != nil {
+		return x.Target
+	}
+	return nil
+}
+
+func (x *Transition) GetNextState() string {
+	if x != nil {
+		if x, ok := x.Target.(*Transition_NextState); ok {
+			return x.NextState
+		}
+	}
+	return ""
+}
+
+func (x *Transition) GetNextTool() *ToolState {
+	if x != nil {
+		if x, ok := x.Target.(*Transition_NextTool); ok {
+			return x.NextTool
+		}
+	}
+	return nil
+}
+
+func (x *Transition) GetDismiss() []string {
+	if x != nil {
+		return x.Dismiss
+	}
+	return nil
+}
+
+func (x *Transition) GetHook() *ToolState {
+	if x != nil {
+		return x.Hook
+	}
+	return nil
+}
+
+func (x *Transition) GetCheckpoint() bool {
+	if x != nil {
+		return x.Checkpoint
+	}
+	return false
+}
+
+func (x *Transition) GetEnter() string {
+	if x != nil {
+		return x.Enter
+	}
+	return ""
+}
+
+type isTransition_Target interface {
+	isTransition_Target()
+}
+
+type Transition_NextState struct {
+	// A state name in StateMachinePattern.states.
+	NextState string `protobuf:"bytes,1,opt,name=next_state,json=nextState,proto3,oneof"`
+}
+
+type Transition_NextTool struct {
+	// A tool that computes the destination from run state — walking a task
+	// DAG, bounded replans, aggregation. Its signal is the next state's name,
+	// validated against states before the move: deterministic is not trusted.
+	NextTool *ToolState `protobuf:"bytes,2,opt,name=next_tool,json=nextTool,proto3,oneof"`
+}
+
+func (*Transition_NextState) isTransition_Target() {}
+
+func (*Transition_NextTool) isTransition_Target() {}
+
 var File_loom_v1_orchestration_proto protoreflect.FileDescriptor
 
 const file_loom_v1_orchestration_proto_rawDesc = "" +
 	"\n" +
-	"\x1bloom/v1/orchestration.proto\x12\aloom.v1\x1a\x1aloom/v1/agent_config.proto\x1a\x1bloom/v1/collaboration.proto\"\xe4\x04\n" +
+	"\x1bloom/v1/orchestration.proto\x12\aloom.v1\x1a\x1aloom/v1/agent_config.proto\x1a\x1bloom/v1/collaboration.proto\"\xa9\x05\n" +
 	"\x0fWorkflowPattern\x120\n" +
 	"\x06debate\x18\x01 \x01(\v2\x16.loom.v1.DebatePatternH\x00R\x06debate\x127\n" +
 	"\tfork_join\x18\x02 \x01(\v2\x18.loom.v1.ForkJoinPatternH\x00R\bforkJoin\x126\n" +
@@ -3584,7 +4505,8 @@ const file_loom_v1_orchestration_proto_rawDesc = "" +
 	"\x05swarm\x18\x06 \x01(\v2\x15.loom.v1.SwarmPatternH\x00R\x05swarm\x12L\n" +
 	"\x10pair_programming\x18\a \x01(\v2\x1f.loom.v1.PairProgrammingPatternH\x00R\x0fpairProgramming\x12I\n" +
 	"\x0fteacher_student\x18\b \x01(\v2\x1e.loom.v1.TeacherStudentPatternH\x00R\x0eteacherStudent\x12A\n" +
-	"\titerative\x18\t \x01(\v2!.loom.v1.IterativeWorkflowPatternH\x00R\titerative\x12\x1f\n" +
+	"\titerative\x18\t \x01(\v2!.loom.v1.IterativeWorkflowPatternH\x00R\titerative\x12C\n" +
+	"\rstate_machine\x18\v \x01(\v2\x1c.loom.v1.StateMachinePatternH\x00R\fstateMachine\x12\x1f\n" +
 	"\vworkflow_id\x18\n" +
 	" \x01(\tR\n" +
 	"workflowIdB\t\n" +
@@ -3621,7 +4543,7 @@ const file_loom_v1_orchestration_proto_rawDesc = "" +
 	"\x16revise_target_stage_id\x18\x04 \x01(\tR\x13reviseTargetStageId\x12#\n" +
 	"\rmax_revisions\x18\x05 \x01(\x05R\fmaxRevisions\x129\n" +
 	"\n" +
-	"on_timeout\x18\x06 \x01(\x0e2\x1a.loom.v1.GateTimeoutActionR\tonTimeout\"\xa0\x02\n" +
+	"on_timeout\x18\x06 \x01(\x0e2\x1a.loom.v1.GateTimeoutActionR\tonTimeout\"\xbf\x02\n" +
 	"\x0fHITLGateRequest\x12\x1f\n" +
 	"\vworkflow_id\x18\x01 \x01(\tR\n" +
 	"workflowId\x12$\n" +
@@ -3631,12 +4553,15 @@ const file_loom_v1_orchestration_proto_rawDesc = "" +
 	"\fstage_output\x18\x05 \x01(\tR\vstageOutput\x12!\n" +
 	"\frequest_type\x18\x06 \x01(\tR\vrequestType\x12'\n" +
 	"\x0ftimeout_seconds\x18\a \x01(\x05R\x0etimeoutSeconds\x12\x18\n" +
-	"\aoptions\x18\b \x03(\tR\aoptions\"v\n" +
+	"\aoptions\x18\b \x03(\tR\aoptions\x12\x1d\n" +
+	"\n" +
+	"state_path\x18\t \x01(\tR\tstatePath\"v\n" +
 	"\fGateDecision\x12+\n" +
 	"\x06action\x18\x01 \x01(\x0e2\x13.loom.v1.GateActionR\x06action\x12\x1a\n" +
 	"\bfeedback\x18\x02 \x01(\tR\bfeedback\x12\x1d\n" +
 	"\n" +
-	"decided_by\x18\x03 \x01(\tR\tdecidedBy\"\x92\a\n" +
+	"decided_by\x18\x03 \x01(\tR\tdecidedBy\"\x9f\n" +
+	"\n" +
 	"\x12WorkflowCheckpoint\x12-\n" +
 	"\x12checkpoint_version\x18\x01 \x01(\x05R\x11checkpointVersion\x12-\n" +
 	"\x12config_fingerprint\x18\x02 \x01(\tR\x11configFingerprint\x12\x1f\n" +
@@ -3655,13 +4580,24 @@ const file_loom_v1_orchestration_proto_rawDesc = "" +
 	"\x14gate_revision_counts\x18\v \x03(\v23.loom.v1.WorkflowCheckpoint.GateRevisionCountsEntryR\x12gateRevisionCounts\x12;\n" +
 	"\fpending_gate\x18\f \x01(\v2\x18.loom.v1.HITLGateRequestR\vpendingGate\x12C\n" +
 	"\rshared_memory\x18\r \x03(\v2\x1e.loom.v1.CheckpointMemoryEntryR\fsharedMemory\x12\"\n" +
-	"\rcreated_at_ms\x18\x0e \x01(\x03R\vcreatedAtMs\x1a=\n" +
+	"\rcreated_at_ms\x18\x0e \x01(\x03R\vcreatedAtMs\x12\x1d\n" +
+	"\n" +
+	"state_path\x18\x0f \x03(\tR\tstatePath\x12=\n" +
+	"\x0esuspend_reason\x18\x10 \x01(\x0e2\x16.loom.v1.SuspendReasonR\rsuspendReason\x12H\n" +
+	"\x11nested_checkpoint\x18\x11 \x01(\v2\x1b.loom.v1.WorkflowCheckpointR\x10nestedCheckpoint\x12(\n" +
+	"\x10granted_cost_usd\x18\x12 \x01(\x01R\x0egrantedCostUsd\x12/\n" +
+	"\x13granted_transitions\x18\x13 \x01(\x05R\x12grantedTransitions\x129\n" +
+	"\x04vars\x18\x14 \x03(\v2%.loom.v1.WorkflowCheckpoint.VarsEntryR\x04vars\x12\x14\n" +
+	"\x05error\x18\x15 \x01(\tR\x05error\x1a=\n" +
 	"\x0fModelsUsedEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aE\n" +
 	"\x17GateRevisionCountsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01\"U\n" +
+	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01\x1a7\n" +
+	"\tVarsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"U\n" +
 	"\x17CheckpointStageSnapshot\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x1f\n" +
 	"\vfull_output\x18\x02 \x01(\tR\n" +
@@ -3869,7 +4805,79 @@ const file_loom_v1_orchestration_proto_rawDesc = "" +
 	"\vlast_status\x18\x05 \x01(\tR\n" +
 	"lastStatus\x12\x1d\n" +
 	"\n" +
-	"last_error\x18\x06 \x01(\tR\tlastError*\x97\x01\n" +
+	"last_error\x18\x06 \x01(\tR\tlastError\"\xe1\x04\n" +
+	"\x13StateMachinePattern\x12\x1f\n" +
+	"\ventry_state\x18\x01 \x01(\tR\n" +
+	"entryState\x12@\n" +
+	"\x06states\x18\x02 \x03(\v2(.loom.v1.StateMachinePattern.StatesEntryR\x06states\x12'\n" +
+	"\x0fmax_transitions\x18\x03 \x01(\x05R\x0emaxTransitions\x12'\n" +
+	"\x0floopback_states\x18\b \x03(\tR\x0eloopbackStates\x12 \n" +
+	"\fmax_cost_usd\x18\x04 \x01(\x01R\n" +
+	"maxCostUsd\x12%\n" +
+	"\x0ebubble_signals\x18\x05 \x03(\tR\rbubbleSignals\x12\x10\n" +
+	"\x03dir\x18\a \x01(\tR\x03dir\x12\x1b\n" +
+	"\tagent_dir\x18\t \x01(\tR\bagentDir\x12\x1d\n" +
+	"\n" +
+	"logic_seat\x18\n" +
+	" \x01(\tR\tlogicSeat\x12S\n" +
+	"\rsignal_fields\x18\x06 \x03(\v2..loom.v1.StateMachinePattern.SignalFieldsEntryR\fsignalFields\x1aQ\n" +
+	"\vStatesEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12,\n" +
+	"\x05value\x18\x02 \x01(\v2\x16.loom.v1.WorkflowStateR\x05value:\x028\x01\x1aV\n" +
+	"\x11SignalFieldsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12+\n" +
+	"\x05value\x18\x02 \x01(\v2\x15.loom.v1.SignalFieldsR\x05value:\x028\x01\"&\n" +
+	"\fSignalFields\x12\x16\n" +
+	"\x06fields\x18\x01 \x03(\tR\x06fields\"\x8e\x03\n" +
+	"\rWorkflowState\x12+\n" +
+	"\x05agent\x18\x01 \x01(\v2\x13.loom.v1.AgentStateH\x00R\x05agent\x12(\n" +
+	"\x04tool\x18\x02 \x01(\v2\x12.loom.v1.ToolStateH\x00R\x04tool\x124\n" +
+	"\bdelegate\x18\x03 \x01(\v2\x16.loom.v1.DelegateStateH\x00R\bdelegate\x127\n" +
+	"\x05route\x18\x04 \x03(\v2!.loom.v1.WorkflowState.RouteEntryR\x05route\x12.\n" +
+	"\thitl_gate\x18\x05 \x01(\v2\x11.loom.v1.HITLGateR\bhitlGate\x12\x1a\n" +
+	"\bterminal\x18\x06 \x01(\bR\bterminal\x12\x14\n" +
+	"\x05vocab\x18\a \x03(\tR\x05vocab\x1aM\n" +
+	"\n" +
+	"RouteEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
+	"\x05value\x18\x02 \x01(\v2\x13.loom.v1.TransitionR\x05value:\x028\x01B\x06\n" +
+	"\x04body\"\xa7\x01\n" +
+	"\n" +
+	"AgentState\x12\x19\n" +
+	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\"\n" +
+	"\finstructions\x18\x02 \x01(\tR\finstructions\x12,\n" +
+	"\x12session_key_suffix\x18\x04 \x01(\tR\x10sessionKeySuffix\x12\x17\n" +
+	"\afork_of\x18\x05 \x01(\tR\x06forkOfJ\x04\b\x03\x10\x04R\rresume_prompt\"\x92\x01\n" +
+	"\tToolState\x12\x12\n" +
+	"\x04tool\x18\x01 \x01(\tR\x04tool\x126\n" +
+	"\x06params\x18\x02 \x03(\v2\x1e.loom.v1.ToolState.ParamsEntryR\x06params\x1a9\n" +
+	"\vParamsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x8a\x03\n" +
+	"\rDelegateState\x124\n" +
+	"\bworkflow\x18\x01 \x01(\v2\x18.loom.v1.WorkflowPatternR\bworkflow\x12#\n" +
+	"\rworkflow_name\x18\t \x01(\tR\fworkflowName\x12\x1b\n" +
+	"\titems_key\x18\x02 \x01(\tR\bitemsKey\x12!\n" +
+	"\fdir_template\x18\x03 \x01(\tR\vdirTemplate\x12!\n" +
+	"\fmax_parallel\x18\x04 \x01(\x05R\vmaxParallel\x12$\n" +
+	"\x0emin_budget_usd\x18\x05 \x01(\x01R\fminBudgetUsd\x124\n" +
+	"\x04vars\x18\a \x03(\v2 .loom.v1.DelegateState.VarsEntryR\x04vars\x12\x12\n" +
+	"\x04step\x18\b \x01(\bR\x04step\x1a7\n" +
+	"\tVarsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\x06\x10\aR\foutcomes_key\"\xe2\x01\n" +
+	"\n" +
+	"Transition\x12\x1f\n" +
+	"\n" +
+	"next_state\x18\x01 \x01(\tH\x00R\tnextState\x121\n" +
+	"\tnext_tool\x18\x02 \x01(\v2\x12.loom.v1.ToolStateH\x00R\bnextTool\x12\x18\n" +
+	"\adismiss\x18\x03 \x03(\tR\adismiss\x12&\n" +
+	"\x04hook\x18\x04 \x01(\v2\x12.loom.v1.ToolStateR\x04hook\x12\x1e\n" +
+	"\n" +
+	"checkpoint\x18\x05 \x01(\bR\n" +
+	"checkpoint\x12\x14\n" +
+	"\x05enter\x18\x06 \x01(\tR\x05enterB\b\n" +
+	"\x06target*\x97\x01\n" +
 	"\x11GateTimeoutAction\x12#\n" +
 	"\x1fGATE_TIMEOUT_ACTION_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18GATE_TIMEOUT_ACTION_FAIL\x10\x01\x12\x1e\n" +
@@ -3893,7 +4901,16 @@ const file_loom_v1_orchestration_proto_rawDesc = "" +
 	"\x14ScheduledSessionMode\x12&\n" +
 	"\"SCHEDULED_SESSION_MODE_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aSCHEDULED_SESSION_MODE_NEW\x10\x01\x12!\n" +
-	"\x1dSCHEDULED_SESSION_MODE_RESUME\x10\x02B5Z3github.com/teradata-labs/loom/gen/go/loom/v1;loomv1b\x06proto3"
+	"\x1dSCHEDULED_SESSION_MODE_RESUME\x10\x02*\xf9\x01\n" +
+	"\rSuspendReason\x12\x1e\n" +
+	"\x1aSUSPEND_REASON_UNSPECIFIED\x10\x00\x12\x17\n" +
+	"\x13SUSPEND_REASON_GATE\x10\x01\x12\x1d\n" +
+	"\x19SUSPEND_REASON_UNROUTABLE\x10\x02\x12\x1b\n" +
+	"\x17SUSPEND_REASON_COST_CAP\x10\x03\x12\"\n" +
+	"\x1eSUSPEND_REASON_MAX_TRANSITIONS\x10\x04\x12\x19\n" +
+	"\x15SUSPEND_REASON_NESTED\x10\x05\x12\x1a\n" +
+	"\x16SUSPEND_REASON_BUBBLED\x10\x06\x12\x18\n" +
+	"\x14SUSPEND_REASON_ERROR\x10\aB5Z3github.com/teradata-labs/loom/gen/go/loom/v1;loomv1b\x06proto3"
 
 var (
 	file_loom_v1_orchestration_proto_rawDescOnce sync.Once
@@ -3907,145 +4924,178 @@ func file_loom_v1_orchestration_proto_rawDescGZIP() []byte {
 	return file_loom_v1_orchestration_proto_rawDescData
 }
 
-var file_loom_v1_orchestration_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_loom_v1_orchestration_proto_msgTypes = make([]protoimpl.MessageInfo, 48)
+var file_loom_v1_orchestration_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
+var file_loom_v1_orchestration_proto_msgTypes = make([]protoimpl.MessageInfo, 61)
 var file_loom_v1_orchestration_proto_goTypes = []any{
 	(GateTimeoutAction)(0),           // 0: loom.v1.GateTimeoutAction
 	(GateAction)(0),                  // 1: loom.v1.GateAction
 	(MergeStrategy)(0),               // 2: loom.v1.MergeStrategy
 	(ScheduledSessionMode)(0),        // 3: loom.v1.ScheduledSessionMode
-	(*WorkflowPattern)(nil),          // 4: loom.v1.WorkflowPattern
-	(*DebatePattern)(nil),            // 5: loom.v1.DebatePattern
-	(*ForkJoinPattern)(nil),          // 6: loom.v1.ForkJoinPattern
-	(*PipelinePattern)(nil),          // 7: loom.v1.PipelinePattern
-	(*PipelineStage)(nil),            // 8: loom.v1.PipelineStage
-	(*HITLGate)(nil),                 // 9: loom.v1.HITLGate
-	(*HITLGateRequest)(nil),          // 10: loom.v1.HITLGateRequest
-	(*GateDecision)(nil),             // 11: loom.v1.GateDecision
-	(*WorkflowCheckpoint)(nil),       // 12: loom.v1.WorkflowCheckpoint
-	(*CheckpointStageSnapshot)(nil),  // 13: loom.v1.CheckpointStageSnapshot
-	(*CheckpointMemoryEntry)(nil),    // 14: loom.v1.CheckpointMemoryEntry
-	(*IterativeWorkflowPattern)(nil), // 15: loom.v1.IterativeWorkflowPattern
-	(*RestartPolicy)(nil),            // 16: loom.v1.RestartPolicy
-	(*RestartRequest)(nil),           // 17: loom.v1.RestartRequest
-	(*RestartResponse)(nil),          // 18: loom.v1.RestartResponse
-	(*ParallelPattern)(nil),          // 19: loom.v1.ParallelPattern
-	(*AgentTask)(nil),                // 20: loom.v1.AgentTask
-	(*LevelingRung)(nil),             // 21: loom.v1.LevelingRung
-	(*LevelingTierPolicy)(nil),       // 22: loom.v1.LevelingTierPolicy
-	(*LevelingPolicy)(nil),           // 23: loom.v1.LevelingPolicy
-	(*ConditionalPattern)(nil),       // 24: loom.v1.ConditionalPattern
-	(*WorkflowResult)(nil),           // 25: loom.v1.WorkflowResult
-	(*DebateResult)(nil),             // 26: loom.v1.DebateResult
-	(*AgentResult)(nil),              // 27: loom.v1.AgentResult
-	(*AgentExecutionCost)(nil),       // 28: loom.v1.AgentExecutionCost
-	(*WorkflowCost)(nil),             // 29: loom.v1.WorkflowCost
-	(*WorkflowExecution)(nil),        // 30: loom.v1.WorkflowExecution
-	(*ExecuteWorkflowRequest)(nil),   // 31: loom.v1.ExecuteWorkflowRequest
-	(*WorkflowSummary)(nil),          // 32: loom.v1.WorkflowSummary
-	(*ListWorkflowsRequest)(nil),     // 33: loom.v1.ListWorkflowsRequest
-	(*ListWorkflowsResponse)(nil),    // 34: loom.v1.ListWorkflowsResponse
-	(*ExecuteWorkflowResponse)(nil),  // 35: loom.v1.ExecuteWorkflowResponse
-	(*ScheduleConfig)(nil),           // 36: loom.v1.ScheduleConfig
-	(*ScheduledWorkflow)(nil),        // 37: loom.v1.ScheduledWorkflow
-	(*ScheduleStats)(nil),            // 38: loom.v1.ScheduleStats
-	nil,                              // 39: loom.v1.WorkflowCheckpoint.ModelsUsedEntry
-	nil,                              // 40: loom.v1.WorkflowCheckpoint.GateRevisionCountsEntry
-	nil,                              // 41: loom.v1.CheckpointMemoryEntry.MetadataEntry
-	nil,                              // 42: loom.v1.RestartRequest.ParametersEntry
-	nil,                              // 43: loom.v1.AgentTask.MetadataEntry
-	nil,                              // 44: loom.v1.LevelingPolicy.TierPoliciesEntry
-	nil,                              // 45: loom.v1.ConditionalPattern.BranchesEntry
-	nil,                              // 46: loom.v1.WorkflowResult.MetadataEntry
-	nil,                              // 47: loom.v1.WorkflowResult.ModelsUsedEntry
-	nil,                              // 48: loom.v1.AgentResult.MetadataEntry
-	nil,                              // 49: loom.v1.WorkflowCost.AgentCostsUsdEntry
-	nil,                              // 50: loom.v1.ExecuteWorkflowRequest.VariablesEntry
-	nil,                              // 51: loom.v1.ScheduleConfig.VariablesEntry
-	(*SwarmPattern)(nil),             // 52: loom.v1.SwarmPattern
-	(*PairProgrammingPattern)(nil),   // 53: loom.v1.PairProgrammingPattern
-	(*TeacherStudentPattern)(nil),    // 54: loom.v1.TeacherStudentPattern
-	(*OutputPolicy)(nil),             // 55: loom.v1.OutputPolicy
-	(*OutputRetryPolicy)(nil),        // 56: loom.v1.OutputRetryPolicy
-	(LLMRole)(0),                     // 57: loom.v1.LLMRole
-	(*SwarmResult)(nil),              // 58: loom.v1.SwarmResult
-	(*PairProgrammingResult)(nil),    // 59: loom.v1.PairProgrammingResult
-	(*TeacherStudentResult)(nil),     // 60: loom.v1.TeacherStudentResult
-	(*CollaborationMetrics)(nil),     // 61: loom.v1.CollaborationMetrics
-	(*DebateRound)(nil),              // 62: loom.v1.DebateRound
+	(SuspendReason)(0),               // 4: loom.v1.SuspendReason
+	(*WorkflowPattern)(nil),          // 5: loom.v1.WorkflowPattern
+	(*DebatePattern)(nil),            // 6: loom.v1.DebatePattern
+	(*ForkJoinPattern)(nil),          // 7: loom.v1.ForkJoinPattern
+	(*PipelinePattern)(nil),          // 8: loom.v1.PipelinePattern
+	(*PipelineStage)(nil),            // 9: loom.v1.PipelineStage
+	(*HITLGate)(nil),                 // 10: loom.v1.HITLGate
+	(*HITLGateRequest)(nil),          // 11: loom.v1.HITLGateRequest
+	(*GateDecision)(nil),             // 12: loom.v1.GateDecision
+	(*WorkflowCheckpoint)(nil),       // 13: loom.v1.WorkflowCheckpoint
+	(*CheckpointStageSnapshot)(nil),  // 14: loom.v1.CheckpointStageSnapshot
+	(*CheckpointMemoryEntry)(nil),    // 15: loom.v1.CheckpointMemoryEntry
+	(*IterativeWorkflowPattern)(nil), // 16: loom.v1.IterativeWorkflowPattern
+	(*RestartPolicy)(nil),            // 17: loom.v1.RestartPolicy
+	(*RestartRequest)(nil),           // 18: loom.v1.RestartRequest
+	(*RestartResponse)(nil),          // 19: loom.v1.RestartResponse
+	(*ParallelPattern)(nil),          // 20: loom.v1.ParallelPattern
+	(*AgentTask)(nil),                // 21: loom.v1.AgentTask
+	(*LevelingRung)(nil),             // 22: loom.v1.LevelingRung
+	(*LevelingTierPolicy)(nil),       // 23: loom.v1.LevelingTierPolicy
+	(*LevelingPolicy)(nil),           // 24: loom.v1.LevelingPolicy
+	(*ConditionalPattern)(nil),       // 25: loom.v1.ConditionalPattern
+	(*WorkflowResult)(nil),           // 26: loom.v1.WorkflowResult
+	(*DebateResult)(nil),             // 27: loom.v1.DebateResult
+	(*AgentResult)(nil),              // 28: loom.v1.AgentResult
+	(*AgentExecutionCost)(nil),       // 29: loom.v1.AgentExecutionCost
+	(*WorkflowCost)(nil),             // 30: loom.v1.WorkflowCost
+	(*WorkflowExecution)(nil),        // 31: loom.v1.WorkflowExecution
+	(*ExecuteWorkflowRequest)(nil),   // 32: loom.v1.ExecuteWorkflowRequest
+	(*WorkflowSummary)(nil),          // 33: loom.v1.WorkflowSummary
+	(*ListWorkflowsRequest)(nil),     // 34: loom.v1.ListWorkflowsRequest
+	(*ListWorkflowsResponse)(nil),    // 35: loom.v1.ListWorkflowsResponse
+	(*ExecuteWorkflowResponse)(nil),  // 36: loom.v1.ExecuteWorkflowResponse
+	(*ScheduleConfig)(nil),           // 37: loom.v1.ScheduleConfig
+	(*ScheduledWorkflow)(nil),        // 38: loom.v1.ScheduledWorkflow
+	(*ScheduleStats)(nil),            // 39: loom.v1.ScheduleStats
+	(*StateMachinePattern)(nil),      // 40: loom.v1.StateMachinePattern
+	(*SignalFields)(nil),             // 41: loom.v1.SignalFields
+	(*WorkflowState)(nil),            // 42: loom.v1.WorkflowState
+	(*AgentState)(nil),               // 43: loom.v1.AgentState
+	(*ToolState)(nil),                // 44: loom.v1.ToolState
+	(*DelegateState)(nil),            // 45: loom.v1.DelegateState
+	(*Transition)(nil),               // 46: loom.v1.Transition
+	nil,                              // 47: loom.v1.WorkflowCheckpoint.ModelsUsedEntry
+	nil,                              // 48: loom.v1.WorkflowCheckpoint.GateRevisionCountsEntry
+	nil,                              // 49: loom.v1.WorkflowCheckpoint.VarsEntry
+	nil,                              // 50: loom.v1.CheckpointMemoryEntry.MetadataEntry
+	nil,                              // 51: loom.v1.RestartRequest.ParametersEntry
+	nil,                              // 52: loom.v1.AgentTask.MetadataEntry
+	nil,                              // 53: loom.v1.LevelingPolicy.TierPoliciesEntry
+	nil,                              // 54: loom.v1.ConditionalPattern.BranchesEntry
+	nil,                              // 55: loom.v1.WorkflowResult.MetadataEntry
+	nil,                              // 56: loom.v1.WorkflowResult.ModelsUsedEntry
+	nil,                              // 57: loom.v1.AgentResult.MetadataEntry
+	nil,                              // 58: loom.v1.WorkflowCost.AgentCostsUsdEntry
+	nil,                              // 59: loom.v1.ExecuteWorkflowRequest.VariablesEntry
+	nil,                              // 60: loom.v1.ScheduleConfig.VariablesEntry
+	nil,                              // 61: loom.v1.StateMachinePattern.StatesEntry
+	nil,                              // 62: loom.v1.StateMachinePattern.SignalFieldsEntry
+	nil,                              // 63: loom.v1.WorkflowState.RouteEntry
+	nil,                              // 64: loom.v1.ToolState.ParamsEntry
+	nil,                              // 65: loom.v1.DelegateState.VarsEntry
+	(*SwarmPattern)(nil),             // 66: loom.v1.SwarmPattern
+	(*PairProgrammingPattern)(nil),   // 67: loom.v1.PairProgrammingPattern
+	(*TeacherStudentPattern)(nil),    // 68: loom.v1.TeacherStudentPattern
+	(*OutputPolicy)(nil),             // 69: loom.v1.OutputPolicy
+	(*OutputRetryPolicy)(nil),        // 70: loom.v1.OutputRetryPolicy
+	(LLMRole)(0),                     // 71: loom.v1.LLMRole
+	(*SwarmResult)(nil),              // 72: loom.v1.SwarmResult
+	(*PairProgrammingResult)(nil),    // 73: loom.v1.PairProgrammingResult
+	(*TeacherStudentResult)(nil),     // 74: loom.v1.TeacherStudentResult
+	(*CollaborationMetrics)(nil),     // 75: loom.v1.CollaborationMetrics
+	(*DebateRound)(nil),              // 76: loom.v1.DebateRound
 }
 var file_loom_v1_orchestration_proto_depIdxs = []int32{
-	5,  // 0: loom.v1.WorkflowPattern.debate:type_name -> loom.v1.DebatePattern
-	6,  // 1: loom.v1.WorkflowPattern.fork_join:type_name -> loom.v1.ForkJoinPattern
-	7,  // 2: loom.v1.WorkflowPattern.pipeline:type_name -> loom.v1.PipelinePattern
-	19, // 3: loom.v1.WorkflowPattern.parallel:type_name -> loom.v1.ParallelPattern
-	24, // 4: loom.v1.WorkflowPattern.conditional:type_name -> loom.v1.ConditionalPattern
-	52, // 5: loom.v1.WorkflowPattern.swarm:type_name -> loom.v1.SwarmPattern
-	53, // 6: loom.v1.WorkflowPattern.pair_programming:type_name -> loom.v1.PairProgrammingPattern
-	54, // 7: loom.v1.WorkflowPattern.teacher_student:type_name -> loom.v1.TeacherStudentPattern
-	15, // 8: loom.v1.WorkflowPattern.iterative:type_name -> loom.v1.IterativeWorkflowPattern
-	2,  // 9: loom.v1.DebatePattern.merge_strategy:type_name -> loom.v1.MergeStrategy
-	2,  // 10: loom.v1.ForkJoinPattern.merge_strategy:type_name -> loom.v1.MergeStrategy
-	55, // 11: loom.v1.ForkJoinPattern.agent_output_policy:type_name -> loom.v1.OutputPolicy
-	8,  // 12: loom.v1.PipelinePattern.stages:type_name -> loom.v1.PipelineStage
-	56, // 13: loom.v1.PipelineStage.retry_policy:type_name -> loom.v1.OutputRetryPolicy
-	55, // 14: loom.v1.PipelineStage.output_policy:type_name -> loom.v1.OutputPolicy
-	9,  // 15: loom.v1.PipelineStage.hitl_gate:type_name -> loom.v1.HITLGate
-	23, // 16: loom.v1.PipelineStage.leveling_policy:type_name -> loom.v1.LevelingPolicy
-	0,  // 17: loom.v1.HITLGate.on_timeout:type_name -> loom.v1.GateTimeoutAction
-	1,  // 18: loom.v1.GateDecision.action:type_name -> loom.v1.GateAction
-	13, // 19: loom.v1.WorkflowCheckpoint.stage_snapshots:type_name -> loom.v1.CheckpointStageSnapshot
-	27, // 20: loom.v1.WorkflowCheckpoint.all_results:type_name -> loom.v1.AgentResult
-	39, // 21: loom.v1.WorkflowCheckpoint.models_used:type_name -> loom.v1.WorkflowCheckpoint.ModelsUsedEntry
-	40, // 22: loom.v1.WorkflowCheckpoint.gate_revision_counts:type_name -> loom.v1.WorkflowCheckpoint.GateRevisionCountsEntry
-	10, // 23: loom.v1.WorkflowCheckpoint.pending_gate:type_name -> loom.v1.HITLGateRequest
-	14, // 24: loom.v1.WorkflowCheckpoint.shared_memory:type_name -> loom.v1.CheckpointMemoryEntry
-	41, // 25: loom.v1.CheckpointMemoryEntry.metadata:type_name -> loom.v1.CheckpointMemoryEntry.MetadataEntry
-	7,  // 26: loom.v1.IterativeWorkflowPattern.pipeline:type_name -> loom.v1.PipelinePattern
-	16, // 27: loom.v1.IterativeWorkflowPattern.restart_policy:type_name -> loom.v1.RestartPolicy
-	42, // 28: loom.v1.RestartRequest.parameters:type_name -> loom.v1.RestartRequest.ParametersEntry
-	20, // 29: loom.v1.ParallelPattern.tasks:type_name -> loom.v1.AgentTask
-	2,  // 30: loom.v1.ParallelPattern.merge_strategy:type_name -> loom.v1.MergeStrategy
-	43, // 31: loom.v1.AgentTask.metadata:type_name -> loom.v1.AgentTask.MetadataEntry
-	55, // 32: loom.v1.AgentTask.output_policy:type_name -> loom.v1.OutputPolicy
-	23, // 33: loom.v1.AgentTask.leveling_policy:type_name -> loom.v1.LevelingPolicy
-	57, // 34: loom.v1.LevelingRung.role:type_name -> loom.v1.LLMRole
-	21, // 35: loom.v1.LevelingPolicy.ladder:type_name -> loom.v1.LevelingRung
-	44, // 36: loom.v1.LevelingPolicy.tier_policies:type_name -> loom.v1.LevelingPolicy.TierPoliciesEntry
-	45, // 37: loom.v1.ConditionalPattern.branches:type_name -> loom.v1.ConditionalPattern.BranchesEntry
-	4,  // 38: loom.v1.ConditionalPattern.default_branch:type_name -> loom.v1.WorkflowPattern
-	56, // 39: loom.v1.ConditionalPattern.retry_policy:type_name -> loom.v1.OutputRetryPolicy
-	27, // 40: loom.v1.WorkflowResult.agent_results:type_name -> loom.v1.AgentResult
-	46, // 41: loom.v1.WorkflowResult.metadata:type_name -> loom.v1.WorkflowResult.MetadataEntry
-	29, // 42: loom.v1.WorkflowResult.cost:type_name -> loom.v1.WorkflowCost
-	26, // 43: loom.v1.WorkflowResult.debate_result:type_name -> loom.v1.DebateResult
-	58, // 44: loom.v1.WorkflowResult.swarm_result:type_name -> loom.v1.SwarmResult
-	59, // 45: loom.v1.WorkflowResult.pair_programming_result:type_name -> loom.v1.PairProgrammingResult
-	60, // 46: loom.v1.WorkflowResult.teacher_student_result:type_name -> loom.v1.TeacherStudentResult
-	61, // 47: loom.v1.WorkflowResult.metrics:type_name -> loom.v1.CollaborationMetrics
-	47, // 48: loom.v1.WorkflowResult.models_used:type_name -> loom.v1.WorkflowResult.ModelsUsedEntry
-	62, // 49: loom.v1.DebateResult.rounds:type_name -> loom.v1.DebateRound
-	48, // 50: loom.v1.AgentResult.metadata:type_name -> loom.v1.AgentResult.MetadataEntry
-	28, // 51: loom.v1.AgentResult.cost:type_name -> loom.v1.AgentExecutionCost
-	49, // 52: loom.v1.WorkflowCost.agent_costs_usd:type_name -> loom.v1.WorkflowCost.AgentCostsUsdEntry
-	4,  // 53: loom.v1.WorkflowExecution.pattern:type_name -> loom.v1.WorkflowPattern
-	25, // 54: loom.v1.WorkflowExecution.result:type_name -> loom.v1.WorkflowResult
-	4,  // 55: loom.v1.ExecuteWorkflowRequest.pattern:type_name -> loom.v1.WorkflowPattern
-	50, // 56: loom.v1.ExecuteWorkflowRequest.variables:type_name -> loom.v1.ExecuteWorkflowRequest.VariablesEntry
-	32, // 57: loom.v1.ListWorkflowsResponse.workflows:type_name -> loom.v1.WorkflowSummary
-	25, // 58: loom.v1.ExecuteWorkflowResponse.result:type_name -> loom.v1.WorkflowResult
-	51, // 59: loom.v1.ScheduleConfig.variables:type_name -> loom.v1.ScheduleConfig.VariablesEntry
-	3,  // 60: loom.v1.ScheduleConfig.session_mode:type_name -> loom.v1.ScheduledSessionMode
-	4,  // 61: loom.v1.ScheduledWorkflow.pattern:type_name -> loom.v1.WorkflowPattern
-	36, // 62: loom.v1.ScheduledWorkflow.schedule:type_name -> loom.v1.ScheduleConfig
-	38, // 63: loom.v1.ScheduledWorkflow.stats:type_name -> loom.v1.ScheduleStats
-	22, // 64: loom.v1.LevelingPolicy.TierPoliciesEntry.value:type_name -> loom.v1.LevelingTierPolicy
-	4,  // 65: loom.v1.ConditionalPattern.BranchesEntry.value:type_name -> loom.v1.WorkflowPattern
-	66, // [66:66] is the sub-list for method output_type
-	66, // [66:66] is the sub-list for method input_type
-	66, // [66:66] is the sub-list for extension type_name
-	66, // [66:66] is the sub-list for extension extendee
-	0,  // [0:66] is the sub-list for field type_name
+	6,  // 0: loom.v1.WorkflowPattern.debate:type_name -> loom.v1.DebatePattern
+	7,  // 1: loom.v1.WorkflowPattern.fork_join:type_name -> loom.v1.ForkJoinPattern
+	8,  // 2: loom.v1.WorkflowPattern.pipeline:type_name -> loom.v1.PipelinePattern
+	20, // 3: loom.v1.WorkflowPattern.parallel:type_name -> loom.v1.ParallelPattern
+	25, // 4: loom.v1.WorkflowPattern.conditional:type_name -> loom.v1.ConditionalPattern
+	66, // 5: loom.v1.WorkflowPattern.swarm:type_name -> loom.v1.SwarmPattern
+	67, // 6: loom.v1.WorkflowPattern.pair_programming:type_name -> loom.v1.PairProgrammingPattern
+	68, // 7: loom.v1.WorkflowPattern.teacher_student:type_name -> loom.v1.TeacherStudentPattern
+	16, // 8: loom.v1.WorkflowPattern.iterative:type_name -> loom.v1.IterativeWorkflowPattern
+	40, // 9: loom.v1.WorkflowPattern.state_machine:type_name -> loom.v1.StateMachinePattern
+	2,  // 10: loom.v1.DebatePattern.merge_strategy:type_name -> loom.v1.MergeStrategy
+	2,  // 11: loom.v1.ForkJoinPattern.merge_strategy:type_name -> loom.v1.MergeStrategy
+	69, // 12: loom.v1.ForkJoinPattern.agent_output_policy:type_name -> loom.v1.OutputPolicy
+	9,  // 13: loom.v1.PipelinePattern.stages:type_name -> loom.v1.PipelineStage
+	70, // 14: loom.v1.PipelineStage.retry_policy:type_name -> loom.v1.OutputRetryPolicy
+	69, // 15: loom.v1.PipelineStage.output_policy:type_name -> loom.v1.OutputPolicy
+	10, // 16: loom.v1.PipelineStage.hitl_gate:type_name -> loom.v1.HITLGate
+	24, // 17: loom.v1.PipelineStage.leveling_policy:type_name -> loom.v1.LevelingPolicy
+	0,  // 18: loom.v1.HITLGate.on_timeout:type_name -> loom.v1.GateTimeoutAction
+	1,  // 19: loom.v1.GateDecision.action:type_name -> loom.v1.GateAction
+	14, // 20: loom.v1.WorkflowCheckpoint.stage_snapshots:type_name -> loom.v1.CheckpointStageSnapshot
+	28, // 21: loom.v1.WorkflowCheckpoint.all_results:type_name -> loom.v1.AgentResult
+	47, // 22: loom.v1.WorkflowCheckpoint.models_used:type_name -> loom.v1.WorkflowCheckpoint.ModelsUsedEntry
+	48, // 23: loom.v1.WorkflowCheckpoint.gate_revision_counts:type_name -> loom.v1.WorkflowCheckpoint.GateRevisionCountsEntry
+	11, // 24: loom.v1.WorkflowCheckpoint.pending_gate:type_name -> loom.v1.HITLGateRequest
+	15, // 25: loom.v1.WorkflowCheckpoint.shared_memory:type_name -> loom.v1.CheckpointMemoryEntry
+	4,  // 26: loom.v1.WorkflowCheckpoint.suspend_reason:type_name -> loom.v1.SuspendReason
+	13, // 27: loom.v1.WorkflowCheckpoint.nested_checkpoint:type_name -> loom.v1.WorkflowCheckpoint
+	49, // 28: loom.v1.WorkflowCheckpoint.vars:type_name -> loom.v1.WorkflowCheckpoint.VarsEntry
+	50, // 29: loom.v1.CheckpointMemoryEntry.metadata:type_name -> loom.v1.CheckpointMemoryEntry.MetadataEntry
+	8,  // 30: loom.v1.IterativeWorkflowPattern.pipeline:type_name -> loom.v1.PipelinePattern
+	17, // 31: loom.v1.IterativeWorkflowPattern.restart_policy:type_name -> loom.v1.RestartPolicy
+	51, // 32: loom.v1.RestartRequest.parameters:type_name -> loom.v1.RestartRequest.ParametersEntry
+	21, // 33: loom.v1.ParallelPattern.tasks:type_name -> loom.v1.AgentTask
+	2,  // 34: loom.v1.ParallelPattern.merge_strategy:type_name -> loom.v1.MergeStrategy
+	52, // 35: loom.v1.AgentTask.metadata:type_name -> loom.v1.AgentTask.MetadataEntry
+	69, // 36: loom.v1.AgentTask.output_policy:type_name -> loom.v1.OutputPolicy
+	24, // 37: loom.v1.AgentTask.leveling_policy:type_name -> loom.v1.LevelingPolicy
+	71, // 38: loom.v1.LevelingRung.role:type_name -> loom.v1.LLMRole
+	22, // 39: loom.v1.LevelingPolicy.ladder:type_name -> loom.v1.LevelingRung
+	53, // 40: loom.v1.LevelingPolicy.tier_policies:type_name -> loom.v1.LevelingPolicy.TierPoliciesEntry
+	54, // 41: loom.v1.ConditionalPattern.branches:type_name -> loom.v1.ConditionalPattern.BranchesEntry
+	5,  // 42: loom.v1.ConditionalPattern.default_branch:type_name -> loom.v1.WorkflowPattern
+	70, // 43: loom.v1.ConditionalPattern.retry_policy:type_name -> loom.v1.OutputRetryPolicy
+	28, // 44: loom.v1.WorkflowResult.agent_results:type_name -> loom.v1.AgentResult
+	55, // 45: loom.v1.WorkflowResult.metadata:type_name -> loom.v1.WorkflowResult.MetadataEntry
+	30, // 46: loom.v1.WorkflowResult.cost:type_name -> loom.v1.WorkflowCost
+	27, // 47: loom.v1.WorkflowResult.debate_result:type_name -> loom.v1.DebateResult
+	72, // 48: loom.v1.WorkflowResult.swarm_result:type_name -> loom.v1.SwarmResult
+	73, // 49: loom.v1.WorkflowResult.pair_programming_result:type_name -> loom.v1.PairProgrammingResult
+	74, // 50: loom.v1.WorkflowResult.teacher_student_result:type_name -> loom.v1.TeacherStudentResult
+	75, // 51: loom.v1.WorkflowResult.metrics:type_name -> loom.v1.CollaborationMetrics
+	56, // 52: loom.v1.WorkflowResult.models_used:type_name -> loom.v1.WorkflowResult.ModelsUsedEntry
+	76, // 53: loom.v1.DebateResult.rounds:type_name -> loom.v1.DebateRound
+	57, // 54: loom.v1.AgentResult.metadata:type_name -> loom.v1.AgentResult.MetadataEntry
+	29, // 55: loom.v1.AgentResult.cost:type_name -> loom.v1.AgentExecutionCost
+	58, // 56: loom.v1.WorkflowCost.agent_costs_usd:type_name -> loom.v1.WorkflowCost.AgentCostsUsdEntry
+	5,  // 57: loom.v1.WorkflowExecution.pattern:type_name -> loom.v1.WorkflowPattern
+	26, // 58: loom.v1.WorkflowExecution.result:type_name -> loom.v1.WorkflowResult
+	5,  // 59: loom.v1.ExecuteWorkflowRequest.pattern:type_name -> loom.v1.WorkflowPattern
+	59, // 60: loom.v1.ExecuteWorkflowRequest.variables:type_name -> loom.v1.ExecuteWorkflowRequest.VariablesEntry
+	33, // 61: loom.v1.ListWorkflowsResponse.workflows:type_name -> loom.v1.WorkflowSummary
+	26, // 62: loom.v1.ExecuteWorkflowResponse.result:type_name -> loom.v1.WorkflowResult
+	60, // 63: loom.v1.ScheduleConfig.variables:type_name -> loom.v1.ScheduleConfig.VariablesEntry
+	3,  // 64: loom.v1.ScheduleConfig.session_mode:type_name -> loom.v1.ScheduledSessionMode
+	5,  // 65: loom.v1.ScheduledWorkflow.pattern:type_name -> loom.v1.WorkflowPattern
+	37, // 66: loom.v1.ScheduledWorkflow.schedule:type_name -> loom.v1.ScheduleConfig
+	39, // 67: loom.v1.ScheduledWorkflow.stats:type_name -> loom.v1.ScheduleStats
+	61, // 68: loom.v1.StateMachinePattern.states:type_name -> loom.v1.StateMachinePattern.StatesEntry
+	62, // 69: loom.v1.StateMachinePattern.signal_fields:type_name -> loom.v1.StateMachinePattern.SignalFieldsEntry
+	43, // 70: loom.v1.WorkflowState.agent:type_name -> loom.v1.AgentState
+	44, // 71: loom.v1.WorkflowState.tool:type_name -> loom.v1.ToolState
+	45, // 72: loom.v1.WorkflowState.delegate:type_name -> loom.v1.DelegateState
+	63, // 73: loom.v1.WorkflowState.route:type_name -> loom.v1.WorkflowState.RouteEntry
+	10, // 74: loom.v1.WorkflowState.hitl_gate:type_name -> loom.v1.HITLGate
+	64, // 75: loom.v1.ToolState.params:type_name -> loom.v1.ToolState.ParamsEntry
+	5,  // 76: loom.v1.DelegateState.workflow:type_name -> loom.v1.WorkflowPattern
+	65, // 77: loom.v1.DelegateState.vars:type_name -> loom.v1.DelegateState.VarsEntry
+	44, // 78: loom.v1.Transition.next_tool:type_name -> loom.v1.ToolState
+	44, // 79: loom.v1.Transition.hook:type_name -> loom.v1.ToolState
+	23, // 80: loom.v1.LevelingPolicy.TierPoliciesEntry.value:type_name -> loom.v1.LevelingTierPolicy
+	5,  // 81: loom.v1.ConditionalPattern.BranchesEntry.value:type_name -> loom.v1.WorkflowPattern
+	42, // 82: loom.v1.StateMachinePattern.StatesEntry.value:type_name -> loom.v1.WorkflowState
+	41, // 83: loom.v1.StateMachinePattern.SignalFieldsEntry.value:type_name -> loom.v1.SignalFields
+	46, // 84: loom.v1.WorkflowState.RouteEntry.value:type_name -> loom.v1.Transition
+	85, // [85:85] is the sub-list for method output_type
+	85, // [85:85] is the sub-list for method input_type
+	85, // [85:85] is the sub-list for extension type_name
+	85, // [85:85] is the sub-list for extension extendee
+	0,  // [0:85] is the sub-list for field type_name
 }
 
 func init() { file_loom_v1_orchestration_proto_init() }
@@ -4065,6 +5115,7 @@ func file_loom_v1_orchestration_proto_init() {
 		(*WorkflowPattern_PairProgramming)(nil),
 		(*WorkflowPattern_TeacherStudent)(nil),
 		(*WorkflowPattern_Iterative)(nil),
+		(*WorkflowPattern_StateMachine)(nil),
 	}
 	file_loom_v1_orchestration_proto_msgTypes[19].OneofWrappers = []any{}
 	file_loom_v1_orchestration_proto_msgTypes[21].OneofWrappers = []any{
@@ -4073,13 +5124,22 @@ func file_loom_v1_orchestration_proto_init() {
 		(*WorkflowResult_PairProgrammingResult)(nil),
 		(*WorkflowResult_TeacherStudentResult)(nil),
 	}
+	file_loom_v1_orchestration_proto_msgTypes[37].OneofWrappers = []any{
+		(*WorkflowState_Agent)(nil),
+		(*WorkflowState_Tool)(nil),
+		(*WorkflowState_Delegate)(nil),
+	}
+	file_loom_v1_orchestration_proto_msgTypes[41].OneofWrappers = []any{
+		(*Transition_NextState)(nil),
+		(*Transition_NextTool)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_loom_v1_orchestration_proto_rawDesc), len(file_loom_v1_orchestration_proto_rawDesc)),
-			NumEnums:      4,
-			NumMessages:   48,
+			NumEnums:      5,
+			NumMessages:   61,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

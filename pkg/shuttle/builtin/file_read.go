@@ -28,8 +28,10 @@ const (
 	// Prevents memory issues with very large files.
 	MaxFileReadSize = 10 * 1024 * 1024
 
-	// DefaultMaxLines limits text output to prevent context bloat.
-	DefaultMaxLines = 1000
+	// DefaultMaxLines is 0 — unlimited: the §4.1 write rule is the single
+	// bounding point for context; max_lines remains the caller's narrowing
+	// knob, never a silent default cut.
+	DefaultMaxLines = 0
 )
 
 // FileReadTool provides safe file reading capabilities for agents.
@@ -108,6 +110,11 @@ func (t *FileReadTool) InputSchema() *shuttle.JSONSchema {
 }
 
 func (t *FileReadTool) Execute(ctx context.Context, params map[string]interface{}) (*shuttle.Result, error) {
+	// A turn that says where it works reads there: the same tool, standing in
+	// the turn's directory rather than the one it was built with.
+	if dir := shuttle.WorkDirFromContext(ctx); dir != "" && dir != t.baseDir {
+		return NewFileReadTool(dir).Execute(ctx, params)
+	}
 	start := time.Now()
 
 	// Multi-file / search form: paths array or pattern present.
