@@ -450,7 +450,8 @@ Loom Span.Attributes        exportAttributes()      OTel Span
 One `Weave` turn exports as one trace. The agent opens a span for each stage and runs the stage under it, so a span's children are the work that stage caused:
 
 ```
-server.Weave                          (CHAIN)
+server.Weave                          (CHAIN)  message.preview (input.value),
+│                                              response.preview (output.value)
 └── agent.chat                        (AGENT)  agent.id, agent.name, session.id,
     │                                          session.turn, metadata
     └── agent.conversation_loop       (CHAIN)

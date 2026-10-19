@@ -67,7 +67,10 @@ func extractWeaveContextMetadata(req *loomv1.WeaveRequest) map[string]string {
 // startWeaveSpan attaches whitelisted req.Context tags to ctx and, when tracer
 // is non-nil, starts the server span ("server.Weave" or "server.StreamWeave")
 // before session-ownership resolution so session_store.load_session nests under
-// the turn trace.
+// the turn trace. The span is the root of the request's trace, so it carries the
+// user's message as message.preview (bounded by observability.TruncateContent,
+// exported as OpenInference input.value): trace and session views that show a
+// root span's input then show what the user sent.
 func startWeaveSpan(
 	ctx context.Context,
 	tracer observability.Tracer,
@@ -83,6 +86,9 @@ func startWeaveSpan(
 	}
 	opts := []observability.SpanOption{
 		observability.WithAttribute("query.length", len(req.GetQuery())),
+	}
+	if q := req.GetQuery(); q != "" {
+		opts = append(opts, observability.WithAttribute("message.preview", observability.TruncateContent(q)))
 	}
 	if req.GetSessionId() != "" {
 		opts = append(opts, observability.WithAttribute(observability.AttrSessionID, req.GetSessionId()))
@@ -109,14 +115,19 @@ func turnUsage(resp *agent.Response) agent.Usage {
 	return resp.TurnUsage
 }
 
-// recordWeaveSpanUsage records the completed turn's response length and
-// full-turn usage totals onto the server span.
+// recordWeaveSpanUsage records the completed turn's response, as
+// response.preview (bounded by observability.TruncateContent, exported as
+// OpenInference output.value) and its length, and the full-turn usage totals
+// onto the server span.
 func recordWeaveSpanUsage(span *observability.Span, resp *agent.Response) {
 	if span == nil || resp == nil {
 		return
 	}
 	usage := turnUsage(resp)
 	span.SetAttribute("response.length", len(resp.Content))
+	if resp.Content != "" {
+		span.SetAttribute("response.preview", observability.TruncateContent(resp.Content))
+	}
 	span.SetAttribute("usage.input_tokens", usage.InputTokens)
 	span.SetAttribute("usage.output_tokens", usage.OutputTokens)
 	span.SetAttribute("usage.total_tokens", usage.TotalTokens)

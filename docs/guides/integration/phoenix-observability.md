@@ -175,7 +175,7 @@ The `Weave` cost (`cost.totalCostUsd`) is the total of the turn's conversation c
 ## What a Turn Looks Like in Phoenix
 
 ```
-server.Weave                          CHAIN
+server.Weave                          CHAIN    the user's message in, the response out
 └── agent.chat                        AGENT    agent.name, session.id, metadata
     └── agent.conversation_loop       CHAIN
         ├── graph_memory.recall       RETRIEVER
@@ -189,6 +189,8 @@ server.Weave                          CHAIN
 ```
 
 Phoenix's trace token totals count only LLM spans, so `agent.chat` does not double the turn's tokens.
+
+Streaming requests have `server.StreamWeave` as the root instead of `server.Weave`. The root carries the request's message and final response, which is what Phoenix shows in its trace list and as a session's first input and last output; turns that a workflow injects into an agent (sub-agent messages) start at `agent.chat` instead.
 
 ## Verification Checklist
 
