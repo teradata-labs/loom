@@ -87,7 +87,7 @@ type PhoenixClientConfig struct {
 // PhoenixClient posts annotations to Phoenix from a background worker, so the
 // Annotate methods never block on the network and never fail the caller
 // because Phoenix is unreachable; failures are logged. Label and explanation
-// text is PII-redacted like exported span attributes.
+// text is cleaned of credentials and PII like exported span attributes.
 //
 // Requests use Phoenix's default asynchronous mode: an annotation whose trace
 // or span has not been exported yet (the OTLP exporter batches spans) is
@@ -305,7 +305,7 @@ func (c *PhoenixClient) post(endpoint string, body []byte) (int, error) {
 }
 
 // phoenixPayload renders the request body's data array, with label and
-// explanation PII-redacted.
+// explanation cleaned of credentials and PII.
 func phoenixPayload(req phoenixRequest) []map[string]interface{} {
 	out := make([]map[string]interface{}, 0, len(req.items))
 	for _, a := range req.items {
@@ -316,13 +316,13 @@ func phoenixPayload(req phoenixRequest) []map[string]interface{} {
 		}
 		result := map[string]interface{}{}
 		if a.Label != "" {
-			result["label"] = redactPIIString(a.Label)
+			result["label"] = redactPIIString(redactCredentialString(a.Label))
 		}
 		if a.Score != nil {
 			result["score"] = *a.Score
 		}
 		if a.Explanation != "" {
-			result["explanation"] = redactPIIString(a.Explanation)
+			result["explanation"] = redactPIIString(redactCredentialString(a.Explanation))
 		}
 		if len(result) > 0 {
 			item["result"] = result

@@ -442,6 +442,8 @@ Loom Span.Attributes        exportAttributes()      OTel Span
 
 **Privacy-first ordering**: Redaction runs before translation. Attributes removed by the redactor are never passed to `exportAttributes`, and derived values such as `input.value` are computed from the redacted attributes.
 
+**Credentials inside values** (`credentials.go`): dropping attributes by key is not enough, because tool arguments, tool results and LLM tool calls are exported as JSON or text inside `input.value` / `output.value`. With `RedactCredentials`, every attribute value, event attribute, status message and Phoenix annotation text is cleaned: a JSON document has credential-named fields replaced with `[REDACTED]` at any depth; remaining text is matched for credential-named `"key": value` pairs (plain, escaped inside a string, or truncated), credential header lines, `name=value` assignments, credentials named in prose (a credential word followed by a value that mixes letters and digits or contains `=`), `Bearer`/`Basic` credentials, well-known key formats, JWTs and credential URL parameters. The patterns favour removing too much over leaking: a tool parameter named `api_key` loses its description too. `observability.RedactSpan` exposes the same cleaning for tests and callers.
+
 
 ### Turn Span Tree
 

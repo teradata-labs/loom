@@ -38,8 +38,9 @@ observability:
   #
   # Exported content: message, response and tool-call previews are bounded
   # to otlp_max_content_length runes (default 200; research runs set 32768),
-  # and PII patterns (email, phone-shaped and 16-digit numbers, SSN-shaped
-  # strings) are redacted before export. Redaction stays on.
+  # and credentials (also inside tool arguments and results) and PII
+  # patterns (email, phone-shaped and 16-digit numbers, SSN-shaped strings)
+  # are redacted before export. Redaction stays on.
   # otlp_max_content_length: 32768
   #
   # otlp_record_eval_runs also writes the embedded eval_runs record (Loom

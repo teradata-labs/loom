@@ -39,8 +39,9 @@ observability:
   # drops parents such as agent.conversation_loop and orphans their children.
   #
   # Exported content: message, response and tool-call previews keep up to
-  # 32768 runes; PII patterns (email, phone-shaped and 16-digit numbers,
-  # SSN-shaped strings) are redacted before export. Redaction stays on.
+  # 32768 runes; credentials (also inside tool arguments and results) and
+  # PII patterns (email, phone-shaped and 16-digit numbers, SSN-shaped
+  # strings) are redacted before export. Redaction stays on.
   otlp_max_content_length: 32768
   #
   # Keep writing the embedded eval_runs record (Loom attribute names,

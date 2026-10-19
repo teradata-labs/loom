@@ -274,6 +274,19 @@ func buildOTelSpanContext(loomTraceID, loomSpanID string) (oteltrace.SpanContext
 // lists, which are exported as JSON. With RedactPII the status message is
 // redacted too. Keys in AllowedAttributes are exported unchanged. The caller's
 // span is not modified.
+// RedactSpan returns a copy of span cleaned the way OTLP export cleans it:
+// attributes whose key names a credential are dropped, credentials inside
+// attribute values (JSON documents, embedded JSON, header lines, Bearer/Basic
+// credentials, well-known key formats, JWTs, URL parameters) are replaced with
+// RedactedValue, and PII patterns are replaced, as cfg selects. Events and the
+// status message are cleaned too. span is not modified.
+func RedactSpan(span *Span, cfg PrivacyConfig) *Span {
+	if span == nil {
+		return nil
+	}
+	return redactOTelSpan(span, cfg)
+}
+
 func redactOTelSpan(span *Span, cfg PrivacyConfig) *Span {
 	if !cfg.RedactCredentials && !cfg.RedactPII {
 		return span
@@ -291,8 +304,11 @@ func redactOTelSpan(span *Span, cfg PrivacyConfig) *Span {
 		redacted.Events[i] = event
 		redacted.Events[i].Attributes = redactAttributes(event.Attributes, cfg, allowed)
 	}
+	if cfg.RedactCredentials {
+		redacted.Status.Message = redactCredentialString(redacted.Status.Message)
+	}
 	if cfg.RedactPII {
-		redacted.Status.Message = redactPIIString(span.Status.Message)
+		redacted.Status.Message = redactPIIString(redacted.Status.Message)
 	}
 	return &redacted
 }
@@ -306,9 +322,13 @@ func redactAttributes(attrs map[string]interface{}, cfg PrivacyConfig, allowed m
 			out[k] = v
 		case cfg.RedactCredentials && isCredentialKey(k):
 			// dropped
-		case cfg.RedactPII:
-			out[k] = redactPIIValue(v)
 		default:
+			if cfg.RedactCredentials {
+				v = redactCredentialValue(v)
+			}
+			if cfg.RedactPII {
+				v = redactPIIValue(v)
+			}
 			out[k] = v
 		}
 	}

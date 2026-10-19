@@ -201,7 +201,7 @@ func TestPhoenixClient_ValidatesAndRedacts(t *testing.T) {
 		}
 	}
 	if err := c.AnnotateTraces([]PhoenixAnnotation{{TargetID: "t1", Name: "loom.quality", AnnotatorKind: PhoenixAnnotatorLLM,
-		Explanation: "the user wrote from jane@example.com"}}); err != nil {
+		Explanation: "the user wrote from jane@example.com with Authorization: Bearer abc123def456ghi"}}); err != nil {
 		t.Fatal(err)
 	}
 	stopClient(t, c)
@@ -211,7 +211,8 @@ func TestPhoenixClient_ValidatesAndRedacts(t *testing.T) {
 		t.Fatalf("requests = %d, want 1 (invalid annotations are not sent)", len(calls))
 	}
 	item := calls[0].body["data"].([]interface{})[0].(map[string]interface{})
-	if expl := item["result"].(map[string]interface{})["explanation"].(string); strings.Contains(expl, "jane@example.com") {
+	if expl := item["result"].(map[string]interface{})["explanation"].(string); strings.Contains(expl, "jane@example.com") ||
+		strings.Contains(expl, "abc123def456ghi") {
 		t.Fatalf("explanation not redacted: %q", expl)
 	}
 }
