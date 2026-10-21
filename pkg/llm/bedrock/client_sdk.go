@@ -301,6 +301,19 @@ func (c *SDKClient) Chat(ctx context.Context, messages []llmtypes.Message, tools
 	return llmResp, nil
 }
 
+// InvocationParameters reports the parameters a request made under ctx
+// carries. Temperature is left out when thinking is on, as the request
+// leaves it out.
+func (c *SDKClient) InvocationParameters(ctx context.Context) map[string]interface{} {
+	params := map[string]interface{}{"max_tokens": c.maxTokens}
+	if c.thinkingEnabled(ctx) {
+		params["thinking"] = true
+	} else {
+		params["temperature"] = c.temperature
+	}
+	return params
+}
+
 // thinkingEnabled reports whether this request carries thinking, in which form
 // does not matter: the API rejects temperature != 1 whenever thinking is on.
 func (c *SDKClient) thinkingEnabled(ctx context.Context) bool {

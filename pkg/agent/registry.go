@@ -604,7 +604,7 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 
 	// Wrap LLM provider with instrumentation for observability
 	if r.tracer != nil {
-		llmProvider = llm.NewInstrumentedProvider(llmProvider, r.tracer)
+		llmProvider = llm.NewInstrumentedProvider(llmProvider, r.tracer, llm.WithRole(llm.RoleAgent))
 	}
 
 	// Build options from config
@@ -623,7 +623,7 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 				zap.Error(err))
 		} else {
 			if r.tracer != nil {
-				judgeLLM = llm.NewInstrumentedProvider(judgeLLM, r.tracer)
+				judgeLLM = llm.NewInstrumentedProvider(judgeLLM, r.tracer, llm.WithRole(llm.RoleJudge))
 			}
 			opts = append(opts, WithJudgeLLM(judgeLLM))
 		}
@@ -638,7 +638,7 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 				zap.Error(err))
 		} else {
 			if r.tracer != nil {
-				orchLLM = llm.NewInstrumentedProvider(orchLLM, r.tracer)
+				orchLLM = llm.NewInstrumentedProvider(orchLLM, r.tracer, llm.WithRole(llm.RoleOrchestrator))
 			}
 			opts = append(opts, WithOrchestratorLLM(orchLLM))
 		}
@@ -657,7 +657,7 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 				zap.Error(err))
 		} else {
 			if r.tracer != nil {
-				classLLM = llm.NewInstrumentedProvider(classLLM, r.tracer)
+				classLLM = llm.NewInstrumentedProvider(classLLM, r.tracer, llm.WithRole(llm.RoleClassifier))
 			}
 			classifierLLM = classLLM
 			opts = append(opts, WithClassifierLLM(classLLM))
@@ -673,7 +673,7 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 				zap.Error(err))
 		} else {
 			if r.tracer != nil {
-				compLLM = llm.NewInstrumentedProvider(compLLM, r.tracer)
+				compLLM = llm.NewInstrumentedProvider(compLLM, r.tracer, llm.WithRole(llm.RoleCompressor))
 			}
 			opts = append(opts, WithCompressorLLM(compLLM))
 		}
@@ -2523,6 +2523,13 @@ func BuildSkillsOptions(deps SkillsWiringDeps) []Option {
 		}
 		if routerLLM == nil {
 			routerLLM = deps.PrimaryLLM
+		}
+		if routerLLM != nil {
+			// A pooled override may be uninstrumented; trace it like the rest.
+			if _, ok := routerLLM.(*llm.InstrumentedProvider); !ok && deps.Tracer != nil {
+				routerLLM = llm.NewInstrumentedProvider(routerLLM, deps.Tracer)
+			}
+			routerLLM = llmForRole(routerLLM, roleSkillsRouter)
 		}
 	}
 

@@ -46,6 +46,7 @@ type JudgeServer struct {
 	defaultProvider agent.LLMProvider              // fallback LLM for evaluation
 	tracer          observability.Tracer
 	logger          *zap.Logger
+	phoenix         *observability.PhoenixClient // optional; judges post scores to Phoenix
 }
 
 // NewJudgeServer creates a new JudgeServer with the given tracer and logger.
@@ -61,6 +62,14 @@ func NewJudgeServer(tracer observability.Tracer, logger *zap.Logger) *JudgeServe
 		tracer:  tracer,
 		logger:  logger,
 	}
+}
+
+// SetPhoenixClient makes evaluations post their scores to Arize Phoenix as
+// annotations on EvaluationContext.TraceId. nil turns that off.
+func (s *JudgeServer) SetPhoenixClient(c *observability.PhoenixClient) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.phoenix = c
 }
 
 // SetProviderPool configures the provider pool and default fallback provider.
@@ -213,7 +222,10 @@ func (s *JudgeServer) evaluateSingle(ctx context.Context, judgeID string, evalCt
 		return nil, status.Error(codes.FailedPrecondition, "no LLM provider available for evaluation; call SetProviderPool first")
 	}
 
-	judge, err := judges.NewLLMJudge(provider, cfg, s.tracer)
+	s.mu.RLock()
+	phoenix := s.phoenix
+	s.mu.RUnlock()
+	judge, err := judges.NewLLMJudge(provider, cfg, s.tracer, judges.WithPhoenixClient(phoenix))
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to create judge %q: %v", judgeID, err)
 	}

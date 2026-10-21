@@ -270,7 +270,7 @@ func (sm *SegmentedMemory) SetLLMProvider(llm LLMProvider) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	if llm != nil {
-		sm.llmProvider = llm
+		sm.llmProvider = llmForRole(llm, roleMemorySearchRerank)
 	}
 }
 

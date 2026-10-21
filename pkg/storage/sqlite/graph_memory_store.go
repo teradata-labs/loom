@@ -507,6 +507,16 @@ func (s *GraphMemoryStore) Recall(ctx context.Context, opts memory.RecallOpts) (
 			strings.Join(placeholders, ",")))
 	}
 
+	// Optional source exclusion.
+	if len(opts.ExcludeSources) > 0 {
+		placeholders := make([]string, len(opts.ExcludeSources))
+		for i, src := range opts.ExcludeSources {
+			placeholders[i] = "?"
+			args = append(args, src)
+		}
+		conditions = append(conditions, fmt.Sprintf("COALESCE(m.source,'') NOT IN (%s)", strings.Join(placeholders, ",")))
+	}
+
 	// Optional tag filter: match exact JSON string values within the tags array.
 	// Uses instr with JSON double-quote delimiters to avoid substring false positives
 	// (e.g., searching for "test" won't match "test_data").

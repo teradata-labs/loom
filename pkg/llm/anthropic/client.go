@@ -267,6 +267,17 @@ func (c *Client) thinkingParam(ctx context.Context) map[string]interface{} {
 	return map[string]interface{}{"type": "enabled", "budget_tokens": budget}
 }
 
+// InvocationParameters reports the parameters a request made under ctx
+// carries: max_tokens, the temperature sent (1 when thinking or an output
+// config is on) and whether thinking is on.
+func (c *Client) InvocationParameters(ctx context.Context) map[string]interface{} {
+	params := map[string]interface{}{"max_tokens": c.maxTokens, "temperature": c.temperatureParam(ctx)}
+	if c.thinkingParam(ctx) != nil {
+		params["thinking"] = true
+	}
+	return params
+}
+
 // temperatureParam returns the request temperature, or 1 when thinking is on.
 // Anthropic rejects any other temperature alongside thinking, so a configured
 // 0.2 would fail every request at any level above off.

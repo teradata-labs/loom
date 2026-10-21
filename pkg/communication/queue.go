@@ -349,14 +349,6 @@ func (q *MessageQueue) Dequeue(ctx context.Context, agentID string) (*QueueMessa
 		return nil, fmt.Errorf("agent ID cannot be empty")
 	}
 
-	// Instrument with Hawk
-	var span *observability.Span
-	if q.tracer != nil {
-		ctx, span = q.tracer.StartSpan(ctx, SpanQueueDequeue)
-		defer q.tracer.EndSpan(span)
-		span.SetAttribute("agent_id", agentID)
-	}
-
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -405,6 +397,18 @@ func (q *MessageQueue) Dequeue(ctx context.Context, agentID string) (*QueueMessa
 		return nil, nil // No pending messages
 	}
 
+	// Trace only a dequeue that returns a message: workers poll until the queue
+	// is empty, and a span per empty poll buried real traces (BUG-5).
+	if q.tracer != nil {
+		var span *observability.Span
+		ctx, span = q.tracer.StartSpan(ctx, SpanQueueDequeue)
+		defer q.tracer.EndSpan(span)
+		span.SetAttribute("agent_id", agentID)
+		span.SetAttribute("message_id", msg.ID)
+		span.SetAttribute("priority", msg.Priority)
+		span.SetAttribute("dequeue_count", msg.DequeueCount+1)
+	}
+
 	// Mark as in-flight
 	msg.Status = QueueMessageStatusInFlight
 	msg.DequeueCount++
@@ -422,12 +426,6 @@ func (q *MessageQueue) Dequeue(ctx context.Context, agentID string) (*QueueMessa
 	}
 
 	q.totalDequeued.Add(1)
-
-	if span != nil {
-		span.SetAttribute("message_id", msg.ID)
-		span.SetAttribute("priority", msg.Priority)
-		span.SetAttribute("dequeue_count", msg.DequeueCount)
-	}
 
 	q.logger.Debug("message dequeued",
 		zap.String("message_id", msg.ID),
@@ -904,6 +902,62 @@ func (q *MessageQueue) UnregisterNotificationChannel(agentID string) {
 	defer q.mu.Unlock()
 
 	delete(q.notificationChannels, agentID)
+}
+
+// UnregisterNotificationChannelIf removes agentID's notification channel only
+// when it is still ch, and reports whether it did. A worker that is replaced
+// under the same agent ID must not remove its replacement's channel when it
+// stops.
+func (q *MessageQueue) UnregisterNotificationChannelIf(agentID string, ch <-chan struct{}) bool {
+	if q.closed.Load() {
+		return false
+	}
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	if current, ok := q.notificationChannels[agentID]; ok && current == ch {
+		delete(q.notificationChannels, agentID)
+		return true
+	}
+	return false
+}
+
+// FailUndeliverable marks agentID's pending messages enqueued before
+// enqueuedBefore as failed, logs one warning per message with reason, and
+// returns their IDs. It is for messages nothing will ever dequeue, for example
+// a message addressed to a short agent name while the listener is registered
+// under its workflow-qualified name: left pending, such a message is kept for
+// its whole TTL and reloaded after every restart. Messages enqueued later stay
+// pending, so a listener that is still starting gets them.
+func (q *MessageQueue) FailUndeliverable(ctx context.Context, agentID string, enqueuedBefore time.Time, reason string) []string {
+	if q.closed.Load() || agentID == "" {
+		return nil
+	}
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	var failed []string
+	for _, m := range q.queues[agentID] {
+		if m.Status != QueueMessageStatusPending || !m.EnqueuedAt.Before(enqueuedBefore) {
+			continue
+		}
+		m.Status = QueueMessageStatusFailed
+		q.totalFailed.Add(1)
+		if err := q.updateMessageStatus(ctx, m.ID, QueueMessageStatusFailed); err != nil {
+			q.logger.Warn("Failed to update undeliverable message status", zap.String("message_id", m.ID), zap.Error(err))
+		}
+		q.logger.Warn("Message undeliverable; marked failed",
+			zap.String("message_id", m.ID),
+			zap.String("to_agent", m.ToAgent),
+			zap.String("from_agent", m.FromAgent),
+			zap.String("message_type", m.MessageType),
+			zap.Time("enqueued_at", m.EnqueuedAt),
+			zap.String("reason", reason))
+		failed = append(failed, m.ID)
+	}
+	return failed
 }
 
 // GetNotificationChannel returns the notification channel for an agent, if registered.

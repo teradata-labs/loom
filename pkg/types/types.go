@@ -292,6 +292,14 @@ type HealthChecker interface {
 	HealthCheck(ctx context.Context) error
 }
 
+// InvocationParameterReporter is an optional interface providers implement
+// to report the parameters a request made under ctx carries, such as
+// max_tokens and temperature, keyed by the provider's request field names.
+// Instrumentation records them as OpenInference llm.invocation_parameters.
+type InvocationParameterReporter interface {
+	InvocationParameters(ctx context.Context) map[string]interface{}
+}
+
 // TokenCallback is called for each token/chunk during streaming.
 // Implementations should be lightweight and non-blocking.
 type TokenCallback func(token string)

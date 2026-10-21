@@ -93,6 +93,12 @@ func (c *Client) Name() string {
 	return "mistral"
 }
 
+// InvocationParameters reports the parameters the underlying OpenAI-compatible
+// request carries.
+func (c *Client) InvocationParameters(ctx context.Context) map[string]interface{} {
+	return c.openai.InvocationParameters(ctx)
+}
+
 // Model returns the model identifier.
 func (c *Client) Model() string {
 	return c.model

@@ -1062,6 +1062,21 @@ func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cache
 	return inputCost + cacheWriteCost + cacheReadCost + outputCost
 }
 
+// InvocationParameters reports the parameters a request made under ctx
+// carries: the token limit under the field name the model takes, the
+// temperature sent and whether thinking is on.
+func (c *Client) InvocationParameters(ctx context.Context) map[string]interface{} {
+	limit := "max_tokens"
+	if c.usesMaxCompletionTokens() {
+		limit = "max_completion_tokens"
+	}
+	params := map[string]interface{}{limit: c.maxTokens, "temperature": c.temperatureParam(ctx)}
+	if c.thinkingParam(ctx) != nil {
+		params["thinking"] = true
+	}
+	return params
+}
+
 // usesMaxCompletionTokens returns true when the model requires max_completion_tokens
 // instead of the legacy max_tokens parameter.
 //

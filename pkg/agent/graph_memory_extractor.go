@@ -25,6 +25,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/teradata-labs/loom/pkg/memory"
+	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/types"
 )
 
@@ -256,13 +257,35 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 	extractCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// One span per extraction, outcome always set. Started from ctx, it joins
+	// the turn's trace even when the turn has already ended. No session.id:
+	// the eval_runs analysis expects it only on server.Weave and agent.chat.
+	tracer := a.tracer
+	if tracer == nil {
+		tracer = observability.NewNoOpTracer()
+	}
+	extractCtx, span := tracer.StartSpan(extractCtx, "graph_memory.extract")
+	defer tracer.EndSpan(span)
+	span.SetAttribute("agent.name", a.config.Name)
+	outcome := "unknown"
+	var counts extractionCounts
+	defer func() {
+		span.SetAttribute("extract.outcome", outcome)
+		span.SetAttribute("extract.entities_created", counts.entities)
+		span.SetAttribute("extract.relationships_created", counts.relationships)
+		span.SetAttribute("extract.memories_created", counts.memories)
+		span.SetAttribute("extract.store_errors", counts.storeErrors)
+	}()
+
 	session, ok := a.memory.GetSession(sessionID)
 	if !ok {
+		outcome = "no_session"
 		return
 	}
 
 	segmentedMem, ok := session.SegmentedMem.(*SegmentedMemory)
 	if !ok || segmentedMem == nil {
+		outcome = "no_session"
 		return
 	}
 
@@ -276,6 +299,7 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 	}
 	recentMessages := segmentedMem.GetRecentConversationTurns(messageCount)
 	if len(recentMessages) == 0 {
+		outcome = "no_messages"
 		return
 	}
 
@@ -320,6 +344,7 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 	if a.compressorLLM != nil {
 		llmProvider = a.compressorLLM
 	}
+	llmProvider = llmForRole(llmProvider, roleMemoryExtract)
 
 	// Single-pass extraction with date anchoring.
 	prompt := buildGraphMemoryExtractionPromptWithDate(
@@ -329,11 +354,14 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 		{Role: "user", Content: prompt},
 	}, nil)
 	if err != nil {
+		outcome = "llm_error"
+		span.RecordError(err)
 		return
 	}
 
 	data, ok := parseExtractionResponse(response.Content)
 	if !ok {
+		outcome = "parse_error"
 		return
 	}
 
@@ -353,10 +381,12 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 		if e.IsUser {
 			props = `{"is_user":true}`
 		}
-		entity, err := a.getOrCreateEntity(extractCtx, agentID, name, entityType, props)
+		entity, created, err := a.getOrCreateEntity(extractCtx, agentID, name, entityType, props)
 		if err != nil {
+			counts.storeErrors++
 			continue
 		}
+		counts.addEntity(created)
 		entityMap[name] = entity
 	}
 
@@ -372,21 +402,27 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 		source, ok := entityMap[sourceName]
 		if !ok {
 			// Entity not extracted this cycle; try to get-or-create.
+			var created bool
 			var err error
-			source, err = a.getOrCreateEntity(extractCtx, agentID, sourceName, "concept", "")
+			source, created, err = a.getOrCreateEntity(extractCtx, agentID, sourceName, "concept", "")
 			if err != nil {
+				counts.storeErrors++
 				continue
 			}
+			counts.addEntity(created)
 			entityMap[sourceName] = source
 		}
 
 		target, ok := entityMap[targetName]
 		if !ok {
+			var created bool
 			var err error
-			target, err = a.getOrCreateEntity(extractCtx, agentID, targetName, "concept", "")
+			target, created, err = a.getOrCreateEntity(extractCtx, agentID, targetName, "concept", "")
 			if err != nil {
+				counts.storeErrors++
 				continue
 			}
+			counts.addEntity(created)
 			entityMap[targetName] = target
 		}
 
@@ -397,11 +433,14 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 			Relation: relation,
 		})
 		if err != nil {
+			counts.storeErrors++
 			zap.L().Debug("graph memory extraction: failed to create relationship",
 				zap.String("source", sourceName),
 				zap.String("target", targetName),
 				zap.String("relation", relation),
 				zap.Error(err))
+		} else {
+			counts.relationships++
 		}
 	}
 
@@ -478,10 +517,31 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 
 		_, err := a.graphMemoryStore.Remember(extractCtx, mem)
 		if err != nil {
+			counts.storeErrors++
 			zap.L().Debug("graph memory extraction: failed to store memory",
 				zap.String("content_preview", truncate(m.Content, 80)),
 				zap.Error(err))
+		} else {
+			counts.memories++
 		}
+	}
+
+	outcome = "completed"
+	if counts.storeErrors > 0 && counts.entities+counts.relationships+counts.memories == 0 {
+		outcome = "store_error"
+	}
+}
+
+// extractionCounts tallies what one extraction stored, for its span.
+type extractionCounts struct {
+	entities, relationships, memories, storeErrors int
+}
+
+// addEntity counts an entity that the extraction created; one it found
+// already stored is not counted.
+func (c *extractionCounts) addEntity(created bool) {
+	if created {
+		c.entities++
 	}
 }
 
@@ -547,17 +607,18 @@ var datePatterns = func() []*regexp.Regexp {
 // getOrCreateEntity retrieves an entity by name, creating it if it doesn't exist.
 // If propertiesJSON is non-empty and the entity already exists, it updates properties
 // (used to mark is_user on existing entities).
-func (a *Agent) getOrCreateEntity(ctx context.Context, agentID, name, entityType, propertiesJSON string) (*memory.Entity, error) {
-	entity, err := a.graphMemoryStore.GetEntity(ctx, agentID, name)
+// created reports whether this call stored a new entity.
+func (a *Agent) getOrCreateEntity(ctx context.Context, agentID, name, entityType, propertiesJSON string) (entity *memory.Entity, created bool, err error) {
+	entity, err = a.graphMemoryStore.GetEntity(ctx, agentID, name)
 	if err == nil {
 		// If is_user property needs to be set on an existing entity, update it.
 		if propertiesJSON != "" && propertiesJSON != "{}" && entity.PropertiesJSON != propertiesJSON {
 			entity.PropertiesJSON = propertiesJSON
 			if updated, err := a.graphMemoryStore.UpdateEntity(ctx, entity); err == nil {
-				return updated, nil
+				return updated, false, nil
 			}
 		}
-		return entity, nil
+		return entity, false, nil
 	}
 
 	// Entity doesn't exist, create it.
@@ -572,12 +633,12 @@ func (a *Agent) getOrCreateEntity(ctx context.Context, agentID, name, entityType
 		// Retry the Get.
 		entity, err2 := a.graphMemoryStore.GetEntity(ctx, agentID, name)
 		if err2 == nil {
-			return entity, nil
+			return entity, false, nil
 		}
-		return nil, fmt.Errorf("create entity %q: %w", name, err)
+		return nil, false, fmt.Errorf("create entity %q: %w", name, err)
 	}
 
-	return entity, nil
+	return entity, true, nil
 }
 
 // normalizeEntityName lowercases and trims entity names for consistent deduplication.

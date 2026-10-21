@@ -221,6 +221,12 @@ func (c *Client) Name() string {
 	return "bedrock"
 }
 
+// InvocationParameters reports the max_tokens and temperature every request
+// carries.
+func (c *Client) InvocationParameters(_ context.Context) map[string]interface{} {
+	return map[string]interface{}{"max_tokens": c.maxTokens, "temperature": c.temperature}
+}
+
 // Model returns the model identifier.
 func (c *Client) Model() string {
 	return c.modelID

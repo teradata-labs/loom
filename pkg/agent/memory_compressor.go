@@ -167,7 +167,7 @@ type promptRegistryCompressor struct {
 // or a failed prompt load surfaces as an error, which LLMCompressor returns to
 // its caller (the fold then drops the region with an "(unsummarized)" marker).
 func newPromptRegistryCompressor(llm LLMProvider, registry prompts.PromptRegistry) *promptRegistryCompressor {
-	return &promptRegistryCompressor{llm: llm, prompts: registry}
+	return &promptRegistryCompressor{llm: llmForRole(llm, roleMemoryCompress), prompts: registry}
 }
 
 // CompressConversation loads the compaction prompt from the registry and asks

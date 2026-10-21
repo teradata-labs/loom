@@ -147,6 +147,12 @@ func NewClient(cfg Config) *Client {
 // Name returns the provider identifier.
 func (c *Client) Name() string { return "litellm" }
 
+// InvocationParameters reports the parameters the underlying OpenAI-compatible
+// request carries.
+func (c *Client) InvocationParameters(ctx context.Context) map[string]interface{} {
+	return c.inner.InvocationParameters(ctx)
+}
+
 // Model returns the configured model routing string.
 func (c *Client) Model() string { return c.model }
 

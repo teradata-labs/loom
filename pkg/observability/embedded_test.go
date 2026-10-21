@@ -35,7 +35,7 @@ func TestNewEmbeddedTracer_Memory(t *testing.T) {
 	}
 	defer func() { _ = tracer.Close() }()
 
-	if tracer.storage == nil {
+	if tracer.GetStorage() == nil {
 		t.Fatal("Expected storage to be initialized")
 	}
 }
@@ -236,13 +236,16 @@ func TestEmbeddedTracer_SetEvalID(t *testing.T) {
 	_, span := tracer.StartSpan(ctx, "test.operation")
 	tracer.EndSpan(span)
 
-	// Verify eval ID was set
-	tracer.mu.RLock()
-	currentID := tracer.currentEvalID
-	tracer.mu.RUnlock()
-
-	if currentID != customEvalID {
+	// Verify the span was recorded under the custom eval ID
+	if currentID := tracer.recorder.CurrentEvalID(); currentID != customEvalID {
 		t.Errorf("Expected eval ID %s, got %s", customEvalID, currentID)
+	}
+	metrics, err := tracer.GetStorage().CalculateEvalMetrics(ctx, customEvalID)
+	if err != nil {
+		t.Fatalf("CalculateEvalMetrics: %v", err)
+	}
+	if metrics.TotalRuns != 1 {
+		t.Errorf("Expected 1 run under %s, got %d", customEvalID, metrics.TotalRuns)
 	}
 }
 
@@ -310,7 +313,7 @@ func TestNewEmbeddedHawkTracer_BackwardCompat(t *testing.T) {
 	}
 	defer func() { _ = tracer.Close() }()
 
-	if tracer.storage == nil {
+	if tracer.GetStorage() == nil {
 		t.Fatal("Expected storage to be initialized")
 	}
 }

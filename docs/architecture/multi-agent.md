@@ -1044,24 +1044,30 @@ s.workflowSubAgents[subAgentKey] = &workflowSubAgentContext{
 }
 ```
 
-**Lookup Algorithm** (monitor goroutine finds sub-agents by suffix):
+**Lookup Algorithm** (`dispatchPendingMessages`, the queue monitor's one-second tick): each context records the agent ID it dequeues under (`agentID`: the coordinator's ID, or the sub-agent's workflow-qualified ID), and the monitor notifies only the contexts whose `agentID` equals the pending message's recipient:
 
 ```go
-// Find all sub-agents for a session's workflow
-for key, ctx := range s.workflowSubAgents {
-    // Match by suffix (agentID part of composite key)
-    if strings.HasSuffix(key, ":"+agentID) && ctx.sessionID == sessionID {
-        // Found matching sub-agent
+for _, agentID := range s.messageQueue.GetAgentsWithPendingMessages(ctx) {
+    for _, wctx := range s.workflowSubAgents {
+        if wctx.agentID == agentID {
+            // notify wctx.notifyChan (several sessions may run the same sub-agent)
+        }
     }
+    // No context: leave it to a listener registered on the queue, or
+    // auto-spawn a workflow-qualified ID ("workflow:role"). Still no
+    // listener after the 2-minute grace period: mark the message failed
+    // and log "Message undeliverable; marked failed".
 }
 ```
+
+The monitor used to match context keys by suffix, so a message addressed to a short name (`role`) woke the worker registered as `workflow:role`, which dequeues under its full ID and never found it: the worker was notified every second until the message expired. `send_message` resolves short names to the workflow-qualified ID before enqueueing.
 
 **Design Trade-offs**:
 
 | Approach | Pros | Cons | Decision |
 |----------|------|------|----------|
 | **Single agentID keys** (original) | Simple map structure, fast lookup | Session conflicts, agents cancel each other | ❌ Rejected |
-| **Composite keys** (chosen) | Session isolation, concurrent workflows | Suffix matching O(n) for lookups, 2x key length | ✅ Chosen |
+| **Composite keys** (chosen) | Session isolation, concurrent workflows | O(n) scan to find a recipient's contexts, 2x key length | ✅ Chosen |
 | **Nested maps** (session → agent) | Fast lookup by session, type-safe | Higher memory overhead (N maps), complex iteration | ❌ Rejected |
 
 **Formal Properties**:
@@ -1085,16 +1091,18 @@ When new sub-agent spawned with existing key:
   2. Delete old entry
   3. Insert new entry
   (Prevents orphaned goroutines)
+The cancelled worker's cleanup runs after step 3, so it removes the entry
+and its queue notification channel only while they are still its own.
 ```
 
 **Performance**:
 - Map insert/delete: O(1)
 - Lookup by composite key: O(1)
-- Monitor suffix matching: O(n) where n = total sub-agents (acceptable, runs every 5s)
+- Monitor exact matching: O(n) where n = total sub-agents per agent ID with pending messages (acceptable, runs every second)
 
 **Rationale**:
 - Composite keys chosen over nested maps for simpler iteration patterns
-- Suffix matching acceptable since n is small (typically <10 sub-agents per server)
+- A linear scan is acceptable since n is small (typically <10 sub-agents per server)
 - Explicit conflict prevention (cancel before spawn) ensures clean teardown
 
 

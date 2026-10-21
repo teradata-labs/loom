@@ -20,7 +20,6 @@ package observability
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -80,15 +79,12 @@ func WithDefaultResourceAttributes(attrs map[string]string) EmbeddedTracerOption
 
 // EmbeddedTracer implements Tracer interface using embedded storage
 type EmbeddedTracer struct {
-	storage              storage.Storage
+	recorder             *EvalRunRecorder // eval_runs storage, eval ID and metrics flush
 	config               *EmbeddedConfig
 	logger               *zap.Logger
 	mu                   sync.RWMutex
 	activeSpans          map[string]*Span
 	closed               bool
-	flushTicker          *time.Ticker
-	flushDone            chan struct{}
-	currentEvalID        string // Current evaluation session
 	spanExporter         SpanExporter
 	defaultResourceAttrs map[string]string
 }
@@ -110,41 +106,21 @@ func NewEmbeddedTracer(config *EmbeddedConfig, opts ...EmbeddedTracerOption) (*E
 		}
 	}
 
-	// Create storage based on type
-	storageConfig := &storage.StorageConfig{
-		Type:            config.StorageType,
-		Path:            config.SQLitePath,
-		MaxMemoryTraces: config.MaxMemoryTraces,
-	}
-
-	if config.StorageType == "sqlite" {
-		if config.SQLitePath == "" {
-			return nil, fmt.Errorf("sqlite_path required when storage_type = 'sqlite'")
-		}
-	}
-
-	stor, err := storage.NewStorage(storageConfig)
+	recorder, err := NewEvalRunRecorder(config, logger)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create storage: %w", err)
+		return nil, err
 	}
 
 	tracer := &EmbeddedTracer{
-		storage:     stor,
+		recorder:    recorder,
 		config:      config,
 		logger:      logger,
 		activeSpans: make(map[string]*Span),
-		flushDone:   make(chan struct{}),
 	}
 
 	// Apply options
 	for _, opt := range opts {
 		opt(tracer)
-	}
-
-	// Start flush ticker for periodic metrics updates
-	if config.FlushInterval > 0 {
-		tracer.flushTicker = time.NewTicker(config.FlushInterval)
-		go tracer.flushLoop()
 	}
 
 	logger.Info("embedded tracer initialized",
@@ -244,22 +220,14 @@ func (t *EmbeddedTracer) EndSpan(span *Span) {
 	// Remove from active spans
 	delete(t.activeSpans, span.SpanID)
 
-	// Convert to storage EvalRun format for embedded storage
-	evalRun := t.spanToEvalRun(span)
-
 	// Capture exporter ref (set once at construction, safe to read under lock)
 	exporter := t.spanExporter
 
 	t.mu.Unlock()
 
-	// Store in embedded storage (outside lock — storage has its own synchronization)
+	// Store in embedded storage (outside lock — the recorder synchronizes itself)
+	t.recorder.Record(span)
 	ctx := context.Background()
-	if err := t.storage.CreateEvalRun(ctx, evalRun); err != nil {
-		t.logger.Error("failed to store eval run",
-			zap.String("span_id", span.SpanID),
-			zap.Error(err),
-		)
-	}
 
 	// Export to external exporter if configured (outside lock to avoid
 	// blocking concurrent spans during potentially slow network I/O)
@@ -279,88 +247,9 @@ func (t *EmbeddedTracer) EndSpan(span *Span) {
 	)
 }
 
-// spanToEvalRun converts a Span to storage EvalRun format
-func (t *EmbeddedTracer) spanToEvalRun(span *Span) *storage.EvalRun {
-	// Extract metadata from span attributes
-	query, _ := span.Attributes["query"].(string)
-	model, _ := span.Attributes[AttrLLMModel].(string)
-	response, _ := span.Attributes["response"].(string)
-	sessionID, _ := span.Attributes[AttrSessionID].(string)
-
-	// Success based on status
-	success := span.Status.Code != StatusError
-	errorMsg := ""
-	if !success {
-		errorMsg = span.Status.Message
-	}
-
-	// Token count - check multiple possible attribute names
-	tokenCount := int32(0)
-	if tokens, ok := span.Attributes["llm.tokens.total"].(int); ok {
-		tokenCount = safeInt32(tokens)
-	} else if tokens, ok := span.Attributes["llm.tokens.total"].(int32); ok {
-		tokenCount = tokens
-	} else if tokens, ok := span.Attributes["llm.tokens.total"].(float64); ok {
-		tokenCount = safeInt32FromFloat64(tokens)
-	} else if tokens, ok := span.Attributes["token_count"].(int); ok {
-		tokenCount = safeInt32(tokens)
-	} else if tokens, ok := span.Attributes["token_count"].(int32); ok {
-		tokenCount = tokens
-	}
-
-	// Serialize configuration
-	configJSON, _ := json.Marshal(span.Attributes)
-
-	return &storage.EvalRun{
-		ID:                span.SpanID,
-		EvalID:            t.getCurrentEvalID(),
-		Query:             query,
-		Model:             model,
-		ConfigurationJSON: string(configJSON),
-		Response:          response,
-		ExecutionTimeMS:   span.Duration.Milliseconds(),
-		TokenCount:        tokenCount,
-		Success:           success,
-		ErrorMessage:      errorMsg,
-		SessionID:         sessionID,
-		Timestamp:         span.StartTime.Unix(),
-	}
-}
-
-// getCurrentEvalID returns the current evaluation ID (or creates one)
-func (t *EmbeddedTracer) getCurrentEvalID() string {
-	if t.currentEvalID != "" {
-		return t.currentEvalID
-	}
-
-	// Create a default eval for this session
-	evalID := fmt.Sprintf("loom-session-%d", time.Now().Unix())
-	t.currentEvalID = evalID
-
-	eval := &storage.Eval{
-		ID:        evalID,
-		Name:      "Loom Agent Session",
-		Suite:     "embedded",
-		Status:    "running",
-		CreatedAt: time.Now().Unix(),
-	}
-
-	ctx := context.Background()
-	if err := t.storage.CreateEval(ctx, eval); err != nil {
-		t.logger.Warn("failed to create eval",
-			zap.String("eval_id", evalID),
-			zap.Error(err),
-		)
-	}
-
-	return evalID
-}
-
 // SetEvalID sets the current evaluation ID for grouping traces
 func (t *EmbeddedTracer) SetEvalID(evalID string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.currentEvalID = evalID
+	t.recorder.SetEvalID(evalID)
 }
 
 // RecordMetric records a point-in-time metric
@@ -382,46 +271,7 @@ func (t *EmbeddedTracer) RecordEvent(ctx context.Context, name string, attribute
 
 // Flush forces a metrics update for the current evaluation
 func (t *EmbeddedTracer) Flush(ctx context.Context) error {
-	t.mu.RLock()
-	evalID := t.currentEvalID
-	t.mu.RUnlock()
-
-	if evalID == "" {
-		return nil // No active eval
-	}
-
-	// Calculate metrics for current eval
-	metrics, err := t.storage.CalculateEvalMetrics(ctx, evalID)
-	if err != nil {
-		return fmt.Errorf("failed to calculate metrics: %w", err)
-	}
-
-	// Update metrics
-	if err := t.storage.UpsertEvalMetrics(ctx, metrics); err != nil {
-		return fmt.Errorf("failed to update metrics: %w", err)
-	}
-
-	t.logger.Debug("metrics flushed",
-		zap.String("eval_id", evalID),
-		zap.Float64("success_rate", metrics.SuccessRate),
-		zap.Int32("total_runs", metrics.TotalRuns),
-	)
-
-	return nil
-}
-
-// flushLoop periodically flushes metrics
-func (t *EmbeddedTracer) flushLoop() {
-	for {
-		select {
-		case <-t.flushTicker.C:
-			if err := t.Flush(context.Background()); err != nil {
-				t.logger.Error("periodic flush failed", zap.Error(err))
-			}
-		case <-t.flushDone:
-			return
-		}
-	}
+	return t.recorder.Flush(ctx)
 }
 
 // Close shuts down the embedded tracer
@@ -432,28 +282,7 @@ func (t *EmbeddedTracer) Close() error {
 		return nil
 	}
 	t.closed = true
-
-	// Stop flush ticker
-	if t.flushTicker != nil {
-		t.flushTicker.Stop()
-		close(t.flushDone)
-	}
-
-	evalID := t.currentEvalID
 	t.mu.Unlock()
-
-	// Final flush (must release lock first to avoid deadlock)
-	if evalID != "" {
-		ctx := context.Background()
-		if err := t.Flush(ctx); err != nil {
-			t.logger.Error("final flush failed", zap.Error(err))
-		}
-
-		// Mark eval as completed
-		if err := t.storage.UpdateEvalStatus(ctx, evalID, "completed"); err != nil {
-			t.logger.Error("failed to update eval status", zap.Error(err))
-		}
-	}
 
 	// Flush and shutdown span exporter if configured (with timeout to avoid hanging)
 	if t.spanExporter != nil {
@@ -467,9 +296,8 @@ func (t *EmbeddedTracer) Close() error {
 		cancel()
 	}
 
-	// Close storage
-	if err := t.storage.Close(); err != nil {
-		t.logger.Error("failed to close storage", zap.Error(err))
+	// Final metrics, mark the eval completed, close storage.
+	if err := t.recorder.Close(); err != nil {
 		return err
 	}
 
@@ -479,36 +307,8 @@ func (t *EmbeddedTracer) Close() error {
 
 // GetStorage returns the underlying storage (for testing/inspection)
 func (t *EmbeddedTracer) GetStorage() storage.Storage {
-	return t.storage
+	return t.recorder.Storage()
 }
 
 // Compile-time interface check
 var _ Tracer = (*EmbeddedTracer)(nil)
-
-// safeInt32 converts an int to int32, capping at MaxInt32/MinInt32 to prevent overflow.
-// This is a local copy to avoid import cycle with pkg/types.
-func safeInt32(n int) int32 {
-	const maxInt32 = 2147483647  // math.MaxInt32
-	const minInt32 = -2147483648 // math.MinInt32
-	if n > maxInt32 {
-		return maxInt32
-	}
-	if n < minInt32 {
-		return minInt32
-	}
-	return int32(n) // #nosec G115 -- bounds checked above
-}
-
-// safeInt32FromFloat64 converts a float64 to int32, capping at MaxInt32/MinInt32 to prevent overflow.
-// This is a local copy to avoid import cycle with pkg/types.
-func safeInt32FromFloat64(f float64) int32 {
-	const maxInt32 = 2147483647  // math.MaxInt32
-	const minInt32 = -2147483648 // math.MinInt32
-	if f > maxInt32 {
-		return maxInt32
-	}
-	if f < minInt32 {
-		return minInt32
-	}
-	return int32(f) // #nosec G115 -- bounds checked above
-}

@@ -48,6 +48,9 @@ type Edge struct {
 	UpdatedAt      time.Time
 }
 
+// SourceTask is the Source of task-completion memories (task.Manager).
+const SourceTask = "task"
+
 // Memory is IMMUTABLE once created. Only AccessedAt, AccessCount,
 // Salience, and ExpiresAt may be mutated (via specific engine operations).
 type Memory struct {

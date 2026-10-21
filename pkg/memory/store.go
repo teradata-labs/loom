@@ -78,6 +78,9 @@ type RecallOpts struct {
 	MinSalience float64
 	MaxTokens   int // 0 = no limit
 	Limit       int // max results
+	// ExcludeSources leaves out memories whose Source is one of these (for
+	// example SourceTask).
+	ExcludeSources []string
 }
 
 // ContextForOpts configures a composite context query.

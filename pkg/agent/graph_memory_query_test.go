@@ -257,6 +257,6 @@ func TestInjectGraphMemoryContextTruncatesQueryAttribute(t *testing.T) {
 	require.Len(t, spans, 1)
 	recorded, ok := spans[0].Attributes["recall.query"].(string)
 	require.True(t, ok, "recall.query must be recorded")
-	assert.LessOrEqual(t, len([]rune(recorded)), maxPreviewLen+1, "recall.query must be truncated")
+	assert.LessOrEqual(t, len([]rune(recorded)), observability.DefaultMaxContentLength+1, "recall.query must be truncated")
 	assert.Less(t, len(recorded), len(longQuery))
 }

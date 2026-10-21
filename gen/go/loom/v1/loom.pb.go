@@ -643,8 +643,10 @@ type WeaveProgress struct {
 	// from a provider that does not report sizes has no tool_call_id or tool_name
 	// and a size of 0; with either set, 0 means no arguments have arrived yet.
 	ToolInputBytes int64 `protobuf:"varint,23,opt,name=tool_input_bytes,json=toolInputBytes,proto3" json:"tool_input_bytes,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Trace ID for observability (populated on terminal events such as COMPLETED)
+	TraceId       string `protobuf:"bytes,24,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WeaveProgress) Reset() {
@@ -836,6 +838,13 @@ func (x *WeaveProgress) GetToolInputBytes() int64 {
 		return x.ToolInputBytes
 	}
 	return 0
+}
+
+func (x *WeaveProgress) GetTraceId() string {
+	if x != nil {
+		return x.TraceId
+	}
+	return ""
 }
 
 // HITLRequestInfo carries information about a human-in-the-loop request.
@@ -10991,7 +11000,7 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\bmetadata\x18\x06 \x01(\v2\x1a.loom.v1.ExecutionMetadataR\bmetadata\x12@\n" +
 	"\vcorrections\x18\a \x03(\v2\x1e.loom.v1.SelfCorrectionAttemptR\vcorrections\x12\x19\n" +
 	"\bagent_id\x18\b \x01(\tR\aagentId\x12:\n" +
-	"\rcontext_state\x18\t \x01(\v2\x15.loom.v1.ContextStateR\fcontextState\"\xc9\a\n" +
+	"\rcontext_state\x18\t \x01(\v2\x15.loom.v1.ContextStateR\fcontextState\"\xe4\a\n" +
 	"\rWeaveProgress\x12-\n" +
 	"\x05stage\x18\x01 \x01(\x0e2\x17.loom.v1.ExecutionStageR\x05stage\x12\x1a\n" +
 	"\bprogress\x18\x02 \x01(\x05R\bprogress\x12\x18\n" +
@@ -11021,7 +11030,8 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"toolCallId\x12:\n" +
 	"\rcontext_state\x18\x15 \x01(\v2\x15.loom.v1.ContextStateR\fcontextState\x12/\n" +
 	"\x14is_tool_input_stream\x18\x16 \x01(\bR\x11isToolInputStream\x12(\n" +
-	"\x10tool_input_bytes\x18\x17 \x01(\x03R\x0etoolInputBytes\"\x92\x02\n" +
+	"\x10tool_input_bytes\x18\x17 \x01(\x03R\x0etoolInputBytes\x12\x19\n" +
+	"\btrace_id\x18\x18 \x01(\tR\atraceId\"\x92\x02\n" +
 	"\x0fHITLRequestInfo\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x1a\n" +

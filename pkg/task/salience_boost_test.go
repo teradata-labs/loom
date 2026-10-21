@@ -25,6 +25,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/teradata-labs/loom/pkg/memory"
+	"github.com/teradata-labs/loom/pkg/observability"
 )
 
 // mockGraphMemoryStore is a minimal mock that tracks SearchEntities, Recall,
@@ -156,7 +157,7 @@ func TestBoostRelatedEntitySalience_TouchesMemories(t *testing.T) {
 		CloseReason:  "done",
 	}
 
-	mgr.boostRelatedEntitySalience(task)
+	mgr.boostRelatedEntitySalience(context.Background(), task)
 
 	// Allow async goroutine from rememberTaskCompletion — but
 	// boostRelatedEntitySalience is called synchronously here.
@@ -203,7 +204,7 @@ func TestBoostRelatedEntitySalience_WithSkillMetadata(t *testing.T) {
 		Metadata:     map[string]string{"skill_name": "code-review"},
 	}
 
-	mgr.boostRelatedEntitySalience(task)
+	mgr.boostRelatedEntitySalience(context.Background(), task)
 
 	mock.mu.Lock()
 	defer mock.mu.Unlock()
@@ -222,7 +223,7 @@ func TestBoostRelatedEntitySalience_WithSkillMetadata(t *testing.T) {
 func TestBoostRelatedEntitySalience_NilGraphMemory(t *testing.T) {
 	mgr := NewManager(nil, nil, nil, zap.NewNop())
 	// graphMemory is nil — should be a no-op, no panic.
-	mgr.boostRelatedEntitySalience(&Task{
+	mgr.boostRelatedEntitySalience(context.Background(), &Task{
 		ID:    "task-x",
 		Title: "something",
 	})
@@ -243,7 +244,7 @@ func TestBoostRelatedEntitySalience_NoEntitiesFound(t *testing.T) {
 		OwnerAgentID: "test-agent",
 	}
 
-	mgr.boostRelatedEntitySalience(task)
+	mgr.boostRelatedEntitySalience(context.Background(), task)
 
 	mock.mu.Lock()
 	defer mock.mu.Unlock()
@@ -365,4 +366,28 @@ func TestMemoryRecordingAllowed(t *testing.T) {
 	mgr.SetGraphMemoryPolicy(func(id string) bool { return id == "a" })
 	assert.True(t, mgr.MemoryRecordingAllowed("a"))
 	assert.False(t, mgr.MemoryRecordingAllowed("b"))
+}
+
+func TestBoostRelatedEntitySalience_SpanJoinsCallerTrace(t *testing.T) {
+	mock := &mockGraphMemoryStore{
+		entities: []*memory.Entity{{ID: "ent-1", Name: "SQL Optimization", AgentID: "test-agent"}},
+		memories: []*memory.Memory{{ID: "mem-1"}},
+	}
+	tracer := observability.NewMockTracer()
+	mgr := NewManager(nil, nil, tracer, zap.NewNop())
+	mgr.SetGraphMemory(mock)
+
+	turnCtx, turn := tracer.StartSpan(context.Background(), "agent.chat")
+	tracer.EndSpan(turn) // the turn has ended by the time the boost runs
+	mgr.boostRelatedEntitySalience(context.WithoutCancel(turnCtx), &Task{
+		ID: "task-1", Title: "Optimize SQL query", OwnerAgentID: "test-agent", CloseReason: "done",
+	})
+
+	boost := tracer.GetSpanByName("graph_memory.salience_boost")
+	require.NotNil(t, boost)
+	assert.Equal(t, turn.TraceID, boost.TraceID, "the boost joins the closing turn's trace")
+	assert.Equal(t, turn.SpanID, boost.ParentID)
+	assert.Equal(t, "task_close", boost.Attributes["salience.trigger"])
+	assert.Equal(t, "task-1", boost.Attributes["task.id"])
+	assert.Equal(t, 1, boost.Attributes["salience.memories_touched"])
 }

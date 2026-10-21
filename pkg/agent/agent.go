@@ -144,7 +144,7 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		if a.classifierLLM != nil {
 			classifierProvider = a.classifierLLM
 		}
-		llmClassifierConfig := patterns.DefaultLLMClassifierConfig(classifierProvider)
+		llmClassifierConfig := patterns.DefaultLLMClassifierConfig(llmForRole(classifierProvider, roleClassifier))
 		llmClassifier := patterns.NewLLMIntentClassifier(llmClassifierConfig)
 		a.orchestrator.SetIntentClassifier(llmClassifier)
 	}
@@ -397,8 +397,16 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	if a.skillOrchestrator != nil && a.graphMemoryStore != nil {
 		store := a.graphMemoryStore
 		agentName := a.config.Name
+		tracer := a.tracer
 		a.skillOrchestrator.SetOnSkillEviction(func(sessionID string, skill *skills.Skill, activeFor time.Duration) {
-			ctx := context.Background()
+			// No request context reaches an eviction (Orchestrator.ActivateSkill
+			// takes none), so the boost is a trace of its own; its span groups
+			// the store calls that would otherwise each be a root.
+			ctx, span := tracer.StartSpan(context.Background(), "graph_memory.salience_boost")
+			defer tracer.EndSpan(span)
+			span.SetAttribute("salience.trigger", "skill_eviction")
+			span.SetAttribute("skill.name", skill.Name)
+			span.SetAttribute("agent.name", agentName)
 
 			// Build search query from skill name + first 3 keywords.
 			query := skill.Name
@@ -448,7 +456,9 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 				}
 			}
 
+			span.SetAttribute("salience.memories_touched", len(deduped))
 			if touchErr := store.TouchMemories(ctx, deduped); touchErr != nil {
+				span.RecordError(touchErr)
 				zap.L().Debug("eviction salience boost: TouchMemories failed",
 					zap.String("skill", skill.Name),
 					zap.Error(touchErr))
@@ -1901,19 +1911,6 @@ func hasTextBlock(blocks []ContentBlock) bool {
 	return false
 }
 
-// maxPreviewLen is the maximum number of runes recorded in span preview attributes
-// to avoid bloating OTLP traces with large message bodies.
-const maxPreviewLen = 200
-
-// truncatePreview returns up to maxPreviewLen runes of s, appending "…" when truncated.
-func truncatePreview(s string) string {
-	runes := []rune(s)
-	if len(runes) <= maxPreviewLen {
-		return s
-	}
-	return string(runes[:maxPreviewLen]) + "…"
-}
-
 // chat runs the full conversation lifecycle — span setup, user-message
 // persistence, graph-memory kick-off, the conversation loop, and success/error
 // telemetry — shared by the three public chat entry points. See chatParams for
@@ -1960,7 +1957,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// Set initial attributes
 	span.SetAttribute(observability.AttrSessionID, sessionID)
 	span.SetAttribute("message.length", len(userMessage))
-	span.SetAttribute("message.preview", truncatePreview(userMessage))
+	span.SetAttribute("message.preview", observability.TruncateContent(userMessage))
 	if p.reportContentBlocks {
 		span.SetAttribute("message.content_blocks", len(p.contentBlocks))
 	}
@@ -1971,6 +1968,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	span.SetAttribute("llm.model", currentLLM.Model())
 	span.SetAttribute("config.max_turns", a.config.MaxTurns)
 	span.SetAttribute("config.max_tool_executions", a.config.MaxToolExecutions)
+	a.setAgentSpanIdentity(ctx, span)
 
 	// Record conversation started event
 	startedEvent := map[string]interface{}{
@@ -2065,6 +2063,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// the attribution as soon as it is set.
 	ctx, taskBinding := taskctx.ContextWithBinding(ctx)
 	turnIndex := userMsg.Turn
+	span.SetAttribute("session.turn", turnIndex)
 
 	// Create agent context (a nil progressCallback is fine — no events emitted)
 	agentCtx := &agentContext{
@@ -2204,7 +2203,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	span.SetAttribute("conversation.cost.usd", response.TurnUsage.CostUSD)
 	span.SetAttribute("conversation.stop_reason", response.Metadata["stop_reason"])
 	span.SetAttribute("response.length", len(response.Content))
-	span.SetAttribute("response.preview", truncatePreview(response.Content))
+	span.SetAttribute("response.preview", observability.TruncateContent(response.Content))
 
 	// Check if we hit limits
 	if maxTurnsHit, ok := response.Metadata["max_turns_hit"].(bool); ok && maxTurnsHit {
@@ -2224,8 +2223,39 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	})
 
 	a.recordConversationMetrics(sessionID, response, duration)
+	setResponseTraceID(response, span)
 
 	return response, nil
+}
+
+// setAgentSpanIdentity records which agent a turn span belongs to, and one
+// OpenInference metadata attribute (a JSON object string) holding
+// graph_memory_enabled plus the span metadata found in ctx (the experiment
+// tags the server copies from WeaveRequest.context).
+func (a *Agent) setAgentSpanIdentity(ctx context.Context, span *observability.Span) {
+	span.SetAttribute("agent.id", a.GetID())
+	span.SetAttribute("agent.name", a.config.Name)
+	md := map[string]interface{}{
+		"graph_memory_enabled": a.graphMemoryStore != nil && a.graphMemoryConfig != nil && a.graphMemoryConfig.Enabled,
+	}
+	for k, v := range observability.SpanMetadataFromContext(ctx) {
+		md[k] = v
+	}
+	if b, err := json.Marshal(md); err == nil {
+		span.SetAttribute("metadata", string(b))
+	}
+}
+
+// setResponseTraceID records the turn's trace ID in the response metadata, so
+// a caller can find the turn in the trace backend.
+func setResponseTraceID(response *Response, span *observability.Span) {
+	if response == nil || span == nil || span.TraceID == "" {
+		return
+	}
+	if response.Metadata == nil {
+		response.Metadata = make(map[string]interface{})
+	}
+	response.Metadata["trace_id"] = span.TraceID
 }
 
 // recordConversationMetrics emits the six metrics that describe one completed
@@ -2510,9 +2540,12 @@ func extractHITLInfo(input map[string]interface{}) *HITLRequestInfo {
 // This implements the core agent behavior: LLM generates tool calls,
 // we execute them, feed results back to LLM, repeat until completion.
 func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
-	// Start trace span — always created; NoOpTracer handles disabled case
-	_, span := ctx.Tracer().StartSpan(ctx, "agent.conversation_loop")
+	// Start trace span — always created; NoOpTracer handles disabled case.
+	// Everything below runs under it, so LLM and tool spans nest under the
+	// loop span rather than under agent.chat.
+	loopCtx, span := ctx.Tracer().StartSpan(ctx, "agent.conversation_loop")
 	defer ctx.Tracer().EndSpan(span)
+	ctx = withSpanContext(ctx, loopCtx)
 
 	session := ctx.Session()
 
@@ -2525,6 +2558,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	toolExecutionCount := 0
 	var allToolExecutions []ToolExecution
 	var turnUsage Usage                         // sum of every successful LLM call this turn → Response.TurnUsage
+	llmCalls := 0                               // number of calls turnUsage sums → Metadata["llm_calls"]
 	emptyRetried := false                       // one-shot flag: retry empty LLM response at most once per conversation
 	hygieneRetries := 0                         // capped count of REQUIRE_FIX retries the end-of-turn auditor has triggered
 	var hygieneLast *hygiene.EnforcementOutcome // last outcome, surfaced into Response.Metadata
@@ -2782,6 +2816,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			return nil, fmt.Errorf("LLM call failed: %w", err)
 		}
 		addUsage(&turnUsage, llmResp.Usage)
+		llmCalls++
 		a.observePromptUsage(session, llmResp.Usage)
 
 		// Record LLM response on conversation_loop span
@@ -2990,6 +3025,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 
 			meta := map[string]interface{}{
 				"turns":           turnCount,
+				"llm_calls":       llmCalls,
 				"tool_executions": toolExecutionCount,
 				"stop_reason":     llmResp.StopReason,
 				"empty_retried":   emptyRetried,
@@ -3100,7 +3136,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	// If we hit max turns/executions, make one final LLM call to synthesize results
 	// This ensures the agent provides meaningful output instead of a generic error message
 	emitProgress(ctx, StageSynthesis, 90, "Synthesizing tool execution results", "")
-	return a.synthesizeFinalResponse(ctx, session, turnCount, toolExecutionCount, allToolExecutions, turnUsage)
+	return a.synthesizeFinalResponse(ctx, session, turnCount, toolExecutionCount, allToolExecutions, turnUsage, llmCalls)
 }
 
 // batchState carries the loop-level state the per-call dispatch body reads
@@ -3228,12 +3264,16 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 		emitToolStarted(ctx, 50+clampInt32(*st.toolExecutionCount*5), toolCall)
 	}
 
-	// Execute tool with tracing — always created
-	_, toolSpan := ctx.Tracer().StartSpan(ctx, "agent.tool_execution")
-	toolSpan.SetAttribute("tool_name", toolCall.Name)
+	// Execute tool with tracing — always created. The span ends when this
+	// call returns, after the tool row is committed, so an error the commit
+	// records on it is exported with it.
+	toolCtx, toolSpan := ctx.Tracer().StartSpan(ctx, "agent.tool_execution")
+	defer ctx.Tracer().EndSpan(toolSpan)
+	setToolSpanInput(toolSpan, toolCall)
 
-	// Execute with self-correction (circuit breaker + SQL correction)
-	result, err := a.executeToolWithSelfCorrection(ctx, toolCall.Name, toolCall.Input, session.ID)
+	// Execute with self-correction (circuit breaker + SQL correction). Spans
+	// the tool starts nest under the tool span.
+	result, err := a.executeToolWithSelfCorrection(withSpanContext(ctx, toolCtx), toolCall.Name, toolCall.Input, session.ID)
 
 	// Tier 1: if tool CB fired, disable tool and inject synthetic result.
 	if err != nil && strings.Contains(err.Error(), "circuit breaker open") && st.recovery != nil {
@@ -3299,11 +3339,13 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 			toolSpan.SetAttribute("error.message", result.Error.Message)
 		}
 
-		toolSpan.SetAttribute("success", fmt.Sprintf("%t", success))
+		toolSpan.SetAttribute("success", success)
 		if result != nil {
-			toolSpan.SetAttribute("execution_time_ms", fmt.Sprintf("%d", result.ExecutionTimeMs))
+			toolSpan.SetAttribute("execution_time_ms", result.ExecutionTimeMs)
 		}
-		ctx.Tracer().EndSpan(toolSpan)
+		if out := toolOutputPreview(result, err); out != "" {
+			toolSpan.SetAttribute("output.value", out)
+		}
 	}
 
 	// Resource-await hold (park_resource.go): a successful result asking to be
@@ -3315,6 +3357,47 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 	}
 
 	a.commitToolRow(ctx, session, toolCall, st, result, err, toolSpan)
+}
+
+// setToolSpanInput records the call on an agent.tool_execution span: the tool
+// name, the OTel GenAI operation and call ID, and the arguments as
+// OpenInference input.value, bounded by TruncateContent. input.mime_type is
+// set only when the arguments are whole, since truncated JSON is not JSON.
+func setToolSpanInput(span *observability.Span, call ToolCall) {
+	span.SetAttribute("tool_name", call.Name)
+	span.SetAttribute(observability.AttrToolName, call.Name)
+	span.SetAttribute("gen_ai.operation.name", "execute_tool")
+	if call.ID != "" {
+		span.SetAttribute("gen_ai.tool.call.id", call.ID)
+	}
+	args := canonicalJSON(call.Input)
+	in := observability.TruncateContent(args)
+	span.SetAttribute("input.value", in)
+	if in == args {
+		span.SetAttribute("input.mime_type", "application/json")
+	}
+}
+
+// toolOutputPreview renders a tool result for the tool span's output.value:
+// the error for a failed call, else the result data (a string as it is,
+// anything else as JSON), bounded by TruncateContent.
+func toolOutputPreview(result *shuttle.Result, err error) string {
+	switch {
+	case err != nil:
+		return observability.TruncateContent("error: " + err.Error())
+	case result == nil:
+		return ""
+	case !result.Success && result.Error != nil:
+		return observability.TruncateContent("error: " + result.Error.Code + ": " + result.Error.Message)
+	}
+	if s, ok := result.Data.(string); ok {
+		return observability.TruncateContent(s)
+	}
+	b, err := json.Marshal(result.Data)
+	if err != nil {
+		return observability.TruncateContent(fmt.Sprintf("%v", result.Data))
+	}
+	return observability.TruncateContent(string(b))
 }
 
 // commitToolRow is the commit tail of dispatchOneCall — execution record,
@@ -3437,7 +3520,7 @@ func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, 
 // conversation loop exhausts its turn/execution budget, so the agent yields
 // meaningful output instead of a generic limit error. Moved verbatim from
 // the loop tail when the batch body was extracted into dispatchOneCall.
-func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount, toolExecutionCount int, allToolExecutions []ToolExecution, turnUsage Usage) (*Response, error) {
+func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount, toolExecutionCount int, allToolExecutions []ToolExecution, turnUsage Usage, llmCalls int) (*Response, error) {
 	// Add a synthesis request to the conversation
 	// Include explicit format instructions since they may have been compressed in context
 	synthesisPrompt := "You must provide your final answer NOW with whatever information you have gathered so far. Summarize your findings: what actions were taken, what results were produced, and any remaining steps the user would need to complete manually. Be concise and actionable. You MUST respond with text — do not return an empty response."
@@ -3485,6 +3568,7 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount
 			ToolExecutions: allToolExecutions,
 			Metadata: map[string]interface{}{
 				"turns":           turnCount,
+				"llm_calls":       llmCalls,
 				"tool_executions": toolExecutionCount,
 				"max_turns_hit":   turnCount >= a.config.MaxTurns,
 				"max_exec_hit":    toolExecutionCount >= a.config.MaxToolExecutions,
@@ -3500,6 +3584,7 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount
 	}
 
 	addUsage(&turnUsage, finalResp.Usage)
+	llmCalls++
 	return &Response{
 		Content:        content,
 		Usage:          finalResp.Usage,
@@ -3508,6 +3593,7 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount
 		Thinking:       finalResp.Thinking,
 		Metadata: map[string]interface{}{
 			"turns":           turnCount + 1, // Include synthesis turn
+			"llm_calls":       llmCalls,
 			"tool_executions": toolExecutionCount,
 			"max_turns_hit":   turnCount >= a.config.MaxTurns,
 			"max_exec_hit":    toolExecutionCount >= a.config.MaxToolExecutions,
@@ -3742,6 +3828,7 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 	// (az512h). One span, outcome always set.
 	ctx, span := a.tracer.StartSpan(ctx, "graph_memory.recall")
 	defer a.tracer.EndSpan(span)
+	span.SetAttribute("agent.name", a.config.Name)
 	outcome := "unknown"
 	defer func() { span.SetAttribute("recall.outcome", outcome) }()
 
@@ -3781,7 +3868,8 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 		outcome = "no_query"
 		return
 	}
-	span.SetAttribute("recall.query", truncatePreview(searchQuery))
+	span.SetAttribute("recall.query", observability.TruncateContent(searchQuery))
+	span.SetAttribute("input.value", observability.TruncateContent(searchQuery))
 
 	// Gather candidate memories from multiple sources.
 	seen := make(map[string]bool)
@@ -3845,31 +3933,185 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 		}
 	}
 
+	// Semantic recall: memories close in meaning to the query, whatever words
+	// they use. Runs when the agent has an embedder (embedding.enabled), the
+	// one extraction embeds new memories with.
+	vectorFailed := false
+	if a.embedder != nil && !a.vectorRecallUnsupported.Load() {
+		similar, vecErr := a.vectorRecall(ctx, searchQuery, seen)
+		if errors.Is(vecErr, memory.ErrVectorRecallUnsupported) {
+			// The store keeps no embeddings (PostgreSQL today): keyword
+			// recall only, for this and later turns.
+			a.vectorRecallUnsupported.Store(true)
+		} else {
+			if vecErr != nil {
+				vectorFailed = true
+				span.RecordError(fmt.Errorf("graph memory recall: vector recall: %w", vecErr))
+			}
+			span.SetAttribute("recall.embedding_model", a.embedder.Model())
+			span.SetAttribute("recall.vector_error", vectorFailed)
+			span.SetAttribute("recall.vector_candidates", len(similar))
+			candidates = append(candidates, similar...)
+		}
+	}
+
 	// Recorded even when candidates were found, so a partial store failure is
 	// visible instead of being hidden behind a successful injection.
 	span.SetAttribute("recall.store_error", storeFailed)
 	span.SetAttribute("recall.candidates", len(candidates))
-	if len(candidates) == 0 {
-		if storeFailed {
-			// Distinct from no_candidates: the store failed, this is not a miss.
-			outcome = "store_error"
-		} else {
-			outcome = "no_candidates"
-		}
+	if len(candidates) > 0 {
+		span.SetAttribute("recall.candidate_ids", memoryIDs(candidates))
+	}
+	if len(candidates) == 0 && storeFailed {
+		// Distinct from no_candidates: the store failed, this is not a miss.
+		outcome = "store_error"
 		return
 	}
 
 	// LLM re-rank: ask the LLM which candidates are actually relevant.
-	relevant := a.rerankMemories(ctx, userMessage, candidates)
-	if len(relevant) == 0 {
-		outcome = "rerank_none"
+	var relevant []*memory.Memory
+	if len(candidates) > 0 {
+		relevant = a.rerankMemories(ctx, userMessage, candidates)
+	}
+	if len(relevant) > 0 {
+		a.injectRecalledMemories(ctx, span, session, relevant, relevantMemoriesHeader)
+		outcome = "injected"
 		return
 	}
-	span.SetAttribute("recall.injected", len(relevant))
+
+	// Nothing recalled for this message. At the start of a session, bring in
+	// what the agent knows about the user anyway: an opening message ("Hi")
+	// rarely names the topic the stored memories are about.
+	if isFirstTurn(session) {
+		background, fallbackErr := a.sessionStartMemories(ctx, budget)
+		if fallbackErr != nil {
+			span.RecordError(fmt.Errorf("graph memory recall: session-start fallback: %w", fallbackErr))
+		}
+		if len(background) > 0 {
+			span.SetAttribute("recall.fallback", "session_start")
+			a.injectRecalledMemories(ctx, span, session, background, sessionStartMemoriesHeader)
+			outcome = "fallback_injected"
+			return
+		}
+	}
+	switch {
+	case len(candidates) > 0:
+		outcome = "rerank_none"
+	case vectorFailed:
+		// The semantic search failed, so this is not an honest miss either.
+		outcome = "vector_error"
+	default:
+		outcome = "no_candidates"
+	}
+}
+
+// Headers of the injected graph-memory block.
+const (
+	relevantMemoriesHeader     = "Relevant memories from past conversations:"
+	sessionStartMemoriesHeader = "Memories from past conversations with this user, recalled at the start of the session (not selected for this message):"
+)
+
+// Semantic recall bounds: how many of the closest memories to take, and the
+// cosine similarity below which a memory is not treated as related. The
+// re-rank that follows makes the final choice.
+const (
+	vectorRecallLimit     = 20
+	vectorRecallThreshold = 0.3
+)
+
+// sessionStartFallbackLimit bounds the memories the session-start fallback
+// injects.
+const sessionStartFallbackLimit = 5
+
+// isFirstTurn reports whether session has no assistant message yet, so the
+// current turn is its first.
+func isFirstTurn(session *types.Session) bool {
+	for _, m := range session.GetMessages() {
+		if m.Role == "assistant" {
+			return false
+		}
+	}
+	return true
+}
+
+// vectorRecall embeds query and returns the agent's memories closest to it
+// that seen does not hold yet, marking them seen. Only memories embedded with
+// the agent's embedding model are compared, and memories below the salience
+// floor keyword recall applies are left out.
+func (a *Agent) vectorRecall(ctx context.Context, query string, seen map[string]bool) ([]*memory.Memory, error) {
+	vec, err := a.embedder.Embed(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("embedding the query: %w", err)
+	}
+	memories, err := a.graphMemoryStore.VectorRecall(ctx, memory.VectorRecallOpts{
+		AgentID:   a.config.Name,
+		Embedding: vec,
+		Model:     a.embedder.Model(),
+		Limit:     vectorRecallLimit,
+		Threshold: vectorRecallThreshold,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var out []*memory.Memory
+	for _, m := range memories {
+		if seen[m.ID] || m.Salience < memory.DefaultMinSalience {
+			continue
+		}
+		seen[m.ID] = true
+		out = append(out, m)
+	}
+	return out, nil
+}
+
+// sessionStartMemories returns the agent's highest-salience memories that
+// fit in budget tokens, for the first turn of a session when recall found
+// nothing for the message. They are not re-ranked against the message, which
+// at a session's start is often only a greeting. Task-completion memories
+// are left out: they record that a turn finished, not what the user wants,
+// and carry a fixed high salience that would put them first.
+func (a *Agent) sessionStartMemories(ctx context.Context, budget int) ([]*memory.Memory, error) {
+	memories, err := a.graphMemoryStore.Recall(ctx, memory.RecallOpts{
+		AgentID:        a.config.Name,
+		Limit:          sessionStartFallbackLimit,
+		MaxTokens:      budget,
+		ExcludeSources: []string{memory.SourceTask},
+	})
+	if err != nil {
+		return nil, err
+	}
+	tc := a.tokenCounter
+	if tc == nil {
+		tc = GetTokenCounter()
+	}
+	var out []*memory.Memory
+	used := 0
+	for _, m := range memories {
+		n := m.TokenCount
+		if n <= 0 {
+			n = tc.CountTokens(m.Content)
+		}
+		if used+n > budget {
+			break
+		}
+		used += n
+		out = append(out, m)
+	}
+	return out, nil
+}
+
+// injectRecalledMemories adds memories to the session as one graph-memory
+// system message under header, and records them on the recall span: count,
+// IDs, tokens, the block as output.value and each memory as an OpenInference
+// retrieval document.
+func (a *Agent) injectRecalledMemories(ctx context.Context, span *observability.Span, session *types.Session, memories []*memory.Memory, header string) {
+	span.SetAttribute("recall.injected", len(memories))
+	span.SetAttribute("recall.selected_ids", memoryIDs(memories))
 
 	var sb strings.Builder
-	sb.WriteString("Relevant memories from past conversations:\n\n")
-	for _, m := range relevant {
+	sb.WriteString(header)
+	sb.WriteString("\n\n")
+	for _, m := range memories {
 		sb.WriteString("- ")
 		if m.EventDate != "" {
 			// Surface the absolute date first so the answering LLM can order
@@ -3883,11 +4125,33 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 		sb.WriteString("\n")
 	}
 
+	injected := sb.String()
+	tc := a.tokenCounter
+	if tc == nil {
+		tc = GetTokenCounter()
+	}
+	span.SetAttribute("recall.injected_tokens", tc.CountTokens(injected))
+	span.SetAttribute("output.value", observability.TruncateContent(injected))
+	// OpenInference retriever documents, which Phoenix lists on the span.
+	for i, m := range memories {
+		prefix := fmt.Sprintf("retrieval.documents.%d.document.", i)
+		span.SetAttribute(prefix+"id", m.ID)
+		span.SetAttribute(prefix+"content", observability.TruncateContent(m.Content))
+	}
+
 	session.AddMessage(ctx, types.Message{
 		Role:    "system",
-		Content: graphMemoryContextMarker + "\n" + sb.String(),
+		Content: graphMemoryContextMarker + "\n" + injected,
 	})
-	outcome = "injected"
+}
+
+// memoryIDs returns the IDs of memories, in order.
+func memoryIDs(memories []*memory.Memory) []string {
+	ids := make([]string, len(memories))
+	for i, m := range memories {
+		ids[i] = m.ID
+	}
+	return ids
 }
 
 // multiHopRecall finds the user entity and traverses 2 hops outward to collect
@@ -3998,6 +4262,7 @@ func (a *Agent) rerankMemories(ctx context.Context, userMessage string, candidat
 	if a.compressorLLM != nil {
 		llmProvider = a.compressorLLM
 	}
+	llmProvider = llmForRole(llmProvider, roleMemoryRerank)
 
 	resp, err := llmProvider.Chat(rerankCtx, []types.Message{
 		{Role: "user", Content: sb.String()},
@@ -4054,6 +4319,7 @@ func (a *Agent) extractSearchQuery(ctx context.Context, userMessage string) (que
 	if a.compressorLLM != nil {
 		llmProvider = a.compressorLLM
 	}
+	llmProvider = llmForRole(llmProvider, roleMemoryQuery)
 
 	resp, err := llmProvider.Chat(extractCtx, []types.Message{
 		{Role: "user", Content: prompt},
@@ -4447,7 +4713,7 @@ func (a *Agent) SetLLMProviderForRole(role loomv1.LLMRole, llm LLMProvider) {
 		a.classifierLLM = llm
 		// Update the orchestrator's intent classifier if pattern classification is enabled
 		if a.orchestrator != nil && a.config.PatternConfig.UseLLMClassifier && llm != nil {
-			llmClassifierConfig := patterns.DefaultLLMClassifierConfig(llm)
+			llmClassifierConfig := patterns.DefaultLLMClassifierConfig(llmForRole(llm, roleClassifier))
 			llmClassifier := patterns.NewLLMIntentClassifier(llmClassifierConfig)
 			a.orchestrator.SetIntentClassifier(llmClassifier)
 		}

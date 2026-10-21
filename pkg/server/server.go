@@ -60,6 +60,7 @@ type Server struct {
 	activeProviderName string                       // currently active pool provider
 	evalStore          *evals.Store                 // optional; nil means no persistence
 	judgeServer        *JudgeServer                 // optional; nil means use hardcoded judge
+	tracer             observability.Tracer         // optional tracer for Weave/StreamWeave spans
 
 	// allowTimeOverride accepts WeaveRequest.occurred_at (replay/import arrival
 	// times). Default false: client-supplied timestamps can poison temporal
@@ -98,6 +99,11 @@ func (s *Server) SetEvalStore(store *evals.Store) {
 	s.evalStore = store
 }
 
+// SetTracer configures the observability tracer for Server operations.
+func (s *Server) SetTracer(tracer observability.Tracer) {
+	s.tracer = tracer
+}
+
 // NewServer creates a new LoomService server.
 func NewServer(ag *agent.Agent, store agent.SessionStorage) *Server {
 	return &Server{
@@ -130,7 +136,7 @@ func (s *Server) SetActiveProviderName(name string) {
 }
 
 // Weave executes a user query using the agent.
-func (s *Server) Weave(ctx context.Context, req *loomv1.WeaveRequest) (*loomv1.WeaveResponse, error) {
+func (s *Server) Weave(ctx context.Context, req *loomv1.WeaveRequest) (weaveResp *loomv1.WeaveResponse, weaveErr error) {
 	if req.Query == "" {
 		return nil, status.Error(codes.InvalidArgument, "query is required")
 	}
@@ -148,10 +154,28 @@ func (s *Server) Weave(ctx context.Context, req *loomv1.WeaveRequest) (*loomv1.W
 		return nil, err
 	}
 
+	weaveStart := time.Now()
+	tracer := s.tracer
+	ctx, span := startWeaveSpan(ctx, tracer, "server.Weave", req)
+	if span != nil {
+		defer func() {
+			if weaveErr != nil {
+				span.RecordError(weaveErr)
+			}
+			tracer.EndSpan(span)
+		}()
+	}
+
 	// Get or create session
 	sessionID := req.SessionId
 	if sessionID == "" {
 		sessionID = GenerateSessionID()
+	}
+
+	agentID := s.agent.GetID()
+	if span != nil {
+		span.SetAttribute(observability.AttrSessionID, sessionID)
+		span.SetAttribute("agent.id", agentID)
 	}
 
 	// Slot scheduling: install this turn's SlotInfo (origin from the
@@ -159,7 +183,7 @@ func (s *Server) Weave(ctx context.Context, req *loomv1.WeaveRequest) (*loomv1.W
 	// already has history classifies IN_FLIGHT from its first call).
 	// Installed on every turn-executing entry point, unary and streaming.
 	_, sessionResumed := s.agent.GetSession(sessionID)
-	ctx = installTurnSlotInfo(ctx, sessionResumed, sessionID, s.agent.GetID())
+	ctx = installTurnSlotInfo(ctx, sessionResumed, sessionID, agentID)
 
 	// Door admission (see enterTurnDoor): batch turns queue at the front
 	// door when the active ceiling is reached; interactive turns bypass.
@@ -180,6 +204,8 @@ func (s *Server) Weave(ctx context.Context, req *loomv1.WeaveRequest) (*loomv1.W
 		return nil, wrapAgentError(err)
 	}
 
+	recordWeaveSpanUsage(span, resp)
+
 	// Build context state snapshot (after response, reflects post-conversation state)
 	var contextState *loomv1.ContextState
 	if cs := s.agent.GetContextState(sessionID); cs != nil {
@@ -196,25 +222,16 @@ func (s *Server) Weave(ctx context.Context, req *loomv1.WeaveRequest) (*loomv1.W
 	return &loomv1.WeaveResponse{
 		Text:         resp.Content,
 		SessionId:    sessionID,
-		AgentId:      s.agent.GetID(),
+		TraceId:      resolveWeaveTraceID(span, resp),
+		AgentId:      agentID,
 		ContextState: contextState,
-		Cost: &loomv1.CostInfo{
-			LlmCost: &loomv1.LLMCost{
-				Provider:                 s.agent.GetLLMProviderName(),
-				Model:                    s.agent.GetLLMModel(),
-				InputTokens:              types.SafeInt32(resp.Usage.InputTokens),
-				OutputTokens:             types.SafeInt32(resp.Usage.OutputTokens),
-				CostUsd:                  resp.Usage.CostUSD,
-				CacheReadInputTokens:     types.SafeInt32(resp.Usage.CacheReadInputTokens),
-				CacheCreationInputTokens: types.SafeInt32(resp.Usage.CacheCreationInputTokens),
-			},
-			TotalCostUsd: resp.Usage.CostUSD,
-		},
+		Cost:         buildWeaveCostInfo(s.agent.GetLLMProviderName(), s.agent.GetLLMModel(), resp),
+		Metadata:     buildExecutionMetadata(resp, contextState, time.Since(weaveStart)),
 	}, nil
 }
 
 // StreamWeave streams agent execution progress.
-func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService_StreamWeaveServer) error {
+func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService_StreamWeaveServer) (weaveErr error) {
 	// Validate query
 	if req.Query == "" {
 		return status.Error(codes.InvalidArgument, "query cannot be empty")
@@ -233,16 +250,33 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 		return err
 	}
 
+	tracer := s.tracer
+	ctx, span := startWeaveSpan(ctx, tracer, "server.StreamWeave", req)
+	if span != nil {
+		defer func() {
+			if weaveErr != nil {
+				span.RecordError(weaveErr)
+			}
+			tracer.EndSpan(span)
+		}()
+	}
+
 	// Generate session ID if not provided
 	sessionID := req.SessionId
 	if sessionID == "" {
 		sessionID = GenerateSessionID()
 	}
 
+	agentID := s.agent.GetID()
+	if span != nil {
+		span.SetAttribute(observability.AttrSessionID, sessionID)
+		span.SetAttribute("agent.id", agentID)
+	}
+
 	// Slot scheduling: install this turn's SlotInfo (see Weave — every
 	// turn-executing entry point installs it).
 	_, sessionResumed := s.agent.GetSession(sessionID)
-	ctx = installTurnSlotInfo(ctx, sessionResumed, sessionID, s.agent.GetID())
+	ctx = installTurnSlotInfo(ctx, sessionResumed, sessionID, agentID)
 
 	// Door admission (see enterTurnDoor): batch turns queue at the front
 	// door when the active ceiling is reached; interactive turns bypass.
@@ -344,6 +378,8 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 
 	// Send final completion event with result and context state
 	resp := finalResult.resp
+	recordWeaveSpanUsage(span, resp)
+	traceID := resolveWeaveTraceID(span, resp)
 
 	// Build context state snapshot
 	var contextState *loomv1.ContextState
@@ -368,18 +404,8 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 		},
 		PartialContent: sanitizeUTF8(resp.Content),
 		ContextState:   contextState,
-		Cost: &loomv1.CostInfo{
-			TotalCostUsd: resp.Usage.CostUSD,
-			LlmCost: &loomv1.LLMCost{
-				Provider:                 s.agent.GetLLMProviderName(),
-				Model:                    s.agent.GetLLMModel(),
-				InputTokens:              types.SafeInt32(resp.Usage.InputTokens),
-				OutputTokens:             types.SafeInt32(resp.Usage.OutputTokens),
-				CostUsd:                  resp.Usage.CostUSD,
-				CacheReadInputTokens:     types.SafeInt32(resp.Usage.CacheReadInputTokens),
-				CacheCreationInputTokens: types.SafeInt32(resp.Usage.CacheCreationInputTokens),
-			},
-		},
+		Cost:           buildWeaveCostInfo(s.agent.GetLLMProviderName(), s.agent.GetLLMModel(), resp),
+		TraceId:        traceID,
 	}
 
 	return stream.Send(completionProgress)

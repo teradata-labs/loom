@@ -7,9 +7,14 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"sync"
 	"testing"
 
@@ -18,6 +23,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
+	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/storage"
 )
@@ -737,4 +743,297 @@ func TestUpdateAgent_ThreadSafety(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+type twoCallToolLLM struct {
+	mu      sync.Mutex
+	calls   int
+	seenCtx []context.Context
+}
+
+func (m *twoCallToolLLM) Chat(ctx context.Context, _ []llmtypes.Message, _ []shuttle.Tool) (*llmtypes.LLMResponse, error) {
+	m.mu.Lock()
+	m.calls++
+	call := m.calls
+	m.seenCtx = append(m.seenCtx, ctx)
+	m.mu.Unlock()
+
+	if call%2 == 1 {
+		return &llmtypes.LLMResponse{
+			StopReason: "tool_use",
+			ToolCalls: []llmtypes.ToolCall{
+				{ID: "call_1", Name: "noop_tool", Input: map[string]interface{}{"q": "x"}},
+			},
+			Usage: llmtypes.Usage{
+				InputTokens:              100,
+				OutputTokens:             25,
+				TotalTokens:              125,
+				CacheReadInputTokens:     400,
+				CacheCreationInputTokens: 50,
+				CostUSD:                  0.004,
+			},
+		}, nil
+	}
+	return &llmtypes.LLMResponse{
+		Content:    "final answer after tool",
+		StopReason: "end_turn",
+		Usage: llmtypes.Usage{
+			InputTokens:          20,
+			OutputTokens:         10,
+			TotalTokens:          30,
+			CacheReadInputTokens: 450,
+			CostUSD:              0.002,
+		},
+	}, nil
+}
+
+func (m *twoCallToolLLM) Name() string  { return "bedrock" }
+func (m *twoCallToolLLM) Model() string { return "claude-sonnet-4-5" }
+
+type noopTestTool struct{}
+
+func (noopTestTool) Name() string                     { return "noop_tool" }
+func (noopTestTool) Description() string              { return "no-op tool for tests" }
+func (noopTestTool) Backend() string                  { return "" }
+func (noopTestTool) InputSchema() *shuttle.JSONSchema { return &shuttle.JSONSchema{Type: "object"} }
+func (noopTestTool) Execute(context.Context, map[string]interface{}) (*shuttle.Result, error) {
+	return &shuttle.Result{Success: true, Data: "ok"}, nil
+}
+
+func newTestOTelTracer(t *testing.T) *observability.OTelTracer {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	tr, err := observability.NewOTelTracer(observability.OTelConfig{
+		Endpoint:    srv.URL,
+		ServiceName: "loom-test",
+		Insecure:    true,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tr.Shutdown(context.Background()) })
+	return tr
+}
+
+var hex32Pattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+func TestMultiAgentServer_Weave_OTelTraceIDAndTurnUsageCost(t *testing.T) {
+	tr := newTestOTelTracer(t)
+	llm := &twoCallToolLLM{}
+	ag := agent.NewAgent(&mockBackend{}, llm, agent.WithTracer(tr))
+	ag.RegisterTool(noopTestTool{})
+
+	srv := NewMultiAgentServer(map[string]*agent.Agent{"default": ag}, nil)
+	srv.SetTracer(tr)
+
+	req := &loomv1.WeaveRequest{
+		Query:     "run tool then answer",
+		SessionId: "sess-phase3-unary",
+		Context: map[string]string{
+			"experiment_id":  "mm-123",
+			"replication_id": "r001",
+			"condition":      "dollyM",
+			"game_name":      "game-001",
+			"phase":          "guess",
+			"call_number":    "2",
+			"ignored_key":    "dropped",
+		},
+	}
+
+	resp, err := srv.Weave(context.Background(), req)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	// 1. TraceId is 32 lowercase hex under OTelTracer.
+	assert.Regexp(t, hex32Pattern, resp.TraceId)
+
+	// 2. Cost reflects full-turn TurnUsage (call 1 + call 2), not just call 2.
+	require.NotNil(t, resp.Cost)
+	require.NotNil(t, resp.Cost.LlmCost)
+	assert.InDelta(t, 0.006, resp.Cost.TotalCostUsd, 1e-9)
+	assert.InDelta(t, 0.006, resp.Cost.LlmCost.CostUsd, 1e-9)
+	assert.Equal(t, int32(120), resp.Cost.LlmCost.InputTokens)
+	assert.Equal(t, int32(35), resp.Cost.LlmCost.OutputTokens)
+	assert.Equal(t, int32(155), resp.Cost.LlmCost.TotalTokens)
+	assert.Equal(t, int32(850), resp.Cost.LlmCost.CacheReadInputTokens)
+	assert.Equal(t, int32(50), resp.Cost.LlmCost.CacheCreationInputTokens)
+
+	// 3. ExecutionMetadata is populated for the two-call tool turn.
+	require.NotNil(t, resp.Metadata)
+	assert.Equal(t, int32(2), resp.Metadata.LlmCalls)
+	assert.Equal(t, int32(1), resp.Metadata.ToolExecutions)
+	assert.GreaterOrEqual(t, resp.Metadata.TotalDurationMs, int64(0))
+
+	// 4. Whitelisted req.Context keys are on server.Weave as the OpenInference
+	// metadata JSON string, and propagated into ctx for Agent.chat.
+	traceResp, err := srv.GetTrace(context.Background(), &loomv1.GetTraceRequest{TraceId: resp.TraceId})
+	require.NoError(t, err)
+	require.Len(t, traceResp.Spans, 1)
+	weaveSpan := traceResp.Spans[0]
+	assert.Equal(t, "server.Weave", weaveSpan.Name)
+	assert.Equal(t, "120", weaveSpan.Attributes["usage.input_tokens"])
+	assert.Equal(t, "35", weaveSpan.Attributes["usage.output_tokens"])
+	assert.Equal(t, "155", weaveSpan.Attributes["usage.total_tokens"])
+
+	var spanMD map[string]string
+	require.NoError(t, json.Unmarshal([]byte(weaveSpan.Attributes["metadata"]), &spanMD))
+	assert.Equal(t, "dollyM", spanMD["condition"])
+	assert.Equal(t, "mm-123", spanMD["experiment_id"])
+	assert.Equal(t, "r001", spanMD["replication_id"])
+	assert.Equal(t, "game-001", spanMD["game_name"])
+	assert.Equal(t, "guess", spanMD["phase"])
+	assert.Equal(t, "2", spanMD["call_number"])
+	assert.NotContains(t, spanMD, "ignored_key")
+
+	llm.mu.Lock()
+	require.NotEmpty(t, llm.seenCtx)
+	ctxMD := observability.SpanMetadataFromContext(llm.seenCtx[0])
+	llm.mu.Unlock()
+	assert.Equal(t, "dollyM", ctxMD["condition"])
+}
+
+func TestMultiAgentServer_StreamWeave_OTelTraceIDAndTurnUsageCost(t *testing.T) {
+	tr := newTestOTelTracer(t)
+	llm := &twoCallToolLLM{}
+	ag := agent.NewAgent(&mockBackend{}, llm, agent.WithTracer(tr))
+	ag.RegisterTool(noopTestTool{})
+
+	srv := NewMultiAgentServer(map[string]*agent.Agent{"default": ag}, nil)
+	srv.SetTracer(tr)
+
+	stream := &mockStreamWeaveStream{ctx: context.Background()}
+	err := srv.StreamWeave(&loomv1.WeaveRequest{
+		Query:     "stream tool turn",
+		SessionId: "sess-phase3-stream",
+		Context:   map[string]string{"condition": "dollyNM", "trial": "7"},
+	}, stream)
+	require.NoError(t, err)
+	require.NotEmpty(t, stream.progress)
+
+	last := stream.progress[len(stream.progress)-1]
+	assert.Equal(t, loomv1.ExecutionStage_EXECUTION_STAGE_COMPLETED, last.Stage)
+	assert.Regexp(t, hex32Pattern, last.TraceId)
+	require.NotNil(t, last.Cost)
+	assert.InDelta(t, 0.006, last.Cost.TotalCostUsd, 1e-9)
+	assert.Equal(t, int32(120), last.Cost.LlmCost.InputTokens)
+	assert.Equal(t, int32(35), last.Cost.LlmCost.OutputTokens)
+	assert.Equal(t, int32(155), last.Cost.LlmCost.TotalTokens)
+
+	// Verify server.StreamWeave span recorded metadata and usage totals.
+	traceResp, err := srv.GetTrace(context.Background(), &loomv1.GetTraceRequest{TraceId: last.TraceId})
+	require.NoError(t, err)
+	require.Len(t, traceResp.Spans, 1)
+	assert.Equal(t, "server.StreamWeave", traceResp.Spans[0].Name)
+	var spanMD map[string]string
+	require.NoError(t, json.Unmarshal([]byte(traceResp.Spans[0].Attributes["metadata"]), &spanMD))
+	assert.Equal(t, "dollyNM", spanMD["condition"])
+	assert.Equal(t, "7", spanMD["trial"])
+
+	// Verify completedProgressFromResponse forwards TraceId for dedupe joiners.
+	joinedProgress := completedProgressFromResponse(&loomv1.WeaveResponse{
+		Text:    "joined",
+		TraceId: last.TraceId,
+		Cost:    last.Cost,
+	})
+	assert.Equal(t, last.TraceId, joinedProgress.TraceId)
+}
+
+func TestMultiAgentServer_Weave_StartsSpanBeforeFindSessionOwner(t *testing.T) {
+	mockTr := observability.NewMockTracer()
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := agent.NewSessionStore(dbPath, mockTr)
+	require.NoError(t, err)
+	defer func() { _ = store.Close() }()
+
+	ag := agent.NewAgent(&mockBackend{}, &mockLLMForMultiAgent{}, agent.WithTracer(mockTr))
+	srv := NewMultiAgentServer(map[string]*agent.Agent{"default": ag}, store)
+	srv.SetTracer(mockTr)
+
+	// Using a fresh session ID not in memory forces findSessionOwner to query
+	// store.LoadSession ("session_store.load_session"), which must be a child
+	// of server.Weave rather than an orphan root span.
+	resp, err := srv.Weave(context.Background(), &loomv1.WeaveRequest{
+		Query:     "check session owner parenting",
+		SessionId: "persisted-lookup-session",
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, resp.TraceId)
+
+	var weaveSpan, loadSpan *observability.Span
+	for _, s := range mockTr.GetSpans() {
+		switch s.Name {
+		case "server.Weave":
+			weaveSpan = s
+		case "session_store.load_session":
+			if loadSpan == nil {
+				loadSpan = s
+			}
+		}
+	}
+	require.NotNil(t, weaveSpan, "server.Weave span must be recorded")
+	require.NotNil(t, loadSpan, "session_store.load_session span must be recorded")
+	assert.Equal(t, weaveSpan.TraceID, loadSpan.TraceID, "load_session must share server.Weave's TraceID")
+	assert.Equal(t, weaveSpan.SpanID, loadSpan.ParentID, "load_session must be a child of server.Weave")
+
+	// Also verify early-return error paths end server.Weave with StatusError.
+	mockTr.Reset()
+	_, err = srv.Weave(context.Background(), &loomv1.WeaveRequest{
+		Query:   "unknown agent",
+		AgentId: "does-not-exist",
+	})
+	require.Error(t, err)
+	spans := mockTr.GetSpans()
+	require.Len(t, spans, 1)
+	assert.Equal(t, "server.Weave", spans[0].Name)
+	assert.Equal(t, observability.StatusError, spans[0].Status.Code)
+}
+
+func TestServer_WeaveAndStreamWeave_Phase3Telemetry(t *testing.T) {
+	tr := newTestOTelTracer(t)
+	llm := &twoCallToolLLM{}
+	ag := agent.NewAgent(&mockBackend{}, llm, agent.WithTracer(tr))
+	ag.RegisterTool(noopTestTool{})
+
+	srv := NewServer(ag, nil)
+	srv.SetTracer(tr)
+
+	resp, err := srv.Weave(context.Background(), &loomv1.WeaveRequest{
+		Query:   "single server weave",
+		Context: map[string]string{"condition": "single"},
+	})
+	require.NoError(t, err)
+	assert.Regexp(t, hex32Pattern, resp.TraceId)
+	assert.InDelta(t, 0.006, resp.Cost.TotalCostUsd, 1e-9)
+	require.NotNil(t, resp.Metadata)
+	assert.Equal(t, int32(2), resp.Metadata.LlmCalls)
+	assert.Equal(t, int32(1), resp.Metadata.ToolExecutions)
+
+	stream := &mockStreamWeaveStream{ctx: context.Background()}
+	err = srv.StreamWeave(&loomv1.WeaveRequest{
+		Query:   "single server stream",
+		Context: map[string]string{"condition": "single-stream"},
+	}, stream)
+	require.NoError(t, err)
+	require.NotEmpty(t, stream.progress)
+	last := stream.progress[len(stream.progress)-1]
+	assert.Regexp(t, hex32Pattern, last.TraceId)
+	assert.InDelta(t, 0.006, last.Cost.TotalCostUsd, 1e-9)
+}
+
+func TestExtractWeaveContextMetadata_BoundsRunesAndFiltersKeys(t *testing.T) {
+	longRuneVal := strings.Repeat("界", 300)
+	md := extractWeaveContextMetadata(&loomv1.WeaveRequest{
+		Context: map[string]string{
+			"condition":   longRuneVal,
+			"run_id":      "r-1",
+			"unknown_key": "ignored",
+			"phase":       "",
+		},
+	})
+	require.Len(t, md, 2)
+	assert.Equal(t, "r-1", md["run_id"])
+	assert.Equal(t, 256, len([]rune(md["condition"])))
+	assert.Equal(t, strings.Repeat("界", 256), md["condition"])
 }

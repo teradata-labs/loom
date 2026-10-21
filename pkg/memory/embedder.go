@@ -5,7 +5,15 @@
 
 package memory
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// ErrVectorRecallUnsupported is returned by VectorRecall on a backend that
+// stores no embeddings, so callers can fall back to keyword recall instead of
+// treating it as a failure.
+var ErrVectorRecallUnsupported = errors.New("vector recall is not supported by this graph memory backend")
 
 // Embedder produces vector embeddings from text. Implementations may use
 // OpenAI, local models, or any provider that returns fixed-dimension float32 vectors.

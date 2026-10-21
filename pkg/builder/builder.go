@@ -503,7 +503,7 @@ func NewInstrumentedAgent(
 	opts ...agent.Option,
 ) *agent.Agent {
 	// Wrap LLM provider with instrumentation
-	instrumentedLLM := llm.NewInstrumentedProvider(llmProvider, tracer)
+	instrumentedLLM := llm.NewInstrumentedProvider(llmProvider, tracer, llm.WithRole(llm.RoleAgent))
 
 	// Build options list with tracer
 	allOpts := []agent.Option{

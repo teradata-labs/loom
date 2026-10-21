@@ -78,6 +78,13 @@ type OTelConfig struct {
 	// Privacy controls PII and credential redaction before export.
 	Privacy PrivacyConfig
 
+	// Recorder, when set, also stores every completed span as an eval_runs
+	// row (the embedded-mode record) before redaction, translation and span
+	// filtering, so analysis that reads embedded storage keeps working while
+	// spans are exported over OTLP. The tracer flushes it on Flush and closes
+	// it on Shutdown. nil disables local recording.
+	Recorder *EvalRunRecorder
+
 	// SpanFilter limits which spans are exported. Empty IncludePrefixes = export all.
 	SpanFilter SpanFilterConfig
 }

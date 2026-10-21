@@ -21,12 +21,14 @@ package judges
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
 	llmjudge "github.com/teradata-labs/loom/pkg/evals/judges/llm"
+	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/types"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -75,6 +77,7 @@ type LLMJudge struct {
 	config      *loomv1.JudgeConfig
 	tracer      observability.Tracer
 	llmProvider types.LLMProvider
+	phoenix     *observability.PhoenixClient
 }
 
 // NewLLMJudge creates a new LLM-based judge.
@@ -114,6 +117,12 @@ func NewLLMJudge(llmProvider types.LLMProvider, config *loomv1.JudgeConfig, trac
 
 	if effectiveProvider == nil {
 		return nil, fmt.Errorf("LLM provider required: no fallback provider and no llm_config in judge config")
+	}
+	// Trace the judge's own LLM calls as llm.completion spans with
+	// llm.role=judge, children of judge.evaluation. An already instrumented
+	// provider on the same tracer is re-tagged, not wrapped twice.
+	if tracer != nil {
+		effectiveProvider = llm.NewInstrumentedProvider(effectiveProvider, tracer, llm.WithRole(llm.RoleJudge))
 	}
 
 	// Phase 8: Validate custom dimension configuration
@@ -155,12 +164,22 @@ func NewLLMJudge(llmProvider types.LLMProvider, config *loomv1.JudgeConfig, trac
 		config:      config,
 		tracer:      tracer,
 		llmProvider: effectiveProvider,
+		phoenix:     options.phoenix,
 	}, nil
 }
 
 // llmJudgeOptions holds optional configuration for NewLLMJudge.
 type llmJudgeOptions struct {
 	providerFactory LLMProviderFactory
+	phoenix         *observability.PhoenixClient
+}
+
+// WithPhoenixClient makes the judge post its scores to Arize Phoenix as
+// annotations on the evaluated trace (EvaluationContext.TraceId).
+func WithPhoenixClient(c *observability.PhoenixClient) LLMJudgeOption {
+	return func(o *llmJudgeOptions) {
+		o.phoenix = c
+	}
 }
 
 // LLMJudgeOption is a functional option for NewLLMJudge.
@@ -220,6 +239,10 @@ func (h *LLMJudge) Config() *loomv1.JudgeConfig {
 
 // Evaluate performs the evaluation using Hawk's judge
 func (h *LLMJudge) Evaluate(ctx context.Context, evalCtx *loomv1.EvaluationContext) (*loomv1.JudgeResult, error) {
+	if evalCtx == nil {
+		return nil, fmt.Errorf("evaluation context required")
+	}
+
 	// Start tracing
 	ctx, span := h.tracer.StartSpan(ctx, observability.SpanJudgeEvaluation)
 	defer h.tracer.EndSpan(span)
@@ -261,7 +284,68 @@ func (h *LLMJudge) Evaluate(ctx context.Context, evalCtx *loomv1.EvaluationConte
 	result.ExecutionTimeMs = time.Since(startTime).Milliseconds()
 	result.CostUsd = evalCtx.CostUsd
 
+	recordJudgeVerdict(span, result)
+	h.annotateTrace(evalCtx.TraceId, result)
+
 	return result, nil
+}
+
+// recordJudgeVerdict records the verdict on the judge.evaluation span.
+func recordJudgeVerdict(span *observability.Span, result *loomv1.JudgeResult) {
+	if span == nil || result == nil {
+		return
+	}
+	span.SetAttribute("judge.score", result.OverallScore)
+	span.SetAttribute("judge.verdict", result.Verdict)
+	span.SetAttribute("judge.reasoning", observability.TruncateContent(result.Reasoning))
+	for dim, score := range result.DimensionScores {
+		span.SetAttribute("judge.dimension_scores."+dim, score)
+	}
+}
+
+// annotateTrace posts the verdict to Phoenix as trace annotations, one per
+// dimension score plus the overall score (names loom.<dimension> and
+// loom.overall), when a Phoenix client is configured and the evaluation names
+// the trace it judges. The identifier (judge ID and dimension) makes a repeat
+// evaluation by the same judge replace its earlier annotation.
+func (h *LLMJudge) annotateTrace(traceID string, result *loomv1.JudgeResult) {
+	if h.phoenix == nil || traceID == "" || result == nil {
+		return
+	}
+	custom := h.config.CustomDimensionName
+	annotation := func(dim string, score float64) observability.PhoenixAnnotation {
+		scale := "0-100"
+		if custom != "" && dim == custom {
+			scale = "0-1"
+		}
+		s := score
+		return observability.PhoenixAnnotation{
+			TargetID:      traceID,
+			Name:          "loom." + dim,
+			AnnotatorKind: observability.PhoenixAnnotatorLLM,
+			Label:         result.Verdict,
+			Score:         &s,
+			Explanation:   result.Reasoning,
+			Identifier:    h.ID() + ":" + dim,
+			Metadata: map[string]interface{}{
+				"judge_id":    h.ID(),
+				"judge_name":  h.Name(),
+				"judge_model": result.JudgeModel,
+				"scale":       scale,
+			},
+		}
+	}
+	dims := make([]string, 0, len(result.DimensionScores))
+	for dim := range result.DimensionScores {
+		dims = append(dims, dim)
+	}
+	sort.Strings(dims)
+	items := []observability.PhoenixAnnotation{annotation("overall", result.OverallScore)}
+	for _, dim := range dims {
+		items = append(items, annotation(dim, result.DimensionScores[dim]))
+	}
+	// Enqueued, never sent inline: the evaluation does not wait on Phoenix.
+	_ = h.phoenix.AnnotateTraces(items)
 }
 
 // convertVerdictToResult converts LLM judge Verdict to Loom's JudgeResult

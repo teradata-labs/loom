@@ -122,3 +122,21 @@ func TestGraphMemory_RememberAutoCreatesReferencedEntities(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, got2.EntityIDs, existing.ID, "link should resolve to the existing entity's id")
 }
+
+func TestGraphMemory_RecallExcludeSources(t *testing.T) {
+	pool := testPool(t)
+	store := NewGraphMemoryStore(pool, nil, nil)
+	ctx := ContextWithUserID(context.Background(), uniqueID("graph-user"))
+	agentID := uniqueID("graph-agent")
+	for _, src := range []string{memory.SourceTask, "conversation"} {
+		_, err := store.Remember(ctx, &memory.Memory{
+			AgentID: agentID, Content: "Conference shortlist from source " + src,
+			MemoryType: memory.MemoryTypeFact, Salience: 0.5, Source: src,
+		})
+		require.NoError(t, err)
+	}
+	memories, err := store.Recall(ctx, memory.RecallOpts{AgentID: agentID, Limit: 10, ExcludeSources: []string{memory.SourceTask}})
+	require.NoError(t, err)
+	require.Len(t, memories, 1)
+	assert.Equal(t, "conversation", memories[0].Source)
+}

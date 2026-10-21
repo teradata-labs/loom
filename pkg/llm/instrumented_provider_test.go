@@ -16,6 +16,7 @@ package llm
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -212,7 +213,7 @@ func TestInstrumentedProvider_Success(t *testing.T) {
 }
 
 func TestInstrumentedProvider_BoundsPromptAndCompletionPreviews(t *testing.T) {
-	content := strings.Repeat("界", maxPreviewRunes+25)
+	content := strings.Repeat("界", observability.DefaultMaxContentLength+25)
 	mockProvider := &mockLLMProvider{
 		name:     "test-provider",
 		model:    "test-model",
@@ -225,7 +226,7 @@ func TestInstrumentedProvider_BoundsPromptAndCompletionPreviews(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, tracer.spans, 1)
 
-	want := strings.Repeat("界", maxPreviewRunes) + "…"
+	want := strings.Repeat("界", observability.DefaultMaxContentLength) + "…"
 	assert.Equal(t, want, tracer.spans[0].Attributes["message.preview"])
 	assert.Equal(t, want, tracer.spans[0].Attributes["response.preview"])
 }
@@ -515,4 +516,185 @@ func TestInstrumentedProvider_ConcurrentCalls(t *testing.T) {
 
 	// Verify spans (should have one per call)
 	assert.Equal(t, concurrency, len(tracer.spans))
+}
+
+// mockStreamingLLMProvider adds ChatStream to mockLLMProvider.
+type mockStreamingLLMProvider struct {
+	*mockLLMProvider
+}
+
+func (m *mockStreamingLLMProvider) ChatStream(ctx context.Context, messages []llmtypes.Message, tools []shuttle.Tool, tokenCallback llmtypes.TokenCallback) (*llmtypes.LLMResponse, error) {
+	resp, err := m.Chat(ctx, messages, tools)
+	if err == nil && tokenCallback != nil && resp.Content != "" {
+		tokenCallback(resp.Content)
+	}
+	return resp, err
+}
+
+// TestInstrumentedProvider_InputAndOutputValues covers the OpenInference
+// input.value and output.value an LLM span carries explicitly. Both are
+// otherwise derived from message.preview / response.preview on export.
+func TestInstrumentedProvider_InputAndOutputValues(t *testing.T) {
+	toolCallResponse := &llmtypes.LLMResponse{
+		StopReason: "tool_use",
+		ToolCalls: []llmtypes.ToolCall{
+			{ID: "call_1", Name: "file_read", Input: map[string]interface{}{"path": "C:/notes.txt"}},
+			{ID: "call_2", Name: "get_time", Input: map[string]interface{}{}},
+		},
+	}
+	tests := []struct {
+		name       string
+		messages   []llmtypes.Message
+		response   *llmtypes.LLMResponse
+		wantInput  interface{} // nil: no explicit input.value
+		wantOutput interface{} // nil: no explicit output.value
+	}{
+		{
+			name:       "first call that only calls tools",
+			messages:   []llmtypes.Message{{Role: "user", Content: "Read the file"}},
+			response:   toolCallResponse,
+			wantOutput: "file_read({\"path\":\"C:/notes.txt\"})\nget_time({})",
+		},
+		{
+			name: "follow-up call after a tool result",
+			messages: []llmtypes.Message{
+				{Role: "user", Content: "Read the file"},
+				{Role: "assistant", ToolCalls: toolCallResponse.ToolCalls[:1]},
+				{Role: "tool", Content: "The secret word is heliotrope.", ToolUseID: "call_1"},
+			},
+			response:  &llmtypes.LLMResponse{Content: "The word is heliotrope."},
+			wantInput: "tool: The secret word is heliotrope.",
+		},
+		{
+			name: "messages added after the user message",
+			messages: []llmtypes.Message{
+				{Role: "user", Content: "What broke?"},
+				{Role: "system", Content: "Relevant memories: the volatile table overflowed."},
+			},
+			response:  &llmtypes.LLMResponse{Content: "The volatile table."},
+			wantInput: "user: What broke?\nsystem: Relevant memories: the volatile table overflowed.",
+		},
+		{
+			name: "session start: system context before the user message",
+			messages: []llmtypes.Message{
+				{Role: "system", Content: "# START HERE: agent operating guide"},
+				{Role: "user", Content: "Say hello"},
+			},
+			response: &llmtypes.LLMResponse{Content: "Hello"},
+		},
+		{
+			name: "session start with a memory block after the user message",
+			messages: []llmtypes.Message{
+				{Role: "system", Content: "# START HERE: agent operating guide"},
+				{Role: "user", Content: "What broke?"},
+				{Role: "system", Content: "[Graph Memory Context] the volatile table overflowed."},
+			},
+			response:  &llmtypes.LLMResponse{Content: "The volatile table."},
+			wantInput: "user: What broke?\nsystem: [Graph Memory Context] the volatile table overflowed.",
+		},
+		{
+			name:       "text and tool calls in one response",
+			messages:   []llmtypes.Message{{Role: "user", Content: "Read the file"}},
+			response:   &llmtypes.LLMResponse{Content: "Reading it now.", ToolCalls: toolCallResponse.ToolCalls[1:]},
+			wantOutput: "Reading it now.\nget_time({})",
+		},
+		{
+			name:     "plain question and answer",
+			messages: []llmtypes.Message{{Role: "user", Content: "Say hello"}},
+			response: &llmtypes.LLMResponse{Content: "Hello"},
+		},
+	}
+	for _, tt := range tests {
+		for _, streaming := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/streaming=%t", tt.name, streaming), func(t *testing.T) {
+				base := &mockLLMProvider{name: "test-provider", model: "test-model", response: tt.response}
+				tracer := newMockTracer()
+				var err error
+				if streaming {
+					instrumented := NewInstrumentedProvider(&mockStreamingLLMProvider{mockLLMProvider: base}, tracer)
+					_, err = instrumented.ChatStream(context.Background(), tt.messages, nil, func(string) {})
+				} else {
+					instrumented := NewInstrumentedProvider(base, tracer)
+					_, err = instrumented.Chat(context.Background(), tt.messages, nil)
+				}
+				require.NoError(t, err)
+				require.Len(t, tracer.spans, 1)
+				attrs := tracer.spans[0].Attributes
+
+				assert.Equal(t, tt.wantInput, attrs["input.value"])
+				assert.Equal(t, tt.wantOutput, attrs["output.value"])
+				assert.Equal(t, observability.TruncateContent(lastUserContent(tt.messages)), attrs["message.preview"],
+					"message.preview stays the last user message")
+			})
+		}
+	}
+}
+
+func TestInstrumentedProvider_ToolCallOutputIsBounded(t *testing.T) {
+	long := strings.Repeat("x", observability.DefaultMaxContentLength*2)
+	mockProvider := &mockLLMProvider{
+		name:  "test-provider",
+		model: "test-model",
+		response: &llmtypes.LLMResponse{ToolCalls: []llmtypes.ToolCall{
+			{ID: "call_1", Name: "file_write", Input: map[string]interface{}{"content": long}},
+		}},
+	}
+	tracer := newMockTracer()
+	_, err := NewInstrumentedProvider(mockProvider, tracer).Chat(context.Background(),
+		[]llmtypes.Message{{Role: "user", Content: "write it"}}, nil)
+	require.NoError(t, err)
+
+	out, ok := tracer.spans[0].Attributes["output.value"].(string)
+	require.True(t, ok)
+	assert.Equal(t, observability.DefaultMaxContentLength+1, len([]rune(out)), "bounded, plus the ellipsis")
+}
+
+func lastUserContent(messages []llmtypes.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			return messages[i].Content
+		}
+	}
+	return ""
+}
+
+func TestInstrumentedProvider_Role(t *testing.T) {
+	base := &mockLLMProvider{name: "test-provider", model: "test-model", response: &llmtypes.LLMResponse{Content: "ok"}}
+	tracer := newMockTracer()
+	agentLLM := NewInstrumentedProvider(base, tracer, WithRole(RoleAgent))
+	extractLLM := agentLLM.ForRole(RoleMemoryExtract)
+
+	_, err := agentLLM.Chat(context.Background(), []llmtypes.Message{{Role: "user", Content: "hi"}}, nil)
+	require.NoError(t, err)
+	_, err = extractLLM.Chat(context.Background(), []llmtypes.Message{{Role: "user", Content: "hi"}}, nil)
+	require.NoError(t, err)
+
+	require.Len(t, tracer.spans, 2)
+	assert.Equal(t, RoleAgent, tracer.spans[0].Attributes["llm.role"])
+	assert.Equal(t, RoleMemoryExtract, tracer.spans[1].Attributes["llm.role"])
+	assert.Equal(t, RoleAgent, agentLLM.Role(), "ForRole must not change the original")
+
+	_, err = NewInstrumentedProvider(base, tracer).Chat(context.Background(), []llmtypes.Message{{Role: "user", Content: "hi"}}, nil)
+	require.NoError(t, err)
+	_, hasRole := tracer.spans[2].Attributes["llm.role"]
+	assert.False(t, hasRole, "no role, no attribute")
+}
+
+func TestNewInstrumentedProvider_DoesNotWrapTwice(t *testing.T) {
+	base := &mockLLMProvider{name: "test-provider", model: "test-model", response: &llmtypes.LLMResponse{Content: "ok"}}
+	tracer := newMockTracer()
+	once := NewInstrumentedProvider(base, tracer, WithRole(RoleAgent))
+	twice := NewInstrumentedProvider(once, tracer)
+	thrice := NewInstrumentedProvider(twice, tracer, WithRole(RoleCompressor))
+
+	_, err := thrice.Chat(context.Background(), []llmtypes.Message{{Role: "user", Content: "hi"}}, nil)
+	require.NoError(t, err)
+	require.Len(t, tracer.spans, 1, "one llm.completion span per call, however often it is wrapped")
+	assert.Equal(t, RoleCompressor, tracer.spans[0].Attributes["llm.role"])
+	assert.Equal(t, RoleAgent, twice.Role(), "a re-wrap without options keeps the role")
+
+	other := newMockTracer()
+	_, err = NewInstrumentedProvider(once, other).Chat(context.Background(), []llmtypes.Message{{Role: "user", Content: "hi"}}, nil)
+	require.NoError(t, err)
+	assert.Len(t, other.spans, 1, "a different tracer still traces the call")
 }

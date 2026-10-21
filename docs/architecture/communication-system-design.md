@@ -387,7 +387,7 @@ CREATE INDEX IF NOT EXISTS idx_correlation_id ON message_queue(correlation_id);
 - `0 (Pending)`: Queued, awaiting delivery
 - `1 (InFlight)`: Dequeued, awaiting acknowledgment
 - `2 (Acked)`: Successfully processed by agent
-- `3 (Failed)`: Max retries exceeded
+- `3 (Failed)`: Max retries exceeded, or undeliverable: the server's queue monitor found no listener for the recipient within 2 minutes (logged as `Message undeliverable; marked failed`)
 - `4 (Expired)`: TTL exceeded
 
 **Delivery Flow**:

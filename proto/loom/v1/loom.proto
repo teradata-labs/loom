@@ -884,6 +884,9 @@ message WeaveProgress {
   // from a provider that does not report sizes has no tool_call_id or tool_name
   // and a size of 0; with either set, 0 means no arguments have arrived yet.
   int64 tool_input_bytes = 23;
+
+  // Trace ID for observability (populated on terminal events such as COMPLETED)
+  string trace_id = 24;
 }
 
 // HITLRequestInfo carries information about a human-in-the-loop request.

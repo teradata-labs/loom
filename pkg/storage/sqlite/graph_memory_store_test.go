@@ -922,3 +922,30 @@ func TestGraphMemoryStore_EntityRecallFormat(t *testing.T) {
 	assert.Contains(t, formatted, "WORKS_ON")
 	assert.Contains(t, formatted, "Likes Go")
 }
+
+func TestGraphMemoryStore_Recall_ExcludeSources(t *testing.T) {
+	store := newTestGraphMemoryStore(t)
+	ctx := context.Background()
+	for _, src := range []string{memory.SourceTask, "conversation", ""} {
+		_, err := store.Remember(ctx, &memory.Memory{
+			AgentID: "agent-1", Content: "Conference shortlist from source " + src,
+			MemoryType: memory.MemoryTypeFact, Salience: 0.5, Source: src,
+		})
+		require.NoError(t, err)
+	}
+
+	for _, query := range []string{"", "conference shortlist"} {
+		memories, err := store.Recall(ctx, memory.RecallOpts{
+			AgentID: "agent-1", Query: query, Limit: 10, ExcludeSources: []string{memory.SourceTask},
+		})
+		require.NoError(t, err)
+		require.Len(t, memories, 2, "query %q", query)
+		for _, m := range memories {
+			assert.NotEqual(t, memory.SourceTask, m.Source)
+		}
+	}
+
+	all, err := store.Recall(ctx, memory.RecallOpts{AgentID: "agent-1", Limit: 10})
+	require.NoError(t, err)
+	assert.Len(t, all, 3, "no exclusion by default")
+}

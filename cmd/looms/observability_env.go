@@ -14,11 +14,42 @@
 package main
 
 import (
+	"fmt"
 	"os"
+	"time"
 
 	"github.com/teradata-labs/loom/pkg/observability"
 	"go.uber.org/zap"
 )
+
+// Default eval_metrics flush intervals for embedded storage when
+// observability.flush_interval is unset or invalid.
+const (
+	serveEmbeddedFlushInterval    = 30 * time.Second
+	workflowEmbeddedFlushInterval = 5 * time.Second // shorter runs
+)
+
+// embeddedStorageConfig builds the embedded storage settings from obs:
+// storage_type (default memory), sqlite_path and flush_interval (default
+// defaultFlush when unset or unparsable).
+func embeddedStorageConfig(obs ObservabilityConfig, defaultFlush time.Duration, logger *zap.Logger) *observability.EmbeddedConfig {
+	storageType := obs.StorageType
+	if storageType == "" {
+		storageType = "memory"
+	}
+	flushInterval := defaultFlush
+	if obs.FlushInterval != "" {
+		if duration, err := time.ParseDuration(obs.FlushInterval); err == nil {
+			flushInterval = duration
+		}
+	}
+	return &observability.EmbeddedConfig{
+		StorageType:   storageType,
+		SQLitePath:    obs.SQLitePath,
+		FlushInterval: flushInterval,
+		Logger:        logger,
+	}
+}
 
 // applyOTLPEnvOverride inspects standard and Loom OTLP endpoint environment
 // variables when OTLP was selected in configuration, then overrides the
@@ -62,6 +93,69 @@ func firstConfiguredEnv(keys ...string) string {
 		}
 	}
 	return ""
+}
+
+// newOTLPTracer builds the OTel tracer that looms serve and looms workflow
+// export through and, once it is built, applies the process-wide content
+// bound from obs (the default when otlp_max_content_length is unset). With
+// otlp_record_eval_runs it also opens the embedded eval_runs record, which
+// the tracer closes on Shutdown. It also applies otlp_capture_llm_messages.
+func newOTLPTracer(obs ObservabilityConfig, serviceName, serviceVersion string, defaultFlush time.Duration, logger *zap.Logger) (*observability.OTelTracer, error) {
+	var recorder *observability.EvalRunRecorder
+	if obs.OTLPRecordEvalRuns {
+		var err error
+		recorder, err = observability.NewEvalRunRecorder(embeddedStorageConfig(obs, defaultFlush, logger), logger)
+		if err != nil {
+			return nil, fmt.Errorf("opening eval_runs record: %w", err)
+		}
+	}
+	tracer, err := observability.NewOTelTracer(observability.OTelConfig{
+		Endpoint:       obs.OTLPEndpoint,
+		Headers:        obs.OTLPHeaders,
+		Insecure:       obs.OTLPInsecure,
+		ServiceName:    otlpServiceName(serviceName),
+		ServiceVersion: serviceVersion,
+		Privacy: observability.PrivacyConfig{
+			RedactCredentials: true,
+			RedactPII:         true,
+		},
+		SpanFilter: observability.SpanFilterConfig{
+			IncludePrefixes: obs.OTLPIncludeSpans,
+		},
+		Recorder: recorder,
+	})
+	if err != nil {
+		if recorder != nil {
+			_ = recorder.Close()
+		}
+		return nil, err
+	}
+
+	maxContent := observability.DefaultMaxContentLength
+	if obs.OTLPMaxContentLength != nil {
+		maxContent = *obs.OTLPMaxContentLength
+	}
+	observability.SetMaxContentLength(maxContent)
+	observability.SetCaptureLLMMessages(obs.OTLPCaptureLLMMessages)
+	return tracer, nil
+}
+
+// newPhoenixClient builds the Phoenix annotation client when
+// observability.phoenix_base_url is set, and returns nil otherwise. The API
+// key comes from phoenix_api_key (keyring or env), else PHOENIX_API_KEY.
+func newPhoenixClient(obs ObservabilityConfig, logger *zap.Logger) (*observability.PhoenixClient, error) {
+	if obs.PhoenixBaseURL == "" {
+		return nil, nil
+	}
+	apiKey := obs.PhoenixAPIKey
+	if apiKey == "" {
+		apiKey = os.Getenv("PHOENIX_API_KEY")
+	}
+	return observability.NewPhoenixClient(observability.PhoenixClientConfig{
+		BaseURL: obs.PhoenixBaseURL,
+		APIKey:  apiKey,
+		Logger:  logger,
+	})
 }
 
 func otlpServiceName(defaultName string) string {

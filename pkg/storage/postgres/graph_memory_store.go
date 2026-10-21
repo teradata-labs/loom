@@ -619,6 +619,17 @@ func (s *GraphMemoryStore) Recall(ctx context.Context, opts memory.RecallOpts) (
 				strings.Join(placeholders, ",")))
 		}
 
+		// Optional source exclusion.
+		if len(opts.ExcludeSources) > 0 {
+			placeholders := make([]string, len(opts.ExcludeSources))
+			for i, src := range opts.ExcludeSources {
+				placeholders[i] = fmt.Sprintf("$%d", argN)
+				args = append(args, src)
+				argN++
+			}
+			conditions = append(conditions, fmt.Sprintf("COALESCE(m.source,'') NOT IN (%s)", strings.Join(placeholders, ",")))
+		}
+
 		// Optional tag filter: JSONB containment.
 		if len(opts.Tags) > 0 {
 			for _, tag := range opts.Tags {
@@ -1322,7 +1333,7 @@ func pgScanMemoryFromRows(rows pgx.Rows) (*memory.Memory, error) {
 // requires it for the sqlite brute-force cosine path; once pgvector wiring
 // lands here, replace this stub with a real implementation.
 func (s *GraphMemoryStore) VectorRecall(ctx context.Context, opts memory.VectorRecallOpts) ([]*memory.Memory, error) {
-	return nil, fmt.Errorf("VectorRecall not implemented for postgres backend yet")
+	return nil, fmt.Errorf("postgres graph memory store: %w", memory.ErrVectorRecallUnsupported)
 }
 
 func pgLoadMemoryEntityIDs(ctx context.Context, tx pgx.Tx, memoryID string) ([]string, error) {

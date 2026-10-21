@@ -128,6 +128,7 @@ message WeaveProgress {
   ContextState context_state = 21;    // Context window state (included in completion event)
   bool is_tool_input_stream = 22;     // True while the model is still writing a tool call's arguments
   int64 tool_input_bytes = 23;        // Argument bytes received so far (when is_tool_input_stream)
+  string trace_id = 24;               // Trace ID for observability (included in completion event)
 }
 ```
 

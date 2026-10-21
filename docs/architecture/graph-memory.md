@@ -53,7 +53,7 @@ Salience-driven graph-backed episodic memory for persistent, cross-session agent
 6. **Opt-Out by Default**: Graph memory is enabled when a store is available; agents must explicitly disable it
 
 **Non-goals**:
-- Vector/embedding-based semantic search (FTS5 keyword search is the current approach)
+- Vector search as the only retrieval path: recall is FTS5 keyword search, plus vector search when an embedder is configured (see Context Injection)
 - Real-time inter-agent knowledge sharing (each agent has its own graph)
 - Unbounded memory growth (salience decay and token budgeting control retrieval)
 
@@ -368,11 +368,17 @@ Uses multiplicative combination (`CombineScores` in `pkg/memory/salience.go:122`
 
 **Responsibility**: Automatically inject relevant graph memory context into each conversation turn.
 
-**Flow** (called from `runConversationLoop()` at each turn):
-1. Extract topic from the most recent user message (truncated to 200 chars)
-2. Query `ContextFor()` on the agent's own entity name, using topic as search filter
-3. Format result via `EntityRecall.Format()` into structured text
-4. Inject as system message: `[Graph Memory Context]\n{formatted_recall}`
+**Flow** (`injectGraphMemoryContext`, once per turn before the first LLM call; a resumed turn skips it while the block from its first run is still in the session):
+1. An LLM side call distills the newest user message into a search query (`extractSearchQuery`; keyword extraction when the call fails).
+2. Candidates, deduplicated:
+   - entities whose names match the query, with their `ContextFor()` memories;
+   - multi-hop: memories linked within two hops of the user's entity (a `person` entity marked `is_user`, which extraction creates when the user states who they are);
+   - FTS5 `Recall()` with an OR of the query's words;
+   - with an embedder (`embedding.enabled`), `VectorRecall()`: the 20 memories closest to the embedded query (cosine ≥ 0.3, same embedding model, salience at or above the recall floor). A backend without embeddings (PostgreSQL) returns `memory.ErrVectorRecallUnsupported`, and the agent stops embedding queries.
+3. An LLM re-rank keeps the candidates relevant to the message.
+4. Session-start fallback: on a session's first turn (no assistant message yet), when nothing is kept, the agent's top five memories by salience within the token budget are used instead. Task-completion memories (`memory.SourceTask`) are excluded, and these are not re-ranked against the message, which is often a greeting.
+5. The memories are injected as a system message, `[Graph Memory Context]` followed by a header and one line per memory. The message is in-memory only, not persisted.
+6. The `graph_memory.recall` span records the outcome: `injected`, `fallback_injected`, `no_candidates`, `rerank_none`, `store_error`, `vector_error`, `no_query`, `no_user_message` or `no_budget`.
 
 **Token Budget**: Controlled by config. Default: 20% of context window (200K * 20% = 40K tokens). Can be overridden with absolute `max_context_tokens`. Within `ContextFor()`, the budget is allocated in three phases: entity profile (200 tokens reserved), graph neighborhood (300 tokens reserved), and remaining budget for ranked memories via `AllocateMemoryBudget()` in `pkg/memory/budget.go`.
 
@@ -640,6 +646,8 @@ SELECT DISTINCT * FROM neighbor_walk
 **Alternatives**:
 1. **Vector embeddings + cosine similarity**: Higher semantic accuracy. Rejected for now: requires embedding model, adds 100-300ms latency, external dependency.
 2. **BM25 + LLM reranking** (used in conversation_memory): Better semantic matching. Considered for future: adds LLM cost per recall.
+
+**Update (2026-10)**: keyword-only recall missed paraphrases and conversational turns: interactive agents found candidates in 6 of 13 recalls where they had memories. Recall now also runs `VectorRecall` when an embedder is configured, and an LLM re-rank picks among all candidates. FTS5 remains the path without an embedder.
 
 ### Decision 3: Agent-Scoped Isolation vs. Shared Knowledge Graph
 
