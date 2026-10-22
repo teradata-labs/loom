@@ -375,6 +375,17 @@ func (p *InstrumentedProvider) ChatStream(ctx context.Context, messages []llmtyp
 	span.SetAttribute("llm.ttft_ms", ttft.Milliseconds())
 	span.SetAttribute("llm.streaming.chunks", tokenCount)
 
+	// The client's own stamps are ground truth: the callback-based ttft above
+	// only fires on text deltas, so tool-call turns report 0. Client metadata
+	// covers every chunk type and adds the prep/generation split.
+	if resp.Metadata != nil {
+		for _, key := range []string{"ttft_ms", "prep_ms", "gen_ms", "sse_chunks"} {
+			if v, ok := resp.Metadata[key]; ok {
+				span.SetAttribute("llm.client."+key, v)
+			}
+		}
+	}
+
 	// Capture cache token metrics for observability
 	if resp.Usage.CacheReadInputTokens > 0 {
 		span.SetAttribute("llm.tokens.cache_read", resp.Usage.CacheReadInputTokens)
