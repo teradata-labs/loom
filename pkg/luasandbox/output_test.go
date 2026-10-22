@@ -15,6 +15,7 @@
 package luasandbox
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -29,7 +30,7 @@ func TestCappedWriter(t *testing.T) {
 	assert.Equal(t, "short", s)
 	assert.False(t, cut)
 
-	w = newCappedWriter(30)
+	w = newCappedWriter(120)
 	for range 100 {
 		_, _ = w.Write([]byte("0123456789"))
 	}
@@ -40,11 +41,13 @@ func TestCappedWriter(t *testing.T) {
 	assert.Contains(t, s, "bytes of output elided")
 	assert.LessOrEqual(t, len(w.tail), 2*w.tailCap, "memory stays bounded")
 
-	w = newCappedWriter(30)
+	w = newCappedWriter(120)
 	_, _ = w.Write([]byte(strings.Repeat("y", 1000)))
 	s, cut = w.String()
 	assert.True(t, cut)
-	assert.Contains(t, s, "970 bytes") // 1000 written, 10 head + 20 tail kept
+	assert.LessOrEqual(t, len(s), 120, "the marker fits inside the limit")
+	kept := strings.Count(s, "y") - 1 // the marker's "bytes" has one
+	assert.Contains(t, s, fmt.Sprintf("%d bytes", 1000-kept), "the marker counts exactly what was dropped")
 
 	w = newCappedWriter(1)
 	_, _ = w.Write([]byte("abcdef"))
@@ -61,7 +64,7 @@ func TestCappedWriterExactFit(t *testing.T) {
 }
 
 func TestOutputIsRuneSafe(t *testing.T) {
-	w := newCappedWriter(40)
+	w := newCappedWriter(60)
 	for range 50 {
 		_, _ = w.Write([]byte("日本語テキスト"))
 	}

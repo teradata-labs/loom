@@ -1,6 +1,12 @@
+// Modified for loom, 2026: newVarargTable reports what it allocates so named varargs are charged.
+// See third_party/golua/README.md for the list of changes from upstream.
+
 package runtime
 
-import "errors"
+import (
+	"errors"
+	"unsafe"
+)
 
 // varargN is the key used to store the element count in a vararg table.
 var varargN = StringValue("n")
@@ -11,12 +17,17 @@ var errBadVarargN = errors.New("vararg table has no proper 'n'")
 // Matches reference Lua 5.5's limit (values >= 2^30 are rejected).
 const maxVarargN = 1<<30 - 1
 
+// varargTableHeaderSize is the memory a new vararg table takes before its
+// "n" field: the table header plus the array part that wraps the values.
+const varargTableHeaderSize = TableHeaderSize + uint64(unsafe.Sizeof(array{}))
+
 // newVarargTable creates a vararg table (Lua 5.5) from a slice.
 // The table's array part references the slice directly, and t.n is set to the length.
-func newVarargTable(values []Value) *Table {
+// It returns the bytes the table allocated, so the caller can charge them.
+func newVarargTable(values []Value) (*Table, uint64) {
 	t := NewTableFromSlice(values)
-	t.Set(varargN, IntValue(int64(len(values))))
-	return t
+	alloc := t.Set(varargN, IntValue(int64(len(values))))
+	return t, varargTableHeaderSize + alloc
 }
 
 // expandVarargs converts a vararg value (either a raw []Value slice or a

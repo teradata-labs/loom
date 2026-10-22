@@ -1,4 +1,5 @@
-// Modified for loom, 2026: NEWTABLE charges the table header (golua PR #135).
+// Modified for loom, 2026: NEWTABLE charges the table header (golua PR #135); named vararg tables
+// charge their header and storage.
 // See third_party/golua/README.md for the list of changes from upstream.
 
 package runtime
@@ -325,7 +326,9 @@ RunLoop:
 					pc++
 					continue RunLoop
 				case code.OpMkVarargTable:
-					tbl := TableValue(newVarargTable(val.AsArray()))
+					vt, alloc := newVarargTable(val.AsArray())
+					t.RequireMem(alloc)
+					tbl := TableValue(vt)
 					// Overwrite the etc register so ... expansion reads from
 					// the table (respecting t.n modifications).
 					setReg(regs, cells, opcode.GetB(), tbl)

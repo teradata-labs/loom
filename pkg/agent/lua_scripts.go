@@ -217,13 +217,16 @@ func (t *ScriptTool) Execute(ctx context.Context, params map[string]interface{})
 	defer t.run.agent.tracer.EndSpan(span)
 
 	sc, err := t.store.GetForRunner(ctx, t.script)
+	known := ResolvedScript{Name: t.script}
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		return luaFailure(span, start, LuaCodeScriptNotFound, t.Name()+": the script was deleted", "", false), nil
+		return luaFailure(span, start, known, LuaCodeScriptNotFound, t.Name()+": the script was deleted", "", false), nil
 	case err != nil:
-		return luaFailure(span, start, LuaCodePolicyDenied, t.Name()+": the script could not be loaded", "", false), nil
+		return luaFailure(span, start, known, LuaCodePolicyDenied, t.Name()+": the script could not be loaded", "", false), nil
 	case !sc.Published:
-		return luaFailure(span, start, LuaCodePolicyDenied, t.Name()+" is no longer published", "", false), nil
+		return luaFailure(span, start, known, LuaCodePolicyDenied, t.Name()+" is no longer published", "", false), nil
+	case !validSavedTrust(sc.Trust):
+		return luaFailure(span, start, known, LuaCodePolicyDenied, t.Name()+": the saved script has no valid trust tier", "", false), nil
 	}
 	return t.run.runResolved(ctx, span, start, resolvedFrom(sc), params, 0), nil
 }

@@ -126,7 +126,9 @@ func TestDeriveCapacity(t *testing.T) {
 		{"1 GiB pod, 64 MiB runs", gib, 64 * mib, 2, 64 * mib},
 		{"1 GiB pod lowers a 128 MiB budget", gib, 128 * mib, 2, 68 * mib},
 		{"huge pod is capped", 256 * gib, 64 * mib, MaxSlots, 64 * mib},
-		{"tiny pod keeps a floor", 64 * mib, 256 * mib, 2, minDerivedMemory},
+		{"small pod lowers to the floor", 240 * mib, 256 * mib, 2, minDerivedMemory},
+		{"tiny pod admits nothing", 64 * mib, 256 * mib, 0, 0},
+		{"just under the floor admits nothing", 239 * mib, 64 * mib, 0, 0},
 		{"zero per-run uses the default", 4 * gib, 0, 4, DefaultLimits().MemoryBytes},
 	}
 	for _, tt := range tests {
@@ -135,8 +137,9 @@ func TestDeriveCapacity(t *testing.T) {
 			assert.Equal(t, tt.slots, slots)
 			assert.InDelta(t, float64(tt.runBytes), float64(runBytes), float64(mib))
 			worst := PeakMemoryOverhead * float64(slots) * float64(runBytes)
-			if runBytes > minDerivedMemory {
-				assert.LessOrEqual(t, worst, ScriptMemoryShare*float64(tt.mem)+1, "worst case stays within the share")
+			assert.LessOrEqual(t, worst, ScriptMemoryShare*float64(tt.mem)+1, "worst case stays within the share, tiny pods included")
+			if slots > 0 {
+				assert.GreaterOrEqual(t, runBytes, uint64(minDerivedMemory))
 			}
 		})
 	}

@@ -839,6 +839,15 @@ type ToolPermissionsConfig struct {
 	// Can be enabled via --yolo flag or LOOM_YOLO=true env var
 	YOLO bool `mapstructure:"yolo"`
 
+	// SafeFiles confines the file tools (file_read, file_write, edit_files) to
+	// the workspace — the tool's working directory, the sandbox dir, the loom
+	// data dir and temp. Off by default, for the same reason YOLO permissions
+	// are on by default: an agent works in its own tree and an absolute path
+	// its caller holds is not an escape. Turn it on where the agent is driven
+	// against paths the deployment does not trust.
+	// --safe-files flag, tools.permissions.safe_files, or LOOM_FILE_SAFE_MODE.
+	SafeFiles bool `mapstructure:"safe_files"`
+
 	// AllowedTools is a list of tool names that are always allowed without prompts
 	// Empty list means all tools require approval (if RequireApproval is true)
 	AllowedTools []string `mapstructure:"allowed_tools"`
@@ -2039,7 +2048,9 @@ tools:
   # run_lua: lets the model run a short Lua script that calls its own tools
   # through the same admission hooks as direct calls. Off by default; an agent
   # must also list run_lua in tools.builtin, and must have tools.hooks or
-  # tools.permissions configured (scripts never run unguarded).
+  # tools.permissions configured. The default tools.permissions.yolo: true
+  # counts as configured but admits every call the lua deny lists leave, so
+  # set a restrictive permission policy or hook before enabling this.
   # lua:
   #   enabled: false
   #   limits:                       # zero = engine default; capped at the engine ceilings

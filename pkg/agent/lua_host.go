@@ -194,15 +194,19 @@ func (h *luaHost) ToolSchema(_ context.Context, name string) (map[string]any, er
 // CallTool runs one nested call. Tool failures are results the script sees;
 // a Go error is returned only when the host itself is broken.
 func (h *luaHost) CallTool(ctx context.Context, name string, args map[string]any) (*luasandbox.CallResult, error) {
-	tool, ok := h.visible[name]
-	if !ok {
-		return h.notVisible(name), nil
-	}
-
+	// The span starts first so a refused attempt (a script probing for
+	// denied tools) is traced like any other nested call.
 	ctx, span := h.agent.tracer.StartSpan(ctx, "lua.tool_call")
 	defer h.agent.tracer.EndSpan(span)
 	span.SetAttribute("tool_name", name)
 	span.SetAttribute("lua.trust", h.trust.String())
+
+	tool, ok := h.visible[name]
+	if !ok {
+		res := h.notVisible(name)
+		span.SetAttribute("lua.decision", res.Decision)
+		return res, nil
+	}
 
 	// An approval granted for the run_lua call itself never covers the calls
 	// the script makes.

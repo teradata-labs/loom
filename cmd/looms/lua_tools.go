@@ -184,7 +184,8 @@ type luaRuntime struct {
 }
 
 // newLuaRuntime builds the run_lua wiring from tools.lua. It returns nil when
-// Lua is disabled, and an error for a malformed policy or an unusable scripts
+// Lua is disabled or the process is too small to run scripts safely (with a
+// warning), and an error for a malformed policy or an unusable scripts
 // directory, which aborts serve like a malformed hook binding (fail closed).
 // memLimit is the process memory limit used to size the gate; dataDir is the
 // default parent of the scripts directory.
@@ -206,6 +207,14 @@ func newLuaRuntime(c LuaToolsConfig, memLimit uint64, dataDir string, shellGover
 		return nil, fmt.Errorf("tools.lua.tools: %w", err)
 	}
 	slots, runMem := luasandbox.DeriveCapacity(memLimit, pol.Limits.MemoryBytes)
+	if slots == 0 {
+		// The process is too small for even two minimum-budget runs within
+		// the engine's memory plan: run_lua stays off rather than admit
+		// runs that could exhaust the process.
+		zap.L().Warn("tools.lua.enabled is set, but the process memory limit is too small to run Lua scripts safely; run_lua is disabled",
+			zap.Uint64("memory_limit_bytes", memLimit))
+		return nil, nil
+	}
 	if c.Limits.MaxConcurrentRuns > 0 && c.Limits.MaxConcurrentRuns < slots {
 		slots = c.Limits.MaxConcurrentRuns
 	}

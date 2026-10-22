@@ -414,6 +414,13 @@ Under `spec.memory` (k8s-style) or `agent.memory` (legacy).
 | `memory_compression` | object | optional | See [Memory Compression](#memory-compression-configuration) |
 | `graph_memory` | object | optional | See [Graph Memory](#graph-memory-configuration) |
 
+Single-agent lifecycle RPCs (`CreateAgentFromConfig`, `GetAgent`, `StartAgent`,
+`StopAgent`, and `ReloadAgent`) return `AgentInfo.config` with a nonempty
+`memory.dsn` replaced by `[REDACTED]`; the HTTP gateway exposes the same
+redacted `AgentInfo`. `ListAgents` omits `config` entirely. Agent YAML is
+environment-expanded before loading; arbitrary fields such as `system_prompt`
+and metadata are not secret-filtered, so do not embed credentials there.
+
 **Large tool results**: a result always enters the conversation whole — offload is a render condition of context compilation, not an arrival event. When a tool row's content is strictly over the threshold, the copy compiled for the LLM is replaced by a stub. In the producing turn this is the offload stub — tool name, estimated token figure, a 160-byte preview, and a `query_tool_result(message_id=…)` door (`sql=` for tabular payloads); `query_tool_result` resolves only within that turn, and every return is bounded at the same threshold. In later turns, and for rows evicted by memory-pressure relief, it is the evicted stub, whose only door is re-running the call. Rows are persisted truncated to a bounded core plus tail at the same threshold. A session without a persistent store has no `message_id` to print, so its current-turn oversize results render the evicted stub.
 
 **Offload-exempt tools** (Go API only; no YAML field): `Agent.SetOffloadExemptTools(names []string)` names the tools whose current-turn results always render whole regardless of the threshold. Use it for tools whose full output is the product of the call — reference or lookup content the model must read inline in the turn it asked for it — where an offload stub would defeat the call.
