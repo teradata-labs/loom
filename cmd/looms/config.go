@@ -1990,7 +1990,9 @@ tools:
   # run_lua: lets the model run a short Lua script that calls its own tools
   # through the same admission hooks as direct calls. Off by default; an agent
   # must also list run_lua in tools.builtin, and must have tools.hooks or
-  # tools.permissions configured (scripts never run unguarded).
+  # tools.permissions configured. The default tools.permissions.yolo: true
+  # counts as configured but admits every call the lua deny lists leave, so
+  # set a restrictive permission policy or hook before enabling this.
   # lua:
   #   enabled: false
   #   limits:                       # zero = engine default; capped at the engine ceilings
