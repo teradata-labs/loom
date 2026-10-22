@@ -46,6 +46,12 @@ type Orchestrator struct {
 	logger         *zap.Logger
 	activeSessions map[string][]*ActiveSkill // sessionID -> active skills
 
+	// activationLog records every activation per session with the time it
+	// ended, so SkillsActiveSince can report a skill that was active during a
+	// window even after it was deactivated, evicted or replaced — the active
+	// set alone forgets it. Bounded by maxActivationLogPerSession.
+	activationLog map[string][]activationRecord
+
 	// maxConcurrentSkills caps the active set during eviction. <=0 means
 	// "use the legacy default of 3". Set via WithMaxConcurrentSkills, or
 	// at runtime via SetMaxConcurrentSkills (the agent layer pulls it
@@ -398,6 +404,8 @@ func (o *Orchestrator) ActivateSkill(sessionID string, skill *Skill, triggerType
 		if existing.Skill.Name == skill.Name {
 			sessions[i] = active
 			o.activeSessions[sessionID] = sessions
+			o.endActivationLocked(sessionID, skill.Name, active.ActivatedAt)
+			o.logActivationLocked(sessionID, active)
 			if span != nil {
 				span.SetAttribute("skill.name", skill.Name)
 				span.SetAttribute("action", "replaced")
@@ -443,6 +451,9 @@ func (o *Orchestrator) ActivateSkill(sessionID string, skill *Skill, triggerType
 		if minIdx >= 0 {
 			// Capture evicted skill metadata before removal.
 			evicted := sessions[minIdx]
+			if evicted != nil && evicted.Skill != nil {
+				o.endActivationLocked(sessionID, evicted.Skill.Name, time.Now())
+			}
 			// Remove it (swap with last, truncate).
 			sessions[minIdx] = sessions[len(sessions)-1]
 			sessions = sessions[:len(sessions)-1]
@@ -481,6 +492,7 @@ func (o *Orchestrator) ActivateSkill(sessionID string, skill *Skill, triggerType
 	}
 
 	o.activeSessions[sessionID] = sessions
+	o.logActivationLocked(sessionID, active)
 
 	if span != nil {
 		span.SetAttribute("skill.name", skill.Name)
@@ -538,6 +550,8 @@ func (o *Orchestrator) ActivatePinned(sessionID string, skill *Skill, triggerTyp
 		if existing.Skill.Name == skill.Name {
 			sessions[i] = active
 			o.activeSessions[sessionID] = sessions
+			o.endActivationLocked(sessionID, skill.Name, active.ActivatedAt)
+			o.logActivationLocked(sessionID, active)
 			if span != nil {
 				span.SetAttribute("skill.name", skill.Name)
 				span.SetAttribute("action", "replaced")
@@ -556,6 +570,7 @@ func (o *Orchestrator) ActivatePinned(sessionID string, skill *Skill, triggerTyp
 
 	sessions = append(sessions, active)
 	o.activeSessions[sessionID] = sessions
+	o.logActivationLocked(sessionID, active)
 
 	if span != nil {
 		span.SetAttribute("skill.name", skill.Name)
@@ -593,6 +608,7 @@ func (o *Orchestrator) DeactivateSkill(sessionID, skillName string) {
 			activeFor := time.Since(active.ActivatedAt)
 			// Remove by shifting.
 			o.activeSessions[sessionID] = append(sessions[:i], sessions[i+1:]...)
+			o.endActivationLocked(sessionID, skillName, time.Now())
 			o.tracer.RecordMetric("skills.orchestrator.deactivate_skill", 1.0, map[string]string{
 				"skill":   skillName,
 				"session": sessionID,
@@ -621,6 +637,80 @@ func (o *Orchestrator) GetActiveSkills(sessionID string) []*ActiveSkill {
 	out := make([]*ActiveSkill, len(src))
 	copy(out, src)
 	return out
+}
+
+// SkillsActiveSince returns every skill that was active at any moment from
+// since until now — including skills deactivated, evicted or replaced in that
+// window, which GetActiveSkills no longer reports. One entry per skill name
+// (its latest activation), ordered by activation time. An embedder attributing
+// a turn to the skills that shaped it passes the turn's start time.
+func (o *Orchestrator) SkillsActiveSince(sessionID string, since time.Time) []*ActiveSkill {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+
+	latest := make(map[string]*ActiveSkill)
+	for _, rec := range o.activationLog[sessionID] {
+		if !rec.endedAt.IsZero() && rec.endedAt.Before(since) {
+			continue
+		}
+		name := rec.active.Skill.Name
+		if prev, ok := latest[name]; !ok || rec.active.ActivatedAt.After(prev.ActivatedAt) {
+			latest[name] = rec.active
+		}
+	}
+	if len(latest) == 0 {
+		return nil
+	}
+	out := make([]*ActiveSkill, 0, len(latest))
+	for _, as := range latest {
+		out = append(out, as)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ActivatedAt.Before(out[j].ActivatedAt) })
+	return out
+}
+
+// maxActivationLogPerSession bounds the activation log. When exceeded, the
+// oldest ended records are dropped; open (still-active) records never are.
+const maxActivationLogPerSession = 256
+
+type activationRecord struct {
+	active  *ActiveSkill
+	endedAt time.Time // zero while still active
+}
+
+// logActivationLocked records a new activation. Caller holds o.mu.
+func (o *Orchestrator) logActivationLocked(sessionID string, active *ActiveSkill) {
+	if active == nil || active.Skill == nil {
+		return
+	}
+	if o.activationLog == nil {
+		o.activationLog = make(map[string][]activationRecord)
+	}
+	recs := append(o.activationLog[sessionID], activationRecord{active: active})
+	if len(recs) > maxActivationLogPerSession {
+		kept := recs[:0]
+		drop := len(recs) - maxActivationLogPerSession
+		for _, r := range recs {
+			if drop > 0 && !r.endedAt.IsZero() {
+				drop--
+				continue
+			}
+			kept = append(kept, r)
+		}
+		recs = kept
+	}
+	o.activationLog[sessionID] = recs
+}
+
+// endActivationLocked closes the open record for skillName. Caller holds o.mu.
+func (o *Orchestrator) endActivationLocked(sessionID, skillName string, at time.Time) {
+	recs := o.activationLog[sessionID]
+	for i := len(recs) - 1; i >= 0; i-- {
+		if recs[i].endedAt.IsZero() && recs[i].active.Skill.Name == skillName {
+			recs[i].endedAt = at
+			return
+		}
+	}
 }
 
 // FormatActiveSkillsForLLM combines all active skill prompts within the given
@@ -675,6 +765,7 @@ func (o *Orchestrator) CleanupSession(sessionID string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	delete(o.activeSessions, sessionID)
+	delete(o.activationLog, sessionID)
 }
 
 // GetLibrary returns the underlying skill library.

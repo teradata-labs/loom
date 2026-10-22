@@ -1718,6 +1718,26 @@ func (r *Registry) GetConfig(name string) *loomv1.AgentConfig {
 	return r.configs[name]
 }
 
+// GraphMemoryEnabledFor reports whether graph memory is enabled for the agent
+// identified by GUID or name. Mirrors the server's subsystem wiring rule: on
+// unless the YAML explicitly sets memory.graph_memory.enabled: false. Unknown
+// agents (not registered, or ephemeral) resolve to the default-on behavior.
+func (r *Registry) GraphMemoryEnabledFor(nameOrID string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	name := nameOrID
+	if info, ok := r.agentInfo[nameOrID]; ok {
+		name = info.Name
+	}
+	cfg, ok := r.configs[name]
+	if !ok || cfg == nil {
+		return true
+	}
+	gm := cfg.GetMemory().GetGraphMemory()
+	return gm == nil || gm.Enabled
+}
+
 // DeleteAgent removes an agent by name or GUID
 func (r *Registry) DeleteAgent(ctx context.Context, nameOrID string, force bool) error {
 	r.mu.Lock()

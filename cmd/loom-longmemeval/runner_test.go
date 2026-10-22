@@ -114,11 +114,15 @@ func TestOccurredAtEnabled(t *testing.T) {
 	}
 }
 
-func TestIsTimeOverrideRejection(t *testing.T) {
+// A refused override must abort the run, whichever override it is: it
+// invalidates the benchmark rather than degrading it, and a run that writes
+// error rows and exits zero hands automation a fake result.
+func TestOverrideRejection(t *testing.T) {
 	tests := []struct {
-		name   string
-		result EntryResult
-		want   bool
+		name     string
+		result   EntryResult
+		want     bool
+		wantFlag string
 	}{
 		{
 			name: "failed precondition mentioning occurred_at",
@@ -126,12 +130,30 @@ func TestIsTimeOverrideRejection(t *testing.T) {
 				Error:    "ingest session 0: rpc error: code = FailedPrecondition desc = occurred_at override is disabled on this server",
 				grpcCode: codes.FailedPrecondition,
 			},
-			want: true,
+			want:     true,
+			wantFlag: "allow_time_override",
 		},
 		{
-			name:   "flag-name substring without a status code",
-			result: EntryResult{Error: "server refused: enable allow_time_override"},
-			want:   true,
+			name:     "flag-name substring without a status code",
+			result:   EntryResult{Error: "server refused: enable allow_time_override"},
+			want:     true,
+			wantFlag: "allow_time_override",
+		},
+		{
+			// The MAJOR-001 case: conversation mode against a default server.
+			name: "failed precondition mentioning replay_assistant_message",
+			result: EntryResult{
+				Error:    "replay turn 3: rpc error: code = FailedPrecondition desc = replay_assistant_message override is disabled on this server (set server.allow_assistant_override: true ...)",
+				grpcCode: codes.FailedPrecondition,
+			},
+			want:     true,
+			wantFlag: "allow_assistant_override",
+		},
+		{
+			name:     "assistant flag-name substring without a status code",
+			result:   EntryResult{Error: "server refused: enable allow_assistant_override"},
+			want:     true,
+			wantFlag: "allow_assistant_override",
 		},
 		{
 			name: "unrelated failed precondition",
@@ -153,7 +175,14 @@ func TestIsTimeOverrideRejection(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, isTimeOverrideRejection(tt.result))
+			msg, got := overrideRejection(tt.result)
+			assert.Equal(t, tt.want, got)
+			if tt.want {
+				assert.Contains(t, msg, tt.wantFlag,
+					"the abort message must name the flag the operator has to change")
+			} else {
+				assert.Empty(t, msg)
+			}
 		})
 	}
 }
@@ -167,6 +196,12 @@ type fakeLoomClient struct {
 	weaveReqs          []*loomv1.WeaveRequest
 	weaveErr           error
 	deleteAgentCtxErrs []error
+
+	// ignoreReplay simulates a server that predates replay_assistant_message
+	// (e.g. released v1.4.0): it drops the unknown field and generates, so a
+	// replay request succeeds with generated text instead of the scripted
+	// turn.
+	ignoreReplay bool
 }
 
 func (f *fakeLoomClient) CreateSession(_ context.Context, _ *loomv1.CreateSessionRequest, _ ...grpc.CallOption) (*loomv1.Session, error) {
@@ -194,6 +229,10 @@ func (f *fakeLoomClient) Weave(_ context.Context, in *loomv1.WeaveRequest, _ ...
 	f.weaveReqs = append(f.weaveReqs, in)
 	if f.weaveErr != nil {
 		return nil, f.weaveErr
+	}
+	// A replay-capable server answers a replay turn with the scripted text.
+	if msg := in.GetReplayAssistantMessage(); msg != "" && !f.ignoreReplay {
+		return &loomv1.WeaveResponse{Text: msg}, nil
 	}
 	return &loomv1.WeaveResponse{Text: "answer"}, nil
 }
@@ -283,4 +322,139 @@ func TestRunAbortsOnTimeOverrideRejection(t *testing.T) {
 	for i, ctxErr := range fake.deleteAgentCtxErrs {
 		assert.NoError(t, ctxErr, "temp-agent cleanup %d ran on a cancelled context", i)
 	}
+}
+
+// weaveErrClient fails every Weave with a fixed status. Only Weave is
+// called, so the embedded nil interface is never dereferenced.
+type weaveErrClient struct {
+	loomv1.LoomServiceClient
+	err error
+}
+
+func (c *weaveErrClient) Weave(_ context.Context, _ *loomv1.WeaveRequest, _ ...grpc.CallOption) (*loomv1.WeaveResponse, error) {
+	return nil, c.err
+}
+
+// The other half of MAJOR-001: replayTurn dropped the gRPC status, so a
+// server refusing the replay override was indistinguishable from a transient
+// per-entry failure and the run never aborted. This walks the whole path —
+// the refusal a default server actually returns, through replayTurn, into
+// the fail-fast check — because either half alone silently restores the bug.
+func TestReplayTurn_RecordsRejectionSoTheRunAborts(t *testing.T) {
+	r := &Runner{
+		client: &weaveErrClient{err: status.Error(codes.FailedPrecondition,
+			"replay_assistant_message override is disabled on this server "+
+				"(set server.allow_assistant_override: true to accept generation-free conversation replay)")},
+	}
+
+	var result EntryResult
+	err := r.replayTurn(context.Background(), "sess-1", "user text", "assistant text", "", time.Time{}, &result)
+	require.Error(t, err)
+	assert.Equal(t, codes.FailedPrecondition, result.grpcCode,
+		"replayTurn must record the status, or the rejection looks transient")
+
+	// What Runner.Run stores before consulting the fail-fast check.
+	result.Error = err.Error()
+	msg, rejected := overrideRejection(result)
+	assert.True(t, rejected, "a refused replay override must abort the run, not write error rows and exit zero")
+	assert.Contains(t, msg, "allow_assistant_override")
+}
+
+// A successful replay must not mark the entry as rejected.
+func TestReplayTurn_SuccessLeavesNoRejection(t *testing.T) {
+	r := &Runner{client: &weaveOKClient{}}
+
+	var result EntryResult
+	require.NoError(t, r.replayTurn(context.Background(), "sess-1", "u", "a", "", time.Time{}, &result))
+	assert.Equal(t, codes.OK, result.grpcCode)
+
+	_, rejected := overrideRejection(result)
+	assert.False(t, rejected)
+}
+
+// weaveOKClient succeeds every Weave the way a replay-capable server does:
+// a replay turn is answered with the scripted assistant text verbatim.
+type weaveOKClient struct {
+	loomv1.LoomServiceClient
+}
+
+func (c *weaveOKClient) Weave(_ context.Context, in *loomv1.WeaveRequest, _ ...grpc.CallOption) (*loomv1.WeaveResponse, error) {
+	return &loomv1.WeaveResponse{Text: in.GetReplayAssistantMessage()}, nil
+}
+
+// A server that predates replay_assistant_message (released v1.4.0) does not
+// reject it: proto3 drops the unknown field and the turn generates. The Weave
+// succeeds, so only the response text shows the dataset's assistant turn was
+// replaced. replayTurn must flag that, and the fail-fast check must treat it
+// like a refused override.
+func TestReplayTurn_IgnoredReplayAbortsTheRun(t *testing.T) {
+	r := &Runner{client: &fakeLoomClient{ignoreReplay: true}}
+
+	var result EntryResult
+	err := r.replayTurn(context.Background(), "sess-1", "user text", "assistant text", "", time.Time{}, &result)
+	require.ErrorIs(t, err, errReplayIgnored)
+	assert.True(t, result.replayIgnored)
+	assert.Equal(t, codes.OK, result.grpcCode, "the Weave itself succeeded")
+
+	// What runConversationWith stores before Run consults the fail-fast check.
+	result.Error = "replay session 0 turn 0: " + err.Error()
+	msg, rejected := overrideRejection(result)
+	assert.True(t, rejected, "an ignored replay override must abort the run, not exit zero with generated turns")
+	assert.Contains(t, msg, "replay_assistant_message")
+	assert.Contains(t, msg, "upgrade looms")
+}
+
+// End to end through Runner.Run: --mode conversation against a server that
+// ignores replay_assistant_message must abort with a non-nil error after the
+// first replay turn, instead of exiting zero with a generative-replay result.
+func TestRunAbortsWhenServerIgnoresReplay(t *testing.T) {
+	fake := &fakeLoomClient{ignoreReplay: true}
+	r := &Runner{
+		config: RunConfig{Mode: ModeConversation, Concurrency: 1},
+		logger: zap.NewNop(),
+		client: fake,
+	}
+
+	entry := testEntry("q1")
+	entry.HaystackSessions = [][]Turn{{
+		{Role: "user", Content: "I went on a trip today."},
+		{Role: "assistant", Content: "That sounds fun."},
+		{Role: "user", Content: "It was to Lisbon."},
+		{Role: "assistant", Content: "Lisbon is lovely."},
+	}}
+	entries := []Entry{entry, testEntry("q2"), testEntry("q3")}
+	entries[1].HaystackSessions = entry.HaystackSessions
+	entries[2].HaystackSessions = entry.HaystackSessions
+	resultCh := make(chan EntryResult, len(entries))
+
+	err := r.Run(context.Background(), entries, resultCh)
+	require.Error(t, err, "a run whose replay turns were generated must not exit zero")
+	assert.Contains(t, err.Error(), "ignored replay_assistant_message")
+
+	// Fail fast: the first entry stops at its first replay turn (no second
+	// replay, no question turn), and the abort keeps later entries from
+	// starting. Concurrency 1 makes the count deterministic.
+	assert.Len(t, fake.snapshotWeaveReqs(), 1)
+}
+
+// The same run against a replay-capable server completes cleanly — the echo
+// check passes when the scripted text comes back verbatim.
+func TestRunConversationSucceedsWhenServerHonorsReplay(t *testing.T) {
+	fake := &fakeLoomClient{}
+	r := &Runner{
+		config: RunConfig{Mode: ModeConversation, Concurrency: 1},
+		logger: zap.NewNop(),
+		client: fake,
+	}
+	entry := testEntry("q1")
+	entry.HaystackSessions = [][]Turn{{
+		{Role: "user", Content: "I went on a trip today."},
+		{Role: "assistant", Content: "That sounds fun."},
+	}}
+	resultCh := make(chan EntryResult, 1)
+
+	require.NoError(t, r.Run(context.Background(), []Entry{entry}, resultCh))
+	res := <-resultCh
+	assert.Empty(t, res.Error)
+	assert.Equal(t, "answer", res.Hypothesis)
 }

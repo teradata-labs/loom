@@ -49,8 +49,11 @@ type Manager struct {
 	store       TaskStore
 	bus         *communication.MessageBus // optional, nil = no events
 	graphMemory memory.GraphMemoryStore   // optional, nil = no memory integration
-	tracer      observability.Tracer
-	logger      *zap.Logger
+	// memoryPolicy reports whether task-completion memories may be recorded
+	// for the task's owner agent. nil = allowed whenever graphMemory is set.
+	memoryPolicy func(agentID string) bool
+	tracer       observability.Tracer
+	logger       *zap.Logger
 }
 
 // NewManager creates a new task manager.
@@ -79,6 +82,28 @@ func (m *Manager) SetBus(bus *communication.MessageBus) {
 // when tasks are completed. Supports two-phase initialization.
 func (m *Manager) SetGraphMemory(store memory.GraphMemoryStore) {
 	m.graphMemory = store
+}
+
+// SetGraphMemoryPolicy installs the per-agent gate consulted before a
+// task-completion memory is written into the owner agent's partition. The
+// task manager is server-wide while graph memory is opted in/out per agent
+// in YAML; without this gate a `graph_memory.enabled: false` agent still
+// accrues an "experience" memory on every closed task.
+func (m *Manager) SetGraphMemoryPolicy(allowed func(agentID string) bool) {
+	m.memoryPolicy = allowed
+}
+
+// MemoryRecordingAllowed reports whether task-completion memories may be
+// recorded for agentID: a graph memory store must be wired and the installed
+// policy (if any) must permit it.
+func (m *Manager) MemoryRecordingAllowed(agentID string) bool {
+	if m.graphMemory == nil {
+		return false
+	}
+	if m.memoryPolicy == nil {
+		return true
+	}
+	return m.memoryPolicy(agentID)
 }
 
 // =============================================================================
@@ -835,7 +860,7 @@ func (m *Manager) tryUnblockDependents(ctx context.Context, blockerTaskID string
 // rememberTaskCompletion creates a graph memory entry when a task is completed.
 // Links the memory to any entities referenced by the task. Best-effort.
 func (m *Manager) rememberTaskCompletion(ctx context.Context, t *Task) {
-	if m.graphMemory == nil || t == nil {
+	if t == nil || !m.MemoryRecordingAllowed(t.OwnerAgentID) {
 		return
 	}
 
@@ -886,7 +911,7 @@ func (m *Manager) rememberTaskCompletion(ctx context.Context, t *Task) {
 // and last-accessed timestamp (which the salience ranking function uses).
 // Best-effort, never blocks the caller, zero LLM calls.
 func (m *Manager) boostRelatedEntitySalience(t *Task) {
-	if m.graphMemory == nil || t == nil {
+	if t == nil || !m.MemoryRecordingAllowed(t.OwnerAgentID) {
 		return
 	}
 

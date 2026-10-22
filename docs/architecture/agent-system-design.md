@@ -918,9 +918,9 @@ func AddMessage(msg):
 ```
 
 **Compression Profiles** (defined in `pkg/agent/compression_profiles.go`):
-- `data_intensive`: warning=50%, critical=70%, batches=2/4/6
-- `balanced` (default): warning=60%, critical=75%, batches=3/5/7
-- `conversational`: warning=70%, critical=85%, batches=4/6/8
+- `data_intensive`: warning=45%, critical=80%, batches=2/4/6
+- `balanced` (default): warning=60%, critical=90%, batches=3/5/7
+- `conversational`: warning=70%, critical=92%, batches=4/6/8
 
 **Eviction Frequency**: Depends on profile and message size; adaptive rather than fixed.
 
