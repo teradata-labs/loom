@@ -125,6 +125,70 @@ func TestAdmissionResult_ApprovedAndGrants(t *testing.T) {
 	assert.Nil(t, plain.Grants)
 }
 
+func TestAdmit_GrantsOnlyWhenApproved(t *testing.T) {
+	approve := resolveTo{decision: Decision{Kind: Allow}}
+	reject := resolveTo{decision: Decision{Kind: Deny, Reason: "no"}}
+	allowWithGrant := fixedHook{decision: Decision{Kind: Allow, Grant: "ignored"}}
+
+	for _, tc := range []struct {
+		name     string
+		hooks    []Hook
+		resolver AskResolver
+		grant    *AskGrant
+		kind     DecisionKind
+		approved bool
+		want     []any
+	}{
+		{name: "resolver rejects", hooks: []Hook{askWith("g1")}, resolver: reject, kind: Deny},
+		{name: "AskGrant rejects", hooks: []Hook{askWith("g1")}, resolver: approve, grant: &AskGrant{Approved: false}, kind: Deny},
+		{name: "Deny outranks the Ask", hooks: []Hook{askWith("g1"), denyToolNamed("t", "blocked")}, resolver: approve, kind: Deny},
+		{name: "a Grant on an Allow is ignored", hooks: []Hook{allowWithGrant}, resolver: approve, kind: Allow},
+		{name: "a Grant on an Allow is ignored beside an approved Ask", hooks: []Hook{allowWithGrant, askWith("g1")}, resolver: approve, kind: Allow, approved: true, want: []any{"g1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			if tc.grant != nil {
+				ctx = ContextWithAskGrant(ctx, tc.grant)
+			}
+			res := NewChain(tc.hooks, nil, tc.resolver).Admit(AdmissionRequest{Ctx: ctx, ToolName: "t"})
+			assert.Equal(t, tc.kind, res.Decision.Kind)
+			assert.Equal(t, tc.approved, res.Approved)
+			assert.Equal(t, tc.want, res.Grants)
+		})
+	}
+}
+
+type resolverFunc func(AdmissionRequest, Decision) Decision
+
+func (f resolverFunc) Resolve(req AdmissionRequest, d Decision) Decision { return f(req, d) }
+
+func TestAdmit_FirstAskReasonWins(t *testing.T) {
+	first := fixedHook{decision: Decision{Kind: Ask, Reason: "first", Grant: "g1"}}
+	second := fixedHook{decision: Decision{Kind: Ask, Reason: "second", Grant: "g2"}}
+	var seen Decision
+	resolver := resolverFunc(func(_ AdmissionRequest, d Decision) Decision {
+		seen = d
+		return Decision{Kind: Allow}
+	})
+	res := NewChain([]Hook{first, second}, nil, resolver).Admit(AdmissionRequest{Ctx: context.Background(), ToolName: "t"})
+	assert.Equal(t, "first", seen.Reason)
+	assert.Equal(t, []any{"g1", "g2"}, res.Grants)
+}
+
+func TestAdmissionGrantsContext_CopiesSlices(t *testing.T) {
+	in := []any{"a", "b"}
+	ctx := ContextWithAdmissionGrants(context.Background(), in)
+	in[0] = "mutated"
+	assert.Equal(t, []any{"a", "b"}, AdmissionGrantsFromContext(ctx), "mutating the input must not reach the context")
+
+	out := AdmissionGrantsFromContext(ctx)
+	out[1] = "mutated"
+	assert.Equal(t, []any{"a", "b"}, AdmissionGrantsFromContext(ctx), "mutating a returned slice must not reach the context")
+
+	assert.Nil(t, AdmissionGrantsFromContext(ContextWithAdmissionGrants(ctx, nil)), "nil clears grants")
+	assert.Nil(t, AdmissionGrantsFromContext(ContextWithAdmissionGrants(ctx, []any{})), "empty clears grants")
+}
+
 // Preflight decides without resolving, so it never reports an approval.
 func TestPreflight_NeverApproves(t *testing.T) {
 	chain := NewChain([]Hook{askWith("g1")}, nil, resolveTo{decision: Decision{Kind: Allow}})

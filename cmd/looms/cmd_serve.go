@@ -1072,6 +1072,13 @@ func exportConfigToEnv(cfg *Config) {
 		// #nosec G104 -- os.Setenv rarely fails, and we can continue without it
 		_ = os.Setenv("SERPAPI_KEY", cfg.Tools.WebSearch.SerpAPIKey)
 	}
+	// Safe mode for the file tools. Only set when asked: the env var is also
+	// the direct switch for a library embedding, and writing "false" here
+	// would override a caller that set it before start.
+	if cfg.Tools.Permissions.SafeFiles {
+		// #nosec G104 -- os.Setenv rarely fails, and we can continue without it
+		_ = os.Setenv("LOOM_FILE_SAFE_MODE", "true")
+	}
 }
 
 // buildServerAuthConfig converts the viper auth config into the server package's

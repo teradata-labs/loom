@@ -44,7 +44,9 @@ type Decision struct {
 	// matched Ask's Grant to the tool body (AdmissionGrantsFromContext), so a
 	// tool that enforces policy at run time can honor exactly what was
 	// approved. A Grant must be immutable once returned; it may be shared by
-	// concurrent readers.
+	// concurrent readers. Every asking hook's Grant survives the fold, but the
+	// combined Decision keeps only the first asking hook's Reason, and that is
+	// the reason recorded on the approval request a person decides.
 	Grant any
 }
 
