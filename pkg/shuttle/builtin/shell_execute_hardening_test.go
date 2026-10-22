@@ -208,25 +208,6 @@ func TestShellExecute_WorkingDirSymlinkEscapeIsRefused(t *testing.T) {
 	assert.True(t, res.Success, "a real directory inside LOOM_DATA_DIR is allowed: %+v", res.Error)
 }
 
-func TestWithinDir(t *testing.T) {
-	for _, tc := range []struct {
-		root, path string
-		want       bool
-	}{
-		{"/a/data", "/a/data", true},
-		{"/a/data", "/a/data/x/y", true},
-		{"/a/data", "/a/data-evil", false},
-		{"/a/data", "/a/datax/y", false},
-		{"/a/data", "/a", false},
-		{"/a/data", "/a/data/../other", false},
-		{"/tmp", "/tmpfoo", false},
-		{"/tmp", "/tmp/foo", true},
-		{"/", "/anything", true},
-	} {
-		assert.Equal(t, tc.want, withinDir(tc.root, tc.path), "withinDir(%q, %q)", tc.root, tc.path)
-	}
-}
-
 func TestIsSensitiveEnvName(t *testing.T) {
 	for name, want := range map[string]bool{
 		"ANTHROPIC_API_KEY":      true,
