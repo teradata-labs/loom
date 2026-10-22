@@ -901,15 +901,13 @@ func anthropicFallbackPricing(modelID string) (inputPerM, outputPerM float64, ma
 // cache-aware and authoritative — preferred over any local estimate.
 const providerCostHeader = "x-litellm-response-cost"
 
-// Cache-tier multipliers on the input rate, by rate-card family. Anthropic
-// bills a 5-minute cache write at 1.25x and a cache read at 0.10x. OpenAI bills
-// a cached input token at 0.5x (gpt-4o: $1.25 cached against $2.50) and has no
-// separate write bucket, so a cache-creation token is simply an input token.
+// Cache-tier multipliers on the input rate for the OpenAI rate card. OpenAI
+// bills a cached input token at 0.5x (gpt-4o: $1.25 cached against $2.50) and
+// has no separate write bucket, so a cache-creation token is simply an input
+// token. Claude's multipliers are per model and come from pkg/llm/catalog.
 const (
-	anthropicCacheWriteMultiplier = 1.25
-	anthropicCacheReadMultiplier  = 0.10
-	openAICacheWriteMultiplier    = 1.0
-	openAICacheReadMultiplier     = 0.5
+	openAICacheWriteMultiplier = 1.0
+	openAICacheReadMultiplier  = 0.5
 )
 
 // parseProviderCost reads the gateway's reported cost, if it sent one.
@@ -1039,7 +1037,11 @@ func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cache
 	// model id, so it still identifies a Claude that the catalog priced.
 	cacheReadMult, cacheWriteMult := openAICacheReadMultiplier, openAICacheWriteMultiplier
 	if _, _, isAnthropic := anthropicFallbackPricing(c.model); isAnthropic {
-		cacheReadMult, cacheWriteMult = anthropicCacheReadMultiplier, anthropicCacheWriteMultiplier
+		cacheReadMult, cacheWriteMult = catalog.ClaudeCacheReadMultiplier(c.model), catalog.ClaudeCacheWriteMultiplier
+		// prompt_tokens already includes the cached buckets, so it is the prompt length.
+		if in, out, long := catalog.ClaudeLongContextPricing(c.model, inputTokens); long {
+			inputCostPerM, outputCostPerM = in, out
+		}
 	}
 
 	uncached := inputTokens - cacheReadTokens - cacheCreationTokens

@@ -317,8 +317,8 @@ func TestClient_ConvertResponse(t *testing.T) {
 				assert.Equal(t, 50, resp.Usage.InputTokens)
 				assert.Equal(t, 100, resp.Usage.OutputTokens)
 				assert.Equal(t, 150, resp.Usage.TotalTokens)
-				// Cost: 50 * $3/1M + 100 * $15/1M = $0.00015 + $0.0015 = $0.00165
-				assert.InDelta(t, 0.00165, resp.Usage.CostUSD, 0.0001)
+				// Cost: (50 * $3/1M + 100 * $15/1M) x 1.1 regional = $0.001815
+				assert.InDelta(t, 0.001815, resp.Usage.CostUSD, 0.00001)
 			},
 		},
 		{
@@ -395,7 +395,7 @@ func TestClient_ConvertResponse(t *testing.T) {
 func TestClient_CalculateCost(t *testing.T) {
 	// Pricing arithmetic is exercised against a catalogued model; an empty
 	// modelID now reports zero by design (see the uncatalogued-model case).
-	client := &Client{modelID: "us.anthropic.claude-sonnet-5"}
+	client := &Client{modelID: "global.anthropic.claude-sonnet-5"}
 
 	tests := []struct {
 		name         string
@@ -445,11 +445,13 @@ func TestClient_CalculateCost_ModelPricing(t *testing.T) {
 	const tokens = 1_000_000 // use 1M tokens for easy mental math
 
 	tests := []struct {
-		name         string
-		modelID      string
-		inputTokens  int
-		outputTokens int
-		wantCost     float64
+		name                string
+		modelID             string
+		inputTokens         int
+		outputTokens        int
+		cacheReadTokens     int
+		cacheCreationTokens int
+		wantCost            float64
 	}{
 		// --- Opus 4.1 (most expensive) ---
 		{
@@ -465,7 +467,7 @@ func TestClient_CalculateCost_ModelPricing(t *testing.T) {
 			modelID:      "us.anthropic.claude-opus-4-5-20250929-v1:0",
 			inputTokens:  tokens,
 			outputTokens: tokens,
-			wantCost:     30.0, // $5 + $25
+			wantCost:     33.0, // ($5 + $25) x 1.1 regional
 		},
 		// --- Opus 4.6 (must NOT match 4.1 pricing) ---
 		{
@@ -473,7 +475,7 @@ func TestClient_CalculateCost_ModelPricing(t *testing.T) {
 			modelID:      "us.anthropic.claude-opus-4-6-20260301-v1:0",
 			inputTokens:  tokens,
 			outputTokens: tokens,
-			wantCost:     30.0, // $5 + $25
+			wantCost:     33.0, // ($5 + $25) x 1.1 regional
 		},
 		// --- Opus 4 bare (no sub-version) ---
 		{
@@ -489,7 +491,7 @@ func TestClient_CalculateCost_ModelPricing(t *testing.T) {
 			modelID:      "us.anthropic.claude-haiku-4-5-20250929-v1:0",
 			inputTokens:  tokens,
 			outputTokens: tokens,
-			wantCost:     6.0, // $1 + $5
+			wantCost:     6.6, // ($1 + $5) x 1.1 regional
 		},
 		// --- Sonnet 4 ---
 		{
@@ -497,7 +499,7 @@ func TestClient_CalculateCost_ModelPricing(t *testing.T) {
 			modelID:      "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
 			inputTokens:  tokens,
 			outputTokens: tokens,
-			wantCost:     18.0, // $3 + $15
+			wantCost:     19.8, // ($3 + $15) x 1.1 regional
 		},
 		// --- Claude 5 family ---
 		{
@@ -505,7 +507,7 @@ func TestClient_CalculateCost_ModelPricing(t *testing.T) {
 			modelID:      "us.anthropic.claude-fable-5",
 			inputTokens:  tokens,
 			outputTokens: tokens,
-			wantCost:     60.0, // $10 + $50
+			wantCost:     66.0, // ($10 + $50) x 1.1 regional
 		},
 		{
 			name:         "fable 5.1 uncataloged profile",
@@ -519,14 +521,14 @@ func TestClient_CalculateCost_ModelPricing(t *testing.T) {
 			modelID:      "us.anthropic.claude-opus-5-5",
 			inputTokens:  tokens,
 			outputTokens: tokens,
-			wantCost:     24.0, // $4 + $20
+			wantCost:     26.4, // ($4 + $20) x 1.1 regional
 		},
 		{
 			name:         "opus 5 cross-region",
 			modelID:      "us.anthropic.claude-opus-5",
 			inputTokens:  tokens,
 			outputTokens: tokens,
-			wantCost:     30.0, // $5 + $25
+			wantCost:     33.0, // ($5 + $25) x 1.1 regional
 		},
 		{
 			name:         "sonnet 5 global",
@@ -536,6 +538,50 @@ func TestClient_CalculateCost_ModelPricing(t *testing.T) {
 			wantCost:     12.0, // $2 + $10
 		},
 		// --- Uncatalogued model reports no cost rather than a guessed one ---
+		// --- Paired global/regional controls (10% regional premium, 4.5+) ---
+		{
+			name:         "fable 5 global (control for the regional row)",
+			modelID:      "global.anthropic.claude-fable-5",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     60.0,
+		},
+		{
+			name:         "opus 5.5 global (control for the regional row)",
+			modelID:      "global.anthropic.claude-opus-5-5",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     24.0,
+		},
+		{
+			name:         "opus 4.1 regional carries no premium (pre-4.5)",
+			modelID:      "us.anthropic.claude-opus-4-1-20250805-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     90.0,
+		},
+		// --- Cache reads are priced per model ---
+		{
+			name:            "fable 5.1 global cache read at 0.025x",
+			modelID:         "global.anthropic.claude-fable-5-1",
+			cacheReadTokens: tokens,
+			wantCost:        0.25,
+		},
+		{
+			name:            "opus 5.5 global cache read at 0.05x",
+			modelID:         "global.anthropic.claude-opus-5-5",
+			cacheReadTokens: tokens,
+			wantCost:        0.20,
+		},
+		{
+			name:                "opus 5.5 regional premium covers every bucket",
+			modelID:             "us.anthropic.claude-opus-5-5",
+			inputTokens:         tokens,
+			outputTokens:        tokens,
+			cacheReadTokens:     tokens,
+			cacheCreationTokens: tokens,
+			wantCost:            32.12, // ($4 + $20 + $5 write + $0.20 read) x 1.1
+		},
 		{
 			name:         "uncatalogued model reports zero, never an invented rate",
 			modelID:      "us.anthropic.claude-unknown-9-20260101-v1:0",
@@ -548,7 +594,7 @@ func TestClient_CalculateCost_ModelPricing(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client := &Client{modelID: tt.modelID}
-			got := client.calculateCost(tt.inputTokens, tt.outputTokens, 0, 0)
+			got := client.calculateCost(tt.inputTokens, tt.outputTokens, tt.cacheReadTokens, tt.cacheCreationTokens)
 			assert.InDelta(t, tt.wantCost, got, 0.001,
 				"model=%s: expected cost $%.2f, got $%.2f", tt.modelID, tt.wantCost, got)
 		})
@@ -575,20 +621,20 @@ func TestSDKClient_CalculateCost_ModelPricing(t *testing.T) {
 			modelID:      "us.anthropic.claude-sonnet-5",
 			inputTokens:  tokens,
 			outputTokens: tokens,
-			wantCost:     12.0, // $2 + $10
+			wantCost:     13.2, // ($2 + $10) x 1.1 regional
 		},
 		{
 			name:         "opus 5.5 no cache",
 			modelID:      "us.anthropic.claude-opus-5-5",
 			inputTokens:  tokens,
 			outputTokens: tokens,
-			wantCost:     24.0, // $4 + $20
+			wantCost:     26.4, // ($4 + $20) x 1.1 regional
 		},
 		{
 			name:            "fable 5 cache read",
 			modelID:         "us.anthropic.claude-fable-5",
 			cacheReadTokens: tokens,
-			wantCost:        1.0, // $10 * 0.10
+			wantCost:        1.1, // $10 * 0.10 x 1.1 regional
 		},
 		// --- Opus 4.1 (most expensive) ---
 		{
@@ -604,7 +650,7 @@ func TestSDKClient_CalculateCost_ModelPricing(t *testing.T) {
 			modelID:      "us.anthropic.claude-opus-4-5-20250929-v1:0",
 			inputTokens:  tokens,
 			outputTokens: tokens,
-			wantCost:     30.0, // $5 + $25
+			wantCost:     33.0, // ($5 + $25) x 1.1 regional
 		},
 		// --- Opus 4.6 (must NOT match 4.1 pricing) ---
 		{
@@ -612,7 +658,7 @@ func TestSDKClient_CalculateCost_ModelPricing(t *testing.T) {
 			modelID:      "us.anthropic.claude-opus-4-6-20260301-v1:0",
 			inputTokens:  tokens,
 			outputTokens: tokens,
-			wantCost:     30.0, // $5 + $25
+			wantCost:     33.0, // ($5 + $25) x 1.1 regional
 		},
 		// --- Haiku 4 ---
 		{
@@ -620,7 +666,7 @@ func TestSDKClient_CalculateCost_ModelPricing(t *testing.T) {
 			modelID:      "us.anthropic.claude-haiku-4-5-20250929-v1:0",
 			inputTokens:  tokens,
 			outputTokens: tokens,
-			wantCost:     6.0, // $1 + $5
+			wantCost:     6.6, // ($1 + $5) x 1.1 regional
 		},
 		// --- Sonnet 4 ---
 		{
@@ -628,7 +674,7 @@ func TestSDKClient_CalculateCost_ModelPricing(t *testing.T) {
 			modelID:      "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
 			inputTokens:  tokens,
 			outputTokens: tokens,
-			wantCost:     18.0, // $3 + $15
+			wantCost:     19.8, // ($3 + $15) x 1.1 regional
 		},
 		// --- Cache pricing with Sonnet ---
 		{
@@ -641,7 +687,7 @@ func TestSDKClient_CalculateCost_ModelPricing(t *testing.T) {
 			// base: $3 + $15 = $18
 			// cache write: 200K * $3 * 1.25 / 1M = $0.75
 			// cache read:  500K * $3 * 0.10 / 1M = $0.15
-			wantCost: 18.90,
+			wantCost: 20.79,
 		},
 		// --- Cache pricing with Opus 4.5 ---
 		{
@@ -654,9 +700,53 @@ func TestSDKClient_CalculateCost_ModelPricing(t *testing.T) {
 			// base: $5 + $25 = $30
 			// cache write: 200K * $5 * 1.25 / 1M = $1.25
 			// cache read:  500K * $5 * 0.10 / 1M = $0.25
-			wantCost: 31.50,
+			wantCost: 34.65,
 		},
 		// --- Uncatalogued model reports no cost rather than a guessed one ---
+		// --- Paired global/regional controls (10% regional premium, 4.5+) ---
+		{
+			name:         "fable 5 global (control for the regional row)",
+			modelID:      "global.anthropic.claude-fable-5",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     60.0,
+		},
+		{
+			name:         "opus 5.5 global (control for the regional row)",
+			modelID:      "global.anthropic.claude-opus-5-5",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     24.0,
+		},
+		{
+			name:         "opus 4.1 regional carries no premium (pre-4.5) [sdk]",
+			modelID:      "us.anthropic.claude-opus-4-1-20250805-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     90.0,
+		},
+		// --- Cache reads are priced per model ---
+		{
+			name:            "fable 5.1 global cache read at 0.025x",
+			modelID:         "global.anthropic.claude-fable-5-1",
+			cacheReadTokens: tokens,
+			wantCost:        0.25,
+		},
+		{
+			name:            "opus 5.5 global cache read at 0.05x",
+			modelID:         "global.anthropic.claude-opus-5-5",
+			cacheReadTokens: tokens,
+			wantCost:        0.20,
+		},
+		{
+			name:                "opus 5.5 regional premium covers every bucket",
+			modelID:             "us.anthropic.claude-opus-5-5",
+			inputTokens:         tokens,
+			outputTokens:        tokens,
+			cacheReadTokens:     tokens,
+			cacheCreationTokens: tokens,
+			wantCost:            32.12, // ($4 + $20 + $5 write + $0.20 read) x 1.1
+		},
 		{
 			name:         "uncatalogued model reports zero, never an invented rate",
 			modelID:      "anthropic.claude-unknown-9-20260101-v1:0",

@@ -64,9 +64,44 @@ func TestGatewayProxiedFableUsesAnthropicRatesAndCacheTiers(t *testing.T) {
 	c := &Client{model: "coding-agent/claude-fable-5-1"}
 	const promptTokens, cacheRead, output = 1_000_000, 800_000, 10_000
 	got := c.calculateCost(promptTokens, output, cacheRead, 0)
-	want := (200_000*10.0 + 800_000*10.0*0.10 + output*50.0) / 1e6
+	// Fable 5.1 reads cache at 0.025x ($0.25/MTok), not the 0.10x of older models.
+	want := (200_000*10.0 + 800_000*10.0*0.025 + output*50.0) / 1e6
 	if math.Abs(got-want) > 1e-9 {
 		t.Fatalf("fable cost = %.6f, want %.6f", got, want)
+	}
+}
+
+// Cache-read rates follow the model: a million cached tokens cost $0.25 on
+// Fable 5.1, $0.20 on Opus 5.5, $0.10 on Sonnet 5.5 and $1.00 on Fable 5.
+func TestGatewayProxiedClaude5CacheReadRates(t *testing.T) {
+	for _, tc := range []struct {
+		id   string
+		want float64
+	}{
+		{"coding-agent/claude-fable-5-1", 0.25},
+		{"coding-agent/claude-opus-5-5", 0.20},
+		{"coding-agent/claude-sonnet-5-5", 0.10},
+		{"coding-agent/claude-fable-5", 1.00},
+	} {
+		c := &Client{model: tc.id}
+		got := c.calculateCost(1_000_000, 0, 1_000_000, 0)
+		if math.Abs(got-tc.want) > 1e-9 {
+			t.Fatalf("%s: 1M cache reads = $%.4f, want $%.4f", tc.id, got, tc.want)
+		}
+	}
+}
+
+// Haiku 5.5 bills its $0.50/$2.50 card once prompt_tokens (cache buckets
+// included) passes 100K, and $0.10/$0.50 at or below it.
+func TestGatewayProxiedHaiku55LongContextCard(t *testing.T) {
+	c := &Client{model: "coding-agent/claude-haiku-5-5"}
+	if got, want := c.calculateCost(100_000, 1_000, 0, 0), (100_000*0.10+1_000*0.50)/1e6; math.Abs(got-want) > 1e-12 {
+		t.Fatalf("100K prompt = %.8f, want %.8f", got, want)
+	}
+	got := c.calculateCost(150_000, 1_000, 100_000, 0)
+	want := (50_000*0.50 + 100_000*0.50*0.10 + 1_000*2.50) / 1e6
+	if math.Abs(got-want) > 1e-12 {
+		t.Fatalf("150K prompt = %.8f, want %.8f", got, want)
 	}
 }
 

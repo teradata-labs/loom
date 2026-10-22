@@ -111,17 +111,31 @@ Expected output:
 
 ## Cost Estimation
 
-The `calculateCost` function in `pkg/llm/anthropic/client.go` selects per-million-token pricing
-by matching the model name to a family (`switch` on `strings.Contains(c.model, ...)`):
+`calculateCost` in `pkg/llm/anthropic/client.go` resolves per-million-token rates in this order:
+the model catalog (`catalog.LookupPricing`), then `catalog.ClaudeFamilyPricing` (substring match on
+the model family, shared with the Bedrock and OpenAI-compatible clients), then the Sonnet 4 rate
+($3/$15) for an id that is not recognisably Claude.
 
-| Model family match | Input $/1M | Output $/1M |
-|--------------------|------------|-------------|
-| `opus-4-1` (checked first) | $15.00 | $75.00 |
-| `opus-4` (4.5, 4.6, 4.7) | $5.00 | $25.00 |
-| `haiku` (4.5) | $1.00 | $5.00 |
-| default (Sonnet 4.x and any unrecognized model) | $3.00 | $15.00 |
+| Model family | Input $/1M | Output $/1M | Cache read |
+|--------------|------------|-------------|------------|
+| Fable 5.1 / Mythos 5.1 | $10.00 | $50.00 | 0.025x input ($0.25) |
+| Fable 5 / Mythos 5 | $10.00 | $50.00 | 0.10x input ($1.00) |
+| Opus 5.5 | $4.00 | $20.00 | 0.05x input ($0.20) |
+| Opus 5 | $5.00 | $25.00 | 0.10x input |
+| Sonnet 5.5 | $2.00 | $10.00 | 0.05x input ($0.10) |
+| Sonnet 5 | $2.00 | $10.00 | 0.10x input |
+| Haiku 5.5 (prompt ≤ 100K tokens) | $0.10 | $0.50 | 0.10x input |
+| Haiku 5.5 (prompt > 100K tokens) | $0.50 | $2.50 | 0.10x input |
+| Opus 4.5 – 4.8 | $5.00 | $25.00 | 0.10x input |
+| Opus 4.1 | $15.00 | $75.00 | 0.10x input |
+| Haiku 4.5 | $1.00 | $5.00 | 0.10x input |
+| Sonnet 4.x | $3.00 | $15.00 | 0.10x input |
 
-Cache pricing is derived from the input price: cache write = 1.25x input, cache read = 0.10x input.
+A cache write (5-minute TTL) bills at 1.25x the input rate on every model. Cache-read multipliers
+come from `catalog.ClaudeCacheReadMultiplier`. Haiku 5.5's prompt length counts every input token
+of the request, cache reads and writes included (`catalog.ClaudeLongContextPricing`). Rates are
+Anthropic's published first-party card; 1-hour cache writes (2x) and `inference_geo` pricing are
+not modelled.
 
 Example costs for Sonnet-tier models ($3.00/$15.00):
 - Small query (50 input, 100 output tokens): $0.00165
@@ -210,7 +224,7 @@ Anthropic's input-tokens-per-minute (ITPM) rate limit. Cost calculation is cache
 (see `calculateCost` in `pkg/llm/anthropic/client.go`):
 
 - **Cache creation (write)**: $3.75 per 1M tokens (1.25x input price)
-- **Cache read**: $0.30 per 1M tokens (0.10x input price)
+- **Cache read**: $0.30 per 1M tokens (0.10x input price) on Sonnet 4.x; the multiplier is per model (see [Cost Estimation](#cost-estimation))
 
 Token usage is reported in the `LLMCost` proto message via `cache_read_input_tokens` (field 7)
 and `cache_creation_input_tokens` (field 8).

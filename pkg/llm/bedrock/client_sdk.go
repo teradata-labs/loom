@@ -29,7 +29,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/smithy-go/auth/bearer"
 	"github.com/teradata-labs/loom/pkg/llm"
-	"github.com/teradata-labs/loom/pkg/llm/catalog"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"go.uber.org/zap"
@@ -629,30 +628,9 @@ func (c *SDKClient) convertResponseFromSDK(message *anthropic.Message, toolNameM
 	return llmResp
 }
 
-// calculateCost estimates cost for Bedrock Claude models.
-// Cache pricing: cache_creation at 1.25x input, cache_read at 0.10x input.
+// calculateCost estimates cost for Bedrock Claude models; see bedrockClaudeCost.
 func (c *SDKClient) calculateCost(inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int) float64 {
-	// Same resolution as Client.calculateCost: catalog first, then
-	// catalog.ClaudeFamilyPricing, then zero. This client used to skip the
-	// catalog entirely and carry its own substring switch.
-	inputPricePerMillion, outputPricePerMillion, ok := catalog.LookupPricing("bedrock", c.modelID)
-	if !ok {
-		inputPricePerMillion, outputPricePerMillion, ok = catalog.ClaudeFamilyPricing(c.modelID)
-	}
-	if !ok {
-		// No invented rate for an uncatalogued model — see the same guard in
-		// client.go.
-		zap.L().Warn("bedrock: model not in pricing catalog — cost reported as 0",
-			zap.String("model", c.modelID))
-		return 0
-	}
-
-	inputCost := float64(inputTokens) * inputPricePerMillion / 1_000_000
-	outputCost := float64(outputTokens) * outputPricePerMillion / 1_000_000
-	// Cache write at 1.25x input price, cache read at 0.10x input price
-	cacheWriteCost := float64(cacheCreationTokens) * inputPricePerMillion * 1.25 / 1_000_000
-	cacheReadCost := float64(cacheReadTokens) * inputPricePerMillion * 0.10 / 1_000_000
-	return inputCost + outputCost + cacheWriteCost + cacheReadCost
+	return bedrockClaudeCost(c.modelID, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens)
 }
 
 // ChatStream streams tokens as they're generated from Bedrock using the Anthropic SDK.

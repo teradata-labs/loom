@@ -598,7 +598,7 @@ func (c *Client) convertResponse(resp *MessagesResponse) *llmtypes.LLMResponse {
 
 // calculateCost estimates the cost in USD based on token usage.
 // Pricing varies by model family. Cache pricing derives from input price:
-// cache_write = 1.25x input, cache_read = 0.10x input.
+// cache_write = 1.25x input, cache_read = catalog.ClaudeCacheReadMultiplier.
 func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int) float64 {
 	// The catalog (pkg/llm/catalog) is the source of truth for the base
 	// per-million-token rates; catalog.ClaudeFamilyPricing prices any Claude id
@@ -610,11 +610,15 @@ func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cache
 	if !ok {
 		inputPricePerM, outputPricePerM = 3.0, 15.0
 	}
+	// Anthropic's three input buckets are additive; together they are the prompt.
+	if in, out, long := catalog.ClaudeLongContextPricing(c.model, inputTokens+cacheReadTokens+cacheCreationTokens); long {
+		inputPricePerM, outputPricePerM = in, out
+	}
 
 	inputCost := float64(inputTokens) * inputPricePerM / 1_000_000
 	outputCost := float64(outputTokens) * outputPricePerM / 1_000_000
-	cacheWriteCost := float64(cacheCreationTokens) * (inputPricePerM * 1.25) / 1_000_000
-	cacheReadCost := float64(cacheReadTokens) * (inputPricePerM * 0.10) / 1_000_000
+	cacheWriteCost := float64(cacheCreationTokens) * inputPricePerM * catalog.ClaudeCacheWriteMultiplier / 1_000_000
+	cacheReadCost := float64(cacheReadTokens) * inputPricePerM * catalog.ClaudeCacheReadMultiplier(c.model) / 1_000_000
 	return inputCost + outputCost + cacheWriteCost + cacheReadCost
 }
 
