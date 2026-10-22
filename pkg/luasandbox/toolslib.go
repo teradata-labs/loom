@@ -148,13 +148,22 @@ func (s *run) hostCall(t *rt.Thread, tool string, call func(context.Context) (*C
 	cancel()
 	ms := time.Since(start).Milliseconds()
 
+	// Every attempted call is recorded exactly once, whatever ends it.
+	record := func(ok bool, code, decision string) {
+		s.calls = append(s.calls, CallRecord{Tool: tool, OK: ok, Code: code, Millis: ms, Decision: decision})
+		s.progress(ProgressEvent{Kind: ProgressToolCompleted, Tool: tool, OK: ok, Code: code, Millis: ms, Seq: seq, Max: s.lim.MaxToolCalls})
+	}
+
 	// The run itself ending (cancelled, wall budget) wins over the call's
 	// own result.
 	if err := s.checkCancel(t); err != nil {
+		record(false, CodeRunEnded, "")
 		return rt.NilValue, nil, err
 	}
 	switch {
-	case timedOut && (hostErr != nil || res == nil || !res.OK):
+	case timedOut:
+		// A host that ignores cancellation and answers after the deadline
+		// does not turn a timed-out call into a success.
 		res = &CallResult{Error: &CallError{
 			Code:       CodeToolCallTimeout,
 			Message:    fmt.Sprintf("%s did not finish within %v", tool, s.lim.ToolCallTimeout),
@@ -162,9 +171,11 @@ func (s *run) hostCall(t *rt.Thread, tool string, call func(context.Context) (*C
 			Retryable:  true,
 		}}
 	case hostErr != nil:
+		record(false, CodeHostError, "")
 		s.noteDetail(fmt.Sprintf("host error calling %s: %v", tool, hostErr))
 		return rt.NilValue, nil, s.terminate(t, OutcomeHostError, "", "the host failed while calling "+tool)
 	case res == nil:
+		record(false, CodeHostError, "")
 		s.noteDetail("host returned a nil result for " + tool)
 		return rt.NilValue, nil, s.terminate(t, OutcomeHostError, "", "the host failed while calling "+tool)
 	}
@@ -173,9 +184,8 @@ func (s *run) hostCall(t *rt.Thread, tool string, call func(context.Context) (*C
 	if !res.OK {
 		code, _ = errorParts(res)
 	}
-	s.calls = append(s.calls, CallRecord{Tool: tool, OK: res.OK, Code: code, Millis: ms, Decision: res.Decision})
+	record(res.OK, code, res.Decision)
 	v := s.resultTable(t, res, ms)
-	s.progress(ProgressEvent{Kind: ProgressToolCompleted, Tool: tool, OK: res.OK, Code: code, Millis: ms, Seq: seq, Max: s.lim.MaxToolCalls})
 	return v, res, nil
 }
 
@@ -219,7 +229,7 @@ func (s *run) resultTable(t *rt.Thread, res *CallResult, ms int64) rt.Value {
 // A string within the limit that holds a JSON object or array is decoded into
 // data and kept verbatim in text. An oversized string is cut (head and tail
 // kept). An oversized structured value is replaced by a summary with a JSON
-// preview.
+// preview; its bytes is a lower bound, because measuring stops at the limit.
 func (s *run) prepareData(d any) (data any, text *string, size int, cut bool) {
 	limit := s.lim.MaxCallResultBytes
 	if str, ok := d.(string); ok {
@@ -236,25 +246,23 @@ func (s *run) prepareData(d any) (data any, text *string, size int, cut bool) {
 	if d == nil {
 		return nil, nil, 0, false
 	}
-	size, encoded := jsonSize(d)
-	if size < 0 {
-		d = sanitize(d, 0)
+	// Measuring stops once the limit is passed, so neither the Go work nor
+	// the memory spent on an oversized result depends on its real size.
+	m := measureJSON(d, limit, previewBytes)
+	if m.over() {
+		return map[string]any{
+			"truncated": true,
+			"bytes":     m.n,
+			"preview":   string(trimToRuneEnd(m.out)),
+		}, nil, m.n, true
+	}
+	if m.flawed {
+		d = sanitize(d)
 		if str, ok := d.(string); ok {
 			return s.prepareData(str)
 		}
-		if size, encoded = jsonSize(d); size < 0 {
-			return s.prepareData(fmt.Sprintf("%v", d))
-		}
 	}
-	if size > limit {
-		preview := encoded[:min(previewBytes, len(encoded))]
-		return map[string]any{
-			"truncated": true,
-			"bytes":     size,
-			"preview":   string(trimToRuneEnd(preview)),
-		}, nil, size, true
-	}
-	return d, nil, size, false
+	return d, nil, m.n, false
 }
 
 // decodeJSONContainer decodes s when it is exactly one JSON object or array.

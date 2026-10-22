@@ -122,11 +122,12 @@ func TestTruncatedObjectsKeepSortedKeys(t *testing.T) {
 func TestNormalizeJSONFallbacks(t *testing.T) {
 	assert.Equal(t, map[string]any{"id": json.Number("1"), "name": "a"}, normalizeJSON(customRow{ID: 1, Name: "a"}))
 	assert.IsType(t, "", normalizeJSON(make(chan int)))
-	size, _ := jsonSize(make(chan int))
-	assert.Equal(t, -1, size)
-	size, raw := jsonSize(map[string]int{"a": 1})
-	assert.Equal(t, 7, size)
-	assert.Equal(t, `{"a":1}`, string(raw))
+	m := measureJSON(make(chan int), 1<<10, 1<<10)
+	assert.True(t, m.flawed)
+	m = measureJSON(map[string]int{"a": 1}, 1<<10, 1<<10)
+	assert.False(t, m.flawed)
+	assert.Equal(t, 7, m.n)
+	assert.Equal(t, `{"a":1}`, string(m.out))
 }
 
 func TestPrepareDataEdgeCases(t *testing.T) {

@@ -16,8 +16,8 @@ several) with control flow added.
 
 The engine is a thin, defensive layer over the pure-Go interpreter
 [`github.com/arnodel/golua`](https://github.com/arnodel/golua) v0.3.0 (Lua 5.4,
-Apache-2.0), vendored in `third_party/golua` with seven fixes that are proposed upstream
-(see "Vendored interpreter" below). Its job is to make an untrusted script safe to run in a shared process:
+Apache-2.0), vendored in `third_party/golua` with ten fixes: eight proposed upstream and two not yet
+proposed (see "Vendored interpreter" below). Its job is to make an untrusted script safe to run in a shared process:
 bounded in time, CPU, memory and tool calls, unable to crash or block the host, and
 unable to escape through the Lua standard library.
 
@@ -188,8 +188,9 @@ engine loads the base library per run. The `package` library is not loaded; `str
 Building and attacking the engine (an independent adversarial review, every finding
 reproduced in a separate process) turned up six defects in golua v0.3.0 that an embedder
 cannot fix safely from outside. A seventh came from CodeQL, once the vendored source was
-inside the repository. They are fixed in `third_party/golua` and proposed
-upstream; when upstream releases them, the directory can be replaced by the module again.
+inside the repository, and an eighth from `go vet`. Review of the engine found two more
+(the last two rows). All are fixed in `third_party/golua`; the first eight are proposed
+upstream. When upstream releases them, the directory can be replaced by the module again.
 
 | Defect in v0.3.0 (measured) | Fix | Upstream PR |
 |---|---|---|
@@ -200,6 +201,9 @@ upstream; when upstream releases them, the directory can be replaced by the modu
 | Parser and compiler recursion unbounded | 400 syntax levels, matching the reference suite's limits test | [#134](https://github.com/arnodel/golua/pull/134) |
 | `string.format("%p")` without an argument panicked | returns an error | [#130](https://github.com/arnodel/golua/pull/130) |
 | 64-bit integers narrowed with a plain `int(n)`, which wraps where `int` is 32 bits (CodeQL reported 26 sites): on linux/386 integer literals were miscompiled, positions wrapped, and `select` and table growth panicked; on every platform `math.ldexp(2.0, math.maxinteger)` returned 0 | conversions saturate or compare in `int64`, `math.ldexp` bounds its exponent, and every narrowing has its bound check next to it; the Go tests and the reference suite pass on linux/386 | [#136](https://github.com/arnodel/golua/pull/136) |
+| The AST dump (`HWrite`) passed name structs to `%s` and used names as format strings; `go vet` refused to build the package | names rendered as text | [#138](https://github.com/arnodel/golua/pull/138) |
+| Named vararg tables (`function f(... xs)`) and `table.create` under a memory quota were not charged: 50,000 retained tables cost the same as 50,000 integers | the vararg table charges its header, array part and `n` slot; `table.create` charges its header | not yet proposed |
+| `string.match` with a start position past the end slices out of range inside the anchored matcher (a Go panic, an engine error for the run); the #136 saturation added `math.maxinteger` as a trigger | a start past the end returns no match, as in reference Lua | not yet proposed |
 
 Before the fixes were in place the engine carried workarounds: function-valued
 VM metamethods were refused, capacity planning assumed 12 times the budget, and
@@ -273,8 +277,8 @@ per-run budget is 128 MiB (about 384 MB worst case); a 4 GiB pod runs 4 at once.
 
 ## Upstream Status
 
-The seven fixes above are open as upstream PRs #130 to #136 from the `ilsiepotamus/golua`
-fork. Not proposed: `SetStopLevel(HardStop)` on a context that is not current kills it
+The first eight fixes above are open as upstream PRs #130 to #136 and #138 from the
+`ilsiepotamus/golua` fork. The last two are not yet in the fork or proposed upstream. Not proposed: `SetStopLevel(HardStop)` on a context that is not current kills it
 immediately, raising the termination from the current context, so a `pcall` swallows it
 and the stopped context is left killed and current. The engine does not use
 `SetStopLevel`. Upstream's coroutine data races (above) are also not addressed.
