@@ -15,12 +15,9 @@
 package luasandbox
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math"
-	"strings"
 	"time"
 
 	"github.com/teradata-labs/loom/third_party/golua/lib/base"
@@ -152,17 +149,12 @@ func (s *run) jsonDecode(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 		return nil, errors.New("json.decode: bad argument #1 (expected a string)")
 	}
 	t.RequireCPU(uint64(len(str)/8) + 1)
-	dec := json.NewDecoder(strings.NewReader(str))
-	dec.UseNumber()
-	var v any
-	if err := dec.Decode(&v); err != nil {
+	conv := &luaConv{t: t, null: rt.UserDataValue(s.null)}
+	v, err := conv.decodeJSON(str)
+	if err != nil {
 		return nil, fmt.Errorf("json.decode: invalid JSON: %v", err)
 	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return nil, errors.New("json.decode: invalid JSON: unexpected data after the first value")
-	}
-	conv := &luaConv{t: t, null: rt.UserDataValue(s.null)}
-	return c.PushingNext1(t.Runtime, conv.value(v, 0)), nil
+	return c.PushingNext1(t.Runtime, v), nil
 }
 
 // time.now() -> RFC 3339 UTC timestamp with milliseconds

@@ -92,6 +92,12 @@ func TestNewLuaRuntime(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, rt.runMem, pol.Limits.MemoryBytes, "runs use the lowered budget")
 	})
+	t.Run("a pod too small for two minimum runs disables run_lua", func(t *testing.T) {
+		rt, err := newLuaRuntime(base, 128<<20, t.TempDir())
+		require.NoError(t, err)
+		assert.Nil(t, rt, "no run slot fits within the memory plan")
+		assert.Nil(t, rt.registryOptions())
+	})
 	t.Run("limits are converted and capped", func(t *testing.T) {
 		c := base
 		c.Limits.WallSeconds = 30

@@ -85,6 +85,9 @@ running, and the model should make it directly.
 
 `Result.Metadata["lua.run"]` always carries the run record: outcome, limit, usage, the
 call ledger (`tool`, `ok`, `code`, `millis`, `decision`), output and truncation flags.
+A call refused before the engine ran (`INVALID_PARAMS`, `POLICY_DENIED`, `LUA_BUSY`, the
+saved-script lookup codes) has outcome `refused`, its code under `refusal`, zero usage and
+an empty ledger.
 The nested calls are not tool rows of their own; the `run_lua` call is one row.
 
 ## Saved scripts
@@ -230,7 +233,7 @@ otherwise ignored. A Go panic inside the interpreter or this package ends the ru
 | `Limit` | `cpu`, `memory`, `wall` or `tool_calls` when `Outcome` is `budget_exceeded` |
 | `Detail` | diagnostics for server logs only (panic values, stacks), at most 64 KiB. Never show it to a model or user. |
 | `Used` | `CPUTicks`, `MemoryBytes` (from the interpreter), `WallMillis` (`int64`) |
-| `Calls` | one `CallRecord{Tool, OK, Code, Millis, Decision}` per nested call |
+| `Calls` | one `CallRecord{Tool, OK, Code, Millis, Decision}` per attempted nested call, including calls that ended the run |
 | `Truncated` | `Output`, `Value`, `CallResults` flags |
 
 A caller deadline sooner than `Wall` reports as `cancelled`, not as a wall budget.
@@ -248,7 +251,10 @@ func ProcessMemoryLimit() uint64 // cgroup limit, else GOMEMLIMIT, else 1 GiB
 
 `DeriveCapacity` returns as many slots (2 to 16) as fit when every run sits at its
 worst-case peak, `PeakMemoryOverhead` (3) times its budget, within 40% of `memLimit`.
-When two slots do not fit, it lowers the per-run budget instead (floor 16 MiB).
+When two slots do not fit, it lowers the per-run budget instead, down to 16 MiB. When two
+16 MiB runs do not fit either (process memory under 240 MiB), it returns `0, 0`: the process
+is too small to run scripts within the 3× / 40% plan, and the host must not admit any run.
+`looms` then leaves `run_lua` off and logs a warning, even with `tools.lua.enabled: true`.
 
 | Process memory | Per-run budget asked | Slots | Per-run budget returned |
 |---|---|---|---|
@@ -257,6 +263,8 @@ When two slots do not fit, it lowers the per-run budget instead (floor 16 MiB).
 | 4 GiB | 256 MiB | 2 | 256 MiB |
 | 1 GiB | 64 MiB | 2 | 64 MiB |
 | 1 GiB | 128 MiB | 2 | about 68 MiB |
+| 240 MiB | 256 MiB | 2 | 16 MiB |
+| 128 MiB | any | 0 | 0 (no runs admitted) |
 
 ### `Policy`
 
@@ -325,7 +333,7 @@ Result table:
 | `data` | when the tool returned data | a string, or a table. A string holding exactly one JSON object or array is decoded. |
 | `text` | when the tool returned a string | the string as returned |
 | `error` | when `ok` is false | `{code, message, suggestion, retryable}` |
-| `truncated`, `bytes` | when the result exceeded `MaxCallResultBytes` | text keeps head and tail; structured data becomes `{truncated=true, bytes=N, preview=<2 KiB of JSON>}` |
+| `truncated`, `bytes` | when the result exceeded `MaxCallResultBytes` | text keeps head and tail, and `bytes` is its length; structured data becomes `{truncated=true, bytes=N, preview=<2 KiB of JSON>}`, where `N` is a lower bound because measuring stops at the limit |
 
 A call that runs past `ToolCallTimeout` returns `ok=false` with code
 `TOOL_CALL_TIMEOUT` and `retryable=true`.
@@ -397,7 +405,9 @@ Shared constants for hosts and scripts:
 | `CodePermissionDenied` | `permission_denied` | host: an admission hook denied the call |
 | `CodeResourcePending` | `RESOURCE_PENDING` | host: the tool started a long-running job |
 | `CodeExecutionFailed` | `execution_failed` | host or engine: the tool failed without a code |
-| `CodeToolCallTimeout` | `TOOL_CALL_TIMEOUT` | engine: `ToolCallTimeout` passed |
+| `CodeToolCallTimeout` | `TOOL_CALL_TIMEOUT` | engine: `ToolCallTimeout` passed, even when the host answers late with success |
+| `CodeHostError` | `HOST_ERROR` | engine, call ledger only: the host failed or returned no result; the run ends with `host_error` |
+| `CodeRunEnded` | `RUN_ENDED` | engine, call ledger only: the run was cancelled or ran out of wall time during the call |
 
 ---
 

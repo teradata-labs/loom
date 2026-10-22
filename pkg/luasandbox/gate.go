@@ -102,7 +102,10 @@ const (
 // concurrent runs (MinSlots to MaxSlots) as fit when every one sits at its
 // worst-case peak (PeakMemoryOverhead times its budget) and together they use
 // at most ScriptMemoryShare of memLimit. When even MinSlots runs do not fit at
-// perRunBytes, it lowers the per-run budget instead of the slot count.
+// perRunBytes, it lowers the per-run budget instead of the slot count, but
+// never below minDerivedMemory. When MinSlots runs do not fit even at
+// minDerivedMemory it returns 0 slots: the process is too small to run
+// scripts safely, and the caller must not admit any.
 func DeriveCapacity(memLimit, perRunBytes uint64) (slots int, runBytes uint64) {
 	if perRunBytes == 0 {
 		perRunBytes = DefaultLimits().MemoryBytes
@@ -113,7 +116,10 @@ func DeriveCapacity(memLimit, perRunBytes uint64) (slots int, runBytes uint64) {
 		return min(n, MaxSlots), perRunBytes
 	}
 	fit := uint64(budget / (PeakMemoryOverhead * MinSlots))
-	return MinSlots, max(min(fit, perRunBytes), minDerivedMemory)
+	if fit < minDerivedMemory {
+		return 0, 0
+	}
+	return MinSlots, min(fit, perRunBytes)
 }
 
 // ProcessMemoryLimit returns the memory the process may use: the cgroup limit
