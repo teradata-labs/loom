@@ -51,6 +51,10 @@ const (
 // it is not shown to the model.
 const LuaRunMetadataKey = "lua.run"
 
+// LuaOutcomeRefused is the run record outcome for a call refused before the
+// engine ran (bad parameters, policy, busy slots, script lookup).
+const LuaOutcomeRefused = "refused"
+
 // luaErrorOutputTail is how much captured output a SCRIPT_ERROR message keeps.
 const luaErrorOutputTail = 512
 
@@ -85,7 +89,9 @@ var ErrLuaToolSuppressed = errors.New("run_lua is suppressed on this agent")
 type ResolvedScript struct {
 	Name   string
 	Source string
-	// Trust says who wrote the script, relative to the caller.
+	// Trust says who wrote the script, relative to the caller. It must be
+	// TrustOwn, TrustShared or TrustPublished; run_lua refuses any other
+	// value, the zero value included.
 	Trust luasandbox.Trust
 	// Requires is the script's manifest.requires; nil when absent.
 	Requires []string
@@ -269,12 +275,16 @@ func (t *RunLuaTool) Execute(ctx context.Context, params map[string]interface{})
 	ctx, span := t.agent.tracer.StartSpan(ctx, "lua.run")
 	defer t.agent.tracer.EndSpan(span)
 
+	// script is known once the parameters are read; a refusal before then
+	// records an empty name.
+	var script ResolvedScript
 	fail := func(code, msg, suggestion string, retryable bool) (*shuttle.Result, error) {
 		span.SetAttribute("lua.outcome", code)
 		return &shuttle.Result{
 			Success:         false,
 			Error:           &shuttle.Error{Code: code, Message: msg, Suggestion: suggestion, Retryable: retryable},
 			ExecutionTimeMs: time.Since(start).Milliseconds(),
+			Metadata:        map[string]interface{}{LuaRunMetadataKey: luaRefusalRecord(code, msg, script)},
 		}, nil
 	}
 
@@ -295,12 +305,13 @@ func (t *RunLuaTool) Execute(ctx context.Context, params map[string]interface{})
 		return fail(LuaCodePolicyDenied, "the Lua policy could not be loaded", "call the tools directly", false)
 	}
 
-	script := ResolvedScript{Name: "inline", Source: p.script, Trust: luasandbox.TrustInline}
+	script = ResolvedScript{Name: "inline", Source: p.script, Trust: luasandbox.TrustInline}
 	if p.name != "" {
+		script = ResolvedScript{Name: p.name}
 		if t.opts.Resolve == nil {
 			return fail(LuaCodeScriptNotFound, "saved scripts are not available here", "pass the source as script", false)
 		}
-		script, err = t.opts.Resolve(ctx, p.name)
+		resolved, err := t.opts.Resolve(ctx, p.name)
 		switch {
 		case errors.Is(err, ErrAmbiguousScript):
 			return fail(LuaCodeAmbiguousScript, err.Error(), "run it again with the script id", false)
@@ -312,6 +323,17 @@ func (t *RunLuaTool) Execute(ctx context.Context, params map[string]interface{})
 			zap.L().Warn("run_lua: script lookup failed", zap.String("session_id", sessionID), zap.String("name", p.name), zap.Error(err))
 			return fail(LuaCodePolicyDenied, "the saved script could not be loaded", "", false)
 		}
+		// A saved script must name a saved-script tier. The zero value is
+		// TrustInline, and an unknown value is not foreign either: both
+		// would skip DenyForShared, so they are refused.
+		switch resolved.Trust {
+		case luasandbox.TrustOwn, luasandbox.TrustShared, luasandbox.TrustPublished:
+		default:
+			zap.L().Warn("run_lua: resolver returned no valid trust tier", zap.String("session_id", sessionID),
+				zap.String("name", p.name), zap.Int("trust", int(resolved.Trust)))
+			return fail(LuaCodePolicyDenied, "the saved script has no valid trust tier", "", false)
+		}
+		script = resolved
 		if script.Name == "" {
 			script.Name = p.name
 		}
@@ -424,6 +446,32 @@ func luaRunRecord(res *luasandbox.RunResult, script ResolvedScript) map[string]i
 		"output_truncated":       res.Truncated.Output,
 		"value_truncated":        res.Truncated.Value,
 		"call_results_truncated": res.Truncated.CallResults,
+	}
+}
+
+// luaRefusalRecord is the run record for a call refused before the engine ran:
+// the same keys as luaRunRecord, with outcome "refused", the refusal code,
+// zero usage and an empty ledger.
+func luaRefusalRecord(code, msg string, script ResolvedScript) map[string]interface{} {
+	trust := ""
+	if script.Source != "" { // resolved, or inline: the tier is known
+		trust = script.Trust.String()
+	}
+	return map[string]interface{}{
+		"outcome":                LuaOutcomeRefused,
+		"refusal":                code,
+		"limit":                  "",
+		"error":                  msg,
+		"script":                 script.Name,
+		"trust":                  trust,
+		"cpu_ticks":              uint64(0),
+		"memory_bytes":           uint64(0),
+		"wall_ms":                int64(0),
+		"calls":                  []map[string]interface{}{},
+		"output":                 "",
+		"output_truncated":       false,
+		"value_truncated":        false,
+		"call_results_truncated": false,
 	}
 }
 

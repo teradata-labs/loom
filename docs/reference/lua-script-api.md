@@ -85,6 +85,9 @@ running, and the model should make it directly.
 
 `Result.Metadata["lua.run"]` always carries the run record: outcome, limit, usage, the
 call ledger (`tool`, `ok`, `code`, `millis`, `decision`), output and truncation flags.
+A call refused before the engine ran (`INVALID_PARAMS`, `POLICY_DENIED`, `LUA_BUSY`, the
+saved-script lookup codes) has outcome `refused`, its code under `refusal`, zero usage and
+an empty ledger.
 The nested calls are not tool rows of their own; the `run_lua` call is one row.
 
 ## Go API
