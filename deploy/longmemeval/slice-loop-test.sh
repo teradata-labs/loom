@@ -294,6 +294,45 @@ else
         || fail "no PVC failure diagnostic in the log"
 fi
 
+# ── 5b. A failure at the promotion step itself fails closed ─────────────────
+# Case 5 fails on the run's first write, before any chunk is promoted. These
+# inject the failure into each promotion step instead: a validated chunk whose
+# output or marker never lands must stop the pass, and must never be left
+# marked complete — otherwise later passes skip it and the scored run silently
+# loses those entries.
+echo "=== 5b. a failed promotion or marker write fails closed ==="
+SHIM_DIR="${TMP_DIR}/mv-shim"; mkdir -p "${SHIM_DIR}"
+REAL_MV="$(command -v mv)"
+cat > "${SHIM_DIR}/mv" <<SHIM
+#!/usr/bin/env bash
+# Fails a rename whose destination matches MV_FAIL_GLOB; otherwise real mv.
+dest="\${@: -1}"
+case "\${dest}" in \${MV_FAIL_GLOB:-__none__}) echo "mv-shim: injected failure for \${dest}" >&2; exit 1 ;; esac
+exec "${REAL_MV}" "\$@"
+SHIM
+chmod +x "${SHIM_DIR}/mv"
+for step in '*-detailed.json' '*.jsonl' '*.done'; do
+    R5="$(mktemp -d "${TMP_DIR}/r5.XXXX")"
+    (
+        export PATH="${SHIM_DIR}:${PATH}" MV_FAIL_GLOB="${step}"
+        POISON_IDS="" run_loop "${R5}"
+    )
+    rc=$?
+    [[ ${rc} -ne 0 ]] \
+        && ok "promotion failure at ${step} exits nonzero" \
+        || fail "promotion failure at ${step} reported success (rc=${rc})"
+    grep -q "FATAL: results PVC write failed" "${TMP_DIR}/loop.log" \
+        && ok "promotion failure at ${step} is reported as a PVC failure" \
+        || fail "no PVC failure diagnostic for a promotion failure at ${step}"
+    if grep -q '^chunk complete:' "${TMP_DIR}/loop.log"; then
+        fail "a chunk was reported complete although its ${step} rename failed"
+    fi
+    leaked="$(find "${R5}" -name '*.done' | wc -l | tr -d ' ')"
+    [[ "${leaked}" == "0" ]] \
+        && ok "no .done marker after a failed ${step} rename" \
+        || fail "${leaked} .done marker(s) written although the ${step} rename failed"
+done
+
 # ── 6. A recovered run clears the incomplete sentinel ───────────────────────
 echo "=== 6. RUN-INCOMPLETE.txt is cleared once every chunk completes ==="
 run_dir1="${R1}/runs/${LME_RUN_ID}"
@@ -368,6 +407,24 @@ rc=$?
 [[ ${rc} -ne 0 ]] && grep -q 'no longer holds the' "${TMP_DIR}/loop.log" \
     && ok "resume refused after the dataset changed under it" \
     || fail "a revised dataset was accepted on resume (rc=${rc})"
+
+# ── 8b. A same-shape revision is refused too ────────────────────────────────
+# Case 8 changes the entry count, which summary statistics alone would catch.
+# This revision keeps every count and type and changes only one question's
+# text, so only the dataset content hash can refuse it.
+echo "=== 8b. a same-count, same-type dataset edit is refused on resume ==="
+python3 - "${TMP_DIR}/dataset.json" <<'PY'
+import json, sys
+entries = [e for e in json.load(open(sys.argv[1])) if e["question_id"] != "alpha-type-9"]
+assert len(entries) == 8, len(entries)
+entries[0]["question"] = "a different question"
+json.dump(entries, open(sys.argv[1], "w"))
+PY
+POISON_IDS="" run_loop "${R1}"
+rc=$?
+[[ ${rc} -ne 0 ]] && grep -q 'no longer holds the' "${TMP_DIR}/loop.log" \
+    && ok "resume refused after a same-shape dataset edit" \
+    || fail "a same-count, same-type dataset edit was accepted on resume (rc=${rc})"
 
 echo ""
 if [[ "${failures}" -gt 0 ]]; then
