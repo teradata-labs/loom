@@ -462,9 +462,24 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	// escaped the group (setsid) may keep a pipe open.
 	stop := func() {
 		killProcessTree(cmd)
-		select {
-		case waitErr = <-waitDone:
-		case <-time.After(500 * time.Millisecond):
+		// One group kill can miss a process the shell forks while the kill is
+		// being delivered (the shell wakes from waiting on a killed pipeline and
+		// starts the next command first). The straggler holds the pipes open, so
+		// the group is killed again until the exit status arrives.
+		deadline := time.NewTimer(500 * time.Millisecond)
+		defer deadline.Stop()
+		rekill := time.NewTicker(25 * time.Millisecond)
+		defer rekill.Stop()
+	wait:
+		for {
+			select {
+			case waitErr = <-waitDone:
+				break wait
+			case <-rekill.C:
+				rekillProcessGroup(cmd)
+			case <-deadline.C:
+				break wait
+			}
 		}
 		done := make(chan struct{})
 		go func() {
