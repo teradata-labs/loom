@@ -21,13 +21,16 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"go.uber.org/zap"
 )
@@ -45,12 +48,33 @@ type summaryState struct {
 const syntheticFailedResult = "[no result recorded — the call did not complete. Re-run it if needed.]"
 
 // offloadStubFormat is the normative offload stub of HLD §5.5 — a turn=T result
-// strictly over the threshold; the payload is in memory and queryable.
-const offloadStubFormat = "[%s result, ~%d tokens, held in memory this turn — query_tool_result(message_id=%d, offset=0, limit=100) to read it; sql=\"SELECT ... FROM results\" for tabular data.%s\n preview: %s]"
+// strictly over the threshold; the payload is in memory and queryable. The sql
+// door is advertised only for tabular payloads (offloadStubOpaqueFormat
+// otherwise) — the stub must never invite a door that errors. The final %s is
+// previewMeta's line: schema/shape metadata, not a data slice — a data preview
+// invites answering from the fragment instead of opening the door.
+const offloadStubFormat = "[%s result, ~%d tokens, held in memory this turn — query_tool_result(message_id=%d, offset=0, limit=100) to read it; sql=\"SELECT ... FROM results\" for tabular data.%s\n %s]"
+
+// offloadStubOpaqueFormat is the offload stub for non-tabular payloads: same
+// doors minus sql=, which tabularPayload would refuse.
+const offloadStubOpaqueFormat = "[%s result, ~%d tokens, held in memory this turn — query_tool_result(message_id=%d, offset=0, limit=100) to read it.%s\n %s]"
+
+// pressureStubFormat is the stub for a current-turn result offloaded by the
+// pressure rung rather than the size rule. The size rule stubs one oversize
+// result and carries previewMeta so the model knows what it holds; the
+// pressure rung stubs a whole batch of ordinary results at once, where forty
+// previews cost more than the window can give back (the rung would stub
+// everything and still miss target). So this stub is the door alone — the
+// payload is in memory, and one query_tool_result reads any of them.
+const pressureStubFormat = "[%s result, ~%d tokens, held in memory this turn — query_tool_result(message_id=%d, offset=0, limit=100) to read it.]"
+
+// pressureStubTabularFormat is pressureStubFormat plus the sql door, which
+// tabularPayload accepts for this row.
+const pressureStubTabularFormat = "[%s result, ~%d tokens, held in memory this turn — query_tool_result(message_id=%d, offset=0, limit=100) to read it; sql=\"SELECT ... FROM results\" for tabular data.]"
 
 // evictedStubFormat is the normative evicted stub of HLD §5.5 — evicted=true or
 // legacy oversize; the only door is re-run.
-const evictedStubFormat = "[%s result, ~%d tokens, evicted from context — re-run the call above if this data is needed again.%s\n preview: %s]"
+const evictedStubFormat = "[%s result, ~%d tokens, evicted from context — re-run the call above if this data is needed again.%s\n %s]"
 
 // compileLocked is ContextCompilation §5.2 steps 1–7: KERNEL rides the provider
 // tools parameter (its bytes are counted via kernelBytes); ROM; the summary's
@@ -69,7 +93,13 @@ func (sm *SegmentedMemory) compileLocked() []Message {
 	// Step 3: the summary's newest version, one system message. Its own cache
 	// breakpoint — stable until the next fold rewrites it.
 	if sm.summary.text != "" {
-		out = append(out, Message{Role: "system", Content: sm.summary.text, CacheBreakpoint: true})
+		// No cache marker. Markers are WRITE points and the budget is four:
+		// the tool list, ROM, lastStable, and the till-NOW marker that makes a
+		// turn's offload stubs and query_tool_result re-reads cacheable. The
+		// summary is the weakest claimant — a fold rewrites the summary itself,
+		// so the fallback it would provide lands on ROM's entry anyway, and on
+		// an evict-only pass it saves re-sending the summary alone.
+		out = append(out, Message{Role: "system", Content: sm.summary.text})
 	}
 
 	// Step 5: T — the session's current turn number.
@@ -97,10 +127,15 @@ func (sm *SegmentedMemory) compileLocked() []Message {
 	emit := func(m *Message) {
 		out = append(out, sm.renderLocked(m, t, callName))
 		if m.Turn == t && ((m.Role == "tool" && !m.Evicted && len(m.Content) > sm.threshold) ||
+			(m.Role == "tool" && sm.pressureOffloadedLocked(m, t)) ||
 			(m.Role == "assistant" && hasQueryToolResultCall(m))) {
 			frozen = true
 		}
-		if !frozen {
+		// Advance only onto messages that can carry a wire cache marker: a
+		// text-empty message (an assistant tool-call shell) gets no
+		// cache_control from the provider clients, so parking the breakpoint
+		// there silently uncaches the entire prefix for the rest of the turn.
+		if !frozen && out[len(out)-1].Content != "" {
 			lastStable = len(out) - 1
 		}
 	}
@@ -146,6 +181,22 @@ func (sm *SegmentedMemory) compileLocked() []Message {
 		out[lastStable].CacheBreakpoint = true
 	}
 
+	// The till-NOW breakpoint — the fourth marker, on the last markable
+	// message. Within a turn the region past lastStable is byte-stable:
+	// offload stubs render deterministically and query_tool_result re-reads
+	// append rather than rewrite, so this marker is read back by every
+	// following call of the same turn. At turn settle the region re-renders
+	// and the request falls back to the lastStable marker — cross-turn
+	// behavior unchanged. This is the third marker — ROM and lastStable are
+	// the others — which is what a client that spends one on the tool list
+	// has room for.
+	for i := len(out) - 1; i >= 0 && i != lastStable; i-- {
+		if out[i].Content != "" {
+			out[i].CacheBreakpoint = true
+			break
+		}
+	}
+
 	return out
 }
 
@@ -161,14 +212,24 @@ func hasQueryToolResultCall(m *Message) bool {
 	return false
 }
 
-// renderLocked applies §5.2 step 6's five render cases — first matching case
-// wins. Conversation is never stubbed; offload is a pure render condition of
-// the current turn; evicted and legacy-oversize rows render the evicted stub.
+// renderLocked applies §5.2 step 6's render cases — first matching case wins.
+// Conversation is never stubbed; offload is a pure render condition of the
+// current turn; evicted and legacy-oversize rows render the evicted stub.
 // The offload case carves out the exempt set (SetOffloadExemptTools): an
 // exempt tool's current-turn result renders whole — exemption never reaches
 // the evicted cases, so relief and prior turns behave identically for every
-// tool.
+// tool. The one exception is relief's last-resort pressure offload
+// (offloadCurrentTurnLocked), which stubs a current-turn result whatever its
+// size or exemption, because the alternative is a turn that cannot be sent.
 func (sm *SegmentedMemory) renderLocked(m *Message, t int64, callName map[string]string) Message {
+	if m.Role == "assistant" && len(m.ThinkingBlocks) > 0 && m.Turn < t {
+		// Settled turns render without thinking blocks: the provider ignores
+		// them there, and the strip is a deterministic render (same one-time
+		// prefix rewrite as the stub re-render at the settle boundary).
+		r := *m
+		r.ThinkingBlocks = nil
+		return r
+	}
 	// User turns carry their arrival time into the compiled view ONLY, so the
 	// model keeps per-turn temporal grounding ("today", "this month") while the
 	// stored, client-visible Content stays verbatim. Timestamp is write-once and
@@ -199,6 +260,14 @@ func (sm *SegmentedMemory) renderLocked(m *Message, t int64, callName map[string
 	case m.Evicted:
 		r := *m
 		r.Content = sm.evictedStub(m, callName)
+		return r
+	case sm.pressureOffloadedLocked(m, t):
+		// Relief's last-resort rung: a current-turn result offloaded under
+		// pressure regardless of size or exemption — the turn would otherwise
+		// end on a provider refusal. The payload stays queryable this turn
+		// through a door-only stub (pressureStubFormat).
+		r := *m
+		r.Content = sm.pressureStub(m, callName)
 		return r
 	case len(m.Content) > sm.threshold && m.Turn == t:
 		if sm.offloadExempt[callName[m.ToolUseID]] {
@@ -242,21 +311,42 @@ func (sm *SegmentedMemory) offloadStub(m *Message, callName map[string]string) s
 	if id <= 0 {
 		return sm.evictedStub(m, callName)
 	}
-	return fmt.Sprintf(offloadStubFormat,
+	meta, tabular := previewMeta(m.Content)
+	format := offloadStubOpaqueFormat
+	if tabular {
+		format = offloadStubFormat
+	}
+	return fmt.Sprintf(format,
 		stubToolName(m, callName),
 		tokenFigure(len(m.Content)),
 		id,
 		harvestTails(m.Content),
-		previewOf(m.Content))
+		meta)
+}
+
+// pressureStub renders the door-only stub for a result the pressure rung
+// offloaded (pressureStubFormat). Storeless rows fall back to the evicted stub
+// for the same reason offloadStub does.
+func (sm *SegmentedMemory) pressureStub(m *Message, callName map[string]string) string {
+	id, _ := strconv.ParseInt(m.ID, 10, 64)
+	if id <= 0 {
+		return sm.evictedStub(m, callName)
+	}
+	format := pressureStubFormat
+	if _, tabular := previewMeta(m.Content); tabular {
+		format = pressureStubTabularFormat
+	}
+	return fmt.Sprintf(format, stubToolName(m, callName), tokenFigure(len(m.Content)), id)
 }
 
 // evictedStub renders the §5.5 evicted stub.
 func (sm *SegmentedMemory) evictedStub(m *Message, callName map[string]string) string {
+	meta, _ := previewMeta(m.Content)
 	return fmt.Sprintf(evictedStubFormat,
 		stubToolName(m, callName),
 		tokenFigure(len(m.Content)),
 		harvestTails(m.Content),
-		previewOf(m.Content))
+		meta)
 }
 
 // stubToolName resolves the producing call's tool name via the paired
@@ -292,6 +382,12 @@ func harvestTails(content string) string {
 // every whitespace run collapsed to a single space, cut backward to a rune
 // boundary (whole runes are appended, so no rune is ever split).
 func previewOf(content string) string {
+	return collapseTo(content, 160)
+}
+
+// collapseTo is previewOf's engine at an arbitrary byte cap: whitespace runs
+// collapse to one space, whole runes only.
+func collapseTo(content string, max int) string {
 	var b strings.Builder
 	lastSpace := false
 	for _, r := range content {
@@ -306,12 +402,160 @@ func previewOf(content string) string {
 			lastSpace = false
 			s = string(r)
 		}
-		if b.Len()+len(s) > 160 {
+		if b.Len()+len(s) > max {
 			break
 		}
 		b.WriteString(s)
 	}
 	return b.String()
+}
+
+// previewMeta renders the stub's preview line as METADATA, not data: schema for
+// tabular payloads, a shape sketch for other JSON, head+tail for opaque text.
+// The preview's job is to let the model decide whether and how to open the
+// door (query_tool_result), not to feel like the data — a data slice invites
+// answering from the fragment, recreating the truncated-but-looks-whole state
+// this design exists to eliminate. Pure function of content: byte-stable
+// across compiles, so it can never disturb the provider prompt cache.
+// The bool reports whether the payload is tabular (the sql= door applies).
+func previewMeta(content string) (string, bool) {
+	if line, tabular, ok := previewMetaCached(content); ok {
+		return line, tabular
+	}
+	line, tabular := previewMetaUncached(content)
+	previewMetaStore(content, line, tabular)
+	return line, tabular
+}
+
+// previewMetaCache memoizes previewMeta. Compile and every estimate pass call
+// it for each stubbed row, and each call can run three json.Unmarshals over a
+// payload large enough to have been stubbed — all under the memory lock, for a
+// function whose output depends on nothing but its input. The key carries the
+// content length and a hash, so a changed payload cannot read a stale line.
+var (
+	previewMetaMu    sync.Mutex
+	previewMetaCache = map[string]previewMetaEntry{}
+)
+
+type previewMetaEntry struct {
+	line    string
+	tabular bool
+}
+
+// previewMetaCacheCap bounds the map. Entries are keyed by payload, and a long
+// session stubs many different ones; past the cap the cache is dropped whole
+// rather than evicted one by one, which costs one recompute per live stub and
+// keeps the bookkeeping to nothing.
+const previewMetaCacheCap = 512
+
+func previewMetaKey(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	return fmt.Sprintf("%d:%x", len(content), sum[:8])
+}
+
+func previewMetaCached(content string) (string, bool, bool) {
+	k := previewMetaKey(content)
+	previewMetaMu.Lock()
+	defer previewMetaMu.Unlock()
+	e, ok := previewMetaCache[k]
+	return e.line, e.tabular, ok
+}
+
+func previewMetaStore(content, line string, tabular bool) {
+	k := previewMetaKey(content)
+	previewMetaMu.Lock()
+	defer previewMetaMu.Unlock()
+	if len(previewMetaCache) >= previewMetaCacheCap {
+		previewMetaCache = map[string]previewMetaEntry{}
+	}
+	previewMetaCache[k] = previewMetaEntry{line: line, tabular: tabular}
+}
+
+func previewMetaUncached(content string) (string, bool) {
+	if columns, rows, err := tabularPayload(content); err == nil {
+		count := fmt.Sprintf("%d", len(rows))
+		var envelope struct {
+			TotalRowCount int `json:"total_row_count"`
+		}
+		if json.Unmarshal([]byte(content), &envelope) == nil && envelope.TotalRowCount > len(rows) {
+			count = fmt.Sprintf("%d of %d", len(rows), envelope.TotalRowCount)
+		}
+		// No sample row. The line's whole purpose is to say what the payload
+		// IS so the model can decide whether to open the door; a real first
+		// row up to 200 bytes is data, and data invites answering from the
+		// fragment — the truncated-but-looks-whole state this design exists
+		// to remove. It also inflated every stub, and the evicted stub's
+		// length sets the floor below which eviction saves nothing.
+		return fmt.Sprintf("columns: [%s] · rows: %s",
+			collapseTo(strings.Join(columns, ", "), 300), count), true
+	}
+	var v interface{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(content)), &v); err == nil {
+		return "shape: " + jsonSketch(v), false
+	}
+	line := "preview: " + collapseTo(content, 300)
+	if len(content) > 600 {
+		// collapseTo keeps the head of its input, so slice exactly the tail;
+		// collapsing only shrinks, so the whole slice always fits the cap.
+		// The cut snaps forward to a rune start: slicing mid-rune would put a
+		// replacement character in a stub that is otherwise byte-exact.
+		cut := len(content) - 200
+		for cut < len(content) && !utf8.RuneStart(content[cut]) {
+			cut++
+		}
+		line += " … tail: " + collapseTo(content[cut:], 200)
+	}
+	return line, false
+}
+
+// jsonSketch renders a one-level shape sketch of a parsed JSON value — sorted
+// keys with value kinds, array lengths, nested sizes; never values. Sorted
+// iteration keeps the sketch byte-stable (cache safety).
+func jsonSketch(v interface{}) string {
+	switch t := v.(type) {
+	case map[string]interface{}:
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for i, k := range keys {
+			if i == 8 {
+				parts = append(parts, "…")
+				break
+			}
+			parts = append(parts, k+": "+jsonKind(t[k]))
+		}
+		return "{" + strings.Join(parts, ", ") + "}"
+	case []interface{}:
+		if len(t) == 0 {
+			return "[0 items]"
+		}
+		return fmt.Sprintf("[%d items of %s]", len(t), jsonKind(t[0]))
+	default:
+		return jsonKind(v)
+	}
+}
+
+// jsonKind names a JSON value's kind for the sketch.
+func jsonKind(v interface{}) string {
+	switch t := v.(type) {
+	case string:
+		return "str"
+	case float64:
+		return "num"
+	case bool:
+		return "bool"
+	case nil:
+		return "null"
+	case []interface{}:
+		return fmt.Sprintf("[%d items]", len(t))
+	case map[string]interface{}:
+		return fmt.Sprintf("{%d keys}", len(t))
+	default:
+		return "value"
+	}
 }
 
 // --- estimate & target (HLD §5.1) -------------------------------------------
@@ -335,7 +579,15 @@ const cheapBytesPerToken = 2.7
 //
 // Must hold lock.
 func (sm *SegmentedMemory) estimateLocked() int {
-	compiled := sm.compileLocked()
+	return sm.estimateCompiledLocked(sm.compileLocked())
+}
+
+// estimateCompiledLocked is estimateLocked over an already-compiled message
+// list (the whole context, or a subset such as the current-turn floor). Both
+// tiers are scaled by the provider calibration factor, so the cheap tier's
+// early exit compares like with like. Must hold lock.
+func (sm *SegmentedMemory) estimateCompiledLocked(compiled []Message) int {
+	f := sm.calibrationLocked()
 
 	// Cheap tier — byte bound, no tokenization.
 	bytes := sm.kernelBytes
@@ -346,13 +598,22 @@ func (sm *SegmentedMemory) estimateLocked() int {
 				bytes += len(b)
 			}
 		}
+		for _, tb := range compiled[i].ThinkingBlocks {
+			bytes += len(tb.Thinking) + len(tb.Signature)
+		}
 	}
-	cheap := int(float64(bytes) / cheapBytesPerToken)
+	cheap := int(float64(bytes) / cheapBytesPerToken * f)
 	if limit := sm.startMarkLocked(0); limit <= 0 || cheap < limit {
 		return cheap
 	}
 
 	// Accurate tier — near the limit, tokenize (cached per rendered message).
+	return int(float64(sm.accurateTokensLocked(compiled)) * f)
+}
+
+// accurateTokensLocked is the uncalibrated tiktoken count of KERNEL plus the
+// compiled messages. Must hold lock.
+func (sm *SegmentedMemory) accurateTokensLocked(compiled []Message) int {
 	tc := sm.tokenCounter
 	if tc == nil {
 		tc = GetTokenCounter()
@@ -362,6 +623,65 @@ func (sm *SegmentedMemory) estimateLocked() int {
 		tokens += sm.msgTokensLocked(tc, &compiled[i])
 	}
 	return tokens
+}
+
+// Provider calibration. The estimate tokenizes with tiktoken, which counts
+// Claude prompts ~25% low (production: 1.17M estimated, 1.46M billed), so
+// relief fired late and its recovery pass under-shed. After each successful
+// call the provider's own prompt count is compared with loom's count of the
+// same compiled context, and the running ratio scales every estimate.
+const (
+	// calibrationMin: never scale below tiktoken — a provider that counts
+	// fewer tokens must not make relief fire later than it did uncalibrated.
+	calibrationMin = 1.0
+	// calibrationMax bounds a skewed sample (e.g. image blocks the estimate
+	// does not count) to relief firing earlier, never to a runaway factor.
+	calibrationMax = 2.0
+	// calibrationAlpha is the EWMA weight of each new sample.
+	calibrationAlpha = 0.5
+	// calibrationMinSampleTokens skips small prompts, where fixed provider
+	// overhead (tool-use system text, framing) dominates the ratio.
+	calibrationMinSampleTokens = 2000
+)
+
+// calibrationLocked returns the current estimate scale factor. Must hold lock.
+func (sm *SegmentedMemory) calibrationLocked() float64 {
+	if sm.estimateCalibration < calibrationMin {
+		return calibrationMin
+	}
+	return sm.estimateCalibration
+}
+
+// EstimateCalibration returns the factor the estimate is currently scaled by.
+func (sm *SegmentedMemory) EstimateCalibration() float64 {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.calibrationLocked()
+}
+
+// ObservePromptTokens feeds one provider-reported prompt size (input + cache
+// read + cache write — the whole prompt, see types.Usage) into the calibration.
+// Call it right after a successful send, before anything is appended, so the
+// compiled context is the one that was sent.
+func (sm *SegmentedMemory) ObservePromptTokens(actual int) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if actual <= 0 {
+		return
+	}
+	counted := sm.accurateTokensLocked(sm.compileLocked())
+	if counted < calibrationMinSampleTokens {
+		return
+	}
+	ratio := min(max(float64(actual)/float64(counted), calibrationMin), calibrationMax)
+	f := sm.calibrationLocked()
+	sm.estimateCalibration = min(max(f+calibrationAlpha*(ratio-f), calibrationMin), calibrationMax)
+	zap.L().Debug("relief: estimate calibration",
+		zap.String("session_id", sm.sessionID),
+		zap.Int("provider_prompt_tokens", actual),
+		zap.Int("counted_tokens", counted),
+		zap.Float64("sample_ratio", ratio),
+		zap.Float64("factor", sm.estimateCalibration))
 }
 
 // msgTokensLocked returns one compiled message's token count, memoising the
@@ -378,6 +698,10 @@ func (sm *SegmentedMemory) msgTokensLocked(tc *TokenCounter, m *Message) int {
 			sm.msgTokenCache = make(map[string]int)
 		}
 		sm.msgTokenCache[m.Content] = n
+	}
+	for _, tb := range m.ThinkingBlocks {
+		// Thinking rides the wire in-turn: text tokenized, signature ~4B/token.
+		n += tc.CountTokens(tb.Thinking) + len(tb.Signature)/4
 	}
 	if len(m.ToolCalls) > 0 {
 		if b, err := json.Marshal(m.ToolCalls); err == nil {
@@ -465,10 +789,13 @@ func (sm *SegmentedMemory) releaseMarkLocked(penalty int) int {
 // ReleasePressure is the relief pass, called at compile before every send. It
 // SELF-GATES on loom's own accounting: if the estimate is under the start mark
 // (HWM, §5.1) there is no pressure and it is a no-op. Otherwise it sheds to the
-// release mark (LWM) via the escalating evict-then-fold ladder below —
-// recompiling and re-estimating after each op, returning the instant the
-// estimate reaches the mark. Returns whether it shed and the post-pass
-// {estimate, target}.
+// release mark (LWM) via the escalating ladder below — prior-turn evict, then
+// prior-turn fold, then current-turn offload; when the current turn alone is
+// over target, the current-turn offload moves ahead of every fold and a fold
+// that still cannot reach target is skipped — recompiling and re-estimating
+// after each op, returning the instant the estimate reaches the mark. The
+// estimate is scaled by the provider calibration (ObservePromptTokens).
+// Returns whether it shed and the post-pass {estimate, target}.
 //
 // penalty (percentage points) lowers both marks. It is 0 for the normal compile
 // pass; on the one recovery pass after a provider refusal it is
@@ -486,9 +813,21 @@ func (sm *SegmentedMemory) ReleasePressure(ctx context.Context, penalty int) (sh
 		return false, sm.estimateLocked(), sm.releaseMarkLocked(penalty)
 	}
 
-	if sm.estimateLocked() < sm.startMarkLocked(penalty) {
+	sm.compressorFailedThisPass = false
+
+	startEstimate := sm.estimateLocked()
+	if startEstimate < sm.startMarkLocked(penalty) {
 		return false, 0, 0 // under the start mark — no pressure to release
 	}
+	// The per-op lines log only post-op estimates; without the starting point
+	// two consecutive passes read as one op inflating the estimate.
+	zap.L().Info("releasePressure: start",
+		zap.String("session_id", sm.sessionID),
+		zap.Int64("turn", sm.currentTurnLocked()),
+		zap.Int("estimate_tokens", startEstimate),
+		zap.Int("start_tokens", sm.startMarkLocked(penalty)),
+		zap.Int("target_tokens", sm.releaseMarkLocked(penalty)),
+		zap.Int("penalty", penalty))
 
 	sm.reliefInFlight = true
 	defer func() { sm.reliefInFlight = false }()
@@ -520,29 +859,85 @@ func (sm *SegmentedMemory) ReleasePressure(ctx context.Context, penalty int) (sh
 			rungs = append(rungs, b)
 		}
 	}
-	ops := make([]reliefOp, 0, 2*len(rungs))
+	evictOps := make([]reliefOp, 0, len(rungs))
+	foldOps := make([]reliefOp, 0, len(rungs))
 	for _, b := range rungs {
-		ops = append(ops, reliefOp{"evict", b, sm.evictLocked})
+		evictOps = append(evictOps, reliefOp{"evict", b, sm.evictLocked})
+		foldOps = append(foldOps, reliefOp{"fold", b, sm.foldLocked})
 	}
-	for _, b := range rungs {
-		ops = append(ops, reliefOp{"fold", b, sm.foldLocked})
-	}
-	for _, op := range ops {
-		if !op.run(ctx, op.boundary) {
-			// An operation that changed nothing (its rows were already flagged
-			// by an earlier pressure event) passes to the next.
-			continue
+	// The current turn. Every rung above stops at T−1, so a turn whose OWN tool
+	// results exceed the window (hundreds of parallel calls, each under the
+	// threshold and so rendered whole) used to leave the pass with nothing to
+	// shed, and the turn ended on the provider's refusal. These rungs offload
+	// them to stubs — oldest first, on the same halving ladder, keeping the
+	// newest n/2, n/4 … 0 whole. Lossless within the turn: each stub carries
+	// its query_tool_result door.
+	var offloadOps []reliefOp
+	n := len(sm.currentTurnOffloadCandidatesLocked(t))
+	for keep := n / 2; n > 0; keep /= 2 {
+		offloadOps = append(offloadOps, reliefOp{"offload_current_turn", t, func(context.Context, int64) bool {
+			return sm.offloadCurrentTurnLocked(t, keep)
+		}})
+		if keep == 0 {
+			break
 		}
-		estimate = sm.estimateLocked()
-		zap.L().Info("releasePressure: operation complete",
-			zap.String("session_id", sm.sessionID),
-			zap.String("operation", op.name),
-			zap.Int64("boundary_turn", op.boundary),
-			zap.Int("estimate_tokens", estimate),
-			zap.Int("target_tokens", target))
-		if estimate <= target {
+	}
+
+	// runOps runs ops in order and reports whether the estimate reached target.
+	runOps := func(ops []reliefOp) bool {
+		for _, op := range ops {
+			if !op.run(ctx, op.boundary) {
+				// An operation that changed nothing (its rows were already
+				// flagged by an earlier pressure event) passes to the next.
+				continue
+			}
+			estimate = sm.estimateLocked()
+			zap.L().Info("releasePressure: operation complete",
+				zap.String("session_id", sm.sessionID),
+				zap.String("operation", op.name),
+				zap.Int64("boundary_turn", op.boundary),
+				zap.Int("estimate_tokens", estimate),
+				zap.Int("target_tokens", target))
+			if estimate <= target {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Phase order: prior-turn eviction (re-runnable) first. Then, when the
+	// current turn ALONE is over target, no prior-turn fold can reach it — so
+	// the lossless current-turn offload goes before any lossy fold, and a fold
+	// runs only if it can now reach target or the estimate is still at or over
+	// the start mark (every token counts near the provider's hard limit).
+	// Otherwise folds go first and the current turn stays the last resort.
+	if runOps(evictOps) {
+		return true, estimate, target
+	}
+	if sm.currentTurnFloorLocked(t) > target {
+		if runOps(offloadOps) {
 			return true, estimate, target
 		}
+		if floor := sm.currentTurnFloorLocked(t); floor > target && sm.estimateLocked() < sm.startMarkLocked(penalty) {
+			zap.L().Info("releasePressure: fold skipped — the current turn alone exceeds target",
+				zap.String("session_id", sm.sessionID),
+				zap.Int64("turn", t),
+				zap.Int("current_turn_floor_tokens", floor),
+				zap.Int("target_tokens", target))
+			return estimate >= 0, sm.estimateLocked(), target
+		}
+	}
+	if runOps(foldOps) || runOps(offloadOps) {
+		return true, estimate, target
+	}
+	// Rung 0 fold — the current turn itself. The offload rungs above cover a
+	// turn whose mass is tool results; a turn whose mass is the model's own
+	// reasoning text has nothing to stub, and no prior-turn fold can reach it.
+	// foldLocked at b = t caps the region before the last assistant message, so
+	// the pending pair and the turn's user rows survive it whole. Lossy, and
+	// therefore last.
+	if runOps([]reliefOp{{"fold", t, sm.foldLocked}}) {
+		return true, estimate, target
 	}
 
 	if estimate < 0 {
@@ -554,10 +949,183 @@ func (sm *SegmentedMemory) ReleasePressure(ctx context.Context, penalty int) (sh
 	return true, estimate, target
 }
 
+// currentTurnFloorLocked estimates the context with every prior turn gone —
+// ROM, the summary and turn T as currently rendered. No prior-turn operation
+// can bring the estimate below it, so when it is over target a fold would be a
+// lossy compressor call that cannot succeed. Must hold lock.
+func (sm *SegmentedMemory) currentTurnFloorLocked(t int64) int {
+	compiled := sm.compileLocked()
+	kept := make([]Message, 0, len(compiled))
+	for i := range compiled {
+		if compiled[i].Role == "system" || compiled[i].Turn == t {
+			kept = append(kept, compiled[i])
+		}
+	}
+	return sm.estimateCompiledLocked(kept)
+}
+
+// CurrentTurnOverflow describes a current turn relief cannot bring under its
+// start mark: every result it may offload is already a stub, and the turn alone
+// (ROM, the summary and turn T as rendered, every prior turn gone) is still at
+// or over the start mark.
+type CurrentTurnOverflow struct {
+	// FloorTokens is the calibrated estimate of the turn alone.
+	FloorTokens int
+	// StartTokens is the relief start mark (no penalty).
+	StartTokens int
+	// StubbedResults counts the turn's tool results rendered as stubs.
+	StubbedResults int
+	// ToolResults counts the turn's tool results.
+	ToolResults int
+}
+
+// CurrentTurnOverflow reports whether the current turn has outgrown the window
+// in a way no relief operation can fix — the irreducible cost of its stubs and
+// read-backs alone keeps the context at or over the start mark. Sending anyway
+// buys an uncached near-limit loop whose every pass sheds nothing; the caller
+// ends the turn instead. Called after ReleasePressure: it does not shed, it
+// only reads. False when any candidate still renders whole (the ladder has
+// room) or the turn has no stubbed tool result (the pressure is not the
+// turn's results — a ROM that alone fills the window is a config problem).
+func (sm *SegmentedMemory) CurrentTurnOverflow() (CurrentTurnOverflow, bool) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	t := sm.currentTurnLocked()
+	// Cheap gate, no compile: it runs before every send, and an overflow needs
+	// at least one turn-T row the pressure rung or the size rule stubs.
+	maybeStubbed := sm.pressureOffloadTurn == t && len(sm.pressureOffload) > 0
+	for i := range sm.contextMessages {
+		if maybeStubbed {
+			break
+		}
+		m := &sm.contextMessages[i]
+		maybeStubbed = m.Role == "tool" && m.Turn == t && (m.Evicted || len(m.Content) > sm.threshold)
+	}
+	if !maybeStubbed {
+		return CurrentTurnOverflow{}, false
+	}
+	for _, i := range sm.currentTurnOffloadCandidatesLocked(t) {
+		if !sm.pressureOffloadedLocked(&sm.contextMessages[i], t) {
+			return CurrentTurnOverflow{}, false
+		}
+	}
+	stored := make(map[string]string)
+	for i := range sm.contextMessages {
+		if m := &sm.contextMessages[i]; m.Role == "tool" && m.Turn == t && m.ToolUseID != "" {
+			stored[m.ToolUseID] = m.Content
+		}
+	}
+	var o CurrentTurnOverflow
+	for _, m := range sm.compileLocked() {
+		if m.Role != "tool" || m.Turn != t {
+			continue
+		}
+		o.ToolResults++
+		if content, ok := stored[m.ToolUseID]; ok && content != m.Content {
+			o.StubbedResults++
+		}
+	}
+	if o.StubbedResults == 0 {
+		return CurrentTurnOverflow{}, false
+	}
+	o.StartTokens = sm.startMarkLocked(0)
+	o.FloorTokens = sm.currentTurnFloorLocked(t)
+	if o.StartTokens <= 0 || o.FloorTokens < o.StartTokens {
+		return CurrentTurnOverflow{}, false
+	}
+	return o, true
+}
+
+// pressureOffloadedLocked reports whether m is a current-turn tool result that
+// relief's last-resort rung has offloaded. Must hold lock.
+func (sm *SegmentedMemory) pressureOffloadedLocked(m *Message, t int64) bool {
+	return m.Role == "tool" && m.Turn == t && m.ToolUseID != "" &&
+		sm.pressureOffloadTurn == t && sm.pressureOffload[m.ToolUseID]
+}
+
+// currentTurnOffloadCandidatesLocked returns, in seq order, the indices of the
+// turn-T tool rows the last-resort rung may offload: not evicted, keyed by a
+// ToolUseID, not produced by query_tool_result, not already rendered as an
+// offload stub by the size rule, and at least 2× their offload stub (the same
+// floor evictLocked applies — below it, stubbing saves nothing). Rows the rung
+// already offloaded stay in the list, so its length is stable across the
+// ladder. Must hold lock.
+//
+// A query_tool_result row is the model reading an offloaded payload back
+// through the stub's door. Stubbing it would render a stub whose door points
+// at the read itself — the model can never see the data, loops to MaxTurns and
+// answers from previews. The read is already bounded at one page (threshold),
+// so it is never a candidate.
+func (sm *SegmentedMemory) currentTurnOffloadCandidatesLocked(t int64) []int {
+	callName := make(map[string]string)
+	for i := range sm.contextMessages {
+		for _, c := range sm.contextMessages[i].ToolCalls {
+			if c.ID != "" {
+				callName[c.ID] = c.Name
+			}
+		}
+	}
+	var out []int
+	for i := range sm.contextMessages {
+		m := &sm.contextMessages[i]
+		if m.Role != "tool" || m.Turn != t || m.Evicted || m.ToolUseID == "" {
+			continue
+		}
+		if callName[m.ToolUseID] == "query_tool_result" {
+			continue // the model's read-back of an offloaded payload
+		}
+		if len(m.Content) > sm.threshold && !sm.offloadExempt[callName[m.ToolUseID]] {
+			continue // the size rule already stubs it
+		}
+		if len(m.Content) < 2*len(sm.pressureStub(m, callName)) {
+			continue
+		}
+		out = append(out, i)
+	}
+	return out
+}
+
+// offloadCurrentTurnLocked offloads every last-resort candidate except the
+// newest keep, oldest first. Returns whether any row newly moved to a stub.
+// Must hold lock.
+func (sm *SegmentedMemory) offloadCurrentTurnLocked(t int64, keep int) bool {
+	cands := sm.currentTurnOffloadCandidatesLocked(t)
+	if keep >= len(cands) {
+		return false
+	}
+	if sm.pressureOffloadTurn != t || sm.pressureOffload == nil {
+		sm.pressureOffload = make(map[string]bool)
+		sm.pressureOffloadTurn = t
+	}
+	added := 0
+	for _, i := range cands[:len(cands)-keep] {
+		id := sm.contextMessages[i].ToolUseID
+		if !sm.pressureOffload[id] {
+			sm.pressureOffload[id] = true
+			added++
+		}
+	}
+	if added == 0 {
+		return false
+	}
+	zap.L().Warn("releasePressure: offload current turn",
+		zap.String("session_id", sm.sessionID),
+		zap.Int64("turn", t),
+		zap.Int("rows_offloaded", added),
+		zap.Int("offloaded_total", len(sm.pressureOffload)),
+		zap.Int("kept_newest", keep))
+	return true
+}
+
 // evictLocked marks evicted=true on every tool row with turn ≤ b whose stored
 // content ≥ 2× its stub (the eviction floor, §5.1) — one transaction, in-memory
-// copies updated in the same step. Returns whether anything changed. Must hold
-// lock.
+// copies updated in the same step. The pending region — every row after the
+// last assistant message, i.e. the results of the not-yet-dispatched call — is
+// never evicted: stubbing a result the model has not read defeats the call.
+// (For b < t the guard is formally a no-op: pending rows carry turn t and are
+// already excluded by the turn bound.) Returns whether anything changed. Must
+// hold lock.
 func (sm *SegmentedMemory) evictLocked(ctx context.Context, b int64) bool {
 	callName := make(map[string]string)
 	for i := range sm.contextMessages {
@@ -568,11 +1136,21 @@ func (sm *SegmentedMemory) evictLocked(ctx context.Context, b int64) bool {
 		}
 	}
 
+	lastAssistant := -1
+	for i := range sm.contextMessages {
+		if sm.contextMessages[i].Role == "assistant" {
+			lastAssistant = i
+		}
+	}
+
 	var marked []int
 	var seqs []int64
 	for i := range sm.contextMessages {
 		m := &sm.contextMessages[i]
 		if m.Role != "tool" || m.Evicted || m.Turn > b {
+			continue
+		}
+		if i > lastAssistant {
 			continue
 		}
 		stub := sm.evictedStub(m, callName)
@@ -633,13 +1211,50 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 	for count < len(sm.contextMessages) && sm.contextMessages[count].Turn <= b {
 		count++
 	}
+	if b >= sm.currentTurnLocked() {
+		// Rung 0: the region may reach into the current turn, but never the
+		// pending pair — cap it before the last assistant message (exclusive:
+		// the call signature must survive with its results). For b < t the cap
+		// is formally a no-op: the prefix ends before any turn-t row.
+		lastAssistant := -1
+		for i := range sm.contextMessages {
+			if sm.contextMessages[i].Role == "assistant" {
+				lastAssistant = i
+			}
+		}
+		if lastAssistant < 0 {
+			count = 0
+		} else if count > lastAssistant {
+			count = lastAssistant
+		}
+	}
 	count = sm.adjustCompressionBoundary(count)
 	if count <= 0 {
 		return false
 	}
-	region := sm.contextMessages[:count]
 
-	// The covered span, from the region's persisted seqs.
+	// Partition the prefix: the current turn's user-role rows — the ticket
+	// and any skill-body sidecar — are the run's INPUT and never fold. They
+	// cannot be re-derived from anything else in the session; a summary is a
+	// paraphrase of the axioms, not the axioms. They stay in L1 verbatim and
+	// re-enter the compile untouched. For b < t the predicate never fires:
+	// settled turns fold whole, user rows included.
+	tNow := sm.currentTurnLocked()
+	foldRegion := make([]Message, 0, count)
+	protected := make([]Message, 0, 2)
+	for i := 0; i < count; i++ {
+		if sm.contextMessages[i].Turn == tNow && sm.contextMessages[i].Role == "user" {
+			protected = append(protected, sm.contextMessages[i])
+			continue
+		}
+		foldRegion = append(foldRegion, sm.contextMessages[i])
+	}
+	if len(foldRegion) == 0 {
+		return false
+	}
+	region := foldRegion
+
+	// The covered span, from the folded rows' persisted seqs.
 	var loSeq, hiSeq int64
 	var seqs []int64
 	for i := range region {
@@ -691,9 +1306,29 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 	// The LOCK IS RELEASED across the call: the compressor is a pure function
 	// of the snapshot built above, and holding the write lock through a
 	// network call would serialize every reader behind it for the duration.
-	newText := ""
+	// The compressor is REQUIRED: a fold without a real summary is task
+	// amnesia when a summary was possible. A compressor that is absent or
+	// still failing after retries drops the region and says so in one line,
+	// which sheds the space without claiming a summary it does not have.
+	// Without a summariser the region is dropped and SAID to be dropped: the
+	// summary gains one line naming the span and its first user ask. Lossy and
+	// honest, and the only rung that sheds a turn whose bulk is reasoning
+	// rather than tool results — offload and eviction have nothing to take
+	// there, so a session with no compressor would otherwise meet the window
+	// with no rung left. A caller that wires no compressor relies on this.
 	fallback := false
-	if sm.compressor != nil && sm.compressor.IsEnabled() {
+	askCompressor := sm.compressor != nil && sm.compressor.IsEnabled()
+	if askCompressor && sm.compressorFailedThisPass {
+		// The compressor already failed this pass; another region is another
+		// three attempts against the same fault. Drop with the marker instead.
+		askCompressor = false
+		zap.L().Warn("releasePressure: fold dropping the region unsummarised — the compressor already failed in this pass",
+			zap.String("session_id", sm.sessionID),
+			zap.Int64("boundary_turn", b))
+	}
+	newText := ""
+	const compressAttempts = 3
+	for attempt := 1; askCompressor && attempt <= compressAttempts; attempt++ {
 		sm.mu.Unlock()
 		compressCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 		// The re-lock is DEFERRED, not sequential. ReleasePressure holds a
@@ -725,7 +1360,7 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 			return false
 		}
 
-		if err == nil && compressed != "" {
+		if err == nil && strings.TrimSpace(compressed) != "" {
 			newText = strings.TrimSpace(compressed)
 			// The first line states the covered span (§5.4.4) — enforced here
 			// when the compressor omitted it OR echoed a stale line: a span
@@ -734,12 +1369,23 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 			if !coversThrough(newText, hiSeq) {
 				newText = fmt.Sprintf("covers msg:%d-%d\n", loSeq, hiSeq) + newText
 			}
+			break
 		}
+		zap.L().Warn("releasePressure: compressor attempt failed",
+			zap.String("session_id", sm.sessionID),
+			zap.Int64("boundary_turn", b),
+			zap.Int("attempt", attempt),
+			zap.Error(err))
 	}
 	if newText == "" {
-		// Compressor failure (§5.4.5): version n+1 = the previous text
-		// unchanged plus one line — coverage is never silently claimed and
-		// never lost; the next fold's compressor pass absorbs it.
+		if askCompressor {
+			// Remember it for the rest of the pass: the next region would pay
+			// the same attempts against the same fault.
+			sm.compressorFailedThisPass = true
+			zap.L().Error("releasePressure: compressor failed after retries; the region is dropped unsummarised",
+				zap.String("session_id", sm.sessionID),
+				zap.Int64("boundary_turn", b))
+		}
 		fallback = true
 		line := fmt.Sprintf("also covers msg:%d-%d (unsummarized): %s", loSeq, hiSeq, firstUserLine(region))
 		if sm.summary.text == "" {
@@ -754,7 +1400,27 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 	// model sees which capability went out with the folded conversation and can
 	// reload it if still in use. Tracking it as state (not just this fold's text)
 	// keeps the note alive when a later fold's compressor paraphrases the summary.
-	newlyFolded := foldedSkillLoads(region)
+	//
+	// A skill whose load pair ALSO appears after the region was reloaded and its
+	// newer load is still in live context: that activation is current, so it is
+	// neither deactivated nor noted, and a note left by an earlier fold is
+	// dropped. Deactivation is by name, so without this a fold of an old load
+	// pair kills a reload from the very turn that asked for it.
+	stillLoaded := make(map[string]bool)
+	// Pass 0, not the current turn: this scan asks which skills are loaded in
+	// live context, and a reload made THIS turn is the most live activation
+	// there is — skipping it would leave an earlier fold's note standing over
+	// a skill that is active again.
+	for _, name := range foldedSkillLoads(sm.contextMessages[count:], 0) {
+		stillLoaded[name] = true
+		delete(sm.foldedSkills, name)
+	}
+	var newlyFolded []string
+	for _, name := range foldedSkillLoads(region, sm.currentTurnLocked()) {
+		if !stillLoaded[name] {
+			newlyFolded = append(newlyFolded, name)
+		}
+	}
 	if len(newlyFolded) > 0 && sm.foldedSkills == nil {
 		sm.foldedSkills = make(map[string]bool)
 	}
@@ -802,8 +1468,9 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 	// post-stage state without a re-read (folded rows are filtered at the
 	// database read on reload).
 	sm.summary = summaryState{n: n1, text: newText}
-	remaining := make([]Message, len(sm.contextMessages)-count)
-	copy(remaining, sm.contextMessages[count:])
+	remaining := make([]Message, 0, len(protected)+len(sm.contextMessages)-count)
+	remaining = append(remaining, protected...)
+	remaining = append(remaining, sm.contextMessages[count:]...)
 	sm.contextMessages = remaining
 	sm.l1Dirty = true
 	sm.updateTokenCount()
@@ -812,30 +1479,33 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 	zap.L().Info("releasePressure: fold",
 		zap.String("session_id", sm.sessionID),
 		zap.Int64("boundary_turn", b),
-		zap.Int("rows_folded", count),
+		zap.Int("rows_folded", len(region)),
+		zap.Int("rows_protected", len(protected)),
 		zap.Int64("seq_lo", loSeq),
 		zap.Int64("seq_hi", hiSeq),
 		zap.Int("version", n1),
 		zap.Int("output_bytes", len(newText)),
-		zap.Bool("fallback", fallback))
+		zap.Bool("unsummarised", fallback))
 	return true
 }
 
-// firstUserLine returns the first line of the region's first user message —
-// the §5.4.5 fallback citation.
+// firstUserLine returns the first line of the region's first user message, so
+// a dropped region still names what it was about.
 func firstUserLine(region []Message) string {
 	for i := range region {
-		if region[i].Role == "user" && region[i].Content != "" {
-			line, _, _ := strings.Cut(region[i].Content, "\n")
-			return line
+		if region[i].Role != "user" || region[i].Content == "" {
+			continue
 		}
+		line := region[i].Content
+		if j := strings.IndexByte(line, '\n'); j >= 0 {
+			line = line[:j]
+		}
+		line = strings.TrimSpace(line)
+		return collapseTo(line, 120)
 	}
-	return ""
+	return "(no user message in the region)"
 }
 
-// foldedSkillLoads returns the names of skills whose manage_skills load pair —
-// the load call paired with a "Skill loaded: " confirmation — lies inside the
-// region.
 // coversThrough reports whether text opens with a "covers msg:A-B" line whose
 // upper bound reaches hiSeq — i.e. the span line genuinely claims this fold's
 // coverage, not a stale echo of a previous version's line.
@@ -860,9 +1530,23 @@ func coversThrough(text string, hiSeq int64) bool {
 	return err == nil && hi >= hiSeq
 }
 
-func foldedSkillLoads(region []Message) []string {
+// foldedSkillLoads returns the names of skills whose manage_skills load pair —
+// the load call paired with a "Skill loaded: " confirmation — lies inside the
+// region AND belongs to a settled turn.
+//
+// A load pair from the CURRENT turn is skipped. Rung 0 folds the current turn,
+// so without this a turn that loaded a skill and then hit the window would
+// have that skill deactivated mid-turn: its tools leave the kernel while the
+// protected skill-body row — the instructions telling the model to use them —
+// stays in context. The model is then told how to drive tools it no longer
+// has. The load pair's text still folds away; the activation it created
+// outlives it, and the ordinary settled-turn fold deactivates it later.
+func foldedSkillLoads(region []Message, currentTurn int64) []string {
 	loadCalls := make(map[string]string) // tool_use_id → skill name
 	for i := range region {
+		if region[i].Turn == currentTurn {
+			continue
+		}
 		for _, c := range region[i].ToolCalls {
 			if c.Name != "manage_skills" || c.ID == "" {
 				continue
@@ -879,7 +1563,7 @@ func foldedSkillLoads(region []Message) []string {
 	seen := make(map[string]bool)
 	for i := range region {
 		m := &region[i]
-		if m.Role != "tool" || m.ToolUseID == "" {
+		if m.Role != "tool" || m.ToolUseID == "" || m.Turn == currentTurn {
 			continue
 		}
 		name := loadCalls[m.ToolUseID]

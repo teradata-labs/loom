@@ -8,7 +8,7 @@ package orchestration
 import (
 	"fmt"
 	"math"
-	"sort"
+	"slices"
 	"strings"
 
 	"google.golang.org/protobuf/proto"
@@ -520,18 +520,20 @@ func retrySessionModeShortNames() []string {
 // enumShortNames lists a generated enum's values in numeric order, minus the
 // zero value, lowercased and with the enum prefix stripped.
 func enumShortNames(names map[int32]string, prefix string) []string {
-	numbers := make([]int, 0, len(names))
+	// Keep the enum's own int32 key type end to end; converting through int
+	// and back is a needless narrowing (gosec G115).
+	numbers := make([]int32, 0, len(names))
 	for number := range names {
 		if number == 0 {
 			continue
 		}
-		numbers = append(numbers, int(number))
+		numbers = append(numbers, number)
 	}
-	sort.Ints(numbers)
+	slices.Sort(numbers)
 
 	short := make([]string, 0, len(numbers))
 	for _, number := range numbers {
-		short = append(short, strings.ToLower(strings.TrimPrefix(names[int32(number)], prefix)))
+		short = append(short, strings.ToLower(strings.TrimPrefix(names[number], prefix)))
 	}
 	return short
 }

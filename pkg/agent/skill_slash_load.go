@@ -115,12 +115,16 @@ func (a *Agent) loadSkillFromSlashCommand(ctx context.Context, session *Session,
 		return
 	}
 
-	// The body rides under the user-instruction slot, mirroring the sidecar the
-	// tool loop appends after a model-issued load (see agent.go's text_body
-	// handling) — instructions are the user's word to the model, not tool data.
+	// The body is persisted as skill_body and folds to the user role on the wire,
+	// exactly like the sidecar the tool loop appends after a model-issued load
+	// (agent.go's text_body handling). Same row for the same content, whichever
+	// route loaded the skill: a reader that separates agent-authored content
+	// from what the user actually typed — the live message stream, recall's
+	// allowlist, any UI rendering roles — must not see the two routes
+	// differently.
 	if body, ok := result.Metadata["text_body"].(string); ok && body != "" {
 		a.appendMessage(ctx, session, Message{
-			Role:      "user",
+			Role:      "skill_body",
 			Content:   body,
 			AgentID:   a.GetID(),
 			Timestamp: time.Now(),

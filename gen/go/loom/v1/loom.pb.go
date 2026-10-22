@@ -311,9 +311,28 @@ type WeaveRequest struct {
 	// (FAILED_PRECONDITION), and reject values in the future beyond a small
 	// clock-skew allowance (INVALID_ARGUMENT). Live conversations should leave
 	// it unset.
-	OccurredAt    *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=occurred_at,json=occurredAt,proto3" json:"occurred_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	OccurredAt *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=occurred_at,json=occurredAt,proto3" json:"occurred_at,omitempty"`
+	// Generation-free replay: when set, the agent does NOT call the LLM to
+	// generate a response. Instead it records this text verbatim as the
+	// assistant's turn and runs the full turn pipeline exactly as a live turn
+	// would — context compilation, memory compression (relief/fold),
+	// graph-memory extraction, and salience updates. Only generation is skipped.
+	//
+	// This replays a pre-written conversation turn-by-turn while preserving the
+	// ground-truth assistant content (never inventing the assistant's side), so
+	// the memory system is exercised under realistic accumulation. It is used by
+	// the LongMemEval conversation-replay harness and is typically paired with
+	// occurred_at to anchor each turn at its historical time.
+	//
+	// Gated by its own server.allow_assistant_override switch
+	// (FAILED_PRECONDITION when disabled) — separate from occurred_at's
+	// server.allow_time_override, so operators who enabled timestamp anchoring
+	// have not implicitly accepted caller-supplied assistant content.
+	// Whitespace-only values are rejected (INVALID_ARGUMENT). Live
+	// conversations leave it unset.
+	ReplayAssistantMessage string `protobuf:"bytes,12,opt,name=replay_assistant_message,json=replayAssistantMessage,proto3" json:"replay_assistant_message,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *WeaveRequest) Reset() {
@@ -421,6 +440,13 @@ func (x *WeaveRequest) GetOccurredAt() *timestamppb.Timestamp {
 		return x.OccurredAt
 	}
 	return nil
+}
+
+func (x *WeaveRequest) GetReplayAssistantMessage() string {
+	if x != nil {
+		return x.ReplayAssistantMessage
+	}
+	return ""
 }
 
 // WeaveResponse contains the execution result.
@@ -602,12 +628,23 @@ type WeaveProgress struct {
 	ToolSuccess bool `protobuf:"varint,18,opt,name=tool_success,json=toolSuccess,proto3" json:"tool_success,omitempty"`
 	// Tool execution duration in milliseconds (when is_tool_completed)
 	ToolDurationMs int64 `protobuf:"varint,19,opt,name=tool_duration_ms,json=toolDurationMs,proto3" json:"tool_duration_ms,omitempty"`
-	// Unique identifier correlating started/completed events for the same tool call
+	// Unique identifier correlating started/completed events for the same tool
+	// call; also set on is_tool_input_stream events so they match the later
+	// started event.
 	ToolCallId string `protobuf:"bytes,20,opt,name=tool_call_id,json=toolCallId,proto3" json:"tool_call_id,omitempty"`
 	// Context window state (included in completion event)
-	ContextState  *ContextState `protobuf:"bytes,21,opt,name=context_state,json=contextState,proto3" json:"context_state,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ContextState *ContextState `protobuf:"bytes,21,opt,name=context_state,json=contextState,proto3" json:"context_state,omitempty"`
+	// True while the model is still writing a tool call's arguments. Carries no
+	// argument content; tool_name, tool_call_id and tool_input_bytes identify the
+	// call when the provider reports them.
+	IsToolInputStream bool `protobuf:"varint,22,opt,name=is_tool_input_stream,json=isToolInputStream,proto3" json:"is_tool_input_stream,omitempty"`
+	// Bytes of tool-call argument JSON received so far (when is_tool_input_stream).
+	// Events are throttled, so the last value can lag the final size. A bare pulse
+	// from a provider that does not report sizes has no tool_call_id or tool_name
+	// and a size of 0; with either set, 0 means no arguments have arrived yet.
+	ToolInputBytes int64 `protobuf:"varint,23,opt,name=tool_input_bytes,json=toolInputBytes,proto3" json:"tool_input_bytes,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *WeaveProgress) Reset() {
@@ -785,6 +822,20 @@ func (x *WeaveProgress) GetContextState() *ContextState {
 		return x.ContextState
 	}
 	return nil
+}
+
+func (x *WeaveProgress) GetIsToolInputStream() bool {
+	if x != nil {
+		return x.IsToolInputStream
+	}
+	return false
+}
+
+func (x *WeaveProgress) GetToolInputBytes() int64 {
+	if x != nil {
+		return x.ToolInputBytes
+	}
+	return 0
 }
 
 // HITLRequestInfo carries information about a human-in-the-loop request.
@@ -10906,7 +10957,7 @@ var File_loom_v1_loom_proto protoreflect.FileDescriptor
 
 const file_loom_v1_loom_proto_rawDesc = "" +
 	"\n" +
-	"\x12loom/v1/loom.proto\x12\aloom.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1aloom/v1/agent_config.proto\x1a\x12loom/v1/apps.proto\x1a\x11loom/v1/bus.proto\x1a\x1bloom/v1/communication.proto\x1a\x1bloom/v1/orchestration.proto\x1a\x14loom/v1/server.proto\x1a\x1bloom/v1/shared_memory.proto\x1a\x15loom/v1/storage.proto\x1a\x17loom/v1/templates.proto\x1a\x13loom/v1/tools.proto\"\xdd\x04\n" +
+	"\x12loom/v1/loom.proto\x12\aloom.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1aloom/v1/agent_config.proto\x1a\x12loom/v1/apps.proto\x1a\x11loom/v1/bus.proto\x1a\x1bloom/v1/communication.proto\x1a\x1bloom/v1/orchestration.proto\x1a\x14loom/v1/server.proto\x1a\x1bloom/v1/shared_memory.proto\x1a\x15loom/v1/storage.proto\x1a\x17loom/v1/templates.proto\x1a\x13loom/v1/tools.proto\"\x97\x05\n" +
 	"\fWeaveRequest\x12\x14\n" +
 	"\x05query\x18\x01 \x01(\tR\x05query\x12\x1d\n" +
 	"\n" +
@@ -10922,7 +10973,8 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\rreset_context\x18\n" +
 	" \x01(\bR\fresetContext\x12;\n" +
 	"\voccurred_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"occurredAt\x1a@\n" +
+	"occurredAt\x128\n" +
+	"\x18replay_assistant_message\x18\f \x01(\tR\x16replayAssistantMessage\x1a@\n" +
 	"\x12BackendConfigEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a:\n" +
@@ -10939,7 +10991,7 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\bmetadata\x18\x06 \x01(\v2\x1a.loom.v1.ExecutionMetadataR\bmetadata\x12@\n" +
 	"\vcorrections\x18\a \x03(\v2\x1e.loom.v1.SelfCorrectionAttemptR\vcorrections\x12\x19\n" +
 	"\bagent_id\x18\b \x01(\tR\aagentId\x12:\n" +
-	"\rcontext_state\x18\t \x01(\v2\x15.loom.v1.ContextStateR\fcontextState\"\xee\x06\n" +
+	"\rcontext_state\x18\t \x01(\v2\x15.loom.v1.ContextStateR\fcontextState\"\xc9\a\n" +
 	"\rWeaveProgress\x12-\n" +
 	"\x05stage\x18\x01 \x01(\x0e2\x17.loom.v1.ExecutionStageR\x05stage\x12\x1a\n" +
 	"\bprogress\x18\x02 \x01(\x05R\bprogress\x12\x18\n" +
@@ -10967,7 +11019,9 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\x10tool_duration_ms\x18\x13 \x01(\x03R\x0etoolDurationMs\x12 \n" +
 	"\ftool_call_id\x18\x14 \x01(\tR\n" +
 	"toolCallId\x12:\n" +
-	"\rcontext_state\x18\x15 \x01(\v2\x15.loom.v1.ContextStateR\fcontextState\"\x92\x02\n" +
+	"\rcontext_state\x18\x15 \x01(\v2\x15.loom.v1.ContextStateR\fcontextState\x12/\n" +
+	"\x14is_tool_input_stream\x18\x16 \x01(\bR\x11isToolInputStream\x12(\n" +
+	"\x10tool_input_bytes\x18\x17 \x01(\x03R\x0etoolInputBytes\"\x92\x02\n" +
 	"\x0fHITLRequestInfo\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x1a\n" +

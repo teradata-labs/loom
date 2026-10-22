@@ -266,11 +266,26 @@ func TestManualMode_SlashCommandLoadsManualSkill(t *testing.T) {
 	bodies := 0
 	for _, m := range first.Messages {
 		if strings.Contains(m.Content, manualBodySentinel) {
-			assert.Equal(t, "user", m.Role, "the body rides the user-instruction slot")
+			assert.Equal(t, "user", m.Role, "on the wire the body rides the user-instruction slot")
 			bodies++
 		}
 	}
 	assert.Equal(t, 1, bodies, "the model saw the skill body exactly once, on this turn")
+
+	// In the transcript it is skill_body, the role a model-issued load writes.
+	// The wire role above folds from it. Both routes load the same content, so a
+	// reader that separates agent-authored content from what the user typed must
+	// not be able to tell them apart.
+	sess, ok := rig.agent.GetSession(sessionID)
+	require.True(t, ok, "the session is retrievable")
+	persisted := 0
+	for _, m := range sess.GetMessages() {
+		if strings.Contains(m.Content, manualBodySentinel) {
+			assert.Equal(t, "skill_body", m.Role, "the persisted body row carries the synthetic role")
+			persisted++
+		}
+	}
+	assert.Equal(t, 1, persisted, "the body was persisted once")
 }
 
 // TestManualMode_SlashLoadLeavesTheRestoreMarker asserts the rows a slash load

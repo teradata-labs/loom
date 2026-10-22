@@ -43,7 +43,7 @@ func TestClient_ConvertResponse_ReasoningContent(t *testing.T) {
 		Usage: ChatCompletionUsage{PromptTokens: 5, CompletionTokens: 7, TotalTokens: 12},
 	}
 
-	got := client.convertResponse(resp)
+	got := client.convertResponse(resp, 0)
 	assert.Equal(t, "The answer is 42.", got.Content)
 	assert.Equal(t, "the user wants the answer; compute it", got.Thinking)
 }
@@ -67,7 +67,7 @@ func TestClient_ConvertResponse_ReasoningOnly(t *testing.T) {
 		},
 	}
 
-	got := client.convertResponse(resp)
+	got := client.convertResponse(resp, 0)
 	assert.Empty(t, got.Content)
 	assert.Equal(t, "…still thinking…", got.Thinking)
 }

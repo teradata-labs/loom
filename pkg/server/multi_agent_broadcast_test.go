@@ -65,7 +65,7 @@ func (m *mockLLMForBroadcastTest) GetInjectedMessages() []string {
 
 // setupBroadcastTestServer creates a test server with message bus configured
 func setupBroadcastTestServer(t *testing.T, agents map[string]*agent.Agent, registry *agent.Registry) *MultiAgentServer {
-	logger := zaptest.NewLogger(t)
+	logger := newTestLogger(t)
 	tracer := observability.NewNoOpTracer()
 
 	sessionStore, err := agent.NewSessionStore(":memory:", tracer)

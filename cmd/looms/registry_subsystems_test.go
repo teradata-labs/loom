@@ -28,6 +28,10 @@ type spyRegistrySink struct {
 	taskManagerSet bool
 	graphStoreSet  bool
 	suppressedSet  []string
+	// memoryOff lists agent IDs the spy reports as graph-memory disabled.
+	memoryOff map[string]bool
+	// policyQueried records agent IDs the wired task manager asked about.
+	policyQueried []string
 }
 
 func (s *spyRegistrySink) SetTaskManager(*task.Manager, *task.Decomposer) { s.taskManagerSet = true }
@@ -35,6 +39,10 @@ func (s *spyRegistrySink) SetGraphMemoryStore(memory.GraphMemoryStore, memory.Em
 	s.graphStoreSet = true
 }
 func (s *spyRegistrySink) SetSuppressedBuiltinTools(names []string) { s.suppressedSet = names }
+func (s *spyRegistrySink) GraphMemoryEnabledFor(nameOrID string) bool {
+	s.policyQueried = append(s.policyQueried, nameOrID)
+	return !s.memoryOff[nameOrID]
+}
 
 // stubGraphStore is a non-nil memory.GraphMemoryStore whose methods are never
 // invoked here (the helper only checks for nil). Embedding the interface
@@ -70,5 +78,29 @@ func TestWireRegistrySubsystems(t *testing.T) {
 		assert.False(t, spy.taskManagerSet, "nil task manager must not be injected")
 		assert.False(t, spy.graphStoreSet, "nil graph store must not be injected")
 		assert.Nil(t, spy.suppressedSet, "empty suppression list must not call the setter")
+	})
+
+	t.Run("task-completion memory is gated on the registry's per-agent setting", func(t *testing.T) {
+		spy := &spyRegistrySink{memoryOff: map[string]bool{"agent-off": true}}
+		tm := task.NewManager(nil, nil, nil, zap.NewNop())
+		gm := memory.GraphMemoryStore(&stubGraphStore{})
+		tm.SetGraphMemory(gm)
+		wireRegistrySubsystems(spy, tm, nil, gm, nil, nil, zap.NewNop())
+
+		assert.False(t, tm.MemoryRecordingAllowed("agent-off"),
+			"an agent with graph_memory.enabled=false must not receive task-completion memories")
+		assert.True(t, tm.MemoryRecordingAllowed("agent-on"),
+			"default-on agents keep receiving task-completion memories")
+		assert.ElementsMatch(t, []string{"agent-off", "agent-on"}, spy.policyQueried,
+			"the gate must consult the registry, not a cached view")
+	})
+
+	t.Run("without a graph store no policy is installed and recording is off", func(t *testing.T) {
+		spy := &spyRegistrySink{}
+		tm := task.NewManager(nil, nil, nil, zap.NewNop())
+		wireRegistrySubsystems(spy, tm, nil, nil, nil, nil, zap.NewNop())
+
+		assert.False(t, tm.MemoryRecordingAllowed("any-agent"))
+		assert.Empty(t, spy.policyQueried, "no store means the registry is never consulted")
 	})
 }

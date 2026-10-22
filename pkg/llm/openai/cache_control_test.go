@@ -75,9 +75,14 @@ func TestChatStream_CacheControlAndUsage(t *testing.T) {
 		}
 	}
 
-	// (2) the streamed usage chunk's cache tokens are parsed back.
-	if resp.Usage.InputTokens != 100 {
-		t.Errorf("input tokens: got %d want 100", resp.Usage.InputTokens)
+	// (2) the streamed usage chunk's cache tokens are parsed back, and
+	// InputTokens carries only the uncached remainder of prompt_tokens
+	// (100 - 80 read - 20 write).
+	if resp.Usage.InputTokens != 0 {
+		t.Errorf("input tokens: got %d want 0", resp.Usage.InputTokens)
+	}
+	if resp.Usage.TotalTokens != 5 {
+		t.Errorf("total tokens: got %d want 5", resp.Usage.TotalTokens)
 	}
 	if resp.Usage.CacheReadInputTokens != 80 {
 		t.Errorf("cache_read: got %d want 80", resp.Usage.CacheReadInputTokens)
