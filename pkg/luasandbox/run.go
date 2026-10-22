@@ -16,6 +16,7 @@ package luasandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"runtime/debug"
@@ -93,15 +94,24 @@ func Run(ctx context.Context, p Program, lim Limits, h Host) (res *RunResult) {
 	case len(p.Source) > lim.MaxSourceBytes:
 		return &RunResult{Outcome: OutcomeScriptError, Error: fmt.Sprintf("the script is %d bytes; the limit is %d", len(p.Source), lim.MaxSourceBytes)}
 	}
-	if err := checkSourceShape(chunk, p.Source); err != nil {
-		return &RunResult{Outcome: OutcomeScriptError, Error: err.Error()}
-	}
 
+	// The wall budget starts here, before any work on the source: checking,
+	// parsing and compiling a source at MaxSourceBytes takes long enough
+	// (seconds under the race detector) that it must honor the deadline and
+	// cancellation like the script itself.
 	runCtx, cancel := context.WithTimeout(ctx, lim.Wall)
 	defer cancel()
 	s := &run{parent: ctx, ctx: runCtx, lim: lim, host: h, chunk: chunk, out: newCappedWriter(lim.MaxOutputBytes)}
 	if d, ok := ctx.Deadline(); ok && d.Before(start.Add(lim.Wall)) {
 		s.parentDeadlineBinds = true
+	}
+	if err := checkSourceShape(runCtx, chunk, p.Source); err != nil {
+		if runCtx.Err() != nil && errors.Is(err, runCtx.Err()) {
+			res := &RunResult{}
+			res.Outcome, res.Limit, res.Error = s.endReason()
+			return s.result(res)
+		}
+		return &RunResult{Outcome: OutcomeScriptError, Error: err.Error()}
 	}
 	return s.execute(p)
 }
@@ -114,11 +124,6 @@ func (s *run) execute(p Program) *RunResult {
 		r.Close(nil)
 	}()
 	s.installGlobals()
-
-	chunk, err := r.CompileAndLoadLuaChunk(s.chunk, []byte(p.Source), rt.TableValue(r.GlobalEnv()))
-	if err != nil {
-		return s.result(&RunResult{Outcome: OutcomeScriptError, Error: cleanError(err)})
-	}
 
 	// The run context carries the sooner of the caller's deadline and the
 	// wall budget; golua enforces the same instant from inside the VM.
@@ -141,6 +146,14 @@ func (s *run) execute(p Program) *RunResult {
 		},
 		Interrupt: intr,
 	}, func() error {
+		// Compiling inside the limited context charges its CPU and memory
+		// estimate to the run's budget, and golua polls the interrupt and
+		// the time limit while it scans, parses and compiles, so a large
+		// source stops as promptly as a running script.
+		chunk, err := r.CompileAndLoadLuaChunk(s.chunk, []byte(p.Source), rt.TableValue(r.GlobalEnv()))
+		if err != nil {
+			return err
+		}
 		s.installProgram(thread, p)
 		v, err := rt.Call1(thread, rt.FunctionValue(chunk))
 		ret = v

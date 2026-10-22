@@ -1,3 +1,6 @@
+// Modified for loom, 2026: CompileStat polls (loom-only; see
+// third_party/golua/README.md for the list of changes from upstream).
+
 package astcomp
 
 import (
@@ -371,6 +374,7 @@ func (c *compiler) ProcessWhileStat(s ast.WhileStat) {
 }
 
 func (c *compiler) CompileStat(s ast.Stat) {
+	c.poll.tick()
 	s.ProcessStat(c)
 }
 

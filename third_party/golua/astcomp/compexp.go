@@ -1,3 +1,6 @@
+// Modified for loom, 2026: compileExp polls (loom-only; see
+// third_party/golua/README.md for the list of changes from upstream).
+
 package astcomp
 
 import (
@@ -290,6 +293,7 @@ func (c *etcExpCompiler) CompileTailExp(e ast.TailExpNode) {
 
 // compileExp compiles the given expression into a register and returns it.
 func (c *compiler) compileExp(e ast.ExpNode, dst ir.Register) ir.Register {
+	c.poll.tick()
 	ec := expCompiler{
 		compiler: c,
 		dst:      dst,
