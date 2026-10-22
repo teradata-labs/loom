@@ -380,6 +380,13 @@ func (r *Runner) createTempAgent(ctx context.Context, questionID string) (string
 	cfg.Name = fmt.Sprintf("lme-tmp-%s", questionID)
 	cfg.Description = fmt.Sprintf("LongMemEval temp agent for %s", questionID)
 
+	// A runner killed before its deferred cleanup (SIGKILL, OOM, node loss)
+	// leaves this name registered with the earlier attempt's memory, and the
+	// create below would fail "already running". Remove any such leftover.
+	if _, err := r.client.DeleteAgent(ctx, &loomv1.DeleteAgentRequest{AgentId: cfg.Name, Force: true}); err != nil && status.Code(err) != codes.NotFound {
+		return "", fmt.Errorf("remove stale temp agent %s: %w", cfg.Name, err)
+	}
+
 	info, err := r.client.CreateAgentFromConfig(ctx, &loomv1.CreateAgentRequest{
 		Config: cfg,
 	})

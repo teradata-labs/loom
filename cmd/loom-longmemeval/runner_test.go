@@ -224,7 +224,11 @@ func (f *fakeLoomClient) CreateAgentFromConfig(_ context.Context, _ *loomv1.Crea
 	return &loomv1.AgentInfo{Id: "agent-fake"}, nil
 }
 
-func (f *fakeLoomClient) DeleteAgent(ctx context.Context, _ *loomv1.DeleteAgentRequest, _ ...grpc.CallOption) (*loomv1.DeleteAgentResponse, error) {
+func (f *fakeLoomClient) DeleteAgent(ctx context.Context, in *loomv1.DeleteAgentRequest, _ ...grpc.CallOption) (*loomv1.DeleteAgentResponse, error) {
+	if in.GetAgentId() != "agent-fake" {
+		// The stale-name sweep before create: nothing left over here.
+		return nil, status.Errorf(codes.NotFound, "agent not found: %s", in.GetAgentId())
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.deleteAgentCtxErrs = append(f.deleteAgentCtxErrs, ctx.Err())
