@@ -230,7 +230,11 @@ Go stops at the first entry that cannot fit and charges CPU per entry visited, s
   call's context: `advertisedTools(session)` after `recovery.activeTools`, so
   circuit-broken, permission-disabled and not-yet-activated tools are excluded. The
   bridge never re-derives the set, which could widen it, and refuses to start when the
-  context carries none.
+  context carries none. A `run_lua` call parked for approval keeps its requesting
+  call's projection: the park records the names, and the resume narrows the
+  resume-time set to them, so nothing registered or re-enabled while the batch waited
+  becomes visible; a parked row without the record gets no projection and the run is
+  refused (`docs/architecture/hitl-park-and-resume.md` §3.2).
 - **Filtering.** `Policy.Visible(projection, trust)` then applies the engine's hard-deny
   list, the reserved names (`run_lua`, `manage_lua_scripts`, `lua_*`, added by the bridge
   whatever the host configured), `Deny`, `DenyForShared` for scripts the runner did not

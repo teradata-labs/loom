@@ -145,6 +145,12 @@ func (a *Agent) maybeParkResourceBatch(ctx Context, sess *Session, st *batchStat
 		items = append(items, parkItem{call: h.call, seq: h.seq, kind: "resource", uri: h.uri})
 	}
 
+	// The batch's provider-call projection, as recovery left it during
+	// dispatch: recorded so a resume never widens it.
+	var advertised []shuttle.Tool
+	if st.tools != nil {
+		advertised = *st.tools
+	}
 	now := time.Now()
 	params, truncated := buildParkParams(items)
 	kind, question := parkKindAndQuestion(items)
@@ -153,7 +159,7 @@ func (a *Agent) maybeParkResourceBatch(ctx Context, sess *Session, st *batchStat
 		AgentID:         a.GetID(),
 		SessionID:       sess.ID,
 		Question:        question,
-		Context:         map[string]interface{}{"kind": "parked"},
+		Context:         parkedRequestContext(advertised),
 		RequestType:     "parked",
 		Priority:        "normal",
 		Kind:            kind,
