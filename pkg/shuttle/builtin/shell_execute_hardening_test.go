@@ -208,7 +208,7 @@ func TestShellExecute_WorkingDirSymlinkEscapeIsRefused(t *testing.T) {
 	assert.True(t, res.Success, "a real directory inside LOOM_DATA_DIR is allowed: %+v", res.Error)
 }
 
-func TestWithinDir(t *testing.T) {
+func TestPathWithin(t *testing.T) {
 	for _, tc := range []struct {
 		root, path string
 		want       bool
@@ -223,7 +223,7 @@ func TestWithinDir(t *testing.T) {
 		{"/tmp", "/tmp/foo", true},
 		{"/", "/anything", true},
 	} {
-		assert.Equal(t, tc.want, withinDir(tc.root, tc.path), "withinDir(%q, %q)", tc.root, tc.path)
+		assert.Equal(t, tc.want, pathWithin(tc.path, tc.root), "pathWithin(%q, %q)", tc.path, tc.root)
 	}
 }
 
