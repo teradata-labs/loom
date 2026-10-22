@@ -140,3 +140,24 @@ func TestWriteHITLParams(t *testing.T) {
 	writeHITLParams(&buf, &shuttle.HumanRequest{})
 	assert.Empty(t, buf.String(), "a question carries no parameters")
 }
+
+func TestHITLListLabel_ControlCharsStayInOneCell(t *testing.T) {
+	label := hitlListLabel(&shuttle.HumanRequest{
+		Question: `Approve tool call "shell_execute"?`,
+		Summary:  "shell_execute command=echo first\necho second\r\tdone",
+	})
+	assert.NotContains(t, label, "\n")
+	assert.NotContains(t, label, "\r")
+	assert.NotContains(t, label, "\t", "a tab would shift the tabwriter columns")
+	assert.Equal(t, `shell_execute command=echo first\necho second\r\tdone`, label)
+}
+
+func TestWriteHITLParams_WarnsWhenEveryParameterWasDropped(t *testing.T) {
+	for name, params := range map[string]map[string]interface{}{"nil": nil, "empty": {}} {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			writeHITLParams(&buf, &shuttle.HumanRequest{Params: params, ParamsTruncated: true})
+			assert.Contains(t, buf.String(), "too large for the approval record")
+		})
+	}
+}

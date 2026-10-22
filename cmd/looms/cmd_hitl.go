@@ -23,6 +23,7 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode"
 
 	"github.com/spf13/cobra"
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
@@ -608,16 +609,37 @@ func runHitlRespond(cmd *cobra.Command, args []string) {
 
 // hitlListLabel is the one-line label `hitl list` shows for a request: the
 // call digest for an approval (which names the tool and its arguments), else
-// the question, cut to 70 characters on a rune boundary.
+// the question, with control characters escaped so it stays in one table
+// cell, cut to 70 characters on a rune boundary.
 func hitlListLabel(req *shuttle.HumanRequest) string {
 	label := req.Question
 	if req.Summary != "" {
 		label = req.Summary
 	}
+	label = escapeControlChars(label)
 	if r := []rune(label); len(r) > 70 {
 		label = string(r[:67]) + "..."
 	}
 	return label
+}
+
+func escapeControlChars(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r == '\n':
+			b.WriteString(`\n`)
+		case r == '\r':
+			b.WriteString(`\r`)
+		case r == '\t':
+			b.WriteString(`\t`)
+		case unicode.IsControl(r):
+			fmt.Fprintf(&b, `\u%04x`, r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // writeHITLParams prints the parameters of the call an approval request holds,
@@ -625,6 +647,12 @@ func hitlListLabel(req *shuttle.HumanRequest) string {
 // whole command). Nothing is printed when the request carries none.
 func writeHITLParams(w io.Writer, req *shuttle.HumanRequest) {
 	if len(req.Params) == 0 {
+		// The size bound can drop every parameter; the person deciding must
+		// still learn the digest above is not the whole call.
+		if req.ParamsTruncated {
+			_, _ = fmt.Fprintln(w, "Parameters:     (too large for the approval record and not shown)")
+			_, _ = fmt.Fprintln(w)
+		}
 		return
 	}
 	// No HTML escaping: a shell command's "&&" must read as written.
