@@ -46,6 +46,13 @@ func NewBackend(config *loomv1.BackendConfig) (fabric.ExecutionBackend, error) {
 	case "postgres", "mysql", "sqlite":
 		return newSQLBackend(config)
 
+	case "duckdb":
+		dbConfig := config.GetDatabase()
+		if dbConfig == nil || dbConfig.Dsn == "" {
+			return nil, fmt.Errorf("duckdb backend requires database.dsn (the db file path)")
+		}
+		return NewDuckDBBackend(config.Name, dbConfig.Dsn)
+
 	case "file":
 		return newFileBackend(config)
 

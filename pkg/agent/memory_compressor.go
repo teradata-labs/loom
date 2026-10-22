@@ -53,7 +53,13 @@ func NewLLMCompressor(llmCaller LLMCaller) *LLMCompressor {
 }
 
 // CompressMessages compresses a slice of messages into a concise summary.
-// Uses LLM if available, otherwise falls back to simple extraction.
+//
+// A failure is REPORTED, never papered over. The caller that matters is the
+// fold (foldLocked), whose contract is that a fold without a real summary is
+// task amnesia: it retries, then aborts and lets the relief ladder move on.
+// Returning a keyword-extraction stub with a nil error made that contract
+// unreachable — a failed compressor committed a bag of words as the session's
+// memory, and nothing downstream could tell the difference.
 //
 // LLM compression typically achieves:
 // - 50-80% token reduction
@@ -61,7 +67,9 @@ func NewLLMCompressor(llmCaller LLMCaller) *LLMCompressor {
 // - Preservation of key context (tables, queries, findings)
 func (c *LLMCompressor) CompressMessages(ctx context.Context, messages []Message) (string, error) {
 	if !c.enabled {
-		// Fallback to simple compression
+		// Not configured to call a model: the keyword extraction is all this
+		// compressor has, and it is honest about which it is because the
+		// caller asked a disabled compressor.
 		return c.simpleCompress(messages), nil
 	}
 
@@ -75,20 +83,20 @@ func (c *LLMCompressor) CompressMessages(ctx context.Context, messages []Message
 	// Use LLM to create compressed summary
 	summary, err := c.llmCaller.CompressConversation(ctx, conversationText)
 	if err != nil {
-		// Fall back to simple compression on error
-		return c.simpleCompress(messages), nil
+		return "", fmt.Errorf("compressor call failed: %w", err)
 	}
 
 	if summary == "" {
-		// Fallback if LLM returned nothing
-		return c.simpleCompress(messages), nil
+		return "", fmt.Errorf("compressor returned an empty summary")
 	}
 
 	return strings.TrimSpace(summary), nil
 }
 
 // simpleCompress performs basic keyword extraction without LLM.
-// Used as fallback when LLM is unavailable or errors occur.
+// Used only when CompressMessages is called on a disabled compressor (no
+// LLMCaller); LLM errors are returned, never replaced by this. The fold does
+// not reach it: it checks IsEnabled and drops with an "(unsummarized)" marker.
 func (c *LLMCompressor) simpleCompress(messages []Message) string {
 	var parts []string
 
@@ -156,8 +164,8 @@ type promptRegistryCompressor struct {
 
 // newPromptRegistryCompressor builds an LLMCaller backed by an LLM provider and
 // a prompt registry. Both must be non-nil for compression to run; a nil registry
-// or a failed prompt load surfaces as an error so LLMCompressor falls back to
-// the heuristic.
+// or a failed prompt load surfaces as an error, which LLMCompressor returns to
+// its caller (the fold then drops the region with an "(unsummarized)" marker).
 func newPromptRegistryCompressor(llm LLMProvider, registry prompts.PromptRegistry) *promptRegistryCompressor {
 	return &promptRegistryCompressor{llm: llm, prompts: registry}
 }
