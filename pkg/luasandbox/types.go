@@ -148,6 +148,11 @@ const (
 	CodeResourcePending  = "RESOURCE_PENDING"
 	CodeExecutionFailed  = "execution_failed"
 	CodeToolCallTimeout  = "TOOL_CALL_TIMEOUT"
+	// CodeHostError and CodeRunEnded appear only in the call ledger: the
+	// host failed (the run ends with OutcomeHostError), or the run itself
+	// ended while the call was in flight.
+	CodeHostError = "HOST_ERROR"
+	CodeRunEnded  = "RUN_ENDED"
 )
 
 // CallRecord is one entry of a run's call ledger.

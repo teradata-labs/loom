@@ -217,5 +217,13 @@ func boundError(s string) string {
 	if len(s) <= maxErrorBytes {
 		return s
 	}
-	return string(trimToRuneEnd([]byte(s[:maxErrorBytes]))) + fmt.Sprintf(" [... %d bytes elided]", len(s)-maxErrorBytes)
+	// The marker counts toward maxErrorBytes. Its length is computed for
+	// the largest count it can show, so the result always fits.
+	keep := maxErrorBytes - len(errorElision(len(s)))
+	kept := trimToRuneEnd([]byte(s[:keep]))
+	return string(kept) + errorElision(len(s)-len(kept))
+}
+
+func errorElision(n int) string {
+	return fmt.Sprintf(" [... %d bytes elided]", n)
 }

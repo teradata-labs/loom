@@ -82,10 +82,34 @@ func (w *cappedWriter) String() (string, bool) {
 	if len(tail) > w.tailCap {
 		tail = tail[len(tail)-w.tailCap:]
 	}
-	head := trimToRuneEnd(w.head)
+	// The marker is part of the limit: head and tail give its bytes up in
+	// the writer's own one-third / two-thirds split, so the rendered output
+	// never exceeds headCap+tailCap.
+	// A wider elided count only makes the marker longer, so its length is
+	// computed from the largest count it can show.
+	room := w.headCap + w.tailCap - len(elisionMarker(w.total))
+	if room < 0 {
+		// A limit shorter than the marker keeps only the start; the
+		// caller's truncation flag reports the cut.
+		return string(trimToRuneEnd(w.head)), true
+	}
+	head := w.head
+	if over := len(head) + len(tail) - room; over > 0 {
+		cut := min(over/3, len(head))
+		head, over = head[:len(head)-cut], over-cut
+		cut = min(over, len(tail))
+		tail, over = tail[cut:], over-cut
+		head = head[:len(head)-min(over, len(head))]
+	}
+	head = trimToRuneEnd(head)
 	tail = trimToRuneStart(tail)
-	elided := w.total - int64(len(head)) - int64(len(tail))
-	return fmt.Sprintf("%s\n[... %d bytes of output elided ...]\n%s", head, elided, tail), true
+	marker := elisionMarker(w.total - int64(len(head)) - int64(len(tail)))
+	return string(head) + marker + string(tail), true
+}
+
+// elisionMarker is the line that replaces elided output.
+func elisionMarker(elided int64) string {
+	return fmt.Sprintf("\n[... %d bytes of output elided ...]\n", elided)
 }
 
 // trimToRuneEnd drops a trailing partial UTF-8 sequence.
@@ -107,6 +131,9 @@ func trimToRuneStart(b []byte) []byte {
 		if utf8.RuneStart(b[i]) {
 			return b[i:]
 		}
+	}
+	if len(b) <= utf8.UTFMax {
+		return b[len(b):] // only the end of a cut rune
 	}
 	return b
 }

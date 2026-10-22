@@ -16,6 +16,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 // agentState tracks lifecycle state for an agent managed by the server.
@@ -86,8 +87,24 @@ func (s *MultiAgentServer) buildAgentInfo(ag *agent.Agent, agentID string, state
 		info.CreatedAt = time.Now().Unix()
 		info.UpdatedAt = time.Now().Unix()
 	}
+	if info.Config == nil && s.registry != nil {
+		info.Config = s.registry.GetConfig(ag.GetName())
+	}
+	info.Config = redactAgentConfig(info.Config)
 
 	return info
+}
+
+func redactAgentConfig(config *loomv1.AgentConfig) *loomv1.AgentConfig {
+	if config == nil {
+		return nil
+	}
+
+	safe := proto.Clone(config).(*loomv1.AgentConfig)
+	if safe.Memory != nil && safe.Memory.Dsn != "" {
+		safe.Memory.Dsn = "[REDACTED]"
+	}
+	return safe
 }
 
 // snapshotStateLocked reads and snapshots agent state. Must be called with s.mu held (read or write).

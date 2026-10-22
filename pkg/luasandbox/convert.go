@@ -17,8 +17,10 @@ package luasandbox
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"slices"
 	"strconv"
 
@@ -119,6 +121,9 @@ func (c *goConv) value(v rt.Value, depth int) (x any, keep bool, err error) {
 	case rt.FloatType:
 		f := v.AsFloat()
 		if math.IsNaN(f) || math.IsInf(f, 0) {
+			if !c.truncate {
+				return nil, false, errors.New("NaN and infinity cannot be encoded as JSON")
+			}
 			c.nonFinite++
 			return c.scalar(nil, 4)
 		}
@@ -208,11 +213,18 @@ func (c *goConv) table(t *rt.Table, depth int) (any, bool, error) {
 		arr := make([]any, 0, min(count, maxEntries))
 		for i := int64(1); i <= maxIndex; i++ {
 			c.visit()
+			if i > 1 && !c.spend(1) { // the comma before this element
+				if !c.truncate {
+					return nil, false, c.tooLarge()
+				}
+				c.cut = true
+				break
+			}
 			x, keep, err := c.value(t.Get(rt.IntValue(i)), depth)
 			if err != nil {
 				return nil, false, err
 			}
-			if !keep || !c.spend(1) {
+			if !keep {
 				c.cut = true
 				break
 			}
@@ -244,8 +256,13 @@ func (c *goConv) table(t *rt.Table, depth int) (any, bool, error) {
 		return 0
 	})
 	obj := make(map[string]any, len(entries))
-	for _, e := range entries {
-		if !c.spend(len(e.key) + 4) {
+	for i, e := range entries {
+		// "key": plus the comma before every entry but the first.
+		size := len(e.key) + 3
+		if i > 0 {
+			size++
+		}
+		if !c.spend(size) {
 			if !c.truncate {
 				return nil, false, c.tooLarge()
 			}
@@ -427,12 +444,12 @@ func uintValue(u uint64) rt.Value {
 }
 
 // normalizeJSON turns any Go value into plain JSON values by round-tripping
-// it through encoding/json. Values encoding/json rejects become their %v
-// text.
+// it through encoding/json. Values encoding/json rejects become a short
+// description of their type.
 func normalizeJSON(v any) any {
 	b, err := json.Marshal(v)
 	if err != nil {
-		return fmt.Sprintf("%v", v)
+		return unencodable(v)
 	}
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.UseNumber()
@@ -443,42 +460,14 @@ func normalizeJSON(v any) any {
 	return out
 }
 
-// sanitize replaces the leaves of v that encoding/json rejects (channels,
-// functions, cyclic values) with their %v text, keeping the rest of the
-// structure, so one bad field does not turn a whole result into text.
-func sanitize(v any, depth int) any {
-	switch x := v.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(x))
-		for k, e := range x {
-			out[k] = sanitize(e, depth+1)
-		}
-		return out
-	case []any:
-		out := make([]any, len(x))
-		for i, e := range x {
-			out[i] = sanitize(e, depth+1)
-		}
-		return out
+// unencodable describes a value encoding/json rejects. Scalars (a channel, a
+// function, an invalid json.Number) become their %v text. Composite values
+// only name their type: fmt has no cycle detection for maps, so %v of a
+// cyclic value recurses until the Go stack is exhausted.
+func unencodable(v any) string {
+	switch reflect.ValueOf(v).Kind() {
+	case reflect.Map, reflect.Slice, reflect.Array, reflect.Struct, reflect.Pointer, reflect.Interface:
+		return fmt.Sprintf("[%T value that cannot be encoded as JSON]", v)
 	}
-	if depth > maxValueDepth {
-		return fmt.Sprintf("[nested more than %d levels deep]", maxValueDepth)
-	}
-	if _, err := json.Marshal(v); err != nil {
-		return fmt.Sprintf("%v", v)
-	}
-	return v
-}
-
-// jsonSize returns the encoded size of a Go value, or -1 when it cannot be
-// encoded.
-func jsonSize(v any) (int, []byte) {
-	if s, ok := v.(string); ok {
-		return len(s), nil
-	}
-	b, err := json.Marshal(v)
-	if err != nil {
-		return -1, nil
-	}
-	return len(b), b
+	return fmt.Sprintf("%v", v)
 }
