@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"os/exec"
@@ -401,51 +402,43 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	var overflowOnce sync.Once
 	signalOverflow := func() { overflowOnce.Do(func() { close(overflow) }) }
 
+	// readStream collects one pipe's lines. It counts raw bytes as they
+	// arrive, with no per-line limit: a bufio.Scanner fails on a token over
+	// its buffer and stops draining, so a newline-free flood blocked the
+	// writer until the timeout instead of tripping the overflow.
+	readStream := func(pipe io.Reader, lines *[]string) {
+		defer wg.Done()
+		reader := bufio.NewReaderSize(pipe, 64*1024)
+		var line []byte
+		for {
+			frag, isPrefix, err := reader.ReadLine()
+			if err != nil {
+				return
+			}
+			n := int64(len(frag))
+			if !isPrefix {
+				n++ // the newline
+			}
+			mu.Lock()
+			outputBytes += n
+			if outputBytes > maxOutputBytes {
+				outputErr = fmt.Errorf("output exceeded maximum size (%d bytes)", maxOutputBytes)
+				mu.Unlock()
+				signalOverflow()
+				return
+			}
+			line = append(line, frag...)
+			if !isPrefix {
+				*lines = append(*lines, string(line))
+				line = line[:0]
+			}
+			mu.Unlock()
+		}
+	}
+
 	wg.Add(2)
-
-	// Read stdout
-	go func() {
-		defer wg.Done()
-		scanner := bufio.NewScanner(stdoutPipe)
-		buf := make([]byte, 64*1024)   // 64KB line buffer
-		scanner.Buffer(buf, 1024*1024) // 1MB max line size
-
-		for scanner.Scan() {
-			line := scanner.Text()
-			mu.Lock()
-			outputBytes += int64(len(line)) + 1 // +1 for newline
-			if outputBytes > maxOutputBytes {
-				outputErr = fmt.Errorf("output exceeded maximum size (%d bytes)", maxOutputBytes)
-				mu.Unlock()
-				signalOverflow()
-				break
-			}
-			stdoutLines = append(stdoutLines, line)
-			mu.Unlock()
-		}
-	}()
-
-	// Read stderr
-	go func() {
-		defer wg.Done()
-		scanner := bufio.NewScanner(stderrPipe)
-		buf := make([]byte, 64*1024)   // 64KB line buffer
-		scanner.Buffer(buf, 1024*1024) // 1MB max line size
-
-		for scanner.Scan() {
-			line := scanner.Text()
-			mu.Lock()
-			outputBytes += int64(len(line)) + 1 // +1 for newline
-			if outputBytes > maxOutputBytes {
-				outputErr = fmt.Errorf("output exceeded maximum size (%d bytes)", maxOutputBytes)
-				mu.Unlock()
-				signalOverflow()
-				break
-			}
-			stderrLines = append(stderrLines, line)
-			mu.Unlock()
-		}
-	}()
+	go readStream(stdoutPipe, &stdoutLines)
+	go readStream(stderrPipe, &stderrLines)
 
 	// Wait for pipe scanners to finish, then call cmd.Wait() to get the exit code.
 	// IMPORTANT: Per Go docs, all reads from StdoutPipe/StderrPipe must complete

@@ -185,6 +185,34 @@ func TestShellExecute_OutputOverflowStopsPromptly(t *testing.T) {
 	assert.Less(t, time.Since(start), 5*time.Second, "overflow waited for the timeout")
 }
 
+// A single newline-free token larger than any line buffer must trip the
+// overflow too, on either stream, and the command must be stopped.
+func TestShellExecute_NewlineFreeOverflowStopsPromptly(t *testing.T) {
+	for _, tc := range []struct{ name, redirect string }{
+		{"stdout", ""},
+		{"stderr", " >&2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pidFile := filepath.Join(t.TempDir(), "shell.pid")
+			start := time.Now()
+			res, err := NewShellExecuteTool("").Execute(context.Background(), map[string]interface{}{
+				"command":          "echo $$ > " + pidFile + "; head -c 2000000 /dev/zero | tr '\\0' a" + tc.redirect + "; sleep 30",
+				"max_output_bytes": float64(4096),
+				"timeout_seconds":  float64(8),
+			})
+			elapsed := time.Since(start)
+			require.NoError(t, err)
+			require.NotNil(t, res.Error)
+			assert.Equal(t, "OUTPUT_OVERFLOW", res.Error.Code)
+			assert.Less(t, elapsed, 4*time.Second, "overflow waited for the timeout")
+
+			pid := readPID(t, pidFile)
+			t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+			assert.True(t, waitGone(pid, 2*time.Second), "shell %d survived the overflow", pid)
+		})
+	}
+}
+
 // working_dir confinement must follow symlinks: a link inside LOOM_DATA_DIR
 // that points outside it is outside it.
 func TestShellExecute_WorkingDirSymlinkEscapeIsRefused(t *testing.T) {
