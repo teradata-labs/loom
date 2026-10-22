@@ -7,6 +7,7 @@ package server
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -16,6 +17,7 @@ import (
 	"go.uber.org/zap/zaptest"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // newTestMultiAgentServer creates a MultiAgentServer for lifecycle tests.
@@ -198,6 +200,134 @@ func TestAgentLifecycle_GetAgent(t *testing.T) {
 			assert.Equal(t, "running", resp.Status)
 		})
 	}
+}
+
+func TestAgentLifecycle_GetAgentIncludesRegistryConfig(t *testing.T) {
+	srv := newTestMultiAgentServer(t)
+	registry, err := agent.NewRegistry(agent.RegistryConfig{
+		ConfigDir: t.TempDir(),
+		DBPath:    filepath.Join(t.TempDir(), "registry.db"),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, registry.Close()) })
+
+	t.Setenv("AGENT_LIFECYCLE_TEST_PASSWORD", "test-secret")
+	config, err := agent.LoadConfigFromString(`
+apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: test-agent
+  description: Experiment subject
+spec:
+  system_prompt: Follow the experiment protocol.
+  memory:
+    type: postgres
+    dsn: postgres://u:${AGENT_LIFECYCLE_TEST_PASSWORD}@db/x
+    graph_memory:
+      enabled: true
+`)
+	require.NoError(t, err)
+	require.Equal(t, "postgres://u:test-secret@db/x", config.GetMemory().GetDsn())
+	registry.RegisterConfig(config)
+	srv.SetAgentRegistry(registry)
+	agentIDs := srv.GetAgentIDs()
+	require.Len(t, agentIDs, 1)
+
+	checkResponse := func(t *testing.T, response *loomv1.AgentInfo) {
+		t.Helper()
+		require.NotNil(t, response.Config)
+		assert.Equal(t, config.Name, response.Config.Name)
+		assert.Equal(t, config.SystemPrompt, response.Config.SystemPrompt)
+		assert.Equal(t, "[REDACTED]", response.Config.GetMemory().GetDsn())
+		assert.True(t, response.Config.GetMemory().GetGraphMemory().GetEnabled())
+		data, err := protojson.Marshal(response)
+		require.NoError(t, err)
+		assert.NotContains(t, string(data), "test-secret")
+	}
+
+	t.Run("without lifecycle state", func(t *testing.T) {
+		response, err := srv.GetAgent(context.Background(), &loomv1.GetAgentRequest{AgentId: agentIDs[0]})
+		require.NoError(t, err)
+		checkResponse(t, response)
+		response.Config.Memory.GraphMemory.Enabled = false
+		response.Config.Memory.Dsn = "changed"
+		assert.Equal(t, "postgres://u:test-secret@db/x", config.GetMemory().GetDsn())
+		assert.True(t, config.GetMemory().GetGraphMemory().GetEnabled())
+	})
+
+	t.Run("with lifecycle state but no config", func(t *testing.T) {
+		started, err := srv.StartAgent(context.Background(), &loomv1.StartAgentRequest{AgentId: agentIDs[0]})
+		require.NoError(t, err)
+		checkResponse(t, started)
+
+		response, err := srv.GetAgent(context.Background(), &loomv1.GetAgentRequest{AgentId: agentIDs[0]})
+		require.NoError(t, err)
+		checkResponse(t, response)
+	})
+}
+
+func TestAgentLifecycle_StateConfigPrecedesRegistryConfig(t *testing.T) {
+	srv := newTestMultiAgentServer(t)
+	stateConfig := &loomv1.AgentConfig{
+		Name:        "state-agent",
+		Description: "Lifecycle state",
+		Memory: &loomv1.MemoryConfig{
+			Dsn:         "postgres://state:secret@db/x",
+			GraphMemory: &loomv1.GraphMemoryConfig{Enabled: true},
+		},
+	}
+	created, err := srv.CreateAgentFromConfig(context.Background(), &loomv1.CreateAgentRequest{Config: stateConfig})
+	require.NoError(t, err)
+	assert.Equal(t, "[REDACTED]", created.Config.GetMemory().GetDsn())
+	assert.Equal(t, "postgres://state:secret@db/x", stateConfig.GetMemory().GetDsn())
+
+	registry, err := agent.NewRegistry(agent.RegistryConfig{
+		ConfigDir: t.TempDir(),
+		DBPath:    filepath.Join(t.TempDir(), "registry.db"),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, registry.Close()) })
+	registry.RegisterConfig(&loomv1.AgentConfig{
+		Name:        "state-agent",
+		Description: "Registry config",
+		Memory:      &loomv1.MemoryConfig{Dsn: "postgres://registry:secret@db/x"},
+	})
+	srv.SetAgentRegistry(registry)
+
+	response, err := srv.GetAgent(context.Background(), &loomv1.GetAgentRequest{AgentId: created.Id})
+	require.NoError(t, err)
+	require.NotNil(t, response.Config)
+	assert.Equal(t, stateConfig.Description, response.Config.Description)
+	assert.True(t, response.Config.GetMemory().GetGraphMemory().GetEnabled())
+	assert.Equal(t, "[REDACTED]", response.Config.GetMemory().GetDsn())
+	response.Config.Description = "changed"
+	response.Config.Memory.GraphMemory.Enabled = false
+	assert.Equal(t, "Lifecycle state", stateConfig.Description)
+	assert.True(t, stateConfig.GetMemory().GetGraphMemory().GetEnabled())
+}
+
+func TestAgentLifecycle_ReloadAgentRedactsConfig(t *testing.T) {
+	srv := newTestMultiAgentServer(t)
+	created, err := srv.CreateAgentFromConfig(context.Background(), &loomv1.CreateAgentRequest{
+		Config: &loomv1.AgentConfig{Name: "reload-agent"},
+	})
+	require.NoError(t, err)
+
+	config := &loomv1.AgentConfig{
+		Name:   "reload-agent",
+		Memory: &loomv1.MemoryConfig{Dsn: "postgres://reload:secret@db/x"},
+	}
+	reloaded, err := srv.ReloadAgent(context.Background(), &loomv1.ReloadAgentRequest{
+		AgentId: created.Id,
+		Config:  config,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "[REDACTED]", reloaded.Config.GetMemory().GetDsn())
+	assert.Equal(t, "postgres://reload:secret@db/x", config.GetMemory().GetDsn())
+
+	response, err := srv.GetAgent(context.Background(), &loomv1.GetAgentRequest{AgentId: created.Id})
+	require.NoError(t, err)
+	assert.Equal(t, "[REDACTED]", response.Config.GetMemory().GetDsn())
 }
 
 // --- StartAgent / StopAgent state transitions ---

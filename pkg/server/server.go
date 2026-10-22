@@ -313,6 +313,7 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 
 			// Include tool lifecycle fields if present
 			applyToolLifecycleFields(protoProgress, event)
+			applyToolInputStreamFields(protoProgress, event)
 
 			// Send to client
 			if err := stream.Send(protoProgress); err != nil {
@@ -447,6 +448,18 @@ func sanitizeUTF8(s string) string {
 		return s
 	}
 	return strings.ToValidUTF8(s, "\uFFFD")
+}
+
+// applyToolInputStreamFields marks a tool-input stream event and carries the
+// call's id and argument bytes so far, so clients can show the tool before it starts.
+func applyToolInputStreamFields(proto *loomv1.WeaveProgress, event agent.ProgressEvent) {
+	if !event.IsToolInputStream {
+		return
+	}
+
+	proto.IsToolInputStream = true
+	proto.ToolCallId = event.ToolCallID
+	proto.ToolInputBytes = event.ToolInputBytes
 }
 
 func applyToolLifecycleFields(proto *loomv1.WeaveProgress, event agent.ProgressEvent) {

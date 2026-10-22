@@ -91,6 +91,8 @@ Support:
 	// Tool permission flags
 	rootCmd.PersistentFlags().Bool("yolo", false, "Bypass all tool permission prompts (YOLO mode)")
 	rootCmd.PersistentFlags().Bool("require-approval", false, "Require user approval before executing tools")
+	rootCmd.PersistentFlags().Bool("safe-files", false,
+		"Confine the file tools to the workspace: the agent's working directory, sandbox dir, loom data dir and temp (off by default, like --yolo permissions)")
 
 	// Tool injection flags
 	rootCmd.PersistentFlags().Bool("minimal-tools", false,
@@ -126,6 +128,7 @@ Support:
 	_ = viper.BindPFlag("tools.permissions.yolo", rootCmd.PersistentFlags().Lookup("yolo"))
 	_ = viper.BindPFlag("tools.minimal", rootCmd.PersistentFlags().Lookup("minimal-tools"))
 	_ = viper.BindPFlag("tools.permissions.require_approval", rootCmd.PersistentFlags().Lookup("require-approval"))
+	_ = viper.BindPFlag("tools.permissions.safe_files", rootCmd.PersistentFlags().Lookup("safe-files"))
 }
 
 // initConfig reads in config file and ENV variables if set.
