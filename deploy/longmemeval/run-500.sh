@@ -19,6 +19,7 @@ source "${SCRIPT_DIR}/lme.env"
 [[ -f "${SCRIPT_DIR}/lme.env.local" ]] && source "${SCRIPT_DIR}/lme.env.local"
 # shellcheck source=render-common.sh
 source "${SCRIPT_DIR}/render-common.sh"
+lme_derive_image
 
 SKIP_BUILD=0
 [[ "${1:-}" == "--skip-build" ]] && SKIP_BUILD=1
@@ -67,21 +68,19 @@ else
     fi
 fi
 
-# ACR tags are mutable, and Kubernetes defaults a non-:latest tag to
-# imagePullPolicy: IfNotPresent — so a rebuilt or retagged image can serve a
-# run whose manifest records the same tag string. Resolve the tag to its
-# immutable digest and make THAT part of the run identity, so a moved tag
-# yields a new run id instead of silently resuming onto chunks produced by
-# different bytes. Empty (older az, or no permission) degrades to tag-only
-# identity rather than blocking the run.
+# ACR tags are mutable. Resolve the tag to its immutable digest; the workloads
+# deploy by that digest and it is part of the run identity, so a moved tag
+# yields a new run id, and a pod restart mid-run can never pull different
+# bytes than the ones this run records. Without a digest neither guarantee
+# holds, so an unresolved digest stops the launch.
 LME_IMAGE_DIGEST="$(az acr repository show \
     --name "${LME_ACR_NAME}" \
     --image "${LME_IMAGE_REPO}:${LME_IMAGE_TAG}" \
-    --query digest -o tsv 2>/dev/null || true)"
-if [[ -z "${LME_IMAGE_DIGEST}" ]]; then
-    echo "WARNING: could not resolve the image digest; run identity falls back to the"
-    echo "         tag alone, which ACR allows to move. Resume cannot detect a rebuild."
-    LME_IMAGE_DIGEST="unresolved"
+    --query digest -o tsv)" || LME_IMAGE_DIGEST=""
+if [[ ! "${LME_IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "ERROR: could not resolve the digest of ${LME_IMAGE}:${LME_IMAGE_TAG} (got '${LME_IMAGE_DIGEST}')."
+    echo "       Workloads deploy by digest; check az login and AcrPull/AcrPush rights on ${LME_ACR_NAME}."
+    exit 1
 fi
 
 # Run identity: a manifest of every input that determines what the benchmark
@@ -92,7 +91,7 @@ LME_RUN_MANIFEST="dataset=${LME_DATASET_FILE} mode=${LME_MODE} occurred_at=${LME
 LME_RUN_ID="${LME_RUN_ID:-$(lme_sha256_12 "${LME_RUN_MANIFEST}")}"
 LME_ALLOW_MANIFEST_DRIFT="${LME_ALLOW_MANIFEST_DRIFT:-0}"
 
-export LME_NAMESPACE LME_IMAGE LME_IMAGE_TAG LME_GRPC_PORT LME_MODEL \
+export LME_NAMESPACE LME_IMAGE LME_IMAGE_TAG LME_IMAGE_DIGEST LME_GRPC_PORT LME_MODEL \
     LME_DATASET LME_DATASET_FILE LME_MODE LME_CONCURRENCY LME_CHUNK \
     LME_OCCURRED_AT LME_RUN_ID LME_RUN_MANIFEST LME_ALLOW_MANIFEST_DRIFT \
     LME_MAX_CHUNK_ATTEMPTS
@@ -126,7 +125,7 @@ if ! kubectl get secret lme-bedrock -n "${LME_NAMESPACE}" &>/dev/null; then
         --from-literal=bearer-token="${LME_BEDROCK_BEARER_TOKEN}"
 fi
 
-echo "=== Deploying server (${LME_IMAGE}:${LME_IMAGE_TAG}, port ${LME_GRPC_PORT}) ==="
+echo "=== Deploying server (${LME_IMAGE}@${LME_IMAGE_DIGEST}, port ${LME_GRPC_PORT}) ==="
 lme_render "${SCRIPT_DIR}/server-deployment.yaml" | kubectl apply -f -
 kubectl rollout status deployment/lme-server -n "${LME_NAMESPACE}" --timeout=300s
 

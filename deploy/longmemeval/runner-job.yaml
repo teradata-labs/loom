@@ -34,11 +34,11 @@ spec:
       initContainers:
         # One-time (cached on the data PVC): fetch the dataset from HuggingFace.
         - name: download-dataset
-          image: ${LME_IMAGE}:${LME_IMAGE_TAG}
-          # Any tag other than the floating default pulls IfNotPresent, so a
-          # node with a cached layer under a moved tag would keep serving the
-          # old bytes.
-          imagePullPolicy: Always
+          # Pinned by digest, not tag: ACR tags are mutable, and a pod restart
+          # mid-run (the resume path) would otherwise pull whatever the tag
+          # points to now, under the run id recorded at launch.
+          image: ${LME_IMAGE}@${LME_IMAGE_DIGEST}
+          imagePullPolicy: IfNotPresent
           command: ["/loom-longmemeval"]
           args: ["download", "--datasets", "${LME_DATASET}", "--data-dir", "/data/longmemeval"]
           volumeMounts:
@@ -46,11 +46,11 @@ spec:
               mountPath: /data
       containers:
         - name: runner
-          image: ${LME_IMAGE}:${LME_IMAGE_TAG}
-          # Any tag other than the floating default pulls IfNotPresent, so a
-          # node with a cached layer under a moved tag would keep serving the
-          # old bytes.
-          imagePullPolicy: Always
+          # Pinned by digest, not tag: ACR tags are mutable, and a pod restart
+          # mid-run (the resume path) would otherwise pull whatever the tag
+          # points to now, under the run id recorded at launch.
+          image: ${LME_IMAGE}@${LME_IMAGE_DIGEST}
+          imagePullPolicy: IfNotPresent
           command: ["/bin/bash", "/scripts/run-slices.sh"]
           env:
             - name: SERVER

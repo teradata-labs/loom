@@ -8,7 +8,17 @@
 # variable is unset or an unknown ${LME_*} placeholder survives.
 
 # Every LME_* placeholder that may appear in a manifest template.
-LME_RENDER_VARS='${LME_NAMESPACE} ${LME_IMAGE} ${LME_IMAGE_TAG} ${LME_GRPC_PORT} ${LME_MODEL} ${LME_DATASET} ${LME_DATASET_FILE} ${LME_MODE} ${LME_CONCURRENCY} ${LME_CHUNK} ${LME_OCCURRED_AT} ${LME_RUN_ID} ${LME_RUN_MANIFEST} ${LME_ALLOW_MANIFEST_DRIFT} ${LME_MAX_CHUNK_ATTEMPTS} ${LME_CONFIG_HASH}'
+LME_RENDER_VARS='${LME_NAMESPACE} ${LME_IMAGE} ${LME_IMAGE_TAG} ${LME_IMAGE_DIGEST} ${LME_GRPC_PORT} ${LME_MODEL} ${LME_DATASET} ${LME_DATASET_FILE} ${LME_MODE} ${LME_CONCURRENCY} ${LME_CHUNK} ${LME_OCCURRED_AT} ${LME_RUN_ID} ${LME_RUN_MANIFEST} ${LME_ALLOW_MANIFEST_DRIFT} ${LME_MAX_CHUNK_ATTEMPTS} ${LME_CONFIG_HASH}'
+
+# lme_derive_image — fill the registry-derived values AFTER lme.env and
+# lme.env.local are both sourced. Deriving them inside lme.env froze them to
+# the default registry, so a lme.env.local that set only LME_ACR_NAME sent the
+# build to the new registry while the pods still pulled from the old one.
+# An explicitly set LME_ACR_LOGIN_SERVER or LME_IMAGE is kept.
+lme_derive_image() {
+    LME_ACR_LOGIN_SERVER="${LME_ACR_LOGIN_SERVER:-${LME_ACR_NAME}.azurecr.io}"
+    LME_IMAGE="${LME_IMAGE:-${LME_ACR_LOGIN_SERVER}/loom-longmemeval}"
+}
 
 # lme_render <template> — render a manifest template to stdout.
 # Fails if any allowlisted variable is unset/empty, or if any ${LME_*}

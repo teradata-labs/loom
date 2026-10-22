@@ -15,6 +15,7 @@ source "${SCRIPT_DIR}/render-common.sh"
 export LME_NAMESPACE="lme-render-test"
 export LME_IMAGE="testreg.azurecr.io/lme-render-test"
 export LME_IMAGE_TAG="cafef00d"
+export LME_IMAGE_DIGEST="sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 export LME_GRPC_PORT="51234"
 export LME_MODEL="test.model-v9"
 export LME_DATASET="small"
@@ -73,17 +74,31 @@ for m in pvcs server-config runner-script server-deployment runner-job; do
     fi
 done
 
-# 4. Images: every image reference is the pinned nondefault tag; never :latest.
+# 4. Images: every workload image is pinned by digest — never a tag, which ACR
+# lets move under a running Job — and never :latest.
 for m in server-deployment runner-job; do
-    grep -q "image: ${LME_IMAGE}:${LME_IMAGE_TAG}\$" "${TMP_DIR}/${m}.yaml" \
-        || fail "${m}.yaml missing pinned image ${LME_IMAGE}:${LME_IMAGE_TAG}"
-    if grep -n '^[[:space:]]*image: ' "${TMP_DIR}/${m}.yaml" | grep -v "image: ${LME_IMAGE}:${LME_IMAGE_TAG}\$"; then
-        fail "${m}.yaml has an image other than ${LME_IMAGE}:${LME_IMAGE_TAG}"
+    grep -q "image: ${LME_IMAGE}@${LME_IMAGE_DIGEST}\$" "${TMP_DIR}/${m}.yaml" \
+        || fail "${m}.yaml missing digest-pinned image ${LME_IMAGE}@${LME_IMAGE_DIGEST}"
+    if grep -n '^[[:space:]]*image: ' "${TMP_DIR}/${m}.yaml" | grep -v "image: ${LME_IMAGE}@${LME_IMAGE_DIGEST}\$"; then
+        fail "${m}.yaml has an image other than ${LME_IMAGE}@${LME_IMAGE_DIGEST}"
     fi
 done
 if grep -rn ':latest' "${TMP_DIR}"/*.yaml; then
     fail "a rendered manifest still references :latest"
 fi
+
+# 4b. The registry is derived after lme.env.local: overriding LME_ACR_NAME
+# alone must move the pods' image too, not only the build.
+derived="$(
+    unset LME_IMAGE LME_ACR_LOGIN_SERVER
+    # shellcheck source=lme.env
+    source "${SCRIPT_DIR}/lme.env"
+    LME_ACR_NAME="otherreg"   # what an lme.env.local override does
+    lme_derive_image
+    printf '%s' "${LME_IMAGE}"
+)"
+[[ "${derived}" == "otherreg.azurecr.io/loom-longmemeval" ]] \
+    || fail "LME_IMAGE ignores an LME_ACR_NAME override (got ${derived})"
 
 # 5. Port: server config, containerPort, Service port, and the runner's SERVER
 # address must all agree; the old default must not survive anywhere.
@@ -114,6 +129,9 @@ grep -q "value: \"${LME_MAX_CHUNK_ATTEMPTS}\"" "${TMP_DIR}/runner-job.yaml" \
 # at startup, so without this a new model would never actually be served.
 grep -q "loom.dev/config-checksum: \"${LME_CONFIG_HASH}\"" "${TMP_DIR}/server-deployment.yaml" \
     || fail "server-deployment.yaml pod template missing the config checksum annotation"
+# A new run must not inherit the previous run's server state (emptyDir).
+grep -q "loom.dev/run-id: \"${LME_RUN_ID}\"" "${TMP_DIR}/server-deployment.yaml" \
+    || fail "server-deployment.yaml pod template missing the run id annotation"
 
 # 6b. run-500.sh computes LME_CONFIG_HASH by rendering server-config.yaml
 # BEFORE that variable exists. lme_render must therefore require only the

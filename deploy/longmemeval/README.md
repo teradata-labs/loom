@@ -90,9 +90,19 @@ dataset refused on resume.
   a dirty tree is tagged `<commit>-dirty-<fingerprint>` and gets its own run id
   — a build with uncommitted edits can never resume a clean commit's chunks
   under the same name. `run-500.sh` warns when it does this. Because ACR tags
-  are mutable, the run identity also records the image's immutable **digest**,
-  and both workloads pull with `imagePullPolicy: Always`, so a rebuilt or
-  retagged image yields a new run id instead of quietly serving a resume.
+  are mutable, `run-500.sh` resolves the tag to its immutable **digest**, records
+  it in the run identity, and deploys both workloads as `image@digest`, so a
+  rebuilt or retagged image yields a new run id, and a pod restarted mid-run
+  pulls exactly the bytes the run records. The launch stops if the digest cannot
+  be resolved. The base image floats and the build runs `apt-get update`, so a
+  rebuild almost never reproduces a digest: **to resume a run, re-launch with
+  `--skip-build`**. Rebuilding starts a new run id and re-bills every entry.
+- **Server state:** the server pod template carries the run id, so starting a
+  different run replaces the pod and its `emptyDir` state rather than inheriting
+  the previous run's agents and memory. Within one run, each entry's temp agent
+  (`lme-tmp-<question_id>`) is removed before it is created, so an entry retried
+  after the runner was killed (skipping its cleanup) starts clean instead of
+  failing "already running".
 - **Per-type counts:** the slice loop derives them from
   `loom-longmemeval info --json` on the dataset it is about to run, so a dataset
   revision cannot silently drive the final chunk past the last entry or stop the

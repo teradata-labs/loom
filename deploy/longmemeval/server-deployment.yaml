@@ -26,6 +26,10 @@ spec:
         # template makes such a change roll the pod, so the server that
         # answers is always the one this run's identity records.
         loom.dev/config-checksum: "${LME_CONFIG_HASH}"
+        # The server keeps agents and graph memory in an emptyDir, so a new
+        # run must not inherit the previous run's server state: stamping the
+        # run id replaces the pod (fresh emptyDir) whenever the run changes.
+        loom.dev/run-id: "${LME_RUN_ID}"
     spec:
       nodeSelector:
         loom-role: lme
@@ -35,11 +39,11 @@ spec:
           effect: NoSchedule
       containers:
         - name: server
-          image: ${LME_IMAGE}:${LME_IMAGE_TAG}
-          # Any tag other than the floating default pulls IfNotPresent, so a
-          # node with a cached layer under a moved tag would keep serving the
-          # old bytes.
-          imagePullPolicy: Always
+          # Pinned by digest, not tag: ACR tags are mutable, and a pod restart
+          # mid-run (the resume path) would otherwise pull whatever the tag
+          # points to now, under the run id recorded at launch.
+          image: ${LME_IMAGE}@${LME_IMAGE_DIGEST}
+          imagePullPolicy: IfNotPresent
           command: ["/looms"]
           args: ["serve", "--config", "/etc/loom/looms.yaml"]
           ports:
