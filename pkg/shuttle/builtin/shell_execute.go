@@ -19,6 +19,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/config"
@@ -134,8 +135,8 @@ func (t *ShellExecuteTool) Name() string {
 // Deprecated: Description loaded from PromptRegistry (prompts/tools/shell_execute.yaml).
 // This fallback is used only when prompts are not configured.
 func (t *ShellExecuteTool) Description() string {
-	return `Executes shell commands on the local system. Supports bash/sh on Unix and PowerShell/cmd on Windows.
-Use for automation, builds, tests, data processing, and system operations.
+	return `Executes shell commands on the local system — general-purpose. Supports bash/sh on Unix and PowerShell/cmd on Windows.
+Prefer file_read for reading and searching files, and file_write/edit_files for changing them; use shell for everything else: dbt, builds, scripts, OS operations.
 Security: validates working directories, filters sensitive env vars, enforces timeouts.`
 }
 
@@ -313,18 +314,26 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	if loomDataDir != "" && sessionID != "" {
 		// Ensure working directory is within LOOM_DATA_DIR or whitelisted
 		// directories. Containment is judged on symlink-resolved paths, with a
-		// path-component comparison (withinDir), never a string prefix: a link
+		// path-component comparison (pathWithin), never a string prefix: a link
 		// inside LOOM_DATA_DIR that points elsewhere is elsewhere, and
 		// "/tmpfoo" is not inside "/tmp".
-		isAllowed := withinDir(resolvedAbs(loomDataDir), resolvedWorkingDir)
+		// LOOM_SANDBOX_DIR is the agent execution context (the workspace) and
+		// is honored exactly as this guard's Suggestion advertises — without
+		// it, an anchored workspace outside the data dir rejects every call.
+		isAllowed := pathWithin(resolvedWorkingDir, resolvedAbs(loomDataDir))
+		if !isAllowed {
+			if sandboxDir := config.GetLoomSandboxDir(); sandboxDir != "" && pathWithin(resolvedWorkingDir, resolvedAbs(sandboxDir)) {
+				isAllowed = true
+			}
+		}
 		if !isAllowed {
 			// Whitelist /tmp for temporary file operations (common for agent workflows)
-			if runtime.GOOS != "windows" && withinDir(resolvedAbs("/tmp"), resolvedWorkingDir) {
+			if runtime.GOOS != "windows" && pathWithin(resolvedWorkingDir, resolvedAbs("/tmp")) {
 				isAllowed = true
 			}
 			// Windows temp directory
 			if runtime.GOOS == "windows" && os.Getenv("TEMP") != "" {
-				if withinDir(resolvedAbs(os.Getenv("TEMP")), resolvedWorkingDir) {
+				if pathWithin(resolvedWorkingDir, resolvedAbs(os.Getenv("TEMP"))) {
 					isAllowed = true
 				}
 			}
@@ -599,8 +608,8 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	// read of what they write happens under their lock.
 	mu.Lock()
 	overflowErr := outputErr
-	stdout := strings.Join(stdoutLines, "\n")
-	stderr := strings.Join(stderrLines, "\n")
+	stdout := compactShellOutput(strings.Join(stdoutLines, "\n"))
+	stderr := compactShellOutput(strings.Join(stderrLines, "\n"))
 	totalOutputBytes := outputBytes
 	mu.Unlock()
 
@@ -958,17 +967,6 @@ func resolvedAbs(path string) string {
 	return abs
 }
 
-// withinDir reports whether path is root or lies beneath it, comparing whole
-// path components (so "/tmpfoo" is not within "/tmp"). Both are cleaned first;
-// neither is resolved, so callers pass resolvedAbs paths.
-func withinDir(root, path string) bool {
-	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
-	if err != nil || filepath.IsAbs(rel) {
-		return false
-	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
-}
-
 // sanitizeCommandForTracing redacts sensitive information from commands for tracing.
 func sanitizeCommandForTracing(command string) string {
 	// Patterns to redact (order matters - more specific first)
@@ -1031,4 +1029,74 @@ func checkCommandTokenSize(command string) error {
 	}
 
 	return nil
+}
+
+// pathWithin reports whether path is dir itself or sits beneath it. A bare
+// strings.HasPrefix accepts a sibling whose name merely starts the same way —
+// /work/proj also admitting /work/proj-evil — so containment is tested on
+// whole path segments. Neither path is symlink-resolved; callers that need
+// that pass resolvedAbs paths.
+func pathWithin(path, dir string) bool {
+	if dir == "" || path == "" {
+		return false
+	}
+	rel, err := filepath.Rel(filepath.Clean(dir), filepath.Clean(path))
+	if err != nil || filepath.IsAbs(rel) {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// ansiEscape matches CSI/OSC terminal escape sequences — pure rendering bytes
+// that inflate build-tool output (dbt colorizes every line) without carrying
+// information.
+var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07`)
+
+const (
+	// shellOutputCap bounds one stream's bytes in the result.
+	shellOutputCap = 12 * 1024
+	// shellOutputHead / shellOutputTail split the cap: build tools put
+	// failures inline and the summary at the end, so the tail gets the bulk.
+	shellOutputHead = 4 * 1024
+	shellOutputTail = 8 * 1024
+)
+
+// compactShellOutput strips terminal escape sequences and, past the cap,
+// keeps the head and tail of the stream with an explicit elision marker. The
+// cuts land on rune boundaries: a byte-offset slice through a multi-byte rune
+// puts invalid UTF-8 into the result, which every downstream encoder then has
+// to repair.
+func compactShellOutput(s string) string {
+	s = ansiEscape.ReplaceAllString(s, "")
+	if len(s) <= shellOutputCap {
+		return s
+	}
+	head := runeBoundaryBefore(s, shellOutputHead)
+	tail := runeBoundaryAfter(s, len(s)-shellOutputTail)
+	elided := tail - head
+	return s[:head] +
+		fmt.Sprintf("\n[... %d bytes elided — rerun with a filter (grep/tail) to see the middle ...]\n", elided) +
+		s[tail:]
+}
+
+// runeBoundaryBefore returns the largest index <= i that starts a rune.
+func runeBoundaryBefore(s string, i int) int {
+	if i >= len(s) {
+		return len(s)
+	}
+	for i > 0 && !utf8.RuneStart(s[i]) {
+		i--
+	}
+	return i
+}
+
+// runeBoundaryAfter returns the smallest index >= i that starts a rune.
+func runeBoundaryAfter(s string, i int) int {
+	if i < 0 {
+		return 0
+	}
+	for i < len(s) && !utf8.RuneStart(s[i]) {
+		i++
+	}
+	return i
 }
