@@ -1,3 +1,7 @@
+// Modified for loom, 2026: SetPoll lets the embedder stop a long compilation
+// (loom-only; see third_party/golua/README.md for the list of changes from
+// upstream).
+
 package ircomp
 
 import (
@@ -12,6 +16,22 @@ type ConstantCompiler struct {
 	compiledCount int
 	queue         []uint
 	offset        int
+	poll          func() // called every pollInterval instructions; see SetPoll
+	compiledInstr uint   // instructions compiled so far
+}
+
+// pollInterval is how many IR instructions are compiled between two calls of
+// the SetPoll function. Compiling 256 instructions takes microseconds, so a
+// stop request is noticed promptly, and the poll costs well under 1% of the
+// compilation.
+const pollInterval = 256
+
+// SetPoll makes CompileQueue call poll once every pollInterval instructions.
+// The embedder uses it to stop compiling a large unit when its deadline passes
+// or its caller cancels: poll does so by panicking, and the panic propagates
+// out of CompileQueue.
+func (kc *ConstantCompiler) SetPoll(poll func()) {
+	kc.poll = poll
 }
 
 var _ ir.ConstantProcessor = (*ConstantCompiler)(nil)
@@ -66,6 +86,12 @@ func (kc *ConstantCompiler) ProcessCode(c ir.Code) {
 		regAllocator:     regAllocator,
 	}
 	for i, instr := range c.Instructions {
+		if kc.poll != nil {
+			kc.compiledInstr++
+			if kc.compiledInstr%pollInterval == 0 {
+				kc.poll()
+			}
+		}
 		ic.line = c.Lines[i]
 		instr.ProcessInstr(ic)
 	}

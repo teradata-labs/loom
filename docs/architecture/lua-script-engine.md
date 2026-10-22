@@ -99,10 +99,11 @@ advertised set, `Preflight`, then `Executor.ExecuteWithTool` (see "Agent bridge"
 Caller            Run                 golua VM              Host
   │                │                     │                    │
   ├─ Run(ctx) ────▶│ normalize limits    │                    │
+  │                │ start wall budget   │                    │
   │                │ scan source shape   │                    │
   │                │ new runtime, libs   │                    │
-  │                ├─ compile ──────────▶│                    │
   │                ├─ CallContext(limits)▶                    │
+  │                │                     ├─ compile (polls)   │
   │                │                     ├─ tools.call ──┐    │
   │                │                     │  wrap: ctx ok?│    │
   │                │                     │  budget ok?   │    │
@@ -175,6 +176,25 @@ scanner before parsing and rejects:
   brackets. An identifier directly after a complete operand starts a new statement and
   resets the run, so long scripts of short statements pass.
 
+### Source preparation under the run limits
+
+The wall budget starts before any work on the source, and every phase of preparing it
+honors the run's limits like the script does:
+
+- `checkSourceShape` checks the run context every 256 tokens and returns its error once
+  the context ends; `Run` reports that as `cancelled` or as the `wall` budget, like a
+  stop during execution.
+- Compilation runs inside the limited golua context, so its CPU and memory estimate is
+  charged to the run's budgets. The vendored scanner and compilers poll every 256
+  tokens, nodes or instructions; the poll terminates the context when the run's
+  `Interrupt` has fired (cancellation or the wall budget) or golua's own time limit has
+  passed, and the termination unwinds to the run's `CallContext` like a kill during
+  execution.
+
+At the 1 MiB source ceiling, a 100 ms wall budget or a cancellation now ends the run
+within milliseconds of the deadline; before, preparation ran to the end first (0.3 s,
+3.4 s under the race detector).
+
 ### Race-free runtime setup
 
 Upstream golua's `base.Load` marked package-level function values (`next`, the `ipairs`
@@ -189,9 +209,9 @@ engine loads the base library per run. The `package` library is not loaded; `str
 Building and attacking the engine (an independent adversarial review, every finding
 reproduced in a separate process) turned up six defects in golua v0.3.0 that an embedder
 cannot fix safely from outside. A seventh came from CodeQL, once the vendored source was
-inside the repository, and an eighth from `go vet`. Review of the engine found two more
-(the last two rows). All are fixed in `third_party/golua`; the first eight are proposed
-upstream. When upstream releases them, the directory can be replaced by the module again.
+inside the repository, and an eighth from `go vet`. Review of the engine found three more
+(the last three rows). All are fixed in `third_party/golua`; the first eight are proposed
+upstream; the last three are not yet in the `ilsiepotamus/golua` fork either. When upstream releases them, the directory can be replaced by the module again.
 
 | Defect in v0.3.0 (measured) | Fix | Upstream PR |
 |---|---|---|
@@ -205,6 +225,7 @@ upstream. When upstream releases them, the directory can be replaced by the modu
 | The AST dump (`HWrite`) passed name structs to `%s` and used names as format strings; `go vet` refused to build the package | names rendered as text | [#138](https://github.com/arnodel/golua/pull/138) |
 | Named vararg tables (`function f(... xs)`) and `table.create` under a memory quota were not charged: 50,000 retained tables cost the same as 50,000 integers | the vararg table charges its header, array part and `n` slot; `table.create` charges its header | not yet proposed |
 | `string.match` with a start position past the end slices out of range inside the anchored matcher (a Go panic, an engine error for the run); the #136 saturation added `math.maxinteger` as a trigger | a start past the end returns no match, as in reference Lua | not yet proposed |
+| Scanning, parsing and compiling never checked a limit: at the 1 MiB source ceiling they took about 0.3 s (3.4 s under the race detector) before the first limit check, whatever the wall budget or the caller's context | the scanner, the AST compiler and the IR compiler call a poll function every 256 tokens, nodes or instructions; the runtime's poll terminates the current context when its `Interrupt` has fired, it is hard-stopped or it is past its time limit | not yet proposed |
 
 Before the fixes were in place the engine carried workarounds: function-valued
 VM metamethods were refused, capacity planning assumed 12 times the budget, and
@@ -279,6 +300,7 @@ list it in `tools.builtin`, through serve's own agent loops and through
 | Tool results are charged to memory | `TestToolResultsAreChargedToMemory` |
 | Dangerous globals absent; pure libraries work under all limits | `TestDangerousGlobalsAreAbsent`, `TestPureLibrariesWorkUnderLimits` |
 | Deep nesting rejected before parsing; ordinary code accepted | `TestSourceGuardRejectsDeepNesting`, `TestSourceGuardAcceptsOrdinaryCode` |
+| Wall budget, caller deadline and cancellation bind while a source at the size ceiling is checked, parsed and compiled | `TestSourcePreparationHonorsRunLimits`, `TestShapeGuardStopsWhenContextEnds`, `TestGoluaPreparationPolls`, `TestGoluaCompileStopsWhenInterrupted` |
 | No goroutine outlives a run | `TestNoGoroutineOutlivesARun` |
 | Concurrent runs share nothing (run with `-race`) | `TestConcurrentRunsShareNothing` |
 | Forbidden golua APIs and libraries never used | `TestForbiddenAPIs` |

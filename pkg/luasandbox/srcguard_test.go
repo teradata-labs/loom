@@ -67,7 +67,7 @@ func TestSourceGuardRejectsDeepNesting(t *testing.T) {
 	for _, kind := range nestedKinds {
 		t.Run(kind, func(t *testing.T) {
 			src := nestedSource(kind, 2500)
-			err := checkSourceShape("inline", src)
+			err := checkSourceShape(context.Background(), "inline", src)
 			require.Error(t, err)
 			assert.Regexp(t, `too many syntax levels|expression nesting too deep`, err.Error())
 
@@ -87,10 +87,10 @@ func TestSourceGuardRejectsDeepNesting(t *testing.T) {
 func TestSourceGuardAcceptsOrdinaryCode(t *testing.T) {
 	for _, kind := range nestedKinds {
 		t.Run("nested 50 "+kind, func(t *testing.T) {
-			assert.NoError(t, checkSourceShape("inline", nestedSource(kind, 50)))
+			assert.NoError(t, checkSourceShape(context.Background(), "inline", nestedSource(kind, 50)))
 		})
 		t.Run("nested 190 "+kind, func(t *testing.T) {
-			assert.NoError(t, checkSourceShape("inline", nestedSource(kind, 190)), "just under the syntax-level limit")
+			assert.NoError(t, checkSourceShape(context.Background(), "inline", nestedSource(kind, 190)), "just under the syntax-level limit")
 		})
 	}
 	t.Run("thousands of statements", func(t *testing.T) {
@@ -98,7 +98,7 @@ func TestSourceGuardAcceptsOrdinaryCode(t *testing.T) {
 		for i := range 5000 {
 			fmt.Fprintf(&b, "print(%d) x%d = %d y = x%d .. 'z'\n", i, i%7, i, i%7)
 		}
-		assert.NoError(t, checkSourceShape("inline", b.String()))
+		assert.NoError(t, checkSourceShape(context.Background(), "inline", b.String()))
 	})
 	t.Run("long but legitimate expression", func(t *testing.T) {
 		parts := make([]string, 300)
@@ -106,22 +106,22 @@ func TestSourceGuardAcceptsOrdinaryCode(t *testing.T) {
 			parts[i] = fmt.Sprintf("v%d", i)
 		}
 		src := "local s = " + strings.Join(parts, " .. ', ' .. ")
-		assert.NoError(t, checkSourceShape("inline", src))
+		assert.NoError(t, checkSourceShape(context.Background(), "inline", src))
 	})
 	t.Run("big table literal", func(t *testing.T) {
 		items := make([]string, 20000)
 		for i := range items {
 			items[i] = fmt.Sprintf("{id = %d, name = 'n%d'}", i, i)
 		}
-		assert.NoError(t, checkSourceShape("inline", "return {"+strings.Join(items, ", ")+"}"))
+		assert.NoError(t, checkSourceShape(context.Background(), "inline", "return {"+strings.Join(items, ", ")+"}"))
 	})
 	t.Run("brackets inside strings and comments do not count", func(t *testing.T) {
 		src := "local s = '" + strings.Repeat("(", 1000) + "' -- " + strings.Repeat("{", 1000) + "\n" +
 			"local l = [[" + strings.Repeat("[", 1000) + "]] return #s"
-		assert.NoError(t, checkSourceShape("inline", src))
+		assert.NoError(t, checkSourceShape(context.Background(), "inline", src))
 	})
 	t.Run("lexical errors are left to the parser", func(t *testing.T) {
-		assert.NoError(t, checkSourceShape("inline", `local s = "unterminated`))
+		assert.NoError(t, checkSourceShape(context.Background(), "inline", `local s = "unterminated`))
 		res := runSrc(t, `local s = "unterminated`, nil)
 		assert.Equal(t, OutcomeScriptError, res.Outcome)
 	})
