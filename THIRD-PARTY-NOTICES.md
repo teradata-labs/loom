@@ -9,49 +9,49 @@ This file covers the components compiled into the distributed binaries
 (`loom`, `looms`, `loom-standalone`), not the full development dependency
 graph — test-only and build-time modules are not distributed and are excluded.
 
-150 components, 92 distinct license texts.
+152 components, 93 distinct license texts.
 
 ## Components
 
 | Component | Version |
 |---|---|
 | `charm.land/bubbles/v2` | `v2.2.1` |
-| `charm.land/bubbletea/v2` | `v2.0.9` |
+| `charm.land/bubbletea/v2` | `v2.1.0` |
 | `charm.land/lipgloss/v2` | `v2.0.6` |
 | `filippo.io/edwards25519` | `v1.2.0` |
 | `github.com/MakeNowJust/heredoc` | `v1.0.0` |
 | `github.com/MicahParks/jwkset` | `v0.11.3` |
 | `github.com/MicahParks/keyfunc/v3` | `v3.8.2` |
 | `github.com/alecthomas/chroma/v2` | `v2.27.0` |
-| `github.com/anthropics/anthropic-sdk-go` | `v1.73.0` |
+| `github.com/anthropics/anthropic-sdk-go` | `v1.80.0` |
 | `github.com/atotto/clipboard` | `v0.1.4` |
-| `github.com/aws/aws-sdk-go-v2` | `v1.47.0` |
-| `github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream` | `v1.7.20` |
-| `github.com/aws/aws-sdk-go-v2/config` | `v1.33.5` |
-| `github.com/aws/aws-sdk-go-v2/credentials` | `v1.20.5` |
-| `github.com/aws/aws-sdk-go-v2/feature/ec2/imds` | `v1.20.0` |
-| `github.com/aws/aws-sdk-go-v2/internal/configsources` | `v1.5.3` |
-| `github.com/aws/aws-sdk-go-v2/internal/endpoints/v2` | `v2.8.3` |
-| `github.com/aws/aws-sdk-go-v2/internal/sync/singleflight` | `v1.47.0` |
-| `github.com/aws/aws-sdk-go-v2/internal/v4a` | `v1.5.3` |
-| `github.com/aws/aws-sdk-go-v2/service/bedrockruntime` | `v1.63.0` |
-| `github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding` | `v1.13.19` |
-| `github.com/aws/aws-sdk-go-v2/service/internal/presigned-url` | `v1.14.3` |
-| `github.com/aws/aws-sdk-go-v2/service/signin` | `v1.10.0` |
-| `github.com/aws/aws-sdk-go-v2/service/sso` | `v1.38.0` |
-| `github.com/aws/aws-sdk-go-v2/service/ssooidc` | `v1.43.0` |
-| `github.com/aws/aws-sdk-go-v2/service/sts` | `v1.51.0` |
-| `github.com/aws/smithy-go` | `v1.28.1` |
-| `github.com/aws/smithy-go/internal/sync/singleflight` | `v1.28.1` |
-| `github.com/aws/smithy-go/transport/http/protocol/internal/json/internal/stdlib` | `v1.28.1` |
+| `github.com/aws/aws-sdk-go-v2` | `v1.47.3` |
+| `github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream` | `v1.7.22` |
+| `github.com/aws/aws-sdk-go-v2/config` | `v1.33.9` |
+| `github.com/aws/aws-sdk-go-v2/credentials` | `v1.20.9` |
+| `github.com/aws/aws-sdk-go-v2/feature/ec2/imds` | `v1.20.3` |
+| `github.com/aws/aws-sdk-go-v2/internal/configsources` | `v1.5.6` |
+| `github.com/aws/aws-sdk-go-v2/internal/endpoints/v2` | `v2.8.6` |
+| `github.com/aws/aws-sdk-go-v2/internal/sync/singleflight` | `v1.47.3` |
+| `github.com/aws/aws-sdk-go-v2/internal/v4a` | `v1.5.6` |
+| `github.com/aws/aws-sdk-go-v2/service/bedrockruntime` | `v1.63.4` |
+| `github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding` | `v1.13.21` |
+| `github.com/aws/aws-sdk-go-v2/service/internal/presigned-url` | `v1.14.6` |
+| `github.com/aws/aws-sdk-go-v2/service/signin` | `v1.10.4` |
+| `github.com/aws/aws-sdk-go-v2/service/sso` | `v1.38.4` |
+| `github.com/aws/aws-sdk-go-v2/service/ssooidc` | `v1.43.4` |
+| `github.com/aws/aws-sdk-go-v2/service/sts` | `v1.51.4` |
+| `github.com/aws/smithy-go` | `v1.28.5` |
+| `github.com/aws/smithy-go/internal/sync/singleflight` | `v1.28.5` |
+| `github.com/aws/smithy-go/transport/http/protocol/internal/json/internal/stdlib` | `v1.28.5` |
 | `github.com/aymanbagabas/go-osc52/v2` | `v2.0.1` |
 | `github.com/bahlo/generic-list-go` | `v0.2.0` |
 | `github.com/buger/jsonparser` | `v1.1.2` |
 | `github.com/cenkalti/backoff/v5` | `v5.0.3` |
 | `github.com/cespare/xxhash/v2` | `v2.3.0` |
 | `github.com/charmbracelet/colorprofile` | `v0.4.3` |
-| `github.com/charmbracelet/ultraviolet` | `v0.0.0-20260811164956-006e29f97886` |
-| `github.com/charmbracelet/x/ansi` | `v0.11.8` |
+| `github.com/charmbracelet/ultraviolet` | `v0.0.0-20261008173134-6b8d4baf91b4` |
+| `github.com/charmbracelet/x/ansi` | `v0.11.9` |
 | `github.com/charmbracelet/x/term` | `v0.2.2` |
 | `github.com/charmbracelet/x/termios` | `v0.1.1` |
 | `github.com/charmbracelet/x/windows` | `v0.2.2` |
@@ -75,22 +75,22 @@ graph — test-only and build-time modules are not distributed and are excluded.
 | `github.com/golang-jwt/jwt/v5` | `v5.3.1` |
 | `github.com/golang/protobuf` | `v1.5.4` |
 | `github.com/google/uuid` | `v1.6.0` |
-| `github.com/grpc-ecosystem/grpc-gateway/v2` | `v2.30.0` |
+| `github.com/grpc-ecosystem/grpc-gateway/v2` | `v2.31.0` |
 | `github.com/inconshreveable/mousetrap` | `v1.1.0` |
 | `github.com/invopop/jsonschema` | `v0.14.0` |
 | `github.com/jackc/pgpassfile` | `v1.0.0` |
 | `github.com/jackc/pgservicefile` | `v0.0.0-20240606120523-5a60cdf6a761` |
 | `github.com/jackc/pgx/v5` | `v5.11.0` |
 | `github.com/jackc/puddle/v2` | `v2.2.2` |
-| `github.com/jhump/protoreflect` | `v1.18.1` |
+| `github.com/jhump/protoreflect` | `v1.19.0` |
 | `github.com/jhump/protoreflect/v2` | `v2.0.0-beta.1` |
-| `github.com/klauspost/compress` | `v1.20.0` |
-| `github.com/klauspost/compress/internal/snapref` | `v1.20.0` |
-| `github.com/klauspost/compress/zstd/internal/xxhash` | `v1.20.0` |
+| `github.com/klauspost/compress` | `v1.20.1` |
+| `github.com/klauspost/compress/internal/snapref` | `v1.20.1` |
+| `github.com/klauspost/compress/zstd/internal/xxhash` | `v1.20.1` |
 | `github.com/ledongthuc/pdf` | `v0.0.0-20250511090121-5959a4027728` |
 | `github.com/lucasb-eyer/go-colorful` | `v1.4.1` |
 | `github.com/mattn/go-isatty` | `v0.0.24` |
-| `github.com/mattn/go-runewidth` | `v0.0.27` |
+| `github.com/mattn/go-runewidth` | `v0.0.30` |
 | `github.com/miekg/dns` | `v1.1.72` |
 | `github.com/muesli/cancelreader` | `v0.2.2` |
 | `github.com/muesli/termenv` | `v0.16.0` |
@@ -107,6 +107,7 @@ graph — test-only and build-time modules are not distributed and are excluded.
 | `github.com/richardlehane/msoleps` | `v1.0.6` |
 | `github.com/rivo/uniseg` | `v0.4.7` |
 | `github.com/robfig/cron/v3` | `v3.0.1` |
+| `github.com/sabhiram/go-gitignore` | `v0.0.0-20210923224102-525f6e181f06` |
 | `github.com/sagikazarmark/locafero` | `v0.11.0` |
 | `github.com/sahilm/fuzzy` | `v0.1.3` |
 | `github.com/sergi/go-diff` | `v1.4.0` |
@@ -128,43 +129,44 @@ graph — test-only and build-time modules are not distributed and are excluded.
 | `github.com/xeipuuv/gojsonpointer` | `v0.0.0-20180127040702-4e3ac2762d5f` |
 | `github.com/xeipuuv/gojsonreference` | `v0.0.0-20180127040603-bd5ef7bd5415` |
 | `github.com/xeipuuv/gojsonschema` | `v1.2.0` |
-| `github.com/xo/terminfo` | `v0.0.0-20220910002029-abceb7e1c41e` |
+| `github.com/xo/terminfo` | `v1.0.0` |
 | `github.com/xuri/efp` | `v0.0.1` |
 | `github.com/xuri/excelize/v2` | `v2.11.0` |
 | `github.com/xuri/nfp` | `v0.0.2-0.20250530014748-2ddeb826f9a9` |
 | `github.com/zalando/go-keyring` | `v0.2.8` |
 | `github.com/zalando/go-keyring/internal/shellescape` | `v0.2.8` |
 | `go.opentelemetry.io/auto/sdk` | `v1.2.1` |
-| `go.opentelemetry.io/otel` | `v1.46.0` |
-| `go.opentelemetry.io/otel/exporters/otlp/otlptrace` | `v1.46.0` |
-| `go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp` | `v1.46.0` |
-| `go.opentelemetry.io/otel/metric` | `v1.46.0` |
-| `go.opentelemetry.io/otel/sdk` | `v1.46.0` |
-| `go.opentelemetry.io/otel/trace` | `v1.46.0` |
+| `go.opentelemetry.io/otel` | `v1.47.0` |
+| `go.opentelemetry.io/otel/exporters/otlp/otlptrace` | `v1.47.0` |
+| `go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp` | `v1.47.0` |
+| `go.opentelemetry.io/otel/log` | `v1.47.0` |
+| `go.opentelemetry.io/otel/metric` | `v1.47.0` |
+| `go.opentelemetry.io/otel/sdk` | `v1.47.0` |
+| `go.opentelemetry.io/otel/trace` | `v1.47.0` |
 | `go.opentelemetry.io/proto/otlp` | `v1.11.0` |
 | `go.uber.org/multierr` | `v1.11.0` |
 | `go.uber.org/zap` | `v1.28.0` |
 | `go.yaml.in/yaml/v3` | `v3.0.5` |
 | `go.yaml.in/yaml/v4` | `v4.0.0-rc.2` |
-| `golang.org/x/crypto` | `v0.57.0` |
+| `golang.org/x/crypto` | `v0.58.0` |
 | `golang.org/x/image` | `v0.41.0` |
-| `golang.org/x/mod` | `v0.41.0` |
-| `golang.org/x/net` | `v0.58.0` |
-| `golang.org/x/sync` | `v0.23.0` |
-| `golang.org/x/sys` | `v0.48.0` |
-| `golang.org/x/term` | `v0.46.0` |
-| `golang.org/x/text` | `v0.42.0` |
+| `golang.org/x/mod` | `v0.42.0` |
+| `golang.org/x/net` | `v0.60.0` |
+| `golang.org/x/sync` | `v0.24.0` |
+| `golang.org/x/sys` | `v0.49.0` |
+| `golang.org/x/term` | `v0.47.0` |
+| `golang.org/x/text` | `v0.43.0` |
 | `golang.org/x/time` | `v0.15.0` |
-| `google.golang.org/genproto/googleapis/api` | `v0.0.0-20260819154853-08b0e4226688` |
-| `google.golang.org/genproto/googleapis/rpc` | `v0.0.0-20260819154853-08b0e4226688` |
+| `google.golang.org/genproto/googleapis/api` | `v0.0.0-20260928230214-8a89bd6388cc` |
+| `google.golang.org/genproto/googleapis/rpc` | `v0.0.0-20260928230214-8a89bd6388cc` |
 | `google.golang.org/grpc` | `v1.84.0` |
 | `google.golang.org/protobuf` | `v1.36.12` |
 | `gopkg.in/cenkalti/backoff.v1` | `v1.1.0` |
 | `gopkg.in/yaml.v3` | `v3.0.1` |
-| `modernc.org/libc` | `v1.75.7` |
+| `modernc.org/libc` | `v1.77.1` |
 | `modernc.org/mathutil` | `v1.7.1` |
 | `modernc.org/memory` | `v1.12.1` |
-| `modernc.org/sqlite` | `v1.59.0` |
+| `modernc.org/sqlite` | `v1.60.1` |
 
 ## The Go standard library
 
@@ -4577,6 +4579,34 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ---
 
+### `github.com/sabhiram/go-gitignore`
+
+```
+The MIT License (MIT)
+
+Copyright (c) 2015 Shaba Abhiram
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
 ### `github.com/sagikazarmark/locafero`
 
 ```
@@ -5527,10 +5557,11 @@ SOFTWARE.
 
 ### `go.opentelemetry.io/otel`
 
-and 5 further component(s) under the identical license text:
+and 6 further component(s) under the identical license text:
 
 - `go.opentelemetry.io/otel/exporters/otlp/otlptrace`
 - `go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp`
+- `go.opentelemetry.io/otel/log`
 - `go.opentelemetry.io/otel/metric`
 - `go.opentelemetry.io/otel/sdk`
 - `go.opentelemetry.io/otel/trace`
