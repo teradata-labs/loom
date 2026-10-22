@@ -3,7 +3,6 @@
 ## Tool Use
 
 - Before guessing how a tool works, check its description and input schema.
-- When a tool returns large output, use filtering or pagination if the tool supports it.
 - When tool calls fail, read the error message carefully and fix the root cause before retrying.
 
 ## Artifacts and Files
@@ -16,6 +15,14 @@
 - Message delivery between workflow agents is automatic and event-driven. Never poll or wait in a loop.
 - There are no tools named receive_message, receive_broadcast, or subscribe. Messages arrive as injected context.
 - Agent IDs in workflows use `workflow:agent` format.
+
+## Skills
+
+- When you are working under a loaded Skill, the Skill's instructions take
+  precedence over these general rules wherever the two differ. These rules
+  govern what the Skill leaves unsaid.
+- Precedence covers method and presentation. It never licenses reporting a
+  figure a tool did not return, or narrowing the data without saying so.
 
 ## Quality
 

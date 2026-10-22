@@ -361,10 +361,14 @@ func (a *MCPToolAdapter) Execute(ctx context.Context, params map[string]interfac
 	// LLM slot scheduler learn about the lease generically.
 	leaseEvents := trackSessionHandles(ctx, a, params, data)
 
-	// Cache schema results (#4: Schema Caching)
+	// Cache schema results (#4: Schema Caching). An empty answer is never
+	// cached: a lookup that found nothing is either a transient condition or a
+	// bad argument, and caching it hands the same "no columns" to every later
+	// caller with the same arguments (observed on the az512 rig: one
+	// {"columns":[]} served to four agents, none of which could then write SQL).
 	if a.isSchemaLookupTool() {
 		cacheKey := a.buildSchemaCacheKey(restoredParams)
-		if str, ok := data.(string); ok {
+		if str, ok := data.(string); ok && !isEmptySchemaResult(str) {
 			globalSchemaCache.set(cacheKey, str)
 		}
 	}
@@ -495,6 +499,33 @@ func (a *MCPToolAdapter) isSchemaLookupTool() bool {
 		if strings.Contains(toolName, pattern) {
 			return true
 		}
+	}
+	return false
+}
+
+// isEmptySchemaResult reports whether a schema-lookup payload carries no
+// entries: a JSON array with no elements, or a JSON object whose array-valued
+// fields are all empty (e.g. {"columns":[]}, {"tables":[],"row_count":0}).
+// Non-JSON text and objects with no array fields are not considered empty.
+func isEmptySchemaResult(payload string) bool {
+	var v interface{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(payload)), &v); err != nil {
+		return false
+	}
+	switch t := v.(type) {
+	case []interface{}:
+		return len(t) == 0
+	case map[string]interface{}:
+		arrays := 0
+		for _, field := range t {
+			if arr, ok := field.([]interface{}); ok {
+				arrays++
+				if len(arr) > 0 {
+					return false
+				}
+			}
+		}
+		return arrays > 0
 	}
 	return false
 }

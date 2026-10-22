@@ -296,7 +296,7 @@ Schema Request → Check Cache
 
 **Content**: Recent messages, verbatim.
 
-**Size**: Uncapped. L1 is not bounded by a message count or by an L1 token ceiling — it grows until overall token budget pressure triggers compaction, and shrinks by whole batches when it does. The only floor is `minL1Messages`, the recency floor that compaction will not compress below.
+**Size**: Uncapped. L1 is not bounded by a message count or by an L1 token ceiling — it grows until overall token budget pressure triggers compaction, and shrinks by whole batches when it does. The floor is `protectedRecentTurns`, the recency window relief will not compress below; `minL1Messages` is a per-profile figure that gates nothing.
 
 **Eviction Policy**: FIFO (First-In-First-Out) to L2, driven by budget pressure
 
@@ -304,9 +304,9 @@ Schema Request → Check Cache
 ```
 Profile          │ MinMsgs │ Warning% │ Critical% │ Batch (Warning/Critical)
 ─────────────────┼─────────┼──────────┼───────────┼─────────────────────────
-data_intensive   │ 3       │ 50%      │ 70%       │ 4/6
-balanced         │ 4       │ 60%      │ 75%       │ 5/7
-conversational   │ 6       │ 70%      │ 85%       │ 6/8
+data_intensive   │ 3       │ 45%      │ 80%       │ 4/6
+balanced         │ 4       │ 60%      │ 90%       │ 5/7
+conversational   │ 6       │ 70%      │ 92%       │ 6/8
 ```
 
 `MaxL1Tokens` also exists per profile — 4000 / 6400 / 9600 as static fallbacks, or derived from the real window by dynamic memory allocation — but it gates nothing. It is validated at profile load and reported as a stat and log field (`GetStats` as `l1_max_tokens`, profile-init logs); no code path compares L1 size against it.
@@ -764,9 +764,15 @@ Cross-agent access (blocked):
 At compile time, each tool row renders by the first matching case:
 
 1. **Relief-evicted row** → the evicted stub (tool name, estimated token figure, 160-byte preview). Its only door is re-running the call.
-2. **Current-turn row strictly over the threshold** → the offload stub (tool name, estimated token figure, 160-byte preview, and a `query_tool_result(message_id=…)` door; `sql=` for tabular payloads) — unless the producing tool is in the offload-exempt set, in which case the row renders whole.
-3. **Prior-turn row strictly over the threshold** → the evicted stub.
-4. **Otherwise** → the row renders whole.
+2. **Current-turn row offloaded by relief's last-resort rung** → the offload stub, whatever its size or exemption (see *Oversize current turn* below).
+3. **Current-turn row strictly over the threshold** → the offload stub (tool name, estimated token figure, 160-byte preview, and a `query_tool_result(message_id=…)` door; `sql=` for tabular payloads) — unless the producing tool is in the offload-exempt set, in which case the row renders whole.
+4. **Prior-turn row strictly over the threshold** → the evicted stub.
+5. **Otherwise** → the row renders whole.
+
+**Oversize current turn** (`ReleasePressure`, `pkg/agent/context_compilation.go`): every prior-turn rung stops at turn T−1, so a turn whose own results exceed the window — hundreds of parallel calls, each under the threshold and rendered whole — has nothing for them to shed. The last-resort rung offloads the turn's results to offload stubs, oldest first, keeping the newest n/2, n/4 … 0 whole. Within the turn this loses nothing: each stub keeps its `query_tool_result` door. Two limits apply:
+
+- A row produced by `query_tool_result` is never a candidate. It is the model reading an offloaded payload back, already bounded at one page; stubbing it would render a stub whose door points at the read itself.
+- Each stub still costs tokens. When every candidate is a stub and the turn alone (ROM, summary and turn T as rendered) is still at or over the start mark, relief has nothing left to shed. The conversation loop then ends the turn before the next send with the recoverable error `current_turn_overflow` (not retryable; payload `floor_tokens`, `start_tokens`, `stubbed_results`, `tool_results`), whose message asks for the work to be split into smaller batches across turns. Without this, every later send ran near the limit, uncached, until `MaxTurns`, and the answer was synthesized from 160-byte previews.
 
 **Recall is turn-scoped**: `query_tool_result` resolves a `message_id` only within the turn that produced it — the whole payload is held in memory for one turn and persisted truncated, so the only cross-turn door is re-running the call. Every `query_tool_result` return, page or SQL result, is bounded at the same threshold. A session without a persistent store has no `message_id` to print, so its current-turn oversize rows render the evicted stub.
 

@@ -32,6 +32,11 @@ type ChatCompletionRequest struct {
 	StreamOptions       *StreamOptions         `json:"stream_options,omitempty"`
 	User                string                 `json:"user,omitempty"`
 	ResponseFormat      map[string]interface{} `json:"response_format,omitempty"`
+
+	// Thinking requests extended thinking for Anthropic-backed models routed
+	// through litellm ({"type":"adaptive"} on Claude 4.6+/5). Omitted for
+	// every other model — a strict OpenAI endpoint may reject the field.
+	Thinking map[string]interface{} `json:"thinking,omitempty"`
 }
 
 // ChatMessage represents a message in the conversation.
@@ -48,10 +53,21 @@ type ChatMessage struct {
 	ToolCalls  []ToolCall  `json:"tool_calls,omitempty"`
 	ToolCallID string      `json:"tool_call_id,omitempty"` // For tool role messages
 
-	// ReasoningContent carries the reasoning trace that reasoning models
-	// (DeepSeek, Qwen, ...) return through OpenAI-compatible gateways such as
-	// LiteLLM. Response-only: omitempty keeps it off outgoing requests.
-	ReasoningContent string `json:"reasoning_content,omitempty"`
+	// litellm's extended-thinking convention for Anthropic models: the
+	// response carries the thinking text in ReasoningContent and/or inside
+	// ThinkingBlocks (both shapes observed live); replay sends ThinkingBlocks
+	// back verbatim on assistant messages so signatures survive the round-trip.
+	ReasoningContent string              `json:"reasoning_content,omitempty"`
+	ThinkingBlocks   []WireThinkingBlock `json:"thinking_blocks,omitempty"`
+}
+
+// WireThinkingBlock is litellm's thinking block shape. Index appears only in
+// streaming fragments and pairs fragments of the same block.
+type WireThinkingBlock struct {
+	Type      string `json:"type,omitempty"`
+	Thinking  string `json:"thinking,omitempty"`
+	Signature string `json:"signature,omitempty"`
+	Index     *int   `json:"index,omitempty"`
 }
 
 // ToolCall represents a function call from the assistant.
@@ -125,6 +141,32 @@ func (u ChatCompletionUsage) CacheRead() int {
 	return 0
 }
 
+// UncachedPromptTokens returns the prompt tokens that were neither read from
+// nor written to the prompt cache. OpenAI-compatible prompt_tokens INCLUDES
+// both cache buckets (OpenAI's cached_tokens, and litellm's Anthropic-shaped
+// cache_read/cache_creation fields); loom's Usage.InputTokens excludes them,
+// matching Anthropic and Bedrock, so this is what InputTokens must carry.
+// Clamped at zero for a gateway that reports the buckets outside prompt_tokens.
+func (u ChatCompletionUsage) UncachedPromptTokens() int {
+	return max(0, u.PromptTokens-u.CacheRead()-u.CacheCreationInputTokens)
+}
+
+// UncachedTotalTokens is total_tokens with the same cache buckets removed, so
+// Usage.TotalTokens = InputTokens + OutputTokens as on Anthropic and Bedrock.
+func (u ChatCompletionUsage) UncachedTotalTokens() int {
+	return max(0, u.TotalTokens-(u.PromptTokens-u.UncachedPromptTokens()))
+}
+
+// MeteredTokens is what OpenAI-style TPM limits count for the call: the raw,
+// cache-inclusive total_tokens (prompt_tokens + completion_tokens when a
+// gateway omits total_tokens). Carried as Usage.RateLimitTokens.
+func (u ChatCompletionUsage) MeteredTokens() int {
+	if u.TotalTokens > 0 {
+		return u.TotalTokens
+	}
+	return u.PromptTokens + u.CompletionTokens
+}
+
 // OpenAIError represents an error from the OpenAI API.
 type OpenAIError struct {
 	Message string      `json:"message"`
@@ -155,6 +197,12 @@ type ChatMessageDelta struct {
 	Role      string          `json:"role,omitempty"`
 	Content   interface{}     `json:"content,omitempty"` // string or null
 	ToolCalls []ToolCallDelta `json:"tool_calls,omitempty"`
+
+	// Streaming thinking (litellm → Anthropic): text arrives as
+	// ReasoningContent deltas and/or inside ThinkingBlocks fragments; the
+	// signature arrives in a block fragment. Merge fragments by Index.
+	ReasoningContent string              `json:"reasoning_content,omitempty"`
+	ThinkingBlocks   []WireThinkingBlock `json:"thinking_blocks,omitempty"`
 }
 
 // ToolCallDelta represents a delta in a tool call.

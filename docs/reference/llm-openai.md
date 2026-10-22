@@ -56,7 +56,7 @@ client := openai.NewClient(openai.Config{
     Temperature: 1.0,                        // Default: 1.0
     Timeout:                60 * time.Second, // Default: 60s
     StreamFirstByteTimeout: 90 * time.Second, // Optional: max wait for first body bytes
-    StreamIdleTimeout:      30 * time.Second, // Optional: max silence between later reads
+    StreamIdleTimeout:      90 * time.Second, // Optional: max blocked network-read time
 })
 ```
 
@@ -119,11 +119,16 @@ curl https://api.openai.com/v1/chat/completions \
 | `Temperature` | `float64` | No | `1.0` | 0.0-2.0 |
 | `Timeout` | `duration` | No | `60s` | 1s-10m |
 | `StreamFirstByteTimeout` | `duration` | No | `90s` | Maximum wait for the first response-body bytes in `ChatStream` |
-| `StreamIdleTimeout` | `duration` | No | `30s` | Maximum silence between subsequent network reads in `ChatStream` |
+| `StreamIdleTimeout` | `duration` | No | `60s` | Maximum time a subsequent network read may block in `ChatStream` |
 
 Streaming requests use the two phase-specific timeouts instead of applying
 `Timeout` to the entire response. `StreamFirstByteTimeout` also bounds streaming
 response headers, while `Timeout` continues to bound non-streaming requests.
+The stream timeout fields are available through the Go API; server YAML and CLI
+configuration use their defaults. Time spent processing a received chunk does
+not count toward `StreamIdleTimeout`.
+
+**Available since**: v1.4.0
 
 
 ## Overview
@@ -267,9 +272,9 @@ client := openai.NewClient(openai.Config{
     Endpoint:                "https://api.openai.com/v1/chat/completions", // Optional
     MaxTokens:               8192,             // Increase for longer responses
     Temperature:             0.7,              // Lower for more deterministic
-    Timeout:                 120 * time.Second, // Non-streaming and response headers
+    Timeout:                 120 * time.Second, // Non-streaming requests
     StreamFirstByteTimeout:  90 * time.Second, // Wait for initial body bytes
-    StreamIdleTimeout:       30 * time.Second, // Silence after streaming starts
+    StreamIdleTimeout:       90 * time.Second, // Blocked read after streaming starts
 })
 
 // Use as LLMProvider
@@ -325,7 +330,7 @@ agent, err := builder.NewAgentBuilder().
 | `Temperature` | `float64` | No | `1.0` | 0.0-2.0 | Sampling temperature |
 | `Timeout` | `duration` | No | `60s` | 1s-10m | Request timeout |
 | `StreamFirstByteTimeout` | `duration` | No | `90s` | >0 | Maximum wait for the first response-body bytes in `ChatStream` |
-| `StreamIdleTimeout` | `duration` | No | `30s` | >0 | Maximum silence between subsequent network reads in `ChatStream` |
+| `StreamIdleTimeout` | `duration` | No | `60s` | >0 | Maximum time a subsequent network read may block in `ChatStream` |
 
 
 ## Model Support and Pricing

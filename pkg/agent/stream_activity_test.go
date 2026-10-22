@@ -79,3 +79,81 @@ func TestChatWithStreaming_NoToolInputDeltasNoActivityEvents(t *testing.T) {
 	}
 	require.NotEmpty(t, events, "text tokens still produce progress events")
 }
+
+// toolInputProgressProvider reports per-call tool-input progress the way a
+// provider that knows the streaming call's identity does, and also fires the
+// bare activity hook for every delta as providers do.
+type toolInputProgressProvider struct {
+	steps []llmtypes.ToolInputProgress
+}
+
+func (p *toolInputProgressProvider) Name() string  { return "tool-input-progress" }
+func (p *toolInputProgressProvider) Model() string { return "test-model" }
+
+func (p *toolInputProgressProvider) Chat(context.Context, []llmtypes.Message, []shuttle.Tool) (*llmtypes.LLMResponse, error) {
+	return &llmtypes.LLMResponse{Content: "chat"}, nil
+}
+
+func (p *toolInputProgressProvider) ChatStream(ctx context.Context, _ []llmtypes.Message, _ []shuttle.Tool, _ llmtypes.TokenCallback) (*llmtypes.LLMResponse, error) {
+	for _, step := range p.steps {
+		llmtypes.NotifyToolInputProgress(ctx, step)
+		llmtypes.NotifyStreamActivity(ctx)
+	}
+	return &llmtypes.LLMResponse{StopReason: "tool_use"}, nil
+}
+
+func TestChatWithStreaming_ToolInputProgressNamesTheCallImmediately(t *testing.T) {
+	var events []ProgressEvent
+	ctx := newTestContextWithProgress(nil)
+	a := &Agent{llm: &toolInputProgressProvider{steps: []llmtypes.ToolInputProgress{
+		{Index: 0, ToolCallID: "call_1", ToolName: "files", Bytes: 10},
+		{Index: 0, ToolCallID: "call_1", ToolName: "files", Bytes: 2000},
+		{Index: 0, ToolCallID: "call_1", ToolName: "files", Bytes: 4000},
+		{Index: 1, ToolCallID: "call_2", ToolName: "read_notebook", Bytes: 5},
+	}}}
+
+	_, err := a.chatWithStreaming(ctx, []Message{{Role: "user", Content: "build it"}}, nil, func(e ProgressEvent) { events = append(events, e) })
+	require.NoError(t, err)
+
+	var inputEvents []ProgressEvent
+	for _, e := range events {
+		if e.IsToolInputStream {
+			inputEvents = append(inputEvents, e)
+		}
+	}
+	// The first delta of each call is emitted at once; the rest of call 0's
+	// deltas fall inside the throttle window, and no bare pulse is added.
+	require.Len(t, inputEvents, 2)
+	assert.Equal(t, "files", inputEvents[0].ToolName)
+	assert.Equal(t, "call_1", inputEvents[0].ToolCallID)
+	assert.Equal(t, int64(10), inputEvents[0].ToolInputBytes)
+	assert.Equal(t, "read_notebook", inputEvents[1].ToolName)
+	assert.Equal(t, "call_2", inputEvents[1].ToolCallID)
+	for _, e := range inputEvents {
+		assert.True(t, e.Droppable)
+		assert.Empty(t, e.PartialContent, "tool-input bytes must never leak into the visible partial content")
+	}
+}
+
+func TestChatWithStreaming_ToolInputProgressEmitsWhenNameArrivesLate(t *testing.T) {
+	var events []ProgressEvent
+	ctx := newTestContextWithProgress(nil)
+	a := &Agent{llm: &toolInputProgressProvider{steps: []llmtypes.ToolInputProgress{
+		{Index: 0, Bytes: 4},
+		{Index: 0, ToolCallID: "call_1", ToolName: "files", Bytes: 9},
+	}}}
+
+	_, err := a.chatWithStreaming(ctx, []Message{{Role: "user", Content: "go"}}, nil, func(e ProgressEvent) { events = append(events, e) })
+	require.NoError(t, err)
+
+	var inputEvents []ProgressEvent
+	for _, e := range events {
+		if e.IsToolInputStream {
+			inputEvents = append(inputEvents, e)
+		}
+	}
+	require.Len(t, inputEvents, 2, "the delta that first supplies the name must not wait for the throttle")
+	assert.Empty(t, inputEvents[0].ToolName)
+	assert.Equal(t, "files", inputEvents[1].ToolName)
+	assert.Equal(t, int64(9), inputEvents[1].ToolInputBytes)
+}
