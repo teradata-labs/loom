@@ -132,7 +132,9 @@ func ValidateName(name string) error {
 
 // ValidateScript checks everything Save requires: the name, a description,
 // a source that compiles under lim (it is never run), and the manifest.
-func ValidateScript(s Script, lim luasandbox.Limits) error {
+// Compiling honors ctx and lim's budgets (luasandbox.Check); a check that ctx
+// or the wall budget stopped is returned as is, not as ErrInvalid.
+func ValidateScript(ctx context.Context, s Script, lim luasandbox.Limits) error {
 	if err := ValidateName(s.Name); err != nil {
 		return err
 	}
@@ -148,7 +150,10 @@ func ValidateScript(s Script, lim luasandbox.Limits) error {
 	if strings.TrimSpace(s.Source) == "" {
 		return fmt.Errorf("%w: the script source is empty", ErrInvalid)
 	}
-	if err := luasandbox.Check(s.Name, s.Source, lim); err != nil {
+	if err := luasandbox.Check(ctx, s.Name, s.Source, lim); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
 		return fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
 	if s.Manifest != nil {

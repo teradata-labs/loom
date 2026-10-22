@@ -291,8 +291,12 @@ list it in `tools.builtin`, through serve's own agent loops and through
 `store.ScriptStore` is the interface hosts implement; loom's is `filestore` (one directory,
 temp-file-and-rename writes). One persistence mutex serializes each write, and the index
 lock is held only for map operations, so reads never wait on file I/O and no lock is held
-while a script runs. `luasandbox.Check` compiles a script without running it, and saves
-must pass it.
+while a script runs. `luasandbox.Check(ctx, name, source, lim)` compiles a script without
+running it, and saves must pass it. It is bounded like a run: the wall, CPU and memory
+budgets of `lim` apply and it stops when `ctx` ends, so saving a 1 MiB source cannot hold
+a caller past its deadline (`TestCheckHonorsContextAndWall`). A check that stopped early
+returns an error wrapping `context.Canceled` or `context.DeadlineExceeded`, which
+`store.ValidateScript` passes through instead of reporting an invalid script.
 
 Publishing (a flag on the script) and attaching (an entry per agent) are separate. An agent
 registers `lua_<name>` for each published script attached to it, or named by a `lua://`

@@ -236,8 +236,8 @@ func (s *Store) copyAttachments() map[string][]string {
 }
 
 // Save implements store.ScriptStore.
-func (s *Store) Save(_ context.Context, sc store.Script, overwrite bool) (store.Script, bool, error) {
-	if err := store.ValidateScript(sc, s.lim); err != nil {
+func (s *Store) Save(ctx context.Context, sc store.Script, overwrite bool) (store.Script, bool, error) {
+	if err := store.ValidateScript(ctx, sc, s.lim); err != nil {
 		return store.Script{}, false, err
 	}
 	s.persistMu.Lock()

@@ -15,6 +15,7 @@
 package store
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -36,7 +37,7 @@ func TestToolNameAndValidateName(t *testing.T) {
 
 func TestValidateScript(t *testing.T) {
 	good := Script{Name: "abc", Description: "Does a thing.", Source: "return 1"}
-	assert.NoError(t, ValidateScript(good, luasandbox.Limits{}))
+	assert.NoError(t, ValidateScript(context.Background(), good, luasandbox.Limits{}))
 
 	props := map[string]any{}
 	for i := 0; i < MaxManifestParameters+1; i++ {
@@ -71,7 +72,7 @@ func TestValidateScript(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			s := good
 			mutate(&s)
-			assert.ErrorIs(t, ValidateScript(s, luasandbox.Limits{MaxSourceBytes: 64 << 10}), ErrInvalid)
+			assert.ErrorIs(t, ValidateScript(context.Background(), s, luasandbox.Limits{MaxSourceBytes: 64 << 10}), ErrInvalid)
 		})
 	}
 
@@ -81,7 +82,7 @@ func TestValidateScript(t *testing.T) {
 		Requires:   []string{"execute_query"},
 		Returns:    "rows",
 	}
-	assert.NoError(t, ValidateScript(withManifest, luasandbox.Limits{}))
+	assert.NoError(t, ValidateScript(context.Background(), withManifest, luasandbox.Limits{}))
 	var nilManifest *Manifest
 	assert.NoError(t, nilManifest.Validate())
 }
