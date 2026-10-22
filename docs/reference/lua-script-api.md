@@ -36,7 +36,7 @@ Zero or negative fields take the default; larger values are lowered to the ceili
 
 | Field | Default | Ceiling | Bounds |
 |---|---|---|---|
-| `Wall` | 120 s | 600 s | the whole run, including tool calls and sleeps |
+| `Wall` | 120 s | 600 s | the whole run, including checking and compiling the source, tool calls and sleeps |
 | `CPUTicks` | 2,000,000,000 | 10,000,000,000 | interpreter steps (about 2×10⁸ per second) |
 | `MemoryBytes` | 128 MiB | 512 MiB | allocation, including values the host hands in (real memory can reach about 2.7× for scripts holding many small strings or closures) |
 | `MaxToolCalls` | 100 | 1000 | `tools.call` + `tools.must` + `turn.result` |

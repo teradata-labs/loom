@@ -1,3 +1,7 @@
+// Modified for loom, 2026: parsing and compiling poll for a stop request
+// (loom-only). See third_party/golua/README.md for the list of changes from
+// upstream.
+
 package runtime
 
 import (
@@ -277,11 +281,31 @@ func (r *Runtime) SetEnvGoFunc(t *Table, name string, f GoFunctionFunc, nArgs in
 
 // scannerOptions returns scanner options based on the runtime configuration.
 func (r *Runtime) scannerOptions() []scanner.Option {
-	var opts []scanner.Option
+	opts := []scanner.Option{scanner.WithPoll(r.compilePoll)}
 	if r.reservedGlobal {
 		opts = append(opts, scanner.WithReservedGlobal())
 	}
 	return opts
+}
+
+// compilePoll is called periodically while source is scanned, parsed and
+// compiled. It stops that work, by panicking with a ContextTerminationError as
+// running code does, when the current context has been interrupted or has run
+// past its time limit. Without it a large source runs to the end of
+// compilation before any limit is checked.
+func (r *Runtime) compilePoll() {
+	r.pollStop()
+}
+
+// reraiseTermination panics again with err when it is a context termination.
+// The parser turns every panic into an error; a termination must keep
+// unwinding to the CallContext that installed the limit, which reports the
+// context as killed.
+func reraiseTermination(err error) {
+	var termErr ContextTerminationError
+	if errors.As(err, &termErr) {
+		panic(termErr)
+	}
 }
 
 // ParseLuaChunk parses a string as a Lua statement and returns the AST.
@@ -298,6 +322,7 @@ func (r *Runtime) ParseLuaChunk(name string, source []byte, scannerOptions ...sc
 	*stat, err = parsing.ParseChunk(s)
 	if err != nil {
 		r.ReleaseMem(statSize)
+		reraiseTermination(err)
 		var parseErr parsing.Error
 		if !errors.As(err, &parseErr) {
 			return nil, 0, err
@@ -320,6 +345,7 @@ func (r *Runtime) ParseLuaExp(name string, source []byte, scannerOptions ...scan
 	exp, err := parsing.ParseExp(s)
 	if err != nil {
 		r.ReleaseMem(statSize)
+		reraiseTermination(err)
 		var parseErr parsing.Error
 		if !errors.As(err, &parseErr) {
 			return nil, 0, err
@@ -344,7 +370,7 @@ func (r *Runtime) compileLuaStat(name string, stat *ast.BlockStat, statSize uint
 	defer r.ReleaseMem(constsSize)
 
 	// Compile ast to ir
-	kidx, constants, err := astcomp.CompileLuaChunk(name, *stat)
+	kidx, constants, err := astcomp.CompileLuaChunkWithPoll(name, *stat, r.compilePoll)
 
 	// We no longer need the AST (whether that succeeded or not)
 	r.ReleaseMem(statSize)
@@ -360,6 +386,7 @@ func (r *Runtime) compileLuaStat(name string, stat *ast.BlockStat, statSize uint
 
 	// Set up the IR to code compiler
 	kc := ircomp.NewConstantCompiler(constants, code.NewBuilder(name))
+	kc.SetPoll(r.compilePoll)
 	kc.QueueConstant(kidx)
 
 	// Account for CPU and memory needed to compile IR to a code unit.  This is

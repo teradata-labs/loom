@@ -1,4 +1,5 @@
-// Modified for loom, 2026: PopContext restores the parent before charging it; Interrupt check (golua PR #133).
+// Modified for loom, 2026: PopContext restores the parent before charging it; Interrupt check (golua PR #133);
+// pollStop for compilation (loom-only).
 // See third_party/golua/README.md for the list of changes from upstream.
 
 //go:build !noquotas
@@ -206,6 +207,27 @@ func (m *runtimeContextManager) requireCPU(cpuAmount uint64) {
 		m.updateTimeUsed()
 	}
 	m.usedResources.Cpu = cpuUsed
+}
+
+// pollStop terminates the current context if it has been hard-stopped,
+// interrupted or has run past its time limit, and otherwise does nothing. It
+// charges no CPU. Parsing and compiling call it periodically (see
+// Runtime.compilePoll) so that they stop as promptly as running code does.
+func (m *runtimeContextManager) pollStop() {
+	if !m.trackCpu {
+		return
+	}
+	if m.stopLevel&HardStop != 0 {
+		m.KillContext()
+	}
+	if m.interrupt != nil {
+		if reason, ok := m.interrupt.Triggered(); ok {
+			m.TerminateContext("%s", reason)
+		}
+	}
+	if m.trackTime {
+		m.updateTimeUsed()
+	}
 }
 
 func (m *runtimeContextManager) UnusedCPU() uint64 {

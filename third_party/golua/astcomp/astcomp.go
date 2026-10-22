@@ -1,3 +1,7 @@
+// Modified for loom, 2026: CompileLuaChunkWithPoll lets the embedder stop a
+// long compilation (loom-only; see third_party/golua/README.md for the list of
+// changes from upstream).
+
 package astcomp
 
 import (
@@ -10,6 +14,15 @@ import (
 // CompileLuaChunk compiles the given block statement to IR code and returns a
 // slice or ir.Constant values and the index to the main code constant.
 func CompileLuaChunk(source string, s ast.BlockStat) (kidx uint, consts []ir.Constant, err error) {
+	return CompileLuaChunkWithPoll(source, s, nil)
+}
+
+// CompileLuaChunkWithPoll is CompileLuaChunk calling poll, when not nil, once
+// every pollInterval statements and expressions compiled. The embedder uses it
+// to stop compiling a large chunk when its deadline passes or its caller
+// cancels: poll does so by panicking, and the panic propagates to the caller
+// of CompileLuaChunkWithPoll.
+func CompileLuaChunkWithPoll(source string, s ast.BlockStat, poll func()) (kidx uint, consts []ir.Constant, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			compErr, ok := r.(Error)
@@ -24,6 +37,9 @@ func CompileLuaChunk(source string, s ast.BlockStat) (kidx uint, consts []ir.Con
 	rootIrC.DeclareLocal("_ENV", rootIrC.GetFreeRegister())
 	irC := rootIrC.NewChild("<main chunk>")
 	c := &compiler{CodeBuilder: irC}
+	if poll != nil {
+		c.poll = &poller{fn: poll}
+	}
 	c.compileFunctionBody(ast.Function{
 		ParList: ast.ParList{HasDots: true},
 		Body:    s,
@@ -34,11 +50,36 @@ func CompileLuaChunk(source string, s ast.BlockStat) (kidx uint, consts []ir.Con
 
 type compiler struct {
 	*ir.CodeBuilder
+	poll *poller // shared by the compilers of nested functions; nil when not polling
 }
 
 func (c *compiler) NewChild(name string) *compiler {
 	return &compiler{
 		CodeBuilder: c.CodeBuilder.NewChild(name),
+		poll:        c.poll,
+	}
+}
+
+// pollInterval is how many statements and expressions are compiled between
+// two calls of the poll function. Compiling 256 nodes takes microseconds, so a
+// stop request is noticed promptly, and the poll costs well under 1% of the
+// compilation.
+const pollInterval = 256
+
+// poller counts compiled nodes and calls fn every pollInterval of them.
+type poller struct {
+	fn func()
+	n  uint
+}
+
+// tick counts one compiled node. It does nothing on a nil poller.
+func (p *poller) tick() {
+	if p == nil {
+		return
+	}
+	p.n++
+	if p.n%pollInterval == 0 {
+		p.fn()
 	}
 }
 
