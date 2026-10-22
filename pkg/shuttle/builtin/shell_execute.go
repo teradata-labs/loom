@@ -323,7 +323,7 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	cmd := exec.Command(shellBinary, shellArgs...) // #nosec G204 -- shellBinary is validated against allowlist above
 	cmd.Dir = cleanWorkingDir
 	// Own process group, so a timeout, cancellation or output overflow can kill
-	// everything the shell started, not only the shell (killProcessTree).
+	// the shell's whole process group, not only the shell (killProcessTree).
 	setProcessGroup(cmd)
 
 	// Set environment variables: the server's environment minus anything that

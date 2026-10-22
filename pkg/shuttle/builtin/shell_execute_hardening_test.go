@@ -131,7 +131,7 @@ func readPID(t *testing.T, path string) int {
 	return pid
 }
 
-// A timeout must kill everything the shell started, not just the shell.
+// A timeout must kill the shell's process group, not just the shell.
 func TestShellExecute_TimeoutKillsBackgroundChildren(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "child.pid")
 	res, err := NewShellExecuteTool("").Execute(context.Background(), map[string]interface{}{
