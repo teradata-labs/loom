@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+#### HITL park: tools other than `contact_human` can park as questions
+- **`shuttle.ParkableQuestion`** lets a tool whose result is a human's answer park the turn as a `question` item, like `contact_human`. `ParkQuestion(ctx, input)` reports whether the call parks and the question text; `ParkAnswerResult(ctx, input, answer)` builds the tool result on an approved resume. With park enabled (`WithHITLPark`) `Execute` does not run for a parked call. The call's input is under `params` in the descriptor, subject to the usual `params_truncated` bound. `Execute` still runs when `ParkQuestion` returns `ok=false`, when the call ID is empty or duplicated in the batch, or when park is disabled. Resume uses the kind recorded on the park row rather than calling `ParkQuestion` again; a policy `Deny` is never lifted and a policy `Ask` yields only the question card. A rejected resume synthesizes `permission_denied`, an empty answer `MISSING_ANSWER`, and a nil `ParkAnswerResult` `internal_error`. See `docs/architecture/hitl-park-and-resume.md`.
+
+#### Tool-call progress while arguments stream
+- **Providers can report which tool call is being written, and how much.** `types.ToolInputProgress` (index, id, name, argument bytes so far) is reported through `types.WithToolInputProgress` / `NotifyToolInputProgress`, alongside the existing content-free stream-activity pulse. The OpenAI-compatible client (so LiteLLM, Mistral and HuggingFace too) reports it per tool-call delta; other providers still send only the bare pulse. `chatWithStreaming` emits it as `ProgressEvent.IsToolInputStream` with `ToolCallID`, `ToolName` and the new `ToolInputBytes`: the first delta of each call, and the delta that first supplies its name or id, immediately, later ones at most once a second per call.
+- **`WeaveProgress` carries it to gRPC clients.** New fields `is_tool_input_stream` (22) and `tool_input_bytes` (23); `tool_call_id` is now also set on these events, so a non-empty `tool_call_id` no longer implies the tool started. See `docs/reference/streaming.md`.
+
 ### Fixed
 
 #### Relief: a turn whose own tool results exceed the window is shed, not refused

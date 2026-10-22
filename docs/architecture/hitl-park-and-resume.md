@@ -51,7 +51,42 @@ blocking resolver never invoked.
 | `Ask` | **approval item** |
 | `contact_human`, registered, not denied | **question item** |
 | `contact_human`, unregistered | never an item; "tool not found" at execution |
+| `shuttle.ParkableQuestion` tool, registered, `ParkQuestion` ok, not denied | **question item** |
 | `Allow` / `NoDecision` | never an item; dispatches normally at resume |
+
+A tool is not limited to the literal name `contact_human` to park as a
+question. A tool that implements `shuttle.ParkableQuestion`
+(`ParkQuestion(ctx, input)` reports whether the call parks and the question
+text; `ParkAnswerResult(ctx, input, answer)` builds the tool result from the
+human's answer) is parked like `contact_human`: its `Execute` never runs for a
+parked call, and on an approved resume the agent synthesizes the result from
+`ParkAnswerResult`. Both methods run inside an `agent.park_question` /
+`agent.park_answer_result` span and receive its context.
+
+Behavior to know when writing such a tool:
+
+- **The recorded kind is the authority on resume.** `ParkQuestion` is called
+  when the turn parks; the result is recorded as the descriptor's `kind`.
+  Resume uses that record and does not call `ParkQuestion` again, so a
+  classification that depends on input types (JSON turns integers into
+  `float64`), configuration or tool state cannot flip between park and resume.
+  A policy `Deny` is still re-checked on resume and is never lifted. If the
+  tool is no longer a `ParkableQuestion` at resume, the call gets an
+  `internal_error` result instead of running `Execute`.
+- **`Execute` still runs** when the call is not parked: park is disabled (an
+  in-turn resolver is used instead), `ParkQuestion` reports `ok=false` (the
+  model sees a repairable tool error), or the batch has an empty or duplicate
+  call ID (`checkParkItemIDs`, which makes the batch dispatch inline).
+- **Policy `Ask` yields only the question.** The question check precedes the
+  `Ask` check, as for `contact_human`, so a `ParkableQuestion` under an `Ask`
+  verdict gets the question card and no separate approval item.
+- **`params` may be truncated.** The descriptor carries the call input under
+  `params`, bounded like every other item: an input over the per-call limit
+  (or a batch over the whole-map limit) is replaced by a digest and marked
+  `params_truncated`. A card that renders a form from `params` must handle
+  that, or put what it needs in the question text.
+- A rejected resume gives `permission_denied`, an empty answer gives
+  `MISSING_ANSWER`, and a `nil` from `ParkAnswerResult` gives `internal_error`.
 
 One or more items parks the **whole batch**: a single grouped `human_requests`
 row whose `params` carry one descriptor per item keyed by `ToolCall.ID`, a
