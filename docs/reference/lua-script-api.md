@@ -184,6 +184,7 @@ worst-case peak, `PeakMemoryOverhead` (3) times its budget, within 40% of `memLi
 When two slots do not fit, it lowers the per-run budget instead, down to 16 MiB. When two
 16 MiB runs do not fit either (process memory under 240 MiB), it returns `0, 0`: the process
 is too small to run scripts within the 3× / 40% plan, and the host must not admit any run.
+`looms` then leaves `run_lua` off and logs a warning, even with `tools.lua.enabled: true`.
 
 | Process memory | Per-run budget asked | Slots | Per-run budget returned |
 |---|---|---|---|
