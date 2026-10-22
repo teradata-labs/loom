@@ -1,4 +1,5 @@
-// Modified for loom, 2026: table.sort refuses a length longer than an int (golua PR #136).
+// Modified for loom, 2026: table.sort refuses a length longer than an int (golua PR #136);
+// table.create charges the table header under a memory quota.
 // See third_party/golua/README.md for the list of changes from upstream.
 
 package tablelib
@@ -524,6 +525,7 @@ func create(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 	softLimits := t.Runtime.SoftLimits()
 	if hardLimits.Memory > 0 || softLimits.Memory > 0 {
 		// Memory quotas are active - don't preallocate to avoid security issue
+		t.RequireMem(rt.TableHeaderSize)
 		tbl = rt.NewTable()
 	} else {
 		// No memory quotas - preallocate for performance

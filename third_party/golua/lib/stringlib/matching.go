@@ -1,4 +1,5 @@
-// Modified for loom, 2026: init positions saturate and gsub formats integers in 64 bits (golua PR #136).
+// Modified for loom, 2026: init positions saturate and gsub formats integers in 64 bits (golua PR #136);
+// string.match fails for a start past the end instead of slicing out of range.
 // See third_party/golua/README.md for the list of changes from upstream.
 
 package stringlib
@@ -100,6 +101,12 @@ func match(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 	pat, ptnErr := pattern.New(string(ptn))
 	if ptnErr != nil {
 		return nil, ptnErr
+	}
+	if si > len(s) {
+		// Reference Lua: a start past the end cannot match. The anchored
+		// matcher would otherwise accept it and slice past the string.
+		t.Push1(next, rt.NilValue)
+		return next, nil
 	}
 	captures, usedCPU := pat.MatchFromStart(string(s), si, t.UnusedCPU())
 	t.RequireCPU(usedCPU)

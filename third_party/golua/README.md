@@ -8,7 +8,7 @@ This directory holds a copy of the Lua 5.4 interpreter
 | | |
 |---|---|
 | Upstream | `arnodel/golua` branch `lua5.5`, commit `a129ef2` (tag `v0.3.0`) |
-| Patched source | [`ilsiepotamus/golua`](https://github.com/ilsiepotamus/golua) branch `combined/sandbox-hardening`, commit `c2d4961` |
+| Patched source | [`ilsiepotamus/golua`](https://github.com/ilsiepotamus/golua) branch `combined/sandbox-hardening`, commit `c2d4961`, plus the two changes marked "loom-only" below |
 | Packages copied | the 20 packages `pkg/luasandbox` needs, non-test files only, imports rewritten to this path |
 
 ## Why it is vendored
@@ -28,6 +28,8 @@ by the module again.
 | Tables were charged 8% to 29% of what they allocate; they are now charged what they allocate (within about 10%) | [#135](https://github.com/arnodel/golua/pull/135) | `runtime/table.go`, `runtime/hashtable.go`, `runtime/luacont.go` |
 | 64-bit Lua integers were narrowed to `int` with a plain conversion, which wraps where `int` is 32 bits: wrong positions, miscompiled literals and two panics on linux/386. They now saturate (`runtime.ClampToInt`) or are compared in `int64`; `math.ldexp` no longer overflows near `math.MaxInt` on any platform; already-correct narrowings put the bound check next to the conversion | [#136](https://github.com/arnodel/golua/pull/136) | `runtime/numconv.go`, `runtime/hashtable.go`, `code/instructions.go`, `ircomp/compinstr.go`, `ast/string.go`, `lib/base/error.go`, `lib/base/select.go`, `lib/mathlib/mathlib.go`, `lib/stringlib/{format,matching,packer,packing,stringlib}.go`, `lib/tablelib/tablelib.go`, `lib/utf8lib/utf8lib.go` |
 | The AST tree dump (`HWrite`) passed `Name`/`NameAttrib` structs to `%s` and used names as format strings, printing struct dumps such as `{{%!s(*token.Pos=<nil>) …} c}` instead of `c <const>`; `go vet`'s printf check (module `go` ≥ 1.24) reports all eight sites, so `go test` refused to build the package here | [#138](https://github.com/arnodel/golua/pull/138) | `ast/{forstat,function,functioncall,globalstat,gotostat,localstat,name}.go` |
+| Named vararg tables (`function f(... xs)`) were not charged at all, and `table.create` skipped its header charge under a memory quota | not yet proposed; loom-only until it is in the fork | `runtime/varargtable.go`, `runtime/luacont.go`, `lib/tablelib/tablelib.go` |
+| `string.match` with a start past the end reached the anchored matcher, which sliced out of range (a Go panic); it now returns no match, as reference Lua does | not yet proposed; loom-only until it is in the fork | `lib/stringlib/matching.go` |
 
 Every modified file starts with a "Modified for loom" notice. No other file differs
 from upstream except for the rewritten import paths.
