@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -238,10 +239,14 @@ func (c *Client) sendOnce(apiURL string, body []byte) func(context.Context) (int
 func (c *Client) convertResponse(resp *GenerateContentResponse) *llmtypes.LLMResponse {
 	llmResp := &llmtypes.LLMResponse{
 		Usage: llmtypes.Usage{
-			InputTokens:  resp.UsageMetadata.PromptTokenCount,
+			// InputTokens/TotalTokens exclude cached tokens (loom convention);
+			// cost stays on the raw promptTokenCount, which calculateCost prices.
+			InputTokens:  resp.UsageMetadata.UncachedPromptTokens(),
 			OutputTokens: resp.UsageMetadata.CandidatesTokenCount,
-			TotalTokens:  resp.UsageMetadata.TotalTokenCount,
-			CostUSD:      c.calculateCost(resp.UsageMetadata.PromptTokenCount, resp.UsageMetadata.CandidatesTokenCount),
+			TotalTokens:  resp.UsageMetadata.UncachedTotalTokens(),
+			// Gemini meters cached tokens against rate limits.
+			RateLimitTokens: resp.UsageMetadata.MeteredTokens(),
+			CostUSD:         c.calculateCost(resp.UsageMetadata.PromptTokenCount, resp.UsageMetadata.CandidatesTokenCount),
 			// Gemini implicit caching (automatic since May 2025): map to CacheReadInputTokens for observability.
 			// Note: for Gemini, cached tokens still count against rate limits (cost savings only, not rate limit relief).
 			CacheReadInputTokens: resp.UsageMetadata.CachedContentTokenCount,
@@ -615,11 +620,17 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	// 3. Process Server-Sent Events stream
 	var contentBuffer strings.Builder
 	usage := llmtypes.Usage{}
+	// Raw promptTokenCount / totalTokenCount (cache-inclusive) from the last usage chunk.
+	var promptTokens, rawTotalTokens int
 	var finishReason string
 	tokenCount := 0
 	var toolCalls []llmtypes.ToolCall
 
 	scanner := bufio.NewScanner(httpResp.Body)
+	// A gateway may coalesce a whole response (or an error echoing the request)
+	// into one SSE line; the Scanner default 64KB line cap aborts the stream.
+	// Grown on demand, so steady-state memory is unchanged.
+	scanner.Buffer(make([]byte, 0, 64<<10), 8<<20)
 	for scanner.Scan() {
 		line := scanner.Text()
 
@@ -681,9 +692,12 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 
 		// Extract usage metadata
 		if chunk.UsageMetadata.TotalTokenCount > 0 {
-			usage.InputTokens = chunk.UsageMetadata.PromptTokenCount
+			promptTokens = chunk.UsageMetadata.PromptTokenCount
+			rawTotalTokens = chunk.UsageMetadata.TotalTokenCount
+			usage.InputTokens = chunk.UsageMetadata.UncachedPromptTokens()
 			usage.OutputTokens = chunk.UsageMetadata.CandidatesTokenCount
-			usage.TotalTokens = chunk.UsageMetadata.TotalTokenCount
+			usage.TotalTokens = chunk.UsageMetadata.UncachedTotalTokens()
+			usage.RateLimitTokens = chunk.UsageMetadata.MeteredTokens()
 			// Track Gemini implicit cache hits for observability
 			usage.CacheReadInputTokens = chunk.UsageMetadata.CachedContentTokenCount
 		}
@@ -697,19 +711,24 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	}
 
 	if err := scanner.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			return nil, fmt.Errorf("error reading stream: SSE line exceeded the 8MB cap: %w", err)
+		}
 		return nil, fmt.Errorf("error reading stream: %w", err)
 	}
 
 	// 4. Build final response
-	if usage.TotalTokens == 0 {
+	if rawTotalTokens == 0 {
 		usage.OutputTokens = tokenCount
 		usage.TotalTokens = tokenCount
 	}
-	usage.CostUSD = c.calculateCost(usage.InputTokens, usage.OutputTokens)
+	// Cost and the rate limiter take the raw promptTokenCount: calculateCost is
+	// cache-blind, and Gemini cached tokens still count against rate limits.
+	usage.CostUSD = c.calculateCost(promptTokens, usage.OutputTokens)
 
 	// Record token usage for rate limiter metrics
 	if c.rateLimiter != nil {
-		totalTokens := int64(usage.InputTokens + usage.OutputTokens)
+		totalTokens := int64(promptTokens + usage.OutputTokens)
 		c.rateLimiter.RecordTokenUsage(totalTokens)
 	}
 

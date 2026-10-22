@@ -124,6 +124,30 @@ type SegmentedMemory struct {
 	// its compressor call, and this keeps a second pass from interleaving.
 	reliefInFlight bool
 
+	// pressureOffload names (by ToolUseID) the current-turn tool results that
+	// relief's last-resort rung renders as offload stubs (§5.2 step 6) even
+	// though they are at or under the threshold — the one relief operation
+	// that touches turn T, taken only after every prior-turn evict and fold
+	// has failed to reach the release mark. In-memory render state, never
+	// persisted: the payload stays in L1 and query_tool_result still reads it,
+	// and once the turn advances the rows are ordinary prior-turn rows that
+	// the evict ladder handles. pressureOffloadTurn scopes the set to the turn
+	// it was built in, so a stale set is inert without a turn-start hook.
+	pressureOffload     map[string]bool
+	pressureOffloadTurn int64
+
+	// compressorFailedThisPass records that a fold's compressor already
+	// failed in the current relief pass, so later folds in the same pass skip
+	// it instead of re-paying the attempts. A failing compressor costs up to
+	// three 120s calls per fold and a pass can fold several regions, so
+	// without this one broken provider can hold a pass for minutes and then
+	// still abort. Reset at the start of every pass; guarded by mu.
+	compressorFailedThisPass bool
+
+	// estimateCalibration scales relief's tiktoken estimate toward the
+	// provider's own prompt count (ObservePromptTokens). Zero reads as 1.0.
+	estimateCalibration float64
+
 	// skillDeactivation is the skills orchestrator's deactivation path, called
 	// when fold flags a region containing a manage_skills load pair.
 	skillDeactivation func(sessionID, skillName string)

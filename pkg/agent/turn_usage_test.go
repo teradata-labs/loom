@@ -150,5 +150,28 @@ func TestAddUsage(t *testing.T) {
 	var dst Usage
 	addUsage(&dst, Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3, CacheReadInputTokens: 4, CacheCreationInputTokens: 5, CostUSD: 0.5})
 	addUsage(&dst, Usage{InputTokens: 10, OutputTokens: 20, TotalTokens: 30, CacheReadInputTokens: 40, CacheCreationInputTokens: 50, CostUSD: 0.25})
+	// Neither call set RateLimitTokens, so it stays unset (ThroughputTokens
+	// then falls back to the summed TotalTokens).
 	assert.Equal(t, Usage{InputTokens: 11, OutputTokens: 22, TotalTokens: 33, CacheReadInputTokens: 44, CacheCreationInputTokens: 55, CostUSD: 0.75}, dst)
+	assert.Equal(t, 33, dst.ThroughputTokens())
+}
+
+// A turn mixing a cached OpenAI-style call (RateLimitTokens set) with a call
+// that leaves it unset totals every call's metered figure.
+func TestAddUsage_RateLimitTokensSumsMeteredFigure(t *testing.T) {
+	cached := Usage{InputTokens: 5, OutputTokens: 336, TotalTokens: 341, CacheReadInputTokens: 16817, CacheCreationInputTokens: 361, RateLimitTokens: 17519}
+	plain := Usage{InputTokens: 100, OutputTokens: 10, TotalTokens: 110}
+	for name, order := range map[string][]Usage{
+		"metered call first": {cached, plain},
+		"metered call last":  {plain, cached},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var dst Usage
+			for _, u := range order {
+				addUsage(&dst, u)
+			}
+			assert.Equal(t, 451, dst.TotalTokens)
+			assert.Equal(t, 17519+110, dst.ThroughputTokens())
+		})
+	}
 }
