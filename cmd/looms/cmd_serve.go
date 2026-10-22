@@ -1072,6 +1072,13 @@ func exportConfigToEnv(cfg *Config) {
 		// #nosec G104 -- os.Setenv rarely fails, and we can continue without it
 		_ = os.Setenv("SERPAPI_KEY", cfg.Tools.WebSearch.SerpAPIKey)
 	}
+	// Safe mode for the file tools. Only set when asked: the env var is also
+	// the direct switch for a library embedding, and writing "false" here
+	// would override a caller that set it before start.
+	if cfg.Tools.Permissions.SafeFiles {
+		// #nosec G104 -- os.Setenv rarely fails, and we can continue without it
+		_ = os.Setenv("LOOM_FILE_SAFE_MODE", "true")
+	}
 }
 
 // buildServerAuthConfig converts the viper auth config into the server package's
@@ -2543,6 +2550,15 @@ func runServe(cmd *cobra.Command, args []string) {
 	loomService.SetAllowTimeOverride(config.Server.AllowTimeOverride)
 	if config.Server.AllowTimeOverride {
 		logger.Info("Arrival-time override enabled (server.allow_time_override): WeaveRequest.occurred_at will be honored")
+	}
+
+	// Honor WeaveRequest.replay_assistant_message only when the operator opted
+	// in — generation-free replay writes caller-supplied assistant turns, so it
+	// has its own switch, separate from allow_time_override (see
+	// applyReplayAssistant).
+	loomService.SetAllowAssistantOverride(config.Server.AllowAssistantOverride)
+	if config.Server.AllowAssistantOverride {
+		logger.Info("Assistant override enabled (server.allow_assistant_override): WeaveRequest.replay_assistant_message will be honored")
 	}
 
 	// Set provider factory for dynamic model switching
