@@ -110,7 +110,7 @@ func TestSourceGuardBoundsTotalNesting(t *testing.T) {
 	}
 	b.WriteString("1")
 	b.WriteString(strings.Repeat(")", 150))
-	err := checkSourceShape("inline", b.String())
+	err := checkSourceShape(context.Background(), "inline", b.String())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nesting too deep")
 }
@@ -128,13 +128,14 @@ func TestSourceGuardAllowsLongFlatScripts(t *testing.T) {
 		b.WriteString("handlers[1] = function() return 2 end ")
 		b.WriteString("repeat local w = 1 until true ")
 	}
-	assert.NoError(t, checkSourceShape("inline", b.String()))
+	assert.NoError(t, checkSourceShape(context.Background(), "inline", b.String()))
 }
 
 func TestCompileTimeIsBoundedForLargeFlatSources(t *testing.T) {
-	// Compilation runs before the limited context opens, so its cost must
-	// stay small at the source-size ceiling for the constructs most likely
-	// to be expensive (many locals, many statements).
+	// With the largest budgets, checking and compiling a source at the size
+	// ceiling must stay cheap for the constructs most likely to be expensive
+	// (many locals, many statements). TestSourcePreparationHonorsRunLimits
+	// covers stopping that work early under a short budget.
 	lim := MaxLimits()
 	for name, unit := range map[string]string{
 		"locals":      "local a%d = %d\n",

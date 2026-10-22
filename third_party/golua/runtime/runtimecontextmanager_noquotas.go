@@ -1,4 +1,4 @@
-// Modified for loom, 2026: Interrupt check (golua PR #133).
+// Modified for loom, 2026: Interrupt check (golua PR #133); pollStop for compilation (loom-only).
 // See third_party/golua/README.md for the list of changes from upstream.
 
 //go:build noquotas
@@ -104,6 +104,12 @@ func (m *runtimeContextManager) RequireCPU(cpuAmount uint64) {
 			m.TerminateContext("%s", reason)
 		}
 	}
+}
+
+// pollStop terminates the current context if it has been interrupted. Without
+// quotas there is no time limit to check.
+func (m *runtimeContextManager) pollStop() {
+	m.RequireCPU(0)
 }
 
 func (m *runtimeContextManager) UnusedCPU() uint64 {

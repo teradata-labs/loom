@@ -15,6 +15,7 @@
 package luasandbox
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -26,15 +27,35 @@ import (
 // running any of it: the size limit, the nesting screen and the compiler are
 // the same ones Run applies. Hosts call it before saving a script. The error,
 // when there is one, is suitable for the model ("<name>:<line>: message").
-func Check(name, source string, lim Limits) (err error) {
+//
+// Like Run, the check is bounded by lim.Wall, lim.CPUTicks and
+// lim.MemoryBytes and stops when ctx ends: the nesting screen checks its
+// context every 256 tokens and the compiler polls an interrupt. A check that
+// stops early returns an error wrapping context.Canceled or
+// context.DeadlineExceeded, so callers can tell it from an invalid script.
+func Check(ctx context.Context, name, source string, lim Limits) (err error) {
 	lim = lim.Normalize()
 	if name == "" {
 		name = "inline"
 	}
+	if cause := ctx.Err(); cause != nil {
+		return fmt.Errorf("script check cancelled before it started: %w", cause)
+	}
 	if len(source) > lim.MaxSourceBytes {
 		return fmt.Errorf("the script is %d bytes; the limit is %d", len(source), lim.MaxSourceBytes)
 	}
-	if err := checkSourceShape(name, source); err != nil {
+	checkCtx, cancel := context.WithTimeout(ctx, lim.Wall)
+	defer cancel()
+	stopped := func() error {
+		if cause := ctx.Err(); cause != nil {
+			return fmt.Errorf("script check cancelled: %w", cause)
+		}
+		return fmt.Errorf("checking the script exceeded the wall time limit of %v: %w", lim.Wall, context.DeadlineExceeded)
+	}
+	if err := checkSourceShape(checkCtx, name, source); err != nil {
+		if checkCtx.Err() != nil && errors.Is(err, checkCtx.Err()) {
+			return stopped()
+		}
 		return err
 	}
 	defer func() {
@@ -44,8 +65,23 @@ func Check(name, source string, lim Limits) (err error) {
 	}()
 	r := rt.New(io.Discard)
 	defer r.Close(nil)
-	if _, err := r.CompileAndLoadLuaChunk(name, []byte(source), rt.TableValue(r.GlobalEnv())); err != nil {
-		return errors.New(boundError(cleanError(err)))
+	// Compile inside a limited context with an interrupt bound to checkCtx,
+	// as Run does, so the vendored compiler's polls stop it promptly.
+	intr := rt.NewInterrupt()
+	stopWatch := context.AfterFunc(checkCtx, func() { intr.Trigger("script check stopped") })
+	defer stopWatch()
+	_, cerr := r.MainThread().CallContext(rt.RuntimeContextDef{
+		HardLimits: rt.RuntimeResources{Cpu: lim.CPUTicks, Memory: lim.MemoryBytes},
+		Interrupt:  intr,
+	}, func() error {
+		_, err := r.CompileAndLoadLuaChunk(name, []byte(source), rt.TableValue(r.GlobalEnv()))
+		return err
+	})
+	if checkCtx.Err() != nil {
+		return stopped()
+	}
+	if cerr != nil {
+		return errors.New(boundError(cleanError(cerr)))
 	}
 	return nil
 }

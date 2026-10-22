@@ -15,6 +15,7 @@
 package luasandbox
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/teradata-labs/loom/third_party/golua/scanner"
@@ -35,6 +36,11 @@ const (
 	// index/call chains a.b.c or f()()), which nest in the parse tree even
 	// without brackets.
 	maxExpressionTokens = 2000
+	// shapePollInterval is how many tokens checkSourceShape scans between
+	// two checks of its context. Scanning 256 tokens takes microseconds,
+	// and ctx.Err is a mutex-free atomic load in the common case, so the
+	// check costs well under 1% of the scan.
+	shapePollInterval = 256
 )
 
 // checkSourceShape rejects sources whose nesting would make the parser or
@@ -45,8 +51,13 @@ const (
 // each unfinished expression in every open level, so the guard bounds the
 // number of open levels and the total of unfinished-expression tokens across
 // all of them (bounding each level separately would let the limits multiply).
-func checkSourceShape(chunk, src string) error {
+//
+// It checks ctx every shapePollInterval tokens and returns ctx.Err() once ctx
+// has ended: at MaxSourceBytes the scan alone takes long enough to matter
+// against a short wall budget.
+func checkSourceShape(ctx context.Context, chunk, src string) error {
 	sc := scanner.New(chunk, []byte(src))
+	scanned := 0
 	// runs[i] counts tokens since the last expression boundary at depth i;
 	// open is their sum, the work the parser holds on its stack.
 	runs := make([]int, 1, 16)
@@ -64,6 +75,11 @@ func checkSourceShape(chunk, src string) error {
 		tok := sc.Scan()
 		if tok == nil || tok.Type == token.EOF || tok.Type == token.INVALID || tok.Type == token.UNFINISHED {
 			return nil
+		}
+		if scanned++; scanned%shapePollInterval == 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 		}
 		switch {
 		case opensFrame(tok.Type):

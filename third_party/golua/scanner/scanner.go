@@ -1,3 +1,6 @@
+// Modified for loom, 2026: WithPoll lets the embedder stop a long scan
+// (loom-only; see third_party/golua/README.md for the list of changes from upstream).
+
 // Package scanner implements a tokeniser for lua.
 // Inspired by https://talks.golang.org/2011/lex.slide#1
 package scanner
@@ -19,7 +22,14 @@ type Scanner struct {
 	state            stateFn
 	errorMsg         string
 	reservedGlobal   bool // when true, "global" is a reserved keyword
+	poll             func() // called every pollInterval tokens; see WithPoll
+	scanned          uint   // tokens returned by Scan
 }
+
+// pollInterval is how many tokens Scan returns between two calls of the
+// WithPoll function. Scanning 256 tokens takes microseconds, so a stop request
+// is noticed promptly, and the poll costs well under 1% of the scan.
+const pollInterval = 256
 
 type Option func(*Scanner)
 
@@ -35,6 +45,15 @@ func ForNumber() Option {
 func WithReservedGlobal() Option {
 	return func(s *Scanner) {
 		s.reservedGlobal = true
+	}
+}
+
+// WithPoll makes Scan call poll once every pollInterval tokens. The embedder
+// uses it to stop scanning a long input when its deadline passes or its caller
+// cancels: poll does so by panicking, and the panic propagates out of Scan.
+func WithPoll(poll func()) Option {
+	return func(s *Scanner) {
+		s.poll = poll
 	}
 }
 
@@ -173,6 +192,12 @@ func (l *Scanner) Scan() *token.Token {
 	for {
 		select {
 		case item := <-l.items:
+			if l.poll != nil {
+				l.scanned++
+				if l.scanned%pollInterval == 0 {
+					l.poll()
+				}
+			}
 			return item
 		default:
 			if l.state == nil {
