@@ -1719,6 +1719,14 @@ func truncateID(id string) string {
 // This context is used to inject dynamic communication instructions into the system prompt.
 func (a *Agent) SetWorkflowCommunicationContext(ctx *WorkflowCommunicationContext) {
 	a.workflowCommContext = ctx
+	if ctx == nil {
+		return
+	}
+	if tool, ok := a.tools.Get("send_message"); ok {
+		if workflowAware, ok := tool.(interface{ SetWorkflowName(string) }); ok {
+			workflowAware.SetWorkflowName(ctx.WorkflowName)
+		}
+	}
 }
 
 // formatWorkflowCommunicationInstructions renders an agent's team block: the

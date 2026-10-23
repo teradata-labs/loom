@@ -831,3 +831,30 @@ func TestSendMessageAutoHealingWithoutRegistry(t *testing.T) {
 	data := result.Data.(map[string]interface{})
 	assert.Equal(t, "receiver-agent", data["to_agent"])
 }
+
+func TestSendMessageAutoHealingUsesExplicitWorkflowContext(t *testing.T) {
+	queue := createTestQueue(t)
+	notify := make(chan struct{}, 1)
+	queue.RegisterNotificationChannel("conference-intelligence:conf-intel-discovery", notify)
+
+	tool := NewSendMessageTool(queue, "9722a860-5844-4e58-b290-143684753110")
+	tool.SetWorkflowName("conference-intelligence")
+
+	result, err := tool.Execute(context.Background(), map[string]interface{}{
+		"to_agent": "conf-intel-discovery",
+		"message":  "Find December 2026 AI conferences.",
+	})
+	require.NoError(t, err)
+	require.True(t, result.Success)
+
+	data := result.Data.(map[string]interface{})
+	assert.Equal(t, "conference-intelligence:conf-intel-discovery", data["to_agent"])
+
+	message, err := queue.Dequeue(
+		context.Background(),
+		"conference-intelligence:conf-intel-discovery",
+	)
+	require.NoError(t, err)
+	require.NotNil(t, message)
+	assert.Equal(t, "9722a860-5844-4e58-b290-143684753110", message.FromAgent)
+}

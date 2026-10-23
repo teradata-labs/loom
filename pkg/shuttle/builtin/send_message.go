@@ -25,10 +25,11 @@ type AgentRegistry interface {
 // SendMessageTool provides agent-to-agent messaging for workflows.
 // Enables point-to-point async communication between agents.
 type SendMessageTool struct {
-	queue    *communication.MessageQueue
-	agentID  string // The agent that owns this tool
-	registry AgentRegistry
-	logger   *zap.Logger
+	queue        *communication.MessageQueue
+	agentID      string // The agent that owns this tool
+	workflowName string
+	registry     AgentRegistry
+	logger       *zap.Logger
 }
 
 // NewSendMessageTool creates a new send message tool for an agent.
@@ -48,6 +49,12 @@ func (t *SendMessageTool) SetAgentRegistry(registry AgentRegistry, logger *zap.L
 	if logger != nil {
 		t.logger = logger
 	}
+}
+
+// SetWorkflowName supplies the workflow namespace for tools whose owning agent
+// is identified by a GUID rather than by its workflow-qualified display name.
+func (t *SendMessageTool) SetWorkflowName(workflowName string) {
+	t.workflowName = workflowName
 }
 
 func (t *SendMessageTool) Name() string {
@@ -117,17 +124,20 @@ func (t *SendMessageTool) Execute(ctx context.Context, params map[string]interfa
 		}, nil
 	}
 
-	// AUTO-HEAL: Use sender's workflow context to resolve short agent names
-	// If the target is a short name (no ":"), try to resolve it using the sender's workflow context
+	// AUTO-HEAL: Use the explicit workflow context to resolve short agent names.
+	// Runtime agents are commonly identified by GUID, so deriving the workflow
+	// solely from t.agentID would produce "<guid>:<agent>" and strand messages.
 	originalToAgent := toAgent
-	if t.registry != nil && !strings.Contains(toAgent, ":") {
-		// Extract workflow name from sender's agent ID
-		workflowName := extractWorkflowName(t.agentID)
+	if !strings.Contains(toAgent, ":") {
+		workflowName := t.workflowName
+		if workflowName == "" {
+			workflowName = extractWorkflowName(t.agentID)
+		}
 		if workflowName != "" {
-			// Try workflow-prefixed name: "workflow:agent"
 			candidate := fmt.Sprintf("%s:%s", workflowName, toAgent)
-			if t.registry.GetConfig(candidate) != nil {
-				// Found! Use the resolved ID
+			_, hasActiveListener := t.queue.GetNotificationChannel(candidate)
+			registered := t.registry != nil && t.registry.GetConfig(candidate) != nil
+			if hasActiveListener || registered {
 				toAgent = candidate
 				t.logger.Info("Auto-healed agent ID using sender's workflow context",
 					zap.String("sender", t.agentID),

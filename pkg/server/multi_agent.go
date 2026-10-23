@@ -2745,11 +2745,13 @@ func (s *MultiAgentServer) runWorkflowSubAgent(ctx context.Context, ag *agent.Ag
 			s.logger.Info("Workflow sub-agent notified of pending message",
 				zap.String("agent", agentID))
 
-			// Acquire semaphore to limit concurrent LLM calls (prevents rate limiting)
-			s.logger.Info("Sub-agent acquiring LLM semaphore",
+			// Acquire semaphore to limit concurrent LLM calls (prevents rate limiting).
+			// Logged at debug: a wake-up that finds no message never calls the
+			// LLM, so these lines are not LLM traffic.
+			s.logger.Debug("Sub-agent acquiring LLM semaphore",
 				zap.String("agent", agentID))
 			s.llmSemaphore <- struct{}{}
-			s.logger.Info("Sub-agent acquired LLM semaphore",
+			s.logger.Debug("Sub-agent acquired LLM semaphore",
 				zap.String("agent", agentID))
 
 			// Dequeue and inject pending queue messages
@@ -2798,6 +2800,9 @@ func (s *MultiAgentServer) runWorkflowSubAgent(ctx context.Context, ag *agent.Ag
 					// Use the parent context directly (no timeout) to allow sub-agent full time to process
 					// The agent's own config has max_turns and timeout_seconds configured
 					_, err = ag.Chat(ctx, sessionID, allMessages)
+					s.logger.Info("Sub-agent Chat() completed",
+						zap.String("agent", agentID),
+						zap.Bool("has_error", err != nil))
 
 					// Acknowledge all messages after successful processing
 					if err == nil {
@@ -2822,13 +2827,9 @@ func (s *MultiAgentServer) runWorkflowSubAgent(ctx context.Context, ag *agent.Ag
 					zap.String("agent", agentID))
 			}
 
-			s.logger.Info("Sub-agent Chat() completed",
-				zap.String("agent", agentID),
-				zap.Bool("has_error", err != nil))
-
 			// Release semaphore immediately after LLM call completes
 			<-s.llmSemaphore
-			s.logger.Info("Sub-agent released LLM semaphore",
+			s.logger.Debug("Sub-agent released LLM semaphore",
 				zap.String("agent", agentID))
 
 			if err != nil {

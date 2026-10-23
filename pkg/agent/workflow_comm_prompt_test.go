@@ -20,7 +20,21 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/teradata-labs/loom/pkg/shuttle"
 )
+
+type workflowAwareSendTool struct {
+	workflowName string
+}
+
+func (t *workflowAwareSendTool) Name() string                        { return "send_message" }
+func (t *workflowAwareSendTool) Description() string                 { return "" }
+func (t *workflowAwareSendTool) InputSchema() *shuttle.JSONSchema    { return nil }
+func (t *workflowAwareSendTool) Backend() string                     { return "" }
+func (t *workflowAwareSendTool) SetWorkflowName(workflowName string) { t.workflowName = workflowName }
+func (t *workflowAwareSendTool) Execute(context.Context, map[string]interface{}) (*shuttle.Result, error) {
+	return &shuttle.Result{Success: true}, nil
+}
 
 // TestWorkflowCommPrompt_AbsentWithoutATeam proves the default: an agent that
 // no one attached a workflow context to renders no team block at all. This is
@@ -46,6 +60,18 @@ func TestWorkflowCommPrompt_EmptyContextRendersNothing(t *testing.T) {
 
 	assert.Empty(t, ag.workflowCommPromptSupplement(),
 		"a context with no topics and no peers renders no block")
+}
+
+func TestWorkflowCommContext_ConfiguresSendMessageNamespace(t *testing.T) {
+	ag := NewAgent(nil, nil)
+	sendTool := &workflowAwareSendTool{}
+	ag.RegisterTool(sendTool)
+
+	ag.SetWorkflowCommunicationContext(&WorkflowCommunicationContext{
+		WorkflowName: "conference-intelligence",
+	})
+
+	assert.Equal(t, "conference-intelligence", sendTool.workflowName)
 }
 
 // TestWorkflowCommPrompt_PeersRenderWithReplyRule is the coordinator/worker
