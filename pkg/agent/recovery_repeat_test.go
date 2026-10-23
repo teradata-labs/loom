@@ -121,6 +121,8 @@ func TestAgent_RepeatHintAppendedAcrossResponses(t *testing.T) {
 	}
 	require.Contains(t, byID, "call_3")
 	assert.Contains(t, byID["call_3"], "call 3 in a row to calculator")
+	require.Contains(t, byID, "call_1")
+	require.Contains(t, byID, "call_2")
 	assert.NotContains(t, byID["call_1"], "in a row")
 	assert.NotContains(t, byID["call_2"], "in a row")
 }
@@ -183,6 +185,7 @@ func TestAgent_RepeatHintSurvivesOffloadStub(t *testing.T) {
 	require.Contains(t, byID, "call_3")
 	assert.Less(t, len(byID["call_3"]), 1024, "the 5KB result must have been stubbed")
 	assert.Contains(t, byID["call_3"], repeatHintPrefix+"(note: this is call 3 in a row")
+	require.Contains(t, byID, "call_1")
 	assert.NotContains(t, byID["call_1"], repeatHintPrefix)
 }
 
