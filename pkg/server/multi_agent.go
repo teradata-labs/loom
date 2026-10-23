@@ -22,6 +22,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/evals"
 	"github.com/teradata-labs/loom/pkg/llm/factory"
+	luastore "github.com/teradata-labs/loom/pkg/luasandbox/store"
 	"github.com/teradata-labs/loom/pkg/mcp/manager"
 	"github.com/teradata-labs/loom/pkg/metaagent"
 	"github.com/teradata-labs/loom/pkg/metaagent/learning"
@@ -163,6 +164,9 @@ type MultiAgentServer struct {
 
 	// UI App compiler for CreateUIApp/UpdateUIApp RPCs
 	appCompiler AppCompiler
+
+	// luaScripts backs the Lua script RPCs; nil when tools.lua is disabled.
+	luaScripts luastore.ScriptStore
 
 	// Storage backend for health checks and migration RPCs
 	storageBackend     backend.StorageBackend

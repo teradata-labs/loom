@@ -78,6 +78,7 @@ type Registry struct {
 	identityResolver  func(context.Context) string // Resolves AdmissionRequest.UserID from the call context
 	artifactStore     interface{}                  // artifacts.Store for workspace tool
 	runLuaTool        *RunLuaToolOptions           // run_lua wiring; nil when tools.lua is disabled
+	luaScripts        *LuaScriptsOptions           // saved-script wiring; nil without a script store
 
 	// providerPool is the server-level named provider pool injected by cmd_serve.go.
 	// Agents can reference pool entries by name in their LLM config (e.g., provider: "fast").
@@ -160,6 +161,12 @@ type RegistryConfig struct {
 	// leaves run_lua unregistered even when listed.
 	RunLuaTool *RunLuaToolOptions
 
+	// LuaScripts, when set (with RunLuaTool), wires saved scripts into
+	// agents: manage_lua_scripts when listed, and a lua_<name> tool for each
+	// published script attached to the agent or named by a lua:// custom
+	// tool.
+	LuaScripts *LuaScriptsOptions
+
 	// Database encryption (opt-in for enterprise deployments)
 	EncryptDatabase bool   // Enable SQLCipher encryption
 	EncryptionKey   string // Encryption key (or use LOOM_DB_KEY env var)
@@ -225,6 +232,7 @@ func NewRegistry(config RegistryConfig) (*Registry, error) {
 		identityResolver:  config.IdentityResolver,
 		artifactStore:     config.ArtifactStore,
 		runLuaTool:        config.RunLuaTool,
+		luaScripts:        config.LuaScripts,
 	}
 
 	// Load existing agents from database to restore GUIDs
@@ -961,6 +969,9 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 				r.registerRunLua(agent, config.Name)
 				continue
 			}
+			if toolName == ManageLuaScriptsToolName {
+				continue // registered with the saved-script tools below
+			}
 			tool := builtin.ByName(toolName)
 			if tool != nil {
 				// Wrap with PromptAwareTool if prompts registry available
@@ -1059,6 +1070,10 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 			}
 		}
 	}
+
+	// Saved Lua scripts register last, after the builtin filter above:
+	// lua_<name> tools come from attachments, not from tools.builtin.
+	r.registerLuaScripts(ctx, agent, config)
 
 	return agent, nil
 }
@@ -1462,6 +1477,9 @@ func (r *Registry) registerCustomTools(ctx context.Context, agent *Agent, custom
 		if customConfig.Name == "" {
 			r.logger.Warn("Skipping custom tool with empty name")
 			continue
+		}
+		if _, ok := LuaScriptFromImplementation(customConfig.Implementation); ok {
+			continue // a saved Lua script; registered by registerLuaScripts
 		}
 
 		// Log that custom tool loading is not yet fully implemented
@@ -2790,5 +2808,59 @@ func (r *Registry) registerRunLua(ag *Agent, agentName string) {
 		r.logger.Info("run_lua suppressed on this agent; not registered", zap.String("agent", agentName))
 	default:
 		r.logger.Warn("run_lua not registered", zap.String("agent", agentName), zap.Error(err))
+	}
+}
+
+// LuaScriptFromImplementation returns the script name of a lua://<name>
+// custom-tool implementation.
+func LuaScriptFromImplementation(impl string) (string, bool) {
+	name, ok := strings.CutPrefix(impl, "lua://")
+	if !ok || name == "" {
+		return "", false
+	}
+	return name, true
+}
+
+// luaCustomScripts returns the script names an agent config's lua:// custom
+// tools name.
+func luaCustomScripts(config *loomv1.AgentConfig) []string {
+	if config == nil || config.Tools == nil {
+		return nil
+	}
+	var out []string
+	for _, c := range config.Tools.Custom {
+		if name, ok := LuaScriptFromImplementation(c.GetImplementation()); ok {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// registerLuaScripts wires saved scripts into a registry-built agent and logs
+// what it registered and skipped.
+func (r *Registry) registerLuaScripts(ctx context.Context, ag *Agent, config *loomv1.AgentConfig) {
+	wantManage := false
+	if config.Tools != nil {
+		for _, n := range config.Tools.Builtin {
+			if n == ManageLuaScriptsToolName {
+				wantManage = true
+			}
+		}
+	}
+	custom := luaCustomScripts(config)
+	if r.luaScripts == nil || r.runLuaTool == nil {
+		if wantManage || len(custom) > 0 {
+			r.logger.Info("Saved Lua scripts are not available (tools.lua disabled or no script store); "+
+				"manage_lua_scripts and lua:// tools not registered", zap.String("agent", config.Name))
+		}
+		return
+	}
+	rep := ag.RegisterLuaScriptTools(ctx, *r.luaScripts, wantManage, custom)
+	for _, name := range rep.Registered {
+		r.logger.Info("Registered Lua script tool", zap.String("agent", config.Name), zap.String("tool", name))
+	}
+	for name, reason := range rep.Skipped {
+		r.logger.Warn("Lua script tool not registered", zap.String("agent", config.Name),
+			zap.String("tool", name), zap.String("reason", reason))
 	}
 }
