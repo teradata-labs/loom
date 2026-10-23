@@ -41,21 +41,30 @@ type TieVote struct {
 	Reasoning  string
 }
 
-// maxTieQuestionRunes bounds the swarm question in state.
+// maxTieQuestionRunes bounds the swarm question the decider judges. The judge
+// agent reads the whole question, so a longer one is not asked about.
 const maxTieQuestionRunes = 2000
 
 // maxTieReasoningRunes bounds each vote's reasoning in state; the judge
-// prompt today shows 150 bytes, which loses most of a sentence.
+// prompt today shows 150 bytes, which loses most of a sentence. The decider
+// therefore sees more of every vote than the judge does, so cutting here
+// cannot make it eliminate a choice on less than the judge reads.
 const maxTieReasoningRunes = 400
 
 // TieBreakRequest builds the request: options are the tied choices (plus
 // none_of_these, so the decider has an honest place for "neither"), state is
 // the question, the tied options with their vote counts, and every vote with
 // its confidence and bounded reasoning. It returns a *decision.ValidationError
-// when fewer than two choices are tied.
+// when fewer than two choices are tied, and one whose Cause is
+// decision.ErrStateTooLarge when the question is over maxTieQuestionRunes:
+// a pick made on a cut question eliminates the other choices on a view the
+// judge never has, so the judge breaks the tie.
 func TieBreakRequest(question string, tied map[string]int32, votes []TieVote) (*loomv1.DecisionRequest, error) {
 	if len(tied) < 2 {
 		return nil, &decision.ValidationError{Field: "questions.winner.options", Msg: "a tie needs at least two choices"}
+	}
+	if err := fitRunes("state.question", question, maxTieQuestionRunes); err != nil {
+		return nil, err
 	}
 	keys := make([]string, 0, len(tied))
 	for k := range tied {
@@ -85,7 +94,7 @@ func TieBreakRequest(question string, tied map[string]int32, votes []TieVote) (*
 		})
 	}
 	state := map[string]any{
-		"question": truncateRunes(question, maxTieQuestionRunes),
+		"question": question,
 		"tied":     tiedState,
 		"votes":    voteState,
 	}

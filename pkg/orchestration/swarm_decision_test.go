@@ -16,6 +16,7 @@ package orchestration
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -37,6 +38,12 @@ func tieBreakBand(actMin float64) decision.RouterOption {
 // runTiedSwarm runs a 2–2 PostgreSQL/MongoDB swarm with the given judge.
 func runTiedSwarm(t *testing.T, judge *agent.Agent) (*loomv1.WorkflowResult, error) {
 	t.Helper()
+	return runTiedSwarmQuestion(t, judge, "Which database should we use?")
+}
+
+// runTiedSwarmQuestion is runTiedSwarm with the swarm question given.
+func runTiedSwarmQuestion(t *testing.T, judge *agent.Agent, question string) (*loomv1.WorkflowResult, error) {
+	t.Helper()
 	orch := NewOrchestrator(Config{Logger: zaptest.NewLogger(t), Tracer: observability.NewNoOpTracer()})
 	votes := []string{
 		"VOTE: PostgreSQL\nCONFIDENCE: 0.8\nREASONING: ACID compliance",
@@ -52,7 +59,7 @@ func runTiedSwarm(t *testing.T, judge *agent.Agent) (*loomv1.WorkflowResult, err
 	}
 	orch.RegisterAgent("judge", judge)
 	return NewSwarmExecutor(orch, &loomv1.SwarmPattern{
-		Question:     "Which database should we use?",
+		Question:     question,
 		AgentIds:     ids,
 		Strategy:     loomv1.VotingStrategy_MAJORITY,
 		JudgeAgentId: "judge",
@@ -176,4 +183,35 @@ func TestSwarmTieBreakDecision_PerQuestionHonoursActMin(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
 	assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_FALLBACK, rows[0].Path)
+}
+
+// The judge reads the whole swarm question; the decider's request cut it at
+// 2,000 runes, so a tie could be broken on a question missing the part that
+// decides it. A question over the limit is not asked about: the judge
+// breaks the tie and nothing is recorded. One at the limit is still asked.
+func TestSwarmTieBreakDecision_OverLimitQuestionGoesToJudge(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		question   string
+		wantWinner string
+		wantCalls  int
+	}{
+		{"over the limit: the judge decides", strings.Repeat("q", 2001), "PostgreSQL", 0},
+		{"at the limit: the decider still acts", strings.Repeat("q", 2000), "MongoDB", 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			judgeLLM := newMockLLMProvider("PostgreSQL")
+			dec := decisionmock.New().AnswerChoice(sites.QTieWinner, map[string]float64{"MongoDB": 0.9, "PostgreSQL": 0.05, decision.NoneOption: 0.05})
+			store := &memShadowStore{}
+			judge := newDecisionAgent(t, "judge", judgeLLM, dec, store, tieBreakBand(0.8))
+			res, err := runTiedSwarmQuestion(t, judge, tt.question)
+			require.NoError(t, err)
+			judge.WaitDecisionShadows()
+			assert.Equal(t, tt.wantWinner, res.MergedOutput)
+			assert.Equal(t, tt.wantCalls, dec.CallCount())
+		})
+	}
 }

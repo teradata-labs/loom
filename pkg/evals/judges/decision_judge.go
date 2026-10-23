@@ -101,10 +101,19 @@ var defaultJudgeCriteria = []string{
 	"The response states no facts that the request or general knowledge contradicts.",
 }
 
+// Bounds on the request and response the typed judge reads. Past either the
+// request carries a cut view while the generative judge reads both whole, so
+// on a cut view only a pass stands (see Evaluate).
 const (
 	maxJudgePromptRunes   = 6000
 	maxJudgeResponseRunes = 12000
 )
+
+// cutView reports whether buildRequest cuts the request or the response.
+func cutView(evalCtx *loomv1.EvaluationContext) bool {
+	return utf8.RuneCountInString(evalCtx.GetPrompt()) > maxJudgePromptRunes ||
+		utf8.RuneCountInString(evalCtx.GetResponse()) > maxJudgeResponseRunes
+}
 
 // NewDecisionJudge builds a DecisionJudge over an already constructed
 // decider. Defaults follow LLMJudge: weight 1, minimum passing score 80,
@@ -469,6 +478,22 @@ func (j *DecisionJudge) Evaluate(ctx context.Context, evalCtx *loomv1.Evaluation
 		verdict = "PASS"
 	case satisfied == 0 || overall < 50:
 		verdict = "FAIL"
+	}
+
+	if verdict != "PASS" && cutView(evalCtx) {
+		// The decider judged a cut request or response. A pass on a cut view
+		// stands; the reason for a miss may sit in the part it never saw, so
+		// a non-pass is not the typed judge's to give. Report it like an
+		// uncertain answer so a screening caller escalates.
+		res := &loomv1.JudgeResult{
+			JudgeId: j.ID(), JudgeName: j.Name(), JudgeModel: j.decider.Model(),
+			Criteria: j.criteria, OverallScore: overall, Verdict: "PARTIAL",
+			Reasoning: strings.TrimSpace(reasoning.String()), Issues: issues,
+			JudgedAt: timestamppb.Now(), ExecutionTimeMs: time.Since(start).Milliseconds(),
+			CostUsd: out.Response.GetUsage().GetCostUsd(),
+		}
+		return res, fmt.Errorf("%w: a %s verdict on a cut request or response (over %d or %d runes) is not acted on",
+			ErrUncertain, verdict, maxJudgePromptRunes, maxJudgeResponseRunes)
 	}
 
 	dims := map[string]float64{

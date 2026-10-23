@@ -17,6 +17,7 @@ package index
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -308,4 +309,42 @@ func TestRouteLiveBandStillHonoursEligibility(t *testing.T) {
 	require.Len(t, got, 1)
 	assert.Equal(t, "ml-train", got[0].Name, "a skill the agent never bound must not surface")
 	r.WaitDecisionShadows()
+}
+
+// The tree-walk LLM reads the whole message; the decider's request cut it at
+// 1,500 runes, so a subtree could be pruned on a message missing the part
+// that names it. A message over the limit is not asked about: the LLM walk
+// decides. One at the limit is still asked.
+func TestRouteOverLimitMessageGoesToTheLLM(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		msgRunes  int
+		wantSkill string
+		wantCalls int
+	}{
+		{"over the limit: the LLM walk decides", 1501, "ml-train", 0},
+		{"at the limit: the decider still acts", 1500, "sql-opt", 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tree, res := twoBranchTree()
+			// o0 = ML, o1 = SQL. The decider prunes ML; the LLM picks ML.
+			dec := decisionmock.New().AnswerNoul("o0", 0.02).AnswerNoul("o1", 0.95)
+			llm := newScriptedLLM([]string{`{"descend":["` + NodeID("ent/ml") + `"],"skills":[],"reason":"ml"}`})
+			r := NewRouter(res,
+				WithRouterLLM(llm),
+				WithRouterDecision(decision.NewRouter(dec, decision.WithBands(liveBand())), &memShadowStore{}))
+			r.SetTree(tree)
+			head := "make this query faster. "
+			msg := head + strings.Repeat("m", tt.msgRunes-len(head))
+			got, err := r.Route(context.Background(), "sess-long", msg, nil, "h")
+			require.NoError(t, err)
+			r.WaitDecisionShadows()
+			require.Len(t, got, 1)
+			assert.Equal(t, tt.wantSkill, got[0].Name)
+			assert.Equal(t, tt.wantCalls, dec.CallCount())
+		})
+	}
 }

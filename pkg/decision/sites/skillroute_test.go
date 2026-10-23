@@ -39,7 +39,7 @@ func routeOpts() []RouteOption {
 func TestSkillRouteRequestShape(t *testing.T) {
 	t.Parallel()
 	opts := routeOpts()
-	req, err := SkillRouteRequest(strings.Repeat("m", maxRouteMessageRunes+50), "Enterprise", "top of the index", opts)
+	req, err := SkillRouteRequest(strings.Repeat("m", maxRouteMessageRunes), "Enterprise", "top of the index", opts)
 	require.NoError(t, err)
 	require.NoError(t, decision.Validate(req))
 
@@ -55,7 +55,7 @@ func TestSkillRouteRequestShape(t *testing.T) {
 
 	state := req.GetState().GetStructValue().AsMap()
 	msg, _ := state["message"].(string)
-	assert.LessOrEqual(t, len([]rune(msg)), maxRouteMessageRunes+1, "message is truncated, not unbounded")
+	assert.Len(t, []rune(msg), maxRouteMessageRunes, "a message at the limit is carried whole")
 	items, _ := state[SkillRouteFanOutKey].([]any)
 	require.Len(t, items, len(opts))
 	first, _ := items[0].(map[string]any)
@@ -72,6 +72,38 @@ func TestSkillRouteRequestShape(t *testing.T) {
 
 	_, err = SkillRouteRequest("m", "n", "", nil)
 	require.Error(t, err, "no options is a validation error, not an empty request")
+}
+
+// The walk LLM reads the message, the node and option titles whole, so over
+// any of those bounds there is no request. Option text is still cut: the
+// walk's own prompt shows only 200 bytes of it.
+func TestSkillRouteRequestOverLimitIsNotAsked(t *testing.T) {
+	t.Parallel()
+	long := func(n int) string { return strings.Repeat("x", n+1) }
+	tests := []struct {
+		name, message, title, summary, field string
+		opts                                 []RouteOption
+	}{
+		{"message", long(maxRouteMessageRunes), "n", "", "state.message", routeOpts()},
+		{"node title", "m", long(maxRouteNodeRunes), "", "state.node.title", routeOpts()},
+		{"node summary", "m", "n", long(maxRouteNodeRunes), "state.node.summary", routeOpts()},
+		{"option title", "m", "n", "", "state.options.title", []RouteOption{{Kind: OptionKindSkill, ID: "s", Title: long(maxRouteOptionRunes)}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			req, err := SkillRouteRequest(tt.message, tt.title, tt.summary, tt.opts)
+			assert.Nil(t, req)
+			assert.ErrorIs(t, err, decision.ErrStateTooLarge)
+			var ve *decision.ValidationError
+			require.ErrorAs(t, err, &ve)
+			assert.Equal(t, tt.field, ve.Field)
+		})
+	}
+	req, err := SkillRouteRequest("m", "n", "", []RouteOption{{Kind: OptionKindSkill, ID: "s", Title: "t", Text: long(maxRouteOptionRunes)}})
+	require.NoError(t, err, "long option text is cut, not refused")
+	items := req.GetState().GetStructValue().AsMap()[SkillRouteFanOutKey].([]any)
+	assert.True(t, strings.HasSuffix(items[0].(map[string]any)["text"].(string), "…"))
 }
 
 // The asymmetry is the design: never prune a subtree on an uncertain answer,

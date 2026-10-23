@@ -54,6 +54,10 @@ const (
 
 // Bounds on one routing request. The message is the thing being classified,
 // so it gets room; option text is a summary or description and does not.
+// The tree-walk LLM reads the message, the node and every option title
+// whole, so a request over those bounds is not built (the walk decides).
+// Option text is still cut: the walk's own prompt cuts it to 200 bytes, so
+// at 400 runes the decider never sees less of an option than the LLM does.
 const (
 	maxRouteMessageRunes = 1500
 	maxRouteOptionRunes  = 400
@@ -87,13 +91,30 @@ func RouteOptionQuestionID(i int) string { return "o" + strconv.Itoa(i) }
 // question in the same request because the walk decides both at once; the
 // caller separates them by Kind when it reads the answers.
 //
-// It returns a *decision.ValidationError when there are no options.
+// It returns a *decision.ValidationError when there are no options, and one
+// whose Cause is decision.ErrStateTooLarge when the message, the node's
+// title or summary, or an option's title is over its bound: a choice made on
+// that cut view could prune or reject an option on text the walk reads.
 func SkillRouteRequest(message, nodeTitle, nodeSummary string, options []RouteOption) (*loomv1.DecisionRequest, error) {
 	if len(options) == 0 {
 		return nil, &decision.ValidationError{Field: "state.options", Msg: "no options"}
 	}
 	if len(options) > MaxRouteOptions {
 		options = options[:MaxRouteOptions]
+	}
+	if err := fitRunes("state.message", message, maxRouteMessageRunes); err != nil {
+		return nil, err
+	}
+	if err := fitRunes("state.node.title", nodeTitle, maxRouteNodeRunes); err != nil {
+		return nil, err
+	}
+	if err := fitRunes("state.node.summary", nodeSummary, maxRouteNodeRunes); err != nil {
+		return nil, err
+	}
+	for _, o := range options {
+		if err := fitRunes("state.options.title", o.Title, maxRouteOptionRunes); err != nil {
+			return nil, err
+		}
 	}
 	items := make([]any, 0, len(options))
 	questions := make(map[string]*loomv1.DecisionQuestion, len(options))
@@ -102,7 +123,7 @@ func SkillRouteRequest(message, nodeTitle, nodeSummary string, options []RouteOp
 		item := map[string]any{
 			"id":    id,
 			"kind":  o.Kind,
-			"title": truncateRunes(o.Title, maxRouteOptionRunes),
+			"title": o.Title,
 		}
 		if o.Text != "" {
 			item["text"] = truncateRunes(o.Text, maxRouteOptionRunes)
@@ -116,10 +137,10 @@ func SkillRouteRequest(message, nodeTitle, nodeSummary string, options []RouteOp
 		)
 	}
 	state := map[string]any{
-		"message": truncateRunes(message, maxRouteMessageRunes),
+		"message": message,
 		"node": map[string]any{
-			"title":   truncateRunes(nodeTitle, maxRouteNodeRunes),
-			"summary": truncateRunes(nodeSummary, maxRouteNodeRunes),
+			"title":   nodeTitle,
+			"summary": nodeSummary,
 		},
 		SkillRouteFanOutKey: items,
 	}

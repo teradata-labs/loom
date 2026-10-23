@@ -17,6 +17,7 @@ package judges
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -421,4 +422,42 @@ func (c *countingLLM) calls() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.n
+}
+
+// The typed judge's request cut the response at 12,000 runes (the request
+// at 6,000) while the generative judge reads both whole. On a cut view a
+// confident pass stands, but a non-pass is never the typed judge's to give:
+// it reports ErrUncertain and a screening caller escalates.
+func TestDecisionJudgeCutViewOnlyPasses(t *testing.T) {
+	band := []*loomv1.DecisionBand{{Site: "judge.dj-1", ActMin: 0.5, TrueMin: 0.2}}
+	llmPass := `{"factual_accuracy":9,"completeness":9,"query_quality":9,"overall_score":9,"verdict":"PASS","reasoning":"llm decided"}`
+	tests := []struct {
+		name        string
+		prompt      string
+		response    string
+		p           float64
+		wantLLM     int
+		wantVerdict string
+	}{
+		{"cut response, confident not met: escalated", "q", strings.Repeat("r", 12001), 0.03, 1, "PASS"},
+		{"cut request, confident not met: escalated", strings.Repeat("q", 6001), "a", 0.03, 1, "PASS"},
+		{"cut response, confident met: the typed pass stands", "q", strings.Repeat("r", 12001), 0.97, 0, "PASS"},
+		{"whole view, confident not met: the typed fail stands", "q", "a", 0.03, 0, "FAIL"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := decisionmock.New().SetModel("typed")
+			quality := "4"
+			if tt.p < 0.5 {
+				quality = "0"
+			}
+			scriptAll(m, []float64{tt.p}, quality)
+			llm := &countingLLM{response: llmPass}
+			j := screenedFor(t, m, llm, band)
+			res, err := j.Evaluate(context.Background(), &loomv1.EvaluationContext{Prompt: tt.prompt, Response: tt.response})
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantLLM, llm.calls())
+			assert.Equal(t, tt.wantVerdict, res.Verdict)
+		})
+	}
 }
