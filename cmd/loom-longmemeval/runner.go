@@ -664,6 +664,7 @@ func (r *Runner) runConversationWith(ctx context.Context, entry Entry, sessions 
 	sessionID, err := r.createSession(ctx, fmt.Sprintf("lme-%s-conv", entry.QuestionID), agentID)
 	if err != nil {
 		result.Error = fmt.Sprintf("create session: %v", err)
+		result.grpcCode = status.Code(err)
 		return result
 	}
 

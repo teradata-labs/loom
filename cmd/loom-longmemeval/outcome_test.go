@@ -181,6 +181,8 @@ func TestRunRecordsRPCStatusOnEveryFailureSite(t *testing.T) {
 		{"create session (ingest)", ModeIngest, &fakeLoomClient{createSessionErr: unavailable}},
 		{"create session (multi-session)", ModeMultiSession, &fakeLoomClient{createSessionErr: unavailable}},
 		{"create session (context-stuffing)", ModeContextStuffing, &fakeLoomClient{createSessionErr: unavailable}},
+		{"weave (conversation)", ModeConversation, &fakeLoomClient{weaveErr: unavailable}},
+		{"create session (conversation)", ModeConversation, &fakeLoomClient{createSessionErr: unavailable}},
 		{"create temp agent", ModeIngest, &fakeLoomClient{createAgentErr: unavailable}},
 	}
 	for _, tt := range tests {
