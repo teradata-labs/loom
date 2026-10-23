@@ -810,7 +810,7 @@ HTTP gateway translates it for `POST /v1/weave`:
 | `Canceled` (1) | 499 | The caller canceled the request | Caller's choice |
 | `DeadlineExceeded` (4) | 504 | The request deadline elapsed | Yes |
 | `ResourceExhausted` (8) | 429 | The LLM provider throttled the call and looms' own retries (rate limiter, agent retry loop) did not get through; also a full admission-door queue | Yes, with backoff |
-| `Unavailable` (14) | 503 | The LLM provider had a temporary server fault (HTTP 500/502/503/504/529, Bedrock `InternalServerException`/`ServiceUnavailableException`/`ModelNotReadyException`, an `overloaded_error` from the Anthropic SDK) past looms' retries, or its response stream stalled | Yes, with backoff |
+| `Unavailable` (14) | 503 | The LLM provider had a temporary server fault or timeout (HTTP 408/500/502/503/504/529, Bedrock `InternalServerException`/`ServiceUnavailableException`/`ModelNotReadyException`/`ModelTimeoutException`, an `overloaded_error` from the Anthropic SDK) past looms' retries, or its response stream stalled | Yes, with backoff |
 | `Internal` (13) | 500 | Any other agent failure, including a deterministic provider refusal (validation error, auth failure, other 4xx) | Not without changing the request |
 
 A provider 5xx maps to `Unavailable` only when the provider client typed the

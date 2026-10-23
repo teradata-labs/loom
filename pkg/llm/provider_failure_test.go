@@ -116,6 +116,7 @@ func TestClassifyProviderFailure(t *testing.T) {
 		{"SDK mid-stream Bedrock internalServerException", sdkAPIError(t, 200, `{"type":"error","error":{"type":"internalServerException","message":"boom"}}`), ProviderFailureUnavailable},
 		{"SDK mid-stream Bedrock serviceUnavailableException", sdkAPIError(t, 200, `{"type":"error","error":{"type":"serviceUnavailableException","message":"down"}}`), ProviderFailureUnavailable},
 		{"SDK mid-stream Bedrock modelStreamErrorException", sdkAPIError(t, 200, `{"type":"error","error":{"type":"modelStreamErrorException","message":"retry"}}`), ProviderFailureUnavailable},
+		{"SDK mid-stream Bedrock modelTimeoutException", sdkAPIError(t, 200, `{"type":"error","error":{"type":"modelTimeoutException","message":"model timed out"}}`), ProviderFailureUnavailable},
 		{"SDK mid-stream validation on a 200 is not capacity", sdkAPIError(t, 200, `{"type":"error","error":{"type":"invalid_request_error","message":"bad"}}`), ProviderFailureNone},
 
 		// AWS SDK (bedrockruntime Converse path).
@@ -140,13 +141,19 @@ func TestClassifyProviderFailure(t *testing.T) {
 		{"AWS generic server-fault APIError",
 			&smithy.GenericAPIError{Code: "SomethingNew", Message: "m", Fault: smithy.FaultServer},
 			ProviderFailureUnavailable},
+		{"AWS ModelTimeoutException is a client fault but transient",
+			&smithy.GenericAPIError{Code: "ModelTimeoutException", Message: "model timed out", Fault: smithy.FaultClient},
+			ProviderFailureUnavailable},
+		{"AWS ModelTimeoutException 408 through the SDK chain",
+			awsOperationError(408, &brtypes.ModelTimeoutException{Message: aws.String("model timed out")}),
+			ProviderFailureUnavailable},
 
 		// HTTPStatusCoder: the shared seam for loom-typed provider errors.
 		{"HTTPStatusCoder 503", agentWrap(&statusOnlyError{code: 503, msg: "API error (status 503)"}), ProviderFailureUnavailable},
 		{"HTTPStatusCoder 529", &statusOnlyError{code: 529, msg: "overloaded"}, ProviderFailureUnavailable},
 		{"HTTPStatusCoder 429", &statusOnlyError{code: 429, msg: "busy"}, ProviderFailureThrottled},
 		{"HTTPStatusCoder 501 is not transient", &statusOnlyError{code: 501, msg: "not implemented"}, ProviderFailureNone},
-		{"HTTPStatusCoder 408 is not transient", &statusOnlyError{code: 408, msg: "throttle"}, ProviderFailureNone},
+		{"HTTPStatusCoder 408 request timeout is transient", &statusOnlyError{code: 408, msg: "request timeout"}, ProviderFailureUnavailable},
 
 		// Untyped messages: only throttling falls back to message matching.
 		{"untyped AWS ThrottlingException message", agentWrap(errors.New("bedrock SDK invocation failed: ThrottlingException: Too many requests")), ProviderFailureThrottled},

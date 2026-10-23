@@ -39,8 +39,9 @@ const (
 	// AWS ThrottlingException, Anthropic rate_limit_error).
 	ProviderFailureThrottled
 	// ProviderFailureUnavailable: the provider reported a temporary server
-	// fault (HTTP 500/502/503/504/529, an AWS server-fault exception,
-	// Bedrock ModelNotReadyException, Anthropic overloaded_error).
+	// fault or timeout (HTTP 408/500/502/503/504/529, an AWS server-fault
+	// exception, Bedrock ModelNotReadyException or ModelTimeoutException,
+	// Anthropic overloaded_error).
 	ProviderFailureUnavailable
 )
 
@@ -76,10 +77,12 @@ type HTTPStatusCoder interface {
 //     the only signal for an error event that arrives mid-stream on a 200
 //     response — otherwise its HTTP status;
 //  3. a smithy.APIError (AWS SDK service exceptions): ThrottlingException,
-//     ModelNotReadyException, or any exception the SDK marks as a server
-//     fault (InternalServerException, ServiceUnavailableException, ...);
-//  4. an HTTPStatusCoder: 429 is throttling, 500/502/503/504/529 is a
-//     temporary server fault.
+//     ModelNotReadyException, ModelTimeoutException (a client fault in the
+//     SDK model, but a timeout a retry can clear), or any exception the SDK
+//     marks as a server fault (InternalServerException,
+//     ServiceUnavailableException, ...);
+//  4. an HTTPStatusCoder: 429 is throttling, 408/500/502/503/504/529 is a
+//     temporary server fault or timeout.
 //
 // A typed status outside those sets (a 400 validation error, a 403) is
 // authoritative too: it returns ProviderFailureNone even when the message
@@ -149,13 +152,15 @@ func classifyTypedProviderFailure(err error) (f ProviderFailure, typed bool) {
 
 // providerFailureForHTTPStatus maps a provider's error status. The 5xx set
 // is deliberately narrow — 500 and the gateway trio, plus 529, which
-// Anthropic uses for "overloaded"; any other status is not a capacity
+// Anthropic uses for "overloaded". 408 Request Timeout is transient too:
+// Bedrock returns it for ModelTimeoutException, and a timeout must not be
+// read as a deterministic refusal. Any other status is not a capacity
 // failure.
 func providerFailureForHTTPStatus(code int) ProviderFailure {
 	switch code {
 	case http.StatusTooManyRequests:
 		return ProviderFailureThrottled
-	case http.StatusInternalServerError, http.StatusBadGateway,
+	case http.StatusRequestTimeout, http.StatusInternalServerError, http.StatusBadGateway,
 		http.StatusServiceUnavailable, http.StatusGatewayTimeout, 529:
 		return ProviderFailureUnavailable
 	}
@@ -176,7 +181,8 @@ func providerFailureForErrorName(name string) (f ProviderFailure, ok bool) {
 		return ProviderFailureThrottled, true
 	case "overloaded_error", "api_error", "timeout_error",
 		"internalserverexception", "serviceunavailableexception",
-		"modelnotreadyexception", "modelstreamerrorexception":
+		"modelnotreadyexception", "modelstreamerrorexception",
+		"modeltimeoutexception":
 		return ProviderFailureUnavailable, true
 	}
 	return ProviderFailureNone, false

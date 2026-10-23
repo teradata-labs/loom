@@ -46,13 +46,14 @@ data:
     # Infrastructure retries are bounded by the Job's backoffLimit instead.
     # A Bedrock throttle or outage that outlasts looms' own LLM retries is
     # infrastructure too: looms returns ResourceExhausted for a throttle and
-    # Unavailable for a temporary provider server fault (HTTP 500/502/503/
-    # 504/529, InternalServerException, ServiceUnavailableException,
-    # ModelNotReadyException), so the harness exits HARNESS_RC_TRANSIENT and
+    # Unavailable for a temporary provider server fault or timeout (HTTP
+    # 408/500/502/503/504/529, InternalServerException,
+    # ServiceUnavailableException, ModelNotReadyException,
+    # ModelTimeoutException), so the harness exits HARNESS_RC_TRANSIENT and
     # the budget is untouched. A sustained outage therefore spends the Job's
     # backoffLimit instead of quarantining chunks. A deterministic provider
-    # refusal (ValidationException, AccessDenied, any other 4xx) is still
-    # Internal and IS charged.
+    # refusal (ValidationException, AccessDenied, any other 4xx except 408
+    # and 429) is still Internal and IS charged.
     #
     # Run identity: outputs live under RESULTS_DIR/runs/RUN_ID and both the
     # stored manifest and the dataset's own statistics must match before

@@ -133,11 +133,12 @@ dataset refused on resume.
   shedding) — which the harness reports with exit status 75. A Bedrock
   throttle or outage that outlasts looms' own LLM retries is in the second
   case: looms returns `ResourceExhausted` for a throttle and `Unavailable` for
-  a temporary provider server fault (HTTP 500/502/503/504/529, or Bedrock's
-  `InternalServerException`, `ServiceUnavailableException`,
-  `ModelNotReadyException`), so it is not charged. A deterministic provider
-  refusal (`ValidationException`, `AccessDeniedException`, any other 4xx)
-  stays `Internal` and is charged. Because outages and timeouts are never
+  a temporary provider server fault or timeout (HTTP 408/500/502/503/504/529,
+  or Bedrock's `InternalServerException`, `ServiceUnavailableException`,
+  `ModelNotReadyException`, `ModelTimeoutException`), so it is not charged. A
+  deterministic provider refusal (`ValidationException`,
+  `AccessDeniedException`, any other 4xx except 408 and 429) stays `Internal`
+  and is charged. Because outages and timeouts are never
   charged, a sustained Bedrock outage, or an entry that times out on every
   attempt, is retried until `backoffLimit` and then fails the Job; it never
   quarantines a chunk. Past the budget the chunk is quarantined with a `.failed` marker

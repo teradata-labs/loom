@@ -115,6 +115,8 @@ func TestWrapAgentErrorCodes(t *testing.T) {
 		{"Bedrock ServiceUnavailableException", agentChain(bedrockRuntimeError(503, &brtypes.ServiceUnavailableException{Message: aws.String("unavailable")})), codes.Unavailable},
 		{"Bedrock InternalServerException", agentChain(bedrockRuntimeError(500, &brtypes.InternalServerException{Message: aws.String("internal")})), codes.Unavailable},
 		{"Bedrock ModelNotReadyException", agentChain(bedrockRuntimeError(429, &brtypes.ModelNotReadyException{Message: aws.String("not ready")})), codes.Unavailable},
+		{"Bedrock ModelTimeoutException", agentChain(bedrockRuntimeError(408, &brtypes.ModelTimeoutException{Message: aws.String("model timed out")})), codes.Unavailable},
+		{"Anthropic SDK mid-stream modelTimeoutException", agentChain(anthropicSDKError(t, 200, `{"type":"error","error":{"type":"modelTimeoutException","message":"model timed out"}}`)), codes.Unavailable},
 		{"Anthropic SDK 503 (Bedrock Claude path)", agentChain(anthropicSDKError(t, 503, `{"message":"Bedrock is unable to process your request."}`)), codes.Unavailable},
 		{"Anthropic SDK 529 overloaded", agentChain(anthropicSDKError(t, 529, `{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`)), codes.Unavailable},
 		{"Anthropic SDK mid-stream overloaded_error", agentChain(anthropicSDKError(t, 200, `{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`)), codes.Unavailable},

@@ -156,12 +156,12 @@ far as running entries):
 
 A provider throttle or outage that outlasts the server's own LLM retries comes
 back with a retryable status, so it counts toward 75: a throttle is
-`ResourceExhausted`; a temporary provider server fault (HTTP 500, 502, 503,
-504 or 529, Bedrock `InternalServerException`/`ServiceUnavailableException`/
-`ModelNotReadyException`, or an `overloaded_error` from the Anthropic SDK that
-the Bedrock client uses for Claude) is `Unavailable`. A
-deterministic provider refusal (a validation error or any other 4xx) is
-`Internal` and is an ordinary entry failure (exit 0).
+`ResourceExhausted`; a temporary provider server fault or timeout (HTTP 408,
+500, 502, 503, 504 or 529, Bedrock `InternalServerException`/
+`ServiceUnavailableException`/`ModelNotReadyException`/`ModelTimeoutException`,
+or an `overloaded_error` from the Anthropic SDK that the Bedrock client uses
+for Claude) is `Unavailable`. A deterministic provider refusal (a validation
+error or any other 4xx except 408 and 429) is `Internal` and is an ordinary entry failure (exit 0).
 
 Limitation: the server only recognises a 5xx that the provider client typed.
 Both Bedrock clients do (AWS SDK and Anthropic SDK errors carry the status).
