@@ -17,6 +17,7 @@ package sites
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -263,9 +264,19 @@ func sortedAskProbabilities(p map[string]float64) []AskProbability {
 	return out
 }
 
+// scaleAskProbabilities lists a Score's distribution in level order. The
+// levels are the legend's (echoed from the question), widened by any
+// higher level index the distribution carries, so a sparse distribution
+// that omits zero-probability levels still reaches its top level.
 func scaleAskProbabilities(a *loomv1.ScoreAnswer) []AskProbability {
+	levels := len(a.Legend)
+	for key := range a.Probabilities {
+		if i, err := strconv.Atoi(key); err == nil && i >= levels && i < decision.MaxScoreLevels {
+			levels = i + 1
+		}
+	}
 	out := make([]AskProbability, 0, len(a.Probabilities))
-	for i := 0; i < len(a.Probabilities); i++ {
+	for i := 0; i < levels; i++ {
 		key := fmt.Sprintf("%d", i)
 		p, ok := a.Probabilities[key]
 		if !ok {

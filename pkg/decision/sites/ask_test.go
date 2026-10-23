@@ -187,3 +187,39 @@ func TestAskAnswerOf(t *testing.T) {
 	})
 	_ = time.Second
 }
+
+// Review #410 minor e: scaleAskProbabilities looped over
+// len(Probabilities), so a sparse distribution (a provider that omits
+// zero-probability levels) never reached its top level and Answer named the
+// wrong one. It loops over the levels the legend declares.
+func TestAskAnswerOfSparseScaleDistribution(t *testing.T) {
+	t.Parallel()
+	legend := map[string]string{"0": "low", "1": "mid", "2": "high"}
+	tests := []struct {
+		name       string
+		probs      map[string]float64
+		legend     map[string]string
+		wantAnswer string
+		wantLevels []int
+	}{
+		{"top level only with a low tail", map[string]float64{"0": 0.1, "2": 0.9}, legend, "high", []int{0, 2}},
+		{"top level alone", map[string]float64{"2": 1}, legend, "high", []int{2}},
+		{"no legend: levels from the keys", map[string]float64{"0": 0.2, "3": 0.8}, nil, "", []int{0, 3}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			out := decision.Outcome{Response: &loomv1.DecisionResponse{Answers: map[string]*loomv1.DecisionAnswer{
+				QAsk: {Kind: &loomv1.DecisionAnswer_Score{Score: &loomv1.ScoreAnswer{Probabilities: tt.probs, Legend: tt.legend}}},
+			}}}
+			ans, err := AskAnswerOf(AskScale, out)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantAnswer, ans.Answer)
+			levels := make([]int, 0, len(ans.Probabilities))
+			for _, p := range ans.Probabilities {
+				levels = append(levels, *p.Level)
+			}
+			assert.Equal(t, tt.wantLevels, levels, "every level with a probability, in level order")
+		})
+	}
+}
