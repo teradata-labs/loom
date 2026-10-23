@@ -23,7 +23,7 @@ graph — test-only and build-time modules are not distributed and are excluded.
 | `github.com/MicahParks/jwkset` | `v0.11.3` |
 | `github.com/MicahParks/keyfunc/v3` | `v3.8.2` |
 | `github.com/alecthomas/chroma/v2` | `v2.27.0` |
-| `github.com/anthropics/anthropic-sdk-go` | `v1.80.0` |
+| `github.com/anthropics/anthropic-sdk-go` | `v1.82.0` |
 | `github.com/atotto/clipboard` | `v0.1.4` |
 | `github.com/aws/aws-sdk-go-v2` | `v1.47.3` |
 | `github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream` | `v1.7.22` |
@@ -34,7 +34,7 @@ graph — test-only and build-time modules are not distributed and are excluded.
 | `github.com/aws/aws-sdk-go-v2/internal/endpoints/v2` | `v2.8.6` |
 | `github.com/aws/aws-sdk-go-v2/internal/sync/singleflight` | `v1.47.3` |
 | `github.com/aws/aws-sdk-go-v2/internal/v4a` | `v1.5.6` |
-| `github.com/aws/aws-sdk-go-v2/service/bedrockruntime` | `v1.63.4` |
+| `github.com/aws/aws-sdk-go-v2/service/bedrockruntime` | `v1.63.5` |
 | `github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding` | `v1.13.21` |
 | `github.com/aws/aws-sdk-go-v2/service/internal/presigned-url` | `v1.14.6` |
 | `github.com/aws/aws-sdk-go-v2/service/signin` | `v1.10.4` |
@@ -75,7 +75,7 @@ graph — test-only and build-time modules are not distributed and are excluded.
 | `github.com/golang-jwt/jwt/v5` | `v5.3.1` |
 | `github.com/golang/protobuf` | `v1.5.4` |
 | `github.com/google/uuid` | `v1.6.0` |
-| `github.com/grpc-ecosystem/grpc-gateway/v2` | `v2.31.0` |
+| `github.com/grpc-ecosystem/grpc-gateway/v2` | `v2.32.0` |
 | `github.com/inconshreveable/mousetrap` | `v1.1.0` |
 | `github.com/invopop/jsonschema` | `v0.14.0` |
 | `github.com/jackc/pgpassfile` | `v1.0.0` |
@@ -84,9 +84,9 @@ graph — test-only and build-time modules are not distributed and are excluded.
 | `github.com/jackc/puddle/v2` | `v2.2.2` |
 | `github.com/jhump/protoreflect` | `v1.19.0` |
 | `github.com/jhump/protoreflect/v2` | `v2.0.0-beta.1` |
-| `github.com/klauspost/compress` | `v1.20.1` |
-| `github.com/klauspost/compress/internal/snapref` | `v1.20.1` |
-| `github.com/klauspost/compress/zstd/internal/xxhash` | `v1.20.1` |
+| `github.com/klauspost/compress` | `v1.20.3` |
+| `github.com/klauspost/compress/internal/snapref` | `v1.20.3` |
+| `github.com/klauspost/compress/zstd/internal/xxhash` | `v1.20.3` |
 | `github.com/ledongthuc/pdf` | `v0.0.0-20250511090121-5959a4027728` |
 | `github.com/lucasb-eyer/go-colorful` | `v1.4.1` |
 | `github.com/mattn/go-isatty` | `v0.0.24` |
@@ -151,14 +151,14 @@ graph — test-only and build-time modules are not distributed and are excluded.
 | `golang.org/x/crypto` | `v0.58.0` |
 | `golang.org/x/image` | `v0.41.0` |
 | `golang.org/x/mod` | `v0.42.0` |
-| `golang.org/x/net` | `v0.60.0` |
+| `golang.org/x/net` | `v0.61.0` |
 | `golang.org/x/sync` | `v0.24.0` |
 | `golang.org/x/sys` | `v0.49.0` |
 | `golang.org/x/term` | `v0.47.0` |
 | `golang.org/x/text` | `v0.43.0` |
 | `golang.org/x/time` | `v0.15.0` |
-| `google.golang.org/genproto/googleapis/api` | `v0.0.0-20260928230214-8a89bd6388cc` |
-| `google.golang.org/genproto/googleapis/rpc` | `v0.0.0-20260928230214-8a89bd6388cc` |
+| `google.golang.org/genproto/googleapis/api` | `v0.0.0-20261012220534-4341edf3f941` |
+| `google.golang.org/genproto/googleapis/rpc` | `v0.0.0-20261005182115-fad411399dd8` |
 | `google.golang.org/grpc` | `v1.84.0` |
 | `google.golang.org/protobuf` | `v1.36.12` |
 | `gopkg.in/cenkalti/backoff.v1` | `v1.1.0` |
