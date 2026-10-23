@@ -49,6 +49,12 @@ type Reference struct {
 	// external truth later. Optional; a Reference may carry only a Subject
 	// when the site acted and has no reference answer.
 	Subject string
+	// NotActed marks a question whose answer the site did not act on
+	// although the request as a whole did (it kept a candidate the answer
+	// would have dropped, because the answer was uncertain or judged a cut
+	// view of the candidate). Its row is recorded as FALLBACK, never
+	// DECIDER, so a DECIDER row always describes what the site did.
+	NotActed bool
 }
 
 // ShadowQuery selects shadow rows for a report.
@@ -205,6 +211,10 @@ func BuildShadowRecords(req *loomv1.DecisionRequest, out Outcome, provider, sess
 			kind = questionKind(req.Questions[id])
 		}
 		ref := refs[id]
+		path := out.Path
+		if ref.NotActed && path == loomv1.DecisionPath_DECISION_PATH_DECIDER {
+			path = loomv1.DecisionPath_DECISION_PATH_FALLBACK
+		}
 		records = append(records, &loomv1.DecisionShadowRecord{
 			RecordedAt:             now,
 			Site:                   req.Site,
@@ -221,7 +231,7 @@ func BuildShadowRecords(req *loomv1.DecisionRequest, out Outcome, provider, sess
 			CostUsd:                cost,
 			Model:                  model,
 			Provider:               provider,
-			Path:                   out.Path,
+			Path:                   path,
 			Error:                  errorText(out.Err),
 			Subject:                ref.Subject,
 		})

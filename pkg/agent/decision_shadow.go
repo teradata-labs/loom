@@ -329,11 +329,16 @@ func (a *Agent) liveDecide(ctx context.Context, sessionID string, req *loomv1.De
 
 // rerankRequest builds the recall rerank request for a candidate list.
 func rerankRequest(site, userMessage string, candidates []*memory.Memory) (*loomv1.DecisionRequest, error) {
+	return sites.RerankRequest(site, userMessage, memoryTexts(candidates))
+}
+
+// memoryTexts is the text the rerank request carries for each candidate.
+func memoryTexts(candidates []*memory.Memory) []string {
 	texts := make([]string, 0, len(candidates))
 	for _, m := range candidates {
 		texts = append(texts, m.Content)
 	}
-	return sites.RerankRequest(site, userMessage, texts)
+	return texts
 }
 
 // memorySubjects renders each candidate's provenance as a shadow-row subject:
@@ -401,29 +406,36 @@ func (a *Agent) shadowRerank(ctx context.Context, sessionID, site, userMessage s
 // when its band says to act, return the kept candidates without a generative
 // call. The second return is false when the caller must run the existing
 // mechanism; the outcome is returned either way so the caller can record it
-// against the mechanism's answer without a second decider call.
-func (a *Agent) liveRerank(ctx context.Context, sessionID, site, userMessage string, candidates []*memory.Memory) (kept []*memory.Memory, acted bool, req *loomv1.DecisionRequest, out decision.Outcome) {
+// against the mechanism's answer without a second decider call. notActed
+// lists the candidates kept without acting on their answer (see
+// sites.RerankSelect), for the acted row's references.
+func (a *Agent) liveRerank(ctx context.Context, sessionID, site, userMessage string, candidates []*memory.Memory) (kept []*memory.Memory, acted bool, req *loomv1.DecisionRequest, out decision.Outcome, notActed []int) {
 	if a.decisionRouter == nil || len(candidates) == 0 || a.decisionRouter.Band(site).Shadow {
-		return nil, false, nil, decision.Outcome{}
+		return nil, false, nil, decision.Outcome{}, nil
 	}
-	req, err := rerankRequest(site, userMessage, candidates)
+	texts := memoryTexts(candidates)
+	req, err := sites.RerankRequest(site, userMessage, texts)
 	if err != nil {
 		zap.L().Debug("decision: rerank request", zap.String("site", site), zap.Error(err))
-		return nil, false, nil, decision.Outcome{}
+		return nil, false, nil, decision.Outcome{}, nil
 	}
 	out = a.liveDecide(ctx, sessionID, req)
 	if !out.Act() {
-		return nil, false, req, out
+		return nil, false, req, out, nil
 	}
-	idx, uncertain := sites.RerankKeptWithBand(out.Response, len(candidates), out.Band)
+	// A memory the request carried cut is kept on a confident yes but
+	// never dropped on its cut view; the LLM rerank reads it whole.
+	sel := sites.RerankSelect(out.Response, len(candidates), out.Band, sites.RerankCut(texts))
+	uncertain := len(sel.NotActed)
 	if !sites.RerankContributed(len(candidates), uncertain) {
-		// Every answer was uncertain: the generative rerank decides, and the
-		// row is recorded as a fallback against it.
+		// No answer the site may act on (every one uncertain, or a drop of
+		// a cut memory): the generative rerank decides, and the row is
+		// recorded as a fallback against it.
 		out.Path = loomv1.DecisionPath_DECISION_PATH_FALLBACK
-		return nil, false, req, out
+		return nil, false, req, out, nil
 	}
 	kept = make([]*memory.Memory, 0, len(candidates))
-	for _, i := range idx {
+	for _, i := range sel.Kept {
 		if i < len(candidates) {
 			kept = append(kept, candidates[i])
 		}
@@ -438,7 +450,7 @@ func (a *Agent) liveRerank(ctx context.Context, sessionID, site, userMessage str
 		zap.String("site", site), zap.Int("candidates", len(candidates)),
 		zap.Int("kept", len(kept)), zap.Int("uncertain_kept", uncertain),
 		zap.Duration("latency", out.Latency))
-	return kept, true, req, out
+	return kept, true, req, out, sel.NotActed
 }
 
 // shadowFailureKind compares the decider's failure classification against

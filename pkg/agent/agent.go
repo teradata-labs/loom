@@ -4013,10 +4013,11 @@ func (a *Agent) findUserEntity(ctx context.Context, agentID string) *memory.Enti
 // band) is recorded against it as shadow rows.
 func (a *Agent) rerankMemories(ctx context.Context, userMessage string, candidates []*memory.Memory) []*memory.Memory {
 	sessionID := sessionIDFromContext(ctx)
-	if kept, acted, req, out := a.liveRerank(ctx, sessionID, sites.SiteRecallRerank, userMessage, candidates); acted {
+	if kept, acted, req, out, notActed := a.liveRerank(ctx, sessionID, sites.SiteRecallRerank, userMessage, candidates); acted {
 		// Live: nothing to compare against; the row records what was acted
-		// on, with each candidate's provenance as its subject.
-		a.recordDecisionAsync(ctx, sessionID, req, out, sites.RerankSubjectsOnly(len(candidates), memorySubjects(candidates)))
+		// on, with each candidate's provenance as its subject. Candidates
+		// kept without acting on their answer are recorded as FALLBACK.
+		a.recordDecisionAsync(ctx, sessionID, req, out, sites.RerankActedReferences(len(candidates), memorySubjects(candidates), notActed))
 		return kept
 	} else if req != nil {
 		// Live band, but the decider did not clear it: the LLM decides and

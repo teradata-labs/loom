@@ -94,6 +94,11 @@ type searchDecision struct {
 // rerankRequest builds the tool_search rerank request over candidate names
 // and descriptions (never their scores or schemas).
 func rerankRequest(query string, candidates []*loomv1.ToolSearchResult) (*loomv1.DecisionRequest, error) {
+	return sites.RerankRequest(sites.SiteToolSearchRerank, query, candidateTexts(candidates))
+}
+
+// candidateTexts is the text the rerank request carries for each candidate.
+func candidateTexts(candidates []*loomv1.ToolSearchResult) []string {
 	texts := make([]string, 0, len(candidates))
 	for _, c := range candidates {
 		text := ""
@@ -102,7 +107,7 @@ func rerankRequest(query string, candidates []*loomv1.ToolSearchResult) (*loomv1
 		}
 		texts = append(texts, text)
 	}
-	return sites.RerankRequest(sites.SiteToolSearchRerank, query, texts)
+	return texts
 }
 
 // keptIndexes maps the LLM rerank's output back to candidate indexes and
@@ -199,31 +204,36 @@ func (d *searchDecision) shadowRerank(ctx context.Context, logger *zap.Logger, q
 // probability, each carrying a "decision" signal, and the LLM rerank is
 // skipped. When the decider does not clear the band, acted is false and the
 // request and outcome are returned so the caller can record them against the
-// LLM's answer.
-func (d *searchDecision) liveRerank(ctx context.Context, logger *zap.Logger, query string, candidates []*loomv1.ToolSearchResult) (results []*loomv1.ToolSearchResult, acted bool, req *loomv1.DecisionRequest, out decision.Outcome) {
+// LLM's answer. notActed lists the candidates kept without acting on their
+// answer (see sites.RerankSelect), for the acted row's references.
+func (d *searchDecision) liveRerank(ctx context.Context, logger *zap.Logger, query string, candidates []*loomv1.ToolSearchResult) (results []*loomv1.ToolSearchResult, acted bool, req *loomv1.DecisionRequest, out decision.Outcome, notActed []int) {
 	if d == nil || d.router == nil || len(candidates) == 0 || d.router.Band(sites.SiteToolSearchRerank).Shadow {
-		return nil, false, nil, decision.Outcome{}
+		return nil, false, nil, decision.Outcome{}, nil
 	}
-	req, err := rerankRequest(query, candidates)
+	texts := candidateTexts(candidates)
+	req, err := sites.RerankRequest(sites.SiteToolSearchRerank, query, texts)
 	if err != nil {
 		logger.Debug("decision: tool_search rerank request", zap.Error(err))
-		return nil, false, nil, decision.Outcome{}
+		return nil, false, nil, decision.Outcome{}, nil
 	}
 	budget := decision.Budget(d.router.Decider(), len(req.Questions), liveDecidePerWave, maxLiveDecideBudget)
 	liveCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	out = d.router.Decide(liveCtx, req)
 	if !out.Act() {
-		return nil, false, req, out
+		return nil, false, req, out, nil
 	}
-	idx, uncertain := sites.RerankKeptWithBand(out.Response, len(candidates), out.Band)
+	// A tool the request carried cut is kept on a confident yes but never
+	// dropped on its cut view; the LLM rerank reads it whole.
+	sel := sites.RerankSelect(out.Response, len(candidates), out.Band, sites.RerankCut(texts))
+	uncertain := len(sel.NotActed)
 	if !sites.RerankContributed(len(candidates), uncertain) {
-		// Every answer was uncertain: the LLM rerank decides.
+		// No answer the site may act on: the LLM rerank decides.
 		out.Path = loomv1.DecisionPath_DECISION_PATH_FALLBACK
-		return nil, false, req, out
+		return nil, false, req, out, nil
 	}
-	results = make([]*loomv1.ToolSearchResult, 0, len(idx))
-	for _, i := range idx {
+	results = make([]*loomv1.ToolSearchResult, 0, len(sel.Kept))
+	for _, i := range sel.Kept {
 		if i >= len(candidates) {
 			continue
 		}
@@ -248,5 +258,5 @@ func (d *searchDecision) liveRerank(ctx context.Context, logger *zap.Logger, que
 	logger.Debug("decision: tool_search rerank acted",
 		zap.Int("candidates", len(candidates)), zap.Int("kept", len(results)),
 		zap.Int("uncertain_kept", uncertain), zap.Duration("latency", out.Latency))
-	return results, true, req, out
+	return results, true, req, out, sel.NotActed
 }

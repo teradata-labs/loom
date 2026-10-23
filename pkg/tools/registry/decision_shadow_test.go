@@ -220,7 +220,7 @@ func TestLiveRerankActsOrdersByProbabilityAndSignals(t *testing.T) {
 	st, reg := bindingWith(t, decision.NewRouter(m, liveToolSearchBand(0.5)), &memShadowStore{})
 
 	ctx := decision.WithSessionID(context.Background(), "sess-live")
-	results, acted, req, out := st.decision.liveRerank(ctx, reg.logger, "notify the team", candidates())
+	results, acted, req, out, _ := st.decision.liveRerank(ctx, reg.logger, "notify the team", candidates())
 	require.True(t, acted)
 	require.NotNil(t, req)
 	assert.True(t, out.Act())
@@ -237,7 +237,7 @@ func TestLiveRerankShadowBandDoesNotAsk(t *testing.T) {
 	m := mock.New().AnswerNoul("c0", 0.9).AnswerNoul("c1", 0.9).AnswerNoul("c2", 0.9)
 	st, reg := bindingWith(t, decision.NewRouter(m), &memShadowStore{}) // no band: shadow
 
-	_, acted, req, _ := st.decision.liveRerank(context.Background(), reg.logger, "q", candidates())
+	_, acted, req, _, _ := st.decision.liveRerank(context.Background(), reg.logger, "q", candidates())
 	assert.False(t, acted)
 	assert.Nil(t, req, "shadow band never pays the live call")
 	assert.Equal(t, 0, m.CallCount())
@@ -249,7 +249,7 @@ func TestLiveRerankBelowBandReturnsOutcomeForRecording(t *testing.T) {
 	st, reg := bindingWith(t, decision.NewRouter(m, liveToolSearchBand(0.8)), store)
 
 	ctx := decision.WithSessionID(context.Background(), "sess-fb")
-	results, acted, req, out := st.decision.liveRerank(ctx, reg.logger, "q", candidates())
+	results, acted, req, out, _ := st.decision.liveRerank(ctx, reg.logger, "q", candidates())
 	assert.False(t, acted)
 	assert.Nil(t, results)
 	require.NotNil(t, req)
@@ -361,7 +361,7 @@ func TestLiveRerankKeepsCandidatesPastTheRequest(t *testing.T) {
 	for i := range many {
 		many[i] = &loomv1.ToolSearchResult{Tool: &loomv1.IndexedTool{Name: fmt.Sprintf("t%02d", i), Description: "d"}}
 	}
-	results, acted, _, _ := st.decision.liveRerank(context.Background(), reg.logger, "q", many)
+	results, acted, _, _, _ := st.decision.liveRerank(context.Background(), reg.logger, "q", many)
 	require.True(t, acted)
 	assert.Len(t, results, 70)
 	assert.Equal(t, "t69", results[69].Tool.Name, "the unjudged tail follows the ranked candidates")
@@ -380,9 +380,34 @@ func TestLiveRerankAllUncertainPastTheCapFallsBack(t *testing.T) {
 	for i := range many {
 		many[i] = &loomv1.ToolSearchResult{Tool: &loomv1.IndexedTool{Name: fmt.Sprintf("t%02d", i), Description: "d"}}
 	}
-	results, acted, req, out := st.decision.liveRerank(context.Background(), reg.logger, "q", many)
+	results, acted, req, out, _ := st.decision.liveRerank(context.Background(), reg.logger, "q", many)
 	assert.False(t, acted, "nothing cleared the band: the LLM rerank decides")
 	assert.Nil(t, results)
 	require.NotNil(t, req)
 	assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_FALLBACK, out.Path)
+}
+
+// tool_search: a tool whose description the request cut is never dropped
+// on its cut view, but is kept on a confident yes; a whole tool is still
+// dropped on a confident no.
+func TestLiveRerankNeverDropsACutCandidate(t *testing.T) {
+	m := mock.New().AnswerNoul("c0", 0.9).AnswerNoul("c1", 0.05).AnswerNoul("c2", 0.9).AnswerNoul("c3", 0.05)
+	st, reg := bindingWith(t, decision.NewRouter(m, liveToolSearchBand(0.5)), &memShadowStore{})
+	long := strings.Repeat("d", 1200)
+	cands := []*loomv1.ToolSearchResult{
+		{Tool: &loomv1.IndexedTool{Name: "whole_keep", Description: "d"}},
+		{Tool: &loomv1.IndexedTool{Name: "cut_drop", Description: long}},
+		{Tool: &loomv1.IndexedTool{Name: "cut_keep", Description: long}},
+		{Tool: &loomv1.IndexedTool{Name: "whole_drop", Description: "d"}},
+	}
+	results, acted, _, _, _ := st.decision.liveRerank(context.Background(), reg.logger, "q", cands)
+	require.True(t, acted)
+	names := map[string]bool{}
+	for _, r := range results {
+		names[r.Tool.Name] = true
+	}
+	assert.True(t, names["whole_keep"])
+	assert.True(t, names["cut_keep"], "a cut candidate is kept on a confident yes")
+	assert.True(t, names["cut_drop"], "a cut candidate is never dropped on its cut view")
+	assert.False(t, names["whole_drop"], "a whole candidate is still dropped on a confident no")
 }

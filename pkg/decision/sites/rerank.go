@@ -17,6 +17,7 @@ package sites
 import (
 	"fmt"
 	"strconv"
+	"unicode/utf8"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/decision"
@@ -129,6 +130,22 @@ func RerankReferenceSubjects(n int, kept []int, source string, subjects []string
 	return refs
 }
 
+// RerankActedReferences is the reference set for rows recorded when the site
+// acted on the decider: each candidate's subject, and NotActed on every
+// candidate the site kept without acting on its answer (RerankSelection's
+// NotActed), so those rows say FALLBACK rather than claim a decider verdict
+// the site did not apply.
+func RerankActedReferences(n int, subjects []string, notActed []int) map[string]decision.Reference {
+	refs := RerankSubjectsOnly(n, subjects)
+	for _, i := range notActed {
+		id := CandidateQuestionID(i)
+		ref := refs[id]
+		ref.NotActed = true
+		refs[id] = ref
+	}
+	return refs
+}
+
 // RerankSubjectsOnly carries subjects with no reference answer, for rows
 // recorded when the site acted on the decider and ran no other mechanism.
 func RerankSubjectsOnly(n int, subjects []string) map[string]decision.Reference {
@@ -147,7 +164,9 @@ func RerankSubjectsOnly(n int, subjects []string) map[string]decision.Reference 
 const RerankKeepProbability = 0.5
 
 // RerankContributed reports whether a live rerank outcome is worth acting on:
-// at least one of n answers cleared the band. When every answer is uncertain
+// at least one of n answers cleared the band and was acted on (uncertain
+// counts RerankSelection.NotActed, so a confident drop of a cut candidate
+// does not count). When every answer is uncertain
 // the decider has said nothing, and the site is better off running its
 // generative rerank than keeping every candidate. n is the caller's candidate
 // count; like RerankKeptWithBand it is capped at MaxRerankCandidates, because
@@ -157,36 +176,72 @@ func RerankContributed(n, uncertain int) bool {
 	return n > 0 && uncertain < n
 }
 
-// RerankKeptWithBand is the live-mode selection for a fan-out band judged
+// RerankCut reports, per candidate the request carries, whether
+// RerankRequest cut its text to maxRerankCandidateRunes. The decider judged
+// a cut candidate on part of its text while the LLM rerank reads all of it.
+func RerankCut(candidates []string) []bool {
+	n := min(len(candidates), MaxRerankCandidates)
+	cut := make([]bool, n)
+	for i := 0; i < n; i++ {
+		cut[i] = utf8.RuneCountInString(candidates[i]) > maxRerankCandidateRunes
+	}
+	return cut
+}
+
+// RerankSelection is the live-mode outcome of a rerank request.
+type RerankSelection struct {
+	// Kept holds the kept candidate indexes, in index order.
+	Kept []int
+	// NotActed holds the indexes kept without acting on the decider's
+	// answer: no answer, an answer that did not clear the band, or a
+	// confident drop of a cut candidate. Every one of them is also in Kept.
+	NotActed []int
+}
+
+// RerankSelect is the live-mode selection for a fan-out band judged
 // PER_QUESTION: a candidate is kept when its Noul says relevant, or when the
 // answer does not clear the band (uncertain candidates are kept, because
 // dropping a relevant memory costs an answer while keeping an irrelevant one
-// costs tokens). It returns the kept indexes in index order and how many were
-// kept only because they were uncertain.
-func RerankKeptWithBand(resp *loomv1.DecisionResponse, n int, band decision.Band) (kept []int, uncertain int) {
+// costs tokens). cut (RerankCut, index-aligned; nil for none) marks
+// candidates the request carried cut: one of those is kept on a confident
+// yes but never dropped on its cut view, so a confident no on it counts as
+// not acted on and the candidate is kept.
+func RerankSelect(resp *loomv1.DecisionResponse, n int, band decision.Band, cut []bool) RerankSelection {
+	var sel RerankSelection
 	if resp == nil {
-		return nil, 0
+		return sel
 	}
 	if n > MaxRerankCandidates {
 		n = MaxRerankCandidates
+	}
+	notActed := func(i int) {
+		sel.Kept = append(sel.Kept, i)
+		sel.NotActed = append(sel.NotActed, i)
 	}
 	for i := 0; i < n; i++ {
 		id := CandidateQuestionID(i)
 		a, err := decision.NoulOf(resp, id)
 		if err != nil {
-			kept = append(kept, i) // no answer: keep, never drop silently
-			uncertain++
+			notActed(i) // no answer: keep, never drop silently
 			continue
 		}
 		switch {
 		case !band.Confident(resp.Answers[id]):
-			kept = append(kept, i)
-			uncertain++
+			notActed(i)
 		case band.IsTrue(a.Probability):
-			kept = append(kept, i)
+			sel.Kept = append(sel.Kept, i)
+		case i < len(cut) && cut[i]:
+			notActed(i) // a drop judged on a cut view: keep
 		}
 	}
-	return kept, uncertain
+	return sel
+}
+
+// RerankKeptWithBand is RerankSelect with no cut candidates, returning the
+// kept indexes and how many were kept without acting on their answer.
+func RerankKeptWithBand(resp *loomv1.DecisionResponse, n int, band decision.Band) (kept []int, uncertain int) {
+	sel := RerankSelect(resp, n, band, nil)
+	return sel.Kept, len(sel.NotActed)
 }
 
 // RerankKept returns the candidate indexes whose Noul probability is at or

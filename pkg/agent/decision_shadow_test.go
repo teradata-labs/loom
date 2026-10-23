@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -373,7 +374,13 @@ func TestRerankMemoriesLiveBandSkipsLLM(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, rows, 3)
 	for _, r := range rows {
-		assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_DECIDER, r.Path)
+		want := loomv1.DecisionPath_DECISION_PATH_DECIDER
+		if r.QuestionId == "c2" {
+			// Kept because uncertain, not because of its answer: the site
+			// did not act on it, so the row does not say DECIDER.
+			want = loomv1.DecisionPath_DECISION_PATH_FALLBACK
+		}
+		assert.Equal(t, want, r.Path, r.QuestionId)
 		assert.Equal(t, "", r.ReferenceAnswer, "acted: nothing to compare against")
 	}
 }
@@ -520,4 +527,71 @@ func TestRerankMemoriesLiveBandAllUncertainPastTheCapFallsBack(t *testing.T) {
 	for _, r := range rows {
 		assert.NotEqual(t, loomv1.DecisionPath_DECISION_PATH_DECIDER, r.Path, "question %s", r.QuestionId)
 	}
+}
+
+// A candidate whose text the request cut (past the per-candidate rune
+// limit) may be kept on a confident yes but never dropped on its cut view:
+// the LLM rerank reads it whole. A confident no on a cut candidate is
+// overruled to keep, and its row says FALLBACK, so no DECIDER row claims a
+// drop that did not happen. A whole candidate is still dropped on a
+// confident no.
+func TestRerankMemoriesLiveBandNeverDropsACutCandidate(t *testing.T) {
+	t.Parallel()
+	long := strings.Repeat("x", 1200)
+	llm := &countingRerankLLM{reply: "1"}
+	dec := decisionmock.New().
+		AnswerNoul("c0", 0.95). // whole, relevant: kept
+		AnswerNoul("c1", 0.05). // cut, confident drop: overruled, kept
+		AnswerNoul("c2", 0.95). // cut, confident keep: kept
+		AnswerNoul("c3", 0.05)  // whole, confident drop: dropped
+	store := &memShadowStore{}
+	ag := NewAgent(nil, llm, WithName("dec"),
+		WithDecisionRouter(decision.NewRouter(dec, liveRerankBand(0.8))),
+		WithDecisionShadowStore(store))
+	candidates := []*memory.Memory{
+		{ID: "m0", Content: "the user drives a blue car"},
+		{ID: "m1", Content: "service log: " + long + " GPS module replaced in March"},
+		{ID: "m2", Content: "GPS notes: " + long},
+		{ID: "m3", Content: "quarterly revenue table"},
+	}
+	ctx := decision.WithSessionID(context.Background(), "sess-cut")
+	kept := ag.rerankMemories(ctx, "what happened to my car's GPS?", candidates)
+	ag.WaitDecisionShadows()
+
+	ids := make([]string, 0, len(kept))
+	for _, m := range kept {
+		ids = append(ids, m.ID)
+	}
+	assert.Equal(t, []string{"m0", "m1", "m2"}, ids, "the cut candidate is kept; only the whole one is dropped")
+	assert.Equal(t, int32(0), llm.calls.Load(), "the decider still acted on the confident answers")
+
+	rows, err := store.QueryShadow(ctx, decision.ShadowQuery{Site: sites.SiteRecallRerank})
+	require.NoError(t, err)
+	byQ := map[string]*loomv1.DecisionShadowRecord{}
+	for _, r := range rows {
+		byQ[r.QuestionId] = r
+	}
+	require.Len(t, byQ, 4)
+	assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_FALLBACK, byQ["c1"].Path, "the overruled drop is not a DECIDER row")
+	for _, q := range []string{"c0", "c2", "c3"} {
+		assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_DECIDER, byQ[q].Path, q)
+	}
+}
+
+// When the only confident answers are drops of cut candidates, the decider
+// contributed nothing the site may act on, so the LLM rerank decides.
+func TestRerankMemoriesLiveBandOnlyCutDropsFallsBack(t *testing.T) {
+	t.Parallel()
+	llm := &countingRerankLLM{reply: "1"}
+	dec := decisionmock.New().AnswerNoul("c0", 0.05).AnswerNoul("c1", 0.5)
+	ag := NewAgent(nil, llm, WithName("dec"),
+		WithDecisionRouter(decision.NewRouter(dec, liveRerankBand(0.8))),
+		WithDecisionShadowStore(&memShadowStore{}))
+	candidates := []*memory.Memory{
+		{ID: "m0", Content: strings.Repeat("y", 1200)},
+		{ID: "m1", Content: "short"},
+	}
+	_ = ag.rerankMemories(decision.WithSessionID(context.Background(), "sess-cut2"), "q", candidates)
+	ag.WaitDecisionShadows()
+	assert.Equal(t, int32(1), llm.calls.Load(), "nothing actionable: the LLM rerank decides")
 }

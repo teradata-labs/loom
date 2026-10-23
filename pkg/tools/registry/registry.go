@@ -571,10 +571,10 @@ func (r *Registry) search(ctx context.Context, req *loomv1.SearchToolsRequest, d
 	var results []*loomv1.ToolSearchResult
 	if (mode == loomv1.SearchMode_SEARCH_MODE_BALANCED || mode == loomv1.SearchMode_SEARCH_MODE_ACCURATE) && r.llm != nil && len(candidates) > 0 {
 		rerankStart := time.Now()
-		if decided, acted, dreq, dout := dl.liveRerank(ctx, r.logger, req.Query, candidates); acted {
+		if decided, acted, dreq, dout, notActed := dl.liveRerank(ctx, r.logger, req.Query, candidates); acted {
 			results = decided
 			span.SetAttribute("tool_search.rerank", "decision")
-			dl.recordAsync(ctx, r.logger, dreq, dout, sites.RerankSubjectsOnly(len(candidates), toolSubjects(candidates)))
+			dl.recordAsync(ctx, r.logger, dreq, dout, sites.RerankActedReferences(len(candidates), toolSubjects(candidates), notActed))
 		} else if dreq != nil {
 			results = r.rerankWithLLMOnly(ctx, req.Query, req.TaskContext, candidates)
 			span.SetAttribute("tool_search.rerank", "llm_after_decision")

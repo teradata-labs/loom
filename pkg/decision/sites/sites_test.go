@@ -347,3 +347,37 @@ func TestSingleQuestionSitesApplyActMinPerAnswer(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, "a", key)
 }
+
+// A cut candidate is kept on a confident yes and never dropped on its cut
+// view; its confident no counts as not acted on, like an uncertain answer.
+func TestRerankSelectNeverDropsCutCandidates(t *testing.T) {
+	t.Parallel()
+	req, err := RerankRequest(SiteRecallRerank, "q", []string{"a", strings.Repeat("b", maxRerankCandidateRunes+1), strings.Repeat("c", maxRerankCandidateRunes+1), "d", "e"})
+	require.NoError(t, err)
+	out := decision.NewRouter(mock.New().
+		AnswerNoul("c0", 0.95).AnswerNoul("c1", 0.05).AnswerNoul("c2", 0.95).AnswerNoul("c3", 0.05).AnswerNoul("c4", 0.5),
+		decision.WithBands([]*loomv1.DecisionBand{{Site: SiteRecallRerank, ActMin: 0.8,
+			Aggregate: loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_PER_QUESTION}}),
+	).Decide(context.Background(), req)
+	require.NoError(t, out.Err)
+	cut := RerankCut([]string{"a", strings.Repeat("b", maxRerankCandidateRunes+1), strings.Repeat("c", maxRerankCandidateRunes+1), "d", "e"})
+	assert.Equal(t, []bool{false, true, true, false, false}, cut)
+
+	sel := RerankSelect(out.Response, 5, decision.Band{ActMin: 0.8}, cut)
+	assert.Equal(t, []int{0, 1, 2, 4}, sel.Kept, "the cut drop is kept; the whole drop is not")
+	assert.Equal(t, []int{1, 4}, sel.NotActed, "the overruled cut drop and the uncertain answer")
+	assert.True(t, RerankContributed(5, len(sel.NotActed)))
+
+	refs := RerankActedReferences(5, []string{"s0", "s1", "s2", "s3", "s4"}, sel.NotActed)
+	assert.True(t, refs["c1"].NotActed)
+	assert.False(t, refs["c0"].NotActed)
+	assert.Equal(t, "s1", refs["c1"].Subject)
+	records := decision.BuildShadowRecords(req, out, "mock", "s", refs)
+	paths := map[string]loomv1.DecisionPath{}
+	for _, r := range records {
+		paths[r.QuestionId] = r.Path
+	}
+	assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_FALLBACK, paths["c1"])
+	assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_FALLBACK, paths["c4"])
+	assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_DECIDER, paths["c3"], "an acted drop is a DECIDER row")
+}
