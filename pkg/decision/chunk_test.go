@@ -425,3 +425,43 @@ func TestChunkedBisectionSharesOneSlotPool(t *testing.T) {
 		})
 	}
 }
+
+// Review #410 minor f: every size error is a ValidationError with Cause
+// ErrStateTooLarge, and chunkRetryable refused anything that was a
+// ValidationError, so a too-large request never bisected although the
+// design says size errors do. A smaller request can clear a size error (a
+// fan-out carves state with its questions; the total shrinks with them).
+func TestChunkedBisectsOnSizeErrors(t *testing.T) {
+	tests := []struct {
+		name  string
+		field string
+	}{
+		{"request total over the limit", "request"},
+		{"fan-out state over the limit", "state"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := mock.New()
+			scriptAll(m, 8)
+			m.SetHook(func(req *loomv1.DecisionRequest) error {
+				if len(req.Questions) > 4 {
+					return &decision.ValidationError{Field: tt.field, Msg: "too large", Cause: decision.ErrStateTooLarge}
+				}
+				return nil
+			})
+			resp, err := decision.Chunk(m).Decide(context.Background(), fanOutRequest(t, 8))
+			require.NoError(t, err)
+			assert.Len(t, resp.Answers, 8)
+			assert.Equal(t, 3, m.CallCount(), "the whole request, then two halves of four")
+		})
+	}
+	// Any other validation error still fails at once.
+	m := mock.New()
+	scriptAll(m, 8)
+	m.SetHook(func(*loomv1.DecisionRequest) error {
+		return &decision.ValidationError{Field: "questions", Msg: "bad"}
+	})
+	_, err := decision.Chunk(m).Decide(context.Background(), fanOutRequest(t, 8))
+	require.ErrorIs(t, err, decision.ErrValidation)
+	assert.Equal(t, 1, m.CallCount())
+}

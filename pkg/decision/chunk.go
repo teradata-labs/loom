@@ -41,11 +41,13 @@ const DefaultChunkConcurrency = 4
 // Chunked splits a request that carries more questions than a decider
 // handles well into concurrent smaller requests and merges the answers.
 // The limit is the configured size, else the decider's SizeHinter, else
-// none. Whatever the limit, a chunk that fails with an overload, rate-limit,
-// size or transport error and still has more than one question is bisected
-// and both halves retried, so an unknown or shifting provider limit is
-// found at run time instead of failing the whole request. Auth, validation
-// and malformed-answer errors are not retried: they would fail at any size.
+// none. Whatever the limit, a chunk that fails with an overload, size or
+// transport error and still has more than one question is bisected and both
+// halves retried, so an unknown or shifting provider limit is found at run
+// time instead of failing the whole request. Auth, other validation,
+// malformed-answer and rate-limit errors are not retried: the first three
+// would fail at any size, and splitting a throttled request doubles the
+// requests against the budget that just refused one.
 //
 // A fan-out request (DecisionRequest.fan_out_key) has its state carved with
 // its questions: each chunk keeps only the items for its own question ids,
@@ -307,6 +309,13 @@ func withFailedUsage(resp *loomv1.DecisionResponse, err error) func(*loomv1.Deci
 func chunkRetryable(ctx context.Context, err error) bool {
 	if ctx.Err() != nil {
 		return false
+	}
+	// A size error is a ValidationError (Cause ErrStateTooLarge), so it is
+	// checked before the validation rule below: unlike other validation
+	// failures, fewer questions can clear it (a fan-out carves its state with
+	// them, and the request total shrinks with them).
+	if errors.Is(err, ErrStateTooLarge) {
+		return true
 	}
 	switch {
 	case errors.Is(err, ErrUnauthorized), errors.Is(err, ErrValidation),
