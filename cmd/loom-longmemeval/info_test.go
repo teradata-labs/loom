@@ -105,16 +105,26 @@ func TestInfoCmd_JSONOutput(t *testing.T) {
 	cmd.SetArgs([]string{path, "--json"})
 	require.NoError(t, cmd.Execute())
 
-	var got DatasetStats
+	// Decode generically: round-tripping through DatasetStats would pass
+	// even if a json tag were renamed on both sides. These are the literal
+	// keys runner-script.yaml reads: `.entries`,
+	// `.question_types[] | [.type, .count]`, and `{entries, question_types}`
+	// for the resume identity.
+	var got map[string]any
 	require.NoError(t, json.Unmarshal(out.Bytes(), &got))
 
-	assert.Equal(t, path, got.Dataset)
-	assert.Equal(t, 4, got.Entries)
-	assert.Equal(t, 4, got.TotalSessions)
-	assert.Equal(t, 8, got.TotalTurns)
-	assert.Equal(t, []DatasetTypeCount{
-		{Type: "knowledge-update", Count: 1},
-		{Type: "multi-session", Count: 1},
-		{Type: "temporal-reasoning", Count: 2},
-	}, got.QuestionTypes)
+	assert.Equal(t, float64(4), got["entries"])
+	assert.Equal(t, []any{
+		map[string]any{"type": "knowledge-update", "count": float64(1)},
+		map[string]any{"type": "multi-session", "count": float64(1)},
+		map[string]any{"type": "temporal-reasoning", "count": float64(2)},
+	}, got["question_types"])
+
+	// Fields the slice loop does not read are still pinned through the
+	// struct.
+	var stats DatasetStats
+	require.NoError(t, json.Unmarshal(out.Bytes(), &stats))
+	assert.Equal(t, path, stats.Dataset)
+	assert.Equal(t, 4, stats.TotalSessions)
+	assert.Equal(t, 8, stats.TotalTurns)
 }
