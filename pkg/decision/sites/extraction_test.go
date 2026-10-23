@@ -133,4 +133,8 @@ func TestExtractReferenceIsObservedYield(t *testing.T) {
 
 	refs = ExtractReference(3)
 	assert.Equal(t, "true", refs[QExtractDurable].Answer, "extraction stored three memories")
+
+	refs = ExtractFailedReference()
+	assert.Empty(t, refs[QExtractDurable].Answer, "a failed extraction observed nothing")
+	assert.Equal(t, ReferenceSourceExtractionFailed, refs[QExtractDurable].Source)
 }

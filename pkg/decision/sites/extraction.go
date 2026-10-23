@@ -38,6 +38,11 @@ const QExtractDurable = "durable"
 // a labelled dataset rather than an agreement measurement.
 const ReferenceSourceExtractionYield = "agent.extractGraphMemoryAsync.stored"
 
+// ReferenceSourceExtractionFailed labels a row whose extraction failed (the
+// LLM call errored or its reply did not parse). Such a run observed nothing,
+// so the row carries no reference answer.
+const ReferenceSourceExtractionFailed = "agent.extractGraphMemoryAsync.failed"
+
 // maxExtractWindowRunes bounds the conversation window the gate judges.
 // The window is the thing being judged, so it gets room, but extraction
 // prompts are already large and this request should stay cheap.
@@ -112,6 +117,14 @@ func ExtractReference(stored int) map[string]decision.Reference {
 			Answer: boolAnswer(stored > 0),
 			Source: ReferenceSourceExtractionYield,
 		},
+	}
+}
+
+// ExtractFailedReference is the reference for an extraction that failed:
+// no answer, and a source that says why there is none.
+func ExtractFailedReference() map[string]decision.Reference {
+	return map[string]decision.Reference{
+		QExtractDurable: {Source: ReferenceSourceExtractionFailed},
 	}
 }
 

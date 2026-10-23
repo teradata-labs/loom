@@ -534,18 +534,29 @@ func (a *Agent) liveExtractGate(ctx context.Context, sessionID, window string) (
 	return req, out, out.Act()
 }
 
+// extractionYield is what one extraction run produced, for the gate's row:
+// how many memories it stored, or that it failed before storing any (the
+// LLM call errored or its reply did not parse).
+type extractionYield struct {
+	stored int
+	failed bool
+}
+
 // recordExtractionGate writes the gate's row against what extraction
-// actually stored. When the live gate already asked (req != nil, whatever
+// actually stored; a failed run is recorded with no reference answer. When the live gate already asked (req != nil, whatever
 // the outcome: acted, below the band, decider error, budget), that answer is
 // recorded; the decider is never asked twice for one extraction. Only on a
 // shadow band, where nothing was asked, does it ask now, in the background,
 // so the comparison costs the turn nothing.
 func (a *Agent) recordExtractionGate(ctx context.Context, sessionID, window string,
-	req *loomv1.DecisionRequest, out decision.Outcome, stored *int) {
+	req *loomv1.DecisionRequest, out decision.Outcome, yield *extractionYield) {
 	if a.decisionRouter == nil || window == "" {
 		return
 	}
-	refs := sites.ExtractReference(*stored)
+	refs := sites.ExtractReference(yield.stored)
+	if yield.failed {
+		refs = sites.ExtractFailedReference()
+	}
 	if req != nil {
 		a.recordDecisionAsync(ctx, sessionID, req, out, refs)
 		return

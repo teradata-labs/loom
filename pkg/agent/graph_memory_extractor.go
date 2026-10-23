@@ -337,11 +337,11 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 			gateOut.Path = loomv1.DecisionPath_DECISION_PATH_FALLBACK
 		}
 	}
-	storedRef := 0
+	var yield extractionYield
 	defer func() {
 		// Whatever path ran, record the decider against what extraction
-		// actually yielded.
-		a.recordExtractionGate(extractCtx, sessionID, window, gateReq, gateOut, &storedRef)
+		// actually yielded, or as a failure when it never got that far.
+		a.recordExtractionGate(extractCtx, sessionID, window, gateReq, gateOut, &yield)
 	}()
 
 	// Use compressorLLM for extraction (cheaper/smaller model), fall back to main LLM.
@@ -358,11 +358,13 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 		{Role: "user", Content: prompt},
 	}, nil)
 	if err != nil {
+		yield.failed = true
 		return
 	}
 
 	data, ok := parseExtractionResponse(response.Content)
 	if !ok {
+		yield.failed = true
 		return
 	}
 
@@ -508,7 +510,7 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 
 		_, err := a.graphMemoryStore.Remember(extractCtx, mem)
 		if err == nil {
-			storedRef++
+			yield.stored++
 		}
 		if err != nil {
 			zap.L().Debug("graph memory extraction: failed to store memory",

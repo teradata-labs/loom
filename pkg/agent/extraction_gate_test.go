@@ -19,6 +19,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -241,6 +242,37 @@ func TestExtractionGateOverLimitWindowExtractsWithoutAsking(t *testing.T) {
 			rows, err := shadow.QueryShadow(ctx, decision.ShadowQuery{Site: sites.SiteMemoryExtract})
 			require.NoError(t, err)
 			assert.Empty(t, rows, "no row: nothing was asked")
+		})
+	}
+}
+
+// Review #410 minor a: a failed extraction returned before anything was
+// stored, so the deferred row's reference said "stored nothing" (false), a
+// label the extraction never produced. A failed run carries no reference
+// answer and names the failure as its source, so agreement skips it.
+func TestExtractionGateFailedExtractionIsNotLabelledEmpty(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		response string
+		err      error
+	}{
+		{name: "LLM error", err: errors.New("provider down")},
+		{name: "unparseable reply", response: "not json at all"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newTestGraphMemoryStore(t)
+			dec := decisionmock.New().AnswerNoul(sites.QExtractDurable, 0.9)
+			shadow := &memShadowStore{}
+			a, llm := gateAgent(t, store, nil, dec, shadow) // shadow band
+			llm.response, llm.err = tt.response, tt.err
+
+			a.extractGraphMemoryAsync(context.Background(), "gate-session")
+			a.WaitDecisionShadows()
+			rows, err := shadow.QueryShadow(context.Background(), decision.ShadowQuery{Site: sites.SiteMemoryExtract})
+			require.NoError(t, err)
+			require.Len(t, rows, 1)
+			assert.Equal(t, "", rows[0].ReferenceAnswer, "a failed extraction observed nothing")
+			assert.Equal(t, sites.ReferenceSourceExtractionFailed, rows[0].ReferenceSource)
 		})
 	}
 }
