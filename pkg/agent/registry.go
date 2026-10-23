@@ -77,6 +77,7 @@ type Registry struct {
 	admissionChain    *shuttle.Chain               // Admission hook chain for tool-call admission
 	identityResolver  func(context.Context) string // Resolves AdmissionRequest.UserID from the call context
 	artifactStore     interface{}                  // artifacts.Store for workspace tool
+	runLuaTool        *RunLuaToolOptions           // run_lua wiring; nil when tools.lua is disabled
 
 	// providerPool is the server-level named provider pool injected by cmd_serve.go.
 	// Agents can reference pool entries by name in their LLM config (e.g., provider: "fast").
@@ -154,6 +155,11 @@ type RegistryConfig struct {
 	IdentityResolver  func(context.Context) string // Resolves AdmissionRequest.UserID from the call context
 	ArtifactStore     interface{}                  // artifacts.Store for workspace tool
 
+	// RunLuaTool, when set, makes run_lua available to agents that list it in
+	// tools.builtin (the server sets it only when tools.lua.enabled). nil
+	// leaves run_lua unregistered even when listed.
+	RunLuaTool *RunLuaToolOptions
+
 	// Database encryption (opt-in for enterprise deployments)
 	EncryptDatabase bool   // Enable SQLCipher encryption
 	EncryptionKey   string // Encryption key (or use LOOM_DB_KEY env var)
@@ -218,6 +224,7 @@ func NewRegistry(config RegistryConfig) (*Registry, error) {
 		admissionChain:    config.AdmissionChain,
 		identityResolver:  config.IdentityResolver,
 		artifactStore:     config.ArtifactStore,
+		runLuaTool:        config.RunLuaTool,
 	}
 
 	// Load existing agents from database to restore GUIDs
@@ -948,6 +955,10 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 			// The server constructs this tool later with request-scoped session
 			// and agent identifiers when the configuration explicitly opts in.
 			if toolName == "manage_ephemeral_agents" {
+				continue
+			}
+			if toolName == RunLuaToolName {
+				r.registerRunLua(agent, config.Name)
 				continue
 			}
 			tool := builtin.ByName(toolName)
@@ -2755,4 +2766,29 @@ func removeFile(path string) error {
 		return nil
 	}
 	return err
+}
+
+// registerRunLua registers run_lua on an agent whose config lists it. It
+// stays unregistered when the server has Lua disabled, when the agent
+// suppresses it, and when the agent has no admission guard at all (fail
+// closed); each case is logged with its reason.
+func (r *Registry) registerRunLua(ag *Agent, agentName string) {
+	if r.runLuaTool == nil {
+		r.logger.Info("run_lua listed but tools.lua.enabled is false; not registered",
+			zap.String("agent", agentName))
+		return
+	}
+	err := ag.RegisterRunLuaTool(*r.runLuaTool)
+	switch {
+	case err == nil:
+		r.logger.Info("Registered run_lua", zap.String("agent", agentName))
+	case errors.Is(err, ErrLuaNoGuards):
+		r.logger.Warn("run_lua not registered: the agent has no admission chain and no permission checker, "+
+			"so scripts would run unguarded; configure tools.hooks or tools.permissions",
+			zap.String("agent", agentName))
+	case errors.Is(err, ErrLuaToolSuppressed):
+		r.logger.Info("run_lua suppressed on this agent; not registered", zap.String("agent", agentName))
+	default:
+		r.logger.Warn("run_lua not registered", zap.String("agent", agentName), zap.Error(err))
+	}
 }
