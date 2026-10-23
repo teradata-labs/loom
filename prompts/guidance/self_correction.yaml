@@ -58,7 +58,7 @@ prompts:
 
   - id: repeated_tool_call
     content: |
-      (note: this is call {{.count}} in a row to {{.tool_name}} with identical arguments. Read the previous result before calling again: change the arguments, try a different approach, or finish. If you are polling a job that is still running, this is expected.)
+      (note: this is call {{.count}} in a row to {{.tool_name}} with identical arguments. Read this result before calling again: change the arguments, try a different approach, or finish. Calling again is fine when the data can change between calls, for example when polling a job that is still running.)
     variables:
       count:
         name: count

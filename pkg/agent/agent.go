@@ -1799,7 +1799,7 @@ func (a *Agent) getGuidanceMessage(ctx context.Context, key string, vars map[str
 		if n, ok := vars["tool_name"].(string); ok && n != "" {
 			name = n
 		}
-		return fmt.Sprintf("(note: this is call %s in a row to %s with identical arguments. Read the previous result before calling again: change the arguments, try a different approach, or finish. If you are polling a job that is still running, this is expected.)", count, name)
+		return fmt.Sprintf("(note: this is call %s in a row to %s with identical arguments. Read this result before calling again: change the arguments, try a different approach, or finish. Calling again is fine when the data can change between calls, for example when polling a job that is still running.)", count, name)
 	default:
 		return "An unexpected situation occurred. Please try again."
 	}

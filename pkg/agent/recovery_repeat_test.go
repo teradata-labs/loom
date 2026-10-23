@@ -132,6 +132,8 @@ func TestGetGuidanceMessage_RepeatedToolCallFallback(t *testing.T) {
 	msg := ag.getGuidanceMessage(context.Background(), "repeated_tool_call",
 		map[string]interface{}{"count": "3", "tool_name": "t"})
 	assert.Contains(t, msg, "call 3 in a row to t")
+	assert.Contains(t, msg, "Read this result", "the note sits on the newest result")
+	assert.Contains(t, msg, "data can change between calls")
 	assert.Contains(t, msg, "polling a job")
 
 	msg = ag.getGuidanceMessage(context.Background(), "repeated_tool_call", nil)
