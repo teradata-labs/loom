@@ -47,9 +47,10 @@ rather than printing SKIP and going green).
 runs it against a synthetic dataset, asserting the behaviours a paid multi-day
 run depends on: counts derived from the dataset, resume skipping only completed
 chunks, a deterministically-failing entry quarantining its chunk instead of
-re-billing the run, rejected output preserved outside the scorer's glob, a
-failed results-volume write stopping the run instead of reporting success, the
-incomplete-run sentinel clearing once every chunk completes, and a revised
+re-billing the run, every rejected attempt preserved under its own number
+outside the scorer's glob, a failed results-volume write stopping the run
+instead of reporting success, the incomplete-run sentinel naming every chunk
+that is not done and clearing only once every chunk completes, and a revised
 dataset refused on resume.
 
 ## Architecture
@@ -112,9 +113,12 @@ dataset refused on resume.
   `-detailed.json`), promotes it with an atomic rename, and only then writes a
   `.done` marker. The marker — not file nonemptiness — is the resume signal, so a
   killed or partial chunk is always redone. Promoted results are never deleted,
-  and a rejected attempt's output is moved to `runs/<run-id>/rejected/` (outside
-  the `s500-*.jsonl` glob the scorer reads) rather than discarded — it cost real
-  spend and names the entries that failed. Individual errored entries can no
+  and each rejected attempt's output is moved to
+  `runs/<run-id>/rejected/<chunk>.a<NNN>.jsonl` and
+  `<chunk>.a<NNN>-detailed.json` (outside the `s500-*.jsonl` glob the scorer
+  reads) rather than discarded — it cost real spend and names the entries that
+  failed. Every attempt, transient or deterministic, takes the next free number
+  `NNN` (001, 002, ...), so a later attempt never overwrites an earlier one. Individual errored entries can no
   longer hide inside a "completed" chunk: validation rejects them and the Job's
   backoff retries the chunk.
 - **Attempt budget:** validation is all-or-nothing but resume granularity is the

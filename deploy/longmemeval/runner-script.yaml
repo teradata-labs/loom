@@ -62,9 +62,11 @@ data:
     # resuming, so chunks from a different configuration or a revised dataset
     # are never silently reused.
     #
-    # Results are never deleted: a rejected attempt's output is moved into
-    # runs/RUN_ID/rejected/ (outside the s500-*.jsonl glob the scorer reads),
-    # never removed; promoted outputs and other runs are untouched.
+    # Results are never deleted: each rejected attempt's output is moved into
+    # runs/RUN_ID/rejected/<chunk>.a<NNN>.jsonl and -detailed.json (outside
+    # the s500-*.jsonl glob the scorer reads, numbered so no attempt
+    # overwrites another), never removed; promoted outputs and other runs
+    # are untouched.
     set -uo pipefail
 
     : "${SERVER:?}" "${DATASET_FILE:?}" "${MODE:?}" "${CONCURRENCY:?}" "${CHUNK:?}" "${OCCURRED_AT:?}" "${RESULTS_DIR:?}" "${RUN_ID:?}" "${RUN_MANIFEST:?}"
@@ -327,17 +329,26 @@ data:
           echo "  ${reason}"
           # Keep the rejected attempt: it cost real Bedrock spend and names
           # the failing entries. It lands in rejected/ so the scorer's
-          # s500-*.jsonl glob can never pick it up as a result.
-          mkdir -p "${reject_dir}"
-          [ -f "$tmp_out" ] && mv -f "$tmp_out" "${reject_dir}/${name}.jsonl"
-          [ -f "$tmp_det" ] && mv -f "$tmp_det" "${reject_dir}/${name}-detailed.json"
+          # s500-*.jsonl glob can never pick it up as a result. Every
+          # attempt, transient or deterministic, takes the next free number
+          # (<name>.a001, .a002, ...), so no earlier attempt is overwritten.
+          mkdir -p "${reject_dir}" || fatal_pvc "${reject_dir}"
+          reject_n=1
+          while [ -e "${reject_dir}/${name}.a$(printf '%03d' "${reject_n}").jsonl" ] \
+              || [ -e "${reject_dir}/${name}.a$(printf '%03d' "${reject_n}")-detailed.json" ]; do
+            reject_n=$((reject_n + 1))
+          done
+          reject_name="${name}.a$(printf '%03d' "${reject_n}")"
+          rej_out="${reject_dir}/${reject_name}.jsonl"; rej_det="${reject_dir}/${reject_name}-detailed.json"
+          if [ -f "$tmp_out" ]; then mv -f "$tmp_out" "$rej_out" || fatal_pvc "reject ${rej_out}"; fi
+          if [ -f "$tmp_det" ]; then mv -f "$tmp_det" "$rej_det" || fatal_pvc "reject ${rej_det}"; fi
           if [ "${harness_rc}" -eq "${HARNESS_RC_TRANSIENT}" ]; then
             # The chunk ran, but every failed entry carries a retryable gRPC
             # status: the server or its transport failed mid-chunk, or Bedrock
             # throttled or failed past looms' own retries. That is
             # infrastructure, not a verdict on these entries.
             echo "CHUNK FAILED (transient entry failures, budget untouched): ${name} — harness exited ${harness_rc}; retried on the next pod restart."
-            errored_entries "${reject_dir}/${name}-detailed.json"
+            errored_entries "${rej_det}"
             transient_failed+=("${name}")
             offset=$((offset + CHUNK))
             continue
@@ -362,9 +373,9 @@ data:
               printf 'run_id=%s type=%s offset=%s limit=%s deterministic_failures=%s quarantined=%s\n' \
                 "${RUN_ID}" "${t}" "${offset}" "${lim}" "${attempt}" "$(date -u '+%FT%TZ')"
               printf 'last failure: %s\n' "${reason}"
-              printf 'last attempt output: rejected/%s.jsonl, rejected/%s-detailed.json\n' "${name}" "${name}"
+              printf 'last attempt output: rejected/%s.jsonl, rejected/%s-detailed.json\n' "${reject_name}" "${reject_name}"
               printf 'entries the harness reported an error for:\n'
-              errored_entries "${reject_dir}/${name}-detailed.json"
+              errored_entries "${rej_det}"
               printf 'to retry this chunk: rm %s %s\n' "${quarantine}" "${attempts_file}"
             } | write_atomic "${quarantine}" || fatal_pvc "${quarantine}"
             quarantined+=("${name}")

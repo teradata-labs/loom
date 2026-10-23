@@ -14,7 +14,8 @@
 #   3. a deterministically-failing entry quarantines its chunk after
 #      MAX_CHUNK_ATTEMPTS instead of re-billing its healthy neighbours forever,
 #      and the remaining chunks still complete
-#   4. a rejected attempt's output is preserved outside the scorer's glob
+#   4. every rejected attempt's output is preserved, under its own attempt
+#      number, outside the scorer's glob
 #   5. a dataset swapped underneath a resume is refused
 #   6. a mid-chunk transient outage (every entry failing with a retryable
 #      gRPC status, harness exit HARNESS_RC_TRANSIENT) never consumes the
@@ -277,9 +278,22 @@ healthy_done="$(find "${run_dir2}" -name '*.done' | wc -l | tr -d ' ')"
     || fail "no RUN-INCOMPLETE.txt written"
 
 echo "=== 4. rejected output is preserved, outside the scorer's glob ==="
-[[ -s "${run_dir2}/rejected/s500-alpha-type-o002-detailed.json" ]] \
-    && ok "rejected attempt preserved under rejected/" \
-    || fail "rejected attempt output was discarded"
+# Two deterministic failures of the same chunk must leave two files each,
+# not one overwritten by the other.
+for n in 001 002; do
+    for f in "s500-alpha-type-o002.a${n}.jsonl" "s500-alpha-type-o002.a${n}-detailed.json"; do
+        [[ -f "${run_dir2}/rejected/${f}" ]] \
+            && ok "rejected attempt ${n} preserved as rejected/${f}" \
+            || fail "rejected/${f} missing: $(ls "${run_dir2}/rejected" 2>/dev/null | tr '\n' ' ')"
+    done
+done
+rejected_det="$(find "${run_dir2}/rejected" -name 's500-alpha-type-o002.a*-detailed.json' | wc -l | tr -d ' ')"
+[[ "${rejected_det}" == "${LME_MAX_CHUNK_ATTEMPTS}" ]] \
+    && ok "one rejected detailed file per deterministic attempt" \
+    || fail "expected ${LME_MAX_CHUNK_ATTEMPTS} rejected detailed files, got ${rejected_det}"
+grep -q 'rejected/s500-alpha-type-o002.a002.jsonl' "${run_dir2}/s500-alpha-type-o002.failed" \
+    && ok "quarantine marker points at the last attempt's rejected output" \
+    || fail "quarantine marker does not name rejected/s500-alpha-type-o002.a002.jsonl"
 if compgen -G "${run_dir2}/s500-*.jsonl" >/dev/null; then
     if cat "${run_dir2}"/s500-*.jsonl | grep -q 'alpha-type-3'; then
         fail "an unpromoted entry leaked into the scorer's glob"
@@ -346,6 +360,18 @@ for step in '*-detailed.json' '*.jsonl' '*.done'; do
         || fail "${leaked} .done marker(s) written although the ${step} rename failed"
 done
 
+# Moving a rejected attempt into rejected/ is a PVC write too: if it fails,
+# the attempt's output is about to be lost, so the pass stops.
+R5="$(mktemp -d "${TMP_DIR}/r5.XXXX")"
+(
+    export PATH="${SHIM_DIR}:${PATH}" MV_FAIL_GLOB='*/rejected/*'
+    POISON_IDS="alpha-type-0" run_loop "${R5}"
+)
+rc=$?
+[[ ${rc} -ne 0 ]] && grep -q "FATAL: results PVC write failed: reject " "${TMP_DIR}/loop.log" \
+    && ok "a failed move into rejected/ is reported as a PVC failure" \
+    || fail "a failed move into rejected/ did not stop the pass (rc=${rc})"
+
 # ── 6. A recovered run clears the incomplete sentinel ───────────────────────
 echo "=== 6. RUN-INCOMPLETE.txt is cleared once every chunk completes ==="
 run_dir1="${R1}/runs/${LME_RUN_ID}"
@@ -381,6 +407,13 @@ for pass in $(seq 1 "${outage_passes}"); do
         || fail "outage pass ${pass} charged the deterministic budget ($(cat "${run_dir4}/s500-beta-type-o000.attempts"))"
     [[ -f "${run_dir4}/RUN-INCOMPLETE.txt" ]] \
         || fail "outage pass ${pass} wrote no RUN-INCOMPLETE.txt while a chunk was failing"
+done
+# The attempt number advances for transient attempts too, so none of the
+# outage's rejected outputs is overwritten.
+for n in 001 002; do
+    [[ -f "${run_dir4}/rejected/s500-beta-type-o000.a${n}-detailed.json" ]] \
+        && ok "transient attempt ${n} kept as its own rejected file" \
+        || fail "transient attempt ${n} has no rejected/s500-beta-type-o000.a${n}-detailed.json"
 done
 grep -q 'transient entry failures, budget untouched' "${TMP_DIR}/loop.log" \
     && ok "outage reported as transient, budget untouched" \
