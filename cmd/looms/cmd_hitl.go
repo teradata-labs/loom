@@ -17,11 +17,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode"
 
 	"github.com/spf13/cobra"
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
@@ -296,10 +298,7 @@ func runHitlList(cmd *cobra.Command, args []string) {
 
 	for _, req := range requests {
 		age := time.Since(req.CreatedAt).Round(time.Second)
-		question := req.Question
-		if len(question) > 50 {
-			question = question[:47] + "..."
-		}
+		question := hitlListLabel(req)
 
 		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%v\t%s\n",
 			req.ID,
@@ -362,7 +361,13 @@ func runHitlShow(cmd *cobra.Command, args []string) {
 	fmt.Printf("Status:         %s\n", req.Status)
 	fmt.Printf("\n")
 	fmt.Printf("Question:       %s\n", req.Question)
+	if req.Summary != "" && req.Summary != req.Question {
+		fmt.Printf("Call:           %s\n", req.Summary)
+	}
 	fmt.Printf("\n")
+
+	// The held call's own parameters: what an approver is approving.
+	writeHITLParams(os.Stdout, req)
 
 	// Print timing info
 	fmt.Printf("Created:        %s (%v ago)\n", req.CreatedAt.Format(time.RFC3339), time.Since(req.CreatedAt).Round(time.Second))
@@ -600,4 +605,68 @@ func runHitlRespond(cmd *cobra.Command, args []string) {
 	fmt.Printf("  Status:     %s\n", after.Status)
 	fmt.Printf("  Message:    %s\n", after.Response)
 	fmt.Printf("  By:         %s\n", after.RespondedBy)
+}
+
+// hitlListLabel is the one-line label `hitl list` shows for a request: the
+// call digest for an approval (which names the tool and its arguments), else
+// the question, with control characters escaped so it stays in one table
+// cell, cut to 70 characters on a rune boundary.
+func hitlListLabel(req *shuttle.HumanRequest) string {
+	label := req.Question
+	if req.Summary != "" {
+		label = req.Summary
+	}
+	label = escapeControlChars(label)
+	if r := []rune(label); len(r) > 70 {
+		label = string(r[:67]) + "..."
+	}
+	return label
+}
+
+func escapeControlChars(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r == '\n':
+			b.WriteString(`\n`)
+		case r == '\r':
+			b.WriteString(`\r`)
+		case r == '\t':
+			b.WriteString(`\t`)
+		case unicode.IsControl(r):
+			fmt.Fprintf(&b, `\u%04x`, r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// writeHITLParams prints the parameters of the call an approval request holds,
+// so the person deciding sees exactly what will run (for shell_execute, the
+// whole command). Nothing is printed when the request carries none.
+func writeHITLParams(w io.Writer, req *shuttle.HumanRequest) {
+	if len(req.Params) == 0 {
+		// The size bound can drop every parameter; the person deciding must
+		// still learn the digest above is not the whole call.
+		if req.ParamsTruncated {
+			_, _ = fmt.Fprintln(w, "Parameters:     (too large for the approval record and not shown)")
+			_, _ = fmt.Fprintln(w)
+		}
+		return
+	}
+	// No HTML escaping: a shell command's "&&" must read as written.
+	var raw strings.Builder
+	enc := json.NewEncoder(&raw)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("  ", "  ")
+	if err := enc.Encode(req.Params); err != nil {
+		_, _ = fmt.Fprintf(w, "Parameters:     (cannot display: %v)\n\n", err)
+		return
+	}
+	_, _ = fmt.Fprintf(w, "Parameters:\n  %s", raw.String())
+	if req.ParamsTruncated {
+		_, _ = fmt.Fprintln(w, "  (some parameters were too large for the approval record and are not shown)")
+	}
+	_, _ = fmt.Fprintln(w)
 }
