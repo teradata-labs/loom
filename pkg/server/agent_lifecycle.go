@@ -147,6 +147,23 @@ func ensureConfigDefaults(config *loomv1.AgentConfig) {
 	}
 }
 
+func directAgentOptions(config *loomv1.AgentConfig) []agent.Option {
+	opts := []agent.Option{agent.WithName(config.Name)}
+	if config.Description != "" {
+		opts = append(opts, agent.WithDescription(config.Description))
+	}
+	if config.SystemPrompt != "" {
+		opts = append(opts, agent.WithSystemPrompt(config.SystemPrompt))
+	}
+	if config.Rom != "" {
+		opts = append(opts, agent.WithROM(config.Rom))
+	}
+	if len(config.Metadata) > 0 {
+		opts = append(opts, agent.WithMetadata(config.Metadata))
+	}
+	return opts
+}
+
 // CreateAgentFromConfig creates a new agent from the provided configuration or config file path.
 func (s *MultiAgentServer) CreateAgentFromConfig(ctx context.Context, req *loomv1.CreateAgentRequest) (*loomv1.AgentInfo, error) {
 	if req.Config == nil && req.ConfigPath == "" {
@@ -217,17 +234,7 @@ func (s *MultiAgentServer) CreateAgentFromConfig(ctx context.Context, req *loomv
 	// Fallback: create agent directly without registry (for testing or simple setups)
 	agentID := uuid.New().String()
 
-	opts := []agent.Option{
-		agent.WithName(agentConfig.Name),
-	}
-	if agentConfig.Description != "" {
-		opts = append(opts, agent.WithDescription(agentConfig.Description))
-	}
-	if agentConfig.SystemPrompt != "" {
-		opts = append(opts, agent.WithSystemPrompt(agentConfig.SystemPrompt))
-	}
-
-	ag := agent.NewAgent(nil, nil, opts...)
+	ag := agent.NewAgent(nil, nil, directAgentOptions(agentConfig)...)
 	ag.SetID(agentID)
 
 	s.AddAgent(agentID, ag)
@@ -487,15 +494,37 @@ func (s *MultiAgentServer) ReloadAgent(ctx context.Context, req *loomv1.ReloadAg
 	if req.ReloadFromFile {
 		// Delegate to registry for file-based reload
 		if s.registry != nil {
-			if reloadErr := s.registry.ReloadAgent(ctx, resolvedID); reloadErr != nil {
-				return nil, status.Errorf(codes.Internal, "failed to reload agent from file: %v", reloadErr)
+			var refreshed *agent.Agent
+			if s.registry.OwnsRuntimeAgent(ag) {
+				if reloadErr := s.registry.ReloadAgent(ctx, resolvedID); reloadErr != nil {
+					return nil, status.Errorf(codes.Internal, "failed to reload agent from file: %v", reloadErr)
+				}
+				refreshed, err = s.registry.GetAgent(ctx, resolvedID)
+				if err != nil {
+					return nil, status.Errorf(codes.Internal, "failed to retrieve reloaded agent: %v", err)
+				}
+				if updateErr := s.UpdateAgent(resolvedID, refreshed); updateErr != nil {
+					return nil, status.Errorf(codes.Internal, "failed to update reloaded agent: %v", updateErr)
+				}
+			} else if s.registry.HasReloadCallback() {
+				if reloadErr := s.registry.ForceReload(ctx, ag.GetName()); reloadErr != nil {
+					return nil, status.Errorf(codes.Internal, "failed to reload agent from file: %v", reloadErr)
+				}
+				refreshed, _, err = s.getAgent(resolvedID)
+				if err != nil {
+					return nil, status.Errorf(codes.Internal, "failed to retrieve reloaded agent: %v", err)
+				}
+				if refreshed == ag {
+					return nil, status.Errorf(codes.Internal, "reload callback did not replace agent %q", resolvedID)
+				}
+			} else {
+				return nil, status.Errorf(codes.FailedPrecondition, "agent %q has no registry runtime or reload callback", resolvedID)
 			}
-
-			// Retrieve updated agent info from registry
-			info, infoErr := s.registry.GetAgentInfo(resolvedID)
-			if infoErr == nil {
-				newConfig = s.registry.GetConfig(info.Name)
+			newConfig = s.registry.GetConfig(refreshed.GetName())
+			if newConfig == nil {
+				return nil, status.Errorf(codes.Internal, "reloaded agent %q has no config", refreshed.GetName())
 			}
+			ag = refreshed
 		} else {
 			return nil, status.Error(codes.FailedPrecondition, "reload_from_file requires an agent registry; no registry configured")
 		}
@@ -534,17 +563,7 @@ func (s *MultiAgentServer) ReloadAgent(ctx context.Context, req *loomv1.ReloadAg
 			ag = newAgent
 		} else {
 			// Simple reload without registry: create new agent with updated opts
-			opts := []agent.Option{
-				agent.WithName(newConfig.Name),
-			}
-			if newConfig.Description != "" {
-				opts = append(opts, agent.WithDescription(newConfig.Description))
-			}
-			if newConfig.SystemPrompt != "" {
-				opts = append(opts, agent.WithSystemPrompt(newConfig.SystemPrompt))
-			}
-
-			newAgent := agent.NewAgent(nil, nil, opts...)
+			newAgent := agent.NewAgent(nil, nil, directAgentOptions(newConfig)...)
 			newAgent.SetID(resolvedID)
 
 			if updateErr := s.UpdateAgent(resolvedID, newAgent); updateErr != nil {

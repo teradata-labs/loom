@@ -1890,10 +1890,14 @@ func runServe(cmd *cobra.Command, args []string) {
 				}
 
 				// Create config from proto LLMConfig
-				// Set max_turns and max_tool_executions from behavior config if specified, otherwise use defaults
+				// Set behavior limits from config if specified, otherwise use defaults.
+				maxIterations := agent.DefaultConfig().MaxIterations
 				maxTurns := 25          // Default from pkg/agent/types.go:145
 				maxToolExecutions := 50 // Default from pkg/agent/types.go:146
 				if cfg.Behavior != nil {
+					if cfg.Behavior.MaxIterations > 0 {
+						maxIterations = int(cfg.Behavior.MaxIterations)
+					}
 					if cfg.Behavior.MaxTurns > 0 {
 						maxTurns = int(cfg.Behavior.MaxTurns)
 					}
@@ -1908,6 +1912,7 @@ func runServe(cmd *cobra.Command, args []string) {
 					SystemPrompt:      cfg.SystemPrompt,
 					Rom:               cfg.Rom,      // ROM identifier for domain-specific knowledge
 					Metadata:          cfg.Metadata, // Metadata includes backend_path for ROM auto-detection
+					MaxIterations:     maxIterations,
 					MaxTurns:          maxTurns,
 					MaxToolExecutions: maxToolExecutions,
 					EnableTracing:     config.Observability.Enabled,
@@ -3203,10 +3208,14 @@ func runServe(cmd *cobra.Command, args []string) {
 			}
 
 			// Create agent configuration
-			// Set max_turns and max_tool_executions from behavior config if specified, otherwise use defaults
+			// Set behavior limits from config if specified, otherwise use defaults.
+			maxIterations := agent.DefaultConfig().MaxIterations
 			maxTurns := 25          // Default from pkg/agent/types.go:145
 			maxToolExecutions := 50 // Default from pkg/agent/types.go:146
 			if agentConfig.Behavior != nil {
+				if agentConfig.Behavior.MaxIterations > 0 {
+					maxIterations = int(agentConfig.Behavior.MaxIterations)
+				}
 				if agentConfig.Behavior.MaxTurns > 0 {
 					maxTurns = int(agentConfig.Behavior.MaxTurns)
 				}
@@ -3218,6 +3227,7 @@ func runServe(cmd *cobra.Command, args []string) {
 			cfg := &agent.Config{
 				Name:              agentConfig.Name,
 				Description:       agentConfig.Description,
+				MaxIterations:     maxIterations,
 				MaxTurns:          maxTurns,
 				MaxToolExecutions: maxToolExecutions,
 				SystemPrompt:      agentConfig.SystemPrompt,

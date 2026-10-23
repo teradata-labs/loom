@@ -1325,6 +1325,7 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 	yaml.Agent.Name = config.Name
 	yaml.Agent.Description = config.Description
 	yaml.Agent.SystemPrompt = config.SystemPrompt
+	yaml.Agent.ROM = config.Rom
 	yaml.Agent.Metadata = convertMetadataToInterface(config.Metadata)
 
 	// Convert LLM config

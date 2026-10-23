@@ -325,39 +325,67 @@ func TestRegistry_DeleteAgent_Running(t *testing.T) {
 }
 
 func TestRegistry_ReloadAgent(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		running       bool
+		removeRuntime bool
+	}{
+		{name: "stopped"},
+		{name: "running", running: true},
+		{name: "running without runtime instance", running: true, removeRuntime: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			registry, tmpDir := createTestRegistry(t)
+			ctx := context.Background()
+			config := createTestAgentConfig("reload")
+			configPath := filepath.Join(tmpDir, "agents", "reload.yaml")
+			require.NoError(t, SaveAgentConfig(config, configPath))
+			require.NoError(t, registry.LoadAgents(ctx))
+
+			before, err := registry.CreateAgent(ctx, config.Name)
+			require.NoError(t, err)
+			if tt.running {
+				require.NoError(t, registry.StartAgent(ctx, config.Name))
+			}
+			if tt.removeRuntime {
+				registry.RemoveAgentRuntime(config.Name)
+			}
+
+			config.Description = "Updated description"
+			config.SystemPrompt = "Follow the updated experiment protocol."
+			require.NoError(t, SaveAgentConfig(config, configPath))
+			require.NoError(t, registry.ReloadAgent(ctx, config.Name))
+
+			after, err := registry.GetAgent(ctx, config.Name)
+			require.NoError(t, err)
+			assert.NotSame(t, before, after)
+			assert.Equal(t, before.GetID(), after.GetID())
+			assert.Equal(t, config.Description, after.GetDescription())
+			assert.Equal(t, config.SystemPrompt, after.GetConfig().SystemPrompt)
+			assert.Equal(t, config.Description, registry.GetConfig(config.Name).Description)
+		})
+	}
+}
+
+func TestRegistry_ReloadAgentRejectsRenamedConfig(t *testing.T) {
 	registry, tmpDir := createTestRegistry(t)
 	ctx := context.Background()
-
-	// Setup agent
-	agentsDir := filepath.Join(tmpDir, "agents")
-	err := os.MkdirAll(agentsDir, 0755)
-	require.NoError(t, err)
-
 	config := createTestAgentConfig("reload")
-	configPath := filepath.Join(agentsDir, "reload.yaml")
-	err = SaveAgentConfig(config, configPath)
-	require.NoError(t, err)
+	configPath := filepath.Join(tmpDir, "agents", "reload.yaml")
+	require.NoError(t, SaveAgentConfig(config, configPath))
+	require.NoError(t, registry.LoadAgents(ctx))
 
-	err = registry.LoadAgents(ctx)
+	before, err := registry.CreateAgent(ctx, config.Name)
 	require.NoError(t, err)
-
-	_, err = registry.CreateAgent(ctx, "reload")
-	require.NoError(t, err)
-
-	// Modify config
-	config.Description = "Updated description"
-	err = SaveAgentConfig(config, configPath)
-	require.NoError(t, err)
-
-	// Reload agent
+	config.Name = "different-name"
+	require.NoError(t, SaveAgentConfig(config, configPath))
 	err = registry.ReloadAgent(ctx, "reload")
-	require.NoError(t, err)
+	require.ErrorContains(t, err, "differs from agent")
 
-	// Verify config was reloaded
-	registry.mu.RLock()
-	reloadedConfig := registry.configs["reload"]
-	registry.mu.RUnlock()
-	assert.Equal(t, "Updated description", reloadedConfig.Description)
+	after, err := registry.GetAgent(ctx, "reload")
+	require.NoError(t, err)
+	assert.Same(t, before, after)
+	assert.Equal(t, "reload", registry.GetConfig("reload").Name)
 }
 
 func TestRegistry_ListAgents(t *testing.T) {
@@ -1462,4 +1490,124 @@ func TestRegistry_TaskManagerInjection(t *testing.T) {
 		assert.Nil(t, ag.skillTaskEmitter,
 			"emitter must stay nil when no manager is available (legacy v1.2.0 parity)")
 	})
+}
+
+// saveTestAgentFile writes agents/<name>.yaml under dir with the given
+// description and returns its path.
+func saveTestAgentFile(t *testing.T, dir, name, description string) string {
+	t.Helper()
+	agentsDir := filepath.Join(dir, "agents")
+	require.NoError(t, os.MkdirAll(agentsDir, 0755))
+	config := createTestAgentConfig(name)
+	config.Description = description
+	path := filepath.Join(agentsDir, name+".yaml")
+	require.NoError(t, SaveAgentConfig(config, path))
+	return path
+}
+
+// TestForceReload_CallbackErrorKeepsConfig verifies that a failed host reload
+// leaves the registry config that matches the agent still running.
+func TestForceReload_CallbackErrorKeepsConfig(t *testing.T) {
+	registry, tmpDir := createTestRegistry(t)
+	ctx := context.Background()
+	saveTestAgentFile(t, tmpDir, "keepcfg", "Before reload")
+	require.NoError(t, registry.LoadAgents(ctx))
+
+	registry.SetReloadCallback(func(name string, guid string, cfg *loomv1.AgentConfig) error {
+		return fmt.Errorf("build failed")
+	})
+	saveTestAgentFile(t, tmpDir, "keepcfg", "After reload")
+
+	err := registry.ForceReload(ctx, "keepcfg")
+	require.Error(t, err)
+	assert.Equal(t, "Before reload", registry.GetConfig("keepcfg").Description)
+}
+
+// TestReloadAgentFile_CommitsConfigOnlyAfterReload covers the file-watch path:
+// the new config is recorded only when the reload callback succeeds.
+func TestReloadAgentFile_CommitsConfigOnlyAfterReload(t *testing.T) {
+	tests := []struct {
+		name        string
+		callbackErr error
+		wantDesc    string
+	}{
+		{name: "callback succeeds", wantDesc: "After reload"},
+		{name: "callback fails", callbackErr: fmt.Errorf("build failed"), wantDesc: "Before reload"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			registry, tmpDir := createTestRegistry(t)
+			ctx := context.Background()
+			path := saveTestAgentFile(t, tmpDir, "watched", "Before reload")
+			require.NoError(t, registry.LoadAgents(ctx))
+
+			calls := 0
+			registry.SetReloadCallback(func(name string, guid string, cfg *loomv1.AgentConfig) error {
+				calls++
+				return tt.callbackErr
+			})
+			saveTestAgentFile(t, tmpDir, "watched", "After reload")
+
+			registry.reloadAgentFile(ctx, path, "watched")
+
+			assert.Equal(t, 1, calls)
+			assert.Equal(t, tt.wantDesc, registry.GetConfig("watched").Description)
+		})
+	}
+}
+
+// TestReloadAgentFile_RejectsRenamedConfig verifies that a file whose config
+// names another agent is not applied, as ForceReload and ReloadAgent reject it.
+func TestReloadAgentFile_RejectsRenamedConfig(t *testing.T) {
+	registry, tmpDir := createTestRegistry(t)
+	ctx := context.Background()
+	path := saveTestAgentFile(t, tmpDir, "original", "Before reload")
+	require.NoError(t, registry.LoadAgents(ctx))
+
+	called := false
+	registry.SetReloadCallback(func(name string, guid string, cfg *loomv1.AgentConfig) error {
+		called = true
+		return nil
+	})
+	require.NoError(t, SaveAgentConfig(createTestAgentConfig("renamed"), path))
+
+	registry.reloadAgentFile(ctx, path, "original")
+
+	assert.False(t, called, "a renamed config must not reach the reload callback")
+	assert.Equal(t, "Before reload", registry.GetConfig("original").Description)
+	assert.Nil(t, registry.GetConfig("renamed"))
+}
+
+// TestReloadAgentFile_NoCallbackRegistersNewAgentConfig verifies that, without
+// a host callback, a file for an unregistered agent records its config.
+func TestReloadAgentFile_NoCallbackRegistersNewAgentConfig(t *testing.T) {
+	registry, tmpDir := createTestRegistry(t)
+	ctx := context.Background()
+	path := saveTestAgentFile(t, tmpDir, "fresh", "New agent")
+
+	registry.reloadAgentFile(ctx, path, "fresh")
+
+	require.NotNil(t, registry.GetConfig("fresh"))
+	assert.Equal(t, "New agent", registry.GetConfig("fresh").Description)
+}
+
+// TestReloadAgentFile_NoCallbackRebuildsRegisteredAgent verifies that, without
+// a host callback, a file change rebuilds a registered agent through
+// ReloadAgent, which commits the config together with the new agent.
+func TestReloadAgentFile_NoCallbackRebuildsRegisteredAgent(t *testing.T) {
+	registry, tmpDir := createTestRegistry(t)
+	ctx := context.Background()
+	path := saveTestAgentFile(t, tmpDir, "rebuilt", "Before reload")
+	require.NoError(t, registry.LoadAgents(ctx))
+	before, err := registry.CreateAgent(ctx, "rebuilt")
+	require.NoError(t, err)
+	saveTestAgentFile(t, tmpDir, "rebuilt", "After reload")
+
+	registry.reloadAgentFile(ctx, path, "rebuilt")
+
+	assert.Equal(t, "After reload", registry.GetConfig("rebuilt").Description)
+	after, err := registry.GetAgent(ctx, "rebuilt")
+	require.NoError(t, err)
+	assert.NotSame(t, before, after, "the running agent must be replaced")
+	assert.Equal(t, before.GetID(), after.GetID(), "the rebuilt agent keeps its GUID")
 }

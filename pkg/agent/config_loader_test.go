@@ -390,6 +390,7 @@ func TestSaveAgentConfig(t *testing.T) {
 	config := &loomv1.AgentConfig{
 		Name:        "test_agent",
 		Description: "Test agent",
+		Rom:         "none",
 		Llm: &loomv1.LLMConfig{
 			Provider:    "anthropic",
 			Model:       "claude-3",
@@ -440,6 +441,7 @@ func TestSaveAgentConfig(t *testing.T) {
 	assert.Equal(t, config.Llm.Provider, loadedConfig.Llm.Provider)
 	assert.Equal(t, config.Llm.Model, loadedConfig.Llm.Model)
 	assert.Equal(t, config.SystemPrompt, loadedConfig.SystemPrompt)
+	assert.Equal(t, config.Rom, loadedConfig.Rom)
 	assert.Equal(t, config.Memory.Type, loadedConfig.Memory.Type)
 	assert.Equal(t, config.Metadata["author"], loadedConfig.Metadata["author"])
 }
