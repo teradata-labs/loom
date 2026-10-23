@@ -15,7 +15,6 @@ package agent
 
 import (
 	"fmt"
-	"strings"
 	"unicode/utf8"
 )
 
@@ -29,31 +28,14 @@ func tokenFigure(bytes int) int {
 	return (bytes + 2) / 3
 }
 
-// repeatHintPrefix opens the single-line advisory note appended to a tool result
-// after repeated identical calls. Stub rendering (harvestTails) and row
-// truncation both keep a trailing line with this prefix.
-const repeatHintPrefix = "[repeat: "
-
 // truncateToolRowContent applies write rule §4.1: every tool result row is
 // bounded at threshold bytes stored, tail included. If the content exceeds the
 // bound, keep the first threshold−len(tail) bytes of content (cut backward to a
 // UTF-8 rune boundary) and append the tail, so stored = core + tail ≤ threshold
-// — a truncated row must never itself exceed the threshold. A trailing
-// repeatHintPrefix line is kept after the tail and counted in the budget; if it
-// cannot fit alongside a minThreshold core, it is dropped.
+// — a truncated row must never itself exceed the threshold.
 func truncateToolRowContent(content string, threshold int) string {
 	if threshold <= 0 || len(content) <= threshold {
 		return content
-	}
-	if i := strings.LastIndex(content, "\n"); i >= 0 && strings.HasPrefix(content[i+1:], repeatHintPrefix) {
-		hint := content[i:]
-		if room := threshold - len(hint); room >= minThreshold {
-			return truncateToolRowContent(content[:i], room) + hint
-		}
-		content = content[:i]
-		if len(content) <= threshold {
-			return content
-		}
 	}
 	total := len(content)
 	core := threshold

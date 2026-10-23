@@ -348,6 +348,8 @@ type BehaviorConfigYAML struct {
 	Skills                 SkillsConfigYAML   `yaml:"skills"`
 	OutputTokenCBThreshold int                `yaml:"output_token_cb_threshold"`
 	EnableSelfHealing      *bool              `yaml:"enable_self_healing"`
+	// RepeatCallHint opts the agent into the repeat-call note (default off).
+	RepeatCallHint *bool `yaml:"repeat_call_hint"`
 }
 
 // SkillsConfigYAML represents skills configuration in YAML
@@ -898,6 +900,15 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 			config.Metadata = make(map[string]string)
 		}
 		config.Metadata["_enable_self_healing"] = "false"
+	}
+
+	// Stash the repeat-call opt-in the same way; registry.go turns it into
+	// RecoveryConfig thresholds. Off unless the YAML sets it true.
+	if yaml.Agent.Behavior.RepeatCallHint != nil && *yaml.Agent.Behavior.RepeatCallHint {
+		if config.Metadata == nil {
+			config.Metadata = make(map[string]string)
+		}
+		config.Metadata["_repeat_call_hint"] = "true"
 	}
 
 	return config, nil

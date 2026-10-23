@@ -77,7 +77,7 @@ Self-correction (guardrails + circuit breakers) is **enabled by default** and is
 - Circuit breaker base timeout: 30s
 - Max retry attempts: 3
 
-**Repeat-call hint**: after 3, then 5, then 8 identical consecutive executed tool calls (same name and canonical input; a call rejected before execution neither counts nor resets the run), the Tier 1 recovery orchestrator appends a single-line advisory note to the newest tool result naming the count and the tool. The thresholds default to 3/5/8 and are tunable only via `RecoveryConfig.RepeatHintThresholds` in Go (an empty slice disables hints) — YAML-configured agents cannot change them, and the hint is emitted only when self-healing is enabled. The note is one line opening with `[repeat: ` and survives context compilation — offload/eviction stubs keep the marker line via `harvestTails` — and persisted-row truncation, which re-fits the hint inside the row's byte budget (`truncateToolRowContent`).
+**Repeat-call hint** (opt-in): set `behavior.repeat_call_hint: true` in the agent YAML. With it on, the Tier 1 recovery orchestrator counts identical consecutive executed tool calls (same name and canonical input; a call rejected before execution neither counts nor resets the run). At 3, 5 and 8 it adds one advisory note to the next provider request, as a transient `<system-reminder>` user message naming the count and the tool. The thresholds are fixed at 3/5/8. The note needs self-healing enabled (the default) and is never written into a tool row, so offloaded, tabular and JSON results keep their shape, and it is not stored or replayed in later turns. A failed call (a Go error or `result.Success == false`) gets no note.
 
 **Go API**:
 ```go
