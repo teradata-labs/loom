@@ -9,6 +9,8 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,6 +36,12 @@ const (
 
 	// DefaultMaxOutputBytes limits output size to prevent memory issues (1MB).
 	DefaultMaxOutputBytes = 1024 * 1024
+
+	// PassEnvVar names the environment variable holding a comma-separated list
+	// of server variables passed to commands even though their names look
+	// sensitive (for example GH_TOKEN for the gh CLI). Every other sensitive
+	// server variable is withheld from commands.
+	PassEnvVar = "LOOM_SHELL_PASS_ENV" // #nosec G101 -- an environment variable name, not a credential
 )
 
 // ShellExecuteTool provides cross-platform shell command execution.
@@ -44,6 +52,9 @@ type ShellExecuteTool struct {
 	loomDataDir    string // LOOM_DATA_DIR for boundary checking
 	restrictWrites bool   // Enforce write restrictions (default: true)
 	restrictReads  string // Read restriction level: "session" or "all_sessions"
+	// passEnv names sensitive-looking server variables that commands still
+	// receive; set from LOOM_SHELL_PASS_ENV or SetPassEnv.
+	passEnv map[string]bool
 }
 
 // NewShellExecuteTool creates a new shell execution tool.
@@ -58,7 +69,25 @@ func NewShellExecuteTool(baseDir string) *ShellExecuteTool {
 		loomDataDir:    os.Getenv("LOOM_DATA_DIR"), // Will be set from config in agent initialization
 		restrictWrites: true,                       // Default to restricted writes
 		restrictReads:  "session",                  // Default to session-only reads
+		passEnv:        parsePassEnv(os.Getenv(PassEnvVar)),
 	}
+}
+
+// SetPassEnv replaces the list of sensitive-looking server variables that
+// commands still receive. Names match exactly.
+func (t *ShellExecuteTool) SetPassEnv(names []string) {
+	t.passEnv = parsePassEnv(strings.Join(names, ","))
+}
+
+// parsePassEnv turns a comma-separated list into a set, skipping blanks.
+func parsePassEnv(list string) map[string]bool {
+	set := make(map[string]bool)
+	for _, name := range strings.Split(list, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			set[name] = true
+		}
+	}
+	return set
 }
 
 // SetLoomDataDir sets the LOOM_DATA_DIR for path validation.
@@ -212,8 +241,10 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 		}, nil
 	}
 
-	// Security: Block execution in sensitive system directories
-	if isBlockedWorkingDir(cleanWorkingDir) {
+	// Security: Block execution in sensitive system directories, judged on both
+	// the path as given and where its symlinks lead.
+	resolvedWorkingDir := resolvedAbs(cleanWorkingDir)
+	if isBlockedWorkingDir(cleanWorkingDir) || isBlockedWorkingDir(resolvedWorkingDir) {
 		return &shuttle.Result{
 			Success: false,
 			Error: &shuttle.Error{
@@ -227,30 +258,28 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 
 	// Session-based path restrictions
 	if loomDataDir != "" && sessionID != "" {
-		// Ensure working directory is within LOOM_DATA_DIR or whitelisted directories
-		absWorkingDir, _ := filepath.Abs(cleanWorkingDir)
-		absLoomDataDir, _ := filepath.Abs(loomDataDir)
-
-		// Check if path is within LOOM_DATA_DIR or a whitelisted directory.
+		// Ensure working directory is within LOOM_DATA_DIR or whitelisted
+		// directories. Containment is judged on symlink-resolved paths, with a
+		// path-component comparison (pathWithin), never a string prefix: a link
+		// inside LOOM_DATA_DIR that points elsewhere is elsewhere, and
+		// "/tmpfoo" is not inside "/tmp".
 		// LOOM_SANDBOX_DIR is the agent execution context (the workspace) and
 		// is honored exactly as this guard's Suggestion advertises — without
 		// it, an anchored workspace outside the data dir rejects every call.
-		isAllowed := pathWithin(absWorkingDir, absLoomDataDir)
+		isAllowed := pathWithin(resolvedWorkingDir, resolvedAbs(loomDataDir))
 		if !isAllowed {
-			absSandboxDir, _ := filepath.Abs(config.GetLoomSandboxDir())
-			if pathWithin(absWorkingDir, absSandboxDir) {
+			if sandboxDir := config.GetLoomSandboxDir(); sandboxDir != "" && pathWithin(resolvedWorkingDir, resolvedAbs(sandboxDir)) {
 				isAllowed = true
 			}
 		}
 		if !isAllowed {
 			// Whitelist /tmp for temporary file operations (common for agent workflows)
-			if runtime.GOOS != "windows" && pathWithin(absWorkingDir, "/tmp") {
+			if runtime.GOOS != "windows" && pathWithin(resolvedWorkingDir, resolvedAbs("/tmp")) {
 				isAllowed = true
 			}
 			// Windows temp directory
 			if runtime.GOOS == "windows" && os.Getenv("TEMP") != "" {
-				absTempDir, _ := filepath.Abs(os.Getenv("TEMP"))
-				if pathWithin(absWorkingDir, absTempDir) {
+				if pathWithin(resolvedWorkingDir, resolvedAbs(os.Getenv("TEMP"))) {
 					isAllowed = true
 				}
 			}
@@ -293,9 +322,14 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	// Create command (we'll handle timeout manually for better control)
 	cmd := exec.Command(shellBinary, shellArgs...) // #nosec G204 -- shellBinary is validated against allowlist above
 	cmd.Dir = cleanWorkingDir
+	// Own process group, so a timeout, cancellation or output overflow can kill
+	// the shell's whole process group, not only the shell (killProcessTree).
+	setProcessGroup(cmd)
 
-	// Set environment variables (merge with system env, filter sensitive ones)
-	cmd.Env = os.Environ()
+	// Set environment variables: the server's environment minus anything that
+	// looks like a credential (unless the operator passed it by name), then
+	// the call's own variables, filtered the same way.
+	cmd.Env = inheritedEnv(os.Environ(), t.passEnv)
 	filteredEnv := filterSensitiveEnvVars(envVars)
 	for k, v := range filteredEnv {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
@@ -361,50 +395,50 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	var outputErr error
 	var mu sync.Mutex
 	var wg sync.WaitGroup
+	// overflow is closed (once) when output passes maxOutputBytes, so the
+	// command is stopped at once: a reader that stops reading leaves the writer
+	// blocked on a full pipe until the timeout.
+	overflow := make(chan struct{})
+	var overflowOnce sync.Once
+	signalOverflow := func() { overflowOnce.Do(func() { close(overflow) }) }
+
+	// readStream collects one pipe's lines. It counts raw bytes as they
+	// arrive, with no per-line limit: a bufio.Scanner fails on a token over
+	// its buffer and stops draining, so a newline-free flood blocked the
+	// writer until the timeout instead of tripping the overflow.
+	readStream := func(pipe io.Reader, lines *[]string) {
+		defer wg.Done()
+		reader := bufio.NewReaderSize(pipe, 64*1024)
+		var line []byte
+		for {
+			frag, isPrefix, err := reader.ReadLine()
+			if err != nil {
+				return
+			}
+			n := int64(len(frag))
+			if !isPrefix {
+				n++ // the newline
+			}
+			mu.Lock()
+			outputBytes += n
+			if outputBytes > maxOutputBytes {
+				outputErr = fmt.Errorf("output exceeded maximum size (%d bytes)", maxOutputBytes)
+				mu.Unlock()
+				signalOverflow()
+				return
+			}
+			line = append(line, frag...)
+			if !isPrefix {
+				*lines = append(*lines, string(line))
+				line = line[:0]
+			}
+			mu.Unlock()
+		}
+	}
 
 	wg.Add(2)
-
-	// Read stdout
-	go func() {
-		defer wg.Done()
-		scanner := bufio.NewScanner(stdoutPipe)
-		buf := make([]byte, 64*1024)   // 64KB line buffer
-		scanner.Buffer(buf, 1024*1024) // 1MB max line size
-
-		for scanner.Scan() {
-			line := scanner.Text()
-			mu.Lock()
-			outputBytes += int64(len(line)) + 1 // +1 for newline
-			if outputBytes > maxOutputBytes {
-				outputErr = fmt.Errorf("output exceeded maximum size (%d bytes)", maxOutputBytes)
-				mu.Unlock()
-				break
-			}
-			stdoutLines = append(stdoutLines, line)
-			mu.Unlock()
-		}
-	}()
-
-	// Read stderr
-	go func() {
-		defer wg.Done()
-		scanner := bufio.NewScanner(stderrPipe)
-		buf := make([]byte, 64*1024)   // 64KB line buffer
-		scanner.Buffer(buf, 1024*1024) // 1MB max line size
-
-		for scanner.Scan() {
-			line := scanner.Text()
-			mu.Lock()
-			outputBytes += int64(len(line)) + 1 // +1 for newline
-			if outputBytes > maxOutputBytes {
-				outputErr = fmt.Errorf("output exceeded maximum size (%d bytes)", maxOutputBytes)
-				mu.Unlock()
-				break
-			}
-			stderrLines = append(stderrLines, line)
-			mu.Unlock()
-		}
-	}()
+	go readStream(stdoutPipe, &stdoutLines)
+	go readStream(stderrPipe, &stderrLines)
 
 	// Wait for pipe scanners to finish, then call cmd.Wait() to get the exit code.
 	// IMPORTANT: Per Go docs, all reads from StdoutPipe/StderrPipe must complete
@@ -416,86 +450,78 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 		waitDone <- cmd.Wait() // Then collect exit status
 	}()
 
-	// Wait for either completion or timeout
+	// Wait for completion, timeout, cancellation or output overflow.
 	var waitErr error
 	timedOut := false
 
 	timer := time.NewTimer(time.Duration(timeoutSeconds) * time.Second)
 	defer timer.Stop()
 
+	// stop kills the whole process group, then waits briefly for the exit
+	// status and the output streams. It never blocks for long: a process that
+	// escaped the group (setsid) may keep a pipe open.
+	stop := func() {
+		killProcessTree(cmd)
+		// One group kill can miss a process the shell forks while the kill is
+		// being delivered (the shell wakes from waiting on a killed pipeline and
+		// starts the next command first). The straggler holds the pipes open, so
+		// the group is killed again until the exit status arrives.
+		deadline := time.NewTimer(500 * time.Millisecond)
+		defer deadline.Stop()
+		rekill := time.NewTicker(25 * time.Millisecond)
+		defer rekill.Stop()
+	wait:
+		for {
+			select {
+			case waitErr = <-waitDone:
+				break wait
+			case <-rekill.C:
+				rekillProcessGroup(cmd)
+			case <-deadline.C:
+				break wait
+			}
+		}
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+
 	select {
 	case waitErr = <-waitDone:
 		// Command completed — scanners already finished above
 	case <-timer.C:
-		// Timeout - kill the process forcefully
 		timedOut = true
-		if cmd.Process != nil {
-			// Try SIGKILL for forceful termination
-			_ = cmd.Process.Signal(os.Kill) // Ignore error - process may have already exited
-			// Also call Kill() as backup
-			_ = cmd.Process.Kill() // Ignore error - process may have already exited
-		}
-		// Wait for Wait() to return after kill (brief timeout)
-		select {
-		case waitErr = <-waitDone:
-			// Got it
-		case <-time.After(500 * time.Millisecond):
-			// If it takes too long, continue anyway
-		}
-		// Wait briefly for output streams (they should close after process dies)
-		done := make(chan struct{})
-		go func() {
-			wg.Wait()
-			close(done)
-		}()
-		select {
-		case <-done:
-			// Streams finished
-		case <-time.After(100 * time.Millisecond):
-			// Don't wait too long for streams after timeout
-		}
+		stop()
 	case <-ctx.Done():
 		// Parent context cancelled
 		timedOut = true
-		if cmd.Process != nil {
-			// Try SIGKILL for forceful termination
-			_ = cmd.Process.Signal(os.Kill) // Ignore error - process may have already exited
-			// Also call Kill() as backup
-			_ = cmd.Process.Kill() // Ignore error - process may have already exited
-		}
-		// Wait for Wait() to return after kill (brief timeout)
-		select {
-		case waitErr = <-waitDone:
-			// Got it
-		case <-time.After(500 * time.Millisecond):
-			// If it takes too long, continue anyway
-		}
-		// Wait briefly for output streams
-		done := make(chan struct{})
-		go func() {
-			wg.Wait()
-			close(done)
-		}()
-		select {
-		case <-done:
-			// Streams finished
-		case <-time.After(100 * time.Millisecond):
-			// Don't wait too long for streams after cancellation
-		}
+		stop()
+	case <-overflow:
+		stop()
 	}
 
+	// The scanners may still be running if stop() gave up on them, so every
+	// read of what they write happens under their lock.
+	mu.Lock()
+	overflowErr := outputErr
+	stdout := compactShellOutput(strings.Join(stdoutLines, "\n"))
+	stderr := compactShellOutput(strings.Join(stderrLines, "\n"))
+	totalOutputBytes := outputBytes
+	mu.Unlock()
+
 	// Check for output overflow (detected during streaming)
-	if outputErr != nil {
-		// Kill the process if still running
-		if cmd.Process != nil {
-			// Best-effort kill; process may have already exited
-			_ = cmd.Process.Kill()
-		}
+	if overflowErr != nil {
 		return &shuttle.Result{
 			Success: false,
 			Error: &shuttle.Error{
 				Code:       "OUTPUT_OVERFLOW",
-				Message:    outputErr.Error(),
+				Message:    overflowErr.Error(),
 				Suggestion: "Increase max_output_bytes or reduce command output",
 			},
 			ExecutionTimeMs: time.Since(start).Milliseconds(),
@@ -534,8 +560,8 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 				Retryable:  false,
 			},
 			Data: map[string]interface{}{
-				"stdout":      compactShellOutput(strings.Join(stdoutLines, "\n")),
-				"stderr":      compactShellOutput(strings.Join(stderrLines, "\n")),
+				"stdout":      stdout,
+				"stderr":      stderr,
 				"exit_code":   -1,
 				"shell":       actualShellType,
 				"working_dir": cleanWorkingDir,
@@ -546,8 +572,6 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	}
 
 	// Build result
-	stdout := compactShellOutput(strings.Join(stdoutLines, "\n"))
-	stderr := compactShellOutput(strings.Join(stderrLines, "\n"))
 	success := exitCode == 0
 
 	result := &shuttle.Result{
@@ -564,7 +588,7 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 			"command":      sanitizeCommandForTracing(command),
 			"shell_type":   actualShellType,
 			"shell_os":     runtime.GOOS,
-			"output_bytes": outputBytes,
+			"output_bytes": totalOutputBytes,
 			"exit_code":    exitCode,
 		},
 		ExecutionTimeMs: time.Since(start).Milliseconds(),
@@ -736,29 +760,89 @@ func isBlockedWorkingDir(path string) bool {
 
 // filterSensitiveEnvVars removes sensitive environment variables from user input.
 func filterSensitiveEnvVars(envVars map[string]string) map[string]string {
-	// Sensitive environment variables to block
-	blockedVars := map[string]bool{
-		"AWS_SECRET_ACCESS_KEY": true,
-		"AWS_SESSION_TOKEN":     true,
-		"GITHUB_TOKEN":          true,
-		"ANTHROPIC_API_KEY":     true,
-		"OPENAI_API_KEY":        true,
-		"DATABASE_PASSWORD":     true,
-		"DB_PASSWORD":           true,
-		"DB_PASS":               true,
-		"MYSQL_PASSWORD":        true,
-		"POSTGRES_PASSWORD":     true,
-	}
-
 	filtered := make(map[string]string)
 	for k, v := range envVars {
-		keyUpper := strings.ToUpper(k)
-		if !blockedVars[keyUpper] && !strings.Contains(keyUpper, "SECRET") && !strings.Contains(keyUpper, "PASSWORD") {
+		if !isSensitiveEnvName(k) && !hasURLCredentials(v) {
 			filtered[k] = v
 		}
 	}
-
 	return filtered
+}
+
+// inheritedEnv returns the server environment a command receives: every
+// "NAME=value" entry except those whose name looks like a credential or whose
+// value is a URL carrying a password, unless passEnv names the variable.
+func inheritedEnv(environ []string, passEnv map[string]bool) []string {
+	out := make([]string, 0, len(environ))
+	for _, kv := range environ {
+		name, value, _ := strings.Cut(kv, "=")
+		if passEnv[name] || (!isSensitiveEnvName(name) && !hasURLCredentials(value)) {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
+// sensitiveEnvNames are withheld from commands by exact (upper-cased) name.
+var sensitiveEnvNames = map[string]bool{
+	"DATABASE_PASSWORD": true,
+	"DB_PASS":           true,
+}
+
+// sensitiveEnvSubstrings are withheld wherever they appear in a name.
+var sensitiveEnvSubstrings = []string{"SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "APIKEY", "PRIVATE_KEY"}
+
+// sensitiveEnvSegments are withheld when they are a whole underscore-separated
+// part of a name, so GH_TOKEN and AWS_ACCESS_KEY_ID match while
+// TOKENIZERS_PARALLELISM and KEYBOARD_LAYOUT do not.
+var sensitiveEnvSegments = map[string]bool{"TOKEN": true, "KEY": true, "PASS": true, "DSN": true}
+
+// isSensitiveEnvName reports whether an environment variable's name looks like
+// it holds a credential. Names are compared upper-cased.
+func isSensitiveEnvName(name string) bool {
+	upper := strings.ToUpper(name)
+	if sensitiveEnvNames[upper] || strings.HasSuffix(upper, "DATABASE_URL") {
+		return true
+	}
+	for _, sub := range sensitiveEnvSubstrings {
+		if strings.Contains(upper, sub) {
+			return true
+		}
+	}
+	for _, seg := range strings.Split(upper, "_") {
+		if sensitiveEnvSegments[seg] {
+			return true
+		}
+	}
+	return false
+}
+
+// hasURLCredentials reports whether value is a URL with a password in its
+// userinfo (postgres://user:pw@host, http://user:pw@proxy).
+func hasURLCredentials(value string) bool {
+	if !strings.Contains(value, "://") || !strings.Contains(value, "@") {
+		return false
+	}
+	u, err := url.Parse(value)
+	if err != nil || u.User == nil {
+		return false
+	}
+	_, hasPassword := u.User.Password()
+	return hasPassword
+}
+
+// resolvedAbs returns path made absolute and with its symlinks resolved. When
+// resolution fails (the path does not exist yet), it returns the cleaned
+// absolute path.
+func resolvedAbs(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = filepath.Clean(path)
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved
+	}
+	return abs
 }
 
 // sanitizeCommandForTracing redacts sensitive information from commands for tracing.
@@ -828,17 +912,17 @@ func checkCommandTokenSize(command string) error {
 // pathWithin reports whether path is dir itself or sits beneath it. A bare
 // strings.HasPrefix accepts a sibling whose name merely starts the same way —
 // /work/proj also admitting /work/proj-evil — so containment is tested on
-// whole path segments.
+// whole path segments. Neither path is symlink-resolved; callers that need
+// that pass resolvedAbs paths.
 func pathWithin(path, dir string) bool {
 	if dir == "" || path == "" {
 		return false
 	}
-	path = filepath.Clean(path)
-	dir = filepath.Clean(dir)
-	if path == dir {
-		return true
+	rel, err := filepath.Rel(filepath.Clean(dir), filepath.Clean(path))
+	if err != nil || filepath.IsAbs(rel) {
+		return false
 	}
-	return strings.HasPrefix(path, dir+string(filepath.Separator))
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // ansiEscape matches CSI/OSC terminal escape sequences — pure rendering bytes

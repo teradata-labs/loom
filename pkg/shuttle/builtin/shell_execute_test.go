@@ -758,6 +758,10 @@ func TestPathWithinRejectsSiblingPrefix(t *testing.T) {
 		{"/work", "/work/proj", false},
 		{"/work/proj", "", false},
 		{"", "/work/proj", false},
+		{"/work/proj/../other", "/work/proj", false},
+		{"/tmpfoo", "/tmp", false},
+		{"/tmp/foo", "/tmp", true},
+		{"/anything", "/", true},
 	} {
 		if got := pathWithin(tc.path, tc.dir); got != tc.want {
 			t.Errorf("pathWithin(%q, %q) = %v, want %v", tc.path, tc.dir, got, tc.want)
