@@ -16,6 +16,7 @@ package orchestration
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -40,13 +41,19 @@ func validationBand(actMin float64, mode loomv1.DecisionBandMode) decision.Route
 // it was or was not consulted.
 func stageValidationRig(t *testing.T, dec decision.Decider, store decision.ShadowStore, validatorReply string, opts ...decision.RouterOption) (*loomv1.WorkflowResult, *lvlMockLLM, *lvlMockLLM, *agent.Agent, error) {
 	t.Helper()
+	return stageValidationRigOutput(t, dec, store, validatorReply, "a prose answer", opts...)
+}
+
+// stageValidationRigOutput is stageValidationRig with the stage output given.
+func stageValidationRigOutput(t *testing.T, dec decision.Decider, store decision.ShadowStore, validatorReply, output string, opts ...decision.RouterOption) (*loomv1.WorkflowResult, *lvlMockLLM, *lvlMockLLM, *agent.Agent, error) {
+	t.Helper()
 	validator := newLvlMockLLM(lvlFrontierProvider, lvlFrontierModel, 0, validatorReply)
 	orch := NewOrchestrator(Config{
 		Logger:      zaptest.NewLogger(t),
 		Tracer:      observability.NewNoOpTracer(),
 		LLMProvider: validator,
 	})
-	worker := newLvlMockLLM(lvlLowProvider, lvlLowModel, 0, "a prose answer")
+	worker := newLvlMockLLM(lvlLowProvider, lvlLowModel, 0, output)
 	cfg := agent.DefaultConfig()
 	cfg.PatternConfig = agent.DefaultPatternConfig()
 	cfg.PatternConfig.UseLLMClassifier = false
@@ -197,4 +204,35 @@ func TestStageValidationDecision_PerQuestionHonoursActMin(t *testing.T) {
 	require.Len(t, rows, 1)
 	assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_FALLBACK, rows[0].Path)
 	assert.Equal(t, "true", rows[0].ReferenceAnswer, "recorded against the LLM's verdict")
+}
+
+// Review #410 M5: past maxValidationOutputRunes the decider saw a tail-cut
+// output while the LLM validator sees all of it, so a confident "invalid" on
+// the cut view failed a stage the validator would pass. An output over the
+// limit is not asked about: the validator decides, and nothing is recorded.
+func TestStageValidationDecision_OverLimitOutputGoesToValidator(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name string
+		opts []decision.RouterOption
+	}{
+		{name: "live replace band", opts: []decision.RouterOption{validationBand(0.8, loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE)}},
+		{name: "shadow band"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dec := decisionmock.New().AnswerNoul(sites.QOutputValid, 0.02) // a confident invalid
+			store := &memShadowStore{}
+			output := strings.Repeat("a", 12001)
+			res, validator, _, ag, err := stageValidationRigOutput(t, dec, store, "valid", output, tt.opts...)
+			require.NoError(t, err, "the validator passes the whole output")
+			assert.Equal(t, output, res.MergedOutput)
+			assert.Equal(t, 1, validator.count(), "the validator decides")
+			ag.WaitDecisionShadows()
+			assert.Equal(t, 0, dec.CallCount(), "the decider is not asked about an output it cannot see whole")
+			rows, err := store.QueryShadow(context.Background(), decision.ShadowQuery{})
+			require.NoError(t, err)
+			assert.Empty(t, rows)
+		})
+	}
 }

@@ -295,7 +295,9 @@ func (d *DebateOrchestrator) decideConsensus(ctx context.Context, workflowID str
 	sessionID := fmt.Sprintf("%s-round%d-consensus", workflowID, roundNum)
 	req, err := sites.ConsensusRequest(topic, consensusPositions(round.Positions))
 	if err != nil {
-		d.logger.Debug("decision: consensus request", zap.Error(err))
+		// Not asked (an over-limit topic or position included): the
+		// heuristic decides.
+		d.logger.Debug("decision: consensus not asked, heuristic decides", zap.Error(err))
 		return heuristic
 	}
 	refs := sites.ConsensusReference(heuristic)

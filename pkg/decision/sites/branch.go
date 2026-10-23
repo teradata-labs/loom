@@ -37,7 +37,7 @@ const BranchNoneOfThese = decision.NoneOption
 // condition agent's answer selected (after coercion and retry).
 const ReferenceSourceSelectBranch = "orchestration.conditional.selectBranch"
 
-// maxBranchPromptRunes bounds the condition prompt carried in state. A
+// maxBranchPromptRunes bounds the condition prompt the decider judges. A
 // condition prompt is the text to classify, so it gets more room than a
 // rerank query.
 const maxBranchPromptRunes = 4000
@@ -46,10 +46,16 @@ const maxBranchPromptRunes = 4000
 // question is which branch key it calls for, with none_of_these available.
 // Keys are the branch keys as configured; the decider answers with one of
 // them. It returns a *decision.ValidationError when keys is empty or a key is
-// empty, and when there are more keys than a Choice allows.
+// empty, and when there are more keys than a Choice allows; and one whose
+// Cause is decision.ErrStateTooLarge when the condition prompt is over
+// maxBranchPromptRunes, because the condition agent reads it whole and a cut
+// can drop the text the branch turns on.
 func BranchRequest(conditionPrompt string, keys []string) (*loomv1.DecisionRequest, error) {
 	if len(keys) == 0 {
 		return nil, &decision.ValidationError{Field: "questions.branch.options", Msg: "no branch keys"}
+	}
+	if err := fitRunes("state.condition", conditionPrompt, maxBranchPromptRunes); err != nil {
+		return nil, err
 	}
 	sorted := append([]string(nil), keys...)
 	sort.Strings(sorted)
@@ -66,7 +72,7 @@ func BranchRequest(conditionPrompt string, keys []string) (*loomv1.DecisionReque
 		return nil, err
 	}
 	state := map[string]any{
-		"condition":   truncateRunes(conditionPrompt, maxBranchPromptRunes),
+		"condition":   conditionPrompt,
 		"branch_keys": sorted,
 	}
 	return decision.NewRequest(SiteWorkflowBranch, state, map[string]*loomv1.DecisionQuestion{QBranch: q})

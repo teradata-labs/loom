@@ -54,6 +54,37 @@ func TestConsensusRequest(t *testing.T) {
 	assert.ErrorIs(t, err, decision.ErrValidation)
 }
 
+// Review #410 M5: a cut topic or position can hide the disagreement the
+// verdict turns on, so over either limit there is no request. Arguments are
+// still bounded (tested above): the question counts differing supporting
+// reasons as agreement.
+func TestConsensusRequestOverLimitIsNotAsked(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		topic     string
+		positions []Position
+		field     string
+	}{
+		{"topic", strings.Repeat("t", maxConsensusTopicRunes+1), []Position{{Position: "x"}, {Position: "y"}}, "state.topic"},
+		{"position", "t", []Position{{Position: "x"}, {Position: strings.Repeat("p", maxConsensusPositionRunes+1)}}, "state.positions.position"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			req, err := ConsensusRequest(tt.topic, tt.positions)
+			assert.Nil(t, req)
+			assert.ErrorIs(t, err, decision.ErrStateTooLarge)
+			var ve *decision.ValidationError
+			require.ErrorAs(t, err, &ve)
+			assert.Equal(t, tt.field, ve.Field)
+		})
+	}
+	req, err := ConsensusRequest("t", []Position{{Position: "x"}, {Position: strings.Repeat("p", maxConsensusPositionRunes)}})
+	require.NoError(t, err, "a position at the limit is carried whole")
+	assert.NotNil(t, req)
+}
+
 func TestConsensusReferenceAndVerdict(t *testing.T) {
 	t.Parallel()
 	assert.Equal(t, "true", ConsensusReference(true)[QConsensus].Answer)

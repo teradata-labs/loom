@@ -42,23 +42,32 @@ const OutputPlaceholder = "{{output}}"
 // state, so the requirement reads as a rule about "the output" below it.
 const outputStandIn = "the output"
 
-// maxValidationRequirementRunes bounds the requirement text in state.
+// maxValidationRequirementRunes bounds the requirement text the decider
+// judges.
 const maxValidationRequirementRunes = 4000
 
-// maxValidationOutputRunes bounds the output in state. A stage output is
-// the material judged, so it gets the most room of any site; beyond this the
-// tail is cut and the decider sees a truncation mark.
+// maxValidationOutputRunes bounds the output the decider judges. A stage
+// output is the material judged, so it gets the most room of any site.
 const maxValidationOutputRunes = 12000
 
 // ValidationRequest builds the request: state is the requirement (the
 // stage's validation prompt with the output placeholder replaced by a stand-in)
 // and the output, kept as separate fields so the decider never has to find
 // where one ends and the other begins. It returns a *decision.ValidationError
-// when the requirement is empty.
+// when the requirement is empty, and one whose Cause is
+// decision.ErrStateTooLarge when the requirement or the output is over its
+// limit: the LLM validator reads both whole, and a verdict on a cut view
+// could fail a stage the validator would pass, so the validator decides.
 func ValidationRequest(requirement, output string) (*loomv1.DecisionRequest, error) {
 	requirement = strings.TrimSpace(strings.ReplaceAll(requirement, OutputPlaceholder, outputStandIn))
 	if requirement == "" {
 		return nil, &decision.ValidationError{Field: "state.requirement", Msg: "empty validation requirement"}
+	}
+	if err := fitRunes("state.requirement", requirement, maxValidationRequirementRunes); err != nil {
+		return nil, err
+	}
+	if err := fitRunes("state.output", output, maxValidationOutputRunes); err != nil {
+		return nil, err
 	}
 	q := decision.Noul(
 		"Does the output satisfy the requirement?",
@@ -68,8 +77,8 @@ func ValidationRequest(requirement, output string) (*loomv1.DecisionRequest, err
 		),
 	)
 	state := map[string]any{
-		"requirement": truncateRunes(requirement, maxValidationRequirementRunes),
-		"output":      truncateRunes(output, maxValidationOutputRunes),
+		"requirement": requirement,
+		"output":      output,
 	}
 	return decision.NewRequest(SiteStageValidation, state, map[string]*loomv1.DecisionQuestion{QOutputValid: q})
 }

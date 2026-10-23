@@ -112,7 +112,7 @@ func (e *ConditionalExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResu
 			if req, rerr := sites.BranchRequest(e.pattern.ConditionPrompt, e.getBranchKeys()); rerr == nil {
 				conditionAgent.RunDecisionShadow(ctx, sessionID, req, refs)
 			} else {
-				e.orchestrator.logger.Debug("decision shadow: branch request", zap.Error(rerr))
+				e.orchestrator.logger.Debug("decision shadow: branch not asked", zap.Error(rerr))
 			}
 		}
 	}
@@ -252,7 +252,9 @@ func (e *ConditionalExecutor) liveBranch(ctx context.Context, conditionAgent *ag
 	}
 	req, err := sites.BranchRequest(e.pattern.ConditionPrompt, e.getBranchKeys())
 	if err != nil {
-		e.orchestrator.logger.Debug("decision: branch request", zap.Error(err))
+		// Not asked (an over-limit condition prompt included): the
+		// condition agent decides.
+		e.orchestrator.logger.Debug("decision: branch not asked, condition agent decides", zap.Error(err))
 		return nil, decision.Outcome{}, "", false
 	}
 	out = conditionAgent.LiveDecide(ctx, sessionID, req)

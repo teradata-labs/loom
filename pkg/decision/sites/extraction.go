@@ -15,9 +15,6 @@
 package sites
 
 import (
-	"fmt"
-	"unicode/utf8"
-
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/decision"
 )
@@ -59,12 +56,8 @@ func ExtractRequest(window string) (*loomv1.DecisionRequest, error) {
 	if window == "" {
 		return nil, &decision.ValidationError{Field: "state.window", Msg: "empty window"}
 	}
-	if n := utf8.RuneCountInString(window); n > maxExtractWindowRunes {
-		return nil, &decision.ValidationError{
-			Field: "state.window",
-			Msg:   fmt.Sprintf("window is %d runes, over the %d the gate judges whole", n, maxExtractWindowRunes),
-			Cause: decision.ErrStateTooLarge,
-		}
+	if err := fitRunes("state.window", window, maxExtractWindowRunes); err != nil {
+		return nil, err
 	}
 	q := decision.Noul(
 		"Does this conversation window contain a durable fact worth remembering after the conversation ends?",

@@ -53,10 +53,23 @@ const (
 
 // ConsensusRequest builds the request: state is the topic and every
 // position with its bounded arguments and confidence. It returns a
-// *decision.ValidationError with fewer than two positions.
+// *decision.ValidationError with fewer than two positions, and one whose
+// Cause is decision.ErrStateTooLarge when the topic or a position is over
+// its limit: a cut position can hide the disagreement the verdict turns on.
+// Arguments are still bounded rather than refused, because the question
+// counts differing supporting reasons as agreement, so a cut argument cannot
+// turn agreement into disagreement or back.
 func ConsensusRequest(topic string, positions []Position) (*loomv1.DecisionRequest, error) {
 	if len(positions) < 2 {
 		return nil, &decision.ValidationError{Field: "state.positions", Msg: "consensus needs at least two positions"}
+	}
+	if err := fitRunes("state.topic", topic, maxConsensusTopicRunes); err != nil {
+		return nil, err
+	}
+	for _, p := range positions {
+		if err := fitRunes("state.positions.position", p.Position, maxConsensusPositionRunes); err != nil {
+			return nil, err
+		}
 	}
 	q := decision.Noul(
 		"Do the positions agree on the answer to the topic?",
@@ -77,13 +90,13 @@ func ConsensusRequest(topic string, positions []Position) (*loomv1.DecisionReque
 		}
 		items = append(items, map[string]any{
 			"agent":      p.AgentID,
-			"position":   truncateRunes(p.Position, maxConsensusPositionRunes),
+			"position":   p.Position,
 			"arguments":  bounded,
 			"confidence": p.Confidence,
 		})
 	}
 	state := map[string]any{
-		"topic":     truncateRunes(topic, maxConsensusTopicRunes),
+		"topic":     topic,
 		"positions": items,
 	}
 	return decision.NewRequest(SiteDebateConsensus, state, map[string]*loomv1.DecisionQuestion{QConsensus: q})

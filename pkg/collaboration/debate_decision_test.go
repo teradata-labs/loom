@@ -17,6 +17,7 @@ package collaboration
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -228,5 +229,43 @@ func TestDebateConsensusDecision_PerQuestionHonoursActMin(t *testing.T) {
 	require.NotEmpty(t, rows)
 	for _, r := range rows {
 		assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_FALLBACK, r.Path)
+	}
+}
+
+// Review #410 M5: a position past maxConsensusPositionRunes reached the
+// decider head-cut, so a disagreement in its tail could be read as
+// agreement and end the debate. A round whose positions cannot be carried
+// whole is not asked about: the heuristic decides, and nothing is recorded.
+func TestDebateConsensusDecision_OverLimitPositionGoesToHeuristic(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name string
+		opts []decision.RouterOption
+	}{
+		{name: "live band", opts: []decision.RouterOption{consensusBand(0.8, loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE)}},
+		{name: "shadow band"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dec := decisionmock.New().AnswerNoul(sites.QConsensus, 0.02) // a confident "no consensus"
+			store := &memShadowStore{}
+			moderator := agent.NewAgent(nil, positionLLM{"Use indexes"},
+				agent.WithName("a1"),
+				agent.WithDecisionRouter(decision.NewRouter(dec, tt.opts...)),
+				agent.WithDecisionShadowStore(store))
+			long := "Use indexes. " + strings.Repeat("Supporting detail. ", 100)
+			other := agent.NewAgent(nil, positionLLM{long}, agent.WithName("a2"))
+			d := NewDebateOrchestrator(mapProvider{agents: map[string]*agent.Agent{"a1": moderator, "a2": other}})
+			res, err := d.Execute(context.Background(), &loomv1.DebatePattern{
+				Topic: "Indexes or partitions?", AgentIds: []string{"a1", "a2"}, Rounds: 1,
+			})
+			require.NoError(t, err)
+			assert.Equal(t, "true", res.Metadata["consensus_achieved"], "the confidence heuristic decided")
+			moderator.WaitDecisionShadows()
+			assert.Equal(t, 0, dec.CallCount(), "the decider is not asked about positions it cannot see whole")
+			rows, err := store.QueryShadow(context.Background(), decision.ShadowQuery{})
+			require.NoError(t, err)
+			assert.Empty(t, rows)
+		})
 	}
 }

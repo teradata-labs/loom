@@ -28,7 +28,7 @@ import (
 
 func TestValidationRequest(t *testing.T) {
 	t.Parallel()
-	req, err := ValidationRequest("Is {{output}} a markdown table with a header row?", strings.Repeat("x", maxValidationOutputRunes+10))
+	req, err := ValidationRequest("Is {{output}} a markdown table with a header row?", strings.Repeat("x", maxValidationOutputRunes))
 	require.NoError(t, err)
 	assert.Equal(t, SiteStageValidation, req.Site)
 	require.Contains(t, req.Questions, QOutputValid)
@@ -36,13 +36,36 @@ func TestValidationRequest(t *testing.T) {
 
 	state := req.State.GetStructValue().AsMap()
 	assert.Equal(t, "Is the output a markdown table with a header row?", state["requirement"], "placeholder replaced by a stand-in")
-	assert.True(t, strings.HasSuffix(state["output"].(string), "…"), "long output truncated")
+	assert.Len(t, []rune(state["output"].(string)), maxValidationOutputRunes, "an output at the limit is carried whole")
 	assert.Len(t, state, 2)
 
 	_, err = ValidationRequest("   ", "out")
 	assert.ErrorIs(t, err, decision.ErrValidation)
 	_, err = ValidationRequest("{{output}}", "out")
 	assert.NoError(t, err, "a bare placeholder still leaves a requirement")
+}
+
+// Review #410 M5: over a limit there is no request, never a cut one, so the
+// LLM validator (which reads both whole) decides.
+func TestValidationRequestOverLimitIsNotAsked(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, requirement, output, field string
+	}{
+		{"output", "is it complete?", strings.Repeat("é", maxValidationOutputRunes+1), "state.output"},
+		{"requirement", strings.Repeat("r", maxValidationRequirementRunes+1), "out", "state.requirement"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			req, err := ValidationRequest(tt.requirement, tt.output)
+			assert.Nil(t, req)
+			assert.ErrorIs(t, err, decision.ErrStateTooLarge)
+			var ve *decision.ValidationError
+			require.ErrorAs(t, err, &ve)
+			assert.Equal(t, tt.field, ve.Field)
+		})
+	}
 }
 
 func TestValidationReferenceAndVerdict(t *testing.T) {

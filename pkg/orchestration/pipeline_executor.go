@@ -923,7 +923,7 @@ func (e *PipelineExecutor) validateStageOutput(ctx context.Context, workflowID s
 		if req, rerr := sites.ValidationRequest(stage.ValidationPrompt, output); rerr == nil {
 			stageAgent.RunDecisionShadow(ctx, sessionID, req, refs)
 		} else {
-			e.orchestrator.logger.Debug("decision shadow: validation request", zap.Error(rerr))
+			e.orchestrator.logger.Debug("decision shadow: validation not asked", zap.Error(rerr))
 		}
 	}
 	return valid, nil
@@ -945,7 +945,9 @@ func (e *PipelineExecutor) liveValidation(ctx context.Context, stageAgent *agent
 	}
 	req, err := sites.ValidationRequest(requirement, output)
 	if err != nil {
-		e.orchestrator.logger.Debug("decision: validation request", zap.Error(err))
+		// Not asked (an over-limit requirement or output included): the LLM
+		// validator decides.
+		e.orchestrator.logger.Debug("decision: validation not asked, validator decides", zap.Error(err))
 		return nil, decision.Outcome{}, false, false
 	}
 	out = stageAgent.LiveDecide(ctx, sessionID, req)

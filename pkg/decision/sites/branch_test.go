@@ -28,7 +28,7 @@ import (
 
 func TestBranchRequest(t *testing.T) {
 	t.Parallel()
-	req, err := BranchRequest(strings.Repeat("x", maxBranchPromptRunes+5), []string{"feature", "bug"})
+	req, err := BranchRequest(strings.Repeat("x", maxBranchPromptRunes), []string{"feature", "bug"})
 	require.NoError(t, err)
 	assert.Equal(t, SiteWorkflowBranch, req.Site)
 	require.Contains(t, req.Questions, QBranch)
@@ -39,7 +39,7 @@ func TestBranchRequest(t *testing.T) {
 	assert.Contains(t, opts, BranchNoneOfThese)
 
 	state := req.State.GetStructValue().AsMap()
-	assert.True(t, strings.HasSuffix(state["condition"].(string), "…"), "prompt truncated")
+	assert.Len(t, []rune(state["condition"].(string)), maxBranchPromptRunes, "a prompt at the limit is carried whole")
 	keys := state["branch_keys"].([]any)
 	assert.Equal(t, []any{"bug", "feature"}, keys, "keys sorted for determinism")
 
@@ -47,6 +47,11 @@ func TestBranchRequest(t *testing.T) {
 	assert.ErrorIs(t, err, decision.ErrValidation)
 	_, err = BranchRequest("p", []string{""})
 	assert.ErrorIs(t, err, decision.ErrValidation)
+
+	// Review #410 M5: over the limit there is no request, never a cut one.
+	req, err = BranchRequest(strings.Repeat("x", maxBranchPromptRunes+1), []string{"bug"})
+	assert.Nil(t, req)
+	assert.ErrorIs(t, err, decision.ErrStateTooLarge)
 }
 
 func TestBranchReferenceAndChosen(t *testing.T) {

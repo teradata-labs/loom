@@ -16,6 +16,7 @@ package orchestration
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
@@ -230,4 +231,40 @@ func TestConditionalDecision_DeciderErrorFallsBack(t *testing.T) {
 	assert.Equal(t, "bug", res.Metadata["selected_branch"])
 	assert.Equal(t, 1, classifierLLM.calls(), "a decider error never costs the workflow anything")
 	classifier.WaitDecisionShadows()
+}
+
+// Review #410 M5: a condition prompt past maxBranchPromptRunes reached the
+// decider head-cut while the condition agent reads all of it, so the branch
+// could be chosen on text that leaves out what decides it. Such a prompt is
+// not asked about: the condition agent decides, and nothing is recorded.
+func TestConditionalDecision_OverLimitPromptGoesToConditionAgent(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name string
+		opts []decision.RouterOption
+	}{
+		{name: "live band", opts: []decision.RouterOption{liveBranchBand(0.8)}},
+		{name: "shadow band"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			classifierLLM := newMockLLMProvider("feature")
+			dec := decisionmock.New().AnswerChoice(sites.QBranch, map[string]float64{"bug": 0.95, "feature": 0.03, sites.BranchNoneOfThese: 0.02})
+			store := &memShadowStore{}
+			classifier := decisionClassifier(t, classifierLLM, dec, store, tt.opts...)
+			pattern := conditionalPattern(false)
+			pattern.GetConditional().ConditionPrompt = "Classify this issue: the app crashes on start. " +
+				strings.Repeat("log line ", 450) + "Update: it is a requested new capability, not a crash."
+
+			res, _, err := runConditional(t, classifier, pattern)
+			require.NoError(t, err)
+			assert.Equal(t, "feature", res.Metadata["selected_branch"], "the condition agent decided")
+			assert.Equal(t, 1, classifierLLM.calls())
+			classifier.WaitDecisionShadows()
+			assert.Equal(t, 0, dec.CallCount(), "the decider is not asked about a prompt it cannot see whole")
+			rows, err := store.QueryShadow(context.Background(), decision.ShadowQuery{})
+			require.NoError(t, err)
+			assert.Empty(t, rows)
+		})
+	}
 }
