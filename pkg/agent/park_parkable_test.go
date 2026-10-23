@@ -17,10 +17,12 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
+	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
@@ -412,5 +414,124 @@ func TestParkable_AskPolicyYieldsQuestionOnly(t *testing.T) {
 	desc, _ := hr.Params["c-form"].(map[string]interface{})
 	if desc["kind"] != "question" {
 		t.Fatalf("descriptor = %#v", desc)
+	}
+}
+
+// After a restart the parked call's input has been through JSON, so a numeric
+// field reaches ParkAnswerResult as float64 (documented on
+// shuttle.ParkableQuestion). The call is scripted with an int so a pass proves
+// the JSON round trip, not the mock's literal.
+func TestParkable_ResumeAfterRestartDeliversNumbersAsFloat64(t *testing.T) {
+	ft := newFormTool(true)
+	script := []mockLLMResponse{
+		{toolCalls: []llmtypes.ToolCall{{
+			ID: "c-form", Name: "form_tool",
+			Input: map[string]interface{}{"title": "How many?", "count": 3},
+		}}},
+		{content: "done"},
+	}
+	f := newFormFixture(t, nil, ft, script)
+	hr := parkForm(t, f, "s-pq-json")
+
+	// Agent B: same session and park stores, fresh process state.
+	cfg := DefaultConfig()
+	cfg.PatternConfig = DefaultPatternConfig()
+	cfg.PatternConfig.UseLLMClassifier = false
+	restored := NewAgent(&mockBackend{}, &mockToolCallingLLM{responses: []mockLLMResponse{{content: "done"}}},
+		WithConfig(cfg),
+		WithMemory(NewMemoryWithStore(f.sessions)),
+		WithHITLPark(f.store, 0, NewProgressNotifier()),
+	)
+	rt := newFormTool(true)
+	restored.RegisterTool(rt)
+
+	if _, err := restored.ResumeChat(context.Background(), "s-pq-json", ParkDecision{
+		RequestID: hr.ID, ItemIDs: paramKeys(hr), Approved: true,
+		Answers: map[string]string{"c-form": "yes"},
+	}, nil); err != nil {
+		t.Fatalf("ResumeChat: %v", err)
+	}
+	in, _ := rt.gotInput.Load().(map[string]interface{})
+	if in == nil {
+		t.Fatalf("ParkAnswerResult was not called on the restored agent")
+	}
+	if n, ok := in["count"].(float64); !ok || n != 3 {
+		t.Fatalf("count = %#v (%T), want float64(3)", in["count"], in["count"])
+	}
+	if rt.runs.Load() != 0 {
+		t.Fatalf("Execute ran on resume")
+	}
+}
+
+// The park and resume seams are traced: agent.park_question carries the tool
+// name and the parks decision; agent.park_answer_result carries the tool name.
+func TestParkable_EmitsParkSpans(t *testing.T) {
+	ft := newFormTool(true)
+	f := newFormFixture(t, nil, ft, formScript())
+	tracer := observability.NewMockTracer()
+	f.ag.tracer = tracer
+	hr := parkForm(t, f, "s-pq-span")
+
+	pq := tracer.GetSpanByName("agent.park_question")
+	if pq == nil {
+		t.Fatalf("no agent.park_question span")
+	}
+	if pq.Attributes["tool"] != "form_tool" || pq.Attributes["parks"] != true {
+		t.Fatalf("park_question attributes = %#v", pq.Attributes)
+	}
+	if tracer.GetSpanByName("agent.park_answer_result") != nil {
+		t.Fatalf("park_answer_result span emitted before resume")
+	}
+
+	if _, err := f.ag.ResumeChat(context.Background(), "s-pq-span", ParkDecision{
+		RequestID: hr.ID, ItemIDs: paramKeys(hr), Approved: true,
+		Answers: map[string]string{"c-form": "x"},
+	}, nil); err != nil {
+		t.Fatalf("ResumeChat: %v", err)
+	}
+	ar := tracer.GetSpanByName("agent.park_answer_result")
+	if ar == nil {
+		t.Fatalf("no agent.park_answer_result span")
+	}
+	if ar.Attributes["tool"] != "form_tool" {
+		t.Fatalf("park_answer_result attributes = %#v", ar.Attributes)
+	}
+}
+
+// ParkQuestion reporting ok=false is recorded on the span too.
+func TestParkable_SpanRecordsNotParking(t *testing.T) {
+	ft := newFormTool(false)
+	f := newFormFixture(t, nil, ft, formScript())
+	tracer := observability.NewMockTracer()
+	f.ag.tracer = tracer
+	if _, err := f.ag.Chat(context.Background(), "s-pq-span-no", "go"); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	pq := tracer.GetSpanByName("agent.park_question")
+	if pq == nil || pq.Attributes["parks"] != false {
+		t.Fatalf("park_question span = %#v", pq)
+	}
+}
+
+// A recorded question whose tool has been unregistered entirely reports
+// tool_not_found. Only the message matches dispatch's unknown-tool error;
+// dispatch returns a Go error with no result or code.
+func TestParkable_ResumeToolUnregisteredIsToolNotFound(t *testing.T) {
+	ft := newFormTool(true)
+	f := newFormFixture(t, nil, ft, formScript())
+	hr := parkForm(t, f, "s-pq-gone")
+
+	f.ag.tools.Unregister("form_tool")
+	if _, err := f.ag.ResumeChat(context.Background(), "s-pq-gone", ParkDecision{
+		RequestID: hr.ID, ItemIDs: paramKeys(hr), Approved: true,
+		Answers: map[string]string{"c-form": "x"},
+	}, nil); err != nil {
+		t.Fatalf("ResumeChat: %v", err)
+	}
+	row := toolRow(t, f, "s-pq-gone", "c-form")
+	if row.ToolResult.Success || row.ToolResult.Error == nil ||
+		row.ToolResult.Error.Code != "tool_not_found" ||
+		!strings.Contains(row.ToolResult.Error.Message, "form_tool") {
+		t.Fatalf("row = %#v", row.ToolResult)
 	}
 }

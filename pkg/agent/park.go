@@ -651,8 +651,12 @@ func (a *Agent) parkedAsQuestion(ctx Context, call ToolCall, kinds map[string]st
 
 // parkedAnswerResult builds the result of a parked question from the human's
 // non-empty answer. Execute never runs here: the question was asked and
-// answered. A tool that is no longer a registered ParkableQuestion yields an
-// error result the model can see.
+// answered. A tool that is no longer registered yields a tool_not_found error
+// result; one that is registered but no longer a ParkableQuestion yields
+// internal_error. Both are visible to the model. The tool_not_found message
+// matches dispatch's unknown-tool error, but dispatch returns a Go error with
+// no result or code, and it first tries dynamic registration, which this
+// check does not.
 func (a *Agent) parkedAnswerResult(ctx Context, call ToolCall, answer string) *shuttle.Result {
 	if call.Name == "contact_human" {
 		return &shuttle.Result{
@@ -664,10 +668,14 @@ func (a *Agent) parkedAnswerResult(ctx Context, call ToolCall, answer string) *s
 			},
 		}
 	}
-	var pq shuttle.ParkableQuestion
-	if t, found := a.tools.Get(call.Name); found {
-		pq, _ = t.(shuttle.ParkableQuestion)
+	t, found := a.tools.Get(call.Name)
+	if !found {
+		return &shuttle.Result{Success: false, Error: &shuttle.Error{
+			Code:    "tool_not_found",
+			Message: fmt.Sprintf("tool not found: %s", call.Name),
+		}}
 	}
+	pq, _ := t.(shuttle.ParkableQuestion)
 	if pq == nil {
 		return &shuttle.Result{Success: false, Error: &shuttle.Error{
 			Code:    "internal_error",
