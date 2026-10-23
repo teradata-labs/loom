@@ -19,6 +19,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -209,4 +210,37 @@ func TestRenderExtractionWindowDropsToolPayloads(t *testing.T) {
 	assert.Contains(t, got, "[assistant] Noted.")
 	assert.NotContains(t, got, "ssn", "tool payloads never reach the decider")
 	assert.NotContains(t, got, "[user]   ", "blank turns are dropped")
+}
+
+// Review #410 M4: the window is oldest-first, so cutting it to the first
+// maxExtractWindowRunes judged only the oldest turns, and a confident no on
+// that head skipped extracting the newest. A window over the limit is not
+// asked about at all: extraction runs as it did before the gate.
+func TestExtractionGateOverLimitWindowExtractsWithoutAsking(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		band []*loomv1.DecisionBand
+	}{
+		{name: "live band", band: extractLiveBand()},
+		{name: "shadow band", band: nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newTestGraphMemoryStore(t)
+			dec := decisionmock.New().AnswerNoul(sites.QExtractDurable, 0.02) // a confident no
+			shadow := &memShadowStore{}
+			a, llm := gateAgent(t, store, tt.band, dec, shadow)
+			ctx := context.Background()
+			segMem, ok := a.memory.GetOrCreateSession(ctx, "gate-session").SegmentedMem.(*SegmentedMemory)
+			require.True(t, ok)
+			segMem.AddMessage(ctx, types.Message{Role: "user", Content: "my new manager is Grace. " + strings.Repeat("x", 7000)})
+
+			a.extractGraphMemoryAsync(ctx, "gate-session")
+			a.WaitDecisionShadows()
+			assert.Equal(t, 1, llm.getCalls(), "extraction ran over the whole window")
+			assert.Equal(t, 0, dec.CallCount(), "a window the gate cannot see whole is not asked about")
+			rows, err := shadow.QueryShadow(ctx, decision.ShadowQuery{Site: sites.SiteMemoryExtract})
+			require.NoError(t, err)
+			assert.Empty(t, rows, "no row: nothing was asked")
+		})
+	}
 }

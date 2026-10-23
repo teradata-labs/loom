@@ -15,6 +15,9 @@
 package sites
 
 import (
+	"fmt"
+	"unicode/utf8"
+
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/decision"
 )
@@ -38,7 +41,7 @@ const QExtractDurable = "durable"
 // a labelled dataset rather than an agreement measurement.
 const ReferenceSourceExtractionYield = "agent.extractGraphMemoryAsync.stored"
 
-// maxExtractWindowRunes bounds the conversation window carried in state.
+// maxExtractWindowRunes bounds the conversation window the gate judges.
 // The window is the thing being judged, so it gets room, but extraction
 // prompts are already large and this request should stay cheap.
 const maxExtractWindowRunes = 6000
@@ -47,10 +50,21 @@ const maxExtractWindowRunes = 6000
 // remembering. window is the rendered recent turns; the caller decides how
 // many and in what form, and must not include tool payloads.
 //
-// It returns a *decision.ValidationError when the window is empty.
+// It returns a *decision.ValidationError when the window is empty, and one
+// whose Cause is decision.ErrStateTooLarge when the window is longer than
+// maxExtractWindowRunes. The window is oldest-first, so any cut would judge
+// a part of it and a confident no on that part would skip extracting the
+// rest; the caller extracts ungated instead.
 func ExtractRequest(window string) (*loomv1.DecisionRequest, error) {
 	if window == "" {
 		return nil, &decision.ValidationError{Field: "state.window", Msg: "empty window"}
+	}
+	if n := utf8.RuneCountInString(window); n > maxExtractWindowRunes {
+		return nil, &decision.ValidationError{
+			Field: "state.window",
+			Msg:   fmt.Sprintf("window is %d runes, over the %d the gate judges whole", n, maxExtractWindowRunes),
+			Cause: decision.ErrStateTooLarge,
+		}
 	}
 	q := decision.Noul(
 		"Does this conversation window contain a durable fact worth remembering after the conversation ends?",
@@ -62,7 +76,7 @@ func ExtractRequest(window string) (*loomv1.DecisionRequest, error) {
 		),
 	)
 	return decision.NewRequest(SiteMemoryExtract,
-		map[string]any{"window": truncateRunes(window, maxExtractWindowRunes)},
+		map[string]any{"window": window},
 		map[string]*loomv1.DecisionQuestion{QExtractDurable: q})
 }
 

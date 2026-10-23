@@ -521,7 +521,10 @@ func (a *Agent) liveExtractGate(ctx context.Context, sessionID, window string) (
 	}
 	req, err := sites.ExtractRequest(window)
 	if err != nil {
-		zap.L().Debug("extraction gate: request", zap.Error(err))
+		// Not asked (an over-limit window included): extraction runs
+		// ungated, as it did before the gate.
+		zap.L().Debug("extraction gate: not asked, extracting ungated",
+			zap.String("session", sessionID), zap.Error(err))
 		return nil, decision.Outcome{}, false
 	}
 	budget := decision.Budget(a.decisionRouter.Decider(), len(req.Questions), liveDecidePerWave, maxLiveDecideBudget)
@@ -549,6 +552,8 @@ func (a *Agent) recordExtractionGate(ctx context.Context, sessionID, window stri
 	}
 	shadowReq, err := sites.ExtractRequest(window)
 	if err != nil {
+		zap.L().Debug("extraction gate: shadow not asked",
+			zap.String("session", sessionID), zap.Error(err))
 		return
 	}
 	a.runShadow(ctx, sessionID, shadowReq, refs)

@@ -29,7 +29,7 @@ import (
 
 func TestExtractRequestShape(t *testing.T) {
 	t.Parallel()
-	req, err := ExtractRequest(strings.Repeat("w", maxExtractWindowRunes+100))
+	req, err := ExtractRequest(strings.Repeat("w", maxExtractWindowRunes))
 	require.NoError(t, err)
 	require.NoError(t, decision.Validate(req))
 	assert.Equal(t, SiteMemoryExtract, req.Site)
@@ -39,11 +39,18 @@ func TestExtractRequestShape(t *testing.T) {
 
 	state := req.GetState().GetStructValue().AsMap()
 	w, _ := state["window"].(string)
-	assert.LessOrEqual(t, len([]rune(w)), maxExtractWindowRunes+1, "the window is bounded")
+	assert.Equal(t, maxExtractWindowRunes, len([]rune(w)), "a window at the limit is carried whole")
 	assert.Empty(t, req.FanOutKey, "one question, nothing to fan out")
 
 	_, err = ExtractRequest("")
 	require.Error(t, err, "an empty window is a validation error, not a request")
+
+	// Review #410 M4: past the limit there is no request, never a cut one.
+	req, err = ExtractRequest(strings.Repeat("é", maxExtractWindowRunes+1))
+	require.Error(t, err)
+	assert.Nil(t, req)
+	assert.ErrorIs(t, err, decision.ErrStateTooLarge)
+	assert.ErrorIs(t, err, decision.ErrValidation)
 }
 
 // The gate may skip an extraction and may never force one. Every case here
