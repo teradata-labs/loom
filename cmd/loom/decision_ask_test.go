@@ -18,9 +18,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"testing"
 
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -31,8 +35,10 @@ func resetAskFlags(t *testing.T) {
 	t.Helper()
 	resetDecisionFlags(t)
 	askKind, askFacts, askOptions, askWhenYes, askWhenNo, askJSON = sites.AskYesNo, "", nil, "", "", false
+	prevDecider := askDecider
 	t.Cleanup(func() {
 		askKind, askFacts, askOptions, askWhenYes, askWhenNo, askJSON = sites.AskYesNo, "", nil, "", "", false
+		askDecider = prevDecider
 	})
 }
 
@@ -68,7 +74,7 @@ func TestLoadAskFacts(t *testing.T) {
 
 func TestDecisionAskWithMock(t *testing.T) {
 	resetAskFlags(t)
-	decisionDecider = "mock"
+	askDecider.decider = "mock"
 
 	t.Run("yes_no text", func(t *testing.T) {
 		askFacts = "exit status 137"
@@ -113,8 +119,65 @@ func TestDecisionAskWithMock(t *testing.T) {
 
 	t.Run("unknown decider", func(t *testing.T) {
 		askKind, askOptions, askFacts = sites.AskYesNo, nil, "f"
-		decisionDecider = "nope"
+		askDecider.decider = "nope"
 		err := runDecisionAsk(decisionAskCmd, []string{"q"})
 		require.Error(t, err)
 	})
+}
+
+// decisionDefaultsChildEnv marks the child process of
+// TestDecisionCommandFlagDefaults.
+const decisionDefaultsChildEnv = "LOOM_TEST_DECISION_FLAG_DEFAULTS_CHILD"
+
+// Review #410 M2: ask and replay bound one package variable for --decider,
+// so init order (by file name) made replay default to ask's "jev". The check
+// runs in a fresh process, because other tests in this package set the
+// flag variables.
+func TestDecisionCommandFlagDefaults(t *testing.T) {
+	if os.Getenv(decisionDefaultsChildEnv) == "1" {
+		tests := []struct {
+			cmd  *cobra.Command
+			flag string
+			want string
+		}{
+			{decisionReplayCmd, "decider", "llm"},
+			{decisionAskCmd, "decider", "jev"},
+			{decisionReplayCmd, "limit", "1000"},
+			{decisionReportCmd, "limit", "0"},
+		}
+		for _, tt := range tests {
+			f := tt.cmd.Flags().Lookup(tt.flag)
+			require.NotNil(t, f, "%s --%s", tt.cmd.Name(), tt.flag)
+			assert.Equal(t, tt.want, f.DefValue, "%s --%s documented default", tt.cmd.Name(), tt.flag)
+			assert.Equal(t, tt.want, f.Value.String(), "%s --%s resolves to its documented default with no flag", tt.cmd.Name(), tt.flag)
+		}
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestDecisionCommandFlagDefaults$", "-test.v")
+	cmd.Env = append(os.Environ(), decisionDefaultsChildEnv+"=1")
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "child process:\n%s", out)
+	assert.Contains(t, string(out), "--- PASS: TestDecisionCommandFlagDefaults")
+}
+
+// No two decision subcommands share a flag variable unless they also share
+// the default: a shared variable takes whichever default init bound last.
+func TestDecisionSubcommandFlagsDoNotShareStorage(t *testing.T) {
+	type bound struct {
+		cmd, def string
+	}
+	seen := map[uintptr]bound{}
+	for _, c := range decisionCmd.Commands() {
+		c.Flags().VisitAll(func(f *pflag.Flag) {
+			if f.Value == nil || reflect.ValueOf(f.Value).Kind() != reflect.Ptr {
+				return
+			}
+			addr := reflect.ValueOf(f.Value).Pointer()
+			if prev, ok := seen[addr]; ok && prev.cmd != c.Name() {
+				assert.Equal(t, prev.def, f.DefValue,
+					"--%s on %s and %s share one variable with different defaults", f.Name, prev.cmd, c.Name())
+			}
+			seen[addr] = bound{cmd: c.Name(), def: f.DefValue}
+		})
+	}
 }

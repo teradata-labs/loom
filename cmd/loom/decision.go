@@ -76,6 +76,11 @@ var (
 	decisionInsecure    bool
 	decisionSeed        int64
 	decisionRPM         float64
+
+	// reportLimit is report's own --limit: replay's default (1000) and
+	// report's (0 = store default) differ, and one shared variable would
+	// take whichever default init bound last.
+	reportLimit int
 )
 
 var decisionReplayCmd = &cobra.Command{
@@ -107,7 +112,7 @@ func init() {
 	decisionReplayCmd.Flags().Float64Var(&decisionRPM, "rpm", 0, "For --decider jev: cap requests per minute (0 = client default; the Vercel AI Gateway free tier allows 30)")
 
 	decisionReportCmd.Flags().StringVar(&decisionSite, "site", sites.SiteFailureKind, "Site to report on (empty = all sites)")
-	decisionReportCmd.Flags().IntVar(&decisionLimit, "limit", 0, "Maximum shadow rows to read, newest first (0 = store default)")
+	decisionReportCmd.Flags().IntVar(&reportLimit, "limit", 0, "Maximum shadow rows to read, newest first (0 = store default)")
 	decisionReportCmd.Flags().StringVar(&decisionSince, "since", "", "Only rows recorded after this duration ago (e.g. 24h, 7d) or RFC3339 time")
 
 	decisionCmd.AddCommand(decisionReplayCmd)
@@ -420,23 +425,46 @@ func loadToolExecutions(ctx context.Context, db *sql.DB, limit int, errorsOnly b
 	return out, rows.Err()
 }
 
-// buildReplayDecider resolves --decider. "mock" scripts a fixed answer so the
+// deciderFlags are the flags that pick and configure a decider. Each command
+// binds its own copy so each keeps its own documented defaults.
+type deciderFlags struct {
+	decider  string
+	baseURL  string
+	insecure bool
+	provider string
+	model    string
+	rpm      float64
+}
+
+// buildReplayDecider resolves replay's decider flags.
+func buildReplayDecider(ctx context.Context) (decision.Decider, error) {
+	return buildDecider(ctx, deciderFlags{
+		decider:  decisionDecider,
+		baseURL:  decisionBaseURL,
+		insecure: decisionInsecure,
+		provider: decisionProvider,
+		model:    decisionModel,
+		rpm:      decisionRPM,
+	})
+}
+
+// buildDecider resolves --decider. "mock" scripts a fixed answer so the
 // pipeline can be exercised without any provider; "llm" adapts a provider
 // built from the environment the way the agent CLI does.
-func buildReplayDecider(_ context.Context) (decision.Decider, error) {
-	switch strings.ToLower(decisionDecider) {
+func buildDecider(_ context.Context, f deciderFlags) (decision.Decider, error) {
+	switch strings.ToLower(f.decider) {
 	case "jev":
 		// The CLI runs as the operator, so its flags are server-level
 		// settings for this process, not a DecisionConfig endpoint.
-		if err := jev.SetServerEndpoint(jev.ServerEndpoint{BaseURL: decisionBaseURL, AllowInsecureHTTP: decisionInsecure}); err != nil {
+		if err := jev.SetServerEndpoint(jev.ServerEndpoint{BaseURL: f.baseURL, AllowInsecureHTTP: f.insecure}); err != nil {
 			return nil, err
 		}
-		cfg, err := jev.FromDecisionConfig(&loomv1.DecisionConfig{Model: decisionModel})
+		cfg, err := jev.FromDecisionConfig(&loomv1.DecisionConfig{Model: f.model})
 		if err != nil {
 			return nil, err
 		}
-		if decisionRPM > 0 {
-			cfg.RequestsPerMinute = decisionRPM
+		if f.rpm > 0 {
+			cfg.RequestsPerMinute = f.rpm
 		}
 		client, err := jev.New(cfg)
 		if err != nil {
@@ -455,16 +483,16 @@ func buildReplayDecider(_ context.Context) (decision.Decider, error) {
 			AnswerNoul(sites.QRetryHelps, 0.1)
 		return m, nil
 	case "llm":
-		provider := decisionProvider
+		provider := f.provider
 		if provider == "" {
 			provider = os.Getenv("LOOM_LLM_PROVIDER")
 		}
 		if provider == "" {
 			provider = "anthropic"
 		}
-		f := factory.NewProviderFactory(factory.FactoryConfig{
+		pf := factory.NewProviderFactory(factory.FactoryConfig{
 			DefaultProvider:         provider,
-			DefaultModel:            decisionModel,
+			DefaultModel:            f.model,
 			AnthropicAPIKey:         os.Getenv("ANTHROPIC_API_KEY"),
 			OpenAIAPIKey:            os.Getenv("OPENAI_API_KEY"),
 			GeminiAPIKey:            os.Getenv("GEMINI_API_KEY"),
@@ -479,7 +507,7 @@ func buildReplayDecider(_ context.Context) (decision.Decider, error) {
 			AzureOpenAIDeploymentID: os.Getenv("AZURE_OPENAI_DEPLOYMENT"),
 			AzureOpenAIAPIKey:       os.Getenv("AZURE_OPENAI_API_KEY"),
 		})
-		raw, err := f.CreateProvider(provider, decisionModel)
+		raw, err := pf.CreateProvider(provider, f.model)
 		if err != nil {
 			return nil, fmt.Errorf("create %s provider: %w", provider, err)
 		}
@@ -489,7 +517,7 @@ func buildReplayDecider(_ context.Context) (decision.Decider, error) {
 		}
 		return decisionllm.New(llmProvider), nil
 	default:
-		return nil, fmt.Errorf("--decider %q: must be jev, llm or mock", decisionDecider)
+		return nil, fmt.Errorf("--decider %q: must be jev, llm or mock", f.decider)
 	}
 }
 
@@ -504,7 +532,7 @@ func runDecisionReport(cmd *cobra.Command, _ []string) error {
 	}
 	defer func() { _ = db.Close() }()
 
-	q := decision.ShadowQuery{Site: decisionSite, Limit: decisionLimit}
+	q := decision.ShadowQuery{Site: decisionSite, Limit: reportLimit}
 	if decisionSince != "" {
 		since, err := parseSince(decisionSince)
 		if err != nil {

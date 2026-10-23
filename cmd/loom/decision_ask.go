@@ -40,6 +40,11 @@ var (
 	askWhenNo  string
 	askJSON    bool
 	askTimeout time.Duration
+
+	// ask's decider flags are its own: replay documents a different
+	// --decider default, and a shared variable takes whichever default init
+	// bound last.
+	askDecider deciderFlags
 )
 
 var decisionAskCmd = &cobra.Command{
@@ -62,12 +67,12 @@ decider sees only the facts and the question. Nothing is written to loom.db.`,
 }
 
 func init() {
-	decisionAskCmd.Flags().StringVar(&decisionDecider, "decider", "jev", "Decider: jev | llm | mock (jev reads TYPESAFE_API_KEY or AI_GATEWAY_API_KEY)")
-	decisionAskCmd.Flags().StringVar(&decisionBaseURL, "base-url", "", "Endpoint base URL for --decider jev, https only (default: $TYPESAFE_BASE_URL, else the provider default)")
-	decisionAskCmd.Flags().BoolVar(&decisionInsecure, "allow-insecure-http", false, "With --decider jev: allow an http:// --base-url on a loopback host (local proxy or mock decider)")
-	decisionAskCmd.Flags().StringVar(&decisionProvider, "provider", "", "LLM provider for --decider llm (default: $LOOM_LLM_PROVIDER or anthropic)")
-	decisionAskCmd.Flags().StringVar(&decisionModel, "model", "", "Model for the chosen decider (default: the decider's default)")
-	decisionAskCmd.Flags().Float64Var(&decisionRPM, "rpm", 0, "For --decider jev: cap requests per minute (0 = client default)")
+	decisionAskCmd.Flags().StringVar(&askDecider.decider, "decider", "jev", "Decider: jev | llm | mock (jev reads TYPESAFE_API_KEY or AI_GATEWAY_API_KEY)")
+	decisionAskCmd.Flags().StringVar(&askDecider.baseURL, "base-url", "", "Endpoint base URL for --decider jev, https only (default: $TYPESAFE_BASE_URL, else the provider default)")
+	decisionAskCmd.Flags().BoolVar(&askDecider.insecure, "allow-insecure-http", false, "With --decider jev: allow an http:// --base-url on a loopback host (local proxy or mock decider)")
+	decisionAskCmd.Flags().StringVar(&askDecider.provider, "provider", "", "LLM provider for --decider llm (default: $LOOM_LLM_PROVIDER or anthropic)")
+	decisionAskCmd.Flags().StringVar(&askDecider.model, "model", "", "Model for the chosen decider (default: the decider's default)")
+	decisionAskCmd.Flags().Float64Var(&askDecider.rpm, "rpm", 0, "For --decider jev: cap requests per minute (0 = client default)")
 	decisionAskCmd.Flags().StringVar(&askKind, "kind", sites.AskYesNo, "yes_no | choice | scale")
 	decisionAskCmd.Flags().StringVar(&askFacts, "facts", "", "What the answer depends on: text, JSON text, or @path (required)")
 	decisionAskCmd.Flags().StringSliceVar(&askOptions, "options", nil, "choice: labels to choose among; scale: levels, lowest first")
@@ -124,12 +129,12 @@ func runDecisionAsk(cmd *cobra.Command, args []string) error {
 	}
 
 	var decider decision.Decider
-	if strings.EqualFold(decisionDecider, "mock") {
+	if strings.EqualFold(askDecider.decider, "mock") {
 		// A scripted answer for the request just built, so the command can
 		// be exercised end to end without credentials.
 		decider = askMockDecider(req)
 	} else {
-		decider, err = buildReplayDecider(ctx)
+		decider, err = buildDecider(ctx, askDecider)
 		if err != nil {
 			return err
 		}
