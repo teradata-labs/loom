@@ -96,3 +96,30 @@ prompts:
     metadata:
       version: "v1.0"
       description: "Backend unavailability error"
+
+  - id: output_truncated
+    content: |
+      OUTPUT_TRUNCATED: your response reached the output token limit ({{.output_tokens}} tokens) before the arguments of this {{.tool_name}} call were complete (missing: {{.missing_args}}), so the call was not run. Send the content in smaller pieces: split it across several calls (for example one call per item or section) so each call fits in one response.
+    variables:
+      tool_name:
+        name: tool_name
+        type: 1  # STRING
+        required: true
+        description: "Name of the tool whose call was cut off"
+      output_tokens:
+        name: output_tokens
+        type: 2  # INT
+        required: true
+        description: "Output tokens the response used when it hit the limit"
+      missing_args:
+        name: missing_args
+        type: 1  # STRING
+        required: true
+        description: "Required arguments the cut-off call lacks, comma-separated, or 'not determined'"
+    tags:
+      - error
+      - tool
+      - truncation
+    metadata:
+      version: "v1.0"
+      description: "Tool call cut off by the output token limit; not executed"

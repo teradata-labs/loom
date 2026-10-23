@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+#### Tool calls cut off by the output token limit are not executed
+- **A tool call cut off at `max_tokens` was executed anyway.** When a response stopped at `max_tokens` before a call's arguments were complete, the agent counted the turn toward the output-token circuit breaker but still ran the incomplete call. The tool's own validation error (for example `value is required and must be a string` from `shared_memory_write`) never said the output was cut off, so the model repeated the same oversized call until the breaker ended the turn. In one observed run, 7 such rounds on Claude Opus 4.5 cost $0.90 and saved nothing.
+- **Now each call that is incomplete per its advertised schema gets an `OUTPUT_TRUNCATED` tool result instead of running.** The result names the tool, the output tokens used and the missing required arguments, and asks for the content in smaller pieces. Text comes from the new `errors.tool_execution.output_truncated` prompt (`prompts/errors/tool_execution.yaml`), with the same text built in when no prompt registry is loaded. The row is written before the HITL park pre-scan, so a cut-off call is never offered for approval and never runs when a parked batch resumes. Complete calls in the same response run as before. A `tool_call.truncated_not_executed` span event records each one. The circuit breaker still counts these turns as a backstop.
+- **Only a `max_tokens` stop qualifies.** A call missing a required argument in an ordinary response still runs and gets the tool's validation error.
+- **Arguments that depend on the call count too.** A tool can declare per-call requirements through `shuttle.ConditionalArgsTool` (`RequiredArgsFor`), and `workspace` does: `write` needs `filename` and `content`, `read` and `delete` need `filename`, `search` needs `query`. A `workspace` write cut off before its content previously satisfied the schema's only required field, `action`, so it ran and failed with a generic error that the circuit breaker did not count.
+
+#### Unset `max_tokens` uses the model's output limit instead of 4096
+- **`looms` pinned every provider at 4096 output tokens unless `llm.max_tokens` was set.** The `llm.max_tokens` viper default was 4096, the agent YAML loader filled 4096 into any `llm` block without `max_tokens`, and the `serve`, `workflow` and agent-registry client builders passed the value through unchanged. The provider factory's catalog lookup never applied, so Claude Opus 4.5 (64,000 output tokens) was cut off at 4096.
+- **Unset now means "the model's `MaxOutputTokens` from `pkg/llm/catalog`", falling back to 4096 for models the catalog does not list.** `factory.ResolveMaxOutput` is exported and used by `looms serve`, `looms workflow`, `looms config show` and the agent registry; the factory's own resolution is unchanged. An explicit `max_tokens` still wins. `looms serve` logs `LLM output token limit` with the configured and resolved values at startup.
+- **Bedrock quota note:** Bedrock reserves `max_tokens` times the output burndown rate (5x for most Anthropic models) against tokens-per-minute quotas at request start and returns the unused part at the end. A larger default can therefore cause throttling on low quotas; set an explicit `llm.max_tokens` if it does. See `docs/reference/llm-bedrock.md`.
+
 ### Added
 
 #### HITL park: tools other than `contact_human` can park as questions

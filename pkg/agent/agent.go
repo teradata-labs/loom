@@ -1798,8 +1798,6 @@ func (a *Agent) getGuidanceMessage(ctx context.Context, key string, vars map[str
 // getErrorMessage loads an error message from PromptRegistry or returns default.
 // Used for structured error messages with context variables.
 // Format: errors.{category}.{type} (e.g., "errors.llm.timeout", "errors.tool_execution.invalid_input")
-//
-//nolint:unused // Infrastructure for future error message integration
 func (a *Agent) getErrorMessage(ctx context.Context, category string, errorType string, vars map[string]interface{}) string {
 	// Try loading from PromptRegistry
 	if a.prompts != nil {
@@ -3027,6 +3025,13 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			Timestamp:      time.Now(),
 		}, false)
 
+		// Calls cut off by the output token limit are answered with an
+		// OUTPUT_TRUNCATED row instead of running (truncated_tool_calls.go).
+		// Before the park pre-scan, so a cut-off call is never offered to a
+		// human for approval nor run when a parked batch resumes.
+		truncatedCalls := truncatedToolCallIndexes(llmResp, tools)
+		a.answerTruncatedToolCalls(ctx, session, llmResp, truncatedCalls, tools, span, &toolExecutionCount, &allToolExecutions)
+
 		// HITL park pre-scan (park.go): with park enabled and the batch's
 		// assistant row durable, a batch needing a human decision ends the
 		// turn HERE — before anything executes. A non-durable assistant row
@@ -3038,7 +3043,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// assistantPersisted alone reports success for a batch that was never
 		// written anywhere — exactly the stranding this gate exists to stop.
 		if a.hitlPark != nil && assistantPersisted && a.memory.HasStore() {
-			if parkErr := a.maybeParkBatch(ctx, session, llmResp, turnUsage); parkErr != nil {
+			if parkErr := a.maybeParkBatch(ctx, session, llmResp, turnUsage, truncatedCalls); parkErr != nil {
 				return nil, parkErr
 			}
 		}
@@ -3074,6 +3079,9 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		}
 
 		for i, toolCall := range llmResp.ToolCalls {
+			if truncatedCalls[i] {
+				continue // already answered with OUTPUT_TRUNCATED above
+			}
 			if toolExecutionCount >= a.config.MaxToolExecutions {
 				break
 			}

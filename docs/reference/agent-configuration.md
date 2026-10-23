@@ -208,7 +208,7 @@ All fields are optional. If `spec.llm` is omitted entirely, the agent inherits t
 | `provider` | `string` | (server default) | Provider name. See [LLM Providers](#llm-providers). |
 | `model` | `string` | (server default) | Model identifier |
 | `temperature` | `float64` | `0.7` | Sampling temperature (0.0 - 1.0) |
-| `max_tokens` | `int` | `4096` | Maximum response tokens |
+| `max_tokens` | `int` | model's output limit | Maximum response tokens. When unset, the model's `MaxOutputTokens` from the built-in catalog (`pkg/llm/catalog`) is used, or 4096 for models the catalog does not list |
 | `stop_sequences` | `[]string` | `[]` | Stop generation sequences |
 | `top_p` | `float64` | `0.0` | Nucleus sampling (0.0 - 1.0) |
 | `top_k` | `int` | `0` | Top-k sampling |
