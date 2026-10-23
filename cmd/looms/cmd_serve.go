@@ -1157,7 +1157,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		llmscheduler.Default().SetLogger(logger)
 	}
 
-	logger.Info("Starting Loom Server", zap.String("version", rootCmd.Version))
+	logger.Info("Starting Loom Server", zap.String("version", rootCmd.Version), zap.String("commit", gitCommit))
 
 	// Show actual config file used (not just the --config flag)
 	configFileUsed := viper.ConfigFileUsed()

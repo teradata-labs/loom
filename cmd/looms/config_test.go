@@ -16,6 +16,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/spf13/viper"
@@ -746,6 +747,187 @@ storage:
 	require.NoError(t, err)
 	assert.Equal(t, testDSN, cfg.Storage.Postgres.DSN,
 		"LOOM_STORAGE_POSTGRES_DSN should work even without dsn key in YAML")
+}
+
+// TestEnvVar_LLMSecrets_NoYAMLKey pins that every env-only LLM credential and
+// the other default-less LLM / web-search string keys reach the config when
+// the YAML has no entry for them. viper's AutomaticEnv
+// does not register keys, so Unmarshal silently drops an env var whose key has
+// no config entry, default, or bound flag. The LongMemEval AKS rig depends on
+// LOOM_LLM_BEDROCK_BEARER_TOKEN arriving this way.
+func TestEnvVar_LLMSecrets_NoYAMLKey(t *testing.T) {
+	tests := []struct {
+		env string
+		get func(*Config) string
+	}{
+		{"LOOM_LLM_BEDROCK_BEARER_TOKEN", func(c *Config) string { return c.LLM.BedrockBearerToken }},
+		{"LOOM_LLM_BEDROCK_ACCESS_KEY_ID", func(c *Config) string { return c.LLM.BedrockAccessKeyID }},
+		{"LOOM_LLM_BEDROCK_SECRET_ACCESS_KEY", func(c *Config) string { return c.LLM.BedrockSecretAccessKey }},
+		{"LOOM_LLM_BEDROCK_SESSION_TOKEN", func(c *Config) string { return c.LLM.BedrockSessionToken }},
+		{"LOOM_LLM_ANTHROPIC_API_KEY", func(c *Config) string { return c.LLM.AnthropicAPIKey }},
+		{"LOOM_LLM_OPENAI_API_KEY", func(c *Config) string { return c.LLM.OpenAIAPIKey }},
+		{"LOOM_LLM_AZURE_OPENAI_API_KEY", func(c *Config) string { return c.LLM.AzureOpenAIAPIKey }},
+		{"LOOM_LLM_AZURE_OPENAI_ENTRA_TOKEN", func(c *Config) string { return c.LLM.AzureOpenAIEntraToken }},
+		{"LOOM_LLM_MISTRAL_API_KEY", func(c *Config) string { return c.LLM.MistralAPIKey }},
+		{"LOOM_LLM_GEMINI_API_KEY", func(c *Config) string { return c.LLM.GeminiAPIKey }},
+		{"LOOM_LLM_HUGGINGFACE_TOKEN", func(c *Config) string { return c.LLM.HuggingFaceToken }},
+		{"LOOM_LLM_LITELLM_API_KEY", func(c *Config) string { return c.LLM.LiteLLMAPIKey }},
+		{"LOOM_LLM_BEDROCK_PROFILE", func(c *Config) string { return c.LLM.BedrockProfile }},
+		{"LOOM_LLM_LITELLM_ENDPOINT", func(c *Config) string { return c.LLM.LiteLLMEndpoint }},
+		{"LOOM_LLM_LITELLM_MODEL", func(c *Config) string { return c.LLM.LiteLLMModel }},
+		{"LOOM_TOOLS_WEB_SEARCH_BRAVE_API_KEY", func(c *Config) string { return c.Tools.WebSearch.BraveAPIKey }},
+		{"LOOM_TOOLS_WEB_SEARCH_TAVILY_API_KEY", func(c *Config) string { return c.Tools.WebSearch.TavilyAPIKey }},
+		{"LOOM_TOOLS_WEB_SEARCH_SERPAPI_KEY", func(c *Config) string { return c.Tools.WebSearch.SerpAPIKey }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.env, func(t *testing.T) {
+			viper.Reset()
+			dir := t.TempDir()
+			cfgPath := filepath.Join(dir, "looms.yaml")
+			require.NoError(t, os.WriteFile(cfgPath, []byte(`
+server:
+  port: 60051
+llm:
+  provider: bedrock
+  bedrock_region: us-east-1
+`), 0o644))
+
+			// Fake value: not a real credential shape, so secret scanning stays quiet.
+			const fake = "fake-test-credential-not-a-secret"
+			t.Setenv(tt.env, fake)
+
+			cfg, err := LoadConfig(cfgPath)
+			require.NoError(t, err)
+			assert.Equal(t, fake, tt.get(cfg),
+				"%s must populate the config with no YAML key", tt.env)
+		})
+	}
+}
+
+// TestEnvOnlyKeys_UnsetStayEmpty pins that registering empty defaults for the
+// env-only keys changes nothing when neither YAML nor env sets them: strings
+// stay "", headers stay empty, and YAML-provided headers still win.
+func TestEnvOnlyKeys_UnsetStayEmpty(t *testing.T) {
+	for _, env := range []string{
+		"LOOM_LLM_BEDROCK_BEARER_TOKEN", "LOOM_LLM_BEDROCK_PROFILE",
+		"LOOM_LLM_LITELLM_ENDPOINT", "LOOM_LLM_LITELLM_MODEL", "LOOM_LLM_LITELLM_EXTRA_HEADERS",
+		"LOOM_TOOLS_WEB_SEARCH_BRAVE_API_KEY", "LOOM_TOOLS_WEB_SEARCH_TAVILY_API_KEY",
+		"LOOM_TOOLS_WEB_SEARCH_SERPAPI_KEY",
+	} {
+		t.Setenv(env, "")
+		require.NoError(t, os.Unsetenv(env))
+	}
+
+	t.Run("no yaml keys", func(t *testing.T) {
+		viper.Reset()
+		cfgPath := filepath.Join(t.TempDir(), "looms.yaml")
+		require.NoError(t, os.WriteFile(cfgPath, []byte("llm:\n  provider: litellm\n"), 0o644))
+		cfg, err := LoadConfig(cfgPath)
+		require.NoError(t, err)
+		assert.Empty(t, cfg.LLM.BedrockProfile)
+		assert.Empty(t, cfg.LLM.LiteLLMEndpoint)
+		assert.Empty(t, cfg.LLM.LiteLLMModel)
+		assert.Empty(t, cfg.LLM.LiteLLMExtraHeaders)
+	})
+
+	t.Run("yaml values are untouched", func(t *testing.T) {
+		viper.Reset()
+		cfgPath := filepath.Join(t.TempDir(), "looms.yaml")
+		require.NoError(t, os.WriteFile(cfgPath, []byte(`
+llm:
+  provider: litellm
+  bedrock_profile: yaml-profile
+  litellm_endpoint: http://yaml:4000
+  litellm_model: yaml-model
+  litellm_extra_headers:
+    X-Team: yaml
+`), 0o644))
+		cfg, err := LoadConfig(cfgPath)
+		require.NoError(t, err)
+		assert.Equal(t, "yaml-profile", cfg.LLM.BedrockProfile)
+		assert.Equal(t, "http://yaml:4000", cfg.LLM.LiteLLMEndpoint)
+		assert.Equal(t, "yaml-model", cfg.LLM.LiteLLMModel)
+		// viper lowercases map keys read from YAML (pre-existing behaviour).
+		assert.Equal(t, map[string]string{"x-team": "yaml"}, cfg.LLM.LiteLLMExtraHeaders)
+	})
+}
+
+// TestEnvVar_LiteLLMExtraHeaders pins LOOM_LLM_LITELLM_EXTRA_HEADERS, a map
+// key set from a string env var. Before the default + decode hook it was
+// silently dropped with no YAML key and silently wiped the YAML headers when
+// both were set.
+func TestEnvVar_LiteLLMExtraHeaders(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		env     string
+		want    map[string]string
+		wantErr string
+	}{
+		{
+			name: "key=value pairs, no yaml key",
+			env:  "X-Team=abc, X-Token=dG9rZW4=",
+			want: map[string]string{"X-Team": "abc", "X-Token": "dG9rZW4="},
+		},
+		{
+			name: "json object, no yaml key",
+			env:  `{"X-Team":"a,b","X-Trace":"t"}`,
+			want: map[string]string{"X-Team": "a,b", "X-Trace": "t"},
+		},
+		{
+			name: "env overrides yaml",
+			yaml: "  litellm_extra_headers:\n    X-Team: yaml\n",
+			env:  "X-Team=env",
+			want: map[string]string{"X-Team": "env"},
+		},
+		{
+			name:    "malformed value fails loudly",
+			env:     "not-a-pair",
+			wantErr: "want key=value",
+		},
+		{
+			name:    "malformed json fails loudly",
+			env:     `{"X-Team":1}`,
+			wantErr: "JSON object of strings",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			viper.Reset()
+			cfgPath := filepath.Join(t.TempDir(), "looms.yaml")
+			require.NoError(t, os.WriteFile(cfgPath, []byte("llm:\n  provider: litellm\n"+tt.yaml), 0o644))
+			t.Setenv("LOOM_LLM_LITELLM_EXTRA_HEADERS", tt.env)
+
+			cfg, err := LoadConfig(cfgPath)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.LLM.LiteLLMExtraHeaders)
+		})
+	}
+}
+
+func TestStringToStringMapHook(t *testing.T) {
+	mapType := reflect.TypeOf(map[string]string(nil))
+	strType := reflect.TypeOf("")
+
+	got, err := stringToStringMapHook(strType, mapType, "  ")
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{}, got, "blank decodes to an empty map")
+
+	got, err = stringToStringMapHook(strType, reflect.TypeOf([]string(nil)), "a,b")
+	require.NoError(t, err)
+	assert.Equal(t, "a,b", got, "non-map targets pass through untouched")
+
+	got, err = stringToStringMapHook(reflect.TypeOf(0), mapType, 7)
+	require.NoError(t, err)
+	assert.Equal(t, 7, got, "non-string sources pass through untouched")
+
+	_, err = stringToStringMapHook(strType, mapType, "=v")
+	require.Error(t, err, "an empty key is rejected")
 }
 
 func TestEnvVar_PatternsDir_NoYAMLKey(t *testing.T) {
