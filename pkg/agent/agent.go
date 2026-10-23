@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1768,12 +1769,17 @@ func formatWorkflowCommunicationInstructions(ctx *WorkflowCommunicationContext) 
 // getGuidanceMessage loads a guidance message from PromptRegistry or returns default.
 // Used for user-facing messages like error recovery, max turns, etc.
 func (a *Agent) getGuidanceMessage(ctx context.Context, key string, vars map[string]interface{}) string {
-	// Try loading from PromptRegistry
+	// Try loading from PromptRegistry. The guidance files register their entries
+	// under guidance.self_correction.<id> (prompts/guidance/self_correction.yaml),
+	// so try that namespace too; the plain key stays first for callers that
+	// register one directly. A rendered message that still holds a placeholder
+	// (a variable the caller did not pass) is never shown: the fallback runs.
 	if a.prompts != nil {
-		fullKey := "guidance." + key
-		msg, err := a.prompts.Get(ctx, fullKey, vars)
-		if err == nil && msg != "" {
-			return msg
+		for _, fullKey := range []string{"guidance." + key, "guidance.self_correction." + key} {
+			msg, err := a.prompts.Get(ctx, fullKey, vars)
+			if err == nil && msg != "" && !strings.Contains(msg, "{{") {
+				return msg
+			}
 		}
 	}
 
@@ -1790,6 +1796,15 @@ func (a *Agent) getGuidanceMessage(ctx context.Context, key string, vars map[str
 			}
 		}
 		return "The tool execution failed. Let me try a different approach."
+	case "repeated_tool_call":
+		count, name := "several", "this tool"
+		if c, ok := vars["count"].(string); ok && c != "" {
+			count = c
+		}
+		if n, ok := vars["tool_name"].(string); ok && n != "" {
+			name = n
+		}
+		return fmt.Sprintf("(note: this is call %s in a row to %s with identical arguments. Read this result before calling again: change the arguments, try a different approach, or finish. Calling again is fine when the data can change between calls, for example when polling a job that is still running.)", count, name)
 	default:
 		return "An unexpected situation occurred. Please try again."
 	}
@@ -2625,6 +2640,13 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			}
 		}
 
+		// The repeat-call note from the last tool batch rides this provider call
+		// only (see withReminder). The orchestrator is per turn, so an unsent note
+		// cannot reach a later turn.
+		if note := recovery.takeRepeatHint(); note != "" {
+			softReminder = strings.TrimSpace(softReminder + "\n" + note)
+		}
+
 		// Emit LLM generation progress
 		emitProgress(ctx, StageLLMGeneration, 20+clampInt32(turnCount*10), fmt.Sprintf("Generating response (turn %d)", turnCount), "")
 
@@ -3389,6 +3411,21 @@ func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, 
 	formattedResult := a.formatToolResult(ctx, session.ID, toolCall.Name, result, err)
 	if escalationMsg != "" {
 		formattedResult = formatToolResultWithEscalation(formattedResult, err, escalationMsg)
+	}
+
+	// Advisory note after repeated identical calls (the call itself already ran).
+	// The note goes to the next provider call only, never into this row: a row
+	// that carries it stops parsing as JSON or tabular data, and it would be
+	// stored and replayed in later turns. A failed call gets no note; "failed"
+	// is the same test the success metric below uses, since a tool-reported
+	// failure arrives with err == nil.
+	toolOK := err == nil && (result == nil || result.Success)
+	if n, hint := st.recovery.noteToolCall(dedupKey); hint && toolOK {
+		msg := a.getGuidanceMessage(ctx, "repeated_tool_call", map[string]interface{}{
+			"count": strconv.Itoa(n), "tool_name": toolCall.Name,
+		})
+		st.recovery.setRepeatHint(strings.Join(strings.Fields(msg), " "))
+		span.AddEvent("recovery.repeat_hint", map[string]interface{}{"tool_name": toolCall.Name, "count": n})
 	}
 
 	// Add tool result to conversation
