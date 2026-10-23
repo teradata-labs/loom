@@ -317,6 +317,7 @@ type GraphMemoryConfigYAML struct {
 	MaxEntitiesPerExtraction      int     `yaml:"max_entities_per_extraction"`
 	ConversationExtractionCadence int     `yaml:"conversation_extraction_cadence"`
 	ExtractionTimeoutSeconds      int     `yaml:"extraction_timeout_seconds"`
+	FleetLessonSharing            bool    `yaml:"fleet_lesson_sharing"` // opt-in: share mined lessons across all agents
 }
 
 // MemoryCompressionConfigYAML represents memory compression configuration in YAML
@@ -1063,6 +1064,7 @@ func parseGraphMemoryConfig(yaml *GraphMemoryConfigYAML) *loomv1.GraphMemoryConf
 		MaxEntitiesPerExtraction:      maxEntitiesPerExtraction,
 		ConversationExtractionCadence: conversationExtractionCadence,
 		ExtractionTimeoutSeconds:      extractionTimeoutSeconds,
+		FleetLessonSharing:            yaml.FleetLessonSharing,
 	}
 }
 
@@ -1395,6 +1397,7 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 				MaxEntitiesPerExtraction:      int(config.Memory.GraphMemory.MaxEntitiesPerExtraction),
 				ConversationExtractionCadence: int(config.Memory.GraphMemory.ConversationExtractionCadence),
 				ExtractionTimeoutSeconds:      int(config.Memory.GraphMemory.ExtractionTimeoutSeconds),
+				FleetLessonSharing:            config.Memory.GraphMemory.FleetLessonSharing,
 			}
 		}
 	}
