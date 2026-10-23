@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Providers can report which tool call is being written, and how much.** `types.ToolInputProgress` (index, id, name, argument bytes so far) is reported through `types.WithToolInputProgress` / `NotifyToolInputProgress`, alongside the existing content-free stream-activity pulse. The OpenAI-compatible client (so LiteLLM, Mistral and HuggingFace too) reports it per tool-call delta; other providers still send only the bare pulse. `chatWithStreaming` emits it as `ProgressEvent.IsToolInputStream` with `ToolCallID`, `ToolName` and the new `ToolInputBytes`: the first delta of each call, and the delta that first supplies its name or id, immediately, later ones at most once a second per call.
 - **`WeaveProgress` carries it to gRPC clients.** New fields `is_tool_input_stream` (22) and `tool_input_bytes` (23); `tool_call_id` is now also set on these events, so a non-empty `tool_call_id` no longer implies the tool started. See `docs/reference/streaming.md`.
 
+#### Tool repeat-call hint
+- **The agent hints the model after repeated identical tool calls.** After 3, then 5, then 8 identical consecutive executed tool calls (same name and canonical input; a call rejected before execution neither counts nor resets the run), the self-healing orchestrator appends a single-line advisory note to the newest tool result naming the count and the tool. Thresholds are configurable via `RecoveryConfig.RepeatHintThresholds` (Go only — an empty slice disables hints; YAML-configured agents run the defaults). The note opens with `[repeat: ` and survives context offload/eviction stubs and persisted-row truncation, which both keep the marker line. See `docs/reference/self-correction.md`.
+
 ### Fixed
 
 #### Relief: a turn whose own tool results exceed the window is shed, not refused
