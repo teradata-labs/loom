@@ -117,6 +117,15 @@ func TestClassifyProviderFailure(t *testing.T) {
 		{"SDK mid-stream Bedrock serviceUnavailableException", sdkAPIError(t, 200, `{"type":"error","error":{"type":"serviceUnavailableException","message":"down"}}`), ProviderFailureUnavailable},
 		{"SDK mid-stream Bedrock modelStreamErrorException", sdkAPIError(t, 200, `{"type":"error","error":{"type":"modelStreamErrorException","message":"retry"}}`), ProviderFailureUnavailable},
 		{"SDK mid-stream Bedrock modelTimeoutException", sdkAPIError(t, 200, `{"type":"error","error":{"type":"modelTimeoutException","message":"model timed out"}}`), ProviderFailureUnavailable},
+		{"SDK timeout_error", sdkAPIError(t, 200, `{"type":"error","error":{"type":"timeout_error","message":"Request timed out"}}`), ProviderFailureUnavailable},
+		{"SDK api_error", sdkAPIError(t, 200, `{"type":"error","error":{"type":"api_error","message":"Internal server error"}}`), ProviderFailureUnavailable},
+		// An error type the classifier does not know: a real error status
+		// decides, a 200 (mid-stream) status does not.
+		{"SDK unrecognised type on a 503 takes the status", sdkAPIError(t, 503, `{"type":"error","error":{"type":"some_new_error","message":"m"}}`), ProviderFailureUnavailable},
+		{"SDK unrecognised type on a 200 is not capacity", sdkAPIError(t, 200, `{"type":"error","error":{"type":"some_new_error","message":"m"}}`), ProviderFailureNone},
+		{"SDK unrecognised type on a 200 falls back to the message match",
+			sdkAPIError(t, 200, `{"type":"error","error":{"type":"some_new_error","message":"Too many requests, please slow down: throttled"}}`),
+			ProviderFailureThrottled},
 		{"SDK mid-stream validation on a 200 is not capacity", sdkAPIError(t, 200, `{"type":"error","error":{"type":"invalid_request_error","message":"bad"}}`), ProviderFailureNone},
 
 		// AWS SDK (bedrockruntime Converse path).
