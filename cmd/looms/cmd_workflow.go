@@ -713,6 +713,11 @@ func setupWorkflowRuntime(pattern *loomv1.WorkflowPattern, promptGates bool) (*w
 		logger.Warn("Storage backend unavailable; decision shadow rows will not be persisted", zap.Error(sbErr))
 	} else {
 		rt.closers = append(rt.closers, func() { _ = storageBackend.Close() })
+		// Migrate as `looms serve` does: a schema behind this binary makes
+		// every shadow insert fail, and the recorder only counts that.
+		if mErr := storageBackend.Migrate(context.Background()); mErr != nil {
+			logger.Warn("Storage migration failed; decision shadow rows may not be persisted", zap.Error(mErr))
+		}
 		if dsp, ok := storageBackend.(backend.DecisionShadowProvider); ok {
 			registry.SetDecisionShadowStore(dsp.DecisionShadowStore())
 		}

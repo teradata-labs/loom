@@ -123,7 +123,7 @@ func TestDecisionShadowStoreRoundTrip(t *testing.T) {
 func TestDecisionShadowStoreDefaultsAndEmptyProbabilities(t *testing.T) {
 	store, ctx := newShadowTestStore(t)
 	before := time.Now().UTC().Add(-time.Second)
-	rec := &loomv1.DecisionShadowRecord{Site: "s", QuestionId: "q", Kind: decision.KindNoul, Path: loomv1.DecisionPath_DECISION_PATH_ERROR}
+	rec := &loomv1.DecisionShadowRecord{Site: "s", QuestionId: "q", Kind: decision.KindNoul, Path: loomv1.DecisionPath_DECISION_PATH_ERROR, Error: "jev: HTTP 503: service unavailable", Subject: "session:s1"}
 	require.NoError(t, store.RecordShadow(ctx, []*loomv1.DecisionShadowRecord{rec}))
 	rows, err := store.QueryShadow(ctx, decision.ShadowQuery{Site: "s"})
 	require.NoError(t, err)
@@ -131,6 +131,8 @@ func TestDecisionShadowStoreDefaultsAndEmptyProbabilities(t *testing.T) {
 	assert.True(t, rows[0].RecordedAt.AsTime().After(before), "missing recorded_at defaults to now")
 	assert.Nil(t, rows[0].CandidateProbabilities)
 	assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_ERROR, rows[0].Path)
+	assert.Equal(t, "jev: HTTP 503: service unavailable", rows[0].Error, "ERROR rows keep their reason")
+	assert.Equal(t, "session:s1", rows[0].Subject, "the subject round-trips")
 }
 
 func TestDecisionShadowStoreConcurrentWrites(t *testing.T) {

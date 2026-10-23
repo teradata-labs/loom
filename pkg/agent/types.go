@@ -33,6 +33,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/skills"
 	"github.com/teradata-labs/loom/pkg/skills/discovery"
 	"github.com/teradata-labs/loom/pkg/skills/hygiene"
+	skillindex "github.com/teradata-labs/loom/pkg/skills/index"
 	skilltasks "github.com/teradata-labs/loom/pkg/skills/tasks"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/task"
@@ -130,6 +131,9 @@ type Agent struct {
 	decisionRouter      *decision.Router
 	decisionRecorder    *decision.ShadowRecorder
 	decisionWG          sync.WaitGroup
+	// skillRouteRouters are the skill routers BuildSkillsOptions built for
+	// this agent; attachSkillRouteDecision gives them decisionRouter.
+	skillRouteRouters []*skillindex.Router
 
 	// Tracer for observability
 	tracer observability.Tracer

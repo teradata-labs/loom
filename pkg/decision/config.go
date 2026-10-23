@@ -17,7 +17,10 @@ package decision
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
+
+	"go.uber.org/zap"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
@@ -58,7 +61,8 @@ var ErrEndpointNotServerLevel = errors.New("decision.base_url is not accepted in
 // inline AgentConfig (CreateAgentFromConfig, loom-mcp create_agent), or a
 // judge's JudgeConfig. A nil config is valid (the layer is off). Every path
 // that accepts a DecisionConfig runs this one function, so the rules cannot
-// drift between them.
+// drift between them. A config that is valid but likely not what was meant
+// (ConfigWarnings) is accepted and each warning is logged.
 func ValidateConfig(cfg *loomv1.DecisionConfig) error {
 	if cfg == nil {
 		return nil
@@ -84,6 +88,9 @@ func ValidateConfig(cfg *loomv1.DecisionConfig) error {
 	if cfg.RequestsPerMinute < 0 {
 		return fmt.Errorf("decision.requests_per_minute must be >= 0, got %d", cfg.RequestsPerMinute)
 	}
+	if cfg.MaxQuestionsPerRequest < 0 {
+		return fmt.Errorf("decision.max_questions_per_request must be >= 0, got %d", cfg.MaxQuestionsPerRequest)
+	}
 	seen := make(map[string]bool, len(cfg.Bands))
 	for i, b := range cfg.Bands {
 		if b == nil {
@@ -96,8 +103,19 @@ func ValidateConfig(cfg *loomv1.DecisionConfig) error {
 			return fmt.Errorf("decision.bands[%d]: duplicate site %q", i, b.Site)
 		}
 		seen[b.Site] = true
-		if b.ActMin < 0 || b.ActMin > 1 {
+		// NaN fails every comparison, so the range check alone accepts it.
+		if math.IsNaN(b.ActMin) || b.ActMin < 0 || b.ActMin > 1 {
 			return fmt.Errorf("decision.bands[%d] (%s): act_min must be in [0, 1], got %v", i, b.Site, b.ActMin)
+		}
+		if math.IsNaN(b.TrueMin) || b.TrueMin < 0 || b.TrueMin > 1 {
+			return fmt.Errorf("decision.bands[%d] (%s): true_min must be in [0, 1], got %v", i, b.Site, b.TrueMin)
+		}
+		switch b.Aggregate {
+		case loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_UNSPECIFIED,
+			loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_MIN,
+			loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_PER_QUESTION:
+		default:
+			return fmt.Errorf("decision.bands[%d] (%s): aggregate %v must be min or per_question", i, b.Site, b.Aggregate)
 		}
 		switch b.Mode {
 		case loomv1.DecisionBandMode_DECISION_BAND_MODE_UNSPECIFIED,
@@ -107,5 +125,30 @@ func ValidateConfig(cfg *loomv1.DecisionConfig) error {
 			return fmt.Errorf("decision.bands[%d] (%s): mode %v must be replace or tighten_only", i, b.Site, b.Mode)
 		}
 	}
+	for _, w := range ConfigWarnings(cfg) {
+		zap.L().Warn("decision config", zap.String("warning", w))
+	}
 	return nil
+}
+
+// ConfigWarnings lists settings that are valid but likely not what was
+// meant. Today that is a live band with act_min 0: "at or above this
+// confidence the answer is used" then acts on every answer, however
+// uncertain, and an act_min left out of YAML reads as 0. It is a warning,
+// not an error, because acting on every answer is a meaningful setting
+// (it is what a decision judge does with no band).
+func ConfigWarnings(cfg *loomv1.DecisionConfig) []string {
+	if cfg == nil {
+		return nil
+	}
+	var out []string
+	for i, b := range cfg.Bands {
+		if b == nil || b.Shadow || b.ActMin != 0 {
+			continue
+		}
+		out = append(out, fmt.Sprintf(
+			"decision.bands[%d] (%s): act_min is 0 on a live band, so the site acts on every answer however uncertain; set act_min, or shadow: true to only record",
+			i, b.Site))
+	}
+	return out
 }
