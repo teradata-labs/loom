@@ -47,6 +47,11 @@ var datasetFiles = map[string]string{
 	"medium": "longmemeval_m_cleaned.json",
 }
 
+// gitCommit is the source revision this binary was built from. Image builds
+// set it with -ldflags "-X main.gitCommit=<sha>" (deploy/longmemeval/
+// Dockerfile); a plain go build leaves it "unknown".
+var gitCommit = "unknown"
+
 var (
 	// Global flags
 	dataDir string
@@ -398,6 +403,7 @@ func runBenchmark(cmd *cobra.Command, args []string) error {
 	}
 
 	logger.Info("benchmark configuration",
+		zap.String("commit", gitCommit),
 		zap.String("mode", mode),
 		zap.String("server", serverAddr),
 		zap.String("agent", agentID),
