@@ -144,10 +144,19 @@ dataset refused on resume.
   quarantines a chunk. Past the budget the chunk is quarantined with a `.failed` marker
   naming the failing entries and how to retry it (`rm` the marker), and later
   passes skip it so the remaining chunks can finish. A quarantined chunk never
-  turns a partial run into a passing one: the run exits nonzero and writes
-  `RUN-INCOMPLETE.txt` listing what is missing. Once only quarantined chunks
-  remain, further Job restarts are no-op passes that cost nothing, and the Job
-  ends `Failed` when it exhausts `backoffLimit` — which is the honest outcome.
+  turns a partial run into a passing one: the run exits nonzero. Once only
+  quarantined chunks remain, further Job restarts are no-op passes that cost
+  nothing, and the Job ends `Failed` when it exhausts `backoffLimit` — which is
+  the honest outcome.
+- **`RUN-INCOMPLETE.txt`:** every pass that ends with any chunk not done writes
+  `runs/<run-id>/RUN-INCOMPLETE.txt`, listing the not-done chunks under
+  separate headings: quarantined chunks (budget spent; see each `.failed`
+  marker), transient-failed chunks (the harness could not run, or every failed
+  entry carried a retryable status), and chunks that failed deterministically
+  but are still under the budget. The last two are retried on the next pod
+  restart; if the Job has already reached `backoffLimit` there is no next
+  restart, and their entries are missing from the run. The file is removed
+  only by a pass in which every chunk is done.
 
 ## Time and cost — read before launching
 

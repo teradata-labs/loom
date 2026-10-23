@@ -19,6 +19,11 @@
 #   6. a mid-chunk transient outage (every entry failing with a retryable
 #      gRPC status, harness exit HARNESS_RC_TRANSIENT) never consumes the
 #      deterministic budget, however many passes it lasts
+#   7. RUN-INCOMPLETE.txt is written whenever a chunk is not done — a chunk
+#      still failing transiently, one under its deterministic budget, or a
+#      quarantined one — names each under its own heading, survives such a
+#      pass even when it pre-exists, and is removed only once every chunk
+#      completes
 #
 # No cluster or Bedrock access needed. Usage:
 #   bash deploy/longmemeval/slice-loop-test.sh
@@ -107,6 +112,9 @@ export HARNESS_RC_TRANSIENT
 # the chunk fails with a retryable gRPC status and the stub exits
 # HARNESS_RC_TRANSIENT, as the real harness does; after that the chunk
 # succeeds.
+#
+# CRASH_IDS (space separated) simulate a harness that could not run at all:
+# a chunk holding one of them exits 1 without writing any output.
 cat > "${TMP_DIR}/harness-stub.sh" <<'STUB'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -133,6 +141,10 @@ echo "${types} ${offset} ${limit}" >> "${TMP_DIR}/invocations.log"
 
 ids="$(jq -r --arg t "${types}" --argjson o "${offset}" --argjson l "${limit}" \
     '[.[] | select(.question_type == $t) | .question_id][$o:($o+$l)][]' "${dataset}")"
+
+for id in ${ids}; do
+    for cid in ${CRASH_IDS:-}; do [[ "${id}" == "${cid}" ]] && exit 1; done
+done
 
 outage=0
 for id in ${ids}; do
@@ -180,6 +192,7 @@ chmod +x "${TMP_DIR}/harness-stub.sh"
 run_loop() {
     TMP_DIR="${TMP_DIR}" POISON_IDS="${POISON_IDS:-}" \
     TRANSIENT_IDS="${TRANSIENT_IDS:-}" TRANSIENT_PASSES="${TRANSIENT_PASSES:-0}" \
+    CRASH_IDS="${CRASH_IDS:-}" \
     HARNESS_BIN="${TMP_DIR}/harness-stub.sh" \
     SERVER="stub:1" DATASET_FILE="${TMP_DIR}/dataset.json" MODE="ingest" \
     CONCURRENCY="1" CHUNK="2" OCCURRED_AT="false" RESULTS_DIR="$1" \
@@ -366,6 +379,8 @@ for pass in $(seq 1 "${outage_passes}"); do
         || fail "outage pass ${pass} quarantined a chunk whose failures were all transient"
     [[ ! -f "${run_dir4}/s500-beta-type-o000.attempts" ]] \
         || fail "outage pass ${pass} charged the deterministic budget ($(cat "${run_dir4}/s500-beta-type-o000.attempts"))"
+    [[ -f "${run_dir4}/RUN-INCOMPLETE.txt" ]] \
+        || fail "outage pass ${pass} wrote no RUN-INCOMPLETE.txt while a chunk was failing"
 done
 grep -q 'transient entry failures, budget untouched' "${TMP_DIR}/loop.log" \
     && ok "outage reported as transient, budget untouched" \
@@ -392,6 +407,56 @@ outage_attempts="$(grep -c '^beta-type 0 ' "${TMP_DIR}/invocations.log")"
 [[ "${outage_attempts}" == "$((outage_passes + 1))" ]] \
     && ok "outage chunk retried on every pass (${outage_attempts} invocations)" \
     || fail "outage chunk invoked ${outage_attempts} times, expected $((outage_passes + 1))"
+
+# ── 7b. A chunk that never recovers keeps the incomplete sentinel ───────────
+# If the transient outage outlasts the Job's backoffLimit, the last pass is
+# the run's final state: the sentinel must say which chunk is missing, even
+# though no chunk was quarantined, and a pre-existing sentinel must not be
+# taken for a stale one.
+echo "=== 7b. RUN-INCOMPLETE.txt names chunks that are not done ==="
+R6="${TMP_DIR}/r6"; mkdir -p "${R6}/runs/${LME_RUN_ID}"
+run_dir6="${R6}/runs/${LME_RUN_ID}"
+rm -f "${TMP_DIR}/transient-alpha-type-4.count"
+echo "stale" > "${run_dir6}/RUN-INCOMPLETE.txt"
+# alpha offset 4 fails transiently on every pass; the harness cannot run at
+# all for beta offset 2; alpha offset 0 holds a poison entry, so after pass 1
+# it is under its deterministic budget and after pass 2 it is quarantined.
+for pass in 1 2; do
+    POISON_IDS="alpha-type-0" TRANSIENT_IDS="alpha-type-4" TRANSIENT_PASSES=1000 \
+        CRASH_IDS="beta-type-2" run_loop "${R6}"
+    rc=$?
+    sentinel="${run_dir6}/RUN-INCOMPLETE.txt"
+    [[ ${rc} -ne 0 ]] \
+        && ok "pass ${pass} exits nonzero while chunks are not done" \
+        || fail "pass ${pass} exited 0 with a chunk still failing"
+    if [[ ! -f "${sentinel}" ]]; then
+        fail "pass ${pass} removed RUN-INCOMPLETE.txt although chunks are not done"
+        continue
+    fi
+    grep -qx 'stale' "${sentinel}" \
+        && fail "pass ${pass} left the pre-existing sentinel unrewritten" \
+        || ok "pass ${pass} rewrote the sentinel"
+    sed -n '/^transient-failed chunks/,/^[^ ]/p' "${sentinel}" | grep -q '^  s500-alpha-type-o004$' \
+        && ok "pass ${pass}: sentinel lists the transient chunk under its heading" \
+        || fail "pass ${pass}: sentinel does not list s500-alpha-type-o004 as transient-failed ($(cat "${sentinel}"))"
+    sed -n '/^transient-failed chunks/,/^[^ ]/p' "${sentinel}" | grep -q '^  s500-beta-type-o002$' \
+        && ok "pass ${pass}: sentinel lists the chunk whose harness could not run as transient-failed" \
+        || fail "pass ${pass}: sentinel does not list s500-beta-type-o002 as transient-failed ($(cat "${sentinel}"))"
+    if [[ ${pass} -eq 1 ]]; then
+        sed -n '/^deterministically failed chunks/,/^[^ ]/p' "${sentinel}" | grep -q '^  s500-alpha-type-o000$' \
+            && ok "pass 1: a chunk under its deterministic budget is listed under its own heading" \
+            || fail "pass 1: sentinel does not list s500-alpha-type-o000 as deterministically failed ($(cat "${sentinel}"))"
+    fi
+    grep -Eq '^  transient-failed chunks: +2$' "${TMP_DIR}/loop.log" \
+        && ok "pass ${pass}: run summary prints the transient count" \
+        || fail "pass ${pass}: run summary does not print the transient count"
+done
+sed -n '/^quarantined chunks/,/^[^ ]/p' "${run_dir6}/RUN-INCOMPLETE.txt" | grep -q '^  s500-alpha-type-o000$' \
+    && ok "after the budget is spent the poison chunk is listed as quarantined" \
+    || fail "sentinel does not list s500-alpha-type-o000 as quarantined ($(cat "${run_dir6}/RUN-INCOMPLETE.txt"))"
+sed -n '/^transient-failed chunks/,/^[^ ]/p' "${run_dir6}/RUN-INCOMPLETE.txt" | grep -q 's500-alpha-type-o000' \
+    && fail "the quarantined chunk is also listed as transient-failed" \
+    || ok "quarantined and transient-failed chunks are listed separately"
 
 # ── 8. Dataset swapped underneath a resume is refused ───────────────────────
 echo "=== 8. dataset drift is refused on resume ==="

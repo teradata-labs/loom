@@ -30,8 +30,10 @@ data:
     # MAX_CHUNK_ATTEMPTS tries, counted on the PVC so the budget spans pod
     # restarts; past that the chunk is quarantined (.failed marker) and later
     # passes skip it, leaving the remaining chunks free to finish. The run
-    # still exits nonzero and writes RUN-INCOMPLETE.txt — a quarantined chunk
-    # means the published number would be missing entries.
+    # still exits nonzero, and any pass that ends with a chunk not done
+    # (quarantined, failed transiently, or failed deterministically under its
+    # budget) writes RUN-INCOMPLETE.txt naming those chunks — the published
+    # number would be missing their entries.
     #
     # What the budget is charged for is decided by the harness exit status:
     #   0                     ran; validation decides (a rejected chunk is a
@@ -244,6 +246,8 @@ data:
 
     failed=0
     quarantined=()
+    transient_failed=()
+    deterministic_failed=()
     completed=0
     for i in "${!types[@]}"; do
       t="${types[$i]}"; n="${counts[$i]}"
@@ -334,6 +338,7 @@ data:
             # infrastructure, not a verdict on these entries.
             echo "CHUNK FAILED (transient entry failures, budget untouched): ${name} — harness exited ${harness_rc}; retried on the next pod restart."
             errored_entries "${reject_dir}/${name}-detailed.json"
+            transient_failed+=("${name}")
             offset=$((offset + CHUNK))
             continue
           fi
@@ -342,6 +347,7 @@ data:
             # verdict on these entries, so the deterministic budget is
             # untouched and the Job's backoffLimit bounds the retries.
             echo "CHUNK FAILED (infrastructure, budget untouched): ${name} — harness exited ${harness_rc}; retried on the next pod restart."
+            transient_failed+=("${name}")
             offset=$((offset + CHUNK))
             continue
           fi
@@ -365,6 +371,7 @@ data:
             echo "CHUNK QUARANTINED after ${attempt} deterministic failures: ${name} — later passes will skip it so the remaining chunks can finish. See ${quarantine}."
           else
             echo "CHUNK FAILED (deterministic ${attempt}/${MAX_CHUNK_ATTEMPTS}): ${name} — retried on the next pod restart."
+            deterministic_failed+=("${name}")
           fi
         fi
         offset=$((offset + CHUNK))
@@ -374,24 +381,48 @@ data:
     echo "=== run summary (run_id=${RUN_ID}) ==="
     echo "  completed chunks:   ${completed}"
     echo "  quarantined chunks: ${#quarantined[@]}"
-    if [ "${#quarantined[@]}" -gt 0 ]; then
+    echo "  transient-failed chunks: ${#transient_failed[@]}"
+    echo "  deterministic failures under budget: ${#deterministic_failed[@]}"
+    if [ "${failed}" -ne 0 ]; then
+      # Written on EVERY pass that leaves a chunk not done, not only when one
+      # is quarantined: a transient outage that outlasts the Job's
+      # backoffLimit makes this pass the run's final state, and a run that
+      # ends that way is missing entries just as surely.
       {
         printf 'run_id=%s written=%s\n' "${RUN_ID}" "$(date -u '+%FT%TZ')"
-        printf 'This run is INCOMPLETE: %s chunk(s) exhausted MAX_CHUNK_ATTEMPTS=%s and were\n' "${#quarantined[@]}" "${MAX_CHUNK_ATTEMPTS}"
-        printf 'skipped. Scoring s500-*.jsonl will omit their entries, so any number derived\n'
-        printf 'from this run is not the full benchmark. Each chunk has a .failed marker\n'
-        printf 'naming the entries that failed and how to retry it.\n'
-        printf 'quarantined chunks:\n'
-        for q in "${quarantined[@]}"; do printf '  %s\n' "${q}"; done
+        printf 'This run is INCOMPLETE: %s chunk(s) are not done. Scoring s500-*.jsonl will\n' \
+          "$(( ${#quarantined[@]} + ${#transient_failed[@]} + ${#deterministic_failed[@]} ))"
+        printf 'omit their entries, so any number derived from this run is not the full\n'
+        printf 'benchmark.\n'
+        printf '\n'
+        printf 'Quarantined chunks exhausted MAX_CHUNK_ATTEMPTS=%s; each has a .failed marker\n' "${MAX_CHUNK_ATTEMPTS}"
+        printf 'naming the entries that failed and how to retry it. The other chunks are\n'
+        printf 'retried on the next pod restart (transient failures without consuming the\n'
+        printf 'budget). If the Job has reached its backoffLimit there is no next restart,\n'
+        printf 'and their entries are missing from the run.\n'
+        if [ "${#quarantined[@]}" -gt 0 ]; then
+          printf 'quarantined chunks:\n'
+          for q in "${quarantined[@]}"; do printf '  %s\n' "${q}"; done
+        fi
+        if [ "${#transient_failed[@]}" -gt 0 ]; then
+          printf 'transient-failed chunks (infrastructure or retryable gRPC statuses):\n'
+          for q in "${transient_failed[@]}"; do printf '  %s\n' "${q}"; done
+        fi
+        if [ "${#deterministic_failed[@]}" -gt 0 ]; then
+          printf 'deterministically failed chunks under the attempt budget:\n'
+          for q in "${deterministic_failed[@]}"; do printf '  %s\n' "${q}"; done
+        fi
       } | write_atomic "${run_dir}/RUN-INCOMPLETE.txt" || fatal_pvc "RUN-INCOMPLETE.txt"
       echo "  wrote ${run_dir}/RUN-INCOMPLETE.txt"
-      echo "  NOTE: the Job will keep restarting until backoffLimit is reached; later"
-      echo "        passes are no-ops (every chunk is done or quarantined) and cost nothing."
+      if [ "${#transient_failed[@]}" -eq 0 ] && [ "${#deterministic_failed[@]}" -eq 0 ]; then
+        echo "  NOTE: the Job will keep restarting until backoffLimit is reached; later"
+        echo "        passes are no-ops (every chunk is done or quarantined) and cost nothing."
+      fi
     elif [ -f "${run_dir}/RUN-INCOMPLETE.txt" ]; then
-      # A quarantined chunk was recovered (operator removed its .failed and
-      # .attempts markers) and the run has since completed. Leaving the
-      # sentinel behind would tell the next reader — and the README tells
-      # them to believe it — that a complete run is missing entries.
+      # Every chunk is done (a quarantined chunk was recovered, or a
+      # transient outage ended). Leaving the sentinel behind would tell the
+      # next reader — and the README tells them to believe it — that a
+      # complete run is missing entries.
       rm -f "${run_dir}/RUN-INCOMPLETE.txt"
       echo "  cleared a stale RUN-INCOMPLETE.txt: every chunk is now complete"
     fi
