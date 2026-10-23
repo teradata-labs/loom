@@ -890,35 +890,24 @@ func (c *Client) convertResponse(resp *ChatCompletionResponse, providerCostUSD f
 }
 
 // anthropicFallbackPricing returns published Anthropic rates for a model id
-// proxied through an OpenAI-compatible endpoint. Mirrors the bedrock client's
-// substring matching so a gateway-proxied Claude is never priced as a GPT.
+// proxied through an OpenAI-compatible endpoint, so a gateway-proxied Claude is
+// never priced as a GPT. It delegates to catalog.ClaudeFamilyPricing, the
+// matcher shared with the anthropic and bedrock clients.
 func anthropicFallbackPricing(modelID string) (inputPerM, outputPerM float64, matched bool) {
-	switch {
-	case strings.Contains(modelID, "claude-opus-4-1"):
-		return 15.0, 75.0, true
-	case strings.Contains(modelID, "claude-opus"):
-		return 5.0, 25.0, true
-	case strings.Contains(modelID, "claude-haiku"):
-		return 1.0, 5.0, true
-	case strings.Contains(modelID, "claude-sonnet"), strings.Contains(modelID, "claude-3-5-sonnet"):
-		return 3.0, 15.0, true
-	}
-	return 0, 0, false
+	return catalog.ClaudeFamilyPricing(modelID)
 }
 
 // providerCostHeader is litellm's own computed cost for the call. It is
 // cache-aware and authoritative — preferred over any local estimate.
 const providerCostHeader = "x-litellm-response-cost"
 
-// Cache-tier multipliers on the input rate, by rate-card family. Anthropic
-// bills a 5-minute cache write at 1.25x and a cache read at 0.10x. OpenAI bills
-// a cached input token at 0.5x (gpt-4o: $1.25 cached against $2.50) and has no
-// separate write bucket, so a cache-creation token is simply an input token.
+// Cache-tier multipliers on the input rate for the OpenAI rate card. OpenAI
+// bills a cached input token at 0.5x (gpt-4o: $1.25 cached against $2.50) and
+// has no separate write bucket, so a cache-creation token is simply an input
+// token. Claude's multipliers are per model and come from pkg/llm/catalog.
 const (
-	anthropicCacheWriteMultiplier = 1.25
-	anthropicCacheReadMultiplier  = 0.10
-	openAICacheWriteMultiplier    = 1.0
-	openAICacheReadMultiplier     = 0.5
+	openAICacheWriteMultiplier = 1.0
+	openAICacheReadMultiplier  = 0.5
 )
 
 // parseProviderCost reads the gateway's reported cost, if it sent one.
@@ -1048,7 +1037,11 @@ func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cache
 	// model id, so it still identifies a Claude that the catalog priced.
 	cacheReadMult, cacheWriteMult := openAICacheReadMultiplier, openAICacheWriteMultiplier
 	if _, _, isAnthropic := anthropicFallbackPricing(c.model); isAnthropic {
-		cacheReadMult, cacheWriteMult = anthropicCacheReadMultiplier, anthropicCacheWriteMultiplier
+		cacheReadMult, cacheWriteMult = catalog.ClaudeCacheReadMultiplier(c.model), catalog.ClaudeCacheWriteMultiplier
+		// prompt_tokens already includes the cached buckets, so it is the prompt length.
+		if in, out, long := catalog.ClaudeLongContextPricing(c.model, inputTokens); long {
+			inputCostPerM, outputCostPerM = in, out
+		}
 	}
 
 	uncached := inputTokens - cacheReadTokens - cacheCreationTokens
