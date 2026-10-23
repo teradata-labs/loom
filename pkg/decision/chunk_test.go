@@ -383,3 +383,45 @@ func (recoverDecider) Decide(_ context.Context, req *loomv1.DecisionRequest) (*l
 	}
 	return out, nil
 }
+
+// Review #410 M6: each bisection level made a fresh semaphore while the
+// parent held its slot, so under overload in-flight Decide calls grew
+// 4→8→16→32→64. One slot pool now bounds every provider call of a request,
+// and a recursing chunk gives its slot back before its halves ask for one,
+// so the walk cannot deadlock on its own slots.
+func TestChunkedBisectionSharesOneSlotPool(t *testing.T) {
+	tests := []struct {
+		name        string
+		concurrency int
+	}{
+		{"default concurrency", decision.DefaultChunkConcurrency},
+		{"one slot", 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := mock.New()
+			var inFlight, peak atomic.Int32
+			m.SetHook(func(*loomv1.DecisionRequest) error {
+				n := inFlight.Add(1)
+				defer inFlight.Add(-1)
+				for {
+					p := peak.Load()
+					if n <= p || peak.CompareAndSwap(p, n) {
+						break
+					}
+				}
+				time.Sleep(2 * time.Millisecond) // hold the call so overlaps are visible
+				return decision.ErrOverloaded
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			d := decision.Chunk(m, decision.WithChunkSize(16), decision.WithChunkConcurrency(tt.concurrency))
+			_, err := d.Decide(ctx, fanOutRequest(t, 64))
+			require.NoError(t, ctx.Err(), "the bisection walk finished before the deadline")
+			require.ErrorIs(t, err, decision.ErrOverloaded)
+			// 4 chunks of 16, each bisected down to single questions: 4×31 calls.
+			assert.Equal(t, 4*31, m.CallCount())
+			assert.LessOrEqual(t, int(peak.Load()), tt.concurrency, "in-flight Decide calls exceeded the configured concurrency")
+		})
+	}
+}

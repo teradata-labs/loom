@@ -34,8 +34,8 @@ type SizeHinter interface {
 	MaxQuestionsPerRequest() int
 }
 
-// DefaultChunkConcurrency bounds how many chunks of one request are in
-// flight at once.
+// DefaultChunkConcurrency bounds how many provider calls one request has in
+// flight at once, bisection retries included.
 const DefaultChunkConcurrency = 4
 
 // Chunked splits a request that carries more questions than a decider
@@ -66,8 +66,8 @@ type ChunkOption func(*Chunked)
 // decider's hint (or no pre-split when it has none).
 func WithChunkSize(n int) ChunkOption { return func(c *Chunked) { c.size = n } }
 
-// WithChunkConcurrency bounds chunks in flight for one request (default
-// DefaultChunkConcurrency, minimum 1).
+// WithChunkConcurrency bounds provider calls in flight for one request,
+// across every bisection level (default DefaultChunkConcurrency, minimum 1).
 func WithChunkConcurrency(n int) ChunkOption {
 	return func(c *Chunked) {
 		if n >= 1 {
@@ -164,22 +164,39 @@ func (c *Chunked) Decide(ctx context.Context, req *loomv1.DecisionRequest) (*loo
 	if req == nil {
 		return nil, fmt.Errorf("%w: nil request", ErrValidation)
 	}
+	// One slot pool for the whole request: every provider call, at every
+	// bisection level, takes a slot for the call alone.
+	slots := make(chan struct{}, c.concurrency)
 	n := len(req.Questions)
 	if n == 0 || (c.size == 0 || n <= c.size) {
-		resp, err := c.decider.Decide(ctx, req)
+		resp, err := c.call(ctx, slots, req)
 		if err == nil || !c.bisect || n < 2 || !chunkRetryable(ctx, err) {
 			return resp, err
 		}
 		// The whole request failed with something a smaller request may
 		// clear: bisect from here, keeping what the failed attempt cost.
-		return withFailedUsage(c.decideIDs(ctx, req, sortedQuestionIDs(req), 1))(UsageFromError(err))
+		return withFailedUsage(c.decideIDs(ctx, slots, req, sortedQuestionIDs(req), 1))(UsageFromError(err))
 	}
-	return c.decideIDs(ctx, req, sortedQuestionIDs(req), 0)
+	return c.decideIDs(ctx, slots, req, sortedQuestionIDs(req), 0)
+}
+
+// call sends one request to the wrapped decider while holding a slot. The
+// slot is released when the call returns, before any bisection of its
+// failure, so a chunk waiting on its halves never holds a slot they need.
+func (c *Chunked) call(ctx context.Context, slots chan struct{}, req *loomv1.DecisionRequest) (*loomv1.DecisionResponse, error) {
+	select {
+	case slots <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	defer func() { <-slots }()
+	return c.decider.Decide(ctx, req)
 }
 
 // decideIDs answers the given question ids, splitting into chunks of c.size
-// (or in half when depth > 0, i.e. after a failure) and merging.
-func (c *Chunked) decideIDs(ctx context.Context, req *loomv1.DecisionRequest, ids []string, depth int) (*loomv1.DecisionResponse, error) {
+// (or in half when depth > 0, i.e. after a failure) and merging. Parts run
+// concurrently; slots, not the number of parts, bounds the provider calls.
+func (c *Chunked) decideIDs(ctx context.Context, slots chan struct{}, req *loomv1.DecisionRequest, ids []string, depth int) (*loomv1.DecisionResponse, error) {
 	var parts [][]string
 	switch {
 	case depth == 0 && c.size > 0 && len(ids) > c.size:
@@ -197,25 +214,17 @@ func (c *Chunked) decideIDs(ctx context.Context, req *loomv1.DecisionRequest, id
 		parts = [][]string{ids}
 	}
 	if len(parts) == 1 {
-		return c.decideOne(ctx, req, parts[0], depth)
+		return c.decideOne(ctx, slots, req, parts[0], depth)
 	}
 
 	results := make([]*loomv1.DecisionResponse, len(parts))
 	errs := make([]error, len(parts))
-	sem := make(chan struct{}, c.concurrency)
 	var wg sync.WaitGroup
 	for i, part := range parts {
 		wg.Add(1)
 		go func(i int, part []string) {
 			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-			case <-ctx.Done():
-				errs[i] = ctx.Err()
-				return
-			}
-			defer func() { <-sem }()
-			results[i], errs[i] = c.decideOne(ctx, req, part, depth)
+			results[i], errs[i] = c.decideOne(ctx, slots, req, part, depth)
 		}(i, part)
 	}
 	wg.Wait()
@@ -260,16 +269,15 @@ func addUsage(dst, src *loomv1.DecisionUsage) {
 // decideOne sends one chunk; on a retryable failure with more than one
 // question it bisects (bounded by the question count, so at most log2(n)
 // levels deep).
-func (c *Chunked) decideOne(ctx context.Context, req *loomv1.DecisionRequest, ids []string, depth int) (*loomv1.DecisionResponse, error) {
-	sub := SubRequest(req, ids)
-	resp, err := c.decider.Decide(ctx, sub)
+func (c *Chunked) decideOne(ctx context.Context, slots chan struct{}, req *loomv1.DecisionRequest, ids []string, depth int) (*loomv1.DecisionResponse, error) {
+	resp, err := c.call(ctx, slots, SubRequest(req, ids))
 	if err == nil {
 		return resp, nil
 	}
 	if !c.bisect || len(ids) < 2 || !chunkRetryable(ctx, err) {
 		return nil, err
 	}
-	return withFailedUsage(c.decideIDs(ctx, req, ids, depth+1))(UsageFromError(err))
+	return withFailedUsage(c.decideIDs(ctx, slots, req, ids, depth+1))(UsageFromError(err))
 }
 
 // withFailedUsage folds the usage of a failed attempt into what the retry
