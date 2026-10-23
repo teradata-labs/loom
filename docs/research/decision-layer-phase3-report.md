@@ -173,4 +173,3 @@ The ordering is sound and close to a step function at 0.1: below it almost nothi
 **Two corrections to earlier readings in this report.** On knowledge-update, Jev and gpt-4o agree on 99% of individual candidates (645 of 652), so the gap there is noise, not a win; the multi-session recall gap (56.0% against 40.4%) is the real difference. And the Phase 2 headline of 94.0% against gpt-4o's 79.9% on failure classification reverses to 77.2% against 96.9% under the original reference: 201 foreign-key rows decide it, and which label they get is a judgement we made. Neither number is ground truth, and the report should not be read as if they were.
 
 A caveat that bounds all of §9: evidence is labelled per session, so a memory extracted from an evidence session counts as evidence whether or not it carries the answer. That inflates the apparent under-confidence. The monotonic ordering and the step at 0.1 survive it.
-
