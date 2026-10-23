@@ -1071,6 +1071,11 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 				allowedTools["get_error_details"] = true
 			}
 		}
+		// decision.expose_tool is how a config asks for the decide builtin;
+		// it would be inert if this filter removed the tool it registers.
+		if config.GetDecision().GetExposeTool() {
+			allowedTools[DecideToolName] = true
+		}
 
 		// Get list of currently registered tools
 		registeredTools := agent.ListTools()

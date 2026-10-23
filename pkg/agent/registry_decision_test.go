@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/decision"
 	decisionmock "github.com/teradata-labs/loom/pkg/decision/mock"
 	"github.com/teradata-labs/loom/pkg/memory"
@@ -55,4 +56,37 @@ func TestRegistryWaitDecisionShadows(t *testing.T) {
 	rows, err := store.QueryShadow(context.Background(), decision.ShadowQuery{})
 	require.NoError(t, err)
 	assert.Len(t, rows, 1, "the row landed before Wait returned")
+}
+
+// Review #410 minor d: with tools.builtin set, the registry's builtin filter
+// unregistered every framework tool not on the list, including "decide", so
+// decision.expose_tool: true did nothing. expose_tool now counts as asking
+// for the tool; without it the filter still removes nothing it did not.
+func TestRegistryBuiltinFilterKeepsDecideWhenExposed(t *testing.T) {
+	tests := []struct {
+		name       string
+		exposeTool bool
+		want       bool
+	}{
+		{"expose_tool true", true, true},
+		{"expose_tool false", false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			registry, _ := createTestRegistry(t)
+			config := createTestAgentConfig("decide_filter")
+			config.Tools = &loomv1.ToolsConfig{Builtin: []string{"shell_execute"}}
+			config.Decision = &loomv1.DecisionConfig{Provider: DecisionProviderMock, ExposeTool: tt.exposeTool}
+
+			ag, err := registry.buildAgent(context.Background(), config)
+			require.NoError(t, err)
+			tools := ag.ListTools()
+			assert.Contains(t, tools, "shell_execute")
+			if tt.want {
+				assert.Contains(t, tools, DecideToolName)
+			} else {
+				assert.NotContains(t, tools, DecideToolName)
+			}
+		})
+	}
 }
