@@ -366,3 +366,23 @@ func TestLiveRerankKeepsCandidatesPastTheRequest(t *testing.T) {
 	assert.Len(t, results, 70)
 	assert.Equal(t, "t69", results[69].Tool.Name, "the unjudged tail follows the ranked candidates")
 }
+
+// Review #410 M1: 70 candidates, all 64 judged answers uncertain. The guard
+// must compare against the 64 the request carried, so the LLM rerank decides
+// and the outcome is a fallback, not a DECIDER act on zero confident answers.
+func TestLiveRerankAllUncertainPastTheCapFallsBack(t *testing.T) {
+	m := mock.New()
+	for i := 0; i < sites.MaxRerankCandidates; i++ {
+		m.AnswerNoul(sites.CandidateQuestionID(i), 0.5)
+	}
+	st, reg := bindingWith(t, decision.NewRouter(m, liveToolSearchBand(0.8)), &memShadowStore{})
+	many := make([]*loomv1.ToolSearchResult, 70)
+	for i := range many {
+		many[i] = &loomv1.ToolSearchResult{Tool: &loomv1.IndexedTool{Name: fmt.Sprintf("t%02d", i), Description: "d"}}
+	}
+	results, acted, req, out := st.decision.liveRerank(context.Background(), reg.logger, "q", many)
+	assert.False(t, acted, "nothing cleared the band: the LLM rerank decides")
+	assert.Nil(t, results)
+	require.NotNil(t, req)
+	assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_FALLBACK, out.Path)
+}

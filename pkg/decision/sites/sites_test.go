@@ -204,6 +204,10 @@ func TestRerankKeptWithBand(t *testing.T) {
 	assert.True(t, RerankContributed(4, 2))
 	assert.False(t, RerankContributed(4, 4), "all uncertain: nothing to act on")
 	assert.False(t, RerankContributed(0, 0))
+	// Review #410 M1: n past the request cap counts only the judged
+	// candidates, the same cap RerankKeptWithBand applies.
+	assert.False(t, RerankContributed(70, MaxRerankCandidates), "70 candidates, all 64 judged uncertain")
+	assert.True(t, RerankContributed(70, MaxRerankCandidates-1))
 }
 
 func TestRerankKept(t *testing.T) {

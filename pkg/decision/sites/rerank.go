@@ -149,8 +149,13 @@ const RerankKeepProbability = 0.5
 // RerankContributed reports whether a live rerank outcome is worth acting on:
 // at least one of n answers cleared the band. When every answer is uncertain
 // the decider has said nothing, and the site is better off running its
-// generative rerank than keeping every candidate.
-func RerankContributed(n, uncertain int) bool { return n > 0 && uncertain < n }
+// generative rerank than keeping every candidate. n is the caller's candidate
+// count; like RerankKeptWithBand it is capped at MaxRerankCandidates, because
+// uncertain counts only the candidates the request carried.
+func RerankContributed(n, uncertain int) bool {
+	n = min(n, MaxRerankCandidates)
+	return n > 0 && uncertain < n
+}
 
 // RerankKeptWithBand is the live-mode selection for a fan-out band judged
 // PER_QUESTION: a candidate is kept when its Noul says relevant, or when the

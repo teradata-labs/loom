@@ -487,3 +487,37 @@ func TestRerankMemoriesLiveBandKeepsCandidatesPastTheRequest(t *testing.T) {
 	require.Equal(t, 1, dec.CallCount())
 	assert.Len(t, dec.Calls()[0].Questions, sites.MaxRerankCandidates)
 }
+
+// Review #410 M1: with 70 candidates the request carries 64 and every answer
+// is uncertain. The all-uncertain guard compared 64 uncertain answers against
+// 70 candidates, so it acted on zero confident answers and skipped the LLM
+// rerank. The LLM rerank now runs once and no DECIDER row is recorded.
+func TestRerankMemoriesLiveBandAllUncertainPastTheCapFallsBack(t *testing.T) {
+	t.Parallel()
+	llm := &countingRerankLLM{reply: "1"}
+	dec := decisionmock.New()
+	for i := 0; i < sites.MaxRerankCandidates; i++ {
+		dec.AnswerNoul(sites.CandidateQuestionID(i), 0.5)
+	}
+	store := &memShadowStore{}
+	ag := NewAgent(nil, llm, WithName("dec"),
+		WithDecisionRouter(decision.NewRouter(dec, liveRerankBand(0.8))),
+		WithDecisionShadowStore(store))
+
+	candidates := make([]*memory.Memory, 70)
+	for i := range candidates {
+		candidates[i] = &memory.Memory{ID: fmt.Sprintf("m%02d", i), Content: fmt.Sprintf("memory %d", i)}
+	}
+	ctx := decision.WithSessionID(context.Background(), "sess-70u")
+	_ = ag.rerankMemories(ctx, "q", candidates)
+	ag.WaitDecisionShadows()
+	assert.Equal(t, int32(1), llm.calls.Load(), "the LLM rerank decides when nothing cleared the band")
+	assert.Equal(t, 1, dec.CallCount())
+
+	rows, err := store.QueryShadow(ctx, decision.ShadowQuery{Site: sites.SiteRecallRerank})
+	require.NoError(t, err)
+	require.NotEmpty(t, rows)
+	for _, r := range rows {
+		assert.NotEqual(t, loomv1.DecisionPath_DECISION_PATH_DECIDER, r.Path, "question %s", r.QuestionId)
+	}
+}
