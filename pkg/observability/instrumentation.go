@@ -26,6 +26,9 @@ const (
 	SpanLLMCompletion = "llm.completion"
 	SpanLLMTokenize   = "llm.tokenize" // #nosec G101 -- not a credential, just span name
 
+	// Decision spans (typed decisions, pkg/decision)
+	SpanDecisionEvaluate = "decision.evaluate"
+
 	// Tool (shuttle) spans
 	SpanToolExecute  = "tool.execute"
 	SpanToolValidate = "tool.validate"
@@ -102,6 +105,19 @@ const (
 	MetricLLMTokensOutput = "llm.tokens.output" // #nosec G101 -- not a credential, just metric name
 	MetricLLMCost         = "llm.cost"
 	MetricLLMErrors       = "llm.errors.total"
+
+	// Decision metrics (typed decisions, pkg/decision). Decisions are the
+	// auxiliary judgments that used to be uncounted generative calls; these
+	// metrics are what makes them visible next to llm.* .
+	MetricDecisionCalls     = "decision.calls.total"
+	MetricDecisionLatency   = "decision.latency"
+	MetricDecisionTokens    = "decision.tokens.input" // #nosec G101 -- not a credential, just metric name
+	MetricDecisionCost      = "decision.cost"
+	MetricDecisionErrors    = "decision.errors.total"
+	MetricDecisionFallbacks = "decision.fallbacks.total"
+	// Shadow-mode comparisons written (rows) and store failures.
+	MetricDecisionShadowRows   = "decision.shadow.rows.total"
+	MetricDecisionShadowErrors = "decision.shadow.errors.total"
 
 	// Streaming metrics
 	MetricLLMStreamingTTFT       = "llm.streaming.ttft_ms"

@@ -23,6 +23,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/artifacts"
+	"github.com/teradata-labs/loom/pkg/decision"
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/task"
@@ -78,6 +79,15 @@ type StorageDetailProvider interface {
 type GraphMemoryProvider interface {
 	// GraphMemoryStore returns the graph memory store, or nil if not available.
 	GraphMemoryStore() memory.GraphMemoryStore
+}
+
+// DecisionShadowProvider is an optional interface that StorageBackend
+// implementations may satisfy to persist typed-decision shadow comparisons
+// (pkg/decision). Only backends with the decision_shadow migration applied
+// implement it.
+type DecisionShadowProvider interface {
+	// DecisionShadowStore returns the shadow store, or nil if not available.
+	DecisionShadowStore() decision.ShadowStore
 }
 
 // TaskStoreProvider is an optional interface that StorageBackend implementations

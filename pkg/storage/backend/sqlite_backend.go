@@ -23,6 +23,7 @@ import (
 	"github.com/teradata-labs/loom/internal/sqlitedriver"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/artifacts"
+	"github.com/teradata-labs/loom/pkg/decision"
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
@@ -41,10 +42,13 @@ type SQLiteBackend struct {
 	graphMemDB        *sql.DB // owned connection for graph memory; closed in Close()
 	taskStore         task.TaskStore
 	taskDB            *sql.DB // owned connection for task store; closed in Close()
-	migrator          *sqlite.Migrator
-	migratorDB        *sql.DB // owned connection backing migrator; closed in Close()
-	dbPath            string
-	tracer            observability.Tracer
+	// decisionShadowStore persists typed-decision shadow rows (pkg/decision).
+	decisionShadowStore decision.ShadowStore
+	decisionDB          *sql.DB // owned connection for the shadow store; closed in Close()
+	migrator            *sqlite.Migrator
+	migratorDB          *sql.DB // owned connection backing migrator; closed in Close()
+	dbPath              string
+	tracer              observability.Tracer
 }
 
 // NewSQLiteBackend creates a new SQLite-backed storage backend.
@@ -156,18 +160,35 @@ func NewSQLiteBackend(cfg *loomv1.SQLiteStorageConfig, tracer observability.Trac
 	}
 	taskStore := sqlite.NewTaskStore(taskDB, tracer)
 
+	// Create decision shadow store (same DB path, separate connection).
+	decisionDB, err := sql.Open("sqlite3", dsn)
+	if err != nil {
+		return nil, errors.Join(
+			fmt.Errorf("failed to open DB for decision shadow store: %w", err),
+			taskDB.Close(),
+			graphMemDB.Close(),
+			migratorDB.Close(),
+			sessionStore.Close(),
+			artifactStore.Close(),
+			humanStore.Close(),
+		)
+	}
+	decisionShadowStore := sqlite.NewDecisionShadowStore(decisionDB, tracer)
+
 	return &SQLiteBackend{
-		sessionStore:      sessionStore,
-		artifactStore:     artifactStore,
-		humanRequestStore: humanStore,
-		graphMemoryStore:  graphMemoryStore,
-		graphMemDB:        graphMemDB,
-		taskStore:         taskStore,
-		taskDB:            taskDB,
-		migrator:          migrator,
-		migratorDB:        migratorDB,
-		dbPath:            dbPath,
-		tracer:            tracer,
+		sessionStore:        sessionStore,
+		artifactStore:       artifactStore,
+		humanRequestStore:   humanStore,
+		graphMemoryStore:    graphMemoryStore,
+		graphMemDB:          graphMemDB,
+		taskStore:           taskStore,
+		taskDB:              taskDB,
+		decisionShadowStore: decisionShadowStore,
+		decisionDB:          decisionDB,
+		migrator:            migrator,
+		migratorDB:          migratorDB,
+		dbPath:              dbPath,
+		tracer:              tracer,
 	}, nil
 }
 
@@ -262,6 +283,11 @@ func (b *SQLiteBackend) Close() error {
 			firstErr = fmt.Errorf("task db close: %w", err)
 		}
 	}
+	if b.decisionDB != nil {
+		if err := b.decisionDB.Close(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("decision shadow db close: %w", err)
+		}
+	}
 	if b.migratorDB != nil {
 		if err := b.migratorDB.Close(); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("migrator db close: %w", err)
@@ -269,6 +295,11 @@ func (b *SQLiteBackend) Close() error {
 	}
 
 	return firstErr
+}
+
+// DecisionShadowStore implements DecisionShadowProvider.
+func (b *SQLiteBackend) DecisionShadowStore() decision.ShadowStore {
+	return b.decisionShadowStore
 }
 
 // GraphMemoryStore implements GraphMemoryProvider.
