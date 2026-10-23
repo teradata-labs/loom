@@ -289,7 +289,7 @@ build-bin name:
 
 # Run go vet
 vet:
-    go vet ./...
+    go vet $(go list ./... | grep -v /third_party/)
 
 # Run linter
 lint:
@@ -297,14 +297,14 @@ lint:
 
 # Format code
 fmt:
-    gofmt -s -w .
-    goimports -w .
+    find . -name '*.go' -not -path './vendor/*' -not -path './gen/*' -not -path './third_party/*' -exec gofmt -s -w {} +
+    find . -name '*.go' -not -path './vendor/*' -not -path './gen/*' -not -path './third_party/*' -exec goimports -w {} +
 
 # Check code formatting (fails if unformatted files exist)
 fmt-check:
     #!/usr/bin/env bash
     set -euo pipefail
-    unformatted=$(find . -name '*.go' -not -path './vendor/*' -not -path './gen/*' -exec gofmt -l {} +)
+    unformatted=$(find . -name '*.go' -not -path './vendor/*' -not -path './gen/*' -not -path './third_party/*' -exec gofmt -l {} +)
     if [ -n "$unformatted" ]; then
         echo "The following files need formatting:"
         echo "$unformatted"

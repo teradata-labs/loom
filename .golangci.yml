@@ -10,6 +10,7 @@ linters:
     paths:
       - gen
       - vendor
+      - third_party
 
 issues:
   max-issues-per-linter: 0
