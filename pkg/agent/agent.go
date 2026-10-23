@@ -1972,6 +1972,23 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	span.SetAttribute("config.max_turns", a.config.MaxTurns)
 	span.SetAttribute("config.max_tool_executions", a.config.MaxToolExecutions)
 
+	// One turn per session at a time (session_turn_lock.go). Taken after the
+	// span starts so the wait is visible on the turn; a turn that arrives while
+	// another runs (a user message during a workflow injection) waits instead of
+	// interleaving its rows with the running turn's.
+	lockWaitStart := time.Now()
+	unlockSession, err := a.lockSession(ctx, sessionID)
+	if err != nil {
+		span.RecordError(err)
+		span.Status = observability.Status{Code: observability.StatusError, Message: err.Error()}
+		return nil, fmt.Errorf("waiting for the running turn on session %s: %w", sessionID, err)
+	}
+	defer unlockSession()
+	if waited := time.Since(lockWaitStart); waited >= sessionTurnWaitReportThreshold {
+		span.SetAttribute("session.turn_wait_ms", waited.Milliseconds())
+		span.AddEvent("session.turn_waited", map[string]interface{}{"wait_ms": waited.Milliseconds()})
+	}
+
 	// Record conversation started event
 	startedEvent := map[string]interface{}{
 		"session_id":     sessionID,

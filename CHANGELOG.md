@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+#### One turn per session at a time
+- **Two turns on the same session could run concurrently and corrupt each other's requests.** Nothing serialized `Agent.chat()` per session, and a workflow coordinator's session gets turns from two sources: the user (`Weave`/`StreamWeave`) and the notification handler that injects each sub-agent reply. When a reply arrived during a user turn, both conversation loops appended rows to the session at once, and a compiled request carried one `tool_result` twice. Bedrock rejected it with `each tool_use must have a single result. Found multiple tool_result blocks with id: …`, failing both turns.
+- **`chat()` (`Chat`, `ChatWithProgress`, `ChatWithContentBlocks`) and `ResumeChat()` now hold a per-session turn lock for the whole turn**, so a new turn and a resume also exclude each other. A turn that arrives while another runs waits; turns on different sessions still run in parallel.
+- **The lock honors the caller's context**: a waiter whose context ends returns the context error. Entries are reference-counted and removed when no turn holds or awaits them; the previous resume-only lock kept one entry per session forever. A wait of 10 ms or more is recorded on the turn span as `session.turn_wait_ms` and a `session.turn_waited` event.
+- **Scope:** one `Agent` instance in one process. A host that builds a fresh `Agent` per call, or spreads a session's turns across processes, must serialize them itself. The workflow coordinator handlers hold a server `llmSemaphore` slot while they wait for a user turn; user turns do not take slots, so this cannot deadlock, but the slot is idle during the wait.
+
 ### Added
 
 #### HITL park: tools other than `contact_human` can park as questions
