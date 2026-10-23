@@ -3418,19 +3418,31 @@ func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, 
 	}
 
 	// === AUTOMATIC GRAPH MEMORY EXTRACTION ===
-	// After each tool execution, check if we should extract graph memories.
-	// Skip when the tool IS graph_memory — explicit use is higher quality.
-	if a.enableGraphMemoryExtraction && toolCall.Name != "graph_memory" {
-		a.graphToolExecutionsSinceExtraction++
-		if a.graphToolExecutionsSinceExtraction >= a.graphExtractionCadence {
-			a.graphExtractionWG.Add(1)
-			go func() {
-				defer a.graphExtractionWG.Done()
-				a.extractGraphMemoryAsync(ctx, session.ID)
-			}()
-			a.graphToolExecutionsSinceExtraction = 0
-		}
+	a.maybeExtractAfterTool(ctx, session.ID, toolCall.Name)
+}
+
+// maybeExtractAfterTool counts a tool execution toward the graph memory
+// extraction cadence and starts an extraction when the cadence is reached.
+// The graph_memory tool itself is skipped: explicit use is higher quality.
+//
+// WithoutCancel: the turn may return before extraction ends (a Weave RPC's
+// context is cancelled when it returns); the extraction's own timeout bounds
+// it, as for the per-turn extraction in runConversationLoop.
+func (a *Agent) maybeExtractAfterTool(ctx context.Context, sessionID, toolName string) {
+	if !a.enableGraphMemoryExtraction || toolName == "graph_memory" {
+		return
 	}
+	a.graphToolExecutionsSinceExtraction++
+	if a.graphToolExecutionsSinceExtraction < a.graphExtractionCadence {
+		return
+	}
+	extractCtx := context.WithoutCancel(ctx)
+	a.graphExtractionWG.Add(1)
+	go func() {
+		defer a.graphExtractionWG.Done()
+		a.extractGraphMemoryAsync(extractCtx, sessionID)
+	}()
+	a.graphToolExecutionsSinceExtraction = 0
 }
 
 // synthesizeFinalResponse makes the final tool-free LLM call after the

@@ -675,3 +675,78 @@ func TestBuildConversationBlock_RendersPerTurnDates(t *testing.T) {
 	assert.Contains(t, block, "2. [user]: legacy line",
 		"a timestamp-less row renders role only, no invented date")
 }
+
+// ctxAwareExtractionLLM fails a call whose context is already done, as
+// network-backed providers do.
+type ctxAwareExtractionLLM struct {
+	extractionMockLLM
+}
+
+func (m *ctxAwareExtractionLLM) Chat(ctx context.Context, msgs []types.Message, tools []shuttle.Tool) (*types.LLMResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return m.extractionMockLLM.Chat(ctx, msgs, tools)
+}
+
+func newCadenceTestAgent(t *testing.T, cadence int) (*Agent, *ctxAwareExtractionLLM, memory.GraphMemoryStore) {
+	t.Helper()
+	store := newTestGraphMemoryStore(t)
+	responseJSON, err := json.Marshal(ExtractedGraphData{
+		Entities: []ExtractedEntity{{Name: "volatile_table", EntityType: "dataset"}},
+	})
+	require.NoError(t, err)
+	llm := &ctxAwareExtractionLLM{extractionMockLLM: extractionMockLLM{response: string(responseJSON)}}
+
+	mem := NewMemory()
+	session := mem.GetOrCreateSession(context.Background(), "cadence-session")
+	segMem := NewSegmentedMemory("", 200000, 20000)
+	segMem.AddMessage(context.Background(), types.Message{Role: "user", Content: "Why did the volatile table overflow?"})
+	segMem.AddMessage(context.Background(), types.Message{Role: "tool", Content: `{"rows": 1000000}`})
+	session.SegmentedMem = segMem
+
+	a := &Agent{
+		llm:                         llm,
+		graphMemoryStore:            store,
+		enableGraphMemoryExtraction: true,
+		graphExtractionCadence:      cadence,
+		graphMemoryConfig:           &loomv1.GraphMemoryConfig{Enabled: true, EnableExtraction: true},
+		memory:                      mem,
+		config:                      &Config{Name: "test-agent"},
+	}
+	return a, llm, store
+}
+
+// TestMaybeExtractAfterTool_SurvivesCancelledTurnContext covers the tool-cadence
+// extraction started late in a turn: the Weave RPC's context is cancelled when
+// the RPC returns, and the extraction must still run to completion.
+func TestMaybeExtractAfterTool_SurvivesCancelledTurnContext(t *testing.T) {
+	a, llm, store := newCadenceTestAgent(t, 1)
+
+	turnCtx, cancel := context.WithCancel(context.Background())
+	cancel() // the RPC has returned
+	a.maybeExtractAfterTool(turnCtx, "cadence-session", "file_read")
+	a.FlushGraphMemoryExtraction()
+
+	assert.Equal(t, 1, llm.getCalls(), "the extraction LLM call must run after the turn context is cancelled")
+	_, err := store.GetEntity(context.Background(), "test-agent", "volatile_table")
+	require.NoError(t, err, "the extracted entity must be stored")
+}
+
+func TestMaybeExtractAfterTool_Cadence(t *testing.T) {
+	a, llm, _ := newCadenceTestAgent(t, 2)
+	ctx := context.Background()
+
+	a.maybeExtractAfterTool(ctx, "cadence-session", "file_read")
+	a.FlushGraphMemoryExtraction()
+	assert.Equal(t, 0, llm.getCalls(), "below the cadence nothing is extracted")
+
+	a.maybeExtractAfterTool(ctx, "cadence-session", "graph_memory")
+	a.FlushGraphMemoryExtraction()
+	assert.Equal(t, 0, llm.getCalls(), "the graph_memory tool does not count")
+
+	a.maybeExtractAfterTool(ctx, "cadence-session", "file_read")
+	a.FlushGraphMemoryExtraction()
+	assert.Equal(t, 1, llm.getCalls(), "the second counted tool reaches the cadence")
+	assert.Equal(t, 0, a.graphToolExecutionsSinceExtraction, "the counter resets after an extraction starts")
+}
