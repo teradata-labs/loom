@@ -137,7 +137,7 @@ func (m *jsonMeasure) value(v any, depth int) {
 		m.write("}")
 	case []any:
 		if len(x) > 0 {
-			p := unsafe.Pointer(unsafe.SliceData(x))
+			p := reflect.ValueOf(x).UnsafePointer()
 			if !m.enter(p) {
 				return
 			}
@@ -266,7 +266,7 @@ func (s *sanitizer) value(v any, depth int) any {
 		return out
 	case []any:
 		if len(x) > 0 {
-			p := unsafe.Pointer(unsafe.SliceData(x))
+			p := reflect.ValueOf(x).UnsafePointer()
 			if _, seen := s.path[p]; seen {
 				return cyclicMarker
 			}
