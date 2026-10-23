@@ -3403,9 +3403,12 @@ func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, 
 
 	// Advisory note after repeated identical calls (the call itself already ran).
 	if n, hint := st.recovery.noteToolCall(dedupKey); hint {
-		formattedResult += "\n\n" + a.getGuidanceMessage(ctx, "repeated_tool_call", map[string]interface{}{
+		// One marked line: harvestTails and truncateToolRowContent keep a trailing
+		// repeatHintPrefix line, so the hint survives offload and truncation.
+		msg := a.getGuidanceMessage(ctx, "repeated_tool_call", map[string]interface{}{
 			"count": strconv.Itoa(n), "tool_name": toolCall.Name,
 		})
+		formattedResult += "\n\n" + repeatHintPrefix + strings.Join(strings.Fields(msg), " ") + "]"
 		span.AddEvent("recovery.repeat_hint", map[string]interface{}{"tool_name": toolCall.Name, "count": n})
 	}
 

@@ -41,7 +41,8 @@ func (e *RecoverableError) Unwrap() error { return e.Cause }
 // A5): no code path outside releasePressure can remove or shrink a message.
 type RecoveryConfig struct {
 	// RepeatHintThresholds are the lengths of a run of identical consecutive
-	// tool calls (same name and canonical input) at which noteToolCall reports
+	// executed tool calls (same name and canonical input; a call rejected
+	// before execution neither counts nor resets the run) at which noteToolCall reports
 	// a hint. An empty slice disables hints. Hints exist only when the agent
 	// runs with EnableSelfHealing (the orchestrator is nil otherwise). A
 	// park/resume (park.go) builds a fresh orchestrator, so a run of identical

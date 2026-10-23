@@ -15,6 +15,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
@@ -133,4 +134,82 @@ func TestGetGuidanceMessage_RepeatedToolCallFallback(t *testing.T) {
 
 	msg = ag.getGuidanceMessage(context.Background(), "repeated_tool_call", nil)
 	assert.Contains(t, msg, "call several in a row to this tool")
+}
+
+// bigResultTool returns a result well above the offload threshold.
+type bigResultTool struct{ mockCountingCalculatorTool }
+
+func (b *bigResultTool) Execute(context.Context, map[string]interface{}) (*shuttle.Result, error) {
+	return &shuttle.Result{Success: true, Data: strings.Repeat("x", 5000)}, nil
+}
+
+// A large repeated result is offloaded to a stub at render time; the hint must
+// still reach the model (the >16KB loop case).
+func TestAgent_RepeatHintSurvivesOffloadStub(t *testing.T) {
+	call := func(id string) []llmtypes.ToolCall {
+		return []llmtypes.ToolCall{{ID: id, Name: "calculator", Input: map[string]interface{}{"expression": "2+2"}}}
+	}
+	llm := &recordingToolLLM{mockToolCallingLLM: &mockToolCallingLLM{
+		responses: []mockLLMResponse{
+			{toolCalls: call("call_1")},
+			{toolCalls: call("call_2")},
+			{toolCalls: call("call_3")},
+			{content: "done"},
+		},
+	}}
+	patternCfg := DefaultPatternConfig()
+	patternCfg.UseLLMClassifier = false
+	ag := NewAgent(&mockBackend{}, llm, WithConfig(&Config{
+		MaxTurns:          25,
+		MaxToolExecutions: 50,
+		MaxIterations:     10,
+		PatternConfig:     patternCfg,
+		EnableSelfHealing: true,
+	}))
+	ag.SetSharedMemoryThreshold(1024)
+	ag.RegisterTool(&bigResultTool{})
+
+	_, err := ag.Chat(context.Background(), "repeat_hint_big", "add 2+2 three times")
+	require.NoError(t, err)
+
+	llm.recMu.Lock()
+	defer llm.recMu.Unlock()
+	byID := map[string]string{}
+	for _, m := range llm.seen[len(llm.seen)-1] {
+		if m.ToolUseID != "" {
+			byID[m.ToolUseID] = m.Content
+		}
+	}
+	require.Contains(t, byID, "call_3")
+	assert.Less(t, len(byID["call_3"]), 1024, "the 5KB result must have been stubbed")
+	assert.Contains(t, byID["call_3"], repeatHintPrefix+"(note: this is call 3 in a row")
+	assert.NotContains(t, byID["call_1"], repeatHintPrefix)
+}
+
+func TestHarvestTails_KeepsRepeatLine(t *testing.T) {
+	content := "data...\n[harvested: 3 rows]\n\n" + repeatHintPrefix + "call 3 in a row]"
+	got := harvestTails(content)
+	assert.Contains(t, got, "[harvested: 3 rows]")
+	assert.Contains(t, got, repeatHintPrefix+"call 3 in a row]")
+	assert.Empty(t, harvestTails("data...\nplain last line"))
+}
+
+func TestTruncateToolRowContent_KeepsRepeatLine(t *testing.T) {
+	hint := repeatHintPrefix + strings.Repeat("h", 100) + "]"
+	content := strings.Repeat("x", 5000) + "\n\n" + hint
+
+	got := truncateToolRowContent(content, 1024)
+	assert.LessOrEqual(t, len(got), 1024)
+	assert.True(t, strings.HasSuffix(got, hint), "repeat line kept as the last line")
+	assert.Contains(t, got, "[truncated: ")
+
+	// The line cannot fit beside a minThreshold core: dropped, bound holds.
+	big := repeatHintPrefix + strings.Repeat("h", 400) + "]"
+	got = truncateToolRowContent(strings.Repeat("x", 5000)+"\n\n"+big, 600)
+	assert.LessOrEqual(t, len(got), 600)
+	assert.NotContains(t, got, repeatHintPrefix)
+
+	// Dropping the line can leave content within the bound: returned whole.
+	got = truncateToolRowContent(strings.Repeat("x", 300)+"\n\n"+big, 600)
+	assert.LessOrEqual(t, len(got), 600)
 }

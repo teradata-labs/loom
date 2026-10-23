@@ -359,14 +359,19 @@ func stubToolName(m *Message, callName map[string]string) string {
 }
 
 // harvestTails extracts the row's trailing [harvested: …] / [harvest failed …]
-// line(s), prefixed by one space — the tails sit at the end of stored content,
-// outside the preview, so the stub must carry them itself (HLD §5.5, §4.4).
+// / [repeat: …] line(s), prefixed by one space — the tails sit at the end of
+// stored content, outside the preview, so the stub must carry them itself
+// (HLD §5.5, §4.4).
 func harvestTails(content string) string {
 	var tails []string
 	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := strings.TrimSpace(lines[i])
-		if strings.HasPrefix(line, "[harvested: ") || strings.HasPrefix(line, "[harvest failed for ") {
+		if line == "" { // the repeat hint is appended after a blank line
+			continue
+		}
+		if strings.HasPrefix(line, "[harvested: ") || strings.HasPrefix(line, "[harvest failed for ") ||
+			strings.HasPrefix(line, repeatHintPrefix) {
 			tails = append([]string{line}, tails...)
 			continue
 		}
