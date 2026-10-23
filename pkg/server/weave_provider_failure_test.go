@@ -270,3 +270,25 @@ func TestStreamWeaveProviderThrottleIsResourceExhausted(t *testing.T) {
 		assert.Equal(t, codes.ResourceExhausted, status.Code(err), "%v", err)
 	})
 }
+
+// StreamWeave on both servers reports a temporary provider server fault
+// with the same retryable code as Weave.
+func TestStreamWeaveProviderServerFaultIsUnavailable(t *testing.T) {
+	serverFault := func(*testing.T) error {
+		return bedrockRuntimeError(503, &brtypes.ServiceUnavailableException{Message: aws.String("unavailable")})
+	}
+
+	t.Run("multi-agent server", func(t *testing.T) {
+		srv := newFailingServer(newFailingProvider(t, serverFault(t)))
+		stream := &mockStreamWeaveServer{ctx: context.Background()}
+		err := srv.StreamWeave(&loomv1.WeaveRequest{Query: "q"}, stream)
+		assert.Equal(t, codes.Unavailable, status.Code(err), "%v", err)
+	})
+
+	t.Run("single-agent server", func(t *testing.T) {
+		srv := NewServer(newFailingAgent(newFailingProvider(t, serverFault(t))), nil)
+		stream := &mockStreamWeaveServer{ctx: context.Background()}
+		err := srv.StreamWeave(&loomv1.WeaveRequest{Query: "q"}, stream)
+		assert.Equal(t, codes.Unavailable, status.Code(err), "%v", err)
+	})
+}
