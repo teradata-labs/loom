@@ -16,6 +16,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
@@ -38,11 +39,17 @@ func (e *RecoverableError) Unwrap() error { return e.Cause }
 // RecoveryConfig holds tunables for the self-healing orchestrator. The
 // destructive trim knobs are gone with the second relief ladder (blueprint
 // A5): no code path outside releasePressure can remove or shrink a message.
-type RecoveryConfig struct{}
+type RecoveryConfig struct {
+	// RepeatHintThresholds are the lengths of a run of identical consecutive
+	// tool calls (same name and canonical input) at which noteToolCall reports
+	// a hint. An empty slice disables hints.
+	RepeatHintThresholds []int
+}
 
-// DefaultRecoveryConfig returns sensible defaults.
+// DefaultRecoveryConfig returns sensible defaults. The repeat-hint thresholds
+// (3, 5, 8) are the DeepSeek Harness defaults.
 func DefaultRecoveryConfig() *RecoveryConfig {
-	return &RecoveryConfig{}
+	return &RecoveryConfig{RepeatHintThresholds: []int{3, 5, 8}}
 }
 
 // recoveryOrchestrator coordinates Tier 1 self-healing attempts within
@@ -51,17 +58,47 @@ type recoveryOrchestrator struct {
 	config        *RecoveryConfig
 	disabledTools map[string]bool
 	span          *observability.Span
+
+	// Run of identical consecutive tool calls; repeatMu guards the three fields.
+	repeatMu         sync.Mutex
+	lastCallKey      string
+	repeatCount      int
+	repeatThresholds map[int]bool
 }
 
 func newRecoveryOrchestrator(config *RecoveryConfig, span *observability.Span) *recoveryOrchestrator {
 	if config == nil {
 		config = DefaultRecoveryConfig()
 	}
-	return &recoveryOrchestrator{
-		config:        config,
-		disabledTools: make(map[string]bool),
-		span:          span,
+	thresholds := make(map[int]bool, len(config.RepeatHintThresholds))
+	for _, n := range config.RepeatHintThresholds {
+		thresholds[n] = true
 	}
+	return &recoveryOrchestrator{
+		config:           config,
+		disabledTools:    make(map[string]bool),
+		span:             span,
+		repeatThresholds: thresholds,
+	}
+}
+
+// noteToolCall records one executed tool call keyed by callKey (name + canonical
+// input) and reports the length of the current run of identical consecutive
+// calls and whether that length is a configured hint threshold.
+// A nil receiver returns (0, false).
+func (r *recoveryOrchestrator) noteToolCall(callKey string) (count int, hint bool) {
+	if r == nil {
+		return 0, false
+	}
+	r.repeatMu.Lock()
+	defer r.repeatMu.Unlock()
+	if callKey == r.lastCallKey {
+		r.repeatCount++
+	} else {
+		r.lastCallKey = callKey
+		r.repeatCount = 1
+	}
+	return r.repeatCount, r.repeatThresholds[r.repeatCount]
 }
 
 // recoverToolCB handles a tool whose circuit breaker has opened.
