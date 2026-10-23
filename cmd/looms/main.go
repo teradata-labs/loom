@@ -13,6 +13,12 @@
 // limitations under the License.
 package main
 
+import "github.com/teradata-labs/loom/pkg/shelljail"
+
 func main() {
+	// Must run before anything else: when this process was started as a
+	// jailed shell child (tools.shell_execute.mode: jailed), it runs the jail
+	// and exits here.
+	shelljail.Main()
 	Execute()
 }
