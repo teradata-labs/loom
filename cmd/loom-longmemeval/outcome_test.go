@@ -50,6 +50,7 @@ func TestClassifyOutcome(t *testing.T) {
 		wantNil       bool
 		wantTransient bool
 		wantFailed    int
+		wantCodes     map[codes.Code]int
 	}{
 		{
 			name:    "all entries succeeded",
@@ -65,12 +66,14 @@ func TestClassifyOutcome(t *testing.T) {
 			results:       []EntryResult{okResult("a"), failedResult("b", codes.Unavailable), failedResult("c", codes.Unavailable)},
 			wantTransient: true,
 			wantFailed:    2,
+			wantCodes:     map[codes.Code]int{codes.Unavailable: 2},
 		},
 		{
 			name:          "mixed retryable statuses",
 			results:       []EntryResult{failedResult("a", codes.DeadlineExceeded), failedResult("b", codes.ResourceExhausted), failedResult("c", codes.Unavailable)},
 			wantTransient: true,
 			wantFailed:    3,
+			wantCodes:     map[codes.Code]int{codes.DeadlineExceeded: 1, codes.ResourceExhausted: 1, codes.Unavailable: 1},
 		},
 		{
 			name:    "one deterministic failure among transient ones is charged",
@@ -104,6 +107,7 @@ func TestClassifyOutcome(t *testing.T) {
 			runErr:        context.Canceled,
 			wantTransient: true,
 			wantFailed:    1,
+			wantCodes:     map[codes.Code]int{codes.Unavailable: 1},
 		},
 		{
 			name:    "aborted run is an error even when entries look transient",
@@ -129,6 +133,10 @@ func TestClassifyOutcome(t *testing.T) {
 			require.True(t, errors.As(err, &transient), "want *TransientFailureError, got %T: %v", err, err)
 			assert.Equal(t, tt.wantFailed, transient.Failed)
 			assert.Equal(t, len(tt.results), transient.Total)
+			assert.Equal(t, tt.wantCodes, transient.Codes)
+			for c, n := range tt.wantCodes {
+				assert.Contains(t, err.Error(), fmt.Sprintf("%s=%d", c, n))
+			}
 		})
 	}
 }
