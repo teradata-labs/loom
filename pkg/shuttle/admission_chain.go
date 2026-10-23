@@ -22,6 +22,12 @@ import "fmt"
 type AdmissionResult struct {
 	Decision      Decision
 	AuditDecision string
+	// Approved reports that the combined verdict was Ask and it was resolved to
+	// Allow, by the AskResolver or by an approved AskGrant on the context.
+	Approved bool
+	// Grants holds the Grant of every matched Ask decision, in hook order,
+	// when Approved; nil otherwise.
+	Grants []any
 }
 
 // PersistedDecision is the value the executor stamps into the tool-execution
@@ -70,8 +76,9 @@ func (c *Chain) Admit(req AdmissionRequest) AdmissionResult {
 		return AdmissionResult{Decision: Decision{Kind: NoDecision}}
 	}
 
-	final, matched := c.combine(req)
+	final, matched, grants := c.combine(req)
 
+	approved := false
 	if final.Kind == Ask {
 		if granted, ok := applyAskGrant(req, final); ok {
 			final = granted
@@ -80,6 +87,7 @@ func (c *Chain) Admit(req AdmissionRequest) AdmissionResult {
 		} else {
 			final = Decision{Kind: Deny, Reason: "tool call requires approval but no approval resolver is configured"}
 		}
+		approved = final.Kind == Allow
 	}
 
 	auditDecision := ""
@@ -91,7 +99,11 @@ func (c *Chain) Admit(req AdmissionRequest) AdmissionResult {
 		}
 	}
 
-	return AdmissionResult{Decision: final, AuditDecision: auditDecision}
+	res := AdmissionResult{Decision: final, AuditDecision: auditDecision, Approved: approved}
+	if approved {
+		res.Grants = grants
+	}
+	return res
 }
 
 // Preflight combines hook verdicts exactly as Admit does and resolves an Ask
@@ -104,7 +116,7 @@ func (c *Chain) Preflight(req AdmissionRequest) Decision {
 	if c == nil {
 		return Decision{Kind: NoDecision}
 	}
-	final, _ := c.combine(req)
+	final, _, _ := c.combine(req)
 	if final.Kind == Ask {
 		if granted, ok := applyAskGrant(req, final); ok {
 			final = granted
@@ -115,10 +127,13 @@ func (c *Chain) Preflight(req AdmissionRequest) Decision {
 
 // combine evaluates every matching hook and folds their verdicts under
 // Deny > Ask > Allow > NoDecision — the shared first half of Admit and
-// Preflight, so the two can never drift.
-func (c *Chain) combine(req AdmissionRequest) (Decision, []Hook) {
+// Preflight, so the two can never drift. It also collects the non-nil Grant of
+// every matched Ask, in hook order: the fold keeps one decision, but a person
+// approving the call approves what every asking hook asked about.
+func (c *Chain) combine(req AdmissionRequest) (Decision, []Hook, []any) {
 	final := Decision{Kind: NoDecision}
 	matched := make([]Hook, 0, len(c.hooks))
+	var grants []any
 
 	for _, h := range c.hooks {
 		if h == nil {
@@ -129,9 +144,12 @@ func (c *Chain) combine(req AdmissionRequest) (Decision, []Hook) {
 			continue
 		}
 		matched = append(matched, h)
+		if d.Kind == Ask && d.Grant != nil {
+			grants = append(grants, d.Grant)
+		}
 		final = moreRestrictive(final, d)
 	}
-	return final, matched
+	return final, matched, grants
 }
 
 // applyAskGrant resolves an Ask from a context AskGrant when one is installed.
