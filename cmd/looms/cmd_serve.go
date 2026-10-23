@@ -255,6 +255,13 @@ func registerYAMLBuiltinTools(
 		if tool != nil {
 			ag.RegisterTool(tool)
 			logger.Info(indent+"  Tool registered", zap.String("name", toolName))
+			if readiness, ok := shuttle.ReadinessOf(context.Background(), tool); ok && readiness.State != shuttle.ReadinessReady {
+				logger.Warn(indent+"  Tool registered but not fully usable",
+					zap.String("name", toolName),
+					zap.String("agent", cfg.Name),
+					zap.String("readiness", string(readiness.State)),
+					zap.String("remediation", readiness.Remediation))
+			}
 		} else {
 			logger.Warn(indent+"  Unknown builtin tool", zap.String("name", toolName))
 		}

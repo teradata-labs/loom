@@ -51,7 +51,7 @@ func TestToolSchemaSize(t *testing.T) {
 			name:           "web_search",
 			tool:           NewWebSearchTool(),
 			maxSchemaBytes: 817, // baseline=767
-			maxDescChars:   230, // baseline=180
+			maxDescChars:   346, // baseline=296 — live provider status (no keys configured)
 			minDescWords:   20,
 		},
 		{

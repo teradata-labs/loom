@@ -7,13 +7,16 @@ prompts:
     content: |
       Search the web for current information, news, articles, and documentation.
       Returns search results with titles, URLs, snippets, and optional content.
-      AI-optimized search results using Tavily by default!
 
       Supports multiple providers:
-      - Tavily (default, AI-optimized results, FREE API key, 1000/month)
-      - Brave Search (excellent results, FREE API key, 2000/month)
-      - SerpAPI (Google results, requires API key, 100/month free)
+      - Tavily (AI-optimized results, requires API key)
+      - Brave Search (requires API key)
+      - SerpAPI (Google results, requires API key)
       - DuckDuckGo (no API key required, instant answers only, limited results)
+
+      When no provider is given, the first provider with a configured API key is
+      used (in the order above), falling back to DuckDuckGo. The provider status
+      at the end of this description says which providers are configured now.
 
       Use this tool to:
       - Find current information beyond training data cutoff
@@ -36,8 +39,7 @@ prompts:
       - Include year in query when looking for recent info (e.g., "Go concurrency 2025")
       - Check multiple results before drawing conclusions
       - Cite sources with URLs in your response
-      - Tavily provides AI-optimized results by default (requires API key)
-      - For alternative providers, configure Brave or use DuckDuckGo (no key needed)
+      - Check the provider status before planning many searches
 
       Getting better results:
       To use Tavily or other premium providers, configure API keys via:

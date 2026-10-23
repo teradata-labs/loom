@@ -13,22 +13,37 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestWebSearchTool_DefaultProvider_NoAPIKey tests that the tool requires
-// an API key for Tavily (the default provider).
+// TestWebSearchTool_DefaultProvider_NoAPIKey tests that with no API keys
+// configured, a query without a provider uses the keyless fallback instead
+// of failing on Tavily.
 func TestWebSearchTool_DefaultProvider_NoAPIKey(t *testing.T) {
-	tool := NewWebSearchTool()
+	tool := newMockedDDGTool(t)
 
-	// Execute search with only a query - no provider, no API key
-	// This should fail because Tavily (default) requires an API key
 	result, err := tool.Execute(context.Background(), map[string]interface{}{
 		"query": "golang concurrency",
 	})
 
 	require.NoError(t, err)
+	require.True(t, result.Success, "default search should use duckduckgo when no key is configured")
+	assert.Equal(t, "duckduckgo", result.Metadata["provider"])
+}
+
+// TestWebSearchTool_ExplicitTavily_NoAPIKey tests that the execution-time key
+// check still rejects an explicitly requested provider whose key is missing.
+func TestWebSearchTool_ExplicitTavily_NoAPIKey(t *testing.T) {
+	tool := NewWebSearchTool()
+
+	result, err := tool.Execute(context.Background(), map[string]interface{}{
+		"query":    "golang concurrency",
+		"provider": "tavily",
+	})
+
+	require.NoError(t, err)
 	assert.False(t, result.Success, "Search should fail without API key for Tavily")
-	assert.NotNil(t, result.Error)
+	require.NotNil(t, result.Error)
 	assert.Equal(t, "MISSING_API_KEY", result.Error.Code)
 	assert.Contains(t, result.Error.Message, "tavily")
+	assert.Contains(t, result.Error.Suggestion, "TAVILY_API_KEY")
 }
 
 // TestWebSearchTool_MinimalUsage tests the absolute minimal usage:
@@ -54,15 +69,16 @@ func TestWebSearchTool_DefaultsInSchema(t *testing.T) {
 	tool := NewWebSearchTool()
 	schema := tool.InputSchema()
 
-	// Check provider default
+	// With no keys configured (TestMain clears them), the advertised default
+	// is the keyless fallback, not tavily.
 	providerSchema := schema.Properties["provider"]
-	assert.NotNil(t, providerSchema)
-	assert.Equal(t, "tavily", providerSchema.Default, "Default provider should be tavily")
+	require.NotNil(t, providerSchema)
+	assert.Equal(t, "duckduckgo", providerSchema.Default)
 
 	// Check that query is the only required field
 	assert.Equal(t, []string{"query"}, schema.Required)
 
-	// Verify enum includes all providers (order changed, tavily first)
+	// Verify enum includes all providers
 	assert.Contains(t, providerSchema.Enum, "tavily")
 	assert.Contains(t, providerSchema.Enum, "brave")
 	assert.Contains(t, providerSchema.Enum, "serpapi")

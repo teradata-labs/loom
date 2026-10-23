@@ -421,6 +421,12 @@ func validateTools(tools []interface{}) ([]ValidationError, []ValidationWarning)
 		}
 
 		// Check if tool exists in known tools
+		if knownTools[toolName] {
+			if w := readinessWarning(toolName); w != nil {
+				warnings = append(warnings, *w)
+			}
+		}
+
 		if !knownTools[toolName] {
 			// Check for close matches (typos)
 			suggestion := findClosestTool(toolName, knownTools)

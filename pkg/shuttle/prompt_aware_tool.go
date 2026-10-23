@@ -15,6 +15,7 @@ package shuttle
 
 import (
 	"context"
+	"strings"
 
 	"github.com/teradata-labs/loom/pkg/prompts"
 )
@@ -60,11 +61,18 @@ func (p *PromptAwareTool) Name() string {
 // - Prompt is empty
 //
 // This ensures tools always have a valid description, even if prompts are not configured.
+//
+// A registry prompt is static text, so when the wrapped tool reports readiness
+// its current summary is appended; otherwise the prompt could advertise a
+// capability the runtime configuration does not provide.
 func (p *PromptAwareTool) Description() string {
 	// Try loading from registry first
 	if p.registry != nil {
 		desc, err := p.registry.Get(context.Background(), p.promptKey, nil)
 		if err == nil && desc != "" {
+			if readiness, ok := ReadinessOf(context.Background(), p.tool); ok && readiness.Summary != "" {
+				return strings.TrimRight(desc, "\n") + "\n\n" + readiness.Summary
+			}
 			return desc
 		}
 		// If lookup failed, fall through to native description
@@ -72,6 +80,15 @@ func (p *PromptAwareTool) Description() string {
 
 	// Fall back to tool's native description
 	return p.tool.Description()
+}
+
+// Readiness delegates to the wrapped tool so wrapping never hides readiness.
+// A wrapped tool that does not report readiness is reported as ready.
+func (p *PromptAwareTool) Readiness(ctx context.Context) ToolReadiness {
+	if readiness, ok := ReadinessOf(ctx, p.tool); ok {
+		return readiness
+	}
+	return ToolReadiness{State: ReadinessReady}
 }
 
 // InputSchema returns the JSON Schema for tool parameters (delegates to wrapped tool).

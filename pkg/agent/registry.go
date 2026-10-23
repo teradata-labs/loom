@@ -958,6 +958,13 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 					tool = shuttle.NewPromptAwareTool(tool, agent.prompts, key)
 				}
 				agent.RegisterTool(tool)
+				if readiness, ok := shuttle.ReadinessOf(ctx, tool); ok && readiness.State != shuttle.ReadinessReady {
+					r.logger.Warn("Builtin tool registered but not fully usable",
+						zap.String("tool", toolName),
+						zap.String("agent", config.Name),
+						zap.String("readiness", string(readiness.State)),
+						zap.String("remediation", readiness.Remediation))
+				}
 			} else {
 				// Tool not found in builtin, might be a special tool (get_tool_result, etc.)
 				// or tool_search - these are registered separately

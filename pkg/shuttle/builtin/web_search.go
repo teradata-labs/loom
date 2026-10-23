@@ -80,6 +80,111 @@ func getEnvOrDefault(key, defaultValue string) string {
 	return defaultValue
 }
 
+// webSearchProvider describes a search provider and where its API key comes from.
+type webSearchProvider struct {
+	name string
+	// keyEnvVars lists the environment variables checked for the API key,
+	// in order. Empty means the provider needs no key.
+	keyEnvVars []string
+}
+
+// webSearchProviders lists the providers in default-selection order: when no
+// provider is requested, the first one with a configured key is used, and
+// duckduckgo (no key) is the last resort.
+var webSearchProviders = []webSearchProvider{
+	{name: "tavily", keyEnvVars: []string{"TAVILY_API_KEY"}},
+	{name: "brave", keyEnvVars: []string{"BRAVE_API_KEY", "BRAVE_SEARCH_API_KEY"}},
+	{name: "serpapi", keyEnvVars: []string{"SERPAPI_KEY", "SERPAPI_API_KEY"}},
+	{name: "duckduckgo"},
+}
+
+// fallbackSearchProvider needs no API key, so it is always usable, but it only
+// queries the DuckDuckGo Instant Answer API.
+const fallbackSearchProvider = "duckduckgo"
+
+// lookupWebSearchProvider returns the provider with the given name.
+func lookupWebSearchProvider(name string) (webSearchProvider, bool) {
+	for _, p := range webSearchProviders {
+		if p.name == name {
+			return p, true
+		}
+	}
+	return webSearchProvider{}, false
+}
+
+// envAPIKey returns the provider's API key from the environment, or "" if none is set.
+func (p webSearchProvider) envAPIKey() string {
+	for _, envVar := range p.keyEnvVars {
+		if key := os.Getenv(envVar); key != "" {
+			return key
+		}
+	}
+	return ""
+}
+
+// requiresKey reports whether the provider needs an API key.
+func (p webSearchProvider) requiresKey() bool {
+	return len(p.keyEnvVars) > 0
+}
+
+// providerNames returns the names of all providers, for the schema enum.
+func providerNames() []interface{} {
+	names := make([]interface{}, 0, len(webSearchProviders))
+	for _, p := range webSearchProviders {
+		names = append(names, p.name)
+	}
+	return names
+}
+
+// defaultProvider returns the provider used when the caller names none:
+// the first keyed provider whose key is configured, otherwise the fallback.
+// Evaluated per call because looms exports configured keys to the
+// environment after tools may have been constructed.
+func (t *WebSearchTool) defaultProvider() string {
+	for _, p := range webSearchProviders {
+		if p.requiresKey() && p.envAPIKey() != "" {
+			return p.name
+		}
+	}
+	return fallbackSearchProvider
+}
+
+// Readiness reports which providers are usable. It never includes key values.
+func (t *WebSearchTool) Readiness(_ context.Context) shuttle.ToolReadiness {
+	var configured, missing, missingEnvVars []string
+	for _, p := range webSearchProviders {
+		if !p.requiresKey() {
+			continue
+		}
+		if p.envAPIKey() != "" {
+			configured = append(configured, p.name)
+		} else {
+			missing = append(missing, p.name)
+			missingEnvVars = append(missingEnvVars, p.keyEnvVars[0])
+		}
+	}
+
+	// Kept short: this text is sent with every LLM request (see schema_test.go).
+	missingNote := fmt.Sprintf("No API key for %s (calls fail with MISSING_API_KEY).", strings.Join(missing, ", "))
+	fallbackNote := fmt.Sprintf("%s returns instant answers only, often none for research queries.", fallbackSearchProvider)
+
+	if len(configured) == 0 {
+		return shuttle.ToolReadiness{
+			State:   shuttle.ReadinessDegraded,
+			Summary: fmt.Sprintf("Provider status: %s Default %s", missingNote, fallbackNote),
+			Remediation: fmt.Sprintf("Set one of %s in the looms environment (or run 'looms config set-key tavily_api_key') and restart looms.",
+				strings.Join(missingEnvVars, ", ")),
+		}
+	}
+
+	summary := fmt.Sprintf("Provider status: default %s; configured: %s.", t.defaultProvider(), strings.Join(configured, ", "))
+	if len(missing) > 0 {
+		summary += " " + missingNote
+	}
+	summary += " " + fallbackNote
+	return shuttle.ToolReadiness{State: shuttle.ReadinessReady, Summary: summary}
+}
+
 func (t *WebSearchTool) Name() string {
 	return "web_search"
 }
@@ -90,18 +195,18 @@ func (t *WebSearchTool) Name() string {
 func (t *WebSearchTool) Description() string {
 	return `Search the web for current information beyond the model's training cutoff.
 Returns results with titles, URLs, and snippets.
-Providers: tavily (default), brave, serpapi, duckduckgo.`
+` + t.Readiness(context.Background()).Summary
 }
 
 func (t *WebSearchTool) InputSchema() *shuttle.JSONSchema {
+	defaultProvider := t.defaultProvider()
 	return shuttle.NewObjectSchema(
 		"Parameters for web search",
 		map[string]*shuttle.JSONSchema{
 			"query": shuttle.NewStringSchema("The search query (required)"),
-			"provider": shuttle.NewStringSchema("Search provider to use (default: tavily)").
-				WithEnum("tavily", "brave", "serpapi", "duckduckgo").
-				WithDefault("tavily"),
-			"api_key": shuttle.NewStringSchema("API key for the provider (not needed for duckduckgo)"),
+			"provider": shuttle.NewStringSchema(fmt.Sprintf("Search provider to use (default: %s)", defaultProvider)).
+				WithEnum(providerNames()...).
+				WithDefault(defaultProvider),
 			"max_results": shuttle.NewNumberSchema("Maximum number of results to return (default: 10)").
 				WithDefault(10),
 			"search_lang": shuttle.NewStringSchema("Search language code (default: en)").
@@ -131,11 +236,14 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]interface
 		}, nil
 	}
 
-	provider := "tavily"
-	if p, ok := params["provider"].(string); ok {
+	provider := t.defaultProvider()
+	if p, ok := params["provider"].(string); ok && p != "" {
 		provider = strings.ToLower(p)
 	}
 
+	// api_key is not advertised: a key the model passes as an argument is
+	// recorded in tool spans and session history. Programmatic callers that
+	// still send it are honoured.
 	apiKey, _ := params["api_key"].(string)
 
 	// FORCE TAVILY if API key is available (override LLM's provider choice)
@@ -143,26 +251,11 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]interface
 		provider = "tavily"
 	}
 
+	providerInfo, knownProvider := lookupWebSearchProvider(provider)
+
 	// If no API key provided in params, check environment variables
-	if apiKey == "" {
-		switch provider {
-		case "brave":
-			// Try both BRAVE_API_KEY and BRAVE_SEARCH_API_KEY
-			if key := os.Getenv("BRAVE_API_KEY"); key != "" {
-				apiKey = key
-			} else if key := os.Getenv("BRAVE_SEARCH_API_KEY"); key != "" {
-				apiKey = key
-			}
-		case "tavily":
-			apiKey = os.Getenv("TAVILY_API_KEY")
-		case "serpapi":
-			// Try both SERPAPI_KEY and SERPAPI_API_KEY
-			if key := os.Getenv("SERPAPI_KEY"); key != "" {
-				apiKey = key
-			} else if key := os.Getenv("SERPAPI_API_KEY"); key != "" {
-				apiKey = key
-			}
-		}
+	if apiKey == "" && knownProvider {
+		apiKey = providerInfo.envAPIKey()
 	}
 
 	maxResults := 10
@@ -181,22 +274,14 @@ func (t *WebSearchTool) Execute(ctx context.Context, params map[string]interface
 	}
 
 	// Validate API key for providers that require it
-	if (provider == "brave" || provider == "tavily" || provider == "serpapi") && apiKey == "" {
-		var envVarName string
-		switch provider {
-		case "brave":
-			envVarName = "BRAVE_API_KEY or BRAVE_SEARCH_API_KEY"
-		case "tavily":
-			envVarName = "TAVILY_API_KEY"
-		case "serpapi":
-			envVarName = "SERPAPI_KEY or SERPAPI_API_KEY"
-		}
+	if knownProvider && providerInfo.requiresKey() && apiKey == "" {
+		envVarName := strings.Join(providerInfo.keyEnvVars, " or ")
 		return &shuttle.Result{
 			Success: false,
 			Error: &shuttle.Error{
 				Code:       "MISSING_API_KEY",
 				Message:    fmt.Sprintf("API key required for provider: %s", provider),
-				Suggestion: fmt.Sprintf("Set api_key parameter, configure via 'looms config set-key', or set %s environment variable. Or use duckduckgo which doesn't require an API key.", envVarName),
+				Suggestion: fmt.Sprintf("An operator must configure the key ('looms config set-key' or the %s environment variable); it cannot be passed as an argument. Or use duckduckgo, which doesn't require an API key.", envVarName),
 			},
 			ExecutionTimeMs: time.Since(start).Milliseconds(),
 		}, nil
