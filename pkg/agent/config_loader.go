@@ -231,6 +231,7 @@ type ToolsConfigYAML struct {
 	MCP     []MCPToolConfigYAML    `yaml:"mcp"`
 	Custom  []CustomToolConfigYAML `yaml:"custom"`
 	Builtin []string               `yaml:"builtin"`
+	None    bool                   `yaml:"none,omitempty"`
 }
 
 // MCPToolConfigYAML represents MCP tool configuration in YAML
@@ -435,7 +436,11 @@ func LoadConfigFromString(yamlContent string) (*loomv1.AgentConfig, error) {
 		if err := yaml.Unmarshal([]byte(yamlOnly), &k8sConfig); err != nil {
 			return nil, fmt.Errorf("failed to parse k8s-style YAML config: %w", err)
 		}
-		yamlConfig = convertK8sToLegacy(&k8sConfig)
+		converted, err := convertK8sToLegacy(&k8sConfig)
+		if err != nil {
+			return nil, err
+		}
+		yamlConfig = converted
 	} else {
 		// Legacy format
 		if err := yaml.Unmarshal([]byte(yamlOnly), &yamlConfig); err != nil {
@@ -487,7 +492,7 @@ func LoadConfigFromString(yamlContent string) (*loomv1.AgentConfig, error) {
 }
 
 // convertK8sToLegacy converts k8s-style config to legacy format.
-func convertK8sToLegacy(k8s *K8sStyleAgentConfig) AgentConfigYAML {
+func convertK8sToLegacy(k8s *K8sStyleAgentConfig) (AgentConfigYAML, error) {
 	var legacy AgentConfigYAML
 
 	// Basic fields from metadata
@@ -512,6 +517,26 @@ func convertK8sToLegacy(k8s *K8sStyleAgentConfig) AgentConfigYAML {
 	// Tools - handle both old ToolsConfigYAML and new simplified format
 	switch tools := k8s.Spec.Tools.(type) {
 	case map[string]interface{}:
+		if value, exists := tools["none"]; exists {
+			none, ok := value.(bool)
+			if !ok {
+				return legacy, fmt.Errorf("spec.tools.none must be a boolean")
+			}
+			legacy.Agent.Tools.None = none
+			if none {
+				for _, key := range []string{"builtin", "mcp", "custom"} {
+					if value, exists := tools[key]; exists {
+						entries, ok := value.([]interface{})
+						if !ok {
+							return legacy, fmt.Errorf("spec.tools.%s must be a list", key)
+						}
+						if len(entries) > 0 {
+							return legacy, fmt.Errorf("tools.none cannot be combined with builtin, mcp, or custom tools")
+						}
+					}
+				}
+			}
+		}
 		// Old format with mcp/custom/builtin
 		if mcp, ok := tools["mcp"].([]interface{}); ok {
 			for _, m := range mcp {
@@ -590,7 +615,7 @@ func convertK8sToLegacy(k8s *K8sStyleAgentConfig) AgentConfigYAML {
 		legacy.Agent.Metadata["backend_type"] = k8s.Spec.Backend.Type
 	}
 
-	return legacy
+	return legacy, nil
 }
 
 // convertMetadata converts map[string]interface{} to map[string]string
@@ -699,6 +724,7 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 		Mcp:     make([]*loomv1.MCPToolConfig, len(yaml.Agent.Tools.MCP)),
 		Custom:  make([]*loomv1.CustomToolConfig, len(yaml.Agent.Tools.Custom)),
 		Builtin: yaml.Agent.Tools.Builtin,
+		None:    yaml.Agent.Tools.None,
 	}
 
 	for i, mcp := range yaml.Agent.Tools.MCP {
@@ -900,7 +926,17 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 		config.Metadata["_enable_self_healing"] = "false"
 	}
 
+	if err := validateToolsConfig(config.Tools); err != nil {
+		return nil, err
+	}
 	return config, nil
+}
+
+func validateToolsConfig(tools *loomv1.ToolsConfig) error {
+	if tools.GetNone() && (len(tools.GetBuiltin()) > 0 || len(tools.GetMcp()) > 0 || len(tools.GetCustom()) > 0) {
+		return fmt.Errorf("tools.none cannot be combined with builtin, mcp, or custom tools")
+	}
+	return nil
 }
 
 // parseMemoryCompressionConfig converts YAML memory compression config to proto
@@ -1250,6 +1286,9 @@ func ValidateAgentConfig(config *loomv1.AgentConfig) error {
 	if config.Name == "" {
 		return fmt.Errorf("agent name is required")
 	}
+	if err := validateToolsConfig(config.Tools); err != nil {
+		return err
+	}
 
 	// LLM config is optional - agents inherit server's LLM provider if not specified
 	// Only validate if LLM config is actually provided (has provider or model set)
@@ -1368,6 +1407,7 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 		}
 
 		yaml.Agent.Tools.Builtin = config.Tools.Builtin
+		yaml.Agent.Tools.None = config.Tools.None
 	}
 
 	// Convert memory config

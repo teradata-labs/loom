@@ -1066,6 +1066,133 @@ spec:
 	assert.InDelta(t, 0.7, gmYAML.DefaultSalience, 0.001)
 }
 
+func TestToolsNoneConfigRoundTrip(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		yaml string
+	}{
+		{"k8s", `
+apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: no-tools
+spec:
+  tools:
+    none: true
+  memory:
+    graph_memory:
+      enabled: true
+`},
+		{"legacy", `
+agent:
+  name: no-tools
+  tools:
+    none: true
+  memory:
+    graph_memory:
+      enabled: true
+`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			config, err := LoadConfigFromString(tt.yaml)
+			require.NoError(t, err)
+			assert.True(t, config.GetTools().GetNone())
+			assert.True(t, config.GetMemory().GetGraphMemory().GetEnabled())
+			require.NoError(t, ValidateAgentConfig(config))
+
+			path := filepath.Join(t.TempDir(), "agent.yaml")
+			require.NoError(t, SaveAgentConfig(config, path))
+			reloaded, err := LoadAgentConfig(path)
+			require.NoError(t, err)
+			assert.True(t, reloaded.GetTools().GetNone())
+			assert.True(t, reloaded.GetMemory().GetGraphMemory().GetEnabled())
+		})
+	}
+
+	config, err := LoadConfigFromString("agent:\n  name: default-tools\n")
+	require.NoError(t, err)
+	assert.False(t, config.GetTools().GetNone())
+}
+
+func TestToolsNoneConfigRejectsConflicts(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{"k8s builtin", `
+apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: invalid
+spec:
+  tools:
+    none: true
+    builtin: [web_search]
+`, "tools.none cannot be combined"},
+		{"k8s mcp", `
+apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: invalid
+spec:
+  tools:
+    none: true
+    mcp:
+      - server: example
+        tools: [search]
+`, "tools.none cannot be combined"},
+		{"k8s custom", `
+apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: invalid
+spec:
+  tools:
+    none: true
+    custom:
+      - name: example
+        implementation: /path/to/tool
+`, "tools.none cannot be combined"},
+		{"legacy builtin", `
+agent:
+  name: invalid
+  tools:
+    none: true
+    builtin: [web_search]
+`, "tools.none cannot be combined"},
+		{"non-boolean", `
+apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: invalid
+spec:
+  tools:
+    none: "true"
+`, "spec.tools.none must be a boolean"},
+		{"invalid builtin list", `
+apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: invalid
+spec:
+  tools:
+    none: true
+    builtin: web_search
+`, "spec.tools.builtin must be a list"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := LoadConfigFromString(tt.yaml)
+			require.ErrorContains(t, err, tt.want)
+		})
+	}
+	config := &loomv1.AgentConfig{
+		Name:  "invalid",
+		Tools: &loomv1.ToolsConfig{None: true, Builtin: []string{"web_search"}},
+	}
+	require.ErrorContains(t, ValidateAgentConfig(config), "tools.none cannot be combined")
+}
+
 func TestGraphMemoryConfig_LegacyYAML(t *testing.T) {
 	// Test legacy format with graph_memory config
 	yamlContent := `

@@ -981,7 +981,11 @@ type ToolsConfig struct {
 	// Custom tool implementations
 	Custom []*CustomToolConfig `protobuf:"bytes,2,rep,name=custom,proto3" json:"custom,omitempty"`
 	// Built-in tools (e.g., "web_search", "calculator")
-	Builtin       []string `protobuf:"bytes,3,rep,name=builtin,proto3" json:"builtin,omitempty"`
+	Builtin []string `protobuf:"bytes,3,rep,name=builtin,proto3" json:"builtin,omitempty"`
+	// Expose no tools to this agent, including automatically registered tools.
+	// Graph memory and other background subsystems remain enabled by their own config.
+	// Cannot be combined with mcp, custom, or builtin.
+	None          bool `protobuf:"varint,4,opt,name=none,proto3" json:"none,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1035,6 +1039,13 @@ func (x *ToolsConfig) GetBuiltin() []string {
 		return x.Builtin
 	}
 	return nil
+}
+
+func (x *ToolsConfig) GetNone() bool {
+	if x != nil {
+		return x.None
+	}
+	return false
 }
 
 // MCPToolConfig specifies tools from an MCP server
@@ -2449,11 +2460,12 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\vmax_retries\x18\x06 \x01(\x05R\n" +
 	"maxRetries\x12(\n" +
 	"\x10retry_backoff_ms\x18\a \x01(\x05R\x0eretryBackoffMs\x122\n" +
-	"\x15queue_timeout_seconds\x18\b \x01(\x05R\x13queueTimeoutSeconds\"\x84\x01\n" +
+	"\x15queue_timeout_seconds\x18\b \x01(\x05R\x13queueTimeoutSeconds\"\x98\x01\n" +
 	"\vToolsConfig\x12(\n" +
 	"\x03mcp\x18\x01 \x03(\v2\x16.loom.v1.MCPToolConfigR\x03mcp\x121\n" +
 	"\x06custom\x18\x02 \x03(\v2\x19.loom.v1.CustomToolConfigR\x06custom\x12\x18\n" +
-	"\abuiltin\x18\x03 \x03(\tR\abuiltin\"=\n" +
+	"\abuiltin\x18\x03 \x03(\tR\abuiltin\x12\x12\n" +
+	"\x04none\x18\x04 \x01(\bR\x04none\"=\n" +
 	"\rMCPToolConfig\x12\x16\n" +
 	"\x06server\x18\x01 \x01(\tR\x06server\x12\x14\n" +
 	"\x05tools\x18\x02 \x03(\tR\x05tools\"N\n" +

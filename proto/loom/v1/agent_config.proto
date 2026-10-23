@@ -227,6 +227,11 @@ message ToolsConfig {
 
   // Built-in tools (e.g., "web_search", "calculator")
   repeated string builtin = 3;
+
+  // Expose no tools to this agent, including automatically registered tools.
+  // Graph memory and other background subsystems remain enabled by their own config.
+  // Cannot be combined with mcp, custom, or builtin.
+  bool none = 4;
 }
 
 // MCPToolConfig specifies tools from an MCP server

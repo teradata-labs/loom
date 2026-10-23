@@ -218,6 +218,7 @@ type Agent struct {
 	// the single source of truth for which tools should be surfaced —
 	// agent code only consults this map.
 	suppressedBuiltinTools map[string]bool
+	disableToolSurface     bool
 
 	// Per-session advertised-tool projection. The shared tools Registry is the
 	// definition store (what CAN exist); advertisement is scoped per session so

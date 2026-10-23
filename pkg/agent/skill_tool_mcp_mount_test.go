@@ -95,3 +95,37 @@ func TestEnforceRequiredSkillTools_MCPResolutionFailure_SkipsCleanly(t *testing.
 	assert.False(t, a.tools.IsRegistered("ghost_tool"),
 		"unresolvable required tool must not be registered")
 }
+
+// TestEnforceRequiredSkillTools_ZeroToolAgentMountsNothing proves a skill's
+// required tools, builtin or MCP, never reach an agent whose tool surface is
+// off (tools.none).
+func TestEnforceRequiredSkillTools_ZeroToolAgentMountsNothing(t *testing.T) {
+	a := newTestAgentWithSkills(t)
+	a.disableToolSurface = true
+	sessionID := "sess-zero-tool"
+
+	const mcpTool = "td_run_sql"
+	reg := &stubToolRegistry{resp: &loomv1.SearchToolsResponse{
+		Results: []*loomv1.ToolSearchResult{{Tool: &loomv1.IndexedTool{
+			Name:        mcpTool,
+			Source:      loomv1.ToolSource_TOOL_SOURCE_MCP,
+			McpServer:   "teradata",
+			InputSchema: `{"type":"object"}`,
+		}}},
+	}}
+	a.executor = shuttle.NewExecutor(a.tools)
+	a.executor.SetToolRegistry(reg)
+	a.executor.SetMCPManager(&stubMCPManager{})
+
+	skill := &skills.Skill{
+		Name:  "needs-tools",
+		Tools: skills.SkillToolConfig{RequiredTools: []string{"web_search", mcpTool}},
+	}
+	a.skillOrchestrator.ActivateSkill(sessionID, skill, "test", "", 1.0)
+
+	a.enforceRequiredSkillTools(sessionID)
+
+	assert.False(t, a.tools.IsRegistered("web_search"), "builtin required tool must not register on a zero-tool agent")
+	assert.False(t, a.tools.IsRegistered(mcpTool), "MCP required tool must not mount on a zero-tool agent")
+	assert.Empty(t, a.sessionToolLedger[sessionID], "nothing may be advertised into the session")
+}

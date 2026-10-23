@@ -2011,6 +2011,9 @@ func runServe(cmd *cobra.Command, args []string) {
 				for _, name := range builtinToolsToSuppress() {
 					agentOpts = append(agentOpts, agent.WithoutBuiltinTool(name))
 				}
+				if cfg.GetTools().GetNone() {
+					agentOpts = append(agentOpts, agent.WithoutTools())
+				}
 
 				// Add PermissionChecker if configured
 				if permissionChecker != nil {
@@ -3343,6 +3346,9 @@ func runServe(cmd *cobra.Command, args []string) {
 			// Tool-surface gating — see builtinToolsToSuppress() for policy.
 			for _, name := range builtinToolsToSuppress() {
 				agentOpts = append(agentOpts, agent.WithoutBuiltinTool(name))
+			}
+			if agentConfig.GetTools().GetNone() {
+				agentOpts = append(agentOpts, agent.WithoutTools())
 			}
 
 			// Add PermissionChecker if configured
