@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1790,6 +1791,15 @@ func (a *Agent) getGuidanceMessage(ctx context.Context, key string, vars map[str
 			}
 		}
 		return "The tool execution failed. Let me try a different approach."
+	case "repeated_tool_call":
+		count, name := "several", "this tool"
+		if c, ok := vars["count"].(string); ok && c != "" {
+			count = c
+		}
+		if n, ok := vars["tool_name"].(string); ok && n != "" {
+			name = n
+		}
+		return fmt.Sprintf("(note: this is call %s in a row to %s with identical arguments. Read the previous result before calling again: change the arguments, try a different approach, or finish. If you are polling a job that is still running, this is expected.)", count, name)
 	default:
 		return "An unexpected situation occurred. Please try again."
 	}
@@ -3389,6 +3399,14 @@ func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, 
 	formattedResult := a.formatToolResult(ctx, session.ID, toolCall.Name, result, err)
 	if escalationMsg != "" {
 		formattedResult = formatToolResultWithEscalation(formattedResult, err, escalationMsg)
+	}
+
+	// Advisory note after repeated identical calls (the call itself already ran).
+	if n, hint := st.recovery.noteToolCall(dedupKey); hint {
+		formattedResult += "\n\n" + a.getGuidanceMessage(ctx, "repeated_tool_call", map[string]interface{}{
+			"count": strconv.Itoa(n), "tool_name": toolCall.Name,
+		})
+		span.AddEvent("recovery.repeat_hint", map[string]interface{}{"tool_name": toolCall.Name, "count": n})
 	}
 
 	// Add tool result to conversation

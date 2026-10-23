@@ -42,7 +42,10 @@ func (e *RecoverableError) Unwrap() error { return e.Cause }
 type RecoveryConfig struct {
 	// RepeatHintThresholds are the lengths of a run of identical consecutive
 	// tool calls (same name and canonical input) at which noteToolCall reports
-	// a hint. An empty slice disables hints.
+	// a hint. An empty slice disables hints. Hints exist only when the agent
+	// runs with EnableSelfHealing (the orchestrator is nil otherwise). A
+	// park/resume (park.go) builds a fresh orchestrator, so a run of identical
+	// calls restarts its count after a human decision.
 	RepeatHintThresholds []int
 }
 
@@ -59,7 +62,8 @@ type recoveryOrchestrator struct {
 	disabledTools map[string]bool
 	span          *observability.Span
 
-	// Run of identical consecutive tool calls; repeatMu guards the three fields.
+	// Run of identical consecutive tool calls. repeatMu guards lastCallKey and
+	// repeatCount; repeatThresholds is read-only after construction.
 	repeatMu         sync.Mutex
 	lastCallKey      string
 	repeatCount      int
