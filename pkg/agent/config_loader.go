@@ -155,7 +155,8 @@ type DecisionConfigYAML struct {
 	TimeoutMs  int64  `yaml:"timeout_ms"`
 	// BaseURL is parsed only so that setting it fails loudly: the decider
 	// endpoint is server-level (decision.ValidateConfig rejects it here).
-	BaseURL              string  `yaml:"base_url"`
+	// omitempty keeps SaveAgentConfig from ever writing the key.
+	BaseURL              string  `yaml:"base_url,omitempty"`
 	MaxPerSession        int64   `yaml:"max_per_session"`
 	MaxCostUSDPerSession float64 `yaml:"max_cost_usd_per_session"`
 	LLMRole              string  `yaml:"llm_role"`
@@ -170,8 +171,48 @@ type DecisionConfigYAML struct {
 type DecisionBandConfigYAML struct {
 	Site   string  `yaml:"site"`
 	ActMin float64 `yaml:"act_min"`
-	Mode   string  `yaml:"mode"`
+	Mode   string  `yaml:"mode,omitempty"`
 	Shadow bool    `yaml:"shadow"`
+}
+
+// convertProtoToDecisionConfigYAML is the inverse of
+// convertDecisionConfigYAMLToProto, used by SaveAgentConfig. base_url is never
+// written (the endpoint is server-level), and an UNSPECIFIED band mode is left
+// out so the file stays unset; the loader and the router both read that as
+// replace. A nil config converts to nil (no decision block).
+func convertProtoToDecisionConfigYAML(cfg *loomv1.DecisionConfig) *DecisionConfigYAML {
+	if cfg == nil {
+		return nil
+	}
+	y := &DecisionConfigYAML{
+		Provider:             cfg.Provider,
+		Model:                cfg.Model,
+		AllowAlias:           cfg.AllowAlias,
+		TimeoutMs:            cfg.TimeoutMs,
+		MaxPerSession:        cfg.MaxPerSession,
+		MaxCostUSDPerSession: cfg.MaxCostUsdPerSession,
+		LLMRole:              cfg.LlmRole,
+		RequestsPerMinute:    cfg.RequestsPerMinute,
+	}
+	for _, b := range cfg.Bands {
+		if b == nil {
+			continue
+		}
+		var mode string
+		switch b.Mode {
+		case loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE:
+			mode = "replace"
+		case loomv1.DecisionBandMode_DECISION_BAND_MODE_TIGHTEN_ONLY:
+			mode = "tighten_only"
+		}
+		y.Bands = append(y.Bands, DecisionBandConfigYAML{
+			Site:   b.Site,
+			ActMin: b.ActMin,
+			Mode:   mode,
+			Shadow: b.Shadow,
+		})
+	}
+	return y
 }
 
 // convertDecisionConfigYAMLToProto normalises the YAML spellings (provider
@@ -1520,6 +1561,9 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 			OutputTokenCBThreshold: int(config.Behavior.GetOutputTokenCbThreshold()),
 		}
 	}
+
+	// Decision layer; nil leaves the block out.
+	yaml.Agent.Decision = convertProtoToDecisionConfigYAML(config.Decision)
 
 	return yaml
 }

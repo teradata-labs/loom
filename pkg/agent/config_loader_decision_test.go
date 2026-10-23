@@ -15,10 +15,13 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
@@ -137,4 +140,105 @@ spec:
 	assert.Equal(t, "mock", cfg.GetDecision().Provider)
 	require.Len(t, cfg.GetDecision().Bands, 1)
 	assert.True(t, cfg.GetDecision().Bands[0].Shadow)
+}
+
+// Load → SaveAgentConfig → load keeps the decision block proto-equal (#482).
+func TestSaveAgentConfig_DecisionRoundTrip(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		block string
+	}{
+		{
+			name: "full block with several bands and modes",
+			block: `  decision:
+    provider: jev
+    llm_role: classifier
+    model: typesafe-ai/jev
+    allow_alias: true
+    timeout_ms: 2000
+    max_per_session: 200
+    max_cost_usd_per_session: 0.05
+    requests_per_minute: 30
+    bands:
+      - site: recall.rerank
+        act_min: 0.9
+        mode: replace
+      - site: tool.failure_kind
+        act_min: 0.8
+        mode: tighten_only
+        shadow: true
+      - site: tool.search
+        act_min: 0.75
+        mode: tighten-only
+`,
+		},
+		{
+			name: "band with no mode",
+			block: `  decision:
+    provider: llm
+    bands:
+      - site: recall.rerank
+        act_min: 0.6
+`,
+		},
+		{
+			name: "shadow band and provider case normalised",
+			block: `  decision:
+    provider: MOCK
+    bands:
+      - site: recall.rerank
+        shadow: true
+`,
+		},
+		{name: "empty block means off", block: "  decision: {}\n"},
+		{name: "no decision block"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			first, err := LoadConfigFromString(decisionYAMLHead + tt.block)
+			require.NoError(t, err)
+
+			path := filepath.Join(t.TempDir(), "agent.yaml")
+			require.NoError(t, SaveAgentConfig(first, path))
+			second, err := LoadAgentConfig(path)
+			require.NoError(t, err)
+
+			if tt.block == "" {
+				assert.Nil(t, second.GetDecision(), "an agent without a decision block must not gain one")
+				return
+			}
+			require.NotNil(t, second.GetDecision(), "SaveAgentConfig dropped the decision block")
+			assert.True(t, proto.Equal(first.GetDecision(), second.GetDecision()),
+				"decision changed across save:\nfirst:  %v\nsecond: %v", first.GetDecision(), second.GetDecision())
+		})
+	}
+}
+
+// A band built in code with no mode is saved without one, so the file stays
+// unset; the loader then reads it as replace, which is what the router does
+// with UNSPECIFIED (decision.BandFromProto).
+func TestSaveAgentConfig_DecisionUnspecifiedModeStaysUnset(t *testing.T) {
+	t.Parallel()
+	cfg := &loomv1.AgentConfig{
+		Name: "decision-unset",
+		Decision: &loomv1.DecisionConfig{
+			Provider: DecisionProviderLLM,
+			Bands:    []*loomv1.DecisionBand{{Site: "recall.rerank", ActMin: 0.5}},
+		},
+	}
+	path := filepath.Join(t.TempDir(), "agent.yaml")
+	require.NoError(t, SaveAgentConfig(cfg, path))
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "mode:", "an unset mode must not be written")
+	assert.NotContains(t, string(data), "base_url", "the server-level endpoint is never written to agent YAML")
+
+	got, err := LoadAgentConfig(path)
+	require.NoError(t, err)
+	require.Len(t, got.GetDecision().GetBands(), 1)
+	assert.Equal(t, loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE, got.GetDecision().GetBands()[0].GetMode())
+	assert.InDelta(t, 0.5, got.GetDecision().GetBands()[0].GetActMin(), 1e-12)
 }
