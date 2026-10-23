@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+#### Runtime-created agents use the server's LLM credentials
+- **An agent created through `POST /v1/agents` (or built by the agent registry) with its own `llm:` block got a provider built from environment variables only.** Agents loaded at `looms serve` startup build per-agent providers from the server's `llm.*` config (`looms.yaml`, keyring, environment); the registry's `createLLMProvider` never saw that config. On Bedrock it also forced AWS profile `default` when `AWS_PROFILE` was unset and passed no bearer token, so on a host without `~/.aws/config` creation failed with `failed to get shared config profile, default` even though the server's own Bedrock provider worked.
+- **`RegistryConfig.ProviderBuilder`** (new, optional) builds a per-agent provider for configs that name a provider and do not match a pool entry. `looms serve` and `looms workflow` pass the same function their startup path uses, so main and role LLMs (`judge_llm`, `orchestrator_llm`, `classifier_llm`, `compressor_llm`) get the server's credentials on every build path. The provider pool and the registry default keep precedence.
+- **Without a builder** (library callers), the environment-only fallback no longer forces profile `default`; an unset `AWS_PROFILE` leaves the AWS default credential chain in effect.
+
 ### Added
 
 #### HITL park: tools other than `contact_human` can park as questions

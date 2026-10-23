@@ -692,6 +692,10 @@ func setupWorkflowRuntime(pattern *loomv1.WorkflowPattern, promptGates bool) (*w
 		Logger:       logger,
 		Tracer:       tracer,
 		SessionStore: sessionStore,
+		// Per-agent providers use the same credentials as looms serve.
+		ProviderBuilder: func(llmCfg *loomv1.LLMConfig) (agent.LLMProvider, error) {
+			return createLLMProviderFromProtoConfig(llmCfg, config, logger)
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create agent registry: %w", err)
