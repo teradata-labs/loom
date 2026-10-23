@@ -135,7 +135,7 @@ dataset refused on resume.
   gRPC status — `Unavailable` (server restart, transport drop),
   `DeadlineExceeded` (a deadline inside the server elapsed; the harness sets
   no per-call deadline of its own, because `Weave` ignores
-  `WeaveRequest.timeout_seconds` — only the workflow RPCs read it) or
+  `WeaveRequest.timeout_seconds` — the server never reads it, #481) or
   `ResourceExhausted` (load shedding) — which the harness reports with exit
   status 75 (`HARNESS_RC_TRANSIENT` in the runner script). A Bedrock
   throttle or outage that outlasts looms' own LLM retries is in the second

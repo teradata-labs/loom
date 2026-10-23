@@ -165,8 +165,8 @@ error or any other 4xx except 408 and 429) is `Internal` and is an ordinary entr
 
 `DeadlineExceeded` here means a deadline inside the server elapsed. The
 harness sets no per-call deadline: it sends `timeout_seconds` on each
-`WeaveRequest`, but `Weave` and `StreamWeave` ignore that field (only the
-workflow RPCs read it), and the harness puts no deadline on the call context.
+`WeaveRequest`, but the server never reads that field (#481), and the
+harness puts no deadline on the call context.
 
 On AKS, `deploy/longmemeval/runner-script.yaml` runs the harness one chunk at a
 time and treats exit 75 as `HARNESS_RC_TRANSIENT`: the chunk is retried on the
