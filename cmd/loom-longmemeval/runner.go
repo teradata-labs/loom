@@ -411,6 +411,9 @@ func (r *Runner) deleteTempAgent(ctx context.Context, agentID string) {
 // buildWeaveRequest constructs a Weave request, attaching occurred_at when
 // a non-zero time is given so replayed turns anchor at their historical date.
 func buildWeaveRequest(sessionID, query, agentID string, occurredAt time.Time) *loomv1.WeaveRequest {
+	// TimeoutSeconds is not a per-call deadline: Weave and StreamWeave
+	// ignore it (only the workflow RPCs read it), and the harness sets no
+	// context deadline on the call either.
 	req := &loomv1.WeaveRequest{
 		Query:          query,
 		SessionId:      sessionID,

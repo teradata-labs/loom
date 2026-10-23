@@ -1,6 +1,6 @@
 # LongMemEval Benchmark Guide
 
-**Version**: v1.3.0 | **Status**: ✅ Implemented (merged to `main` via PR #159)
+**Version**: v1.4.0 | **Status**: ✅ Implemented (merged to `main` via PR #159)
 
 ## Table of Contents
 
@@ -150,7 +150,7 @@ far as running entries):
 
 | Status | Meaning |
 |--------|---------|
-| 0 | Run finished. Entries may still have failed — check the `error` fields in `--detailed`. A user interrupt (Ctrl-C) also exits 0 unless rule 75 applies. |
+| 0 | Run finished. Entries may still have failed — check the `error` fields in `--detailed`. A user interrupt (Ctrl-C) also exits 0 unless the exit-75 rule (`ExitTransient`, `HARNESS_RC_TRANSIENT` in the AKS runner) applies. |
 | 1 | Could not start (bad flags, dataset missing, server health check failed) or aborted (the server rejects `occurred_at`). |
 | 75 | Run finished and at least one entry failed, but **every** failure carries a retryable gRPC status (`Unavailable`, `DeadlineExceeded`, `ResourceExhausted`). Retry the same range. |
 
@@ -162,6 +162,21 @@ back with a retryable status, so it counts toward 75: a throttle is
 or an `overloaded_error` from the Anthropic SDK that the Bedrock client uses
 for Claude) is `Unavailable`. A deterministic provider refusal (a validation
 error or any other 4xx except 408 and 429) is `Internal` and is an ordinary entry failure (exit 0).
+
+`DeadlineExceeded` here means a deadline inside the server elapsed. The
+harness sets no per-call deadline: it sends `timeout_seconds` on each
+`WeaveRequest`, but `Weave` and `StreamWeave` ignore that field (only the
+workflow RPCs read it), and the harness puts no deadline on the call context.
+
+On AKS, `deploy/longmemeval/runner-script.yaml` runs the harness one chunk at a
+time and treats exit 75 as `HARNESS_RC_TRANSIENT`: the chunk is retried on the
+next pod restart without consuming its deterministic-failure budget. Each
+rejected attempt is kept as `runs/<run-id>/rejected/<chunk>.a<NNN>.jsonl` and
+`<chunk>.a<NNN>-detailed.json`, numbered so no attempt overwrites another. Any
+pass that ends with a chunk not done writes `runs/<run-id>/RUN-INCOMPLETE.txt`,
+listing quarantined, transient-failed and under-budget chunks under separate
+headings; only a pass in which every chunk is done removes it. See
+`deploy/longmemeval/README.md` for the full contract.
 
 Limitation: the server only recognises a 5xx that the provider client typed.
 Both Bedrock clients do (AWS SDK and Anthropic SDK errors carry the status).

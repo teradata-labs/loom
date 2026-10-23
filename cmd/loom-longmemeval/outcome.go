@@ -48,7 +48,8 @@ const (
 
 // retryableCodes are the gRPC statuses that describe the infrastructure
 // rather than the entry: the server or its transport is down or restarting
-// (Unavailable), the per-call deadline elapsed (DeadlineExceeded), or the
+// (Unavailable), a deadline inside the server elapsed (DeadlineExceeded —
+// the harness sets no per-call deadline of its own), or the
 // server shed load (ResourceExhausted, the conversation-door backpressure
 // code).
 //

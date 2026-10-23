@@ -41,7 +41,9 @@ data:
     #   HARNESS_RC_TRANSIENT  ran, and EVERY failed entry carries a retryable
     #                         gRPC status (Unavailable, DeadlineExceeded,
     #                         ResourceExhausted): a server restart, transport
-    #                         drop, call deadline or load shedding mid-chunk.
+    #                         drop, server-side deadline or load shedding
+    #                         mid-chunk. (The harness sets no per-call Weave
+    #                         deadline: Weave ignores timeout_seconds.)
     #                         Infrastructure — budget untouched.
     #   any other nonzero     the harness could not run (or aborted).
     #                         Infrastructure — budget untouched.

@@ -76,7 +76,7 @@ dataset refused on resume.
   historical dates (see `docs/guides/longmemeval-benchmark.md`).
 - **Run identity:** `run-500.sh` derives a run id from a manifest of everything
   that determines what the benchmark measures (dataset, mode, occurred_at, model,
-  pinned image tag, chunk size). Chunk outputs live under
+  image tag and the immutable digest it resolved to, chunk size). Chunk outputs live under
   `/results/runs/<run-id>/`, and the runner verifies the stored `manifest.txt`
   before resuming — a changed configuration gets a fresh run directory instead of
   silently reusing chunks. To knowingly continue a run after e.g. an image
@@ -133,8 +133,11 @@ dataset refused on resume.
   a harness that could not run at all (nonzero exit before any entry ran, or
   an aborted run), and a chunk whose failed entries *all* carry a retryable
   gRPC status — `Unavailable` (server restart, transport drop),
-  `DeadlineExceeded` (per-call deadline) or `ResourceExhausted` (load
-  shedding) — which the harness reports with exit status 75. A Bedrock
+  `DeadlineExceeded` (a deadline inside the server elapsed; the harness sets
+  no per-call deadline of its own, because `Weave` ignores
+  `WeaveRequest.timeout_seconds` — only the workflow RPCs read it) or
+  `ResourceExhausted` (load shedding) — which the harness reports with exit
+  status 75 (`HARNESS_RC_TRANSIENT` in the runner script). A Bedrock
   throttle or outage that outlasts looms' own LLM retries is in the second
   case: looms returns `ResourceExhausted` for a throttle and `Unavailable` for
   a temporary provider server fault or timeout (HTTP 408/500/502/503/504/529,
