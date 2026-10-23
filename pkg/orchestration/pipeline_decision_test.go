@@ -16,6 +16,7 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -28,7 +29,9 @@ import (
 	"github.com/teradata-labs/loom/pkg/decision"
 	decisionmock "github.com/teradata-labs/loom/pkg/decision/mock"
 	"github.com/teradata-labs/loom/pkg/decision/sites"
+	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
 func validationBand(actMin float64, mode loomv1.DecisionBandMode) decision.RouterOption {
@@ -235,4 +238,45 @@ func TestStageValidationDecision_OverLimitOutputGoesToValidator(t *testing.T) {
 			assert.Empty(t, rows)
 		})
 	}
+}
+
+// failingLLM fails every chat, standing in for a validator that is down.
+type failingLLM struct{}
+
+func (failingLLM) Chat(context.Context, []llmtypes.Message, []shuttle.Tool) (*llmtypes.LLMResponse, error) {
+	return nil, errors.New("validator unavailable")
+}
+func (failingLLM) Name() string  { return "failing" }
+func (failingLLM) Model() string { return "failing-1" }
+
+// Review #410 minor b: when the LLM validator failed, validateStageOutput
+// returned before recording, losing the decider answer it had already paid
+// for. The row is recorded (no reference: the validator produced none)
+// before the error is returned.
+func TestStageValidationDecision_ValidatorErrorStillRecordsTheLiveAnswer(t *testing.T) {
+	t.Parallel()
+	dec := decisionmock.New().AnswerNoul(sites.QOutputValid, 0.55) // below the band: the validator decides
+	store := &memShadowStore{}
+	orch := NewOrchestrator(Config{Logger: zaptest.NewLogger(t), Tracer: observability.NewNoOpTracer(), LLMProvider: failingLLM{}})
+	cfg := agent.DefaultConfig()
+	cfg.PatternConfig = agent.DefaultPatternConfig()
+	cfg.PatternConfig.UseLLMClassifier = false
+	ag := agent.NewAgent(&mockBackend{}, newLvlMockLLM(lvlLowProvider, lvlLowModel, 0, "a prose answer"),
+		agent.WithName("worker"), agent.WithConfig(cfg),
+		agent.WithDecisionRouter(decision.NewRouter(dec, validationBand(0.8, loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE))),
+		agent.WithDecisionShadowStore(store))
+	orch.RegisterAgent("worker", ag)
+	e := NewPipelineExecutor(orch, &loomv1.PipelinePattern{}, "wf")
+
+	_, err := e.validateStageOutput(context.Background(), "wf", &loomv1.PipelineStage{
+		AgentId: "worker", ValidationPrompt: "Is {{output}} a complete answer?",
+	}, "a prose answer", 1)
+	require.Error(t, err)
+	ag.WaitDecisionShadows()
+	assert.Equal(t, 1, dec.CallCount())
+	rows, err := store.QueryShadow(context.Background(), decision.ShadowQuery{})
+	require.NoError(t, err)
+	require.Len(t, rows, 1, "the billed decider answer is recorded")
+	assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_FALLBACK, rows[0].Path)
+	assert.Equal(t, "", rows[0].ReferenceAnswer)
 }

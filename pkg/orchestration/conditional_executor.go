@@ -101,6 +101,11 @@ func (e *ConditionalExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResu
 	} else {
 		conditionResult, model, selectedBranch, branchKey, err = e.evaluateAndSelect(ctx, conditionAgent)
 		if err != nil {
+			if dreq != nil {
+				// The live answer was paid for; record it, with no
+				// reference because the condition agent produced none.
+				conditionAgent.RecordDecisionAsync(ctx, sessionID, dreq, dout, nil)
+			}
 			return nil, err
 		}
 		refs := sites.BranchReference(e.referenceKey(selectedBranch, branchKey))

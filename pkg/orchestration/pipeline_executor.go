@@ -911,6 +911,11 @@ func (e *PipelineExecutor) validateStageOutput(ctx context.Context, workflowID s
 
 	valid, err := e.validateStageOutputLLM(ctx, sessionID, stage, output)
 	if err != nil {
+		if dreq != nil {
+			// The live answer was paid for; record it, with no reference
+			// because the validator produced none.
+			stageAgent.RecordDecisionAsync(ctx, sessionID, dreq, dout, nil)
+		}
 		return valid, err
 	}
 	refs := sites.ValidationReference(valid)

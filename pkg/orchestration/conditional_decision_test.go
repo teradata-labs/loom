@@ -268,3 +268,26 @@ func TestConditionalDecision_OverLimitPromptGoesToConditionAgent(t *testing.T) {
 		})
 	}
 }
+
+// Review #410 minor b: when the condition agent path failed, the executor
+// returned before recording, losing the decider answer it had already paid
+// for. The row is recorded (no reference: the mechanism produced none)
+// before the error is returned.
+func TestConditionalDecision_FallbackErrorStillRecordsTheLiveAnswer(t *testing.T) {
+	t.Parallel()
+	classifierLLM := newMockLLMProvider("no idea") // matches no branch, and there is no default
+	dec := decisionmock.New().AnswerChoice(sites.QBranch, map[string]float64{"bug": 0.5, "feature": 0.4, sites.BranchNoneOfThese: 0.1})
+	store := &memShadowStore{}
+	classifier := decisionClassifier(t, classifierLLM, dec, store, liveBranchBand(0.8))
+
+	_, _, err := runConditional(t, classifier, conditionalPattern(false))
+	require.Error(t, err, "the condition agent path failed")
+	classifier.WaitDecisionShadows()
+	assert.Equal(t, 1, dec.CallCount())
+	rows, err := store.QueryShadow(context.Background(), decision.ShadowQuery{})
+	require.NoError(t, err)
+	require.Len(t, rows, 1, "the billed decider answer is recorded")
+	assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_FALLBACK, rows[0].Path)
+	assert.Equal(t, "bug", rows[0].CandidateAnswer)
+	assert.Equal(t, "", rows[0].ReferenceAnswer)
+}
