@@ -280,3 +280,40 @@ func TestStageValidationDecision_ValidatorErrorStillRecordsTheLiveAnswer(t *test
 	assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_FALLBACK, rows[0].Path)
 	assert.Equal(t, "", rows[0].ReferenceAnswer)
 }
+
+// stage.validation is a gate: a live band with no mode is tighten-only, so
+// the decider may fail an output but never pass one on its own. An explicit
+// mode: replace opts out and acts on either verdict.
+func TestStageValidationDecision_UnsetModeIsTightenOnly(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		mode          loomv1.DecisionBandMode
+		p             float64
+		validator     string
+		wantErr       bool
+		wantValidator int
+	}{
+		// "rejected: incomplete", not "invalid": the scraper on main reads any
+		// reply containing "valid" as a pass.
+		{"unset mode, confident valid: the validator still decides and fails it", loomv1.DecisionBandMode_DECISION_BAND_MODE_UNSPECIFIED, 0.95, "rejected: incomplete", true, 1},
+		{"unset mode, confident invalid: the decider fails it", loomv1.DecisionBandMode_DECISION_BAND_MODE_UNSPECIFIED, 0.05, "valid", true, 0},
+		{"replace, confident valid: the decider passes it", loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE, 0.95, "rejected: incomplete", false, 0},
+		{"replace, confident invalid: the decider fails it", loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE, 0.05, "valid", true, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dec := decisionmock.New().AnswerNoul(sites.QOutputValid, tt.p)
+			_, validator, _, ag, err := stageValidationRig(t, dec, &memShadowStore{}, tt.validator, validationBand(0.8, tt.mode))
+			ag.WaitDecisionShadows()
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "output validation failed")
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tt.wantValidator, validator.count())
+		})
+	}
+}

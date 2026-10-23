@@ -28,6 +28,11 @@ import (
 // its prose for "valid", "yes" or "true"; here it is one Noul.
 const SiteStageValidation = "stage.validation"
 
+// ValidationDefaultMode is the band mode at SiteStageValidation when the band
+// leaves mode unset: a gate may fail an output, never pass one on its own.
+// mode: replace opts out.
+const ValidationDefaultMode = loomv1.DecisionBandMode_DECISION_BAND_MODE_TIGHTEN_ONLY
+
 // QOutputValid is the single question id at SiteStageValidation.
 const QOutputValid = "valid"
 

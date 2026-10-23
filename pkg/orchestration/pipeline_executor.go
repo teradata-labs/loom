@@ -888,9 +888,10 @@ func levelingStageWarnings(stage *loomv1.PipelineStage, stageNum int, report *Le
 // borrowed the way the conditional executor borrows the condition agent's.
 // With a live band the decider judges first and, when its band says to act,
 // the LLM validator is skipped; otherwise the LLM decides and the decider's
-// answer is recorded against the scraped verdict. A TIGHTEN_ONLY band lets
+// answer is recorded against the scraped verdict. A TIGHTEN_ONLY band (the
+// default when the band leaves mode unset, sites.ValidationDefaultMode) lets
 // the decider fail an output but never pass one: a confident "valid" still
-// runs the LLM.
+// runs the LLM. mode: replace lets it pass outputs too.
 func (e *PipelineExecutor) validateStageOutput(ctx context.Context, workflowID string, stage *loomv1.PipelineStage, output string, stageNum int) (bool, error) {
 	sessionID := fmt.Sprintf("%s-stage%d-%s-validation", workflowID, stageNum, stage.AgentId)
 
@@ -937,7 +938,8 @@ func (e *PipelineExecutor) validateStageOutput(ctx context.Context, workflowID s
 // liveValidation is the decision layer's live path for stage.validation.
 // acted is true when the stage agent's band for the site is live, the
 // decider cleared it, and the band's mode allows the verdict: REPLACE acts on
-// either verdict, TIGHTEN_ONLY only on "invalid". When the decider answered
+// either verdict, TIGHTEN_ONLY (the default for an unset mode) only on
+// "invalid". When the decider answered
 // but the site must still run the LLM, req and out come back non-nil so the
 // caller records them against the LLM's verdict.
 func (e *PipelineExecutor) liveValidation(ctx context.Context, stageAgent *agent.Agent, sessionID, requirement, output string) (req *loomv1.DecisionRequest, out decision.Outcome, valid bool, acted bool) {
@@ -965,7 +967,7 @@ func (e *PipelineExecutor) liveValidation(ctx context.Context, stageAgent *agent
 		out.Path = loomv1.DecisionPath_DECISION_PATH_FALLBACK
 		return req, out, false, false
 	}
-	if valid && out.Band.Mode == loomv1.DecisionBandMode_DECISION_BAND_MODE_TIGHTEN_ONLY {
+	if valid && out.Band.ModeOr(sites.ValidationDefaultMode) == loomv1.DecisionBandMode_DECISION_BAND_MODE_TIGHTEN_ONLY {
 		// A gate may only tighten: the decider cannot pass an output on its
 		// own, so the LLM still decides and the row is a fallback.
 		out.Path = loomv1.DecisionPath_DECISION_PATH_FALLBACK

@@ -30,7 +30,8 @@ type Band struct {
 	// used. Below it the site's existing mechanism decides.
 	ActMin float64
 	// Mode says how the site may use a confident answer. TightenOnly sites
-	// may only make an outcome more restrictive.
+	// may only make an outcome more restrictive. UNSPECIFIED means the
+	// band did not say; read it through ModeOr with the site's default.
 	Mode loomv1.DecisionBandMode
 	// Shadow records the decider's answer but never acts on it: the path is
 	// always FALLBACK and the response is attached for comparison.
@@ -47,6 +48,19 @@ type Band struct {
 	// (one question per candidate) use PER_QUESTION so one uncertain
 	// candidate cannot veto the rest.
 	Aggregate loomv1.DecisionBandAggregate
+}
+
+// ModeOr is the band's mode, or siteDefault when the band leaves it unset.
+// Gate sites (stage.validation, debate.consensus) default to TIGHTEN_ONLY;
+// an explicit mode always wins.
+func (b Band) ModeOr(siteDefault loomv1.DecisionBandMode) loomv1.DecisionBandMode {
+	if b.Mode != loomv1.DecisionBandMode_DECISION_BAND_MODE_UNSPECIFIED {
+		return b.Mode
+	}
+	if siteDefault != loomv1.DecisionBandMode_DECISION_BAND_MODE_UNSPECIFIED {
+		return siteDefault
+	}
+	return loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE
 }
 
 // PerQuestion reports whether the band judges answers individually.
@@ -78,15 +92,13 @@ func (b Band) Confident(a *loomv1.DecisionAnswer) bool {
 var ShadowBand = Band{ActMin: 1, Mode: loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE, Shadow: true,
 	Aggregate: loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_MIN}
 
-// BandFromProto converts a configured band.
+// BandFromProto converts a configured band. An unset mode stays unset so
+// the site can apply its own default (Band.ModeOr).
 func BandFromProto(b *loomv1.DecisionBand) Band {
 	if b == nil {
 		return ShadowBand
 	}
 	mode := b.Mode
-	if mode == loomv1.DecisionBandMode_DECISION_BAND_MODE_UNSPECIFIED {
-		mode = loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE
-	}
 	agg := b.Aggregate
 	if agg == loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_UNSPECIFIED {
 		agg = loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_MIN

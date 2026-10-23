@@ -285,8 +285,10 @@ func (d *DebateOrchestrator) executeRound(ctx context.Context, workflowID string
 // The internal moderator's decision layer is borrowed: with a live band the
 // decider reads the positions and its verdict is used when the band is
 // cleared; otherwise the confidence-mean heuristic decides and the decider's
-// answer is recorded against it. Under a TIGHTEN_ONLY band the decider may
-// only withhold consensus (keep the debate going), never declare it.
+// answer is recorded against it. Under a TIGHTEN_ONLY band (the default when
+// the band leaves mode unset, sites.ConsensusDefaultMode) the decider may
+// only withhold consensus (keep the debate going), never declare it; mode:
+// replace lets it declare consensus too.
 func (d *DebateOrchestrator) decideConsensus(ctx context.Context, workflowID string, roundNum int32, topic string, round *loomv1.DebateRound, moderator *agent.Agent) bool {
 	heuristic := d.checkConsensus(round)
 	if moderator == nil || moderator.DecisionRouter() == nil || len(round.Positions) < 2 {
@@ -316,7 +318,7 @@ func (d *DebateOrchestrator) decideConsensus(ctx context.Context, workflowID str
 			out.Path = loomv1.DecisionPath_DECISION_PATH_FALLBACK
 		}
 		if ok {
-			tightenBlocked := reached && band.Mode == loomv1.DecisionBandMode_DECISION_BAND_MODE_TIGHTEN_ONLY
+			tightenBlocked := reached && band.ModeOr(sites.ConsensusDefaultMode) == loomv1.DecisionBandMode_DECISION_BAND_MODE_TIGHTEN_ONLY
 			if !tightenBlocked {
 				d.logger.Info("Consensus judged by decision layer",
 					zap.Int32("round", roundNum),

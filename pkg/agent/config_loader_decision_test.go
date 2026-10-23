@@ -64,7 +64,8 @@ func TestLoadConfig_DecisionBlock(t *testing.T) {
 	require.Len(t, d.Bands, 2)
 	assert.Equal(t, "recall.rerank", d.Bands[0].Site)
 	assert.InDelta(t, 0.9, d.Bands[0].ActMin, 1e-9)
-	assert.Equal(t, loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE, d.Bands[0].Mode, "mode defaults to replace")
+	assert.Equal(t, loomv1.DecisionBandMode_DECISION_BAND_MODE_UNSPECIFIED, d.Bands[0].Mode,
+		"an unset mode stays unset, so the site's own default applies (tighten-only at the gate sites)")
 	assert.False(t, d.Bands[0].Shadow)
 	assert.Equal(t, loomv1.DecisionBandMode_DECISION_BAND_MODE_TIGHTEN_ONLY, d.Bands[1].Mode)
 	assert.True(t, d.Bands[1].Shadow)

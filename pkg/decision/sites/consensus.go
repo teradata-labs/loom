@@ -29,6 +29,11 @@ import (
 // where none was made, so a live band here buys accuracy, not latency.
 const SiteDebateConsensus = "debate.consensus"
 
+// ConsensusDefaultMode is the band mode at SiteDebateConsensus when the band
+// leaves mode unset: the decider may keep a debate going, never end one on
+// its own. mode: replace opts out.
+const ConsensusDefaultMode = loomv1.DecisionBandMode_DECISION_BAND_MODE_TIGHTEN_ONLY
+
 // QConsensus is the single question id at SiteDebateConsensus.
 const QConsensus = "consensus"
 

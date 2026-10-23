@@ -269,3 +269,51 @@ func TestDebateConsensusDecision_OverLimitPositionGoesToHeuristic(t *testing.T) 
 		})
 	}
 }
+
+// lowConfidenceLLM answers with a position at 40% confidence, so the
+// confidence-mean heuristic says no consensus.
+type lowConfidenceLLM struct{ position string }
+
+func (l lowConfidenceLLM) Chat(context.Context, []llmtypes.Message, []shuttle.Tool) (*llmtypes.LLMResponse, error) {
+	return &llmtypes.LLMResponse{Content: fmt.Sprintf("POSITION: %s\n\nCONFIDENCE: 40", l.position), StopReason: "end_turn"}, nil
+}
+func (lowConfidenceLLM) Name() string  { return "mock" }
+func (lowConfidenceLLM) Model() string { return "mock-model" }
+
+// debate.consensus is a gate: a live band with no mode is tighten-only, so
+// the decider may keep a debate going but never declare consensus on its
+// own. An explicit mode: replace opts out and acts on either verdict.
+func TestDebateConsensusDecision_UnsetModeIsTightenOnly(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		mode          loomv1.DecisionBandMode
+		p             float64
+		lowConfidence bool // heuristic says no consensus
+		want          string
+	}{
+		{"unset mode, confident agree: cannot declare consensus", loomv1.DecisionBandMode_DECISION_BAND_MODE_UNSPECIFIED, 0.95, true, "false"},
+		{"unset mode, confident disagree: withholds consensus", loomv1.DecisionBandMode_DECISION_BAND_MODE_UNSPECIFIED, 0.05, false, "false"},
+		{"replace, confident agree: declares consensus", loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE, 0.95, true, "true"},
+		{"replace, confident disagree: withholds consensus", loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE, 0.05, false, "false"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dec := decisionmock.New().AnswerNoul(sites.QConsensus, tt.p)
+			var l1, l2 agent.LLMProvider = positionLLM{"Use indexes"}, positionLLM{"Use partitions"}
+			if tt.lowConfidence {
+				l1, l2 = lowConfidenceLLM{"Use indexes"}, lowConfidenceLLM{"Use indexes too"}
+			}
+			moderator := agent.NewAgent(nil, l1, agent.WithName("a1"),
+				agent.WithDecisionRouter(decision.NewRouter(dec, consensusBand(0.8, tt.mode))),
+				agent.WithDecisionShadowStore(&memShadowStore{}))
+			other := agent.NewAgent(nil, l2, agent.WithName("a2"))
+			d := NewDebateOrchestrator(mapProvider{agents: map[string]*agent.Agent{"a1": moderator, "a2": other}})
+			res, err := d.Execute(context.Background(), &loomv1.DebatePattern{Topic: "Indexes or partitions?", AgentIds: []string{"a1", "a2"}, Rounds: 1})
+			require.NoError(t, err)
+			moderator.WaitDecisionShadows()
+			assert.Equal(t, tt.want, res.Metadata["consensus_achieved"])
+		})
+	}
+}

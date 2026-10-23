@@ -146,7 +146,8 @@ func convertProtoToLLMConfigYAML(pb *loomv1.LLMConfig) *LLMConfigYAML {
 //	  bands:
 //	    - site: recall.rerank
 //	      act_min: 0.9
-//	      mode: replace        # replace | tighten_only
+//	      mode: replace        # replace | tighten_only; unset = tighten_only at the gate
+//	                           # sites (stage.validation, debate.consensus), replace elsewhere
 //	      shadow: true         # record only, never act
 type DecisionConfigYAML struct {
 	Provider   string `yaml:"provider"`
@@ -216,7 +217,11 @@ func convertDecisionConfigYAMLToProto(y *DecisionConfigYAML) (*loomv1.DecisionCo
 	for i, b := range y.Bands {
 		var mode loomv1.DecisionBandMode
 		switch strings.ToLower(strings.TrimSpace(b.Mode)) {
-		case "", "replace":
+		case "":
+			// Unset: the site's default applies (tighten-only at the gate
+			// sites, replace elsewhere; decision.Band.ModeOr).
+			mode = loomv1.DecisionBandMode_DECISION_BAND_MODE_UNSPECIFIED
+		case "replace":
 			mode = loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE
 		case "tighten_only", "tighten-only", "tighten":
 			mode = loomv1.DecisionBandMode_DECISION_BAND_MODE_TIGHTEN_ONLY
