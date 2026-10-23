@@ -156,7 +156,8 @@ type DecisionConfigYAML struct {
 	TimeoutMs  int64  `yaml:"timeout_ms"`
 	// BaseURL is parsed only so that setting it fails loudly: the decider
 	// endpoint is server-level (decision.ValidateConfig rejects it here).
-	BaseURL              string  `yaml:"base_url"`
+	// omitempty keeps SaveAgentConfig from ever writing the key.
+	BaseURL              string  `yaml:"base_url,omitempty"`
 	MaxPerSession        int64   `yaml:"max_per_session"`
 	MaxCostUSDPerSession float64 `yaml:"max_cost_usd_per_session"`
 	LLMRole              string  `yaml:"llm_role"`
@@ -177,7 +178,7 @@ type DecisionConfigYAML struct {
 type DecisionBandConfigYAML struct {
 	Site   string  `yaml:"site"`
 	ActMin float64 `yaml:"act_min"`
-	Mode   string  `yaml:"mode"`
+	Mode   string  `yaml:"mode,omitempty"`
 	Shadow bool    `yaml:"shadow"`
 	// Aggregate: min (default) | per_question. Fan-out sites such as the
 	// reranks use per_question so one uncertain candidate cannot veto the rest.
@@ -187,6 +188,54 @@ type DecisionBandConfigYAML struct {
 	// gate. 0 means the site default (0.5). It is not act_min, which asks
 	// how decisive an answer must be before the site acts at all.
 	TrueMin float64 `yaml:"true_min"`
+}
+
+// convertProtoToDecisionConfigYAML is the inverse of
+// convertDecisionConfigYAMLToProto, used by SaveAgentConfig. base_url is never
+// written (the endpoint is server-level), and an UNSPECIFIED band mode is left
+// out so the file stays unset; the loader and the router both read that as
+// replace. A nil config converts to nil (no decision block).
+func convertProtoToDecisionConfigYAML(cfg *loomv1.DecisionConfig) *DecisionConfigYAML {
+	if cfg == nil {
+		return nil
+	}
+	y := &DecisionConfigYAML{
+		Provider:               cfg.Provider,
+		Model:                  cfg.Model,
+		AllowAlias:             cfg.AllowAlias,
+		TimeoutMs:              cfg.TimeoutMs,
+		MaxPerSession:          cfg.MaxPerSession,
+		MaxCostUSDPerSession:   cfg.MaxCostUsdPerSession,
+		LLMRole:                cfg.LlmRole,
+		RequestsPerMinute:      cfg.RequestsPerMinute,
+		ExposeTool:             cfg.ExposeTool,
+		MaxQuestionsPerRequest: cfg.MaxQuestionsPerRequest,
+	}
+	for _, b := range cfg.Bands {
+		if b == nil {
+			continue
+		}
+		var mode string
+		switch b.Mode {
+		case loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE:
+			mode = "replace"
+		case loomv1.DecisionBandMode_DECISION_BAND_MODE_TIGHTEN_ONLY:
+			mode = "tighten_only"
+		}
+		var agg string
+		if b.Aggregate == loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_PER_QUESTION {
+			agg = "per_question"
+		}
+		y.Bands = append(y.Bands, DecisionBandConfigYAML{
+			Site:      b.Site,
+			ActMin:    b.ActMin,
+			TrueMin:   b.TrueMin,
+			Mode:      mode,
+			Shadow:    b.Shadow,
+			Aggregate: agg,
+		})
+	}
+	return y
 }
 
 // convertDecisionConfigYAMLToProto normalises the YAML spellings (provider
@@ -473,6 +522,8 @@ type BehaviorConfigYAML struct {
 	Skills                 SkillsConfigYAML   `yaml:"skills"`
 	OutputTokenCBThreshold int                `yaml:"output_token_cb_threshold"`
 	EnableSelfHealing      *bool              `yaml:"enable_self_healing"`
+	// RepeatCallHint opts the agent into the repeat-call note (default off).
+	RepeatCallHint *bool `yaml:"repeat_call_hint"`
 }
 
 // SkillsConfigYAML represents skills configuration in YAML
@@ -1033,6 +1084,15 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 		config.Metadata["_enable_self_healing"] = "false"
 	}
 
+	// Stash the repeat-call opt-in the same way; registry.go turns it into
+	// RecoveryConfig thresholds. Off unless the YAML sets it true.
+	if yaml.Agent.Behavior.RepeatCallHint != nil && *yaml.Agent.Behavior.RepeatCallHint {
+		if config.Metadata == nil {
+			config.Metadata = make(map[string]string)
+		}
+		config.Metadata["_repeat_call_hint"] = "true"
+	}
+
 	return config, nil
 }
 
@@ -1552,6 +1612,9 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 			OutputTokenCBThreshold: int(config.Behavior.GetOutputTokenCbThreshold()),
 		}
 	}
+
+	// Decision layer; nil leaves the block out.
+	yaml.Agent.Decision = convertProtoToDecisionConfigYAML(config.Decision)
 
 	return yaml
 }
