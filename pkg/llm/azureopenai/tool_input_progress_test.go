@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/types"
 )
 
@@ -60,5 +61,22 @@ func TestClient_ChatStream_ToolCallDeltasReportProgress(t *testing.T) {
 	}, got)
 
 	require.Len(t, resp.ToolCalls, 2)
-	assert.Equal(t, "a.ipynb", resp.ToolCalls[0].Input["path"])
+	// The client assembles ToolCalls by ranging over a map, so their order is
+	// not deterministic — look them up by ID instead of by position.
+	byID := make(map[string]llmtypes.ToolCall, len(resp.ToolCalls))
+	for _, tc := range resp.ToolCalls {
+		byID[tc.ID] = tc
+	}
+	first, ok := byID["call_1"]
+	require.True(t, ok, "call_1 missing from response")
+	assert.Equal(t, "files", first.Name)
+	assert.Equal(t, "a.ipynb", first.Input["path"])
+	// call_2 sent its arguments before its id and name; both must be backfilled.
+	// Its arguments are "{}", which parses to an empty (but non-nil) Input.
+	second, ok := byID["call_2"]
+	require.True(t, ok, "call_2 missing from response")
+	assert.Equal(t, "read_notebook", second.Name)
+	assert.NotNil(t, second.Input)
+	assert.NotContains(t, second.Input, "_args")
+	assert.NotContains(t, second.Input, "_raw")
 }

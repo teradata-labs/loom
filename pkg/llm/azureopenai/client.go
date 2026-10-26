@@ -857,9 +857,12 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 						}
 					}
 					tc := toolCallMap[idx]
-					// Some OpenAI-compatible proxies emit arguments before the ID
-					// and function name. Backfill identity fields on every delta so
-					// an args-first tool call is not silently discarded at the end.
+					// Some OpenAI-compatible proxies emit arguments before the
+					// ID and function name. Backfill identity fields on every
+					// delta so such calls are reported with their real id and
+					// name as soon as they arrive; before that the progress
+					// event carries an empty identity (the call itself was
+					// never dropped).
 					if tcDelta.ID != "" {
 						tc.ID = tcDelta.ID
 					}

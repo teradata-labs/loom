@@ -756,7 +756,6 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	toolInputBuffers := make(map[int64]*strings.Builder)
 	// Map content block index to tool call index in our array
 	blockIndexToToolIndex := make(map[int64]int)
-	toolCallState := make(map[int64]*llmtypes.ToolCall)
 
 	// Streaming thinking assembly: blocks open at content_block_start and
 	// accumulate thinking_delta / signature_delta fragments by block index.
@@ -786,15 +785,15 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			}
 			// Check if this is a tool use block
 			if event.ContentBlock.Type == "tool_use" {
-				// Start tracking a new tool call - reverse map sanitized name
-				toolCall := llmtypes.ToolCall{
+				// Start tracking a new tool call - reverse map sanitized name.
+				// The SDK path sends the call's id and name here, before any
+				// argument deltas.
+				toolCallIndex := len(toolCalls)
+				toolCalls = append(toolCalls, llmtypes.ToolCall{
 					ID:    event.ContentBlock.ID,
 					Name:  llm.ReverseToolName(toolNameMap, event.ContentBlock.Name),
 					Input: make(map[string]interface{}), // Will be populated from deltas
-				}
-				toolCallIndex := len(toolCalls)
-				toolCalls = append(toolCalls, toolCall)
-				toolCallState[event.Index] = &toolCalls[toolCallIndex]
+				})
 				// Initialize buffer for this tool's input JSON
 				toolInputBuffers[event.Index] = &strings.Builder{}
 				// Map block index to tool call index
@@ -830,23 +829,17 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			if event.Delta.Type == "input_json_delta" {
 				// Tool-input deltas never reach tokenCallback (text only);
 				// report them as stream activity, then accumulate the JSON.
-				if buf, exists := toolInputBuffers[event.Index]; exists {
+				// The buffer is the only copy of the arguments: it is parsed at
+				// content_block_stop, so a call truncated mid-argument leaves
+				// ToolCall.Input empty instead of leaking a stray key.
+				if buf, exists := toolInputBuffers[event.Index]; exists && event.Delta.PartialJSON != "" {
 					buf.WriteString(event.Delta.PartialJSON)
-				}
-				if tc, ok := toolCallState[event.Index]; ok {
-					argsSoFar := ""
-					if existing, ok := tc.Input["_args"].(string); ok {
-						argsSoFar = existing
-					}
-					if event.Delta.PartialJSON != "" {
-						tc.Input["_args"] = argsSoFar + event.Delta.PartialJSON
-					}
-					if argsStr, ok := tc.Input["_args"].(string); ok {
+					if toolIdx, ok := blockIndexToToolIndex[event.Index]; ok && toolIdx < len(toolCalls) {
 						llmtypes.NotifyToolInputProgress(ctx, llmtypes.ToolInputProgress{
-							Index:      blockIndexToToolIndex[event.Index],
-							ToolCallID: tc.ID,
-							ToolName:   tc.Name,
-							Bytes:      len(argsStr),
+							Index:      toolIdx,
+							ToolCallID: toolCalls[toolIdx].ID,
+							ToolName:   toolCalls[toolIdx].Name,
+							Bytes:      buf.Len(),
 						})
 					}
 				}
@@ -866,7 +859,6 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				// Clean up buffer
 				delete(toolInputBuffers, event.Index)
 				delete(blockIndexToToolIndex, event.Index)
-				delete(toolCallState, event.Index)
 			}
 
 		case "message_delta":
