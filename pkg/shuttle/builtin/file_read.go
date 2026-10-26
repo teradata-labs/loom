@@ -535,7 +535,9 @@ func (t *FileReadTool) expandEntry(entry string) []string {
 	}
 	idx := strings.Index(abs, "**")
 	root := filepath.Dir(abs[:idx+1]) // directory before the **
-	suffix := strings.TrimLeft(abs[idx+2:], "/"+string(filepath.Separator))
+	// Slash form on every OS: filepath.Join rendered abs with the native
+	// separator, and the suffix is matched against slash-form relative paths.
+	suffix := strings.TrimPrefix(filepath.ToSlash(abs[idx+2:]), "/")
 	var out []string
 	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -551,12 +553,12 @@ func (t *FileReadTool) expandEntry(entry string) []string {
 			return nil
 		}
 		var target string
-		if strings.ContainsAny(suffix, "/"+string(filepath.Separator)) {
+		if strings.Contains(suffix, "/") {
 			rel, rerr := filepath.Rel(root, p)
 			if rerr != nil {
 				return nil
 			}
-			target = rel
+			target = filepath.ToSlash(rel)
 		} else {
 			target = filepath.Base(p)
 		}
