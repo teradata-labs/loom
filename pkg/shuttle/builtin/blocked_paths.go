@@ -6,7 +6,6 @@
 package builtin
 
 import (
-	"path/filepath"
 	"runtime"
 	"strings"
 )
@@ -20,13 +19,21 @@ func matchBlockedPath(path string, blocked []string) (string, bool) {
 	return matchBlockedPathFold(path, blocked, runtime.GOOS == "windows")
 }
 
+// slashNormalize converts backslashes to forward slashes on every OS.
+// filepath.ToSlash is a no-op off Windows, which would let a Windows-style
+// path slip past a forward-slash entry; over-matching is the safe direction
+// for a blocklist.
+func slashNormalize(p string) string {
+	return strings.ReplaceAll(p, `\`, "/")
+}
+
 func matchBlockedPathFold(path string, blocked []string, foldCase bool) (string, bool) {
-	p := filepath.ToSlash(path)
+	p := slashNormalize(path)
 	if foldCase {
 		p = strings.ToLower(p)
 	}
 	for _, entry := range blocked {
-		e := filepath.ToSlash(entry)
+		e := slashNormalize(entry)
 		if foldCase {
 			e = strings.ToLower(e)
 		}
