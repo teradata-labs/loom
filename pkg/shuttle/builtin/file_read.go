@@ -317,16 +317,8 @@ func isSensitiveReadPath(path string) bool {
 		"C:/Windows/System32/config/SYSTEM",
 	}
 
-	// Compare on a slash-normalized form: callers pass paths through
-	// filepath.Clean, which renders the OS-native separator (backslash on
-	// Windows), so these Unix entries would otherwise never match.
-	slashPath := filepath.ToSlash(path)
-
-	// Exact match for very sensitive files
-	for _, s := range sensitive {
-		if slashPath == s {
-			return true
-		}
+	if _, blocked := matchBlockedPath(path, sensitive); blocked {
+		return true
 	}
 
 	// Prevent reading from certain directories entirely
@@ -336,14 +328,8 @@ func isSensitiveReadPath(path string) bool {
 		"/dev",
 		"C:/Windows/System32/config",
 	}
-
-	for _, prefix := range protectedDirs {
-		if strings.HasPrefix(slashPath, prefix+"/") || slashPath == prefix {
-			return true
-		}
-	}
-
-	return false
+	_, blocked := matchBlockedPath(path, protectedDirs)
+	return blocked
 }
 
 // executeMulti serves the paths-array and pattern (search) forms.Each path may
