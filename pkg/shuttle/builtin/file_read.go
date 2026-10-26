@@ -423,7 +423,7 @@ func (t *FileReadTool) executeMulti(rawPaths []interface{}, params map[string]in
 			clean = filepath.Join(t.baseDir, clean)
 		}
 		clean = filepath.Clean(clean)
-		display := f
+		display := filepath.ToSlash(f)
 
 		fail := func(msg string) {
 			b.WriteString(fmt.Sprintf("=== %s ===\nERROR: %s\n", display, msg))
@@ -535,7 +535,7 @@ func (t *FileReadTool) expandEntry(entry string) []string {
 	}
 	idx := strings.Index(abs, "**")
 	root := filepath.Dir(abs[:idx+1]) // directory before the **
-	suffix := strings.TrimPrefix(abs[idx+2:], "/")
+	suffix := strings.TrimLeft(abs[idx+2:], "/"+string(filepath.Separator))
 	var out []string
 	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -551,7 +551,7 @@ func (t *FileReadTool) expandEntry(entry string) []string {
 			return nil
 		}
 		var target string
-		if strings.Contains(suffix, "/") {
+		if strings.ContainsAny(suffix, "/"+string(filepath.Separator)) {
 			rel, rerr := filepath.Rel(root, p)
 			if rerr != nil {
 				return nil
@@ -586,7 +586,8 @@ func (t *FileReadTool) sweepExcluded(absPath string) bool {
 	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
 		return false
 	}
-	for _, seg := range strings.Split(rel, string(filepath.Separator)) {
+	rel = filepath.ToSlash(rel)
+	for _, seg := range strings.Split(rel, "/") {
 		if len(seg) > 1 && strings.HasPrefix(seg, ".") {
 			return true
 		}

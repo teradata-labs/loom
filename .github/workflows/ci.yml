@@ -607,6 +607,20 @@ jobs:
       - name: Generate weaver.yaml from template
         run: go run ./cmd/generate-weaver
 
+      - name: Pre-warm MCP filesystem server (npm cache)
+        # Same reason as the Linux job: the MCP conformance tests start
+        # `npx -y @modelcontextprotocol/server-*` under a 45s init timeout, and a
+        # cold download on the Windows runner can exceed it ("initialize failed:
+        # context deadline exceeded"). Install the packages once so the timed
+        # tests resolve them from the global npm bin; never hard-fails the job.
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npm install -g @modelcontextprotocol/server-filesystem @modelcontextprotocol/server-memory && break
+            echo "npm install attempt $i failed; retrying in 5s..."
+            sleep 5
+          done || true
+
       - name: Run tests
         shell: bash
         run: go test -tags fts5 -short -timeout=30m ./...
