@@ -51,7 +51,7 @@ func TestBuildWorkflowStorageBackend_DefaultsToSQLite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildWorkflowStorageBackend: %v", err)
 	}
-	defer sb.Close()
+	defer func() { _ = sb.Close() }()
 
 	if err := sb.Ping(context.Background()); err != nil {
 		t.Fatalf("Ping: %v", err)
@@ -112,7 +112,7 @@ func TestPersistCheckpoint_WritesBothStoreAndFileWhenStoreAvailable(t *testing.T
 	if err != nil {
 		t.Fatalf("buildWorkflowStorageBackend: %v", err)
 	}
-	defer sb.Close()
+	defer func() { _ = sb.Close() }()
 
 	dir := t.TempDir()
 	path := dir + "/test.checkpoint.pb"
@@ -167,7 +167,7 @@ func TestLoadCheckpoint_FallsBackToStoreByWorkflowIDWhenFileMissing(t *testing.T
 	if err != nil {
 		t.Fatalf("buildWorkflowStorageBackend: %v", err)
 	}
-	defer sb.Close()
+	defer func() { _ = sb.Close() }()
 
 	ckpt := &loomv1.WorkflowCheckpoint{WorkflowId: "wf-recovered-by-id"}
 	csp := sb.(backend.CheckpointStoreProvider)
