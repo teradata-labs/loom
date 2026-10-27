@@ -78,7 +78,7 @@ func TestPruneStepIfResolved_UnresolvedGap_IsNotPruned(t *testing.T) {
 		t.Fatalf("LoadEvents: %v", err)
 	}
 
-	ag.pruneStepIfResolved(ctx, sid, 0)
+	ag.pruneStepIfResolved(ctx, sid, 0, true)
 
 	after, err := recorder.LoadEvents(ctx, sid)
 	if err != nil {
@@ -94,7 +94,7 @@ func TestPruneStepIfResolved_UnresolvedGap_IsNotPruned(t *testing.T) {
 	if err := recorder.RecordResult(ctx, sid, 0, 0, eventlog.EventToolCallResult, "c0", []byte(`{"result":{"success":true},"error":""}`)); err != nil {
 		t.Fatalf("fixture late tool result pos 0: %v", err)
 	}
-	ag.pruneStepIfResolved(ctx, sid, 0)
+	ag.pruneStepIfResolved(ctx, sid, 0, true)
 	resolved, err := recorder.LoadEvents(ctx, sid)
 	if err != nil {
 		t.Fatalf("LoadEvents after second prune: %v", err)

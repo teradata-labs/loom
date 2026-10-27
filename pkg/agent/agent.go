@@ -2199,7 +2199,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	}
 
 	// Add assistant response to history
-	a.appendMessage(ctx, session, Message{
+	_, replyPersisted := a.appendMessage(ctx, session, Message{
 		Role: "assistant",
 		// Turn-ending message: thinking text rides for persistence; blocks
 		// would be stripped by the next turn's compile, so none are carried.
@@ -2210,6 +2210,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 		TokenCount: response.Usage.TotalTokens,
 		CostUSD:    response.Usage.CostUSD,
 	}, false)
+	a.pruneFinishedTurn(ctx, session.ID, replyPersisted)
 
 	// Persist session
 	if err := a.memory.PersistSession(ctx, session); err != nil {
@@ -3018,8 +3019,10 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			// the LLM responds — there is no tool_call_intent to await a
 			// result for. Prune here, before any of this branch's three
 			// exits (two `continue` retries below, or the final `return`),
-			// since none of them reach the loop-tail prune call.
-			a.pruneStepIfResolved(ctx, session.ID, thisStep)
+			// since none of them reach the loop-tail prune call. No tool rows
+			// belong to this step, so there is nothing whose durability to
+			// check.
+			a.pruneStepIfResolved(ctx, session.ID, thisStep, true)
 			if strings.TrimSpace(llmResp.Content) == "" && !emptyRetried {
 				// One-shot retry: nudge the LLM to produce a response.
 				emptyRetried = true
@@ -3189,8 +3192,11 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// silently failed. Whether the step is actually resolved is therefore
 		// not knowable from here, which is why pruneStepIfResolved verifies
 		// intent↔result pairing against the log itself before deleting
-		// anything rather than trusting this call site.
-		a.pruneStepIfResolved(ctx, session.ID, thisStep)
+		// anything rather than trusting this call site. It also needs the
+		// batch's rows to be durable: if the assistant message or a tool row
+		// failed to persist, a resume after a crash reads a session without
+		// them and must find this step's events to avoid re-running a call.
+		a.pruneStepIfResolved(ctx, session.ID, thisStep, assistantPersisted && !st.rowNotPersisted)
 	}
 
 	// If we hit max turns/executions, make one final LLM call to synthesize results
@@ -3218,6 +3224,11 @@ type batchState struct {
 	pendingSidecars []Message
 
 	stepIndex int // the execution-event-log step this batch's calls are recorded under
+
+	// rowNotPersisted is set when a tool row for a call in this batch failed to
+	// persist (appendMessage is fail-open). The step's events are then the
+	// only durable record of that call, so the step must not be pruned.
+	rowNotPersisted bool
 
 	// Resource-await park (park_resource.go). parkableTail mirrors the
 	// pre-scan's durability gate and is set ONLY by the conversation loop —
@@ -3540,14 +3551,16 @@ func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, 
 	}
 
 	// Add tool result to conversation
-	a.appendMessage(ctx, session, Message{
+	if _, persisted := a.appendMessage(ctx, session, Message{
 		Role:       "tool",
 		Content:    formattedResult,
 		ToolUseID:  toolCall.ID, // Store ID for Bedrock/Anthropic format conversion
 		ToolResult: result,
 		AgentID:    a.GetID(), // Track which agent executed this tool
 		Timestamp:  time.Now(),
-	}, false)
+	}, false); !persisted {
+		st.rowNotPersisted = true
+	}
 
 	// If the tool signaled a text_body sidecar (e.g. manage_skills(load)
 	// — the skill body belongs under the user-instruction slot, not the

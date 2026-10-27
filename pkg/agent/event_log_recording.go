@@ -170,6 +170,28 @@ func (a *Agent) recordIntentWithRetry(ctx context.Context, sessionID string, ste
 	return fmt.Errorf("recording %s event after %d attempts: %w", eventType, recordIntentMaxAttempts, lastErr)
 }
 
+// pruneFinishedTurn deletes every execution event left for the session once a
+// turn's final reply is durably saved. A resume of that session finds the
+// reply and has nothing to do, so no remaining step can be needed. This is
+// what clears steps an earlier gap or persistence failure left behind.
+// Without a durable reply the events are kept: a crash now would leave the
+// session where a resume still needs them.
+func (a *Agent) pruneFinishedTurn(ctx context.Context, sessionID string, replyPersisted bool) {
+	if a.eventLog == nil || !replyPersisted {
+		return
+	}
+	next, err := a.eventLog.NextStepIndex(ctx, sessionID)
+	if err != nil {
+		zap.L().Warn("failed to read the step counter; keeping execution events",
+			zap.String("session_id", sessionID), zap.Error(err))
+		return
+	}
+	if err := a.eventLog.PruneStepsBefore(ctx, sessionID, next); err != nil {
+		zap.L().Warn("failed to prune a finished turn's execution events",
+			zap.String("session_id", sessionID), zap.Error(err))
+	}
+}
+
 // pruneStepIfResolved deletes a step's execution_events once every call in
 // its batch is confirmed complete (a tool_call_intent/result pair, or no
 // tool calls at all — a text-only step) — that step carries no further
@@ -185,8 +207,19 @@ func (a *Agent) recordIntentWithRetry(ctx context.Context, sessionID string, ste
 // disagree with it — so deleting it on a belief rather than on evidence
 // removes exactly the safety net that would have let a resume recover from
 // such a failure, at the instant it is needed.
-func (a *Agent) pruneStepIfResolved(ctx context.Context, sessionID string, stepIndex int) {
+//
+// Pairing in the log is not enough on its own: a tool can run and have its
+// result recorded while its tool row fails to persist. rowsDurable is the
+// caller's evidence (appendMessage's persisted flag for the assistant
+// message and every tool row of the step) that the session itself holds the
+// step; without it the step is kept for a resume to backfill from.
+func (a *Agent) pruneStepIfResolved(ctx context.Context, sessionID string, stepIndex int, rowsDurable bool) {
 	if a.eventLog == nil {
+		return
+	}
+	if !rowsDurable {
+		zap.L().Warn("keeping execution-event step: part of its batch did not persist",
+			zap.String("session_id", sessionID), zap.Int("step_index", stepIndex))
 		return
 	}
 	events, err := a.eventLog.LoadEvents(ctx, sessionID)

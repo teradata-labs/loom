@@ -1293,7 +1293,7 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 		return nil, fmt.Errorf("conversation loop failed: %w", err)
 	}
 
-	a.appendMessage(ctx, sess, Message{
+	_, replyPersisted := a.appendMessage(ctx, sess, Message{
 		Role:       "assistant",
 		Content:    response.Content,
 		AgentID:    a.GetID(),
@@ -1301,6 +1301,7 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 		TokenCount: response.Usage.TotalTokens,
 		CostUSD:    response.Usage.CostUSD,
 	}, false)
+	a.pruneFinishedTurn(ctx, sess.ID, replyPersisted)
 
 	if err := a.memory.PersistSession(ctx, sess); err != nil {
 		zap.L().Warn("Failed to persist session",

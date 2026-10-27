@@ -6,6 +6,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -71,6 +72,7 @@ func TestResumeSession_ToolNeverAttempted_DispatchesNormally(t *testing.T) {
 		Role:      "assistant",
 		ToolCalls: []llmtypes.ToolCall{{ID: "c1", Name: "crashy", Input: map[string]interface{}{}}},
 	}, false)
+	recordTailBatch(t, recorder, sess, 0)
 	// No tool row, no execution_events row: this call was NEVER attempted.
 
 	resp, err := ag.ResumeSession(context.Background(), "s-resume-dispatch")
@@ -100,6 +102,7 @@ func TestResumeSession_ToolIntentWithResult_BackfillsWithoutReexecuting(t *testi
 		Role:      "assistant",
 		ToolCalls: []llmtypes.ToolCall{{ID: "c1", Name: "crashy", Input: map[string]interface{}{}}},
 	}, false)
+	recordTailBatch(t, recorder, sess, 0)
 	// Simulate: the tool ACTUALLY ran and its result was durably recorded to
 	// the event log, but the crash happened before the `tool` message row
 	// was appended (the narrow window RecordResult's best-effort write and
@@ -141,6 +144,7 @@ func TestResumeSession_AllRowsPresentNoFinalReply_ResumesLoop(t *testing.T) {
 		Role:      "assistant",
 		ToolCalls: []llmtypes.ToolCall{{ID: "c1", Name: "crashy", Input: map[string]interface{}{}}},
 	}, false)
+	recordTailBatch(t, recorder, sess, 0)
 	ag.appendMessage(ctx, sess, Message{
 		Role:       "tool",
 		ToolUseID:  "c1",
@@ -199,6 +203,7 @@ func TestResumeSession_NeverAttemptedHITLCall_ReParks(t *testing.T) {
 			{ID: "c-q", Name: "contact_human", Input: map[string]interface{}{"question": "prod or staging?"}},
 		},
 	}, false)
+	recordTailBatch(t, recorder, sess, 0)
 	// No tool row, no execution_events row: this call was NEVER attempted —
 	// the process crashed before even its intent was durably recorded.
 
@@ -279,6 +284,7 @@ func TestResumeSession_ToolIntentNoResult_SurfacesGap(t *testing.T) {
 		Role:      "assistant",
 		ToolCalls: []llmtypes.ToolCall{{ID: "c1", Name: "crashy", Input: map[string]interface{}{}}},
 	}, false)
+	recordTailBatch(t, recorder, sess, 0)
 	ctx := context.Background()
 	if err := recorder.RecordIntent(ctx, sess.ID, 0, 0, eventlog.EventToolCallIntent, "c1", []byte(`{"tool_name":"crashy"}`)); err != nil {
 		t.Fatalf("fixture RecordIntent: %v", err)
@@ -334,6 +340,7 @@ func TestResumeSession_PriorAppliedParkDoesNotBlockCrashResume(t *testing.T) {
 		Role:      "assistant",
 		ToolCalls: []llmtypes.ToolCall{{ID: "c1", Name: "crashy", Input: map[string]interface{}{}}},
 	}, false)
+	recordTailBatch(t, recorder, sess, 0)
 
 	// An earlier park, already approved and applied, still inside its TTL.
 	now := time.Now()
@@ -382,6 +389,7 @@ func TestFindExecutionGap_CallWithARowIsNotAGap(t *testing.T) {
 			{ID: "c1", Name: "crashy", Input: map[string]interface{}{}},
 		},
 	}, false)
+	recordTailBatch(t, recorder, sess, 0)
 	ag.appendMessage(ctx, sess, Message{Role: "tool", ToolUseID: "c0", Content: "ok"}, false)
 	for pos, id := range []string{"c0", "c1"} {
 		if err := recorder.RecordIntent(ctx, sid, 0, pos, eventlog.EventToolCallIntent, id, []byte(`{"tool_name":"crashy"}`)); err != nil {
@@ -421,5 +429,27 @@ func TestFindExecutionGap_CallWithARowIsNotAGap(t *testing.T) {
 	events, _ = recorder.LoadEvents(ctx, sid)
 	if g := FindExecutionGap(sess, events); g != nil {
 		t.Errorf("FindExecutionGap after resolving = %+v, want nil", g)
+	}
+}
+
+// recordTailBatch records, at step, the LLM call that produced the session's
+// tail tool-call batch, the way the conversation loop records it before
+// dispatching. Resume acts only on a batch whose step it finds in the log.
+func recordTailBatch(t *testing.T, store eventlog.EventLogStore, sess *Session, step int) {
+	t.Helper()
+	batch, _, _, err := locateParkedBatch(sess, nil)
+	if err != nil {
+		t.Fatalf("fixture: no tail batch to record: %v", err)
+	}
+	payload, err := json.Marshal(LLMResponse{ToolCalls: batch.ToolCalls})
+	if err != nil {
+		t.Fatalf("fixture: marshal LLM response: %v", err)
+	}
+	ctx := context.Background()
+	if err := store.RecordIntent(ctx, sess.ID, step, 0, eventlog.EventLLMCallIntent, "", []byte(`{"model":"test"}`)); err != nil {
+		t.Fatalf("fixture: record LLM intent: %v", err)
+	}
+	if err := store.RecordResult(ctx, sess.ID, step, 0, eventlog.EventLLMCallResult, "", payload); err != nil {
+		t.Fatalf("fixture: record LLM result: %v", err)
 	}
 }

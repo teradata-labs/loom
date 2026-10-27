@@ -30,6 +30,7 @@ func TestResumeSession_ConcurrentResumes_ExactlyOneDispatches(t *testing.T) {
 		Role:      "assistant",
 		ToolCalls: []llmtypes.ToolCall{{ID: "c1", Name: "crashy", Input: map[string]interface{}{}}},
 	}, false)
+	recordTailBatch(t, recorder, sess, 0)
 
 	const attempts = 8
 	var wg sync.WaitGroup
@@ -187,6 +188,7 @@ func TestResumeSession_CollidingToolCallIDs_BackfillEachCallsOwnResult(t *testin
 			{ID: "", Name: "crashy", Input: map[string]interface{}{"q": "third"}},
 		},
 	}, false)
+	recordTailBatch(t, recorder, sess, 0)
 	// No tool rows: the crash happened after every call ran and every result
 	// was recorded, but before any `tool` message landed. Each position's
 	// recorded result carries a position-specific sentinel so a cross-wired
@@ -246,6 +248,7 @@ func TestResumeSession_CollidingToolCallIDs_GapDoesNotMaskSiblingResult(t *testi
 			{ID: "dup", Name: "crashy", Input: map[string]interface{}{"q": "second"}},
 		},
 	}, false)
+	recordTailBatch(t, recorder, sess, 0)
 	// Position 0 completed and was recorded; position 1's intent landed but
 	// its result never did (the crash window).
 	if err := recorder.RecordIntent(ctx, sess.ID, 0, 0, eventlog.EventToolCallIntent, "dup", []byte(`{"tool_name":"crashy"}`)); err != nil {
@@ -321,7 +324,10 @@ func TestEventLog_StepIndex_MonotonicAcrossChatAndResumeSession(t *testing.T) {
 	}
 
 	firstEvents, _ := recorder.LoadEvents(ctx, "s-monotonic")
-	maxFirst := latestStepIndex(firstEvents)
+	maxFirst := 0
+	for _, e := range firstEvents {
+		maxFirst = max(maxFirst, e.StepIndex)
+	}
 
 	next, err := recorder.NextStepIndex(ctx, "s-monotonic")
 	if err != nil {

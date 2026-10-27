@@ -130,11 +130,9 @@ func TestPark_CompletedBatchRecordsAtOriginatingStepIndex(t *testing.T) {
 	}
 
 	// The completed batch's tool_call_intent/result events for c-write must
-	// carry originatingStep, not 0.
-	events, err = recorder.LoadEvents(ctx, "s-stepidx")
-	if err != nil {
-		t.Fatalf("LoadEvents after resume: %v", err)
-	}
+	// carry originatingStep, not 0. The finished turn's events are pruned once
+	// its reply is saved, so read everything that was ever recorded.
+	events = recorder.AllRecordedEvents("s-stepidx")
 	var sawIntent, sawResult bool
 	for _, e := range events {
 		if e.ToolUseID != "c-write" {

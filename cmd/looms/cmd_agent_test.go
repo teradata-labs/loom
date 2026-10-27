@@ -118,6 +118,13 @@ func TestRunAgentResolveGap_RealStore(t *testing.T) {
 				}}
 				require.NoError(t, sb.SessionStorage().SaveMessage(ctx, sessionID, batch, false))
 
+				// Record the LLM call that produced the batch, as the loop
+				// does; resume and resolve-gap act only on a recorded batch.
+				llmResult, err := json.Marshal(loomagent.LLMResponse{ToolCalls: batch.ToolCalls})
+				require.NoError(t, err)
+				require.NoError(t, eventLog.RecordResult(ctx, sessionID, 0, 0,
+					eventlog.EventLLMCallResult, "", llmResult))
+
 				// Seed an intent-only execution event: a tool_call_intent
 				// with no matching tool_call_result — exactly the gap
 				// runAgentResolveGap must find and close.
