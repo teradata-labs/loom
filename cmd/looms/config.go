@@ -83,6 +83,9 @@ type Config struct {
 	// Learning agent configuration (for self-improvement)
 	Learning LearningConfig `mapstructure:"learning"`
 
+	// Execution log configuration (durable tool-call log for crash resume)
+	ExecutionLog ExecutionLogConfig `mapstructure:"execution_log"`
+
 	// Docker configuration (for container-based tool execution)
 	Docker DockerConfig `mapstructure:"docker"`
 
@@ -858,6 +861,17 @@ type WebSearchEndpointsConfig struct {
 // 1. Config file (looms.yaml) - basic settings
 // 2. YAML files in $LOOM_DATA_DIR/learning/ - full declarative config (preferred)
 // 3. CLI flags - for quick overrides
+// ExecutionLogConfig configures the durable execution log. When enabled,
+// every agent the server builds from config records a write-ahead event
+// before each LLM and tool call, and `looms agent resume` can finish a turn a
+// crash interrupted without re-running calls that already ran. Off by
+// default: it adds two database writes per LLM or tool call, and it needs a
+// storage backend with the execution_events migration. Turns that ran with
+// it off cannot be resumed (resume refuses them).
+type ExecutionLogConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+}
+
 type LearningConfig struct {
 	// Enabled enables the learning agent (default: true)
 	Enabled bool `mapstructure:"enabled"`
@@ -1222,6 +1236,7 @@ func setDefaults() {
 	viper.SetDefault("communication.store.backend", "sqlite")
 	viper.SetDefault("communication.store.path", defaultDBPath) // Reuse same database as sessions
 	viper.SetDefault("communication.gc.enabled", true)
+	viper.SetDefault("execution_log.enabled", false)
 	viper.SetDefault("communication.gc.strategy", "ref_counting")
 	viper.SetDefault("communication.gc.interval", 300) // 5 minutes
 	viper.SetDefault("communication.auto_promote.enabled", true)

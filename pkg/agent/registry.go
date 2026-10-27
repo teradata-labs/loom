@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/artifacts"
+	"github.com/teradata-labs/loom/pkg/eventlog"
 	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
 	"github.com/teradata-labs/loom/pkg/llm/azureopenai"
@@ -76,6 +77,7 @@ type Registry struct {
 	permissionChecker *shuttle.PermissionChecker   // For permission validation
 	admissionChain    *shuttle.Chain               // Admission hook chain for tool-call admission
 	identityResolver  func(context.Context) string // Resolves AdmissionRequest.UserID from the call context
+	eventLog          eventlog.EventLogStore       // Attached to every agent built from config; nil leaves recording off
 	artifactStore     interface{}                  // artifacts.Store for workspace tool
 
 	// providerPool is the server-level named provider pool injected by cmd_serve.go.
@@ -148,6 +150,11 @@ type RegistryConfig struct {
 	SessionStore SessionStorage         // For persistent agent session traces
 	ToolRegistry *toolregistry.Registry // Tool search registry for dynamic tool discovery
 
+	// EventLogStore, when set, is attached to every agent built from config
+	// (WithEventLog), so each records the durable execution log that
+	// ResumeSession needs. Nil leaves recording off.
+	EventLogStore eventlog.EventLogStore
+
 	// Agent dependencies (injected by server)
 	PermissionChecker *shuttle.PermissionChecker   // For permission validation
 	AdmissionChain    *shuttle.Chain               // Admission hook chain for tool-call admission
@@ -217,6 +224,7 @@ func NewRegistry(config RegistryConfig) (*Registry, error) {
 		permissionChecker: config.PermissionChecker,
 		admissionChain:    config.AdmissionChain,
 		identityResolver:  config.IdentityResolver,
+		eventLog:          config.EventLogStore,
 		artifactStore:     config.ArtifactStore,
 	}
 
@@ -894,6 +902,9 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 	}
 	if r.identityResolver != nil {
 		opts = append(opts, WithIdentityResolver(r.identityResolver))
+	}
+	if r.eventLog != nil {
+		opts = append(opts, WithEventLog(r.eventLog))
 	}
 
 	// Create agent with configuration
