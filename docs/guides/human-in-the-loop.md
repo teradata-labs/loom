@@ -390,6 +390,50 @@ looms workflow resume create-table.yaml review.pb --reject
 looms workflow run create-table.yaml
 ```
 
+`--reject` ends the workflow without creating an LLM provider or any agent,
+so it works on a machine with no LLM credentials configured.
+
+### Resuming when the checkpoint file is lost
+
+✅ **Available** - tests in `cmd/looms/cmd_workflow_storage_test.go`,
+`pkg/storage/sqlite/checkpoint_store_test.go` and
+`pkg/storage/postgres/checkpoint_store_test.go`
+
+When a gate suspends, the CLI writes the checkpoint file and also saves the
+checkpoint to the configured storage backend (SQLite by default, or Postgres).
+If the backend save succeeds, the CLI prints the workflow ID:
+
+```
+💾 Checkpoint written: review.pb
+   Workflow ID (for store-based resume if this file is lost): 3f2b9c1e-...
+```
+
+If `review.pb` is gone (another machine, a wiped container), pass the
+workflow ID where the file path would go:
+
+```bash
+looms workflow resume create-table.yaml 3f2b9c1e-... --approve
+```
+
+The CLI looks for a file at that path first and falls back to the storage
+backend only when no file exists. The backend save is best-effort: if it
+fails, the file is still written and the workflow ID line is not printed.
+
+**Tenants.** Stored checkpoints belong to one tenant, and each tenant sees only
+its own. Two tenants can use the same workflow ID without affecting each other.
+
+| Backend  | Tenant used                                                                   |
+|----------|-------------------------------------------------------------------------------|
+| SQLite   | `--user` if given, otherwise `default-user`                                   |
+| Postgres | `--user` if given, otherwise `storage.postgres.default_user_id`; error if neither |
+
+On Postgres with no tenant, `run` writes only the file and logs a warning, and
+`resume` by workflow ID fails with an error asking for `--user`:
+
+```bash
+looms workflow resume create-table.yaml 3f2b9c1e-... --approve --user alice
+```
+
 ### Embedding hosts (inline decisions)
 
 A host that wants to decide gates in-process (chat bridge, terminal, tests)
