@@ -849,28 +849,43 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			if len(choice.Delta.ToolCalls) > 0 {
 				// Tool-call deltas never reach tokenCallback (text only);
 				// report them as stream activity.
-				llmtypes.NotifyStreamActivity(ctx)
 				for _, tcDelta := range choice.Delta.ToolCalls {
 					idx := tcDelta.Index
 					if _, exists := toolCallMap[idx]; !exists {
-						// Map sanitized name back to original
-						toolName := llm.ReverseToolName(c.toolNameMap, tcDelta.Function.Name)
 						toolCallMap[idx] = &llmtypes.ToolCall{
-							ID:    tcDelta.ID,
-							Name:  toolName,
 							Input: make(map[string]interface{}),
 						}
 					}
+					tc := toolCallMap[idx]
+					// Some OpenAI-compatible proxies emit arguments before the
+					// ID and function name. Backfill identity fields on every
+					// delta so such calls are reported with their real id and
+					// name as soon as they arrive; before that the progress
+					// event carries an empty identity (the call itself was
+					// never dropped).
+					if tcDelta.ID != "" {
+						tc.ID = tcDelta.ID
+					}
+					if tcDelta.Function.Name != "" {
+						tc.Name = llm.ReverseToolName(c.toolNameMap, tcDelta.Function.Name)
+					}
 
 					if tcDelta.Function.Arguments != "" {
-						tc := toolCallMap[idx]
 						if existingArgs, ok := tc.Input["_args"].(string); ok {
 							tc.Input["_args"] = existingArgs + tcDelta.Function.Arguments
 						} else {
 							tc.Input["_args"] = tcDelta.Function.Arguments
 						}
 					}
+					argsSoFar, _ := tc.Input["_args"].(string)
+					llmtypes.NotifyToolInputProgress(ctx, llmtypes.ToolInputProgress{
+						Index:      idx,
+						ToolCallID: tc.ID,
+						ToolName:   tc.Name,
+						Bytes:      len(argsSoFar),
+					})
 				}
+				llmtypes.NotifyStreamActivity(ctx)
 			}
 
 			if choice.FinishReason != "" {

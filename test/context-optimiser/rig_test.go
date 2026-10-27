@@ -345,6 +345,8 @@ func newRig(t *testing.T, outDir string, script []scriptedTurn, maxContext, rese
 	if err != nil {
 		t.Fatalf("session store: %v", err)
 	}
+	// Windows cannot delete an open file, so TempDir's removal needs the db closed first.
+	t.Cleanup(func() { _ = store.Close() })
 
 	llm := &scriptedLLM{turns: script}
 	a, orch, mem := buildAgentWithMemory(t, llm, store, skillsDir, patternsDir,
