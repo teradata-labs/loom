@@ -135,6 +135,12 @@ type Message struct {
 	// Optional - may be empty for messages created before this field was added
 	AgentID string
 
+	// Model is the model that answered, on a message an LLM call billed; empty
+	// on every other message and on rows written before it was recorded.
+	Model string
+	// Effort is the effort that call was made at, on the same messages.
+	Effort string
+
 	// UserID identifies which user owns this message (for RLS multi-tenancy).
 	// Set from context via interceptor for PostgreSQL backends.
 	// Defaults to "default-user" for SQLite backends.
@@ -145,8 +151,10 @@ type Message struct {
 	// Chat()-entry persist site is the only turn-incrementing event.
 	Turn int64
 
-	// Evicted marks a tool row whose payload was shed under context pressure.
-	// Write-once true, set only inside releasePressure; no code path clears it.
+	// Evicted is a legacy flag. Eviction (shedding a tool payload by rewriting
+	// the row in place) was removed: nothing sets it, and a row that carries it
+	// from an older run renders its full stored content. Kept so historical
+	// rows round-trip and the 000019 column still maps onto a field.
 	Evicted bool
 
 	// Folded marks a row folded into the session summary. Write-once true, set
@@ -173,6 +181,23 @@ type Message struct {
 
 	// CostUSD for cost tracking
 	CostUSD float64
+
+	// Per-turn token breakdown recorded from the LLM response that produced
+	// this message. Zero on rows written before the accounting rewrite
+	// (schema default) and on non-assistant rows (tool results, user
+	// messages) whose LLM call is attributed to the adjacent assistant row.
+	// Every cost/token roll-up in the product sums these columns — no other
+	// source is authoritative.
+	InputTokens       int
+	OutputTokens      int
+	CacheReadTokens   int
+	CacheCreateTokens int
+	// CacheCreateTokens split by how long the cache entry lives, and the part
+	// of OutputTokens spent thinking, as the provider reported them; zero when
+	// it did not and on rows written before they were recorded.
+	CacheCreate1hTokens int
+	CacheCreate5mTokens int
+	ThinkingTokens      int
 }
 
 // Usage tracks LLM token usage and costs.
@@ -208,6 +233,17 @@ type Usage struct {
 	CacheReadInputTokens int
 	// CacheCreationInputTokens: tokens written to prompt cache (billed at 1.25x for Anthropic).
 	CacheCreationInputTokens int
+	// CacheCreation1hInputTokens and CacheCreation5mInputTokens split the cache
+	// write by how long the entry lives, as the provider reports it; both 0
+	// when it does not.
+	CacheCreation1hInputTokens int
+	CacheCreation5mInputTokens int
+	// ThinkingTokens is the part of OutputTokens the model spent thinking, as
+	// the provider reports it; 0 when it does not.
+	ThinkingTokens int
+	// Effort is the effort the call was made at; empty when the provider has
+	// no such setting.
+	Effort string
 	// RateLimitTokens is the figure capacity accounting charges for this call
 	// when it differs from TotalTokens. The OpenAI-compatible and Gemini clients
 	// set it to the provider's raw, cache-inclusive total. OpenAI and Gemini

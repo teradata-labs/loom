@@ -1,11 +1,15 @@
 // Copyright 2026 Teradata
 //
-// rung 0 — relief inside the current turn. A single-shot session (CLI) is one
-// turn forever: the old ladder's boundaries (t−K … t−1) match nothing, so
-// before rung 0 such a session had no working pressure valve. These routes
-// prove the valve end-to-end: consumed results evict, fold stays a last
-// resort, the pending pair always survives, and multi-turn sessions whose old
-// rungs suffice never reach rung 0 at all.
+// Relief inside the current turn. A single-shot session (CLI) is one turn
+// forever — a turn is a Chat() entry, so every message a single prompt produces
+// carries the same turn number and the ladder's t−K … t−1 boundaries match
+// everything in it. These routes prove the valve end-to-end for that shape:
+// pressure reaches the mark, the fold sheds it, the pending pair always
+// survives, and the cache-marker budget holds in every dispatched context.
+//
+// The fold is the only shedding mechanism. Nothing rewrites a stored row, so
+// what "shed" looks like here is a row that is absent from the dispatched
+// context and a summary row that stands in its place — never a stub.
 //
 //	LOOM_CONTEXT_OPTIMISER=1 go test -tags fts5 -run TestRung0 ./test/context-optimiser/ -v
 
@@ -17,19 +21,48 @@ import (
 	"testing"
 )
 
-// TestRung0_SingleTurnOffloadShedsToTarget — one turn, consumed mid-size
-// results push past the HWM mid-drive → relief must shed via the lossless
-// current-turn offload alone: door-only pressure stubs appear, no fold happens,
-// the run completes, and the cache marker budget holds in every dispatched
-// context.
-func TestRung0_SingleTurnOffloadShedsToTarget(t *testing.T) {
-	requireGate(t)
-	r := newRig(t, routeOutDir(t, "rung0-offload"), nil, 12000, 2000, 16384)
-	sid := "rung0-offload"
+// summaryRowMarker is how a fold is observed from a dispatched context: the
+// compiled summary row opens with it (pkg/agent's summaryRowPrefix).
+const summaryRowMarker = "Session summary — the work so far"
 
-	turns := make([]scriptedTurn, 0, 7)
-	for i := 0; i < 6; i++ {
-		turns = append(turns, callTools(emit(fmt.Sprintf("r%d", i), 6000, "string")))
+// sawSummaryRow reports whether any dispatched context carried a summary row —
+// i.e. whether a fold committed at least once during the route.
+func sawSummaryRow(stages []stage) bool {
+	for _, s := range stages {
+		for _, m := range s.Messages {
+			if strings.Contains(m.Content, summaryRowMarker) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// toolBytes totals the tool-row payload in one dispatched context — the measure
+// of what the context is actually carrying.
+func toolBytes(s stage) int {
+	n := 0
+	for _, m := range s.Messages {
+		if m.Role == "tool" {
+			n += len(m.Content)
+		}
+	}
+	return n
+}
+
+// TestRung0_SingleTurnReliefShedsToTarget — one turn, consumed results push past
+// the start mark mid-drive → the fold must fire and shed, the run must complete,
+// and the cache-marker budget must hold in every dispatched context including
+// the post-fold ones.
+func TestRung0_SingleTurnReliefShedsToTarget(t *testing.T) {
+	requireGate(t)
+	r := newRig(t, routeOutDir(t, "rung0-shed"), nil, 12000, 2000, 16384)
+	sid := "rung0-shed"
+
+	// Payloads render whole (under the threshold) and their sum crosses the mark.
+	turns := make([]scriptedTurn, 0, 9)
+	for i := 0; i < 8; i++ {
+		turns = append(turns, callTools(emit(fmt.Sprintf("r%d", i), 12000, "string")))
 	}
 	turns = append(turns, sayText("done"))
 	if err := drive(t, r, sid, "one long task", turns...); err != nil {
@@ -41,22 +74,19 @@ func TestRung0_SingleTurnOffloadShedsToTarget(t *testing.T) {
 		t.Fatalf("want ≥5 provider calls, got %d", len(stages))
 	}
 
-	var sawPressureStub, sawFold bool
+	if !sawSummaryRow(stages) {
+		t.Error("no summary row ever dispatched — relief did not shed in a single-turn session")
+	}
+
+	// Shedding is real: the last context carries less tool payload than the peak.
+	peak, final := 0, toolBytes(stages[len(stages)-1])
 	for _, s := range stages {
-		for _, m := range s.Messages {
-			if m.Role == "tool" && strings.Contains(m.Content, "held in memory this turn") {
-				sawPressureStub = true
-			}
-			if m.Role == "system" && strings.Contains(m.Content, "covers msg:") {
-				sawFold = true
-			}
+		if b := toolBytes(s); b > peak {
+			peak = b
 		}
 	}
-	if !sawPressureStub {
-		t.Error("no pressure stub ever dispatched — the current-turn offload rung did not fire")
-	}
-	if sawFold {
-		t.Error("a fold ran — the current-turn offload should have reached target first (reversibility order)")
+	if final >= peak {
+		t.Errorf("tool payload never fell (peak=%d final=%d) — nothing was shed", peak, final)
 	}
 
 	// Marker budget in every dispatched context, including post-relief ones.
@@ -73,19 +103,15 @@ func TestRung0_SingleTurnOffloadShedsToTarget(t *testing.T) {
 	}
 }
 
-// TestRung0_FoldLastResort — one turn whose mass is assistant reasoning text
-// with only floor-protected tiny results: sweep finds no query pairs, evict
-// finds nothing above the floor, so fold(t) must fire — and the pending pair
-// must survive it whole.
-func TestRung0_FoldLastResort(t *testing.T) {
+// TestRung0_FoldIsTheOnlyValve — one turn whose mass is assistant reasoning text
+// with only tiny results: there is nothing to sweep, so the fold is the only
+// thing that can shed — and the pending pair must survive it whole.
+func TestRung0_FoldIsTheOnlyValve(t *testing.T) {
 	requireGate(t)
 	r := newRig(t, routeOutDir(t, "rung0-fold"), nil, 12000, 2000, 16384)
-	// Production agents always carry the compaction prompt; the rig builds a
-	// bare agent, so attach the same summariser the harness uses elsewhere.
-	r.setCompressor(&countingCompressor{})
 	sid := "rung0-fold"
 
-	reasoning := strings.Repeat("thinking through the step in detail. ", 55) // ~2k chars, unevictable
+	reasoning := strings.Repeat("thinking through the step in detail. ", 55) // ~2k chars
 	turns := make([]scriptedTurn, 0, 24)
 	for i := 0; i < 23; i++ {
 		st := callTools(emit(fmt.Sprintf("t%d", i), 300, "string"))
@@ -98,21 +124,12 @@ func TestRung0_FoldLastResort(t *testing.T) {
 	}
 
 	stages := r.readStages(t)
-	var sawFold bool
-	for _, s := range stages {
-		for _, m := range s.Messages {
-			if m.Role == "system" && strings.Contains(m.Content, "covers msg:") {
-				sawFold = true
-			}
-		}
-	}
-	if !sawFold {
-		t.Fatal("fold(t) never fired — tiny results are unevictable, fold was the only valve")
+	if !sawSummaryRow(stages) {
+		t.Fatal("the fold never fired — with tiny results it is the only valve there is")
 	}
 
-	// The pending pair survives every fold: in each stage, the newest tool row
-	// must render whole (its payload text), never a fold casualty. The emit
-	// payload contains "scan-row"; a folded row simply would not be present.
+	// The pending pair survives every fold: in the final context the newest tool
+	// row must render whole. A folded row would simply not be present.
 	final := stages[len(stages)-1]
 	var lastTool string
 	for _, m := range final.Messages {
@@ -125,24 +142,24 @@ func TestRung0_FoldLastResort(t *testing.T) {
 	}
 }
 
-// TestRung0_MultiTurnOldRungsSuffice — settled turns carry the mass, the
-// current turn is small: relief must shed the OLD turns and never touch the
-// current turn's consumed row — rung 0 exists but is unreachable when the old
-// ladder reaches target (the equivalence lock).
-func TestRung0_MultiTurnOldRungsSuffice(t *testing.T) {
+// TestRung0_MultiTurnShedsThePast — settled turns carry the mass, the current
+// turn is small: relief must shed the settled turns and leave the current turn's
+// consumed rows whole. Here turns genuinely advance (three Chat() entries), so
+// the ladder's recent-turn window is live rather than matching everything.
+func TestRung0_MultiTurnShedsThePast(t *testing.T) {
 	requireGate(t)
 	r := newRig(t, routeOutDir(t, "rung0-equiv"), nil, 12000, 2000, 16384)
 	sid := "rung0-equiv"
 
-	if err := drive(t, r, sid, "big turn one",
-		callTools(emit("old1", 40000, "string")), sayText("ok")); err != nil {
-		t.Fatal(err)
+	// Each settled result is bounded at arrival to the 16 KB threshold, so four
+	// of them carry the context past the 12k-token window.
+	for _, name := range []string{"old1", "old2", "old3", "old4"} {
+		if err := drive(t, r, sid, "big turn "+name,
+			callTools(emit(name, 40000, "string")), sayText("ok")); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := drive(t, r, sid, "big turn two",
-		callTools(emit("old2", 40000, "string")), sayText("ok")); err != nil {
-		t.Fatal(err)
-	}
-	// Current turn: one small consumed result, then pressure forces relief.
+	// Current turn: two small consumed results, then pressure forces relief.
 	if err := drive(t, r, sid, "current turn",
 		callTools(emit("cur", 3000, "string")),
 		callTools(emit("cur2", 3000, "string")),
@@ -151,31 +168,24 @@ func TestRung0_MultiTurnOldRungsSuffice(t *testing.T) {
 	}
 
 	stages := r.readStages(t)
+	if !sawSummaryRow(stages) {
+		t.Error("no summary row ever dispatched — pressure never fired; route is not exercising relief")
+	}
+
+	// The current turn's own results survive whole. The two 40 KB settled
+	// payloads cannot still be present: the final context's tool payload must be
+	// a small fraction of what was emitted.
 	final := stages[len(stages)-1]
-	var curEvicted bool
-	var oldEvicted bool
+	whole := 0
 	for _, m := range final.Messages {
-		if m.Role != "tool" {
-			continue
-		}
-		if strings.Contains(m.Content, "evicted from context") {
-			oldEvicted = true
+		if m.Role == "tool" && strings.Contains(m.Content, "scan-row") {
+			whole++
 		}
 	}
-	// The current turn's first result (consumed by the second iteration): find
-	// it rendered whole in the final dispatched context.
-	var curWholeCount int
-	for _, m := range final.Messages {
-		if m.Role == "tool" && strings.Contains(m.Content, "scan-row") &&
-			!strings.Contains(m.Content, "evicted from context") &&
-			!strings.Contains(m.Content, "held in memory") {
-			curWholeCount++
-		}
+	if whole < 2 {
+		t.Errorf("current turn's results were shed (whole=%d) — the recent window must protect them", whole)
 	}
-	if !oldEvicted {
-		t.Error("no old-turn eviction visible — pressure never fired; route is not exercising relief")
-	}
-	if curEvicted || curWholeCount < 2 {
-		t.Errorf("current turn's results were shed (whole=%d) — old rungs sufficed, rung 0 must be unreachable", curWholeCount)
+	if b := toolBytes(final); b > 40000 {
+		t.Errorf("final context still carries %d bytes of tool payload — the settled turns were not shed", b)
 	}
 }

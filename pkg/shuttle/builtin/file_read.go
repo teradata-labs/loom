@@ -28,8 +28,10 @@ const (
 	// Prevents memory issues with very large files.
 	MaxFileReadSize = 10 * 1024 * 1024
 
-	// DefaultMaxLines limits text output to prevent context bloat.
-	DefaultMaxLines = 1000
+	// DefaultMaxLines is 0 — unlimited: the §4.1 write rule is the single
+	// bounding point for context; max_lines remains the caller's narrowing
+	// knob, never a silent default cut.
+	DefaultMaxLines = 0
 )
 
 // FileReadTool provides safe file reading capabilities for agents.

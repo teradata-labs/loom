@@ -94,7 +94,7 @@ func TestInspect_RenderCases(t *testing.T) {
 	}
 	last := stages[len(stages)-1]
 
-	var sawSkillBody, sawSmallWhole, sawOffloadStub bool
+	var sawSkillBody, sawSmallWhole bool
 	skillBodyCount := 0
 	for _, m := range last.Messages {
 		if m.Role == "user" && strings.Contains(m.Content, "GRANT REVIEW PROCEDURE") {
@@ -105,11 +105,6 @@ func TestInspect_RenderCases(t *testing.T) {
 			// small result: whole scan-row payload, not a stub
 			if strings.Contains(m.Content, "scan-row") && !strings.Contains(m.Content, "result, ~") {
 				sawSmallWhole = true
-			}
-			// large current-turn result: the offload stub (HLD §5.5)
-			if strings.Contains(m.Content, "held in memory this turn") &&
-				strings.Contains(m.Content, "query_tool_result(message_id=") {
-				sawOffloadStub = true
 			}
 		}
 	}
@@ -125,12 +120,6 @@ func TestInspect_RenderCases(t *testing.T) {
 	if !sawSmallWhole {
 		t.Errorf("§5.2: the small result did not render whole")
 	}
-	// The offload stub only survives in context while the result is current-turn.
-	// By turn 4 the big result is a prior turn; whether it still shows as an
-	// offload stub or has become an evicted/truncated form is exactly what
-	// stages.md tells us — so this is logged, not failed.
-	t.Logf("offload stub present in final context: %v (see stages.md for the prior-turn render)", sawOffloadStub)
-
 	// No dead-design markers anywhere.
 	for _, st := range stages {
 		for _, m := range st.Messages {

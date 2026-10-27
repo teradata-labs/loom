@@ -326,7 +326,6 @@ func TestResolveCompressionProfile_InvalidProfileReturnsError(t *testing.T) {
 // the distinction reaches the marks a session actually uses.
 func TestWorkloadProfilesMoveTheReliefMarks(t *testing.T) {
 	const window, reserve = 200000, 20000
-	usable := window - reserve
 
 	markFor := func(p loomv1.WorkloadProfile) (start, release int) {
 		sm := NewSegmentedMemoryWithCompression("ROM", window, reserve, ProfileDefaults[p])
@@ -339,18 +338,15 @@ func TestWorkloadProfilesMoveTheReliefMarks(t *testing.T) {
 	balStart, balRelease := markFor(loomv1.WorkloadProfile_WORKLOAD_PROFILE_BALANCED)
 	convStart, convRelease := markFor(loomv1.WorkloadProfile_WORKLOAD_PROFILE_CONVERSATIONAL)
 
-	// Bursty workloads start earliest and shed deepest; conversational starts
-	// latest and sheds least, keeping recency.
-	assert.Less(t, dataStart, balStart, "data_intensive begins relief before balanced")
-	assert.Less(t, balStart, convStart, "conversational begins relief after balanced")
+	// The start mark is G for every profile — the fold cadence is the
+	// economics' square-root optimum and does not vary by workload. Profiles
+	// keep their voice in shed DEPTH: bursty sheds deepest, conversational
+	// shallowest, keeping recency.
+	assert.Equal(t, window, dataStart, "start is G regardless of profile")
+	assert.Equal(t, window, balStart, "start is G regardless of profile")
+	assert.Equal(t, window, convStart, "start is G regardless of profile")
 	assert.Less(t, dataRelease, balRelease, "data_intensive sheds deeper than balanced")
 	assert.Less(t, balRelease, convRelease, "conversational sheds shallower than balanced")
-
-	// Every mark stays below usable — a mark at or above it would sit beyond
-	// the provider's refusal line and never fire.
-	for _, m := range []int{dataStart, balStart, convStart} {
-		assert.Less(t, m, usable, "a start mark must stay under usable context")
-	}
 
 	// And the band never inverts.
 	assert.Less(t, dataRelease, dataStart)

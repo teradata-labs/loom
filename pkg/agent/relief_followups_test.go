@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -29,102 +28,32 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
-// --- fold gate: no lossy fold when the current turn alone is over target ------
-
-// countingCompressor records every fold compressor call.
-type countingCompressor struct {
-	mu    sync.Mutex
-	calls int
+// denseResult is one token-dense tool payload: structured rows, every row
+// different, so the accurate tier counts it like real data.
+func denseResult(i int) string {
+	return strings.Repeat(fmt.Sprintf("row %d acct=%05d region=%d spend=%d.%02d; ", i, i*37, i%7, i*113, i%100), 60)
 }
 
-func (c *countingCompressor) CompressMessages(context.Context, []Message) (string, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.calls++
-	return "covers msg:1-999\nsummary", nil
-}
-func (c *countingCompressor) IsEnabled() bool { return true }
-func (c *countingCompressor) n() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.calls
-}
-
-// denseText is token-dense conversation text (never stubbed, so a fold is the
-// only way to shed it).
-func denseText(tag string, reps int) string {
-	var b strings.Builder
-	for i := 0; i < reps; i++ {
-		fmt.Fprintf(&b, "%s note %d: acct=%05d region=%d spend=%d.%02d; ", tag, i, i*37, i%7, i*113, i%100)
-	}
-	return b.String()
-}
-
-func TestReleasePressure_OffloadsCurrentTurnBeforeFoldWhenTurnAloneExceedsTarget(t *testing.T) {
+// parallelBatchMemory builds a settled turn 1 and a current turn 2 holding one
+// assistant row with n tool calls followed by their n results (IDs 1000+i).
+func parallelBatchMemory(t *testing.T, maxTokens, reserved, n int, toolName string) *SegmentedMemory {
+	t.Helper()
 	ctx := context.Background()
-	// usable 15000 → target 9000. Prior turn: ~1K tokens of conversation text
-	// (foldable, not evictable). Current turn: 40 × ~750-token results (~30K) —
-	// alone far over target, and comfortably under it once stubbed.
-	sm := NewSegmentedMemory("ROM", 16000, 1000)
-	sm.SetThreshold(16384)
-	comp := &countingCompressor{}
-	sm.SetCompressor(comp)
-	sm.AddMessage(ctx, Message{Role: "user", Content: denseText("q1", 40), Turn: 1})
-	sm.AddMessage(ctx, Message{Role: "assistant", Content: denseText("a1", 40), Turn: 1})
-	sm.AddMessage(ctx, Message{Role: "user", Content: "run them all", Turn: 2})
-	calls := make([]ToolCall, 40)
+	sm := NewSegmentedMemory("ROM", maxTokens, reserved)
+	sm.SetThreshold(16384) // production default: every result below renders whole
+	sm.AddMessage(ctx, Message{Role: "user", Content: "hi", Turn: 1})
+	sm.AddMessage(ctx, Message{Role: "assistant", Content: "hello", Turn: 1})
+	sm.AddMessage(ctx, Message{Role: "user", Content: "run them all in parallel", Turn: 2})
+	calls := make([]ToolCall, n)
 	for i := range calls {
-		calls[i] = ToolCall{ID: fmt.Sprintf("c%d", i), Name: "run_query", Input: map[string]interface{}{"i": i}}
+		calls[i] = ToolCall{ID: fmt.Sprintf("c%d", i), Name: toolName, Input: map[string]interface{}{"i": i}}
 	}
 	sm.AddMessage(ctx, Message{Role: "assistant", Turn: 2, ToolCalls: calls})
-	for i := range calls {
-		sm.AddMessage(ctx, Message{Role: "tool", ID: fmt.Sprintf("%d", 1000+i), ToolUseID: fmt.Sprintf("c%d", i),
-			Content: denseResult(i), Turn: 2})
+	for i := 0; i < n; i++ {
+		sm.AddMessage(ctx, Message{Role: "tool", ID: fmt.Sprintf("%d", 1000+i),
+			ToolUseID: fmt.Sprintf("c%d", i), Content: denseResult(i), Turn: 2})
 	}
-
-	shed, estimate, target := sm.ReleasePressure(ctx, 0)
-	require.True(t, shed)
-	assert.LessOrEqual(t, estimate, target)
-	assert.Equal(t, 0, comp.n(), "the lossless current-turn offload reached target — no lossy fold was needed")
-	assert.False(t, sm.HasL2Content(), "prior-turn conversation survives intact")
-}
-
-func TestReleasePressure_FoldSkippedWhenItCannotReachTarget(t *testing.T) {
-	ctx := context.Background()
-	// usable 11000 → start 9900, target 6600. The current turn carries an
-	// unsheddable ~7.5K-token user message (floor over target on its own) plus
-	// a tool batch that pushes the total over the start mark. Offloading the
-	// batch brings the estimate back under the start mark but the floor stays
-	// over target — a fold of turn 1 could not reach it, so it must not run.
-	sm := NewSegmentedMemory("ROM", 12000, 1000)
-	sm.SetThreshold(16384)
-	comp := &countingCompressor{}
-	sm.SetCompressor(comp)
-	sm.AddMessage(ctx, Message{Role: "user", Content: denseText("q1", 10), Turn: 1})
-	sm.AddMessage(ctx, Message{Role: "assistant", Content: denseText("a1", 10), Turn: 1})
-	sm.AddMessage(ctx, Message{Role: "user", Content: denseText("big", 330), Turn: 2})
-	calls := make([]ToolCall, 8)
-	for i := range calls {
-		calls[i] = ToolCall{ID: fmt.Sprintf("c%d", i), Name: "run_query", Input: map[string]interface{}{"i": i}}
-	}
-	sm.AddMessage(ctx, Message{Role: "assistant", Turn: 2, ToolCalls: calls})
-	for i := range calls {
-		sm.AddMessage(ctx, Message{Role: "tool", ID: fmt.Sprintf("%d", 1000+i), ToolUseID: fmt.Sprintf("c%d", i),
-			Content: denseResult(i), Turn: 2})
-	}
-
-	sm.mu.Lock()
-	start, tgt := sm.startMarkLocked(0), sm.releaseMarkLocked(0)
-	floor, before := sm.currentTurnFloorLocked(2), sm.estimateLocked()
-	sm.mu.Unlock()
-	require.GreaterOrEqual(t, before, start, "fixture: the pass must trigger")
-	require.Greater(t, floor, tgt, "fixture: the current turn alone is over target")
-
-	shed, estimate, target := sm.ReleasePressure(ctx, 0)
-	assert.True(t, shed, "the current-turn offload shed")
-	assert.Greater(t, estimate, target, "no operation can reach target here")
-	assert.Less(t, estimate, start, "but the estimate is back under the start mark")
-	assert.Equal(t, 0, comp.n(), "a fold that cannot reach target is a lossy call for nothing — skipped")
+	return sm
 }
 
 // --- calibration: the estimate follows the provider's prompt count ------------
@@ -242,84 +171,6 @@ func TestSynthesis_ResendsOnceAfterContextTooLong(t *testing.T) {
 				assert.NotEqual(t, "synthesized answer", resp.Content)
 				assert.Contains(t, resp.Metadata, "synthesis_error")
 			}
-		})
-	}
-}
-
-// --- current-turn overflow ends the turn instead of looping -----------------
-
-// fanOutLLM answers the first call with n parallel calls to dense_rows and
-// every later call with a final answer, counting calls.
-type fanOutLLM struct {
-	mockToolCallingLLM
-	n     int
-	fmu   sync.Mutex
-	calls int
-}
-
-func (f *fanOutLLM) Chat(_ context.Context, _ []llmtypes.Message, _ []shuttle.Tool) (*llmtypes.LLMResponse, error) {
-	f.fmu.Lock()
-	defer f.fmu.Unlock()
-	f.calls++
-	if f.calls > 1 {
-		return &llmtypes.LLMResponse{Content: "answer from previews", Usage: llmtypes.Usage{InputTokens: 50, OutputTokens: 10}}, nil
-	}
-	calls := make([]llmtypes.ToolCall, f.n)
-	for i := range calls {
-		calls[i] = llmtypes.ToolCall{ID: fmt.Sprintf("c%d", i), Name: "dense_rows", Input: map[string]interface{}{"i": i}}
-	}
-	return &llmtypes.LLMResponse{ToolCalls: calls, Usage: llmtypes.Usage{InputTokens: 50, OutputTokens: 10}}, nil
-}
-
-func (f *fanOutLLM) count() int {
-	f.fmu.Lock()
-	defer f.fmu.Unlock()
-	return f.calls
-}
-
-func TestChat_CurrentTurnOverflowEndsTurnWithRecoverableError(t *testing.T) {
-	tests := []struct {
-		name      string
-		fanOut    int
-		wantError bool
-	}{
-		{"stubs alone over start: turn ends before the next send", 300, true},
-		{"relief fits the turn: the model answers", 10, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			mockLLM := &fanOutLLM{n: tt.fanOut}
-			patternCfg := DefaultPatternConfig()
-			patternCfg.UseLLMClassifier = false
-			ag := NewAgent(&mockBackend{}, mockLLM, WithConfig(&Config{
-				MaxTurns:             5,
-				MaxToolExecutions:    1000,
-				MaxIterations:        1000, // per-turn call cap: the whole fan-out runs
-				MaxContextTokens:     20000,
-				ReservedOutputTokens: 1000,
-				PatternConfig:        patternCfg,
-			}))
-			var row atomic.Int64
-			ag.RegisterTool(&shuttle.MockTool{
-				MockName: "dense_rows",
-				MockExecute: func(context.Context, map[string]interface{}) (*shuttle.Result, error) {
-					return &shuttle.Result{Success: true, Data: denseResult(int(row.Add(1)))}, nil
-				},
-			})
-
-			resp, err := ag.Chat(context.Background(), "overflow-"+fmt.Sprint(tt.fanOut), "run them all in parallel")
-			if !tt.wantError {
-				require.NoError(t, err)
-				assert.Equal(t, "answer from previews", resp.Content)
-				return
-			}
-			var re *RecoverableError
-			require.ErrorAs(t, err, &re)
-			assert.Equal(t, "current_turn_overflow", re.ErrorType)
-			assert.False(t, re.Retryable, "resending the same turn cannot fit")
-			assert.Contains(t, re.Message, "split the work into smaller batches")
-			assert.Equal(t, tt.fanOut, re.RecoveryPayload["tool_results"])
-			assert.Equal(t, 1, mockLLM.count(), "no send after relief has nothing left to shed")
 		})
 	}
 }
