@@ -122,7 +122,7 @@ func TestCompile_AtThresholdRendersFull(t *testing.T) {
 // does: the stamp is applied before the wire fold renames them to "user", so
 // the persisted role must not change what the model sees.
 func TestCompile_SyntheticRolesRenderArrivalStamp(t *testing.T) {
-	for _, role := range []string{"skill_body", "hygiene_injection", "empty_response_retry", "synthesis_prompt"} {
+	for _, role := range syntheticWireRoles {
 		t.Run(role, func(t *testing.T) {
 			sm := newCompileMemory(t)
 			ts := time.Date(2026, 8, 10, 14, 5, 0, 0, time.UTC)
@@ -1018,7 +1018,7 @@ func TestReleasePressure_NeverFoldsCurrentTurnUserRows(t *testing.T) {
 // exactly like the ticket: their persisted roles differ from "user" but they
 // are protected from the fold the same way.
 func TestReleasePressure_NeverFoldsCurrentTurnSyntheticRows(t *testing.T) {
-	for _, role := range []string{"skill_body", "hygiene_injection", "empty_response_retry", "synthesis_prompt"} {
+	for _, role := range syntheticWireRoles {
 		t.Run(role, func(t *testing.T) {
 			sm := reliefSingleTurnFixtureWithSidecar(t, role)
 			sm.SetCompressor(&foldCompressor{out: "covers msg:1-99\nsummary of the analysis prose"})
