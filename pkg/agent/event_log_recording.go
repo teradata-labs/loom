@@ -161,6 +161,11 @@ func (a *Agent) recordIntentWithRetry(ctx context.Context, sessionID string, ste
 		if lastErr == nil {
 			return nil
 		}
+		if errors.Is(lastErr, eventlog.ErrEventConflict) {
+			// Another writer already recorded a different call here; a retry
+			// cannot change that.
+			return lastErr
+		}
 	}
 	return fmt.Errorf("recording %s event after %d attempts: %w", eventType, recordIntentMaxAttempts, lastErr)
 }

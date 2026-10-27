@@ -89,6 +89,10 @@ type Agent struct {
 	// is unavailable (returns ErrEventLogDisabled).
 	eventLog eventlog.EventLogStore
 
+	// leaseTTL overrides eventlog.DefaultSessionLeaseTTL for the session lease
+	// (session_lease.go). Zero uses the default; tests set it short.
+	leaseTTL time.Duration
+
 	// resourceAwait, when non-nil (WithResourceAwait), enables resource-await
 	// park: a successful tool result carrying AwaitResource ends the turn
 	// parked until the named resource reaches a terminal state. Requires

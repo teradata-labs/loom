@@ -27,7 +27,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"github.com/teradata-labs/loom/pkg/eventlog"
@@ -68,19 +67,13 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (*Response,
 	}
 	ctx = session.WithSessionID(ctx, sessionID)
 
-	leaseHolder := uuid.New().String()
-	won, err := a.eventLog.AcquireSessionLease(ctx, sessionID, leaseHolder, eventlog.DefaultSessionLeaseTTL)
+	// The session lease keeps a live turn, another resume, or a second
+	// replica from dispatching the same calls while this resume runs.
+	ctx, releaseLease, err := a.holdSessionLease(ctx, sessionID)
 	if err != nil {
-		return nil, fmt.Errorf("taking the session lease for resume: %w", err)
+		return nil, err
 	}
-	if !won {
-		return nil, fmt.Errorf("session %s is being driven by another process (its lease has not expired)", sessionID)
-	}
-	defer func() {
-		if err := a.eventLog.ReleaseSessionLease(ctx, sessionID, leaseHolder); err != nil {
-			zap.L().Warn("failed to release session lease", zap.String("session_id", sessionID), zap.Error(err))
-		}
-	}()
+	defer releaseLease()
 
 	// Also serializes against a same-process ResumeChat/chat on this session —
 	// the same in-process guard ResumeChat itself takes (park.go:787).

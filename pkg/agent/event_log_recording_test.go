@@ -7,7 +7,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -190,5 +192,31 @@ func TestRunConversationLoop_NoEventLog_NoPanicNoRecording(t *testing.T) {
 
 	if _, err := ag.Chat(context.Background(), "s-no-log", "hello"); err != nil {
 		t.Fatalf("Chat without an event log configured must still work: %v", err)
+	}
+}
+
+// conflictingEventLog reports every intent as conflicting with a different
+// event already recorded at the same key.
+type conflictingEventLog struct {
+	recordingEventLog
+	attempts atomic.Int32
+}
+
+func (c *conflictingEventLog) RecordIntent(ctx context.Context, sessionID string, stepIndex, batchPosition int, eventType eventlog.EventType, toolUseID string, payload []byte) error {
+	c.attempts.Add(1)
+	return eventlog.ErrEventConflict
+}
+
+// A conflict means another writer recorded a different call at this step;
+// retrying cannot fix that, so the intent fails on the first attempt.
+func TestRecordIntentWithRetry_ConflictIsNotRetried(t *testing.T) {
+	store := &conflictingEventLog{}
+	a := &Agent{eventLog: store}
+	err := a.recordIntentWithRetry(context.Background(), "s", 0, 0, eventlog.EventToolCallIntent, "c", []byte(`{}`))
+	if !errors.Is(err, eventlog.ErrEventConflict) {
+		t.Fatalf("got %v, want ErrEventConflict", err)
+	}
+	if n := store.attempts.Load(); n != 1 {
+		t.Fatalf("RecordIntent called %d times, want 1", n)
 	}
 }

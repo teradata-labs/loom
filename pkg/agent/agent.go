@@ -1958,6 +1958,15 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// Inject session ID into context for tool access
 	ctx = session.WithSessionID(ctx, sessionID)
 
+	// With an event log, one process at a time drives a session's loop
+	// (session_lease.go): a concurrent turn or crash resume would otherwise
+	// record events and dispatch calls at the same steps.
+	ctx, releaseLease, err := a.holdSessionLease(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseLease()
+
 	// Session-handle lifecycle (issue #345): MCP tools that mint session
 	// handles get them auto-released when this conversation ends. Agent
 	// discretion doesn't work — in a 3×64-agent live study, zero agents
@@ -2612,6 +2621,9 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 
 	// Conversation loop
 	for turnCount < a.config.MaxTurns && toolExecutionCount < a.config.MaxToolExecutions {
+		if leaseErr := sessionLeaseLost(ctx); leaseErr != nil {
+			return nil, leaseErr
+		}
 		turnCount++
 
 		// thisStep is captured once per iteration, before any branch
@@ -2815,15 +2827,11 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				if segMem2, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem2 != nil {
 					segMem2.SetAdvertisedToolsBytes(advertisedToolsBytes(tools))
 				}
-				// Same logical step — a resend on ErrContextTooLong is not a
-				// new step (nothing about the step advances), so this
-				// re-records intent/result at the SAME stepIndex. The
-				// store's intent insert is idempotent on retry, and the
-				// result write safely lands once the resend's real result
-				// is available.
-				if intentErr := a.recordLLMIntent(ctx, session.ID, thisStep, len(messages), a.llm.Model()); intentErr != nil {
-					return nil, fmt.Errorf("recording LLM call intent: %w", intentErr)
-				}
+				// Same logical step: a resend after ErrContextTooLong is the
+				// same LLM call with a shorter context, so it reuses the
+				// intent already recorded at thisStep (re-recording it with
+				// the new message count would conflict) and records only
+				// the result.
 				llmResp, err = a.chatWithRetry(ctx, withReminder(messages), tools)
 				if err == nil {
 					a.recordLLMResult(ctx, session.ID, thisStep, llmResp)
@@ -3229,6 +3237,14 @@ type batchState struct {
 // function so the two paths cannot drift.
 func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall, i int, st *batchState) {
 	span := st.span
+
+	// After the session lease is lost, another process may be dispatching
+	// this batch, so this one must not start the call. Returning before the
+	// intent and the tool row leaves the call "never attempted", which is how
+	// the new holder's resume will see it.
+	if sessionLeaseLost(ctx) != nil {
+		return
+	}
 
 	// Per-turn cap: skip remaining calls with an error result
 	if st.turnToolCount >= st.maxPerTurn {

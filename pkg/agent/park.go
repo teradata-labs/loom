@@ -1003,6 +1003,14 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	unlock := a.lockSession(sessionID)
 	defer unlock()
 
+	// Across processes and agents, the session lease (event log only) is what
+	// keeps a live turn or a crash resume from running alongside this one.
+	ctx, releaseLease, err := a.holdSessionLease(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseLease()
+
 	startTime := time.Now()
 	ctx, span := a.tracer.StartSpan(ctx, "agent.conversation.resume")
 	defer a.tracer.EndSpan(span)
