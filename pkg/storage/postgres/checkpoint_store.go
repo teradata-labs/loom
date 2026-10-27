@@ -59,7 +59,7 @@ func (s *CheckpointStore) SaveCheckpoint(ctx context.Context, ckpt *loomv1.Workf
 		_, err := tx.Exec(ctx, `
 			INSERT INTO workflow_checkpoints (workflow_id, user_id, checkpoint_version, checkpoint_proto, updated_at)
 			VALUES ($1, $2, $3, $4, now())
-			ON CONFLICT (workflow_id) DO UPDATE
+			ON CONFLICT (user_id, workflow_id) DO UPDATE
 				SET checkpoint_version = EXCLUDED.checkpoint_version,
 					checkpoint_proto = EXCLUDED.checkpoint_proto,
 					updated_at = now()`,

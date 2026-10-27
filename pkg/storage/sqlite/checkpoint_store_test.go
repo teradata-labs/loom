@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/types"
 )
 
 // migratedDB (task_idempotency_test.go) already imports the real
@@ -64,5 +65,66 @@ func TestCheckpointStore_LoadMissing_ReturnsNilNil(t *testing.T) {
 	}
 	if got != nil {
 		t.Fatalf("LoadCheckpoint: got %+v, want nil", got)
+	}
+}
+
+// TestCheckpointStore_TenantIsolation covers two tenants that use the same
+// workflow ID, which is common because the ID is often set by hand in the
+// workflow YAML. Each tenant must read only its own checkpoint, and one
+// tenant's save must not replace the other's.
+func TestCheckpointStore_TenantIsolation(t *testing.T) {
+	db := migratedDB(t)
+	store := NewCheckpointStore(db, nil)
+	ctxA := types.ContextWithUserID(context.Background(), "user-a")
+	ctxB := types.ContextWithUserID(context.Background(), "user-b")
+
+	if err := store.SaveCheckpoint(ctxA, &loomv1.WorkflowCheckpoint{WorkflowId: "shared-id", NextStageIndex: 1}); err != nil {
+		t.Fatalf("SaveCheckpoint(A): %v", err)
+	}
+
+	got, err := store.LoadCheckpoint(ctxB, "shared-id")
+	if err != nil {
+		t.Fatalf("LoadCheckpoint(B, before B saves): %v", err)
+	}
+	if got != nil {
+		t.Fatalf("LoadCheckpoint(B): got user A's checkpoint %+v, want nil", got)
+	}
+
+	if err := store.SaveCheckpoint(ctxB, &loomv1.WorkflowCheckpoint{WorkflowId: "shared-id", NextStageIndex: 2}); err != nil {
+		t.Fatalf("SaveCheckpoint(B): %v", err)
+	}
+
+	gotA, err := store.LoadCheckpoint(ctxA, "shared-id")
+	if err != nil {
+		t.Fatalf("LoadCheckpoint(A): %v", err)
+	}
+	if gotA == nil || gotA.NextStageIndex != 1 {
+		t.Fatalf("LoadCheckpoint(A): got %+v, want next_stage_index=1 (B's save must not replace A's row)", gotA)
+	}
+	gotB, err := store.LoadCheckpoint(ctxB, "shared-id")
+	if err != nil {
+		t.Fatalf("LoadCheckpoint(B): %v", err)
+	}
+	if gotB == nil || gotB.NextStageIndex != 2 {
+		t.Fatalf("LoadCheckpoint(B): got %+v, want next_stage_index=2", gotB)
+	}
+}
+
+// TestCheckpointStore_NoIdentityUsesDefaultUser checks that a context with no
+// caller identity reads and writes as types.DefaultUserID, the same owner
+// SQLite sessions use, so a local no-auth deployment keeps working.
+func TestCheckpointStore_NoIdentityUsesDefaultUser(t *testing.T) {
+	db := migratedDB(t)
+	store := NewCheckpointStore(db, nil)
+
+	if err := store.SaveCheckpoint(context.Background(), &loomv1.WorkflowCheckpoint{WorkflowId: "wf-default"}); err != nil {
+		t.Fatalf("SaveCheckpoint: %v", err)
+	}
+	got, err := store.LoadCheckpoint(types.ContextWithUserID(context.Background(), types.DefaultUserID), "wf-default")
+	if err != nil {
+		t.Fatalf("LoadCheckpoint: %v", err)
+	}
+	if got == nil {
+		t.Fatal("LoadCheckpoint as DefaultUserID: got nil, want the checkpoint saved without an identity")
 	}
 }
