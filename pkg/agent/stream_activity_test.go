@@ -157,3 +157,31 @@ func TestChatWithStreaming_ToolInputProgressEmitsWhenNameArrivesLate(t *testing.
 	assert.Equal(t, "files", inputEvents[1].ToolName)
 	assert.Equal(t, int64(9), inputEvents[1].ToolInputBytes)
 }
+
+// TestChatWithStreaming_ToolInputProgressCarriesCallIndex pins that the agent
+// loop copies the provider's stream index into ProgressEvent.ToolCallIndex.
+// Two parallel Gemini-style calls that share a tool_call_id (the function
+// name) must produce events with distinct indices 0 and 1.
+func TestChatWithStreaming_ToolInputProgressCarriesCallIndex(t *testing.T) {
+	var events []ProgressEvent
+	ctx := newTestContextWithProgress(nil)
+	a := &Agent{llm: &toolInputProgressProvider{steps: []llmtypes.ToolInputProgress{
+		{Index: 0, ToolCallID: "files", ToolName: "files", Bytes: 18},
+		{Index: 1, ToolCallID: "files", ToolName: "files", Bytes: 18},
+	}}}
+
+	_, err := a.chatWithStreaming(ctx, []Message{{Role: "user", Content: "go"}}, nil, func(e ProgressEvent) { events = append(events, e) })
+	require.NoError(t, err)
+
+	var inputEvents []ProgressEvent
+	for _, e := range events {
+		if e.IsToolInputStream {
+			inputEvents = append(inputEvents, e)
+		}
+	}
+	require.Len(t, inputEvents, 2)
+	assert.Equal(t, int32(0), inputEvents[0].ToolCallIndex)
+	assert.Equal(t, int32(1), inputEvents[1].ToolCallIndex)
+	assert.Equal(t, "files", inputEvents[0].ToolCallID)
+	assert.Equal(t, inputEvents[0].ToolCallID, inputEvents[1].ToolCallID, "both calls share one ID — only the index tells them apart")
+}
