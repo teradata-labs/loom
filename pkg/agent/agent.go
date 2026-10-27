@@ -1958,15 +1958,6 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// Inject session ID into context for tool access
 	ctx = session.WithSessionID(ctx, sessionID)
 
-	// With an event log, one process at a time drives a session's loop
-	// (session_lease.go): a concurrent turn or crash resume would otherwise
-	// record events and dispatch calls at the same steps.
-	ctx, releaseLease, err := a.holdSessionLease(ctx, sessionID)
-	if err != nil {
-		return nil, err
-	}
-	defer releaseLease()
-
 	// Session-handle lifecycle (issue #345): MCP tools that mint session
 	// handles get them auto-released when this conversation ends. Agent
 	// discretion doesn't work — in a 3×64-agent live study, zero agents
@@ -2022,6 +2013,16 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 
 	// Get or create session with agent metadata for proper ReferenceStore namespacing
 	session := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
+
+	// With an event log, one process at a time drives a session's loop
+	// (session_lease.go): a concurrent turn or crash resume would otherwise
+	// record events and dispatch calls at the same steps. Taken after the
+	// session exists, because the lease row references it.
+	ctx, releaseLease, err := a.holdSessionLease(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseLease()
 
 	// A session holding backend leases from a previous turn starts this turn
 	// in the RESOURCE_HOLDER class — the previous turn's SlotInfo died with

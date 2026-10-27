@@ -367,7 +367,7 @@ func TestResumeSession_PriorAppliedParkDoesNotBlockCrashResume(t *testing.T) {
 // call already has a tool row but its tool_call_result event is missing (the
 // result write is fail-open, so this really happens). Call 0 ran and its output
 // was kept as a tool row; only call 1 is genuinely unknown. Both
-// FindExecutionGap (what `looms agent resolve-gap` uses) and ResumeSession
+// FindExecutionGap (what ResolveExecutionGap uses) and ResumeSession
 // must name call 1 — scanning the event log alone would name call 0.
 func TestFindExecutionGap_CallWithARowIsNotAGap(t *testing.T) {
 	recorder := &recordingEventLog{}

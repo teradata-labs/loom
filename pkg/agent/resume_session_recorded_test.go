@@ -269,3 +269,42 @@ func TestChat_FinishedTurnClearsLeftoverSteps(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, events)
 }
+
+func TestResolveExecutionGap_FailedOutcomeBackfillsAFailedRow(t *testing.T) {
+	recorder := &recordingEventLog{}
+	tool := &crashingTool{}
+	ag := newEventLogAgent(t, &mockSimpleLLM{}, nil, recorder, tool)
+	ctx := context.Background()
+	sess := ag.memory.GetOrCreateSessionWithAgent(ctx, "s-resolve", ag.config.Name, "")
+	ag.appendMessage(ctx, sess, Message{Role: "user", Content: "run crashy"}, true)
+	ag.appendMessage(ctx, sess, Message{
+		Role:      "assistant",
+		ToolCalls: []llmtypes.ToolCall{{ID: "c1", Name: "crashy", Input: map[string]interface{}{}}},
+	}, false)
+	recordTailBatch(t, recorder, sess, 0)
+	require.NoError(t, recorder.RecordIntent(ctx, sess.ID, 0, 0, eventlog.EventToolCallIntent, "c1", []byte(`{"tool_name":"crashy"}`)))
+
+	_, err := ag.ResolveExecutionGap(ctx, "s-resolve", GapSucceeded, []byte("{not json"))
+	require.Error(t, err, "a succeeded outcome needs a JSON result")
+
+	gap, err := ag.ResolveExecutionGap(ctx, "s-resolve", GapFailed, nil)
+	require.NoError(t, err)
+	require.Equal(t, "crashy", gap.ToolName)
+
+	_, err = ag.ResolveExecutionGap(ctx, "s-resolve", GapFailed, nil)
+	require.ErrorIs(t, err, ErrNoExecutionGap)
+
+	_, err = ag.ResumeSession(ctx, "s-resolve")
+	require.NoError(t, err)
+	require.Zero(t, tool.calls, "the resolved call was run")
+	var row *Message
+	for _, m := range rawSessionMessages(sess) {
+		if m.Role == "tool" && m.ToolUseID == "c1" {
+			m := m
+			row = &m
+		}
+	}
+	require.NotNil(t, row)
+	require.NotNil(t, row.ToolResult)
+	require.False(t, row.ToolResult.Success, "a call resolved as failed was backfilled as a success")
+}

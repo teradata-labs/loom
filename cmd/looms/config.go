@@ -863,7 +863,7 @@ type WebSearchEndpointsConfig struct {
 // 3. CLI flags - for quick overrides
 // ExecutionLogConfig configures the durable execution log. When enabled,
 // every agent the server builds from config records a write-ahead event
-// before each LLM and tool call, and `looms agent resume` can finish a turn a
+// before each LLM and tool call, and `loom sessions resume` can finish a turn a
 // crash interrupted without re-running calls that already ran. Off by
 // default: it adds two database writes per LLM or tool call, and it needs a
 // storage backend with the execution_events migration. Turns that ran with

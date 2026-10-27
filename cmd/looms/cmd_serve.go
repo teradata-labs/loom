@@ -1297,7 +1297,7 @@ func runServe(cmd *cobra.Command, args []string) {
 	store := storageBackend.SessionStorage()
 
 	// Durable execution log (opt-in, execution_log.enabled). Every agent built
-	// below records it, so `looms agent resume` can finish a turn a crash
+	// below records it, so `loom sessions resume` can finish a turn a crash
 	// interrupted. Enabled on a backend without support is a startup error,
 	// not a silent no-op: resume would then refuse every turn.
 	var executionLog eventlog.EventLogStore

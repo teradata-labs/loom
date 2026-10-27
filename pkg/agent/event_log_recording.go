@@ -26,18 +26,9 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
-// ErrEventLogDisabled is returned by write-ahead-intent recording (and by
-// ResumeSession) when no EventLogStore was configured via WithEventLog.
+// ErrEventLogDisabled is returned by ResumeSession and ResolveExecutionGap
+// when no EventLogStore was configured via WithEventLog.
 var ErrEventLogDisabled = errors.New("execution event log is not configured on this agent")
-
-// SetEventLogForResume wires an EventLogStore onto an already-constructed
-// Agent — used by CLI/server paths (looms agent resume) that build agents
-// via Registry.LoadAgents (which does not yet accept WithEventLog per-agent
-// config) and need to attach the event log store afterward, before calling
-// ResumeSession. Prefer WithEventLog at construction time everywhere else.
-func (a *Agent) SetEventLogForResume(store eventlog.EventLogStore) {
-	a.eventLog = store
-}
 
 // currentStepIndex resolves the step_index a loop invocation should use for
 // its FIRST llm_call_intent event, by reading the durable continuation point

@@ -55,7 +55,7 @@ var ErrBatchNotSaved = errors.New("tools ran for a batch whose assistant message
 // result ever landed. Either the process crashed mid-call, or the result
 // write itself failed after the action succeeded. Both look identical, and
 // neither is retried automatically (no per-tool idempotency classification
-// exists to know if that would be safe). Resolve with `looms agent resolve-gap`.
+// exists to know if that would be safe). Resolve with `loom sessions resolve-gap` (Agent.ResolveExecutionGap).
 type ExecutionGap struct {
 	SessionID     string
 	StepIndex     int
@@ -65,7 +65,7 @@ type ExecutionGap struct {
 }
 
 func (e *ExecutionGap) Error() string {
-	return fmt.Sprintf("execution gap: session %s step %d position %d (tool %q, call %s) has a recorded intent but no result — outcome unknown, resolve with `looms agent resolve-gap`",
+	return fmt.Sprintf("execution gap: session %s step %d position %d (tool %q, call %s) has a recorded intent but no result — outcome unknown, resolve with `loom sessions resolve-gap`",
 		e.SessionID, e.StepIndex, e.BatchPosition, e.ToolName, e.ToolUseID)
 }
 
@@ -148,17 +148,21 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (*Response,
 		span.AddEvent("resume_session.nothing_to_resume", map[string]interface{}{"reason": err.Error()})
 		return nil, err // ErrNothingParked / ErrNotParkedTail, both meaningful to the caller as-is
 	}
+	// len(rowless) == 0 means every call in the tail batch already has a row
+	// but no final assistant reply exists yet: the batch was applied and the
+	// process crashed before the LLM produced its reply. No call needs a
+	// decision, so the turn just continues, exactly like ResumeChat. (The
+	// batch's step may already be pruned, since its rows are durable.)
+	if len(rowless) == 0 {
+		span.AddEvent("resume_session.batch_complete", nil)
+		return a.finishResumedTurn(ctx, agentCtx, sess, handleCollector, &parkedAgain)
+	}
 	step, eventPositions, recorded := recordedStepForBatch(events, batch)
 	if !recorded {
 		span.AddEvent("resume_session.not_recorded", nil)
 		return nil, fmt.Errorf("session %s: %w", sessionID, ErrTurnNotRecorded)
 	}
 	span.SetAttribute("resume.step_index", step)
-	// len(rowless) == 0 here means every call in the tail batch already has a
-	// row but no final assistant reply exists yet: the batch was applied and
-	// the process crashed before the LLM produced its reply. The per-call loop
-	// below is then a no-op and control falls through to the conversation
-	// loop, exactly like ResumeChat.
 
 	st := &batchState{
 		span:      span,
@@ -209,7 +213,7 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (*Response,
 
 		default:
 			// Intent with no result: outcome unknown. The gap is named by
-			// FindExecutionGap, the same function `looms agent resolve-gap`
+			// FindExecutionGap, the same function ResolveExecutionGap
 			// uses, so the gap resume reports is the gap resolve-gap resolves.
 			if gap := FindExecutionGap(sess, events); gap != nil {
 				return nil, gap
@@ -493,4 +497,82 @@ func (a *Agent) backfillFromResultEvent(ctx Context, sess *Session, call ToolCal
 		Timestamp:  time.Now(),
 	}, false)
 	return persisted, nil
+}
+
+// ErrNoExecutionGap is returned by ResolveExecutionGap when the session has
+// no call whose outcome is unknown.
+var ErrNoExecutionGap = errors.New("the session has no execution gap to resolve")
+
+// GapOutcome is an operator's finding for an execution gap.
+type GapOutcome int
+
+const (
+	// GapSucceeded: the call ran and succeeded; its result is supplied.
+	GapSucceeded GapOutcome = iota + 1
+	// GapFailed: the call did not take effect.
+	GapFailed
+)
+
+// ResolveExecutionGap records an operator's finding for the session's current
+// execution gap (the one ResumeSession reports) as that call's result, so a
+// following ResumeSession backfills it instead of stopping. resultJSON is the
+// call's result data and is required for GapSucceeded. It holds the session
+// lease, so it cannot run while a resume or turn is driving the session.
+func (a *Agent) ResolveExecutionGap(ctx context.Context, sessionID string, outcome GapOutcome, resultJSON []byte) (*ExecutionGap, error) {
+	if a.eventLog == nil {
+		return nil, ErrEventLogDisabled
+	}
+
+	var payload map[string]interface{}
+	switch outcome {
+	case GapSucceeded:
+		var data interface{}
+		if err := json.Unmarshal(resultJSON, &data); err != nil {
+			return nil, fmt.Errorf("result for a succeeded call must be JSON: %w", err)
+		}
+		payload = map[string]interface{}{"result": shuttle.Result{Success: true, Data: data}, "error": ""}
+	case GapFailed:
+		const msg = "operator resolved this execution gap as failed"
+		payload = map[string]interface{}{
+			"result": shuttle.Result{Success: false, Error: &shuttle.Error{Code: "manually_resolved_failed", Message: msg}},
+			"error":  msg,
+		}
+	default:
+		return nil, fmt.Errorf("unknown gap outcome %d", outcome)
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("building the resolved result: %w", err)
+	}
+
+	ctx = session.WithSessionID(ctx, sessionID)
+	ctx, releaseLease, err := a.holdSessionLease(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseLease()
+	unlock := a.lockSession(sessionID)
+	defer unlock()
+
+	ctx, span := a.tracer.StartSpan(ctx, "agent.conversation.resolve_execution_gap")
+	defer a.tracer.EndSpan(span)
+	span.SetAttribute(observability.AttrSessionID, sessionID)
+
+	sess := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
+	events, err := a.eventLog.LoadEvents(ctx, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("loading execution events: %w", err)
+	}
+	// The gap to resolve is the one ResumeSession reports; asking the same
+	// function is what guarantees it.
+	gap := FindExecutionGap(sess, events)
+	if gap == nil {
+		return nil, ErrNoExecutionGap
+	}
+	if err := a.eventLog.RecordResult(ctx, sessionID, gap.StepIndex, gap.BatchPosition, eventlog.EventToolCallResult, gap.ToolUseID, payloadJSON); err != nil {
+		span.RecordError(err)
+		return nil, fmt.Errorf("recording the resolution: %w", err)
+	}
+	span.SetAttribute("gap.tool_name", gap.ToolName)
+	return gap, nil
 }

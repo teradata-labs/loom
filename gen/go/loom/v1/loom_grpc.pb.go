@@ -46,6 +46,8 @@ const (
 	LoomService_GetSession_FullMethodName                  = "/loom.v1.LoomService/GetSession"
 	LoomService_ListSessions_FullMethodName                = "/loom.v1.LoomService/ListSessions"
 	LoomService_DeleteSession_FullMethodName               = "/loom.v1.LoomService/DeleteSession"
+	LoomService_ResumeSession_FullMethodName               = "/loom.v1.LoomService/ResumeSession"
+	LoomService_ResolveExecutionGap_FullMethodName         = "/loom.v1.LoomService/ResolveExecutionGap"
 	LoomService_SubscribeToSession_FullMethodName          = "/loom.v1.LoomService/SubscribeToSession"
 	LoomService_GetConversationHistory_FullMethodName      = "/loom.v1.LoomService/GetConversationHistory"
 	LoomService_RegisterTool_FullMethodName                = "/loom.v1.LoomService/RegisterTool"
@@ -158,6 +160,17 @@ type LoomServiceClient interface {
 	ListSessions(ctx context.Context, in *ListSessionsRequest, opts ...grpc.CallOption) (*ListSessionsResponse, error)
 	// DeleteSession deletes a session and its history.
 	DeleteSession(ctx context.Context, in *DeleteSessionRequest, opts ...grpc.CallOption) (*DeleteSessionResponse, error)
+	// ResumeSession finishes a conversation turn that a crash interrupted, using
+	// the durable execution log (execution_log.enabled must have been on while
+	// the turn ran). Calls recorded as complete are backfilled from the log,
+	// calls never started are dispatched, and the turn's reply is produced. A
+	// call whose outcome is unknown is reported as an execution gap, to be
+	// settled with ResolveExecutionGap before resuming again.
+	ResumeSession(ctx context.Context, in *ResumeSessionRequest, opts ...grpc.CallOption) (*ResumeSessionResponse, error)
+	// ResolveExecutionGap records an operator's finding for the tool call that
+	// ResumeSession reported as an execution gap, so ResumeSession can continue
+	// the turn.
+	ResolveExecutionGap(ctx context.Context, in *ResolveExecutionGapRequest, opts ...grpc.CallOption) (*ResolveExecutionGapResponse, error)
 	// SubscribeToSession subscribes to real-time updates for a session.
 	// Returns a stream of updates when new messages arrive or session state changes.
 	// This allows clients to receive asynchronous responses from workflow coordinators
@@ -493,6 +506,26 @@ func (c *loomServiceClient) DeleteSession(ctx context.Context, in *DeleteSession
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(DeleteSessionResponse)
 	err := c.cc.Invoke(ctx, LoomService_DeleteSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomServiceClient) ResumeSession(ctx context.Context, in *ResumeSessionRequest, opts ...grpc.CallOption) (*ResumeSessionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ResumeSessionResponse)
+	err := c.cc.Invoke(ctx, LoomService_ResumeSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomServiceClient) ResolveExecutionGap(ctx context.Context, in *ResolveExecutionGapRequest, opts ...grpc.CallOption) (*ResolveExecutionGapResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ResolveExecutionGapResponse)
+	err := c.cc.Invoke(ctx, LoomService_ResolveExecutionGap_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1338,6 +1371,17 @@ type LoomServiceServer interface {
 	ListSessions(context.Context, *ListSessionsRequest) (*ListSessionsResponse, error)
 	// DeleteSession deletes a session and its history.
 	DeleteSession(context.Context, *DeleteSessionRequest) (*DeleteSessionResponse, error)
+	// ResumeSession finishes a conversation turn that a crash interrupted, using
+	// the durable execution log (execution_log.enabled must have been on while
+	// the turn ran). Calls recorded as complete are backfilled from the log,
+	// calls never started are dispatched, and the turn's reply is produced. A
+	// call whose outcome is unknown is reported as an execution gap, to be
+	// settled with ResolveExecutionGap before resuming again.
+	ResumeSession(context.Context, *ResumeSessionRequest) (*ResumeSessionResponse, error)
+	// ResolveExecutionGap records an operator's finding for the tool call that
+	// ResumeSession reported as an execution gap, so ResumeSession can continue
+	// the turn.
+	ResolveExecutionGap(context.Context, *ResolveExecutionGapRequest) (*ResolveExecutionGapResponse, error)
 	// SubscribeToSession subscribes to real-time updates for a session.
 	// Returns a stream of updates when new messages arrive or session state changes.
 	// This allows clients to receive asynchronous responses from workflow coordinators
@@ -1576,6 +1620,12 @@ func (UnimplementedLoomServiceServer) ListSessions(context.Context, *ListSession
 }
 func (UnimplementedLoomServiceServer) DeleteSession(context.Context, *DeleteSessionRequest) (*DeleteSessionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteSession not implemented")
+}
+func (UnimplementedLoomServiceServer) ResumeSession(context.Context, *ResumeSessionRequest) (*ResumeSessionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ResumeSession not implemented")
+}
+func (UnimplementedLoomServiceServer) ResolveExecutionGap(context.Context, *ResolveExecutionGapRequest) (*ResolveExecutionGapResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ResolveExecutionGap not implemented")
 }
 func (UnimplementedLoomServiceServer) SubscribeToSession(*SubscribeToSessionRequest, grpc.ServerStreamingServer[SessionUpdate]) error {
 	return status.Error(codes.Unimplemented, "method SubscribeToSession not implemented")
@@ -2024,6 +2074,42 @@ func _LoomService_DeleteSession_Handler(srv interface{}, ctx context.Context, de
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LoomServiceServer).DeleteSession(ctx, req.(*DeleteSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LoomService_ResumeSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResumeSessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomServiceServer).ResumeSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LoomService_ResumeSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomServiceServer).ResumeSession(ctx, req.(*ResumeSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LoomService_ResolveExecutionGap_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResolveExecutionGapRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomServiceServer).ResolveExecutionGap(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LoomService_ResolveExecutionGap_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomServiceServer).ResolveExecutionGap(ctx, req.(*ResolveExecutionGapRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3407,6 +3493,14 @@ var LoomService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteSession",
 			Handler:    _LoomService_DeleteSession_Handler,
+		},
+		{
+			MethodName: "ResumeSession",
+			Handler:    _LoomService_ResumeSession_Handler,
+		},
+		{
+			MethodName: "ResolveExecutionGap",
+			Handler:    _LoomService_ResolveExecutionGap_Handler,
 		},
 		{
 			MethodName: "GetConversationHistory",
