@@ -698,6 +698,7 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 			OutputTokenCBThreshold: int(config.Behavior.GetOutputTokenCbThreshold()),
 			EnableSelfHealing:      config.Metadata["_enable_self_healing"] != "false",
 		}
+		agentConfig.RecoveryConfig = repeatHintRecoveryConfig(config.Metadata)
 		// Use defaults if not specified
 		if agentConfig.MaxToolExecutions == 0 {
 			agentConfig.MaxToolExecutions = 50

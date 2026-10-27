@@ -77,6 +77,8 @@ Self-correction (guardrails + circuit breakers) is **enabled by default** and is
 - Circuit breaker base timeout: 30s
 - Max retry attempts: 3
 
+**Repeat-call hint** (opt-in): set `behavior.repeat_call_hint: true` in the agent YAML. With it on, the Tier 1 recovery orchestrator counts identical consecutive executed tool calls (same name and canonical input; a call rejected before execution neither counts nor resets the run). At 3, 5 and 8 it adds one advisory note to the next provider request, as a transient `<system-reminder>` user message naming the count and the tool. The thresholds are fixed at 3/5/8. The note needs self-healing enabled (the default) and is never written into a tool row, so offloaded, tabular and JSON results keep their shape, and it is not stored or replayed in later turns. A failed call (a Go error or `result.Success == false`) gets no note.
+
 **Go API**:
 ```go
 // Self-correction enabled by default
