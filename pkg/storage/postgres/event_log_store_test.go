@@ -6,226 +6,247 @@ package postgres
 
 import (
 	"context"
-	"fmt"
-	"os"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 
 	"github.com/teradata-labs/loom/pkg/eventlog"
-	"github.com/teradata-labs/loom/pkg/observability"
 )
 
-// testEventLogPool skips unless TEST_POSTGRES_URL is set, matching this
-// package's existing live-DB test convention — see testHumanRequestStore in
-// human_request_store_test.go, which this mirrors exactly.
-func testEventLogPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	dsn := os.Getenv("TEST_POSTGRES_URL")
-	if dsn == "" {
-		t.Skip("TEST_POSTGRES_URL not set; skipping PostgreSQL store test")
-	}
-	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	require.NoError(t, err, "failed to connect to PostgreSQL")
-	t.Cleanup(pool.Close)
-	migrator, err := NewMigrator(pool, observability.NewNoOpTracer())
-	require.NoError(t, err)
-	require.NoError(t, migrator.MigrateUp(ctx), "failed to run migrations")
-	return pool
+// eventLogFixture is an event log store connected as an RLS-subject role (see
+// rlsSubjectPool), plus the admin pool for seeding and cleanup. Tests against
+// the superuser connection would pass whether or not the policies work.
+type eventLogFixture struct {
+	admin *pgxpool.Pool
+	app   *pgxpool.Pool
+	store *EventLogStore
 }
 
-// seedEventLogSession inserts a minimal sessions row so execution_events'
-// session_id foreign key is satisfiable — mirrors seedSession in
-// human_request_store_test.go (that helper takes *HumanRequestStore, not
-// reusable here directly, so this is the same SQL against *EventLogStore's
-// pool instead).
-func seedEventLogSession(t *testing.T, pool *pgxpool.Pool) string {
+func newEventLogFixture(t *testing.T) *eventLogFixture {
 	t.Helper()
-	sessionID := fmt.Sprintf("evtlog-test-%d", time.Now().UnixNano())
-	_, err := pool.Exec(context.Background(),
-		"INSERT INTO sessions (id, agent_id) VALUES ($1, 'agent-1') ON CONFLICT (id) DO NOTHING", sessionID)
+	admin := migratedAdminPool(t)
+	app := rlsSubjectPool(t, admin)
+	return &eventLogFixture{admin: admin, app: app, store: NewEventLogStore(app, nil)}
+}
+
+// session seeds a sessions row owned by a fresh user and returns that user's
+// context and the session ID.
+func (f *eventLogFixture) session(t *testing.T) (context.Context, string) {
+	t.Helper()
+	userID := "evtlog-user-" + uuid.NewString()
+	sessionID := "evtlog-sess-" + uuid.NewString()
+	_, err := f.admin.Exec(context.Background(),
+		"INSERT INTO sessions (id, agent_id, user_id) VALUES ($1, 'agent-1', $2)", sessionID, userID)
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), "DELETE FROM sessions WHERE id = $1", sessionID)
+		_, _ = f.admin.Exec(context.Background(), "DELETE FROM sessions WHERE id = $1", sessionID)
 	})
-	return sessionID
+	return ContextWithUserID(context.Background(), userID), sessionID
+}
+
+func TestExecutionEventTables_RLSForced(t *testing.T) {
+	admin := migratedAdminPool(t)
+	requireForcedRLS(t, admin, "execution_events")
+	requireForcedRLS(t, admin, "execution_leases")
 }
 
 func TestEventLogStore_RecordIntentThenResult_LoadEventsOrdered(t *testing.T) {
-	pool := testEventLogPool(t)
-	store := NewEventLogStore(pool, nil)
-	ctx := context.Background()
-	sessionID := seedEventLogSession(t, pool)
+	f := newEventLogFixture(t)
+	ctx, sessionID := f.session(t)
 
-	if err := store.RecordIntent(ctx, sessionID, 0, 0, eventlog.EventLLMCallIntent, "", []byte(`{"model":"test"}`)); err != nil {
-		t.Fatalf("RecordIntent: %v", err)
-	}
-	if err := store.RecordResult(ctx, sessionID, 0, 0, eventlog.EventLLMCallResult, "", []byte(`{"content":"hi"}`)); err != nil {
-		t.Fatalf("RecordResult: %v", err)
-	}
-	if err := store.RecordIntent(ctx, sessionID, 0, 0, eventlog.EventToolCallIntent, "call-1", []byte(`{"tool_name":"search"}`)); err != nil {
-		t.Fatalf("RecordIntent (tool): %v", err)
-	}
+	require.NoError(t, f.store.RecordIntent(ctx, sessionID, 0, 0, eventlog.EventLLMCallIntent, "", []byte(`{"model":"test"}`)))
+	require.NoError(t, f.store.RecordResult(ctx, sessionID, 0, 0, eventlog.EventLLMCallResult, "", []byte(`{"content":"hi"}`)))
+	require.NoError(t, f.store.RecordIntent(ctx, sessionID, 0, 0, eventlog.EventToolCallIntent, "call-1", []byte(`{"tool_name":"search"}`)))
 
-	events, err := store.LoadEvents(ctx, sessionID)
-	if err != nil {
-		t.Fatalf("LoadEvents: %v", err)
-	}
-	if len(events) != 3 {
-		t.Fatalf("len(events) = %d, want 3", len(events))
-	}
-	if events[0].EventType != eventlog.EventLLMCallIntent || events[1].EventType != eventlog.EventLLMCallResult {
-		t.Errorf("events not in expected order: %+v", events)
-	}
-	if events[2].ToolUseID != "call-1" {
-		t.Errorf("events[2].ToolUseID = %q, want %q", events[2].ToolUseID, "call-1")
-	}
+	events, err := f.store.LoadEvents(ctx, sessionID)
+	require.NoError(t, err)
+	require.Len(t, events, 3)
+	require.Equal(t, eventlog.EventLLMCallIntent, events[0].EventType)
+	require.Equal(t, eventlog.EventLLMCallResult, events[1].EventType)
+	require.Equal(t, "call-1", events[2].ToolUseID)
 }
 
 func TestEventLogStore_RecordIntent_IdempotentOnRetry(t *testing.T) {
-	pool := testEventLogPool(t)
-	store := NewEventLogStore(pool, nil)
-	ctx := context.Background()
-	sessionID := seedEventLogSession(t, pool)
+	f := newEventLogFixture(t)
+	ctx, sessionID := f.session(t)
 
 	for i := 0; i < 3; i++ {
-		if err := store.RecordIntent(ctx, sessionID, 0, 0, eventlog.EventToolCallIntent, "call-1", []byte(`{}`)); err != nil {
-			t.Fatalf("RecordIntent attempt %d: %v", i, err)
-		}
+		require.NoError(t, f.store.RecordIntent(ctx, sessionID, 0, 0, eventlog.EventToolCallIntent, "call-1", []byte(`{"a": 1}`)), "attempt %d", i)
 	}
-	events, err := store.LoadEvents(ctx, sessionID)
-	if err != nil {
-		t.Fatalf("LoadEvents: %v", err)
-	}
-	if len(events) != 1 {
-		t.Fatalf("len(events) = %d after 3 identical RecordIntent calls, want 1 (idempotent)", len(events))
-	}
+	events, err := f.store.LoadEvents(ctx, sessionID)
+	require.NoError(t, err)
+	require.Len(t, events, 1, "identical retries must leave one row")
+}
+
+// Two writers recording different calls at the same step and position must
+// not have the second one silently dropped.
+func TestEventLogStore_RecordIntent_DifferentPayloadConflicts(t *testing.T) {
+	f := newEventLogFixture(t)
+	ctx, sessionID := f.session(t)
+
+	require.NoError(t, f.store.RecordIntent(ctx, sessionID, 3, 0, eventlog.EventToolCallIntent, "a", []byte(`{"tool_name":"one"}`)))
+	err := f.store.RecordIntent(ctx, sessionID, 3, 0, eventlog.EventToolCallIntent, "b", []byte(`{"tool_name":"two"}`))
+	require.True(t, errors.Is(err, eventlog.ErrEventConflict), "got %v, want ErrEventConflict", err)
 }
 
 func TestEventLogStore_NextStepIndex_ZeroThenIncrementing(t *testing.T) {
-	pool := testEventLogPool(t)
-	store := NewEventLogStore(pool, nil)
-	ctx := context.Background()
-	sessionID := seedEventLogSession(t, pool)
+	f := newEventLogFixture(t)
+	ctx, sessionID := f.session(t)
 
-	next, err := store.NextStepIndex(ctx, sessionID)
-	if err != nil {
-		t.Fatalf("NextStepIndex (empty): %v", err)
-	}
-	if next != 0 {
-		t.Errorf("NextStepIndex on a session with no events = %d, want 0", next)
-	}
+	next, err := f.store.NextStepIndex(ctx, sessionID)
+	require.NoError(t, err)
+	require.Equal(t, 0, next)
 
-	if err := store.RecordIntent(ctx, sessionID, 0, 0, eventlog.EventLLMCallIntent, "", []byte(`{}`)); err != nil {
-		t.Fatalf("RecordIntent: %v", err)
-	}
-	if err := store.RecordIntent(ctx, sessionID, 3, 0, eventlog.EventLLMCallIntent, "", []byte(`{}`)); err != nil {
-		t.Fatalf("RecordIntent: %v", err)
-	}
-	next, err = store.NextStepIndex(ctx, sessionID)
-	if err != nil {
-		t.Fatalf("NextStepIndex: %v", err)
-	}
-	if next != 4 {
-		t.Errorf("NextStepIndex after max step_index=3 = %d, want 4", next)
-	}
+	require.NoError(t, f.store.RecordIntent(ctx, sessionID, 0, 0, eventlog.EventLLMCallIntent, "", []byte(`{}`)))
+	require.NoError(t, f.store.RecordIntent(ctx, sessionID, 1, 0, eventlog.EventLLMCallIntent, "", []byte(`{}`)))
+	next, err = f.store.NextStepIndex(ctx, sessionID)
+	require.NoError(t, err)
+	require.Equal(t, 2, next)
 }
 
-func TestEventLogStore_ClaimSessionResume_ExactlyOneWinner(t *testing.T) {
-	pool := testEventLogPool(t)
-	store := NewEventLogStore(pool, nil)
-	ctx := context.Background()
-	sessionID := seedEventLogSession(t, pool)
+func TestEventLogStore_SessionLease(t *testing.T) {
+	f := newEventLogFixture(t)
 
-	won1, err := store.ClaimSessionResume(ctx, sessionID, "token-1", time.Minute)
-	if err != nil {
-		t.Fatalf("first claim: %v", err)
-	}
-	if !won1 {
-		t.Fatal("first claim on an unclaimed session should win")
-	}
+	t.Run("one holder at a time", func(t *testing.T) {
+		ctx, sessionID := f.session(t)
+		won, err := f.store.AcquireSessionLease(ctx, sessionID, "h1", time.Minute)
+		require.NoError(t, err)
+		require.True(t, won, "the session's owner must be able to take its lease")
+		won, err = f.store.AcquireSessionLease(ctx, sessionID, "h2", time.Minute)
+		require.NoError(t, err)
+		require.False(t, won)
+		won, err = f.store.AcquireSessionLease(ctx, sessionID, "h1", time.Minute)
+		require.NoError(t, err)
+		require.True(t, won, "the holder may re-acquire its own lease")
+	})
 
-	won2, err := store.ClaimSessionResume(ctx, sessionID, "token-2", time.Minute)
-	if err != nil {
-		t.Fatalf("second claim: %v", err)
-	}
-	if won2 {
-		t.Error("second claim on an already-claimed, non-expired session should NOT win")
-	}
+	t.Run("concurrent acquires have exactly one winner", func(t *testing.T) {
+		ctx, sessionID := f.session(t)
+		const n = 8
+		var wg sync.WaitGroup
+		wins := make(chan string, n)
+		for i := 0; i < n; i++ {
+			holder := uuid.NewString()
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				won, err := f.store.AcquireSessionLease(ctx, sessionID, holder, time.Minute)
+				if err == nil && won {
+					wins <- holder
+				}
+			}()
+		}
+		wg.Wait()
+		close(wins)
+		require.Len(t, wins, 1)
+	})
+
+	t.Run("expired lease is taken over and the old holder loses it", func(t *testing.T) {
+		ctx, sessionID := f.session(t)
+		won, err := f.store.AcquireSessionLease(ctx, sessionID, "h1", -time.Second)
+		require.NoError(t, err)
+		require.True(t, won)
+		won, err = f.store.AcquireSessionLease(ctx, sessionID, "h2", time.Minute)
+		require.NoError(t, err)
+		require.True(t, won, "an expired lease must be reclaimable")
+		held, err := f.store.RenewSessionLease(ctx, sessionID, "h1", time.Minute)
+		require.NoError(t, err)
+		require.False(t, held, "the old holder must learn it lost the lease")
+	})
+
+	t.Run("renewal keeps the lease past its first expiry", func(t *testing.T) {
+		ctx, sessionID := f.session(t)
+		won, err := f.store.AcquireSessionLease(ctx, sessionID, "h1", -time.Second)
+		require.NoError(t, err)
+		require.True(t, won)
+		held, err := f.store.RenewSessionLease(ctx, sessionID, "h1", time.Minute)
+		require.NoError(t, err)
+		require.True(t, held)
+		won, err = f.store.AcquireSessionLease(ctx, sessionID, "h2", time.Minute)
+		require.NoError(t, err)
+		require.False(t, won, "a renewed lease must not be taken over")
+	})
+
+	t.Run("only the holder releases", func(t *testing.T) {
+		ctx, sessionID := f.session(t)
+		_, err := f.store.AcquireSessionLease(ctx, sessionID, "h1", time.Minute)
+		require.NoError(t, err)
+		require.NoError(t, f.store.ReleaseSessionLease(ctx, sessionID, "h2"))
+		won, err := f.store.AcquireSessionLease(ctx, sessionID, "h2", time.Minute)
+		require.NoError(t, err)
+		require.False(t, won, "a release by another holder must not clear the lease")
+		require.NoError(t, f.store.ReleaseSessionLease(ctx, sessionID, "h1"))
+		won, err = f.store.AcquireSessionLease(ctx, sessionID, "h2", time.Minute)
+		require.NoError(t, err)
+		require.True(t, won)
+	})
 }
 
-func TestEventLogStore_ClaimSessionResume_StaleClaimIsReclaimable(t *testing.T) {
-	pool := testEventLogPool(t)
-	store := NewEventLogStore(pool, nil)
-	ctx := context.Background()
-	sessionID := seedEventLogSession(t, pool)
+func TestEventLogStore_Prune(t *testing.T) {
+	f := newEventLogFixture(t)
+	ctx, sessionID := f.session(t)
 
-	won1, err := store.ClaimSessionResume(ctx, sessionID, "token-1", -1*time.Second) // already-expired lease
-	if err != nil || !won1 {
-		t.Fatalf("first claim: won=%v err=%v", won1, err)
+	for step := 0; step < 4; step++ {
+		require.NoError(t, f.store.RecordIntent(ctx, sessionID, step, 0, eventlog.EventLLMCallIntent, "", []byte(`{}`)))
 	}
+	require.NoError(t, f.store.PruneResolvedStep(ctx, sessionID, 3))
+	require.NoError(t, f.store.PruneStepsBefore(ctx, sessionID, 2))
 
-	won2, err := store.ClaimSessionResume(ctx, sessionID, "token-2", time.Minute)
-	if err != nil {
-		t.Fatalf("second claim: %v", err)
-	}
-	if !won2 {
-		t.Error("a claim whose lease already expired must be reclaimable")
-	}
+	events, err := f.store.LoadEvents(ctx, sessionID)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	require.Equal(t, 2, events[0].StepIndex)
 }
 
-func TestEventLogStore_ReleaseSessionResume_OnlyOwnerCanRelease(t *testing.T) {
-	pool := testEventLogPool(t)
-	store := NewEventLogStore(pool, nil)
-	ctx := context.Background()
-	sessionID := seedEventLogSession(t, pool)
+// TestEventLogStore_TenantIsolation covers the cross-tenant cases from review
+// round 1: another user must not read, write, delete or lease events on a
+// session it does not own.
+func TestEventLogStore_TenantIsolation(t *testing.T) {
+	f := newEventLogFixture(t)
+	ctxA, sessionID := f.session(t)
+	ctxB, _ := f.session(t) // user B, with a session of its own
 
-	if _, err := store.ClaimSessionResume(ctx, sessionID, "token-1", time.Minute); err != nil {
-		t.Fatalf("claim: %v", err)
-	}
-	if err := store.ReleaseSessionResume(ctx, sessionID, "wrong-token"); err != nil {
-		t.Fatalf("release with wrong token should no-op, not error: %v", err)
-	}
-	won, err := store.ClaimSessionResume(ctx, sessionID, "token-2", time.Minute)
-	if err != nil {
-		t.Fatalf("claim after wrong-token release attempt: %v", err)
-	}
-	if won {
-		t.Error("claim must still be held by token-1 — a wrong-token release must not have cleared it")
-	}
+	require.NoError(t, f.store.RecordIntent(ctxA, sessionID, 0, 0, eventlog.EventToolCallIntent, "c", []byte(`{"tool_name":"a","input":"secret"}`)))
 
-	if err := store.ReleaseSessionResume(ctx, sessionID, "token-1"); err != nil {
-		t.Fatalf("release with correct token: %v", err)
-	}
-	won, err = store.ClaimSessionResume(ctx, sessionID, "token-2", time.Minute)
-	if err != nil || !won {
-		t.Fatalf("claim after correct release: won=%v err=%v, want true/nil", won, err)
-	}
-}
+	events, err := f.store.LoadEvents(ctxB, sessionID)
+	require.NoError(t, err)
+	require.Empty(t, events, "user B read user A's events")
+	next, err := f.store.NextStepIndex(ctxB, sessionID)
+	require.NoError(t, err)
+	require.Equal(t, 0, next, "user B saw user A's step counter")
 
-func TestEventLogStore_PruneResolvedStep_RemovesOnlyThatStep(t *testing.T) {
-	pool := testEventLogPool(t)
-	store := NewEventLogStore(pool, nil)
-	ctx := context.Background()
-	sessionID := seedEventLogSession(t, pool)
+	err = f.store.RecordIntent(ctxB, sessionID, 5, 0, eventlog.EventToolCallIntent, "c", []byte(`{"tool_name":"b"}`))
+	require.Error(t, err, "user B wrote an event into user A's session")
 
-	if err := store.RecordIntent(ctx, sessionID, 0, 0, eventlog.EventLLMCallIntent, "", []byte(`{}`)); err != nil {
-		t.Fatalf("RecordIntent step 0: %v", err)
-	}
-	if err := store.RecordIntent(ctx, sessionID, 1, 0, eventlog.EventLLMCallIntent, "", []byte(`{}`)); err != nil {
-		t.Fatalf("RecordIntent step 1: %v", err)
-	}
-	if err := store.PruneResolvedStep(ctx, sessionID, 0); err != nil {
-		t.Fatalf("PruneResolvedStep: %v", err)
-	}
-	events, err := store.LoadEvents(ctx, sessionID)
-	if err != nil {
-		t.Fatalf("LoadEvents: %v", err)
-	}
-	if len(events) != 1 || events[0].StepIndex != 1 {
-		t.Fatalf("events after pruning step 0 = %+v, want only step 1's event", events)
-	}
+	require.NoError(t, f.store.PruneResolvedStep(ctxB, sessionID, 0))
+	require.NoError(t, f.store.PruneStepsBefore(ctxB, sessionID, 10))
+	eventsA, err := f.store.LoadEvents(ctxA, sessionID)
+	require.NoError(t, err)
+	require.Len(t, eventsA, 1, "user B's prunes deleted user A's events")
+
+	_, err = f.store.AcquireSessionLease(ctxB, sessionID, "b", time.Minute)
+	require.Error(t, err, "user B took a lease on user A's session")
+	won, err := f.store.AcquireSessionLease(ctxA, sessionID, "a", time.Minute)
+	require.NoError(t, err)
+	require.True(t, won, "user A could not lease its own session")
+	held, err := f.store.RenewSessionLease(ctxB, sessionID, "a", time.Minute)
+	require.NoError(t, err)
+	require.False(t, held, "user B renewed user A's lease")
+	require.NoError(t, f.store.ReleaseSessionLease(ctxB, sessionID, "a"))
+	held, err = f.store.RenewSessionLease(ctxA, sessionID, "a", time.Minute)
+	require.NoError(t, err)
+	require.True(t, held, "user B released user A's lease")
+
+	// The policy itself, not only the store's WHERE clauses, hides A's rows.
+	var visible int
+	require.NoError(t, execInTx(ctxB, f.app, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, "SELECT count(*) FROM execution_events WHERE session_id = $1", sessionID).Scan(&visible)
+	}))
+	require.Zero(t, visible, "row-level security let user B see user A's events")
 }

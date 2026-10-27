@@ -79,24 +79,42 @@ func (r *recordingEventLog) NextStepIndex(ctx context.Context, sessionID string)
 	}
 	return max + 1, nil
 }
-func (r *recordingEventLog) ClaimSessionResume(ctx context.Context, sessionID, claimToken string, leaseTTL time.Duration) (bool, error) {
+func (r *recordingEventLog) AcquireSessionLease(ctx context.Context, sessionID, holder string, ttl time.Duration) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.claims == nil {
 		r.claims = make(map[string]string)
 	}
-	if existing, ok := r.claims[sessionID]; ok && existing != "" {
+	if existing, ok := r.claims[sessionID]; ok && existing != holder {
 		return false, nil
 	}
-	r.claims[sessionID] = claimToken
+	r.claims[sessionID] = holder
 	return true, nil
 }
-func (r *recordingEventLog) ReleaseSessionResume(ctx context.Context, sessionID, claimToken string) error {
+func (r *recordingEventLog) RenewSessionLease(ctx context.Context, sessionID, holder string, ttl time.Duration) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.claims[sessionID] == claimToken {
+	return r.claims[sessionID] == holder, nil
+}
+func (r *recordingEventLog) ReleaseSessionLease(ctx context.Context, sessionID, holder string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.claims[sessionID] == holder {
 		delete(r.claims, sessionID)
 	}
+	return nil
+}
+func (r *recordingEventLog) PruneStepsBefore(ctx context.Context, sessionID string, stepIndex int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	kept := r.events[:0]
+	for _, e := range r.events {
+		if e.SessionID == sessionID && e.StepIndex < stepIndex {
+			continue
+		}
+		kept = append(kept, e)
+	}
+	r.events = kept
 	return nil
 }
 func (r *recordingEventLog) PruneResolvedStep(ctx context.Context, sessionID string, stepIndex int) error {

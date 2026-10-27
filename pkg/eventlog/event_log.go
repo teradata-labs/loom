@@ -25,12 +25,12 @@ package eventlog
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
 // EventType enumerates the four write-ahead event kinds execution_events
-// records. See docs/superpowers/specs/2026-09-06-durable-execution-replay-design.md
-// for the full design.
+// records: an intent before each LLM or tool call, and a result after it.
 type EventType string
 
 const (
@@ -40,11 +40,17 @@ const (
 	EventToolCallResult EventType = "tool_call_result"
 )
 
-// DefaultResumeClaimTTL bounds how long a session-resume claim is honored
-// before another resume attempt may reclaim it. Long enough to cover a slow
-// tool call plus retry backoff; short enough that a dead resumer's stale
-// claim does not block recovery for long. Not configurable in phase 1.
-const DefaultResumeClaimTTL = 5 * time.Minute
+// DefaultSessionLeaseTTL is how long a session lease lasts without renewal.
+// A holder renews it every DefaultSessionLeaseTTL/3 while it runs, so the TTL
+// only bounds how long a crashed holder blocks the next one.
+const DefaultSessionLeaseTTL = 2 * time.Minute
+
+// ErrEventConflict is returned by RecordIntent and RecordResult when an event
+// already exists at the same (session, step, position, type) with a different
+// payload. Two writers recorded different calls at the same step, so the log
+// can no longer say which call that position holds. A retry of the same write
+// (same payload) is not a conflict.
+var ErrEventConflict = errors.New("execution event conflict: a different event is already recorded at this step and position")
 
 // ExecutionEvent is one row of the execution_events log.
 type ExecutionEvent struct {
@@ -52,65 +58,66 @@ type ExecutionEvent struct {
 	StepIndex     int
 	BatchPosition int
 	EventType     EventType
-	// ToolUseID is auxiliary/debugging only — never a correlation key. See
-	// the design doc's "Correlation key" section: ToolCall.ID is not
-	// reliably unique or present across every LLM provider.
+	// ToolUseID is for debugging only, never a correlation key: ToolCall.ID
+	// is not reliably unique or present across LLM providers (Ollama can
+	// omit it; Gemini reuses the function name for parallel calls).
 	ToolUseID string
 	Payload   []byte // JSON
 	CreatedAt time.Time
 }
 
 // EventLogStore is the optional-capability interface for the durable,
-// tool-call-granularity execution log (issue #229). A StorageBackend
-// implements this once its execution_events migration has run; callers
-// type-assert backend.StorageBackend.(backend.EventLogProvider) to reach it,
-// exactly like TaskStoreProvider/GraphMemoryProvider.
+// tool-call-granularity execution log. A StorageBackend implements it once
+// its execution_events migration has run; callers type-assert
+// backend.StorageBackend.(backend.EventLogProvider) to reach it, like
+// TaskStoreProvider and GraphMemoryProvider.
+//
+// Every method acts as the caller identity in ctx (types.UserIDFromContext):
+// a caller reads and writes only its own sessions' events and leases.
 type EventLogStore interface {
 	// RecordIntent durably writes an *_intent event before the corresponding
-	// LLM/tool call executes. The caller (agent.go) must treat a failure here
-	// as a precondition failure: abort the call before it runs, since nothing
-	// has happened yet. Idempotent: a retried call with the same
-	// (sessionID, stepIndex, batchPosition, eventType) is a no-op, not an
-	// error, so a caller may safely retry a few times on transient failure.
+	// LLM or tool call executes. The caller must treat a failure as a
+	// precondition failure and not run the call. Retrying the same write is a
+	// no-op; a different payload at the same key returns ErrEventConflict.
 	RecordIntent(ctx context.Context, sessionID string, stepIndex, batchPosition int, eventType EventType, toolUseID string, payload []byte) error
 
 	// RecordResult durably writes the matching *_result event after the call
-	// completes. Best-effort by design — the action has already happened by
-	// the time this is called, so the caller logs-and-continues on failure
-	// exactly like every other post-action persist in this package
-	// (PersistToolExecution, appendMessage). A failed result write degrades
-	// into the same (intent, no result) gap state a crash mid-call produces;
-	// see ResumeSession.
+	// completes. Best-effort for the caller: the action already happened, so
+	// a failure is logged and leaves an (intent, no result) gap, the same
+	// state a crash mid-call produces. Same retry and conflict rules as
+	// RecordIntent.
 	RecordResult(ctx context.Context, sessionID string, stepIndex, batchPosition int, eventType EventType, toolUseID string, payload []byte) error
 
 	// LoadEvents returns every recorded event for a session, ordered by
-	// step_index ascending, then batch_position ascending, then event_type
-	// (an "*_intent" sorts before its "*_result" lexically, which is also
-	// insertion order).
+	// step_index, then batch_position, then event_type ("*_intent" sorts
+	// before its "*_result").
 	LoadEvents(ctx context.Context, sessionID string) ([]ExecutionEvent, error)
 
-	// NextStepIndex returns MAX(step_index)+1 for the session (0 if no events
-	// are recorded yet) — the step counter's durable continuation point,
-	// read once at loop entry (chat/ResumeChat/ResumeSession) and held in
-	// memory for that one invocation.
+	// NextStepIndex returns MAX(step_index)+1 for the session, or 0 if no
+	// events are recorded.
 	NextStepIndex(ctx context.Context, sessionID string) (int, error)
 
-	// ClaimSessionResume attempts to take exclusive ownership of resuming
-	// sessionID for leaseTTL, via a conditional UPDATE whose rows-affected
-	// count is itself the CAS signal (see this plan's "Decisions made during
-	// planning" note on why this differs from claimParkedRequest's read-back
-	// pattern). Returns true if this call won the claim.
-	ClaimSessionResume(ctx context.Context, sessionID, claimToken string, leaseTTL time.Duration) (bool, error)
+	// AcquireSessionLease makes holder the only process driving sessionID's
+	// conversation loop for ttl. It succeeds when no lease exists, the
+	// existing lease has expired, or holder already holds it. Expiry uses the
+	// database clock, so replicas with skewed clocks agree.
+	AcquireSessionLease(ctx context.Context, sessionID, holder string, ttl time.Duration) (bool, error)
 
-	// ReleaseSessionResume clears the claim if claimToken still owns it. A
-	// mismatched or already-cleared token is a no-op, not an error — the same
-	// "judge by the row, not the write" caution claimParkedRequest documents.
-	ReleaseSessionResume(ctx context.Context, sessionID, claimToken string) error
+	// RenewSessionLease extends holder's lease to now+ttl. It returns false
+	// when holder no longer holds the lease (another holder took it after it
+	// expired); the caller must then stop dispatching calls.
+	RenewSessionLease(ctx context.Context, sessionID, holder string, ttl time.Duration) (bool, error)
 
-	// PruneResolvedStep deletes every execution_events row for one
-	// (sessionID, stepIndex) pair. Called once every call in that step's
-	// batch is confirmed complete (event log agrees with messages/
-	// tool_executions) and the loop has advanced past it — see "Retention"
-	// in the design doc.
+	// ReleaseSessionLease removes holder's lease. A lease held by someone
+	// else, or no lease, is a no-op.
+	ReleaseSessionLease(ctx context.Context, sessionID, holder string) error
+
+	// PruneResolvedStep deletes every event for one (sessionID, stepIndex),
+	// once every call in that step is confirmed complete.
 	PruneResolvedStep(ctx context.Context, sessionID string, stepIndex int) error
+
+	// PruneStepsBefore deletes every event for sessionID with a step_index
+	// below stepIndex. Called once a turn completes, so steps left behind by
+	// a resolved execution gap do not accumulate.
+	PruneStepsBefore(ctx context.Context, sessionID string, stepIndex int) error
 }

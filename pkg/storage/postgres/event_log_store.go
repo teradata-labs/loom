@@ -11,20 +11,26 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
 package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/teradata-labs/loom/pkg/eventlog"
 	"github.com/teradata-labs/loom/pkg/observability"
 )
 
-// EventLogStore implements eventlog.EventLogStore using PostgreSQL.
+// EventLogStore implements eventlog.EventLogStore using PostgreSQL. Every
+// query runs through execInTx, so app.current_user_id is set and the
+// execution_events / execution_leases RLS policies apply. Queries also filter
+// on user_id explicitly, so isolation does not depend on RLS alone.
 type EventLogStore struct {
 	pool   *pgxpool.Pool
 	tracer observability.Tracer
@@ -44,28 +50,54 @@ var _ eventlog.EventLogStore = (*EventLogStore)(nil)
 func (s *EventLogStore) RecordIntent(ctx context.Context, sessionID string, stepIndex, batchPosition int, eventType eventlog.EventType, toolUseID string, payload []byte) error {
 	ctx, span := s.tracer.StartSpan(ctx, "pg.event_log.record_intent")
 	defer s.tracer.EndSpan(span)
-	return s.insertEvent(ctx, sessionID, stepIndex, batchPosition, eventType, toolUseID, payload)
+	return recordSpanError(span, s.insertEvent(ctx, sessionID, stepIndex, batchPosition, eventType, toolUseID, payload))
 }
 
 func (s *EventLogStore) RecordResult(ctx context.Context, sessionID string, stepIndex, batchPosition int, eventType eventlog.EventType, toolUseID string, payload []byte) error {
 	ctx, span := s.tracer.StartSpan(ctx, "pg.event_log.record_result")
 	defer s.tracer.EndSpan(span)
-	return s.insertEvent(ctx, sessionID, stepIndex, batchPosition, eventType, toolUseID, payload)
+	return recordSpanError(span, s.insertEvent(ctx, sessionID, stepIndex, batchPosition, eventType, toolUseID, payload))
 }
 
-// insertEvent is shared by RecordIntent/RecordResult: same shape, only the
-// caller's durability expectations differ (see EventLogStore doc comments in
-// pkg/eventlog/event_log.go). ON CONFLICT DO NOTHING makes a retried write of
-// the same (session, step, position, type) a safe no-op.
+// insertEvent is shared by RecordIntent and RecordResult. On a key conflict it
+// compares payloads: the same payload is a retry of this write (no-op), a
+// different one is eventlog.ErrEventConflict. The RLS WITH CHECK rejects a
+// session the caller cannot see.
 func (s *EventLogStore) insertEvent(ctx context.Context, sessionID string, stepIndex, batchPosition int, eventType eventlog.EventType, toolUseID string, payload []byte) error {
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO execution_events (session_id, step_index, batch_position, event_type, tool_use_id, payload)
-		VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6)
-		ON CONFLICT (session_id, step_index, batch_position, event_type) DO NOTHING`,
-		sessionID, stepIndex, batchPosition, string(eventType), toolUseID, payload,
-	)
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		userID := UserIDFromContext(ctx)
+		tag, err := tx.Exec(ctx, `
+			INSERT INTO execution_events (user_id, session_id, step_index, batch_position, event_type, tool_use_id, payload)
+			VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7)
+			ON CONFLICT (session_id, step_index, batch_position, event_type) DO NOTHING`,
+			userID, sessionID, stepIndex, batchPosition, string(eventType), toolUseID, payload,
+		)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 1 {
+			return nil
+		}
+		var same bool
+		err = tx.QueryRow(ctx, `
+			SELECT payload = $6::jsonb FROM execution_events
+			WHERE user_id = $1 AND session_id = $2 AND step_index = $3 AND batch_position = $4 AND event_type = $5`,
+			userID, sessionID, stepIndex, batchPosition, string(eventType), payload,
+		).Scan(&same)
+		if errors.Is(err, pgx.ErrNoRows) {
+			// The row this insert collided with is not visible to the caller.
+			return fmt.Errorf("session %s: %w", sessionID, eventlog.ErrEventConflict)
+		}
+		if err != nil {
+			return err
+		}
+		if !same {
+			return eventlog.ErrEventConflict
+		}
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("record %s event: %w", eventType, err)
+		return fmt.Errorf("record %s event (step %d, position %d): %w", eventType, stepIndex, batchPosition, err)
 	}
 	return nil
 }
@@ -74,29 +106,34 @@ func (s *EventLogStore) LoadEvents(ctx context.Context, sessionID string) ([]eve
 	ctx, span := s.tracer.StartSpan(ctx, "pg.event_log.load_events")
 	defer s.tracer.EndSpan(span)
 
-	rows, err := s.pool.Query(ctx, `
-		SELECT session_id, step_index, batch_position, event_type, COALESCE(tool_use_id, ''), payload, created_at
-		FROM execution_events
-		WHERE session_id = $1
-		ORDER BY step_index ASC, batch_position ASC, event_type ASC`,
-		sessionID,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("load events: %w", err)
-	}
-	defer rows.Close()
-
 	var out []eventlog.ExecutionEvent
-	for rows.Next() {
-		var e eventlog.ExecutionEvent
-		var eventType string
-		if err := rows.Scan(&e.SessionID, &e.StepIndex, &e.BatchPosition, &eventType, &e.ToolUseID, &e.Payload, &e.CreatedAt); err != nil {
-			return nil, fmt.Errorf("scan event: %w", err)
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT session_id, step_index, batch_position, event_type, COALESCE(tool_use_id, ''), payload, created_at
+			FROM execution_events
+			WHERE user_id = $1 AND session_id = $2
+			ORDER BY step_index ASC, batch_position ASC, event_type ASC`,
+			UserIDFromContext(ctx), sessionID,
+		)
+		if err != nil {
+			return err
 		}
-		e.EventType = eventlog.EventType(eventType)
-		out = append(out, e)
+		defer rows.Close()
+		for rows.Next() {
+			var e eventlog.ExecutionEvent
+			var eventType string
+			if err := rows.Scan(&e.SessionID, &e.StepIndex, &e.BatchPosition, &eventType, &e.ToolUseID, &e.Payload, &e.CreatedAt); err != nil {
+				return fmt.Errorf("scan event: %w", err)
+			}
+			e.EventType = eventlog.EventType(eventType)
+			out = append(out, e)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, recordSpanError(span, fmt.Errorf("load events: %w", err))
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (s *EventLogStore) NextStepIndex(ctx context.Context, sessionID string) (int, error) {
@@ -104,9 +141,14 @@ func (s *EventLogStore) NextStepIndex(ctx context.Context, sessionID string) (in
 	defer s.tracer.EndSpan(span)
 
 	var maxStep *int
-	err := s.pool.QueryRow(ctx, `SELECT MAX(step_index) FROM execution_events WHERE session_id = $1`, sessionID).Scan(&maxStep)
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			`SELECT MAX(step_index) FROM execution_events WHERE user_id = $1 AND session_id = $2`,
+			UserIDFromContext(ctx), sessionID,
+		).Scan(&maxStep)
+	})
 	if err != nil {
-		return 0, fmt.Errorf("next step index: %w", err)
+		return 0, recordSpanError(span, fmt.Errorf("next step index: %w", err))
 	}
 	if maxStep == nil {
 		return 0, nil
@@ -114,52 +156,68 @@ func (s *EventLogStore) NextStepIndex(ctx context.Context, sessionID string) (in
 	return *maxStep + 1, nil
 }
 
-// ClaimSessionResume uses a conditional UPDATE whose rows-affected count is
-// the CAS signal — see this plan's note on why this differs from
-// claimParkedRequest's read-back pattern (that pattern exists to work around
-// shuttle.HumanRequestStore hiding rows-affected behind a higher-level call;
-// no such limitation applies to this direct-SQL store).
-func (s *EventLogStore) ClaimSessionResume(ctx context.Context, sessionID, claimToken string, leaseTTL time.Duration) (bool, error) {
-	ctx, span := s.tracer.StartSpan(ctx, "pg.event_log.claim_session_resume")
+// AcquireSessionLease inserts the lease, or takes over one that has expired
+// or that holder already holds. The conditional ON CONFLICT ... WHERE makes
+// RowsAffected the acquire signal. Expiry is computed with the database clock.
+func (s *EventLogStore) AcquireSessionLease(ctx context.Context, sessionID, holder string, ttl time.Duration) (bool, error) {
+	ctx, span := s.tracer.StartSpan(ctx, "pg.event_log.acquire_session_lease")
 	defer s.tracer.EndSpan(span)
 
-	// resume_claimed_at stores the lease's *expiry* instant (now + leaseTTL),
-	// not the claim instant. Storing the claim instant and re-deriving
-	// staleness from the reclaiming caller's own leaseTTL (cutoff = now -
-	// leaseTTL) breaks when a claim was originally taken with a different
-	// TTL than the one a later caller passes (e.g. a short-lived claim
-	// reclaimed by a caller using the default TTL): the reclaimer's cutoff
-	// would not reach far enough back to see the original claim as stale
-	// even though its own lease already expired. Storing the expiry instant
-	// makes staleness a simple "has this already passed" check that doesn't
-	// depend on which TTL the reclaiming caller happens to use.
-	now := time.Now()
-	expiresAt := now.Add(leaseTTL)
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE sessions
-		SET resume_claimed_by = $2, resume_claim_token = $2, resume_claimed_at = $4
-		WHERE id = $1
-		  AND (resume_claimed_by IS NULL OR resume_claimed_at < $3)`,
-		sessionID, claimToken, now, expiresAt,
-	)
+	won, err := s.execLease(ctx, `
+		INSERT INTO execution_leases (user_id, session_id, holder, expires_at)
+		VALUES ($1, $2, $3, now() + $4 * interval '1 microsecond')
+		ON CONFLICT (user_id, session_id) DO UPDATE
+			SET holder = EXCLUDED.holder, expires_at = EXCLUDED.expires_at
+			WHERE execution_leases.expires_at < now() OR execution_leases.holder = EXCLUDED.holder`,
+		sessionID, holder, ttl)
 	if err != nil {
-		return false, fmt.Errorf("claim session resume: %w", err)
+		return false, recordSpanError(span, fmt.Errorf("acquire session lease: %w", err))
 	}
-	return tag.RowsAffected() == 1, nil
+	return won, nil
 }
 
-func (s *EventLogStore) ReleaseSessionResume(ctx context.Context, sessionID, claimToken string) error {
-	ctx, span := s.tracer.StartSpan(ctx, "pg.event_log.release_session_resume")
+func (s *EventLogStore) RenewSessionLease(ctx context.Context, sessionID, holder string, ttl time.Duration) (bool, error) {
+	ctx, span := s.tracer.StartSpan(ctx, "pg.event_log.renew_session_lease")
 	defer s.tracer.EndSpan(span)
 
-	_, err := s.pool.Exec(ctx, `
-		UPDATE sessions
-		SET resume_claimed_by = NULL, resume_claim_token = NULL, resume_claimed_at = NULL
-		WHERE id = $1 AND resume_claim_token = $2`,
-		sessionID, claimToken,
-	)
+	held, err := s.execLease(ctx, `
+		UPDATE execution_leases SET expires_at = now() + $4 * interval '1 microsecond'
+		WHERE user_id = $1 AND session_id = $2 AND holder = $3`,
+		sessionID, holder, ttl)
 	if err != nil {
-		return fmt.Errorf("release session resume: %w", err)
+		return false, recordSpanError(span, fmt.Errorf("renew session lease: %w", err))
+	}
+	return held, nil
+}
+
+// execLease runs a lease statement taking (user, session, holder, ttl in
+// microseconds) and reports whether it changed exactly one row.
+func (s *EventLogStore) execLease(ctx context.Context, query, sessionID, holder string, ttl time.Duration) (bool, error) {
+	var changed bool
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, query, UserIDFromContext(ctx), sessionID, holder, ttl.Microseconds())
+		if err != nil {
+			return err
+		}
+		changed = tag.RowsAffected() == 1
+		return nil
+	})
+	return changed, err
+}
+
+func (s *EventLogStore) ReleaseSessionLease(ctx context.Context, sessionID, holder string) error {
+	ctx, span := s.tracer.StartSpan(ctx, "pg.event_log.release_session_lease")
+	defer s.tracer.EndSpan(span)
+
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			`DELETE FROM execution_leases WHERE user_id = $1 AND session_id = $2 AND holder = $3`,
+			UserIDFromContext(ctx), sessionID, holder,
+		)
+		return err
+	})
+	if err != nil {
+		return recordSpanError(span, fmt.Errorf("release session lease: %w", err))
 	}
 	return nil
 }
@@ -167,10 +225,36 @@ func (s *EventLogStore) ReleaseSessionResume(ctx context.Context, sessionID, cla
 func (s *EventLogStore) PruneResolvedStep(ctx context.Context, sessionID string, stepIndex int) error {
 	ctx, span := s.tracer.StartSpan(ctx, "pg.event_log.prune_resolved_step")
 	defer s.tracer.EndSpan(span)
-
-	_, err := s.pool.Exec(ctx, `DELETE FROM execution_events WHERE session_id = $1 AND step_index = $2`, sessionID, stepIndex)
+	err := s.deleteEvents(ctx,
+		`DELETE FROM execution_events WHERE user_id = $1 AND session_id = $2 AND step_index = $3`, sessionID, stepIndex)
 	if err != nil {
-		return fmt.Errorf("prune resolved step: %w", err)
+		return recordSpanError(span, fmt.Errorf("prune resolved step: %w", err))
 	}
 	return nil
+}
+
+func (s *EventLogStore) PruneStepsBefore(ctx context.Context, sessionID string, stepIndex int) error {
+	ctx, span := s.tracer.StartSpan(ctx, "pg.event_log.prune_steps_before")
+	defer s.tracer.EndSpan(span)
+	err := s.deleteEvents(ctx,
+		`DELETE FROM execution_events WHERE user_id = $1 AND session_id = $2 AND step_index < $3`, sessionID, stepIndex)
+	if err != nil {
+		return recordSpanError(span, fmt.Errorf("prune steps before: %w", err))
+	}
+	return nil
+}
+
+func (s *EventLogStore) deleteEvents(ctx context.Context, query, sessionID string, stepIndex int) error {
+	return execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, query, UserIDFromContext(ctx), sessionID, stepIndex)
+		return err
+	})
+}
+
+// recordSpanError records a non-nil err on span and returns err unchanged.
+func recordSpanError(span *observability.Span, err error) error {
+	if err != nil {
+		span.RecordError(err)
+	}
+	return err
 }

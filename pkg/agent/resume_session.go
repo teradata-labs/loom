@@ -68,17 +68,17 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (*Response,
 	}
 	ctx = session.WithSessionID(ctx, sessionID)
 
-	claimToken := uuid.New().String()
-	won, err := a.eventLog.ClaimSessionResume(ctx, sessionID, claimToken, eventlog.DefaultResumeClaimTTL)
+	leaseHolder := uuid.New().String()
+	won, err := a.eventLog.AcquireSessionLease(ctx, sessionID, leaseHolder, eventlog.DefaultSessionLeaseTTL)
 	if err != nil {
-		return nil, fmt.Errorf("claiming session for resume: %w", err)
+		return nil, fmt.Errorf("taking the session lease for resume: %w", err)
 	}
 	if !won {
-		return nil, fmt.Errorf("session %s is already being resumed by another process (or was, within the last %s)", sessionID, eventlog.DefaultResumeClaimTTL)
+		return nil, fmt.Errorf("session %s is being driven by another process (its lease has not expired)", sessionID)
 	}
 	defer func() {
-		if err := a.eventLog.ReleaseSessionResume(ctx, sessionID, claimToken); err != nil {
-			zap.L().Warn("failed to release session resume claim", zap.String("session_id", sessionID), zap.Error(err))
+		if err := a.eventLog.ReleaseSessionLease(ctx, sessionID, leaseHolder); err != nil {
+			zap.L().Warn("failed to release session lease", zap.String("session_id", sessionID), zap.Error(err))
 		}
 	}()
 

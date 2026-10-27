@@ -33,11 +33,15 @@ func (f *fakeEventLogStore) NextStepIndex(ctx context.Context, sessionID string)
 	return 0, nil
 }
 
-func (f *fakeEventLogStore) ClaimSessionResume(ctx context.Context, sessionID, claimToken string, leaseTTL time.Duration) (bool, error) {
+func (f *fakeEventLogStore) AcquireSessionLease(ctx context.Context, sessionID, holder string, ttl time.Duration) (bool, error) {
 	return false, nil
 }
 
-func (f *fakeEventLogStore) ReleaseSessionResume(ctx context.Context, sessionID, claimToken string) error {
+func (f *fakeEventLogStore) RenewSessionLease(ctx context.Context, sessionID, holder string, ttl time.Duration) (bool, error) {
+	return false, nil
+}
+
+func (f *fakeEventLogStore) ReleaseSessionLease(ctx context.Context, sessionID, holder string) error {
 	return nil
 }
 
@@ -45,11 +49,18 @@ func (f *fakeEventLogStore) PruneResolvedStep(ctx context.Context, sessionID str
 	return nil
 }
 
+func (f *fakeEventLogStore) PruneStepsBefore(ctx context.Context, sessionID string, stepIndex int) error {
+	return nil
+}
+
 var _ EventLogStore = (*fakeEventLogStore)(nil)
 
-func TestDefaultResumeClaimTTL_IsFiveMinutes(t *testing.T) {
-	if DefaultResumeClaimTTL.Minutes() != 5 {
-		t.Errorf("DefaultResumeClaimTTL = %v, want 5m", DefaultResumeClaimTTL)
+// The lease must outlive several renewal intervals (TTL/3) so one slow
+// renewal does not lose it, and stay short enough that a crashed holder
+// does not block recovery for long.
+func TestDefaultSessionLeaseTTL(t *testing.T) {
+	if DefaultSessionLeaseTTL < 30*time.Second || DefaultSessionLeaseTTL > 10*time.Minute {
+		t.Errorf("DefaultSessionLeaseTTL = %v, want between 30s and 10m", DefaultSessionLeaseTTL)
 	}
 }
 

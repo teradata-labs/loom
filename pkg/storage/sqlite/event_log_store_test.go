@@ -7,20 +7,22 @@ package sqlite
 import (
 	"context"
 	"database/sql"
-	"fmt"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
 	"github.com/teradata-labs/loom/pkg/eventlog"
+	"github.com/teradata-labs/loom/pkg/types"
 )
 
 // seedEventLogSessionSQLite inserts a minimal sessions row, mirroring the
 // INSERT shape at pkg/storage/sqlite/migrator_test.go:171.
 func seedEventLogSessionSQLite(t *testing.T, db *sql.DB) string {
 	t.Helper()
-	sessionID := fmt.Sprintf("evtlog-test-%d", time.Now().UnixNano())
+	sessionID := "evtlog-test-" + uuid.NewString()
 	now := time.Now().Unix()
 	_, err := db.Exec(
 		"INSERT INTO sessions (id, name, agent_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
@@ -36,63 +38,36 @@ func TestEventLogStore_RecordIntentThenResult_LoadEventsOrdered(t *testing.T) {
 	ctx := context.Background()
 	sessionID := seedEventLogSessionSQLite(t, db)
 
-	if err := store.RecordIntent(ctx, sessionID, 0, 0, eventlog.EventLLMCallIntent, "", []byte(`{"model":"test"}`)); err != nil {
-		t.Fatalf("RecordIntent: %v", err)
-	}
-	if err := store.RecordResult(ctx, sessionID, 0, 0, eventlog.EventLLMCallResult, "", []byte(`{"content":"hi"}`)); err != nil {
-		t.Fatalf("RecordResult: %v", err)
-	}
-	if err := store.RecordIntent(ctx, sessionID, 0, 0, eventlog.EventToolCallIntent, "call-1", []byte(`{"tool_name":"search"}`)); err != nil {
-		t.Fatalf("RecordIntent (tool): %v", err)
-	}
+	require.NoError(t, store.RecordIntent(ctx, sessionID, 0, 0, eventlog.EventLLMCallIntent, "", []byte(`{"model":"test"}`)))
+	require.NoError(t, store.RecordResult(ctx, sessionID, 0, 0, eventlog.EventLLMCallResult, "", []byte(`{"content":"hi"}`)))
+	require.NoError(t, store.RecordIntent(ctx, sessionID, 0, 0, eventlog.EventToolCallIntent, "call-1", []byte(`{"tool_name":"search"}`)))
 
 	events, err := store.LoadEvents(ctx, sessionID)
-	if err != nil {
-		t.Fatalf("LoadEvents: %v", err)
-	}
-	if len(events) != 3 {
-		t.Fatalf("len(events) = %d, want 3", len(events))
-	}
-	if events[0].EventType != eventlog.EventLLMCallIntent || events[1].EventType != eventlog.EventLLMCallResult {
-		t.Errorf("events not in expected order: %+v", events)
-	}
-	if events[2].ToolUseID != "call-1" {
-		t.Errorf("events[2].ToolUseID = %q, want %q", events[2].ToolUseID, "call-1")
-	}
+	require.NoError(t, err)
+	require.Len(t, events, 3)
+	require.Equal(t, eventlog.EventLLMCallIntent, events[0].EventType)
+	require.Equal(t, eventlog.EventLLMCallResult, events[1].EventType)
+	require.Equal(t, "call-1", events[2].ToolUseID)
 }
 
-func TestEventLogStore_LoadEvents_CreatedAtParsedCorrectly(t *testing.T) {
+// created_at is written in UTC; the parsed time must be the real instant, not
+// a local-time string read as UTC.
+func TestEventLogStore_LoadEvents_CreatedAtIsUTCInstant(t *testing.T) {
 	db := migratedDB(t)
 	store := NewEventLogStore(db, nil)
 	ctx := context.Background()
 	sessionID := seedEventLogSessionSQLite(t, db)
 
-	beforeRecord := time.Now()
-	if err := store.RecordIntent(ctx, sessionID, 0, 0, eventlog.EventLLMCallIntent, "", []byte(`{"model":"test"}`)); err != nil {
-		t.Fatalf("RecordIntent: %v", err)
-	}
-	afterRecord := time.Now()
+	before := time.Now()
+	require.NoError(t, store.RecordIntent(ctx, sessionID, 0, 0, eventlog.EventLLMCallIntent, "", []byte(`{}`)))
+	after := time.Now()
 
 	events, err := store.LoadEvents(ctx, sessionID)
-	if err != nil {
-		t.Fatalf("LoadEvents: %v", err)
-	}
-	if len(events) != 1 {
-		t.Fatalf("len(events) = %d, want 1", len(events))
-	}
-
-	e := events[0]
-	if e.CreatedAt.IsZero() {
-		t.Error("ExecutionEvent.CreatedAt is zero time; datetime parsing failed")
-	}
-
-	// Verify CreatedAt is reasonably close to the time we recorded (within a few seconds).
-	// Account for SQLite's datetime('now') truncating to whole-second resolution.
-	lowerBound := beforeRecord.Add(-2 * time.Second)
-	upperBound := afterRecord.Add(5 * time.Second)
-	if e.CreatedAt.Before(lowerBound) || e.CreatedAt.After(upperBound) {
-		t.Errorf("CreatedAt = %v, not within [%v, %v]", e.CreatedAt, lowerBound, upperBound)
-	}
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	got := events[0].CreatedAt
+	require.False(t, got.Before(before.Add(-time.Second)) || got.After(after.Add(time.Second)),
+		"CreatedAt = %v, want within a second of [%v, %v]", got, before, after)
 }
 
 func TestEventLogStore_RecordIntent_IdempotentOnRetry(t *testing.T) {
@@ -102,17 +77,24 @@ func TestEventLogStore_RecordIntent_IdempotentOnRetry(t *testing.T) {
 	sessionID := seedEventLogSessionSQLite(t, db)
 
 	for i := 0; i < 3; i++ {
-		if err := store.RecordIntent(ctx, sessionID, 0, 0, eventlog.EventToolCallIntent, "call-1", []byte(`{}`)); err != nil {
-			t.Fatalf("RecordIntent attempt %d: %v", i, err)
-		}
+		require.NoError(t, store.RecordIntent(ctx, sessionID, 0, 0, eventlog.EventToolCallIntent, "call-1", []byte(`{"a":1}`)), "attempt %d", i)
 	}
 	events, err := store.LoadEvents(ctx, sessionID)
-	if err != nil {
-		t.Fatalf("LoadEvents: %v", err)
-	}
-	if len(events) != 1 {
-		t.Fatalf("len(events) = %d after 3 identical RecordIntent calls, want 1 (idempotent)", len(events))
-	}
+	require.NoError(t, err)
+	require.Len(t, events, 1, "identical retries must leave one row")
+}
+
+// Two writers recording different calls at the same step and position must
+// not have the second one silently dropped.
+func TestEventLogStore_RecordIntent_DifferentPayloadConflicts(t *testing.T) {
+	db := migratedDB(t)
+	store := NewEventLogStore(db, nil)
+	ctx := context.Background()
+	sessionID := seedEventLogSessionSQLite(t, db)
+
+	require.NoError(t, store.RecordIntent(ctx, sessionID, 3, 0, eventlog.EventToolCallIntent, "a", []byte(`{"tool_name":"one"}`)))
+	err := store.RecordIntent(ctx, sessionID, 3, 0, eventlog.EventToolCallIntent, "b", []byte(`{"tool_name":"two"}`))
+	require.True(t, errors.Is(err, eventlog.ErrEventConflict), "got %v, want ErrEventConflict", err)
 }
 
 func TestEventLogStore_NextStepIndex_ZeroThenIncrementing(t *testing.T) {
@@ -122,116 +104,128 @@ func TestEventLogStore_NextStepIndex_ZeroThenIncrementing(t *testing.T) {
 	sessionID := seedEventLogSessionSQLite(t, db)
 
 	next, err := store.NextStepIndex(ctx, sessionID)
-	if err != nil {
-		t.Fatalf("NextStepIndex (empty): %v", err)
-	}
-	if next != 0 {
-		t.Errorf("NextStepIndex on a session with no events = %d, want 0", next)
-	}
+	require.NoError(t, err)
+	require.Equal(t, 0, next)
 
-	if err := store.RecordIntent(ctx, sessionID, 0, 0, eventlog.EventLLMCallIntent, "", []byte(`{}`)); err != nil {
-		t.Fatalf("RecordIntent: %v", err)
-	}
-	if err := store.RecordIntent(ctx, sessionID, 3, 0, eventlog.EventLLMCallIntent, "", []byte(`{}`)); err != nil {
-		t.Fatalf("RecordIntent: %v", err)
-	}
+	require.NoError(t, store.RecordIntent(ctx, sessionID, 0, 0, eventlog.EventLLMCallIntent, "", []byte(`{}`)))
+	require.NoError(t, store.RecordIntent(ctx, sessionID, 1, 0, eventlog.EventLLMCallIntent, "", []byte(`{}`)))
 	next, err = store.NextStepIndex(ctx, sessionID)
-	if err != nil {
-		t.Fatalf("NextStepIndex: %v", err)
-	}
-	if next != 4 {
-		t.Errorf("NextStepIndex after max step_index=3 = %d, want 4", next)
-	}
+	require.NoError(t, err)
+	require.Equal(t, 2, next)
 }
 
-func TestEventLogStore_ClaimSessionResume_ExactlyOneWinner(t *testing.T) {
+func TestEventLogStore_SessionLease(t *testing.T) {
+	db := migratedDB(t)
+	store := NewEventLogStore(db, nil)
+	ctx := context.Background()
+
+	t.Run("one holder at a time", func(t *testing.T) {
+		sessionID := seedEventLogSessionSQLite(t, db)
+		won, err := store.AcquireSessionLease(ctx, sessionID, "h1", time.Minute)
+		require.NoError(t, err)
+		require.True(t, won)
+		won, err = store.AcquireSessionLease(ctx, sessionID, "h2", time.Minute)
+		require.NoError(t, err)
+		require.False(t, won, "a live lease must not be taken by another holder")
+		won, err = store.AcquireSessionLease(ctx, sessionID, "h1", time.Minute)
+		require.NoError(t, err)
+		require.True(t, won, "the holder may re-acquire its own lease")
+	})
+
+	t.Run("expired lease is taken over and the old holder loses it", func(t *testing.T) {
+		sessionID := seedEventLogSessionSQLite(t, db)
+		won, err := store.AcquireSessionLease(ctx, sessionID, "h1", -time.Second)
+		require.NoError(t, err)
+		require.True(t, won)
+		won, err = store.AcquireSessionLease(ctx, sessionID, "h2", time.Minute)
+		require.NoError(t, err)
+		require.True(t, won, "an expired lease must be reclaimable")
+		held, err := store.RenewSessionLease(ctx, sessionID, "h1", time.Minute)
+		require.NoError(t, err)
+		require.False(t, held, "the old holder must learn it lost the lease")
+	})
+
+	t.Run("renewal keeps the lease past its first expiry", func(t *testing.T) {
+		sessionID := seedEventLogSessionSQLite(t, db)
+		won, err := store.AcquireSessionLease(ctx, sessionID, "h1", -time.Second)
+		require.NoError(t, err)
+		require.True(t, won)
+		held, err := store.RenewSessionLease(ctx, sessionID, "h1", time.Minute)
+		require.NoError(t, err)
+		require.True(t, held)
+		won, err = store.AcquireSessionLease(ctx, sessionID, "h2", time.Minute)
+		require.NoError(t, err)
+		require.False(t, won, "a renewed lease must not be taken over")
+	})
+
+	t.Run("only the holder releases", func(t *testing.T) {
+		sessionID := seedEventLogSessionSQLite(t, db)
+		_, err := store.AcquireSessionLease(ctx, sessionID, "h1", time.Minute)
+		require.NoError(t, err)
+		require.NoError(t, store.ReleaseSessionLease(ctx, sessionID, "h2"))
+		won, err := store.AcquireSessionLease(ctx, sessionID, "h2", time.Minute)
+		require.NoError(t, err)
+		require.False(t, won, "a release by another holder must not clear the lease")
+		require.NoError(t, store.ReleaseSessionLease(ctx, sessionID, "h1"))
+		won, err = store.AcquireSessionLease(ctx, sessionID, "h2", time.Minute)
+		require.NoError(t, err)
+		require.True(t, won)
+	})
+}
+
+func TestEventLogStore_Prune(t *testing.T) {
 	db := migratedDB(t)
 	store := NewEventLogStore(db, nil)
 	ctx := context.Background()
 	sessionID := seedEventLogSessionSQLite(t, db)
 
-	won1, err := store.ClaimSessionResume(ctx, sessionID, "token-1", time.Minute)
-	if err != nil || !won1 {
-		t.Fatalf("first claim: won=%v err=%v", won1, err)
+	for step := 0; step < 4; step++ {
+		require.NoError(t, store.RecordIntent(ctx, sessionID, step, 0, eventlog.EventLLMCallIntent, "", []byte(`{}`)))
 	}
-	won2, err := store.ClaimSessionResume(ctx, sessionID, "token-2", time.Minute)
-	if err != nil {
-		t.Fatalf("second claim: %v", err)
-	}
-	if won2 {
-		t.Error("second claim should not win while the first claim's lease is live")
-	}
-}
+	require.NoError(t, store.PruneResolvedStep(ctx, sessionID, 3))
+	require.NoError(t, store.PruneStepsBefore(ctx, sessionID, 2))
 
-func TestEventLogStore_ClaimSessionResume_StaleClaimIsReclaimable(t *testing.T) {
-	db := migratedDB(t)
-	store := NewEventLogStore(db, nil)
-	ctx := context.Background()
-	sessionID := seedEventLogSessionSQLite(t, db)
-
-	won1, err := store.ClaimSessionResume(ctx, sessionID, "token-1", -1*time.Second) // already-expired lease
-	if err != nil || !won1 {
-		t.Fatalf("first claim: won=%v err=%v", won1, err)
-	}
-
-	won2, err := store.ClaimSessionResume(ctx, sessionID, "token-2", time.Minute)
-	if err != nil {
-		t.Fatalf("second claim: %v", err)
-	}
-	if !won2 {
-		t.Error("a claim whose lease already expired must be reclaimable")
-	}
-}
-
-func TestEventLogStore_ReleaseSessionResume_OnlyOwnerCanRelease(t *testing.T) {
-	db := migratedDB(t)
-	store := NewEventLogStore(db, nil)
-	ctx := context.Background()
-	sessionID := seedEventLogSessionSQLite(t, db)
-
-	if _, err := store.ClaimSessionResume(ctx, sessionID, "token-1", time.Minute); err != nil {
-		t.Fatalf("claim: %v", err)
-	}
-	if err := store.ReleaseSessionResume(ctx, sessionID, "wrong-token"); err != nil {
-		t.Fatalf("release with wrong token should no-op, not error: %v", err)
-	}
-	won, err := store.ClaimSessionResume(ctx, sessionID, "token-2", time.Minute)
-	if err != nil {
-		t.Fatalf("claim after wrong-token release attempt: %v", err)
-	}
-	if won {
-		t.Error("claim must still be held by token-1 — a wrong-token release must not have cleared it")
-	}
-
-	if err := store.ReleaseSessionResume(ctx, sessionID, "token-1"); err != nil {
-		t.Fatalf("release with correct token: %v", err)
-	}
-	won, err = store.ClaimSessionResume(ctx, sessionID, "token-2", time.Minute)
-	if err != nil || !won {
-		t.Fatalf("claim after correct release: won=%v err=%v, want true/nil", won, err)
-	}
-}
-
-func TestEventLogStore_PruneResolvedStep_RemovesOnlyThatStep(t *testing.T) {
-	db := migratedDB(t)
-	store := NewEventLogStore(db, nil)
-	ctx := context.Background()
-	sessionID := seedEventLogSessionSQLite(t, db)
-
-	if err := store.RecordIntent(ctx, sessionID, 0, 0, eventlog.EventLLMCallIntent, "", []byte(`{}`)); err != nil {
-		t.Fatalf("RecordIntent step 0: %v", err)
-	}
-	if err := store.RecordIntent(ctx, sessionID, 1, 0, eventlog.EventLLMCallIntent, "", []byte(`{}`)); err != nil {
-		t.Fatalf("RecordIntent step 1: %v", err)
-	}
-	if err := store.PruneResolvedStep(ctx, sessionID, 0); err != nil {
-		t.Fatalf("PruneResolvedStep: %v", err)
-	}
 	events, err := store.LoadEvents(ctx, sessionID)
-	if err != nil {
-		t.Fatalf("LoadEvents: %v", err)
-	}
-	if len(events) != 1 || events[0].StepIndex != 1 {
-		t.Fatalf("events after pruning step 0 = %+v, want only step 1's event", events)
-	}
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	require.Equal(t, 2, events[0].StepIndex)
+}
+
+// SQLite has no row-level security, so the store itself must keep one user's
+// events and leases away from another's.
+func TestEventLogStore_TenantIsolation(t *testing.T) {
+	db := migratedDB(t)
+	store := NewEventLogStore(db, nil)
+	ctxA := types.ContextWithUserID(context.Background(), "user-a")
+	ctxB := types.ContextWithUserID(context.Background(), "user-b")
+	sessionID := seedEventLogSessionSQLite(t, db)
+
+	require.NoError(t, store.RecordIntent(ctxA, sessionID, 0, 0, eventlog.EventToolCallIntent, "c", []byte(`{"tool_name":"a"}`)))
+
+	events, err := store.LoadEvents(ctxB, sessionID)
+	require.NoError(t, err)
+	require.Empty(t, events, "user B read user A's events")
+	next, err := store.NextStepIndex(ctxB, sessionID)
+	require.NoError(t, err)
+	require.Equal(t, 0, next, "user B saw user A's step counter")
+
+	// B's write at the same key must neither collide with nor replace A's.
+	require.NoError(t, store.RecordIntent(ctxB, sessionID, 0, 0, eventlog.EventToolCallIntent, "c", []byte(`{"tool_name":"b"}`)))
+	require.NoError(t, store.PruneResolvedStep(ctxB, sessionID, 0))
+	require.NoError(t, store.PruneStepsBefore(ctxB, sessionID, 10))
+	eventsA, err := store.LoadEvents(ctxA, sessionID)
+	require.NoError(t, err)
+	require.Len(t, eventsA, 1, "user B's writes or prunes changed user A's events")
+	require.JSONEq(t, `{"tool_name":"a"}`, string(eventsA[0].Payload))
+
+	won, err := store.AcquireSessionLease(ctxA, sessionID, "a", time.Minute)
+	require.NoError(t, err)
+	require.True(t, won)
+	held, err := store.RenewSessionLease(ctxB, sessionID, "a", time.Minute)
+	require.NoError(t, err)
+	require.False(t, held, "user B renewed user A's lease")
+	require.NoError(t, store.ReleaseSessionLease(ctxB, sessionID, "a"))
+	held, err = store.RenewSessionLease(ctxA, sessionID, "a", time.Minute)
+	require.NoError(t, err)
+	require.True(t, held, "user B released user A's lease")
 }

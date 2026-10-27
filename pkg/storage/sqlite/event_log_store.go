@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
 package sqlite
 
 import (
@@ -21,9 +22,12 @@ import (
 
 	"github.com/teradata-labs/loom/pkg/eventlog"
 	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/types"
 )
 
-// EventLogStore implements eventlog.EventLogStore using SQLite.
+// EventLogStore implements eventlog.EventLogStore using SQLite. SQLite has no
+// row-level security, so every query filters on the caller's user ID
+// (types.UserIDOrDefault), the rule SQLite sessions use.
 type EventLogStore struct {
 	db     *sql.DB
 	tracer observability.Tracer
@@ -40,26 +44,52 @@ func NewEventLogStore(db *sql.DB, tracer observability.Tracer) *EventLogStore {
 // Compile-time interface check.
 var _ eventlog.EventLogStore = (*EventLogStore)(nil)
 
+// secondsPerDay converts a TTL to the julianday() units execution_leases uses.
+const secondsPerDay = 86400.0
+
 func (s *EventLogStore) RecordIntent(ctx context.Context, sessionID string, stepIndex, batchPosition int, eventType eventlog.EventType, toolUseID string, payload []byte) error {
 	ctx, span := s.tracer.StartSpan(ctx, "sqlite.event_log.record_intent")
 	defer s.tracer.EndSpan(span)
-	return s.insertEvent(ctx, sessionID, stepIndex, batchPosition, eventType, toolUseID, payload)
+	return recordSpanError(span, s.insertEvent(ctx, sessionID, stepIndex, batchPosition, eventType, toolUseID, payload))
 }
 
 func (s *EventLogStore) RecordResult(ctx context.Context, sessionID string, stepIndex, batchPosition int, eventType eventlog.EventType, toolUseID string, payload []byte) error {
 	ctx, span := s.tracer.StartSpan(ctx, "sqlite.event_log.record_result")
 	defer s.tracer.EndSpan(span)
-	return s.insertEvent(ctx, sessionID, stepIndex, batchPosition, eventType, toolUseID, payload)
+	return recordSpanError(span, s.insertEvent(ctx, sessionID, stepIndex, batchPosition, eventType, toolUseID, payload))
 }
 
+// insertEvent is shared by RecordIntent and RecordResult. On a key conflict it
+// compares payloads: the same payload is a retry of this write (no-op), a
+// different one is eventlog.ErrEventConflict.
 func (s *EventLogStore) insertEvent(ctx context.Context, sessionID string, stepIndex, batchPosition int, eventType eventlog.EventType, toolUseID string, payload []byte) error {
-	_, err := s.db.ExecContext(ctx, `
-		INSERT OR IGNORE INTO execution_events (session_id, step_index, batch_position, event_type, tool_use_id, payload)
-		VALUES (?, ?, ?, ?, NULLIF(?, ''), ?)`,
-		sessionID, stepIndex, batchPosition, string(eventType), toolUseID, string(payload),
+	userID := types.UserIDOrDefault(ctx)
+	res, err := s.db.ExecContext(ctx, `
+		INSERT INTO execution_events (user_id, session_id, step_index, batch_position, event_type, tool_use_id, payload)
+		VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), ?)
+		ON CONFLICT (user_id, session_id, step_index, batch_position, event_type) DO NOTHING`,
+		userID, sessionID, stepIndex, batchPosition, string(eventType), toolUseID, string(payload),
 	)
 	if err != nil {
-		return fmt.Errorf("record %s event: %w", eventType, err)
+		return fmt.Errorf("record %s event (step %d, position %d): %w", eventType, stepIndex, batchPosition, err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("record %s event: rows affected: %w", eventType, err)
+	} else if n == 1 {
+		return nil
+	}
+
+	var existing string
+	err = s.db.QueryRowContext(ctx, `
+		SELECT payload FROM execution_events
+		WHERE user_id = ? AND session_id = ? AND step_index = ? AND batch_position = ? AND event_type = ?`,
+		userID, sessionID, stepIndex, batchPosition, string(eventType),
+	).Scan(&existing)
+	if err != nil {
+		return fmt.Errorf("record %s event: reading the conflicting row: %w", eventType, err)
+	}
+	if existing != string(payload) {
+		return fmt.Errorf("record %s event (step %d, position %d): %w", eventType, stepIndex, batchPosition, eventlog.ErrEventConflict)
 	}
 	return nil
 }
@@ -71,12 +101,12 @@ func (s *EventLogStore) LoadEvents(ctx context.Context, sessionID string) ([]eve
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT session_id, step_index, batch_position, event_type, COALESCE(tool_use_id, ''), payload, created_at
 		FROM execution_events
-		WHERE session_id = ?
+		WHERE user_id = ? AND session_id = ?
 		ORDER BY step_index ASC, batch_position ASC, event_type ASC`,
-		sessionID,
+		types.UserIDOrDefault(ctx), sessionID,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("load events: %w", err)
+		return nil, recordSpanError(span, fmt.Errorf("load events: %w", err))
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -85,18 +115,21 @@ func (s *EventLogStore) LoadEvents(ctx context.Context, sessionID string) ([]eve
 		var e eventlog.ExecutionEvent
 		var eventType, payload, createdAt string
 		if err := rows.Scan(&e.SessionID, &e.StepIndex, &e.BatchPosition, &eventType, &e.ToolUseID, &payload, &createdAt); err != nil {
-			return nil, fmt.Errorf("scan event: %w", err)
+			return nil, recordSpanError(span, fmt.Errorf("scan event: %w", err))
 		}
 		e.EventType = eventlog.EventType(eventType)
 		e.Payload = []byte(payload)
-		e.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
-		// Also parse "2006-01-02 15:04:05" format used by SQLite datetime().
-		if e.CreatedAt.IsZero() {
-			e.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
+		// created_at is written by strftime('%Y-%m-%dT%H:%M:%fZ'), which is
+		// RFC 3339 in UTC with milliseconds.
+		if e.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt); err != nil {
+			return nil, recordSpanError(span, fmt.Errorf("parse created_at %q: %w", createdAt, err))
 		}
 		out = append(out, e)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, recordSpanError(span, fmt.Errorf("load events: %w", err))
+	}
+	return out, nil
 }
 
 func (s *EventLogStore) NextStepIndex(ctx context.Context, sessionID string) (int, error) {
@@ -104,9 +137,12 @@ func (s *EventLogStore) NextStepIndex(ctx context.Context, sessionID string) (in
 	defer s.tracer.EndSpan(span)
 
 	var maxStep sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT MAX(step_index) FROM execution_events WHERE session_id = ?`, sessionID).Scan(&maxStep)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT MAX(step_index) FROM execution_events WHERE user_id = ? AND session_id = ?`,
+		types.UserIDOrDefault(ctx), sessionID,
+	).Scan(&maxStep)
 	if err != nil {
-		return 0, fmt.Errorf("next step index: %w", err)
+		return 0, recordSpanError(span, fmt.Errorf("next step index: %w", err))
 	}
 	if !maxStep.Valid {
 		return 0, nil
@@ -114,52 +150,65 @@ func (s *EventLogStore) NextStepIndex(ctx context.Context, sessionID string) (in
 	return int(maxStep.Int64) + 1, nil
 }
 
-func (s *EventLogStore) ClaimSessionResume(ctx context.Context, sessionID, claimToken string, leaseTTL time.Duration) (bool, error) {
-	ctx, span := s.tracer.StartSpan(ctx, "sqlite.event_log.claim_session_resume")
+// AcquireSessionLease inserts the lease, or takes over one that has expired
+// or that holder already holds. Expiry is a julianday() value on the database
+// clock.
+func (s *EventLogStore) AcquireSessionLease(ctx context.Context, sessionID, holder string, ttl time.Duration) (bool, error) {
+	ctx, span := s.tracer.StartSpan(ctx, "sqlite.event_log.acquire_session_lease")
 	defer s.tracer.EndSpan(span)
 
-	// resume_claimed_at stores the lease's *expiry* instant (now + leaseTTL),
-	// not the claim instant. Storing the claim instant and re-deriving
-	// staleness from the reclaiming caller's own leaseTTL (cutoff = now -
-	// leaseTTL) breaks when a claim was originally taken with a different
-	// TTL than the one a later caller passes (e.g. a short-lived claim
-	// reclaimed by a caller using the default TTL): the reclaimer's cutoff
-	// would not reach far enough back to see the original claim as stale
-	// even though its own lease already expired. Storing the expiry instant
-	// makes staleness a simple "has this already passed" check that doesn't
-	// depend on which TTL the reclaiming caller happens to use.
-	now := time.Now()
-	expiresAt := now.Add(leaseTTL).Format(time.RFC3339)
-	nowStr := now.Format(time.RFC3339)
-	result, err := s.db.ExecContext(ctx, `
-		UPDATE sessions
-		SET resume_claimed_by = ?, resume_claim_token = ?, resume_claimed_at = ?
-		WHERE id = ?
-		  AND (resume_claimed_by IS NULL OR resume_claimed_at < ?)`,
-		claimToken, claimToken, expiresAt, sessionID, nowStr,
-	)
+	won, err := s.execLease(ctx, `
+		INSERT INTO execution_leases (user_id, session_id, holder, expires_at)
+		VALUES (?1, ?2, ?3, julianday('now') + ?4)
+		ON CONFLICT (user_id, session_id) DO UPDATE
+			SET holder = excluded.holder, expires_at = excluded.expires_at
+			WHERE execution_leases.expires_at < julianday('now') OR execution_leases.holder = excluded.holder`,
+		sessionID, holder, ttl)
 	if err != nil {
-		return false, fmt.Errorf("claim session resume: %w", err)
+		return false, recordSpanError(span, fmt.Errorf("acquire session lease: %w", err))
 	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("claim session resume: rows affected: %w", err)
-	}
-	return affected == 1, nil
+	return won, nil
 }
 
-func (s *EventLogStore) ReleaseSessionResume(ctx context.Context, sessionID, claimToken string) error {
-	ctx, span := s.tracer.StartSpan(ctx, "sqlite.event_log.release_session_resume")
+func (s *EventLogStore) RenewSessionLease(ctx context.Context, sessionID, holder string, ttl time.Duration) (bool, error) {
+	ctx, span := s.tracer.StartSpan(ctx, "sqlite.event_log.renew_session_lease")
 	defer s.tracer.EndSpan(span)
 
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE sessions
-		SET resume_claimed_by = NULL, resume_claim_token = NULL, resume_claimed_at = NULL
-		WHERE id = ? AND resume_claim_token = ?`,
-		sessionID, claimToken,
+	held, err := s.execLease(ctx, `
+		UPDATE execution_leases SET expires_at = julianday('now') + ?4
+		WHERE user_id = ?1 AND session_id = ?2 AND holder = ?3`,
+		sessionID, holder, ttl)
+	if err != nil {
+		return false, recordSpanError(span, fmt.Errorf("renew session lease: %w", err))
+	}
+	return held, nil
+}
+
+// execLease runs a lease statement taking (?1 user, ?2 session, ?3 holder,
+// ?4 ttl in days) and reports whether it changed exactly one row.
+func (s *EventLogStore) execLease(ctx context.Context, query, sessionID, holder string, ttl time.Duration) (bool, error) {
+	res, err := s.db.ExecContext(ctx, query,
+		types.UserIDOrDefault(ctx), sessionID, holder, ttl.Seconds()/secondsPerDay)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
+func (s *EventLogStore) ReleaseSessionLease(ctx context.Context, sessionID, holder string) error {
+	ctx, span := s.tracer.StartSpan(ctx, "sqlite.event_log.release_session_lease")
+	defer s.tracer.EndSpan(span)
+
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM execution_leases WHERE user_id = ? AND session_id = ? AND holder = ?`,
+		types.UserIDOrDefault(ctx), sessionID, holder,
 	)
 	if err != nil {
-		return fmt.Errorf("release session resume: %w", err)
+		return recordSpanError(span, fmt.Errorf("release session lease: %w", err))
 	}
 	return nil
 }
@@ -168,9 +217,32 @@ func (s *EventLogStore) PruneResolvedStep(ctx context.Context, sessionID string,
 	ctx, span := s.tracer.StartSpan(ctx, "sqlite.event_log.prune_resolved_step")
 	defer s.tracer.EndSpan(span)
 
-	_, err := s.db.ExecContext(ctx, `DELETE FROM execution_events WHERE session_id = ? AND step_index = ?`, sessionID, stepIndex)
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM execution_events WHERE user_id = ? AND session_id = ? AND step_index = ?`,
+		types.UserIDOrDefault(ctx), sessionID, stepIndex)
 	if err != nil {
-		return fmt.Errorf("prune resolved step: %w", err)
+		return recordSpanError(span, fmt.Errorf("prune resolved step: %w", err))
 	}
 	return nil
+}
+
+func (s *EventLogStore) PruneStepsBefore(ctx context.Context, sessionID string, stepIndex int) error {
+	ctx, span := s.tracer.StartSpan(ctx, "sqlite.event_log.prune_steps_before")
+	defer s.tracer.EndSpan(span)
+
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM execution_events WHERE user_id = ? AND session_id = ? AND step_index < ?`,
+		types.UserIDOrDefault(ctx), sessionID, stepIndex)
+	if err != nil {
+		return recordSpanError(span, fmt.Errorf("prune steps before: %w", err))
+	}
+	return nil
+}
+
+// recordSpanError records a non-nil err on span and returns err unchanged.
+func recordSpanError(span *observability.Span, err error) error {
+	if err != nil {
+		span.RecordError(err)
+	}
+	return err
 }
