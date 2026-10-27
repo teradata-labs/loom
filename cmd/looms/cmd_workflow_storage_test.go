@@ -16,12 +16,15 @@ package main
 
 import (
 	"context"
+	"io"
 	"os"
+	"strings"
 	"testing"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/storage/backend"
+	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
@@ -88,7 +91,7 @@ func TestPersistCheckpoint_FallsBackToFileWhenNoStore(t *testing.T) {
 	ckpt := &loomv1.WorkflowCheckpoint{WorkflowId: "wf-fallback-test"}
 
 	// nil storageBackend simulates buildWorkflowStorageBackend having failed.
-	if err := persistCheckpoint(context.Background(), nil, zap.NewNop(), path, ckpt); err != nil {
+	if _, err := persistCheckpoint(context.Background(), nil, zap.NewNop(), path, ckpt); err != nil {
 		t.Fatalf("persistCheckpoint: %v", err)
 	}
 
@@ -118,7 +121,7 @@ func TestPersistCheckpoint_WritesBothStoreAndFileWhenStoreAvailable(t *testing.T
 	path := dir + "/test.checkpoint.pb"
 	ckpt := &loomv1.WorkflowCheckpoint{WorkflowId: "wf-store-test"}
 
-	if err := persistCheckpoint(context.Background(), sb, zap.NewNop(), path, ckpt); err != nil {
+	if _, err := persistCheckpoint(context.Background(), sb, zap.NewNop(), path, ckpt); err != nil {
 		t.Fatalf("persistCheckpoint: %v", err)
 	}
 
@@ -192,4 +195,124 @@ func TestLoadCheckpoint_NoFileNoStore_ReturnsError(t *testing.T) {
 	if err == nil {
 		t.Fatal("loadCheckpoint: expected an error when neither a file nor a store can resolve the argument")
 	}
+}
+
+// TestWorkflowCheckpointUserID covers the tenant the workflow commands use for
+// checkpoints in the storage backend: --user wins, postgres falls back to its
+// configured default_user_id and otherwise refuses, and SQLite uses
+// types.DefaultUserID like SQLite sessions do.
+func TestWorkflowCheckpointUserID(t *testing.T) {
+	tests := []struct {
+		name    string
+		backend string
+		pgUser  string
+		flag    string
+		want    string
+		wantErr bool
+	}{
+		{name: "sqlite default", backend: "sqlite", want: types.DefaultUserID},
+		{name: "unset backend means sqlite", backend: "", want: types.DefaultUserID},
+		{name: "sqlite with flag", backend: "sqlite", flag: "alice", want: "alice"},
+		{name: "postgres with flag", backend: "postgres", pgUser: "svc", flag: "alice", want: "alice"},
+		{name: "postgres default_user_id", backend: "postgres", pgUser: "svc", want: "svc"},
+		{name: "postgres with no tenant", backend: "postgres", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			origConfig, origUser := config, workflowUser
+			t.Cleanup(func() { config, workflowUser = origConfig, origUser })
+			config = &Config{}
+			config.Storage.Backend = tt.backend
+			config.Storage.Postgres.DefaultUserID = tt.pgUser
+			workflowUser = tt.flag
+
+			got, err := workflowCheckpointUserID()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("workflowCheckpointUserID() = %q, want an error", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("workflowCheckpointUserID(): %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("workflowCheckpointUserID() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRunResume_RejectNeedsNoLLM checks that `looms workflow resume --reject`
+// ends the workflow without building the LLM provider or any agent: a
+// rejection runs no stage, so it must not depend on LLM credentials.
+func TestRunResume_RejectNeedsNoLLM(t *testing.T) {
+	t.Setenv("LOOM_DATA_DIR", t.TempDir())
+	origConfig, origReject := config, resumeReject
+	t.Cleanup(func() { config, resumeReject = origConfig, origReject })
+	config = &Config{}
+	resumeReject = true
+
+	dir := t.TempDir()
+	workflowPath := dir + "/gated.yaml"
+	if err := os.WriteFile(workflowPath, []byte(`apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: gated
+spec:
+  type: pipeline
+  initial_prompt: "go"
+  stages:
+    - agent_id: designer
+      prompt_template: "Design: {{previous}}"
+      hitl_gate:
+        prompt_template: "Review:\n{{output}}"
+        request_type: approval
+    - agent_id: executor
+      prompt_template: "Execute: {{previous}}"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ckptPath := dir + "/gated.checkpoint.pb"
+	data, err := proto.Marshal(&loomv1.WorkflowCheckpoint{
+		CheckpointVersion: 1,
+		WorkflowId:        "wf-reject",
+		PendingGate:       &loomv1.HITLGateRequest{StageAgentId: "designer", StageNumber: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ckptPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() { runResume(nil, []string{workflowPath, ckptPath}) })
+
+	if !strings.Contains(out, "Workflow rejected") {
+		t.Fatalf("output does not report the rejection:\n%s", out)
+	}
+	if strings.Contains(out, "LLM Provider") {
+		t.Fatalf("resume --reject built an LLM provider; output:\n%s", out)
+	}
+}
+
+// captureStdout returns everything fn writes to os.Stdout.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stdout
+	os.Stdout = w
+	done := make(chan string)
+	go func() {
+		b, _ := io.ReadAll(r)
+		done <- string(b)
+	}()
+	defer func() { os.Stdout = orig }()
+	fn()
+	_ = w.Close()
+	os.Stdout = orig
+	return <-done
 }
