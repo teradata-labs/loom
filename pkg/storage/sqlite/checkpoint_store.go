@@ -15,6 +15,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/checkpoint"
 	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/types"
 )
 
 // CheckpointStore implements checkpoint.CheckpointStore for SQLite.
@@ -31,8 +32,8 @@ func NewCheckpointStore(db *sql.DB, tracer observability.Tracer) *CheckpointStor
 	return &CheckpointStore{db: db, tracer: tracer}
 }
 
-// SaveCheckpoint upserts ckpt, replacing any existing checkpoint for the same
-// WorkflowId.
+// SaveCheckpoint upserts ckpt, replacing any existing checkpoint the caller
+// (types.UserIDOrDefault) holds for the same WorkflowId.
 func (s *CheckpointStore) SaveCheckpoint(ctx context.Context, ckpt *loomv1.WorkflowCheckpoint) error {
 	ctx, span := s.tracer.StartSpan(ctx, "sqlite.checkpoint.save")
 	defer s.tracer.EndSpan(span)
@@ -43,13 +44,13 @@ func (s *CheckpointStore) SaveCheckpoint(ctx context.Context, ckpt *loomv1.Workf
 	}
 
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO workflow_checkpoints (workflow_id, checkpoint_version, checkpoint_proto, updated_at)
-		VALUES (?, ?, ?, datetime('now'))
-		ON CONFLICT(workflow_id) DO UPDATE SET
+		INSERT INTO workflow_checkpoints (user_id, workflow_id, checkpoint_version, checkpoint_proto, updated_at)
+		VALUES (?, ?, ?, ?, datetime('now'))
+		ON CONFLICT(user_id, workflow_id) DO UPDATE SET
 			checkpoint_version = excluded.checkpoint_version,
 			checkpoint_proto = excluded.checkpoint_proto,
 			updated_at = excluded.updated_at`,
-		ckpt.GetWorkflowId(), ckpt.GetCheckpointVersion(), data,
+		types.UserIDOrDefault(ctx), ckpt.GetWorkflowId(), ckpt.GetCheckpointVersion(), data,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to save workflow checkpoint: %w", err)
@@ -57,16 +58,16 @@ func (s *CheckpointStore) SaveCheckpoint(ctx context.Context, ckpt *loomv1.Workf
 	return nil
 }
 
-// LoadCheckpoint retrieves the checkpoint for workflowID, or (nil, nil) if
-// none exists.
+// LoadCheckpoint retrieves the caller's checkpoint for workflowID, or
+// (nil, nil) if the caller has none.
 func (s *CheckpointStore) LoadCheckpoint(ctx context.Context, workflowID string) (*loomv1.WorkflowCheckpoint, error) {
 	ctx, span := s.tracer.StartSpan(ctx, "sqlite.checkpoint.load")
 	defer s.tracer.EndSpan(span)
 
 	var data []byte
 	err := s.db.QueryRowContext(ctx,
-		`SELECT checkpoint_proto FROM workflow_checkpoints WHERE workflow_id = ?`,
-		workflowID,
+		`SELECT checkpoint_proto FROM workflow_checkpoints WHERE user_id = ? AND workflow_id = ?`,
+		types.UserIDOrDefault(ctx), workflowID,
 	).Scan(&data)
 	if err == sql.ErrNoRows {
 		return nil, nil
