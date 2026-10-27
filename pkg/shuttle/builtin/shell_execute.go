@@ -713,25 +713,13 @@ func isBlockedWorkingDir(path string) bool {
 		"/private/etc",
 		"/System",
 		"/Library",
-		"C:\\Windows\\System32",
-		"C:\\Windows\\SysWOW64",
-		"C:\\Windows\\WinSxS",
+		"C:/Windows/System32",
+		"C:/Windows/SysWOW64",
+		"C:/Windows/WinSxS",
 	}
 
-	// filepath.Clean renders the OS-native separator (backslash on Windows), so
-	// compare on a slash-normalized form; otherwise the Unix entries above never
-	// match a cleaned Windows path and vice versa.
-	cleanPath := filepath.ToSlash(filepath.Clean(path))
-
-	// Check exact match or prefix
-	for _, blocked := range blockedDirs {
-		blockedSlash := filepath.ToSlash(blocked)
-		if cleanPath == blockedSlash || strings.HasPrefix(cleanPath, blockedSlash+"/") {
-			return true
-		}
-	}
-
-	return false
+	_, blocked := matchBlockedPath(filepath.Clean(path), blockedDirs)
+	return blocked
 }
 
 // filterSensitiveEnvVars removes sensitive environment variables from user input.
