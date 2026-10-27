@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+#### Agent: synthetic user-turn rows are protected from the fold and stamped again
+- **The current-turn fold and the arrival stamp only matched `Role == "user"`.** After #387 the skill-body sidecar, hygiene nudge, empty-response retry nudge and synthesis prompt persist under their own roles, so `ReleasePressure` could fold a skill body into a summary and `renderLocked` skipped their arrival stamp. Both now use `IsSyntheticWireUserRole`, restoring the pre-#387 behavior. A test pins the `pkg/agent` role constants to `internal/message`. Sessions written between #387 and this fix compile to different bytes once, which costs one prompt-cache miss; after that the bytes are stable.
+
 #### Server: `ListAgents` reports `total_count`
 - **`ListAgentsResponse.total_count` was always 0.** The proto documents it as the number of agents, but `ListAgents` never set it, so a client that read it (for example to show how many agents a server serves) reported none. It is now the number of agents returned.
 
