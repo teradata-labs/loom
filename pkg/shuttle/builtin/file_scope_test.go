@@ -29,7 +29,7 @@ func TestResolveInScopeRefusesOutsideTheWorkspace(t *testing.T) {
 	if _, err := resolveInScope(base, "../../../../../../etc/hosts"); err == nil {
 		t.Error("a traversal out of the workspace was allowed")
 	}
-	if _, err := resolveInScope(base, "/etc/hosts"); err == nil {
+	if _, err := resolveInScope(base, outsidePath("hosts")); err == nil {
 		t.Error("an absolute path outside the workspace was allowed")
 	}
 	if _, err := resolveInScope(base, ""); err == nil {
@@ -44,7 +44,7 @@ func TestResolveInScopeFollowsSymlinksBeforeDeciding(t *testing.T) {
 	base := t.TempDir()
 	outside := t.TempDir() // a sibling temp dir, inside TempDir's root
 	link := filepath.Join(base, "escape")
-	if err := os.Symlink("/etc", link); err != nil {
+	if err := os.Symlink(outsideDir(), link); err != nil {
 		t.Skip("symlinks unsupported")
 	}
 	if _, err := resolveInScope(base, "escape/hosts"); err == nil {
@@ -94,17 +94,18 @@ func TestResolveInScopeOffByDefault(t *testing.T) {
 	t.Setenv("LOOM_FILE_SAFE_MODE", "")
 	base := t.TempDir()
 
-	abs, err := resolveInScope(base, "/etc/hosts")
+	outside := outsidePath("hosts")
+	abs, err := resolveInScope(base, outside)
 	if err != nil {
 		t.Errorf("default mode must not confine: %v", err)
 	}
-	if abs != "/etc/hosts" {
+	if abs != outside {
 		t.Errorf("path should pass through normalised, got %q", abs)
 	}
 	if _, err := resolveInScope(base, ""); err == nil {
 		t.Error("an empty path is still refused in either mode")
 	}
-	if !pathWithinScope(base, "/etc/hosts") {
+	if !pathWithinScope(base, outside) {
 		t.Error("the sweep test must not confine in default mode")
 	}
 }

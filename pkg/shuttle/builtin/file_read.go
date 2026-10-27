@@ -317,16 +317,8 @@ func isSensitiveReadPath(path string) bool {
 		"C:/Windows/System32/config/SYSTEM",
 	}
 
-	// Compare on a slash-normalized form: callers pass paths through
-	// filepath.Clean, which renders the OS-native separator (backslash on
-	// Windows), so these Unix entries would otherwise never match.
-	slashPath := filepath.ToSlash(path)
-
-	// Exact match for very sensitive files
-	for _, s := range sensitive {
-		if slashPath == s {
-			return true
-		}
+	if _, blocked := matchBlockedPath(path, sensitive); blocked {
+		return true
 	}
 
 	// Prevent reading from certain directories entirely
@@ -336,14 +328,8 @@ func isSensitiveReadPath(path string) bool {
 		"/dev",
 		"C:/Windows/System32/config",
 	}
-
-	for _, prefix := range protectedDirs {
-		if strings.HasPrefix(slashPath, prefix+"/") || slashPath == prefix {
-			return true
-		}
-	}
-
-	return false
+	_, blocked := matchBlockedPath(path, protectedDirs)
+	return blocked
 }
 
 // executeMulti serves the paths-array and pattern (search) forms.Each path may
@@ -437,7 +423,7 @@ func (t *FileReadTool) executeMulti(rawPaths []interface{}, params map[string]in
 			clean = filepath.Join(t.baseDir, clean)
 		}
 		clean = filepath.Clean(clean)
-		display := f
+		display := filepath.ToSlash(f)
 
 		fail := func(msg string) {
 			b.WriteString(fmt.Sprintf("=== %s ===\nERROR: %s\n", display, msg))
@@ -549,7 +535,9 @@ func (t *FileReadTool) expandEntry(entry string) []string {
 	}
 	idx := strings.Index(abs, "**")
 	root := filepath.Dir(abs[:idx+1]) // directory before the **
-	suffix := strings.TrimPrefix(abs[idx+2:], "/")
+	// Slash form on every OS: filepath.Join rendered abs with the native
+	// separator, and the suffix is matched against slash-form relative paths.
+	suffix := strings.TrimPrefix(filepath.ToSlash(abs[idx+2:]), "/")
 	var out []string
 	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -570,7 +558,7 @@ func (t *FileReadTool) expandEntry(entry string) []string {
 			if rerr != nil {
 				return nil
 			}
-			target = rel
+			target = filepath.ToSlash(rel)
 		} else {
 			target = filepath.Base(p)
 		}
@@ -600,7 +588,8 @@ func (t *FileReadTool) sweepExcluded(absPath string) bool {
 	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
 		return false
 	}
-	for _, seg := range strings.Split(rel, string(filepath.Separator)) {
+	rel = filepath.ToSlash(rel)
+	for _, seg := range strings.Split(rel, "/") {
 		if len(seg) > 1 && strings.HasPrefix(seg, ".") {
 			return true
 		}
