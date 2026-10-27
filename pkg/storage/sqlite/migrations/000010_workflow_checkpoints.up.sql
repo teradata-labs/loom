@@ -14,13 +14,18 @@
 
 -- 000010_workflow_checkpoints.up.sql
 -- Durable storage for WorkflowCheckpoint (proto/loom/v1/orchestration.proto),
--- mirroring the Postgres 000025_workflow_checkpoints migration. SQLite is
--- single-tenant, so no user_id/RLS equivalent is added here.
+-- mirroring the Postgres 000025_workflow_checkpoints migration. SQLite has
+-- no row-level security, so the store scopes every query by user_id itself,
+-- the same way SQLite sessions are scoped (types.UserIDOrDefault). The key is
+-- (user_id, workflow_id): workflow IDs are often set by hand in the workflow
+-- YAML, so two users can share one.
 
 CREATE TABLE IF NOT EXISTS workflow_checkpoints (
-    workflow_id        TEXT PRIMARY KEY,
+    user_id            TEXT NOT NULL,
+    workflow_id        TEXT NOT NULL,
     checkpoint_version INTEGER NOT NULL,
     checkpoint_proto   BLOB NOT NULL,
     created_at         TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
+    updated_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, workflow_id)
 );

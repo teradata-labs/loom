@@ -46,3 +46,13 @@ func UserIDFromContext(ctx context.Context) string {
 	}
 	return ""
 }
+
+// UserIDOrDefault returns the caller's user ID from ctx, or DefaultUserID when
+// none is set. Stores without row-level security (SQLite) use it to scope rows
+// per caller while keeping local no-auth deployments working.
+func UserIDOrDefault(ctx context.Context) string {
+	if u := UserIDFromContext(ctx); u != "" {
+		return u
+	}
+	return DefaultUserID
+}

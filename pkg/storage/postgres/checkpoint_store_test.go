@@ -15,10 +15,9 @@ package postgres
 
 import (
 	"context"
-	"os"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
@@ -32,19 +31,7 @@ import (
 
 func testCheckpointStore(t *testing.T) (*CheckpointStore, context.Context, string) {
 	t.Helper()
-	dsn := os.Getenv("TEST_POSTGRES_URL")
-	if dsn == "" {
-		t.Skip("TEST_POSTGRES_URL not set; skipping PostgreSQL store test")
-	}
-	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	require.NoError(t, err, "failed to connect to PostgreSQL")
-	t.Cleanup(pool.Close)
-
-	migrator, err := NewMigrator(pool, observability.NewNoOpTracer())
-	require.NoError(t, err)
-	require.NoError(t, migrator.MigrateUp(ctx), "failed to run migrations")
-
+	pool := migratedAdminPool(t)
 	store := NewCheckpointStore(pool, observability.NewNoOpTracer())
 	userID := hrUniqueID("ckpt-user")
 	t.Cleanup(func() {
@@ -103,4 +90,54 @@ func TestCheckpointStore_LoadMissing_ReturnsNilNil(t *testing.T) {
 	if got != nil {
 		t.Fatalf("LoadCheckpoint: got %+v, want nil", got)
 	}
+}
+
+// TestCheckpointStore_TenantIsolation_RLSSubject runs the store as a role that
+// row-level security applies to (see rlsSubjectPool). Two tenants use the same
+// workflow ID, which is common because the ID is often set by hand in the
+// workflow YAML: each must see only its own row, and one tenant's save must
+// not touch the other's.
+func TestCheckpointStore_TenantIsolation_RLSSubject(t *testing.T) {
+	adminPool := migratedAdminPool(t)
+	appPool := rlsSubjectPool(t, adminPool)
+	store := NewCheckpointStore(appPool, observability.NewNoOpTracer())
+
+	userA, userB := hrUniqueID("ckpt-a"), hrUniqueID("ckpt-b")
+	t.Cleanup(func() {
+		_, _ = adminPool.Exec(context.Background(),
+			"DELETE FROM workflow_checkpoints WHERE user_id = ANY($1)", []string{userA, userB})
+	})
+	ctxA := ContextWithUserID(context.Background(), userA)
+	ctxB := ContextWithUserID(context.Background(), userB)
+
+	require.NoError(t, store.SaveCheckpoint(ctxA, &loomv1.WorkflowCheckpoint{WorkflowId: "shared-id", NextStageIndex: 1}))
+
+	got, err := store.LoadCheckpoint(ctxB, "shared-id")
+	require.NoError(t, err)
+	require.Nil(t, got, "user B read user A's checkpoint")
+
+	require.NoError(t, store.SaveCheckpoint(ctxB, &loomv1.WorkflowCheckpoint{WorkflowId: "shared-id", NextStageIndex: 2}),
+		"user B's save of a workflow ID user A also uses must not collide with A's row")
+
+	gotA, err := store.LoadCheckpoint(ctxA, "shared-id")
+	require.NoError(t, err)
+	require.NotNil(t, gotA)
+	require.EqualValues(t, 1, gotA.NextStageIndex, "user B's save replaced user A's checkpoint")
+
+	gotB, err := store.LoadCheckpoint(ctxB, "shared-id")
+	require.NoError(t, err)
+	require.NotNil(t, gotB)
+	require.EqualValues(t, 2, gotB.NextStageIndex)
+
+	// The policy, not only the store's WHERE clause, must hide A's row: an
+	// unfiltered read as B sees exactly one row.
+	var visible int
+	require.NoError(t, execInTx(ctxB, appPool, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, "SELECT count(*) FROM workflow_checkpoints WHERE workflow_id = 'shared-id'").Scan(&visible)
+	}))
+	require.Equal(t, 1, visible, "row-level security let user B see another tenant's checkpoint")
+}
+
+func TestWorkflowCheckpoints_RLSForced(t *testing.T) {
+	requireForcedRLS(t, migratedAdminPool(t), "workflow_checkpoints")
 }
