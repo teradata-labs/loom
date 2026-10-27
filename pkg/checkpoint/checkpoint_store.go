@@ -18,22 +18,25 @@ import (
 )
 
 // CheckpointStore persists and retrieves WorkflowCheckpoint records keyed by
-// workflow ID. It gives stage-boundary HITL-gate resume (see hitl_gate.go,
-// resume.go in pkg/orchestration) a durable home beyond a caller-managed
-// local file: the CLI's checkpoint file (cmd/looms/cmd_workflow.go) remains
-// a fallback for environments with no StorageBackend, not the primary
-// persistence mechanism.
+// (caller, workflow ID). It gives stage-boundary HITL-gate resume (see
+// hitl_gate.go, resume.go in pkg/orchestration) a durable copy beyond the
+// CLI's local checkpoint file: the CLI writes both, reads the file first, and
+// falls back to the store when the file is gone (cmd/looms/cmd_workflow.go).
+//
+// Checkpoints belong to the caller identity in ctx (types.UserIDFromContext).
+// Each caller sees only its own, and two callers may use the same workflow ID
+// independently, since workflow IDs are often set by hand in the YAML.
 //
 // LoadCheckpoint returns (nil, nil) for a workflow ID with no saved
 // checkpoint, matching the no-error-on-absence convention used elsewhere in
 // this codebase (e.g. shuttle.HumanRequestStore.Get).
 type CheckpointStore interface {
-	// SaveCheckpoint persists ckpt, replacing any existing checkpoint for the
-	// same WorkflowId (a workflow has at most one live checkpoint at a time —
-	// a new suspension supersedes the last one).
+	// SaveCheckpoint persists ckpt, replacing any checkpoint the caller already
+	// holds for the same WorkflowId (a workflow has at most one live
+	// checkpoint at a time; a new suspension supersedes the last one).
 	SaveCheckpoint(ctx context.Context, ckpt *loomv1.WorkflowCheckpoint) error
 
-	// LoadCheckpoint retrieves the checkpoint for workflowID, or (nil, nil) if
-	// none exists.
+	// LoadCheckpoint retrieves the caller's checkpoint for workflowID, or
+	// (nil, nil) if the caller has none.
 	LoadCheckpoint(ctx context.Context, workflowID string) (*loomv1.WorkflowCheckpoint, error)
 }
