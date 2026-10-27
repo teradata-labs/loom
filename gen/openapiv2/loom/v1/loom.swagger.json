@@ -3661,7 +3661,7 @@
         "NULL_VALUE"
       ],
       "default": "NULL_VALUE",
-      "description": "`NullValue` is a singleton enumeration to represent the null value for the\n`Value` type union.\n\nThe JSON representation for `NullValue` is JSON `null`.\n\n - NULL_VALUE: Null value."
+      "description": "Represents a JSON `null`.\n\n`NullValue` is a sentinel, using an enum with only one value to represent\nthe null value for the `Value` type union.\n\nA field of type `NullValue` with any value other than `0` is considered\ninvalid. Most ProtoJSON serializers will emit a Value with a `null_value` set\nas a JSON `null` regardless of the integer value, and so will round trip to\na `0` value.\n\n - NULL_VALUE: Null value."
     },
     "rpcStatus": {
       "type": "object",
@@ -10299,6 +10299,11 @@
           "type": "string",
           "format": "int64",
           "description": "Bytes of tool-call argument JSON received so far (when is_tool_input_stream).\nEvents are throttled, so the last value can lag the final size. A bare pulse\nfrom a provider that does not report sizes has no tool_call_id or tool_name\nand a size of 0; with either set, 0 means no arguments have arrived yet."
+        },
+        "toolCallIndex": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Zero-based position of the tool call within the response's tool-call list\n(when is_tool_input_stream). Providers without call IDs (Gemini repeats the\nfunction name in tool_call_id) still have distinct positions, so clients can\nkey on this to tell two parallel calls to the same tool apart. The agent's\nthrottling keys on the same index, so events for one call never interleave\nwith another's."
         }
       },
       "description": "WeaveProgress streams incremental updates during execution."

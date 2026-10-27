@@ -561,15 +561,20 @@ type ProgressEvent struct {
 	// last value a consumer sees can lag the final size until tool-started.
 	ToolInputBytes int64
 
+	// ToolCallIndex is the zero-based position of the tool call within the
+	// response's tool-call list; set only on IsToolInputStream events. It
+	// lets clients tell two parallel calls to the same tool apart when the
+	// provider has no call IDs (Gemini repeats the function name in
+	// ToolCallID). The agent's throttling keys on the same index, so events
+	// for one call never interleave with another's.
+	ToolCallIndex int32
+
 	// TokenCount is the running count of tokens received
 	TokenCount int32
 
 	// TTFT is the time to first token in milliseconds (0 if not applicable)
 	TTFT int64
 
-	// Tool execution lifecycle fields (for real-time tool event rendering)
-
-	// IsToolStarted indicates this event is a tool-execution-started update
 	IsToolStarted bool
 
 	// IsToolCompleted indicates this event is a tool-execution-completed update

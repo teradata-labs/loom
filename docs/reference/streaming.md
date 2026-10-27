@@ -128,6 +128,7 @@ message WeaveProgress {
   ContextState context_state = 21;    // Context window state (included in completion event)
   bool is_tool_input_stream = 22;     // True while the model is still writing a tool call's arguments
   int64 tool_input_bytes = 23;        // Argument bytes received so far (when is_tool_input_stream)
+  int32 tool_call_index = 24;         // Zero-based position of the call in the response's tool-call list (when is_tool_input_stream)
 }
 ```
 
@@ -368,7 +369,7 @@ True while the model is still writing a tool call's arguments, before `is_tool_s
 
 All streaming providers report the call identity: OpenAI-compatible (OpenAI, Azure OpenAI, LiteLLM, Mistral, HuggingFace), Anthropic and Bedrock's Claude path stream it per argument delta; Ollama and Gemini deliver each tool call complete in one chunk and report it once with the full size.
 
-Gemini has no call IDs: `tool_call_id` repeats the function name, so two parallel calls to the same tool share one ID. Clients that key on `tool_call_id` should key on the event's call index instead (the agent's throttling does).
+Gemini has no call IDs: `tool_call_id` repeats the function name, so two parallel calls to the same tool share one ID. Clients that key on `tool_call_id` should key on `tool_call_index` instead — the call's zero-based position in the response's tool-call list, which the agent's throttling also keys on.
 
 The first event for a call, and the event that first supplies its name or id, are sent immediately. Later events are throttled to about one per second per call.
 
@@ -384,6 +385,15 @@ Bytes of tool-call argument JSON received so far. Because events are throttled, 
 A value of 0 with no `tool_call_id` and no `tool_name` means the provider does not report sizes (a bare pulse). With either set, 0 means no arguments have arrived yet. Ollama and Gemini report the full argument size in a single event per call; the other providers report it growing per delta.
 
 For Ollama, the size is the raw argument JSON as the model produced it when it arrives as a string; when Ollama pre-parses the arguments into an object, the size is of the re-serialized JSON, which can differ slightly from what the model emitted.
+
+
+#### tool_call_index
+
+**Type**: `int32`
+**Required**: No (only when `is_tool_input_stream` is true)
+**Available since**: unreleased (after v1.4.0)
+
+Zero-based position of the tool call within the response's tool-call list. Providers without call IDs (Gemini repeats the function name in `tool_call_id`) still have distinct positions, so clients can key on this to tell two parallel calls to the same tool apart. The agent's throttling keys on the same index, so events for one call never interleave with another's.
 
 
 ## Execution Stages
