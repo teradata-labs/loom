@@ -2683,7 +2683,8 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// sheds to the release mark. On a shed, recompile messages and the
 		// advertised tool set so a fold-deactivated skill's tools do not linger.
 		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
-			if shed, estimate, target := segMem.ReleasePressure(ctx, 0); shed {
+			shed, estimate, target := segMem.ReleasePressure(ctx, 0)
+			if shed {
 				zap.L().Info("relief: shed before send",
 					zap.String("session_id", session.ID),
 					zap.Int("estimate_tokens", estimate),
@@ -2692,6 +2693,22 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				tools = a.advertisedTools(session)
 				tools = recovery.activeTools(tools)
 				segMem.SetAdvertisedToolsBytes(advertisedToolsBytes(tools))
+			}
+			// Opt-in (behavior.context_relief_warning). Relief ran and left the
+			// estimate over its release mark, whether or not it shed; under the
+			// start mark it returns 0, 0 and this is false, so the note rides
+			// only the sends where relief ran. It is transient: softReminder is
+			// read at send time.
+			if a.config.ContextReliefWarning && estimate > target {
+				used, available, _ := segMem.GetTokenBudgetUsage()
+				usable := used + available
+				softReminder += buildContextReminder(estimate, target, usable)
+				span.AddEvent("context_reminder.added", map[string]interface{}{
+					"turn":            turnCount,
+					"estimate_tokens": estimate,
+					"target_tokens":   target,
+					"usable_tokens":   usable,
+				})
 			}
 			// Relief has nothing left to shed and the turn's own stubs still
 			// hold the context over the start mark: every further send is a

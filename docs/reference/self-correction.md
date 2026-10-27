@@ -77,6 +77,8 @@ Self-correction (guardrails + circuit breakers) is **enabled by default** and is
 - Circuit breaker base timeout: 30s
 - Max retry attempts: 3
 
+**Context-relief warning** (opt-in): set `behavior.context_relief_warning: true` in the agent YAML. With it on, a send where context relief ran and left the estimate over its release mark carries one advisory note as a transient `<system-reminder>` user message, stating the context's percentage of the usable window (capped at 100) and the release mark's. Relief runs only once the estimate reaches the start mark, so a later send that sits between the two marks carries no warning until the estimate climbs past the start mark again. The note is never stored in history, and a resend after a refused send carries it too. The `context_reminder.added` span event records the turn, the estimate, the release mark and the usable window.
+
 **Repeat-call hint** (opt-in): set `behavior.repeat_call_hint: true` in the agent YAML. With it on, the Tier 1 recovery orchestrator counts identical consecutive executed tool calls (same name and canonical input; a call rejected before execution neither counts nor resets the run). At 3, 5 and 8 it adds one advisory note to the next provider request, as a transient `<system-reminder>` user message naming the count and the tool. The thresholds are fixed at 3/5/8. The note needs self-healing enabled (the default) and is never written into a tool row, so offloaded, tabular and JSON results keep their shape, and it is not stored or replayed in later turns. A failed call (a Go error or `result.Success == false`) gets no note.
 
 **Go API**:
