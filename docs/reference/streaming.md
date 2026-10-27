@@ -366,6 +366,10 @@ Context window state after the response. Reports how full the context window is.
 
 True while the model is still writing a tool call's arguments, before `is_tool_started`. The event carries no argument content. `tool_name` and `tool_call_id` identify the call when the provider reports them; a provider that does not report them sends a bare liveness pulse with both empty.
 
+All streaming providers report the call identity: OpenAI-compatible (OpenAI, Azure OpenAI, LiteLLM, Mistral, HuggingFace), Anthropic and Bedrock's Claude path stream it per argument delta; Ollama and Gemini deliver each tool call complete in one chunk and report it once with the full size.
+
+Gemini has no call IDs: `tool_call_id` repeats the function name, so two parallel calls to the same tool share one ID. Clients that key on `tool_call_id` should key on the event's call index instead (the agent's throttling does).
+
 The first event for a call, and the event that first supplies its name or id, are sent immediately. Later events are throttled to about one per second per call.
 
 
@@ -377,7 +381,9 @@ The first event for a call, and the event that first supplies its name or id, ar
 
 Bytes of tool-call argument JSON received so far. Because events are throttled, the last value a client sees can lag the final size until `is_tool_started` arrives.
 
-A value of 0 with no `tool_call_id` and no `tool_name` means the provider does not report sizes (a bare pulse). With either set, 0 means no arguments have arrived yet.
+A value of 0 with no `tool_call_id` and no `tool_name` means the provider does not report sizes (a bare pulse). With either set, 0 means no arguments have arrived yet. Ollama and Gemini report the full argument size in a single event per call; the other providers report it growing per delta.
+
+For Ollama, the size is the raw argument JSON as the model produced it when it arrives as a string; when Ollama pre-parses the arguments into an object, the size is of the re-serialized JSON, which can differ slightly from what the model emitted.
 
 
 ## Execution Stages
