@@ -498,7 +498,7 @@ jobs:
         run: go run ./cmd/generate-weaver
 
       - name: Run Gosec Security Scanner
-        uses: securego/gosec@deb54465fea23d19a77f037e11e6589021f8501d # v2.29.0
+        uses: securego/gosec@5eb1d104ef85ff2c905c877eb600e8c1dee33a22 # v2.30.0
         with:
           args: '-no-fail -fmt sarif -out results.sarif -exclude-dir=gen ./...'
 
@@ -511,7 +511,7 @@ jobs:
           mv results-fixed.sarif results.sarif
 
       - name: Upload SARIF file
-        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         continue-on-error: true  # Don't fail the build if code scanning is not enabled
         with:
           sarif_file: results.sarif
@@ -573,6 +573,59 @@ jobs:
           echo "| pkg/observability | >80% | Check coverage.out |" >> $GITHUB_STEP_SUMMARY
 
   # ============================================================================
+  # Job 7b: Windows Unit Tests
+  # ============================================================================
+  # Guards the Windows test-suite portability fixes (path separators, open file
+  # handles blocking temp-dir removal, POSIX-only assumptions). No -race and no
+  # service containers: the Linux `test` job owns race detection and the
+  # postgres-backed tests.
+  test-windows:
+    name: Unit Tests (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Cache buf modules
+        uses: ./.github/actions/buf-cache
+
+      - name: Setup Buf
+        uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate Proto Files
+        run: buf generate
+
+      - name: Generate weaver.yaml from template
+        run: go run ./cmd/generate-weaver
+
+      - name: Pre-warm MCP filesystem server (npm cache)
+        # Same reason as the Linux job: the MCP conformance tests start
+        # `npx -y @modelcontextprotocol/server-*` under a 45s init timeout, and a
+        # cold download on the Windows runner can exceed it ("initialize failed:
+        # context deadline exceeded"). Install the packages once so the timed
+        # tests resolve them from the global npm bin; never hard-fails the job.
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npm install -g @modelcontextprotocol/server-filesystem @modelcontextprotocol/server-memory && break
+            echo "npm install attempt $i failed; retrying in 5s..."
+            sleep 5
+          done || true
+
+      - name: Run tests
+        shell: bash
+        run: go test -tags fts5 -short -timeout=30m ./...
+
+  # ============================================================================
   # Job 8: All Checks Passed
   # ============================================================================
   ci-success:
@@ -583,6 +636,7 @@ jobs:
       - proto
       - lint
       - test
+      - test-windows
       - fuzz
       - build
       - security
