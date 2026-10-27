@@ -12,6 +12,15 @@
 -- See the License for the specific language governing permissions and
 -- limitations under the License.
 
--- 000009_workflow_checkpoints.down.sql
+-- 000010_workflow_checkpoints.up.sql
+-- Durable storage for WorkflowCheckpoint (proto/loom/v1/orchestration.proto),
+-- mirroring the Postgres 000025_workflow_checkpoints migration. SQLite is
+-- single-tenant, so no user_id/RLS equivalent is added here.
 
-DROP TABLE IF EXISTS workflow_checkpoints;
+CREATE TABLE IF NOT EXISTS workflow_checkpoints (
+    workflow_id        TEXT PRIMARY KEY,
+    checkpoint_version INTEGER NOT NULL,
+    checkpoint_proto   BLOB NOT NULL,
+    created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
+);
