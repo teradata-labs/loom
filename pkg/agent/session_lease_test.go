@@ -168,7 +168,9 @@ func TestHoldSessionLease_ConcurrentEntriesOneWinner(t *testing.T) {
 type leaseProbeTool struct {
 	name  string
 	sleep time.Duration
-	calls atomic.Int32
+	// onStart, when set, runs as the call begins, before it sleeps.
+	onStart func()
+	calls   atomic.Int32
 }
 
 func (p *leaseProbeTool) Name() string        { return p.name }
@@ -179,6 +181,9 @@ func (p *leaseProbeTool) InputSchema() *shuttle.JSONSchema {
 func (p *leaseProbeTool) Backend() string { return "" }
 func (p *leaseProbeTool) Execute(ctx context.Context, _ map[string]interface{}) (*shuttle.Result, error) {
 	p.calls.Add(1)
+	if p.onStart != nil {
+		p.onStart()
+	}
 	time.Sleep(p.sleep)
 	return &shuttle.Result{Success: true, Data: "ok"}, nil
 }
@@ -217,8 +222,10 @@ func TestChat_SessionLeasedElsewhere_IsRefused(t *testing.T) {
 // dispatch, and the turn reports the loss.
 func TestChat_LeaseLostMidBatch_StopsDispatch(t *testing.T) {
 	store := newLeaseScriptLog()
-	store.renewHeld.Store(false) // the first renewal finds the lease taken over
-	slow := &leaseProbeTool{name: "slow", sleep: 300 * time.Millisecond}
+	// The takeover happens once the first call is running, so a slow runner
+	// cannot lose the lease before that call dispatches.
+	slow := &leaseProbeTool{name: "slow", sleep: 300 * time.Millisecond,
+		onStart: func() { store.renewHeld.Store(false) }}
 	next := &leaseProbeTool{name: "next"}
 	llm := &mockToolCallingLLM{responses: []mockLLMResponse{
 		{toolCalls: []llmtypes.ToolCall{
