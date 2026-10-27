@@ -162,8 +162,9 @@ func (a *Agent) observeSchedulerOutcome(err error) {
 //
 // Both conditions are required. A resumed turn whose rows still carry their
 // blocks (the park never left the process) needs no suppression, and a missing
-// block outside a resume is not this problem — compile strips blocks from
-// SETTLED turns by design, and a model may simply have returned none.
+// block outside a resume is not this problem — compile strips blocks from a
+// SETTLED turn once the context before them has changed, and a model may
+// simply have returned none.
 func (a *Agent) providerCtx(ctx Context, messages []Message) context.Context {
 	if isResumedTurn(ctx) && rebuiltToolTurn(messages) {
 		return llm.ContextSuppressThinking(ctx)
@@ -173,8 +174,8 @@ func (a *Agent) providerCtx(ctx Context, messages []Message) context.Context {
 
 // rebuiltToolTurn reports whether the newest turn present holds an assistant
 // message with tool calls but no thinking blocks — the shape a store rebuild
-// produces. Only the newest turn is examined: settled turns render without
-// their blocks on purpose.
+// produces. Only the newest turn is examined: settled turns may render
+// without their blocks on purpose.
 func rebuiltToolTurn(messages []Message) bool {
 	var newest int64
 	for i := range messages {

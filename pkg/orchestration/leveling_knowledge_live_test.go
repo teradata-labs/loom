@@ -79,7 +79,7 @@ import (
 // executor would add schema validation, coercion and retry to the measurement
 // path — three confounds for a question that is purely about accuracy.
 //
-// The agent's injectGraphMemoryContext. That path gates retrieval behind two
+// The agent's graphMemoryNote. That path gates retrieval behind two
 // extra LLM calls (a relevance decision and a query rewrite), so a miss there
 // could be either retrieval failing or a gate declining. Retrieval is called
 // directly and the retrieved sentences are prepended here, which is what makes

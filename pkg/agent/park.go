@@ -535,7 +535,7 @@ func unappliedParkedTail(sess *Session) *Message {
 type resumedTurnKey struct{}
 
 // contextWithResumedTurn marks ctx as a resume. Per-TURN entry work in
-// runConversationLoop — graph-memory context injection and extraction —
+// runConversationLoop — graph-memory extraction of the user message —
 // must not run twice for one turn just because the loop is entered twice.
 func contextWithResumedTurn(ctx context.Context) context.Context {
 	return context.WithValue(ctx, resumedTurnKey{}, true)

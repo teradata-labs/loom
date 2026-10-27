@@ -412,7 +412,11 @@ func (c *Client) convertMessages(messages []llmtypes.Message) []ChatMessage {
 	var apiMessages []ChatMessage
 	srcToEmitted := make(map[int]int)
 	validToolCallIDs := make(map[string]struct{})
+	var newestTurn int64
 	for _, msg := range messages {
+		if msg.Turn > newestTurn {
+			newestTurn = msg.Turn
+		}
 		if msg.Role != "assistant" {
 			continue
 		}
@@ -527,11 +531,14 @@ func (c *Client) convertMessages(messages []llmtypes.Message) []ChatMessage {
 
 			// In-turn thinking replay: blocks ride back verbatim so the
 			// provider's signatures survive the round-trip. Settled turns
-			// arrive here already stripped by the compile. A block that is
-			// still text-empty (capture should have completed it) is dropped
-			// rather than replayed: Anthropic 400s on a thinking block with
-			// no thinking field, while a missing block is tolerated (probed).
-			if len(msg.ThinkingBlocks) > 0 {
+			// (Turn below the newest) can arrive with their blocks, for
+			// providers that keep earlier turns' thinking; reasoning APIs
+			// behind this client may reject earlier turns' reasoning, so
+			// they are not sent. A block that is still text-empty (capture
+			// should have completed it) is dropped rather than replayed:
+			// Anthropic 400s on a thinking block with no thinking field,
+			// while a missing block is tolerated (probed).
+			if len(msg.ThinkingBlocks) > 0 && msg.Turn >= newestTurn {
 				wire := make([]WireThinkingBlock, 0, len(msg.ThinkingBlocks))
 				for _, b := range msg.ThinkingBlocks {
 					if b.Thinking == "" && b.Type != "redacted_thinking" {

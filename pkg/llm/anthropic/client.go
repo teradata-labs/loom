@@ -77,7 +77,6 @@ type Client struct {
 	temperature   float64
 	thinkingLevel string
 	rateLimiter   *llm.RateLimiter
-	toolNameMap   map[string]string // sanitized name → original name
 }
 
 // Config holds configuration for the Anthropic client.
@@ -193,8 +192,7 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 	systemPrompt, apiMessages := c.convertMessages(messages)
 
 	// Convert tools to Anthropic format with name sanitization
-	c.toolNameMap = make(map[string]string)
-	apiTools := c.convertTools(tools)
+	apiTools, toolNameMap := c.convertTools(tools)
 
 	// Build request
 	req := &MessagesRequest{
@@ -222,7 +220,7 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 	}
 
 	// Convert response
-	return c.convertResponse(resp), nil
+	return c.convertResponse(resp, toolNameMap), nil
 }
 
 // thinkingParam returns the request's thinking field, or nil (omitted) when
@@ -371,9 +369,10 @@ func (c *Client) convertMessages(messages []llmtypes.Message) ([]TextBlockParam,
 		case "assistant":
 			var content []ContentBlock
 
-			// In-turn thinking replay: blocks ride back verbatim and FIRST
-			// (the response order). Empty text stays valid — MarshalJSON keeps
-			// the field present. Settled turns arrive already stripped.
+			// Thinking replay: blocks ride back verbatim and FIRST (the
+			// response order). Empty text stays valid — MarshalJSON keeps the
+			// field present. A settled turn carries its blocks only while the
+			// context before them is unchanged; the compile decides.
 			for _, tb := range msg.ThinkingBlocks {
 				if tb.Type == "redacted_thinking" {
 					content = append(content, ContentBlock{Type: "redacted_thinking", Data: tb.Thinking})
@@ -466,15 +465,17 @@ func appendUserOrCoalesce(msgs []Message, blocks []ContentBlock) []Message {
 // Tool names are sanitized to replace colons with underscores for provider compatibility.
 // The last tool in the list is marked with cache_control: ephemeral so the entire tool
 // list is cached. For Anthropic, cached tool tokens don't count against ITPM rate limits.
-func (c *Client) convertTools(tools []shuttle.Tool) []CacheableTool {
+// Also returns the request's sanitized → original name map: one client serves
+// concurrent calls (an agent's graph memory side calls run beside its main
+// call), so the map is request-local.
+func (c *Client) convertTools(tools []shuttle.Tool) ([]CacheableTool, map[string]string) {
 	var apiTools []CacheableTool
+	toolNameMap := make(map[string]string, len(tools))
 
 	for _, tool := range tools {
 		originalName := tool.Name()
 		sanitizedName := llm.SanitizeToolName(originalName)
-		if c.toolNameMap != nil {
-			c.toolNameMap[sanitizedName] = originalName
-		}
+		toolNameMap[sanitizedName] = originalName
 
 		apiTool := CacheableTool{
 			Name:        sanitizedName,
@@ -500,7 +501,7 @@ func (c *Client) convertTools(tools []shuttle.Tool) []CacheableTool {
 		apiTools[len(apiTools)-1].CacheControl = &CacheControl{Type: "ephemeral"}
 	}
 
-	return apiTools
+	return apiTools, toolNameMap
 }
 
 // convertSchemaProperties converts JSONSchema properties to Anthropic format.
@@ -552,7 +553,7 @@ func (c *Client) convertSchemaProperties(props map[string]*shuttle.JSONSchema) m
 }
 
 // convertResponse converts Anthropic response to agent format.
-func (c *Client) convertResponse(resp *MessagesResponse) *llmtypes.LLMResponse {
+func (c *Client) convertResponse(resp *MessagesResponse, toolNameMap map[string]string) *llmtypes.LLMResponse {
 	llmResp := &llmtypes.LLMResponse{
 		StopReason: resp.StopReason,
 		Usage: llmtypes.Usage{
@@ -587,7 +588,7 @@ func (c *Client) convertResponse(resp *MessagesResponse) *llmtypes.LLMResponse {
 		case "tool_use":
 			llmResp.ToolCalls = append(llmResp.ToolCalls, llmtypes.ToolCall{
 				ID:    block.ID,
-				Name:  llm.ReverseToolName(c.toolNameMap, block.Name),
+				Name:  llm.ReverseToolName(toolNameMap, block.Name),
 				Input: block.Input,
 			})
 		}
@@ -654,8 +655,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 
 	// 1. Build request body (extract system messages and convert to Anthropic format)
 	systemPrompt, apiMessages := c.convertMessages(messages)
-	c.toolNameMap = make(map[string]string)
-	apiTools := c.convertTools(tools)
+	apiTools, toolNameMap := c.convertTools(tools)
 
 	req := &MessagesRequest{
 		Model:        c.model,
@@ -852,7 +852,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 					idx := len(toolCalls)
 					toolCalls = append(toolCalls, llmtypes.ToolCall{
 						ID:    event.ContentBlock.ID,
-						Name:  llm.ReverseToolName(c.toolNameMap, event.ContentBlock.Name),
+						Name:  llm.ReverseToolName(toolNameMap, event.ContentBlock.Name),
 						Input: make(map[string]interface{}),
 					})
 					toolInputBuffers[event.Index] = &strings.Builder{}

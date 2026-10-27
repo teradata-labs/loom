@@ -442,8 +442,9 @@ func (c *SDKClient) convertMessagesToSDK(messages []llmtypes.Message) ([]anthrop
 		case "assistant":
 			var content []anthropic.ContentBlockParamUnion
 
-			// In-turn thinking replay: blocks ride back verbatim and FIRST
-			// (response order). Settled turns arrive already stripped.
+			// Thinking replay: blocks ride back verbatim and FIRST (response
+			// order). A settled turn carries its blocks only while the
+			// context before them is unchanged; the compile decides.
 			for _, tb := range msg.ThinkingBlocks {
 				if tb.Type == "redacted_thinking" {
 					content = append(content, anthropic.NewRedactedThinkingBlock(tb.Thinking))

@@ -15,6 +15,7 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -96,6 +97,13 @@ type SegmentedMemory struct {
 	// messages on every provider call. Keyed by the rendered string, so a stub,
 	// a whole row, and a folded form each cache separately.
 	msgTokenCache map[string]int
+
+	// thinkingPrefix maps an assistant message's thinking blocks
+	// (thinkingBlocksKey) to the fingerprint of the compiled context it was
+	// written after, so compile can keep a settled turn's blocks while that
+	// context is unchanged (context_compilation.go). In memory only, like the
+	// blocks themselves.
+	thinkingPrefix map[[sha256.Size]byte][sha256.Size]byte
 
 	// Memory compression (the fold compressor)
 	compressor MemoryCompressor
@@ -379,6 +387,7 @@ func (sm *SegmentedMemory) AddMessage(ctx context.Context, msg Message) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
+	sm.recordThinkingPrefixLocked(&msg)
 	sm.contextMessages = append(sm.contextMessages, msg)
 
 	// Incremental L1 token update (reporting only).

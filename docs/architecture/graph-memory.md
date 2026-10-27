@@ -100,8 +100,8 @@ Salience-driven graph-backed episodic memory for persistent, cross-session agent
 ```
 
 **External Dependencies**:
-- **LLM Provider**: Context window constraint; graph memory context injected as system message
-- **Agent Runtime**: Calls `injectGraphMemoryContext()` each turn, registers `graph_memory` tool
+- **LLM Provider**: Context window constraint; graph memory context sent in the trailing `<system-reminder>` note, after the cached prefix
+- **Agent Runtime**: Calls `graphMemoryNote()` each turn, registers `graph_memory` tool
 - **Storage Backend**: Must implement `GraphMemoryProvider` interface to supply a `GraphMemoryStore`
 
 
@@ -260,7 +260,7 @@ Extraction contract:
 
 **Sanitizer guarantee**: `sanitizeEventDate(date, confidence)` in `pkg/agent/graph_memory_extractor.go` enforces the contract at the ingestion boundary. A malformed date is dropped (date becomes `""`, confidence preserved for telemetry). A non-empty date with `confidence=ambiguous` is a protocol violation; the date is dropped in favor of the self-reported confidence.
 
-**Rendering**: `injectGraphMemoryContext()` in `pkg/agent/agent.go` prepends `[YYYY-MM-DD]` to memories that carry an `event_date` before writing them into the `[Graph Memory Context]` system message. The answering LLM sees explicit absolute dates side by side and orders facts by string comparison instead of date arithmetic.
+**Rendering**: `graphMemoryNote()` in `pkg/agent/agent.go` prepends `[YYYY-MM-DD]` to memories that carry an `event_date` before writing them into the `[Graph Memory Context]` note. The answering LLM sees explicit absolute dates side by side and orders facts by string comparison instead of date arithmetic.
 
 **Invariants**:
 ```
@@ -372,13 +372,27 @@ Uses multiplicative combination (`CombineScores` in `pkg/memory/salience.go:122`
 1. Extract topic from the most recent user message (truncated to 200 chars)
 2. Query `ContextFor()` on the agent's own entity name, using topic as search filter
 3. Format result via `EntityRecall.Format()` into structured text
-4. Inject as system message: `[Graph Memory Context]\n{formatted_recall}`
+4. Return the note `[Graph Memory Context]\n{formatted_recall}`, which every LLM call of the turn carries in its trailing `<system-reminder>` user message (`withSystemReminder`, with the turn's soft reminder). It is never added to the session, so it is not persisted and a resumed turn recalls again. It is not a system message: the Anthropic client moves system messages into the request's `system` field, ahead of the conversation, where a note that changes every turn would miss the prompt cache on every call.
+
+   `TestGraphMemoryRecall_PromptCacheLive` (`pkg/agent/graph_memory_prompt_cache_live_test.go`, needs `ANTHROPIC_API_KEY`) runs an eight-message conversation against the Anthropic API and logs the cache read, cache write and uncached input tokens the API reports for each main call. `TestGraphMemoryRecall_PromptCache` checks the same properties offline on every run: one recall note per request, none in the `system` field, and each call reading back what the previous one cached.
+
+   One run each on 2026-10-27, `claude-haiku-5-5`, each message sent right after the previous one (inside the 5-minute cache lifetime). "Before" is `main` at 99c51663 with the live test added; "After" is this change. Totals are for every main call after the first; the runs made 16 and 14 main calls in all, because the model chose its own `graph_memory` tool calls, so compare the shares. Cost is loom's estimate (`calculateCost`), which prices `claude-haiku-5-5` at the generic Haiku fallback rate.
+
+   | Calls 2 onward | Before | After |
+   |---|---|---|
+   | Input tokens read from cache | 162,770 (82%) | 164,752 (97%) |
+   | Input tokens written to cache | 16,331 | 3,544 |
+   | Uncached input tokens | 19,520 | 1,652 |
+   | Estimated cost | $0.0740 | $0.0383 |
+   | Recall notes in the last request | 7 | 1 |
+
+   The after column also depends on settled turns keeping their thinking blocks while the context before them is unchanged (`compileLocked` in `pkg/agent/context_compilation.go`): current models keep earlier turns' thinking, so leaving it out changed the request from the first tool call of each earlier message that used tools.
 
 **Token Budget**: Controlled by config. Default: 20% of context window (200K * 20% = 40K tokens). Can be overridden with absolute `max_context_tokens`. Within `ContextFor()`, the budget is allocated in three phases: entity profile (200 tokens reserved), graph neighborhood (300 tokens reserved), and remaining budget for ranked memories via `AllocateMemoryBudget()` in `pkg/memory/budget.go`.
 
 **Tool Guidance**: The `graph_memory` tool's own description carries its usage guidance. The system prompt gets no graph-memory supplement — the ROM slot is byte-stable for the life of a session (ContextCompilation HLD §3), so per-feature prompt injection is not a channel.
 
-**Implementation**: `pkg/agent/agent.go:injectGraphMemoryContext()` (per-turn context)
+**Implementation**: `pkg/agent/agent.go:graphMemoryNote()` (per-turn context)
 
 
 ## Key Interactions
@@ -799,7 +813,7 @@ agent:
 - `pkg/memory/salience.go` -- Salience engine (`ComputeSalience`, `BoostSalience`, `RankBySalience`, `CombineScores`)
 - `pkg/memory/budget.go` -- Token budget phased allocation (`BudgetConfig`, `AllocateMemoryBudget`)
 - `pkg/agent/graph_memory_tool.go` -- Agent tool (8 actions)
-- `pkg/agent/agent.go` -- `injectGraphMemoryContext()`, `checkAndRegisterGraphMemoryTool()`
+- `pkg/agent/agent.go` -- `graphMemoryNote()`, `checkAndRegisterGraphMemoryTool()`
 - `pkg/storage/backend/backend.go` -- `GraphMemoryProvider` interface
 - `pkg/storage/sqlite/graph_memory_store.go` -- SQLite implementation
 - `pkg/storage/sqlite/migrations/000002_graph_memory.up.sql` -- SQLite schema
