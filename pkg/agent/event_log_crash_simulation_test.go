@@ -9,9 +9,12 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/teradata-labs/loom/pkg/eventlog"
+	"github.com/teradata-labs/loom/pkg/shuttle"
 	llmtypes "github.com/teradata-labs/loom/pkg/types"
 )
 
@@ -108,7 +111,7 @@ func TestEventLog_ToolCallCorrelation_UnaffectedByEmptyOrCollidingToolCallID(t *
 	cfg.PatternConfig = DefaultPatternConfig()
 	cfg.PatternConfig.UseLLMClassifier = false
 	// Two parallel calls to the SAME tool with the SAME (colliding) ID —
-	// the Gemini case park.go:252-258 documents — plus an empty ID (Ollama).
+	// the Gemini case parkItems documents — plus an empty ID (Ollama).
 	ag := NewAgent(&mockBackend{},
 		&mockToolCallingLLM{responses: []mockLLMResponse{
 			{toolCalls: []llmtypes.ToolCall{
@@ -282,8 +285,7 @@ func TestResumeSession_CollidingToolCallIDs_GapDoesNotMaskSiblingResult(t *testi
 
 // TestEventLog_StepIndex_MonotonicAcrossChatAndResumeSession asserts
 // NextStepIndex continues from a live (unresolved) step rather than
-// restarting at 0 — the "chat() then later ResumeSession" scenario the
-// design doc's Testing section describes.
+// restarting at 0 — the "chat() then later ResumeSession" scenario.
 //
 // Deviation from the Task 9 brief's literal fixture, noted explicitly: the
 // brief's original version drove this through a single ag.Chat call with
@@ -338,18 +340,66 @@ func TestEventLog_StepIndex_MonotonicAcrossChatAndResumeSession(t *testing.T) {
 	}
 }
 
+// overlapProbe records whether another probe started while it was running.
+type overlapProbe struct {
+	name    string
+	running *atomic.Int32
+	overlap *atomic.Bool
+}
+
+func (p *overlapProbe) Name() string                     { return p.name }
+func (p *overlapProbe) Description() string              { return "detects concurrent dispatch" }
+func (p *overlapProbe) InputSchema() *shuttle.JSONSchema { return &shuttle.JSONSchema{Type: "object"} }
+func (p *overlapProbe) Backend() string                  { return "" }
+func (p *overlapProbe) Execute(ctx context.Context, _ map[string]interface{}) (*shuttle.Result, error) {
+	if p.running.Add(1) > 1 {
+		p.overlap.Store(true)
+	}
+	// Stay running long enough for a concurrently dispatched sibling to
+	// start; with sequential dispatch none can.
+	time.Sleep(50 * time.Millisecond)
+	p.running.Add(-1)
+	return &shuttle.Result{Success: true, Data: p.name}, nil
+}
+
+// TestDispatchOneCall_BatchLoop_IsSequentialNotConcurrent pins that a batch's
+// calls run one at a time. Each call's batch_position is its loop index and
+// its intent is recorded just before it runs; concurrent dispatch would let a
+// crash leave several calls mid-flight and break the "at most the call that
+// was running is unknown" property resume relies on.
 func TestDispatchOneCall_BatchLoop_IsSequentialNotConcurrent(t *testing.T) {
-	// Static assertion by inspection, not by racing goroutines (a flaky timing
-	// test would be worse than no test): read pkg/agent/agent.go's
-	// runConversationLoop batch loop and confirm it is still a plain
-	// `for i, toolCall := range llmResp.ToolCalls { a.dispatchOneCall(...) }`
-	// with no `go func` — batch_position = i depends on this being true (see
-	// the design doc's "batch_position is race-free by construction").
-	//
-	// This test intentionally has no assertions beyond compiling and running:
-	// its real value is the comment above being read by whoever changes that
-	// loop. If it is ever parallelized, this comment (and the design doc
-	// section it cites) is the trip-wire to update batch_position's
-	// derivation before anything else in this feature.
-	t.Log("see agent.go's tool-call batch loop and docs/superpowers/specs/2026-09-06-durable-execution-replay-design.md 'batch_position is race-free by construction'")
+	recorder := &recordingEventLog{}
+	cfg := DefaultConfig()
+	cfg.PatternConfig = DefaultPatternConfig()
+	cfg.PatternConfig.UseLLMClassifier = false
+	var running atomic.Int32
+	var overlap atomic.Bool
+	ag := NewAgent(&mockBackend{},
+		&mockToolCallingLLM{responses: []mockLLMResponse{
+			{toolCalls: []llmtypes.ToolCall{
+				{ID: "a", Name: "probe_a", Input: map[string]interface{}{}},
+				{ID: "b", Name: "probe_b", Input: map[string]interface{}{}},
+				{ID: "c", Name: "probe_c", Input: map[string]interface{}{}},
+			}},
+		}},
+		WithConfig(cfg), WithEventLog(recorder))
+	for _, name := range []string{"probe_a", "probe_b", "probe_c"} {
+		ag.tools.Register(&overlapProbe{name: name, running: &running, overlap: &overlap})
+	}
+
+	if _, err := ag.Chat(context.Background(), "s-sequential", "run all three"); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if overlap.Load() {
+		t.Fatal("two calls of one batch ran at the same time")
+	}
+	var positions []int
+	for _, e := range recorder.AllRecordedEvents("s-sequential") {
+		if e.EventType == eventlog.EventToolCallIntent {
+			positions = append(positions, e.BatchPosition)
+		}
+	}
+	if len(positions) != 3 || positions[0] != 0 || positions[1] != 1 || positions[2] != 2 {
+		t.Fatalf("tool intents recorded at positions %v, want [0 1 2] in order", positions)
+	}
 }

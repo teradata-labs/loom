@@ -54,8 +54,8 @@ func (a *Agent) currentStepIndex(ctx context.Context, sessionID string) int {
 // LLM call can occur between a batch parking and its completion (parking
 // ends the turn immediately via TurnParkedError), so the highest recorded
 // step_index at completion time IS the step that produced the parked batch
-// — the same "unresolved tail is unambiguous" reasoning the design doc's
-// Resume Flow section uses for crash-resume. Returns 0 if no event log is
+// — the same "unresolved tail is unambiguous" reasoning crash-resume relies
+// on. Returns 0 if no event log is
 // configured or no events have been recorded yet (both cases make the exact
 // value inert, since recording is a no-op throughout when a.eventLog is nil,
 // and there is nothing to correlate against if nothing was ever recorded).
