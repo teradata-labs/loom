@@ -566,18 +566,26 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		// Extract tool calls if present. They never reach tokenCallback
 		// (text only), so report them as stream activity.
 		if len(chunk.Message.ToolCalls) > 0 {
-			llmtypes.NotifyStreamActivity(ctx)
 			for _, tc := range chunk.Message.ToolCalls {
 				// Parse function arguments
 				var params map[string]interface{}
+				var argsLen int
 				switch args := tc.Function.Arguments.(type) {
 				case string:
+					// Report the raw argument JSON as received; a string that
+					// fails to parse still has a real size.
+					argsLen = len(args)
 					cleanedArgs := c.cleanJSONString(args)
 					if err := json.Unmarshal([]byte(cleanedArgs), &params); err != nil {
 						params = make(map[string]interface{})
 					}
 				case map[string]interface{}:
 					params = args
+					// Re-marshal to approximate the JSON the model produced;
+					// Ollama parsed it for us, so the original bytes are gone.
+					if argsJSON, err := json.Marshal(args); err == nil {
+						argsLen = len(argsJSON)
+					}
 				default:
 					params = make(map[string]interface{})
 				}
@@ -587,7 +595,16 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 					Name:  llm.ReverseToolName(c.toolNameMap, tc.Function.Name),
 					Input: params,
 				})
+				// Ollama delivers each tool call complete in one chunk, so the
+				// progress event reports the full argument size at once.
+				llmtypes.NotifyToolInputProgress(ctx, llmtypes.ToolInputProgress{
+					Index:      len(toolCalls) - 1,
+					ToolCallID: tc.ID,
+					ToolName:   llm.ReverseToolName(c.toolNameMap, tc.Function.Name),
+					Bytes:      argsLen,
+				})
 			}
+			llmtypes.NotifyStreamActivity(ctx)
 		}
 
 		// Keep final response for metadata

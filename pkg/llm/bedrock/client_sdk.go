@@ -785,14 +785,15 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			}
 			// Check if this is a tool use block
 			if event.ContentBlock.Type == "tool_use" {
-				// Start tracking a new tool call - reverse map sanitized name
-				toolCall := llmtypes.ToolCall{
+				// Start tracking a new tool call - reverse map sanitized name.
+				// The SDK path sends the call's id and name here, before any
+				// argument deltas.
+				toolCallIndex := len(toolCalls)
+				toolCalls = append(toolCalls, llmtypes.ToolCall{
 					ID:    event.ContentBlock.ID,
 					Name:  llm.ReverseToolName(toolNameMap, event.ContentBlock.Name),
 					Input: make(map[string]interface{}), // Will be populated from deltas
-				}
-				toolCallIndex := len(toolCalls)
-				toolCalls = append(toolCalls, toolCall)
+				})
 				// Initialize buffer for this tool's input JSON
 				toolInputBuffers[event.Index] = &strings.Builder{}
 				// Map block index to tool call index
@@ -828,11 +829,21 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			if event.Delta.Type == "input_json_delta" {
 				// Tool-input deltas never reach tokenCallback (text only);
 				// report them as stream activity, then accumulate the JSON.
-				llmtypes.NotifyStreamActivity(ctx)
-				// Accumulate the JSON delta (uses PartialJSON field, not Text)
-				if buf, exists := toolInputBuffers[event.Index]; exists {
+				// The buffer is the only copy of the arguments: it is parsed at
+				// content_block_stop, so a call truncated mid-argument leaves
+				// ToolCall.Input empty instead of leaking a stray key.
+				if buf, exists := toolInputBuffers[event.Index]; exists && event.Delta.PartialJSON != "" {
 					buf.WriteString(event.Delta.PartialJSON)
+					if toolIdx, ok := blockIndexToToolIndex[event.Index]; ok && toolIdx < len(toolCalls) {
+						llmtypes.NotifyToolInputProgress(ctx, llmtypes.ToolInputProgress{
+							Index:      toolIdx,
+							ToolCallID: toolCalls[toolIdx].ID,
+							ToolName:   toolCalls[toolIdx].Name,
+							Bytes:      buf.Len(),
+						})
+					}
 				}
+				llmtypes.NotifyStreamActivity(ctx)
 			}
 
 		case "content_block_stop":
@@ -847,6 +858,7 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				}
 				// Clean up buffer
 				delete(toolInputBuffers, event.Index)
+				delete(blockIndexToToolIndex, event.Index)
 			}
 
 		case "message_delta":
