@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/pkoukk/tiktoken-go"
+	tiktokenloader "github.com/pkoukk/tiktoken-go-loader"
 	"go.uber.org/zap"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
@@ -113,6 +114,14 @@ func GetTokenCounter() *TokenCounter {
 		// Use cl100k_base encoding (GPT-4/Claude compatible)
 		// This is a good approximation for Claude models
 		encoding := "cl100k_base"
+
+		// Use the encoding bundled in the binary (tiktoken-go-loader; its
+		// cl100k_base file has the SHA-256 OpenAI's tiktoken checks,
+		// 223921b7...b2a7) instead of downloading it from
+		// openaipublic.blob.core.windows.net on first use: a self-hosted
+		// server should not call out to count tokens, and without network
+		// access counting fell back to a characters/4 estimate.
+		tiktoken.SetBpeLoader(tiktokenloader.NewOfflineLoader())
 
 		encoders := make(chan *tiktoken.Tiktoken, encoderPoolSize)
 		var first *tiktoken.Tiktoken
