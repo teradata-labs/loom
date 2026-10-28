@@ -350,7 +350,7 @@ func runResume(cmd *cobra.Command, args []string) {
 		gate.GetStageNumber(), gate.GetStageAgentId(), decision.Action.String())
 
 	if decision.Action == loomv1.GateAction_GATE_ACTION_REJECT {
-		consumeStoredCheckpoint(context.Background(), rt.openCheckpoints, rt.logger, ckpt.GetWorkflowId())
+		consumeStoredCheckpoint(context.Background(), rt.openCheckpoints, rt.logger, ckpt)
 		fmt.Printf("\n🛑 Workflow rejected at gate on stage %s. No further stages executed.\n", gate.GetStageAgentId())
 		return
 	}
@@ -372,7 +372,7 @@ func runResume(cmd *cobra.Command, args []string) {
 
 	result, err := rt.orchestrator.ResumeWorkflow(ctx, pattern, ckpt, decision)
 	if resumeFinished(err) {
-		consumeStoredCheckpoint(context.Background(), rt.openCheckpoints, rt.logger, ckpt.GetWorkflowId())
+		consumeStoredCheckpoint(context.Background(), rt.openCheckpoints, rt.logger, ckpt)
 	}
 	handleWorkflowOutcome(rt, workflowPath, result, err, time.Since(startTime))
 }
@@ -441,9 +441,11 @@ var workflowStorageTimeout = 10 * time.Second
 var errCheckpointTenantRequired = errors.New("the storage backend is postgres: --user is required (it selects the tenant whose workflow checkpoints are read and written)")
 
 // workflowCheckpointUserID resolves the tenant that owns checkpoints in the
-// storage backend, by the same rule as `looms hitl` (openHITLStore): the
-// explicit --user; on postgres, --user is required; on SQLite, which has no
-// row-level security, types.DefaultUserID when --user is not given.
+// storage backend: the explicit --user; on postgres, --user is required (the
+// same rule as `looms hitl`, openHITLStore); on SQLite, types.DefaultUserID
+// when --user is not given. SQLite differs from `looms hitl` in one way:
+// openHITLStore ignores --user on SQLite because the SQLite human-request
+// store has no user column, while SQLite checkpoints are scoped by --user.
 func workflowCheckpointUserID() (string, error) {
 	if workflowUser != "" {
 		return workflowUser, nil
@@ -452,6 +454,18 @@ func workflowCheckpointUserID() (string, error) {
 		return "", errCheckpointTenantRequired
 	}
 	return types.DefaultUserID, nil
+}
+
+// checkpointTenant resolves the tenant to read or write a checkpoint as. A
+// checkpoint that records its owner (ckpt.TenantUserId, set when the CLI stored
+// it) is used under that owner, so finishing it from the checkpoint file
+// removes the stored copy whichever --user the resume command carries.
+// Otherwise the tenant comes from --user as workflowCheckpointUserID describes.
+func checkpointTenant(recorded string) (string, error) {
+	if recorded != "" {
+		return recorded, nil
+	}
+	return workflowCheckpointUserID()
 }
 
 // checkpointHandle is an open CheckpointStore and the context its calls must
@@ -466,18 +480,15 @@ type checkpointHandle struct {
 // workflow commands call it only when a checkpoint is saved, looked up by
 // workflow ID, or consumed, so a run that never suspends and a resume from a
 // checkpoint file never touch the storage backend until then.
-type openCheckpointStoreFunc func(ctx context.Context) (*checkpointHandle, error)
+type openCheckpointStoreFunc func(ctx context.Context, userID string) (*checkpointHandle, error)
 
 // openCheckpointStore opens the configured storage backend, the same way
 // `looms hitl` does (openHITLStore): it does not run migrations, which belong
 // to `looms serve` and `looms upgrade`, so a CLI invocation never changes a
-// shared database's schema. The tenant is resolved first, so a postgres
-// config without --user fails before any network call.
-func openCheckpointStore(ctx context.Context, tracer observability.Tracer) (*checkpointHandle, error) {
-	userID, err := workflowCheckpointUserID()
-	if err != nil {
-		return nil, err
-	}
+// shared database's schema. userID is the tenant the store's calls run as; the
+// caller resolves it (checkpointTenant) before opening, so a postgres config
+// without a tenant fails before any network call.
+func openCheckpointStore(ctx context.Context, tracer observability.Tracer, userID string) (*checkpointHandle, error) {
 	sb, err := backend.NewStorageBackend(ctx, config.BuildProtoStorageConfig(), tracer)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open storage backend: %w", err)
@@ -494,12 +505,18 @@ func openCheckpointStore(ctx context.Context, tracer observability.Tracer) (*che
 	}, nil
 }
 
-// withCheckpointStore opens the store, runs fn against it, and closes it, all
-// within workflowStorageTimeout.
-func withCheckpointStore(ctx context.Context, open openCheckpointStoreFunc, fn func(ctx context.Context, store checkpoint.CheckpointStore) error) error {
+// withCheckpointStore resolves the tenant (recordedTenant, else --user), opens
+// the store, runs fn against it, and closes it, all within
+// workflowStorageTimeout. The tenant is resolved before the open, so a postgres
+// config without one fails without a network call.
+func withCheckpointStore(ctx context.Context, open openCheckpointStoreFunc, recordedTenant string, fn func(ctx context.Context, store checkpoint.CheckpointStore) error) error {
+	userID, err := checkpointTenant(recordedTenant)
+	if err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(ctx, workflowStorageTimeout)
 	defer cancel()
-	h, err := open(ctx)
+	h, err := open(ctx, userID)
 	if err != nil {
 		return err
 	}
@@ -526,6 +543,19 @@ func withCheckpointStore(ctx context.Context, open openCheckpointStoreFunc, fn f
 // zap.ReplaceGlobals (only cmd_serve.go does), so zap.L() resolves to a Nop
 // logger here and would silently discard this warning.
 func persistCheckpoint(ctx context.Context, open openCheckpointStoreFunc, logger *zap.Logger, path string, ckpt *loomv1.WorkflowCheckpoint) (storedInBackend bool, err error) {
+	// Record the owning tenant in the checkpoint, in the file too, so a resume
+	// from the file deletes the stored copy under this tenant instead of
+	// whatever --user that resume command happens to carry. With no tenant
+	// (postgres without --user) nothing is stored, so nothing is recorded.
+	tenant := ""
+	if open != nil {
+		if userID, terr := workflowCheckpointUserID(); terr == nil {
+			tenant = userID
+		}
+	}
+	ckpt = proto.Clone(ckpt).(*loomv1.WorkflowCheckpoint)
+	ckpt.TenantUserId = tenant
+
 	data, err := proto.Marshal(ckpt)
 	if err != nil {
 		return false, fmt.Errorf("failed to marshal checkpoint: %w", err)
@@ -537,7 +567,7 @@ func persistCheckpoint(ctx context.Context, open openCheckpointStoreFunc, logger
 		return false, nil
 	}
 
-	err = withCheckpointStore(ctx, open, func(ctx context.Context, store checkpoint.CheckpointStore) error {
+	err = withCheckpointStore(ctx, open, tenant, func(ctx context.Context, store checkpoint.CheckpointStore) error {
 		return store.SaveCheckpoint(ctx, ckpt)
 	})
 	if err != nil {
@@ -566,7 +596,7 @@ func readCheckpointFile(path string) (*loomv1.WorkflowCheckpoint, error) {
 // checkpoint file no longer exists.
 func loadStoredCheckpoint(ctx context.Context, open openCheckpointStoreFunc, workflowID string) (*loomv1.WorkflowCheckpoint, error) {
 	var ckpt *loomv1.WorkflowCheckpoint
-	err := withCheckpointStore(ctx, open, func(ctx context.Context, store checkpoint.CheckpointStore) error {
+	err := withCheckpointStore(ctx, open, "", func(ctx context.Context, store checkpoint.CheckpointStore) error {
 		var err error
 		ckpt, err = store.LoadCheckpoint(ctx, workflowID)
 		return err
@@ -580,20 +610,27 @@ func loadStoredCheckpoint(ctx context.Context, open openCheckpointStoreFunc, wor
 	return ckpt, nil
 }
 
-// consumeStoredCheckpoint deletes the stored checkpoint for workflowID once
-// its workflow has finished, so the same ID cannot be resumed a second time.
-// It is best-effort: the workflow already ran, so a failure is logged and the
-// stored copy stays resumable. With no tenant (postgres without --user) there
-// is nothing the run could have stored, so it does nothing.
-func consumeStoredCheckpoint(ctx context.Context, open openCheckpointStoreFunc, logger *zap.Logger, workflowID string) {
+// consumeStoredCheckpoint deletes the stored copy of ckpt once its workflow has
+// finished, so the same ID cannot be resumed a second time. The copy is deleted
+// under the tenant recorded in ckpt when there is one, else under --user. It is
+// best-effort: the workflow already ran, so a failure is logged and the stored
+// copy stays resumable.
+//
+// A checkpoint with no recorded tenant (written by an earlier version, or by a
+// run that stored nothing) falls back to --user. On postgres without --user
+// that cannot name a tenant, which is logged rather than skipped silently
+// because a stored copy may exist. On SQLite the fallback is default-user,
+// which deletes nothing when the run used another --user.
+func consumeStoredCheckpoint(ctx context.Context, open openCheckpointStoreFunc, logger *zap.Logger, ckpt *loomv1.WorkflowCheckpoint) {
+	workflowID := ckpt.GetWorkflowId()
 	if open == nil || workflowID == "" {
 		return
 	}
-	err := withCheckpointStore(ctx, open, func(ctx context.Context, store checkpoint.CheckpointStore) error {
+	err := withCheckpointStore(ctx, open, ckpt.GetTenantUserId(), func(ctx context.Context, store checkpoint.CheckpointStore) error {
 		return store.DeleteCheckpoint(ctx, workflowID)
 	})
-	if err != nil && !errors.Is(err, errCheckpointTenantRequired) {
-		logger.Warn("failed to delete the stored workflow checkpoint; it can still be resumed with --workflow-id",
+	if err != nil {
+		logger.Warn("failed to delete the stored workflow checkpoint; it can still be resumed with --workflow-id (pass --user with the tenant that ran the workflow to delete it)",
 			zap.String("workflow_id", workflowID), zap.Error(err))
 	}
 }
@@ -648,14 +685,17 @@ func writeCheckpointAndPrintGate(rt *workflowRuntime, workflowPath string, ckpt 
 	fmt.Println(strings.Repeat("-", 80))
 	fmt.Printf("\n💾 Checkpoint written: %s\n", path)
 	fmt.Println("\nResume with one of:")
-	fmt.Printf("  looms workflow resume %s %s --approve\n", workflowPath, path)
-	fmt.Printf("  looms workflow resume %s %s --revise \"<feedback>\"\n", workflowPath, path)
-	fmt.Printf("  looms workflow resume %s %s --reject\n", workflowPath, path)
+	// --user is part of every command when the run had one: a resume that
+	// leaves it out would look for the stored copy under another tenant.
+	userArg := ""
+	if workflowUser != "" {
+		userArg = " --user " + workflowUser
+	}
+	fmt.Printf("  looms workflow resume %s %s%s --approve\n", workflowPath, path, userArg)
+	fmt.Printf("  looms workflow resume %s %s%s --revise \"<feedback>\"\n", workflowPath, path, userArg)
+	fmt.Printf("  looms workflow resume %s %s%s --reject\n", workflowPath, path, userArg)
 	if storedInBackend {
-		byID := "--workflow-id " + ckpt.GetWorkflowId()
-		if workflowUser != "" {
-			byID += " --user " + workflowUser
-		}
+		byID := "--workflow-id " + ckpt.GetWorkflowId() + userArg
 		fmt.Printf("\nIf %s is lost, the checkpoint is also stored under workflow ID %s:\n", path, ckpt.GetWorkflowId())
 		fmt.Printf("  looms workflow resume %s %s --approve\n", workflowPath, byID)
 	}
@@ -906,8 +946,8 @@ func newWorkflowRuntime() (*workflowRuntime, error) {
 	}
 
 	rt.tracer = tracer
-	rt.openCheckpoints = func(ctx context.Context) (*checkpointHandle, error) {
-		return openCheckpointStore(ctx, tracer)
+	rt.openCheckpoints = func(ctx context.Context, userID string) (*checkpointHandle, error) {
+		return openCheckpointStore(ctx, tracer, userID)
 	}
 
 	ok = true

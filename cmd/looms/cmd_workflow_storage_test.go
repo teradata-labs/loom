@@ -69,9 +69,9 @@ func migrateWorkflowStorage(t *testing.T) {
 // realOpener is the opener the workflow commands use, counting how many times
 // the storage backend is opened.
 func realOpener(opens *atomic.Int32) openCheckpointStoreFunc {
-	return func(ctx context.Context) (*checkpointHandle, error) {
+	return func(ctx context.Context, userID string) (*checkpointHandle, error) {
 		opens.Add(1)
-		return openCheckpointStore(ctx, observability.NewNoOpTracer())
+		return openCheckpointStore(ctx, observability.NewNoOpTracer(), userID)
 	}
 }
 
@@ -79,7 +79,7 @@ func realOpener(opens *atomic.Int32) openCheckpointStoreFunc {
 func saveStored(t *testing.T, ckpt *loomv1.WorkflowCheckpoint) {
 	t.Helper()
 	var opens atomic.Int32
-	err := withCheckpointStore(context.Background(), realOpener(&opens), func(ctx context.Context, store checkpoint.CheckpointStore) error {
+	err := withCheckpointStore(context.Background(), realOpener(&opens), "", func(ctx context.Context, store checkpoint.CheckpointStore) error {
 		return store.SaveCheckpoint(ctx, ckpt)
 	})
 	if err != nil {
@@ -95,7 +95,7 @@ func TestOpenCheckpointStore_DoesNotMigrate(t *testing.T) {
 	// leaves it unmigrated, so a save fails for want of the table.
 	config.Storage.Migration.AutoMigrate = true
 	var opens atomic.Int32
-	err := withCheckpointStore(context.Background(), realOpener(&opens), func(ctx context.Context, store checkpoint.CheckpointStore) error {
+	err := withCheckpointStore(context.Background(), realOpener(&opens), "", func(ctx context.Context, store checkpoint.CheckpointStore) error {
 		return store.SaveCheckpoint(ctx, &loomv1.WorkflowCheckpoint{WorkflowId: "wf-unmigrated"})
 	})
 	if err == nil {
@@ -137,13 +137,13 @@ func TestWithCheckpointStore_BoundsASlowOpen(t *testing.T) {
 
 	// An opener that blocks until its context ends, like a pool ping to a
 	// host that never answers.
-	open := func(ctx context.Context) (*checkpointHandle, error) {
+	open := func(ctx context.Context, _ string) (*checkpointHandle, error) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
 
 	start := time.Now()
-	err := withCheckpointStore(context.Background(), open, func(context.Context, checkpoint.CheckpointStore) error {
+	err := withCheckpointStore(context.Background(), open, "", func(context.Context, checkpoint.CheckpointStore) error {
 		t.Fatal("fn ran although the store never opened")
 		return nil
 	})
@@ -338,7 +338,7 @@ func TestLoadStoredCheckpoint_Postgres(t *testing.T) {
 	t.Cleanup(func() {
 		for _, u := range []string{alice, bob} {
 			workflowUser = u
-			consumeStoredCheckpoint(context.Background(), realOpener(&opens), zap.NewNop(), id)
+			consumeStoredCheckpoint(context.Background(), realOpener(&opens), zap.NewNop(), &loomv1.WorkflowCheckpoint{WorkflowId: id})
 		}
 	})
 
@@ -362,14 +362,14 @@ func TestConsumeStoredCheckpoint(t *testing.T) {
 	saveStored(t, &loomv1.WorkflowCheckpoint{WorkflowId: "wf-consumed"})
 
 	var opens atomic.Int32
-	consumeStoredCheckpoint(context.Background(), realOpener(&opens), zap.NewNop(), "wf-consumed")
+	consumeStoredCheckpoint(context.Background(), realOpener(&opens), zap.NewNop(), &loomv1.WorkflowCheckpoint{WorkflowId: "wf-consumed"})
 
 	if _, err := loadStoredCheckpoint(context.Background(), realOpener(&opens), "wf-consumed"); err == nil {
 		t.Fatal("the checkpoint is still loadable after being consumed")
 	}
 	// Consuming again, or an ID that was never stored, is harmless.
 	core, logs := observer.New(zap.WarnLevel)
-	consumeStoredCheckpoint(context.Background(), realOpener(&opens), zap.New(core), "wf-consumed")
+	consumeStoredCheckpoint(context.Background(), realOpener(&opens), zap.New(core), &loomv1.WorkflowCheckpoint{WorkflowId: "wf-consumed"})
 	if logs.Len() != 0 {
 		t.Fatalf("consuming an absent checkpoint warned: %v", logs.All())
 	}
@@ -377,24 +377,71 @@ func TestConsumeStoredCheckpoint(t *testing.T) {
 
 func TestConsumeStoredCheckpoint_FailureWarnsButDoesNotFail(t *testing.T) {
 	core, logs := observer.New(zap.WarnLevel)
-	open := func(context.Context) (*checkpointHandle, error) { return nil, errors.New("connection refused") }
+	open := func(context.Context, string) (*checkpointHandle, error) { return nil, errors.New("connection refused") }
 
-	consumeStoredCheckpoint(context.Background(), open, zap.New(core), "wf-1")
+	consumeStoredCheckpoint(context.Background(), open, zap.New(core), &loomv1.WorkflowCheckpoint{WorkflowId: "wf-1"})
 
 	if logs.Len() != 1 || !strings.Contains(logs.All()[0].Message, "can still be resumed with --workflow-id") {
 		t.Fatalf("want one warning that the stored copy stays resumable, got %v", logs.All())
 	}
 }
 
-func TestConsumeStoredCheckpoint_NoTenantIsSilent(t *testing.T) {
+// TestConsumeStoredCheckpoint_PostgresWithoutTenantWarns: a checkpoint that
+// records no tenant, finished on postgres with no --user, cannot name the
+// tenant whose stored copy to delete. That is a warning naming --user, not
+// silence, because the stored copy may exist and stay resumable.
+func TestConsumeStoredCheckpoint_PostgresWithoutTenantWarns(t *testing.T) {
+	isolateWorkflowStorage(t)
+	config.Storage.Backend = "postgres"
+	config.Storage.Postgres.Host = "10.255.255.1" // unroutable: reaching for it would stall
+	config.Storage.Postgres.Database = "loom"
+
 	core, logs := observer.New(zap.WarnLevel)
-	open := func(context.Context) (*checkpointHandle, error) { return nil, errCheckpointTenantRequired }
+	var opens atomic.Int32
+	start := time.Now()
+	consumeStoredCheckpoint(context.Background(), realOpener(&opens), zap.New(core), &loomv1.WorkflowCheckpoint{WorkflowId: "wf-1"})
 
-	consumeStoredCheckpoint(context.Background(), open, zap.New(core), "wf-1")
-	consumeStoredCheckpoint(context.Background(), nil, zap.New(core), "wf-1")
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("took %v: the tenant check must come before any network call", elapsed)
+	}
+	if opens.Load() != 0 {
+		t.Fatalf("opened the storage backend %d times with no tenant", opens.Load())
+	}
+	if logs.Len() != 1 || !strings.Contains(logs.All()[0].Message, "--user") {
+		t.Fatalf("want one warning naming --user, got %v", logs.All())
+	}
 
-	if logs.Len() != 0 {
-		t.Fatalf("got warnings %v: with no tenant nothing was stored, so there is nothing to report", logs.All())
+	// No opener means no storage backend configured for this runtime: nothing
+	// could have been stored, so there is nothing to report.
+	consumeStoredCheckpoint(context.Background(), nil, zap.New(core), &loomv1.WorkflowCheckpoint{WorkflowId: "wf-1"})
+	if logs.Len() != 1 {
+		t.Fatalf("a nil opener warned: %v", logs.All())
+	}
+}
+
+// TestConsumeStoredCheckpoint_UsesTheRecordedTenant: the checkpoint names the
+// tenant it was stored under, and that tenant wins over --user, so a resume
+// command that omits or changes --user still deletes the right row.
+func TestConsumeStoredCheckpoint_UsesTheRecordedTenant(t *testing.T) {
+	isolateWorkflowStorage(t)
+	migrateWorkflowStorage(t)
+	workflowUser = "alice"
+	saveStored(t, &loomv1.WorkflowCheckpoint{WorkflowId: "wf-owned"})
+	workflowUser = "bob"
+	saveStored(t, &loomv1.WorkflowCheckpoint{WorkflowId: "wf-owned"})
+
+	workflowUser = ""
+	var opens atomic.Int32
+	consumeStoredCheckpoint(context.Background(), realOpener(&opens), zap.NewNop(),
+		&loomv1.WorkflowCheckpoint{WorkflowId: "wf-owned", TenantUserId: "alice"})
+
+	workflowUser = "alice"
+	if got, err := loadStoredCheckpoint(context.Background(), realOpener(&opens), "wf-owned"); err == nil {
+		t.Fatalf("alice's stored copy survived: %+v", got)
+	}
+	workflowUser = "bob"
+	if _, err := loadStoredCheckpoint(context.Background(), realOpener(&opens), "wf-owned"); err != nil {
+		t.Fatalf("bob's stored copy under the same ID was deleted: %v", err)
 	}
 }
 
@@ -604,6 +651,140 @@ func TestRunResume_RejectFromFileConsumesTheStoredCopy(t *testing.T) {
 	var opens atomic.Int32
 	if got, err := loadStoredCheckpoint(context.Background(), realOpener(&opens), "pipeline-aa11bb22"); err == nil {
 		t.Fatalf("the stored copy is still resumable after the file was rejected: %+v", got)
+	}
+}
+
+// TestPersistCheckpoint_RecordsTheTenant: the tenant that stored the
+// checkpoint is written into the file and the stored copy, and the caller's
+// checkpoint is left untouched.
+func TestPersistCheckpoint_RecordsTheTenant(t *testing.T) {
+	isolateWorkflowStorage(t)
+	migrateWorkflowStorage(t)
+	workflowUser = "alice"
+
+	path := t.TempDir() + "/test.checkpoint.pb"
+	var opens atomic.Int32
+	ckpt := &loomv1.WorkflowCheckpoint{WorkflowId: "wf-tenant"}
+	if stored, err := persistCheckpoint(context.Background(), realOpener(&opens), zap.NewNop(), path, ckpt); err != nil || !stored {
+		t.Fatalf("persistCheckpoint = (%v, %v), want stored", stored, err)
+	}
+
+	if ckpt.GetTenantUserId() != "" {
+		t.Fatalf("persistCheckpoint modified the caller's checkpoint: tenant %q", ckpt.GetTenantUserId())
+	}
+	fromFile, err := readCheckpointFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fromFile.GetTenantUserId() != "alice" {
+		t.Fatalf("file records tenant %q, want alice", fromFile.GetTenantUserId())
+	}
+	fromStore, err := loadStoredCheckpoint(context.Background(), realOpener(&opens), "wf-tenant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fromStore.GetTenantUserId() != "alice" {
+		t.Fatalf("stored copy records tenant %q, want alice", fromStore.GetTenantUserId())
+	}
+}
+
+// TestPersistCheckpoint_PostgresWithoutTenantRecordsNone: with no tenant
+// nothing is stored, so the file does not name one.
+func TestPersistCheckpoint_PostgresWithoutTenantRecordsNone(t *testing.T) {
+	isolateWorkflowStorage(t)
+	config.Storage.Backend = "postgres"
+	config.Storage.Postgres.Host = "10.255.255.1"
+	config.Storage.Postgres.Database = "loom"
+
+	path := t.TempDir() + "/test.checkpoint.pb"
+	var opens atomic.Int32
+	if _, err := persistCheckpoint(context.Background(), realOpener(&opens), zap.NewNop(), path, &loomv1.WorkflowCheckpoint{WorkflowId: "wf-none"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readCheckpointFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetTenantUserId() != "" {
+		t.Fatalf("file records tenant %q although none was resolved", got.GetTenantUserId())
+	}
+}
+
+// TestRunResume_FinishFromFileWithoutUserConsumesTheOwnersCopy is the round-2
+// F9 failure: a workflow run as alice, finished from its checkpoint file by a
+// resume that omits --user, must not stay resumable by --workflow-id.
+func TestRunResume_FinishFromFileWithoutUserConsumesTheOwnersCopy(t *testing.T) {
+	isolateWorkflowStorage(t)
+	migrateWorkflowStorage(t)
+	setResumeFlags(t, true, "")
+
+	// The run: suspended as alice, storing the checkpoint and writing the file.
+	workflowUser = "alice"
+	ckptPath := filepath.Join(t.TempDir(), "gated.checkpoint.pb")
+	var opens atomic.Int32
+	if stored, err := persistCheckpoint(context.Background(), realOpener(&opens), zap.NewNop(), ckptPath, gatedCheckpoint("pipeline-3f2b9c1e")); err != nil || !stored {
+		t.Fatalf("persistCheckpoint = (%v, %v), want stored", stored, err)
+	}
+
+	// The resume: from the file, with no --user.
+	workflowUser = ""
+	captureStdout(t, func() { runResume(nil, []string{writeGatedWorkflow(t), ckptPath}) })
+
+	workflowUser = "alice"
+	if got, err := loadStoredCheckpoint(context.Background(), realOpener(&opens), "pipeline-3f2b9c1e"); err == nil {
+		t.Fatalf("the finished workflow is still resumable by --workflow-id as alice: %+v", got)
+	}
+}
+
+// TestConsumeStoredCheckpoint_SameFixedIDDeletesTheLaterRunsCopy pins the
+// documented limit: the delete is keyed by tenant and workflow ID, so with a
+// fixed workflow_id shared by two suspended runs, finishing the first removes
+// the stored copy the second run replaced it with.
+func TestConsumeStoredCheckpoint_SameFixedIDDeletesTheLaterRunsCopy(t *testing.T) {
+	isolateWorkflowStorage(t)
+	migrateWorkflowStorage(t)
+	workflowUser = "alice"
+	var opens atomic.Int32
+	runA := &loomv1.WorkflowCheckpoint{WorkflowId: "fixed-id", NextStageIndex: 1}
+	runB := &loomv1.WorkflowCheckpoint{WorkflowId: "fixed-id", NextStageIndex: 2}
+	for _, c := range []*loomv1.WorkflowCheckpoint{runA, runB} {
+		if _, err := persistCheckpoint(context.Background(), realOpener(&opens), zap.NewNop(), filepath.Join(t.TempDir(), "c.pb"), c); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	consumeStoredCheckpoint(context.Background(), realOpener(&opens), zap.NewNop(), runA)
+
+	if got, err := loadStoredCheckpoint(context.Background(), realOpener(&opens), "fixed-id"); err == nil {
+		t.Fatalf("run B's stored copy survived run A finishing: %+v", got)
+	}
+}
+
+// TestWriteCheckpointAndPrintGate_FileResumeCommandsCarryTheUser: every printed
+// resume command names --user when the run had one.
+func TestWriteCheckpointAndPrintGate_FileResumeCommandsCarryTheUser(t *testing.T) {
+	origSuspend := workflowSuspendTo
+	t.Cleanup(func() { workflowSuspendTo = origSuspend })
+	isolateWorkflowStorage(t)
+	workflowUser = "alice"
+	workflowSuspendTo = filepath.Join(t.TempDir(), "wf.checkpoint.pb")
+	rt := &workflowRuntime{logger: zap.NewNop()}
+
+	out := captureStdout(t, func() { writeCheckpointAndPrintGate(rt, "wf.yaml", gatedCheckpoint("pipeline-3f2b9c1e")) })
+
+	for _, action := range []string{"--approve", "--revise", "--reject"} {
+		found := false
+		for line := range strings.SplitSeq(out, "\n") {
+			if strings.Contains(line, "looms workflow resume wf.yaml") && strings.Contains(line, action) {
+				found = true
+				if !strings.Contains(line, "--user alice") {
+					t.Errorf("%s command omits --user: %q", action, line)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("no %s command printed:\n%s", action, out)
+		}
 	}
 }
 
