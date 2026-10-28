@@ -59,6 +59,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### MCP tool adapter
 - The schema-lookup result cache no longer stores an empty answer (`{"columns":[]}`, `[]`, or an object whose array fields are all empty). A `describe_table` that found nothing — because the server was handed a name it could not resolve — was cached and then served to every later caller with the same arguments, so one bad lookup became "a table with no columns" for a whole fleet. The empty answer is still returned to the caller that got it; the next caller reaches the server again.
 
+### Security
+
+#### Spreadsheet parsing
+- **`github.com/xuri/excelize/v2` moves from v2.11.0 to commit `611b222f` (pseudo-version `v2.11.1-0.20261020033641-611b222fd8f7`) for 15 advisories.** `govulncheck` reported them as reachable through `parse_document`'s Excel path (`parseExcel`), which every agent registers, so a malformed spreadsheet could crash the server. No tagged release contains the fixes yet; switch to v2.11.1 when it is tagged. The bump also moves `richardlehane/mscfb` to v1.0.8 and `xuri/efp` to v0.0.2.
+- **`golang.org/x/image` moves to v0.45.0.** The TUI's image rendering uses it. v0.45.0 fixes an advisory that `govulncheck` lists against v0.44.0 but finds no call to.
+
 ### Breaking Changes
 
 - **An undeclared `trigger.mode` now loads as `HYBRID`, not `MANUAL`.** With the mode enforced, the old default would have withheld from the model every skill that omits the field — in practice nearly all of them, since nothing read the mode before and no author chose `MANUAL` by writing nothing. `HYBRID` preserves how those skills behave today (the model may pull them; a slash command also invokes them). An embedder that wants a skill withheld must now declare `mode: MANUAL` on it.
