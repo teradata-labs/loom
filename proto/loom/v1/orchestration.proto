@@ -304,6 +304,15 @@ message WorkflowCheckpoint {
 
   // Checkpoint creation time (Unix milliseconds).
   int64 created_at_ms = 14;
+
+  // Tenant user ID the `looms workflow` CLI stored this checkpoint under in
+  // the storage backend. The CLI sets it when it persists a suspension, and a
+  // resume uses it to find the stored copy to delete, so finishing a workflow
+  // from the checkpoint file removes the stored copy even when the resume
+  // command omits --user. Empty when no tenant was resolved (for example a
+  // checkpoint written by an earlier version, or a run with no storage
+  // backend); the orchestrator neither reads nor sets it.
+  string tenant_user_id = 15;
 }
 
 // CheckpointStageSnapshot is the latest full output of one completed stage.
