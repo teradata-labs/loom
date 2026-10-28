@@ -19,7 +19,6 @@ package postgres
 import (
 	"context"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
@@ -36,26 +35,7 @@ import (
 // It runs all migrations before returning. The pool is closed via t.Cleanup.
 func testPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-
-	dsn := os.Getenv("TEST_POSTGRES_URL")
-	if dsn == "" {
-		t.Skip("TEST_POSTGRES_URL not set; skipping PostgreSQL integration test")
-	}
-
-	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	require.NoError(t, err, "failed to connect to PostgreSQL")
-
-	t.Cleanup(func() {
-		pool.Close()
-	})
-
-	// Run migrations to ensure schema is up to date
-	migrator, err := NewMigrator(pool, observability.NewNoOpTracer())
-	require.NoError(t, err, "failed to create migrator")
-	require.NoError(t, migrator.MigrateUp(ctx), "failed to run migrations")
-
-	return pool
+	return migratedAdminPool(t)
 }
 
 // testSessionStore creates a SessionStore with a no-op tracer for integration tests.
