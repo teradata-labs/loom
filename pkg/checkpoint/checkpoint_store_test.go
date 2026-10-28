@@ -26,6 +26,11 @@ func (f *fakeCheckpointStore) LoadCheckpoint(_ context.Context, workflowID strin
 	return f.saved[workflowID], nil // nil, nil on a miss — matches map zero value
 }
 
+func (f *fakeCheckpointStore) DeleteCheckpoint(_ context.Context, workflowID string) error {
+	delete(f.saved, workflowID)
+	return nil
+}
+
 var _ CheckpointStore = (*fakeCheckpointStore)(nil)
 
 func TestCheckpointStore_SaveThenLoad_RoundTrips(t *testing.T) {
@@ -58,5 +63,20 @@ func TestCheckpointStore_LoadMissing_ReturnsNilNil(t *testing.T) {
 	}
 	if got != nil {
 		t.Fatalf("LoadCheckpoint: got %+v, want nil for a missing checkpoint", got)
+	}
+}
+
+func TestCheckpointStore_DeleteThenLoad_ReturnsNilNil(t *testing.T) {
+	store := newFakeCheckpointStore()
+	ctx := context.Background()
+	if err := store.SaveCheckpoint(ctx, &loomv1.WorkflowCheckpoint{WorkflowId: "wf-123"}); err != nil {
+		t.Fatalf("SaveCheckpoint: %v", err)
+	}
+	if err := store.DeleteCheckpoint(ctx, "wf-123"); err != nil {
+		t.Fatalf("DeleteCheckpoint: %v", err)
+	}
+	got, err := store.LoadCheckpoint(ctx, "wf-123")
+	if err != nil || got != nil {
+		t.Fatalf("LoadCheckpoint after delete: got (%+v, %v), want (nil, nil)", got, err)
 	}
 }
