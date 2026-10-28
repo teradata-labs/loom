@@ -411,6 +411,9 @@ If review.pb is lost, the checkpoint is also stored under workflow ID pipeline-3
   looms workflow resume create-table.yaml --workflow-id pipeline-3f2b9c1e --approve
 ```
 
+When the run was started with `--user alice`, every printed resume command,
+file-based or by ID, includes `--user alice`.
+
 If `review.pb` is gone (another machine, a wiped container), pass the workflow
 ID with `--workflow-id` in place of the file:
 
@@ -442,23 +445,40 @@ workflow or rejects it, the CLI deletes the stored checkpoint, so
 `--workflow-id` for that workflow fails with "no checkpoint found". A resume
 that fails, or suspends at another gate, leaves the stored checkpoint in
 place (a new suspension replaces it). The delete is best-effort: if it fails,
-the CLI logs a warning and the stored checkpoint stays resumable. Two
-limits:
+the CLI logs a warning and the stored checkpoint stays resumable.
+
+When the CLI stores a checkpoint it records the tenant in the checkpoint
+itself, in the file as well as the stored copy. Finishing a workflow from the
+checkpoint file therefore deletes the stored copy under the tenant that saved
+it, even if the resume command carries a different `--user` or none. The resume
+commands the CLI prints include `--user` when the run had one. A checkpoint
+file written by an earlier version records no tenant; resuming from it falls
+back to `--user`, and on Postgres with no `--user` the CLI logs a warning that
+the stored copy was not deleted. Limits:
 
 - The local checkpoint file is not deleted and can still be resumed on the
   machine that has it.
 - Nothing claims a checkpoint before the stages run, so two operators who
   resume the same workflow ID at the same moment can both run the remaining
   stages.
+- The delete is keyed by tenant and workflow ID only (see the next
+  paragraph).
 
 **Workflow IDs are per tenant, one checkpoint per ID.** A second suspended run
 of the same tenant that uses the same workflow ID (a fixed `workflow_id` in
-the YAML) replaces the first run's stored checkpoint. Generated IDs do not
+the YAML) replaces the first run's stored checkpoint. It also means that
+finishing the first run from its file deletes the stored checkpoint of the
+second run, which can then be resumed only from its own file. Use a distinct
+`workflow_id` per run, or leave it unset so the CLI generates one, if runs of
+the same workflow can be suspended at the same time. Generated IDs do not
 collide in practice.
 
 **Tenants.** Stored checkpoints belong to one tenant, and each tenant sees only
 its own. Two tenants can use the same workflow ID without affecting each other.
-The rule is the same as for `looms hitl`:
+On Postgres the rule is the same as for `looms hitl`. On SQLite it is not:
+`looms hitl` ignores `--user` there (the SQLite human-request store has no user
+column), while SQLite checkpoints are scoped by `--user`, or `default-user`
+when it is not given.
 
 | Backend  | Tenant used                                      |
 |----------|--------------------------------------------------|
