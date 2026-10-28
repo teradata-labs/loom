@@ -431,7 +431,7 @@
     },
     "/v1/apps/component-types": {
       "get": {
-        "summary": "ListComponentTypes returns the catalog of available component types\r\nfor building dynamic UI apps.",
+        "summary": "ListComponentTypes returns the catalog of available component types\nfor building dynamic UI apps.",
         "operationId": "LoomService_ListComponentTypes",
         "responses": {
           "200": {
@@ -621,7 +621,7 @@
           },
           {
             "name": "sessionId",
-            "description": "Filter to artifacts belonging to one session (optional). Unset means no\r\nsession filtering, preserving existing behaviour. This is what lets a\r\nremote surface render \"the files this session produced\" — the local\r\nartifact store has always supported it (artifacts.Filter.SessionID); the\r\nrequest message could not express it.",
+            "description": "Filter to artifacts belonging to one session (optional). Unset means no\nsession filtering, preserving existing behaviour. This is what lets a\nremote surface render \"the files this session produced\" — the local\nartifact store has always supported it (artifacts.Filter.SessionID); the\nrequest message could not express it.",
             "in": "query",
             "required": false,
             "type": "string"
@@ -722,7 +722,7 @@
           },
           {
             "name": "sessionId",
-            "description": "Session to scope a name lookup to (optional). Names are only unique within\r\na session, so a bare name lookup from a remote client is ambiguous without\r\nthis. Ignored when id is set. Unset falls back to the session carried in\r\nthe call context, preserving existing behaviour for in-session callers.",
+            "description": "Session to scope a name lookup to (optional). Names are only unique within\na session, so a bare name lookup from a remote client is ambiguous without\nthis. Ignored when id is set. Unset falls back to the session carried in\nthe call context, preserving existing behaviour for in-session callers.",
             "in": "query",
             "required": false,
             "type": "string"
@@ -1041,7 +1041,7 @@
     },
     "/v1/clarifications/{sessionId}/answer": {
       "post": {
-        "summary": "AnswerClarificationQuestion provides an answer to a clarification question asked by an agent.\r\nUsed by TUI and other clients to respond to EventQuestionAsked progress events.",
+        "summary": "AnswerClarificationQuestion provides an answer to a clarification question asked by an agent.\nUsed by TUI and other clients to respond to EventQuestionAsked progress events.",
         "operationId": "LoomService_AnswerClarificationQuestion",
         "responses": {
           "200": {
@@ -1266,7 +1266,7 @@
     },
     "/v1/mcp/servers/{serverName}/tools": {
       "get": {
-        "summary": "ListMCPServerTools lists all tools from a specific MCP server.\r\nThis queries the MCP server directly through the manager, not the agent's tool registry.",
+        "summary": "ListMCPServerTools lists all tools from a specific MCP server.\nThis queries the MCP server directly through the manager, not the agent's tool registry.",
         "operationId": "LoomService_ListMCPServerTools",
         "responses": {
           "200": {
@@ -1361,7 +1361,7 @@
     },
     "/v1/mcp/servers:test": {
       "post": {
-        "summary": "TestMCPServerConnection tests an MCP server configuration without persisting it.\r\nThis allows users to validate their configuration (command, args, env vars) before saving.",
+        "summary": "TestMCPServerConnection tests an MCP server configuration without persisting it.\nThis allows users to validate their configuration (command, args, env vars) before saving.",
         "operationId": "LoomService_TestMCPServerConnection",
         "responses": {
           "200": {
@@ -1650,7 +1650,7 @@
     },
     "/v1/patterns:stream": {
       "get": {
-        "summary": "StreamPatternUpdates streams real-time pattern updates (additions, changes, deletions).\r\nUsed by TUI and other clients to show live pattern library changes.",
+        "summary": "StreamPatternUpdates streams real-time pattern updates (additions, changes, deletions).\nUsed by TUI and other clients to show live pattern library changes.",
         "operationId": "LoomService_StreamPatternUpdates",
         "responses": {
           "200": {
@@ -2157,7 +2157,8 @@
     },
     "/v1/sessions/{sessionId}:resolveExecutionGap": {
       "post": {
-        "summary": "ResolveExecutionGap records an operator's finding for the tool call that\r\nResumeSession reported as an execution gap, so ResumeSession can continue\r\nthe turn.\r\n\r\nThe recorded result is the caller's assertion, not tool output, but the\r\nagent treats it as real tool output. It is stored marked as manually\r\nresolved with the caller's user id. Any caller who can open the session may\r\ncall this; there is no operator-only role. Do not expose it to session\r\nowners you would not trust to set a tool's result.",
+        "summary": "ResolveExecutionGap records an operator's finding for the tool call that\nResumeSession reported as an execution gap, so ResumeSession can continue\nthe turn.",
+        "description": "The recorded result is the caller's assertion, not tool output, but the\nagent treats it as real tool output. It is stored marked as manually\nresolved with the caller's user id. Any caller who can open the session may\ncall this; there is no operator-only role. Do not expose it to session\nowners you would not trust to set a tool's result.",
         "operationId": "LoomService_ResolveExecutionGap",
         "responses": {
           "200": {
@@ -2197,7 +2198,7 @@
     },
     "/v1/sessions/{sessionId}:resume": {
       "post": {
-        "summary": "ResumeSession finishes a conversation turn that a crash interrupted, using\r\nthe durable execution log (execution_log.enabled must have been on while\r\nthe turn ran). Calls recorded as complete are backfilled from the log,\r\ncalls never started are dispatched, and the turn's reply is produced. A\r\ncall whose outcome is unknown is reported as an execution gap, to be\r\nsettled with ResolveExecutionGap before resuming again.",
+        "summary": "ResumeSession finishes a conversation turn that a crash interrupted, using\nthe durable execution log (execution_log.enabled must have been on while\nthe turn ran). Calls recorded as complete are backfilled from the log,\ncalls never started are dispatched, and the turn's reply is produced. A\ncall whose outcome is unknown is reported as an execution gap, to be\nsettled with ResolveExecutionGap before resuming again.",
         "operationId": "LoomService_ResumeSession",
         "responses": {
           "200": {
@@ -2237,7 +2238,7 @@
     },
     "/v1/sessions/{sessionId}:subscribe": {
       "get": {
-        "summary": "SubscribeToSession subscribes to real-time updates for a session.\r\nReturns a stream of updates when new messages arrive or session state changes.\r\nThis allows clients to receive asynchronous responses from workflow coordinators\r\nand sub-agents without polling.",
+        "summary": "SubscribeToSession subscribes to real-time updates for a session.\nReturns a stream of updates when new messages arrive or session state changes.\nThis allows clients to receive asynchronous responses from workflow coordinators\nand sub-agents without polling.",
         "operationId": "LoomService_SubscribeToSession",
         "responses": {
           "200": {
@@ -2657,7 +2658,7 @@
     },
     "/v1/templates/workflows:apply": {
       "post": {
-        "summary": "CreateWorkflowFromTemplate instantiates a template: creates each agent\r\nin the template (reusing by name where possible), then creates a\r\nworkflow that composes them under the template's pattern.",
+        "summary": "CreateWorkflowFromTemplate instantiates a template: creates each agent\nin the template (reusing by name where possible), then creates a\nworkflow that composes them under the template's pattern.",
         "operationId": "LoomService_CreateWorkflowFromTemplate",
         "responses": {
           "200": {
@@ -2823,7 +2824,7 @@
     },
     "/v1/weave": {
       "post": {
-        "summary": "Weave executes a user query by selecting patterns, executing tools,\r\nand weaving LLM intelligence with domain knowledge.",
+        "summary": "Weave executes a user query by selecting patterns, executing tools,\nand weaving LLM intelligence with domain knowledge.",
         "operationId": "LoomService_Weave",
         "responses": {
           "200": {
@@ -2900,7 +2901,7 @@
     },
     "/v1/workflows": {
       "get": {
-        "summary": "ListWorkflows lists saved workflow definitions that can be run by name via\r\nExecuteWorkflow's workflow_ref. Lets a client discover existing workflows\r\ninstead of re-supplying a full pattern/YAML.",
+        "summary": "ListWorkflows lists saved workflow definitions that can be run by name via\nExecuteWorkflow's workflow_ref. Lets a client discover existing workflows\ninstead of re-supplying a full pattern/YAML.",
         "operationId": "LoomService_ListWorkflows",
         "responses": {
           "200": {
@@ -3088,7 +3089,8 @@
     },
     "/v1/workflows/schedules/executions/{executionId}:cancel": {
       "post": {
-        "summary": "CancelScheduledExecution stops a scheduled execution that is in flight.\r\n\r\nPausing a schedule prevents future runs but does nothing about one already\r\nin flight, and max_execution_seconds only detects a stuck run after the\r\nfact. This is the operator's stop button: without it a workflow that hangs\r\nholds its schedule's slot until the timeout expires, and skip_if_running\r\nsilently skips every run in the meantime.\r\n\r\nScope: this cancels executions minted by the scheduler — the IDs reported\r\nin ScheduledWorkflow.current_execution_id and in the response to\r\nTriggerScheduledWorkflow. Execution IDs from ExecuteWorkflow and\r\nStreamWorkflow live in a different namespace (the one GetWorkflowExecution\r\nand ListWorkflowExecutions read) and cannot be canceled here; passing one\r\nreturns NOT_FOUND.\r\n\r\nNOT_FOUND means no scheduled execution with that ID exists, neither in\r\nflight nor in the schedule's history. A response with canceled = false and\r\na message means the execution was found but had already reached its verdict\r\nbefore the request arrived; that is deliberately not an error, because a\r\ncaller stopping a run that just finished got the state it asked for.\r\n\r\nCancellation is cooperative — the execution's context is canceled and the\r\nrun is recorded as canceled once it unwinds. Work already committed by\r\nearlier stages is not rolled back.\r\n\r\nAuthorization: like the sibling schedule RPCs (PauseSchedule,\r\nResumeSchedule, DeleteScheduledWorkflow, TriggerScheduledWorkflow), this\r\nperforms no ownership check — the scheduled_workflows table has no owner\r\ncolumn, so there is nothing to check against. Any caller that reaches the\r\nservice can stop any scheduled execution. Adding ownership is a follow-up\r\nfor the whole schedule surface rather than something this one RPC can\r\nsolve; it is recorded here so the gap is not mistaken for an oversight.",
+        "summary": "CancelScheduledExecution stops a scheduled execution that is in flight.",
+        "description": "Pausing a schedule prevents future runs but does nothing about one already\nin flight, and max_execution_seconds only detects a stuck run after the\nfact. This is the operator's stop button: without it a workflow that hangs\nholds its schedule's slot until the timeout expires, and skip_if_running\nsilently skips every run in the meantime.\n\nScope: this cancels executions minted by the scheduler — the IDs reported\nin ScheduledWorkflow.current_execution_id and in the response to\nTriggerScheduledWorkflow. Execution IDs from ExecuteWorkflow and\nStreamWorkflow live in a different namespace (the one GetWorkflowExecution\nand ListWorkflowExecutions read) and cannot be canceled here; passing one\nreturns NOT_FOUND.\n\nNOT_FOUND means no scheduled execution with that ID exists, neither in\nflight nor in the schedule's history. A response with canceled = false and\na message means the execution was found but had already reached its verdict\nbefore the request arrived; that is deliberately not an error, because a\ncaller stopping a run that just finished got the state it asked for.\n\nCancellation is cooperative — the execution's context is canceled and the\nrun is recorded as canceled once it unwinds. Work already committed by\nearlier stages is not rolled back.\n\nAuthorization: like the sibling schedule RPCs (PauseSchedule,\nResumeSchedule, DeleteScheduledWorkflow, TriggerScheduledWorkflow), this\nperforms no ownership check — the scheduled_workflows table has no owner\ncolumn, so there is nothing to check against. Any caller that reaches the\nservice can stop any scheduled execution. Adding ownership is a follow-up\nfor the whole schedule surface rather than something this one RPC can\nsolve; it is recorded here so the gap is not mistaken for an oversight.",
         "operationId": "LoomService_CancelScheduledExecution",
         "responses": {
           "200": {
@@ -3107,7 +3109,7 @@
         "parameters": [
           {
             "name": "executionId",
-            "description": "Execution ID to cancel, as reported by ScheduledWorkflow.current_execution_id\r\nor by the response to TriggerScheduledWorkflow. An ID that names no\r\nscheduled execution — in flight or in history — returns NOT_FOUND.",
+            "description": "Execution ID to cancel, as reported by ScheduledWorkflow.current_execution_id\nor by the response to TriggerScheduledWorkflow. An ID that names no\nscheduled execution — in flight or in history — returns NOT_FOUND.",
             "in": "path",
             "required": true,
             "type": "string"
@@ -3491,10 +3493,10 @@
       "properties": {
         "reason": {
           "type": "string",
-          "description": "Optional human-readable reason, recorded in the execution history so the\r\nrecord distinguishes an operator stop from a crash."
+          "description": "Optional human-readable reason, recorded in the execution history so the\nrecord distinguishes an operator stop from a crash."
         }
       },
-      "description": "CancelScheduledExecutionRequest stops a scheduled execution that is in\r\nflight.\r\n\r\nThe ID must be one the scheduler minted. IDs returned by ExecuteWorkflow and\r\nStreamWorkflow belong to a different namespace and yield NOT_FOUND."
+      "description": "CancelScheduledExecutionRequest stops a scheduled execution that is in\nflight.\n\nThe ID must be one the scheduler minted. IDs returned by ExecuteWorkflow and\nStreamWorkflow belong to a different namespace and yield NOT_FOUND."
     },
     "LoomServicePauseScheduleBody": {
       "type": "object",
@@ -3554,7 +3556,7 @@
         },
         "resultJson": {
           "type": "string",
-          "description": "The call's result as JSON. Required when outcome is\r\nEXECUTION_GAP_OUTCOME_SUCCEEDED."
+          "description": "The call's result as JSON. Required when outcome is\nEXECUTION_GAP_OUTCOME_SUCCEEDED."
         }
       },
       "description": "ResolveExecutionGapRequest settles the session's current execution gap."
@@ -3614,7 +3616,7 @@
         },
         "role": {
           "$ref": "#/definitions/v1LLMRole",
-          "description": "Target LLM role to switch (default: unspecified = main agent LLM)\r\nAllows switching role-specific LLMs (judge, orchestrator, classifier, compressor)\r\nwithout affecting other roles."
+          "description": "Target LLM role to switch (default: unspecified = main agent LLM)\nAllows switching role-specific LLMs (judge, orchestrator, classifier, compressor)\nwithout affecting other roles."
         },
         "providerName": {
           "type": "string",
@@ -4066,11 +4068,11 @@
       "properties": {
         "id": {
           "type": "string",
-          "description": "Immutable agent GUID (UUID v4) - stable across renames and restarts.\r\nEvery agent instance has a unique ID automatically assigned by NewAgent().\r\nRegistry-managed agents have stable GUIDs persisted to database.\r\nStandalone and ephemeral agents have UUIDs but are not persisted.\r\nThis is the canonical identifier for the agent and should be used\r\nfor all API operations, logging, and cross-references."
+          "description": "Immutable agent GUID (UUID v4) - stable across renames and restarts.\nEvery agent instance has a unique ID automatically assigned by NewAgent().\nRegistry-managed agents have stable GUIDs persisted to database.\nStandalone and ephemeral agents have UUIDs but are not persisted.\nThis is the canonical identifier for the agent and should be used\nfor all API operations, logging, and cross-references."
         },
         "name": {
           "type": "string",
-          "description": "Agent name - user-editable display name that can change.\r\nUse `id` for stable references, not `name`."
+          "description": "Agent name - user-editable display name that can change.\nUse `id` for stable references, not `name`."
         },
         "status": {
           "type": "string",
@@ -4381,7 +4383,7 @@
         },
         "sessionId": {
           "type": "string",
-          "description": "Session this artifact belongs to. Empty for artifacts created outside a\r\nsession (user uploads, pre-session tooling). The store has recorded this\r\nsince sessions were introduced; it was simply never put on the wire, which\r\nleft remote clients unable to tell whose files they were looking at."
+          "description": "Session this artifact belongs to. Empty for artifacts created outside a\nsession (user uploads, pre-session tooling). The store has recorded this\nsince sessions were introduced; it was simply never put on the wire, which\nleft remote clients unable to tell whose files they were looking at."
         }
       },
       "title": "Artifact represents a file in $LOOM_DATA_DIR/artifacts/"
@@ -4503,14 +4505,14 @@
       "properties": {
         "canceled": {
           "type": "boolean",
-          "description": "True when the execution was in flight and its context was canceled; the\r\nrun is recorded as canceled once it unwinds. False means the execution had\r\nalready reached its verdict before the request arrived, so nothing was\r\nsignaled and the recorded outcome stands — not an error, since a caller\r\nstopping a run that just completed got the state it asked for.\r\n\r\nCancellation is cooperative: true says the signal was delivered, not that\r\nthe run has stopped yet, and work already committed is not rolled back."
+          "description": "True when the execution was in flight and its context was canceled; the\nrun is recorded as canceled once it unwinds. False means the execution had\nalready reached its verdict before the request arrived, so nothing was\nsignaled and the recorded outcome stands — not an error, since a caller\nstopping a run that just completed got the state it asked for.\n\nCancellation is cooperative: true says the signal was delivered, not that\nthe run has stopped yet, and work already committed is not rolled back."
         },
         "message": {
           "type": "string",
-          "description": "Human-readable outcome, suitable for showing directly. It is the only thing\r\nthat distinguishes \"signaled\" from \"already finished\" beyond the boolean."
+          "description": "Human-readable outcome, suitable for showing directly. It is the only thing\nthat distinguishes \"signaled\" from \"already finished\" beyond the boolean."
         }
       },
-      "description": "CancelScheduledExecutionResponse reports what the cancellation did.\r\n\r\nReaching this message at all means the execution exists in the scheduler's\r\nnamespace; an unknown ID is a NOT_FOUND error instead."
+      "description": "CancelScheduledExecutionResponse reports what the cancellation did.\n\nReaching this message at all means the execution exists in the scheduler's\nnamespace; an unknown ID is a NOT_FOUND error instead."
     },
     "v1CertificateInfo": {
       "type": "object",
@@ -4723,7 +4725,7 @@
           "title": "Tool names currently registered on the agent"
         }
       },
-      "description": "ContextState reports the agent's memory and context window state after a response.\r\nThis is a per-session cumulative view (how full is the window, what's loaded),\r\ndistinct from ExecutionMetadata which is per-turn (tokens, cost, duration)."
+      "description": "ContextState reports the agent's memory and context window state after a response.\nThis is a per-session cumulative view (how full is the window, what's loaded),\ndistinct from ExecutionMetadata which is per-turn (tokens, cost, duration)."
     },
     "v1ConversationHistory": {
       "type": "object",
@@ -5335,7 +5337,7 @@
           "description": "The provider's tool call ID; informational, may be empty or repeated."
         }
       },
-      "description": "ExecutionGap identifies a tool call whose outcome is unknown: its intent\r\nwas recorded before it ran, but no result was ever recorded."
+      "description": "ExecutionGap identifies a tool call whose outcome is unknown: its intent\nwas recorded before it ran, but no result was ever recorded."
     },
     "v1ExecutionGapOutcome": {
       "type": "string",
@@ -6030,7 +6032,7 @@
         "cacheReadInputTokens": {
           "type": "integer",
           "format": "int32",
-          "description": "Tokens served from prompt cache (do NOT count against ITPM rate limit for Anthropic).\r\nFor OpenAI/Gemini, these still count against rate limits but at reduced cost."
+          "description": "Tokens served from prompt cache (do NOT count against ITPM rate limit for Anthropic).\nFor OpenAI/Gemini, these still count against rate limits but at reduced cost."
         },
         "cacheCreationInputTokens": {
           "type": "integer",
@@ -6435,7 +6437,7 @@
         "totalCount": {
           "type": "integer",
           "format": "int32",
-          "description": "Total number of sessions matching the request filters (before applying offset/limit).\r\nint32 is sufficient for in-memory listings; values above 2^31-1 are not expected."
+          "description": "Total number of sessions matching the request filters (before applying offset/limit).\nint32 is sufficient for in-memory listings; values above 2^31-1 are not expected."
         }
       },
       "description": "ListSessionsResponse returns sessions."
@@ -7972,7 +7974,7 @@
         "RESUME_SESSION_OUTCOME_PARKED"
       ],
       "default": "RESUME_SESSION_OUTCOME_UNSPECIFIED",
-      "description": "ResumeSessionOutcome is what ResumeSession did.\n\n - RESUME_SESSION_OUTCOME_RESUMED: The interrupted turn finished; content holds its reply.\n - RESUME_SESSION_OUTCOME_NOTHING_TO_RESUME: The session's last turn is already complete; nothing ran.\n - RESUME_SESSION_OUTCOME_EXECUTION_GAP: A tool call's outcome is unknown; gap describes it. Settle it with\r\nResolveExecutionGap, then call ResumeSession again.\n - RESUME_SESSION_OUTCOME_PARKED: The turn stopped again to wait for a human decision."
+      "description": "ResumeSessionOutcome is what ResumeSession did.\n\n - RESUME_SESSION_OUTCOME_RESUMED: The interrupted turn finished; content holds its reply.\n - RESUME_SESSION_OUTCOME_NOTHING_TO_RESUME: The session's last turn is already complete; nothing ran.\n - RESUME_SESSION_OUTCOME_EXECUTION_GAP: A tool call's outcome is unknown; gap describes it. Settle it with\nResolveExecutionGap, then call ResumeSession again.\n - RESUME_SESSION_OUTCOME_PARKED: The turn stopped again to wait for a human decision."
     },
     "v1ResumeSessionResponse": {
       "type": "object",
@@ -8180,7 +8182,7 @@
         },
         "status": {
           "type": "string",
-          "description": "Status: \"success\", \"failed\", \"skipped\", \"canceled\"\r\nThe US spelling matches WorkflowStatus \"canceled\" in the workflow-execution\r\nnamespace, so both surfaces report the same word for the same outcome."
+          "description": "Status: \"success\", \"failed\", \"skipped\", \"canceled\"\nThe US spelling matches WorkflowStatus \"canceled\" in the workflow-execution\nnamespace, so both surfaces report the same word for the same outcome."
         },
         "error": {
           "type": "string",
@@ -8715,7 +8717,7 @@
           "title": "Session status changed"
         }
       },
-      "description": "SessionUpdate represents a real-time update for a session.\r\nSent when new messages arrive or session state changes."
+      "description": "SessionUpdate represents a real-time update for a session.\nSent when new messages arrive or session state changes."
     },
     "v1SharedMemoryNamespace": {
       "type": "string",
@@ -9895,7 +9897,7 @@
           "title": "Providers (for multi-provider tools like web_search)"
         }
       },
-      "description": "ToolDefinition defines a tool with comprehensive metadata.\r\nExtended to support self-describing tools for LLM-driven selection."
+      "description": "ToolDefinition defines a tool with comprehensive metadata.\nExtended to support self-describing tools for LLM-driven selection."
     },
     "v1ToolExample": {
       "type": "object",
@@ -10402,11 +10404,11 @@
         },
         "hitlRequest": {
           "$ref": "#/definitions/v1HITLRequestInfo",
-          "description": "HITL request info (only when stage == EXECUTION_STAGE_HUMAN_IN_THE_LOOP).\r\n\r\nA non-empty hitl_request.request_id is what makes a message an ANSWERABLE\r\ncard. Consumers MUST key the human-facing prompt off that id, because it is\r\nthe handle AnswerClarificationQuestion / RespondToRequest take; a prompt\r\nraised without one cannot deliver its answer, and the hold behind it stays\r\npending until it times out. Two other shapes ride the same stage and MUST\r\nNOT raise a prompt:\r\n\r\n  - hitl_request ABSENT — a hold heartbeat. A hold is otherwise byte-silent\r\n    on this stream for its whole window (up to 300s for an approval hold),\r\n    long enough for an intermediary to trip an inactivity timeout and tear\r\n    down the stream the decision has to travel back on. These messages\r\n    exist only to produce traffic and carry no state; they may also be\r\n    dropped under backpressure, so consumers must not count on receiving\r\n    every one.\r\n  - hitl_request PRESENT with an empty request_id — the pre-creation ping\r\n    the conversation loop emits off a contact_human call before the store\r\n    row exists. Useful as an early \"a hold is coming\" hint; the answerable\r\n    card follows once the row is written."
+          "description": "HITL request info (only when stage == EXECUTION_STAGE_HUMAN_IN_THE_LOOP).\n\nA non-empty hitl_request.request_id is what makes a message an ANSWERABLE\ncard. Consumers MUST key the human-facing prompt off that id, because it is\nthe handle AnswerClarificationQuestion / RespondToRequest take; a prompt\nraised without one cannot deliver its answer, and the hold behind it stays\npending until it times out. Two other shapes ride the same stage and MUST\nNOT raise a prompt:\n\n  - hitl_request ABSENT — a hold heartbeat. A hold is otherwise byte-silent\n    on this stream for its whole window (up to 300s for an approval hold),\n    long enough for an intermediary to trip an inactivity timeout and tear\n    down the stream the decision has to travel back on. These messages\n    exist only to produce traffic and carry no state; they may also be\n    dropped under backpressure, so consumers must not count on receiving\n    every one.\n  - hitl_request PRESENT with an empty request_id — the pre-creation ping\n    the conversation loop emits off a contact_human call before the store\n    row exists. Useful as an early \"a hold is coming\" hint; the answerable\n    card follows once the row is written."
         },
         "partialContent": {
           "type": "string",
-          "title": "Token streaming fields\r\nAccumulated content so far (for streaming responses)"
+          "title": "Token streaming fields\nAccumulated content so far (for streaming responses)"
         },
         "isTokenStream": {
           "type": "boolean",
@@ -10456,7 +10458,7 @@
         },
         "toolCallId": {
           "type": "string",
-          "description": "Unique identifier correlating started/completed events for the same tool\r\ncall; also set on is_tool_input_stream events so they match the later\r\nstarted event."
+          "description": "Unique identifier correlating started/completed events for the same tool\ncall; also set on is_tool_input_stream events so they match the later\nstarted event."
         },
         "contextState": {
           "$ref": "#/definitions/v1ContextState",
@@ -10464,7 +10466,7 @@
         },
         "isToolInputStream": {
           "type": "boolean",
-          "description": "True while the model is still writing a tool call's arguments. Carries no\r\nargument content; tool_name, tool_call_id and tool_input_bytes identify the\r\ncall when the provider reports them."
+          "description": "True while the model is still writing a tool call's arguments. Carries no\nargument content; tool_name, tool_call_id and tool_input_bytes identify the\ncall when the provider reports them."
         },
         "toolInputBytes": {
           "type": "string",
@@ -10528,16 +10530,16 @@
         },
         "resetContext": {
           "type": "boolean",
-          "description": "Clear context window before processing this message.\r\nWhen true, the agent's SegmentedMemory is reset (L1/L2/swap cleared)\r\nbefore the query is processed, giving a fresh context window."
+          "description": "Clear context window before processing this message.\nWhen true, the agent's SegmentedMemory is reset (L1/L2/swap cleared)\nbefore the query is processed, giving a fresh context window."
         },
         "occurredAt": {
           "type": "string",
           "format": "date-time",
-          "description": "Historical arrival time for replayed or imported conversations (optional).\r\nWhen set, every message persisted during this call — the user turn, the\r\nassistant reply, and tool rows — carries this timestamp instead of the\r\nserver wall clock, so temporal grounding (compiled-view arrival stamps,\r\ngraph-memory extraction anchoring) reflects when the conversation\r\nactually happened rather than when it was ingested.\r\n\r\nServers reject this field unless server.allow_time_override is enabled\r\n(FAILED_PRECONDITION), and reject values in the future beyond a small\r\nclock-skew allowance (INVALID_ARGUMENT). Live conversations should leave\r\nit unset."
+          "description": "Historical arrival time for replayed or imported conversations (optional).\nWhen set, every message persisted during this call — the user turn, the\nassistant reply, and tool rows — carries this timestamp instead of the\nserver wall clock, so temporal grounding (compiled-view arrival stamps,\ngraph-memory extraction anchoring) reflects when the conversation\nactually happened rather than when it was ingested.\n\nServers reject this field unless server.allow_time_override is enabled\n(FAILED_PRECONDITION), and reject values in the future beyond a small\nclock-skew allowance (INVALID_ARGUMENT). Live conversations should leave\nit unset."
         },
         "replayAssistantMessage": {
           "type": "string",
-          "description": "Generation-free replay: when set, the agent does NOT call the LLM to\r\ngenerate a response. Instead it records this text verbatim as the\r\nassistant's turn and runs the full turn pipeline exactly as a live turn\r\nwould — context compilation, memory compression (relief/fold),\r\ngraph-memory extraction, and salience updates. Only generation is skipped.\r\n\r\nThis replays a pre-written conversation turn-by-turn while preserving the\r\nground-truth assistant content (never inventing the assistant's side), so\r\nthe memory system is exercised under realistic accumulation. It is used by\r\nthe LongMemEval conversation-replay harness and is typically paired with\r\noccurred_at to anchor each turn at its historical time.\r\n\r\nGated by its own server.allow_assistant_override switch\r\n(FAILED_PRECONDITION when disabled) — separate from occurred_at's\r\nserver.allow_time_override, so operators who enabled timestamp anchoring\r\nhave not implicitly accepted caller-supplied assistant content.\r\nWhitespace-only values are rejected (INVALID_ARGUMENT). Live\r\nconversations leave it unset."
+          "description": "Generation-free replay: when set, the agent does NOT call the LLM to\ngenerate a response. Instead it records this text verbatim as the\nassistant's turn and runs the full turn pipeline exactly as a live turn\nwould — context compilation, memory compression (relief/fold),\ngraph-memory extraction, and salience updates. Only generation is skipped.\n\nThis replays a pre-written conversation turn-by-turn while preserving the\nground-truth assistant content (never inventing the assistant's side), so\nthe memory system is exercised under realistic accumulation. It is used by\nthe LongMemEval conversation-replay harness and is typically paired with\noccurred_at to anchor each turn at its historical time.\n\nGated by its own server.allow_assistant_override switch\n(FAILED_PRECONDITION when disabled) — separate from occurred_at's\nserver.allow_time_override, so operators who enabled timestamp anchoring\nhave not implicitly accepted caller-supplied assistant content.\nWhitespace-only values are rejected (INVALID_ARGUMENT). Live\nconversations leave it unset."
         }
       },
       "description": "WeaveRequest initiates a query execution."
