@@ -362,7 +362,10 @@ func runHitlShow(cmd *cobra.Command, args []string) {
 	fmt.Printf("\n")
 	fmt.Printf("Question:       %s\n", req.Question)
 	if req.Summary != "" && req.Summary != req.Question {
-		fmt.Printf("Call:           %s\n", req.Summary)
+		// The digest is built from the model's own arguments: escape control
+		// characters so a newline or terminal escape in a command cannot draw
+		// fake lines (a forged "Parameters:" block) on the approval screen.
+		fmt.Printf("Call:           %s\n", escapeControlChars(req.Summary))
 	}
 	fmt.Printf("\n")
 
