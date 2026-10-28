@@ -16,8 +16,10 @@ package postgres
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
@@ -45,31 +47,38 @@ func migratedAdminPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// rlsAppRole is a login role with no SUPERUSER and no BYPASSRLS, so row-level
-// security applies to every query it runs. The test container's own user is a
-// superuser, and a store connected as that user passes tenant-isolation tests
-// whether or not the policies work.
-const (
-	rlsAppRole     = "loom_rls_app"
-	rlsAppPassword = "loom_rls_app_test"
-)
+// rlsAppPassword is the password of the throwaway login role rlsSubjectPool
+// creates.
+const rlsAppPassword = "loom_rls_app_test"
 
 // rlsSubjectPool returns a pool that connects to the same database as
-// adminPool but as rlsAppRole, creating the role and granting it table access
-// if needed. Build a store on this pool to test it the way a production
-// deployment on a plain role (such as Supabase's postgres) runs it.
+// adminPool as a login role with no SUPERUSER and no BYPASSRLS, so row-level
+// security applies to every query it runs. The test container's own user is a
+// superuser, and a store connected as that user passes tenant-isolation tests
+// whether or not the policies work. Build a store on this pool to test it the
+// way a production deployment on a plain role (such as Supabase's postgres)
+// runs it.
+//
+// The role is named per call and dropped, with its grants, when the test ends,
+// so the cluster is left as it was found.
 func rlsSubjectPool(t *testing.T, adminPool *pgxpool.Pool) *pgxpool.Pool {
 	t.Helper()
 	ctx := context.Background()
 
-	_, err := adminPool.Exec(ctx, `DO $$ BEGIN
-		IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '`+rlsAppRole+`') THEN
-			CREATE ROLE `+rlsAppRole+` LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '`+rlsAppPassword+`';
-		END IF;
-	END $$;`)
-	if err != nil {
+	rlsAppRole := fmt.Sprintf("loom_rls_app_%d", time.Now().UnixNano())
+	if _, err := adminPool.Exec(ctx,
+		`CREATE ROLE `+rlsAppRole+` LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '`+rlsAppPassword+`'`); err != nil {
 		t.Skipf("cannot create the %s role (the test user needs CREATEROLE): %v", rlsAppRole, err)
 	}
+	// Registered before the pool's own cleanup, so it runs after the pool has
+	// closed and no connection still holds the role.
+	t.Cleanup(func() {
+		for _, stmt := range []string{"DROP OWNED BY " + rlsAppRole, "DROP ROLE IF EXISTS " + rlsAppRole} {
+			if _, err := adminPool.Exec(context.Background(), stmt); err != nil {
+				t.Logf("cleaning up role %s: %s: %v", rlsAppRole, stmt, err)
+			}
+		}
+	})
 	for _, stmt := range []string{
 		"GRANT USAGE ON SCHEMA public TO " + rlsAppRole,
 		"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO " + rlsAppRole,
