@@ -401,38 +401,99 @@ so it works on a machine with no LLM credentials configured.
 
 When a gate suspends, the CLI writes the checkpoint file and also saves the
 checkpoint to the configured storage backend (SQLite by default, or Postgres).
-If the backend save succeeds, the CLI prints the workflow ID:
+If the backend save succeeds, the CLI prints the workflow ID next to the
+file-based resume commands:
 
 ```
 💾 Checkpoint written: review.pb
-   Workflow ID (for store-based resume if this file is lost): 3f2b9c1e-...
+...
+If review.pb is lost, the checkpoint is also stored under workflow ID pipeline-3f2b9c1e:
+  looms workflow resume create-table.yaml --workflow-id pipeline-3f2b9c1e --approve
 ```
 
-If `review.pb` is gone (another machine, a wiped container), pass the
-workflow ID where the file path would go:
+When the run was started with `--user alice`, every printed resume command,
+file-based or by ID, includes `--user alice`.
+
+If `review.pb` is gone (another machine, a wiped container), pass the workflow
+ID with `--workflow-id` in place of the file:
 
 ```bash
-looms workflow resume create-table.yaml 3f2b9c1e-... --approve
+looms workflow resume create-table.yaml --workflow-id pipeline-3f2b9c1e --approve
 ```
 
-The CLI looks for a file at that path first and falls back to the storage
-backend only when no file exists. The backend save is best-effort: if it
-fails, the file is still written and the workflow ID line is not printed.
+Give either the checkpoint file or `--workflow-id`, never both. The file
+argument is always a file path: a mistyped path is an error, not a workflow ID
+lookup. Generated workflow IDs look like `<pattern type>-<8 hex characters>`
+(for example `pipeline-3f2b9c1e`); a workflow can also set its own `workflow_id`
+in the YAML.
+
+**When the backend is used.** The workflow commands open the storage backend
+only to save a checkpoint when a gate suspends, to look one up by
+`--workflow-id`, and to delete one when a resume finishes (below). A run that
+never suspends, and a resume from a checkpoint file, otherwise never touch it.
+Each open and each call is bounded at 10 seconds, so an unreachable Postgres
+host delays those steps by at most that long. The commands do **not** run
+migrations (`storage.migration.auto_migrate` is ignored here, as in `looms
+hitl`): the `workflow_checkpoints` table is created by `looms serve` (when
+`storage.migration.auto_migrate` is on, its default) or `looms upgrade`. Until
+one has run against that database, the backend save fails, the
+CLI logs a warning, the file is still written, and no workflow ID is printed.
+The backend save is best-effort in every case: a failure never fails the run.
+
+**A finished workflow cannot be resumed again.** Once a resume completes the
+workflow or rejects it, the CLI deletes the stored checkpoint, so
+`--workflow-id` for that workflow fails with "no checkpoint found". A resume
+that fails, or suspends at another gate, leaves the stored checkpoint in
+place (a new suspension replaces it). The delete is best-effort: if it fails,
+the CLI logs a warning and the stored checkpoint stays resumable.
+
+When the CLI stores a checkpoint it records the tenant in the checkpoint
+itself, in the file as well as the stored copy. Finishing a workflow from the
+checkpoint file therefore deletes the stored copy under the tenant that saved
+it, even if the resume command carries a different `--user` or none. The resume
+commands the CLI prints include `--user` when the run had one. A checkpoint
+file written by an earlier version records no tenant; resuming from it falls
+back to `--user`, and on Postgres with no `--user` the CLI logs a warning that
+the stored copy was not deleted. Limits:
+
+- The local checkpoint file is not deleted and can still be resumed on the
+  machine that has it.
+- Nothing claims a checkpoint before the stages run, so two operators who
+  resume the same workflow ID at the same moment can both run the remaining
+  stages.
+- The delete is keyed by tenant and workflow ID only (see the next
+  paragraph).
+
+**Workflow IDs are per tenant, one checkpoint per ID.** A second suspended run
+of the same tenant that uses the same workflow ID (a fixed `workflow_id` in
+the YAML) replaces the first run's stored checkpoint. It also means that
+finishing the first run from its file deletes the stored checkpoint of the
+second run, which can then be resumed only from its own file. Use a distinct
+`workflow_id` per run, or leave it unset so the CLI generates one, if runs of
+the same workflow can be suspended at the same time. Generated IDs do not
+collide in practice.
 
 **Tenants.** Stored checkpoints belong to one tenant, and each tenant sees only
 its own. Two tenants can use the same workflow ID without affecting each other.
+On Postgres the rule is the same as for `looms hitl`. On SQLite it is not:
+`looms hitl` ignores `--user` there (the SQLite human-request store has no user
+column), while SQLite checkpoints are scoped by `--user`, or `default-user`
+when it is not given.
 
-| Backend  | Tenant used                                                                   |
-|----------|-------------------------------------------------------------------------------|
-| SQLite   | `--user` if given, otherwise `default-user`                                   |
-| Postgres | `--user` if given, otherwise `storage.postgres.default_user_id`; error if neither |
+| Backend  | Tenant used                                      |
+|----------|--------------------------------------------------|
+| SQLite   | `--user` if given, otherwise `default-user`      |
+| Postgres | `--user` is required; `default_user_id` is not used |
 
-On Postgres with no tenant, `run` writes only the file and logs a warning, and
-`resume` by workflow ID fails with an error asking for `--user`:
+On Postgres with no `--user`, `run` writes only the file and logs a warning,
+and `resume --workflow-id` fails with an error asking for `--user`:
 
 ```bash
-looms workflow resume create-table.yaml 3f2b9c1e-... --approve --user alice
+looms workflow resume create-table.yaml --workflow-id pipeline-3f2b9c1e --approve --user alice
 ```
+
+`looms serve` does not read these checkpoints; only the `looms workflow`
+commands do.
 
 ### Embedding hosts (inline decisions)
 

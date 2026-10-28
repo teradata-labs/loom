@@ -38,6 +38,9 @@ func (s *CheckpointStore) SaveCheckpoint(ctx context.Context, ckpt *loomv1.Workf
 	ctx, span := s.tracer.StartSpan(ctx, "sqlite.checkpoint.save")
 	defer s.tracer.EndSpan(span)
 
+	if ckpt.GetWorkflowId() == "" {
+		return checkpoint.ErrWorkflowIDRequired
+	}
 	data, err := proto.Marshal(ckpt)
 	if err != nil {
 		return fmt.Errorf("failed to marshal checkpoint: %w", err)
@@ -64,6 +67,9 @@ func (s *CheckpointStore) LoadCheckpoint(ctx context.Context, workflowID string)
 	ctx, span := s.tracer.StartSpan(ctx, "sqlite.checkpoint.load")
 	defer s.tracer.EndSpan(span)
 
+	if workflowID == "" {
+		return nil, checkpoint.ErrWorkflowIDRequired
+	}
 	var data []byte
 	err := s.db.QueryRowContext(ctx,
 		`SELECT checkpoint_proto FROM workflow_checkpoints WHERE user_id = ? AND workflow_id = ?`,
@@ -81,6 +87,24 @@ func (s *CheckpointStore) LoadCheckpoint(ctx context.Context, workflowID string)
 		return nil, fmt.Errorf("failed to unmarshal workflow checkpoint: %w", err)
 	}
 	return ckpt, nil
+}
+
+// DeleteCheckpoint removes the caller's checkpoint for workflowID. It is not an
+// error if the caller has none.
+func (s *CheckpointStore) DeleteCheckpoint(ctx context.Context, workflowID string) error {
+	ctx, span := s.tracer.StartSpan(ctx, "sqlite.checkpoint.delete")
+	defer s.tracer.EndSpan(span)
+
+	if workflowID == "" {
+		return checkpoint.ErrWorkflowIDRequired
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM workflow_checkpoints WHERE user_id = ? AND workflow_id = ?`,
+		types.UserIDOrDefault(ctx), workflowID,
+	); err != nil {
+		return fmt.Errorf("failed to delete workflow checkpoint: %w", err)
+	}
+	return nil
 }
 
 // Compile-time check: CheckpointStore implements checkpoint.CheckpointStore.

@@ -350,6 +350,11 @@ type BehaviorConfigYAML struct {
 	EnableSelfHealing      *bool              `yaml:"enable_self_healing"`
 	// RepeatCallHint opts the agent into the repeat-call note (default off).
 	RepeatCallHint *bool `yaml:"repeat_call_hint"`
+	// ToolChangeNote opts the agent into the tool-change note (default off).
+	ToolChangeNote bool `yaml:"tool_change_note"`
+	// ContextReliefWarning opts the agent into the context-relief warning
+	// (default off).
+	ContextReliefWarning bool `yaml:"context_relief_warning"`
 }
 
 // SkillsConfigYAML represents skills configuration in YAML
@@ -909,6 +914,22 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 			config.Metadata = make(map[string]string)
 		}
 		config.Metadata["_repeat_call_hint"] = "true"
+	}
+
+	// The tool-change note is opt-in the same way.
+	if yaml.Agent.Behavior.ToolChangeNote {
+		if config.Metadata == nil {
+			config.Metadata = make(map[string]string)
+		}
+		config.Metadata["_tool_change_note"] = "true"
+	}
+
+	// The context-relief warning is opt-in the same way.
+	if yaml.Agent.Behavior.ContextReliefWarning {
+		if config.Metadata == nil {
+			config.Metadata = make(map[string]string)
+		}
+		config.Metadata["_context_relief_warning"] = "true"
 	}
 
 	return config, nil

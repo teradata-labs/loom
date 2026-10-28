@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/checkpoint"
 	"github.com/teradata-labs/loom/pkg/observability"
 )
 
@@ -140,4 +141,59 @@ func TestCheckpointStore_TenantIsolation_RLSSubject(t *testing.T) {
 
 func TestWorkflowCheckpoints_RLSForced(t *testing.T) {
 	requireForcedRLS(t, migratedAdminPool(t), "workflow_checkpoints")
+}
+
+func TestCheckpointStore_Delete(t *testing.T) {
+	store, ctx, _ := testCheckpointStore(t)
+
+	require.NoError(t, store.SaveCheckpoint(ctx, &loomv1.WorkflowCheckpoint{WorkflowId: "wf-delete"}))
+	require.NoError(t, store.DeleteCheckpoint(ctx, "wf-delete"))
+
+	got, err := store.LoadCheckpoint(ctx, "wf-delete")
+	require.NoError(t, err)
+	require.Nil(t, got, "checkpoint still loadable after delete")
+
+	require.NoError(t, store.DeleteCheckpoint(ctx, "wf-delete"),
+		"deleting a checkpoint that is already gone must not be an error")
+}
+
+// TestCheckpointStore_DeleteIsTenantScoped_RLSSubject checks, as a role that
+// row-level security applies to, that one tenant deleting a workflow ID leaves
+// another tenant's checkpoint under the same ID alone.
+func TestCheckpointStore_DeleteIsTenantScoped_RLSSubject(t *testing.T) {
+	adminPool := migratedAdminPool(t)
+	store := NewCheckpointStore(rlsSubjectPool(t, adminPool), observability.NewNoOpTracer())
+
+	userA, userB := hrUniqueID("ckpt-a"), hrUniqueID("ckpt-b")
+	t.Cleanup(func() {
+		_, _ = adminPool.Exec(context.Background(),
+			"DELETE FROM workflow_checkpoints WHERE user_id = ANY($1)", []string{userA, userB})
+	})
+	ctxA := ContextWithUserID(context.Background(), userA)
+	ctxB := ContextWithUserID(context.Background(), userB)
+
+	require.NoError(t, store.SaveCheckpoint(ctxA, &loomv1.WorkflowCheckpoint{WorkflowId: "shared-id", NextStageIndex: 1}))
+	require.NoError(t, store.SaveCheckpoint(ctxB, &loomv1.WorkflowCheckpoint{WorkflowId: "shared-id", NextStageIndex: 2}))
+
+	require.NoError(t, store.DeleteCheckpoint(ctxA, "shared-id"))
+
+	gotA, err := store.LoadCheckpoint(ctxA, "shared-id")
+	require.NoError(t, err)
+	require.Nil(t, gotA, "user A's checkpoint survived A's delete")
+	gotB, err := store.LoadCheckpoint(ctxB, "shared-id")
+	require.NoError(t, err)
+	require.NotNil(t, gotB, "user A's delete removed user B's checkpoint")
+	require.EqualValues(t, 2, gotB.NextStageIndex)
+}
+
+// TestCheckpointStore_RejectsEmptyWorkflowID checks that a checkpoint with no
+// workflow ID is refused instead of stored under a key nothing can look up.
+func TestCheckpointStore_RejectsEmptyWorkflowID(t *testing.T) {
+	store, ctx, _ := testCheckpointStore(t)
+
+	require.ErrorIs(t, store.SaveCheckpoint(ctx, &loomv1.WorkflowCheckpoint{}), checkpoint.ErrWorkflowIDRequired)
+	require.ErrorIs(t, store.SaveCheckpoint(ctx, nil), checkpoint.ErrWorkflowIDRequired)
+	_, err := store.LoadCheckpoint(ctx, "")
+	require.ErrorIs(t, err, checkpoint.ErrWorkflowIDRequired)
+	require.ErrorIs(t, store.DeleteCheckpoint(ctx, ""), checkpoint.ErrWorkflowIDRequired)
 }
