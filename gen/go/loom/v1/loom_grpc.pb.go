@@ -170,6 +170,12 @@ type LoomServiceClient interface {
 	// ResolveExecutionGap records an operator's finding for the tool call that
 	// ResumeSession reported as an execution gap, so ResumeSession can continue
 	// the turn.
+	//
+	// The recorded result is the caller's assertion, not tool output, but the
+	// agent treats it as real tool output. It is stored marked as manually
+	// resolved with the caller's user id. Any caller who can open the session may
+	// call this; there is no operator-only role. Do not expose it to session
+	// owners you would not trust to set a tool's result.
 	ResolveExecutionGap(ctx context.Context, in *ResolveExecutionGapRequest, opts ...grpc.CallOption) (*ResolveExecutionGapResponse, error)
 	// SubscribeToSession subscribes to real-time updates for a session.
 	// Returns a stream of updates when new messages arrive or session state changes.
@@ -1381,6 +1387,12 @@ type LoomServiceServer interface {
 	// ResolveExecutionGap records an operator's finding for the tool call that
 	// ResumeSession reported as an execution gap, so ResumeSession can continue
 	// the turn.
+	//
+	// The recorded result is the caller's assertion, not tool output, but the
+	// agent treats it as real tool output. It is stored marked as manually
+	// resolved with the caller's user id. Any caller who can open the session may
+	// call this; there is no operator-only role. Do not expose it to session
+	// owners you would not trust to set a tool's result.
 	ResolveExecutionGap(context.Context, *ResolveExecutionGapRequest) (*ResolveExecutionGapResponse, error)
 	// SubscribeToSession subscribes to real-time updates for a session.
 	// Returns a stream of updates when new messages arrive or session state changes.

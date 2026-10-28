@@ -134,6 +134,12 @@ service LoomService {
   // ResolveExecutionGap records an operator's finding for the tool call that
   // ResumeSession reported as an execution gap, so ResumeSession can continue
   // the turn.
+  //
+  // The recorded result is the caller's assertion, not tool output, but the
+  // agent treats it as real tool output. It is stored marked as manually
+  // resolved with the caller's user id. Any caller who can open the session may
+  // call this; there is no operator-only role. Do not expose it to session
+  // owners you would not trust to set a tool's result.
   rpc ResolveExecutionGap(ResolveExecutionGapRequest) returns (ResolveExecutionGapResponse) {
     option (google.api.http) = {
       post: "/v1/sessions/{session_id}:resolveExecutionGap"
