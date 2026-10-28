@@ -23,6 +23,8 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
+	"github.com/teradata-labs/loom/pkg/metaagent"
+	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/storage/postgres"
 )
 
@@ -30,16 +32,62 @@ import (
 // server itself built for the session, so the resumed turn has the same LLM
 // provider, MCP tools and governance as the turn that crashed, and acts as
 // the calling user.
+//
+// A resume executes tool calls and LLM requests, so it is a turn-executing
+// entry point and is admitted like Weave: it takes the LLM slot-scheduling
+// identity, parks at the door when max_active_conversations is reached, runs
+// under a server span, and carries the agent's progress multiplexer.
 func (s *MultiAgentServer) ResumeSession(ctx context.Context, req *loomv1.ResumeSessionRequest) (*loomv1.ResumeSessionResponse, error) {
-	if req.GetSessionId() == "" {
+	sessionID := req.GetSessionId()
+	if sessionID == "" {
 		return nil, status.Error(codes.InvalidArgument, "session_id is required")
 	}
-	ag, err := s.sessionAgent(ctx, req.GetSessionId())
+	ag, agentID, err := s.sessionAgent(ctx, sessionID)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := ag.ResumeSession(ctx, req.GetSessionId())
+	// The session exists (sessionAgent found it), so this is a resumed
+	// conversation: its first LLM call classifies as in-flight.
+	ctx = installTurnSlotInfo(ctx, true, sessionID, agentID)
+	releaseDoor, doorErr := enterTurnDoor(ctx, s.logger)
+	if doorErr != nil {
+		return nil, doorErr
+	}
+	defer releaseDoor()
+
+	s.mu.RLock()
+	if pm, ok := s.progressMultiplexers[agentID]; ok {
+		ctx = metaagent.WithProgress(ctx, pm)
+	}
+	tracer := s.tracer
+	s.mu.RUnlock()
+
+	var span *observability.Span
+	if tracer != nil {
+		ctx, span = tracer.StartSpan(ctx, "server.ResumeSession",
+			observability.WithAttribute(observability.AttrSessionID, sessionID),
+			observability.WithAttribute("agent.id", agentID),
+		)
+	}
+
+	resp, err := s.runResumeSession(ctx, ag, sessionID)
+	if span != nil {
+		if err != nil {
+			span.RecordError(err)
+		} else {
+			span.SetAttribute("resume.outcome", resp.GetOutcome().String())
+		}
+		tracer.EndSpan(span)
+		s.RecordTraceSpan(span)
+	}
+	return resp, err
+}
+
+// runResumeSession runs the agent's resume and maps its outcome to the RPC
+// response.
+func (s *MultiAgentServer) runResumeSession(ctx context.Context, ag *agent.Agent, sessionID string) (*loomv1.ResumeSessionResponse, error) {
+	resp, err := ag.ResumeSession(ctx, sessionID)
 	var gap *agent.ExecutionGap
 	var parked *agent.TurnParkedError
 	switch {
@@ -84,7 +132,7 @@ func (s *MultiAgentServer) ResolveExecutionGap(ctx context.Context, req *loomv1.
 		return nil, status.Error(codes.InvalidArgument, "outcome must be SUCCEEDED or FAILED")
 	}
 
-	ag, err := s.sessionAgent(ctx, req.GetSessionId())
+	ag, _, err := s.sessionAgent(ctx, req.GetSessionId())
 	if err != nil {
 		return nil, err
 	}
@@ -99,19 +147,19 @@ func (s *MultiAgentServer) ResolveExecutionGap(ctx context.Context, req *loomv1.
 }
 
 // sessionAgent returns the agent that owns sessionID for the calling user,
-// with the same routing and isolation rules as Weave.
-func (s *MultiAgentServer) sessionAgent(ctx context.Context, sessionID string) (*agent.Agent, error) {
+// and that agent's id, with the same routing and isolation rules as Weave.
+func (s *MultiAgentServer) sessionAgent(ctx context.Context, sessionID string) (*agent.Agent, string, error) {
 	ag, agentID, exists, accessible := s.findSessionOwner(ctx, sessionID, postgres.UserIDFromContext(ctx))
 	if !exists || !accessible {
-		return nil, status.Error(codes.NotFound, "session not found")
+		return nil, "", status.Error(codes.NotFound, "session not found")
 	}
 	if ag == nil {
 		if agentID != "" {
-			return nil, status.Errorf(codes.FailedPrecondition, "session belongs to agent %q, which is not registered", agentID)
+			return nil, "", status.Errorf(codes.FailedPrecondition, "session belongs to agent %q, which is not registered", agentID)
 		}
-		return nil, status.Error(codes.FailedPrecondition, "session is not bound to an agent")
+		return nil, "", status.Error(codes.FailedPrecondition, "session is not bound to an agent")
 	}
-	return ag, nil
+	return ag, agentID, nil
 }
 
 // resumeStatus maps the errors ResumeSession and ResolveExecutionGap refuse
@@ -119,7 +167,7 @@ func (s *MultiAgentServer) sessionAgent(ctx context.Context, sessionID string) (
 func resumeStatus(err error) error {
 	var parked *agent.SessionParkedError
 	switch {
-	case errors.Is(err, agent.ErrSessionBusy):
+	case isSessionLeaseError(err):
 		return status.Error(codes.Aborted, err.Error())
 	case errors.Is(err, agent.ErrEventLogDisabled),
 		errors.Is(err, agent.ErrTurnNotRecorded),

@@ -31,6 +31,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/eventlog"
+	llmscheduler "github.com/teradata-labs/loom/pkg/llm/scheduler"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
@@ -228,6 +229,96 @@ func TestResumeSessionRPC_Refusals(t *testing.T) {
 	_, err = srv.ResumeSession(ctx, &loomv1.ResumeSessionRequest{SessionId: "s-unlogged"})
 	require.Equal(t, codes.FailedPrecondition, status.Code(err), "got %v", err)
 	require.Zero(t, probe.calls.Load())
+}
+
+// slotProbeLLM notes whether the turn reached the provider with LLM
+// slot-scheduling info, which only a turn-executing entry point installs.
+type slotProbeLLM struct {
+	resumeLLM
+	sawSlot atomic.Bool
+}
+
+func (l *slotProbeLLM) Chat(ctx context.Context, msgs []llmtypes.Message, tools []shuttle.Tool) (*llmtypes.LLMResponse, error) {
+	if llmscheduler.SlotInfoFrom(ctx) != nil {
+		l.sawSlot.Store(true)
+	}
+	return l.resumeLLM.Chat(ctx, msgs, tools)
+}
+
+// Review round 2, B4: a resumed turn runs tools and LLM calls, so it counts
+// against max_active_conversations like any other turn. With the ceiling
+// reached it parks at the door without touching the agent, runs once a slot
+// frees, and gives the slot back when it finishes.
+func TestResumeSessionRPC_RespectsDoorCeiling(t *testing.T) {
+	withDoorLimits(t, 1, 0)
+	stores := newResumeStores(t)
+	probe := &resumeProbeTool{}
+	stores.crashTurn(t, "s-door", probe)
+	llm := &resumeLLM{}
+	srv := stores.server(t, stores.agent(llm, probe))
+	ctx := context.Background()
+
+	// Another conversation holds the only active slot.
+	hold, err := llmscheduler.Door().Enter(ctx)
+	require.NoError(t, err)
+
+	type result struct {
+		resp *loomv1.ResumeSessionResponse
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		resp, err := srv.ResumeSession(ctx, &loomv1.ResumeSessionRequest{SessionId: "s-door"})
+		done <- result{resp, err}
+	}()
+
+	waitDoorQueued(t, 1)
+	select {
+	case <-done:
+		t.Fatal("the resume ran past the max_active ceiling")
+	case <-time.After(200 * time.Millisecond):
+	}
+	llm.mu.Lock()
+	reached := llm.calls
+	llm.mu.Unlock()
+	require.Zero(t, reached, "a resume parked at the door reached the LLM")
+
+	hold()
+	select {
+	case r := <-done:
+		require.NoError(t, r.err)
+		require.Equal(t, loomv1.ResumeSessionOutcome_RESUME_SESSION_OUTCOME_RESUMED, r.resp.GetOutcome())
+	case <-time.After(10 * time.Second):
+		t.Fatal("the resume never ran after the slot freed")
+	}
+	require.EqualValues(t, 1, probe.calls.Load(), "resume re-ran the tool")
+
+	active, queued := llmscheduler.Door().DoorState()
+	require.Zero(t, active, "the resume did not release its door slot")
+	require.Zero(t, queued)
+}
+
+// Review round 2, B4: the resumed turn carries the LLM slot identity and the
+// server records a span for it, so it is visible in traces like a Weave turn.
+func TestResumeSessionRPC_InstallsSlotInfoAndRecordsSpan(t *testing.T) {
+	stores := newResumeStores(t)
+	probe := &resumeProbeTool{}
+	stores.crashTurn(t, "s-obs", probe)
+	llm := &slotProbeLLM{}
+	srv := stores.server(t, stores.agent(llm, probe))
+	tracer := observability.NewMockTracer()
+	srv.SetTracer(tracer)
+	srv.SetTraceStore(time.Hour)
+
+	resp, err := srv.ResumeSession(context.Background(), &loomv1.ResumeSessionRequest{SessionId: "s-obs"})
+	require.NoError(t, err)
+	require.Equal(t, loomv1.ResumeSessionOutcome_RESUME_SESSION_OUTCOME_RESUMED, resp.GetOutcome())
+	require.True(t, llm.sawSlot.Load(), "the resumed turn reached the LLM without slot-scheduling info")
+
+	span := tracer.GetSpanByName("server.ResumeSession")
+	require.NotNil(t, span, "no server span for the resume")
+	require.Equal(t, "s-obs", span.Attributes[observability.AttrSessionID])
+	require.NotNil(t, srv.traceStoreLocal.GetTrace(span.TraceID), "the span was not recorded for GetTrace")
 }
 
 // A session leased by another process (a live turn or another replica's
