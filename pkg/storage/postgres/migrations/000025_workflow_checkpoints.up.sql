@@ -7,9 +7,11 @@
 -- Durable storage for WorkflowCheckpoint (proto/loom/v1/orchestration.proto),
 -- the stage-boundary HITL-gate suspension record. Previously the CLI
 -- (cmd/looms/cmd_workflow.go writeCheckpointAndPrintGate) wrote this only to
--- a local *.checkpoint.pb file, so a suspended workflow's resume state did
--- not survive a server restart unless the caller separately persisted that
--- file. One row per (user_id, workflow_id): a new suspension replaces the
+-- a local *.checkpoint.pb file, so a suspended workflow could be resumed only
+-- on the machine that still had that file. The CLI now also saves the record
+-- here, and `looms workflow resume --workflow-id` reads it back; `looms serve`
+-- does not read this table. The resume deletes the row once the workflow
+-- completes or is rejected. One row per (user_id, workflow_id): a new suspension replaces the
 -- last one, so a workflow has at most one live pending gate at a time. The
 -- key includes user_id because workflow IDs are often set by hand in the
 -- workflow YAML, so two tenants can share one; keyed on workflow_id alone, one
