@@ -28,6 +28,7 @@ import (
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"github.com/teradata-labs/loom/pkg/types"
 )
 
 // scriptedLLM returns its steps in order; a step may cancel the turn to stand
@@ -79,6 +80,32 @@ func (s *toolRowFailingStore) SaveMessage(ctx context.Context, sessionID string,
 	s.mu.Unlock()
 	if fail {
 		return errors.New("injected: tool row write failed")
+	}
+	return s.SessionStorage.SaveMessage(ctx, sessionID, msg, turnStart)
+}
+
+// laterBatchFailingStore fails every assistant-with-tool-calls and tool row
+// write from the second batch on: the batch's tools still run and are recorded
+// in the event log, but the session never holds them.
+type laterBatchFailingStore struct {
+	SessionStorage
+	mu      sync.Mutex
+	batches int
+	failing bool
+}
+
+func (s *laterBatchFailingStore) SaveMessage(ctx context.Context, sessionID string, msg *Message, turnStart bool) error {
+	s.mu.Lock()
+	if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+		s.batches++
+		if s.batches == 2 {
+			s.failing = true
+		}
+	}
+	fail := s.failing && (msg.Role == "tool" || (msg.Role == "assistant" && len(msg.ToolCalls) > 0))
+	s.mu.Unlock()
+	if fail {
+		return errors.New("injected: later batch write failed")
 	}
 	return s.SessionStorage.SaveMessage(ctx, sessionID, msg, turnStart)
 }
@@ -230,6 +257,118 @@ func TestResumeSession_UnansweredTurnWithUnsavedBatch_Refuses(t *testing.T) {
 	require.Zero(t, tool.calls)
 }
 
+// stepReadFailingLog cannot say where the log's step counter stands.
+type stepReadFailingLog struct{ recordingEventLog }
+
+func (l *stepReadFailingLog) NextStepIndex(context.Context, string) (int, error) {
+	return 0, errors.New("injected: step counter unavailable")
+}
+
+// Review round 2, B6: when the step counter cannot be read the turn must stop.
+// Starting at step 0 instead would record this turn's events over steps already
+// in the log, which resume then misreads.
+func TestChat_StepCounterUnreadable_FailsClosed(t *testing.T) {
+	log := &stepReadFailingLog{}
+	tool := &crashingTool{}
+	llm := &scriptedLLM{steps: []func(context.Context) (*llmtypes.LLMResponse, error){
+		toolCallStep(llmtypes.ToolCall{ID: "c1", Name: "crashy", Input: map[string]interface{}{}}),
+	}}
+	ag := newEventLogAgent(t, llm, nil, log, tool)
+
+	_, err := ag.Chat(context.Background(), "s-b6", "run crashy")
+	require.ErrorContains(t, err, "step counter unavailable")
+	require.Zero(t, llm.calls, "the LLM was called with no step to record it under")
+	require.Zero(t, tool.calls)
+	require.Empty(t, log.AllRecordedEvents("s-b6"), "events were recorded under a guessed step")
+}
+
+// Review round 2, B1: batch A completes and is saved; batch B's assistant
+// message and tool row fail to persist, but B's tool runs and is recorded; the
+// process dies. The session ends at A's complete tool rows, which looks like a
+// turn that only needs its reply. Resume must refuse: asking the LLM again
+// would request B again and run its tool a second time.
+func TestResumeSession_CompleteBatchThenUnsavedBatch_Refuses(t *testing.T) {
+	recorder := &recordingEventLog{}
+	sessions := newSQLiteSessions(t)
+	failing := &laterBatchFailingStore{SessionStorage: sessions}
+	tool := &crashingTool{}
+
+	turnCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	llm := &scriptedLLM{steps: []func(context.Context) (*llmtypes.LLMResponse, error){
+		toolCallStep(llmtypes.ToolCall{ID: "a1", Name: "crashy", Input: map[string]interface{}{"n": 1}}),
+		toolCallStep(llmtypes.ToolCall{ID: "b1", Name: "crashy", Input: map[string]interface{}{"n": 2}}),
+		crashStep(cancel),
+	}}
+	first := newEventLogAgent(t, llm, failing, recorder, tool)
+	_, err := first.Chat(turnCtx, "s-b1", "run crashy twice")
+	require.Error(t, err, "the turn should end with the simulated crash")
+	require.Equal(t, 2, tool.calls)
+
+	// A fresh process asks the LLM for batch B again.
+	again := &scriptedLLM{steps: []func(context.Context) (*llmtypes.LLMResponse, error){
+		toolCallStep(llmtypes.ToolCall{ID: "b1", Name: "crashy", Input: map[string]interface{}{"n": 2}}),
+	}}
+	second := newEventLogAgent(t, again, sessions, recorder, tool)
+	_, err = second.ResumeSession(context.Background(), "s-b1")
+	require.ErrorIs(t, err, ErrBatchNotSaved)
+	require.Equal(t, 2, tool.calls, "resume ran batch B's tool a second time")
+	require.Zero(t, again.calls, "resume asked the LLM again")
+}
+
+// stepEvents builds the log a dispatched step leaves: its LLM response and an
+// intent for each call.
+func stepEvents(t *testing.T, step int, calls ...llmtypes.ToolCall) []eventlog.ExecutionEvent {
+	t.Helper()
+	payload, err := json.Marshal(LLMResponse{ToolCalls: calls})
+	require.NoError(t, err)
+	events := []eventlog.ExecutionEvent{{StepIndex: step, EventType: eventlog.EventLLMCallResult, Payload: payload}}
+	for i, c := range calls {
+		intent, err := json.Marshal(map[string]interface{}{"tool_name": c.Name, "input": c.Input})
+		require.NoError(t, err)
+		events = append(events, eventlog.ExecutionEvent{
+			StepIndex: step, BatchPosition: i, EventType: eventlog.EventToolCallIntent, ToolUseID: c.ID, Payload: intent,
+		})
+	}
+	return events
+}
+
+// Review round 2, B8: an earlier batch with the same name and input as an
+// unsaved one must not vouch for it. Each saved message answers one step, and
+// the tool-call id tells two responses' identical batches apart.
+func TestUnsavedBatchStep_EarlierIdenticalBatchDoesNotHideAnUnsavedOne(t *testing.T) {
+	input := map[string]interface{}{"n": float64(1)}
+	earlier := llmtypes.ToolCall{ID: "toolu_1", Name: "crashy", Input: input}
+	later := llmtypes.ToolCall{ID: "toolu_2", Name: "crashy", Input: input}
+	msgs := []Message{{Role: "assistant", ToolCalls: []llmtypes.ToolCall{earlier}}}
+
+	// Different ids: the later step is not the saved message.
+	events := stepEvents(t, 3, later)
+	step, unsaved := unsavedBatchStep(events, msgs)
+	require.True(t, unsaved)
+	require.Equal(t, 3, step)
+
+	// Same id (a provider reusing ids): one saved message still answers only
+	// one step, so the second step is reported.
+	events = append(stepEvents(t, 1, earlier), stepEvents(t, 3, earlier)...)
+	step, unsaved = unsavedBatchStep(events, msgs)
+	require.True(t, unsaved)
+	require.Equal(t, 3, step)
+
+	// Both steps saved: nothing to report.
+	msgs = append(msgs, Message{Role: "assistant", ToolCalls: []llmtypes.ToolCall{earlier}})
+	_, unsaved = unsavedBatchStep(events, msgs)
+	require.False(t, unsaved)
+}
+
+// A step holding only query_tool_result calls has no saved batch by design
+// (PersistMessage drops those calls), and re-running it repeats nothing.
+func TestUnsavedBatchStep_QueryToolResultOnlyStepIsNotReported(t *testing.T) {
+	events := stepEvents(t, 0, llmtypes.ToolCall{ID: "q1", Name: queryToolResultName, Input: map[string]interface{}{"message_id": float64(2)}})
+	_, unsaved := unsavedBatchStep(events, nil)
+	require.False(t, unsaved)
+}
+
 // The saved assistant message omits query_tool_result calls, so a call's
 // index in the saved batch can differ from the batch_position its events were
 // recorded under. Resume must read each call's events at the recorded
@@ -307,4 +446,48 @@ func TestResolveExecutionGap_FailedOutcomeBackfillsAFailedRow(t *testing.T) {
 	require.NotNil(t, row)
 	require.NotNil(t, row.ToolResult)
 	require.False(t, row.ToolResult.Success, "a call resolved as failed was backfilled as a success")
+}
+
+// A resolved gap is an operator's assertion, not something the tool returned.
+// Both outcomes mark the result as manually resolved and say by whom, so the
+// tool row can be told apart from a real execution.
+func TestResolveExecutionGap_MarksTheResultAsManuallyResolved(t *testing.T) {
+	for name, tc := range map[string]struct {
+		outcome GapOutcome
+		result  []byte
+	}{
+		"succeeded": {GapSucceeded, []byte(`{"message_id": "m-1"}`)},
+		"failed":    {GapFailed, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := &recordingEventLog{}
+			ag := newEventLogAgent(t, &mockSimpleLLM{}, nil, recorder, &crashingTool{})
+			ctx := types.ContextWithUserID(context.Background(), "operator-1")
+			sess := ag.memory.GetOrCreateSessionWithAgent(ctx, "s-marked", ag.config.Name, "")
+			ag.appendMessage(ctx, sess, Message{Role: "user", Content: "run crashy"}, true)
+			ag.appendMessage(ctx, sess, Message{
+				Role:      "assistant",
+				ToolCalls: []llmtypes.ToolCall{{ID: "c1", Name: "crashy", Input: map[string]interface{}{}}},
+			}, false)
+			recordTailBatch(t, recorder, sess, 0)
+			require.NoError(t, recorder.RecordIntent(ctx, sess.ID, 0, 0, eventlog.EventToolCallIntent, "c1", []byte(`{"tool_name":"crashy"}`)))
+
+			_, err := ag.ResolveExecutionGap(ctx, "s-marked", tc.outcome, tc.result)
+			require.NoError(t, err)
+
+			events, err := recorder.LoadEvents(ctx, "s-marked")
+			require.NoError(t, err)
+			var recorded struct {
+				Result *shuttle.Result `json:"result"`
+			}
+			for _, e := range events {
+				if e.EventType == eventlog.EventToolCallResult {
+					require.NoError(t, json.Unmarshal(e.Payload, &recorded))
+				}
+			}
+			require.NotNil(t, recorded.Result)
+			require.Equal(t, true, recorded.Result.Metadata["manually_resolved"])
+			require.Equal(t, "operator-1", recorded.Result.Metadata["resolved_by"])
+		})
+	}
 }

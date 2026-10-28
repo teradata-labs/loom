@@ -97,10 +97,19 @@ func (a *Agent) holdSessionLease(ctx context.Context, sessionID string) (context
 				return
 			case <-ticker.C:
 			}
-			held, err := a.eventLog.RenewSessionLease(storeCtx, sessionID, holder, ttl)
+			// A renewal that never returns must not outlive the lease: it would
+			// keep the turn dispatching after another process could have taken
+			// over, and block release. Bounding each call to one renewal
+			// interval lets the failure check below see it in time. The lease
+			// is vouched for from when the call began, not when it returned,
+			// since the store stamps the renewal somewhere inside the call.
+			began := time.Now()
+			renewCtx, cancelRenew := context.WithTimeout(storeCtx, ttl/3)
+			held, err := a.eventLog.RenewSessionLease(renewCtx, sessionID, holder, ttl)
+			cancelRenew()
 			switch {
 			case err == nil && held:
-				lastHeld = time.Now()
+				lastHeld = began
 			case err == nil:
 				cancel(ErrSessionLeaseLost)
 				return

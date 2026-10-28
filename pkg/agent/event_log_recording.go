@@ -35,36 +35,59 @@ var ErrEventLogDisabled = errors.New("execution event log is not configured on t
 // (see EventLogStore.NextStepIndex doc comment). With no event log configured
 // this always returns 0 — the value is never persisted anywhere in that case,
 // so its exact number is irrelevant.
-func (a *Agent) currentStepIndex(ctx context.Context, sessionID string) int {
+//
+// A failed read is an error, not step 0: events recorded under a guessed step
+// would collide with, or be misread as belonging to, steps already in the log,
+// and resume decides what already ran from exactly those events.
+func (a *Agent) currentStepIndex(ctx context.Context, sessionID string) (int, error) {
 	if a.eventLog == nil {
-		return 0
+		return 0, nil
 	}
 	next, err := a.eventLog.NextStepIndex(ctx, sessionID)
 	if err != nil {
-		zap.L().Warn("failed to read next step index; starting from 0 for this invocation",
-			zap.String("session_id", sessionID), zap.Error(err))
-		return 0
+		return 0, fmt.Errorf("reading next step index for session %s: %w", sessionID, err)
 	}
-	return next
+	return next, nil
 }
 
 // lastRecordedStepIndex returns the step_index of the most recently recorded
-// LLM call for sessionID — the step a parked batch's tool calls belong to
-// when completing it later (see completeParkedBatch in park.go). No further
-// LLM call can occur between a batch parking and its completion (parking
-// ends the turn immediately via TurnParkedError), so the highest recorded
-// step_index at completion time IS the step that produced the parked batch
-// — the same "unresolved tail is unambiguous" reasoning crash-resume relies
-// on. Returns 0 if no event log is
-// configured or no events have been recorded yet (both cases make the exact
-// value inert, since recording is a no-op throughout when a.eventLog is nil,
-// and there is nothing to correlate against if nothing was ever recorded).
-func (a *Agent) lastRecordedStepIndex(ctx context.Context, sessionID string) int {
-	next := a.currentStepIndex(ctx, sessionID)
-	if next <= 0 {
-		return 0
+// LLM call for sessionID. Returns 0 if no event log is configured or no events
+// have been recorded yet (both cases make the exact value inert, since
+// recording is a no-op throughout when a.eventLog is nil, and there is nothing
+// to correlate against if nothing was ever recorded).
+func (a *Agent) lastRecordedStepIndex(ctx context.Context, sessionID string) (int, error) {
+	next, err := a.currentStepIndex(ctx, sessionID)
+	if err != nil || next <= 0 {
+		return 0, err
 	}
-	return next - 1
+	return next - 1, nil
+}
+
+// batchEventStep resolves where the execution events of an already-saved tool
+// batch live, for a path that completes the batch outside the loop that
+// produced it (completeParkedBatch). The loop records each call at its index in
+// the LLM response, which differs from its index in the saved message when the
+// message dropped query_tool_result calls, so the saved position cannot be used
+// as is.
+//
+// positions[k] is the batch_position of batch.ToolCalls[k]; it is nil when the
+// saved indices are the right ones (no event log, or the batch has no recorded
+// LLM response and its events fall under the latest step, which is the step
+// that produced a parked batch since parking ends the turn before another LLM
+// call can run).
+func (a *Agent) batchEventStep(ctx context.Context, sessionID string, batch Message) (step int, positions []int, err error) {
+	if a.eventLog == nil {
+		return 0, nil, nil
+	}
+	events, err := a.eventLog.LoadEvents(ctx, sessionID)
+	if err != nil {
+		return 0, nil, fmt.Errorf("loading execution events for session %s: %w", sessionID, err)
+	}
+	if step, positions, ok := recordedStepForBatch(events, batch); ok {
+		return step, positions, nil
+	}
+	step, err = a.lastRecordedStepIndex(ctx, sessionID)
+	return step, nil, err
 }
 
 // recordLLMIntent is a blocking precondition: per the design's write-ahead

@@ -472,6 +472,12 @@ func (a *Agent) guardPendingPark(ctx context.Context, sessionID string) error {
 			zap.String("session_id", sessionID), zap.Error(err))
 		return nil
 	}
+	return a.pendingParkIn(ctx, sessionID, reqs)
+}
+
+// pendingParkIn is guardPendingPark over requests the caller already listed, so
+// a guard that needs the list for more than one check reads it once.
+func (a *Agent) pendingParkIn(ctx context.Context, sessionID string, reqs []*shuttle.HumanRequest) error {
 	now := time.Now()
 	for _, r := range reqs {
 		if r == nil || r.RequestType != "parked" || r.Status != "pending" {
@@ -497,12 +503,14 @@ func (a *Agent) guardParkedTail(ctx context.Context, sessionID string, sess *Ses
 	if a.hitlPark == nil {
 		return nil
 	}
-	if err := a.guardPendingPark(ctx, sessionID); err != nil {
-		return err
-	}
 	reqs, err := a.hitlPark.store.ListBySession(ctx, sessionID)
 	if err != nil {
+		zap.L().Warn("parked-tail guard: listing session requests failed; admitting turn",
+			zap.String("session_id", sessionID), zap.Error(err))
 		return nil
+	}
+	if err := a.pendingParkIn(ctx, sessionID, reqs); err != nil {
+		return err
 	}
 	now := time.Now()
 
@@ -1532,7 +1540,15 @@ func (a *Agent) completeParkedBatch(ctx Context, sess *Session, batch Message, r
 		tools:              &tools,
 		recovery:           recovery,
 		turnDedup:          make(map[string]*shuttle.Result),
-		stepIndex:          a.lastRecordedStepIndex(ctx, sess.ID),
+	}
+	// The loop recorded each call at its index in the LLM response; the saved
+	// batch can hold fewer calls (query_tool_result is dropped), so a call's
+	// events sit at eventPositions[position], not at position.
+	var eventPositions []int
+	st.stepIndex, eventPositions, st.stepErr = a.batchEventStep(ctx, sess.ID, batch)
+	if st.stepErr != nil {
+		zap.L().Warn("could not resolve the execution-event step for a parked batch; its calls will not run",
+			zap.String("session_id", sess.ID), zap.Error(st.stepErr))
 	}
 
 	// The grant lives only on this derived context — step 4's loop re-entry
@@ -1562,7 +1578,10 @@ func (a *Agent) completeParkedBatch(ctx Context, sess *Session, batch Message, r
 	}
 
 	for j, call := range rowless {
-		position := positions[j]
+		eventPos := positions[j]
+		if eventPositions != nil {
+			eventPos = eventPositions[eventPos]
+		}
 		switch {
 		case kinds[call.ID] == "resource":
 			// The call's tool body already RAN when the turn parked — every
@@ -1589,9 +1608,9 @@ func (a *Agent) completeParkedBatch(ctx Context, sess *Session, batch Message, r
 			}
 			a.synthesizeParkedResult(ctx, sess, call, a.parkedAnswerResult(ctx, call, answer), st)
 		case granted[call.ID]:
-			a.dispatchOneCall(grantCtx, sess, call, position, st)
+			a.dispatchOneCall(grantCtx, sess, call, eventPos, st)
 		default:
-			a.dispatchOneCall(ctx, sess, call, position, st)
+			a.dispatchOneCall(ctx, sess, call, eventPos, st)
 		}
 	}
 

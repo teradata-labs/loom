@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"go.uber.org/zap"
@@ -34,6 +35,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"github.com/teradata-labs/loom/pkg/types"
 )
 
 // ErrTurnNotRecorded is returned by ResumeSession when the interrupted batch
@@ -85,6 +87,12 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (*Response,
 	}
 	ctx = session.WithSessionID(ctx, sessionID)
 
+	// Same order as ResumeChat and ResolveExecutionGap: the in-process lock
+	// first, then the lease. A caller waiting on the lock then holds no lease,
+	// so it cannot keep another replica's resume out while it queues.
+	unlock := a.lockSession(sessionID)
+	defer unlock()
+
 	// The session lease keeps a live turn, another resume, or a second
 	// replica from dispatching the same calls while this resume runs.
 	ctx, releaseLease, err := a.holdSessionLease(ctx, sessionID)
@@ -92,11 +100,6 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (*Response,
 		return nil, err
 	}
 	defer releaseLease()
-
-	// Also serializes against a same-process ResumeChat on this session, the
-	// in-process guard ResumeChat itself takes.
-	unlock := a.lockSession(sessionID)
-	defer unlock()
 
 	ctx, span := a.tracer.StartSpan(ctx, "agent.conversation.resume_session")
 	defer a.tracer.EndSpan(span)
@@ -134,11 +137,16 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (*Response,
 	}()
 	agentCtx := &agentContext{Context: ctx, session: sess, tracer: a.tracer, progressCallback: nil}
 
+	// A batch whose tools ran but whose assistant message never saved leaves
+	// the session looking like an earlier batch just finished. Whatever the
+	// tail looks like, resuming from it would ask the LLM again and could run
+	// that batch's tools a second time, so every path refuses here.
 	msgs := rawSessionMessages(sess)
+	if step, unsaved := unsavedBatchStep(events, msgs); unsaved {
+		span.AddEvent("resume_session.batch_not_saved", map[string]interface{}{"step_index": step})
+		return nil, fmt.Errorf("session %s step %d: %w", sessionID, step, ErrBatchNotSaved)
+	}
 	if unansweredTurnTail(msgs) {
-		if step, unsaved := unsavedBatchStep(events, msgs); unsaved {
-			return nil, fmt.Errorf("session %s step %d: %w", sessionID, step, ErrBatchNotSaved)
-		}
 		span.AddEvent("resume_session.unanswered_turn", nil)
 		return a.finishResumedTurn(ctx, agentCtx, sess, handleCollector, &parkedAgain)
 	}
@@ -164,10 +172,17 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (*Response,
 	}
 	span.SetAttribute("resume.step_index", step)
 
+	// The same recovery orchestrator the loop and ResumeChat give a batch, so
+	// self-healing applies to calls dispatched by a resume too.
+	var recovery *recoveryOrchestrator
+	if a.config.EnableSelfHealing {
+		recovery = newRecoveryOrchestrator(a.config.RecoveryConfig, span)
+	}
 	st := &batchState{
 		span:      span,
 		batchLen:  len(batch.ToolCalls),
 		turnDedup: make(map[string]*shuttle.Result),
+		recovery:  recovery,
 		stepIndex: step,
 	}
 	var toolExecCount int
@@ -382,8 +397,12 @@ func matchRecordedCalls(recorded, saved []ToolCall) ([]int, bool) {
 // assistant messages.
 const queryToolResultName = "query_tool_result"
 
+// sameToolCall compares a recorded call with a saved one. The saved message
+// holds the very ToolCall the log recorded, so id, name and input all agree
+// for a true match; the id keeps two identical batches from different LLM
+// responses apart.
 func sameToolCall(a, b ToolCall) bool {
-	return a.Name == b.Name && canonicalJSON(a.Input) == canonicalJSON(b.Input)
+	return a.ID == b.ID && a.Name == b.Name && canonicalJSON(a.Input) == canonicalJSON(b.Input)
 }
 
 // unansweredTurnTail reports whether msgs ends in a user message that opened
@@ -413,13 +432,24 @@ func unansweredTurnTail(msgs []Message) bool {
 // no saved batch to resume from, re-running the turn would ask the LLM again
 // and could run those tools twice. A step whose LLM response is missing from
 // the log cannot be checked and is reported too.
+//
+// Each saved assistant message vouches for at most one step, and steps are
+// taken in order, so an earlier identical batch cannot also stand in for a
+// later one that never saved. Calls match on tool-call id as well as name and
+// input (see sameToolCall); a provider that reuses ids across responses can
+// still confuse two identical batches.
 func unsavedBatchStep(events []eventlog.ExecutionEvent, msgs []Message) (int, bool) {
 	dispatched := make(map[int]bool)
 	responses := make(map[int][]ToolCall)
 	for _, e := range events {
 		switch e.EventType {
 		case eventlog.EventToolCallIntent:
-			dispatched[e.StepIndex] = true
+			// query_tool_result only reads this turn's in-memory results and is
+			// never saved with its batch, so a step holding only those has
+			// nothing a re-run could do twice.
+			if !isQueryToolResultIntent(e) {
+				dispatched[e.StepIndex] = true
+			}
 		case eventlog.EventLLMCallResult:
 			var resp LLMResponse
 			if err := json.Unmarshal(e.Payload, &resp); err == nil {
@@ -427,18 +457,27 @@ func unsavedBatchStep(events []eventlog.ExecutionEvent, msgs []Message) (int, bo
 			}
 		}
 	}
+	steps := make([]int, 0, len(dispatched))
 	for step := range dispatched {
+		steps = append(steps, step)
+	}
+	sort.Ints(steps)
+
+	claimed := make(map[int]bool)
+	for _, step := range steps {
 		recorded, ok := responses[step]
 		if !ok {
 			return step, true
 		}
 		saved := false
-		for _, m := range msgs {
-			if m.Role == "assistant" && len(m.ToolCalls) > 0 {
-				if _, match := matchRecordedCalls(recorded, m.ToolCalls); match {
-					saved = true
-					break
-				}
+		for i, m := range msgs {
+			if claimed[i] || m.Role != "assistant" || len(m.ToolCalls) == 0 {
+				continue
+			}
+			if _, match := matchRecordedCalls(recorded, m.ToolCalls); match {
+				claimed[i] = true
+				saved = true
+				break
 			}
 		}
 		if !saved {
@@ -446,6 +485,19 @@ func unsavedBatchStep(events []eventlog.ExecutionEvent, msgs []Message) (int, bo
 		}
 	}
 	return 0, false
+}
+
+// isQueryToolResultIntent reports whether a tool_call_intent event is for the
+// built-in query_tool_result call. An intent whose payload cannot be read is
+// not, so the caller treats it as a real dispatch.
+func isQueryToolResultIntent(e eventlog.ExecutionEvent) bool {
+	var p struct {
+		ToolName string `json:"tool_name"`
+	}
+	if err := json.Unmarshal(e.Payload, &p); err != nil {
+		return false
+	}
+	return p.ToolName == queryToolResultName
 }
 
 // findEventPair returns the intent and result events (if any) for one call's
@@ -518,10 +570,20 @@ const (
 // following ResumeSession backfills it instead of stopping. resultJSON is the
 // call's result data and is required for GapSucceeded. It holds the session
 // lease, so it cannot run while a resume or turn is driving the session.
+//
+// The recorded result is the caller's assertion and the agent treats it as
+// real tool output. It is marked manually_resolved with the caller's user id,
+// but any caller who can open the session may resolve its gap; there is no
+// operator-only check.
 func (a *Agent) ResolveExecutionGap(ctx context.Context, sessionID string, outcome GapOutcome, resultJSON []byte) (*ExecutionGap, error) {
 	if a.eventLog == nil {
 		return nil, ErrEventLogDisabled
 	}
+
+	// The result is the resolver's assertion, not something the tool returned.
+	// It is marked so the tool row can be told apart from a real execution, and
+	// names the caller (empty when the deployment has no user identity).
+	marker := map[string]interface{}{"manually_resolved": true, "resolved_by": types.UserIDFromContext(ctx)}
 
 	var payload map[string]interface{}
 	switch outcome {
@@ -530,11 +592,11 @@ func (a *Agent) ResolveExecutionGap(ctx context.Context, sessionID string, outco
 		if err := json.Unmarshal(resultJSON, &data); err != nil {
 			return nil, fmt.Errorf("result for a succeeded call must be JSON: %w", err)
 		}
-		payload = map[string]interface{}{"result": shuttle.Result{Success: true, Data: data}, "error": ""}
+		payload = map[string]interface{}{"result": shuttle.Result{Success: true, Data: data, Metadata: marker}, "error": ""}
 	case GapFailed:
 		const msg = "operator resolved this execution gap as failed"
 		payload = map[string]interface{}{
-			"result": shuttle.Result{Success: false, Error: &shuttle.Error{Code: "manually_resolved_failed", Message: msg}},
+			"result": shuttle.Result{Success: false, Error: &shuttle.Error{Code: "manually_resolved_failed", Message: msg}, Metadata: marker},
 			"error":  msg,
 		}
 	default:
@@ -546,13 +608,13 @@ func (a *Agent) ResolveExecutionGap(ctx context.Context, sessionID string, outco
 	}
 
 	ctx = session.WithSessionID(ctx, sessionID)
+	unlock := a.lockSession(sessionID)
+	defer unlock()
 	ctx, releaseLease, err := a.holdSessionLease(ctx, sessionID)
 	if err != nil {
 		return nil, err
 	}
 	defer releaseLease()
-	unlock := a.lockSession(sessionID)
-	defer unlock()
 
 	ctx, span := a.tracer.StartSpan(ctx, "agent.conversation.resolve_execution_gap")
 	defer a.tracer.EndSpan(span)

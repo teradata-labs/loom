@@ -2619,7 +2619,10 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	// stepIndex is the durable execution-event-log step counter for this
 	// invocation, read once at loop entry (see EventLogStore.NextStepIndex)
 	// and advanced once per loop iteration (see thisStep below).
-	stepIndex := a.currentStepIndex(ctx, session.ID)
+	stepIndex, stepErr := a.currentStepIndex(ctx, session.ID)
+	if stepErr != nil {
+		return nil, fmt.Errorf("reading the execution-event step counter: %w", stepErr)
+	}
 
 	// Conversation loop
 	for turnCount < a.config.MaxTurns && toolExecutionCount < a.config.MaxToolExecutions {
@@ -3152,7 +3155,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			tools:              &tools,
 			recovery:           recovery,
 			turnDedup:          make(map[string]*shuttle.Result),
-			stepIndex:          thisStep, // NEW
+			stepIndex:          thisStep,
 			parkableTail:       a.hitlPark != nil && assistantPersisted && a.memory.HasStore(),
 			batchIDCount:       batchIDCount,
 		}
@@ -3225,6 +3228,10 @@ type batchState struct {
 	pendingSidecars []Message
 
 	stepIndex int // the execution-event-log step this batch's calls are recorded under
+	// stepErr is set when stepIndex could not be resolved. No call may be
+	// recorded under a guessed step, and an unrecorded call must not run, so
+	// every dispatch fails its intent with this error.
+	stepErr error
 
 	// rowNotPersisted is set when a tool row for a call in this batch failed to
 	// persist (appendMessage is fail-open). The step's events are then the
@@ -3350,7 +3357,11 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 	_, toolSpan := ctx.Tracer().StartSpan(ctx, "agent.tool_execution")
 	toolSpan.SetAttribute("tool_name", toolCall.Name)
 
-	if intentErr := a.recordToolIntent(ctx, session.ID, st.stepIndex, i, toolCall); intentErr != nil {
+	intentErr := st.stepErr
+	if intentErr == nil {
+		intentErr = a.recordToolIntent(ctx, session.ID, st.stepIndex, i, toolCall)
+	}
+	if intentErr != nil {
 		// Same treatment as an LLM-intent failure: abort this call before it
 		// runs. The caller (the batch loop) has no per-call error return today
 		// (dispatchOneCall returns nothing) — synthesize a tool-result error

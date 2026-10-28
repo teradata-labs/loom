@@ -35,8 +35,11 @@ type leaseScriptLog struct {
 	recordingEventLog
 	renewHeld atomic.Bool
 	renewErr  atomic.Value // error
-	renewals  atomic.Int32
-	released  atomic.Int32
+	// renewHangs makes a renewal block until its context ends, like a database
+	// call that never returns.
+	renewHangs atomic.Bool
+	renewals   atomic.Int32
+	released   atomic.Int32
 }
 
 func newLeaseScriptLog() *leaseScriptLog {
@@ -47,6 +50,10 @@ func newLeaseScriptLog() *leaseScriptLog {
 
 func (l *leaseScriptLog) RenewSessionLease(ctx context.Context, sessionID, holder string, ttl time.Duration) (bool, error) {
 	l.renewals.Add(1)
+	if l.renewHangs.Load() {
+		<-ctx.Done()
+		return false, ctx.Err()
+	}
 	if v := l.renewErr.Load(); v != nil {
 		if err, _ := v.(error); err != nil {
 			return false, err
@@ -131,6 +138,26 @@ func TestHoldSessionLease_PersistentRenewalErrorCancelsTurn(t *testing.T) {
 	case <-ctx.Done():
 	case <-time.After(2 * time.Second):
 		t.Fatal("turn context still live although renewal kept failing")
+	}
+	require.ErrorIs(t, context.Cause(ctx), ErrSessionLeaseLost)
+}
+
+// Review round 2, B7: a renewal that never returns must not leave the turn
+// running past its lease. Each renewal has a deadline, and the turn is
+// cancelled once the lease can no longer be vouched for.
+func TestHoldSessionLease_HangingRenewalCancelsTurn(t *testing.T) {
+	store := newLeaseScriptLog()
+	store.renewHangs.Store(true)
+	a := leaseTestAgent(store, 90*time.Millisecond)
+
+	ctx, release, err := a.holdSessionLease(context.Background(), "s")
+	require.NoError(t, err)
+	defer release()
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("turn context still live although renewal never returned")
 	}
 	require.ErrorIs(t, context.Cause(ctx), ErrSessionLeaseLost)
 }

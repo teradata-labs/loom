@@ -29,6 +29,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -38,6 +39,68 @@ import (
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
+
+// Review round 2, B5: the loop records a call's events at its index in the LLM
+// response, but a saved assistant message drops query_tool_result calls, so the
+// call's index in the batch the session holds is smaller. completeParkedBatch
+// must record at the response's index, or a crash inside it leaves intents at
+// positions that crash-resume reads as never attempted.
+//
+// Driven directly: through ResumeChat a session reloaded without the
+// query_tool_result call is refused first, because a park request's item seq is
+// the call's index in the full response (verifyItemBinding).
+func TestCompleteParkedBatch_RecordsAtResponsePosition(t *testing.T) {
+	recorder := &recordingEventLog{}
+	tool := &crashingTool{}
+	ag := newEventLogAgent(t, &mockSimpleLLM{}, nil, recorder, tool)
+
+	ctx := context.Background()
+	sess := ag.memory.GetOrCreateSessionWithAgent(ctx, "s-pos", ag.config.Name, "")
+	ag.appendMessage(ctx, sess, Message{Role: "user", Content: "go"}, true)
+	// The session holds the batch as the store keeps it: no query_tool_result.
+	saved := []llmtypes.ToolCall{{ID: "c-write", Name: "crashy", Input: map[string]interface{}{"v": "w"}}}
+	ag.appendMessage(ctx, sess, Message{Role: "assistant", ToolCalls: saved}, false)
+	// The log holds the LLM response as the loop saw it.
+	recorded := []llmtypes.ToolCall{
+		{ID: "c-query", Name: queryToolResultName, Input: map[string]interface{}{"message_id": float64(1)}},
+		saved[0],
+	}
+	payload, err := json.Marshal(LLMResponse{ToolCalls: recorded})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := recorder.RecordResult(ctx, sess.ID, 4, 0, eventlog.EventLLMCallResult, "", payload); err != nil {
+		t.Fatalf("RecordResult: %v", err)
+	}
+
+	batch, rowless, positions, err := locateParkedBatch(sess, nil)
+	if err != nil {
+		t.Fatalf("locateParkedBatch: %v", err)
+	}
+	if positions[0] != 0 {
+		t.Fatalf("setup: the call's index in the saved batch is %d, want 0", positions[0])
+	}
+	agentCtx := &agentContext{Context: ctx, session: sess, tracer: ag.tracer}
+	ag.completeParkedBatch(agentCtx, sess, batch, rowless, positions, ParkDecision{Approved: true}, nil, nil)
+
+	if tool.calls != 1 {
+		t.Fatalf("crashy ran %d times, want 1", tool.calls)
+	}
+	var seen int
+	for _, e := range recorder.AllRecordedEvents(sess.ID) {
+		if e.ToolUseID != "c-write" {
+			continue
+		}
+		seen++
+		if e.StepIndex != 4 || e.BatchPosition != 1 {
+			t.Errorf("%s for c-write recorded at step %d position %d, want step 4 position 1 (its place in the recorded LLM response)",
+				e.EventType, e.StepIndex, e.BatchPosition)
+		}
+	}
+	if seen != 2 {
+		t.Fatalf("recorded %d events for c-write, want an intent and a result", seen)
+	}
+}
 
 func TestPark_CompletedBatchRecordsAtOriginatingStepIndex(t *testing.T) {
 	cfg := DefaultConfig()
