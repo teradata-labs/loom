@@ -19,6 +19,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/teradata-labs/loom/internal/message"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	llmtypes "github.com/teradata-labs/loom/pkg/types"
@@ -85,4 +86,20 @@ func TestNormalizeWireRoles_NoOpReturnsSameSliceWhenNothingToFold(t *testing.T) 
 	// reflect.DeepEqual — DeepEqual would report two *different* arrays with
 	// equal contents as "equal" too, which would defeat this test's purpose.
 	require.Same(t, &input[0], &out[0], "no fold needed: must return the same backing array, not a copy")
+}
+
+// syntheticWireRoles lists every persisted role IsSyntheticWireUserRole must
+// accept, spelled via the package constants so tests follow a rename.
+var syntheticWireRoles = []string{roleSkillBody, roleHygieneInjection, roleEmptyResponseRetry, roleSynthesisPrompt}
+
+// pkg/agent cannot import internal/message in production code, so its role
+// constants duplicate the message package's values. This pins them together.
+func TestSyntheticRoleConstantsMatchMessagePackage(t *testing.T) {
+	require.Equal(t, string(message.SkillBody), roleSkillBody)
+	require.Equal(t, string(message.HygieneInjection), roleHygieneInjection)
+	require.Equal(t, string(message.EmptyResponseRetry), roleEmptyResponseRetry)
+	require.Equal(t, string(message.SynthesisPrompt), roleSynthesisPrompt)
+	for _, role := range syntheticWireRoles {
+		require.True(t, IsSyntheticWireUserRole(role), role)
+	}
 }

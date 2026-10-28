@@ -27,6 +27,17 @@ import (
 	"go.uber.org/zap"
 )
 
+// Persisted roles for agent-authored content that reaches the LLM as a user
+// turn. Values mirror internal/message (a TUI-domain package pkg/agent must
+// not import); producers and IsSyntheticWireUserRole share these so a rename
+// cannot silently stop a role folding to "user" on the wire.
+const (
+	roleSkillBody          = "skill_body"
+	roleHygieneInjection   = "hygiene_injection"
+	roleEmptyResponseRetry = "empty_response_retry"
+	roleSynthesisPrompt    = "synthesis_prompt"
+)
+
 // IsSyntheticWireUserRole reports whether role is a persisted Loom-internal
 // role that must be delivered to the LLM as user-turn content — the
 // skill-body sidecar, a hygiene retry injection, an empty-response retry
@@ -36,7 +47,7 @@ import (
 // independently.
 func IsSyntheticWireUserRole(role string) bool {
 	switch role {
-	case "skill_body", "hygiene_injection", "empty_response_retry", "synthesis_prompt":
+	case roleSkillBody, roleHygieneInjection, roleEmptyResponseRetry, roleSynthesisPrompt:
 		return true
 	default:
 		return false
@@ -427,6 +438,7 @@ func (a *Agent) chatWithStreaming(ctx Context, messages []Message, tools []shutt
 			ToolName:          call.name,
 			ToolCallID:        call.id,
 			ToolInputBytes:    int64(p.Bytes),
+			ToolCallIndex:     int32(p.Index),
 		})
 	})
 

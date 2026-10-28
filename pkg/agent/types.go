@@ -376,6 +376,16 @@ type Config struct {
 	// Nil uses DefaultRecoveryConfig().
 	RecoveryConfig *RecoveryConfig
 
+	// ContextReliefWarning adds a transient note to a send where context relief
+	// ran and left the estimate over its release mark. Default false; the YAML
+	// key is behavior.context_relief_warning.
+	ContextReliefWarning bool
+
+	// ToolChangeNote adds a transient note to a provider call whose advertised
+	// tools differ from the previous successful call of the same turn. Default
+	// false; the YAML key is behavior.tool_change_note.
+	ToolChangeNote bool
+
 	// Debug holds opt-in diagnostic switches, all off by default.
 	Debug DebugConfig
 }
