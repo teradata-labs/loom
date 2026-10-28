@@ -625,6 +625,14 @@ jobs:
         shell: bash
         run: go test -tags fts5 -short -timeout=30m ./...
 
+      - name: Run platform-specific tests with race detection
+        # pkg/shuttle/builtin holds the Windows process-tree and job-object code
+        # (shell_execute_hardening_windows_test.go). The full-repo run above has no
+        # -race because it would multiply the job time; this step covers only the
+        # package with Windows-specific concurrency.
+        shell: bash
+        run: go test -tags fts5 -race -timeout=10m ./pkg/shuttle/builtin/...
+
   # ============================================================================
   # Job 8: All Checks Passed
   # ============================================================================
