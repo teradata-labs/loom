@@ -342,6 +342,10 @@ func runResume(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "❌ Failed to load checkpoint: %v\n", err)
 		os.Exit(1)
 	}
+	if err := adoptCheckpointTenant(ckpt); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ %v\n", err)
+		os.Exit(1)
+	}
 
 	fmt.Printf("📄 Resuming workflow: %s\n", workflowPath)
 	printPatternSummary(pattern)
@@ -466,6 +470,31 @@ func checkpointTenant(recorded string) (string, error) {
 		return recorded, nil
 	}
 	return workflowCheckpointUserID()
+}
+
+// adoptCheckpointTenant makes a resume run as the tenant ckpt records, so every
+// checkpoint of one workflow stays under one tenant. Without it, a resume that
+// omits --user and suspends again would store the next checkpoint under another
+// tenant (the orchestrator builds that checkpoint without one), and finishing
+// the workflow would delete only the later copy.
+//
+// With no --user the recorded tenant becomes the resume's --user, which the
+// next save, the printed resume commands and the final delete then all use. A
+// --user that names a different tenant is an error: two tenants for one
+// workflow is never what the operator meant. A checkpoint that records no
+// tenant (written by an earlier version, or by a run with no storage backend)
+// leaves --user as given.
+func adoptCheckpointTenant(ckpt *loomv1.WorkflowCheckpoint) error {
+	recorded := ckpt.GetTenantUserId()
+	switch {
+	case recorded == "", recorded == workflowUser:
+		return nil
+	case workflowUser == "":
+		workflowUser = recorded
+		return nil
+	default:
+		return fmt.Errorf("--user %q does not match the tenant %q recorded in the checkpoint; omit --user or pass --user %s", workflowUser, recorded, recorded)
+	}
 }
 
 // checkpointHandle is an open CheckpointStore and the context its calls must
