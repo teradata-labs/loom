@@ -1171,6 +1171,11 @@ type WorkflowCheckpoint struct {
 	// command omits --user. Empty when no tenant was resolved (for example a
 	// checkpoint written by an earlier version, or a run with no storage
 	// backend); the orchestrator neither reads nor sets it.
+	//
+	// This value comes from a local file that anyone with access to it can edit,
+	// and the CLI's --user is equally unauthenticated, so in the CLI it grants
+	// nothing. A server must never take the tenant from this field: it has to use
+	// the tenant of the authenticated caller.
 	TenantUserId  string `protobuf:"bytes,15,opt,name=tenant_user_id,json=tenantUserId,proto3" json:"tenant_user_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

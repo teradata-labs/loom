@@ -848,3 +848,101 @@ func captureStdout(t *testing.T, fn func()) string {
 	os.Stdout = orig
 	return <-done
 }
+
+// TestAdoptCheckpointTenant_ResuspendKeepsTheRecordedTenant is the round-3 F12
+// failure: run as alice, resume from the file with no --user, reach a second
+// gate, then finish from the second gate's file. Every checkpoint of the
+// workflow must stay under alice, so finishing leaves nothing resumable by ID.
+func TestAdoptCheckpointTenant_ResuspendKeepsTheRecordedTenant(t *testing.T) {
+	isolateWorkflowStorage(t)
+	migrateWorkflowStorage(t)
+	var opens atomic.Int32
+	open := realOpener(&opens)
+	const id = "pipeline-3f2b9c1e"
+
+	// The run: suspended at gate 1 as alice.
+	workflowUser = "alice"
+	gate1File := filepath.Join(t.TempDir(), "gate1.checkpoint.pb")
+	if stored, err := persistCheckpoint(context.Background(), open, zap.NewNop(), gate1File, gatedCheckpoint(id)); err != nil || !stored {
+		t.Fatalf("persistCheckpoint gate 1 = (%v, %v), want stored", stored, err)
+	}
+
+	// The resume: from the file, with no --user. It suspends again at gate 2;
+	// the orchestrator builds that checkpoint without a tenant.
+	workflowUser = ""
+	fromFile, err := readCheckpointFile(gate1File)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adoptCheckpointTenant(fromFile); err != nil {
+		t.Fatalf("adoptCheckpointTenant: %v", err)
+	}
+	gate2 := gatedCheckpoint(id)
+	gate2.NextStageIndex = 2
+	gate2File := filepath.Join(t.TempDir(), "gate2.checkpoint.pb")
+	if stored, err := persistCheckpoint(context.Background(), open, zap.NewNop(), gate2File, gate2); err != nil || !stored {
+		t.Fatalf("persistCheckpoint gate 2 = (%v, %v), want stored", stored, err)
+	}
+
+	// Finish from the gate-2 file, again with no --user.
+	workflowUser = ""
+	atGate2, err := readCheckpointFile(gate2File)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adoptCheckpointTenant(atGate2); err != nil {
+		t.Fatalf("adoptCheckpointTenant at gate 2: %v", err)
+	}
+	consumeStoredCheckpoint(context.Background(), open, zap.NewNop(), atGate2)
+
+	workflowUser = "alice"
+	if got, err := loadStoredCheckpoint(context.Background(), open, id); err == nil {
+		t.Fatalf("the finished workflow is still resumable by --workflow-id as alice: %+v", got)
+	}
+}
+
+// TestAdoptCheckpointTenant covers how a resume's --user and the tenant
+// recorded in the checkpoint combine.
+func TestAdoptCheckpointTenant(t *testing.T) {
+	tests := []struct {
+		name      string
+		recorded  string
+		user      string
+		wantUser  string
+		wantError []string // substrings of the error; nil means no error
+	}{
+		{name: "no recorded tenant keeps --user", recorded: "", user: "bob", wantUser: "bob"},
+		{name: "no recorded tenant and no --user", recorded: "", user: "", wantUser: ""},
+		{name: "recorded tenant is adopted without --user", recorded: "alice", user: "", wantUser: "alice"},
+		{name: "matching --user is accepted", recorded: "alice", user: "alice", wantUser: "alice"},
+		{
+			name: "a different --user is refused", recorded: "alice", user: "bob", wantUser: "bob",
+			wantError: []string{"alice", "bob", "--user"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolateWorkflowStorage(t)
+			workflowUser = tt.user
+
+			err := adoptCheckpointTenant(&loomv1.WorkflowCheckpoint{WorkflowId: "wf", TenantUserId: tt.recorded})
+
+			if tt.wantError == nil && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.wantError != nil {
+				if err == nil {
+					t.Fatalf("no error, want one naming %v", tt.wantError)
+				}
+				for _, sub := range tt.wantError {
+					if !strings.Contains(err.Error(), sub) {
+						t.Errorf("error %q does not mention %q", err, sub)
+					}
+				}
+			}
+			if workflowUser != tt.wantUser {
+				t.Errorf("workflowUser = %q, want %q", workflowUser, tt.wantUser)
+			}
+		})
+	}
+}

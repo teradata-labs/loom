@@ -450,8 +450,11 @@ the CLI logs a warning and the stored checkpoint stays resumable.
 When the CLI stores a checkpoint it records the tenant in the checkpoint
 itself, in the file as well as the stored copy. Finishing a workflow from the
 checkpoint file therefore deletes the stored copy under the tenant that saved
-it, even if the resume command carries a different `--user` or none. The resume
-commands the CLI prints include `--user` when the run had one. A checkpoint
+it, even if the resume command omits `--user`. A resume with no `--user` runs
+as the recorded tenant, so a workflow that suspends again at a later gate keeps
+every checkpoint under that one tenant. A `--user` that names a different
+tenant than the one recorded is refused with an error. The resume commands the
+CLI prints include `--user` when the run had one. A checkpoint
 file written by an earlier version records no tenant; resuming from it falls
 back to `--user`, and on Postgres with no `--user` the CLI logs a warning that
 the stored copy was not deleted. Limits:
