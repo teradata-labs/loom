@@ -169,8 +169,6 @@ go test -race ./pkg/observability # Tracer implementations
 go test -race ./pkg/prompts      # Prompt cache
 ```
 
-The Windows CI job (`test-windows`) runs the full suite without `-race`, and runs `-race` only on `./pkg/shuttle/builtin/...`. When adding OS-specific concurrent code (build-tagged `_windows.go`/`_unix.go` files, process or job-object handling, file locking), add its package to the `-race` step in `.github/workflows/ci.yml`.
-
 ### Coverage Targets
 - Agent core: >30% (complex system)
 - Observability: >80% (critical path)
