@@ -15,7 +15,7 @@ Full license texts for every bundled component are in THIRD-PARTY-NOTICES.md.
 
 ----------------------------------------------------------------------------
 
-github.com/aws/aws-sdk-go-v2 v1.47.3
+github.com/aws/aws-sdk-go-v2 v1.47.4
 
 AWS SDK for Go
 Copyright 2015 Amazon.com, Inc. or its affiliates. All Rights Reserved.
@@ -23,7 +23,7 @@ Copyright 2014-2015 Stripe, Inc.
 
 ----------------------------------------------------------------------------
 
-github.com/aws/smithy-go v1.28.5
+github.com/aws/smithy-go v1.28.6
 
 Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 

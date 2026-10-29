@@ -9,7 +9,7 @@ This file covers the components compiled into the distributed binaries
 (`loom`, `looms`, `loom-standalone`), not the full development dependency
 graph — test-only and build-time modules are not distributed and are excluded.
 
-152 components, 93 distinct license texts.
+153 components, 93 distinct license texts.
 
 ## Components
 
@@ -23,27 +23,27 @@ graph — test-only and build-time modules are not distributed and are excluded.
 | `github.com/MicahParks/jwkset` | `v0.11.3` |
 | `github.com/MicahParks/keyfunc/v3` | `v3.8.2` |
 | `github.com/alecthomas/chroma/v2` | `v2.27.0` |
-| `github.com/anthropics/anthropic-sdk-go` | `v1.82.0` |
+| `github.com/anthropics/anthropic-sdk-go` | `v1.84.0` |
 | `github.com/atotto/clipboard` | `v0.1.4` |
-| `github.com/aws/aws-sdk-go-v2` | `v1.47.3` |
-| `github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream` | `v1.7.22` |
-| `github.com/aws/aws-sdk-go-v2/config` | `v1.33.9` |
-| `github.com/aws/aws-sdk-go-v2/credentials` | `v1.20.9` |
-| `github.com/aws/aws-sdk-go-v2/feature/ec2/imds` | `v1.20.3` |
-| `github.com/aws/aws-sdk-go-v2/internal/configsources` | `v1.5.6` |
-| `github.com/aws/aws-sdk-go-v2/internal/endpoints/v2` | `v2.8.6` |
-| `github.com/aws/aws-sdk-go-v2/internal/sync/singleflight` | `v1.47.3` |
-| `github.com/aws/aws-sdk-go-v2/internal/v4a` | `v1.5.6` |
-| `github.com/aws/aws-sdk-go-v2/service/bedrockruntime` | `v1.63.5` |
-| `github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding` | `v1.13.21` |
-| `github.com/aws/aws-sdk-go-v2/service/internal/presigned-url` | `v1.14.6` |
-| `github.com/aws/aws-sdk-go-v2/service/signin` | `v1.10.4` |
-| `github.com/aws/aws-sdk-go-v2/service/sso` | `v1.38.4` |
-| `github.com/aws/aws-sdk-go-v2/service/ssooidc` | `v1.43.4` |
-| `github.com/aws/aws-sdk-go-v2/service/sts` | `v1.51.4` |
-| `github.com/aws/smithy-go` | `v1.28.5` |
-| `github.com/aws/smithy-go/internal/sync/singleflight` | `v1.28.5` |
-| `github.com/aws/smithy-go/transport/http/protocol/internal/json/internal/stdlib` | `v1.28.5` |
+| `github.com/aws/aws-sdk-go-v2` | `v1.47.4` |
+| `github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream` | `v1.7.24` |
+| `github.com/aws/aws-sdk-go-v2/config` | `v1.33.10` |
+| `github.com/aws/aws-sdk-go-v2/credentials` | `v1.20.10` |
+| `github.com/aws/aws-sdk-go-v2/feature/ec2/imds` | `v1.20.4` |
+| `github.com/aws/aws-sdk-go-v2/internal/configsources` | `v1.5.7` |
+| `github.com/aws/aws-sdk-go-v2/internal/endpoints/v2` | `v2.8.7` |
+| `github.com/aws/aws-sdk-go-v2/internal/sync/singleflight` | `v1.47.4` |
+| `github.com/aws/aws-sdk-go-v2/internal/v4a` | `v1.5.7` |
+| `github.com/aws/aws-sdk-go-v2/service/bedrockruntime` | `v1.63.7` |
+| `github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding` | `v1.13.22` |
+| `github.com/aws/aws-sdk-go-v2/service/internal/presigned-url` | `v1.14.7` |
+| `github.com/aws/aws-sdk-go-v2/service/signin` | `v1.10.5` |
+| `github.com/aws/aws-sdk-go-v2/service/sso` | `v1.38.5` |
+| `github.com/aws/aws-sdk-go-v2/service/ssooidc` | `v1.43.5` |
+| `github.com/aws/aws-sdk-go-v2/service/sts` | `v1.51.5` |
+| `github.com/aws/smithy-go` | `v1.28.6` |
+| `github.com/aws/smithy-go/internal/sync/singleflight` | `v1.28.6` |
+| `github.com/aws/smithy-go/transport/http/protocol/internal/json/internal/stdlib` | `v1.28.6` |
 | `github.com/aymanbagabas/go-osc52/v2` | `v2.0.1` |
 | `github.com/bahlo/generic-list-go` | `v0.2.0` |
 | `github.com/buger/jsonparser` | `v1.1.2` |
@@ -62,11 +62,11 @@ graph — test-only and build-time modules are not distributed and are excluded.
 | `github.com/disintegration/imageorient` | `v0.0.0-20180920195336-8147d86e83ec` |
 | `github.com/dlclark/regexp2` | `v1.12.0` |
 | `github.com/dlclark/regexp2/v2` | `v2.2.1` |
-| `github.com/dustin/go-humanize` | `v1.0.1` |
+| `github.com/dustin/go-humanize` | `v1.1.0` |
 | `github.com/fsnotify/fsnotify` | `v1.10.1` |
 | `github.com/go-acme/lego/v4` | `v4.35.2` |
-| `github.com/go-jose/go-jose/v4` | `v4.1.4` |
-| `github.com/go-jose/go-jose/v4/json` | `v4.1.4` |
+| `github.com/go-jose/go-jose/v4` | `v4.1.6` |
+| `github.com/go-jose/go-jose/v4/json` | `v4.1.6` |
 | `github.com/go-logr/logr` | `v1.4.4` |
 | `github.com/go-logr/stdr` | `v1.2.2` |
 | `github.com/go-sql-driver/mysql` | `v1.10.1` |
@@ -95,12 +95,13 @@ graph — test-only and build-time modules are not distributed and are excluded.
 | `github.com/muesli/cancelreader` | `v0.2.2` |
 | `github.com/muesli/termenv` | `v0.16.0` |
 | `github.com/mutecomm/go-sqlcipher/v4` | `v4.4.2` |
-| `github.com/ncruces/go-strftime` | `v1.0.0` |
+| `github.com/ncruces/go-strftime` | `v1.1.0` |
 | `github.com/nfnt/resize` | `v0.0.0-20180221191011-83c6a9932646` |
 | `github.com/pb33f/ordered-map/v2` | `v2.3.1` |
 | `github.com/pelletier/go-toml/v2` | `v2.2.4` |
 | `github.com/pkg/browser` | `v0.0.0-20240102092130-5ac0b6a4141c` |
 | `github.com/pkoukk/tiktoken-go` | `v0.1.8` |
+| `github.com/pkoukk/tiktoken-go-loader` | `v0.0.2` |
 | `github.com/r3labs/sse/v2` | `v2.10.0` |
 | `github.com/remyoudompheng/bigfft` | `v0.0.0-20230129092748-24d4a6f8daec` |
 | `github.com/richardlehane/mscfb` | `v1.0.7` |
@@ -163,10 +164,10 @@ graph — test-only and build-time modules are not distributed and are excluded.
 | `google.golang.org/protobuf` | `v1.36.12` |
 | `gopkg.in/cenkalti/backoff.v1` | `v1.1.0` |
 | `gopkg.in/yaml.v3` | `v3.0.1` |
-| `modernc.org/libc` | `v1.77.1` |
+| `modernc.org/libc` | `v1.79.0` |
 | `modernc.org/mathutil` | `v1.7.1` |
 | `modernc.org/memory` | `v1.12.1` |
-| `modernc.org/sqlite` | `v1.60.1` |
+| `modernc.org/sqlite` | `v1.61.0` |
 
 ## The Go standard library
 
@@ -4116,6 +4117,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ---
 
 ### `github.com/pkoukk/tiktoken-go`
+
+and 1 further component(s) under the identical license text:
+
+- `github.com/pkoukk/tiktoken-go-loader`
 
 ```
 MIT License
