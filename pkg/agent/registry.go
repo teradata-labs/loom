@@ -700,6 +700,7 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 			ToolChangeNote:         config.Metadata["_tool_change_note"] == "true",
 			ContextReliefWarning:   config.Metadata["_context_relief_warning"] == "true",
 		}
+		ApplyMetadataBehavior(agentConfig, config.Metadata)
 		agentConfig.RecoveryConfig = repeatHintRecoveryConfig(config.Metadata)
 		// Use defaults if not specified
 		if agentConfig.MaxToolExecutions == 0 {
