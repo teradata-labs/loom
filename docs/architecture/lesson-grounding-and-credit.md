@@ -41,7 +41,8 @@ enforced structurally rather than by asking other writers to behave:
 
 - **Own partition.** Mined lessons are stored under, and recalled from,
   `lessonPartition()`: `__fleet_lessons__` when `fleet_lesson_sharing` is on,
-  otherwise `<agent name>__lessons`. Private mode used to reuse the agent's
+  otherwise `<graph-memory key>__lessons` (the key is
+  `Config.GraphMemoryAgentID` when set, else the agent name). Private mode used to reuse the agent's
   own partition — the same one the per-turn extractor and the LLM-callable
   `graph_memory` tool write to — so the lane's contents depended on a prompt
   instruction. A derived partition cannot be forgotten by a future caller

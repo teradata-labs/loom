@@ -452,7 +452,7 @@ Under `spec.memory.graph_memory`.
 | `min_salience_threshold` | `float64` | `0.1` | Minimum salience for recall |
 | `max_recall_candidates` | `int` | `50` | Max memories to consider during recall |
 | `default_salience` | `float64` | `0.5` | Initial salience for new memories |
-| `fleet_lesson_sharing` | `bool` | `false` (opt-in) | Store mined lessons in one partition shared by every agent on the server (`__fleet_lessons__`) instead of the agent's private `<name>__lessons` partition. Affects only where lessons are stored and recalled; the lesson lane below runs either way. Do not enable it with untrusted tool servers: see [Security Model](security-model.md). |
+| `fleet_lesson_sharing` | `bool` | `false` (opt-in) | Store mined lessons in one partition shared by every agent on the server (`__fleet_lessons__`) instead of the agent's private `<key>__lessons` partition (key: `Config.GraphMemoryAgentID` when set, otherwise the agent name). Affects only where lessons are stored and recalled; the lesson lane below runs either way. Do not enable it with untrusted tool servers: see [Security Model](security-model.md). |
 
 ```yaml
 spec:
