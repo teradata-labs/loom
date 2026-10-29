@@ -847,7 +847,7 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			}
 
 		case "content_block_stop":
-			// If we have accumulated input JSON for this block, parse it
+			// Finalize tool input: parse accumulated JSON
 			if buf, exists := toolInputBuffers[event.Index]; exists && buf.Len() > 0 {
 				var input map[string]interface{}
 				if err := json.Unmarshal([]byte(buf.String()), &input); err == nil {
@@ -856,11 +856,11 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 						toolCalls[toolIdx].Input = input
 					}
 				}
-				// Clean up buffer
-				delete(toolInputBuffers, event.Index)
-				delete(blockIndexToToolIndex, event.Index)
 			}
-
+			// Clean up state for this block — unconditionally, so a
+			// call with no arguments doesn't leave its entries behind.
+			delete(toolInputBuffers, event.Index)
+			delete(blockIndexToToolIndex, event.Index)
 		case "message_delta":
 			// Update stop reason and output tokens
 			if event.Delta.StopReason != "" {
