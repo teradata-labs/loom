@@ -883,7 +883,7 @@ func TestEnvVar_LiteLLMExtraHeaders(t *testing.T) {
 		{
 			name:    "malformed value fails loudly",
 			env:     "not-a-pair",
-			wantErr: "want key=value",
+			wantErr: "is not key=value",
 		},
 		{
 			name:    "malformed json fails loudly",
@@ -928,6 +928,66 @@ func TestStringToStringMapHook(t *testing.T) {
 
 	_, err = stringToStringMapHook(strType, mapType, "=v")
 	require.Error(t, err, "an empty key is rejected")
+}
+
+// TestEnvVar_LiteLLMExtraHeaders_MalformedDoesNotLeakValue pins that a
+// malformed header variable fails startup with an error naming the variable
+// and the entry's position, but never any part of the value. A likely typo is
+// "Authorization: Bearer <token>" (colon instead of '='), which would
+// otherwise put the credential in the startup error and the logs.
+func TestEnvVar_LiteLLMExtraHeaders_MalformedDoesNotLeakValue(t *testing.T) {
+	const fakeToken = "fake-not-a-real-token-123"
+	tests := []struct {
+		name      string
+		env       string
+		wantParts []string
+	}{
+		{
+			name:      "colon instead of equals",
+			env:       "Authorization: Bearer " + fakeToken,
+			wantParts: []string{"entry 1"},
+		},
+		{
+			name:      "second entry malformed",
+			env:       "X-Team=a,Authorization: Bearer " + fakeToken,
+			wantParts: []string{"entry 2"},
+		},
+		{
+			name:      "empty key with token value",
+			env:       "=" + fakeToken,
+			wantParts: []string{"entry 1"},
+		},
+		{
+			name:      "truncated json object",
+			env:       `{"Authorization":"Bearer ` + fakeToken + `"`,
+			wantParts: []string{"JSON object"},
+		},
+		{
+			name:      "json with a non-string value",
+			env:       `{"Authorization":["Bearer ` + fakeToken + `"]}`,
+			wantParts: []string{"JSON object"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			viper.Reset()
+			cfgPath := filepath.Join(t.TempDir(), "looms.yaml")
+			require.NoError(t, os.WriteFile(cfgPath, []byte("llm:\n  provider: litellm\n"), 0o644))
+			t.Setenv("LOOM_LLM_LITELLM_EXTRA_HEADERS", tt.env)
+
+			_, err := LoadConfig(cfgPath)
+			require.Error(t, err)
+			msg := err.Error()
+			assert.NotContains(t, msg, fakeToken, "the error must not echo the credential")
+			assert.NotContains(t, msg, "Bearer", "the error must not echo any part of the value")
+			assert.NotContains(t, msg, "Authorization", "the error must not echo any part of the value")
+			assert.Contains(t, msg, "LOOM_LLM_LITELLM_EXTRA_HEADERS", "the error must name the variable")
+			assert.Contains(t, msg, "llm.litellm_extra_headers", "the error must name the config key")
+			for _, part := range tt.wantParts {
+				assert.Contains(t, msg, part)
+			}
+		})
+	}
 }
 
 func TestEnvVar_PatternsDir_NoYAMLKey(t *testing.T) {

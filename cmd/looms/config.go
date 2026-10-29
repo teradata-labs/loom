@@ -15,6 +15,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -1090,6 +1091,9 @@ func LoadConfig(cfgFile string) (*Config, error) {
 	// by fixMCPEnvCase() which restores original case from YAML for MCP env vars.
 	var config Config
 	if err := viper.Unmarshal(&config, withStringToStringMapHook); err != nil {
+		if vars := malformedMapEnvVars(err); len(vars) > 0 {
+			return nil, fmt.Errorf("failed to unmarshal config (check %s): %w", strings.Join(vars, ", "), err)
+		}
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
@@ -1151,7 +1155,11 @@ func withStringToStringMapHook(c *mapstructure.DecoderConfig) {
 //
 // An empty or all-whitespace string decodes to an empty map. Any other
 // string is an error, so a malformed value fails loudly instead of being
-// dropped.
+// dropped. The error never contains the value or any part of it: these maps
+// hold HTTP headers, and a likely typo such as "Authorization: Bearer <token>"
+// (colon instead of '=') would otherwise print the credential at startup. It
+// names the entry's position instead; mapstructure adds the config key and
+// LoadConfig adds the environment variable.
 func stringToStringMapHook(from, to reflect.Type, data any) (any, error) {
 	if from.Kind() != reflect.String || to != reflect.TypeOf(map[string]string(nil)) {
 		return data, nil
@@ -1163,19 +1171,68 @@ func stringToStringMapHook(from, to reflect.Type, data any) (any, error) {
 	}
 	if strings.HasPrefix(raw, "{") {
 		if err := json.Unmarshal([]byte(raw), &out); err != nil {
-			return nil, fmt.Errorf("parse %q as a JSON object of strings: %w", raw, err)
+			// Report only the byte offset of a syntax error: json error text
+			// can quote parts of the input.
+			var syntaxErr *json.SyntaxError
+			if errors.As(err, &syntaxErr) {
+				return nil, &malformedMapError{reason: fmt.Sprintf(
+					"value is not a valid JSON object of strings (syntax error at byte %d)", syntaxErr.Offset)}
+			}
+			return nil, &malformedMapError{reason: "value is not a valid JSON object of strings (truncated, or an entry is not a string)"}
 		}
 		return out, nil
 	}
-	for _, pair := range strings.Split(raw, ",") {
+	pairs := strings.Split(raw, ",")
+	for i, pair := range pairs {
 		k, v, ok := strings.Cut(pair, "=")
 		k = strings.TrimSpace(k)
 		if !ok || k == "" {
-			return nil, fmt.Errorf("parse map entry %q: want key=value (or a JSON object)", strings.TrimSpace(pair))
+			return nil, &malformedMapError{reason: fmt.Sprintf(
+				"entry %d of %d is not key=value (or use a JSON object)", i+1, len(pairs))}
 		}
 		out[k] = strings.TrimSpace(v)
 	}
 	return out, nil
+}
+
+// malformedMapError is returned by stringToStringMapHook. Its message
+// describes what is wrong and where, and deliberately carries no part of the
+// value (which may hold a credential) so it is safe to print and log.
+type malformedMapError struct {
+	reason string
+}
+
+func (e *malformedMapError) Error() string {
+	return e.reason + "; the value is not shown because it may contain a credential"
+}
+
+// malformedMapEnvVars walks a config decode error and returns the environment
+// variable name for every map key that stringToStringMapHook rejected, e.g.
+// llm.litellm_extra_headers -> LOOM_LLM_LITELLM_EXTRA_HEADERS (same mapping
+// as the env key replacer in LoadConfig).
+func malformedMapEnvVars(err error) []string {
+	var vars []string
+	var walk func(error)
+	walk = func(e error) {
+		if e == nil {
+			return
+		}
+		var malformed *malformedMapError
+		if decErr, ok := e.(*mapstructure.DecodeError); ok && errors.As(decErr.Unwrap(), &malformed) {
+			vars = append(vars, "LOOM_"+strings.ToUpper(strings.ReplaceAll(decErr.Name(), ".", "_")))
+			return
+		}
+		switch u := e.(type) {
+		case interface{ Unwrap() []error }:
+			for _, inner := range u.Unwrap() {
+				walk(inner)
+			}
+		case interface{ Unwrap() error }:
+			walk(u.Unwrap())
+		}
+	}
+	walk(err)
+	return vars
 }
 
 // setDefaults sets default configuration values.
