@@ -59,6 +59,23 @@ func (t *WorkspaceTool) Description() string {
 All files are automatically organized by session. No manual path management needed.`
 }
 
+// RequiredArgsFor returns the arguments each action needs beyond "action".
+// The schema can only require "action", so without this a write cut off
+// before its content looks complete.
+func (t *WorkspaceTool) RequiredArgsFor(params map[string]interface{}) []string {
+	action, _ := params["action"].(string)
+	switch action {
+	case "write":
+		return []string{"filename", "content"}
+	case "read", "delete":
+		return []string{"filename"}
+	case "search":
+		return []string{"query"}
+	default:
+		return nil
+	}
+}
+
 func (t *WorkspaceTool) InputSchema() *shuttle.JSONSchema {
 	return shuttle.NewObjectSchema(
 		"Parameters for workspace operations",

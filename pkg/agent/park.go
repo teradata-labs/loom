@@ -711,10 +711,16 @@ type parkItem struct {
 // contact_human or ParkableQuestion survives as a question item, an Ask as an
 // approval item. With no items it returns nil and the
 // serial dispatch loop runs exactly as today. With items it persists ONE
-// grouped request and ends the turn with TurnParkedError.
-func (a *Agent) maybeParkBatch(ctx Context, sess *Session, llmResp *LLMResponse, turnUsage Usage) error {
+// grouped request and ends the turn with TurnParkedError. Calls whose batch
+// index is in answered already have a tool row and are not preflighted.
+func (a *Agent) maybeParkBatch(ctx Context, sess *Session, llmResp *LLMResponse, turnUsage Usage, answered map[int]bool) error {
 	var items []parkItem
 	for i, call := range llmResp.ToolCalls {
+		// Already answered without running (a call cut off by the output
+		// token limit): nothing for a human to decide.
+		if answered[i] {
+			continue
+		}
 		d := a.executor.Preflight(ctx, call.Name, call.Input)
 		if d.Kind == shuttle.Deny {
 			continue

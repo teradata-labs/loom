@@ -98,11 +98,29 @@ func TestResolveMaxOutput(t *testing.T) {
 		},
 	}
 
+	tests = append(tests, struct {
+		name             string
+		configuredMax    int
+		provider         string
+		model            string
+		wantMaxOutputCap int
+		description      string
+	}{
+		name:             "bedrock opus 4.5 inference profile reads catalog",
+		configuredMax:    0,
+		provider:         "bedrock",
+		model:            "us.anthropic.claude-opus-4-5-20251101-v1:0",
+		wantMaxOutputCap: 64_000,
+		description:      "an unset looms max_tokens must not pin Opus 4.5 at 4096",
+	})
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := NewProviderFactory(FactoryConfig{MaxTokens: tt.configuredMax})
 			got := f.resolveMaxOutput(tt.provider, tt.model)
 			assert.Equal(t, tt.wantMaxOutputCap, got, tt.description)
+			// looms serve/workflow call the exported form directly.
+			assert.Equal(t, got, ResolveMaxOutput(tt.configuredMax, tt.provider, tt.model))
 		})
 	}
 }

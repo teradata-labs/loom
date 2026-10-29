@@ -21,6 +21,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
+	"github.com/teradata-labs/loom/pkg/llm/factory"
 	"github.com/zalando/go-keyring"
 	"golang.org/x/term"
 )
@@ -319,7 +320,11 @@ func runConfigShow(cmd *cobra.Command, args []string) {
 		}
 	}
 	fmt.Printf("  Temperature: %.1f\n", config.LLM.Temperature)
-	fmt.Printf("  Max Tokens: %d\n", config.LLM.MaxTokens)
+	if config.LLM.MaxTokens > 0 {
+		fmt.Printf("  Max Tokens: %d\n", config.LLM.MaxTokens)
+	} else {
+		fmt.Printf("  Max Tokens: model default (%d)\n", factory.ResolveMaxOutput(0, config.LLM.Provider, getDefaultModelForProvider(config)))
+	}
 	fmt.Println()
 
 	fmt.Println("Database:")

@@ -45,6 +45,25 @@ type Tool interface {
 	Backend() string
 }
 
+// ConditionalArgsTool is implemented by tools whose required arguments depend
+// on the call itself, which a JSON schema's top-level required list cannot
+// express: for example a tool whose "write" action needs "content" while
+// "list" needs nothing more.
+type ConditionalArgsTool interface {
+	// RequiredArgsFor returns the arguments this call needs beyond the
+	// schema's required list, given its (normalized) parameters.
+	RequiredArgsFor(params map[string]interface{}) []string
+}
+
+// RequiredArgsFor returns the call-dependent required arguments of tool for
+// params, or nil when the tool does not declare any.
+func RequiredArgsFor(tool Tool, params map[string]interface{}) []string {
+	if c, ok := tool.(ConditionalArgsTool); ok {
+		return c.RequiredArgsFor(params)
+	}
+	return nil
+}
+
 // Result represents the outcome of tool execution.
 type Result struct {
 	// Success indicates if the tool executed successfully

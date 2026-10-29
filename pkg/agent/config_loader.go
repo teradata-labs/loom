@@ -659,10 +659,10 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 	}
 	config.Llm = mainLLM
 
-	// Set defaults for LLM if not specified
-	if config.Llm.MaxTokens == 0 {
-		config.Llm.MaxTokens = 4096
-	}
+	// Set defaults for LLM if not specified. MaxTokens stays 0 when unset:
+	// provider construction resolves 0 to the model's catalog output limit
+	// (factory.ResolveMaxOutput), and a fixed 4096 here would cut off large
+	// tool calls on models that allow far more output.
 	if config.Llm.Temperature == 0 {
 		config.Llm.Temperature = 0.7
 	}
@@ -1704,7 +1704,7 @@ func loadOrchestrationWorkflow(path string, data map[string]interface{}, llmProv
 		Provider:    llmProvider.Name(),
 		Model:       llmProvider.Model(),
 		Temperature: 0.7,
-		MaxTokens:   4096,
+		// MaxTokens unset (0): resolved to the model's catalog output limit.
 	}
 
 	var configs []*loomv1.AgentConfig
@@ -1954,15 +1954,13 @@ func loadWeaverWorkflow(path string, data map[string]interface{}, llmProvider LL
 		if tempVal, ok := llmData["temperature"].(float64); ok {
 			temperature = tempVal
 		}
-		maxTokens := int32(4096)
+		// 0 = unset: resolved to the model's catalog output limit.
+		var maxTokens int32
 		if tokensVal, ok := llmData["max_tokens"].(float64); ok {
-			maxTokensVal, err := safeInt32(int(tokensVal), "max_tokens")
-			if err != nil {
-				// Ignore error, keep default
-				maxTokens = 4096
-			} else {
+			if maxTokensVal, err := safeInt32(int(tokensVal), "max_tokens"); err == nil {
 				maxTokens = maxTokensVal
 			}
+			// An out-of-range value is ignored and stays unset.
 		}
 
 		llmConfig = &loomv1.LLMConfig{
@@ -1977,7 +1975,7 @@ func loadWeaverWorkflow(path string, data map[string]interface{}, llmProvider LL
 			Provider:    llmProvider.Name(),
 			Model:       llmProvider.Model(),
 			Temperature: 0.7,
-			MaxTokens:   4096,
+			// MaxTokens unset (0): resolved to the model's catalog output limit.
 		}
 	}
 

@@ -47,7 +47,8 @@ agent:
 				assert.Equal(t, "anthropic", config.Llm.Provider)
 				assert.Equal(t, "claude-3-5-sonnet-20241022", config.Llm.Model)
 				// Check defaults
-				assert.Equal(t, int32(4096), config.Llm.MaxTokens)
+				// Unset max_tokens stays 0: providers resolve it to the model's catalog limit.
+				assert.Equal(t, int32(0), config.Llm.MaxTokens)
 				assert.Equal(t, float32(0.7), config.Llm.Temperature)
 			},
 		},

@@ -35,9 +35,23 @@ llm:
   bedrock_region: us-west-2
   bedrock_model_id: us.anthropic.claude-sonnet-4-5-20250929-v1:0
   temperature: 1.0
-  max_tokens: 4096
+  # max_tokens: omit to use the model's output limit (see Max Output below)
   timeout_seconds: 60
 ```
+
+When `max_tokens` is not set, looms uses the model's **Max Output** from the
+built-in catalog (for example 64,000 for Claude Opus 4.5), and 4096 for models
+the catalog does not list. Billing is unaffected (you pay for tokens generated),
+but Bedrock reserves `max_tokens` against your tokens-per-minute and
+tokens-per-day quotas when a request starts, multiplied by the model's output
+burndown rate (5x for most Anthropic models), and returns the unused part when
+the request ends. With a 64,000 default, each in-flight Opus 4.5 request
+reserves about 320,000 TPM. If requests are throttled, set an explicit, smaller
+`max_tokens`. See
+[How tokens are counted in Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/quotas-token-burndown.html).
+Requests whose
+`max_tokens` implies more than about 10 minutes of generation are sent over the
+streaming API automatically.
 
 ### Available Models
 

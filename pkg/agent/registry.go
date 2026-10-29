@@ -25,6 +25,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
 	"github.com/teradata-labs/loom/pkg/llm/azureopenai"
 	"github.com/teradata-labs/loom/pkg/llm/bedrock"
+	"github.com/teradata-labs/loom/pkg/llm/factory"
 	"github.com/teradata-labs/loom/pkg/llm/gemini"
 	"github.com/teradata-labs/loom/pkg/llm/huggingface"
 	"github.com/teradata-labs/loom/pkg/llm/litellm"
@@ -1150,6 +1151,9 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 
 	rlCfg := r.buildRateLimiterConfig(config.RateLimit)
 
+	// Unset (0) resolves to the model's catalog output limit, as on the server path.
+	maxTokens := factory.ResolveMaxOutput(int(config.MaxTokens), config.Provider, config.Model)
+
 	switch config.Provider {
 	case "anthropic":
 		apiKey := os.Getenv("ANTHROPIC_API_KEY")
@@ -1159,7 +1163,7 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 		return anthropic.NewClient(anthropic.Config{
 			APIKey:            apiKey,
 			Model:             config.Model,
-			MaxTokens:         int(config.MaxTokens),
+			MaxTokens:         maxTokens,
 			Temperature:       float64(config.Temperature),
 			RateLimiterConfig: rlCfg,
 		}), nil
@@ -1177,7 +1181,7 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 			Region:            region,
 			Profile:           profile,
 			ModelID:           config.Model,
-			MaxTokens:         int(config.MaxTokens),
+			MaxTokens:         maxTokens,
 			Temperature:       float64(config.Temperature),
 			RateLimiterConfig: rlCfg,
 		})
@@ -1190,7 +1194,7 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 		return ollama.NewClient(ollama.Config{
 			Endpoint:          endpoint,
 			Model:             config.Model,
-			MaxTokens:         int(config.MaxTokens),
+			MaxTokens:         maxTokens,
 			Temperature:       float64(config.Temperature),
 			Seed:              config.Seed,
 			RateLimiterConfig: rlCfg,
@@ -1204,7 +1208,7 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 		return openai.NewClient(openai.Config{
 			APIKey:            apiKey,
 			Model:             config.Model,
-			MaxTokens:         int(config.MaxTokens),
+			MaxTokens:         maxTokens,
 			Temperature:       float64(config.Temperature),
 			RateLimiterConfig: rlCfg,
 		}), nil
@@ -1218,7 +1222,7 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 			Endpoint:          endpoint,
 			APIKey:            os.Getenv("LITELLM_API_KEY"),
 			Model:             config.Model,
-			MaxTokens:         int(config.MaxTokens),
+			MaxTokens:         maxTokens,
 			Temperature:       float64(config.Temperature),
 			RateLimiterConfig: rlCfg,
 		}), nil
@@ -1236,7 +1240,7 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 			APIKey:            apiKey,
 			Endpoint:          endpoint,
 			DeploymentID:      config.Model,
-			MaxTokens:         int(config.MaxTokens),
+			MaxTokens:         maxTokens,
 			Temperature:       float64(config.Temperature),
 			RateLimiterConfig: rlCfg,
 		}
@@ -1254,7 +1258,7 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 		return mistral.NewClient(mistral.Config{
 			APIKey:            apiKey,
 			Model:             config.Model,
-			MaxTokens:         int(config.MaxTokens),
+			MaxTokens:         maxTokens,
 			Temperature:       float64(config.Temperature),
 			RateLimiterConfig: rlCfg,
 		}), nil
@@ -1267,7 +1271,7 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 		return gemini.NewClient(gemini.Config{
 			APIKey:            apiKey,
 			Model:             config.Model,
-			MaxTokens:         int(config.MaxTokens),
+			MaxTokens:         maxTokens,
 			Temperature:       float64(config.Temperature),
 			RateLimiterConfig: rlCfg,
 		}), nil
@@ -1283,7 +1287,7 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 		return huggingface.NewClient(huggingface.Config{
 			Token:             apiKey,
 			Model:             config.Model,
-			MaxTokens:         int(config.MaxTokens),
+			MaxTokens:         maxTokens,
 			Temperature:       float64(config.Temperature),
 			RateLimiterConfig: rlCfg,
 		}), nil

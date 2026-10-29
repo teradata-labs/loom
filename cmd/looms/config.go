@@ -1184,7 +1184,9 @@ func setDefaults() {
 	viper.SetDefault("llm.gemini_model", "gemini-3-flash-preview")
 	viper.SetDefault("llm.huggingface_model", "meta-llama/Meta-Llama-3.1-70B-Instruct")
 	viper.SetDefault("llm.temperature", 1.0)
-	viper.SetDefault("llm.max_tokens", 4096)
+	// 0 = use the model's output limit from the catalog (pkg/llm/catalog),
+	// falling back to 4096 for models the catalog does not list.
+	viper.SetDefault("llm.max_tokens", 0)
 	viper.SetDefault("llm.timeout_seconds", 0)
 	viper.SetDefault("llm.concurrency_limit", 2)
 
@@ -1938,7 +1940,11 @@ llm:
 
   # Common generation parameters (apply to all providers)
   temperature: 1.0
-  max_tokens: 4096
+  # max_tokens: omit to use the model's output limit from the catalog
+  # (4096 for unlisted models). On Bedrock, max_tokens counts against the
+  # tokens-per-minute quota when a request starts; set it lower if you hit
+  # throttling.
+  # max_tokens: 8192
   timeout_seconds: 60
 
 database:

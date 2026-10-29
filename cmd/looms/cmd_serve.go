@@ -586,6 +586,15 @@ func buildProviderPool(cfg *Config, _ *factory.ProviderFactory, logger *zap.Logg
 func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMProvider, error) {
 	rlCfg := buildRateLimiterConfig(cfg.RateLimit, logger)
 
+	// An unset max_tokens means the model's own output limit from the catalog,
+	// not a fixed 4096: a fixed low cap cuts off large tool calls on models
+	// that allow far more output (see truncated_tool_calls.go in pkg/agent).
+	maxTokens := factory.ResolveMaxOutput(cfg.MaxTokens, cfg.Provider, defaultModelForLLM(cfg, cfg.Provider))
+	logger.Info("LLM output token limit",
+		zap.String("provider", cfg.Provider),
+		zap.Int("configured", cfg.MaxTokens),
+		zap.Int("resolved", maxTokens))
+
 	// Resolve API keys: prefer explicit config, fall back to environment variables.
 	apiKey := func(explicit, envKey string) string {
 		if explicit != "" {
@@ -603,7 +612,7 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		return anthropic.NewClient(anthropic.Config{
 			APIKey:            key,
 			Model:             cfg.AnthropicModel,
-			MaxTokens:         cfg.MaxTokens,
+			MaxTokens:         maxTokens,
 			Temperature:       cfg.Temperature,
 			Timeout:           time.Duration(cfg.Timeout) * time.Second,
 			RateLimiterConfig: rlCfg,
@@ -622,7 +631,7 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 			BearerToken:       cfg.BedrockBearerToken,
 			Profile:           cfg.BedrockProfile,
 			ModelID:           cfg.BedrockModelID,
-			MaxTokens:         cfg.MaxTokens,
+			MaxTokens:         maxTokens,
 			Temperature:       cfg.Temperature,
 			RateLimiterConfig: rlCfg,
 		})
@@ -642,7 +651,7 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		return ollama.NewClient(ollama.Config{
 			Endpoint:          endpoint,
 			Model:             cfg.OllamaModel,
-			MaxTokens:         cfg.MaxTokens,
+			MaxTokens:         maxTokens,
 			Temperature:       cfg.Temperature,
 			Timeout:           time.Duration(cfg.Timeout) * time.Second,
 			RateLimiterConfig: rlCfg,
@@ -656,7 +665,7 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		return openai.NewClient(openai.Config{
 			APIKey:            key,
 			Model:             cfg.OpenAIModel,
-			MaxTokens:         cfg.MaxTokens,
+			MaxTokens:         maxTokens,
 			Temperature:       cfg.Temperature,
 			Timeout:           time.Duration(cfg.Timeout) * time.Second,
 			RateLimiterConfig: rlCfg,
@@ -681,7 +690,7 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 			DeploymentID:      deploymentID,
 			APIKey:            key,
 			EntraToken:        entraToken,
-			MaxTokens:         cfg.MaxTokens,
+			MaxTokens:         maxTokens,
 			Temperature:       cfg.Temperature,
 			Timeout:           time.Duration(cfg.Timeout) * time.Second,
 			RateLimiterConfig: rlCfg,
@@ -699,7 +708,7 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		return mistral.NewClient(mistral.Config{
 			APIKey:            key,
 			Model:             cfg.MistralModel,
-			MaxTokens:         cfg.MaxTokens,
+			MaxTokens:         maxTokens,
 			Temperature:       cfg.Temperature,
 			Timeout:           time.Duration(cfg.Timeout) * time.Second,
 			RateLimiterConfig: rlCfg,
@@ -713,7 +722,7 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		return gemini.NewClient(gemini.Config{
 			APIKey:            key,
 			Model:             cfg.GeminiModel,
-			MaxTokens:         cfg.MaxTokens,
+			MaxTokens:         maxTokens,
 			Temperature:       cfg.Temperature,
 			Timeout:           time.Duration(cfg.Timeout) * time.Second,
 			RateLimiterConfig: rlCfg,
@@ -730,7 +739,7 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		return huggingface.NewClient(huggingface.Config{
 			Token:             key,
 			Model:             cfg.HuggingFaceModel,
-			MaxTokens:         cfg.MaxTokens,
+			MaxTokens:         maxTokens,
 			Temperature:       cfg.Temperature,
 			Timeout:           time.Duration(cfg.Timeout) * time.Second,
 			RateLimiterConfig: rlCfg,
@@ -754,7 +763,7 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 			APIKey:            key,
 			Model:             loomconfig.ExpandEnvPlaceholders(cfg.LiteLLMModel),
 			ExtraHeaders:      extraHeaders,
-			MaxTokens:         cfg.MaxTokens,
+			MaxTokens:         maxTokens,
 			Temperature:       cfg.Temperature,
 			Timeout:           time.Duration(cfg.Timeout) * time.Second,
 			RateLimiterConfig: rlCfg,
@@ -785,48 +794,54 @@ func llmRoleDisplayName(role loomv1.LLMRole) string {
 
 // getDefaultModelForProvider returns the default model ID for the configured provider.
 func getDefaultModelForProvider(cfg *Config) string {
-	switch cfg.LLM.Provider {
+	return defaultModelForLLM(cfg.LLM, cfg.LLM.Provider)
+}
+
+// defaultModelForLLM returns the model llmCfg configures for provider, or that
+// provider's built-in default when llmCfg names none.
+func defaultModelForLLM(llmCfg LLMConfig, provider string) string {
+	switch provider {
 	case "anthropic":
-		if cfg.LLM.AnthropicModel != "" {
-			return cfg.LLM.AnthropicModel
+		if llmCfg.AnthropicModel != "" {
+			return llmCfg.AnthropicModel
 		}
 		return "claude-sonnet-4-5-20250929"
 	case "bedrock":
-		if cfg.LLM.BedrockModelID != "" {
-			return cfg.LLM.BedrockModelID
+		if llmCfg.BedrockModelID != "" {
+			return llmCfg.BedrockModelID
 		}
 		return "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 	case "ollama":
-		if cfg.LLM.OllamaModel != "" {
-			return cfg.LLM.OllamaModel
+		if llmCfg.OllamaModel != "" {
+			return llmCfg.OllamaModel
 		}
 		return "llama3.2"
 	case "openai":
-		if cfg.LLM.OpenAIModel != "" {
-			return cfg.LLM.OpenAIModel
+		if llmCfg.OpenAIModel != "" {
+			return llmCfg.OpenAIModel
 		}
 		return "gpt-4o"
 	case "azure-openai", "azureopenai":
 		// Azure uses deployment ID, not model ID
-		return cfg.LLM.AzureOpenAIDeploymentID
+		return llmCfg.AzureOpenAIDeploymentID
 	case "mistral":
-		if cfg.LLM.MistralModel != "" {
-			return cfg.LLM.MistralModel
+		if llmCfg.MistralModel != "" {
+			return llmCfg.MistralModel
 		}
 		return "mistral-large-latest"
 	case "gemini":
-		if cfg.LLM.GeminiModel != "" {
-			return cfg.LLM.GeminiModel
+		if llmCfg.GeminiModel != "" {
+			return llmCfg.GeminiModel
 		}
 		return "gemini-3-flash-preview"
 	case "huggingface":
-		if cfg.LLM.HuggingFaceModel != "" {
-			return cfg.LLM.HuggingFaceModel
+		if llmCfg.HuggingFaceModel != "" {
+			return llmCfg.HuggingFaceModel
 		}
 		return "meta-llama/Llama-3.1-70B-Instruct"
 	case "litellm":
-		if cfg.LLM.LiteLLMModel != "" {
-			return cfg.LLM.LiteLLMModel
+		if llmCfg.LiteLLMModel != "" {
+			return llmCfg.LiteLLMModel
 		}
 		return litellm.DefaultModel
 	default:
@@ -852,6 +867,12 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 	if protoConfig.MaxTokens > 0 {
 		maxTokens = int(protoConfig.MaxTokens)
 	}
+	// Neither set: the model's own output limit from the catalog.
+	resolvedModel := protoConfig.Model
+	if resolvedModel == "" {
+		resolvedModel = defaultModelForLLM(serverConfig.LLM, protoConfig.Provider)
+	}
+	maxTokens = factory.ResolveMaxOutput(maxTokens, protoConfig.Provider, resolvedModel)
 
 	timeout := time.Duration(serverConfig.LLM.Timeout) * time.Second
 

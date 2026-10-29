@@ -164,8 +164,17 @@ func NewProviderFactory(config FactoryConfig) *ProviderFactory {
 //  2. Built-in catalog MaxOutputTokens for the resolved provider+model
 //  3. fallbackMaxOutputTokens (conservative default for unknown models)
 func (f *ProviderFactory) resolveMaxOutput(provider, model string) int {
-	if f.config.MaxTokens > 0 {
-		return f.config.MaxTokens
+	return ResolveMaxOutput(f.config.MaxTokens, provider, model)
+}
+
+// ResolveMaxOutput applies the resolveMaxOutput precedence for callers that
+// build provider clients without a ProviderFactory (looms serve and looms
+// workflow): configured wins when positive; otherwise the catalog's
+// MaxOutputTokens for provider+model; otherwise fallbackMaxOutputTokens.
+// Pass configured as 0 to mean "not configured".
+func ResolveMaxOutput(configured int, provider, model string) int {
+	if configured > 0 {
+		return configured
 	}
 	if info := catalog.Lookup(provider, model); info != nil && info.MaxOutputTokens > 0 {
 		return int(info.MaxOutputTokens)
