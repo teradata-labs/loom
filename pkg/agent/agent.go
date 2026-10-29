@@ -27,6 +27,7 @@ import (
 	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
+	"github.com/teradata-labs/loom/pkg/eventlog"
 	"github.com/teradata-labs/loom/pkg/fabric"
 	"github.com/teradata-labs/loom/pkg/llm"
 	mcpadapter "github.com/teradata-labs/loom/pkg/mcp/adapter"
@@ -748,6 +749,16 @@ func WithSkillDiscovery(d *discovery.Discovery) Option {
 func WithSkillTaskEmitter(e *skilltasks.Emitter) Option {
 	return func(a *Agent) {
 		a.skillTaskEmitter = e
+	}
+}
+
+// WithEventLog enables the durable, tool-call-granularity execution log
+// (issue #229) for crash-resumable conversation loops. A nil store leaves
+// recording disabled — every write-ahead call becomes a no-op, and
+// ResumeSession is unavailable (returns ErrEventLogDisabled).
+func WithEventLog(store eventlog.EventLogStore) Option {
+	return func(a *Agent) {
+		a.eventLog = store
 	}
 }
 
@@ -2003,6 +2014,16 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// Get or create session with agent metadata for proper ReferenceStore namespacing
 	session := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
 
+	// With an event log, one process at a time drives a session's loop
+	// (session_lease.go): a concurrent turn or crash resume would otherwise
+	// record events and dispatch calls at the same steps. Taken after the
+	// session exists, because the lease row references it.
+	ctx, releaseLease, err := a.holdSessionLease(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseLease()
+
 	// A session holding backend leases from a previous turn starts this turn
 	// in the RESOURCE_HOLDER class — the previous turn's SlotInfo died with
 	// it, so the ledger re-marks the fresh one the server installed.
@@ -2179,7 +2200,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	}
 
 	// Add assistant response to history
-	a.appendMessage(ctx, session, Message{
+	_, replyPersisted := a.appendMessage(ctx, session, Message{
 		Role: "assistant",
 		// Turn-ending message: thinking text rides for persistence; blocks
 		// would be stripped by the next turn's compile, so none are carried.
@@ -2190,6 +2211,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 		TokenCount: response.Usage.TotalTokens,
 		CostUSD:    response.Usage.CostUSD,
 	}, false)
+	a.pruneFinishedTurn(ctx, session.ID, replyPersisted)
 
 	// Persist session
 	if err := a.memory.PersistSession(ctx, session); err != nil {
@@ -2595,9 +2617,29 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		}()
 	}
 
+	// stepIndex is the durable execution-event-log step counter for this
+	// invocation, read once at loop entry (see EventLogStore.NextStepIndex)
+	// and advanced once per loop iteration (see thisStep below).
+	stepIndex, stepErr := a.currentStepIndex(ctx, session.ID)
+	if stepErr != nil {
+		return nil, fmt.Errorf("reading the execution-event step counter: %w", stepErr)
+	}
+
 	// Conversation loop
 	for turnCount < a.config.MaxTurns && toolExecutionCount < a.config.MaxToolExecutions {
+		if leaseErr := sessionLeaseLost(ctx); leaseErr != nil {
+			return nil, leaseErr
+		}
 		turnCount++
+
+		// thisStep is captured once per iteration, before any branch
+		// (continue/return/fall-through) can run, so exactly one step_index
+		// is consumed per iteration regardless of which exit path it takes.
+		// See the two `continue` statements below in the zero-tool-call
+		// branch: neither reaches a loop-tail increment, so the increment
+		// must happen here instead.
+		thisStep := stepIndex
+		stepIndex++
 
 		// Record turn start on conversation_loop span
 		span.AddEvent("turn.started", map[string]interface{}{
@@ -2811,7 +2853,13 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		if scripted, ok := scriptedResponseFromContext(ctx); ok && strings.TrimSpace(scripted) != "" {
 			llmResp = &LLMResponse{Content: scripted, StopReason: "end_turn"}
 		} else {
+			if intentErr := a.recordLLMIntent(ctx, session.ID, thisStep, len(messages), a.llm.Model()); intentErr != nil {
+				return nil, fmt.Errorf("recording LLM call intent: %w", intentErr)
+			}
 			llmResp, err = sendChat(tools)
+			if err == nil {
+				a.recordLLMResult(ctx, session.ID, thisStep, llmResp)
+			}
 		}
 		if err != nil && errors.Is(err, llm.ErrContextTooLong) {
 			if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
@@ -2829,7 +2877,15 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				if segMem2, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem2 != nil {
 					segMem2.SetAdvertisedToolsBytes(advertisedToolsBytes(tools))
 				}
+				// Same logical step: a resend after ErrContextTooLong is the
+				// same LLM call with a shorter context, so it reuses the
+				// intent already recorded at thisStep (re-recording it with
+				// the new message count would conflict) and records only
+				// the result.
 				llmResp, err = sendChat(tools)
+				if err == nil {
+					a.recordLLMResult(ctx, session.ID, thisStep, llmResp)
+				}
 				if err != nil && errors.Is(err, llm.ErrContextTooLong) {
 					zap.L().Error("context too long after relief: turn ends",
 						zap.String("session_id", session.ID),
@@ -3008,6 +3064,14 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// If LLM returned text (no tool calls), we're done — unless the response
 		// is empty, in which case we retry once with a nudge message.
 		if len(llmResp.ToolCalls) == 0 {
+			// Zero tool calls means this step is fully resolved the instant
+			// the LLM responds — there is no tool_call_intent to await a
+			// result for. Prune here, before any of this branch's three
+			// exits (two `continue` retries below, or the final `return`),
+			// since none of them reach the loop-tail prune call. No tool rows
+			// belong to this step, so there is nothing whose durability to
+			// check.
+			a.pruneStepIfResolved(ctx, session.ID, thisStep, true)
 			if strings.TrimSpace(llmResp.Content) == "" && !emptyRetried {
 				// One-shot retry: nudge the LLM to produce a response.
 				emptyRetried = true
@@ -3136,6 +3200,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			tools:              &tools,
 			recovery:           recovery,
 			turnDedup:          make(map[string]*shuttle.Result),
+			stepIndex:          thisStep,
 			parkableTail:       a.hitlPark != nil && assistantPersisted && a.memory.HasStore(),
 			batchIDCount:       batchIDCount,
 		}
@@ -3162,6 +3227,25 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		if parkErr := a.maybeParkResourceBatch(ctx, session, st, llmResp); parkErr != nil {
 			return nil, parkErr
 		}
+
+		// This step's batch finished dispatching inline (the common, non-crash
+		// path), so the step is NORMALLY fully resolved and carries no further
+		// replay value. A step that ended in an ExecutionGap or a parked HITL
+		// batch never reaches this line (the loop returns/parks earlier), so
+		// its events are correctly retained.
+		//
+		// "Normally" is the whole point: this line is also reached when the
+		// MaxToolExecutions break above stopped the per-call loop partway
+		// through the batch, so not every call got a row — and any of the
+		// fail-open result/persist writes inside dispatchOneCall can have
+		// silently failed. Whether the step is actually resolved is therefore
+		// not knowable from here, which is why pruneStepIfResolved verifies
+		// intent↔result pairing against the log itself before deleting
+		// anything rather than trusting this call site. It also needs the
+		// batch's rows to be durable: if the assistant message or a tool row
+		// failed to persist, a resume after a crash reads a session without
+		// them and must find this step's events to avoid re-running a call.
+		a.pruneStepIfResolved(ctx, session.ID, thisStep, assistantPersisted && !st.rowNotPersisted)
 	}
 
 	// If we hit max turns/executions, make one final LLM call to synthesize results
@@ -3188,6 +3272,17 @@ type batchState struct {
 	turnDedup       map[string]*shuttle.Result
 	pendingSidecars []Message
 
+	stepIndex int // the execution-event-log step this batch's calls are recorded under
+	// stepErr is set when stepIndex could not be resolved. No call may be
+	// recorded under a guessed step, and an unrecorded call must not run, so
+	// every dispatch fails its intent with this error.
+	stepErr error
+
+	// rowNotPersisted is set when a tool row for a call in this batch failed to
+	// persist (appendMessage is fail-open). The step's events are then the
+	// only durable record of that call, so the step must not be pruned.
+	rowNotPersisted bool
+
 	// Resource-await park (park_resource.go). parkableTail mirrors the
 	// pre-scan's durability gate and is set ONLY by the conversation loop —
 	// the resume path leaves it false, so completions never nest a resource
@@ -3206,6 +3301,14 @@ type batchState struct {
 // function so the two paths cannot drift.
 func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall, i int, st *batchState) {
 	span := st.span
+
+	// After the session lease is lost, another process may be dispatching
+	// this batch, so this one must not start the call. Returning before the
+	// intent and the tool row leaves the call "never attempted", which is how
+	// the new holder's resume will see it.
+	if sessionLeaseLost(ctx) != nil {
+		return
+	}
 
 	// Per-turn cap: skip remaining calls with an error result
 	if st.turnToolCount >= st.maxPerTurn {
@@ -3299,8 +3402,39 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 	_, toolSpan := ctx.Tracer().StartSpan(ctx, "agent.tool_execution")
 	toolSpan.SetAttribute("tool_name", toolCall.Name)
 
+	intentErr := st.stepErr
+	if intentErr == nil {
+		intentErr = a.recordToolIntent(ctx, session.ID, st.stepIndex, i, toolCall)
+	}
+	if intentErr != nil {
+		// Same treatment as an LLM-intent failure: abort this call before it
+		// runs. The caller (the batch loop) has no per-call error return today
+		// (dispatchOneCall returns nothing) — synthesize a tool-result error
+		// exactly like the turn_limit_exceeded path above does, so the turn
+		// continues instead of the whole conversation loop failing on one
+		// event-log hiccup.
+		ctx.Tracer().EndSpan(toolSpan)
+		a.appendMessage(ctx, session, Message{
+			Role:      "tool",
+			Content:   fmt.Sprintf("event_log_intent_failed — could not durably record this call before executing it: %v. Not executed.", intentErr),
+			ToolUseID: toolCall.ID,
+			ToolResult: &shuttle.Result{
+				Success: false,
+				Error:   &shuttle.Error{Code: "event_log_intent_failed", Message: intentErr.Error()},
+			},
+			AgentID:   a.id,
+			Timestamp: time.Now(),
+		}, false)
+		*st.allToolExecutions = append(*st.allToolExecutions, ToolExecution{ToolName: toolCall.Name, Input: toolCall.Input, Error: intentErr})
+		// No *st.toolExecutionCount++ here: the counter was already advanced
+		// above, before the intent check. A call that never ran must consume
+		// exactly one unit of the MaxToolExecutions budget, not two.
+		return
+	}
+
 	// Execute with self-correction (circuit breaker + SQL correction)
 	result, err := a.executeToolWithSelfCorrection(ctx, toolCall.Name, toolCall.Input, session.ID)
+	a.recordToolResult(ctx, session.ID, st.stepIndex, i, toolCall.ID, result, err)
 
 	// Tier 1: if tool CB fired, disable tool and inject synthetic result.
 	if err != nil && strings.Contains(err.Error(), "circuit breaker open") && st.recovery != nil {
@@ -3474,14 +3608,16 @@ func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, 
 	}
 
 	// Add tool result to conversation
-	a.appendMessage(ctx, session, Message{
+	if _, persisted := a.appendMessage(ctx, session, Message{
 		Role:       "tool",
 		Content:    formattedResult,
 		ToolUseID:  toolCall.ID, // Store ID for Bedrock/Anthropic format conversion
 		ToolResult: result,
 		AgentID:    a.GetID(), // Track which agent executed this tool
 		Timestamp:  time.Now(),
-	}, false)
+	}, false); !persisted {
+		st.rowNotPersisted = true
+	}
 
 	// If the tool signaled a text_body sidecar (e.g. manage_skills(load)
 	// — the skill body belongs under the user-instruction slot, not the

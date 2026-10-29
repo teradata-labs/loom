@@ -425,7 +425,7 @@ func TestPark_ResumeTerminals(t *testing.T) {
 
 	// Same-turn user rows (in-turn machinery) do NOT refuse the resume.
 	f.ag.appendMessage(ctx, sess, Message{Role: "user", Content: "sidecar body", AgentID: f.ag.id}, false)
-	if _, _, lerr := locateParkedBatch(sess, paramKeys(hr)); lerr != nil {
+	if _, _, _, lerr := locateParkedBatch(sess, paramKeys(hr)); lerr != nil {
 		t.Fatalf("same-turn user row refused resume: %v", lerr)
 	}
 
