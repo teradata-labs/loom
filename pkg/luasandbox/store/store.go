@@ -80,7 +80,7 @@ type Script struct {
 	Manifest    *Manifest // nil when not provided
 	Version     int
 	Published   bool
-	// Owner is who saved it: an agent name in loom ("server" for RPC saves),
+	// Owner is who saved it: an agent name in loom (OwnerRPC for RPC saves),
 	// a user id in Tera.
 	Owner string
 	// Trust is set by GetForRunner for the caller; it is not stored.
@@ -99,7 +99,7 @@ type ScriptStore interface {
 	// Get returns a script by name, or ErrNotFound.
 	Get(ctx context.Context, name string) (Script, error)
 	// GetForRunner returns a script the caller may run, with Trust set for
-	// the caller, or ErrNotFound.
+	// the caller, or ErrNotFound. Loom names the caller with WithRunner.
 	GetForRunner(ctx context.Context, nameOrID string) (Script, error)
 	// List returns every script, name-sorted.
 	List(ctx context.Context) ([]Script, error)
@@ -224,4 +224,23 @@ func hasRef(v any) bool {
 		}
 	}
 	return false
+}
+
+// OwnerRPC is the Owner loom records for scripts saved over the LuaScripts
+// RPC. No agent runs such a script as its own.
+const OwnerRPC = "server"
+
+type runnerKey struct{}
+
+// WithRunner returns ctx carrying runner, the identity GetForRunner compares
+// a script's Owner with to set its Trust. In loom it is the running agent's
+// name, the same name the agent records as Owner when it saves.
+func WithRunner(ctx context.Context, runner string) context.Context {
+	return context.WithValue(ctx, runnerKey{}, runner)
+}
+
+// RunnerFromContext returns the runner WithRunner set, or "".
+func RunnerFromContext(ctx context.Context) string {
+	r, _ := ctx.Value(runnerKey{}).(string)
+	return r
 }

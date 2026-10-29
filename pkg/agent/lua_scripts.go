@@ -54,7 +54,9 @@ type LuaScriptsOptions struct {
 	PublishEnabled bool
 }
 
-// StoreScriptResolver resolves run_lua's `name` against s.
+// StoreScriptResolver resolves run_lua's `name` against s. run_lua names
+// the running agent in ctx (store.WithRunner), so a script is TrustOwn only
+// for the agent that saved it.
 func StoreScriptResolver(s store.ScriptStore) ScriptResolver {
 	return func(ctx context.Context, nameOrID string) (ResolvedScript, error) {
 		sc, err := s.GetForRunner(ctx, nameOrID)
@@ -88,6 +90,12 @@ func (r *LuaScriptsReport) skip(name, reason string) {
 		r.Skipped = make(map[string]string)
 	}
 	r.Skipped[name] = reason
+}
+
+// luaRunnerContext names this agent as the runner for GetForRunner, the
+// same name manage_lua_scripts records as Owner on save.
+func (a *Agent) luaRunnerContext(ctx context.Context) context.Context {
+	return store.WithRunner(ctx, a.config.Name)
 }
 
 // runLuaTool returns the run_lua registered on this agent, or nil.
@@ -216,7 +224,7 @@ func (t *ScriptTool) Execute(ctx context.Context, params map[string]interface{})
 	ctx, span := t.run.agent.tracer.StartSpan(ctx, "lua.run")
 	defer t.run.agent.tracer.EndSpan(span)
 
-	sc, err := t.store.GetForRunner(ctx, t.script)
+	sc, err := t.store.GetForRunner(t.run.agent.luaRunnerContext(ctx), t.script)
 	known := ResolvedScript{Name: t.script}
 	switch {
 	case errors.Is(err, store.ErrNotFound):
@@ -381,7 +389,7 @@ func manifestParam(v interface{}) (*store.Manifest, error) {
 }
 
 func (t *ManageLuaScriptsTool) get(ctx context.Context, name string) *shuttle.Result {
-	sc, err := t.opts.Store.GetForRunner(ctx, name)
+	sc, err := t.opts.Store.GetForRunner(t.agent.luaRunnerContext(ctx), name)
 	if err != nil {
 		return storeFail(err)
 	}
@@ -404,11 +412,19 @@ func (t *ManageLuaScriptsTool) list(ctx context.Context) *shuttle.Result {
 	if len(all) > luaListMax {
 		all = all[:luaListMax]
 	}
+	runnerCtx := t.agent.luaRunnerContext(ctx)
 	rows := make([]map[string]interface{}, 0, len(all))
 	for _, sc := range all {
+		trust, err := t.opts.Store.GetForRunner(runnerCtx, sc.Name)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			continue // deleted since List
+		case err != nil:
+			return storeFail(err)
+		}
 		rows = append(rows, map[string]interface{}{
 			"name": sc.Name, "description": sc.Description, "version": sc.Version, "published": sc.Published,
-			"trust": luasandbox.TrustOwn.String(), "updated_at": sc.UpdatedAt.Format(time.RFC3339),
+			"trust": trust.Trust.String(), "updated_at": sc.UpdatedAt.Format(time.RFC3339),
 		})
 	}
 	return &shuttle.Result{Success: true, Data: rows}
@@ -426,7 +442,7 @@ func (t *ManageLuaScriptsTool) publish(ctx context.Context, name string) *shuttl
 	if !t.opts.PublishEnabled {
 		return luaManageFail(LuaCodePolicyDenied, "publishing scripts as tools is disabled (tools.lua.scripts.publish_as_tool_enabled)")
 	}
-	sc, err := t.opts.Store.Get(ctx, name)
+	sc, err := t.opts.Store.GetForRunner(t.agent.luaRunnerContext(ctx), name)
 	if err != nil {
 		return storeFail(err)
 	}
@@ -443,7 +459,7 @@ func (t *ManageLuaScriptsTool) publish(ctx context.Context, name string) *shuttl
 			return luaManageFail(LuaCodePolicyDenied, "the Lua policy could not be loaded")
 		}
 		visible := make(map[string]bool)
-		for _, n := range withLuaReservedNames(pol).Visible(projection, luasandbox.TrustOwn) {
+		for _, n := range withLuaReservedNames(pol).Visible(projection, sc.Trust) {
 			visible[n] = true
 		}
 		for _, r := range sc.Manifest.Requires {

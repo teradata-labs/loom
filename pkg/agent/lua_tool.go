@@ -319,7 +319,9 @@ func (t *RunLuaTool) resolve(ctx context.Context, span *observability.Span, star
 	if t.opts.Resolve == nil {
 		return ResolvedScript{}, luaFailure(span, start, ResolvedScript{Name: name}, LuaCodeScriptNotFound, "saved scripts are not available here", "pass the source as script", false)
 	}
-	script, err := t.opts.Resolve(ctx, name)
+	// Name this agent as the runner, so a store resolver can tell the
+	// agent's own scripts from the ones it did not save.
+	script, err := t.opts.Resolve(t.agent.luaRunnerContext(ctx), name)
 	switch {
 	case errors.Is(err, ErrAmbiguousScript):
 		return script, luaFailure(span, start, ResolvedScript{Name: name}, LuaCodeAmbiguousScript, err.Error(), "run it again with the script id", false)

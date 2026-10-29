@@ -64,7 +64,8 @@ Any other parameter is `INVALID_PARAMS`.
 Only the tools the model was shown for the provider call that requested the run, minus
 the engine's hard-deny list, the reserved names (`run_lua`, `manage_lua_scripts`,
 `lua_*`), `tools.lua.tools.deny`, and `deny_for_shared` for scripts the runner did not
-write; `allow`, when set, narrows further. Each call runs through the agent's admission
+write (shared scripts; see "Who owns a saved script" below); `allow`, when set, narrows
+further. Each call runs through the agent's admission
 chain like a direct call. A call that needs approval returns `approval_required` without
 running, and the model should make it directly.
 
@@ -110,6 +111,17 @@ tools:
 
 `run_lua` can run any saved script by `name` whenever Lua is enabled.
 
+### Who owns a saved script
+
+A script's owner is whoever saved its current version: the agent's name for a save through
+`manage_lua_scripts`, `server` for a save over the RPC. A new version saved by another agent
+changes the owner to that agent. When an agent runs a saved script (`run_lua name=...` or
+`lua_<name>`), the script is `own` trust only if that agent is its owner. Every other script
+runs as `shared`: one saved by another agent, and every script saved over the RPC, for every
+agent. `tools.lua.tools.deny_for_shared` removes its tools from shared scripts, so such a
+call returns `TOOL_NOT_VISIBLE` without running. The run record's `trust` field, and the
+`trust` that `get` and `list` return, show the tier for the calling agent.
+
 ### `manage_lua_scripts`
 
 Registered on agents that list it in `tools.builtin` and also have `run_lua`, when
@@ -118,10 +130,10 @@ Registered on agents that list it in `tools.builtin` and also have `run_lua`, wh
 | Action | Does |
 |---|---|
 | `save` | Validates the name (`^[a-z][a-z0-9_]{2,40}$`), a description, the manifest, and that the source compiles (it is never run), then stores it. An existing name is `DUPLICATE` unless `overwrite` is true; a new version keeps its published state and attachments. Returns `{name, version, tool_name, published}`. |
-| `get` | Returns the script with its source, manifest, version, owner and `updated_at`. |
+| `get` | Returns the script with its source, manifest, version, owner, `updated_at`, and the `trust` (`own` or `shared`) it runs with on this agent. |
 | `list` | Returns up to 200 scripts, name-sorted, without source. |
 | `delete` | Deletes the script and every attachment of it. |
-| `publish` | Needs `publish_as_tool_enabled` and a manifest with `parameters`. Every `requires` entry must be a tool scripts on this agent can call (`TOOL_NOT_VISIBLE` otherwise). Marks the script published, attaches it to this agent, and registers `lua_<name>` at once. |
+| `publish` | Needs `publish_as_tool_enabled` and a manifest with `parameters`. Every `requires` entry must be a tool the script, at its trust on this agent, can call (`TOOL_NOT_VISIBLE` otherwise). Marks the script published, attaches it to this agent, and registers `lua_<name>` at once. |
 | `unpublish` | Clears the published flag. The tool leaves this agent at once, and every other agent's copy refuses its next call. Attachments are kept, so publishing again restores them. |
 | `detach` | Removes `lua_<name>` from this agent only. |
 

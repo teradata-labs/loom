@@ -82,7 +82,9 @@ type LuaToolListsConfig struct {
 	Allow []string `mapstructure:"allow"`
 	// Deny removes tools for every script.
 	Deny []string `mapstructure:"deny"`
-	// DenyForShared removes tools for scripts the runner did not write.
+	// DenyForShared removes tools for saved scripts the running agent did
+	// not save: scripts another agent saved, and every script saved over
+	// the RPC.
 	DenyForShared []string `mapstructure:"deny_for_shared"`
 }
 

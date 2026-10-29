@@ -69,12 +69,44 @@ func TestSaveGetVersionsAndDuplicates(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, `return #args + 0`, read.Source)
 
-	runner, err := s.GetForRunner(ctx, "sum_list")
+	runner, err := s.GetForRunner(store.WithRunner(ctx, "agent-a"), "sum_list")
 	require.NoError(t, err)
 	assert.Equal(t, luasandbox.TrustOwn, runner.Trust)
 
 	_, err = s.Get(ctx, "missing")
 	assert.ErrorIs(t, err, store.ErrNotFound)
+}
+
+// Review Josh-Schoen F2: only the runner that saved a script gets TrustOwn.
+func TestGetForRunnerTrust(t *testing.T) {
+	s := open(t, t.TempDir())
+	_, _, err := s.Save(ctx, script("by_agent"), false) // Owner agent-a
+	require.NoError(t, err)
+	rpc := script("by_rpc")
+	rpc.Owner = store.OwnerRPC
+	_, _, err = s.Save(ctx, rpc, false)
+	require.NoError(t, err)
+
+	for _, tc := range []struct {
+		name, script, runner string
+		want                 luasandbox.Trust
+	}{
+		{"saving agent", "by_agent", "agent-a", luasandbox.TrustOwn},
+		{"another agent", "by_agent", "agent-b", luasandbox.TrustShared},
+		{"no runner in ctx", "by_agent", "", luasandbox.TrustShared},
+		{"RPC save, any agent", "by_rpc", "agent-a", luasandbox.TrustShared},
+		{"RPC save, runner named like the RPC owner", "by_rpc", store.OwnerRPC, luasandbox.TrustShared},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := ctx
+			if tc.runner != "" {
+				c = store.WithRunner(ctx, tc.runner)
+			}
+			got, err := s.GetForRunner(c, tc.script)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got.Trust)
+		})
+	}
 }
 
 func TestSaveValidates(t *testing.T) {

@@ -28,8 +28,9 @@ import (
 	luastore "github.com/teradata-labs/loom/pkg/luasandbox/store"
 )
 
-// luaScriptOwnerRPC is the owner recorded for scripts saved over RPC.
-const luaScriptOwnerRPC = "server"
+// luaScriptOwnerRPC is the owner recorded for scripts saved over RPC. No
+// agent runs such a script as its own (TrustShared).
+const luaScriptOwnerRPC = luastore.OwnerRPC
 
 // SetLuaScriptStore sets the store behind the Lua script RPCs. Leave it unset
 // (nil) when tools.lua is disabled; the RPCs then return FailedPrecondition.
