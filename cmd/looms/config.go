@@ -719,6 +719,11 @@ type MCPServerConfig struct {
 
 	// WorkingDir is the working directory for the MCP server process (optional)
 	WorkingDir string `mapstructure:"working_dir"`
+
+	// TrustAnnotations opts this server in to having its tool annotations
+	// (readOnlyHint, destructiveHint) believed, so behavior.parallel_read_tools
+	// may run its read-only tools concurrently. Default false.
+	TrustAnnotations bool `mapstructure:"trust_annotations"`
 }
 
 // PromptsConfig holds configuration for PromptRegistry integration.
