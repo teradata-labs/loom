@@ -368,6 +368,12 @@ jobs:
           New-Item -ItemType Directory -Path loom-package -Force
           Copy-Item loom-windows-amd64.exe loom-package/
           Copy-Item looms-windows-amd64.exe loom-package/
+          # Same attribution files as the per-binary archives (extracted above
+          # from those zips): permissive licenses require their text with the
+          # distribution and Apache-2.0 section 4(d) requires the NOTICE.
+          Copy-Item LICENSE loom-package/
+          Copy-Item NOTICE loom-package/
+          Copy-Item THIRD-PARTY-NOTICES.md loom-package/
           7z a loom-windows-x64.zip loom-package/*
 
       - name: Generate SHA256
