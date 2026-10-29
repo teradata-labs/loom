@@ -136,6 +136,62 @@ func TestAnalyze_Corpus(t *testing.T) {
 		{cmd: `if rm x; then :; fi`, want: Ask, static: Ask},
 		{cmd: `ls ~`, want: Allow, static: Deny},
 		{cmd: `echo x > ~/f`, want: Allow, static: Deny},
+		{cmd: `PATH=/tmp/evil ls`, want: Ask, static: Ask, why: "PATH (1:1): sets PATH"},
+		{cmd: `GIT_EXTERNAL_DIFF=rm git diff`, want: Ask, static: Deny, why: "sets GIT_EXTERNAL_DIFF"},
+		{cmd: `GIT_PAGER=sh git log`, want: Ask, static: Deny, why: "sets GIT_PAGER"},
+		{cmd: `LD_PRELOAD=/tmp/x.so ls`, want: Ask, static: Ask, why: "sets LD_PRELOAD"},
+		{cmd: `DYLD_INSERT_LIBRARIES=/tmp/x.dylib ls`, want: Ask, static: Ask, why: "sets DYLD_INSERT_LIBRARIES"},
+		{cmd: `BASH_ENV=/tmp/x ls`, want: Ask, static: Ask, why: "sets BASH_ENV"},
+		{cmd: `PYTHONSTARTUP=/tmp/x ls`, want: Ask, static: Ask, why: "sets PYTHONSTARTUP"},
+		{cmd: `PATH=/tmp/evil`, want: Ask, static: Ask, why: "sets PATH"},
+		{cmd: `export PATH=/tmp/evil; ls`, want: Ask, static: Ask, why: "PATH (1:8): sets PATH"},
+		{cmd: `declare -x PATH=/tmp/evil`, want: Ask, static: Ask, why: "sets PATH"},
+		{cmd: `typeset -x LD_PRELOAD=/tmp/x.so`, want: Ask, static: Ask, why: "sets LD_PRELOAD"},
+		{cmd: `readonly -x EDITOR=sh`, want: Ask, static: Ask, why: "sets EDITOR"},
+		{cmd: `f() { local PATH=/tmp/evil; ls; }; f`, want: Ask, static: Ask, why: "sets PATH"},
+		{cmd: `export "PATH=/tmp/evil"`, want: Ask, static: Ask, why: "sets PATH"},
+		{cmd: `export "$n=/tmp/evil"`, want: Ask, static: Deny, why: "name is computed at run time"},
+		{cmd: `env PATH=/tmp/evil ls`, want: Ask, static: Ask, why: "sets PATH"},
+		{cmd: `env -u HOME GIT_SSH=/tmp/x ls`, want: Ask, static: Ask, why: "sets GIT_SSH"},
+		{cmd: `declare -n r=PATH; r=/tmp/evil; ls`, want: Ask, static: Ask, why: "sets PATH"},
+		{cmd: `for PATH in /tmp/evil; do ls; done`, want: Ask, static: Ask, why: "sets PATH"},
+		{cmd: `read -r PATH <<< /tmp/evil; ls`, want: Ask, static: Ask, why: "sets PATH"},
+		{cmd: `read -a LD_PRELOAD <<< /tmp/x.so`, want: Ask, static: Ask, why: "sets LD_PRELOAD"},
+		{cmd: `mapfile -t PATH < /dev/null`, want: Ask, static: Ask, why: "sets PATH"},
+		{cmd: `printf -v PATH /tmp/evil`, want: Ask, static: Ask, why: "sets PATH"},
+		{cmd: `getopts ab PAGER`, want: Ask, static: Ask, why: "sets PAGER"},
+		{cmd: `: ${PATH:=/tmp/evil}`, want: Ask, static: Ask, why: "sets PATH"},
+		{cmd: `(( LD_BIND_NOW = 1 ))`, want: Ask, static: Ask, why: "sets LD_BIND_NOW"},
+		{cmd: `eval "PATH=/tmp/evil ls"`, want: Ask, static: Ask, why: "sets PATH"},
+		{cmd: `IFS=x; ls`, want: Ask, static: Ask, why: "sets IFS"},
+		{cmd: `printf -vPATH /tmp/evil`, want: Ask, static: Ask, why: "sets PATH"},
+		{cmd: `printf "$f" PATH /tmp/evil`, want: Ask, static: Ask, why: "sets PATH"},
+		{cmd: `printf "$f" "$x"`, want: Allow, static: Deny, swhy: "name is computed at run time"},
+		{cmd: `printf '%s\\n' PATH`, want: Allow, static: Allow},
+		{cmd: `read -- PATH <<< /tmp/evil`, want: Ask, static: Ask, why: "sets PATH"},
+		{cmd: `read -p prompt -aLD_PRELOAD <<< x`, want: Ask, static: Ask, why: "sets LD_PRELOAD"},
+		{cmd: `getopts ab "$n"`, want: Ask, static: Deny, why: "name is computed at run time"},
+		{cmd: `(( PATH++ ))`, want: Ask, static: Ask, why: "sets PATH"},
+		{cmd: `env -i -u X PATH=/tmp/evil ls`, want: Ask, static: Ask, why: "sets PATH"},
+		{cmd: `env "$a" ls`, want: Ask, static: Deny, swhy: "name is computed at run time"},
+		{cmd: `export -n PATH`, want: Ask, static: Ask, why: "sets PATH"},
+		{cmd: `declare -n r="$t"`, want: Ask, static: Deny, why: "name is computed at run time"},
+		{cmd: `export 'FOO' "BAR=1"`, want: Allow, static: Allow},
+		{cmd: `ls >& $f`, want: Allow, static: Deny, swhy: "redirects to a path computed at run time"},
+		{cmd: `let PATH=1`, want: Ask, static: Ask, why: "sets PATH"},
+		{cmd: `PATH+=:/tmp/evil ls`, want: Ask, static: Ask, why: "sets PATH"},
+		{cmd: `select PATH in a; do ls; done`, want: Ask, static: Ask, why: "sets PATH"},
+		{cmd: `nameref r=LD_PRELOAD`, want: Ask, static: Ask, why: "sets LD_PRELOAD"},
+		{cmd: `env -S "PATH=/tmp/evil ls"`, want: Ask, static: Ask, why: "env -S changes what env runs"},
+		{cmd: `read -r "$v" <<< /tmp/evil`, want: Ask, static: Deny, why: "name is computed at run time"},
+		{cmd: `FOO=1 ls`, want: Allow, static: Allow},
+		{cmd: `export FOO=1`, want: Allow, static: Allow},
+		{cmd: `declare -x FOO=1; x=2; echo $x`, want: Allow, static: Allow},
+		{cmd: `path=/tmp/evil ls`, want: Allow, static: Allow},
+		{cmd: `for f in a b; do echo $f; done`, want: Allow, static: Allow},
+		{cmd: `read -r line <<< x; echo $line`, want: Allow, static: Allow},
+		{cmd: `IFS=, read -r a b <<< "1,2"`, want: Allow, static: Allow},
+		{cmd: `env FOO=1 ls`, want: Ask, static: Ask, why: "env (1:1): not on the shell allowlist"},
 	} {
 		for _, static := range []bool{false, true} {
 			o := opt
@@ -182,6 +238,33 @@ func TestAnalyze_ReasonAndGrant(t *testing.T) {
 }
 
 // A finding inside a literal eval argument is reported at the eval.
+// An Ask for a variable that changes what runs names it in the reason and
+// in the grant.
+func TestAnalyze_ExecEnvGrant(t *testing.T) {
+	v := Readonly().Analyze("PATH=/tmp/evil ls; GIT_EXTERNAL_DIFF=rm git diff", session(t))
+	require.Equal(t, Ask, v.Kind)
+	assert.Equal(t, "needs approval under shell policy readonly: "+
+		"PATH (1:1): sets PATH, which changes what programs run or load; "+
+		"GIT_EXTERNAL_DIFF (1:20): sets GIT_EXTERNAL_DIFF, which changes what programs run or load. "+
+		"Everything else in the command is allowed.", v.Reason())
+	require.NotNil(t, v.Grant)
+	assert.Equal(t, []string{"PATH", "GIT_EXTERNAL_DIFF"}, v.Grant.Env)
+	assert.Empty(t, v.Grant.Programs)
+	assert.Equal(t, []string{"PATH", "LD_PRELOAD"}, MergeGrants([]any{&Grant{Env: []string{"PATH"}}, &Grant{Env: []string{"LD_PRELOAD", "PATH"}}}).Env)
+}
+
+func TestExecEnvName(t *testing.T) {
+	for _, name := range []string{"PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "BASH_ENV", "ENV",
+		"GIT_EXTERNAL_DIFF", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_EDITOR", "GIT_PAGER", "GIT_ASKPASS", "GIT_EXEC_PATH",
+		"PAGER", "EDITOR", "VISUAL", "PYTHONPATH", "PYTHONSTARTUP", "NODE_OPTIONS", "PERL5OPT", "RUBYOPT", "IFS",
+		"PROMPT_COMMAND", "LUA_INIT", "BASH_FUNC_ls%%", "GCONV_PATH"} {
+		assert.True(t, ExecEnvName(name), name)
+	}
+	for _, name := range []string{"FOO", "HOME", "LANG", "path", "editor", "TERM", "PWD", "MY_PATH", "XPATH"} {
+		assert.False(t, ExecEnvName(name), name)
+	}
+}
+
 func TestAnalyze_NestedPositions(t *testing.T) {
 	v := Readonly().Analyze(`ls; eval "eval 'rm x'"`, session(t))
 	require.Equal(t, Ask, v.Kind)

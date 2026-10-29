@@ -192,7 +192,26 @@ func (a *analyzer) source(src string, depth int, outer *syntax.Pos) {
 		case *syntax.Stmt:
 			a.redirects(x, outer)
 		case *syntax.CallExpr:
+			a.assigns(x, outer)
 			a.call(x, depth, outer)
+		case *syntax.DeclClause:
+			a.decl(x, outer)
+		case *syntax.WordIter:
+			if x.Name != nil {
+				a.setsVar(x, outer, x.Name.Value) // for NAME in ...; select NAME in ...
+			}
+		case *syntax.ParamExp:
+			if x.Param != nil && x.Exp != nil && (x.Exp.Op == syntax.AssignUnset || x.Exp.Op == syntax.AssignUnsetOrNull) {
+				a.setsVar(x, outer, x.Param.Value) // ${NAME=value}, ${NAME:=value}
+			}
+		case *syntax.BinaryArithm:
+			if isArithAssign(x.Op) {
+				a.arithAssign(x.X, outer)
+			}
+		case *syntax.UnaryArithm:
+			if x.Op == syntax.Inc || x.Op == syntax.Dec {
+				a.arithAssign(x.X, outer)
+			}
 		}
 		return true
 	})
@@ -201,7 +220,7 @@ func (a *analyzer) source(src string, depth int, outer *syntax.Pos) {
 func (a *analyzer) call(x *syntax.CallExpr, depth int, outer *syntax.Pos) {
 	args := x.Args
 	if len(args) == 0 {
-		return // assignments only; their words are walked for substitutions
+		return // assignments only (judged by assigns); their words are walked for substitutions
 	}
 	name, lit := literal(args[0])
 	for lit && (name == "command" || name == "exec" || name == "builtin") {
@@ -228,6 +247,9 @@ func (a *analyzer) call(x *syntax.CallExpr, depth int, outer *syntax.Pos) {
 		return
 	}
 	rest := args[1:]
+	if filepath.Base(name) == "env" && !a.funcs[name] {
+		a.envArgs(args[0], rest, outer)
+	}
 	switch {
 	case a.funcs[name]:
 		return
@@ -293,6 +315,7 @@ func (a *analyzer) builtin(x *syntax.CallExpr, name string, rest []*syntax.Word,
 		a.add(Deny, x, outer, name, "not supported by the jailed shell")
 		return
 	}
+	a.varBuiltin(x, name, rest, outer)
 	if !a.p.Builtins[name] {
 		if a.opt.Static && (name == "source" || name == "." || name == "alias" || name == "shopt") {
 			a.add(Deny, x, outer, name, "runs commands the static check cannot see")

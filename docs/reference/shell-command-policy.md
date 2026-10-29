@@ -81,6 +81,16 @@ A word is **literal** when it has no parameter, command, arithmetic or process e
 
 Relative paths resolve against the call's working directory. Paths are compared after symlinks are resolved, by whole path components.
 
+| Variables the command sets | Verdict |
+|---|---|
+| a name `shellpolicy.ExecEnvName` reports (its value changes what runs or loads), set in any form: a prefix (`PATH=/x ls`), a bare assignment (`PATH=/x`), `export`/`declare`/`typeset`/`readonly`/`local`/`nameref` (with or without `-x`, and the target of `-n`), `env NAME=…`, a `for`/`select` variable, `read`, `mapfile`/`readarray`, `printf -v`, `getopts`, `${NAME:=…}`/`${NAME=…}`, or arithmetic (`(( NAME = 1 ))`, `let`, `++`) | Ask in both modes, naming the variable; the grant lists it in `Env` |
+| a variable whose name is computed at run time in one of those forms (`export "$n=…"`, `read "$v"`, `env "$a" …`) | `runtime`: Ask. `static`: Deny |
+| `env -S` or `env -P` (more assignments, or another search path) | Ask |
+| an `IFS=` prefix on `read`, `mapfile` or `readarray` (it only sets that builtin's field separator) | no verdict |
+| any other name (`FOO=1 ls`, `export FOO=1`) | no verdict |
+
+`ExecEnvName` matches these names exactly: `PATH BASH_ENV ENV ZDOTDIR SHELL SHELLOPTS BASHOPTS PROMPT_COMMAND PS4 IFS PAGER MANPAGER EDITOR VISUAL BROWSER LESSOPEN LESSCLOSE SSH_ASKPASS SUDO_ASKPASS NODE_OPTIONS NODE_PATH PERL5OPT PERL5LIB PERLLIB RUBYOPT RUBYLIB JAVA_TOOL_OPTIONS _JAVA_OPTIONS JDK_JAVA_OPTIONS CLASSPATH TCLLIBPATH GCONV_PATH`, and every name starting with `LD_`, `DYLD_`, `GIT_`, `PYTHON`, `LUA_` or `BASH_FUNC_`. The run-time checks below take no environment, so the Ask before the command runs is the only check on these variables.
+
 The hook additionally turns an **Ask into a Deny** when the call's JSON-encoded params exceed `shuttle.ApprovalParamsMaxBytes` (8,192 bytes). An approval card cuts params past that size, and a person is never asked to approve text they cannot see. It also denies a call with no `command` string.
 
 ## Reasons
@@ -104,6 +114,7 @@ type Grant struct {
     Programs  []string // names or exact paths that may run, with any arguments, for this call
     Builtins  []string
     ReadPaths []string // resolved paths that may be read, with everything beneath them
+    Env       []string // variables the command sets that change what runs (no run-time check reads this yet)
 }
 ```
 
@@ -113,7 +124,7 @@ When the Ask is approved, the tool body reads the grants with `shellpolicy.Merge
 
 `shellpolicy.Readonly()`. A program qualifies when it cannot start another program, cannot write a file except through an argument its profile refuses, and is run often.
 
-**Builtins:** `echo printf test [ cd pwd read true false : set shift exit return break continue wait type getopts pushd popd dirs mapfile readarray eval trap unset`. Assignments (`export`, `local`, `declare`, `readonly`, `typeset`, `let`) are not calls and need no entry.
+**Builtins:** `echo printf test [ cd pwd read true false : set shift exit return break continue wait type getopts pushd popd dirs mapfile readarray eval trap unset`. Assignments (`export`, `local`, `declare`, `readonly`, `typeset`, `let`) are not calls and need no builtin entry. Each name they set is still judged: setting a variable that changes what runs, such as `PATH` or `LD_PRELOAD`, is an Ask (see "Variables the command sets" above).
 
 | Program | Argument rules |
 |---|---|
@@ -164,8 +175,8 @@ Each returns a `*shellpolicy.LaunchError{Name, Reason}`, or nil.
 
 ## Tests
 
-- `pkg/shellpolicy`: 94.7% statement coverage.
-- **Corpus:** the design's bypass corpus, about 80 commands, each run under both enforcement modes.
+- `pkg/shellpolicy`: 95.4% statement coverage.
+- **Corpus:** the design's bypass corpus plus the environment-assignment and static-path cases, 144 commands, each run under both enforcement modes.
 - **Run-time checks:** a 22-case table for `CheckLaunch`.
 - **Interpreter drift:** `TestImplementedBuiltinsMatchInterpreter` fails when an interpreter upgrade implements or drops a builtin.
 - **Executor:** an end-to-end test through `BuildChainFromConfig` and the executor.
