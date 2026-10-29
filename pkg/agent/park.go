@@ -27,7 +27,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -434,25 +433,6 @@ func (a *Agent) settleAbandonedParkTask(ctx context.Context, hr *shuttle.HumanRe
 	}
 	a.implicitTasks.AbortForTurn(ctx, hr.TaskID, reason)
 	a.implicitTasks.ReleaseTaskMemo(hr.SessionID, hr.TaskID)
-}
-
-// lockSession serializes resumes of one session within this process, and
-// returns the unlock func. One mutex per live session; not pruned, because a
-// mutex is one pointer and sessions are bounded by the host's own lifetime.
-func (a *Agent) lockSession(sessionID string) func() {
-	a.sessionLocksMu.Lock()
-	if a.sessionLocks == nil {
-		a.sessionLocks = make(map[string]*sync.Mutex)
-	}
-	mu, ok := a.sessionLocks[sessionID]
-	if !ok {
-		mu = &sync.Mutex{}
-		a.sessionLocks[sessionID] = mu
-	}
-	a.sessionLocksMu.Unlock()
-
-	mu.Lock()
-	return mu.Unlock
 }
 
 // guardParkedTail refuses a new user turn while the session holds a PENDING
@@ -928,7 +908,8 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	}
 	ctx = session.WithSessionID(ctx, sessionID)
 
-	// One resume at a time per session, PER AGENT INSTANCE. The tail walk
+	// One turn at a time per session, PER AGENT INSTANCE (session_turn_lock.go):
+	// a resume waits for a running turn and vice versa. The tail walk
 	// cannot be the double-application guard on its own: it reads the batch's
 	// rowless calls BEFORE any of them execute, so two overlapping resumes of
 	// one decision both see work to do and both do it.
@@ -941,7 +922,10 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	// flow has no row left to claim, so this lock is all it gets — meaning an
 	// embedder that pools agents, or spreads resumes across processes, must
 	// deliver an already-decided resume at most once itself.
-	unlock := a.lockSession(sessionID)
+	unlock, err := a.lockSession(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
 	defer unlock()
 
 	startTime := time.Now()
