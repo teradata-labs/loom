@@ -24,6 +24,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/teradata-labs/loom/pkg/memory"
+	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/types"
 )
@@ -118,6 +119,24 @@ func (a *Agent) judgeVacuous(tc types.ToolCall, result *shuttle.Result) bool {
 	}
 	vacuous, judged := shuttle.ConventionVacuousResult(tc.Input, result)
 	return judged && vacuous
+}
+
+// Span names for the lesson lane. Mining, credit and error-lane injection
+// each change what later conversations see, so each is one span carrying
+// its counts and an outcome — the same shape as graph_memory.recall.
+const (
+	spanLessonMining    = "graph_memory.lesson_mining"
+	spanLessonCredit    = "graph_memory.lesson_credit"
+	spanLessonInjection = "graph_memory.lesson_injection"
+)
+
+// lessonTracer returns the agent's tracer, or a no-op tracer for agents built
+// without one (struct literals; New always sets a tracer).
+func (a *Agent) lessonTracer() observability.Tracer {
+	if a.tracer == nil {
+		return observability.NewNoOpTracer()
+	}
+	return a.tracer
 }
 
 // maxLedgerEvents caps a session's mining ledger.
@@ -250,14 +269,32 @@ func (a *Agent) injectErrorLessons(ctx context.Context, session *types.Session, 
 		return
 	}
 
+	tracer := a.lessonTracer()
+	ctx, span := tracer.StartSpan(ctx, spanLessonInjection)
+	defer tracer.EndSpan(span)
+	span.SetAttribute(observability.AttrSessionID, session.ID)
+	span.SetAttribute("lesson.errors", len(errTexts))
+	outcome := "unknown"
+	recalled, injectedVerified, injectedProbation := 0, 0, 0
+	defer func() {
+		span.SetAttribute("lesson.outcome", outcome)
+		span.SetAttribute("lesson.recalled", recalled)
+		span.SetAttribute("lesson.injected", injectedVerified+injectedProbation)
+		span.SetAttribute("lesson.injected_verified", injectedVerified)
+		span.SetAttribute("lesson.injected_probation", injectedProbation)
+	}()
+
 	query := errorLessonQuery(strings.Join(errTexts, " "))
 	if query == "" {
+		outcome = "no_query"
 		return
 	}
 	// Probation is allowed here and nowhere else: this is the lane outcome
 	// credit scores, so a demoted lesson offered here is actually re-measured.
 	lessons := a.fleetLessons(ctx, query, lessonRecallBudget, true)
+	recalled = len(lessons)
 	if len(lessons) == 0 {
+		outcome = "no_match"
 		return
 	}
 
@@ -274,6 +311,7 @@ func (a *Agent) injectErrorLessons(ctx context.Context, session *types.Session, 
 	}
 	if st.injections >= maxErrorLessonInjections {
 		a.errorLessonMu.Unlock()
+		outcome = "cap_reached"
 		return
 	}
 	var fresh []*memory.Memory
@@ -289,6 +327,7 @@ func (a *Agent) injectErrorLessons(ctx context.Context, session *types.Session, 
 	a.errorLessonMu.Unlock()
 
 	if len(fresh) == 0 {
+		outcome = "already_shown"
 		return
 	}
 
@@ -332,6 +371,8 @@ func (a *Agent) injectErrorLessons(ctx context.Context, session *types.Session, 
 		Role:    "system",
 		Content: sb.String(),
 	})
+	injectedVerified, injectedProbation = len(verified), len(probation)
+	outcome = "injected"
 }
 
 // clearErrorLessonState drops the session's error-injection tracking
@@ -793,7 +834,23 @@ func (a *Agent) extractLessonsAtEnd(ctx context.Context, sessionID string) {
 		a.graphMemoryConfig == nil || !a.graphMemoryConfig.Enabled {
 		return
 	}
+	tracer := a.lessonTracer()
+	ctx, span := tracer.StartSpan(ctx, spanLessonMining)
+	defer tracer.EndSpan(span)
+	span.SetAttribute(observability.AttrSessionID, sessionID)
+	outcome := "unknown"
+	minedPairs, groundedCount, stored, dropped, storeErrors := 0, 0, 0, 0, 0
+	defer func() {
+		span.SetAttribute("lesson.outcome", outcome)
+		span.SetAttribute("lesson.pairs", minedPairs)
+		span.SetAttribute("lesson.pairs_grounded", groundedCount)
+		span.SetAttribute("lesson.stored", stored)
+		span.SetAttribute("lesson.dropped_ungrounded", dropped)
+		span.SetAttribute("lesson.store_errors", storeErrors)
+	}()
+
 	events := a.takeToolLedger(sessionID)
+	span.SetAttribute("lesson.ledger_events", len(events))
 
 	// Outcome credit (Fix B, docs/architecture/lesson-grounding-and-credit.md):
 	// score the lessons the error lane injected against what the ledger says
@@ -831,8 +888,11 @@ func (a *Agent) extractLessonsAtEnd(ctx context.Context, sessionID string) {
 	// not exist is asking it to invent one, and an all-empty grounding map
 	// used to switch OFF the very gate that would have caught the invention.
 	// Dropping the pairs instead means the gate below is unconditional.
+	minedPairs = len(pairs)
 	pairs = groundedPairs(pairs)
+	groundedCount = len(pairs)
 	if len(pairs) == 0 {
+		outcome = "no_grounded_pairs"
 		return
 	}
 
@@ -848,16 +908,18 @@ func (a *Agent) extractLessonsAtEnd(ctx context.Context, sessionID string) {
 	}, nil)
 	if err != nil {
 		zap.L().Debug("lesson mining: LLM call failed", zap.Error(err))
+		outcome = "llm_error"
+		span.RecordError(err)
 		return
 	}
 	data, ok := parseExtractionResponse(response.Content)
 	if !ok {
+		outcome = "parse_error"
 		return
 	}
 
 	agentID := a.config.Name
 	grounding := lessonGroundingTokens(pairs)
-	stored, dropped := 0, 0
 	for _, m := range data.Memories {
 		if m.Content == "" {
 			continue
@@ -885,10 +947,13 @@ func (a *Agent) extractLessonsAtEnd(ctx context.Context, sessionID string) {
 			Tags:          append(m.Tags, "lesson"),
 			Salience:      salience,
 		}
-		if _, err := a.graphMemoryStore.Remember(extractCtx, mem); err == nil {
-			stored++
+		if _, err := a.graphMemoryStore.Remember(extractCtx, mem); err != nil {
+			storeErrors++
+			continue
 		}
+		stored++
 	}
+	outcome = "mined"
 	if stored > 0 || dropped > 0 {
 		zap.L().Info("lesson mining: stored verified lessons",
 			zap.String("agent", agentID),
@@ -997,14 +1062,34 @@ type salienceAdjuster interface {
 // failure after the injection, or a mechanically-judged no-work "success" of
 // the failing class. Everything else leaves the lesson untouched.
 func (a *Agent) applyLessonCredit(ctx context.Context, events []minedEvent, injections map[string]int) {
-	if len(injections) == 0 || len(events) == 0 {
+	if len(injections) == 0 {
+		return
+	}
+	tracer := a.lessonTracer()
+	ctx, span := tracer.StartSpan(ctx, spanLessonCredit)
+	defer tracer.EndSpan(span)
+	span.SetAttribute("lesson.injections", len(injections))
+	span.SetAttribute("lesson.ledger_events", len(events))
+	outcome := "unknown"
+	wins, losses, unscored, adjustErrors := 0, 0, 0, 0
+	defer func() {
+		span.SetAttribute("lesson.outcome", outcome)
+		span.SetAttribute("lesson.credit.wins", wins)
+		span.SetAttribute("lesson.credit.losses", losses)
+		span.SetAttribute("lesson.credit.unscored", unscored)
+		span.SetAttribute("lesson.credit.adjust_errors", adjustErrors)
+	}()
+
+	if len(events) == 0 {
+		unscored = len(injections)
+		outcome = "no_events"
 		return
 	}
 	adjuster, ok := a.graphMemoryStore.(salienceAdjuster)
 	if !ok {
+		outcome = "store_unsupported"
 		return
 	}
-	wins, losses, unscored := 0, 0, 0
 	for lessonID, idx := range injections {
 		if idx < 0 {
 			idx = 0
@@ -1053,14 +1138,17 @@ func (a *Agent) applyLessonCredit(ctx context.Context, events []minedEvent, inje
 		if recovered {
 			delta = a.lessonWinDelta(ctx, lessonID)
 		}
-		if err := adjuster.AdjustSalience(ctx, lessonID, delta); err == nil {
-			if recovered {
-				wins++
-			} else {
-				losses++
-			}
+		if err := adjuster.AdjustSalience(ctx, lessonID, delta); err != nil {
+			adjustErrors++
+			continue
+		}
+		if recovered {
+			wins++
+		} else {
+			losses++
 		}
 	}
+	outcome = "scored"
 	if wins > 0 || losses > 0 {
 		zap.L().Info("lesson credit applied",
 			zap.String("agent", a.config.Name),
