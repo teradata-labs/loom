@@ -42,7 +42,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 )
 
 // target is one shipped binary and the build tags the release pipeline uses
@@ -332,12 +331,6 @@ func goStdlibLicense() (string, error) {
 // package that ships its own LICENSE is governed by that file rather than by
 // the module's.
 func findLicense(importPath, moduleDir string) (string, error) {
-	rel := ""
-	if i := strings.Index(importPath, "/"); i >= 0 {
-		rel = importPath
-	}
-	_ = rel
-
 	dir := moduleDir
 	// Reconstruct the package directory from the module dir when possible.
 	if sub := packageSubdir(importPath, moduleDir); sub != "" {
@@ -471,10 +464,15 @@ func renderThirdParty(comps []component, goLicense string) []byte {
 	return []byte(b.String())
 }
 
+// noticeCopyrightYear is the year on loom's own NOTICE line. It is fixed, like
+// the "Copyright 2026 Teradata" header in the source files, so the generated
+// NOTICE does not change at New Year and `-check` stays deterministic.
+const noticeCopyrightYear = 2026
+
 func renderNotice(comps []component) []byte {
 	var b strings.Builder
 	b.WriteString("Loom\n")
-	fmt.Fprintf(&b, "Copyright %d Teradata\n\n", time.Now().Year())
+	fmt.Fprintf(&b, "Copyright %d Teradata\n\n", noticeCopyrightYear)
 	b.WriteString("This product includes software developed at Teradata.\n\n")
 	b.WriteString("Licensed under the Apache License, Version 2.0. See the LICENSE file.\n\n")
 	b.WriteString(strings.Repeat("-", 76) + "\n\n")
