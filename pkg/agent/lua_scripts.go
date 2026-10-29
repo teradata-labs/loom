@@ -32,7 +32,8 @@ import (
 // name without overwrite.
 const LuaCodeDuplicate = "DUPLICATE"
 
-// luaListMax bounds manage_lua_scripts list.
+// luaListMax bounds manage_lua_scripts list; a longer list reports
+// truncated with the total.
 const luaListMax = 200
 
 // manageLuaScriptsDescription is verbatim from the design (02-lua-api.md §2).
@@ -409,7 +410,9 @@ func (t *ManageLuaScriptsTool) list(ctx context.Context) *shuttle.Result {
 		return storeFail(err)
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i].Name < all[j].Name })
-	if len(all) > luaListMax {
+	total := len(all)
+	truncated := total > luaListMax
+	if truncated {
 		all = all[:luaListMax]
 	}
 	runnerCtx := t.agent.luaRunnerContext(ctx)
@@ -427,7 +430,9 @@ func (t *ManageLuaScriptsTool) list(ctx context.Context) *shuttle.Result {
 			"trust": trust.Trust.String(), "updated_at": sc.UpdatedAt.Format(time.RFC3339),
 		})
 	}
-	return &shuttle.Result{Success: true, Data: rows}
+	return &shuttle.Result{Success: true, Data: map[string]interface{}{
+		"scripts": rows, "total": total, "truncated": truncated,
+	}}
 }
 
 func (t *ManageLuaScriptsTool) delete(ctx context.Context, name string) *shuttle.Result {

@@ -16,6 +16,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -127,9 +128,7 @@ func TestManageLuaScripts_SaveGetListDelete(t *testing.T) {
 	assert.Equal(t, "agent-a", data["owner"])
 	assert.Equal(t, "own", data["trust"])
 
-	res = manage(t, ag, ctx, map[string]interface{}{"action": "list"})
-	require.True(t, res.Success)
-	rows := res.Data.([]map[string]interface{})
+	rows := luaListRows(t, manage(t, ag, ctx, map[string]interface{}{"action": "list"}))
 	require.Len(t, rows, 1)
 	assert.Equal(t, "double_it", rows[0]["name"])
 	assert.NotContains(t, rows[0], "script", "list omits the source")
@@ -453,7 +452,44 @@ func TestSavedScriptTrust_OwnOnlyForTheSavingAgent(t *testing.T) {
 func luaListRows(t *testing.T, res *shuttle.Result) []map[string]interface{} {
 	t.Helper()
 	require.True(t, res.Success, "%+v", res.Error)
-	rows, ok := res.Data.([]map[string]interface{})
+	data, ok := res.Data.(map[string]interface{})
 	require.True(t, ok, "list data is %T", res.Data)
+	rows, ok := data["scripts"].([]map[string]interface{})
+	require.True(t, ok, "list scripts is %T", data["scripts"])
 	return rows
+}
+
+// Review Josh-Schoen F4: a list cut at luaListMax says so, with the total.
+func TestManageLuaScripts_ListReportsTruncation(t *testing.T) {
+	st := newTestScriptStore(t)
+	ag, _ := newScriptsAgent(t, "agent-a", st, false)
+	ctx := runLuaCtx(ManageLuaScriptsToolName)
+
+	list := func() map[string]interface{} {
+		res := manage(t, ag, ctx, map[string]interface{}{"action": "list"})
+		require.True(t, res.Success, "%+v", res.Error)
+		data, ok := res.Data.(map[string]interface{})
+		require.True(t, ok, "list data is %T", res.Data)
+		return data
+	}
+	for i := 0; i < 3; i++ {
+		_, _, err := st.Save(context.Background(), store.Script{Name: fmt.Sprintf("s%03d", i), Description: "d", Source: "return 1"}, false)
+		require.NoError(t, err)
+	}
+	data := list()
+	assert.Equal(t, 3, data["total"])
+	assert.Equal(t, false, data["truncated"])
+	assert.Len(t, data["scripts"], 3)
+
+	for i := 3; i < luaListMax+5; i++ {
+		_, _, err := st.Save(context.Background(), store.Script{Name: fmt.Sprintf("s%03d", i), Description: "d", Source: "return 1"}, false)
+		require.NoError(t, err)
+	}
+	data = list()
+	assert.Equal(t, luaListMax+5, data["total"])
+	assert.Equal(t, true, data["truncated"])
+	rows := data["scripts"].([]map[string]interface{})
+	require.Len(t, rows, luaListMax)
+	assert.Equal(t, "s000", rows[0]["name"])
+	assert.Equal(t, fmt.Sprintf("s%03d", luaListMax-1), rows[luaListMax-1]["name"])
 }

@@ -131,7 +131,7 @@ Registered on agents that list it in `tools.builtin` and also have `run_lua`, wh
 |---|---|
 | `save` | Validates the name (`^[a-z][a-z0-9_]{2,40}$`), a description, the manifest, and that the source compiles (it is never run), then stores it. An existing name is `DUPLICATE` unless `overwrite` is true; a new version keeps its published state and attachments. Returns `{name, version, tool_name, published}`. |
 | `get` | Returns the script with its source, manifest, version, owner, `updated_at`, and the `trust` (`own` or `shared`) it runs with on this agent. |
-| `list` | Returns up to 200 scripts, name-sorted, without source. |
+| `list` | Returns `{scripts, total, truncated}`: up to 200 scripts, name-sorted, without source, each with the `trust` it runs with on this agent; `total` is the number of saved scripts and `truncated` is true when more than 200 exist. |
 | `delete` | Deletes the script and every attachment of it. |
 | `publish` | Needs `publish_as_tool_enabled` and a manifest with `parameters`. Every `requires` entry must be a tool the script, at its trust on this agent, can call (`TOOL_NOT_VISIBLE` otherwise). Marks the script published, attaches it to this agent, and registers `lua_<name>` at once. |
 | `unpublish` | Clears the published flag. The tool leaves this agent at once, and every other agent's copy refuses its next call. Attachments are kept, so publishing again restores them. |
