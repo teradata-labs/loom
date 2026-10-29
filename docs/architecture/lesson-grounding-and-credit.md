@@ -133,8 +133,12 @@ actually recovered.
   reversible:
   - a **bounded re-trial slot**: one demoted lesson (store-side band
     `salience ∈ [0.01, 0.3)`, via the new optional `RecallOpts.BelowSalience`
-    — implemented by the SQLite store; a store that ignores it just yields no
-    candidate, since the caller re-checks) rides one in
+    — implemented by the SQLite and Postgres stores. A store that ignores
+    the ceiling answers the band query with the best *eligible* lesson
+    whenever one matches the query; the caller re-checks and discards it, so
+    nothing is mislabelled, but the re-trial slot then produces no candidate
+    and the demoted lesson is held back until no eligible lesson matches.
+    Any new store must honor the field.) rides one in
     every `lessonRetrialInterval` = 8 recalls, and *only on the
     error-triggered lane* — the lane outcome credit scores. A re-trial
     nothing measures is cost without evidence, so the conversation-start lane
@@ -149,7 +153,7 @@ actually recovered.
   it keeps genuinely bad lessons permanently eligible, which is the failure
   outcome credit exists to fix.
 - Salience adjustment is an **optional store capability**
-  (`AdjustSalience(ctx, memoryID, delta)` on the SQLite store, discovered by
+  (`AdjustSalience(ctx, memoryID, delta)` on the SQLite and Postgres stores, discovered by
   type assertion) — no `GraphMemoryStore` interface change, so other
   implementations are unaffected and credit is silently skipped where the
   capability is absent.

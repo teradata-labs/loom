@@ -763,9 +763,9 @@ func (a *Agent) fleetLessons(ctx context.Context, searchQuery string, budget int
 	if err != nil || len(demoted) == 0 {
 		return lessons
 	}
-	// A store that does not honor BelowSalience (the field is optional; only
-	// the SQLite store implements it) would answer with an eligible lesson
-	// instead. Take the candidate only if it really is demoted and new.
+	// A store that does not honor BelowSalience (the SQLite and Postgres
+	// stores both do) would answer with an eligible lesson instead. Take the
+	// candidate only if it really is demoted and new.
 	pick := demoted[0]
 	if !lessonOnProbation(pick) {
 		return lessons

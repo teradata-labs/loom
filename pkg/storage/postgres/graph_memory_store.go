@@ -576,60 +576,7 @@ func (s *GraphMemoryStore) Recall(ctx context.Context, opts memory.RecallOpts) (
 	var memories []*memory.Memory
 
 	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		var conditions []string
-		var args []interface{}
-		argN := 1
-
-		conditions = append(conditions, fmt.Sprintf("m.agent_id = $%d", argN))
-		args = append(args, opts.AgentID)
-		argN++
-
-		// Exclude expired.
-		conditions = append(conditions, "(m.expires_at IS NULL OR m.expires_at > NOW())")
-
-		// Exclude superseded.
-		conditions = append(conditions,
-			`m.id NOT IN (SELECT old_memory_id FROM graph_memory_lineage WHERE relation_type = 'SUPERSEDES')`)
-
-		// Exclude soft-deleted.
-		conditions = append(conditions, "m.deleted_at IS NULL")
-
-		// Salience threshold.
-		conditions = append(conditions, fmt.Sprintf("m.salience >= $%d", argN))
-		args = append(args, opts.MinSalience)
-		argN++
-
-		// Optional type filter.
-		if opts.MemoryType != "" {
-			conditions = append(conditions, fmt.Sprintf("m.memory_type = $%d", argN))
-			args = append(args, opts.MemoryType)
-			argN++
-		}
-
-		// Optional entity scope.
-		if len(opts.EntityIDs) > 0 {
-			placeholders := make([]string, len(opts.EntityIDs))
-			for i, eid := range opts.EntityIDs {
-				placeholders[i] = fmt.Sprintf("$%d", argN)
-				args = append(args, eid)
-				argN++
-			}
-			conditions = append(conditions, fmt.Sprintf(
-				`m.id IN (SELECT memory_id FROM graph_memory_entities WHERE entity_id IN (%s))`,
-				strings.Join(placeholders, ",")))
-		}
-
-		// Optional tag filter: JSONB containment.
-		if len(opts.Tags) > 0 {
-			for _, tag := range opts.Tags {
-				conditions = append(conditions, fmt.Sprintf("m.tags @> $%d::jsonb", argN))
-				tagJSON, _ := json.Marshal([]string{tag})
-				args = append(args, string(tagJSON))
-				argN++
-			}
-		}
-
-		where := strings.Join(conditions, " AND ")
+		where, args, argN := recallWhere(opts)
 
 		var query string
 		if opts.Query != "" {
@@ -692,6 +639,78 @@ func (s *GraphMemoryStore) Recall(ctx context.Context, opts memory.RecallOpts) (
 	}
 
 	return memories, nil
+}
+
+// recallWhere builds Recall's WHERE clause and its positional arguments from
+// opts (MinSalience and Limit already defaulted by the caller). It returns the
+// next free placeholder number so the caller can append the FTS query and
+// LIMIT arguments. Kept separate from Recall so the clause is unit-testable
+// without a database.
+func recallWhere(opts memory.RecallOpts) (string, []interface{}, int) {
+	var conditions []string
+	var args []interface{}
+	argN := 1
+
+	conditions = append(conditions, fmt.Sprintf("m.agent_id = $%d", argN))
+	args = append(args, opts.AgentID)
+	argN++
+
+	// Exclude expired.
+	conditions = append(conditions, "(m.expires_at IS NULL OR m.expires_at > NOW())")
+
+	// Exclude superseded.
+	conditions = append(conditions,
+		`m.id NOT IN (SELECT old_memory_id FROM graph_memory_lineage WHERE relation_type = 'SUPERSEDES')`)
+
+	// Exclude soft-deleted.
+	conditions = append(conditions, "m.deleted_at IS NULL")
+
+	// Salience threshold.
+	conditions = append(conditions, fmt.Sprintf("m.salience >= $%d", argN))
+	args = append(args, opts.MinSalience)
+	argN++
+
+	// Optional strict salience ceiling (band selection — see RecallOpts).
+	// Without it the lesson lane's re-trial query (MinSalience = probation
+	// floor, BelowSalience = recall floor) answers with the best ELIGIBLE
+	// lesson whenever one matches, so a demoted lesson never gets re-trialled.
+	if opts.BelowSalience > 0 {
+		conditions = append(conditions, fmt.Sprintf("m.salience < $%d", argN))
+		args = append(args, opts.BelowSalience)
+		argN++
+	}
+
+	// Optional type filter.
+	if opts.MemoryType != "" {
+		conditions = append(conditions, fmt.Sprintf("m.memory_type = $%d", argN))
+		args = append(args, opts.MemoryType)
+		argN++
+	}
+
+	// Optional entity scope.
+	if len(opts.EntityIDs) > 0 {
+		placeholders := make([]string, len(opts.EntityIDs))
+		for i, eid := range opts.EntityIDs {
+			placeholders[i] = fmt.Sprintf("$%d", argN)
+			args = append(args, eid)
+			argN++
+		}
+		conditions = append(conditions, fmt.Sprintf(
+			`m.id IN (SELECT memory_id FROM graph_memory_entities WHERE entity_id IN (%s))`,
+			strings.Join(placeholders, ",")))
+	}
+
+	// Optional tag filter: JSONB containment.
+	if len(opts.Tags) > 0 {
+		for _, tag := range opts.Tags {
+			conditions = append(conditions, fmt.Sprintf("m.tags @> $%d::jsonb", argN))
+			tagJSON, _ := json.Marshal([]string{tag})
+			args = append(args, string(tagJSON))
+			argN++
+		}
+	}
+
+	return strings.Join(conditions, " AND "), args, argN
 }
 
 func (s *GraphMemoryStore) Forget(ctx context.Context, memoryID string) error {

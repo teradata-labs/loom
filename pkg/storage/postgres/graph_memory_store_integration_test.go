@@ -193,3 +193,74 @@ func TestGraphMemory_AdjustSalience(t *testing.T) {
 			"credit iterates lessons that may have been forgotten mid-conversation")
 	})
 }
+
+// RecallOpts.BelowSalience must bind on Postgres (review: Josh-Schoen F1).
+//
+// The lesson lane's re-trial slot asks for the best DEMOTED lesson with a
+// band query: MinSalience at the probation floor, BelowSalience at the recall
+// floor, Limit 1. The Postgres store used to ignore the ceiling, so whenever an
+// eligible lesson also matched it won the single slot on salience ordering and
+// the demoted lesson was never re-trialled. One eligible and one demoted row
+// matching the same query: only the demoted one may come back.
+func TestGraphMemory_RecallHonorsBelowSalience(t *testing.T) {
+	pool := testPool(t)
+	store := NewGraphMemoryStore(pool, nil, nil)
+	ctx := ContextWithUserID(context.Background(), uniqueID("band-user"))
+	agentID := uniqueID("band-agent")
+
+	remember := func(content string, salience float64) string {
+		t.Helper()
+		saved, err := store.Remember(ctx, &memory.Memory{
+			AgentID:    agentID,
+			Content:    content,
+			MemoryType: memory.MemoryTypeLesson,
+			Source:     "lesson_mined",
+			Salience:   salience,
+		})
+		require.NoError(t, err)
+		return saved.ID
+	}
+	eligibleID := remember("numeric overflow inserting identifiers into an INTEGER column: declare it BIGINT", 0.9)
+	demotedID := remember("numeric overflow inserting identifiers: wrap the value in a defensive CAST", 0.2)
+
+	t.Run("band query returns only the demoted row", func(t *testing.T) {
+		got, err := store.Recall(ctx, memory.RecallOpts{
+			AgentID:       agentID,
+			Query:         "numeric overflow identifiers",
+			MemoryType:    memory.MemoryTypeLesson,
+			MinSalience:   0.01,
+			BelowSalience: 0.3,
+			Limit:         1,
+		})
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+		assert.Equal(t, demotedID, got[0].ID, "the ceiling must exclude the 0.9 row")
+		assert.Less(t, got[0].Salience, 0.3)
+	})
+
+	t.Run("band query without FTS text also honors the ceiling", func(t *testing.T) {
+		got, err := store.Recall(ctx, memory.RecallOpts{
+			AgentID:       agentID,
+			MemoryType:    memory.MemoryTypeLesson,
+			MinSalience:   0.01,
+			BelowSalience: 0.3,
+			Limit:         10,
+		})
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+		assert.Equal(t, demotedID, got[0].ID)
+	})
+
+	t.Run("no ceiling returns the eligible row first", func(t *testing.T) {
+		got, err := store.Recall(ctx, memory.RecallOpts{
+			AgentID:     agentID,
+			Query:       "numeric overflow identifiers",
+			MemoryType:  memory.MemoryTypeLesson,
+			MinSalience: 0.01,
+			Limit:       1,
+		})
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+		assert.Equal(t, eligibleID, got[0].ID)
+	})
+}
