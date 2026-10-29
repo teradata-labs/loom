@@ -119,7 +119,7 @@ func setupShellJail(ctx context.Context, config *Config, loomDataDir string, log
 		return nil, fmt.Errorf("jailed shell: %w", err)
 	}
 	for _, w := range warnings {
-		logger.Warn("Jailed shell: program left out", zap.String("detail", w))
+		logger.Warn("Jailed shell: programs left out", zap.String("detail", w))
 	}
 	if err := runner.SelfTest(ctx); err != nil {
 		return nil, err

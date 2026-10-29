@@ -174,7 +174,7 @@ tools:
         extends: readonly     # default readonly
         allow: [make, go]     # path confinement only
         never: [curl]         # never wins over allow, at any level
-    search_path: [/usr/local/bin, /usr/bin, /bin]   # default
+    search_path: [/usr/local/bin, /usr/bin, /bin]   # default; macOS adds /sbin (md5, md5sum, sha1sum, sha256sum)
     memory_bytes: 536870912   # default 512 MiB
     file_bytes: 268435456     # default 256 MiB
     strict: true              # set -u (default true)
@@ -197,7 +197,7 @@ tools:
 
 In jailed mode, `serve` also:
 
-1. **Pins programs.** It resolves every allowlisted program once on `search_path` and logs each one it cannot find. A missing program fails with exit 127.
+1. **Pins programs.** It resolves every allowlisted program once on `search_path` and logs one warning naming every program it cannot find (for example `md5sum`, `sha1sum` and `sha256sum` on older macOS releases, or `md5` on most Linux systems). A missing program fails with exit 127.
 2. **Checks git.** It drops git when git does not accept `--attr-source`, so that git calls need approval rather than running without the hardening.
 3. **Runs a self-test.** It runs `echo` through the jail. A binary that does not call `shelljail.Main()` first in `main()` fails this check.
 

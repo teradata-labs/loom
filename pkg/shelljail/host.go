@@ -34,8 +34,18 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
-// DefaultSearchPath is where allowlisted programs are looked up.
-var DefaultSearchPath = []string{"/usr/local/bin", "/usr/bin", "/bin"}
+// DefaultSearchPath is where allowlisted programs are looked up. On macOS it
+// adds /sbin, where md5 (and, on recent releases, md5sum, sha1sum and
+// sha256sum) live.
+var DefaultSearchPath = defaultSearchPath(runtime.GOOS)
+
+func defaultSearchPath(goos string) []string {
+	path := []string{"/usr/local/bin", "/usr/bin", "/bin"}
+	if goos == "darwin" {
+		path = append(path, "/sbin")
+	}
+	return path
+}
 
 // Default limits for one jailed command.
 const (
@@ -88,7 +98,9 @@ type Runner struct {
 // NewRunner validates cfg, pins every allowlisted program to the absolute path
 // it resolves to now, and checks that git accepts the hardening flags (git is
 // left unpinned, so calls to it need approval, when it does not). It returns
-// warnings for programs it left out. It does not run the self-test.
+// warnings for programs it left out: one naming every program not found on
+// the search path, and one for git when its hardening cannot be applied. It
+// does not run the self-test.
 func NewRunner(cfg Config) (*Runner, []string, error) {
 	if !supported {
 		return nil, nil, fmt.Errorf("jailed shell mode is not supported on %s", runtime.GOOS)
@@ -135,14 +147,19 @@ func NewRunner(cfg Config) (*Runner, []string, error) {
 	if r.limits.FileBytes == 0 {
 		r.limits.FileBytes = DefaultFileBytes
 	}
-	var warnings []string
+	var warnings, missing []string
 	for _, name := range cfg.Policy.ProgramNames() {
 		p := LookPath(name, r.search)
 		if p == "" {
-			warnings = append(warnings, fmt.Sprintf("%s: not found on the search path; calls to it fail with exit 127", name))
+			missing = append(missing, name)
 			continue
 		}
 		r.pinned[name] = p
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		warnings = append(warnings, fmt.Sprintf("not found on the search path %s, so calls to them fail with exit 127: %s",
+			strings.Join(r.search, string(os.PathListSeparator)), strings.Join(missing, ", ")))
 	}
 	if git, ok := r.pinned["git"]; ok && !gitHasAttrSource(git) {
 		delete(r.pinned, "git")

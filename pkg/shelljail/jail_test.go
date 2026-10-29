@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -517,7 +518,13 @@ func TestNewRunner_Validation(t *testing.T) {
 
 	r, warnings, err := NewRunner(Config{Policy: shellpolicy.Readonly().Extend("p", []string{"no-such-program-xyz"}, nil), LoomDataDir: "/x"})
 	require.NoError(t, err)
-	assert.Contains(t, strings.Join(warnings, "\n"), "no-such-program-xyz: not found")
+	require.Len(t, warnings, 1, "missing programs are reported in one line: %q", warnings)
+	assert.Contains(t, warnings[0], "not found on the search path")
+	assert.Contains(t, warnings[0], "no-such-program-xyz")
+	_, warnings, err = NewRunner(Config{Policy: shellpolicy.Readonly().Extend("p", []string{"no-such-a", "no-such-b"}, nil), LoomDataDir: "/x"})
+	require.NoError(t, err)
+	require.Len(t, warnings, 1, "%q", warnings)
+	assert.Contains(t, warnings[0], ": no-such-a, no-such-b")
 	assert.NotContains(t, r.Pinned(), "no-such-program-xyz")
 	for name, path := range r.Pinned() {
 		assert.True(t, filepath.IsAbs(path), name)
@@ -561,6 +568,36 @@ func TestFilterEnvAndNames(t *testing.T) {
 	assert.False(t, SensitiveEnvName("TOKENIZERS_PARALLELISM"))
 	assert.True(t, URLHasPassword("https://u:p@h"))
 	assert.False(t, URLHasPassword("https://u@h"))
+}
+
+func TestDefaultSearchPath(t *testing.T) {
+	assert.Equal(t, []string{"/usr/local/bin", "/usr/bin", "/bin"}, defaultSearchPath("linux"))
+	assert.Equal(t, []string{"/usr/local/bin", "/usr/bin", "/bin", "/sbin"}, defaultSearchPath("darwin"))
+}
+
+// On macOS the readonly policy's checksum programs live in /sbin (md5, and on
+// recent releases md5sum, sha1sum and sha256sum) and shasum in /usr/bin. The
+// default search path must find every one the system has.
+func TestDefaultSearchPath_FindsMacOSChecksumPrograms(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS search path")
+	}
+	r, warnings, err := NewRunner(Config{Policy: shellpolicy.Readonly(), LoomDataDir: t.TempDir()})
+	require.NoError(t, err)
+	pinned := r.Pinned()
+	for _, name := range []string{"md5", "md5sum", "sha1sum", "sha256sum", "shasum"} {
+		exists := false
+		for _, dir := range []string{"/sbin", "/usr/bin", "/bin", "/usr/local/bin"} {
+			if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+				exists = true
+			}
+		}
+		if exists {
+			assert.Contains(t, pinned, name, "%s exists on this Mac and must be pinned; warnings: %q", name, warnings)
+		}
+	}
+	assert.Contains(t, pinned, "md5", "md5 ships in /sbin on every macOS")
+	assert.LessOrEqual(t, len(warnings), 2, "at most one missing-programs line and one git line: %q", warnings)
 }
 
 func TestLookPath(t *testing.T) {
