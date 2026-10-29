@@ -9,6 +9,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -156,7 +157,8 @@ func TestEditFilesWriteIsAtomicAndLeavesNoTemp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Mode().Perm() != 0o640 {
+	// Windows reports only the read-only bit; unix permission bits don't exist.
+	if runtime.GOOS != "windows" && st.Mode().Perm() != 0o640 {
 		t.Fatalf("permissions not preserved: %v", st.Mode().Perm())
 	}
 }

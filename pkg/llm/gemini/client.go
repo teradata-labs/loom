@@ -673,7 +673,6 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				// Extract tool calls. A function-call part never reaches
 				// tokenCallback (text only); report it as stream activity.
 				if part.FunctionCall != nil {
-					llmtypes.NotifyStreamActivity(ctx)
 					reversedName := llm.ReverseToolName(c.toolNameMap, part.FunctionCall.Name)
 					toolCalls = append(toolCalls, llmtypes.ToolCall{
 						ID:               reversedName,
@@ -681,6 +680,16 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 						Input:            part.FunctionCall.Args,
 						ThoughtSignature: part.ThoughtSignature, // Preserve for round-trip
 					})
+					// Gemini delivers each function call complete in one part, so
+					// the progress event reports the full argument size at once.
+					argsJSON, _ := json.Marshal(part.FunctionCall.Args)
+					llmtypes.NotifyToolInputProgress(ctx, llmtypes.ToolInputProgress{
+						Index:      len(toolCalls) - 1,
+						ToolCallID: reversedName,
+						ToolName:   reversedName,
+						Bytes:      len(argsJSON),
+					})
+					llmtypes.NotifyStreamActivity(ctx)
 				}
 			}
 

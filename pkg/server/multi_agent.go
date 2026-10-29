@@ -984,7 +984,8 @@ func (s *MultiAgentServer) ListAgents(ctx context.Context, req *loomv1.ListAgent
 	}
 
 	return &loomv1.ListAgentsResponse{
-		Agents: agents,
+		Agents:     agents,
+		TotalCount: types.SafeInt32(len(agents)),
 	}, nil
 }
 

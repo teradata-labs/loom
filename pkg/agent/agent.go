@@ -2543,6 +2543,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	emptyRetried := false                       // one-shot flag: retry empty LLM response at most once per conversation
 	hygieneRetries := 0                         // capped count of REQUIRE_FIX retries the end-of-turn auditor has triggered
 	var hygieneLast *hygiene.EnforcementOutcome // last outcome, surfaced into Response.Metadata
+	var prevToolNames []string                  // names advertised on this turn's previous provider call; nil before the first
 
 	// Self-healing orchestrator (Tier 1 recovery).
 	var recovery *recoveryOrchestrator
@@ -2683,7 +2684,8 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// sheds to the release mark. On a shed, recompile messages and the
 		// advertised tool set so a fold-deactivated skill's tools do not linger.
 		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
-			if shed, estimate, target := segMem.ReleasePressure(ctx, 0); shed {
+			shed, estimate, target := segMem.ReleasePressure(ctx, 0)
+			if shed {
 				zap.L().Info("relief: shed before send",
 					zap.String("session_id", session.ID),
 					zap.Int("estimate_tokens", estimate),
@@ -2692,6 +2694,22 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				tools = a.advertisedTools(session)
 				tools = recovery.activeTools(tools)
 				segMem.SetAdvertisedToolsBytes(advertisedToolsBytes(tools))
+			}
+			// Opt-in (behavior.context_relief_warning). Relief ran and left the
+			// estimate over its release mark, whether or not it shed; under the
+			// start mark it returns 0, 0 and this is false, so the note rides
+			// only the sends where relief ran. It is transient: softReminder is
+			// read at send time.
+			if a.config.ContextReliefWarning && estimate > target {
+				used, available, _ := segMem.GetTokenBudgetUsage()
+				usable := used + available
+				softReminder += buildContextReminder(estimate, target, usable)
+				span.AddEvent("context_reminder.added", map[string]interface{}{
+					"turn":            turnCount,
+					"estimate_tokens": estimate,
+					"target_tokens":   target,
+					"usable_tokens":   usable,
+				})
 			}
 			// Relief has nothing left to shed and the turn's own stubs still
 			// hold the context over the start mark: every further send is a
@@ -2730,8 +2748,8 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// as one trailing message on a copy: transient, past every cache
 		// breakpoint, never stored, carried by both the normal send and the
 		// recovery resend.
-		withReminder := func(msgs []Message) []Message {
-			tail := strings.TrimSpace(softReminder)
+		withReminder := func(msgs []Message, toolNote string) []Message {
+			tail := strings.TrimSpace(softReminder + "\n" + toolNote)
 			if tail == "" {
 				return msgs
 			}
@@ -2745,6 +2763,33 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			// The reminder tag marks it as harness state, not a user ask.
 			return append(out, Message{Role: "user",
 				Content: "<system-reminder>\n" + tail + "\n</system-reminder>"})
+		}
+
+		// sendChat is the one provider call of this iteration. With
+		// behavior.tool_change_note on, the note is computed against the tools
+		// this call sends. The baseline moves only when the call succeeds, so a
+		// refused send is reported again by the resend instead of being swallowed.
+		sendChat := func(ts []shuttle.Tool) (*LLMResponse, error) {
+			if !a.config.ToolChangeNote {
+				return a.chatWithRetry(ctx, withReminder(messages, ""), ts)
+			}
+			names := make([]string, 0, len(ts))
+			for _, t := range ts {
+				names = append(names, t.Name())
+			}
+			// nil marks "no previous successful call this turn": the first send emits nothing.
+			note := ""
+			if prevToolNames != nil {
+				note = toolDeltaNote(prevToolNames, names)
+			}
+			if note != "" {
+				span.AddEvent("tools.changed", map[string]interface{}{"note": note})
+			}
+			resp, err := a.chatWithRetry(ctx, withReminder(messages, note), ts)
+			if err == nil {
+				prevToolNames = names
+			}
+			return resp, err
 		}
 
 		// Call LLM. Relief is proactive (above) — loom keeps the context under its
@@ -2766,7 +2811,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		if scripted, ok := scriptedResponseFromContext(ctx); ok && strings.TrimSpace(scripted) != "" {
 			llmResp = &LLMResponse{Content: scripted, StopReason: "end_turn"}
 		} else {
-			llmResp, err = a.chatWithRetry(ctx, withReminder(messages), tools)
+			llmResp, err = sendChat(tools)
 		}
 		if err != nil && errors.Is(err, llm.ErrContextTooLong) {
 			if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
@@ -2784,7 +2829,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				if segMem2, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem2 != nil {
 					segMem2.SetAdvertisedToolsBytes(advertisedToolsBytes(tools))
 				}
-				llmResp, err = a.chatWithRetry(ctx, withReminder(messages), tools)
+				llmResp, err = sendChat(tools)
 				if err != nil && errors.Is(err, llm.ErrContextTooLong) {
 					zap.L().Error("context too long after relief: turn ends",
 						zap.String("session_id", session.ID),
@@ -2967,7 +3012,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				// One-shot retry: nudge the LLM to produce a response.
 				emptyRetried = true
 				a.appendMessage(ctx, session, Message{
-					Role:      "empty_response_retry",
+					Role:      roleEmptyResponseRetry,
 					Content:   "Your previous response was empty. Please provide a response summarizing what you found or explaining what went wrong.",
 					AgentID:   a.GetID(),
 					Timestamp: time.Now(),
@@ -3004,7 +3049,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				hygieneLast = outcome
 			}
 			if retry {
-				// runEndOfTurnHygiene already appended the synthetic user
+				// runEndOfTurnHygiene already appended the synthetic hygiene_injection
 				// message to the session and persisted it. Re-enter the
 				// conversation loop so the LLM sees the fixup request.
 				continue
@@ -3446,7 +3491,7 @@ func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, 
 	if result != nil && result.Metadata != nil {
 		if textBody, ok := result.Metadata["text_body"].(string); ok && textBody != "" {
 			st.pendingSidecars = append(st.pendingSidecars, Message{
-				Role:      "skill_body",
+				Role:      roleSkillBody,
 				Content:   textBody,
 				AgentID:   a.GetID(),
 				Timestamp: time.Now(),
@@ -3479,7 +3524,7 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount
 	// Include explicit format instructions since they may have been compressed in context
 	synthesisPrompt := "You must provide your final answer NOW with whatever information you have gathered so far. Summarize your findings: what actions were taken, what results were produced, and any remaining steps the user would need to complete manually. Be concise and actionable. You MUST respond with text — do not return an empty response."
 	a.appendMessage(ctx, session, Message{
-		Role:      "synthesis_prompt",
+		Role:      roleSynthesisPrompt,
 		Content:   synthesisPrompt,
 		AgentID:   a.GetID(), // Track which agent created this synthesis request
 		Timestamp: time.Now(),
@@ -3567,6 +3612,57 @@ func advertisedToolsBytes(tools []shuttle.Tool) int {
 		}
 	}
 	return bytes
+}
+
+// toolDeltaNote describes how the advertised tool names changed between two
+// provider calls: "" when the sets match (order-insensitive), else the sorted
+// added and removed names.
+func toolDeltaNote(prev, cur []string) string {
+	had := make(map[string]bool, len(prev))
+	for _, n := range prev {
+		had[n] = true
+	}
+	has := make(map[string]bool, len(cur))
+	for _, n := range cur {
+		has[n] = true
+	}
+	var added, removed []string
+	for _, n := range cur {
+		if !had[n] {
+			added = append(added, n)
+		}
+	}
+	for _, n := range prev {
+		if !has[n] {
+			removed = append(removed, n)
+		}
+	}
+	if len(added) == 0 && len(removed) == 0 {
+		return ""
+	}
+	sort.Strings(added)
+	sort.Strings(removed)
+	var parts []string
+	if len(added) > 0 {
+		parts = append(parts, "Tools added: "+toolNoteList(added)+".")
+	}
+	if len(removed) > 0 {
+		parts = append(parts, "Tools removed: "+toolNoteList(removed)+".")
+	}
+	return strings.Join(parts, " ")
+}
+
+// toolNoteMaxNames bounds the names one side of the note lists, so a skill that
+// brings up an MCP server with a hundred tools cannot make the note a hundred
+// names long.
+const toolNoteMaxNames = 10
+
+// toolNoteList joins names, then counts the ones past toolNoteMaxNames.
+func toolNoteList(names []string) string {
+	if len(names) <= toolNoteMaxNames {
+		return strings.Join(names, ", ")
+	}
+	return fmt.Sprintf("%s, and %d more", strings.Join(names[:toolNoteMaxNames], ", "), len(names)-toolNoteMaxNames)
 }
 
 // canonicalJSON serializes a map to a deterministic JSON string for deduplication.
