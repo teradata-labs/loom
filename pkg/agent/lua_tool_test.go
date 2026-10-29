@@ -334,7 +334,7 @@ func TestRegisterRunLuaTool(t *testing.T) {
 func TestRunLuaTool_SchemaAndDescription(t *testing.T) {
 	_, tool := newLuaToolAgent(t, RunLuaToolOptions{})
 	desc := tool.Description()
-	assert.LessOrEqual(t, utf8.RuneCountInString(desc), 1100, "the design caps the description at 1,100 characters")
+	assert.LessOrEqual(t, utf8.RuneCountInString(desc), 1100, "the run_lua description is capped at 1,100 characters")
 	assert.GreaterOrEqual(t, len(strings.Fields(desc)), 20)
 	schema, err := json.Marshal(tool.InputSchema())
 	require.NoError(t, err)

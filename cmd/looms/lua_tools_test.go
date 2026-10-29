@@ -170,7 +170,7 @@ func enabledLuaRuntime(t *testing.T) *luaRuntime {
 	return rt
 }
 
-// The registration matrix from the design (L2.3).
+// The registration matrix in "Enabling it" of docs/reference/lua-script-api.md.
 func TestRegisterLuaTools(t *testing.T) {
 	t.Run("disabled: absent even when listed", func(t *testing.T) {
 		ag := guardedAgent()

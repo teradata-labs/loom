@@ -31,7 +31,8 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
-// Error codes run_lua returns to the model (02-lua-api.md §6 of the design).
+// Error codes run_lua returns to the model, listed in the "Results" table of
+// docs/reference/lua-script-api.md.
 const (
 	LuaCodeInvalidParams     = "INVALID_PARAMS"
 	LuaCodeScriptError       = "SCRIPT_ERROR"
@@ -58,8 +59,10 @@ const LuaOutcomeRefused = "refused"
 // luaErrorOutputTail is how much captured output a SCRIPT_ERROR message keeps.
 const luaErrorOutputTail = 512
 
-// runLuaDescription is the tool description, verbatim from the design
-// (02-lua-api.md §1). It must stay under 1,100 characters.
+// runLuaDescription is the tool description the model sees. It must stay
+// under 1,100 characters (TestRunLuaTool_SchemaAndDescription checks the cap); the
+// behaviour it describes is in "The run_lua tool" in
+// docs/reference/lua-script-api.md.
 const runLuaDescription = "Runs a short Lua 5.4 script in a sandbox inside the server and returns its result. " +
 	"The script can call the tools you already have with `tools.call(name, args)`, so one run can replace many tool calls: " +
 	"loop over results, filter and join them, retry, aggregate, and return only what you need. " +
@@ -384,7 +387,7 @@ func (t *RunLuaTool) Execute(ctx context.Context, params map[string]interface{})
 }
 
 // mapLuaRunResult converts a run into the tool result the model sees, per the
-// design's result-mapping table (02-lua-api.md §1).
+// "Results" table in docs/reference/lua-script-api.md.
 func mapLuaRunResult(res *luasandbox.RunResult, script ResolvedScript, elapsed time.Duration) *shuttle.Result {
 	out := &shuttle.Result{
 		ExecutionTimeMs: elapsed.Milliseconds(),

@@ -70,7 +70,8 @@ type LuaToolListsConfig struct {
 	DenyForShared []string `mapstructure:"deny_for_shared"`
 }
 
-// Default lists, from the design (01 §6): tools that are slow, hold locks,
+// Default lists (documented under "Enabling it" in
+// docs/reference/lua-script-api.md): tools that are slow, hold locks,
 // manage agents or skills, or (for shared scripts) can send data out.
 // shell_execute is loom's own unsandboxed shell: a script calling it in a loop
 // would run commands nobody sees one by one, and under the default YOLO
