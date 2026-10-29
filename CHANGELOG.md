@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Admission grants: a tool body learns what a person approved
+- **`Decision.Grant`** lets a hook that answers `Ask` attach what the person is being asked to approve (for example, the programs a shell command names that are off its allowlist). When the call's Ask is resolved to Allow — by the `AskResolver` or by an approved `AskGrant` on park resume — the executor hands the `Grant` of **every** matched Ask decision, in hook order, to the tool body: `shuttle.AdmissionGrantsFromContext(ctx)`. The fold keeps one decision, but the grants of a second asking hook are not dropped. A call allowed outright carries none, and `Preflight` never resolves, so it never reports an approval.
+- **`AdmissionResult.Approved` and `AdmissionResult.Grants`** report the same on the chain's result.
+- **`shuttle.ContextWithAdmissionGrants`** installs grants for a tool body called directly (hosts and tests); **`shuttle.ApprovalParamsMaxBytes`** exports the 8,192-byte bound on the parameters an approval request carries, so a hook can refuse to ask about text the approval card would cut.
+- Grants never reach a nested call: a tool that re-enters the executor gets a context with that call's own grants or none.
+
 #### HITL park: tools other than `contact_human` can park as questions
 - **`shuttle.ParkableQuestion`** lets a tool whose result is a human's answer park the turn as a `question` item, like `contact_human`. `ParkQuestion(ctx, input)` reports whether the call parks and the question text; `ParkAnswerResult(ctx, input, answer)` builds the tool result on an approved resume. With park enabled (`WithHITLPark`) `Execute` does not run for a parked call. The call's input is under `params` in the descriptor, subject to the usual `params_truncated` bound. `Execute` still runs when `ParkQuestion` returns `ok=false`, when the call ID is empty or duplicated in the batch, or when park is disabled. Resume uses the kind recorded on the park row rather than calling `ParkQuestion` again; a policy `Deny` is never lifted and a policy `Ask` yields only the question card. A rejected resume synthesizes `permission_denied`, an empty answer `MISSING_ANSWER`, and a nil `ParkAnswerResult` `internal_error`. See `docs/architecture/hitl-park-and-resume.md`.
 
@@ -72,12 +78,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`manage_ephemeral_agents` is no longer suppressed by `tools.none`** — the tool now requires explicit opt-in via `tools.builtin` configuration or must be individually disabled (`tools.permissions.disabled_tools: [manage_ephemeral_agents]`). Deployments that relied on `tools.none` to prevent agents from spawning sub-agents must add `manage_ephemeral_agents` to `tools.permissions.disabled_tools` explicitly.
 
 ### Added
-
-#### Admission grants: a tool body learns what a person approved
-- **`Decision.Grant`** lets a hook that answers `Ask` attach what the person is being asked to approve (for example, the programs a shell command names that are off its allowlist). When the call's Ask is resolved to Allow — by the `AskResolver` or by an approved `AskGrant` on park resume — the executor hands the `Grant` of **every** matched Ask decision, in hook order, to the tool body: `shuttle.AdmissionGrantsFromContext(ctx)`. The fold keeps one decision, but the grants of a second asking hook are not dropped. A call allowed outright carries none, and `Preflight` never resolves, so it never reports an approval.
-- **`AdmissionResult.Approved` and `AdmissionResult.Grants`** report the same on the chain's result.
-- **`shuttle.ContextWithAdmissionGrants`** installs grants for a tool body called directly (hosts and tests); **`shuttle.ApprovalParamsMaxBytes`** exports the 8,192-byte bound on the parameters an approval request carries, so a hook can refuse to ask about text the approval card would cut.
-- Grants never reach a nested call: a tool that re-enters the executor gets a context with that call's own grants or none.
 
 - **Task attribution and timeline read model (#378)** — `taskctx.Attribution` on the context stamps `task_id` onto messages and human requests on both backends; `TimelineReader` merges `messages`, `task_history` and `human_requests` projections for a task (no RPC yet). `ImplicitTaskConfig` (`TaskBoardConfig` field 7) tunes runtime recording: `mode`, `triggers`, `excluded_triggers`, `max_per_session`, `agent_visible`; unparseable values fail closed.
 - **`Task.created_via` on the wire** (`task.proto` field 29) so API and UI consumers of `ListTasks`/`GetBoard` can tell runtime-minted tasks from an agent's own. Tasks created over the `CreateTask` RPC without an explicit value are stamped `user`.
