@@ -173,6 +173,17 @@ than stored. A tool that enforces policy while it runs (a shell runner that must
 allow exactly the programs the person saw) reads them; a call allowed outright,
 or a nested call, gets none.
 
+Because the grant is recomputed, **an asking hook must be deterministic for the
+same call**: given the same tool name, parameters and caller identity, its
+`Evaluate` must return the same `Ask` reason and an equal `Grant` at park time
+and at resume. The approval request records the combined reason and the
+parameters, not the grant itself, so nothing at resume checks that the
+recomputed grant matches what the card described. A hook whose grant depends on
+anything else (a clock, a counter, a lookup that can change while the person
+decides) can hand the tool body a grant the person never saw. The approval card
+shows every asking hook's reason, in chain order and deduplicated, joined with
+`"; "`.
+
 ### 3.3 Claiming the decision
 
 In the standalone (pending-row) flow the row is closed **before the batch

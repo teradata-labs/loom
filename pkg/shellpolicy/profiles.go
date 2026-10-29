@@ -80,7 +80,7 @@ func (pr *Profile) violation(args []string, complete bool) string {
 		if strings.HasPrefix(a, "--") {
 			name, _, _ := strings.Cut(a, "=")
 			for _, l := range pr.RefuseLong {
-				if len(name) > 3 && strings.HasPrefix(l, name) {
+				if len(name) > 2 && strings.HasPrefix(l, name) {
 					return l + " is outside the profile"
 				}
 			}

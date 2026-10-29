@@ -94,6 +94,24 @@ func TestFactory(t *testing.T) {
 	assert.Equal(t, shuttle.Deny, eval(shuttle.AdmissionRequest{Params: map[string]interface{}{"command": "$x"}}).Kind)
 }
 
+// An empty enforcement means static: no runner exists to re-check what the
+// analyzer cannot see, so a computed program name is not allowed by default.
+func TestFactory_EmptyEnforcementIsStatic(t *testing.T) {
+	f := Factory(map[string]*Policy{"readonly": Readonly()}, fixedOptions(session(t)))
+	for _, enforcement := range []string{"", shuttle.CommandPolicyStatic, shuttle.CommandPolicyRuntime} {
+		eval, err := f(shuttle.HookBinding{Kind: "command-policy", Scope: "shell_execute", Policy: "readonly", Enforcement: enforcement})
+		require.NoError(t, err)
+		for _, cmd := range []string{`$X -rf /`, `"$(echo rm)" file`} {
+			d := eval(shuttle.AdmissionRequest{Params: map[string]interface{}{"command": cmd}})
+			if enforcement == shuttle.CommandPolicyRuntime {
+				assert.Equal(t, shuttle.Allow, d.Kind, "%q under runtime is left to the runner", cmd)
+				continue
+			}
+			assert.Equal(t, shuttle.Deny, d.Kind, "%q under enforcement %q: %s", cmd, enforcement, d.Reason)
+		}
+	}
+}
+
 // End to end through the chain builder and the executor: an approved call's
 // tool body receives the *Grant, an outright Allow receives none, and the
 // binding's scope keeps other tools out of it.

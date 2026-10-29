@@ -65,6 +65,10 @@ type Grant struct {
 	Programs  []string `json:"programs,omitempty"`
 	Builtins  []string `json:"builtins,omitempty"`
 	ReadPaths []string `json:"read_paths,omitempty"`
+	// Env names the variables the command sets whose value changes what runs
+	// (ExecEnvName), or the words naming ones computed at run time. No
+	// per-launch check reads it yet: approving the call is what lets it run.
+	Env []string `json:"env,omitempty"`
 }
 
 // MergeGrants combines the *Grant values among an approved call's admission
@@ -83,6 +87,7 @@ func MergeGrants(grants []any) *Grant {
 		out.Programs = appendNew(out.Programs, gr.Programs...)
 		out.Builtins = appendNew(out.Builtins, gr.Builtins...)
 		out.ReadPaths = appendNew(out.ReadPaths, gr.ReadPaths...)
+		out.Env = appendNew(out.Env, gr.Env...)
 	}
 	return out
 }
@@ -142,11 +147,13 @@ func (g *Grant) add(kind, item string) {
 		g.Builtins = appendNew(g.Builtins, item)
 	case "read":
 		g.ReadPaths = appendNew(g.ReadPaths, item)
+	case "env":
+		g.Env = appendNew(g.Env, item)
 	}
 }
 
 func (g *Grant) empty() bool {
-	return len(g.Programs) == 0 && len(g.Builtins) == 0 && len(g.ReadPaths) == 0
+	return len(g.Programs) == 0 && len(g.Builtins) == 0 && len(g.ReadPaths) == 0 && len(g.Env) == 0
 }
 
 // Extend returns a copy of p named name, with extra programs allowed (each

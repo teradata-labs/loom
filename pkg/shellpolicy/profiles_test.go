@@ -30,6 +30,7 @@ func TestProfileViolation(t *testing.T) {
 		"-T /tmp a":           "-T",
 		"--output=x a":        "--output",
 		"--out x":             "--output",
+		"--o x":               "--output",
 		"--compress-prog=gz":  "--compress-program",
 		"-- -o":               "",
 		"--reverse --numeric": "",

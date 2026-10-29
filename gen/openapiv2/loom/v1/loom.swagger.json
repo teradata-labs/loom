@@ -10299,6 +10299,11 @@
           "type": "string",
           "format": "int64",
           "description": "Bytes of tool-call argument JSON received so far (when is_tool_input_stream).\nEvents are throttled, so the last value can lag the final size. A bare pulse\nfrom a provider that does not report sizes has no tool_call_id or tool_name\nand a size of 0; with either set, 0 means no arguments have arrived yet."
+        },
+        "toolCallIndex": {
+          "type": "integer",
+          "format": "int32",
+          "description": "The provider's stream index for this tool call (when\nis_tool_input_stream). On providers that deliver calls in order\n(Anthropic, Bedrock, Gemini, Ollama) it matches the call's position in\nthe response's tool-call list. On OpenAI-compatible providers (OpenAI,\nAzure, LiteLLM, Mistral, HuggingFace) the final tool-call list is built\nfrom a map, so its order is not guaranteed to match this index; match a\nprogress event to its tool-started event by tool_call_id there. Gemini\nrepeats the function name in tool_call_id, so two parallel calls to the\nsame tool share an ID and only this index tells them apart. The agent's\nthrottling keys on the same index, so events for one call never\ninterleave with another's. A bare activity pulse (no tool_call_id, no\ntool_name, 0 bytes) carries index 0 without being call 0; skip pulses."
         }
       },
       "description": "WeaveProgress streams incremental updates during execution."

@@ -26,7 +26,7 @@ tools:
     - kind: command-policy
       scope: shell_execute        # any tool whose "command" param is a shell string
       policy: readonly            # required: a policy the host registered
-      enforcement: runtime        # runtime (default) | static
+      enforcement: static         # static (default) | runtime
 ```
 
 | Field | Required | Meaning |
@@ -35,7 +35,7 @@ tools:
 | `scope` | yes | Tool selector, with the same semantics as every other binding |
 | `matcher` | no | Narrows the calls it governs, with the same semantics as every other binding |
 | `policy` | yes | Name of a policy passed to `shellpolicy.Factory` |
-| `enforcement` | no | `runtime`: a runner re-checks every launch, so a program named by a run-time expansion is left to the runner. `static`: nothing re-checks, so everything the analyzer cannot see is denied (details below). |
+| `enforcement` | no | `static` (the default when empty): nothing re-checks, so everything the analyzer cannot see is denied (details below). `runtime`: a runner re-checks every launch, so a program named by a run-time expansion is left to the runner. The jailed `shell_execute` is that runner (see [Jailed mode](#jailed-mode)); bind it with `runtime`. On any tool that does not re-check, `runtime` leaves run-time expansions unchecked. |
 
 Validation, at save time and at build:
 
@@ -61,6 +61,7 @@ A word is **literal** when it has no parameter, command, arithmetic or process e
 | a builtin the interpreter does not implement (`kill`, `umask`, `ulimit`, `fc`, `jobs`, `bg`, `fg`, `disown`, `enable`, `history`, …) | Deny |
 | on the policy's `Never` list (by base name) | Deny |
 | a literal path (`./x`, `/usr/bin/rm`) | Ask, granting that exact path |
+| an allowlisted program whose profile needs run-time hardening (`Profile.Harden` or `Profile.Env`, such as `git`) | `static`: Deny, since no runner applies the hardening. `runtime`: judged like any allowlisted program |
 | an allowlisted program, all literal arguments within its profile | Allow |
 | an allowlisted program, a literal argument outside its profile | Ask, granting the program (any arguments, for this call) |
 | any other literal name | Ask, granting the name |
@@ -70,15 +71,27 @@ A word is **literal** when it has no parameter, command, arithmetic or process e
 |---|---|
 | an existing literal path argument outside the read roots | Ask, granting the resolved path |
 | the literal directory part of a glob outside the read roots (`/etc` in `/etc/pass*`) | Ask, granting the resolved path |
+| a path argument built from `~`, a parameter (`$HOME`, `${X}`) or a command or process substitution, for a program whose arguments are paths | `runtime`: no verdict (the runner checks the expanded path). `static`: Deny |
 | a literal `cd` target outside the read roots | Ask, granting the resolved path |
+| a computed `cd` or `pushd` target | `static` only: Deny |
 | a write redirect (`>`, `>>`, `>\|`, `&>`, `&>>`, `<>`, `>& file`) to a literal path outside the write roots | Deny |
-| a write redirect to a computed path | `static` only: Deny |
+| a write redirect, a read redirect or a `<&`/`>&` target that is computed | `static` only: Deny |
 | a read redirect (`<`, `<& file`) from outside the read roots | Ask, granting the resolved path |
 | `/dev/null`, `/dev/stdin`, `/dev/stdout`, `/dev/stderr` | always allowed |
 | redirects on file descriptors above 2, `coproc`, bats `@test` | Deny (the interpreter does not support them) |
 | a command that does not parse as bash | Deny, with the parser's message |
 
 Relative paths resolve against the call's working directory. Paths are compared after symlinks are resolved, by whole path components.
+
+| Variables the command sets | Verdict |
+|---|---|
+| a name `shellpolicy.ExecEnvName` reports (its value changes what runs or loads), set in any form: a prefix (`PATH=/x ls`), a bare assignment (`PATH=/x`), `export`/`declare`/`typeset`/`readonly`/`local`/`nameref` (with or without `-x`, and the target of `-n`), `env NAME=…`, a `for`/`select` variable, `read`, `mapfile`/`readarray`, `printf -v`, `getopts`, `${NAME:=…}`/`${NAME=…}`, or arithmetic (`(( NAME = 1 ))`, `let`, `++`) | Ask in both modes, naming the variable; the grant lists it in `Env` |
+| a variable whose name is computed at run time in one of those forms (`export "$n=…"`, `read "$v"`, `env "$a" …`) | `runtime`: Ask. `static`: Deny |
+| `env -S` or `env -P` (more assignments, or another search path) | Ask |
+| an `IFS=` prefix on `read`, `mapfile` or `readarray` (it only sets that builtin's field separator) | no verdict |
+| any other name (`FOO=1 ls`, `export FOO=1`) | no verdict |
+
+`ExecEnvName` matches these names exactly: `PATH BASH_ENV ENV ZDOTDIR SHELL SHELLOPTS BASHOPTS PROMPT_COMMAND PS4 IFS PAGER MANPAGER EDITOR VISUAL BROWSER LESSOPEN LESSCLOSE SSH_ASKPASS SUDO_ASKPASS NODE_OPTIONS NODE_PATH PERL5OPT PERL5LIB PERLLIB RUBYOPT RUBYLIB JAVA_TOOL_OPTIONS _JAVA_OPTIONS JDK_JAVA_OPTIONS CLASSPATH TCLLIBPATH GCONV_PATH`, and every name starting with `LD_`, `DYLD_`, `GIT_`, `PYTHON`, `LUA_` or `BASH_FUNC_`. The run-time checks below take no environment. Outside jailed mode the Ask before the command runs is the only check on these variables; in jailed mode the jail also drops them from every program's environment (see [Jailed mode](#jailed-mode)).
 
 The hook additionally turns an **Ask into a Deny** when the call's JSON-encoded params exceed `shuttle.ApprovalParamsMaxBytes` (8,192 bytes). An approval card cuts params past that size, and a person is never asked to approve text they cannot see. It also denies a call with no `command` string.
 
@@ -103,6 +116,7 @@ type Grant struct {
     Programs  []string // names or exact paths that may run, with any arguments, for this call
     Builtins  []string
     ReadPaths []string // resolved paths that may be read, with everything beneath them
+    Env       []string // variables the command sets that change what runs (no run-time check reads this; the jail drops these names from every program's environment)
 }
 ```
 
@@ -112,7 +126,7 @@ When the Ask is approved, the tool body reads the grants with `shellpolicy.Merge
 
 `shellpolicy.Readonly()`. A program qualifies when it cannot start another program, cannot write a file except through an argument its profile refuses, and is run often.
 
-**Builtins:** `echo printf test [ cd pwd read true false : set shift exit return break continue wait type getopts pushd popd dirs mapfile readarray eval trap unset`. Assignments (`export`, `local`, `declare`, `readonly`, `typeset`, `let`) are not calls and need no entry.
+**Builtins:** `echo printf test [ cd pwd read true false : set shift exit return break continue wait type getopts pushd popd dirs mapfile readarray eval trap unset`. Assignments (`export`, `local`, `declare`, `readonly`, `typeset`, `let`) are not calls and need no builtin entry. Each name they set is still judged: setting a variable that changes what runs, such as `PATH` or `LD_PRELOAD`, is an Ask (see "Variables the command sets" above).
 
 | Program | Argument rules |
 |---|---|
@@ -130,13 +144,13 @@ When the Ask is approved, the tool body reads the grants with `shellpolicy.Merge
 
 **Option matching.** Short options are matched inside groups, so `-ro` contains `-o`. Long options are matched with or without `=value`, and by abbreviation, so `--out` matches `--output`. Arguments after `--` are positional.
 
-**Path confinement.** Every positional argument, and every `--option=value` value, that names an existing path must lie within the read roots or a granted path.
+**Path confinement.** Every positional argument, and every `--option=value` value, that names an existing path must lie within the read roots or a granted path. Under `static`, an argument the analyzer cannot read as a literal (other than a plain glob, whose directory is checked) is denied, because nothing would check its expanded value.
 
 **git profile.**
 - **Subcommands:** `status diff log show rev-parse ls-files blame grep describe shortlog`, and `branch` with only `--list -a --all -r --remotes -v -vv --verbose --show-current`.
 - **Global options:** only `--no-pager`, `-P`, `--no-optional-locks` and `-C <dir>`. This is what refuses `-c`.
 - **Refused anywhere:** `--config-env --exec-path --attr-source --git-dir --work-tree --namespace --super-prefix --output --ext-diff --textconv -O --open-files-in-pager --paginate`.
-- **Hardening.** `Profile.Harden` prepends the following at run time, and adds `--no-ext-diff --no-textconv` to `diff`, `log` and `show`:
+- **Hardening.** Under `static` enforcement no runner applies this hardening, so `git` is denied there. `Profile.Harden` prepends the following at run time, and adds `--no-ext-diff --no-textconv` to `diff`, `log` and `show`:
 
   ```
   -c core.fsmonitor=false -c core.pager=cat -c core.hooksPath=/dev/null -c diff.external= --no-pager --attr-source=4b825dc642cb6eb9a060e54bf8d69288fbee4904
@@ -170,6 +184,7 @@ tools:
     - kind: command-policy    # optional; without it, off-list programs are blocked and never approvable
       scope: shell_execute
       policy: readonly        # must equal tools.shell_execute.policy
+      enforcement: runtime    # the jail re-checks every launch; static would also deny git and computed names
 ```
 
 **Startup** (`serve`). The following abort startup:
@@ -238,9 +253,8 @@ Each returns a `*shellpolicy.LaunchError{Name, Reason}`, or nil.
   - the self-test catches a binary that is not a jail.
 - `pkg/shuttle/builtin`: the full hook → approval → jail path through the executor.
 - `cmd/looms`: config decoding, validation and `serve` setup.
-
-- `pkg/shellpolicy`: 94.7% statement coverage.
-- **Corpus:** the design's bypass corpus, about 80 commands, each run under both enforcement modes.
+- `pkg/shellpolicy`: 95.4% statement coverage.
+- **Corpus:** the design's bypass corpus plus the environment-assignment and static-path cases, 144 commands, each run under both enforcement modes.
 - **Run-time checks:** a 22-case table for `CheckLaunch`.
 - **Interpreter drift:** `TestImplementedBuiltinsMatchInterpreter` fails when an interpreter upgrade implements or drops a builtin.
 - **Executor:** an end-to-end test through `BuildChainFromConfig` and the executor.
