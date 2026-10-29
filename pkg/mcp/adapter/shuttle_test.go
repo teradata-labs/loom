@@ -24,6 +24,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/mcp/client"
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
 	"github.com/teradata-labs/loom/pkg/shuttle"
@@ -968,6 +969,56 @@ func TestInputSchema_CamelCaseToSnakeCase_Conversion(t *testing.T) {
 	// Required fields should also be snake_case
 	assert.Contains(t, schema.Required, "database_name")
 	assert.Contains(t, schema.Required, "table_name")
+}
+
+func TestInputSchema_CompositeParameterNames(t *testing.T) {
+	const input = `{"type":"object","properties":{"userId":{"type":"string"}},"allOf":[
+		{"properties":{"userId":{"minLength":3}},"required":["userId"]},
+		{"properties":{"teamId":{"type":"integer"}},"required":["teamId"]}
+	]}`
+	var original map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(input), &original))
+	adapter := NewMCPToolAdapter(nil, protocol.Tool{Name: "composite", InputSchema: original}, "test")
+	schema := adapter.InputSchema()
+	assert.Contains(t, schema.AllOf[0].Properties, "user_id")
+	assert.NotContains(t, schema.AllOf[0].Properties, "userId")
+	assert.Equal(t, []string{"user_id"}, schema.AllOf[0].Required)
+	assert.Contains(t, schema.AllOf[1].Properties, "team_id")
+	adapted, err := llm.NormalizeObjectToolSchema(schema)
+	require.NoError(t, err)
+	properties := adapted["properties"].(map[string]interface{})
+	assert.Len(t, properties, 2)
+	assert.Contains(t, properties, "user_id")
+	assert.Contains(t, properties, "team_id")
+	assert.NotContains(t, properties, "userId")
+	assert.ElementsMatch(t, []string{"user_id", "team_id"}, adapted["required"])
+	assert.Equal(t, map[string]interface{}{"userId": "alice", "teamId": 3}, adapter.restoreParameterNames(map[string]interface{}{"user_id": "alice", "team_id": 3}))
+	for attempt := 0; attempt < 20; attempt++ {
+		assert.Equal(t, map[string]interface{}{"userId": "original"}, adapter.restoreParameterNames(map[string]interface{}{"userId": "original", "user_id": "alias"}))
+	}
+	assert.Contains(t, original["properties"], "userId")
+	assert.NotContains(t, original["properties"], "user_id")
+	for _, keyword := range []string{"anyOf", "oneOf", "not"} {
+		branch := map[string]interface{}{"required": []interface{}{"branchOnly"}}
+		root := map[string]interface{}{keyword: []interface{}{branch}}
+		if keyword == "not" {
+			root[keyword] = branch
+		}
+		adapter := NewMCPToolAdapter(nil, protocol.Tool{Name: "branch", InputSchema: root}, "test")
+		schema := adapter.InputSchema()
+		var branches []*shuttle.JSONSchema
+		switch keyword {
+		case "anyOf":
+			branches = schema.AnyOf
+		case "oneOf":
+			branches = schema.OneOf
+		default:
+			branches = []*shuttle.JSONSchema{schema.Not}
+		}
+		require.Len(t, branches, 1)
+		assert.Equal(t, []string{"branch_only"}, branches[0].Required)
+		assert.Equal(t, map[string]interface{}{"branchOnly": true}, adapter.restoreParameterNames(map[string]interface{}{"branch_only": true}))
+	}
 }
 
 func TestParamNameRoundTrip(t *testing.T) {
