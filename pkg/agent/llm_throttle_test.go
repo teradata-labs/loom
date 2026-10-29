@@ -17,6 +17,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,10 +35,31 @@ type throttleOnceLLM struct {
 	mu       sync.Mutex
 	failures int
 	calls    int
+	// model overrides the reported model name. The slot scheduler's scope is
+	// derived from provider name + model, and scheduler.Default() is
+	// process-global, so a test that registers or mutates a scope must use a
+	// model no other run shares (see uniqueStubModel).
+	model string
 }
 
-func (s *throttleOnceLLM) Name() string  { return "throttle-stub" }
-func (s *throttleOnceLLM) Model() string { return "throttle-stub-model" }
+func (s *throttleOnceLLM) Name() string { return "throttle-stub" }
+func (s *throttleOnceLLM) Model() string {
+	if s.model != "" {
+		return s.model
+	}
+	return "throttle-stub-model"
+}
+
+// stubModelSeq makes uniqueStubModel distinct across -count and -cpu reruns
+// of the same test in one process.
+var stubModelSeq atomic.Uint64
+
+// uniqueStubModel returns a model name, and therefore a scheduler scope, that
+// no other test run in this process uses.
+func uniqueStubModel(t *testing.T) string {
+	t.Helper()
+	return fmt.Sprintf("throttle-stub-model/%s/%d", t.Name(), stubModelSeq.Add(1))
+}
 
 func (s *throttleOnceLLM) Chat(_ context.Context, _ []Message, _ []shuttle.Tool) (*LLMResponse, error) {
 	s.mu.Lock()
@@ -143,7 +165,10 @@ func TestThrottlePatienceBudget(t *testing.T) {
 // signal that should shrink it. absorbThrottle reports at the moment of
 // absorption to close that hole; this pins it.
 func TestChatWithRetry_AbsorbedThrottleStillHalvesCeiling(t *testing.T) {
-	stub := &throttleOnceLLM{failures: 1}
+	// A fresh scope per run: scheduler.Default() is process-global and
+	// Registry.For keeps the first registration, so a shared model name would
+	// start every rerun with the ceiling the previous run already halved.
+	stub := &throttleOnceLLM{failures: 1, model: uniqueStubModel(t)}
 	a := &Agent{id: "t-aimd", llm: stub, config: &Config{}}
 
 	// Register the scope with a known ceiling BEFORE enabling scheduling
