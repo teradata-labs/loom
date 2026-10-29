@@ -53,8 +53,13 @@ func TestDecisionServerConfig(t *testing.T) {
 			cfg := validBase()
 			cfg.Decision = tt.dec
 			if tt.wantErr {
-				assert.ErrorIs(t, cfg.Validate(), jev.ErrInsecureEndpoint)
-				assert.ErrorIs(t, applyDecisionServerConfig(cfg), jev.ErrInsecureEndpoint)
+				for _, err := range []error{cfg.Validate(), applyDecisionServerConfig(cfg)} {
+					require.ErrorIs(t, err, jev.ErrInsecureEndpoint)
+					// An operator who set the env var, not the YAML key, must
+					// see the name they used (review: Josh-Schoen F4).
+					assert.Contains(t, err.Error(), "LOOM_DECISION_BASE_URL")
+					assert.Contains(t, err.Error(), "LOOM_DECISION_ALLOW_INSECURE_HTTP")
+				}
 				return
 			}
 			require.NoError(t, cfg.Validate())
