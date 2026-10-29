@@ -151,10 +151,16 @@ func (d DecisionServerConfig) endpoint() jev.ServerEndpoint {
 // operator-chosen endpoint.
 func applyDecisionServerConfig(c *Config) error {
 	if err := jev.SetServerEndpoint(c.Decision.endpoint()); err != nil {
-		return fmt.Errorf("decision: %w", err)
+		return fmt.Errorf("%s: %w", decisionEndpointSources, err)
 	}
 	return nil
 }
+
+// decisionEndpointSources prefixes an endpoint error with where the value can
+// have come from, so an operator who set the environment variable, not the
+// YAML key, sees the name they used.
+const decisionEndpointSources = "decision.base_url (looms.yaml decision.base_url or LOOM_DECISION_BASE_URL; " +
+	"decision.allow_insecure_http is LOOM_DECISION_ALLOW_INSECURE_HTTP)"
 
 // EmbeddingConfig configures the vector embedding provider for hybrid memory search.
 // Once set, the model should not be changed without re-embedding (different models
@@ -1683,7 +1689,7 @@ func (c *Config) Validate() error {
 	}
 
 	if err := c.Decision.endpoint().Validate(); err != nil {
-		return fmt.Errorf("decision.base_url: %w", err)
+		return fmt.Errorf("%s: %w", decisionEndpointSources, err)
 	}
 
 	// Validate LLM config

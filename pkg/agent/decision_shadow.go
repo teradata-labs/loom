@@ -174,6 +174,11 @@ func (a *Agent) initDecisionRouter() {
 		zap.String("model", decider.Model()),
 		zap.Int("bands", len(cfg.Bands)),
 		zap.Bool("shadow_store", a.decisionShadowStore != nil))
+	// Logged here, once per agent, rather than from ValidateConfig, which
+	// the config loaders and registry run several times for one config.
+	for _, w := range decision.ConfigWarnings(cfg) {
+		zap.L().Warn("decision config", zap.String("agent", a.config.Name), zap.String("warning", w))
+	}
 }
 
 // roleLLMForDecision maps DecisionConfig.llm_role onto the agent's LLMs. An

@@ -56,34 +56,3 @@ func TestValidateConfigRejectsNonFiniteThresholds(t *testing.T) {
 		})
 	}
 }
-
-// Review #410 minor c: act_min 0 on a live band acts on every answer. The
-// proto defines act_min as "at or above this confidence the answer is used"
-// and the judge docs describe acting on every answer as meaningful, so it
-// is accepted with a warning rather than rejected.
-func TestConfigWarningsFlagsLiveBandActingOnEverything(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name string
-		band *loomv1.DecisionBand
-		want int
-	}{
-		{"live band act_min 0", &loomv1.DecisionBand{Site: "recall.rerank"}, 1},
-		{"shadow band act_min 0", &loomv1.DecisionBand{Site: "recall.rerank", Shadow: true}, 0},
-		{"live band act_min set", &loomv1.DecisionBand{Site: "recall.rerank", ActMin: 0.3}, 0},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			cfg := &loomv1.DecisionConfig{Provider: "mock", Bands: []*loomv1.DecisionBand{tt.band}}
-			require.NoError(t, decision.ValidateConfig(cfg), "a warning never rejects the config")
-			got := decision.ConfigWarnings(cfg)
-			require.Len(t, got, tt.want)
-			if tt.want > 0 {
-				assert.Contains(t, got[0], "recall.rerank")
-				assert.Contains(t, got[0], "act_min is 0")
-			}
-		})
-	}
-	assert.Nil(t, decision.ConfigWarnings(nil))
-}

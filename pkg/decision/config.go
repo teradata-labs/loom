@@ -20,8 +20,6 @@ import (
 	"math"
 	"strings"
 
-	"go.uber.org/zap"
-
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
 
@@ -61,8 +59,9 @@ var ErrEndpointNotServerLevel = errors.New("decision.base_url is not accepted in
 // inline AgentConfig (CreateAgentFromConfig, loom-mcp create_agent), or a
 // judge's JudgeConfig. A nil config is valid (the layer is off). Every path
 // that accepts a DecisionConfig runs this one function, so the rules cannot
-// drift between them. A config that is valid but likely not what was meant
-// (ConfigWarnings) is accepted and each warning is logged.
+// drift between them. It does not log: a config that is valid but likely not
+// what was meant is accepted, and ConfigWarnings lists why for the caller to
+// log once.
 func ValidateConfig(cfg *loomv1.DecisionConfig) error {
 	if cfg == nil {
 		return nil
@@ -125,30 +124,82 @@ func ValidateConfig(cfg *loomv1.DecisionConfig) error {
 			return fmt.Errorf("decision.bands[%d] (%s): mode %v must be replace or tighten_only", i, b.Site, b.Mode)
 		}
 	}
-	for _, w := range ConfigWarnings(cfg) {
-		zap.L().Warn("decision config", zap.String("warning", w))
-	}
 	return nil
 }
 
+// actingSites are the sites whose call site acts on Outcome.Act() in this
+// release: a non-shadow band there replaces the existing mechanism whenever
+// the answer clears act_min. A site not listed here only records shadow rows
+// whatever its band says. The names are the constants in pkg/decision/sites,
+// which imports this package; TestConfigWarningsActingSitesMatchSites keeps
+// the two in step.
+var actingSites = map[string]bool{
+	"recall.rerank":      true,
+	"tool_search.rerank": true,
+	"memory.extract":     true,
+	"workflow.branch":    true,
+	"stage.validation":   true,
+	"swarm.tie_break":    true,
+	"debate.consensus":   true,
+	"skill.route":        true,
+}
+
+// tightenOnlySites are the acting sites that read DecisionBandMode and
+// default to tighten-only: a band there acts only on a fail (stage.validation)
+// or not-reached (debate.consensus) verdict unless it says mode: replace.
+var tightenOnlySites = map[string]bool{
+	"stage.validation": true,
+	"debate.consensus": true,
+}
+
+// SiteActs reports whether the call site for site acts on a decider answer
+// when its band is not shadow. Judge sites (judge.<id>) act: a decision
+// judge returns the decider's verdict.
+func SiteActs(site string) bool {
+	return actingSites[site] || strings.HasPrefix(site, "judge.")
+}
+
 // ConfigWarnings lists settings that are valid but likely not what was
-// meant. Today that is a live band with act_min 0: "at or above this
-// confidence the answer is used" then acts on every answer, however
-// uncertain, and an act_min left out of YAML reads as 0. It is a warning,
-// not an error, because acting on every answer is a meaningful setting
-// (it is what a decision judge does with no band).
+// meant. It does not log; the caller logs each warning once, where the
+// decider is built for an agent (ValidateConfig runs on several paths for
+// the same config).
+//
+// Today that is every band without shadow: true, one warning each, naming
+// the site, so the first thing an operator sees is which sites are live. At
+// a site that acts (SiteActs) the band is LIVE: an answer at or above
+// act_min decides there instead of the existing mechanism, and act_min 0
+// (also what a band that leaves act_min out gets) acts on every answer
+// however uncertain. At a site that only records, the Router still reports
+// DECISION_PATH_DECIDER for answers that clear act_min although nothing
+// acts on them, so shadow reports show DECIDER rows for decisions the
+// decider did not make.
 func ConfigWarnings(cfg *loomv1.DecisionConfig) []string {
 	if cfg == nil {
 		return nil
 	}
 	var out []string
 	for i, b := range cfg.Bands {
-		if b == nil || b.Shadow || b.ActMin != 0 {
+		if b == nil || b.Shadow {
 			continue
 		}
-		out = append(out, fmt.Sprintf(
-			"decision.bands[%d] (%s): act_min is 0 on a live band, so the site acts on every answer however uncertain; set act_min, or shadow: true to only record",
-			i, b.Site))
+		if !SiteActs(b.Site) {
+			out = append(out, fmt.Sprintf(
+				"decision.bands[%d] (%s): band is not shadow, so answers at or above act_min %g are recorded as DECIDER, "+
+					"but nothing acts on decider answers at site %s in this release (the existing mechanism still decides). "+
+					"Set shadow: true to only record",
+				i, b.Site, b.ActMin, b.Site))
+			continue
+		}
+		msg := fmt.Sprintf(
+			"decision.bands[%d] (%s): site %s is LIVE: answers at or above act_min %g act on the site instead of the existing mechanism",
+			i, b.Site, b.Site, b.ActMin)
+		if tightenOnlySites[b.Site] && b.Mode != loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE {
+			msg += " (tighten-only: only a fail or not-reached verdict acts)"
+		}
+		if b.ActMin == 0 {
+			msg += "; act_min is 0, so the site acts on every answer however uncertain"
+		}
+		out = append(out, msg+". Set shadow: true to only record")
 	}
 	return out
 }

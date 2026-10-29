@@ -25,6 +25,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/decision"
@@ -594,4 +597,30 @@ func TestRerankMemoriesLiveBandOnlyCutDropsFallsBack(t *testing.T) {
 	_ = ag.rerankMemories(decision.WithSessionID(context.Background(), "sess-cut2"), "q", candidates)
 	ag.WaitDecisionShadows()
 	assert.Equal(t, int32(1), llm.calls.Load(), "nothing actionable: the LLM rerank decides")
+}
+
+// TestInitDecisionRouterLogsConfigWarningsOnce pins that a non-shadow band is
+// warned about exactly once per agent, at the point the decider is built, and
+// that an all-shadow config is silent.
+func TestInitDecisionRouterLogsConfigWarningsOnce(t *testing.T) {
+	core, logs := observer.New(zapcore.WarnLevel)
+	restore := zap.ReplaceGlobals(zap.New(core))
+	defer restore()
+
+	cfg := &loomv1.DecisionConfig{Provider: DecisionProviderMock, Bands: []*loomv1.DecisionBand{
+		{Site: sites.SiteRecallRerank, ActMin: 0.8},
+		{Site: sites.SiteFailureKind, Shadow: true},
+	}}
+	ag := NewAgent(nil, rerankReplyLLM{reply: "none"}, WithName("warn-once"), WithDecisionConfig(cfg, nil))
+	require.NotNil(t, ag.DecisionRouter(), "rig: the mock provider builds a router")
+
+	entries := logs.FilterMessage("decision config").FilterField(zap.String("agent", "warn-once")).All()
+	require.Len(t, entries, 1, "one warning for the one non-shadow band, logged once")
+	assert.Contains(t, entries[0].ContextMap()["warning"], "site "+sites.SiteRecallRerank+" is LIVE")
+
+	quiet := &loomv1.DecisionConfig{Provider: DecisionProviderMock, Bands: []*loomv1.DecisionBand{
+		{Site: sites.SiteRecallRerank, ActMin: 0.8, Shadow: true},
+	}}
+	_ = NewAgent(nil, rerankReplyLLM{reply: "none"}, WithName("warn-quiet"), WithDecisionConfig(quiet, nil))
+	assert.Empty(t, logs.FilterMessage("decision config").FilterField(zap.String("agent", "warn-quiet")).All())
 }
