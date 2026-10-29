@@ -176,16 +176,7 @@ func TestRunHitlShow_CallDigestControlCharsEscaped(t *testing.T) {
 	}))
 	require.NoError(t, store.Close())
 
-	r, w, err := os.Pipe()
-	require.NoError(t, err)
-	origStdout := os.Stdout
-	os.Stdout = w
-	runHitlShow(hitlShowCmd, []string{"forge-1"})
-	os.Stdout = origStdout
-	require.NoError(t, w.Close())
-	outBytes, err := io.ReadAll(r)
-	require.NoError(t, err)
-	out := string(outBytes)
+	out := captureStdout(t, func() { runHitlShow(hitlShowCmd, []string{"forge-1"}) })
 
 	assert.NotContains(t, out, "\x1b", "a terminal escape reaches the screen raw")
 	for _, line := range strings.Split(out, "\n") {
@@ -195,6 +186,77 @@ func TestRunHitlShow_CallDigestControlCharsEscaped(t *testing.T) {
 	assert.Contains(t, out, `Call:           shell_execute command=ls\nParameters: {"command": "ls"}\n\u001b[2Jrm -rf /`+"\n",
 		"the whole digest stays on the Call line, escaped")
 	assert.Contains(t, out, "Parameters:\n", "the real parameters block still prints")
+}
+
+// `hitl list` keeps every request on one table row: an approval is labelled
+// by its call digest with control characters escaped, and a long label is
+// cut to 70 characters on a rune boundary. Driven through the real command
+// body over a real SQLite store.
+func TestRunHitlList_OneRowPerRequestWithEscapedDigest(t *testing.T) {
+	origConfig, origPath := config, hitlCLIDBPath
+	origSession, origAgent := hitlSessionID, hitlAgentID
+	t.Cleanup(func() {
+		config, hitlCLIDBPath = origConfig, origPath
+		hitlSessionID, hitlAgentID = origSession, origAgent
+	})
+	config = nil
+	hitlSessionID, hitlAgentID = "", ""
+	hitlCLIDBPath = filepath.Join(t.TempDir(), "hitl.db")
+
+	store, err := shuttle.NewSQLiteHumanRequestStore(shuttle.SQLiteConfig{Path: hitlCLIDBPath})
+	require.NoError(t, err)
+	for _, req := range []*shuttle.HumanRequest{
+		{
+			ID: "approval-1", AgentID: "a", SessionID: "s",
+			Question:    `Approve tool call "shell_execute"?`,
+			Summary:     "shell_execute command=echo first\necho second\x1b[2J",
+			RequestType: "approval", Priority: "normal", Status: "pending", Kind: "approval",
+		},
+		{
+			ID: "question-1", AgentID: "a", SessionID: "s",
+			Question:    strings.Repeat("é", 100),
+			RequestType: "question", Priority: "normal", Status: "pending", Kind: "question",
+		},
+	} {
+		req.CreatedAt, req.ExpiresAt = time.Now(), time.Now().Add(time.Hour)
+		require.NoError(t, store.Store(context.Background(), req))
+	}
+	require.NoError(t, store.Close())
+
+	out := captureStdout(t, func() { runHitlList(hitlListCmd, nil) })
+
+	assert.NotContains(t, out, "\x1b", "a terminal escape reaches the screen raw")
+	rows := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		for _, id := range []string{"approval-1", "question-1"} {
+			if strings.HasPrefix(line, id) {
+				rows[id] = line
+			}
+		}
+	}
+	require.Len(t, rows, 2, "each request is listed:\n%s", out)
+	assert.Contains(t, rows["approval-1"], `shell_execute command=echo first\necho second\u001b[2J`,
+		"the whole digest stays on the request's row, escaped")
+	assert.NotContains(t, out, "\necho second", "the digest's newline split the row")
+	label := rows["question-1"][strings.Index(rows["question-1"], "é"):]
+	assert.Equal(t, 70, len([]rune(label)), "the label is cut to 70 runes")
+	assert.True(t, strings.HasSuffix(label, "..."))
+	assert.Contains(t, out, "Total: 2 pending request(s)")
+}
+
+// captureStdout runs fn with os.Stdout redirected and returns what it wrote.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	orig := os.Stdout
+	os.Stdout = w
+	defer func() { os.Stdout = orig }()
+	fn()
+	require.NoError(t, w.Close())
+	out, err := io.ReadAll(r)
+	require.NoError(t, err)
+	return string(out)
 }
 
 func TestWriteHITLParams_WarnsWhenEveryParameterWasDropped(t *testing.T) {
