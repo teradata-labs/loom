@@ -57,6 +57,11 @@ type ShellExecuteTool struct {
 	passEnv map[string]bool
 }
 
+// testHookAfterWorkingDirCheck, when set by a test, runs after the working
+// directory has been checked and before the command starts. Always nil in
+// production.
+var testHookAfterWorkingDirCheck func()
+
 // NewShellExecuteTool creates a new shell execution tool.
 // If baseDir is empty, uses current working directory.
 // Defaults: restrictWrites=true, restrictReads="session"
@@ -305,6 +310,10 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 		// No additional restriction needed - agents can read from LOOM_DATA_DIR as intended
 	}
 
+	if testHookAfterWorkingDirCheck != nil {
+		testHookAfterWorkingDirCheck()
+	}
+
 	// Detect shell binary
 	shellBinary, shellArgs, actualShellType, err := detectShell(shellType, command)
 	if err != nil {
@@ -321,7 +330,10 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 
 	// Create command (we'll handle timeout manually for better control)
 	cmd := exec.Command(shellBinary, shellArgs...) // #nosec G204 -- shellBinary is validated against allowlist above
-	cmd.Dir = cleanWorkingDir
+	// Run in the directory the checks above approved. cleanWorkingDir may be a
+	// symlink, and a link repointed after the check would otherwise carry the
+	// command outside LOOM_DATA_DIR.
+	cmd.Dir = resolvedWorkingDir
 	// Own process group, so a timeout, cancellation or output overflow can kill
 	// the shell's whole process group, not only the shell (killProcessTree).
 	setProcessGroup(cmd)

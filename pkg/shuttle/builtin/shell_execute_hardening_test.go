@@ -289,3 +289,38 @@ func TestIsSensitiveEnvName(t *testing.T) {
 		assert.Equal(t, want, isSensitiveEnvName(name), name)
 	}
 }
+
+// The command must start in the directory the containment check approved:
+// the symlink-resolved working_dir, not the link. Repointing the link after
+// the check must not carry the command outside LOOM_DATA_DIR.
+func TestShellExecute_RunsInResolvedWorkingDir(t *testing.T) {
+	dataDir := t.TempDir()
+	outside := t.TempDir()
+	t.Setenv("LOOM_DATA_DIR", dataDir)
+	target := filepath.Join(dataDir, "real")
+	require.NoError(t, os.Mkdir(target, 0o700))
+	link := filepath.Join(dataDir, "link")
+	require.NoError(t, os.Symlink(target, link))
+	want, err := filepath.EvalSymlinks(target) // macOS: /var -> /private/var
+	require.NoError(t, err)
+
+	testHookAfterWorkingDirCheck = func() {
+		require.NoError(t, os.Remove(link))
+		require.NoError(t, os.Symlink(outside, link))
+	}
+	t.Cleanup(func() { testHookAfterWorkingDirCheck = nil })
+
+	tool := NewShellExecuteTool("")
+	tool.SetLoomDataDir(dataDir)
+	ctx := session.WithSessionID(context.Background(), "sess-resolved-dir")
+	res, err := tool.Execute(ctx, map[string]interface{}{
+		"command":     "pwd -P",
+		"working_dir": link,
+	})
+	require.NoError(t, err)
+	require.True(t, res.Success, "%+v", res.Error)
+	data, ok := res.Data.(map[string]interface{})
+	require.True(t, ok, "%T", res.Data)
+	stdout, _ := data["stdout"].(string)
+	assert.Equal(t, want, strings.TrimSpace(stdout), "command ran outside the checked directory")
+}
