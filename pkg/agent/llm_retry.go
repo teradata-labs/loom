@@ -206,21 +206,13 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 		return a.chatWithStreaming(ctx, messages, tools, progressCallback)
 	}
 
-	// Non-streaming path with retry logic
-	// If retry is disabled, call LLM directly — but throttling still pauses
-	// rather than failing: disabling retry opts out of retrying FAILURES,
-	// not out of honoring provider flow control.
-	if !a.config.Retry.Enabled || a.config.Retry.MaxRetries == 0 {
-		var patience throttlePatience
-		for {
-			resp, err := a.llm.Chat(a.providerCtx(ctx, messages), messages, tools)
-			if err == nil || !llm.IsThrottle(err) {
-				return resp, err
-			}
-			if waitErr := a.absorbThrottle(ctx, &patience, err); waitErr != nil {
-				return nil, waitErr
-			}
-		}
+	// Non-streaming path with retry logic.
+	// If retry is disabled, call the LLM directly and fail fast: a throttle
+	// is returned as-is, with no throttle-patience wait. An operator who
+	// disables retry is asking for the first error, not a pause of up to the
+	// throttle budget.
+	if !a.retryEnabled() {
+		return a.llm.Chat(a.providerCtx(ctx, messages), messages, tools)
 	}
 
 	var lastErr error
@@ -307,10 +299,18 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 		a.config.Retry.MaxRetries+1, lastErr)
 }
 
+// retryEnabled reports whether this agent retries failed LLM calls. When it
+// does not, every LLM path fails fast: a provider throttle is returned to the
+// caller immediately instead of entering the throttle-patience wait.
+func (a *Agent) retryEnabled() bool {
+	return a.config.Retry.Enabled && a.config.Retry.MaxRetries != 0
+}
+
 // throttlePatience paces re-invocation against provider throttling (429 and
 // kin). Waits honor the provider-stated retry-after when the error names one,
 // escalate 2s→60s otherwise, and give up only past a total budget — a
-// throttled conversation pauses, it does not die.
+// throttled conversation pauses, it does not die. Only retry-enabled agents
+// use it (see retryEnabled); a retry-disabled agent fails fast.
 type throttlePatience struct {
 	delay time.Duration
 	total time.Duration
@@ -527,10 +527,12 @@ func (a *Agent) chatWithStreaming(ctx Context, messages []Message, tools []shutt
 		})
 	})
 
-	// Call streaming provider. Throttling pauses and re-invokes — the
-	// previous behavior ("streaming already handles errors") returned the
-	// first 429 straight up the stack and killed the conversation. Buffered
-	// state resets per attempt so a retried stream never duplicates tokens.
+	// Call streaming provider. With retry enabled, throttling pauses and
+	// re-invokes — the previous behavior ("streaming already handles errors")
+	// returned the first 429 straight up the stack and killed the
+	// conversation. With retry disabled the throttle is returned at once
+	// (fail fast), as on the non-streaming direct path. Buffered state resets
+	// per attempt so a retried stream never duplicates tokens.
 	var patience throttlePatience
 	var resp *LLMResponse
 	for {
@@ -545,7 +547,7 @@ func (a *Agent) chatWithStreaming(ctx Context, messages []Message, tools []shutt
 		if err == nil {
 			break
 		}
-		if llm.IsThrottle(err) {
+		if llm.IsThrottle(err) && a.retryEnabled() {
 			if waitErr := a.absorbThrottle(ctx, &patience, err); waitErr != nil {
 				return nil, waitErr
 			}

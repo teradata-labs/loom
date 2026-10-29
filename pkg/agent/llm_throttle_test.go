@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/llm/scheduler"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
@@ -96,27 +97,77 @@ func (s *throttleOnceStreamingLLM) ChatStream(_ context.Context, _ []Message, _ 
 	return &LLMResponse{Content: "hello", StopReason: "end_turn"}, nil
 }
 
-// A 429 on the non-streaming path with retry DISABLED must pause and go
-// again, not kill the conversation — disabling retry opts out of retrying
-// failures, not out of honoring flow control.
-func TestChatWithRetry_ThrottleDoesNotKill_RetryDisabled(t *testing.T) {
-	stub := &throttleOnceLLM{failures: 1}
-	a := &Agent{id: "t1", llm: stub, config: &Config{}} // Retry zero-value => direct path
-	ctx := newCtxDumpContext("sess-throttle-ns", observability.NewNoOpTracer(), nil)
+// patientRetry is a retry-enabled config whose failure backoff is negligible,
+// so a test's wall time is the throttle-patience wait alone.
+func patientRetry() RetryConfig {
+	return RetryConfig{Enabled: true, MaxRetries: 1, InitialDelay: time.Millisecond, Multiplier: 2, MaxDelay: time.Millisecond}
+}
 
-	resp, err := a.chatWithRetry(ctx, []Message{{Role: "user", Content: "hi"}}, nil)
-	require.NoError(t, err)
-	assert.Equal(t, "ok", resp.Content)
-	assert.Equal(t, 2, stub.calls)
+// With retry DISABLED a throttle fails fast, as it did before throttle
+// patience existed: the first 429 is returned unwrapped after one provider
+// call, with no patience wait, on both the direct and the streaming path.
+// The stub would succeed on a second call, so any re-invocation shows up as
+// a nil error and a second call.
+func TestChatWithRetry_ThrottleFailsFast_RetryDisabled(t *testing.T) {
+	disabled := []struct {
+		name  string
+		retry RetryConfig
+	}{
+		{"zero value", RetryConfig{}},
+		{"enabled false", RetryConfig{Enabled: false, MaxRetries: 3, InitialDelay: time.Millisecond, Multiplier: 2, MaxDelay: time.Millisecond}},
+		{"max retries zero", RetryConfig{Enabled: true, MaxRetries: 0, InitialDelay: time.Millisecond, Multiplier: 2, MaxDelay: time.Millisecond}},
+	}
+	for _, streaming := range []bool{false, true} {
+		for _, tc := range disabled {
+			t.Run(fmt.Sprintf("%s/streaming=%v", tc.name, streaming), func(t *testing.T) {
+				var (
+					provider LLMProvider
+					calls    func() int
+					cb       ProgressCallback
+				)
+				if streaming {
+					stub := &throttleOnceStreamingLLM{throttleOnceLLM: throttleOnceLLM{failures: 1}}
+					provider = stub
+					calls = func() int { stub.mu.Lock(); defer stub.mu.Unlock(); return stub.streamCalls }
+					cb = func(ProgressEvent) {}
+				} else {
+					stub := &throttleOnceLLM{failures: 1}
+					provider = stub
+					calls = func() int { stub.mu.Lock(); defer stub.mu.Unlock(); return stub.calls }
+				}
+				a := &Agent{id: "t-failfast", llm: provider, config: &Config{Retry: tc.retry}}
+				require.False(t, a.retryEnabled())
+
+				// The deadline is only a backstop against a hang: patience
+				// would otherwise end the call at the deadline with a
+				// "context ended during wait" error, which the assertions
+				// below reject.
+				base, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				ctx := &agentContext{Context: base, tracer: observability.NewNoOpTracer(), progressCallback: cb}
+
+				start := time.Now()
+				resp, err := a.chatWithRetry(ctx, []Message{{Role: "user", Content: "hi"}}, nil)
+				elapsed := time.Since(start)
+
+				require.Error(t, err, "a retry-disabled agent must not ride out a throttle")
+				assert.Nil(t, resp)
+				assert.True(t, llm.IsThrottle(err), "the provider's throttle error must surface: %v", err)
+				assert.NotContains(t, err.Error(), "context ended during wait")
+				assert.NotContains(t, err.Error(), "patience budget")
+				assert.Equal(t, 1, calls(), "fail fast means exactly one provider call")
+				assert.Less(t, elapsed, throttleInitialDelay/2,
+					"fail fast means no throttle-patience wait (took %s)", elapsed)
+			})
+		}
+	}
 }
 
 // A 429 on the non-streaming path with retry ENABLED must not consume retry
 // attempts: one throttle plus MaxRetries genuine failures still succeeds.
 func TestChatWithRetry_ThrottleConsumesNoAttempts(t *testing.T) {
 	stub := &throttleOnceLLM{failures: 1}
-	a := &Agent{id: "t2", llm: stub, config: &Config{
-		Retry: RetryConfig{Enabled: true, MaxRetries: 1, InitialDelay: time.Millisecond, Multiplier: 2, MaxDelay: time.Millisecond},
-	}}
+	a := &Agent{id: "t2", llm: stub, config: &Config{Retry: patientRetry()}}
 	ctx := newCtxDumpContext("sess-throttle-r", observability.NewNoOpTracer(), nil)
 
 	resp, err := a.chatWithRetry(ctx, []Message{{Role: "user", Content: "hi"}}, nil)
@@ -124,14 +175,14 @@ func TestChatWithRetry_ThrottleConsumesNoAttempts(t *testing.T) {
 	assert.Equal(t, "ok", resp.Content)
 }
 
-// A 429 on the STREAMING path — the path that previously killed the
-// conversation outright — must pause, re-invoke, and deliver clean content
-// with no tokens duplicated from the failed attempt.
+// A 429 on the STREAMING path of a retry-enabled agent — the path that
+// previously killed the conversation outright — must pause, re-invoke, and
+// deliver clean content with no tokens duplicated from the failed attempt.
 func TestChatWithStreaming_ThrottleDoesNotKill(t *testing.T) {
 	stub := &throttleOnceStreamingLLM{throttleOnceLLM: throttleOnceLLM{failures: 1}}
 	require.True(t, llmtypes.SupportsStreaming(stub))
 
-	a := &Agent{id: "t3", llm: stub, config: &Config{}}
+	a := &Agent{id: "t3", llm: stub, config: &Config{Retry: patientRetry()}}
 	// Collect EVERY partial, not only the last: the final "LLM response
 	// complete" event carries resp.Content and would hide a duplicated
 	// partial emitted after the throttle wait.
@@ -184,7 +235,7 @@ func TestChatWithRetry_AbsorbedThrottleStillHalvesCeiling(t *testing.T) {
 	// Registry.For keeps the first registration, so a shared model name would
 	// start every rerun with the ceiling the previous run already halved.
 	stub := &throttleOnceLLM{failures: 1, model: uniqueStubModel(t)}
-	a := &Agent{id: "t-aimd", llm: stub, config: &Config{}}
+	a := &Agent{id: "t-aimd", llm: stub, config: &Config{Retry: patientRetry()}}
 
 	// Register the scope with a known ceiling BEFORE enabling scheduling
 	// (Registry.For keeps the first registration's config).
