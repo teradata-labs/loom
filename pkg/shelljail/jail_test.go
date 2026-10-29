@@ -319,6 +319,31 @@ func TestJail_EnvIsBuiltFromScratch(t *testing.T) {
 	assert.Equal(t, []string{"GIT_PAGER", "LD_PRELOAD"}, got.res.EnvDropped)
 }
 
+// A program the jail starts gets the jail's search path, never the server's
+// PATH or one the command set, and none of the names shellpolicy.ExecEnvName
+// reports (the one list the command-policy hook also uses).
+func TestJail_ProgramSeesTheJailsPath(t *testing.T) {
+	f := newFixture(t)
+	t.Setenv("PATH", "/parent-only/bin:"+os.Getenv("PATH"))
+	envProg, err := exec.LookPath("env")
+	require.NoError(t, err)
+	envProg, err = filepath.EvalSymlinks(envProg)
+	require.NoError(t, err)
+	got := f.jailed(t, `export PATH=/evil/bin SHELL=/bin/evil NODE_PATH=/n KEEP_ME=yes; `+envProg,
+		&shellpolicy.Grant{Programs: []string{envProg}}, 10*time.Second)
+	require.Empty(t, got.res.Blocked, got.stderr)
+	lines := strings.Split(got.stdout, "\n")
+	assert.Contains(t, lines, "PATH="+strings.Join(DefaultSearchPath, string(os.PathListSeparator)), got.stdout)
+	assert.Contains(t, lines, "KEEP_ME=yes")
+	assert.NotContains(t, got.stdout, "/parent-only")
+	assert.NotContains(t, got.stdout, "/evil")
+	assert.NotContains(t, got.stdout, "NODE_PATH=")
+	for _, name := range []string{"SHELL", "NODE_PATH"} {
+		assert.True(t, shellpolicy.ExecEnvName(name), name)
+		assert.Contains(t, got.res.EnvDropped, name)
+	}
+}
+
 // Repository config cannot make git run anything (design Probe 9).
 func TestJail_GitRunsNothingFromRepoConfig(t *testing.T) {
 	git, err := exec.LookPath("git")

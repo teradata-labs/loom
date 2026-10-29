@@ -18,6 +18,8 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+
+	"github.com/teradata-labs/loom/pkg/shellpolicy"
 )
 
 // sensitiveEnvNames are withheld by exact (upper-cased) name.
@@ -107,41 +109,17 @@ func URLHasPassword(value string) bool {
 	return ok
 }
 
-// execEnvNames change what a program executes or loads, so a jailed command
-// may not set them for the programs it starts.
-var execEnvNames = map[string]bool{
-	"PAGER": true, "EDITOR": true, "VISUAL": true, "BASH_ENV": true, "ENV": true,
-	"LESSOPEN": true, "LESSCLOSE": true, "NODE_OPTIONS": true, "PERL5OPT": true,
-	"PERL5LIB": true, "PERLLIB": true, "RUBYOPT": true, "RUBYLIB": true,
-	"SHELLOPTS": true, "BASHOPTS": true, "PROMPT_COMMAND": true, "IFS": true,
-	"PS4": true, "MANPAGER": true, "BROWSER": true, "SSH_ASKPASS": true,
-}
-
-// execEnvPrefixes are name prefixes with the same effect.
-var execEnvPrefixes = []string{"LD_", "DYLD_", "GIT_", "PYTHON", "BASH_FUNC_"}
-
-// ExecEnvName reports whether name changes what a program executes.
-func ExecEnvName(name string) bool {
-	if execEnvNames[name] {
-		return true
-	}
-	for _, p := range execEnvPrefixes {
-		if strings.HasPrefix(name, p) {
-			return true
-		}
-	}
-	return false
-}
-
 // FilterEnv splits NAME=value entries into those a jailed program may receive
 // and the names it may not: credentials (SensitiveEnvName, URLHasPassword)
-// and names that change what a program executes (ExecEnvName). The dropped
-// names are sorted and unique.
+// and names that change what a program executes or loads
+// (shellpolicy.ExecEnvName, the list the command-policy hook asks about, so
+// the hook and the jail never disagree on it). The dropped names are sorted
+// and unique. Callers that force their own PATH remove it before calling.
 func FilterEnv(entries []string) (kept, dropped []string) {
 	seen := map[string]bool{}
 	for _, kv := range entries {
 		name, value, _ := strings.Cut(kv, "=")
-		if SensitiveEnvName(name) || URLHasPassword(value) || ExecEnvName(name) {
+		if SensitiveEnvName(name) || URLHasPassword(value) || shellpolicy.ExecEnvName(name) {
 			if !seen[name] {
 				seen[name] = true
 				dropped = append(dropped, name)
