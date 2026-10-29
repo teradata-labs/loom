@@ -217,6 +217,36 @@ func TestAdmit_AskReasonsJoined(t *testing.T) {
 	}
 }
 
+// Decision.Grant is `any`, so the Decision comment warns that == and map-key
+// use panic once a Grant holds an uncomparable value. This pins that warning to
+// the language's behavior: if Grant is ever narrowed to a comparable type, this
+// test fails and the comment (and CHANGELOG note) must change with it.
+func TestDecision_UncomparableGrantPanics(t *testing.T) {
+	a := Decision{Kind: Ask, Reason: "r", Grant: []string{"curl"}}
+	b := Decision{Kind: Ask, Reason: "r", Grant: []string{"curl"}}
+	m1 := Decision{Kind: Ask, Reason: "r", Grant: map[string]bool{"curl": true}}
+	m2 := Decision{Kind: Ask, Reason: "r", Grant: map[string]bool{"curl": true}}
+
+	for _, tc := range []struct {
+		name string
+		fn   func()
+	}{
+		{name: "== with slice grants", fn: func() { _ = a == b }},
+		{name: "== with map grants", fn: func() { _ = m1 == m2 }},
+		{name: "map key with slice grant", fn: func() { _ = map[Decision]int{a: 1} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Panics(t, tc.fn)
+		})
+	}
+
+	t.Run("comparable grants do not panic", func(t *testing.T) {
+		s1 := Decision{Kind: Ask, Grant: "curl"}
+		s2 := Decision{Kind: Ask, Grant: "curl"}
+		assert.NotPanics(t, func() { assert.True(t, s1 == s2) })
+	})
+}
+
 func TestAdmissionGrantsContext_CopiesSlices(t *testing.T) {
 	in := []any{"a", "b"}
 	ctx := ContextWithAdmissionGrants(context.Background(), in)

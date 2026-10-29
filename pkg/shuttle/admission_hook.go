@@ -34,6 +34,9 @@ const (
 )
 
 // Decision is a hook's verdict plus a human-readable reason carried on Deny/Ask.
+//
+// A Decision that carries a Grant must not be compared with == or used as a
+// map key: see Grant.
 type Decision struct {
 	Kind   DecisionKind
 	Reason string
@@ -48,6 +51,13 @@ type Decision struct {
 	// combined Ask's Reason joins every asking hook's Reason (hook order,
 	// deduplicated, "; "-separated), so the approval request a person decides
 	// names everything the grants cover.
+	//
+	// Because Grant is an interface, a Decision whose Grant holds a slice, a
+	// map, a func, or a struct containing one is not comparable: == between two
+	// such Decisions, or using one as a map key, compiles but panics at run
+	// time ("comparing uncomparable type" / "hash of unhashable type"). Compare
+	// the Kind and Reason fields instead, and do not key a map on a Decision
+	// that may carry a Grant.
 	Grant any
 }
 
