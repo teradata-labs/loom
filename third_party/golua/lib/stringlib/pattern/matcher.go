@@ -1,4 +1,12 @@
+// Modified for loom, 2026: the matcher calls a poll function every
+// pollInterval steps so a long match can be stopped (loom-only).
+// See third_party/golua/README.md for the list of changes from upstream.
+
 package pattern
+
+// pollInterval is the number of matcher steps between two calls of the poll
+// function.
+const pollInterval = 1024
 
 type patternMatcher struct {
 	Pattern
@@ -10,6 +18,11 @@ type patternMatcher struct {
 	trackbacks []trackback
 
 	budget uint64
+
+	// poll, when not nil, is called every pollInterval steps; it stops the
+	// match by panicking. untilPoll counts the steps left before the next call.
+	poll      func()
+	untilPoll int
 }
 
 type trackback struct {
@@ -203,6 +216,13 @@ func (m *patternMatcher) addTrackback(siMin int) {
 }
 
 func (m *patternMatcher) consumeBudget() {
+	if m.poll != nil {
+		m.untilPoll--
+		if m.untilPoll <= 0 {
+			m.untilPoll = pollInterval
+			m.poll()
+		}
+	}
 	if m.budget == 0 {
 		return
 	}

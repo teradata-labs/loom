@@ -71,8 +71,12 @@ Behavior to know when writing such a tool:
   classification that depends on input types (JSON turns integers into
   `float64`), configuration or tool state cannot flip between park and resume.
   A policy `Deny` is still re-checked on resume and is never lifted. If the
-  tool is no longer a `ParkableQuestion` at resume, the call gets an
-  `internal_error` result instead of running `Execute`.
+  tool is no longer registered at resume, the call gets a `tool_not_found`
+  result; if it is registered but no longer a `ParkableQuestion`, it gets an
+  `internal_error` result. Neither runs `Execute`. Only the message
+  (`tool not found: <name>`) matches dispatch's unknown-tool error; dispatch
+  returns a Go error with no `shuttle.Result` or code, so an unregistered
+  `contact_human` still persists no result.
 - **`Execute` still runs** when the call is not parked: park is disabled (an
   in-turn resolver is used instead), `ParkQuestion` reports `ok=false` (the
   model sees a repairable tool error), or the batch has an empty or duplicate

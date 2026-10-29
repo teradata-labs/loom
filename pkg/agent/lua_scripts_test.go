@@ -16,6 +16,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -49,6 +50,12 @@ var sumParams = map[string]interface{}{
 // against st) and the given tools registered, plus the saved-script options.
 func newScriptsAgent(t *testing.T, name string, st store.ScriptStore, publish bool, tools ...shuttle.Tool) (*Agent, LuaScriptsOptions) {
 	t.Helper()
+	return newScriptsAgentWithPolicy(t, name, st, publish, luasandbox.Policy{}, tools...)
+}
+
+// newScriptsAgentWithPolicy is newScriptsAgent with run_lua under pol.
+func newScriptsAgentWithPolicy(t *testing.T, name string, st store.ScriptStore, publish bool, pol luasandbox.Policy, tools ...shuttle.Tool) (*Agent, LuaScriptsOptions) {
+	t.Helper()
 	cfg := DefaultConfig()
 	cfg.Name = name
 	cfg.PatternConfig = DefaultPatternConfig()
@@ -59,7 +66,7 @@ func newScriptsAgent(t *testing.T, name string, st store.ScriptStore, publish bo
 		ag.RegisterTool(tool)
 	}
 	require.NoError(t, ag.RegisterRunLuaTool(RunLuaToolOptions{
-		Policy:  staticLuaPolicy(luasandbox.Policy{}),
+		Policy:  staticLuaPolicy(pol),
 		Gate:    luasandbox.NewGate(4, 4),
 		Resolve: StoreScriptResolver(st),
 	}))
@@ -81,13 +88,17 @@ func manage(t *testing.T, ag *Agent, ctx context.Context, params map[string]inte
 func TestStoreScriptResolver(t *testing.T) {
 	st := newTestScriptStore(t)
 	_, _, err := st.Save(context.Background(), store.Script{Name: "lookup", Description: "d", Source: "return 1",
-		Manifest: &store.Manifest{Requires: []string{"query"}}}, false)
+		Manifest: &store.Manifest{Requires: []string{"query"}}, Owner: "agent-a"}, false)
 	require.NoError(t, err)
 	resolve := StoreScriptResolver(st)
 
-	got, err := resolve(context.Background(), "lookup")
+	got, err := resolve(store.WithRunner(context.Background(), "agent-a"), "lookup")
 	require.NoError(t, err)
 	assert.Equal(t, ResolvedScript{Name: "lookup", Source: "return 1", Trust: luasandbox.TrustOwn, Requires: []string{"query"}}, got)
+
+	got, err = resolve(context.Background(), "lookup")
+	require.NoError(t, err)
+	assert.Equal(t, luasandbox.TrustShared, got.Trust, "a caller that names no runner does not own the script")
 
 	_, err = resolve(context.Background(), "missing")
 	assert.ErrorIs(t, err, ErrScriptNotFound)
@@ -117,9 +128,7 @@ func TestManageLuaScripts_SaveGetListDelete(t *testing.T) {
 	assert.Equal(t, "agent-a", data["owner"])
 	assert.Equal(t, "own", data["trust"])
 
-	res = manage(t, ag, ctx, map[string]interface{}{"action": "list"})
-	require.True(t, res.Success)
-	rows := res.Data.([]map[string]interface{})
+	rows := luaListRows(t, manage(t, ag, ctx, map[string]interface{}{"action": "list"}))
 	require.Len(t, rows, 1)
 	assert.Equal(t, "double_it", rows[0]["name"])
 	assert.NotContains(t, rows[0], "script", "list omits the source")
@@ -368,4 +377,119 @@ func TestPublishedScriptToolThroughTheConversationLoop(t *testing.T) {
 	require.NotNil(t, got)
 	require.True(t, got.Success, "%+v", got.Error)
 	assert.EqualValues(t, 42, got.Data)
+}
+
+// Review Josh-Schoen F2: only the agent that saved a script runs it as its
+// own; the same script run by another agent, and a script saved over the
+// RPC, run as shared, so deny_for_shared applies to them.
+func TestSavedScriptTrust_OwnOnlyForTheSavingAgent(t *testing.T) {
+	const src = `local r = tools.call("read_note", {}) return {r.ok, r.error and r.error.code or ""}`
+	st := newTestScriptStore(t)
+	pol := luasandbox.Policy{DenyForShared: []string{"read_note"}}
+	noteA, noteB := &luaTestTool{name: "read_note"}, &luaTestTool{name: "read_note"}
+	a, _ := newScriptsAgentWithPolicy(t, "agent-a", st, true, pol, noteA)
+	b, optsB := newScriptsAgentWithPolicy(t, "agent-b", st, true, pol, noteB)
+	ctx := runLuaCtx("read_note", ManageLuaScriptsToolName)
+
+	res := manage(t, a, ctx, map[string]interface{}{"action": "save", "name": "note_it", "description": "Reads a note.",
+		"script": src, "manifest": map[string]interface{}{"parameters": sumParams}})
+	require.True(t, res.Success, "%+v", res.Error)
+	_, _, err := st.Save(context.Background(), store.Script{Name: "rpc_note", Description: "Reads a note.", Source: src,
+		Owner: store.OwnerRPC}, false)
+	require.NoError(t, err)
+
+	// B gets lua_note_it once A has published it.
+	require.True(t, manage(t, a, ctx, map[string]interface{}{"action": "publish", "name": "note_it"}).Success)
+	rep := b.RegisterLuaScriptTools(context.Background(), optsB, false, []string{"note_it"})
+	require.Contains(t, rep.Registered, "lua_note_it", "%v", rep.Skipped)
+
+	for _, tc := range []struct {
+		name   string
+		ag     *Agent
+		note   *luaTestTool
+		tool   string
+		params map[string]interface{}
+		trust  string
+		ok     bool
+	}{
+		{"A runs its own script", a, noteA, RunLuaToolName, map[string]interface{}{"name": "note_it"}, "own", true},
+		{"B runs A's script by name", b, noteB, RunLuaToolName, map[string]interface{}{"name": "note_it"}, "shared", false},
+		{"B runs A's published tool", b, noteB, "lua_note_it", map[string]interface{}{}, "shared", false},
+		{"A runs an RPC-saved script", a, noteA, RunLuaToolName, map[string]interface{}{"name": "rpc_note"}, "shared", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := tc.note.runs.Load()
+			tool, ok := tc.ag.tools.Get(tc.tool)
+			require.True(t, ok)
+			out, err := tool.Execute(ctx, tc.params)
+			require.NoError(t, err)
+			require.True(t, out.Success, "%+v", out.Error)
+			assert.Equal(t, tc.trust, luaRun(t, out)["trust"])
+			if tc.ok {
+				assert.Equal(t, []any{true, ""}, out.Data)
+				assert.EqualValues(t, 1, tc.note.runs.Load()-before)
+			} else {
+				assert.Equal(t, []any{false, luasandbox.CodeToolNotVisible}, out.Data, "deny_for_shared refuses the tool")
+				assert.EqualValues(t, 0, tc.note.runs.Load()-before, "the denied tool body never ran")
+			}
+		})
+	}
+
+	// get and list report the trust the caller would run with.
+	got := manage(t, b, ctx, map[string]interface{}{"action": "get", "name": "note_it"})
+	require.True(t, got.Success)
+	assert.Equal(t, "shared", got.Data.(map[string]interface{})["trust"])
+	got = manage(t, a, ctx, map[string]interface{}{"action": "get", "name": "note_it"})
+	assert.Equal(t, "own", got.Data.(map[string]interface{})["trust"])
+	trust := map[string]interface{}{}
+	for _, row := range luaListRows(t, manage(t, a, ctx, map[string]interface{}{"action": "list"})) {
+		trust[row["name"].(string)] = row["trust"]
+	}
+	assert.Equal(t, map[string]interface{}{"note_it": "own", "rpc_note": "shared"}, trust)
+}
+
+// luaListRows returns the rows of a manage_lua_scripts list result.
+func luaListRows(t *testing.T, res *shuttle.Result) []map[string]interface{} {
+	t.Helper()
+	require.True(t, res.Success, "%+v", res.Error)
+	data, ok := res.Data.(map[string]interface{})
+	require.True(t, ok, "list data is %T", res.Data)
+	rows, ok := data["scripts"].([]map[string]interface{})
+	require.True(t, ok, "list scripts is %T", data["scripts"])
+	return rows
+}
+
+// Review Josh-Schoen F4: a list cut at luaListMax says so, with the total.
+func TestManageLuaScripts_ListReportsTruncation(t *testing.T) {
+	st := newTestScriptStore(t)
+	ag, _ := newScriptsAgent(t, "agent-a", st, false)
+	ctx := runLuaCtx(ManageLuaScriptsToolName)
+
+	list := func() map[string]interface{} {
+		res := manage(t, ag, ctx, map[string]interface{}{"action": "list"})
+		require.True(t, res.Success, "%+v", res.Error)
+		data, ok := res.Data.(map[string]interface{})
+		require.True(t, ok, "list data is %T", res.Data)
+		return data
+	}
+	for i := 0; i < 3; i++ {
+		_, _, err := st.Save(context.Background(), store.Script{Name: fmt.Sprintf("s%03d", i), Description: "d", Source: "return 1"}, false)
+		require.NoError(t, err)
+	}
+	data := list()
+	assert.Equal(t, 3, data["total"])
+	assert.Equal(t, false, data["truncated"])
+	assert.Len(t, data["scripts"], 3)
+
+	for i := 3; i < luaListMax+5; i++ {
+		_, _, err := st.Save(context.Background(), store.Script{Name: fmt.Sprintf("s%03d", i), Description: "d", Source: "return 1"}, false)
+		require.NoError(t, err)
+	}
+	data = list()
+	assert.Equal(t, luaListMax+5, data["total"])
+	assert.Equal(t, true, data["truncated"])
+	rows := data["scripts"].([]map[string]interface{})
+	require.Len(t, rows, luaListMax)
+	assert.Equal(t, "s000", rows[0]["name"])
+	assert.Equal(t, fmt.Sprintf("s%03d", luaListMax-1), rows[luaListMax-1]["name"])
 }

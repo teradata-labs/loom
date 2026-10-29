@@ -22,7 +22,10 @@ Three things must all hold for an agent to have `run_lua`:
    (`tools.hooks` or `tools.permissions`). Otherwise `run_lua` is not registered and
    serve logs one warning naming the reason. loom's default YOLO permission checker
    counts, and admits every call; configure `tools.hooks` before enabling Lua on a
-   shared server.
+   shared server. When `tools.lua.enabled` is on, `tools.permissions.yolo` is on
+   (also set by `--yolo` or `LOOM_YOLO=true`) and `tools.hooks` has no bindings, serve
+   logs one warning at startup naming `run_lua` and saying that every nested tool call
+   is allowed without a check. The warning does not change what registers.
 
 ```yaml
 tools:
@@ -75,7 +78,8 @@ Any other parameter is `INVALID_PARAMS`.
 Only the tools the model was shown for the provider call that requested the run, minus
 the engine's hard-deny list, the reserved names (`run_lua`, `manage_lua_scripts`,
 `lua_*`), `tools.lua.tools.deny`, and `deny_for_shared` for scripts the runner did not
-write; `allow`, when set, narrows further. Each call runs through the agent's admission
+write (shared scripts; see "Who owns a saved script" below); `allow`, when set, narrows
+further. Each call runs through the agent's admission
 chain like a direct call. A call that needs approval returns `approval_required` without
 running, and the model should make it directly.
 
@@ -101,6 +105,30 @@ saved-script lookup codes) has outcome `refused`, its code under `refusal`, zero
 an empty ledger.
 The nested calls are not tool rows of their own; the `run_lua` call is one row.
 
+**Where the run record lives.** The record is not shown to the model, and no client
+surfaces it yet. No code outside `pkg/agent/lua_tool.go` reads `lua.run`; the
+`Message` returned by `GetConversationHistory` has no tool-result field, and the
+streamed `WeaveProgress.tool_result` carries only `Result.Data`, so the TUI and other
+gRPC clients see the `run_lua` result, not its record. It is kept in two places:
+
+- **The session store.** The `run_lua` tool message is saved with its whole
+  `shuttle.Result` serialized in the `messages.tool_result_json` column (SQLite and
+  PostgreSQL), so the record is at `$.Metadata."lua.run"` in that row. The column is
+  bounded like the row: when the serialized result is larger than
+  `shared_memory_threshold_bytes` (16 KiB by default), `tool_result_json` is left empty
+  and the record is not stored (`pkg/agent/memory.go`).
+- **Traces.** Each run has a `lua.run` span (`lua.outcome`, `lua.cpu_ticks`,
+  `lua.memory_bytes`, `lua.wall_ms`, `lua.tool_calls`) and each nested call a
+  `lua.tool_call` span (`tool_name`, `lua.decision`) in the configured tracer.
+
+```sql
+-- SQLite: the call ledger of every run_lua row in a session
+SELECT id, json_extract(tool_result_json, '$.Metadata."lua.run".calls')
+FROM messages
+WHERE session_id = ? AND role = 'tool' AND tool_result_json IS NOT NULL
+  AND json_extract(tool_result_json, '$.Metadata."lua.run"') IS NOT NULL;
+```
+
 ## Saved scripts
 
 A loom server keeps saved scripts in `tools.lua.scripts_dir` (default
@@ -121,6 +149,17 @@ tools:
 
 `run_lua` can run any saved script by `name` whenever Lua is enabled.
 
+### Who owns a saved script
+
+A script's owner is whoever saved its current version: the agent's name for a save through
+`manage_lua_scripts`, `server` for a save over the RPC. A new version saved by another agent
+changes the owner to that agent. When an agent runs a saved script (`run_lua name=...` or
+`lua_<name>`), the script is `own` trust only if that agent is its owner. Every other script
+runs as `shared`: one saved by another agent, and every script saved over the RPC, for every
+agent. `tools.lua.tools.deny_for_shared` removes its tools from shared scripts, so such a
+call returns `TOOL_NOT_VISIBLE` without running. The run record's `trust` field, and the
+`trust` that `get` and `list` return, show the tier for the calling agent.
+
 ### `manage_lua_scripts`
 
 Registered on agents that list it in `tools.builtin` and also have `run_lua`, when
@@ -129,10 +168,10 @@ Registered on agents that list it in `tools.builtin` and also have `run_lua`, wh
 | Action | Does |
 |---|---|
 | `save` | Validates the name (`^[a-z][a-z0-9_]{2,40}$`), a description, the manifest, and that the source compiles (it is never run), then stores it. An existing name is `DUPLICATE` unless `overwrite` is true; a new version keeps its published state and attachments. Returns `{name, version, tool_name, published}`. |
-| `get` | Returns the script with its source, manifest, version, owner and `updated_at`. |
-| `list` | Returns up to 200 scripts, name-sorted, without source. |
+| `get` | Returns the script with its source, manifest, version, owner, `updated_at`, and the `trust` (`own` or `shared`) it runs with on this agent. |
+| `list` | Returns `{scripts, total, truncated}`: up to 200 scripts, name-sorted, without source, each with the `trust` it runs with on this agent; `total` is the number of saved scripts and `truncated` is true when more than 200 exist. |
 | `delete` | Deletes the script and every attachment of it. |
-| `publish` | Needs `publish_as_tool_enabled` and a manifest with `parameters`. Every `requires` entry must be a tool scripts on this agent can call (`TOOL_NOT_VISIBLE` otherwise). Marks the script published, attaches it to this agent, and registers `lua_<name>` at once. |
+| `publish` | Needs `publish_as_tool_enabled` and a manifest with `parameters`. Every `requires` entry must be a tool the script, at its trust on this agent, can call (`TOOL_NOT_VISIBLE` otherwise). Marks the script published, attaches it to this agent, and registers `lua_<name>` at once. The tool is registered on the agent, not the session: every session of that agent is offered it from its next model call, and because the attachment is saved in `attachments.json`, the agent registers it again after a server restart. |
 | `unpublish` | Clears the published flag. The tool leaves this agent at once, and every other agent's copy refuses its next call. Attachments are kept, so publishing again restores them. |
 | `detach` | Removes `lua_<name>` from this agent only. |
 
@@ -141,7 +180,7 @@ The manifest:
 | Field | Meaning |
 |---|---|
 | `parameters` | JSON Schema with `type: object` for the tool's arguments: at most 20 properties and 4 KiB, no `$ref`. |
-| `requires` | The tools the script calls. When set, the script may call only these. |
+| `requires` | The tools the script calls. When set, the script may call only these; an empty list (`requires: []`) means no tool at all, and an absent `requires` means no restriction. Over the RPC, set `requires_set: true` to send an empty list: proto3 cannot tell an empty list from an absent one, so an empty `requires` without `requires_set` is stored as no restriction. Responses set `requires_set` whenever the stored manifest has a `requires` list, so a read saved back keeps it. |
 | `returns` | One line describing the return value. |
 
 ### `lua_<name>` tools
@@ -152,6 +191,12 @@ is `Saved Lua script. <description> Returns: <returns>`, and its input schema is
 script, so the newest version runs, and a deleted or unpublished script refuses. It runs the
 same way as `run_lua`: same gate, same bridge, with the script's `requires`. Scripts can
 never call `lua_*` tools.
+
+A `lua_<name>` tool belongs to the agent, not to a session. Once published, it is offered to
+every session of that agent, including sessions that were open before the publish, and it
+survives a restart: at startup each agent registers every published script in its
+attachments (`attachments.json`). This also holds after `publish_as_tool_enabled` is turned
+off, which only stops new publishes; `detach`, `unpublish` or `delete` removes the tool.
 
 An agent gets `lua_<name>` from its attachments, or from a custom tool in its YAML:
 

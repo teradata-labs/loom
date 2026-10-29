@@ -157,3 +157,46 @@ func TestPcallStillCatchesOrdinaryErrors(t *testing.T) {
 	assert.Equal(t, int64(7), v["a"])
 	assert.Equal(t, int64(12), v["b"])
 }
+
+// TestPatternMatchHonorsWallAndCancel runs a backtracking pattern whose single
+// match takes seconds: about 3.5 s at 60 characters without the race detector,
+// growing with about the sixth power of the subject length. The matcher polls
+// the run's stop condition while it works, so the wall limit and a caller's
+// cancel end the run on time instead of after the match returns.
+func TestPatternMatchHonorsWallAndCancel(t *testing.T) {
+	const subject = `local s = string.rep("a", 60) local p = "a*a*a*a*a*a*b" `
+	scripts := []struct {
+		name string
+		src  string
+	}{
+		{"find", subject + `return string.find(s, p)`},
+		{"match", subject + `return string.match(s, p)`},
+		{"gmatch", subject + `for m in string.gmatch(s, p) do end`},
+		{"gsub", subject + `return (string.gsub(s, p, "x"))`},
+		{"find under pcall", subject + `local ok = pcall(string.find, s, p) return ok`},
+	}
+	for _, sc := range scripts {
+		t.Run(sc.name+"/wall", func(t *testing.T) {
+			lim := small()
+			lim.CPUTicks, lim.Wall = 1<<40, 200*time.Millisecond
+			start := time.Now()
+			res := Run(context.Background(), Program{Source: sc.src}, lim, newFakeHost())
+			elapsed := time.Since(start)
+			assert.Equal(t, OutcomeBudgetExceeded, res.Outcome, res.Error)
+			assert.Equal(t, LimitWall, res.Limit)
+			assert.Less(t, elapsed, slack(400*time.Millisecond))
+		})
+		t.Run(sc.name+"/cancel", func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			lim := small()
+			lim.CPUTicks, lim.Wall = 1<<40, 20*time.Second
+			time.AfterFunc(100*time.Millisecond, cancel)
+			start := time.Now()
+			res := Run(ctx, Program{Source: sc.src}, lim, newFakeHost())
+			elapsed := time.Since(start)
+			assert.Equal(t, OutcomeCancelled, res.Outcome, res.Error)
+			assert.Less(t, elapsed, slack(300*time.Millisecond))
+		})
+	}
+}

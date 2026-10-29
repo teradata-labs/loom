@@ -32,7 +32,8 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
-// Error codes run_lua returns to the model (02-lua-api.md §6 of the design).
+// Error codes run_lua returns to the model, listed in the "Results" table of
+// docs/reference/lua-script-api.md.
 const (
 	LuaCodeInvalidParams     = "INVALID_PARAMS"
 	LuaCodeScriptError       = "SCRIPT_ERROR"
@@ -59,8 +60,10 @@ const LuaOutcomeRefused = "refused"
 // luaErrorOutputTail is how much captured output a SCRIPT_ERROR message keeps.
 const luaErrorOutputTail = 512
 
-// runLuaDescription is the tool description, verbatim from the design
-// (02-lua-api.md §1). It must stay under 1,100 characters.
+// runLuaDescription is the tool description the model sees. It must stay
+// under 1,100 characters (TestRunLuaTool_SchemaAndDescription checks the cap); the
+// behaviour it describes is in "The run_lua tool" in
+// docs/reference/lua-script-api.md.
 const runLuaDescription = "Runs a short Lua 5.4 script in a sandbox inside the server and returns its result. " +
 	"The script can call the tools you already have with `tools.call(name, args)`, so one run can replace many tool calls: " +
 	"loop over results, filter and join them, retry, aggregate, and return only what you need. " +
@@ -319,7 +322,9 @@ func (t *RunLuaTool) resolve(ctx context.Context, span *observability.Span, star
 	if t.opts.Resolve == nil {
 		return ResolvedScript{}, luaFailure(span, start, ResolvedScript{Name: name}, LuaCodeScriptNotFound, "saved scripts are not available here", "pass the source as script", false)
 	}
-	script, err := t.opts.Resolve(ctx, name)
+	// Name this agent as the runner, so a store resolver can tell the
+	// agent's own scripts from the ones it did not save.
+	script, err := t.opts.Resolve(t.agent.luaRunnerContext(ctx), name)
 	switch {
 	case errors.Is(err, ErrAmbiguousScript):
 		return script, luaFailure(span, start, ResolvedScript{Name: name}, LuaCodeAmbiguousScript, err.Error(), "run it again with the script id", false)
@@ -404,7 +409,7 @@ func (t *RunLuaTool) runResolved(ctx context.Context, span *observability.Span, 
 }
 
 // mapLuaRunResult converts a run into the tool result the model sees, per the
-// design's result-mapping table (02-lua-api.md §1).
+// "Results" table in docs/reference/lua-script-api.md.
 func mapLuaRunResult(res *luasandbox.RunResult, script ResolvedScript, elapsed time.Duration) *shuttle.Result {
 	out := &shuttle.Result{
 		ExecutionTimeMs: elapsed.Milliseconds(),

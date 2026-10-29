@@ -14,8 +14,10 @@
 
 // Package filestore keeps saved Lua scripts in a directory: <name>.lua holds
 // the source, <name>.json the metadata, and attachments.json the per-agent
-// attachments. Loom is single-tenant per server, so every script is the
-// runner's own (TrustOwn).
+// attachments. A script is the runner's own (TrustOwn) only when the agent
+// running it is the agent that saved it; any other script (saved by another
+// agent, or over the RPC) is shared (TrustShared), so the policy's
+// deny_for_shared applies to it.
 package filestore
 
 import (
@@ -287,15 +289,25 @@ func (s *Store) Get(_ context.Context, name string) (store.Script, error) {
 	return sc, nil
 }
 
-// GetForRunner implements store.ScriptStore. Every script on a loom server is
-// the runner's own.
+// GetForRunner implements store.ScriptStore. The runner is
+// store.RunnerFromContext(ctx): a script is TrustOwn when its Owner is that
+// runner, and TrustShared otherwise, including when ctx names no runner and
+// for scripts saved over the RPC (store.OwnerRPC).
 func (s *Store) GetForRunner(ctx context.Context, name string) (store.Script, error) {
 	sc, err := s.Get(ctx, name)
 	if err != nil {
 		return store.Script{}, err
 	}
-	sc.Trust = luasandbox.TrustOwn
+	sc.Trust = trustFor(sc.Owner, store.RunnerFromContext(ctx))
 	return sc, nil
+}
+
+// trustFor is the tier a script saved by owner runs at for runner.
+func trustFor(owner, runner string) luasandbox.Trust {
+	if runner != "" && owner == runner && owner != store.OwnerRPC {
+		return luasandbox.TrustOwn
+	}
+	return luasandbox.TrustShared
 }
 
 // List implements store.ScriptStore.

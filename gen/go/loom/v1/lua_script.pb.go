@@ -44,10 +44,18 @@ type LuaScriptManifest struct {
 	// JSON Schema (type object) for the script's args when it runs as a tool.
 	// At most 20 properties and 4 KiB; no $ref.
 	Parameters *structpb.Struct `protobuf:"bytes,1,opt,name=parameters,proto3" json:"parameters,omitempty"`
-	// Tool names the script calls. When set, the script may call only these.
+	// Tool names the script calls. When non-empty, or when requires_set is
+	// true, the script may call only these. Empty with requires_set false
+	// means no restriction.
 	Requires []string `protobuf:"bytes,2,rep,name=requires,proto3" json:"requires,omitempty"`
 	// One line describing the return value.
-	Returns       string `protobuf:"bytes,3,opt,name=returns,proto3" json:"returns,omitempty"`
+	Returns string `protobuf:"bytes,3,opt,name=returns,proto3" json:"returns,omitempty"`
+	// When true, requires is authoritative even if empty: an empty requires
+	// with requires_set true means the script may call no tool at all. proto3
+	// cannot tell an empty repeated field from an absent one, so this flag
+	// carries the difference. Responses set it whenever the stored manifest
+	// lists its requires (empty included).
+	RequiresSet   bool `protobuf:"varint,4,opt,name=requires_set,json=requiresSet,proto3" json:"requires_set,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -101,6 +109,13 @@ func (x *LuaScriptManifest) GetReturns() string {
 		return x.Returns
 	}
 	return ""
+}
+
+func (x *LuaScriptManifest) GetRequiresSet() bool {
+	if x != nil {
+		return x.RequiresSet
+	}
+	return false
 }
 
 // LuaScript is a saved Lua script that run_lua can run by name.
@@ -621,13 +636,14 @@ var File_loom_v1_lua_script_proto protoreflect.FileDescriptor
 
 const file_loom_v1_lua_script_proto_rawDesc = "" +
 	"\n" +
-	"\x18loom/v1/lua_script.proto\x12\aloom.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x82\x01\n" +
+	"\x18loom/v1/lua_script.proto\x12\aloom.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa5\x01\n" +
 	"\x11LuaScriptManifest\x127\n" +
 	"\n" +
 	"parameters\x18\x01 \x01(\v2\x17.google.protobuf.StructR\n" +
 	"parameters\x12\x1a\n" +
 	"\brequires\x18\x02 \x03(\tR\brequires\x12\x18\n" +
-	"\areturns\x18\x03 \x01(\tR\areturns\"\xc3\x02\n" +
+	"\areturns\x18\x03 \x01(\tR\areturns\x12!\n" +
+	"\frequires_set\x18\x04 \x01(\bR\vrequiresSet\"\xc3\x02\n" +
 	"\tLuaScript\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12\x16\n" +
