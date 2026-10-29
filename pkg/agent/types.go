@@ -302,6 +302,11 @@ type Config struct {
 	// Name is the agent name (used for identification and logging)
 	Name string
 
+	// GraphMemoryAgentID is the stable key for graph memory reads and writes.
+	// Empty means Name (unchanged behaviour). Use an ID that survives renames;
+	// the agent's own ID is a fresh UUID per instance and would lose memory on restart.
+	GraphMemoryAgentID string
+
 	// Description is a human-readable description of the agent's purpose
 	Description string
 
@@ -385,6 +390,12 @@ type Config struct {
 	// tools differ from the previous successful call of the same turn. Default
 	// false; the YAML key is behavior.tool_change_note.
 	ToolChangeNote bool
+
+	// ParallelReadTools runs consecutive concurrency-safe tool calls of one
+	// model response in parallel (at most maxParallelReads at once); rows still
+	// commit in call order. Default false; the YAML key is
+	// behavior.parallel_read_tools. See dispatchBatch.
+	ParallelReadTools bool
 
 	// Debug holds opt-in diagnostic switches, all off by default.
 	Debug DebugConfig

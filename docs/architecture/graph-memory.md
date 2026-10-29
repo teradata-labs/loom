@@ -49,7 +49,7 @@ Salience-driven graph-backed episodic memory for persistent, cross-session agent
 2. **Salience-Driven Retrieval**: Not all memories are equal; salience scoring with time decay ensures the most important and recent memories surface first
 3. **Immutable Audit Trail**: Memory content is append-only with lineage tracking (SUPERSEDES, CONSOLIDATES), providing a complete historical record
 4. **Token Budget Control**: Automatic context truncation prevents memory injection from overflowing the LLM context window
-5. **Agent-Scoped Isolation**: Each agent maintains its own knowledge graph; no cross-agent leakage
+5. **Agent-Scoped Isolation**: Each agent maintains its own knowledge graph; no cross-agent leakage. The `agent_id` key is `Config.GraphMemoryAgentID` when set, otherwise `Config.Name`
 6. **Opt-Out by Default**: Graph memory is enabled when a store is available; agents must explicitly disable it
 
 **Non-goals**:
@@ -679,6 +679,8 @@ SELECT DISTINCT * FROM neighbor_walk
 **Description**: Knowledge graphs are isolated per `agent_id`. No cross-agent memory sharing.
 
 **Impact**: Two agents cannot share knowledge unless explicitly copied. This is by design for isolation.
+
+**Key**: `agent_id` is `Config.GraphMemoryAgentID` when set, otherwise `Config.Name`; set an ID to keep memories across a rename. Two agents given the same ID share one graph. The ID is set from Go only (`agent.WithGraphMemoryAgentID` or `agent.WithConfig`); there is no YAML or proto field. The `graph_memory.recall` span records the key as `graph_memory.agent_key`.
 
 ### Constraint 3: Keyword Search Only
 

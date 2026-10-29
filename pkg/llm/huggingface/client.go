@@ -32,6 +32,7 @@ type Client struct {
 
 // Config holds configuration for the HuggingFace client.
 type Config struct {
+	StrictToolSchemas bool
 	// Required: HuggingFace token from https://huggingface.co/settings/tokens
 	// Note: This is a "token" not an "API key" in HuggingFace terminology
 	Token string
@@ -76,6 +77,7 @@ func NewClient(config Config) *Client {
 	// Create OpenAI client with HuggingFace endpoint
 	// Note: We use the full chat/completions path since OpenAI client expects it
 	openaiClient := openai.NewClient(openai.Config{
+		StrictToolSchemas: config.StrictToolSchemas,
 		APIKey:            config.Token, // HuggingFace calls it a "token" but it works as API key
 		Model:             config.Model,
 		Endpoint:          "https://router.huggingface.co/v1/chat/completions",
