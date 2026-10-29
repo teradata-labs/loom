@@ -397,7 +397,7 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// calls — pure FTS search + TouchMemories.
 	if a.skillOrchestrator != nil && a.graphMemoryStore != nil {
 		store := a.graphMemoryStore
-		agentName := a.config.Name
+		agentName := a.graphMemoryKey()
 		a.skillOrchestrator.SetOnSkillEviction(func(sessionID string, skill *skills.Skill, activeFor time.Duration) {
 			ctx := context.Background()
 
@@ -653,6 +653,14 @@ func (a *Agent) isBuiltinToolSuppressed(name string) bool {
 func WithName(name string) Option {
 	return func(a *Agent) {
 		a.config.Name = name
+	}
+}
+
+// WithGraphMemoryAgentID sets the stable key for graph memory reads and writes
+// (Config.GraphMemoryAgentID), so memories survive a rename of the agent.
+func WithGraphMemoryAgentID(id string) Option {
+	return func(a *Agent) {
+		a.config.GraphMemoryAgentID = id
 	}
 }
 
@@ -3864,8 +3872,17 @@ func (a *Agent) checkAndRegisterGraphMemoryTool() {
 		return
 	}
 
-	tool := shuttle.Tool(NewGraphMemoryTool(a.graphMemoryStore, a.config.Name))
+	tool := shuttle.Tool(NewGraphMemoryTool(a.graphMemoryStore, a.graphMemoryKey()))
 	a.tools.Register(tool)
+}
+
+// graphMemoryKey is the agent ID that keys graph memory reads and writes.
+// GraphMemoryAgentID wins when set; otherwise the agent Name (unchanged behaviour).
+func (a *Agent) graphMemoryKey() string {
+	if a.config.GraphMemoryAgentID != "" {
+		return a.config.GraphMemoryAgentID
+	}
+	return a.config.Name
 }
 
 // graphMemoryTokenBudget returns the token budget for graph memory context injection.
@@ -3922,6 +3939,9 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 	// (az512h). One span, outcome always set.
 	ctx, span := a.tracer.StartSpan(ctx, "graph_memory.recall")
 	defer a.tracer.EndSpan(span)
+	// Which memory partition this recall queries; differs from the agent name
+	// when GraphMemoryAgentID is set.
+	span.SetAttribute("graph_memory.agent_key", a.graphMemoryKey())
 	outcome := "unknown"
 	defer func() { span.SetAttribute("recall.outcome", outcome) }()
 
@@ -3973,14 +3993,14 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 	storeFailed := false
 
 	// Entity-scoped recall: search entities, get their neighborhoods.
-	entities, err := a.graphMemoryStore.SearchEntities(ctx, a.config.Name, searchQuery, 5)
+	entities, err := a.graphMemoryStore.SearchEntities(ctx, a.graphMemoryKey(), searchQuery, 5)
 	if err != nil {
 		storeFailed = true
 		span.RecordError(fmt.Errorf("graph memory recall: search entities: %w", err))
 	}
 	for _, e := range entities {
 		recall, ctxErr := a.graphMemoryStore.ContextFor(ctx, memory.ContextForOpts{
-			AgentID:    a.config.Name,
+			AgentID:    a.graphMemoryKey(),
 			EntityName: e.Name,
 			Topic:      searchQuery,
 			MaxTokens:  budget,
@@ -4009,7 +4029,7 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 
 	// Unscoped recall: broad FTS5 search across all memories.
 	memories, recallErr := a.graphMemoryStore.Recall(ctx, memory.RecallOpts{
-		AgentID:   a.config.Name,
+		AgentID:   a.graphMemoryKey(),
 		Query:     searchQuery,
 		Limit:     50,
 		MaxTokens: budget,
@@ -4097,7 +4117,7 @@ func (a *Agent) multiHopRecall(ctx context.Context, seen map[string]bool, budget
 		return nil
 	}
 
-	agentID := a.config.Name
+	agentID := a.graphMemoryKey()
 
 	// Find the user entity (marked with is_user:true during extraction).
 	userEntity := a.findUserEntity(ctx, agentID)

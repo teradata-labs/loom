@@ -318,6 +318,11 @@ type Config struct {
 	// Name is the agent name (used for identification and logging)
 	Name string
 
+	// GraphMemoryAgentID is the stable key for graph memory reads and writes.
+	// Empty means Name (unchanged behaviour). Use an ID that survives renames;
+	// the agent's own ID is a fresh UUID per instance and would lose memory on restart.
+	GraphMemoryAgentID string
+
 	// Description is a human-readable description of the agent's purpose
 	Description string
 
