@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Third-party license notices ship with every release
+- **`NOTICE` and `THIRD-PARTY-NOTICES.md` are generated** by `cmd/gen-notices` (`just notices`) from the packages compiled into `loom`, `looms` and `loom-standalone`, resolved for every release platform and unioned. License and NOTICE texts are copied verbatim from each dependency, including the Go standard library's license; a distributed component without a license file is a hard error. `just notices-check` (part of `just check` and CI) fails when the files no longer match the dependency tree, so every dependency change must be followed by `just notices`.
+- **Release archives carry `LICENSE`, `NOTICE` and `THIRD-PARTY-NOTICES.md`**: the per-binary tarballs and zips, and the combined Windows zip. The Homebrew formulas install them to the formula's `doc` directory, and `docker/Dockerfile.runtime` copies them to `/usr/share/doc/loom/`. See `docs/reference/third-party-notices.md`.
+
 #### Opt-in context-window warning when relief leaves the context over its release mark
 - **Off by default.** An agent turns it on with `behavior.context_relief_warning: true` in its YAML. When on, the model is told on each send where context relief ran and left the estimate over its release mark. Relief runs only once the estimate reaches the start mark, so a send that starts below it, including one that sits between the two marks after an earlier relief, carries no warning. The note states the context's percentage of the usable window (capped at 100) and the release mark's, and rides the same transient send path as the turn and tool reminders, so it is never stored in history. A resend after a refused send carries it too. A `context_reminder.added` span event records the turn, the estimate, the release mark and the usable window; `soft_reminder.added` is unchanged. See `docs/reference/self-correction.md`.
 

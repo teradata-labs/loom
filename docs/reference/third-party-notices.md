@@ -53,15 +53,28 @@ just notices        # rewrite both files
 just notices-check  # fail if they no longer match the dependency tree
 ```
 
-`notices-check` runs as part of `just check`, so a dependency change that is not
-reflected in the notices fails the build in the same way stale generated proto
-code does.
+`notices-check` runs as part of `just check` and in CI, so a dependency change
+that is not reflected in the notices fails the build in the same way stale
+generated proto code does. Nothing regenerates the files automatically: run
+`just notices` and commit the result after any `go.mod` / `go.sum` change,
+including Dependabot bumps and merges of `main` that bring one.
 
 ## Release packaging
 
-`LICENSE`, `NOTICE`, and `THIRD-PARTY-NOTICES.md` are included in every release
-archive alongside the binary. Generating the files is not sufficient on its own —
-the obligation is to distribute them *with* the software.
+Generating the files is not sufficient on its own — the obligation is to
+distribute them *with* the software. `LICENSE`, `NOTICE`, and
+`THIRD-PARTY-NOTICES.md` travel with each distribution channel defined in this
+repository:
+
+| Channel | Where the files are |
+|---|---|
+| Per-binary release archives (`*.tar.gz`, `*.exe.zip`) | Top level of the archive, next to the binary |
+| Combined Windows zip (`loom-windows-x64.zip`) | Next to the two `.exe` files |
+| Homebrew (`loom`, `loom-server` formulas) | The formula's `doc` directory (`$(brew --prefix)/share/doc/<formula>/`) |
+| Runtime image (`docker/Dockerfile.runtime`) | `/usr/share/doc/loom/` |
+
+The winget manifest installs only the two executables from the combined zip, so
+a winget install does not leave the files on disk; the zip itself carries them.
 
 ## What this is not
 
@@ -85,4 +98,6 @@ Module-level license tooling reports only the wrapper's MIT license, so these ar
 called out explicitly in `THIRD-PARTY-NOTICES.md`.
 
 The Go standard library and runtime are statically linked into every binary and
-are distributed under BSD-3-Clause, © 2009 The Go Authors.
+are distributed under BSD-3-Clause, © 2009 The Go Authors. The generator copies
+that license text verbatim from `$(go env GOROOT)/LICENSE` of the toolchain
+`go.mod` selects, so it is reproduced rather than linked.
