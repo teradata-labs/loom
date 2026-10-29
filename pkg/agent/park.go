@@ -796,6 +796,11 @@ func (a *Agent) maybeParkBatch(ctx Context, sess *Session, llmResp *LLMResponse,
 
 // parkedRequestContext is the Context of a parked request: its origin
 // discriminator and the projection of the provider call whose batch parked.
+// The projection is written on every park, not only when run_lua is
+// registered: the resume (completeParkedBatch) restricts the whole batch's
+// tool set to the recorded names and treats a missing record as a legacy row
+// (no tools, no projection, and a warning), so skipping it would send every
+// Lua-off resume down that path.
 func parkedRequestContext(advertised []shuttle.Tool) map[string]interface{} {
 	return map[string]interface{}{
 		"kind":                   "parked",
