@@ -136,8 +136,15 @@ Priority classes, highest first:
 | `NEW` | first call of a conversation | admitted as churn allows |
 
 Within a class: weighted fair queuing per tenant/agent, FIFO within a weight.
-**Aging**: a waiter that has waited longer than `starvation_age_s` is promoted
-one class, so `NEW` cannot be starved forever by a hot fleet. One outstanding
+**Aging**: each `starvation_age_s` a waiter waits crosses one starvation tier
+(tier n after (n+1) × `starvation_age_s`). A tier raises the rank the waiter
+is *dispatched* at by one class step, capped at `RESOURCE_HOLDER`'s rank; it
+never changes the waiter's class, which keeps saying what the request is
+(`loom scheduler waiters` shows the real class, and `PROMOTIONS` counts tiers).
+So a `NEW` waiter one tier old is served with `IN_FLIGHT`, still behind a real
+`RESOURCE_HOLDER`, and after two tiers it is served with holders. Within a
+rank, the waiter that reached the rank first is served first. `NEW` therefore
+cannot be starved forever by a hot fleet. One outstanding
 slot per conversation (the conversation loop is sequential anyway).
 
 Grant lifetime: a slot covers one LLM call *including its throttle retries*.
@@ -166,7 +173,8 @@ a goroutine inside the limiter queue:
      priority precisely so their parks are short).
    - In-process memory: retained (parking is expected to be seconds-to-minutes).
 4. The scheduler wakes the waiter when churn creates a slot (a grant
-   completes, capacity feedback raises the ceiling, or aging promotes it).
+   completes, capacity feedback raises the ceiling, or aging raises its
+   dispatch rank).
    Wake resumes the loop at the pending LLM call.
 5. Crash recovery: parked conversations are durable. On looms restart, parked
    waiters re-register from the store; grants in flight at crash are simply
@@ -265,7 +273,8 @@ syntax = "proto3";
 package loom.v1;
 
 // Priority class of a slot request. Order is semantic: higher classes are
-// served first; aging promotes a starved waiter one class.
+// served first; aging raises a starved waiter's dispatch rank one class step
+// (its class is unchanged).
 enum SlotPriorityClass {
   SLOT_PRIORITY_CLASS_UNSPECIFIED = 0;
   SLOT_PRIORITY_CLASS_NEW = 1;              // first call of a conversation
@@ -286,7 +295,8 @@ message LLMSchedulerConfig {
   // Door-queue depth beyond which new conversations are rejected with
   // RESOURCE_EXHAUSTED instead of queued.
   int32 max_door_queue = 4;
-  // Seconds after which a waiting slot request is promoted one class.
+  // Seconds per starvation tier; each tier raises a waiting request's
+  // dispatch rank one class step.
   int32 starvation_age_s = 5;
   // Target utilization of measured capacity (0,1]; default 0.8.
   float utilization_target = 6;
@@ -333,9 +343,13 @@ YAML). The scheduler consumes it; it does not replace it.
 - **No death by waiting.** Invariant: the scheduler never returns a fatal
   error for lack of capacity. Fatal outcomes come only from the
   conversation's own budget/deadline or a non-retryable provider error.
-- **Bounded starvation.** Aging guarantees any waiter reaches the top class in
-  `≤ 2 × starvation_age_s`. (Trade-off: a saturated system with aging degrades
-  toward FIFO — acceptable; aging exists for liveness, not throughput.)
+- **Bounded starvation.** Aging guarantees any waiter reaches the top dispatch
+  rank of its band in `≤ 2 × starvation_age_s` (its class label does not
+  change). A top-rank waiter that crosses a further tier and still does not
+  fit halts backfill in its band until it does. (Trade-off: a saturated system
+  with aging degrades toward FIFO — acceptable; aging exists for liveness, not
+  throughput. Class orders waiters by itself only until they cross their first
+  tier.)
 - **Bounded priority inversion.** `RESOURCE_HOLDER` inheritance is one level
   and non-transitive; a holder that parks with non-reclaimable state keeps the
   boost so its park is short.
@@ -354,7 +368,7 @@ YAML). The scheduler consumes it; it does not replace it.
 Per scope: `loom_llm_slots_active`, `loom_llm_parked`, `loom_llm_door_queue`,
 `loom_llm_effective_tpm`, `loom_llm_reserved_outstanding`,
 `loom_llm_wait_seconds` (histogram, by priority class),
-`loom_llm_promotions_total` (aging events), `loom_llm_admission_rejects_total`.
+`loom_llm_promotions_total` (starvation tiers crossed), `loom_llm_admission_rejects_total`.
 Every park/wake/grant is a span event on the conversation trace, so a slow
 agent's timeline shows *where* it waited and *why* it was woken. Scheduler
 state queryable live via `LLMSchedulerService.GetSlotState`.

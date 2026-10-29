@@ -30,7 +30,9 @@ type Config struct {
 	TokensPerMinute int64
 	// UtilizationTarget in (0,1]; 0 = 0.8.
 	UtilizationTarget float64
-	// StarvationAge promotes a waiter one class after this long. 0 = 60s.
+	// StarvationAge is the starvation tier interval: each one a waiter
+	// waits raises its effective dispatch rank one class step (its class
+	// label never changes). 0 = 60s.
 	StarvationAge time.Duration
 	// InteractiveHeadroom in [0,1): fraction of the budget batch admission
 	// cannot touch, kept free for the interactive band. 0 = default 0.15;
@@ -741,9 +743,10 @@ func (s *Scheduler) tick() {
 	}
 }
 
-// ageLocked promotes waiters older than starvationAge one class within
-// their band (liveness: top class of the band in at most 2 * starvationAge).
-// Aging NEVER crosses bands: saturated batch must not flood the interactive
+// ageLocked advances the starvation tier of every waiter that has waited
+// past its current one, which raises its effective dispatch rank within its
+// band (liveness: top rank of the band in at most 2 * starvationAge). It
+// never changes a waiter's class. Aging NEVER crosses bands: saturated batch must not flood the interactive
 // lane by seniority. Note the asymmetry this leaves by design: batch has no
 // reserved budget share, so a saturated interactive band CAN starve batch
 // entirely (a human is waiting; throughput work waits — see SlotOrigin in
@@ -767,7 +770,8 @@ func (s *Scheduler) ageLocked() {
 					// parked requests read as holders after 715 promotions,
 					// which erases the distinction priority inheritance
 					// depends on. Precedence for a starved waiter comes from
-					// dispatch instead (see dispatchLocked).
+					// its effective rank at dispatch instead (see
+					// effectiveRank).
 					before := effectiveRank(w)
 					w.promoted++
 					s.promotionsTotal++
