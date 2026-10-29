@@ -46,6 +46,14 @@ func TestClaudeFamilyPricing(t *testing.T) {
 		{"claude-sonnet-4-6", 3, 15, true},
 		{"claude-3-5-sonnet-20241022", 3, 15, true},
 		{"claude-haiku-4-5", 1, 5, true},
+		// Claude 3 ids put the generation before the family name, so the
+		// generic "claude-haiku" / "claude-opus" cases never see them.
+		{"claude-3-5-haiku-20241022", 0.80, 4, true},
+		{"claude-3-5-haiku-latest", 0.80, 4, true},
+		{"claude-3-haiku-20240307", 0.25, 1.25, true},
+		{"anthropic.claude-3-haiku-20240307-v1:0", 0.25, 1.25, true},
+		{"claude-3-opus-20240229", 15, 75, true},
+		{"us.anthropic.claude-3-opus-20240229-v1:0", 15, 75, true},
 		// Not Claude: the caller's own default applies.
 		{"gpt-4o", 0, 0, false},
 		{"opus", 0, 0, false},

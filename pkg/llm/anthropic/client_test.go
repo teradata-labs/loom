@@ -539,6 +539,13 @@ func TestClient_CalculateCost(t *testing.T) {
 		{"opus_4_1", "claude-opus-4-1-20250805", 1_000_000, 1_000_000, 0, 0, 90.0},
 		// Haiku — $1/$5
 		{"haiku_4_5", "claude-haiku-4-5-20251001", 1_000_000, 1_000_000, 0, 0, 6.0},
+		// Claude 3 ids put the generation first ("claude-3-haiku"), so they
+		// need their own rows rather than the Sonnet default.
+		{"haiku_3_5", "claude-3-5-haiku-20241022", 1_000_000, 1_000_000, 0, 0, 4.80},   // $0.80 + $4
+		{"haiku_3", "claude-3-haiku-20240307", 1_000_000, 1_000_000, 0, 0, 1.50},       // $0.25 + $1.25
+		{"opus_3", "claude-3-opus-20240229", 1_000_000, 1_000_000, 0, 0, 90.0},         // $15 + $75
+		{"opus_3_cache_read", "claude-3-opus-20240229", 0, 0, 1_000_000, 0, 1.50},      // $15 * 0.10
+		{"haiku_3_cache_write", "claude-3-haiku-20240307", 0, 0, 0, 1_000_000, 0.3125}, // $0.25 * 1.25
 		// Claude 5 family
 		{"fable_5_1", "claude-fable-5-1", 1_000_000, 1_000_000, 0, 0, 60.0},           // $10 + $50
 		{"fable_5", "claude-fable-5", 1_000_000, 1_000_000, 0, 0, 60.0},               // $10 + $50

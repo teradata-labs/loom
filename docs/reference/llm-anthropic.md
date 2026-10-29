@@ -130,6 +130,9 @@ the model family, shared with the Bedrock and OpenAI-compatible clients), then t
 | Opus 4.1 | $15.00 | $75.00 | 0.10x input |
 | Haiku 4.5 | $1.00 | $5.00 | 0.10x input |
 | Sonnet 4.x | $3.00 | $15.00 | 0.10x input |
+| Claude 3 Opus (`claude-3-opus-*`) | $15.00 | $75.00 | 0.10x input |
+| Claude 3.5 Haiku (`claude-3-5-haiku-*`) | $0.80 | $4.00 | 0.10x input |
+| Claude 3 Haiku (`claude-3-haiku-*`) | $0.25 | $1.25 | 0.10x input |
 
 A cache write (5-minute TTL) bills at 1.25x the input rate on every model. Cache-read multipliers
 come from `catalog.ClaudeCacheReadMultiplier`. Haiku 5.5's prompt length counts every input token

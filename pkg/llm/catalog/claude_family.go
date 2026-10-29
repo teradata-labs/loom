@@ -41,6 +41,17 @@ func ClaudeFamilyPricing(modelID string) (inputPer1M, outputPer1M float64, match
 	switch {
 	case strings.Contains(id, "claude-fable"), strings.Contains(id, "claude-mythos"):
 		return 10.0, 50.0, true // Fable 5 / 5.1 (and the Mythos counterparts)
+	// Claude 3 ids name the generation before the family ("claude-3-haiku",
+	// not "claude-haiku-3"), so the generic family cases below never match
+	// them. Rates: Anthropic's published list prices (anthropic.com/pricing,
+	// legacy models); the Claude 3.5 Haiku card also appears in the v1.0.0
+	// provider reference (website/content/en/docs/reference/llm-providers.md).
+	case strings.Contains(id, "claude-3-5-haiku"):
+		return 0.80, 4.0, true
+	case strings.Contains(id, "claude-3-haiku"):
+		return 0.25, 1.25, true
+	case strings.Contains(id, "claude-3-opus"):
+		return 15.0, 75.0, true
 	case strings.Contains(id, "claude-opus-5-5"):
 		return 4.0, 20.0, true
 	case strings.Contains(id, "claude-opus-5"):
