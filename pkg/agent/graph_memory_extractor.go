@@ -327,8 +327,11 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 	if gateLive {
 		skip, ok := sites.ExtractVerdict(gateOut.Response, gateOut.Band)
 		if ok && skip {
-			zap.L().Debug("graph memory extraction: skipped, no durable facts in window",
-				zap.String("session", sessionID), zap.Int("messages", len(recentMessages)))
+			// Info, not Debug: an operator reading the log must be able to
+			// tell "nothing durable was extracted" from "the gate said no".
+			zap.L().Info("graph memory extraction: skipped by decision gate, no durable facts in window",
+				zap.String("agent", a.config.Name), zap.String("session", sessionID),
+				zap.String("site", sites.SiteMemoryExtract), zap.Int("messages", len(recentMessages)))
 			a.recordDecisionAsync(extractCtx, sessionID, gateReq, gateOut, nil)
 			return
 		}

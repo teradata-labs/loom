@@ -25,6 +25,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/decision"
@@ -80,6 +83,18 @@ func gateAgent(t *testing.T, store memory.GraphMemoryStore, band []*loomv1.Decis
 	return a, llm
 }
 
+const gateSkipLog = "graph memory extraction: skipped by decision gate, no durable facts in window"
+
+// observeGateLogs routes the global logger to an observer at Info for the
+// test's duration, so a skip logged at Debug is not seen.
+func observeGateLogs(t *testing.T) *observer.ObservedLogs {
+	t.Helper()
+	core, logs := observer.New(zapcore.InfoLevel)
+	restore := zap.ReplaceGlobals(zap.New(core))
+	t.Cleanup(restore)
+	return logs
+}
+
 func extractLiveBand() []*loomv1.DecisionBand {
 	return []*loomv1.DecisionBand{{
 		Site: sites.SiteMemoryExtract, ActMin: 0.5, TrueMin: 0.5,
@@ -94,11 +109,20 @@ func TestExtractionGateSkipsOnConfidentNo(t *testing.T) {
 	dec := decisionmock.New().AnswerNoul(sites.QExtractDurable, 0.03)
 	shadow := &memShadowStore{}
 	a, llm := gateAgent(t, store, extractLiveBand(), dec, shadow)
+	logs := observeGateLogs(t)
 
 	a.extractGraphMemoryAsync(context.Background(), "gate-session")
 
 	assert.Equal(t, 0, llm.getCalls(), "the extraction call never happened")
 	assert.Equal(t, 1, dec.CallCount(), "one cheap question instead")
+
+	// Review #410 F3: the skip is visible at Info, naming session and site.
+	skips := logs.FilterMessage(gateSkipLog).All()
+	require.Len(t, skips, 1, "one Info line for the skipped extraction")
+	fields := skips[0].ContextMap()
+	assert.Equal(t, "gate-session", fields["session"])
+	assert.Equal(t, sites.SiteMemoryExtract, fields["site"])
+	assert.Equal(t, "gate-agent", fields["agent"])
 
 	a.WaitDecisionShadows()
 	rows, err := shadow.QueryShadow(context.Background(), decision.ShadowQuery{Site: sites.SiteMemoryExtract})
@@ -129,9 +153,11 @@ func TestExtractionGateExtractsUnlessConfidentlyTold(t *testing.T) {
 			}
 			shadow := &memShadowStore{}
 			a, llm := gateAgent(t, store, extractLiveBand(), dec, shadow)
+			logs := observeGateLogs(t)
 
 			a.extractGraphMemoryAsync(context.Background(), "gate-session")
 			assert.Equal(t, 1, llm.getCalls(), "extraction ran as it always did")
+			assert.Zero(t, logs.FilterMessage(gateSkipLog).Len(), "no skip line when extraction ran")
 
 			a.WaitDecisionShadows()
 			// Review #410: a fallback used to send a second request for the
