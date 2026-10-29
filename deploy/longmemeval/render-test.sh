@@ -149,6 +149,14 @@ grep -q "loom.dev/run-id: \"${LME_RUN_ID}\"" "${TMP_DIR}/server-deployment.yaml"
     lme_render "${SCRIPT_DIR}/server-config.yaml" >/dev/null 2>&1
 ) && fail "lme_render accepted server-config.yaml with LME_MODEL unset" || true
 
+# 6c. The Bedrock bearer token must never be passed on kubectl's command
+# line (visible to other local users via ps); run-500.sh feeds it on stdin.
+if grep -n -- '--from-literal=bearer-token' "${SCRIPT_DIR}/run-500.sh"; then
+    fail "run-500.sh passes the bearer token with --from-literal (use --from-file=bearer-token=/dev/stdin)"
+fi
+grep -q -- '--from-file=bearer-token=/dev/stdin' "${SCRIPT_DIR}/run-500.sh" \
+    || fail "run-500.sh no longer creates lme-bedrock from stdin"
+
 # 7. No unrendered placeholders (lme_render also guards; belt and suspenders).
 if grep -rn '\${LME_' "${TMP_DIR}"/*.yaml; then
     fail "unrendered LME_* placeholder in rendered output"

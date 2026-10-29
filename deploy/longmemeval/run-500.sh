@@ -120,9 +120,11 @@ if ! kubectl get secret lme-bedrock -n "${LME_NAMESPACE}" &>/dev/null; then
         echo "Export a Bedrock API key (ABSK...) and re-run."
         exit 1
     fi
-    kubectl create secret generic lme-bedrock \
+    # Feed the token on stdin, not --from-literal: a literal puts it in
+    # kubectl's argument list, readable by any local user via ps.
+    printf %s "${LME_BEDROCK_BEARER_TOKEN}" | kubectl create secret generic lme-bedrock \
         -n "${LME_NAMESPACE}" \
-        --from-literal=bearer-token="${LME_BEDROCK_BEARER_TOKEN}"
+        --from-file=bearer-token=/dev/stdin
 fi
 
 echo "=== Deploying server (${LME_IMAGE}@${LME_IMAGE_DIGEST}, port ${LME_GRPC_PORT}) ==="
