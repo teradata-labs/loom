@@ -23,6 +23,7 @@ import (
 	"github.com/teradata-labs/loom/internal/sqlitedriver"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/artifacts"
+	"github.com/teradata-labs/loom/pkg/checkpoint"
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
@@ -41,6 +42,8 @@ type SQLiteBackend struct {
 	graphMemDB        *sql.DB // owned connection for graph memory; closed in Close()
 	taskStore         task.TaskStore
 	taskDB            *sql.DB // owned connection for task store; closed in Close()
+	checkpointStore   checkpoint.CheckpointStore
+	checkpointDB      *sql.DB // owned connection for checkpoint store; closed in Close()
 	migrator          *sqlite.Migrator
 	migratorDB        *sql.DB // owned connection backing migrator; closed in Close()
 	dbPath            string
@@ -156,6 +159,21 @@ func NewSQLiteBackend(cfg *loomv1.SQLiteStorageConfig, tracer observability.Trac
 	}
 	taskStore := sqlite.NewTaskStore(taskDB, tracer)
 
+	// Create checkpoint store (uses same DB path, separate connection).
+	checkpointDB, err := sql.Open("sqlite3", dsn)
+	if err != nil {
+		return nil, errors.Join(
+			fmt.Errorf("failed to open DB for checkpoint store: %w", err),
+			taskDB.Close(),
+			graphMemDB.Close(),
+			migratorDB.Close(),
+			sessionStore.Close(),
+			artifactStore.Close(),
+			humanStore.Close(),
+		)
+	}
+	checkpointStore := sqlite.NewCheckpointStore(checkpointDB, tracer)
+
 	return &SQLiteBackend{
 		sessionStore:      sessionStore,
 		artifactStore:     artifactStore,
@@ -164,6 +182,8 @@ func NewSQLiteBackend(cfg *loomv1.SQLiteStorageConfig, tracer observability.Trac
 		graphMemDB:        graphMemDB,
 		taskStore:         taskStore,
 		taskDB:            taskDB,
+		checkpointStore:   checkpointStore,
+		checkpointDB:      checkpointDB,
 		migrator:          migrator,
 		migratorDB:        migratorDB,
 		dbPath:            dbPath,
@@ -262,6 +282,11 @@ func (b *SQLiteBackend) Close() error {
 			firstErr = fmt.Errorf("task db close: %w", err)
 		}
 	}
+	if b.checkpointDB != nil {
+		if err := b.checkpointDB.Close(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("checkpoint db close: %w", err)
+		}
+	}
 	if b.migratorDB != nil {
 		if err := b.migratorDB.Close(); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("migrator db close: %w", err)
@@ -281,9 +306,15 @@ func (b *SQLiteBackend) TaskStore() task.TaskStore {
 	return b.taskStore
 }
 
+// CheckpointStore implements CheckpointStoreProvider.
+func (b *SQLiteBackend) CheckpointStore() checkpoint.CheckpointStore {
+	return b.checkpointStore
+}
+
 // Compile-time checks
 var _ StorageBackend = (*SQLiteBackend)(nil)
 var _ MigrationInspector = (*SQLiteBackend)(nil)
 var _ StorageDetailProvider = (*SQLiteBackend)(nil)
 var _ GraphMemoryProvider = (*SQLiteBackend)(nil)
 var _ TaskStoreProvider = (*SQLiteBackend)(nil)
+var _ CheckpointStoreProvider = (*SQLiteBackend)(nil)

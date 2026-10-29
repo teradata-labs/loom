@@ -46,10 +46,7 @@ type SessionCleanupHook func(ctx context.Context, sessionID string)
 // so local no-auth deployments keep their pre-existing behavior while
 // auth-enabled deployments get per-user isolation (migration 000009).
 func storeUserID(ctx context.Context) string {
-	if u := types.UserIDFromContext(ctx); u != "" {
-		return u
-	}
-	return types.DefaultUserID
+	return types.UserIDOrDefault(ctx)
 }
 
 // SessionExists reports whether any session row has this id, regardless of

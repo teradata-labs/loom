@@ -26,6 +26,7 @@ import (
 	"github.com/spf13/cobra"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
+	"github.com/teradata-labs/loom/pkg/checkpoint"
 	"github.com/teradata-labs/loom/pkg/communication"
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
@@ -40,6 +41,8 @@ import (
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/orchestration"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
+	"github.com/teradata-labs/loom/pkg/storage/backend"
+	"github.com/teradata-labs/loom/pkg/types"
 	"github.com/teradata-labs/loom/pkg/visualization"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
@@ -55,6 +58,8 @@ var (
 	resumeApprove     bool
 	resumeReject      bool
 	resumeRevise      string
+	resumeWorkflowID  string
+	workflowUser      string
 )
 
 // workflowCmd represents the workflow command
@@ -135,7 +140,7 @@ Examples:
 
 // resumeCmd resumes a workflow suspended at a HITL gate
 var resumeCmd = &cobra.Command{
-	Use:   "resume <workflow-file> <checkpoint-file>",
+	Use:   "resume <workflow-file> [checkpoint-file]",
 	Short: "Resume a workflow suspended at a HITL gate",
 	Long: `Resume a workflow that suspended at a human-in-the-loop gate.
 
@@ -151,11 +156,22 @@ The workflow file must be IDENTICAL to the one the run started with — the
 checkpoint records a fingerprint of the definition and refuses to resume a
 changed workflow.
 
+If the checkpoint file no longer exists (e.g. resuming on a different
+machine, or after the local file was lost), pass --workflow-id with the ID
+printed at suspend time instead of a file path. The checkpoint is then read
+from the configured storage backend. Give either the file or --workflow-id,
+never both; with Postgres, --user names the tenant that owns the checkpoint.
+
+Once the resumed workflow completes or is rejected, its stored checkpoint is
+deleted, so the workflow ID cannot be resumed again. A resume that fails or
+suspends at another gate leaves the checkpoint in place.
+
 Examples:
   looms workflow resume create-table.yaml create-table.checkpoint.pb --approve
   looms workflow resume create-table.yaml create-table.checkpoint.pb --revise "Use MULTISET and add COMPRESS"
-  looms workflow resume create-table.yaml create-table.checkpoint.pb --reject`,
-	Args: cobra.ExactArgs(2),
+  looms workflow resume create-table.yaml create-table.checkpoint.pb --reject
+  looms workflow resume create-table.yaml --workflow-id pipeline-3f2b9c1e --approve`,
+	Args: cobra.RangeArgs(1, 2),
 	Run:  runResume,
 }
 
@@ -201,13 +217,16 @@ func init() {
 	runCmd.Flags().BoolVar(&workflowDryRun, "dry-run", false, "Validate without executing")
 	runCmd.Flags().IntVar(&workflowTimeout, "timeout", 3600, "Execution timeout in seconds")
 	runCmd.Flags().StringVar(&workflowSuspendTo, "suspend-to", "", "Write the HITL gate checkpoint to this file on suspension (default: <workflow>.checkpoint.pb; also disables interactive gate prompts)")
+	runCmd.Flags().StringVar(&workflowUser, "user", "", workflowUserFlagHelp)
 
 	// Flags for resume command
 	resumeCmd.Flags().BoolVar(&resumeApprove, "approve", false, "Approve the pending gate and continue")
 	resumeCmd.Flags().BoolVar(&resumeReject, "reject", false, "Reject the pending gate and end the workflow")
 	resumeCmd.Flags().StringVar(&resumeRevise, "revise", "", "Request a revision with this feedback")
+	resumeCmd.Flags().StringVar(&resumeWorkflowID, "workflow-id", "", "Resume the checkpoint stored under this workflow ID in the storage backend, instead of a checkpoint file")
 	resumeCmd.Flags().IntVar(&workflowTimeout, "timeout", 3600, "Execution timeout in seconds")
 	resumeCmd.Flags().StringVar(&workflowSuspendTo, "suspend-to", "", "Write the next HITL gate checkpoint to this file if the run suspends again")
+	resumeCmd.Flags().StringVar(&workflowUser, "user", "", workflowUserFlagHelp)
 
 	// Flags for list command
 	listCmd.Flags().StringVarP(&workflowDir, "dir", "d", "", "Directory to search (default: auto-detect)")
@@ -273,15 +292,23 @@ func runWorkflow(cmd *cobra.Command, args []string) {
 	}
 
 	result, err := rt.orchestrator.ExecutePattern(ctx, pattern)
-	handleWorkflowOutcome(filePath, result, err, time.Since(startTime))
+	handleWorkflowOutcome(rt, filePath, result, err, time.Since(startTime))
 }
 
 // runResume resumes a workflow suspended at a HITL gate.
 func runResume(cmd *cobra.Command, args []string) {
-	workflowPath, checkpointPath := args[0], args[1]
+	workflowPath := args[0]
+	var checkpointFile string
+	if len(args) > 1 {
+		checkpointFile = args[1]
+	}
 
 	decision, err := buildResumeDecision()
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ %v\n", err)
+		os.Exit(1)
+	}
+	if err := validateResumeSource(checkpointFile, resumeWorkflowID); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ %v\n", err)
 		os.Exit(1)
 	}
@@ -292,14 +319,31 @@ func runResume(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	ckptData, err := os.ReadFile(filepath.Clean(checkpointPath))
+	// Only the base runtime here: a rejection needs no LLM provider or agents,
+	// so the orchestrator is started after the reject check below.
+	rt, err := newWorkflowRuntime()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Failed to read checkpoint: %v\n", err)
+		fmt.Fprintf(os.Stderr, "❌ %v\n", err)
 		os.Exit(1)
 	}
-	ckpt := &loomv1.WorkflowCheckpoint{}
-	if err := proto.Unmarshal(ckptData, ckpt); err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Invalid checkpoint file: %v\n", err)
+	defer rt.Close()
+
+	// A workflow's ID cannot be derived from a file path (it is either set in
+	// the YAML or minted at run time), so the checkpoint comes from the file
+	// or, with --workflow-id, from the storage backend; never a guess between
+	// the two.
+	var ckpt *loomv1.WorkflowCheckpoint
+	if resumeWorkflowID != "" {
+		ckpt, err = loadStoredCheckpoint(context.Background(), rt.openCheckpoints, resumeWorkflowID)
+	} else {
+		ckpt, err = readCheckpointFile(checkpointFile)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Failed to load checkpoint: %v\n", err)
+		os.Exit(1)
+	}
+	if err := adoptCheckpointTenant(ckpt); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ %v\n", err)
 		os.Exit(1)
 	}
 
@@ -309,18 +353,16 @@ func runResume(cmd *cobra.Command, args []string) {
 	fmt.Printf("   Pending gate: stage %d (%s), decision: %s\n",
 		gate.GetStageNumber(), gate.GetStageAgentId(), decision.Action.String())
 
-	// A rejection needs no agents or LLM — short-circuit before runtime setup.
 	if decision.Action == loomv1.GateAction_GATE_ACTION_REJECT {
+		consumeStoredCheckpoint(context.Background(), rt.openCheckpoints, rt.logger, ckpt)
 		fmt.Printf("\n🛑 Workflow rejected at gate on stage %s. No further stages executed.\n", gate.GetStageAgentId())
 		return
 	}
 
-	rt, err := setupWorkflowRuntime(pattern, false)
-	if err != nil {
+	if err := rt.startOrchestrator(pattern, false); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ %v\n", err)
 		os.Exit(1)
 	}
-	defer rt.Close()
 
 	fmt.Println("\n⚡ Resuming workflow...")
 	startTime := time.Now()
@@ -333,7 +375,10 @@ func runResume(cmd *cobra.Command, args []string) {
 	}
 
 	result, err := rt.orchestrator.ResumeWorkflow(ctx, pattern, ckpt, decision)
-	handleWorkflowOutcome(workflowPath, result, err, time.Since(startTime))
+	if resumeFinished(err) {
+		consumeStoredCheckpoint(context.Background(), rt.openCheckpoints, rt.logger, ckpt)
+	}
+	handleWorkflowOutcome(rt, workflowPath, result, err, time.Since(startTime))
 }
 
 // buildResumeDecision maps the resume flags to a GateDecision, requiring
@@ -364,10 +409,10 @@ func buildResumeDecision() (*loomv1.GateDecision, error) {
 
 // handleWorkflowOutcome prints the result of a run/resume, handling HITL
 // suspension (write checkpoint + resume instructions) and rejection.
-func handleWorkflowOutcome(workflowPath string, result *loomv1.WorkflowResult, err error, duration time.Duration) {
+func handleWorkflowOutcome(rt *workflowRuntime, workflowPath string, result *loomv1.WorkflowResult, err error, duration time.Duration) {
 	var suspended *orchestration.WorkflowSuspended
 	if errors.As(err, &suspended) {
-		writeCheckpointAndPrintGate(workflowPath, suspended.Checkpoint)
+		writeCheckpointAndPrintGate(rt, workflowPath, suspended.Checkpoint)
 		return
 	}
 	var rejected *orchestration.GateRejected
@@ -385,21 +430,273 @@ func handleWorkflowOutcome(workflowPath string, result *loomv1.WorkflowResult, e
 	printWorkflowResult(result, duration)
 }
 
+// workflowUserFlagHelp is the --user help text shared by run and resume.
+const workflowUserFlagHelp = "Tenant user ID that owns the workflow checkpoint in the storage backend (postgres: required)"
+
+// workflowStorageTimeout bounds opening the storage backend and each
+// checkpoint call to it. pgxdriver.NewPool pings before it returns, so an
+// unreachable Postgres host would otherwise stall the command for over a
+// minute. A var so tests can shorten it.
+var workflowStorageTimeout = 10 * time.Second
+
+// errCheckpointTenantRequired is returned when the storage backend is
+// postgres and no --user names the tenant. Postgres row-level security needs a
+// real tenant, and guessing one would read or write another user's rows.
+var errCheckpointTenantRequired = errors.New("the storage backend is postgres: --user is required (it selects the tenant whose workflow checkpoints are read and written)")
+
+// workflowCheckpointUserID resolves the tenant that owns checkpoints in the
+// storage backend: the explicit --user; on postgres, --user is required (the
+// same rule as `looms hitl`, openHITLStore); on SQLite, types.DefaultUserID
+// when --user is not given. SQLite differs from `looms hitl` in one way:
+// openHITLStore ignores --user on SQLite because the SQLite human-request
+// store has no user column, while SQLite checkpoints are scoped by --user.
+func workflowCheckpointUserID() (string, error) {
+	if workflowUser != "" {
+		return workflowUser, nil
+	}
+	if config != nil && config.Storage.Backend == "postgres" {
+		return "", errCheckpointTenantRequired
+	}
+	return types.DefaultUserID, nil
+}
+
+// checkpointTenant resolves the tenant to read or write a checkpoint as. A
+// checkpoint that records its owner (ckpt.TenantUserId, set when the CLI stored
+// it) is used under that owner, so finishing it from the checkpoint file
+// removes the stored copy whichever --user the resume command carries.
+// Otherwise the tenant comes from --user as workflowCheckpointUserID describes.
+func checkpointTenant(recorded string) (string, error) {
+	if recorded != "" {
+		return recorded, nil
+	}
+	return workflowCheckpointUserID()
+}
+
+// adoptCheckpointTenant makes a resume run as the tenant ckpt records, so every
+// checkpoint of one workflow stays under one tenant. Without it, a resume that
+// omits --user and suspends again would store the next checkpoint under another
+// tenant (the orchestrator builds that checkpoint without one), and finishing
+// the workflow would delete only the later copy.
+//
+// With no --user the recorded tenant becomes the resume's --user, which the
+// next save, the printed resume commands and the final delete then all use. A
+// --user that names a different tenant is an error: two tenants for one
+// workflow is never what the operator meant. A checkpoint that records no
+// tenant (written by an earlier version, or by a run with no storage backend)
+// leaves --user as given.
+func adoptCheckpointTenant(ckpt *loomv1.WorkflowCheckpoint) error {
+	recorded := ckpt.GetTenantUserId()
+	switch {
+	case recorded == "", recorded == workflowUser:
+		return nil
+	case workflowUser == "":
+		workflowUser = recorded
+		return nil
+	default:
+		return fmt.Errorf("--user %q does not match the tenant %q recorded in the checkpoint; omit --user or pass --user %s", workflowUser, recorded, recorded)
+	}
+}
+
+// checkpointHandle is an open CheckpointStore and the context its calls must
+// carry (the tenant, and the deadline of the open).
+type checkpointHandle struct {
+	store checkpoint.CheckpointStore
+	ctx   context.Context
+	close func()
+}
+
+// openCheckpointStoreFunc opens the workflow checkpoint store on demand. The
+// workflow commands call it only when a checkpoint is saved, looked up by
+// workflow ID, or consumed, so a run that never suspends and a resume from a
+// checkpoint file never touch the storage backend until then.
+type openCheckpointStoreFunc func(ctx context.Context, userID string) (*checkpointHandle, error)
+
+// openCheckpointStore opens the configured storage backend, the same way
+// `looms hitl` does (openHITLStore): it does not run migrations, which belong
+// to `looms serve` and `looms upgrade`, so a CLI invocation never changes a
+// shared database's schema. userID is the tenant the store's calls run as; the
+// caller resolves it (checkpointTenant) before opening, so a postgres config
+// without a tenant fails before any network call.
+func openCheckpointStore(ctx context.Context, tracer observability.Tracer, userID string) (*checkpointHandle, error) {
+	sb, err := backend.NewStorageBackend(ctx, config.BuildProtoStorageConfig(), tracer)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open storage backend: %w", err)
+	}
+	csp, ok := sb.(backend.CheckpointStoreProvider)
+	if !ok || csp.CheckpointStore() == nil {
+		_ = sb.Close()
+		return nil, errors.New("the configured storage backend does not support workflow checkpoints")
+	}
+	return &checkpointHandle{
+		store: csp.CheckpointStore(),
+		ctx:   types.ContextWithUserID(ctx, userID),
+		close: func() { _ = sb.Close() },
+	}, nil
+}
+
+// withCheckpointStore resolves the tenant (recordedTenant, else --user), opens
+// the store, runs fn against it, and closes it, all within
+// workflowStorageTimeout. The tenant is resolved before the open, so a postgres
+// config without one fails without a network call.
+func withCheckpointStore(ctx context.Context, open openCheckpointStoreFunc, recordedTenant string, fn func(ctx context.Context, store checkpoint.CheckpointStore) error) error {
+	userID, err := checkpointTenant(recordedTenant)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, workflowStorageTimeout)
+	defer cancel()
+	h, err := open(ctx, userID)
+	if err != nil {
+		return err
+	}
+	defer h.close()
+	return fn(h.ctx, h.store)
+}
+
+// persistCheckpoint saves ckpt to the local file at path, and additionally to
+// the storage backend's CheckpointStore when open can provide one. Both are
+// written (not either/or): the file keeps the same-machine resume path
+// unchanged, and the store makes ckpt recoverable by workflow ID if the file
+// is later unavailable (different machine, wiped container). The store write
+// is best-effort: a failure there is logged, not fatal, since the file write
+// already made the checkpoint durable for the file resume path. storedInBackend
+// reports whether the store write landed, so the caller only offers a
+// store-based resume when one is possible. A nil open means no store.
+//
+// A stored checkpoint is keyed by workflow ID within the tenant, so a second
+// suspended run with the same workflow_id (a fixed one in the YAML) replaces
+// the first run's stored checkpoint.
+//
+// logger must be the caller's own *zap.Logger (e.g. rt.logger), not the
+// global zap.L() — the `looms workflow` commands never call
+// zap.ReplaceGlobals (only cmd_serve.go does), so zap.L() resolves to a Nop
+// logger here and would silently discard this warning.
+func persistCheckpoint(ctx context.Context, open openCheckpointStoreFunc, logger *zap.Logger, path string, ckpt *loomv1.WorkflowCheckpoint) (storedInBackend bool, err error) {
+	// Record the owning tenant in the checkpoint, in the file too, so a resume
+	// from the file deletes the stored copy under this tenant instead of
+	// whatever --user that resume command happens to carry. With no tenant
+	// (postgres without --user) nothing is stored, so nothing is recorded.
+	tenant := ""
+	if open != nil {
+		if userID, terr := workflowCheckpointUserID(); terr == nil {
+			tenant = userID
+		}
+	}
+	ckpt = proto.Clone(ckpt).(*loomv1.WorkflowCheckpoint)
+	ckpt.TenantUserId = tenant
+
+	data, err := proto.Marshal(ckpt)
+	if err != nil {
+		return false, fmt.Errorf("failed to marshal checkpoint: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return false, fmt.Errorf("failed to write checkpoint %s: %w", path, err)
+	}
+	if open == nil {
+		return false, nil
+	}
+
+	err = withCheckpointStore(ctx, open, tenant, func(ctx context.Context, store checkpoint.CheckpointStore) error {
+		return store.SaveCheckpoint(ctx, ckpt)
+	})
+	if err != nil {
+		logger.Warn("not persisting workflow checkpoint to storage backend; local file still written (if the storage database has never been migrated, 'looms upgrade' applies the migrations)",
+			zap.String("workflow_id", ckpt.GetWorkflowId()), zap.Error(err))
+		return false, nil
+	}
+	return true, nil
+}
+
+// readCheckpointFile reads a checkpoint written by persistCheckpoint.
+func readCheckpointFile(path string) (*loomv1.WorkflowCheckpoint, error) {
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read checkpoint file %s: %w", path, err)
+	}
+	ckpt := &loomv1.WorkflowCheckpoint{}
+	if err := proto.Unmarshal(data, ckpt); err != nil {
+		return nil, fmt.Errorf("invalid checkpoint file: %w", err)
+	}
+	return ckpt, nil
+}
+
+// loadStoredCheckpoint reads the tenant's checkpoint for workflowID from the
+// storage backend. This is the recovery path for a resume where the original
+// checkpoint file no longer exists.
+func loadStoredCheckpoint(ctx context.Context, open openCheckpointStoreFunc, workflowID string) (*loomv1.WorkflowCheckpoint, error) {
+	var ckpt *loomv1.WorkflowCheckpoint
+	err := withCheckpointStore(ctx, open, "", func(ctx context.Context, store checkpoint.CheckpointStore) error {
+		var err error
+		ckpt, err = store.LoadCheckpoint(ctx, workflowID)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	if ckpt == nil {
+		return nil, fmt.Errorf("no checkpoint found for workflow ID %q in the storage backend (checkpoints are scoped to the --user tenant that saved them)", workflowID)
+	}
+	return ckpt, nil
+}
+
+// consumeStoredCheckpoint deletes the stored copy of ckpt once its workflow has
+// finished, so the same ID cannot be resumed a second time. The copy is deleted
+// under the tenant recorded in ckpt when there is one, else under --user. It is
+// best-effort: the workflow already ran, so a failure is logged and the stored
+// copy stays resumable.
+//
+// A checkpoint with no recorded tenant (written by an earlier version, or by a
+// run that stored nothing) falls back to --user. On postgres without --user
+// that cannot name a tenant, which is logged rather than skipped silently
+// because a stored copy may exist. On SQLite the fallback is default-user,
+// which deletes nothing when the run used another --user.
+func consumeStoredCheckpoint(ctx context.Context, open openCheckpointStoreFunc, logger *zap.Logger, ckpt *loomv1.WorkflowCheckpoint) {
+	workflowID := ckpt.GetWorkflowId()
+	if open == nil || workflowID == "" {
+		return
+	}
+	err := withCheckpointStore(ctx, open, ckpt.GetTenantUserId(), func(ctx context.Context, store checkpoint.CheckpointStore) error {
+		return store.DeleteCheckpoint(ctx, workflowID)
+	})
+	if err != nil {
+		logger.Warn("failed to delete the stored workflow checkpoint; it can still be resumed with --workflow-id (pass --user with the tenant that ran the workflow to delete it)",
+			zap.String("workflow_id", workflowID), zap.Error(err))
+	}
+}
+
+// validateResumeSource requires exactly one place to read the checkpoint
+// from: a checkpoint file, or --workflow-id for the storage backend. The two
+// are never inferred from each other, so a mistyped file path cannot be
+// mistaken for a workflow ID and a stray file cannot shadow a stored one.
+func validateResumeSource(checkpointFile, workflowID string) error {
+	if (checkpointFile == "") == (workflowID == "") {
+		return fmt.Errorf("give exactly one of a checkpoint file or --workflow-id")
+	}
+	return nil
+}
+
+// resumeFinished reports whether a resume ended the workflow: it completed,
+// or the gate was rejected. A failure leaves the workflow resumable, and a
+// WorkflowSuspended saves its own newer checkpoint under the same ID.
+func resumeFinished(err error) bool {
+	if err == nil {
+		return true
+	}
+	var rejected *orchestration.GateRejected
+	return errors.As(err, &rejected)
+}
+
 // writeCheckpointAndPrintGate persists a suspension checkpoint and prints the
 // pending gate with resume instructions.
-func writeCheckpointAndPrintGate(workflowPath string, ckpt *loomv1.WorkflowCheckpoint) {
+func writeCheckpointAndPrintGate(rt *workflowRuntime, workflowPath string, ckpt *loomv1.WorkflowCheckpoint) {
 	path := workflowSuspendTo
 	if path == "" {
 		base := strings.TrimSuffix(filepath.Base(workflowPath), filepath.Ext(workflowPath))
 		path = base + ".checkpoint.pb"
 	}
-	data, err := proto.Marshal(ckpt)
+	storedInBackend, err := persistCheckpoint(context.Background(), rt.openCheckpoints, rt.logger, path, ckpt)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Failed to marshal checkpoint: %v\n", err)
-		os.Exit(1)
-	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Failed to write checkpoint %s: %v\n", path, err)
+		fmt.Fprintf(os.Stderr, "❌ Failed to persist checkpoint: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -417,9 +714,20 @@ func writeCheckpointAndPrintGate(workflowPath string, ckpt *loomv1.WorkflowCheck
 	fmt.Println(strings.Repeat("-", 80))
 	fmt.Printf("\n💾 Checkpoint written: %s\n", path)
 	fmt.Println("\nResume with one of:")
-	fmt.Printf("  looms workflow resume %s %s --approve\n", workflowPath, path)
-	fmt.Printf("  looms workflow resume %s %s --revise \"<feedback>\"\n", workflowPath, path)
-	fmt.Printf("  looms workflow resume %s %s --reject\n", workflowPath, path)
+	// --user is part of every command when the run had one: a resume that
+	// leaves it out would look for the stored copy under another tenant.
+	userArg := ""
+	if workflowUser != "" {
+		userArg = " --user " + workflowUser
+	}
+	fmt.Printf("  looms workflow resume %s %s%s --approve\n", workflowPath, path, userArg)
+	fmt.Printf("  looms workflow resume %s %s%s --revise \"<feedback>\"\n", workflowPath, path, userArg)
+	fmt.Printf("  looms workflow resume %s %s%s --reject\n", workflowPath, path, userArg)
+	if storedInBackend {
+		byID := "--workflow-id " + ckpt.GetWorkflowId() + userArg
+		fmt.Printf("\nIf %s is lost, the checkpoint is also stored under workflow ID %s:\n", path, ckpt.GetWorkflowId())
+		fmt.Printf("  looms workflow resume %s %s --approve\n", workflowPath, byID)
+	}
 }
 
 // printWorkflowResult prints a completed workflow's results (shared by run
@@ -506,9 +814,13 @@ func (terminalGateHandler) RequestDecision(_ context.Context, req *loomv1.HITLGa
 // workflowRuntime bundles the orchestrator and everything it depends on for a
 // CLI workflow execution, plus the teardown for those dependencies.
 type workflowRuntime struct {
-	orchestrator *orchestration.Orchestrator
+	orchestrator *orchestration.Orchestrator // nil until startOrchestrator runs
 	logger       *zap.Logger
-	closers      []func()
+	tracer       observability.Tracer
+	// openCheckpoints opens the checkpoint store on demand; see
+	// openCheckpointStoreFunc.
+	openCheckpoints openCheckpointStoreFunc
+	closers         []func()
 }
 
 // Close tears down runtime dependencies in reverse construction order.
@@ -524,6 +836,22 @@ func (rt *workflowRuntime) Close() {
 // auto-injected tools. When promptGates is true, HITL gates are decided
 // interactively on the terminal; otherwise they suspend with a checkpoint.
 func setupWorkflowRuntime(pattern *loomv1.WorkflowPattern, promptGates bool) (*workflowRuntime, error) {
+	rt, err := newWorkflowRuntime()
+	if err != nil {
+		return nil, err
+	}
+	if err := rt.startOrchestrator(pattern, promptGates); err != nil {
+		rt.Close()
+		return nil, err
+	}
+	return rt, nil
+}
+
+// newWorkflowRuntime builds the part of the runtime every workflow command
+// needs: the logger, the tracer, and the opener for the checkpoint store. It
+// creates no LLM provider and no agents and opens no storage backend, so a
+// command that only reads a checkpoint file (resume --reject) can stop here.
+func newWorkflowRuntime() (*workflowRuntime, error) {
 	rt := &workflowRuntime{}
 	ok := false
 	defer func() {
@@ -531,11 +859,6 @@ func setupWorkflowRuntime(pattern *loomv1.WorkflowPattern, promptGates bool) (*w
 			rt.Close()
 		}
 	}()
-
-	// Initialize LLM provider
-	llmProvider, providerName := createLLMProvider()
-	fmt.Printf("\n🤖 LLM Provider: %s\n", providerName)
-	fmt.Printf("   Model: %s\n\n", llmProvider.Model())
 
 	// Create production logger with INFO level (stack traces only for ERROR level)
 	zapConfig := zap.NewProductionConfig()
@@ -651,6 +974,27 @@ func setupWorkflowRuntime(pattern *loomv1.WorkflowPattern, promptGates bool) (*w
 		tracer = observability.NewNoOpTracer()
 	}
 
+	rt.tracer = tracer
+	rt.openCheckpoints = func(ctx context.Context, userID string) (*checkpointHandle, error) {
+		return openCheckpointStore(ctx, tracer, userID)
+	}
+
+	ok = true
+	return rt, nil
+}
+
+// startOrchestrator creates the LLM provider, session store, agent registry,
+// communication infrastructure and orchestrator for the pattern, then creates
+// and registers every referenced agent with the standard auto-injected tools.
+// Everything it opens is added to rt.closers, so rt.Close releases it.
+func (rt *workflowRuntime) startOrchestrator(pattern *loomv1.WorkflowPattern, promptGates bool) error {
+	logger, tracer := rt.logger, rt.tracer
+
+	// Initialize LLM provider
+	llmProvider, providerName := createLLMProvider()
+	fmt.Printf("\n🤖 LLM Provider: %s\n", providerName)
+	fmt.Printf("   Model: %s\n\n", llmProvider.Model())
+
 	// Create session store for telemetry
 	dbPath := config.Database.Path
 	if dbPath == "" {
@@ -658,7 +1002,7 @@ func setupWorkflowRuntime(pattern *loomv1.WorkflowPattern, promptGates bool) (*w
 	}
 	sessionStore, err := agent.NewSessionStore(dbPath, tracer)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create session store: %w", err)
+		return fmt.Errorf("failed to create session store: %w", err)
 	}
 	rt.closers = append(rt.closers, func() { _ = sessionStore.Close() })
 
@@ -694,7 +1038,7 @@ func setupWorkflowRuntime(pattern *loomv1.WorkflowPattern, promptGates bool) (*w
 		SessionStore: sessionStore,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create agent registry: %w", err)
+		return fmt.Errorf("failed to create agent registry: %w", err)
 	}
 
 	// Initialize MessageBus and SharedMemory for workflow communication
@@ -703,7 +1047,7 @@ func setupWorkflowRuntime(pattern *loomv1.WorkflowPattern, promptGates bool) (*w
 	messageBus := communication.NewMessageBus(memoryStore, nil, tracer, logger)
 	sharedMemory, err := communication.NewSharedMemoryStore(tracer, logger)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create shared memory: %w", err)
+		return fmt.Errorf("failed to create shared memory: %w", err)
 	}
 	logger.Info("Initialized communication infrastructure",
 		zap.Bool("message_bus", true),
@@ -738,7 +1082,7 @@ func setupWorkflowRuntime(pattern *loomv1.WorkflowPattern, promptGates bool) (*w
 	ctx := context.Background()
 	fmt.Println("🔧 Loading agents from registry...")
 	if err := registry.LoadAgents(ctx); err != nil {
-		return nil, fmt.Errorf("failed to load agents: %w", err)
+		return fmt.Errorf("failed to load agents: %w", err)
 	}
 
 	// Extract agent IDs from workflow
@@ -762,12 +1106,12 @@ func setupWorkflowRuntime(pattern *loomv1.WorkflowPattern, promptGates bool) (*w
 		logger.Info("Creating agent", zap.String("agent", agentID))
 		ag, err := registry.CreateAgent(ctx, agentID)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create agent %s: %w", agentID, err)
+			return fmt.Errorf("failed to create agent %s: %w", agentID, err)
 		}
 
 		// Start the agent (marks as running)
 		if err := registry.StartAgent(ctx, agentID); err != nil {
-			return nil, fmt.Errorf("failed to start agent %s: %w", agentID, err)
+			return fmt.Errorf("failed to start agent %s: %w", agentID, err)
 		}
 
 		// Auto-inject restart coordination tool for iterative workflows
@@ -822,8 +1166,7 @@ func setupWorkflowRuntime(pattern *loomv1.WorkflowPattern, promptGates bool) (*w
 	}
 
 	rt.orchestrator = orchestrator
-	ok = true
-	return rt, nil
+	return nil
 }
 
 // printDebateResults prints detailed debate results with thinking, tool usage, and model info.
