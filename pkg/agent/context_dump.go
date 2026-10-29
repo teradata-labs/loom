@@ -64,27 +64,11 @@ type contextDumper struct {
 	turns map[string]int // sessionID -> last emitted turn number
 }
 
-// liveDumpers tracks every sink opened by this process. Production agents run
-// for the life of the process and never drain it (the OS reclaims file
-// handles on exit); it exists so tests -- which construct many agents per
-// process against t.TempDir() sinks, spread across many rig helpers -- have
-// one place to release every handle before their temp dir is removed,
-// instead of each rig having to remember to do so itself.
-var (
-	liveDumpersMu sync.Mutex
-	liveDumpers   []*contextDumper
-)
-
-// closeLiveContextDumpers closes and forgets every sink opened since the last
-// call. Test-only; production processes never call this.
-func closeLiveContextDumpers() {
-	liveDumpersMu.Lock()
-	defer liveDumpersMu.Unlock()
-	for _, d := range liveDumpers {
-		_ = d.close()
-	}
-	liveDumpers = nil
-}
+// onContextDumperOpened, when non-nil, is called with each sink as it is
+// opened. It is nil in production and exists so tests -- which construct many
+// agents per process against t.TempDir() sinks -- can release every handle
+// before their temp dir is removed. Set only from _test.go files.
+var onContextDumperOpened func(*contextDumper)
 
 // envContextDumpVar is the environment switch that enables context dumping
 // independently of Config.Debug.ContextDump.
@@ -177,9 +161,9 @@ func newContextDumper(agentID string) (*contextDumper, error) {
 		turns: make(map[string]int),
 	}
 
-	liveDumpersMu.Lock()
-	liveDumpers = append(liveDumpers, d)
-	liveDumpersMu.Unlock()
+	if hook := onContextDumperOpened; hook != nil {
+		hook(d)
+	}
 
 	return d, nil
 }

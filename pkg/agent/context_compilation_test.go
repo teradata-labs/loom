@@ -118,6 +118,27 @@ func TestCompile_AtThresholdRendersFull(t *testing.T) {
 	}
 }
 
+// Synthetic user-turn roles render the same arrival stamp a literal user row
+// does: the stamp is applied before the wire fold renames them to "user", so
+// the persisted role must not change what the model sees.
+func TestCompile_SyntheticRolesRenderArrivalStamp(t *testing.T) {
+	for _, role := range syntheticWireRoles {
+		t.Run(role, func(t *testing.T) {
+			sm := newCompileMemory(t)
+			ts := time.Date(2026, 8, 10, 14, 5, 0, 0, time.UTC)
+			sm.AddMessage(context.Background(), Message{Role: role, Content: "body", Turn: 1, Timestamp: ts})
+
+			var rendered string
+			for _, m := range sm.GetMessagesForLLM() {
+				if m.Role == role {
+					rendered = m.Content
+				}
+			}
+			assert.Equal(t, "[Mon 2026-08-10 14:05 UTC] body", rendered)
+		})
+	}
+}
+
 func TestCompile_UserTurnRendersArrivalStampInViewOnly(t *testing.T) {
 	sm := newCompileMemory(t)
 	ts := time.Date(2026, 8, 10, 14, 5, 0, 0, time.UTC)
@@ -932,6 +953,14 @@ func (f *flakyCompressor) IsEnabled() bool { return true }
 // rung-0 fold of the current turn.
 func reliefSingleTurnFixture(t *testing.T) *SegmentedMemory {
 	t.Helper()
+	return reliefSingleTurnFixtureWithSidecar(t, "")
+}
+
+// reliefSingleTurnFixtureWithSidecar is reliefSingleTurnFixture with an
+// agent-authored user-turn row (a skill-body sidecar, say) persisted right
+// after the ticket when sidecarRole is non-empty.
+func reliefSingleTurnFixtureWithSidecar(t *testing.T, sidecarRole string) *SegmentedMemory {
+	t.Helper()
 	store, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
@@ -951,6 +980,9 @@ func reliefSingleTurnFixture(t *testing.T) *SegmentedMemory {
 	}
 
 	persist("user", "TICKET: build the marts; payment_method_share = share of the source's transaction count", "", nil, true)
+	if sidecarRole != "" {
+		persist(sidecarRole, "SIDECAR: the skill instructions for this turn", "", nil, false)
+	}
 	for i := 0; i < 5; i++ {
 		persist("assistant", strings.Repeat(fmt.Sprintf("analysis %d of models io=17 cpu=23; ", i), 120), "", nil, false)
 	}
@@ -979,6 +1011,31 @@ func TestReleasePressure_NeverFoldsCurrentTurnUserRows(t *testing.T) {
 	}
 	assert.True(t, foundTicket, "the ticket must survive the fold verbatim in L1")
 	assert.Contains(t, sm.summary.text, "summary of the analysis prose", "the fold itself must have committed")
+}
+
+// Invariant: the current turn's agent-authored user-turn rows (skill-body
+// sidecar, hygiene nudge, retry nudge, synthesis prompt) are the run's input
+// exactly like the ticket: their persisted roles differ from "user" but they
+// are protected from the fold the same way.
+func TestReleasePressure_NeverFoldsCurrentTurnSyntheticRows(t *testing.T) {
+	for _, role := range syntheticWireRoles {
+		t.Run(role, func(t *testing.T) {
+			sm := reliefSingleTurnFixtureWithSidecar(t, role)
+			sm.SetCompressor(&foldCompressor{out: "covers msg:1-99\nsummary of the analysis prose"})
+
+			shed, _, _ := sm.ReleasePressure(context.Background(), 0)
+			require.True(t, shed, "pressure must shed via rung-0 fold")
+
+			found := false
+			for _, m := range sm.GetMessages() {
+				if m.Role == role && strings.Contains(m.Content, "SIDECAR: the skill instructions") {
+					found = true
+				}
+			}
+			assert.True(t, found, "the %s row must survive the fold verbatim in L1", role)
+			assert.Contains(t, sm.summary.text, "summary of the analysis prose", "the fold itself must have committed")
+		})
+	}
 }
 
 // Invariant: with no working compressor the fold still sheds the region, but

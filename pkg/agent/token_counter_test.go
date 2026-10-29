@@ -91,6 +91,19 @@ func TestGetTokenCounter(t *testing.T) {
 	}
 }
 
+// The cl100k_base encoding is bundled in the binary, so the counter gets a
+// real encoder without network access instead of the characters/4 fallback.
+func TestTokenCounter_UsesBundledEncoding(t *testing.T) {
+	tc := GetTokenCounter()
+	if tc.encoder == nil {
+		t.Fatal("Expected the bundled cl100k_base encoder, got the characters/4 fallback")
+	}
+	// cl100k_base: "Hello" "," " world" "!" (the fallback would say 3).
+	if got := tc.CountTokens("Hello, world!"); got != 4 {
+		t.Errorf("CountTokens(%q) = %d, want 4", "Hello, world!", got)
+	}
+}
+
 func TestTokenCounter_CountTokens(t *testing.T) {
 	tc := GetTokenCounter()
 
