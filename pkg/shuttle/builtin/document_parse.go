@@ -303,11 +303,8 @@ func (t *DocumentParseTool) cleanPath(path string) (string, error) {
 		"C:/Windows/SysWOW64",
 	}
 
-	slashPath := filepath.ToSlash(cleanPath)
-	for _, blocked := range blacklistedPaths {
-		if strings.HasPrefix(slashPath, blocked) {
-			return "", fmt.Errorf("access denied to system directory: %s", blocked)
-		}
+	if blocked, ok := matchBlockedPath(cleanPath, blacklistedPaths); ok {
+		return "", fmt.Errorf("access denied to system directory: %s", blocked)
 	}
 
 	return cleanPath, nil

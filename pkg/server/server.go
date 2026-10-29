@@ -451,7 +451,8 @@ func sanitizeUTF8(s string) string {
 }
 
 // applyToolInputStreamFields marks a tool-input stream event and carries the
-// call's id and argument bytes so far, so clients can show the tool before it starts.
+// call's id, position and argument bytes so far, so clients can show the tool
+// before it starts and tell parallel calls to the same tool apart.
 func applyToolInputStreamFields(proto *loomv1.WeaveProgress, event agent.ProgressEvent) {
 	if !event.IsToolInputStream {
 		return
@@ -460,6 +461,7 @@ func applyToolInputStreamFields(proto *loomv1.WeaveProgress, event agent.Progres
 	proto.IsToolInputStream = true
 	proto.ToolCallId = event.ToolCallID
 	proto.ToolInputBytes = event.ToolInputBytes
+	proto.ToolCallIndex = event.ToolCallIndex
 }
 
 func applyToolLifecycleFields(proto *loomv1.WeaveProgress, event agent.ProgressEvent) {
