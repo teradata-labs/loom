@@ -93,6 +93,30 @@ saved-script lookup codes) has outcome `refused`, its code under `refusal`, zero
 an empty ledger.
 The nested calls are not tool rows of their own; the `run_lua` call is one row.
 
+**Where the run record lives.** The record is not shown to the model, and no client
+surfaces it yet. No code outside `pkg/agent/lua_tool.go` reads `lua.run`; the
+`Message` returned by `GetConversationHistory` has no tool-result field, and the
+streamed `WeaveProgress.tool_result` carries only `Result.Data`, so the TUI and other
+gRPC clients see the `run_lua` result, not its record. It is kept in two places:
+
+- **The session store.** The `run_lua` tool message is saved with its whole
+  `shuttle.Result` serialized in the `messages.tool_result_json` column (SQLite and
+  PostgreSQL), so the record is at `$.Metadata."lua.run"` in that row. The column is
+  bounded like the row: when the serialized result is larger than
+  `shared_memory_threshold_bytes` (16 KiB by default), `tool_result_json` is left empty
+  and the record is not stored (`pkg/agent/memory.go`).
+- **Traces.** Each run has a `lua.run` span (`lua.outcome`, `lua.cpu_ticks`,
+  `lua.memory_bytes`, `lua.wall_ms`, `lua.tool_calls`) and each nested call a
+  `lua.tool_call` span (`tool_name`, `lua.decision`) in the configured tracer.
+
+```sql
+-- SQLite: the call ledger of every run_lua row in a session
+SELECT id, json_extract(tool_result_json, '$.Metadata."lua.run".calls')
+FROM messages
+WHERE session_id = ? AND role = 'tool' AND tool_result_json IS NOT NULL
+  AND json_extract(tool_result_json, '$.Metadata."lua.run"') IS NOT NULL;
+```
+
 ## Go API
 
 ### `Run`
