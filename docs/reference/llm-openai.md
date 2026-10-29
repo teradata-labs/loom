@@ -1127,7 +1127,8 @@ client := openai.NewClient(openai.Config{
 - Requests are queued and admitted at the configured request rate
   (`RequestsPerSecond`, `BurstCapacity`, `MinDelay`)
 - 429 responses are retried inside the limiter with jittered exponential
-  backoff, honoring the server's `Retry-After` (capped at 5 minutes)
+  backoff, honoring the server's `Retry-After` uncapped (a 5xx's
+  `Retry-After` is capped at 5 minutes)
 - 500, 502, 503, 504 and 529 responses whose status is known before any
   content streams are retried under the same budget and backoff as a 429;
   other 4xx/5xx are not retried, and retried 5xx are counted apart from

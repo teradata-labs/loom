@@ -466,13 +466,16 @@ func (rl *RateLimiter) retryDelay(attempt int, err error) time.Duration {
 
 	// Honor the server-specified wait when it is longer than the jittered
 	// backoff (delta-seconds, HTTP-date, and x-ratelimit reset forms all
-	// arrive here via ThrottleError/TransientError.RetryAfter) — but never
-	// beyond maxRetryDelay: a 503 during a maintenance window can carry
-	// Retry-After: 3600 or an HTTP-date an hour out, and sleeping that long
-	// inside execute() would pin the caller and its scheduler grant.
+	// arrive here via ThrottleError/TransientError.RetryAfter). For a
+	// transient (5xx) error the wait never goes beyond maxRetryDelay: a 503
+	// during a maintenance window can carry Retry-After: 3600 or an HTTP-date
+	// an hour out, and sleeping that long inside execute() would pin the
+	// caller and its scheduler grant. A throttle's (429) Retry-After is not
+	// capped: a quota-limited provider that asks for 20 minutes would only
+	// throttle a caller that came back sooner, spending the retry budget.
 	if ra := RetryAfter(err); ra > delay {
 		delay = ra
-		if delay > maxRetryDelay {
+		if IsTransient(err) && delay > maxRetryDelay {
 			delay = maxRetryDelay
 		}
 	}

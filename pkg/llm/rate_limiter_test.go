@@ -327,24 +327,65 @@ func TestRateLimiter_ExhaustionIsTyped(t *testing.T) {
 	assert.Contains(t, err.Error(), "LLM request failed after 2 retries due to throttling")
 }
 
-// A server-specified Retry-After is honoured only up to maxRetryDelay: a
-// maintenance-window 503 with Retry-After: 3600 must not pin the caller (and
-// its scheduler grant) for an hour.
-func TestRateLimiter_RetryAfterFloorIsCapped(t *testing.T) {
+// A server-specified Retry-After floors the retry wait. For a transient
+// (5xx) error it is honoured only up to maxRetryDelay: a maintenance-window
+// 503 with Retry-After: 3600 must not pin the caller (and its scheduler grant)
+// for an hour. A throttle's (429) Retry-After is not capped, exactly as before
+// 5xx retry existed: a quota-limited provider that asks for 20 minutes would
+// only throttle a caller that came back after 5.
+func TestRateLimiter_RetryDelayRetryAfterFloor(t *testing.T) {
 	config := DefaultRateLimiterConfig()
 	config.Logger = zaptest.NewLogger(t)
 	config.RetryBackoff = time.Millisecond
 	rl := NewRateLimiter(config)
 	defer func() { _ = rl.Close() }()
 
-	err := NewTransientError(errors.New("API error (status 503): maintenance"), 503, time.Hour)
-	assert.Equal(t, maxRetryDelay, rl.retryDelay(0, err))
-
-	throttle := NewThrottleError(errors.New("API error (status 429)"), 2*time.Hour)
-	assert.Equal(t, maxRetryDelay, rl.retryDelay(0, throttle), "same cap for a throttle's Retry-After")
-
-	short := NewTransientError(errors.New("API error (status 503)"), 503, 300*time.Millisecond)
-	assert.Equal(t, 300*time.Millisecond, rl.retryDelay(0, short), "a modest Retry-After still floors the wait")
+	tests := []struct {
+		name string
+		err  error
+		want time.Duration
+	}{
+		{
+			name: "throttle 20m is not capped",
+			err:  NewThrottleError(errors.New("API error (status 429)"), 20*time.Minute),
+			want: 20 * time.Minute,
+		},
+		{
+			name: "throttle 2h is not capped",
+			err:  NewThrottleError(errors.New("API error (status 429)"), 2*time.Hour),
+			want: 2 * time.Hour,
+		},
+		{
+			name: "wrapped throttle 20m is not capped",
+			err:  &RetriesExhaustedError{Attempts: 2, Cause: "throttling", Err: NewThrottleError(errors.New("API error (status 429)"), 20*time.Minute)},
+			want: 20 * time.Minute,
+		},
+		{
+			name: "transient 20m is capped at maxRetryDelay",
+			err:  NewTransientError(errors.New("API error (status 503): maintenance"), 503, 20*time.Minute),
+			want: maxRetryDelay,
+		},
+		{
+			name: "transient 1h is capped at maxRetryDelay",
+			err:  NewTransientError(errors.New("API error (status 503): maintenance"), 503, time.Hour),
+			want: maxRetryDelay,
+		},
+		{
+			name: "modest transient Retry-After still floors the wait",
+			err:  NewTransientError(errors.New("API error (status 503)"), 503, 300*time.Millisecond),
+			want: 300 * time.Millisecond,
+		},
+		{
+			name: "modest throttle Retry-After still floors the wait",
+			err:  NewThrottleError(errors.New("API error (status 429)"), 300*time.Millisecond),
+			want: 300 * time.Millisecond,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, rl.retryDelay(0, tt.err))
+		})
+	}
 }
 
 // A cancelled context ends a transient retry wait immediately with ctx.Err().
