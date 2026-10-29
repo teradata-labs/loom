@@ -203,3 +203,24 @@ func TestFinish(t *testing.T) {
 		assert.Contains(t, err.Error(), "example.com/x v0.1.0")
 	})
 }
+
+// TestRenderThirdPartyReproducesGoLicense checks the Go standard library's
+// license text is reproduced verbatim rather than linked.
+func TestRenderThirdPartyReproducesGoLicense(t *testing.T) {
+	comps := []component{{ImportPath: "example.com/a", Module: "example.com/a", Version: "v1.0.0", License: "MIT a"}}
+	const goLicense = "Copyright 2009 The Go Authors.\n\nRedistribution and use ..."
+
+	out := string(renderThirdParty(comps, goLicense))
+	assert.Contains(t, out, "## The Go standard library")
+	assert.Contains(t, out, "```\n"+goLicense+"\n```\n")
+	assert.NotContains(t, out, "https://go.dev/LICENSE")
+}
+
+// TestGoStdlibLicense checks the active toolchain's LICENSE is found and is the
+// Go BSD license.
+func TestGoStdlibLicense(t *testing.T) {
+	text, err := goStdlibLicense()
+	require.NoError(t, err)
+	assert.Contains(t, text, "The Go Authors")
+	assert.Contains(t, text, "Redistribution and use in source and binary forms")
+}
