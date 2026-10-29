@@ -132,10 +132,18 @@ func TestChatWithStreaming_ThrottleDoesNotKill(t *testing.T) {
 	require.True(t, llmtypes.SupportsStreaming(stub))
 
 	a := &Agent{id: "t3", llm: stub, config: &Config{}}
-	var lastPartial string
+	// Collect EVERY partial, not only the last: the final "LLM response
+	// complete" event carries resp.Content and would hide a duplicated
+	// partial emitted after the throttle wait.
+	var (
+		partialsMu sync.Mutex
+		partials   []string
+	)
 	ctx := newCtxDumpContext("sess-throttle-str", observability.NewNoOpTracer(), func(ev ProgressEvent) {
 		if ev.PartialContent != "" {
-			lastPartial = ev.PartialContent
+			partialsMu.Lock()
+			partials = append(partials, ev.PartialContent)
+			partialsMu.Unlock()
 		}
 	})
 
@@ -143,8 +151,15 @@ func TestChatWithStreaming_ThrottleDoesNotKill(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "hello", resp.Content)
 	assert.Equal(t, 2, stub.streamCalls, "throttled stream must re-invoke")
-	assert.NotContains(t, lastPartial, "junk-from-failed-attempt",
-		"buffered tokens from the failed attempt must be discarded on retry")
+
+	partialsMu.Lock()
+	defer partialsMu.Unlock()
+	require.NotEmpty(t, partials, "streaming must emit progress partials")
+	for i, p := range partials {
+		assert.NotContains(t, p, "junk-from-failed-attempt",
+			"partial %d (%q) carries a token from the throttled attempt; "+
+				"buffered state must reset before re-invoking", i, p)
+	}
 }
 
 // The patience budget is a hard stop: once cumulative throttle waiting would
