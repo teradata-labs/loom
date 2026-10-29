@@ -124,10 +124,23 @@ func NewMCPToolAdapter(client *client.Client, tool protocol.Tool, serverName str
 // differs from the server's. For a snake_case schema the map is empty
 // (identity); for a camelCase schema it restores the original names exactly.
 func buildParamNameMap(inputSchema map[string]interface{}) map[string]string {
-	props, ok := inputSchema["properties"].(map[string]interface{})
-	if !ok {
+	data, err := json.Marshal(inputSchema)
+	if err != nil {
 		return nil
 	}
+	schema, err := shuttle.FromJSON(data)
+	if err != nil {
+		return nil
+	}
+	props := make(map[string]struct{})
+	walkToolSchemaRoots(schema, func(root *shuttle.JSONSchema) {
+		for name := range root.Properties {
+			props[name] = struct{}{}
+		}
+		for _, name := range root.Required {
+			props[name] = struct{}{}
+		}
+	})
 	m := make(map[string]string)
 	ambiguous := map[string]bool{}
 	for original := range props {
@@ -165,7 +178,9 @@ func (a *MCPToolAdapter) restoreParameterNames(params map[string]interface{}) ma
 	restored := make(map[string]interface{}, len(params))
 	for key, value := range params {
 		if original, ok := a.paramNameMap[key]; ok {
-			restored[original] = value
+			if _, provided := params[original]; !provided {
+				restored[original] = value
+			}
 		} else {
 			restored[key] = value
 		}
@@ -215,22 +230,24 @@ func (a *MCPToolAdapter) InputSchema() *shuttle.JSONSchema {
 
 	// Convert property names from camelCase to snake_case for LLM-friendliness
 	// LLMs naturally prefer snake_case but MCP schemas often use camelCase
-	if shuttleSchema.Properties != nil {
+	walkToolSchemaRoots(&shuttleSchema, func(root *shuttle.JSONSchema) {
 		snakeCaseProps := make(map[string]*shuttle.JSONSchema)
-		for key, prop := range shuttleSchema.Properties {
+		for key, prop := range root.Properties {
 			snakeCaseProps[toSnakeCase(key)] = prop
 		}
-		shuttleSchema.Properties = snakeCaseProps
+		if root.Properties != nil {
+			root.Properties = snakeCaseProps
+		}
 
 		// Also convert required field names
-		if len(shuttleSchema.Required) > 0 {
-			snakeCaseRequired := make([]string, len(shuttleSchema.Required))
-			for i, req := range shuttleSchema.Required {
-				snakeCaseRequired[i] = toSnakeCase(req)
+		if len(root.Required) > 0 {
+			snakeCaseRequired := make([]string, len(root.Required))
+			for index, name := range root.Required {
+				snakeCaseRequired[index] = toSnakeCase(name)
 			}
-			shuttleSchema.Required = snakeCaseRequired
+			root.Required = snakeCaseRequired
 		}
-	}
+	})
 
 	// Normalize schema to ensure JSON Schema draft 2020-12 compliance
 	// This is critical for Bedrock which strictly validates schemas
@@ -251,6 +268,19 @@ func (a *MCPToolAdapter) InputSchema() *shuttle.JSONSchema {
 	}
 
 	return normalized
+}
+
+func walkToolSchemaRoots(schema *shuttle.JSONSchema, visit func(*shuttle.JSONSchema)) {
+	if schema == nil {
+		return
+	}
+	visit(schema)
+	for _, alternatives := range [][]*shuttle.JSONSchema{schema.AllOf, schema.AnyOf, schema.OneOf} {
+		for _, branch := range alternatives {
+			walkToolSchemaRoots(branch, visit)
+		}
+	}
+	walkToolSchemaRoots(schema.Not, visit)
 }
 
 // Execute implements shuttle.Tool

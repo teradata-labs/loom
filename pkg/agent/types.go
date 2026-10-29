@@ -302,6 +302,11 @@ type Config struct {
 	// Name is the agent name (used for identification and logging)
 	Name string
 
+	// GraphMemoryAgentID is the stable key for graph memory reads and writes.
+	// Empty means Name (unchanged behaviour). Use an ID that survives renames;
+	// the agent's own ID is a fresh UUID per instance and would lose memory on restart.
+	GraphMemoryAgentID string
+
 	// Description is a human-readable description of the agent's purpose
 	Description string
 
@@ -375,6 +380,16 @@ type Config struct {
 	// RecoveryConfig holds tunables for the self-healing orchestrator.
 	// Nil uses DefaultRecoveryConfig().
 	RecoveryConfig *RecoveryConfig
+
+	// ContextReliefWarning adds a transient note to a send where context relief
+	// ran and left the estimate over its release mark. Default false; the YAML
+	// key is behavior.context_relief_warning.
+	ContextReliefWarning bool
+
+	// ToolChangeNote adds a transient note to a provider call whose advertised
+	// tools differ from the previous successful call of the same turn. Default
+	// false; the YAML key is behavior.tool_change_note.
+	ToolChangeNote bool
 
 	// Debug holds opt-in diagnostic switches, all off by default.
 	Debug DebugConfig
