@@ -58,7 +58,7 @@ const luaToolSummaryMax = 160
 // separately), so the resolved trust travels here.
 type LuaHostOptions struct {
 	// SessionID is the session whose tools the script may use: the ctx value
-	// "session_id" set by executeToolWithSelfCorrection.
+	// "session_id" set by runTool.
 	SessionID string
 	// Policy holds the tool lists from the host's configuration. The bridge
 	// adds the reserved Lua names itself; its limits are not used here.

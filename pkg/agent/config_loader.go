@@ -355,6 +355,9 @@ type BehaviorConfigYAML struct {
 	// ContextReliefWarning opts the agent into the context-relief warning
 	// (default off).
 	ContextReliefWarning bool `yaml:"context_relief_warning"`
+	// ParallelReadTools opts the agent into running consecutive
+	// concurrency-safe tool calls of one response in parallel (default off).
+	ParallelReadTools bool `yaml:"parallel_read_tools"`
 }
 
 // SkillsConfigYAML represents skills configuration in YAML
@@ -932,7 +935,25 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 		config.Metadata["_context_relief_warning"] = "true"
 	}
 
+	// Parallel dispatch of read-only tool calls is opt-in the same way.
+	if yaml.Agent.Behavior.ParallelReadTools {
+		if config.Metadata == nil {
+			config.Metadata = make(map[string]string)
+		}
+		config.Metadata["_parallel_read_tools"] = "true"
+	}
+
 	return config, nil
+}
+
+// ApplyMetadataBehavior maps the behavior flags yamlToProto encodes in an
+// agent's metadata onto cfg. Every place that builds a Config from a
+// loomv1.AgentConfig calls it, so a YAML key cannot work in one host and be
+// ignored in another. It maps only _parallel_read_tools for now; the sibling
+// flags (_tool_change_note, _context_relief_warning, _repeat_call_hint) are
+// tracked in issue #526.
+func ApplyMetadataBehavior(cfg *Config, md map[string]string) {
+	cfg.ParallelReadTools = md["_parallel_read_tools"] == "true"
 }
 
 // parseMemoryCompressionConfig converts YAML memory compression config to proto
