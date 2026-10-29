@@ -24,7 +24,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/llm/scheduler"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
@@ -103,12 +102,13 @@ func patientRetry() RetryConfig {
 	return RetryConfig{Enabled: true, MaxRetries: 1, InitialDelay: time.Millisecond, Multiplier: 2, MaxDelay: time.Millisecond}
 }
 
-// With retry DISABLED a throttle fails fast, as it did before throttle
-// patience existed: the first 429 is returned unwrapped after one provider
-// call, with no patience wait, on both the direct and the streaming path.
-// The stub would succeed on a second call, so any re-invocation shows up as
-// a nil error and a second call.
-func TestChatWithRetry_ThrottleFailsFast_RetryDisabled(t *testing.T) {
+// With retry DISABLED a throttle still pauses and goes again rather than
+// ending the conversation: disabling retry opts out of retrying failures, not
+// out of honoring provider flow control. Retry is off for every agent that
+// looms serve builds and for registry agents with a behavior: block, so this
+// is the common case. Covered on both the direct and the streaming path; the
+// stub succeeds on its second call.
+func TestChatWithRetry_ThrottleDoesNotKill_RetryDisabled(t *testing.T) {
 	disabled := []struct {
 		name  string
 		retry RetryConfig
@@ -120,29 +120,31 @@ func TestChatWithRetry_ThrottleFailsFast_RetryDisabled(t *testing.T) {
 	for _, streaming := range []bool{false, true} {
 		for _, tc := range disabled {
 			t.Run(fmt.Sprintf("%s/streaming=%v", tc.name, streaming), func(t *testing.T) {
+				// Each subtest owns its stub and never enables the scheduler,
+				// so the 2 s patience waits can overlap.
+				t.Parallel()
 				var (
 					provider LLMProvider
 					calls    func() int
 					cb       ProgressCallback
+					want     string
 				)
 				if streaming {
 					stub := &throttleOnceStreamingLLM{throttleOnceLLM: throttleOnceLLM{failures: 1}}
 					provider = stub
 					calls = func() int { stub.mu.Lock(); defer stub.mu.Unlock(); return stub.streamCalls }
 					cb = func(ProgressEvent) {}
+					want = "hello"
 				} else {
 					stub := &throttleOnceLLM{failures: 1}
 					provider = stub
 					calls = func() int { stub.mu.Lock(); defer stub.mu.Unlock(); return stub.calls }
+					want = "ok"
 				}
-				a := &Agent{id: "t-failfast", llm: provider, config: &Config{Retry: tc.retry}}
-				require.False(t, a.retryEnabled())
+				a := &Agent{id: "t-disabled", llm: provider, config: &Config{Retry: tc.retry}}
 
-				// The deadline is only a backstop against a hang: patience
-				// would otherwise end the call at the deadline with a
-				// "context ended during wait" error, which the assertions
-				// below reject.
-				base, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				// Backstop only: one 2 s patience wait fits well inside it.
+				base, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
 				ctx := &agentContext{Context: base, tracer: observability.NewNoOpTracer(), progressCallback: cb}
 
@@ -150,14 +152,11 @@ func TestChatWithRetry_ThrottleFailsFast_RetryDisabled(t *testing.T) {
 				resp, err := a.chatWithRetry(ctx, []Message{{Role: "user", Content: "hi"}}, nil)
 				elapsed := time.Since(start)
 
-				require.Error(t, err, "a retry-disabled agent must not ride out a throttle")
-				assert.Nil(t, resp)
-				assert.True(t, llm.IsThrottle(err), "the provider's throttle error must surface: %v", err)
-				assert.NotContains(t, err.Error(), "context ended during wait")
-				assert.NotContains(t, err.Error(), "patience budget")
-				assert.Equal(t, 1, calls(), "fail fast means exactly one provider call")
-				assert.Less(t, elapsed, throttleInitialDelay/2,
-					"fail fast means no throttle-patience wait (took %s)", elapsed)
+				require.NoError(t, err, "a retry-disabled agent must ride out a throttle, not fail")
+				assert.Equal(t, want, resp.Content)
+				assert.Equal(t, 2, calls(), "the throttled call must be re-invoked once")
+				assert.GreaterOrEqual(t, elapsed, throttleInitialDelay,
+					"the re-invocation must come after a patience wait (took %s)", elapsed)
 			})
 		}
 	}
