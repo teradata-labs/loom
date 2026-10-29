@@ -45,6 +45,22 @@ type Tool interface {
 	Backend() string
 }
 
+// ConcurrencySafe is an optional trait. A tool that returns true declares it
+// is safe to run concurrently with other tool calls from the same model
+// response: a pure read with no writes to disk or shared state. It is opt-in
+// and fails closed: a tool that does not implement it is not concurrency-safe.
+type ConcurrencySafe interface {
+	ConcurrencySafe() bool
+}
+
+// IsConcurrencySafe reports whether t declares itself concurrency-safe.
+// False for an untyped nil Tool and for any tool that does not implement
+// ConcurrencySafe. A typed-nil pointer is the implementer's responsibility.
+func IsConcurrencySafe(t Tool) bool {
+	cs, ok := t.(ConcurrencySafe)
+	return ok && cs.ConcurrencySafe()
+}
+
 // Result represents the outcome of tool execution.
 type Result struct {
 	// Success indicates if the tool executed successfully

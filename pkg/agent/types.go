@@ -391,6 +391,12 @@ type Config struct {
 	// false; the YAML key is behavior.tool_change_note.
 	ToolChangeNote bool
 
+	// ParallelReadTools runs consecutive concurrency-safe tool calls of one
+	// model response in parallel (at most maxParallelReads at once); rows still
+	// commit in call order. Default false; the YAML key is
+	// behavior.parallel_read_tools. See dispatchBatch.
+	ParallelReadTools bool
+
 	// Debug holds opt-in diagnostic switches, all off by default.
 	Debug DebugConfig
 }

@@ -42,6 +42,10 @@ type MCPServerConfig struct {
 	// Logger receives registration events and is handed to every tool
 	// adapter (backpressure freezes, resource-wait parks). Nil = no-op.
 	Logger *zap.Logger
+
+	// TrustAnnotations believes this server's readOnlyHint/destructiveHint
+	// annotations (see manager.ServerConfig.TrustAnnotations). Default false.
+	TrustAnnotations bool
 }
 
 // RegisterMCPTools connects to an MCP server and registers all its tools with the agent.
@@ -103,6 +107,7 @@ func (a *Agent) RegisterMCPTools(ctx context.Context, config MCPServerConfig) er
 	for i, mcpTool := range mcpTools {
 		mcpAdapter := adapter.NewMCPToolAdapter(config.Client, mcpTool, config.Name)
 		mcpAdapter.SetLogger(logger)
+		mcpAdapter.SetTrustAnnotations(config.TrustAnnotations)
 		tools[i] = mcpAdapter
 	}
 
@@ -205,6 +210,7 @@ func (a *Agent) RegisterMCPServer(ctx context.Context, mcpMgr *manager.Manager, 
 	for _, tool := range toolsToRegister {
 		mcpAdapter := adapter.NewMCPToolAdapter(client, tool, serverName)
 		mcpAdapter.SetLogger(logger)
+		mcpAdapter.SetTrustAnnotations(serverConfig.TrustAnnotations)
 		a.RegisterTool(mcpAdapter)
 		logger.Debug("registered MCP tool",
 			zap.String("server", serverName),
@@ -241,6 +247,9 @@ func (a *Agent) RegisterMCPTool(ctx context.Context, mcpMgr *manager.Manager, se
 		return fmt.Errorf("server %s not found: %w", serverName, err)
 	}
 
+	// Trust is per-server config; a missing config fails closed (untrusted).
+	serverConfig, _ := mcpMgr.GetServerConfig(serverName)
+
 	logger := mcpMgr.Logger()
 
 	// Get tool definition
@@ -254,6 +263,7 @@ func (a *Agent) RegisterMCPTool(ctx context.Context, mcpMgr *manager.Manager, se
 		if tool.Name == toolName {
 			mcpAdapter := adapter.NewMCPToolAdapter(client, tool, serverName)
 			mcpAdapter.SetLogger(logger)
+			mcpAdapter.SetTrustAnnotations(serverConfig.TrustAnnotations)
 			shuttleTool := mcpAdapter
 			a.RegisterTool(shuttleTool)
 

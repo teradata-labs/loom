@@ -3148,12 +3148,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			batchIDCount:       batchIDCount,
 		}
 
-		for i, toolCall := range llmResp.ToolCalls {
-			if toolExecutionCount >= a.config.MaxToolExecutions {
-				break
-			}
-			a.dispatchOneCall(ctx, session, toolCall, i, st)
-		}
+		a.dispatchBatch(ctx, session, llmResp.ToolCalls, st)
 
 		// Drain buffered text_body sidecars from this batch AFTER every
 		// tool_result is in place. Order within the batch preserved so a
@@ -3204,6 +3199,11 @@ type batchState struct {
 	parkableTail bool
 	batchIDCount map[string]int
 	awaitHeld    []heldAwait
+
+	// barrierReason is set by dispatchBatch (flag on) for a call it dispatches
+	// alone; prepareCall records it on that call's tool span. Empty adds no
+	// dispatch attributes.
+	barrierReason string
 }
 
 // dispatchOneCall runs one call of a tool batch through the full per-call
@@ -3212,7 +3212,37 @@ type batchState struct {
 // and sidecar buffering. The body is the conversation loop's original batch
 // body, moved verbatim; ResumeChat's parked-batch completion calls the same
 // function so the two paths cannot drift.
+//
+// The ceremony is three phases: prepareCall (caps, dedup, counters, progress,
+// span), runCall (the tool execution itself) and settleCall (everything that
+// touches session-shared state). prepareCall and settleCall must stay
+// sequential and in call order; runCall may overlap other calls only if the
+// caller knows those calls are independent (see runTool).
 func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall, i int, st *batchState) {
+	pc, finished := a.prepareCall(ctx, session, toolCall, i, st)
+	if finished {
+		return
+	}
+	result, err := a.runCall(ctx, pc, session.ID)
+	a.settleCall(ctx, session, pc, st, result, err)
+}
+
+// preparedCall is one call that passed the per-turn cap and dedup checks and
+// is ready to execute: the call, its batch index, its dedup key, and the open
+// tool span that settleCall ends.
+type preparedCall struct {
+	call     ToolCall
+	index    int
+	dedupKey string
+	toolSpan *observability.Span
+}
+
+// prepareCall is the sequential front half of dispatchOneCall: the per-turn
+// cap row, the dedup replay row, the two counter increments, and the
+// contact_human / implicit-task / tool-started-progress block, ending with the
+// tool span opened. finished is true when a row was already committed (cap or
+// dedup); pc is then nil and the caller must not run the call.
+func (a *Agent) prepareCall(ctx Context, session *Session, toolCall ToolCall, i int, st *batchState) (pc *preparedCall, finished bool) {
 	span := st.span
 
 	// Per-turn cap: skip remaining calls with an error result
@@ -3232,7 +3262,7 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 			Timestamp: time.Now(),
 		}, false)
 		*st.toolExecutionCount++
-		return
+		return nil, true
 	}
 
 	// Deduplication: compute canonical key from tool name + sorted JSON input
@@ -3253,7 +3283,7 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 		})
 		*st.toolExecutionCount++
 		st.turnToolCount++
-		return
+		return nil, true
 	}
 
 	st.turnToolCount++
@@ -3306,9 +3336,34 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 	// Execute tool with tracing — always created
 	_, toolSpan := ctx.Tracer().StartSpan(ctx, "agent.tool_execution")
 	toolSpan.SetAttribute("tool_name", toolCall.Name)
+	if st.barrierReason != "" {
+		toolSpan.SetAttribute("dispatch.parallel", false)
+		toolSpan.SetAttribute("dispatch.barrier_reason", st.barrierReason)
+	}
 
-	// Execute with self-correction (circuit breaker + SQL correction)
-	result, err := a.executeToolWithSelfCorrection(ctx, toolCall.Name, toolCall.Input, session.ID)
+	return &preparedCall{call: toolCall, index: i, dedupKey: dedupKey, toolSpan: toolSpan}, false
+}
+
+// runCall is the execution middle of dispatchOneCall: the circuit breaker and
+// the executor call, and nothing else. It must not touch the session, the
+// batch state, the lease ledger, guardrails, the failure tracker, the dedup
+// cache or the transcript — settleCall owns all of those. See runTool for the
+// shared state executor.Execute can still reach.
+func (a *Agent) runCall(ctx Context, pc *preparedCall, sessionID string) (*shuttle.Result, error) {
+	return a.runTool(ctx, pc.call.Name, pc.call.Input, sessionID)
+}
+
+// settleCall is the sequential back half of dispatchOneCall: lease events and
+// guardrails bookkeeping, tier-1 circuit-breaker recovery, the span events,
+// ending the tool span, the resource-await hold, and the committed tool row.
+// Calls must be settled in call order.
+func (a *Agent) settleCall(ctx Context, session *Session, pc *preparedCall, st *batchState, result *shuttle.Result, err error) {
+	span := st.span
+	toolCall := pc.call
+	i := pc.index
+	toolSpan := pc.toolSpan
+
+	a.settleExecution(ctx, session.ID, toolCall.Input, result, err)
 
 	// Tier 1: if tool CB fired, disable tool and inject synthetic result.
 	if err != nil && strings.Contains(err.Error(), "circuit breaker open") && st.recovery != nil {
@@ -3698,10 +3753,31 @@ func (c *contextWithValue) Value(key interface{}) interface{} {
 	return c.Context.Value(key)
 }
 
-// executeToolWithSelfCorrection wraps tool execution with optional circuit breaker.
-// If circuit breaker is enabled, provides failure isolation for tools.
-// If guardrails are enabled, tracks errors for error analysis.
-func (a *Agent) executeToolWithSelfCorrection(ctx Context, toolName string, input map[string]interface{}, sessionID string) (*shuttle.Result, error) {
+// toolBreakerOpenError is the error runTool returns when the tool's circuit
+// breaker rejected the call before it ran. The message is what recovery
+// matches on; the type lets settleExecution skip the bookkeeping that only
+// applies to an executed call.
+type toolBreakerOpenError struct {
+	tool  string
+	cause error
+}
+
+func (e *toolBreakerOpenError) Error() string {
+	return fmt.Sprintf("circuit breaker open for tool %s: %v", e.tool, e.cause)
+}
+
+func (e *toolBreakerOpenError) Unwrap() error { return e.cause }
+
+// runTool executes one tool call: context wrapping plus the optional circuit
+// breaker (failure isolation) and the executor call. It touches no session,
+// batch-state, lease-ledger, guardrails, failure-tracker or transcript state.
+// executor.Execute itself can still reach shared state: the admission
+// approved-set (order-dependent: a render call followed by a gated call in
+// one batch relies on the render being recorded first), dynamic tool
+// registration, the shared-memory store, and a half-open breaker admits every
+// concurrent request. A caller that runs calls concurrently must do so only
+// for calls it knows are independent.
+func (a *Agent) runTool(ctx Context, toolName string, input map[string]interface{}, sessionID string) (*shuttle.Result, error) {
 	var result *shuttle.Result
 	var err error
 
@@ -3730,11 +3806,23 @@ func (a *Agent) executeToolWithSelfCorrection(ctx Context, toolName string, inpu
 
 		// If circuit breaker itself failed (breaker open), return that error
 		if cbErr != nil && err == nil {
-			return nil, fmt.Errorf("circuit breaker open for tool %s: %w", toolName, cbErr)
+			return nil, &toolBreakerOpenError{tool: toolName, cause: cbErr}
 		}
 	} else {
 		// No circuit breaker - execute directly
 		result, err = a.executor.Execute(ctxWithAgent, toolName, input)
+	}
+
+	return result, err
+}
+
+// settleExecution is the session-shared bookkeeping for an executed tool
+// result: lease events and guardrails error tracking. It must run sequentially
+// and in call order. A call the breaker rejected never ran, so it is skipped.
+func (a *Agent) settleExecution(ctx Context, sessionID string, input map[string]interface{}, result *shuttle.Result, err error) {
+	var breakerOpen *toolBreakerOpenError
+	if errors.As(err, &breakerOpen) {
+		return
 	}
 
 	// Backend-declared lease events ride the result's metadata: fold them
@@ -3758,8 +3846,6 @@ func (a *Agent) executeToolWithSelfCorrection(ctx Context, toolName string, inpu
 		}
 		_ = a.guardrails.HandleErrorWithAnalysis(ctx, sessionID, query, errorAnalysis)
 	}
-
-	return result, err
 }
 
 // analyzeError converts execution error into ErrorAnalysisInfo for self-correction.
