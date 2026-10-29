@@ -145,8 +145,8 @@ classification never depends on parsing golua's message text.
 | Shopify go-lua | none | none built in | Lua 5.2 |
 | WebAssembly runtime | yes | yes | not Lua; larger dependency |
 
-A script must not be able to take the pod down by allocating memory, and only golua
-offers a hard per-run memory limit. Its quota API is labelled alpha, so the engine
+A script must not be able to take the pod down by allocating memory, and of these
+options only golua offers a hard per-run memory limit. Its quota API is labelled alpha, so the engine
 pins the version, keeps golua imports inside this package, and turns every measured
 behaviour it relies on into a regression test.
 
