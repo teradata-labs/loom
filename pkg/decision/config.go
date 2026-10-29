@@ -109,3 +109,33 @@ func ValidateConfig(cfg *loomv1.DecisionConfig) error {
 	}
 	return nil
 }
+
+// ConfigWarnings lists settings that are valid but likely not what was
+// meant. It does not log; the caller logs each warning once, where the
+// decider is built for an agent (ValidateConfig runs on several paths for
+// the same config).
+//
+// Today that is every band without shadow: true. The Router reports
+// DECISION_PATH_DECIDER for such a band whenever the answer clears act_min,
+// but no call site in this release acts on Outcome.Act(): every wired site
+// only records a shadow row and keeps the existing mechanism's answer. A
+// non-shadow band therefore makes shadow reports show DECIDER rows for
+// decisions the decider did not make, and it becomes live, with no further
+// config change, when its site is wired to act.
+func ConfigWarnings(cfg *loomv1.DecisionConfig) []string {
+	if cfg == nil {
+		return nil
+	}
+	var out []string
+	for i, b := range cfg.Bands {
+		if b == nil || b.Shadow {
+			continue
+		}
+		out = append(out, fmt.Sprintf(
+			"decision.bands[%d] (%s): band is not shadow, so answers at or above act_min %g are recorded as DECIDER, "+
+				"but nothing acts on decider answers at site %s in this release (the existing mechanism still decides); "+
+				"the band becomes live when the site is wired to act. Set shadow: true to only record",
+			i, b.Site, b.ActMin, b.Site))
+	}
+	return out
+}
