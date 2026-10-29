@@ -78,6 +78,11 @@ type Registry struct {
 	identityResolver  func(context.Context) string // Resolves AdmissionRequest.UserID from the call context
 	artifactStore     interface{}                  // artifacts.Store for workspace tool
 
+	// providerBuilder builds a per-agent provider with the host's own
+	// credentials (see RegistryConfig.ProviderBuilder). Nil means the
+	// environment-only fallback in createLLMProvider.
+	providerBuilder ProviderBuilder
+
 	// providerPool is the server-level named provider pool injected by cmd_serve.go.
 	// Agents can reference pool entries by name in their LLM config (e.g., provider: "fast").
 	// Protected by mu (RW lock shared with the rest of the registry state).
@@ -154,10 +159,22 @@ type RegistryConfig struct {
 	IdentityResolver  func(context.Context) string // Resolves AdmissionRequest.UserID from the call context
 	ArtifactStore     interface{}                  // artifacts.Store for workspace tool
 
+	// ProviderBuilder builds the provider for an agent (or role) LLM config
+	// that names its own provider. A host with its own LLM credentials (looms
+	// serve reads them from looms.yaml, the keyring and the environment)
+	// passes the function it uses for agents loaded at startup, so an agent
+	// created at runtime gets the same credentials. Nil keeps the
+	// environment-only fallback.
+	ProviderBuilder ProviderBuilder
+
 	// Database encryption (opt-in for enterprise deployments)
 	EncryptDatabase bool   // Enable SQLCipher encryption
 	EncryptionKey   string // Encryption key (or use LOOM_DB_KEY env var)
 }
+
+// ProviderBuilder builds an LLM provider from an agent's LLM config. It is
+// called only for configs that name a provider and do not match a pool entry.
+type ProviderBuilder func(config *loomv1.LLMConfig) (LLMProvider, error)
 
 // NewRegistry creates a new agent registry
 func NewRegistry(config RegistryConfig) (*Registry, error) {
@@ -218,6 +235,7 @@ func NewRegistry(config RegistryConfig) (*Registry, error) {
 		admissionChain:    config.AdmissionChain,
 		identityResolver:  config.IdentityResolver,
 		artifactStore:     config.ArtifactStore,
+		providerBuilder:   config.ProviderBuilder,
 	}
 
 	// Load existing agents from database to restore GUIDs
@@ -1113,8 +1131,10 @@ func resolvePrimaryLLMConfig(config *loomv1.AgentConfig) *loomv1.LLMConfig {
 //  1. If config.Provider names a pool entry (injected via SetProviderPool), use it.
 //  2. If a registry-level default LLMProvider is set and no per-agent provider is
 //     named, use the default.
-//  3. Otherwise construct a new provider from the standard provider type names
-//     ("anthropic", "bedrock", etc.).
+//  3. Otherwise build a new provider: with the injected ProviderBuilder when the
+//     host supplied one (the host's own credentials), else from the standard
+//     provider type names ("anthropic", "bedrock", etc.) with credentials from
+//     environment variables only.
 func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, error) {
 	// Check the named provider pool first.
 	// This allows agent configs to reference a pre-built pool entry by name
@@ -1148,6 +1168,10 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 		zap.String("provider", config.Provider),
 		zap.String("model", config.Model))
 
+	if r.providerBuilder != nil {
+		return r.providerBuilder(config)
+	}
+
 	rlCfg := r.buildRateLimiterConfig(config.RateLimit)
 
 	switch config.Provider {
@@ -1169,13 +1193,12 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 		if region == "" {
 			region = "us-west-2"
 		}
-		profile := os.Getenv("AWS_PROFILE")
-		if profile == "" {
-			profile = "default"
-		}
+		// No AWS_PROFILE: leave Profile empty so the AWS default credential
+		// chain applies. Forcing "default" fails on hosts without
+		// ~/.aws/config, even when other credentials are available.
 		return bedrock.NewClientForModel(bedrock.Config{
 			Region:            region,
-			Profile:           profile,
+			Profile:           os.Getenv("AWS_PROFILE"),
 			ModelID:           config.Model,
 			MaxTokens:         int(config.MaxTokens),
 			Temperature:       float64(config.Temperature),

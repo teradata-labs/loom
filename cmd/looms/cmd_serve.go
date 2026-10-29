@@ -1797,6 +1797,12 @@ func runServe(cmd *cobra.Command, args []string) {
 		PermissionChecker: permissionChecker,
 		AdmissionChain:    admissionChain,
 		IdentityResolver:  postgres.UserIDFromContext,
+		// Runtime-created agents (POST /v1/agents) build their per-agent
+		// provider with the same server credentials as agents loaded at
+		// startup, not from environment variables alone.
+		ProviderBuilder: func(llmCfg *loomv1.LLMConfig) (agent.LLMProvider, error) {
+			return createLLMProviderFromProtoConfig(llmCfg, config, logger)
+		},
 	})
 	if err != nil {
 		logger.Warn("Failed to create agent registry", zap.Error(err))
