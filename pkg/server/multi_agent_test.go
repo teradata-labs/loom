@@ -738,3 +738,16 @@ func TestUpdateAgent_ThreadSafety(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestListAgents_SetsTotalCount(t *testing.T) {
+	llm := &countingLLM{name: "mock", model: "mock-model"}
+	srv := NewMultiAgentServer(map[string]*agent.Agent{
+		"a1": agent.NewAgent(&mockBackend{}, llm),
+		"a2": agent.NewAgent(&mockBackend{}, llm),
+	}, nil)
+
+	resp, err := srv.ListAgents(context.Background(), &loomv1.ListAgentsRequest{})
+	require.NoError(t, err)
+	assert.Len(t, resp.GetAgents(), 2)
+	assert.Equal(t, int32(2), resp.GetTotalCount())
+}
