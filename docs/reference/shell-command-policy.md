@@ -24,7 +24,7 @@ tools:
     - kind: command-policy
       scope: shell_execute        # any tool whose "command" param is a shell string
       policy: readonly            # required: a policy the host registered
-      enforcement: runtime        # runtime (default) | static
+      enforcement: static         # static (default) | runtime
 ```
 
 | Field | Required | Meaning |
@@ -33,7 +33,7 @@ tools:
 | `scope` | yes | Tool selector, with the same semantics as every other binding |
 | `matcher` | no | Narrows the calls it governs, with the same semantics as every other binding |
 | `policy` | yes | Name of a policy passed to `shellpolicy.Factory` |
-| `enforcement` | no | `runtime`: a runner re-checks every launch, so a program named by a run-time expansion is left to the runner. `static`: nothing re-checks, so everything the analyzer cannot see is denied (details below). |
+| `enforcement` | no | `static` (the default when empty): nothing re-checks, so everything the analyzer cannot see is denied (details below). `runtime`: a runner re-checks every launch, so a program named by a run-time expansion is left to the runner. No runner exists yet (see the status table), so only `static` protects anything today. |
 
 Validation, at save time and at build:
 

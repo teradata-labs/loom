@@ -51,7 +51,8 @@ type ChainDeps struct {
 // unknown policy name), which aborts the build.
 type CommandPolicyFactory func(b HookBinding) (func(req AdmissionRequest) Decision, error)
 
-// Enforcement modes a command-policy binding may declare.
+// Enforcement modes a command-policy binding may declare. An empty
+// enforcement means CommandPolicyStatic.
 const (
 	CommandPolicyRuntime = "runtime"
 	CommandPolicyStatic  = "static"

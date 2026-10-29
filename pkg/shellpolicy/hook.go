@@ -34,7 +34,8 @@ type OptionsFunc func(req shuttle.AdmissionRequest) (Options, error)
 // Factory returns the shuttle.CommandPolicyFactory serve wires into
 // shuttle.ChainDeps: a command-policy binding names one of policies, and its
 // decision body analyzes the call's command under it. A binding naming an
-// unknown policy is a build error.
+// unknown policy is a build error. An empty enforcement means static: only
+// an explicit "runtime" leaves to a runner what the analyzer cannot see.
 func Factory(policies map[string]*Policy, opts OptionsFunc) shuttle.CommandPolicyFactory {
 	return func(b shuttle.HookBinding) (func(shuttle.AdmissionRequest) shuttle.Decision, error) {
 		pol, ok := policies[b.Policy]
@@ -46,7 +47,7 @@ func Factory(policies map[string]*Policy, opts OptionsFunc) shuttle.CommandPolic
 			sort.Strings(known)
 			return nil, fmt.Errorf("command-policy names unknown policy %q (known: %s)", b.Policy, strings.Join(known, ", "))
 		}
-		static := b.Enforcement == shuttle.CommandPolicyStatic
+		static := b.Enforcement != shuttle.CommandPolicyRuntime
 		return func(req shuttle.AdmissionRequest) shuttle.Decision {
 			return Decide(pol, req, opts, static)
 		}, nil
