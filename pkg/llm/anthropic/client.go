@@ -754,15 +754,13 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	var stopReason string
 	tokenCount := 0
 	var toolCalls []llmtypes.ToolCall
-	// Track tool input JSON as it streams in (indexed by content block index)
 	toolInputBuffers := make(map[int]*strings.Builder)
+	toolCallIndex := make(map[int]int)
 
 	// Streaming thinking assembly: blocks open at content_block_start and
 	// accumulate thinking_delta / signature_delta fragments by index.
 	thinkBlocks := make(map[int]*llmtypes.ThinkingBlock)
 	var thinkOrder []int
-	// Map content block index → toolCalls slice index for tool_use blocks
-	toolCallIndex := make(map[int]int)
 
 	scanner := bufio.NewScanner(httpResp.Body)
 	// A gateway may coalesce a whole response (or an error echoing the request)
@@ -819,10 +817,22 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				case "input_json_delta":
 					// Accumulate tool input JSON fragments. These never reach
 					// tokenCallback (text only), so report them as activity.
-					llmtypes.NotifyStreamActivity(ctx)
-					if buf, exists := toolInputBuffers[event.Index]; exists {
+					// The buffer is the only copy of the arguments: it is parsed
+					// at content_block_stop, so a call truncated mid-argument
+					// leaves ToolCall.Input empty instead of leaking a stray key.
+					if buf, exists := toolInputBuffers[event.Index]; exists && event.Delta.PartialJSON != "" {
 						buf.WriteString(event.Delta.PartialJSON)
+						if idx, ok := toolCallIndex[event.Index]; ok && idx < len(toolCalls) {
+							// Identity was set in content_block_start.
+							llmtypes.NotifyToolInputProgress(ctx, llmtypes.ToolInputProgress{
+								Index:      idx,
+								ToolCallID: toolCalls[idx].ID,
+								ToolName:   toolCalls[idx].Name,
+								Bytes:      buf.Len(),
+							})
+						}
 					}
+					llmtypes.NotifyStreamActivity(ctx)
 				}
 
 			case "content_block_start":
@@ -837,14 +847,14 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 					thinkOrder = append(thinkOrder, event.Index)
 				}
 				if event.ContentBlock != nil && event.ContentBlock.Type == "tool_use" {
-					// Start tracking a new tool call
+					// Start tracking a new tool call. Anthropic sends the call's
+					// id and name here, before any argument deltas.
 					idx := len(toolCalls)
 					toolCalls = append(toolCalls, llmtypes.ToolCall{
 						ID:    event.ContentBlock.ID,
 						Name:  llm.ReverseToolName(c.toolNameMap, event.ContentBlock.Name),
 						Input: make(map[string]interface{}),
 					})
-					// Initialize buffer for this tool's input JSON
 					toolInputBuffers[event.Index] = &strings.Builder{}
 					toolCallIndex[event.Index] = idx
 				}
