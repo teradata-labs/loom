@@ -5,4 +5,6 @@
 
 -- 000012_decision_shadow_subject.down.sql
 -- The bundled SQLite predates DROP COLUMN; the column stays (see 000011).
+-- Running this migration's up again after this down fails with "duplicate
+-- column name", because the column is still there.
 SELECT 1;

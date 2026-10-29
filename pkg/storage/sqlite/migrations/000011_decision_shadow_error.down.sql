@@ -7,5 +7,7 @@
 -- The bundled SQLite predates ALTER TABLE ... DROP COLUMN, so, like the other
 -- column additions in this directory (000006, 000009), the column stays; the
 -- store's INSERT names its columns and the default is '', so the older code
--- keeps working against the wider table.
+-- keeps working against the wider table. Running this migration's up again after
+-- this down fails with "duplicate column name: error", because the column is
+-- still there.
 SELECT 1;
