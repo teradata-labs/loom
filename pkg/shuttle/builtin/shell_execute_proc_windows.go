@@ -30,3 +30,8 @@ func killProcessTree(cmd *exec.Cmd) {
 	_ = exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(cmd.Process.Pid)).Run()
 	_ = cmd.Process.Kill()
 }
+
+// rekillProcessGroup is a no-op on Windows: killProcessTree's taskkill /T has
+// already walked the process tree, and re-running it every few milliseconds
+// would start a taskkill process each time.
+func rekillProcessGroup(_ *exec.Cmd) {}

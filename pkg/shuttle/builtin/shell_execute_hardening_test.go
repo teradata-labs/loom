@@ -131,7 +131,7 @@ func readPID(t *testing.T, path string) int {
 	return pid
 }
 
-// A timeout must kill everything the shell started, not just the shell.
+// A timeout must kill the shell's process group, not just the shell.
 func TestShellExecute_TimeoutKillsBackgroundChildren(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "child.pid")
 	res, err := NewShellExecuteTool("").Execute(context.Background(), map[string]interface{}{
@@ -185,6 +185,34 @@ func TestShellExecute_OutputOverflowStopsPromptly(t *testing.T) {
 	assert.Less(t, time.Since(start), 5*time.Second, "overflow waited for the timeout")
 }
 
+// A single newline-free token larger than any line buffer must trip the
+// overflow too, on either stream, and the command must be stopped.
+func TestShellExecute_NewlineFreeOverflowStopsPromptly(t *testing.T) {
+	for _, tc := range []struct{ name, redirect string }{
+		{"stdout", ""},
+		{"stderr", " >&2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pidFile := filepath.Join(t.TempDir(), "shell.pid")
+			start := time.Now()
+			res, err := NewShellExecuteTool("").Execute(context.Background(), map[string]interface{}{
+				"command":          "echo $$ > " + pidFile + "; head -c 2000000 /dev/zero | tr '\\0' a" + tc.redirect + "; sleep 30",
+				"max_output_bytes": float64(4096),
+				"timeout_seconds":  float64(8),
+			})
+			elapsed := time.Since(start)
+			require.NoError(t, err)
+			require.NotNil(t, res.Error)
+			assert.Equal(t, "OUTPUT_OVERFLOW", res.Error.Code)
+			assert.Less(t, elapsed, 4*time.Second, "overflow waited for the timeout")
+
+			pid := readPID(t, pidFile)
+			t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+			assert.True(t, waitGone(pid, 2*time.Second), "shell %d survived the overflow", pid)
+		})
+	}
+}
+
 // working_dir confinement must follow symlinks: a link inside LOOM_DATA_DIR
 // that points outside it is outside it.
 func TestShellExecute_WorkingDirSymlinkEscapeIsRefused(t *testing.T) {
@@ -229,30 +257,89 @@ func TestPathWithin(t *testing.T) {
 
 func TestIsSensitiveEnvName(t *testing.T) {
 	for name, want := range map[string]bool{
-		"ANTHROPIC_API_KEY":      true,
-		"AWS_ACCESS_KEY_ID":      true,
-		"AWS_SECRET_ACCESS_KEY":  true,
-		"AWS_SESSION_TOKEN":      true,
-		"GH_TOKEN":               true,
-		"HF_TOKEN":               true,
-		"MY_PRIVATE_KEY":         true,
-		"OPENAI_APIKEY":          true,
-		"GOOGLE_CREDENTIALS":     true,
-		"DB_PASSWD":              true,
-		"POSTGRES_PASSWORD":      true,
-		"CLIENT_SECRET":          true,
-		"DATABASE_URL":           true,
-		"ANALYTICS_DSN":          true,
-		"github_token":           true,
-		"PATH":                   false,
-		"HOME":                   false,
-		"KEYBOARD_LAYOUT":        false,
-		"MONKEY":                 false,
-		"LANG":                   false,
-		"SSH_AUTH_SOCK":          false,
-		"LOOM_DATA_DIR":          false,
-		"TOKENIZERS_PARALLELISM": false,
+		"ANTHROPIC_API_KEY":     true,
+		"AWS_ACCESS_KEY_ID":     true,
+		"AWS_SECRET_ACCESS_KEY": true,
+		"AWS_SESSION_TOKEN":     true,
+		"GH_TOKEN":              true,
+		"HF_TOKEN":              true,
+		"MY_PRIVATE_KEY":        true,
+		"OPENAI_APIKEY":         true,
+		"GOOGLE_CREDENTIALS":    true,
+		"DB_PASSWD":             true,
+		"POSTGRES_PASSWORD":     true,
+		"CLIENT_SECRET":         true,
+		"DATABASE_URL":          true,
+		"ANALYTICS_DSN":         true,
+		"github_token":          true,
+		// Names from review (Josh-Schoen F1) that the earlier lists let through.
+		"GITHUBTOKEN":                true,
+		"APITOKEN":                   true,
+		"AUTHORIZATION":              true,
+		"JWT":                        true,
+		"BEARER":                     true,
+		"SESSIONCOOKIE":              true,
+		"PASSPHRASE":                 true,
+		"ZZ_AUTH_HEADER":             true,
+		"ZZ_COOKIE":                  true,
+		"ZZ_PASSCODE":                true,
+		"ZZ_PWD":                     true,
+		"ZZ_PRIVATEKEY":              true,
+		"ZZ_WEBHOOK_URL":             true,
+		"ACCESSKEY":                  true,
+		"SIGNINGKEY":                 true,
+		"AUTHTOKEN":                  true,
+		"PRIVATEKEY":                 true,
+		"LOOM_OTLP_HEADERS":          true,
+		"OTEL_EXPORTER_OTLP_HEADERS": true,
+		"PWD":                        false,
+		"OLDPWD":                     false,
+		"AUTHOR":                     false,
+		"GIT_AUTHOR_NAME":            false,
+		"PATH":                       false,
+		"HOME":                       false,
+		"KEYBOARD_LAYOUT":            false,
+		"MONKEY":                     false,
+		"LANG":                       false,
+		"SSH_AUTH_SOCK":              false,
+		"LOOM_DATA_DIR":              false,
+		"TOKENIZERS_PARALLELISM":     false,
 	} {
 		assert.Equal(t, want, isSensitiveEnvName(name), name)
 	}
+}
+
+// The command must start in the directory the containment check approved:
+// the symlink-resolved working_dir, not the link. Repointing the link after
+// the check must not carry the command outside LOOM_DATA_DIR.
+func TestShellExecute_RunsInResolvedWorkingDir(t *testing.T) {
+	dataDir := t.TempDir()
+	outside := t.TempDir()
+	t.Setenv("LOOM_DATA_DIR", dataDir)
+	target := filepath.Join(dataDir, "real")
+	require.NoError(t, os.Mkdir(target, 0o700))
+	link := filepath.Join(dataDir, "link")
+	require.NoError(t, os.Symlink(target, link))
+	want, err := filepath.EvalSymlinks(target) // macOS: /var -> /private/var
+	require.NoError(t, err)
+
+	testHookAfterWorkingDirCheck = func() {
+		require.NoError(t, os.Remove(link))
+		require.NoError(t, os.Symlink(outside, link))
+	}
+	t.Cleanup(func() { testHookAfterWorkingDirCheck = nil })
+
+	tool := NewShellExecuteTool("")
+	tool.SetLoomDataDir(dataDir)
+	ctx := session.WithSessionID(context.Background(), "sess-resolved-dir")
+	res, err := tool.Execute(ctx, map[string]interface{}{
+		"command":     "pwd -P",
+		"working_dir": link,
+	})
+	require.NoError(t, err)
+	require.True(t, res.Success, "%+v", res.Error)
+	data, ok := res.Data.(map[string]interface{})
+	require.True(t, ok, "%T", res.Data)
+	stdout, _ := data["stdout"].(string)
+	assert.Equal(t, want, strings.TrimSpace(stdout), "command ran outside the checked directory")
 }
