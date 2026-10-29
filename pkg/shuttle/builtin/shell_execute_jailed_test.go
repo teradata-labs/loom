@@ -163,7 +163,7 @@ func TestJailedShell_ThroughTheHookAndApproval(t *testing.T) {
 				decision = shuttle.Decision{Kind: shuttle.Allow}
 			}
 			chain, err := shuttle.BuildChainFromConfig(shuttle.HooksConfig{Bindings: []shuttle.HookBinding{
-				{Kind: "command-policy", Scope: "shell_execute", Policy: "readonly"},
+				{Kind: "command-policy", Scope: "shell_execute", Policy: "readonly", Enforcement: "runtime"},
 			}}, shuttle.ChainDeps{
 				Ask:           fixedResolver{decision},
 				CommandPolicy: shellpolicy.Factory(map[string]*shellpolicy.Policy{"readonly": f.runner.Policy()}, f.runner.OptionsFunc()),
