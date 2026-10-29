@@ -167,6 +167,16 @@ export LOOM_SHELL_PASS_ENV=GH_TOKEN,AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,AWS_
 
 The value is read when the tool is created (at server start), so changing it needs a restart. It applies only to the inherited server environment; a call's own `env` parameter is filtered regardless. Programs embedding Loom can call `ShellExecuteTool.SetPassEnv` instead.
 
+It applies to bash mode only. In jailed mode (`tools.shell_execute.mode: jailed`) a command's environment is built from scratch and no server variable reaches it, so this setting has no effect there.
+
+### LOOM_SHELLJAIL_CHILD
+**Internal. Do not set.**
+**Used in:** `pkg/shelljail/spec.go` (`MarkerEnv`), `pkg/shelljail/child.go` (`Main`)
+
+Jailed `shell_execute` runs each command in a child process: the server re-executes its own binary with `LOOM_SHELLJAIL_CHILD=1` and only a few other variables, and sends the command spec on stdin. `shelljail.Main()`, which `looms` calls first in `main()`, sees the value `1` and runs the jailed interpreter instead of the server, then exits. Any other value, or none, starts the binary normally.
+
+Operators must not set it. With `LOOM_SHELLJAIL_CHILD=1` in its environment, `looms` does not start as a server: it waits for a jail spec on stdin and exits with status 125 when none arrives.
+
 ---
 
 ## LLM Providers
