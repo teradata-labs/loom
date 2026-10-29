@@ -129,5 +129,23 @@ func setupShellJail(ctx context.Context, config *Config, loomDataDir string, log
 		zap.String("policy", name),
 		zap.Int("pinned_programs", len(runner.Pinned())),
 		zap.Bool("strict", se.Strict))
+	warnUnsetEnforcement(config.Tools.Hooks.Bindings, logger)
 	return shellpolicy.Factory(policies, runner.OptionsFunc()), nil
+}
+
+// warnUnsetEnforcement logs one warning per command-policy binding that leaves
+// enforcement unset while the jail is on. An unset enforcement is static, so
+// the binding denies what the static check cannot see (every git command, any
+// computed command name) even though the jail would re-check each launch; the
+// operator most likely meant enforcement: runtime.
+func warnUnsetEnforcement(bindings []shuttle.HookBinding, logger *zap.Logger) {
+	for i, b := range bindings {
+		if b.Kind != "command-policy" || b.Enforcement != "" {
+			continue
+		}
+		logger.Warn("Jailed shell: command-policy binding has no enforcement and runs static; set enforcement: runtime to let the jail re-check each launch",
+			zap.Int("binding", i),
+			zap.String("scope", b.Scope),
+			zap.String("policy", b.Policy))
+	}
 }

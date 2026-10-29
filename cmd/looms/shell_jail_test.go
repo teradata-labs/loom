@@ -136,3 +136,21 @@ func TestSetupShellJail(t *testing.T) {
 	_, err = setupShellJail(context.Background(), c, data, logger)
 	assert.ErrorContains(t, err, "not absolute")
 }
+
+// With the jail on, a command-policy binding that leaves enforcement unset runs
+// static and denies what the jail would re-check, so serve warns once for it;
+// explicit enforcement and other kinds stay quiet.
+func TestWarnUnsetEnforcement(t *testing.T) {
+	logger, logs := observedLogger()
+	warnUnsetEnforcement([]shuttle.HookBinding{
+		{Kind: "command-policy", Scope: "shell_execute", Policy: "readonly"},
+		{Kind: "command-policy", Scope: "shell_execute", Policy: "readonly", Enforcement: "runtime"},
+		{Kind: "command-policy", Scope: "shell_execute", Policy: "readonly", Enforcement: "static"},
+		{Kind: "denylist", Scope: "shell_execute"},
+	}, logger)
+
+	warns := logs.FilterMessageSnippet("has no enforcement").All()
+	require.Len(t, warns, 1, "only the binding with enforcement unset is warned about")
+	assert.Equal(t, int64(0), warns[0].ContextMap()["binding"])
+	assert.Equal(t, "readonly", warns[0].ContextMap()["policy"])
+}

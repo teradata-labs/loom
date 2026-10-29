@@ -187,6 +187,8 @@ tools:
       enforcement: runtime    # the jail re-checks every launch; static would also deny git and computed names
 ```
 
+**Startup warning.** With the jail on, `serve` logs one warning for each `command-policy` binding that leaves `enforcement` unset. An unset value means static, which denies what the jail would re-check.
+
 **Startup** (`serve`). The following abort startup:
 
 - an unknown `mode`;
