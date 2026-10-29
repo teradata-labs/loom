@@ -46,6 +46,7 @@ func TestAnalyze_Corpus(t *testing.T) {
 		want   VerdictKind
 		static VerdictKind // the verdict under enforcement: static
 		why    string      // a substring of the reason, when not Allow
+		swhy   string      // a substring of the static reason, when it differs
 	}{
 		{cmd: `ls -la`, want: Allow, static: Allow},
 		{cmd: `ls -la | grep x | wc -l && echo ok || echo no`, want: Allow, static: Allow},
@@ -63,29 +64,30 @@ func TestAnalyze_Corpus(t *testing.T) {
 		{cmd: `source ./s.sh`, want: Ask, static: Deny, why: "source"},
 		{cmd: `trap 'rm nope' EXIT`, want: Ask, static: Ask, why: "rm"},
 		{cmd: `(rm nope) &`, want: Ask, static: Ask},
-		{cmd: `cat <(rm nope)`, want: Ask, static: Ask},
+		{cmd: `cat <(rm nope)`, want: Ask, static: Deny},
 		{cmd: `/bin/rm nope`, want: Ask, static: Ask, why: "runs a program by path"},
 		{cmd: `./rm`, want: Ask, static: Ask},
 		{cmd: `\rm x`, want: Ask, static: Ask, why: "rm (1:1)"},
 		{cmd: `r''m x`, want: Ask, static: Ask, why: "rm (1:1)"},
 		{cmd: `find . -exec rm {} \;`, want: Ask, static: Ask, why: "-exec is outside the profile"},
 		{cmd: `find . -delete`, want: Ask, static: Ask},
-		{cmd: `find . $X`, want: Allow, static: Allow},
+		{cmd: `find . $X`, want: Allow, static: Deny, swhy: "an argument computed at run time"},
 		{cmd: `sort -o out a`, want: Ask, static: Ask},
 		{cmd: `sort -ro out a`, want: Ask, static: Ask},
 		{cmd: `sort --out=x a`, want: Ask, static: Ask, why: "--output"},
 		{cmd: `sort -- -o`, want: Allow, static: Allow},
 		{cmd: `uniq a b`, want: Ask, static: Ask, why: "more than 1 file argument"},
 		{cmd: `uniq -f 1 a`, want: Allow, static: Allow},
-		{cmd: `git -c core.pager='sh -c id' log`, want: Ask, static: Ask, why: "git -c"},
-		{cmd: `git log -p`, want: Allow, static: Allow},
-		{cmd: `git grep -c x`, want: Allow, static: Allow},
-		{cmd: `git --no-pager log --oneline`, want: Allow, static: Allow},
-		{cmd: `git branch`, want: Allow, static: Allow},
-		{cmd: `git branch -D x`, want: Ask, static: Ask, why: "listing only"},
-		{cmd: `git push`, want: Ask, static: Ask, why: "git push"},
-		{cmd: `git log --output=x`, want: Ask, static: Ask},
-		{cmd: `git -C /usr status`, want: Ask, static: Ask, why: "reads outside the session"},
+		{cmd: `git -c core.pager='sh -c id' log`, want: Ask, static: Deny, why: "git -c"},
+		{cmd: `git log -p`, want: Allow, static: Deny},
+		{cmd: `git grep -c x`, want: Allow, static: Deny},
+		{cmd: `git --no-pager log --oneline`, want: Allow, static: Deny},
+		{cmd: `git branch`, want: Allow, static: Deny, swhy: "git needs the runner's hardening"},
+		{cmd: `git status`, want: Allow, static: Deny, swhy: "git needs the runner's hardening"},
+		{cmd: `git branch -D x`, want: Ask, static: Deny, why: "listing only"},
+		{cmd: `git push`, want: Ask, static: Deny, why: "git push"},
+		{cmd: `git log --output=x`, want: Ask, static: Deny},
+		{cmd: `git -C /usr status`, want: Ask, static: Deny, why: "reads outside the session"},
 		{cmd: `echo x > /etc/x`, want: Deny, static: Deny, why: "writes outside the session"},
 		{cmd: `echo x >> ../../outside`, want: Deny, static: Deny},
 		{cmd: `echo x > ../out.txt; echo y >> out.txt; ls 2>&1 >/dev/null; ls >&2`, want: Allow, static: Allow},
@@ -93,10 +95,19 @@ func TestAnalyze_Corpus(t *testing.T) {
 		{cmd: `cat /etc/hosts`, want: Ask, static: Ask},
 		{cmd: `cd /; ls`, want: Ask, static: Ask},
 		{cmd: `cd ../..; ls`, want: Ask, static: Ask},
-		{cmd: `d=/; cd $d; ls`, want: Allow, static: Allow},
+		{cmd: `d=/; cd $d; ls`, want: Allow, static: Deny, swhy: "$d (1:9): a path computed at run time"},
+		{cmd: `cd ~`, want: Allow, static: Deny},
 		{cmd: `ls /etc/pass*`, want: Ask, static: Ask},
-		{cmd: `p=/etc; ls $p/pass*`, want: Allow, static: Allow},
-		{cmd: `for f in *.txt; do wc -l "$f"; done`, want: Allow, static: Allow},
+		{cmd: `p=/etc; ls $p/pass*`, want: Allow, static: Deny},
+		{cmd: `for f in *.txt; do wc -l "$f"; done`, want: Allow, static: Deny},
+		{cmd: `wc -l *.txt`, want: Allow, static: Allow},
+		{cmd: `cat ~/.ssh/config`, want: Allow, static: Deny, swhy: "~/.ssh/config (1:5): an argument computed at run time"},
+		{cmd: `cat $HOME/.ssh/config`, want: Allow, static: Deny, swhy: "$HOME/.ssh/config"},
+		{cmd: `cat ${HOME}/x`, want: Allow, static: Deny},
+		{cmd: `cat $(echo /etc/hosts)`, want: Allow, static: Deny},
+		{cmd: "cat `echo /etc/hosts`", want: Allow, static: Deny},
+		{cmd: `cat < $f`, want: Allow, static: Deny, swhy: "reads a path computed at run time"},
+		{cmd: `sleep $N; echo $HOME`, want: Allow, static: Allow},
 		{cmd: `env`, want: Ask, static: Ask},
 		{cmd: `echo $ANTHROPIC_API_KEY`, want: Allow, static: Allow},
 		{cmd: `sleep 100 & sleep 100`, want: Allow, static: Allow},
@@ -123,7 +134,7 @@ func TestAnalyze_Corpus(t *testing.T) {
 		{cmd: `time rm x`, want: Ask, static: Ask},
 		{cmd: `! rm x`, want: Ask, static: Ask},
 		{cmd: `if rm x; then :; fi`, want: Ask, static: Ask},
-		{cmd: `ls ~`, want: Allow, static: Allow},
+		{cmd: `ls ~`, want: Allow, static: Deny},
 		{cmd: `echo x > ~/f`, want: Allow, static: Deny},
 	} {
 		for _, static := range []bool{false, true} {
@@ -137,6 +148,9 @@ func TestAnalyze_Corpus(t *testing.T) {
 			assert.Equal(t, want, v.Kind, "%q (static=%v): %s", tc.cmd, static, v.Reason())
 			if tc.why != "" && v.Kind == want && want != Allow && (!static || tc.static == tc.want) {
 				assert.Contains(t, v.Reason(), tc.why, "%q (static=%v)", tc.cmd, static)
+			}
+			if static && tc.swhy != "" {
+				assert.Contains(t, v.Reason(), tc.swhy, "%q (static)", tc.cmd)
 			}
 			if v.Kind == Ask {
 				assert.NotNil(t, v.Grant, "%q: an Ask carries what approving it allows", tc.cmd)

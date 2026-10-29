@@ -96,8 +96,10 @@ type Options struct {
 	Roots Roots
 	// Static marks a binding with no runner behind it ("enforcement:
 	// static"): anything Analyze cannot see (a program name computed at run
-	// time, a non-literal eval or trap, source, aliases) is refused rather than
-	// left to the runner.
+	// time, a non-literal eval or trap, source, aliases, a path argument or
+	// redirect target built from ~, a parameter or a substitution) is refused
+	// rather than left to the runner, and so is a program whose profile needs
+	// run-time hardening (Profile.Harden or Profile.Env).
 	Static bool
 }
 
@@ -250,14 +252,25 @@ func (a *analyzer) call(x *syntax.CallExpr, depth int, outer *syntax.Pos) {
 }
 
 func (a *analyzer) program(x *syntax.CallExpr, nameWord *syntax.Word, name string, prof *Profile, rest []*syntax.Word, outer *syntax.Pos) {
+	if a.opt.Static && (prof.Harden != nil || len(prof.Env) > 0) {
+		// The profile is only safe with the hardening a runner applies at
+		// launch (git's -c overrides and environment); static has no runner.
+		a.add(Deny, nameWord, outer, name, name+" needs the runner's hardening, which static enforcement does not apply")
+		return
+	}
 	lits := make([]string, 0, len(rest))
 	complete := true
 	for _, w := range rest {
 		s, ok := literal(w)
 		if !ok {
 			complete = false
-			if dir, ok := globDir(w); ok && !prof.NoPathArgs {
+			if prof.NoPathArgs {
+				continue
+			}
+			if dir, ok := globDir(w); ok {
 				a.checkRead(dir, w, outer)
+			} else if a.opt.Static {
+				a.add(Deny, w, outer, wordText(w), "an argument computed at run time (tilde, parameter or command substitution) cannot be path-checked")
 			}
 			continue
 		}
@@ -298,7 +311,13 @@ func (a *analyzer) builtin(x *syntax.CallExpr, name string, rest []*syntax.Word,
 	case "cd", "pushd":
 		for _, w := range rest {
 			s, ok := literal(w)
-			if !ok || strings.HasPrefix(s, "-") || strings.HasPrefix(s, "+") {
+			if !ok {
+				if a.opt.Static {
+					a.add(Deny, w, outer, wordText(w), "a path computed at run time cannot be checked")
+				}
+				continue
+			}
+			if strings.HasPrefix(s, "-") || strings.HasPrefix(s, "+") {
 				continue
 			}
 			a.checkRead(s, w, outer)
@@ -344,6 +363,9 @@ func (a *analyzer) redirects(st *syntax.Stmt, outer *syntax.Pos) {
 		case syntax.DplIn, syntax.DplOut:
 			target, ok := literal(r.Word)
 			if !ok {
+				if a.opt.Static {
+					a.add(Deny, r, outer, wordText(r.Word), "redirects to a path computed at run time, which cannot be checked")
+				}
 				continue
 			}
 			if target == "-" {
@@ -363,6 +385,8 @@ func (a *analyzer) redirects(st *syntax.Stmt, outer *syntax.Pos) {
 		case syntax.RdrIn:
 			if target, ok := literal(r.Word); ok {
 				a.checkRead(target, r, outer)
+			} else if a.opt.Static {
+				a.add(Deny, r, outer, wordText(r.Word), "reads a path computed at run time, which cannot be checked")
 			}
 		case syntax.RdrOut, syntax.AppOut, syntax.RdrClob, syntax.RdrAll, syntax.AppAll, syntax.RdrInOut:
 			if target, ok := literal(r.Word); ok {

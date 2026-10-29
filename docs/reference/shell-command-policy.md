@@ -59,6 +59,7 @@ A word is **literal** when it has no parameter, command, arithmetic or process e
 | a builtin the interpreter does not implement (`kill`, `umask`, `ulimit`, `fc`, `jobs`, `bg`, `fg`, `disown`, `enable`, `history`, …) | Deny |
 | on the policy's `Never` list (by base name) | Deny |
 | a literal path (`./x`, `/usr/bin/rm`) | Ask, granting that exact path |
+| an allowlisted program whose profile needs run-time hardening (`Profile.Harden` or `Profile.Env`, such as `git`) | `static`: Deny, since no runner applies the hardening. `runtime`: judged like any allowlisted program |
 | an allowlisted program, all literal arguments within its profile | Allow |
 | an allowlisted program, a literal argument outside its profile | Ask, granting the program (any arguments, for this call) |
 | any other literal name | Ask, granting the name |
@@ -68,9 +69,11 @@ A word is **literal** when it has no parameter, command, arithmetic or process e
 |---|---|
 | an existing literal path argument outside the read roots | Ask, granting the resolved path |
 | the literal directory part of a glob outside the read roots (`/etc` in `/etc/pass*`) | Ask, granting the resolved path |
+| a path argument built from `~`, a parameter (`$HOME`, `${X}`) or a command or process substitution, for a program whose arguments are paths | `runtime`: no verdict (the runner checks the expanded path). `static`: Deny |
 | a literal `cd` target outside the read roots | Ask, granting the resolved path |
+| a computed `cd` or `pushd` target | `static` only: Deny |
 | a write redirect (`>`, `>>`, `>\|`, `&>`, `&>>`, `<>`, `>& file`) to a literal path outside the write roots | Deny |
-| a write redirect to a computed path | `static` only: Deny |
+| a write redirect, a read redirect or a `<&`/`>&` target that is computed | `static` only: Deny |
 | a read redirect (`<`, `<& file`) from outside the read roots | Ask, granting the resolved path |
 | `/dev/null`, `/dev/stdin`, `/dev/stdout`, `/dev/stderr` | always allowed |
 | redirects on file descriptors above 2, `coproc`, bats `@test` | Deny (the interpreter does not support them) |
@@ -128,13 +131,13 @@ When the Ask is approved, the tool body reads the grants with `shellpolicy.Merge
 
 **Option matching.** Short options are matched inside groups, so `-ro` contains `-o`. Long options are matched with or without `=value`, and by abbreviation, so `--out` matches `--output`. Arguments after `--` are positional.
 
-**Path confinement.** Every positional argument, and every `--option=value` value, that names an existing path must lie within the read roots or a granted path.
+**Path confinement.** Every positional argument, and every `--option=value` value, that names an existing path must lie within the read roots or a granted path. Under `static`, an argument the analyzer cannot read as a literal (other than a plain glob, whose directory is checked) is denied, because nothing would check its expanded value.
 
 **git profile.**
 - **Subcommands:** `status diff log show rev-parse ls-files blame grep describe shortlog`, and `branch` with only `--list -a --all -r --remotes -v -vv --verbose --show-current`.
 - **Global options:** only `--no-pager`, `-P`, `--no-optional-locks` and `-C <dir>`. This is what refuses `-c`.
 - **Refused anywhere:** `--config-env --exec-path --attr-source --git-dir --work-tree --namespace --super-prefix --output --ext-diff --textconv -O --open-files-in-pager --paginate`.
-- **Hardening.** `Profile.Harden` prepends the following at run time, and adds `--no-ext-diff --no-textconv` to `diff`, `log` and `show`:
+- **Hardening.** Under `static` enforcement no runner applies this hardening, so `git` is denied there. `Profile.Harden` prepends the following at run time, and adds `--no-ext-diff --no-textconv` to `diff`, `log` and `show`:
 
   ```
   -c core.fsmonitor=false -c core.pager=cat -c core.hooksPath=/dev/null -c diff.external= --no-pager --attr-source=4b825dc642cb6eb9a060e54bf8d69288fbee4904
