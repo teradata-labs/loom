@@ -93,6 +93,14 @@ func (r AdmissionRequest) MatchesTool(scope ToolScope) bool {
 //
 // Reading mutable state is fine (the gated allowlist reads the approved set);
 // WRITING it from Evaluate is not.
+//
+// A hook that answers Ask MUST be deterministic for the same call: the same
+// tool name, Params and caller identity must yield the same Reason and an equal
+// Grant every time. A parked approval does not store the Grant; on resume the
+// chain re-evaluates the call and the tool body receives the recomputed Grant
+// (see docs/architecture/hitl-park-and-resume.md), so a Grant that varied
+// between park and resume would reach the body without the person having seen
+// it.
 type Hook interface {
 	Matches(req AdmissionRequest) bool
 	Evaluate(req AdmissionRequest) Decision
