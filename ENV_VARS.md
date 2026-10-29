@@ -167,6 +167,8 @@ export LOOM_SHELL_PASS_ENV=GH_TOKEN,AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,AWS_
 
 The value is read when the tool is created (at server start), so changing it needs a restart. It applies only to the inherited server environment; a call's own `env` parameter is filtered regardless. Programs embedding Loom can call `ShellExecuteTool.SetPassEnv` instead.
 
+Each call logs the names it withheld (never the values) at Debug level, with the session ID, as `shell_execute withheld credential-like server environment variables from the command`.
+
 It applies to bash mode only. In jailed mode (`tools.shell_execute.mode: jailed`) a command's environment is built from scratch and no server variable reaches it, so this setting has no effect there.
 
 ### LOOM_SHELLJAIL_CHILD

@@ -9,6 +9,7 @@ package builtin
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -22,6 +23,8 @@ import (
 
 	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 func shellData(t *testing.T, r *shuttle.Result) map[string]interface{} {
@@ -99,8 +102,35 @@ func TestHasURLCredentials(t *testing.T) {
 func TestInheritedEnv(t *testing.T) {
 	got := inheritedEnv([]string{
 		"PATH=/usr/bin", "GH_TOKEN=a", "HF_TOKEN=b", "PROXY=http://u:p@h", "EMPTY=", "NOEQUALS",
-	}, map[string]bool{"GH_TOKEN": true})
+	}, map[string]bool{"GH_TOKEN": true}, zap.NewNop())
 	assert.Equal(t, []string{"PATH=/usr/bin", "GH_TOKEN=a", "EMPTY=", "NOEQUALS"}, got)
+}
+
+// The withheld names are logged so an operator can find them; values never
+// are, not even for a variable withheld because its value is a URL with a
+// password.
+func TestInheritedEnv_LogsNamesNeverValues(t *testing.T) {
+	core, logs := observer.New(zap.DebugLevel)
+	got := inheritedEnv([]string{
+		"PATH=/usr/bin", "HF_TOKEN=hf-secret-value", "PROXY=http://u:url-secret@h", "AWS_SECRET_ACCESS_KEY=aws-secret", "HF_TOKEN=hf-secret-value",
+	}, nil, zap.New(core))
+	assert.Equal(t, []string{"PATH=/usr/bin"}, got)
+	entries := logs.All()
+	require.Len(t, entries, 1)
+	assert.Equal(t, zap.DebugLevel, entries[0].Level)
+	fields := entries[0].ContextMap()
+	assert.Equal(t, []interface{}{"AWS_SECRET_ACCESS_KEY", "HF_TOKEN", "PROXY"}, fields["names"])
+	assert.Equal(t, PassEnvVar, fields["pass_with"])
+	for _, e := range entries {
+		dump := fmt.Sprintf("%s %v", e.Message, e.ContextMap())
+		for _, secret := range []string{"hf-secret-value", "url-secret", "aws-secret"} {
+			assert.NotContains(t, dump, secret)
+		}
+	}
+
+	core, logs = observer.New(zap.DebugLevel)
+	inheritedEnv([]string{"PATH=/usr/bin", "HOME=/h"}, nil, zap.New(core))
+	assert.Zero(t, logs.Len(), "nothing withheld, nothing logged")
 }
 
 func processAlive(pid int) bool {

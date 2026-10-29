@@ -28,6 +28,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/shelljail"
 	"github.com/teradata-labs/loom/pkg/shellpolicy"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"go.uber.org/zap"
 )
 
 const (
@@ -61,6 +62,9 @@ type ShellExecuteTool struct {
 	// jail, when set, runs commands in the jailed runner instead of bash
 	// (tools.shell_execute.mode: jailed).
 	jail *shelljail.Runner
+	// logger receives the names (never values) of withheld server
+	// variables; nil means zap.L().
+	logger *zap.Logger
 }
 
 // defaultJail is the runner every ShellExecuteTool created after SetShellJail
@@ -99,6 +103,17 @@ func NewShellExecuteTool(baseDir string) *ShellExecuteTool {
 
 // SetJail makes this tool run commands in r; nil means bash.
 func (t *ShellExecuteTool) SetJail(r *shelljail.Runner) { t.jail = r }
+
+// SetLogger sets the logger the tool reports withheld environment names to;
+// nil restores zap.L().
+func (t *ShellExecuteTool) SetLogger(l *zap.Logger) { t.logger = l }
+
+func (t *ShellExecuteTool) log() *zap.Logger {
+	if t.logger != nil {
+		return t.logger
+	}
+	return zap.L()
+}
 
 // SetPassEnv replaces the list of sensitive-looking server variables that
 // commands still receive. Names match exactly.
@@ -430,7 +445,7 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 		// Set environment variables: the server's environment minus anything that
 		// looks like a credential (unless the operator passed it by name), then
 		// the call's own variables, filtered the same way.
-		cmd.Env = inheritedEnv(os.Environ(), t.passEnv)
+		cmd.Env = inheritedEnv(os.Environ(), t.passEnv, t.log().With(zap.String("session_id", sessionID)))
 		filteredEnv := filterSensitiveEnvVars(envVars)
 		for k, v := range filteredEnv {
 			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
@@ -942,14 +957,30 @@ func filterSensitiveEnvVars(envVars map[string]string) map[string]string {
 
 // inheritedEnv returns the server environment a command receives: every
 // "NAME=value" entry except those whose name looks like a credential or whose
-// value is a URL carrying a password, unless passEnv names the variable.
-func inheritedEnv(environ []string, passEnv map[string]bool) []string {
+// value is a URL carrying a password, unless passEnv names the variable. It
+// logs the withheld names at Debug (never their values), so an operator
+// whose command lost a token can see which one and pass it with
+// LOOM_SHELL_PASS_ENV.
+func inheritedEnv(environ []string, passEnv map[string]bool, logger *zap.Logger) []string {
 	out := make([]string, 0, len(environ))
+	var dropped []string
+	seen := map[string]bool{}
 	for _, kv := range environ {
 		name, value, _ := strings.Cut(kv, "=")
 		if passEnv[name] || (!isSensitiveEnvName(name) && !hasURLCredentials(value)) {
 			out = append(out, kv)
+			continue
 		}
+		if !seen[name] {
+			seen[name] = true
+			dropped = append(dropped, name)
+		}
+	}
+	if len(dropped) > 0 && logger != nil {
+		sort.Strings(dropped)
+		logger.Debug("shell_execute withheld credential-like server environment variables from the command",
+			zap.Strings("names", dropped),
+			zap.String("pass_with", PassEnvVar))
 	}
 	return out
 }
