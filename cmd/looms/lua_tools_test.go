@@ -404,4 +404,34 @@ func TestLuaTools_ShellForScripts(t *testing.T) {
 	assert.ElementsMatch(t, tools, pol.Visible(tools, luasandbox.TrustOwn), "governed: the runner's own scripts get the shell")
 	assert.Equal(t, []string{"file_read"}, pol.Visible(tools, luasandbox.TrustShared), "shared scripts never do")
 
+	// An operator-set deny_for_shared replaces the default list wholesale;
+	// shared scripts still never get the shell, governed or not.
+	for _, guards := range []luaGuards{{}, {ShellGoverned: true}} {
+		custom := cfg.Tools.Lua
+		custom.Tools.DenyForShared = []string{"foo"}
+		rt, err := newLuaRuntime(custom, guards, 4<<30, t.TempDir(), zap.NewNop())
+		require.NoError(t, err)
+		pol, err := rt.options.Policy(context.Background())
+		require.NoError(t, err)
+		assert.Contains(t, pol.DenyForShared, "shell_execute", "governed=%v", guards.ShellGoverned)
+		assert.Contains(t, pol.DenyForShared, "foo", "governed=%v", guards.ShellGoverned)
+		assert.Equal(t, []string{"file_read"}, pol.Visible(tools, luasandbox.TrustShared), "governed=%v: custom deny_for_shared", guards.ShellGoverned)
+	}
+}
+
+func TestKeepShellDeniedForShared(t *testing.T) {
+	for name, tc := range map[string]struct {
+		deny []string
+		want []string
+	}{
+		"default list keeps it":        {deny: []string{"http_request", "shell_execute"}, want: []string{"http_request", "shell_execute"}},
+		"a pattern covers it":          {deny: []string{"shell_*"}, want: []string{"shell_*"}},
+		"operator list without it":     {deny: []string{"foo"}, want: []string{"foo", "shell_execute"}},
+		"empty list":                   {deny: nil, want: []string{"shell_execute"}},
+		"a pattern for something else": {deny: []string{"web_*"}, want: []string{"web_*", "shell_execute"}},
+	} {
+		in := append([]string(nil), tc.deny...)
+		assert.Equal(t, tc.want, keepShellDeniedForShared(tc.deny), name)
+		assert.Equal(t, in, tc.deny, "%s: input not modified", name)
+	}
 }

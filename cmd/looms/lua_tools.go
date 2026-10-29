@@ -98,8 +98,9 @@ type LuaToolListsConfig struct {
 // nothing checks them. It stays denied unless it runs jailed under a
 // command-policy hook with no matcher (design 06 §7): an operator who sets that up can remove
 // it from deny, and newLuaRuntime puts it back otherwise. Shared scripts never
-// get it (deny_for_shared): someone else's script does not run commands as its
-// runner, even allowed ones.
+// get it: newLuaRuntime keeps it in deny_for_shared whatever the operator sets
+// there, so a script another agent saved, or one saved over the RPC, does not
+// run commands as its runner, even allowed ones.
 var (
 	defaultLuaDeny          = []string{"shell_execute", "shell_execute_sandbox", "agent_management", "project_manager", "git_contribute", "propose_skill_edit"}
 	defaultLuaDenyForShared = []string{"http_request", "web_browse", "web_search", "file_write", "files", "workspace", "shell_execute"}
@@ -150,6 +151,18 @@ func keepShellDenied(deny []string, governed bool) ([]string, string) {
 		"tools.lua.tools.deny does not list shell_execute, but scripts get it only when " +
 			"tools.shell_execute.mode is jailed and a command-policy hook binding with no matcher governs shell_execute; " +
 			"it stays hidden from scripts"
+}
+
+// keepShellDeniedForShared returns the deny_for_shared list with
+// shell_execute in it. Shared scripts (another agent's, or saved over the RPC)
+// never get loom's shell, governed or not, so an operator list that replaces
+// the default without it gets it put back. It returns a new slice when it adds
+// the entry.
+func keepShellDeniedForShared(deny []string) []string {
+	if deniesShell(deny) {
+		return deny
+	}
+	return append(append([]string{}, deny...), "shell_execute")
 }
 
 // setLuaDefaults registers the tools.lua defaults.
@@ -230,7 +243,7 @@ func newLuaRuntime(c LuaToolsConfig, guards luaGuards, memLimit uint64, dataDir 
 		Limits:        c.Limits.limits(),
 		Allow:         c.Tools.Allow,
 		Deny:          deny,
-		DenyForShared: c.Tools.DenyForShared,
+		DenyForShared: keepShellDeniedForShared(c.Tools.DenyForShared),
 	}
 	if err := pol.Validate(); err != nil {
 		return nil, fmt.Errorf("tools.lua.tools: %w", err)

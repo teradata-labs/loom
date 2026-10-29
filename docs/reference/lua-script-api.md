@@ -54,11 +54,13 @@ one. Scripts get it only when both of these hold:
   A binding whose `matcher` narrows the calls it judges does not count, because a script
   call the matcher does not select would run unjudged. Either `enforcement` mode counts.
 
-Then removing `shell_execute` from `deny` gives it to the runner's own scripts. A command
+Then removing `shell_execute` from `deny` gives it to the runner's own scripts (inline
+scripts, and saved scripts the running agent owns; see "Who owns a saved script"). A command
 that needs approval returns `approval_required` to the script, and the model makes the call
 itself so a person can approve it. If either condition is missing, serve keeps
 `shell_execute` hidden from scripts whatever `deny` says, and logs a warning. Shared scripts
-never get it: `deny_for_shared` lists it by default.
+(saved by another agent, or over the RPC) never get it: `deny_for_shared` lists it by
+default, and serve adds it back when a configured `deny_for_shared` leaves it out.
 
 A malformed tool pattern in `tools.lua.tools` aborts `looms serve`. Hosts embedding loom
 call `Agent.RegisterRunLuaTool(agent.RunLuaToolOptions{...})` themselves, or suppress
