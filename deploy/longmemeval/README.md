@@ -71,6 +71,20 @@ dataset refused on resume.
 - **Auth:** a Bedrock API key (`ABSK...`) in the `lme-bedrock` Secret, injected as
   `LOOM_LLM_BEDROCK_BEARER_TOKEN`. Loom's Bedrock client uses bearer auth only when
   configured explicitly (ambient `AWS_BEARER_TOKEN_BEDROCK` is deliberately ignored).
+- **Containers run as root:** the image (`Dockerfile`) has no `USER` and
+  neither manifest sets a `securityContext`, so `lme-server` and `lme-runner`
+  run as UID 0. This is deliberate for now. Every file already on the
+  `lme-results` and `lme-data` PVCs was written by these root containers, and
+  a resumed run must be able to read, rename and append to them (`.done`
+  markers, attempt counters, `rejected/`, `RUN-INCOMPLETE.txt`). Switching to a
+  non-root user therefore needs a one-time ownership change on the existing
+  volumes first — on `azurefile-csi` that means the volume's mount options
+  (`uid`/`gid`, `dir_mode`/`file_mode`) or a `chown` from a root pod, done in
+  place. It must never be done by deleting and recreating a PVC: `lme-results`
+  holds days of paid compute and is never deleted (see Teardown). Until that
+  migration is planned and run against a pulled copy of the results, the rig
+  stays root. `setup-cluster.sh` creates a cluster for this benchmark alone,
+  and the only credential the rig deploys is the Bedrock key.
 - **Time anchoring:** the server config sets `server.allow_time_override: true`; the
   runner passes `--occurred-at=true` so replayed conversations anchor at their
   historical dates (see `docs/guides/longmemeval-benchmark.md`).
