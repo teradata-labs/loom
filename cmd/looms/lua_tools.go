@@ -96,7 +96,7 @@ type LuaToolListsConfig struct {
 // shell_execute is loom's own shell: a script calling it in a loop would run
 // commands nobody sees one by one, and under the default YOLO permissions
 // nothing checks them. It stays denied unless it runs jailed under a
-// command-policy hook (design 06 §7): an operator who sets that up can remove
+// command-policy hook with no matcher (design 06 §7): an operator who sets that up can remove
 // it from deny, and newLuaRuntime puts it back otherwise. Shared scripts never
 // get it (deny_for_shared): someone else's script does not run commands as its
 // runner, even allowed ones.
@@ -107,14 +107,32 @@ var (
 
 // scriptShellGoverned reports whether scripts may be given loom's
 // shell_execute: only when it runs jailed and a command-policy binding governs
-// it, so every script call is judged by the hook and enforced by the runner.
+// every call to it, so every script call is judged by the hook and enforced by
+// the runner. A binding with a matcher judges only the calls the matcher
+// selects and lets the rest through unjudged, so it does not count; either
+// enforcement mode does.
 func scriptShellGoverned(config *Config) bool {
 	if config == nil || config.Tools.ShellExecute.Mode != "jailed" {
 		return false
 	}
 	req := shuttle.AdmissionRequest{ToolName: "shell_execute"}
 	for _, b := range config.Tools.Hooks.Bindings {
-		if b.Kind == "command-policy" && req.MatchesTool(shuttle.NewToolScope(b.Scope)) {
+		if b.Kind == "command-policy" && b.Matcher == (shuttle.MatcherSpec{}) &&
+			req.MatchesTool(shuttle.NewToolScope(b.Scope)) {
+			return true
+		}
+	}
+	return false
+}
+
+// deniesShell reports whether an entry of deny (an exact name or a pattern
+// such as "shell_*") matches shell_execute.
+func deniesShell(deny []string) bool {
+	for _, pat := range deny {
+		if pat == "shell_execute" {
+			return true
+		}
+		if ok, err := path.Match(pat, "shell_execute"); err == nil && ok {
 			return true
 		}
 	}
@@ -123,23 +141,14 @@ func scriptShellGoverned(config *Config) bool {
 
 // keepShellDenied returns deny with shell_execute put back when the operator
 // removed it but nothing governs it, and the warning to log. A deny entry that
-// still matches shell_execute (an exact name or a pattern such as "shell_*")
-// leaves the list unchanged.
+// still matches shell_execute leaves the list unchanged.
 func keepShellDenied(deny []string, governed bool) ([]string, string) {
-	for _, pat := range deny {
-		if pat == "shell_execute" {
-			return deny, ""
-		}
-		if ok, err := path.Match(pat, "shell_execute"); err == nil && ok {
-			return deny, ""
-		}
-	}
-	if governed {
+	if deniesShell(deny) || governed {
 		return deny, ""
 	}
 	return append(append([]string{}, deny...), "shell_execute"),
 		"tools.lua.tools.deny does not list shell_execute, but scripts get it only when " +
-			"tools.shell_execute.mode is jailed and a command-policy hook binding governs shell_execute; " +
+			"tools.shell_execute.mode is jailed and a command-policy hook binding with no matcher governs shell_execute; " +
 			"it stays hidden from scripts"
 }
 

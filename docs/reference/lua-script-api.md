@@ -49,8 +49,10 @@ one. Scripts get it only when both of these hold:
 
 - `tools.shell_execute.mode` is `jailed`, so every program a command starts is checked on
   its real arguments; and
-- a `kind: command-policy` hook binding governs `shell_execute`, so each call is judged
-  before it runs (see [shell-command-policy.md](shell-command-policy.md)).
+- a `kind: command-policy` hook binding with no `matcher` governs `shell_execute`, so each
+  call is judged before it runs (see [shell-command-policy.md](shell-command-policy.md)).
+  A binding whose `matcher` narrows the calls it judges does not count, because a script
+  call the matcher does not select would run unjudged. Either `enforcement` mode counts.
 
 Then removing `shell_execute` from `deny` gives it to the runner's own scripts. A command
 that needs approval returns `approval_required` to the script, and the model makes the call

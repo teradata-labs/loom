@@ -349,6 +349,18 @@ func TestScriptShellGoverned(t *testing.T) {
 		"bash with a binding":       {mode: "bash", bindings: []shuttle.HookBinding{binding}},
 		"binding on another tool":   {mode: "jailed", bindings: []shuttle.HookBinding{{Kind: "command-policy", Scope: "shell_execute_sandbox", Policy: "p"}}},
 		"another kind on the shell": {mode: "jailed", bindings: []shuttle.HookBinding{{Kind: "ask", Scope: "shell_execute"}}},
+		// A matcher narrows the calls a binding judges, so the hook would let
+		// every other script call through unjudged: it does not govern.
+		"jailed with a narrowed matcher": {mode: "jailed", bindings: []shuttle.HookBinding{{Kind: "command-policy", Scope: "shell_execute", Policy: "readonly",
+			Matcher: shuttle.MatcherSpec{ParamPath: "working_dir", Op: "equals", Value: "/nonexistent"}}}},
+		"narrowed static binding": {mode: "jailed", bindings: []shuttle.HookBinding{{Kind: "command-policy", Scope: "shell_execute", Policy: "readonly", Enforcement: "static",
+			Matcher: shuttle.MatcherSpec{ParamPath: "command", Op: "contains", Value: "ls"}}}},
+		"jailed with an empty matcher":   {mode: "jailed", bindings: []shuttle.HookBinding{{Kind: "command-policy", Scope: "shell_execute", Policy: "readonly", Matcher: shuttle.MatcherSpec{}}}, want: true},
+		"static enforcement, unfiltered": {mode: "jailed", bindings: []shuttle.HookBinding{{Kind: "command-policy", Scope: "shell_execute", Policy: "readonly", Enforcement: "static"}}, want: true},
+		"narrowed binding next to an unfiltered one": {mode: "jailed", bindings: []shuttle.HookBinding{
+			{Kind: "command-policy", Scope: "shell_execute", Policy: "readonly", Matcher: shuttle.MatcherSpec{ParamPath: "command", Op: "regex", Value: "^ls"}},
+			binding,
+		}, want: true},
 	} {
 		c := &Config{}
 		c.Tools.ShellExecute.Mode = tc.mode
@@ -391,4 +403,5 @@ func TestLuaTools_ShellForScripts(t *testing.T) {
 	require.NoError(t, err)
 	assert.ElementsMatch(t, tools, pol.Visible(tools, luasandbox.TrustOwn), "governed: the runner's own scripts get the shell")
 	assert.Equal(t, []string{"file_read"}, pol.Visible(tools, luasandbox.TrustShared), "shared scripts never do")
+
 }
