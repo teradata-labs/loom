@@ -152,7 +152,7 @@ const maxLedgerEvents = 300
 const fleetLessonAgentID = "__fleet_lessons__"
 
 // lessonPartitionSuffix derives the PRIVATE lesson partition from the agent's
-// own name. Private mode used to store lessons under a.config.Name — the same
+// graph-memory key. Private mode used to store lessons under that key — the same
 // partition the per-turn extractor and the LLM-callable graph_memory tool
 // write to — so "verified lesson" was a claim about a prompt instruction, not
 // about who could write the row. A derived partition makes the claim
@@ -162,14 +162,15 @@ const lessonPartitionSuffix = "__lessons"
 
 // lessonPartition returns the graph-memory agent ID lessons are stored under
 // and recalled from: the shared fleet partition when sharing is opted in,
-// otherwise a partition derived from the agent's own name (private lessons).
+// otherwise a partition derived from the agent's graph-memory key (private
+// lessons), so a renamed agent with a stable GraphMemoryAgentID keeps them.
 // Neither value is ever a partition another writer targets — the per-turn
-// extractor and the graph_memory tool both write under a.config.Name.
+// extractor and the graph_memory tool both write under graphMemoryKey().
 func (a *Agent) lessonPartition() string {
 	if a.graphMemoryConfig != nil && a.graphMemoryConfig.GetFleetLessonSharing() {
 		return fleetLessonAgentID
 	}
-	return a.config.Name + lessonPartitionSuffix
+	return a.graphMemoryKey() + lessonPartitionSuffix
 }
 
 // maxFleetLessons caps the dedicated lesson lane in the injected context.
@@ -918,7 +919,7 @@ func (a *Agent) extractLessonsAtEnd(ctx context.Context, sessionID string) {
 		return
 	}
 
-	agentID := a.config.Name
+	agentID := a.graphMemoryKey()
 	grounding := lessonGroundingTokens(pairs)
 	for _, m := range data.Memories {
 		if m.Content == "" {
