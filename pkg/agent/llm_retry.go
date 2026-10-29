@@ -446,6 +446,7 @@ func (a *Agent) chatWithStreaming(ctx Context, messages []Message, tools []shutt
 			ToolName:          call.name,
 			ToolCallID:        call.id,
 			ToolInputBytes:    int64(p.Bytes),
+			ToolCallIndex:     int32(p.Index),
 		})
 	})
 

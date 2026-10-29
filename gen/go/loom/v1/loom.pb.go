@@ -643,8 +643,21 @@ type WeaveProgress struct {
 	// from a provider that does not report sizes has no tool_call_id or tool_name
 	// and a size of 0; with either set, 0 means no arguments have arrived yet.
 	ToolInputBytes int64 `protobuf:"varint,23,opt,name=tool_input_bytes,json=toolInputBytes,proto3" json:"tool_input_bytes,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// The provider's stream index for this tool call (when
+	// is_tool_input_stream). On providers that deliver calls in order
+	// (Anthropic, Bedrock, Gemini, Ollama) it matches the call's position in
+	// the response's tool-call list. On OpenAI-compatible providers (OpenAI,
+	// Azure, LiteLLM, Mistral, HuggingFace) the final tool-call list is built
+	// from a map, so its order is not guaranteed to match this index; match a
+	// progress event to its tool-started event by tool_call_id there. Gemini
+	// repeats the function name in tool_call_id, so two parallel calls to the
+	// same tool share an ID and only this index tells them apart. The agent's
+	// throttling keys on the same index, so events for one call never
+	// interleave with another's. A bare activity pulse (no tool_call_id, no
+	// tool_name, 0 bytes) carries index 0 without being call 0; skip pulses.
+	ToolCallIndex int32 `protobuf:"varint,24,opt,name=tool_call_index,json=toolCallIndex,proto3" json:"tool_call_index,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WeaveProgress) Reset() {
@@ -834,6 +847,13 @@ func (x *WeaveProgress) GetIsToolInputStream() bool {
 func (x *WeaveProgress) GetToolInputBytes() int64 {
 	if x != nil {
 		return x.ToolInputBytes
+	}
+	return 0
+}
+
+func (x *WeaveProgress) GetToolCallIndex() int32 {
+	if x != nil {
+		return x.ToolCallIndex
 	}
 	return 0
 }
@@ -10991,7 +11011,7 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\bmetadata\x18\x06 \x01(\v2\x1a.loom.v1.ExecutionMetadataR\bmetadata\x12@\n" +
 	"\vcorrections\x18\a \x03(\v2\x1e.loom.v1.SelfCorrectionAttemptR\vcorrections\x12\x19\n" +
 	"\bagent_id\x18\b \x01(\tR\aagentId\x12:\n" +
-	"\rcontext_state\x18\t \x01(\v2\x15.loom.v1.ContextStateR\fcontextState\"\xc9\a\n" +
+	"\rcontext_state\x18\t \x01(\v2\x15.loom.v1.ContextStateR\fcontextState\"\xf1\a\n" +
 	"\rWeaveProgress\x12-\n" +
 	"\x05stage\x18\x01 \x01(\x0e2\x17.loom.v1.ExecutionStageR\x05stage\x12\x1a\n" +
 	"\bprogress\x18\x02 \x01(\x05R\bprogress\x12\x18\n" +
@@ -11021,7 +11041,8 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"toolCallId\x12:\n" +
 	"\rcontext_state\x18\x15 \x01(\v2\x15.loom.v1.ContextStateR\fcontextState\x12/\n" +
 	"\x14is_tool_input_stream\x18\x16 \x01(\bR\x11isToolInputStream\x12(\n" +
-	"\x10tool_input_bytes\x18\x17 \x01(\x03R\x0etoolInputBytes\"\x92\x02\n" +
+	"\x10tool_input_bytes\x18\x17 \x01(\x03R\x0etoolInputBytes\x12&\n" +
+	"\x0ftool_call_index\x18\x18 \x01(\x05R\rtoolCallIndex\"\x92\x02\n" +
 	"\x0fHITLRequestInfo\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x1a\n" +

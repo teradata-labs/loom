@@ -53,3 +53,46 @@ func TestClient_ChatStream_ToolCallsReportProgress(t *testing.T) {
 	require.Len(t, resp.ToolCalls, 2)
 	assert.Equal(t, "a.ipynb", resp.ToolCalls[0].Input["path"])
 }
+
+// TestClient_ChatStream_StringArgumentsReportRawLength pins the string path of
+// the argument handling: Ollama can deliver `arguments` as a raw JSON string
+// instead of a parsed object, and the progress event must report the raw
+// string's length — including when the string fails to parse, which still has
+// a real size.
+func TestClient_ChatStream_StringArgumentsReportRawLength(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		lines := []string{
+			// `{"path":"a.ipynb"}` = 18 bytes, parses cleanly.
+			`{"model":"llama3.1","message":{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"files","arguments":"{\"path\":\"a.ipynb\"}"}}]}}`,
+			// `{"path":"a.txt",` = 16 bytes, truncated — unparseable but still
+			// has a real size, and the call keeps empty input.
+			`{"model":"llama3.1","message":{"role":"assistant","tool_calls":[{"id":"call_2","type":"function","function":{"name":"files","arguments":"{\"path\":\"a.txt\","}}]}}`,
+			`{"model":"llama3.1","message":{"role":"assistant","content":""},"done":true,"prompt_eval_count":10,"eval_count":5}`,
+		}
+		for _, line := range lines {
+			_, _ = w.Write([]byte(line + "\n"))
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{Endpoint: server.URL, Model: "llama3.1"})
+
+	var got []types.ToolInputProgress
+	ctx := types.WithToolInputProgress(context.Background(), func(p types.ToolInputProgress) { got = append(got, p) })
+
+	resp, err := client.ChatStream(ctx, []types.Message{{Role: "user", Content: "go"}}, nil, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, []types.ToolInputProgress{
+		{Index: 0, ToolCallID: "call_1", ToolName: "files", Bytes: 18},
+		{Index: 1, ToolCallID: "call_2", ToolName: "files", Bytes: 16},
+	}, got)
+
+	require.Len(t, resp.ToolCalls, 2)
+	assert.Equal(t, "a.ipynb", resp.ToolCalls[0].Input["path"])
+	// The truncated string parses to nothing; the call still exists with empty
+	// input rather than being dropped.
+	assert.NotNil(t, resp.ToolCalls[1].Input)
+	assert.Empty(t, resp.ToolCalls[1].Input)
+}
