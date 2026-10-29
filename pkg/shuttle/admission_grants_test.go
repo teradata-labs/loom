@@ -162,17 +162,89 @@ type resolverFunc func(AdmissionRequest, Decision) Decision
 
 func (f resolverFunc) Resolve(req AdmissionRequest, d Decision) Decision { return f(req, d) }
 
-func TestAdmit_FirstAskReasonWins(t *testing.T) {
-	first := fixedHook{decision: Decision{Kind: Ask, Reason: "first", Grant: "g1"}}
-	second := fixedHook{decision: Decision{Kind: Ask, Reason: "second", Grant: "g2"}}
-	var seen Decision
-	resolver := resolverFunc(func(_ AdmissionRequest, d Decision) Decision {
-		seen = d
-		return Decision{Kind: Allow}
+// The approval card shows the combined Ask's Reason, and approving it applies
+// every asking hook's Grant, so the Reason must name every asking hook's
+// concern: chain order, deduplicated, joined with "; ". A Deny keeps its own
+// reason, and the same text reaches the resolver (Admit) and the park pre-scan
+// (Preflight).
+func TestAdmit_AskReasonsJoined(t *testing.T) {
+	ask := func(reason string, grant any) Hook {
+		return fixedHook{decision: Decision{Kind: Ask, Reason: reason, Grant: grant}}
+	}
+	for _, tc := range []struct {
+		name       string
+		hooks      []Hook
+		wantKind   DecisionKind
+		wantReason string
+		wantGrants []any
+	}{
+		{name: "two asking hooks", hooks: []Hook{ask("first", "g1"), ask("second", "g2")},
+			wantKind: Ask, wantReason: "first; second", wantGrants: []any{"g1", "g2"}},
+		{name: "chain order, not alphabetical", hooks: []Hook{ask("zeta", nil), ask("alpha", nil)},
+			wantKind: Ask, wantReason: "zeta; alpha"},
+		{name: "duplicate reasons appear once", hooks: []Hook{ask("same", "g1"), ask("other", nil), ask("same", "g2")},
+			wantKind: Ask, wantReason: "same; other", wantGrants: []any{"g1", "g2"}},
+		{name: "empty reason skipped", hooks: []Hook{ask("", "g1"), ask("only", "g2")},
+			wantKind: Ask, wantReason: "only", wantGrants: []any{"g1", "g2"}},
+		{name: "single asking hook unchanged", hooks: []Hook{fixedHook{decision: Decision{Kind: Allow}}, ask("one", "g1")},
+			wantKind: Ask, wantReason: "one", wantGrants: []any{"g1"}},
+		{name: "deny keeps its own reason", hooks: []Hook{ask("first", "g1"), fixedHook{decision: Decision{Kind: Deny, Reason: "blocked"}}, ask("second", "g2")},
+			wantKind: Deny, wantReason: "blocked"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var seen *Decision
+			resolver := resolverFunc(func(_ AdmissionRequest, d Decision) Decision {
+				seen = &d
+				return Decision{Kind: Allow}
+			})
+			chain := NewChain(tc.hooks, nil, resolver)
+			req := AdmissionRequest{Ctx: context.Background(), ToolName: "t"}
+
+			pre := chain.Preflight(req)
+			assert.Equal(t, tc.wantKind, pre.Kind)
+			assert.Equal(t, tc.wantReason, pre.Reason, "Preflight (park card) reason")
+
+			res := chain.Admit(req)
+			if tc.wantKind == Ask {
+				require.NotNil(t, seen, "the resolver decides the Ask")
+				assert.Equal(t, tc.wantReason, seen.Reason, "reason handed to the resolver")
+				assert.Equal(t, tc.wantGrants, res.Grants)
+			} else {
+				assert.Nil(t, seen, "a Deny is never put to the resolver")
+				assert.Equal(t, tc.wantReason, res.Decision.Reason)
+			}
+		})
+	}
+}
+
+// Decision.Grant is `any`, so the Decision comment warns that == and map-key
+// use panic once a Grant holds an uncomparable value. This pins that warning to
+// the language's behavior: if Grant is ever narrowed to a comparable type, this
+// test fails and the comment (and CHANGELOG note) must change with it.
+func TestDecision_UncomparableGrantPanics(t *testing.T) {
+	a := Decision{Kind: Ask, Reason: "r", Grant: []string{"curl"}}
+	b := Decision{Kind: Ask, Reason: "r", Grant: []string{"curl"}}
+	m1 := Decision{Kind: Ask, Reason: "r", Grant: map[string]bool{"curl": true}}
+	m2 := Decision{Kind: Ask, Reason: "r", Grant: map[string]bool{"curl": true}}
+
+	for _, tc := range []struct {
+		name string
+		fn   func()
+	}{
+		{name: "== with slice grants", fn: func() { _ = a == b }},
+		{name: "== with map grants", fn: func() { _ = m1 == m2 }},
+		{name: "map key with slice grant", fn: func() { _ = map[Decision]int{a: 1} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Panics(t, tc.fn)
+		})
+	}
+
+	t.Run("comparable grants do not panic", func(t *testing.T) {
+		s1 := Decision{Kind: Ask, Grant: "curl"}
+		s2 := Decision{Kind: Ask, Grant: "curl"}
+		assert.NotPanics(t, func() { assert.True(t, s1 == s2) })
 	})
-	res := NewChain([]Hook{first, second}, nil, resolver).Admit(AdmissionRequest{Ctx: context.Background(), ToolName: "t"})
-	assert.Equal(t, "first", seen.Reason)
-	assert.Equal(t, []any{"g1", "g2"}, res.Grants)
 }
 
 func TestAdmissionGrantsContext_CopiesSlices(t *testing.T) {
