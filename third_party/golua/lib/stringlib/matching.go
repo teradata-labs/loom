@@ -1,5 +1,6 @@
 // Modified for loom, 2026: init positions saturate and gsub formats integers in 64 bits (golua PR #136);
-// string.match fails for a start past the end instead of slicing out of range.
+// string.match fails for a start past the end instead of slicing out of range;
+// pattern matches poll for a stop request (loom-only).
 // See third_party/golua/README.md for the list of changes from upstream.
 
 package stringlib
@@ -61,7 +62,7 @@ func find(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 		if err != nil {
 			return nil, err
 		}
-		captures, usedCPU := pat.MatchFromStart(string(s), si, t.UnusedCPU())
+		captures, usedCPU := pat.MatchFromStart(string(s), si, t.UnusedCPU(), t.PollStop)
 		t.RequireCPU(usedCPU)
 		if len(captures) == 0 {
 			t.Push1(next, rt.NilValue)
@@ -108,7 +109,7 @@ func match(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 		t.Push1(next, rt.NilValue)
 		return next, nil
 	}
-	captures, usedCPU := pat.MatchFromStart(string(s), si, t.UnusedCPU())
+	captures, usedCPU := pat.MatchFromStart(string(s), si, t.UnusedCPU(), t.PollStop)
 	t.RequireCPU(usedCPU)
 	pushCaptures(t.Runtime, captures, s, next)
 	return next, nil
@@ -178,7 +179,7 @@ func gmatch(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 			usedCPU  uint64
 		)
 		for {
-			captures, usedCPU = pat.Match(s, si, t.UnusedCPU())
+			captures, usedCPU = pat.Match(s, si, t.UnusedCPU(), t.PollStop)
 			t.RequireCPU(usedCPU)
 			if len(captures) == 0 {
 				break
@@ -330,7 +331,7 @@ func gsub(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 	// is achieved by keeping the variable sj the same until bytes are written
 	// in the string builder.
 	for ; matchCount != n; matchCount++ {
-		captures, usedCPU := pat.Match(string(s), si, t.UnusedCPU())
+		captures, usedCPU := pat.Match(string(s), si, t.UnusedCPU(), t.PollStop)
 		t.RequireCPU(usedCPU)
 		if len(captures) == 0 {
 			break

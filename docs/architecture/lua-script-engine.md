@@ -17,8 +17,8 @@ several) with control flow added.
 
 The engine is a thin, defensive layer over the pure-Go interpreter
 [`github.com/arnodel/golua`](https://github.com/arnodel/golua) v0.3.0 (Lua 5.4,
-Apache-2.0), vendored in `third_party/golua` with ten fixes: eight proposed upstream and two not yet
-proposed (see "Vendored interpreter" below). Its job is to make an untrusted script safe to run in a shared process:
+Apache-2.0), vendored in `third_party/golua` with twelve fixes: eight proposed upstream and four not
+yet proposed (see "Vendored interpreter" below). Its job is to make an untrusted script safe to run in a shared process:
 bounded in time, CPU, memory and tool calls, unable to crash or block the host, and
 unable to escape through the Lua standard library.
 
@@ -146,8 +146,8 @@ classification never depends on parsing golua's message text.
 | Shopify go-lua | none | none built in | Lua 5.2 |
 | WebAssembly runtime | yes | yes | not Lua; larger dependency |
 
-A script must not be able to take the pod down by allocating memory, and only golua
-offers a hard per-run memory limit. Its quota API is labelled alpha, so the engine
+A script must not be able to take the pod down by allocating memory, and of these
+options only golua offers a hard per-run memory limit. Its quota API is labelled alpha, so the engine
 pins the version, keeps golua imports inside this package, and turns every measured
 behaviour it relies on into a regression test.
 
@@ -159,8 +159,12 @@ golua has no `context.Context` integration, and its stop API (`SetStopLevel`,
 charge of the context it is installed in. The engine installs one in the run's root
 context and arms it with `context.AfterFunc(runCtx, ...)`, whose goroutine only sets the
 flag. A script is therefore stopped at its next interpreter step when the caller cancels,
-even if it only computes. Host functions also check `ctx.Err()` on entry and after any
-blocking work, so a cancelled run never starts another tool call.
+even if it only computes. A string pattern match (`find`, `match`, `gmatch`, `gsub`) is
+one library call that runs in Go and charges its CPU only when it returns, and a
+backtracking pattern can run for seconds; the vendored matcher (a loom-only patch, see
+`third_party/golua/README.md`) therefore polls the interrupt and the time limit every
+1024 matcher steps, so a match stops on time too. Host functions also check `ctx.Err()`
+on entry and after any blocking work, so a cancelled run never starts another tool call.
 
 ### Source shape guard
 
@@ -209,9 +213,9 @@ engine loads the base library per run. The `package` library is not loaded; `str
 Building and attacking the engine (an independent adversarial review, every finding
 reproduced in a separate process) turned up six defects in golua v0.3.0 that an embedder
 cannot fix safely from outside. A seventh came from CodeQL, once the vendored source was
-inside the repository, and an eighth from `go vet`. Review of the engine found three more
-(the last three rows). All are fixed in `third_party/golua`; the first eight are proposed
-upstream; the last three are not yet in the `ilsiepotamus/golua` fork either. When upstream releases them, the directory can be replaced by the module again.
+inside the repository, and an eighth from `go vet`. Review of the engine found four more
+(the last four rows). All are fixed in `third_party/golua`; the first eight are proposed
+upstream; the last four are not yet in the `ilsiepotamus/golua` fork either. When upstream releases them, the directory can be replaced by the module again.
 
 | Defect in v0.3.0 (measured) | Fix | Upstream PR |
 |---|---|---|
@@ -226,6 +230,7 @@ upstream; the last three are not yet in the `ilsiepotamus/golua` fork either. Wh
 | Named vararg tables (`function f(... xs)`) and `table.create` under a memory quota were not charged: 50,000 retained tables cost the same as 50,000 integers | the vararg table charges its header, array part and `n` slot; `table.create` charges its header | not yet proposed |
 | `string.match` with a start position past the end slices out of range inside the anchored matcher (a Go panic, an engine error for the run); the #136 saturation added `math.maxinteger` as a trigger | a start past the end returns no match, as in reference Lua | not yet proposed |
 | Scanning, parsing and compiling never checked a limit: at the 1 MiB source ceiling they took about 0.3 s (3.4 s under the race detector) before the first limit check, whatever the wall budget or the caller's context | the scanner, the AST compiler and the IR compiler call a poll function every 256 tokens, nodes or instructions; the runtime's poll terminates the current context when its `Interrupt` has fired, it is hard-stopped or it is past its time limit | not yet proposed |
+| A string pattern match ran in Go with the whole remaining CPU budget and checked neither the `Interrupt` nor the time limit until it returned: `string.find(string.rep("a", 60), "a*a*a*a*a*a*b")` took about 3.5 s against a 200 ms wall or a cancel at 100 ms, the same for `match`, `gmatch` and `gsub` (the time grows with about the sixth power of the subject length) | the matcher calls the runtime's poll every 1024 steps, so the match ends on time; the matcher also re-raises panics other than an exhausted budget instead of swallowing them | not yet proposed |
 
 Before the fixes were in place the engine carried workarounds: function-valued
 VM metamethods were refused, capacity planning assumed 12 times the budget, and
@@ -350,7 +355,7 @@ per-run budget is 128 MiB (about 384 MB worst case); a 4 GiB pod runs 4 at once.
 ## Upstream Status
 
 The first eight fixes above are open as upstream PRs #130 to #136 and #138 from the
-`ilsiepotamus/golua` fork. The last two are not yet in the fork or proposed upstream. Not proposed: `SetStopLevel(HardStop)` on a context that is not current kills it
+`ilsiepotamus/golua` fork. The last four are not yet in the fork or proposed upstream. Not proposed: `SetStopLevel(HardStop)` on a context that is not current kills it
 immediately, raising the termination from the current context, so a `pcall` swallows it
 and the stopped context is left killed and current. The engine does not use
 `SetStopLevel`. Upstream's coroutine data races (above) are also not addressed.

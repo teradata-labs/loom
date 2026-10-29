@@ -651,8 +651,12 @@ func (a *Agent) parkedAsQuestion(ctx Context, call ToolCall, kinds map[string]st
 
 // parkedAnswerResult builds the result of a parked question from the human's
 // non-empty answer. Execute never runs here: the question was asked and
-// answered. A tool that is no longer a registered ParkableQuestion yields an
-// error result the model can see.
+// answered. A tool that is no longer registered yields a tool_not_found error
+// result; one that is registered but no longer a ParkableQuestion yields
+// internal_error. Both are visible to the model. The tool_not_found message
+// matches dispatch's unknown-tool error, but dispatch returns a Go error with
+// no result or code, and it first tries dynamic registration, which this
+// check does not.
 func (a *Agent) parkedAnswerResult(ctx Context, call ToolCall, answer string) *shuttle.Result {
 	if call.Name == "contact_human" {
 		return &shuttle.Result{
@@ -664,10 +668,14 @@ func (a *Agent) parkedAnswerResult(ctx Context, call ToolCall, answer string) *s
 			},
 		}
 	}
-	var pq shuttle.ParkableQuestion
-	if t, found := a.tools.Get(call.Name); found {
-		pq, _ = t.(shuttle.ParkableQuestion)
+	t, found := a.tools.Get(call.Name)
+	if !found {
+		return &shuttle.Result{Success: false, Error: &shuttle.Error{
+			Code:    "tool_not_found",
+			Message: fmt.Sprintf("tool not found: %s", call.Name),
+		}}
 	}
+	pq, _ := t.(shuttle.ParkableQuestion)
 	if pq == nil {
 		return &shuttle.Result{Success: false, Error: &shuttle.Error{
 			Code:    "internal_error",
@@ -1308,8 +1316,9 @@ func rawSessionMessages(sess *Session) []Message {
 // about which turn is being resumed.
 //
 // The user message is the FIRST user row of that turn, not the last. The loop
-// appends further user-role rows WITHIN a turn (sidecar drain, empty-response
-// nudge, hygiene fixup, synthesis prompt), all stamped with the same turn; the
+// appends further user-turn rows WITHIN a turn (sidecar drain, empty-response
+// nudge, hygiene fixup, synthesis prompt; persisted under synthetic roles, see
+// IsSyntheticWireUserRole), all stamped with the same turn; the
 // request that opened the turn is the one a board row should be named after.
 //
 // A session with no assistant batch yields turn 0 and no message. Nothing acts
@@ -1332,10 +1341,11 @@ func parkedTurnIdentity(sess *Session) (turnIndex int64, userMessage string) {
 }
 
 // locateParkedBatch finds the tail tool batch and validates the decision
-// against it. The walk is turn-aware: the loop itself appends user-role rows
+// against it. The walk is turn-aware: the loop itself appends user-turn rows
 // WITHIN a turn (sidecar drain, empty-response nudge, hygiene fixup,
-// synthesis prompt), all stamped with the current turn; only a user row of a
-// LATER turn — the sole turn-incrementing append — means history moved on.
+// synthesis prompt; persisted under synthetic roles, see
+// IsSyntheticWireUserRole), all stamped with the current turn; only a user
+// row of a LATER turn — the sole turn-incrementing append — means history moved on.
 func locateParkedBatch(sess *Session, itemIDs []string) (Message, []ToolCall, error) {
 	msgs := rawSessionMessages(sess)
 
