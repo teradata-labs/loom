@@ -133,7 +133,7 @@ Registered on agents that list it in `tools.builtin` and also have `run_lua`, wh
 | `get` | Returns the script with its source, manifest, version, owner, `updated_at`, and the `trust` (`own` or `shared`) it runs with on this agent. |
 | `list` | Returns `{scripts, total, truncated}`: up to 200 scripts, name-sorted, without source, each with the `trust` it runs with on this agent; `total` is the number of saved scripts and `truncated` is true when more than 200 exist. |
 | `delete` | Deletes the script and every attachment of it. |
-| `publish` | Needs `publish_as_tool_enabled` and a manifest with `parameters`. Every `requires` entry must be a tool the script, at its trust on this agent, can call (`TOOL_NOT_VISIBLE` otherwise). Marks the script published, attaches it to this agent, and registers `lua_<name>` at once. |
+| `publish` | Needs `publish_as_tool_enabled` and a manifest with `parameters`. Every `requires` entry must be a tool the script, at its trust on this agent, can call (`TOOL_NOT_VISIBLE` otherwise). Marks the script published, attaches it to this agent, and registers `lua_<name>` at once. The tool is registered on the agent, not the session: every session of that agent is offered it from its next model call, and because the attachment is saved in `attachments.json`, the agent registers it again after a server restart. |
 | `unpublish` | Clears the published flag. The tool leaves this agent at once, and every other agent's copy refuses its next call. Attachments are kept, so publishing again restores them. |
 | `detach` | Removes `lua_<name>` from this agent only. |
 
@@ -153,6 +153,12 @@ is `Saved Lua script. <description> Returns: <returns>`, and its input schema is
 script, so the newest version runs, and a deleted or unpublished script refuses. It runs the
 same way as `run_lua`: same gate, same bridge, with the script's `requires`. Scripts can
 never call `lua_*` tools.
+
+A `lua_<name>` tool belongs to the agent, not to a session. Once published, it is offered to
+every session of that agent, including sessions that were open before the publish, and it
+survives a restart: at startup each agent registers every published script in its
+attachments (`attachments.json`). This also holds after `publish_as_tool_enabled` is turned
+off, which only stops new publishes; `detach`, `unpublish` or `delete` removes the tool.
 
 An agent gets `lua_<name>` from its attachments, or from a custom tool in its YAML:
 

@@ -36,7 +36,9 @@ const LuaCodeDuplicate = "DUPLICATE"
 // truncated with the total.
 const luaListMax = 200
 
-// manageLuaScriptsDescription is verbatim from the design (02-lua-api.md §2).
+// manageLuaScriptsDescription is the model-facing description of
+// manage_lua_scripts; its actions are documented in
+// docs/reference/lua-script-api.md, section "manage_lua_scripts".
 const manageLuaScriptsDescription = "Saves, lists, reads, deletes and publishes Lua scripts for reuse with run_lua. " +
 	"Save a script when the user asks to keep it or when the same logic will run again. " +
 	"A saved script runs with `run_lua name=...`. " +
