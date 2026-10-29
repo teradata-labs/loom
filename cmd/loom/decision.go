@@ -45,7 +45,7 @@ import (
 
 var decisionCmd = &cobra.Command{
 	Use:   "decision",
-	Short: "Replay and report typed-decision shadow comparisons",
+	Short: "Replay, report and ask typed decisions",
 	Long: `Shadow-evaluate the typed decision layer (pkg/decision) against Loom's own
 telemetry, and report how well a decider agrees with what Loom decides today.
 
