@@ -171,7 +171,9 @@ func luaScriptToProto(ctx context.Context, st luastore.ScriptStore, sc luastore.
 		p.UpdatedAt = timestamppb.New(sc.UpdatedAt)
 	}
 	if m := sc.Manifest; m != nil {
-		pm := &loomv1.LuaScriptManifest{Requires: m.Requires, Returns: m.Returns}
+		// RequiresSet keeps "no tools" (a non-nil empty list) apart from
+		// "unrestricted" (nil), which proto3's repeated field cannot.
+		pm := &loomv1.LuaScriptManifest{Requires: m.Requires, Returns: m.Returns, RequiresSet: m.Requires != nil}
 		if m.Parameters != nil {
 			params, err := structpb.NewStruct(m.Parameters)
 			if err != nil {
@@ -185,15 +187,17 @@ func luaScriptToProto(ctx context.Context, st luastore.ScriptStore, sc luastore.
 }
 
 // luaManifestFromProto converts a request manifest. An absent manifest is
-// nil. The proto cannot tell an empty requires list from an absent one, so an
-// empty list means no restriction.
+// nil. proto3 cannot tell an empty requires list from an absent one, so
+// requires_set carries it: with requires_set, requires is authoritative and
+// an empty list means the script may call no tool; without it, an empty list
+// means no restriction.
 func luaManifestFromProto(m *loomv1.LuaScriptManifest) *luastore.Manifest {
 	if m == nil {
 		return nil
 	}
 	out := &luastore.Manifest{Returns: m.GetReturns()}
-	if len(m.GetRequires()) > 0 {
-		out.Requires = append([]string(nil), m.GetRequires()...)
+	if m.GetRequiresSet() || len(m.GetRequires()) > 0 {
+		out.Requires = append(make([]string, 0, len(m.GetRequires())), m.GetRequires()...)
 	}
 	if m.GetParameters() != nil {
 		out.Parameters = m.GetParameters().AsMap()

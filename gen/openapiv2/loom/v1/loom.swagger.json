@@ -6687,11 +6687,15 @@
           "items": {
             "type": "string"
           },
-          "description": "Tool names the script calls. When set, the script may call only these."
+          "description": "Tool names the script calls. When non-empty, or when requires_set is\ntrue, the script may call only these. Empty with requires_set false\nmeans no restriction."
         },
         "returns": {
           "type": "string",
           "description": "One line describing the return value."
+        },
+        "requiresSet": {
+          "type": "boolean",
+          "description": "When true, requires is authoritative even if empty: an empty requires\nwith requires_set true means the script may call no tool at all. proto3\ncannot tell an empty repeated field from an absent one, so this flag\ncarries the difference. Responses set it whenever the stored manifest\nlists its requires (empty included)."
         }
       },
       "description": "LuaScriptManifest describes a saved script's inputs and needs. It is\nrequired before the script can be published as a tool."

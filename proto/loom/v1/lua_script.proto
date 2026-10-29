@@ -28,13 +28,22 @@ message LuaScriptManifest {
   // At most 20 properties and 4 KiB; no $ref.
   google.protobuf.Struct parameters = 1;
 
-  // Tool names the script calls. When set, the script may call only these.
+  // Tool names the script calls. When non-empty, or when requires_set is
+  // true, the script may call only these. Empty with requires_set false
+  // means no restriction.
   repeated string requires = 2;
 
   // One line describing the return value.
   string returns = 3;
 
-  // Next field number: 4
+  // When true, requires is authoritative even if empty: an empty requires
+  // with requires_set true means the script may call no tool at all. proto3
+  // cannot tell an empty repeated field from an absent one, so this flag
+  // carries the difference. Responses set it whenever the stored manifest
+  // lists its requires (empty included).
+  bool requires_set = 4;
+
+  // Next field number: 5
 }
 
 // LuaScript is a saved Lua script that run_lua can run by name.

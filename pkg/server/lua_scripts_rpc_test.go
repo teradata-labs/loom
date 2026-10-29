@@ -16,6 +16,7 @@ package server
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -120,4 +121,51 @@ func TestLuaScriptRPCs_Validation(t *testing.T) {
 	assert.Equal(t, codes.InvalidArgument, codeOf(err), "names are validated before any lookup")
 	_, err = srv.DeleteLuaScript(ctx, &loomv1.DeleteLuaScriptRequest{Name: ""})
 	assert.Equal(t, codes.InvalidArgument, codeOf(err))
+}
+
+// Review Josh-Schoen F3: proto3 cannot tell `requires: []` from an absent
+// list, so requires_set carries it. Saved over the RPC, requires_set with an
+// empty list stores "no tools"; without it an empty list stays unrestricted;
+// and a read keeps the difference.
+func TestLuaScriptRPCs_RequiresSet(t *testing.T) {
+	srv, st := newLuaRPCServer(t)
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name     string
+		manifest *loomv1.LuaScriptManifest
+		want     []string // the stored Requires; nil means unrestricted
+		wantSet  bool
+	}{
+		{"requires_set with no tools", &loomv1.LuaScriptManifest{RequiresSet: true}, []string{}, true},
+		{"requires_set with tools", &loomv1.LuaScriptManifest{RequiresSet: true, Requires: []string{"query"}}, []string{"query"}, true},
+		{"tools without requires_set", &loomv1.LuaScriptManifest{Requires: []string{"query"}}, []string{"query"}, true},
+		{"empty without requires_set", &loomv1.LuaScriptManifest{Returns: "x"}, nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			name := "s_" + strings.ReplaceAll(tc.name, " ", "_")
+			_, err := srv.SaveLuaScript(ctx, &loomv1.SaveLuaScriptRequest{Name: name, Description: "d", Source: "return 1", Manifest: tc.manifest})
+			require.NoError(t, err)
+			stored, err := st.Get(ctx, name)
+			require.NoError(t, err)
+			require.NotNil(t, stored.Manifest)
+			if tc.want == nil {
+				assert.Nil(t, stored.Manifest.Requires, "unrestricted")
+			} else {
+				require.NotNil(t, stored.Manifest.Requires, "restricted")
+				assert.Equal(t, tc.want, stored.Manifest.Requires)
+			}
+
+			// Round trip: what Get returns saves back to the same manifest.
+			got, err := srv.GetLuaScript(ctx, &loomv1.GetLuaScriptRequest{Name: name})
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantSet, got.Script.Manifest.GetRequiresSet())
+			_, err = srv.SaveLuaScript(ctx, &loomv1.SaveLuaScriptRequest{Name: name, Description: "d", Source: "return 1",
+				Manifest: got.Script.Manifest, Overwrite: true})
+			require.NoError(t, err)
+			again, err := st.Get(ctx, name)
+			require.NoError(t, err)
+			assert.Equal(t, stored.Manifest.Requires, again.Manifest.Requires)
+			assert.Equal(t, stored.Manifest.Requires == nil, again.Manifest.Requires == nil)
+		})
+	}
 }

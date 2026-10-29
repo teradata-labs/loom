@@ -142,7 +142,7 @@ The manifest:
 | Field | Meaning |
 |---|---|
 | `parameters` | JSON Schema with `type: object` for the tool's arguments: at most 20 properties and 4 KiB, no `$ref`. |
-| `requires` | The tools the script calls. When set, the script may call only these. |
+| `requires` | The tools the script calls. When set, the script may call only these; an empty list (`requires: []`) means no tool at all, and an absent `requires` means no restriction. Over the RPC, set `requires_set: true` to send an empty list: proto3 cannot tell an empty list from an absent one, so an empty `requires` without `requires_set` is stored as no restriction. Responses set `requires_set` whenever the stored manifest has a `requires` list, so a read saved back keeps it. |
 | `returns` | One line describing the return value. |
 
 ### `lua_<name>` tools
