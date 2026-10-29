@@ -667,7 +667,7 @@ func buildLessonMiningPrompt(pairs []lessonPair, task string) string {
 	var sb strings.Builder
 	sb.WriteString("Each numbered item below is a CLAIMED fix from a tool-execution ledger: a tool call ")
 	sb.WriteString("that failed, the error it produced, and the later call of the same kind that stopped ")
-	sb.WriteString("erroring. You are AUDITING these claims: an error going away proves nothing about the ")
+	sb.WriteString("erroring. Audit these claims: an error going away proves nothing about the ")
 	sb.WriteString("work being right. Name what each change did — and what it traded away.\n\n")
 	if task != "" {
 		sb.WriteString("THE CONVERSATION'S TASK (context for judging whether a fix served it — ")

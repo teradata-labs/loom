@@ -271,7 +271,9 @@ func TestSQLClass(t *testing.T) {
 func TestLessonMiningPrompt(t *testing.T) {
 	p := buildLessonMiningPrompt([]lessonPair{{Tool: "x", FailingIn: "{a}", ErrorText: "boom", SucceedsIn: "{b}"}}, "")
 	assert.Contains(t, p, "CLAIMED fix")
-	assert.Contains(t, p, "AUDITING")
+	assert.Contains(t, p, "Audit these claims:")
+	// Repo rule: no role framing in prompts ("You are ..."/"As a ...").
+	assert.NotContains(t, p, "You are")
 	assert.Contains(t, p, "what it traded away")
 	assert.Contains(t, p, "Skip an item")
 	assert.Contains(t, p, `"memory_type": "lesson"`)
