@@ -29,7 +29,8 @@
 //     run's context ends; it never touches the interpreter, and Run stops it
 //     before returning.
 //   - Cancellation stops the script at its next interpreter step, even when
-//     it only computes.
+//     it only computes; a running string pattern match stops within 1024
+//     matcher steps.
 //   - A script cannot catch the end of its own run. Budget kills, cancellation
 //     and host failures pass through every pcall/xpcall level.
 //   - Every value a host function creates is charged to the run's memory

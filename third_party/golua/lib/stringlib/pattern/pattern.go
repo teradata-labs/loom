@@ -1,3 +1,8 @@
+// Modified for loom, 2026: Match and MatchFromStart take a poll function that
+// can stop a long match, and re-raise panics other than an exhausted budget
+// (loom-only).
+// See third_party/golua/README.md for the list of changes from upstream.
+
 package pattern
 
 import "errors"
@@ -19,11 +24,16 @@ func New(ptn string) (*Pattern, error) {
 
 // MatchFromStart returns a slice of Capture instances that match the given
 // string, starting from the `init` index.
-func (p *Pattern) MatchFromStart(s string, init int, budget uint64) (captures []Capture, used uint64) {
+//
+// When poll is not nil, it is called every 1024 matcher steps; it may
+// stop the match by panicking, and that panic propagates to the caller.
+func (p *Pattern) MatchFromStart(s string, init int, budget uint64, poll func()) (captures []Capture, used uint64) {
 	defer func() {
 		if r := recover(); r == budgetConsumed {
 			captures = nil
 			used = budget + 1
+		} else if r != nil {
+			panic(r)
 		}
 	}()
 	matcher := patternMatcher{
@@ -31,6 +41,7 @@ func (p *Pattern) MatchFromStart(s string, init int, budget uint64) (captures []
 		s:       s,
 		si:      init,
 		budget:  budget,
+		poll:    poll,
 	}
 	captures = matcher.findFromStart()
 	return captures, budget - matcher.budget
@@ -38,11 +49,16 @@ func (p *Pattern) MatchFromStart(s string, init int, budget uint64) (captures []
 
 // Match returns a slice of Capture instances that match the given
 // string, starting from the `init` index.
-func (p *Pattern) Match(s string, init int, budget uint64) (captures []Capture, used uint64) {
+//
+// When poll is not nil, it is called every 1024 matcher steps; it may
+// stop the match by panicking, and that panic propagates to the caller.
+func (p *Pattern) Match(s string, init int, budget uint64, poll func()) (captures []Capture, used uint64) {
 	defer func() {
 		if r := recover(); r == budgetConsumed {
 			captures = nil
 			used = budget + 1
+		} else if r != nil {
+			panic(r)
 		}
 	}()
 	matcher := patternMatcher{
@@ -50,6 +66,7 @@ func (p *Pattern) Match(s string, init int, budget uint64) (captures []Capture, 
 		s:       s,
 		si:      init,
 		budget:  budget,
+		poll:    poll,
 	}
 	captures = matcher.find()
 	return captures, budget - matcher.budget

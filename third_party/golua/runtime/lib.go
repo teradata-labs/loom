@@ -1,5 +1,5 @@
-// Modified for loom, 2026: parsing and compiling poll for a stop request
-// (loom-only). See third_party/golua/README.md for the list of changes from
+// Modified for loom, 2026: parsing and compiling poll for a stop request;
+// PollStop for long-running library functions (loom-only). See third_party/golua/README.md for the list of changes from
 // upstream.
 
 package runtime
@@ -294,6 +294,16 @@ func (r *Runtime) scannerOptions() []scanner.Option {
 // past its time limit. Without it a large source runs to the end of
 // compilation before any limit is checked.
 func (r *Runtime) compilePoll() {
+	r.pollStop()
+}
+
+// PollStop terminates the current context, by panicking with a
+// ContextTerminationError as running code does, when it has been interrupted,
+// hard-stopped or has run past its time limit; otherwise it does nothing and
+// charges no CPU. Library functions that run a long loop in Go without
+// returning to the VM call it periodically, so that the loop stops as promptly
+// as Lua code does.
+func (r *Runtime) PollStop() {
 	r.pollStop()
 }
 

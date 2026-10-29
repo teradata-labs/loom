@@ -8,7 +8,7 @@ This directory holds a copy of the Lua 5.4 interpreter
 | | |
 |---|---|
 | Upstream | `arnodel/golua` branch `lua5.5`, commit `a129ef2` (tag `v0.3.0`) |
-| Patched source | [`ilsiepotamus/golua`](https://github.com/ilsiepotamus/golua) branch `combined/sandbox-hardening`, commit `c2d4961`, plus the three changes marked "loom-only" below |
+| Patched source | [`ilsiepotamus/golua`](https://github.com/ilsiepotamus/golua) branch `combined/sandbox-hardening`, commit `c2d4961`, plus the four changes marked "loom-only" below |
 | Packages copied | the 20 packages `pkg/luasandbox` needs, non-test files only, imports rewritten to this path |
 
 ## Why it is vendored
@@ -31,6 +31,7 @@ by the module again.
 | Named vararg tables (`function f(... xs)`) were not charged at all, and `table.create` skipped its header charge under a memory quota | not yet proposed; loom-only until it is in the fork | `runtime/varargtable.go`, `runtime/luacont.go`, `lib/tablelib/tablelib.go` |
 | `string.match` with a start past the end reached the anchored matcher, which sliced out of range (a Go panic); it now returns no match, as reference Lua does | not yet proposed; loom-only until it is in the fork | `lib/stringlib/matching.go` |
 | Scanning, parsing and compiling checked no limit, so a large source compiled to the end however short the deadline. The scanner (`WithPoll`), the AST compiler (`CompileLuaChunkWithPoll`) and the IR compiler (`ConstantCompiler.SetPoll`) now call a poll function every 256 tokens, nodes or instructions; the runtime passes one that terminates the current context when its `Interrupt` has fired, it is hard-stopped or it is past its time limit, and the parse functions re-raise that termination instead of reporting it as a syntax error | not yet proposed; loom-only until it is in the fork | `scanner/scanner.go`, `astcomp/{astcomp,compexp,compstat}.go`, `ircomp/ircomp.go`, `runtime/lib.go`, `runtime/runtimecontextmanager.go`, `runtime/runtimecontextmanager_noquotas.go` |
+| A string pattern match ran in Go with the whole remaining CPU budget and checked neither the `Interrupt` nor the time limit until it returned, so a backtracking pattern (`string.find(string.rep("a", 60), "a*a*a*a*a*a*b")` takes about 3.5 s) outlasted both a short deadline and a cancel. The matcher now calls a poll function every 1024 steps; `find`, `match`, `gmatch` and `gsub` pass the new `Runtime.PollStop`, which terminates the current context as the compile poll does. `Match` and `MatchFromStart` also re-raise panics other than an exhausted budget, which they used to swallow | not yet proposed; loom-only until it is in the fork | `lib/stringlib/pattern/{matcher,pattern}.go`, `lib/stringlib/matching.go`, `runtime/lib.go` |
 
 Every modified file starts with a "Modified for loom" notice. No other file differs
 from upstream except for the rewritten import paths.
