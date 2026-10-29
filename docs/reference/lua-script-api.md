@@ -22,7 +22,10 @@ Three things must all hold for an agent to have `run_lua`:
    (`tools.hooks` or `tools.permissions`). Otherwise `run_lua` is not registered and
    serve logs one warning naming the reason. loom's default YOLO permission checker
    counts, and admits every call; configure `tools.hooks` before enabling Lua on a
-   shared server.
+   shared server. When `tools.lua.enabled` is on, `tools.permissions.yolo` is on
+   (also set by `--yolo` or `LOOM_YOLO=true`) and `tools.hooks` has no bindings, serve
+   logs one warning at startup naming `run_lua` and saying that every nested tool call
+   is allowed without a check. The warning does not change what registers.
 
 ```yaml
 tools:
