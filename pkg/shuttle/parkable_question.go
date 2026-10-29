@@ -25,9 +25,12 @@ import "context"
 // card cannot bind such a call), or an in-turn resolver is used instead of
 // park. Execute should then explain why the tool needs a human.
 //
-// Both methods may be called more than once for the same call and must be
-// pure with respect to the input. The agent decides whether a call parks when
-// the turn parks and records that decision on the park row; on resume it
+// Today each method is called at most once per call: ParkQuestion when the
+// turn parks, ParkAnswerResult when it resumes. Implementations must still be
+// pure with respect to the input and tolerate repeated calls, because
+// ParkAnswerResult can run again when a resume is retried after it ran but
+// before its result row was saved. The agent decides whether a call parks
+// when the turn parks and records that decision on the park row; on resume it
 // trusts the recorded decision and does not call ParkQuestion again. After a
 // restart the input has been through JSON, so numbers arrive as float64.
 //

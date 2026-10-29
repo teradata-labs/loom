@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/teradata-labs/loom/third_party/golua/lib/stringlib/pattern"
 	rt "github.com/teradata-labs/loom/third_party/golua/runtime"
 )
 
@@ -273,4 +274,37 @@ func TestFailedHostCallsAreInTheLedger(t *testing.T) {
 			assert.Equal(t, 1, completed)
 		})
 	}
+}
+
+// TestPatternMatchPollPanicPropagates checks the vendored matcher's poll hook
+// directly: it is called while a long match runs, and the panic it raises (a
+// context termination, in the engine) reaches the caller instead of being
+// swallowed as an empty match.
+func TestPatternMatchPollPanicPropagates(t *testing.T) {
+	pat, err := pattern.New("a*a*a*a*a*a*b")
+	require.NoError(t, err)
+	subject := strings.Repeat("a", 60)
+	type stop struct{}
+	for name, match := range map[string]func(func()){
+		"Match":          func(poll func()) { pat.Match(subject, 0, 0, poll) },
+		"MatchFromStart": func(poll func()) { pat.MatchFromStart(subject, 0, 0, poll) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			polls := 0
+			assert.PanicsWithValue(t, stop{}, func() {
+				match(func() {
+					polls++
+					if polls == 3 {
+						panic(stop{})
+					}
+				})
+			})
+			assert.Equal(t, 3, polls)
+		})
+	}
+
+	// An exhausted budget is still reported as a failed match, not a panic.
+	captures, used := pat.Match(subject, 0, 1000, func() {})
+	assert.Nil(t, captures)
+	assert.Equal(t, uint64(1001), used)
 }

@@ -53,7 +53,7 @@ func TestLuaTools_DefaultOff(t *testing.T) {
 	assert.Empty(t, cfg.Tools.Lua.Tools.Allow)
 	assert.Equal(t, 2, cfg.Tools.Lua.Limits.MaxConcurrentRunsPerKey)
 
-	rt, err := newLuaRuntime(cfg.Tools.Lua, 4<<30, t.TempDir())
+	rt, err := newLuaRuntime(cfg.Tools.Lua, luaGuards{}, 4<<30, t.TempDir(), zap.NewNop())
 	require.NoError(t, err)
 	assert.Nil(t, rt, "a disabled tools.lua builds no runtime")
 	assert.Nil(t, rt.registryOptions())
@@ -64,7 +64,7 @@ func TestNewLuaRuntime(t *testing.T) {
 	base := LuaToolsConfig{Enabled: true, Limits: LuaLimitsConfig{MaxConcurrentRunsPerKey: 2}}
 
 	t.Run("derived slots at the default budget", func(t *testing.T) {
-		rt, err := newLuaRuntime(base, 4*gib, t.TempDir())
+		rt, err := newLuaRuntime(base, luaGuards{}, 4*gib, t.TempDir(), zap.NewNop())
 		require.NoError(t, err)
 		assert.Equal(t, 4, rt.slots, "4 GiB pod at 128 MiB per run")
 		assert.Equal(t, 2, rt.perKey)
@@ -76,17 +76,17 @@ func TestNewLuaRuntime(t *testing.T) {
 	t.Run("a configured slot count only lowers", func(t *testing.T) {
 		c := base
 		c.Limits.MaxConcurrentRuns = 16
-		rt, err := newLuaRuntime(c, 4*gib, t.TempDir())
+		rt, err := newLuaRuntime(c, luaGuards{}, 4*gib, t.TempDir(), zap.NewNop())
 		require.NoError(t, err)
 		assert.Equal(t, 4, rt.slots, "16 configured cannot exceed the 4 derived")
 		c.Limits.MaxConcurrentRuns = 1
-		rt, err = newLuaRuntime(c, 4*gib, t.TempDir())
+		rt, err = newLuaRuntime(c, luaGuards{}, 4*gib, t.TempDir(), zap.NewNop())
 		require.NoError(t, err)
 		assert.Equal(t, 1, rt.slots)
 		assert.Equal(t, 1, rt.perKey, "per-agent runs never exceed the total")
 	})
 	t.Run("small pods lower the per-run budget", func(t *testing.T) {
-		rt, err := newLuaRuntime(base, gib, t.TempDir())
+		rt, err := newLuaRuntime(base, luaGuards{}, gib, t.TempDir(), zap.NewNop())
 		require.NoError(t, err)
 		assert.Equal(t, 2, rt.slots)
 		assert.Less(t, rt.runMem, uint64(128<<20))
@@ -95,7 +95,7 @@ func TestNewLuaRuntime(t *testing.T) {
 		assert.Equal(t, rt.runMem, pol.Limits.MemoryBytes, "runs use the lowered budget")
 	})
 	t.Run("a pod too small for two minimum runs disables run_lua", func(t *testing.T) {
-		rt, err := newLuaRuntime(base, 128<<20, t.TempDir())
+		rt, err := newLuaRuntime(base, luaGuards{}, 128<<20, t.TempDir(), zap.NewNop())
 		require.NoError(t, err)
 		assert.Nil(t, rt, "no run slot fits within the memory plan")
 		assert.Nil(t, rt.registryOptions())
@@ -105,7 +105,7 @@ func TestNewLuaRuntime(t *testing.T) {
 		c.Limits.WallSeconds = 30
 		c.Limits.MemoryBytes = 8 << 30 // above the 512 MiB ceiling
 		c.Limits.MaxToolCalls = 5
-		rt, err := newLuaRuntime(c, 64*gib, t.TempDir())
+		rt, err := newLuaRuntime(c, luaGuards{}, 64*gib, t.TempDir(), zap.NewNop())
 		require.NoError(t, err)
 		pol, err := rt.options.Policy(context.Background())
 		require.NoError(t, err)
@@ -117,9 +117,42 @@ func TestNewLuaRuntime(t *testing.T) {
 	t.Run("a malformed pattern fails closed", func(t *testing.T) {
 		c := base
 		c.Tools.Deny = []string{"web_["}
-		_, err := newLuaRuntime(c, 4*gib, t.TempDir())
+		_, err := newLuaRuntime(c, luaGuards{}, 4*gib, t.TempDir(), zap.NewNop())
 		assert.Error(t, err)
 	})
+}
+
+// Review Josh-Schoen F1: YOLO counts as a guard for registration but allows
+// every call, so enabling Lua under YOLO with no hook bindings must say so.
+func TestNewLuaRuntime_WarnsWhenYOLOLeavesScriptsUnchecked(t *testing.T) {
+	enabled := LuaToolsConfig{Enabled: true, Limits: LuaLimitsConfig{MaxConcurrentRunsPerKey: 2}}
+	tests := []struct {
+		name      string
+		cfg       LuaToolsConfig
+		guards    luaGuards
+		wantWarns int
+	}{
+		{"yolo and no bindings: one warning", enabled, luaGuards{YOLO: true}, 1},
+		{"yolo with a binding: no warning", enabled, luaGuards{YOLO: true, HookBindings: 1}, 0},
+		{"no yolo and no bindings: no warning", enabled, luaGuards{}, 0},
+		{"no yolo with a binding: no warning", enabled, luaGuards{HookBindings: 2}, 0},
+		{"lua disabled under yolo: no warning", LuaToolsConfig{}, luaGuards{YOLO: true}, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			core, logs := observer.New(zapcore.InfoLevel)
+			_, err := newLuaRuntime(tt.cfg, tt.guards, 4<<30, t.TempDir(), zap.New(core))
+			require.NoError(t, err)
+			warns := logs.FilterLevelExact(zapcore.WarnLevel).All()
+			require.Len(t, warns, tt.wantWarns)
+			if tt.wantWarns == 1 {
+				assert.Contains(t, warns[0].Message, "run_lua")
+				assert.Contains(t, warns[0].Message, "every nested tool call")
+				assert.Contains(t, warns[0].Message, "without a check")
+				assert.Equal(t, agent.RunLuaToolName, warns[0].ContextMap()["tool"])
+			}
+		})
+	}
 }
 
 type luaGuardHook struct{}
@@ -136,12 +169,12 @@ func guardedAgent(opts ...agent.Option) *agent.Agent {
 
 func enabledLuaRuntime(t *testing.T) *luaRuntime {
 	t.Helper()
-	rt, err := newLuaRuntime(LuaToolsConfig{Enabled: true, Limits: LuaLimitsConfig{MaxConcurrentRunsPerKey: 2}}, 4<<30, t.TempDir())
+	rt, err := newLuaRuntime(LuaToolsConfig{Enabled: true, Limits: LuaLimitsConfig{MaxConcurrentRunsPerKey: 2}}, luaGuards{}, 4<<30, t.TempDir(), zap.NewNop())
 	require.NoError(t, err)
 	return rt
 }
 
-// The registration matrix from the design (L2.3).
+// The registration matrix in "Enabling it" of docs/reference/lua-script-api.md.
 func TestRegisterLuaTools(t *testing.T) {
 	t.Run("disabled: absent even when listed", func(t *testing.T) {
 		ag := guardedAgent()
@@ -213,7 +246,7 @@ func TestLuaTools_ScriptDefaults(t *testing.T) {
 
 func TestNewLuaRuntime_OpensTheScriptStore(t *testing.T) {
 	dataDir := t.TempDir()
-	rt, err := newLuaRuntime(LuaToolsConfig{Enabled: true, Scripts: LuaScriptsConfig{SaveEnabled: true}}, 4<<30, dataDir)
+	rt, err := newLuaRuntime(LuaToolsConfig{Enabled: true, Scripts: LuaScriptsConfig{SaveEnabled: true}}, luaGuards{}, 4<<30, dataDir, zap.NewNop())
 	require.NoError(t, err)
 	require.NotNil(t, rt.store)
 	assert.DirExists(t, filepath.Join(dataDir, "lua_scripts"), "default scripts_dir")
@@ -223,7 +256,7 @@ func TestNewLuaRuntime_OpensTheScriptStore(t *testing.T) {
 	assert.NotNil(t, rt.scriptsRegistryOptions())
 
 	custom := t.TempDir()
-	rt, err = newLuaRuntime(LuaToolsConfig{Enabled: true, ScriptsDir: custom}, 4<<30, dataDir)
+	rt, err = newLuaRuntime(LuaToolsConfig{Enabled: true, ScriptsDir: custom}, luaGuards{}, 4<<30, dataDir, zap.NewNop())
 	require.NoError(t, err)
 	_, _, err = rt.store.Save(context.Background(), store.Script{Name: "abc", Description: "d", Source: "return 1"}, false)
 	require.NoError(t, err)
@@ -231,13 +264,13 @@ func TestNewLuaRuntime_OpensTheScriptStore(t *testing.T) {
 
 	file := filepath.Join(t.TempDir(), "not-a-dir")
 	require.NoError(t, os.WriteFile(file, nil, 0o600))
-	_, err = newLuaRuntime(LuaToolsConfig{Enabled: true, ScriptsDir: file}, 4<<30, dataDir)
+	_, err = newLuaRuntime(LuaToolsConfig{Enabled: true, ScriptsDir: file}, luaGuards{}, 4<<30, dataDir, zap.NewNop())
 	assert.Error(t, err, "an unusable scripts_dir aborts startup")
 }
 
 func TestRegisterLuaTools_SavedScripts(t *testing.T) {
 	rt, err := newLuaRuntime(LuaToolsConfig{Enabled: true, Scripts: LuaScriptsConfig{SaveEnabled: true},
-		Limits: LuaLimitsConfig{MaxConcurrentRunsPerKey: 2}}, 4<<30, t.TempDir())
+		Limits: LuaLimitsConfig{MaxConcurrentRunsPerKey: 2}}, luaGuards{}, 4<<30, t.TempDir(), zap.NewNop())
 	require.NoError(t, err)
 	ctx := context.Background()
 	params := map[string]any{"type": "object", "properties": map[string]any{}}
@@ -275,7 +308,7 @@ func TestLuaTools_DefaultPolicyHidesTheShell(t *testing.T) {
 	var cfg Config
 	require.NoError(t, viper.Unmarshal(&cfg))
 	cfg.Tools.Lua.Enabled = true
-	rt, err := newLuaRuntime(cfg.Tools.Lua, 4<<30, t.TempDir())
+	rt, err := newLuaRuntime(cfg.Tools.Lua, luaGuards{}, 4<<30, t.TempDir(), zap.NewNop())
 	require.NoError(t, err)
 	pol, err := rt.options.Policy(context.Background())
 	require.NoError(t, err)

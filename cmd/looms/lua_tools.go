@@ -88,7 +88,8 @@ type LuaToolListsConfig struct {
 	DenyForShared []string `mapstructure:"deny_for_shared"`
 }
 
-// Default lists, from the design (01 §6): tools that are slow, hold locks,
+// Default lists (documented under "Enabling it" in
+// docs/reference/lua-script-api.md): tools that are slow, hold locks,
 // manage agents or skills, or (for shared scripts) can send data out.
 // shell_execute is loom's own unsandboxed shell: a script calling it in a loop
 // would run commands nobody sees one by one, and under the default YOLO
@@ -140,13 +141,29 @@ type luaRuntime struct {
 	runMem  uint64
 }
 
+// luaGuards is what the server's admission config says about the tool calls a
+// script makes. run_lua refuses to register on an agent with no guard at all
+// (agent.ErrLuaNoGuards), but the YOLO permission checker counts as a guard
+// while allowing every call, so the server warns about that case at startup.
+type luaGuards struct {
+	// YOLO is tools.permissions.yolo (also set by --yolo and LOOM_YOLO).
+	YOLO bool
+	// HookBindings is the number of tools.hooks bindings.
+	HookBindings int
+}
+
+// unguarded reports whether nothing checks a script's nested tool calls: YOLO
+// allows every call and no hook binding is configured to evaluate them.
+func (g luaGuards) unguarded() bool { return g.YOLO && g.HookBindings == 0 }
+
 // newLuaRuntime builds the run_lua wiring from tools.lua. It returns nil when
 // Lua is disabled or the process is too small to run scripts safely (with a
 // warning), and an error for a malformed policy or an unusable scripts
 // directory, which aborts serve like a malformed hook binding (fail closed).
 // memLimit is the process memory limit used to size the gate; dataDir is the
-// default parent of the scripts directory.
-func newLuaRuntime(c LuaToolsConfig, memLimit uint64, dataDir string) (*luaRuntime, error) {
+// default parent of the scripts directory. When Lua is on and guards says
+// nothing checks the nested calls, it logs one warning naming run_lua.
+func newLuaRuntime(c LuaToolsConfig, guards luaGuards, memLimit uint64, dataDir string, logger *zap.Logger) (*luaRuntime, error) {
 	if !c.Enabled {
 		return nil, nil
 	}
@@ -164,7 +181,7 @@ func newLuaRuntime(c LuaToolsConfig, memLimit uint64, dataDir string) (*luaRunti
 		// The process is too small for even two minimum-budget runs within
 		// the engine's memory plan: run_lua stays off rather than admit
 		// runs that could exhaust the process.
-		zap.L().Warn("tools.lua.enabled is set, but the process memory limit is too small to run Lua scripts safely; run_lua is disabled",
+		logger.Warn("tools.lua.enabled is set, but the process memory limit is too small to run Lua scripts safely; run_lua is disabled",
 			zap.Uint64("memory_limit_bytes", memLimit))
 		return nil, nil
 	}
@@ -183,6 +200,12 @@ func newLuaRuntime(c LuaToolsConfig, memLimit uint64, dataDir string) (*luaRunti
 	st, err := filestore.Open(dir, pol.Limits)
 	if err != nil {
 		return nil, fmt.Errorf("tools.lua.scripts_dir: %w", err)
+	}
+	if guards.unguarded() {
+		logger.Warn("run_lua: tools.permissions.yolo is on and no tools.hooks bindings are configured, "+
+			"so every nested tool call a Lua script makes is allowed without a check; "+
+			"bind tools.hooks or turn off tools.permissions.yolo to govern them",
+			zap.String("tool", agent.RunLuaToolName))
 	}
 	return &luaRuntime{
 		options: agent.RunLuaToolOptions{

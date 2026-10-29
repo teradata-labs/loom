@@ -61,9 +61,9 @@ type run struct {
 // Run executes on the caller's goroutine and returns when the script
 // finishes, a limit fires, or ctx ends. It never panics and never returns
 // nil. When ctx ends, the interpreter's interrupt flag is set and the script
-// stops at its next interpreter step, even when it only computes. One step
-// can run long: a single string pattern match receives the remaining CPU
-// budget up front and is not interrupted part way.
+// stops at its next interpreter step, even when it only computes. A string
+// pattern match, which runs in Go until it returns, checks the same flag
+// every 1024 matcher steps.
 func Run(ctx context.Context, p Program, lim Limits, h Host) (res *RunResult) {
 	start := time.Now()
 	lim = lim.Normalize()
