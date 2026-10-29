@@ -696,7 +696,12 @@ Bedrock pricing varies by region. US East (us-east-1) pricing:
 The per-model tables above are base (global-endpoint) rates. The estimate is computed from
 Anthropic's published card; your AWS bill is authoritative.
 
-**Cost calculation**: The `cost_usd` field in `WeaveResponse` comes from `calculateCost` in the Bedrock client, which matches the model ID to a Claude family (`pkg/llm/bedrock/client.go`): `claude-opus-4-1` → $15/$75 (checked first), `claude-opus-4` (4.5/4.6/4.7) → $5/$25, `claude-haiku-4` → $1/$5, `claude-sonnet-4` and any unrecognized model → $3/$15. These rates match the catalog tiers shown above.
+Every base rate is read as a global-endpoint rate, including one returned by a pricing `Source`
+an embedder registers with `catalog.Register`; the regional premium in step 3 is applied on top
+of it. Register the global rate for a model, not the regional one, or regional calls are
+estimated 10% high a second time.
+
+The `cost_usd` field in `WeaveResponse` is this estimate.
 
 
 ## Security Best Practices

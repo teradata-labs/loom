@@ -51,6 +51,13 @@ func buildPriceIndex() {
 // A registered entry with no positive rate is treated as "unpriced" and the
 // static table is tried next, so a metadata-only row cannot zero out a price.
 //
+// Rates returned here are base (global-endpoint) rates, whichever Source
+// supplied them. The Bedrock client multiplies them by
+// BedrockEndpointMultiplier, which adds a 10% premium for regional endpoints
+// on Claude 4.5 and later — so an embedder registering Bedrock rates must
+// register the global rate, not the regional one, or the premium is counted
+// twice.
+//
 // The lookup is keyed by both provider and model id because the same id can
 // appear under multiple providers (e.g. "gpt-4.1" under openai and azure-openai)
 // with different pricing.
