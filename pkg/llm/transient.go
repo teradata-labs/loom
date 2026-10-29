@@ -98,6 +98,8 @@ type RetriesExhaustedError struct {
 }
 
 // Error keeps the historical wording so log greps and tests keep matching.
+// The printed count is Attempts (MaxRetries+1), not retries; the word
+// "retries" is kept so existing log greps still match.
 func (e *RetriesExhaustedError) Error() string {
 	return fmt.Sprintf("LLM request failed after %d retries due to %s: %v", e.Attempts, e.Cause, e.Err)
 }
