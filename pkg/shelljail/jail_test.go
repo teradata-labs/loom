@@ -344,6 +344,43 @@ func TestJail_ProgramSeesTheJailsPath(t *testing.T) {
 	}
 }
 
+// Reads are confined to the session's own directories: the database, the
+// server config and another session's files under the same data directory
+// are refused, while the session's scratchpad and uploads are readable.
+func TestJail_ReadsStayInTheSession(t *testing.T) {
+	f := newFixture(t)
+	data := os.Getenv("LOOM_DATA_DIR")
+	other := filepath.Join(data, "artifacts", "sessions", "sess-other", "scratchpad")
+	upload := filepath.Join(filepath.Dir(f.scratch), "user")
+	for path, content := range map[string]string{
+		filepath.Join(data, "loom.db"):        "DB-CONTENT",
+		filepath.Join(data, "looms.yaml"):     "CONFIG-CONTENT",
+		filepath.Join(other, "secret.txt"):    "OTHER-SESSION",
+		filepath.Join(f.scratch, "notes.txt"): "OWN-SCRATCH",
+		filepath.Join(upload, "upload.txt"):   "OWN-UPLOAD",
+	} {
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o750))
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	}
+	for _, tc := range []struct {
+		cmd, leak string
+	}{
+		{"cat " + filepath.Join(data, "loom.db"), "DB-CONTENT"},
+		{"cat " + filepath.Join(data, "looms.yaml"), "CONFIG-CONTENT"},
+		{"cat " + filepath.Join(other, "secret.txt"), "OTHER-SESSION"},
+		{"cat ../../sess-other/scratchpad/secret.txt", "OTHER-SESSION"},
+		{"cat < " + filepath.Join(data, "loom.db"), "DB-CONTENT"},
+		{"ls " + filepath.Join(data, "artifacts", "sessions"), "sess-other"},
+	} {
+		got := f.jailed(t, tc.cmd, nil, 10*time.Second)
+		assert.NotEmpty(t, got.res.Blocked, "%q must be refused: %s", tc.cmd, got.stderr)
+		assert.NotContains(t, got.stdout, tc.leak, tc.cmd)
+	}
+	got := f.jailed(t, "cat notes.txt ../user/upload.txt", nil, 10*time.Second)
+	require.Empty(t, got.res.Blocked, got.stderr)
+	assert.Equal(t, "OWN-SCRATCHOWN-UPLOAD", got.stdout)
+}
+
 // Repository config cannot make git run anything (design Probe 9).
 func TestJail_GitRunsNothingFromRepoConfig(t *testing.T) {
 	git, err := exec.LookPath("git")
@@ -496,6 +533,15 @@ func TestOptionsAndBaseEnv(t *testing.T) {
 	assert.Equal(t, filepath.Join(f.scratch, "sub"), opt.WorkingDir)
 	assert.Contains(t, opt.Roots.Read, shellpolicy.ResolvePath("/", "/usr/share"))
 	assert.Subset(t, opt.Roots.Read, opt.Roots.Write, "every write root is readable")
+	assert.Contains(t, opt.Roots.Read, filepath.Dir(f.scratch), "the session's own directory is readable")
+	assert.NotContains(t, opt.Roots.Read, os.Getenv("LOOM_DATA_DIR"), "the data directory as a whole is not")
+	assert.NotContains(t, opt.Roots.Read, shellpolicy.ResolvePath("/", "/tmp"))
+
+	// A session whose directories resolve outside the runner's data directory
+	// (LOOM_DATA_DIR changed under it) is refused rather than judged.
+	t.Setenv("LOOM_DATA_DIR", t.TempDir())
+	_, err = f.r.Options(testSession, "")
+	assert.ErrorContains(t, err, "outside the loom data directory")
 
 	env, dropped := f.r.BaseEnv("/home/x", map[string]string{"SESSION_ID": "s"}, map[string]string{
 		"FOO": "1", "GH_TOKEN": "t", "PATH": "/evil", "LD_PRELOAD": "x", "DB_URL": "postgres://u:p@h/d",

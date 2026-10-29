@@ -437,7 +437,7 @@ func (a *analyzer) checkRead(path string, n syntax.Node, outer *syntax.Pos) {
 	if inRoots(full, a.opt.Roots.Read) {
 		return
 	}
-	a.ask(n, outer, path, "reads outside the session", "read", full)
+	a.ask(n, outer, path, "reads outside the read roots", "read", full)
 }
 
 func (a *analyzer) checkWrite(path string, n syntax.Node, outer *syntax.Pos) {
@@ -448,7 +448,7 @@ func (a *analyzer) checkWrite(path string, n syntax.Node, outer *syntax.Pos) {
 	if inRoots(full, a.opt.Roots.Write) {
 		return
 	}
-	a.add(Deny, n, outer, path, "writes outside the session")
+	a.add(Deny, n, outer, path, "writes outside the write roots")
 }
 
 // literal returns the word's value when it is fully literal: no parameter,

@@ -99,7 +99,7 @@ The hook additionally turns an **Ask into a Deny** when the call's JSON-encoded 
 
 ```
 needs approval under shell policy readonly: rm (1:1): not on the shell allowlist; npm (1:10):
-not on the shell allowlist; /etc/hosts (2:1): reads outside the session. Everything else in
+not on the shell allowlist; /etc/hosts (2:1): reads outside the read roots. Everything else in
 the command is allowed.
 
 shell policy readonly refuses this command: sudo (1:1): never allowed by the shell policy
@@ -178,7 +178,7 @@ tools:
     memory_bytes: 536870912   # default 512 MiB
     file_bytes: 268435456     # default 256 MiB
     strict: true              # set -u (default true)
-    read_roots: []            # added to LOOM_DATA_DIR and /tmp
+    read_roots: []            # added to the session's own directory
     write_roots: []           # added to the session's scratchpad and artifact directories
   hooks:
     - kind: command-policy    # optional; without it, off-list programs are blocked and never approvable
@@ -208,6 +208,7 @@ In jailed mode, `serve` also:
 | Interpreter | `mvdan.cc/sh/v3/interp`, bash dialect, in a child process (the host binary re-executed with `LOOM_SHELLJAIL_CHILD=1`). The command spec goes on stdin, never argv. |
 | Session | Required. Without one, the result is `JAIL_UNAVAILABLE`. |
 | Working directory | The session scratchpad. A relative `working_dir` resolves against it. |
+| Reads | Confined to the session's own directory, `$LOOM_DATA_DIR/artifacts/sessions/<id>/` (its `scratchpad/`, `agent/` artifacts and `user/` uploads), plus `read_roots` and `write_roots`. The rest of `LOOM_DATA_DIR` is outside: it can hold the database (`loom.db`), the server config (`looms.yaml`) and every other session's files. `/tmp` is outside too. A read outside these roots needs a person's approval for that path (an Ask from the hook) or is blocked. A session whose directories resolve outside `LOOM_DATA_DIR` is `JAIL_UNAVAILABLE`. |
 | `shell` param | Only `default`, `bash` or `sh`. Anything else is `INVALID_PARAMS`. |
 | Program launch | `CheckLaunch` on the expanded argv and current directory. A bare name runs only from its pinned path, and a name containing `/` only when granted. A refusal fails that one command with exit 126; the shell continues, and `set -e` stops it. |
 | Builtins, redirects, globs | `CheckBuiltin`, `CheckOpen` and `CheckListDir`. |

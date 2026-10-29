@@ -87,11 +87,11 @@ func TestAnalyze_Corpus(t *testing.T) {
 		{cmd: `git branch -D x`, want: Ask, static: Deny, why: "listing only"},
 		{cmd: `git push`, want: Ask, static: Deny, why: "git push"},
 		{cmd: `git log --output=x`, want: Ask, static: Deny},
-		{cmd: `git -C /usr status`, want: Ask, static: Deny, why: "reads outside the session"},
-		{cmd: `echo x > /etc/x`, want: Deny, static: Deny, why: "writes outside the session"},
+		{cmd: `git -C /usr status`, want: Ask, static: Deny, why: "reads outside the read roots"},
+		{cmd: `echo x > /etc/x`, want: Deny, static: Deny, why: "writes outside the write roots"},
 		{cmd: `echo x >> ../../outside`, want: Deny, static: Deny},
 		{cmd: `echo x > ../out.txt; echo y >> out.txt; ls 2>&1 >/dev/null; ls >&2`, want: Allow, static: Allow},
-		{cmd: `cat < /etc/hosts`, want: Ask, static: Ask, why: "reads outside the session"},
+		{cmd: `cat < /etc/hosts`, want: Ask, static: Ask, why: "reads outside the read roots"},
 		{cmd: `cat /etc/hosts`, want: Ask, static: Ask},
 		{cmd: `cd /; ls`, want: Ask, static: Ask},
 		{cmd: `cd ../..; ls`, want: Ask, static: Ask},
@@ -223,7 +223,7 @@ func TestAnalyze_ReasonAndGrant(t *testing.T) {
 	require.Equal(t, Ask, v.Kind)
 	assert.Equal(t, "needs approval under shell policy readonly: "+
 		"rm (1:1): not on the shell allowlist; npm (1:10): not on the shell allowlist; "+
-		"/etc/hosts (2:1): reads outside the session. Everything else in the command is allowed.", v.Reason())
+		"/etc/hosts (2:1): reads outside the read roots. Everything else in the command is allowed.", v.Reason())
 	require.NotNil(t, v.Grant)
 	assert.Equal(t, []string{"rm", "npm"}, v.Grant.Programs)
 	hosts, err := filepath.EvalSymlinks("/etc/hosts")

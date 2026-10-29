@@ -810,8 +810,9 @@ type ShellExecuteConfig struct {
 	Strict bool `mapstructure:"strict"`
 
 	// ReadRoots and WriteRoots add directories jailed commands may read and
-	// write, beyond LOOM_DATA_DIR and /tmp (read) and the session's
-	// scratchpad and artifact directories (write).
+	// write, beyond the session's own directory (read) and the session's
+	// scratchpad and artifact directories (write). The rest of LOOM_DATA_DIR
+	// (the database, the server config, other sessions) is not readable.
 	ReadRoots  []string `mapstructure:"read_roots"`
 	WriteRoots []string `mapstructure:"write_roots"`
 }
