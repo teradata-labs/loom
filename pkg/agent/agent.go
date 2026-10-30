@@ -2337,8 +2337,15 @@ func (a *Agent) observePromptUsage(session *Session, u Usage) {
 // then the same bytes, so nothing is ever cut, stubbed or re-rendered later —
 // the context only grows, and the fold is the only thing that changes it.
 func (a *Agent) appendMessage(ctx context.Context, session *Session, msg Message, turnStart bool) (Message, bool) {
-	if msg.Role == "tool" && a.memory != nil {
-		msg.Content = SpillAndTruncateToolRow(msg.Content, a.memory.thresholdOrDefault(), a.memory.toolSnapshotDir, msg.ToolUseID)
+	// The whole of a bounded result is kept for this turn, out of the context,
+	// for a host tool that stages it by message id (InTurnPayload).
+	var whole string
+	if msg.Role == "tool" && a.memory != nil && !a.memory.exempt(toolNameOf(session, msg.ToolUseID)) {
+		bounded := SpillAndTruncateToolRow(msg.Content, a.memory.thresholdOrDefault(), a.memory.toolSnapshotDir, msg.ToolUseID)
+		if bounded != msg.Content {
+			whole = msg.Content
+		}
+		msg.Content = bounded
 	}
 	// A replay/import override (WeaveRequest.occurred_at → WithOccurredAt)
 	// anchors every row persisted during the call at the conversation's
@@ -2368,8 +2375,69 @@ func (a *Agent) appendMessage(ctx context.Context, session *Session, msg Message
 			zap.Error(err))
 	}
 
+	if whole != "" {
+		if id, err := strconv.ParseInt(msg.ID, 10, 64); err == nil {
+			a.memory.keepWhole(session.ID, msg.Turn, id, whole)
+		}
+	}
+
 	session.AddMessage(ctx, msg)
 	return msg, persisted
+}
+
+// toolNameOf is the tool a result answers: the call with this id on the
+// latest assistant row that made calls.
+func toolNameOf(session *Session, toolUseID string) string {
+	if session == nil || toolUseID == "" {
+		return ""
+	}
+	var name string
+	session.FindMessage(func(m Message) bool {
+		for _, c := range m.ToolCalls {
+			if c.ID == toolUseID {
+				name = c.Name
+				return true
+			}
+		}
+		return false
+	})
+	return name
+}
+
+// ErrNotThisTurn is the typed miss for InTurnPayload: the id does not name a
+// tool result of the session's current turn. Callers turn it into their own
+// loud error and never guess: a result does not outlive its turn.
+var ErrNotThisTurn = errors.New("not a current-turn in-memory payload")
+
+// InTurnPayload returns the whole of message id's tool result iff it belongs
+// to the session's current turn. The model saw it bounded; a host tool that
+// stages it — into a sandbox, say — gets every byte. Any other case is
+// ErrNotThisTurn.
+func (a *Agent) InTurnPayload(sessionID string, messageID int64) (string, error) {
+	session, ok := a.memory.GetSession(sessionID)
+	if !ok || session == nil {
+		return "", fmt.Errorf("%w: message %d", ErrNotThisTurn, messageID)
+	}
+	turn := sessionCurrentTurn(session)
+	if whole, ok := a.memory.wholeOf(sessionID, turn, messageID); ok {
+		return whole, nil
+	}
+	id := strconv.FormatInt(messageID, 10)
+	if m, ok := session.FindMessage(func(m Message) bool {
+		return m.Role == "tool" && m.ID == id && m.Turn == turn
+	}); ok {
+		return m.Content, nil
+	}
+	return "", fmt.Errorf("%w: message %d", ErrNotThisTurn, messageID)
+}
+
+// SetOffloadExemptTools names the tools whose results enter the conversation
+// whole, for existing and future sessions: the arrival bound does not apply to
+// them. The set replaces the previous one.
+func (a *Agent) SetOffloadExemptTools(names []string) {
+	if a.memory != nil {
+		a.memory.SetOffloadExemptTools(names)
+	}
 }
 
 // Response represents the agent's response to a user message.

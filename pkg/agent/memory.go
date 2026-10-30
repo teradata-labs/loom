@@ -63,6 +63,8 @@ type Memory struct {
 	compressor           MemoryCompressor           // Optional LLM compressor for L2 compaction (nil = fold drops with an "(unsummarized)" marker)
 	thresholdBytes       int64                      // Offload / row / page bound in bytes (0 = default; HLD §5.1)
 	toolSnapshotDir      string                     // Non-empty: §4.1 tails cite ToolSnapshotPath and persist spills the full bytes there
+	exemptTools          map[string]bool            // Tools whose results enter whole: the arrival bound does not apply to them
+	turnPayloads         map[string]turnPayloads    // Per session: whole bytes of this turn's bounded tool results, by message id
 
 	// Real-time observers for cross-session updates
 	// Map of agentID -> list of observers
@@ -195,6 +197,60 @@ func (m *Memory) SetThresholdBytes(bytes int64) {
 			segMem.SetThreshold(bytes)
 		}
 	}
+}
+
+// SetOffloadExemptTools names the tools whose results enter the conversation
+// whole: the arrival bound does not apply to them. It is for a tool whose whole
+// output is the point of the call — a reference the model reads inline in the
+// turn that asked. The set replaces the previous one. A stored row is bounded
+// by the store regardless.
+func (m *Memory) SetOffloadExemptTools(names []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.exemptTools = make(map[string]bool, len(names))
+	for _, n := range names {
+		m.exemptTools[n] = true
+	}
+}
+
+func (m *Memory) exempt(tool string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.exemptTools[tool]
+}
+
+// turnPayloads is one session's whole tool results for the turn in hand.
+type turnPayloads struct {
+	turn  int64
+	whole map[int64]string
+}
+
+// keepWhole records a bounded tool result's whole bytes under its message id,
+// for this turn only: a later turn's first record replaces the set.
+func (m *Memory) keepWhole(sessionID string, turn, id int64, content string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.turnPayloads == nil {
+		m.turnPayloads = map[string]turnPayloads{}
+	}
+	tp := m.turnPayloads[sessionID]
+	if tp.whole == nil || tp.turn != turn {
+		tp = turnPayloads{turn: turn, whole: map[int64]string{}}
+	}
+	tp.whole[id] = content
+	m.turnPayloads[sessionID] = tp
+}
+
+// wholeOf is a tool result's whole bytes if it is one of turn's.
+func (m *Memory) wholeOf(sessionID string, turn, id int64) (string, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	tp, ok := m.turnPayloads[sessionID]
+	if !ok || tp.turn != turn {
+		return "", false
+	}
+	content, ok := tp.whole[id]
+	return content, ok
 }
 
 // SetToolSnapshotDir sets the workspace-relative directory for §4.1 result
@@ -661,6 +717,7 @@ func (m *Memory) DeleteSession(sessionID string) {
 	defer m.mu.Unlock()
 
 	delete(m.sessions, sessionID)
+	delete(m.turnPayloads, sessionID)
 }
 
 // ListSessions returns all active sessions.
