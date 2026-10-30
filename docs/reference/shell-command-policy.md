@@ -1,6 +1,6 @@
 # Shell Command Policy Reference
 
-The `command-policy` admission hook decides, before a shell command runs, whether it may run without a person's approval. It parses the command, finds every program, builtin, redirect and path it names, and judges each against a named policy:
+`shell_execute` can run in **jailed mode**: commands run in a pure-Go shell interpreter in a child process, where every program launch, file the shell opens and directory a glob lists is checked against a policy on its real, expanded arguments. The `command-policy` admission hook decides, before a command runs, whether it may run without a person's approval. It parses the command, finds every program, builtin, redirect and path it names, and judges each against a named policy:
 
 - **Allow:** every part is within the policy.
 - **Ask:** some literal part needs approval. The approval card shows the reason, and approving runs the call with a grant naming exactly what was flagged.
@@ -12,7 +12,9 @@ The hook decides what starts. It does not contain what a started program does.
 |---|---|
 | ✅ | `pkg/shellpolicy`: the policy model, the built-in `readonly` policy, the static analyzer (`Policy.Analyze`), the per-launch checks (`CheckLaunch`, `CheckBuiltin`, `CheckOpen`, `CheckListDir`) and the hook factory (`shellpolicy.Factory`). |
 | ✅ | The `command-policy` hook kind in `pkg/shuttle` (`HookBinding.Policy`, `HookBinding.Enforcement`, `ChainDeps.CommandPolicy`). |
-| 📋 | Wiring into `looms serve`, together with a `tools.shell` config block and the jailed runner that calls the per-launch checks. Until then, `serve` passes no `ChainDeps.CommandPolicy`, so a `command-policy` binding fails the chain build (fail-closed). |
+| ✅ | `pkg/shelljail`: the jailed runner, and `tools.shell_execute.mode: jailed` in `looms serve` (see [Jailed mode](#jailed-mode)). |
+| ✅ | Linux and macOS. On Windows, jailed mode refuses to start. |
+| 📋 | Lua scripts calling `shell_execute`. It stays on the default `tools.lua` deny list until the registry rule in design §7 lands (step S4). |
 
 Design: Teradata-PE/avmo-tera-cloud `docs/design/lua-script-tool/06-shell-command-policy.md`.
 
@@ -33,7 +35,7 @@ tools:
 | `scope` | yes | Tool selector, with the same semantics as every other binding |
 | `matcher` | no | Narrows the calls it governs, with the same semantics as every other binding |
 | `policy` | yes | Name of a policy passed to `shellpolicy.Factory` |
-| `enforcement` | no | `static` (the default when empty): nothing re-checks, so everything the analyzer cannot see is denied (details below). `runtime`: a runner re-checks every launch, so a program named by a run-time expansion is left to the runner. No runner exists yet (see the status table), so only `static` protects anything today. |
+| `enforcement` | no | `static` (the default when empty): nothing re-checks, so everything the analyzer cannot see is denied (details below). `runtime`: a runner re-checks every launch, so a program named by a run-time expansion is left to the runner. The jailed `shell_execute` is that runner (see [Jailed mode](#jailed-mode)); bind it with `runtime`. On any tool that does not re-check, `runtime` leaves run-time expansions unchecked. |
 
 Validation, at save time and at build:
 
@@ -89,7 +91,7 @@ Relative paths resolve against the call's working directory. Paths are compared 
 | an `IFS=` prefix on `read`, `mapfile` or `readarray` (it only sets that builtin's field separator) | no verdict |
 | any other name (`FOO=1 ls`, `export FOO=1`) | no verdict |
 
-`ExecEnvName` matches these names exactly: `PATH BASH_ENV ENV ZDOTDIR SHELL SHELLOPTS BASHOPTS PROMPT_COMMAND PS4 IFS PAGER MANPAGER EDITOR VISUAL BROWSER LESSOPEN LESSCLOSE SSH_ASKPASS SUDO_ASKPASS NODE_OPTIONS NODE_PATH PERL5OPT PERL5LIB PERLLIB RUBYOPT RUBYLIB JAVA_TOOL_OPTIONS _JAVA_OPTIONS JDK_JAVA_OPTIONS CLASSPATH TCLLIBPATH GCONV_PATH`, and every name starting with `LD_`, `DYLD_`, `GIT_`, `PYTHON`, `LUA_` or `BASH_FUNC_`. The run-time checks below take no environment, so the Ask before the command runs is the only check on these variables.
+`ExecEnvName` matches these names exactly: `PATH BASH_ENV ENV ZDOTDIR SHELL SHELLOPTS BASHOPTS PROMPT_COMMAND PS4 IFS PAGER MANPAGER EDITOR VISUAL BROWSER LESSOPEN LESSCLOSE SSH_ASKPASS SUDO_ASKPASS NODE_OPTIONS NODE_PATH PERL5OPT PERL5LIB PERLLIB RUBYOPT RUBYLIB JAVA_TOOL_OPTIONS _JAVA_OPTIONS JDK_JAVA_OPTIONS CLASSPATH TCLLIBPATH GCONV_PATH`, and every name starting with `LD_`, `DYLD_`, `GIT_`, `PYTHON`, `LUA_` or `BASH_FUNC_`. The run-time checks below take no environment. Outside jailed mode the Ask before the command runs is the only check on these variables; in jailed mode the jail also drops them from every program's environment (see [Jailed mode](#jailed-mode)).
 
 The hook additionally turns an **Ask into a Deny** when the call's JSON-encoded params exceed `shuttle.ApprovalParamsMaxBytes` (8,192 bytes). An approval card cuts params past that size, and a person is never asked to approve text they cannot see. It also denies a call with no `command` string.
 
@@ -97,7 +99,7 @@ The hook additionally turns an **Ask into a Deny** when the call's JSON-encoded 
 
 ```
 needs approval under shell policy readonly: rm (1:1): not on the shell allowlist; npm (1:10):
-not on the shell allowlist; /etc/hosts (2:1): reads outside the session. Everything else in
+not on the shell allowlist; /etc/hosts (2:1): reads outside the read roots. Everything else in
 the command is allowed.
 
 shell policy readonly refuses this command: sudo (1:1): never allowed by the shell policy
@@ -114,7 +116,7 @@ type Grant struct {
     Programs  []string // names or exact paths that may run, with any arguments, for this call
     Builtins  []string
     ReadPaths []string // resolved paths that may be read, with everything beneath them
-    Env       []string // variables the command sets that change what runs (no run-time check reads this yet)
+    Env       []string // variables the command sets that change what runs (no run-time check reads this; the jail drops these names from every program's environment)
 }
 ```
 
@@ -160,6 +162,76 @@ With the hardening applied, git 2.50.1 ran no program from the repository's own 
 
 `Policy.Extend(name, allow, never)` derives a policy. Added programs get path confinement only. A program on both lists is never allowed. `Policy.Validate` rejects a policy with no name, an allowlisted name containing `/`, or a name that is both allowed and never allowed.
 
+## Jailed mode
+
+```yaml
+tools:
+  shell_execute:
+    mode: jailed              # bash (default) | jailed
+    policy: readonly          # the policy every jailed command runs under (default readonly)
+    policies:                 # optional named policies
+      dev:
+        extends: readonly     # default readonly
+        allow: [make, go]     # path confinement only
+        never: [curl]         # never wins over allow, at any level
+    search_path: [/usr/local/bin, /usr/bin, /bin]   # default; macOS adds /sbin (md5, md5sum, sha1sum, sha256sum)
+    memory_bytes: 536870912   # default 512 MiB
+    file_bytes: 268435456     # default 256 MiB
+    strict: true              # set -u (default true)
+    read_roots: []            # added to the session's own directory
+    write_roots: []           # added to the session's scratchpad and artifact directories
+  hooks:
+    - kind: command-policy    # optional; without it, off-list programs are blocked and never approvable
+      scope: shell_execute
+      policy: readonly        # must equal tools.shell_execute.policy
+      enforcement: runtime    # the jail re-checks every launch; static would also deny git and computed names
+```
+
+**Startup warning.** With the jail on, `serve` logs one warning for each `command-policy` binding that leaves `enforcement` unset. An unset value means static, which denies what the jail would re-check.
+
+**Startup** (`serve`). The following abort startup:
+
+- an unknown `mode`;
+- a `policies` entry that is undefined, loops, redefines `readonly`, or fails `Validate`;
+- a `command-policy` binding on `shell_execute` while `mode` is `bash`, because nothing would enforce what the hook approves;
+- a binding naming a different policy than `tools.shell_execute.policy`;
+- a failed self-test.
+
+In jailed mode, `serve` also:
+
+1. **Pins programs.** It resolves every allowlisted program once on `search_path` and logs one warning naming every program it cannot find (for example `md5sum`, `sha1sum` and `sha256sum` on older macOS releases, or `md5` on most Linux systems). A missing program fails with exit 127.
+2. **Checks git.** It drops git when git does not accept `--attr-source`, so that git calls need approval rather than running without the hardening.
+3. **Runs a self-test.** It runs `echo` through the jail. A binary that does not call `shelljail.Main()` first in `main()` fails this check.
+
+**A call**:
+
+| | Jailed mode |
+|---|---|
+| Interpreter | `mvdan.cc/sh/v3/interp`, bash dialect, in a child process (the host binary re-executed with `LOOM_SHELLJAIL_CHILD=1`). The command spec goes on stdin, never argv. |
+| Session | Required. Without one, the result is `JAIL_UNAVAILABLE`. |
+| Working directory | The session scratchpad. A relative `working_dir` resolves against it. |
+| Reads | Confined to the session's own directory, `$LOOM_DATA_DIR/artifacts/sessions/<id>/` (its `scratchpad/`, `agent/` artifacts and `user/` uploads), plus `read_roots` and `write_roots`. The rest of `LOOM_DATA_DIR` is outside: it can hold the database (`loom.db`), the server config (`looms.yaml`) and every other session's files. `/tmp` is outside too. A read outside these roots needs a person's approval for that path (an Ask from the hook) or is blocked. A session whose directories resolve outside `LOOM_DATA_DIR` is `JAIL_UNAVAILABLE`. |
+| `shell` param | Only `default`, `bash` or `sh`. Anything else is `INVALID_PARAMS`. |
+| Program launch | `CheckLaunch` on the expanded argv and current directory. A bare name runs only from its pinned path, and a name containing `/` only when granted. A refusal fails that one command with exit 126; the shell continues, and `set -e` stops it. |
+| Builtins, redirects, globs | `CheckBuiltin`, `CheckOpen` and `CheckListDir`. |
+| What a person approved | The call's admission grants (`shellpolicy.MergeGrants(shuttle.AdmissionGrantsFromContext(ctx))`). |
+| Environment | Built from scratch. No server variable reaches a command. The interpreter starts with `PATH` (`search_path`), `HOME` (scratchpad), `TERM=dumb`, `NO_COLOR=1`, `LANG`/`LC_ALL`/`TZ` from the server, `LOOM_DATA_DIR`, `SESSION_ID`, `SESSION_ARTIFACT_DIR`, `SESSION_SCRATCHPAD_DIR`, and the call's `env`. Each program gets the shell's exported variables with `PATH` forced to `search_path`, whatever the server's or the command's `PATH`. Credential names (as in bash mode) and every name `shellpolicy.ExecEnvName` reports (the list under "Variables the command sets", the same one the hook asks about: `SHELL`, `LD_*`, `GIT_*`, `PAGER`, `NODE_OPTIONS`, …) are dropped and reported in `env_dropped`; `PATH` is replaced, not reported. |
+| Limits | Linux: `RLIMIT_DATA` (`memory_bytes`), `RLIMIT_FSIZE` (`file_bytes`), `RLIMIT_CPU` (timeout + 5 s) and `RLIMIT_CORE` = 0, all inherited by every program, plus `oom_score_adj` = 1000. Every OS: a heap watchdog that stops the interpreter at a third of `memory_bytes`, with exit 137 and `limit: memory`. The watchdog samples the interpreter's own Go heap, so it does not see the memory of the programs the jail starts (`sort`, `grep`, `jq`, …), which are separate processes. macOS rejects `RLIMIT_DATA`, so there the watchdog is the only memory bound and the programs the jail starts have no memory limit: in a review run with `memory_bytes` at 96 MiB, `sort` on a 115 MB file peaked near 288 MB and finished. `file_bytes` and the CPU limit still apply to them. |
+| End of call | The child's whole process group is killed, so a jailed command leaves nothing running, background jobs included. |
+| Unsupported | `coproc`, redirects on descriptors above 2, `kill`, `umask`, `ulimit` and other builtins the interpreter does not implement. `printf -v` is not supported: it prints `-v` and sets nothing. `$!` names an interpreter job (`g1`), not a process ID. |
+
+**Result.** `Data` gains a `jail` block:
+
+```json
+"jail": {
+  "blocked": [{"name": "rm", "reason": "not on the shell allowlist and not approved for this call", "pos": "1:7"}],
+  "env_dropped": ["GH_TOKEN", "LD_PRELOAD"],
+  "limit": ""
+}
+```
+
+`limit` is `memory`, `timeout`, or empty. When anything was blocked, the error message lists it, and the suggestion tells the model to write the program out literally so it can be approved. A program computed at run time can never be approved.
+
 ## Run-time checks
 
 These are for a runner that executes the command and sees each launch with its expanded arguments.
@@ -175,6 +247,15 @@ Each returns a `*shellpolicy.LaunchError{Name, Reason}`, or nil.
 
 ## Tests
 
+- `pkg/shelljail` (87.8% coverage):
+  - the corpus, through a real child and in-process under `-race`;
+  - git runs nothing from repository config;
+  - a timeout kills background programs;
+  - the memory bomb is stopped (on Linux, by `RLIMIT_DATA`, in 0.05 s);
+  - policy and jail agree on fully literal commands;
+  - the self-test catches a binary that is not a jail.
+- `pkg/shuttle/builtin`: the full hook → approval → jail path through the executor.
+- `cmd/looms`: config decoding, validation and `serve` setup.
 - `pkg/shellpolicy`: 95.4% statement coverage.
 - **Corpus:** the design's bypass corpus plus the environment-assignment and static-path cases, 144 commands, each run under both enforcement modes.
 - **Run-time checks:** a 22-case table for `CheckLaunch`.

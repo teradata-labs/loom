@@ -44,7 +44,7 @@ func (p *Policy) CheckLaunch(argv []string, dir string, roots Roots, g *Grant) e
 	}
 	resolvedDir := ResolvePath("/", dir)
 	if !inRoots(resolvedDir, roots.Read) && !g.allowsRead(resolvedDir) {
-		return &LaunchError{Name: name, Reason: "runs in " + dir + ", outside the session"}
+		return &LaunchError{Name: name, Reason: "runs in " + dir + ", outside the read roots"}
 	}
 	if g.allowsProgram(name) {
 		return nil // approved for this call, with any arguments
@@ -93,12 +93,12 @@ func (p *Policy) CheckOpen(path, dir string, write bool, roots Roots, g *Grant) 
 		if inRoots(full, roots.Write) {
 			return nil
 		}
-		return &LaunchError{Name: path, Reason: "writes outside the session"}
+		return &LaunchError{Name: path, Reason: "writes outside the write roots"}
 	}
 	if inRoots(full, roots.Read) || g.allowsRead(full) {
 		return nil
 	}
-	return &LaunchError{Name: path, Reason: "reads outside the session"}
+	return &LaunchError{Name: path, Reason: "reads outside the read roots"}
 }
 
 // CheckListDir judges a directory the shell lists to expand a glob.
@@ -107,7 +107,7 @@ func (p *Policy) CheckListDir(dir string, roots Roots, g *Grant) error {
 	if inRoots(full, roots.Read) || g.allowsRead(full) {
 		return nil
 	}
-	return &LaunchError{Name: dir, Reason: "lists a directory outside the session"}
+	return &LaunchError{Name: dir, Reason: "lists a directory outside the read roots"}
 }
 
 func checkReadAt(name, path, dir string, roots Roots, g *Grant) error {
@@ -121,5 +121,5 @@ func checkReadAt(name, path, dir string, roots Roots, g *Grant) error {
 	if inRoots(full, roots.Read) || g.allowsRead(full) {
 		return nil
 	}
-	return &LaunchError{Name: name, Reason: "reads " + path + ", outside the session"}
+	return &LaunchError{Name: name, Reason: "reads " + path + ", outside the read roots"}
 }
