@@ -119,10 +119,20 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		a.config.PatternConfig = DefaultPatternConfig()
 	}
 
-	// Automatic graph memory (background extraction + recall injection) is
-	// permanently disabled: it put LLM bookkeeping calls on the message
-	// critical path. Graph memory exists only through the explicit
-	// graph_memory tool.
+	// Initialize automatic graph memory extraction if graph memory is enabled.
+	if a.graphMemoryStore != nil && a.graphMemoryConfig != nil &&
+		a.graphMemoryConfig.Enabled && a.graphMemoryConfig.EnableExtraction {
+		a.enableGraphMemoryExtraction = true
+		a.graphExtractionCadence = int(a.graphMemoryConfig.ExtractionCadence)
+		if a.graphExtractionCadence <= 0 {
+			a.graphExtractionCadence = 5
+		}
+		a.graphToolExecutionsSinceExtraction = 0
+
+		// Conversation-turn-based extraction (fires on LLM responses, not just tool use).
+		a.graphConversationExtractionCadence = int(a.graphMemoryConfig.ConversationExtractionCadence)
+		a.graphTurnsSinceExtraction = 0
+	}
 
 	// Initialize pattern orchestrator
 	patternLibrary := patterns.NewLibrary(nil, a.config.PatternsDir)
@@ -2590,6 +2600,31 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		}
 	}
 
+	// Inject graph memory context (if enabled and available). A resumed turn
+	// skips it: the loop is being RE-entered for a turn that already got its
+	// context block before it parked, so injecting again would duplicate the
+	// block in the prompt and pay a second recall round-trip per resume.
+	// A resumed turn already ran this once — but only if the block SURVIVED.
+	// injectGraphMemoryContext appends through Session.AddMessage, which is
+	// in-memory only and never persisted, so a resume in a fresh process finds
+	// nothing there. Suppressing on "is a resume" alone would leave exactly
+	// the turn carrying the human-approved action with no recall at all.
+	if !isResumedTurn(ctx) || !hasGraphMemoryContext(session) {
+		a.injectGraphMemoryContext(ctx, session)
+	}
+
+	// Extract the incoming user message only after recall, in parallel with the LLM
+	// call. A resume has no new user message, so it must not extract again.
+	// WithoutCancel: the turn may return before extraction ends; its own timeout bounds it.
+	if a.enableGraphMemoryExtraction && !isResumedTurn(ctx) {
+		extractCtx := context.WithoutCancel(ctx)
+		a.graphExtractionWG.Add(1)
+		go func() {
+			defer a.graphExtractionWG.Done()
+			a.extractGraphMemoryAsync(extractCtx, session.ID)
+		}()
+	}
+
 	// Conversation loop
 	for turnCount < a.config.MaxTurns && toolExecutionCount < a.config.MaxToolExecutions {
 		turnCount++
@@ -2782,12 +2817,12 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		//
 		// Generation-free replay (WeaveRequest.replay_assistant_message): when a
 		// scripted assistant turn is threaded through the context, substitute it
-		// for the provider call. Relief/compression (above) and context
-		// compilation have already run, so the memory pipeline is exercised
-		// exactly as a live turn — only generation is skipped. The scripted text
-		// carries no tool calls, so the loop finalizes this turn at the
-		// no-tool-calls branch below. An empty override is ignored (falls
-		// through to a normal provider call).
+		// for the provider call. Relief/compression (above), context compilation,
+		// and graph extraction on the incoming user turn have all already run, so
+		// the memory pipeline is exercised exactly as a live turn — only
+		// generation is skipped. The scripted text carries no tool calls, so the
+		// loop finalizes this turn at the no-tool-calls branch below. An empty
+		// override is ignored (falls through to a normal provider call).
 		var llmResp *LLMResponse
 		var err error
 		if scripted, ok := scriptedResponseFromContext(ctx); ok && strings.TrimSpace(scripted) != "" {
@@ -3580,6 +3615,20 @@ func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, 
 		}
 	}
 
+	// === AUTOMATIC GRAPH MEMORY EXTRACTION ===
+	// After each tool execution, check if we should extract graph memories.
+	// Skip when the tool IS graph_memory — explicit use is higher quality.
+	if a.enableGraphMemoryExtraction && toolCall.Name != "graph_memory" {
+		a.graphToolExecutionsSinceExtraction++
+		if a.graphToolExecutionsSinceExtraction >= a.graphExtractionCadence {
+			a.graphExtractionWG.Add(1)
+			go func() {
+				defer a.graphExtractionWG.Done()
+				a.extractGraphMemoryAsync(ctx, session.ID)
+			}()
+			a.graphToolExecutionsSinceExtraction = 0
+		}
+	}
 }
 
 // synthesizeFinalResponse makes the final tool-free LLM call after the

@@ -42,10 +42,9 @@ func newTestGraphStore(t *testing.T) memory.GraphMemoryStore {
 }
 
 // TestWithoutBuiltinTool_GraphMemory verifies the core invariant of the
-// tool-surface refactor: WithGraphMemoryStore wires the subsystem (store
-// reference) regardless of WithoutBuiltinTool, which only hides the tool
-// definition from the LLM's tool list. Automatic extraction is gone: graph
-// memory is written solely through the explicit graph_memory tool.
+// tool-surface refactor: WithGraphMemoryStore wires the subsystem (extractor
+// state, store reference) regardless of WithoutBuiltinTool. WithoutBuiltinTool
+// only hides the tool definition from the LLM's tool list.
 func TestWithoutBuiltinTool_GraphMemory(t *testing.T) {
 	store := newTestGraphStore(t)
 	gmCfg := DefaultGraphMemoryConfig()
@@ -58,7 +57,7 @@ func TestWithoutBuiltinTool_GraphMemory(t *testing.T) {
 		)
 		assert.NotNil(t, ag.graphMemoryStore, "subsystem store should be wired")
 		assert.True(t, ag.graphMemoryConfig.Enabled, "config should pass through")
-		assert.False(t, ag.enableGraphMemoryExtraction, "extraction never auto-enables — graph memory is explicit-tool-only")
+		assert.True(t, ag.enableGraphMemoryExtraction, "extractor should be enabled")
 		assert.True(t, ag.tools.IsRegistered("graph_memory"), "tool should surface to the LLM")
 	})
 
@@ -69,7 +68,7 @@ func TestWithoutBuiltinTool_GraphMemory(t *testing.T) {
 		)
 		assert.NotNil(t, ag.graphMemoryStore, "subsystem store should still be wired")
 		assert.True(t, ag.graphMemoryConfig.Enabled, "config should still pass through")
-		assert.False(t, ag.enableGraphMemoryExtraction, "extraction never auto-enables — graph memory is explicit-tool-only")
+		assert.True(t, ag.enableGraphMemoryExtraction, "extractor should still be enabled")
 		assert.False(t, ag.tools.IsRegistered("graph_memory"), "tool should NOT surface")
 		assert.True(t, ag.isBuiltinToolSuppressed("graph_memory"), "suppression flag should be set")
 	})
@@ -112,10 +111,11 @@ func TestWithoutBuiltinTool_MultipleCalls(t *testing.T) {
 		WithoutBuiltinTool("conversation_memory"),
 		WithoutBuiltinTool("session_memory"),
 		WithoutBuiltinTool("get_error_details"),
+		WithoutBuiltinTool("query_tool_result"),
 	)
 	for _, name := range []string{
 		"graph_memory", "task_board", "conversation_memory",
-		"session_memory", "get_error_details",
+		"session_memory", "get_error_details", "query_tool_result",
 	} {
 		assert.True(t, ag.isBuiltinToolSuppressed(name), "expected %q suppressed", name)
 	}
@@ -153,7 +153,7 @@ func TestWithoutBuiltinTool_GraphMemoryExtractorStillRoutesToCompressor(t *testi
 	assert.NotNil(t, ag.graphMemoryStore, "subsystem still wired")
 	assert.Same(t, compressor, ag.compressorLLM, "compressor wiring preserved")
 	assert.False(t, ag.tools.IsRegistered("graph_memory"), "tool suppressed")
-	assert.False(t, ag.enableGraphMemoryExtraction, "extraction never auto-enables — graph memory is explicit-tool-only")
+	assert.True(t, ag.enableGraphMemoryExtraction, "extractor enabled")
 	// The actual LLM resolution lives in extractGraphMemoryAsync (uses
 	// a.compressorLLM ?? a.llm). Documented here so a future refactor that
 	// moves that logic breaks this test instead of silently regressing.
@@ -173,19 +173,21 @@ func (s *stubLLM) Chat(ctx context.Context, msgs []Message, tools []shuttle.Tool
 	return &LLMResponse{Content: ""}, nil
 }
 
-// TestWithoutBuiltinTool_RetrievalTools verifies recall honours the
-// suppression set: registered by default at construction, and
-// WithoutBuiltinTool hides it from the LLM's tool list.
+// TestWithoutBuiltinTool_RetrievalTools verifies query_tool_result and recall
+// honour the suppression set: both are registered by default at construction,
+// and WithoutBuiltinTool hides each from the LLM's tool list.
 func TestWithoutBuiltinTool_RetrievalTools(t *testing.T) {
+	// recall is registered by default. query_tool_result is not: a result is
+	// bounded as it arrives and the model reads it there; a host whose own
+	// tools need this turn's whole results registers it (NewQueryToolResultTool).
 	t.Run("registered by default", func(t *testing.T) {
 		ag := NewAgent(nil, nil)
 		assert.True(t, ag.tools.IsRegistered("recall"), "recall surfaces by default")
+		assert.False(t, ag.tools.IsRegistered("query_tool_result"), "query_tool_result is opt-in")
 	})
 
 	t.Run("suppressed when opted out", func(t *testing.T) {
-		ag := NewAgent(nil, nil,
-			WithoutBuiltinTool("recall"),
-		)
+		ag := NewAgent(nil, nil, WithoutBuiltinTool("recall"))
 		assert.False(t, ag.tools.IsRegistered("recall"), "recall must NOT surface")
 	})
 }
