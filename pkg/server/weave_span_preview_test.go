@@ -104,13 +104,10 @@ func TestWeaveServerSpans_CarryMessageAndResponse(t *testing.T) {
 }
 
 // TestWeaveServerSpans_PreviewsFollowContentBound checks that the previews use
-// the configured content bound (otlp_max_content_length) and that the export
-// redaction applies to them.
+// the content bound (observability.DefaultMaxContentLength) and that the
+// export redaction applies to them.
 func TestWeaveServerSpans_PreviewsFollowContentBound(t *testing.T) {
-	prev := observability.MaxContentLength()
-	observability.SetMaxContentLength(40)
-	t.Cleanup(func() { observability.SetMaxContentLength(prev) })
-
+	const limit = observability.DefaultMaxContentLength
 	const bearer = "planted123bearer456token789"
 	query := "Authorization: Bearer " + bearer + " " + strings.Repeat("long question ", 20)
 	for _, ep := range weaveEntryPoints() {
@@ -122,8 +119,9 @@ func TestWeaveServerSpans_PreviewsFollowContentBound(t *testing.T) {
 			msg, _ := span.Attributes["message.preview"].(string)
 			resp, _ := span.Attributes["response.preview"].(string)
 			assert.Equal(t, observability.TruncateContent(query), msg)
-			assert.LessOrEqual(t, len([]rune(msg)), 40+1, "message bounded (plus the one-rune truncation marker)")
-			assert.LessOrEqual(t, len([]rune(resp)), 40+1, "response bounded (plus the one-rune truncation marker)")
+			assert.Less(t, len([]rune(msg)), len([]rune(query)), "message truncated")
+			assert.LessOrEqual(t, len([]rune(msg)), limit+1, "message bounded (plus the one-rune truncation marker)")
+			assert.LessOrEqual(t, len([]rune(resp)), limit+1, "response bounded (plus the one-rune truncation marker)")
 
 			exported := observability.RedactSpan(span, observability.PrivacyConfig{RedactCredentials: true, RedactPII: true})
 			assert.NotContains(t, fmt.Sprint(exported.Attributes), bearer, "previews are redacted on export")

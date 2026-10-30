@@ -1,8 +1,8 @@
 # Loom + Arize Phoenix OTLP configuration for experiment runs (Bedrock)
 #
-# Differences from otlp-phoenix.yaml: whole prompts and responses up to
-# 32768 runes, the embedded eval_runs record kept for the trace_reports
-# analysis, judge scores posted to Phoenix, and its own Phoenix project.
+# Differences from otlp-phoenix.yaml: the embedded eval_runs record kept
+# for the trace_reports analysis, judge scores posted to Phoenix, and its
+# own Phoenix project.
 #
 # Phoenix version: 20.22.0 (pip: arize-phoenix==20.22.0, Docker: arizephoenix/phoenix:version-20.22.0).
 # Re-run the Phase 0 smoke test after changing the Phoenix version.
@@ -39,14 +39,13 @@ observability:
   # drops parents such as agent.conversation_loop and orphans their children.
   #
   # Exported content: message, response and tool-call previews keep up to
-  # 32768 runes; credentials (also inside tool arguments and results) and
+  # 200 runes; credentials (also inside tool arguments and results) and
   # PII patterns (email, phone-shaped and 16-digit numbers, SSN-shaped
   # strings) are redacted before export. Redaction stays on.
-  otlp_max_content_length: 32768
   #
   # Keep writing the embedded eval_runs record (Loom attribute names,
   # unredacted) while exporting, so the trace_reports analysis works as
-  # with mode: embedded. Previews in it are up to 32768 runes as well.
+  # with mode: embedded. Previews in it are up to 200 runes as well.
   otlp_record_eval_runs: true
   storage_type: sqlite
   sqlite_path: ./observability.db

@@ -37,11 +37,9 @@ observability:
   # drops parents such as agent.conversation_loop and orphans their children.
   #
   # Exported content: message, response and tool-call previews are bounded
-  # to otlp_max_content_length runes (default 200; research runs set 32768),
-  # and credentials (also inside tool arguments and results) and PII
+  # to 200 runes, and credentials (also inside tool arguments and results) and PII
   # patterns (email, phone-shaped and 16-digit numbers, SSN-shaped strings)
   # are redacted before export. Redaction stays on.
-  # otlp_max_content_length: 32768
   #
   # otlp_record_eval_runs also writes the embedded eval_runs record (Loom
   # attribute names, unredacted) while exporting; it needs SQLite storage.

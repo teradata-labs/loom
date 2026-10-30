@@ -636,10 +636,6 @@ type ObservabilityConfig struct {
 	OTLPHeaders      map[string]string `mapstructure:"otlp_headers"`       // e.g. Authorization: Bearer <key>
 	OTLPInsecure     bool              `mapstructure:"otlp_insecure"`      // Use plaintext HTTP (local dev only)
 	OTLPIncludeSpans []string          `mapstructure:"otlp_include_spans"` // Span name prefixes to export; empty = all
-	// OTLPMaxContentLength bounds message, response and query previews on
-	// spans, in runes, while OTLP export is active. nil keeps the default
-	// (observability.DefaultMaxContentLength); 0 keeps content whole.
-	OTLPMaxContentLength *int `mapstructure:"otlp_max_content_length"`
 	// OTLPRecordEvalRuns keeps writing the embedded-mode eval_runs record
 	// (storage_type: sqlite, sqlite_path, flush_interval) while spans are
 	// exported over OTLP. Default false.
@@ -1964,9 +1960,6 @@ func (c *Config) Validate() error {
 			// cmd_serve.go will apply this override before building the tracer.
 			if c.Observability.OTLPEndpoint == "" && observability.ResolveOTLPEndpointEnv() == "" {
 				return fmt.Errorf("observability.otlp_endpoint is required when mode=otel (set otlp_endpoint, OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, OTEL_EXPORTER_OTLP_ENDPOINT, or LOOM_OTLP_ENDPOINT)")
-			}
-			if n := c.Observability.OTLPMaxContentLength; n != nil && *n < 0 {
-				return fmt.Errorf("observability.otlp_max_content_length must be 0 (unlimited) or positive (got: %d)", *n)
 			}
 			if c.Observability.OTLPRecordEvalRuns &&
 				(c.Observability.StorageType != "sqlite" || c.Observability.SQLitePath == "") {

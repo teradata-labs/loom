@@ -43,69 +43,6 @@ func loadOTLPTestConfig(t *testing.T, extra string) *Config {
 	return cfg
 }
 
-func TestLoadConfig_OTLPMaxContentLength(t *testing.T) {
-	t.Run("unset", func(t *testing.T) {
-		cfg := loadOTLPTestConfig(t, "")
-		assert.Nil(t, cfg.Observability.OTLPMaxContentLength)
-	})
-	t.Run("research value", func(t *testing.T) {
-		cfg := loadOTLPTestConfig(t, "  otlp_max_content_length: 32768\n")
-		require.NotNil(t, cfg.Observability.OTLPMaxContentLength)
-		assert.Equal(t, 32768, *cfg.Observability.OTLPMaxContentLength)
-	})
-	t.Run("zero is unlimited, not unset", func(t *testing.T) {
-		cfg := loadOTLPTestConfig(t, "  otlp_max_content_length: 0\n")
-		require.NotNil(t, cfg.Observability.OTLPMaxContentLength)
-		assert.Equal(t, 0, *cfg.Observability.OTLPMaxContentLength)
-	})
-	t.Run("valid values pass validation", func(t *testing.T) {
-		cfg := loadOTLPTestConfig(t, "  otlp_max_content_length: 32768\n")
-		require.NoError(t, cfg.Validate())
-	})
-	t.Run("negative is rejected", func(t *testing.T) {
-		cfg := loadOTLPTestConfig(t, "  otlp_max_content_length: -1\n")
-		err := cfg.Validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "otlp_max_content_length")
-	})
-}
-
-func TestNewOTLPTracer_AppliesMaxContentLength(t *testing.T) {
-	t.Cleanup(func() { observability.SetMaxContentLength(observability.DefaultMaxContentLength) })
-
-	shutdown := func(tr *observability.OTelTracer) {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = tr.Shutdown(ctx)
-	}
-
-	limit := 32768
-	tr, err := newOTLPTracer(ObservabilityConfig{
-		OTLPEndpoint:         "http://127.0.0.1:6006/v1/traces",
-		OTLPInsecure:         true,
-		OTLPMaxContentLength: &limit,
-	}, "looms", "test", serveEmbeddedFlushInterval, zap.NewNop())
-	require.NoError(t, err)
-	shutdown(tr)
-	assert.Equal(t, 32768, observability.MaxContentLength())
-
-	// A start without the key restores the default rather than keeping the
-	// bound an earlier start set.
-	tr, err = newOTLPTracer(ObservabilityConfig{
-		OTLPEndpoint: "http://127.0.0.1:6006/v1/traces",
-		OTLPInsecure: true,
-	}, "looms", "test", serveEmbeddedFlushInterval, zap.NewNop())
-	require.NoError(t, err)
-	shutdown(tr)
-	assert.Equal(t, observability.DefaultMaxContentLength, observability.MaxContentLength(), "unset key means the default")
-
-	// A start that fails leaves the bound unchanged.
-	observability.SetMaxContentLength(512)
-	_, err = newOTLPTracer(ObservabilityConfig{OTLPMaxContentLength: &limit}, "looms", "test", serveEmbeddedFlushInterval, zap.NewNop())
-	require.Error(t, err, "no endpoint")
-	assert.Equal(t, 512, observability.MaxContentLength())
-}
-
 func TestLoadConfig_OTLPRecordEvalRuns(t *testing.T) {
 	t.Run("default off", func(t *testing.T) {
 		cfg := loadOTLPTestConfig(t, "")

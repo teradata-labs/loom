@@ -713,7 +713,7 @@ exportAttributes(spanName string, attrs map[string]interface{}) []attribute.KeyV
    {eval_runs row} in SQLite
 ```
 
-**Invariant**: for the same span, the row written under `mode: otel` with a recorder equals the row `mode: embedded` writes, except for `id` (the OTel span ID instead of a UUID), `eval_id` and timing columns. A golden test (`TestEvalRunRecorder_RowParityWithEmbedded`) checks this. Previews are bounded when a span records them (Content Bounds), so with `otlp_max_content_length` raised the rows carry the longer previews too: at 32768 a single preview attribute in `configuration_json` can hold up to 32,768 runes.
+**Invariant**: for the same span, the row written under `mode: otel` with a recorder equals the row `mode: embedded` writes, except for `eval_id` and timing columns. A golden test (`TestEvalRunRecorder_RowParityWithEmbedded`) checks this. Previews are bounded when a span records them (Content Bounds).
 
 **Alternatives considered**:
 - **OTLPSpanExporter on `EmbeddedTracer`** (Decision 1, Option B): embedded mode stays the tracer, spans are forwarded over OTLP. Rejected for this purpose because span identity and parent linkage (synced OTel IDs, late children after a parent ends) live in `OTelTracer`; an exporter would rebuild them from UUIDs.
@@ -857,7 +857,7 @@ The redaction function operates on a copy so exporting a span does not mutate th
 
 ### Content Bounds
 
-Message, response and recall-query previews are bounded where they are recorded, by `observability.TruncateContent`, before they become span attributes: the first `MaxContentLength()` runes are kept and `…` is appended. The default is 200 runes for every tracer. When OTLP export is selected, `observability.otlp_max_content_length` replaces the bound process-wide at startup (0 keeps content whole); embedded-only deployments keep the default. The bound is applied each time the OTLP tracer is built, so a start without the key uses the default rather than a bound an earlier start set. The `input.value` and `output.value` the instrumented LLM provider sets are bounded the same way.
+Message, response and recall-query previews are bounded where they are recorded, by `observability.TruncateContent`, before they become span attributes: the first 200 runes (`observability.DefaultMaxContentLength`) are kept and `…` is appended, for every tracer. The bound is not configurable yet. The `input.value` and `output.value` the instrumented LLM provider sets are bounded the same way.
 
 One exception: the `llm.thinking` span event carries a model's full extended-thinking text and is not bounded. It is exported, after redaction, with the span.
 

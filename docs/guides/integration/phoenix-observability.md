@@ -28,6 +28,7 @@ Loom exports its traces to [Arize Phoenix](https://github.com/Arize-ai/phoenix) 
 - Judge scores posted as Phoenix trace annotations (`phoenix_base_url`)
 
 📋 Planned:
+- A configurable preview length (previews are 200 runes) (separate PR)
 - Experiment tags from `WeaveRequest.context` on the server and agent spans (separate PR)
 - Experiment-harness telemetry and per-game annotations (Mastermind, card sorting), after the harness moves to its own repository
 - The VM rollout below has not been run yet
@@ -156,7 +157,7 @@ Memory LLM cost is the sum of `llm.cost.total` over `llm.completion` spans whose
 looms serve --config examples\config\otlp-phoenix-research.yaml
 ```
 
-Compared with `otlp-phoenix.yaml` it keeps previews up to 32768 runes, writes the embedded `eval_runs` record to `./observability.db` for the `trace_reports` analysis, posts judge scores to Phoenix, and uses the `loom-research` project. PII redaction stays on in the export; the local `eval_runs` record is not redacted.
+Compared with `otlp-phoenix.yaml` it writes the embedded `eval_runs` record to `./observability.db` for the `trace_reports` analysis, posts judge scores to Phoenix, and uses the `loom-research` project. PII redaction stays on in the export; the local `eval_runs` record is not redacted.
 
 The `Weave` cost (`cost.totalCostUsd`) is the turn's last LLM call. The `server.Weave` span's `usage.*` attributes hold the whole turn's conversation calls. Loom's memory calls are in neither; use Task 4.
 

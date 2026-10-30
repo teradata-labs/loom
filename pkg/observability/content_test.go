@@ -18,34 +18,20 @@ import (
 	"testing"
 )
 
-func withMaxContentLength(t *testing.T, n int) {
-	t.Helper()
-	SetMaxContentLength(n)
-	t.Cleanup(func() { SetMaxContentLength(DefaultMaxContentLength) })
-}
-
 func TestTruncateContent(t *testing.T) {
 	long := strings.Repeat("界", 10_000) // multi-byte runes: truncation must count runes
 
 	tests := []struct {
-		name  string
-		limit *int
-		in    string
-		want  string
+		name string
+		in   string
+		want string
 	}{
 		{name: "default keeps 200 runes", in: long, want: strings.Repeat("界", 200) + "…"},
 		{name: "short content unchanged", in: "hello", want: "hello"},
 		{name: "exactly at the limit unchanged", in: strings.Repeat("a", 200), want: strings.Repeat("a", 200)},
-		{name: "research limit keeps 10k runes whole", limit: intPtr(32768), in: long, want: long},
-		{name: "explicit 200", limit: intPtr(200), in: long, want: strings.Repeat("界", 200) + "…"},
-		{name: "zero is unlimited", limit: intPtr(0), in: long, want: long},
-		{name: "negative restores default", limit: intPtr(-5), in: long, want: strings.Repeat("界", 200) + "…"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.limit != nil {
-				withMaxContentLength(t, *tc.limit)
-			}
 			if got := TruncateContent(tc.in); got != tc.want {
 				t.Errorf("TruncateContent: got %d runes, want %d", len([]rune(got)), len([]rune(tc.want)))
 			}
@@ -53,11 +39,10 @@ func TestTruncateContent(t *testing.T) {
 	}
 }
 
-// TestRedactionAppliesBeyondDefaultLength guards D1: raising the content
-// limit must not let PII past the redactor, wherever it sits in the text.
-func TestRedactionAppliesBeyondDefaultLength(t *testing.T) {
-	withMaxContentLength(t, 0)
-	preview := TruncateContent(strings.Repeat("x", 5000) + " call 555-123-4567 or a@b.example")
+// TestRedactionAppliesToTruncatedPreview checks that PII kept inside the
+// content bound is still redacted on export.
+func TestRedactionAppliesToTruncatedPreview(t *testing.T) {
+	preview := TruncateContent(strings.Repeat("x", 100) + " call 555-123-4567 or a@b.example" + strings.Repeat("y", 500))
 
 	redacted := redactOTelSpan(&Span{Attributes: map[string]interface{}{"message.preview": preview}},
 		PrivacyConfig{RedactCredentials: true, RedactPII: true})
@@ -72,5 +57,3 @@ func TestRedactionAppliesBeyondDefaultLength(t *testing.T) {
 		}
 	}
 }
-
-func intPtr(n int) *int { return &n }
