@@ -656,14 +656,15 @@ func (s *MultiAgentServer) processSpawnedAgentMessages(ctx context.Context, spaw
 			zap.String("agent", spawned.subAgentID),
 			zap.String("session", spawned.subSessionID))
 
-		chatCtx, chatCancel := context.WithTimeout(ctx, 2*time.Minute)
-		resp, err := spawned.agent.Chat(chatCtx, spawned.subSessionID, content)
-		chatCancel()
-
+		resp, err := s.chatSpawnedAgentWithRetry(ctx, spawned, msg, content, logger)
 		if err != nil {
-			logger.Warn("Spawned agent failed to process message",
+			// Bus messages are not persisted, so once the retries are spent the
+			// message is lost; log it at error level with its ID so it can be traced.
+			logger.Error("Spawned agent failed to process message, dropping it",
 				zap.String("agent", spawned.subAgentID),
 				zap.String("from", msg.FromAgent),
+				zap.String("message_id", msg.Id),
+				zap.Int("attempts", spawnedChatMaxAttempts),
 				zap.Error(err))
 			continue
 		}
@@ -712,6 +713,58 @@ func (s *MultiAgentServer) processSpawnedAgentMessages(ctx context.Context, spaw
 			Timestamp: time.Now(),
 		})
 	}
+}
+
+// spawnedChatMaxAttempts bounds how many times a spawned agent tries to process
+// one bus message before giving up on it.
+const spawnedChatMaxAttempts = 3
+
+// spawnedChatRetryDelay returns how long to wait before retry number attempt
+// (1-based) of a failed spawned-agent Chat. It is a variable so tests can
+// shorten it.
+var spawnedChatRetryDelay = func(attempt int) time.Duration {
+	return time.Duration(attempt) * time.Second
+}
+
+// chatSpawnedAgentWithRetry runs the spawned agent's Chat for one bus message,
+// retrying with a growing delay when it fails. A bus message has no queue
+// behind it to redeliver it, so without a retry a transient LLM error or a
+// timeout would silently drop it. It stops early when ctx is cancelled.
+func (s *MultiAgentServer) chatSpawnedAgentWithRetry(
+	ctx context.Context,
+	spawned *spawnedAgentContext,
+	msg *loomv1.BusMessage,
+	content string,
+	logger *zap.Logger,
+) (*agent.Response, error) {
+	var lastErr error
+	for attempt := 1; attempt <= spawnedChatMaxAttempts; attempt++ {
+		if attempt > 1 {
+			select {
+			case <-ctx.Done():
+				return nil, lastErr
+			case <-time.After(spawnedChatRetryDelay(attempt - 1)):
+			}
+		}
+
+		chatCtx, chatCancel := context.WithTimeout(ctx, 2*time.Minute)
+		resp, err := spawned.agent.Chat(chatCtx, spawned.subSessionID, content)
+		chatCancel()
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+
+		if attempt < spawnedChatMaxAttempts && ctx.Err() == nil {
+			logger.Warn("Spawned agent failed to process message, retrying",
+				zap.String("agent", spawned.subAgentID),
+				zap.String("from", msg.FromAgent),
+				zap.String("message_id", msg.Id),
+				zap.Int("attempt", attempt),
+				zap.Error(err))
+		}
+	}
+	return nil, lastErr
 }
 
 // BusMessage wraps a bus message with its topic for processing
