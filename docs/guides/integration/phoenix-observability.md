@@ -24,11 +24,11 @@ Loom exports its traces to [Arize Phoenix](https://github.com/Arize-ai/phoenix) 
 - One trace per turn, with the trace ID returned in the `Weave` / `StreamWeave` response (`traceId`)
 - OpenInference span kinds, `input.value` / `output.value`, token counts with cached prompt tokens, cost
 - Nested spans: LLM and tool calls under the conversation loop; memory recall, extraction, context relief and salience boosts as their own spans; `llm.role` on every LLM call
-- Experiment tags from `WeaveRequest.context` on the server and agent spans
 - The embedded `eval_runs` record kept while exporting (`otlp_record_eval_runs`)
 - Judge scores posted as Phoenix trace annotations (`phoenix_base_url`)
 
 📋 Planned:
+- Experiment tags from `WeaveRequest.context` on the server and agent spans (separate PR)
 - Experiment-harness telemetry and per-game annotations (Mastermind, card sorting), after the harness moves to its own repository
 - The VM rollout below has not been run yet
 
@@ -117,19 +117,7 @@ Expected output: `114 spans` for the two-turn example. Loom-specific attributes 
 
 ### Task 2: Tag turns with experiment metadata
 
-Add whitelisted keys to the request's `context` map. Loom copies `experiment_id`, `replication_id`, `condition`, `game_name`, `phase`, `call_number`, `trial` and `run_id` (values up to 256 runes) into the OpenInference `metadata` attribute of `server.Weave` and `agent.chat`; other keys are ignored. Values must be strings.
-
-```powershell
-$body = @{
-  query = "Guess the code."
-  sessionId = "mm-001"
-  agentId = "<agent-name>"
-  context = @{ experiment_id = "mm-001"; condition = "memory_on"; call_number = "3" }
-} | ConvertTo-Json
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:5006/v1/weave -ContentType application/json -Body $body
-```
-
-In Phoenix the span attributes show `metadata.condition = memory_on`, and the trace can be filtered on it.
+📋 Planned. Forwarding `WeaveRequest.context` keys onto the trace is not part of this release.
 
 ### Task 3: Post judge scores to Phoenix
 
@@ -170,7 +158,7 @@ looms serve --config examples\config\otlp-phoenix-research.yaml
 
 Compared with `otlp-phoenix.yaml` it keeps previews up to 32768 runes, writes the embedded `eval_runs` record to `./observability.db` for the `trace_reports` analysis, posts judge scores to Phoenix, and uses the `loom-research` project. PII redaction stays on in the export; the local `eval_runs` record is not redacted.
 
-The `Weave` cost (`cost.totalCostUsd`) is the total of the turn's conversation calls. Builds before the trace-correlation change reported only the turn's last LLM call there, so do not compare cost figures across that change. Loom's memory calls are not in that total; use Task 4.
+The `Weave` cost (`cost.totalCostUsd`) is the turn's last LLM call. The `server.Weave` span's `usage.*` attributes hold the whole turn's conversation calls. Loom's memory calls are in neither; use Task 4.
 
 ## What a Turn Looks Like in Phoenix
 

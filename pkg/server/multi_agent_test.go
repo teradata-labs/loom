@@ -7,14 +7,11 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strings"
 	"sync"
 	"testing"
 
@@ -830,9 +827,20 @@ func newTestOTelTracer(t *testing.T) *observability.OTelTracer {
 	return tr
 }
 
-var hex32Pattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
+// lastCallCost asserts CostInfo carries the final LLM call's usage
+// (twoCallToolLLM's second call), which is what Weave reports.
+func lastCallCost(t *testing.T, cost *loomv1.CostInfo) {
+	t.Helper()
+	require.NotNil(t, cost)
+	require.NotNil(t, cost.LlmCost)
+	assert.InDelta(t, 0.002, cost.TotalCostUsd, 1e-9)
+	assert.InDelta(t, 0.002, cost.LlmCost.CostUsd, 1e-9)
+	assert.Equal(t, int32(20), cost.LlmCost.InputTokens)
+	assert.Equal(t, int32(10), cost.LlmCost.OutputTokens)
+	assert.Equal(t, int32(450), cost.LlmCost.CacheReadInputTokens)
+}
 
-func TestMultiAgentServer_Weave_OTelTraceIDAndTurnUsageCost(t *testing.T) {
+func TestMultiAgentServer_Weave_TraceIDAndTurnTelemetry(t *testing.T) {
 	tr := newTestOTelTracer(t)
 	llm := &twoCallToolLLM{}
 	ag := agent.NewAgent(&mockBackend{}, llm, agent.WithTracer(tr))
@@ -841,37 +849,24 @@ func TestMultiAgentServer_Weave_OTelTraceIDAndTurnUsageCost(t *testing.T) {
 	srv := NewMultiAgentServer(map[string]*agent.Agent{"default": ag}, nil)
 	srv.SetTracer(tr)
 
-	req := &loomv1.WeaveRequest{
+	resp, err := srv.Weave(context.Background(), &loomv1.WeaveRequest{
 		Query:     "run tool then answer",
 		SessionId: "sess-phase3-unary",
-		Context: map[string]string{
-			"experiment_id":  "mm-123",
-			"replication_id": "r001",
-			"condition":      "dollyM",
-			"game_name":      "game-001",
-			"phase":          "guess",
-			"call_number":    "2",
-			"ignored_key":    "dropped",
-		},
-	}
-
-	resp, err := srv.Weave(context.Background(), req)
+		Context:   map[string]string{"condition": "dollyM"},
+	})
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 
-	// 1. TraceId is 32 lowercase hex under OTelTracer.
-	assert.Regexp(t, hex32Pattern, resp.TraceId)
+	// 1. TraceId is the server span's trace ID.
+	require.NotEmpty(t, resp.TraceId)
+	traceResp, err := srv.GetTrace(context.Background(), &loomv1.GetTraceRequest{TraceId: resp.TraceId})
+	require.NoError(t, err)
+	require.Len(t, traceResp.Spans, 1)
+	weaveSpan := traceResp.Spans[0]
+	assert.Equal(t, "server.Weave", weaveSpan.Name)
 
-	// 2. Cost reflects full-turn TurnUsage (call 1 + call 2), not just call 2.
-	require.NotNil(t, resp.Cost)
-	require.NotNil(t, resp.Cost.LlmCost)
-	assert.InDelta(t, 0.006, resp.Cost.TotalCostUsd, 1e-9)
-	assert.InDelta(t, 0.006, resp.Cost.LlmCost.CostUsd, 1e-9)
-	assert.Equal(t, int32(120), resp.Cost.LlmCost.InputTokens)
-	assert.Equal(t, int32(35), resp.Cost.LlmCost.OutputTokens)
-	assert.Equal(t, int32(155), resp.Cost.LlmCost.TotalTokens)
-	assert.Equal(t, int32(850), resp.Cost.LlmCost.CacheReadInputTokens)
-	assert.Equal(t, int32(50), resp.Cost.LlmCost.CacheCreationInputTokens)
+	// 2. CostInfo is the final LLM call's usage.
+	lastCallCost(t, resp.Cost)
 
 	// 3. ExecutionMetadata is populated for the two-call tool turn.
 	require.NotNil(t, resp.Metadata)
@@ -879,35 +874,15 @@ func TestMultiAgentServer_Weave_OTelTraceIDAndTurnUsageCost(t *testing.T) {
 	assert.Equal(t, int32(1), resp.Metadata.ToolExecutions)
 	assert.GreaterOrEqual(t, resp.Metadata.TotalDurationMs, int64(0))
 
-	// 4. Whitelisted req.Context keys are on server.Weave as the OpenInference
-	// metadata JSON string, and propagated into ctx for Agent.chat.
-	traceResp, err := srv.GetTrace(context.Background(), &loomv1.GetTraceRequest{TraceId: resp.TraceId})
-	require.NoError(t, err)
-	require.Len(t, traceResp.Spans, 1)
-	weaveSpan := traceResp.Spans[0]
-	assert.Equal(t, "server.Weave", weaveSpan.Name)
+	// 4. The server span records the whole turn's usage (call 1 + call 2), and
+	// request context keys are not copied onto it.
 	assert.Equal(t, "120", weaveSpan.Attributes["usage.input_tokens"])
 	assert.Equal(t, "35", weaveSpan.Attributes["usage.output_tokens"])
 	assert.Equal(t, "155", weaveSpan.Attributes["usage.total_tokens"])
-
-	var spanMD map[string]string
-	require.NoError(t, json.Unmarshal([]byte(weaveSpan.Attributes["metadata"]), &spanMD))
-	assert.Equal(t, "dollyM", spanMD["condition"])
-	assert.Equal(t, "mm-123", spanMD["experiment_id"])
-	assert.Equal(t, "r001", spanMD["replication_id"])
-	assert.Equal(t, "game-001", spanMD["game_name"])
-	assert.Equal(t, "guess", spanMD["phase"])
-	assert.Equal(t, "2", spanMD["call_number"])
-	assert.NotContains(t, spanMD, "ignored_key")
-
-	llm.mu.Lock()
-	require.NotEmpty(t, llm.seenCtx)
-	ctxMD := observability.SpanMetadataFromContext(llm.seenCtx[0])
-	llm.mu.Unlock()
-	assert.Equal(t, "dollyM", ctxMD["condition"])
+	assert.NotContains(t, weaveSpan.Attributes, "metadata")
 }
 
-func TestMultiAgentServer_StreamWeave_OTelTraceIDAndTurnUsageCost(t *testing.T) {
+func TestMultiAgentServer_StreamWeave_TraceIDAndTurnTelemetry(t *testing.T) {
 	tr := newTestOTelTracer(t)
 	llm := &twoCallToolLLM{}
 	ag := agent.NewAgent(&mockBackend{}, llm, agent.WithTracer(tr))
@@ -920,29 +895,21 @@ func TestMultiAgentServer_StreamWeave_OTelTraceIDAndTurnUsageCost(t *testing.T) 
 	err := srv.StreamWeave(&loomv1.WeaveRequest{
 		Query:     "stream tool turn",
 		SessionId: "sess-phase3-stream",
-		Context:   map[string]string{"condition": "dollyNM", "trial": "7"},
 	}, stream)
 	require.NoError(t, err)
 	require.NotEmpty(t, stream.progress)
 
 	last := stream.progress[len(stream.progress)-1]
 	assert.Equal(t, loomv1.ExecutionStage_EXECUTION_STAGE_COMPLETED, last.Stage)
-	assert.Regexp(t, hex32Pattern, last.TraceId)
-	require.NotNil(t, last.Cost)
-	assert.InDelta(t, 0.006, last.Cost.TotalCostUsd, 1e-9)
-	assert.Equal(t, int32(120), last.Cost.LlmCost.InputTokens)
-	assert.Equal(t, int32(35), last.Cost.LlmCost.OutputTokens)
-	assert.Equal(t, int32(155), last.Cost.LlmCost.TotalTokens)
+	require.NotEmpty(t, last.TraceId)
+	lastCallCost(t, last.Cost)
 
-	// Verify server.StreamWeave span recorded metadata and usage totals.
+	// The COMPLETED event's trace ID is the server.StreamWeave span's.
 	traceResp, err := srv.GetTrace(context.Background(), &loomv1.GetTraceRequest{TraceId: last.TraceId})
 	require.NoError(t, err)
 	require.Len(t, traceResp.Spans, 1)
 	assert.Equal(t, "server.StreamWeave", traceResp.Spans[0].Name)
-	var spanMD map[string]string
-	require.NoError(t, json.Unmarshal([]byte(traceResp.Spans[0].Attributes["metadata"]), &spanMD))
-	assert.Equal(t, "dollyNM", spanMD["condition"])
-	assert.Equal(t, "7", spanMD["trial"])
+	assert.Equal(t, "155", traceResp.Spans[0].Attributes["usage.total_tokens"])
 
 	// Verify completedProgressFromResponse forwards TraceId for dedupe joiners.
 	joinedProgress := completedProgressFromResponse(&loomv1.WeaveResponse{
@@ -1013,40 +980,22 @@ func TestServer_WeaveAndStreamWeave_Phase3Telemetry(t *testing.T) {
 	srv.SetTracer(tr)
 
 	resp, err := srv.Weave(context.Background(), &loomv1.WeaveRequest{
-		Query:   "single server weave",
-		Context: map[string]string{"condition": "single"},
+		Query: "single server weave",
 	})
 	require.NoError(t, err)
-	assert.Regexp(t, hex32Pattern, resp.TraceId)
-	assert.InDelta(t, 0.006, resp.Cost.TotalCostUsd, 1e-9)
+	assert.NotEmpty(t, resp.TraceId)
+	lastCallCost(t, resp.Cost)
 	require.NotNil(t, resp.Metadata)
 	assert.Equal(t, int32(2), resp.Metadata.LlmCalls)
 	assert.Equal(t, int32(1), resp.Metadata.ToolExecutions)
 
 	stream := &mockStreamWeaveStream{ctx: context.Background()}
 	err = srv.StreamWeave(&loomv1.WeaveRequest{
-		Query:   "single server stream",
-		Context: map[string]string{"condition": "single-stream"},
+		Query: "single server stream",
 	}, stream)
 	require.NoError(t, err)
 	require.NotEmpty(t, stream.progress)
 	last := stream.progress[len(stream.progress)-1]
-	assert.Regexp(t, hex32Pattern, last.TraceId)
-	assert.InDelta(t, 0.006, last.Cost.TotalCostUsd, 1e-9)
-}
-
-func TestExtractWeaveContextMetadata_BoundsRunesAndFiltersKeys(t *testing.T) {
-	longRuneVal := strings.Repeat("界", 300)
-	md := extractWeaveContextMetadata(&loomv1.WeaveRequest{
-		Context: map[string]string{
-			"condition":   longRuneVal,
-			"run_id":      "r-1",
-			"unknown_key": "ignored",
-			"phase":       "",
-		},
-	})
-	require.Len(t, md, 2)
-	assert.Equal(t, "r-1", md["run_id"])
-	assert.Equal(t, 256, len([]rune(md["condition"])))
-	assert.Equal(t, strings.Repeat("界", 256), md["condition"])
+	assert.NotEmpty(t, last.TraceId)
+	lastCallCost(t, last.Cost)
 }

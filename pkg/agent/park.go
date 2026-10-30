@@ -1036,7 +1036,7 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	span.SetAttribute(observability.AttrSessionID, sessionID)
 	span.SetAttribute("resume.request_id", decision.RequestID)
 	span.SetAttribute("resume.approved", decision.Approved)
-	a.setAgentSpanIdentity(ctx, span)
+	a.setAgentSpanIdentity(span)
 
 	// NO DropTurnPayloads / dropInTurnSQLite — the parked turn is still the
 	// current turn. NO user append — resuming is not a new turn. NO graph

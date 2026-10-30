@@ -70,8 +70,7 @@ func TestTurnSpans(t *testing.T) {
 	ag := builder.NewInstrumentedAgent(&mockBackend{}, llmProvider, tracer, agent.WithConfig(cfg))
 	ag.RegisterTool(tool)
 
-	ctx := observability.ContextWithSpanMetadata(context.Background(), map[string]string{"condition": "memory_on"})
-	resp, err := ag.Chat(ctx, "span-session", "look it up")
+	resp, err := ag.Chat(context.Background(), "span-session", "look it up")
 	require.NoError(t, err)
 
 	chat := oneSpan(t, tracer, "agent.chat")
@@ -111,7 +110,7 @@ func TestTurnSpans(t *testing.T) {
 		assert.Equal(t, int64(1), a["session.turn"])
 		var md map[string]interface{}
 		require.NoError(t, json.Unmarshal([]byte(a["metadata"].(string)), &md))
-		assert.Equal(t, map[string]interface{}{"graph_memory_enabled": false, "condition": "memory_on"}, md)
+		assert.Equal(t, map[string]interface{}{"graph_memory_enabled": false}, md)
 		assert.Equal(t, chat.TraceID, resp.Metadata["trace_id"])
 	})
 }

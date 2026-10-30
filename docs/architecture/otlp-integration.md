@@ -575,8 +575,6 @@ StartSpan(ctx, name, opts):
     trace.WithTimestamp(loomSpan.StartTime),
     trace.WithSpanKind(spanKindFor(name)),
   )
-  loomSpan.TraceID = otelSpan.SpanContext().TraceID().String()   // adopt exported IDs
-  loomSpan.SpanID  = otelSpan.SpanContext().SpanID().String()
   t.activeSpans.Store(loomSpan.SpanID, otelSpan)
   return ContextWithSpan(otelCtx, loomSpan), loomSpan
 

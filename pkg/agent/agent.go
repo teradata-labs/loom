@@ -2002,7 +2002,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	span.SetAttribute("llm.model", currentLLM.Model())
 	span.SetAttribute("config.max_turns", a.config.MaxTurns)
 	span.SetAttribute("config.max_tool_executions", a.config.MaxToolExecutions)
-	a.setAgentSpanIdentity(ctx, span)
+	a.setAgentSpanIdentity(span)
 
 	// Record conversation started event
 	startedEvent := map[string]interface{}{
@@ -2296,16 +2296,12 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 
 // setAgentSpanIdentity records which agent a turn span belongs to, and one
 // OpenInference metadata attribute (a JSON object string) holding
-// graph_memory_enabled plus the span metadata found in ctx (the experiment
-// tags the server copies from WeaveRequest.context).
-func (a *Agent) setAgentSpanIdentity(ctx context.Context, span *observability.Span) {
+// graph_memory_enabled.
+func (a *Agent) setAgentSpanIdentity(span *observability.Span) {
 	span.SetAttribute("agent.id", a.GetID())
 	span.SetAttribute("agent.name", a.config.Name)
 	md := map[string]interface{}{
 		"graph_memory_enabled": a.graphMemoryStore != nil && a.graphMemoryConfig != nil && a.graphMemoryConfig.Enabled,
-	}
-	for k, v := range observability.SpanMetadataFromContext(ctx) {
-		md[k] = v
 	}
 	if b, err := json.Marshal(md); err == nil {
 		span.SetAttribute("metadata", string(b))

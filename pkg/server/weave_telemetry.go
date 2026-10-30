@@ -15,7 +15,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
@@ -24,48 +23,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/types"
 )
 
-// weaveContextMetadataKeys lists the WeaveRequest.context keys forwarded onto
-// the server span's OpenInference metadata attribute and into the turn context
-// so Agent.chat can include them on agent.chat.
-var weaveContextMetadataKeys = []string{ //nolint:gochecknoglobals
-	"experiment_id",
-	"replication_id",
-	"condition",
-	"game_name",
-	"phase",
-	"call_number",
-	"trial",
-	"run_id",
-}
-
-const maxWeaveContextValueRunes = 256
-
-// extractWeaveContextMetadata copies whitelisted non-empty keys from
-// req.Context, bounding each value to maxWeaveContextValueRunes runes.
-func extractWeaveContextMetadata(req *loomv1.WeaveRequest) map[string]string {
-	raw := req.GetContext()
-	if len(raw) == 0 {
-		return nil
-	}
-	var out map[string]string
-	for _, k := range weaveContextMetadataKeys {
-		v, ok := raw[k]
-		if !ok || v == "" {
-			continue
-		}
-		if runes := []rune(v); len(runes) > maxWeaveContextValueRunes {
-			v = string(runes[:maxWeaveContextValueRunes])
-		}
-		if out == nil {
-			out = make(map[string]string)
-		}
-		out[k] = v
-	}
-	return out
-}
-
-// startWeaveSpan attaches whitelisted req.Context tags to ctx and, when tracer
-// is non-nil, starts the server span ("server.Weave" or "server.StreamWeave")
+// startWeaveSpan starts the server span, when tracer is non-nil, ("server.Weave" or "server.StreamWeave")
 // before session-ownership resolution so session_store.load_session nests under
 // the turn trace. The span is the root of the request's trace, so it carries the
 // user's message as message.preview (bounded by observability.TruncateContent,
@@ -77,10 +35,6 @@ func startWeaveSpan(
 	spanName string,
 	req *loomv1.WeaveRequest,
 ) (context.Context, *observability.Span) {
-	md := extractWeaveContextMetadata(req)
-	if len(md) > 0 {
-		ctx = observability.ContextWithSpanMetadata(ctx, md)
-	}
 	if tracer == nil {
 		return ctx, nil
 	}
@@ -95,11 +49,6 @@ func startWeaveSpan(
 	}
 	if req.GetAgentId() != "" {
 		opts = append(opts, observability.WithAttribute("agent.id", req.GetAgentId()))
-	}
-	if len(md) > 0 {
-		if b, err := json.Marshal(md); err == nil {
-			opts = append(opts, observability.WithAttribute("metadata", string(b)))
-		}
 	}
 	return tracer.StartSpan(ctx, spanName, opts...)
 }
@@ -154,16 +103,19 @@ func resolveWeaveTraceID(span *observability.Span, resp *agent.Response) string 
 	return ""
 }
 
-// buildWeaveCostInfo constructs CostInfo from the turn's accumulated usage
-// (resp.TurnUsage) rather than only the final LLM call.
+// buildWeaveCostInfo constructs CostInfo from the final LLM call's usage
+// (resp.Usage), as Weave has always reported it. The server span records the
+// whole turn's totals (recordWeaveSpanUsage).
 func buildWeaveCostInfo(provider, model string, resp *agent.Response) *loomv1.CostInfo {
-	usage := turnUsage(resp)
+	var usage agent.Usage
+	if resp != nil {
+		usage = resp.Usage
+	}
 	return &loomv1.CostInfo{
 		TotalCostUsd: usage.CostUSD,
 		LlmCost: &loomv1.LLMCost{
 			Provider:                 provider,
 			Model:                    model,
-			TotalTokens:              types.SafeInt32(usage.TotalTokens),
 			InputTokens:              types.SafeInt32(usage.InputTokens),
 			OutputTokens:             types.SafeInt32(usage.OutputTokens),
 			CostUsd:                  usage.CostUSD,
