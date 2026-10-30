@@ -169,17 +169,17 @@ const (
 	attrOpenInferenceKind   = "openinference.span.kind"
 	attrOIInputValue        = "input.value"
 	attrOIOutputValue       = "output.value"
-	attrOITokenPrompt       = "llm.token_count.prompt"
-	attrOITokenCompletion   = "llm.token_count.completion"
-	attrOITokenTotal        = "llm.token_count.total"
-	attrOITokenCacheRead    = "llm.token_count.prompt_details.cache_read"
-	attrOITokenCacheWrite   = "llm.token_count.prompt_details.cache_write"
+	attrOITokenPrompt       = "llm.token_count.prompt"                     // #nosec G101 -- attribute key name, not a credential
+	attrOITokenCompletion   = "llm.token_count.completion"                 // #nosec G101 -- attribute key name, not a credential
+	attrOITokenTotal        = "llm.token_count.total"                      // #nosec G101 -- attribute key name, not a credential
+	attrOITokenCacheRead    = "llm.token_count.prompt_details.cache_read"  // #nosec G101 -- attribute key name, not a credential
+	attrOITokenCacheWrite   = "llm.token_count.prompt_details.cache_write" // #nosec G101 -- attribute key name, not a credential
 	attrOICostTotal         = "llm.cost.total"
-	attrLoomTokensInput     = "llm.tokens.input"
-	attrLoomTokensOutput    = "llm.tokens.output"
+	attrLoomTokensInput     = "llm.tokens.input"  // #nosec G101 -- attribute key name, not a credential
+	attrLoomTokensOutput    = "llm.tokens.output" // #nosec G101 -- attribute key name, not a credential
 	attrLoomCostUSD         = "llm.cost.usd"
-	attrLoomTokensCacheRead = "llm.tokens.cache_read"
-	attrLoomTokensCacheWrt  = "llm.tokens.cache_write"
+	attrLoomTokensCacheRead = "llm.tokens.cache_read"  // #nosec G101 -- attribute key name, not a credential
+	attrLoomTokensCacheWrt  = "llm.tokens.cache_write" // #nosec G101 -- attribute key name, not a credential
 	attrLoomMessagePreview  = "message.preview"
 	attrLoomResponsePreview = "response.preview"
 )
