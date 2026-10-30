@@ -1335,3 +1335,44 @@ func TestClient_ChatStream_DroppedToolCallEndsTurn(t *testing.T) {
 	assert.Empty(t, response.ToolCalls)
 	assert.Equal(t, "end_turn", response.StopReason)
 }
+
+// TestClient_ChatStream_ParallelToolCallsKeepStreamOrder pins that parallel
+// tool calls come back in stream index order. They used to be collected by
+// ranging over a map, so ToolCalls[0] was not always the first call (#500).
+func TestClient_ChatStream_ParallelToolCallsKeepStreamOrder(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		chunks := []string{
+			`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"read_file","arguments":"{\"path\":\"a\"}"}}]}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_b","function":{"name":"read_file","arguments":"{\"path\":"}}]}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"index":2,"id":"call_c","function":{"name":"list_dir","arguments":"{\"path\":\"c\"}"}}]}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"arguments":"\"b\"}"}}]}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"index":3,"id":"call_d","function":{"name":"read_file","arguments":"{\"path\":\"d\"}"}}]},"finish_reason":"tool_calls"}]}`,
+		}
+		for _, chunk := range chunks {
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", chunk)
+		}
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{APIKey: "test-key", Endpoint: server.URL})
+	// Map iteration order is random per range, so repeat to make an
+	// order-dependent regression fail reliably rather than occasionally.
+	for run := 0; run < 20; run++ {
+		response, err := client.ChatStream(
+			&mockContext{Context: context.Background()},
+			[]types.Message{{Role: "user", Content: "read them"}},
+			nil,
+			nil,
+		)
+		require.NoError(t, err)
+		require.Len(t, response.ToolCalls, 4)
+		ids := make([]string, 0, len(response.ToolCalls))
+		for _, tc := range response.ToolCalls {
+			ids = append(ids, tc.ID)
+		}
+		require.Equal(t, []string{"call_a", "call_b", "call_c", "call_d"}, ids, "run %d", run)
+		assert.Equal(t, "b", response.ToolCalls[1].Input["path"])
+	}
+}
