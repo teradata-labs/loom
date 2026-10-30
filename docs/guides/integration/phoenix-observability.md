@@ -133,7 +133,7 @@ grpcurl -plaintext -d '{"context":{"prompt":"Say hello and name one tool you hav
   127.0.0.1:60051 loom.v1.JudgeService/EvaluateWithJudges
 ```
 
-The trace then carries one annotation per score: `loom.overall`, `loom.quality`, `loom.correctness`, `loom.completeness` and `loom.safety` (0–100), labeled with the verdict (`PASS`, `PARTIAL`, `FAIL`) and the judge's reasoning as explanation. Evaluating again with the same judge replaces its annotations. The judge's own LLM call appears in Phoenix as an `llm.completion` span with `llm.role = judge` under `judge.evaluation`.
+The trace then carries one annotation per score: `loom.overall`, `loom.quality`, `loom.correctness`, `loom.completeness` and `loom.safety` (0–100), labeled with the verdict (`PASS`, `PARTIAL`, `FAIL`) and the judge's reasoning as explanation. Evaluating again with the same judge replaces its annotations.
 
 Annotations are sent from a background queue and never slow the evaluation down. Phoenix holds an annotation whose trace has not arrived yet and retries it (Phoenix 20.22.0: 60 attempts, 10 seconds apart), which covers the few seconds the OTLP exporter batches spans. That queue is in Phoenix's memory, so an annotation still waiting when Phoenix restarts is lost.
 

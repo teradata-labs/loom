@@ -2540,10 +2540,6 @@ func BuildSkillsOptions(deps SkillsWiringDeps) []Option {
 			routerLLM = deps.PrimaryLLM
 		}
 		if routerLLM != nil {
-			// A pooled override may be uninstrumented; trace it like the rest.
-			if _, ok := routerLLM.(*llm.InstrumentedProvider); !ok && deps.Tracer != nil {
-				routerLLM = llm.NewInstrumentedProvider(routerLLM, deps.Tracer)
-			}
 			routerLLM = llmForRole(routerLLM, roleSkillsRouter)
 		}
 	}

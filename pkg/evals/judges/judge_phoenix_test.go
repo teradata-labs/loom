@@ -27,7 +27,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
-	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/types"
@@ -80,11 +79,6 @@ func TestLLMJudge_EvaluateRecordsVerdictAndAnnotatesTrace(t *testing.T) {
 		assert.Equal(t, "PASS", span.Attributes["judge.verdict"])
 		assert.Equal(t, "answers the question", span.Attributes["judge.reasoning"])
 		assert.Equal(t, 80.0, span.Attributes["judge.dimension_scores.quality"])
-
-		llmSpans := tracer.GetSpansByName(observability.SpanLLMCompletion)
-		require.Len(t, llmSpans, 1, "the judge's LLM call is traced")
-		assert.Equal(t, span.SpanID, llmSpans[0].ParentID)
-		assert.Equal(t, llm.RoleJudge, llmSpans[0].Attributes["llm.role"])
 	})
 
 	t.Run("one trace annotation per score", func(t *testing.T) {

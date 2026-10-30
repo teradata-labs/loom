@@ -17,7 +17,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"strings"
 	"time"
 
@@ -72,18 +71,9 @@ func WithRole(role string) InstrumentedOption {
 	return func(p *InstrumentedProvider) { p.role = role }
 }
 
-// NewInstrumentedProvider creates a new instrumented LLM provider. A provider
-// that is already instrumented with the same tracer is not wrapped again (each
-// layer would trace the same call as its own llm.completion span); a copy of it
-// with opts applied is returned instead.
+// NewInstrumentedProvider creates a new instrumented LLM provider.
 func NewInstrumentedProvider(provider llmtypes.LLMProvider, tracer observability.Tracer, opts ...InstrumentedOption) *InstrumentedProvider {
-	var p *InstrumentedProvider
-	if inner, ok := provider.(*InstrumentedProvider); ok && sameTracer(inner.tracer, tracer) {
-		c := *inner
-		p = &c
-	} else {
-		p = &InstrumentedProvider{provider: provider, tracer: tracer}
-	}
+	p := &InstrumentedProvider{provider: provider, tracer: tracer}
 	for _, opt := range opts {
 		opt(p)
 	}
@@ -100,16 +90,6 @@ func (p *InstrumentedProvider) ForRole(role string) *InstrumentedProvider {
 // Role returns the llm.role p records, or "".
 func (p *InstrumentedProvider) Role() string {
 	return p.role
-}
-
-// sameTracer reports whether a and b are the same tracer. Tracers of a
-// non-comparable dynamic type are treated as different rather than compared.
-func sameTracer(a, b observability.Tracer) bool {
-	if a == nil || b == nil {
-		return a == nil && b == nil
-	}
-	ta := reflect.TypeOf(a)
-	return ta == reflect.TypeOf(b) && ta.Comparable() && a == b
 }
 
 // Name returns the underlying provider name.

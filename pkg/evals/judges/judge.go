@@ -28,7 +28,6 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
 	llmjudge "github.com/teradata-labs/loom/pkg/evals/judges/llm"
-	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/types"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -117,12 +116,6 @@ func NewLLMJudge(llmProvider types.LLMProvider, config *loomv1.JudgeConfig, trac
 
 	if effectiveProvider == nil {
 		return nil, fmt.Errorf("LLM provider required: no fallback provider and no llm_config in judge config")
-	}
-	// Trace the judge's own LLM calls as llm.completion spans with
-	// llm.role=judge, children of judge.evaluation. An already instrumented
-	// provider on the same tracer is re-tagged, not wrapped twice.
-	if tracer != nil {
-		effectiveProvider = llm.NewInstrumentedProvider(effectiveProvider, tracer, llm.WithRole(llm.RoleJudge))
 	}
 
 	// Phase 8: Validate custom dimension configuration

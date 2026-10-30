@@ -679,22 +679,3 @@ func TestInstrumentedProvider_Role(t *testing.T) {
 	_, hasRole := tracer.spans[2].Attributes["llm.role"]
 	assert.False(t, hasRole, "no role, no attribute")
 }
-
-func TestNewInstrumentedProvider_DoesNotWrapTwice(t *testing.T) {
-	base := &mockLLMProvider{name: "test-provider", model: "test-model", response: &llmtypes.LLMResponse{Content: "ok"}}
-	tracer := newMockTracer()
-	once := NewInstrumentedProvider(base, tracer, WithRole(RoleAgent))
-	twice := NewInstrumentedProvider(once, tracer)
-	thrice := NewInstrumentedProvider(twice, tracer, WithRole(RoleCompressor))
-
-	_, err := thrice.Chat(context.Background(), []llmtypes.Message{{Role: "user", Content: "hi"}}, nil)
-	require.NoError(t, err)
-	require.Len(t, tracer.spans, 1, "one llm.completion span per call, however often it is wrapped")
-	assert.Equal(t, RoleCompressor, tracer.spans[0].Attributes["llm.role"])
-	assert.Equal(t, RoleAgent, twice.Role(), "a re-wrap without options keeps the role")
-
-	other := newMockTracer()
-	_, err = NewInstrumentedProvider(once, other).Chat(context.Background(), []llmtypes.Message{{Role: "user", Content: "hi"}}, nil)
-	require.NoError(t, err)
-	assert.Len(t, other.spans, 1, "a different tracer still traces the call")
-}
