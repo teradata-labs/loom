@@ -28,6 +28,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/teradata-labs/loom/pkg/luasandbox"
+	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
@@ -278,26 +279,83 @@ func (t *RunLuaTool) Execute(ctx context.Context, params map[string]interface{})
 	ctx, span := t.agent.tracer.StartSpan(ctx, "lua.run")
 	defer t.agent.tracer.EndSpan(span)
 
-	// script is known once the parameters are read; a refusal before then
-	// records an empty name.
-	var script ResolvedScript
-	fail := func(code, msg, suggestion string, retryable bool) (*shuttle.Result, error) {
-		span.SetAttribute("lua.outcome", code)
-		return &shuttle.Result{
-			Success:         false,
-			Error:           &shuttle.Error{Code: code, Message: msg, Suggestion: suggestion, Retryable: retryable},
-			ExecutionTimeMs: time.Since(start).Milliseconds(),
-			Metadata:        map[string]interface{}{LuaRunMetadataKey: luaRefusalRecord(code, msg, script)},
-		}, nil
+	p, err := parseRunLuaParams(params)
+	if err != nil {
+		return luaFailure(span, start, ResolvedScript{}, LuaCodeInvalidParams, err.Error(), "", false), nil
 	}
+	script := ResolvedScript{Name: "inline", Source: p.script, Trust: luasandbox.TrustInline}
+	if p.name != "" {
+		var refused *shuttle.Result
+		if script, refused = t.resolve(ctx, span, start, p.name); refused != nil {
+			return refused, nil
+		}
+	}
+	return t.runResolved(ctx, span, start, script, p.args, p.timeout), nil
+}
+
+// luaFailure is a run refused before the engine ran. script is what is known
+// about the script so far (an empty name before the parameters are read).
+func luaFailure(span *observability.Span, start time.Time, script ResolvedScript, code, msg, suggestion string, retryable bool) *shuttle.Result {
+	span.SetAttribute("lua.outcome", code)
+	return &shuttle.Result{
+		Success:         false,
+		Error:           &shuttle.Error{Code: code, Message: msg, Suggestion: suggestion, Retryable: retryable},
+		ExecutionTimeMs: time.Since(start).Milliseconds(),
+		Metadata:        map[string]interface{}{LuaRunMetadataKey: luaRefusalRecord(code, msg, script)},
+	}
+}
+
+// validSavedTrust reports whether trust is a saved-script tier. The zero value
+// is TrustInline, and an unknown value is not foreign either: both would skip
+// DenyForShared, so a saved script carrying one is refused.
+func validSavedTrust(trust luasandbox.Trust) bool {
+	switch trust {
+	case luasandbox.TrustOwn, luasandbox.TrustShared, luasandbox.TrustPublished:
+		return true
+	}
+	return false
+}
+
+// resolve looks a saved script up through the host's resolver. A non-nil
+// Result is the refusal to return.
+func (t *RunLuaTool) resolve(ctx context.Context, span *observability.Span, start time.Time, name string) (ResolvedScript, *shuttle.Result) {
+	if t.opts.Resolve == nil {
+		return ResolvedScript{}, luaFailure(span, start, ResolvedScript{Name: name}, LuaCodeScriptNotFound, "saved scripts are not available here", "pass the source as script", false)
+	}
+	// Name this agent as the runner, so a store resolver can tell the
+	// agent's own scripts from the ones it did not save.
+	script, err := t.opts.Resolve(t.agent.luaRunnerContext(ctx), name)
+	switch {
+	case errors.Is(err, ErrAmbiguousScript):
+		return script, luaFailure(span, start, ResolvedScript{Name: name}, LuaCodeAmbiguousScript, err.Error(), "run it again with the script id", false)
+	case errors.Is(err, ErrScriptNotAccepted):
+		return script, luaFailure(span, start, ResolvedScript{Name: name}, LuaCodeScriptNotAccepted, err.Error(), "the user must review and accept this version first", false)
+	case errors.Is(err, ErrScriptNotFound):
+		return script, luaFailure(span, start, ResolvedScript{Name: name}, LuaCodeScriptNotFound, err.Error(), "", false)
+	case err != nil:
+		zap.L().Warn("run_lua: script lookup failed", zap.String("name", name), zap.Error(err))
+		return script, luaFailure(span, start, ResolvedScript{Name: name}, LuaCodePolicyDenied, "the saved script could not be loaded", "", false)
+	}
+	if !validSavedTrust(script.Trust) {
+		zap.L().Warn("run_lua: resolver returned no valid trust tier", zap.String("name", name), zap.Int("trust", int(script.Trust)))
+		return script, luaFailure(span, start, ResolvedScript{Name: name}, LuaCodePolicyDenied, "the saved script has no valid trust tier", "", false)
+	}
+	if script.Name == "" {
+		script.Name = name
+	}
+	return script, nil
+}
+
+// runResolved runs a script whose source is known: the step run_lua and the
+// lua_<name> tools share. It applies the policy, takes a gate slot, builds the
+// bridge and maps the outcome.
+func (t *RunLuaTool) runResolved(ctx context.Context, span *observability.Span, start time.Time, script ResolvedScript, args map[string]any, timeout time.Duration) *shuttle.Result {
+	span.SetAttribute("lua.script", script.Name)
+	span.SetAttribute("lua.trust", script.Trust.String())
 
 	sessionID, _ := ctx.Value("session_id").(string)
 	if sessionID == "" {
-		return fail(LuaCodePolicyDenied, "run_lua needs a session; none is attached to this call", "", false)
-	}
-	p, err := parseRunLuaParams(params)
-	if err != nil {
-		return fail(LuaCodeInvalidParams, err.Error(), "", false)
+		return luaFailure(span, start, script, LuaCodePolicyDenied, "run_lua needs a session; none is attached to this call", "", false)
 	}
 	pol, err := t.opts.Policy(ctx)
 	if err == nil {
@@ -305,44 +363,8 @@ func (t *RunLuaTool) Execute(ctx context.Context, params map[string]interface{})
 	}
 	if err != nil {
 		zap.L().Warn("run_lua: policy unavailable; refusing the run", zap.String("session_id", sessionID), zap.Error(err))
-		return fail(LuaCodePolicyDenied, "the Lua policy could not be loaded", "call the tools directly", false)
+		return luaFailure(span, start, script, LuaCodePolicyDenied, "the Lua policy could not be loaded", "call the tools directly", false)
 	}
-
-	script = ResolvedScript{Name: "inline", Source: p.script, Trust: luasandbox.TrustInline}
-	if p.name != "" {
-		script = ResolvedScript{Name: p.name}
-		if t.opts.Resolve == nil {
-			return fail(LuaCodeScriptNotFound, "saved scripts are not available here", "pass the source as script", false)
-		}
-		resolved, err := t.opts.Resolve(ctx, p.name)
-		switch {
-		case errors.Is(err, ErrAmbiguousScript):
-			return fail(LuaCodeAmbiguousScript, err.Error(), "run it again with the script id", false)
-		case errors.Is(err, ErrScriptNotAccepted):
-			return fail(LuaCodeScriptNotAccepted, err.Error(), "the user must review and accept this version first", false)
-		case errors.Is(err, ErrScriptNotFound):
-			return fail(LuaCodeScriptNotFound, err.Error(), "", false)
-		case err != nil:
-			zap.L().Warn("run_lua: script lookup failed", zap.String("session_id", sessionID), zap.String("name", p.name), zap.Error(err))
-			return fail(LuaCodePolicyDenied, "the saved script could not be loaded", "", false)
-		}
-		// A saved script must name a saved-script tier. The zero value is
-		// TrustInline, and an unknown value is not foreign either: both
-		// would skip DenyForShared, so they are refused.
-		switch resolved.Trust {
-		case luasandbox.TrustOwn, luasandbox.TrustShared, luasandbox.TrustPublished:
-		default:
-			zap.L().Warn("run_lua: resolver returned no valid trust tier", zap.String("session_id", sessionID),
-				zap.String("name", p.name), zap.Int("trust", int(resolved.Trust)))
-			return fail(LuaCodePolicyDenied, "the saved script has no valid trust tier", "", false)
-		}
-		script = resolved
-		if script.Name == "" {
-			script.Name = p.name
-		}
-	}
-	span.SetAttribute("lua.script", script.Name)
-	span.SetAttribute("lua.trust", script.Trust.String())
 
 	key := t.agent.config.Name
 	if t.opts.GateKey != nil {
@@ -350,7 +372,7 @@ func (t *RunLuaTool) Execute(ctx context.Context, params map[string]interface{})
 	}
 	release, ok := t.opts.Gate.TryAcquire(key)
 	if !ok {
-		return fail(LuaCodeBusy, "every Lua run slot is busy", "retry shortly, or call the tools directly", true)
+		return luaFailure(span, start, script, LuaCodeBusy, "every Lua run slot is busy", "retry shortly, or call the tools directly", true)
 	}
 	defer release()
 
@@ -363,14 +385,14 @@ func (t *RunLuaTool) Execute(ctx context.Context, params map[string]interface{})
 	})
 	if err != nil {
 		zap.L().Warn("run_lua: bridge refused the run", zap.String("session_id", sessionID), zap.Error(err))
-		return fail(LuaCodePolicyDenied, "scripts cannot run here: "+err.Error(), "call the tools directly", false)
+		return luaFailure(span, start, script, LuaCodePolicyDenied, "scripts cannot run here: "+err.Error(), "call the tools directly", false)
 	}
 
-	lim := pol.Limits.Clamp(luasandbox.Limits{Wall: p.timeout})
+	lim := pol.Limits.Clamp(luasandbox.Limits{Wall: timeout})
 	res := luasandbox.Run(ctx, luasandbox.Program{
 		Name:   script.Name,
 		Source: script.Source,
-		Args:   p.args,
+		Args:   args,
 		Info:   map[string]any{"trust": script.Trust.String()},
 	}, lim, host)
 
@@ -383,7 +405,7 @@ func (t *RunLuaTool) Execute(ctx context.Context, params map[string]interface{})
 		zap.L().Warn("run_lua: diagnostics", zap.String("session_id", sessionID),
 			zap.String("outcome", string(res.Outcome)), zap.String("detail", res.Detail))
 	}
-	return mapLuaRunResult(res, script, time.Since(start)), nil
+	return mapLuaRunResult(res, script, time.Since(start))
 }
 
 // mapLuaRunResult converts a run into the tool result the model sees, per the
