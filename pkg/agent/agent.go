@@ -3113,7 +3113,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// assistantPersisted alone reports success for a batch that was never
 		// written anywhere — exactly the stranding this gate exists to stop.
 		if a.hitlPark != nil && assistantPersisted && a.memory.HasStore() {
-			if parkErr := a.maybeParkBatch(ctx, session, llmResp, turnUsage); parkErr != nil {
+			if parkErr := a.maybeParkBatch(ctx, session, llmResp, turnUsage, tools); parkErr != nil {
 				return nil, parkErr
 			}
 		}
@@ -3186,6 +3186,11 @@ type batchState struct {
 	allToolExecutions  *[]ToolExecution
 	tools              *[]shuttle.Tool
 	recovery           *recoveryOrchestrator
+	// noProjection is set by the resume path when the parked batch carries
+	// no record of the tools its provider call advertised. Calls then get no
+	// projection on their context, so a script engine refuses to run
+	// instead of trusting the resume-time set.
+	noProjection bool
 
 	turnToolCount   int
 	turnDedup       map[string]*shuttle.Result
@@ -3235,6 +3240,11 @@ type preparedCall struct {
 	index    int
 	dedupKey string
 	toolSpan *observability.Span
+	// projection is the advertised tool set runCall attaches to the call's
+	// context; noProjection means attach none (a resumed batch with no
+	// recorded projection), so a script engine fails closed.
+	projection   []shuttle.Tool
+	noProjection bool
 }
 
 // prepareCall is the sequential front half of dispatchOneCall: the per-turn
@@ -3341,7 +3351,17 @@ func (a *Agent) prepareCall(ctx Context, session *Session, toolCall ToolCall, i 
 		toolSpan.SetAttribute("dispatch.barrier_reason", st.barrierReason)
 	}
 
-	return &preparedCall{call: toolCall, index: i, dedupKey: dedupKey, toolSpan: toolSpan}, false
+	// The call's context will record the tools this provider call advertised
+	// (after recovery filtering), so a script engine never re-derives a wider
+	// set. On resume st.tools is the requesting call's recorded projection,
+	// narrowed by the resume-time set (completeParkedBatch); with no record
+	// the call gets no projection and a script engine fails closed. Read here,
+	// in the sequential front half, so a parallel group sees the same set.
+	pc = &preparedCall{call: toolCall, index: i, dedupKey: dedupKey, toolSpan: toolSpan, noProjection: st.noProjection}
+	if !st.noProjection && st.tools != nil {
+		pc.projection = *st.tools
+	}
+	return pc, false
 }
 
 // runCall is the execution middle of dispatchOneCall: the circuit breaker and
@@ -3350,7 +3370,11 @@ func (a *Agent) prepareCall(ctx Context, session *Session, toolCall ToolCall, i 
 // cache or the transcript — settleCall owns all of those. See runTool for the
 // shared state executor.Execute can still reach.
 func (a *Agent) runCall(ctx Context, pc *preparedCall, sessionID string) (*shuttle.Result, error) {
-	return a.runTool(ctx, pc.call.Name, pc.call.Input, sessionID)
+	callCtx := ctx
+	if !pc.noProjection {
+		callCtx = withAdvertisedProjection(ctx, pc.projection)
+	}
+	return a.runTool(callCtx, pc.call.Name, pc.call.Input, sessionID)
 }
 
 // settleCall is the sequential back half of dispatchOneCall: lease events and

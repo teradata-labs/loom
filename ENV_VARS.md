@@ -122,11 +122,14 @@ just clean
 - The running application never needs to know where its binary is installed
 
 ### LOOM_YOLO
-**Default:** `false`
-**Values:** `true`, `1`, `false`, `0`
-**Used in:** `cmd/looms/config.go`
+**Default:** unset (YOLO itself defaults to on; see `LOOM_TOOLS_PERMISSIONS_YOLO`)
+**Values:** `true`, `1`
+**Used in:** `cmd/looms/config.go` (`setDefaults`)
 
-Enables YOLO mode, which bypasses all tool permission prompts for autonomous operation.
+Turns YOLO mode on, which bypasses all tool permission prompts for autonomous operation.
+It only turns YOLO on, and it wins over the config file: `LOOM_YOLO=false` or `0` does
+nothing. To turn YOLO off, use `LOOM_TOOLS_PERMISSIONS_YOLO=false` or
+`tools.permissions.yolo: false`.
 
 ```bash
 export LOOM_YOLO=true
@@ -135,6 +138,35 @@ export LOOM_YOLO=1
 ```
 
 ⚠️ **Warning:** YOLO mode allows agents to execute tools without user approval. Use with caution.
+
+### LOOM_TOOLS_PERMISSIONS_YOLO
+**Default:** `true` (`viper.SetDefault("tools.permissions.yolo", true)`)
+**Values:** `true`, `false`
+**Used in:** `cmd/looms/config.go` (bound by viper `AutomaticEnv` from the `tools.permissions.yolo` key)
+
+The environment form of `tools.permissions.yolo`. It overrides the config file. Unlike
+`LOOM_YOLO`, it can turn YOLO off:
+
+```bash
+export LOOM_TOOLS_PERMISSIONS_YOLO=false
+```
+
+### LOOM_TOOLS_LUA_ENABLED
+**Default:** `false`
+**Values:** `true`, `false`
+**Used in:** `cmd/looms/lua_tools.go` (`LuaToolsConfig.Enabled`, bound by viper `AutomaticEnv` from the `tools.lua.enabled` key)
+
+The environment form of `tools.lua.enabled`, the server switch for the `run_lua` tool.
+When it is false, `run_lua` is never registered, even on agents that list it in
+`tools.builtin`. When it is true, an agent also needs `run_lua` in `tools.builtin` and an
+admission guard (`tools.hooks` or `tools.permissions`). Under the default YOLO checker
+with no `tools.hooks` bindings, serve logs a startup warning that every tool call a
+script makes is allowed without a check. See
+[Lua script API](docs/reference/lua-script-api.md#enabling-it).
+
+```bash
+export LOOM_TOOLS_LUA_ENABLED=true
+```
 
 ### LOOM_DB_KEY
 **Used in:** `pkg/agent/db_config.go`
@@ -951,7 +983,10 @@ Loom uses the following naming conventions:
 4. **LOOM_DEBUG_** prefix: Debug flags
    - Example: `LOOM_DEBUG_BEDROCK`
 
-5. **Standard names**: Standard environment variables from external tools
+5. **LOOM_TOOLS_** prefix: `tools.*` config keys, derived by viper (dots become underscores)
+   - Example: `LOOM_TOOLS_LUA_ENABLED`, `LOOM_TOOLS_PERMISSIONS_YOLO`
+
+6. **Standard names**: Standard environment variables from external tools
    - Example: `AWS_REGION`, `ANTHROPIC_API_KEY`, `DOCKER_HOST`
 
 ---

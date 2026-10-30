@@ -199,6 +199,7 @@ buf format -w       # Format proto files
 4. ❌ **Don't change proto without buf lint** - Keep it clean
 5. ❌ **Don't break backwards compatibility** - Use `buf breaking`
 6. ❌ **Don't set risk_level: high on skills without testing** - HIGH/RESTRICTED skills are blocked by default when require_approval=true. Test with --yolo first, then configure the gate.
+7. ❌ **Don't call `Executor.Execute(name)` for tool calls the model did not make itself** (scripts, batch runners) - it does fuzzy dynamic registration. Match the provider call's advertised projection by exact name, `Preflight`, then `ExecuteWithTool`, as `pkg/agent/lua_host.go` does.
 
 ### Documentation
 8. ❌ **Don't use marketing speak** - See "Documentation Standards" section
