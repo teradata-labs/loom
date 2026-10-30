@@ -23,6 +23,7 @@ Reference for all supported LLM providers and their configuration.
 - [Google Vertex AI](#9-google-vertex-ai) - GCP integration (Planned)
 
 ### Reference
+- [Tool Schema Compatibility](#tool-schema-compatibility) - Omitted tools and library-only strict validation
 - [Provider Comparison](#provider-comparison) - Feature matrix and benchmarks
 - [Configuration Reference](#configuration-reference) - Common and provider-specific parameters
 - [Security Best Practices](#security-best-practices) - Credential management
@@ -91,6 +92,28 @@ Loom supports multiple LLM providers for different deployment scenarios. All pro
 - Cost tracking and observability
 - Secure credential management (system keyring)
 - Provider-agnostic agent code
+
+
+## Tool Schema Compatibility
+
+Anthropic, Bedrock, OpenAI, Azure OpenAI, Gemini, and the OpenAI-compatible wrappers validate tool schemas before sending a request. An incompatible tool is omitted by default, while the remaining tools stay available. If every tool is omitted, the request proceeds without tools. A zap warning names the tool and reason once per tool/reason pair per provider-client lifetime, so a new failure after a schema reload is logged; every omission is also recorded as `llm.tool.schema.skipped` on the active request span when tracing is enabled.
+
+Anthropic, Bedrock, OpenAI, and Azure normalize compatible object-root `allOf` schemas. Root alternatives and incompatible constraints are not approximated. OpenAI and Azure additionally reject normalized root `enum` and `not`. Gemini omits tools with root composites, root `enum`, or unsupported nested `oneOf`/`allOf`/`not`. Supported `anyOf` branch nodes keep absent types unspecified, while their properties/items resume Gemini's required type fill-in. Null nested schema nodes are incompatible on all these paths. Conflicting `default` annotations do not discard a tool: the root value wins, or the first branch value if the root has none.
+
+To adapt a root alternative, place it inside a named property, such as `properties.input.anyOf`, and update the tool to read that wrapper. This does not guarantee every provider/model supports every nested keyword. Schema handling is limited to the keywords represented by `shuttle.JSONSchema`; it does not add `$ref`/`$defs` resolution or replace tool-side argument validation.
+
+### Library-Only Strict Validation
+
+Go embedders can set `StrictToolSchemas: true` on the Anthropic, Bedrock, OpenAI, Azure OpenAI, Gemini, LiteLLM, Mistral, or HuggingFace provider's `Config` to return an error before HTTP instead of omitting an incompatible tool:
+
+```go
+client := gemini.NewClient(gemini.Config{
+  APIKey:            os.Getenv("GEMINI_API_KEY"),
+  StrictToolSchemas: true,
+})
+```
+
+This switch is **library-only**. It is not present in protobuf `LLMConfig`, the provider factory, YAML, or CLI flags; `loom` and `looms` therefore use the default omission policy. Do not add `strict_tool_schemas` to agent YAML expecting it to take effect. This switch is also separate from a provider's constrained-decoding or strict-mode API options.
 
 
 ## Implemented Providers

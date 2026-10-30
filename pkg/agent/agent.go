@@ -404,7 +404,7 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// calls — pure FTS search + TouchMemories.
 	if a.skillOrchestrator != nil && a.graphMemoryStore != nil {
 		store := a.graphMemoryStore
-		agentName := a.config.Name
+		agentName := a.graphMemoryKey()
 		a.skillOrchestrator.SetOnSkillEviction(func(sessionID string, skill *skills.Skill, activeFor time.Duration) {
 			ctx := context.Background()
 
@@ -682,6 +682,14 @@ func (a *Agent) isBuiltinToolSuppressed(name string) bool {
 func WithName(name string) Option {
 	return func(a *Agent) {
 		a.config.Name = name
+	}
+}
+
+// WithGraphMemoryAgentID sets the stable key for graph memory reads and writes
+// (Config.GraphMemoryAgentID), so memories survive a rename of the agent.
+func WithGraphMemoryAgentID(id string) Option {
+	return func(a *Agent) {
+		a.config.GraphMemoryAgentID = id
 	}
 }
 
@@ -3169,12 +3177,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			batchIDCount:       batchIDCount,
 		}
 
-		for i, toolCall := range llmResp.ToolCalls {
-			if toolExecutionCount >= a.config.MaxToolExecutions {
-				break
-			}
-			a.dispatchOneCall(ctx, session, toolCall, i, st)
-		}
+		a.dispatchBatch(ctx, session, llmResp.ToolCalls, st)
 
 		// Drain buffered text_body sidecars from this batch AFTER every
 		// tool_result is in place. Order within the batch preserved so a
@@ -3225,6 +3228,11 @@ type batchState struct {
 	parkableTail bool
 	batchIDCount map[string]int
 	awaitHeld    []heldAwait
+
+	// barrierReason is set by dispatchBatch (flag on) for a call it dispatches
+	// alone; prepareCall records it on that call's tool span. Empty adds no
+	// dispatch attributes.
+	barrierReason string
 }
 
 // dispatchOneCall runs one call of a tool batch through the full per-call
@@ -3233,7 +3241,37 @@ type batchState struct {
 // and sidecar buffering. The body is the conversation loop's original batch
 // body, moved verbatim; ResumeChat's parked-batch completion calls the same
 // function so the two paths cannot drift.
+//
+// The ceremony is three phases: prepareCall (caps, dedup, counters, progress,
+// span), runCall (the tool execution itself) and settleCall (everything that
+// touches session-shared state). prepareCall and settleCall must stay
+// sequential and in call order; runCall may overlap other calls only if the
+// caller knows those calls are independent (see runTool).
 func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall, i int, st *batchState) {
+	pc, finished := a.prepareCall(ctx, session, toolCall, i, st)
+	if finished {
+		return
+	}
+	result, err := a.runCall(ctx, pc, session.ID)
+	a.settleCall(ctx, session, pc, st, result, err)
+}
+
+// preparedCall is one call that passed the per-turn cap and dedup checks and
+// is ready to execute: the call, its batch index, its dedup key, and the open
+// tool span that settleCall ends.
+type preparedCall struct {
+	call     ToolCall
+	index    int
+	dedupKey string
+	toolSpan *observability.Span
+}
+
+// prepareCall is the sequential front half of dispatchOneCall: the per-turn
+// cap row, the dedup replay row, the two counter increments, and the
+// contact_human / implicit-task / tool-started-progress block, ending with the
+// tool span opened. finished is true when a row was already committed (cap or
+// dedup); pc is then nil and the caller must not run the call.
+func (a *Agent) prepareCall(ctx Context, session *Session, toolCall ToolCall, i int, st *batchState) (pc *preparedCall, finished bool) {
 	span := st.span
 
 	// Per-turn cap: skip remaining calls with an error result
@@ -3253,7 +3291,7 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 			Timestamp: time.Now(),
 		}, false)
 		*st.toolExecutionCount++
-		return
+		return nil, true
 	}
 
 	// Deduplication: compute canonical key from tool name + sorted JSON input
@@ -3274,7 +3312,7 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 		})
 		*st.toolExecutionCount++
 		st.turnToolCount++
-		return
+		return nil, true
 	}
 
 	st.turnToolCount++
@@ -3327,9 +3365,34 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 	// Execute tool with tracing — always created
 	_, toolSpan := ctx.Tracer().StartSpan(ctx, "agent.tool_execution")
 	toolSpan.SetAttribute("tool_name", toolCall.Name)
+	if st.barrierReason != "" {
+		toolSpan.SetAttribute("dispatch.parallel", false)
+		toolSpan.SetAttribute("dispatch.barrier_reason", st.barrierReason)
+	}
 
-	// Execute with self-correction (circuit breaker + SQL correction)
-	result, err := a.executeToolWithSelfCorrection(ctx, toolCall.Name, toolCall.Input, session.ID)
+	return &preparedCall{call: toolCall, index: i, dedupKey: dedupKey, toolSpan: toolSpan}, false
+}
+
+// runCall is the execution middle of dispatchOneCall: the circuit breaker and
+// the executor call, and nothing else. It must not touch the session, the
+// batch state, the lease ledger, guardrails, the failure tracker, the dedup
+// cache or the transcript — settleCall owns all of those. See runTool for the
+// shared state executor.Execute can still reach.
+func (a *Agent) runCall(ctx Context, pc *preparedCall, sessionID string) (*shuttle.Result, error) {
+	return a.runTool(ctx, pc.call.Name, pc.call.Input, sessionID)
+}
+
+// settleCall is the sequential back half of dispatchOneCall: lease events and
+// guardrails bookkeeping, tier-1 circuit-breaker recovery, the span events,
+// ending the tool span, the resource-await hold, and the committed tool row.
+// Calls must be settled in call order.
+func (a *Agent) settleCall(ctx Context, session *Session, pc *preparedCall, st *batchState, result *shuttle.Result, err error) {
+	span := st.span
+	toolCall := pc.call
+	i := pc.index
+	toolSpan := pc.toolSpan
+
+	a.settleExecution(ctx, session.ID, toolCall.Name, toolCall.Input, result, err)
 
 	// Tier 1: if tool CB fired, disable tool and inject synthetic result.
 	if err != nil && strings.Contains(err.Error(), "circuit breaker open") && st.recovery != nil {
@@ -3719,10 +3782,31 @@ func (c *contextWithValue) Value(key interface{}) interface{} {
 	return c.Context.Value(key)
 }
 
-// executeToolWithSelfCorrection wraps tool execution with optional circuit breaker.
-// If circuit breaker is enabled, provides failure isolation for tools.
-// If guardrails are enabled, tracks errors for error analysis.
-func (a *Agent) executeToolWithSelfCorrection(ctx Context, toolName string, input map[string]interface{}, sessionID string) (*shuttle.Result, error) {
+// toolBreakerOpenError is the error runTool returns when the tool's circuit
+// breaker rejected the call before it ran. The message is what recovery
+// matches on; the type lets settleExecution skip the bookkeeping that only
+// applies to an executed call.
+type toolBreakerOpenError struct {
+	tool  string
+	cause error
+}
+
+func (e *toolBreakerOpenError) Error() string {
+	return fmt.Sprintf("circuit breaker open for tool %s: %v", e.tool, e.cause)
+}
+
+func (e *toolBreakerOpenError) Unwrap() error { return e.cause }
+
+// runTool executes one tool call: context wrapping plus the optional circuit
+// breaker (failure isolation) and the executor call. It touches no session,
+// batch-state, lease-ledger, guardrails, failure-tracker or transcript state.
+// executor.Execute itself can still reach shared state: the admission
+// approved-set (order-dependent: a render call followed by a gated call in
+// one batch relies on the render being recorded first), dynamic tool
+// registration, the shared-memory store, and a half-open breaker admits every
+// concurrent request. A caller that runs calls concurrently must do so only
+// for calls it knows are independent.
+func (a *Agent) runTool(ctx Context, toolName string, input map[string]interface{}, sessionID string) (*shuttle.Result, error) {
 	var result *shuttle.Result
 	var err error
 
@@ -3751,11 +3835,23 @@ func (a *Agent) executeToolWithSelfCorrection(ctx Context, toolName string, inpu
 
 		// If circuit breaker itself failed (breaker open), return that error
 		if cbErr != nil && err == nil {
-			return nil, fmt.Errorf("circuit breaker open for tool %s: %w", toolName, cbErr)
+			return nil, &toolBreakerOpenError{tool: toolName, cause: cbErr}
 		}
 	} else {
 		// No circuit breaker - execute directly
 		result, err = a.executor.Execute(ctxWithAgent, toolName, input)
+	}
+
+	return result, err
+}
+
+// settleExecution is the session-shared bookkeeping for an executed tool
+// result: lease events and guardrails error tracking. It must run sequentially
+// and in call order. A call the breaker rejected never ran, so it is skipped.
+func (a *Agent) settleExecution(ctx Context, sessionID, toolName string, input map[string]interface{}, result *shuttle.Result, err error) {
+	var breakerOpen *toolBreakerOpenError
+	if errors.As(err, &breakerOpen) {
+		return
 	}
 
 	// Backend-declared lease events ride the result's metadata: fold them
@@ -3785,8 +3881,6 @@ func (a *Agent) executeToolWithSelfCorrection(ctx Context, toolName string, inpu
 		}
 		_ = a.guardrails.HandleErrorWithAnalysis(ctx, sessionID, query, errorAnalysis)
 	}
-
-	return result, err
 }
 
 // analyzeError converts execution error into ErrorAnalysisInfo for self-correction.
@@ -3852,8 +3946,17 @@ func (a *Agent) checkAndRegisterGraphMemoryTool() {
 		return
 	}
 
-	tool := shuttle.Tool(NewGraphMemoryTool(a.graphMemoryStore, a.config.Name))
+	tool := shuttle.Tool(NewGraphMemoryTool(a.graphMemoryStore, a.graphMemoryKey()))
 	a.tools.Register(tool)
+}
+
+// graphMemoryKey is the agent ID that keys graph memory reads and writes.
+// GraphMemoryAgentID wins when set; otherwise the agent Name (unchanged behaviour).
+func (a *Agent) graphMemoryKey() string {
+	if a.config.GraphMemoryAgentID != "" {
+		return a.config.GraphMemoryAgentID
+	}
+	return a.config.Name
 }
 
 // graphMemoryTokenBudget returns the token budget for graph memory context injection.
@@ -3910,6 +4013,9 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 	// (az512h). One span, outcome always set.
 	ctx, span := a.tracer.StartSpan(ctx, "graph_memory.recall")
 	defer a.tracer.EndSpan(span)
+	// Which memory partition this recall queries; differs from the agent name
+	// when GraphMemoryAgentID is set.
+	span.SetAttribute("graph_memory.agent_key", a.graphMemoryKey())
 	outcome := "unknown"
 	defer func() { span.SetAttribute("recall.outcome", outcome) }()
 
@@ -3961,14 +4067,14 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 	storeFailed := false
 
 	// Entity-scoped recall: search entities, get their neighborhoods.
-	entities, err := a.graphMemoryStore.SearchEntities(ctx, a.config.Name, searchQuery, 5)
+	entities, err := a.graphMemoryStore.SearchEntities(ctx, a.graphMemoryKey(), searchQuery, 5)
 	if err != nil {
 		storeFailed = true
 		span.RecordError(fmt.Errorf("graph memory recall: search entities: %w", err))
 	}
 	for _, e := range entities {
 		recall, ctxErr := a.graphMemoryStore.ContextFor(ctx, memory.ContextForOpts{
-			AgentID:    a.config.Name,
+			AgentID:    a.graphMemoryKey(),
 			EntityName: e.Name,
 			Topic:      searchQuery,
 			MaxTokens:  budget,
@@ -3997,7 +4103,7 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 
 	// Unscoped recall: broad FTS5 search across all memories.
 	memories, recallErr := a.graphMemoryStore.Recall(ctx, memory.RecallOpts{
-		AgentID:   a.config.Name,
+		AgentID:   a.graphMemoryKey(),
 		Query:     searchQuery,
 		Limit:     50,
 		MaxTokens: budget,
@@ -4067,7 +4173,7 @@ func (a *Agent) multiHopRecall(ctx context.Context, seen map[string]bool, budget
 		return nil
 	}
 
-	agentID := a.config.Name
+	agentID := a.graphMemoryKey()
 
 	// Find the user entity (marked with is_user:true during extraction).
 	userEntity := a.findUserEntity(ctx, agentID)
