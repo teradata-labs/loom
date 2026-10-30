@@ -21,8 +21,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -862,8 +864,10 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		return nil, fmt.Errorf("error reading stream: %w", err)
 	}
 
-	// Parse accumulated tool call arguments
-	for _, tc := range toolCallMap {
+	// Parse accumulated tool call arguments, in stream index order. Ranging
+	// over the map would hand parallel tool calls back in random order (#500).
+	for _, idx := range slices.Sorted(maps.Keys(toolCallMap)) {
+		tc := toolCallMap[idx]
 		if argsStr, ok := tc.Input["_args"].(string); ok {
 			var parsedArgs map[string]interface{}
 			if err := json.Unmarshal([]byte(argsStr), &parsedArgs); err != nil {

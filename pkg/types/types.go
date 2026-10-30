@@ -562,13 +562,10 @@ type ProgressEvent struct {
 	ToolInputBytes int64
 
 	// ToolCallIndex is the provider's stream index for this tool call; set
-	// only on IsToolInputStream events. On providers that deliver calls in
-	// order (Anthropic, Bedrock, Gemini, Ollama) it matches the call's
-	// position in the response's tool-call list. On OpenAI-compatible
-	// providers (OpenAI, Azure, LiteLLM, Mistral, HuggingFace) the final
-	// tool-call list is built from a map, so its order is not guaranteed to
-	// match this index; match a progress event to its tool-started event by
-	// ToolCallID there. Gemini repeats the function name in ToolCallID, so
+	// only on IsToolInputStream events. It matches the call's position in
+	// the response's tool-call list on every streaming provider; the
+	// OpenAI-compatible ones (OpenAI, Azure, LiteLLM, Mistral, HuggingFace)
+	// also return their tool calls in stream index order. Gemini repeats the function name in ToolCallID, so
 	// two parallel calls to the same tool share an ID and only this index
 	// tells them apart. The agent's throttling keys on the same index, so
 	// events for one call never interleave with another's. A bare activity

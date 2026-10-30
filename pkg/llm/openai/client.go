@@ -21,10 +21,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -1264,9 +1266,11 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		return nil, fmt.Errorf("error reading stream: %w", err)
 	}
 
-	// 4. Parse accumulated tool call arguments
+	// 4. Parse accumulated tool call arguments, in stream index order. Ranging
+	// over the map would hand parallel tool calls back in random order (#500).
 	droppedToolCall := false
-	for _, tc := range toolCallMap {
+	for _, idx := range slices.Sorted(maps.Keys(toolCallMap)) {
+		tc := toolCallMap[idx]
 		// Skip tool calls with empty name or ID — Bedrock (and other strict
 		// providers) reject messages containing toolUse blocks where name or
 		// toolUseId is empty. This can happen when streaming produces partial

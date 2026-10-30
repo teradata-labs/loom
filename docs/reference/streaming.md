@@ -393,7 +393,7 @@ For Ollama, the size is the raw argument JSON as the model produced it when it a
 **Required**: No (only when `is_tool_input_stream` is true)
 **Available since**: unreleased (after v1.4.0)
 
-The provider's stream index for the tool call. On providers that deliver calls in order (Anthropic, Bedrock, Gemini, Ollama) it matches the call's position in the response's tool-call list. On OpenAI-compatible providers (OpenAI, Azure OpenAI, LiteLLM, Mistral, HuggingFace) the final tool-call list is built from a map, so its order is not guaranteed to match this index — match a progress event to its `is_tool_started` event by `tool_call_id` there. Gemini repeats the function name in `tool_call_id`, so two parallel calls to the same tool share an ID and only this index tells them apart. The agent's throttling keys on the same index, so events for one call never interleave with another's.
+The provider's stream index for the tool call. It matches the call's position in the response's tool-call list on every streaming provider; the OpenAI-compatible ones (OpenAI, Azure OpenAI, LiteLLM, Mistral, HuggingFace) also return their tool calls in stream index order. Gemini repeats the function name in `tool_call_id`, so two parallel calls to the same tool share an ID and only this index tells them apart. The agent's throttling keys on the same index, so events for one call never interleave with another's.
 
 A bare activity pulse (no `tool_call_id`, no `tool_name`, 0 bytes) carries index 0 without being call 0; clients should skip pulses before interpreting the index.
 
