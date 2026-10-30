@@ -108,7 +108,7 @@ func TestDebateOrchestrator_FormatRoundHistory(t *testing.T) {
 	}
 
 	// Test without moderator (should use fallback)
-	history := orchestrator.formatRoundHistory(ctx, "test-workflow", round, nil)
+	history := orchestrator.formatRoundHistory(ctx, "test-workflow", round, nil, nil)
 
 	assert.Contains(t, history, "agent1")
 	assert.Contains(t, history, "Use indexing")
@@ -254,7 +254,7 @@ func TestDebateOrchestrator_SummarizePosition(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Test without moderator (should use fallback truncation)
-			result := orchestrator.summarizePosition(ctx, "test-workflow", "agent1", tt.position, tt.arguments, nil)
+			result := orchestrator.summarizePosition(ctx, "test-workflow", "agent1", tt.position, tt.arguments, nil, nil)
 
 			for _, content := range tt.checkContent {
 				assert.Contains(t, result, content)
@@ -270,56 +270,13 @@ func TestDebateOrchestrator_SummarizePosition(t *testing.T) {
 	}
 }
 
-func TestDebateOrchestrator_GeneratePerspectiveGuidance(t *testing.T) {
-	orchestrator := &DebateOrchestrator{}
-
-	tests := []struct {
-		name          string
-		agentID       string
-		checkKeywords []string
-	}{
-		{
-			name:          "performance agent",
-			agentID:       "td-expert-performance",
-			checkKeywords: []string{"Performance", "performance", "speed", "efficiency"},
-		},
-		{
-			name:          "analytics agent",
-			agentID:       "td-expert-analytics",
-			checkKeywords: []string{"Analytics", "data analysis", "statistical"},
-		},
-		{
-			name:          "quality agent",
-			agentID:       "td-expert-quality",
-			checkKeywords: []string{"Quality", "correctness", "reliability", "testing"},
-		},
-		{
-			name:          "architecture agent",
-			agentID:       "td-expert-architecture",
-			checkKeywords: []string{"Architecture", "system design", "modularity"},
-		},
-		{
-			name:          "unknown agent gets generic guidance",
-			agentID:       "some-random-agent-xyz",
-			checkKeywords: []string{"perspective", "unique", "some-random-agent-xyz"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			guidance := orchestrator.generatePerspectiveGuidance(tt.agentID)
-
-			assert.NotEmpty(t, guidance)
-
-			// Check that at least one keyword appears
-			foundKeyword := false
-			for _, keyword := range tt.checkKeywords {
-				if assert.Contains(t, guidance, keyword) {
-					foundKeyword = true
-					break
-				}
-			}
-			assert.True(t, foundKeyword, "Should contain at least one expected keyword")
-		})
-	}
+// TestDebateStandpointGuidance pins the one instruction the debate adds
+// about how to argue: it defers to the agent's own instructions, assigns no
+// perspective, and carries no role framing.
+func TestDebateStandpointGuidance(t *testing.T) {
+	assert.Contains(t, standpointGuidance, "your own instructions")
+	assert.Contains(t, standpointGuidance, "argue that side")
+	assert.NotContains(t, standpointGuidance, "You are")
+	assert.NotContains(t, standpointGuidance, "unique angle")
+	assert.NotContains(t, standpointGuidance, "Your perspective:")
 }

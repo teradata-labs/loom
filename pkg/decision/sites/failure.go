@@ -22,6 +22,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"unicode/utf8"
 
@@ -234,6 +235,22 @@ func InputDigest(input map[string]any) string {
 	}
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:8])
+}
+
+// fitRunes returns nil when s fits in max runes, and otherwise a
+// *decision.ValidationError for field whose Cause is
+// decision.ErrStateTooLarge. Acting sites use it instead of truncateRunes
+// for the text their verdict turns on: a cut view can flip the verdict the
+// existing mechanism, which reads the whole text, would give.
+func fitRunes(field, s string, max int) error {
+	if n := utf8.RuneCountInString(s); n > max {
+		return &decision.ValidationError{
+			Field: field,
+			Msg:   fmt.Sprintf("%d runes, over the %d the decider judges whole", n, max),
+			Cause: decision.ErrStateTooLarge,
+		}
+	}
+	return nil
 }
 
 func truncateRunes(s string, n int) string {

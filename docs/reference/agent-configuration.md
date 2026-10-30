@@ -63,7 +63,7 @@ definitions (in `looms.yaml`) and the **standalone agent YAML** files loaded by 
 | `spec.compressor_llm` | `LLMConfigYAML` | inherits main | Compressor LLM override |
 | `spec.active_provider` | `string` | optional | Named provider from global pool |
 | `spec.allowed_providers` | `[]string` | optional | Restrict to subset of pool |
-| `spec.decision` | `DecisionConfigYAML` | off | Typed decision layer, shadow mode only |
+| `spec.decision` | `DecisionConfigYAML` | off | Typed decision layer: shadow by default, live per site with a band |
 
 ---
 
@@ -269,7 +269,7 @@ spec:
 
 ### Decision Layer
 
-Under `spec.decision` (k8s-style) or `agent.decision` (legacy). Off when the block is absent or `provider` is empty or `off`. With a provider set, the agent runs the decider in the background at `recall.rerank`, `tool_search.rerank` and `tool.failure_kind` and stores shadow rows beside what Loom decided; nothing acts on a decider answer in this release. See [`decision-layer.md`](../architecture/decision-layer.md), including what each site sends to the decider.
+Under `spec.decision` (k8s-style) or `agent.decision` (legacy). Off when the block is absent or `provider` is empty or `off`. With a provider set, the agent runs the decider in the background at every site it reaches (`recall.rerank`, `tool_search.rerank`, `tool.failure_kind`, `memory.extract`, `skill.route`, and the workflow sites `workflow.branch`, `stage.validation`, `swarm.tie_break` and `debate.consensus` when it is a condition, stage, judge or moderator agent) and stores shadow rows beside what Loom decided. A site acts on a decider answer only where a band without `shadow: true` is configured for it (see Band fields). See [`decision-layer.md`](../architecture/decision-layer.md), including what each site sends to the decider.
 
 Source: `DecisionConfigYAML` in `pkg/agent/config_loader.go`; rules in `decision.ValidateConfig` (`pkg/decision/config.go`), which runs on every path that accepts a decision config. A configuration the agent cannot use (no LLM for `llm`, no credential for `jev`) disables the layer with a logged warning; it does not fail agent construction.
 
@@ -283,6 +283,8 @@ Source: `DecisionConfigYAML` in `pkg/agent/config_loader.go`; rules in `decision
 | `max_per_session` | `int` | `0` (no cap) | Decider calls per session before the router falls back; must be `>= 0` |
 | `max_cost_usd_per_session` | `float` | `0` (no cap) | Decider spend per session in USD; must be `>= 0` |
 | `requests_per_minute` | `int` | `0` (jev default 1,000) | jev only. Process-wide: agents with the same decider settings share one client and one limit. Set from the tier in use (gateway free tier: 30) |
+| `max_questions_per_request` | `int` | `0` (decider default; Jev 16) | Most questions one request carries before the router splits it into concurrent chunks; must be `>= 0`. Changes how many round trips carry the answers, never the answers |
+| `expose_tool` | `bool` | `false` | Register the `decide` builtin so the agent can put one typed question (`yes_no`, `choice`, `scale`) to its decider mid-turn. Calls are recorded at site `tool.decide`; nothing acts on the answer automatically. `WithoutBuiltinTool("decide")` suppresses it |
 | `bands` | list | none (every site shadow) | Per-site bands, below |
 | `base_url` | `string` | — | **Rejected.** The decider endpoint is server-level only (`decision.base_url` in `looms.yaml` / `LOOM_DECISION_BASE_URL`, or `TYPESAFE_BASE_URL`; see `ENV_VARS.md`) |
 
@@ -292,12 +294,14 @@ Credentials are never read from YAML: `jev` uses `TYPESAFE_API_KEY`, else `AI_GA
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `site` | `string` | **required** | Call site, e.g. `recall.rerank`, `tool_search.rerank`, `tool.failure_kind`. Unique within the list |
-| `act_min` | `float` | `0` | Confidence at or above which the router reports the answer as usable; in `[0, 1]` |
-| `mode` | `string` | `replace` | `replace` or `tighten_only` (`tighten-only` and `tighten` also accepted) |
+| `site` | `string` | **required** | Call site, e.g. `recall.rerank`, `tool_search.rerank`, `memory.extract`, `stage.validation`. Unique within the list |
+| `act_min` | `float` | `0` | How decisive an answer must be (its distance from 0.5, for a yes/no) before the site may act on it; in `[0, 1]`. `0` acts on every answer however uncertain |
+| `true_min` | `float` | `0` (site default 0.5) | Probability at or above which a yes/no answer counts as true: the keep threshold at a rerank, "valid" at `stage.validation`, "consensus reached" at `debate.consensus`; in `[0, 1]`. Not the same as `act_min` |
+| `aggregate` | `string` | `min` | `min` (the least confident answer must clear `act_min`) or `per_question` (`per-question` and `each` also accepted: each answer is judged on its own). Fan-out reranks need `per_question`, or one uncertain candidate disables the whole answer |
+| `mode` | `string` | site default | `replace` or `tighten_only` (`tighten-only` and `tighten` also accepted). Read only by `stage.validation` and `debate.consensus`, whose default (mode unset) is tighten-only: the decider can only fail an output or keep a debate going, never pass an output or declare consensus on its own (`Band.ModeOr`). `mode: replace` lets it act on either verdict |
 | `shadow` | `bool` | `false` | Record only, never act |
 
-A site with no band is shadow. A band without `shadow: true` is accepted, but in this release the router records its confident answers as `DECISION_PATH_DECIDER` although no site acts on them, so the agent logs a `decision config` warning naming the site once when it builds its decider. Such a band becomes live, with no config change, when its site is wired to act. Write `shadow: true` until then.
+A site with no band is shadow. A band without `shadow: true` is **live** at the sites that act (`recall.rerank`, `tool_search.rerank`, `memory.extract`, `skill.route`, `workflow.branch`, `stage.validation`, `swarm.tie_break`, `debate.consensus`): an answer that clears `act_min` decides there instead of the existing mechanism, which remains the fallback. When the agent builds its decider it logs one `decision config` warning per non-shadow band naming the site and saying it is LIVE; at a site that only records (`tool.failure_kind`, `tool.decide`) the warning says nothing acts there. No shipped agent YAML has a `decision:` block. Read a site's shadow report (`loom decision report --site <site>`) before removing `shadow: true`.
 
 ```yaml
 spec:
@@ -311,7 +315,8 @@ spec:
     bands:
       - site: recall.rerank
         act_min: 0.9
-        shadow: true
+        aggregate: per_question  # fan-out: judge each candidate on its own
+        shadow: true             # remove only after reading the site's shadow report
 ```
 
 ---

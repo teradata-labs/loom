@@ -72,6 +72,7 @@ type sharedClientKey struct {
 	maxAttempts              int
 	requestsPerMinute        float64
 	pricePerMillionInputToks float64
+	maxQuestionsPerRequest   int
 }
 
 func sharedKey(cfg Config) sharedClientKey {
@@ -92,5 +93,6 @@ func sharedKey(cfg Config) sharedClientKey {
 		maxAttempts:              cfg.MaxAttempts,
 		requestsPerMinute:        cfg.RequestsPerMinute,
 		pricePerMillionInputToks: cfg.PricePerMillionInputTokens,
+		maxQuestionsPerRequest:   cfg.MaxQuestionsPerRequest,
 	}
 }

@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -43,6 +44,17 @@ type Reference struct {
 	Answer string
 	// Source names the mechanism ("llm_rerank", "fabric.InferErrorType").
 	Source string
+	// Subject identifies what the question was about (see
+	// DecisionShadowRecord.subject) so the row can be graded against an
+	// external truth later. Optional; a Reference may carry only a Subject
+	// when the site acted and has no reference answer.
+	Subject string
+	// NotActed marks a question whose answer the site did not act on
+	// although the request as a whole did (it kept a candidate the answer
+	// would have dropped, because the answer was uncertain or judged a cut
+	// view of the candidate). Its row is recorded as FALLBACK, never
+	// DECIDER, so a DECIDER row always describes what the site did.
+	NotActed bool
 }
 
 // ShadowQuery selects shadow rows for a report.
@@ -199,6 +211,10 @@ func BuildShadowRecords(req *loomv1.DecisionRequest, out Outcome, provider, sess
 			kind = questionKind(req.Questions[id])
 		}
 		ref := refs[id]
+		path := out.Path
+		if ref.NotActed && path == loomv1.DecisionPath_DECISION_PATH_DECIDER {
+			path = loomv1.DecisionPath_DECISION_PATH_FALLBACK
+		}
 		records = append(records, &loomv1.DecisionShadowRecord{
 			RecordedAt:             now,
 			Site:                   req.Site,
@@ -215,10 +231,28 @@ func BuildShadowRecords(req *loomv1.DecisionRequest, out Outcome, provider, sess
 			CostUsd:                cost,
 			Model:                  model,
 			Provider:               provider,
-			Path:                   out.Path,
+			Path:                   path,
+			Error:                  errorText(out.Err),
+			Subject:                ref.Subject,
 		})
 	}
 	return records
+}
+
+// maxErrorTextRunes bounds the error carried on a shadow row; a gateway
+// body can be long and the first few hundred runes hold the reason.
+const maxErrorTextRunes = 500
+
+// errorText renders an outcome error for a shadow row, empty for nil.
+func errorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := err.Error()
+	if utf8.RuneCountInString(s) <= maxErrorTextRunes {
+		return s
+	}
+	return string([]rune(s)[:maxErrorTextRunes]) + "…"
 }
 
 // ShadowRecorder writes shadow rows and counts store failures as metrics
