@@ -37,6 +37,15 @@ const (
 type Decision struct {
 	Kind   DecisionKind
 	Reason string
+	// Grant is what a person approves when they approve this Ask: data the
+	// hook computed from the call (for example, the programs a shell command
+	// names that are not on its allowlist). It is meaningful only on an Ask.
+	// When the call's Ask is resolved to Allow, the executor hands every
+	// matched Ask's Grant to the tool body (AdmissionGrantsFromContext), so a
+	// tool that enforces policy at run time can honor exactly what was
+	// approved. A Grant must be immutable once returned; it may be shared by
+	// concurrent readers.
+	Grant any
 }
 
 // AdmissionRequest is the immutable view of a tool call handed to every hook.

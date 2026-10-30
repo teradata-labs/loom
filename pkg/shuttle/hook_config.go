@@ -131,6 +131,8 @@ var bindingKeyCanon = map[string]string{
 	"sourcetool":  "source_tool",
 	"resultpath":  "result_path",
 	"name":        "name",
+	"policy":      "policy",
+	"enforcement": "enforcement",
 }
 
 // matcherKeyCanon folds every accepted spelling of a MatcherSpec field onto
@@ -190,7 +192,8 @@ func (m *MatcherSpec) UnmarshalJSON(data []byte) error {
 // the policy-specific parameters. A binding is turned into a live Hook by
 // BuildChainFromConfig; a malformed binding fails serve startup (fail-closed).
 type HookBinding struct {
-	// Kind selects the policy: "gated-allowlist" | "denylist" | "audit" | "ask" | "custom".
+	// Kind selects the policy: "gated-allowlist" | "denylist" | "audit" | "ask" |
+	// "custom" | "command-policy".
 	Kind string `mapstructure:"kind" json:"kind"`
 	// Scope is the tool selector: an exact tool name or a "<prefix>*" pattern,
 	// with the same match semantics as tools.permissions.
@@ -219,4 +222,13 @@ type HookBinding struct {
 	ResultPath string `mapstructure:"result_path" json:"result_path"`
 	// Name is the registry key of a custom hook.
 	Name string `mapstructure:"name" json:"name"`
+	// Policy names the server-defined command policy a command-policy binding
+	// applies (for example "readonly"). Required for that kind, refused on
+	// every other.
+	Policy string `mapstructure:"policy" json:"policy"`
+	// Enforcement is how a command-policy binding is backed: "runtime" (the
+	// default; a runner re-checks every program launch, so programs computed
+	// at run time may pass the static check) or "static" (nothing re-checks,
+	// so anything the static check cannot see is denied). Command-policy only.
+	Enforcement string `mapstructure:"enforcement" json:"enforcement"`
 }

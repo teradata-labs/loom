@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"path/filepath"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/luasandbox"
 	"github.com/teradata-labs/loom/pkg/luasandbox/store/filestore"
+	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
 // LuaToolsConfig is the tools.lua block: the run_lua tool, off by default.
@@ -91,14 +93,77 @@ type LuaToolListsConfig struct {
 // Default lists (documented under "Enabling it" in
 // docs/reference/lua-script-api.md): tools that are slow, hold locks,
 // manage agents or skills, or (for shared scripts) can send data out.
-// shell_execute is loom's own unsandboxed shell: a script calling it in a loop
-// would run commands nobody sees one by one, and under the default YOLO
-// permissions nothing checks them. It stays denied until a command-policy
-// hook governs it; an operator who binds one can remove it from the list.
+// shell_execute is loom's own shell: a script calling it in a loop would run
+// commands nobody sees one by one, and under the default YOLO permissions
+// nothing checks them. It stays denied unless it runs jailed under a
+// command-policy hook with no matcher (design 06 §7): an operator who sets that up can remove
+// it from deny, and newLuaRuntime puts it back otherwise. Shared scripts never
+// get it: newLuaRuntime keeps it in deny_for_shared whatever the operator sets
+// there, so a script another agent saved, or one saved over the RPC, does not
+// run commands as its runner, even allowed ones.
 var (
 	defaultLuaDeny          = []string{"shell_execute", "shell_execute_sandbox", "agent_management", "project_manager", "git_contribute", "propose_skill_edit"}
-	defaultLuaDenyForShared = []string{"http_request", "web_browse", "web_search", "file_write", "files", "workspace"}
+	defaultLuaDenyForShared = []string{"http_request", "web_browse", "web_search", "file_write", "files", "workspace", "shell_execute"}
 )
+
+// scriptShellGoverned reports whether scripts may be given loom's
+// shell_execute: only when it runs jailed and a command-policy binding governs
+// every call to it, so every script call is judged by the hook and enforced by
+// the runner. A binding with a matcher judges only the calls the matcher
+// selects and lets the rest through unjudged, so it does not count; either
+// enforcement mode does.
+func scriptShellGoverned(config *Config) bool {
+	if config == nil || config.Tools.ShellExecute.Mode != "jailed" {
+		return false
+	}
+	req := shuttle.AdmissionRequest{ToolName: "shell_execute"}
+	for _, b := range config.Tools.Hooks.Bindings {
+		if b.Kind == "command-policy" && b.Matcher == (shuttle.MatcherSpec{}) &&
+			req.MatchesTool(shuttle.NewToolScope(b.Scope)) {
+			return true
+		}
+	}
+	return false
+}
+
+// deniesShell reports whether an entry of deny (an exact name or a pattern
+// such as "shell_*") matches shell_execute.
+func deniesShell(deny []string) bool {
+	for _, pat := range deny {
+		if pat == "shell_execute" {
+			return true
+		}
+		if ok, err := path.Match(pat, "shell_execute"); err == nil && ok {
+			return true
+		}
+	}
+	return false
+}
+
+// keepShellDenied returns deny with shell_execute put back when the operator
+// removed it but nothing governs it, and the warning to log. A deny entry that
+// still matches shell_execute leaves the list unchanged.
+func keepShellDenied(deny []string, governed bool) ([]string, string) {
+	if deniesShell(deny) || governed {
+		return deny, ""
+	}
+	return append(append([]string{}, deny...), "shell_execute"),
+		"tools.lua.tools.deny does not list shell_execute, but scripts get it only when " +
+			"tools.shell_execute.mode is jailed and a command-policy hook binding with no matcher governs shell_execute; " +
+			"it stays hidden from scripts"
+}
+
+// keepShellDeniedForShared returns the deny_for_shared list with
+// shell_execute in it. Shared scripts (another agent's, or saved over the RPC)
+// never get loom's shell, governed or not, so an operator list that replaces
+// the default without it gets it put back. It returns a new slice when it adds
+// the entry.
+func keepShellDeniedForShared(deny []string) []string {
+	if deniesShell(deny) {
+		return deny
+	}
+	return append(append([]string{}, deny...), "shell_execute")
+}
 
 // setLuaDefaults registers the tools.lua defaults.
 func setLuaDefaults() {
@@ -139,6 +204,8 @@ type luaRuntime struct {
 	slots   int
 	perKey  int
 	runMem  uint64
+	// warnings are configuration problems serve logs (not fatal).
+	warnings []string
 }
 
 // luaGuards is what the server's admission config says about the tool calls a
@@ -150,6 +217,10 @@ type luaGuards struct {
 	YOLO bool
 	// HookBindings is the number of tools.hooks bindings.
 	HookBindings int
+	// ShellGoverned is scriptShellGoverned(config): when it is false,
+	// shell_execute is hidden from scripts even if tools.lua.tools.deny no
+	// longer lists it.
+	ShellGoverned bool
 }
 
 // unguarded reports whether nothing checks a script's nested tool calls: YOLO
@@ -167,11 +238,12 @@ func newLuaRuntime(c LuaToolsConfig, guards luaGuards, memLimit uint64, dataDir 
 	if !c.Enabled {
 		return nil, nil
 	}
+	deny, shellWarning := keepShellDenied(c.Tools.Deny, guards.ShellGoverned)
 	pol := luasandbox.Policy{
 		Limits:        c.Limits.limits(),
 		Allow:         c.Tools.Allow,
-		Deny:          c.Tools.Deny,
-		DenyForShared: c.Tools.DenyForShared,
+		Deny:          deny,
+		DenyForShared: keepShellDeniedForShared(c.Tools.DenyForShared),
 	}
 	if err := pol.Validate(); err != nil {
 		return nil, fmt.Errorf("tools.lua.tools: %w", err)
@@ -218,11 +290,22 @@ func newLuaRuntime(c LuaToolsConfig, guards luaGuards, memLimit uint64, dataDir 
 			SaveEnabled:    c.Scripts.SaveEnabled,
 			PublishEnabled: c.Scripts.PublishAsToolEnabled,
 		},
-		store:  st,
-		slots:  slots,
-		perKey: perKey,
-		runMem: runMem,
+		store:    st,
+		slots:    slots,
+		perKey:   perKey,
+		runMem:   runMem,
+		warnings: nonEmpty(shellWarning),
 	}, nil
+}
+
+func nonEmpty(s ...string) []string {
+	var out []string
+	for _, v := range s {
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // scriptsRegistryOptions returns the saved-script wiring for

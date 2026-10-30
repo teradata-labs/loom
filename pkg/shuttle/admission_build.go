@@ -38,7 +38,24 @@ type ChainDeps struct {
 	ApprovedSet ApprovedSetAccessor
 	Ask         AskResolver
 	Custom      CustomHookRegistry
+	// CommandPolicy builds the decision body of a command-policy binding. The
+	// host supplies it (pkg/shellpolicy provides one) so this package carries
+	// no shell parser; a command-policy binding with none configured is a
+	// build error (fail-closed).
+	CommandPolicy CommandPolicyFactory
 }
+
+// CommandPolicyFactory turns a command-policy binding into its decision body.
+// The chain applies the binding's scope and matcher around it, exactly as for
+// the library kinds. It returns an error for a binding it cannot honor (an
+// unknown policy name), which aborts the build.
+type CommandPolicyFactory func(b HookBinding) (func(req AdmissionRequest) Decision, error)
+
+// Enforcement modes a command-policy binding may declare.
+const (
+	CommandPolicyRuntime = "runtime"
+	CommandPolicyStatic  = "static"
+)
 
 // BuildChainFromConfig assembles the admission chain from a tools.hooks config.
 // The name-level permission hook is placed first when a checker is supplied,
@@ -122,8 +139,21 @@ func validateBinding(b HookBinding) error {
 	if _, err := b.Matcher.Compile(); err != nil {
 		return err
 	}
+	if b.Kind != "command-policy" && (b.Policy != "" || b.Enforcement != "") {
+		return fmt.Errorf("policy and enforcement are command-policy fields; an unread field would silently change nothing")
+	}
 	switch b.Kind {
 	case "audit", "ask":
+		return nil
+	case "command-policy":
+		if strings.TrimSpace(b.Policy) == "" {
+			return fmt.Errorf("command-policy requires policy")
+		}
+		switch b.Enforcement {
+		case "", CommandPolicyRuntime, CommandPolicyStatic:
+		default:
+			return fmt.Errorf("command-policy enforcement %q (want %s|%s)", b.Enforcement, CommandPolicyRuntime, CommandPolicyStatic)
+		}
 		return nil
 	case "denylist":
 		if b.Pattern != "" {
@@ -152,7 +182,7 @@ func validateBinding(b HookBinding) error {
 		}
 		return nil
 	default:
-		return fmt.Errorf("unknown kind (want gated-allowlist|denylist|audit|ask|custom)")
+		return fmt.Errorf("unknown kind (want gated-allowlist|denylist|audit|ask|custom|command-policy)")
 	}
 }
 
@@ -180,8 +210,17 @@ func buildHook(b HookBinding, deps ChainDeps) (Hook, error) {
 		return libraryAuditHook{scope: scope, matcher: matcher}, nil
 	case "custom":
 		return customHook(b, deps)
+	case "command-policy":
+		if deps.CommandPolicy == nil {
+			return nil, fmt.Errorf("command-policy binding (policy %q) but no command policies are configured", b.Policy)
+		}
+		eval, err := deps.CommandPolicy(b)
+		if err != nil {
+			return nil, err
+		}
+		return libraryHook{scope: scope, matcher: matcher, eval: eval}, nil
 	default:
-		return nil, fmt.Errorf("unknown kind (want gated-allowlist|denylist|audit|ask|custom)")
+		return nil, fmt.Errorf("unknown kind (want gated-allowlist|denylist|audit|ask|custom|command-policy)")
 	}
 }
 
