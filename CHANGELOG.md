@@ -34,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+#### Ollama: tool support detection and tool calls in history
+- **Tool support is read from `capabilities`.** The `/api/show` probe only looked for `.Tools` in the template, which is a bare `{{ .Prompt }}` for models on Ollama's MLX runner, so those models were sent no tools. It now reads `capabilities` and uses the template only on Ollama versions without that list.
+- **A missed probe no longer disables tools.** The probe's timeout goes from 5 s to 30 s, and a failed probe on an unknown model isn't cached, so the next request tries again.
+- **The model's tool calls stay in the history.** `convertMessages` dropped `tool_calls` from assistant messages, so Ollama saw tool results with no matching call and models repeated the call. Assistant messages now carry them, and tool results carry `tool_name`.
+
 #### Token counting: the encoding ships in the binary
 - **The token counter no longer downloads its encoding.** `pkg/agent`'s counter fetched `cl100k_base` from `openaipublic.blob.core.windows.net` on first use; without network access (an air-gapped or locked-down server, a sandboxed CI runner) it fell back to a characters/4 estimate for the life of the process, which skews relief and budget decisions. It now loads the encoding bundled by `github.com/pkoukk/tiktoken-go-loader` (MIT; its `cl100k_base.tiktoken` has the SHA-256 that OpenAI's tiktoken verifies). The binary grows by about 7 MB.
 

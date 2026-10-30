@@ -349,7 +349,7 @@ Tool calling mode for Ollama. This is configurable only via the Go API (`ollama.
 
 | Mode | Behavior | When to Use |
 |------|----------|-------------|
-| `auto` | Probe model template via `/api/show`, fallback to known-models list | **Recommended** - Works with any model |
+| `auto` | Read the model's capabilities via `/api/show`, fallback to known-models list | **Recommended** - Works with any model |
 | `native` | Force native tool calling API | When you know model supports it (Ollama v0.12.3+) |
 | `prompt` | Prompt-based tool calling fallback | For older Ollama or unsupported models |
 
@@ -456,7 +456,7 @@ grpcurl -plaintext -d '{"query": "What is 2+2?"}' \
 
 Loom supports Ollama's native tool calling API (requires Ollama v0.12.3 or later).
 
-**Tool support is detected dynamically.** Loom probes Ollama's `/api/show` endpoint to check if a model's template includes tool-handling directives. Any Ollama model with tool support in its template will work automatically — no hardcoded model list required.
+**Tool support is detected dynamically.** Loom probes Ollama's `/api/show` endpoint and reads the model's `capabilities` list (Ollama v0.6.4 or later), or checks its template for tool-handling directives on older Ollama. Any Ollama model that reports tool support will work automatically — no hardcoded model list required.
 
 **Known-working model families** (used as fallback when probe fails; matched by prefix):
 
@@ -467,6 +467,7 @@ Loom supports Ollama's native tool calling API (requires Ollama v0.12.3 or later
 - **command-r** - Tool calling support
 - **phi4** - Microsoft's reasoning model
 - **functionary** - Specialized for function calling
+- **gemma4**, **gpt-oss** - Native tool calling
 
 ### Tool Mode Configuration
 
@@ -483,16 +484,16 @@ client := ollama.NewClient(ollama.Config{
 
 | Mode | Behavior | When to Use |
 |------|----------|-------------|
-| `auto` | Probe model template, then fallback to known-models list | **Recommended** - Works with any model |
+| `auto` | Probe model capabilities, then fallback to known-models list | **Recommended** - Works with any model |
 | `native` | Force native tool calling API | When you know your model supports it (Ollama v0.12.3+) |
 | `prompt` | Use prompt-based tool calling | For older Ollama versions or unsupported models |
 
 **How `auto` mode works**:
 
-1. On first tool call, Loom queries Ollama's `/api/show` for the model's template
-2. If the template contains tool-handling directives (e.g., `{{ .Tools }}`), native tools are enabled
-3. If the probe fails (e.g., Ollama unreachable), falls back to a static known-models list
-4. Result is cached for the client's lifetime — no repeated probes
+1. On first tool call, Loom queries Ollama's `/api/show` for the model's capabilities
+2. If `capabilities` lists `tools`, native tools are enabled. Older Ollama returns no list, so Loom checks the template for tool-handling directives (e.g., `{{ .Tools }}`) instead
+3. If the probe fails (e.g., Ollama unreachable or busy past the 30 s timeout), falls back to a static known-models list
+4. A probe answer or a known model is cached for the client's lifetime. A failed probe on an unknown model is not, so the next request probes again
 
 
 ### Checking Tool Support
@@ -735,7 +736,7 @@ Loom automatically discovers your installed Ollama models — no manual registry
 ### How It Works
 
 1. **Model Registry**: At startup, Loom queries Ollama's `/api/tags` endpoint to discover all installed models
-2. **Tool Support Probe**: On first tool call, Loom queries `/api/show` for the model's template to detect tool support
+2. **Tool Support Probe**: On first tool call, Loom queries `/api/show` for the model's capabilities to detect tool support
 3. **Fallback**: If Ollama is unreachable, Loom uses a static list of known-working models
 4. **Max Tokens**: Automatically scaled based on model name substrings (default→4096, names containing 13b-34b→6144, 70b+→8192; see [max_tokens](#max_tokens) for details)
 

@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -586,6 +587,36 @@ func TestClient_SupportsNativeTools_ProbeNoToolTemplate(t *testing.T) {
 	assert.False(t, client.supportsNativeTools(), "should detect no tool support")
 }
 
+func TestClient_SupportsNativeTools_ProbeReadsCapabilities(t *testing.T) {
+	tests := []struct {
+		name         string
+		capabilities []string
+		want         bool
+	}{
+		// Models on Ollama's MLX runner report a bare template but list "tools".
+		{"tools listed", []string{"completion", "vision", "tools", "thinking"}, true},
+		{"tools not listed", []string{"completion", "vision"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/show" {
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"template":     `{{ .Prompt }}`,
+						"capabilities": tt.capabilities,
+					})
+				}
+			}))
+			defer server.Close()
+
+			client := NewClient(Config{Endpoint: server.URL, Model: "gemma4:26b"})
+			assert.Equal(t, tt.want, client.supportsNativeTools())
+			assert.True(t, client.nativeToolsProbed, "probe flag should be set")
+		})
+	}
+}
+
 func TestClient_SupportsNativeTools_ProbeFallsBackToStaticList(t *testing.T) {
 	// No server running — probe will fail, should fall back to static list
 	client := NewClient(Config{
@@ -595,6 +626,56 @@ func TestClient_SupportsNativeTools_ProbeFallsBackToStaticList(t *testing.T) {
 	})
 
 	assert.True(t, client.supportsNativeTools(), "qwen3 should match fallback list")
+}
+
+func TestClient_SupportsNativeTools_FailedProbeIsRetried(t *testing.T) {
+	// Ollama answers /api/show with an error first (as when busy), then
+	// lists "tools": the first miss must not stick.
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/show" {
+			if calls.Add(1) == 1 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"capabilities": []string{"completion", "tools"}})
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{Endpoint: server.URL, Model: "some-unknown-model:14b"})
+	assert.False(t, client.supportsNativeTools(), "probe failed and the model isn't in the fallback list")
+	assert.False(t, client.nativeToolsProbed, "a failed probe isn't cached")
+	assert.True(t, client.supportsNativeTools(), "the next request probes again")
+}
+
+func TestClient_ConvertMessages_EchoesToolCalls(t *testing.T) {
+	// The model's own tool calls must go back with the history, or it sees a
+	// result it never asked for and calls the tool again.
+	messages := []llmtypes.Message{
+		{Role: "user", Content: "What's on my calendar tomorrow?"},
+		{Role: "assistant", ToolCalls: []llmtypes.ToolCall{
+			{ID: "call_1", Name: "device_list_calendar_events", Input: map[string]interface{}{"start": "2026-10-30"}},
+		}},
+		{Role: "tool", ToolUseID: "call_1", Content: `{"events":[]}`},
+	}
+
+	client := NewClient(Config{Model: "gemma4:26b", ToolMode: ToolModeNative})
+	converted := client.convertMessages(messages)
+	require.Len(t, converted, 3)
+	require.Len(t, converted[1].ToolCalls, 1)
+	call := converted[1].ToolCalls[0]
+	assert.Equal(t, "call_1", call.ID)
+	assert.Equal(t, "device_list_calendar_events", call.Function.Name)
+	assert.Equal(t, map[string]interface{}{"start": "2026-10-30"}, call.Function.Arguments)
+	assert.Equal(t, "tool", converted[2].Role)
+	assert.Equal(t, "device_list_calendar_events", converted[2].ToolName)
+
+	// Prompt-mode models get no tool_calls: they wrote the call as text.
+	client = NewClient(Config{Model: "gemma4:26b", ToolMode: ToolModePrompt})
+	converted = client.convertMessages(messages)
+	assert.Empty(t, converted[1].ToolCalls)
 }
 
 func TestClient_SupportsNativeTools_ExplicitModes(t *testing.T) {
