@@ -3368,7 +3368,7 @@ func (a *Agent) settleCall(ctx Context, session *Session, pc *preparedCall, st *
 	i := pc.index
 	toolSpan := pc.toolSpan
 
-	a.settleExecution(ctx, session.ID, toolCall.Input, result, err)
+	a.settleExecution(ctx, session.ID, toolCall.Name, toolCall.Input, result, err)
 
 	// Tier 1: if tool CB fired, disable tool and inject synthetic result.
 	if err != nil && strings.Contains(err.Error(), "circuit breaker open") && st.recovery != nil {
@@ -3824,7 +3824,7 @@ func (a *Agent) runTool(ctx Context, toolName string, input map[string]interface
 // settleExecution is the session-shared bookkeeping for an executed tool
 // result: lease events and guardrails error tracking. It must run sequentially
 // and in call order. A call the breaker rejected never ran, so it is skipped.
-func (a *Agent) settleExecution(ctx Context, sessionID string, input map[string]interface{}, result *shuttle.Result, err error) {
+func (a *Agent) settleExecution(ctx Context, sessionID, toolName string, input map[string]interface{}, result *shuttle.Result, err error) {
 	var breakerOpen *toolBreakerOpenError
 	if errors.As(err, &breakerOpen) {
 		return
