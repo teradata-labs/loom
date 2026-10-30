@@ -2813,6 +2813,18 @@ func (s *MultiAgentServer) runWorkflowSubAgent(ctx context.Context, ag *agent.Ag
 						s.logger.Info("Acknowledged all processed messages",
 							zap.String("agent", agentID),
 							zap.Int("count", len(messageIDs)))
+					} else {
+						// In-flight messages have no timeout, so without a requeue a failed
+						// Chat would strand them until restart. Requeue enforces MaxRetries,
+						// so a permanent failure ends up marked failed instead of looping.
+						for _, msgID := range messageIDs {
+							if requeueErr := s.messageQueue.Requeue(ctx, msgID); requeueErr != nil {
+								s.logger.Warn("Failed to requeue message after Chat error",
+									zap.String("agent", agentID),
+									zap.String("message_id", msgID),
+									zap.Error(requeueErr))
+							}
+						}
 					}
 				} else {
 					s.logger.Debug("No queue messages to process",
