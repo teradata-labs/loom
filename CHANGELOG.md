@@ -34,6 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+#### Workflow sub-agents requeue their messages when Chat fails
+- **A failed sub-agent turn no longer strands its messages in-flight.** `runWorkflowSubAgent` dequeued its pending messages and acknowledged them only when `Chat` succeeded; on an error they stayed in-flight, which has no timeout, so they were never redelivered until a restart. They are now requeued, so the queue monitor's next tick delivers them again. `Requeue` enforces `MaxRetries`, so a message that keeps failing is marked failed rather than retried forever (#531).
+
 #### Token counting: the encoding ships in the binary
 - **The token counter no longer downloads its encoding.** `pkg/agent`'s counter fetched `cl100k_base` from `openaipublic.blob.core.windows.net` on first use; without network access (an air-gapped or locked-down server, a sandboxed CI runner) it fell back to a characters/4 estimate for the life of the process, which skews relief and budget decisions. It now loads the encoding bundled by `github.com/pkoukk/tiktoken-go-loader` (MIT; its `cl100k_base.tiktoken` has the SHA-256 that OpenAI's tiktoken verifies). The binary grows by about 7 MB.
 
