@@ -113,6 +113,7 @@ func (d *DynamicToolDiscovery) Search(ctx context.Context, intent string) (shutt
 				// Found a match! Convert to shuttle.Tool
 				mcpAdapter := adapter.NewMCPToolAdapter(client, tool, serverName)
 				mcpAdapter.SetLogger(d.logger)
+				mcpAdapter.SetTrustAnnotations(d.serverTrust(serverName))
 
 				// Cache for future use
 				d.mu.Lock()
@@ -159,6 +160,7 @@ func (d *DynamicToolDiscovery) SearchMultiple(ctx context.Context, intent string
 			if d.matches(intent, tool) {
 				mcpAdapter := adapter.NewMCPToolAdapter(client, tool, serverName)
 				mcpAdapter.SetLogger(d.logger)
+				mcpAdapter.SetTrustAnnotations(d.serverTrust(serverName))
 
 				matchingTools = append(matchingTools, mcpAdapter)
 			}
@@ -174,6 +176,13 @@ func (d *DynamicToolDiscovery) SearchMultiple(ctx context.Context, intent string
 		zap.Int("count", len(matchingTools)))
 
 	return matchingTools, nil
+}
+
+// serverTrust reports the server's trust_annotations opt-in; a missing config
+// fails closed (untrusted).
+func (d *DynamicToolDiscovery) serverTrust(serverName string) bool {
+	cfg, _ := d.mcpMgr.GetServerConfig(serverName)
+	return cfg.TrustAnnotations
 }
 
 // matches checks if a tool satisfies the intent using simple text matching.
