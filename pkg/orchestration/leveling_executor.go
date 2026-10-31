@@ -8,7 +8,6 @@ package orchestration
 import (
 	"context"
 	"fmt"
-	"math"
 
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
@@ -16,6 +15,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/llm/catalog"
 	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/types"
 )
 
 // levelingJudgeReasonSpanChars caps how much of a judge's rejection reason is
@@ -653,21 +653,8 @@ func effectiveOutputPolicy(outputPolicy *loomv1.OutputPolicy, tierPolicy TierPol
 	if !ok {
 		return outputPolicy
 	}
-	cloned.RetryPolicy = &loomv1.OutputRetryPolicy{MaxRetries: clampInt32(tierPolicy.RetryBudget)}
+	cloned.RetryPolicy = &loomv1.OutputRetryPolicy{MaxRetries: types.SafeInt32(tierPolicy.RetryBudget)}
 	return cloned
-}
-
-// clampInt32 narrows an int to int32 without overflow. RetryBudget is either a
-// small literal or a validated non-negative int32 from config, so the clamp
-// is a guard, not an expected path.
-func clampInt32(n int) int32 {
-	if n > math.MaxInt32 {
-		return math.MaxInt32
-	}
-	if n < math.MinInt32 {
-		return math.MinInt32
-	}
-	return int32(n)
 }
 
 // resultCostUSD reads an agent result's spend, tolerating nil results and nil
