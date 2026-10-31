@@ -181,6 +181,12 @@ func (pc *PermissionChecker) matchesAny(toolName, canonicalToolName string, exac
 	return matchPattern(toolName, exact, prefixes) || (canonicalToolName != "" && canonicalToolName != toolName && matchPattern(canonicalToolName, exact, prefixes))
 }
 
+// mayRequireApproval reports whether the checker is configured for human
+// approval (require_approval without yolo). Nil-safe.
+func (pc *PermissionChecker) mayRequireApproval() bool {
+	return pc != nil && !pc.yolo && pc.requireApproval
+}
+
 // IsYOLOMode returns true if YOLO mode is enabled.
 func (pc *PermissionChecker) IsYOLOMode() bool {
 	return pc.yolo
