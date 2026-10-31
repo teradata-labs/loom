@@ -154,6 +154,19 @@ Directory for caching tool results and artifacts. If not set, uses system temp d
 export LOOM_TOOL_CACHE_DIR=/path/to/cache
 ```
 
+### LOOM_SHELL_PASS_ENV
+**Default:** empty (no variables passed)
+**Format:** comma-separated variable names, exact (case-sensitive) match; blanks and surrounding spaces are ignored
+**Used in:** `pkg/shuttle/builtin/shell_execute.go` (`PassEnvVar`)
+
+The `shell_execute` tool withholds server environment variables whose names look like credentials (`GH_TOKEN`, `AWS_ACCESS_KEY_ID`, `AWS_SESSION_TOKEN`, `NPM_TOKEN`, `LOOM_OTLP_HEADERS`, ...) and variables whose value is a URL with a password. The full pattern list is in [docs/architecture/artifacts.md](docs/architecture/artifacts.md). A command that needs one of them, such as `gh` or `aws`, reports that it is not logged in. `LOOM_SHELL_PASS_ENV` re-allows the named server variables:
+
+```bash
+export LOOM_SHELL_PASS_ENV=GH_TOKEN,AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,AWS_SESSION_TOKEN
+```
+
+The value is read when the tool is created (at server start), so changing it needs a restart. It applies only to the inherited server environment; a call's own `env` parameter is filtered regardless. Programs embedding Loom can call `ShellExecuteTool.SetPassEnv` instead.
+
 ---
 
 ## LLM Providers
