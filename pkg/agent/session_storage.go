@@ -25,7 +25,6 @@ type SessionStorage interface {
 	ListSessions(ctx context.Context) ([]string, error)
 	DeleteSession(ctx context.Context, sessionID string) error
 	LoadAgentSessions(ctx context.Context, agentID string) ([]string, error)
-
 	// SessionExists reports whether any session row has this id, regardless
 	// of owner. It is an authorization primitive, not a data read: resume
 	// gates use it to distinguish exists-but-foreign (must deny) from absent
@@ -61,7 +60,9 @@ type SessionStorage interface {
 	// Relief transactions (HLD §5.2 — write-once flags, one transaction per
 	// operation, set only inside releasePressure):
 	//
-	// MarkEvicted sets evicted=true on the given rows in one transaction.
+	// MarkEvicted is kept for implementations written against it. Nothing in
+	// loom calls it: a tool result is bounded once at arrival and never evicted
+	// afterwards, so loom's own stores implement it as a no-op.
 	MarkEvicted(ctx context.Context, sessionID string, seqs []int64) error
 	// FoldMessages writes summary version n (snapshot_type='fold', content =
 	// JSON {"n","text"}) and sets the region's folded flags in ONE transaction
@@ -76,6 +77,50 @@ type SessionStorage interface {
 	RegisterCleanupHook(hook SessionCleanupHook)
 	GetStats(ctx context.Context) (*Stats, error)
 	Close() error
+}
+
+// The interfaces below are optional: a SessionStorage may implement any of
+// them, and a feature that needs one checks for it with a type assertion, as
+// with SoftDeleteStorage. loom's own stores implement all of them. A store
+// that does not still serves every turn; only that feature is unavailable.
+
+// RunAttribution binds sessions to the loop run that created them, so the cost
+// of a run is a sum over its sessions.
+type RunAttribution interface {
+	// StampRunID binds a session to the loop run that created it, once. A
+	// caller that stamps twice with different values keeps the first (the
+	// write requires an empty run_id). Empty runID is a no-op.
+	StampRunID(ctx context.Context, sessionID, runID string) error
+	// SessionsInRun returns every session StampRunID bound to runID. Empty
+	// for a runID no session was stamped with.
+	SessionsInRun(ctx context.Context, runID string) ([]string, error)
+}
+
+// ConversationRouting records which run holds a conversation.
+type ConversationRouting interface {
+	// Holding is read on every message that arrives: when it names a run,
+	// delivery goes there. "" means nobody, so the conversation's own agent
+	// answers. It is set only on a conversation's root session, and only by
+	// the router: a second writer would put the conversation in two places.
+	SetHolding(ctx context.Context, sessionID, runID string) error
+	Holding(ctx context.Context, sessionID string) (string, error)
+}
+
+// ToolHistory reads back what a session's tools did: which, how long, how much
+// came back, and what failed, oldest first.
+type ToolHistory interface {
+	ToolExecutions(ctx context.Context, sessionID string) ([]ToolRecord, error)
+}
+
+// Rewinder removes exchanges that should not have happened. Distinct from
+// relief, which shrinks what a turn costs while keeping it in the history.
+type Rewinder interface {
+	// TruncateFrom deletes every message from the given turn onward and
+	// reports the row count. Turn is the unit because a turn groups a user
+	// message with every call it caused, so a tool call is never orphaned.
+	TruncateFrom(ctx context.Context, sessionID string, turn int) (int, error)
+	// MaxTurn reports the highest turn in a session, 0 when it has none.
+	MaxTurn(ctx context.Context, sessionID string) (int, error)
 }
 
 // SoftDeleteStorage defines optional soft-delete operations.
@@ -99,3 +144,7 @@ type SoftDeleteStorage interface {
 
 // Compile-time check: SessionStore (SQLite) implements SessionStorage.
 var _ SessionStorage = (*SessionStore)(nil)
+var _ RunAttribution = (*SessionStore)(nil)
+var _ ConversationRouting = (*SessionStore)(nil)
+var _ ToolHistory = (*SessionStore)(nil)
+var _ Rewinder = (*SessionStore)(nil)

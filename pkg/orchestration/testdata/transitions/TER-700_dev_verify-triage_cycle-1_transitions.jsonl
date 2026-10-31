@@ -1,0 +1,1 @@
+{"seq": 1, "at": "2026-08-04T08:48:30Z", "loop": "triage", "iter": 1, "from": "DRIVE", "worker": "test_lead", "skill": "drive-epic", "signal": "no-infra", "session": "f986e858-a97a-4cb1-b010-f8273c6c01f0", "mint": true, "in_tok": 12, "out_tok": 8730, "usd": 0.5828, "dur_s": 126.0}

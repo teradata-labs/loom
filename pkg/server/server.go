@@ -339,7 +339,7 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 	}
 
 	if finalResult.err != nil {
-		return status.Errorf(codes.Internal, "agent error: %v", finalResult.err)
+		return wrapAgentError(finalResult.err)
 	}
 
 	// Send final completion event with result and context state

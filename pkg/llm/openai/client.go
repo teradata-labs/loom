@@ -867,6 +867,23 @@ const (
 	openAICacheReadMultiplier     = 0.5
 )
 
+// openAICacheReadMultiplierFor is the cached-input discount by model
+// generation: gpt-5 and the o-series bill a cached token at 0.10x, the gpt-4
+// generation at openAICacheReadMultiplier. Agentic workloads read cache for
+// most of their input, so the gpt-4 rate on a gpt-5 model overstates a run
+// several-fold — enough to invert a cheaper-model comparison.
+func openAICacheReadMultiplierFor(modelID string) float64 {
+	switch {
+	case strings.HasPrefix(modelID, "gpt-5"),
+		strings.HasPrefix(modelID, "o1"),
+		strings.HasPrefix(modelID, "o3"),
+		strings.HasPrefix(modelID, "o4"):
+		return 0.10
+	default:
+		return openAICacheReadMultiplier
+	}
+}
+
 // parseProviderCost reads the gateway's reported cost, if it sent one.
 // Returns 0 when absent or unparseable, meaning "fall back to the estimate".
 func parseProviderCost(h http.Header) float64 {
@@ -992,7 +1009,7 @@ func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cache
 	// The family decides the cache multipliers, independently of which branch
 	// above supplied the rates: anthropicFallbackPricing is a pure matcher on the
 	// model id, so it still identifies a Claude that the catalog priced.
-	cacheReadMult, cacheWriteMult := openAICacheReadMultiplier, openAICacheWriteMultiplier
+	cacheReadMult, cacheWriteMult := openAICacheReadMultiplierFor(c.model), openAICacheWriteMultiplier
 	if _, _, isAnthropic := anthropicFallbackPricing(c.model); isAnthropic {
 		cacheReadMult, cacheWriteMult = anthropicCacheReadMultiplier, anthropicCacheWriteMultiplier
 	}

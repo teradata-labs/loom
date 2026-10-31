@@ -320,8 +320,13 @@ func (c *Client) convertMessages(messages []llmtypes.Message) ([]TextBlockParam,
 	markLast := func() {
 		if n := len(apiMessages); n > 0 {
 			blocks := apiMessages[n-1].Content
-			if len(blocks) > 0 {
-				blocks[len(blocks)-1].CacheControl = &CacheControl{Type: "ephemeral"}
+			// The last block that can carry a marker: thinking blocks cannot.
+			for i := len(blocks) - 1; i >= 0; i-- {
+				if blocks[i].Type == "thinking" || blocks[i].Type == "redacted_thinking" {
+					continue
+				}
+				blocks[i].CacheControl = &CacheControl{Type: "ephemeral"}
+				return
 			}
 		}
 	}

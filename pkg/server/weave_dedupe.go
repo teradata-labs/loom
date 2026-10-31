@@ -34,6 +34,7 @@ import (
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/llm"
 	llmscheduler "github.com/teradata-labs/loom/pkg/llm/scheduler"
 	"github.com/teradata-labs/loom/pkg/types"
@@ -125,6 +126,9 @@ func wrapAgentError(err error) error {
 	}
 	if errors.Is(err, llm.ErrStreamTimeout) {
 		return status.Errorf(codes.Unavailable, "LLM provider stream timed out: %v", err)
+	}
+	if errors.Is(err, agent.ErrSessionBusy) {
+		return status.Errorf(codes.Unavailable, "session is busy with another turn; retry shortly: %v", err)
 	}
 	return status.Errorf(codes.Internal, "agent execution failed: %v", err)
 }

@@ -34,10 +34,10 @@ const (
 	// DefaultMaxMemoryBytes is 1GB
 	DefaultMaxMemoryBytes = 1 * 1024 * 1024 * 1024
 	// DefaultSharedMemoryThreshold is 16384 bytes — the one threshold value of
-	// HLD §5.1, serving three roles: compile-time offload bound, persist-time
-	// row bound, retrieval page bound. Per-agent override via
-	// MemoryConfig.SharedMemoryThresholdBytes (cloud binds its
-	// query_tool_result_threshold_bytes config through SetSharedMemoryThreshold).
+	// HLD §5.1: the bound a tool result row gets at arrival, and the bound the
+	// executor applies to large tool parameters. Per-agent override via
+	// MemoryConfig.SharedMemoryThresholdBytes (cloud binds its own threshold
+	// setting through SetSharedMemoryThreshold).
 	DefaultSharedMemoryThreshold = 16384
 	// DefaultCompressionThreshold is 1MB
 	DefaultCompressionThreshold = 1 * 1024 * 1024

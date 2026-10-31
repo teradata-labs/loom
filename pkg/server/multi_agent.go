@@ -7,6 +7,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1912,12 +1913,7 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 						zap.Error(err))
 				}
 
-				// Acknowledge the message
-				if ackErr := s.messageQueue.Acknowledge(turnIdentityCtx, queueMsg.ID); ackErr != nil { // #nosec -- intentional: background worker goroutine that must outlive request context
-					s.logger.Warn("Failed to acknowledge message",
-						zap.String("message_id", queueMsg.ID),
-						zap.Error(ackErr))
-				}
+				settleQueued(turnIdentityCtx, s.messageQueue, s.logger, queueMsg.ID, err) // #nosec -- intentional: background worker goroutine that must outlive request context
 			}
 		}
 	})
@@ -2258,7 +2254,10 @@ func (s *MultiAgentServer) processCoordinatorBroadcastMessages(
 		// Inject message on a context carrying the worker's tenant identity but
 		// not its cancellation, so a worker shutdown cannot kill a turn mid-flight
 		// while tenant-scoped stores (the postgres HITL store) stay reachable.
-		_, err := coordinatorAgent.Chat(turnIdentityContext(ctx), sessionID, injectedPrompt)
+		_, err := chatWhenFree(ctx, func() error {
+			_, err := coordinatorAgent.Chat(turnIdentityContext(ctx), sessionID, injectedPrompt)
+			return err
+		})
 
 		// Release semaphore
 		<-s.llmSemaphore
@@ -2274,6 +2273,45 @@ func (s *MultiAgentServer) processCoordinatorBroadcastMessages(
 				zap.String("coordinator", coordinatorID),
 				zap.String("from_agent", msg.FromAgent),
 				zap.String("topic", busMsg.topic))
+		}
+	}
+}
+
+// settleQueued settles a queued message after the turn it was handed to. A
+// session busy with another turn has not heard it: it goes back to the queue,
+// and the monitor delivers it again once that turn ends. Anything else is
+// settled and acknowledged — a turn that failed would fail again.
+func settleQueued(ctx context.Context, q *communication.MessageQueue, logger *zap.Logger, id string, turnErr error) {
+	if errors.Is(turnErr, agent.ErrSessionBusy) {
+		if err := q.Requeue(ctx, id); err != nil {
+			logger.Warn("Session busy and the message could not be requeued",
+				zap.String("message_id", id), zap.Error(err))
+		}
+		return
+	}
+	if err := q.Acknowledge(ctx, id); err != nil {
+		logger.Warn("Failed to acknowledge message", zap.String("message_id", id), zap.Error(err))
+	}
+}
+
+// busyWait is how long a broadcast waits for a session busy with another turn
+// before giving up on delivering it. A bus message, once read, cannot be put
+// back; this is its only chance.
+var busyWait = 2 * time.Minute
+
+// chatWhenFree runs a turn, waiting while the session is busy with another,
+// up to busyWait. It reports whether the turn ran.
+func chatWhenFree(ctx context.Context, turn func() error) (bool, error) {
+	deadline := time.Now().Add(busyWait)
+	for {
+		err := turn()
+		if !errors.Is(err, agent.ErrSessionBusy) || time.Now().After(deadline) {
+			return err == nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return false, err
+		case <-time.After(time.Second):
 		}
 	}
 }
@@ -2393,7 +2431,10 @@ done:
 
 		// Inject message on a context carrying the worker's tenant identity but
 		// not its cancellation (see processCoordinatorBroadcastMessages).
-		_, err := subAgent.Chat(turnIdentityContext(ctx), sessionID, injectedPrompt)
+		_, err := chatWhenFree(ctx, func() error {
+			_, err := subAgent.Chat(turnIdentityContext(ctx), sessionID, injectedPrompt)
+			return err
+		})
 
 		// Release semaphore
 		<-s.llmSemaphore

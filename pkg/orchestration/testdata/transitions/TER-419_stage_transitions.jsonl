@@ -1,0 +1,2 @@
+{"seq": 1, "at": "2026-07-17T02:17:10Z", "loop": "OPEN", "iter": 0, "from": "OPEN", "worker": "stage", "skill": "open", "signal": "opened", "session": "6175e945-2cf2-411d-a76a-bd681d01fb69", "mint": true, "in_tok": 30, "out_tok": 12625, "usd": 1.0123, "dur_s": 208.9}
+{"seq": 2, "at": "2026-07-17T02:17:29Z", "loop": "PROVISION", "iter": 1, "from": "PROVISION", "worker": "stage", "skill": "provision", "signal": "staged", "session": "6175e945-2cf2-411d-a76a-bd681d01fb69", "mint": false, "in_tok": 8, "out_tok": 627, "usd": 1.4773, "dur_s": 18.4}

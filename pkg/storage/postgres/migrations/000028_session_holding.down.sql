@@ -1,0 +1,2 @@
+ALTER TABLE sessions DROP COLUMN IF EXISTS holding;
+ALTER TABLE sessions DROP COLUMN IF EXISTS run_id;

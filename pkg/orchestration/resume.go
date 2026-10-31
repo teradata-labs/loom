@@ -15,10 +15,13 @@ import (
 
 // ResumeWorkflow continues a workflow that suspended at a HITL gate.
 //
-// The host supplies the SAME workflow pattern the run was started with (the
-// checkpoint's config fingerprint is verified against it — a mismatch fails
-// fast rather than executing an edited, unreviewed definition), the persisted
-// WorkflowCheckpoint, and the human's GateDecision.
+// The host supplies the workflow pattern, the persisted WorkflowCheckpoint,
+// and the human's GateDecision. A pipeline or iterative workflow must be the
+// SAME pattern the run was started with: the checkpoint's config fingerprint
+// is verified against it, and a mismatch fails fast rather than executing an
+// edited, unreviewed definition. A state machine is resumed on the pattern as
+// it stands now — its checkpoint is a position, not a copy of the machine —
+// and is refused only when it stands in a state the pattern does not have.
 //
 //   - APPROVE continues at the stage after the gate.
 //   - REVISE jumps back to the gate's revise target with GateDecision.feedback
@@ -61,7 +64,11 @@ func (o *Orchestrator) ResumeWorkflow(ctx context.Context, pattern *loomv1.Workf
 		executor := NewIterativePipelineExecutor(o, p.Iterative, o.messageBus, ckpt.WorkflowId)
 		return executor.Resume(ctx, ckpt, decision)
 
+	case *loomv1.WorkflowPattern_StateMachine:
+		executor := NewStateMachineExecutor(o, p.StateMachine, ckpt.WorkflowId)
+		return executor.Resume(ctx, ckpt, decision)
+
 	default:
-		return nil, fmt.Errorf("resume: pattern type %s does not support HITL gates", GetPatternType(pattern))
+		return nil, fmt.Errorf("resume: pattern type %s cannot suspend, so there is nothing to resume", GetPatternType(pattern))
 	}
 }

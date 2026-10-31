@@ -734,7 +734,7 @@ func TestUnknownToolNames(t *testing.T) {
 		},
 		{
 			name: "auto-injected names are not flagged",
-			spec: map[string]interface{}{"tools": []interface{}{"query_tool_result", "send_message", "graph_memory"}},
+			spec: map[string]interface{}{"tools": []interface{}{"recall", "send_message", "graph_memory"}},
 			want: nil,
 		},
 		{
@@ -788,8 +788,8 @@ func TestUnknownToolNames_DeletedToolsAreFlagged(t *testing.T) {
 		}
 	}
 
-	// The surviving retrieval tools stay valid.
-	for _, name := range []string{"query_tool_result", "recall"} {
+	// The surviving retrieval tool stays valid.
+	for _, name := range []string{"recall"} {
 		spec["tools"] = []interface{}{name}
 		if unknown := unknownToolNames(spec); len(unknown) != 0 {
 			t.Errorf("%q must remain a valid tool name, got unknown=%v", name, unknown)

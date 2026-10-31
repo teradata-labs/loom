@@ -330,9 +330,9 @@ func TestServer_ListTools_OnlyLoadPatternBaseTool(t *testing.T) {
 	}
 
 	// The always-present base tools: load_pattern (pattern library configured
-	// from construction), plus query_tool_result and recall — registered
-	// always (HLD §6/§7.1). No other builtin auto-registers.
-	expected := map[string]bool{"load_pattern": true, "query_tool_result": true, "recall": true}
+	// from construction), plus recall and task_list — registered always
+	// (HLD §6). No other builtin auto-registers.
+	expected := map[string]bool{"load_pattern": true, "recall": true, "task_list": true}
 	names := make([]string, len(resp.Tools))
 	for i, tl := range resp.Tools {
 		names[i] = tl.Name

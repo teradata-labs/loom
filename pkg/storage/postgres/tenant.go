@@ -99,3 +99,14 @@ func execInTxNoRLS(ctx context.Context, pool *pgxpool.Pool, fn func(ctx context.
 
 	return nil
 }
+
+// ExecInTx is execInTx for stores outside this package: one transaction under
+// the caller's identity, so row-level security applies to everything fn does.
+// A context that names no user runs as types.DefaultUserID, the single-user
+// identity every store falls back to.
+func ExecInTx(ctx context.Context, pool *pgxpool.Pool, fn func(ctx context.Context, tx pgx.Tx) error) error {
+	if UserIDFromContext(ctx) == "" {
+		ctx = ContextWithUserID(ctx, types.DefaultUserID)
+	}
+	return execInTx(ctx, pool, fn)
+}

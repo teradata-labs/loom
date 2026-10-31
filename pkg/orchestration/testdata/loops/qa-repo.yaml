@@ -1,0 +1,75 @@
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: qa-repo
+  description: Generated from the qa-repo LoopSpec — do not edit by hand.
+spec:
+  type: state-machine
+  entry_state: FAN_SEATS
+  loopback_states:
+    - REPORT
+    - REPORT_CHECK
+    - SYNTHESIS
+    - SYNTHESIS_CHECK
+  states:
+    FAN_SEATS:
+      tool:
+        name: fan-seats
+      vocab:
+        - reviewed
+        - stuck
+      route:
+        reviewed: SYNTHESIS
+        stuck: STUCK
+    REPORT:
+      agent:
+        agent_id: reporter
+        instructions: report
+      vocab:
+        - drafted
+      route:
+        drafted: REPORT_CHECK
+    REPORT_CHECK:
+      agent:
+        agent_id: report_checker
+        instructions: report-check
+      vocab:
+        - postable
+        - revise
+      route:
+        postable:
+          next_tool:
+            name: "advance:verdict"
+        revise: REPORT
+    SYNTHESIS:
+      agent:
+        agent_id: synthesizer
+        instructions: synthesis
+      vocab:
+        - circling
+        - clear
+        - open
+      route:
+        circling:
+          next_tool:
+            name: "advance:circling"
+        clear: SYNTHESIS_CHECK
+        open: SYNTHESIS_CHECK
+    SYNTHESIS_CHECK:
+      agent:
+        agent_id: synthesis_checker
+        instructions: synthesis-check
+      vocab:
+        - revise
+        - sound
+      route:
+        revise:
+          next_tool:
+            name: "advance:resynth"
+        sound: REPORT
+    CLEAR:
+      terminal: true
+    OPEN:
+      terminal: true
+    STUCK:
+      terminal: true

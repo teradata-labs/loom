@@ -1,0 +1,74 @@
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: verify
+  description: Generated from the verify LoopSpec — do not edit by hand.
+spec:
+  type: state-machine
+  entry_state: DEPLOY
+  loopback_states:
+    - DEPLOY
+    - RUN
+  states:
+    DEEP:
+      tool:
+        name: deep
+      vocab:
+        - analysed
+      route:
+        analysed: SYNTH
+    DEPLOY:
+      tool:
+        name: deploy
+      vocab:
+        - deployed
+      route:
+        deployed: RUN
+    GATE:
+      tool:
+        name: gate
+      vocab:
+        - pass
+      route:
+        pass:
+          next_state: DONE
+          dismiss:
+            - "*"
+    GROUP:
+      tool:
+        name: group
+      vocab:
+        - clean
+        - grouped
+      route:
+        clean:
+          next_tool:
+            name: "advance:scope"
+        grouped: SWEEP
+    RUN:
+      tool:
+        name: run
+      vocab:
+        - collected
+      route:
+        collected: GROUP
+    SWEEP:
+      agent:
+        agent_id: verifier
+        instructions: sweep
+      vocab:
+        - swept
+      route:
+        swept: DEEP
+    SYNTH:
+      agent:
+        agent_id: verifier
+        instructions: synth
+      vocab:
+        - issues
+    BOUNCED:
+      terminal: true
+    DONE:
+      terminal: true
+    ESCALATED:
+      terminal: true

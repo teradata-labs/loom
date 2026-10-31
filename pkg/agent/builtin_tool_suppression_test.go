@@ -177,18 +177,17 @@ func (s *stubLLM) Chat(ctx context.Context, msgs []Message, tools []shuttle.Tool
 // honour the suppression set: both are registered by default at construction,
 // and WithoutBuiltinTool hides each from the LLM's tool list.
 func TestWithoutBuiltinTool_RetrievalTools(t *testing.T) {
+	// recall is registered by default. query_tool_result is not: a result is
+	// bounded as it arrives and the model reads it there; a host whose own
+	// tools need this turn's whole results registers it (NewQueryToolResultTool).
 	t.Run("registered by default", func(t *testing.T) {
 		ag := NewAgent(nil, nil)
-		assert.True(t, ag.tools.IsRegistered("query_tool_result"), "query_tool_result surfaces by default")
 		assert.True(t, ag.tools.IsRegistered("recall"), "recall surfaces by default")
+		assert.False(t, ag.tools.IsRegistered("query_tool_result"), "query_tool_result is opt-in")
 	})
 
 	t.Run("suppressed when opted out", func(t *testing.T) {
-		ag := NewAgent(nil, nil,
-			WithoutBuiltinTool("query_tool_result"),
-			WithoutBuiltinTool("recall"),
-		)
-		assert.False(t, ag.tools.IsRegistered("query_tool_result"), "query_tool_result must NOT surface")
+		ag := NewAgent(nil, nil, WithoutBuiltinTool("recall"))
 		assert.False(t, ag.tools.IsRegistered("recall"), "recall must NOT surface")
 	})
 }
