@@ -116,6 +116,12 @@ type waiter struct {
 	// park time, then the moment aging last raised the rank. Dispatch serves
 	// oldest-at-rank first.
 	rankSince time.Time
+	// rankSeq orders waiters that reached the same effective rank: assigned
+	// from Scheduler.nextRankSeq under the mutex each time rankSince is set.
+	// Dispatch sorts on it rather than rankSince because a coarse clock
+	// (Windows' ~15.6ms monotonic tick) gives near-simultaneous arrivals equal
+	// timestamps, and a tie would fall back to class iteration order.
+	rankSeq uint64
 	// promoted counts starvation tiers crossed (see agingDueLocked). It raises
 	// the effective dispatch rank; it never changes class.
 	promoted int32
@@ -161,6 +167,8 @@ type Scheduler struct {
 
 	grantsTotal     int64
 	promotionsTotal int64
+	// nextRankSeq is the last waiter.rankSeq handed out.
+	nextRankSeq uint64
 
 	stopCh   chan struct{}
 	stopOnce sync.Once
@@ -266,12 +274,14 @@ func (s *Scheduler) Acquire(ctx context.Context, req Request) (*Grant, error) {
 		return g, nil
 	}
 	now := time.Now()
+	s.nextRankSeq++
 	w := &waiter{
 		req:       req,
 		origin:    origin,
 		class:     class,
 		since:     now,
 		rankSince: now,
+		rankSeq:   s.nextRankSeq,
 		ready:     make(chan *Grant, 1),
 	}
 	s.queues[origin][class] = append(s.queues[origin][class], w)
@@ -638,7 +648,7 @@ func (s *Scheduler) dispatchLocked() {
 			// rank queues behind the waiters already there, exactly as if it
 			// had joined the end of that rank's queue.
 			sort.SliceStable(g, func(i, j int) bool {
-				return g[i].rankSince.Before(g[j].rankSince)
+				return g[i].rankSeq < g[j].rankSeq
 			})
 			for _, w := range g {
 				if !s.canGrantLocked(band, w.req.ReservationTokens) {
@@ -778,6 +788,8 @@ func (s *Scheduler) ageLocked() {
 					if effectiveRank(w) > before {
 						// It joins the end of its new rank's queue.
 						w.rankSince = time.Now()
+						s.nextRankSeq++
+						w.rankSeq = s.nextRankSeq
 					}
 				}
 			}

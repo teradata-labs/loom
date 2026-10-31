@@ -905,25 +905,10 @@ func TestAgedWaiterJoinsEndOfItsNewRank(t *testing.T) {
 	require.NoError(t, err)
 
 	t0 := time.Now()
-	park := func(name string, class loomv1.SlotPriorityClass, since, rankSince time.Time, promoted int32) *waiter {
-		w := &waiter{
-			req:       Request{ConversationID: name, ReservationTokens: 500, Class: class},
-			origin:    loomv1.SlotOrigin_SLOT_ORIGIN_BATCH,
-			class:     class,
-			since:     since,
-			rankSince: rankSince,
-			promoted:  promoted,
-			ready:     make(chan *Grant, 1),
-		}
-		s.mu.Lock()
-		s.queues[w.origin][class] = append(s.queues[w.origin][class], w)
-		s.mu.Unlock()
-		return w
-	}
 	// aged parked first but reached the IN_FLIGHT rank only after inflight
 	// parked there natively.
-	aged := park("aged", classNew, t0, t0.Add(2*time.Second), 1)
-	inflight := park("inflight", classInFlight, t0.Add(time.Second), t0.Add(time.Second), 0)
+	aged := parkWaiter(s, "aged", classNew, t0, t0.Add(2*time.Second), 2, 1)
+	inflight := parkWaiter(s, "inflight", classInFlight, t0.Add(time.Second), t0.Add(time.Second), 1, 0)
 
 	hog.Release(1) // room for exactly one 500
 	select {
@@ -939,5 +924,61 @@ func TestAgedWaiterJoinsEndOfItsNewRank(t *testing.T) {
 		g.Release(1)
 	case <-time.After(2 * time.Second):
 		t.Fatal("aged waiter never served")
+	}
+}
+
+// parkWaiter places a 500-token batch waiter directly on its class queue, so
+// a test controls its timestamps and rank order exactly instead of depending
+// on the 1s aging tick.
+func parkWaiter(s *Scheduler, name string, class loomv1.SlotPriorityClass, since, rankSince time.Time, rankSeq uint64, promoted int32) *waiter {
+	w := &waiter{
+		req:       Request{ConversationID: name, ReservationTokens: 500, Class: class},
+		origin:    loomv1.SlotOrigin_SLOT_ORIGIN_BATCH,
+		class:     class,
+		since:     since,
+		rankSince: rankSince,
+		rankSeq:   rankSeq,
+		promoted:  promoted,
+		ready:     make(chan *Grant, 1),
+	}
+	s.mu.Lock()
+	s.queues[w.origin][class] = append(s.queues[w.origin][class], w)
+	s.mu.Unlock()
+	return w
+}
+
+// TestSameRankTieUsesArrivalOrderNotClass is the Windows CI failure of
+// TestStarvedWaiterOutranksHolderWithoutBecomingOne made exact: Windows'
+// coarse monotonic clock gives two waiters that reach the top rank within
+// one clock tick the same rankSince. Ordering on the timestamp then fell back
+// to class iteration order, which serves RESOURCE_HOLDER before NEW, so a
+// starved NEW waiter that reached the rank first lost to a fresh holder.
+// Dispatch orders on rankSeq, assigned under the mutex, so arrival order
+// survives a tied clock.
+func TestSameRankTieUsesArrivalOrderNotClass(t *testing.T) {
+	s := newTest(t, Config{TokensPerMinute: 1000, StarvationAge: time.Hour, InteractiveHeadroom: -1})
+	hog, err := s.Acquire(context.Background(), Request{ReservationTokens: 700})
+	require.NoError(t, err)
+
+	tied := time.Now()
+	// The NEW waiter aged two tiers into the top rank, then the holder parked
+	// there; both read the same clock value.
+	starved := parkWaiter(s, "starved", classNew, tied.Add(-time.Second), tied, 1, 2)
+	holder := parkWaiter(s, "holder", classHolder, tied, tied, 2, 0)
+
+	hog.Release(1) // room for exactly one 500
+	select {
+	case g := <-starved.ready:
+		g.Release(1)
+	case <-holder.ready:
+		t.Fatal("a tied timestamp let class order serve the holder ahead of the waiter that reached the rank first")
+	case <-time.After(2 * time.Second):
+		t.Fatal("nothing was served")
+	}
+	select {
+	case g := <-holder.ready:
+		g.Release(1)
+	case <-time.After(2 * time.Second):
+		t.Fatal("holder never served")
 	}
 }
