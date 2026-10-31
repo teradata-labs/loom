@@ -61,8 +61,6 @@ type SessionStorage interface {
 	// Relief transactions (HLD §5.2 — write-once flags, one transaction per
 	// operation, set only inside releasePressure):
 	//
-	// MarkEvicted sets evicted=true on the given rows in one transaction.
-	MarkEvicted(ctx context.Context, sessionID string, seqs []int64) error
 	// FoldMessages writes summary version n (snapshot_type='fold', content =
 	// JSON {"n","text"}) and sets the region's folded flags in ONE transaction
 	// (HLD §5.4.6) — a fold never stands in memory without its row.

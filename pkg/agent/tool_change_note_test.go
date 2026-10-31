@@ -246,10 +246,7 @@ agent:
 	assert.False(t, build("    tool_change_note: false\n").GetConfig().ToolChangeNote)
 	assert.False(t, build("    max_turns: 5\n").GetConfig().ToolChangeNote)
 
-	// Alongside context_relief_warning: each key sets only its own field.
-	both := build("    tool_change_note: true\n    context_relief_warning: true\n").GetConfig()
-	assert.True(t, both.ToolChangeNote)
-	assert.True(t, both.ContextReliefWarning)
-	only := build("    tool_change_note: true\n").GetConfig()
-	assert.False(t, only.ContextReliefWarning)
+	// An agent file that still sets the removed context_relief_warning key
+	// loads, and the key it does set takes effect.
+	assert.True(t, build("    tool_change_note: true\n    context_relief_warning: true\n").GetConfig().ToolChangeNote)
 }

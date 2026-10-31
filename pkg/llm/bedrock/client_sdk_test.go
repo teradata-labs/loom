@@ -458,3 +458,104 @@ func TestSDKClient_ConcurrentChat_ToolNames(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+// TestMarkLastBlockCacheControl_LandsOnToolUse — an assistant message that
+// speaks and then calls a tool ends in a tool_use block; the breakpoint must
+// land there, not be dropped. Thinking blocks are skipped.
+func TestMarkLastBlockCacheControl_LandsOnToolUse(t *testing.T) {
+	msg := anthropic.MessageParam{Role: anthropic.MessageParamRoleAssistant, Content: []anthropic.ContentBlockParamUnion{
+		anthropic.NewTextBlock("I will read the file"),
+		anthropic.NewToolUseBlock("c1", map[string]any{"path": "x"}, "file_read"),
+	}}
+	markLastBlockCacheControl([]anthropic.MessageParam{msg})
+	if msg.Content[1].OfToolUse == nil || msg.Content[1].OfToolUse.CacheControl.Type == "" {
+		t.Fatalf("breakpoint not set on the trailing tool_use block")
+	}
+	if msg.Content[0].OfText.CacheControl.Type != "" {
+		t.Fatalf("text block must not be marked when a later block can carry the marker")
+	}
+	only := anthropic.MessageParam{Role: anthropic.MessageParamRoleAssistant, Content: []anthropic.ContentBlockParamUnion{
+		anthropic.NewTextBlock("done"),
+		anthropic.NewThinkingBlock("sig", "…"),
+	}}
+	markLastBlockCacheControl([]anthropic.MessageParam{only})
+	if only.Content[0].OfText.CacheControl.Type == "" {
+		t.Fatalf("marker must skip the thinking block and land on the text block")
+	}
+}
+
+// TestSDKClientEffortIsTheEffortThatApplied pins what a call records as its
+// effort: on an adaptive model the effort sent, or the API's default when none
+// is; on an older model the thinking level, or none with thinking off.
+func TestSDKClientEffortIsTheEffortThatApplied(t *testing.T) {
+	cases := []struct {
+		model, level, want string
+	}{
+		{"us.anthropic.claude-opus-5", "xhigh", "xhigh"},
+		{"us.anthropic.claude-opus-5", "medium", "medium"},
+		{"us.anthropic.claude-opus-5", "auto", "high"},
+		{"us.anthropic.claude-opus-5", "", "high"},
+		{"us.anthropic.claude-sonnet-4-5-20250929-v1:0", "low", "low"},
+		{"us.anthropic.claude-sonnet-4-5-20250929-v1:0", "", "none"},
+	}
+	for _, tc := range cases {
+		c := &SDKClient{modelID: tc.model, thinkingLevel: tc.level}
+		if got := c.effort(); got != tc.want {
+			t.Errorf("%s/%q: effort %q, want %q", tc.model, tc.level, got, tc.want)
+		}
+	}
+}
+
+// TestSDKClientUsageCarriesThinkingCacheLifetimeAndEffort reads the thinking
+// tokens and the cache write split by lifetime from the provider's usage, on
+// both the plain and the streamed answer, and stamps the effort sent.
+func TestSDKClientUsageCarriesThinkingCacheLifetimeAndEffort(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req map[string]interface{}
+		_ = json.Unmarshal(body, &req)
+		if stream, _ := req["stream"].(bool); !stream {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"msg_test","type":"message","role":"assistant",` +
+				`"content":[{"type":"text","text":"ok"}],"model":"test-model","stop_reason":"end_turn",` +
+				`"usage":{"input_tokens":3,"output_tokens":500,"cache_read_input_tokens":9000,"cache_creation_input_tokens":700,` +
+				`"cache_creation":{"ephemeral_1h_input_tokens":600,"ephemeral_5m_input_tokens":100},` +
+				`"output_tokens_details":{"thinking_tokens":420}}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, ev := range []struct{ event, data string }{
+			{"message_start", `{"type":"message_start","message":{"id":"msg_test","type":"message","role":"assistant","content":[],"model":"test-model",` +
+				`"usage":{"input_tokens":3,"output_tokens":0,"cache_read_input_tokens":9000,"cache_creation_input_tokens":700,` +
+				`"cache_creation":{"ephemeral_1h_input_tokens":600,"ephemeral_5m_input_tokens":100}}}}`},
+			{"content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`},
+			{"content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`},
+			{"content_block_stop", `{"type":"content_block_stop","index":0}`},
+			{"message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},` +
+				`"usage":{"output_tokens":500,"output_tokens_details":{"thinking_tokens":420}}}`},
+			{"message_stop", `{"type":"message_stop"}`},
+		} {
+			_, _ = w.Write([]byte("event: " + ev.event + "\ndata: " + ev.data + "\n\n"))
+		}
+	}))
+	defer ts.Close()
+
+	for _, maxTokens := range []int64{4096, 64000} { // plain, then streamed
+		c := &SDKClient{
+			client:        anthropic.NewClient(option.WithBaseURL(ts.URL), option.WithAPIKey("test-key")),
+			modelID:       "us.anthropic.claude-opus-5",
+			maxTokens:     maxTokens,
+			temperature:   1.0,
+			thinkingLevel: "medium",
+		}
+		resp, err := c.Chat(context.Background(), []llmtypes.Message{{Role: "user", Content: "go"}}, nil)
+		require.NoError(t, err)
+		u := resp.Usage
+		assert.Equal(t, 500, u.OutputTokens, "max_tokens %d", maxTokens)
+		assert.Equal(t, 420, u.ThinkingTokens, "max_tokens %d: thinking tokens", maxTokens)
+		assert.Equal(t, 700, u.CacheCreationInputTokens, "max_tokens %d", maxTokens)
+		assert.Equal(t, 600, u.CacheCreation1hInputTokens, "max_tokens %d: 1-hour cache write", maxTokens)
+		assert.Equal(t, 100, u.CacheCreation5mInputTokens, "max_tokens %d: 5-minute cache write", maxTokens)
+		assert.Equal(t, "medium", u.Effort, "max_tokens %d: effort", maxTokens)
+	}
+}

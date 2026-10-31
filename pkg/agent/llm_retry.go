@@ -82,6 +82,21 @@ func normalizeWireRoles(messages []Message) []Message {
 	return out
 }
 
+// Retry policy for LLM calls. Not configurable: a transient provider failure
+// (internalServerException, a mid-stream disconnect, a throttle) is a fact of
+// the transport, not a choice the caller makes, and no embedder has a reason to
+// want the first blip to kill a conversation. Every LLM call — streaming or
+// plain — runs under this policy.
+//
+// A refusal positively identified as context-too-long is never retried (relief
+// answers that, not retry), and a cancelled context stops the loop at once.
+const (
+	retryMaxRetries   = 5
+	retryInitialDelay = 100 * time.Millisecond
+	retryMaxDelay     = 5 * time.Second
+	retryMultiplier   = 2.0
+)
+
 // chatWithRetry wraps LLM Chat calls with slot scheduling, capacity
 // observation, and exponential backoff retry logic. If the provider supports
 // streaming and a progress callback is configured, it will use streaming
@@ -201,23 +216,26 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 	progressCallback := ctx.ProgressCallback()
 	useStreaming := supportsStreaming && progressCallback != nil
 
-	// If using streaming, bypass retry logic (streaming already handles errors)
-	if useStreaming {
-		return a.chatWithStreaming(ctx, messages, tools, progressCallback)
-	}
-
-	// Non-streaming path with retry logic
-	// If retry is disabled, call LLM directly
-	if !a.config.Retry.Enabled || a.config.Retry.MaxRetries == 0 {
+	// Unified call: streaming or plain. Both flow through the retry loop below.
+	// Previously the streaming path bypassed retry entirely ("streaming already
+	// handles errors" — it does not; chatWithStreaming returns the error raw), so a
+	// transient provider failure (e.g. internalServerException or a mid-stream
+	// disconnect) killed the whole conversation. A failed ChatStream returns
+	// (nil, err) without mutating messages, so re-issuing the turn is safe; only
+	// progress events repeat, which is cosmetic.
+	call := func() (*LLMResponse, error) {
+		if useStreaming {
+			return a.chatWithStreaming(ctx, messages, tools, progressCallback)
+		}
 		return a.llm.Chat(a.providerCtx(ctx, messages), messages, tools)
 	}
 
 	var lastErr error
-	delay := a.config.Retry.InitialDelay
+	delay := retryInitialDelay
 
-	for attempt := 0; attempt <= a.config.Retry.MaxRetries; attempt++ {
-		// Attempt LLM call
-		response, err := a.llm.Chat(a.providerCtx(ctx, messages), messages, tools)
+	for attempt := 0; attempt <= retryMaxRetries; attempt++ {
+		// Attempt LLM call (streaming or plain, via the unified closure)
+		response, err := call()
 		if err == nil {
 			// Success! Log if we had previous failures
 			if attempt > 0 {
@@ -241,18 +259,18 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 		// Don't retry on context cancellation or deadline exceeded
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("llm call failed (attempt %d/%d): %w (context cancelled)",
-				attempt+1, a.config.Retry.MaxRetries+1, err)
+				attempt+1, retryMaxRetries+1, err)
 		}
 
 		// If this is the last attempt, don't sleep
-		if attempt >= a.config.Retry.MaxRetries {
+		if attempt >= retryMaxRetries {
 			break
 		}
 
 		// Log retry attempt
 		zap.L().Warn("llm call failed, retrying",
 			zap.Int("attempt", attempt+1),
-			zap.Int("max_retries", a.config.Retry.MaxRetries),
+			zap.Int("max_retries", retryMaxRetries),
 			zap.Duration("delay", delay),
 			zap.Error(err),
 		)
@@ -261,26 +279,26 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 		select {
 		case <-ctx.Done():
 			return nil, fmt.Errorf("llm call failed (attempt %d/%d): %w (context cancelled during retry)",
-				attempt+1, a.config.Retry.MaxRetries+1, ctx.Err())
+				attempt+1, retryMaxRetries+1, ctx.Err())
 		case <-time.After(delay):
 			// Continue to next retry
 		}
 
 		// Calculate next delay with exponential backoff
-		delay = time.Duration(float64(delay) * a.config.Retry.Multiplier)
-		if delay > a.config.Retry.MaxDelay {
-			delay = a.config.Retry.MaxDelay
+		delay = time.Duration(float64(delay) * retryMultiplier)
+		if delay > retryMaxDelay {
+			delay = retryMaxDelay
 		}
 	}
 
 	// All retries exhausted
 	zap.L().Error("llm retries exhausted",
-		zap.Int("max_retries", a.config.Retry.MaxRetries),
+		zap.Int("max_retries", retryMaxRetries),
 		zap.Error(lastErr),
 	)
 
 	return nil, fmt.Errorf("llm call failed after %d attempts: %w",
-		a.config.Retry.MaxRetries+1, lastErr)
+		retryMaxRetries+1, lastErr)
 }
 
 // toolInputActivityInterval throttles the IsToolInputStream progress events

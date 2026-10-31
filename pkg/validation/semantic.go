@@ -349,10 +349,9 @@ func validateTools(tools []interface{}) ([]ValidationError, []ValidationWarning)
 
 	// Add framework tools (auto-registered, not in builtin.Names())
 	frameworkTools := []string{
-		"workspace",         // Session-scoped file management (auto-registered)
-		"tool_search",       // Tool discovery via FTS (conditionally registered)
-		"query_tool_result", // In-turn retrieval (registered at construction)
-		"recall",            // Summary-span retrieval (registered at construction)
+		"workspace",   // Session-scoped file management (auto-registered)
+		"tool_search", // Tool discovery via FTS (conditionally registered)
+		"recall",      // Summary-span retrieval (registered at construction)
 		// Server-registered tools (not in pkg/shuttle/builtin/registry.go but
 		// reachable by name from agent configs — wired in cmd/looms/cmd_serve.go
 		// and referenced by templates/presets):
@@ -395,7 +394,7 @@ func validateTools(tools []interface{}) ([]ValidationError, []ValidationWarning)
 
 		// Warn about auto-registered tools that should NOT be listed
 		autoRegistered := map[string]bool{
-			"workspace": true, "query_tool_result": true, "recall": true,
+			"workspace": true, "recall": true,
 		}
 		if autoRegistered[toolName] {
 			warnings = append(warnings, ValidationWarning{
@@ -630,11 +629,6 @@ func findClosestTool(tool string, validTools map[string]bool) string {
 		"search_tools": "tool_search",
 		"find_tools":   "tool_search",
 		"search_tool":  "tool_search",
-
-		// query_tool_result variations
-		"query_result":    "query_tool_result",
-		"get_tool_result": "query_tool_result",
-		"tool_result":     "query_tool_result",
 
 		// workspace variations
 		"work_space":   "workspace",

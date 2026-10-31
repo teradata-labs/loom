@@ -189,6 +189,22 @@ func (s *SessionStore) initSchema() error {
 		timestamp INTEGER NOT NULL,
 		token_count INTEGER DEFAULT 0,
 		cost_usd REAL DEFAULT 0,
+		-- Per-turn token breakdown recorded from the LLM response of the
+		-- call that produced this message. SUM over these columns is the
+		-- source of truth for every cost/token roll-up in the product.
+		input_tokens INTEGER NOT NULL DEFAULT 0,
+		output_tokens INTEGER NOT NULL DEFAULT 0,
+		cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+		cache_create_tokens INTEGER NOT NULL DEFAULT 0,
+		-- The model that answered, on a message an LLM call billed, and the
+		-- effort that call was made at.
+		model TEXT NOT NULL DEFAULT '',
+		effort TEXT NOT NULL DEFAULT '',
+		-- cache_create_tokens split by how long the entry lives, and the part
+		-- of output_tokens spent thinking, as the provider reported them.
+		cache_create_1h_tokens INTEGER NOT NULL DEFAULT 0,
+		cache_create_5m_tokens INTEGER NOT NULL DEFAULT 0,
+		thinking_tokens INTEGER NOT NULL DEFAULT 0,
 		evicted INTEGER NOT NULL DEFAULT 0,
 		folded INTEGER NOT NULL DEFAULT 0,
 		turn INTEGER NOT NULL DEFAULT 0,
@@ -344,8 +360,10 @@ func (s *SessionStore) initSchema() error {
 		"session_context":   "ALTER TABLE messages ADD COLUMN session_context TEXT DEFAULT 'direct'",
 		"message_agent_id":  "ALTER TABLE messages ADD COLUMN agent_id TEXT", // Track which agent created each message
 		// Context-compilation columns (HLD §4.5): seq is the existing
-		// messages.id; evicted/folded are the write-once relief flags; turn is
-		// derived at insert. Legacy rows keep turn = 0 (uniformly old).
+		// messages.id; folded is the write-once relief flag; turn is derived at
+		// insert. Legacy rows keep turn = 0 (uniformly old). evicted is legacy:
+		// eviction was removed, so nothing sets it any more, but the column and
+		// the ALTER stay so an older DB still matches the SELECT list.
 		"evicted": "ALTER TABLE messages ADD COLUMN evicted INTEGER NOT NULL DEFAULT 0",
 		"folded":  "ALTER TABLE messages ADD COLUMN folded INTEGER NOT NULL DEFAULT 0",
 		"turn":    "ALTER TABLE messages ADD COLUMN turn INTEGER NOT NULL DEFAULT 0",
@@ -360,6 +378,22 @@ func (s *SessionStore) initSchema() error {
 		// initSchema (not the pkg/storage/sqlite migrator, whose 000001 only
 		// bootstraps): a numbered migration here would double-ALTER.
 		"user_id": "ALTER TABLE sessions ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default-user'",
+		// Per-turn token breakdown on messages: what the LLM billed for the
+		// call that produced this row. Every product cost/token roll-up sums
+		// these; there is no other truth to read.
+		"input_tokens":        "ALTER TABLE messages ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0",
+		"output_tokens":       "ALTER TABLE messages ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0",
+		"cache_read_tokens":   "ALTER TABLE messages ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0",
+		"cache_create_tokens": "ALTER TABLE messages ADD COLUMN cache_create_tokens INTEGER NOT NULL DEFAULT 0",
+		// The model that answered, on a message an LLM call billed, and the
+		// effort that call was made at.
+		"model":  "ALTER TABLE messages ADD COLUMN model TEXT NOT NULL DEFAULT ''",
+		"effort": "ALTER TABLE messages ADD COLUMN effort TEXT NOT NULL DEFAULT ''",
+		// The cache write split by how long the entry lives, and the part of
+		// the output spent thinking, as the provider reported them.
+		"cache_create_1h_tokens": "ALTER TABLE messages ADD COLUMN cache_create_1h_tokens INTEGER NOT NULL DEFAULT 0",
+		"cache_create_5m_tokens": "ALTER TABLE messages ADD COLUMN cache_create_5m_tokens INTEGER NOT NULL DEFAULT 0",
+		"thinking_tokens":        "ALTER TABLE messages ADD COLUMN thinking_tokens INTEGER NOT NULL DEFAULT 0",
 		// incarnation is the session's creation nonce (nanosecond, stamped
 		// once, never updated): created_at survives the round trip at SECOND
 		// resolution only, so the implicit-task epoch needs its own column to
@@ -376,7 +410,9 @@ func (s *SessionStore) initSchema() error {
 		// Check if column exists
 		var table string
 		switch columnName {
-		case "session_context", "message_agent_id", "evicted", "folded", "turn", "task_id":
+		case "session_context", "message_agent_id", "evicted", "folded", "turn", "task_id",
+			"input_tokens", "output_tokens", "cache_read_tokens", "cache_create_tokens", "model",
+			"effort", "cache_create_1h_tokens", "cache_create_5m_tokens", "thinking_tokens":
 			table = "messages"
 		case "admission_decision":
 			table = "tool_executions"
@@ -767,8 +803,8 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg *M
 	}
 
 	query := `
-		INSERT INTO messages (session_id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, evicted, folded, turn)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+		INSERT INTO messages (session_id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, model, effort, cache_create_1h_tokens, cache_create_5m_tokens, thinking_tokens, evicted, folded, turn)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 			(SELECT COALESCE(MAX(turn), 0) + ? FROM messages WHERE session_id = ?))
 	`
 
@@ -785,6 +821,15 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg *M
 		msg.Timestamp.Unix(),
 		msg.TokenCount,
 		msg.CostUSD,
+		msg.InputTokens,
+		msg.OutputTokens,
+		msg.CacheReadTokens,
+		msg.CacheCreateTokens,
+		msg.Model,
+		msg.Effort,
+		msg.CacheCreate1hTokens,
+		msg.CacheCreate5mTokens,
+		msg.ThinkingTokens,
 		evicted,
 		folded,
 		turnIncrement,
@@ -855,7 +900,7 @@ func (s *SessionStore) loadMessagesLocked(ctx context.Context, sessionID string)
 	// The owner predicate is defense in depth: callers guard first, but this
 	// helper must not become a cross-user read if a future caller forgets.
 	query := `
-		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, evicted, folded, turn
+		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, evicted, folded, turn
 		FROM messages
 		WHERE session_id = ? AND folded = 0
 		AND EXISTS (SELECT 1 FROM sessions WHERE id = messages.session_id AND user_id = ?)
@@ -890,6 +935,10 @@ func (s *SessionStore) loadMessagesLocked(ctx context.Context, sessionID string)
 			&timestamp,
 			&msg.TokenCount,
 			&msg.CostUSD,
+			&msg.InputTokens,
+			&msg.OutputTokens,
+			&msg.CacheReadTokens,
+			&msg.CacheCreateTokens,
 			&evicted,
 			&folded,
 			&msg.Turn,
@@ -953,6 +1002,32 @@ func (s *SessionStore) loadMessagesLocked(ctx context.Context, sessionID string)
 	return messages, nil
 }
 
+// SessionCost is what a session has cost: the sum of what every message it
+// produced cost, the ones context relief folded away included. It is summed
+// where the messages are kept, so a host can show it without reading them.
+func (s *SessionStore) SessionCost(ctx context.Context, sessionID string) (float64, error) {
+	ctx, span := s.tracer.StartSpan(ctx, "session_store.session_cost")
+	defer s.tracer.EndSpan(span)
+	span.SetAttribute("session_id", sessionID)
+
+	if owned, err := s.ownsSession(ctx, sessionID); err != nil {
+		return 0, err
+	} else if !owned {
+		return 0, nil // unowned reads as missing by design
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var total float64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(cost_usd), 0) FROM messages WHERE session_id = ?`, sessionID).Scan(&total)
+	if err != nil {
+		return 0, fmt.Errorf("failed to sum the session's cost: %w", err)
+	}
+	return total, nil
+}
+
 // ListMessagesBySeqRange is the by-seq span read backing recall (HLD §6):
 // rows lo..hi inclusive for one session, seq (messages.id) ascending. Folded
 // rows are included — a summary-cited span is exactly what recall retrieves.
@@ -971,7 +1046,7 @@ func (s *SessionStore) ListMessagesBySeqRange(ctx context.Context, sessionID str
 	defer s.mu.RUnlock()
 
 	query := `
-		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd, evicted, folded, turn
+		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, evicted, folded, turn
 		FROM messages
 		WHERE session_id = ? AND id BETWEEN ? AND ?
 		ORDER BY id ASC
@@ -1005,6 +1080,10 @@ func (s *SessionStore) ListMessagesBySeqRange(ctx context.Context, sessionID str
 			&timestamp,
 			&msg.TokenCount,
 			&msg.CostUSD,
+			&msg.InputTokens,
+			&msg.OutputTokens,
+			&msg.CacheReadTokens,
+			&msg.CacheCreateTokens,
 			&evicted,
 			&folded,
 			&msg.Turn,
@@ -1174,7 +1253,6 @@ func (s *SessionStore) LoadMessagesForAgent(ctx context.Context, agentID string)
 		// Populate fields
 		msg.ID = fmt.Sprintf("%d", msgID)
 		msg.Timestamp = time.Unix(timestamp, 0)
-		msg.Evicted = evicted != 0
 
 		if sessionContext.Valid {
 			msg.SessionContext = types.SessionContext(sessionContext.String)
@@ -1317,7 +1395,6 @@ func (s *SessionStore) LoadMessagesFromParentSession(ctx context.Context, sessio
 		// Populate fields
 		msg.ID = fmt.Sprintf("%d", msgID)
 		msg.Timestamp = time.Unix(timestamp, 0)
-		msg.Evicted = evicted != 0
 
 		if sessionContext.Valid {
 			msg.SessionContext = types.SessionContext(sessionContext.String)
@@ -1533,43 +1610,6 @@ func (s *SessionStore) ListSessions(ctx context.Context) ([]string, error) {
 
 	span.SetAttribute("session_count", fmt.Sprintf("%d", len(sessionIDs)))
 	return sessionIDs, nil
-}
-
-// MarkEvicted sets evicted=1 on the given rows in one transaction (relief
-// operation; HLD §5.2). Flags are write-once — no code path clears them.
-func (s *SessionStore) MarkEvicted(ctx context.Context, sessionID string, seqs []int64) error {
-
-	if err := s.requireOwnedSession(ctx, sessionID); err != nil {
-		return err
-	}
-	if len(seqs) == 0 {
-		return nil
-	}
-	ctx, span := s.tracer.StartSpan(ctx, "session_store.mark_evicted")
-	defer s.tracer.EndSpan(span)
-	span.SetAttribute("session_id", sessionID)
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		span.RecordError(err)
-		return fmt.Errorf("failed to begin evict transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	query, args := seqUpdateQuery("UPDATE messages SET evicted = 1 WHERE session_id = ? AND id IN", sessionID, seqs)
-	if _, err := tx.ExecContext(ctx, query, args...); err != nil {
-		span.RecordError(err)
-		return fmt.Errorf("failed to mark evicted: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		span.RecordError(err)
-		return fmt.Errorf("failed to commit evict transaction: %w", err)
-	}
-	span.SetAttribute("rows", fmt.Sprintf("%d", len(seqs)))
-	return nil
 }
 
 // FoldMessages writes summary version n (snapshot_type='fold', content = JSON

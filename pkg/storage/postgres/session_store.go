@@ -186,7 +186,7 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*agen
 
 		// Load messages within the same transaction
 		rows, err := tx.Query(ctx, `
-		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, evicted, folded, turn
+		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, evicted, folded, turn
 		FROM messages
 		WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL AND folded = FALSE
 		ORDER BY id ASC`,
@@ -399,9 +399,9 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg *a
 
 		var seq, turn int64
 		err := tx.QueryRow(ctx, `
-		INSERT INTO messages (session_id, user_id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, evicted, folded, turn)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-			(SELECT COALESCE(MAX(turn), 0) + $16 FROM messages WHERE session_id = $1))
+		INSERT INTO messages (session_id, user_id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, model, effort, cache_create_1h_tokens, cache_create_5m_tokens, thinking_tokens, evicted, folded, turn)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24,
+			(SELECT COALESCE(MAX(turn), 0) + $25 FROM messages WHERE session_id = $1))
 		RETURNING id, turn`,
 			sessionID,
 			userID,
@@ -416,6 +416,15 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg *a
 			msg.Timestamp,
 			msg.TokenCount,
 			msg.CostUSD,
+			msg.InputTokens,
+			msg.OutputTokens,
+			msg.CacheReadTokens,
+			msg.CacheCreateTokens,
+			msg.Model,
+			msg.Effort,
+			msg.CacheCreate1hTokens,
+			msg.CacheCreate5mTokens,
+			msg.ThinkingTokens,
 			msg.Evicted,
 			msg.Folded,
 			turnIncrement,
@@ -459,7 +468,7 @@ func (s *SessionStore) LoadMessages(ctx context.Context, sessionID string) ([]ag
 	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		userID := UserIDFromContext(ctx)
 		rows, err := tx.Query(ctx, `
-		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, evicted, folded, turn
+		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, evicted, folded, turn
 		FROM messages
 		WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL AND folded = FALSE
 		ORDER BY id ASC`,
@@ -478,29 +487,6 @@ func (s *SessionStore) LoadMessages(ctx context.Context, sessionID string) ([]ag
 		return nil, err
 	}
 	return messages, nil
-}
-
-// MarkEvicted sets evicted=TRUE on the given rows in one transaction (relief
-// operation; HLD §5.2). Flags are write-once — no code path clears them.
-func (s *SessionStore) MarkEvicted(ctx context.Context, sessionID string, seqs []int64) error {
-	if len(seqs) == 0 {
-		return nil
-	}
-	ctx, span := s.tracer.StartSpan(ctx, "pg_session_store.mark_evicted")
-	defer s.tracer.EndSpan(span)
-	span.SetAttribute("session_id", sessionID)
-
-	return execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		userID := UserIDFromContext(ctx)
-		if _, err := tx.Exec(ctx,
-			"UPDATE messages SET evicted = TRUE WHERE session_id = $1 AND user_id = $2 AND id = ANY($3)",
-			sessionID, userID, seqs,
-		); err != nil {
-			span.RecordError(err)
-			return fmt.Errorf("failed to mark evicted: %w", err)
-		}
-		return nil
-	})
 }
 
 // FoldMessages writes summary version n (snapshot_type='fold', content = JSON
@@ -553,7 +539,7 @@ func (s *SessionStore) ListMessagesBySeqRange(ctx context.Context, sessionID str
 	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		userID := UserIDFromContext(ctx)
 		rows, err := tx.Query(ctx, `
-		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, evicted, folded, turn
+		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, evicted, folded, turn
 		FROM messages
 		WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL AND id BETWEEN $3 AND $4
 		ORDER BY id ASC`,
@@ -584,7 +570,7 @@ func (s *SessionStore) LoadMessagesForAgent(ctx context.Context, agentID string)
 	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		userID := UserIDFromContext(ctx)
 		rows, err := tx.Query(ctx, `
-		SELECT m.id, m.role, m.content, m.tool_calls_json, m.tool_use_id, m.tool_result_json, m.session_context, m.agent_id, m.task_id, m.timestamp, m.token_count, m.cost_usd, m.evicted, m.folded, m.turn
+		SELECT m.id, m.role, m.content, m.tool_calls_json, m.tool_use_id, m.tool_result_json, m.session_context, m.agent_id, m.task_id, m.timestamp, m.token_count, m.cost_usd, m.input_tokens, m.output_tokens, m.cache_read_tokens, m.cache_create_tokens, m.evicted, m.folded, m.turn
 		FROM messages m
 		JOIN sessions s ON m.session_id = s.id
 		WHERE s.agent_id = $1 AND s.user_id = $2 AND s.deleted_at IS NULL AND m.deleted_at IS NULL
@@ -636,7 +622,7 @@ func (s *SessionStore) LoadMessagesFromParentSession(ctx context.Context, sessio
 
 		// Load messages from parent session within the same transaction
 		rows, err := tx.Query(ctx, `
-		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, evicted, folded, turn
+		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, evicted, folded, turn
 		FROM messages
 		WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL
 		  AND folded = FALSE
@@ -681,7 +667,7 @@ func (s *SessionStore) SearchMessages(ctx context.Context, sessionID, query stri
 		if sessionID == "" {
 			// Search across all sessions for this user
 			rows, err = tx.Query(ctx, `
-			SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, evicted, folded, turn
+			SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, evicted, folded, turn
 			FROM messages
 			WHERE user_id = $1 AND deleted_at IS NULL AND content_search @@ websearch_to_tsquery('english', $2)
 			ORDER BY ts_rank_cd(content_search, websearch_to_tsquery('english', $2)) DESC
@@ -690,7 +676,7 @@ func (s *SessionStore) SearchMessages(ctx context.Context, sessionID, query stri
 			)
 		} else {
 			rows, err = tx.Query(ctx, `
-			SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, evicted, folded, turn
+			SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, evicted, folded, turn
 			FROM messages
 			WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL AND content_search @@ websearch_to_tsquery('english', $3)
 			ORDER BY ts_rank_cd(content_search, websearch_to_tsquery('english', $3)) DESC
@@ -728,7 +714,7 @@ func (s *SessionStore) SearchMessagesByAgent(ctx context.Context, agentID, query
 	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		userID := UserIDFromContext(ctx)
 		rows, err := tx.Query(ctx, `
-		SELECT m.id, m.role, m.content, m.tool_calls_json, m.tool_use_id, m.tool_result_json, m.session_context, m.agent_id, m.task_id, m.timestamp, m.token_count, m.cost_usd, m.evicted, m.folded, m.turn
+		SELECT m.id, m.role, m.content, m.tool_calls_json, m.tool_use_id, m.tool_result_json, m.session_context, m.agent_id, m.task_id, m.timestamp, m.token_count, m.cost_usd, m.input_tokens, m.output_tokens, m.cache_read_tokens, m.cache_create_tokens, m.evicted, m.folded, m.turn
 		FROM messages m
 		JOIN sessions s ON m.session_id = s.id
 		WHERE s.agent_id = $1 AND s.user_id = $2 AND s.deleted_at IS NULL AND m.deleted_at IS NULL AND m.content_search @@ websearch_to_tsquery('english', $3)
@@ -1030,36 +1016,44 @@ func scanMessages(rows pgx.Rows) ([]agent.Message, error) {
 	var messages []agent.Message
 	for rows.Next() {
 		var (
-			id             int64
-			role           string
-			content        *string
-			toolCallsJSON  []byte
-			toolUseID      *string
-			toolResultJSON []byte
-			sessionCtx     *string
-			msgAgentID     *string
-			taskID         *string
-			timestamp      time.Time
-			tokenCount     int
-			costUSD        float64
-			evicted        bool
-			folded         bool
-			turn           int64
+			id                int64
+			role              string
+			content           *string
+			toolCallsJSON     []byte
+			toolUseID         *string
+			toolResultJSON    []byte
+			sessionCtx        *string
+			msgAgentID        *string
+			taskID            *string
+			timestamp         time.Time
+			tokenCount        int
+			costUSD           float64
+			inputTokens       int
+			outputTokens      int
+			cacheReadTokens   int
+			cacheCreateTokens int
+			evicted           bool
+			folded            bool
+			turn              int64
 		)
 
-		if err := rows.Scan(&id, &role, &content, &toolCallsJSON, &toolUseID, &toolResultJSON, &sessionCtx, &msgAgentID, &taskID, &timestamp, &tokenCount, &costUSD, &evicted, &folded, &turn); err != nil {
+		if err := rows.Scan(&id, &role, &content, &toolCallsJSON, &toolUseID, &toolResultJSON, &sessionCtx, &msgAgentID, &taskID, &timestamp, &tokenCount, &costUSD, &inputTokens, &outputTokens, &cacheReadTokens, &cacheCreateTokens, &evicted, &folded, &turn); err != nil {
 			return nil, fmt.Errorf("failed to scan message: %w", err)
 		}
 
 		msg := agent.Message{
-			ID:         fmt.Sprintf("%d", id),
-			Role:       role,
-			Timestamp:  timestamp,
-			TokenCount: tokenCount,
-			CostUSD:    costUSD,
-			Evicted:    evicted,
-			Folded:     folded,
-			Turn:       turn,
+			ID:                fmt.Sprintf("%d", id),
+			Role:              role,
+			Timestamp:         timestamp,
+			TokenCount:        tokenCount,
+			CostUSD:           costUSD,
+			InputTokens:       inputTokens,
+			OutputTokens:      outputTokens,
+			CacheReadTokens:   cacheReadTokens,
+			CacheCreateTokens: cacheCreateTokens,
+			Evicted:           evicted,
+			Folded:            folded,
+			Turn:              turn,
 		}
 
 		if content != nil {
