@@ -989,7 +989,7 @@ func parkSummary(items []parkItem) string {
 // human patience). Response.ToolExecutions on a resumed turn covers the
 // post-resume loop only — the parked batch's executions are authoritative in
 // the persisted tool rows and tool-execution records.
-func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkDecision, progressCallback types.ProgressCallback) (*Response, error) {
+func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkDecision, progressCallback types.ProgressCallback) (_ *Response, retErr error) {
 	if a.hitlPark == nil {
 		return nil, ErrParkDisabled
 	}
@@ -1018,6 +1018,7 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 		return nil, err
 	}
 	defer releaseLease()
+	defer func() { retErr = leaseLostError(ctx, retErr) }()
 
 	startTime := time.Now()
 	ctx, span := a.tracer.StartSpan(ctx, "agent.conversation.resume")

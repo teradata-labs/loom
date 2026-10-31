@@ -17,6 +17,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -271,4 +272,85 @@ func TestChat_LeaseLostMidBatch_StopsDispatch(t *testing.T) {
 		require.False(t, e.EventType == eventlog.EventToolCallIntent && e.BatchPosition == 1,
 			"an intent was recorded for a call after the lease was lost")
 	}
+}
+
+// mixedRenewLog fails its first renewal fast and hangs every later one.
+type mixedRenewLog struct {
+	leaseScriptLog
+	n atomic.Int32
+}
+
+func (l *mixedRenewLog) RenewSessionLease(ctx context.Context, sessionID, holder string, ttl time.Duration) (bool, error) {
+	if l.n.Add(1) == 1 {
+		return false, errors.New("injected: transient renewal error")
+	}
+	<-ctx.Done()
+	return false, ctx.Err()
+}
+
+// Review round 3, B10: after a fast renewal failure, a later renewal that
+// hangs must not carry the turn past the safety margin (ttl - ttl/3). Each
+// renewal is bounded by the time left before the margin.
+func TestHoldSessionLease_FastFailureThenHangCancelsBeforeMargin(t *testing.T) {
+	store := &mixedRenewLog{leaseScriptLog: *newLeaseScriptLog()}
+	ttl := 300 * time.Millisecond
+	a := &Agent{eventLog: store, leaseTTL: ttl}
+
+	start := time.Now()
+	ctx, release, err := a.holdSessionLease(context.Background(), "s")
+	require.NoError(t, err)
+	defer release()
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("turn context still live although renewal kept failing")
+	}
+	require.ErrorIs(t, context.Cause(ctx), ErrSessionLeaseLost)
+	margin := ttl - ttl/3
+	require.Less(t, time.Since(start), margin+ttl/6,
+		"turn cancelled at or past the safety margin %v", margin)
+}
+
+// blockingLLM blocks in Chat until its context ends, like a provider call in
+// flight when the lease is lost.
+type blockingLLM struct{ started chan struct{} }
+
+func (l *blockingLLM) Chat(ctx context.Context, _ []llmtypes.Message, _ []shuttle.Tool) (*llmtypes.LLMResponse, error) {
+	close(l.started)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+func (l *blockingLLM) Name() string  { return "blocking" }
+func (l *blockingLLM) Model() string { return "blocking-v1" }
+
+// Review round 3, B11: a lease lost while the LLM call is blocked comes back
+// as ErrSessionLeaseLost, not as a bare context.Canceled, so the server maps
+// it to ABORTED rather than CANCELED.
+func TestChat_LeaseLostDuringLLMCall_ReportsLeaseLost(t *testing.T) {
+	store := newLeaseScriptLog()
+	llm := &blockingLLM{started: make(chan struct{})}
+	cfg := DefaultConfig()
+	cfg.PatternConfig = DefaultPatternConfig()
+	cfg.PatternConfig.UseLLMClassifier = false
+	ag := NewAgent(&mockBackend{}, llm, WithConfig(cfg), WithEventLog(store))
+	ag.leaseTTL = 30 * time.Millisecond
+	go func() { <-llm.started; store.renewHeld.Store(false) }()
+
+	_, err := ag.Chat(context.Background(), "s-llm-lost", "go")
+	require.ErrorIs(t, err, ErrSessionLeaseLost)
+	require.NotErrorIs(t, err, context.Canceled)
+}
+
+func TestLeaseLostError(t *testing.T) {
+	lostCtx, cancel := context.WithCancelCause(context.Background())
+	cancel(fmt.Errorf("%w: renewal failing", ErrSessionLeaseLost))
+	callerCtx, cancelCaller := context.WithCancel(context.Background())
+	cancelCaller()
+	boom := errors.New("boom")
+
+	require.NoError(t, leaseLostError(lostCtx, nil))
+	require.ErrorIs(t, leaseLostError(lostCtx, context.Canceled), ErrSessionLeaseLost)
+	require.Same(t, boom, leaseLostError(callerCtx, boom), "caller cancellation is left alone")
+	require.ErrorIs(t, leaseLostError(callerCtx, context.Canceled), context.Canceled)
 }

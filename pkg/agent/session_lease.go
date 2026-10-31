@@ -56,6 +56,21 @@ func (a *Agent) sessionLeaseTTL() time.Duration {
 	return eventlog.DefaultSessionLeaseTTL
 }
 
+// leaseLostError returns err with ErrSessionLeaseLost in its chain when ctx was
+// cancelled because the lease was lost. A blocked LLM call or tool returns
+// ctx.Err() (context.Canceled) when that happens, which would otherwise read
+// as the caller cancelling and map to CANCELED instead of ABORTED. err's own
+// text is kept, but not its chain: context.Canceled must not outrank the cause.
+func leaseLostError(ctx context.Context, err error) error {
+	if err == nil || errors.Is(err, ErrSessionLeaseLost) {
+		return err
+	}
+	if cause := sessionLeaseLost(ctx); cause != nil {
+		return fmt.Errorf("%w: %s", cause, err.Error())
+	}
+	return err
+}
+
 // holdSessionLease takes sessionID's lease for one entry into the
 // conversation loop (Chat, ResumeChat or ResumeSession), so that only one
 // process at a time records events and dispatches calls for the session.
@@ -71,6 +86,9 @@ func (a *Agent) holdSessionLease(ctx context.Context, sessionID string) (context
 	ttl := a.sessionLeaseTTL()
 	holder := uuid.NewString()
 
+	// The store stamps the expiry somewhere inside the acquire call, so the
+	// lease is vouched for from before the call, not after it returns.
+	acquireBegan := time.Now()
 	won, err := a.eventLog.AcquireSessionLease(ctx, sessionID, holder, ttl)
 	if err != nil {
 		return nil, nil, fmt.Errorf("taking the session lease: %w", err)
@@ -90,7 +108,9 @@ func (a *Agent) holdSessionLease(ctx context.Context, sessionID string) (context
 		defer wg.Done()
 		ticker := time.NewTicker(ttl / 3)
 		defer ticker.Stop()
-		lastHeld := time.Now()
+		lastHeld := acquireBegan
+		// The turn must stop before the lease can expire.
+		margin := ttl - ttl/3
 		for {
 			select {
 			case <-stop:
@@ -99,12 +119,19 @@ func (a *Agent) holdSessionLease(ctx context.Context, sessionID string) (context
 			}
 			// A renewal that never returns must not outlive the lease: it would
 			// keep the turn dispatching after another process could have taken
-			// over, and block release. Bounding each call to one renewal
-			// interval lets the failure check below see it in time. The lease
-			// is vouched for from when the call began, not when it returned,
-			// since the store stamps the renewal somewhere inside the call.
+			// over, and block release. Each call is bounded to one renewal
+			// interval and also to the time left before the safety margin, so
+			// a hang after an earlier fast failure cannot run past it. The
+			// lease is vouched for from when the call began, not when it
+			// returned, since the store stamps the renewal somewhere inside
+			// the call.
 			began := time.Now()
-			renewCtx, cancelRenew := context.WithTimeout(storeCtx, ttl/3)
+			budget := min(ttl/3, margin-began.Sub(lastHeld))
+			if budget <= 0 {
+				cancel(fmt.Errorf("%w: renewal failing", ErrSessionLeaseLost))
+				return
+			}
+			renewCtx, cancelRenew := context.WithTimeout(storeCtx, budget)
 			held, err := a.eventLog.RenewSessionLease(renewCtx, sessionID, holder, ttl)
 			cancelRenew()
 			switch {
@@ -113,7 +140,7 @@ func (a *Agent) holdSessionLease(ctx context.Context, sessionID string) (context
 			case err == nil:
 				cancel(ErrSessionLeaseLost)
 				return
-			case time.Since(lastHeld) >= ttl-ttl/3:
+			case time.Since(lastHeld) >= margin:
 				// Renewal has failed long enough that the lease may expire
 				// before the next attempt; stop rather than risk running
 				// alongside a new holder.
@@ -130,7 +157,11 @@ func (a *Agent) holdSessionLease(ctx context.Context, sessionID string) (context
 		close(stop)
 		wg.Wait()
 		cancel(nil)
-		if err := a.eventLog.ReleaseSessionLease(storeCtx, sessionID, holder); err != nil {
+		// Bounded so a hung store cannot keep the RPC from returning; the
+		// lease expires on its own if the release does not land.
+		releaseCtx, cancelRelease := context.WithTimeout(storeCtx, ttl/3)
+		defer cancelRelease()
+		if err := a.eventLog.ReleaseSessionLease(releaseCtx, sessionID, holder); err != nil {
 			zap.L().Warn("failed to release session lease; it expires on its own",
 				zap.String("session_id", sessionID), zap.Duration("ttl", ttl), zap.Error(err))
 		}

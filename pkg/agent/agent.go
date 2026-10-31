@@ -1945,7 +1945,7 @@ func truncatePreview(s string) string {
 // telemetry — shared by the three public chat entry points. See chatParams for
 // how each entry point tailors span name, multimodal content, and progress
 // reporting.
-func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, p chatParams) (*Response, error) {
+func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, p chatParams) (_ *Response, retErr error) {
 	// Providers build the request exclusively from ContentBlocks when present,
 	// dropping Content — so an image-only block set would silently send the
 	// image without the question text. Keep userMessage truly canonical by
@@ -2023,6 +2023,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 		return nil, err
 	}
 	defer releaseLease()
+	defer func() { retErr = leaseLostError(ctx, retErr) }()
 
 	// A session holding backend leases from a previous turn starts this turn
 	// in the RESOURCE_HOLDER class — the previous turn's SlotInfo died with
