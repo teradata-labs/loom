@@ -59,6 +59,29 @@ func NewChain(hooks []Hook, postHooks []PostToolHook, askResolver AskResolver) *
 	}
 }
 
+// OrderIndependent reports whether admitting the calls of one batch in any
+// order, or at the same time, gives the same verdicts. Only a chain whose hooks
+// are all the stateless name-level permission hook, with no post-tool hook and
+// no human-approval path, qualifies; a nil chain does too. Anything else is
+// treated as order-dependent (fail closed): a post-tool hook records state a
+// later call's admission reads, an approval holds the call for a human, and an
+// unknown hook may read mutable state.
+func (c *Chain) OrderIndependent() bool {
+	if c == nil {
+		return true
+	}
+	if len(c.postHooks) > 0 {
+		return false
+	}
+	for _, h := range c.hooks {
+		ph, ok := h.(permHook)
+		if !ok || ph.mayRequireApproval() {
+			return false
+		}
+	}
+	return true
+}
+
 // Admit evaluates every hook whose Matches reports true, combines their verdicts
 // as Deny > Ask > Allow (most restrictive wins), and resolves an Ask outcome via
 // the AskResolver — with no resolver, Ask fails closed to Deny. A hook that
