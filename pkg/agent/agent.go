@@ -2715,22 +2715,6 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				tools = recovery.activeTools(tools)
 				segMem.SetAdvertisedToolsBytes(advertisedToolsBytes(tools))
 			}
-			// Opt-in (behavior.context_relief_warning). Relief ran and left the
-			// estimate over its release mark, whether or not it shed; under the
-			// start mark it returns 0, 0 and this is false, so the note rides
-			// only the sends where relief ran. It is transient: softReminder is
-			// read at send time.
-			if a.config.ContextReliefWarning && estimate > target {
-				used, available, _ := segMem.GetTokenBudgetUsage()
-				usable := used + available
-				softReminder += buildContextReminder(estimate, target, usable)
-				span.AddEvent("context_reminder.added", map[string]interface{}{
-					"turn":            turnCount,
-					"estimate_tokens": estimate,
-					"target_tokens":   target,
-					"usable_tokens":   usable,
-				})
-			}
 		}
 
 		// withReminder appends the transient tail — the turn's soft reminder —
