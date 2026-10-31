@@ -208,8 +208,203 @@ func TestAgingPromotesStarvedWaiters(t *testing.T) {
 
 	ws := s.Waiters()
 	require.Len(t, ws, 1)
-	assert.NotEqual(t, classNew, ws[0].Class, "waiter should have left NEW")
-	assert.GreaterOrEqual(t, ws[0].Promotions, int32(1))
+	assert.GreaterOrEqual(t, ws[0].Promotions, int32(1), "the starvation tier must advance")
+	assert.Equal(t, classNew, ws[0].Class,
+		"aging must NOT move the waiter's class: class says what a request is, "+
+			"and waiting longer does not turn a request into a lease holder — "+
+			"precedence for a starved waiter comes from dispatch")
+}
+
+// TestStarvedWaiterOutranksHolderWithoutBecomingOne is the liveness half of
+// that contract: a NEW waiter that has aged to the top effective rank (two
+// starvation tiers) must be served ahead of a RESOURCE_HOLDER that arrived
+// after it got there, so removing the cross-class promotion cannot starve
+// lower classes behind a stream of holders. One tier is not enough — that
+// only ranks it with IN_FLIGHT (see TestAgedWaitersKeepHolderPrecedence).
+//
+// Reservations are sized so exactly ONE of the two waiters fits once the hog
+// releases (budget 800; two 500s cannot both be admitted) — otherwise both
+// are granted in the same dispatch pass and the assertion is a coin flip.
+func TestStarvedWaiterOutranksHolderWithoutBecomingOne(t *testing.T) {
+	s := newTest(t, Config{TokensPerMinute: 1000, StarvationAge: 300 * time.Millisecond, InteractiveHeadroom: -1})
+	hog, err := s.Acquire(context.Background(), Request{ReservationTokens: 700})
+	require.NoError(t, err)
+
+	// Grant order is recorded before each Release: releasing the first grant
+	// admits the second at once, so the order the goroutines finish in can
+	// differ from the order the scheduler granted them.
+	granted := make(chan string, 2)
+
+	// A NEW waiter parks first and ages to the top rank.
+	newDone := make(chan struct{})
+	go func() {
+		g, err := s.Acquire(context.Background(), Request{ReservationTokens: 500, Class: classNew})
+		if err == nil {
+			granted <- "new"
+			g.Release(1)
+		}
+		close(newDone)
+	}()
+	require.Eventually(t, func() bool { return s.State().PromotionsTotal >= 2 },
+		10*time.Second, 20*time.Millisecond, "the NEW waiter must age two tiers")
+
+	// A holder arrives afterwards — higher class, but it has not starved.
+	holderDone := make(chan struct{})
+	go func() {
+		g, err := s.Acquire(context.Background(), Request{ReservationTokens: 500, Class: classHolder})
+		if err == nil {
+			granted <- "holder"
+			g.Release(1)
+		}
+		close(holderDone)
+	}()
+	require.Eventually(t, func() bool { return s.State().ParkedRequests >= 2 },
+		5*time.Second, 20*time.Millisecond, "both must be parked")
+	for _, w := range s.Waiters() {
+		if w.Promotions > 0 {
+			assert.Equal(t, classNew, w.Class, "aging must not relabel the waiter")
+		}
+	}
+
+	// True up the hog's reservation (Release(0) would book the whole 700 and
+	// keep the window full until rollover), freeing room for exactly one.
+	hog.Release(1)
+
+	select {
+	case first := <-granted:
+		// The starved waiter must go first, without ever changing class.
+		require.Equal(t, "new", first, "the freshly-arrived holder was served before the starved waiter")
+	case <-time.After(5 * time.Second):
+		t.Fatal("neither waiter was served")
+	}
+	<-newDone
+	<-holderDone
+}
+
+// TestAgedWaitersKeepHolderPrecedence is the review probe (Josh-Schoen F2): a
+// hog holds 700 of 800 tokens, four NEW 500-token waiters park and age ONE
+// starvation tier, then one real RESOURCE_HOLDER parks. Only one 500 fits at
+// a time, so release order is dispatch order. A NEW waiter one tier old has
+// effective rank IN_FLIGHT, still below a holder, so the holder goes first —
+// the order main served before aging stopped relabelling classes. Serving
+// every promoted waiter ahead of every non-promoted one (the previous
+// dispatch) put the holder last and broke priority inheritance for the first
+// tiers of saturation.
+func TestAgedWaitersKeepHolderPrecedence(t *testing.T) {
+	// Tier 1 is due at 1.5s, tier 2 at 3s: once every NEW waiter has crossed
+	// tier 1 there is over a second of margin before any crosses tier 2, and
+	// the whole release chain below takes milliseconds.
+	s := newTest(t, Config{TokensPerMinute: 1000, StarvationAge: 1500 * time.Millisecond, InteractiveHeadroom: -1})
+	hog, err := s.Acquire(context.Background(), Request{ReservationTokens: 700})
+	require.NoError(t, err)
+
+	var mu sync.Mutex
+	var order []string
+	var wg sync.WaitGroup
+	acquire := func(name string, class loomv1.SlotPriorityClass) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			g, err := s.Acquire(context.Background(), Request{ReservationTokens: 500, Class: class, ConversationID: name})
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			mu.Lock()
+			order = append(order, name)
+			mu.Unlock()
+			g.Release(1) // frees room for exactly the next one
+		}()
+	}
+
+	for i := 1; i <= 4; i++ {
+		name := "new" + string(rune('0'+i))
+		acquire(name, classNew)
+		require.Eventually(t, func() bool { return s.State().ParkedRequests == int32(i) },
+			2*time.Second, 5*time.Millisecond, "%s must park in order", name)
+	}
+	require.Eventually(t, func() bool {
+		ws := s.Waiters()
+		if len(ws) != 4 {
+			return false
+		}
+		for _, w := range ws {
+			if w.Promotions != 1 {
+				return false
+			}
+		}
+		return true
+	}, 10*time.Second, 20*time.Millisecond, "every NEW waiter must cross exactly one tier")
+
+	acquire("holder", classHolder)
+	require.Eventually(t, func() bool { return s.State().ParkedRequests == 5 },
+		2*time.Second, 5*time.Millisecond, "the holder must park")
+
+	// Labels: aging raised the NEW waiters' dispatch rank, not their class.
+	ws := s.Waiters()
+	require.Len(t, ws, 5)
+	for _, w := range ws {
+		if w.ConversationId == "holder" {
+			assert.Equal(t, classHolder, w.Class)
+			assert.Equal(t, int32(0), w.Promotions)
+			continue
+		}
+		assert.Equal(t, classNew, w.Class, "%s must keep its class", w.ConversationId)
+		assert.Equal(t, int32(1), w.Promotions, "%s must show its tier", w.ConversationId)
+	}
+
+	hog.Release(1)
+	wg.Wait()
+	assert.Equal(t, []string{"holder", "new1", "new2", "new3", "new4"}, order,
+		"a waiter one tier old ranks with IN_FLIGHT, below a real RESOURCE_HOLDER")
+}
+
+// TestArrivalCannotOvertakeAgedWaiterAtTopRank: a NEW waiter aged to the top
+// effective rank is parked; a fresh RESOURCE_HOLDER small enough to fit must
+// still park behind it instead of taking the Acquire fast path. Main enforced
+// this because the aged waiter sat in the RESOURCE_HOLDER queue; with class
+// labels left alone, the fast path has to check effective rank.
+func TestArrivalCannotOvertakeAgedWaiterAtTopRank(t *testing.T) {
+	s := newTest(t, Config{TokensPerMinute: 1000, StarvationAge: 300 * time.Millisecond, InteractiveHeadroom: -1})
+	hog, err := s.Acquire(context.Background(), Request{ReservationTokens: 700})
+	require.NoError(t, err)
+
+	agedDone := make(chan *Grant, 1)
+	go func() {
+		g, err := s.Acquire(context.Background(), Request{ReservationTokens: 500, Class: classNew})
+		require.NoError(t, err)
+		agedDone <- g
+	}()
+	require.Eventually(t, func() bool { return s.State().PromotionsTotal >= 2 },
+		10*time.Second, 20*time.Millisecond, "the NEW waiter must age to the top rank")
+
+	// 700 + 50 <= 800: the holder fits, but a top-rank waiter is parked.
+	overtook := make(chan *Grant, 1)
+	go func() {
+		g, err := s.Acquire(context.Background(), Request{ReservationTokens: 50, Class: classHolder})
+		require.NoError(t, err)
+		overtook <- g
+	}()
+	select {
+	case g := <-overtook:
+		g.Release(1)
+		t.Fatal("a fresh RESOURCE_HOLDER overtook a NEW waiter already at the top rank")
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	hog.Release(1)
+	select {
+	case g := <-agedDone:
+		g.Release(1)
+	case <-time.After(5 * time.Second):
+		t.Fatal("aged waiter never granted")
+	}
+	select {
+	case g := <-overtook:
+		g.Release(1)
+	case <-time.After(5 * time.Second):
+		t.Fatal("holder never granted after the aged waiter")
+	}
 }
 
 func TestReservationTrueUpFreesBudget(t *testing.T) {
@@ -415,8 +610,13 @@ func TestStarvedTopClassHeadHaltsBackfill(t *testing.T) {
 		require.NoError(t, gerr)
 		holderGranted <- g
 	}()
-	// ...and starves past its aging point at the top class.
-	time.Sleep(300 * time.Millisecond)
+	// ...and starves for real. Starvation is promoted > 0, and promoted is
+	// only bumped by ageLocked on the 1s tick — so sleeping past
+	// StarvationAge is NOT enough, and a short sleep here made this test
+	// assert the NON-starved path by accident (the old flattened dispatch
+	// halted the band for any unfit head, starved or not, so it passed for
+	// the wrong reason and left the starved case unexercised).
+	waitUntilStarved(t, s)
 
 	// A stream of small NEW arrivals that would individually fit.
 	smallGranted := make(chan *Grant, 2)
@@ -611,4 +811,174 @@ func TestListWaitersAllScopes(t *testing.T) {
 
 	cancel()
 	held.Release(0)
+}
+
+// The mirror of TestStarvedTopClassHeadHaltsBackfill: a NON-starved head that
+// cannot fit must block only its own class, not the whole band.
+//
+// Halting the band is correct for a STARVED head — that is how it finally
+// accumulates capacity. Applying the same halt to an ordinary head silently
+// converts one stuck large reservation into a stall for every cheaper waiter
+// behind it, for up to a full starvation_age. That is the throughput this
+// function's contract promises ("below a non-starved head, backfill
+// continues"), and only the starved case was pinned before.
+func TestNonStarvedHeadAllowsBackfill(t *testing.T) {
+	// StarvationAge far exceeds the test's lifetime, so nothing starves and
+	// the head below is unambiguously ordinary.
+	s := newTest(t, Config{TokensPerMinute: 1000, StarvationAge: time.Hour, InteractiveHeadroom: -1})
+
+	hog1, err := s.Acquire(context.Background(), Request{ReservationTokens: 500})
+	require.NoError(t, err)
+	hog2, err := s.Acquire(context.Background(), Request{ReservationTokens: 200})
+	require.NoError(t, err)
+
+	// A large RESOURCE_HOLDER parks: 500+200+400 > 800.
+	holderGranted := make(chan *Grant, 1)
+	go func() {
+		g, gerr := s.Acquire(context.Background(), Request{ReservationTokens: 400, Class: classHolder, ConversationID: "big-holder"})
+		require.NoError(t, gerr)
+		holderGranted <- g
+	}()
+	time.Sleep(100 * time.Millisecond) // park it, but nowhere near starving
+
+	// A cheap NEW arrival in a lower class, which fits once hog2 releases.
+	smallGranted := make(chan *Grant, 1)
+	go func() {
+		g, gerr := s.Acquire(context.Background(), Request{ReservationTokens: 100, Class: classNew})
+		require.NoError(t, gerr)
+		smallGranted <- g
+	}()
+	time.Sleep(100 * time.Millisecond)
+
+	// Free 200: the holder still does not fit (500+400 > 800), but the small
+	// one does (500+100 <= 800). Because the holder is NOT starved, it holds
+	// up only its own class and the small NEW waiter must be granted.
+	hog2.Release(1)
+
+	select {
+	case g := <-smallGranted:
+		g.Release(1)
+	case <-holderGranted:
+		t.Fatal("holder cannot fit while hog1 holds 500")
+	case <-time.After(2 * time.Second):
+		t.Fatal("a cheap NEW waiter was stalled behind an unfit but NON-starved holder; " +
+			"an ordinary head must block only its own class, not the band")
+	}
+
+	hog1.Release(1)
+	select {
+	case g := <-holderGranted:
+		g.Release(1)
+	case <-time.After(2 * time.Second):
+		t.Fatal("holder never admitted after capacity freed")
+	}
+}
+
+// waitUntilStarved blocks until some parked waiter has actually crossed a
+// starvation tier (promoted > 0), which only ageLocked's 1s tick can do.
+func waitUntilStarved(t *testing.T, s *Scheduler) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for _, band := range bandOrder {
+			for _, class := range dispatchOrder {
+				for _, w := range s.queues[band][class] {
+					if !w.cancelled && w.promoted > 0 {
+						return true
+					}
+				}
+			}
+		}
+		return false
+	}, 5*time.Second, 50*time.Millisecond, "no waiter ever crossed a starvation tier")
+}
+
+// TestAgedWaiterJoinsEndOfItsNewRank pins the within-rank order: a waiter
+// that aged INTO a rank is served after the waiters that were already at that
+// rank, even when it parked before them — main's append-on-promotion order.
+// The waiters are placed directly so the ordering is exact rather than
+// dependent on the 1s aging tick.
+func TestAgedWaiterJoinsEndOfItsNewRank(t *testing.T) {
+	s := newTest(t, Config{TokensPerMinute: 1000, StarvationAge: time.Hour, InteractiveHeadroom: -1})
+	hog, err := s.Acquire(context.Background(), Request{ReservationTokens: 700})
+	require.NoError(t, err)
+
+	t0 := time.Now()
+	// aged parked first but reached the IN_FLIGHT rank only after inflight
+	// parked there natively.
+	aged := parkWaiter(s, "aged", classNew, t0, t0.Add(2*time.Second), 2, 1)
+	inflight := parkWaiter(s, "inflight", classInFlight, t0.Add(time.Second), t0.Add(time.Second), 1, 0)
+
+	hog.Release(1) // room for exactly one 500
+	select {
+	case g := <-inflight.ready:
+		g.Release(1)
+	case <-aged.ready:
+		t.Fatal("a waiter that aged into IN_FLIGHT was served ahead of one already there")
+	case <-time.After(2 * time.Second):
+		t.Fatal("nothing was served")
+	}
+	select {
+	case g := <-aged.ready:
+		g.Release(1)
+	case <-time.After(2 * time.Second):
+		t.Fatal("aged waiter never served")
+	}
+}
+
+// parkWaiter places a 500-token batch waiter directly on its class queue, so
+// a test controls its timestamps and rank order exactly instead of depending
+// on the 1s aging tick.
+func parkWaiter(s *Scheduler, name string, class loomv1.SlotPriorityClass, since, rankSince time.Time, rankSeq uint64, promoted int32) *waiter {
+	w := &waiter{
+		req:       Request{ConversationID: name, ReservationTokens: 500, Class: class},
+		origin:    loomv1.SlotOrigin_SLOT_ORIGIN_BATCH,
+		class:     class,
+		since:     since,
+		rankSince: rankSince,
+		rankSeq:   rankSeq,
+		promoted:  promoted,
+		ready:     make(chan *Grant, 1),
+	}
+	s.mu.Lock()
+	s.queues[w.origin][class] = append(s.queues[w.origin][class], w)
+	s.mu.Unlock()
+	return w
+}
+
+// TestSameRankTieUsesArrivalOrderNotClass is the Windows CI failure of
+// TestStarvedWaiterOutranksHolderWithoutBecomingOne made exact: Windows'
+// coarse monotonic clock gives two waiters that reach the top rank within
+// one clock tick the same rankSince. Ordering on the timestamp then fell back
+// to class iteration order, which serves RESOURCE_HOLDER before NEW, so a
+// starved NEW waiter that reached the rank first lost to a fresh holder.
+// Dispatch orders on rankSeq, assigned under the mutex, so arrival order
+// survives a tied clock.
+func TestSameRankTieUsesArrivalOrderNotClass(t *testing.T) {
+	s := newTest(t, Config{TokensPerMinute: 1000, StarvationAge: time.Hour, InteractiveHeadroom: -1})
+	hog, err := s.Acquire(context.Background(), Request{ReservationTokens: 700})
+	require.NoError(t, err)
+
+	tied := time.Now()
+	// The NEW waiter aged two tiers into the top rank, then the holder parked
+	// there; both read the same clock value.
+	starved := parkWaiter(s, "starved", classNew, tied.Add(-time.Second), tied, 1, 2)
+	holder := parkWaiter(s, "holder", classHolder, tied, tied, 2, 0)
+
+	hog.Release(1) // room for exactly one 500
+	select {
+	case g := <-starved.ready:
+		g.Release(1)
+	case <-holder.ready:
+		t.Fatal("a tied timestamp let class order serve the holder ahead of the waiter that reached the rank first")
+	case <-time.After(2 * time.Second):
+		t.Fatal("nothing was served")
+	}
+	select {
+	case g := <-holder.ready:
+		g.Release(1)
+	case <-time.After(2 * time.Second):
+		t.Fatal("holder never served")
+	}
 }

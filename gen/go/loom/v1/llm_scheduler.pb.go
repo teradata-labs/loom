@@ -27,8 +27,12 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// SlotPriorityClass orders slot requests. Higher classes are served first;
-// aging promotes a starved waiter one class (liveness, not throughput).
+// SlotPriorityClass is what a slot request IS, and it orders requests:
+// higher classes are served first. Starvation aging never changes a
+// request's class. Each starvation tier (see starvation_age_s) raises the
+// rank a waiter is dispatched at by one class step, capped at the top, so a
+// waiter one tier old is served with IN_FLIGHT while still labelled NEW
+// (liveness, not throughput).
 type SlotPriorityClass int32
 
 const (
@@ -40,7 +44,10 @@ const (
 	SlotPriorityClass_SLOT_PRIORITY_CLASS_IN_FLIGHT SlotPriorityClass = 2
 	// Conversation holding an external scarce resource (database session
 	// handle, MCP slot): priority inheritance — it is blocking other agents
-	// that are burning LLM budget trying to acquire what it holds.
+	// that are burning LLM budget trying to acquire what it holds. Reached
+	// ONLY by actually holding a lease; starvation aging never relabels a
+	// request into this class, though an aged waiter can reach its dispatch
+	// rank (see starvation_age_s).
 	SlotPriorityClass_SLOT_PRIORITY_CLASS_RESOURCE_HOLDER SlotPriorityClass = 3
 )
 
@@ -91,7 +98,7 @@ func (SlotPriorityClass) EnumDescriptor() ([]byte, []int) {
 // interactive band outranks the batch band entirely: a human blocked on a
 // response experiences latency directly, while batch work only cares about
 // throughput. Within a band, SlotPriorityClass orders requests. Aging never
-// promotes across bands.
+// raises a request across bands.
 //
 // Trust model: the origin is CLIENT-ASSERTED (gRPC metadata
 // "loom-slot-origin") and trusted as-is by design. Loom deployments are
@@ -179,9 +186,15 @@ type LLMSchedulerConfig struct {
 	// The door gate is wired process-wide and configured at boot via looms
 	// config (llm.max_door_queue); this per-scope field is not yet read.
 	MaxDoorQueue int32 `protobuf:"varint,4,opt,name=max_door_queue,json=maxDoorQueue,proto3" json:"max_door_queue,omitempty"`
-	// Seconds after which a waiting slot request is promoted one priority
-	// class. Bounds starvation: any waiter reaches the top class in at most
-	// 2 * starvation_age_s.
+	// Starvation tier interval in seconds. A waiter crosses tier n after
+	// (n+1) * starvation_age_s of waiting. Each tier raises its effective
+	// dispatch rank one class step, capped at RESOURCE_HOLDER's rank, so any
+	// waiter reaches the top rank of its band within 2 * starvation_age_s.
+	// Within a rank, the waiter that reached the rank first is served first.
+	// A top-rank waiter that crosses a further tier halts backfill in its band
+	// until it fits. The waiter's class is never rewritten: waiting longer
+	// does not make a request a lease holder, so the RESOURCE_HOLDER class
+	// keeps meaning what it says even in a scope saturated for a long time.
 	StarvationAgeS int32 `protobuf:"varint,5,opt,name=starvation_age_s,json=starvationAgeS,proto3" json:"starvation_age_s,omitempty"`
 	// Target utilization of measured capacity, (0, 1]. 0 = default 0.8.
 	UtilizationTarget float32 `protobuf:"fixed32,6,opt,name=utilization_target,json=utilizationTarget,proto3" json:"utilization_target,omitempty"`
@@ -298,8 +311,9 @@ type SlotState struct {
 	NextWake *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=next_wake,json=nextWake,proto3" json:"next_wake,omitempty"`
 	// Grants issued and completed since scheduler start.
 	GrantsTotal int64 `protobuf:"varint,8,opt,name=grants_total,json=grantsTotal,proto3" json:"grants_total,omitempty"`
-	// Aging promotions since scheduler start (a rising rate means the scope is
-	// saturated enough that liveness protection is doing real work).
+	// Starvation tiers crossed by waiters since scheduler start (a rising rate
+	// means the scope is saturated enough that liveness protection is doing
+	// real work). A tier raises a waiter's dispatch rank, never its class.
 	PromotionsTotal int64 `protobuf:"varint,9,opt,name=promotions_total,json=promotionsTotal,proto3" json:"promotions_total,omitempty"`
 	// True when an operator pinned effective_tokens_per_minute via
 	// SetSchedulerConfig. While pinned, provider header calibration and AIMD
@@ -417,7 +431,8 @@ type SlotWaiter struct {
 	AgentName      string                 `protobuf:"bytes,2,opt,name=agent_name,json=agentName,proto3" json:"agent_name,omitempty"`
 	Class          SlotPriorityClass      `protobuf:"varint,3,opt,name=class,proto3,enum=loom.v1.SlotPriorityClass" json:"class,omitempty"`
 	WaitingSince   *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=waiting_since,json=waitingSince,proto3" json:"waiting_since,omitempty"`
-	// Number of aging promotions applied to this waiter so far.
+	// Starvation tiers this waiter has crossed so far. Each raises its
+	// dispatch rank one class step (capped at the top); class is unchanged.
 	Promotions    int32      `protobuf:"varint,5,opt,name=promotions,proto3" json:"promotions,omitempty"`
 	Origin        SlotOrigin `protobuf:"varint,6,opt,name=origin,proto3,enum=loom.v1.SlotOrigin" json:"origin,omitempty"`
 	unknownFields protoimpl.UnknownFields

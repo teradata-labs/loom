@@ -12,6 +12,7 @@ package scheduler
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 
@@ -29,7 +30,9 @@ type Config struct {
 	TokensPerMinute int64
 	// UtilizationTarget in (0,1]; 0 = 0.8.
 	UtilizationTarget float64
-	// StarvationAge promotes a waiter one class after this long. 0 = 60s.
+	// StarvationAge is the starvation tier interval: each one a waiter
+	// waits raises its effective dispatch rank one class step (its class
+	// label never changes). 0 = 60s.
 	StarvationAge time.Duration
 	// InteractiveHeadroom in [0,1): fraction of the budget batch admission
 	// cannot touch, kept free for the interactive band. 0 = default 0.15;
@@ -105,10 +108,22 @@ func (g *Grant) Cancel() {
 
 // waiter is one parked request.
 type waiter struct {
-	req      Request
-	origin   loomv1.SlotOrigin
-	class    loomv1.SlotPriorityClass
-	since    time.Time
+	req    Request
+	origin loomv1.SlotOrigin
+	class  loomv1.SlotPriorityClass
+	since  time.Time
+	// rankSince is when the waiter reached its current effective rank: its
+	// park time, then the moment aging last raised the rank. Dispatch serves
+	// oldest-at-rank first.
+	rankSince time.Time
+	// rankSeq orders waiters that reached the same effective rank: assigned
+	// from Scheduler.nextRankSeq under the mutex each time rankSince is set.
+	// Dispatch sorts on it rather than rankSince because a coarse clock
+	// (Windows' ~15.6ms monotonic tick) gives near-simultaneous arrivals equal
+	// timestamps, and a tie would fall back to class iteration order.
+	rankSeq uint64
+	// promoted counts starvation tiers crossed (see agingDueLocked). It raises
+	// the effective dispatch rank; it never changes class.
 	promoted int32
 	ready    chan *Grant // closed-with-value on grant; buffered 1
 	// cancelled is set (under the scheduler mutex) when the waiter's context
@@ -152,6 +167,8 @@ type Scheduler struct {
 
 	grantsTotal     int64
 	promotionsTotal int64
+	// nextRankSeq is the last waiter.rankSeq handed out.
+	nextRankSeq uint64
 
 	stopCh   chan struct{}
 	stopOnce sync.Once
@@ -256,12 +273,16 @@ func (s *Scheduler) Acquire(ctx context.Context, req Request) (*Grant, error) {
 		s.mu.Unlock()
 		return g, nil
 	}
+	now := time.Now()
+	s.nextRankSeq++
 	w := &waiter{
-		req:    req,
-		origin: origin,
-		class:  class,
-		since:  time.Now(),
-		ready:  make(chan *Grant, 1),
+		req:       req,
+		origin:    origin,
+		class:     class,
+		since:     now,
+		rankSince: now,
+		rankSeq:   s.nextRankSeq,
+		ready:     make(chan *Grant, 1),
 	}
 	s.queues[origin][class] = append(s.queues[origin][class], w)
 	s.mu.Unlock()
@@ -554,18 +575,22 @@ func (s *Scheduler) grantLocked(reservation int64) *Grant {
 
 // queuesEmptyAtOrAboveLocked reports whether no waiter that outranks the
 // given (origin, class) is parked — a newly arriving request must not
-// overtake them. Any interactive waiter outranks every batch arrival.
+// overtake them. Any interactive waiter outranks every batch arrival; within
+// the band, a parked waiter whose EFFECTIVE rank (see effectiveRank) is at or
+// above the arrival's class rank does, so an aged NEW waiter at the top rank
+// is not overtaken by a fresh RESOURCE_HOLDER that happens to fit.
 func (s *Scheduler) queuesEmptyAtOrAboveLocked(origin loomv1.SlotOrigin, class loomv1.SlotPriorityClass) bool {
+	arrival := classRank(class)
 	for _, band := range bandOrder {
 		if bandRank(band) < bandRank(origin) {
 			continue
 		}
 		for _, c := range dispatchOrder {
-			if band == origin && c < class {
-				continue
-			}
 			for _, w := range s.queues[band][c] {
-				if !w.cancelled {
+				if w.cancelled {
+					continue
+				}
+				if band != origin || effectiveRank(w) >= arrival {
 					return false
 				}
 			}
@@ -588,54 +613,127 @@ func bandRank(o loomv1.SlotOrigin) int {
 
 // dispatchLocked grants as many parked waiters as the budget allows:
 // interactive band first (full budget), then batch (headroom-capped budget);
-// highest class first within a band, FIFO within a class. Each waiter is
-// woken with its own grant — one completion wakes bounded work, no herd.
+// highest effective rank first within a band (see effectiveRank), oldest
+// arrival at that rank first within a rank. Each waiter is woken with its own
+// grant — one completion wakes bounded work, no herd.
 //
-// Backfill stops entirely below a STARVED blocked head (a waiter already at
-// the top class of its band that has aged past its next promotion point):
-// aging can no longer help it, and letting smaller lower-class or lower-band
-// work keep consuming every freed token would starve a large reservation
-// forever. Halting backfill lets completion churn drain the window until the
-// head fits — admission liveness, the proto's starvation bound. Below a
-// non-starved head, backfill continues (throughput).
+// An unfit head blocks only its own rank: the next rank still gets a turn, so
+// one large reservation that cannot fit yet does not stall cheaper waiters
+// (throughput). The exception is a head STARVED AT THE TOP RANK (see
+// starvedAtTopLocked): aging can raise it no further, and letting smaller
+// lower-rank or lower-band work keep consuming every freed token would starve
+// a large reservation forever. Backfill then halts entirely, so completion
+// churn drains the window until the head fits — admission liveness, the
+// proto's starvation bound.
 func (s *Scheduler) dispatchLocked() {
 	for _, band := range bandOrder {
+		// Group the band's live waiters by effective rank. Each waiter lands
+		// in exactly one group, so it can never be granted twice in a pass.
+		groups := make([][]*waiter, topRank+1)
 		for _, class := range dispatchOrder {
-			q := s.queues[band][class]
-			var remaining []*waiter
-			var blockedOnStarvedHead bool
-			for i, w := range q {
+			for _, w := range s.queues[band][class] {
 				if w.cancelled {
 					continue
 				}
+				r := effectiveRank(w)
+				groups[r] = append(groups[r], w)
+			}
+		}
+
+		granted := make(map[*waiter]struct{})
+		halted := false
+		for r := topRank; r >= 0 && !halted; r-- {
+			g := groups[r]
+			// Oldest arrival AT THIS RANK first: a waiter that aged into the
+			// rank queues behind the waiters already there, exactly as if it
+			// had joined the end of that rank's queue.
+			sort.SliceStable(g, func(i, j int) bool {
+				return g[i].rankSeq < g[j].rankSeq
+			})
+			for _, w := range g {
 				if !s.canGrantLocked(band, w.req.ReservationTokens) {
-					remaining = append(remaining, q[i:]...)
-					blockedOnStarvedHead = s.starvedAtTopLocked(w)
-					break
+					halted = s.starvedAtTopLocked(w)
+					break // this rank only, unless the head starved at the top
 				}
 				w.ready <- s.grantLocked(w.req.ReservationTokens)
+				granted[w] = struct{}{}
 			}
-			// Filter any cancelled stragglers retained by the break above.
-			filtered := remaining[:0]
-			for _, w := range remaining {
-				if !w.cancelled {
-					filtered = append(filtered, w)
+		}
+
+		// Rebuild each class queue from what remains, preserving FIFO.
+		for _, class := range dispatchOrder {
+			q := s.queues[band][class]
+			keep := q[:0]
+			for _, w := range q {
+				if w.cancelled {
+					continue
 				}
+				if _, done := granted[w]; done {
+					continue
+				}
+				keep = append(keep, w)
 			}
-			s.queues[band][class] = filtered
-			if blockedOnStarvedHead {
-				return
-			}
+			s.queues[band][class] = keep
+		}
+		if halted {
+			return
 		}
 	}
 }
 
-// starvedAtTopLocked reports whether w has waited past its next aging point
-// while already at the top class of its band — the point where promotion can
-// no longer help it and admission liveness (backfill halt) must take over.
+// topRank is the highest dispatch rank: RESOURCE_HOLDER's.
+const topRank = 2
+
+// classRank maps a priority class to its dispatch rank (NEW 0, IN_FLIGHT 1,
+// RESOURCE_HOLDER 2). Unspecified never reaches a queue (Acquire maps it to
+// NEW) and ranks with NEW.
+func classRank(c loomv1.SlotPriorityClass) int {
+	switch c {
+	case loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_RESOURCE_HOLDER:
+		return 2
+	case loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_IN_FLIGHT:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// rawRank is a waiter's class rank plus its starvation tiers, uncapped.
+func rawRank(w *waiter) int { return classRank(w.class) + int(w.promoted) }
+
+// effectiveRank is the rank dispatch serves a waiter at: its class rank
+// raised one step per starvation tier, capped at the top rank. Aging raises
+// this, never the waiter's class — class says what a request IS (a new turn,
+// a turn mid-task, a turn holding a scarce backend lease), and waiting longer
+// does not turn a request into a lease holder. Ordering by effective rank
+// keeps the priority-inheritance order a real holder relies on (a NEW waiter
+// one tier old ranks with IN_FLIGHT, still below a fresh RESOURCE_HOLDER),
+// while the liveness bound holds: any waiter reaches the top rank of its band
+// within 2 * starvationAge.
+func effectiveRank(w *waiter) int {
+	if r := rawRank(w); r < topRank {
+		return r
+	}
+	return topRank
+}
+
+// starvedAtTopLocked reports whether w is at the top rank of its band and has
+// waited past its next starvation tier there — the point where aging can no
+// longer raise it and admission liveness (backfill halt) must take over.
 func (s *Scheduler) starvedAtTopLocked(w *waiter) bool {
-	return w.class == loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_RESOURCE_HOLDER &&
-		time.Since(w.since) >= s.starvationAge*time.Duration(w.promoted+1)
+	r := rawRank(w)
+	return r > topRank || (r == topRank && s.agingDueLocked(w))
+}
+
+// agingDueLocked reports whether a waiter has waited past its CURRENT
+// starvation tier and should advance to the next one. The threshold escalates
+// with each tier: tier n is due after (n+1) * starvationAge of waiting.
+//
+// Class-independent by design: starvation is about elapsed time, not about
+// what the request is, and conflating the two is what let aging dilute the
+// RESOURCE_HOLDER class.
+func (s *Scheduler) agingDueLocked(w *waiter) bool {
+	return time.Since(w.since) >= s.starvationAge*time.Duration(w.promoted+1)
 }
 
 // tick drives window rollover, Retry-After expiry, and starvation aging.
@@ -655,9 +753,10 @@ func (s *Scheduler) tick() {
 	}
 }
 
-// ageLocked promotes waiters older than starvationAge one class within
-// their band (liveness: top class of the band in at most 2 * starvationAge).
-// Aging NEVER crosses bands: saturated batch must not flood the interactive
+// ageLocked advances the starvation tier of every waiter that has waited
+// past its current one, which raises its effective dispatch rank within its
+// band (liveness: top rank of the band in at most 2 * starvationAge). It
+// never changes a waiter's class. Aging NEVER crosses bands: saturated batch must not flood the interactive
 // lane by seniority. Note the asymmetry this leaves by design: batch has no
 // reserved budget share, so a saturated interactive band CAN starve batch
 // entirely (a human is waiting; throughput work waits — see SlotOrigin in
@@ -665,27 +764,36 @@ func (s *Scheduler) tick() {
 // only; batch regains admission when the interactive band goes quiet.
 func (s *Scheduler) ageLocked() {
 	for _, band := range bandOrder {
-		promote := func(from, to loomv1.SlotPriorityClass) {
-			var keep []*waiter
-			for _, w := range s.queues[band][from] {
+		for _, class := range dispatchOrder {
+			for _, w := range s.queues[band][class] {
 				if w.cancelled {
 					continue
 				}
-				if time.Since(w.since) >= s.starvationAge*time.Duration(w.promoted+1) {
+				if s.agingDueLocked(w) {
+					// Bump the starvation tier only. Aging deliberately does
+					// NOT move the waiter's class: class says what a request
+					// IS (a new turn, a turn mid-task, a turn holding a
+					// scarce backend lease), and waiting longer does not turn
+					// a request into a lease holder. Promoting across classes
+					// filled RESOURCE_HOLDER with non-holders under sustained
+					// saturation — measured on a 384-agent run, 382 of 383
+					// parked requests read as holders after 715 promotions,
+					// which erases the distinction priority inheritance
+					// depends on. Precedence for a starved waiter comes from
+					// its effective rank at dispatch instead (see
+					// effectiveRank).
+					before := effectiveRank(w)
 					w.promoted++
-					w.class = to
 					s.promotionsTotal++
-					s.queues[band][to] = append(s.queues[band][to], w)
-					continue
+					if effectiveRank(w) > before {
+						// It joins the end of its new rank's queue.
+						w.rankSince = time.Now()
+						s.nextRankSeq++
+						w.rankSeq = s.nextRankSeq
+					}
 				}
-				keep = append(keep, w)
 			}
-			s.queues[band][from] = keep
 		}
-		promote(loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_IN_FLIGHT,
-			loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_RESOURCE_HOLDER)
-		promote(loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_NEW,
-			loomv1.SlotPriorityClass_SLOT_PRIORITY_CLASS_IN_FLIGHT)
 	}
 }
 
