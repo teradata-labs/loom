@@ -750,64 +750,46 @@ func (c *Client) convertResponse(resp *bedrockResponse) *llmtypes.LLMResponse {
 	return llmResp
 }
 
-// calculateCost estimates cost for Bedrock Claude models.
-// Pricing varies by model and region - these are approximate.
-//
-// Cache tiers: a cache write bills at 1.25x the input rate and a cache read at
-// 0.10x. Bedrock/Anthropic report input_tokens EXCLUSIVE of cached tokens, so
-// the three buckets are additive (unlike the OpenAI-compatible shape, where
-// prompt_tokens includes them). Mirrors SDKClient.calculateCost.
+// calculateCost estimates cost for Bedrock Claude models. Mirrors
+// SDKClient.calculateCost; both delegate to bedrockClaudeCost.
 func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int) float64 {
-	// The catalog (pkg/llm/catalog) is the source of truth for pricing. Fall back
-	// to substring matching only for model ids it does not list.
-	// IMPORTANT: in the fallback, check "opus-4-1" BEFORE "opus-4" because
-	// strings.Contains("opus-4-5", "opus-4") is true. Opus 4.1 is the expensive
-	// model ($15/$75); Opus 4.5/4.6 are cheaper ($5/$25).
-	inputPricePerMillion, outputPricePerMillion, ok := catalog.LookupPricing("bedrock", c.modelID)
+	return bedrockClaudeCost(c.modelID, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens)
+}
+
+// bedrockClaudeCost prices one Bedrock Claude call. The catalog
+// (pkg/llm/catalog) is the source of truth; catalog.ClaudeFamilyPricing prices
+// any Claude profile id it does not list, and anything unrecognised reports 0.
+//
+// Bedrock/Anthropic report input_tokens EXCLUSIVE of cached tokens, so the
+// three input buckets are additive (unlike the OpenAI-compatible shape, where
+// prompt_tokens includes them). A cache write bills at 1.25x the input rate and
+// a cache read at the model's own multiplier. Regional endpoints carry the
+// premium catalog.BedrockEndpointMultiplier reports, on every bucket.
+func bedrockClaudeCost(modelID string, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int) float64 {
+	inputPricePerMillion, outputPricePerMillion, ok := catalog.LookupPricing("bedrock", modelID)
 	if !ok {
-		switch {
-		case strings.Contains(c.modelID, "claude-opus-5"):
-			// Claude Opus 5: $5 per 1M input, $25 per 1M output
-			inputPricePerMillion = 5.0
-			outputPricePerMillion = 25.0
-		case strings.Contains(c.modelID, "claude-sonnet-5"):
-			// Claude Sonnet 5: $3 per 1M input, $15 per 1M output
-			inputPricePerMillion = 3.0
-			outputPricePerMillion = 15.0
-		case strings.Contains(c.modelID, "claude-opus-4-1"):
-			// Claude Opus 4.1: $15 per 1M input, $75 per 1M output
-			inputPricePerMillion = 15.0
-			outputPricePerMillion = 75.0
-		case strings.Contains(c.modelID, "claude-opus-4"):
-			// Claude Opus 4.5/4.6: $5 per 1M input, $25 per 1M output
-			inputPricePerMillion = 5.0
-			outputPricePerMillion = 25.0
-		case strings.Contains(c.modelID, "claude-haiku-4"):
-			// Claude Haiku 4: $1 per 1M input, $5 per 1M output
-			inputPricePerMillion = 1.0
-			outputPricePerMillion = 5.0
-		case strings.Contains(c.modelID, "claude-sonnet-4"):
-			// Claude Sonnet 4: $3 per 1M input, $15 per 1M output
-			inputPricePerMillion = 3.0
-			outputPricePerMillion = 15.0
-		default:
-			// An uncatalogued model gets no invented rate. Guessing Sonnet's
-			// card here is how Opus-5 was under-billed for a whole campaign and
-			// Fable by 3.3x: a plausible number is worse than an obvious zero,
-			// because nobody audits a cost that looks reasonable. Report zero
-			// and say so — the token counts are still recorded, so the real
-			// figure can be computed once the model is catalogued.
-			zap.L().Warn("bedrock: model not in pricing catalog — cost reported as 0",
-				zap.String("model", c.modelID))
-			return 0
-		}
+		inputPricePerMillion, outputPricePerMillion, ok = catalog.ClaudeFamilyPricing(modelID)
+	}
+	if !ok {
+		// An uncatalogued model gets no invented rate. Guessing Sonnet's
+		// card here is how Opus-5 was under-billed for a whole campaign and
+		// Fable by 3.3x: a plausible number is worse than an obvious zero,
+		// because nobody audits a cost that looks reasonable. Report zero
+		// and say so — the token counts are still recorded, so the real
+		// figure can be computed once the model is catalogued.
+		zap.L().Warn("bedrock: model not in pricing catalog — cost reported as 0",
+			zap.String("model", modelID))
+		return 0
+	}
+	if in, out, long := catalog.ClaudeLongContextPricing(modelID, inputTokens+cacheReadTokens+cacheCreationTokens); long {
+		inputPricePerMillion, outputPricePerMillion = in, out
 	}
 
 	inputCost := float64(inputTokens) * inputPricePerMillion / 1_000_000
 	outputCost := float64(outputTokens) * outputPricePerMillion / 1_000_000
-	cacheWriteCost := float64(cacheCreationTokens) * inputPricePerMillion * 1.25 / 1_000_000
-	cacheReadCost := float64(cacheReadTokens) * inputPricePerMillion * 0.10 / 1_000_000
-	return inputCost + outputCost + cacheWriteCost + cacheReadCost
+	cacheWriteCost := float64(cacheCreationTokens) * inputPricePerMillion * catalog.ClaudeCacheWriteMultiplier / 1_000_000
+	cacheReadCost := float64(cacheReadTokens) * inputPricePerMillion * catalog.ClaudeCacheReadMultiplier(modelID) / 1_000_000
+	return (inputCost + outputCost + cacheWriteCost + cacheReadCost) * catalog.BedrockEndpointMultiplier(modelID)
 }
 
 // bedrockResponse represents Bedrock's response format (Anthropic-compatible).

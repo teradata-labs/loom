@@ -776,6 +776,20 @@ func TestClient_CalculateCost(t *testing.T) {
 		{"opus_4_1", "claude-opus-4-1-20250805", 1_000_000, 1_000_000, 0, 0, 90.0},
 		// Haiku — $1/$5
 		{"haiku_4_5", "claude-haiku-4-5-20251001", 1_000_000, 1_000_000, 0, 0, 6.0},
+		// Claude 3 ids put the generation first ("claude-3-haiku"), so they
+		// need their own rows rather than the Sonnet default.
+		{"haiku_3_5", "claude-3-5-haiku-20241022", 1_000_000, 1_000_000, 0, 0, 4.80},   // $0.80 + $4
+		{"haiku_3", "claude-3-haiku-20240307", 1_000_000, 1_000_000, 0, 0, 1.50},       // $0.25 + $1.25
+		{"opus_3", "claude-3-opus-20240229", 1_000_000, 1_000_000, 0, 0, 90.0},         // $15 + $75
+		{"opus_3_cache_read", "claude-3-opus-20240229", 0, 0, 1_000_000, 0, 1.50},      // $15 * 0.10
+		{"haiku_3_cache_write", "claude-3-haiku-20240307", 0, 0, 0, 1_000_000, 0.3125}, // $0.25 * 1.25
+		// Claude 5 family
+		{"fable_5_1", "claude-fable-5-1", 1_000_000, 1_000_000, 0, 0, 60.0},           // $10 + $50
+		{"fable_5", "claude-fable-5", 1_000_000, 1_000_000, 0, 0, 60.0},               // $10 + $50
+		{"opus_5_5", "claude-opus-5-5", 1_000_000, 1_000_000, 0, 0, 24.0},             // $4 + $20, not opus-5's $5/$25
+		{"opus_5", "claude-opus-5", 1_000_000, 1_000_000, 0, 0, 30.0},                 // $5 + $25
+		{"sonnet_5", "claude-sonnet-5", 1_000_000, 1_000_000, 0, 0, 12.0},             // $2 + $10, not sonnet-4's $3/$15
+		{"opus_4_8_uncataloged", "claude-opus-4-8", 1_000_000, 1_000_000, 0, 0, 30.0}, // family fallback
 		// Cache pricing derives from input price
 		{"sonnet_cache_read", "claude-sonnet-4-6", 0, 0, 1_000_000, 0, 0.3},           // $3 * 0.10
 		{"sonnet_cache_write", "claude-sonnet-4-6", 0, 0, 0, 1_000_000, 3.75},         // $3 * 1.25
@@ -783,6 +797,15 @@ func TestClient_CalculateCost(t *testing.T) {
 		{"opus_4_6_cache_write", "claude-opus-4-6", 0, 0, 0, 1_000_000, 6.25},         // $5 * 1.25
 		{"opus_4_1_cache_read", "claude-opus-4-1-20250805", 0, 0, 1_000_000, 0, 1.50}, // $15 * 0.10
 		{"haiku_cache_read", "claude-haiku-4-5-20251001", 0, 0, 1_000_000, 0, 0.10},   // $1 * 0.10
+		// Claude 5 cache reads are priced per model, not at a flat 0.10x
+		{"fable_5_1_cache_read", "claude-fable-5-1", 0, 0, 1_000_000, 0, 0.25},   // $10 * 0.025
+		{"fable_5_cache_read", "claude-fable-5", 0, 0, 1_000_000, 0, 1.00},       // $10 * 0.10
+		{"opus_5_5_cache_read", "claude-opus-5-5", 0, 0, 1_000_000, 0, 0.20},     // $4 * 0.05
+		{"sonnet_5_5_cache_read", "claude-sonnet-5-5", 0, 0, 1_000_000, 0, 0.10}, // $2 * 0.05
+		{"opus_5_5_cache_write", "claude-opus-5-5", 0, 0, 0, 1_000_000, 5.00},    // $4 * 1.25
+		// Haiku 5.5: $0.10/$0.50 up to a 100K prompt, $0.50/$2.50 above it
+		{"haiku_5_5_short_prompt", "claude-haiku-5-5", 100_000, 1_000_000, 0, 0, 0.51},                   // $0.01 + $0.50
+		{"haiku_5_5_long_prompt_counts_cache", "claude-haiku-5-5", 1_000, 1_000_000, 100_000, 0, 2.5055}, // $0.0005 + $2.50 + $0.005
 	}
 
 	for _, tt := range tests {

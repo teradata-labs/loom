@@ -34,6 +34,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+#### LLM cost estimates: Claude 5, per-model cache reads, Bedrock regional premium
+Reported `cost_usd` figures change for the models below; compare costs across this release with that in mind. The anthropic, Bedrock and OpenAI-compatible clients now share one Claude fallback matcher, `catalog.ClaudeFamilyPricing`, in place of three hand-maintained copies that had drifted.
+- **Claude 5 rates.** Catalog rows for Fable 5 / 5.1 ($10/$50), Opus 5.5 ($4/$20), Opus 5 ($5/$25) and Sonnet 5 ($2/$10), plus Bedrock `us.` / `global.` profile rows for Fable 5, Opus 5 and Sonnet 5. Bedrock previously priced Sonnet 5 at $3/$15, and the OpenAI-compatible client priced a gateway-proxied Fable (e.g. a LiteLLM alias) at gpt-4o rates.
+- **Cache reads are priced per model** (`catalog.ClaudeCacheReadMultiplier`): 0.025x input on Fable 5.1 and Mythos 5.1, 0.05x on Opus 5.5 and Sonnet 5.5, 0.10x on every other Claude model. It was a flat 0.10x. Cache writes stay at 1.25x.
+- **Haiku 5.5** bills $0.10/$0.50 up to a 100K-token prompt and $0.50/$2.50 above it (`catalog.ClaudeLongContextPricing`); the prompt length counts cache reads and writes.
+- **Bedrock regional premium.** For Claude 4.5 and later, regional endpoints (`us.`, `eu.`, `apac.`, … and in-region `anthropic.` ids) are estimated 10% above `global.` endpoints, on every token bucket (`catalog.BedrockEndpointMultiplier`). Existing `us.anthropic.claude-sonnet-4-5-…` and later regional ids therefore report 10% more than before. Base rates, including any returned by a pricing `Source` an embedder registers, are read as global rates; register the global rate. See `docs/reference/llm-bedrock.md`.
+- **Claude 3 Haiku, 3.5 Haiku and 3 Opus ids are priced at their own cards**: `claude-3-haiku-*` $0.25/$1.25, `claude-3-5-haiku-*` $0.80/$4, `claude-3-opus-*` $15/$75. Before, the anthropic client priced the Haiku ids at $1/$5 and `claude-3-opus` at $5/$25, Bedrock reported 0, and the OpenAI-compatible client used gpt-4o rates.
+
 #### Token counting: the encoding ships in the binary
 - **The token counter no longer downloads its encoding.** `pkg/agent`'s counter fetched `cl100k_base` from `openaipublic.blob.core.windows.net` on first use; without network access (an air-gapped or locked-down server, a sandboxed CI runner) it fell back to a characters/4 estimate for the life of the process, which skews relief and budget decisions. It now loads the encoding bundled by `github.com/pkoukk/tiktoken-go-loader` (MIT; its `cl100k_base.tiktoken` has the SHA-256 that OpenAI's tiktoken verifies). The binary grows by about 7 MB.
 
