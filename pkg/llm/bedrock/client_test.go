@@ -16,12 +16,19 @@ package bedrock
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/types"
+	"github.com/xeipuuv/gojsonschema"
 )
 
 func TestNewClient_Defaults(t *testing.T) {
@@ -208,7 +215,8 @@ func TestClient_ConvertTools(t *testing.T) {
 		},
 	}
 
-	apiTools := client.convertTools([]shuttle.Tool{mockTool})
+	apiTools, err := client.convertTools(context.Background(), []shuttle.Tool{mockTool})
+	require.NoError(t, err)
 
 	require.Len(t, apiTools, 1)
 
@@ -234,50 +242,146 @@ func TestClient_ConvertTools(t *testing.T) {
 	assert.Equal(t, []string{"city"}, required)
 }
 
-func TestClient_ConvertSchemaProperties(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    map[string]*shuttle.JSONSchema
-		expected map[string]interface{}
-	}{
-		{
-			name:     "nil properties",
-			input:    nil,
-			expected: nil,
-		},
-		{
-			name: "simple string property",
-			input: map[string]*shuttle.JSONSchema{
-				"name": {Type: "string", Description: "User name"},
-			},
-			expected: map[string]interface{}{
-				"name": map[string]interface{}{
-					"type":        "string",
-					"description": "User name",
-				},
-			},
-		},
-		{
-			name: "property with enum",
-			input: map[string]*shuttle.JSONSchema{
-				"status": {
-					Type: "string",
-					Enum: []interface{}{"active", "inactive"},
-				},
-			},
-			expected: map[string]interface{}{
-				"status": map[string]interface{}{
-					"type": "string",
-					"enum": []interface{}{"active", "inactive"},
-				},
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := convertSchemaProperties(tt.input)
-			assert.Equal(t, tt.expected, result)
+func TestClient_ToolSchemaRequest(t *testing.T) {
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "")
+	const schemaJSON = `{"type":"object","description":"Task input","required":["tasks"],"allOf":[{"type":"object","properties":{},"not":{"required":["forbidden"]}}],"properties":{
+		"tasks":{"type":"array","description":"Tasks to create","items":{
+			"type":"object","description":"A task","required":["idx","subject","details"],"properties":{
+				"idx":{"type":"integer","description":"1-based task number","minimum":0,"maximum":100},
+				"subject":{"type":"string","description":"Short task title","minLength":0,"maxLength":80,"pattern":"^[A-Z]","format":"text","enum":["Task"],"default":"Task"},
+				"details":{"type":"object","required":["active"],"properties":{"active":{"type":"boolean","default":false}}},
+				"matrix":{"type":"array","items":{"type":"array","items":{"type":"integer"}}},
+				"nullable":{"anyOf":[{"type":"integer"},{"type":"null"}]},
+				"choice":{"oneOf":[{"type":"string"},{"type":"number"}]},
+				"excluded":{"not":{"type":"null"}},
+				"empty":{"type":"object","properties":{}}
+			}
+		}}
+	}}`
+	for _, mode := range []string{"chat", "stream", "converse"} {
+		t.Run(mode, func(t *testing.T) {
+			captured := make(chan map[string]interface{}, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request map[string]interface{}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Error(err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				captured <- request
+				w.Header().Set("Content-Type", "application/json")
+				if mode == "converse" {
+					_, _ = w.Write([]byte(`{"output":{"message":{"role":"assistant","content":[{"text":"ok"}]}},"stopReason":"end_turn","usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2},"metrics":{"latencyMs":1}}`))
+				} else {
+					_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}`))
+				}
+			}))
+			defer server.Close()
+			schema, err := shuttle.FromJSON([]byte(schemaJSON))
+			require.NoError(t, err)
+			inputTools := []shuttle.Tool{
+				&mockTool{name: "create_tasks", schema: schema},
+				&mockTool{name: "no_arguments", schema: &shuttle.JSONSchema{}},
+				&mockTool{name: "description_only", schema: &shuttle.JSONSchema{Description: "No arguments"}},
+				&mockTool{name: "incompatible", schema: &shuttle.JSONSchema{AnyOf: []*shuttle.JSONSchema{{Type: "object"}}}},
+			}
+			client := &Client{
+				client: bedrockruntime.New(bedrockruntime.Options{
+					Region:       "us-east-1",
+					BaseEndpoint: aws.String(server.URL),
+					Credentials:  credentials.NewStaticCredentialsProvider("test-key", "test-secret", ""),
+					HTTPClient:   server.Client(),
+				}),
+				modelID:   DefaultBedrockModelID,
+				maxTokens: DefaultBedrockMaxTokens,
+			}
+			messages := []types.Message{{Role: "user", Content: "Create tasks"}}
+			span := &observability.Span{}
+			ctx := observability.ContextWithSpan(context.Background(), span)
+			switch mode {
+			case "stream":
+				_, err = client.ChatStream(ctx, messages, inputTools, nil)
+			case "converse":
+				_, err = client.ChatConverse(ctx, messages, inputTools)
+			default:
+				_, err = client.Chat(ctx, messages, inputTools)
+			}
+			require.NoError(t, err)
+			require.Len(t, span.Events, 1)
+			assert.Equal(t, "incompatible", span.Events[0].Attributes["tool"])
+			request := <-captured
+			var inputSchema interface{}
+			var noArgumentSchemas []interface{}
+			if mode == "converse" {
+				config := request["toolConfig"].(map[string]interface{})
+				tools := config["tools"].([]interface{})
+				require.Len(t, tools, 3)
+				spec := tools[0].(map[string]interface{})["toolSpec"].(map[string]interface{})
+				inputSchema = spec["inputSchema"].(map[string]interface{})["json"]
+				for _, tool := range tools[1:] {
+					spec := tool.(map[string]interface{})["toolSpec"].(map[string]interface{})
+					noArgumentSchemas = append(noArgumentSchemas, spec["inputSchema"].(map[string]interface{})["json"])
+				}
+			} else {
+				tools := request["tools"].([]interface{})
+				require.Len(t, tools, 3)
+				inputSchema = tools[0].(map[string]interface{})["input_schema"]
+				for _, tool := range tools[1:] {
+					noArgumentSchemas = append(noArgumentSchemas, tool.(map[string]interface{})["input_schema"])
+				}
+			}
+			data, err := json.Marshal(inputSchema)
+			require.NoError(t, err)
+			var expected map[string]interface{}
+			require.NoError(t, json.Unmarshal([]byte(schemaJSON), &expected))
+			expected["not"] = expected["allOf"].([]interface{})[0].(map[string]interface{})["not"]
+			delete(expected, "allOf")
+			expectedJSON, err := json.Marshal(expected)
+			require.NoError(t, err)
+			assert.JSONEq(t, string(expectedJSON), string(data))
+			for _, forbidden := range []bool{false, true} {
+				sample := map[string]interface{}{"tasks": []interface{}{}}
+				if forbidden {
+					sample["forbidden"] = true
+				}
+				validation, err := gojsonschema.Validate(gojsonschema.NewGoLoader(inputSchema), gojsonschema.NewGoLoader(sample))
+				require.NoError(t, err)
+				assert.Equal(t, !forbidden, validation.Valid(), "outgoing schema lost its prohibition for %v", sample)
+			}
+			assert.Equal(t, map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}, noArgumentSchemas[0])
+			assert.Equal(t, map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "description": "No arguments"}, noArgumentSchemas[1])
+			assert.Empty(t, inputTools[1].InputSchema().Type)
+			assert.Empty(t, inputTools[2].InputSchema().Type)
+			client.strictToolSchemas = true
+			for _, keyword := range []string{"anyOf", "oneOf"} {
+				invalid, err := shuttle.FromJSON([]byte(`{"` + keyword + `":[{"type":"object"}]}`))
+				require.NoError(t, err)
+				invalidTools := []shuttle.Tool{&mockTool{name: "ambiguous", schema: invalid}}
+				switch mode {
+				case "stream":
+					_, err = client.ChatStream(context.Background(), messages, invalidTools, nil)
+				case "converse":
+					_, err = client.ChatConverse(context.Background(), messages, invalidTools)
+				default:
+					_, err = client.Chat(context.Background(), messages, invalidTools)
+				}
+				require.ErrorContains(t, err, `tool "ambiguous" schema:`)
+				require.ErrorContains(t, err, "root "+keyword)
+				assert.Empty(t, captured, "unsupported schema made an HTTP request")
+			}
+			client.strictToolSchemas = false
+			switch mode {
+			case "stream":
+				_, err = client.ChatStream(context.Background(), messages, inputTools[3:], nil)
+			case "converse":
+				_, err = client.ChatConverse(context.Background(), messages, inputTools[3:])
+			default:
+				_, err = client.Chat(context.Background(), messages, inputTools[3:])
+			}
+			require.NoError(t, err)
+			emptyRequest := <-captured
+			assert.NotContains(t, emptyRequest, "tools")
+			assert.NotContains(t, emptyRequest, "toolConfig")
 		})
 	}
 }

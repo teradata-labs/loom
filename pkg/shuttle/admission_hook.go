@@ -129,6 +129,14 @@ func (h permHook) Matches(req AdmissionRequest) bool {
 	return true
 }
 
+// mayRequireApproval reports whether the checker is configured for human
+// approval (require_approval without yolo). Evaluate resolves it to the
+// default action today, but it is the human-approval path, so the chain treats
+// it as order-dependent.
+func (h permHook) mayRequireApproval() bool {
+	return h.pc.mayRequireApproval()
+}
+
 // Evaluate runs the name-level permission check. A nil checker or a nil error
 // is Allow (the yolo short-circuit lives inside CheckPermission); any error is
 // Deny carrying the checker's message.
