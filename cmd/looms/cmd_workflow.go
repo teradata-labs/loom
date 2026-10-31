@@ -431,7 +431,7 @@ func handleWorkflowOutcome(rt *workflowRuntime, workflowPath string, result *loo
 }
 
 // workflowUserFlagHelp is the --user help text shared by run and resume.
-const workflowUserFlagHelp = "Tenant user ID that owns the workflow checkpoint in the storage backend (postgres: required)"
+const workflowUserFlagHelp = "Tenant user ID that owns the workflow checkpoint in the storage backend (postgres: required for run and for resume --workflow-id; a resume from a checkpoint file uses the tenant the file records)"
 
 // workflowStorageTimeout bounds opening the storage backend and each
 // checkpoint call to it. pgxdriver.NewPool pings before it returns, so an
@@ -454,10 +454,16 @@ func workflowCheckpointUserID() (string, error) {
 	if workflowUser != "" {
 		return workflowUser, nil
 	}
-	if config != nil && config.Storage.Backend == "postgres" {
+	if storageIsPostgres() {
 		return "", errCheckpointTenantRequired
 	}
 	return types.DefaultUserID, nil
+}
+
+// storageIsPostgres reports whether the workflow commands store checkpoints in
+// Postgres, where row-level security makes the tenant a real identity.
+func storageIsPostgres() bool {
+	return config != nil && config.Storage.Backend == "postgres"
 }
 
 // checkpointTenant resolves the tenant to read or write a checkpoint as. A
@@ -484,11 +490,19 @@ func checkpointTenant(recorded string) (string, error) {
 // workflow is never what the operator meant. A checkpoint that records no
 // tenant (written by an earlier version, or by a run with no storage backend)
 // leaves --user as given.
+//
+// On postgres, types.DefaultUserID is never adopted. A SQLite run with no
+// --user records that name as a fallback, not as an owner, and adopting it
+// would have the CLI read, write and delete Postgres rows as a tenant nobody
+// chose: the guess errCheckpointTenantRequired exists to prevent. Only an
+// explicit --user default-user resumes as that tenant.
 func adoptCheckpointTenant(ckpt *loomv1.WorkflowCheckpoint) error {
 	recorded := ckpt.GetTenantUserId()
 	switch {
 	case recorded == "", recorded == workflowUser:
 		return nil
+	case recorded == types.DefaultUserID && storageIsPostgres():
+		return fmt.Errorf("the checkpoint records tenant %q, the name a SQLite run uses when --user is not given, and the storage backend is postgres: pass --user %s to resume as that tenant", recorded, recorded)
 	case workflowUser == "":
 		workflowUser = recorded
 		return nil

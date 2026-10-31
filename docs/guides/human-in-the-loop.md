@@ -453,8 +453,14 @@ checkpoint file therefore deletes the stored copy under the tenant that saved
 it, even if the resume command omits `--user`. A resume with no `--user` runs
 as the recorded tenant, so a workflow that suspends again at a later gate keeps
 every checkpoint under that one tenant. A `--user` that names a different
-tenant than the one recorded is refused with an error. The resume commands the
-CLI prints include `--user` when the run had one. A checkpoint
+tenant than the one recorded is refused with an error. One recorded tenant is
+never adopted on Postgres: `default-user`, which a SQLite run records when it
+had no `--user`. A file resumed against Postgres needs `--user default-user`
+passed explicitly to resume as that tenant; without `--user`, or with another
+one, the resume is refused. The resume commands the
+CLI prints include `--user` when the run was given one or the checkpoint records
+one; a SQLite run with no `--user` records `default-user`, so the commands
+printed after a resume from that file carry `--user default-user`. A checkpoint
 file written by an earlier version records no tenant; resuming from it falls
 back to `--user`, and on Postgres with no `--user` the CLI logs a warning that
 the stored copy was not deleted. Limits:
@@ -486,7 +492,7 @@ when it is not given.
 | Backend  | Tenant used                                      |
 |----------|--------------------------------------------------|
 | SQLite   | `--user` if given, otherwise `default-user`      |
-| Postgres | `--user` is required; `default_user_id` is not used |
+| Postgres | `--user` is required for `run` and `resume --workflow-id`; `default_user_id` is not used. A resume from a checkpoint file uses the tenant the file records |
 
 On Postgres with no `--user`, `run` writes only the file and logs a warning,
 and `resume --workflow-id` fails with an error asking for `--user`:
