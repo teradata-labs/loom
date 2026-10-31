@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"time"
 
@@ -81,7 +82,7 @@ func (e *ExecutionGap) Error() string {
 // backfills it from the recorded result (known complete), or returns an
 // ExecutionGap (intent with no result: outcome unknown). A batch with no
 // recorded step returns ErrTurnNotRecorded instead of guessing.
-func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (*Response, error) {
+func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (_ *Response, retErr error) {
 	if a.eventLog == nil {
 		return nil, ErrEventLogDisabled
 	}
@@ -100,6 +101,7 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (*Response,
 		return nil, err
 	}
 	defer releaseLease()
+	defer func() { retErr = leaseLostError(ctx, retErr) }()
 
 	ctx, span := a.tracer.StartSpan(ctx, "agent.conversation.resume_session")
 	defer a.tracer.EndSpan(span)
@@ -142,9 +144,9 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (*Response,
 	// tail looks like, resuming from it would ask the LLM again and could run
 	// that batch's tools a second time, so every path refuses here.
 	msgs := rawSessionMessages(sess)
-	if step, unsaved := unsavedBatchStep(events, msgs); unsaved {
+	if step, err := a.unsavedBatchStepWithFolded(ctx, sessionID, events, msgs); err != nil {
 		span.AddEvent("resume_session.batch_not_saved", map[string]interface{}{"step_index": step})
-		return nil, fmt.Errorf("session %s step %d: %w", sessionID, step, ErrBatchNotSaved)
+		return nil, fmt.Errorf("session %s step %d: %w", sessionID, step, err)
 	}
 	if unansweredTurnTail(msgs) {
 		span.AddEvent("resume_session.unanswered_turn", nil)
@@ -431,14 +433,15 @@ func unansweredTurnTail(msgs []Message) bool {
 // tool_call_intent) for a batch that no assistant message in msgs holds. With
 // no saved batch to resume from, re-running the turn would ask the LLM again
 // and could run those tools twice. A step whose LLM response is missing from
-// the log cannot be checked and is reported too.
+// the log cannot be checked and is reported too, as ErrTurnNotRecorded rather
+// than ErrBatchNotSaved, since the assistant message may well have been saved.
 //
 // Each saved assistant message vouches for at most one step, and steps are
 // taken in order, so an earlier identical batch cannot also stand in for a
 // later one that never saved. Calls match on tool-call id as well as name and
 // input (see sameToolCall); a provider that reuses ids across responses can
 // still confuse two identical batches.
-func unsavedBatchStep(events []eventlog.ExecutionEvent, msgs []Message) (int, bool) {
+func unsavedBatchStep(events []eventlog.ExecutionEvent, msgs []Message) (int, error) {
 	dispatched := make(map[int]bool)
 	responses := make(map[int][]ToolCall)
 	for _, e := range events {
@@ -467,7 +470,7 @@ func unsavedBatchStep(events []eventlog.ExecutionEvent, msgs []Message) (int, bo
 	for _, step := range steps {
 		recorded, ok := responses[step]
 		if !ok {
-			return step, true
+			return step, ErrTurnNotRecorded
 		}
 		saved := false
 		for i, m := range msgs {
@@ -481,10 +484,40 @@ func unsavedBatchStep(events []eventlog.ExecutionEvent, msgs []Message) (int, bo
 			}
 		}
 		if !saved {
-			return step, true
+			return step, ErrBatchNotSaved
 		}
 	}
-	return 0, false
+	return 0, nil
+}
+
+// unsavedBatchStepWithFolded is unsavedBatchStep that also counts messages
+// compression has folded. Folded rows leave L1, which is all msgs holds, but
+// they are saved: a step the log kept because its tool row did not persist can
+// have its assistant message folded by a later turn, and it must not read as
+// lost. Only a step still unmatched is looked up, so a session without folds
+// pays no extra read; a failed read keeps the refusal.
+func (a *Agent) unsavedBatchStepWithFolded(ctx context.Context, sessionID string, events []eventlog.ExecutionEvent, msgs []Message) (int, error) {
+	step, err := unsavedBatchStep(events, msgs)
+	if !errors.Is(err, ErrBatchNotSaved) || a.memory == nil || a.memory.store == nil {
+		return step, err
+	}
+	rows, lerr := a.memory.store.ListMessagesBySeqRange(ctx, sessionID, 1, math.MaxInt64)
+	if lerr != nil {
+		zap.L().Warn("failed to read folded messages; keeping the unsaved-batch refusal",
+			zap.String("session_id", sessionID), zap.Error(lerr))
+		return step, err
+	}
+	var all []Message
+	for _, m := range rows {
+		if m.Folded && m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			all = append(all, m)
+		}
+	}
+	if len(all) == 0 {
+		return step, err
+	}
+	// Folded rows are older than everything in L1, and steps are matched in order.
+	return unsavedBatchStep(events, append(all, msgs...))
 }
 
 // isQueryToolResultIntent reports whether a tool_call_intent event is for the
@@ -575,7 +608,7 @@ const (
 // real tool output. It is marked manually_resolved with the caller's user id,
 // but any caller who can open the session may resolve its gap; there is no
 // operator-only check.
-func (a *Agent) ResolveExecutionGap(ctx context.Context, sessionID string, outcome GapOutcome, resultJSON []byte) (*ExecutionGap, error) {
+func (a *Agent) ResolveExecutionGap(ctx context.Context, sessionID string, outcome GapOutcome, resultJSON []byte) (_ *ExecutionGap, retErr error) {
 	if a.eventLog == nil {
 		return nil, ErrEventLogDisabled
 	}
@@ -615,6 +648,7 @@ func (a *Agent) ResolveExecutionGap(ctx context.Context, sessionID string, outco
 		return nil, err
 	}
 	defer releaseLease()
+	defer func() { retErr = leaseLostError(ctx, retErr) }()
 
 	ctx, span := a.tracer.StartSpan(ctx, "agent.conversation.resolve_execution_gap")
 	defer a.tracer.EndSpan(span)

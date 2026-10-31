@@ -344,29 +344,42 @@ func TestUnsavedBatchStep_EarlierIdenticalBatchDoesNotHideAnUnsavedOne(t *testin
 
 	// Different ids: the later step is not the saved message.
 	events := stepEvents(t, 3, later)
-	step, unsaved := unsavedBatchStep(events, msgs)
-	require.True(t, unsaved)
+	step, err := unsavedBatchStep(events, msgs)
+	require.ErrorIs(t, err, ErrBatchNotSaved)
 	require.Equal(t, 3, step)
 
 	// Same id (a provider reusing ids): one saved message still answers only
 	// one step, so the second step is reported.
 	events = append(stepEvents(t, 1, earlier), stepEvents(t, 3, earlier)...)
-	step, unsaved = unsavedBatchStep(events, msgs)
-	require.True(t, unsaved)
+	step, err = unsavedBatchStep(events, msgs)
+	require.ErrorIs(t, err, ErrBatchNotSaved)
 	require.Equal(t, 3, step)
 
 	// Both steps saved: nothing to report.
 	msgs = append(msgs, Message{Role: "assistant", ToolCalls: []llmtypes.ToolCall{earlier}})
-	_, unsaved = unsavedBatchStep(events, msgs)
-	require.False(t, unsaved)
+	_, err = unsavedBatchStep(events, msgs)
+	require.NoError(t, err)
+}
+
+// An intent without its llm_call_result (the best-effort write failed) cannot
+// be checked against the saved messages. It is reported as an unrecorded
+// turn, not as a lost assistant message: the message may have been saved.
+func TestUnsavedBatchStep_MissingLLMResponseIsTurnNotRecorded(t *testing.T) {
+	call := llmtypes.ToolCall{ID: "toolu_1", Name: "crashy", Input: map[string]interface{}{"n": float64(1)}}
+	msgs := []Message{{Role: "assistant", ToolCalls: []llmtypes.ToolCall{call}}}
+	events := stepEvents(t, 0, call)[1:] // drop the llm_call_result, keep the intent
+	step, err := unsavedBatchStep(events, msgs)
+	require.ErrorIs(t, err, ErrTurnNotRecorded)
+	require.NotErrorIs(t, err, ErrBatchNotSaved)
+	require.Equal(t, 0, step)
 }
 
 // A step holding only query_tool_result calls has no saved batch by design
 // (PersistMessage drops those calls), and re-running it repeats nothing.
 func TestUnsavedBatchStep_QueryToolResultOnlyStepIsNotReported(t *testing.T) {
 	events := stepEvents(t, 0, llmtypes.ToolCall{ID: "q1", Name: queryToolResultName, Input: map[string]interface{}{"message_id": float64(2)}})
-	_, unsaved := unsavedBatchStep(events, nil)
-	require.False(t, unsaved)
+	_, err := unsavedBatchStep(events, nil)
+	require.NoError(t, err)
 }
 
 // The saved assistant message omits query_tool_result calls, so a call's
