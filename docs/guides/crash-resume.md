@@ -257,8 +257,10 @@ loom sessions resume sess_checkout_7
 ### `the interrupted turn was not recorded in the execution log`
 
 The turn ran with `execution_log.enabled` off (or before the server
-restarted with it on). Resume cannot tell which tool calls already ran. Check
-the tools' effects manually and continue the conversation with a new message.
+restarted with it on), or the log recorded a tool call but not the LLM
+response that asked for it (that write is best-effort). Resume cannot tell
+which tool calls already ran. Check the tools' effects manually and continue
+the conversation with a new message.
 
 ### `tools ran for a batch whose assistant message was not saved`
 
@@ -277,7 +279,9 @@ gRPC this is `ABORTED`.
 
 ### `session lease lost`
 
-The turn could not renew its lease, so it stopped before its next tool call.
+The turn could not renew its lease, so it stopped before its next tool call,
+or while waiting on an LLM response. Over gRPC this is `ABORTED`, not
+`CANCELED`.
 Check the database, then run `loom sessions resume` for the session. If a tool
 was running when the lease was lost, resume may report an execution gap.
 
