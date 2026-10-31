@@ -124,7 +124,7 @@ type Error struct {
 // JSONSchema represents a JSON Schema for tool parameters.
 // This follows the JSON Schema spec for type definitions.
 type JSONSchema struct {
-	Type        string                 `json:"type,omitempty"`
+	Type        string                 `json:"type"`
 	Description string                 `json:"description,omitempty"`
 	Properties  map[string]*JSONSchema `json:"properties,omitempty"`
 	Required    []string               `json:"required,omitempty"`

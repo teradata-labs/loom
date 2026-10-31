@@ -20,7 +20,7 @@ func TestAnyOfOnlyPropertyCarriesNoEmptyType(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := json.Marshal(NormalizeSchema(s).Properties)
+	out, err := json.Marshal(NormalizeSchema(s).ToToolMap())
 	if err != nil {
 		t.Fatal(err)
 	}
