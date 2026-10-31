@@ -21,8 +21,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/teradata-labs/loom/pkg/llm/catalog"
-
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/bedrock"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
