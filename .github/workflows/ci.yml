@@ -576,9 +576,10 @@ jobs:
   # Job 7b: Windows Unit Tests
   # ============================================================================
   # Guards the Windows test-suite portability fixes (path separators, open file
-  # handles blocking temp-dir removal, POSIX-only assumptions). No -race and no
-  # service containers: the Linux `test` job owns race detection and the
-  # postgres-backed tests.
+  # handles blocking temp-dir removal, POSIX-only assumptions). The full suite
+  # runs without -race; -race runs only on the packages with OS-specific code
+  # that .github/scripts/windows-race-packages.sh detects. No service
+  # containers: the Linux `test` job owns the postgres-backed tests.
   test-windows:
     name: Unit Tests (Windows)
     runs-on: windows-latest
@@ -628,19 +629,21 @@ jobs:
       - name: Run platform-specific tests with race detection
         # The full-repo run above has no -race because it would multiply the job
         # time. This step runs -race on the packages with OS-specific code, found
-        # by scripts/windows-race-packages.sh (files compiled for windows but not
-        # linux, and non-test code that reads runtime.GOOS), so new OS boundaries
-        # are picked up without editing this workflow.
+        # by .github/scripts/windows-race-packages.sh (files compiled for windows
+        # but not linux, and non-test code that reads runtime.GOOS), so new OS
+        # boundaries are picked up without editing this workflow. -short matches
+        # the step above and keeps test/loadtest (which only reads runtime.GOOS to
+        # report its environment) from running its scalability tests under -race.
         shell: bash
         run: |
-          pkgs=$(scripts/windows-race-packages.sh)
+          pkgs=$(.github/scripts/windows-race-packages.sh)
           echo "Packages with Windows-specific code:"
           echo "$pkgs"
           if [ -z "$pkgs" ]; then
             echo "none found; skipping"
             exit 0
           fi
-          go test -tags fts5 -race -timeout=15m $pkgs
+          go test -tags fts5 -short -race -timeout=15m $pkgs
 
   # ============================================================================
   # Job 8: All Checks Passed

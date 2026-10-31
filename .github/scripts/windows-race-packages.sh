@@ -7,7 +7,7 @@
 #     not for linux, or
 #   - non-test code that branches on runtime.GOOS.
 #
-# Usage: scripts/windows-race-packages.sh   (run from anywhere in the repo)
+# Usage: .github/scripts/windows-race-packages.sh   (run from anywhere in the repo)
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
@@ -33,7 +33,11 @@ goos_branching() {
   git grep -l 'runtime\.GOOS' -- '*.go' ':!*_test.go' |
     xargs -r -n1 dirname |
     sort -u |
-    while read -r dir; do go list -tags fts5 "./$dir"; done
+    while read -r dir; do
+      # -e and the GoFiles guard skip directories whose files are all excluded
+      # for the host (e.g. a `//go:build ignore` generator) instead of failing.
+      go list -e -tags fts5 -f '{{if .GoFiles}}{{.ImportPath}}{{end}}' "./$dir"
+    done
 }
 
 { windows_only; goos_branching; } | sort -u
