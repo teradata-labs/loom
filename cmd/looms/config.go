@@ -14,12 +14,16 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
+	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
@@ -1091,7 +1095,10 @@ func LoadConfig(cfgFile string) (*Config, error) {
 	// Note: Viper lowercases all keys, including map keys. This is fixed later
 	// by fixMCPEnvCase() which restores original case from YAML for MCP env vars.
 	var config Config
-	if err := viper.Unmarshal(&config); err != nil {
+	if err := viper.Unmarshal(&config, withStringToStringMapHook); err != nil {
+		if vars := malformedMapEnvVars(err); len(vars) > 0 {
+			return nil, fmt.Errorf("failed to unmarshal config (check %s): %w", strings.Join(vars, ", "), err)
+		}
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
@@ -1132,6 +1139,105 @@ func LoadConfig(cfgFile string) (*Config, error) {
 	}
 
 	return &config, nil
+}
+
+// withStringToStringMapHook adds stringToStringMapHook to viper's default
+// decode hooks (duration and string-slice parsing), keeping them intact.
+func withStringToStringMapHook(c *mapstructure.DecoderConfig) {
+	c.DecodeHook = mapstructure.ComposeDecodeHookFunc(c.DecodeHook, stringToStringMapHook)
+}
+
+// stringToStringMapHook decodes a string into a map[string]string field. The
+// only way a string reaches such a field is an environment variable (e.g.
+// LOOM_LLM_LITELLM_EXTRA_HEADERS) overriding a map key, and without this hook
+// mapstructure either fails the whole load or silently decodes it to nil.
+//
+// Accepted forms:
+//   - a JSON object: {"X-Team":"a","X-Trace":"b"} (use this when a value
+//     contains a comma)
+//   - comma-separated key=value pairs: X-Team=a,X-Trace=b (split on the first
+//     '=', so values may contain '=', e.g. base64 padding)
+//
+// An empty or all-whitespace string decodes to an empty map. Any other
+// string is an error, so a malformed value fails loudly instead of being
+// dropped. The error never contains the value or any part of it: these maps
+// hold HTTP headers, and a likely typo such as "Authorization: Bearer <token>"
+// (colon instead of '=') would otherwise print the credential at startup. It
+// names the entry's position instead; mapstructure adds the config key and
+// LoadConfig adds the environment variable.
+func stringToStringMapHook(from, to reflect.Type, data any) (any, error) {
+	if from.Kind() != reflect.String || to != reflect.TypeOf(map[string]string(nil)) {
+		return data, nil
+	}
+	raw := strings.TrimSpace(data.(string))
+	out := map[string]string{}
+	if raw == "" {
+		return out, nil
+	}
+	if strings.HasPrefix(raw, "{") {
+		if err := json.Unmarshal([]byte(raw), &out); err != nil {
+			// Report only the byte offset of a syntax error: json error text
+			// can quote parts of the input.
+			var syntaxErr *json.SyntaxError
+			if errors.As(err, &syntaxErr) {
+				return nil, &malformedMapError{reason: fmt.Sprintf(
+					"value is not a valid JSON object of strings (syntax error at byte %d)", syntaxErr.Offset)}
+			}
+			return nil, &malformedMapError{reason: "value is not a valid JSON object of strings (truncated, or an entry is not a string)"}
+		}
+		return out, nil
+	}
+	pairs := strings.Split(raw, ",")
+	for i, pair := range pairs {
+		k, v, ok := strings.Cut(pair, "=")
+		k = strings.TrimSpace(k)
+		if !ok || k == "" {
+			return nil, &malformedMapError{reason: fmt.Sprintf(
+				"entry %d of %d is not key=value (or use a JSON object)", i+1, len(pairs))}
+		}
+		out[k] = strings.TrimSpace(v)
+	}
+	return out, nil
+}
+
+// malformedMapError is returned by stringToStringMapHook. Its message
+// describes what is wrong and where, and deliberately carries no part of the
+// value (which may hold a credential) so it is safe to print and log.
+type malformedMapError struct {
+	reason string
+}
+
+func (e *malformedMapError) Error() string {
+	return e.reason + "; the value is not shown because it may contain a credential"
+}
+
+// malformedMapEnvVars walks a config decode error and returns the environment
+// variable name for every map key that stringToStringMapHook rejected, e.g.
+// llm.litellm_extra_headers -> LOOM_LLM_LITELLM_EXTRA_HEADERS (same mapping
+// as the env key replacer in LoadConfig).
+func malformedMapEnvVars(err error) []string {
+	var vars []string
+	var walk func(error)
+	walk = func(e error) {
+		if e == nil {
+			return
+		}
+		var malformed *malformedMapError
+		if decErr, ok := e.(*mapstructure.DecodeError); ok && errors.As(decErr.Unwrap(), &malformed) {
+			vars = append(vars, "LOOM_"+strings.ToUpper(strings.ReplaceAll(decErr.Name(), ".", "_")))
+			return
+		}
+		switch u := e.(type) {
+		case interface{ Unwrap() []error }:
+			for _, inner := range u.Unwrap() {
+				walk(inner)
+			}
+		case interface{ Unwrap() error }:
+			walk(u.Unwrap())
+		}
+	}
+	walk(err)
+	return vars
 }
 
 // setDefaults sets default configuration values.
@@ -1192,6 +1298,33 @@ func setDefaults() {
 	viper.SetDefault("llm.max_tokens", 4096)
 	viper.SetDefault("llm.timeout_seconds", 0)
 	viper.SetDefault("llm.concurrency_limit", 2)
+
+	// LLM credentials (env/keyring/CLI only). Registered empty so AutomaticEnv
+	// binds e.g. LOOM_LLM_BEDROCK_BEARER_TOKEN on Unmarshal; without a known key
+	// viper silently drops the env var. An empty default is indistinguishable
+	// from "unset" after Unmarshal, so the keyring fallback still applies.
+	viper.SetDefault("llm.anthropic_api_key", "")
+	viper.SetDefault("llm.bedrock_access_key_id", "")
+	viper.SetDefault("llm.bedrock_secret_access_key", "")
+	viper.SetDefault("llm.bedrock_session_token", "")
+	viper.SetDefault("llm.bedrock_bearer_token", "")
+	viper.SetDefault("llm.openai_api_key", "")
+	viper.SetDefault("llm.azure_openai_api_key", "")
+	viper.SetDefault("llm.azure_openai_entra_token", "")
+	viper.SetDefault("llm.mistral_api_key", "")
+	viper.SetDefault("llm.gemini_api_key", "")
+	viper.SetDefault("llm.huggingface_token", "")
+	viper.SetDefault("llm.litellm_api_key", "")
+
+	// Non-secret LLM keys with no built-in value, registered for the same
+	// reason: without a known key, LOOM_LLM_BEDROCK_PROFILE etc. are dropped.
+	// Every consumer tests these with == "" / len() == 0, so an empty default
+	// behaves exactly like an absent key. The headers env var is a string;
+	// withStringToStringMapHook decodes it.
+	viper.SetDefault("llm.bedrock_profile", "")
+	viper.SetDefault("llm.litellm_endpoint", "")
+	viper.SetDefault("llm.litellm_model", "")
+	viper.SetDefault("llm.litellm_extra_headers", map[string]string{})
 
 	// Database defaults (legacy - use loom data directory)
 	defaultDBPath := filepath.Join(loomconfig.GetLoomDataDir(), "loom.db")
@@ -1279,6 +1412,12 @@ func setDefaults() {
 	viper.SetDefault("tools.web_search.endpoints.tavily", "https://api.tavily.com/search")
 	viper.SetDefault("tools.web_search.endpoints.serpapi", "https://serpapi.com/search")
 	viper.SetDefault("tools.web_search.endpoints.duckduckgo", "https://api.duckduckgo.com/")
+	// Web search credentials (env/keyring only), registered so AutomaticEnv
+	// binds LOOM_TOOLS_WEB_SEARCH_*_KEY on Unmarshal. The keyring fallback
+	// tests != "", so an empty default leaves it unchanged.
+	viper.SetDefault("tools.web_search.brave_api_key", "")
+	viper.SetDefault("tools.web_search.tavily_api_key", "")
+	viper.SetDefault("tools.web_search.serpapi_key", "")
 
 	// Tool executor defaults
 	viper.SetDefault("tools.executor.timeout_seconds", 30)
