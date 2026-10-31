@@ -230,11 +230,17 @@ func TestStarvedWaiterOutranksHolderWithoutBecomingOne(t *testing.T) {
 	hog, err := s.Acquire(context.Background(), Request{ReservationTokens: 700})
 	require.NoError(t, err)
 
+	// Grant order is recorded before each Release: releasing the first grant
+	// admits the second at once, so the order the goroutines finish in can
+	// differ from the order the scheduler granted them.
+	granted := make(chan string, 2)
+
 	// A NEW waiter parks first and ages to the top rank.
 	newDone := make(chan struct{})
 	go func() {
 		g, err := s.Acquire(context.Background(), Request{ReservationTokens: 500, Class: classNew})
 		if err == nil {
+			granted <- "new"
 			g.Release(1)
 		}
 		close(newDone)
@@ -247,6 +253,7 @@ func TestStarvedWaiterOutranksHolderWithoutBecomingOne(t *testing.T) {
 	go func() {
 		g, err := s.Acquire(context.Background(), Request{ReservationTokens: 500, Class: classHolder})
 		if err == nil {
+			granted <- "holder"
 			g.Release(1)
 		}
 		close(holderDone)
@@ -264,13 +271,13 @@ func TestStarvedWaiterOutranksHolderWithoutBecomingOne(t *testing.T) {
 	hog.Release(1)
 
 	select {
-	case <-newDone:
-		// The starved waiter went first, without ever changing class.
-	case <-holderDone:
-		t.Fatal("the freshly-arrived holder was served before the starved waiter")
+	case first := <-granted:
+		// The starved waiter must go first, without ever changing class.
+		require.Equal(t, "new", first, "the freshly-arrived holder was served before the starved waiter")
 	case <-time.After(5 * time.Second):
 		t.Fatal("neither waiter was served")
 	}
+	<-newDone
 	<-holderDone
 }
 
