@@ -61,6 +61,10 @@ type SessionStorage interface {
 	// Relief transactions (HLD §5.2 — write-once flags, one transaction per
 	// operation, set only inside releasePressure):
 	//
+	// MarkEvicted is kept for implementations written against it. Nothing in
+	// loom calls it: a tool result is bounded once at arrival and never evicted
+	// afterwards, so loom's own stores implement it as a no-op.
+	MarkEvicted(ctx context.Context, sessionID string, seqs []int64) error
 	// FoldMessages writes summary version n (snapshot_type='fold', content =
 	// JSON {"n","text"}) and sets the region's folded flags in ONE transaction
 	// (HLD §5.4.6) — a fold never stands in memory without its row.

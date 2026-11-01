@@ -489,6 +489,13 @@ func (s *SessionStore) LoadMessages(ctx context.Context, sessionID string) ([]ag
 	return messages, nil
 }
 
+// MarkEvicted does nothing: a tool result is bounded once at arrival and
+// never evicted afterwards. It is here for SessionStorage implementations
+// written against it.
+func (s *SessionStore) MarkEvicted(ctx context.Context, sessionID string, seqs []int64) error {
+	return nil
+}
+
 // FoldMessages writes summary version n (snapshot_type='fold', content = JSON
 // {"n","text"}) and sets the region's folded flags in ONE transaction (HLD
 // §5.4.6) — never a fold that evaporates on reload.
