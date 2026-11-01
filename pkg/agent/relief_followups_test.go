@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -173,4 +174,118 @@ func TestSynthesis_ResendsOnceAfterContextTooLong(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- current-turn overflow ends the turn instead of looping -----------------
+
+// fanOutLLM answers the first call with n parallel calls to dense_rows and
+// every later call with a final answer, counting calls.
+type fanOutLLM struct {
+	mockToolCallingLLM
+	n     int
+	fmu   sync.Mutex
+	calls int
+}
+
+func (f *fanOutLLM) Chat(_ context.Context, _ []llmtypes.Message, _ []shuttle.Tool) (*llmtypes.LLMResponse, error) {
+	f.fmu.Lock()
+	defer f.fmu.Unlock()
+	f.calls++
+	if f.calls > 1 {
+		return &llmtypes.LLMResponse{Content: "answer from previews", Usage: llmtypes.Usage{InputTokens: 50, OutputTokens: 10}}, nil
+	}
+	calls := make([]llmtypes.ToolCall, f.n)
+	for i := range calls {
+		calls[i] = llmtypes.ToolCall{ID: fmt.Sprintf("c%d", i), Name: "dense_rows", Input: map[string]interface{}{"i": i}}
+	}
+	return &llmtypes.LLMResponse{ToolCalls: calls, Usage: llmtypes.Usage{InputTokens: 50, OutputTokens: 10}}, nil
+}
+
+func (f *fanOutLLM) count() int {
+	f.fmu.Lock()
+	defer f.fmu.Unlock()
+	return f.calls
+}
+
+func TestChat_CurrentTurnOverflowEndsTurnWithRecoverableError(t *testing.T) {
+	tests := []struct {
+		name      string
+		fanOut    int
+		wantError bool
+	}{
+		{"stubs alone over start: turn ends before the next send", 300, true},
+		{"relief fits the turn: the model answers", 10, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockLLM := &fanOutLLM{n: tt.fanOut}
+			patternCfg := DefaultPatternConfig()
+			patternCfg.UseLLMClassifier = false
+			ag := NewAgent(&mockBackend{}, mockLLM, WithConfig(&Config{
+				MaxTurns:             5,
+				MaxToolExecutions:    1000,
+				MaxIterations:        1000, // per-turn call cap: the whole fan-out runs
+				MaxContextTokens:     20000,
+				ReservedOutputTokens: 1000,
+				PatternConfig:        patternCfg,
+			}))
+			var row atomic.Int64
+			ag.RegisterTool(&shuttle.MockTool{
+				MockName: "dense_rows",
+				MockExecute: func(context.Context, map[string]interface{}) (*shuttle.Result, error) {
+					return &shuttle.Result{Success: true, Data: denseResult(int(row.Add(1)))}, nil
+				},
+			})
+
+			resp, err := ag.Chat(context.Background(), "overflow-"+fmt.Sprint(tt.fanOut), "run them all in parallel")
+			if !tt.wantError {
+				require.NoError(t, err)
+				assert.Equal(t, "answer from previews", resp.Content)
+				return
+			}
+			var re *RecoverableError
+			require.ErrorAs(t, err, &re)
+			assert.Equal(t, "current_turn_overflow", re.ErrorType)
+			assert.False(t, re.Retryable, "resending the same turn cannot fit")
+			assert.Contains(t, re.Message, "split the work into smaller batches")
+			assert.Equal(t, tt.fanOut, re.RecoveryPayload["tool_results"])
+			assert.Equal(t, 1, mockLLM.count(), "no send after relief has nothing left to shed")
+		})
+	}
+}
+
+// The step's own results, after relief, are what decide an overflow: a batch
+// that does not fit the window is one, a batch that fits is not, and a prompt
+// with no batch in flight is not — a ROM that alone fills the window is a
+// config problem, not the turn's results.
+func TestCurrentTurnOverflow_IsTheBatchInFlightNotFitting(t *testing.T) {
+	ctx := context.Background()
+	batch := func(results int) *SegmentedMemory {
+		sm := NewSegmentedMemory("ROM", 20000, 1000)
+		sm.AddMessage(ctx, Message{Role: "user", Content: "run them all", Turn: 1})
+		calls := make([]ToolCall, results)
+		for i := range calls {
+			calls[i] = ToolCall{ID: fmt.Sprintf("c%d", i), Name: "dense_rows"}
+		}
+		sm.AddMessage(ctx, Message{Role: "assistant", ToolCalls: calls, Turn: 1})
+		for i := range calls {
+			sm.AddMessage(ctx, Message{Role: "tool", ToolUseID: calls[i].ID, Content: denseResult(i), Turn: 1})
+		}
+		_, _, _ = sm.ReleasePressure(ctx, 0)
+		return sm
+	}
+
+	o, over := batch(300).CurrentTurnOverflow()
+	require.True(t, over, "300 results in a 20,000-token window were sent")
+	assert.Equal(t, 300, o.ToolResults)
+	assert.Equal(t, 19000, o.StartTokens, "the window less the room reserved for the reply")
+	assert.Greater(t, o.FloorTokens, o.StartTokens)
+
+	_, over = batch(5).CurrentTurnOverflow()
+	assert.False(t, over, "a batch that fits is an overflow")
+
+	rom := NewSegmentedMemory(strings.Repeat("rom ", 30000), 20000, 1000)
+	rom.AddMessage(ctx, Message{Role: "user", Content: "hi", Turn: 1})
+	_, over = rom.CurrentTurnOverflow()
+	assert.False(t, over, "a prompt with no batch in flight is an overflow")
 }

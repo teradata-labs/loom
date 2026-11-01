@@ -127,45 +127,7 @@ func (sm *SegmentedMemory) ApplyFoldReply(ctx context.Context, summary string) (
 		return false, 0
 	}
 
-	t := sm.currentTurnLocked()
-	k := int64(sm.protectedRecentTurns)
-	if k <= 0 {
-		k = defaultProtectedRecentTurns
-	}
-
-	// The pending pair: the last assistant row and everything after it are
-	// untouchable — the in-flight region.
-	lastAssistant := -1
-	for i := range sm.contextMessages {
-		if sm.contextMessages[i].Role == "assistant" {
-			lastAssistant = i
-		}
-	}
-
-	kept := make([]Message, 0, len(sm.contextMessages))
-	excised := make([]Message, 0, len(sm.contextMessages))
-	for i := range sm.contextMessages {
-		m := sm.contextMessages[i]
-		switch {
-		case lastAssistant >= 0 && i >= lastAssistant:
-			kept = append(kept, m) // pending pair and after
-		case m.Role == "user":
-			kept = append(kept, m) // the operator's words, verbatim, always
-		case m.Turn > t-k && m.Role == "assistant" && strings.TrimSpace(m.Content) != "":
-			// Recent window: the assistant THREAD survives, its tool traffic
-			// does not. Pairs are stripped whole — the calls leave here, the
-			// results leave via the excised branch below.
-			// The row itself stays unflagged (its text must survive reload);
-			// its RESULTS are excised and flagged below, and on reload the
-			// compile's pair-atomicity fills the orphaned calls with
-			// synthetic failed results — the re-run door.
-			mm := m
-			mm.ToolCalls = nil
-			kept = append(kept, mm)
-		default:
-			excised = append(excised, m)
-		}
-	}
+	kept, excised := sm.foldSplitLocked()
 	if len(excised) == 0 {
 		return false, 0
 	}
@@ -208,4 +170,52 @@ func (sm *SegmentedMemory) ApplyFoldReply(ctx context.Context, summary string) (
 		zap.Int("summary_bytes", len(newText)),
 		zap.Int("version", n1))
 	return true, estimate
+}
+
+// foldSplitLocked is the in-loop fold's cut of the context: what a full fold
+// keeps and what it excises. Kept: the pending pair — the last assistant row and
+// everything after it, untouchable — the operator's words verbatim, and the
+// recent assistant thread with its tool traffic stripped. Everything else is
+// excised. Must hold lock.
+func (sm *SegmentedMemory) foldSplitLocked() (kept, excised []Message) {
+	t := sm.currentTurnLocked()
+	k := int64(sm.protectedRecentTurns)
+	if k <= 0 {
+		k = defaultProtectedRecentTurns
+	}
+
+	// The pending pair: the last assistant row and everything after it are
+	// untouchable — the in-flight region.
+	lastAssistant := -1
+	for i := range sm.contextMessages {
+		if sm.contextMessages[i].Role == "assistant" {
+			lastAssistant = i
+		}
+	}
+
+	kept = make([]Message, 0, len(sm.contextMessages))
+	excised = make([]Message, 0, len(sm.contextMessages))
+	for i := range sm.contextMessages {
+		m := sm.contextMessages[i]
+		switch {
+		case lastAssistant >= 0 && i >= lastAssistant:
+			kept = append(kept, m) // pending pair and after
+		case m.Role == "user":
+			kept = append(kept, m) // the operator's words, verbatim, always
+		case m.Turn > t-k && m.Role == "assistant" && strings.TrimSpace(m.Content) != "":
+			// Recent window: the assistant THREAD survives, its tool traffic
+			// does not. Pairs are stripped whole — the calls leave here, the
+			// results leave via the excised branch below.
+			// The row itself stays unflagged (its text must survive reload);
+			// its RESULTS are excised and flagged below, and on reload the
+			// compile's pair-atomicity fills the orphaned calls with
+			// synthetic failed results — the re-run door.
+			mm := m
+			mm.ToolCalls = nil
+			kept = append(kept, mm)
+		default:
+			excised = append(excised, m)
+		}
+	}
+	return kept, excised
 }

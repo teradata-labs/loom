@@ -312,6 +312,13 @@ func (sm *SegmentedMemory) CurrentTurn() int64 {
 	return sm.currentTurnLocked()
 }
 
+// DropTurnPayloads is kept for callers written against it. A tool result is
+// bounded once, when it arrives, so there is no whole payload left to drop at a
+// turn's end.
+//
+// Deprecated: nothing to drop; results are bounded at arrival.
+func (sm *SegmentedMemory) DropTurnPayloads() {}
+
 // currentTurnLocked computes max(Turn) over L1. Must hold lock.
 func (sm *SegmentedMemory) currentTurnLocked() int64 {
 	var t int64

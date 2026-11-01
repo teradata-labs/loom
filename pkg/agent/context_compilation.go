@@ -1072,6 +1072,76 @@ func (sm *SegmentedMemory) SetAdvertisedToolsBytes(bytes int) {
 	sm.tokenCountDirty = false
 }
 
+// overflowMarginPercent is how far past the window the smallest prompt a fold
+// can leave must be for the turn to end before sending. The estimate is
+// calibrated against what the provider bills, so what is left is the drift
+// between calls; a floor within it is sent, and a refusal is caught after.
+const overflowMarginPercent = 10
+
+// CurrentTurnOverflow is a turn whose prompt cannot be made to fit the window.
+type CurrentTurnOverflow struct {
+	// FloorTokens is the calibrated estimate of the smallest prompt a fold can
+	// leave: the in-flight batch, the operator's words and the recent thread.
+	FloorTokens int
+	// StartTokens is what the window takes: its size less the room reserved
+	// for the reply.
+	StartTokens int
+	// StubbedResults counts the in-flight batch's results bounded at arrival.
+	StubbedResults int
+	// ToolResults counts the in-flight batch's results.
+	ToolResults int
+}
+
+// CurrentTurnOverflow reports whether the turn's prompt cannot be made to fit
+// the window: even the smallest prompt a fold can leave — the in-flight batch,
+// which no fold may excise, with the operator's words and the recent thread —
+// is over it. Then no relief can make the send fit: one step returned more
+// results than the window holds, and the caller ends the turn instead of
+// sending. A prompt that is over the window but that a fold can bring under it
+// is relief's to shed, not an overflow. It only reads.
+func (sm *SegmentedMemory) CurrentTurnOverflow() (CurrentTurnOverflow, bool) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	fits := sm.usableLocked()
+	if fits <= 0 {
+		return CurrentTurnOverflow{}, false
+	}
+	lastAssistant := -1
+	for i := range sm.contextMessages {
+		if sm.contextMessages[i].Role == "assistant" {
+			lastAssistant = i
+		}
+	}
+	var results, bounded int
+	for i := lastAssistant + 1; i < len(sm.contextMessages); i++ {
+		if m := &sm.contextMessages[i]; m.Role == "tool" {
+			results++
+			if strings.Contains(m.Content, "[truncated: ") {
+				bounded++
+			}
+		}
+	}
+	if results == 0 {
+		return CurrentTurnOverflow{}, false
+	}
+	// The smallest prompt a fold leaves: compile what it keeps. compileLocked
+	// only reads the context, so standing it in for a moment, under the lock,
+	// changes nothing anyone sees.
+	kept, _ := sm.foldSplitLocked()
+	live := sm.contextMessages
+	sm.contextMessages = kept
+	floor := int(float64(sm.accurateTokensLocked(sm.compileLocked())) * sm.calibrationLocked())
+	sm.contextMessages = live
+	// The floor is an estimate. Near the line the turn is sent, and a real
+	// refusal is answered as any is: relief, one resend, and the turn ends with
+	// context_exhausted. Only a floor past the estimate's error ends the turn
+	// before a send that cannot succeed.
+	if floor <= fits+fits*overflowMarginPercent/100 {
+		return CurrentTurnOverflow{}, false
+	}
+	return CurrentTurnOverflow{FloorTokens: floor, StartTokens: fits, StubbedResults: bounded, ToolResults: results}, true
+}
+
 // noteFoldedSkillsLocked is what a fold does about skills (§4.5): it returns the
 // skills whose manage_skills load pair lies in the folded region, and the
 // summary text with the full set of folded skills pinned at its end, so the
