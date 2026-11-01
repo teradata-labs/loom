@@ -171,3 +171,30 @@ func TestInloopFold_SummaryNotCountedByTrigger(t *testing.T) {
 	sm.AddMessage(ctx, Message{Role: "assistant", Content: "done reading", Turn: 13})
 	assert.True(t, sm.NeedsFold(), "the past has crossed the mark on its own")
 }
+
+// A skill loaded long ago and loaded again by the step in flight is current:
+// the in-loop fold excises the old load pair but neither deactivates the skill
+// nor notes it as folded. One loaded only in what is excised is deactivated
+// and noted.
+func TestInloopFold_KeepsASkillReloadedByTheStepInFlight(t *testing.T) {
+	sm := newCompileMemory(t)
+	var deactivated []string
+	sm.SetSkillDeactivationHook(func(_, name string) { deactivated = append(deactivated, name) })
+	load := func(turn int64, id, name string) {
+		sm.AddMessage(context.Background(), Message{Role: "assistant", Turn: turn, ToolCalls: []ToolCall{{
+			ID: id, Name: "manage_skills", Input: map[string]interface{}{"action": "load", "name": name}}}})
+		sm.AddMessage(context.Background(), Message{Role: "tool", ToolUseID: id, Content: "Skill loaded: " + name, Turn: turn})
+	}
+	sm.AddMessage(context.Background(), Message{Role: "user", Content: "the JOB", Turn: 1})
+	load(1, "l-alpha", "alpha")
+	load(1, "l-beta", "beta")
+	sm.AddMessage(context.Background(), Message{Role: "assistant", Content: "done 1", Turn: 1})
+	sm.AddMessage(context.Background(), Message{Role: "user", Content: "next", Turn: 2})
+	load(2, "l-alpha-again", "alpha") // the step in flight
+
+	applied, _ := sm.ApplyFoldReply(context.Background(), "state of work")
+	require.True(t, applied)
+	assert.Equal(t, []string{"beta"}, deactivated, "only the skill the fold took away is deactivated")
+	assert.Contains(t, sm.summary.text, "beta")
+	assert.NotContains(t, sm.summary.text, "alpha", "a skill loaded again by the step in flight is noted as folded")
+}

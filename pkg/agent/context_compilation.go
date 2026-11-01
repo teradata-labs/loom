@@ -899,48 +899,7 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 		}
 	}
 
-	// Skills whose load pair folds are deactivated (§4.5). Accumulate them on the
-	// memory and re-pin the FULL set as a note at the END of the summary, so the
-	// model sees which capability went out with the folded conversation and can
-	// reload it if still in use. Tracking it as state (not just this fold's text)
-	// keeps the note alive when a later fold's compressor paraphrases the summary.
-	//
-	// A skill whose load pair ALSO appears after the region was reloaded and its
-	// newer load is still in live context: that activation is current, so it is
-	// neither deactivated nor noted, and a note left by an earlier fold is
-	// dropped. Deactivation is by name, so without this a fold of an old load
-	// pair kills a reload from the very turn that asked for it.
-	stillLoaded := make(map[string]bool)
-	// Pass 0, not the current turn: this scan asks which skills are loaded in
-	// live context, and a reload made THIS turn is the most live activation
-	// there is — skipping it would leave an earlier fold's note standing over
-	// a skill that is active again.
-	for _, name := range foldedSkillLoads(sm.contextMessages[count:], 0) {
-		stillLoaded[name] = true
-		delete(sm.foldedSkills, name)
-	}
-	var newlyFolded []string
-	for _, name := range foldedSkillLoads(region, sm.currentTurnLocked()) {
-		if !stillLoaded[name] {
-			newlyFolded = append(newlyFolded, name)
-		}
-	}
-	if len(newlyFolded) > 0 && sm.foldedSkills == nil {
-		sm.foldedSkills = make(map[string]bool)
-	}
-	for _, name := range newlyFolded {
-		sm.foldedSkills[name] = true
-	}
-	if len(sm.foldedSkills) > 0 {
-		names := make([]string, 0, len(sm.foldedSkills))
-		for n := range sm.foldedSkills {
-			names = append(names, n)
-		}
-		sort.Strings(names)
-		newText = strings.TrimRight(newText, "\n") +
-			fmt.Sprintf("\n\n[Folded active skill(s): %s — reload with manage_skills if still in use.]",
-				strings.Join(names, ", "))
-	}
+	newlyFolded, newText := sm.noteFoldedSkillsLocked(region, sm.contextMessages[count:], newText)
 
 	n1 := sm.summary.n + 1
 
@@ -1111,6 +1070,51 @@ func (sm *SegmentedMemory) SetAdvertisedToolsBytes(bytes int) {
 	sm.kernelDirty = false
 	sm.updateTokenCount()
 	sm.tokenCountDirty = false
+}
+
+// noteFoldedSkillsLocked is what a fold does about skills (§4.5): it returns the
+// skills whose manage_skills load pair lies in the folded region, and the
+// summary text with the full set of folded skills pinned at its end, so the
+// model sees which capability went out with the folded conversation and can
+// reload it. Tracking the set as state keeps the note alive when a later fold
+// paraphrases the summary.
+//
+// A skill whose load pair also appears in what stays was reloaded and is
+// current: it is neither deactivated nor noted, and a note an earlier fold
+// left for it is dropped. Deactivation is by name, so without this a fold of
+// an old load pair kills a reload from the very turn that asked for it. Must
+// hold lock.
+func (sm *SegmentedMemory) noteFoldedSkillsLocked(region, stays []Message, text string) ([]string, string) {
+	stillLoaded := make(map[string]bool)
+	// Pass 0, not the current turn: this asks which skills are loaded in live
+	// context, and a reload made this turn is the most live activation there is.
+	for _, name := range foldedSkillLoads(stays, 0) {
+		stillLoaded[name] = true
+		delete(sm.foldedSkills, name)
+	}
+	var newlyFolded []string
+	for _, name := range foldedSkillLoads(region, sm.currentTurnLocked()) {
+		if !stillLoaded[name] {
+			newlyFolded = append(newlyFolded, name)
+		}
+	}
+	if len(newlyFolded) > 0 && sm.foldedSkills == nil {
+		sm.foldedSkills = make(map[string]bool)
+	}
+	for _, name := range newlyFolded {
+		sm.foldedSkills[name] = true
+	}
+	if len(sm.foldedSkills) > 0 {
+		names := make([]string, 0, len(sm.foldedSkills))
+		for n := range sm.foldedSkills {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		text = strings.TrimRight(text, "\n") +
+			fmt.Sprintf("\n\n[Folded active skill(s): %s — reload with manage_skills if still in use.]",
+				strings.Join(names, ", "))
+	}
+	return newlyFolded, text
 }
 
 // SetSkillDeactivationHook wires the skills orchestrator's deactivation path,

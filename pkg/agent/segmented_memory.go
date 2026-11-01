@@ -122,10 +122,6 @@ type SegmentedMemory struct {
 	// its compressor call, and this keeps a second pass from interleaving.
 	reliefInFlight bool
 
-	// board accumulates the model's logical_task_boundary declarations —
-	// the running summary a declared fold installs (boundary_fold.go).
-	board boardState
-
 	// compressorFailedThisPass records that a fold's compressor already
 	// failed in the current relief pass, so later folds in the same pass skip
 	// it instead of re-paying the attempts. A failing compressor costs up to

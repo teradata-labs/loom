@@ -177,23 +177,7 @@ func (sm *SegmentedMemory) ApplyFoldReply(ctx context.Context, summary string) (
 		}
 	}
 
-	newText := summary
-	newlyFolded := foldedSkillLoads(excised, sm.currentTurnLocked())
-	if len(newlyFolded) > 0 && sm.foldedSkills == nil {
-		sm.foldedSkills = make(map[string]bool)
-	}
-	for _, name := range newlyFolded {
-		sm.foldedSkills[name] = true
-	}
-	if len(sm.foldedSkills) > 0 {
-		names := make([]string, 0, len(sm.foldedSkills))
-		for n := range sm.foldedSkills {
-			names = append(names, n)
-		}
-		sortStrings(names)
-		newText = strings.TrimRight(newText, "\n") +
-			"\n\n[Folded active skill(s): " + strings.Join(names, ", ") + " — reload with manage_skills if still in use.]"
-	}
+	newlyFolded, newText := sm.noteFoldedSkillsLocked(excised, kept, summary)
 
 	n1 := sm.summary.n + 1
 	if sm.sessionStore != nil && sm.sessionID != "" {
@@ -224,12 +208,4 @@ func (sm *SegmentedMemory) ApplyFoldReply(ctx context.Context, summary string) (
 		zap.Int("summary_bytes", len(newText)),
 		zap.Int("version", n1))
 	return true, estimate
-}
-
-func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j] < s[j-1]; j-- {
-			s[j], s[j-1] = s[j-1], s[j]
-		}
-	}
 }

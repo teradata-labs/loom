@@ -2781,20 +2781,6 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// loom's own estimate (§5.1) — a no-op under the start mark, otherwise it
 		// sheds to the release mark. On a shed, recompile messages and the
 		// advertised tool set so a fold-deactivated skill's tools do not linger.
-		// Declared-boundary fold first: the model marked a seam and the
-		// droppable region cleared the economics gate. A declared fold that
-		// sheds enough spares the pressure path below entirely.
-		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
-			if shed, estimate := segMem.ReleaseDeclared(ctx); shed {
-				zap.L().Info("declared fold: shed before send",
-					zap.String("session_id", session.ID),
-					zap.Int("estimate_tokens", estimate))
-				messages = session.GetMessages()
-				tools = a.advertisedTools(session)
-				tools = recovery.activeTools(tools)
-				segMem.SetAdvertisedToolsBytes(advertisedToolsBytes(tools))
-			}
-		}
 		// In-loop fold first: past the start mark, the next call carries the
 		// fold instruction and its reply is consumed as the summary — the
 		// agent summarises itself on its own warm cache. The pressure path
