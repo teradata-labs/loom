@@ -17,6 +17,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
@@ -335,6 +336,10 @@ type Config struct {
 	// Backend configuration
 	BackendConfig map[string]interface{}
 
+	// Retry configuration for LLM calls. The zero value retries with the
+	// defaults (DefaultRetryConfig): a Config built without it is covered.
+	Retry RetryConfig
+
 	// MaxContextTokens is the model's context window size (0 = use defaults/auto-detect)
 	MaxContextTokens int
 
@@ -414,6 +419,63 @@ type PatternConfig struct {
 	UseLLMClassifier bool
 }
 
+// RetryConfig configures exponential backoff retry logic for LLM calls.
+//
+// The zero value means the defaults (DefaultRetryConfig), so an agent whose
+// Config never names retry still survives a transient provider failure. Retry
+// is off when MaxRetries is negative, or when Enabled is false on a config that
+// sets MaxRetries.
+type RetryConfig struct {
+	// MaxRetries is the maximum number of retry attempts (negative = no retries)
+	MaxRetries int
+
+	// InitialDelay is the initial delay before the first retry
+	InitialDelay time.Duration
+
+	// MaxDelay is the maximum delay between retries
+	MaxDelay time.Duration
+
+	// Multiplier is the exponential backoff multiplier (e.g., 2.0 for doubling)
+	Multiplier float64
+
+	// Enabled enables retry logic. A config that sets MaxRetries and leaves
+	// Enabled false has retry off, as before.
+	Enabled bool
+}
+
+// DefaultRetryConfig is the retry a Config gets when it names none.
+func DefaultRetryConfig() RetryConfig {
+	return RetryConfig{
+		Enabled:      true,
+		MaxRetries:   3,
+		InitialDelay: 100 * time.Millisecond,
+		MaxDelay:     5 * time.Second,
+		Multiplier:   2.0,
+	}
+}
+
+// effective is the retry a call runs under: the defaults for a zero config,
+// and no retries for one that turns retry off.
+func (r RetryConfig) effective() RetryConfig {
+	if r == (RetryConfig{}) {
+		return DefaultRetryConfig()
+	}
+	if r.MaxRetries < 0 || (!r.Enabled && r.MaxRetries > 0) {
+		return RetryConfig{}
+	}
+	d := DefaultRetryConfig()
+	if r.InitialDelay <= 0 {
+		r.InitialDelay = d.InitialDelay
+	}
+	if r.MaxDelay <= 0 {
+		r.MaxDelay = d.MaxDelay
+	}
+	if r.Multiplier < 1 {
+		r.Multiplier = d.Multiplier
+	}
+	return r
+}
+
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
@@ -424,6 +486,7 @@ func DefaultConfig() *Config {
 		EnableTracing:     true,
 		EnableSelfHealing: true,
 		BackendConfig:     make(map[string]interface{}),
+		Retry:             DefaultRetryConfig(),
 	}
 }
 

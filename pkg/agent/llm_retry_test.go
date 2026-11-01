@@ -50,11 +50,11 @@ func retryTestContext() *agentContext {
 	return &agentContext{Context: context.Background(), tracer: observability.NewNoOpTracer()}
 }
 
-// A transient provider failure must not end the turn. Retry is a property of
-// the transport, not a setting: an agent whose Config never mentions retry —
-// which is every agent built by an embedder that sets only its own fields — is
-// still covered. Before retry stopped being configurable, a zero Config meant
-// retry off, and the first internalServerException killed the conversation.
+// A transient provider failure must not end the turn: an agent whose Config
+// never mentions retry — every agent loom's registry builds, and every one an
+// embedder builds setting only its own fields — retries with the defaults. A
+// zero Config once meant retry off, and the first internalServerException
+// killed the conversation.
 func TestChatWithRetry_TransientProviderErrorIsRetried(t *testing.T) {
 	provider := &flakyLLM{
 		failures: 2,
@@ -80,7 +80,7 @@ func TestChatWithRetry_ExhaustsAndReportsAttemptCount(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "permanently broken", "the provider's own error is preserved")
-	assert.Equal(t, retryMaxRetries+1, provider.calls, "one initial attempt plus the retry budget")
+	assert.Equal(t, DefaultRetryConfig().MaxRetries+1, provider.calls, "one initial attempt plus the retry budget")
 }
 
 // A refusal positively identified as context-too-long is answered by relief,
@@ -98,4 +98,88 @@ func TestChatWithRetry_ContextTooLongIsNeverRetried(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, llm.ErrContextTooLong, "the sentinel must reach the relief path")
 	assert.Equal(t, 1, provider.calls, "no retry — relief is the only response to a context refusal")
+}
+
+// Retry stays a setting: a config that turns it off gets one attempt, and one
+// that names its own budget gets that many.
+func TestChatWithRetry_TheConfigsRetryIsHonoured(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		retry RetryConfig
+		calls int
+	}{
+		{"turned off", RetryConfig{MaxRetries: -1}, 1},
+		{"off as main wrote it", RetryConfig{Enabled: false, MaxRetries: 3}, 1},
+		{"its own budget", RetryConfig{Enabled: true, MaxRetries: 1, InitialDelay: 1}, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := &flakyLLM{failures: 1000, err: errors.New("down")}
+			a := &Agent{id: "retry-test", llm: provider, config: &Config{Retry: tc.retry}}
+			_, err := a.chatWithRetry(retryTestContext(), []Message{{Role: "user", Content: "q"}}, nil)
+			require.Error(t, err)
+			assert.Equal(t, tc.calls, provider.calls)
+		})
+	}
+}
+
+// A request the provider refused as malformed or unauthorised is refused again
+// on every re-send, so it is not re-sent.
+func TestChatWithRetry_ARefusedRequestIsNotRetried(t *testing.T) {
+	for _, refusal := range []string{
+		"API error (status 401): invalid x-api-key",
+		"API error (status 400): messages: field required",
+		"API error (status 403): forbidden",
+		"operation error Bedrock Runtime: ConverseStream, ValidationException: malformed",
+		"operation error Bedrock Runtime: Converse, AccessDeniedException: not authorized",
+	} {
+		provider := &flakyLLM{failures: 1000, err: errors.New(refusal)}
+		a := &Agent{id: "retry-test", llm: provider, config: &Config{}}
+		_, err := a.chatWithRetry(retryTestContext(), []Message{{Role: "user", Content: "q"}}, nil)
+		require.Error(t, err)
+		assert.Equal(t, 1, provider.calls, "%q was re-sent", refusal)
+	}
+}
+
+// flakyStream streams said, then fails, for its first failures calls.
+type flakyStream struct {
+	flakyLLM
+	said string
+}
+
+func (f *flakyStream) ChatStream(_ context.Context, _ []Message, _ []shuttle.Tool, cb llmtypes.TokenCallback) (*LLMResponse, error) {
+	f.calls++
+	if f.calls <= f.failures {
+		if f.said != "" {
+			cb(f.said)
+		}
+		return nil, f.err
+	}
+	cb("ok")
+	return &LLMResponse{Content: "ok"}, nil
+}
+
+// A stream that fails before any text reached the client is sent again; one
+// that fails after its words went out is not, or the client would read them
+// twice.
+func TestChatWithRetry_AStreamIsRetriedOnlyBeforeItsTextIsSent(t *testing.T) {
+	streamCtx := func() *agentContext {
+		c := retryTestContext()
+		c.progressCallback = func(ProgressEvent) {}
+		return c
+	}
+	transient := fmt.Errorf("stream error: received exception internalServerException")
+
+	before := &flakyStream{flakyLLM: flakyLLM{failures: 1, err: transient}}
+	a := &Agent{id: "retry-test", llm: before, config: &Config{}}
+	resp, err := a.chatWithRetry(streamCtx(), []Message{{Role: "user", Content: "q"}}, nil)
+	require.NoError(t, err, "a stream that failed before any text was not retried")
+	assert.Equal(t, "ok", resp.Content)
+	assert.Equal(t, 2, before.calls)
+
+	after := &flakyStream{flakyLLM: flakyLLM{failures: 1, err: transient}, said: "half an answer"}
+	a = &Agent{id: "retry-test", llm: after, config: &Config{}}
+	_, err = a.chatWithRetry(streamCtx(), []Message{{Role: "user", Content: "q"}}, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "internalServerException", "the provider's error is kept")
+	assert.Equal(t, 1, after.calls, "a stream whose text the client already has was sent again")
 }

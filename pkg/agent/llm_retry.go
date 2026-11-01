@@ -82,20 +82,30 @@ func normalizeWireRoles(messages []Message) []Message {
 	return out
 }
 
-// Retry policy for LLM calls. Not configurable: a transient provider failure
-// (internalServerException, a mid-stream disconnect, a throttle) is a fact of
-// the transport, not a choice the caller makes, and no embedder has a reason to
-// want the first blip to kill a conversation. Every LLM call — streaming or
-// plain — runs under this policy.
-//
-// A refusal positively identified as context-too-long is never retried (relief
-// answers that, not retry), and a cancelled context stops the loop at once.
-const (
-	retryMaxRetries   = 5
-	retryInitialDelay = 100 * time.Millisecond
-	retryMaxDelay     = 5 * time.Second
-	retryMultiplier   = 2.0
-)
+// errStreamedThenFailed marks a streaming call that failed after its text had
+// reached the client. Re-sending it would stream the same words again, so it
+// is not retried.
+var errStreamedThenFailed = errors.New("stream failed after text was sent")
+
+// retryable is whether a failed LLM call may be sent again. A refusal that
+// re-sending cannot change is not: a prompt too long for the model (relief
+// answers that), a request the provider rejected as malformed or unauthorised,
+// and a stream whose text the client already has.
+func retryable(err error) bool {
+	if errors.Is(err, llm.ErrContextTooLong) || errors.Is(err, errStreamedThenFailed) {
+		return false
+	}
+	msg := err.Error()
+	for _, refused := range []string{
+		"(status 400)", "(status 401)", "(status 403)",
+		"ValidationException", "AccessDeniedException", "UnrecognizedClientException",
+	} {
+		if strings.Contains(msg, refused) {
+			return false
+		}
+	}
+	return true
+}
 
 // chatWithRetry wraps LLM Chat calls with slot scheduling, capacity
 // observation, and exponential backoff retry logic. If the provider supports
@@ -217,12 +227,9 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 	useStreaming := supportsStreaming && progressCallback != nil
 
 	// Unified call: streaming or plain. Both flow through the retry loop below.
-	// Previously the streaming path bypassed retry entirely ("streaming already
-	// handles errors" — it does not; chatWithStreaming returns the error raw), so a
-	// transient provider failure (e.g. internalServerException or a mid-stream
-	// disconnect) killed the whole conversation. A failed ChatStream returns
-	// (nil, err) without mutating messages, so re-issuing the turn is safe; only
-	// progress events repeat, which is cosmetic.
+	// A stream that fails before any text reached the client — a refused
+	// connection, an internalServerException before the first token — is sent
+	// again; one that fails after its text went out is not.
 	call := func() (*LLMResponse, error) {
 		if useStreaming {
 			return a.chatWithStreaming(ctx, messages, tools, progressCallback)
@@ -230,10 +237,11 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 		return a.llm.Chat(a.providerCtx(ctx, messages), messages, tools)
 	}
 
+	retry := a.config.Retry.effective()
 	var lastErr error
-	delay := retryInitialDelay
+	delay := retry.InitialDelay
 
-	for attempt := 0; attempt <= retryMaxRetries; attempt++ {
+	for attempt := 0; attempt <= retry.MaxRetries; attempt++ {
 		// Attempt LLM call (streaming or plain, via the unified closure)
 		response, err := call()
 		if err == nil {
@@ -247,10 +255,10 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 			return response, nil
 		}
 
-		// A positively-identified context-too-long refusal is returned
-		// immediately, never retried (blueprint A5): relief, not retry, is the
-		// only response to it.
-		if errors.Is(err, llm.ErrContextTooLong) {
+		// A refusal re-sending cannot change is returned at once. A
+		// context-too-long refusal in particular is answered by relief, never
+		// by retry (blueprint A5).
+		if !retryable(err) {
 			return nil, err
 		}
 
@@ -259,18 +267,18 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 		// Don't retry on context cancellation or deadline exceeded
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("llm call failed (attempt %d/%d): %w (context cancelled)",
-				attempt+1, retryMaxRetries+1, err)
+				attempt+1, retry.MaxRetries+1, err)
 		}
 
 		// If this is the last attempt, don't sleep
-		if attempt >= retryMaxRetries {
+		if attempt >= retry.MaxRetries {
 			break
 		}
 
 		// Log retry attempt
 		zap.L().Warn("llm call failed, retrying",
 			zap.Int("attempt", attempt+1),
-			zap.Int("max_retries", retryMaxRetries),
+			zap.Int("max_retries", retry.MaxRetries),
 			zap.Duration("delay", delay),
 			zap.Error(err),
 		)
@@ -279,26 +287,26 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 		select {
 		case <-ctx.Done():
 			return nil, fmt.Errorf("llm call failed (attempt %d/%d): %w (context cancelled during retry)",
-				attempt+1, retryMaxRetries+1, ctx.Err())
+				attempt+1, retry.MaxRetries+1, ctx.Err())
 		case <-time.After(delay):
 			// Continue to next retry
 		}
 
 		// Calculate next delay with exponential backoff
-		delay = time.Duration(float64(delay) * retryMultiplier)
-		if delay > retryMaxDelay {
-			delay = retryMaxDelay
+		delay = time.Duration(float64(delay) * retry.Multiplier)
+		if delay > retry.MaxDelay {
+			delay = retry.MaxDelay
 		}
 	}
 
 	// All retries exhausted
 	zap.L().Error("llm retries exhausted",
-		zap.Int("max_retries", retryMaxRetries),
+		zap.Int("max_retries", retry.MaxRetries),
 		zap.Error(lastErr),
 	)
 
 	return nil, fmt.Errorf("llm call failed after %d attempts: %w",
-		retryMaxRetries+1, lastErr)
+		retry.MaxRetries+1, lastErr)
 }
 
 // toolInputActivityInterval throttles the IsToolInputStream progress events
@@ -463,6 +471,9 @@ func (a *Agent) chatWithStreaming(ctx Context, messages []Message, tools []shutt
 	// Call streaming provider
 	resp, err := streamingProvider.ChatStream(streamCtx, messages, tools, tokenCallback)
 	if err != nil {
+		if tokenCount > 0 {
+			return nil, fmt.Errorf("%w: %w", errStreamedThenFailed, err)
+		}
 		return nil, err
 	}
 
