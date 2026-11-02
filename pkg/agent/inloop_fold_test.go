@@ -56,9 +56,10 @@ func TestInloopFold_ParseLenient(t *testing.T) {
 	assert.False(t, ok)
 }
 
-// TestInloopFold_FullCollapseSemantics — one call: operator rows survive
-// verbatim, recent assistant text survives stripped of calls, the pending
-// pair is whole, everything else is gone, the summary is L2.
+// TestInloopFold_FullCollapseSemantics — one call: the last k turns before the
+// pending pair survive as text, whichever role they are; the pending pair is
+// whole; everything else is gone, the opening ask with it, and the summary is
+// L2.
 func TestInloopFold_FullCollapseSemantics(t *testing.T) {
 	sm := newCompileMemory(t)
 	sm.SetProtectedRecentTurns(2)
@@ -68,12 +69,13 @@ func TestInloopFold_FullCollapseSemantics(t *testing.T) {
 
 	require.True(t, applied)
 	assert.Contains(t, sm.summary.text, "nulls in discounts")
-	var users, results, keptAssistants int
+	var users []string
+	var results, keptAssistants int
 	var pendingWhole bool
 	for _, m := range sm.GetMessages() {
 		switch m.Role {
 		case "user":
-			users++
+			users = append(users, m.Content)
 		case "tool":
 			results++
 		case "assistant":
@@ -81,14 +83,52 @@ func TestInloopFold_FullCollapseSemantics(t *testing.T) {
 			if m.Content == "current work" {
 				pendingWhole = len(m.ToolCalls) == 1
 			} else {
-				assert.Nil(t, m.ToolCalls, "kept recent thread is stripped of calls")
+				assert.Nil(t, m.ToolCalls, "a kept turn is stripped of its calls")
 			}
 		}
 	}
-	assert.Equal(t, 2, users, "the JOB and the mid-session ruling both survive verbatim")
+	assert.Equal(t, []string{"operator ruling: keep it exact"}, users,
+		"the ruling is one of the last 2 turns and stays; the opening ask is older and folds")
 	assert.Equal(t, 1, results, "only the pending pair's result remains")
 	assert.True(t, pendingWhole, "the pending pair keeps its call signature")
-	assert.GreaterOrEqual(t, keptAssistants, 2, "recent thread text + pending assistant")
+	assert.Equal(t, 2, keptAssistants, "the last step's text + the pending assistant")
+}
+
+// A user's pasted file is a turn like any other: inside the last k turns it
+// stays whole, and once the work has moved past it, it folds into the summary.
+func TestInloopFold_APasteFoldsOnceTheWorkMovesPastIt(t *testing.T) {
+	ctx := context.Background()
+	paste := "here is the log:\n" + strings.Repeat("ERROR something failed at line 42\n", 500)
+	build := func(stepsAfter int) *SegmentedMemory {
+		sm := newCompileMemory(t)
+		sm.SetProtectedRecentTurns(3)
+		sm.AddMessage(ctx, Message{Role: "user", Content: paste, Turn: 1})
+		for i := 0; i <= stepsAfter; i++ {
+			id := "c" + strconv.Itoa(i)
+			sm.AddMessage(ctx, Message{Role: "assistant", Content: "looking at it " + strconv.Itoa(i), Turn: 1,
+				ToolCalls: []ToolCall{{ID: id, Name: "shell_execute"}}})
+			sm.AddMessage(ctx, Message{Role: "tool", ToolUseID: id, Content: "ok", Turn: 1})
+		}
+		return sm
+	}
+	holds := func(sm *SegmentedMemory) bool {
+		for _, m := range sm.GetMessages() {
+			if m.Role == "user" && m.Content == paste {
+				return true
+			}
+		}
+		return false
+	}
+
+	recent := build(2) // paste, two steps, the pending one: the paste is the 3rd turn back
+	applied, _ := recent.ApplyFoldReply(ctx, "reading the log")
+	require.True(t, applied)
+	assert.True(t, holds(recent), "a paste inside the last k turns was folded")
+
+	old := build(6) // six steps after it: the paste is far outside the window
+	applied, _ = old.ApplyFoldReply(ctx, "the log showed a failure at line 42")
+	require.True(t, applied)
+	assert.False(t, holds(old), "a paste the work has moved past is still in context")
 }
 
 // TestInloopFold_EmptySummaryRefused — a fold without a summary is amnesia.

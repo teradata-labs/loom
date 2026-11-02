@@ -66,8 +66,8 @@ func TestFullLifecycle(t *testing.T) {
 	r.llm.refuse(1)
 	step("Status?", sayText("Three scans loaded; proceeding."))
 	// 7+. pile on conversation until it crosses the start mark on its own — the
-	// big tool results were shed at moment 1, so only conversation (which is
-	// kept verbatim) can drive the next fold.
+	// big tool results were shed at moment 1, so only conversation can drive
+	// the next fold, and the fold takes the conversation with it.
 	for i := 0; i < 18; i++ {
 		step(heavyConversation(i), sayText("ack"))
 	}
@@ -90,13 +90,15 @@ func TestFullLifecycle(t *testing.T) {
 	if !anyStageHas(stages, evictMark, foldMark, summaryRowMarker) {
 		t.Error("B. relief moment 1 installed no summary row — the fold did not run")
 	}
-	// C. §5.4 fold: after moment 2, the summary is installed with its coverage line.
+	// C. fold over conversation: the final context opens on the summary, and
+	// the conversation it stands in for is gone — the opening ask included —
+	// leaving only the last turns.
 	finalText := contextText(stages[len(stages)-1])
-	if !strings.Contains(finalText, comp.summary) {
-		t.Error("C. fold summary is not in the final context")
+	if !strings.Contains(finalText, summaryRowMarker) {
+		t.Error("C. the final context holds no fold summary")
 	}
-	if !strings.Contains(finalText, "covers msg") {
-		t.Error("C. fold summary carries no 'covers msg' coverage line")
+	if strings.Contains(finalText, "Load the grant-review skill.") {
+		t.Error("C. the opening ask is still in context: the fold did not take the conversation")
 	}
 	if comp.count() == 0 {
 		t.Error("C. compressor never called — no fold happened")
