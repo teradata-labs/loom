@@ -136,3 +136,22 @@ func TestQueryToolResultPagesTheWholeOfThisTurnsResult(t *testing.T) {
 		t.Fatalf("sql is refused as unsupported, got %+v", res)
 	}
 }
+
+// Naming the exempt tools replaces the set, and an empty name exempts nothing:
+// a tool named before and not named now is bounded again.
+func TestTheExemptSetIsReplacedNotAdded(t *testing.T) {
+	ag, sess, ctx := payloadAgent(t)
+	topic := strings.Repeat("SELECT … syntax line\n", 2100)
+	ag.SetOffloadExemptTools([]string{"", "get_syntax_help"})
+	asked(ctx, ag, sess, "tu-a", "get_syntax_help", true)
+	ag.appendMessage(ctx, sess, Message{Role: "tool", Content: topic, ToolUseID: "tu-a"}, false)
+	if lastTool(sess).Content != topic {
+		t.Fatal("a named tool was bounded")
+	}
+	ag.SetOffloadExemptTools([]string{"other_tool"})
+	asked(ctx, ag, sess, "tu-b", "get_syntax_help", false)
+	ag.appendMessage(ctx, sess, Message{Role: "tool", Content: topic, ToolUseID: "tu-b"}, false)
+	if len(lastTool(sess).Content) > 2048 {
+		t.Fatal("a tool no longer named still entered whole")
+	}
+}

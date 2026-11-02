@@ -209,7 +209,9 @@ func (m *Memory) SetOffloadExemptTools(names []string) {
 	defer m.mu.Unlock()
 	m.exemptTools = make(map[string]bool, len(names))
 	for _, n := range names {
-		m.exemptTools[n] = true
+		if n != "" {
+			m.exemptTools[n] = true
+		}
 	}
 }
 
