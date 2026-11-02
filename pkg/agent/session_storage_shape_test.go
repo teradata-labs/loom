@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/types"
 )
 
 // An embedder's store written against SessionStorage before results were
@@ -64,5 +65,44 @@ func TestMarkEvictedIsKeptAndChangesNothing(t *testing.T) {
 	after, err := store.LoadMessages(ctx, sess.ID)
 	if err != nil || len(after) != 2 || after[1].Content != "42 rows" {
 		t.Fatalf("MarkEvicted changed the conversation: %v %+v", err, after)
+	}
+}
+
+// A session's cost is summed where its rows are kept, folded rows included,
+// and is the owner's to read.
+func TestSessionCost_SumsEveryRowForItsOwner(t *testing.T) {
+	store, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	var cs CostStorage = store
+
+	ctx := types.ContextWithUserID(context.Background(), "ann")
+	if err := store.SaveSession(ctx, &Session{ID: "s-cost"}); err != nil {
+		t.Fatal(err)
+	}
+	for i, m := range []Message{
+		{Role: "user", Content: "q"}, {Role: "assistant", Content: "a", CostUSD: 0.25},
+		{Role: "user", Content: "q2"}, {Role: "assistant", Content: "a2", CostUSD: 0.5},
+	} {
+		if err := store.SaveMessage(ctx, "s-cost", &m, m.Role == "user"); err != nil {
+			t.Fatalf("row %d: %v", i, err)
+		}
+	}
+	usd, err := cs.SessionCost(ctx, "s-cost")
+	if err != nil || usd < 0.75-1e-9 || usd > 0.75+1e-9 {
+		t.Fatalf("the rows sum to 0.75, got %v %v", usd, err)
+	}
+	msgs, _ := store.LoadMessages(ctx, "s-cost")
+	seq, _ := strconv.ParseInt(msgs[1].ID, 10, 64)
+	if err := store.FoldMessages(ctx, "s-cost", []int64{seq}, 1, "covers msg:1-1\nsummary"); err != nil {
+		t.Fatal(err)
+	}
+	if usd, _ = cs.SessionCost(ctx, "s-cost"); usd < 0.75-1e-9 {
+		t.Fatalf("a folded row left the ledger: %v", usd)
+	}
+	if usd, _ = cs.SessionCost(types.ContextWithUserID(context.Background(), "bob"), "s-cost"); usd != 0 {
+		t.Fatalf("another owner read the session's cost: %v", usd)
 	}
 }

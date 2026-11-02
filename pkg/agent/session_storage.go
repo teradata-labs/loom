@@ -80,6 +80,22 @@ type SessionStorage interface {
 	Close() error
 }
 
+// CostStorage is the optional operation a store offers when it can sum what a
+// session cost where the rows are kept, so a host shows a cost without loading
+// the messages. loom's SQLite and Postgres stores implement it; use a type
+// assertion:
+//
+//	if cs, ok := store.(CostStorage); ok {
+//	    usd, err := cs.SessionCost(ctx, sessionID)
+//	}
+type CostStorage interface {
+	// SessionCost is the sum of cost_usd over every message of the session,
+	// the rows relief folded away included: a fold hides a row from the
+	// model, not from the ledger. A session the caller does not own reads as
+	// zero, as it reads as missing everywhere else.
+	SessionCost(ctx context.Context, sessionID string) (float64, error)
+}
+
 // SoftDeleteStorage defines optional soft-delete operations.
 // Not all backends support soft-delete (SQLite does hard delete).
 // Use type assertion to check if a SessionStorage supports soft-delete:

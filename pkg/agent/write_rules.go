@@ -73,11 +73,12 @@ func writeToolSnapshot(path, content string) {
 	_ = os.WriteFile(path, []byte(content), 0o644)
 }
 
-// TruncateToolRowContent is the exported §4.1 truncation for embedders whose
-// own storage applies the row bound (cloud's SessionStorage). One
-// implementation on purpose: the stored row and every render of it must stay
-// byte-identical, so a second copy of this logic is a cache-invalidation bug
-// waiting to happen.
+// TruncateToolRowContent is the bound a tool result row carries (§4.1), for any
+// SessionStorage that applies it on its own persist path rather than through
+// loom's. One implementation on purpose: the stored row and every render of it
+// must stay byte-identical, so a second copy of this logic is a
+// cache-invalidation bug waiting to happen. Its bounds are tested in
+// context_compilation_test.go.
 func TruncateToolRowContent(content string, threshold int, snapshotPath string) string {
 	return truncateToolRowContent(content, threshold, snapshotPath)
 }

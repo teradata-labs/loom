@@ -880,6 +880,30 @@ func (s *SessionStore) RegisterCleanupHook(hook agent.SessionCleanupHook) {
 }
 
 // GetStats returns aggregate statistics about stored sessions.
+var _ agent.CostStorage = (*SessionStore)(nil)
+
+// SessionCost implements agent.CostStorage: the sum of cost_usd over every
+// message of the session, folded rows included. The sum is the owner's, by
+// the row's user_id as every read here is — RLS is the second fence, not the
+// first, since a connection that bypasses it would otherwise sum every owner.
+func (s *SessionStore) SessionCost(ctx context.Context, sessionID string) (float64, error) {
+	ctx, span := s.tracer.StartSpan(ctx, "pg_session_store.session_cost")
+	defer s.tracer.EndSpan(span)
+	span.SetAttribute("session_id", sessionID)
+
+	var total float64
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			`SELECT COALESCE(SUM(cost_usd), 0) FROM messages WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL`,
+			sessionID, UserIDFromContext(ctx)).Scan(&total)
+	})
+	if err != nil {
+		span.RecordError(err)
+		return 0, fmt.Errorf("failed to sum the session's cost: %w", err)
+	}
+	return total, nil
+}
+
 func (s *SessionStore) GetStats(ctx context.Context) (*agent.Stats, error) {
 	ctx, span := s.tracer.StartSpan(ctx, "pg_session_store.get_stats")
 	defer s.tracer.EndSpan(span)

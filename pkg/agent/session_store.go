@@ -999,9 +999,10 @@ func (s *SessionStore) loadMessagesLocked(ctx context.Context, sessionID string)
 	return messages, nil
 }
 
-// SessionCost is what a session has cost: the sum of what every message it
-// produced cost, the ones context relief folded away included. It is summed
-// where the messages are kept, so a host can show it without reading them.
+var _ CostStorage = (*SessionStore)(nil)
+
+// SessionCost implements CostStorage: the sum of what every message of the
+// session cost, the ones relief folded away included.
 func (s *SessionStore) SessionCost(ctx context.Context, sessionID string) (float64, error) {
 	ctx, span := s.tracer.StartSpan(ctx, "session_store.session_cost")
 	defer s.tracer.EndSpan(span)
