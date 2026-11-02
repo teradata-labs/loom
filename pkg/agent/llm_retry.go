@@ -98,6 +98,7 @@ func retryable(err error) bool {
 	msg := err.Error()
 	for _, refused := range []string{
 		"(status 400)", "(status 401)", "(status 403)",
+		"400 Bad Request", "401 Unauthorized", "403 Forbidden",
 		"ValidationException", "AccessDeniedException", "UnrecognizedClientException",
 	} {
 		if strings.Contains(msg, refused) {

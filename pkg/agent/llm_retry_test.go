@@ -129,6 +129,7 @@ func TestChatWithRetry_ARefusedRequestIsNotRetried(t *testing.T) {
 		"API error (status 401): invalid x-api-key",
 		"API error (status 400): messages: field required",
 		"API error (status 403): forbidden",
+		`stream error: POST "https://bedrock-runtime.us-west-2.amazonaws.com/v1/messages": 403 Forbidden {"Message":"Authentication failed"}`,
 		"operation error Bedrock Runtime: ConverseStream, ValidationException: malformed",
 		"operation error Bedrock Runtime: Converse, AccessDeniedException: not authorized",
 	} {
