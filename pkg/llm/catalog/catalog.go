@@ -836,8 +836,10 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 				ShowInDropdown:      false,
 			},
 			{
-				// Rates confirmed from the Bedrock agreement offer card:
-				// $10/M in, $50/M out — exactly 2x Opus 5.
+				// Priced at Anthropic's public first-party rate for Claude Fable 5
+				// ($10/M in, $50/M out). Bedrock's on-demand card does not list
+				// Fable 5; a deployment on a negotiated rate overrides this through
+				// the registered catalog Source (catalog.Register).
 				Id:                  "us.anthropic.claude-fable-5",
 				Name:                "Claude Fable 5 (Bedrock)",
 				Provider:            "bedrock",
