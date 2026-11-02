@@ -12,7 +12,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Agent turn: tool results bounded at arrival, in-loop fold, per-call accounting
 - **Every billed message carries what it cost.** `model`, `effort`, input/output, cache-create split by TTL (1h/5m), cache-read and thinking tokens, on the assistant row the LLM call produced (migration 000025).
 - **In-loop fold.** When the estimate crosses the start mark, the next call carries one transient fold instruction; the agent itself answers with the summary, on its own warm cache, and the harness performs the collapse. The compressor subsystem remains as the failsafe.
-- **`file_read` no longer cuts at 1000 lines by default**; `max_lines` is the caller's narrowing knob, and the arrival-time row bound is the one bounding point for context.
 
 #### Models and providers
 - **Catalog**: Claude Opus 5 and Sonnet 5 direct; on Bedrock, Opus 5, Sonnet 5 and Fable 5 (`us.` and `global.` routes) and the non-Anthropic Converse families (GLM-5, GLM-4.7, GLM-4.7 Flash, DeepSeek V3.2, V3.1, R1) at the published on-demand rates.
