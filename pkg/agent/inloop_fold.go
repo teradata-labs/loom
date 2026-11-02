@@ -43,8 +43,14 @@ import (
 	"go.uber.org/zap"
 )
 
-// foldInstruction is the transient message appended to the fold turn. It is
-// never stored; the model's reply to it is consumed by the harness.
+// foldPromptKey names the fold ask in the prompt registry (prompts/memory/
+// compaction.yaml), where every prompt loom sends lives, so an embedder can
+// change it without a rebuild.
+const foldPromptKey = "memory.fold"
+
+// foldInstruction is the fold ask as shipped: the transient message appended
+// to the fold call, used when no registry is wired. It is never stored; the
+// model's reply to it is consumed by the harness.
 const foldInstruction = `<system-reminder>
 Context maintenance: summarise the work so far. Reply with ONLY this JSON —
 no other text, no tool calls:
@@ -75,6 +81,17 @@ not); raw results already reduced to a conclusion; exploration that led
 nowhere unless it closed a door — then it is a ruled-out line with its
 reason. Do not invent facts not present in the conversation.
 </system-reminder>`
+
+// foldAsk is the fold ask this agent sends: the registry's, or the one
+// shipped when the registry has none.
+func (a *Agent) foldAsk(ctx context.Context) string {
+	if a.prompts != nil {
+		if text, err := a.prompts.Get(ctx, foldPromptKey, nil); err == nil && strings.TrimSpace(text) != "" {
+			return strings.TrimSpace(text)
+		}
+	}
+	return foldInstruction
+}
 
 // NeedsFold reports whether the past has crossed the start mark. The summary
 // is left out of the comparison: it is the floor the next fold stands on, not

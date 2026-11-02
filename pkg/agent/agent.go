@@ -2806,6 +2806,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			zap.L().Info("inloopFold: armed",
 				zap.String("session_id", session.ID),
 				zap.Int("attempt", foldRetries+1))
+			span.AddEvent("fold.armed", map[string]interface{}{"turn": turnCount, "attempt": foldRetries + 1})
 		}
 		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil && !foldPending {
 			shed, estimate, target := segMem.ReleasePressure(ctx, 0)
@@ -2884,7 +2885,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		outgoing := func(toolNote string) []Message {
 			msgs := withReminder(messages, toolNote)
 			if foldPending {
-				msgs = append(msgs, Message{Role: "user", Content: foldInstruction})
+				msgs = append(msgs, Message{Role: "user", Content: a.foldAsk(ctx)})
 			}
 			return msgs
 		}
@@ -3159,6 +3160,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 							zap.L().Info("inloopFold: applied",
 								zap.String("session_id", session.ID),
 								zap.Int("estimate_tokens", estimate))
+							span.AddEvent("fold.applied", map[string]interface{}{"turn": turnCount, "estimate_tokens": estimate})
 							messages = session.GetMessages()
 							tools = a.advertisedTools(session)
 							tools = recovery.activeTools(tools)
@@ -3170,6 +3172,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					zap.L().Warn("inloopFold: reply unusable — will retry or fall back to pressure relief",
 						zap.String("session_id", session.ID),
 						zap.Int("fold_retries", foldRetries))
+					span.AddEvent("fold.unusable", map[string]interface{}{"turn": turnCount, "fold_retries": foldRetries})
 					continue
 				}
 			}

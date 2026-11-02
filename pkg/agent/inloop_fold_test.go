@@ -26,6 +26,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/teradata-labs/loom/pkg/prompts"
 )
 
 func seedInloopSession(sm *SegmentedMemory) {
@@ -197,4 +199,19 @@ func TestInloopFold_KeepsASkillReloadedByTheStepInFlight(t *testing.T) {
 	assert.Equal(t, []string{"beta"}, deactivated, "only the skill the fold took away is deactivated")
 	assert.Contains(t, sm.summary.text, "beta")
 	assert.NotContains(t, sm.summary.text, "alpha", "a skill loaded again by the step in flight is noted as folded")
+}
+
+// The fold ask lives in the prompt registry with every other prompt loom
+// sends, so an embedder changes it without a rebuild. Shipped, it is the ask
+// the harness was written against; an agent with no registry sends that one.
+func TestInloopFold_TheAskComesFromTheRegistry(t *testing.T) {
+	reg := prompts.NewFileRegistry("../../prompts")
+	require.NoError(t, reg.Reload(context.Background()))
+	shipped, err := reg.Get(context.Background(), foldPromptKey, nil)
+	require.NoError(t, err)
+	assert.Equal(t, strings.TrimSpace(foldInstruction), strings.TrimSpace(shipped), "the shipped prompt file and the built-in ask differ")
+
+	withRegistry := &Agent{prompts: reg}
+	assert.Equal(t, strings.TrimSpace(shipped), withRegistry.foldAsk(context.Background()))
+	assert.Equal(t, foldInstruction, (&Agent{}).foldAsk(context.Background()), "an agent with no registry sends the built-in ask")
 }
