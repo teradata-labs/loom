@@ -2355,11 +2355,19 @@ func (a *Agent) appendMessage(ctx context.Context, session *Session, msg Message
 	// for a host tool that stages it by message id (InTurnPayload).
 	var whole string
 	if msg.Role == "tool" && a.memory != nil && !a.memory.exempt(toolNameOf(session, msg.ToolUseID)) {
-		bounded := SpillAndTruncateToolRow(msg.Content, a.memory.thresholdOrDefault(), a.memory.toolSnapshotDir, msg.ToolUseID)
+		threshold := a.memory.thresholdOrDefault()
+		bounded := SpillAndTruncateToolRow(msg.Content, threshold, a.memory.toolSnapshotDir, msg.ToolUseID)
 		if bounded != msg.Content {
 			whole = msg.Content
 		}
 		msg.Content = bounded
+		// The raw result record is bounded with its content: the store drops a
+		// record over the bound, and memory holds the same row the store does.
+		if msg.ToolResult != nil {
+			if raw, err := json.Marshal(msg.ToolResult); err != nil || len(raw) > threshold {
+				msg.ToolResult = nil
+			}
+		}
 	}
 	// A replay/import override (WeaveRequest.occurred_at → WithOccurredAt)
 	// anchors every row persisted during the call at the conversation's

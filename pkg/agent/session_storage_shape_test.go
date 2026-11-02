@@ -18,9 +18,11 @@ import (
 	"context"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/types"
 )
 
@@ -143,5 +145,24 @@ func TestABilledRowReadsBackWhole(t *testing.T) {
 		if pair[0] != pair[1] {
 			t.Errorf("%s: wrote %v, read back %v", name, pair[0], pair[1])
 		}
+	}
+}
+
+// A tool row's raw result record is bounded with its content when it arrives:
+// memory holds the row the store does, not a whole payload for the session.
+func TestARawResultOverTheBoundIsNotHeldInMemory(t *testing.T) {
+	ag, sess, ctx := payloadAgent(t)
+	big := strings.Repeat("row,value\n", 3000)
+	asked(ctx, ag, sess, "tu-raw", "execute_query", true)
+	ag.appendMessage(ctx, sess, Message{Role: "tool", Content: big, ToolUseID: "tu-raw",
+		ToolResult: &shuttle.Result{Success: true, Data: big}}, false)
+	if lastTool(sess).ToolResult != nil {
+		t.Fatal("a raw result over the bound is held in memory")
+	}
+	asked(ctx, ag, sess, "tu-small", "execute_query", false)
+	ag.appendMessage(ctx, sess, Message{Role: "tool", Content: "3 rows", ToolUseID: "tu-small",
+		ToolResult: &shuttle.Result{Success: true, Data: "3 rows"}}, false)
+	if lastTool(sess).ToolResult == nil {
+		t.Fatal("a raw result under the bound was dropped")
 	}
 }
