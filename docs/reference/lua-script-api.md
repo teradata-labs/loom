@@ -127,8 +127,8 @@ func Run(ctx context.Context, p Program, lim Limits, h Host) *RunResult
 
 Runs `p` on the caller's goroutine. Never returns nil, never panics. Returns when the
 script finishes, a limit fires, or `ctx` ends. When `ctx` ends the script stops at its
-next interpreter step, even when it only computes; a single string pattern match takes
-its CPU budget up front and is not interrupted part way.
+next interpreter step, even when it only computes, and a running string pattern match
+stops within 1024 matcher steps.
 
 ### `Program`
 
