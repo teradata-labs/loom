@@ -46,7 +46,9 @@ func TestMessages_RoundTrip_ContextCompilationColumns(t *testing.T) {
 		require.NoError(t, store.SaveMessage(ctx, sessionID, &msg, turnStart))
 	}
 	save(agent.Message{Role: "user", Content: "q1"}, true)
-	save(agent.Message{Role: "assistant", ToolCalls: []agent.ToolCall{{ID: "c1", Name: "query"}}}, false)
+	save(agent.Message{Role: "assistant", ToolCalls: []agent.ToolCall{{ID: "c1", Name: "query"}},
+		CostUSD: 0.5, InputTokens: 10, OutputTokens: 20, CacheReadTokens: 30, CacheCreateTokens: 7,
+		CacheCreate1hTokens: 4, CacheCreate5mTokens: 3, ThinkingTokens: 12, Model: "claude-opus-5-5", Effort: "high"}, false)
 	save(agent.Message{Role: "tool", ToolUseID: "c1", Content: "42 rows"}, false)
 	save(agent.Message{Role: "user", Content: "q2"}, true)
 
@@ -61,6 +63,15 @@ func TestMessages_RoundTrip_ContextCompilationColumns(t *testing.T) {
 	}
 	require.Equal(t, "42 rows", msgs[2].Content)
 	require.Equal(t, "c1", msgs[2].ToolUseID)
+
+	// What a billed row carries comes back as it was written.
+	billed := msgs[1]
+	require.Equal(t, "claude-opus-5-5", billed.Model)
+	require.Equal(t, "high", billed.Effort)
+	require.Equal(t, 4, billed.CacheCreate1hTokens)
+	require.Equal(t, 3, billed.CacheCreate5mTokens)
+	require.Equal(t, 12, billed.ThinkingTokens)
+	require.Equal(t, 7, billed.CacheCreateTokens)
 
 	// Relief roundtrip: fold the first user row.
 	firstSeq, err := strconv.ParseInt(msgs[0].ID, 10, 64)

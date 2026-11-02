@@ -106,3 +106,42 @@ func TestSessionCost_SumsEveryRowForItsOwner(t *testing.T) {
 		t.Fatalf("another owner read the session's cost: %v", usd)
 	}
 }
+
+// What a billed row carries — the model, its effort, and every token lane —
+// comes back on load as it was written: a row's cost can then be read as
+// well as summed.
+func TestABilledRowReadsBackWhole(t *testing.T) {
+	store, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	ctx := context.Background()
+	if err := store.SaveSession(ctx, &Session{ID: "s-billed"}); err != nil {
+		t.Fatal(err)
+	}
+	billed := Message{Role: "assistant", Content: "a", CostUSD: 0.5, TokenCount: 60,
+		InputTokens: 10, OutputTokens: 20, CacheReadTokens: 30, CacheCreateTokens: 7,
+		CacheCreate1hTokens: 4, CacheCreate5mTokens: 3, ThinkingTokens: 12,
+		Model: "claude-opus-5-5", Effort: "high"}
+	if err := store.SaveMessage(ctx, "s-billed", &billed, true); err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := store.LoadMessages(ctx, "s-billed")
+	if err != nil || len(msgs) != 1 {
+		t.Fatalf("load: %v %d", err, len(msgs))
+	}
+	got := msgs[0]
+	for name, pair := range map[string][2]any{
+		"model": {billed.Model, got.Model}, "effort": {billed.Effort, got.Effort},
+		"cache_create_1h": {billed.CacheCreate1hTokens, got.CacheCreate1hTokens},
+		"cache_create_5m": {billed.CacheCreate5mTokens, got.CacheCreate5mTokens},
+		"thinking":        {billed.ThinkingTokens, got.ThinkingTokens},
+		"input":           {billed.InputTokens, got.InputTokens},
+		"cache_create":    {billed.CacheCreateTokens, got.CacheCreateTokens},
+	} {
+		if pair[0] != pair[1] {
+			t.Errorf("%s: wrote %v, read back %v", name, pair[0], pair[1])
+		}
+	}
+}

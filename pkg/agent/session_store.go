@@ -897,7 +897,7 @@ func (s *SessionStore) loadMessagesLocked(ctx context.Context, sessionID string)
 	// The owner predicate is defense in depth: callers guard first, but this
 	// helper must not become a cross-user read if a future caller forgets.
 	query := `
-		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, evicted, folded, turn
+		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, model, effort, cache_create_1h_tokens, cache_create_5m_tokens, thinking_tokens, evicted, folded, turn
 		FROM messages
 		WHERE session_id = ? AND folded = 0
 		AND EXISTS (SELECT 1 FROM sessions WHERE id = messages.session_id AND user_id = ?)
@@ -936,6 +936,11 @@ func (s *SessionStore) loadMessagesLocked(ctx context.Context, sessionID string)
 			&msg.OutputTokens,
 			&msg.CacheReadTokens,
 			&msg.CacheCreateTokens,
+			&msg.Model,
+			&msg.Effort,
+			&msg.CacheCreate1hTokens,
+			&msg.CacheCreate5mTokens,
+			&msg.ThinkingTokens,
 			&evicted,
 			&folded,
 			&msg.Turn,
@@ -1044,7 +1049,7 @@ func (s *SessionStore) ListMessagesBySeqRange(ctx context.Context, sessionID str
 	defer s.mu.RUnlock()
 
 	query := `
-		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, evicted, folded, turn
+		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, model, effort, cache_create_1h_tokens, cache_create_5m_tokens, thinking_tokens, evicted, folded, turn
 		FROM messages
 		WHERE session_id = ? AND id BETWEEN ? AND ?
 		ORDER BY id ASC
@@ -1082,6 +1087,11 @@ func (s *SessionStore) ListMessagesBySeqRange(ctx context.Context, sessionID str
 			&msg.OutputTokens,
 			&msg.CacheReadTokens,
 			&msg.CacheCreateTokens,
+			&msg.Model,
+			&msg.Effort,
+			&msg.CacheCreate1hTokens,
+			&msg.CacheCreate5mTokens,
+			&msg.ThinkingTokens,
 			&evicted,
 			&folded,
 			&msg.Turn,
