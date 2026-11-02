@@ -9,6 +9,7 @@ package agent
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -17,6 +18,111 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
+
+type noToolsDiscoveryRegistry struct {
+	tool     *loomv1.IndexedTool
+	searches int
+}
+
+func (r *noToolsDiscoveryRegistry) Search(context.Context, *loomv1.SearchToolsRequest) (*loomv1.SearchToolsResponse, error) {
+	r.searches++
+	return &loomv1.SearchToolsResponse{Results: []*loomv1.ToolSearchResult{{Tool: r.tool}}}, nil
+}
+
+type noToolsMCPClient struct{ calls int }
+
+func (c *noToolsMCPClient) CallTool(context.Context, string, map[string]interface{}) (interface{}, error) {
+	c.calls++
+	return map[string]interface{}{"value": "executed"}, nil
+}
+
+type noToolsMCPManager struct {
+	client  *noToolsMCPClient
+	lookups int
+}
+
+func (m *noToolsMCPManager) GetClient(string) (interface{}, error) {
+	m.lookups++
+	return m.client, nil
+}
+
+func TestWithoutToolsBlocksDynamicDiscovery(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "readable.txt")
+	require.NoError(t, os.WriteFile(filePath, []byte("dynamic discovery regression"), 0600))
+	for _, source := range []loomv1.ToolSource{loomv1.ToolSource_TOOL_SOURCE_BUILTIN, loomv1.ToolSource_TOOL_SOURCE_MCP} {
+		for _, disabled := range []bool{false, true} {
+			for _, resolveOnly := range []bool{false, true} {
+				name := source.String()
+				if disabled {
+					name += "/disabled"
+				} else {
+					name += "/enabled"
+				}
+				if resolveOnly {
+					name += "/resolve"
+				} else {
+					name += "/execute"
+				}
+				t.Run(name, func(t *testing.T) {
+					var opts []Option
+					if disabled {
+						opts = append(opts, WithoutTools())
+					}
+					a := NewAgent(nil, nil, opts...)
+					toolName := "file_read"
+					if source == loomv1.ToolSource_TOOL_SOURCE_MCP {
+						toolName = "remote_read"
+					}
+					registry := &noToolsDiscoveryRegistry{tool: &loomv1.IndexedTool{
+						Name: toolName, Source: source, McpServer: "test-server", InputSchema: `{"type":"object"}`,
+					}}
+					manager := &noToolsMCPManager{client: &noToolsMCPClient{}}
+					a.SetToolRegistryForDynamicDiscovery(registry, manager)
+					require.False(t, a.tools.IsRegistered(toolName))
+
+					var err error
+					if resolveOnly {
+						var tool shuttle.Tool
+						tool, err = a.executor.ResolveAndRegister(context.Background(), toolName, nil)
+						if disabled {
+							assert.Nil(t, tool)
+						} else {
+							require.NotNil(t, tool)
+							assert.Equal(t, toolName, tool.Name())
+						}
+					} else {
+						var result *shuttle.Result
+						result, err = a.executor.Execute(context.Background(), toolName, map[string]interface{}{"path": filePath})
+						if disabled {
+							assert.Nil(t, result)
+						} else {
+							require.NotNil(t, result)
+							assert.True(t, result.Success, "%+v", result.Error)
+						}
+					}
+					if disabled {
+						require.Error(t, err)
+						assert.Zero(t, registry.searches, "disabled agents must not consult the tool catalog")
+						assert.Zero(t, manager.lookups)
+						assert.Zero(t, manager.client.calls)
+						assert.Zero(t, a.ToolCount())
+						for _, sessionID := range []string{"current-session", "other-session"} {
+							assert.Empty(t, a.advertisedTools(&Session{ID: sessionID}))
+						}
+					} else {
+						require.NoError(t, err)
+						assert.Positive(t, registry.searches)
+						assert.True(t, a.tools.IsRegistered(toolName))
+						assert.Contains(t, advertisedNames(a, &Session{ID: "current-session"}), toolName)
+						if source == loomv1.ToolSource_TOOL_SOURCE_MCP && !resolveOnly {
+							assert.Equal(t, 1, manager.client.calls)
+						}
+					}
+				})
+			}
+		}
+	}
+}
 
 func TestWithoutToolsKeepsGraphMemoryButHidesAllTools(t *testing.T) {
 	store := newTestGraphStore(t)
@@ -54,7 +160,7 @@ func TestRegistry_PerAgentNoToolsKeepsGraphMemory(t *testing.T) {
 
 	agentsDir := filepath.Join(tmpDir, "agents")
 	noTools := createTestAgentConfig("no-tools")
-	noTools.Tools = &loomv1.ToolsConfig{None: true}
+	noTools.Tools = &loomv1.ToolsConfig{Disabled: true}
 	noTools.Memory.GraphMemory = &loomv1.GraphMemoryConfig{Enabled: true, EnableExtraction: true}
 	require.NoError(t, SaveAgentConfig(noTools, filepath.Join(agentsDir, "no-tools.yaml")))
 	ordinary := createTestAgentConfig("ordinary")

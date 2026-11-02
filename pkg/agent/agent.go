@@ -156,6 +156,9 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// through the process logger; zap.L() is a no-op unless the host installed
 	// one via zap.ReplaceGlobals (cmd_serve does).
 	a.executor.SetLogger(zap.L())
+	if a.disableToolSurface {
+		a.executor.DisableDynamicRegistration()
+	}
 
 	// Set permission checker on executor if provided
 	if a.permissionChecker != nil {
@@ -990,7 +993,7 @@ func (a *Agent) applyPermissionToolFilter(in []shuttle.Tool) []shuttle.Tool {
 // the LLM never sees the tool. Subsystems that drive the tool keep
 // running — only the surface is hidden.
 func (a *Agent) RegisterTool(tool shuttle.Tool) {
-	if a.disableToolSurface || (tool != nil && a.isBuiltinToolSuppressed(tool.Name())) {
+	if tool != nil && a.isBuiltinToolSuppressed(tool.Name()) {
 		return
 	}
 	a.tools.Register(tool)
@@ -1088,7 +1091,7 @@ func (a *Agent) SetID(id string) {
 // When enabled, agents can use tools discovered via tool_search without explicit registration.
 // MCP tools and builtin tools found in the registry will be dynamically registered when first used.
 func (a *Agent) SetToolRegistryForDynamicDiscovery(toolRegistry shuttle.ToolRegistry, mcpManager shuttle.MCPManager) {
-	if a.executor == nil {
+	if a.executor == nil || a.disableToolSurface {
 		return
 	}
 	if toolRegistry != nil {
