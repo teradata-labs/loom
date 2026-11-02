@@ -1,0 +1,141 @@
+# DEVLEAD, ported from tera-sdlc-loop/tera_sdlc_loop/agents/developer/devlead.py.
+#
+# STATE_TABLE -> each state's body: a worker becomes an agent, a None worker
+# becomes an action (or a nested run where the loop nests engine.run).
+# ROUTE       -> the route map, including its advance: targets and edge hooks.
+# VOCAB\ROUTE -> deliberately absent: those signals are unrouted by design and
+#                must park for the DM rather than being guessed at.
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: devlead
+  description: The epic lead's cycle — plan, publish, deliver every task, verify.
+spec:
+  type: state-machine
+  entry_state: P_CREATE
+  max_cost_usd: 400.0
+  states:
+    P_CREATE:
+      agent:
+        agent_id: devlead
+        instructions: plan-create
+      route:
+        planned: P_REVIEW
+
+    P_REVIEW:
+      agent:
+        agent_id: plan_reviewer
+        instructions: plan-review
+      route:
+        deltas: P_CREATE
+        converged: PUBLISH
+
+    PUBLISH:
+      tool:
+        name: publish
+      route:
+        published:
+          next_state: DELIVER_TASK
+          hook: {name: task=first}
+
+    DELIVER_TASK:
+      delegate:
+        workflow:
+          type: state-machine
+          entry_state: TASK
+          states:
+            TASK:
+              tool:
+                name: run-task
+              route:
+                done: DELIVERED
+            DELIVERED:
+              terminal: true
+      route:
+        delivered:
+          next_state: TASK_ACCEPT
+          checkpoint: true
+        skipped:
+          next_tool: {name: advance:tasks}
+        failed: EXCEPTION
+
+    TASK_ACCEPT:
+      agent:
+        agent_id: devlead
+        instructions: accept-task
+      route:
+        accepted:
+          next_tool: {name: advance:tasks}
+        task-deltas:
+          next_state: DELIVER_TASK
+          hook: {name: task=fix}
+        refined: P_REVIEW
+        replan: P_CREATE
+
+    EXCEPTION:
+      agent:
+        agent_id: devlead
+        instructions: handle-exception
+      route:
+        resolved: DELIVER_TASK
+        replan: P_CREATE
+
+    VALIDATE:
+      tool:
+        name: validate
+      route:
+        validated: PLAN_EPIC_TESTS
+
+    PLAN_EPIC_TESTS:
+      agent:
+        agent_id: test_lead
+        instructions: plan-epic-tests
+      route:
+        planned: WRITE_EPIC_TESTS
+        no-change: VERIFY
+
+    WRITE_EPIC_TESTS:
+      agent:
+        agent_id: feature_tester
+        instructions: write-epic-tests
+      route:
+        tests-ready: CHECK_EPIC_TESTS
+
+    CHECK_EPIC_TESTS:
+      agent:
+        agent_id: test_lead
+        instructions: check-epic-tests
+      route:
+        deltas: WRITE_EPIC_TESTS
+        converged:
+          next_state: VERIFY
+          hook: {name: epic-tests=commit}
+
+    VERIFY:
+      delegate:
+        workflow:
+          type: state-machine
+          entry_state: TRIAGE
+          states:
+            TRIAGE:
+              tool:
+                name: triage
+              route:
+                clean: PASS
+            PASS:
+              terminal: true
+      route:
+        pass:
+          next_state: DONE
+          dismiss: ["*"]
+          checkpoint: true
+        fix:
+          next_state: DELIVER_TASK
+          hook: {name: task=first}
+
+    DONE:
+      terminal: true
+    BOUNCED:
+      terminal: true
+    ESCALATED:
+      terminal: true

@@ -1,0 +1,2118 @@
+{
+  "specs": {
+    "architect": {
+      "bubble_signals": [],
+      "loopback_states": [
+        "A_CREATE",
+        "A_REVIEW",
+        "D_CREATE",
+        "D_REVIEW",
+        "S_CREATE",
+        "S_REVIEW",
+        "T_CREATE",
+        "T_REVIEW"
+      ],
+      "model": "claude-opus-5",
+      "name": "architect",
+      "prompt_dir": "",
+      "route": {
+        "A_CREATE|created": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "created",
+          "state": "A_CREATE",
+          "target": "A_REVIEW"
+        },
+        "A_CREATE|escalate": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "escalate",
+          "state": "A_CREATE",
+          "target": "HITL_ESC"
+        },
+        "A_REVIEW|converged": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "converged",
+          "state": "A_REVIEW",
+          "target": "A_GATE"
+        },
+        "A_REVIEW|deltas": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "deltas",
+          "state": "A_REVIEW",
+          "target": "A_CREATE"
+        },
+        "A_REVIEW|escalate": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "escalate",
+          "state": "A_REVIEW",
+          "target": "HITL_ESC"
+        },
+        "D_CREATE|created": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "created",
+          "state": "D_CREATE",
+          "target": "D_REVIEW"
+        },
+        "D_CREATE|escalate": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "escalate",
+          "state": "D_CREATE",
+          "target": "HITL_ESC"
+        },
+        "D_REVIEW|converged": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "converged",
+          "state": "D_REVIEW",
+          "target": "DONE"
+        },
+        "D_REVIEW|deltas": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "deltas",
+          "state": "D_REVIEW",
+          "target": "D_CREATE"
+        },
+        "D_REVIEW|escalate": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "escalate",
+          "state": "D_REVIEW",
+          "target": "HITL_ESC"
+        },
+        "S_CREATE|created": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "created",
+          "state": "S_CREATE",
+          "target": "S_REVIEW"
+        },
+        "S_CREATE|escalate": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "escalate",
+          "state": "S_CREATE",
+          "target": "HITL_ESC"
+        },
+        "S_REVIEW|converged": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "converged",
+          "state": "S_REVIEW",
+          "target": "A_CREATE"
+        },
+        "S_REVIEW|deltas": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "deltas",
+          "state": "S_REVIEW",
+          "target": "S_CREATE"
+        },
+        "S_REVIEW|escalate": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "escalate",
+          "state": "S_REVIEW",
+          "target": "HITL_ESC"
+        },
+        "T_CREATE|created": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "created",
+          "state": "T_CREATE",
+          "target": "T_REVIEW"
+        },
+        "T_CREATE|escalate": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "escalate",
+          "state": "T_CREATE",
+          "target": "HITL_ESC"
+        },
+        "T_REVIEW|converged": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "converged",
+          "state": "T_REVIEW",
+          "target": "D_CREATE"
+        },
+        "T_REVIEW|deltas": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "deltas",
+          "state": "T_REVIEW",
+          "target": "T_CREATE"
+        },
+        "T_REVIEW|escalate": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "escalate",
+          "state": "T_REVIEW",
+          "target": "HITL_ESC"
+        }
+      },
+      "signal_fields": {
+        "deltas": [
+          "deltas"
+        ],
+        "escalate": [
+          "reason"
+        ]
+      },
+      "start_state": "S_CREATE",
+      "states": {
+        "A_CREATE": {
+          "prompts": {
+            "mint": "arch",
+            "resume": ""
+          },
+          "worker": "creator"
+        },
+        "A_REVIEW": {
+          "prompts": {
+            "mint": "arch",
+            "resume": ""
+          },
+          "worker": "reviewer"
+        },
+        "D_CREATE": {
+          "prompts": {
+            "mint": "decompose",
+            "resume": ""
+          },
+          "worker": "decomposer"
+        },
+        "D_REVIEW": {
+          "prompts": {
+            "mint": "decompose",
+            "resume": ""
+          },
+          "worker": "reviewer"
+        },
+        "S_CREATE": {
+          "prompts": {
+            "mint": "spec",
+            "resume": ""
+          },
+          "worker": "creator"
+        },
+        "S_REVIEW": {
+          "prompts": {
+            "mint": "spec",
+            "resume": ""
+          },
+          "worker": "reviewer"
+        },
+        "T_CREATE": {
+          "prompts": {
+            "mint": "testarch",
+            "resume": ""
+          },
+          "worker": "test_architect"
+        },
+        "T_REVIEW": {
+          "prompts": {
+            "mint": "testarch",
+            "resume": ""
+          },
+          "worker": "reviewer"
+        }
+      },
+      "symbol": "ARCHITECT",
+      "terminal": [
+        "A_GATE",
+        "DONE",
+        "HITL_ESC"
+      ],
+      "unrouted": [],
+      "vocab": {
+        "A_CREATE": [
+          "created"
+        ],
+        "A_REVIEW": [
+          "converged",
+          "deltas",
+          "escalate"
+        ],
+        "D_CREATE": [
+          "created"
+        ],
+        "D_REVIEW": [
+          "converged",
+          "deltas",
+          "escalate"
+        ],
+        "S_CREATE": [
+          "created"
+        ],
+        "S_REVIEW": [
+          "converged",
+          "deltas",
+          "escalate"
+        ],
+        "T_CREATE": [
+          "created"
+        ],
+        "T_REVIEW": [
+          "converged",
+          "deltas",
+          "escalate"
+        ]
+      }
+    },
+    "cycle": {
+      "bubble_signals": [],
+      "loopback_states": [],
+      "model": "claude-opus-5",
+      "name": "cycle",
+      "prompt_dir": "",
+      "route": {
+        "DEV|built": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "built",
+          "state": "DEV",
+          "target": "TEST"
+        },
+        "MERGE|merged": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "merged",
+          "state": "MERGE",
+          "target": "QA"
+        },
+        "PLAN|planned": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "planned",
+          "state": "PLAN",
+          "target": "DEV"
+        },
+        "QA|assured": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "assured",
+          "state": "QA",
+          "target": "RELEASE"
+        },
+        "RELEASE|released": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "released",
+          "state": "RELEASE",
+          "target": "DONE"
+        },
+        "STAGE|staged": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "staged",
+          "state": "STAGE",
+          "target": "PLAN"
+        },
+        "TEST|tested": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "tested",
+          "state": "TEST",
+          "target": "MERGE"
+        }
+      },
+      "signal_fields": {},
+      "start_state": "STAGE",
+      "states": {
+        "DEV": {
+          "prompts": {
+            "mint": "DEV",
+            "resume": ""
+          },
+          "worker": null
+        },
+        "MERGE": {
+          "prompts": {
+            "mint": "MERGE",
+            "resume": ""
+          },
+          "worker": null
+        },
+        "PLAN": {
+          "prompts": {
+            "mint": "PLAN",
+            "resume": ""
+          },
+          "worker": null
+        },
+        "QA": {
+          "prompts": {
+            "mint": "QA",
+            "resume": ""
+          },
+          "worker": null
+        },
+        "RELEASE": {
+          "prompts": {
+            "mint": "RELEASE",
+            "resume": ""
+          },
+          "worker": null
+        },
+        "STAGE": {
+          "prompts": {
+            "mint": "STAGE",
+            "resume": ""
+          },
+          "worker": null
+        },
+        "TEST": {
+          "prompts": {
+            "mint": "TEST",
+            "resume": ""
+          },
+          "worker": null
+        }
+      },
+      "symbol": "CYCLE",
+      "terminal": [
+        "BOUNCED",
+        "DONE",
+        "ESCALATED"
+      ],
+      "unrouted": [
+        "DEV|failed",
+        "DEV|gate",
+        "MERGE|failed",
+        "MERGE|gate",
+        "PLAN|failed",
+        "PLAN|gate",
+        "QA|failed",
+        "QA|gate",
+        "RELEASE|failed",
+        "RELEASE|gate",
+        "STAGE|failed",
+        "STAGE|gate",
+        "TEST|failed",
+        "TEST|gate"
+      ],
+      "vocab": {
+        "DEV": [
+          "built",
+          "failed",
+          "gate"
+        ],
+        "MERGE": [
+          "failed",
+          "gate",
+          "merged"
+        ],
+        "PLAN": [
+          "failed",
+          "gate",
+          "planned"
+        ],
+        "QA": [
+          "assured",
+          "failed",
+          "gate"
+        ],
+        "RELEASE": [
+          "failed",
+          "gate",
+          "released"
+        ],
+        "STAGE": [
+          "failed",
+          "gate",
+          "staged"
+        ],
+        "TEST": [
+          "failed",
+          "gate",
+          "tested"
+        ]
+      }
+    },
+    "devlead": {
+      "bubble_signals": [
+        "hitl"
+      ],
+      "loopback_states": [
+        "DELIVER_TASK",
+        "EXCEPTION",
+        "P_CREATE",
+        "P_REVIEW",
+        "TASK_ACCEPT",
+        "VERIFY"
+      ],
+      "model": "claude-opus-5",
+      "name": "devlead",
+      "prompt_dir": "/Users/anuj/tera-code/tera-sdlc-loop/tera_sdlc_loop/agents/developer/workers",
+      "route": {
+        "CHECK_EPIC_TESTS|converged": {
+          "dismiss": [],
+          "hook": "epic-tests=commit",
+          "signal": "converged",
+          "state": "CHECK_EPIC_TESTS",
+          "target": "VERIFY"
+        },
+        "CHECK_EPIC_TESTS|deltas": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "deltas",
+          "state": "CHECK_EPIC_TESTS",
+          "target": "WRITE_EPIC_TESTS"
+        },
+        "DELIVER_TASK|delivered": {
+          "dismiss": [],
+          "hook": "checkpoint",
+          "signal": "delivered",
+          "state": "DELIVER_TASK",
+          "target": "TASK_ACCEPT"
+        },
+        "DELIVER_TASK|failed": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "failed",
+          "state": "DELIVER_TASK",
+          "target": "EXCEPTION"
+        },
+        "DELIVER_TASK|skipped": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "skipped",
+          "state": "DELIVER_TASK",
+          "target": "advance:tasks"
+        },
+        "EXCEPTION|replan": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "replan",
+          "state": "EXCEPTION",
+          "target": "P_CREATE"
+        },
+        "EXCEPTION|resolved": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "resolved",
+          "state": "EXCEPTION",
+          "target": "DELIVER_TASK"
+        },
+        "PLAN_EPIC_TESTS|no-change": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "no-change",
+          "state": "PLAN_EPIC_TESTS",
+          "target": "VERIFY"
+        },
+        "PLAN_EPIC_TESTS|planned": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "planned",
+          "state": "PLAN_EPIC_TESTS",
+          "target": "WRITE_EPIC_TESTS"
+        },
+        "PUBLISH|published": {
+          "dismiss": [],
+          "hook": "task=first",
+          "signal": "published",
+          "state": "PUBLISH",
+          "target": "DELIVER_TASK"
+        },
+        "P_CREATE|planned": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "planned",
+          "state": "P_CREATE",
+          "target": "P_REVIEW"
+        },
+        "P_REVIEW|converged": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "converged",
+          "state": "P_REVIEW",
+          "target": "PUBLISH"
+        },
+        "P_REVIEW|deltas": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "deltas",
+          "state": "P_REVIEW",
+          "target": "P_CREATE"
+        },
+        "TASK_ACCEPT|accepted": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "accepted",
+          "state": "TASK_ACCEPT",
+          "target": "advance:tasks"
+        },
+        "TASK_ACCEPT|refined": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "refined",
+          "state": "TASK_ACCEPT",
+          "target": "P_REVIEW"
+        },
+        "TASK_ACCEPT|replan": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "replan",
+          "state": "TASK_ACCEPT",
+          "target": "P_CREATE"
+        },
+        "TASK_ACCEPT|task-deltas": {
+          "dismiss": [],
+          "hook": "task=fix",
+          "signal": "task-deltas",
+          "state": "TASK_ACCEPT",
+          "target": "DELIVER_TASK"
+        },
+        "VALIDATE|validated": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "validated",
+          "state": "VALIDATE",
+          "target": "PLAN_EPIC_TESTS"
+        },
+        "VERIFY|fix": {
+          "dismiss": [],
+          "hook": "task=first",
+          "signal": "fix",
+          "state": "VERIFY",
+          "target": "DELIVER_TASK"
+        },
+        "VERIFY|pass": {
+          "dismiss": [
+            "*"
+          ],
+          "hook": "checkpoint",
+          "signal": "pass",
+          "state": "VERIFY",
+          "target": "DONE"
+        },
+        "WRITE_EPIC_TESTS|tests-ready": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "tests-ready",
+          "state": "WRITE_EPIC_TESTS",
+          "target": "CHECK_EPIC_TESTS"
+        }
+      },
+      "signal_fields": {
+        "bounce": [
+          "problem"
+        ],
+        "escalate": [
+          "problem"
+        ],
+        "redesign": [
+          "problem"
+        ]
+      },
+      "start_state": "P_CREATE",
+      "states": {
+        "CHECK_EPIC_TESTS": {
+          "prompts": {
+            "mint": "check-epic-tests",
+            "resume": ""
+          },
+          "worker": "test_lead"
+        },
+        "DELIVER_TASK": {
+          "prompts": {
+            "mint": "deliver-task",
+            "resume": ""
+          },
+          "worker": null
+        },
+        "EXCEPTION": {
+          "prompts": {
+            "mint": "handle-exception",
+            "resume": ""
+          },
+          "worker": "devlead"
+        },
+        "PLAN_EPIC_TESTS": {
+          "prompts": {
+            "mint": "plan-epic-tests",
+            "resume": ""
+          },
+          "worker": "test_lead"
+        },
+        "PUBLISH": {
+          "prompts": {
+            "mint": "publish",
+            "resume": ""
+          },
+          "worker": null
+        },
+        "P_CREATE": {
+          "prompts": {
+            "mint": "plan-create",
+            "resume": "plan-revise"
+          },
+          "worker": "devlead"
+        },
+        "P_REVIEW": {
+          "prompts": {
+            "mint": "plan-review",
+            "resume": ""
+          },
+          "worker": "plan_reviewer"
+        },
+        "TASK_ACCEPT": {
+          "prompts": {
+            "mint": "accept-task",
+            "resume": ""
+          },
+          "worker": "devlead"
+        },
+        "VALIDATE": {
+          "prompts": {
+            "mint": "validate",
+            "resume": ""
+          },
+          "worker": null
+        },
+        "VERIFY": {
+          "prompts": {
+            "mint": "triage",
+            "resume": ""
+          },
+          "worker": null
+        },
+        "WRITE_EPIC_TESTS": {
+          "prompts": {
+            "mint": "write-epic-tests",
+            "resume": ""
+          },
+          "worker": "feature_tester"
+        }
+      },
+      "symbol": "DEVLEAD",
+      "terminal": [
+        "BOUNCED",
+        "DONE",
+        "ESCALATED"
+      ],
+      "unrouted": [
+        "DELIVER_TASK|hitl",
+        "EXCEPTION|escalate",
+        "EXCEPTION|redesign",
+        "PLAN_EPIC_TESTS|bounce",
+        "P_CREATE|bounce",
+        "P_REVIEW|bounce",
+        "TASK_ACCEPT|bounce",
+        "VALIDATE|env",
+        "VERIFY|bubble",
+        "VERIFY|env"
+      ],
+      "vocab": {
+        "CHECK_EPIC_TESTS": [
+          "converged",
+          "deltas"
+        ],
+        "DELIVER_TASK": [
+          "delivered",
+          "failed",
+          "hitl",
+          "skipped"
+        ],
+        "EXCEPTION": [
+          "escalate",
+          "redesign",
+          "replan",
+          "resolved"
+        ],
+        "PLAN_EPIC_TESTS": [
+          "bounce",
+          "no-change",
+          "planned"
+        ],
+        "PUBLISH": [
+          "published"
+        ],
+        "P_CREATE": [
+          "bounce",
+          "planned"
+        ],
+        "P_REVIEW": [
+          "bounce",
+          "converged",
+          "deltas"
+        ],
+        "TASK_ACCEPT": [
+          "accepted",
+          "bounce",
+          "refined",
+          "replan",
+          "task-deltas"
+        ],
+        "VALIDATE": [
+          "env",
+          "validated"
+        ],
+        "VERIFY": [
+          "bubble",
+          "env",
+          "fix",
+          "pass"
+        ],
+        "WRITE_EPIC_TESTS": [
+          "tests-ready"
+        ]
+      }
+    },
+    "devlead_impl": {
+      "bubble_signals": [],
+      "loopback_states": [
+        "DELIVER_TASK",
+        "EXCEPTION",
+        "VERIFY"
+      ],
+      "model": "claude-opus-5",
+      "name": "devlead_impl",
+      "prompt_dir": "/Users/anuj/tera-code/tera-sdlc-loop/tera_sdlc_loop/agents/developer/workers",
+      "route": {
+        "DELIVER_TASK|delivered": {
+          "dismiss": [],
+          "hook": "checkpoint",
+          "signal": "delivered",
+          "state": "DELIVER_TASK",
+          "target": "TASK_ACCEPT"
+        },
+        "DELIVER_TASK|failed": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "failed",
+          "state": "DELIVER_TASK",
+          "target": "EXCEPTION"
+        },
+        "EXCEPTION|resolved": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "resolved",
+          "state": "EXCEPTION",
+          "target": "DELIVER_TASK"
+        },
+        "PLAN|planned": {
+          "dismiss": [],
+          "hook": "task=first",
+          "signal": "planned",
+          "state": "PLAN",
+          "target": "DELIVER_TASK"
+        },
+        "REFACTOR_PLAN|refactored": {
+          "dismiss": [],
+          "hook": "task=first",
+          "signal": "refactored",
+          "state": "REFACTOR_PLAN",
+          "target": "DELIVER_TASK"
+        },
+        "TASK_ACCEPT|accepted": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "accepted",
+          "state": "TASK_ACCEPT",
+          "target": "advance:tasks"
+        },
+        "VALIDATE|validated": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "validated",
+          "state": "VALIDATE",
+          "target": "VERIFY"
+        },
+        "VERIFY|fix": {
+          "dismiss": [],
+          "hook": "task=first",
+          "signal": "fix",
+          "state": "VERIFY",
+          "target": "DELIVER_TASK"
+        },
+        "VERIFY|pass": {
+          "dismiss": [
+            "*"
+          ],
+          "hook": "checkpoint",
+          "signal": "pass",
+          "state": "VERIFY",
+          "target": "DONE"
+        }
+      },
+      "signal_fields": {
+        "bounce": [
+          "problem"
+        ]
+      },
+      "start_state": "PLAN",
+      "states": {
+        "DELIVER_TASK": {
+          "prompts": {
+            "mint": "deliver-task",
+            "resume": ""
+          },
+          "worker": null
+        },
+        "EXCEPTION": {
+          "prompts": {
+            "mint": "handle-exception",
+            "resume": ""
+          },
+          "worker": "devlead_impl"
+        },
+        "PLAN": {
+          "prompts": {
+            "mint": "plan-impl",
+            "resume": ""
+          },
+          "worker": "devlead_impl"
+        },
+        "REFACTOR_PLAN": {
+          "prompts": {
+            "mint": "refactor-plan",
+            "resume": ""
+          },
+          "worker": "devlead_impl"
+        },
+        "TASK_ACCEPT": {
+          "prompts": {
+            "mint": "accept-task",
+            "resume": ""
+          },
+          "worker": "devlead_impl"
+        },
+        "VALIDATE": {
+          "prompts": {
+            "mint": "validate",
+            "resume": ""
+          },
+          "worker": null
+        },
+        "VERIFY": {
+          "prompts": {
+            "mint": "verify-feature",
+            "resume": ""
+          },
+          "worker": "devlead_impl"
+        }
+      },
+      "symbol": "DEVLEAD_IMPL",
+      "terminal": [
+        "BOUNCED",
+        "DONE",
+        "ESCALATED"
+      ],
+      "unrouted": [
+        "EXCEPTION|escalate",
+        "PLAN|bounce",
+        "REFACTOR_PLAN|bounce",
+        "TASK_ACCEPT|bounce",
+        "VALIDATE|env",
+        "VERIFY|bounce"
+      ],
+      "vocab": {
+        "DELIVER_TASK": [
+          "delivered",
+          "failed"
+        ],
+        "EXCEPTION": [
+          "escalate",
+          "resolved"
+        ],
+        "PLAN": [
+          "bounce",
+          "planned"
+        ],
+        "REFACTOR_PLAN": [
+          "bounce",
+          "refactored"
+        ],
+        "TASK_ACCEPT": [
+          "accepted",
+          "bounce"
+        ],
+        "VALIDATE": [
+          "env",
+          "validated"
+        ],
+        "VERIFY": [
+          "bounce",
+          "fix",
+          "pass"
+        ]
+      }
+    },
+    "qa": {
+      "bubble_signals": [],
+      "loopback_states": [
+        "PLAN",
+        "PLAN_CHECK",
+        "REFERENCE",
+        "REF_CHECK"
+      ],
+      "model": "claude-opus-5",
+      "name": "qa",
+      "prompt_dir": "",
+      "route": {
+        "DELTA|changed": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "changed",
+          "state": "DELTA",
+          "target": "PLAN"
+        },
+        "DELTA|nothing": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "nothing",
+          "state": "DELTA",
+          "target": "VERDICT"
+        },
+        "FAN_REPOS|fanned": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "fanned",
+          "state": "FAN_REPOS",
+          "target": "VERDICT"
+        },
+        "FAN_REPOS|stuck": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "stuck",
+          "state": "FAN_REPOS",
+          "target": "ESCALATED"
+        },
+        "PLAN_CHECK|revise": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "revise",
+          "state": "PLAN_CHECK",
+          "target": "advance:replan"
+        },
+        "PLAN_CHECK|sound": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "sound",
+          "state": "PLAN_CHECK",
+          "target": "FAN_REPOS"
+        },
+        "PLAN|planned": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "planned",
+          "state": "PLAN",
+          "target": "PLAN_CHECK"
+        },
+        "REFERENCE|extracted": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "extracted",
+          "state": "REFERENCE",
+          "target": "REF_CHECK"
+        },
+        "REFERENCE|none": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "none",
+          "state": "REFERENCE",
+          "target": "DELTA"
+        },
+        "REF_CHECK|revise": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "revise",
+          "state": "REF_CHECK",
+          "target": "REFERENCE"
+        },
+        "REF_CHECK|sound": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "sound",
+          "state": "REF_CHECK",
+          "target": "DELTA"
+        },
+        "VERDICT|clear": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "clear",
+          "state": "VERDICT",
+          "target": "ASSURED"
+        },
+        "VERDICT|escalate": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "escalate",
+          "state": "VERDICT",
+          "target": "ESCALATED"
+        },
+        "VERDICT|open": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "open",
+          "state": "VERDICT",
+          "target": "advance:open"
+        }
+      },
+      "signal_fields": {},
+      "start_state": "REFERENCE",
+      "states": {
+        "DELTA": {
+          "prompts": {
+            "mint": "delta",
+            "resume": ""
+          },
+          "worker": null
+        },
+        "FAN_REPOS": {
+          "prompts": {
+            "mint": "fan-repos",
+            "resume": ""
+          },
+          "worker": null
+        },
+        "PLAN": {
+          "prompts": {
+            "mint": "plan",
+            "resume": "replan"
+          },
+          "worker": "planner"
+        },
+        "PLAN_CHECK": {
+          "prompts": {
+            "mint": "plan-check",
+            "resume": ""
+          },
+          "worker": "plan_checker"
+        },
+        "REFERENCE": {
+          "prompts": {
+            "mint": "extract-reference",
+            "resume": "re-extract"
+          },
+          "worker": "ref_extractor"
+        },
+        "REF_CHECK": {
+          "prompts": {
+            "mint": "reference-check",
+            "resume": ""
+          },
+          "worker": "ref_checker"
+        },
+        "VERDICT": {
+          "prompts": {
+            "mint": "verdict",
+            "resume": ""
+          },
+          "worker": null
+        }
+      },
+      "symbol": "QA",
+      "terminal": [
+        "ASSURED",
+        "DELTAS",
+        "ESCALATED"
+      ],
+      "unrouted": [
+        "PLAN|bounce"
+      ],
+      "vocab": {
+        "DELTA": [
+          "changed",
+          "nothing"
+        ],
+        "FAN_REPOS": [
+          "fanned",
+          "stuck"
+        ],
+        "PLAN": [
+          "bounce",
+          "planned"
+        ],
+        "PLAN_CHECK": [
+          "revise",
+          "sound"
+        ],
+        "REFERENCE": [
+          "extracted",
+          "none"
+        ],
+        "REF_CHECK": [
+          "revise",
+          "sound"
+        ],
+        "VERDICT": [
+          "clear",
+          "escalate",
+          "open"
+        ]
+      }
+    },
+    "qa-pair": {
+      "bubble_signals": [],
+      "loopback_states": [
+        "CHECK",
+        "RESPOND"
+      ],
+      "model": "claude-opus-5",
+      "name": "qa-pair",
+      "prompt_dir": "",
+      "route": {
+        "CHECK|challenged": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "challenged",
+          "state": "CHECK",
+          "target": "advance:respond"
+        },
+        "CHECK|settled": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "settled",
+          "state": "CHECK",
+          "target": "SETTLED"
+        },
+        "RESPOND|responded": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "responded",
+          "state": "RESPOND",
+          "target": "CHECK"
+        },
+        "REVIEW|filed": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "filed",
+          "state": "REVIEW",
+          "target": "CHECK"
+        }
+      },
+      "signal_fields": {},
+      "start_state": "REVIEW",
+      "states": {
+        "CHECK": {
+          "prompts": {
+            "mint": "review-{seat}",
+            "resume": ""
+          },
+          "worker": "checker:{suite}"
+        },
+        "RESPOND": {
+          "prompts": {
+            "mint": "respond",
+            "resume": ""
+          },
+          "worker": "reviewer"
+        },
+        "REVIEW": {
+          "prompts": {
+            "mint": "review-{seat}",
+            "resume": "re-review"
+          },
+          "worker": "reviewer"
+        }
+      },
+      "symbol": "PAIR",
+      "terminal": [
+        "SETTLED"
+      ],
+      "unrouted": [],
+      "vocab": {
+        "CHECK": [
+          "challenged",
+          "settled"
+        ],
+        "RESPOND": [
+          "responded"
+        ],
+        "REVIEW": [
+          "filed"
+        ]
+      }
+    },
+    "qa-repo": {
+      "bubble_signals": [],
+      "loopback_states": [
+        "REPORT",
+        "REPORT_CHECK",
+        "SYNTHESIS",
+        "SYNTHESIS_CHECK"
+      ],
+      "model": "claude-opus-5",
+      "name": "qa-repo",
+      "prompt_dir": "",
+      "route": {
+        "FAN_SEATS|reviewed": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "reviewed",
+          "state": "FAN_SEATS",
+          "target": "SYNTHESIS"
+        },
+        "FAN_SEATS|stuck": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "stuck",
+          "state": "FAN_SEATS",
+          "target": "STUCK"
+        },
+        "REPORT_CHECK|postable": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "postable",
+          "state": "REPORT_CHECK",
+          "target": "advance:verdict"
+        },
+        "REPORT_CHECK|revise": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "revise",
+          "state": "REPORT_CHECK",
+          "target": "REPORT"
+        },
+        "REPORT|drafted": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "drafted",
+          "state": "REPORT",
+          "target": "REPORT_CHECK"
+        },
+        "SYNTHESIS_CHECK|revise": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "revise",
+          "state": "SYNTHESIS_CHECK",
+          "target": "advance:resynth"
+        },
+        "SYNTHESIS_CHECK|sound": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "sound",
+          "state": "SYNTHESIS_CHECK",
+          "target": "REPORT"
+        },
+        "SYNTHESIS|circling": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "circling",
+          "state": "SYNTHESIS",
+          "target": "advance:circling"
+        },
+        "SYNTHESIS|clear": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "clear",
+          "state": "SYNTHESIS",
+          "target": "SYNTHESIS_CHECK"
+        },
+        "SYNTHESIS|open": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "open",
+          "state": "SYNTHESIS",
+          "target": "SYNTHESIS_CHECK"
+        }
+      },
+      "signal_fields": {},
+      "start_state": "FAN_SEATS",
+      "states": {
+        "FAN_SEATS": {
+          "prompts": {
+            "mint": "fan-seats",
+            "resume": ""
+          },
+          "worker": null
+        },
+        "REPORT": {
+          "prompts": {
+            "mint": "report",
+            "resume": "revise-report"
+          },
+          "worker": "reporter"
+        },
+        "REPORT_CHECK": {
+          "prompts": {
+            "mint": "report-check",
+            "resume": ""
+          },
+          "worker": "report_checker"
+        },
+        "SYNTHESIS": {
+          "prompts": {
+            "mint": "synthesis",
+            "resume": "revise-synthesis"
+          },
+          "worker": "synthesizer"
+        },
+        "SYNTHESIS_CHECK": {
+          "prompts": {
+            "mint": "synthesis-check",
+            "resume": ""
+          },
+          "worker": "synthesis_checker"
+        }
+      },
+      "symbol": "REPO",
+      "terminal": [
+        "CLEAR",
+        "OPEN",
+        "STUCK"
+      ],
+      "unrouted": [],
+      "vocab": {
+        "FAN_SEATS": [
+          "reviewed",
+          "stuck"
+        ],
+        "REPORT": [
+          "drafted"
+        ],
+        "REPORT_CHECK": [
+          "postable",
+          "revise"
+        ],
+        "SYNTHESIS": [
+          "circling",
+          "clear",
+          "open"
+        ],
+        "SYNTHESIS_CHECK": [
+          "revise",
+          "sound"
+        ]
+      }
+    },
+    "rca": {
+      "bubble_signals": [],
+      "loopback_states": [
+        "DIG"
+      ],
+      "model": "claude-opus-5",
+      "name": "rca",
+      "prompt_dir": "/Users/anuj/tera-code/tera-sdlc-loop/tera_sdlc_loop/agents/tester/prompts",
+      "route": {
+        "DIG|verdict": {
+          "dismiss": [
+            "*"
+          ],
+          "hook": "",
+          "signal": "verdict",
+          "state": "DIG",
+          "target": "DONE"
+        }
+      },
+      "signal_fields": {},
+      "start_state": "DIG",
+      "states": {
+        "DIG": {
+          "prompts": {
+            "mint": "dig",
+            "resume": ""
+          },
+          "worker": "rca"
+        }
+      },
+      "symbol": "RCA",
+      "terminal": [
+        "BOUNCED",
+        "DONE",
+        "ESCALATED"
+      ],
+      "unrouted": [],
+      "vocab": {
+        "DIG": [
+          "verdict"
+        ]
+      }
+    },
+    "task": {
+      "bubble_signals": [
+        "bounce",
+        "break",
+        "bubble",
+        "defer-needed",
+        "spec-unclear"
+      ],
+      "loopback_states": [
+        "CHECK_TESTS",
+        "CODE_REVIEW",
+        "REVIEW_CODE_FIX",
+        "REVIEW_TEST_FIX",
+        "TRIAGE"
+      ],
+      "model": "claude-opus-5",
+      "name": "task",
+      "prompt_dir": "/Users/anuj/tera-code/tera-sdlc-loop/tera_sdlc_loop/agents/developer/workers",
+      "route": {
+        "CHECK_TESTS|converged": {
+          "dismiss": [],
+          "hook": "tests=commit",
+          "signal": "converged",
+          "state": "CHECK_TESTS",
+          "target": "advance:tests"
+        },
+        "CHECK_TESTS|deltas": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "deltas",
+          "state": "CHECK_TESTS",
+          "target": "WRITE_TESTS"
+        },
+        "CODE_REVIEW|approved": {
+          "dismiss": [],
+          "hook": "code=commit",
+          "signal": "approved",
+          "state": "CODE_REVIEW",
+          "target": "PLAN_TESTS"
+        },
+        "CODE_REVIEW|deltas": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "deltas",
+          "state": "CODE_REVIEW",
+          "target": "FIX_CODE"
+        },
+        "DELIVER|delivered": {
+          "dismiss": [
+            "*"
+          ],
+          "hook": "checkpoint",
+          "signal": "delivered",
+          "state": "DELIVER",
+          "target": "DONE"
+        },
+        "FIX_CODE|code-ready": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "code-ready",
+          "state": "FIX_CODE",
+          "target": "CODE_REVIEW"
+        },
+        "PLAN_TESTS|planned": {
+          "dismiss": [],
+          "hook": "suite=first",
+          "signal": "planned",
+          "state": "PLAN_TESTS",
+          "target": "WRITE_TESTS"
+        },
+        "REVIEW_CODE_FIX|redo": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "redo",
+          "state": "REVIEW_CODE_FIX",
+          "target": "TRIAGE_FIX_CODE"
+        },
+        "REVIEW_CODE_FIX|rerun": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "rerun",
+          "state": "REVIEW_CODE_FIX",
+          "target": "TRIAGE"
+        },
+        "REVIEW_TEST_FIX|coder-next": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "coder-next",
+          "state": "REVIEW_TEST_FIX",
+          "target": "TRIAGE_FIX_CODE"
+        },
+        "REVIEW_TEST_FIX|redo": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "redo",
+          "state": "REVIEW_TEST_FIX",
+          "target": "TRIAGE_FIX_TESTS"
+        },
+        "REVIEW_TEST_FIX|rerun": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "rerun",
+          "state": "REVIEW_TEST_FIX",
+          "target": "TRIAGE"
+        },
+        "TRIAGE_FIX_CODE|code-ready": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "code-ready",
+          "state": "TRIAGE_FIX_CODE",
+          "target": "REVIEW_CODE_FIX"
+        },
+        "TRIAGE_FIX_TESTS|tests-ready": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "tests-ready",
+          "state": "TRIAGE_FIX_TESTS",
+          "target": "REVIEW_TEST_FIX"
+        },
+        "TRIAGE|fix-both": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "fix-both",
+          "state": "TRIAGE",
+          "target": "TRIAGE_FIX_TESTS"
+        },
+        "TRIAGE|fix-code": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "fix-code",
+          "state": "TRIAGE",
+          "target": "TRIAGE_FIX_CODE"
+        },
+        "TRIAGE|fix-tests": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "fix-tests",
+          "state": "TRIAGE",
+          "target": "TRIAGE_FIX_TESTS"
+        },
+        "TRIAGE|green": {
+          "dismiss": [
+            "tester:{suite}"
+          ],
+          "hook": "triage=commit",
+          "signal": "green",
+          "state": "TRIAGE",
+          "target": "advance:verify"
+        },
+        "WRITE_CODE|code-ready": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "code-ready",
+          "state": "WRITE_CODE",
+          "target": "CODE_REVIEW"
+        },
+        "WRITE_TESTS|tests-ready": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "tests-ready",
+          "state": "WRITE_TESTS",
+          "target": "CHECK_TESTS"
+        }
+      },
+      "signal_fields": {},
+      "start_state": "WRITE_CODE",
+      "states": {
+        "CHECK_TESTS": {
+          "prompts": {
+            "mint": "check-tests",
+            "resume": ""
+          },
+          "worker": "test_lead"
+        },
+        "CODE_REVIEW": {
+          "prompts": {
+            "mint": "review-code",
+            "resume": ""
+          },
+          "worker": "reviewer"
+        },
+        "DELIVER": {
+          "prompts": {
+            "mint": "publish",
+            "resume": ""
+          },
+          "worker": null
+        },
+        "FIX_CODE": {
+          "prompts": {
+            "mint": "fix-code",
+            "resume": ""
+          },
+          "worker": "coder"
+        },
+        "PLAN_TESTS": {
+          "prompts": {
+            "mint": "plan-tests",
+            "resume": ""
+          },
+          "worker": "test_lead"
+        },
+        "REVIEW_CODE_FIX": {
+          "prompts": {
+            "mint": "review-fix",
+            "resume": ""
+          },
+          "worker": "test_lead"
+        },
+        "REVIEW_TEST_FIX": {
+          "prompts": {
+            "mint": "review-fix",
+            "resume": ""
+          },
+          "worker": "test_lead"
+        },
+        "TRIAGE": {
+          "prompts": {
+            "mint": "triage-judge",
+            "resume": ""
+          },
+          "worker": "test_lead"
+        },
+        "TRIAGE_FIX_CODE": {
+          "prompts": {
+            "mint": "fix-code",
+            "resume": ""
+          },
+          "worker": "coder"
+        },
+        "TRIAGE_FIX_TESTS": {
+          "prompts": {
+            "mint": "fix-tests",
+            "resume": ""
+          },
+          "worker": "tester:{suite}"
+        },
+        "WRITE_CODE": {
+          "prompts": {
+            "mint": "write-code",
+            "resume": ""
+          },
+          "worker": "coder"
+        },
+        "WRITE_TESTS": {
+          "prompts": {
+            "mint": "write-tests",
+            "resume": "fix-tests"
+          },
+          "worker": "tester:{suite}"
+        }
+      },
+      "symbol": "TASK",
+      "terminal": [
+        "BOUNCED",
+        "DONE",
+        "ESCALATED"
+      ],
+      "unrouted": [
+        "CODE_REVIEW|spec-unclear",
+        "PLAN_TESTS|bounce",
+        "PLAN_TESTS|defer-needed",
+        "TRIAGE|break",
+        "TRIAGE|env"
+      ],
+      "vocab": {
+        "CHECK_TESTS": [
+          "converged",
+          "deltas"
+        ],
+        "CODE_REVIEW": [
+          "approved",
+          "deltas",
+          "spec-unclear"
+        ],
+        "DELIVER": [
+          "delivered"
+        ],
+        "FIX_CODE": [
+          "code-ready"
+        ],
+        "PLAN_TESTS": [
+          "bounce",
+          "defer-needed",
+          "planned"
+        ],
+        "REVIEW_CODE_FIX": [
+          "redo",
+          "rerun"
+        ],
+        "REVIEW_TEST_FIX": [
+          "coder-next",
+          "redo",
+          "rerun"
+        ],
+        "TRIAGE": [
+          "break",
+          "env",
+          "fix-both",
+          "fix-code",
+          "fix-tests",
+          "green"
+        ],
+        "TRIAGE_FIX_CODE": [
+          "code-ready"
+        ],
+        "TRIAGE_FIX_TESTS": [
+          "tests-ready"
+        ],
+        "WRITE_CODE": [
+          "code-ready"
+        ],
+        "WRITE_TESTS": [
+          "tests-ready"
+        ]
+      }
+    },
+    "triage_epic": {
+      "bubble_signals": [
+        "break",
+        "no-evidence",
+        "no-infra",
+        "spec-unclear"
+      ],
+      "loopback_states": [
+        "ACCUMULATE",
+        "CODE_PLAN",
+        "DIAGNOSE",
+        "DRIVE",
+        "TEST_PLAN"
+      ],
+      "model": "claude-opus-5",
+      "name": "triage_epic",
+      "prompt_dir": "/Users/anuj/tera-code/tera-sdlc-loop/tera_sdlc_loop/agents/developer/workers",
+      "route": {
+        "ACCUMULATE|done": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "done",
+          "state": "ACCUMULATE",
+          "target": "TEST_PLAN"
+        },
+        "ACCUMULATE|more": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "more",
+          "state": "ACCUMULATE",
+          "target": "DIAGNOSE"
+        },
+        "CODE_PLAN|code-side-done": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "code-side-done",
+          "state": "CODE_PLAN",
+          "target": "PLAN_REVIEW"
+        },
+        "CODE_PLAN|needs-clarification": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "needs-clarification",
+          "state": "CODE_PLAN",
+          "target": "TEST_PLAN"
+        },
+        "DIAGNOSE|hypothesis-ready": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "hypothesis-ready",
+          "state": "DIAGNOSE",
+          "target": "DIAG_REVIEW"
+        },
+        "DIAG_REVIEW|sound": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "sound",
+          "state": "DIAG_REVIEW",
+          "target": "ACCUMULATE"
+        },
+        "DIAG_REVIEW|unsound": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "unsound",
+          "state": "DIAG_REVIEW",
+          "target": "DIAGNOSE"
+        },
+        "DRIVE|failures": {
+          "dismiss": [],
+          "hook": "cursor=first",
+          "signal": "failures",
+          "state": "DRIVE",
+          "target": "DIAGNOSE"
+        },
+        "DRIVE|green": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "green",
+          "state": "DRIVE",
+          "target": "DONE"
+        },
+        "PLAN_REVIEW|approved": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "approved",
+          "state": "PLAN_REVIEW",
+          "target": "DONE"
+        },
+        "PLAN_REVIEW|bounce-dl": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "bounce-dl",
+          "state": "PLAN_REVIEW",
+          "target": "CODE_PLAN"
+        },
+        "PLAN_REVIEW|bounce-tl": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "bounce-tl",
+          "state": "PLAN_REVIEW",
+          "target": "TEST_PLAN"
+        },
+        "TEST_PLAN|test-side-done": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "test-side-done",
+          "state": "TEST_PLAN",
+          "target": "CODE_PLAN"
+        }
+      },
+      "signal_fields": {},
+      "start_state": "DRIVE",
+      "states": {
+        "ACCUMULATE": {
+          "prompts": {
+            "mint": "accumulate",
+            "resume": ""
+          },
+          "worker": null
+        },
+        "CODE_PLAN": {
+          "prompts": {
+            "mint": "write-code-plan",
+            "resume": ""
+          },
+          "worker": "devlead"
+        },
+        "DIAGNOSE": {
+          "prompts": {
+            "mint": "investigate",
+            "resume": ""
+          },
+          "worker": "diagnose"
+        },
+        "DIAG_REVIEW": {
+          "prompts": {
+            "mint": "review-diagnosis",
+            "resume": ""
+          },
+          "worker": "plan_reviewer"
+        },
+        "DRIVE": {
+          "prompts": {
+            "mint": "drive-epic",
+            "resume": ""
+          },
+          "worker": "test_lead"
+        },
+        "PLAN_REVIEW": {
+          "prompts": {
+            "mint": "review-round-plan",
+            "resume": ""
+          },
+          "worker": "plan_reviewer"
+        },
+        "TEST_PLAN": {
+          "prompts": {
+            "mint": "write-diagnosis-doc",
+            "resume": ""
+          },
+          "worker": "test_lead"
+        }
+      },
+      "symbol": "TRIAGE_EPIC",
+      "terminal": [
+        "BOUNCED",
+        "DONE",
+        "ESCALATED"
+      ],
+      "unrouted": [
+        "DIAGNOSE|env",
+        "DIAGNOSE|no-evidence",
+        "DIAGNOSE|spec-unclear",
+        "DIAG_REVIEW|env-confirmed",
+        "DRIVE|break",
+        "DRIVE|env",
+        "DRIVE|no-infra",
+        "PLAN_REVIEW|should-be-env",
+        "PLAN_REVIEW|spec-unclear"
+      ],
+      "vocab": {
+        "ACCUMULATE": [
+          "done",
+          "more"
+        ],
+        "CODE_PLAN": [
+          "code-side-done",
+          "needs-clarification"
+        ],
+        "DIAGNOSE": [
+          "env",
+          "hypothesis-ready",
+          "no-evidence",
+          "spec-unclear"
+        ],
+        "DIAG_REVIEW": [
+          "env-confirmed",
+          "sound",
+          "unsound"
+        ],
+        "DRIVE": [
+          "break",
+          "env",
+          "failures",
+          "green",
+          "no-infra"
+        ],
+        "PLAN_REVIEW": [
+          "approved",
+          "bounce-dl",
+          "bounce-tl",
+          "should-be-env",
+          "spec-unclear"
+        ],
+        "TEST_PLAN": [
+          "test-side-done"
+        ]
+      }
+    },
+    "verify": {
+      "bubble_signals": [],
+      "loopback_states": [
+        "DEPLOY",
+        "RUN"
+      ],
+      "model": "claude-opus-5",
+      "name": "verify",
+      "prompt_dir": "/Users/anuj/tera-code/tera-sdlc-loop/tera_sdlc_loop/agents/tester/prompts",
+      "route": {
+        "DEEP|analysed": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "analysed",
+          "state": "DEEP",
+          "target": "SYNTH"
+        },
+        "DEPLOY|deployed": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "deployed",
+          "state": "DEPLOY",
+          "target": "RUN"
+        },
+        "GATE|pass": {
+          "dismiss": [
+            "*"
+          ],
+          "hook": "",
+          "signal": "pass",
+          "state": "GATE",
+          "target": "DONE"
+        },
+        "GROUP|clean": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "clean",
+          "state": "GROUP",
+          "target": "advance:scope"
+        },
+        "GROUP|grouped": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "grouped",
+          "state": "GROUP",
+          "target": "SWEEP"
+        },
+        "RUN|collected": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "collected",
+          "state": "RUN",
+          "target": "GROUP"
+        },
+        "SWEEP|swept": {
+          "dismiss": [],
+          "hook": "",
+          "signal": "swept",
+          "state": "SWEEP",
+          "target": "DEEP"
+        }
+      },
+      "signal_fields": {},
+      "start_state": "DEPLOY",
+      "states": {
+        "DEEP": {
+          "prompts": {
+            "mint": "deep",
+            "resume": ""
+          },
+          "worker": null
+        },
+        "DEPLOY": {
+          "prompts": {
+            "mint": "deploy",
+            "resume": ""
+          },
+          "worker": null
+        },
+        "GATE": {
+          "prompts": {
+            "mint": "gate",
+            "resume": ""
+          },
+          "worker": null
+        },
+        "GROUP": {
+          "prompts": {
+            "mint": "group",
+            "resume": ""
+          },
+          "worker": null
+        },
+        "RUN": {
+          "prompts": {
+            "mint": "run",
+            "resume": ""
+          },
+          "worker": null
+        },
+        "SWEEP": {
+          "prompts": {
+            "mint": "sweep",
+            "resume": ""
+          },
+          "worker": "verifier"
+        },
+        "SYNTH": {
+          "prompts": {
+            "mint": "synth",
+            "resume": ""
+          },
+          "worker": "verifier"
+        }
+      },
+      "symbol": "VERIFY",
+      "terminal": [
+        "BOUNCED",
+        "DONE",
+        "ESCALATED"
+      ],
+      "unrouted": [
+        "SYNTH|issues"
+      ],
+      "vocab": {
+        "DEEP": [
+          "analysed"
+        ],
+        "DEPLOY": [
+          "deployed"
+        ],
+        "GATE": [
+          "pass"
+        ],
+        "GROUP": [
+          "clean",
+          "grouped"
+        ],
+        "RUN": [
+          "collected"
+        ],
+        "SWEEP": [
+          "swept"
+        ],
+        "SYNTH": [
+          "issues"
+        ]
+      }
+    }
+  }
+}

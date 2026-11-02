@@ -1,0 +1,105 @@
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: triage_epic
+  description: Generated from the triage_epic LoopSpec — do not edit by hand.
+spec:
+  type: state-machine
+  entry_state: DRIVE
+  loopback_states:
+    - ACCUMULATE
+    - CODE_PLAN
+    - DIAGNOSE
+    - DRIVE
+    - TEST_PLAN
+  bubble_signals:
+    - break
+    - no-evidence
+    - no-infra
+    - spec-unclear
+  states:
+    ACCUMULATE:
+      tool:
+        name: accumulate
+      vocab:
+        - done
+        - more
+      route:
+        done: TEST_PLAN
+        more: DIAGNOSE
+    CODE_PLAN:
+      agent:
+        agent_id: devlead
+        instructions: write-code-plan
+      vocab:
+        - code-side-done
+        - needs-clarification
+      route:
+        code-side-done: PLAN_REVIEW
+        needs-clarification: TEST_PLAN
+    DIAGNOSE:
+      agent:
+        agent_id: diagnose
+        instructions: investigate
+      vocab:
+        - env
+        - hypothesis-ready
+        - no-evidence
+        - spec-unclear
+      route:
+        hypothesis-ready: DIAG_REVIEW
+    DIAG_REVIEW:
+      agent:
+        agent_id: plan_reviewer
+        instructions: review-diagnosis
+      vocab:
+        - env-confirmed
+        - sound
+        - unsound
+      route:
+        sound: ACCUMULATE
+        unsound: DIAGNOSE
+    DRIVE:
+      agent:
+        agent_id: test_lead
+        instructions: drive-epic
+      vocab:
+        - break
+        - env
+        - failures
+        - green
+        - no-infra
+      route:
+        failures:
+          next_state: DIAGNOSE
+          hook:
+            name: cursor=first
+        green: DONE
+    PLAN_REVIEW:
+      agent:
+        agent_id: plan_reviewer
+        instructions: review-round-plan
+      vocab:
+        - approved
+        - bounce-dl
+        - bounce-tl
+        - should-be-env
+        - spec-unclear
+      route:
+        approved: DONE
+        bounce-dl: CODE_PLAN
+        bounce-tl: TEST_PLAN
+    TEST_PLAN:
+      agent:
+        agent_id: test_lead
+        instructions: write-diagnosis-doc
+      vocab:
+        - test-side-done
+      route:
+        test-side-done: CODE_PLAN
+    BOUNCED:
+      terminal: true
+    DONE:
+      terminal: true
+    ESCALATED:
+      terminal: true

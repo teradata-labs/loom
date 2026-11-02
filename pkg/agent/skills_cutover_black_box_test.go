@@ -168,11 +168,13 @@ func isPrefixExtension(t *testing.T, prev, cur []Message) bool {
 	return true
 }
 
-// recordHasL2Summary reports whether a record's system slot carries the
-// cumulative L2 summary — the signature that compaction has run.
+// recordHasL2Summary reports whether a record carries the cumulative L2
+// summary — the signature that compaction has run. The summary renders as a
+// user-role reminder in the conversation region (the folded past is
+// conversation, not system; a system block displaced the till-NOW marker).
 func recordHasL2Summary(rec contextDumpRecord) bool {
 	for _, m := range rec.Messages {
-		if m.Role == "system" && strings.HasPrefix(m.Content, l2SummaryPrefix) {
+		if m.Role == "user" && strings.Contains(m.Content, "Session summary") && strings.Contains(m.Content, l2SummaryPrefix) {
 			return true
 		}
 	}

@@ -50,35 +50,30 @@ func TestMessages_RoundTrip_ContextCompilationColumns(t *testing.T) {
 	save(agent.Message{Role: "tool", ToolUseID: "c1", Content: "42 rows"}, false)
 	save(agent.Message{Role: "user", Content: "q2"}, true)
 
-	// Load back: turn must be derived-at-insert (1,1,1,2), flags false.
+	// Load back: turn must be derived-at-insert (1,1,1,2), folded false.
 	msgs, err := store.LoadMessages(ctx, sessionID)
 	require.NoError(t, err, "LoadMessages must scan every selected column")
 	require.Len(t, msgs, 4)
 	wantTurns := []int64{1, 1, 1, 2}
 	for i, m := range msgs {
 		require.Equal(t, wantTurns[i], m.Turn, "msg %d turn", i)
-		require.False(t, m.Evicted, "msg %d evicted", i)
 		require.False(t, m.Folded, "msg %d folded", i)
 	}
 	require.Equal(t, "42 rows", msgs[2].Content)
 	require.Equal(t, "c1", msgs[2].ToolUseID)
 
-	// Relief flags roundtrip: evict the tool row, fold the first user row.
-	toolSeq, err := strconv.ParseInt(msgs[2].ID, 10, 64)
-	require.NoError(t, err)
+	// Relief roundtrip: fold the first user row.
 	firstSeq, err := strconv.ParseInt(msgs[0].ID, 10, 64)
 	require.NoError(t, err)
-	require.NoError(t, store.MarkEvicted(ctx, sessionID, []int64{toolSeq}))
 	require.NoError(t, store.FoldMessages(ctx, sessionID, []int64{firstSeq}, 1, "covers msg:1-1\nsummary"))
 
 	msgs, err = store.LoadMessages(ctx, sessionID)
 	require.NoError(t, err)
-	// The folded row is filtered at the read; the evicted row returns flagged.
+	// The folded row is filtered at the read; the rest return intact.
 	require.Len(t, msgs, 3, "folded rows are filtered at the database read")
 	for _, m := range msgs {
 		require.False(t, m.Folded)
 	}
-	require.True(t, msgs[1].Evicted, "the evicted tool row returns with its flag")
 	require.Equal(t, int64(1), msgs[1].Turn, "turn survives the roundtrip")
 
 	// LoadSession drives the same scan through its own SELECT.
@@ -132,4 +127,42 @@ func TestMessages_CrossAgentReadsFilterFolded(t *testing.T) {
 	for _, m := range fromParent {
 		require.NotEqual(t, "folded-away", m.Content, "LoadMessagesFromParentSession must not return folded rows")
 	}
+}
+
+// TestMessages_ARowIsForWhoeverItsTurnIsFor proves on real postgres what the
+// SQLite store does: a row that does not say who it is for takes the
+// session_context of its turn's first row, and RETURNING stamps it onto the
+// in-memory message; a row that says keeps it; a turn that says nothing is
+// direct.
+func TestMessages_ARowIsForWhoeverItsTurnIsFor(t *testing.T) {
+	pool := testPool(t)
+	store := testSessionStore(t, pool)
+
+	userID := uniqueID("user-kind")
+	sessionID := createTestSession(t, store, userID, uniqueID("sess-kind"), "kind-agent")
+	ctx := ContextWithUserID(context.Background(), userID)
+
+	var thinking agent.Message
+	save := func(msg *agent.Message, turnStart bool) {
+		t.Helper()
+		require.NoError(t, store.SaveMessage(ctx, sessionID, msg, turnStart))
+	}
+	save(&agent.Message{Role: "user", Content: "hi"}, true)
+	save(&agent.Message{Role: "assistant", Content: "hello"}, false)
+	save(&agent.Message{Role: "user", Content: "loop stopped", SessionContext: "loop:run-1@7"}, true)
+	thinking = agent.Message{Role: "assistant", ToolCalls: []agent.ToolCall{{ID: "c1", Name: "work"}}}
+	save(&thinking, false)
+	save(&agent.Message{Role: "tool", ToolUseID: "c1", Content: "done"}, false)
+	save(&agent.Message{Role: "assistant", Content: "report", SessionContext: "coordinator"}, false)
+	save(&agent.Message{Role: "user", Content: "tell them", SessionContext: "speak"}, true)
+	save(&agent.Message{Role: "assistant", Content: "it stopped"}, false)
+
+	msgs, err := store.LoadMessages(ctx, sessionID)
+	require.NoError(t, err)
+	want := []string{"direct", "direct", "loop:run-1@7", "loop:run-1@7", "loop:run-1@7", "coordinator", "speak", "speak"}
+	require.Len(t, msgs, len(want))
+	for i, m := range msgs {
+		require.Equal(t, want[i], string(m.SessionContext), "row %d (%s, turn %d)", i+1, m.Role, m.Turn)
+	}
+	require.Equal(t, "loop:run-1@7", string(thinking.SessionContext), "RETURNING stamps the in-memory message")
 }

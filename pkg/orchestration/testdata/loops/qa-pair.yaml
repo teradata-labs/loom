@@ -1,0 +1,43 @@
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: qa-pair
+  description: Generated from the qa-pair LoopSpec — do not edit by hand.
+spec:
+  type: state-machine
+  entry_state: REVIEW
+  loopback_states:
+    - CHECK
+    - RESPOND
+  states:
+    CHECK:
+      agent:
+        agent_id: "checker:{suite}"
+        instructions: "review-{seat}"
+        session_key_suffix: "{{suite}}"
+      vocab:
+        - challenged
+        - settled
+      route:
+        challenged:
+          next_tool:
+            name: "advance:respond"
+        settled: SETTLED
+    RESPOND:
+      agent:
+        agent_id: reviewer
+        instructions: respond
+      vocab:
+        - responded
+      route:
+        responded: CHECK
+    REVIEW:
+      agent:
+        agent_id: reviewer
+        instructions: "review-{seat}"
+      vocab:
+        - filed
+      route:
+        filed: CHECK
+    SETTLED:
+      terminal: true

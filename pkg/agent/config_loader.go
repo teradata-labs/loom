@@ -352,9 +352,6 @@ type BehaviorConfigYAML struct {
 	RepeatCallHint *bool `yaml:"repeat_call_hint"`
 	// ToolChangeNote opts the agent into the tool-change note (default off).
 	ToolChangeNote bool `yaml:"tool_change_note"`
-	// ContextReliefWarning opts the agent into the context-relief warning
-	// (default off).
-	ContextReliefWarning bool `yaml:"context_relief_warning"`
 	// ParallelReadTools opts the agent into running consecutive
 	// concurrency-safe tool calls of one response in parallel (default off).
 	ParallelReadTools bool `yaml:"parallel_read_tools"`
@@ -927,14 +924,6 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 		config.Metadata["_tool_change_note"] = "true"
 	}
 
-	// The context-relief warning is opt-in the same way.
-	if yaml.Agent.Behavior.ContextReliefWarning {
-		if config.Metadata == nil {
-			config.Metadata = make(map[string]string)
-		}
-		config.Metadata["_context_relief_warning"] = "true"
-	}
-
 	// Parallel dispatch of read-only tool calls is opt-in the same way.
 	if yaml.Agent.Behavior.ParallelReadTools {
 		if config.Metadata == nil {
@@ -950,7 +939,7 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 // agent's metadata onto cfg. Every place that builds a Config from a
 // loomv1.AgentConfig calls it, so a YAML key cannot work in one host and be
 // ignored in another. It maps only _parallel_read_tools for now; the sibling
-// flags (_tool_change_note, _context_relief_warning, _repeat_call_hint) are
+// flags (_tool_change_note, _repeat_call_hint) are
 // tracked in issue #526.
 func ApplyMetadataBehavior(cfg *Config, md map[string]string) {
 	cfg.ParallelReadTools = md["_parallel_read_tools"] == "true"
@@ -1937,6 +1926,25 @@ func (c *workflowAgentCollector) collect(spec map[string]interface{}) error {
 			}
 			if err := c.collect(defaultSpec); err != nil {
 				return fmt.Errorf("conditional default_branch: %w", err)
+			}
+		}
+
+	case "state-machine":
+		states, _ := spec["states"].(map[string]interface{})
+		for name, raw := range states {
+			stateMap, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if body, ok := stateMap["agent"].(map[string]interface{}); ok {
+				if id, ok := body["agent_id"].(string); ok {
+					c.add(id)
+				}
+			}
+			if body, ok := stateMap["nested"].(map[string]interface{}); ok {
+				if err := c.collect(body); err != nil {
+					return fmt.Errorf("state %s nested workflow: %w", name, err)
+				}
 			}
 		}
 

@@ -170,6 +170,17 @@ func (c *Client) ChatConverse(ctx context.Context, messages []llmtypes.Message, 
 						toolCall.Name = originalName
 					}
 
+					// Decode the smithy document into the tool's arguments.
+					// json.Marshal on a document.Interface yields "{}" — the
+					// payload is reachable only through the smithy decoder, and
+					// marshalling it instead is how tool calls silently arrived
+					// with empty inputs.
+					if b.Value.Input != nil {
+						if err := b.Value.Input.UnmarshalSmithyDocument(&toolCall.Input); err != nil {
+							return nil, fmt.Errorf("bedrock converse: decoding arguments for tool %q: %w", toolCall.Name, err)
+						}
+					}
+
 					toolCalls = append(toolCalls, toolCall)
 				}
 			}

@@ -269,6 +269,8 @@ func (t *TaskTrackedOrchestrator) createBoardFromPattern(
 		tasks, err = t.createPipelineTasks(ctx, board.ID, p.Iterative.Pipeline)
 	case *loomv1.WorkflowPattern_Swarm:
 		tasks, err = t.createSwarmTasks(ctx, board.ID, p.Swarm)
+	case *loomv1.WorkflowPattern_StateMachine:
+		tasks, err = t.createStateMachineTasks(ctx, board.ID, p.StateMachine)
 	default:
 		// Unknown pattern — create a single task.
 		tk, createErr := t.manager.CreateTask(ctx, &task.Task{
@@ -710,6 +712,61 @@ func (t *TaskTrackedOrchestrator) createConditionalTasks(ctx context.Context, bo
 		if err != nil {
 			return nil, fmt.Errorf("add branch dependency: %w", err)
 		}
+	}
+
+	return tasks, nil
+}
+
+// createStateMachineTasks creates one task per state.
+//
+// There are no dependencies between them: a machine is a graph, not an order,
+// and the same state may be entered many times or never. The board answers
+// "what work does this machine contain", and the run's transitions answer
+// "where did it go".
+func (t *TaskTrackedOrchestrator) createStateMachineTasks(ctx context.Context, boardID string, sm *loomv1.StateMachinePattern) ([]*task.Task, error) {
+	var tasks []*task.Task
+
+	names := make([]string, 0, len(sm.GetStates()))
+	for name := range sm.GetStates() {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		st := sm.GetStates()[name]
+		meta := map[string]string{"state": name}
+		kind := "terminal"
+		switch {
+		case st.GetAgent() != nil:
+			kind = "agent"
+			meta["agent_id"] = st.GetAgent().GetAgentId()
+		case st.GetTool() != nil:
+			kind = "tool"
+			meta["tool"] = st.GetTool().GetTool()
+		case st.GetDelegate() != nil:
+			kind = "delegate"
+			meta["delegates_to"] = st.GetDelegate().GetWorkflowName()
+			if meta["delegates_to"] == "" {
+				meta["delegates_to"] = GetPatternType(st.GetDelegate().GetWorkflow())
+			}
+		}
+		if name == sm.GetEntryState() {
+			meta["entry"] = "true"
+		}
+
+		tk, err := t.manager.CreateTask(ctx, &task.Task{
+			Title:    fmt.Sprintf("State: %s", name),
+			BoardID:  boardID,
+			Category: loomv1.TaskCategory_TASK_CATEGORY_IMPLEMENTATION,
+			Priority: loomv1.TaskPriority_TASK_PRIORITY_MEDIUM,
+			Status:   loomv1.TaskStatus_TASK_STATUS_OPEN,
+			Tags:     []string{"workflow", "state-machine", kind},
+			Metadata: meta,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create state task %s: %w", name, err)
+		}
+		tasks = append(tasks, tk)
 	}
 
 	return tasks, nil

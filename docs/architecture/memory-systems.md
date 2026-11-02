@@ -757,32 +757,11 @@ Cross-agent access (blocked):
 - Internal context that shouldn't be shared (private notes, internal state)
 - Temporary computation results (agent-local caching)
 
-**Large Tool Result Offload** (render-time):
+**Large Tool Result Bounding**:
 
-*Arrival appends*: a tool result enters the in-memory conversation whole — nothing is examined, sized, or transformed at arrival. Bounding happens at exactly two later points: persist (a stored row is truncated to a bounded core plus tail) and compile (the copy rendered for the LLM). One threshold value — `storage.DefaultSharedMemoryThreshold`, **16 KiB**, per-agent override via `MemoryConfig.SharedMemoryThresholdBytes` — plays three roles: compile-time offload bound, persist-time row bound, retrieval page bound.
+A tool result is bounded once, at arrival (`appendMessage`, `pkg/agent/agent.go`). Above the threshold it enters the conversation as its first bytes plus a tail that says how to reach the rest: the workspace snapshot file holding the whole result when a snapshot directory is configured, otherwise a narrower re-run of the call. The in-memory row, the stored row and the bytes the model is sent are the same, so a session reloaded from the store renders exactly what the producing session did.
 
-At compile time, each tool row renders by the first matching case:
-
-1. **Relief-evicted row** → the evicted stub (tool name, estimated token figure, 160-byte preview). Its only door is re-running the call.
-2. **Current-turn row offloaded by relief's last-resort rung** → the offload stub, whatever its size or exemption (see *Oversize current turn* below).
-3. **Current-turn row strictly over the threshold** → the offload stub (tool name, estimated token figure, 160-byte preview, and a `query_tool_result(message_id=…)` door; `sql=` for tabular payloads) — unless the producing tool is in the offload-exempt set, in which case the row renders whole.
-4. **Prior-turn row strictly over the threshold** → the evicted stub.
-5. **Otherwise** → the row renders whole.
-
-**Oversize current turn** (`ReleasePressure`, `pkg/agent/context_compilation.go`): every prior-turn rung stops at turn T−1, so a turn whose own results exceed the window — hundreds of parallel calls, each under the threshold and rendered whole — has nothing for them to shed. The last-resort rung offloads the turn's results to offload stubs, oldest first, keeping the newest n/2, n/4 … 0 whole. Within the turn this loses nothing: each stub keeps its `query_tool_result` door. Two limits apply:
-
-- A row produced by `query_tool_result` is never a candidate. It is the model reading an offloaded payload back, already bounded at one page; stubbing it would render a stub whose door points at the read itself.
-- Each stub still costs tokens. When every candidate is a stub and the turn alone (ROM, summary and turn T as rendered) is still at or over the start mark, relief has nothing left to shed. The conversation loop then ends the turn before the next send with the recoverable error `current_turn_overflow` (not retryable; payload `floor_tokens`, `start_tokens`, `stubbed_results`, `tool_results`), whose message asks for the work to be split into smaller batches across turns. Without this, every later send ran near the limit, uncached, until `MaxTurns`, and the answer was synthesized from 160-byte previews.
-
-**Recall is turn-scoped**: `query_tool_result` resolves a `message_id` only within the turn that produced it — the whole payload is held in memory for one turn and persisted truncated, so the only cross-turn door is re-running the call. Every `query_tool_result` return, page or SQL result, is bounded at the same threshold. A session without a persistent store has no `message_id` to print, so its current-turn oversize rows render the evicted stub.
-
-**Offload-exempt carve-out** (configurable, none by default): for some tools the full output *is* the product of the call — reference or lookup content the model must read inline in the turn it asked for it — and a 160-byte preview plus a recall door defeats the call. The embedding application registers its own exempt set via `SetOffloadExemptTools` (available at the `Agent`, `Memory`, and per-session `SegmentedMemory` levels); the framework bakes in no tool names. Three constraints keep the carve-out from weakening the memory model:
-
-- Exemption is a render condition of the producing turn only: later turns render the evicted stub, so the carve-out suits cheap, idempotent lookups for which the re-run door is adequate.
-- Relief's `Evicted` flag wins over exemption — the exempt set can never block pressure release.
-- Exempt results count at full size toward the pressure estimate.
-
-**Trade-off**: an oversize exempt result spends its full size in the producing turn's prompt. Accepted: the spend is bounded to that one turn, and the alternative — a stub — makes the exempted tool useless for its purpose.
+Compile applies no size bound of its own and never rewrites a row: a tool row renders with the bytes it holds. Because no row is ever rewritten behind the prompt-cache breakpoint, a compiled prefix stays valid for the life of the session, and the fold is the only thing that invalidates it. The fold, not the threshold, is what controls context size.
 
 **Large parameters**: the tool executor's shared-memory site applies to tool *inputs* (`handleLargeParameters`, `pkg/shuttle/executor.go`): a parameter strictly over the threshold is stored in the `SharedMemoryStore` as a `DataReference` and dereferenced transparently before the tool executes.
 

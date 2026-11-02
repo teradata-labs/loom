@@ -1,0 +1,1 @@
+{"seq": 1, "at": "2026-07-25T06:38:59Z", "loop": "triage", "iter": 1, "from": "DIAG_HYP", "worker": "tester:component", "skill": "diagnose-hyp", "signal": "no-hypothesis", "session": "0bab7a5b-57ee-4720-8737-efd291d5c706", "mint": false, "in_tok": 34, "out_tok": 31504, "usd": 4.8957, "dur_s": 459.8}

@@ -1,0 +1,28 @@
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: rca
+  description: Generated from the rca LoopSpec — do not edit by hand.
+spec:
+  type: state-machine
+  entry_state: DIG
+  loopback_states:
+    - DIG
+  states:
+    DIG:
+      agent:
+        agent_id: rca
+        instructions: dig
+      vocab:
+        - verdict
+      route:
+        verdict:
+          next_state: DONE
+          dismiss:
+            - "*"
+    BOUNCED:
+      terminal: true
+    DONE:
+      terminal: true
+    ESCALATED:
+      terminal: true

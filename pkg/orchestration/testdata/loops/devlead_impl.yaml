@@ -1,0 +1,103 @@
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: devlead_impl
+  description: Generated from the devlead_impl LoopSpec — do not edit by hand.
+spec:
+  type: state-machine
+  entry_state: PLAN
+  loopback_states:
+    - DELIVER_TASK
+    - EXCEPTION
+    - VERIFY
+  signal_fields:
+    bounce:
+      - problem
+  states:
+    DELIVER_TASK:
+      tool:
+        name: deliver-task
+      vocab:
+        - delivered
+        - failed
+      route:
+        delivered:
+          next_state: TASK_ACCEPT
+          checkpoint: true
+        failed: EXCEPTION
+    EXCEPTION:
+      agent:
+        agent_id: devlead_impl
+        instructions: handle-exception
+      vocab:
+        - escalate
+        - resolved
+      route:
+        resolved: DELIVER_TASK
+    PLAN:
+      agent:
+        agent_id: devlead_impl
+        instructions: plan-impl
+      vocab:
+        - bounce
+        - planned
+      route:
+        planned:
+          next_state: DELIVER_TASK
+          hook:
+            name: task=first
+    REFACTOR_PLAN:
+      agent:
+        agent_id: devlead_impl
+        instructions: refactor-plan
+      vocab:
+        - bounce
+        - refactored
+      route:
+        refactored:
+          next_state: DELIVER_TASK
+          hook:
+            name: task=first
+    TASK_ACCEPT:
+      agent:
+        agent_id: devlead_impl
+        instructions: accept-task
+      vocab:
+        - accepted
+        - bounce
+      route:
+        accepted:
+          next_tool:
+            name: "advance:tasks"
+    VALIDATE:
+      tool:
+        name: validate
+      vocab:
+        - env
+        - validated
+      route:
+        validated: VERIFY
+    VERIFY:
+      agent:
+        agent_id: devlead_impl
+        instructions: verify-feature
+      vocab:
+        - bounce
+        - fix
+        - pass
+      route:
+        fix:
+          next_state: DELIVER_TASK
+          hook:
+            name: task=first
+        pass:
+          next_state: DONE
+          dismiss:
+            - "*"
+          checkpoint: true
+    BOUNCED:
+      terminal: true
+    DONE:
+      terminal: true
+    ESCALATED:
+      terminal: true

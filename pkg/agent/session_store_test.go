@@ -642,3 +642,34 @@ func TestSessionStore_ConcurrentLoadSession(t *testing.T) {
 		t.Errorf("Expected 15 messages, got %d", len(messages))
 	}
 }
+
+// What a session has cost is the sum of what its messages cost — every one,
+// folded or not — and nothing of another session's.
+func TestSessionStore_SessionCostIsTheSumOfItsMessages(t *testing.T) {
+	store, err := NewSessionStore(t.TempDir()+"/test.db", observability.NewNoOpTracer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	ctx := context.Background()
+	for _, id := range []string{"mine", "other"} {
+		_ = store.SaveSession(ctx, &Session{ID: id, Context: map[string]interface{}{}, CreatedAt: time.Now(), UpdatedAt: time.Now()})
+	}
+	for _, m := range []struct {
+		session string
+		cost    float64
+		folded  bool
+	}{{"mine", 0.25, false}, {"mine", 0.5, true}, {"mine", 0, false}, {"other", 4, false}} {
+		msg := Message{Role: "assistant", Content: "x", Timestamp: time.Now(), CostUSD: m.cost, Folded: m.folded}
+		if err := store.SaveMessage(ctx, m.session, &msg, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := store.SessionCost(ctx, "mine")
+	if err != nil || got != 0.75 {
+		t.Fatalf("the session cost $%.2f (%v), want $0.75", got, err)
+	}
+	if got, err := store.SessionCost(ctx, "nobody"); err != nil || got != 0 {
+		t.Fatalf("a session with no messages cost $%.2f (%v)", got, err)
+	}
+}

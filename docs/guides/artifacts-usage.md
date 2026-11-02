@@ -412,7 +412,7 @@ workspace({
 **Session-aware shell execution with working directory restrictions.**
 
 **Features:**
-- Default working directory: `LOOM_SANDBOX_DIR` (defaults to `LOOM_DATA_DIR`)
+- Default working directory: the directory the tool was built with; built with none, `LOOM_SANDBOX_DIR` (defaults to `LOOM_DATA_DIR`)
 - Working directory must be within `LOOM_DATA_DIR` or `/tmp` (on Unix)
 - System directories (`/etc`, `/bin`, `/sbin`, `/boot`, `/sys`, `/proc`) are blocked
 - Sensitive environment variables (API keys, passwords) are filtered

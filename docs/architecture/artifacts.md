@@ -531,7 +531,7 @@ $SESSION_ARTIFACT_DIR      # $LOOM_DATA_DIR/artifacts/sessions/<session>/agent/
 $SESSION_SCRATCHPAD_DIR    # $LOOM_DATA_DIR/artifacts/sessions/<session>/scratchpad/
 ```
 
-**Working Directory**: Defaults to `LOOM_SANDBOX_DIR` (falls back to `LOOM_DATA_DIR` if not set). Agents can override with `working_dir` parameter.
+**Working Directory**: A turn that names its working directory starts there; otherwise a tool built with a directory starts in that one. Built with none, it defaults to `LOOM_SANDBOX_DIR` (falls back to `LOOM_DATA_DIR` if not set). Agents can override with `working_dir` parameter.
 
 **Path Validation** (working directory restriction):
 ```go

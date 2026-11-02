@@ -421,18 +421,7 @@ redacted `AgentInfo`. `ListAgents` omits `config` entirely. Agent YAML is
 environment-expanded before loading; arbitrary fields such as `system_prompt`
 and metadata are not secret-filtered, so do not embed credentials there.
 
-**Large tool results**: a result always enters the conversation whole — offload is a render condition of context compilation, not an arrival event. When a tool row's content is strictly over the threshold, the copy compiled for the LLM is replaced by a stub. In the producing turn this is the offload stub — tool name, estimated token figure, a 160-byte preview, and a `query_tool_result(message_id=…)` door (`sql=` for tabular payloads); `query_tool_result` resolves only within that turn, and every return is bounded at the same threshold. In later turns, and for rows evicted by memory-pressure relief, it is the evicted stub, whose only door is re-running the call. Rows are persisted truncated to a bounded core plus tail at the same threshold. A session without a persistent store has no `message_id` to print, so its current-turn oversize results render the evicted stub.
-
-**Offload-exempt tools** (Go API only; no YAML field): `Agent.SetOffloadExemptTools(names []string)` names the tools whose current-turn results always render whole regardless of the threshold. Use it for tools whose full output is the product of the call — reference or lookup content the model must read inline in the turn it asked for it — where an offload stub would defeat the call.
-
-```go
-ag.SetOffloadExemptTools([]string{"reference_lookup", "get_syntax_help"})
-```
-
-- Each call replaces the whole set; `nil` or an empty slice clears it; empty-string names are skipped. No tools are exempt by default.
-- Applies to existing and future sessions. Also available on `Memory` and per-session `SegmentedMemory`. Safe for concurrent use.
-- Exemption is a render condition of the producing turn only: prior-turn oversize rows and relief-evicted rows still render the evicted stub, and the persist-time row bound is unchanged.
-- An exempt result counts at full size toward memory-pressure estimates; a very large exempt result spends a correspondingly large share of the producing turn's context window.
+**Large tool results**: a result is bounded once, at arrival. Above the threshold it enters the conversation as its first bytes plus a tail that says how to reach the rest: the workspace snapshot file holding the whole result when a snapshot directory is configured, otherwise a narrower re-run of the call. What enters memory, what is stored and what the model is sent are the same bytes. Nothing is cut, stubbed or re-rendered later, so a compiled prefix stays valid for the whole session and the fold — not the threshold — is what controls context size.
 
 ---
 

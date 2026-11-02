@@ -1,0 +1,165 @@
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: task
+  description: Generated from the task LoopSpec — do not edit by hand.
+spec:
+  type: state-machine
+  entry_state: WRITE_CODE
+  loopback_states:
+    - CHECK_TESTS
+    - CODE_REVIEW
+    - REVIEW_CODE_FIX
+    - REVIEW_TEST_FIX
+    - TRIAGE
+  bubble_signals:
+    - bounce
+    - break
+    - bubble
+    - defer-needed
+    - spec-unclear
+  states:
+    CHECK_TESTS:
+      agent:
+        agent_id: test_lead
+        instructions: check-tests
+      vocab:
+        - converged
+        - deltas
+      route:
+        converged:
+          next_tool:
+            name: "advance:tests"
+          hook:
+            name: tests=commit
+        deltas: WRITE_TESTS
+    CODE_REVIEW:
+      agent:
+        agent_id: reviewer
+        instructions: review-code
+      vocab:
+        - approved
+        - deltas
+        - spec-unclear
+      route:
+        approved:
+          next_state: PLAN_TESTS
+          hook:
+            name: code=commit
+        deltas: FIX_CODE
+    DELIVER:
+      tool:
+        name: publish
+      vocab:
+        - delivered
+      route:
+        delivered:
+          next_state: DONE
+          dismiss:
+            - "*"
+          checkpoint: true
+    FIX_CODE:
+      agent:
+        agent_id: coder
+        instructions: fix-code
+      vocab:
+        - code-ready
+      route:
+        code-ready: CODE_REVIEW
+    PLAN_TESTS:
+      agent:
+        agent_id: test_lead
+        instructions: plan-tests
+      vocab:
+        - bounce
+        - defer-needed
+        - planned
+      route:
+        planned:
+          next_state: WRITE_TESTS
+          hook:
+            name: suite=first
+    REVIEW_CODE_FIX:
+      agent:
+        agent_id: test_lead
+        instructions: review-fix
+      vocab:
+        - redo
+        - rerun
+      route:
+        redo: TRIAGE_FIX_CODE
+        rerun: TRIAGE
+    REVIEW_TEST_FIX:
+      agent:
+        agent_id: test_lead
+        instructions: review-fix
+      vocab:
+        - coder-next
+        - redo
+        - rerun
+      route:
+        coder-next: TRIAGE_FIX_CODE
+        redo: TRIAGE_FIX_TESTS
+        rerun: TRIAGE
+    TRIAGE:
+      agent:
+        agent_id: test_lead
+        instructions: triage-judge
+      vocab:
+        - break
+        - env
+        - fix-both
+        - fix-code
+        - fix-tests
+        - green
+      route:
+        fix-both: TRIAGE_FIX_TESTS
+        fix-code: TRIAGE_FIX_CODE
+        fix-tests: TRIAGE_FIX_TESTS
+        green:
+          next_tool:
+            name: "advance:verify"
+          dismiss:
+            - "tester:{suite}"
+          hook:
+            name: triage=commit
+    TRIAGE_FIX_CODE:
+      agent:
+        agent_id: coder
+        instructions: fix-code
+      vocab:
+        - code-ready
+      route:
+        code-ready: REVIEW_CODE_FIX
+    TRIAGE_FIX_TESTS:
+      agent:
+        agent_id: "tester:{suite}"
+        instructions: fix-tests
+        session_key_suffix: "{{suite}}"
+      vocab:
+        - tests-ready
+      route:
+        tests-ready: REVIEW_TEST_FIX
+    WRITE_CODE:
+      agent:
+        agent_id: coder
+        instructions: write-code
+      vocab:
+        - code-ready
+      route:
+        code-ready: CODE_REVIEW
+    WRITE_TESTS:
+      agent:
+        agent_id: "tester:{suite}"
+        instructions: write-tests
+        session_key_suffix: "{{suite}}"
+      vocab:
+        - tests-ready
+      route:
+        tests-ready: CHECK_TESTS
+    BOUNCED:
+      terminal: true
+    DONE:
+      terminal: true
+    ESCALATED:
+      terminal: true

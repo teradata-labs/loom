@@ -31,6 +31,20 @@ prompts:
       version: "v1.0"
       description: "Exact-match in-place file edits"
 
+  - id: edit_files
+    content: |
+      Change lines inside existing files. Each edit replaces one exact
+      occurrence of find with replace and fails loudly if find is absent or
+      ambiguous. Use for targeted fixes; use file_write for new or fully
+      reshaped files.
+    tags:
+      - tool
+      - file
+      - edit
+    metadata:
+      version: "v1.0"
+      description: "Exact-match in-place file edits"
+
   - id: file_write
     content: |
       Write complete files. files carries every file that is ready — batch all

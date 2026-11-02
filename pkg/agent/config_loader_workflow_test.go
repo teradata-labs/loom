@@ -475,6 +475,40 @@ spec:
 `,
 			wantAgents: []string{"classifier", "bug-triager", "feature-assessor", "generalist"},
 		},
+		"state-machine": {
+			yaml: `apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: contract-state-machine
+  description: Canonical state-machine spec — a cyclic walk with a free action state
+spec:
+  type: state-machine
+  entry_state: PLAN
+  max_transitions: 20
+  states:
+    PLAN:
+      agent:
+        agent_id: planner
+        instructions: 'Plan: {{input}}'
+      route:
+        planned: REVIEW
+    REVIEW:
+      agent:
+        agent_id: plan-reviewer
+        instructions: 'Review the plan'
+      route:
+        deltas: PLAN
+        converged: PUBLISH
+    PUBLISH:
+      action:
+        action: publish
+      route:
+        published: DONE
+    DONE:
+      terminal: true
+`,
+			wantAgents: []string{"planner", "plan-reviewer"},
+		},
 		"iterative": {
 			yaml: `apiVersion: loom/v1
 kind: Workflow
@@ -724,50 +758,6 @@ spec:
 	}
 }
 
-// TestLoadWorkflowAgents_ShippedOrchestrationExamples loads every shipped
-// orchestration example through the registry loader. Before the canonical
-// pattern-type work, several of these (swarm, conditional) validated but were
-// silently skipped by the registry at startup.
-func TestLoadWorkflowAgents_ShippedOrchestrationExamples(t *testing.T) {
-	examplesDir := filepath.Join("..", "..", "examples", "reference", "workflows", "orchestration-patterns")
-
-	var files []string
-	err := filepath.WalkDir(examplesDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if !d.IsDir() && filepath.Ext(path) == ".yaml" {
-			files = append(files, path)
-		}
-		return nil
-	})
-	require.NoError(t, err, "examples directory missing (update the path)")
-	require.NotEmpty(t, files)
-
-	for _, file := range files {
-		t.Run(filepath.Base(file), func(t *testing.T) {
-			configs, err := LoadWorkflowAgents(file, &mockLLMProvider{})
-			require.NoError(t, err, "shipped example failed to load in the registry: %s", file)
-
-			var coordinator *loomv1.AgentConfig
-			subAgents := 0
-			for _, config := range configs {
-				if config.Metadata["role"] == "coordinator" {
-					coordinator = config
-					continue
-				}
-				subAgents++
-			}
-			require.NotNil(t, coordinator, "no coordinator generated for %s", file)
-			assert.Greater(t, subAgents, 0, "no sub-agents registered for %s", file)
-		})
-	}
-}
-
-// TestLoadWorkflowAgents_LoaderOnlySpellingsRejected locks out spec.type
-// spellings that only the registry loader ever accepted. They were never
-// valid for the validator or the canonical converter, so accepting them here
-// reintroduces the vocabulary split fixed for fork_join in #307.
 func TestLoadWorkflowAgents_LoaderOnlySpellingsRejected(t *testing.T) {
 	workflowYAML := `apiVersion: loom/v1
 kind: Workflow

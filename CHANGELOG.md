@@ -9,11 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### State-machine workflows: loops with a manager seat
+- **A workflow can be a graph.** The `state-machine` pattern (`entry_state`, `states`, per-state `route` tables) walks states of four kinds — agent, tool, delegate, terminal — and routes on the signal a state produced. A healthy transition is a map lookup: no LLM call, no cost. Models appear only inside agent-bodied states and at the exceptions the route table cannot resolve. Suspension happens only between states, so a checkpoint is a position, not a copy of the machine, and a run resumes on the pattern as it stands now.
+- **A machine names its manager.** `logic_seat` names the agent that handles the machine's trouble: every agent step's escalation and every child machine's non-done end route to it, and it may send the walk back to any step by naming it. The manager's own escalation is the park — the only way anything leaves the machine.
+- **Delegation.** A `delegate` state hands work to a child workflow once or once per item (fanned, or stepping one entry at a time), each child on its own run record, with `min_budget_usd` refusing children the budget cannot carry. `max_cost_usd` budgets a run; the checkpoint carries `granted_cost_usd`.
+- **Run record and run variables.** Every run, top or child, has one record of where it stands and what it has worked out. `{loom_dir}`, `{loom_state}`, `{loom_signal}` and `{loom_message}` interpolate everywhere a state speaks; `fork:<agent>` seats an agent in a copy of an earlier conversation, `session:<agent>` in the conversation itself.
+- **The rest of the engine knows the pattern**: `validation`, the config loader's agent collection, HITL gates (a state has a path, not a number), interpolation, and the task board (one task per state; a machine is a graph, not an order).
+
+- **`pkg/loops`**: the run store — loop runs and agent runs in one table, steps with per-state cost, lease, checkpoint and status — over SQLite. A host fills `RunObserver` with it, so runs survive the process that started them.
+- **`pkg/workspace`**: workspaces as rows — a body of work, the repositories it spans, its sessions — with a repo pool, worktrees and a personal workspace per owner (migration 000030; sessions gain `workspace_id`).
+
+#### Sessions: one turn at a time, routing, run attribution
+- **One turn at a time per session.** A turn claims its session row before it touches it and releases it when it ends, on every path; a second turn is refused with `ErrSessionBusy`, and a claim left by a dead process is taken over. The claim is on the row (`turn_holder`, `turn_since`, `turns`), so it holds across agent objects and processes (migration 000029).
+- **Holding.** `sessions.holding` names the run that currently has a conversation; read on every arriving message, set only on the root session, only by the router (migration 000028).
+- **Cost of a run is a sum over its sessions.** `StampRunID` binds a session to the loop run that created it, once; `SessionsInRun` lists them (migration 000028).
+- **A conversation spread across agents reads back in order.** `LoadThreadMessages` gathers a root session and the sessions of every agent that was handed it, ordered as it happened. `ToolExecutions` reads back what a session's tools did — the write side had no reader.
+- **Fork and rewind.** `ForkSession` starts a conversation that remembers another's, from its folded context; `RewindSession` removes the last turns from both storage and the loaded copy.
+- **`task_list`**: the session's checklist, registered by default. It lives on the session object, outside Messages, so relief cannot touch it; when an item completes, the transcript span it occupied folds to the item's completion summary.
+
+#### Tools
+- **`shell_execute` batch mode.** Up to a fixed number of commands in one call, each in its own shell, all in parallel, rendered in submission order so the same batch renders the same bytes; each command has its own wall-clock budget and output byte budget.
+- **A turn says where it works.** `shuttle.ContextWithWorkDir` installs the turn's working directory on the context; `file_read`, `file_write` and `shell_execute` stand there instead of the directory they were built with.
+- **`table_profile`**: a table's shape in one call — row count, per-column profile, sample rows — composed from `ExecutionBackend` primitives and constructed by the embedder with its backend (not in `builtin.ByName`).
+- **A tool can end the turn it ran in** by setting `agent.EndsTurnKey` on its result metadata.
+
+#### Agent turn: tool results bounded at arrival, in-loop fold, per-call accounting
+- **Every billed message carries what it cost.** `model`, `effort`, input/output, cache-create split by TTL (1h/5m), cache-read and thinking tokens, on the assistant row the LLM call produced (migrations 000025–000027).
+- **In-loop fold.** When the estimate crosses the start mark, the next call carries one transient fold instruction; the agent itself answers with the summary, on its own warm cache, and the harness performs the collapse. The compressor subsystem remains as the failsafe.
+- **`file_read` no longer cuts at 1000 lines by default**; `max_lines` is the caller's narrowing knob, and the arrival-time row bound is the one bounding point for context.
+
+#### Models and providers
+- **Catalog**: Claude Opus 5 and Sonnet 5 direct; on Bedrock, Opus 5, Sonnet 5 and Fable 5 (`us.` and `global.` routes) and the non-Anthropic Converse families (GLM-5, GLM-4.7, GLM-4.7 Flash, DeepSeek V3.2, V3, R1) at the published on-demand rates.
+- **Bedrock stamps the effort a call was made at** on the usage record, from the model's thinking level.
+- **OpenAI cached-input discount by model generation**: gpt-5 and the o-series bill a cached token at 0.10×; the gpt-4 generation keeps its rate. Agentic workloads read cache for most of their input, so the wrong rate overstated a run several-fold.
+- **Anthropic cache marker lands on the last block that can carry one**: thinking blocks cannot, so a turn ending in thinking no longer loses its breakpoint.
+
 #### Opt-in parallel dispatch of read-only tool calls
 - **Off by default.** An agent turns it on with `behavior.parallel_read_tools: true` in its YAML. When on, consecutive tool calls of one model response whose tools declare `shuttle.ConcurrencySafe` run at the same time, at most 4 at once. Every other call is a barrier: it runs alone, after the calls before it have committed. Rows, execution records and the in-turn dedup cache still land in call order, whatever order the tools finish in. A repeat of an earlier identical call waits and replays the cached result, `contact_human` and unresolved tools never join a group, and a group never crosses `max_tool_executions` or the per-turn cap. A tool that panics inside a group becomes that call's error result; the other calls still commit. An order-dependent admission chain (any `tools.hooks` binding, or `require_approval` without `yolo`) makes every call a barrier, so dispatch stays sequential; the default name-level permission check does not. `looms serve` honours the key on startup and hot reload, as registry-built agents do. Each tool span records `dispatch.parallel` and either `dispatch.group_size` or `dispatch.barrier_reason`. An MCP tool joins a group only when its server sets `trust_annotations: true` (default `false`; the MCP spec treats annotations as untrusted) and annotates it `readOnlyHint` without `destructiveHint`; built-in tools use their own allowlist. Resuming a parked batch stays sequential. See `docs/reference/self-correction.md`.
-
-#### Opt-in context-window warning when relief leaves the context over its release mark
-- **Off by default.** An agent turns it on with `behavior.context_relief_warning: true` in its YAML. When on, the model is told on each send where context relief ran and left the estimate over its release mark. Relief runs only once the estimate reaches the start mark, so a send that starts below it, including one that sits between the two marks after an earlier relief, carries no warning. The note states the context's percentage of the usable window (capped at 100) and the release mark's, and rides the same transient send path as the turn and tool reminders, so it is never stored in history. A resend after a refused send carries it too. A `context_reminder.added` span event records the turn, the estimate, the release mark and the usable window; `soft_reminder.added` is unchanged. See `docs/reference/self-correction.md`.
 
 #### Opt-in tool-set change note
 - **Off by default.** An agent turns it on with `behavior.tool_change_note: true` in its YAML. When on, a provider call whose advertised tools differ from the previous successful call of the same turn (progressive disclosure activates a tool, a skill fold deactivates one, a circuit breaker excludes one, a server drops its tools) carries a transient `<system-reminder>` such as `Tools added: a, b. Tools removed: c.`. Each side lists at most 10 names, then `and N more`. The note describes the tools that call sends and the baseline moves only on a successful call, so a send the provider refused is reported again by its resend. Changes between turns are not announced, the first provider call of a turn emits none, and a removal by context relief before the turn's first successful send is not announced. The note is never stored in session history or replayed. A `tools.changed` span event carries it. See `docs/reference/self-correction.md`.
@@ -34,6 +66,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+#### LLM transport
+- **Streaming calls are retried like plain ones.** The streaming path bypassed retry ("streaming already handles errors" — it did not), so one transient provider failure killed the conversation. Both paths now run under one fixed policy; a refusal identified as context-too-long is never retried, relief answers that.
+- **Bedrock Converse tool arguments decoded through the smithy document decoder.** `json.Marshal` on a `document.Interface` yields `{}`, which is how tool calls silently arrived with empty inputs.
+
 #### Token counting: the encoding ships in the binary
 - **The token counter no longer downloads its encoding.** `pkg/agent`'s counter fetched `cl100k_base` from `openaipublic.blob.core.windows.net` on first use; without network access (an air-gapped or locked-down server, a sandboxed CI runner) it fell back to a characters/4 estimate for the life of the process, which skews relief and budget decisions. It now loads the encoding bundled by `github.com/pkoukk/tiktoken-go-loader` (MIT; its `cl100k_base.tiktoken` has the SHA-256 that OpenAI's tiktoken verifies). The binary grows by about 7 MB.
 
@@ -48,10 +84,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Server: `ListAgents` reports `total_count`
 - **`ListAgentsResponse.total_count` was always 0.** The proto documents it as the number of agents, but `ListAgents` never set it, so a client that read it (for example to show how many agents a server serves) reported none. It is now the number of agents returned.
 
-#### Relief: a turn whose own tool results exceed the window is shed, not refused
-- **Relief never touched the current turn, so a turn that was itself too large ended on the provider's refusal.** Every evict and fold rung stops at T−1, and a current-turn result renders whole unless it is over the offload threshold. A single response fanning out hundreds of parallel calls, each result under the threshold, therefore left the pass with nothing to shed: in production a Bedrock Sonnet session reached ~1.46M tokens with a relief estimate of 1.17M after the pass, and the turn ended `context_exhausted`. Relief now has a last-resort rung, taken only after every prior-turn evict and fold has failed to reach the release mark: it renders the current turn's results as §5.5 offload stubs, oldest first, on the same halving ladder (keep the newest n/2, n/4 … 0 whole). Nothing is lost within the turn — each stub carries its `query_tool_result` door and the payload stays in L1 — and nothing is persisted: the set is render state scoped to the turn, so once the turn advances the rows are ordinary prior-turn rows for the evict ladder. The rung overrides `SetOffloadExemptTools`, since the alternative is a turn that cannot be sent; storeless rows (no durable id) fall back to the evicted stub. A `releasePressure: offload current turn` warning names the rows offloaded.
+#### Relief: the synthesis call is relieved, and the estimate is calibrated
 - **`releasePressure: start` logs each pass's starting estimate.** The per-operation lines log only post-op estimates, so two consecutive passes read as one operation inflating the estimate.
-- **No lossy fold when the current turn alone is over target.** No prior-turn operation can bring the estimate below the current turn's own floor (ROM + summary + turn T), so a fold there was a compressor call that summarized history away for nothing — in production it ran on every turn while the post-fold estimate kept climbing (186K → 382K). When the floor is over target, the lossless current-turn offload now runs before any fold, and a fold runs only if it can then reach target or the estimate is still at or over the start mark (`releasePressure: fold skipped` otherwise).
 - **The final synthesis call gets relief.** `synthesizeFinalResponse` runs exactly when the loop exhausted its budget — the turn at its largest — but sent without a relief pass or the refusal backstop. It now advertises no tool bytes (the call carries none), sheds before the send, and on a context-too-long refusal sheds with the recovery penalty and resends once before falling back to the guidance message.
 - **The estimate is calibrated to the provider's own count.** The tiktoken estimate counted Claude prompts ~25% low (1.17M estimated vs 1.46M billed), so relief fired late and under-shed. After each successful call the provider-reported prompt (input + cache read + cache write) is compared with loom's count of the same compiled context, and an EWMA of the ratio scales both estimate tiers. The factor never drops below 1.0 (relief never fires later than before), is capped at 2.0 (a skewed sample, e.g. uncounted image blocks, cannot run away), and ignores prompts under 2,000 tokens. `SegmentedMemory.ObservePromptTokens` / `EstimateCalibration` expose it. The factor is per memory instance: an embedder that rebuilds memory per request starts each request at 1.0 and calibrates from its first call.
 
@@ -69,6 +103,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### MCP tool adapter
 - The schema-lookup result cache no longer stores an empty answer (`{"columns":[]}`, `[]`, or an object whose array fields are all empty). A `describe_table` that found nothing — because the server was handed a name it could not resolve — was cached and then served to every later caller with the same arguments, so one bad lookup became "a table with no columns" for a whole fleet. The empty answer is still returned to the caller that got it; the next caller reaches the server again.
+
+### Breaking Changes
+
+- **Tool results are bounded once, at arrival, and nothing is stubbed or evicted later.** Above the threshold a result enters the conversation as its first bytes plus a tail that says where the rest is (the workspace snapshot file, or a narrower re-run). What enters memory, what is stored and what the model is sent are the same bytes; relief is fold-only. Removed with the offload/evict machinery: `Agent.SetOffloadExemptTools` (and on `Memory`/`SegmentedMemory`), `SessionStore.MarkEvicted`, `SegmentedMemory.DropTurnPayloads` / `CurrentTurnOverflow`, the relief rung that offloaded the current turn, `Agent.InTurnPayload`, the `query_tool_result` tool (`NewQueryToolResultTool`) and its prompt, and the in-turn SQLite behind its `sql=` mode.
+- **Automatic graph memory is off.** Background extraction and recall injection put LLM bookkeeping calls on the message critical path; graph memory is reached through the explicit `graph_memory` tool.
+- **`behavior.context_relief_warning` and `Config.ContextReliefWarning` are removed**, with the context-window warning they enabled. Relief folds every G of growth — an absolute budget, not a share of the model's window — so there is no fill percentage to report, and the model is not told about its context budget: a budget signal pushes a model to cut corners, and the one context relief cannot shrink, a single step returning many results, is prevented by bounding each result as it arrives. An agent file that still sets the key loads; the key is ignored.
+- **The LLM retry policy is fixed, not configured.** `Config.Retry` and `RetryConfig` are gone; every call runs under the same backoff.
+- **Postgres migrations 000025–000027 are new.** `000024_task_attribution` keeps its number.
+- **`file_write` defaults to `overwrite`** (was `create`).
+- **Postgres migrations 000028–000030 are new.**
 
 ### Breaking Changes
 

@@ -92,8 +92,8 @@ func TestToolSchemaSize(t *testing.T) {
 		{
 			name:           "shell_execute",
 			tool:           NewShellExecuteTool(""),
-			maxSchemaBytes: 825, // baseline=775
-			maxDescChars:   446, // baseline=396 — routing preferences (tool-surface redesign)
+			maxSchemaBytes: 1100, // baseline=1012 — batch mode adds commands[]; timeout_seconds and stop_on_error are deliberately unadvertised
+			maxDescChars:   1500, // baseline=1370 — the description is the usage guide for batch reading
 			minDescWords:   25,
 		},
 		{

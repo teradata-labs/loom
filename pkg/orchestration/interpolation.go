@@ -48,6 +48,38 @@ func InterpolateVariables(pattern *loomv1.WorkflowPattern, vars map[string]strin
 		debate.Topic = interpolateString(debate.Topic, vars)
 		return &loomv1.WorkflowPattern{Pattern: &loomv1.WorkflowPattern_Debate{Debate: debate}}
 
+	case *loomv1.WorkflowPattern_StateMachine:
+		machine := proto.Clone(p.StateMachine).(*loomv1.StateMachinePattern)
+		for _, st := range machine.GetStates() {
+			if b := st.GetAgent(); b != nil {
+				b.Instructions = interpolateString(b.Instructions, vars)
+				// The session suffix is interpolated too: it is what makes one
+				// role fanned across surfaces several conversations, so leaving
+				// it literal would silently collapse them into one.
+				b.SessionKeySuffix = interpolateString(b.SessionKeySuffix, vars)
+			}
+			if b := st.GetTool(); b != nil {
+				for k, v := range b.GetParams() {
+					b.Params[k] = interpolateString(v, vars)
+				}
+			}
+			if st.GetHitlGate() != nil {
+				st.HitlGate.PromptTemplate = interpolateString(st.HitlGate.PromptTemplate, vars)
+			}
+			for _, tr := range st.GetRoute() {
+				for i, d := range tr.GetDismiss() {
+					tr.Dismiss[i] = interpolateString(d, vars)
+				}
+			}
+			if d := st.GetDelegate(); d != nil {
+				if d.GetWorkflow() != nil {
+					d.Workflow = InterpolateVariables(d.GetWorkflow(), vars)
+				}
+				d.DirTemplate = interpolateString(d.DirTemplate, vars)
+			}
+		}
+		return &loomv1.WorkflowPattern{Pattern: &loomv1.WorkflowPattern_StateMachine{StateMachine: machine}}
+
 	case *loomv1.WorkflowPattern_Conditional:
 		conditional := proto.Clone(p.Conditional).(*loomv1.ConditionalPattern)
 		conditional.ConditionPrompt = interpolateString(conditional.ConditionPrompt, vars)

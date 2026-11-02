@@ -1,0 +1,113 @@
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: architect
+  description: Generated from the architect LoopSpec — do not edit by hand.
+spec:
+  type: state-machine
+  entry_state: S_CREATE
+  loopback_states:
+    - A_CREATE
+    - A_REVIEW
+    - D_CREATE
+    - D_REVIEW
+    - S_CREATE
+    - S_REVIEW
+    - T_CREATE
+    - T_REVIEW
+  signal_fields:
+    deltas:
+      - deltas
+    escalate:
+      - reason
+  states:
+    A_CREATE:
+      agent:
+        agent_id: creator
+        instructions: arch
+      vocab:
+        - created
+      route:
+        created: A_REVIEW
+        escalate: HITL_ESC
+    A_REVIEW:
+      agent:
+        agent_id: reviewer
+        instructions: arch
+      vocab:
+        - converged
+        - deltas
+        - escalate
+      route:
+        converged: A_GATE
+        deltas: A_CREATE
+        escalate: HITL_ESC
+    D_CREATE:
+      agent:
+        agent_id: decomposer
+        instructions: decompose
+      vocab:
+        - created
+      route:
+        created: D_REVIEW
+        escalate: HITL_ESC
+    D_REVIEW:
+      agent:
+        agent_id: reviewer
+        instructions: decompose
+      vocab:
+        - converged
+        - deltas
+        - escalate
+      route:
+        converged: DONE
+        deltas: D_CREATE
+        escalate: HITL_ESC
+    S_CREATE:
+      agent:
+        agent_id: creator
+        instructions: spec
+      vocab:
+        - created
+      route:
+        created: S_REVIEW
+        escalate: HITL_ESC
+    S_REVIEW:
+      agent:
+        agent_id: reviewer
+        instructions: spec
+      vocab:
+        - converged
+        - deltas
+        - escalate
+      route:
+        converged: A_CREATE
+        deltas: S_CREATE
+        escalate: HITL_ESC
+    T_CREATE:
+      agent:
+        agent_id: test_architect
+        instructions: testarch
+      vocab:
+        - created
+      route:
+        created: T_REVIEW
+        escalate: HITL_ESC
+    T_REVIEW:
+      agent:
+        agent_id: reviewer
+        instructions: testarch
+      vocab:
+        - converged
+        - deltas
+        - escalate
+      route:
+        converged: D_CREATE
+        deltas: T_CREATE
+        escalate: HITL_ESC
+    A_GATE:
+      terminal: true
+    DONE:
+      terminal: true
+    HITL_ESC:
+      terminal: true
