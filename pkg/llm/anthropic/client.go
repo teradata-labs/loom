@@ -572,19 +572,14 @@ func (c *Client) convertResponse(resp *MessagesResponse) *llmtypes.LLMResponse {
 // Pricing varies by model family. Cache pricing derives from input price:
 // cache_write = 1.25x input, cache_read = catalog.ClaudeCacheReadMultiplier.
 func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int) float64 {
-	// The catalog (pkg/llm/catalog) is the source of truth for the base
-	// per-million-token rates; catalog.ClaudeFamilyPricing prices any Claude id
-	// it does not list, and anything unrecognised gets the Sonnet 4 rate.
-	inputPricePerM, outputPricePerM, ok := catalog.LookupPricing("anthropic", c.model)
-	if !ok {
-		inputPricePerM, outputPricePerM, ok = catalog.ClaudeFamilyPricing(c.model)
-	}
+	// The catalog (pkg/llm/catalog) is the source of truth for the
+	// per-million-token rates; catalog.RequestPricing resolves the catalog,
+	// then the Claude family fallback, and the published long-context card.
+	// Anything unrecognised gets the Sonnet 4 rate. Anthropic's three input
+	// buckets are additive; together they are the prompt.
+	inputPricePerM, outputPricePerM, ok := catalog.RequestPricing("anthropic", c.model, inputTokens+cacheReadTokens+cacheCreationTokens)
 	if !ok {
 		inputPricePerM, outputPricePerM = 3.0, 15.0
-	}
-	// Anthropic's three input buckets are additive; together they are the prompt.
-	if in, out, long := catalog.ClaudeLongContextPricing(c.model, inputTokens+cacheReadTokens+cacheCreationTokens); long {
-		inputPricePerM, outputPricePerM = in, out
 	}
 
 	inputCost := float64(inputTokens) * inputPricePerM / 1_000_000

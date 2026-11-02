@@ -683,8 +683,10 @@ Bedrock pricing varies by region. US East (us-east-1) pricing:
 `SDKClient.calculateCost` and `Client.calculateCost` (`pkg/llm/bedrock`) share one function,
 `bedrockClaudeCost`:
 
-1. Base rates come from the catalog, then `catalog.ClaudeFamilyPricing`. A model that is neither
-   reports a cost of 0 and logs a warning, rather than guessing a rate.
+1. Base rates come from the catalog, then `catalog.ClaudeFamilyPricing` (`catalog.RequestPricing`).
+   A model that is neither reports a cost of 0 and logs a warning, rather than guessing a rate.
+   Haiku 5.5's published long-context card ($0.50/$2.50 above a 100K-token prompt) replaces only
+   published rates; a rate a registered pricing `Source` returns is kept at every prompt length.
 2. Cache writes bill at 1.25x input; cache reads at the model's own multiplier
    (`catalog.ClaudeCacheReadMultiplier`: 0.025x on Fable 5.1, 0.05x on Opus 5.5 and Sonnet 5.5,
    0.10x otherwise).

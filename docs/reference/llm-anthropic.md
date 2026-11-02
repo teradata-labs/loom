@@ -136,7 +136,10 @@ the model family, shared with the Bedrock and OpenAI-compatible clients), then t
 
 A cache write (5-minute TTL) bills at 1.25x the input rate on every model. Cache-read multipliers
 come from `catalog.ClaudeCacheReadMultiplier`. Haiku 5.5's prompt length counts every input token
-of the request, cache reads and writes included (`catalog.ClaudeLongContextPricing`). Rates are
+of the request, cache reads and writes included (`catalog.ClaudeLongContextPricing`). The
+long-context card replaces only these published rates: when an embedder registers a pricing
+`Source` (`catalog.Register`) that returns a rate for the model, that rate is used at every prompt
+length, since a `Source` row has no field for a long-context rate (`catalog.RequestPricing`). Rates are
 Anthropic's published first-party card; 1-hour cache writes (2x) and `inference_geo` pricing are
 not modelled.
 

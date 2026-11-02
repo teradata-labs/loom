@@ -757,8 +757,10 @@ func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cache
 }
 
 // bedrockClaudeCost prices one Bedrock Claude call. The catalog
-// (pkg/llm/catalog) is the source of truth; catalog.ClaudeFamilyPricing prices
-// any Claude profile id it does not list, and anything unrecognised reports 0.
+// (pkg/llm/catalog) is the source of truth: catalog.RequestPricing resolves the
+// catalog, then catalog.ClaudeFamilyPricing for any Claude profile id it does
+// not list, and the published long-context card; anything unrecognised
+// reports 0.
 //
 // Bedrock/Anthropic report input_tokens EXCLUSIVE of cached tokens, so the
 // three input buckets are additive (unlike the OpenAI-compatible shape, where
@@ -766,10 +768,8 @@ func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cache
 // a cache read at the model's own multiplier. Regional endpoints carry the
 // premium catalog.BedrockEndpointMultiplier reports, on every bucket.
 func bedrockClaudeCost(modelID string, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int) float64 {
-	inputPricePerMillion, outputPricePerMillion, ok := catalog.LookupPricing("bedrock", modelID)
-	if !ok {
-		inputPricePerMillion, outputPricePerMillion, ok = catalog.ClaudeFamilyPricing(modelID)
-	}
+	// The three input buckets are additive; together they are the prompt.
+	inputPricePerMillion, outputPricePerMillion, ok := catalog.RequestPricing("bedrock", modelID, inputTokens+cacheReadTokens+cacheCreationTokens)
 	if !ok {
 		// An uncatalogued model gets no invented rate. Guessing Sonnet's
 		// card here is how Opus-5 was under-billed for a whole campaign and
@@ -780,9 +780,6 @@ func bedrockClaudeCost(modelID string, inputTokens, outputTokens, cacheReadToken
 		zap.L().Warn("bedrock: model not in pricing catalog — cost reported as 0",
 			zap.String("model", modelID))
 		return 0
-	}
-	if in, out, long := catalog.ClaudeLongContextPricing(modelID, inputTokens+cacheReadTokens+cacheCreationTokens); long {
-		inputPricePerMillion, outputPricePerMillion = in, out
 	}
 
 	inputCost := float64(inputTokens) * inputPricePerMillion / 1_000_000

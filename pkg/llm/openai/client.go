@@ -912,18 +912,14 @@ func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cache
 	if provider == "" {
 		provider = DefaultCatalogProvider
 	}
-	inputCostPerM, outputCostPerM, ok := catalog.LookupPricing(provider, c.model)
-	if !ok {
-		// Gateways (litellm et al.) proxy non-OpenAI models through this
-		// OpenAI-compatible client under ids like "coding-agent/claude-sonnet-4-6".
-		// Falling through to the GPT rate card below would price them wrongly, so
-		// recognise the Anthropic family first. Order matters: check "opus-4-1"
-		// before "opus-4", since Contains("opus-4-5","opus-4") is true.
-		if in, out, matched := anthropicFallbackPricing(c.model); matched {
-			inputCostPerM, outputCostPerM = in, out
-			ok = true
-		}
-	}
+	// Gateways (litellm et al.) proxy non-OpenAI models through this
+	// OpenAI-compatible client under ids like "coding-agent/claude-sonnet-4-6".
+	// Falling through to the GPT rate card below would price them wrongly, so
+	// catalog.RequestPricing recognises the Anthropic family (the same matcher
+	// as anthropicFallbackPricing) after the catalog, and applies the published
+	// long-context card. prompt_tokens already includes the cached buckets, so
+	// it is the prompt length.
+	inputCostPerM, outputCostPerM, ok := catalog.RequestPricing(provider, c.model, inputTokens)
 	if !ok {
 		switch c.model {
 		case "gpt-4o":
@@ -984,10 +980,6 @@ func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cache
 	cacheReadMult, cacheWriteMult := openAICacheReadMultiplier, openAICacheWriteMultiplier
 	if _, _, isAnthropic := anthropicFallbackPricing(c.model); isAnthropic {
 		cacheReadMult, cacheWriteMult = catalog.ClaudeCacheReadMultiplier(c.model), catalog.ClaudeCacheWriteMultiplier
-		// prompt_tokens already includes the cached buckets, so it is the prompt length.
-		if in, out, long := catalog.ClaudeLongContextPricing(c.model, inputTokens); long {
-			inputCostPerM, outputCostPerM = in, out
-		}
 	}
 
 	uncached := inputTokens - cacheReadTokens - cacheCreationTokens

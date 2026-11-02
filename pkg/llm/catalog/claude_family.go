@@ -105,7 +105,10 @@ const claudeLongContextThreshold = 100_000
 // long-context threshold. Only Claude Haiku 5.5 is priced by prompt length
 // ($0.50 / $2.50 over 100K tokens); every other model returns ok=false.
 // promptTokens must count every input token of the request, cache reads and
-// cache writes included — each request is priced on its own.
+// cache writes included — each request is priced on its own. The card is
+// Anthropic's published one: cost estimates reach it through RequestPricing,
+// which applies it only over published base rates, never over a rate a
+// registered Source supplies.
 func ClaudeLongContextPricing(modelID string, promptTokens int) (inputPer1M, outputPer1M float64, ok bool) {
 	if promptTokens <= claudeLongContextThreshold {
 		return 0, 0, false
