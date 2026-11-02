@@ -33,17 +33,20 @@ import (
 
 // Client implements the LLMProvider interface for Google Gemini.
 type Client struct {
-	apiKey      string
-	model       string
-	httpClient  *http.Client
-	maxTokens   int
-	temperature float64
-	rateLimiter *llm.RateLimiter
-	toolNameMap map[string]string // sanitized name → original name
+	schemaPolicy      llm.ToolSchemaPolicy
+	strictToolSchemas bool
+	apiKey            string
+	model             string
+	httpClient        *http.Client
+	maxTokens         int
+	temperature       float64
+	rateLimiter       *llm.RateLimiter
+	toolNameMap       map[string]string // sanitized name → original name
 }
 
 // Config holds configuration for the Gemini client.
 type Config struct {
+	StrictToolSchemas bool
 	// Required: Gemini API key from https://makersuite.google.com/
 	APIKey string
 
@@ -86,11 +89,12 @@ func NewClient(config Config) *Client {
 	}
 
 	return &Client{
-		apiKey:      config.APIKey,
-		model:       config.Model,
-		maxTokens:   config.MaxTokens,
-		temperature: config.Temperature,
-		rateLimiter: rateLimiter,
+		strictToolSchemas: config.StrictToolSchemas,
+		apiKey:            config.APIKey,
+		model:             config.Model,
+		maxTokens:         config.MaxTokens,
+		temperature:       config.Temperature,
+		rateLimiter:       rateLimiter,
 		httpClient: &http.Client{
 			Timeout: config.Timeout,
 		},
@@ -116,7 +120,11 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 	var functionDeclarations []FunctionDeclaration
 	c.toolNameMap = make(map[string]string)
 	if len(tools) > 0 {
-		functionDeclarations = convertTools(tools, c.toolNameMap)
+		var err error
+		functionDeclarations, err = c.convertTools(ctx, tools, c.toolNameMap)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Build request
@@ -470,11 +478,19 @@ func convertMessages(messages []llmtypes.Message) []Content {
 	return contents
 }
 
-func convertTools(tools []shuttle.Tool, nameMap map[string]string) []FunctionDeclaration {
+func (c *Client) convertTools(ctx context.Context, tools []shuttle.Tool, nameMap map[string]string) ([]FunctionDeclaration, error) {
 	var declarations []FunctionDeclaration
 
 	for _, tool := range tools {
 		originalName := tool.Name()
+		schema := tool.InputSchema()
+		keep, err := c.schemaPolicy.Check(ctx, originalName, c.strictToolSchemas, validateGeminiToolSchema(schema))
+		if err != nil {
+			return nil, err
+		}
+		if !keep {
+			continue
+		}
 		sanitizedName := llm.SanitizeToolName(originalName)
 		if nameMap != nil {
 			nameMap[sanitizedName] = originalName
@@ -485,23 +501,67 @@ func convertTools(tools []shuttle.Tool, nameMap map[string]string) []FunctionDec
 			Description: tool.Description(),
 		}
 
-		schema := tool.InputSchema()
 		if schema != nil {
-			params := Schema{
-				Type:       schema.Type,
-				Properties: convertSchemaProperties(schema.Properties),
-				Required:   schema.Required,
+			root := *schema
+			if root.Type == "" {
+				root.Type = "object"
 			}
-			if params.Type == "" {
-				params.Type = "object"
-			}
-			decl.Parameters = params
+			decl.Parameters = convertSchema(&root)
 		}
 
 		declarations = append(declarations, decl)
 	}
 
-	return declarations
+	return declarations, nil
+}
+
+func validateGeminiToolSchema(schema *shuttle.JSONSchema) error {
+	if err := llm.ValidateToolSchema(schema); err != nil {
+		return err
+	}
+	if schema == nil {
+		return nil
+	}
+	if schema.Type != "" && !strings.EqualFold(schema.Type, "object") {
+		return fmt.Errorf("gemini tool schema root must be an object, got %q", schema.Type)
+	}
+	for _, keyword := range []struct {
+		name    string
+		present bool
+	}{{"anyOf", len(schema.AnyOf) > 0}, {"oneOf", len(schema.OneOf) > 0}, {"allOf", len(schema.AllOf) > 0}, {"not", schema.Not != nil}, {"enum", len(schema.Enum) > 0}} {
+		if keyword.present {
+			return fmt.Errorf("unsupported Gemini tool schema root %s; place the constraint inside an object property", keyword.name)
+		}
+	}
+	return validateGeminiNestedComposites(schema, "$")
+}
+
+func validateGeminiNestedComposites(schema *shuttle.JSONSchema, path string) error {
+	if schema == nil {
+		return nil
+	}
+	for _, keyword := range []struct {
+		name    string
+		present bool
+	}{{"oneOf", len(schema.OneOf) > 0}, {"allOf", len(schema.AllOf) > 0}, {"not", schema.Not != nil}} {
+		if keyword.present {
+			return fmt.Errorf("unsupported Gemini tool schema %s at %s", keyword.name, path)
+		}
+	}
+	for name, property := range schema.Properties {
+		if err := validateGeminiNestedComposites(property, fmt.Sprintf("%s.properties[%q]", path, name)); err != nil {
+			return err
+		}
+	}
+	if err := validateGeminiNestedComposites(schema.Items, path+".items"); err != nil {
+		return err
+	}
+	for index, branch := range schema.AnyOf {
+		if err := validateGeminiNestedComposites(branch, fmt.Sprintf("%s.anyOf[%d]", path, index)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func convertSchemaProperties(props map[string]*shuttle.JSONSchema) map[string]Schema {
@@ -511,42 +571,65 @@ func convertSchemaProperties(props map[string]*shuttle.JSONSchema) map[string]Sc
 
 	result := make(map[string]Schema)
 	for key, schema := range props {
-		propType := schema.Type
-		if propType == "" {
-			propType = "string" // Gemini requires a non-empty type for every property
-		}
-
-		s := Schema{
-			Type:        propType,
-			Description: schema.Description,
-			Enum:        schema.Enum,
-		}
-
-		if schema.Properties != nil {
-			s.Properties = convertSchemaProperties(schema.Properties)
-			if s.Type == "string" && len(s.Properties) > 0 {
-				s.Type = "object" // properties imply object type
-			}
-		}
-
-		if schema.Items != nil {
-			itemType := schema.Items.Type
-			if itemType == "" {
-				itemType = "string"
-			}
-			s.Items = &Schema{
-				Type:        itemType,
-				Description: schema.Items.Description,
-			}
-			if s.Type == "string" && s.Items != nil {
-				s.Type = "array" // items implies array type
-			}
-		}
-
-		result[key] = s
+		result[key] = convertSchema(schema)
 	}
 
 	return result
+}
+
+func convertSchema(schema *shuttle.JSONSchema) Schema {
+	return convertSchemaWithInference(schema, true)
+}
+
+func convertSchemaWithInference(schema *shuttle.JSONSchema, inferCurrentType bool) Schema {
+	if schema == nil {
+		return Schema{}
+	}
+	result := Schema{
+		Type:        schema.Type,
+		Description: schema.Description,
+		Properties:  convertSchemaProperties(schema.Properties),
+		Required:    schema.Required,
+		Enum:        schema.Enum,
+		Default:     schema.Default,
+		Format:      schema.Format,
+		Pattern:     schema.Pattern,
+		Minimum:     schema.Minimum,
+		Maximum:     schema.Maximum,
+		MinLength:   schema.MinLength,
+		MaxLength:   schema.MaxLength,
+	}
+	if inferCurrentType && result.Type == "" && len(schema.AnyOf) == 0 {
+		result.Type = llm.InferSchemaType(schema)
+	}
+	if schema.Items != nil {
+		item := convertSchema(schema.Items)
+		result.Items = &item
+	}
+	for _, alternative := range schema.AnyOf {
+		result.AnyOf = append(result.AnyOf, convertSchemaWithInference(alternative, false))
+	}
+	result.Type = strings.ToUpper(result.Type)
+	result.Format = geminiSchemaFormat(result.Type, result.Format)
+	return result
+}
+
+func geminiSchemaFormat(schemaType, format string) string {
+	switch schemaType {
+	case "STRING":
+		if format == "enum" || format == "date-time" {
+			return format
+		}
+	case "INTEGER":
+		if format == "int32" || format == "int64" {
+			return format
+		}
+	case "NUMBER":
+		if format == "float" || format == "double" {
+			return format
+		}
+	}
+	return ""
 }
 
 // ChatStream implements token-by-token streaming for Google Gemini.
@@ -560,7 +643,11 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	var functionDeclarations []FunctionDeclaration
 	c.toolNameMap = make(map[string]string)
 	if len(tools) > 0 {
-		functionDeclarations = convertTools(tools, c.toolNameMap)
+		var err error
+		functionDeclarations, err = c.convertTools(ctx, tools, c.toolNameMap)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	req := &GenerateContentRequest{

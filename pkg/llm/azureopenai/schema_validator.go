@@ -63,6 +63,16 @@ func sanitizeParameters(params map[string]interface{}) map[string]interface{} {
 				continue
 			}
 		}
+		if key == "not" {
+			if schema, ok := value.(map[string]interface{}); ok {
+				result[key] = sanitizeParameters(schema)
+				continue
+			}
+		}
+		if key == "anyOf" || key == "oneOf" || key == "allOf" {
+			result[key] = sanitizeAlternatives(value)
+			continue
+		}
 
 		// Skip empty string defaults (but keep false, 0, etc)
 		if key == "default" {
@@ -75,6 +85,28 @@ func sanitizeParameters(params map[string]interface{}) map[string]interface{} {
 	}
 
 	return result
+}
+
+func sanitizeAlternatives(value interface{}) interface{} {
+	switch branches := value.(type) {
+	case []map[string]interface{}:
+		result := make([]map[string]interface{}, len(branches))
+		for index, branch := range branches {
+			result[index] = sanitizeParameters(branch)
+		}
+		return result
+	case []interface{}:
+		result := make([]interface{}, len(branches))
+		for index, branch := range branches {
+			result[index] = branch
+			if schema, ok := branch.(map[string]interface{}); ok {
+				result[index] = sanitizeParameters(schema)
+			}
+		}
+		return result
+	default:
+		return value
+	}
 }
 
 // sanitizeProperties recursively sanitizes property schemas
@@ -92,44 +124,7 @@ func sanitizeProperties(props map[string]interface{}) map[string]interface{} {
 			continue
 		}
 
-		sanitizedProp := make(map[string]interface{})
-
-		for key, value := range propMap {
-			// Skip empty arrays
-			if arr, ok := value.([]interface{}); ok && len(arr) == 0 {
-				continue
-			}
-			if arr, ok := value.([]string); ok && len(arr) == 0 {
-				continue
-			}
-
-			// Recursively sanitize nested properties
-			if key == "properties" {
-				if nestedProps, ok := value.(map[string]interface{}); ok {
-					sanitizedProp[key] = sanitizeProperties(nestedProps)
-					continue
-				}
-			}
-
-			// Recursively sanitize items
-			if key == "items" {
-				if items, ok := value.(map[string]interface{}); ok {
-					sanitizedProp[key] = sanitizeParameters(items)
-					continue
-				}
-			}
-
-			// Skip empty string defaults
-			if key == "default" {
-				if str, ok := value.(string); ok && str == "" {
-					continue
-				}
-			}
-
-			sanitizedProp[key] = value
-		}
-
-		result[propName] = sanitizedProp
+		result[propName] = sanitizeParameters(propMap)
 	}
 
 	return result

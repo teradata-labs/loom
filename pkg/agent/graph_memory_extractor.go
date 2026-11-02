@@ -279,7 +279,7 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 		return
 	}
 
-	agentID := a.config.Name
+	agentID := a.graphMemoryKey()
 
 	// Determine max entities from config.
 	maxEntities := 10

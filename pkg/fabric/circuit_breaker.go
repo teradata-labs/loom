@@ -125,6 +125,7 @@ func (cb *CircuitBreaker) beforeRequest() error {
 	cb.mu.RLock()
 	state := cb.state
 	lastFailure := cb.lastFailureTime
+	consecutiveOpens := cb.consecutiveOpens
 	cb.mu.RUnlock()
 
 	switch state {
@@ -144,7 +145,7 @@ func (cb *CircuitBreaker) beforeRequest() error {
 				zap.String("reason", "timeout_elapsed"),
 				zap.Duration("elapsed", time.Since(lastFailure)),
 				zap.Duration("timeout_used", timeout),
-				zap.Int("consecutive_opens", cb.consecutiveOpens))
+				zap.Int("consecutive_opens", consecutiveOpens))
 			return nil
 		}
 

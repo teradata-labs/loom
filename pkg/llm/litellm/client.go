@@ -54,6 +54,7 @@ const (
 
 // Config holds configuration for the LiteLLM client.
 type Config struct {
+	StrictToolSchemas bool
 	// Endpoint is the full URL of the LiteLLM proxy chat-completions endpoint.
 	// Defaults to http://litellm:4000/v1/chat/completions.
 	Endpoint string
@@ -124,6 +125,7 @@ func NewClient(cfg Config) *Client {
 	}
 
 	inner := openai.NewClient(openai.Config{
+		StrictToolSchemas: cfg.StrictToolSchemas,
 		APIKey:            cfg.APIKey,
 		Model:             cfg.Model,
 		Endpoint:          cfg.Endpoint,

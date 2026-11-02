@@ -308,15 +308,7 @@ func sanitizeSchemaTypes(schema *shuttle.JSONSchema) {
 	if schema == nil {
 		return
 	}
-	if schema.Type == "" {
-		if schema.Properties != nil {
-			schema.Type = "object"
-		} else if schema.Items != nil {
-			schema.Type = "array"
-		} else {
-			schema.Type = "string"
-		}
-	}
+	schema.Type = llm.InferSchemaType(schema)
 	for _, prop := range schema.Properties {
 		sanitizeSchemaTypes(prop)
 	}

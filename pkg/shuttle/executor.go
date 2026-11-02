@@ -126,6 +126,15 @@ func (e *Executor) SetAdmissionChain(chain *Chain) {
 	e.admissionChain = chain
 }
 
+// AdmissionOrderDependent reports whether admission verdicts can depend on the
+// order of the calls of one batch: the chain is order-dependent (see
+// Chain.OrderIndependent) or the executor-level permission checker may hold a
+// call for human approval. A caller must not run calls concurrently while it
+// is true.
+func (e *Executor) AdmissionOrderDependent() bool {
+	return !e.admissionChain.OrderIndependent() || e.permissionChecker.mayRequireApproval()
+}
+
 // SetApprovedSet configures the approved-set accessor threaded to admission
 // hooks as AdmissionRequest.State. A nil accessor leaves a gated-allowlist with
 // no store to read, so it fails closed.

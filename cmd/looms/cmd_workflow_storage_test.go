@@ -736,6 +736,48 @@ func TestRunResume_FinishFromFileWithoutUserConsumesTheOwnersCopy(t *testing.T) 
 	}
 }
 
+// TestRunResume_AdoptsTheRecordedTenant is the round-4 F13 guard: the
+// adoptCheckpointTenant tests call the function directly, so they pass even if
+// runResume stops calling it. A resume with no --user must leave the CLI
+// running as the tenant the checkpoint records, because that is what the next
+// save and the printed resume commands read. A checkpoint that records no
+// tenant must leave --user alone.
+func TestRunResume_AdoptsTheRecordedTenant(t *testing.T) {
+	tests := []struct {
+		name     string
+		recorded string
+		wantUser string
+	}{
+		{name: "recorded tenant is adopted", recorded: "alice", wantUser: "alice"},
+		{name: "legacy checkpoint with no tenant leaves --user empty", recorded: "", wantUser: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolateWorkflowStorage(t)
+			migrateWorkflowStorage(t)
+			setResumeFlags(t, true, "")
+
+			ckpt := gatedCheckpoint("wf-adopt")
+			ckpt.TenantUserId = tt.recorded
+			ckptPath := filepath.Join(t.TempDir(), "gated.checkpoint.pb")
+			data, err := proto.Marshal(ckpt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(ckptPath, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			workflowUser = ""
+			captureStdout(t, func() { runResume(nil, []string{writeGatedWorkflow(t), ckptPath}) })
+
+			if workflowUser != tt.wantUser {
+				t.Fatalf("workflowUser after resume = %q, want %q", workflowUser, tt.wantUser)
+			}
+		})
+	}
+}
+
 // TestConsumeStoredCheckpoint_SameFixedIDDeletesTheLaterRunsCopy pins the
 // documented limit: the delete is keyed by tenant and workflow ID, so with a
 // fixed workflow_id shared by two suspended runs, finishing the first removes
@@ -906,6 +948,7 @@ func TestAdoptCheckpointTenant_ResuspendKeepsTheRecordedTenant(t *testing.T) {
 func TestAdoptCheckpointTenant(t *testing.T) {
 	tests := []struct {
 		name      string
+		postgres  bool
 		recorded  string
 		user      string
 		wantUser  string
@@ -919,10 +962,31 @@ func TestAdoptCheckpointTenant(t *testing.T) {
 			name: "a different --user is refused", recorded: "alice", user: "bob", wantUser: "bob",
 			wantError: []string{"alice", "bob", "--user"},
 		},
+		// The round-4 Q4 case: a SQLite run with no --user records default-user,
+		// and that file is resumed against Postgres.
+		{name: "sqlite adopts the default-user fallback", recorded: types.DefaultUserID, user: "", wantUser: types.DefaultUserID},
+		{
+			name: "postgres refuses to adopt the default-user fallback", postgres: true,
+			recorded: types.DefaultUserID, user: "", wantUser: "",
+			wantError: []string{types.DefaultUserID, "postgres", "--user"},
+		},
+		{
+			name: "postgres refuses another --user against the default-user fallback", postgres: true,
+			recorded: types.DefaultUserID, user: "alice", wantUser: "alice",
+			wantError: []string{types.DefaultUserID, "postgres", "--user"},
+		},
+		{
+			name: "postgres accepts an explicit --user default-user", postgres: true,
+			recorded: types.DefaultUserID, user: types.DefaultUserID, wantUser: types.DefaultUserID,
+		},
+		{name: "postgres still adopts a real recorded tenant", postgres: true, recorded: "alice", user: "", wantUser: "alice"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			isolateWorkflowStorage(t)
+			if tt.postgres {
+				config.Storage.Backend = "postgres"
+			}
 			workflowUser = tt.user
 
 			err := adoptCheckpointTenant(&loomv1.WorkflowCheckpoint{WorkflowId: "wf", TenantUserId: tt.recorded})

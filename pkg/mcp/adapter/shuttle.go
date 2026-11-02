@@ -93,6 +93,12 @@ type MCPToolAdapter struct {
 	uiResourceURI string      // From tool._meta.ui.resourceUri (MCP Apps)
 	logger        *zap.Logger // Structured logger (defaults to no-op)
 
+	// trustAnnotations records that the operator opted this tool's server in
+	// to having its readOnlyHint/destructiveHint annotations believed. False
+	// (the default) keeps ConcurrencySafe false: the MCP spec treats
+	// annotations as untrusted unless the server is trusted.
+	trustAnnotations bool
+
 	// paramNameMap maps the LLM-visible property name (snake_case, as
 	// presented by InputSchema) back to the server's ORIGINAL property name
 	// from the tool's own schema. Execute renames via this map only — a key
@@ -124,10 +130,23 @@ func NewMCPToolAdapter(client *client.Client, tool protocol.Tool, serverName str
 // differs from the server's. For a snake_case schema the map is empty
 // (identity); for a camelCase schema it restores the original names exactly.
 func buildParamNameMap(inputSchema map[string]interface{}) map[string]string {
-	props, ok := inputSchema["properties"].(map[string]interface{})
-	if !ok {
+	data, err := json.Marshal(inputSchema)
+	if err != nil {
 		return nil
 	}
+	schema, err := shuttle.FromJSON(data)
+	if err != nil {
+		return nil
+	}
+	props := make(map[string]struct{})
+	walkToolSchemaRoots(schema, func(root *shuttle.JSONSchema) {
+		for name := range root.Properties {
+			props[name] = struct{}{}
+		}
+		for _, name := range root.Required {
+			props[name] = struct{}{}
+		}
+	})
 	m := make(map[string]string)
 	ambiguous := map[string]bool{}
 	for original := range props {
@@ -165,7 +184,9 @@ func (a *MCPToolAdapter) restoreParameterNames(params map[string]interface{}) ma
 	restored := make(map[string]interface{}, len(params))
 	for key, value := range params {
 		if original, ok := a.paramNameMap[key]; ok {
-			restored[original] = value
+			if _, provided := params[original]; !provided {
+				restored[original] = value
+			}
 		} else {
 			restored[key] = value
 		}
@@ -215,22 +236,24 @@ func (a *MCPToolAdapter) InputSchema() *shuttle.JSONSchema {
 
 	// Convert property names from camelCase to snake_case for LLM-friendliness
 	// LLMs naturally prefer snake_case but MCP schemas often use camelCase
-	if shuttleSchema.Properties != nil {
+	walkToolSchemaRoots(&shuttleSchema, func(root *shuttle.JSONSchema) {
 		snakeCaseProps := make(map[string]*shuttle.JSONSchema)
-		for key, prop := range shuttleSchema.Properties {
+		for key, prop := range root.Properties {
 			snakeCaseProps[toSnakeCase(key)] = prop
 		}
-		shuttleSchema.Properties = snakeCaseProps
+		if root.Properties != nil {
+			root.Properties = snakeCaseProps
+		}
 
 		// Also convert required field names
-		if len(shuttleSchema.Required) > 0 {
-			snakeCaseRequired := make([]string, len(shuttleSchema.Required))
-			for i, req := range shuttleSchema.Required {
-				snakeCaseRequired[i] = toSnakeCase(req)
+		if len(root.Required) > 0 {
+			snakeCaseRequired := make([]string, len(root.Required))
+			for index, name := range root.Required {
+				snakeCaseRequired[index] = toSnakeCase(name)
 			}
-			shuttleSchema.Required = snakeCaseRequired
+			root.Required = snakeCaseRequired
 		}
-	}
+	})
 
 	// Normalize schema to ensure JSON Schema draft 2020-12 compliance
 	// This is critical for Bedrock which strictly validates schemas
@@ -251,6 +274,19 @@ func (a *MCPToolAdapter) InputSchema() *shuttle.JSONSchema {
 	}
 
 	return normalized
+}
+
+func walkToolSchemaRoots(schema *shuttle.JSONSchema, visit func(*shuttle.JSONSchema)) {
+	if schema == nil {
+		return
+	}
+	visit(schema)
+	for _, alternatives := range [][]*shuttle.JSONSchema{schema.AllOf, schema.AnyOf, schema.OneOf} {
+		for _, branch := range alternatives {
+			walkToolSchemaRoots(branch, visit)
+		}
+	}
+	walkToolSchemaRoots(schema.Not, visit)
 }
 
 // Execute implements shuttle.Tool
@@ -402,6 +438,28 @@ func (a *MCPToolAdapter) Backend() string {
 	// Use server name as backend identifier
 	// This allows backend-specific routing if needed
 	return fmt.Sprintf("mcp:%s", a.serverName)
+}
+
+// SetTrustAnnotations opts this tool's server in to having its annotations
+// believed (server config `trust_annotations: true`). Default false.
+func (a *MCPToolAdapter) SetTrustAnnotations(trust bool) {
+	a.trustAnnotations = trust
+}
+
+// ConcurrencySafe is true only when the server is trusted (SetTrustAnnotations),
+// annotates the tool readOnlyHint true and does not also mark it destructive;
+// an untrusted server, or a nil or false hint, is not concurrency-safe. A hint
+// is the server's claim, not a guarantee.
+func (a *MCPToolAdapter) ConcurrencySafe() bool {
+	if a == nil || !a.trustAnnotations {
+		return false
+	}
+	h := a.tool.Annotations
+	if h == nil || h.ReadOnlyHint == nil || !*h.ReadOnlyHint {
+		return false
+	}
+	// readOnly + destructive is contradictory; refuse it.
+	return h.DestructiveHint == nil || !*h.DestructiveHint
 }
 
 // HasUI returns true if this tool has an associated MCP Apps UI resource.
