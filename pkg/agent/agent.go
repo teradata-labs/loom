@@ -2296,6 +2296,17 @@ func (a *Agent) recordConversationMetrics(sessionID string, response *Response, 
 }
 
 // addUsage folds one LLM call's usage into a running turn total.
+// carryFoldCost is a call's usage with the cost of the fold calls before it
+// added: the money and the output, so a row's cost is what was spent to reach
+// it. The input figures stay the call's own, which is the prompt it sent.
+func carryFoldCost(u, fold Usage) Usage {
+	u.CostUSD += fold.CostUSD
+	u.OutputTokens += fold.OutputTokens
+	u.TotalTokens += fold.TotalTokens
+	u.ThinkingTokens += fold.ThinkingTokens
+	return u
+}
+
 func addUsage(dst *Usage, u Usage) {
 	// RateLimitTokens stays zero until some call sets it (so a turn of calls
 	// that never set it still equals their plain sum); once any call does, it
@@ -2309,6 +2320,9 @@ func addUsage(dst *Usage, u Usage) {
 	dst.TotalTokens += u.TotalTokens
 	dst.CacheReadInputTokens += u.CacheReadInputTokens
 	dst.CacheCreationInputTokens += u.CacheCreationInputTokens
+	dst.CacheCreation1hInputTokens += u.CacheCreation1hInputTokens
+	dst.CacheCreation5mInputTokens += u.CacheCreation5mInputTokens
+	dst.ThinkingTokens += u.ThinkingTokens
 	dst.CostUSD += u.CostUSD
 }
 
@@ -2638,6 +2652,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	emptyRetried := false                       // one-shot flag: retry empty LLM response at most once per conversation
 	foldPending := false                        // in-loop fold: this call carries the fold instruction; its reply is the summary
 	foldRetries := 0                            // malformed fold replies re-asked at most once; then the pressure path is the failsafe
+	var foldUsage Usage                         // what fold calls cost; no row of their own, so the next row the loop writes carries it
 	hygieneRetries := 0                         // capped count of REQUIRE_FIX retries the end-of-turn auditor has triggered
 	var hygieneLast *hygiene.EnforcementOutcome // last outcome, surfaced into Response.Metadata
 	var prevToolNames []string                  // names advertised on this turn's previous provider call; nil before the first
@@ -2873,9 +2888,19 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			}
 			return msgs
 		}
+		// A fold call's reply is the harness's, never the user's: it is sent
+		// with no progress callback, so the summary is not streamed out.
+		callCtx := Context(ctx)
+		if foldPending {
+			if ac, ok := ctx.(*agentContext); ok {
+				quiet := *ac
+				quiet.progressCallback = nil
+				callCtx = &quiet
+			}
+		}
 		sendChat := func(ts []shuttle.Tool) (*LLMResponse, error) {
 			if !a.config.ToolChangeNote {
-				return a.chatWithRetry(ctx, outgoing(""), ts)
+				return a.chatWithRetry(callCtx, outgoing(""), ts)
 			}
 			names := make([]string, 0, len(ts))
 			for _, t := range ts {
@@ -2889,7 +2914,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			if note != "" {
 				span.AddEvent("tools.changed", map[string]interface{}{"note": note})
 			}
-			resp, err := a.chatWithRetry(ctx, outgoing(note), ts)
+			resp, err := a.chatWithRetry(callCtx, outgoing(note), ts)
 			if err == nil {
 				prevToolNames = names
 			}
@@ -2954,6 +2979,15 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		}
 		addUsage(&turnUsage, llmResp.Usage)
 		a.observePromptUsage(session, llmResp.Usage)
+		// A fold call writes no row. What it cost rides on the row this call
+		// writes, so the session's rows still sum to what the turn spent. The
+		// prompt figures stay this call's own: they measure what was sent.
+		if foldPending {
+			addUsage(&foldUsage, llmResp.Usage)
+		} else if foldUsage != (Usage{}) {
+			llmResp.Usage = carryFoldCost(llmResp.Usage, foldUsage)
+			foldUsage = Usage{}
+		}
 
 		// Record LLM response on conversation_loop span
 		llmEvent := map[string]interface{}{
