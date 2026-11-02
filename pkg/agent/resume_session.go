@@ -145,7 +145,13 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (_ *Respons
 	// that batch's tools a second time, so every path refuses here.
 	msgs := rawSessionMessages(sess)
 	if step, err := a.unsavedBatchStepWithFolded(ctx, sessionID, events, msgs); err != nil {
-		span.AddEvent("resume_session.batch_not_saved", map[string]interface{}{"step_index": step})
+		// Two different refusals come out of this check; the event name says
+		// which, so a trace agrees with the RPC's error.
+		event := "resume_session.batch_not_saved"
+		if errors.Is(err, ErrTurnNotRecorded) {
+			event = "resume_session.not_recorded"
+		}
+		span.AddEvent(event, map[string]interface{}{"step_index": step})
 		return nil, fmt.Errorf("session %s step %d: %w", sessionID, step, err)
 	}
 	if unansweredTurnTail(msgs) {

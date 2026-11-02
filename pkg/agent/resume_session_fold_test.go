@@ -118,3 +118,54 @@ func TestUnsavedBatchStep_KeptStepWhoseMessageWasFolded(t *testing.T) {
 		})
 	}
 }
+
+// Review round 5, B13: the Q1 fix is only worth anything if ResumeSession
+// calls the folded-aware check. The test above calls the helper directly, so
+// it passes even with ResumeSession back on the L1-only check. This goes
+// through ResumeSession, on a session reloaded from the store the way a fresh
+// process would see it.
+func TestResumeSession_KeptStepWhoseMessageWasFolded_IsNotRefusedAsUnsaved(t *testing.T) {
+	kept := llmtypes.ToolCall{ID: "toolu_kept", Name: "crashy", Input: map[string]interface{}{"n": float64(1)}}
+	filler := strings.Repeat("grant audit 123 db=SALES cpu=456; ", 100)
+
+	store := newSQLiteSessions(t)
+	ctx := context.Background()
+	const sessionID = "sess-b13"
+	require.NoError(t, store.SaveSession(ctx, &Session{ID: sessionID, Context: map[string]interface{}{}}))
+
+	sm := NewSegmentedMemory("ROM", 6000, 600)
+	sm.SetThreshold(6000)
+	sm.SetSessionStore(store, sessionID)
+	sm.SetCompressor(&foldCompressor{out: "covers msg:1-999\nfolded conversation"})
+	save := func(m Message, turnStart bool) {
+		require.NoError(t, store.SaveMessage(ctx, sessionID, &m, turnStart))
+		sm.AddMessage(ctx, m)
+	}
+	save(Message{Role: "user", Content: "turn 1: " + filler}, true)
+	save(Message{Role: "assistant", ToolCalls: []llmtypes.ToolCall{kept}}, false)
+	for turn := 2; turn <= 7; turn++ {
+		save(Message{Role: "user", Content: fmt.Sprintf("turn %d: ", turn) + filler}, true)
+		save(Message{Role: "assistant", Content: fmt.Sprintf("noted %d", turn)}, false)
+	}
+	shed, _, _ := sm.ReleasePressure(ctx, 0)
+	require.True(t, shed, "the conversation must be heavy enough to fold")
+
+	// A fresh process: new agent and memory over the same durable store, with
+	// the kept step's events still in the log.
+	recorder := &recordingEventLog{}
+	for _, e := range stepEvents(t, 0, kept) {
+		e.SessionID = sessionID
+		recorder.events = append(recorder.events, e)
+	}
+	ag := newEventLogAgent(t, &mockSimpleLLM{}, store, recorder, &crashingTool{})
+
+	sess := ag.memory.GetOrCreateSessionWithAgent(ctx, sessionID, ag.config.Name, "")
+	for _, m := range rawSessionMessages(sess) {
+		require.False(t, len(m.ToolCalls) > 0 && m.ToolCalls[0].ID == kept.ID,
+			"precondition: the kept step's assistant message is not in the reloaded L1 view")
+	}
+
+	_, err := ag.ResumeSession(ctx, sessionID)
+	require.NotErrorIs(t, err, ErrBatchNotSaved, "a folded message is saved, not lost")
+	require.ErrorIs(t, err, ErrNothingParked, "the folded step is accepted and the session tail, a finished turn, has nothing to resume")
+}
