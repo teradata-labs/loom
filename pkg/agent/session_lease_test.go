@@ -354,3 +354,21 @@ func TestLeaseLostError(t *testing.T) {
 	require.Same(t, boom, leaseLostError(callerCtx, boom), "caller cancellation is left alone")
 	require.ErrorIs(t, leaseLostError(callerCtx, context.Canceled), context.Canceled)
 }
+
+// Review round 5, O1: when the lease was lost, a structured error loses its
+// chain on purpose. Its text stays, the lease cause leads, and neither the
+// structured type nor context.Canceled is reachable. This pins that so a
+// change to it is deliberate.
+func TestLeaseLostError_DropsTheChainOfAStructuredError(t *testing.T) {
+	lostCtx, cancel := context.WithCancelCause(context.Background())
+	cancel(ErrSessionLeaseLost)
+
+	parked := &SessionParkedError{RequestID: "req-1", SessionID: "s-parked"}
+	err := leaseLostError(lostCtx, fmt.Errorf("resume: %w (%w)", parked, context.Canceled))
+
+	require.ErrorIs(t, err, ErrSessionLeaseLost)
+	require.NotErrorIs(t, err, context.Canceled)
+	var got *SessionParkedError
+	require.False(t, errors.As(err, &got), "the structured error's chain is dropped")
+	require.Contains(t, err.Error(), parked.Error(), "its text is kept")
+}

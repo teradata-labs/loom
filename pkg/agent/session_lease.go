@@ -61,6 +61,13 @@ func (a *Agent) sessionLeaseTTL() time.Duration {
 // ctx.Err() (context.Canceled) when that happens, which would otherwise read
 // as the caller cancelling and map to CANCELED instead of ABORTED. err's own
 // text is kept, but not its chain: context.Canceled must not outrank the cause.
+//
+// The same rule drops the chain of a structured error (an *SessionParkedError,
+// say) when the lease was lost, so errors.As no longer finds it. That is
+// intended: no caller reads the chain today, and the server maps a lost lease
+// before it looks at anything else. A caller that does need the structured
+// error from a lease-lost turn should change this deliberately, keeping
+// context.Canceled out of the chain, not wrap err with a second %w.
 func leaseLostError(ctx context.Context, err error) error {
 	if err == nil || errors.Is(err, ErrSessionLeaseLost) {
 		return err
