@@ -15,6 +15,7 @@ package agent
 
 import (
 	"context"
+	"maps"
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/shuttle"
@@ -72,6 +73,12 @@ func (progressNotifier) Notify(ctx context.Context, req *shuttle.HumanRequest) e
 			RequestType:     req.RequestType,
 			Priority:        req.Priority,
 			Question:        req.Question,
+			// The stored request's context rides along so the card shows
+			// what the row records — for an ask hold, the "reason" holding
+			// every asking hook's reason, which is what the approval's
+			// grants cover. Cloned so a consumer mutating the event cannot
+			// reach the stored row.
+			Context: maps.Clone(req.Context),
 		},
 		Message:   "Waiting for human response",
 		Timestamp: time.Now(),

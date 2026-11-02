@@ -180,9 +180,22 @@ and at resume. The approval request records the combined reason and the
 parameters, not the grant itself, so nothing at resume checks that the
 recomputed grant matches what the card described. A hook whose grant depends on
 anything else (a clock, a counter, a lookup that can change while the person
-decides) can hand the tool body a grant the person never saw. The approval card
-shows every asking hook's reason, in chain order and deduplicated, joined with
-`"; "`.
+decides) can hand the tool body a grant the person never saw. The approval
+request carries every asking hook's reason, in chain order and deduplicated,
+joined with `"; "`, on both card paths:
+
+- **Parked:** each approval item's descriptor in the row's `params` has the
+  joined text under `reason` (omitted when no asking hook gave one). Question
+  and resource items carry no `reason`.
+- **In-turn (ask resolver):** the row's `Context["reason"]`.
+  `NewProgressNotifier` copies the row's `Context` into the progress event's
+  `HITLRequestInfo.Context`, which the gRPC streams serialize to
+  `hitl_request.context_json`.
+
+Limitation: the proto `HITLRequestInfo` has no `params` field, so a parked
+item's `reason` is on the in-process progress event (`HITLRequestInfo.Params`)
+and the stored row, but not on the gRPC progress message; a parked card's
+`context_json` is only `{"kind":"parked"}`.
 
 ### 3.3 Claiming the decision
 
