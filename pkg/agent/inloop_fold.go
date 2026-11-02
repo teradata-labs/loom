@@ -174,12 +174,16 @@ func (sm *SegmentedMemory) ApplyFoldReply(ctx context.Context, summary string) (
 
 // foldSplitLocked is the in-loop fold's cut of the context: what a full fold
 // keeps and what it excises. Kept: the pending pair — the last assistant row and
-// everything after it, untouchable — the operator's words verbatim, and the
-// recent assistant thread with its tool traffic stripped. Everything else is
-// excised. Must hold lock.
+// everything after it, untouchable — the operator's words verbatim, and the last
+// k agent steps before the pending one, as text with their tool traffic
+// stripped. Everything else is excised: the summary stands in for it.
+//
+// k counts agent steps — assistant rows — not user turns. A step is the unit
+// the model works in, and within one user turn there are many; counted in user
+// turns, a long one-shot turn kept every step it had taken, and the floor a
+// fold left rose by one step with every step. Must hold lock.
 func (sm *SegmentedMemory) foldSplitLocked() (kept, excised []Message) {
-	t := sm.currentTurnLocked()
-	k := int64(sm.protectedRecentTurns)
+	k := sm.protectedRecentTurns
 	if k <= 0 {
 		k = defaultProtectedRecentTurns
 	}
@@ -192,6 +196,17 @@ func (sm *SegmentedMemory) foldSplitLocked() (kept, excised []Message) {
 			lastAssistant = i
 		}
 	}
+	// The last k steps before the pending one: counted back from it, each an
+	// assistant row with words in it. A row that only called tools is tool
+	// traffic, and goes with it.
+	recent := map[int]bool{}
+	for i, n := lastAssistant-1, 0; i >= 0 && n < k; i-- {
+		m := &sm.contextMessages[i]
+		if m.Role == "assistant" && strings.TrimSpace(m.Content) != "" {
+			recent[i] = true
+			n++
+		}
+	}
 
 	kept = make([]Message, 0, len(sm.contextMessages))
 	excised = make([]Message, 0, len(sm.contextMessages))
@@ -202,8 +217,8 @@ func (sm *SegmentedMemory) foldSplitLocked() (kept, excised []Message) {
 			kept = append(kept, m) // pending pair and after
 		case m.Role == "user":
 			kept = append(kept, m) // the operator's words, verbatim, always
-		case m.Turn > t-k && m.Role == "assistant" && strings.TrimSpace(m.Content) != "":
-			// Recent window: the assistant THREAD survives, its tool traffic
+		case recent[i]:
+			// Recent steps: the assistant THREAD survives, its tool traffic
 			// does not. Pairs are stripped whole — the calls leave here, the
 			// results leave via the excised branch below.
 			// The row itself stays unflagged (its text must survive reload);

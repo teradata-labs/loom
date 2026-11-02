@@ -146,3 +146,56 @@ func TestInloopFold_ARefusedFoldCallIsResentAsAFold(t *testing.T) {
 	assert.NotContains(t, resp.Content, "STATE-OF-WORK-SUMMARY", "a fold reply was returned as the answer")
 	assert.Equal(t, 24, model.taken, "a step's reply was taken as the fold and thrown away")
 }
+
+// k counts agent steps. In one user turn, each fold keeps the last k steps and
+// the summary stands in for every step before them, so what a fold leaves is
+// the same size after the twentieth step as after the fifth: the floor is
+// flat, and a long turn can fold as many times as it needs.
+func TestInloopFold_KCountsAgentStepsSoTheFloorIsFlat(t *testing.T) {
+	sm := newCompileMemory(t)
+	sm.SetProtectedRecentTurns(3)
+	ctx := context.Background()
+	sm.AddMessage(ctx, Message{Role: "user", Content: "do the long job", Turn: 1})
+	step := func(i int) {
+		id := fmt.Sprintf("s%d", i)
+		sm.AddMessage(ctx, Message{Role: "assistant", Turn: 1, Content: fmt.Sprintf("step %d: %s", i, strings.Repeat("reasoning ", 40)),
+			ToolCalls: []ToolCall{{ID: id, Name: "step"}}})
+		sm.AddMessage(ctx, Message{Role: "tool", ToolUseID: id, Turn: 1, Content: strings.Repeat("result ", 400)})
+	}
+
+	var floors []int
+	for i := 1; i <= 20; i++ {
+		step(i)
+		if i%5 != 0 {
+			continue
+		}
+		applied, _ := sm.ApplyFoldReply(ctx, "state of the work so far") // one length: the floor is measured, not the summary
+		require.True(t, applied, "fold after step %d", i)
+		var text, results int
+		for _, m := range sm.GetMessages() {
+			switch m.Role {
+			case "assistant":
+				// Measured without the step's number, whose digits vary.
+				if _, body, ok := strings.Cut(m.Content, ": "); ok {
+					text += len(body)
+				} else {
+					text += len(m.Content)
+				}
+			case "tool":
+				results++
+			}
+		}
+		floors = append(floors, text)
+		assert.Equal(t, 1, results, "after the fold at step %d only the pending result remains", i)
+		kept := 0
+		for _, m := range sm.GetMessages() {
+			if m.Role == "assistant" && strings.HasPrefix(m.Content, "step ") {
+				kept++
+			}
+		}
+		assert.Equal(t, 4, kept, "after the fold at step %d: the last 3 steps and the pending one", i)
+	}
+	for i := 1; i < len(floors); i++ {
+		assert.Equal(t, floors[0], floors[i], "the floor grew between folds: %v", floors)
+	}
+}

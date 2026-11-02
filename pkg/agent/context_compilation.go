@@ -1041,9 +1041,10 @@ func foldedSkillLoads(region []Message, currentTurn int64) []string {
 	return names
 }
 
-// defaultProtectedRecentTurns is K (HLD §5.1): the top rung of the halving
-// escalation ladder — the newest user turns relief tries hardest to keep. The
-// ladder folds at K, K/2, K/4 … 1 (§5.2).
+// defaultProtectedRecentTurns is K. For the in-loop fold it is the agent
+// steps kept before the pending one (foldSplitLocked). For the pressure
+// ladder behind it, it is the top rung — the newest user turns relief tries
+// hardest to keep; the ladder folds at K, K/2, K/4 … 1 (§5.2).
 const defaultProtectedRecentTurns = 4
 
 // SetProtectedRecentTurns configures K (config ProtectedRecentTurns, §9).

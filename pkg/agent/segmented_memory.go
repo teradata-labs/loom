@@ -114,8 +114,8 @@ type SegmentedMemory struct {
 	// sandbox) must never cite a path its file tools cannot see.
 	snapshotDir string
 
-	// protectedRecentTurns is K (HLD §5.1): the K newest turns are never
-	// touched by relief.
+	// protectedRecentTurns is K: the in-loop fold keeps the last K agent
+	// steps; the pressure ladder keeps the newest K user turns.
 	protectedRecentTurns int
 
 	// reliefInFlight guards ReleasePressure: fold releases the lock across
