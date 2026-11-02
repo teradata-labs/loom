@@ -349,44 +349,17 @@ func TestReFireOnRestore_DurableKey(t *testing.T) {
 		"re-fire keys on the manage_skills load call paired with a 'Skill loaded: ' confirmation")
 }
 
-func TestPressureMarks_GrowthBudget(t *testing.T) {
-	// The configured MaxTokens IS G — the growth budget. The start mark is G
-	// itself; the output reservation plays no part in the marks (the
-	// provider's refusal backstop owns the real ceiling).
-	sm := NewSegmentedMemory("ROM", 50000, 64000)
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-	assert.Equal(t, 50000, sm.startMarkLocked(0))
-	assert.Equal(t, 60*50000/100, sm.releaseMarkLocked(0))
-	// The recovery pass lowers both marks by the penalty on the same base.
-	assert.Equal(t, 80*50000/100, sm.startMarkLocked(pressureRecoveryPenalty))
-	assert.Equal(t, 40*50000/100, sm.releaseMarkLocked(pressureRecoveryPenalty))
-}
-
-func TestMarks_IgnoreOutputReservation(t *testing.T) {
-	// G semantics: the start mark is the configured budget itself. The output
-	// reservation is a wire concern (the request's max_tokens); it must not
-	// bend the fold policy. The provider's refusal backstop owns the ceiling.
-	const g = 50000
-	for _, reserve := range []int{0, 20000, 64000, 128000} {
-		sm := NewSegmentedMemory("ROM", g, reserve)
-		sm.mu.Lock()
-		assert.Equal(t, g, sm.startMarkLocked(0),
-			"reserve=%d must not move the start mark", reserve)
-		sm.mu.Unlock()
-	}
-}
-
 func TestPressureMarks_ProfileDrivenWithFallback(t *testing.T) {
+	usable := 100000 - 10000
 
-	// Start is always G; the profile's warning threshold sets shed depth.
+	// The profile's critical/warning thresholds ARE the marks.
 	custom := ProfileDefaults[loomv1.WorkloadProfile_WORKLOAD_PROFILE_BALANCED]
 	custom.CriticalThresholdPercent = 80
 	custom.WarningThresholdPercent = 50
 	sm := NewSegmentedMemoryWithCompression("ROM", 100000, 10000, custom)
 	sm.mu.Lock()
-	assert.Equal(t, 100000, sm.startMarkLocked(0))
-	assert.Equal(t, 50*100000/100, sm.releaseMarkLocked(0))
+	assert.Equal(t, 80*usable/100, sm.startMarkLocked(0))
+	assert.Equal(t, 50*usable/100, sm.releaseMarkLocked(0))
 	sm.mu.Unlock()
 
 	// A hand-built profile with a missing or inverted pair falls back to 90/60.
@@ -401,8 +374,8 @@ func TestPressureMarks_ProfileDrivenWithFallback(t *testing.T) {
 		p.WarningThresholdPercent = bad.warning
 		sm := NewSegmentedMemoryWithCompression("ROM", 100000, 10000, p)
 		sm.mu.Lock()
-		assert.Equal(t, 100000, sm.startMarkLocked(0), "critical=%d warning=%d", bad.critical, bad.warning)
-		assert.Equal(t, 60*100000/100, sm.releaseMarkLocked(0), "critical=%d warning=%d", bad.critical, bad.warning)
+		assert.Equal(t, 90*usable/100, sm.startMarkLocked(0), "critical=%d warning=%d", bad.critical, bad.warning)
+		assert.Equal(t, 60*usable/100, sm.releaseMarkLocked(0), "critical=%d warning=%d", bad.critical, bad.warning)
 		sm.mu.Unlock()
 	}
 }
@@ -530,8 +503,11 @@ func TestReleasePressure_FoldDiscardsStaleSnapshot(t *testing.T) {
 	sm.mu.Lock()
 	n := sm.summary.n
 	sm.mu.Unlock()
-	assert.Equal(t, 100, n,
-		"the stale fold (would-be version 1) must be discarded; the retry builds version 100 on top of the raced state")
+	// The stale fold (would-be version 1) is discarded and the retry builds on
+	// the raced state's version 100. With eviction gone the ladder may fold
+	// again after it, so the version is 100 or later — never 1.
+	assert.GreaterOrEqual(t, n, 100,
+		"the stale fold (would-be version 1) must be discarded; the retry builds on top of the raced state")
 	assert.Contains(t, sm.GetL2Summary(), "rebuilt on the raced state")
 }
 
@@ -807,4 +783,19 @@ func TestFoldedSkillLoads_SkipsTheCurrentTurn(t *testing.T) {
 
 	// With no turn in flight every pair in the region counts.
 	assert.ElementsMatch(t, []string{"alpha-skill", "beta-skill"}, foldedSkillLoads(region, 0))
+}
+func TestPressureMarks_UsableBase(t *testing.T) {
+	// Marks are percentages of usable = window − output reservation, never of
+	// the full window: a mark above usable would sit beyond the provider's
+	// refusal line and never fire.
+	sm := NewSegmentedMemory("ROM", 200000, 64000)
+	usable := 200000 - 64000
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	assert.Equal(t, 90*usable/100, sm.startMarkLocked(0))
+	assert.Equal(t, 60*usable/100, sm.releaseMarkLocked(0))
+	// The recovery pass lowers both marks by the penalty on the same base, so
+	// a refused prompt can never sit above the recovery start mark.
+	assert.Equal(t, 70*usable/100, sm.startMarkLocked(pressureRecoveryPenalty))
+	assert.Equal(t, 40*usable/100, sm.releaseMarkLocked(pressureRecoveryPenalty))
 }

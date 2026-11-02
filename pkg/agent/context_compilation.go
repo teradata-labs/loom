@@ -581,22 +581,25 @@ func (sm *SegmentedMemory) marksLocked() (start, release int) {
 	return start, release
 }
 
-// startMarkLocked is the HWM: begin relief when the estimate reaches it. The
-// configured MaxTokens IS G — the growth budget (fold every ~G of sheddable
-// conversation), an absolute the same for every model, NOT a fraction of a
-// provider window. The provider's real ceiling is enforced only by the
-// refusal backstop. penalty (percentage points) lowers the mark for the
+// startMarkLocked is G, the start mark: fold when the estimate reaches it. G is
+// the profile's critical threshold percent of the usable window — the window
+// less the reply reservation, which is where the provider refuses. The share
+// left above G is room for what the trigger does not count but the fold call
+// still sends: the summary, the batch in flight, the fold instruction, and the
+// estimate's error. A user moves G with critical_threshold_percent, or with
+// max_context_tokens. penalty (percentage points) lowers the mark for the
 // recovery pass. Must hold lock.
 func (sm *SegmentedMemory) startMarkLocked(penalty int) int {
-	return applyPenalty(100, penalty) * sm.tokenBudget.MaxTokens / 100
+	start, _ := sm.marksLocked()
+	return applyPenalty(start, penalty) * sm.usableLocked() / 100
 }
 
-// releaseMarkLocked is the LWM: shed down to it — the profile's release
-// percentage applied to G. penalty lowers it in step with startMarkLocked so
-// the recovery pass sheds deeper. Must hold lock.
+// releaseMarkLocked is the LWM: shed down to it — the profile's warning
+// threshold percent of the usable window. penalty lowers it in step with
+// startMarkLocked so the recovery pass sheds deeper. Must hold lock.
 func (sm *SegmentedMemory) releaseMarkLocked(penalty int) int {
 	_, release := sm.marksLocked()
-	return applyPenalty(release, penalty) * sm.tokenBudget.MaxTokens / 100
+	return applyPenalty(release, penalty) * sm.usableLocked() / 100
 }
 
 // --- releasePressure (HLD §5.2) ----------------------------------------------

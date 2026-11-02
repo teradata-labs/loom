@@ -433,6 +433,28 @@ func TestNewAgent_DoesNotClobberComputedReservation(t *testing.T) {
 		"the computed reservation survives agent construction")
 	assert.Equal(t, window-effectiveReserve, segMem.usableLocked(),
 		"usable is window minus the real output reservation")
-	assert.Equal(t, window, segMem.startMarkLocked(0),
-		"the start mark is the configured budget (G semantics)")
+	assert.Less(t, segMem.startMarkLocked(0), window-effectiveReserve,
+		"the start mark stays below the provider's refusal line")
+}
+func TestEffectiveOutputReservation_MarksStayBelowRefusalLine(t *testing.T) {
+	const window, wireMaxTokens = 200000, 64000
+
+	reserve := EffectiveOutputReservation("anthropic", "claude-sonnet-4-6", wireMaxTokens, 0, window)
+	sm := NewSegmentedMemory("ROM", window, reserve)
+
+	sm.mu.Lock()
+	start := sm.startMarkLocked(0)
+	sm.mu.Unlock()
+
+	refusalLine := window - wireMaxTokens
+	assert.LessOrEqual(t, start, refusalLine,
+		"the start mark must sit at or below window − max_tokens, or relief can never fire")
+
+	// The pre-fix 10% reserve put the mark above the line — guard the regression.
+	stale := NewSegmentedMemory("ROM", window, window/10)
+	stale.mu.Lock()
+	staleStart := stale.startMarkLocked(0)
+	stale.mu.Unlock()
+	assert.Greater(t, staleStart, refusalLine,
+		"precondition: the 10% reserve is exactly the geometry this fix corrects")
 }
