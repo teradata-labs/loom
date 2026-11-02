@@ -98,7 +98,7 @@ func TestEnforceRequiredSkillTools_MCPResolutionFailure_SkipsCleanly(t *testing.
 
 // TestEnforceRequiredSkillTools_ZeroToolAgentMountsNothing proves a skill's
 // required tools, builtin or MCP, never reach an agent whose tool surface is
-// off (tools.none).
+// off (tools.disabled).
 func TestEnforceRequiredSkillTools_ZeroToolAgentMountsNothing(t *testing.T) {
 	a := newTestAgentWithSkills(t)
 	a.disableToolSurface = true

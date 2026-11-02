@@ -228,10 +228,40 @@ type LLMRateLimitYAML struct {
 
 // ToolsConfigYAML represents tools configuration in YAML
 type ToolsConfigYAML struct {
-	MCP     []MCPToolConfigYAML    `yaml:"mcp"`
-	Custom  []CustomToolConfigYAML `yaml:"custom"`
-	Builtin []string               `yaml:"builtin"`
-	None    bool                   `yaml:"none,omitempty"`
+	MCP      []MCPToolConfigYAML    `yaml:"mcp"`
+	Custom   []CustomToolConfigYAML `yaml:"custom"`
+	Builtin  []string               `yaml:"builtin"`
+	Disabled bool                   `yaml:"disabled,omitempty"`
+}
+
+// UnmarshalYAML applies the same tools field types to both agent YAML formats.
+// Empty and null lists are equivalent; populated-list conflicts are checked once
+// after conversion to proto by validateToolsConfig.
+func (t *ToolsConfigYAML) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("tools must be a mapping")
+	}
+	for i := 0; i < len(node.Content); i += 2 {
+		key, value := node.Content[i].Value, node.Content[i+1]
+		if value.Kind == yaml.AliasNode {
+			value = value.Alias
+		}
+		switch key {
+		case "none":
+			return fmt.Errorf("tools.none is a server setting; use tools.disabled for an agent")
+		case "disabled":
+			if value.Tag != "!!bool" {
+				return fmt.Errorf("tools.disabled must be a boolean")
+			}
+		case "builtin", "mcp", "custom":
+			if value.Kind != yaml.SequenceNode && value.Tag != "!!null" {
+				return fmt.Errorf("tools.%s must be a list or null", key)
+			}
+		}
+	}
+	// Use an alias to decode the fields without calling this method recursively.
+	type toolsConfigYAML ToolsConfigYAML
+	return node.Decode((*toolsConfigYAML)(t))
 }
 
 // MCPToolConfigYAML represents MCP tool configuration in YAML
@@ -517,64 +547,12 @@ func convertK8sToLegacy(k8s *K8sStyleAgentConfig) (AgentConfigYAML, error) {
 	// Tools - handle both old ToolsConfigYAML and new simplified format
 	switch tools := k8s.Spec.Tools.(type) {
 	case map[string]interface{}:
-		if value, exists := tools["none"]; exists {
-			none, ok := value.(bool)
-			if !ok {
-				return legacy, fmt.Errorf("spec.tools.none must be a boolean")
-			}
-			legacy.Agent.Tools.None = none
-			if none {
-				for _, key := range []string{"builtin", "mcp", "custom"} {
-					if value, exists := tools[key]; exists {
-						entries, ok := value.([]interface{})
-						if !ok {
-							return legacy, fmt.Errorf("spec.tools.%s must be a list", key)
-						}
-						if len(entries) > 0 {
-							return legacy, fmt.Errorf("tools.none cannot be combined with builtin, mcp, or custom tools")
-						}
-					}
-				}
-			}
+		var toolsNode yaml.Node
+		if err := toolsNode.Encode(tools); err != nil {
+			return legacy, fmt.Errorf("invalid spec.tools: %w", err)
 		}
-		// Old format with mcp/custom/builtin
-		if mcp, ok := tools["mcp"].([]interface{}); ok {
-			for _, m := range mcp {
-				if mcpMap, ok := m.(map[string]interface{}); ok {
-					server, _ := mcpMap["server"].(string)
-					var toolsList []string
-					if t, ok := mcpMap["tools"].([]interface{}); ok {
-						for _, tool := range t {
-							if toolStr, ok := tool.(string); ok {
-								toolsList = append(toolsList, toolStr)
-							}
-						}
-					}
-					legacy.Agent.Tools.MCP = append(legacy.Agent.Tools.MCP, MCPToolConfigYAML{
-						Server: server,
-						Tools:  toolsList,
-					})
-				}
-			}
-		}
-		if builtin, ok := tools["builtin"].([]interface{}); ok {
-			for _, b := range builtin {
-				if builtinStr, ok := b.(string); ok {
-					legacy.Agent.Tools.Builtin = append(legacy.Agent.Tools.Builtin, builtinStr)
-				}
-			}
-		}
-		if custom, ok := tools["custom"].([]interface{}); ok {
-			for _, c := range custom {
-				if customMap, ok := c.(map[string]interface{}); ok {
-					name, _ := customMap["name"].(string)
-					impl, _ := customMap["implementation"].(string)
-					legacy.Agent.Tools.Custom = append(legacy.Agent.Tools.Custom, CustomToolConfigYAML{
-						Name:           name,
-						Implementation: impl,
-					})
-				}
-			}
+		if err := toolsNode.Decode(&legacy.Agent.Tools); err != nil {
+			return legacy, fmt.Errorf("invalid spec.tools: %w", err)
 		}
 	case []interface{}:
 		// New simplified format - array of tool names (assume builtin)
@@ -721,10 +699,10 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 
 	// Convert tools config
 	config.Tools = &loomv1.ToolsConfig{
-		Mcp:     make([]*loomv1.MCPToolConfig, len(yaml.Agent.Tools.MCP)),
-		Custom:  make([]*loomv1.CustomToolConfig, len(yaml.Agent.Tools.Custom)),
-		Builtin: yaml.Agent.Tools.Builtin,
-		None:    yaml.Agent.Tools.None,
+		Mcp:      make([]*loomv1.MCPToolConfig, len(yaml.Agent.Tools.MCP)),
+		Custom:   make([]*loomv1.CustomToolConfig, len(yaml.Agent.Tools.Custom)),
+		Builtin:  yaml.Agent.Tools.Builtin,
+		Disabled: yaml.Agent.Tools.Disabled,
 	}
 
 	for i, mcp := range yaml.Agent.Tools.MCP {
@@ -933,8 +911,8 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 }
 
 func validateToolsConfig(tools *loomv1.ToolsConfig) error {
-	if tools.GetNone() && (len(tools.GetBuiltin()) > 0 || len(tools.GetMcp()) > 0 || len(tools.GetCustom()) > 0) {
-		return fmt.Errorf("tools.none cannot be combined with builtin, mcp, or custom tools")
+	if tools.GetDisabled() && (len(tools.GetBuiltin()) > 0 || len(tools.GetMcp()) > 0 || len(tools.GetCustom()) > 0) {
+		return fmt.Errorf("tools.disabled cannot be combined with builtin, mcp, or custom tools")
 	}
 	return nil
 }
@@ -1407,7 +1385,7 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 		}
 
 		yaml.Agent.Tools.Builtin = config.Tools.Builtin
-		yaml.Agent.Tools.None = config.Tools.None
+		yaml.Agent.Tools.Disabled = config.Tools.Disabled
 	}
 
 	// Convert memory config

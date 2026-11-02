@@ -226,6 +226,9 @@ func (s *MultiAgentServer) CreateAgentFromConfig(ctx context.Context, req *loomv
 	if agentConfig.SystemPrompt != "" {
 		opts = append(opts, agent.WithSystemPrompt(agentConfig.SystemPrompt))
 	}
+	if agentConfig.GetTools().GetDisabled() {
+		opts = append(opts, agent.WithoutTools())
+	}
 
 	ag := agent.NewAgent(nil, nil, opts...)
 	ag.SetID(agentID)
@@ -542,6 +545,9 @@ func (s *MultiAgentServer) ReloadAgent(ctx context.Context, req *loomv1.ReloadAg
 			}
 			if newConfig.SystemPrompt != "" {
 				opts = append(opts, agent.WithSystemPrompt(newConfig.SystemPrompt))
+			}
+			if newConfig.GetTools().GetDisabled() {
+				opts = append(opts, agent.WithoutTools())
 			}
 
 			newAgent := agent.NewAgent(nil, nil, opts...)

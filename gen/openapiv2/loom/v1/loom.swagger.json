@@ -9901,7 +9901,7 @@
           },
           "title": "Built-in tools (e.g., \"web_search\", \"calculator\")"
         },
-        "none": {
+        "disabled": {
           "type": "boolean",
           "description": "Expose no tools to this agent, including automatically registered tools.\nGraph memory and other background subsystems remain enabled by their own config.\nCannot be combined with mcp, custom, or builtin."
         }

@@ -815,7 +815,7 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 	for _, name := range suppressedTools {
 		opts = append(opts, WithoutBuiltinTool(name))
 	}
-	if config.GetTools().GetNone() {
+	if config.GetTools().GetDisabled() {
 		opts = append(opts, WithoutTools())
 	}
 
