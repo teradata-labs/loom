@@ -11,6 +11,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -210,6 +211,77 @@ func TestShellExecute_NewlineFreeOverflowStopsPromptly(t *testing.T) {
 			t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
 			assert.True(t, waitGone(pid, 2*time.Second), "shell %d survived the overflow", pid)
 		})
+	}
+}
+
+// elidedMarker matches the marker compactShellOutput puts in place of the
+// middle of a long stream.
+var elidedMarker = regexp.MustCompile(`\n\[\.\.\. (\d+) bytes elided — rerun with a filter \(grep/tail\) to see the middle \.\.\.\]\n`)
+
+// collectedLen returns the length of a stream as collected, before
+// compactShellOutput replaced its middle with the elision marker.
+func collectedLen(t *testing.T, s string) int {
+	t.Helper()
+	m := elidedMarker.FindStringSubmatchIndex(s)
+	if m == nil {
+		return len(s)
+	}
+	elided, err := strconv.Atoi(s[m[2]:m[3]])
+	require.NoError(t, err)
+	return len(s) - (m[1] - m[0]) + elided
+}
+
+// A final line with no trailing newline whose length is an exact multiple of
+// the 64 KiB read buffer used to vanish: ReadLine hands back a full buffer
+// with isPrefix=true, then io.EOF, and the pending line was dropped on EOF.
+// Lengths either side of the boundary and a final line after normal lines are
+// covered too, on both streams.
+func TestShellExecute_OutputOnReadBufferBoundaryIsKept(t *testing.T) {
+	const buf = 64 * 1024
+	flood := func(n int) string {
+		return "head -c " + strconv.Itoa(n) + " /dev/zero | tr '\\0' a"
+	}
+	for _, tc := range []struct {
+		name    string
+		command string
+		want    int    // collected stream length: its lines joined with "\n"
+		prefix  string // expected start of the stream, when set
+	}{
+		{name: "exactly 64KiB", command: flood(buf), want: buf, prefix: "aaa"},
+		{name: "exactly 128KiB", command: flood(2 * buf), want: 2 * buf, prefix: "aaa"},
+		{name: "64KiB minus one", command: flood(buf - 1), want: buf - 1, prefix: "aaa"},
+		{name: "64KiB plus one", command: flood(buf + 1), want: buf + 1, prefix: "aaa"},
+		{
+			name:    "lines then 64KiB final line without newline",
+			command: "printf 'first\\nsecond\\n'; " + flood(buf),
+			want:    len("first\nsecond\n") + buf,
+			prefix:  "first\nsecond\naaa",
+		},
+		{
+			name:    "lines then short final line without newline",
+			command: "printf 'first\\nsecond\\nlast'",
+			want:    len("first\nsecond\nlast"),
+			prefix:  "first\nsecond\nlast",
+		},
+	} {
+		for _, stream := range []struct{ name, redirect, other string }{
+			{"stdout", "", "stderr"},
+			{"stderr", " >&2", "stdout"},
+		} {
+			t.Run(tc.name+"/"+stream.name, func(t *testing.T) {
+				res, err := NewShellExecuteTool("").Execute(context.Background(), map[string]interface{}{
+					"command":         "{ " + tc.command + "; }" + stream.redirect,
+					"timeout_seconds": float64(30),
+				})
+				require.NoError(t, err)
+				require.True(t, res.Success, "%+v", res.Error)
+				data := shellData(t, res)
+				got := data[stream.name].(string)
+				assert.Equal(t, tc.want, collectedLen(t, got), "%s lost bytes", stream.name)
+				assert.True(t, strings.HasPrefix(got, tc.prefix), "%s starts %q", stream.name, got[:min(len(got), 32)])
+				assert.Empty(t, data[stream.other], "%s should be empty", stream.other)
+			})
+		}
 	}
 }
 

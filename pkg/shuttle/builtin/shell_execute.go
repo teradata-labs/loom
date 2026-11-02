@@ -424,11 +424,8 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 		var line []byte
 		for {
 			frag, isPrefix, err := reader.ReadLine()
-			if err != nil {
-				return
-			}
 			n := int64(len(frag))
-			if !isPrefix {
+			if !isPrefix && err == nil {
 				n++ // the newline
 			}
 			mu.Lock()
@@ -440,11 +437,20 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 				return
 			}
 			line = append(line, frag...)
-			if !isPrefix {
-				*lines = append(*lines, string(line))
+			// On EOF or any other read error, keep the pending line: a
+			// final line with no newline whose length is an exact multiple
+			// of the buffer arrives as full isPrefix fragments followed by
+			// an error with no bytes, and was dropped here.
+			if !isPrefix || err != nil {
+				if err == nil || len(line) > 0 {
+					*lines = append(*lines, string(line))
+				}
 				line = line[:0]
 			}
 			mu.Unlock()
+			if err != nil {
+				return
+			}
 		}
 	}
 
