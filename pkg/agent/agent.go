@@ -2829,39 +2829,6 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				segMem.SetAdvertisedToolsBytes(advertisedToolsBytes(tools))
 			}
 		}
-		// Even the smallest prompt a fold can leave does not fit: the step's
-		// own results are the model's to read and nothing may excise them, so
-		// every send would be refused. End the turn with an error the user can
-		// act on instead.
-		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
-			if o, over := segMem.CurrentTurnOverflow(); over {
-				cause := fmt.Errorf("turn produced too many tool results to fit the context window: "+
-					"%d of %d results are bounded and the smallest prompt a fold can leave is %d tokens "+
-					"against a window of %d; split the work into smaller batches across turns",
-					o.StubbedResults, o.ToolResults, o.FloorTokens, o.StartTokens)
-				zap.L().Error("current turn overflow: turn ends",
-					zap.String("session_id", session.ID),
-					zap.Int("turn", turnCount),
-					zap.Int("floor_tokens", o.FloorTokens),
-					zap.Int("start_tokens", o.StartTokens),
-					zap.Int("stubbed_results", o.StubbedResults),
-					zap.Int("tool_results", o.ToolResults))
-				span.AddEvent("turn.current_turn_overflow", map[string]interface{}{
-					"turn":            turnCount,
-					"floor_tokens":    o.FloorTokens,
-					"start_tokens":    o.StartTokens,
-					"stubbed_results": o.StubbedResults,
-					"tool_results":    o.ToolResults,
-				})
-				return nil, recovery.buildRecoverableError("current_turn_overflow", cause, "",
-					map[string]any{
-						"floor_tokens":    o.FloorTokens,
-						"start_tokens":    o.StartTokens,
-						"stubbed_results": o.StubbedResults,
-						"tool_results":    o.ToolResults,
-					})
-			}
-		}
 
 		// withReminder appends the transient tail — the turn's soft reminder —
 		// as one trailing message on a copy: transient, past every cache

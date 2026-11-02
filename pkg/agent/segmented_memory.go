@@ -268,6 +268,7 @@ func (sm *SegmentedMemory) SetSessionStore(store SessionStorage, sessionID strin
 	sm.sessionStore = store
 	sm.sessionID = sessionID
 }
+
 // SetOffloadExemptTools is kept for callers written against it. Exemption is
 // decided where a result arrives, on the agent's Memory (Memory.
 // SetOffloadExemptTools): an exempt tool's result enters whole, and nothing
@@ -275,7 +276,6 @@ func (sm *SegmentedMemory) SetSessionStore(store SessionStorage, sessionID strin
 //
 // Deprecated: set the exempt tools on Memory or Agent.
 func (sm *SegmentedMemory) SetOffloadExemptTools(names []string) {}
-
 
 // SetToolSnapshotDir sets the workspace-relative directory the truncation
 // tails cite (empty disables snapshot tails; see the field doc).
