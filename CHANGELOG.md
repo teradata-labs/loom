@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 #### Agent turn: tool results bounded at arrival, in-loop fold, per-call accounting
-- **Every billed message carries what it cost.** `model`, `effort`, input/output, cache-create split by TTL (1h/5m), cache-read and thinking tokens, on the assistant row the LLM call produced (migrations 000025–000027).
+- **Every billed message carries what it cost.** `model`, `effort`, input/output, cache-create split by TTL (1h/5m), cache-read and thinking tokens, on the assistant row the LLM call produced (migration 000025).
 - **In-loop fold.** When the estimate crosses the start mark, the next call carries one transient fold instruction; the agent itself answers with the summary, on its own warm cache, and the harness performs the collapse. The compressor subsystem remains as the failsafe.
 - **`file_read` no longer cuts at 1000 lines by default**; `max_lines` is the caller's narrowing knob, and the arrival-time row bound is the one bounding point for context.
 
@@ -86,7 +86,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Automatic graph memory is off.** Background extraction and recall injection put LLM bookkeeping calls on the message critical path; graph memory is reached through the explicit `graph_memory` tool.
 - **`behavior.context_relief_warning` and `Config.ContextReliefWarning` are removed**, with the context-window warning they enabled. Relief folds every G of growth — an absolute budget, not a share of the model's window — so there is no fill percentage to report, and the model is not told about its context budget: a budget signal pushes a model to cut corners, and the one context relief cannot shrink, a single step returning many results, is prevented by bounding each result as it arrives. An agent file that still sets the key loads; the key is ignored.
 - **The LLM retry policy is fixed, not configured.** `Config.Retry` and `RetryConfig` are gone; every call runs under the same backoff.
-- **Postgres migrations 000025–000027 are new.** `000024_task_attribution` keeps its number.
+- **Postgres migration 000025 is new.** `000024_task_attribution` keeps its number.
 
 ### Breaking Changes
 
