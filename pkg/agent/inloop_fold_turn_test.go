@@ -199,3 +199,31 @@ func TestInloopFold_KCountsAgentStepsSoTheFloorIsFlat(t *testing.T) {
 		assert.Equal(t, floors[0], floors[i], "the floor grew between folds: %v", floors)
 	}
 }
+
+// A scripted turn calls no model, so it is never asked for a fold: its text is
+// the turn's reply, never a summary — even past G, and even when the replayed
+// text looks like a fold reply.
+func TestInloopFold_AScriptedTurnIsNeverTakenAsAFold(t *testing.T) {
+	model := &foldingStream{steps: 24}
+	ag, _ := foldingAgent(t, model)
+	ctx := context.Background()
+	_, err := ag.Chat(ctx, "s-replay", "do the long job")
+	require.NoError(t, err)
+
+	// Grow the session past G again without a model: big tool rows.
+	sess := ag.memory.GetOrCreateSessionWithAgent(ctx, "s-replay", ag.config.Name, "")
+	rows := strings.Repeat("id=12345 name=widget qty=7 status=open\n", 60)
+	for i := 0; i < 40; i++ {
+		id := fmt.Sprintf("r%d", i)
+		ag.appendMessage(ctx, sess, Message{Role: "assistant", ToolCalls: []ToolCall{{ID: id, Name: "step"}}}, false)
+		ag.appendMessage(ctx, sess, Message{Role: "tool", ToolUseID: id, Content: rows}, false)
+	}
+	segMem := sess.SegmentedMem.(*SegmentedMemory)
+	require.True(t, segMem.NeedsFold(), "the session is not past G; the test does not reach the fold")
+
+	replay := `{"summary": "REPLAYED-ASSISTANT-TEXT"}`
+	resp, err := ag.Chat(WithScriptedResponse(ctx, replay), "s-replay", "next")
+	require.NoError(t, err)
+	assert.Equal(t, replay, resp.Content)
+	assert.NotContains(t, segMem.summary.text, "REPLAYED-ASSISTANT-TEXT", "a scripted reply was taken as the fold's summary")
+}

@@ -2801,7 +2801,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// agent summarises itself on its own warm cache. The pressure path
 		// below stays as the failsafe, entered only after the in-loop fold
 		// has failed its retries.
-		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil && !foldPending && foldRetries < 2 && segMem.NeedsFold() {
+		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil && !foldPending && foldRetries < 2 && !scriptedTurn(ctx) && segMem.NeedsFold() {
 			foldPending = true
 			zap.L().Info("inloopFold: armed",
 				zap.String("session_id", session.ID),
