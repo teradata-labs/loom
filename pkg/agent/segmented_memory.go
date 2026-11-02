@@ -608,6 +608,24 @@ func (sm *SegmentedMemory) recountKernel() {
 	sm.cachedKernelTokens = tokenFigure(sm.kernelBytes)
 }
 
+// SettledMessagesForLLM is the compiled context without the pending pair —
+// the last assistant row and the results after it. It is what the fold call
+// sends: the summary covers the settled past, and the pending pair is kept
+// whole by the fold, so the call need not carry the step's results. It is
+// the previous call's request exactly, and reads all of it from the cache.
+func (sm *SegmentedMemory) SettledMessagesForLLM() []Message {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	settled := sm.contextMessages
+	for i := len(settled) - 1; i >= 0; i-- {
+		if settled[i].Role == "assistant" {
+			settled = settled[:i]
+			break
+		}
+	}
+	return sm.compileMessagesLocked(settled, sm.currentTurnLocked())
+}
+
 // GetMessagesForLLM builds the compiled context for the LLM call
 // (ContextCompilation, HLD §5.2 steps 1–7).
 func (sm *SegmentedMemory) GetMessagesForLLM() []Message {

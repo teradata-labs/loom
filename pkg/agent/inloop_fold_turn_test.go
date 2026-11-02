@@ -45,6 +45,13 @@ type foldingStream struct {
 	taken       int
 	folds       int
 	refuseFolds int
+	// toolFolds answers the first toolFolds fold requests with tool calls.
+	toolFolds int
+	// sent is every call's messages, in order; foldAt marks the fold calls.
+	sent   [][]Message
+	foldAt []bool
+	// summary is the fold reply's summary; empty means the short default.
+	summary string
 }
 
 const callCost = 0.01
@@ -60,14 +67,26 @@ func (f *foldingStream) ChatStream(_ context.Context, msgs []Message, _ []shuttl
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	usage := llmtypes.Usage{InputTokens: 100, OutputTokens: 10, TotalTokens: 110, CostUSD: callCost}
-	if strings.Contains(msgs[len(msgs)-1].Content, "Context maintenance: summarise the work so far") {
+	isFold := strings.Contains(msgs[len(msgs)-1].Content, "Context maintenance: summarise the work so far")
+	f.sent = append(f.sent, append([]Message(nil), msgs...))
+	f.foldAt = append(f.foldAt, isFold)
+	if isFold {
+		if f.toolFolds > 0 {
+			f.toolFolds--
+			return &LLMResponse{Content: "", StopReason: "tool_use", Usage: usage,
+				ToolCalls: []ToolCall{{ID: "fold-tool", Name: "step", Input: map[string]interface{}{}}}}, nil
+		}
 		if f.refuseFolds > 0 {
 			f.refuseFolds--
 			return nil, fmt.Errorf("API error (status 400): prompt is too long: %w", llm.ErrContextTooLong)
 		}
 		f.folds++
-		cb(foldSummaryJSON)
-		return &LLMResponse{Content: foldSummaryJSON, StopReason: "end_turn", Usage: usage}, nil
+		reply := foldSummaryJSON
+		if f.summary != "" {
+			reply = `{"summary": "` + f.summary + `"}`
+		}
+		cb(reply)
+		return &LLMResponse{Content: reply, StopReason: "end_turn", Usage: usage}, nil
 	}
 	if f.taken >= f.steps {
 		cb("final answer")
@@ -91,6 +110,7 @@ func foldingAgent(t *testing.T, model *foldingStream) (*Agent, *SessionStore) {
 	cfg.MaxContextTokens = 12000
 	cfg.ReservedOutputTokens = 2000
 	cfg.MaxIterations = 100
+	cfg.MaxTurns = 200 // fold calls are loop passes too: the long jobs here must not hit the turn cap
 	cfg.MaxToolExecutions = 100
 	ag := NewAgent(&mockBackend{}, model, WithConfig(cfg), WithMemory(NewMemoryWithStore(store)))
 	ag.RegisterTool(&shuttle.MockTool{
@@ -226,4 +246,78 @@ func TestInloopFold_AScriptedTurnIsNeverTakenAsAFold(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, replay, resp.Content)
 	assert.NotContains(t, segMem.summary.text, "REPLAYED-ASSISTANT-TEXT", "a scripted reply was taken as the fold's summary")
+}
+
+// A fold call is the previous call's request exactly, plus the fold ask: it
+// carries no result of the step in flight — the fold keeps those whole — so
+// its whole prefix is the one the previous call cached.
+func TestInloopFold_TheFoldCallIsThePreviousCallsRequest(t *testing.T) {
+	model := &foldingStream{steps: 24}
+	ag, _ := foldingAgent(t, model)
+	_, err := ag.Chat(context.Background(), "s-prefix", "do the long job")
+	require.NoError(t, err)
+	require.Positive(t, model.folds)
+	checked := 0
+	for i := 1; i < len(model.sent); i++ {
+		if !model.foldAt[i] || model.foldAt[i-1] {
+			continue
+		}
+		prev, fold := model.sent[i-1], model.sent[i]
+		require.Equal(t, len(prev)+1, len(fold), "the fold call is the previous request plus the ask")
+		for j := range prev {
+			assert.Equal(t, prev[j].Role, fold[j].Role, "call %d message %d", i, j)
+			assert.Equal(t, prev[j].Content, fold[j].Content, "call %d message %d", i, j)
+		}
+		checked++
+	}
+	require.Positive(t, checked, "no fold call followed a step call")
+}
+
+// countingCompressor counts the pressure ladder's summary calls.
+type countingCompressor struct{ calls int }
+
+func (c *countingCompressor) CompressMessages(context.Context, []Message) (string, error) {
+	c.calls++
+	return "compressed", nil
+}
+func (c *countingCompressor) IsEnabled() bool { return true }
+
+// The in-loop fold is the only thing that sheds before a send: a turn that
+// folds again and again never runs the pressure ladder, whose estimate counts
+// the summary and so would cross G first on every cycle after the first.
+func TestInloopFold_NoLadderRunsBeforeASend(t *testing.T) {
+	// A summary the size real runs write (2-3K tokens): it is what puts the
+	// ladder's estimate over G before the fold's.
+	model := &foldingStream{steps: 40, summary: strings.Repeat("state of the work, decisions and paths. ", 200)}
+	ag, store := foldingAgent(t, model)
+	comp := &countingCompressor{}
+	ag.memory.SetCompressor(comp)
+	_, err := ag.Chat(context.Background(), "s-noladder", "do the long job")
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, model.folds, 2, "the turn did not fold more than once")
+	assert.Zero(t, comp.calls, "the pressure ladder shed before a send")
+	snaps, err := store.LoadMemorySnapshots(context.Background(), "s-noladder", "fold", 100)
+	require.NoError(t, err)
+	assert.Equal(t, model.folds, len(snaps), "a summary was written by something other than the in-loop fold")
+}
+
+// A fold reply that is tool calls was made without the step's results, which
+// the fold call leaves out: it is discarded, not executed, and the fold is
+// asked again.
+func TestInloopFold_AToolCallFoldReplyIsNotExecuted(t *testing.T) {
+	model := &foldingStream{steps: 24, toolFolds: 1}
+	ag, _ := foldingAgent(t, model)
+	var stepRuns int
+	ag.RegisterTool(&shuttle.MockTool{
+		MockName: "step",
+		MockExecute: func(_ context.Context, in map[string]interface{}) (*shuttle.Result, error) {
+			stepRuns++
+			return &shuttle.Result{Success: true, Data: "ok"}, nil
+		},
+	})
+	resp, err := ag.Chat(context.Background(), "s-toolfold", "do the long job")
+	require.NoError(t, err)
+	assert.Equal(t, "final answer", resp.Content)
+	require.Positive(t, model.folds, "the fold was not asked again after a tool-call reply")
+	assert.Equal(t, model.taken, stepRuns, "a fold reply's tool call was executed")
 }

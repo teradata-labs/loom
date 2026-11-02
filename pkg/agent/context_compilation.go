@@ -54,7 +54,15 @@ const syntheticFailedResult = "[no result recorded — the call did not complete
 // render cases, with pair atomicity restored by synthetic failed results.
 // Must hold lock.
 func (sm *SegmentedMemory) compileLocked() []Message {
-	out := make([]Message, 0, len(sm.contextMessages)+2)
+	return sm.compileMessagesLocked(sm.contextMessages, sm.currentTurnLocked())
+}
+
+// compileMessagesLocked is compileLocked over msgs, rendered for turn t. The
+// fold call compiles the settled context — everything before the pending pair
+// — through it, rendered for the same turn as the call before it, so its
+// bytes and breakpoints are that call's prefix. Must hold lock.
+func (sm *SegmentedMemory) compileMessagesLocked(msgs []Message, t int64) []Message {
+	out := make([]Message, 0, len(msgs)+2)
 
 	// Step 2: ROM. Its own cache breakpoint — the most stable prefix; survives a
 	// fold, which only invalidates from the summary downward.
@@ -79,9 +87,6 @@ func (sm *SegmentedMemory) compileLocked() []Message {
 				"\n\nExact values quoted in this summary (expected outputs, literals, paths, interfaces) are unverified — the summary may restate them imprecisely. Before relying on one, read it from its source.\n</system-reminder>"})
 	}
 
-	// Step 5: T — the session's current turn number.
-	t := sm.currentTurnLocked()
-
 	// Render cases + pair atomicity. Track the message cache breakpoint: the
 	// last message before any CURRENT-TURN content that can re-render at
 	// settle. An offload-exempt tool's current-turn result renders whole and
@@ -89,7 +94,6 @@ func (sm *SegmentedMemory) compileLocked() []Message {
 	// mismatch the next call's prefix. Non-exempt over-threshold rows render
 	// their truncated §4.1 bytes from the first compile and never change;
 	// they sit behind the same freeze conservatively.
-	msgs := sm.contextMessages
 	lastStable, frozen := len(out)-1, false
 	emit := func(m *Message) {
 		out = append(out, sm.renderLocked(m, t))
