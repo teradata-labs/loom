@@ -141,14 +141,39 @@ func claudeAtLeast45(id string) bool {
 	return major > 4 || (major == 4 && minor >= 5)
 }
 
+// bedrockResourceID returns the model or inference-profile id a Bedrock model
+// identifier names. A bare id ("global.anthropic.claude-…") is returned as is.
+// An ARN — arn:<partition>:bedrock:<region>:<account>:<type>/<id> — returns
+// the <id> after the resource type: for "foundation-model/" a base model id
+// ("anthropic.claude-…", in-region), for "inference-profile/" a system-defined
+// profile id ("us.anthropic.claude-…", "global.anthropic.claude-…"), and for
+// "application-inference-profile/" or "provisioned-model/" an opaque id that
+// names no model. The id may itself contain ':' ("…-v1:0"), so only the first
+// five ARN separators are split on.
+func bedrockResourceID(modelID string) string {
+	if !strings.HasPrefix(modelID, "arn:") {
+		return modelID
+	}
+	parts := strings.SplitN(modelID, ":", 6)
+	if len(parts) != 6 {
+		return modelID
+	}
+	if _, id, ok := strings.Cut(parts[5], "/"); ok {
+		return id
+	}
+	return parts[5]
+}
+
 // BedrockEndpointMultiplier returns the factor Bedrock applies to every token
 // bucket (input, output, cache writes, cache reads) for a model id, by endpoint.
 // For Claude 4.5 and later, regional endpoints — geographic inference profiles
 // ("us.", "eu.", "apac.", …) and in-region ids ("anthropic.…") — carry a 10%
 // premium over global endpoints ("global."). Earlier models and non-Claude ids
-// return 1.0.
+// return 1.0. A Bedrock ARN is classified by the model or profile id it
+// carries (see bedrockResourceID), so a global inference-profile ARN is
+// global; an application inference profile ARN names no model and returns 1.0.
 func BedrockEndpointMultiplier(modelID string) float64 {
-	id := strings.ToLower(modelID)
+	id := bedrockResourceID(strings.ToLower(modelID))
 	if strings.HasPrefix(id, "global.") || !claudeAtLeast45(id) {
 		return 1.0
 	}

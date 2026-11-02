@@ -148,6 +148,19 @@ func TestBedrockEndpointMultiplier(t *testing.T) {
 		{"us.anthropic.claude-sonnet-4-20250514-v1:0", 1.0}, // date is not a minor version
 		{"anthropic.claude-3-5-sonnet-20240620-v1:0", 1.0},
 		{"us.meta.llama3-70b-instruct-v1:0", 1.0},
+		// ARNs are classified by the model or profile id they carry, paired
+		// with the bare-id cases above.
+		{"arn:aws:bedrock:us-east-1:123456789012:inference-profile/global.anthropic.claude-sonnet-4-5-20250929-v1:0", 1.0},
+		{"arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0", 1.1},
+		{"arn:aws:bedrock:us-east-1:123456789012:inference-profile/global.anthropic.claude-opus-5-5", 1.0},
+		{"arn:aws:bedrock:eu-west-1:123456789012:inference-profile/eu.anthropic.claude-opus-5-5", 1.1},
+		{"ARN:AWS:BEDROCK:US-EAST-1:123456789012:INFERENCE-PROFILE/GLOBAL.ANTHROPIC.CLAUDE-FABLE-5", 1.0},
+		{"arn:aws-us-gov:bedrock:us-gov-west-1:123456789012:inference-profile/us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0", 1.1},
+		{"arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0", 1.1}, // in-region
+		{"arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-20250514-v1:0", 1.0},
+		{"arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-opus-4-1-20250805-v1:0", 1.0},
+		// An application inference profile id is opaque: no model, no premium.
+		{"arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/a1b2c3d4e5f6", 1.0},
 	} {
 		assert.InDelta(t, tc.want, BedrockEndpointMultiplier(tc.id), 1e-12, tc.id)
 	}

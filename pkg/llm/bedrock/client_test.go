@@ -686,6 +686,28 @@ func TestClient_CalculateCost_ModelPricing(t *testing.T) {
 			cacheCreationTokens: tokens,
 			wantCost:            32.12, // ($4 + $20 + $5 write + $0.20 read) x 1.1
 		},
+		// --- Inference-profile ARNs price by the profile id they carry ---
+		{
+			name:         "sonnet 4.5 global profile ARN carries no regional premium",
+			modelID:      "arn:aws:bedrock:us-east-1:123456789012:inference-profile/global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     18.0, // $3 + $15, global
+		},
+		{
+			name:         "sonnet 4.5 regional profile ARN carries the regional premium",
+			modelID:      "arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     19.8, // ($3 + $15) x 1.1 regional
+		},
+		{
+			name:         "sonnet 4.5 foundation-model ARN is in-region",
+			modelID:      "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     19.8, // ($3 + $15) x 1.1 regional
+		},
 		{
 			name:         "uncatalogued model reports zero, never an invented rate",
 			modelID:      "us.anthropic.claude-unknown-9-20260101-v1:0",
@@ -850,6 +872,28 @@ func TestSDKClient_CalculateCost_ModelPricing(t *testing.T) {
 			cacheReadTokens:     tokens,
 			cacheCreationTokens: tokens,
 			wantCost:            32.12, // ($4 + $20 + $5 write + $0.20 read) x 1.1
+		},
+		// --- Inference-profile ARNs price by the profile id they carry ---
+		{
+			name:         "sonnet 4.5 global profile ARN carries no regional premium",
+			modelID:      "arn:aws:bedrock:us-east-1:123456789012:inference-profile/global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     18.0, // $3 + $15, global
+		},
+		{
+			name:         "sonnet 4.5 regional profile ARN carries the regional premium",
+			modelID:      "arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     19.8, // ($3 + $15) x 1.1 regional
+		},
+		{
+			name:         "sonnet 4.5 foundation-model ARN is in-region",
+			modelID:      "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     19.8, // ($3 + $15) x 1.1 regional
 		},
 		{
 			name:         "uncatalogued model reports zero, never an invented rate",

@@ -691,7 +691,11 @@ Bedrock pricing varies by region. US East (us-east-1) pricing:
 3. For Claude 4.5 and later, regional endpoints — geographic inference profiles (`us.`, `eu.`,
    `apac.`, …) and in-region ids (`anthropic.…`) — are priced 10% above global endpoints
    (`global.…`), on every token bucket (`catalog.BedrockEndpointMultiplier`). Opus 4.1 and earlier
-   are priced the same on both.
+   are priced the same on both. A model configured by ARN is classified by the id after the
+   resource type: `inference-profile/global.…` is global, `inference-profile/us.…` (or another
+   geography) is regional, and `foundation-model/anthropic.…` is in-region. An
+   `application-inference-profile/` ARN carries an opaque id that names no model, so it gets no
+   family rate and reports a cost of 0 (step 1).
 
 The per-model tables above are base (global-endpoint) rates. The estimate is computed from
 Anthropic's published card; your AWS bill is authoritative.
