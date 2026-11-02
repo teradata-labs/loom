@@ -231,8 +231,11 @@ func NewRateLimiter(config RateLimiterConfig) *RateLimiter {
 // retryable errors: throttling (429 and SDK-level equivalents) and transient
 // server failures (TransientError: 500/502/503/504/529). Both are retried
 // under the one MaxRetries budget with jittered exponential backoff, floored
-// by any server Retry-After and capped at 5 minutes per wait; an exhausted
-// budget returns a RetriesExhaustedError. Any other error is returned as-is.
+// by any server Retry-After. The exponential backoff base is capped at 5
+// minutes before ±50% jitter, so a wait without Retry-After can reach 7.5
+// minutes. A 429 Retry-After is not capped. A 5xx Retry-After is capped at 5
+// minutes. An exhausted budget returns a RetriesExhaustedError. Any other
+// error is returned as-is.
 func (rl *RateLimiter) Do(ctx context.Context, call func(context.Context) (interface{}, error)) (interface{}, error) {
 	if !rl.config.Enabled {
 		// Rate limiting disabled - call directly
@@ -441,8 +444,10 @@ func (rl *RateLimiter) deliver(req *rateLimitedRequest, res *rateLimitedResult) 
 	}
 }
 
-// maxRetryDelay caps the exponential backoff so pathological attempt counts
-// cannot produce multi-hour waits.
+// maxRetryDelay caps the exponential backoff base (before ±50% jitter, so a
+// jittered wait can reach 1.5*maxRetryDelay) so pathological attempt counts
+// cannot produce multi-hour waits. It also caps a transient (5xx) error's
+// Retry-After; a throttle's (429) Retry-After is not capped.
 const maxRetryDelay = 5 * time.Minute
 
 // retryDelay computes the wait before retry attempt attempt+1: exponential
@@ -467,7 +472,7 @@ func (rl *RateLimiter) retryDelay(attempt int, err error) time.Duration {
 	// Honor the server-specified wait when it is longer than the jittered
 	// backoff (delta-seconds, HTTP-date, and x-ratelimit reset forms all
 	// arrive here via ThrottleError/TransientError.RetryAfter). For a
-	// transient (5xx) error the wait never goes beyond maxRetryDelay: a 503
+	// transient (5xx) error the Retry-After is capped at maxRetryDelay: a 503
 	// during a maintenance window can carry Retry-After: 3600 or an HTTP-date
 	// an hour out, and sleeping that long inside execute() would pin the
 	// caller and its scheduler grant. A throttle's (429) Retry-After is not

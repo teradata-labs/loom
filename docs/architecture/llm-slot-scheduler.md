@@ -143,15 +143,17 @@ slot per conversation (the conversation loop is sequential anyway).
 Grant lifetime: a slot covers one LLM call *including its rate-limiter
 retries* — throttling (429) and transient server failures (500/502/503/504/529)
 share one `max_retries` budget and one backoff, so a grant is held for at most
-`max_retries + 1` attempts. Each computed backoff wait is capped at 5 minutes,
-and so is a 5xx's `Retry-After`; a 429's `Retry-After` is honored uncapped, as
-before 5xx retry existed, so a long throttle window holds the grant for as long
-as the provider asks. In practice a
+`max_retries + 1` attempts. The exponential backoff base is capped at 5
+minutes before ±50% jitter, so a wait without `Retry-After` can reach 7.5
+minutes for a 429 or a 5xx. A 429 `Retry-After` is not capped (as before 5xx
+retry existed), so a long throttle window holds the grant for as long as the
+provider asks. A 5xx `Retry-After` is capped at 5 minutes. In practice a
 provider outage therefore holds each scheduled call's slot for the whole
 budget rather than releasing it on the first 5xx: at the limiter defaults
 (`max_retries: 5`, `retry_backoff: 1s`) that is ~31 s of nominal backoff
 (±50% jitter: ~15.5–46.5 s) plus admission pacing, and up to 5 × 5 min when
-the provider sends a long `Retry-After`. Size `max_retries`/`retry_backoff`
+the provider sends a long 5xx `Retry-After` (unbounded for a long 429
+`Retry-After`). Size `max_retries`/`retry_backoff`
 with that hold time in mind; the agent loop does not add a second budget on
 top (a `RetriesExhaustedError` is final).
 The grant carries a token reservation (§3.4); the reservation is trued-up from
