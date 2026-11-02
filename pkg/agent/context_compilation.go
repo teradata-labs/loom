@@ -1089,10 +1089,10 @@ type CurrentTurnOverflow struct {
 }
 
 // CurrentTurnOverflow is kept for callers written against it and reports no
-// overflow. MaxTokens is G, the growth budget a fold keeps the context under,
-// not the provider's window, so no measure against it can say a prompt will
-// not fit. A prompt that does not is refused by the provider, and that refusal
-// is answered where it happens: relief, one resend, then context_exhausted.
+// overflow. Each tool result is bounded as it arrives, so a send that does not
+// fit is a step returning more than the window holds; the provider refuses it,
+// and that refusal is answered where it happens: relief, one resend, then
+// context_exhausted.
 //
 // Deprecated: overflow is the provider's refusal, not a pre-send estimate.
 func (sm *SegmentedMemory) CurrentTurnOverflow() (CurrentTurnOverflow, bool) {
