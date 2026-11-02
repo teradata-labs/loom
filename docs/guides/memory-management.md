@@ -131,8 +131,8 @@ memory:
 **Configuration:**
 - **Max L1 Messages:** 8 (~6400 tokens)
 - **Min L1 Messages:** 4 (minimum preserved for recency)
-- **Warning Threshold (relief low mark):** 60%
-- **Critical Threshold (relief high mark):** 90%
+- **Warning Threshold (release mark):** 60% of G — what the pressure backstop sheds down to
+- **Critical Threshold:** not a fold trigger; the fold starts when the context has grown by G (see below)
 - **Batch Sizes:** normal=3, warning=5, critical=7
 
 **Use Cases:**
@@ -372,7 +372,7 @@ memory:
 **Default behavior:**
 - Max L1 messages: 8 (~6400 tokens at 800 tokens/message)
 - Min L1 messages: 4 (minimum preserved for recency)
-- Thresholds: 60%/90% (balanced profile water marks)
+- Fold start: G, the context's growth budget (`MaxTokens`); release mark 60% of G
 - Max tool results in kernel: 5
 
 These changes provide better compression defaults while maintaining reasonable context preservation.
