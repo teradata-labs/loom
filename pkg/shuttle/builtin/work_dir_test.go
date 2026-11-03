@@ -143,3 +143,55 @@ func TestShellGuardAllowsTheTurnsDirectory(t *testing.T) {
 	require.False(t, res.Success, "a directory nobody named was allowed")
 	assert.Equal(t, "PATH_RESTRICTED", res.Error.Code)
 }
+
+// Every tool that resolves paths against a directory serves a turn in the
+// turn's directory: an edit, an image read and a document parse of a relative
+// path all find the file there, not where the tool was built.
+func TestEveryPathToolWorksWhereTheTurnSays(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	t.Setenv("LOOM_SANDBOX_DIR", root)
+	built, turn := filepath.Join(root, "built"), filepath.Join(root, "turn")
+	require.NoError(t, os.MkdirAll(built, 0o755))
+	require.NoError(t, os.MkdirAll(turn, 0o755))
+	ctx := shuttle.ContextWithWorkDir(context.Background(), turn)
+
+	require.NoError(t, os.WriteFile(filepath.Join(turn, "f.txt"), []byte("hello turn"), 0o644))
+	res, err := NewEditFilesTool(built).Execute(ctx, map[string]interface{}{"edits": []interface{}{
+		map[string]interface{}{"path": "f.txt", "find": "hello", "replace": "bye"}}})
+	require.NoError(t, err)
+	require.True(t, res.Success, "%+v %v", res.Error, res.Data)
+	got, err := os.ReadFile(filepath.Join(turn, "f.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "bye turn", string(got), "the edit did not land in the turn's directory")
+
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0}
+	require.NoError(t, os.WriteFile(filepath.Join(turn, "pic.png"), png, 0o644))
+	res, err = NewVisionTool(built).Execute(ctx, map[string]interface{}{"image_path": "pic.png"})
+	require.NoError(t, err)
+	assert.True(t, res.Success, "the image in the turn's directory was not read: %+v", res.Error)
+
+	require.NoError(t, os.WriteFile(filepath.Join(turn, "t.csv"), []byte("a,b\n1,2\n"), 0o644))
+	res, err = NewDocumentParseTool(built).Execute(ctx, map[string]interface{}{"file_path": "t.csv"})
+	require.NoError(t, err)
+	assert.True(t, res.Success, "the document in the turn's directory was not parsed: %+v", res.Error)
+}
+
+// A relative turn directory is made absolute once, against the process's
+// working directory, so every tool reads the same place.
+func TestARelativeTurnDirectoryIsMadeAbsolute(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pwd")
+	}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	t.Setenv("LOOM_SANDBOX_DIR", root)
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "proj"), 0o755))
+	t.Chdir(root)
+	ctx := shuttle.ContextWithWorkDir(context.Background(), "proj")
+	assert.Equal(t, filepath.Join(root, "proj"), shuttle.WorkDirFromContext(ctx))
+	res, err := NewShellExecuteTool(root).Execute(ctx, map[string]interface{}{"command": "pwd -P"})
+	require.NoError(t, err)
+	require.True(t, res.Success, "a relative turn directory was refused: %+v", res.Error)
+	assert.Equal(t, filepath.Join(root, "proj"), strings.TrimSpace(res.Data.(map[string]interface{})["stdout"].(string)))
+}

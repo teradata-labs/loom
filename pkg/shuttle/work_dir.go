@@ -14,7 +14,10 @@
 
 package shuttle
 
-import "context"
+import (
+	"context"
+	"path/filepath"
+)
 
 type workDirKey struct{}
 
@@ -22,9 +25,15 @@ type workDirKey struct{}
 // tool that takes a working directory starts there, and resolves relative
 // paths there, in place of the directory it was built with. A tool is built
 // once and serves many turns; where one turn works belongs to the turn.
+//
+// A relative dir is made absolute against the process's working directory
+// here, once, so every tool reads the same directory.
 func ContextWithWorkDir(ctx context.Context, dir string) context.Context {
 	if dir == "" {
 		return ctx
+	}
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
 	}
 	return context.WithValue(ctx, workDirKey{}, dir)
 }
