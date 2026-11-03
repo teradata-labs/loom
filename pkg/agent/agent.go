@@ -2945,7 +2945,12 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			return nil, fmt.Errorf("LLM call failed: %w", err)
 		}
 		addUsage(&turnUsage, llmResp.Usage)
-		a.observePromptUsage(session, llmResp.Usage)
+		// Calibration compares what a call billed with loom's count of the
+		// context it sent. A fold call sends only the settled context, not the
+		// compiled whole, so it is left out rather than skew the factor.
+		if !foldPending {
+			a.observePromptUsage(session, llmResp.Usage)
+		}
 		// A fold call writes no row. What it cost rides on the row this call
 		// writes, so the session's rows still sum to what the turn spent. The
 		// prompt figures stay this call's own: they measure what was sent.

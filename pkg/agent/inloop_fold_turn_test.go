@@ -52,6 +52,8 @@ type foldingStream struct {
 	foldAt []bool
 	// summary is the fold reply's summary; empty means the short default.
 	summary string
+	// foldInput, when set, is the prompt size a fold call reports.
+	foldInput int
 }
 
 const callCost = 0.01
@@ -81,6 +83,9 @@ func (f *foldingStream) ChatStream(_ context.Context, msgs []Message, _ []shuttl
 			return nil, fmt.Errorf("API error (status 400): prompt is too long: %w", llm.ErrContextTooLong)
 		}
 		f.folds++
+		if f.foldInput > 0 {
+			usage.InputTokens = f.foldInput
+		}
 		reply := foldSummaryJSON
 		if f.summary != "" {
 			reply = `{"summary": "` + f.summary + `"}`
@@ -320,4 +325,20 @@ func TestInloopFold_AToolCallFoldReplyIsNotExecuted(t *testing.T) {
 	assert.Equal(t, "final answer", resp.Content)
 	require.Positive(t, model.folds, "the fold was not asked again after a tool-call reply")
 	assert.Equal(t, model.taken, stepRuns, "a fold reply's tool call was executed")
+}
+
+// Calibration compares what a call billed with loom's count of what it sent.
+// A fold call sends only the settled context, so it is left out: the factor a
+// turn ends with does not depend on what its fold calls reported.
+func TestInloopFold_AFoldCallDoesNotMoveCalibration(t *testing.T) {
+	factor := func(foldInput int) float64 {
+		model := &foldingStream{steps: 24, foldInput: foldInput}
+		ag, _ := foldingAgent(t, model)
+		_, err := ag.Chat(context.Background(), "s-cal", "do the long job")
+		require.NoError(t, err)
+		require.Positive(t, model.folds, "the turn never folded; the test does not reach the fold")
+		sess := ag.memory.GetOrCreateSessionWithAgent(context.Background(), "s-cal", ag.config.Name, "")
+		return sess.SegmentedMem.(*SegmentedMemory).EstimateCalibration()
+	}
+	assert.Equal(t, factor(100), factor(900000), "a fold call's reported prompt moved the calibration factor")
 }
