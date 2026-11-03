@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Models and providers
 - **Catalog**: Claude Opus 5 and Sonnet 5 direct; on Bedrock, Opus 5, Sonnet 5 and Fable 5 (`us.` and `global.` routes) and the non-Anthropic Converse families (GLM-5, GLM-4.7, GLM-4.7 Flash, DeepSeek V3.2, V3.1, R1) at the published on-demand rates.
 - **Bedrock stamps the effort a call was made at** on the usage record: the effort sent, or nothing when none was (the model's own default then applies).
-- **OpenAI cached-input discount by model**, from OpenAI's price card: the gpt-5 family 0.10×, o3 and gpt-4.1 0.25×, gpt-4o and unlisted models 0.5×. Agentic workloads read cache for most of their input, so the wrong rate misstated a run several-fold.
+- **OpenAI cached-input discount by model**, from OpenAI's published rates: the gpt-5 family 0.10×; o3, o4-mini and gpt-4.1 0.25×; o3-mini, gpt-4o and unlisted models 0.5×. Agentic workloads read cache for most of their input, so the wrong rate misstated a run several-fold.
 - **Anthropic cache marker lands on the last block that can carry one**: thinking blocks cannot, so a turn ending in thinking no longer loses its breakpoint.
 
 #### Opt-in parallel dispatch of read-only tool calls

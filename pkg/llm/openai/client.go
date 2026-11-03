@@ -868,17 +868,21 @@ const (
 )
 
 // openAICacheReadMultiplierFor is the cached-input discount by model, from
-// OpenAI's price card (https://developers.openai.com/api/docs/pricing,
-// standard tier): the gpt-5 family bills a cached token at 0.10x, o3 and
-// gpt-4.1 at 0.25x, gpt-4o at 0.5x. A model the card does not list — o1 and
-// o4-mini among them — takes openAICacheReadMultiplier. Agentic workloads read
-// cache for most of their input, so the wrong tier overstates or understates a
-// run several-fold.
+// OpenAI's published rates (https://developers.openai.com/api/docs/pricing and
+// each model's page under https://developers.openai.com/api/docs/models/): the
+// gpt-5 family bills a cached token at 0.10x; o3, o4-mini and gpt-4.1 at 0.25x;
+// o3-mini ($0.55 against $1.10) and gpt-4o at 0.5x. A model not listed — o1
+// among them — takes openAICacheReadMultiplier. Agentic workloads read cache
+// for most of their input, so the wrong tier overstates or understates a run
+// several-fold.
 func openAICacheReadMultiplierFor(modelID string) float64 {
 	switch {
 	case strings.HasPrefix(modelID, "gpt-5"):
 		return 0.10
+	case strings.HasPrefix(modelID, "o3-mini"):
+		return openAICacheReadMultiplier
 	case strings.HasPrefix(modelID, "o3"),
+		strings.HasPrefix(modelID, "o4-mini"),
 		strings.HasPrefix(modelID, "gpt-4.1"):
 		return 0.25
 	default:
