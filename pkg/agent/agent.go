@@ -62,7 +62,10 @@ func ContextWithProgressCallback(ctx context.Context, callback ProgressCallback)
 
 // ContextWithoutProgressCallback drops whatever progress callback the context
 // carries. Work that outlives the call it was started from must not stream
-// into that caller's reply.
+// into that caller's reply. It drops only the callback: the caller's
+// cancellation, its tool-approval grant and its task attribution still ride on
+// the context, and work meant to outlive its caller removes those too (for
+// cancellation, context.WithoutCancel).
 func ContextWithoutProgressCallback(ctx context.Context) context.Context {
 	return context.WithValue(ctx, progressCallbackKey{}, nil)
 }
