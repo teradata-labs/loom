@@ -421,7 +421,7 @@ redacted `AgentInfo`. `ListAgents` omits `config` entirely. Agent YAML is
 environment-expanded before loading; arbitrary fields such as `system_prompt`
 and metadata are not secret-filtered, so do not embed credentials there.
 
-**Large tool results**: a result is bounded once, at arrival. Above the threshold it enters the conversation as its first bytes plus a tail that says how to reach the rest: the workspace snapshot file holding the whole result when a snapshot directory is configured, otherwise a narrower re-run of the call. What enters memory, what is stored and what the model is sent are the same bytes. Nothing is cut, stubbed or re-rendered later, so a compiled prefix stays valid for the whole session and the fold — not the threshold — is what controls context size.
+**Large tool results**: a result is bounded once, at arrival. Above the threshold it enters the conversation as its first bytes plus a tail that says how much was cut and to narrow the call to see more. What enters memory, what is stored and what the model is sent are the same bytes, so a compiled prefix stays valid for the whole session and the fold — not the threshold — is what controls context size. The one exception: a step whose results together do not fit the context has them replaced, after the provider refuses it, by a note telling the model to call fewer tools at once.
 
 ---
 

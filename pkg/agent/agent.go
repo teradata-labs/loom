@@ -2362,7 +2362,7 @@ func (a *Agent) appendMessage(ctx context.Context, session *Session, msg Message
 	var whole string
 	if msg.Role == "tool" && a.memory != nil && !a.memory.exempt(toolNameOf(session, msg.ToolUseID)) {
 		threshold := a.memory.thresholdOrDefault()
-		bounded := SpillAndTruncateToolRow(msg.Content, threshold, a.memory.toolSnapshotDir, msg.ToolUseID)
+		bounded := truncateToolRowContent(msg.Content, threshold)
 		if bounded != msg.Content {
 			whole = msg.Content
 		}
@@ -4909,17 +4909,6 @@ func (a *Agent) GetAllRoleLLMs() map[loomv1.LLMRole]LLMProvider {
 		result[loomv1.LLMRole_LLM_ROLE_COMPRESSOR] = a.compressorLLM
 	}
 	return result
-}
-
-// SetToolSnapshotDir enables §4.1 result snapshots: every oversize tool
-// result is spilled whole to dir (workspace-relative) once at persist, and
-// every truncation tail cites the file. Empty (the default) disables —
-// embeddings whose file tools run elsewhere (cloud sandbox) must never cite
-// a path those tools cannot see.
-func (a *Agent) SetToolSnapshotDir(dir string) {
-	if a.memory != nil {
-		a.memory.SetToolSnapshotDir(dir)
-	}
 }
 
 // SetSharedMemoryThreshold configures the byte bound above which a tool result

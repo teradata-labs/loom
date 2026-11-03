@@ -759,7 +759,7 @@ Cross-agent access (blocked):
 
 **Large Tool Result Bounding**:
 
-A tool result is bounded once, at arrival (`appendMessage`, `pkg/agent/agent.go`). Above the threshold it enters the conversation as its first bytes plus a tail that says how to reach the rest: the workspace snapshot file holding the whole result when a snapshot directory is configured, otherwise a narrower re-run of the call. The in-memory row, the stored row and the bytes the model is sent are the same, so a session reloaded from the store renders exactly what the producing session did.
+A tool result is bounded once, at arrival (`appendMessage`, `pkg/agent/agent.go`). Above the threshold it enters the conversation as its first bytes plus a tail that says how much was cut and to narrow the call to see more. The in-memory row, the stored row and the bytes the model is sent are the same, so a session reloaded from the store renders exactly what the producing session did. The one exception is a step whose results together do not fit the context: after the provider refuses it, its results are replaced by a note telling the model to call fewer tools at once, in memory and in the store.
 
 Compile applies no size bound of its own and never rewrites a row: a tool row renders with the bytes it holds. Because no row is ever rewritten behind the prompt-cache breakpoint, a compiled prefix stays valid for the life of the session, and the fold is the only thing that invalidates it. The fold, not the threshold, is what controls context size.
 

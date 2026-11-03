@@ -7,23 +7,19 @@ package agent
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
 )
 
 // A tool result is bounded at the door. Above the threshold it enters the
-// session as its first bytes plus the tail naming the file that holds the
-// whole of it; the model is sent exactly those bytes; the file holds the rest.
-// Nothing later has to cut, stub or re-render it, so a result of any size can
-// never outgrow the window.
+// session as its first bytes plus a tail that says how much was cut and to
+// narrow the call; the model is sent exactly those bytes. Nothing later has to
+// cut, stub or re-render it.
 func TestAToolResultIsBoundedAsItArrives(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.PatternConfig = DefaultPatternConfig()
 	cfg.PatternConfig.UseLLMClassifier = false
 	ag := NewAgent(&mockBackend{}, &mockToolCallingLLM{}, WithConfig(cfg))
-	dir := t.TempDir()
-	ag.SetToolSnapshotDir(dir)
 	ag.SetSharedMemoryThreshold(2048)
 
 	ctx := context.Background()
@@ -39,16 +35,11 @@ func TestAToolResultIsBoundedAsItArrives(t *testing.T) {
 	if len(got.Content) > 2048 {
 		t.Fatalf("the result entered the session at %d bytes; the threshold is 2048", len(got.Content))
 	}
-	path := ToolSnapshotPath(dir, "toolu_wide")
-	if !strings.Contains(got.Content, path) {
-		t.Errorf("the result does not name the file holding the whole of it:\n%s", got.Content[len(got.Content)-300:])
+	if !strings.Contains(got.Content, "Narrow the tool call") {
+		t.Errorf("the result's tail does not say how to see more:\n%s", got.Content[len(got.Content)-300:])
 	}
 	if !strings.HasPrefix(got.Content, "a line of a very wide read\n") {
 		t.Errorf("the result lost its own first bytes:\n%.120s", got.Content)
-	}
-	saved, err := os.ReadFile(path)
-	if err != nil || string(saved) != whole {
-		t.Fatalf("the file does not hold the whole result: err=%v len=%d want %d", err, len(saved), len(whole))
 	}
 
 	// What the model is sent is what entered: the same bytes, no re-render.

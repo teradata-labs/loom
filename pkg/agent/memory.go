@@ -62,7 +62,6 @@ type Memory struct {
 	compressionProfile   *CompressionProfile        // Optional compression profile for new sessions (nil = use defaults)
 	compressor           MemoryCompressor           // Optional LLM compressor for L2 compaction (nil = fold drops with an "(unsummarized)" marker)
 	thresholdBytes       int64                      // Offload / row / page bound in bytes (0 = default; HLD §5.1)
-	toolSnapshotDir      string                     // Non-empty: §4.1 tails cite ToolSnapshotPath and persist spills the full bytes there
 	exemptTools          map[string]bool            // Tools whose results enter whole: the arrival bound does not apply to them
 	turnPayloads         map[string]turnPayloads    // Per session: whole bytes of this turn's bounded tool results, by message id
 
@@ -255,22 +254,6 @@ func (m *Memory) wholeOf(sessionID string, turn, id int64) (string, bool) {
 	return content, ok
 }
 
-// SetToolSnapshotDir sets the workspace-relative directory for §4.1 result
-// snapshots, for existing and future sessions. Non-empty: the persist seam
-// spills each oversize tool result there once (the last moment the full bytes
-// exist) and every truncation tail cites the file. Empty (default) disables —
-// an embedding whose tools run elsewhere must never cite a local path.
-func (m *Memory) SetToolSnapshotDir(dir string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.toolSnapshotDir = dir
-	for _, session := range m.sessions {
-		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
-			segMem.SetToolSnapshotDir(dir)
-		}
-	}
-}
-
 // thresholdOrDefault returns the configured threshold, else the default bound.
 // Never below minThreshold: this value is the persist-time row bound, and a
 // smaller one cannot hold stored = core + tail ≤ threshold (§4.1).
@@ -347,7 +330,6 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 	compProfile := m.compressionProfile
 	compressor := m.compressor
 	thresholdBytes := m.thresholdBytes
-	snapshotDir := m.toolSnapshotDir
 	logger := m.logger
 	ctxDebug := m.ctxDebug
 	skillDeactivation := m.skillDeactivation
@@ -457,7 +439,6 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 	if thresholdBytes > 0 {
 		segMem.SetThreshold(thresholdBytes)
 	}
-	segMem.SetToolSnapshotDir(snapshotDir)
 	segMem.SetContextDebug(ctxDebug)
 	segMem.SetSkillDeactivationHook(skillDeactivation)
 	if protectedTurns > 0 {
@@ -696,7 +677,6 @@ func (m *Memory) ensureSessionMemory(session *Session, sessionID string,
 		if m.thresholdBytes > 0 {
 			segMem.SetThreshold(m.thresholdBytes)
 		}
-		segMem.SetToolSnapshotDir(m.toolSnapshotDir)
 		segMem.SetContextDebug(m.ctxDebug)
 		segMem.SetSkillDeactivationHook(m.skillDeactivation)
 		if m.protectedRecentTurns > 0 {
@@ -808,7 +788,7 @@ func (m *Memory) PersistMessage(ctx context.Context, sessionID string, msg *Mess
 		stored := *msg
 		// Snapshot spill + truncation (§4.1): persist is the last moment the
 		// full bytes exist — the stored row below IS the truncation.
-		stored.Content = SpillAndTruncateToolRow(stored.Content, threshold, m.toolSnapshotDir, msg.ToolUseID)
+		stored.Content = truncateToolRowContent(stored.Content, threshold)
 		// The raw ToolResult record rides the row as tool_result_json; a payload
 		// copy above the threshold would defeat the §4.1 row bound, so it is
 		// dropped from the stored copy (content already carries the rendered

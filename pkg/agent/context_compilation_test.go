@@ -35,7 +35,7 @@ import (
 func TestTruncateToolRowContent_Bounds(t *testing.T) {
 	threshold := 1024
 	content := strings.Repeat("x", 5000)
-	stored := truncateToolRowContent(content, threshold, "")
+	stored := truncateToolRowContent(content, threshold)
 	require.LessOrEqual(t, len(stored), threshold,
 		"a truncated row must never itself exceed the threshold (§4.1)")
 	assert.True(t, strings.HasSuffix(stored, "and re-run to see more.]"),
@@ -43,15 +43,15 @@ func TestTruncateToolRowContent_Bounds(t *testing.T) {
 	assert.Contains(t, stored, "of 5000 bytes shown")
 	// Below the bound: unchanged.
 	small := strings.Repeat("y", 100)
-	assert.Equal(t, small, truncateToolRowContent(small, threshold, ""))
+	assert.Equal(t, small, truncateToolRowContent(small, threshold))
 	// At the bound exactly: unchanged (stored = threshold is legal).
 	exact := strings.Repeat("z", threshold)
-	assert.Equal(t, exact, truncateToolRowContent(exact, threshold, ""))
+	assert.Equal(t, exact, truncateToolRowContent(exact, threshold))
 }
 
 func TestTruncateToolRowContent_RuneBoundary(t *testing.T) {
 	content := strings.Repeat("é", 4000) // 2-byte runes
-	stored := truncateToolRowContent(content, 1024, "")
+	stored := truncateToolRowContent(content, 1024)
 	require.LessOrEqual(t, len(stored), 1024)
 	core := stored[:strings.LastIndex(stored, "[truncated: ")]
 	assert.True(t, strings.HasSuffix(core, "é") || core == "",
@@ -535,7 +535,7 @@ func TestThresholdFloor_AllConsumers(t *testing.T) {
 		"the compile-time offload bound clamps to the floor")
 
 	// The invariant the floor exists to protect, at the clamped value.
-	stored := truncateToolRowContent(strings.Repeat("x", 5000), m.thresholdOrDefault(), "")
+	stored := truncateToolRowContent(strings.Repeat("x", 5000), m.thresholdOrDefault())
 	assert.LessOrEqual(t, len(stored), m.thresholdOrDefault(),
 		"a truncated row never exceeds its own bound")
 }

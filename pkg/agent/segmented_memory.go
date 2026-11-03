@@ -107,13 +107,6 @@ type SegmentedMemory struct {
 	// bound, persist-time row bound, retrieval page bound. Bytes.
 	threshold int
 
-	// snapshotDir, when non-empty, makes every §4.1 truncation tail cite the
-	// tool result's workspace snapshot (ToolSnapshotPath). Render-side only —
-	// the spill itself happens at the persist seam. Empty (default) keeps the
-	// narrow-and-re-run tail: an embedding whose tools run elsewhere (cloud
-	// sandbox) must never cite a path its file tools cannot see.
-	snapshotDir string
-
 	// protectedRecentTurns is K as the agent's Config set it; 0 means not set
 	// in code, and protectedTurnsLocked falls back to the profile, then the
 	// default. The fold keeps the last K turns of either role; the pressure
@@ -278,14 +271,6 @@ func (sm *SegmentedMemory) SetSessionStore(store SessionStorage, sessionID strin
 // Deprecated: set the exempt tools on Memory or Agent.
 func (sm *SegmentedMemory) SetOffloadExemptTools(names []string) {
 	warnDeprecatedOnce("SegmentedMemory.SetOffloadExemptTools", "exemption is set on Memory or Agent, where a result arrives")
-}
-
-// SetToolSnapshotDir sets the workspace-relative directory the truncation
-// tails cite (empty disables snapshot tails; see the field doc).
-func (sm *SegmentedMemory) SetToolSnapshotDir(dir string) {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-	sm.snapshotDir = dir
 }
 
 // SetThreshold sets the one threshold value in bytes (HLD §5.1: one value,
