@@ -16,11 +16,9 @@ package postgres
 import (
 	"context"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 
 	"github.com/teradata-labs/loom/pkg/observability"
@@ -35,18 +33,7 @@ import (
 
 func testHumanRequestStore(t *testing.T) (*HumanRequestStore, context.Context, string) {
 	t.Helper()
-	dsn := os.Getenv("TEST_POSTGRES_URL")
-	if dsn == "" {
-		t.Skip("TEST_POSTGRES_URL not set; skipping PostgreSQL store test")
-	}
-	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	require.NoError(t, err, "failed to connect to PostgreSQL")
-	t.Cleanup(pool.Close)
-
-	migrator, err := NewMigrator(pool, observability.NewNoOpTracer())
-	require.NoError(t, err)
-	require.NoError(t, migrator.MigrateUp(ctx), "failed to run migrations")
+	pool := migratedAdminPool(t)
 
 	store := NewHumanRequestStore(pool, observability.NewNoOpTracer())
 	userID := hrUniqueID("hr-user")
