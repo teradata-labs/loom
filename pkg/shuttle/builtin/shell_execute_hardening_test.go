@@ -148,6 +148,25 @@ func TestShellExecute_TimeoutKillsBackgroundChildren(t *testing.T) {
 	assert.True(t, waitGone(pid, 2*time.Second), "background child %d survived the timeout", pid)
 }
 
+// A background child that outlives the shell, still holding the output pipes,
+// must be killed by the timeout too. The shell exits at once (no wait), so the
+// call can only end on the timeout. This is the Unix counterpart of the
+// Windows Job Object case (TestShellExecute_WindowsTimeoutKillsOrphanedDescendant).
+func TestShellExecute_TimeoutKillsChildOfExitedShell(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	res, err := NewShellExecuteTool("").Execute(context.Background(), map[string]interface{}{
+		"command":         "sleep 30 & echo $! > " + pidFile,
+		"timeout_seconds": float64(1),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, res.Error)
+	assert.Equal(t, "TIMEOUT", res.Error.Code)
+
+	pid := readPID(t, pidFile)
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	assert.True(t, waitGone(pid, 2*time.Second), "child %d of the exited shell survived the timeout", pid)
+}
+
 // Cancelling the turn must do the same.
 func TestShellExecute_CancelKillsBackgroundChildren(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "child.pid")

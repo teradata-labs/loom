@@ -334,8 +334,9 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	// symlink, and a link repointed after the check would otherwise carry the
 	// command outside LOOM_DATA_DIR.
 	cmd.Dir = resolvedWorkingDir
-	// Own process group, so a timeout, cancellation or output overflow can kill
-	// the shell's whole process group, not only the shell (killProcessTree).
+	// Own process group (a Job Object on Windows, see containProcessTree), so a
+	// timeout, cancellation or output overflow can kill the shell's whole
+	// process tree, not only the shell (killProcessTree).
 	setProcessGroup(cmd)
 
 	// Set environment variables: the server's environment minus anything that
@@ -400,6 +401,21 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 			ExecutionTimeMs: time.Since(start).Milliseconds(),
 		}, nil
 	}
+	// On Windows the shell was started suspended; this puts it in a Job Object
+	// and resumes it. On Unix it does nothing.
+	tree, err := containProcessTree(cmd)
+	if err != nil {
+		_ = cmd.Wait() // containProcessTree killed the shell; release it
+		return &shuttle.Result{
+			Success: false,
+			Error: &shuttle.Error{
+				Code:    "EXECUTION_FAILED",
+				Message: fmt.Sprintf("Failed to start command: %v", err),
+			},
+			ExecutionTimeMs: time.Since(start).Milliseconds(),
+		}, nil
+	}
+	defer releaseProcessTree(tree)
 
 	// Stream output concurrently
 	var stdoutLines, stderrLines []string
@@ -479,7 +495,7 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	// status and the output streams. It never blocks for long: a process that
 	// escaped the group (setsid) may keep a pipe open.
 	stop := func() {
-		killProcessTree(cmd)
+		killProcessTree(tree)
 		// One group kill can miss a process the shell forks while the kill is
 		// being delivered (the shell wakes from waiting on a killed pipeline and
 		// starts the next command first). The straggler holds the pipes open, so
@@ -494,7 +510,7 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 			case waitErr = <-waitDone:
 				break wait
 			case <-rekill.C:
-				rekillProcessGroup(cmd)
+				rekillProcessGroup(tree)
 			case <-deadline.C:
 				break wait
 			}
