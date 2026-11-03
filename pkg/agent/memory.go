@@ -78,6 +78,7 @@ type Memory struct {
 	// the restore walk calls these to reconstruct a session's runtime state
 	// from its durable messages. nil hooks disable the corresponding re-fire.
 	restoreActivateSkill func(sessionID, skillName string) // re-activate a loaded skill + wire its required tools
+	restoreResetSkills   func(sessionID string)            // clear a session's active skills before the re-fire rebuilds them
 
 	// Per-mutation debug carrier, forwarded to each SegmentedMemory this manager
 	// builds and read by the restore re-fire pass. nil or off is a no-op.
@@ -159,16 +160,20 @@ func (m *Memory) SetCompressionProfile(profile *CompressionProfile) {
 	m.compressionProfile = profile
 }
 
-// SetRestoreReFireHooks wires the callback the restore replay uses to rebuild
-// a session's runtime state from its durable messages: activateSkill re-fires a
-// load marker (no-evict activation + required-tool wiring). The agent layer
+// SetRestoreReFireHooks wires the callbacks the restore replay uses to rebuild
+// a session's runtime state from its durable messages: resetSkills clears the
+// session's active skills, and activateSkill re-fires each load marker in the
+// live history (no-evict activation + required-tool wiring). Active skills are
+// a function of the live history, so a reload rebuilds them rather than adding
+// to what an earlier copy left: a skill whose load was undone does not survive. The agent layer
 // supplies it because it touches the skill orchestrator and the per-session
 // tool ledger. Disclosure re-fire is deleted (HLD §8): refs never survive a
 // turn, so there is nothing to re-advertise on restore, and the error store is
 // gone.
-func (m *Memory) SetRestoreReFireHooks(activateSkill func(sessionID, skillName string)) {
+func (m *Memory) SetRestoreReFireHooks(resetSkills func(sessionID string), activateSkill func(sessionID, skillName string)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.restoreResetSkills = resetSkills
 	m.restoreActivateSkill = activateSkill
 }
 
@@ -407,6 +412,7 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 			var restoreSnapshot []Message
 			var replayInto *SegmentedMemory
 			var activateSkill func(sessionID, skillName string)
+			var resetSkills func(sessionID string)
 			if needsReplay {
 				if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok {
 					replayInto = segMem
@@ -414,6 +420,7 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 				restoreSnapshot = make([]Message, len(session.Messages))
 				copy(restoreSnapshot, session.Messages)
 				activateSkill = m.restoreActivateSkill
+				resetSkills = m.restoreResetSkills
 			}
 			m.sessions[sessionID] = session
 			m.mu.Unlock()
@@ -424,7 +431,12 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 			}
 
 			// Restore re-fire runs after replay and outside the lock,
-			// reconstructing skill activations from the durable snapshot.
+			// reconstructing skill activations from the durable snapshot:
+			// first cleared, so a skill whose load is no longer in the live
+			// history (an undone turn) is not kept from an earlier copy.
+			if resetSkills != nil {
+				resetSkills(sessionID)
+			}
 			if activateSkill != nil {
 				m.reFireOnRestore(sessionID, restoreSnapshot, activateSkill, ctxDebug)
 			}

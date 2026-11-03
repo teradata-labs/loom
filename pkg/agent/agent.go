@@ -481,7 +481,7 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// implied by durable error/large-result records, so a restored session
 	// advertises the same tools and reports the same active skills as a live one.
 	if a.memory != nil {
-		a.memory.SetRestoreReFireHooks(a.reFireSkillActivation)
+		a.memory.SetRestoreReFireHooks(a.resetSessionSkills, a.reFireSkillActivation)
 		a.memory.SetContextDebug(a.ctxDebug)
 	}
 
@@ -887,6 +887,20 @@ func (a *Agent) enforceRequiredSkillTools(sessionID string) {
 			// session registered the definition first. Base tools are ignored
 			// by registerSessionTool, so requiring one never hides it elsewhere.
 			a.registerSessionTool(sessionID, name)
+		}
+	}
+}
+
+// resetSessionSkills deactivates every active skill of a session, with the
+// tools only those skills required, ahead of a reload's re-fire, which then
+// re-activates exactly the skills loaded in the live history.
+func (a *Agent) resetSessionSkills(sessionID string) {
+	if a.skillOrchestrator == nil {
+		return
+	}
+	for _, as := range a.skillOrchestrator.GetActiveSkills(sessionID) {
+		if as != nil && as.Skill != nil {
+			a.deactivateSkillForFold(sessionID, as.Skill.Name)
 		}
 	}
 }
