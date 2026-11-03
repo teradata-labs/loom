@@ -1163,7 +1163,20 @@ type WorkflowCheckpoint struct {
 	// stage_snapshots). Restored on resume.
 	SharedMemory []*CheckpointMemoryEntry `protobuf:"bytes,13,rep,name=shared_memory,json=sharedMemory,proto3" json:"shared_memory,omitempty"`
 	// Checkpoint creation time (Unix milliseconds).
-	CreatedAtMs   int64 `protobuf:"varint,14,opt,name=created_at_ms,json=createdAtMs,proto3" json:"created_at_ms,omitempty"`
+	CreatedAtMs int64 `protobuf:"varint,14,opt,name=created_at_ms,json=createdAtMs,proto3" json:"created_at_ms,omitempty"`
+	// Tenant user ID the `looms workflow` CLI stored this checkpoint under in
+	// the storage backend. The CLI sets it when it persists a suspension, and a
+	// resume uses it to find the stored copy to delete, so finishing a workflow
+	// from the checkpoint file removes the stored copy even when the resume
+	// command omits --user. Empty when no tenant was resolved (for example a
+	// checkpoint written by an earlier version, or a run with no storage
+	// backend); the orchestrator neither reads nor sets it.
+	//
+	// This value comes from a local file that anyone with access to it can edit,
+	// and the CLI's --user is equally unauthenticated, so in the CLI it grants
+	// nothing. A server must never take the tenant from this field: it has to use
+	// the tenant of the authenticated caller.
+	TenantUserId  string `protobuf:"bytes,15,opt,name=tenant_user_id,json=tenantUserId,proto3" json:"tenant_user_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1294,6 +1307,13 @@ func (x *WorkflowCheckpoint) GetCreatedAtMs() int64 {
 		return x.CreatedAtMs
 	}
 	return 0
+}
+
+func (x *WorkflowCheckpoint) GetTenantUserId() string {
+	if x != nil {
+		return x.TenantUserId
+	}
+	return ""
 }
 
 // CheckpointStageSnapshot is the latest full output of one completed stage.
@@ -3636,7 +3656,7 @@ const file_loom_v1_orchestration_proto_rawDesc = "" +
 	"\x06action\x18\x01 \x01(\x0e2\x13.loom.v1.GateActionR\x06action\x12\x1a\n" +
 	"\bfeedback\x18\x02 \x01(\tR\bfeedback\x12\x1d\n" +
 	"\n" +
-	"decided_by\x18\x03 \x01(\tR\tdecidedBy\"\x92\a\n" +
+	"decided_by\x18\x03 \x01(\tR\tdecidedBy\"\xb8\a\n" +
 	"\x12WorkflowCheckpoint\x12-\n" +
 	"\x12checkpoint_version\x18\x01 \x01(\x05R\x11checkpointVersion\x12-\n" +
 	"\x12config_fingerprint\x18\x02 \x01(\tR\x11configFingerprint\x12\x1f\n" +
@@ -3655,7 +3675,8 @@ const file_loom_v1_orchestration_proto_rawDesc = "" +
 	"\x14gate_revision_counts\x18\v \x03(\v23.loom.v1.WorkflowCheckpoint.GateRevisionCountsEntryR\x12gateRevisionCounts\x12;\n" +
 	"\fpending_gate\x18\f \x01(\v2\x18.loom.v1.HITLGateRequestR\vpendingGate\x12C\n" +
 	"\rshared_memory\x18\r \x03(\v2\x1e.loom.v1.CheckpointMemoryEntryR\fsharedMemory\x12\"\n" +
-	"\rcreated_at_ms\x18\x0e \x01(\x03R\vcreatedAtMs\x1a=\n" +
+	"\rcreated_at_ms\x18\x0e \x01(\x03R\vcreatedAtMs\x12$\n" +
+	"\x0etenant_user_id\x18\x0f \x01(\tR\ftenantUserId\x1a=\n" +
 	"\x0fModelsUsedEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aE\n" +
