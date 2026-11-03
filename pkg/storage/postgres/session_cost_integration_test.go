@@ -64,3 +64,36 @@ func TestSessionCost_SumsEveryRowForItsOwner(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, usd, "another owner read the session's cost")
 }
+
+// RewriteToolResults rewrites the owner's tool rows and nothing else.
+func TestRewriteToolResults_IsTheOwners(t *testing.T) {
+	pool := testPool(t)
+	store := testSessionStore(t, pool)
+	var rw agent.ResultRewriter = store
+
+	owner := uniqueID("user-rw")
+	sessionID := createTestSession(t, store, owner, uniqueID("sess-rw"), "rw-agent")
+	ctx := ContextWithUserID(context.Background(), owner)
+	for _, m := range []agent.Message{{Role: "user", Content: "q"}, {Role: "assistant", ToolCalls: []agent.ToolCall{{ID: "c1", Name: "rows"}}}, {Role: "tool", ToolUseID: "c1", Content: "rows"}} {
+		mm := m
+		require.NoError(t, store.SaveMessage(ctx, sessionID, &mm, m.Role == "user"))
+	}
+	msgs, err := store.LoadMessages(ctx, sessionID)
+	require.NoError(t, err)
+	toolSeq, err := strconv.ParseInt(msgs[2].ID, 10, 64)
+	require.NoError(t, err)
+	userSeq, err := strconv.ParseInt(msgs[0].ID, 10, 64)
+	require.NoError(t, err)
+
+	other := ContextWithUserID(context.Background(), uniqueID("user-other"))
+	require.NoError(t, rw.RewriteToolResults(other, sessionID, []int64{toolSeq}, "not yours"))
+	msgs, err = store.LoadMessages(ctx, sessionID)
+	require.NoError(t, err)
+	require.Equal(t, "rows", msgs[2].Content, "another owner rewrote the row")
+
+	require.NoError(t, rw.RewriteToolResults(ctx, sessionID, []int64{toolSeq, userSeq}, "the note"))
+	msgs, err = store.LoadMessages(ctx, sessionID)
+	require.NoError(t, err)
+	require.Equal(t, "the note", msgs[2].Content)
+	require.Equal(t, "q", msgs[0].Content, "a row that is not a tool result was rewritten")
+}

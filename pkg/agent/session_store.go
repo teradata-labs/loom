@@ -1682,6 +1682,31 @@ func (s *SessionStore) FoldMessages(ctx context.Context, sessionID string, seqs 
 	return nil
 }
 
+var _ ResultRewriter = (*SessionStore)(nil)
+
+// RewriteToolResults implements ResultRewriter: the given tool rows of an owned
+// session take content, in one statement.
+func (s *SessionStore) RewriteToolResults(ctx context.Context, sessionID string, seqs []int64, content string) error {
+	ctx, span := s.tracer.StartSpan(ctx, "session_store.rewrite_tool_results")
+	defer s.tracer.EndSpan(span)
+	span.SetAttribute("session_id", sessionID)
+	if len(seqs) == 0 {
+		return nil
+	}
+	if err := s.requireOwnedSession(ctx, sessionID); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	query, args := seqUpdateQuery("UPDATE messages SET content = ?, tool_result_json = NULL WHERE role = 'tool' AND session_id = ? AND id IN", sessionID, seqs)
+	args = append([]interface{}{content}, args...)
+	if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
+		span.RecordError(err)
+		return fmt.Errorf("failed to rewrite tool results: %w", err)
+	}
+	return nil
+}
+
 // seqUpdateQuery builds "prefix (?, ?, …)" with sessionID + seqs as args.
 func seqUpdateQuery(prefix, sessionID string, seqs []int64) (string, []interface{}) {
 	placeholders := make([]string, len(seqs))

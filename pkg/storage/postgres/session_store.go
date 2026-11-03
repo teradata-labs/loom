@@ -881,6 +881,32 @@ func (s *SessionStore) RegisterCleanupHook(hook agent.SessionCleanupHook) {
 }
 
 // GetStats returns aggregate statistics about stored sessions.
+var _ agent.ResultRewriter = (*SessionStore)(nil)
+
+// RewriteToolResults implements agent.ResultRewriter: the given tool rows of
+// the caller's own session take content. Owner-scoped by user_id in the query,
+// with RLS as the second fence.
+func (s *SessionStore) RewriteToolResults(ctx context.Context, sessionID string, seqs []int64, content string) error {
+	ctx, span := s.tracer.StartSpan(ctx, "pg_session_store.rewrite_tool_results")
+	defer s.tracer.EndSpan(span)
+	span.SetAttribute("session_id", sessionID)
+	if len(seqs) == 0 {
+		return nil
+	}
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			`UPDATE messages SET content = $1, tool_result_json = NULL
+			 WHERE role = 'tool' AND session_id = $2 AND user_id = $3 AND id = ANY($4)`,
+			content, sessionID, UserIDFromContext(ctx), seqs)
+		return err
+	})
+	if err != nil {
+		span.RecordError(err)
+		return fmt.Errorf("failed to rewrite tool results: %w", err)
+	}
+	return nil
+}
+
 var _ agent.CostStorage = (*SessionStore)(nil)
 
 // SessionCost implements agent.CostStorage: the sum of cost_usd over every

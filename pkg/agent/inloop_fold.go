@@ -264,3 +264,79 @@ func (sm *SegmentedMemory) foldSplitLocked() (kept, excised []Message) {
 	}
 	return kept, excised
 }
+
+// InFlightResults counts the results of the step in flight: the tool rows
+// after the last assistant row.
+func (sm *SegmentedMemory) InFlightResults() int {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	last := -1
+	for i := range sm.contextMessages {
+		if sm.contextMessages[i].Role == "assistant" {
+			last = i
+		}
+	}
+	if last < 0 {
+		return 0
+	}
+	n := 0
+	for i := last + 1; i < len(sm.contextMessages); i++ {
+		if sm.contextMessages[i].Role == "tool" {
+			n++
+		}
+	}
+	return n
+}
+
+// ReplaceInFlightResults replaces the results of the step in flight — every
+// tool row after the last assistant row — with note, keeping each row's tool
+// call id so every call still has its result. It is the answer to a step whose
+// results together are too large for the context: the model is told what
+// happened and re-plans, instead of the turn ending. The stored rows are
+// rewritten too, so a reload sends what the model was sent; a store that
+// cannot rewrite leaves its rows as they were, and says so once. Returns how
+// many results were replaced.
+func (sm *SegmentedMemory) ReplaceInFlightResults(ctx context.Context, note string) int {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	lastAssistant := -1
+	for i := range sm.contextMessages {
+		if sm.contextMessages[i].Role == "assistant" {
+			lastAssistant = i
+		}
+	}
+	if lastAssistant < 0 {
+		return 0
+	}
+	var seqs []int64
+	n := 0
+	for i := lastAssistant + 1; i < len(sm.contextMessages); i++ {
+		m := &sm.contextMessages[i]
+		if m.Role != "tool" {
+			continue
+		}
+		m.Content = note
+		m.ToolResult = nil
+		n++
+		if seq, err := strconv.ParseInt(m.ID, 10, 64); err == nil {
+			seqs = append(seqs, seq)
+		}
+	}
+	if n == 0 {
+		return 0
+	}
+	if sm.sessionStore != nil && sm.sessionID != "" && len(seqs) > 0 {
+		if rw, ok := sm.sessionStore.(ResultRewriter); ok {
+			if err := rw.RewriteToolResults(ctx, sm.sessionID, seqs, note); err != nil {
+				zap.L().Warn("step results replaced in memory; the store could not rewrite them",
+					zap.String("session_id", sm.sessionID), zap.Error(err))
+			}
+		} else {
+			warnOnce("ResultRewriter", "the store cannot rewrite tool rows; a step replaced for being too large reloads as it was stored")
+		}
+	}
+	sm.l1Dirty = true
+	sm.updateTokenCount()
+	sm.tokenCountDirty = false
+	return n
+}

@@ -1810,6 +1810,12 @@ func (a *Agent) getGuidanceMessage(ctx context.Context, key string, vars map[str
 			name = n
 		}
 		return fmt.Sprintf("(note: this is call %s in a row to %s with identical arguments. Read this result before calling again: change the arguments, try a different approach, or finish. Calling again is fine when the data can change between calls, for example when polling a job that is still running.)", count, name)
+	case "step_results_too_large":
+		count := "these"
+		if c, ok := vars["count"].(string); ok && c != "" {
+			count = c
+		}
+		return fmt.Sprintf("These %s tool results, from one step, were together too large for the context, so they were removed. Each call ran: do not repeat an action that changed something. Call fewer tools at once, or narrow each call (a range, a filter, LIMIT), and continue.", count)
 	default:
 		return "An unexpected situation occurred. Please try again."
 	}
@@ -2926,6 +2932,25 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					segMem2.SetAdvertisedToolsBytes(advertisedToolsBytes(tools))
 				}
 				llmResp, err = sendChat(tools)
+				// Still refused, and the step in flight has results: they are
+				// what does not fit, and no relief may remove them. They are
+				// replaced with a note saying so — each call ran; call fewer
+				// at once, or narrower — and the model re-plans on one more
+				// send, instead of the turn ending.
+				if err != nil && errors.Is(err, llm.ErrContextTooLong) {
+					if segMem3, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem3 != nil {
+						if n := segMem3.InFlightResults(); n > 0 {
+							note := a.getGuidanceMessage(ctx, "step_results_too_large", map[string]interface{}{"count": strconv.Itoa(n)})
+							replaced := segMem3.ReplaceInFlightResults(ctx, note)
+							zap.L().Warn("context too long: the step's results did not fit; replaced with a note, resending once",
+								zap.String("session_id", session.ID),
+								zap.Int("results", replaced))
+							span.AddEvent("turn.step_results_replaced", map[string]interface{}{"turn": turnCount, "results": replaced})
+							messages = session.GetMessages()
+							llmResp, err = sendChat(tools)
+						}
+					}
+				}
 				if err != nil && errors.Is(err, llm.ErrContextTooLong) {
 					zap.L().Error("context too long after relief: turn ends",
 						zap.String("session_id", session.ID),

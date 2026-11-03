@@ -101,6 +101,16 @@ type CostStorage interface {
 	SessionCost(ctx context.Context, sessionID string) (float64, error)
 }
 
+// ResultRewriter is the optional operation a store offers to replace the
+// content of tool result rows. It exists for one case: a step whose results
+// together are too large for the context is answered by replacing them with a
+// note the model can act on, and the stored rows must say what the model was
+// sent. loom's SQLite and Postgres stores implement it; a row the caller does
+// not own is left unchanged.
+type ResultRewriter interface {
+	RewriteToolResults(ctx context.Context, sessionID string, seqs []int64, content string) error
+}
+
 // SoftDeleteStorage defines optional soft-delete operations.
 // Not all backends support soft-delete (SQLite does hard delete).
 // Use type assertion to check if a SessionStorage supports soft-delete:
@@ -126,10 +136,15 @@ var _ SessionStorage = (*SessionStore)(nil)
 // warnDeprecatedOnce logs, once per process, that a deprecated call was made
 // and does nothing: a caller written against it learns the behavior is gone.
 func warnDeprecatedOnce(name, why string) {
-	if _, done := deprecatedWarned.LoadOrStore(name, true); done {
+	warnOnce(name, "deprecated call has no effect", zap.String("call", name), zap.String("why", why))
+}
+
+// warnOnce logs msg the first time key is seen in this process.
+func warnOnce(key, msg string, fields ...zap.Field) {
+	if _, done := deprecatedWarned.LoadOrStore(key, true); done {
 		return
 	}
-	zap.L().Warn("deprecated call has no effect", zap.String("call", name), zap.String("why", why))
+	zap.L().Warn(msg, fields...)
 }
 
 var deprecatedWarned sync.Map
