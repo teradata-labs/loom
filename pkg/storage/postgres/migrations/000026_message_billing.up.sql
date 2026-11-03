@@ -3,7 +3,7 @@
 -- Licensed under the Apache License, Version 2.0 (the "License");
 -- you may not use this file except in compliance with the License.
 
--- 000025_message_billing.up.sql
+-- 000026_message_billing.up.sql
 -- Every billed message carries what it cost: the model that answered and at
 -- what effort, input and output tokens, cache reads, cache writes split by TTL
 -- (1h/5m), and thinking tokens, on the assistant row the LLM call produced.

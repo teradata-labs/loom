@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 #### Agent turn: tool results bounded at arrival, in-loop fold, per-call accounting
-- **Every billed message carries what it cost.** `model`, `effort`, input/output, cache-create split by TTL (1h/5m), cache-read and thinking tokens, on the assistant row the LLM call produced (migration 000025).
+- **Every billed message carries what it cost.** `model`, `effort`, input/output, cache-create split by TTL (1h/5m), cache-read and thinking tokens, on the assistant row the LLM call produced (migration 000026).
 - **In-loop fold.** When the estimate reaches G, the next call sends the settled context with one transient fold ask; the agent answers with the summary, on its own warm cache, and the harness performs the collapse. The reply is never streamed, its cost rides on the next row, and fold calls are left out of the estimate's calibration. A first-turn fold never removes the user's request. The ask is `memory.fold` in the prompt registry.
 
 #### Models and providers
@@ -85,7 +85,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`behavior.context_relief_warning` and `Config.ContextReliefWarning` are removed**, with the context-window warning they enabled. The model is not told about its context budget: a budget signal pushes a model to cut corners. An agent file that still sets the key loads, with a warning that it has no effect.
 - **A `Config` that names no retry now retries with the defaults** (3 retries, 100ms to 5s). Before, the zero value meant retry off, so the first transient provider failure ended the turn. `RetryConfig` is unchanged; retry is off with a negative `MaxRetries`, or `Enabled: false` on a config that sets `MaxRetries`. A refusal re-sending cannot change (context too long, 400/401/403) and a stream whose text already reached the client are not retried; a stream that fails before its first token is.
 - **A step whose results together do not fit the context no longer ends the turn.** Each result is bounded at arrival, but one step can return more results than the window holds. When the provider still refuses after the relief pass, the step's results are replaced with a note (`guidance.self_correction.step_results_too_large`): each call ran; call fewer tools at once, or narrow them. The model re-plans on one more send. The stored rows are rewritten to the note (`ResultRewriter`, both stores, owner-scoped) — the one place a stored row changes after arrival. A step too wide even for its notes ends with `context_exhausted` as before.
-- **Postgres migration 000025 is new.** `000024_task_attribution` keeps its number.
+- **Postgres migration 000026 is new.** It follows main's `000025_workflow_checkpoints`.
 
 - **An undeclared `trigger.mode` now loads as `HYBRID`, not `MANUAL`.** With the mode enforced, the old default would have withheld from the model every skill that omits the field — in practice nearly all of them, since nothing read the mode before and no author chose `MANUAL` by writing nothing. `HYBRID` preserves how those skills behave today (the model may pull them; a slash command also invokes them). An embedder that wants a skill withheld must now declare `mode: MANUAL` on it.
 

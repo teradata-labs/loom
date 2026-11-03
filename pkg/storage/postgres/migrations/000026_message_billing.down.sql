@@ -3,7 +3,7 @@
 -- Licensed under the Apache License, Version 2.0 (the "License");
 -- you may not use this file except in compliance with the License.
 
--- 000025_message_billing.down.sql
+-- 000026_message_billing.down.sql
 
 ALTER TABLE messages DROP COLUMN IF EXISTS effort;
 ALTER TABLE messages DROP COLUMN IF EXISTS model;
