@@ -176,6 +176,8 @@ func TestPendingEmit_InTurnCardCarriesJoinedAskReasons(t *testing.T) {
 	require.NotNil(t, card.Context, "the emitted card must carry the stored request's context")
 	require.Equal(t, cardJoinedReason, card.Context["reason"],
 		"the emitted in-turn card must name every asking hook's reason")
+	require.Equal(t, map[string]interface{}{"reason": cardJoinedReason}, card.Context,
+		"the card forwards only the ask reason, not stored bookkeeping such as user_id")
 
 	require.Equal(t, [][]any{{cardGrantProgram, cardGrantDestination}}, tool.seen(),
 		"approval delivers both grants to the tool body, in hook order")

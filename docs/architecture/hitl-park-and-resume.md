@@ -188,8 +188,8 @@ joined with `"; "`, on both card paths:
   joined text under `reason` (omitted when no asking hook gave one). Question
   and resource items carry no `reason`.
 - **In-turn (ask resolver):** the row's `Context["reason"]`.
-  `NewProgressNotifier` copies the row's `Context` into the progress event's
-  `HITLRequestInfo.Context`, which the gRPC streams serialize to
+  `NewProgressNotifier` forwards the row's `Context["reason"]` (and no other
+  context key) in the progress event's `HITLRequestInfo.Context`, which the gRPC streams serialize to
   `hitl_request.context_json`.
 
 Limitation: the proto `HITLRequestInfo` has no `params` field, so a parked

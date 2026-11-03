@@ -15,7 +15,6 @@ package agent
 
 import (
 	"context"
-	"maps"
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/shuttle"
@@ -73,12 +72,12 @@ func (progressNotifier) Notify(ctx context.Context, req *shuttle.HumanRequest) e
 			RequestType:     req.RequestType,
 			Priority:        req.Priority,
 			Question:        req.Question,
-			// The stored request's context rides along so the card shows
-			// what the row records — for an ask hold, the "reason" holding
-			// every asking hook's reason, which is what the approval's
-			// grants cover. Cloned so a consumer mutating the event cannot
-			// reach the stored row.
-			Context: maps.Clone(req.Context),
+			// The stored ask reason rides along so the card shows every
+			// asking hook's reason, which is what the approval's grants
+			// cover. Only "reason" is forwarded: the stored context also
+			// holds bookkeeping keys such as "user_id" that the card does
+			// not need.
+			Context: cardContext(req.Context),
 		},
 		Message:   "Waiting for human response",
 		Timestamp: time.Now(),
@@ -117,4 +116,14 @@ func (progressNotifier) Heartbeat(ctx context.Context) error {
 		Droppable: true,
 	})
 	return nil
+}
+
+// cardContext returns the subset of a stored human request's context that an
+// approval card shows: the ask "reason". It returns nil when there is none.
+func cardContext(stored map[string]interface{}) map[string]interface{} {
+	reason, ok := stored["reason"]
+	if !ok {
+		return nil
+	}
+	return map[string]interface{}{"reason": reason}
 }
