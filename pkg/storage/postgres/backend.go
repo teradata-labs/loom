@@ -24,6 +24,7 @@ import (
 	"github.com/teradata-labs/loom/internal/pgxdriver"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/artifacts"
+	"github.com/teradata-labs/loom/pkg/checkpoint"
 	"github.com/teradata-labs/loom/pkg/decision"
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/observability"
@@ -43,6 +44,7 @@ type Backend struct {
 	humanRequestStore *HumanRequestStore
 	taskStore         *TaskStore
 	graphMemoryStore  *GraphMemoryStore
+	checkpointStore   *CheckpointStore
 	// decisionShadowStore persists typed-decision shadow rows (pkg/decision).
 	decisionShadowStore *DecisionShadowStore
 	migrator            *Migrator
@@ -87,6 +89,7 @@ func NewBackend(ctx context.Context, cfg *loomv1.PostgresStorageConfig, tracer o
 		humanRequestStore:   NewHumanRequestStore(pool, tracer),
 		taskStore:           NewTaskStore(pool, tracer),
 		graphMemoryStore:    NewGraphMemoryStore(pool, tc, tracer),
+		checkpointStore:     NewCheckpointStore(pool, tracer),
 		decisionShadowStore: NewDecisionShadowStore(pool, tracer),
 		migrator:            migrator,
 		tracer:              tracer,
@@ -123,6 +126,11 @@ func (b *Backend) DecisionShadowStore() decision.ShadowStore {
 // GraphMemoryStore implements backend.GraphMemoryProvider.
 func (b *Backend) GraphMemoryStore() memory.GraphMemoryStore {
 	return b.graphMemoryStore
+}
+
+// CheckpointStore implements backend.CheckpointStoreProvider.
+func (b *Backend) CheckpointStore() checkpoint.CheckpointStore {
+	return b.checkpointStore
 }
 
 // Migrate runs all pending PostgreSQL migrations.

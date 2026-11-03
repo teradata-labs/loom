@@ -3,7 +3,7 @@
 -- Licensed under the Apache License, Version 2.0 (the "License");
 -- you may not use this file except in compliance with the License.
 
--- 000010_decision_shadow.down.sql
+-- 000025_workflow_checkpoints.down.sql
 
-DROP INDEX IF EXISTS idx_decision_shadow_site_time;
-DROP TABLE IF EXISTS decision_shadow;
+DROP POLICY IF EXISTS workflow_checkpoints_user_isolation ON workflow_checkpoints;
+DROP TABLE IF EXISTS workflow_checkpoints;

@@ -23,6 +23,7 @@ import (
 	"github.com/teradata-labs/loom/internal/sqlitedriver"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/artifacts"
+	"github.com/teradata-labs/loom/pkg/checkpoint"
 	"github.com/teradata-labs/loom/pkg/decision"
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/observability"
@@ -42,6 +43,8 @@ type SQLiteBackend struct {
 	graphMemDB        *sql.DB // owned connection for graph memory; closed in Close()
 	taskStore         task.TaskStore
 	taskDB            *sql.DB // owned connection for task store; closed in Close()
+	checkpointStore   checkpoint.CheckpointStore
+	checkpointDB      *sql.DB // owned connection for checkpoint store; closed in Close()
 	// decisionShadowStore persists typed-decision shadow rows (pkg/decision).
 	decisionShadowStore decision.ShadowStore
 	decisionDB          *sql.DB // owned connection for the shadow store; closed in Close()
@@ -160,11 +163,27 @@ func NewSQLiteBackend(cfg *loomv1.SQLiteStorageConfig, tracer observability.Trac
 	}
 	taskStore := sqlite.NewTaskStore(taskDB, tracer)
 
+	// Create checkpoint store (uses same DB path, separate connection).
+	checkpointDB, err := sql.Open("sqlite3", dsn)
+	if err != nil {
+		return nil, errors.Join(
+			fmt.Errorf("failed to open DB for checkpoint store: %w", err),
+			taskDB.Close(),
+			graphMemDB.Close(),
+			migratorDB.Close(),
+			sessionStore.Close(),
+			artifactStore.Close(),
+			humanStore.Close(),
+		)
+	}
+	checkpointStore := sqlite.NewCheckpointStore(checkpointDB, tracer)
+
 	// Create decision shadow store (same DB path, separate connection).
 	decisionDB, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, errors.Join(
 			fmt.Errorf("failed to open DB for decision shadow store: %w", err),
+			checkpointDB.Close(),
 			taskDB.Close(),
 			graphMemDB.Close(),
 			migratorDB.Close(),
@@ -183,6 +202,8 @@ func NewSQLiteBackend(cfg *loomv1.SQLiteStorageConfig, tracer observability.Trac
 		graphMemDB:          graphMemDB,
 		taskStore:           taskStore,
 		taskDB:              taskDB,
+		checkpointStore:     checkpointStore,
+		checkpointDB:        checkpointDB,
 		decisionShadowStore: decisionShadowStore,
 		decisionDB:          decisionDB,
 		migrator:            migrator,
@@ -283,6 +304,11 @@ func (b *SQLiteBackend) Close() error {
 			firstErr = fmt.Errorf("task db close: %w", err)
 		}
 	}
+	if b.checkpointDB != nil {
+		if err := b.checkpointDB.Close(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("checkpoint db close: %w", err)
+		}
+	}
 	if b.decisionDB != nil {
 		if err := b.decisionDB.Close(); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("decision shadow db close: %w", err)
@@ -312,9 +338,15 @@ func (b *SQLiteBackend) TaskStore() task.TaskStore {
 	return b.taskStore
 }
 
+// CheckpointStore implements CheckpointStoreProvider.
+func (b *SQLiteBackend) CheckpointStore() checkpoint.CheckpointStore {
+	return b.checkpointStore
+}
+
 // Compile-time checks
 var _ StorageBackend = (*SQLiteBackend)(nil)
 var _ MigrationInspector = (*SQLiteBackend)(nil)
 var _ StorageDetailProvider = (*SQLiteBackend)(nil)
 var _ GraphMemoryProvider = (*SQLiteBackend)(nil)
 var _ TaskStoreProvider = (*SQLiteBackend)(nil)
+var _ CheckpointStoreProvider = (*SQLiteBackend)(nil)
