@@ -105,7 +105,14 @@ func (sm *SegmentedMemory) NeedsFold() bool {
 	if sm.reliefInFlight {
 		return false
 	}
-	return sm.estimateOptLocked(true) >= sm.startMarkLocked(0)
+	if sm.estimateOptLocked(true) < sm.startMarkLocked(0) {
+		return false
+	}
+	// A fold that would remove nothing — every turn before the pending one is
+	// among the last K kept — is a call that changes nothing, and would arm
+	// again at the next seam.
+	_, excised := sm.foldSplitLocked()
+	return len(excised) > 0
 }
 
 // parseFoldReply extracts the summary from the model's fold reply. Lenient:
@@ -203,10 +210,7 @@ func (sm *SegmentedMemory) ApplyFoldReply(ctx context.Context, summary string) (
 // whatever their age, the user's messages — a pasted file, a log — could never
 // be folded at all. Must hold lock.
 func (sm *SegmentedMemory) foldSplitLocked() (kept, excised []Message) {
-	k := sm.protectedRecentTurns
-	if k <= 0 {
-		k = defaultProtectedRecentTurns
-	}
+	k := sm.protectedTurnsLocked()
 
 	// The pending pair: the last assistant row and everything after it are
 	// untouchable — the in-flight region.

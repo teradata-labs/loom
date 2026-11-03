@@ -649,10 +649,7 @@ func (sm *SegmentedMemory) ReleasePressure(ctx context.Context, penalty int) (sh
 	defer func() { sm.reliefInFlight = false }()
 
 	t := sm.currentTurnLocked()
-	k := int64(sm.protectedRecentTurns)
-	if k <= 0 {
-		k = defaultProtectedRecentTurns
-	}
+	k := int64(sm.protectedTurnsLocked())
 	target = sm.releaseMarkLocked(penalty)
 	estimate = -1
 
@@ -1048,11 +1045,25 @@ func foldedSkillLoads(region []Message, currentTurn int64) []string {
 	return names
 }
 
-// defaultProtectedRecentTurns is K. For the in-loop fold it is the agent
-// steps kept before the pending one (foldSplitLocked). For the pressure
-// ladder behind it, it is the top rung — the newest user turns relief tries
-// hardest to keep; the ladder folds at K, K/2, K/4 … 1 (§5.2).
-const defaultProtectedRecentTurns = 4
+// defaultProtectedRecentTurns is K when nothing sets it, as on main. For the
+// in-loop fold it is the recent turns kept before the pending one, user
+// messages and assistant steps alike (foldSplitLocked). For the pressure
+// ladder behind it, it is the top rung; the ladder folds at K, K/2, K/4 … 1
+// (§5.2).
+const defaultProtectedRecentTurns = 16
+
+// protectedTurnsLocked is K: what the agent's Config set
+// (SetProtectedRecentTurns), else the compression profile's
+// protected_recent_turns, else the default. Must hold lock.
+func (sm *SegmentedMemory) protectedTurnsLocked() int {
+	if sm.protectedRecentTurns > 0 {
+		return sm.protectedRecentTurns
+	}
+	if sm.compressionProfile.ProtectedRecentTurns > 0 {
+		return sm.compressionProfile.ProtectedRecentTurns
+	}
+	return defaultProtectedRecentTurns
+}
 
 // SetProtectedRecentTurns configures K (config ProtectedRecentTurns, §9).
 func (sm *SegmentedMemory) SetProtectedRecentTurns(k int) {

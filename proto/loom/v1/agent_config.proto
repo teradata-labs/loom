@@ -504,6 +504,11 @@ message MemoryCompressionConfig {
 
   // Batch sizes for compression operations
   MemoryCompressionBatchSizes batch_sizes = 6;
+
+  // Recent turns a fold keeps, counting user messages and assistant steps
+  // alike; the fold summarises everything before them. It is also the top rung
+  // of the pressure ladder. 0 means the default, 16.
+  int32 protected_recent_turns = 7;
 }
 
 // BehaviorConfig defines agent behavior constraints

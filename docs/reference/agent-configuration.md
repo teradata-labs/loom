@@ -482,6 +482,7 @@ Under `spec.memory.memory_compression`.
 | `min_l1_messages` | `int` | max_l1 / 2 | Min messages left in L1 after compression |
 | `warning_threshold_percent` | `int` | profile-dependent | Warning threshold (0-100) |
 | `critical_threshold_percent` | `int` | profile-dependent | Critical threshold (0-100) |
+| `protected_recent_turns` | `int` | `16` | Recent turns a fold keeps, user messages and assistant steps alike; the fold summarises everything before them. Also the top rung of the pressure ladder |
 | `batch_sizes.normal` | `int` | profile-dependent | Messages per batch (normal) |
 | `batch_sizes.warning` | `int` | profile-dependent | Messages per batch (warning) |
 | `batch_sizes.critical` | `int` | profile-dependent | Messages per batch (critical) |

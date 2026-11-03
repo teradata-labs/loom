@@ -114,8 +114,10 @@ type SegmentedMemory struct {
 	// sandbox) must never cite a path its file tools cannot see.
 	snapshotDir string
 
-	// protectedRecentTurns is K: the in-loop fold keeps the last K agent
-	// steps; the pressure ladder keeps the newest K user turns.
+	// protectedRecentTurns is K as the agent's Config set it; 0 means not set
+	// in code, and protectedTurnsLocked falls back to the profile, then the
+	// default. The fold keeps the last K turns of either role; the pressure
+	// ladder starts at K.
 	protectedRecentTurns int
 
 	// reliefInFlight guards ReleasePressure: fold releases the lock across
@@ -197,20 +199,19 @@ func NewSegmentedMemoryWithCompression(romContent string, maxContextTokens, rese
 	tokenBudget := NewTokenBudget(maxContextTokens, reservedOutputTokens)
 
 	sm := &SegmentedMemory{
-		romContent:           romContent,
-		tools:                make([]string, 0),
-		contextMessages:      make([]Message, 0),
-		sessionStore:         nil, // Set via SetSessionStore
-		sessionID:            "",  // Set via SetSessionStore
-		tokenCounter:         tokenCounter,
-		tokenBudget:          tokenBudget,
-		compressor:           nil,                           // Set via SetCompressor after initialization
-		tracer:               observability.NewNoOpTracer(), // Set via SetTracer
-		maxL1Tokens:          profile.MaxL1Tokens,
-		minL1Messages:        profile.MinL1Messages,
-		compressionProfile:   profile,
-		threshold:            int(storage.DefaultSharedMemoryThreshold),
-		protectedRecentTurns: defaultProtectedRecentTurns,
+		romContent:         romContent,
+		tools:              make([]string, 0),
+		contextMessages:    make([]Message, 0),
+		sessionStore:       nil, // Set via SetSessionStore
+		sessionID:          "",  // Set via SetSessionStore
+		tokenCounter:       tokenCounter,
+		tokenBudget:        tokenBudget,
+		compressor:         nil,                           // Set via SetCompressor after initialization
+		tracer:             observability.NewNoOpTracer(), // Set via SetTracer
+		maxL1Tokens:        profile.MaxL1Tokens,
+		minL1Messages:      profile.MinL1Messages,
+		compressionProfile: profile,
+		threshold:          int(storage.DefaultSharedMemoryThreshold),
 	}
 
 	// Initialize all per-layer token caches

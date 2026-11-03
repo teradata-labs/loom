@@ -148,11 +148,17 @@ func TestInloopFold_EmptySummaryRefused(t *testing.T) {
 func TestInloopFold_NeedsFoldTracksMark(t *testing.T) {
 	sm := NewSegmentedMemory("ROM", 4000, 400) // tiny window: mark ≈ a few K tokens
 	sm.SetThreshold(1024)
+	sm.SetProtectedRecentTurns(4)
 	assert.False(t, sm.NeedsFold())
 	for turn := int64(1); turn <= 9; turn++ {
 		sm.AddMessage(context.Background(), Message{Role: "assistant", Content: strings.Repeat("x ", 800), Turn: turn})
 	}
 	assert.True(t, sm.NeedsFold())
+
+	// Past the mark with every turn among the last K kept, a fold would remove
+	// nothing: it does not arm.
+	sm.SetProtectedRecentTurns(16)
+	assert.False(t, sm.NeedsFold(), "a fold armed with nothing to remove")
 }
 
 // TestInloopFold_InFlightResultsNeverTrigger — the estimate excludes tool

@@ -6654,6 +6654,11 @@
         "batchSizes": {
           "$ref": "#/definitions/v1MemoryCompressionBatchSizes",
           "title": "Batch sizes for compression operations"
+        },
+        "protectedRecentTurns": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Recent turns a fold keeps, counting user messages and assistant steps\nalike; the fold summarises everything before them. It is also the top rung\nof the pressure ladder. 0 means the default, 16."
         }
       },
       "title": "MemoryCompressionConfig defines conversation history compression behavior"
