@@ -474,9 +474,6 @@ func (s *Session) GetMessages() []Message {
 	return messages
 }
 
-// MessageCount returns the total number of messages in the session.
-// Thread-safe via RLock.
-// Returns int32 capped at MaxInt32 to prevent overflow when used in proto messages.
 // FindMessage returns the newest message, in the flat history, for which match
 // holds. The history is read under the session's lock.
 func (s *Session) FindMessage(match func(Message) bool) (Message, bool) {
@@ -490,6 +487,9 @@ func (s *Session) FindMessage(match func(Message) bool) (Message, bool) {
 	return Message{}, false
 }
 
+// MessageCount returns the total number of messages in the session.
+// Thread-safe via RLock.
+// Returns int32 capped at MaxInt32 to prevent overflow when used in proto messages.
 func (s *Session) MessageCount() int32 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
