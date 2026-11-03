@@ -172,3 +172,49 @@ func TestABusySessionNeverUsesUpAMessagesRetries(t *testing.T) {
 		t.Fatalf("after a restart the message counts %d deliveries, want 1 (busy refusals are not counted)", m.DequeueCount)
 	}
 }
+
+// A sub-agent's queued messages are acknowledged when its turn heard them,
+// deferred when its session was busy (delivered again, retries untouched),
+// and left in flight on any other failure, as before.
+func TestASubAgentTurnSettlesItsMessages(t *testing.T) {
+	ctx := context.Background()
+	q, err := communication.NewMessageQueue(":memory:", nil, zaptest.NewLogger(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = q.Close() }()
+	send := func() string {
+		if err := q.Enqueue(ctx, &communication.QueueMessage{ToAgent: "sub", FromAgent: "coord", MessageType: "task",
+			Payload: &loomv1.MessagePayload{Data: &loomv1.MessagePayload_Value{Value: []byte("go")}}, MaxRetries: 3}); err != nil {
+			t.Fatal(err)
+		}
+		m, err := q.Dequeue(ctx, "sub")
+		if err != nil || m == nil {
+			t.Fatalf("dequeue: %v %v", m, err)
+		}
+		return m.ID
+	}
+	log := zaptest.NewLogger(t)
+
+	busy := send()
+	for i := 0; i < 5; i++ {
+		settleSubAgentTurn(ctx, q, log, "sub", []string{busy}, agent.ErrSessionBusy)
+		m, err := q.Dequeue(ctx, "sub")
+		if err != nil || m == nil || m.ID != busy {
+			t.Fatalf("refusal %d: a message for a busy sub-agent was not delivered again: %v %v", i+1, m, err)
+		}
+		if m.DequeueCount != 1 {
+			t.Fatalf("a busy refusal counted against the message: %d deliveries", m.DequeueCount)
+		}
+	}
+	settleSubAgentTurn(ctx, q, log, "sub", []string{busy}, nil)
+	if m, _ := q.Dequeue(ctx, "sub"); m != nil {
+		t.Fatalf("a heard message was delivered again: %v", m)
+	}
+
+	failed := send()
+	settleSubAgentTurn(ctx, q, log, "sub", []string{failed}, errors.New("model down"))
+	if m, _ := q.Dequeue(ctx, "sub"); m != nil {
+		t.Fatalf("a message of a failed turn changed state: %v", m)
+	}
+}

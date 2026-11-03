@@ -1906,7 +1906,11 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 				s.logger.Info("Coordinator released LLM semaphore",
 					zap.String("coordinator", coordinatorID))
 
-				if err != nil {
+				if errors.Is(err, agent.ErrSessionBusy) {
+					s.logger.Debug("Coordinator session busy; sub-agent response deferred",
+						zap.String("coordinator", coordinatorID),
+						zap.String("from_agent", queueMsg.FromAgent))
+				} else if err != nil {
 					s.logger.Warn("Failed to inject sub-agent response to coordinator",
 						zap.String("coordinator", coordinatorID),
 						zap.String("from_agent", queueMsg.FromAgent),
@@ -2249,7 +2253,9 @@ func (s *MultiAgentServer) processCoordinatorBroadcastMessages(
 				zap.String("coordinator", coordinatorID))
 			continue
 		}
-		if ctx.Err() != nil {
+		if err != nil && errors.Is(err, ctx.Err()) {
+			// Stopped by shutdown before the turn ran; a turn that ran
+			// is reported below with its own outcome.
 			s.logger.Info("Context canceled while delivering a broadcast",
 				zap.String("coordinator", coordinatorID))
 			return
@@ -2285,6 +2291,31 @@ func settleQueued(ctx context.Context, q *communication.MessageQueue, logger *za
 	}
 	if err := q.Acknowledge(ctx, id); err != nil {
 		logger.Warn("Failed to acknowledge message", zap.String("message_id", id), zap.Error(err))
+	}
+}
+
+// settleSubAgentTurn settles the queued messages a sub-agent's turn was given.
+// Heard (the turn succeeded): acknowledged. Not heard because the session was
+// busy with another turn: deferred, so they are delivered again without using
+// up their retries. Any other failure leaves them in flight, as before.
+func settleSubAgentTurn(ctx context.Context, q *communication.MessageQueue, logger *zap.Logger, agentID string, ids []string, turnErr error) {
+	switch {
+	case turnErr == nil:
+		for _, id := range ids {
+			if err := q.Acknowledge(ctx, id); err != nil {
+				logger.Warn("Failed to acknowledge message",
+					zap.String("agent", agentID), zap.String("message_id", id), zap.Error(err))
+			}
+		}
+		logger.Info("Acknowledged all processed messages",
+			zap.String("agent", agentID), zap.Int("count", len(ids)))
+	case errors.Is(turnErr, agent.ErrSessionBusy):
+		for _, id := range ids {
+			if err := q.Defer(ctx, id); err != nil {
+				logger.Warn("Session busy and the message could not be deferred",
+					zap.String("agent", agentID), zap.String("message_id", id), zap.Error(err))
+			}
+		}
 	}
 }
 
@@ -2432,7 +2463,9 @@ done:
 				zap.String("sub_agent", subAgentID))
 			continue
 		}
-		if ctx.Err() != nil {
+		if err != nil && errors.Is(err, ctx.Err()) {
+			// Stopped by shutdown before the turn ran; a turn that ran
+			// is reported below with its own outcome.
 			s.logger.Info("Context canceled while delivering a broadcast",
 				zap.String("sub_agent", subAgentID))
 			return
@@ -2840,20 +2873,7 @@ func (s *MultiAgentServer) runWorkflowSubAgent(ctx context.Context, ag *agent.Ag
 					// The agent's own config has max_turns and timeout_seconds configured
 					_, err = ag.Chat(ctx, sessionID, allMessages)
 
-					// Acknowledge all messages after successful processing
-					if err == nil {
-						for _, msgID := range messageIDs {
-							if ackErr := s.messageQueue.Acknowledge(ctx, msgID); ackErr != nil {
-								s.logger.Warn("Failed to acknowledge message",
-									zap.String("agent", agentID),
-									zap.String("message_id", msgID),
-									zap.Error(ackErr))
-							}
-						}
-						s.logger.Info("Acknowledged all processed messages",
-							zap.String("agent", agentID),
-							zap.Int("count", len(messageIDs)))
-					}
+					settleSubAgentTurn(ctx, s.messageQueue, s.logger, agentID, messageIDs, err)
 				} else {
 					s.logger.Debug("No queue messages to process",
 						zap.String("agent", agentID))
@@ -2873,7 +2893,11 @@ func (s *MultiAgentServer) runWorkflowSubAgent(ctx context.Context, ag *agent.Ag
 				zap.String("agent", agentID))
 
 			if err != nil {
-				s.logger.Warn("Workflow sub-agent message check failed",
+				logFailure := s.logger.Warn
+				if errors.Is(err, agent.ErrSessionBusy) {
+					logFailure = s.logger.Debug // busy is waiting, not failing
+				}
+				logFailure("Workflow sub-agent message check failed",
 					zap.String("agent", agentID),
 					zap.Error(err))
 
