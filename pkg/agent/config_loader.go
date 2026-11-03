@@ -1221,17 +1221,6 @@ func parseImplicitTasksConfig(yaml *ImplicitTasksConfigYAML) *loomv1.ImplicitTas
 	return cfg
 }
 
-// warnMisnestedTaskBoard reports a task_board block written where the loader
-// does not read it.
-//
-// task_board is read at agent.memory.task_board (spec.memory.task_board in
-// k8s style) and nowhere else. yaml.Unmarshal is not strict, so a block in any
-// other position is dropped in silence — and because implicit_tasks defaults
-// to ON and writes durable rows, a dropped block means an operator who wrote
-// the off switch one level too high still gets recording, with nothing
-// anywhere to say why. Warning is deliberately not an error: the block is
-// inert either way, and refusing to load an agent over a stray key would be a
-// breaking change for configs that load today.
 // warnRemovedKeys reports a key the loader once read and no longer does, so a
 // file that still sets it learns the setting has no effect.
 func warnRemovedKeys(yamlOnly string) {
@@ -1253,6 +1242,17 @@ func warnRemovedKeys(yamlOnly string) {
 	}
 }
 
+// warnMisnestedTaskBoard reports a task_board block written where the loader
+// does not read it.
+//
+// task_board is read at agent.memory.task_board (spec.memory.task_board in
+// k8s style) and nowhere else. yaml.Unmarshal is not strict, so a block in any
+// other position is dropped in silence — and because implicit_tasks defaults
+// to ON and writes durable rows, a dropped block means an operator who wrote
+// the off switch one level too high still gets recording, with nothing
+// anywhere to say why. Warning is deliberately not an error: the block is
+// inert either way, and refusing to load an agent over a stray key would be a
+// breaking change for configs that load today.
 func warnMisnestedTaskBoard(yamlOnly string) {
 	var probe struct {
 		TaskBoard *TaskBoardConfigYAML `yaml:"task_board"`
