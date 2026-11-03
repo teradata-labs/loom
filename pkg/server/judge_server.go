@@ -113,6 +113,9 @@ func (s *JudgeServer) RegisterJudge(ctx context.Context, req *loomv1.RegisterJud
 	s.mu.Unlock()
 
 	s.logger.Debug("judge registered", zap.String("judge_id", id), zap.String("name", req.Config.Name))
+	// Once per registration, not per evaluation: evaluateSingle builds a
+	// judge on every call.
+	judges.LogConfigWarnings(s.logger, req.Config)
 
 	return &loomv1.RegisterJudgeResponse{
 		JudgeId: id,

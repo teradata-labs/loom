@@ -23,6 +23,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/decision"
@@ -460,4 +463,41 @@ func TestDecisionJudgeCutViewOnlyPasses(t *testing.T) {
 			assert.Equal(t, tt.wantVerdict, res.Verdict)
 		})
 	}
+}
+
+// LogConfigWarnings logs one decision config warning per non-shadow band and
+// nothing for a shadow band, a config with no decision block, or a nil
+// logger.
+func TestLogConfigWarnings(t *testing.T) {
+	live := &loomv1.DecisionBand{Site: "judge.dj-1", ActMin: 0.5}
+	shadow := &loomv1.DecisionBand{Site: "judge.dj-1", ActMin: 0.5, Shadow: true}
+	tests := []struct {
+		name      string
+		decision  *loomv1.DecisionConfig
+		wantWarns int
+	}{
+		{name: "live judge band", decision: &loomv1.DecisionConfig{Provider: "mock", Bands: []*loomv1.DecisionBand{live}}, wantWarns: 1},
+		{name: "shadow judge band", decision: &loomv1.DecisionConfig{Provider: "mock", Bands: []*loomv1.DecisionBand{shadow}}, wantWarns: 0},
+		{name: "no decision block", decision: nil, wantWarns: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			core, logs := observer.New(zapcore.WarnLevel)
+			cfg := decisionJudgeConfig("ok")
+			cfg.Decision = tt.decision
+			LogConfigWarnings(zap.New(core), cfg)
+			warns := logs.FilterMessage("decision config").All()
+			require.Len(t, warns, tt.wantWarns)
+			if tt.wantWarns == 1 {
+				fields := warns[0].ContextMap()
+				assert.Equal(t, "dj-1", fields["judge_id"])
+				assert.Contains(t, fields["warning"], "judge.dj-1 is LIVE")
+			}
+		})
+	}
+	t.Run("nil logger", func(t *testing.T) {
+		cfg := decisionJudgeConfig("ok")
+		cfg.Decision = &loomv1.DecisionConfig{Provider: "mock", Bands: []*loomv1.DecisionBand{live}}
+		assert.NotPanics(t, func() { LogConfigWarnings(nil, cfg) })
+	})
 }

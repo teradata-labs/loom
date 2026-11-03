@@ -161,8 +161,9 @@ func SiteActs(site string) bool {
 
 // ConfigWarnings lists settings that are valid but likely not what was
 // meant. It does not log; the caller logs each warning once, where the
-// decider is built for an agent (ValidateConfig runs on several paths for
-// the same config).
+// decider is built for an agent, or where a judge config is accepted
+// (judges.LogConfigWarnings; ValidateConfig runs on several paths for the
+// same config).
 //
 // Today that is every band without shadow: true, one warning each, naming
 // the site, so the first thing an operator sees is which sites are live. At

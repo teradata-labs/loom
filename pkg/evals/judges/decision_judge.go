@@ -24,6 +24,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -209,6 +210,25 @@ func NewDecisionJudgeFromConfig(config *loomv1.JudgeConfig, fallback types.LLMPr
 		return nil, fmt.Errorf("decision judge: unsupported decision.provider %q (jev, llm or mock)", dc.Provider)
 	}
 	return NewDecisionJudge(decider, config, tracer)
+}
+
+// LogConfigWarnings logs decision.ConfigWarnings for a judge config's
+// decision block, one Warn per warning. A judge band (judge.<id>) acts unless
+// it says shadow: true, so an operator needs to see it the same way an
+// agent's live bands are logged. Construction does not log: the judge server
+// builds a judge per evaluation, so the owner of the config calls this once,
+// when it accepts the config (JudgeServer.RegisterJudge, looms eval). A nil
+// logger or a config without a decision block logs nothing.
+func LogConfigWarnings(logger *zap.Logger, config *loomv1.JudgeConfig) {
+	if logger == nil {
+		return
+	}
+	for _, w := range decision.ConfigWarnings(config.GetDecision()) {
+		logger.Warn("decision config",
+			zap.String("judge_id", config.GetId()),
+			zap.String("judge_name", config.GetName()),
+			zap.String("warning", w))
+	}
 }
 
 // NewJudgeFromConfig is the one constructor callers should use: it builds a

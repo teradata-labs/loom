@@ -203,6 +203,7 @@ func runEval(cmd *cobra.Command, args []string) {
 				fmt.Fprintf(os.Stderr, "⚠️  Failed to register judge %s: %v\n", judgeConfig.Name, err)
 				continue
 			}
+			judges.LogConfigWarnings(logger, judgeConfig)
 			fmt.Printf("   ✓ %s (criticality: %s, weight: %.1f)\n",
 				judgeConfig.Name, judgeConfig.Criticality, judgeConfig.Weight)
 		}
