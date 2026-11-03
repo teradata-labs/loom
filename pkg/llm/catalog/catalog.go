@@ -62,7 +62,7 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 				Provider:            "anthropic",
 				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
 				ContextWindow:       1_000_000,
-				MaxOutputTokens:     64_000,
+				MaxOutputTokens:     128_000,
 				CostPer_1MInputUsd:  2.0,
 				CostPer_1MOutputUsd: 10.0,
 				IsReasoning:         true,
