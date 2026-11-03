@@ -16,8 +16,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -244,20 +242,6 @@ func TestRunHitlList_OneRowPerRequestWithEscapedDigest(t *testing.T) {
 	assert.Contains(t, out, "Total: 2 pending request(s)")
 }
 
-// captureStdout runs fn with os.Stdout redirected and returns what it wrote.
-func captureStdout(t *testing.T, fn func()) string {
-	t.Helper()
-	r, w, err := os.Pipe()
-	require.NoError(t, err)
-	orig := os.Stdout
-	os.Stdout = w
-	defer func() { os.Stdout = orig }()
-	fn()
-	require.NoError(t, w.Close())
-	out, err := io.ReadAll(r)
-	require.NoError(t, err)
-	return string(out)
-}
 
 func TestWriteHITLParams_WarnsWhenEveryParameterWasDropped(t *testing.T) {
 	for name, params := range map[string]map[string]interface{}{"nil": nil, "empty": {}} {
