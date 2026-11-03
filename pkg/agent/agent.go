@@ -2539,6 +2539,16 @@ type Response struct {
 	Thinking string
 }
 
+// TurnFailed is a turn that failed after its calls had spent something: the
+// failure, and what the turn spent before it.
+type TurnFailed struct {
+	Err   error
+	Spent Usage
+}
+
+func (e *TurnFailed) Error() string { return e.Err.Error() }
+func (e *TurnFailed) Unwrap() error { return e.Err }
+
 // ToolExecution records a tool execution.
 type ToolExecution struct {
 	ToolName string
@@ -2690,7 +2700,7 @@ func extractHITLInfo(input map[string]interface{}) *HITLRequestInfo {
 // runConversationLoop executes the LLM-driven conversation loop.
 // This implements the core agent behavior: LLM generates tool calls,
 // we execute them, feed results back to LLM, repeat until completion.
-func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
+func (a *Agent) runConversationLoop(ctx Context) (resp *Response, err error) {
 	// Start trace span — always created; NoOpTracer handles disabled case
 	_, span := ctx.Tracer().StartSpan(ctx, "agent.conversation_loop")
 	defer ctx.Tracer().EndSpan(span)
@@ -2713,6 +2723,14 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	var hygieneLast *hygiene.EnforcementOutcome // last outcome, surfaced into Response.Metadata
 	var prevToolNames []string                  // names advertised on this turn's previous provider call; nil before the first
 	var turnUsage Usage                         // every LLM call of this turn, summed
+
+	// A turn that fails part-way has still spent what its calls cost. The
+	// error carries it, so whoever ran the turn can count it.
+	defer func() {
+		if err != nil && (turnUsage.CostUSD > 0 || turnUsage.TotalTokens > 0) {
+			err = &TurnFailed{Err: err, Spent: turnUsage}
+		}
+	}()
 
 	// Self-healing orchestrator (Tier 1 recovery).
 	var recovery *recoveryOrchestrator
