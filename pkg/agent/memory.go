@@ -49,8 +49,11 @@ func (f MemoryObserverFunc) OnMessageAdded(agentID string, sessionID string, msg
 // Memory manages conversation sessions and history.
 // Supports optional persistent storage via SessionStorage interface.
 type Memory struct {
-	mu                   sync.RWMutex
-	sessions             map[string]*Session
+	mu       sync.RWMutex
+	sessions map[string]*Session
+	// turnsSeen is, per session held in sessions, how many turns it had when
+	// this object's copy was last current (turn_lock.go).
+	turnsSeen            map[string]int64
 	store                SessionStorage             // Optional persistent storage (SQLite, PostgreSQL, etc.)
 	sharedMemory         *storage.SharedMemoryStore // Optional shared memory for large data
 	systemPromptFunc     SystemPromptFunc           // Optional function to generate system prompts
@@ -727,7 +730,32 @@ func (m *Memory) DeleteSession(sessionID string) {
 	defer m.mu.Unlock()
 
 	delete(m.sessions, sessionID)
+	delete(m.turnsSeen, sessionID)
 	delete(m.turnPayloads, sessionID)
+}
+
+// staleCopy is whether this object holds a copy of a session that may be
+// older than the session: one from a number of turns other than the
+// session's own, or one whose number it never saw.
+func (m *Memory) staleCopy(sessionID string, turns int64) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if _, held := m.sessions[sessionID]; !held {
+		return false
+	}
+	seen, known := m.turnsSeen[sessionID]
+	return !known || seen != turns
+}
+
+// sawTurns records that this object's copy of a session is current as of a
+// number of turns.
+func (m *Memory) sawTurns(sessionID string, turns int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.turnsSeen == nil {
+		m.turnsSeen = map[string]int64{}
+	}
+	m.turnsSeen[sessionID] = turns
 }
 
 // ListSessions returns all active sessions.

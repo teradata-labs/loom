@@ -401,6 +401,12 @@ func (s *SessionStore) initSchema() error {
 		// so a task's timeline can be reconstructed from the rows that already
 		// record the work. NULL for ordinary chat.
 		"task_id": "ALTER TABLE messages ADD COLUMN task_id TEXT",
+		// One turn at a time per session (turn_lock.go): who is taking a turn
+		// in it now, since when (unix ms, refreshed while the turn runs), and
+		// how many turns it has had. '' and 0 are every existing row: free.
+		"turn_holder": "ALTER TABLE sessions ADD COLUMN turn_holder TEXT NOT NULL DEFAULT ''",
+		"turn_since":  "ALTER TABLE sessions ADD COLUMN turn_since INTEGER NOT NULL DEFAULT 0",
+		"turns":       "ALTER TABLE sessions ADD COLUMN turns INTEGER NOT NULL DEFAULT 0",
 	}
 
 	for columnName, migration := range agentMemoryMigrations {

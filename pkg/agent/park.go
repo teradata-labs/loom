@@ -926,6 +926,15 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	if a.hitlPark == nil {
 		return nil, ErrParkDisabled
 	}
+
+	// The resumed turn is a turn like any other: claimed before the session
+	// is loaded or written, released on every way out.
+	endTurn, err := a.takeTurn(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer endTurn()
+
 	ctx = session.WithSessionID(ctx, sessionID)
 
 	// One resume at a time per session, PER AGENT INSTANCE. The tail walk

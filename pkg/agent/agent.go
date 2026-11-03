@@ -1979,6 +1979,14 @@ func truncatePreview(s string) string {
 // how each entry point tailors span name, multimodal content, and progress
 // reporting.
 func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, p chatParams) (*Response, error) {
+	// One turn at a time in a session, whoever runs it: claimed before the
+	// session is loaded or written, released on every way out.
+	endTurn, err := a.takeTurn(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer endTurn()
+
 	// Providers build the request exclusively from ContentBlocks when present,
 	// dropping Content — so an image-only block set would silently send the
 	// image without the question text. Keep userMessage truly canonical by

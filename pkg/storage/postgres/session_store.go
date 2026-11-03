@@ -1251,4 +1251,63 @@ func (s *SessionStore) MaxTurn(ctx context.Context, sessionID string) (int, erro
 	return *turn, nil
 }
 
+// TakeTurn claims a session for a turn by holder: taken when nobody holds it,
+// when replacing names the holder now on it, or when the claim was last
+// refreshed before staleBefore. The claim and the read are one transaction.
+func (s *SessionStore) TakeTurn(ctx context.Context, sessionID, holder, replacing string, staleBefore time.Time) (agent.TurnClaim, error) {
+	ctx, span := s.tracer.StartSpan(ctx, "pg_session_store.take_turn")
+	defer s.tracer.EndSpan(span)
+
+	claim := agent.TurnClaim{}
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		user := UserIDFromContext(ctx)
+		if _, err := tx.Exec(ctx,
+			`UPDATE sessions SET turn_holder = $1, turn_since = $2
+			 WHERE id = $3 AND user_id = $4 AND deleted_at IS NULL
+			   AND (turn_holder = '' OR turn_holder = $5 OR turn_since < $6)`,
+			holder, time.Now().UnixMilli(), sessionID, user, replacing, staleBefore.UnixMilli()); err != nil {
+			return err
+		}
+		err := tx.QueryRow(ctx,
+			`SELECT turn_holder, turns FROM sessions WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`,
+			sessionID, user).Scan(&claim.Holder, &claim.Turns)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		claim.Exists, claim.Taken = true, claim.Holder == holder
+		return nil
+	})
+	if err != nil {
+		span.RecordError(err)
+		return agent.TurnClaim{}, fmt.Errorf("take a turn in session %s: %w", sessionID, err)
+	}
+	return claim, nil
+}
+
+// KeepTurn refreshes a held claim, so a long turn is not taken as stale.
+func (s *SessionStore) KeepTurn(ctx context.Context, sessionID, holder string) error {
+	return execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			`UPDATE sessions SET turn_since = $1 WHERE id = $2 AND user_id = $3 AND deleted_at IS NULL AND turn_holder = $4`,
+			time.Now().UnixMilli(), sessionID, UserIDFromContext(ctx), holder)
+		return err
+	})
+}
+
+// EndTurn releases a held claim and counts the turn.
+func (s *SessionStore) EndTurn(ctx context.Context, sessionID, holder string) error {
+	return execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			`UPDATE sessions SET turn_holder = '', turn_since = 0, turns = turns + 1
+			 WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL AND turn_holder = $3`,
+			sessionID, UserIDFromContext(ctx), holder)
+		return err
+	})
+}
+
 var _ agent.Rewinder = (*SessionStore)(nil)
+
+var _ agent.TurnLock = (*SessionStore)(nil)
