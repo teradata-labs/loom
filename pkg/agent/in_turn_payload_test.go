@@ -272,3 +272,31 @@ func TestThePageableTailHoldsTheBound(t *testing.T) {
 		t.Fatal("at the default bound the tail names the id")
 	}
 }
+
+// A turn's whole results are held for that turn only: the next turn's start
+// frees them though it cuts nothing, and clearing every session frees them all.
+func TestWholeResultsAreFreedWhenTheirTurnEnds(t *testing.T) {
+	ag, sess, ctx := payloadAgent(t)
+	asked(ctx, ag, sess, "tu-held", "execute_query", true)
+	ag.appendMessage(ctx, sess, Message{Role: "tool", Content: strings.Repeat("row,value\n", 20000), ToolUseID: "tu-held"}, false)
+	held := func() int {
+		ag.memory.mu.RLock()
+		defer ag.memory.mu.RUnlock()
+		return len(ag.memory.turnPayloads)
+	}
+	if held() != 1 {
+		t.Fatalf("the cut result's whole bytes are not held this turn")
+	}
+
+	ag.appendMessage(ctx, sess, Message{Role: "user", Content: "next"}, true)
+	if held() != 0 {
+		t.Fatal("the previous turn's whole results are still held after the next turn started")
+	}
+
+	asked(ctx, ag, sess, "tu-again", "execute_query", true)
+	ag.appendMessage(ctx, sess, Message{Role: "tool", Content: strings.Repeat("row,value\n", 20000), ToolUseID: "tu-again"}, false)
+	ag.memory.ClearAll()
+	if held() != 0 {
+		t.Fatal("clearing every session left their whole results held")
+	}
+}

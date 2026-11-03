@@ -2360,6 +2360,11 @@ func (a *Agent) observePromptUsage(session *Session, u Usage) {
 // then the same bytes, so nothing is ever cut, stubbed or re-rendered later —
 // the context only grows, and the fold is the only thing that changes it.
 func (a *Agent) appendMessage(ctx context.Context, session *Session, msg Message, turnStart bool) (Message, bool) {
+	// A new turn frees the last turn's whole results: they are held for the
+	// turn that produced them only.
+	if turnStart && a.memory != nil {
+		a.memory.dropWhole(session.ID)
+	}
 	// The whole of a bounded result is kept for this turn, out of the context,
 	// for query_tool_result and for a host tool that stages it by id
 	// (InTurnPayload, InTurnPayloadByToolUseID).

@@ -249,6 +249,14 @@ func (m *Memory) keepWhole(sessionID string, turn, id int64, toolUseID, content 
 	m.turnPayloads[sessionID] = tp
 }
 
+// dropWhole frees a session's whole results: a new turn has started, and a
+// result does not outlive its turn.
+func (m *Memory) dropWhole(sessionID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.turnPayloads, sessionID)
+}
+
 // wholeOfUse is a tool result's whole bytes by tool_use_id if it is one of turn's.
 func (m *Memory) wholeOfUse(sessionID string, turn int64, toolUseID string) (string, bool) {
 	m.mu.RLock()
@@ -749,6 +757,7 @@ func (m *Memory) ClearAll() {
 	defer m.mu.Unlock()
 
 	m.sessions = make(map[string]*Session)
+	m.turnPayloads = nil
 }
 
 // HasStore reports whether a persistent session store is configured. Every
