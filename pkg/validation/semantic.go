@@ -351,7 +351,7 @@ func validateTools(tools []interface{}) ([]ValidationError, []ValidationWarning)
 	frameworkTools := []string{
 		"workspace",         // Session-scoped file management (auto-registered)
 		"tool_search",       // Tool discovery via FTS (conditionally registered)
-		"query_tool_result", // In-turn retrieval (registered when a result is first cut)
+		"query_tool_result", // In-turn retrieval (registered at construction)
 		"recall",            // Summary-span retrieval (registered at construction)
 		// Server-registered tools (not in pkg/shuttle/builtin/registry.go but
 		// reachable by name from agent configs — wired in cmd/looms/cmd_serve.go

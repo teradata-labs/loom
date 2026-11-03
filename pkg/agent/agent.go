@@ -262,15 +262,18 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// Note: tool_search is registered by AgentRegistry when a global tool registry is available
 	// Individual agents don't have access to the global tool registry during construction
 
-	// recall retrieves summary-cited conversation spans (HLD §6). Registered by
-	// default — its door is printed by the summary's citations — through
-	// RegisterTool, so the WithoutBuiltinTool suppression set is honoured.
-	// An oversize result renders truncated with a tail naming where the rest
-	// is, so the producing tool itself is the only other door.
+	// query_tool_result pages a current-turn tool result whole and recall
+	// retrieves summary-cited conversation spans (HLD §6). Both are registered by
+	// default — their doors are printed by a cut result's tail and the summary's
+	// citations respectively — through RegisterTool, so the WithoutBuiltinTool
+	// suppression set is honoured.
+	queryTool := shuttle.Tool(NewQueryToolResultTool(a))
 	recallTool := shuttle.Tool(NewRecallTool(a))
 	if a.prompts != nil {
+		queryTool = shuttle.NewPromptAwareTool(queryTool, a.prompts, "tools.query_tool_result")
 		recallTool = shuttle.NewPromptAwareTool(recallTool, a.prompts, "tools.recall")
 	}
+	a.RegisterTool(queryTool)
 	a.RegisterTool(recallTool)
 
 	// Register graph_memory tool eagerly (not progressive disclosure).
@@ -2363,11 +2366,10 @@ func (a *Agent) appendMessage(ctx context.Context, session *Session, msg Message
 	var whole string
 	if msg.Role == "tool" && a.memory != nil && !a.memory.exempt(toolNameOf(session, msg.ToolUseID)) {
 		threshold := a.memory.thresholdOrDefault()
-		// As on main, query_tool_result is registered the moment a result is
-		// cut (unless suppressed), and the tail names it only when the agent
-		// can call it.
+		// The tail names query_tool_result only when the agent can call it:
+		// it is registered at construction unless suppressed.
 		pageBy := ""
-		if len(msg.Content) > threshold && msg.ToolUseID != "" && a.ensureQueryToolResult() {
+		if msg.ToolUseID != "" && a.tools != nil && a.tools.IsRegistered("query_tool_result") {
 			pageBy = msg.ToolUseID
 		}
 		bounded := boundToolRow(msg.Content, threshold, pageBy)
@@ -2464,22 +2466,6 @@ func (a *Agent) InTurnPayload(sessionID string, messageID int64) (string, error)
 		return m.Content, nil
 	}
 	return "", fmt.Errorf("%w: message %d", ErrNotThisTurn, messageID)
-}
-
-// ensureQueryToolResult registers query_tool_result unless it is suppressed,
-// and reports whether the agent can call it.
-func (a *Agent) ensureQueryToolResult() bool {
-	if a.tools == nil || a.isBuiltinToolSuppressed("query_tool_result") {
-		return false
-	}
-	if !a.tools.IsRegistered("query_tool_result") {
-		queryTool := shuttle.Tool(NewQueryToolResultTool(a))
-		if a.prompts != nil {
-			queryTool = shuttle.NewPromptAwareTool(queryTool, a.prompts, "tools.query_tool_result")
-		}
-		a.tools.Register(queryTool)
-	}
-	return true
 }
 
 // InTurnPayloadByToolUseID returns the whole of the tool result answering

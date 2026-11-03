@@ -166,9 +166,6 @@ var tailUseID = regexp.MustCompile(`query_tool_result tool_use_id=(\S+) \(offset
 // shown. On the next turn the same id says re-run.
 func TestACutResultIsPagedWholeByTheIDInItsTail(t *testing.T) {
 	ag, sess, ctx := payloadAgent(t)
-	if ag.tools.IsRegistered("query_tool_result") {
-		t.Fatal("query_tool_result is registered before any result is cut")
-	}
 	lines := make([]string, 3000)
 	for i := range lines {
 		lines[i] = "row " + strconv.Itoa(i)
