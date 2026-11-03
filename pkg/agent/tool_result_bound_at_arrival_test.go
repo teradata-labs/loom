@@ -12,8 +12,8 @@ import (
 )
 
 // A tool result is bounded at the door. Above the threshold it enters the
-// session as its first bytes plus a tail that says how much was cut and to
-// narrow the call; the model is sent exactly those bytes. Nothing later has to
+// session as its first bytes plus a tail that says how much was cut and names
+// the id that pages the rest this turn; the model is sent exactly those bytes. Nothing later has to
 // cut, stub or re-render it.
 func TestAToolResultIsBoundedAsItArrives(t *testing.T) {
 	cfg := DefaultConfig()
@@ -35,7 +35,7 @@ func TestAToolResultIsBoundedAsItArrives(t *testing.T) {
 	if len(got.Content) > 2048 {
 		t.Fatalf("the result entered the session at %d bytes; the threshold is 2048", len(got.Content))
 	}
-	if !strings.Contains(got.Content, "Narrow the tool call") {
+	if !strings.Contains(got.Content, "query_tool_result tool_use_id=toolu_wide") {
 		t.Errorf("the result's tail does not say how to see more:\n%s", got.Content[len(got.Content)-300:])
 	}
 	if !strings.HasPrefix(got.Content, "a line of a very wide read\n") {

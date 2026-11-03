@@ -100,8 +100,11 @@ func TestFullLifecycle(t *testing.T) {
 	if strings.Contains(finalText, "Load the grant-review skill.") {
 		t.Error("C. the opening ask is still in context: the fold did not take the conversation")
 	}
-	if comp.count() == 0 {
-		t.Error("C. compressor never called — no fold happened")
+	// A fold is answered by the model (in-loop, at G) or by the compressor
+	// (relief after a refusal); which one runs first depends on the estimate,
+	// and the request's tool list is part of it.
+	if comp.count() == 0 && r.llm.foldsAnswered == 0 {
+		t.Error("C. neither the model nor the compressor summarised — no fold happened")
 	}
 	// D. no dead-design markers anywhere.
 	for _, st := range stages {

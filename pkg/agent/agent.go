@@ -2351,18 +2351,26 @@ func (a *Agent) observePromptUsage(session *Session, u Usage) {
 // event (HLD §4.5). Persist failures are logged, never fatal.
 //
 // A tool result is bounded here, at the door, and nowhere else: above the
-// threshold it enters as its first bytes plus the tail that names the file
-// holding the whole of it (§4.1), and the agent reads that file when it needs
-// the rest. What enters memory, what is stored and what the model is sent are
+// threshold it enters as its first bytes plus the tail (§4.1). The whole of it
+// is kept for this turn; when query_tool_result is registered the tail names
+// the result's tool_use_id, and the agent pages the rest with it. What enters memory, what is stored and what the model is sent are
 // then the same bytes, so nothing is ever cut, stubbed or re-rendered later —
 // the context only grows, and the fold is the only thing that changes it.
 func (a *Agent) appendMessage(ctx context.Context, session *Session, msg Message, turnStart bool) (Message, bool) {
 	// The whole of a bounded result is kept for this turn, out of the context,
-	// for a host tool that stages it by message id (InTurnPayload).
+	// for query_tool_result and for a host tool that stages it by id
+	// (InTurnPayload, InTurnPayloadByToolUseID).
 	var whole string
 	if msg.Role == "tool" && a.memory != nil && !a.memory.exempt(toolNameOf(session, msg.ToolUseID)) {
 		threshold := a.memory.thresholdOrDefault()
-		bounded := truncateToolRowContent(msg.Content, threshold)
+		// As on main, query_tool_result is registered the moment a result is
+		// cut (unless suppressed), and the tail names it only when the agent
+		// can call it.
+		pageBy := ""
+		if len(msg.Content) > threshold && msg.ToolUseID != "" && a.ensureQueryToolResult() {
+			pageBy = msg.ToolUseID
+		}
+		bounded := boundToolRow(msg.Content, threshold, pageBy)
 		if bounded != msg.Content {
 			whole = msg.Content
 		}
@@ -2404,9 +2412,8 @@ func (a *Agent) appendMessage(ctx context.Context, session *Session, msg Message
 	}
 
 	if whole != "" {
-		if id, err := strconv.ParseInt(msg.ID, 10, 64); err == nil {
-			a.memory.keepWhole(session.ID, msg.Turn, id, whole)
-		}
+		id, _ := strconv.ParseInt(msg.ID, 10, 64)
+		a.memory.keepWhole(session.ID, msg.Turn, id, msg.ToolUseID, whole)
 	}
 
 	session.AddMessage(ctx, msg)
@@ -2457,6 +2464,43 @@ func (a *Agent) InTurnPayload(sessionID string, messageID int64) (string, error)
 		return m.Content, nil
 	}
 	return "", fmt.Errorf("%w: message %d", ErrNotThisTurn, messageID)
+}
+
+// ensureQueryToolResult registers query_tool_result unless it is suppressed,
+// and reports whether the agent can call it.
+func (a *Agent) ensureQueryToolResult() bool {
+	if a.tools == nil || a.isBuiltinToolSuppressed("query_tool_result") {
+		return false
+	}
+	if !a.tools.IsRegistered("query_tool_result") {
+		queryTool := shuttle.Tool(NewQueryToolResultTool(a))
+		if a.prompts != nil {
+			queryTool = shuttle.NewPromptAwareTool(queryTool, a.prompts, "tools.query_tool_result")
+		}
+		a.tools.Register(queryTool)
+	}
+	return true
+}
+
+// InTurnPayloadByToolUseID returns the whole of the tool result answering
+// toolUseID iff it belongs to the session's current turn — the id the model
+// sees on the result and in its truncation tail. Any other case is
+// ErrNotThisTurn.
+func (a *Agent) InTurnPayloadByToolUseID(sessionID, toolUseID string) (string, error) {
+	session, ok := a.memory.GetSession(sessionID)
+	if !ok || session == nil || toolUseID == "" {
+		return "", fmt.Errorf("%w: tool_use_id %q", ErrNotThisTurn, toolUseID)
+	}
+	turn := sessionCurrentTurn(session)
+	if whole, ok := a.memory.wholeOfUse(sessionID, turn, toolUseID); ok {
+		return whole, nil
+	}
+	if m, ok := session.FindMessage(func(m Message) bool {
+		return m.Role == "tool" && m.ToolUseID == toolUseID && m.Turn == turn
+	}); ok {
+		return m.Content, nil
+	}
+	return "", fmt.Errorf("%w: tool_use_id %q", ErrNotThisTurn, toolUseID)
 }
 
 // SetOffloadExemptTools names the tools whose results enter the conversation

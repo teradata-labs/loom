@@ -26,14 +26,14 @@ import (
 )
 
 // queryToolResultDescription is the normative tool description of HLD §7.1.
-const queryToolResultDescription = `Read the full data of a large tool result FROM THIS TURN, by the message_id shown
-on the result. Data is held in memory only within the turn that produced it —
-never use a message_id from conversation history; re-run the producing tool
-instead. (message_id, offset, limit) returns bounded pages.`
+const queryToolResultDescription = `Read the full data of a large tool result FROM THIS TURN, by the tool_use_id named
+in its truncation tail (or a message_id a host shows). Data is held in memory only
+within the turn that produced it — never use an id from an earlier turn; re-run the
+producing tool instead. (tool_use_id, offset, limit) returns bounded pages.`
 
 // QueryToolResultTool serves this turn's memory, nothing else (HLD §7.1): pages
 // (offset, limit) over one tool result's whole payload, addressed by its
-// message_id. Every page is bounded at the threshold. Valid only within the
+// tool_use_id or message_id. Every page is bounded at the threshold. Valid only within the
 // producing turn:
 // memory is per turn, large data is not persisted, and there is no cross-turn
 // data door except re-run.
@@ -41,7 +41,7 @@ type QueryToolResultTool struct {
 	agent *Agent
 }
 
-// NewQueryToolResultTool creates the message_id-addressed query tool (HLD §7.1).
+// NewQueryToolResultTool creates the in-turn query tool (HLD §7.1).
 func NewQueryToolResultTool(a *Agent) *QueryToolResultTool {
 	return &QueryToolResultTool{agent: a}
 }
@@ -61,9 +61,13 @@ func (t *QueryToolResultTool) InputSchema() *shuttle.JSONSchema {
 	return &shuttle.JSONSchema{
 		Type: "object",
 		Properties: map[string]*shuttle.JSONSchema{
+			"tool_use_id": {
+				Type:        "string",
+				Description: "The tool_use_id named in a truncated result's tail, from THIS turn.",
+			},
 			"message_id": {
 				Type:        "integer",
-				Description: "The message_id of a tool result from THIS turn.",
+				Description: "The message_id of a tool result from THIS turn, when a host shows one.",
 			},
 			"offset": {
 				Type:        "integer",
@@ -74,34 +78,33 @@ func (t *QueryToolResultTool) InputSchema() *shuttle.JSONSchema {
 				Description: "Return at most N items/lines (for pagination). Use with offset.",
 			},
 		},
-		Required: []string{"message_id"},
 	}
 }
 
 // Execute serves a page of the addressed message's whole payload.
 func (t *QueryToolResultTool) Execute(ctx context.Context, input map[string]interface{}) (*shuttle.Result, error) {
-	messageID, ok := parseMessageID(input["message_id"])
-	if !ok {
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:    "invalid_input",
-				Message: "message_id must be an integer — the id of a tool result from this turn",
-			},
-		}, nil
-	}
-
 	sessionID := session.SessionIDFromContext(ctx)
-	payload, err := t.agent.InTurnPayload(sessionID, messageID)
-	if err != nil {
-		// The only honest door for anything not in this turn's memory is re-run.
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:    "not_this_turn",
-				Message: fmt.Sprintf("message_id %d does not resolve to a current-turn in-memory payload — data is held in memory only within the turn that produced it. Re-run the producing call for fresh data.", messageID),
-			},
-		}, nil
+	var payload string
+	var err error
+	if useID, _ := input["tool_use_id"].(string); strings.TrimSpace(useID) != "" {
+		useID = strings.TrimSpace(useID)
+		if payload, err = t.agent.InTurnPayloadByToolUseID(sessionID, useID); err != nil {
+			return notThisTurn(fmt.Sprintf("tool_use_id %s", useID)), nil
+		}
+	} else {
+		messageID, ok := parseMessageID(input["message_id"])
+		if !ok {
+			return &shuttle.Result{
+				Success: false,
+				Error: &shuttle.Error{
+					Code:    "invalid_input",
+					Message: "give tool_use_id (named in the truncated result's tail) or an integer message_id",
+				},
+			}, nil
+		}
+		if payload, err = t.agent.InTurnPayload(sessionID, messageID); err != nil {
+			return notThisTurn(fmt.Sprintf("message_id %d", messageID)), nil
+		}
 	}
 
 	threshold := t.agent.contextThreshold()
@@ -117,6 +120,18 @@ func (t *QueryToolResultTool) Execute(ctx context.Context, input map[string]inte
 	}
 
 	return t.paginate(payload, input, threshold)
+}
+
+// notThisTurn is the miss for an id outside this turn's memory: the only
+// honest door for it is re-run.
+func notThisTurn(what string) *shuttle.Result {
+	return &shuttle.Result{
+		Success: false,
+		Error: &shuttle.Error{
+			Code:    "not_this_turn",
+			Message: fmt.Sprintf("%s does not resolve to a current-turn in-memory payload — data is held in memory only within the turn that produced it. Re-run the producing call for fresh data.", what),
+		},
+	}
 }
 
 // parseMessageID accepts the JSON number (float64) and integer-string forms.

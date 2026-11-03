@@ -224,11 +224,13 @@ func (m *Memory) exempt(tool string) bool {
 type turnPayloads struct {
 	turn  int64
 	whole map[int64]string
+	byUse map[string]string // the same bytes by tool_use_id, the id the model sees
 }
 
-// keepWhole records a bounded tool result's whole bytes under its message id,
-// for this turn only: a later turn's first record replaces the set.
-func (m *Memory) keepWhole(sessionID string, turn, id int64, content string) {
+// keepWhole records a bounded tool result's whole bytes under its message id
+// (when the store assigned one) and its tool_use_id (when it has one), for
+// this turn only: a later turn's first record replaces the set.
+func (m *Memory) keepWhole(sessionID string, turn, id int64, toolUseID, content string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.turnPayloads == nil {
@@ -236,10 +238,27 @@ func (m *Memory) keepWhole(sessionID string, turn, id int64, content string) {
 	}
 	tp := m.turnPayloads[sessionID]
 	if tp.whole == nil || tp.turn != turn {
-		tp = turnPayloads{turn: turn, whole: map[int64]string{}}
+		tp = turnPayloads{turn: turn, whole: map[int64]string{}, byUse: map[string]string{}}
 	}
-	tp.whole[id] = content
+	if id > 0 {
+		tp.whole[id] = content
+	}
+	if toolUseID != "" {
+		tp.byUse[toolUseID] = content
+	}
 	m.turnPayloads[sessionID] = tp
+}
+
+// wholeOfUse is a tool result's whole bytes by tool_use_id if it is one of turn's.
+func (m *Memory) wholeOfUse(sessionID string, turn int64, toolUseID string) (string, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	tp, ok := m.turnPayloads[sessionID]
+	if !ok || tp.turn != turn {
+		return "", false
+	}
+	content, ok := tp.byUse[toolUseID]
+	return content, ok
 }
 
 // wholeOf is a tool result's whole bytes if it is one of turn's.

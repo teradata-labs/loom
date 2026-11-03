@@ -23,6 +23,11 @@ import (
 // are ceil(bytes/3).
 const truncationTailFormat = "[truncated: %d of %d bytes shown (~%d of ~%d tokens) to prevent context pollution. Narrow the tool call (range, filter, LIMIT / aggregation) and re-run to see more.]"
 
+// pageableTailFormat is the §4.1 tail when query_tool_result can serve the
+// whole result: it names the result by its tool_use_id, which exists before
+// the row is written, so the stored row and every render carry the same bytes.
+const pageableTailFormat = "[truncated: %d of %d bytes shown (~%d of ~%d tokens). The whole result is held for this turn only: page it with query_tool_result tool_use_id=%s (offset, limit). After this turn, narrow the tool call and re-run.]"
+
 // tokenFigure is the byte→token figure used across the write rules and stubs:
 // ceil(bytes/3) (HLD §4.1, §5.5).
 func tokenFigure(bytes int) int {
@@ -35,13 +40,29 @@ func tokenFigure(bytes int) int {
 // UTF-8 rune boundary) and append the tail, so stored = core + tail ≤ threshold
 // — a truncated row must never itself exceed the threshold.
 func truncateToolRowContent(content string, threshold int) string {
+	return boundToolRow(content, threshold, "")
+}
+
+// boundToolRow is truncateToolRowContent with the tail that names
+// query_tool_result when toolUseID is non-empty. A threshold too small to hold
+// that tail falls back to the plain one, so the bound always holds.
+func boundToolRow(content string, threshold int, toolUseID string) string {
 	if threshold <= 0 || len(content) <= threshold {
 		return content
 	}
 	total := len(content)
+	tailOf := func(core int) string {
+		if toolUseID != "" {
+			return fmt.Sprintf(pageableTailFormat, core, total, tokenFigure(core), tokenFigure(total), toolUseID)
+		}
+		return fmt.Sprintf(truncationTailFormat, core, total, tokenFigure(core), tokenFigure(total))
+	}
+	if toolUseID != "" && len(tailOf(threshold)) >= threshold {
+		return boundToolRow(content, threshold, "")
+	}
 	core := threshold
 	for {
-		tail := fmt.Sprintf(truncationTailFormat, core, total, tokenFigure(core), tokenFigure(total))
+		tail := tailOf(core)
 		budget := threshold - len(tail)
 		if budget < 0 {
 			budget = 0

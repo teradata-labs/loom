@@ -18,9 +18,11 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/session"
@@ -153,5 +155,123 @@ func TestTheExemptSetIsReplacedNotAdded(t *testing.T) {
 	ag.appendMessage(ctx, sess, Message{Role: "tool", Content: topic, ToolUseID: "tu-b"}, false)
 	if len(lastTool(sess).Content) > 2048 {
 		t.Fatal("a tool no longer named still entered whole")
+	}
+}
+
+// tailUseID is the id a pageable tail names.
+var tailUseID = regexp.MustCompile(`query_tool_result tool_use_id=(\S+) \(offset, limit\)`)
+
+// A cut result's tail names the id that pages it whole, and the tool it names
+// is registered: the model can read every byte this turn from what it was
+// shown. On the next turn the same id says re-run.
+func TestACutResultIsPagedWholeByTheIDInItsTail(t *testing.T) {
+	ag, sess, ctx := payloadAgent(t)
+	if ag.tools.IsRegistered("query_tool_result") {
+		t.Fatal("query_tool_result is registered before any result is cut")
+	}
+	lines := make([]string, 3000)
+	for i := range lines {
+		lines[i] = "row " + strconv.Itoa(i)
+	}
+	whole := strings.Join(lines, "\n")
+	asked(ctx, ag, sess, "toolu_01AbC-xyz", "execute_query", true)
+	ag.appendMessage(ctx, sess, Message{Role: "tool", Content: whole, ToolUseID: "toolu_01AbC-xyz"}, false)
+
+	row := lastTool(sess)
+	if len(row.Content) > 2048 {
+		t.Fatalf("the model would see %d bytes; the bound is 2048", len(row.Content))
+	}
+	m := tailUseID.FindStringSubmatch(row.Content)
+	if m == nil {
+		t.Fatalf("the tail names no id to page by: %q", row.Content[len(row.Content)-300:])
+	}
+	if !ag.tools.IsRegistered("query_tool_result") {
+		t.Fatal("the tail names query_tool_result but the agent cannot call it")
+	}
+
+	tool := NewQueryToolResultTool(ag)
+	qctx := session.WithSessionID(ctx, sess.ID)
+	res, err := tool.Execute(qctx, map[string]interface{}{"tool_use_id": m[1], "offset": float64(2990), "limit": float64(10)})
+	if err != nil || !res.Success {
+		t.Fatalf("paging by the tail's id: %v %+v", err, res)
+	}
+	data := res.Data.(map[string]interface{})
+	page := data["lines"].([]string)
+	if len(page) != 10 || page[9] != "row 2999" || data["total_count"] != 3000 {
+		t.Fatalf("the last page should end at row 2999 of 3000, got %v (total %v)", page, data["total_count"])
+	}
+
+	asked(ctx, ag, sess, "tu-next", "execute_query", true)
+	res, _ = tool.Execute(qctx, map[string]interface{}{"tool_use_id": m[1]})
+	if res.Success || res.Error == nil || res.Error.Code != "not_this_turn" {
+		t.Fatalf("an earlier turn's id says re-run, got %+v", res)
+	}
+}
+
+// A session with no store has no message ids; its cut results page by
+// tool_use_id all the same.
+func TestAStorelessSessionPagesItsCutResult(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.PatternConfig = DefaultPatternConfig()
+	cfg.PatternConfig.UseLLMClassifier = false
+	ag := NewAgent(&mockBackend{}, &mockToolCallingLLM{}, WithConfig(cfg), WithMemory(NewMemory()))
+	ag.SetSharedMemoryThreshold(2048)
+	ctx := context.Background()
+	sess := ag.memory.GetOrCreateSessionWithAgent(ctx, "s-storeless", ag.config.Name, "")
+
+	whole := strings.Repeat("row,value\n", 3000)
+	asked(ctx, ag, sess, "tu-mem", "execute_query", true)
+	ag.appendMessage(ctx, sess, Message{Role: "tool", Content: whole, ToolUseID: "tu-mem"}, false)
+	if m := tailUseID.FindStringSubmatch(lastTool(sess).Content); m == nil || m[1] != "tu-mem" {
+		t.Fatalf("the tail names no id to page by: %v", m)
+	}
+	got, err := ag.InTurnPayloadByToolUseID(sess.ID, "tu-mem")
+	if err != nil || got != whole {
+		t.Fatalf("the storeless result reads back at %d of %d bytes: %v", len(got), len(whole), err)
+	}
+}
+
+// An agent that suppresses query_tool_result is never told to call it.
+func TestASuppressedQueryToolIsNeverNamed(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.PatternConfig = DefaultPatternConfig()
+	cfg.PatternConfig.UseLLMClassifier = false
+	ag := NewAgent(&mockBackend{}, &mockToolCallingLLM{}, WithConfig(cfg), WithMemory(NewMemory()), WithoutBuiltinTool("query_tool_result"))
+	ag.SetSharedMemoryThreshold(2048)
+	ctx := context.Background()
+	sess := ag.memory.GetOrCreateSessionWithAgent(ctx, "s-suppressed", ag.config.Name, "")
+
+	asked(ctx, ag, sess, "tu-s", "execute_query", true)
+	ag.appendMessage(ctx, sess, Message{Role: "tool", Content: strings.Repeat("x", 30000), ToolUseID: "tu-s"}, false)
+	row := lastTool(sess).Content
+	if strings.Contains(row, "query_tool_result") || ag.tools.IsRegistered("query_tool_result") {
+		t.Fatalf("a suppressed query_tool_result is named or registered: %q", row[len(row)-250:])
+	}
+	if !strings.Contains(row, "Narrow the tool call") {
+		t.Fatalf("the plain tail is missing: %q", row[len(row)-250:])
+	}
+}
+
+// The tail that names an id holds the bound at every threshold; where it
+// cannot fit, the plain tail stands.
+func TestThePageableTailHoldsTheBound(t *testing.T) {
+	id := strings.Repeat("u", 64)
+	content := strings.Repeat("é", 40000) // multi-byte: cuts land on rune boundaries
+	for threshold := minThreshold; threshold <= 4096; threshold += 37 {
+		got := boundToolRow(content, threshold, id)
+		if len(got) > threshold {
+			t.Fatalf("threshold %d: row is %d bytes", threshold, len(got))
+		}
+		if !utf8.ValidString(got) {
+			t.Fatalf("threshold %d: cut inside a rune", threshold)
+		}
+		named := strings.Contains(got, "tool_use_id="+id)
+		plain := strings.Contains(got, "Narrow the tool call (range")
+		if named == plain {
+			t.Fatalf("threshold %d: exactly one tail expected, named=%v plain=%v", threshold, named, plain)
+		}
+	}
+	if !strings.Contains(boundToolRow(content, 16384, id), "tool_use_id="+id) {
+		t.Fatal("at the default bound the tail names the id")
 	}
 }
