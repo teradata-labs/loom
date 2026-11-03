@@ -16,6 +16,8 @@ package agent
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -63,11 +65,30 @@ var (
 	turnStaleAfter = 5 * time.Minute
 )
 
-// thisProcess is this process as a claim names it: pid@host.
+// thisProcess is this process as a claim names it: pid@host:pidns/nonce.
+// The pid namespace tells apart processes that share a hostname but not a pid
+// space (containers on host networking), so one is never judged dead by
+// another; the nonce tells apart two processes that reuse a pid.
 var thisProcess = func() string {
 	host, _ := os.Hostname()
-	return fmt.Sprintf("%d@%s", os.Getpid(), host)
+	return fmt.Sprintf("%d@%s:%s/%s", os.Getpid(), host, pidNamespace(), processNonce())
 }()
+
+// pidNamespace names this process's pid namespace where the platform has
+// them (Linux), and is empty where it does not.
+func pidNamespace() string {
+	ns, err := os.Readlink("/proc/self/ns/pid")
+	if err != nil {
+		return ""
+	}
+	return ns
+}
+
+func processNonce() string {
+	var b [4]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
 
 // turnSerial tells this process's claims apart, so a claim one of its turns
 // left behind is not mistaken for another's.
@@ -76,7 +97,11 @@ var turnSerial atomic.Int64
 // takeTurn claims a session for a turn and returns how to release it. It
 // refuses with ErrSessionBusy when another turn holds the session, and drops
 // this agent's copy of the session when another has taken a turn in it since.
-func (a *Agent) takeTurn(ctx context.Context, sessionID string) (func(), error) {
+//
+// create says whether a session with no row yet gets one, which only a turn
+// that writes a message should do. Without it a session that has no row is not
+// claimed: there is no history to protect, and nothing is created.
+func (a *Agent) takeTurn(ctx context.Context, sessionID string, create bool) (func(), error) {
 	store, ok := a.memory.GetStore().(TurnLock)
 	if !ok || sessionID == "" {
 		return func() {}, nil
@@ -91,6 +116,9 @@ func (a *Agent) takeTurn(ctx context.Context, sessionID string) (func(), error) 
 		if err != nil {
 			return nil, err
 		}
+	}
+	if !claim.Exists && !create {
+		return func() {}, nil
 	}
 	if !claim.Exists {
 		// A first turn: give the session its row, then claim it like any
@@ -137,20 +165,33 @@ func (a *Agent) takeTurn(ctx context.Context, sessionID string) (func(), error) 
 		<-done
 		// Released even when the turn's context was cancelled: a claim left
 		// behind would refuse every turn after it until it went stale.
-		if store.EndTurn(context.WithoutCancel(ctx), sessionID, holder) == nil {
+		held, err := store.EndTurn(context.WithoutCancel(ctx), sessionID, holder)
+		if err == nil && held {
 			a.memory.sawTurns(sessionID, claim.Turns+1)
+			return
 		}
+		// The claim was taken over while this turn ran (it went stale), or
+		// the release could not be confirmed: another turn may have written
+		// the session since, so this copy is not known to be current.
+		a.memory.DeleteSession(sessionID)
 	}, nil
 }
 
 // deadHere is a claim held by a process on this host that no longer exists.
+// A holder from another host, or from another pid namespace on this host, is
+// never judged dead here: its pid means nothing in this process's pid space.
 func deadHere(holder string) bool {
-	pidHost, _, _ := strings.Cut(holder, "#")
-	pidText, host, ok := strings.Cut(pidHost, "@")
+	who, _, _ := strings.Cut(holder, "#")
+	who, _, _ = strings.Cut(who, "/")
+	pidText, where, ok := strings.Cut(who, "@")
 	if !ok {
 		return false
 	}
-	if here, _ := os.Hostname(); host != here {
+	host, ns, ok := strings.Cut(where, ":")
+	if !ok {
+		return false
+	}
+	if here, _ := os.Hostname(); host != here || ns != pidNamespace() {
 		return false
 	}
 	pid, err := strconv.Atoi(pidText)

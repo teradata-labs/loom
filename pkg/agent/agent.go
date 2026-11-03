@@ -1981,7 +1981,7 @@ func truncatePreview(s string) string {
 func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, p chatParams) (*Response, error) {
 	// One turn at a time in a session, whoever runs it: claimed before the
 	// session is loaded or written, released on every way out.
-	endTurn, err := a.takeTurn(ctx, sessionID)
+	endTurn, err := a.takeTurn(ctx, sessionID, true)
 	if err != nil {
 		return nil, err
 	}
@@ -5266,13 +5266,18 @@ var ErrRewindUnsupported = errors.New("session storage does not support rewind")
 // to remove. Doing both means the reload sees the truncated history, which is
 // why the memory eviction is not an optimisation here but the point.
 //
-// Rewinding is only meaningful between turns. A caller must not run this while
-// a turn is in flight: that turn holds the session and would write its result
-// back on top of the rewind.
+// A rewind takes the session's turn claim like a turn does: it is refused with
+// ErrSessionBusy while a turn runs, and releasing it counts a turn, so every
+// other agent object holding a copy of the session reloads it.
 func (a *Agent) RewindSession(ctx context.Context, sessionID string, turns int) (int, error) {
 	if turns <= 0 {
 		return 0, fmt.Errorf("turns must be positive, got %d", turns)
 	}
+	endTurn, err := a.takeTurn(ctx, sessionID, false)
+	if err != nil {
+		return 0, err
+	}
+	defer endTurn()
 	store, ok := a.memory.GetStore().(Rewinder)
 	if !ok {
 		return 0, ErrRewindUnsupported

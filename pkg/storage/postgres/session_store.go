@@ -1263,13 +1263,13 @@ func (s *SessionStore) TakeTurn(ctx context.Context, sessionID, holder, replacin
 		user := UserIDFromContext(ctx)
 		if _, err := tx.Exec(ctx,
 			`UPDATE sessions SET turn_holder = $1, turn_since = $2
-			 WHERE id = $3 AND user_id = $4 AND deleted_at IS NULL
+			 WHERE id = $3 AND user_id = $4
 			   AND (turn_holder = '' OR turn_holder = $5 OR turn_since < $6)`,
 			holder, time.Now().UnixMilli(), sessionID, user, replacing, staleBefore.UnixMilli()); err != nil {
 			return err
 		}
 		err := tx.QueryRow(ctx,
-			`SELECT turn_holder, turns FROM sessions WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`,
+			`SELECT turn_holder, turns FROM sessions WHERE id = $1 AND user_id = $2`,
 			sessionID, user).Scan(&claim.Holder, &claim.Turns)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
@@ -1291,21 +1291,25 @@ func (s *SessionStore) TakeTurn(ctx context.Context, sessionID, holder, replacin
 func (s *SessionStore) KeepTurn(ctx context.Context, sessionID, holder string) error {
 	return execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx,
-			`UPDATE sessions SET turn_since = $1 WHERE id = $2 AND user_id = $3 AND deleted_at IS NULL AND turn_holder = $4`,
+			`UPDATE sessions SET turn_since = $1 WHERE id = $2 AND user_id = $3 AND turn_holder = $4`,
 			time.Now().UnixMilli(), sessionID, UserIDFromContext(ctx), holder)
 		return err
 	})
 }
 
-// EndTurn releases a held claim and counts the turn.
-func (s *SessionStore) EndTurn(ctx context.Context, sessionID, holder string) error {
-	return execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := tx.Exec(ctx,
+// EndTurn releases a claim, counts the turn, and reports whether holder
+// still held it.
+func (s *SessionStore) EndTurn(ctx context.Context, sessionID, holder string) (bool, error) {
+	held := false
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
 			`UPDATE sessions SET turn_holder = '', turn_since = 0, turns = turns + 1
-			 WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL AND turn_holder = $3`,
+			 WHERE id = $1 AND user_id = $2 AND turn_holder = $3`,
 			sessionID, UserIDFromContext(ctx), holder)
+		held = err == nil && tag.RowsAffected() == 1
 		return err
 	})
+	return held, err
 }
 
 var _ agent.Rewinder = (*SessionStore)(nil)

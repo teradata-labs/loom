@@ -32,8 +32,9 @@ type TurnLock interface {
 	TakeTurn(ctx context.Context, sessionID, holder, replacing string, staleBefore time.Time) (TurnClaim, error)
 	// KeepTurn refreshes a held claim, so a long turn is not taken as stale.
 	KeepTurn(ctx context.Context, sessionID, holder string) error
-	// EndTurn releases a held claim and counts the turn.
-	EndTurn(ctx context.Context, sessionID, holder string) error
+	// EndTurn releases a claim and counts the turn, and reports whether
+	// holder still held it: false when it was taken over in the meantime.
+	EndTurn(ctx context.Context, sessionID, holder string) (bool, error)
 }
 
 // TurnClaim is what taking a turn found.
@@ -82,12 +83,16 @@ func (s *SessionStore) KeepTurn(ctx context.Context, sessionID, holder string) e
 	return err
 }
 
-func (s *SessionStore) EndTurn(ctx context.Context, sessionID, holder string) error {
+func (s *SessionStore) EndTurn(ctx context.Context, sessionID, holder string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.ExecContext(ctx,
+	res, err := s.db.ExecContext(ctx,
 		`UPDATE sessions SET turn_holder = '', turn_since = 0, turns = turns + 1
 		 WHERE id = ? AND user_id = ? AND turn_holder = ?`,
 		sessionID, storeUserID(ctx), holder)
-	return err
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
 }

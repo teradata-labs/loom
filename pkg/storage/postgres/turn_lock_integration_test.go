@@ -50,12 +50,16 @@ func TestTurnLock_OneTurnAtATimePerSession(t *testing.T) {
 	require.Equal(t, "a", b.Holder)
 
 	require.NoError(t, store.KeepTurn(ctx, id, "a"))
-	require.NoError(t, store.EndTurn(ctx, id, "b"), "a holder that does not hold it releases nothing")
+	held, err := store.EndTurn(ctx, id, "b")
+	require.NoError(t, err)
+	require.False(t, held, "a holder that does not hold it released it")
 	b, err = store.TakeTurn(ctx, id, "b", "", long)
 	require.NoError(t, err)
 	require.False(t, b.Taken)
 
-	require.NoError(t, store.EndTurn(ctx, id, "a"))
+	held, err = store.EndTurn(ctx, id, "a")
+	require.NoError(t, err)
+	require.True(t, held, "the holder's release was not reported as held")
 	b, err = store.TakeTurn(ctx, id, "b", "", long)
 	require.NoError(t, err)
 	require.True(t, b.Taken, "a released session was not free")
@@ -77,4 +81,19 @@ func TestTurnLock_OneTurnAtATimePerSession(t *testing.T) {
 	theirs, err := store.TakeTurn(other, id, "f", "", time.Now().Add(time.Minute))
 	require.NoError(t, err)
 	require.False(t, theirs.Exists, "another user's session was claimed")
+}
+
+// A session id that was soft-deleted and saved again can take a turn, as it
+// could before turns were claimed.
+func TestTurnLock_ASoftDeletedSessionIdCanTakeATurn(t *testing.T) {
+	pool := testPool(t)
+	store := testSessionStore(t, pool)
+	ctx := ContextWithUserID(context.Background(), uniqueID("u"))
+	id := uniqueID("s")
+	require.NoError(t, store.SaveSession(ctx, &agent.Session{ID: id, CreatedAt: time.Now(), UpdatedAt: time.Now()}))
+	require.NoError(t, store.DeleteSession(ctx, id))
+	require.NoError(t, store.SaveSession(ctx, &agent.Session{ID: id, CreatedAt: time.Now(), UpdatedAt: time.Now()}))
+	c, err := store.TakeTurn(ctx, id, "h", "", time.Now().Add(-time.Hour))
+	require.NoError(t, err)
+	require.True(t, c.Exists && c.Taken, "the re-created session id could not be claimed")
 }

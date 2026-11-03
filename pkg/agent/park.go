@@ -928,8 +928,10 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	}
 
 	// The resumed turn is a turn like any other: claimed before the session
-	// is loaded or written, released on every way out.
-	endTurn, err := a.takeTurn(ctx, sessionID)
+	// is loaded or written, released on every way out. A resume never creates
+	// a session: one with no row has nothing parked, which the request lookup
+	// below reports.
+	endTurn, err := a.takeTurn(ctx, sessionID, false)
 	if err != nil {
 		return nil, err
 	}

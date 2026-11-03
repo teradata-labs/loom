@@ -202,7 +202,7 @@ func TestAClaimLeftBehindIsTakenOver(t *testing.T) {
 	require.NoError(t, err)
 	host, _ := os.Hostname()
 
-	claimed, err := store.TakeTurn(ctx, "s1", fmt.Sprintf("999999@%s#1", host), "", time.Now().Add(-time.Hour))
+	claimed, err := store.TakeTurn(ctx, "s1", fmt.Sprintf("999999@%s:%s/dead#1", host, pidNamespace()), "", time.Now().Add(-time.Hour))
 	require.NoError(t, err)
 	require.True(t, claimed.Taken)
 	_, err = a.Chat(ctx, "s1", "after a dead process")
