@@ -207,7 +207,7 @@ Extraction trigger (`agent.go:2884`), entity dedupe (`graph_memory_extractor.go:
 - Finding from fuzzing: invalid UTF-8 in state made `ToValue` fail and the builders panic. Fixed by sanitizing to U+FFFD; tool-result-derived state can carry arbitrary bytes.
 
 ### Phase 1 — shadow (no key needed) — ✅ code landed 2026-09-22 on `feat/decision-layer`
-- [x] `shadow.go` (record, store contract, recorder) + SQLite 000010 + Postgres 000025 (RLS) + `backend.DecisionShadowProvider` + `report/`
+- [x] `shadow.go` (record, store contract, recorder) + SQLite 000011 + Postgres 000026 (RLS) + `backend.DecisionShadowProvider` + `report/`
 - [x] `loom decision replay|report` (replay reads `tool_executions`, writes shadow rows; mock and LLM-adapter deciders; dry run)
 - [x] shadow wiring: recall rerank, tool_search rerank, failure classifier; `decision:` config block (moved forward from Phase 2 so shadows can be switched on per agent)
 - [x] `sites/` package so replay and live agents build identical requests and references

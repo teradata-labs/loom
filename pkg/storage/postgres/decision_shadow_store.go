@@ -34,7 +34,7 @@ import (
 const DefaultShadowQueryLimit = 10_000
 
 // DecisionShadowStore persists decision shadow rows in PostgreSQL
-// (migration 000025). Rows are tenant-scoped through the same RLS setting the
+// (migration 000026). Rows are tenant-scoped through the same RLS setting the
 // other per-user tables use; the user id comes from the context.
 type DecisionShadowStore struct {
 	pool   *pgxpool.Pool
