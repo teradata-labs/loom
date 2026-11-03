@@ -146,9 +146,16 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	}
 
 	// Determine working directory
-	// Priority: 1) explicit working_dir param, 2) LOOM_SANDBOX_DIR (agent execution context)
+	// Priority: 1) explicit working_dir param, 2) the turn's own directory
+	// (shuttle.ContextWithWorkDir), 3) LOOM_SANDBOX_DIR (agent execution context).
+	// A turn's directory is also where a relative working_dir resolves.
 	// Note: LOOM_SANDBOX_DIR defaults to LOOM_DATA_DIR (see config.GetLoomSandboxDir)
+	baseDir := t.baseDir
 	workingDir := config.GetLoomSandboxDir()
+	turnDir := shuttle.WorkDirFromContext(ctx)
+	if turnDir != "" {
+		baseDir, workingDir = turnDir, turnDir
+	}
 	if wd, ok := params["working_dir"].(string); ok && wd != "" {
 		workingDir = wd // Explicit override always wins
 	}
@@ -185,7 +192,7 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	}
 
 	// Validate and resolve working directory
-	cleanWorkingDir, err := resolveWorkingDir(workingDir, t.baseDir)
+	cleanWorkingDir, err := resolveWorkingDir(workingDir, baseDir)
 	if err != nil {
 		return &shuttle.Result{
 			Success: false,
@@ -235,7 +242,13 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 		// LOOM_SANDBOX_DIR is the agent execution context (the workspace) and
 		// is honored exactly as this guard's Suggestion advertises — without
 		// it, an anchored workspace outside the data dir rejects every call.
+		// The turn's own directory is the host's word, like LOOM_SANDBOX_DIR,
+		// so work beneath it is allowed.
 		isAllowed := pathWithin(absWorkingDir, absLoomDataDir)
+		if !isAllowed && turnDir != "" {
+			absTurnDir, _ := filepath.Abs(turnDir)
+			isAllowed = pathWithin(absWorkingDir, absTurnDir)
+		}
 		if !isAllowed {
 			absSandboxDir, _ := filepath.Abs(config.GetLoomSandboxDir())
 			if pathWithin(absWorkingDir, absSandboxDir) {
