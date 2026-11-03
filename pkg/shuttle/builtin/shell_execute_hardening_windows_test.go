@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unsafe"
@@ -70,6 +71,25 @@ func windowsReadPID(t *testing.T, path string) int {
 	return pid
 }
 
+var warmPowerShellOnce sync.Once
+
+// warmPowerShell runs one PowerShell Start-Process with the tool's flags before
+// a timeout test, so a cold runner's first-start cost (over 10s seen in CI) is
+// paid outside the timeout window instead of racing the pid write.
+func warmPowerShell(t *testing.T) {
+	t.Helper()
+	warmPowerShellOnce.Do(func() {
+		// #nosec G204 -- fixed test command.
+		out, err := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
+			"Start-Process -FilePath cmd.exe -ArgumentList '/c','exit' -NoNewWindow -Wait").CombinedOutput()
+		require.NoError(t, err, "PowerShell warm-up failed: %s", out)
+	})
+}
+
+// windowsTimeoutSeconds leaves the shell room to start its child and write the
+// pid on a slow runner before the timeout under test fires.
+const windowsTimeoutSeconds = 20
+
 func killPID(pid int) {
 	// #nosec G204 -- fixed program and flags; the only argument is a test child's PID.
 	_ = exec.Command("taskkill", "/F", "/PID", strconv.Itoa(pid)).Run()
@@ -77,11 +97,12 @@ func killPID(pid int) {
 
 // A timeout must end the shell's descendants, not just the shell.
 func TestShellExecute_WindowsTimeoutKillsDescendants(t *testing.T) {
+	warmPowerShell(t)
 	pidFile := filepath.Join(t.TempDir(), "child.pid")
 	res, err := NewShellExecuteTool("").Execute(context.Background(), map[string]interface{}{
 		"command":         startChildCommand(pidFile),
 		"shell":           "powershell",
-		"timeout_seconds": float64(10),
+		"timeout_seconds": float64(windowsTimeoutSeconds),
 	})
 	require.NoError(t, err)
 	require.NotNil(t, res.Error)
@@ -119,11 +140,12 @@ func TestShellExecute_WindowsCancelKillsDescendants(t *testing.T) {
 // A descendant whose parent shell has already exited must still be killed by
 // the timeout. "taskkill /T" alone missed it; the Job Object reaches it.
 func TestShellExecute_WindowsTimeoutKillsOrphanedDescendant(t *testing.T) {
+	warmPowerShell(t)
 	pidFile := filepath.Join(t.TempDir(), "child.pid")
 	res, err := NewShellExecuteTool("").Execute(context.Background(), map[string]interface{}{
 		"command":         startOrphanCommand(pidFile),
 		"shell":           "powershell",
-		"timeout_seconds": float64(10),
+		"timeout_seconds": float64(windowsTimeoutSeconds),
 	})
 	require.NoError(t, err)
 	require.NotNil(t, res.Error)
