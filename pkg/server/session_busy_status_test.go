@@ -43,28 +43,62 @@ func TestABusySessionIsUnavailableToAClient(t *testing.T) {
 	}
 }
 
-// A broadcast waits out a session busy with another turn, and delivers once
-// it is free; it gives up only after its wait.
+// A broadcast waits out a session busy with another turn for as long as it
+// stays busy, holding no model-call slot while it waits, and delivers once the
+// session is free; it stops only when its context ends.
 func TestABroadcastWaitsOutABusySession(t *testing.T) {
-	was := busyWait
-	busyWait = 5 * time.Second
-	t.Cleanup(func() { busyWait = was })
+	was := busyRetryEvery
+	t.Cleanup(func() { busyRetryEvery = was })
+	s := &MultiAgentServer{llmSemaphore: make(chan struct{}, 1)}
 
+	// Many short waits: delivered once free, however long that takes.
+	busyRetryEvery = time.Millisecond
 	var tries atomic.Int32
-	ran, err := chatWhenFree(context.Background(), func() error {
-		if tries.Add(1) < 3 {
+	err := s.injectWhenFree(context.Background(), func() error {
+		if tries.Add(1) < 50 {
 			return agent.ErrSessionBusy
 		}
 		return nil
 	})
-	if !ran || err != nil || tries.Load() != 3 {
-		t.Fatalf("the broadcast was not delivered once the session freed: ran=%v err=%v tries=%d", ran, err, tries.Load())
+	if err != nil || tries.Load() != 50 {
+		t.Fatalf("the broadcast was not delivered once the session freed: err=%v tries=%d", err, tries.Load())
 	}
 
-	busyWait = 0
-	ran, err = chatWhenFree(context.Background(), func() error { return agent.ErrSessionBusy })
-	if ran || !errors.Is(err, agent.ErrSessionBusy) {
-		t.Fatalf("a session busy past the wait reports busy, got ran=%v err=%v", ran, err)
+	// While it waits, another turn can take the only slot.
+	busyRetryEvery = 200 * time.Millisecond
+	waiting := make(chan struct{})
+	got := make(chan bool, 1)
+	go func() {
+		<-waiting
+		select {
+		case s.llmSemaphore <- struct{}{}:
+			<-s.llmSemaphore
+			got <- true
+		case <-time.After(100 * time.Millisecond):
+			got <- false
+		}
+	}()
+	var once atomic.Bool
+	err = s.injectWhenFree(context.Background(), func() error {
+		if once.CompareAndSwap(false, true) {
+			close(waiting)
+			return agent.ErrSessionBusy
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !<-got {
+		t.Fatal("the broadcast held the model-call slot while it waited for the session")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(20 * time.Millisecond); cancel() }()
+	busyRetryEvery = time.Millisecond
+	err = s.injectWhenFree(ctx, func() error { return agent.ErrSessionBusy })
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("a broadcast to a session that stays busy stops with its context, got %v", err)
 	}
 }
 
@@ -98,5 +132,43 @@ func TestAQueuedMessageForABusySessionIsDeliveredAgain(t *testing.T) {
 	settleQueued(ctx, q, zaptest.NewLogger(t), again.ID, nil)
 	if next, _ := q.Dequeue(ctx, "coord"); next != nil {
 		t.Fatalf("a message the session heard was delivered again: %v", next)
+	}
+}
+
+// A message refused as busy more times than its retries is still delivered:
+// a busy session is not a failed attempt. Its count survives a restart.
+func TestABusySessionNeverUsesUpAMessagesRetries(t *testing.T) {
+	path := t.TempDir() + "/queue.db"
+	q, err := communication.NewMessageQueue(path, nil, zaptest.NewLogger(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := q.Enqueue(ctx, &communication.QueueMessage{ToAgent: "coord", FromAgent: "sub", MessageType: "result",
+		Payload: &loomv1.MessagePayload{Data: &loomv1.MessagePayload_Value{Value: []byte("done")}}, MaxRetries: 3}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 10; i++ {
+		m, err := q.Dequeue(ctx, "coord")
+		if err != nil || m == nil {
+			t.Fatalf("delivery %d: the message is gone after %d busy refusals (%v)", i+1, i, err)
+		}
+		settleQueued(ctx, q, zaptest.NewLogger(t), m.ID, agent.ErrSessionBusy)
+	}
+	if err := q.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	q, err = communication.NewMessageQueue(path, nil, zaptest.NewLogger(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = q.Close() }()
+	m, err := q.Dequeue(ctx, "coord")
+	if err != nil || m == nil {
+		t.Fatalf("after a restart the deferred message is gone: %v", err)
+	}
+	if m.DequeueCount != 1 {
+		t.Fatalf("after a restart the message counts %d deliveries, want 1 (busy refusals are not counted)", m.DequeueCount)
 	}
 }

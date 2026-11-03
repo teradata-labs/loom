@@ -2237,30 +2237,23 @@ func (s *MultiAgentServer) processCoordinatorBroadcastMessages(
 			zap.String("topic", busMsg.topic),
 			zap.Int("content_length", len(content)))
 
-		// Acquire semaphore with timeout
-		select {
-		case s.llmSemaphore <- struct{}{}:
-			// Acquired
-		case <-time.After(30 * time.Second):
-			s.logger.Error("Timeout acquiring semaphore for broadcast injection",
-				zap.String("coordinator", coordinatorID))
-			continue
-		case <-ctx.Done():
-			s.logger.Info("Context canceled while waiting for semaphore",
-				zap.String("coordinator", coordinatorID))
-			return
-		}
-
 		// Inject message on a context carrying the worker's tenant identity but
 		// not its cancellation, so a worker shutdown cannot kill a turn mid-flight
 		// while tenant-scoped stores (the postgres HITL store) stay reachable.
-		_, err := chatWhenFree(ctx, func() error {
+		err := s.injectWhenFree(ctx, func() error {
 			_, err := coordinatorAgent.Chat(turnIdentityContext(ctx), sessionID, injectedPrompt)
 			return err
 		})
-
-		// Release semaphore
-		<-s.llmSemaphore
+		if errors.Is(err, errNoModelSlot) {
+			s.logger.Error("Timeout acquiring semaphore for broadcast injection",
+				zap.String("coordinator", coordinatorID))
+			continue
+		}
+		if ctx.Err() != nil {
+			s.logger.Info("Context canceled while delivering a broadcast",
+				zap.String("coordinator", coordinatorID))
+			return
+		}
 
 		if err != nil {
 			s.logger.Warn("Failed to inject broadcast message",
@@ -2278,13 +2271,14 @@ func (s *MultiAgentServer) processCoordinatorBroadcastMessages(
 }
 
 // settleQueued settles a queued message after the turn it was handed to. A
-// session busy with another turn has not heard it: it goes back to the queue,
-// and the monitor delivers it again once that turn ends. Anything else is
+// session busy with another turn has not heard it: it is deferred, back to the
+// queue without counting against its retries, and the monitor delivers it
+// again; a busy session never uses up a message's retries. Anything else is
 // settled and acknowledged; a turn that failed would fail again.
 func settleQueued(ctx context.Context, q *communication.MessageQueue, logger *zap.Logger, id string, turnErr error) {
 	if errors.Is(turnErr, agent.ErrSessionBusy) {
-		if err := q.Requeue(ctx, id); err != nil {
-			logger.Warn("Session busy and the message could not be requeued",
+		if err := q.Defer(ctx, id); err != nil {
+			logger.Warn("Session busy and the message could not be deferred",
 				zap.String("message_id", id), zap.Error(err))
 		}
 		return
@@ -2294,24 +2288,36 @@ func settleQueued(ctx context.Context, q *communication.MessageQueue, logger *za
 	}
 }
 
-// busyWait is how long a broadcast waits for a session busy with another turn
-// before giving up on delivering it. A bus message, once read, cannot be put
-// back; this is its only chance.
-var busyWait = 2 * time.Minute
+// errNoModelSlot is a broadcast turn that could not get a model-call slot in
+// time.
+var errNoModelSlot = errors.New("no model-call slot within 30s")
 
-// chatWhenFree runs a turn, waiting while the session is busy with another,
-// up to busyWait. It reports whether the turn ran.
-func chatWhenFree(ctx context.Context, turn func() error) (bool, error) {
-	deadline := time.Now().Add(busyWait)
+// busyRetryEvery is how often a broadcast tries again a session busy with
+// another turn.
+var busyRetryEvery = time.Second
+
+// injectWhenFree runs a broadcast turn once its session is free. A bus
+// message, once read, cannot be put back, so it waits as long as the session
+// is busy, ending only with ctx; each attempt takes a model-call slot and gives
+// it back, so the wait holds none.
+func (s *MultiAgentServer) injectWhenFree(ctx context.Context, turn func() error) error {
 	for {
+		select {
+		case s.llmSemaphore <- struct{}{}:
+		case <-time.After(30 * time.Second):
+			return errNoModelSlot
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 		err := turn()
-		if !errors.Is(err, agent.ErrSessionBusy) || time.Now().After(deadline) {
-			return err == nil, err
+		<-s.llmSemaphore
+		if !errors.Is(err, agent.ErrSessionBusy) {
+			return err
 		}
 		select {
 		case <-ctx.Done():
-			return false, err
-		case <-time.After(time.Second):
+			return ctx.Err()
+		case <-time.After(busyRetryEvery):
 		}
 	}
 }
@@ -2415,29 +2421,22 @@ done:
 			"[BROADCAST on topic '%s' FROM %s]:\n\n%s",
 			sub.Topic, msg.FromAgent, content)
 
-		// Acquire semaphore with timeout
-		select {
-		case s.llmSemaphore <- struct{}{}:
-			// Acquired
-		case <-time.After(30 * time.Second):
-			s.logger.Error("Timeout acquiring semaphore for broadcast injection",
-				zap.String("sub_agent", subAgentID))
-			continue
-		case <-ctx.Done():
-			s.logger.Info("Context canceled while waiting for semaphore",
-				zap.String("sub_agent", subAgentID))
-			return
-		}
-
 		// Inject message on a context carrying the worker's tenant identity but
 		// not its cancellation (see processCoordinatorBroadcastMessages).
-		_, err := chatWhenFree(ctx, func() error {
+		err := s.injectWhenFree(ctx, func() error {
 			_, err := subAgent.Chat(turnIdentityContext(ctx), sessionID, injectedPrompt)
 			return err
 		})
-
-		// Release semaphore
-		<-s.llmSemaphore
+		if errors.Is(err, errNoModelSlot) {
+			s.logger.Error("Timeout acquiring semaphore for broadcast injection",
+				zap.String("sub_agent", subAgentID))
+			continue
+		}
+		if ctx.Err() != nil {
+			s.logger.Info("Context canceled while delivering a broadcast",
+				zap.String("sub_agent", subAgentID))
+			return
+		}
 
 		if err != nil {
 			s.logger.Warn("Failed to inject broadcast message to sub-agent",
