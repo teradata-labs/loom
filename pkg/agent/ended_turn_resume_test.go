@@ -158,3 +158,31 @@ func countAssistant(ag *Agent, sessionID, content string) int {
 	}
 	return n
 }
+
+// A call id reused by a later turn (some providers reuse them) does not make
+// the earlier turn's ending tool end the resumed one: only the parked batch's
+// own rows count.
+func TestAReusedCallIDDoesNotEndAResumedTurn(t *testing.T) {
+	f := newParkFixture(t, []shuttle.Hook{scopedAskHook{tool: "export_csv"}}, []mockLLMResponse{
+		{content: "Taking you back.", toolCalls: []llmtypes.ToolCall{{ID: "c1", Name: "hand_off", Input: map[string]interface{}{}}}},
+		{content: "exporting", toolCalls: []llmtypes.ToolCall{{ID: "c1", Name: "export_csv", Input: map[string]interface{}{"v": "w"}}}},
+		{content: "Export done."},
+	}, "export_csv")
+	f.ag.RegisterTool(&handOff{})
+	if _, err := f.ag.Chat(context.Background(), "r1", "first"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := f.ag.Chat(context.Background(), "r1", "second")
+	var parked *TurnParkedError
+	if !errors.As(err, &parked) {
+		t.Fatalf("want park, got %v", err)
+	}
+	hr := f.pendingParked(t, "r1")
+	resp, err := f.ag.ResumeChat(context.Background(), "r1", ParkDecision{RequestID: hr.ID, ItemIDs: paramKeys(hr), Approved: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Content != "Export done." {
+		t.Fatalf("the resumed turn was ended by an earlier turn's tool: content=%q meta=%v", resp.Content, resp.Metadata)
+	}
+}

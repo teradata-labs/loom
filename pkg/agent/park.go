@@ -1194,7 +1194,7 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	// anything more, and the turn's words are the ones said with the batch,
 	// already stored on its row.
 	var response *Response
-	if ended := batchEndedBy(sess, batch); ended != "" {
+	if ended := batchEndedBy(sess); ended != "" {
 		response = &Response{
 			Content: batch.Content,
 			Metadata: map[string]interface{}{
@@ -1357,15 +1357,28 @@ func parkedTurnIdentity(sess *Session) (turnIndex int64, userMessage string) {
 	return turnIndex, ""
 }
 
-// batchEndedBy names the call of batch whose stored result ended the turn
-// (EndsTurnKey), or "" when none did. Results are read from the session's tool
-// rows, so a call that ran before a park counts as one that runs on resume.
-func batchEndedBy(sess *Session, batch Message) string {
-	names := make(map[string]string, len(batch.ToolCalls))
-	for _, c := range batch.ToolCalls {
+// batchEndedBy names the call of the parked batch whose stored result ended
+// the turn (EndsTurnKey), or "" when none did. Only the rows after the batch
+// are read, so a row of an earlier turn that reused a call id (some providers
+// reuse them) is never taken for this batch's. A call that ran before the park
+// counts as one that runs on resume.
+func batchEndedBy(sess *Session) string {
+	msgs := rawSessionMessages(sess)
+	k := -1
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "assistant" && len(msgs[i].ToolCalls) > 0 {
+			k = i
+			break
+		}
+	}
+	if k < 0 {
+		return ""
+	}
+	names := make(map[string]string, len(msgs[k].ToolCalls))
+	for _, c := range msgs[k].ToolCalls {
 		names[c.ID] = c.Name
 	}
-	for _, m := range rawSessionMessages(sess) {
+	for _, m := range msgs[k+1:] {
 		if m.Role != "tool" || m.ToolResult == nil || m.ToolResult.Metadata == nil {
 			continue
 		}

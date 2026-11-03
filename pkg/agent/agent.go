@@ -18,7 +18,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -3429,18 +3428,16 @@ func (a *Agent) runConversationLoop(ctx Context) (resp *Response, err error) {
 			return nil, parkErr
 		}
 		if st.endedBy != "" {
-			// The turn ends without another model call, so a hygiene fix the
-			// model would make cannot be asked for: with the retries counted
-			// as spent, the policy repairs the board or logs, never retries.
-			spent := math.MaxInt32
-			_, outcome := a.runEndOfTurnHygiene(ctx, session, &spent)
+			// A tool that ends the turn hands the work on, and the work goes on
+			// elsewhere: like a park, the other exit where work continues, the
+			// turn runs no end-of-turn hygiene pass, which would treat its
+			// live tasks as abandoned.
 			meta := map[string]interface{}{
 				"turns":           turnCount,
 				"tool_executions": toolExecutionCount,
 				"stop_reason":     llmResp.StopReason,
 				"ended_by":        st.endedBy,
 			}
-			addHygieneMeta(meta, outcome)
 			span.SetAttribute("conversation.turns", turnCount)
 			span.SetAttribute("conversation.tool_executions", toolExecutionCount)
 			span.SetAttribute("conversation.stop_reason", llmResp.StopReason)
