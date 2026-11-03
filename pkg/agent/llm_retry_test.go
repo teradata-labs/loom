@@ -19,9 +19,11 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 
 	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/observability"
@@ -183,4 +185,52 @@ func TestChatWithRetry_AStreamIsRetriedOnlyBeforeItsTextIsSent(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "internalServerException", "the provider's error is kept")
 	assert.Equal(t, 1, after.calls, "a stream whose text the client already has was sent again")
+}
+
+// limitedLLM sends every call through a real rate limiter, as the providers
+// do, and fails each attempt with err. attempts counts what reached the
+// provider.
+type limitedLLM struct {
+	rl       *llm.RateLimiter
+	err      error
+	attempts int
+}
+
+func (l *limitedLLM) Chat(ctx context.Context, _ []Message, _ []shuttle.Tool) (*LLMResponse, error) {
+	_, err := l.rl.Do(ctx, func(context.Context) (interface{}, error) {
+		l.attempts++
+		return nil, l.err
+	})
+	return nil, err
+}
+func (l *limitedLLM) Name() string  { return "limited" }
+func (l *limitedLLM) Model() string { return "limited-model" }
+
+// The agent's retry and the provider's rate limiter do not multiply. A
+// throttled call the limiter already retried through its budget is not sent
+// again by the agent; a server error, which the limiter does not retry, gets
+// the agent's retries once.
+func TestChatWithRetry_RetriesDoNotStackOnTheRateLimiter(t *testing.T) {
+	newLimited := func(err error) *limitedLLM {
+		rl := llm.NewRateLimiter(llm.RateLimiterConfig{
+			Enabled: true, RequestsPerSecond: 1000, BurstCapacity: 100,
+			MaxRetries: 2, RetryBackoff: time.Millisecond, QueueTimeout: time.Minute,
+			Logger: zap.NewNop(),
+		})
+		t.Cleanup(func() { _ = rl.Close() })
+		return &limitedLLM{rl: rl, err: err}
+	}
+	quick := RetryConfig{Enabled: true, MaxRetries: 3, InitialDelay: time.Millisecond, MaxDelay: time.Millisecond, Multiplier: 1}
+
+	throttled := newLimited(errors.New("API error (status 429): rate limit exceeded"))
+	a := &Agent{id: "retry-test", llm: throttled, config: &Config{Retry: quick}}
+	_, err := a.chatWithRetry(retryTestContext(), []Message{{Role: "user", Content: "q"}}, nil)
+	require.Error(t, err)
+	assert.Equal(t, 3, throttled.attempts, "the agent re-sent a call the rate limiter had retried: attempts multiplied")
+
+	server := newLimited(errors.New("API error (status 500): internal error"))
+	a = &Agent{id: "retry-test", llm: server, config: &Config{Retry: quick}}
+	_, err = a.chatWithRetry(retryTestContext(), []Message{{Role: "user", Content: "q"}}, nil)
+	require.Error(t, err)
+	assert.Equal(t, 4, server.attempts, "a server error gets the agent's retries once, with no limiter layer")
 }

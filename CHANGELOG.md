@@ -42,7 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 #### LLM transport
-- **Streaming calls are retried while no text has reached the client.** The streaming path bypassed retry ("streaming already handles errors" — it did not), so one transient provider failure killed the conversation. A stream that fails before its first token now runs under `Config.Retry` like a plain call; one that fails after its text went out is not re-sent. Context-too-long and 400/401/403 are never retried.
+- **Streaming calls are retried while no text has reached the client.** The streaming path bypassed retry ("streaming already handles errors" — it did not), so one transient provider failure killed the conversation. A stream that fails before its first token now runs under `Config.Retry` like a plain call; one that fails after its text went out is not re-sent. Context-too-long and 400/401/403 are never retried, and a throttled call the provider's rate limiter already retried through its budget is not sent again (`llm.ErrThrottleRetriesExhausted`), so the two retries do not multiply.
 
 #### Token counting: the encoding ships in the binary
 - **The token counter no longer downloads its encoding.** `pkg/agent`'s counter fetched `cl100k_base` from `openaipublic.blob.core.windows.net` on first use; without network access (an air-gapped or locked-down server, a sandboxed CI runner) it fell back to a characters/4 estimate for the life of the process, which skews relief and budget decisions. It now loads the encoding bundled by `github.com/pkoukk/tiktoken-go-loader` (MIT; its `cl100k_base.tiktoken` has the SHA-256 that OpenAI's tiktoken verifies). The binary grows by about 7 MB.

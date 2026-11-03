@@ -90,9 +90,11 @@ var errStreamedThenFailed = errors.New("stream failed after text was sent")
 // retryable is whether a failed LLM call may be sent again. A refusal that
 // re-sending cannot change is not: a prompt too long for the model (relief
 // answers that), a request the provider rejected as malformed or unauthorised,
-// and a stream whose text the client already has.
+// a stream whose text the client already has, and a throttled call the rate
+// limiter already retried through its budget.
 func retryable(err error) bool {
-	if errors.Is(err, llm.ErrContextTooLong) || errors.Is(err, errStreamedThenFailed) {
+	if errors.Is(err, llm.ErrContextTooLong) || errors.Is(err, errStreamedThenFailed) ||
+		errors.Is(err, llm.ErrThrottleRetriesExhausted) {
 		return false
 	}
 	msg := err.Error()
