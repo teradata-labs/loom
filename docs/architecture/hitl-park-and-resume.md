@@ -186,16 +186,23 @@ joined with `"; "`, on both card paths:
 
 - **Parked:** each approval item's descriptor in the row's `params` has the
   joined text under `reason` (omitted when no asking hook gave one). Question
-  and resource items carry no `reason`.
+  and resource items carry no `reason`. `NewProgressNotifier` copies the row's
+  `Params` into the progress event's `HITLRequestInfo.Params`, which the gRPC
+  streams (Weave and the multi-agent stream) serialize to
+  `hitl_request.params_json`: a JSON object keyed by held ToolCall ID whose
+  values are the item descriptors. The parked card's `context_json` stays
+  `{"kind":"parked"}`; read the reasons from `params_json`.
 - **In-turn (ask resolver):** the row's `Context["reason"]`.
   `NewProgressNotifier` forwards the row's `Context["reason"]` (and no other
-  context key) in the progress event's `HITLRequestInfo.Context`, which the gRPC streams serialize to
-  `hitl_request.context_json`.
+  context key) in the progress event's `HITLRequestInfo.Context`, which the
+  gRPC streams serialize to `hitl_request.context_json`. The held call's
+  parameters go to `params_json`.
 
-Limitation: the proto `HITLRequestInfo` has no `params` field, so a parked
-item's `reason` is on the in-process progress event (`HITLRequestInfo.Params`)
-and the stored row, but not on the gRPC progress message; a parked card's
-`context_json` is only `{"kind":"parked"}`.
+On both paths the gRPC card also carries the row's `kind` (`approval`,
+`question` or `resource`), `summary` (the display digest) and
+`params_truncated` (true when the size bound cut entries out of `params`).
+The bundled TUI does not render `params_json` yet: its dialog shows only the
+question text.
 
 ### 3.3 Claiming the decision
 
