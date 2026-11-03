@@ -255,3 +255,21 @@ func TestInloopFold_TheAskComesFromTheRegistry(t *testing.T) {
 	assert.Equal(t, strings.TrimSpace(shipped), withRegistry.foldAsk(context.Background()))
 	assert.Equal(t, foldInstruction, (&Agent{}).foldAsk(context.Background()), "an agent with no registry sends the built-in ask")
 }
+
+// Before the model has answered once, the user's request is the pending turn:
+// a fold on a first turn whose message alone reaches the start mark never
+// removes that message.
+func TestInloopFold_AFirstTurnNeverFoldsTheUsersRequest(t *testing.T) {
+	sm := NewSegmentedMemory("ROM", 20000, 2000)
+	request := strings.Repeat("analyse this table carefully. ", 3000)
+	sm.AddMessage(context.Background(), Message{Role: "user", Content: request, Turn: 1})
+
+	sm.ApplyFoldReply(context.Background(), "state of work")
+	var kept bool
+	for _, m := range sm.GetMessages() {
+		if m.Role == "user" && m.Content == request {
+			kept = true
+		}
+	}
+	assert.True(t, kept, "a first-turn fold removed the user's own request")
+}

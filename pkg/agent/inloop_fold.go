@@ -210,17 +210,27 @@ func (sm *SegmentedMemory) foldSplitLocked() (kept, excised []Message) {
 
 	// The pending pair: the last assistant row and everything after it are
 	// untouchable — the in-flight region.
-	lastAssistant := -1
+	pendingFrom := -1
 	for i := range sm.contextMessages {
 		if sm.contextMessages[i].Role == "assistant" {
-			lastAssistant = i
+			pendingFrom = i
+		}
+	}
+	// Before the first assistant row the pending turn is the user's request
+	// itself: it starts at the last user message, and no fold removes it.
+	if pendingFrom < 0 {
+		for i := len(sm.contextMessages) - 1; i >= 0; i-- {
+			if sm.contextMessages[i].Role == "user" {
+				pendingFrom = i
+				break
+			}
 		}
 	}
 	// The last k turns before the pending one, counted back from it: a user
 	// message, or an assistant row with words in it. A row that only called
 	// tools is tool traffic, and goes with it.
 	recent := map[int]bool{}
-	for i, n := lastAssistant-1, 0; i >= 0 && n < k; i-- {
+	for i, n := pendingFrom-1, 0; i >= 0 && n < k; i-- {
 		m := &sm.contextMessages[i]
 		if m.Role == "user" || (m.Role == "assistant" && strings.TrimSpace(m.Content) != "") {
 			recent[i] = true
@@ -233,7 +243,7 @@ func (sm *SegmentedMemory) foldSplitLocked() (kept, excised []Message) {
 	for i := range sm.contextMessages {
 		m := sm.contextMessages[i]
 		switch {
-		case lastAssistant >= 0 && i >= lastAssistant:
+		case pendingFrom >= 0 && i >= pendingFrom:
 			kept = append(kept, m) // pending pair and after
 		case recent[i] && m.Role == "user":
 			kept = append(kept, m)
