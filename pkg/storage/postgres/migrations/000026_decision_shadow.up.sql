@@ -41,9 +41,11 @@ CREATE INDEX IF NOT EXISTS idx_decision_shadow_user ON decision_shadow(user_id);
 
 -- FORCE so the policy binds the table owner too: the application role
 -- usually owns the table, and without FORCE Postgres skips RLS for it.
--- Same posture as sessions/messages (000007) and graph memory (000010).
+-- Same posture as sessions/messages (000007) and graph memory (000010); the
+-- policy resolves the caller through loom_current_user_id() (000016) so a
+-- Supabase JWT caller is recognized like on every other per-user table.
 ALTER TABLE decision_shadow ENABLE ROW LEVEL SECURITY;
 ALTER TABLE decision_shadow FORCE ROW LEVEL SECURITY;
 CREATE POLICY decision_shadow_user_isolation ON decision_shadow
-    USING (user_id = current_setting('app.current_user_id', true))
-    WITH CHECK (user_id = current_setting('app.current_user_id', true));
+    USING (user_id = loom_current_user_id())
+    WITH CHECK (user_id = loom_current_user_id());

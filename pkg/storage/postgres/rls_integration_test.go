@@ -687,3 +687,53 @@ func TestRLS_SoftDeleteRestoreIsolation(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, loaded, "Session should be restored and loadable")
 }
+
+// TestRLS_DecisionShadowHonorsJWTSub verifies that decision_shadow (000026)
+// resolves its caller through loom_current_user_id(), like every other
+// per-user table since 000016: a Supabase-authenticated caller that sets only
+// request.jwt.claims sees its own rows and no one else's.
+func TestRLS_DecisionShadowHonorsJWTSub(t *testing.T) {
+	pool := testPool(t)
+	ensureRLSWriterRole(t, pool)
+	require.NoError(t, execInTxNoRLS(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, "GRANT SELECT, INSERT ON decision_shadow TO loom_rls_writer")
+		return err
+	}))
+
+	userA := uniqueID("jwt-shadow-a")
+	questionID := uniqueID("q-shadow")
+	err := execInTxAsWriter(t, pool, userA, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO decision_shadow (site, question_id, kind, user_id)
+			VALUES ('test.site', $1, 'classify', $2)`, questionID, userA)
+		return err
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = execInTxNoRLS(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+			_, derr := tx.Exec(ctx, "DELETE FROM decision_shadow WHERE question_id=$1", questionID)
+			return derr
+		})
+	})
+
+	countAsJWTSub := func(sub string) int {
+		var n int
+		qerr := execInTxNoRLS(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, "SELECT set_config('request.jwt.claims', $1, true)",
+				fmt.Sprintf(`{"sub":%q}`, sub)); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, "SET LOCAL ROLE loom_rls_writer"); err != nil {
+				return err
+			}
+			return tx.QueryRow(ctx, "SELECT count(*) FROM decision_shadow WHERE question_id=$1", questionID).Scan(&n)
+		})
+		require.NoError(t, qerr)
+		return n
+	}
+
+	assert.Equal(t, 1, countAsJWTSub(userA),
+		"a Supabase-authenticated caller with the matching JWT sub must see its own decision_shadow row")
+	assert.Equal(t, 0, countAsJWTSub("someone-else"),
+		"a different JWT sub must not see the row (isolation preserved)")
+}
