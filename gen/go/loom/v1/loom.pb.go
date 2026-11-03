@@ -876,9 +876,28 @@ type HITLRequestInfo struct {
 	// Question ID for clarification questions (used with AnswerClarificationQuestion RPC)
 	QuestionId string `protobuf:"bytes,7,opt,name=question_id,json=questionId,proto3" json:"question_id,omitempty"`
 	// Suggested options for the user (if applicable)
-	Options       []string `protobuf:"bytes,8,rep,name=options,proto3" json:"options,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Options []string `protobuf:"bytes,8,rep,name=options,proto3" json:"options,omitempty"`
+	// Classifies the stored request at origin: "approval" (hook-held call or a
+	// parked batch containing one), "question" (contact_human, or a parked
+	// batch of only questions), or "resource" (a parked resource wait). Empty
+	// means the producer did not classify it; treat it as "question".
+	Kind string `protobuf:"bytes,9,opt,name=kind,proto3" json:"kind,omitempty"`
+	// Display digest of the stored request: the held tool and its arguments
+	// for an approval, the question text for a question. For a parked batch it
+	// joins each item's tool+args digest with "; ", cut to 200 characters.
+	Summary string `protobuf:"bytes,10,opt,name=summary,proto3" json:"summary,omitempty"`
+	// The stored request's parameter map as JSON, mirroring context_json. For
+	// an in-turn approval it is the held call's parameters. For a parked turn
+	// (request_type "parked") it maps each held ToolCall ID to that item's
+	// descriptor; an approval item's descriptor carries "reason", the joined
+	// reason of every admission hook that asked, which is what the approval's
+	// grants cover. Empty when the request has no parameters (a question).
+	ParamsJson string `protobuf:"bytes,11,opt,name=params_json,json=paramsJson,proto3" json:"params_json,omitempty"`
+	// True when the server's size bound cut whole entries out of params_json,
+	// so the card shows only part of what is being approved.
+	ParamsTruncated bool `protobuf:"varint,12,opt,name=params_truncated,json=paramsTruncated,proto3" json:"params_truncated,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *HITLRequestInfo) Reset() {
@@ -965,6 +984,34 @@ func (x *HITLRequestInfo) GetOptions() []string {
 		return x.Options
 	}
 	return nil
+}
+
+func (x *HITLRequestInfo) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *HITLRequestInfo) GetSummary() string {
+	if x != nil {
+		return x.Summary
+	}
+	return ""
+}
+
+func (x *HITLRequestInfo) GetParamsJson() string {
+	if x != nil {
+		return x.ParamsJson
+	}
+	return ""
+}
+
+func (x *HITLRequestInfo) GetParamsTruncated() bool {
+	if x != nil {
+		return x.ParamsTruncated
+	}
+	return false
 }
 
 // ExecutionResult contains domain-specific execution results.
@@ -11042,7 +11089,7 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\rcontext_state\x18\x15 \x01(\v2\x15.loom.v1.ContextStateR\fcontextState\x12/\n" +
 	"\x14is_tool_input_stream\x18\x16 \x01(\bR\x11isToolInputStream\x12(\n" +
 	"\x10tool_input_bytes\x18\x17 \x01(\x03R\x0etoolInputBytes\x12&\n" +
-	"\x0ftool_call_index\x18\x18 \x01(\x05R\rtoolCallIndex\"\x92\x02\n" +
+	"\x0ftool_call_index\x18\x18 \x01(\x05R\rtoolCallIndex\"\x8c\x03\n" +
 	"\x0fHITLRequestInfo\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x1a\n" +
@@ -11053,7 +11100,13 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\fcontext_json\x18\x06 \x01(\tR\vcontextJson\x12\x1f\n" +
 	"\vquestion_id\x18\a \x01(\tR\n" +
 	"questionId\x12\x18\n" +
-	"\aoptions\x18\b \x03(\tR\aoptions\"\x9c\x03\n" +
+	"\aoptions\x18\b \x03(\tR\aoptions\x12\x12\n" +
+	"\x04kind\x18\t \x01(\tR\x04kind\x12\x18\n" +
+	"\asummary\x18\n" +
+	" \x01(\tR\asummary\x12\x1f\n" +
+	"\vparams_json\x18\v \x01(\tR\n" +
+	"paramsJson\x12)\n" +
+	"\x10params_truncated\x18\f \x01(\bR\x0fparamsTruncated\"\x9c\x03\n" +
 	"\x0fExecutionResult\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1b\n" +
 	"\tdata_json\x18\x02 \x01(\tR\bdataJson\x12\x1b\n" +
