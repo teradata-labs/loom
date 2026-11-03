@@ -1194,3 +1194,61 @@ func nullableBytes(b []byte) []byte {
 
 // Compile-time check: SessionStore implements agent.SessionStorage.
 var _ agent.SessionStorage = (*SessionStore)(nil)
+
+// TruncateFrom deletes every message from the given turn onward and reports how
+// many rows went. See agent.SessionStorage for why turn is the unit and why this
+// is a delete rather than an eviction.
+func (s *SessionStore) TruncateFrom(ctx context.Context, sessionID string, turn int) (int, error) {
+	if turn <= 0 {
+		return 0, fmt.Errorf("turn must be positive, got %d", turn)
+	}
+	ctx, span := s.tracer.StartSpan(ctx, "pg_session_store.truncate_from")
+	defer s.tracer.EndSpan(span)
+	span.SetAttribute("session_id", sessionID)
+	span.SetAttribute("turn", fmt.Sprintf("%d", turn))
+
+	var rows int
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
+			"DELETE FROM messages WHERE session_id = $1 AND user_id = $2 AND turn >= $3",
+			sessionID, UserIDFromContext(ctx), turn,
+		)
+		if err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to truncate messages: %w", err)
+		}
+		rows = int(tag.RowsAffected())
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	span.SetAttribute("rows", fmt.Sprintf("%d", rows))
+	return rows, nil
+}
+
+// MaxTurn reports the highest turn number in a session, or 0 when it has no
+// messages.
+func (s *SessionStore) MaxTurn(ctx context.Context, sessionID string) (int, error) {
+	ctx, span := s.tracer.StartSpan(ctx, "pg_session_store.max_turn")
+	defer s.tracer.EndSpan(span)
+	span.SetAttribute("session_id", sessionID)
+
+	var turn *int
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			"SELECT MAX(turn) FROM messages WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL",
+			sessionID, UserIDFromContext(ctx),
+		).Scan(&turn)
+	})
+	if err != nil {
+		span.RecordError(err)
+		return 0, fmt.Errorf("failed to read max turn: %w", err)
+	}
+	if turn == nil {
+		return 0, nil
+	}
+	return *turn, nil
+}
+
+var _ agent.Rewinder = (*SessionStore)(nil)

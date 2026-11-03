@@ -2236,3 +2236,75 @@ func convertToFTS5Query(query string) string {
 	// FTS5 OR operator requires uppercase
 	return strings.Join(words, " OR ")
 }
+
+// TruncateFrom removes every message from the given turn onward and reports how
+// many rows went. It is the rewind primitive: undoing the last exchange rather
+// than relieving it.
+//
+// Turn is the right unit because turn is derived at insert (SaveMessage) as
+// MAX(turn) + 1 on a user message and MAX(turn) otherwise, so one turn already
+// groups a user message with every assistant message and tool call it caused.
+// Deleting a turn therefore cannot leave a tool call without its result, or an
+// assistant message answering a prompt that no longer exists — states the
+// provider rejects outright.
+//
+// Deriving turn from MAX also means no counter has to be rewound: the next
+// insert continues from the new maximum on its own.
+//
+// This is a real delete, not an eviction. Eviction and folding are relief —
+// they shrink what a turn costs while keeping it in the history. A rewind is
+// the user saying the exchange should not have happened.
+//
+// The caller must drop the in-memory copy of the session afterwards
+// (Memory.DeleteSession); otherwise the next turn compiles the history this
+// call just removed. Agent.RewindSession does both.
+func (s *SessionStore) TruncateFrom(ctx context.Context, sessionID string, turn int) (int, error) {
+	if err := s.requireOwnedSession(ctx, sessionID); err != nil {
+		return 0, err
+	}
+	if turn <= 0 {
+		return 0, fmt.Errorf("turn must be positive, got %d", turn)
+	}
+	ctx, span := s.tracer.StartSpan(ctx, "session_store.truncate_from")
+	defer s.tracer.EndSpan(span)
+	span.SetAttribute("session_id", sessionID)
+	span.SetAttribute("turn", fmt.Sprintf("%d", turn))
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	res, err := s.db.ExecContext(ctx,
+		"DELETE FROM messages WHERE session_id = ? AND turn >= ?", sessionID, turn)
+	if err != nil {
+		span.RecordError(err)
+		return 0, fmt.Errorf("failed to truncate messages: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		span.RecordError(err)
+		return 0, fmt.Errorf("failed to count truncated messages: %w", err)
+	}
+	span.SetAttribute("rows", fmt.Sprintf("%d", n))
+	return int(n), nil
+}
+
+// MaxTurn reports the highest turn number in a session, or 0 when it has no
+// messages. A rewind needs it to name the turn to remove.
+func (s *SessionStore) MaxTurn(ctx context.Context, sessionID string) (int, error) {
+	if err := s.requireOwnedSession(ctx, sessionID); err != nil {
+		return 0, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var turn sql.NullInt64
+	err := s.db.QueryRowContext(ctx,
+		"SELECT MAX(turn) FROM messages WHERE session_id = ?", sessionID).Scan(&turn)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read max turn: %w", err)
+	}
+	if !turn.Valid {
+		return 0, nil
+	}
+	return int(turn.Int64), nil
+}

@@ -5242,3 +5242,55 @@ func triggerNames(trs []loomv1.ImplicitTaskTrigger) []string {
 	}
 	return out
 }
+
+// ErrRewindUnsupported is RewindSession on a session store that does not
+// implement Rewinder.
+var ErrRewindUnsupported = errors.New("session storage does not support rewind")
+
+// RewindSession undoes the last n turns of a conversation and reports how many
+// turns it actually removed, which is fewer than asked when the session is
+// shorter than that.
+//
+// Both halves are required and neither is sufficient. Deleting the rows alone
+// leaves the loaded session in memory still holding them, so the next turn
+// compiles history that no longer exists on disk; dropping the in-memory
+// session alone makes the next access reload the very messages the user asked
+// to remove. Doing both means the reload sees the truncated history, which is
+// why the memory eviction is not an optimisation here but the point.
+//
+// Rewinding is only meaningful between turns. A caller must not run this while
+// a turn is in flight: that turn holds the session and would write its result
+// back on top of the rewind.
+func (a *Agent) RewindSession(ctx context.Context, sessionID string, turns int) (int, error) {
+	if turns <= 0 {
+		return 0, fmt.Errorf("turns must be positive, got %d", turns)
+	}
+	store, ok := a.memory.GetStore().(Rewinder)
+	if !ok {
+		return 0, ErrRewindUnsupported
+	}
+
+	maxTurn, err := store.MaxTurn(ctx, sessionID)
+	if err != nil {
+		return 0, err
+	}
+	if maxTurn == 0 {
+		return 0, nil
+	}
+	from := maxTurn - turns + 1
+	if from < 1 {
+		from = 1
+	}
+	if _, err := store.TruncateFrom(ctx, sessionID, from); err != nil {
+		return 0, err
+	}
+	// The loaded copy is now stale. Dropping it makes the next access reload
+	// the truncated history from the store.
+	//
+	// Only the loaded copy: retiring the whole session here would also discard
+	// its recorded approvals, leases and in-turn databases, and a rewind of one
+	// exchange must not revoke permission a human gave for the turns that
+	// remain.
+	a.memory.DeleteSession(sessionID)
+	return maxTurn - from + 1, nil
+}
