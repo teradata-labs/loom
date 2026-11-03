@@ -22,10 +22,8 @@ import (
 )
 
 // TestAgent_SetSharedMemory_UpdatesAllReferences verifies that SetSharedMemory
-// correctly updates all references to the shared memory store, including:
-// - The agent's own sharedMemory field (used by formatToolResult)
-// - The GetToolResultTool registration
-// - The reference tracker
+// correctly updates the agent's own sharedMemory field (used by
+// formatToolResult) and the reference tracker.
 //
 // This test reproduces the bug where SetSharedMemory didn't update a.sharedMemory,
 // causing tool results to be stored in one store but retrieved from another.
@@ -51,12 +49,6 @@ func TestAgent_SetSharedMemory_UpdatesAllReferences(t *testing.T) {
 	require.NotNil(t, agent.sharedMemory)
 	assert.Same(t, store1, agent.sharedMemory, "Agent should initially use store1")
 
-	// Verify QueryToolResultTool is now registered with store1
-	// Note: GetToolResultTool removed - inline metadata makes it unnecessary
-	tool1, exists1 := agent.tools.Get("query_tool_result")
-	require.True(t, exists1, "QueryToolResultTool should be registered after manual registration")
-	require.NotNil(t, tool1, "QueryToolResultTool should not be nil")
-
 	// Now simulate what happens during hot-reload or post-creation injection
 	// The server calls SetSharedMemory to inject the global store
 	store2 := storage.GetGlobalSharedMemory(&storage.Config{
@@ -73,12 +65,6 @@ func TestAgent_SetSharedMemory_UpdatesAllReferences(t *testing.T) {
 
 	// CRITICAL: Verify that a.sharedMemory was updated
 	assert.Same(t, store2, agent.sharedMemory, "Agent sharedMemory field must be updated by SetSharedMemory")
-
-	// Verify QueryToolResultTool was re-registered with the correct store
-	tool2, exists2 := agent.tools.Get("query_tool_result")
-	require.True(t, exists2, "QueryToolResultTool should still be registered after SetSharedMemory")
-	require.NotNil(t, tool2, "QueryToolResultTool should not be nil after SetSharedMemory")
-
 }
 
 // TestAgent_SetSharedMemory_NilSafety verifies that SetSharedMemory handles nil gracefully

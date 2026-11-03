@@ -6,6 +6,8 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -356,4 +358,44 @@ func TestWorkloadProfilesMoveTheReliefMarks(t *testing.T) {
 	assert.Less(t, dataRelease, dataStart)
 	assert.Less(t, balRelease, balStart)
 	assert.Less(t, convRelease, convStart)
+}
+
+// K — the recent turns a fold keeps — is set from an agent file
+// (memory.memory_compression.protected_recent_turns), reaches memory through
+// the compression profile, defaults to 16 as on main, and yields to a value the
+// agent's Config sets in code.
+func TestProtectedRecentTurnsIsSetFromTheAgentFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "a.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`agent:
+  name: a
+  memory:
+    type: memory
+    memory_compression:
+      workload_profile: balanced
+      protected_recent_turns: 6
+`), 0o600))
+	cfg, err := LoadAgentConfig(path)
+	require.NoError(t, err)
+	mc := cfg.GetMemory().GetMemoryCompression()
+	require.NotNil(t, mc, "the file's memory_compression did not load")
+	assert.Equal(t, int32(6), mc.GetProtectedRecentTurns())
+
+	profile, err := ResolveCompressionProfile(mc)
+	require.NoError(t, err)
+	assert.Equal(t, 6, profile.ProtectedRecentTurns)
+
+	sm := NewSegmentedMemoryWithCompression("ROM", 200000, 20000, profile)
+	sm.mu.Lock()
+	assert.Equal(t, 6, sm.protectedTurnsLocked(), "the profile's K did not reach memory")
+	sm.mu.Unlock()
+
+	sm.SetProtectedRecentTurns(3)
+	sm.mu.Lock()
+	assert.Equal(t, 3, sm.protectedTurnsLocked(), "the agent's Config does not take precedence")
+	sm.mu.Unlock()
+
+	unset := NewSegmentedMemory("ROM", 200000, 20000)
+	unset.mu.Lock()
+	assert.Equal(t, 16, unset.protectedTurnsLocked(), "the default is main's 16")
+	unset.mu.Unlock()
 }

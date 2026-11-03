@@ -13,7 +13,12 @@
 // limitations under the License.
 package agent
 
-import "context"
+import (
+	"context"
+	"sync"
+
+	"go.uber.org/zap"
+)
 
 // SessionStorage defines the backend-agnostic interface for session persistence.
 // Implementations include SQLite (SessionStore) and PostgreSQL (postgres.SessionStore).
@@ -61,7 +66,9 @@ type SessionStorage interface {
 	// Relief transactions (HLD §5.2 — write-once flags, one transaction per
 	// operation, set only inside releasePressure):
 	//
-	// MarkEvicted sets evicted=true on the given rows in one transaction.
+	// MarkEvicted is kept for implementations written against it. Nothing in
+	// loom calls it: a tool result is bounded once at arrival and never evicted
+	// afterwards, so loom's own stores implement it as a no-op.
 	MarkEvicted(ctx context.Context, sessionID string, seqs []int64) error
 	// FoldMessages writes summary version n (snapshot_type='fold', content =
 	// JSON {"n","text"}) and sets the region's folded flags in ONE transaction
@@ -76,6 +83,32 @@ type SessionStorage interface {
 	RegisterCleanupHook(hook SessionCleanupHook)
 	GetStats(ctx context.Context) (*Stats, error)
 	Close() error
+}
+
+// CostStorage is the optional operation a store offers when it can sum what a
+// session cost where the rows are kept, so a host shows a cost without loading
+// the messages. loom's SQLite and Postgres stores implement it; use a type
+// assertion:
+//
+//	if cs, ok := store.(CostStorage); ok {
+//	    usd, err := cs.SessionCost(ctx, sessionID)
+//	}
+type CostStorage interface {
+	// SessionCost is the sum of cost_usd over every message of the session,
+	// the rows relief folded away included: a fold hides a row from the
+	// model, not from the ledger. A session the caller does not own reads as
+	// zero, as it reads as missing everywhere else.
+	SessionCost(ctx context.Context, sessionID string) (float64, error)
+}
+
+// ResultRewriter is the optional operation a store offers to replace the
+// content of tool result rows. It exists for one case: a step whose results
+// together are too large for the context is answered by replacing them with a
+// note the model can act on, and the stored rows must say what the model was
+// sent. loom's SQLite and Postgres stores implement it; a row the caller does
+// not own is left unchanged.
+type ResultRewriter interface {
+	RewriteToolResults(ctx context.Context, sessionID string, seqs []int64, content string) error
 }
 
 // SoftDeleteStorage defines optional soft-delete operations.
@@ -97,5 +130,38 @@ type SoftDeleteStorage interface {
 	PurgeDeleted(ctx context.Context, graceInterval string) error
 }
 
+// Rewinder removes exchanges that should not have happened. Distinct from
+// relief, which shrinks what a turn costs while keeping it in the history.
+type Rewinder interface {
+	// TruncateFrom deletes every message from the given turn onward and
+	// reports the row count. Turn is the unit because a turn groups a user
+	// message with every call it caused, so a tool call is never orphaned.
+	TruncateFrom(ctx context.Context, sessionID string, turn int) (int, error)
+	// MaxTurn reports the highest turn in a session, 0 when it has none.
+	MaxTurn(ctx context.Context, sessionID string) (int, error)
+}
+
 // Compile-time check: SessionStore (SQLite) implements SessionStorage.
 var _ SessionStorage = (*SessionStore)(nil)
+
+var _ Rewinder = (*SessionStore)(nil)
+
+// warnDeprecatedOnce logs, once per process, that a deprecated call was made
+// and does nothing: a caller written against it learns the behavior is gone.
+func warnDeprecatedOnce(name, why string) {
+	warnOnce(name, "deprecated call has no effect", zap.String("call", name), zap.String("why", why))
+}
+
+// warnOnce logs msg the first time key is seen in this process.
+func warnOnce(key, msg string, fields ...zap.Field) {
+	if _, done := deprecatedWarned.LoadOrStore(key, true); done {
+		return
+	}
+	zap.L().Warn(msg, fields...)
+}
+
+var deprecatedWarned sync.Map
+
+// WarnDeprecatedOnce is warnDeprecatedOnce for SessionStorage implementations
+// outside this package.
+func WarnDeprecatedOnce(name, why string) { warnDeprecatedOnce(name, why) }

@@ -15,7 +15,6 @@ package agent
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"sync"
 	"time"
@@ -191,12 +190,6 @@ type Agent struct {
 	// Token counter for accurate token estimation
 	tokenCounter *TokenCounter
 
-	// In-turn SQLite databases backing query_tool_result's sql mode (HLD §7.1):
-	// per (session, message), lazily built, dropped at turn end. Guarded by
-	// inTurnSQLMu.
-	inTurnSQL   map[inTurnSQLKey]*sql.DB
-	inTurnSQLMu sync.Mutex
-
 	// Workflow communication context (injected dynamically for workflow agents)
 	workflowCommContext *WorkflowCommunicationContext
 
@@ -210,8 +203,8 @@ type Agent struct {
 	lazyToolSets []lazyToolSet
 
 	// suppressedBuiltinTools blocks agent-internal registrations (graph_memory,
-	// task_board, manage_skills, load_pattern) and the retrieval tools
-	// (query_tool_result, recall) from surfacing to the LLM. Subsystems
+	// task_board, manage_skills, load_pattern) and the retrieval tool
+	// (recall) from surfacing to the LLM. Subsystems
 	// themselves (extractor, task manager) keep running.
 	//
 	// Populated by WithoutBuiltinTool options. The server (cmd/looms) is
@@ -343,7 +336,8 @@ type Config struct {
 	// Backend configuration
 	BackendConfig map[string]interface{}
 
-	// Retry configuration for LLM calls
+	// Retry configuration for LLM calls. The zero value retries with the
+	// defaults (DefaultRetryConfig): a Config built without it is covered.
 	Retry RetryConfig
 
 	// MaxContextTokens is the model's context window size (0 = use defaults/auto-detect)
@@ -352,9 +346,10 @@ type Config struct {
 	// ReservedOutputTokens is the number of tokens reserved for model output (0 = use defaults, typically 10%)
 	ReservedOutputTokens int
 
-	// ProtectedRecentTurns is K (HLD §5.1): the top rung of relief's halving
-	// ladder — the newest turns relief tries hardest to keep, though the ladder
-	// walks toward T−1 when shedding at K is not enough. 0 = default (16).
+	// ProtectedRecentTurns is K: what a fold keeps of the recent thread. The
+	// in-loop fold keeps the last K agent steps — assistant rows — before the
+	// pending one, as text; the pressure ladder behind it keeps the newest K
+	// user turns, then K/2 … 1. 0 = default (4).
 	ProtectedRecentTurns int
 
 	// PatternConfig controls pattern injection (nil = use defaults)
@@ -380,11 +375,6 @@ type Config struct {
 	// RecoveryConfig holds tunables for the self-healing orchestrator.
 	// Nil uses DefaultRecoveryConfig().
 	RecoveryConfig *RecoveryConfig
-
-	// ContextReliefWarning adds a transient note to a send where context relief
-	// ran and left the estimate over its release mark. Default false; the YAML
-	// key is behavior.context_relief_warning.
-	ContextReliefWarning bool
 
 	// ToolChangeNote adds a transient note to a provider call whose advertised
 	// tools differ from the previous successful call of the same turn. Default
@@ -430,9 +420,14 @@ type PatternConfig struct {
 	UseLLMClassifier bool
 }
 
-// RetryConfig configures exponential backoff retry logic for LLM calls
+// RetryConfig configures exponential backoff retry logic for LLM calls.
+//
+// The zero value means the defaults (DefaultRetryConfig), so an agent whose
+// Config never names retry still survives a transient provider failure. Retry
+// is off when MaxRetries is negative, or when Enabled is false on a config that
+// sets MaxRetries.
 type RetryConfig struct {
-	// MaxRetries is the maximum number of retry attempts (0 = no retries)
+	// MaxRetries is the maximum number of retry attempts (negative = no retries)
 	MaxRetries int
 
 	// InitialDelay is the initial delay before the first retry
@@ -444,8 +439,42 @@ type RetryConfig struct {
 	// Multiplier is the exponential backoff multiplier (e.g., 2.0 for doubling)
 	Multiplier float64
 
-	// Enabled enables retry logic
+	// Enabled enables retry logic. A config that sets MaxRetries and leaves
+	// Enabled false has retry off, as before.
 	Enabled bool
+}
+
+// DefaultRetryConfig is the retry a Config gets when it names none.
+func DefaultRetryConfig() RetryConfig {
+	return RetryConfig{
+		Enabled:      true,
+		MaxRetries:   3,
+		InitialDelay: 100 * time.Millisecond,
+		MaxDelay:     5 * time.Second,
+		Multiplier:   2.0,
+	}
+}
+
+// effective is the retry a call runs under: the defaults for a zero config,
+// and no retries for one that turns retry off.
+func (r RetryConfig) effective() RetryConfig {
+	if r == (RetryConfig{}) {
+		return DefaultRetryConfig()
+	}
+	if r.MaxRetries < 0 || (!r.Enabled && r.MaxRetries > 0) {
+		return RetryConfig{}
+	}
+	d := DefaultRetryConfig()
+	if r.InitialDelay <= 0 {
+		r.InitialDelay = d.InitialDelay
+	}
+	if r.MaxDelay <= 0 {
+		r.MaxDelay = d.MaxDelay
+	}
+	if r.Multiplier < 1 {
+		r.Multiplier = d.Multiplier
+	}
+	return r
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -458,13 +487,7 @@ func DefaultConfig() *Config {
 		EnableTracing:     true,
 		EnableSelfHealing: true,
 		BackendConfig:     make(map[string]interface{}),
-		Retry: RetryConfig{
-			Enabled:      true,
-			MaxRetries:   3,
-			InitialDelay: 100 * time.Millisecond,
-			MaxDelay:     5 * time.Second,
-			Multiplier:   2.0,
-		},
+		Retry:             DefaultRetryConfig(),
 	}
 }
 

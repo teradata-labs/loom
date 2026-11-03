@@ -106,6 +106,17 @@ func (t *WorkflowVisualizationTool) Execute(ctx context.Context, params map[stri
 	workflowPath = expandPath(workflowPath)
 	outputPath = expandPath(outputPath)
 
+	// A turn that says where it works is served there: relative paths are
+	// beneath the turn's directory rather than the process's.
+	if dir := shuttle.WorkDirFromContext(ctx); dir != "" {
+		if !filepath.IsAbs(workflowPath) {
+			workflowPath = filepath.Join(dir, workflowPath)
+		}
+		if !filepath.IsAbs(outputPath) {
+			outputPath = filepath.Join(dir, outputPath)
+		}
+	}
+
 	// Validate workflow file exists
 	if _, err := os.Stat(workflowPath); err != nil {
 		if os.IsNotExist(err) {

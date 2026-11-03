@@ -326,6 +326,7 @@ type MemoryCompressionConfigYAML struct {
 	MinL1Messages            int                              `yaml:"min_l1_messages"`
 	WarningThresholdPercent  int                              `yaml:"warning_threshold_percent"`
 	CriticalThresholdPercent int                              `yaml:"critical_threshold_percent"`
+	ProtectedRecentTurns     int                              `yaml:"protected_recent_turns"`
 	BatchSizes               *MemoryCompressionBatchSizesYAML `yaml:"batch_sizes"`
 }
 
@@ -352,9 +353,6 @@ type BehaviorConfigYAML struct {
 	RepeatCallHint *bool `yaml:"repeat_call_hint"`
 	// ToolChangeNote opts the agent into the tool-change note (default off).
 	ToolChangeNote bool `yaml:"tool_change_note"`
-	// ContextReliefWarning opts the agent into the context-relief warning
-	// (default off).
-	ContextReliefWarning bool `yaml:"context_relief_warning"`
 	// ParallelReadTools opts the agent into running consecutive
 	// concurrency-safe tool calls of one response in parallel (default off).
 	ParallelReadTools bool `yaml:"parallel_read_tools"`
@@ -454,6 +452,7 @@ func LoadConfigFromString(yamlContent string) (*loomv1.AgentConfig, error) {
 	}
 
 	warnMisnestedTaskBoard(yamlOnly)
+	warnRemovedKeys(yamlOnly)
 
 	// Validate required fields
 	if yamlConfig.Agent.Name == "" {
@@ -927,14 +926,6 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 		config.Metadata["_tool_change_note"] = "true"
 	}
 
-	// The context-relief warning is opt-in the same way.
-	if yaml.Agent.Behavior.ContextReliefWarning {
-		if config.Metadata == nil {
-			config.Metadata = make(map[string]string)
-		}
-		config.Metadata["_context_relief_warning"] = "true"
-	}
-
 	// Parallel dispatch of read-only tool calls is opt-in the same way.
 	if yaml.Agent.Behavior.ParallelReadTools {
 		if config.Metadata == nil {
@@ -950,7 +941,7 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 // agent's metadata onto cfg. Every place that builds a Config from a
 // loomv1.AgentConfig calls it, so a YAML key cannot work in one host and be
 // ignored in another. It maps only _parallel_read_tools for now; the sibling
-// flags (_tool_change_note, _context_relief_warning, _repeat_call_hint) are
+// flags (_tool_change_note, _repeat_call_hint) are
 // tracked in issue #526.
 func ApplyMetadataBehavior(cfg *Config, md map[string]string) {
 	cfg.ParallelReadTools = md["_parallel_read_tools"] == "true"
@@ -980,11 +971,17 @@ func parseMemoryCompressionConfig(yaml *MemoryCompressionConfigYAML) *loomv1.Mem
 		return nil
 	}
 
+	protectedTurns, err := safeInt32(yaml.ProtectedRecentTurns, "ProtectedRecentTurns")
+	if err != nil {
+		return nil
+	}
+
 	config := &loomv1.MemoryCompressionConfig{
 		MaxL1Messages:            maxL1,
 		MinL1Messages:            minL1,
 		WarningThresholdPercent:  warningThreshold,
 		CriticalThresholdPercent: criticalThreshold,
+		ProtectedRecentTurns:     protectedTurns,
 	}
 
 	// Parse workload profile string to enum
@@ -1222,6 +1219,27 @@ func parseImplicitTasksConfig(yaml *ImplicitTasksConfigYAML) *loomv1.ImplicitTas
 		cfg.ExcludedTriggers = append(cfg.ExcludedTriggers, tr)
 	}
 	return cfg
+}
+
+// warnRemovedKeys reports a key the loader once read and no longer does, so a
+// file that still sets it learns the setting has no effect.
+func warnRemovedKeys(yamlOnly string) {
+	var probe struct {
+		Agent struct {
+			Behavior map[string]any `yaml:"behavior"`
+		} `yaml:"agent"`
+		Spec struct {
+			Behavior map[string]any `yaml:"behavior"`
+		} `yaml:"spec"`
+	}
+	if err := yaml.Unmarshal([]byte(yamlOnly), &probe); err != nil {
+		return
+	}
+	for _, b := range []map[string]any{probe.Agent.Behavior, probe.Spec.Behavior} {
+		if _, set := b["context_relief_warning"]; set {
+			zap.L().Warn("behavior.context_relief_warning is no longer read; the setting has no effect")
+		}
+	}
 }
 
 // warnMisnestedTaskBoard reports a task_board block written where the loader

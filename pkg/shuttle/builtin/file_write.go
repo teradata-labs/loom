@@ -82,6 +82,11 @@ func (t *FileWriteTool) InputSchema() *shuttle.JSONSchema {
 }
 
 func (t *FileWriteTool) Execute(ctx context.Context, params map[string]interface{}) (*shuttle.Result, error) {
+	// A turn that says where it works writes there: the same tool, standing in
+	// the turn's directory rather than the one it was built with.
+	if dir := shuttle.WorkDirFromContext(ctx); dir != "" && dir != t.baseDir {
+		return NewFileWriteTool(dir).Execute(ctx, params)
+	}
 	start := time.Now()
 
 	// Batch form: files applied in order, each reported on its own line; one

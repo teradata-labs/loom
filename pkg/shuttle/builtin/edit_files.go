@@ -77,6 +77,13 @@ func (t *EditFilesTool) InputSchema() *shuttle.JSONSchema {
 // Execute applies the edits in order. Per-edit result lines; one failure does
 // not stop the rest; the call fails only when every edit fails.
 func (t *EditFilesTool) Execute(ctx context.Context, params map[string]interface{}) (*shuttle.Result, error) {
+	// A turn that says where it works is served there: the same tool,
+	// standing in the turn's directory rather than the one it was built with.
+	if dir := shuttle.WorkDirFromContext(ctx); dir != "" && dir != t.baseDir {
+		turn := *t
+		turn.baseDir = dir
+		return turn.Execute(ctx, params)
+	}
 	start := time.Now()
 
 	raw, ok := params["edits"].([]interface{})

@@ -1,0 +1,3 @@
+ALTER TABLE sessions DROP COLUMN IF EXISTS turns;
+ALTER TABLE sessions DROP COLUMN IF EXISTS turn_since;
+ALTER TABLE sessions DROP COLUMN IF EXISTS turn_holder;

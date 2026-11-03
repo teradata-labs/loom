@@ -107,34 +107,15 @@ type SegmentedMemory struct {
 	// bound, persist-time row bound, retrieval page bound. Bytes.
 	threshold int
 
-	// offloadExempt names the tools whose CURRENT-TURN results always render
-	// whole (§5.2 step 6 carve-out) — for tools whose full output is the
-	// product of the call, read inline in the producing turn, where an offload
-	// stub would defeat the call. Exemption is a render condition of the
-	// producing turn only: prior-turn and evicted rows render stubs as usual,
-	// and the persist-time row bound (§4.1) still applies — the re-run door
-	// covers later turns.
-	offloadExempt map[string]bool
-
-	// protectedRecentTurns is K (HLD §5.1): the K newest turns are never
-	// touched by relief.
+	// protectedRecentTurns is K as the agent's Config set it; 0 means not set
+	// in code, and protectedTurnsLocked falls back to the profile, then the
+	// default. The fold keeps the last K turns of either role; the pressure
+	// ladder starts at K.
 	protectedRecentTurns int
 
 	// reliefInFlight guards ReleasePressure: fold releases the lock across
 	// its compressor call, and this keeps a second pass from interleaving.
 	reliefInFlight bool
-
-	// pressureOffload names (by ToolUseID) the current-turn tool results that
-	// relief's last-resort rung renders as offload stubs (§5.2 step 6) even
-	// though they are at or under the threshold — the one relief operation
-	// that touches turn T, taken only after every prior-turn evict and fold
-	// has failed to reach the release mark. In-memory render state, never
-	// persisted: the payload stays in L1 and query_tool_result still reads it,
-	// and once the turn advances the rows are ordinary prior-turn rows that
-	// the evict ladder handles. pressureOffloadTurn scopes the set to the turn
-	// it was built in, so a stale set is inert without a turn-start hook.
-	pressureOffload     map[string]bool
-	pressureOffloadTurn int64
 
 	// compressorFailedThisPass records that a fold's compressor already
 	// failed in the current relief pass, so later folds in the same pass skip
@@ -211,20 +192,19 @@ func NewSegmentedMemoryWithCompression(romContent string, maxContextTokens, rese
 	tokenBudget := NewTokenBudget(maxContextTokens, reservedOutputTokens)
 
 	sm := &SegmentedMemory{
-		romContent:           romContent,
-		tools:                make([]string, 0),
-		contextMessages:      make([]Message, 0),
-		sessionStore:         nil, // Set via SetSessionStore
-		sessionID:            "",  // Set via SetSessionStore
-		tokenCounter:         tokenCounter,
-		tokenBudget:          tokenBudget,
-		compressor:           nil,                           // Set via SetCompressor after initialization
-		tracer:               observability.NewNoOpTracer(), // Set via SetTracer
-		maxL1Tokens:          profile.MaxL1Tokens,
-		minL1Messages:        profile.MinL1Messages,
-		compressionProfile:   profile,
-		threshold:            int(storage.DefaultSharedMemoryThreshold),
-		protectedRecentTurns: defaultProtectedRecentTurns,
+		romContent:         romContent,
+		tools:              make([]string, 0),
+		contextMessages:    make([]Message, 0),
+		sessionStore:       nil, // Set via SetSessionStore
+		sessionID:          "",  // Set via SetSessionStore
+		tokenCounter:       tokenCounter,
+		tokenBudget:        tokenBudget,
+		compressor:         nil,                           // Set via SetCompressor after initialization
+		tracer:             observability.NewNoOpTracer(), // Set via SetTracer
+		maxL1Tokens:        profile.MaxL1Tokens,
+		minL1Messages:      profile.MinL1Messages,
+		compressionProfile: profile,
+		threshold:          int(storage.DefaultSharedMemoryThreshold),
 	}
 
 	// Initialize all per-layer token caches
@@ -283,6 +263,16 @@ func (sm *SegmentedMemory) SetSessionStore(store SessionStorage, sessionID strin
 	sm.sessionID = sessionID
 }
 
+// SetOffloadExemptTools is kept for callers written against it. Exemption is
+// decided where a result arrives, on the agent's Memory (Memory.
+// SetOffloadExemptTools): an exempt tool's result enters whole, and nothing
+// cuts a row after that, so there is nothing for a session's memory to do.
+//
+// Deprecated: set the exempt tools on Memory or Agent.
+func (sm *SegmentedMemory) SetOffloadExemptTools(names []string) {
+	warnDeprecatedOnce("SegmentedMemory.SetOffloadExemptTools", "exemption is set on Memory or Agent, where a result arrives")
+}
+
 // SetThreshold sets the one threshold value in bytes (HLD §5.1: one value,
 // three roles — compile-time offload bound, persist-time row bound, retrieval
 // page bound). Non-positive values keep the current threshold; positive values
@@ -303,23 +293,6 @@ func (sm *SegmentedMemory) SetThreshold(bytes int64) {
 // truncation tail plus a meaningful core.
 const minThreshold = 256
 
-// SetOffloadExemptTools replaces the set of tool names whose current-turn
-// results always render whole regardless of the threshold (§5.2 step 6
-// carve-out). Empty names are ignored; an empty slice clears the set.
-// Exemption affects only the producing turn's render: prior-turn and evicted
-// rows still render stubs, and the persist-time row bound (§4.1) is unchanged.
-func (sm *SegmentedMemory) SetOffloadExemptTools(names []string) {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-	exempt := make(map[string]bool, len(names))
-	for _, n := range names {
-		if n != "" {
-			exempt[n] = true
-		}
-	}
-	sm.offloadExempt = exempt
-}
-
 // Threshold returns the configured threshold in bytes.
 func (sm *SegmentedMemory) Threshold() int {
 	sm.mu.RLock()
@@ -335,6 +308,15 @@ func (sm *SegmentedMemory) CurrentTurn() int64 {
 	return sm.currentTurnLocked()
 }
 
+// DropTurnPayloads is kept for callers written against it. A tool result is
+// bounded once, when it arrives, so there is no whole payload left to drop at a
+// turn's end.
+//
+// Deprecated: nothing to drop; results are bounded at arrival.
+func (sm *SegmentedMemory) DropTurnPayloads() {
+	warnDeprecatedOnce("SegmentedMemory.DropTurnPayloads", "results are bounded at arrival; no whole payload is held to drop")
+}
+
 // currentTurnLocked computes max(Turn) over L1. Must hold lock.
 func (sm *SegmentedMemory) currentTurnLocked() int64 {
 	var t int64
@@ -344,32 +326,6 @@ func (sm *SegmentedMemory) currentTurnLocked() int64 {
 		}
 	}
 	return t
-}
-
-// DropTurnPayloads is the TURN END drop (HLD §1, §7.3; blueprint A1), run when
-// a new turn starts: every prior-turn tool message's in-memory content is
-// replaced by its persisted-row form (truncated core + tail), so a long-lived
-// loom agent does not grow by one payload set per turn. Cloud gets this for
-// free by being stateless.
-func (sm *SegmentedMemory) DropTurnPayloads() {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-	if sm.threshold <= 0 {
-		return
-	}
-	changed := false
-	for i := range sm.contextMessages {
-		m := &sm.contextMessages[i]
-		if m.Role == "tool" && len(m.Content) > sm.threshold {
-			m.Content = truncateToolRowContent(m.Content, sm.threshold)
-			changed = true
-		}
-	}
-	if changed {
-		sm.l1Dirty = true
-		sm.updateTokenCount()
-		sm.tokenCountDirty = false
-	}
 }
 
 // AddMessage appends a message to L1 (HLD §1: arrival appends — nothing is
@@ -516,6 +472,17 @@ func (sm *SegmentedMemory) ReplayMessages(ctx context.Context, messages []Messag
 	sm.tokenCountDirty = false
 }
 
+// RawMessages returns a copy of the L1 rows in append order — the same
+// traversal compileLocked renders from — with no rendering, no folding, and
+// no pair synthesis. Read-only view for the park resume walk.
+func (sm *SegmentedMemory) RawMessages() []Message {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	out := make([]Message, len(sm.contextMessages))
+	copy(out, sm.contextMessages)
+	return out
+}
+
 // GetMessages returns all L1 messages for building conversation context.
 // This is the RAW view: the rows in append order, with no rendering, no
 // folding, and no pair synthesis (that is GetMessagesForLLM/compileLocked,
@@ -629,6 +596,24 @@ func (sm *SegmentedMemory) fullRecount() {
 // the advertised tool schemas (blueprint A6). Feeds the estimate only.
 func (sm *SegmentedMemory) recountKernel() {
 	sm.cachedKernelTokens = tokenFigure(sm.kernelBytes)
+}
+
+// SettledMessagesForLLM is the compiled context without the pending pair —
+// the last assistant row and the results after it. It is what the fold call
+// sends: the summary covers the settled past, and the pending pair is kept
+// whole by the fold, so the call need not carry the step's results. It is
+// the previous call's request exactly, and reads all of it from the cache.
+func (sm *SegmentedMemory) SettledMessagesForLLM() []Message {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	settled := sm.contextMessages
+	for i := len(settled) - 1; i >= 0; i-- {
+		if settled[i].Role == "assistant" {
+			settled = settled[:i]
+			break
+		}
+	}
+	return sm.compileMessagesLocked(settled, sm.currentTurnLocked())
 }
 
 // GetMessagesForLLM builds the compiled context for the LLM call

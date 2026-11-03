@@ -59,6 +59,16 @@ func ContextWithProgressCallback(ctx context.Context, callback ProgressCallback)
 	return context.WithValue(ctx, progressCallbackKey{}, callback)
 }
 
+// ContextWithoutProgressCallback drops whatever progress callback the context
+// carries. Work that outlives the call it was started from must not stream
+// into that caller's reply. It drops only the callback: the caller's
+// cancellation, its tool-approval grant and its task attribution still ride on
+// the context, and work meant to outlive its caller removes those too (for
+// cancellation, context.WithoutCancel).
+func ContextWithoutProgressCallback(ctx context.Context) context.Context {
+	return context.WithValue(ctx, progressCallbackKey{}, nil)
+}
+
 // ProgressCallbackFromContext retrieves the progress callback from context.
 // Returns nil if no callback is stored in the context.
 func ProgressCallbackFromContext(ctx context.Context) ProgressCallback {
@@ -262,9 +272,9 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// Note: tool_search is registered by AgentRegistry when a global tool registry is available
 	// Individual agents don't have access to the global tool registry during construction
 
-	// query_tool_result serves THIS TURN's memory by message_id (HLD §7.1) and
-	// recall retrieves summary-cited conversation spans (HLD §6). Registered by
-	// default — their doors are printed by the offload stub and the summary's
+	// query_tool_result pages a current-turn tool result whole and recall
+	// retrieves summary-cited conversation spans (HLD §6). Both are registered by
+	// default — their doors are printed by a cut result's tail and the summary's
 	// citations respectively — through RegisterTool, so the WithoutBuiltinTool
 	// suppression set is honoured.
 	queryTool := shuttle.Tool(NewQueryToolResultTool(a))
@@ -471,7 +481,7 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// implied by durable error/large-result records, so a restored session
 	// advertises the same tools and reports the same active skills as a live one.
 	if a.memory != nil {
-		a.memory.SetRestoreReFireHooks(a.reFireSkillActivation)
+		a.memory.SetRestoreReFireHooks(a.resetSessionSkills, a.reFireSkillActivation)
 		a.memory.SetContextDebug(a.ctxDebug)
 	}
 
@@ -622,8 +632,8 @@ func WithoutSelfCorrection() Option {
 // disabling subsystem wiring. Pass one name per call; call repeatedly to
 // suppress multiple tools.
 //
-// Currently honoured for: graph_memory, task_board, query_tool_result,
-// recall, manage_skills, load_pattern. Other tools either
+// Currently honoured for: graph_memory, task_board, recall, manage_skills,
+// load_pattern. Other tools either
 // are registered eagerly by the caller (cmd_serve) and can be omitted there,
 // or are not subject to suppression.
 func WithoutBuiltinTool(name string) Option {
@@ -877,6 +887,20 @@ func (a *Agent) enforceRequiredSkillTools(sessionID string) {
 			// session registered the definition first. Base tools are ignored
 			// by registerSessionTool, so requiring one never hides it elsewhere.
 			a.registerSessionTool(sessionID, name)
+		}
+	}
+}
+
+// resetSessionSkills deactivates every active skill of a session, with the
+// tools only those skills required, ahead of a reload's re-fire, which then
+// re-activates exactly the skills loaded in the live history.
+func (a *Agent) resetSessionSkills(sessionID string) {
+	if a.skillOrchestrator == nil {
+		return
+	}
+	for _, as := range a.skillOrchestrator.GetActiveSkills(sessionID) {
+		if as != nil && as.Skill != nil {
+			a.deactivateSkillForFold(sessionID, as.Skill.Name)
 		}
 	}
 }
@@ -1813,6 +1837,12 @@ func (a *Agent) getGuidanceMessage(ctx context.Context, key string, vars map[str
 			name = n
 		}
 		return fmt.Sprintf("(note: this is call %s in a row to %s with identical arguments. Read this result before calling again: change the arguments, try a different approach, or finish. Calling again is fine when the data can change between calls, for example when polling a job that is still running.)", count, name)
+	case "step_results_too_large":
+		count := "these"
+		if c, ok := vars["count"].(string); ok && c != "" {
+			count = c
+		}
+		return fmt.Sprintf("These %s tool results, from one step, were together too large for the context, so they were removed. Each call ran: do not repeat an action that changed something. Call fewer tools at once, or narrow each call (a range, a filter, LIMIT), and continue.", count)
 	default:
 		return "An unexpected situation occurred. Please try again."
 	}
@@ -1865,6 +1895,22 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 	})
 }
 
+// ChatWithProgressAs is ChatWithProgress with the input message's own context
+// stated rather than assumed.
+//
+// A turn's input is usually a person addressing this agent, which is `direct`.
+// It is sometimes machinery: a report handed back by another agent is the next
+// input, and recording that as `direct` would show it as something somebody
+// said. The agent reads it either way; only what is shown changes.
+func (a *Agent) ChatWithProgressAs(ctx context.Context, sessionID string, userMessage string, sessionContext types.SessionContext, progressCallback ProgressCallback) (*Response, error) {
+	return a.chat(ctx, sessionID, userMessage, chatParams{
+		spanName:         "agent.chat_with_progress",
+		progressCallback: progressCallback,
+		reportProgress:   true,
+		sessionContext:   sessionContext,
+	})
+}
+
 // ChatWithContentBlocks is like ChatWithProgress but the user turn carries
 // multimodal content blocks (text and/or images) alongside the plain-text
 // content. userMessage remains the canonical text (used for persistence,
@@ -1912,6 +1958,13 @@ type chatParams struct {
 	// reportContentBlocks adds the "message.content_blocks" span attribute and
 	// the "content_blocks" started-event field. ChatWithContentBlocks only.
 	reportContentBlocks bool
+
+	// sessionContext is what the turn's own input message is recorded as. Empty
+	// means `direct`: someone addressed this agent, which is every ordinary
+	// turn. Another value marks an input that machinery produced rather than a
+	// person, so a renderer showing a conversation can leave it out while the
+	// agent still reads it as its input. The rest of the turn's rows inherit it.
+	sessionContext types.SessionContext
 }
 
 // hasTextBlock reports whether any of the blocks is a text block.
@@ -1943,6 +1996,14 @@ func truncatePreview(s string) string {
 // how each entry point tailors span name, multimodal content, and progress
 // reporting.
 func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, p chatParams) (*Response, error) {
+	// One turn at a time in a session, whoever runs it: claimed before the
+	// session is loaded or written, released on every way out.
+	endTurn, err := a.takeTurn(ctx, sessionID, true)
+	if err != nil {
+		return nil, err
+	}
+	defer endTurn()
+
 	// Providers build the request exclusively from ContentBlocks when present,
 	// dropping Content — so an image-only block set would silently send the
 	// image without the question text. Keep userMessage truly canonical by
@@ -2027,13 +2088,9 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 		return nil, err
 	}
 
-	// TURN END for the previous turn (HLD §1, §7.3): a new turn is starting —
-	// in-memory full payloads are replaced by their persisted-row form and the
-	// in-turn SQLite is dropped. Rows and summary versions are all that remains.
-	if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
-		segMem.DropTurnPayloads()
-	}
-	a.dropInTurnSQLite(sessionID)
+	// Nothing is rewritten at the previous turn's end: every row renders the
+	// same bytes on every call, and the fold is the only thing that changes
+	// the context.
 
 	// Add user message to history. ContentBlocks (when present) take precedence
 	// over Content as providers build the request, so multimodal content reaches
@@ -2051,11 +2108,12 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// is restored by rendering that Timestamp into the compiled view only
 	// (renderLocked), never into the stored body.
 	userMsg, _ := a.appendMessage(ctx, session, Message{
-		Role:          "user",
-		Content:       userMessage,
-		ContentBlocks: p.contentBlocks,
-		AgentID:       a.GetID(), // Track which agent received this message
-		Timestamp:     time.Now(),
+		Role:           "user",
+		Content:        userMessage,
+		ContentBlocks:  p.contentBlocks,
+		AgentID:        a.GetID(), // Track which agent received this message
+		SessionContext: p.sessionContext,
+		Timestamp:      time.Now(),
 	}, true)
 
 	// A leading slash command is the user activating a skill. It runs here,
@@ -2186,18 +2244,33 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 		return nil, fmt.Errorf("conversation loop failed: %w", err)
 	}
 
-	// Add assistant response to history
-	a.appendMessage(ctx, session, Message{
-		Role: "assistant",
-		// Turn-ending message: thinking text rides for persistence; blocks
-		// would be stripped by the next turn's compile, so none are carried.
-		Content:    response.Content,
-		Thinking:   response.Thinking,
-		AgentID:    a.GetID(), // Track which agent generated this response
-		Timestamp:  time.Now(),
-		TokenCount: response.Usage.TotalTokens,
-		CostUSD:    response.Usage.CostUSD,
-	}, false)
+	// Add assistant response to history. response.Usage is the final LLM
+	// call's Usage (last-turn); intermediate tool-use turns already wrote
+	// their own rows above, so SUM(messages.cost) over the session equals
+	// the whole conversation's cost. A turn a tool ended has no final call:
+	// its words were stored with the call that ended it.
+	if _, ended := response.Metadata["ended_by"]; !ended {
+		a.appendMessage(ctx, session, Message{
+			Role: "assistant",
+			// Turn-ending message: thinking text rides for persistence; blocks
+			// would be stripped by the next turn's compile, so none are carried.
+			Content:           response.Content,
+			Thinking:          response.Thinking,
+			AgentID:           a.GetID(), // Track which agent generated this response
+			Timestamp:         time.Now(),
+			TokenCount:        response.Usage.TotalTokens,
+			CostUSD:           response.Usage.CostUSD,
+			InputTokens:       response.Usage.InputTokens,
+			OutputTokens:      response.Usage.OutputTokens,
+			CacheReadTokens:   response.Usage.CacheReadInputTokens,
+			CacheCreateTokens: response.Usage.CacheCreationInputTokens,
+
+			CacheCreate1hTokens: response.Usage.CacheCreation1hInputTokens,
+			CacheCreate5mTokens: response.Usage.CacheCreation5mInputTokens,
+			ThinkingTokens:      response.Usage.ThinkingTokens,
+			Effort:              response.Usage.Effort,
+		}, false)
+	}
 
 	// Persist session
 	if err := a.memory.PersistSession(ctx, session); err != nil {
@@ -2289,6 +2362,17 @@ func (a *Agent) recordConversationMetrics(sessionID string, response *Response, 
 }
 
 // addUsage folds one LLM call's usage into a running turn total.
+// carryFoldCost is a call's usage with the cost of the fold calls before it
+// added: the money and the output, so a row's cost is what was spent to reach
+// it. The input figures stay the call's own, which is the prompt it sent.
+func carryFoldCost(u, fold Usage) Usage {
+	u.CostUSD += fold.CostUSD
+	u.OutputTokens += fold.OutputTokens
+	u.TotalTokens += fold.TotalTokens
+	u.ThinkingTokens += fold.ThinkingTokens
+	return u
+}
+
 func addUsage(dst *Usage, u Usage) {
 	// RateLimitTokens stays zero until some call sets it (so a turn of calls
 	// that never set it still equals their plain sum); once any call does, it
@@ -2302,6 +2386,9 @@ func addUsage(dst *Usage, u Usage) {
 	dst.TotalTokens += u.TotalTokens
 	dst.CacheReadInputTokens += u.CacheReadInputTokens
 	dst.CacheCreationInputTokens += u.CacheCreationInputTokens
+	dst.CacheCreation1hInputTokens += u.CacheCreation1hInputTokens
+	dst.CacheCreation5mInputTokens += u.CacheCreation5mInputTokens
+	dst.ThinkingTokens += u.ThinkingTokens
 	dst.CostUSD += u.CostUSD
 }
 
@@ -2319,16 +2406,56 @@ func (a *Agent) observePromptUsage(session *Session, u Usage) {
 
 // appendMessage is the arrival seam (HLD §1): it stamps the message's turn,
 // persists its durable row once (write rules §4; the store's RETURNING-derived
-// seq and turn override the stamp), and appends the message to the session in
-// full natural form. Nothing is examined, sized, flagged, or transformed at
-// arrival. turnStart is true only at the Chat() entry — the only
-// turn-incrementing event (HLD §4.5). Persist failures are logged, never fatal.
+// seq and turn override the stamp), and appends the message to the session.
+// turnStart is true only at the Chat() entry — the only turn-incrementing
+// event (HLD §4.5). Persist failures are logged, never fatal.
+//
+// A tool result is bounded here, at the door, and nowhere else: above the
+// threshold it enters as its first bytes plus the tail (§4.1). The whole of it
+// is kept for this turn; when query_tool_result is registered the tail names
+// the result's tool_use_id, and the agent pages the rest with it. What enters memory, what is stored and what the model is sent are
+// then the same bytes, so nothing is ever cut, stubbed or re-rendered later —
+// the context only grows, and the fold is the only thing that changes it.
 func (a *Agent) appendMessage(ctx context.Context, session *Session, msg Message, turnStart bool) (Message, bool) {
+	// A new turn frees the last turn's whole results: they are held for the
+	// turn that produced them only.
+	if turnStart && a.memory != nil {
+		a.memory.dropWhole(session.ID)
+	}
+	// The whole of a bounded result is kept for this turn, out of the context,
+	// for query_tool_result and for a host tool that stages it by id
+	// (InTurnPayload, InTurnPayloadByToolUseID).
+	var whole string
+	if msg.Role == "tool" && a.memory != nil && !a.memory.exempt(toolNameOf(session, msg.ToolUseID)) {
+		threshold := a.memory.thresholdOrDefault()
+		// The tail names query_tool_result only when the agent can call it:
+		// it is registered at construction unless suppressed.
+		pageBy := ""
+		if msg.ToolUseID != "" && a.tools != nil && a.tools.IsRegistered("query_tool_result") {
+			pageBy = msg.ToolUseID
+		}
+		bounded := boundToolRow(msg.Content, threshold, pageBy)
+		if bounded != msg.Content {
+			whole = msg.Content
+		}
+		msg.Content = bounded
+		// The raw result record is bounded with its content: the store drops a
+		// record over the bound, and memory holds the same row the store does.
+		if msg.ToolResult != nil {
+			if raw, err := json.Marshal(msg.ToolResult); err != nil || len(raw) > threshold {
+				msg.ToolResult = nil
+			}
+		}
+	}
 	// A replay/import override (WeaveRequest.occurred_at → WithOccurredAt)
 	// anchors every row persisted during the call at the conversation's
 	// historical time; without one, the caller-stamped wall clock stands.
 	if at, ok := occurredAtFromContext(ctx); ok {
 		msg.Timestamp = at
+	}
+	// A message an LLM call billed carries the model that answered.
+	if msg.Model == "" && msg.OutputTokens > 0 && a.llm != nil {
+		msg.Model = a.llm.Model()
 	}
 
 	// In-memory derivation, identical arithmetic to the store's subquery — the
@@ -2348,8 +2475,89 @@ func (a *Agent) appendMessage(ctx context.Context, session *Session, msg Message
 			zap.Error(err))
 	}
 
+	if whole != "" {
+		id, _ := strconv.ParseInt(msg.ID, 10, 64)
+		a.memory.keepWhole(session.ID, msg.Turn, id, msg.ToolUseID, whole)
+	}
+
 	session.AddMessage(ctx, msg)
 	return msg, persisted
+}
+
+// toolNameOf is the tool a result answers: the call with this id on the
+// latest assistant row that made calls.
+func toolNameOf(session *Session, toolUseID string) string {
+	if session == nil || toolUseID == "" {
+		return ""
+	}
+	var name string
+	session.FindMessage(func(m Message) bool {
+		for _, c := range m.ToolCalls {
+			if c.ID == toolUseID {
+				name = c.Name
+				return true
+			}
+		}
+		return false
+	})
+	return name
+}
+
+// ErrNotThisTurn is the typed miss for InTurnPayload: the id does not name a
+// tool result of the session's current turn. Callers turn it into their own
+// loud error and never guess: a result does not outlive its turn.
+var ErrNotThisTurn = errors.New("not a current-turn in-memory payload")
+
+// InTurnPayload returns the whole of message id's tool result iff it belongs
+// to the session's current turn. The model saw it bounded; a host tool that
+// stages it — into a sandbox, say — gets every byte. Any other case is
+// ErrNotThisTurn.
+func (a *Agent) InTurnPayload(sessionID string, messageID int64) (string, error) {
+	session, ok := a.memory.GetSession(sessionID)
+	if !ok || session == nil {
+		return "", fmt.Errorf("%w: message %d", ErrNotThisTurn, messageID)
+	}
+	turn := sessionCurrentTurn(session)
+	if whole, ok := a.memory.wholeOf(sessionID, turn, messageID); ok {
+		return whole, nil
+	}
+	id := strconv.FormatInt(messageID, 10)
+	if m, ok := session.FindMessage(func(m Message) bool {
+		return m.Role == "tool" && m.ID == id && m.Turn == turn
+	}); ok {
+		return m.Content, nil
+	}
+	return "", fmt.Errorf("%w: message %d", ErrNotThisTurn, messageID)
+}
+
+// InTurnPayloadByToolUseID returns the whole of the tool result answering
+// toolUseID iff it belongs to the session's current turn — the id the model
+// sees on the result and in its truncation tail. Any other case is
+// ErrNotThisTurn.
+func (a *Agent) InTurnPayloadByToolUseID(sessionID, toolUseID string) (string, error) {
+	session, ok := a.memory.GetSession(sessionID)
+	if !ok || session == nil || toolUseID == "" {
+		return "", fmt.Errorf("%w: tool_use_id %q", ErrNotThisTurn, toolUseID)
+	}
+	turn := sessionCurrentTurn(session)
+	if whole, ok := a.memory.wholeOfUse(sessionID, turn, toolUseID); ok {
+		return whole, nil
+	}
+	if m, ok := session.FindMessage(func(m Message) bool {
+		return m.Role == "tool" && m.ToolUseID == toolUseID && m.Turn == turn
+	}); ok {
+		return m.Content, nil
+	}
+	return "", fmt.Errorf("%w: tool_use_id %q", ErrNotThisTurn, toolUseID)
+}
+
+// SetOffloadExemptTools names the tools whose results enter the conversation
+// whole, for existing and future sessions: the arrival bound does not apply to
+// them. The set replaces the previous one.
+func (a *Agent) SetOffloadExemptTools(names []string) {
+	if a.memory != nil {
+		a.memory.SetOffloadExemptTools(names)
+	}
 }
 
 // Response represents the agent's response to a user message.
@@ -2380,6 +2588,16 @@ type Response struct {
 	// (for models that support extended thinking)
 	Thinking string
 }
+
+// TurnFailed is a turn that failed after its calls had spent something: the
+// failure, and what the turn spent before it.
+type TurnFailed struct {
+	Err   error
+	Spent Usage
+}
+
+func (e *TurnFailed) Error() string { return e.Err.Error() }
+func (e *TurnFailed) Unwrap() error { return e.Err }
 
 // ToolExecution records a tool execution.
 type ToolExecution struct {
@@ -2532,7 +2750,7 @@ func extractHITLInfo(input map[string]interface{}) *HITLRequestInfo {
 // runConversationLoop executes the LLM-driven conversation loop.
 // This implements the core agent behavior: LLM generates tool calls,
 // we execute them, feed results back to LLM, repeat until completion.
-func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
+func (a *Agent) runConversationLoop(ctx Context) (resp *Response, err error) {
 	// Start trace span — always created; NoOpTracer handles disabled case
 	_, span := ctx.Tracer().StartSpan(ctx, "agent.conversation_loop")
 	defer ctx.Tracer().EndSpan(span)
@@ -2547,11 +2765,22 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	turnCount := 0
 	toolExecutionCount := 0
 	var allToolExecutions []ToolExecution
-	var turnUsage Usage                         // sum of every successful LLM call this turn → Response.TurnUsage
 	emptyRetried := false                       // one-shot flag: retry empty LLM response at most once per conversation
+	foldPending := false                        // in-loop fold: this call carries the fold instruction; its reply is the summary
+	foldRetries := 0                            // unusable fold replies asked again once; then the step goes on unfolded
+	var foldUsage Usage                         // what fold calls cost; no row of their own, so the next row the loop writes carries it
 	hygieneRetries := 0                         // capped count of REQUIRE_FIX retries the end-of-turn auditor has triggered
 	var hygieneLast *hygiene.EnforcementOutcome // last outcome, surfaced into Response.Metadata
 	var prevToolNames []string                  // names advertised on this turn's previous provider call; nil before the first
+	var turnUsage Usage                         // every LLM call of this turn, summed
+
+	// A turn that fails part-way has still spent what its calls cost. The
+	// error carries it, so whoever ran the turn can count it.
+	defer func() {
+		if err != nil && (turnUsage.CostUSD > 0 || turnUsage.TotalTokens > 0) {
+			err = &TurnFailed{Err: err, Spent: turnUsage}
+		}
+	}()
 
 	// Self-healing orchestrator (Tier 1 recovery).
 	var recovery *recoveryOrchestrator
@@ -2687,69 +2916,17 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				zap.Strings("advertised", advertised))
 		}
 
-		// Relief runs at compile, before the send: ReleasePressure self-gates on
-		// loom's own estimate (§5.1) — a no-op under the start mark, otherwise it
-		// sheds to the release mark. On a shed, recompile messages and the
-		// advertised tool set so a fold-deactivated skill's tools do not linger.
-		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
-			shed, estimate, target := segMem.ReleasePressure(ctx, 0)
-			if shed {
-				zap.L().Info("relief: shed before send",
-					zap.String("session_id", session.ID),
-					zap.Int("estimate_tokens", estimate),
-					zap.Int("target_tokens", target))
-				messages = session.GetMessages()
-				tools = a.advertisedTools(session)
-				tools = recovery.activeTools(tools)
-				segMem.SetAdvertisedToolsBytes(advertisedToolsBytes(tools))
-			}
-			// Opt-in (behavior.context_relief_warning). Relief ran and left the
-			// estimate over its release mark, whether or not it shed; under the
-			// start mark it returns 0, 0 and this is false, so the note rides
-			// only the sends where relief ran. It is transient: softReminder is
-			// read at send time.
-			if a.config.ContextReliefWarning && estimate > target {
-				used, available, _ := segMem.GetTokenBudgetUsage()
-				usable := used + available
-				softReminder += buildContextReminder(estimate, target, usable)
-				span.AddEvent("context_reminder.added", map[string]interface{}{
-					"turn":            turnCount,
-					"estimate_tokens": estimate,
-					"target_tokens":   target,
-					"usable_tokens":   usable,
-				})
-			}
-			// Relief has nothing left to shed and the turn's own stubs still
-			// hold the context over the start mark: every further send is a
-			// near-limit loop toward MaxTurns and a preview-backed synthesis.
-			// End the turn with an error the user can act on instead.
-			if o, over := segMem.CurrentTurnOverflow(); over {
-				cause := fmt.Errorf("turn produced too many tool results to fit the context window: "+
-					"%d of %d results are already offloaded to stubs and the turn alone is still %d tokens "+
-					"against a relief start mark of %d; split the work into smaller batches across turns",
-					o.StubbedResults, o.ToolResults, o.FloorTokens, o.StartTokens)
-				zap.L().Error("current turn overflow: turn ends",
-					zap.String("session_id", session.ID),
-					zap.Int("turn", turnCount),
-					zap.Int("floor_tokens", o.FloorTokens),
-					zap.Int("start_tokens", o.StartTokens),
-					zap.Int("stubbed_results", o.StubbedResults),
-					zap.Int("tool_results", o.ToolResults))
-				span.AddEvent("turn.current_turn_overflow", map[string]interface{}{
-					"turn":            turnCount,
-					"floor_tokens":    o.FloorTokens,
-					"start_tokens":    o.StartTokens,
-					"stubbed_results": o.StubbedResults,
-					"tool_results":    o.ToolResults,
-				})
-				return nil, recovery.buildRecoverableError("current_turn_overflow", cause, "",
-					map[string]any{
-						"floor_tokens":    o.FloorTokens,
-						"start_tokens":    o.StartTokens,
-						"stubbed_results": o.StubbedResults,
-						"tool_results":    o.ToolResults,
-					})
-			}
+		// The in-loop fold is the only shedding before a send: past G, the next
+		// call carries the fold instruction and its reply is consumed as the
+		// summary — the agent summarises itself on its own warm cache. Nothing
+		// else sheds here. A prompt the provider still refuses as too long is
+		// answered where the refusal happens: one relief pass and one resend.
+		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil && !foldPending && foldRetries < 2 && !scriptedTurn(ctx) && segMem.NeedsFold() {
+			foldPending = true
+			zap.L().Info("inloopFold: armed",
+				zap.String("session_id", session.ID),
+				zap.Int("attempt", foldRetries+1))
+			span.AddEvent("fold.armed", map[string]interface{}{"turn": turnCount, "attempt": foldRetries + 1})
 		}
 
 		// withReminder appends the transient tail — the turn's soft reminder —
@@ -2777,9 +2954,36 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// behavior.tool_change_note on, the note is computed against the tools
 		// this call sends. The baseline moves only when the call succeeds, so a
 		// refused send is reported again by the resend instead of being swallowed.
+		// A pending in-loop fold rides every send of this iteration, the
+		// context-too-long resend included: its reply is the summary.
+		// A fold call sends the settled context — everything before the
+		// pending pair — and the fold instruction. The summary covers the
+		// settled past and the fold keeps the pending pair whole, so the call
+		// need not carry the step's results: it is the previous call's request
+		// exactly, read whole from the cache, and a step that returned more
+		// than the window holds can never reach a fold call.
+		outgoing := func(toolNote string) []Message {
+			if foldPending {
+				if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
+					return append(withReminder(segMem.SettledMessagesForLLM(), toolNote),
+						Message{Role: "user", Content: a.foldAsk(ctx)})
+				}
+			}
+			return withReminder(messages, toolNote)
+		}
+		// A fold call's reply is the harness's, never the user's: it is sent
+		// with no progress callback, so the summary is not streamed out.
+		callCtx := Context(ctx)
+		if foldPending {
+			if ac, ok := ctx.(*agentContext); ok {
+				quiet := *ac
+				quiet.progressCallback = nil
+				callCtx = &quiet
+			}
+		}
 		sendChat := func(ts []shuttle.Tool) (*LLMResponse, error) {
 			if !a.config.ToolChangeNote {
-				return a.chatWithRetry(ctx, withReminder(messages, ""), ts)
+				return a.chatWithRetry(callCtx, outgoing(""), ts)
 			}
 			names := make([]string, 0, len(ts))
 			for _, t := range ts {
@@ -2793,7 +2997,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			if note != "" {
 				span.AddEvent("tools.changed", map[string]interface{}{"note": note})
 			}
-			resp, err := a.chatWithRetry(ctx, withReminder(messages, note), ts)
+			resp, err := a.chatWithRetry(callCtx, outgoing(note), ts)
 			if err == nil {
 				prevToolNames = names
 			}
@@ -2838,6 +3042,25 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					segMem2.SetAdvertisedToolsBytes(advertisedToolsBytes(tools))
 				}
 				llmResp, err = sendChat(tools)
+				// Still refused, and the step in flight has results: they are
+				// what does not fit, and no relief may remove them. They are
+				// replaced with a note saying so — each call ran; call fewer
+				// at once, or narrower — and the model re-plans on one more
+				// send, instead of the turn ending.
+				if err != nil && errors.Is(err, llm.ErrContextTooLong) {
+					if segMem3, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem3 != nil {
+						if n := segMem3.InFlightResults(); n > 0 {
+							note := a.getGuidanceMessage(ctx, "step_results_too_large", map[string]interface{}{"count": strconv.Itoa(n)})
+							replaced := segMem3.ReplaceInFlightResults(ctx, note)
+							zap.L().Warn("context too long: the step's results did not fit; replaced with a note, resending once",
+								zap.String("session_id", session.ID),
+								zap.Int("results", replaced))
+							span.AddEvent("turn.step_results_replaced", map[string]interface{}{"turn": turnCount, "results": replaced})
+							messages = session.GetMessages()
+							llmResp, err = sendChat(tools)
+						}
+					}
+				}
 				if err != nil && errors.Is(err, llm.ErrContextTooLong) {
 					zap.L().Error("context too long after relief: turn ends",
 						zap.String("session_id", session.ID),
@@ -2857,7 +3080,21 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			return nil, fmt.Errorf("LLM call failed: %w", err)
 		}
 		addUsage(&turnUsage, llmResp.Usage)
-		a.observePromptUsage(session, llmResp.Usage)
+		// Calibration compares what a call billed with loom's count of the
+		// context it sent. A fold call sends only the settled context, not the
+		// compiled whole, so it is left out rather than skew the factor.
+		if !foldPending {
+			a.observePromptUsage(session, llmResp.Usage)
+		}
+		// A fold call writes no row. What it cost rides on the row this call
+		// writes, so the session's rows still sum to what the turn spent. The
+		// prompt figures stay this call's own: they measure what was sent.
+		if foldPending {
+			addUsage(&foldUsage, llmResp.Usage)
+		} else if foldUsage != (Usage{}) {
+			llmResp.Usage = carryFoldCost(llmResp.Usage, foldUsage)
+			foldUsage = Usage{}
+		}
 
 		// Record LLM response on conversation_loop span
 		llmEvent := map[string]interface{}{
@@ -3013,6 +3250,45 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			}
 		}
 
+		// In-loop fold reply: consumed by the harness — parsed, applied,
+		// never appended, never streamed onward, never returned. The loop
+		// continues on the collapsed context. A reply that is not a summary —
+		// malformed, or tool calls made without the step's results the fold
+		// call left out — is discarded and asked again once; after two the
+		// step goes on unfolded and the fold re-arms at the next seam.
+		if foldPending {
+			foldPending = false
+			if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
+				if len(llmResp.ToolCalls) == 0 {
+					if summary, okParse := parseFoldReply(llmResp.Content); okParse {
+						if applied, estimate := segMem.ApplyFoldReply(ctx, summary); applied {
+							foldRetries = 0
+							zap.L().Info("inloopFold: applied",
+								zap.String("session_id", session.ID),
+								zap.Int("estimate_tokens", estimate))
+							span.AddEvent("fold.applied", map[string]interface{}{"turn": turnCount, "estimate_tokens": estimate})
+							messages = session.GetMessages()
+							tools = a.advertisedTools(session)
+							tools = recovery.activeTools(tools)
+							segMem.SetAdvertisedToolsBytes(advertisedToolsBytes(tools))
+							continue
+						}
+					}
+				}
+				foldRetries++
+				zap.L().Warn("inloopFold: reply unusable — asked again, or the step goes on unfolded",
+					zap.String("session_id", session.ID),
+					zap.Int("fold_retries", foldRetries),
+					zap.Bool("tool_calls", len(llmResp.ToolCalls) > 0))
+				span.AddEvent("fold.unusable", map[string]interface{}{"turn": turnCount, "fold_retries": foldRetries})
+				continue
+			}
+		} else {
+			// A step that went on unfolded clears the count: the fold is asked
+			// for again at the next seam.
+			foldRetries = 0
+		}
+
 		// If LLM returned text (no tool calls), we're done — unless the response
 		// is empty, in which case we retry once with a nudge message.
 		if len(llmResp.ToolCalls) == 0 {
@@ -3069,16 +3345,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				"stop_reason":     llmResp.StopReason,
 				"empty_retried":   emptyRetried,
 			}
-			if hygieneLast != nil {
-				meta["hygiene_policy"] = hygieneLast.Policy.String()
-				meta["hygiene_violations_found"] = hygieneLast.ViolationsFound
-				meta["hygiene_by_kind"] = hygieneLast.ViolationsByKind
-				meta["hygiene_resolved"] = hygieneLast.Resolved
-				meta["hygiene_hitl_spawned"] = hygieneLast.HITLSpawned
-				if hygieneLast.FallthroughReason != "" {
-					meta["hygiene_fallthrough"] = hygieneLast.FallthroughReason
-				}
-			}
+			addHygieneMeta(meta, hygieneLast)
 			return &Response{
 				Content:        content,
 				Usage:          llmResp.Usage,
@@ -3091,15 +3358,24 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 
 		// Add assistant message with tool calls to history FIRST (required by Anthropic API)
 		_, assistantPersisted := a.appendMessage(ctx, session, Message{
-			Role:           "assistant",
-			Content:        llmResp.Content,
-			ToolCalls:      llmResp.ToolCalls,
-			Thinking:       llmResp.Thinking,
-			ThinkingBlocks: llmResp.ThinkingBlocks,
-			AgentID:        a.GetID(), // Track which agent generated this response
-			TokenCount:     llmResp.Usage.TotalTokens,
-			CostUSD:        llmResp.Usage.CostUSD,
-			Timestamp:      time.Now(),
+			Role:              "assistant",
+			Content:           llmResp.Content,
+			ToolCalls:         llmResp.ToolCalls,
+			Thinking:          llmResp.Thinking,
+			ThinkingBlocks:    llmResp.ThinkingBlocks,
+			AgentID:           a.GetID(), // Track which agent generated this response
+			TokenCount:        llmResp.Usage.TotalTokens,
+			CostUSD:           llmResp.Usage.CostUSD,
+			InputTokens:       llmResp.Usage.InputTokens,
+			OutputTokens:      llmResp.Usage.OutputTokens,
+			CacheReadTokens:   llmResp.Usage.CacheReadInputTokens,
+			CacheCreateTokens: llmResp.Usage.CacheCreationInputTokens,
+
+			CacheCreate1hTokens: llmResp.Usage.CacheCreation1hInputTokens,
+			CacheCreate5mTokens: llmResp.Usage.CacheCreation5mInputTokens,
+			ThinkingTokens:      llmResp.Usage.ThinkingTokens,
+			Effort:              llmResp.Usage.Effort,
+			Timestamp:           time.Now(),
 		}, false)
 
 		// HITL park pre-scan (park.go): with park enabled and the batch's
@@ -3165,6 +3441,30 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		if parkErr := a.maybeParkResourceBatch(ctx, session, st, llmResp); parkErr != nil {
 			return nil, parkErr
 		}
+		if st.endedBy != "" {
+			// A tool that ends the turn hands the work on, and the work goes on
+			// elsewhere: like a park, the other exit where work continues, the
+			// turn runs no end-of-turn hygiene pass, which would treat its
+			// live tasks as abandoned.
+			meta := map[string]interface{}{
+				"turns":           turnCount,
+				"tool_executions": toolExecutionCount,
+				"stop_reason":     llmResp.StopReason,
+				"ended_by":        st.endedBy,
+			}
+			span.SetAttribute("conversation.turns", turnCount)
+			span.SetAttribute("conversation.tool_executions", toolExecutionCount)
+			span.SetAttribute("conversation.stop_reason", llmResp.StopReason)
+			span.SetAttribute("conversation.ended_by", st.endedBy)
+			return &Response{
+				Content:        llmResp.Content,
+				Usage:          llmResp.Usage,
+				TurnUsage:      turnUsage,
+				ToolExecutions: allToolExecutions,
+				Thinking:       llmResp.Thinking,
+				Metadata:       meta,
+			}, nil
+		}
 	}
 
 	// If we hit max turns/executions, make one final LLM call to synthesize results
@@ -3190,6 +3490,9 @@ type batchState struct {
 	turnToolCount   int
 	turnDedup       map[string]*shuttle.Result
 	pendingSidecars []Message
+	// endedBy names a tool whose result ended the turn: the model is not
+	// asked for anything more once it is in place.
+	endedBy string
 
 	// Resource-await park (park_resource.go). parkableTail mirrors the
 	// pre-scan's durability gate and is set ONLY by the conversation loop —
@@ -3205,6 +3508,28 @@ type batchState struct {
 	// dispatch attributes.
 	barrierReason string
 }
+
+// addHygieneMeta surfaces an end-of-turn hygiene outcome in a response's
+// metadata; a nil outcome adds nothing.
+func addHygieneMeta(meta map[string]interface{}, o *hygiene.EnforcementOutcome) {
+	if o == nil {
+		return
+	}
+	meta["hygiene_policy"] = o.Policy.String()
+	meta["hygiene_violations_found"] = o.ViolationsFound
+	meta["hygiene_by_kind"] = o.ViolationsByKind
+	meta["hygiene_resolved"] = o.Resolved
+	meta["hygiene_hitl_spawned"] = o.HITLSpawned
+	if o.FallthroughReason != "" {
+		meta["hygiene_fallthrough"] = o.FallthroughReason
+	}
+}
+
+// EndsTurnKey is the result metadata a tool sets to end the turn it ran in.
+// The turn's reply is then the words the model said alongside the call, and
+// nothing is generated after it: for a tool that hands something off, where
+// anything said afterwards would be said to nobody.
+const EndsTurnKey = "end_turn"
 
 // dispatchOneCall runs one call of a tool batch through the full per-call
 // ceremony — caps, dedup, progress emits, spans, execution with
@@ -3536,6 +3861,12 @@ func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, 
 		span.AddEvent("recovery.repeat_hint", map[string]interface{}{"tool_name": toolCall.Name, "count": n})
 	}
 
+	if result != nil && result.Metadata != nil {
+		if ends, _ := result.Metadata[EndsTurnKey].(bool); ends {
+			st.endedBy = toolCall.Name
+		}
+	}
+
 	// Add tool result to conversation
 	a.appendMessage(ctx, session, Message{
 		Role:       "tool",
@@ -3595,18 +3926,11 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount
 
 	// Make final LLM call WITHOUT tools to force synthesis. It reaches here
 	// exactly when the loop ran out of budget — the turn is at its largest —
-	// so it gets the same relief as a loop send: advertise no tool bytes (this
-	// call carries none), shed before the send, and on a provider refusal shed
-	// deeper and resend once.
+	// so it gets the same handling as a loop send: advertise no tool bytes
+	// (this call carries none), and on a provider refusal shed and resend once.
 	segMem, _ := session.SegmentedMem.(*SegmentedMemory)
 	if segMem != nil {
 		segMem.SetAdvertisedToolsBytes(0)
-		if shed, estimate, target := segMem.ReleasePressure(ctx, 0); shed {
-			zap.L().Info("relief: shed before synthesis",
-				zap.String("session_id", session.ID),
-				zap.Int("estimate_tokens", estimate),
-				zap.Int("target_tokens", target))
-		}
 	}
 	finalResp, err := a.chatWithRetry(ctx, session.GetMessages(), nil)
 	if err != nil && errors.Is(err, llm.ErrContextTooLong) && segMem != nil {
@@ -4455,9 +4779,6 @@ func (a *Agent) DeleteSession(sessionID string) {
 	a.mu.Lock()
 	delete(a.sessionToolLedger, sessionID)
 	a.mu.Unlock()
-	// In-turn SQLite databases are normally dropped at the session's next turn
-	// start; a deleted session has no next turn, so drop them here.
-	a.dropInTurnSQLite(sessionID)
 	// Retire the session's resource leases: a leaked ledger entry on a
 	// deleted session would pin RESOURCE_HOLDER priority forever.
 	a.leases.forget(sessionID)
@@ -4514,7 +4835,6 @@ func (a *Agent) ClearAllSessions() {
 	a.mu.Lock()
 	a.sessionToolLedger = make(map[string]map[string]bool)
 	a.mu.Unlock()
-	a.dropAllInTurnSQLite()
 	a.leases.reset()
 }
 
@@ -4747,37 +5067,22 @@ func (a *Agent) GetAllRoleLLMs() map[loomv1.LLMRole]LLMProvider {
 	return result
 }
 
-// SetSharedMemoryThreshold configures the byte threshold for storing large tool results in shared memory.
-// -1 = use storage.DefaultSharedMemoryThreshold, 0 = always reference, >0 = reference only if result exceeds N bytes.
+// SetSharedMemoryThreshold configures the byte bound above which a tool result
+// renders truncated. Non-positive values mean storage.DefaultSharedMemoryThreshold —
+// the bound is unconditional, so no input can disable it.
 func (a *Agent) SetSharedMemoryThreshold(threshold int64) {
 	a.sharedMemoryThreshold = threshold
-	// Re-push to the executor: it captured the threshold at SetSharedMemory time,
-	// so a setter call afterwards (the registry configures it post-construction)
-	// would otherwise leave the two offload sites at different thresholds.
+	eff := int64(storage.DefaultSharedMemoryThreshold)
+	if threshold > 0 {
+		eff = threshold
+	}
+	// One value, every site: the executor's persist bound and the compile-time
+	// render bound are pushed the same number, so the two can never diverge.
 	if a.executor != nil && a.sharedMemory != nil {
-		eff := int64(storage.DefaultSharedMemoryThreshold)
-		if threshold >= 0 {
-			eff = threshold
-		}
 		a.executor.SetSharedMemory(a.sharedMemory, eff)
 	}
-	// One value, three roles (HLD §5.1): the same bound is the compile-time
-	// offload bound, the persist-time row bound, and the retrieval page bound.
-	if a.memory != nil && threshold > 0 {
-		a.memory.SetThresholdBytes(threshold)
-	}
-}
-
-// SetOffloadExemptTools replaces the set of tool names whose current-turn
-// results always render whole regardless of the offload threshold (§5.2
-// step 6 carve-out), for existing and future sessions. Use it for tools
-// whose full output is the product of the call — content the model must
-// read inline in the producing turn — where an offload stub would defeat
-// the call. Prior-turn and evicted rows still render stubs, so relief and
-// turn-end truncation behave identically for every tool.
-func (a *Agent) SetOffloadExemptTools(names []string) {
 	if a.memory != nil {
-		a.memory.SetOffloadExemptTools(names)
+		a.memory.SetThresholdBytes(eff)
 	}
 }
 
@@ -4978,4 +5283,64 @@ func triggerNames(trs []loomv1.ImplicitTaskTrigger) []string {
 		out = append(out, strings.ToLower(strings.TrimPrefix(tr.String(), "IMPLICIT_TASK_TRIGGER_")))
 	}
 	return out
+}
+
+// ErrRewindUnsupported is RewindSession on a session store that does not
+// implement Rewinder.
+var ErrRewindUnsupported = errors.New("session storage does not support rewind")
+
+// RewindSession undoes the last n turns of a conversation and reports how many
+// turns it actually removed, which is fewer than asked when the session is
+// shorter than that.
+//
+// Both halves are required and neither is sufficient. Deleting the rows alone
+// leaves the loaded session in memory still holding them, so the next turn
+// compiles history that no longer exists on disk; dropping the in-memory
+// session alone makes the next access reload the very messages the user asked
+// to remove. Doing both means the reload sees the truncated history, which is
+// why the memory eviction is not an optimisation here but the point.
+//
+// A rewind takes the session's turn claim like a turn does: it is refused with
+// ErrSessionBusy while a turn runs, and releasing it counts a turn, so every
+// other agent object holding a copy of the session reloads it.
+func (a *Agent) RewindSession(ctx context.Context, sessionID string, turns int) (int, error) {
+	if turns <= 0 {
+		return 0, fmt.Errorf("turns must be positive, got %d", turns)
+	}
+	endTurn, err := a.takeTurn(ctx, sessionID, false)
+	if errors.Is(err, errNoSessionRow) {
+		return 0, nil // no session, nothing to undo
+	}
+	if err != nil {
+		return 0, err
+	}
+	defer endTurn()
+	store, ok := a.memory.GetStore().(Rewinder)
+	if !ok {
+		return 0, ErrRewindUnsupported
+	}
+
+	maxTurn, err := store.MaxTurn(ctx, sessionID)
+	if err != nil {
+		return 0, err
+	}
+	if maxTurn == 0 {
+		return 0, nil
+	}
+	from := maxTurn - turns + 1
+	if from < 1 {
+		from = 1
+	}
+	if _, err := store.TruncateFrom(ctx, sessionID, from); err != nil {
+		return 0, err
+	}
+	// The loaded copy is now stale. Dropping it makes the next access reload
+	// the truncated history from the store.
+	//
+	// Only the loaded copy: retiring the whole session here would also discard
+	// its recorded approvals, leases and in-turn databases, and a rewind of one
+	// exchange must not revoke permission a human gave for the turns that
+	// remain.
+	a.memory.DeleteSession(sessionID)
+	return maxTurn - from + 1, nil
 }
