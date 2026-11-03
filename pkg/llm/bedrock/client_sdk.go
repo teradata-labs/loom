@@ -372,7 +372,7 @@ func (c *SDKClient) thinkingConfig(ctx context.Context) anthropic.ThinkingConfig
 
 // outputConfig maps the thinking level to output_config.effort on
 // adaptive-thinking models (low|medium|high|xhigh|max; "auto"/empty omit
-// the field and take the API default, high). Zero value = field omitted.
+// the field and take the model's default). Zero value = field omitted.
 func (c *SDKClient) outputConfig(ctx context.Context) anthropic.OutputConfigParam {
 	switch llm.EffortForLevel(c.modelID, c.thinkingLevel) {
 	case "low":
@@ -394,10 +394,10 @@ func (c *SDKClient) outputConfig(ctx context.Context) anthropic.OutputConfigPara
 // thinking level whose budget was sent, or none with thinking off.
 func (c *SDKClient) effort() string {
 	if llm.IsAdaptiveThinkingModel(c.modelID) {
-		if e := llm.EffortForLevel(c.modelID, c.thinkingLevel); e != "" {
-			return e
-		}
-		return "high"
+		// The effort sent, or empty when none was: the API then applies the
+		// model's own default, which differs by model (high on Opus 5, medium
+		// on Opus 5.5), so naming one would record a guess.
+		return llm.EffortForLevel(c.modelID, c.thinkingLevel)
 	}
 	if c.thinkingLevel == "" || c.thinkingLevel == "none" {
 		return "none"

@@ -485,16 +485,17 @@ func TestMarkLastBlockCacheControl_LandsOnToolUse(t *testing.T) {
 }
 
 // TestSDKClientEffortIsTheEffortThatApplied pins what a call records as its
-// effort: on an adaptive model the effort sent, or the API's default when none
-// is; on an older model the thinking level, or none with thinking off.
+// effort: on an adaptive model the effort sent, or nothing when none is (the
+// model's own default applies, and it differs by model); on an older model the
+// thinking level, or none with thinking off.
 func TestSDKClientEffortIsTheEffortThatApplied(t *testing.T) {
 	cases := []struct {
 		model, level, want string
 	}{
 		{"us.anthropic.claude-opus-5", "xhigh", "xhigh"},
 		{"us.anthropic.claude-opus-5", "medium", "medium"},
-		{"us.anthropic.claude-opus-5", "auto", "high"},
-		{"us.anthropic.claude-opus-5", "", "high"},
+		{"us.anthropic.claude-opus-5", "auto", ""},
+		{"us.anthropic.claude-opus-5", "", ""},
 		{"us.anthropic.claude-sonnet-4-5-20250929-v1:0", "low", "low"},
 		{"us.anthropic.claude-sonnet-4-5-20250929-v1:0", "", "none"},
 	}
