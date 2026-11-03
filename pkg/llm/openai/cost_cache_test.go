@@ -129,8 +129,11 @@ func TestCalculateCost_GPT5FamilyGetsNinetyPercentCacheDiscount(t *testing.T) {
 		{"gpt-5", 1.25, 10.00, 0.10},
 		{"gpt-5.4", 2.50, 15.00, 0.10},
 		{"gpt-5.4-mini", 0.75, 4.50, 0.10},
-		{"o3", 0, 0, 0.10}, // rate from the catalog; only the tier is pinned here
+		{"o3", 2.00, 8.00, 0.25},
+		{"gpt-4.1", 2.00, 8.00, 0.25},
 		{"gpt-4o", 2.50, 10.00, 0.50},
+		{"o1", 0, 0, 0.50},      // not on the price card: the default tier
+		{"o4-mini", 0, 0, 0.50}, // not on the price card: the default tier
 	} {
 		if got := openAICacheReadMultiplierFor(tc.model); got != tc.readMult {
 			t.Fatalf("%s: cache read multiplier = %v, want %v", tc.model, got, tc.readMult)
