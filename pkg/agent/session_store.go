@@ -1198,6 +1198,7 @@ func (s *SessionStore) LoadMessagesForAgent(ctx context.Context, agentID string)
 	query := `
 		SELECT DISTINCT m.id, m.role, m.content, m.tool_calls_json, m.tool_use_id,
 		       m.tool_result_json, m.session_context, m.agent_id, m.timestamp, m.token_count, m.cost_usd,
+		       m.input_tokens, m.output_tokens, m.cache_read_tokens, m.cache_create_tokens, m.model, m.effort, m.cache_create_1h_tokens, m.cache_create_5m_tokens, m.thinking_tokens,
 		       m.evicted, m.turn, m.session_id
 		FROM messages m
 		WHERE m.folded = 0
@@ -1249,6 +1250,15 @@ func (s *SessionStore) LoadMessagesForAgent(ctx context.Context, agentID string)
 			&timestamp,
 			&msg.TokenCount,
 			&msg.CostUSD,
+			&msg.InputTokens,
+			&msg.OutputTokens,
+			&msg.CacheReadTokens,
+			&msg.CacheCreateTokens,
+			&msg.Model,
+			&msg.Effort,
+			&msg.CacheCreate1hTokens,
+			&msg.CacheCreate5mTokens,
+			&msg.ThinkingTokens,
 			&evicted,
 			&msg.Turn,
 			&sessionID,
@@ -1257,6 +1267,7 @@ func (s *SessionStore) LoadMessagesForAgent(ctx context.Context, agentID string)
 			span.RecordError(err)
 			return nil, fmt.Errorf("failed to scan message: %w", err)
 		}
+		msg.Evicted = evicted != 0
 
 		// Populate fields
 		msg.ID = fmt.Sprintf("%d", msgID)
@@ -1356,7 +1367,8 @@ func (s *SessionStore) LoadMessagesFromParentSession(ctx context.Context, sessio
 	// owner predicate repeats here as defense in depth on the read itself.
 	query := `
 		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json,
-		       session_context, agent_id, timestamp, token_count, cost_usd, evicted, turn
+		       session_context, agent_id, timestamp, token_count, cost_usd,
+		       input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, model, effort, cache_create_1h_tokens, cache_create_5m_tokens, thinking_tokens, evicted, turn
 		FROM messages
 		WHERE session_id = ? AND folded = 0
 		AND session_context IN ('coordinator', 'shared')
@@ -1392,6 +1404,15 @@ func (s *SessionStore) LoadMessagesFromParentSession(ctx context.Context, sessio
 			&timestamp,
 			&msg.TokenCount,
 			&msg.CostUSD,
+			&msg.InputTokens,
+			&msg.OutputTokens,
+			&msg.CacheReadTokens,
+			&msg.CacheCreateTokens,
+			&msg.Model,
+			&msg.Effort,
+			&msg.CacheCreate1hTokens,
+			&msg.CacheCreate5mTokens,
+			&msg.ThinkingTokens,
 			&evicted,
 			&msg.Turn,
 		)
@@ -1399,6 +1420,7 @@ func (s *SessionStore) LoadMessagesFromParentSession(ctx context.Context, sessio
 			span.RecordError(err)
 			return nil, fmt.Errorf("failed to scan parent message: %w", err)
 		}
+		msg.Evicted = evicted != 0
 
 		// Populate fields
 		msg.ID = fmt.Sprintf("%d", msgID)
