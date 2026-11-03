@@ -550,9 +550,47 @@ func (c *Client) convertMessages(messages []llmtypes.Message) []ChatMessage {
 				apiMessages[emittedIdx].Content = withCacheControl(apiMessages[emittedIdx].Content)
 			}
 		}
+		return apiMessages
 	}
 
-	return apiMessages
+	return hoistSystemMessages(apiMessages)
+}
+
+// hoistSystemMessages folds system messages that follow a non-system message
+// into one leading system message. Chat templates of self-hosted models behind
+// the gateway (Qwen via vLLM) reject a mid-conversation system role with a 400
+// "System message must be at the beginning". Claude keeps its in-place system
+// messages (and their cache breakpoints), so it never reaches this.
+func hoistSystemMessages(msgs []ChatMessage) []ChatMessage {
+	seenNonSystem := false
+	needsHoist := false
+	for _, m := range msgs {
+		if m.Role != "system" {
+			seenNonSystem = true
+		} else if seenNonSystem {
+			needsHoist = true
+			break
+		}
+	}
+	if !needsHoist {
+		return msgs
+	}
+
+	var systemTexts []string
+	rest := make([]ChatMessage, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Role != "system" {
+			rest = append(rest, m)
+			continue
+		}
+		if text, ok := m.Content.(string); ok && text != "" {
+			systemTexts = append(systemTexts, text)
+		}
+	}
+	if len(systemTexts) == 0 {
+		return rest
+	}
+	return append([]ChatMessage{{Role: "system", Content: strings.Join(systemTexts, "\n\n")}}, rest...)
 }
 
 // emitsCacheControl reports whether the configured model is Anthropic-backed —
