@@ -511,19 +511,19 @@ func TestClient_CalculateCost(t *testing.T) {
 			name:         "1M input + 1M output",
 			inputTokens:  1_000_000,
 			outputTokens: 1_000_000,
-			expectedCost: 18.0, // $3 + $15
+			expectedCost: 12.0, // $2 + $10
 		},
 		{
 			name:         "1K input + 1K output",
 			inputTokens:  1_000,
 			outputTokens: 1_000,
-			expectedCost: 0.018, // $0.003 + $0.015
+			expectedCost: 0.012, // $0.002 + $0.010
 		},
 		{
 			name:         "small request",
 			inputTokens:  100,
 			outputTokens: 200,
-			expectedCost: 0.0033, // $0.0003 + $0.003
+			expectedCost: 0.0022, // $0.0002 + $0.002
 		},
 		{
 			name:         "zero tokens",

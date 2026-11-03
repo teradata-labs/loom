@@ -42,7 +42,9 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 		// on 2026-04-22. Deprecated Sonnet 4 / Opus 4 (20250514) intentionally omitted.
 		"anthropic": {
 			{
-				// Claude Opus 5. Adaptive thinking. $5/$25 like the 4.x Opus line.
+				// Claude Opus 5 and Sonnet 5: rates from
+				// https://platform.claude.com/docs/en/about-claude/pricing (Sonnet 5's
+				// $2/$10 is its standard price; the planned $3/$15 did not happen).
 				Id:                  "claude-opus-5",
 				Name:                "Claude Opus 5",
 				Provider:            "anthropic",
@@ -61,8 +63,8 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
 				ContextWindow:       1_000_000,
 				MaxOutputTokens:     64_000,
-				CostPer_1MInputUsd:  3.0,
-				CostPer_1MOutputUsd: 15.0,
+				CostPer_1MInputUsd:  2.0,
+				CostPer_1MOutputUsd: 10.0,
 				IsReasoning:         true,
 				ShowInDropdown:      true,
 			},
@@ -759,13 +761,14 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 		},
 
 		// ── AWS Bedrock ─────────────────────────────────────────────────────────────
-		// Claude 4.x models only. ShowInDropdown=false — Bedrock is endpoint-configured
+		// ShowInDropdown=false — Bedrock is endpoint-configured
 		// via deployment settings, not selected from a user-facing model picker.
 		// Both us.* (regional) and global.* (dynamic routing) forms are listed where
 		// applicable so ProviderFactory.normalizeModelID only needs to strip prefixes.
 		"bedrock": {
 			// Non-Anthropic families served through Converse. Rates are the
-			// published us-west-2 on-demand card (AWS Price List, Aug 2026);
+			// us-west-2 on-demand rates of the AWS Price List,
+			// https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonBedrock/current/us-west-2/index.json;
 			// none of them offer prompt caching on Bedrock, so cache lanes stay
 			// zero and the whole prompt volume prices as plain input.
 			{
@@ -836,10 +839,11 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 				ShowInDropdown:      false,
 			},
 			{
-				// Priced at Anthropic's public first-party rate for Claude Fable 5
-				// ($10/M in, $50/M out). Bedrock's on-demand card does not list
-				// Fable 5; a deployment on a negotiated rate overrides this through
-				// the registered catalog Source (catalog.Register).
+				// Claude Fable 5, Opus 5 and Sonnet 5 on Bedrock: the AWS Price List
+				// does not carry them, so these entries take Anthropic's published
+				// rates (https://platform.claude.com/docs/en/about-claude/pricing). A
+				// deployment on its own rate overrides them through the registered
+				// catalog Source (catalog.Register).
 				Id:                  "us.anthropic.claude-fable-5",
 				Name:                "Claude Fable 5 (Bedrock)",
 				Provider:            "bedrock",
@@ -894,8 +898,8 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
 				ContextWindow:       1_000_000,
 				MaxOutputTokens:     128_000,
-				CostPer_1MInputUsd:  3.0,
-				CostPer_1MOutputUsd: 15.0,
+				CostPer_1MInputUsd:  2.0,
+				CostPer_1MOutputUsd: 10.0,
 				IsReasoning:         true,
 				ShowInDropdown:      false,
 			},
@@ -906,8 +910,8 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
 				ContextWindow:       1_000_000,
 				MaxOutputTokens:     128_000,
-				CostPer_1MInputUsd:  3.0,
-				CostPer_1MOutputUsd: 15.0,
+				CostPer_1MInputUsd:  2.0,
+				CostPer_1MOutputUsd: 10.0,
 				IsReasoning:         true,
 				ShowInDropdown:      false,
 			},
