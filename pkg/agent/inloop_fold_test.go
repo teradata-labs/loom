@@ -279,3 +279,33 @@ func TestInloopFold_AFirstTurnNeverFoldsTheUsersRequest(t *testing.T) {
 	}
 	assert.True(t, kept, "a first-turn fold removed the user's own request")
 }
+
+// A loaded skill's instructions within the kept turns survive the fold: the
+// skill stays active, so its body is what tells the model how to use it.
+func TestInloopFold_KeptTurnsKeepTheSkillTheyLoaded(t *testing.T) {
+	sm := NewSegmentedMemory("ROM", 200000, 2000)
+	ctx := context.Background()
+	body := "## Skill: grant-review\nCheck the passenger table scope before any grant."
+	for _, m := range []Message{
+		{Role: "user", Content: "review the grants", Turn: 1},
+		{Role: "assistant", Content: "Loading the skill.", Turn: 1,
+			ToolCalls: []ToolCall{{ID: "s1", Name: "manage_skills", Input: map[string]interface{}{"action": "load", "name": "grant-review"}}}},
+		{Role: "tool", Content: "Skill loaded: grant-review", ToolUseID: "s1", Turn: 1},
+		{Role: roleSkillBody, Content: body, Turn: 1},
+		{Role: "assistant", Content: "Reading the scope.", Turn: 1, ToolCalls: []ToolCall{{ID: "c2", Name: "execute_query"}}},
+		{Role: "tool", Content: "scope rows", ToolUseID: "c2", Turn: 1},
+		{Role: "assistant", Content: "Checking grants.", Turn: 1, ToolCalls: []ToolCall{{ID: "c3", Name: "execute_query"}}},
+		{Role: "tool", Content: "grant rows", ToolUseID: "c3", Turn: 1},
+	} {
+		sm.AddMessage(ctx, m)
+	}
+
+	sm.ApplyFoldReply(ctx, "state of work")
+	var kept bool
+	for _, m := range sm.GetMessages() {
+		if m.Role == roleSkillBody && m.Content == body {
+			kept = true
+		}
+	}
+	assert.True(t, kept, "the fold cut the instructions of a skill its kept turns loaded")
+}

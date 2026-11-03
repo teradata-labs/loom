@@ -242,6 +242,16 @@ func (sm *SegmentedMemory) foldSplitLocked() (kept, excised []Message) {
 		}
 	}
 
+	// The kept window opens at the oldest kept turn. A row the model reads as
+	// a user message — a loaded skill's body above all — stays with the turns
+	// around it: the skill is still active, and its body is how to use it.
+	windowFrom := pendingFrom
+	for i := range recent {
+		if i < windowFrom {
+			windowFrom = i
+		}
+	}
+
 	kept = make([]Message, 0, len(sm.contextMessages))
 	excised = make([]Message, 0, len(sm.contextMessages))
 	for i := range sm.contextMessages {
@@ -250,6 +260,8 @@ func (sm *SegmentedMemory) foldSplitLocked() (kept, excised []Message) {
 		case pendingFrom >= 0 && i >= pendingFrom:
 			kept = append(kept, m) // pending pair and after
 		case recent[i] && m.Role == "user":
+			kept = append(kept, m)
+		case i >= windowFrom && IsSyntheticWireUserRole(m.Role):
 			kept = append(kept, m)
 		case recent[i]:
 			// Recent steps: the assistant THREAD survives, its tool traffic
