@@ -1878,6 +1878,22 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 	})
 }
 
+// ChatWithProgressAs is ChatWithProgress with the input message's own context
+// stated rather than assumed.
+//
+// A turn's input is usually a person addressing this agent, which is `direct`.
+// It is sometimes machinery: a report handed back by another agent is the next
+// input, and recording that as `direct` would show it as something somebody
+// said. The agent reads it either way; only what is shown changes.
+func (a *Agent) ChatWithProgressAs(ctx context.Context, sessionID string, userMessage string, sessionContext types.SessionContext, progressCallback ProgressCallback) (*Response, error) {
+	return a.chat(ctx, sessionID, userMessage, chatParams{
+		spanName:         "agent.chat_with_progress",
+		progressCallback: progressCallback,
+		reportProgress:   true,
+		sessionContext:   sessionContext,
+	})
+}
+
 // ChatWithContentBlocks is like ChatWithProgress but the user turn carries
 // multimodal content blocks (text and/or images) alongside the plain-text
 // content. userMessage remains the canonical text (used for persistence,
@@ -1925,6 +1941,13 @@ type chatParams struct {
 	// reportContentBlocks adds the "message.content_blocks" span attribute and
 	// the "content_blocks" started-event field. ChatWithContentBlocks only.
 	reportContentBlocks bool
+
+	// sessionContext is what the turn's own input message is recorded as. Empty
+	// means `direct`: someone addressed this agent, which is every ordinary
+	// turn. Another value marks an input that machinery produced rather than a
+	// person, so a renderer showing a conversation can leave it out while the
+	// agent still reads it as its input. The rest of the turn's rows inherit it.
+	sessionContext types.SessionContext
 }
 
 // hasTextBlock reports whether any of the blocks is a text block.
@@ -2060,11 +2083,12 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// is restored by rendering that Timestamp into the compiled view only
 	// (renderLocked), never into the stored body.
 	userMsg, _ := a.appendMessage(ctx, session, Message{
-		Role:          "user",
-		Content:       userMessage,
-		ContentBlocks: p.contentBlocks,
-		AgentID:       a.GetID(), // Track which agent received this message
-		Timestamp:     time.Now(),
+		Role:           "user",
+		Content:        userMessage,
+		ContentBlocks:  p.contentBlocks,
+		AgentID:        a.GetID(), // Track which agent received this message
+		SessionContext: p.sessionContext,
+		Timestamp:      time.Now(),
 	}, true)
 
 	// A leading slash command is the user activating a skill. It runs here,

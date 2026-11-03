@@ -397,12 +397,22 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg *a
 			taskIDValue = taskctx.TaskIDFromContext(ctx)
 		}
 
+		// A row that says who it is for keeps it; one that does not takes the
+		// session_context of its turn's first row, derived at insert like the
+		// turn itself. A turn's first row that says nothing is direct.
 		var seq, turn int64
+		var kind string
 		err := tx.QueryRow(ctx, `
 		INSERT INTO messages (session_id, user_id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, model, effort, cache_create_1h_tokens, cache_create_5m_tokens, thinking_tokens, evicted, folded, turn)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24,
+		VALUES ($1, $2, $3, $4, $5, $6, $7,
+			COALESCE(NULLIF($8, ''),
+				CASE WHEN $25 = 0 THEN (SELECT m.session_context FROM messages m
+					WHERE m.session_id = $1 AND m.turn = (SELECT COALESCE(MAX(turn), 0) FROM messages WHERE session_id = $1)
+					ORDER BY m.id LIMIT 1) END,
+				'direct'),
+			$9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24,
 			(SELECT COALESCE(MAX(turn), 0) + $25 FROM messages WHERE session_id = $1))
-		RETURNING id, turn`,
+		RETURNING id, turn, session_context`,
 			sessionID,
 			userID,
 			msg.Role,
@@ -428,11 +438,12 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg *a
 			msg.Evicted,
 			msg.Folded,
 			turnIncrement,
-		).Scan(&seq, &turn)
+		).Scan(&seq, &turn, &kind)
 		if err == nil {
-			// RETURNING stamps both onto the in-memory message (HLD §4.5).
+			// RETURNING stamps these onto the in-memory message (HLD §4.5).
 			msg.ID = fmt.Sprintf("%d", seq)
 			msg.Turn = turn
+			msg.SessionContext = types.SessionContext(kind)
 		}
 		if err != nil {
 			var pgErr *pgconn.PgError

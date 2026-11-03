@@ -760,10 +760,17 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg *M
 		toolResultJSON = &jsonStr
 	}
 
-	// Default to 'direct' if session_context is not set
-	sessionContext := msg.SessionContext
-	if sessionContext == "" {
-		sessionContext = types.SessionContextDirect
+	// A row that says who it is for keeps it. A row that does not is part of
+	// the turn it is written in, and is for whoever that turn is for: it takes
+	// the session_context of the turn's first row, derived at insert like the
+	// turn itself. A turn's first row that says nothing is direct.
+	var sessionContext any = string(msg.SessionContext)
+	switch {
+	case msg.SessionContext != "":
+	case turnStart:
+		sessionContext = string(types.SessionContextDirect)
+	default:
+		sessionContext = nil
 	}
 
 	// Handle agent_id (nullable for backward compatibility)
@@ -801,7 +808,11 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg *M
 
 	query := `
 		INSERT INTO messages (session_id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, model, effort, cache_create_1h_tokens, cache_create_5m_tokens, thinking_tokens, evicted, folded, turn)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+		VALUES (?, ?, ?, ?, ?, ?,
+			COALESCE(?, (SELECT session_context FROM messages
+				WHERE session_id = ? AND turn = (SELECT COALESCE(MAX(turn), 0) FROM messages WHERE session_id = ?)
+				ORDER BY id LIMIT 1), 'direct'),
+			?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 			(SELECT COALESCE(MAX(turn), 0) + ? FROM messages WHERE session_id = ?))
 	`
 
@@ -812,7 +823,9 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg *M
 		toolCallsJSON,
 		toolUseID,
 		toolResultJSON,
-		string(sessionContext),
+		sessionContext,
+		sessionID,
+		sessionID,
 		agentID,
 		taskID,
 		msg.Timestamp.Unix(),
@@ -848,12 +861,14 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg *M
 		return fmt.Errorf("failed to read message seq: %w", err)
 	}
 	var turn int64
-	if err := s.db.QueryRowContext(ctx, "SELECT turn FROM messages WHERE id = ?", seq).Scan(&turn); err != nil {
+	var kind string
+	if err := s.db.QueryRowContext(ctx, "SELECT turn, session_context FROM messages WHERE id = ?", seq).Scan(&turn, &kind); err != nil {
 		span.RecordError(err)
 		return fmt.Errorf("failed to read message turn: %w", err)
 	}
 	msg.ID = fmt.Sprintf("%d", seq)
 	msg.Turn = turn
+	msg.SessionContext = types.SessionContext(kind)
 
 	span.SetAttribute("tokens", fmt.Sprintf("%d", msg.TokenCount))
 	span.SetAttribute("cost_usd", fmt.Sprintf("%.4f", msg.CostUSD))
