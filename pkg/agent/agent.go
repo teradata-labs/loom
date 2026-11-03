@@ -59,6 +59,13 @@ func ContextWithProgressCallback(ctx context.Context, callback ProgressCallback)
 	return context.WithValue(ctx, progressCallbackKey{}, callback)
 }
 
+// ContextWithoutProgressCallback drops whatever progress callback the context
+// carries. Work that outlives the call it was started from must not stream
+// into that caller's reply.
+func ContextWithoutProgressCallback(ctx context.Context) context.Context {
+	return context.WithValue(ctx, progressCallbackKey{}, nil)
+}
+
 // ProgressCallbackFromContext retrieves the progress callback from context.
 // Returns nil if no callback is stored in the context.
 func ProgressCallbackFromContext(ctx context.Context) ProgressCallback {
