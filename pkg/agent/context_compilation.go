@@ -1096,6 +1096,7 @@ type CurrentTurnOverflow struct {
 //
 // Deprecated: overflow is the provider's refusal, not a pre-send estimate.
 func (sm *SegmentedMemory) CurrentTurnOverflow() (CurrentTurnOverflow, bool) {
+	warnDeprecatedOnce("SegmentedMemory.CurrentTurnOverflow", "a send that does not fit is the provider's refusal, answered by relief")
 	return CurrentTurnOverflow{}, false
 }
 

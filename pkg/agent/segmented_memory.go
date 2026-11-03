@@ -275,7 +275,9 @@ func (sm *SegmentedMemory) SetSessionStore(store SessionStorage, sessionID strin
 // cuts a row after that, so there is nothing for a session's memory to do.
 //
 // Deprecated: set the exempt tools on Memory or Agent.
-func (sm *SegmentedMemory) SetOffloadExemptTools(names []string) {}
+func (sm *SegmentedMemory) SetOffloadExemptTools(names []string) {
+	warnDeprecatedOnce("SegmentedMemory.SetOffloadExemptTools", "exemption is set on Memory or Agent, where a result arrives")
+}
 
 // SetToolSnapshotDir sets the workspace-relative directory the truncation
 // tails cite (empty disables snapshot tails; see the field doc).
@@ -325,7 +327,9 @@ func (sm *SegmentedMemory) CurrentTurn() int64 {
 // turn's end.
 //
 // Deprecated: nothing to drop; results are bounded at arrival.
-func (sm *SegmentedMemory) DropTurnPayloads() {}
+func (sm *SegmentedMemory) DropTurnPayloads() {
+	warnDeprecatedOnce("SegmentedMemory.DropTurnPayloads", "results are bounded at arrival; no whole payload is held to drop")
+}
 
 // currentTurnLocked computes max(Turn) over L1. Must hold lock.
 func (sm *SegmentedMemory) currentTurnLocked() int64 {

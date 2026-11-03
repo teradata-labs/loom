@@ -493,6 +493,7 @@ func (s *SessionStore) LoadMessages(ctx context.Context, sessionID string) ([]ag
 // never evicted afterwards. It is here for SessionStorage implementations
 // written against it.
 func (s *SessionStore) MarkEvicted(ctx context.Context, sessionID string, seqs []int64) error {
+	agent.WarnDeprecatedOnce("SessionStore.MarkEvicted", "nothing is evicted; results are bounded at arrival")
 	return nil
 }
 

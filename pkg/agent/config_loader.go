@@ -451,6 +451,7 @@ func LoadConfigFromString(yamlContent string) (*loomv1.AgentConfig, error) {
 	}
 
 	warnMisnestedTaskBoard(yamlOnly)
+	warnRemovedKeys(yamlOnly)
 
 	// Validate required fields
 	if yamlConfig.Agent.Name == "" {
@@ -1224,6 +1225,27 @@ func parseImplicitTasksConfig(yaml *ImplicitTasksConfigYAML) *loomv1.ImplicitTas
 // anywhere to say why. Warning is deliberately not an error: the block is
 // inert either way, and refusing to load an agent over a stray key would be a
 // breaking change for configs that load today.
+// warnRemovedKeys reports a key the loader once read and no longer does, so a
+// file that still sets it learns the setting has no effect.
+func warnRemovedKeys(yamlOnly string) {
+	var probe struct {
+		Agent struct {
+			Behavior map[string]any `yaml:"behavior"`
+		} `yaml:"agent"`
+		Spec struct {
+			Behavior map[string]any `yaml:"behavior"`
+		} `yaml:"spec"`
+	}
+	if err := yaml.Unmarshal([]byte(yamlOnly), &probe); err != nil {
+		return
+	}
+	for _, b := range []map[string]any{probe.Agent.Behavior, probe.Spec.Behavior} {
+		if _, set := b["context_relief_warning"]; set {
+			zap.L().Warn("behavior.context_relief_warning is no longer read; the setting has no effect")
+		}
+	}
+}
+
 func warnMisnestedTaskBoard(yamlOnly string) {
 	var probe struct {
 		TaskBoard *TaskBoardConfigYAML `yaml:"task_board"`

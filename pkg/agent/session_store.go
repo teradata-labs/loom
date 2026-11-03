@@ -1624,6 +1624,7 @@ func (s *SessionStore) ListSessions(ctx context.Context) ([]string, error) {
 // never evicted afterwards. It is here for SessionStorage implementations
 // written against it.
 func (s *SessionStore) MarkEvicted(ctx context.Context, sessionID string, seqs []int64) error {
+	warnDeprecatedOnce("SessionStore.MarkEvicted", "nothing is evicted; results are bounded at arrival")
 	return nil
 }
 

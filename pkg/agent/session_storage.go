@@ -13,7 +13,12 @@
 // limitations under the License.
 package agent
 
-import "context"
+import (
+	"context"
+	"sync"
+
+	"go.uber.org/zap"
+)
 
 // SessionStorage defines the backend-agnostic interface for session persistence.
 // Implementations include SQLite (SessionStore) and PostgreSQL (postgres.SessionStore).
@@ -117,3 +122,18 @@ type SoftDeleteStorage interface {
 
 // Compile-time check: SessionStore (SQLite) implements SessionStorage.
 var _ SessionStorage = (*SessionStore)(nil)
+
+// warnDeprecatedOnce logs, once per process, that a deprecated call was made
+// and does nothing: a caller written against it learns the behavior is gone.
+func warnDeprecatedOnce(name, why string) {
+	if _, done := deprecatedWarned.LoadOrStore(name, true); done {
+		return
+	}
+	zap.L().Warn("deprecated call has no effect", zap.String("call", name), zap.String("why", why))
+}
+
+var deprecatedWarned sync.Map
+
+// WarnDeprecatedOnce is warnDeprecatedOnce for SessionStorage implementations
+// outside this package.
+func WarnDeprecatedOnce(name, why string) { warnDeprecatedOnce(name, why) }
