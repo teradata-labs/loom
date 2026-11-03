@@ -5294,6 +5294,9 @@ func (a *Agent) RewindSession(ctx context.Context, sessionID string, turns int) 
 		return 0, fmt.Errorf("turns must be positive, got %d", turns)
 	}
 	endTurn, err := a.takeTurn(ctx, sessionID, false)
+	if errors.Is(err, errNoSessionRow) {
+		return 0, nil // no session, nothing to undo
+	}
 	if err != nil {
 		return 0, err
 	}

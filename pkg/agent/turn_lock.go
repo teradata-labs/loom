@@ -47,6 +47,10 @@ import (
 // session.
 var ErrSessionBusy = errors.New("session busy")
 
+// errNoSessionRow is a claim that does not create the session finding it has
+// no row: there is no history to act on.
+var errNoSessionRow = errors.New("session has no row")
+
 // SessionBusyError names the session and who is taking a turn in it.
 type SessionBusyError struct {
 	SessionID, Holder string
@@ -99,8 +103,8 @@ var turnSerial atomic.Int64
 // this agent's copy of the session when another has taken a turn in it since.
 //
 // create says whether a session with no row yet gets one, which only a turn
-// that writes a message should do. Without it a session that has no row is not
-// claimed: there is no history to protect, and nothing is created.
+// that writes a message should do. Without it, a session that has no row is
+// reported with errNoSessionRow and nothing is created.
 func (a *Agent) takeTurn(ctx context.Context, sessionID string, create bool) (func(), error) {
 	store, ok := a.memory.GetStore().(TurnLock)
 	if !ok || sessionID == "" {
@@ -118,7 +122,7 @@ func (a *Agent) takeTurn(ctx context.Context, sessionID string, create bool) (fu
 		}
 	}
 	if !claim.Exists && !create {
-		return func() {}, nil
+		return nil, errNoSessionRow
 	}
 	if !claim.Exists {
 		// A first turn: give the session its row, then claim it like any
@@ -187,10 +191,9 @@ func deadHere(holder string) bool {
 	if !ok {
 		return false
 	}
-	host, ns, ok := strings.Cut(where, ":")
-	if !ok {
-		return false
-	}
+	// A holder written before claims named their pid namespace has none:
+	// it matches only where this process has none either (no namespaces).
+	host, ns, _ := strings.Cut(where, ":")
 	if here, _ := os.Hostname(); host != here || ns != pidNamespace() {
 		return false
 	}

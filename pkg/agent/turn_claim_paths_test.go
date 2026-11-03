@@ -120,3 +120,53 @@ func cutAt(s, sep string) (string, string, bool) {
 	}
 	return s, "", false
 }
+
+// firstTurnBetween is a session store that, the first time a claim finds no
+// row, lets a first turn happen before answering: the race a rewind of a
+// brand-new session can meet.
+type firstTurnBetween struct {
+	*SessionStore
+	between func()
+	done    bool
+}
+
+func (s *firstTurnBetween) TakeTurn(ctx context.Context, sessionID, holder, replacing string, staleBefore time.Time) (TurnClaim, error) {
+	claim, err := s.SessionStore.TakeTurn(ctx, sessionID, holder, replacing, staleBefore)
+	if err == nil && !claim.Exists && !s.done {
+		s.done = true
+		s.between()
+	}
+	return claim, err
+}
+
+// A rewind of a session with no row does nothing, even when a first turn
+// creates the session at that moment: the first turn's history is left whole.
+func TestARewindOfASessionWithNoRowLeavesAFirstTurnAlone(t *testing.T) {
+	store := turnStore(t)
+	writer := NewAgent(nil, &gatedLLM{}, WithName("manager"), WithMemory(NewMemoryWithStore(store)))
+	racing := &firstTurnBetween{SessionStore: store}
+	rewinder := NewAgent(nil, &gatedLLM{}, WithName("manager"), WithMemory(NewMemoryWithStore(racing)))
+	ctx := context.Background()
+	racing.between = func() {
+		_, err := writer.Chat(ctx, "new", "first words")
+		require.NoError(t, err)
+	}
+	n, err := rewinder.RewindSession(ctx, "new", 1)
+	require.NoError(t, err)
+	require.Zero(t, n, "a rewind of a session with no row undid something")
+	msgs, err := store.LoadMessages(ctx, "new")
+	require.NoError(t, err)
+	require.NotEmpty(t, msgs)
+	require.Equal(t, "first words", msgs[0].Content, "the first turn lost its first message to the rewind")
+}
+
+// A claim written before claims named their pid namespace is judged by host
+// and pid alone where this process has no namespace, and never where it has
+// one.
+func TestAnOldFormatClaimIsJudgedSafely(t *testing.T) {
+	_, rest, _ := cutAt(thisProcess, "@")
+	h, _, _ := cutAt(rest, ":")
+	dead := "999999@" + h + "#7"
+	require.Equal(t, pidNamespace() == "", deadHere(dead),
+		"an old-format claim of a dead local process: judged dead only without pid namespaces")
+}

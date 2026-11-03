@@ -932,10 +932,15 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	// a session: one with no row has nothing parked, which the request lookup
 	// below reports.
 	endTurn, err := a.takeTurn(ctx, sessionID, false)
-	if err != nil {
+	switch {
+	case errors.Is(err, errNoSessionRow):
+		// No session: nothing is parked in it, which the lookup below reports.
+		err = nil
+	case err != nil:
 		return nil, err
+	default:
+		defer endTurn()
 	}
-	defer endTurn()
 
 	ctx = session.WithSessionID(ctx, sessionID)
 
