@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -3328,16 +3329,7 @@ func (a *Agent) runConversationLoop(ctx Context) (resp *Response, err error) {
 				"stop_reason":     llmResp.StopReason,
 				"empty_retried":   emptyRetried,
 			}
-			if hygieneLast != nil {
-				meta["hygiene_policy"] = hygieneLast.Policy.String()
-				meta["hygiene_violations_found"] = hygieneLast.ViolationsFound
-				meta["hygiene_by_kind"] = hygieneLast.ViolationsByKind
-				meta["hygiene_resolved"] = hygieneLast.Resolved
-				meta["hygiene_hitl_spawned"] = hygieneLast.HITLSpawned
-				if hygieneLast.FallthroughReason != "" {
-					meta["hygiene_fallthrough"] = hygieneLast.FallthroughReason
-				}
-			}
+			addHygieneMeta(meta, hygieneLast)
 			return &Response{
 				Content:        content,
 				Usage:          llmResp.Usage,
@@ -3434,17 +3426,29 @@ func (a *Agent) runConversationLoop(ctx Context) (resp *Response, err error) {
 			return nil, parkErr
 		}
 		if st.endedBy != "" {
+			// The turn ends without another model call, so a hygiene fix the
+			// model would make cannot be asked for: with the retries counted
+			// as spent, the policy repairs the board or logs, never retries.
+			spent := math.MaxInt32
+			_, outcome := a.runEndOfTurnHygiene(ctx, session, &spent)
+			meta := map[string]interface{}{
+				"turns":           turnCount,
+				"tool_executions": toolExecutionCount,
+				"stop_reason":     llmResp.StopReason,
+				"ended_by":        st.endedBy,
+			}
+			addHygieneMeta(meta, outcome)
+			span.SetAttribute("conversation.turns", turnCount)
+			span.SetAttribute("conversation.tool_executions", toolExecutionCount)
+			span.SetAttribute("conversation.stop_reason", llmResp.StopReason)
+			span.SetAttribute("conversation.ended_by", st.endedBy)
 			return &Response{
 				Content:        llmResp.Content,
 				Usage:          llmResp.Usage,
 				TurnUsage:      turnUsage,
 				ToolExecutions: allToolExecutions,
 				Thinking:       llmResp.Thinking,
-				Metadata: map[string]interface{}{
-					"turns":           turnCount,
-					"tool_executions": toolExecutionCount,
-					"ended_by":        st.endedBy,
-				},
+				Metadata:       meta,
 			}, nil
 		}
 	}
@@ -3489,6 +3493,22 @@ type batchState struct {
 	// alone; prepareCall records it on that call's tool span. Empty adds no
 	// dispatch attributes.
 	barrierReason string
+}
+
+// addHygieneMeta surfaces an end-of-turn hygiene outcome in a response's
+// metadata; a nil outcome adds nothing.
+func addHygieneMeta(meta map[string]interface{}, o *hygiene.EnforcementOutcome) {
+	if o == nil {
+		return
+	}
+	meta["hygiene_policy"] = o.Policy.String()
+	meta["hygiene_violations_found"] = o.ViolationsFound
+	meta["hygiene_by_kind"] = o.ViolationsByKind
+	meta["hygiene_resolved"] = o.Resolved
+	meta["hygiene_hitl_spawned"] = o.HITLSpawned
+	if o.FallthroughReason != "" {
+		meta["hygiene_fallthrough"] = o.FallthroughReason
+	}
 }
 
 // EndsTurnKey is the result metadata a tool sets to end the turn it ran in.

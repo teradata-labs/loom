@@ -1189,7 +1189,23 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 		a.completeParkedBatch(agentCtx, sess, batch, rowless, effective, itemIDs, parkedItemKinds(hr))
 	}
 
-	response, err := a.runConversationLoop(agentCtx)
+	// A call of the resumed batch that ended the turn (EndsTurnKey) ends it
+	// here, whether it ran now or before the park: the model is not asked for
+	// anything more, and the turn's words are the ones said with the batch,
+	// already stored on its row.
+	var response *Response
+	if ended := batchEndedBy(sess, batch); ended != "" {
+		response = &Response{
+			Content: batch.Content,
+			Metadata: map[string]interface{}{
+				"turns":           0,
+				"tool_executions": len(rowless),
+				"ended_by":        ended,
+			},
+		}
+	} else {
+		response, err = a.runConversationLoop(agentCtx)
+	}
 
 	// The mirror of chat()'s deferred close, which a park skips: this is where
 	// the turn finally ends, so this is where its recorded task closes and its
@@ -1237,23 +1253,27 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 		return nil, fmt.Errorf("conversation loop failed: %w", err)
 	}
 
-	a.appendMessage(ctx, sess, Message{
-		Role:              "assistant",
-		Content:           response.Content,
-		AgentID:           a.GetID(),
-		Timestamp:         time.Now(),
-		TokenCount:        response.Usage.TotalTokens,
-		CostUSD:           response.Usage.CostUSD,
-		InputTokens:       response.Usage.InputTokens,
-		OutputTokens:      response.Usage.OutputTokens,
-		CacheReadTokens:   response.Usage.CacheReadInputTokens,
-		CacheCreateTokens: response.Usage.CacheCreationInputTokens,
+	// A turn a tool ended has no final call: its words were stored with the
+	// call that ended it.
+	if _, ended := response.Metadata["ended_by"]; !ended {
+		a.appendMessage(ctx, sess, Message{
+			Role:              "assistant",
+			Content:           response.Content,
+			AgentID:           a.GetID(),
+			Timestamp:         time.Now(),
+			TokenCount:        response.Usage.TotalTokens,
+			CostUSD:           response.Usage.CostUSD,
+			InputTokens:       response.Usage.InputTokens,
+			OutputTokens:      response.Usage.OutputTokens,
+			CacheReadTokens:   response.Usage.CacheReadInputTokens,
+			CacheCreateTokens: response.Usage.CacheCreationInputTokens,
 
-		CacheCreate1hTokens: response.Usage.CacheCreation1hInputTokens,
-		CacheCreate5mTokens: response.Usage.CacheCreation5mInputTokens,
-		ThinkingTokens:      response.Usage.ThinkingTokens,
-		Effort:              response.Usage.Effort,
-	}, false)
+			CacheCreate1hTokens: response.Usage.CacheCreation1hInputTokens,
+			CacheCreate5mTokens: response.Usage.CacheCreation5mInputTokens,
+			ThinkingTokens:      response.Usage.ThinkingTokens,
+			Effort:              response.Usage.Effort,
+		}, false)
+	}
 
 	if err := a.memory.PersistSession(ctx, sess); err != nil {
 		zap.L().Warn("Failed to persist session",
@@ -1335,6 +1355,29 @@ func parkedTurnIdentity(sess *Session) (turnIndex int64, userMessage string) {
 		}
 	}
 	return turnIndex, ""
+}
+
+// batchEndedBy names the call of batch whose stored result ended the turn
+// (EndsTurnKey), or "" when none did. Results are read from the session's tool
+// rows, so a call that ran before a park counts as one that runs on resume.
+func batchEndedBy(sess *Session, batch Message) string {
+	names := make(map[string]string, len(batch.ToolCalls))
+	for _, c := range batch.ToolCalls {
+		names[c.ID] = c.Name
+	}
+	for _, m := range rawSessionMessages(sess) {
+		if m.Role != "tool" || m.ToolResult == nil || m.ToolResult.Metadata == nil {
+			continue
+		}
+		name, ok := names[m.ToolUseID]
+		if !ok {
+			continue
+		}
+		if ends, _ := m.ToolResult.Metadata[EndsTurnKey].(bool); ends {
+			return name
+		}
+	}
+	return ""
 }
 
 // locateParkedBatch finds the tail tool batch and validates the decision

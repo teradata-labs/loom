@@ -475,3 +475,29 @@ func TestHygiene_FullLoop_RequireFix_AgentFixesOnRetry(t *testing.T) {
 	assert.NotContains(t, after.Notes, "[hygiene]",
 		"happy path: no hygiene note because AUTO_FIX never fired")
 }
+
+// A turn a tool ends gets its hygiene pass without a retry: the model is not
+// asked to fix the board, so REQUIRE_FIX falls through to AUTO_FIX at once and
+// the outcome is in the reply's metadata.
+func TestHygiene_AnEndedTurnIsRepairedNotRetried(t *testing.T) {
+	llm := &mockToolCallingLLM{responses: []mockLLMResponse{
+		{content: "Taking you back.", toolCalls: []llmtypes.ToolCall{{ID: "c1", Name: "hand_off", Input: map[string]interface{}{}}}},
+		{content: "said to nobody"},
+	}}
+	ag, mgr := newAgentWithHygieneRig(t, llm)
+	ag.RegisterTool(&handOff{})
+
+	sessionID := "loop-sess-ended"
+	ag.skillOrchestrator.ActivateSkill(sessionID, &skills.Skill{Name: "sql"}, "test", "", 1.0)
+	seeded := seedOpenUnstartedTask(t, mgr, "sql", sessionID, "design-index")
+
+	resp, err := ag.Chat(context.Background(), sessionID, "take me back")
+	require.NoError(t, err)
+	assert.Equal(t, "Taking you back.", resp.Content)
+	assert.Equal(t, 1, llm.currentIdx, "the model was asked to fix the board after the turn was ended")
+	assert.Equal(t, 1, resp.Metadata["hygiene_resolved"], "the ended turn's board was not repaired")
+
+	after, err := mgr.GetTask(context.Background(), seeded.ID)
+	require.NoError(t, err)
+	assert.Equal(t, loomv1.TaskStatus_TASK_STATUS_DEFERRED, after.Status)
+}
