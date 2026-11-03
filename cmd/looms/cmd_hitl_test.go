@@ -242,7 +242,6 @@ func TestRunHitlList_OneRowPerRequestWithEscapedDigest(t *testing.T) {
 	assert.Contains(t, out, "Total: 2 pending request(s)")
 }
 
-
 func TestWriteHITLParams_WarnsWhenEveryParameterWasDropped(t *testing.T) {
 	for name, params := range map[string]map[string]interface{}{"nil": nil, "empty": {}} {
 		t.Run(name, func(t *testing.T) {
