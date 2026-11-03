@@ -517,18 +517,26 @@ func (s *SessionStore) FoldMessages(ctx context.Context, sessionID string, seqs 
 	span.SetAttribute("session_id", sessionID)
 	span.SetAttribute("version", fmt.Sprintf("%d", n))
 
-	content, err := json.Marshal(map[string]interface{}{"n": n, "text": text})
-	if err != nil {
-		span.RecordError(err)
-		return fmt.Errorf("failed to marshal fold snapshot: %w", err)
-	}
-
 	return execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		userID := UserIDFromContext(ctx)
+		// The fold records the turn it is made in and the rows it folds, so a
+		// rewind of that turn can remove it and restore what it folded.
+		var turn int64
+		if err := tx.QueryRow(ctx,
+			"SELECT COALESCE(MAX(turn), 0) FROM messages WHERE session_id = $1 AND user_id = $2",
+			sessionID, userID).Scan(&turn); err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to read the fold's turn: %w", err)
+		}
+		content, err := agent.EncodeFoldRecord(n, text, seqs, turn)
+		if err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to marshal fold snapshot: %w", err)
+		}
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO memory_snapshots (session_id, user_id, snapshot_type, content, token_count, created_at)
 			 VALUES ($1, $2, 'fold', $3, $4, $5)`,
-			sessionID, userID, string(content), (len(text)+2)/3, time.Now().UTC(),
+			sessionID, userID, content, (len(text)+2)/3, time.Now().UTC(),
 		); err != nil {
 			span.RecordError(err)
 			return fmt.Errorf("failed to insert fold snapshot: %w", err)
@@ -1196,8 +1204,9 @@ func nullableBytes(b []byte) []byte {
 var _ agent.SessionStorage = (*SessionStore)(nil)
 
 // TruncateFrom deletes every message from the given turn onward and reports how
-// many rows went. See agent.SessionStorage for why turn is the unit and why this
-// is a delete rather than an eviction.
+// many rows went, with the folds made during those turns (and every later
+// fold); rows those folds folded that the rewind keeps are live again. See
+// agent.SessionStore.TruncateFrom. A session in the trash is not rewound.
 func (s *SessionStore) TruncateFrom(ctx context.Context, sessionID string, turn int) (int, error) {
 	if turn <= 0 {
 		return 0, fmt.Errorf("turn must be positive, got %d", turn)
@@ -1209,9 +1218,69 @@ func (s *SessionStore) TruncateFrom(ctx context.Context, sessionID string, turn 
 
 	var rows int
 	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		userID := UserIDFromContext(ctx)
+		// When the undone turns began: the time of their first row.
+		var madeFrom time.Time
+		err := tx.QueryRow(ctx,
+			`SELECT m.timestamp FROM messages m
+			 JOIN sessions s ON s.id = m.session_id AND s.deleted_at IS NULL
+			 WHERE m.session_id = $1 AND m.user_id = $2 AND m.turn >= $3
+			 ORDER BY m.id LIMIT 1`,
+			sessionID, userID, turn).Scan(&madeFrom)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("failed to read the rewound turns: %w", err)
+		}
+
+		fr, err := tx.Query(ctx,
+			`SELECT id, content, created_at FROM memory_snapshots
+			 WHERE session_id = $1 AND user_id = $2 AND snapshot_type = 'fold' ORDER BY id`,
+			sessionID, userID)
+		if err != nil {
+			return fmt.Errorf("failed to read folds: %w", err)
+		}
+		var ids []int64
+		var folds []agent.FoldRecord
+		var made []int64
+		for fr.Next() {
+			var id int64
+			var content string
+			var createdAt time.Time
+			if err := fr.Scan(&id, &content, &createdAt); err != nil {
+				fr.Close()
+				return fmt.Errorf("failed to read a fold: %w", err)
+			}
+			if r, ok := agent.DecodeFoldRecord(content); ok {
+				ids, folds, made = append(ids, id), append(folds, r), append(made, createdAt.UnixMicro())
+			}
+		}
+		fr.Close()
+		if err := fr.Err(); err != nil {
+			return err
+		}
+		undo, err := agent.FoldsToUndo(folds, made, int64(turn), madeFrom.UnixMicro())
+		if err != nil {
+			return err
+		}
+		var unfold []int64
+		for _, i := range undo {
+			if _, err := tx.Exec(ctx, "DELETE FROM memory_snapshots WHERE id = $1 AND user_id = $2", ids[i], userID); err != nil {
+				return fmt.Errorf("failed to remove a fold: %w", err)
+			}
+			unfold = append(unfold, folds[i].Seqs...)
+		}
+		if len(unfold) > 0 {
+			if _, err := tx.Exec(ctx,
+				"UPDATE messages SET folded = FALSE WHERE session_id = $1 AND user_id = $2 AND id = ANY($3)",
+				sessionID, userID, unfold); err != nil {
+				return fmt.Errorf("failed to restore folded rows: %w", err)
+			}
+		}
 		tag, err := tx.Exec(ctx,
 			"DELETE FROM messages WHERE session_id = $1 AND user_id = $2 AND turn >= $3",
-			sessionID, UserIDFromContext(ctx), turn,
+			sessionID, userID, turn,
 		)
 		if err != nil {
 			span.RecordError(err)
@@ -1237,7 +1306,9 @@ func (s *SessionStore) MaxTurn(ctx context.Context, sessionID string) (int, erro
 	var turn *int
 	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return tx.QueryRow(ctx,
-			"SELECT MAX(turn) FROM messages WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL",
+			`SELECT MAX(m.turn) FROM messages m
+			 JOIN sessions s ON s.id = m.session_id AND s.deleted_at IS NULL
+			 WHERE m.session_id = $1 AND m.user_id = $2 AND m.deleted_at IS NULL`,
 			sessionID, UserIDFromContext(ctx),
 		).Scan(&turn)
 	})
