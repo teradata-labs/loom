@@ -114,6 +114,7 @@ API specifications and command documentation.
 - **[LLM Providers Overview](reference/llm-providers.md)** - Supported providers and configuration
 - **[Anthropic](reference/llm-anthropic.md)** - Claude configuration
 - **[AWS Bedrock](reference/llm-bedrock.md)** - Bedrock configuration
+- **[AWS Bedrock Mantle](reference/llm-bedrock-mantle.md)** - `bedrock-mantle` endpoint (⚠️ Partial: library and agent YAML only)
 - **[Ollama](reference/llm-ollama.md)** - Local models with Ollama
 - **[OpenAI](reference/llm-openai.md)** - GPT models configuration
 - **[Azure OpenAI](reference/llm-azure-openai.md)** - Azure OpenAI setup
