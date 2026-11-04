@@ -92,6 +92,80 @@ func TestChatStream_CacheControlAndUsage(t *testing.T) {
 	}
 }
 
+func TestConvertMessages_HoistsLateSystemMessagesForNonClaude(t *testing.T) {
+	type roleText struct{ role, text string }
+	tests := []struct {
+		name  string
+		model string
+		in    []llmtypes.Message
+		want  []roleText
+	}{
+		{
+			name:  "late system message folds into the leading one",
+			model: "td-vllm/qwen-38-27b-fp8",
+			in: []llmtypes.Message{
+				{Role: "system", Content: "ROM"},
+				{Role: "user", Content: "hello"},
+				{Role: "system", Content: "reminder"},
+				{Role: "assistant", Content: "hi"},
+			},
+			want: []roleText{{"system", "ROM\n\nreminder"}, {"user", "hello"}, {"assistant", "hi"}},
+		},
+		{
+			name:  "no leading system message gets one inserted",
+			model: "td-vllm/qwen-38-27b-fp8",
+			in: []llmtypes.Message{
+				{Role: "user", Content: "hello"},
+				{Role: "system", Content: "reminder"},
+			},
+			want: []roleText{{"system", "reminder"}, {"user", "hello"}},
+		},
+		{
+			name:  "consecutive leading system messages are left alone",
+			model: "td-vllm/qwen-38-27b-fp8",
+			in: []llmtypes.Message{
+				{Role: "system", Content: "ROM"},
+				{Role: "system", Content: "summary"},
+				{Role: "user", Content: "hello"},
+			},
+			want: []roleText{{"system", "ROM"}, {"system", "summary"}, {"user", "hello"}},
+		},
+		{
+			name:  "empty late system message is dropped",
+			model: "td-vllm/qwen-38-27b-fp8",
+			in: []llmtypes.Message{
+				{Role: "user", Content: "hello"},
+				{Role: "system", Content: ""},
+			},
+			want: []roleText{{"user", "hello"}},
+		},
+		{
+			name:  "claude keeps system messages in place",
+			model: "coding-agent/claude-sonnet-4-6",
+			in: []llmtypes.Message{
+				{Role: "system", Content: "ROM"},
+				{Role: "user", Content: "hello"},
+				{Role: "system", Content: "reminder"},
+			},
+			want: []roleText{{"system", "ROM"}, {"user", "hello"}, {"system", "reminder"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := NewClient(Config{Model: tt.model, APIKey: "test"}).convertMessages(tt.in)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d messages, want %d: %+v", len(got), len(tt.want), got)
+			}
+			for i, w := range tt.want {
+				if got[i].Role != w.role || got[i].Content != w.text {
+					t.Errorf("message %d: got {%s %v}, want {%s %q}", i, got[i].Role, got[i].Content, w.role, w.text)
+				}
+			}
+		})
+	}
+}
+
 // TestConvertMessages_CacheControlGatedToClaude proves cache_control is emitted
 // only for Anthropic-backed models: a non-claude model keeps plain string
 // content on marked messages — no foreign field, no block reshaping.
