@@ -347,9 +347,9 @@ type Config struct {
 	ReservedOutputTokens int
 
 	// ProtectedRecentTurns is K: what a fold keeps of the recent thread. The
-	// in-loop fold keeps the last K agent steps — assistant rows — before the
-	// pending one, as text; the pressure ladder behind it keeps the newest K
-	// user turns, then K/2 … 1. 0 = default (4).
+	// in-loop fold keeps the last K turns, user messages and assistant steps
+	// alike, before the pending one; the pressure ladder behind it keeps the
+	// newest K user turns, then K/2 … 1. 0 = default (16).
 	ProtectedRecentTurns int
 
 	// PatternConfig controls pattern injection (nil = use defaults)

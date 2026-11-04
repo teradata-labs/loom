@@ -75,6 +75,8 @@ func TestLoadMigrations_SpecificVersions(t *testing.T) {
 		{8, "tool_exec_snapshot_user_id", "ALTER TABLE tool_executions ADD COLUMN"},
 		{9, "session_name", "ADD COLUMN IF NOT EXISTS name"},
 		{10, "graph_memory", "graph_entities"},
+		{25, "workflow_checkpoints", "CREATE TABLE IF NOT EXISTS workflow_checkpoints"},
+		{26, "message_billing", "cache_create_1h_tokens"},
 	}
 
 	for _, tt := range tests {

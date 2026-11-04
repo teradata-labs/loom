@@ -59,10 +59,12 @@ func TestRung0_SingleTurnReliefShedsToTarget(t *testing.T) {
 	r := newRig(t, routeOutDir(t, "rung0-shed"), nil, 12000, 2000, 16384)
 	sid := "rung0-shed"
 
-	// Payloads render whole (under the threshold) and their sum crosses the mark.
-	turns := make([]scriptedTurn, 0, 9)
-	for i := 0; i < 8; i++ {
-		turns = append(turns, callTools(emit(fmt.Sprintf("r%d", i), 12000, "string")))
+	// Payloads render whole (under the threshold) and their sum crosses the
+	// mark. Each one fits the room above G, as a step's results must: past it
+	// the send is over the window and the results become the note.
+	turns := make([]scriptedTurn, 0, 41)
+	for i := 0; i < 40; i++ {
+		turns = append(turns, callTools(emit(fmt.Sprintf("r%d", i), 1500, "string")))
 	}
 	turns = append(turns, sayText("done"))
 	if err := drive(t, r, sid, "one long task", turns...); err != nil {
@@ -151,18 +153,20 @@ func TestRung0_MultiTurnShedsThePast(t *testing.T) {
 	r := newRig(t, routeOutDir(t, "rung0-equiv"), nil, 12000, 2000, 16384)
 	sid := "rung0-equiv"
 
-	// Each settled result is bounded at arrival to the 16 KB threshold, so four
-	// of them carry the context past the 12k-token window.
-	for _, name := range []string{"old1", "old2", "old3", "old4"} {
+	// The settled turns together carry the context past the start mark; each
+	// result fits the room above G, as a step's results must.
+	const settled, size = 24, 1500
+	for i := 1; i <= settled; i++ {
+		name := fmt.Sprintf("old%d", i)
 		if err := drive(t, r, sid, "big turn "+name,
-			callTools(emit(name, 40000, "string")), sayText("ok")); err != nil {
+			callTools(emit(name, size, "string")), sayText("ok")); err != nil {
 			t.Fatal(err)
 		}
 	}
 	// Current turn: two small consumed results, then pressure forces relief.
 	if err := drive(t, r, sid, "current turn",
-		callTools(emit("cur", 3000, "string")),
-		callTools(emit("cur2", 3000, "string")),
+		callTools(emit("cur", size, "string")),
+		callTools(emit("cur2", size, "string")),
 		sayText("done")); err != nil {
 		t.Fatal(err)
 	}
@@ -172,9 +176,9 @@ func TestRung0_MultiTurnShedsThePast(t *testing.T) {
 		t.Error("no summary row ever dispatched — pressure never fired; route is not exercising relief")
 	}
 
-	// The current turn's own results survive whole. The two 40 KB settled
-	// payloads cannot still be present: the final context's tool payload must be
-	// a small fraction of what was emitted.
+	// The current turn's own results survive whole. The settled payloads cannot
+	// all still be present: the final context's tool payload must be a fraction
+	// of what was emitted.
 	final := stages[len(stages)-1]
 	whole := 0
 	for _, m := range final.Messages {
@@ -185,7 +189,7 @@ func TestRung0_MultiTurnShedsThePast(t *testing.T) {
 	if whole < 2 {
 		t.Errorf("current turn's results were shed (whole=%d) — the recent window must protect them", whole)
 	}
-	if b := toolBytes(final); b > 40000 {
+	if b := toolBytes(final); b > settled*size/2 {
 		t.Errorf("final context still carries %d bytes of tool payload — the settled turns were not shed", b)
 	}
 }

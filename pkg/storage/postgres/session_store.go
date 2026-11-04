@@ -880,7 +880,6 @@ func (s *SessionStore) RegisterCleanupHook(hook agent.SessionCleanupHook) {
 	s.cleanupHooks = append(s.cleanupHooks, hook)
 }
 
-// GetStats returns aggregate statistics about stored sessions.
 var _ agent.ResultRewriter = (*SessionStore)(nil)
 
 // RewriteToolResults implements agent.ResultRewriter: the given tool rows of
@@ -931,6 +930,7 @@ func (s *SessionStore) SessionCost(ctx context.Context, sessionID string) (float
 	return total, nil
 }
 
+// GetStats returns aggregate statistics about stored sessions.
 func (s *SessionStore) GetStats(ctx context.Context) (*agent.Stats, error) {
 	ctx, span := s.tracer.StartSpan(ctx, "pg_session_store.get_stats")
 	defer s.tracer.EndSpan(span)

@@ -172,6 +172,22 @@ func TestInloopFold_ARefusedFoldCallIsResentAsAFold(t *testing.T) {
 	assert.Equal(t, 24, model.taken, "a step's reply was taken as the fold and thrown away")
 }
 
+// A fold call sends no step results, so a fold call refused twice replaces
+// none: the step's stored results stay as they arrived.
+func TestInloopFold_ARefusedFoldCallReplacesNoResults(t *testing.T) {
+	model := &foldingStream{steps: 24, refuseFolds: 2}
+	ag, store := foldingAgent(t, model)
+	_, _ = ag.Chat(context.Background(), "s-refused-twice", "do the long job")
+	require.Contains(t, model.foldAt, true, "no fold call was made; the test does not reach the case")
+	msgs, err := store.LoadMessages(context.Background(), "s-refused-twice")
+	require.NoError(t, err)
+	for _, m := range msgs {
+		if m.Role == "tool" {
+			assert.NotContains(t, m.Content, "together too large for the context", "a refused fold call replaced a result it never sent")
+		}
+	}
+}
+
 // k counts agent steps. In one user turn, each fold keeps the last k steps and
 // the summary stands in for every step before them, so what a fold leaves is
 // the same size after the twentieth step as after the fifth: the floor is

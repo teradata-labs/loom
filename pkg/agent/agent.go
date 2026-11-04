@@ -2929,11 +2929,44 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			return resp, err
 		}
 
-		// Call LLM. Relief is proactive (above) — loom keeps the context under its
-		// own window. The provider refusal is only a backstop: if a clean
-		// context-too-long still comes back (loom's estimate under-counted), shed
-		// and resend once; a second refusal ends the turn with the recoverable
-		// context_exhausted error.
+		// Overflow can come only from the step in flight: everything before it
+		// was in a send the provider accepted, each result is bounded at
+		// arrival, and the model sets how many there are. Before a send that
+		// carries them, count them high on top of the settled context. Past the
+		// provider's own ceiling — the model's window, not max_context_tokens —
+		// they are replaced with the note, as on a refusal. Every provider is
+		// covered, whether or not it labels its refusal. A fold call does not
+		// carry them.
+		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil && !foldPending && !scriptedTurn(ctx) {
+			if n := segMem.InFlightResults(); n > 0 {
+				ceiling := ProviderPromptCeiling(a.GetLLMProviderName(), a.GetLLMModel(), a.config.ReservedOutputTokens, a.config.MaxContextTokens)
+				note := ""
+				if a.config.ToolChangeNote && prevToolNames != nil {
+					names := make([]string, 0, len(tools))
+					for _, t := range tools {
+						names = append(names, t.Name())
+					}
+					note = toolDeltaNote(prevToolNames, names)
+				}
+				reminder := len(strings.TrimSpace(softReminder + "\n" + note))
+				if count := segMem.StepSendCount(reminder); ceiling > 0 && count > ceiling {
+					replaced := segMem.ReplaceInFlightResults(ctx, a.getGuidanceMessage(ctx, "step_results_too_large", map[string]interface{}{"count": strconv.Itoa(n)}))
+					zap.L().Warn("the step's results do not fit the provider's window; replaced with a note before the send",
+						zap.String("session_id", session.ID),
+						zap.Int("results", replaced),
+						zap.Int("count_tokens", count),
+						zap.Int("ceiling_tokens", ceiling))
+					span.AddEvent("turn.step_results_replaced", map[string]interface{}{"turn": turnCount, "results": replaced, "before_send": true})
+					messages = session.GetMessages()
+				}
+			}
+		}
+
+		// Call LLM. The in-loop fold keeps the settled context under G, and the
+		// check above keeps the step in flight inside the provider's window. The
+		// provider refusal is a backstop: on a context-too-long, shed and resend
+		// once, then replace the step's results; a refusal after that ends the
+		// turn with the recoverable context_exhausted error.
 		//
 		// Generation-free replay (WeaveRequest.replay_assistant_message): when a
 		// scripted assistant turn is threaded through the context, substitute it
@@ -2971,8 +3004,9 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				// what does not fit, and no relief may remove them. They are
 				// replaced with a note saying so — each call ran; call fewer
 				// at once, or narrower — and the model re-plans on one more
-				// send, instead of the turn ending.
-				if err != nil && errors.Is(err, llm.ErrContextTooLong) {
+				// send, instead of the turn ending. A fold call sends no
+				// results, so a refused fold call replaces none.
+				if err != nil && errors.Is(err, llm.ErrContextTooLong) && !foldPending {
 					if segMem3, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem3 != nil {
 						if n := segMem3.InFlightResults(); n > 0 {
 							note := a.getGuidanceMessage(ctx, "step_results_too_large", map[string]interface{}{"count": strconv.Itoa(n)})

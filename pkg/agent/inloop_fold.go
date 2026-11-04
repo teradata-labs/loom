@@ -304,6 +304,30 @@ func (sm *SegmentedMemory) InFlightResults() int {
 	return n
 }
 
+// StepSendCount is the size of the next send while a step is in flight. The
+// settled context is counted as the fold counts it; the fold holds it under G.
+// The step's results — the one part nothing bounds in number — and extraBytes
+// (what the send adds past memory) are counted high, at cheapBytesPerToken
+// bytes a token, fewer than any real content takes. Both are scaled by the
+// provider calibration.
+func (sm *SegmentedMemory) StepSendCount(extraBytes int) int {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	lastAssistant := -1
+	for i := range sm.contextMessages {
+		if sm.contextMessages[i].Role == "assistant" {
+			lastAssistant = i
+		}
+	}
+	bytes := extraBytes
+	for i := lastAssistant + 1; i < len(sm.contextMessages); i++ {
+		if sm.contextMessages[i].Role == "tool" {
+			bytes += len(sm.contextMessages[i].Content)
+		}
+	}
+	return sm.estimateLocked() + int(float64(bytes)/cheapBytesPerToken*sm.calibrationLocked())
+}
+
 // ReplaceInFlightResults replaces the results of the step in flight — every
 // tool row after the last assistant row — with note, keeping each row's tool
 // call id so every call still has its result. It is the answer to a step whose

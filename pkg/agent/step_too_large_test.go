@@ -40,10 +40,26 @@ type windowedModel struct {
 	fanOut int
 	calls  int
 	told   bool
+	// plain refuses with an error not labelled ErrContextTooLong, as
+	// providers that do not classify their refusal do.
+	plain bool
+	// provider and model, when set, name a catalog model.
+	provider, model string
 }
 
-func (w *windowedModel) Name() string  { return "windowed" }
-func (w *windowedModel) Model() string { return "windowed-model" }
+func (w *windowedModel) Name() string {
+	if w.provider != "" {
+		return w.provider
+	}
+	return "windowed"
+}
+
+func (w *windowedModel) Model() string {
+	if w.model != "" {
+		return w.model
+	}
+	return "windowed-model"
+}
 
 func (w *windowedModel) Chat(_ context.Context, msgs []Message, _ []shuttle.Tool) (*LLMResponse, error) {
 	w.mu.Lock()
@@ -54,6 +70,9 @@ func (w *windowedModel) Chat(_ context.Context, msgs []Message, _ []shuttle.Tool
 		bytes += len(m.Content)
 	}
 	if bytes/3 > w.limit {
+		if w.plain {
+			return nil, fmt.Errorf("API error (status 400): input is longer than the model accepts")
+		}
 		return nil, fmt.Errorf("API error (status 400): prompt is too long: %w", llm.ErrContextTooLong)
 	}
 	usage := llmtypes.Usage{InputTokens: bytes / 3, OutputTokens: 10}
@@ -129,6 +148,32 @@ func TestAStepTooLargeToSendBecomesANoteTheModelActsOn(t *testing.T) {
 	}
 	assert.Equal(t, 40, notes, "every call keeps a result: the note")
 	assert.Zero(t, rowsLeft, "a stored row still holds the results the model was not sent")
+}
+
+// A provider that does not label its refusal gets the same answer: the step's
+// results are counted before the send, and past the window they are replaced
+// with the note, so the model re-plans and the turn goes on.
+func TestAStepTooLargeIsCaughtBeforeAnUnlabelledRefusal(t *testing.T) {
+	model := &windowedModel{limit: 19000, fanOut: 40, plain: true}
+	ag, _ := windowedAgent(t, model, 4000)
+	resp, err := ag.Chat(context.Background(), "s-plain", "read every table")
+	require.NoError(t, err, "a step too large to send ended the turn on a provider that does not label its refusal")
+	assert.Equal(t, "narrowed and done", resp.Content)
+	assert.True(t, model.told)
+}
+
+// The check is against the model's own window, not max_context_tokens: Opus 5
+// configured to fold at 60k still accepts ten full results — more than 60k
+// holds — so they are sent whole.
+func TestAStepIsCheckedAgainstTheModelsWindowNotTheConfiguredOne(t *testing.T) {
+	model := &windowedModel{limit: 900000, fanOut: 10, provider: "anthropic", model: "claude-opus-5"}
+	ag, _ := windowedAgent(t, model, 16000)
+	ag.config.MaxContextTokens = 60000
+	ag.config.ReservedOutputTokens = 10000
+	resp, err := ag.Chat(context.Background(), "s-opus", "read ten tables")
+	require.NoError(t, err)
+	assert.Equal(t, "read them all", resp.Content)
+	assert.False(t, model.told, "results that fit the model's window were replaced")
 }
 
 // A step that fits is sent as it is: nothing is replaced.
