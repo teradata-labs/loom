@@ -25,6 +25,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
 	"github.com/teradata-labs/loom/pkg/llm/azureopenai"
 	"github.com/teradata-labs/loom/pkg/llm/bedrock"
+	"github.com/teradata-labs/loom/pkg/llm/bedrockmantle"
 	"github.com/teradata-labs/loom/pkg/llm/gemini"
 	"github.com/teradata-labs/loom/pkg/llm/huggingface"
 	"github.com/teradata-labs/loom/pkg/llm/litellm"
@@ -1182,6 +1183,28 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 			Temperature:       float64(config.Temperature),
 			RateLimiterConfig: rlCfg,
 		})
+
+	case "bedrock-mantle":
+		// Bedrock API key is opt-in via BEDROCK_MANTLE_API_KEY; without it every
+		// request is SigV4-signed from the default AWS credential chain
+		// (AWS_PROFILE, env keys, SSO, IAM role).
+		region := os.Getenv("BEDROCK_MANTLE_REGION")
+		if region == "" {
+			region = os.Getenv("AWS_REGION")
+		}
+		client, err := bedrockmantle.NewClientForModel(bedrockmantle.Config{
+			Region:            region,
+			Endpoint:          os.Getenv("BEDROCK_MANTLE_ENDPOINT"),
+			APIKey:            os.Getenv("BEDROCK_MANTLE_API_KEY"),
+			Model:             config.Model,
+			MaxTokens:         int(config.MaxTokens),
+			Temperature:       float64(config.Temperature),
+			RateLimiterConfig: rlCfg,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return client, nil
 
 	case "ollama":
 		endpoint := os.Getenv("OLLAMA_ENDPOINT")

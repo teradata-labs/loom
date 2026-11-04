@@ -135,6 +135,39 @@ func TestRegistry_CreateLLMProvider_LiteLLM(t *testing.T) {
 	assert.Equal(t, "openai/test-model", provider.Model())
 }
 
+func TestRegistry_CreateLLMProvider_BedrockMantle(t *testing.T) {
+	registry, _ := createTestRegistry(t)
+	t.Setenv("BEDROCK_MANTLE_REGION", "us-west-2")
+	t.Setenv("BEDROCK_MANTLE_API_KEY", "ABSKtest")
+	t.Setenv("BEDROCK_MANTLE_ENDPOINT", "")
+
+	provider, err := registry.createLLMProvider(&loomv1.LLMConfig{
+		Provider:  "bedrock-mantle",
+		Model:     "anthropic.claude-haiku-4-5",
+		MaxTokens: 2048,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, provider)
+	assert.Equal(t, "bedrock-mantle", provider.Name())
+	assert.Equal(t, "anthropic.claude-haiku-4-5", provider.Model())
+}
+
+func TestRegistry_CreateLLMProvider_BedrockMantle_MissingRegion(t *testing.T) {
+	registry, _ := createTestRegistry(t)
+	t.Setenv("BEDROCK_MANTLE_REGION", "")
+	t.Setenv("BEDROCK_MANTLE_ENDPOINT", "")
+	t.Setenv("BEDROCK_MANTLE_API_KEY", "ABSKtest")
+	t.Setenv("AWS_REGION", "")
+
+	_, err := registry.createLLMProvider(&loomv1.LLMConfig{
+		Provider: "bedrock-mantle",
+		Model:    "anthropic.claude-haiku-4-5",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "region is required")
+}
+
 func TestRegistry_LoadAgents(t *testing.T) {
 	registry, tmpDir := createTestRegistry(t)
 	ctx := context.Background()
