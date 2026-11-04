@@ -79,6 +79,10 @@ type Config struct {
 	// on every request. Use for proxy metadata such as X-LiteLLM-Tags or
 	// X-LiteLLM-User for cost attribution and routing control.
 	ExtraHeaders map[string]string
+
+	// SingleLeadingSystem merges every system message into one leading message
+	// (see openai.Config.SingleLeadingSystem). Off by default.
+	SingleLeadingSystem bool
 }
 
 // Client implements types.LLMProvider and types.StreamingLLMProvider by
@@ -124,14 +128,15 @@ func NewClient(cfg Config) *Client {
 	}
 
 	inner := openai.NewClient(openai.Config{
-		APIKey:            cfg.APIKey,
-		Model:             cfg.Model,
-		Endpoint:          cfg.Endpoint,
-		Timeout:           cfg.Timeout,
-		MaxTokens:         cfg.MaxTokens,
-		Temperature:       cfg.Temperature,
-		RateLimiterConfig: cfg.RateLimiterConfig,
-		ExtraHeaders:      extraHeadersCopy,
+		APIKey:              cfg.APIKey,
+		Model:               cfg.Model,
+		Endpoint:            cfg.Endpoint,
+		Timeout:             cfg.Timeout,
+		MaxTokens:           cfg.MaxTokens,
+		Temperature:         cfg.Temperature,
+		RateLimiterConfig:   cfg.RateLimiterConfig,
+		ExtraHeaders:        extraHeadersCopy,
+		SingleLeadingSystem: cfg.SingleLeadingSystem,
 	})
 
 	return &Client{
