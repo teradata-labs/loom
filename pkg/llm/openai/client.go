@@ -57,6 +57,8 @@ type Client struct {
 	// catalogProvider is the catalog namespace calculateCost prices under.
 	// "openai" unless Config.CatalogProvider overrides it.
 	catalogProvider string
+	// singleLeadingSystem merges every system message into one leading message.
+	singleLeadingSystem bool
 }
 
 // DefaultCatalogProvider is the catalog namespace the client prices under
@@ -102,6 +104,13 @@ type Config struct {
 	// client is told to look there. Without it a gateway alias never matches
 	// the "openai" namespace and is priced at the gpt-4o default below.
 	CatalogProvider string
+	// SingleLeadingSystem merges every system message into one leading system
+	// message. Off by default: the request keeps system messages where the agent
+	// put them. Turn it on for models whose chat template only allows a single
+	// system message at the start (e.g. Qwen on vLLM, which answers 400 "System
+	// message must be at the beginning"). Cache breakpoints are not emitted when
+	// it is on, since the merge invalidates their message positions.
+	SingleLeadingSystem bool
 }
 
 // Default OpenAI configuration values.
@@ -204,6 +213,7 @@ func NewClient(config Config) *Client {
 		rateLimiter:            rateLimiter,
 		extraHeaders:           copyHeaders(config.ExtraHeaders),
 		catalogProvider:        config.CatalogProvider,
+		singleLeadingSystem:    config.SingleLeadingSystem,
 		httpClient:             httpClient,
 		streamHTTPClient:       &streamHTTPClient,
 	}
@@ -577,38 +587,26 @@ func (c *Client) convertMessages(messages []llmtypes.Message) []ChatMessage {
 	// Emitted only for Anthropic-backed models: cache_control is Anthropic's
 	// field, and a strict OpenAI-native endpoint may reject the foreign key or
 	// the string→block content reshaping that carries it.
+	if c.singleLeadingSystem {
+		return mergeSystemMessages(apiMessages)
+	}
+
 	if c.emitsCacheControl() {
 		for i, msg := range messages {
 			if emittedIdx, ok := srcToEmitted[i]; ok && msg.CacheBreakpoint {
 				apiMessages[emittedIdx].Content = withCacheControl(apiMessages[emittedIdx].Content)
 			}
 		}
-		return apiMessages
 	}
 
-	return hoistSystemMessages(apiMessages)
+	return apiMessages
 }
 
-// hoistSystemMessages folds system messages that follow a non-system message
-// into one leading system message. Chat templates of self-hosted models behind
-// the gateway (Qwen via vLLM) reject a mid-conversation system role with a 400
-// "System message must be at the beginning". Claude keeps its in-place system
-// messages (and their cache breakpoints), so it never reaches this.
-func hoistSystemMessages(msgs []ChatMessage) []ChatMessage {
-	seenNonSystem := false
-	needsHoist := false
-	for _, m := range msgs {
-		if m.Role != "system" {
-			seenNonSystem = true
-		} else if seenNonSystem {
-			needsHoist = true
-			break
-		}
-	}
-	if !needsHoist {
-		return msgs
-	}
-
+// mergeSystemMessages joins every system message, in order, into one leading
+// system message. Qwen's chat template raises "System message must be at the
+// beginning" for any system message that is not the first message, including a
+// second consecutive one.
+func mergeSystemMessages(msgs []ChatMessage) []ChatMessage {
 	var systemTexts []string
 	rest := make([]ChatMessage, 0, len(msgs))
 	for _, m := range msgs {

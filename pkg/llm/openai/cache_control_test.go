@@ -92,36 +92,30 @@ func TestChatStream_CacheControlAndUsage(t *testing.T) {
 	}
 }
 
-func TestConvertMessages_HoistsLateSystemMessagesForNonClaude(t *testing.T) {
+func TestConvertMessages_SingleLeadingSystem(t *testing.T) {
 	type roleText struct{ role, text string }
+	late := []llmtypes.Message{
+		{Role: "system", Content: "ROM"},
+		{Role: "user", Content: "hello"},
+		{Role: "system", Content: "reminder"},
+		{Role: "assistant", Content: "hi"},
+	}
+	lateInPlace := []roleText{{"system", "ROM"}, {"user", "hello"}, {"system", "reminder"}, {"assistant", "hi"}}
 	tests := []struct {
-		name  string
-		model string
-		in    []llmtypes.Message
-		want  []roleText
+		name   string
+		model  string
+		enable bool
+		in     []llmtypes.Message
+		want   []roleText
 	}{
 		{
-			name:  "late system message folds into the leading one",
+			name:  "default keeps every system message in place",
 			model: "td-vllm/qwen-38-27b-fp8",
-			in: []llmtypes.Message{
-				{Role: "system", Content: "ROM"},
-				{Role: "user", Content: "hello"},
-				{Role: "system", Content: "reminder"},
-				{Role: "assistant", Content: "hi"},
-			},
-			want: []roleText{{"system", "ROM\n\nreminder"}, {"user", "hello"}, {"assistant", "hi"}},
+			in:    late,
+			want:  lateInPlace,
 		},
 		{
-			name:  "no leading system message gets one inserted",
-			model: "td-vllm/qwen-38-27b-fp8",
-			in: []llmtypes.Message{
-				{Role: "user", Content: "hello"},
-				{Role: "system", Content: "reminder"},
-			},
-			want: []roleText{{"system", "reminder"}, {"user", "hello"}},
-		},
-		{
-			name:  "consecutive leading system messages are left alone",
+			name:  "default keeps consecutive leading system messages",
 			model: "td-vllm/qwen-38-27b-fp8",
 			in: []llmtypes.Message{
 				{Role: "system", Content: "ROM"},
@@ -131,8 +125,37 @@ func TestConvertMessages_HoistsLateSystemMessagesForNonClaude(t *testing.T) {
 			want: []roleText{{"system", "ROM"}, {"system", "summary"}, {"user", "hello"}},
 		},
 		{
-			name:  "empty late system message is dropped",
-			model: "td-vllm/qwen-38-27b-fp8",
+			name:   "enabled folds a late system message into the leading one",
+			model:  "td-vllm/qwen-38-27b-fp8",
+			enable: true,
+			in:     late,
+			want:   []roleText{{"system", "ROM\n\nreminder"}, {"user", "hello"}, {"assistant", "hi"}},
+		},
+		{
+			name:   "enabled merges consecutive leading system messages",
+			model:  "td-vllm/qwen-38-27b-fp8",
+			enable: true,
+			in: []llmtypes.Message{
+				{Role: "system", Content: "ROM"},
+				{Role: "system", Content: "summary"},
+				{Role: "user", Content: "hello"},
+			},
+			want: []roleText{{"system", "ROM\n\nsummary"}, {"user", "hello"}},
+		},
+		{
+			name:   "enabled inserts a leading system message when none leads",
+			model:  "td-vllm/qwen-38-27b-fp8",
+			enable: true,
+			in: []llmtypes.Message{
+				{Role: "user", Content: "hello"},
+				{Role: "system", Content: "reminder"},
+			},
+			want: []roleText{{"system", "reminder"}, {"user", "hello"}},
+		},
+		{
+			name:   "enabled drops empty system messages",
+			model:  "td-vllm/qwen-38-27b-fp8",
+			enable: true,
 			in: []llmtypes.Message{
 				{Role: "user", Content: "hello"},
 				{Role: "system", Content: ""},
@@ -140,20 +163,17 @@ func TestConvertMessages_HoistsLateSystemMessagesForNonClaude(t *testing.T) {
 			want: []roleText{{"user", "hello"}},
 		},
 		{
-			name:  "claude keeps system messages in place",
+			name:  "claude is unchanged by default",
 			model: "coding-agent/claude-sonnet-4-6",
-			in: []llmtypes.Message{
-				{Role: "system", Content: "ROM"},
-				{Role: "user", Content: "hello"},
-				{Role: "system", Content: "reminder"},
-			},
-			want: []roleText{{"system", "ROM"}, {"user", "hello"}, {"system", "reminder"}},
+			in:    late,
+			want:  lateInPlace,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := NewClient(Config{Model: tt.model, APIKey: "test"}).convertMessages(tt.in)
+			c := NewClient(Config{Model: tt.model, APIKey: "test", SingleLeadingSystem: tt.enable})
+			got := c.convertMessages(tt.in)
 			if len(got) != len(tt.want) {
 				t.Fatalf("got %d messages, want %d: %+v", len(got), len(tt.want), got)
 			}
