@@ -2929,36 +2929,19 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			return resp, err
 		}
 
-		// Overflow can come only from the step in flight: everything before it
-		// was in a send the provider accepted, each result is bounded at
-		// arrival, and the model sets how many there are. Before a send that
-		// carries them, count them high on top of the settled context. Past the
-		// provider's own ceiling — the model's window, not max_context_tokens —
-		// they are replaced with the note, as on a refusal. Every provider is
-		// covered, whether or not it labels its refusal. A fold call does not
-		// carry them.
-		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil && !foldPending && !scriptedTurn(ctx) {
-			if n := segMem.InFlightResults(); n > 0 {
-				ceiling := ProviderPromptCeiling(a.GetLLMProviderName(), a.GetLLMModel(), a.config.ReservedOutputTokens, a.config.MaxContextTokens)
-				note := ""
-				if a.config.ToolChangeNote && prevToolNames != nil {
-					names := make([]string, 0, len(tools))
-					for _, t := range tools {
-						names = append(names, t.Name())
-					}
-					note = toolDeltaNote(prevToolNames, names)
+		// The step in flight must fit the provider's window (fitStepToWindow).
+		// A fold call does not carry it.
+		if !foldPending && !scriptedTurn(ctx) {
+			note := ""
+			if a.config.ToolChangeNote && prevToolNames != nil {
+				names := make([]string, 0, len(tools))
+				for _, t := range tools {
+					names = append(names, t.Name())
 				}
-				reminder := len(strings.TrimSpace(softReminder + "\n" + note))
-				if count := segMem.StepSendCount(reminder); ceiling > 0 && count > ceiling {
-					replaced := segMem.ReplaceInFlightResults(ctx, a.getGuidanceMessage(ctx, "step_results_too_large", map[string]interface{}{"count": strconv.Itoa(n)}))
-					zap.L().Warn("the step's results do not fit the provider's window; replaced with a note before the send",
-						zap.String("session_id", session.ID),
-						zap.Int("results", replaced),
-						zap.Int("count_tokens", count),
-						zap.Int("ceiling_tokens", ceiling))
-					span.AddEvent("turn.step_results_replaced", map[string]interface{}{"turn": turnCount, "results": replaced, "before_send": true})
-					messages = session.GetMessages()
-				}
+				note = toolDeltaNote(prevToolNames, names)
+			}
+			if a.fitStepToWindow(ctx, session, len(strings.TrimSpace(softReminder+"\n"+note)), span, turnCount) {
+				messages = session.GetMessages()
 			}
 		}
 
@@ -3845,6 +3828,9 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount
 	if segMem != nil {
 		segMem.SetAdvertisedToolsBytes(0)
 	}
+	// The loop ends here when the last step used up the tool budget, so this
+	// send can carry that step's results: the same check as a loop send.
+	a.fitStepToWindow(ctx, session, 0, nil, turnCount)
 	finalResp, err := a.chatWithRetry(ctx, session.GetMessages(), nil)
 	if err != nil && errors.Is(err, llm.ErrContextTooLong) && segMem != nil {
 		_, estimate, target := segMem.ReleasePressure(ctx, pressureRecoveryPenalty)
@@ -3912,6 +3898,40 @@ func advertisedToolsBytes(tools []shuttle.Tool) int {
 		}
 	}
 	return bytes
+}
+
+// fitStepToWindow keeps the step in flight inside the provider's window.
+// Overflow can come only from it: everything before it was in a send the
+// provider accepted, each result is bounded at arrival, and the model sets how
+// many there are. Its results are counted high on top of the settled context,
+// with extraBytes for what the send adds past memory; past the provider's own
+// ceiling — the model's window, not max_context_tokens — they are replaced
+// with the note, as on a refusal. Every provider is covered, whether or not it
+// labels its refusal. Reports whether it replaced them.
+func (a *Agent) fitStepToWindow(ctx Context, session *Session, extraBytes int, span *observability.Span, turnCount int) bool {
+	segMem, ok := session.SegmentedMem.(*SegmentedMemory)
+	if !ok || segMem == nil {
+		return false
+	}
+	n := segMem.InFlightResults()
+	if n == 0 {
+		return false
+	}
+	ceiling := ProviderPromptCeiling(a.GetLLMProviderName(), a.GetLLMModel(), a.config.ReservedOutputTokens, a.config.MaxContextTokens)
+	count := segMem.StepSendCount(extraBytes)
+	if ceiling <= 0 || count <= ceiling {
+		return false
+	}
+	replaced := segMem.ReplaceInFlightResults(ctx, a.getGuidanceMessage(ctx, "step_results_too_large", map[string]interface{}{"count": strconv.Itoa(n)}))
+	zap.L().Warn("the step's results do not fit the provider's window; replaced with a note before the send",
+		zap.String("session_id", session.ID),
+		zap.Int("results", replaced),
+		zap.Int("count_tokens", count),
+		zap.Int("ceiling_tokens", ceiling))
+	if span != nil {
+		span.AddEvent("turn.step_results_replaced", map[string]interface{}{"turn": turnCount, "results": replaced, "before_send": true})
+	}
+	return true
 }
 
 // toolDeltaNote describes how the advertised tool names changed between two

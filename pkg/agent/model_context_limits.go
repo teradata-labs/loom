@@ -203,11 +203,16 @@ func EffectiveOutputReservation(provider, model string, configuredMaxTokens, con
 // provider+model: the model's own window — the catalog's, else the
 // prefix-matched table's — less the output reservation. The configured
 // max_context_tokens is where loom folds, not where the provider refuses, so
-// it is used only when neither knows the model. Returns 0 when no window is
+// it is used only when neither knows the model. Ollama is the exception: its
+// window is the server's context length (num_ctx), which loom does not send
+// and the model's listing does not give, so the configured window — the
+// operator's statement of it — comes first there. Returns 0 when no window is
 // known.
 func ProviderPromptCeiling(provider, model string, configuredReserved, configuredWindow int) int {
 	window := 0
-	if info := catalog.Lookup(provider, model); info != nil && info.ContextWindow > 0 {
+	if provider == "ollama" && configuredWindow > 0 {
+		window = configuredWindow
+	} else if info := catalog.Lookup(provider, model); info != nil && info.ContextWindow > 0 {
 		window = int(info.ContextWindow)
 	} else if limits := GetModelContextLimits(model); limits != nil {
 		window = limits.MaxContextTokens

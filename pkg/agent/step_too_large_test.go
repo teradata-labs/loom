@@ -176,6 +176,29 @@ func TestAStepIsCheckedAgainstTheModelsWindowNotTheConfiguredOne(t *testing.T) {
 	assert.False(t, model.told, "results that fit the model's window were replaced")
 }
 
+// A step that uses up the tool budget ends the loop, and the synthesis send
+// carries its results: they get the same check, so the model is told and
+// answers instead of the turn falling back to the budget message.
+func TestAStepThatEndsTheToolBudgetIsCheckedAtSynthesis(t *testing.T) {
+	model := &windowedModel{limit: 19000, fanOut: 40, plain: true}
+	ag, _ := windowedAgent(t, model, 4000)
+	ag.config.MaxToolExecutions = 40
+	resp, err := ag.Chat(context.Background(), "s-synth", "read every table")
+	require.NoError(t, err)
+	assert.Equal(t, "narrowed and done", resp.Content, "the synthesis send was not checked")
+	assert.True(t, model.told)
+}
+
+// Ollama's window is the server's context length, which the model's listing
+// does not give: the configured window is the ceiling there, and the model's
+// listed window only when none is configured.
+func TestOllamasCeilingIsTheConfiguredWindow(t *testing.T) {
+	listed := ProviderPromptCeiling("ollama", "llama3.1:8b", 400, 0)
+	configured := ProviderPromptCeiling("ollama", "llama3.1:8b", 400, 4096)
+	assert.Equal(t, 4096-EffectiveOutputReservation("ollama", "llama3.1:8b", 0, 400, 4096), configured)
+	assert.Greater(t, listed, configured, "the listed window is not larger than 4096; the test does not separate them")
+}
+
 // A step that fits is sent as it is: nothing is replaced.
 func TestAStepThatFitsIsSentWhole(t *testing.T) {
 	model := &windowedModel{limit: 19000, fanOut: 3}
