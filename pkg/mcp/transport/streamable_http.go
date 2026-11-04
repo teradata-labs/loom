@@ -56,9 +56,10 @@ type StreamableHTTPTransport struct {
 	streamCtx     context.Context
 
 	// Configuration
-	enableSessions bool
-	headers        map[string]string // custom headers (e.g. Authorization) sent on every request
-	transport      *http.Transport   // stored for CloseIdleConnections on Close
+	enableSessions   bool
+	headers          map[string]string // custom headers (e.g. Authorization) sent on every request
+	transport        *http.Transport   // stored for CloseIdleConnections on Close
+	maxResponseBytes int64             // bounds one JSON-RPC message; see DefaultMaxResponseBytes
 }
 
 // StreamableHTTPConfig configures streamable-http transport.
@@ -78,6 +79,25 @@ type StreamableHTTPConfig struct {
 	// window (2027-07-28).
 	EnableResumption bool
 	Logger           *zap.Logger // Logger
+	// HTTPClient is the client every request is issued with. When nil, the
+	// transport builds one from a clone of http.DefaultTransport.
+	//
+	// Supply one when the CONNECTION itself carries policy the transport
+	// cannot know about: a dialler pinned to addresses that were verified
+	// before a credential was attached, a guard that refuses private
+	// addresses, a custom proxy or mTLS setup. Such policy lives in the
+	// client's Transport, so a client built here would silently resolve and
+	// dial without it — the caller's guarantees would hold for its own
+	// requests and not for this transport's.
+	HTTPClient *http.Client
+	// MaxResponseBytes bounds ONE JSON-RPC message, on both the plain-JSON
+	// and the SSE response paths. Over it the read stops and the response is
+	// rejected with *ResponseTooLargeError (never truncated). Zero selects
+	// DefaultMaxResponseBytes.
+	//
+	// It is per message and not per stream, so a subscriptions/listen stream
+	// may stay open indefinitely and deliver many bounded messages.
+	MaxResponseBytes int64
 }
 
 // NewStreamableHTTPTransport creates a new streamable-http transport.
@@ -93,19 +113,29 @@ func NewStreamableHTTPTransport(config StreamableHTTPConfig) (*StreamableHTTPTra
 
 	streamCtx, streamCancel := context.WithCancel(context.Background())
 
-	// Prefer a Clone of http.DefaultTransport so we inherit proxy/TLS settings.
-	// If DefaultTransport has been replaced by a wrapper (e.g. otel or mTLS
-	// RoundTripper), keep the wrapper as-is rather than discarding it.
-	var clientTransport http.RoundTripper
-	if base, ok := http.DefaultTransport.(*http.Transport); ok {
-		clientTransport = base.Clone()
+	// An injected client is used exactly as given: its Transport may carry a
+	// pinned dialler or a private-address guard, and rebuilding or rewrapping
+	// it here would drop that policy.
+	client := config.HTTPClient
+	var httpTransport *http.Transport
+	if client != nil {
+		// Only for CloseIdleConnections; nil when the caller's transport is a
+		// wrapped RoundTripper that does not expose it.
+		httpTransport, _ = client.Transport.(*http.Transport)
 	} else {
-		logger.Warn("http.DefaultTransport is not *http.Transport; using it as-is (otel/mTLS wrappers preserved)")
-		clientTransport = http.DefaultTransport
+		// Prefer a Clone of http.DefaultTransport so we inherit proxy/TLS settings.
+		// If DefaultTransport has been replaced by a wrapper (e.g. otel or mTLS
+		// RoundTripper), keep the wrapper as-is rather than discarding it.
+		var clientTransport http.RoundTripper
+		if base, ok := http.DefaultTransport.(*http.Transport); ok {
+			clientTransport = base.Clone()
+		} else {
+			logger.Warn("http.DefaultTransport is not *http.Transport; using it as-is (otel/mTLS wrappers preserved)")
+			clientTransport = http.DefaultTransport
+		}
+		httpTransport, _ = clientTransport.(*http.Transport)
+		client = &http.Client{Transport: clientTransport}
 	}
-	// httpTransport is used only for CloseIdleConnections; fall back to nil when
-	// the transport is a wrapped RoundTripper that doesn't expose the method.
-	httpTransport, _ := clientTransport.(*http.Transport)
 
 	if config.EnableResumption {
 		logger.Warn("enable_resumption is deprecated and has no effect: SSE resumption was removed by MCP 2026-07-28 and never had a read path in this client")
@@ -113,7 +143,7 @@ func NewStreamableHTTPTransport(config StreamableHTTPConfig) (*StreamableHTTPTra
 
 	t := &StreamableHTTPTransport{
 		endpoint:       config.Endpoint,
-		client:         &http.Client{Transport: clientTransport},
+		client:         client,
 		sessionMgr:     NewSessionManager(),
 		messages:       make(chan []byte, 100),
 		errors:         make(chan error, 1),
@@ -123,6 +153,8 @@ func NewStreamableHTTPTransport(config StreamableHTTPConfig) (*StreamableHTTPTra
 		enableSessions: config.EnableSessions,
 		headers:        config.Headers,
 		transport:      httpTransport,
+
+		maxResponseBytes: effectiveResponseLimit(config.MaxResponseBytes),
 	}
 
 	logger.Info("Streamable HTTP transport created")
@@ -252,9 +284,16 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 	case "application/json":
 		// Single JSON response
 		t.logger.Debug("Handling JSON response")
-		data, err := io.ReadAll(resp.Body)
+		// Bounded: +1 over the limit so a body that is exactly at it still
+		// reads, while one byte more is detectable rather than silently cut.
+		// io.ReadAll on an unbounded body is how a single oversized response
+		// becomes this process's memory.
+		data, err := io.ReadAll(io.LimitReader(resp.Body, t.maxResponseBytes+1))
 		if err != nil {
 			return fmt.Errorf("failed to read response: %w", err)
+		}
+		if int64(len(data)) > t.maxResponseBytes {
+			return &ResponseTooLargeError{Limit: t.maxResponseBytes}
 		}
 		t.logger.Debug("Read JSON response data", zap.Int("bytes", len(data)))
 
@@ -374,7 +413,7 @@ func (t *StreamableHTTPTransport) handleSSEStream(ctx context.Context, body io.R
 			}
 		}()
 
-		parser := NewSSEParser(body)
+		parser := NewSSEParserWithLimit(body, t.maxResponseBytes)
 
 		for {
 			t.logger.Debug("Parsing SSE event")
@@ -389,6 +428,19 @@ func (t *StreamableHTTPTransport) handleSSEStream(ctx context.Context, body io.R
 				}
 				if err == io.EOF {
 					t.logger.Debug("SSE stream closed normally")
+					return
+				}
+				// A rejected oversized message is NOT a lost stream. Say so
+				// with its own code, so the caller is told to raise the limit
+				// or ask for less rather than to re-issue a request that will
+				// fail identically every time. sawFinal suppresses the
+				// stream-lost synthesis in the deferred cleanup.
+				var tooLarge *ResponseTooLargeError
+				if errors.As(err, &tooLarge) {
+					t.logger.Warn("SSE message rejected: over the configured size limit",
+						zap.Int64("limit_bytes", tooLarge.Limit))
+					sawFinal = true
+					t.synthesizeError(ctx, expectedID, CodeResponseTooLarge, tooLarge.Error())
 					return
 				}
 				// Check if error is due to closed body (normal for single-response streams)
@@ -459,12 +511,20 @@ func isResponseForID(data []byte, expectedID json.RawMessage) bool {
 func (t *StreamableHTTPTransport) synthesizeStreamLost(ctx context.Context, id json.RawMessage) {
 	t.logger.Warn("response stream lost before completion; synthesizing stream-lost error",
 		zap.ByteString("request_id", id))
+	t.synthesizeError(ctx, id, CodeStreamLost,
+		"response stream lost before completion; re-issue the request")
+}
+
+// synthesizeError delivers a JSON-RPC error response for a request whose real
+// answer will never arrive, so the pending call fails with a reason instead of
+// hanging until its deadline.
+func (t *StreamableHTTPTransport) synthesizeError(ctx context.Context, id json.RawMessage, code int, message string) {
 	synth, err := json.Marshal(map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      id,
 		"error": map[string]interface{}{
-			"code":    CodeStreamLost,
-			"message": "response stream lost before completion; re-issue the request",
+			"code":    code,
+			"message": message,
 		},
 	})
 	if err != nil {

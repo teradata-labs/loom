@@ -78,6 +78,17 @@ func ExtraHeadersFromContext(ctx context.Context) map[string]string {
 // the request as a new request (with the same idempotency key).
 const CodeStreamLost = -32000
 
+// CodeResponseTooLarge is the JSON-RPC error code (implementation-defined
+// range -32000..-32019) the transport synthesizes when one response message
+// exceeded StreamableHTTPConfig.MaxResponseBytes and was therefore rejected
+// rather than buffered.
+//
+// Distinct from CodeStreamLost deliberately: a lost stream says "re-issue the
+// request", and re-issuing an oversized response fails the same way every
+// time. The caller's recovery is to raise the limit, or to ask the server for
+// less — not to retry.
+const CodeResponseTooLarge = -32001
+
 // requestHeaderPeek extracts the body fields the standard request headers
 // mirror, without decoding the full message.
 type requestHeaderPeek struct {
