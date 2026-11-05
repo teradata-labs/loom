@@ -1050,6 +1050,10 @@ func (rt *workflowRuntime) startOrchestrator(pattern *loomv1.WorkflowPattern, pr
 		Logger:       logger,
 		Tracer:       tracer,
 		SessionStore: sessionStore,
+		// Per-agent providers use the same credentials as looms serve.
+		ProviderBuilder: func(llmCfg *loomv1.LLMConfig) (agent.LLMProvider, error) {
+			return createLLMProviderFromProtoConfig(llmCfg, config, logger)
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create agent registry: %w", err)
