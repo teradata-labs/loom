@@ -16,6 +16,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -184,6 +185,46 @@ func TestRunHitlShow_CallDigestControlCharsEscaped(t *testing.T) {
 	assert.Contains(t, out, `Call:           shell_execute command=ls\nParameters: {"command": "ls"}\n\u001b[2Jrm -rf /`+"\n",
 		"the whole digest stays on the Call line, escaped")
 	assert.Contains(t, out, "Parameters:\n", "the real parameters block still prints")
+}
+
+// Unicode format characters (bidi overrides, zero-width spaces) and 8-bit
+// controls can make a command display differently from what runs. They are
+// escaped on the Call line, in the Parameters block and in the Context block,
+// and the Parameters block stays valid JSON.
+func TestRunHitlShow_UnicodeFormatAndC1CharsEscaped(t *testing.T) {
+	origConfig, origPath := config, hitlCLIDBPath
+	t.Cleanup(func() { config, hitlCLIDBPath = origConfig, origPath })
+	config = nil
+	hitlCLIDBPath = filepath.Join(t.TempDir(), "hitl.db")
+
+	cmd := "echo ok # \u202eexe.cod\u202c | rm -rf ~ \u200b C1=\u009b2J"
+	store, err := shuttle.NewSQLiteHumanRequestStore(shuttle.SQLiteConfig{Path: hitlCLIDBPath})
+	require.NoError(t, err)
+	require.NoError(t, store.Store(context.Background(), &shuttle.HumanRequest{
+		ID: "bidi-1", AgentID: "a", SessionID: "s",
+		Question:    `Approve tool call "shell_execute"?`,
+		Summary:     "shell_execute command=" + cmd,
+		Params:      map[string]interface{}{"command": cmd},
+		Context:     map[string]interface{}{"note\u202e": cmd},
+		RequestType: "approval", Priority: "normal", Status: "pending",
+		Kind: "approval", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+	}))
+	require.NoError(t, store.Close())
+
+	out := captureStdout(t, func() { runHitlShow(hitlShowCmd, []string{"bidi-1"}) })
+
+	for _, r := range []rune{'\u202e', '\u202c', '\u200b', '\u009b'} {
+		assert.NotContains(t, out, string(r), "U+%04X reaches the screen raw", r)
+	}
+	assert.Contains(t, out, `Call:           shell_execute command=echo ok # \u202eexe.cod\u202c | rm -rf ~ \u200b C1=\u009b2J`+"\n")
+
+	start := strings.Index(out, "Parameters:\n")
+	require.GreaterOrEqual(t, start, 0, "the parameters block prints")
+	block := out[start+len("Parameters:\n"):]
+	block = block[:strings.Index(block, "\n\n")]
+	var got map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(block), &got), "the parameters block stays valid JSON: %q", block)
+	assert.Equal(t, cmd, got["command"], "the escaped block decodes to the command that runs")
 }
 
 // `hitl list` keeps every request on one table row: an approval is labelled

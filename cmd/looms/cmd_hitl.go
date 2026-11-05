@@ -382,7 +382,7 @@ func runHitlShow(cmd *cobra.Command, args []string) {
 	if len(req.Context) > 0 {
 		fmt.Println("Context:")
 		for k, v := range req.Context {
-			fmt.Printf("  %s: %v\n", k, v)
+			fmt.Printf("  %s: %s\n", escapeControlChars(k), escapeControlChars(fmt.Sprint(v)))
 		}
 		fmt.Printf("\n")
 	}
@@ -403,7 +403,7 @@ func runHitlShow(cmd *cobra.Command, args []string) {
 		if len(req.ResponseData) > 0 {
 			fmt.Println("\nResponse Data:")
 			for k, v := range req.ResponseData {
-				fmt.Printf("  %s: %v\n", k, v)
+				fmt.Printf("  %s: %s\n", escapeControlChars(k), escapeControlChars(fmt.Sprint(v)))
 			}
 		}
 	}
@@ -636,11 +636,30 @@ func escapeControlChars(s string) string {
 			b.WriteString(`\r`)
 		case r == '\t':
 			b.WriteString(`\t`)
-		case unicode.IsControl(r):
+		case unicode.IsControl(r), unicode.Is(unicode.Cf, r):
+			// Cf covers bidi overrides and zero-width characters, which
+			// can make a command display differently from what runs.
 			fmt.Fprintf(&b, `\u%04x`, r)
 		default:
 			b.WriteRune(r)
 		}
+	}
+	return b.String()
+}
+
+// escapeJSONDisplayChars escapes, as JSON \u escapes, the runes that
+// encoding/json leaves raw but that can change how the text displays: format
+// characters (Cf) and controls at or above U+007F. The 7-bit controls are left
+// alone: the encoder has already escaped every one inside a value, so the only
+// ones left are the block's own newlines. The result stays valid JSON.
+func escapeJSONDisplayChars(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.Is(unicode.Cf, r) || (r >= 0x7f && unicode.IsControl(r)) {
+			fmt.Fprintf(&b, `\u%04x`, r)
+			continue
+		}
+		b.WriteRune(r)
 	}
 	return b.String()
 }
@@ -667,7 +686,7 @@ func writeHITLParams(w io.Writer, req *shuttle.HumanRequest) {
 		_, _ = fmt.Fprintf(w, "Parameters:     (cannot display: %v)\n\n", err)
 		return
 	}
-	_, _ = fmt.Fprintf(w, "Parameters:\n  %s", raw.String())
+	_, _ = fmt.Fprintf(w, "Parameters:\n  %s", escapeJSONDisplayChars(raw.String()))
 	if req.ParamsTruncated {
 		_, _ = fmt.Fprintln(w, "  (some parameters were too large for the approval record and are not shown)")
 	}
