@@ -17,6 +17,7 @@ package shellpolicy
 import (
 	"context"
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -162,4 +163,62 @@ type approveAll struct{}
 
 func (approveAll) Resolve(shuttle.AdmissionRequest, shuttle.Decision) shuttle.Decision {
 	return shuttle.Decision{Kind: shuttle.Allow}
+}
+
+// N10: the hook parses the command as bash, so a call that runs it under
+// another shell cannot be judged and is refused.
+func TestDecide_ShellParam(t *testing.T) {
+	opt := session(t)
+	defaultShell := shuttle.Allow
+	if runtime.GOOS == "windows" {
+		defaultShell = shuttle.Deny // "default" is PowerShell or cmd there
+	}
+	for _, tc := range []struct {
+		shell interface{}
+		want  shuttle.DecisionKind
+	}{
+		{shell: "powershell", want: shuttle.Deny},
+		{shell: "cmd", want: shuttle.Deny},
+		{shell: "zsh", want: shuttle.Deny},
+		{shell: 7, want: shuttle.Deny},
+		{shell: "bash", want: shuttle.Allow},
+		{shell: "sh", want: shuttle.Allow},
+		{shell: "", want: shuttle.Allow},
+		{shell: nil, want: shuttle.Allow},
+		{shell: "default", want: defaultShell},
+	} {
+		for _, static := range []bool{false, true} {
+			d := decide(t, opt, static, map[string]interface{}{"command": "echo @(Remove-Item x)", "shell": tc.shell})
+			assert.Equal(t, tc.want, d.Kind, "shell %v (static=%v): %s", tc.shell, static, d.Reason)
+			if tc.want == shuttle.Deny {
+				assert.Contains(t, d.Reason, "only bash and sh", "shell %v", tc.shell)
+			}
+		}
+	}
+	d := decide(t, opt, true, map[string]interface{}{"command": "ls"})
+	assert.Equal(t, shuttle.Allow, d.Kind, "no shell parameter is the default shell")
+}
+
+// Found while fixing the review: shell_execute merges its env parameter into
+// the shell's environment, so env: {BASH_ENV: script} ran the script before
+// the command (bash 5.2). The env parameter is judged like an assignment the
+// command makes.
+func TestDecide_EnvParam(t *testing.T) {
+	opt := session(t)
+	for _, static := range []bool{false, true} {
+		d := decide(t, opt, static, map[string]interface{}{"command": "ls", "env": map[string]interface{}{"BASH_ENV": "/tmp/x.sh", "FOO": "1"}})
+		require.Equal(t, shuttle.Ask, d.Kind, "static=%v: %s", static, d.Reason)
+		assert.Contains(t, d.Reason, "BASH_ENV (env parameter): sets BASH_ENV, which changes what programs run or load")
+		g, ok := d.Grant.(*Grant)
+		require.True(t, ok)
+		assert.Equal(t, []string{"BASH_ENV"}, g.Env)
+
+		d = decide(t, opt, static, map[string]interface{}{"command": "ls", "env": map[string]interface{}{"FOO": "1", "LANG": "C"}})
+		assert.Equal(t, shuttle.Allow, d.Kind, "static=%v: %s", static, d.Reason)
+	}
+	d := decide(t, opt, true, map[string]interface{}{"command": "cd o", "env": map[string]interface{}{"CDPATH": ".."}})
+	assert.Equal(t, shuttle.Deny, d.Kind, d.Reason)
+	assert.Contains(t, d.Reason, "CDPATH (env parameter)")
+	d = decide(t, opt, false, map[string]interface{}{"command": "ls", "env": map[string]interface{}{"PATH": 7}})
+	assert.Equal(t, shuttle.Allow, d.Kind, "the tool ignores a value that is not a string")
 }

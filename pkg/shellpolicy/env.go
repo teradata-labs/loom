@@ -66,6 +66,11 @@ func ExecEnvName(name string) bool {
 // setsVar judges one variable the command sets, named as written: a name
 // ExecEnvName reports is an Ask granting that name.
 func (a *analyzer) setsVar(n syntax.Node, outer *syntax.Pos, name string) {
+	a.subscriptName(n, outer, name)
+	if name == "CDPATH" && a.opt.Static {
+		a.add(Deny, n, outer, name, "sets CDPATH, which changes where cd goes in a way static enforcement does not follow")
+		return
+	}
 	if ExecEnvName(name) {
 		a.ask(n, outer, name, "sets "+name+", which changes what programs run or load", "env", name)
 	}
@@ -95,6 +100,9 @@ func (a *analyzer) assigns(x *syntax.CallExpr, outer *syntax.Pos) {
 		if as.Name == nil {
 			continue
 		}
+		if !intAssign(as) {
+			a.unsafeInt(as.Name.Value)
+		}
 		if as.Name.Value == "IFS" && (cmd == "read" || cmd == "mapfile" || cmd == "readarray") {
 			continue
 		}
@@ -122,15 +130,25 @@ func (a *analyzer) decl(x *syntax.DeclClause, outer *syntax.Pos) {
 				if strings.HasPrefix(s, "-") && strings.ContainsRune(s[1:], 'n') {
 					nameref = true
 				}
+				if strings.HasPrefix(s, "-") && strings.ContainsRune(s[1:], 'i') && a.opt.Static {
+					a.add(Deny, as, outer, x.Variant.Value+" "+s, "declare -i evaluates every value later assigned as arithmetic, which can run commands static enforcement cannot see")
+				}
 				continue
 			}
-			name, _, _ := strings.Cut(s, "=")
+			name, value, _ := strings.Cut(s, "=")
+			if !intLiteral.MatchString(value) && value != "" {
+				a.unsafeInt(name)
+			}
 			a.setsVar(as, outer, name)
 			continue
+		}
+		if !intAssign(as) || nameref {
+			a.unsafeInt(as.Name.Value)
 		}
 		a.setsVar(as, outer, as.Name.Value)
 		if nameref && as.Value != nil {
 			if target, ok := literal(as.Value); ok {
+				a.unsafeInt(target) // assignments through the reference reach it
 				a.setsVar(as, outer, target)
 			} else {
 				a.setsComputedVar(as, outer, as.Value)
@@ -174,6 +192,12 @@ func (a *analyzer) varBuiltin(x *syntax.CallExpr, name string, rest []*syntax.Wo
 		if len(rest) > 1 {
 			a.nameWord(x, rest[1], outer)
 		}
+	case "test", "[":
+		for i := 0; i+1 < len(rest); i++ {
+			if s, ok := literal(rest[i]); ok && s == "-v" {
+				a.varNameOperand(x, outer, rest[i+1])
+			}
+		}
 	case "printf":
 		if len(rest) == 0 {
 			return
@@ -185,11 +209,11 @@ func (a *analyzer) varBuiltin(x *syntax.CallExpr, name string, rest []*syntax.Wo
 				a.nameWord(x, rest[1], outer)
 			}
 		case ok && strings.HasPrefix(first, "-v"):
-			a.setsVar(x, outer, first[2:])
+			a.setsByBuiltin(x, outer, first[2:])
 		case !ok && len(rest) > 1:
 			// A computed first word may be -v; the next word is then a name.
 			if s, lit := literal(rest[1]); lit {
-				a.setsVar(x, outer, s)
+				a.setsByBuiltin(x, outer, s)
 			} else if a.opt.Static {
 				a.setsComputedVar(x, outer, rest[0])
 			}
@@ -214,7 +238,7 @@ func (a *analyzer) optionNames(x *syntax.CallExpr, words []*syntax.Word, valueOp
 			return
 		}
 		if !strings.HasPrefix(s, "-") || s == "-" {
-			a.setsVar(x, outer, s)
+			a.setsByBuiltin(x, outer, s)
 			continue
 		}
 		group := s[1:]
@@ -231,7 +255,7 @@ func (a *analyzer) optionNames(x *syntax.CallExpr, words []*syntax.Word, valueOp
 				if valueWord != nil {
 					a.nameWord(x, valueWord, outer)
 				} else {
-					a.setsVar(x, outer, value)
+					a.setsByBuiltin(x, outer, value)
 				}
 			}
 			break
@@ -239,10 +263,17 @@ func (a *analyzer) optionNames(x *syntax.CallExpr, words []*syntax.Word, valueOp
 	}
 }
 
+// setsByBuiltin judges a variable a builtin sets from data (read, mapfile,
+// printf -v, getopts): its value may be anything.
+func (a *analyzer) setsByBuiltin(n syntax.Node, outer *syntax.Pos, name string) {
+	a.unsafeInt(name)
+	a.setsVar(n, outer, name)
+}
+
 // nameWord judges one word that names a variable.
 func (a *analyzer) nameWord(x *syntax.CallExpr, w *syntax.Word, outer *syntax.Pos) {
 	if s, ok := literal(w); ok {
-		a.setsVar(x, outer, s)
+		a.setsByBuiltin(x, outer, s)
 		return
 	}
 	a.setsComputedVar(x, outer, w)

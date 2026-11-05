@@ -62,7 +62,7 @@ func (p *Policy) CheckLaunch(argv []string, dir string, roots Roots, g *Grant) e
 	if prof.NoPathArgs {
 		return nil
 	}
-	for _, c := range pathCandidates(argv[1:]) {
+	for _, c := range prof.pathCandidates(argv[1:]) {
 		if err := checkReadAt(name, c, dir, roots, g); err != nil {
 			return err
 		}
@@ -87,6 +87,9 @@ func (p *Policy) CheckBuiltin(name string, g *Grant) error {
 func (p *Policy) CheckOpen(path, dir string, write bool, roots Roots, g *Grant) error {
 	if devicePaths[path] {
 		return nil
+	}
+	if netDevice(path) {
+		return &LaunchError{Name: path, Reason: "opens a network connection"}
 	}
 	full := ResolvePath(dir, path)
 	if write {
@@ -113,6 +116,9 @@ func (p *Policy) CheckListDir(dir string, roots Roots, g *Grant) error {
 func checkReadAt(name, path, dir string, roots Roots, g *Grant) error {
 	if devicePaths[path] {
 		return nil
+	}
+	if netDevice(path) {
+		return &LaunchError{Name: name, Reason: "opens a network connection (" + path + ")"}
 	}
 	full := ResolvePath(dir, path)
 	if _, err := os.Stat(full); err != nil {
