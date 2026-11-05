@@ -1,0 +1,146 @@
+// Copyright 2026 Teradata
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//	http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+package main
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/llm/bedrockmantle"
+	"go.uber.org/zap"
+)
+
+// Static, obviously fake credentials: construction with static keys never
+// touches the network, which keeps these tests hermetic.
+const (
+	testMantleAccessKeyID = "test-access-key-id"
+	testMantleSecretKey   = "test-secret-access-key"
+)
+
+func TestMantleRegion_FallsBackToBedrockRegion(t *testing.T) {
+	assert.Equal(t, "us-west-2", mantleRegion(LLMConfig{BedrockRegion: "us-west-2"}))
+	assert.Equal(t, "eu-west-1", mantleRegion(LLMConfig{BedrockRegion: "us-west-2", BedrockMantleRegion: "eu-west-1"}))
+	assert.Empty(t, mantleRegion(LLMConfig{}))
+}
+
+func TestValidate_BedrockMantle(t *testing.T) {
+	base := func(llm LLMConfig) *Config {
+		llm.Provider = "bedrock-mantle"
+		return &Config{
+			Server:  ServerConfig{Port: 60051},
+			LLM:     llm,
+			Storage: StorageBackendConfig{Backend: "sqlite", SQLite: SQLiteConfig{Path: "/tmp/test.db"}},
+		}
+	}
+
+	t.Run("no region anywhere -> error", func(t *testing.T) {
+		err := base(LLMConfig{}).Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "bedrock-mantle region is required")
+	})
+	t.Run("llm.bedrock_region alone is enough", func(t *testing.T) {
+		assert.NoError(t, base(LLMConfig{BedrockRegion: "us-west-2"}).Validate())
+	})
+	t.Run("llm.bedrock_mantle_region alone is enough", func(t *testing.T) {
+		assert.NoError(t, base(LLMConfig{BedrockMantleRegion: "us-east-1"}).Validate())
+	})
+}
+
+func TestGetSecretMappings_BedrockMantleAPIKey(t *testing.T) {
+	mappings := GetSecretMappings()
+	idx := -1
+	for i, m := range mappings {
+		if m.KeyringKey == "bedrock_mantle_api_key" {
+			idx = i
+		}
+	}
+	require.NotEqual(t, -1, idx, "bedrock_mantle_api_key must be a keyring secret")
+
+	cfg := &Config{}
+	assert.False(t, mappings[idx].IsSet(cfg))
+	mappings[idx].Setter(cfg, "bedrock-api-key-test")
+	assert.Equal(t, "bedrock-api-key-test", cfg.LLM.BedrockMantleAPIKey)
+	assert.True(t, mappings[idx].IsSet(cfg))
+}
+
+func TestInheritCredentials_BedrockMantle(t *testing.T) {
+	src := LLMConfig{
+		BedrockMantleRegion:   "eu-west-1",
+		BedrockMantleEndpoint: "https://mantle.example.test",
+		BedrockMantleAPIKey:   "key-from-main",
+	}
+
+	got := inheritCredentials(LLMConfig{}, src)
+	assert.Equal(t, "eu-west-1", got.BedrockMantleRegion)
+	assert.Equal(t, "https://mantle.example.test", got.BedrockMantleEndpoint)
+	assert.Equal(t, "key-from-main", got.BedrockMantleAPIKey)
+
+	own := inheritCredentials(LLMConfig{BedrockMantleRegion: "us-east-2", BedrockMantleAPIKey: "own-key"}, src)
+	assert.Equal(t, "us-east-2", own.BedrockMantleRegion, "pool entry's own value wins")
+	assert.Equal(t, "own-key", own.BedrockMantleAPIKey)
+	assert.Equal(t, "https://mantle.example.test", own.BedrockMantleEndpoint)
+}
+
+func TestGetDefaultModelForProvider_BedrockMantle(t *testing.T) {
+	cfg := &Config{LLM: LLMConfig{Provider: "bedrock-mantle"}}
+	assert.Equal(t, bedrockmantle.DefaultModel, getDefaultModelForProvider(cfg))
+
+	cfg.LLM.BedrockMantleModel = "anthropic.claude-opus-4-7"
+	assert.Equal(t, "anthropic.claude-opus-4-7", getDefaultModelForProvider(cfg))
+}
+
+func TestCreateProviderWithRateLimit_BedrockMantle(t *testing.T) {
+	// No Mantle region set: the provider must inherit llm.bedrock_region.
+	p, err := createProviderWithRateLimit(LLMConfig{
+		Provider:               "bedrock-mantle",
+		BedrockRegion:          "us-west-2",
+		BedrockAccessKeyID:     testMantleAccessKeyID,
+		BedrockSecretAccessKey: testMantleSecretKey,
+		BedrockMantleModel:     "openai.gpt-oss-120b",
+	}, zap.NewNop())
+	require.NoError(t, err)
+
+	client, ok := p.(*bedrockmantle.Client)
+	require.True(t, ok, "expected *bedrockmantle.Client, got %T", p)
+	assert.Equal(t, "bedrock-mantle", client.Name())
+	assert.Equal(t, "openai.gpt-oss-120b", client.Model())
+	assert.Equal(t, "https://bedrock-mantle.us-west-2.api.aws", client.BaseURL())
+}
+
+func TestCreateLLMProviderFromProtoConfig_BedrockMantle(t *testing.T) {
+	server := &Config{LLM: LLMConfig{
+		BedrockMantleRegion:    "us-east-1",
+		BedrockAccessKeyID:     testMantleAccessKeyID,
+		BedrockSecretAccessKey: testMantleSecretKey,
+		BedrockMantleModel:     bedrockmantle.DefaultModel,
+	}}
+
+	t.Run("agent model overrides the server default", func(t *testing.T) {
+		p, err := createLLMProviderFromProtoConfig(&loomv1.LLMConfig{Provider: "bedrock-mantle", Model: "anthropic.claude-opus-4-7"}, server, zap.NewNop())
+		require.NoError(t, err)
+		client, ok := p.(*bedrockmantle.Client)
+		require.True(t, ok, "expected *bedrockmantle.Client, got %T", p)
+		assert.Equal(t, "anthropic.claude-opus-4-7", client.Model())
+		assert.Equal(t, "https://bedrock-mantle.us-east-1.api.aws", client.BaseURL())
+	})
+	t.Run("empty agent model uses llm.bedrock_mantle_model", func(t *testing.T) {
+		p, err := createLLMProviderFromProtoConfig(&loomv1.LLMConfig{Provider: "bedrock-mantle"}, server, zap.NewNop())
+		require.NoError(t, err)
+		client, ok := p.(*bedrockmantle.Client)
+		require.True(t, ok, "expected *bedrockmantle.Client, got %T", p)
+		assert.Equal(t, bedrockmantle.DefaultModel, client.Model())
+	})
+}

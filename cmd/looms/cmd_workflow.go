@@ -32,6 +32,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
 	"github.com/teradata-labs/loom/pkg/llm/azureopenai"
 	"github.com/teradata-labs/loom/pkg/llm/bedrock"
+	"github.com/teradata-labs/loom/pkg/llm/bedrockmantle"
 	"github.com/teradata-labs/loom/pkg/llm/gemini"
 	"github.com/teradata-labs/loom/pkg/llm/huggingface"
 	"github.com/teradata-labs/loom/pkg/llm/mistral"
@@ -1400,6 +1401,24 @@ func createLLMProvider() (agent.LLMProvider, string) {
 				return client, "AWS Bedrock (config)"
 			}
 
+		case "bedrock-mantle":
+			accessKeyID, secretAccessKey, sessionToken := resolveBedrockCredentials(config.LLM)
+			client, err := bedrockmantle.NewClientForModel(bedrockmantle.Config{
+				Region:          mantleRegion(config.LLM),
+				Endpoint:        config.LLM.BedrockMantleEndpoint,
+				APIKey:          config.LLM.BedrockMantleAPIKey,
+				AccessKeyID:     accessKeyID,
+				SecretAccessKey: secretAccessKey,
+				SessionToken:    sessionToken,
+				Profile:         config.LLM.BedrockProfile,
+				Model:           config.LLM.BedrockMantleModel,
+				MaxTokens:       config.LLM.MaxTokens,
+				Temperature:     config.LLM.Temperature,
+			})
+			if err == nil {
+				return client, "AWS Bedrock Mantle (config)"
+			}
+
 		case "ollama":
 			client := ollama.NewClient(ollama.Config{
 				Endpoint:    config.LLM.OllamaEndpoint,
@@ -1513,6 +1532,7 @@ Option 3: AWS Bedrock (env var)
 Supported providers:
   - anthropic    (Anthropic Claude API)
   - bedrock      (AWS Bedrock)
+  - bedrock-mantle (AWS Bedrock Mantle endpoint)
   - ollama       (Local Ollama)
   - openai       (OpenAI GPT models)
   - azure-openai (Azure OpenAI Service)

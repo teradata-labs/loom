@@ -42,6 +42,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
 	"github.com/teradata-labs/loom/pkg/llm/azureopenai"
 	"github.com/teradata-labs/loom/pkg/llm/bedrock"
+	"github.com/teradata-labs/loom/pkg/llm/bedrockmantle"
 	"github.com/teradata-labs/loom/pkg/llm/factory"
 	"github.com/teradata-labs/loom/pkg/llm/gemini"
 	"github.com/teradata-labs/loom/pkg/llm/huggingface"
@@ -535,6 +536,15 @@ func inheritCredentials(dst, src LLMConfig) LLMConfig {
 	if dst.BedrockRegion == "" {
 		dst.BedrockRegion = src.BedrockRegion
 	}
+	if dst.BedrockMantleRegion == "" {
+		dst.BedrockMantleRegion = src.BedrockMantleRegion
+	}
+	if dst.BedrockMantleEndpoint == "" {
+		dst.BedrockMantleEndpoint = src.BedrockMantleEndpoint
+	}
+	if dst.BedrockMantleAPIKey == "" {
+		dst.BedrockMantleAPIKey = src.BedrockMantleAPIKey
+	}
 	if dst.OllamaEndpoint == "" {
 		dst.OllamaEndpoint = src.OllamaEndpoint
 	}
@@ -657,6 +667,29 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		})
 		if err != nil {
 			return nil, fmt.Errorf("bedrock: %w", err)
+		}
+		return client, nil
+
+	case "bedrock-mantle":
+		// Mantle shares the Bedrock SigV4 credential fields; a Bedrock API key
+		// (bearer) is opt-in. The region falls back to llm.bedrock_region.
+		accessKeyID, secretAccessKey, sessionToken := resolveBedrockCredentials(cfg)
+		client, err := bedrockmantle.NewClientForModel(bedrockmantle.Config{
+			Region:            mantleRegion(cfg),
+			Endpoint:          loomconfig.ExpandEnvPlaceholders(cfg.BedrockMantleEndpoint),
+			APIKey:            apiKey(loomconfig.ExpandEnvPlaceholders(cfg.BedrockMantleAPIKey), "BEDROCK_MANTLE_API_KEY"),
+			AccessKeyID:       accessKeyID,
+			SecretAccessKey:   secretAccessKey,
+			SessionToken:      sessionToken,
+			Profile:           cfg.BedrockProfile,
+			Model:             cfg.BedrockMantleModel,
+			MaxTokens:         cfg.MaxTokens,
+			Temperature:       cfg.Temperature,
+			Timeout:           time.Duration(cfg.Timeout) * time.Second,
+			RateLimiterConfig: rlCfg,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("bedrock-mantle: %w", err)
 		}
 		return client, nil
 
@@ -825,6 +858,11 @@ func getDefaultModelForProvider(cfg *Config) string {
 			return cfg.LLM.BedrockModelID
 		}
 		return "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+	case "bedrock-mantle":
+		if cfg.LLM.BedrockMantleModel != "" {
+			return cfg.LLM.BedrockMantleModel
+		}
+		return bedrockmantle.DefaultModel
 	case "ollama":
 		if cfg.LLM.OllamaModel != "" {
 			return cfg.LLM.OllamaModel
@@ -929,6 +967,35 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			Temperature:       temperature,
 			RateLimiterConfig: rlCfg,
 		})
+
+	case "bedrock-mantle":
+		model := protoConfig.Model
+		if model == "" {
+			model = serverConfig.LLM.BedrockMantleModel
+		}
+		accessKeyID, secretAccessKey, sessionToken := resolveBedrockCredentials(serverConfig.LLM)
+		mantleKey := loomconfig.ExpandEnvPlaceholders(serverConfig.LLM.BedrockMantleAPIKey)
+		if mantleKey == "" {
+			mantleKey = os.Getenv("BEDROCK_MANTLE_API_KEY")
+		}
+		client, err := bedrockmantle.NewClientForModel(bedrockmantle.Config{
+			Region:            mantleRegion(serverConfig.LLM),
+			Endpoint:          loomconfig.ExpandEnvPlaceholders(serverConfig.LLM.BedrockMantleEndpoint),
+			APIKey:            mantleKey,
+			AccessKeyID:       accessKeyID,
+			SecretAccessKey:   secretAccessKey,
+			SessionToken:      sessionToken,
+			Profile:           serverConfig.LLM.BedrockProfile,
+			Model:             model,
+			MaxTokens:         maxTokens,
+			Temperature:       temperature,
+			Timeout:           timeout,
+			RateLimiterConfig: rlCfg,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("bedrock-mantle: %w", err)
+		}
+		return client, nil
 
 	case "ollama":
 		model := protoConfig.Model
@@ -1081,7 +1148,7 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		}), nil
 
 	default:
-		return nil, fmt.Errorf("unsupported LLM provider: %s (supported: anthropic, bedrock, ollama, openai, azure-openai, mistral, gemini, huggingface, litellm)", protoConfig.Provider)
+		return nil, fmt.Errorf("unsupported LLM provider: %s (supported: anthropic, bedrock, bedrock-mantle, ollama, openai, azure-openai, mistral, gemini, huggingface, litellm)", protoConfig.Provider)
 	}
 }
 
@@ -1718,6 +1785,12 @@ func runServe(cmd *cobra.Command, args []string) {
 		BedrockBearerToken:     config.LLM.BedrockBearerToken,
 		BedrockProfile:         config.LLM.BedrockProfile,
 		BedrockModelID:         config.LLM.BedrockModelID,
+
+		// Bedrock Mantle (SigV4 credentials are the Bedrock fields above)
+		BedrockMantleRegion:   mantleRegion(config.LLM),
+		BedrockMantleEndpoint: config.LLM.BedrockMantleEndpoint,
+		BedrockMantleAPIKey:   config.LLM.BedrockMantleAPIKey,
+		BedrockMantleModel:    config.LLM.BedrockMantleModel,
 
 		// Ollama
 		OllamaEndpoint: config.LLM.OllamaEndpoint,

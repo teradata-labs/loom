@@ -68,7 +68,7 @@ Support:
 	rootCmd.PersistentFlags().Bool("reflection", true, "enable gRPC reflection")
 
 	// LLM flags
-	rootCmd.PersistentFlags().String("llm-provider", "anthropic", "LLM provider (anthropic, bedrock, ollama, openai, azure-openai, mistral, gemini, huggingface)")
+	rootCmd.PersistentFlags().String("llm-provider", "anthropic", "LLM provider (anthropic, bedrock, bedrock-mantle, ollama, openai, azure-openai, mistral, gemini, huggingface, litellm)")
 	rootCmd.PersistentFlags().String("anthropic-key", "", "Anthropic API key (or use keyring/env)")
 	rootCmd.PersistentFlags().String("anthropic-model", "claude-sonnet-4-5-20250929", "Anthropic model")
 	rootCmd.PersistentFlags().Float64("temperature", 1.0, "LLM temperature")

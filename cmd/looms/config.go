@@ -23,6 +23,7 @@ import (
 	"github.com/spf13/viper"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
+	"github.com/teradata-labs/loom/pkg/llm/bedrockmantle"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/zalando/go-keyring"
@@ -331,6 +332,14 @@ type LLMConfig struct {
 	BedrockBearerToken     string `mapstructure:"bedrock_bearer_token"`      // From CLI/env/keyring only
 	BedrockProfile         string `mapstructure:"bedrock_profile"`
 	BedrockModelID         string `mapstructure:"bedrock_model_id"`
+
+	// Bedrock Mantle-specific (the bedrock-mantle endpoint). The region falls
+	// back to BedrockRegion; SigV4 credentials are shared with the Bedrock
+	// fields above (profile, access key, secret, session token).
+	BedrockMantleRegion   string `mapstructure:"bedrock_mantle_region"`
+	BedrockMantleEndpoint string `mapstructure:"bedrock_mantle_endpoint"`
+	BedrockMantleAPIKey   string `mapstructure:"bedrock_mantle_api_key"` // From CLI/env/keyring only
+	BedrockMantleModel    string `mapstructure:"bedrock_mantle_model"`
 
 	// SchedulerEnabled turns on the LLM slot scheduler: per-quota-scope
 	// admission where waiting is a state, not an error
@@ -1180,6 +1189,9 @@ func setDefaults() {
 	viper.SetDefault("llm.anthropic_model", "claude-sonnet-4-5-20250929")
 	viper.SetDefault("llm.bedrock_region", "us-west-2")
 	viper.SetDefault("llm.bedrock_model_id", "us.anthropic.claude-sonnet-4-5-20250929-v1:0") // Cross-region inference profile
+	viper.SetDefault("llm.bedrock_mantle_region", "")                                        // empty = inherit llm.bedrock_region
+	viper.SetDefault("llm.bedrock_mantle_endpoint", "")
+	viper.SetDefault("llm.bedrock_mantle_model", bedrockmantle.DefaultModel)
 	viper.SetDefault("llm.ollama_endpoint", "http://localhost:11434")
 	viper.SetDefault("llm.ollama_model", "llama3.1:8b")
 	viper.SetDefault("llm.openai_model", "gpt-4.1")
@@ -1347,6 +1359,16 @@ type SecretMapping struct {
 	IsSet      func(*Config) bool // Returns true if the value is already set (skip keyring lookup)
 }
 
+// mantleRegion returns the region the bedrock-mantle provider should use:
+// llm.bedrock_mantle_region when set, otherwise llm.bedrock_region (which
+// has a default), so a Bedrock user can switch provider without new config.
+func mantleRegion(l LLMConfig) string {
+	if l.BedrockMantleRegion != "" {
+		return l.BedrockMantleRegion
+	}
+	return l.BedrockRegion
+}
+
 // GetSecretMappings returns all secret mappings for the application.
 // Developers can extend this by adding new SecretMapping entries.
 func GetSecretMappings() []SecretMapping {
@@ -1375,6 +1397,11 @@ func GetSecretMappings() []SecretMapping {
 			KeyringKey: "bedrock_bearer_token",
 			Setter:     func(c *Config, val string) { c.LLM.BedrockBearerToken = val },
 			IsSet:      func(c *Config) bool { return c.LLM.BedrockBearerToken != "" },
+		},
+		{
+			KeyringKey: "bedrock_mantle_api_key",
+			Setter:     func(c *Config, val string) { c.LLM.BedrockMantleAPIKey = val },
+			IsSet:      func(c *Config) bool { return c.LLM.BedrockMantleAPIKey != "" },
 		},
 		{
 			KeyringKey: "hawk_api_key",
@@ -1663,6 +1690,14 @@ func (c *Config) Validate() error {
 		// - User might be using environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
 		// The Bedrock client will handle auth validation at runtime
 
+	case "bedrock-mantle":
+		if mantleRegion(c.LLM) == "" {
+			return fmt.Errorf("bedrock-mantle region is required (set llm.bedrock_mantle_region or llm.bedrock_region in config, or LOOM_LLM_BEDROCK_MANTLE_REGION env var)")
+		}
+		// Credentials are not required here for the same reasons as bedrock:
+		// SigV4 may come from a profile, an IAM role or ambient AWS env vars, and
+		// the Bedrock API key is optional. The client validates at construction.
+
 	case "ollama":
 		if c.LLM.OllamaEndpoint == "" {
 			return fmt.Errorf("ollama endpoint is required (set llm.ollama_endpoint in config)")
@@ -1706,7 +1741,7 @@ func (c *Config) Validate() error {
 		// endpoint and API key are optional — defaults apply
 
 	default:
-		return fmt.Errorf("unsupported LLM provider: %s (must be anthropic, bedrock, ollama, openai, azure-openai, mistral, gemini, huggingface, or litellm)", c.LLM.Provider)
+		return fmt.Errorf("unsupported LLM provider: %s (must be anthropic, bedrock, bedrock-mantle, ollama, openai, azure-openai, mistral, gemini, huggingface, or litellm)", c.LLM.Provider)
 	}
 
 	// Door admission knobs: a negative value is a configuration error, not a
@@ -1894,7 +1929,7 @@ server:
   # allow_assistant_override: false  # Set to true to honor WeaveRequest.replay_assistant_message (generation-free conversation replay only)
 
 llm:
-  # Provider options: anthropic, bedrock, ollama, openai, azure-openai, mistral
+  # Provider options: anthropic, bedrock, bedrock-mantle, ollama, openai, azure-openai, mistral, gemini, huggingface, litellm
   provider: anthropic
 
   # Anthropic configuration
@@ -1909,6 +1944,12 @@ llm:
   # bedrock_secret_access_key: set via keyring or env (LOOM_LLM_BEDROCK_SECRET_ACCESS_KEY)
   # bedrock_session_token: set via keyring or env (LOOM_LLM_BEDROCK_SESSION_TOKEN)
   # bedrock_bearer_token: set via keyring or env (AWS_BEARER_TOKEN_BEDROCK)
+
+  # AWS Bedrock Mantle configuration (bedrock-mantle endpoint; docs/reference/llm-bedrock-mantle.md)
+  # bedrock_mantle_region: us-west-2  # defaults to bedrock_region
+  # bedrock_mantle_model: anthropic.claude-haiku-4-5
+  # bedrock_mantle_endpoint: https://bedrock-mantle.us-west-2.api.aws  # PrivateLink override only
+  # bedrock_mantle_api_key: set via keyring (looms config set-key bedrock_mantle_api_key); empty = SigV4 via bedrock_profile or the AWS credential chain
 
   # Ollama configuration (local inference)
   ollama_endpoint: http://localhost:11434
@@ -2053,6 +2094,7 @@ mcp:
 #   looms config set-key anthropic_api_key
 #   looms config set-key bedrock_access_key_id
 #   looms config set-key bedrock_secret_access_key
+#   looms config set-key bedrock_mantle_api_key
 #   looms config set-key hawk_api_key
 #   looms config set-key brave_search_api_key
 #   looms config set-key tavily_api_key
