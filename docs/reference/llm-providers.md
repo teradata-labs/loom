@@ -49,7 +49,7 @@ Reference for all supported LLM providers and their configuration.
 | **Mistral AI** | ✅ Implemented | Native | 128k-262k | $0.075-$8/1M tokens | Reasoning, code models |
 | **Google Gemini** | ✅ Implemented | Native | 1.05M | $0-$12/1M tokens | Long context, multimodal |
 | **HuggingFace** | ✅ Implemented | Native (model-dependent) | Varies | ~$0.20-$1.00/1M tokens (estimated) | Open-source models |
-| **AWS Bedrock Mantle** | ✅ Implemented (catalog pricing for Haiku 4.5 and Opus 4.7 only) | Native | 200k-1M (Claude) | $1-$25/1M tokens (cataloged Claude models) | Mantle-only models, OpenAI/Anthropic-compatible AWS endpoint |
+| **AWS Bedrock Mantle** | ⚠️ Partial (catalog pricing for Haiku 4.5 and Opus 4.7 only) | Native | 200k-1M (Claude) | $1-$25/1M tokens (cataloged Claude models) | Mantle-only models, OpenAI/Anthropic-compatible AWS endpoint |
 | **Google Vertex AI** | 📋 Planned | TBD | TBD | TBD | GCP infrastructure |
 
 ### Authentication Methods
@@ -649,7 +649,7 @@ Any other model on the HF Inference API can be used; unlisted models fall back t
 
 ### 9. AWS Bedrock Mantle
 
-**Status**: ✅ Implemented. Provider (`pkg/llm/bedrockmantle`), provider factory, agent registry, `looms` server config (`llm.bedrock_mantle_*`), `looms` CLI and `loom-standalone`. Catalog pricing covers Claude Haiku 4.5 and Opus 4.7 only.
+**Status**: ⚠️ Partial. Provider (`pkg/llm/bedrockmantle`), provider factory, agent registry, `looms` server config (`llm.bedrock_mantle_*`), `looms` CLI and `loom-standalone`. Catalog pricing covers Claude Haiku 4.5 and Opus 4.7 only.
 
 Amazon Bedrock's second endpoint surface (`https://bedrock-mantle.{region}.api.aws`). It speaks the Anthropic Messages API for Claude and the OpenAI Chat Completions API for every other vendor; it does not speak Converse or InvokeModel, so the `bedrock` provider cannot reach it. Loom reuses its anthropic and openai clients behind one provider.
 
