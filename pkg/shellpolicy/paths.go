@@ -210,8 +210,8 @@ func cdCandidates(d workDir, target string) []workDir {
 // cdpathSearched reports whether bash looks target up in CDPATH: it does
 // unless the target is absolute or starts with a "." or ".." component.
 func cdpathSearched(target string) bool {
-	return !(strings.HasPrefix(target, "/") || target == "." || target == ".." ||
-		strings.HasPrefix(target, "./") || strings.HasPrefix(target, "../"))
+	return !strings.HasPrefix(target, "/") && target != "." && target != ".." &&
+		!strings.HasPrefix(target, "./") && !strings.HasPrefix(target, "../")
 }
 
 // finishPaths judges every recorded path from every directory the command

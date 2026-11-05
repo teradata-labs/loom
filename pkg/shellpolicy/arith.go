@@ -248,7 +248,7 @@ func (a *analyzer) paramArith(x *syntax.ParamExp, outer *syntax.Pos) {
 	if !a.opt.Static {
 		return
 	}
-	if x.Excl && x.Names == 0 && !(x.Index != nil && atOrStar(x.Index)) {
+	if x.Excl && x.Names == 0 && (x.Index == nil || !atOrStar(x.Index)) {
 		a.add(Deny, x, outer, "${!"+paramName(x)+"}", "an indirect expansion names a variable at run time, and bash evaluates any subscript in that name")
 	}
 	if x.Index != nil && !atOrStar(x.Index) {
