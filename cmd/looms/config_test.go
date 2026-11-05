@@ -833,3 +833,13 @@ tools:
 	assert.Equal(t, "render_grant_read_sql", b.SourceTool)
 	assert.Equal(t, "stmt", b.StmtParam)
 }
+
+// TestExecutionLog_DefaultFalse locks in that the durable execution log is
+// opt-in: it adds two database writes per LLM or tool call.
+func TestExecutionLog_DefaultFalse(t *testing.T) {
+	viper.Reset()
+	setDefaults()
+
+	assert.False(t, viper.GetBool("execution_log.enabled"),
+		"execution_log.enabled must default to false")
+}
