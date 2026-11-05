@@ -533,11 +533,14 @@ func inheritCredentials(dst, src LLMConfig) LLMConfig {
 	if dst.BedrockProfile == "" {
 		dst.BedrockProfile = src.BedrockProfile
 	}
+	// An entry that sets its own bedrock_region keeps it for bedrock-mantle
+	// too: the main LLM's bedrock_mantle_region is inherited only when the
+	// entry sets neither region, so an explicit entry setting always wins.
+	if dst.BedrockMantleRegion == "" && dst.BedrockRegion == "" {
+		dst.BedrockMantleRegion = src.BedrockMantleRegion
+	}
 	if dst.BedrockRegion == "" {
 		dst.BedrockRegion = src.BedrockRegion
-	}
-	if dst.BedrockMantleRegion == "" {
-		dst.BedrockMantleRegion = src.BedrockMantleRegion
 	}
 	if dst.BedrockMantleEndpoint == "" {
 		dst.BedrockMantleEndpoint = src.BedrockMantleEndpoint
