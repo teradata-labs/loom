@@ -439,7 +439,17 @@ func TestNewClientForModel_Validation(t *testing.T) {
 	t.Run("short-term key region must match", func(t *testing.T) {
 		_, err := NewClientForModel(Config{Region: "us-west-2", APIKey: fakeShortTermKey("us-east-1", false)})
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), `scoped to region "us-east-1"`)
+		assert.Contains(t, err.Error(), `different region than the endpoint region "us-west-2"`)
+		assert.NotContains(t, err.Error(), "us-east-1", "a value decoded from the key must not reach the error text")
+	})
+	t.Run("key content never reaches the error", func(t *testing.T) {
+		// The credential scope comes from the key itself, so a malformed or
+		// hostile key could carry any text there. The error is logged by
+		// every caller; it must not echo it.
+		const leaked = "SECRETPART"
+		_, err := NewClientForModel(Config{Region: "us-west-2", APIKey: fakeShortTermKey(leaked, false)})
+		require.Error(t, err)
+		assert.NotContains(t, err.Error(), leaked)
 	})
 	t.Run("short-term key region matches", func(t *testing.T) {
 		c, err := NewClientForModel(Config{Region: "us-east-1", APIKey: fakeShortTermKey("us-east-1", false)})
@@ -490,5 +500,6 @@ func TestNewClientForModel_RegionDerivedFromPublicEndpoint(t *testing.T) {
 	// checked against it when only Endpoint is set.
 	_, err := NewClientForModel(Config{Endpoint: "https://bedrock-mantle.us-west-2.api.aws", APIKey: fakeShortTermKey("us-east-1", false)})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `endpoint region is "us-west-2"`)
+	assert.Contains(t, err.Error(), `endpoint region "us-west-2"`)
+	assert.NotContains(t, err.Error(), "us-east-1")
 }

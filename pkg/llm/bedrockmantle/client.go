@@ -173,8 +173,11 @@ func NewClientForModel(cfg Config) (*Client, error) {
 
 	var wrap func(http.RoundTripper) http.RoundTripper
 	if cfg.APIKey != "" {
+		// The key's region is decoded from the key itself, so it stays out of
+		// the error text: callers log this error, and a malformed key could
+		// carry any part of the key in that field.
 		if keyRegion, ok := ShortTermKeyRegion(cfg.APIKey); ok && cfg.Region != "" && keyRegion != cfg.Region {
-			return nil, fmt.Errorf("bedrock-mantle: short-term API key is scoped to region %q but the endpoint region is %q; mint the key for %q or change the region", keyRegion, cfg.Region, cfg.Region)
+			return nil, fmt.Errorf("bedrock-mantle: short-term API key is scoped to a different region than the endpoint region %q; mint the key for %q or change the region", cfg.Region, cfg.Region)
 		}
 	} else {
 		if cfg.Region == "" {

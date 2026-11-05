@@ -123,7 +123,8 @@ func TestCreateBedrockMantleProvider_ShortTermKeyRegionMismatch(t *testing.T) {
 
 	_, err := f.createBedrockMantleProvider("")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `scoped to region "us-east-1"`)
+	assert.Contains(t, err.Error(), `different region than the endpoint region "us-west-2"`)
+	assert.NotContains(t, err.Error(), "us-east-1")
 }
 
 func TestCreateBedrockMantleProvider_ExpandsEnvPlaceholders(t *testing.T) {
