@@ -3,7 +3,7 @@
 Technical reference for connecting Loom to the Amazon Bedrock `bedrock-mantle` endpoint.
 
 **Version**: v1.4.0
-**Status**: ✅ Implemented. Provider (`pkg/llm/bedrockmantle`), provider factory, agent registry, `looms` server config (`llm.bedrock_mantle_*`), `looms` CLI and `loom-standalone`. Catalog pricing covers Claude Haiku 4.5 and Opus 4.7 only; see [Cost accounting](#cost-accounting) and [What is not done yet](#what-is-not-done-yet).
+**Status**: ⚠️ Partial. Implemented: provider (`pkg/llm/bedrockmantle`), provider factory, agent registry, `looms` server config (`llm.bedrock_mantle_*`), `looms` CLI and `loom-standalone`. Catalog pricing covers Claude Haiku 4.5 and Opus 4.7 only; see [Cost accounting](#cost-accounting) and [What is not done yet](#what-is-not-done-yet).
 
 ## Table of Contents
 
