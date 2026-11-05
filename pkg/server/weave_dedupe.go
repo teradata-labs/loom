@@ -34,6 +34,7 @@ import (
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/llm"
 	llmscheduler "github.com/teradata-labs/loom/pkg/llm/scheduler"
 	"github.com/teradata-labs/loom/pkg/types"
@@ -115,6 +116,9 @@ func (d *weaveDeduper) finishAndRelease(ctx context.Context, scopeKey string, en
 //
 //   - Cancellation and deadline keep their own codes.
 //   - A provider stream timeout is Unavailable.
+//   - A session another process is driving (or whose lease was lost
+//     mid-turn) is Aborted: the caller may retry once the other holder is
+//     done.
 //   - An LLM provider capacity failure that outlasted the provider stack's
 //     own retries (llm.ClassifyProviderFailure) is retryable: a throttle is
 //     ResourceExhausted (HTTP 429 through the gateway), a temporary provider
@@ -124,9 +128,9 @@ func (d *weaveDeduper) finishAndRelease(ctx context.Context, scopeKey string, en
 // The order matters: a canceled or expired request is reported as such even
 // when the provider error it interrupted was a throttle. The dedupe release
 // (isTransientOutcome) treats every non-Internal code here as transient, so a
-// same-key retry re-executes instead of joining a cached capacity failure,
-// and clients can tell "retry later" from a deterministic agent failure by
-// status alone.
+// same-key retry re-executes instead of joining a cached transport failure,
+// capacity failure or stale busy rejection, and clients can tell "retry later"
+// from a deterministic agent failure by status alone.
 func wrapAgentError(err error) error {
 	if errors.Is(err, context.Canceled) {
 		return status.Errorf(codes.Canceled, "agent execution canceled: %v", err)
@@ -137,6 +141,9 @@ func wrapAgentError(err error) error {
 	if errors.Is(err, llm.ErrStreamTimeout) {
 		return status.Errorf(codes.Unavailable, "LLM provider stream timed out: %v", err)
 	}
+	if isSessionLeaseError(err) {
+		return status.Errorf(codes.Aborted, "session is not available to this turn: %v", err)
+	}
 	switch llm.ClassifyProviderFailure(err) {
 	case llm.ProviderFailureThrottled:
 		return status.Errorf(codes.ResourceExhausted, "LLM provider throttled the request: %v", err)
@@ -146,6 +153,13 @@ func wrapAgentError(err error) error {
 	return status.Errorf(codes.Internal, "agent execution failed: %v", err)
 }
 
+// isSessionLeaseError reports whether err means another process holds the
+// session's lease (ErrSessionBusy) or this turn's lease was lost
+// (ErrSessionLeaseLost). Both clear on their own, so both are retryable.
+func isSessionLeaseError(err error) bool {
+	return errors.Is(err, agent.ErrSessionBusy) || errors.Is(err, agent.ErrSessionLeaseLost)
+}
+
 // isTransientOutcome reports whether err reflects an interrupted run
 // (caller disconnect, deadline) or a capacity rejection rather than a
 // deterministic result. RESOURCE_EXHAUSTED — the door-full backpressure code,
@@ -153,7 +167,9 @@ func wrapAgentError(err error) error {
 // provider stream timeout or temporary provider server fault — mean "retry
 // later" by definition: caching them for the dedupe TTL would keep serving
 // the stale rejection to a same-key retry long after the door queue drained
-// or the provider recovered, so they must be released, never cached.
+// or the provider recovered, so they must be released, never cached. ABORTED
+// — a session held by another process — clears the same way when the holder
+// finishes.
 func isTransientOutcome(err error) bool {
 	if err == nil {
 		return false
@@ -161,11 +177,11 @@ func isTransientOutcome(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
-	if errors.Is(err, llm.ErrStreamTimeout) {
+	if errors.Is(err, llm.ErrStreamTimeout) || isSessionLeaseError(err) {
 		return true
 	}
 	switch status.Code(err) {
-	case codes.Canceled, codes.DeadlineExceeded, codes.ResourceExhausted, codes.Unavailable:
+	case codes.Canceled, codes.DeadlineExceeded, codes.ResourceExhausted, codes.Unavailable, codes.Aborted:
 		return true
 	}
 	return false
