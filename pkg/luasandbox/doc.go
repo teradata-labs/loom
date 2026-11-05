@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package luasandbox runs short Lua 5.4 scripts inside the server process with
+// Package luasandbox runs short Lua 5.5 scripts inside the server process with
 // hard limits on wall time, CPU, memory and tool calls.
 //
 // A script reaches the outside world only through a Host: the host decides
@@ -46,7 +46,7 @@
 //     headers golua does not charge; DeriveCapacity plans for 3 times.
 //
 // The interpreter is github.com/arnodel/golua v0.3.0 with fourteen fixes, vendored
-// in third_party/golua (see its README; eight are proposed upstream, six are
-// loom-only so far). Its types never appear in this package's exported API, so
+// in third_party/golua (see its README; seven are merged upstream in v0.4.0, one
+// is open upstream, six are loom-only so far). Its types never appear in this package's exported API, so
 // the interpreter can be replaced here without touching any host.
 package luasandbox
