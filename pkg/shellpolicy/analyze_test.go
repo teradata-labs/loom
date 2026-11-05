@@ -279,13 +279,14 @@ func TestAnalyze_NestedPositions(t *testing.T) {
 func TestLiteral(t *testing.T) {
 	for src, want := range map[string]string{
 		`rm`: "rm", `\rm`: "rm", `r''m`: "rm", `"r"m`: "rm", `'a b'`: "a b", `"a\"b"`: `a"b`, `a\ b`: "a b",
+		`[`: "[", `"["x]`: "[x]", `[x`: "[x",
 	} {
 		w := parseWord(t, src)
 		got, ok := literal(w)
 		assert.True(t, ok, src)
 		assert.Equal(t, want, got, src)
 	}
-	for _, src := range []string{`$x`, `$(rm)`, "`rm`", `r?`, `{a,b}`, `~/x`, `$'rm'`, `"$x"`, `a{1..3}`} {
+	for _, src := range []string{`$x`, `$(rm)`, "`rm`", `r?`, `{a,b}`, `~/x`, `$'rm'`, `"$x"`, `a{1..3}`, `[a]`, `[a"]"`, `[a']'`, `[$x]`} {
 		_, ok := literal(parseWord(t, src))
 		assert.False(t, ok, src)
 	}

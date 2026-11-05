@@ -130,10 +130,11 @@ func TestAnalyze_ChangedDirectory(t *testing.T) {
 	})
 }
 
-// N1: an inherited CDPATH sends a bare cd target to another directory.
+// N1: an inherited CDPATH sends a bare cd target to another directory. An
+// empty entry is the current directory and a relative one is relative to it.
 func TestAnalyze_InheritedCDPATH(t *testing.T) {
 	opt, base := escapeSession(t)
-	t.Setenv("CDPATH", base)
+	t.Setenv("CDPATH", ":sub:"+base)
 	for _, static := range []bool{false, true} {
 		opt.Static = static
 		v := Readonly().Analyze(`cd o && cat secret.txt`, opt)
@@ -353,4 +354,46 @@ func TestAnalyze_UnsupportedBuiltinOptions(t *testing.T) {
 		{cmd: `set -o "$o"`, want: Allow, static: Deny},
 		{cmd: `set -euo pipefail; set -x; set +k; set -- -k; mapfile -t -c 1 arr < /dev/null`, want: Allow, static: Allow},
 	})
+}
+
+// Shapes around the review fixes: arithmetic forms, quoting and loops.
+func TestAnalyze_ReviewEdgeShapes(t *testing.T) {
+	runBypassCases(t, []bypassCase{
+		{cmd: `for ((i=0, j=0; i<j; i++)); do echo $(( (j) + "$i" )); done`, want: Allow, static: Allow},
+		{cmd: `(( (k = 2) )); echo $(( k ))`, want: Allow, static: Allow},
+		{cmd: `x=; y=( ); echo $(( x + y ))`, want: Allow, static: Allow},
+		{cmd: `[[ a == b && 1 -lt 2 ]]`, want: Allow, static: Allow},
+		{cmd: `echo $(( "$x$y" ))`, want: Allow, static: Deny},
+		{cmd: `echo $(( ${x:-1} ))`, want: Allow, static: Deny},
+		{cmd: `echo $(( 'q' ))`, want: Allow, static: Deny},
+		{cmd: `select n in 1 2; do echo $(( n )); done`, want: Allow, static: Deny},
+		{cmd: `for n; do echo $(( n )); done`, want: Allow, static: Deny},
+		{cmd: `eval 'n=1; echo $(( n ))'`, want: Allow, static: Deny},
+		{cmd: `n=1 & echo $(( n ))`, want: Allow, static: Deny},
+		{cmd: `declare -n m=k; m=1; k=2; echo $(( k ))`, want: Allow, static: Deny},
+		{cmd: `a=(1 x); echo $(( a[0] ))`, want: Allow, static: Deny},
+		{cmd: `unset -v a; unset -- b; unset -fv c`, want: Allow, static: Allow},
+		{cmd: `echo [a"]" [a']' [$x] "[" a[ x]`, want: Allow, static: Allow},
+		{cmd: `[a"]"b`, want: Allow, static: Deny},
+		{cmd: `trap`, want: Allow, static: Allow},
+		{cmd: `mapfile -- arr < /dev/null; mapfile "$o" arr < /dev/null`, want: Ask, static: Deny},
+		{cmd: `set -o; set -o "$x"`, want: Allow, static: Deny},
+	})
+}
+
+// More cd targets than the analyzer follows are refused under static.
+func TestAnalyze_TooManyDirectories(t *testing.T) {
+	opt, _ := escapeSession(t)
+	cmd := ""
+	for i := 0; i < maxDirs+2; i++ {
+		require.NoError(t, os.Mkdir(filepath.Join(opt.WorkingDir, "d"+itoa(i)), 0o700))
+		cmd += "cd d" + itoa(i) + "; "
+	}
+	cmd += "ls"
+	v := Readonly().Analyze(cmd, opt)
+	assert.Equal(t, Allow, v.Kind, "runtime: the runner checks each launch: %s", v.Reason())
+	opt.Static = true
+	v = Readonly().Analyze(cmd, opt)
+	assert.Equal(t, Deny, v.Kind)
+	assert.Contains(t, v.Reason(), "more directories than static enforcement follows")
 }
