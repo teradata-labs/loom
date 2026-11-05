@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -319,6 +320,68 @@ func TestJail_EnvIsBuiltFromScratch(t *testing.T) {
 	assert.Equal(t, []string{"GIT_PAGER", "LD_PRELOAD"}, got.res.EnvDropped)
 }
 
+// A program the jail starts gets the jail's search path, never the server's
+// PATH or one the command set, and none of the names shellpolicy.ExecEnvName
+// reports (the one list the command-policy hook also uses).
+func TestJail_ProgramSeesTheJailsPath(t *testing.T) {
+	f := newFixture(t)
+	t.Setenv("PATH", "/parent-only/bin:"+os.Getenv("PATH"))
+	envProg, err := exec.LookPath("env")
+	require.NoError(t, err)
+	envProg, err = filepath.EvalSymlinks(envProg)
+	require.NoError(t, err)
+	got := f.jailed(t, `export PATH=/evil/bin SHELL=/bin/evil NODE_PATH=/n KEEP_ME=yes; `+envProg,
+		&shellpolicy.Grant{Programs: []string{envProg}}, 10*time.Second)
+	require.Empty(t, got.res.Blocked, got.stderr)
+	lines := strings.Split(got.stdout, "\n")
+	assert.Contains(t, lines, "PATH="+strings.Join(DefaultSearchPath, string(os.PathListSeparator)), got.stdout)
+	assert.Contains(t, lines, "KEEP_ME=yes")
+	assert.NotContains(t, got.stdout, "/parent-only")
+	assert.NotContains(t, got.stdout, "/evil")
+	assert.NotContains(t, got.stdout, "NODE_PATH=")
+	for _, name := range []string{"SHELL", "NODE_PATH"} {
+		assert.True(t, shellpolicy.ExecEnvName(name), name)
+		assert.Contains(t, got.res.EnvDropped, name)
+	}
+}
+
+// Reads are confined to the session's own directories: the database, the
+// server config and another session's files under the same data directory
+// are refused, while the session's scratchpad and uploads are readable.
+func TestJail_ReadsStayInTheSession(t *testing.T) {
+	f := newFixture(t)
+	data := os.Getenv("LOOM_DATA_DIR")
+	other := filepath.Join(data, "artifacts", "sessions", "sess-other", "scratchpad")
+	upload := filepath.Join(filepath.Dir(f.scratch), "user")
+	for path, content := range map[string]string{
+		filepath.Join(data, "loom.db"):        "DB-CONTENT",
+		filepath.Join(data, "looms.yaml"):     "CONFIG-CONTENT",
+		filepath.Join(other, "secret.txt"):    "OTHER-SESSION",
+		filepath.Join(f.scratch, "notes.txt"): "OWN-SCRATCH",
+		filepath.Join(upload, "upload.txt"):   "OWN-UPLOAD",
+	} {
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o750))
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	}
+	for _, tc := range []struct {
+		cmd, leak string
+	}{
+		{"cat " + filepath.Join(data, "loom.db"), "DB-CONTENT"},
+		{"cat " + filepath.Join(data, "looms.yaml"), "CONFIG-CONTENT"},
+		{"cat " + filepath.Join(other, "secret.txt"), "OTHER-SESSION"},
+		{"cat ../../sess-other/scratchpad/secret.txt", "OTHER-SESSION"},
+		{"cat < " + filepath.Join(data, "loom.db"), "DB-CONTENT"},
+		{"ls " + filepath.Join(data, "artifacts", "sessions"), "sess-other"},
+	} {
+		got := f.jailed(t, tc.cmd, nil, 10*time.Second)
+		assert.NotEmpty(t, got.res.Blocked, "%q must be refused: %s", tc.cmd, got.stderr)
+		assert.NotContains(t, got.stdout, tc.leak, tc.cmd)
+	}
+	got := f.jailed(t, "cat notes.txt ../user/upload.txt", nil, 10*time.Second)
+	require.Empty(t, got.res.Blocked, got.stderr)
+	assert.Equal(t, "OWN-SCRATCHOWN-UPLOAD", got.stdout)
+}
+
 // Repository config cannot make git run anything (design Probe 9).
 func TestJail_GitRunsNothingFromRepoConfig(t *testing.T) {
 	git, err := exec.LookPath("git")
@@ -455,7 +518,13 @@ func TestNewRunner_Validation(t *testing.T) {
 
 	r, warnings, err := NewRunner(Config{Policy: shellpolicy.Readonly().Extend("p", []string{"no-such-program-xyz"}, nil), LoomDataDir: "/x"})
 	require.NoError(t, err)
-	assert.Contains(t, strings.Join(warnings, "\n"), "no-such-program-xyz: not found")
+	require.Len(t, warnings, 1, "missing programs are reported in one line: %q", warnings)
+	assert.Contains(t, warnings[0], "not found on the search path")
+	assert.Contains(t, warnings[0], "no-such-program-xyz")
+	_, warnings, err = NewRunner(Config{Policy: shellpolicy.Readonly().Extend("p", []string{"no-such-a", "no-such-b"}, nil), LoomDataDir: "/x"})
+	require.NoError(t, err)
+	require.Len(t, warnings, 1, "%q", warnings)
+	assert.Contains(t, warnings[0], ": no-such-a, no-such-b")
 	assert.NotContains(t, r.Pinned(), "no-such-program-xyz")
 	for name, path := range r.Pinned() {
 		assert.True(t, filepath.IsAbs(path), name)
@@ -471,6 +540,15 @@ func TestOptionsAndBaseEnv(t *testing.T) {
 	assert.Equal(t, filepath.Join(f.scratch, "sub"), opt.WorkingDir)
 	assert.Contains(t, opt.Roots.Read, shellpolicy.ResolvePath("/", "/usr/share"))
 	assert.Subset(t, opt.Roots.Read, opt.Roots.Write, "every write root is readable")
+	assert.Contains(t, opt.Roots.Read, filepath.Dir(f.scratch), "the session's own directory is readable")
+	assert.NotContains(t, opt.Roots.Read, os.Getenv("LOOM_DATA_DIR"), "the data directory as a whole is not")
+	assert.NotContains(t, opt.Roots.Read, shellpolicy.ResolvePath("/", "/tmp"))
+
+	// A session whose directories resolve outside the runner's data directory
+	// (LOOM_DATA_DIR changed under it) is refused rather than judged.
+	t.Setenv("LOOM_DATA_DIR", t.TempDir())
+	_, err = f.r.Options(testSession, "")
+	assert.ErrorContains(t, err, "outside the loom data directory")
 
 	env, dropped := f.r.BaseEnv("/home/x", map[string]string{"SESSION_ID": "s"}, map[string]string{
 		"FOO": "1", "GH_TOKEN": "t", "PATH": "/evil", "LD_PRELOAD": "x", "DB_URL": "postgres://u:p@h/d",
@@ -490,6 +568,36 @@ func TestFilterEnvAndNames(t *testing.T) {
 	assert.False(t, SensitiveEnvName("TOKENIZERS_PARALLELISM"))
 	assert.True(t, URLHasPassword("https://u:p@h"))
 	assert.False(t, URLHasPassword("https://u@h"))
+}
+
+func TestDefaultSearchPath(t *testing.T) {
+	assert.Equal(t, []string{"/usr/local/bin", "/usr/bin", "/bin"}, defaultSearchPath("linux"))
+	assert.Equal(t, []string{"/usr/local/bin", "/usr/bin", "/bin", "/sbin"}, defaultSearchPath("darwin"))
+}
+
+// On macOS the readonly policy's checksum programs live in /sbin (md5, and on
+// recent releases md5sum, sha1sum and sha256sum) and shasum in /usr/bin. The
+// default search path must find every one the system has.
+func TestDefaultSearchPath_FindsMacOSChecksumPrograms(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS search path")
+	}
+	r, warnings, err := NewRunner(Config{Policy: shellpolicy.Readonly(), LoomDataDir: t.TempDir()})
+	require.NoError(t, err)
+	pinned := r.Pinned()
+	for _, name := range []string{"md5", "md5sum", "sha1sum", "sha256sum", "shasum"} {
+		exists := false
+		for _, dir := range []string{"/sbin", "/usr/bin", "/bin", "/usr/local/bin"} {
+			if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+				exists = true
+			}
+		}
+		if exists {
+			assert.Contains(t, pinned, name, "%s exists on this Mac and must be pinned; warnings: %q", name, warnings)
+		}
+	}
+	assert.Contains(t, pinned, "md5", "md5 ships in /sbin on every macOS")
+	assert.LessOrEqual(t, len(warnings), 2, "at most one missing-programs line and one git line: %q", warnings)
 }
 
 func TestLookPath(t *testing.T) {

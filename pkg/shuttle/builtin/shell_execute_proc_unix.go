@@ -30,3 +30,13 @@ func killProcessTree(cmd *exec.Cmd) {
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	_ = cmd.Process.Kill()
 }
+
+// rekillProcessGroup sends SIGKILL to the command's process group again. It is
+// called only before cmd.Wait has reaped the shell: the unreaped leader keeps
+// its PID, and so the group ID, from being reused.
+func rekillProcessGroup(cmd *exec.Cmd) {
+	if cmd.Process == nil {
+		return
+	}
+	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+}

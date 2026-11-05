@@ -39,7 +39,9 @@ func ContextWithAdmissionGrants(ctx context.Context, grants []any) context.Conte
 
 // AdmissionGrantsFromContext returns the Grant of every Ask a person approved
 // for the call whose tool body is running, in hook order, or nil when the call
-// was not approved (allowed outright, or no hook asked). The slice is a copy.
+// was not approved (allowed outright, or no hook asked). The returned slice is
+// a copy, but its elements are the hooks' own Grant values, shared with the
+// hook that produced them: treat every element as read-only.
 func AdmissionGrantsFromContext(ctx context.Context) []any {
 	grants, _ := ctx.Value(admissionGrantsKey{}).([]any)
 	if len(grants) == 0 {

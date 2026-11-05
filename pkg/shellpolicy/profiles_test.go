@@ -30,6 +30,7 @@ func TestProfileViolation(t *testing.T) {
 		"-T /tmp a":           "-T",
 		"--output=x a":        "--output",
 		"--out x":             "--output",
+		"--o x":               "--output",
 		"--compress-prog=gz":  "--compress-program",
 		"-- -o":               "",
 		"--reverse --numeric": "",
@@ -46,6 +47,23 @@ func TestProfileViolation(t *testing.T) {
 	assert.Empty(t, uniq.violation(fields("-c a"), true))
 	assert.NotEmpty(t, uniq.violation(fields("a b"), true))
 	assert.Empty(t, uniq.violation(fields("a b"), false), "positional counting needs every argument")
+
+	// A value attached to an option is not scanned for refused letters.
+	assert.Empty(t, sort.violation(fields("-tso a"), true), "-t takes the separator \"so\"")
+	assert.Empty(t, sort.violation(fields("-rto a"), true), "the o after -t is its value")
+	assert.Contains(t, sort.violation(fields("-t, -o a"), true), "-o", "a refused option after a valued one is still refused")
+	date := Readonly().Programs["date"]
+	assert.Empty(t, date.violation(fields("-dsunday +%s"), true))
+	assert.Contains(t, date.violation(fields("-f x"), true), "-f")
+}
+
+func TestPathCandidates(t *testing.T) {
+	grep := Readonly().Programs["grep"]
+	assert.Equal(t, []string{"/x", "pat", "f"}, grep.pathCandidates(fields("-f/x -e pat -epat2 -A3 f")))
+	assert.Equal(t, []string{"/x"}, grep.pathCandidates(fields("-if/x")))
+	assert.Equal(t, []string{"v", "w"}, grep.pathCandidates(fields("--file=v -- w")))
+	assert.Nil(t, (*Profile)(nil).pathCandidates(fields("-f/x")))
+	assert.Equal(t, []string{"x"}, Readonly().Programs["cut"].pathCandidates(fields("-d/ -f1 x")), "cut -d/ takes a delimiter, not a file")
 }
 
 func TestGitProfile(t *testing.T) {
@@ -69,6 +87,15 @@ func TestGitProfile(t *testing.T) {
 		"log --ext-diff":              false,
 		"diff --textconv":             false,
 		"grep -O pattern":             false,
+		"grep -Ocmd pattern":          false,
+		"grep -iOcmd pattern":         false,
+		"grep --open-files=cmd x":     false,
+		"grep --op x":                 false,
+		"grep --o x":                  false,
+		"log --outp=x":                false,
+		"diff --text":                 true,
+		"grep --or -e a -e b":         true,
+		"log --oneline":               true,
 		"log --output=/tmp/x":         false,
 		"push":                        false,
 		"commit -m x":                 false,

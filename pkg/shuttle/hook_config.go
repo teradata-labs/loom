@@ -226,9 +226,10 @@ type HookBinding struct {
 	// applies (for example "readonly"). Required for that kind, refused on
 	// every other.
 	Policy string `mapstructure:"policy" json:"policy"`
-	// Enforcement is how a command-policy binding is backed: "runtime" (the
-	// default; a runner re-checks every program launch, so programs computed
-	// at run time may pass the static check) or "static" (nothing re-checks,
-	// so anything the static check cannot see is denied). Command-policy only.
+	// Enforcement is how a command-policy binding is backed: "static" (the
+	// default when empty; nothing re-checks, so anything the static check
+	// cannot see is denied) or "runtime" (a runner re-checks every program
+	// launch, so programs computed at run time may pass the static check).
+	// Command-policy only.
 	Enforcement string `mapstructure:"enforcement" json:"enforcement"`
 }

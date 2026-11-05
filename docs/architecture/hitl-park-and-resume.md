@@ -173,6 +173,39 @@ than stored. A tool that enforces policy while it runs (a shell runner that must
 allow exactly the programs the person saw) reads them; a call allowed outright,
 or a nested call, gets none.
 
+Because the grant is recomputed, **an asking hook must be deterministic for the
+same call**: given the same tool name, parameters and caller identity, its
+`Evaluate` must return the same `Ask` reason and an equal `Grant` at park time
+and at resume. The approval request records the combined reason and the
+parameters, not the grant itself, so nothing at resume checks that the
+recomputed grant matches what the card described. A hook whose grant depends on
+anything else (a clock, a counter, a lookup that can change while the person
+decides) can hand the tool body a grant the person never saw. The approval
+request carries every asking hook's reason, in chain order and deduplicated,
+joined with `"; "`, on both card paths:
+
+- **Parked:** each approval item's descriptor in the row's `params` has the
+  joined text under `reason` (omitted when no asking hook gave one). Question
+  and resource items carry no `reason`. `NewProgressNotifier` copies the row's
+  `Params` into the progress event's `HITLRequestInfo.Params`, which the gRPC
+  streams (Weave and the multi-agent stream) serialize to
+  `hitl_request.params_json`: a JSON object keyed by held ToolCall ID whose
+  values are the item descriptors. The parked card's `context_json` stays
+  `{"kind":"parked"}`; read the reasons from `params_json`.
+- **In-turn (ask resolver):** the row's `Context["reason"]`.
+  `NewProgressNotifier` forwards the row's `Context["reason"]` (and no other
+  context key) in the progress event's `HITLRequestInfo.Context`, which the
+  gRPC streams serialize to `hitl_request.context_json`. The held call's
+  parameters go to `params_json`.
+
+On both paths the gRPC card also carries the row's `kind` (`approval`,
+`question` or `resource`), `summary` (the display digest) and
+`params_truncated` (true when the size bound cut entries out of `params`).
+The bundled TUI does not render `params_json` yet: its dialog shows only the
+question text. `looms hitl show` does not show it either: it prints the
+request's `Context` (so an in-turn card's reason appears) but not its `Params`,
+where a parked item's reason is stored.
+
 The park also records, in the request's `Context` under `advertised_tools`, the
 names of the tools the model was shown for the provider call whose batch parked
 (after recovery filtering). Resumed calls carry that projection narrowed by the
@@ -346,16 +379,18 @@ closed.
   the approver is the literal string `"human"`, so nothing records *who*
   approved. (The embedder-recorded flow does not have this problem — there the
   row is decided first and its status overrides the payload.)
-- ✅ **`AskGrant` no longer reaches nested calls** (was: a blanket context value
-  that lifted any `Ask` downstream of the granted call's context). The executor
-  withholds the grant from every tool body once the call's own admission has used
-  it (`toolBodyContext` in `pkg/shuttle/admission_grants.go`), so a code-mode or
-  agent-delegation tool that re-enters the executor gets its nested calls asked
-  afresh. Tested by `TestAskGrant_NotInheritedByNestedCalls`.
 - 📋 No proto/gRPC surface for resume; park is a library API for embedders.
   Whether loom should expose resume over gRPC is a product decision, not an
   oversight — every other conversation entry point reaches clients through the
   Weave surface, so the asymmetry is worth a deliberate answer.
+
+**Fixed (no longer a gap):** an `AskGrant` no longer reaches nested calls. It
+was a blanket context value that lifted any `Ask` downstream of the granted
+call's context. The executor withholds the grant from every tool body once the
+call's own admission has used it (`toolBodyContext` in
+`pkg/shuttle/admission_grants.go`), so a code-mode or agent-delegation tool that
+re-enters the executor gets its nested calls asked afresh. Tested by
+`TestAskGrant_NotInheritedByNestedCalls`.
 
 ## 9. A note on hook evaluation count
 

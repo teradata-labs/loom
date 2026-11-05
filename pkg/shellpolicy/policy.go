@@ -65,6 +65,10 @@ type Grant struct {
 	Programs  []string `json:"programs,omitempty"`
 	Builtins  []string `json:"builtins,omitempty"`
 	ReadPaths []string `json:"read_paths,omitempty"`
+	// Env names the variables the command sets whose value changes what runs
+	// (ExecEnvName), or the words naming ones computed at run time. No
+	// per-launch check reads it yet: approving the call is what lets it run.
+	Env []string `json:"env,omitempty"`
 }
 
 // MergeGrants combines the *Grant values among an approved call's admission
@@ -83,6 +87,7 @@ func MergeGrants(grants []any) *Grant {
 		out.Programs = appendNew(out.Programs, gr.Programs...)
 		out.Builtins = appendNew(out.Builtins, gr.Builtins...)
 		out.ReadPaths = appendNew(out.ReadPaths, gr.ReadPaths...)
+		out.Env = appendNew(out.Env, gr.Env...)
 	}
 	return out
 }
@@ -142,11 +147,13 @@ func (g *Grant) add(kind, item string) {
 		g.Builtins = appendNew(g.Builtins, item)
 	case "read":
 		g.ReadPaths = appendNew(g.ReadPaths, item)
+	case "env":
+		g.Env = appendNew(g.Env, item)
 	}
 }
 
 func (g *Grant) empty() bool {
-	return len(g.Programs) == 0 && len(g.Builtins) == 0 && len(g.ReadPaths) == 0
+	return len(g.Programs) == 0 && len(g.Builtins) == 0 && len(g.ReadPaths) == 0 && len(g.Env) == 0
 }
 
 // Extend returns a copy of p named name, with extra programs allowed (each
@@ -241,32 +248,34 @@ func inRoots(path string, roots []string) bool {
 }
 
 // ResolvePath returns path made absolute against dir (when relative), with
-// symlinks resolved. A path that does not exist has its deepest existing
-// ancestor resolved and the rest appended, so a file about to be created
-// resolves to where it would be created.
+// symlinks resolved the way the kernel opens it: each component in turn, so
+// a ".." after a symlink leaves the symlink's target, not the symlink's
+// directory. A path that does not exist has its deepest existing ancestor
+// resolved and the rest appended, so a file about to be created resolves to
+// where it would be created.
 func ResolvePath(dir, path string) string {
 	if !filepath.IsAbs(path) {
-		path = filepath.Join(dir, path)
+		path = dir + string(filepath.Separator) + path
 	}
-	path = filepath.Clean(path)
-	rest := ""
-	cur := path
-	for {
-		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
-			if rest == "" {
-				return resolved
-			}
-			return filepath.Join(resolved, rest)
+	vol := filepath.VolumeName(path)
+	cur := vol + string(filepath.Separator)
+	comps := strings.Split(path[len(vol):], string(filepath.Separator))
+	for i, c := range comps {
+		switch c {
+		case "", ".":
+			continue
+		case "..":
+			cur = filepath.Dir(cur)
+			continue
 		}
-		parent := filepath.Dir(cur)
-		if parent == cur {
-			return path
+		next := filepath.Join(cur, c)
+		resolved, err := filepath.EvalSymlinks(next)
+		if err != nil {
+			// The rest does not exist (or is beneath a file): no symlink in
+			// it can be followed.
+			return filepath.Join(cur, filepath.Join(comps[i:]...))
 		}
-		if rest == "" {
-			rest = filepath.Base(cur)
-		} else {
-			rest = filepath.Join(filepath.Base(cur), rest)
-		}
-		cur = parent
+		cur = resolved
 	}
+	return cur
 }

@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +28,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/shelljail"
 	"github.com/teradata-labs/loom/pkg/shellpolicy"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"go.uber.org/zap"
 )
 
 const (
@@ -60,6 +62,9 @@ type ShellExecuteTool struct {
 	// jail, when set, runs commands in the jailed runner instead of bash
 	// (tools.shell_execute.mode: jailed).
 	jail *shelljail.Runner
+	// logger receives the names (never values) of withheld server
+	// variables; nil means zap.L().
+	logger *zap.Logger
 }
 
 // defaultJail is the runner every ShellExecuteTool created after SetShellJail
@@ -73,6 +78,11 @@ func SetShellJail(r *shelljail.Runner) { defaultJail.Store(r) }
 
 // ShellJail returns the runner SetShellJail installed, or nil.
 func ShellJail() *shelljail.Runner { return defaultJail.Load() }
+
+// testHookAfterWorkingDirCheck, when set by a test, runs after the working
+// directory has been checked and before the command starts. Always nil in
+// production.
+var testHookAfterWorkingDirCheck func()
 
 // NewShellExecuteTool creates a new shell execution tool.
 // If baseDir is empty, uses current working directory.
@@ -93,6 +103,17 @@ func NewShellExecuteTool(baseDir string) *ShellExecuteTool {
 
 // SetJail makes this tool run commands in r; nil means bash.
 func (t *ShellExecuteTool) SetJail(r *shelljail.Runner) { t.jail = r }
+
+// SetLogger sets the logger the tool reports withheld environment names to;
+// nil restores zap.L().
+func (t *ShellExecuteTool) SetLogger(l *zap.Logger) { t.logger = l }
+
+func (t *ShellExecuteTool) log() *zap.Logger {
+	if t.logger != nil {
+		return t.logger
+	}
+	return zap.L()
+}
 
 // SetPassEnv replaces the list of sensitive-looking server variables that
 // commands still receive. Names match exactly.
@@ -359,6 +380,10 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 		// No additional restriction needed - agents can read from LOOM_DATA_DIR as intended
 	}
 
+	if testHookAfterWorkingDirCheck != nil {
+		testHookAfterWorkingDirCheck()
+	}
+
 	var cmd *exec.Cmd
 	var child *shelljail.Child
 	var jailEnvDropped []string
@@ -374,6 +399,8 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 		if d, err := artifacts.GetScratchpadDir(sessionID); err == nil {
 			sessionVars["SESSION_SCRATCHPAD_DIR"] = d
 		}
+		// Run in the directory the checks above approved (see the bash branch).
+		jailOpt.WorkingDir = resolvedWorkingDir
 		env, dropped := t.jail.BaseEnv(jailOpt.WorkingDir, sessionVars, envVars)
 		jailEnvDropped = dropped
 		grant := shellpolicy.MergeGrants(shuttle.AdmissionGrantsFromContext(ctx))
@@ -407,15 +434,18 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 
 		// Create command (we'll handle timeout manually for better control)
 		cmd = exec.Command(shellBinary, shellArgs...) // #nosec G204 -- shellBinary is validated against allowlist above
-		cmd.Dir = cleanWorkingDir
+		// Run in the directory the checks above approved. cleanWorkingDir may be a
+		// symlink, and a link repointed after the check would otherwise carry the
+		// command outside LOOM_DATA_DIR.
+		cmd.Dir = resolvedWorkingDir
 		// Own process group, so a timeout, cancellation or output overflow can kill
-		// everything the shell started, not only the shell (killProcessTree).
+		// the shell's whole process group, not only the shell (killProcessTree).
 		setProcessGroup(cmd)
 
 		// Set environment variables: the server's environment minus anything that
 		// looks like a credential (unless the operator passed it by name), then
 		// the call's own variables, filtered the same way.
-		cmd.Env = inheritedEnv(os.Environ(), t.passEnv)
+		cmd.Env = inheritedEnv(os.Environ(), t.passEnv, t.log().With(zap.String("session_id", sessionID)))
 		filteredEnv := filterSensitiveEnvVars(envVars)
 		for k, v := range filteredEnv {
 			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
@@ -494,51 +524,43 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	var overflowOnce sync.Once
 	signalOverflow := func() { overflowOnce.Do(func() { close(overflow) }) }
 
+	// readStream collects one pipe's lines. It counts raw bytes as they
+	// arrive, with no per-line limit: a bufio.Scanner fails on a token over
+	// its buffer and stops draining, so a newline-free flood blocked the
+	// writer until the timeout instead of tripping the overflow.
+	readStream := func(pipe io.Reader, lines *[]string) {
+		defer wg.Done()
+		reader := bufio.NewReaderSize(pipe, 64*1024)
+		var line []byte
+		for {
+			frag, isPrefix, err := reader.ReadLine()
+			if err != nil {
+				return
+			}
+			n := int64(len(frag))
+			if !isPrefix {
+				n++ // the newline
+			}
+			mu.Lock()
+			outputBytes += n
+			if outputBytes > maxOutputBytes {
+				outputErr = fmt.Errorf("output exceeded maximum size (%d bytes)", maxOutputBytes)
+				mu.Unlock()
+				signalOverflow()
+				return
+			}
+			line = append(line, frag...)
+			if !isPrefix {
+				*lines = append(*lines, string(line))
+				line = line[:0]
+			}
+			mu.Unlock()
+		}
+	}
+
 	wg.Add(2)
-
-	// Read stdout
-	go func() {
-		defer wg.Done()
-		scanner := bufio.NewScanner(stdoutPipe)
-		buf := make([]byte, 64*1024)   // 64KB line buffer
-		scanner.Buffer(buf, 1024*1024) // 1MB max line size
-
-		for scanner.Scan() {
-			line := scanner.Text()
-			mu.Lock()
-			outputBytes += int64(len(line)) + 1 // +1 for newline
-			if outputBytes > maxOutputBytes {
-				outputErr = fmt.Errorf("output exceeded maximum size (%d bytes)", maxOutputBytes)
-				mu.Unlock()
-				signalOverflow()
-				break
-			}
-			stdoutLines = append(stdoutLines, line)
-			mu.Unlock()
-		}
-	}()
-
-	// Read stderr
-	go func() {
-		defer wg.Done()
-		scanner := bufio.NewScanner(stderrPipe)
-		buf := make([]byte, 64*1024)   // 64KB line buffer
-		scanner.Buffer(buf, 1024*1024) // 1MB max line size
-
-		for scanner.Scan() {
-			line := scanner.Text()
-			mu.Lock()
-			outputBytes += int64(len(line)) + 1 // +1 for newline
-			if outputBytes > maxOutputBytes {
-				outputErr = fmt.Errorf("output exceeded maximum size (%d bytes)", maxOutputBytes)
-				mu.Unlock()
-				signalOverflow()
-				break
-			}
-			stderrLines = append(stderrLines, line)
-			mu.Unlock()
-		}
-	}()
+	go readStream(stdoutPipe, &stdoutLines)
+	go readStream(stderrPipe, &stderrLines)
 
 	// Wait for pipe scanners to finish, then call cmd.Wait() to get the exit code.
 	// IMPORTANT: Per Go docs, all reads from StdoutPipe/StderrPipe must complete
@@ -562,9 +584,24 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	// escaped the group (setsid) may keep a pipe open.
 	stop := func() {
 		killProcessTree(cmd)
-		select {
-		case waitErr = <-waitDone:
-		case <-time.After(500 * time.Millisecond):
+		// One group kill can miss a process the shell forks while the kill is
+		// being delivered (the shell wakes from waiting on a killed pipeline and
+		// starts the next command first). The straggler holds the pipes open, so
+		// the group is killed again until the exit status arrives.
+		deadline := time.NewTimer(500 * time.Millisecond)
+		defer deadline.Stop()
+		rekill := time.NewTicker(25 * time.Millisecond)
+		defer rekill.Stop()
+	wait:
+		for {
+			select {
+			case waitErr = <-waitDone:
+				break wait
+			case <-rekill.C:
+				rekillProcessGroup(cmd)
+			case <-deadline.C:
+				break wait
+			}
 		}
 		done := make(chan struct{})
 		go func() {
@@ -920,14 +957,30 @@ func filterSensitiveEnvVars(envVars map[string]string) map[string]string {
 
 // inheritedEnv returns the server environment a command receives: every
 // "NAME=value" entry except those whose name looks like a credential or whose
-// value is a URL carrying a password, unless passEnv names the variable.
-func inheritedEnv(environ []string, passEnv map[string]bool) []string {
+// value is a URL carrying a password, unless passEnv names the variable. It
+// logs the withheld names at Debug (never their values), so an operator
+// whose command lost a token can see which one and pass it with
+// LOOM_SHELL_PASS_ENV.
+func inheritedEnv(environ []string, passEnv map[string]bool, logger *zap.Logger) []string {
 	out := make([]string, 0, len(environ))
+	var dropped []string
+	seen := map[string]bool{}
 	for _, kv := range environ {
 		name, value, _ := strings.Cut(kv, "=")
 		if passEnv[name] || (!isSensitiveEnvName(name) && !hasURLCredentials(value)) {
 			out = append(out, kv)
+			continue
 		}
+		if !seen[name] {
+			seen[name] = true
+			dropped = append(dropped, name)
+		}
+	}
+	if len(dropped) > 0 && logger != nil {
+		sort.Strings(dropped)
+		logger.Debug("shell_execute withheld credential-like server environment variables from the command",
+			zap.Strings("names", dropped),
+			zap.String("pass_with", PassEnvVar))
 	}
 	return out
 }

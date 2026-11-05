@@ -35,8 +35,10 @@ type Profile struct {
 	RefuseLong []string
 	// RefuseArgs lists argument tokens refused exactly (find's "-exec").
 	RefuseArgs []string
-	// ShortWithValue lists short options whose value is the next argument,
-	// so that value is not counted as a positional argument.
+	// ShortWithValue lists short options that take a value: the rest of the
+	// option group ("-k2"), or else the next argument, which is then not
+	// counted as a positional argument. RefuseShort does not look at letters
+	// inside such a value.
 	ShortWithValue string
 	// MaxPositional limits positional arguments; negative means unlimited.
 	MaxPositional int
@@ -51,6 +53,12 @@ type Profile struct {
 	Harden func(args []string) []string
 	// Env lists extra NAME=value pairs the program runs with (run time only).
 	Env []string
+
+	// pathShort lists the ShortWithValue options whose value names a file:
+	// a value attached to one ("-f../x") is path-checked like a positional
+	// argument. A value in the next argument is checked as a positional
+	// argument anyway.
+	pathShort string
 }
 
 // violation returns why args break the profile, or "". complete reports that
@@ -80,7 +88,7 @@ func (pr *Profile) violation(args []string, complete bool) string {
 		if strings.HasPrefix(a, "--") {
 			name, _, _ := strings.Cut(a, "=")
 			for _, l := range pr.RefuseLong {
-				if len(name) > 3 && strings.HasPrefix(l, name) {
+				if len(name) > 2 && strings.HasPrefix(l, name) {
 					return l + " is outside the profile"
 				}
 			}
@@ -123,8 +131,9 @@ func itoa(n int) string {
 }
 
 // pathCandidates returns the arguments that may name files: every positional
-// argument, and the value of every "--option=value".
-func pathCandidates(args []string) []string {
+// argument, the value of every "--option=value", and a value attached to a
+// short option whose value is a file (pathShort).
+func (pr *Profile) pathCandidates(args []string) []string {
 	var out []string
 	afterDashes := false
 	for _, a := range args {
@@ -139,11 +148,32 @@ func pathCandidates(args []string) []string {
 				out = append(out, v)
 			}
 		case strings.HasPrefix(a, "-"):
+			if v := pr.attachedPath(a[1:]); v != "" {
+				out = append(out, v)
+			}
 		default:
 			out = append(out, a)
 		}
 	}
 	return out
+}
+
+// attachedPath returns the file name attached to a path-valued short option
+// in the option group, or "".
+func (pr *Profile) attachedPath(group string) string {
+	if pr == nil {
+		return ""
+	}
+	for j, c := range group {
+		if !strings.ContainsRune(pr.ShortWithValue, c) {
+			continue
+		}
+		if strings.ContainsRune(pr.pathShort, c) {
+			return group[j+1:]
+		}
+		return "" // the rest of the group is a value that is not a file
+	}
+	return ""
 }
 
 // Readonly returns the built-in "readonly" policy: programs that cannot start
@@ -175,20 +205,32 @@ func Readonly() *Policy {
 			p.Programs[n] = &Profile{MaxPositional: -1, NoPathArgs: true}
 		}
 	}
-	plain("cat", "head", "tail", "wc", "cut", "comm", "cmp", "diff", "od",
-		"ls", "stat", "du", "realpath",
-		"md5sum", "sha1sum", "sha256sum", "shasum", "md5",
-		"grep", "egrep", "fgrep", "jq")
+	plain("cat", "head", "tail", "wc", "cut", "comm", "cmp", "od",
+		"ls", "stat", "realpath",
+		"md5sum", "sha1sum", "sha256sum", "shasum", "md5")
 	noPaths("tr", "basename", "dirname", "seq", "sleep", "uname", "whoami", "id", "which")
-	p.Programs["sort"] = &Profile{MaxPositional: -1, RefuseShort: "oT",
+	// Options that take a file name attached to them ("-f../x") are listed
+	// in pathShort, so the attached name is path-checked too.
+	for _, n := range []string{"grep", "egrep", "fgrep"} {
+		p.Programs[n] = &Profile{MaxPositional: -1, ShortWithValue: "efmABCdD", pathShort: "f"}
+	}
+	p.Programs["diff"] = &Profile{MaxPositional: -1, ShortWithValue: "CUDFIxXSWL", pathShort: "X"}
+	p.Programs["du"] = &Profile{MaxPositional: -1, ShortWithValue: "XBdtI", pathShort: "X"}
+	p.Programs["jq"] = &Profile{MaxPositional: -1, ShortWithValue: "L", pathShort: "L"}
+	p.Programs["sort"] = &Profile{MaxPositional: -1, RefuseShort: "oT", ShortWithValue: "ktS",
 		RefuseLong: []string{"--output", "--compress-program", "--temporary-directory"}}
 	p.Programs["uniq"] = &Profile{MaxPositional: 1, ShortWithValue: "fsw"}
 	p.Programs["find"] = &Profile{MaxPositional: -1, RefuseArgs: []string{
 		"-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls"}}
-	p.Programs["file"] = &Profile{MaxPositional: -1, RefuseShort: "C", RefuseLong: []string{"--compile"}}
-	p.Programs["base64"] = &Profile{MaxPositional: -1, RefuseShort: "o", RefuseLong: []string{"--output"}}
-	p.Programs["date"] = &Profile{MaxPositional: -1, NoPathArgs: true, RefuseShort: "s",
-		RefuseLong: []string{"--set"}, Check: dateCheck}
+	p.Programs["file"] = &Profile{MaxPositional: -1, RefuseShort: "C", RefuseLong: []string{"--compile"},
+		ShortWithValue: "eFfmP", pathShort: "fm"}
+	p.Programs["base64"] = &Profile{MaxPositional: -1, RefuseShort: "o", RefuseLong: []string{"--output"},
+		ShortWithValue: "wbi", pathShort: "i"}
+	// date's arguments are not path-checked (they are formats and times), so
+	// the options that read a file are refused: -f/--file prints the file's
+	// lines in its errors, -r/--reference reads its time.
+	p.Programs["date"] = &Profile{MaxPositional: -1, NoPathArgs: true, RefuseShort: "sfr", ShortWithValue: "dv",
+		RefuseLong: []string{"--set", "--file", "--reference"}, Check: dateCheck}
 	p.Programs["git"] = gitProfile()
 	return p
 }
@@ -226,8 +268,12 @@ var gitBranchFlags = map[string]bool{
 var gitRefused = []string{
 	"--config-env", "--exec-path", "--attr-source", "--git-dir", "--work-tree",
 	"--namespace", "--super-prefix", "--output", "--ext-diff", "--textconv",
-	"-O", "--open-files-in-pager", "--paginate",
+	"--open-files-in-pager", "--paginate",
 }
+
+// gitExactOptions are real git options that are also a prefix of a refused
+// one, so they are not refused as an abbreviation of it.
+var gitExactOptions = map[string]bool{"--text": true}
 
 // gitGlobalAllowed are global options (before the subcommand) the profile lets
 // through. "-C" takes a directory, which path confinement checks.
@@ -268,9 +314,19 @@ func gitSplit(args []string) (globals []string, sub int) {
 
 func gitCheck(args []string) string {
 	for _, a := range args {
+		// -O runs a program (git grep -O<cmd> opens matches in it) or reads
+		// a file (diff -O<orderfile>), alone or in a group such as -iO<cmd>.
+		if strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.ContainsRune(a[1:], 'O') {
+			return "git -O is outside the profile"
+		}
 		name, _, _ := strings.Cut(a, "=")
+		if !strings.HasPrefix(name, "--") || len(name) < 3 || gitExactOptions[name] {
+			continue
+		}
+		// git's option parser accepts any unambiguous abbreviation
+		// (git grep --op=<cmd>), so a prefix of a refused option is refused.
 		for _, r := range gitRefused {
-			if name == r {
+			if strings.HasPrefix(r, name) {
 				return "git " + r + " is outside the profile"
 			}
 		}

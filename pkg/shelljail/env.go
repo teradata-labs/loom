@@ -18,6 +18,8 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+
+	"github.com/teradata-labs/loom/pkg/shellpolicy"
 )
 
 // sensitiveEnvNames are withheld by exact (upper-cased) name.
@@ -26,20 +28,54 @@ var sensitiveEnvNames = map[string]bool{
 	"DB_PASS":           true,
 }
 
-// sensitiveEnvSubstrings are withheld wherever they appear in a name.
-var sensitiveEnvSubstrings = []string{"SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "APIKEY", "PRIVATE_KEY"}
+// sensitiveEnvSubstrings are withheld wherever they appear in a name, so
+// PASSPHRASE, ZZ_PRIVATEKEY and SESSIONCOOKIE match without underscores.
+var sensitiveEnvSubstrings = []string{
+	"SECRET", "PASSWORD", "PASSWD", "PASSPHRASE", "PASSCODE", "CREDENTIAL",
+	"APIKEY", "PRIVATE_KEY", "PRIVATEKEY", "AUTHTOKEN", "ACCESSKEY", "SIGNINGKEY",
+	"BEARER", "COOKIE", "JWT", "WEBHOOK",
+}
 
 // sensitiveEnvSegments are withheld when they are a whole underscore-separated
-// part of a name, so GH_TOKEN and AWS_ACCESS_KEY_ID match while
-// TOKENIZERS_PARALLELISM and KEYBOARD_LAYOUT do not.
-var sensitiveEnvSegments = map[string]bool{"TOKEN": true, "KEY": true, "PASS": true, "DSN": true}
+// part of a name, so AWS_ACCESS_KEY_ID and LOOM_OTLP_HEADERS match while
+// KEYBOARD_LAYOUT and GIT_AUTHOR_NAME do not.
+// HEADERS covers LOOM_OTLP_HEADERS and OTEL_EXPORTER_OTLP_HEADERS, which carry
+// "Authorization=Bearer ..." values.
+var sensitiveEnvSegments = map[string]bool{
+	"KEY": true, "PASS": true, "DSN": true,
+	"AUTH": true, "AUTHORIZATION": true, "HEADERS": true,
+}
+
+// sensitiveEnvSegmentSuffixes are withheld when an underscore-separated part
+// ends with them, so GH_TOKEN, GITHUBTOKEN and ZZ_APITOKEN match while
+// TOKENIZERS_PARALLELISM does not.
+var sensitiveEnvSegmentSuffixes = []string{"TOKEN"}
+
+// sensitiveEnvNameSuffixes are withheld when the whole name ends with them.
+// "_PWD" catches DB_PWD-style passwords while the shell's own PWD and OLDPWD
+// still pass.
+var sensitiveEnvNameSuffixes = []string{"DATABASE_URL", "_PWD"}
+
+// passedEnvNames match the rules above but are passed on purpose.
+// SSH_AUTH_SOCK is a socket path, not a secret; commands that can reach it can
+// use the operator's loaded SSH keys (documented in docs/architecture/artifacts.md).
+var passedEnvNames = map[string]bool{"SSH_AUTH_SOCK": true}
 
 // SensitiveEnvName reports whether an environment variable's name looks like
-// it holds a credential. Names are compared upper-cased.
+// it holds a credential. Names are compared upper-cased. Bash-mode
+// shell_execute and the jail both use it, so both withhold the same names.
 func SensitiveEnvName(name string) bool {
 	upper := strings.ToUpper(name)
-	if sensitiveEnvNames[upper] || strings.HasSuffix(upper, "DATABASE_URL") {
+	if passedEnvNames[upper] {
+		return false
+	}
+	if sensitiveEnvNames[upper] {
 		return true
+	}
+	for _, suffix := range sensitiveEnvNameSuffixes {
+		if strings.HasSuffix(upper, suffix) {
+			return true
+		}
 	}
 	for _, sub := range sensitiveEnvSubstrings {
 		if strings.Contains(upper, sub) {
@@ -49,6 +85,11 @@ func SensitiveEnvName(name string) bool {
 	for _, seg := range strings.Split(upper, "_") {
 		if sensitiveEnvSegments[seg] {
 			return true
+		}
+		for _, suffix := range sensitiveEnvSegmentSuffixes {
+			if strings.HasSuffix(seg, suffix) {
+				return true
+			}
 		}
 	}
 	return false
@@ -68,41 +109,17 @@ func URLHasPassword(value string) bool {
 	return ok
 }
 
-// execEnvNames change what a program executes or loads, so a jailed command
-// may not set them for the programs it starts.
-var execEnvNames = map[string]bool{
-	"PAGER": true, "EDITOR": true, "VISUAL": true, "BASH_ENV": true, "ENV": true,
-	"LESSOPEN": true, "LESSCLOSE": true, "NODE_OPTIONS": true, "PERL5OPT": true,
-	"PERL5LIB": true, "PERLLIB": true, "RUBYOPT": true, "RUBYLIB": true,
-	"SHELLOPTS": true, "BASHOPTS": true, "PROMPT_COMMAND": true, "IFS": true,
-	"PS4": true, "MANPAGER": true, "BROWSER": true, "SSH_ASKPASS": true,
-}
-
-// execEnvPrefixes are name prefixes with the same effect.
-var execEnvPrefixes = []string{"LD_", "DYLD_", "GIT_", "PYTHON", "BASH_FUNC_"}
-
-// ExecEnvName reports whether name changes what a program executes.
-func ExecEnvName(name string) bool {
-	if execEnvNames[name] {
-		return true
-	}
-	for _, p := range execEnvPrefixes {
-		if strings.HasPrefix(name, p) {
-			return true
-		}
-	}
-	return false
-}
-
 // FilterEnv splits NAME=value entries into those a jailed program may receive
 // and the names it may not: credentials (SensitiveEnvName, URLHasPassword)
-// and names that change what a program executes (ExecEnvName). The dropped
-// names are sorted and unique.
+// and names that change what a program executes or loads
+// (shellpolicy.ExecEnvName, the list the command-policy hook asks about, so
+// the hook and the jail never disagree on it). The dropped names are sorted
+// and unique. Callers that force their own PATH remove it before calling.
 func FilterEnv(entries []string) (kept, dropped []string) {
 	seen := map[string]bool{}
 	for _, kv := range entries {
 		name, value, _ := strings.Cut(kv, "=")
-		if SensitiveEnvName(name) || URLHasPassword(value) || ExecEnvName(name) {
+		if SensitiveEnvName(name) || URLHasPassword(value) || shellpolicy.ExecEnvName(name) {
 			if !seen[name] {
 				seen[name] = true
 				dropped = append(dropped, name)

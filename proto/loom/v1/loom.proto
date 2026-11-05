@@ -952,6 +952,29 @@ message HITLRequestInfo {
 
   // Suggested options for the user (if applicable)
   repeated string options = 8;
+
+  // Classifies the stored request at origin: "approval" (hook-held call or a
+  // parked batch containing one), "question" (contact_human, or a parked
+  // batch of only questions), or "resource" (a parked resource wait). Empty
+  // means the producer did not classify it; treat it as "question".
+  string kind = 9;
+
+  // Display digest of the stored request: the held tool and its arguments
+  // for an approval, the question text for a question. For a parked batch it
+  // joins each item's tool+args digest with "; ", cut to 200 characters.
+  string summary = 10;
+
+  // The stored request's parameter map as JSON, mirroring context_json. For
+  // an in-turn approval it is the held call's parameters. For a parked turn
+  // (request_type "parked") it maps each held ToolCall ID to that item's
+  // descriptor; an approval item's descriptor carries "reason", the joined
+  // reason of every admission hook that asked, which is what the approval's
+  // grants cover. Empty when the request has no parameters (a question).
+  string params_json = 11;
+
+  // True when the server's size bound cut whole entries out of params_json,
+  // so the card shows only part of what is being approved.
+  bool params_truncated = 12;
 }
 
 // ExecutionStage enum for tracking progress.

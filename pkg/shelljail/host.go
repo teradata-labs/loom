@@ -34,8 +34,18 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
-// DefaultSearchPath is where allowlisted programs are looked up.
-var DefaultSearchPath = []string{"/usr/local/bin", "/usr/bin", "/bin"}
+// DefaultSearchPath is where allowlisted programs are looked up. On macOS it
+// adds /sbin, where md5 (and, on recent releases, md5sum, sha1sum and
+// sha256sum) live.
+var DefaultSearchPath = defaultSearchPath(runtime.GOOS)
+
+func defaultSearchPath(goos string) []string {
+	path := []string{"/usr/local/bin", "/usr/bin", "/bin"}
+	if goos == "darwin" {
+		path = append(path, "/sbin")
+	}
+	return path
+}
 
 // Default limits for one jailed command.
 const (
@@ -59,10 +69,13 @@ type Config struct {
 	Limits Limits
 	// Strict runs every command with set -u (design decision D10).
 	Strict bool
-	// LoomDataDir is the data directory sessions live in; read access is
-	// confined to it, /tmp and ExtraRead.
+	// LoomDataDir is the data directory sessions live in. A session whose
+	// directories resolve outside it cannot run jailed commands. Reads are not
+	// granted to it as a whole: it holds the database, the server config and
+	// every other session's files.
 	LoomDataDir string
-	// ExtraRead and ExtraWrite add roots for every session.
+	// ExtraRead and ExtraWrite add roots for every session (read_roots and
+	// write_roots).
 	ExtraRead, ExtraWrite []string
 	// Executable is the host binary to run as the jail; empty means
 	// os.Executable().
@@ -85,7 +98,9 @@ type Runner struct {
 // NewRunner validates cfg, pins every allowlisted program to the absolute path
 // it resolves to now, and checks that git accepts the hardening flags (git is
 // left unpinned, so calls to it need approval, when it does not). It returns
-// warnings for programs it left out. It does not run the self-test.
+// warnings for programs it left out: one naming every program not found on
+// the search path, and one for git when its hardening cannot be applied. It
+// does not run the self-test.
 func NewRunner(cfg Config) (*Runner, []string, error) {
 	if !supported {
 		return nil, nil, fmt.Errorf("jailed shell mode is not supported on %s", runtime.GOOS)
@@ -132,14 +147,19 @@ func NewRunner(cfg Config) (*Runner, []string, error) {
 	if r.limits.FileBytes == 0 {
 		r.limits.FileBytes = DefaultFileBytes
 	}
-	var warnings []string
+	var warnings, missing []string
 	for _, name := range cfg.Policy.ProgramNames() {
 		p := LookPath(name, r.search)
 		if p == "" {
-			warnings = append(warnings, fmt.Sprintf("%s: not found on the search path; calls to it fail with exit 127", name))
+			missing = append(missing, name)
 			continue
 		}
 		r.pinned[name] = p
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		warnings = append(warnings, fmt.Sprintf("not found on the search path %s, so calls to them fail with exit 127: %s",
+			strings.Join(r.search, string(os.PathListSeparator)), strings.Join(missing, ", ")))
 	}
 	if git, ok := r.pinned["git"]; ok && !gitHasAttrSource(git) {
 		delete(r.pinned, "git")
@@ -183,7 +203,9 @@ func (r *Runner) Pinned() map[string]string {
 
 // SessionDirs returns the session's scratchpad and artifact directories,
 // creating them. The scratchpad is a jailed command's default working
-// directory and HOME.
+// directory and HOME. Both lie in the session's own directory
+// (artifacts/sessions/<id> under the data directory), which must resolve
+// inside LoomDataDir.
 func (r *Runner) SessionDirs(sessionID string) (scratch, artifactDir string, err error) {
 	if sessionID == "" {
 		return "", "", errors.New("the jailed shell runs only inside a session")
@@ -199,15 +221,23 @@ func (r *Runner) SessionDirs(sessionID string) (scratch, artifactDir string, err
 			return "", "", err
 		}
 	}
-	return shellpolicy.ResolvePath("/", scratch), shellpolicy.ResolvePath("/", artifactDir), nil
+	scratch, artifactDir = shellpolicy.ResolvePath("/", scratch), shellpolicy.ResolvePath("/", artifactDir)
+	for _, d := range []string{scratch, artifactDir} {
+		if !shellpolicy.WithinDir(r.dataDir, d) {
+			return "", "", fmt.Errorf("session directory %s is outside the loom data directory %s", d, r.dataDir)
+		}
+	}
+	return scratch, artifactDir, nil
 }
 
 // Options returns the working directory and roots for a call: the call's
 // working_dir (relative paths resolve against the session scratchpad), or the
-// scratchpad when none is given. Reads are confined to the loom data
-// directory, /tmp and the configured extra roots; writes to the session's
-// scratchpad and artifact directories and the extra write roots. The hook and
-// the tool both use it, so they judge the same paths.
+// scratchpad when none is given. Reads are confined to the session's own
+// directory (its scratchpad, agent artifacts and user uploads), the extra read
+// roots and the write roots; the rest of the data directory (the database,
+// the server config, other sessions) and /tmp are outside. Writes are confined
+// to the session's scratchpad and artifact directories and the extra write
+// roots. The hook and the tool both use it, so they judge the same paths.
 func (r *Runner) Options(sessionID, workingDir string) (shellpolicy.Options, error) {
 	scratch, artifactDir, err := r.SessionDirs(sessionID)
 	if err != nil {
@@ -218,10 +248,9 @@ func (r *Runner) Options(sessionID, workingDir string) (shellpolicy.Options, err
 		dir = shellpolicy.ResolvePath(scratch, workingDir)
 	}
 	write := append([]string{scratch, artifactDir}, r.extraWrite...)
-	read := append([]string{r.dataDir}, r.extraRead...)
-	if runtime.GOOS != "windows" {
-		read = append(read, shellpolicy.ResolvePath("/", "/tmp"))
-	}
+	// The session's own directory: scratchpad, agent/ and user/ share it.
+	sessionDir := filepath.Dir(scratch)
+	read := append([]string{sessionDir}, r.extraRead...)
 	read = append(read, write...)
 	return shellpolicy.Options{WorkingDir: dir, Roots: shellpolicy.Roots{Read: read, Write: write}}, nil
 }
