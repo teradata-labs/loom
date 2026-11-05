@@ -886,12 +886,10 @@ message WeaveProgress {
   int64 tool_input_bytes = 23;
 
   // The provider's stream index for this tool call (when
-  // is_tool_input_stream). On providers that deliver calls in order
-  // (Anthropic, Bedrock, Gemini, Ollama) it matches the call's position in
-  // the response's tool-call list. On OpenAI-compatible providers (OpenAI,
-  // Azure, LiteLLM, Mistral, HuggingFace) the final tool-call list is built
-  // from a map, so its order is not guaranteed to match this index; match a
-  // progress event to its tool-started event by tool_call_id there. Gemini
+  // is_tool_input_stream). It matches the call's position in the response's
+  // tool-call list on every streaming provider; the OpenAI-compatible ones
+  // (OpenAI, Azure, LiteLLM, Mistral, HuggingFace) also return their tool
+  // calls in stream index order. Gemini
   // repeats the function name in tool_call_id, so two parallel calls to the
   // same tool share an ID and only this index tells them apart. The agent's
   // throttling keys on the same index, so events for one call never
