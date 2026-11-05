@@ -238,3 +238,43 @@ func TestWrapAgentErrorPreservesCancellationCodes(t *testing.T) {
 	assert.Equal(t, codes.Unavailable, status.Code(wrapAgentError(fmt.Errorf("chat: %w", llm.ErrStreamTimeout))))
 	assert.Equal(t, codes.Internal, status.Code(wrapAgentError(fmt.Errorf("llm rejected the request"))))
 }
+
+// Review round 2, B3: a session another process is driving, and a lease that
+// was lost mid-turn, are retryable conditions. They map to ABORTED (what the
+// guide and the PR description promise), and ABORTED is transient, so the
+// dedupe never caches the rejection.
+func TestWrapAgentErrorMapsSessionLeaseErrorsToAborted(t *testing.T) {
+	busy := fmt.Errorf("session s: %w", agent.ErrSessionBusy)
+	lost := fmt.Errorf("%w: renewal failing: %v", agent.ErrSessionLeaseLost, "db down")
+
+	assert.Equal(t, codes.Aborted, status.Code(wrapAgentError(busy)))
+	assert.Equal(t, codes.Aborted, status.Code(wrapAgentError(lost)))
+	assert.Equal(t, codes.Aborted, status.Code(resumeStatus(lost)), "resume reports a lost lease as ABORTED too")
+
+	assert.True(t, isTransientOutcome(status.Error(codes.Aborted, "busy")))
+	assert.False(t, isTransientOutcome(status.Error(codes.FailedPrecondition, "not resumable")))
+}
+
+// A busy rejection must not be cached under the caller's idempotency key: the
+// same-key retry runs the turn once the other holder is done.
+func TestWeaveBusySessionIsNotCachedByIdempotencyKey(t *testing.T) {
+	stores := newResumeStores(t)
+	srv := stores.server(t, stores.agent(&resumeLLM{}, nil))
+	ctx := context.Background()
+	require.NoError(t, stores.sessions.SaveSession(ctx, &agent.Session{
+		ID: "s-leased", AgentID: "resume-agent", CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}))
+
+	won, err := stores.log.AcquireSessionLease(ctx, "s-leased", "other-replica", time.Minute)
+	require.NoError(t, err)
+	require.True(t, won)
+
+	req := &loomv1.WeaveRequest{Query: "hello", SessionId: "s-leased"}
+	_, err = srv.Weave(keyedCtx("", "key-busy"), req)
+	require.Equal(t, codes.Aborted, status.Code(err), "got %v", err)
+
+	require.NoError(t, stores.log.ReleaseSessionLease(ctx, "s-leased", "other-replica"))
+	resp, err := srv.Weave(keyedCtx("", "key-busy"), req)
+	require.NoError(t, err, "the same-key retry got the cached busy rejection")
+	require.Equal(t, "resumed reply", resp.GetText())
+}

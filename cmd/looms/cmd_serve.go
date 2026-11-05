@@ -37,6 +37,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/decision"
 	"github.com/teradata-labs/loom/pkg/embedding"
 	"github.com/teradata-labs/loom/pkg/evals"
+	"github.com/teradata-labs/loom/pkg/eventlog"
 	"github.com/teradata-labs/loom/pkg/fabric"
 	fabricfactory "github.com/teradata-labs/loom/pkg/fabric/factory"
 	"github.com/teradata-labs/loom/pkg/llm"
@@ -1331,6 +1332,20 @@ func runServe(cmd *cobra.Command, args []string) {
 	// Extract individual stores from backend
 	store := storageBackend.SessionStorage()
 
+	// Durable execution log (opt-in, execution_log.enabled). Every agent built
+	// below records it, so `loom sessions resume` can finish a turn a crash
+	// interrupted. Enabled on a backend without support is a startup error,
+	// not a silent no-op: resume would then refuse every turn.
+	var executionLog eventlog.EventLogStore
+	if config.ExecutionLog.Enabled {
+		elp, ok := storageBackend.(backend.EventLogProvider)
+		if !ok || elp.EventLogStore() == nil {
+			logger.Fatal("execution_log.enabled is set, but the storage backend does not provide an execution log")
+		}
+		executionLog = elp.EventLogStore()
+		logger.Info("Execution log enabled: agents record write-ahead events for crash resume")
+	}
+
 	// Extract graph memory store if available (optional interface)
 	var graphMemoryStore memory.GraphMemoryStore
 	if gmp, ok := storageBackend.(backend.GraphMemoryProvider); ok {
@@ -1844,6 +1859,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		PermissionChecker: permissionChecker,
 		AdmissionChain:    admissionChain,
 		IdentityResolver:  postgres.UserIDFromContext,
+		EventLogStore:     executionLog,
 	})
 	if err != nil {
 		logger.Warn("Failed to create agent registry", zap.Error(err))
@@ -2053,6 +2069,7 @@ func runServe(cmd *cobra.Command, args []string) {
 				// deployment. A nil chain leaves tool execution a pass-through.
 				agentOpts = append(agentOpts, agent.WithAdmissionHooks(admissionChain))
 				agentOpts = append(agentOpts, agent.WithIdentityResolver(postgres.UserIDFromContext))
+				agentOpts = append(agentOpts, agent.WithEventLog(executionLog))
 
 				// Determine LLM provider for this agent
 				// If agent has specific LLM config, use it; otherwise use server default
@@ -3374,6 +3391,7 @@ func runServe(cmd *cobra.Command, args []string) {
 			// deployment. A nil chain leaves tool execution a pass-through.
 			agentOpts = append(agentOpts, agent.WithAdmissionHooks(admissionChain))
 			agentOpts = append(agentOpts, agent.WithIdentityResolver(postgres.UserIDFromContext))
+			agentOpts = append(agentOpts, agent.WithEventLog(executionLog))
 
 			// Wrap LLM provider with instrumentation for observability
 			if tracer != nil {

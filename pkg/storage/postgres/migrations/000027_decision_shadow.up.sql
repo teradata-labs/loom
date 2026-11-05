@@ -3,7 +3,7 @@
 -- Licensed under the Apache License, Version 2.0 (the "License");
 -- you may not use this file except in compliance with the License.
 
--- 000026_decision_shadow.up.sql
+-- 000027_decision_shadow.up.sql
 -- Shadow comparisons for the typed decision layer (pkg/decision).
 --
 -- One row per question per routed request: what the decider answered and

@@ -3,7 +3,7 @@
 -- Licensed under the Apache License, Version 2.0 (the "License");
 -- you may not use this file except in compliance with the License.
 
--- 000027_decision_shadow_error.up.sql
+-- 000028_decision_shadow_error.up.sql
 -- Decider error text for ERROR-path rows, so they can be triaged.
 
 ALTER TABLE decision_shadow ADD COLUMN IF NOT EXISTS error TEXT NOT NULL DEFAULT '';

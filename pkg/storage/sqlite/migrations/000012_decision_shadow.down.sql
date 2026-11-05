@@ -3,6 +3,7 @@
 -- Licensed under the Apache License, Version 2.0 (the "License");
 -- you may not use this file except in compliance with the License.
 
--- 000027_decision_shadow_error.down.sql
+-- 000012_decision_shadow.down.sql
 
-ALTER TABLE decision_shadow DROP COLUMN IF EXISTS error;
+DROP INDEX IF EXISTS idx_decision_shadow_site_time;
+DROP TABLE IF EXISTS decision_shadow;
