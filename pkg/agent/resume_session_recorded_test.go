@@ -504,3 +504,53 @@ func TestResolveExecutionGap_MarksTheResultAsManuallyResolved(t *testing.T) {
 		})
 	}
 }
+
+// The resume span names which refusal ended it, so a trace agrees with the
+// RPC's error: an intent whose LLM response was not recorded is not_recorded,
+// a recorded batch whose assistant message was not saved is batch_not_saved.
+func TestResumeSession_RefusalEventNamesTheRefusal(t *testing.T) {
+	call := llmtypes.ToolCall{ID: "c1", Name: "crashy", Input: map[string]interface{}{}}
+	for name, tc := range map[string]struct {
+		saveBatch, recordLLMResult bool
+		wantErr                    error
+		wantEvent                  string
+	}{
+		"llm response not recorded": {saveBatch: true, wantErr: ErrTurnNotRecorded, wantEvent: "resume_session.not_recorded"},
+		"batch message not saved":   {recordLLMResult: true, wantErr: ErrBatchNotSaved, wantEvent: "resume_session.batch_not_saved"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := &recordingEventLog{}
+			tracer := observability.NewMockTracer()
+			cfg := DefaultConfig()
+			cfg.PatternConfig = DefaultPatternConfig()
+			cfg.PatternConfig.UseLLMClassifier = false
+			tool := &crashingTool{}
+			ag := NewAgent(&mockBackend{}, &mockSimpleLLM{}, WithConfig(cfg), WithEventLog(recorder), WithTracer(tracer))
+			ag.tools.Register(tool)
+
+			ctx := context.Background()
+			sess := ag.memory.GetOrCreateSessionWithAgent(ctx, "s-refusal", ag.config.Name, "")
+			ag.appendMessage(ctx, sess, Message{Role: "user", Content: "run crashy"}, true)
+			if tc.saveBatch {
+				ag.appendMessage(ctx, sess, Message{Role: "assistant", ToolCalls: []llmtypes.ToolCall{call}}, false)
+			}
+			if tc.recordLLMResult {
+				payload, err := json.Marshal(LLMResponse{ToolCalls: []llmtypes.ToolCall{call}})
+				require.NoError(t, err)
+				require.NoError(t, recorder.RecordResult(ctx, sess.ID, 0, 0, eventlog.EventLLMCallResult, "", payload))
+			}
+			require.NoError(t, recorder.RecordIntent(ctx, sess.ID, 0, 0, eventlog.EventToolCallIntent, "c1", []byte(`{"tool_name":"crashy"}`)))
+
+			_, err := ag.ResumeSession(ctx, "s-refusal")
+			require.ErrorIs(t, err, tc.wantErr)
+			require.Zero(t, tool.calls)
+			var events []string
+			for _, sp := range tracer.GetSpansByName("agent.conversation.resume_session") {
+				for _, e := range sp.Events {
+					events = append(events, e.Name)
+				}
+			}
+			require.Contains(t, events, tc.wantEvent)
+		})
+	}
+}
