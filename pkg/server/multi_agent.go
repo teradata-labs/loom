@@ -151,9 +151,10 @@ type MultiAgentServer struct {
 	spawnedAgentsMu sync.RWMutex
 
 	// LLM concurrency control to prevent rate limiting
-	llmSemaphore        chan struct{} // Semaphore to limit concurrent LLM calls
-	weaveDedupe         *weaveDeduper // Idempotency-key dedupe for Weave/StreamWeave (MCP 2026-07-28, D1)
-	llmConcurrencyLimit int           // Max concurrent LLM calls (configurable)
+	llmSemaphore        chan struct{}    // Semaphore to limit concurrent LLM calls
+	injectBusy          injectBusyPolicy // How long injected messages wait for a busy session (zero fields: defaults)
+	weaveDedupe         *weaveDeduper    // Idempotency-key dedupe for Weave/StreamWeave (MCP 2026-07-28, D1)
+	llmConcurrencyLimit int              // Max concurrent LLM calls (configurable)
 
 	// Agent lifecycle state tracking (created_at, status, config, etc.)
 	agentStates map[string]*agentState
@@ -1884,27 +1885,36 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 					zap.String("message_type", queueMsg.MessageType),
 					zap.Int("content_length", len(messageContent)))
 
-				// Acquire semaphore to limit concurrent LLM calls
-				s.logger.Info("Coordinator acquiring LLM semaphore for message injection",
-					zap.String("coordinator", coordinatorID))
-				s.llmSemaphore <- struct{}{}
-				s.logger.Info("Coordinator acquired LLM semaphore",
-					zap.String("coordinator", coordinatorID))
-
 				// Inject the actual message content into coordinator's session
-				// This triggers the coordinator to process the sub-agent's response and generate a synthesis
+				// This triggers the coordinator to process the sub-agent's response and generate a synthesis.
+				// chatInjected holds an LLM slot only while Chat runs, and waits
+				// out a session another turn is driving (the user's own turn on
+				// the coordinator, or a lease left by a crashed process).
 				s.logger.Info("Coordinator calling Chat() for sub-agent response",
 					zap.String("coordinator", coordinatorID))
-				_, err = coordinatorAgent.Chat(turnIdentityCtx, sessionID, injectedPrompt) // #nosec -- intentional: background worker goroutine that must outlive request context; carries tenant identity only
+				err = s.chatInjected(coordinatorCtx, turnIdentityCtx, coordinatorAgent, sessionID, injectedPrompt, 0) // #nosec -- intentional: background worker goroutine that must outlive request context; carries tenant identity only
 				s.logger.Info("Coordinator Chat() completed",
 					zap.String("coordinator", coordinatorID),
 					zap.Bool("has_error", err != nil))
 
-				// Release semaphore
-				<-s.llmSemaphore
-				s.logger.Info("Coordinator released LLM semaphore",
-					zap.String("coordinator", coordinatorID))
-
+				if injectNotDelivered(err) {
+					// The prompt never reached the session. Acknowledging would
+					// lose the sub-agent's reply for good; put it back so the
+					// queue monitor offers it again. The queue's retry limit
+					// bounds how often that happens.
+					s.logger.Warn("Coordinator session unavailable; leaving sub-agent response for redelivery",
+						zap.String("coordinator", coordinatorID),
+						zap.String("from_agent", queueMsg.FromAgent),
+						zap.String("message_id", queueMsg.ID),
+						zap.Error(err))
+					if reqErr := s.messageQueue.Requeue(turnIdentityCtx, queueMsg.ID); reqErr != nil { // #nosec -- intentional: background worker goroutine that must outlive request context
+						s.logger.Error("Sub-agent response could not be requeued and is lost",
+							zap.String("coordinator", coordinatorID),
+							zap.String("message_id", queueMsg.ID),
+							zap.Error(reqErr))
+					}
+					continue
+				}
 				if err != nil {
 					s.logger.Warn("Failed to inject sub-agent response to coordinator",
 						zap.String("coordinator", coordinatorID),
@@ -2241,28 +2251,27 @@ func (s *MultiAgentServer) processCoordinatorBroadcastMessages(
 			zap.String("topic", busMsg.topic),
 			zap.Int("content_length", len(content)))
 
-		// Acquire semaphore with timeout
-		select {
-		case s.llmSemaphore <- struct{}{}:
-			// Acquired
-		case <-time.After(30 * time.Second):
-			s.logger.Error("Timeout acquiring semaphore for broadcast injection",
-				zap.String("coordinator", coordinatorID))
-			continue
-		case <-ctx.Done():
-			s.logger.Info("Context canceled while waiting for semaphore",
-				zap.String("coordinator", coordinatorID))
-			return
-		}
-
 		// Inject message on a context carrying the worker's tenant identity but
 		// not its cancellation, so a worker shutdown cannot kill a turn mid-flight
 		// while tenant-scoped stores (the postgres HITL store) stay reachable.
-		_, err := coordinatorAgent.Chat(turnIdentityContext(ctx), sessionID, injectedPrompt)
+		// A busy session (the user's turn on the coordinator) is waited out; the
+		// LLM slot is held only while a Chat runs.
+		err := s.chatInjected(ctx, turnIdentityContext(ctx), coordinatorAgent, sessionID, injectedPrompt, 30*time.Second)
 
-		// Release semaphore
-		<-s.llmSemaphore
-
+		if injectNotDelivered(err) {
+			if ctx.Err() != nil {
+				s.logger.Info("Context canceled while delivering broadcast injection",
+					zap.String("coordinator", coordinatorID))
+				return
+			}
+			// A broadcast has no queue behind it to redeliver from.
+			s.logger.Error("Broadcast message dropped: the coordinator's session stayed unavailable",
+				zap.String("coordinator", coordinatorID),
+				zap.String("from_agent", msg.FromAgent),
+				zap.String("topic", busMsg.topic),
+				zap.Error(err))
+			continue
+		}
 		if err != nil {
 			s.logger.Warn("Failed to inject broadcast message",
 				zap.String("coordinator", coordinatorID),
@@ -2377,27 +2386,24 @@ done:
 			"[BROADCAST on topic '%s' FROM %s]:\n\n%s",
 			sub.Topic, msg.FromAgent, content)
 
-		// Acquire semaphore with timeout
-		select {
-		case s.llmSemaphore <- struct{}{}:
-			// Acquired
-		case <-time.After(30 * time.Second):
-			s.logger.Error("Timeout acquiring semaphore for broadcast injection",
-				zap.String("sub_agent", subAgentID))
-			continue
-		case <-ctx.Done():
-			s.logger.Info("Context canceled while waiting for semaphore",
-				zap.String("sub_agent", subAgentID))
-			return
-		}
-
 		// Inject message on a context carrying the worker's tenant identity but
-		// not its cancellation (see processCoordinatorBroadcastMessages).
-		_, err := subAgent.Chat(turnIdentityContext(ctx), sessionID, injectedPrompt)
+		// not its cancellation, and wait out a busy session (see
+		// processCoordinatorBroadcastMessages).
+		err := s.chatInjected(ctx, turnIdentityContext(ctx), subAgent, sessionID, injectedPrompt, 30*time.Second)
 
-		// Release semaphore
-		<-s.llmSemaphore
-
+		if injectNotDelivered(err) {
+			if ctx.Err() != nil {
+				s.logger.Info("Context canceled while delivering broadcast injection",
+					zap.String("sub_agent", subAgentID))
+				return
+			}
+			s.logger.Error("Broadcast message dropped: the sub-agent's session stayed unavailable",
+				zap.String("sub_agent", subAgentID),
+				zap.String("from_agent", msg.FromAgent),
+				zap.String("topic", sub.Topic),
+				zap.Error(err))
+			continue
+		}
 		if err != nil {
 			s.logger.Warn("Failed to inject broadcast message to sub-agent",
 				zap.String("sub_agent", subAgentID),
@@ -2746,14 +2752,9 @@ func (s *MultiAgentServer) runWorkflowSubAgent(ctx context.Context, ag *agent.Ag
 			s.logger.Info("Workflow sub-agent notified of pending message",
 				zap.String("agent", agentID))
 
-			// Acquire semaphore to limit concurrent LLM calls (prevents rate limiting)
-			s.logger.Info("Sub-agent acquiring LLM semaphore",
-				zap.String("agent", agentID))
-			s.llmSemaphore <- struct{}{}
-			s.logger.Info("Sub-agent acquired LLM semaphore",
-				zap.String("agent", agentID))
-
-			// Dequeue and inject pending queue messages
+			// Dequeue and inject pending queue messages. The LLM concurrency
+			// slot (prevents rate limiting) is taken inside chatInjected, only
+			// while a Chat runs.
 			var err error
 			if s.messageQueue != nil {
 				var queuedMessages []string
@@ -2798,7 +2799,27 @@ func (s *MultiAgentServer) runWorkflowSubAgent(ctx context.Context, ag *agent.Ag
 
 					// Use the parent context directly (no timeout) to allow sub-agent full time to process
 					// The agent's own config has max_turns and timeout_seconds configured
-					_, err = ag.Chat(ctx, sessionID, allMessages)
+					err = s.chatInjected(ctx, ctx, ag, sessionID, allMessages, 0)
+
+					if injectNotDelivered(err) {
+						// The prompt never reached the session (busy, or the
+						// worker is stopping). The messages are in flight and
+						// nothing else returns them, so put them back for the
+						// queue monitor to offer again.
+						requeueCtx := turnIdentityContext(ctx)
+						for _, msgID := range messageIDs {
+							if reqErr := s.messageQueue.Requeue(requeueCtx, msgID); reqErr != nil {
+								s.logger.Error("Message could not be requeued and is lost",
+									zap.String("agent", agentID),
+									zap.String("message_id", msgID),
+									zap.Error(reqErr))
+							}
+						}
+						s.logger.Warn("Sub-agent session unavailable; left messages for redelivery",
+							zap.String("agent", agentID),
+							zap.Int("count", len(messageIDs)),
+							zap.Error(err))
+					}
 
 					// Acknowledge all messages after successful processing
 					if err == nil {
@@ -2826,11 +2847,6 @@ func (s *MultiAgentServer) runWorkflowSubAgent(ctx context.Context, ag *agent.Ag
 			s.logger.Info("Sub-agent Chat() completed",
 				zap.String("agent", agentID),
 				zap.Bool("has_error", err != nil))
-
-			// Release semaphore immediately after LLM call completes
-			<-s.llmSemaphore
-			s.logger.Info("Sub-agent released LLM semaphore",
-				zap.String("agent", agentID))
 
 			if err != nil {
 				s.logger.Warn("Workflow sub-agent message check failed",

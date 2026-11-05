@@ -34,6 +34,7 @@ import (
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/llm"
 	llmscheduler "github.com/teradata-labs/loom/pkg/llm/scheduler"
 	"github.com/teradata-labs/loom/pkg/types"
@@ -112,10 +113,12 @@ func (d *weaveDeduper) finishAndRelease(ctx context.Context, scopeKey string, en
 }
 
 // wrapAgentError maps an agent execution failure to its gRPC status.
-// Cancellation and deadline keep their own codes, while a provider stream
-// timeout is Unavailable. The dedupe release classifies these statuses as
-// transient so a retry does not join a cached transport failure. Everything
-// else is Internal.
+// Cancellation and deadline keep their own codes, a provider stream timeout is
+// Unavailable, and a session another process is driving (or whose lease was
+// lost mid-turn) is Aborted: the caller may retry once the other holder is
+// done. The dedupe release classifies these statuses as transient so a retry
+// does not join a cached transport failure or a stale busy rejection.
+// Everything else is Internal.
 func wrapAgentError(err error) error {
 	if errors.Is(err, context.Canceled) {
 		return status.Errorf(codes.Canceled, "agent execution canceled: %v", err)
@@ -126,7 +129,17 @@ func wrapAgentError(err error) error {
 	if errors.Is(err, llm.ErrStreamTimeout) {
 		return status.Errorf(codes.Unavailable, "LLM provider stream timed out: %v", err)
 	}
+	if isSessionLeaseError(err) {
+		return status.Errorf(codes.Aborted, "session is not available to this turn: %v", err)
+	}
 	return status.Errorf(codes.Internal, "agent execution failed: %v", err)
+}
+
+// isSessionLeaseError reports whether err means another process holds the
+// session's lease (ErrSessionBusy) or this turn's lease was lost
+// (ErrSessionLeaseLost). Both clear on their own, so both are retryable.
+func isSessionLeaseError(err error) bool {
+	return errors.Is(err, agent.ErrSessionBusy) || errors.Is(err, agent.ErrSessionLeaseLost)
 }
 
 // isTransientOutcome reports whether err reflects an interrupted run
@@ -134,7 +147,8 @@ func wrapAgentError(err error) error {
 // deterministic result. RESOURCE_EXHAUSTED — the door-full backpressure code
 // — means "retry later" by definition: caching it for the dedupe TTL would
 // keep serving the stale rejection to a same-key retry long after the door
-// queue drained, so it must be released, never cached.
+// queue drained, so it must be released, never cached. ABORTED — a session
+// held by another process — clears the same way when the holder finishes.
 func isTransientOutcome(err error) bool {
 	if err == nil {
 		return false
@@ -142,11 +156,11 @@ func isTransientOutcome(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
-	if errors.Is(err, llm.ErrStreamTimeout) {
+	if errors.Is(err, llm.ErrStreamTimeout) || isSessionLeaseError(err) {
 		return true
 	}
 	switch status.Code(err) {
-	case codes.Canceled, codes.DeadlineExceeded, codes.ResourceExhausted, codes.Unavailable:
+	case codes.Canceled, codes.DeadlineExceeded, codes.ResourceExhausted, codes.Unavailable, codes.Aborted:
 		return true
 	}
 	return false

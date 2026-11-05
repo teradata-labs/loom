@@ -118,6 +118,35 @@ service LoomService {
     option (google.api.http) = {delete: "/v1/sessions/{session_id}"};
   }
 
+  // ResumeSession finishes a conversation turn that a crash interrupted, using
+  // the durable execution log (execution_log.enabled must have been on while
+  // the turn ran). Calls recorded as complete are backfilled from the log,
+  // calls never started are dispatched, and the turn's reply is produced. A
+  // call whose outcome is unknown is reported as an execution gap, to be
+  // settled with ResolveExecutionGap before resuming again.
+  rpc ResumeSession(ResumeSessionRequest) returns (ResumeSessionResponse) {
+    option (google.api.http) = {
+      post: "/v1/sessions/{session_id}:resume"
+      body: "*"
+    };
+  }
+
+  // ResolveExecutionGap records an operator's finding for the tool call that
+  // ResumeSession reported as an execution gap, so ResumeSession can continue
+  // the turn.
+  //
+  // The recorded result is the caller's assertion, not tool output, but the
+  // agent treats it as real tool output. It is stored marked as manually
+  // resolved with the caller's user id. Any caller who can open the session may
+  // call this; there is no operator-only role. Do not expose it to session
+  // owners you would not trust to set a tool's result.
+  rpc ResolveExecutionGap(ResolveExecutionGapRequest) returns (ResolveExecutionGapResponse) {
+    option (google.api.http) = {
+      post: "/v1/sessions/{session_id}:resolveExecutionGap"
+      body: "*"
+    };
+  }
+
   // SubscribeToSession subscribes to real-time updates for a session.
   // Returns a stream of updates when new messages arrive or session state changes.
   // This allows clients to receive asynchronous responses from workflow coordinators
@@ -1484,6 +1513,82 @@ message DeleteSessionResponse {
 
   // Message
   string message = 2;
+}
+
+// ResumeSessionRequest names the session whose interrupted turn to finish.
+message ResumeSessionRequest {
+  // Session ID
+  string session_id = 1;
+}
+
+// ResumeSessionOutcome is what ResumeSession did.
+enum ResumeSessionOutcome {
+  RESUME_SESSION_OUTCOME_UNSPECIFIED = 0;
+  // The interrupted turn finished; content holds its reply.
+  RESUME_SESSION_OUTCOME_RESUMED = 1;
+  // The session's last turn is already complete; nothing ran.
+  RESUME_SESSION_OUTCOME_NOTHING_TO_RESUME = 2;
+  // A tool call's outcome is unknown; gap describes it. Settle it with
+  // ResolveExecutionGap, then call ResumeSession again.
+  RESUME_SESSION_OUTCOME_EXECUTION_GAP = 3;
+  // The turn stopped again to wait for a human decision.
+  RESUME_SESSION_OUTCOME_PARKED = 4;
+}
+
+// ExecutionGap identifies a tool call whose outcome is unknown: its intent
+// was recorded before it ran, but no result was ever recorded.
+message ExecutionGap {
+  // The step (LLM call) whose batch holds the call.
+  int32 step_index = 1;
+
+  // The call's position in that step's batch.
+  int32 batch_position = 2;
+
+  // The tool the call invoked.
+  string tool_name = 3;
+
+  // The provider's tool call ID; informational, may be empty or repeated.
+  string tool_use_id = 4;
+}
+
+// ResumeSessionResponse reports what ResumeSession did.
+message ResumeSessionResponse {
+  // What happened
+  ResumeSessionOutcome outcome = 1;
+
+  // The turn's reply, when outcome is RESUME_SESSION_OUTCOME_RESUMED.
+  string content = 2;
+
+  // The unresolved call, when outcome is RESUME_SESSION_OUTCOME_EXECUTION_GAP.
+  ExecutionGap gap = 3;
+}
+
+// ExecutionGapOutcome is an operator's finding for an execution gap.
+enum ExecutionGapOutcome {
+  EXECUTION_GAP_OUTCOME_UNSPECIFIED = 0;
+  // The call ran and succeeded; result_json holds its result.
+  EXECUTION_GAP_OUTCOME_SUCCEEDED = 1;
+  // The call did not take effect.
+  EXECUTION_GAP_OUTCOME_FAILED = 2;
+}
+
+// ResolveExecutionGapRequest settles the session's current execution gap.
+message ResolveExecutionGapRequest {
+  // Session ID
+  string session_id = 1;
+
+  // The operator's finding
+  ExecutionGapOutcome outcome = 2;
+
+  // The call's result as JSON. Required when outcome is
+  // EXECUTION_GAP_OUTCOME_SUCCEEDED.
+  string result_json = 3;
+}
+
+// ResolveExecutionGapResponse names the gap that was settled.
+message ResolveExecutionGapResponse {
+  // The settled gap
+  ExecutionGap gap = 1;
 }
 
 // SubscribeToSessionRequest subscribes to session updates.
