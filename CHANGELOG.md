@@ -73,7 +73,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 #### Spreadsheet parsing
-- **`github.com/xuri/excelize/v2` moves from v2.11.0 to commit `611b222f` (pseudo-version `v2.11.1-0.20261020033641-611b222fd8f7`) for 15 advisories.** `govulncheck` reported them as reachable through `parse_document`'s Excel path (`parseExcel`), which every agent registers, so a malformed spreadsheet could crash the server. No tagged release contains the fixes yet; switch to v2.11.1 when it is tagged. The bump also moves `richardlehane/mscfb` to v1.0.8 and `xuri/efp` to v0.0.2.
+- **`github.com/xuri/excelize/v2` moves from v2.11.0 to v2.11.1 for 15 Dependabot advisories.** `govulncheck` reports 6 of them (four called from `parse_document`'s Excel path, `parseExcel`), so a crafted spreadsheet could exhaust memory or crash the server. `parse_document` is reachable by any agent that lists it in `tools.builtin`, or that has `tool_search` enabled (the default unless `tools.minimal` or `tools.none` is set). The bump also moves `richardlehane/mscfb` to v1.0.9, `xuri/efp` to the pseudo-version excelize v2.11.1 requires, and `golang.org/x/net` to v0.62.0, which also fixes two `x/net` advisories.
 - **`golang.org/x/image` moves to v0.45.0.** The TUI's image rendering uses it. v0.45.0 fixes an advisory that `govulncheck` lists against v0.44.0 but finds no call to.
 
 ### Breaking Changes
