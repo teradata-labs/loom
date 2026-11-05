@@ -169,7 +169,7 @@ It covers the health check, Claude chat, streaming, tool calls and prompt cachin
 ## What is not done yet
 
 - 📋 `looms` server config: `llm.bedrock_mantle_region`, `llm.bedrock_mantle_api_key`, `llm.bedrock_mantle_endpoint`, `llm.bedrock_mantle_model` in `looms.yaml`, `looms config set-key`, and the provider switch in `cmd/looms`. Until then `looms serve` cannot select this provider; the factory and agent-registry paths can.
-- 📋 Provider-name plumbing elsewhere in the tree (`internal/config` provider list, `pkg/agent/config_loader.go` allowlist, `pkg/agent/model_context_limits.go` defaults, metaagent validator, OTel `gen_ai.system` mapping, `cmd/loom-standalone`).
+- 📋 Provider-name plumbing elsewhere in the tree (`internal/config` provider list, `pkg/agent/model_context_limits.go` defaults, metaagent validator, OTel `gen_ai.system` mapping, `cmd/loom-standalone`).
 - 📋 Catalog entries for the other Claude models Mantle lists (Sonnet 5, Opus 5.x, Opus 4.8, Fable 5) and for non-Claude models, once their rates are verified.
 - 📋 OpenAI Responses API, server-side tools, background inference, Projects and Workspaces.
 
