@@ -130,7 +130,10 @@ func (e *ForkJoinExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 func (e *ForkJoinExecutor) executeFork(ctx context.Context, workflowID string) ([]*loomv1.AgentResult, map[string]string, error) {
 	var wg sync.WaitGroup
 	var modelsMu sync.Mutex
-	resultsChan := make(chan *loomv1.AgentResult, len(e.pattern.AgentIds))
+	// Each branch writes its own slot, so results keep the configured order
+	// whatever order the branches finish in. Callers map results back to
+	// their agents by index.
+	results := make([]*loomv1.AgentResult, len(e.pattern.AgentIds))
 	errorsChan := make(chan error, len(e.pattern.AgentIds))
 	modelsUsed := make(map[string]string)
 
@@ -188,20 +191,13 @@ func (e *ForkJoinExecutor) executeFork(ctx context.Context, workflowID string) (
 				modelsUsed[id] = model
 				modelsMu.Unlock()
 			}
-			resultsChan <- result
+			results[branchIdx] = result
 		}(idx, agentID)
 	}
 
 	// Wait for all goroutines to complete
 	wg.Wait()
-	close(resultsChan)
 	close(errorsChan)
-
-	// Collect results
-	results := make([]*loomv1.AgentResult, 0, len(e.pattern.AgentIds))
-	for result := range resultsChan {
-		results = append(results, result)
-	}
 
 	// Check for errors
 	errs := make([]error, 0)
