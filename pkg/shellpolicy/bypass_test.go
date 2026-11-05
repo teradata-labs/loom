@@ -15,6 +15,7 @@
 package shellpolicy
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -188,4 +189,72 @@ func TestGlobExpand(t *testing.T) {
 	v := Readonly().Analyze(`cat sub/*`, o)
 	assert.Equal(t, Deny, v.Kind, v.Reason())
 	assert.Contains(t, v.Reason(), "matches too many names")
+}
+
+// N5: under static, a glob can expand to more files than a profile's
+// positional limit, and no runner counts them.
+func TestAnalyze_GlobPositional(t *testing.T) {
+	runBypassCases(t, []bypassCase{
+		{cmd: `uniq /dev/null victim.tx*`, want: Allow, static: Ask, why: "a glob may expand to more than 1 file argument(s)"},
+		{cmd: `uniq -c victim.tx*`, want: Allow, static: Ask},
+		{cmd: `uniq -c victim.txt; wc -l *.txt`, want: Allow, static: Allow},
+	})
+}
+
+// N6: a file name attached to a short option is path-checked, and date's
+// options that read a file are refused. A value attached to an option is not
+// scanned for refused option letters.
+func TestAnalyze_AttachedOptionValues(t *testing.T) {
+	runBypassCases(t, []bypassCase{
+		{cmd: `file -f../o/secret.txt`, want: Ask, static: Ask, why: "../o/secret.txt (1:1): reads outside the session"},
+		{cmd: `file -m../o/secret.txt victim.txt`, want: Ask, static: Ask},
+		{cmd: `grep -f../o/secret.txt victim.txt`, want: Ask, static: Ask},
+		{cmd: `grep -if../o/secret.txt victim.txt`, want: Ask, static: Ask},
+		{cmd: `diff -X../o/secret.txt a.txt victim.txt`, want: Ask, static: Ask},
+		{cmd: `base64 -i../o/secret.txt`, want: Ask, static: Ask},
+		{cmd: `date -f ../o/secret.txt`, want: Ask, static: Ask, why: "-f is outside the profile"},
+		{cmd: `date -f../o/secret.txt`, want: Ask, static: Ask, why: "-f is outside the profile"},
+		{cmd: `date --file=../o/secret.txt`, want: Ask, static: Ask, why: "--file"},
+		{cmd: `date -r victim.txt`, want: Ask, static: Ask, why: "-r is outside the profile"},
+		{cmd: `date --ref=victim.txt`, want: Ask, static: Ask, why: "--reference"},
+		{cmd: `date -d'last sunday' +%s; grep -f victim.txt -e'x' a.txt; sort -t, -k2 -tso a.txt`, want: Allow, static: Allow},
+	})
+}
+
+// N6 and N7 at run time: the runner applies the same argument rules to each
+// launch.
+func TestCheckLaunch_ReviewBypasses(t *testing.T) {
+	opt, base := escapeSession(t)
+	w := opt.WorkingDir
+	secret := filepath.Join(base, "o", "secret.txt")
+	pol := Readonly()
+	for _, tc := range []struct {
+		argv  []string
+		block string // a substring of the reason; "" means allowed
+	}{
+		{argv: []string{"file", "-f" + secret}, block: "outside the session"},
+		{argv: []string{"file", "-m../o/secret.txt", "victim.txt"}, block: "outside the session"},
+		{argv: []string{"grep", "-f" + secret, "a.txt"}, block: "outside the session"},
+		{argv: []string{"date", "-f", secret}, block: "-f is outside the profile"},
+		{argv: []string{"date", "--file=" + secret}, block: "--file"},
+		{argv: []string{"git", "grep", "-Otouch pwned", "a"}, block: "-O"},
+		{argv: []string{"git", "grep", "--open-files=touch pwned", "a"}, block: "--open-files-in-pager"},
+		{argv: []string{"git", "grep", "--op", "a"}, block: "--open-files-in-pager"},
+		{argv: []string{"git", "grep", "-iOtouch", "a"}, block: "-O"},
+		{argv: []string{"git", "diff", "--outp=x"}, block: "--output"},
+		{argv: []string{"git", "diff", "--text"}},
+		{argv: []string{"git", "grep", "--or", "-e", "a", "--only-matching"}},
+		{argv: []string{"grep", "-f", "a.txt", "victim.txt"}},
+		{argv: []string{"cat", "link/../secret.txt"}, block: "outside the session"},
+	} {
+		err := pol.CheckLaunch(tc.argv, w, opt.Roots, nil)
+		if tc.block == "" {
+			assert.NoError(t, err, "%v", tc.argv)
+			continue
+		}
+		var le *LaunchError
+		if assert.True(t, errors.As(err, &le), "%v: want a block, got %v", tc.argv, err) {
+			assert.Contains(t, le.Reason, tc.block, "%v", tc.argv)
+		}
+	}
 }

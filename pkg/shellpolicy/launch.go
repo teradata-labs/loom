@@ -62,7 +62,7 @@ func (p *Policy) CheckLaunch(argv []string, dir string, roots Roots, g *Grant) e
 	if prof.NoPathArgs {
 		return nil
 	}
-	for _, c := range pathCandidates(argv[1:]) {
+	for _, c := range prof.pathCandidates(argv[1:]) {
 		if err := checkReadAt(name, c, dir, roots, g); err != nil {
 			return err
 		}

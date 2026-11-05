@@ -368,6 +368,7 @@ func (a *analyzer) program(x *syntax.CallExpr, nameWord *syntax.Word, name strin
 	}
 	lits := make([]string, 0, len(rest))
 	complete := true
+	globbed := false
 	for _, w := range rest {
 		s, ok := literal(w)
 		if !ok {
@@ -376,6 +377,7 @@ func (a *analyzer) program(x *syntax.CallExpr, nameWord *syntax.Word, name strin
 				continue
 			}
 			if dir, ok := globDir(w); ok {
+				globbed = true
 				a.readPath(dir, w, outer)
 				if a.opt.Static {
 					a.staticGlob(w, outer)
@@ -391,10 +393,16 @@ func (a *analyzer) program(x *syntax.CallExpr, nameWord *syntax.Word, name strin
 		a.ask(nameWord, outer, name, v, "program", name)
 		return
 	}
+	if a.opt.Static && globbed && prof.MaxPositional >= 0 {
+		// No runner counts the names the glob expands to.
+		a.ask(nameWord, outer, name, "a glob may expand to more than "+itoa(prof.MaxPositional)+
+			" file argument(s) (the next would be written)", "program", name)
+		return
+	}
 	if prof.NoPathArgs {
 		return
 	}
-	for _, c := range pathCandidates(lits) {
+	for _, c := range prof.pathCandidates(lits) {
 		a.readPath(c, x, outer)
 	}
 }
