@@ -373,8 +373,8 @@ func (sm *SegmentedMemory) estimateOptLocked(skipSummary bool) int {
 	// that cannot commit (the collapse finds nothing removable), and the
 	// pressure failsafe then churns the prefix on every call. The batch is
 	// consumed by the model's next response, ages into excisable past, and
-	// counts from then on. The provider refusal backstop still covers real
-	// overflow.
+	// counts from then on. The batch is fitted to the provider's window
+	// before the send (StepSendCount), not here.
 	lastAssistant := -1
 	for i := range compiled {
 		if compiled[i].Role == "assistant" {

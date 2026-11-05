@@ -1819,6 +1819,12 @@ func (a *Agent) getGuidanceMessage(ctx context.Context, key string, vars map[str
 			count = c
 		}
 		return fmt.Sprintf("These %s tool results, from one step, were together too large for the context, so they were removed. Each call ran: do not repeat an action that changed something. Call fewer tools at once, or narrow each call (a range, a filter, LIMIT), and continue.", count)
+	case "step_results_too_large_at_synthesis":
+		count := "these"
+		if c, ok := vars["count"].(string); ok && c != "" {
+			count = c
+		}
+		return fmt.Sprintf("These %s tool results, from the last step, were together too large for the context, so they were removed. Each call ran. Answer from what you had before them, and say which of these results you could not read.", count)
 	default:
 		return "An unexpected situation occurred. Please try again."
 	}
@@ -2841,11 +2847,12 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				zap.Strings("advertised", advertised))
 		}
 
-		// The in-loop fold is the only shedding before a send: past G, the next
-		// call carries the fold instruction and its reply is consumed as the
-		// summary — the agent summarises itself on its own warm cache. Nothing
-		// else sheds here. A prompt the provider still refuses as too long is
-		// answered where the refusal happens: one relief pass and one resend.
+		// The in-loop fold sheds the settled past before a send: past G, the
+		// next call carries the fold instruction and its reply is consumed as
+		// the summary — the agent summarises itself on its own warm cache. The
+		// step in flight is fitted to the window below (fitStepToWindow).
+		// A prompt the provider still refuses as too long is answered where the
+		// refusal happens: one relief pass and one resend.
 		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil && !foldPending && foldRetries < 2 && !scriptedTurn(ctx) && segMem.NeedsFold() {
 			foldPending = true
 			zap.L().Info("inloopFold: armed",
@@ -2940,7 +2947,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				}
 				note = toolDeltaNote(prevToolNames, names)
 			}
-			if a.fitStepToWindow(ctx, session, len(strings.TrimSpace(softReminder+"\n"+note)), span, turnCount) {
+			if a.fitStepToWindow(ctx, session, "step_results_too_large", len(strings.TrimSpace(softReminder+"\n"+note)), span, turnCount) {
 				messages = session.GetMessages()
 			}
 		}
@@ -3830,7 +3837,7 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount
 	}
 	// The loop ends here when the last step used up the tool budget, so this
 	// send can carry that step's results: the same check as a loop send.
-	a.fitStepToWindow(ctx, session, 0, nil, turnCount)
+	a.fitStepToWindow(ctx, session, "step_results_too_large_at_synthesis", 0, nil, turnCount)
 	finalResp, err := a.chatWithRetry(ctx, session.GetMessages(), nil)
 	if err != nil && errors.Is(err, llm.ErrContextTooLong) && segMem != nil {
 		_, estimate, target := segMem.ReleasePressure(ctx, pressureRecoveryPenalty)
@@ -3903,12 +3910,12 @@ func advertisedToolsBytes(tools []shuttle.Tool) int {
 // fitStepToWindow keeps the step in flight inside the provider's window.
 // Overflow can come only from it: everything before it was in a send the
 // provider accepted, each result is bounded at arrival, and the model sets how
-// many there are. Its results are counted high on top of the settled context,
-// with extraBytes for what the send adds past memory; past the provider's own
-// ceiling — the model's window, not max_context_tokens — they are replaced
-// with the note, as on a refusal. Every provider is covered, whether or not it
-// labels its refusal. Reports whether it replaced them.
-func (a *Agent) fitStepToWindow(ctx Context, session *Session, extraBytes int, span *observability.Span, turnCount int) bool {
+// many there are. The send — with extraBytes for what it adds past memory — is
+// counted against the provider's own ceiling, the model's window, not
+// max_context_tokens (StepSendCount); past it the results are replaced with the
+// note named by noteKey, as on a refusal. Every provider is covered, whether
+// or not it labels its refusal. Reports whether it replaced them.
+func (a *Agent) fitStepToWindow(ctx Context, session *Session, noteKey string, extraBytes int, span *observability.Span, turnCount int) bool {
 	segMem, ok := session.SegmentedMem.(*SegmentedMemory)
 	if !ok || segMem == nil {
 		return false
@@ -3917,12 +3924,18 @@ func (a *Agent) fitStepToWindow(ctx Context, session *Session, extraBytes int, s
 	if n == 0 {
 		return false
 	}
-	ceiling := ProviderPromptCeiling(a.GetLLMProviderName(), a.GetLLMModel(), a.config.ReservedOutputTokens, a.config.MaxContextTokens)
-	count := segMem.StepSendCount(extraBytes)
+	// The reply reservation is the larger of the config's and the memory's: a
+	// builder may resolve max_tokens into the memory's limits only.
+	reserved := a.config.ReservedOutputTokens
+	if r := segMem.ReservedOutputTokens(); r > reserved {
+		reserved = r
+	}
+	ceiling := ProviderPromptCeiling(a.GetLLMProviderName(), a.GetLLMModel(), reserved, a.config.MaxContextTokens)
+	count := segMem.StepSendCount(extraBytes, ceiling)
 	if ceiling <= 0 || count <= ceiling {
 		return false
 	}
-	replaced := segMem.ReplaceInFlightResults(ctx, a.getGuidanceMessage(ctx, "step_results_too_large", map[string]interface{}{"count": strconv.Itoa(n)}))
+	replaced := segMem.ReplaceInFlightResults(ctx, a.getGuidanceMessage(ctx, noteKey, map[string]interface{}{"count": strconv.Itoa(n)}))
 	zap.L().Warn("the step's results do not fit the provider's window; replaced with a note before the send",
 		zap.String("session_id", session.ID),
 		zap.Int("results", replaced),

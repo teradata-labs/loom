@@ -181,12 +181,24 @@ func TestAStepIsCheckedAgainstTheModelsWindowNotTheConfiguredOne(t *testing.T) {
 // answers instead of the turn falling back to the budget message.
 func TestAStepThatEndsTheToolBudgetIsCheckedAtSynthesis(t *testing.T) {
 	model := &windowedModel{limit: 19000, fanOut: 40, plain: true}
-	ag, _ := windowedAgent(t, model, 4000)
+	ag, store := windowedAgent(t, model, 4000)
 	ag.config.MaxToolExecutions = 40
 	resp, err := ag.Chat(context.Background(), "s-synth", "read every table")
 	require.NoError(t, err)
 	assert.Equal(t, "narrowed and done", resp.Content, "the synthesis send was not checked")
 	assert.True(t, model.told)
+
+	// The final answer has no tools, so the note asks for an answer, not
+	// another call.
+	msgs, err := store.LoadMessages(context.Background(), "s-synth")
+	require.NoError(t, err)
+	answer := 0
+	for _, m := range msgs {
+		if m.Role == "tool" && strings.Contains(m.Content, "Answer from what you had before them") {
+			answer++
+		}
+	}
+	assert.Equal(t, 40, answer, "the synthesis note asks for more calls on a send with no tools")
 }
 
 // Ollama's window is the server's context length, which the model's listing
@@ -197,6 +209,49 @@ func TestOllamasCeilingIsTheConfiguredWindow(t *testing.T) {
 	configured := ProviderPromptCeiling("ollama", "llama3.1:8b", 400, 4096)
 	assert.Equal(t, 4096-EffectiveOutputReservation("ollama", "llama3.1:8b", 0, 400, 4096), configured)
 	assert.Greater(t, listed, configured, "the listed window is not larger than 4096; the test does not separate them")
+}
+
+// A step that fits is not replaced because the cheap count says it might not:
+// ten prose results that a count of 2 bytes a token puts over the ceiling are
+// counted with the tokenizer, fit, and are sent and stored whole.
+func TestAStepTheCheapCountOverstatesIsSentWhole(t *testing.T) {
+	model := &windowedModel{limit: 19000, fanOut: 10}
+	ag, store := windowedAgent(t, model, 0)
+	prose := strings.Repeat("The quarterly report shows revenue growth across every region, led by the western offices. ", 38)
+	ag.RegisterTool(&shuttle.MockTool{
+		MockName: "rows",
+		MockExecute: func(context.Context, map[string]interface{}) (*shuttle.Result, error) {
+			return &shuttle.Result{Success: true, Data: prose}, nil
+		},
+	})
+	resp, err := ag.Chat(context.Background(), "s-prose", "read ten reports")
+	require.NoError(t, err)
+	assert.Equal(t, "read them all", resp.Content)
+	assert.False(t, model.told, "results that fit the window were replaced")
+
+	msgs, err := store.LoadMessages(context.Background(), "s-prose")
+	require.NoError(t, err)
+	whole := 0
+	for _, m := range msgs {
+		if m.Role == "tool" && strings.Contains(m.Content, "western offices") {
+			whole++
+		}
+	}
+	assert.Equal(t, 10, whole, "a stored row was rewritten though its step fit")
+}
+
+// The reply reservation a builder resolved into the memory alone — max_tokens
+// included, as the registry does — comes off the ceiling too: a step that
+// would leave the reply no room is replaced before the send.
+func TestTheCeilingReservesTheMemorysReply(t *testing.T) {
+	model := &windowedModel{limit: 12000, fanOut: 10, plain: true}
+	ag, _ := windowedAgent(t, model, 4000)
+	ag.config.ReservedOutputTokens = 0
+	ag.memory.SetContextLimits(20000, 8000)
+	resp, err := ag.Chat(context.Background(), "s-reserve", "read ten tables")
+	require.NoError(t, err, "the step was sent into the room kept for the reply")
+	assert.Equal(t, "narrowed and done", resp.Content)
+	assert.True(t, model.told)
 }
 
 // A step that fits is sent as it is: nothing is replaced.

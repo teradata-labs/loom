@@ -304,13 +304,15 @@ func (sm *SegmentedMemory) InFlightResults() int {
 	return n
 }
 
-// StepSendCount is the size of the next send while a step is in flight. The
-// settled context is counted as the fold counts it; the fold holds it under G.
-// The step's results — the one part nothing bounds in number — and extraBytes
-// (what the send adds past memory) are counted high, at cheapBytesPerToken
-// bytes a token, fewer than any real content takes. Both are scaled by the
-// provider calibration.
-func (sm *SegmentedMemory) StepSendCount(extraBytes int) int {
+// StepSendCount is the size of the next send while a step is in flight,
+// against ceiling. It counts in two tiers, as the estimate does. The cheap
+// tier counts the settled context as the fold counts it — the fold holds it
+// under G — and the step's results plus extraBytes (what the send adds past
+// memory) high, at cheapBytesPerToken bytes a token; at or under ceiling the
+// send certainly fits and that count is returned. Over it, the whole send is
+// counted with the tokenizer, so a step is replaced only when it really does
+// not fit. Both tiers are scaled by the provider calibration.
+func (sm *SegmentedMemory) StepSendCount(extraBytes, ceiling int) int {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	lastAssistant := -1
@@ -325,7 +327,21 @@ func (sm *SegmentedMemory) StepSendCount(extraBytes int) int {
 			bytes += len(sm.contextMessages[i].Content)
 		}
 	}
-	return sm.estimateLocked() + int(float64(bytes)/cheapBytesPerToken*sm.calibrationLocked())
+	f := sm.calibrationLocked()
+	cheap := sm.estimateLocked() + int(float64(bytes)/cheapBytesPerToken*f)
+	if ceiling <= 0 || cheap <= ceiling {
+		return cheap
+	}
+	return int(float64(sm.accurateTokensLocked(sm.compileLocked())+tokenFigure(extraBytes)) * f)
+}
+
+// ReservedOutputTokens is the reply reservation this memory's window was set
+// with — the effective one, max_tokens included, as the agent's builder
+// resolved it.
+func (sm *SegmentedMemory) ReservedOutputTokens() int {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	return sm.tokenBudget.ReservedTokens
 }
 
 // ReplaceInFlightResults replaces the results of the step in flight — every

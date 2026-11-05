@@ -92,3 +92,19 @@ prompts:
     metadata:
       version: "v1.0"
       description: "A step whose results together did not fit the context: replaced, and the model re-plans"
+
+  - id: step_results_too_large_at_synthesis
+    content: |
+      These {{.count}} tool results, from the last step, were together too large for the context, so they were removed. Each call ran. Answer from what you had before them, and say which of these results you could not read.
+    variables:
+      count:
+        name: count
+        type: 1  # STRING
+        required: true
+        description: "Number of tool results the step returned"
+    tags:
+      - guidance
+      - self_correction
+    metadata:
+      version: "v1.0"
+      description: "The last step's results did not fit the final answer's send: replaced, and the model answers from what it had"
