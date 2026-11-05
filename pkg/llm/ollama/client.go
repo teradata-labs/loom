@@ -24,6 +24,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/llm"
@@ -41,9 +42,8 @@ type Client struct {
 	seed               *int64 // nil = omit "seed" from options (Ollama samples randomly)
 	toolMode           ToolMode
 	rateLimiter        *llm.RateLimiter
-	nativeToolsProbed  bool              // true once we've probed the model
-	nativeToolsSupport bool              // cached result from /api/show probe
-	toolNameMap        map[string]string // sanitized name → original name
+	probeOnce          sync.Once // guards the one-time native-tool probe in supportsNativeTools
+	nativeToolsSupport bool      // result of that probe (or the static fallback); read only after probeOnce
 }
 
 // fallbackToolSupportedModels is used when the /api/show probe fails (e.g. Ollama
@@ -203,31 +203,27 @@ func (c *Client) supportsNativeTools() bool {
 		return false
 	}
 
-	// Auto mode: use cached probe result if available
-	if c.nativeToolsProbed {
-		return c.nativeToolsSupport
-	}
-
-	// Try dynamic detection via /api/show
-	if result, ok := c.probeToolSupport(); ok {
-		c.nativeToolsProbed = true
-		c.nativeToolsSupport = result
-		return result
-	}
-
-	// Fallback: static model list (probe failed, e.g. network issue)
-	model := c.model
-	for baseModel := range fallbackToolSupportedModels {
-		if len(model) >= len(baseModel) && model[:len(baseModel)] == baseModel {
-			c.nativeToolsProbed = true
-			c.nativeToolsSupport = true
-			return true
+	// Auto mode: probe once. The client is shared across sessions, so the
+	// probe and its cached result go through sync.Once rather than plain
+	// fields; concurrent first requests would otherwise race on them.
+	c.probeOnce.Do(func() {
+		// Try dynamic detection via /api/show
+		if result, ok := c.probeToolSupport(); ok {
+			c.nativeToolsSupport = result
+			return
 		}
-	}
 
-	c.nativeToolsProbed = true
-	c.nativeToolsSupport = false
-	return false
+		// Fallback: static model list (probe failed, e.g. network issue)
+		model := c.model
+		for baseModel := range fallbackToolSupportedModels {
+			if len(model) >= len(baseModel) && model[:len(baseModel)] == baseModel {
+				c.nativeToolsSupport = true
+				return
+			}
+		}
+		c.nativeToolsSupport = false
+	})
+	return c.nativeToolsSupport
 }
 
 // probeToolSupport queries Ollama's /api/show endpoint to check if the model
@@ -280,16 +276,18 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 
 // convertTools converts shuttle.Tool to Ollama tool format.
 // Tool names are sanitized for provider compatibility.
-func (c *Client) convertTools(tools []shuttle.Tool) []ollamaTool {
+// nameMap, when non-nil, receives this request's sanitized → original names.
+func (c *Client) convertTools(tools []shuttle.Tool, nameMap map[string]string) []ollamaTool {
 	ollamaTools := make([]ollamaTool, len(tools))
 	for i, tool := range tools {
 		originalName := tool.Name()
 		sanitizedName := llm.SanitizeToolName(originalName)
-		if c.toolNameMap != nil {
-			c.toolNameMap[sanitizedName] = originalName
+		if nameMap != nil {
+			nameMap[sanitizedName] = originalName
 		}
-		schema := tool.InputSchema()
-		sanitizeSchemaTypes(schema)
+		// Sanitize a copy: the tool (and its schema) is shared by every session
+		// that uses it, so the request must not write into it.
+		schema := sanitizeSchemaTypes(tool.InputSchema())
 		ollamaTools[i] = ollamaTool{
 			Type: "function",
 			Function: ollamaFunction{
@@ -302,19 +300,27 @@ func (c *Client) convertTools(tools []shuttle.Tool) []ollamaTool {
 	return ollamaTools
 }
 
-// sanitizeSchemaTypes ensures all type fields in a JSONSchema are non-empty.
-// MCP tools may omit type fields which causes errors with some providers.
-func sanitizeSchemaTypes(schema *shuttle.JSONSchema) {
+// sanitizeSchemaTypes returns a copy of schema in which every type field is
+// non-empty (MCP tools may omit types, which some models reject). The input
+// is never written: tool schemas are shared across concurrent requests.
+// Properties and Items are copied recursively; leaf fields that are not
+// rewritten (Enum, Default, bounds) keep pointing at the original values.
+func sanitizeSchemaTypes(schema *shuttle.JSONSchema) *shuttle.JSONSchema {
 	if schema == nil {
-		return
+		return nil
 	}
-	schema.Type = llm.InferSchemaType(schema)
-	for _, prop := range schema.Properties {
-		sanitizeSchemaTypes(prop)
+	cp := *schema
+	cp.Type = llm.InferSchemaType(schema)
+	if schema.Properties != nil {
+		cp.Properties = make(map[string]*shuttle.JSONSchema, len(schema.Properties))
+		for name, prop := range schema.Properties {
+			cp.Properties[name] = sanitizeSchemaTypes(prop)
+		}
 	}
 	if schema.Items != nil {
-		sanitizeSchemaTypes(schema.Items)
+		cp.Items = sanitizeSchemaTypes(schema.Items)
 	}
+	return &cp
 }
 
 // convertMessages converts agent messages to Ollama format.
@@ -460,10 +466,11 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		req.Options["seed"] = *c.seed
 	}
 
-	// Add tools if native support is available
+	// Add tools if native support is available. The sanitized → original
+	// name map is per request: the client is shared across sessions.
+	nameMap := make(map[string]string)
 	if c.supportsNativeTools() && len(tools) > 0 {
-		c.toolNameMap = make(map[string]string)
-		req.Tools = c.convertTools(tools)
+		req.Tools = c.convertTools(tools, nameMap)
 	}
 
 	// Marshal request
@@ -584,7 +591,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 
 				toolCalls = append(toolCalls, llmtypes.ToolCall{
 					ID:    tc.ID,
-					Name:  llm.ReverseToolName(c.toolNameMap, tc.Function.Name),
+					Name:  llm.ReverseToolName(nameMap, tc.Function.Name),
 					Input: params,
 				})
 				// Ollama delivers each tool call complete in one chunk, so the
@@ -592,7 +599,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				llmtypes.NotifyToolInputProgress(ctx, llmtypes.ToolInputProgress{
 					Index:      len(toolCalls) - 1,
 					ToolCallID: tc.ID,
-					ToolName:   llm.ReverseToolName(c.toolNameMap, tc.Function.Name),
+					ToolName:   llm.ReverseToolName(nameMap, tc.Function.Name),
 					Bytes:      argsLen,
 				})
 			}
