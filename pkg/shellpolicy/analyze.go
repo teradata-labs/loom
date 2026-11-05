@@ -55,7 +55,8 @@ type Finding struct {
 	// Why says what rule it meets ("not on the shell allowlist").
 	Why string
 	// Line and Col locate it in the command (1-based). Parts found inside a
-	// literal eval or trap argument are reported at that eval or trap.
+	// literal eval or trap argument are reported at that eval or trap. Both
+	// are 0 for a variable the call's env parameter sets.
 	Line, Col uint
 }
 
@@ -76,9 +77,14 @@ func (v Verdict) Reason() string {
 	}
 	var parts []string
 	for _, f := range v.Findings {
-		if f.Verdict == v.Kind {
-			parts = append(parts, fmt.Sprintf("%s (%d:%d): %s", f.What, f.Line, f.Col, f.Why))
+		if f.Verdict != v.Kind {
+			continue
 		}
+		if f.Line == 0 {
+			parts = append(parts, fmt.Sprintf("%s (env parameter): %s", f.What, f.Why))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s (%d:%d): %s", f.What, f.Line, f.Col, f.Why))
 	}
 	if v.Kind == Deny {
 		return "shell policy " + v.Policy + " refuses this command: " + strings.Join(parts, "; ")
@@ -126,8 +132,26 @@ var implementedBuiltins = map[string]bool{
 // part needs a person's approval (Grant says what approving allows); Deny
 // means the command is refused outright.
 func (p *Policy) Analyze(command string, opt Options) Verdict {
+	return p.analyze(command, nil, opt)
+}
+
+// analyze is Analyze for a call that also puts the variables env in the
+// command's environment (shell_execute's env parameter): each is judged like
+// an assignment before the command.
+func (p *Policy) analyze(command string, env []string, opt Options) Verdict {
 	a := &analyzer{p: p, opt: opt, funcDecls: map[string][]int{}, unsetFuncs: map[string]bool{}, grant: &Grant{},
 		intDefs: map[string][]int{}, unsafeInts: map[string]bool{}}
+	for _, name := range env {
+		switch {
+		case name == "CDPATH" && opt.Static:
+			a.findings = append(a.findings, Finding{Verdict: Deny, What: name,
+				Why: "sets CDPATH, which changes where cd goes in a way static enforcement does not follow"})
+		case ExecEnvName(name):
+			a.findings = append(a.findings, Finding{Verdict: Ask, What: name,
+				Why: "sets " + name + ", which changes what programs run or load"})
+			a.grant.add("env", name)
+		}
+	}
 	a.source(command, 0, nil)
 	a.finish()
 	sort.SliceStable(a.findings, func(i, j int) bool {
