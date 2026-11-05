@@ -140,3 +140,117 @@ func TestSSEParser_ManyEventsDoNotAccumulate(t *testing.T) {
 			events, len(body), allocated, float64(allocated)/float64(len(body)))
 	}
 }
+
+// Reuse of the line buffer bounds allocation work, but not what is RETAINED:
+// the buffer keeps the capacity of the largest line the parser ever read, for
+// the parser's life. That is bounded, not a leak, but a subscriptions/listen
+// stream is long-lived, so one near-limit message followed by silence would
+// hold about limit+64 bytes per open stream - roughly 16 MiB at the default
+// bound, multiplied by every open subscription.
+//
+// The assertion is on cap(lineBuf), which IS the retained capacity and is
+// deterministic. A HeapInuse figure is logged alongside it as corroboration;
+// it is not asserted on, because it also counts each parser's bufio buffer and
+// its reader, and would be flaky.
+func TestSSEParser_LargeLineCapacityIsNotRetained(t *testing.T) {
+	const limit = 1 << 20 // 1 MiB
+
+	// One near-limit event, then many small ones: the shape a subscription
+	// takes after a single large message.
+	stream := func() string {
+		var b strings.Builder
+		b.WriteString("data: " + strings.Repeat("A", limit-16) + "\n\n")
+		for i := 0; i < 200; i++ {
+			b.WriteString("data: {\"small\":1}\n\n")
+		}
+		return b.String()
+	}
+
+	drain := func(p *SSEParser) int {
+		n := 0
+		for {
+			if _, err := p.ParseEvent(); err != nil {
+				return n
+			}
+			n++
+		}
+	}
+
+	p := NewSSEParserWithLimit(strings.NewReader(stream()), limit)
+	if got := drain(p); got != 201 {
+		t.Fatalf("want 201 events parsed, got %d", got)
+	}
+
+	if cap(p.lineBuf) > shrinkLineBufBytes {
+		t.Fatalf("a near-limit line's capacity is still held after the event finished: "+
+			"cap(lineBuf) = %d bytes, above the %d byte release threshold (limit was %d). "+
+			"A quiet subscription would hold this for its lifetime.",
+			cap(p.lineBuf), shrinkLineBufBytes, limit)
+	}
+	t.Logf("one near-limit event + 200 small: cap(lineBuf) retained = %d bytes (limit %d, limit+overhead %d)",
+		cap(p.lineBuf), limit, limit+sseLineOverheadBytes)
+
+	// Many open streams multiply whatever one stream holds.
+	const streams = 20
+	runtime.GC()
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+
+	parsers := make([]*SSEParser, 0, streams)
+	for i := 0; i < streams; i++ {
+		q := NewSSEParserWithLimit(strings.NewReader(stream()), limit)
+		drain(q)
+		parsers = append(parsers, q)
+	}
+
+	runtime.GC()
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+
+	total := 0
+	for _, q := range parsers {
+		total += cap(q.lineBuf)
+	}
+	runtime.KeepAlive(parsers)
+
+	if int64(total) > int64(streams)*shrinkLineBufBytes {
+		t.Fatalf("%d idle parsers retain %d bytes of line buffer; each near-limit line's "+
+			"capacity is being held for the parser's life", streams, total)
+	}
+	t.Logf("%d idle parsers: line buffers total %d bytes; HeapInuse delta %d bytes "+
+		"(includes each parser's bufio buffer and its reader, so not asserted on)",
+		streams, total, int64(after.HeapInuse)-int64(before.HeapInuse))
+}
+
+// The release threshold has two jobs, and the test above pins only one. This
+// pins the other: a buffer at or below the threshold must be KEPT, because
+// reuse across many small lines is what makes a stream of them allocation-free
+// in the first place. Releasing unconditionally would still pass every bound
+// above - it measured 4.2x instead of 2.9x on the 20k-event stream, inside the
+// ceiling - so only a direct check on reuse catches it.
+func TestSSEParser_SmallLineBufferIsReusedNotReleased(t *testing.T) {
+	const limit = 1 << 20
+
+	var b strings.Builder
+	for i := 0; i < 500; i++ {
+		b.WriteString("data: {\"small\":1}\n\n")
+	}
+
+	p := NewSSEParserWithLimit(strings.NewReader(b.String()), limit)
+	for {
+		if _, err := p.ParseEvent(); err != nil {
+			break
+		}
+	}
+
+	// Small lines never reach the threshold, so the buffer must still be there
+	// for the next line to append into.
+	if cap(p.lineBuf) == 0 {
+		t.Fatal("the line buffer was released after a small line; a stream of small " +
+			"lines then allocates one buffer per line, which is what reusing it avoids")
+	}
+	if cap(p.lineBuf) > shrinkLineBufBytes {
+		t.Fatalf("a small-line stream should not grow the buffer past the threshold: cap = %d", cap(p.lineBuf))
+	}
+	t.Logf("500 small events: cap(lineBuf) = %d bytes, kept for reuse", cap(p.lineBuf))
+}

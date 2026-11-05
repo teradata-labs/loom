@@ -365,6 +365,23 @@ func (s *MultiAgentServer) UpdateMCPServer(ctx context.Context, req *loomv1.Upda
 		toolFilter.Exclude = req.ToolFilter.Exclude
 	}
 
+	// Zero means "use the default", which on a plain int64 is indistinguishable
+	// from "leave it alone". This config REPLACES the running one, so passing the
+	// zero through would drop a configured limit back to the 16 MiB default on any
+	// unrelated update that restarts the server, and because GetMCPServer and
+	// ListMCPServers read GetServerConfig, the API would then report the default
+	// while looms.yaml still said otherwise.
+	//
+	// The persisted file does not need this (viper layers the written map over the
+	// file, so a key the request omits keeps its value), but the RUNNING server
+	// does: that is the half the persisted-config path does not cover.
+	maxResponseBytes := req.MaxResponseBytes
+	if maxResponseBytes == 0 {
+		if existing, err := s.mcpManager.GetServerConfig(req.ServerName); err == nil {
+			maxResponseBytes = existing.MaxResponseBytes
+		}
+	}
+
 	// Build server config
 	serverConfig := manager.ServerConfig{
 		Command:          req.Command,
@@ -374,7 +391,7 @@ func (s *MultiAgentServer) UpdateMCPServer(ctx context.Context, req *loomv1.Upda
 		URL:              req.Url, // Note: req.Url from proto (lowercase 'rl')
 		EnableSessions:   req.EnableSessions,
 		EnableResumption: req.EnableResumption,
-		MaxResponseBytes: req.MaxResponseBytes,
+		MaxResponseBytes: maxResponseBytes,
 		Enabled:          req.Enabled,
 		ToolFilter:       toolFilter,
 	}

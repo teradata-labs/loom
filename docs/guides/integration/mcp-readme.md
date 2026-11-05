@@ -155,7 +155,7 @@ mcp:
 
 Verify what a server actually negotiates with `just mcp-probe -url <endpoint>` (see the [MCP Probe guide](../mcp-probe.md)).
 
-**`max_response_bytes`** bounds ONE JSON-RPC message from this server, on both the plain-JSON and the SSE path. Omit it, or set `0`, for the default of **16 MiB**. Over the bound the read stops and the response is refused, never truncated, and the caller gets JSON-RPC error `-33001`; a truncated JSON-RPC message cannot be decoded, so losing the tail quietly would be worse than a clear error.
+**`max_response_bytes`** bounds ONE JSON-RPC message from this server, on both the plain-JSON and the SSE path. Omit it, or set `0`, for the default of **16 MiB**. Over the bound the read stops and the response is refused, never truncated; a truncated JSON-RPC message cannot be decoded, so losing the tail quietly would be worse than a clear error. One check detects it on either path: `errors.Is(err, transport.ErrResponseTooLarge)`. (The paths differ underneath — a plain-JSON body fails the send, while an SSE message, read after the send returned, arrives as a synthesized JSON-RPC `-33001` that the client adapts to the same sentinel.)
 
 - The bound is **per message, not per stream**, so a long-lived `subscriptions/listen` stream may deliver many bounded messages.
 - Raise it for a server whose `resources/read`, resource blob or wide query result legitimately exceeds 16 MiB.

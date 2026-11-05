@@ -92,8 +92,15 @@ type StreamableHTTPConfig struct {
 	HTTPClient *http.Client
 	// MaxResponseBytes bounds ONE JSON-RPC message, on both the plain-JSON
 	// and the SSE response paths. Over it the read stops and the response is
-	// rejected with *ResponseTooLargeError (never truncated). Zero selects
-	// DefaultMaxResponseBytes.
+	// refused, never truncated. Zero selects DefaultMaxResponseBytes.
+	//
+	// The two paths cannot report the refusal identically, because an SSE
+	// message is read long after Send returned: the JSON path fails Send with
+	// *ResponseTooLargeError, while the SSE path synthesizes a JSON-RPC error
+	// carrying CodeResponseTooLarge against the pending request's id. The MCP
+	// client adapts the synthesized form, so by the time either reaches a
+	// caller of the client, errors.Is(err, ErrResponseTooLarge) holds for both
+	// — that single predicate is what a caller should need.
 	//
 	// It is per message and not per stream, so a subscriptions/listen stream
 	// may stay open indefinitely and deliver many bounded messages.

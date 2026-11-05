@@ -52,6 +52,27 @@ var (
 // the limit rather than the limit itself.
 const sseLineOverheadBytes = 64
 
+// shrinkLineBufBytes is the capacity above which readLine's reusable line
+// buffer is released when an event finishes, instead of being kept for the
+// next one.
+//
+// Reuse exists so that a stream of many small lines does not allocate one
+// buffer per line. It has a cost the reuse alone does not bound: the buffer
+// keeps the capacity of the LARGEST line the parser has ever read, for the
+// parser's life. A subscriptions/listen stream is long-lived, so one
+// near-limit message followed by silence would hold about limit+64 bytes -
+// roughly 16 MiB at the default bound - per open stream, multiplied by every
+// open subscription. Measured at a 1 MiB bound before this release: 1.06 MiB
+// still held after one near-limit event and 200 small ones.
+//
+// Releasing above a threshold keeps both properties. Small lines, the shape
+// reuse is for, stay far below it and still reuse the buffer. A near-limit
+// line is handed back as soon as its event completes, so a quiet stream holds
+// nothing. A stream of consecutive large messages regrows the buffer once per
+// event, which is one allocation per message and the same order as the
+// message itself.
+const shrinkLineBufBytes = 64 << 10
+
 // SSEEvent is one parsed Server-Sent Events message.
 type SSEEvent struct {
 	ID   string // SSE event ID (informational; resumption was removed by MCP 2026-07-28)
@@ -113,6 +134,9 @@ func NewSSEParserWithLimit(r io.Reader, maxBytes int64) *SSEParser {
 //	(blank line terminates event)
 func (p *SSEParser) ParseEvent() (*SSEEvent, error) {
 	event := &SSEEvent{}
+	// Released whichever way this returns, a refusal included: the event never
+	// aliases the line buffer (Data comes from the buffer below, ID is copied).
+	defer p.releaseOversizedLineBuf()
 	// data accumulates this event's payload in ONE buffer, as it arrives.
 	//
 	// An earlier revision kept a []string of data lines and joined them at
@@ -317,5 +341,16 @@ func (p *SSEParser) ParseBatch() ([]SSEEvent, error) {
 		} else {
 			blankLines = 0
 		}
+	}
+}
+
+// releaseOversizedLineBuf hands back the reusable line buffer once it has
+// grown past shrinkLineBufBytes, so a parser that read one very large line
+// does not hold that capacity for the rest of its life. Buffers at or below
+// the threshold are kept, which is what makes a stream of many small lines
+// allocation-free.
+func (p *SSEParser) releaseOversizedLineBuf() {
+	if cap(p.lineBuf) > shrinkLineBufBytes {
+		p.lineBuf = nil
 	}
 }
