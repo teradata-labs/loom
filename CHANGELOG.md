@@ -70,12 +70,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### MCP tool adapter
 - The schema-lookup result cache no longer stores an empty answer (`{"columns":[]}`, `[]`, or an object whose array fields are all empty). A `describe_table` that found nothing — because the server was handed a name it could not resolve — was cached and then served to every later caller with the same arguments, so one bad lookup became "a table with no columns" for a whole fleet. The empty answer is still returned to the caller that got it; the next caller reaches the server again.
 
-### Security
-
-#### Spreadsheet parsing
-- **`github.com/xuri/excelize/v2` moves from v2.11.0 to v2.11.1 for 15 Dependabot advisories.** `govulncheck` reports 6 of them (four called from `parse_document`'s Excel path, `parseExcel`), so a crafted spreadsheet could exhaust memory or crash the server. `parse_document` is reachable by any agent that lists it in `tools.builtin`, or that has `tool_search` enabled (the default unless `tools.minimal` or `tools.none` is set). The bump also moves `richardlehane/mscfb` to v1.0.9, `xuri/efp` to the pseudo-version excelize v2.11.1 requires, and `golang.org/x/net` to v0.62.0, which also fixes two `x/net` advisories.
-- **`golang.org/x/image` moves to v0.45.0.** The TUI's image rendering uses it. v0.45.0 fixes an advisory that `govulncheck` lists against v0.44.0 but finds no call to.
-
 ### Breaking Changes
 
 - **An undeclared `trigger.mode` now loads as `HYBRID`, not `MANUAL`.** With the mode enforced, the old default would have withheld from the model every skill that omits the field — in practice nearly all of them, since nothing read the mode before and no author chose `MANUAL` by writing nothing. `HYBRID` preserves how those skills behave today (the model may pull them; a slash command also invokes them). An embedder that wants a skill withheld must now declare `mode: MANUAL` on it.
@@ -140,6 +134,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Every read of the agent id in `pkg/agent` now goes through the locked accessor; several stamped identity onto rows without the lock while `SetID` could run.
 - An int32-overflowing `implicit_tasks.max_per_session` failed open to the default cap instead of disabling emission.
 - Fork-join and swarm stage titles showed raw agent UUIDs; stage output copied into task notes could split a multi-byte rune and fail proto marshalling.
+
+### Security
+
+#### Spreadsheet parsing
+- **`github.com/xuri/excelize/v2` moves from v2.11.0 to v2.11.1 for 15 Dependabot advisories.** `govulncheck` reports 6 of them (four called from `parse_document`'s Excel path, `parseExcel`), so a crafted spreadsheet could exhaust memory or crash the server. `parse_document` is reachable by any agent that lists it in `tools.builtin`, that activates a skill listing it in `required_tools`, or, under `looms serve`, that has `tool_search` enabled (the default there unless `tools.minimal` or `tools.none` is set). The bump also moves `richardlehane/mscfb` to v1.0.9, `xuri/efp` to the pseudo-version excelize v2.11.1 requires, and `golang.org/x/net` to v0.62.0, which also fixes two `x/net` advisories.
+- **`golang.org/x/image` moves from v0.41.0 to v0.45.0.** The TUI's image rendering uses it. `govulncheck` lists 5 advisories against v0.41.0 (GO-2026-4961, -5061, -5062, -5066, -6222) and finds no call to any of them; v0.45.0 has none.
 
 ## [1.4.0] - 2026-08-12
 
