@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/llm/scheduler"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
@@ -258,4 +259,27 @@ func TestChatWithRetry_AbsorbedThrottleStillHalvesCeiling(t *testing.T) {
 	assert.Less(t, after, before,
 		"a throttle absorbed by patience must still shrink the scope's ceiling; "+
 			"if it does not, the AIMD seam saw the eventual success and grew instead")
+}
+
+// When the caller's context ends during a throttle wait, the returned error
+// must carry BOTH causes: the context error, so callers can match
+// context.Canceled / DeadlineExceeded, and the throttle error, so its
+// classification and the provider's retry-after hint survive.
+func TestThrottlePatienceWait_ContextEndKeepsThrottleError(t *testing.T) {
+	const hint = 7 * time.Second
+	throttleErr := llm.NewThrottleError(fmt.Errorf("API error (status 429): rate_limit_exceeded"), hint)
+
+	base, cancel := context.WithCancel(context.Background())
+	cancel() // the context has already ended when the wait starts
+	ctx := &agentContext{Context: base, tracer: observability.NewNoOpTracer()}
+
+	var p throttlePatience
+	err := p.wait(ctx, throttleErr)
+	require.Error(t, err)
+
+	assert.ErrorIs(t, err, context.Canceled, "the context error must stay matchable")
+	assert.ErrorIs(t, err, throttleErr, "the throttle error must stay in the chain")
+	assert.Equal(t, hint, llm.RetryAfter(err), "the provider's retry-after hint must survive")
+	assert.True(t, llm.IsThrottle(err))
+	assert.Zero(t, p.total, "an interrupted wait must not count against the budget")
 }

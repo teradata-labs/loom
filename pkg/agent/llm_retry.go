@@ -357,7 +357,9 @@ func (p *throttlePatience) wait(ctx Context, err error) error {
 	)
 	select {
 	case <-ctx.Done():
-		return fmt.Errorf("llm throttled and context ended during wait: %w", ctx.Err())
+		// Wrap both: callers match the context error (errors.Is), and the
+		// throttle error keeps its classification and retry-after hint.
+		return fmt.Errorf("llm throttled and context ended during wait: %w: %w", err, ctx.Err())
 	case <-time.After(wait):
 	}
 	p.total += wait
