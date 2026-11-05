@@ -45,10 +45,6 @@ type Client struct {
 	region            string
 	maxTokens         int
 	temperature       float64
-	// toolNameMap maps sanitized tool names (used by Bedrock) to original names (used by agent)
-	// This is needed because Bedrock requires tool names to match ^[a-zA-Z0-9_-]{1,64}$
-	// but MCP tools use names like "filesystem:read_file"
-	toolNameMap map[string]string
 	// useConverse selects AWS's model-agnostic Converse API over the Anthropic
 	// Messages payload. Anthropic models take the native payload (it carries
 	// thinking blocks and cache_control, which Converse does not expose the same
@@ -215,7 +211,6 @@ func NewClient(cfg Config) (*Client, error) {
 		region:            cfg.Region,
 		maxTokens:         cfg.MaxTokens,
 		temperature:       cfg.Temperature,
-		toolNameMap:       make(map[string]string),
 		rateLimiter:       rateLimiter,
 	}, nil
 }
@@ -260,9 +255,11 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 		request["system"] = systemPrompt
 	}
 
-	// Add tools if provided
+	// Add tools if provided. The sanitized → original tool-name map is per
+	// request: the client is shared across sessions (server provider pool).
+	nameMap := make(map[string]string)
 	if len(tools) > 0 {
-		apiTools, err := c.convertTools(ctx, tools)
+		apiTools, err := c.convertTools(ctx, tools, nameMap)
 		if err != nil {
 			return nil, err
 		}
@@ -332,7 +329,7 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 	}
 
 	// Convert to agent format
-	llmResp := c.convertResponse(&response)
+	llmResp := c.convertResponse(&response, nameMap)
 
 	// Record token usage for rate limiter metrics
 	if c.rateLimiter != nil {
@@ -368,9 +365,11 @@ func (c *Client) chatStreamDisabled(ctx context.Context, messages []llmtypes.Mes
 		request["system"] = systemPrompt
 	}
 
-	// Add tools if provided
+	// Add tools if provided. The sanitized → original tool-name map is per
+	// request: the client is shared across sessions (server provider pool).
+	nameMap := make(map[string]string)
 	if len(tools) > 0 {
-		apiTools, err := c.convertTools(ctx, tools)
+		apiTools, err := c.convertTools(ctx, tools, nameMap)
 		if err != nil {
 			return nil, err
 		}
@@ -526,7 +525,7 @@ func (c *Client) chatStreamDisabled(ctx context.Context, messages []llmtypes.Mes
 
 	// Map sanitized tool names back to original names
 	for i := range toolCalls {
-		if originalName, exists := c.toolNameMap[toolCalls[i].Name]; exists {
+		if originalName, exists := nameMap[toolCalls[i].Name]; exists {
 			toolCalls[i].Name = originalName
 		}
 	}
@@ -664,12 +663,11 @@ func (c *Client) convertMessages(messages []llmtypes.Message) (string, []map[str
 }
 
 // convertTools converts shuttle tools to Bedrock/Anthropic format.
-// Uses standard Anthropic Messages API format with sanitized tool names.
-func (c *Client) convertTools(ctx context.Context, tools []shuttle.Tool) ([]map[string]interface{}, error) {
+// Uses standard Anthropic Messages API format with sanitized tool names
+// (Bedrock requires ^[a-zA-Z0-9_-]{1,64}$; MCP names carry colons). When
+// nameMap is non-nil it receives this request's sanitized → original names.
+func (c *Client) convertTools(ctx context.Context, tools []shuttle.Tool, nameMap map[string]string) ([]map[string]interface{}, error) {
 	var apiTools []map[string]interface{}
-
-	// Clear previous mapping
-	c.toolNameMap = make(map[string]string)
 
 	for _, tool := range tools {
 		originalName := tool.Name()
@@ -683,7 +681,9 @@ func (c *Client) convertTools(ctx context.Context, tools []shuttle.Tool) ([]map[
 		sanitizedName := llm.SanitizeToolName(originalName)
 
 		// Store mapping for later conversion back
-		c.toolNameMap[sanitizedName] = originalName
+		if nameMap != nil {
+			nameMap[sanitizedName] = originalName
+		}
 
 		apiTool := map[string]interface{}{
 			"name":        sanitizedName,
@@ -701,7 +701,10 @@ func (c *Client) convertTools(ctx context.Context, tools []shuttle.Tool) ([]map[
 }
 
 // convertResponse converts Bedrock response to agent format.
-func (c *Client) convertResponse(resp *bedrockResponse) *llmtypes.LLMResponse {
+// convertResponse converts a Bedrock (Anthropic Messages) response to the
+// agent format. nameMap is this request's sanitized → original tool-name
+// table from convertTools; nil leaves tool-use names as returned.
+func (c *Client) convertResponse(resp *bedrockResponse, nameMap map[string]string) *llmtypes.LLMResponse {
 	llmResp := &llmtypes.LLMResponse{
 		StopReason: resp.StopReason,
 		Usage: llmtypes.Usage{
@@ -733,7 +736,7 @@ func (c *Client) convertResponse(resp *bedrockResponse) *llmtypes.LLMResponse {
 			}
 			if sanitizedName, ok := block["name"].(string); ok {
 				// Map sanitized name back to original name
-				if originalName, exists := c.toolNameMap[sanitizedName]; exists {
+				if originalName, exists := nameMap[sanitizedName]; exists {
 					toolCall.Name = originalName
 				} else {
 					// Fallback: use sanitized name if mapping not found
