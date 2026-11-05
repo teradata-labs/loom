@@ -139,6 +139,12 @@ HTTP (`POST /v1/sessions/{session_id}:resume`).
 4. Run `loom sessions resume` again. The LLM sees the result you recorded and
    decides what to do next (for `failed`, it can call the tool again itself).
 
+A turn can have more than one gap. With `behavior.parallel_read_tools: true`
+in the agent YAML, up to 4 read-only calls of one response run at once, so a
+crash can leave each of them with an unknown outcome. Resume reports one gap at
+a time, in call order: settle it, run resume again, and repeat until the turn
+continues.
+
 ## Examples
 
 ### Example 1: Crash After a Database Write

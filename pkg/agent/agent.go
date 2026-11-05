@@ -3319,25 +3319,33 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 	if finished {
 		return
 	}
-	result, err := a.runCall(ctx, pc, session.ID)
+	var result *shuttle.Result
+	var err error
+	if pc.intentErr == nil {
+		result, err = a.runCall(ctx, pc, session.ID)
+	}
 	a.settleCall(ctx, session, pc, st, result, err)
 }
 
-// preparedCall is one call that passed the per-turn cap and dedup checks and
-// is ready to execute: the call, its batch index, its dedup key, and the open
-// tool span that settleCall ends.
+// preparedCall is one call that passed the per-turn cap and dedup checks: the
+// call, its batch index, its dedup key, and the open tool span that settleCall
+// ends. intentErr is set when the call's intent could not be recorded; the
+// call must then not run, and settleCall commits its error row.
 type preparedCall struct {
-	call     ToolCall
-	index    int
-	dedupKey string
-	toolSpan *observability.Span
+	call      ToolCall
+	index     int
+	dedupKey  string
+	toolSpan  *observability.Span
+	intentErr error
 }
 
 // prepareCall is the sequential front half of dispatchOneCall: the per-turn
-// cap row, the dedup replay row, the two counter increments, and the
-// contact_human / implicit-task / tool-started-progress block, ending with the
-// tool span opened. finished is true when a row was already committed (cap or
-// dedup); pc is then nil and the caller must not run the call.
+// cap row, the dedup replay row, the two counter increments, the
+// contact_human / implicit-task / tool-started-progress block, the tool span
+// and the intent record. finished is true when the call needs nothing more:
+// a row was already committed (cap or dedup), or the session lease is lost
+// (no row); pc is then nil and the caller must not run the call. Otherwise
+// the caller runs pc unless pc.intentErr is set, then settles it.
 func (a *Agent) prepareCall(ctx Context, session *Session, toolCall ToolCall, i int, st *batchState) (pc *preparedCall, finished bool) {
 	span := st.span
 
@@ -3449,33 +3457,35 @@ func (a *Agent) prepareCall(ctx Context, session *Session, toolCall ToolCall, i 
 	if intentErr == nil {
 		intentErr = a.recordToolIntent(ctx, session.ID, st.stepIndex, i, toolCall)
 	}
-	if intentErr != nil {
-		// Same treatment as an LLM-intent failure: abort this call before it
-		// runs. The caller (the batch loop) has no per-call error return today
-		// (dispatchOneCall returns nothing) — synthesize a tool-result error
-		// exactly like the turn_limit_exceeded path above does, so the turn
-		// continues instead of the whole conversation loop failing on one
-		// event-log hiccup.
-		ctx.Tracer().EndSpan(toolSpan)
-		a.appendMessage(ctx, session, Message{
-			Role:      "tool",
-			Content:   fmt.Sprintf("event_log_intent_failed — could not durably record this call before executing it: %v. Not executed.", intentErr),
-			ToolUseID: toolCall.ID,
-			ToolResult: &shuttle.Result{
-				Success: false,
-				Error:   &shuttle.Error{Code: "event_log_intent_failed", Message: intentErr.Error()},
-			},
-			AgentID:   a.id,
-			Timestamp: time.Now(),
-		}, false)
-		*st.allToolExecutions = append(*st.allToolExecutions, ToolExecution{ToolName: toolCall.Name, Input: toolCall.Input, Error: intentErr})
-		// No *st.toolExecutionCount++ here: the counter was already advanced
-		// above, before the intent check. A call that never ran must consume
-		// exactly one unit of the MaxToolExecutions budget, not two.
-		return nil, true
-	}
+	// A failed intent is returned on the prepared call, not committed here: the
+	// call must not run, and settleCall commits its error row so that a group
+	// member's row still lands after the rows of the members before it.
+	return &preparedCall{call: toolCall, index: i, dedupKey: dedupKey, toolSpan: toolSpan, intentErr: intentErr}, false
+}
 
-	return &preparedCall{call: toolCall, index: i, dedupKey: dedupKey, toolSpan: toolSpan}, false
+// settleUnrecordedCall commits the row of a call whose intent could not be
+// recorded. Same treatment as an LLM-intent failure: the call never runs. The
+// batch loop has no per-call error return, so this synthesizes a tool-result
+// error like the turn_limit_exceeded path does, and the turn continues instead
+// of the whole conversation loop failing on one event-log hiccup.
+func (a *Agent) settleUnrecordedCall(ctx Context, session *Session, pc *preparedCall, st *batchState) {
+	toolCall := pc.call
+	ctx.Tracer().EndSpan(pc.toolSpan)
+	a.appendMessage(ctx, session, Message{
+		Role:      "tool",
+		Content:   fmt.Sprintf("event_log_intent_failed — could not durably record this call before executing it: %v. Not executed.", pc.intentErr),
+		ToolUseID: toolCall.ID,
+		ToolResult: &shuttle.Result{
+			Success: false,
+			Error:   &shuttle.Error{Code: "event_log_intent_failed", Message: pc.intentErr.Error()},
+		},
+		AgentID:   a.id,
+		Timestamp: time.Now(),
+	}, false)
+	*st.allToolExecutions = append(*st.allToolExecutions, ToolExecution{ToolName: toolCall.Name, Input: toolCall.Input, Error: pc.intentErr})
+	// No *st.toolExecutionCount++ here: prepareCall already advanced the
+	// counter before the intent check. A call that never ran must consume
+	// exactly one unit of the MaxToolExecutions budget, not two.
 }
 
 // runCall is the execution middle of dispatchOneCall: the circuit breaker and
@@ -3490,8 +3500,13 @@ func (a *Agent) runCall(ctx Context, pc *preparedCall, sessionID string) (*shutt
 // settleCall is the sequential back half of dispatchOneCall: lease events and
 // guardrails bookkeeping, tier-1 circuit-breaker recovery, the span events,
 // ending the tool span, the resource-await hold, and the committed tool row.
-// Calls must be settled in call order.
+// Calls must be settled in call order. A call whose intent was not recorded
+// (pc.intentErr) was never run; it settles as its error row alone.
 func (a *Agent) settleCall(ctx Context, session *Session, pc *preparedCall, st *batchState, result *shuttle.Result, err error) {
+	if pc.intentErr != nil {
+		a.settleUnrecordedCall(ctx, session, pc, st)
+		return
+	}
 	span := st.span
 	toolCall := pc.call
 	i := pc.index
