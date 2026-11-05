@@ -26,26 +26,22 @@ import (
 )
 
 // queryToolResultDescription is the normative tool description of HLD §7.1.
-const queryToolResultDescription = `Read the full data of a large tool result FROM THIS TURN, by the message_id shown
-on the result. Data is held in memory only within the turn that produced it —
-never use a message_id from conversation history; re-run the producing tool
-instead. (message_id, offset, limit) returns bounded pages; (message_id, sql)
-queries tabular data as table ` + "`results`" + `.`
-
-// sqlTruncationTailFormat is the normative truncate-and-advise tail of HLD §7.1.
-const sqlTruncationTailFormat = "[result truncated at %d bytes — narrow with LIMIT / aggregation and re-query]"
+const queryToolResultDescription = `Read the full data of a large tool result FROM THIS TURN, by the tool_use_id named
+in its truncation tail (or a message_id a host shows). Data is held in memory only
+within the turn that produced it — never use an id from an earlier turn; re-run the
+producing tool instead. (tool_use_id, offset, limit) returns bounded pages.`
 
 // QueryToolResultTool serves this turn's memory, nothing else (HLD §7.1): pages
-// (offset, limit) or SQL over one L1 message's full in-memory payload, addressed
-// by message_id — the id printed on the offload stub. Every return is bounded at
-// the threshold — pages and SQL alike. Valid only within the producing turn:
+// (offset, limit) over one tool result's whole payload, addressed by its
+// tool_use_id or message_id. Every page is bounded at the threshold. Valid only within the
+// producing turn:
 // memory is per turn, large data is not persisted, and there is no cross-turn
 // data door except re-run.
 type QueryToolResultTool struct {
 	agent *Agent
 }
 
-// NewQueryToolResultTool creates the message_id-addressed query tool (HLD §7.1).
+// NewQueryToolResultTool creates the in-turn query tool (HLD §7.1).
 func NewQueryToolResultTool(a *Agent) *QueryToolResultTool {
 	return &QueryToolResultTool{agent: a}
 }
@@ -65,13 +61,13 @@ func (t *QueryToolResultTool) InputSchema() *shuttle.JSONSchema {
 	return &shuttle.JSONSchema{
 		Type: "object",
 		Properties: map[string]*shuttle.JSONSchema{
+			"tool_use_id": {
+				Type:        "string",
+				Description: "The tool_use_id named in a truncated result's tail, from THIS turn.",
+			},
 			"message_id": {
 				Type:        "integer",
-				Description: "The message_id printed on the offload stub of a result from THIS turn.",
-			},
-			"sql": {
-				Type:        "string",
-				Description: "SQL over the payload as table 'results' (tabular payloads only).",
+				Description: "The message_id of a tool result from THIS turn, when a host shows one.",
 			},
 			"offset": {
 				Type:        "integer",
@@ -82,43 +78,60 @@ func (t *QueryToolResultTool) InputSchema() *shuttle.JSONSchema {
 				Description: "Return at most N items/lines (for pagination). Use with offset.",
 			},
 		},
-		Required: []string{"message_id"},
 	}
 }
 
-// Execute serves pages or SQL over the addressed message's in-memory payload.
+// Execute serves a page of the addressed message's whole payload.
 func (t *QueryToolResultTool) Execute(ctx context.Context, input map[string]interface{}) (*shuttle.Result, error) {
-	messageID, ok := parseMessageID(input["message_id"])
-	if !ok {
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:    "invalid_input",
-				Message: "message_id must be an integer — the id printed on the offload stub of a result from this turn",
-			},
-		}, nil
-	}
-
 	sessionID := session.SessionIDFromContext(ctx)
-	payload, err := t.agent.InTurnPayload(sessionID, messageID)
-	if err != nil {
-		// The only honest door for anything not in this turn's memory is re-run.
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:    "not_this_turn",
-				Message: fmt.Sprintf("message_id %d does not resolve to a current-turn in-memory payload — data is held in memory only within the turn that produced it. Re-run the producing call for fresh data.", messageID),
-			},
-		}, nil
+	var payload string
+	var err error
+	if useID, _ := input["tool_use_id"].(string); strings.TrimSpace(useID) != "" {
+		useID = strings.TrimSpace(useID)
+		if payload, err = t.agent.InTurnPayloadByToolUseID(sessionID, useID); err != nil {
+			return notThisTurn(fmt.Sprintf("tool_use_id %s", useID)), nil
+		}
+	} else {
+		messageID, ok := parseMessageID(input["message_id"])
+		if !ok {
+			return &shuttle.Result{
+				Success: false,
+				Error: &shuttle.Error{
+					Code:    "invalid_input",
+					Message: "give tool_use_id (named in the truncated result's tail) or an integer message_id",
+				},
+			}, nil
+		}
+		if payload, err = t.agent.InTurnPayload(sessionID, messageID); err != nil {
+			return notThisTurn(fmt.Sprintf("message_id %d", messageID)), nil
+		}
 	}
 
 	threshold := t.agent.contextThreshold()
 
 	if sqlQuery, ok := input["sql"].(string); ok && sqlQuery != "" {
-		return t.querySQL(sessionID, messageID, payload, sqlQuery, threshold)
+		return &shuttle.Result{
+			Success: false,
+			Error: &shuttle.Error{
+				Code:    "unsupported",
+				Message: "sql over a tool result is not supported; page with offset and limit, or narrow the producing call",
+			},
+		}, nil
 	}
 
 	return t.paginate(payload, input, threshold)
+}
+
+// notThisTurn is the miss for an id outside this turn's memory: the only
+// honest door for it is re-run.
+func notThisTurn(what string) *shuttle.Result {
+	return &shuttle.Result{
+		Success: false,
+		Error: &shuttle.Error{
+			Code:    "not_this_turn",
+			Message: fmt.Sprintf("%s does not resolve to a current-turn in-memory payload — data is held in memory only within the turn that produced it. Re-run the producing call for fresh data.", what),
+		},
+	}
 }
 
 // parseMessageID accepts the JSON number (float64) and integer-string forms.
@@ -138,107 +151,8 @@ func parseMessageID(v interface{}) (int64, bool) {
 	}
 }
 
-// querySQL lazily parses the payload into the in-turn SQLite (dropped at turn
-// end) and runs the query against table `results`. The serialized result is
-// bounded at the threshold, cut at a result-row boundary, ending with the
-// normative truncate-and-advise tail (§7.1).
-func (t *QueryToolResultTool) querySQL(sessionID string, messageID int64, payload, sqlQuery string, threshold int) (*shuttle.Result, error) {
-	db, err := t.agent.inTurnSQLite(sessionID, messageID, payload)
-	if err != nil {
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:       "not_tabular",
-				Message:    fmt.Sprintf("payload of message %d is not tabular (%v)", messageID, err),
-				Suggestion: "Use (message_id, offset, limit) paging for non-rectangular payloads.",
-			},
-		}, nil
-	}
-
-	rows, err := db.Query(sqlQuery)
-	if err != nil {
-		return &shuttle.Result{
-			Success: false,
-			Error: &shuttle.Error{
-				Code:       "query_failed",
-				Message:    fmt.Sprintf("Query failed: %v", err),
-				Suggestion: "Table name is 'results'. Check your SQL syntax.",
-			},
-		}, nil
-	}
-	defer func() { _ = rows.Close() }()
-
-	cols, err := rows.Columns()
-	if err != nil {
-		return &shuttle.Result{
-			Success: false,
-			Error:   &shuttle.Error{Code: "query_failed", Message: err.Error()},
-		}, nil
-	}
-
-	var sb strings.Builder
-	sb.WriteString("[")
-	truncated := false
-	first := true
-	for rows.Next() {
-		vals := make([]interface{}, len(cols))
-		ptrs := make([]interface{}, len(cols))
-		for i := range vals {
-			ptrs[i] = &vals[i]
-		}
-		if err := rows.Scan(ptrs...); err != nil {
-			return &shuttle.Result{
-				Success: false,
-				Error:   &shuttle.Error{Code: "query_failed", Message: err.Error()},
-			}, nil
-		}
-		rowObj := make(map[string]interface{}, len(cols))
-		for i, c := range cols {
-			if b, ok := vals[i].([]byte); ok {
-				rowObj[c] = string(b)
-			} else {
-				rowObj[c] = vals[i]
-			}
-		}
-		rowJSON, err := json.Marshal(rowObj)
-		if err != nil {
-			continue
-		}
-		sep := 0
-		if !first {
-			sep = 1
-		}
-		// Cut at a result-row boundary: stop before the row that would push the
-		// serialized return past the threshold (leaving room for the tail).
-		tail := "\n" + fmt.Sprintf(sqlTruncationTailFormat, threshold)
-		if sb.Len()+sep+len(rowJSON)+1+len(tail) > threshold {
-			truncated = true
-			break
-		}
-		if !first {
-			sb.WriteString(",")
-		}
-		sb.Write(rowJSON)
-		first = false
-	}
-	if err := rows.Err(); err != nil {
-		return &shuttle.Result{
-			Success: false,
-			Error:   &shuttle.Error{Code: "query_failed", Message: err.Error()},
-		}, nil
-	}
-	sb.WriteString("]")
-	out := sb.String()
-	if truncated {
-		out += "\n" + fmt.Sprintf(sqlTruncationTailFormat, threshold)
-	}
-
-	return &shuttle.Result{Success: true, Data: out}, nil
-}
-
-// paginate serves bounded pages over the payload: items for a JSON array,
-// lines otherwise. The serialized return is bounded at the threshold — a page
-// must never stub itself (§5.2 renders at-threshold results full).
+// paginate returns one bounded page of the payload: JSON array items when it is
+// an array, else lines.
 func (t *QueryToolResultTool) paginate(payload string, input map[string]interface{}, threshold int) (*shuttle.Result, error) {
 	offset := 0
 	if o, ok := input["offset"].(float64); ok {

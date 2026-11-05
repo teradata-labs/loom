@@ -367,8 +367,8 @@ func (rl *RateLimiter) execute(req *rateLimitedRequest) {
 	if req.attempt >= rl.config.MaxRetries {
 		// All attempts exhausted.
 		rl.deliver(req, &rateLimitedResult{err: fmt.Errorf(
-			"LLM request failed after %d retries due to throttling: %w",
-			rl.config.MaxRetries+1, err)})
+			"LLM request failed after %d retries due to throttling: %w: %w",
+			rl.config.MaxRetries+1, ErrThrottleRetriesExhausted, err)})
 		return
 	}
 

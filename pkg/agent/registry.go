@@ -698,7 +698,6 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 			OutputTokenCBThreshold: int(config.Behavior.GetOutputTokenCbThreshold()),
 			EnableSelfHealing:      config.Metadata["_enable_self_healing"] != "false",
 			ToolChangeNote:         config.Metadata["_tool_change_note"] == "true",
-			ContextReliefWarning:   config.Metadata["_context_relief_warning"] == "true",
 		}
 		ApplyMetadataBehavior(agentConfig, config.Metadata)
 		agentConfig.RecoveryConfig = repeatHintRecoveryConfig(config.Metadata)

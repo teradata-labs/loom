@@ -62,7 +62,8 @@ type Memory struct {
 	compressionProfile   *CompressionProfile        // Optional compression profile for new sessions (nil = use defaults)
 	compressor           MemoryCompressor           // Optional LLM compressor for L2 compaction (nil = fold drops with an "(unsummarized)" marker)
 	thresholdBytes       int64                      // Offload / row / page bound in bytes (0 = default; HLD §5.1)
-	offloadExemptTools   []string                   // Tool names whose current-turn results render whole (§5.2 step 6 carve-out)
+	exemptTools          map[string]bool            // Tools whose results enter whole: the arrival bound does not apply to them
+	turnPayloads         map[string]turnPayloads    // Per session: whole bytes of this turn's bounded tool results, by message id
 
 	// Real-time observers for cross-session updates
 	// Map of agentID -> list of observers
@@ -197,18 +198,87 @@ func (m *Memory) SetThresholdBytes(bytes int64) {
 	}
 }
 
-// SetOffloadExemptTools replaces the set of tool names whose current-turn
-// results always render whole regardless of the threshold (§5.2 step 6
-// carve-out), for existing and future sessions. An empty slice clears the set.
+// SetOffloadExemptTools names the tools whose results enter the conversation
+// whole: the arrival bound does not apply to them. It is for a tool whose whole
+// output is the point of the call — a reference the model reads inline in the
+// turn that asked. The set replaces the previous one. A stored row is bounded
+// by the store regardless.
 func (m *Memory) SetOffloadExemptTools(names []string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.offloadExemptTools = append([]string(nil), names...)
-	for _, session := range m.sessions {
-		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
-			segMem.SetOffloadExemptTools(m.offloadExemptTools)
+	m.exemptTools = make(map[string]bool, len(names))
+	for _, n := range names {
+		if n != "" {
+			m.exemptTools[n] = true
 		}
 	}
+}
+
+func (m *Memory) exempt(tool string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.exemptTools[tool]
+}
+
+// turnPayloads is one session's whole tool results for the turn in hand.
+type turnPayloads struct {
+	turn  int64
+	whole map[int64]string
+	byUse map[string]string // the same bytes by tool_use_id, the id the model sees
+}
+
+// keepWhole records a bounded tool result's whole bytes under its message id
+// (when the store assigned one) and its tool_use_id (when it has one), for
+// this turn only: a later turn's first record replaces the set.
+func (m *Memory) keepWhole(sessionID string, turn, id int64, toolUseID, content string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.turnPayloads == nil {
+		m.turnPayloads = map[string]turnPayloads{}
+	}
+	tp := m.turnPayloads[sessionID]
+	if tp.whole == nil || tp.turn != turn {
+		tp = turnPayloads{turn: turn, whole: map[int64]string{}, byUse: map[string]string{}}
+	}
+	if id > 0 {
+		tp.whole[id] = content
+	}
+	if toolUseID != "" {
+		tp.byUse[toolUseID] = content
+	}
+	m.turnPayloads[sessionID] = tp
+}
+
+// dropWhole frees a session's whole results: a new turn has started, and a
+// result does not outlive its turn.
+func (m *Memory) dropWhole(sessionID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.turnPayloads, sessionID)
+}
+
+// wholeOfUse is a tool result's whole bytes by tool_use_id if it is one of turn's.
+func (m *Memory) wholeOfUse(sessionID string, turn int64, toolUseID string) (string, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	tp, ok := m.turnPayloads[sessionID]
+	if !ok || tp.turn != turn {
+		return "", false
+	}
+	content, ok := tp.byUse[toolUseID]
+	return content, ok
+}
+
+// wholeOf is a tool result's whole bytes if it is one of turn's.
+func (m *Memory) wholeOf(sessionID string, turn, id int64) (string, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	tp, ok := m.turnPayloads[sessionID]
+	if !ok || tp.turn != turn {
+		return "", false
+	}
+	content, ok := tp.whole[id]
+	return content, ok
 }
 
 // thresholdOrDefault returns the configured threshold, else the default bound.
@@ -287,7 +357,6 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 	compProfile := m.compressionProfile
 	compressor := m.compressor
 	thresholdBytes := m.thresholdBytes
-	offloadExemptTools := append([]string(nil), m.offloadExemptTools...)
 	logger := m.logger
 	ctxDebug := m.ctxDebug
 	skillDeactivation := m.skillDeactivation
@@ -397,9 +466,6 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 	if thresholdBytes > 0 {
 		segMem.SetThreshold(thresholdBytes)
 	}
-	if len(offloadExemptTools) > 0 {
-		segMem.SetOffloadExemptTools(offloadExemptTools)
-	}
 	segMem.SetContextDebug(ctxDebug)
 	segMem.SetSkillDeactivationHook(skillDeactivation)
 	if protectedTurns > 0 {
@@ -503,21 +569,32 @@ func (m *Memory) reFireOnRestore(sessionID string, messages []Message,
 }
 
 // loadSummary installs the newest 'fold' summary version from the snapshot
-// table (HLD §4.6, §8): rows are {"n","text"} JSON under snapshot_type='fold';
-// the renderer reads max(n).
+// table (HLD §4.6, §8).
 func (m *Memory) loadSummary(ctx context.Context, store SessionStorage, sessionID string, segMem *SegmentedMemory) {
 	if store == nil || segMem == nil {
 		return
 	}
-	snapshots, err := store.LoadMemorySnapshots(ctx, sessionID, "fold", 0)
+	n, text, err := newestFold(ctx, store, sessionID)
 	if err != nil {
 		m.logger.Warn("Failed to load summary versions",
 			zap.String("session_id", sessionID),
 			zap.Error(err))
 		return
 	}
-	bestN := 0
-	bestText := ""
+	if n > 0 {
+		segMem.setSummary(n, text)
+	}
+}
+
+// newestFold is a session's newest summary version: rows are {"n","text"}
+// JSON under snapshot_type='fold', and the newest is max(n). n is 0 when the
+// session never folded.
+func newestFold(ctx context.Context, store SessionStorage, sessionID string) (int, string, error) {
+	snapshots, err := store.LoadMemorySnapshots(ctx, sessionID, "fold", 0)
+	if err != nil {
+		return 0, "", err
+	}
+	bestN, bestText := 0, ""
 	for _, snap := range snapshots {
 		var v struct {
 			N    int    `json:"n"`
@@ -527,17 +604,15 @@ func (m *Memory) loadSummary(ctx context.Context, store SessionStorage, sessionI
 			continue
 		}
 		if v.N > bestN {
-			bestN = v.N
-			bestText = v.Text
+			bestN, bestText = v.N, v.Text
 		}
 	}
-	if bestN > 0 {
-		segMem.setSummary(bestN, bestText)
-	}
+	return bestN, bestText, nil
 }
 
-// SetProtectedRecentTurns configures K — protected newest user turns (HLD
-// §5.1; config ProtectedRecentTurns) — for existing and future sessions.
+// SetProtectedRecentTurns configures K (config ProtectedRecentTurns) — the
+// agent steps the in-loop fold keeps, the user turns the pressure ladder
+// starts from — for existing and future sessions.
 func (m *Memory) SetProtectedRecentTurns(k int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -629,9 +704,6 @@ func (m *Memory) ensureSessionMemory(session *Session, sessionID string,
 		if m.thresholdBytes > 0 {
 			segMem.SetThreshold(m.thresholdBytes)
 		}
-		if len(m.offloadExemptTools) > 0 {
-			segMem.SetOffloadExemptTools(m.offloadExemptTools)
-		}
 		segMem.SetContextDebug(m.ctxDebug)
 		segMem.SetSkillDeactivationHook(m.skillDeactivation)
 		if m.protectedRecentTurns > 0 {
@@ -655,6 +727,7 @@ func (m *Memory) DeleteSession(sessionID string) {
 	defer m.mu.Unlock()
 
 	delete(m.sessions, sessionID)
+	delete(m.turnPayloads, sessionID)
 }
 
 // ListSessions returns all active sessions.
@@ -684,6 +757,7 @@ func (m *Memory) ClearAll() {
 	defer m.mu.Unlock()
 
 	m.sessions = make(map[string]*Session)
+	m.turnPayloads = nil
 }
 
 // HasStore reports whether a persistent session store is configured. Every
@@ -711,11 +785,7 @@ func (m *Memory) PersistSession(ctx context.Context, session *Session) error {
 // Write rules applied here (loom's single persist seam):
 //   - §4.1 truncation: every tool result row is bounded at the threshold,
 //     tail included (core cut backward to a rune boundary + normative tail).
-//   - §4.3 retrieval pairs are not persisted: query_tool_result entries are
-//     filtered from an assistant row's calls; tool rows whose tool_use_id
-//     matches a filtered entry are not persisted; an assistant message left
-//     with no text and no calls is not persisted. Both sides always — an
-//     orphaned pair breaks replay at the API.
+//   - an assistant message with no text and no calls is not persisted.
 func (m *Memory) PersistMessage(ctx context.Context, sessionID string, msg *Message, turnStart bool) error {
 	if m.store == nil {
 		return nil // No-op if no store configured
@@ -725,20 +795,12 @@ func (m *Memory) PersistMessage(ctx context.Context, sessionID string, msg *Mess
 
 	switch msg.Role {
 	case "assistant":
-		filtered := make([]types.ToolCall, 0, len(msg.ToolCalls))
-		for _, c := range msg.ToolCalls {
-			if c.Name == "query_tool_result" {
-				continue
-			}
-			filtered = append(filtered, c)
-		}
-		if msg.Content == "" && len(filtered) == 0 && len(msg.ContentBlocks) == 0 {
-			// §4.3: an assistant message left with no text and no calls is not
-			// persisted. In memory the message stays intact for the turn.
+		if msg.Content == "" && len(msg.ToolCalls) == 0 && len(msg.ContentBlocks) == 0 {
+			// An assistant message with no text and no calls is not persisted.
+			// In memory the message stays intact for the turn.
 			return nil
 		}
 		stored := *msg
-		stored.ToolCalls = filtered
 		// Thinking blocks never persist (signatures are turn-scoped replay
 		// material); the plain Thinking text rides the stored copy for
 		// display (thinking_content).
@@ -751,12 +813,9 @@ func (m *Memory) PersistMessage(ctx context.Context, sessionID string, msg *Mess
 		return nil
 
 	case "tool":
-		if m.isRetrievalPairResult(sessionID, msg.ToolUseID) {
-			// §4.3: the result side of a filtered query_tool_result pair is not
-			// persisted; in memory the pair stays intact for the producing turn.
-			return nil
-		}
 		stored := *msg
+		// Snapshot spill + truncation (§4.1): persist is the last moment the
+		// full bytes exist — the stored row below IS the truncation.
 		stored.Content = truncateToolRowContent(stored.Content, threshold)
 		// The raw ToolResult record rides the row as tool_result_json; a payload
 		// copy above the threshold would defeat the §4.1 row bound, so it is
@@ -777,39 +836,6 @@ func (m *Memory) PersistMessage(ctx context.Context, sessionID string, msg *Mess
 	default:
 		return m.store.SaveMessage(ctx, sessionID, msg, turnStart)
 	}
-}
-
-// isRetrievalPairResult reports whether the tool row identified by toolUseID is
-// the result side of a query_tool_result pair (§4.3). The pairing assistant
-// message is already in the session's in-memory history — calls persist after
-// their assistant row and within the producing turn.
-func (m *Memory) isRetrievalPairResult(sessionID, toolUseID string) bool {
-	if toolUseID == "" {
-		return false
-	}
-	m.mu.RLock()
-	session := m.sessions[sessionID]
-	m.mu.RUnlock()
-	if session == nil {
-		return false
-	}
-	var msgs []Message
-	if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
-		msgs = segMem.GetMessages()
-	} else {
-		msgs = session.GetMessages()
-	}
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role != "assistant" {
-			continue
-		}
-		for _, c := range msgs[i].ToolCalls {
-			if c.ID == toolUseID {
-				return c.Name == "query_tool_result"
-			}
-		}
-	}
-	return false
 }
 
 // PersistToolExecution saves a tool execution to persistent storage if configured.

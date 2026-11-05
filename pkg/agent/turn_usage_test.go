@@ -154,6 +154,15 @@ func TestAddUsage(t *testing.T) {
 	// then falls back to the summed TotalTokens).
 	assert.Equal(t, Usage{InputTokens: 11, OutputTokens: 22, TotalTokens: 33, CacheReadInputTokens: 44, CacheCreationInputTokens: 55, CostUSD: 0.75}, dst)
 	assert.Equal(t, 33, dst.ThroughputTokens())
+
+	// The billing detail a row carries is summed with the rest: thinking
+	// tokens and the 1h/5m split of cache writes.
+	var detail Usage
+	addUsage(&detail, Usage{ThinkingTokens: 7, CacheCreation1hInputTokens: 3, CacheCreation5mInputTokens: 2})
+	addUsage(&detail, Usage{ThinkingTokens: 1, CacheCreation1hInputTokens: 1, CacheCreation5mInputTokens: 4})
+	assert.Equal(t, 8, detail.ThinkingTokens)
+	assert.Equal(t, 4, detail.CacheCreation1hInputTokens)
+	assert.Equal(t, 6, detail.CacheCreation5mInputTokens)
 }
 
 // A turn mixing a cached OpenAI-style call (RateLimitTokens set) with a call

@@ -200,12 +200,39 @@ func emit(id string, bytes int, shape string) types.ToolCall {
 // scriptedLLM replays a fixed list of turns. Exhausting the script is a fault,
 // not a fallback: a route that runs past its script is no longer deterministic
 // and its stages mean nothing.
+//
+// The fold is answered out of band. The in-loop fold asks the agent itself for
+// the summary, so a fold turn is a provider call like any other — but it is the
+// harness's call, not the route's. Answering it from the script would consume a
+// scripted turn and desynchronise everything after it, and a scripted turn's
+// reply is a tool call with no text, which ApplyFoldReply rejects outright. So a
+// fold request is recognised and answered here with a well-formed summary, and
+// the script index does not move. foldsAnswered counts them, which is how a
+// route asserts that folding actually happened.
 type scriptedLLM struct {
-	mu      sync.Mutex
-	turns   []scriptedTurn
-	idx     int
-	over    bool // set when the script was exhausted
-	refuseN int  // next N Chat calls return the typed context-too-long error
+	mu            sync.Mutex
+	turns         []scriptedTurn
+	idx           int
+	over          bool // set when the script was exhausted
+	refuseN       int  // next N Chat calls return the typed context-too-long error
+	foldsAnswered int  // fold requests answered out of band
+}
+
+// foldRequestMarker identifies the transient fold instruction (pkg/agent's
+// foldInstruction). Matching the request rather than the turn index is what
+// keeps a route deterministic when relief fires at a moment the route did not
+// choose.
+const foldRequestMarker = "Context maintenance: summarise the work so far"
+
+// isFoldRequest reports whether this provider call is the harness asking for a
+// summary rather than the route's next turn.
+func isFoldRequest(messages []types.Message) bool {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if strings.Contains(messages[i].Content, foldRequestMarker) {
+			return true
+		}
+	}
+	return false
 }
 
 // refuse makes the next n Chat calls return llm.ErrContextTooLong — the typed
@@ -226,6 +253,16 @@ func (m *scriptedLLM) Chat(_ context.Context, messages []types.Message, _ []shut
 	if m.refuseN > 0 {
 		m.refuseN--
 		return nil, fmt.Errorf("API error (status 400): context window exceeded: %w", llm.ErrContextTooLong)
+	}
+	// A fold request is the harness's, not the route's: answer it and leave the
+	// script index alone.
+	if isFoldRequest(messages) {
+		m.foldsAnswered++
+		return &types.LLMResponse{
+			Content: `{"summary": "State of the work: the route's steps so far are folded into this line. ` +
+				`Identifiers and paths are carried forward as pointers; payloads are not."}`,
+			Usage: types.Usage{InputTokens: 10, OutputTokens: 10},
+		}, nil
 	}
 	if m.idx >= len(m.turns) {
 		m.over = true

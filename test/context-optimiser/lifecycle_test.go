@@ -57,22 +57,21 @@ func TestFullLifecycle(t *testing.T) {
 	// 2. small result → whole
 	step("Small scan.", callTools(emit("small", 300, "string")), sayText("noted"))
 	// 3. large result → offload stub (current turn)
-	offloadMark := mark()
 	step("Big scan.", callTools(emit("big1", 40000, "string")), sayText("loaded big1"))
 	// 4-5. two more large results
 	step("Another scan.", callTools(emit("big2", 40000, "string")), sayText("ok"))
 	step("And another.", callTools(emit("big3", 40000, "string")), sayText("ok"))
-	// 6. RELIEF MOMENT 1 — eviction alone relieves
+	// 6. RELIEF MOMENT 1 — the fold sheds the settled scans
 	evictMark := mark()
 	r.llm.refuse(1)
 	step("Status?", sayText("Three scans loaded; proceeding."))
-	// 7+. pile on unevictable conversation until it crosses the start mark on its
-	// own — big tool results were evicted at moment 1, so only conversation
-	// (which renders whole) can drive the fold now.
+	// 7+. pile on conversation until it crosses the start mark on its own — the
+	// big tool results were shed at moment 1, so only conversation can drive
+	// the next fold, and the fold takes the conversation with it.
 	for i := 0; i < 18; i++ {
 		step(heavyConversation(i), sayText("ack"))
 	}
-	// RELIEF MOMENT 2 — eviction insufficient, fold fires
+	// RELIEF MOMENT 2 — a second fold, now over conversation
 	foldMark := mark()
 	step("Summarise the audit so far.", sayText("Here is the audit summary."))
 	// 17. recall across the fold
@@ -82,24 +81,30 @@ func TestFullLifecycle(t *testing.T) {
 	writeStages(t, out, stages)
 	t.Logf("compiled contexts → %s", filepath.Join(out, "stages.md"))
 
-	// A. §5.5 offload stub with message_id, in the big1 turn.
-	if !anyStageHas(stages, offloadMark, evictMark, "held in memory this turn", "query_tool_result(message_id=") {
-		t.Error("A. no offload stub with message_id when the large result arrived")
+	// A. The §4.1 persist bound is not asserted here: this route folds, and a
+	// folded row leaves the database read, so by the end of it the large results
+	// are gone from the durable view rather than present-and-bounded.
+	// TestMech_ThresholdRule proves the bound on a route that does not fold.
+	// B. §5.2 relief: the first relief moment sheds by folding, and the summary
+	// row it installs is what stands in for the shed history.
+	if !anyStageHas(stages, evictMark, foldMark, summaryRowMarker) {
+		t.Error("B. relief moment 1 installed no summary row — the fold did not run")
 	}
-	// B. §5.2 eviction: relief moment 1's resend shows evicted stubs.
-	if !anyStageHas(stages, evictMark, foldMark, "evicted from context", "re-run the call above") {
-		t.Error("B. relief moment 1 produced no evicted stub — eviction did not run")
-	}
-	// C. §5.4 fold: after moment 2, the summary is installed with its coverage line.
+	// C. fold over conversation: the final context opens on the summary, and
+	// the conversation it stands in for is gone — the opening ask included —
+	// leaving only the last turns.
 	finalText := contextText(stages[len(stages)-1])
-	if !strings.Contains(finalText, comp.summary) {
-		t.Error("C. fold summary is not in the final context")
+	if !strings.Contains(finalText, summaryRowMarker) {
+		t.Error("C. the final context holds no fold summary")
 	}
-	if !strings.Contains(finalText, "covers msg") {
-		t.Error("C. fold summary carries no 'covers msg' coverage line")
+	if strings.Contains(finalText, "Load the grant-review skill.") {
+		t.Error("C. the opening ask is still in context: the fold did not take the conversation")
 	}
-	if comp.count() == 0 {
-		t.Error("C. compressor never called — no fold happened")
+	// A fold is answered by the model (in-loop, at G) or by the compressor
+	// (relief after a refusal); which one runs first depends on the estimate,
+	// and the request's tool list is part of it.
+	if comp.count() == 0 && r.llm.foldsAnswered == 0 {
+		t.Error("C. neither the model nor the compressor summarised — no fold happened")
 	}
 	// D. no dead-design markers anywhere.
 	for _, st := range stages {

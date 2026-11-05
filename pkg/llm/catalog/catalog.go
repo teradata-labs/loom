@@ -42,6 +42,33 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 		// on 2026-04-22. Deprecated Sonnet 4 / Opus 4 (20250514) intentionally omitted.
 		"anthropic": {
 			{
+				// Claude Opus 5 and Sonnet 5: rates from
+				// https://platform.claude.com/docs/en/about-claude/pricing (Sonnet 5's
+				// $2/$10 is its standard price; the planned $3/$15 did not happen).
+				Id:                  "claude-opus-5",
+				Name:                "Claude Opus 5",
+				Provider:            "anthropic",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       1_000_000,
+				MaxOutputTokens:     128_000,
+				CostPer_1MInputUsd:  5.0,
+				CostPer_1MOutputUsd: 25.0,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
+			{
+				Id:                  "claude-sonnet-5",
+				Name:                "Claude Sonnet 5",
+				Provider:            "anthropic",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       1_000_000,
+				MaxOutputTokens:     128_000,
+				CostPer_1MInputUsd:  2.0,
+				CostPer_1MOutputUsd: 10.0,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
+			{
 				// Current flagship. Uses adaptive thinking (not extended thinking).
 				Id:                  "claude-opus-4-7",
 				Name:                "Claude Opus 4.7",
@@ -734,11 +761,160 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 		},
 
 		// ── AWS Bedrock ─────────────────────────────────────────────────────────────
-		// Claude 4.x models only. ShowInDropdown=false — Bedrock is endpoint-configured
+		// ShowInDropdown=false — Bedrock is endpoint-configured
 		// via deployment settings, not selected from a user-facing model picker.
 		// Both us.* (regional) and global.* (dynamic routing) forms are listed where
 		// applicable so ProviderFactory.normalizeModelID only needs to strip prefixes.
 		"bedrock": {
+			// Non-Anthropic families served through Converse. Rates are the
+			// us-west-2 on-demand rates of the AWS Price List,
+			// https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonBedrock/current/us-west-2/index.json;
+			// none of them offer prompt caching on Bedrock, so cache lanes stay
+			// zero and the whole prompt volume prices as plain input.
+			{
+				Id:                  "zai.glm-5",
+				Name:                "GLM-5 (Bedrock)",
+				Provider:            "bedrock",
+				Capabilities:        []string{"text", "tool-use"},
+				ContextWindow:       200_000,
+				MaxOutputTokens:     96_000,
+				CostPer_1MInputUsd:  1.0,
+				CostPer_1MOutputUsd: 3.2,
+				ShowInDropdown:      false,
+			},
+			{
+				Id:                  "zai.glm-4.7",
+				Name:                "GLM-4.7 (Bedrock)",
+				Provider:            "bedrock",
+				Capabilities:        []string{"text", "tool-use"},
+				ContextWindow:       200_000,
+				MaxOutputTokens:     96_000,
+				CostPer_1MInputUsd:  0.6,
+				CostPer_1MOutputUsd: 2.2,
+				ShowInDropdown:      false,
+			},
+			{
+				Id:                  "zai.glm-4.7-flash",
+				Name:                "GLM-4.7 Flash (Bedrock)",
+				Provider:            "bedrock",
+				Capabilities:        []string{"text", "tool-use"},
+				ContextWindow:       200_000,
+				MaxOutputTokens:     96_000,
+				CostPer_1MInputUsd:  0.07,
+				CostPer_1MOutputUsd: 0.4,
+				ShowInDropdown:      false,
+			},
+			{
+				Id:                  "deepseek.v3.2",
+				Name:                "DeepSeek V3.2 (Bedrock)",
+				Provider:            "bedrock",
+				Capabilities:        []string{"text", "tool-use"},
+				ContextWindow:       128_000,
+				MaxOutputTokens:     32_000,
+				CostPer_1MInputUsd:  0.62,
+				CostPer_1MOutputUsd: 1.85,
+				ShowInDropdown:      false,
+			},
+			{
+				Id:                  "deepseek.v3-v1:0",
+				Name:                "DeepSeek V3.1 (Bedrock)",
+				Provider:            "bedrock",
+				Capabilities:        []string{"text", "tool-use"},
+				ContextWindow:       128_000,
+				MaxOutputTokens:     32_000,
+				CostPer_1MInputUsd:  0.58,
+				CostPer_1MOutputUsd: 1.68,
+				ShowInDropdown:      false,
+			},
+			{
+				Id:                  "us.deepseek.r1-v1:0",
+				Name:                "DeepSeek R1 (Bedrock)",
+				Provider:            "bedrock",
+				Capabilities:        []string{"text", "thinking"},
+				ContextWindow:       128_000,
+				MaxOutputTokens:     32_000,
+				CostPer_1MInputUsd:  1.35,
+				CostPer_1MOutputUsd: 5.4,
+				IsReasoning:         true,
+				ShowInDropdown:      false,
+			},
+			{
+				// Claude Fable 5, Opus 5 and Sonnet 5 on Bedrock: the AWS Price List
+				// does not carry them, so these entries take Anthropic's published
+				// rates (https://platform.claude.com/docs/en/about-claude/pricing). A
+				// deployment on its own rate overrides them through the registered
+				// catalog Source (catalog.Register).
+				Id:                  "us.anthropic.claude-fable-5",
+				Name:                "Claude Fable 5 (Bedrock)",
+				Provider:            "bedrock",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       1_000_000,
+				MaxOutputTokens:     128_000,
+				CostPer_1MInputUsd:  10.0,
+				CostPer_1MOutputUsd: 50.0,
+				IsReasoning:         true,
+				ShowInDropdown:      false,
+			},
+			{
+				Id:                  "global.anthropic.claude-fable-5",
+				Name:                "Claude Fable 5 (Bedrock global)",
+				Provider:            "bedrock",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       1_000_000,
+				MaxOutputTokens:     128_000,
+				CostPer_1MInputUsd:  10.0,
+				CostPer_1MOutputUsd: 50.0,
+				IsReasoning:         true,
+				ShowInDropdown:      false,
+			},
+			{
+				Id:                  "us.anthropic.claude-opus-5",
+				Name:                "Claude Opus 5 (Bedrock)",
+				Provider:            "bedrock",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       1_000_000,
+				MaxOutputTokens:     128_000,
+				CostPer_1MInputUsd:  5.0,
+				CostPer_1MOutputUsd: 25.0,
+				IsReasoning:         true,
+				ShowInDropdown:      false,
+			},
+			{
+				Id:                  "global.anthropic.claude-opus-5",
+				Name:                "Claude Opus 5 (Bedrock global)",
+				Provider:            "bedrock",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       1_000_000,
+				MaxOutputTokens:     128_000,
+				CostPer_1MInputUsd:  5.0,
+				CostPer_1MOutputUsd: 25.0,
+				IsReasoning:         true,
+				ShowInDropdown:      false,
+			},
+			{
+				Id:                  "us.anthropic.claude-sonnet-5",
+				Name:                "Claude Sonnet 5 (Bedrock)",
+				Provider:            "bedrock",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       1_000_000,
+				MaxOutputTokens:     128_000,
+				CostPer_1MInputUsd:  2.0,
+				CostPer_1MOutputUsd: 10.0,
+				IsReasoning:         true,
+				ShowInDropdown:      false,
+			},
+			{
+				Id:                  "global.anthropic.claude-sonnet-5",
+				Name:                "Claude Sonnet 5 (Bedrock global)",
+				Provider:            "bedrock",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       1_000_000,
+				MaxOutputTokens:     128_000,
+				CostPer_1MInputUsd:  2.0,
+				CostPer_1MOutputUsd: 10.0,
+				IsReasoning:         true,
+				ShowInDropdown:      false,
+			},
 			{
 				Id:                  "us.anthropic.claude-opus-4-7-v1:0",
 				Name:                "Claude Opus 4.7 (Bedrock)",

@@ -34,6 +34,11 @@ var ErrContextTooLong = errors.New("context too long")
 // bytes while the caller's context remained active.
 var ErrStreamTimeout = errors.New("provider stream timeout")
 
+// ErrThrottleRetriesExhausted marks a call the rate limiter already retried
+// through its whole throttling budget. A caller with its own retry does not
+// send it again: the limiter's attempts were the retries.
+var ErrThrottleRetriesExhausted = errors.New("throttling retries exhausted")
+
 // IsAnthropicContextTooLong positively identifies anthropic's prompt-too-long
 // refusal from the HTTP status and raw response body.
 func IsAnthropicContextTooLong(statusCode int, body []byte) bool {

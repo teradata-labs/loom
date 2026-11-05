@@ -25,16 +25,16 @@ func TestLoadMigrations(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, migrations, "should have embedded migrations")
 
-	// Verify we have all 25 migrations.
-	// Bumped from 11 by 000012_skill_index and 000013_task_idempotency
-	// (skills overhaul Phases 4 and 8), then 000014_analytics_views,
-	// 000015_rls_infrastructure_tables, 000016_rls_honor_jwt_sub,
-	// 000017_graph_rls_honor_jwt, 000018_tool_outcomes_policy_denied,
-	// 000019_context_compilation, 000020_tool_exec_admission_decision,
-	// 000021_human_request_kind_summary, 000022_human_request_params,
-	// 000023_tool_outcomes_admission_decision, 000024_task_attribution,
-	// then 000025_workflow_checkpoints.
-	assert.Len(t, migrations, 25, "should have 25 migration versions")
+	// The set has to be contiguous from 1, which is the invariant that matters: a
+	// gap means a migration was embedded under the wrong number or lost, and the
+	// migrator would apply the rest anyway.
+	//
+	// Asserted as a shape rather than a count. A hand-maintained number goes stale
+	// the first time somebody adds a migration without editing this line, and then
+	// says nothing about the set at all.
+	for i, m := range migrations {
+		assert.Equal(t, i+1, m.Version, "migration %d is numbered %d — the set has a gap", i+1, m.Version)
+	}
 
 	// Verify ordering
 	for i := 1; i < len(migrations); i++ {
@@ -76,6 +76,7 @@ func TestLoadMigrations_SpecificVersions(t *testing.T) {
 		{9, "session_name", "ADD COLUMN IF NOT EXISTS name"},
 		{10, "graph_memory", "graph_entities"},
 		{25, "workflow_checkpoints", "CREATE TABLE IF NOT EXISTS workflow_checkpoints"},
+		{26, "message_billing", "cache_create_1h_tokens"},
 	}
 
 	for _, tt := range tests {

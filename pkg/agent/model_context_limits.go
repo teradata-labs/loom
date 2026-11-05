@@ -199,6 +199,33 @@ func EffectiveOutputReservation(provider, model string, configuredMaxTokens, con
 	return reservation
 }
 
+// ProviderPromptCeiling is the largest prompt the provider accepts for
+// provider+model: the model's own window — the catalog's, else the
+// prefix-matched table's — less the output reservation. The configured
+// max_context_tokens is where loom folds, not where the provider refuses, so
+// it is used only when neither knows the model. Ollama is the exception: its
+// window is the server's context length (num_ctx), which loom does not send
+// and the model's listing does not give, so the configured window — the
+// operator's statement of it — comes first there. Returns 0 when no window is
+// known.
+func ProviderPromptCeiling(provider, model string, configuredReserved, configuredWindow int) int {
+	window := 0
+	if provider == "ollama" && configuredWindow > 0 {
+		window = configuredWindow
+	} else if info := catalog.Lookup(provider, model); info != nil && info.ContextWindow > 0 {
+		window = int(info.ContextWindow)
+	} else if limits := GetModelContextLimits(model); limits != nil {
+		window = limits.MaxContextTokens
+	}
+	if window <= 0 {
+		window = configuredWindow
+	}
+	if window <= 0 {
+		return 0
+	}
+	return window - EffectiveOutputReservation(provider, model, 0, configuredReserved, window)
+}
+
 // ResolveContextLimits determines the context limits to use, with fallback precedence:
 //  1. Explicit configuration (if configuredMax > 0)
 //  2. Built-in catalog entry for provider+model (authoritative ContextWindow /
