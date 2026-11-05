@@ -236,6 +236,27 @@ func TestRunHitlShow_UnicodeFormatAndC1CharsEscaped(t *testing.T) {
 	assert.Equal(t, cmd, got["command"], "the escaped block decodes to the command that runs")
 }
 
+// A literal backslash is escaped too, so a real newline (shown as \n) and the
+// two characters `\n` typed in a command never print the same on the Call
+// line: a real newline separates shell commands, a literal one does not.
+func TestEscapeControlChars_LiteralBackslashIsDistinct(t *testing.T) {
+	real := escapeControlChars("echo hi\nrm -rf ~")
+	literal := escapeControlChars(`echo hi\nrm -rf ~`)
+	assert.Equal(t, `echo hi\nrm -rf ~`, real)
+	assert.Equal(t, `echo hi\\nrm -rf ~`, literal)
+	assert.NotEqual(t, real, literal)
+	assert.Equal(t, `TAG=\\U000e0041`, escapeControlChars(`TAG=\U000e0041`))
+}
+
+// A label cut at hitlListLabelMax never ends inside an escape: the label is
+// cut before it is escaped.
+func TestHitlListLabel_CutBeforeEscaping(t *testing.T) {
+	label := hitlListLabel(&shuttle.HumanRequest{Question: strings.Repeat("a", 66) + "\u202e" + strings.Repeat("b", 10)})
+	assert.True(t, strings.HasSuffix(label, "..."), label)
+	body := strings.TrimSuffix(label, "...")
+	assert.False(t, strings.HasSuffix(body, `\`), "cut inside an escape: %q", label)
+}
+
 // `hitl list` keeps every request on one table row: an approval is labelled
 // by its call digest with control characters escaped, and a long label is
 // cut to 70 characters on a rune boundary. Driven through the real command

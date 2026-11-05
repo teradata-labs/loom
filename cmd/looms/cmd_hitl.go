@@ -25,6 +25,7 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
@@ -623,11 +624,23 @@ func hitlListLabel(req *shuttle.HumanRequest) string {
 	if req.Summary != "" {
 		label = req.Summary
 	}
-	label = escapeControlChars(label)
-	if r := []rune(label); len(r) > hitlListLabelMax {
-		label = string(r[:hitlListLabelMax-3]) + "..."
+	escaped := escapeControlChars(label)
+	if utf8.RuneCountInString(escaped) <= hitlListLabelMax {
+		return escaped
 	}
-	return label
+	// Cut rune by rune before escaping, so the cut never splits an escape.
+	var b strings.Builder
+	n := 0
+	for _, r := range label {
+		e := escapeControlChars(string(r))
+		w := utf8.RuneCountInString(e)
+		if n+w > hitlListLabelMax-3 {
+			break
+		}
+		b.WriteString(e)
+		n += w
+	}
+	return b.String() + "..."
 }
 
 // unsafeForDisplay reports whether r can change how text displays rather than
@@ -640,8 +653,9 @@ func unsafeForDisplay(r rune) bool {
 
 // escapeControlChars escapes the characters that unsafeForDisplay reports, so
 // model- or responder-written text stays on its own line and reads as it runs:
-// \n, \r and \t by name, other runes up to U+FFFF as \uXXXX, and runes above
-// it as \UXXXXXXXX, so the escape cannot be read as a shorter one plus a digit.
+// a backslash as \\; \n, \r and \t by name; other runes up to U+FFFF as
+// \uXXXX; and runes above it as \UXXXXXXXX, so an escape cannot be read as a
+// shorter one plus a digit, and literal text never reads as an escape.
 func escapeControlChars(s string) string {
 	var b strings.Builder
 	for _, r := range s {
@@ -652,6 +666,10 @@ func escapeControlChars(s string) string {
 			b.WriteString(`\r`)
 		case r == '\t':
 			b.WriteString(`\t`)
+		case r == '\\':
+			// A literal backslash is doubled, so text that already reads
+			// like an escape (`\n`) never prints the same as a real one.
+			b.WriteString(`\\`)
 		case unsafeForDisplay(r) && r > 0xFFFF:
 			fmt.Fprintf(&b, `\U%08x`, r)
 		case unsafeForDisplay(r):
