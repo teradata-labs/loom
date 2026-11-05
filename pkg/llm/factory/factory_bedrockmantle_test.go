@@ -113,6 +113,9 @@ func TestCreateBedrockMantleProvider_MissingRegion(t *testing.T) {
 	_, err := f.createBedrockMantleProvider("")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "bedrock-mantle region not configured")
+	assert.Contains(t, err.Error(), "BEDROCK_MANTLE_REGION")
+	// llm.bedrock_mantle_region is not wired into looms config; do not suggest it.
+	assert.NotContains(t, err.Error(), "llm.bedrock_mantle_region")
 }
 
 func TestCreateBedrockMantleProvider_ShortTermKeyRegionMismatch(t *testing.T) {

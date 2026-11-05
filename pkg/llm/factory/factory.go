@@ -310,7 +310,7 @@ func (f *ProviderFactory) createBedrockMantleProvider(model string) (interface{}
 		endpoint = os.Getenv("BEDROCK_MANTLE_ENDPOINT")
 	}
 	if region == "" && endpoint == "" {
-		return nil, fmt.Errorf("bedrock-mantle region not configured (set llm.bedrock_mantle_region, BEDROCK_MANTLE_REGION, or AWS_REGION)")
+		return nil, fmt.Errorf("bedrock-mantle region not configured (set BEDROCK_MANTLE_REGION or AWS_REGION, or BEDROCK_MANTLE_ENDPOINT)")
 	}
 
 	apiKey := f.config.BedrockMantleAPIKey
