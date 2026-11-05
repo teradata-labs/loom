@@ -281,15 +281,13 @@ func TestStarvedWaiterOutranksHolderWithoutBecomingOne(t *testing.T) {
 	<-holderDone
 }
 
-// TestAgedWaitersKeepHolderPrecedence is the review probe (Josh-Schoen F2): a
-// hog holds 700 of 800 tokens, four NEW 500-token waiters park and age ONE
-// starvation tier, then one real RESOURCE_HOLDER parks. Only one 500 fits at
-// a time, so release order is dispatch order. A NEW waiter one tier old has
-// effective rank IN_FLIGHT, still below a holder, so the holder goes first —
-// the order main served before aging stopped relabelling classes. Serving
-// every promoted waiter ahead of every non-promoted one (the previous
-// dispatch) put the holder last and broke priority inheritance for the first
-// tiers of saturation.
+// TestAgedWaitersKeepHolderPrecedence pins priority inheritance through the
+// first starvation tier: a hog holds 700 of 800 tokens, four NEW 500-token
+// waiters park and age ONE starvation tier, then one real RESOURCE_HOLDER
+// parks. Only one 500 fits at a time, so release order is dispatch order. A
+// NEW waiter one tier old has effective rank IN_FLIGHT, still below a holder,
+// so the holder goes first. A dispatch that served every aged waiter ahead of
+// every non-aged one would put the holder last.
 func TestAgedWaitersKeepHolderPrecedence(t *testing.T) {
 	// Tier 1 is due at 1.5s, tier 2 at 3s: once every NEW waiter has crossed
 	// tier 1 there is over a second of margin before any crosses tier 2, and
@@ -361,9 +359,9 @@ func TestAgedWaitersKeepHolderPrecedence(t *testing.T) {
 
 // TestArrivalCannotOvertakeAgedWaiterAtTopRank: a NEW waiter aged to the top
 // effective rank is parked; a fresh RESOURCE_HOLDER small enough to fit must
-// still park behind it instead of taking the Acquire fast path. Main enforced
-// this because the aged waiter sat in the RESOURCE_HOLDER queue; with class
-// labels left alone, the fast path has to check effective rank.
+// still park behind it instead of taking the Acquire fast path. The aged
+// waiter keeps its NEW class, so the fast path must compare effective rank,
+// not class queues.
 func TestArrivalCannotOvertakeAgedWaiterAtTopRank(t *testing.T) {
 	s := newTest(t, Config{TokensPerMinute: 1000, StarvationAge: 300 * time.Millisecond, InteractiveHeadroom: -1})
 	hog, err := s.Acquire(context.Background(), Request{ReservationTokens: 700})
@@ -896,19 +894,19 @@ func waitUntilStarved(t *testing.T, s *Scheduler) {
 
 // TestAgedWaiterJoinsEndOfItsNewRank pins the within-rank order: a waiter
 // that aged INTO a rank is served after the waiters that were already at that
-// rank, even when it parked before them — main's append-on-promotion order.
-// The waiters are placed directly so the ordering is exact rather than
-// dependent on the 1s aging tick.
+// rank, even when it parked before them: aging appends a waiter to the end of
+// its new rank. The waiters are placed directly so the ordering is exact
+// rather than dependent on the 1s aging tick.
 func TestAgedWaiterJoinsEndOfItsNewRank(t *testing.T) {
 	s := newTest(t, Config{TokensPerMinute: 1000, StarvationAge: time.Hour, InteractiveHeadroom: -1})
 	hog, err := s.Acquire(context.Background(), Request{ReservationTokens: 700})
 	require.NoError(t, err)
 
 	t0 := time.Now()
-	// aged parked first but reached the IN_FLIGHT rank only after inflight
-	// parked there natively.
-	aged := parkWaiter(s, "aged", classNew, t0, t0.Add(2*time.Second), 2, 1)
-	inflight := parkWaiter(s, "inflight", classInFlight, t0.Add(time.Second), t0.Add(time.Second), 1, 0)
+	// aged parked first (earlier since) but reached the IN_FLIGHT rank only
+	// after inflight parked there natively, so it is stamped second.
+	inflight := parkWaiter(s, "inflight", classInFlight, t0.Add(time.Second), 0)
+	aged := parkWaiter(s, "aged", classNew, t0, 1)
 
 	hog.Release(1) // room for exactly one 500
 	select {
@@ -928,33 +926,32 @@ func TestAgedWaiterJoinsEndOfItsNewRank(t *testing.T) {
 }
 
 // parkWaiter places a 500-token batch waiter directly on its class queue, so
-// a test controls its timestamps and rank order exactly instead of depending
-// on the 1s aging tick.
-func parkWaiter(s *Scheduler, name string, class loomv1.SlotPriorityClass, since, rankSince time.Time, rankSeq uint64, promoted int32) *waiter {
+// a test controls its park time and starvation tiers exactly instead of
+// depending on the 1s aging tick. It takes its rank sequence number from the
+// scheduler, as Acquire and aging do, so call order is rank-arrival order:
+// a later call is served later within the same effective rank.
+func parkWaiter(s *Scheduler, name string, class loomv1.SlotPriorityClass, since time.Time, promoted int32) *waiter {
 	w := &waiter{
-		req:       Request{ConversationID: name, ReservationTokens: 500, Class: class},
-		origin:    loomv1.SlotOrigin_SLOT_ORIGIN_BATCH,
-		class:     class,
-		since:     since,
-		rankSince: rankSince,
-		rankSeq:   rankSeq,
-		promoted:  promoted,
-		ready:     make(chan *Grant, 1),
+		req:      Request{ConversationID: name, ReservationTokens: 500, Class: class},
+		origin:   loomv1.SlotOrigin_SLOT_ORIGIN_BATCH,
+		class:    class,
+		since:    since,
+		promoted: promoted,
+		ready:    make(chan *Grant, 1),
 	}
 	s.mu.Lock()
+	s.stampRankLocked(w)
 	s.queues[w.origin][class] = append(s.queues[w.origin][class], w)
 	s.mu.Unlock()
 	return w
 }
 
-// TestSameRankTieUsesArrivalOrderNotClass is the Windows CI failure of
-// TestStarvedWaiterOutranksHolderWithoutBecomingOne made exact: Windows'
-// coarse monotonic clock gives two waiters that reach the top rank within
-// one clock tick the same rankSince. Ordering on the timestamp then fell back
-// to class iteration order, which serves RESOURCE_HOLDER before NEW, so a
-// starved NEW waiter that reached the rank first lost to a fresh holder.
-// Dispatch orders on rankSeq, assigned under the mutex, so arrival order
-// survives a tied clock.
+// TestSameRankTieUsesArrivalOrderNotClass pins within-rank order when the
+// clock ties: two waiters that reach the top rank within one tick of a coarse
+// monotonic clock (Windows' ~15.6ms) read the same time. Dispatch must still
+// serve them in rank-arrival order (rankSeq), not class iteration order, so a
+// starved NEW waiter that reached the rank first goes ahead of a fresh
+// RESOURCE_HOLDER.
 func TestSameRankTieUsesArrivalOrderNotClass(t *testing.T) {
 	s := newTest(t, Config{TokensPerMinute: 1000, StarvationAge: time.Hour, InteractiveHeadroom: -1})
 	hog, err := s.Acquire(context.Background(), Request{ReservationTokens: 700})
@@ -962,9 +959,9 @@ func TestSameRankTieUsesArrivalOrderNotClass(t *testing.T) {
 
 	tied := time.Now()
 	// The NEW waiter aged two tiers into the top rank, then the holder parked
-	// there; both read the same clock value.
-	starved := parkWaiter(s, "starved", classNew, tied.Add(-time.Second), tied, 1, 2)
-	holder := parkWaiter(s, "holder", classHolder, tied, tied, 2, 0)
+	// there at the same clock reading.
+	starved := parkWaiter(s, "starved", classNew, tied.Add(-time.Second), 2)
+	holder := parkWaiter(s, "holder", classHolder, tied, 0)
 
 	hog.Release(1) // room for exactly one 500
 	select {

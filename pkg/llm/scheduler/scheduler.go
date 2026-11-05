@@ -112,15 +112,13 @@ type waiter struct {
 	origin loomv1.SlotOrigin
 	class  loomv1.SlotPriorityClass
 	since  time.Time
-	// rankSince is when the waiter reached its current effective rank: its
-	// park time, then the moment aging last raised the rank. Dispatch serves
-	// oldest-at-rank first.
-	rankSince time.Time
-	// rankSeq orders waiters that reached the same effective rank: assigned
-	// from Scheduler.nextRankSeq under the mutex each time rankSince is set.
-	// Dispatch sorts on it rather than rankSince because a coarse clock
-	// (Windows' ~15.6ms monotonic tick) gives near-simultaneous arrivals equal
-	// timestamps, and a tie would fall back to class iteration order.
+	// rankSeq orders waiters that reached the same effective rank: dispatch
+	// serves the lowest first. stampRankLocked assigns it from
+	// Scheduler.nextRankSeq under the mutex when the waiter parks and each
+	// time aging raises its rank, so a waiter that ages into a rank joins the
+	// end of it. A sequence number rather than a timestamp, because a coarse
+	// clock (Windows' ~15.6ms monotonic tick) gives near-simultaneous arrivals
+	// equal timestamps, and a tie would fall back to class iteration order.
 	rankSeq uint64
 	// promoted counts starvation tiers crossed (see agingDueLocked). It raises
 	// the effective dispatch rank; it never changes class.
@@ -273,17 +271,14 @@ func (s *Scheduler) Acquire(ctx context.Context, req Request) (*Grant, error) {
 		s.mu.Unlock()
 		return g, nil
 	}
-	now := time.Now()
-	s.nextRankSeq++
 	w := &waiter{
-		req:       req,
-		origin:    origin,
-		class:     class,
-		since:     now,
-		rankSince: now,
-		rankSeq:   s.nextRankSeq,
-		ready:     make(chan *Grant, 1),
+		req:    req,
+		origin: origin,
+		class:  class,
+		since:  time.Now(),
+		ready:  make(chan *Grant, 1),
 	}
+	s.stampRankLocked(w)
 	s.queues[origin][class] = append(s.queues[origin][class], w)
 	s.mu.Unlock()
 
@@ -474,7 +469,12 @@ func (s *Scheduler) State() *loomv1.SlotState {
 	return st
 }
 
-// Waiters lists the scope's parked requests, highest class first.
+// Waiters lists the scope's parked requests grouped by band, then by class
+// (RESOURCE_HOLDER, IN_FLIGHT, NEW), then park order. This is not dispatch
+// order: dispatch serves by effective rank (class raised by starvation tiers,
+// see effectiveRank), and the listing does not show effective rank. A NEW
+// waiter aged to the top rank is listed after fresh IN_FLIGHT waiters but is
+// served before them.
 func (s *Scheduler) Waiters() []*loomv1.SlotWaiter {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -760,7 +760,7 @@ func (s *Scheduler) tick() {
 // lane by seniority. Note the asymmetry this leaves by design: batch has no
 // reserved budget share, so a saturated interactive band CAN starve batch
 // entirely (a human is waiting; throughput work waits — see SlotOrigin in
-// the proto). Within-band aging is therefore a class-liveness guarantee
+// the proto). Within-band aging is therefore a rank-liveness guarantee
 // only; batch regains admission when the interactive band goes quiet.
 func (s *Scheduler) ageLocked() {
 	for _, band := range bandOrder {
@@ -787,14 +787,20 @@ func (s *Scheduler) ageLocked() {
 					s.promotionsTotal++
 					if effectiveRank(w) > before {
 						// It joins the end of its new rank's queue.
-						w.rankSince = time.Now()
-						s.nextRankSeq++
-						w.rankSeq = s.nextRankSeq
+						s.stampRankLocked(w)
 					}
 				}
 			}
 		}
 	}
+}
+
+// stampRankLocked gives w the next rank sequence number, which places it at
+// the end of its current effective rank in dispatch order. Called when w
+// parks and each time aging raises its effective rank.
+func (s *Scheduler) stampRankLocked(w *waiter) {
+	s.nextRankSeq++
+	w.rankSeq = s.nextRankSeq
 }
 
 // SetConfig replaces the runtime-tunable knobs. Zero values leave the
