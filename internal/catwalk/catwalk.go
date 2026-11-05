@@ -88,9 +88,19 @@ func GetProviders() []Provider {
 			ID:   InferenceProviderBedrockMantle,
 			Name: "Amazon Bedrock Mantle",
 			Type: TypeBedrockMantle,
+			// Claude ids AWS documents on bedrock-mantle; costs are the regional
+			// (single-Region) rates, see pkg/llm/catalog "bedrock-mantle".
 			Models: []Model{
-				{ID: "anthropic.claude-haiku-4-5", Name: "Claude Haiku 4.5 (Bedrock Mantle)", ContextWindow: 200000},
-				{ID: "anthropic.claude-opus-4-7", Name: "Claude Opus 4.7 (Bedrock Mantle)", ContextWindow: 1000000},
+				{ID: "anthropic.claude-fable-5-1", Name: "Claude Fable 5.1 (Bedrock Mantle)", ContextWindow: 1000000, MaxOutputTokens: 128000, InputCost: 11.0, OutputCost: 55.0},
+				{ID: "anthropic.claude-fable-5", Name: "Claude Fable 5 (Bedrock Mantle)", ContextWindow: 1000000, MaxOutputTokens: 128000, InputCost: 11.0, OutputCost: 55.0},
+				{ID: "anthropic.claude-opus-5-5", Name: "Claude Opus 5.5 (Bedrock Mantle)", ContextWindow: 1000000, MaxOutputTokens: 128000, InputCost: 4.40, OutputCost: 22.0},
+				{ID: "anthropic.claude-opus-5", Name: "Claude Opus 5 (Bedrock Mantle)", ContextWindow: 1000000, MaxOutputTokens: 128000, InputCost: 5.50, OutputCost: 27.50},
+				{ID: "anthropic.claude-opus-4-8", Name: "Claude Opus 4.8 (Bedrock Mantle)", ContextWindow: 1000000, MaxOutputTokens: 128000, InputCost: 5.50, OutputCost: 27.50},
+				{ID: "anthropic.claude-opus-4-7", Name: "Claude Opus 4.7 (Bedrock Mantle)", ContextWindow: 1000000, MaxOutputTokens: 128000, InputCost: 5.50, OutputCost: 27.50},
+				{ID: "anthropic.claude-sonnet-5-5", Name: "Claude Sonnet 5.5 (Bedrock Mantle)", ContextWindow: 1000000, MaxOutputTokens: 128000, InputCost: 2.20, OutputCost: 11.0},
+				{ID: "anthropic.claude-sonnet-5", Name: "Claude Sonnet 5 (Bedrock Mantle)", ContextWindow: 1000000, MaxOutputTokens: 128000, InputCost: 2.20, OutputCost: 11.0},
+				{ID: "anthropic.claude-haiku-5-5", Name: "Claude Haiku 5.5 (Bedrock Mantle)", ContextWindow: 1000000, MaxOutputTokens: 128000, InputCost: 0.11, OutputCost: 0.55},
+				{ID: "anthropic.claude-haiku-4-5", Name: "Claude Haiku 4.5 (Bedrock Mantle)", ContextWindow: 200000, MaxOutputTokens: 64000, InputCost: 1.10, OutputCost: 5.50},
 			},
 		},
 		{
