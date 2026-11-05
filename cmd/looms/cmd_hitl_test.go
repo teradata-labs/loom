@@ -187,36 +187,45 @@ func TestRunHitlShow_CallDigestControlCharsEscaped(t *testing.T) {
 	assert.Contains(t, out, "Parameters:\n", "the real parameters block still prints")
 }
 
-// Unicode format characters (bidi overrides, zero-width spaces) and 8-bit
-// controls can make a command display differently from what runs. They are
-// escaped on the Call line, in the Parameters block and in the Context block,
-// and the Parameters block stays valid JSON.
+// Unicode format characters (bidi overrides, zero-width spaces, tag
+// characters above U+FFFF), line and paragraph separators, and 8-bit controls
+// can make a command display differently from what runs. They are escaped on
+// every model- or responder-written line of the screen, and the Parameters
+// block stays valid JSON that decodes to the stored command.
 func TestRunHitlShow_UnicodeFormatAndC1CharsEscaped(t *testing.T) {
 	origConfig, origPath := config, hitlCLIDBPath
 	t.Cleanup(func() { config, hitlCLIDBPath = origConfig, origPath })
 	config = nil
 	hitlCLIDBPath = filepath.Join(t.TempDir(), "hitl.db")
 
-	cmd := "echo ok # \u202eexe.cod\u202c | rm -rf ~ \u200b C1=\u009b2J"
+	cmd := "echo ok # \u202eexe.cod\u202c | rm -rf ~ \u200b C1=\u009b2J TAG=\U000e0041 LS=\u2028"
 	store, err := shuttle.NewSQLiteHumanRequestStore(shuttle.SQLiteConfig{Path: hitlCLIDBPath})
 	require.NoError(t, err)
+	responded := time.Now()
 	require.NoError(t, store.Store(context.Background(), &shuttle.HumanRequest{
 		ID: "bidi-1", AgentID: "a", SessionID: "s",
-		Question:    `Approve tool call "shell_execute"?`,
+		Question:    "Approve \u202ethis\nForged: line?",
 		Summary:     "shell_execute command=" + cmd,
 		Params:      map[string]interface{}{"command": cmd},
 		Context:     map[string]interface{}{"note\u202e": cmd},
-		RequestType: "approval", Priority: "normal", Status: "pending",
+		RequestType: "approval", Priority: "normal", Status: "approved",
+		Response: "ok\x1b[2J\u2029done", RespondedBy: "ops\u202e\nForged: x", RespondedAt: &responded,
 		Kind: "approval", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
 	}))
 	require.NoError(t, store.Close())
 
 	out := captureStdout(t, func() { runHitlShow(hitlShowCmd, []string{"bidi-1"}) })
 
-	for _, r := range []rune{'\u202e', '\u202c', '\u200b', '\u009b'} {
+	for _, r := range []rune{'\u202e', '\u202c', '\u200b', '\u009b', '\U000e0041', '\u2028', '\u2029', '\x1b'} {
 		assert.NotContains(t, out, string(r), "U+%04X reaches the screen raw", r)
 	}
-	assert.Contains(t, out, `Call:           shell_execute command=echo ok # \u202eexe.cod\u202c | rm -rf ~ \u200b C1=\u009b2J`+"\n")
+	for _, line := range strings.Split(out, "\n") {
+		assert.False(t, strings.HasPrefix(line, "Forged:"), "a newline drew a forged line: %q", line)
+	}
+	assert.Contains(t, out, `Call:           shell_execute command=echo ok # \u202eexe.cod\u202c | rm -rf ~ \u200b C1=\u009b2J TAG=\U000e0041 LS=\u2028`+"\n")
+	assert.Contains(t, out, `Question:       Approve \u202ethis\nForged: line?`+"\n")
+	assert.Contains(t, out, `Response:        ok\u001b[2J\u2029done`+"\n")
+	assert.Contains(t, out, `Responded By:    ops\u202e\nForged: x`+"\n")
 
 	start := strings.Index(out, "Parameters:\n")
 	require.GreaterOrEqual(t, start, 0, "the parameters block prints")

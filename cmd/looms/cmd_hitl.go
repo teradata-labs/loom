@@ -24,6 +24,7 @@ import (
 	"text/tabwriter"
 	"time"
 	"unicode"
+	"unicode/utf16"
 
 	"github.com/spf13/cobra"
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
@@ -298,7 +299,7 @@ func runHitlList(cmd *cobra.Command, args []string) {
 
 	for _, req := range requests {
 		age := time.Since(req.CreatedAt).Round(time.Second)
-		question := hitlListLabel(req)
+		label := hitlListLabel(req)
 
 		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%v\t%s\n",
 			req.ID,
@@ -306,7 +307,7 @@ func runHitlList(cmd *cobra.Command, args []string) {
 			req.Priority,
 			req.RequestType,
 			age,
-			question,
+			label,
 		)
 	}
 
@@ -360,7 +361,7 @@ func runHitlShow(cmd *cobra.Command, args []string) {
 	fmt.Printf("Priority:       %s\n", req.Priority)
 	fmt.Printf("Status:         %s\n", req.Status)
 	fmt.Printf("\n")
-	fmt.Printf("Question:       %s\n", req.Question)
+	fmt.Printf("Question:       %s\n", escapeControlChars(req.Question))
 	if req.Summary != "" && req.Summary != req.Question {
 		// The digest is built from the model's own arguments: escape control
 		// characters so a newline or terminal escape in a command cannot draw
@@ -390,9 +391,9 @@ func runHitlShow(cmd *cobra.Command, args []string) {
 	// Print response info if responded
 	if req.Status != "pending" {
 		fmt.Printf("Response Status: %s\n", req.Status)
-		fmt.Printf("Response:        %s\n", req.Response)
+		fmt.Printf("Response:        %s\n", escapeControlChars(req.Response))
 		if req.RespondedBy != "" {
-			fmt.Printf("Responded By:    %s\n", req.RespondedBy)
+			fmt.Printf("Responded By:    %s\n", escapeControlChars(req.RespondedBy))
 		}
 		if req.RespondedAt != nil {
 			fmt.Printf("Responded At:    %s (%v ago)\n",
@@ -610,22 +611,37 @@ func runHitlRespond(cmd *cobra.Command, args []string) {
 	fmt.Printf("  By:         %s\n", after.RespondedBy)
 }
 
+// hitlListLabelMax is the most characters `hitl list` shows of a label.
+const hitlListLabelMax = 70
+
 // hitlListLabel is the one-line label `hitl list` shows for a request: the
 // call digest for an approval (which names the tool and its arguments), else
-// the question, with control characters escaped so it stays in one table
-// cell, cut to 70 characters on a rune boundary.
+// the question, with unsafe characters escaped so it stays in one table cell,
+// cut to hitlListLabelMax characters on a rune boundary.
 func hitlListLabel(req *shuttle.HumanRequest) string {
 	label := req.Question
 	if req.Summary != "" {
 		label = req.Summary
 	}
 	label = escapeControlChars(label)
-	if r := []rune(label); len(r) > 70 {
-		label = string(r[:67]) + "..."
+	if r := []rune(label); len(r) > hitlListLabelMax {
+		label = string(r[:hitlListLabelMax-3]) + "..."
 	}
 	return label
 }
 
+// unsafeForDisplay reports whether r can change how text displays rather than
+// showing as itself: controls (Cc), format characters (Cf: bidi overrides,
+// zero-width and tag characters), and the line and paragraph separators (Zl,
+// Zp), which many terminals treat as line breaks.
+func unsafeForDisplay(r rune) bool {
+	return unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp)
+}
+
+// escapeControlChars escapes the characters that unsafeForDisplay reports, so
+// model- or responder-written text stays on its own line and reads as it runs:
+// \n, \r and \t by name, other runes up to U+FFFF as \uXXXX, and runes above
+// it as \UXXXXXXXX, so the escape cannot be read as a shorter one plus a digit.
 func escapeControlChars(s string) string {
 	var b strings.Builder
 	for _, r := range s {
@@ -636,9 +652,9 @@ func escapeControlChars(s string) string {
 			b.WriteString(`\r`)
 		case r == '\t':
 			b.WriteString(`\t`)
-		case unicode.IsControl(r), unicode.Is(unicode.Cf, r):
-			// Cf covers bidi overrides and zero-width characters, which
-			// can make a command display differently from what runs.
+		case unsafeForDisplay(r) && r > 0xFFFF:
+			fmt.Fprintf(&b, `\U%08x`, r)
+		case unsafeForDisplay(r):
 			fmt.Fprintf(&b, `\u%04x`, r)
 		default:
 			b.WriteRune(r)
@@ -648,18 +664,24 @@ func escapeControlChars(s string) string {
 }
 
 // escapeJSONDisplayChars escapes, as JSON \u escapes, the runes that
-// encoding/json leaves raw but that can change how the text displays: format
-// characters (Cf) and controls at or above U+007F. The 7-bit controls are left
-// alone: the encoder has already escaped every one inside a value, so the only
-// ones left are the block's own newlines. The result stays valid JSON.
+// encoding/json leaves raw but that unsafeForDisplay reports. A rune above
+// U+FFFF is written as its UTF-16 surrogate pair, which is how JSON spells it.
+// The 7-bit controls are left alone: the encoder has already escaped every one
+// inside a value, so the only ones left are the block's own newlines. The
+// result stays valid JSON and decodes to the same text.
 func escapeJSONDisplayChars(s string) string {
 	var b strings.Builder
 	for _, r := range s {
-		if unicode.Is(unicode.Cf, r) || (r >= 0x7f && unicode.IsControl(r)) {
-			fmt.Fprintf(&b, `\u%04x`, r)
+		if r < 0x7f || !unsafeForDisplay(r) {
+			b.WriteRune(r)
 			continue
 		}
-		b.WriteRune(r)
+		if r > 0xFFFF {
+			hi, lo := utf16.EncodeRune(r)
+			fmt.Fprintf(&b, `\u%04x\u%04x`, hi, lo)
+			continue
+		}
+		fmt.Fprintf(&b, `\u%04x`, r)
 	}
 	return b.String()
 }
