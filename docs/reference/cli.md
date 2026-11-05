@@ -97,6 +97,8 @@ Command reference for `loom` (client) and `looms` (server).
 | `loom sessions list` | List sessions | `--limit`, `--offset` |
 | `loom sessions show` | Show session details | `<session-id>` |
 | `loom sessions delete` | Delete session | `<session-id>` |
+| `loom sessions resume` | Finish a turn a server crash interrupted | `<session-id>`, `--timeout` |
+| `loom sessions resolve-gap` | Record the outcome of a call resume could not determine | `<session-id>`, `--outcome`, `--result` |
 | `loom artifacts list` | List artifacts | `--source`, `--content-type`, `--tags` |
 | `loom artifacts search` | Full-text search artifacts | `<query>`, `--limit` |
 | `loom artifacts show` | Show artifact details | `<artifact-id-or-name>` |
@@ -1005,6 +1007,8 @@ loom sessions <subcommand> [flags]
 | `list` | List conversation sessions |
 | `show <session-id>` | Show session details |
 | `delete <session-id>` | Delete a session and its conversation history |
+| `resume <session-id>` | Finish a turn that a server crash interrupted (needs `execution_log.enabled`) |
+| `resolve-gap <session-id>` | Record the outcome of the tool call `resume` reported as an execution gap |
 
 **Flags (list):**
 
@@ -1030,6 +1034,44 @@ Delete a session:
 ```bash
 loom sessions delete sess_abc123def456
 ```
+
+#### loom sessions resume
+
+Calls the server's `ResumeSession` RPC. The server finishes the session's
+interrupted turn on the agent it built for the session, using the execution
+log. See the [Crash Resume guide](../guides/crash-resume.md).
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--timeout` | duration | `10m` | How long to wait for the resumed turn, which runs LLM and tool calls |
+
+| Result | Output | Exit code |
+|--------|--------|-----------|
+| Turn finished | `Resumed session <id>.` and the reply | 0 |
+| Last turn already complete | `Nothing to resume: ...` | 0 |
+| Turn stopped for a human decision | `Session <id> is waiting for a human decision again.` | 0 |
+| Execution gap | The call's tool, call ID, step and position, and the `resolve-gap` commands | 1 |
+| Refused (gRPC `FAILED_PRECONDITION`) | The turn was not recorded, its batch was not saved, the execution log is off, or a human decision is pending | 1 |
+| Busy (gRPC `ABORTED`) | Another process holds the session's lease (a live turn or another resume) | 1 |
+| Not found (gRPC `NOT_FOUND`) | No such session for the caller | 1 |
+
+#### loom sessions resolve-gap
+
+Calls the server's `ResolveExecutionGap` RPC: records an operator's finding for
+the tool call that `resume` reported as an execution gap, then exits. Run
+`loom sessions resume` again afterwards.
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--outcome` | string | (required) | `succeeded` or `failed` |
+| `--result` | string (JSON) | | The call's result; required with `--outcome succeeded` |
+
+```bash
+loom sessions resolve-gap sess_abc123def456 --outcome succeeded --result '{"rows": 3}'
+loom sessions resolve-gap sess_abc123def456 --outcome failed
+```
+
+Exits 1 with gRPC `FAILED_PRECONDITION` when the session has no execution gap.
 
 
 ### loom artifacts

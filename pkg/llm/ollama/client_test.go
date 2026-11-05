@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -542,8 +543,10 @@ func TestClient_Chat_WithToolCalls(t *testing.T) {
 
 func TestClient_SupportsNativeTools_ProbeDetectsToolTemplate(t *testing.T) {
 	// Mock Ollama /api/show that returns a template with tool markers
+	var probes atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/show" {
+			probes.Add(1)
 			resp := map[string]string{
 				"template": `{{ if .System }}{{ .System }}{{ end }}{{ if .Tools }}Available tools: {{ .Tools }}{{ end }}{{ .Prompt }}`,
 			}
@@ -561,7 +564,9 @@ func TestClient_SupportsNativeTools_ProbeDetectsToolTemplate(t *testing.T) {
 
 	// Should detect tool support dynamically despite not being in fallback list
 	assert.True(t, client.supportsNativeTools(), "should detect tool support from template")
-	assert.True(t, client.nativeToolsProbed, "probe flag should be set")
+	// The probe runs once per client; later calls return the cached result.
+	assert.True(t, client.supportsNativeTools(), "second call should return the cached result")
+	assert.Equal(t, int32(1), probes.Load(), "/api/show should be probed exactly once")
 }
 
 func TestClient_SupportsNativeTools_ProbeNoToolTemplate(t *testing.T) {
