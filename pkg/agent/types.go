@@ -95,10 +95,12 @@ type Agent struct {
 	// slot — abandonParkedRequest releases before closing a dead turn's row. Pooled embedders — a fresh Agent per call, where
 	// adoption can never happen — drain the slot explicitly at each park via
 	// ReleaseParkedHandles, keeping call-scoped semantics with no leak.
-	// sessionLocks serializes resumes per session inside this process, so two
-	// deliveries of one decision cannot both execute its batch.
+	// sessionLocks runs one turn per session at a time inside this process
+	// (session_turn_lock.go): new turns and resumes alike, so a user turn and
+	// a workflow injection cannot interleave, and two deliveries of one
+	// decision cannot both execute its batch.
 	sessionLocksMu sync.Mutex
-	sessionLocks   map[string]*sync.Mutex
+	sessionLocks   map[string]*sessionTurnLock
 
 	parkedHandlesMu sync.Mutex
 	parkedHandles   map[string]*mcpadapter.HandleCollector
