@@ -202,7 +202,9 @@ On both paths the gRPC card also carries the row's `kind` (`approval`,
 `question` or `resource`), `summary` (the display digest) and
 `params_truncated` (true when the size bound cut entries out of `params`).
 The bundled TUI does not render `params_json` yet: its dialog shows only the
-question text.
+question text. `looms hitl show` does not show it either: it prints the
+request's `Context` (so an in-turn card's reason appears) but not its `Params`,
+where a parked item's reason is stored.
 
 ### 3.3 Claiming the decision
 
@@ -367,16 +369,18 @@ closed.
   the approver is the literal string `"human"`, so nothing records *who*
   approved. (The embedder-recorded flow does not have this problem — there the
   row is decided first and its status overrides the payload.)
-- ✅ **`AskGrant` no longer reaches nested calls** (was: a blanket context value
-  that lifted any `Ask` downstream of the granted call's context). The executor
-  withholds the grant from every tool body once the call's own admission has used
-  it (`toolBodyContext` in `pkg/shuttle/admission_grants.go`), so a code-mode or
-  agent-delegation tool that re-enters the executor gets its nested calls asked
-  afresh. Tested by `TestAskGrant_NotInheritedByNestedCalls`.
 - 📋 No proto/gRPC surface for resume; park is a library API for embedders.
   Whether loom should expose resume over gRPC is a product decision, not an
   oversight — every other conversation entry point reaches clients through the
   Weave surface, so the asymmetry is worth a deliberate answer.
+
+**Fixed (no longer a gap):** an `AskGrant` no longer reaches nested calls. It
+was a blanket context value that lifted any `Ask` downstream of the granted
+call's context. The executor withholds the grant from every tool body once the
+call's own admission has used it (`toolBodyContext` in
+`pkg/shuttle/admission_grants.go`), so a code-mode or agent-delegation tool that
+re-enters the executor gets its nested calls asked afresh. Tested by
+`TestAskGrant_NotInheritedByNestedCalls`.
 
 ## 9. A note on hook evaluation count
 
