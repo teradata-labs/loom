@@ -3,7 +3,7 @@
 Technical reference for connecting Loom to the Amazon Bedrock `bedrock-mantle` endpoint.
 
 **Version**: v1.4.0
-**Status**: ✅ Implemented. Provider (`pkg/llm/bedrockmantle`), provider factory, agent registry, `looms` server config (`llm.bedrock_mantle_*`), `looms` CLI and `loom-standalone`. Catalog pricing covers Claude Haiku 4.5 and Opus 4.7 only; see [Cost accounting](#cost-accounting) and [What is not done yet](#what-is-not-done-yet).
+**Status**: ✅ Implemented. Provider (`pkg/llm/bedrockmantle`), provider factory, agent registry, `looms` server config (`llm.bedrock_mantle_*`), `looms` CLI, `loom-standalone`, `quickstart.sh` and `pkg/builder`. The catalog prices every model AWS documents on Mantle except GPT-5.x/6.x (53 models); see [Cost accounting](#cost-accounting) and [What is not done yet](#what-is-not-done-yet).
 
 ## Table of Contents
 
@@ -61,6 +61,8 @@ SigV4 credentials are the Bedrock ones: `llm.bedrock_profile`, or `bedrock_acces
 
 The provider is selectable everywhere `looms` builds an LLM: the main server LLM, `llm.provider_pool` entries (they inherit the Mantle region, endpoint and API key from the main LLM when omitted; when the main LLM sets `bedrock_mantle_region`, a pool entry that sets only `bedrock_region` still uses the main Mantle region, so set `bedrock_mantle_region` on the pool entry to override it), per-agent `llm:` blocks in agent YAML (model from the agent, credentials from the server), `looms workflow`, and `looms config init` (option 4). `loom-standalone --provider bedrock-mantle` reads `BEDROCK_MANTLE_REGION` (then `AWS_REGION`, then `us-west-2`) and `BEDROCK_MANTLE_API_KEY` from the environment.
 
+`quickstart.sh` offers Mantle as option 4 of its provider menu: it asks for the region, for an AWS profile (SigV4, with an optional `aws sso login`) or a Bedrock API key (keyring), and for the model, then writes `llm.provider`, `llm.bedrock_mantle_region`, `llm.bedrock_mantle_model` and either `llm.bedrock_profile` or the `bedrock_mantle_api_key` secret.
+
 ### Through the provider factory (Go)
 
 ```go
@@ -94,6 +96,17 @@ llm:
 
 Under `looms serve`, the agent block selects the provider and model; region, endpoint and credentials come from the server's `llm.bedrock_mantle_*` and `llm.bedrock_*` settings above. When the agent registry is used directly from Go (without `looms`), it reads only environment variables: `BEDROCK_MANTLE_REGION` (then `AWS_REGION`), `BEDROCK_MANTLE_ENDPOINT`, `BEDROCK_MANTLE_API_KEY`, and the default AWS credential chain (`AWS_PROFILE`, env keys, SSO, IAM role) for SigV4.
 
+### Through `pkg/builder` (Go)
+
+```go
+agent, err := builder.NewAgentBuilder().
+    WithBackend(backend).
+    WithBedrockMantleLLM("us-west-2"). // "" falls back to BEDROCK_MANTLE_REGION, then AWS_REGION
+    Build()
+```
+
+`WithBedrockMantleLLM` signs with SigV4 from the AWS credential chain unless `BEDROCK_MANTLE_API_KEY` is set, and takes the model from `LOOM_LLM_BEDROCK_MANTLE_MODEL` (default `anthropic.claude-haiku-4-5`). A construction error (for example no region anywhere) is returned by `Build`, not swallowed; `WithBedrockLLM` now reports its errors the same way.
+
 ### Directly (Go)
 
 ```go
@@ -122,6 +135,8 @@ Mantle requires the `anthropic-version` header (Loom sends `2023-06-01`) and rej
 ## Models, regions and entitlement
 
 Model ids are Mantle's own, with no inference-profile prefix: `anthropic.claude-haiku-4-5`, `anthropic.claude-opus-4-7`, `openai.gpt-oss-120b`, `google.gemma-4-e2b`. A `us.` or `global.` prefix returns 404.
+
+AWS documents these Claude models on Mantle (bedrock-runtime serves the rest of the family through inference profiles): Fable 5.1, Fable 5, Mythos 5 (Mantle-only, verification required), Opus 5.5, Opus 5, Opus 4.8, Opus 4.7, Sonnet 5.5, Sonnet 5, Haiku 5.5 and Haiku 4.5. Opus 4.1/4.5/4.6, Sonnet 4/4.5/4.6 and Claude 3 Haiku are not on Mantle. Anthropic's [Claude in Amazon Bedrock](https://platform.claude.com/docs/en/build-with-claude/claude-in-amazon-bedrock) page also lists `anthropic.claude-mythos-5-1`; AWS's endpoint-availability page does not, so the catalog leaves it out.
 
 What `GET /v1/models` lists depends on the region, and the listing is **not** an entitlement check. Observed in the Teradata Labs account:
 
@@ -162,14 +177,77 @@ Under load, Mantle queues rather than rejecting: 60 concurrent Haiku requests fr
 
 ## Cost accounting
 
-Mantle bills the same per-token rates as `bedrock-runtime`. The catalog's `bedrock-mantle` namespace lists the Mantle ids whose rates are already verified in this repository:
+The catalog's `bedrock-mantle` namespace (`pkg/llm/catalog/catalog.go`) prices every model AWS documents on the endpoint except GPT-5.x/6.x, so the inner clients attach the Mantle rate to each response instead of a fallback. The rates were verified on 2026-11-05 against two sources:
 
-| Model id | Input $/1M | Output $/1M | Context | Max output |
-|---|---|---|---|---|
-| `anthropic.claude-haiku-4-5` | 1.00 | 5.00 | 200k | 64k |
-| `anthropic.claude-opus-4-7` | 5.00 | 25.00 | 1M | 128k |
+- **Claude**: Anthropic's [first-party card](https://platform.claude.com/docs/en/about-claude/pricing) × 1.10. AWS bills the same per-token rate for a model on both endpoints ([endpoints](https://docs.aws.amazon.com/bedrock/latest/userguide/endpoints.html), "Pricing"), and a bare Mantle id is a regional, single-Region endpoint, which for Claude 4.5 and later carries a 10 percent premium over the `global.*` profiles that `bedrock-runtime` offers ([Claude in Amazon Bedrock](https://platform.claude.com/docs/en/build-with-claude/claude-in-amazon-bedrock), "Regions"). The `bedrock` namespace lists the global rates, so the same model costs 10% more through this provider than through `bedrock` with a `global.` profile, and the same as through `bedrock` with a `us.`/`eu.` profile. Haiku 5.5 is priced on its card for prompts up to 100K tokens; Anthropic bills $0.50/$2.50 (×1.10 here) above that, which the catalog does not model.
+- **Everything else**: the [AWS Price List API](https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonBedrock/current/us-west-2/index.json) for AmazonBedrock, offer version 20261102165015, `<id>-mantle-…-tokens-standard` SKUs (us-west-2 and us-east-1 are identical). Only the standard tier is modelled; Mantle also sells flex (−50%), priority (+75%) and batch tiers, and Loom does not send `service_tier`. Grok 4.6 also has a cheaper `-global` SKU ($2.00/$6.00) that a bare Mantle id does not reach.
 
-Other Mantle models are priced by the inner client's fallback table, which is **wrong** for them (non-Claude ids fall to the openai client's default rates). Add entries to the `bedrock-mantle` namespace in `pkg/llm/catalog/catalog.go` as rates are verified.
+Context window and max output are the AWS model cards (`K` written as K×1000). Where a card states no output cap (Gemma 4, Voxtral, Grok) the row carries the cap AWS states for a sibling model, or Grok 4.3's documented `max_completion_tokens` default, and says so in a comment. Capabilities and `IsReasoning` follow the card's modalities and Reasoning line; "tool-use" is client-side tool calling.
+
+### Claude
+
+| Model id | Model | Input $/1M | Output $/1M | Context | Max output | Capabilities |
+|---|---|---|---|---|---|---|
+| `anthropic.claude-fable-5-1` | Claude Fable 5.1 | 11.00 | 55.00 | 1M | 128k | text, vision, tool-use, thinking |
+| `anthropic.claude-fable-5` | Claude Fable 5 | 11.00 | 55.00 | 1M | 128k | text, vision, tool-use, thinking |
+| `anthropic.claude-mythos-5` | Claude Mythos 5 | 11.00 | 55.00 | 1M | 128k | text, vision, tool-use, thinking |
+| `anthropic.claude-opus-5-5` | Claude Opus 5.5 | 4.40 | 22.00 | 1M | 128k | text, vision, tool-use, thinking |
+| `anthropic.claude-opus-5` | Claude Opus 5 | 5.50 | 27.50 | 1M | 128k | text, vision, tool-use, thinking |
+| `anthropic.claude-opus-4-8` | Claude Opus 4.8 | 5.50 | 27.50 | 1M | 128k | text, vision, tool-use, thinking |
+| `anthropic.claude-opus-4-7` | Claude Opus 4.7 | 5.50 | 27.50 | 1M | 128k | text, vision, tool-use, thinking |
+| `anthropic.claude-sonnet-5-5` | Claude Sonnet 5.5 | 2.20 | 11.00 | 1M | 128k | text, vision, tool-use, thinking |
+| `anthropic.claude-sonnet-5` | Claude Sonnet 5 | 2.20 | 11.00 | 1M | 128k | text, vision, tool-use, thinking |
+| `anthropic.claude-haiku-5-5` | Claude Haiku 5.5 | 0.11 | 0.55 | 1M | 128k | text, vision, tool-use, thinking |
+| `anthropic.claude-haiku-4-5` | Claude Haiku 4.5 | 1.10 | 5.50 | 200k | 64k | text, vision, tool-use, thinking |
+
+### Open-weight and third-party models
+
+| Model id | Model | Input $/1M | Output $/1M | Context | Max output | Capabilities |
+|---|---|---|---|---|---|---|
+| `deepseek.v3.1` | DeepSeek-V3.1 | 0.58 | 1.68 | 128k | 8k | text, tool-use |
+| `deepseek.v3.2` | DeepSeek V3.2 | 0.62 | 1.85 | 164k | 8k | text, tool-use |
+| `google.gemma-3-4b-it` | Gemma 3 4B IT | 0.04 | 0.08 | 128k | 8k | text, vision, tool-use |
+| `google.gemma-3-12b-it` | Gemma 3 12B IT | 0.09 | 0.29 | 128k | 8k | text, vision, tool-use |
+| `google.gemma-3-27b-it` | Gemma 3 27B | 0.23 | 0.38 | 128k | 8k | text, vision, tool-use |
+| `google.gemma-4-e2b` | Gemma 4 E2B | 0.04 | 0.08 | 128k | 8k | text, vision, tool-use, thinking |
+| `google.gemma-4-26b-a4b` | Gemma 4 26B-A4B | 0.13 | 0.40 | 256k | 8k | text, vision, tool-use, thinking |
+| `google.gemma-4-31b` | Gemma 4 31B | 0.14 | 0.40 | 256k | 8k | text, vision, tool-use, thinking |
+| `minimax.minimax-m2` | MiniMax M2 | 0.30 | 1.20 | 1M | 8k | text, tool-use |
+| `minimax.minimax-m2.1` | MiniMax M2.1 | 0.30 | 1.20 | 196k | 8k | text, tool-use |
+| `minimax.minimax-m2.5` | MiniMax M2.5 | 0.30 | 1.20 | 196k | 8k | text, tool-use |
+| `mistral.devstral-2-123b` | Devstral 2 123B | 0.40 | 2.00 | 256k | 32k | text, tool-use |
+| `mistral.magistral-small-2509` | Magistral Small 2509 | 0.50 | 1.50 | 128k | 40k | text, vision, tool-use, thinking |
+| `mistral.ministral-3-14b-instruct` | Ministral 3 14B | 0.20 | 0.20 | 128k | 8k | text, vision, tool-use |
+| `mistral.ministral-3-8b-instruct` | Ministral 3 8B | 0.15 | 0.15 | 128k | 8k | text, vision, tool-use |
+| `mistral.ministral-3-3b-instruct` | Ministral 3 3B | 0.10 | 0.10 | 128k | 8k | text, vision, tool-use |
+| `mistral.mistral-large-3-675b-instruct` | Mistral Large 3 | 0.50 | 1.50 | 256k | 32k | text, vision, tool-use |
+| `mistral.voxtral-mini-3b-2507` | Voxtral Mini 3B 2507 | 0.04 | 0.04 | 32k | 8k | text, tool-use |
+| `mistral.voxtral-small-24b-2507` | Voxtral Small 24B 2507 | 0.10 | 0.30 | 32k | 8k | text, tool-use |
+| `moonshotai.kimi-k2-thinking` | Kimi K2 Thinking | 0.60 | 2.50 | 256k | 16k | text, tool-use, thinking |
+| `moonshotai.kimi-k2.5` | Kimi K2.5 | 0.60 | 3.00 | 256k | 16k | text, vision, tool-use |
+| `nvidia.nemotron-nano-9b-v2` | Nemotron Nano 9B v2 | 0.06 | 0.23 | 128k | 8k | text, tool-use |
+| `nvidia.nemotron-nano-12b-v2` | Nemotron Nano 12B v2 VL | 0.20 | 0.60 | 128k | 8k | text, vision, tool-use |
+| `nvidia.nemotron-nano-3-30b` | Nemotron Nano 3 30B | 0.06 | 0.24 | 256k | 8k | text, tool-use, thinking |
+| `nvidia.nemotron-super-3-120b` | Nemotron 3 Super 120B | 0.15 | 0.65 | 256k | 32k | text, tool-use, thinking |
+| `openai.gpt-oss-20b` | gpt-oss-20b | 0.07 | 0.30 | 128k | 16k | text, tool-use, thinking |
+| `openai.gpt-oss-120b` | gpt-oss-120b | 0.15 | 0.60 | 128k | 16k | text, tool-use, thinking |
+| `openai.gpt-oss-safeguard-20b` | gpt-oss-safeguard-20b | 0.07 | 0.20 | 128k | 16k | text, tool-use, thinking |
+| `openai.gpt-oss-safeguard-120b` | gpt-oss-safeguard-120b | 0.15 | 0.60 | 128k | 16k | text, tool-use, thinking |
+| `qwen.qwen3-32b` | Qwen3 32B | 0.15 | 0.60 | 32k | 8k | text, tool-use, thinking |
+| `qwen.qwen3-235b-a22b-2507` | Qwen3 235B A22B 2507 | 0.22 | 0.88 | 256k | 8k | text, tool-use, thinking |
+| `qwen.qwen3-coder-30b-a3b-instruct` | Qwen3 Coder 30B A3B Instruct | 0.15 | 0.60 | 256k | 16k | text, tool-use |
+| `qwen.qwen3-coder-480b-a35b-instruct` | Qwen3 Coder 480B A35B Instruct | 0.45 | 1.80 | 256k | 16k | text, tool-use |
+| `qwen.qwen3-coder-next` | Qwen3 Coder Next | 0.50 | 1.20 | 256k | 16k | text, tool-use |
+| `qwen.qwen3-next-80b-a3b-instruct` | Qwen3 Next 80B A3B | 0.14 | 1.20 | 256k | 8k | text, tool-use, thinking |
+| `qwen.qwen3-vl-235b-a22b-instruct` | Qwen3 VL 235B A22B | 0.53 | 2.66 | 256k | 8k | text, vision, tool-use |
+| `writer.palmyra-vision-7b` | Palmyra Vision 7B | 0.15 | 0.60 | 4k | 4k | text, vision, tool-use |
+| `xai.grok-4.3` | Grok 4.3 | 1.25 | 2.50 | 1M | 131,072 | text, vision, tool-use, thinking |
+| `xai.grok-4.6` | Grok 4.6 | 2.20 | 6.60 | 500k | 131,072 | text, vision, tool-use, thinking |
+| `zai.glm-4.7` | GLM 4.7 | 0.60 | 2.20 | 203k | 128k | text, tool-use |
+| `zai.glm-4.7-flash` | GLM 4.7 Flash | 0.07 | 0.40 | 203k | 128k | text, tool-use |
+| `zai.glm-5` | GLM 5 | 1.00 | 3.20 | 200k | 128k | text, tool-use |
+
+Not priced: `openai.gpt-5.*` and `openai.gpt-6*` (served on Mantle, no price-list SKU yet; the openai client's fallback rate applies), `zai.glm-4.6` (listed live, not on AWS's Mantle availability page or price list), and the cache-read/cache-write tiers of the open models (Grok and Kimi K3 publish them; Loom's openai client does not price cache hits).
 
 ## Testing
 
@@ -190,9 +268,9 @@ It covers the health check, Claude chat, streaming, tool calls and prompt cachin
 
 ## What is not done yet
 
-- 📋 `quickstart.sh` does not offer Mantle in its setup menu and `pkg/builder` has no `WithBedrockMantleLLM` helper; use `looms config init` (option 4) or `looms.yaml`.
-- 📋 Catalog entries for the other Claude models Mantle lists (Sonnet 5, Opus 5.x, Opus 4.8, Fable 5) and for non-Claude models, once their rates are verified.
-- 📋 OpenAI Responses API, server-side tools, background inference, Projects and Workspaces.
+- 📋 Rates for `openai.gpt-5.*` / `openai.gpt-6*` on Mantle (no AWS price-list SKU as of offer 20261102165015), for `zai.glm-4.6`, and for the Haiku 5.5 long-context card; service tiers other than standard.
+- 📋 `anthropic.claude-mythos-5-1`: Anthropic lists it for the Mantle endpoint, AWS does not. Add it once the two agree.
+- 📋 OpenAI Responses API, server-side tools, background inference, Projects and Workspaces. Loom's openai client speaks Chat Completions, which every non-Claude Mantle model serves, so these add capabilities rather than reach.
 
 ## See Also
 
