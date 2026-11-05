@@ -202,7 +202,8 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 	progressCallback := ctx.ProgressCallback()
 	useStreaming := supportsStreaming && progressCallback != nil
 
-	// If using streaming, bypass retry logic (streaming already handles errors)
+	// Streaming skips the failure-retry loop below: chatWithStreaming returns
+	// any non-throttle error at once, and waits out throttles itself.
 	if useStreaming {
 		return a.chatWithStreaming(ctx, messages, tools, progressCallback)
 	}
@@ -310,8 +311,11 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 
 // throttlePatience paces re-invocation against provider throttling (429 and
 // kin). Waits honor the provider-stated retry-after when the error names one,
-// escalate 2s→60s otherwise, and give up only past a total budget — a
-// throttled conversation pauses, it does not die.
+// escalate 2s→60s otherwise, and give up only past a total WAIT budget — a
+// throttled conversation pauses, it does not die. The budget counts the
+// sleeps only, not the time spent inside each re-invoked call (which
+// includes a provider RateLimiter's own retries), so the wall-clock stall
+// can run past it.
 type throttlePatience struct {
 	delay time.Duration
 	total time.Duration
@@ -320,8 +324,9 @@ type throttlePatience struct {
 const (
 	throttleInitialDelay = 2 * time.Second
 	throttleMaxDelay     = 60 * time.Second
-	// throttleBudget bounds total throttle waiting per LLM call so a caller
-	// without a deadline cannot park forever on a hard-down provider.
+	// throttleBudget bounds total throttle waiting (sleep time only) per LLM
+	// call so a caller without a deadline cannot park forever on a hard-down
+	// provider.
 	throttleBudget = 10 * time.Minute
 )
 
