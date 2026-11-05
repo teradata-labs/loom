@@ -17,6 +17,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -334,4 +335,24 @@ func TestResumeSessionRPC_BusySessionIsAborted(t *testing.T) {
 	srv := stores.server(t, stores.agent(&resumeLLM{}, &resumeProbeTool{}))
 	_, err = srv.ResumeSession(ctx, &loomv1.ResumeSessionRequest{SessionId: "s-busy"})
 	require.Equal(t, codes.Aborted, status.Code(err), "got %v", err)
+}
+
+// A lease error maps to ABORTED even when the error also carries a resume
+// outcome. leaseLostError drops that outcome from the chain today; this pins
+// the order of the checks so keeping the chain later cannot turn a lease-lost
+// turn into an EXECUTION_GAP, PARKED or NOTHING_TO_RESUME response.
+func TestResumeSessionResponse_LeaseErrorOutranksOutcome(t *testing.T) {
+	gap := &agent.ExecutionGap{SessionID: "s", ToolName: "read", ToolUseID: "c1"}
+	for name, err := range map[string]error{
+		"lost with gap":            fmt.Errorf("%w: %w", agent.ErrSessionLeaseLost, gap),
+		"busy with gap":            fmt.Errorf("%w: %w", agent.ErrSessionBusy, gap),
+		"lost while parked":        fmt.Errorf("%w: %w", agent.ErrSessionLeaseLost, &agent.TurnParkedError{RequestID: "r1"}),
+		"lost with nothing parked": fmt.Errorf("%w: %w", agent.ErrSessionLeaseLost, agent.ErrNothingParked),
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp, got := resumeSessionResponse(nil, err)
+			require.Nil(t, resp)
+			require.Equal(t, codes.Aborted, status.Code(got), "got %v", got)
+		})
+	}
 }

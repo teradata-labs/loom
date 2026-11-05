@@ -87,7 +87,13 @@ func (s *MultiAgentServer) ResumeSession(ctx context.Context, req *loomv1.Resume
 // runResumeSession runs the agent's resume and maps its outcome to the RPC
 // response.
 func (s *MultiAgentServer) runResumeSession(ctx context.Context, ag *agent.Agent, sessionID string) (*loomv1.ResumeSessionResponse, error) {
-	resp, err := ag.ResumeSession(ctx, sessionID)
+	return resumeSessionResponse(ag.ResumeSession(ctx, sessionID))
+}
+
+// resumeSessionResponse maps ResumeSession's result to the RPC response. A
+// lease error is checked first, so it maps to ABORTED even if the error also
+// carries an outcome (an ExecutionGap, say).
+func resumeSessionResponse(resp *agent.Response, err error) (*loomv1.ResumeSessionResponse, error) {
 	var gap *agent.ExecutionGap
 	var parked *agent.TurnParkedError
 	switch {
@@ -96,6 +102,8 @@ func (s *MultiAgentServer) runResumeSession(ctx context.Context, ag *agent.Agent
 			Outcome: loomv1.ResumeSessionOutcome_RESUME_SESSION_OUTCOME_RESUMED,
 			Content: resp.Content,
 		}, nil
+	case isSessionLeaseError(err):
+		return nil, resumeStatus(err)
 	case errors.As(err, &gap):
 		return &loomv1.ResumeSessionResponse{
 			Outcome: loomv1.ResumeSessionOutcome_RESUME_SESSION_OUTCOME_EXECUTION_GAP,
