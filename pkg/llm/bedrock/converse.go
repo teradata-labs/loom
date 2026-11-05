@@ -36,7 +36,10 @@ func (c *Client) ChatConverse(ctx context.Context, messages []llmtypes.Message, 
 	startTime := time.Now()
 
 	// Convert messages and tools to Converse API format (reuses same converter as streaming)
-	systemBlocks, converseMessages := c.convertMessagesToConverse(messages)
+	// The sanitized → original tool-name map is per request: the client is
+	// shared across sessions (server provider pool).
+	nameMap := make(map[string]string)
+	systemBlocks, converseMessages := c.convertMessagesToConverse(messages, nameMap)
 
 	// Validate that we have at least one message
 	if len(converseMessages) == 0 {
@@ -101,7 +104,7 @@ func (c *Client) ChatConverse(ctx context.Context, messages []llmtypes.Message, 
 
 	// Add tools if provided
 	if len(tools) > 0 {
-		toolConfig, err := c.convertToolsToConverse(ctx, tools)
+		toolConfig, err := c.convertToolsToConverse(ctx, tools, nameMap)
 		if err != nil {
 			return nil, err
 		}
@@ -166,7 +169,7 @@ func (c *Client) ChatConverse(ctx context.Context, messages []llmtypes.Message, 
 					}
 
 					// Map sanitized name back to original name
-					if originalName, found := c.toolNameMap[toolCall.Name]; found {
+					if originalName, found := nameMap[toolCall.Name]; found {
 						toolCall.Name = originalName
 					}
 

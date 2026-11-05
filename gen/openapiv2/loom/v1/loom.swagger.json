@@ -2155,6 +2155,87 @@
         ]
       }
     },
+    "/v1/sessions/{sessionId}:resolveExecutionGap": {
+      "post": {
+        "summary": "ResolveExecutionGap records an operator's finding for the tool call that\nResumeSession reported as an execution gap, so ResumeSession can continue\nthe turn.",
+        "description": "The recorded result is the caller's assertion, not tool output, but the\nagent treats it as real tool output. It is stored marked as manually\nresolved with the caller's user id. Any caller who can open the session may\ncall this; there is no operator-only role. Do not expose it to session\nowners you would not trust to set a tool's result.",
+        "operationId": "LoomService_ResolveExecutionGap",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ResolveExecutionGapResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "sessionId",
+            "description": "Session ID",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/LoomServiceResolveExecutionGapBody"
+            }
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
+    "/v1/sessions/{sessionId}:resume": {
+      "post": {
+        "summary": "ResumeSession finishes a conversation turn that a crash interrupted, using\nthe durable execution log (execution_log.enabled must have been on while\nthe turn ran). Calls recorded as complete are backfilled from the log,\ncalls never started are dispatched, and the turn's reply is produced. A\ncall whose outcome is unknown is reported as an execution gap, to be\nsettled with ResolveExecutionGap before resuming again.",
+        "operationId": "LoomService_ResumeSession",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ResumeSessionResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "sessionId",
+            "description": "Session ID",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/LoomServiceResumeSessionBody"
+            }
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
     "/v1/sessions/{sessionId}:subscribe": {
       "get": {
         "summary": "SubscribeToSession subscribes to real-time updates for a session.\nReturns a stream of updates when new messages arrive or session state changes.\nThis allows clients to receive asynchronous responses from workflow coordinators\nand sub-agents without polling.",
@@ -3466,6 +3547,20 @@
       },
       "description": "ReloadAgentRequest hot-reloads agent configuration."
     },
+    "LoomServiceResolveExecutionGapBody": {
+      "type": "object",
+      "properties": {
+        "outcome": {
+          "$ref": "#/definitions/v1ExecutionGapOutcome",
+          "title": "The operator's finding"
+        },
+        "resultJson": {
+          "type": "string",
+          "description": "The call's result as JSON. Required when outcome is\nEXECUTION_GAP_OUTCOME_SUCCEEDED."
+        }
+      },
+      "description": "ResolveExecutionGapRequest settles the session's current execution gap."
+    },
     "LoomServiceRestartMCPServerBody": {
       "type": "object",
       "properties": {
@@ -3480,6 +3575,10 @@
     "LoomServiceResumeScheduleBody": {
       "type": "object",
       "description": "ResumeScheduleRequest resumes a paused schedule."
+    },
+    "LoomServiceResumeSessionBody": {
+      "type": "object",
+      "description": "ResumeSessionRequest names the session whose interrupted turn to finish."
     },
     "LoomServiceStartAgentBody": {
       "type": "object",
@@ -5215,6 +5314,40 @@
         }
       },
       "description": "ExecuteWorkflowResponse contains the workflow execution result."
+    },
+    "v1ExecutionGap": {
+      "type": "object",
+      "properties": {
+        "stepIndex": {
+          "type": "integer",
+          "format": "int32",
+          "description": "The step (LLM call) whose batch holds the call."
+        },
+        "batchPosition": {
+          "type": "integer",
+          "format": "int32",
+          "description": "The call's position in that step's batch."
+        },
+        "toolName": {
+          "type": "string",
+          "description": "The tool the call invoked."
+        },
+        "toolUseId": {
+          "type": "string",
+          "description": "The provider's tool call ID; informational, may be empty or repeated."
+        }
+      },
+      "description": "ExecutionGap identifies a tool call whose outcome is unknown: its intent\nwas recorded before it ran, but no result was ever recorded."
+    },
+    "v1ExecutionGapOutcome": {
+      "type": "string",
+      "enum": [
+        "EXECUTION_GAP_OUTCOME_UNSPECIFIED",
+        "EXECUTION_GAP_OUTCOME_SUCCEEDED",
+        "EXECUTION_GAP_OUTCOME_FAILED"
+      ],
+      "default": "EXECUTION_GAP_OUTCOME_UNSPECIFIED",
+      "description": "ExecutionGapOutcome is an operator's finding for an execution gap.\n\n - EXECUTION_GAP_OUTCOME_SUCCEEDED: The call ran and succeeded; result_json holds its result.\n - EXECUTION_GAP_OUTCOME_FAILED: The call did not take effect."
     },
     "v1ExecutionMetadata": {
       "type": "object",
@@ -7786,6 +7919,16 @@
       },
       "description": "RenewalStatus reports automatic renewal status."
     },
+    "v1ResolveExecutionGapResponse": {
+      "type": "object",
+      "properties": {
+        "gap": {
+          "$ref": "#/definitions/v1ExecutionGap",
+          "title": "The settled gap"
+        }
+      },
+      "description": "ResolveExecutionGapResponse names the gap that was settled."
+    },
     "v1RestartPolicy": {
       "type": "object",
       "properties": {
@@ -7820,6 +7963,36 @@
         }
       },
       "description": "RestartPolicy defines rules for stage restart coordination."
+    },
+    "v1ResumeSessionOutcome": {
+      "type": "string",
+      "enum": [
+        "RESUME_SESSION_OUTCOME_UNSPECIFIED",
+        "RESUME_SESSION_OUTCOME_RESUMED",
+        "RESUME_SESSION_OUTCOME_NOTHING_TO_RESUME",
+        "RESUME_SESSION_OUTCOME_EXECUTION_GAP",
+        "RESUME_SESSION_OUTCOME_PARKED"
+      ],
+      "default": "RESUME_SESSION_OUTCOME_UNSPECIFIED",
+      "description": "ResumeSessionOutcome is what ResumeSession did.\n\n - RESUME_SESSION_OUTCOME_RESUMED: The interrupted turn finished; content holds its reply.\n - RESUME_SESSION_OUTCOME_NOTHING_TO_RESUME: The session's last turn is already complete; nothing ran.\n - RESUME_SESSION_OUTCOME_EXECUTION_GAP: A tool call's outcome is unknown; gap describes it. Settle it with\nResolveExecutionGap, then call ResumeSession again.\n - RESUME_SESSION_OUTCOME_PARKED: The turn stopped again to wait for a human decision."
+    },
+    "v1ResumeSessionResponse": {
+      "type": "object",
+      "properties": {
+        "outcome": {
+          "$ref": "#/definitions/v1ResumeSessionOutcome",
+          "title": "What happened"
+        },
+        "content": {
+          "type": "string",
+          "description": "The turn's reply, when outcome is RESUME_SESSION_OUTCOME_RESUMED."
+        },
+        "gap": {
+          "$ref": "#/definitions/v1ExecutionGap",
+          "description": "The unresolved call, when outcome is RESUME_SESSION_OUTCOME_EXECUTION_GAP."
+        }
+      },
+      "description": "ResumeSessionResponse reports what ResumeSession did."
     },
     "v1RetrySessionMode": {
       "type": "string",
