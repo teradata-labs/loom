@@ -87,6 +87,9 @@ type MCPServerConfigYAML struct {
 	TimeoutSeconds int                  `yaml:"timeout_seconds"`
 	Tools          MCPToolSelectionYAML `yaml:"tools"`
 	Env            map[string]string    `yaml:"env"`
+	// MaxResponseBytes bounds one JSON-RPC message from this server
+	// (streamable-http only); 0 selects the 16 MiB default.
+	MaxResponseBytes int64 `yaml:"max_response_bytes"`
 }
 
 type MCPToolSelectionYAML struct {
@@ -285,6 +288,8 @@ func convertMCPConfig(yaml *MCPServersConfigYAML) *loomv1.MCPServersConfig {
 			Args:           server.Args,
 			TimeoutSeconds: safeInt32(server.TimeoutSeconds),
 			Env:            server.Env,
+
+			MaxResponseBytes: server.MaxResponseBytes,
 		}
 
 		// Tool selection

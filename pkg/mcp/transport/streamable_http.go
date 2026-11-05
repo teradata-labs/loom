@@ -293,6 +293,13 @@ func (t *StreamableHTTPTransport) Send(ctx context.Context, message []byte) erro
 			return fmt.Errorf("failed to read response: %w", err)
 		}
 		if int64(len(data)) > t.maxResponseBytes {
+			// Logged at Warn, like the SSE branch: at default levels this is
+			// the only record that ties the refusal to a server and a limit.
+			// The caller logs it at Debug, which is not enough to diagnose
+			// from.
+			t.logger.Warn("JSON response rejected: over the configured size limit",
+				zap.Int64("limit_bytes", t.maxResponseBytes),
+				zap.String("endpoint", t.endpoint))
 			return &ResponseTooLargeError{Limit: t.maxResponseBytes}
 		}
 		t.logger.Debug("Read JSON response data", zap.Int("bytes", len(data)))
@@ -438,8 +445,22 @@ func (t *StreamableHTTPTransport) handleSSEStream(ctx context.Context, body io.R
 				var tooLarge *ResponseTooLargeError
 				if errors.As(err, &tooLarge) {
 					t.logger.Warn("SSE message rejected: over the configured size limit",
-						zap.Int64("limit_bytes", tooLarge.Limit))
+						zap.Int64("limit_bytes", tooLarge.Limit),
+						zap.String("endpoint", t.endpoint))
 					sawFinal = true
+					// Only synthesize when there is a request waiting for an
+					// answer. On a stream with no request id (a notification
+					// POST, or a GET listen stream) an error with "id":null
+					// matches no pending request: the client cannot route it
+					// and logs "received unrecognized message" at Warn, so the
+					// only effect is noise. This follows the same rule as the
+					// stream-lost path, which sawFinal already suppresses when
+					// expectedID is nil.
+					if expectedID == nil {
+						t.logger.Warn("oversized SSE message on a stream with no request id; no error synthesized",
+							zap.Int64("limit_bytes", tooLarge.Limit))
+						return
+					}
 					t.synthesizeError(ctx, expectedID, CodeResponseTooLarge, tooLarge.Error())
 					return
 				}

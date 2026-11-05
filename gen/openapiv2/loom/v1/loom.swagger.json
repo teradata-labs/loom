@@ -3600,6 +3600,11 @@
         "enableResumption": {
           "type": "boolean",
           "title": "Enable stream resumption (for streamable-http transport)"
+        },
+        "maxResponseBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Bound on one JSON-RPC message from this server (streamable-http only).\n0 selects the 16 MiB default. See MCPServerConfig.max_response_bytes."
         }
       },
       "description": "UpdateMCPServerRequest updates an MCP server."
@@ -3810,6 +3815,11 @@
         "enableResumption": {
           "type": "boolean",
           "title": "Enable stream resumption (for streamable-http transport)"
+        },
+        "maxResponseBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Bound on one JSON-RPC message from this server (streamable-http only).\n0 selects the 16 MiB default. See MCPServerConfig.max_response_bytes."
         }
       },
       "description": "AddMCPServerRequest adds a new MCP server."

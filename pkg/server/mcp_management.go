@@ -193,6 +193,7 @@ func (s *MultiAgentServer) AddMCPServer(ctx context.Context, req *loomv1.AddMCPS
 		URL:              req.Url, // Note: req.Url from proto (lowercase 'rl')
 		EnableSessions:   req.EnableSessions,
 		EnableResumption: req.EnableResumption,
+		MaxResponseBytes: req.MaxResponseBytes,
 		Enabled:          req.Enabled,
 		ToolFilter:       toolFilter,
 	}
@@ -367,6 +368,7 @@ func (s *MultiAgentServer) UpdateMCPServer(ctx context.Context, req *loomv1.Upda
 		URL:              req.Url, // Note: req.Url from proto (lowercase 'rl')
 		EnableSessions:   req.EnableSessions,
 		EnableResumption: req.EnableResumption,
+		MaxResponseBytes: req.MaxResponseBytes,
 		Enabled:          req.Enabled,
 		ToolFilter:       toolFilter,
 	}

@@ -76,6 +76,10 @@ func ExtraHeadersFromContext(ctx context.Context) map[string]string {
 // before the final response for an in-flight request arrived. The 2026-07-28
 // revision removed stream resumption, so the caller's recovery is to re-issue
 // the request as a new request (with the same idempotency key).
+//
+// This shares -32000 with the TypeScript SDK's ErrorCode.ConnectionClosed,
+// which means the same thing to a caller, so the overlap is harmless and is
+// left as it is.
 const CodeStreamLost = -32000
 
 // CodeResponseTooLarge is the JSON-RPC error code (implementation-defined
@@ -87,7 +91,15 @@ const CodeStreamLost = -32000
 // request", and re-issuing an oversized response fails the same way every
 // time. The caller's recovery is to raise the limit, or to ask the server for
 // less — not to retry.
-const CodeResponseTooLarge = -32001
+//
+// -32002 and not -32001: the published TypeScript SDK
+// (@modelcontextprotocol/sdk v1.32.2) defines ErrorCode.RequestTimeout as
+// -32001, so a proxy or client following that convention would read a size
+// refusal as a timeout and retry it — the one recovery that cannot work. That
+// SDK's full enum is -32000, -32001, -32042, -32600..-32603 and -32700, and
+// this repo already uses -32020..-32022, which leaves -32002 free on both
+// sides.
+const CodeResponseTooLarge = -32002
 
 // requestHeaderPeek extracts the body fields the standard request headers
 // mirror, without decoding the full message.

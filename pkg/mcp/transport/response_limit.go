@@ -17,6 +17,7 @@ package transport
 import (
 	"errors"
 	"fmt"
+	"math"
 )
 
 // DefaultMaxResponseBytes bounds one JSON-RPC message read from a
@@ -53,12 +54,34 @@ func (e *ResponseTooLargeError) Is(target error) bool {
 	return target == ErrResponseTooLarge
 }
 
+// MaxResponseLimit is the largest bound effectiveResponseLimit will return,
+// and so the value that means "effectively no limit": 4 EiB is past every
+// real response, and past what any machine could hold.
+//
+// It exists because both read paths add a little to the limit before using
+// it — one byte on the JSON path, so a body exactly at the limit still reads,
+// and sseLineOverheadBytes on the SSE path for a line's prefix and
+// terminator. At math.MaxInt64 those additions overflow to negative, and the
+// symptom is not a refusal but a HANG: io.LimitReader with a negative N
+// returns EOF at once, the empty body is taken as a notification
+// acknowledgment, and the caller waits for a reply that never comes. The SSE
+// path returns io.EOF just as promptly.
+//
+// Clamping here makes that arithmetic safe wherever the limit came from —
+// config, proto, or a caller building StreamableHTTPConfig by hand — rather
+// than at each use.
+const MaxResponseLimit int64 = math.MaxInt64 / 2
+
 // effectiveResponseLimit maps a non-positive limit to the default, so a caller
 // that leaves MaxResponseBytes zero gets the default bound rather than a
-// transport that rejects every response.
+// transport that rejects every response, and clamps an enormous one to
+// MaxResponseLimit so the read paths' own arithmetic cannot overflow.
 func effectiveResponseLimit(limit int64) int64 {
 	if limit <= 0 {
 		return DefaultMaxResponseBytes
+	}
+	if limit > MaxResponseLimit {
+		return MaxResponseLimit
 	}
 	return limit
 }

@@ -8625,6 +8625,9 @@ type AddMCPServerRequest struct {
 	EnableSessions bool `protobuf:"varint,11,opt,name=enable_sessions,json=enableSessions,proto3" json:"enable_sessions,omitempty"`
 	// Enable stream resumption (for streamable-http transport)
 	EnableResumption bool `protobuf:"varint,12,opt,name=enable_resumption,json=enableResumption,proto3" json:"enable_resumption,omitempty"`
+	// Bound on one JSON-RPC message from this server (streamable-http only).
+	// 0 selects the 16 MiB default. See MCPServerConfig.max_response_bytes.
+	MaxResponseBytes int64 `protobuf:"varint,13,opt,name=max_response_bytes,json=maxResponseBytes,proto3" json:"max_response_bytes,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -8743,6 +8746,13 @@ func (x *AddMCPServerRequest) GetEnableResumption() bool {
 	return false
 }
 
+func (x *AddMCPServerRequest) GetMaxResponseBytes() int64 {
+	if x != nil {
+		return x.MaxResponseBytes
+	}
+	return 0
+}
+
 // AddMCPServerResponse confirms MCP server addition.
 type AddMCPServerResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -8836,6 +8846,9 @@ type UpdateMCPServerRequest struct {
 	EnableSessions bool `protobuf:"varint,12,opt,name=enable_sessions,json=enableSessions,proto3" json:"enable_sessions,omitempty"`
 	// Enable stream resumption (for streamable-http transport)
 	EnableResumption bool `protobuf:"varint,13,opt,name=enable_resumption,json=enableResumption,proto3" json:"enable_resumption,omitempty"`
+	// Bound on one JSON-RPC message from this server (streamable-http only).
+	// 0 selects the 16 MiB default. See MCPServerConfig.max_response_bytes.
+	MaxResponseBytes int64 `protobuf:"varint,14,opt,name=max_response_bytes,json=maxResponseBytes,proto3" json:"max_response_bytes,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -8959,6 +8972,13 @@ func (x *UpdateMCPServerRequest) GetEnableResumption() bool {
 		return x.EnableResumption
 	}
 	return false
+}
+
+func (x *UpdateMCPServerRequest) GetMaxResponseBytes() int64 {
+	if x != nil {
+		return x.MaxResponseBytes
+	}
+	return 0
 }
 
 // DeleteMCPServerRequest deletes an MCP server.
@@ -11684,7 +11704,7 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\x10ToolFilterConfig\x12\x10\n" +
 	"\x03all\x18\x01 \x01(\bR\x03all\x12\x18\n" +
 	"\ainclude\x18\x02 \x03(\tR\ainclude\x12\x18\n" +
-	"\aexclude\x18\x03 \x03(\tR\aexclude\"\xe4\x03\n" +
+	"\aexclude\x18\x03 \x03(\tR\aexclude\"\x92\x04\n" +
 	"\x13AddMCPServerRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aenabled\x18\x02 \x01(\bR\aenabled\x12\x1c\n" +
@@ -11701,14 +11721,15 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\x03url\x18\n" +
 	" \x01(\tR\x03url\x12'\n" +
 	"\x0fenable_sessions\x18\v \x01(\bR\x0eenableSessions\x12+\n" +
-	"\x11enable_resumption\x18\f \x01(\bR\x10enableResumption\x1a6\n" +
+	"\x11enable_resumption\x18\f \x01(\bR\x10enableResumption\x12,\n" +
+	"\x12max_response_bytes\x18\r \x01(\x03R\x10maxResponseBytes\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"z\n" +
 	"\x14AddMCPServerResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12.\n" +
-	"\x06server\x18\x03 \x01(\v2\x16.loom.v1.MCPServerInfoR\x06server\"\xaf\x04\n" +
+	"\x06server\x18\x03 \x01(\v2\x16.loom.v1.MCPServerInfoR\x06server\"\xdd\x04\n" +
 	"\x16UpdateMCPServerRequest\x12\x1f\n" +
 	"\vserver_name\x18\x01 \x01(\tR\n" +
 	"serverName\x12\x18\n" +
@@ -11726,7 +11747,8 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	" \x01(\x05R\x0etimeoutSeconds\x12\x10\n" +
 	"\x03url\x18\v \x01(\tR\x03url\x12'\n" +
 	"\x0fenable_sessions\x18\f \x01(\bR\x0eenableSessions\x12+\n" +
-	"\x11enable_resumption\x18\r \x01(\bR\x10enableResumption\x1a6\n" +
+	"\x11enable_resumption\x18\r \x01(\bR\x10enableResumption\x12,\n" +
+	"\x12max_response_bytes\x18\x0e \x01(\x03R\x10maxResponseBytes\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"O\n" +

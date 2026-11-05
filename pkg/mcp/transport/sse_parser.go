@@ -17,10 +17,22 @@ package transport
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
 )
+
+// sseLineOverheadBytes is the slack readLine allows ABOVE the remaining data
+// bound, for the parts of a line that are not data: the field prefix
+// ("data: " is 6 bytes, "event: " is 7) and the terminator ("\r\n").
+//
+// It exists because charging those bytes to the data bound refused a message
+// whose data was exactly at the limit. The data is charged exactly, in
+// ParseEvent, so this constant decides only how much of ONE line may sit in
+// memory before the refusal (at most limit+64 bytes), never how much data is
+// accepted.
+const sseLineOverheadBytes = 64
 
 // SSEEvent is one parsed Server-Sent Events message.
 type SSEEvent struct {
@@ -131,11 +143,22 @@ func (p *SSEParser) ParseEvent() (*SSEEvent, error) {
 			// Non-message events are silently ignored
 			_ = value
 		case "data":
-			// size shrinks the next line's budget, so a multi-line event is
-			// bounded in total and not merely line by line. readLine is the
-			// single refusal point; no check is needed here, because a line
-			// that would carry size past the limit is never read.
-			size += int64(len(value))
+			// size is exactly what strings.Join(dataLines, "\n") will cost,
+			// so the bound is the JSON-RPC message's own size.
+			//
+			// The joining newline is charged too. Without it an empty "data:"
+			// line costs nothing: the budget never shrinks, and a server that
+			// sends "data:\n" forever grows dataLines and the joined result
+			// without limit, which is the allocation this bound exists to
+			// prevent.
+			cost := int64(len(value))
+			if len(dataLines) > 0 {
+				cost++ // the "\n" joining this line to the previous one
+			}
+			if p.limit > 0 && size+cost > p.limit {
+				return nil, &ResponseTooLargeError{Limit: p.limit}
+			}
+			size += cost
 			dataLines = append(dataLines, value)
 		}
 	}
@@ -146,50 +169,44 @@ func (p *SSEParser) ParseEvent() (*SSEEvent, error) {
 //
 // The per-line guard matters because a streamable-http server sends an entire
 // JSON-RPC message as ONE "data:" line: without it, bufio would buffer that
-// whole line before the accumulated-size check above ever ran, which is
+// whole line before ParseEvent's accumulated-size check ever ran, which is
 // exactly the allocation the bound exists to prevent.
+//
+// The budget is what is LEFT of the data bound plus sseLineOverheadBytes, so
+// the field prefix and the terminator are not charged to the data itself.
+// Reading proceeds in bufio-sized chunks; a byte-at-a-time loop cost one heap
+// allocation per byte on every SSE response.
 func (p *SSEParser) readLine(accumulated int64) (string, error) {
 	if p.limit <= 0 {
 		return p.reader.ReadString('\n')
 	}
-	remaining := p.limit - accumulated
-	if remaining < 0 {
-		remaining = 0
+	budget := p.limit - accumulated
+	if budget < 0 {
+		budget = 0
 	}
-	// +2 admits the delimiter and a CR; +1 more lets an exactly-at-limit line
-	// be read so the size check, not the read, decides.
-	lr := io.LimitedReader{R: p.reader, N: remaining + 3}
-	var b strings.Builder
+	budget += sseLineOverheadBytes
+
+	var buf []byte
 	for {
-		c, err := readByte(&lr)
-		if err != nil {
-			if err == io.EOF && b.Len() > 0 {
-				// A final line with no trailing newline.
-				return b.String(), nil
-			}
-			return "", err
-		}
-		b.WriteByte(c)
-		if c == '\n' {
-			return b.String(), nil
-		}
-		if lr.N <= 0 {
-			// More line to come, but no budget for it.
+		// ReadSlice returns a view into bufio's buffer, valid only until the
+		// next read, so the chunk is copied before looping.
+		chunk, err := p.reader.ReadSlice('\n')
+		if int64(len(buf))+int64(len(chunk)) > budget {
+			// More line than the budget admits. Refuse rather than buffer it.
 			return "", &ResponseTooLargeError{Limit: p.limit}
 		}
-	}
-}
-
-// readByte reads a single byte from r.
-func readByte(r io.Reader) (byte, error) {
-	var buf [1]byte
-	for {
-		n, err := r.Read(buf[:])
-		if n > 0 {
-			return buf[0], nil
-		}
-		if err != nil {
-			return 0, err
+		buf = append(buf, chunk...)
+		switch {
+		case err == nil:
+			return string(buf), nil
+		case errors.Is(err, bufio.ErrBufferFull):
+			// bufio's buffer filled before the delimiter; keep reading.
+			continue
+		case errors.Is(err, io.EOF) && len(buf) > 0:
+			// A final line with no trailing newline.
+			return string(buf), nil
+		default:
+			return "", err
 		}
 	}
 }

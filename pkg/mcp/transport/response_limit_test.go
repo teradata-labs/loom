@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -411,6 +412,12 @@ func TestEffectiveResponseLimit(t *testing.T) {
 		{0, DefaultMaxResponseBytes},
 		{-1, DefaultMaxResponseBytes},
 		{1024, 1024},
+		// Clamped: the read paths add to the limit before using it, and at
+		// math.MaxInt64 that arithmetic overflows to negative, which hangs
+		// the call rather than refusing it.
+		{math.MaxInt64, MaxResponseLimit},
+		{MaxResponseLimit, MaxResponseLimit},
+		{MaxResponseLimit + 1, MaxResponseLimit},
 	} {
 		if got := effectiveResponseLimit(tc.in); got != tc.want {
 			t.Fatalf("effectiveResponseLimit(%d) = %d, want %d", tc.in, got, tc.want)
@@ -429,10 +436,11 @@ func TestResponseTooLargeError_IsSentinel(t *testing.T) {
 	}
 }
 
-// TestSSEParser_MultiLineEventIsBoundedInTotal pins that the per-line budget
-// shrinks as an event's data accumulates, so an event split across several
-// small data lines cannot exceed the limit in total. This is what makes
-// readLine a sufficient single refusal point.
+// TestSSEParser_MultiLineEventIsBoundedInTotal pins that an event split across
+// several small data lines cannot exceed the limit in total, though no single
+// line is near it. The accumulated data is charged and checked in ParseEvent;
+// readLine's shrinking per-line budget is what stops ONE line being buffered
+// past the bound.
 func TestSSEParser_MultiLineEventIsBoundedInTotal(t *testing.T) {
 	const limit = 40
 	// Three 15-byte data lines: 45 bytes of data in total, over the limit,

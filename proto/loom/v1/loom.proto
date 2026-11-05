@@ -2567,6 +2567,10 @@ message AddMCPServerRequest {
 
   // Enable stream resumption (for streamable-http transport)
   bool enable_resumption = 12;
+
+  // Bound on one JSON-RPC message from this server (streamable-http only).
+  // 0 selects the 16 MiB default. See MCPServerConfig.max_response_bytes.
+  int64 max_response_bytes = 13;
 }
 
 // AddMCPServerResponse confirms MCP server addition.
@@ -2621,6 +2625,10 @@ message UpdateMCPServerRequest {
 
   // Enable stream resumption (for streamable-http transport)
   bool enable_resumption = 13;
+
+  // Bound on one JSON-RPC message from this server (streamable-http only).
+  // 0 selects the 16 MiB default. See MCPServerConfig.max_response_bytes.
+  int64 max_response_bytes = 14;
 }
 
 // DeleteMCPServerRequest deletes an MCP server.
