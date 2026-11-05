@@ -16,7 +16,6 @@ package shellpolicy
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -163,6 +162,11 @@ type analyzer struct {
 	// unsetAnyFunc is set when an unset names a word computed at run time.
 	unsetFuncs   map[string]bool
 	unsetAnyFunc bool
+
+	// paths and cds are judged by finishPaths, once every directory the
+	// command can change to is known.
+	paths []pathCheck
+	cds   []cdTarget
 }
 
 // funcCall is a call to a declared function, kept to judge it as a command
@@ -197,7 +201,7 @@ func (a *analyzer) isFunc(name string, off int) bool {
 }
 
 // finish judges what had to wait for the whole command: function calls whose
-// function an unset may remove.
+// function an unset may remove, then paths, which depend on every cd.
 func (a *analyzer) finish() {
 	for changed := true; changed; {
 		changed = false
@@ -210,6 +214,7 @@ func (a *analyzer) finish() {
 			a.command(c.x, c.args, c.name, c.depth, c.outer)
 		}
 	}
+	a.finishPaths()
 }
 
 // at is where findings are reported: the node's own position, or the outer
@@ -370,7 +375,7 @@ func (a *analyzer) program(x *syntax.CallExpr, nameWord *syntax.Word, name strin
 				continue
 			}
 			if dir, ok := globDir(w); ok {
-				a.checkRead(dir, w, outer)
+				a.readPath(dir, w, outer)
 			} else if a.opt.Static {
 				a.add(Deny, w, outer, wordText(w), "an argument computed at run time (tilde, parameter or command substitution) cannot be path-checked")
 			}
@@ -386,7 +391,7 @@ func (a *analyzer) program(x *syntax.CallExpr, nameWord *syntax.Word, name strin
 		return
 	}
 	for _, c := range pathCandidates(lits) {
-		a.checkRead(c, x, outer)
+		a.readPath(c, x, outer)
 	}
 }
 
@@ -415,18 +420,10 @@ func (a *analyzer) builtin(x *syntax.CallExpr, name string, rest []*syntax.Word,
 			a.nested(x, rest[:1], depth, outer)
 		}
 	case "cd", "pushd":
-		for _, w := range rest {
-			s, ok := literal(w)
-			if !ok {
-				if a.opt.Static {
-					a.add(Deny, w, outer, wordText(w), "a path computed at run time cannot be checked")
-				}
-				continue
-			}
-			if strings.HasPrefix(s, "-") || strings.HasPrefix(s, "+") {
-				continue
-			}
-			a.checkRead(s, w, outer)
+		a.chdir(x, name, rest, outer)
+	case "popd":
+		if a.opt.Static {
+			a.add(Deny, x, outer, name, "returns to a directory from the stack, which static enforcement does not follow")
 		}
 	}
 }
@@ -514,19 +511,19 @@ func (a *analyzer) redirects(st *syntax.Stmt, outer *syntax.Pos) {
 				continue
 			}
 			if r.Op == syntax.DplOut {
-				a.checkWrite(target, r, outer)
+				a.writePath(target, r, outer)
 			} else {
-				a.checkRead(target, r, outer)
+				a.readPath(target, r, outer)
 			}
 		case syntax.RdrIn:
 			if target, ok := literal(r.Word); ok {
-				a.checkRead(target, r, outer)
+				a.readPath(target, r, outer)
 			} else if a.opt.Static {
 				a.add(Deny, r, outer, wordText(r.Word), "reads a path computed at run time, which cannot be checked")
 			}
 		case syntax.RdrOut, syntax.AppOut, syntax.RdrClob, syntax.RdrAll, syntax.AppAll, syntax.RdrInOut:
 			if target, ok := literal(r.Word); ok {
-				a.checkWrite(target, r, outer)
+				a.writePath(target, r, outer)
 			} else if a.opt.Static {
 				a.add(Deny, r, outer, wordText(r.Word), "writes to a path computed at run time, which cannot be checked")
 			}
@@ -538,31 +535,6 @@ func (a *analyzer) redirects(st *syntax.Stmt, outer *syntax.Pos) {
 
 // devicePaths are always allowed as redirect targets and arguments.
 var devicePaths = map[string]bool{"/dev/null": true, "/dev/stdin": true, "/dev/stdout": true, "/dev/stderr": true}
-
-func (a *analyzer) checkRead(path string, n syntax.Node, outer *syntax.Pos) {
-	if path == "" || devicePaths[path] || strings.HasPrefix(path, "~") {
-		return
-	}
-	full := ResolvePath(a.opt.WorkingDir, path)
-	if _, err := os.Stat(full); err != nil {
-		return // only an existing path can be read
-	}
-	if inRoots(full, a.opt.Roots.Read) {
-		return
-	}
-	a.ask(n, outer, path, "reads outside the session", "read", full)
-}
-
-func (a *analyzer) checkWrite(path string, n syntax.Node, outer *syntax.Pos) {
-	if devicePaths[path] {
-		return
-	}
-	full := ResolvePath(a.opt.WorkingDir, path)
-	if inRoots(full, a.opt.Roots.Write) {
-		return
-	}
-	a.add(Deny, n, outer, path, "writes outside the session")
-}
 
 // literal returns the word's value when it is fully literal: no parameter,
 // command, arithmetic or process expansion, no glob, brace or tilde expansion,

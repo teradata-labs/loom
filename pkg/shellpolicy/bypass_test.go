@@ -105,3 +105,39 @@ func TestAnalyze_FunctionShadowing(t *testing.T) {
 		{cmd: `rm() { echo fake; }; rm nope; f() { rm x; }; f; eval 'rm y'`, want: Allow, static: Allow},
 	})
 }
+
+// N1: relative paths after cd resolve against every directory the command
+// can change to, and under static a cd the analyzer cannot follow is refused.
+func TestAnalyze_ChangedDirectory(t *testing.T) {
+	runBypassCases(t, []bypassCase{
+		{cmd: `cd sub && cat ../../o/secret.txt`, want: Ask, static: Ask, why: "../../o/secret.txt (1:11): reads outside the session"},
+		{cmd: `pushd sub && cat ../../o/secret.txt`, want: Ask, static: Ask},
+		{cmd: `cat ../../o/secret.txt; cd sub`, want: Ask, static: Ask},
+		{cmd: `eval 'cd sub'; cat ../../o/secret.txt`, want: Ask, static: Ask},
+		{cmd: `f() { cd sub; }; f; cat < ../../o/secret.txt`, want: Ask, static: Ask},
+		{cmd: `cd sub; cd ..; cd sub; cat ../../o/ssh/k`, want: Ask, static: Ask},
+		{cmd: `cd /; echo x > y`, want: Deny, static: Deny, why: "y (1:14): writes outside the session"},
+		{cmd: `cd && cat .ssh/config`, want: Allow, static: Deny, why: "cd (1:1)"},
+		{cmd: `cd -P && cat x`, want: Allow, static: Deny},
+		{cmd: `cd - && cat secret.txt`, want: Allow, static: Deny, why: "$OLDPWD"},
+		{cmd: `popd; cat x`, want: Allow, static: Deny},
+		{cmd: `pushd; cat x`, want: Allow, static: Deny},
+		{cmd: `pushd +1; cat x`, want: Allow, static: Deny, why: "rotates the directory stack"},
+		{cmd: `CDPATH=..; cd o && cat secret.txt`, want: Allow, static: Deny, why: "sets CDPATH"},
+		{cmd: `export CDPATH=..`, want: Allow, static: Deny},
+		{cmd: `cd sub && cat ../a.txt && ls; cd -- sub; cd -P sub`, want: Allow, static: Allow},
+	})
+}
+
+// N1: an inherited CDPATH sends a bare cd target to another directory.
+func TestAnalyze_InheritedCDPATH(t *testing.T) {
+	opt, base := escapeSession(t)
+	t.Setenv("CDPATH", base)
+	for _, static := range []bool{false, true} {
+		opt.Static = static
+		v := Readonly().Analyze(`cd o && cat secret.txt`, opt)
+		assert.Equal(t, Ask, v.Kind, "static=%v: %s", static, v.Reason())
+		assert.Contains(t, v.Reason(), "secret.txt (1:9): reads outside the session")
+		assert.Contains(t, v.Reason(), "o (1:4): reads outside the session")
+	}
+}

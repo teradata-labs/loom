@@ -66,6 +66,10 @@ func ExecEnvName(name string) bool {
 // setsVar judges one variable the command sets, named as written: a name
 // ExecEnvName reports is an Ask granting that name.
 func (a *analyzer) setsVar(n syntax.Node, outer *syntax.Pos, name string) {
+	if name == "CDPATH" && a.opt.Static {
+		a.add(Deny, n, outer, name, "sets CDPATH, which changes where cd goes in a way static enforcement does not follow")
+		return
+	}
 	if ExecEnvName(name) {
 		a.ask(n, outer, name, "sets "+name+", which changes what programs run or load", "env", name)
 	}
