@@ -356,3 +356,12 @@ func TestResumeSessionResponse_LeaseErrorOutranksOutcome(t *testing.T) {
 		})
 	}
 }
+
+// ResolveExecutionGap's refusals map through resumeStatus: a lease error
+// outranks "no gap", which alone is FAILED_PRECONDITION.
+func TestResumeStatus_LeaseErrorOutranksNoGap(t *testing.T) {
+	require.Equal(t, codes.Aborted,
+		status.Code(resumeStatus(fmt.Errorf("%w: %w", agent.ErrSessionLeaseLost, agent.ErrNoExecutionGap))))
+	require.Equal(t, codes.FailedPrecondition,
+		status.Code(resumeStatus(fmt.Errorf("session s: %w", agent.ErrNoExecutionGap))))
+}

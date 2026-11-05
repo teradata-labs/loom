@@ -146,9 +146,6 @@ func (s *MultiAgentServer) ResolveExecutionGap(ctx context.Context, req *loomv1.
 	}
 	gap, err := ag.ResolveExecutionGap(ctx, req.GetSessionId(), outcome, []byte(req.GetResultJson()))
 	if err != nil {
-		if errors.Is(err, agent.ErrNoExecutionGap) {
-			return nil, status.Error(codes.FailedPrecondition, err.Error())
-		}
 		return nil, resumeStatus(err)
 	}
 	return &loomv1.ResolveExecutionGapResponse{Gap: executionGapProto(gap)}, nil
@@ -171,13 +168,15 @@ func (s *MultiAgentServer) sessionAgent(ctx context.Context, sessionID string) (
 }
 
 // resumeStatus maps the errors ResumeSession and ResolveExecutionGap refuse
-// with to gRPC status codes.
+// with to gRPC status codes. A lease error is checked first, so it maps to
+// ABORTED even if the error also carries a refusal.
 func resumeStatus(err error) error {
 	var parked *agent.SessionParkedError
 	switch {
 	case isSessionLeaseError(err):
 		return status.Error(codes.Aborted, err.Error())
 	case errors.Is(err, agent.ErrEventLogDisabled),
+		errors.Is(err, agent.ErrNoExecutionGap),
 		errors.Is(err, agent.ErrTurnNotRecorded),
 		errors.Is(err, agent.ErrBatchNotSaved),
 		errors.As(err, &parked):

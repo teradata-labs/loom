@@ -65,7 +65,8 @@ func (a *Agent) sessionLeaseTTL() time.Duration {
 // The same rule drops the chain of a structured error (an *ExecutionGap or
 // *TurnParkedError, say) when the lease was lost, so errors.As no longer finds
 // it. That is intended: the agent's own readers of those errors run before
-// this wrap, and the server's (resumeSessionResponse, resumeStatus) check for
+// this wrap, and the server maps the ResumeSession and ResolveExecutionGap
+// RPCs' errors through resumeSessionResponse and resumeStatus, which check for
 // a lease error first. A caller that does need the structured error from a
 // lease-lost turn should change this deliberately, keeping context.Canceled
 // out of the chain, not wrap err with a second %w.
