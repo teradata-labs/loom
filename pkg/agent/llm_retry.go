@@ -22,6 +22,7 @@ import (
 
 	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/llm/scheduler"
+	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	llmtypes "github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
@@ -355,6 +356,16 @@ func (p *throttlePatience) wait(ctx Context, err error) error {
 		zap.Duration("throttled_so_far", p.total),
 		zap.Error(err),
 	)
+	// The pause can last minutes, so make it visible on the trace too: the
+	// event lands on the span already in the call's context (the agent's
+	// top-level chat span), next to the turn's other span events.
+	if span := observability.SpanFromContext(ctx); span != nil {
+		span.AddEvent("llm.throttle_wait", map[string]interface{}{
+			"wait_ms":            wait.Milliseconds(),
+			"throttled_total_ms": (p.total + wait).Milliseconds(),
+			"budget_ms":          throttleBudget.Milliseconds(),
+		})
+	}
 	select {
 	case <-ctx.Done():
 		// Wrap both: callers match the context error (errors.Is), and the

@@ -283,3 +283,42 @@ func TestThrottlePatienceWait_ContextEndKeepsThrottleError(t *testing.T) {
 	assert.True(t, llm.IsThrottle(err))
 	assert.Zero(t, p.total, "an interrupted wait must not count against the budget")
 }
+
+// Each throttle wait adds one span event to the span in the call's context,
+// with the wait and the running total of throttle wait so far (this wait
+// included).
+func TestThrottlePatienceWait_AddsSpanEvent(t *testing.T) {
+	span := &observability.Span{Name: "agent.chat"}
+	base := observability.ContextWithSpan(context.Background(), span)
+	ctx := &agentContext{Context: base, tracer: observability.NewNoOpTracer()}
+
+	// A small starting delay keeps the test fast; the doubling still applies.
+	p := throttlePatience{delay: time.Millisecond}
+	throttleErr := fmt.Errorf("API error (status 429): rate_limit_exceeded")
+	require.NoError(t, p.wait(ctx, throttleErr))
+	require.NoError(t, p.wait(ctx, throttleErr))
+
+	require.Len(t, span.Events, 2, "one span event per throttle wait")
+	tests := []struct {
+		wantWait  int64
+		wantTotal int64
+	}{
+		{wantWait: 1, wantTotal: 1},
+		{wantWait: 2, wantTotal: 3},
+	}
+	for i, tt := range tests {
+		ev := span.Events[i]
+		assert.Equal(t, "llm.throttle_wait", ev.Name)
+		assert.Equal(t, tt.wantWait, ev.Attributes["wait_ms"], "event %d wait", i)
+		assert.Equal(t, tt.wantTotal, ev.Attributes["throttled_total_ms"], "event %d running total", i)
+		assert.Equal(t, throttleBudget.Milliseconds(), ev.Attributes["budget_ms"], "event %d budget", i)
+	}
+}
+
+// No span in the context: the wait still works and adds nothing.
+func TestThrottlePatienceWait_NoSpanInContext(t *testing.T) {
+	ctx := &agentContext{Context: context.Background(), tracer: observability.NewNoOpTracer()}
+	p := throttlePatience{delay: time.Millisecond}
+	require.NoError(t, p.wait(ctx, fmt.Errorf("API error (status 429): rate_limit_exceeded")))
+	assert.Equal(t, time.Millisecond, p.total)
+}
