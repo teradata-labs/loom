@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -126,8 +127,13 @@ var implementedBuiltins = map[string]bool{
 // part needs a person's approval (Grant says what approving allows); Deny
 // means the command is refused outright.
 func (p *Policy) Analyze(command string, opt Options) Verdict {
-	a := &analyzer{p: p, opt: opt, funcs: map[string]bool{}, grant: &Grant{}}
+	a := &analyzer{p: p, opt: opt, funcDecls: map[string][]int{}, unsetFuncs: map[string]bool{}, grant: &Grant{}}
 	a.source(command, 0, nil)
+	a.finish()
+	sort.SliceStable(a.findings, func(i, j int) bool {
+		fi, fj := a.findings[i], a.findings[j]
+		return fi.Line < fj.Line || (fi.Line == fj.Line && fi.Col < fj.Col)
+	})
 	v := Verdict{Kind: Allow, Policy: p.Name, Findings: a.findings}
 	for _, f := range a.findings {
 		if f.Verdict > v.Kind {
@@ -143,9 +149,67 @@ func (p *Policy) Analyze(command string, opt Options) Verdict {
 type analyzer struct {
 	p        *Policy
 	opt      Options
-	funcs    map[string]bool
 	findings []Finding
 	grant    *Grant
+
+	// funcDecls holds, for each function name, the end offsets of its
+	// declarations that run unconditionally: direct statements of the
+	// top-level command, not in the background.
+	funcDecls map[string][]int
+	// funcCalls are calls judged as function calls; finish judges them as
+	// commands when something in the command may unset the function.
+	funcCalls []funcCall
+	// unsetFuncs are the names an unset may remove as a function;
+	// unsetAnyFunc is set when an unset names a word computed at run time.
+	unsetFuncs   map[string]bool
+	unsetAnyFunc bool
+}
+
+// funcCall is a call to a declared function, kept to judge it as a command
+// when the function may have been unset.
+type funcCall struct {
+	x      *syntax.CallExpr
+	args   []*syntax.Word
+	name   string
+	depth  int
+	outer  *syntax.Pos
+	judged bool
+}
+
+// offset is where n runs, in the coordinates of the top-level command: the
+// node's own offset, or that of the outer eval/trap.
+func offset(n syntax.Node, outer *syntax.Pos) int {
+	if outer != nil {
+		return int(outer.Offset())
+	}
+	return int(n.Pos().Offset())
+}
+
+// isFunc reports whether a call to name at off runs a function: a
+// declaration of it ran unconditionally before off.
+func (a *analyzer) isFunc(name string, off int) bool {
+	for _, end := range a.funcDecls[name] {
+		if end <= off {
+			return true
+		}
+	}
+	return false
+}
+
+// finish judges what had to wait for the whole command: function calls whose
+// function an unset may remove.
+func (a *analyzer) finish() {
+	for changed := true; changed; {
+		changed = false
+		for i := range a.funcCalls {
+			c := &a.funcCalls[i]
+			if c.judged || (!a.unsetAnyFunc && !a.unsetFuncs[c.name]) {
+				continue
+			}
+			c.judged, changed = true, true
+			a.command(c.x, c.args, c.name, c.depth, c.outer)
+		}
+	}
 }
 
 // at is where findings are reported: the node's own position, or the outer
@@ -177,12 +241,16 @@ func (a *analyzer) source(src string, depth int, outer *syntax.Pos) {
 		a.add(Deny, nil, outer, "the command", "does not parse as bash: "+err.Error())
 		return
 	}
-	syntax.Walk(file, func(n syntax.Node) bool {
-		if fd, ok := n.(*syntax.FuncDecl); ok && fd.Name != nil {
-			a.funcs[fd.Name.Value] = true
+	if depth == 0 {
+		// Only a declaration that runs whatever happens defines a function
+		// for the calls after it: not one in a branch, a loop, a subshell, an
+		// and-or list, the background or an eval string.
+		for _, st := range file.Stmts {
+			if fd, ok := st.Cmd.(*syntax.FuncDecl); ok && fd.Name != nil && !st.Background && !st.Coprocess && !st.Negated {
+				a.funcDecls[fd.Name.Value] = append(a.funcDecls[fd.Name.Value], int(st.End().Offset()))
+			}
 		}
-		return true
-	})
+	}
 	syntax.Walk(file, func(n syntax.Node) bool {
 		switch x := n.(type) {
 		case *syntax.CoprocClause:
@@ -223,6 +291,7 @@ func (a *analyzer) call(x *syntax.CallExpr, depth int, outer *syntax.Pos) {
 		return // assignments only (judged by assigns); their words are walked for substitutions
 	}
 	name, lit := literal(args[0])
+	prefixed := false // command, exec and builtin skip functions
 	for lit && (name == "command" || name == "exec" || name == "builtin") {
 		if len(args) == 1 {
 			return // bare exec (redirects only), command or builtin: starts nothing
@@ -239,6 +308,7 @@ func (a *analyzer) call(x *syntax.CallExpr, depth int, outer *syntax.Pos) {
 		}
 		args = args[1:]
 		name, lit = literal(args[0])
+		prefixed = true
 	}
 	if !lit {
 		if a.opt.Static {
@@ -246,13 +316,23 @@ func (a *analyzer) call(x *syntax.CallExpr, depth int, outer *syntax.Pos) {
 		}
 		return
 	}
+	if !prefixed && a.isFunc(name, offset(x, outer)) {
+		// Its body is judged where it is declared. finish judges the call as
+		// a command if the function may be unset first.
+		a.funcCalls = append(a.funcCalls, funcCall{x: x, args: args, name: name, depth: depth, outer: outer})
+		return
+	}
+	a.command(x, args, name, depth, outer)
+}
+
+// command judges a call whose name, args[0], is the literal name and is not
+// a function.
+func (a *analyzer) command(x *syntax.CallExpr, args []*syntax.Word, name string, depth int, outer *syntax.Pos) {
 	rest := args[1:]
-	if filepath.Base(name) == "env" && !a.funcs[name] {
+	if filepath.Base(name) == "env" {
 		a.envArgs(args[0], rest, outer)
 	}
 	switch {
-	case a.funcs[name]:
-		return
 	case interp.IsBuiltin(name):
 		a.builtin(x, name, rest, depth, outer)
 	case strings.ContainsRune(name, '/'):
@@ -316,6 +396,9 @@ func (a *analyzer) builtin(x *syntax.CallExpr, name string, rest []*syntax.Word,
 		return
 	}
 	a.varBuiltin(x, name, rest, outer)
+	if name == "unset" {
+		a.unsetNames(rest)
+	}
 	if !a.p.Builtins[name] {
 		if a.opt.Static && (name == "source" || name == "." || name == "alias" || name == "shopt") {
 			a.add(Deny, x, outer, name, "runs commands the static check cannot see")
@@ -344,6 +427,36 @@ func (a *analyzer) builtin(x *syntax.CallExpr, name string, rest []*syntax.Word,
 				continue
 			}
 			a.checkRead(s, w, outer)
+		}
+	}
+}
+
+// unsetNames records the functions an unset may remove: with -f, or with no
+// -v, every name (unset NAME removes a function when no variable has that
+// name). A word computed at run time may name any function.
+func (a *analyzer) unsetNames(words []*syntax.Word) {
+	varsOnly := false
+	afterDashes := false
+	for _, w := range words {
+		s, ok := literal(w)
+		if !ok {
+			a.unsetAnyFunc = true
+			continue
+		}
+		if !afterDashes && strings.HasPrefix(s, "-") && len(s) > 1 {
+			if s == "--" {
+				afterDashes = true
+				continue
+			}
+			if strings.ContainsRune(s, 'f') {
+				varsOnly = false
+			} else if strings.ContainsRune(s, 'v') {
+				varsOnly = true
+			}
+			continue
+		}
+		if !varsOnly {
+			a.unsetFuncs[s] = true
 		}
 	}
 }
