@@ -126,7 +126,8 @@ var implementedBuiltins = map[string]bool{
 // part needs a person's approval (Grant says what approving allows); Deny
 // means the command is refused outright.
 func (p *Policy) Analyze(command string, opt Options) Verdict {
-	a := &analyzer{p: p, opt: opt, funcDecls: map[string][]int{}, unsetFuncs: map[string]bool{}, grant: &Grant{}}
+	a := &analyzer{p: p, opt: opt, funcDecls: map[string][]int{}, unsetFuncs: map[string]bool{}, grant: &Grant{},
+		intDefs: map[string][]int{}, unsafeInts: map[string]bool{}}
 	a.source(command, 0, nil)
 	a.finish()
 	sort.SliceStable(a.findings, func(i, j int) bool {
@@ -168,6 +169,15 @@ type analyzer struct {
 	paths []pathCheck
 	cds   []cdTarget
 	globs []globCheck
+
+	// What static enforcement knows about the variables arithmetic reads:
+	// intDefs are the end offsets of top-level integer assignments,
+	// intRegions the for loops that hold an integer in their variable, and
+	// unsafeInts the names the command may assign anything else.
+	intDefs    map[string][]int
+	intRegions []intRegion
+	unsafeInts map[string]bool
+	arithReads []arithRead
 }
 
 // funcCall is a call to a declared function, kept to judge it as a command
@@ -216,6 +226,7 @@ func (a *analyzer) finish() {
 		}
 	}
 	a.finishPaths()
+	a.finishArith()
 }
 
 // at is where findings are reported: the node's own position, or the outer
@@ -256,6 +267,7 @@ func (a *analyzer) source(src string, depth int, outer *syntax.Pos) {
 				a.funcDecls[fd.Name.Value] = append(a.funcDecls[fd.Name.Value], int(st.End().Offset()))
 			}
 		}
+		a.topLevelInts(file)
 	}
 	syntax.Walk(file, func(n syntax.Node) bool {
 		switch x := n.(type) {
@@ -277,6 +289,31 @@ func (a *analyzer) source(src string, depth int, outer *syntax.Pos) {
 		case *syntax.ParamExp:
 			if x.Param != nil && x.Exp != nil && (x.Exp.Op == syntax.AssignUnset || x.Exp.Op == syntax.AssignUnsetOrNull) {
 				a.setsVar(x, outer, x.Param.Value) // ${NAME=value}, ${NAME:=value}
+			}
+			a.paramArith(x, outer)
+		case *syntax.ArithmExp:
+			a.arith(x.X, outer)
+		case *syntax.ArithmCmd:
+			a.arith(x.X, outer)
+		case *syntax.LetClause:
+			for _, e := range x.Exprs {
+				a.arith(e, outer)
+			}
+		case *syntax.ForClause:
+			a.forLoop(x, depth, outer)
+		case *syntax.Assign:
+			if x.Index != nil {
+				a.arith(x.Index, outer) // a[i]=v
+			}
+		case *syntax.ArrayElem:
+			if x.Index != nil {
+				a.arith(x.Index, outer) // a=([i]=v)
+			}
+		case *syntax.BinaryTest:
+			a.arithTest(x, outer)
+		case *syntax.UnaryTest:
+			if w, ok := x.X.(*syntax.Word); ok && x.Op == syntax.TsVarSet {
+				a.varNameOperand(x, outer, w) // [[ -v NAME ]]
 			}
 		case *syntax.BinaryArithm:
 			if isArithAssign(x.Op) {
@@ -414,7 +451,7 @@ func (a *analyzer) builtin(x *syntax.CallExpr, name string, rest []*syntax.Word,
 	}
 	a.varBuiltin(x, name, rest, outer)
 	if name == "unset" {
-		a.unsetNames(rest)
+		a.unsetNames(x, rest, outer)
 	}
 	if !a.p.Builtins[name] {
 		if a.opt.Static && (name == "source" || name == "." || name == "alias" || name == "shopt") {
@@ -443,7 +480,7 @@ func (a *analyzer) builtin(x *syntax.CallExpr, name string, rest []*syntax.Word,
 // unsetNames records the functions an unset may remove: with -f, or with no
 // -v, every name (unset NAME removes a function when no variable has that
 // name). A word computed at run time may name any function.
-func (a *analyzer) unsetNames(words []*syntax.Word) {
+func (a *analyzer) unsetNames(x *syntax.CallExpr, words []*syntax.Word, outer *syntax.Pos) {
 	varsOnly := false
 	afterDashes := false
 	for _, w := range words {
@@ -464,6 +501,7 @@ func (a *analyzer) unsetNames(words []*syntax.Word) {
 			}
 			continue
 		}
+		a.subscriptName(x, outer, s)
 		if !varsOnly {
 			a.unsetFuncs[s] = true
 		}

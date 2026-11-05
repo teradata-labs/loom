@@ -258,3 +258,55 @@ func TestCheckLaunch_ReviewBypasses(t *testing.T) {
 		}
 	}
 }
+
+// N4: bash evaluates a subscript in a variable name, and in any value that
+// arithmetic reads, and the subscript can hold a command substitution. Under
+// static enforcement a name with a computed subscript, and arithmetic that
+// reads a variable not proven to hold an integer, are refused.
+func TestAnalyze_SubscriptArithmetic(t *testing.T) {
+	runBypassCases(t, []bypassCase{
+		{cmd: `x='a[$(touch p)]'; echo $(( x ))`, want: Allow, static: Deny, why: "x (1:29): arithmetic reads x"},
+		{cmd: `x='a[$(touch p)]'; echo $(( $x ))`, want: Allow, static: Deny},
+		{cmd: `x='a[$(touch p)]'; (( x ))`, want: Allow, static: Deny},
+		{cmd: `x='a[$(touch p)]'; [[ $x -eq 1 ]]`, want: Allow, static: Deny},
+		{cmd: `x='a[$(touch p)]'; [[ x -eq 1 ]]`, want: Allow, static: Deny},
+		{cmd: `x='a[$(touch p)]'; let y=x`, want: Allow, static: Deny},
+		{cmd: `x='a[$(touch p)]'; s=abc; echo ${s:x}`, want: Allow, static: Deny},
+		{cmd: `x='a[$(touch p)]'; echo ${b[x]}`, want: Allow, static: Deny},
+		{cmd: `x='a[$(touch p)]'; b[x]=1`, want: Allow, static: Deny},
+		{cmd: `x='a[$(touch p)]'; echo ${!x}`, want: Allow, static: Deny, why: "indirect expansion"},
+		{cmd: `echo $(( $(cat victim.txt) ))`, want: Allow, static: Deny, why: "cannot see"},
+		{cmd: `set -- 'a[$(touch p)]'; echo $(( $1 ))`, want: Allow, static: Deny},
+		{cmd: `test -v 'a[$(touch p)]'`, want: Allow, static: Deny, why: "subscript"},
+		{cmd: `[ -v 'a[$(touch p)]' ]`, want: Allow, static: Deny, why: "subscript"},
+		{cmd: `[[ -v 'a[$(touch p)]' ]]`, want: Allow, static: Deny, why: "subscript"},
+		{cmd: `[[ -v $n ]]`, want: Allow, static: Deny},
+		{cmd: `printf -v 'a[$(touch p)]' x`, want: Allow, static: Deny, why: "subscript"},
+		{cmd: `read 'a[$(touch p)]' <<< x`, want: Allow, static: Deny, why: "subscript"},
+		{cmd: `unset 'a[$(touch p)]'`, want: Allow, static: Deny, why: "subscript"},
+		{cmd: `declare 'a[$(touch p)]=1'`, want: Allow, static: Deny, why: "subscript"},
+		{cmd: `declare -n r='a[$(touch p)]'; echo $r`, want: Allow, static: Deny, why: "subscript"},
+		{cmd: `declare -i n; n='a[$(touch p)]'`, want: Allow, static: Deny, why: "declare -i"},
+		{cmd: `local -ai n`, want: Allow, static: Deny},
+		{cmd: `(( a[$(touch p)] ))`, want: Ask, static: Deny},
+		{cmd: `n=0; read n <<< x; echo $(( n ))`, want: Allow, static: Deny},
+		{cmd: `n=0; declare -n r=n; r='a[$(touch p)]'; echo $(( n ))`, want: Allow, static: Deny},
+		{cmd: `n=0; f() { local n='a[$(touch p)]'; echo $(( n )); }; f`, want: Allow, static: Deny},
+		{cmd: `n=0; : ${n:='a[$(touch p)]'}; echo $(( n ))`, want: Allow, static: Deny},
+		{cmd: `if false; then n=0; fi; echo $(( n ))`, want: Allow, static: Deny},
+		{cmd: `n=0 < missing.txt; echo $(( n ))`, want: Allow, static: Deny},
+		{cmd: `REPLY=0; read; echo $(( REPLY ))`, want: Allow, static: Deny},
+		{cmd: `echo $(( n )); n=1`, want: Allow, static: Deny},
+		{cmd: `for i in 1 x; do echo $(( i )); done`, want: Allow, static: Deny},
+		{cmd: `for i in 1 2; do :; done; echo $(( i ))`, want: Allow, static: Deny},
+		// Arithmetic over literals and variables that only ever hold integers.
+		{cmd: `i=0; (( i++ )); echo $(( i + 1 )) $(( 2#101 + 0x1f + -3 ))`, want: Allow, static: Allow},
+		{cmd: `for ((i=0; i<3; i++)); do echo $i ${a[i]}; done`, want: Allow, static: Allow},
+		{cmd: `for i in 1 2 3; do echo $(( i * 2 )); done`, want: Allow, static: Allow},
+		{cmd: `n=5; [[ $n -gt 3 ]] && echo $(( $# + $? + ${#n} + ${#a[@]} ))`, want: Allow, static: Allow},
+		{cmd: `c=$(( 1 + 2 )); c=$(( c * 2 )); export c; echo $c`, want: Allow, static: Allow},
+		{cmd: `a=(1 2 3); echo $(( a[1] + ${a[2]} )) ${a[@]} ${!a[@]} ${!PA*}`, want: Allow, static: Allow},
+		{cmd: `(( total = 4 )); let half=total/2; echo $(( half ))`, want: Allow, static: Allow},
+		{cmd: `[ "$x" -eq 1 ]; printf -v 'a[1]' x; test -v 'a[@]'; [[ -v HOME ]]`, want: Allow, static: Allow},
+	})
+}
