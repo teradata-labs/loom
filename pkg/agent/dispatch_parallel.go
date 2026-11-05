@@ -178,9 +178,16 @@ func (a *Agent) dispatchGroup(ctx Context, session *Session, calls []ToolCall, f
 		}
 		pcs = append(pcs, pc)
 	}
-	for _, pc := range pcs {
+	// group_size counts every member prepared together, including one whose
+	// intent failed: it was dispatched as part of this group even though it
+	// does not run.
+	members := pcs
+	if unrecorded != nil {
+		members = append(members[:len(members):len(members)], unrecorded)
+	}
+	for _, pc := range members {
 		pc.toolSpan.SetAttribute("dispatch.parallel", true)
-		pc.toolSpan.SetAttribute("dispatch.group_size", len(pcs))
+		pc.toolSpan.SetAttribute("dispatch.group_size", len(members))
 	}
 
 	results := make([]*shuttle.Result, len(pcs))

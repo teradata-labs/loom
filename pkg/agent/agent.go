@@ -3470,17 +3470,20 @@ func (a *Agent) prepareCall(ctx Context, session *Session, toolCall ToolCall, i 
 // of the whole conversation loop failing on one event-log hiccup.
 func (a *Agent) settleUnrecordedCall(ctx Context, session *Session, pc *preparedCall, st *batchState) {
 	toolCall := pc.call
-	ctx.Tracer().EndSpan(pc.toolSpan)
+	result := &shuttle.Result{
+		Success: false,
+		Error:   &shuttle.Error{Code: "event_log_intent_failed", Message: pc.intentErr.Error()},
+	}
+	// Traced like any failed call, so the span is not read as a success.
+	addToolExecutionEvent(st, pc, result, nil)
+	endToolSpan(ctx, pc.toolSpan, result, nil)
 	a.appendMessage(ctx, session, Message{
-		Role:      "tool",
-		Content:   fmt.Sprintf("event_log_intent_failed — could not durably record this call before executing it: %v. Not executed.", pc.intentErr),
-		ToolUseID: toolCall.ID,
-		ToolResult: &shuttle.Result{
-			Success: false,
-			Error:   &shuttle.Error{Code: "event_log_intent_failed", Message: pc.intentErr.Error()},
-		},
-		AgentID:   a.id,
-		Timestamp: time.Now(),
+		Role:       "tool",
+		Content:    fmt.Sprintf("event_log_intent_failed — could not durably record this call before executing it: %v. Not executed.", pc.intentErr),
+		ToolUseID:  toolCall.ID,
+		ToolResult: result,
+		AgentID:    a.id,
+		Timestamp:  time.Now(),
 	}, false)
 	*st.allToolExecutions = append(*st.allToolExecutions, ToolExecution{ToolName: toolCall.Name, Input: toolCall.Input, Error: pc.intentErr})
 	// No *st.toolExecutionCount++ here: prepareCall already advanced the
@@ -3522,26 +3525,7 @@ func (a *Agent) settleCall(ctx Context, session *Session, pc *preparedCall, st *
 		err = nil
 	}
 
-	// Record tool execution on conversation_loop span
-	{
-		toolSuccess := err == nil && (result == nil || result.Success)
-		toolEvent := map[string]interface{}{
-			"turn":      st.turnCount,
-			"tool_name": toolCall.Name,
-			"success":   toolSuccess,
-			"index":     i + 1,
-			"total":     st.batchLen,
-		}
-		if err != nil {
-			toolEvent["error"] = err.Error()
-		} else if result != nil && !result.Success && result.Error != nil {
-			toolEvent["error"] = result.Error.Message
-		}
-		if result != nil {
-			toolEvent["execution_time_ms"] = result.ExecutionTimeMs
-		}
-		span.AddEvent("turn.tool_execution", toolEvent)
-	}
+	addToolExecutionEvent(st, pc, result, err)
 
 	// Add instrumentation for HITL completion
 	if toolCall.Name == "contact_human" {
@@ -3567,24 +3551,7 @@ func (a *Agent) settleCall(ctx Context, session *Session, pc *preparedCall, st *
 		}
 	}
 
-	// Record tool execution results on span
-	{
-		success := err == nil && (result == nil || result.Success)
-
-		if err != nil {
-			toolSpan.RecordError(err)
-		} else if result != nil && !result.Success && result.Error != nil {
-			toolSpan.RecordError(fmt.Errorf("%s: %s", result.Error.Code, result.Error.Message))
-			toolSpan.SetAttribute("error.code", result.Error.Code)
-			toolSpan.SetAttribute("error.message", result.Error.Message)
-		}
-
-		toolSpan.SetAttribute("success", fmt.Sprintf("%t", success))
-		if result != nil {
-			toolSpan.SetAttribute("execution_time_ms", fmt.Sprintf("%d", result.ExecutionTimeMs))
-		}
-		ctx.Tracer().EndSpan(toolSpan)
-	}
+	endToolSpan(ctx, toolSpan, result, err)
 
 	// Resource-await hold (park_resource.go): a successful result asking to be
 	// awaited is withheld from the transcript — no execution record, no tool
@@ -3595,6 +3562,42 @@ func (a *Agent) settleCall(ctx Context, session *Session, pc *preparedCall, st *
 	}
 
 	a.commitToolRow(ctx, session, toolCall, st, result, err, toolSpan)
+}
+
+// addToolExecutionEvent records a settled call on the conversation loop span.
+func addToolExecutionEvent(st *batchState, pc *preparedCall, result *shuttle.Result, err error) {
+	toolEvent := map[string]interface{}{
+		"turn":      st.turnCount,
+		"tool_name": pc.call.Name,
+		"success":   err == nil && (result == nil || result.Success),
+		"index":     pc.index + 1,
+		"total":     st.batchLen,
+	}
+	if err != nil {
+		toolEvent["error"] = err.Error()
+	} else if result != nil && !result.Success && result.Error != nil {
+		toolEvent["error"] = result.Error.Message
+	}
+	if result != nil {
+		toolEvent["execution_time_ms"] = result.ExecutionTimeMs
+	}
+	st.span.AddEvent("turn.tool_execution", toolEvent)
+}
+
+// endToolSpan records a settled call's outcome on its tool span and ends it.
+func endToolSpan(ctx Context, toolSpan *observability.Span, result *shuttle.Result, err error) {
+	if err != nil {
+		toolSpan.RecordError(err)
+	} else if result != nil && !result.Success && result.Error != nil {
+		toolSpan.RecordError(fmt.Errorf("%s: %s", result.Error.Code, result.Error.Message))
+		toolSpan.SetAttribute("error.code", result.Error.Code)
+		toolSpan.SetAttribute("error.message", result.Error.Message)
+	}
+	toolSpan.SetAttribute("success", fmt.Sprintf("%t", err == nil && (result == nil || result.Success)))
+	if result != nil {
+		toolSpan.SetAttribute("execution_time_ms", fmt.Sprintf("%d", result.ExecutionTimeMs))
+	}
+	ctx.Tracer().EndSpan(toolSpan)
 }
 
 // commitToolRow is the commit tail of dispatchOneCall — execution record,

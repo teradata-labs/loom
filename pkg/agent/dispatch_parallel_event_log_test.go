@@ -27,6 +27,7 @@ import (
 
 	"github.com/teradata-labs/loom/pkg/eventlog"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
+	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
@@ -109,7 +110,7 @@ func TestParallel_IntentFailureRow_LandsInCallOrder(t *testing.T) {
 	require.NotNil(t, rows[1].ToolResult)
 	require.NotNil(t, rows[1].ToolResult.Error)
 	assert.Equal(t, "event_log_intent_failed", rows[1].ToolResult.Error.Code)
-	assert.EqualValues(t, 1, read.runs.Load(), "the call without an intent ran")
+	assert.EqualValues(t, 1, read.runs.Load(), "the call without an intent ran anyway")
 }
 
 // resultDroppingLog stops recording tool results once crashed is set: the
@@ -188,4 +189,54 @@ func TestResumeSession_CrashDuringParallelGroup_ReportsEachGapInCallOrder(t *tes
 	require.NoError(t, err)
 	assert.EqualValues(t, 1, readA.runs.Load(), "resume ran read_a again")
 	assert.EqualValues(t, 1, readB.runs.Load(), "resume ran read_b again")
+}
+
+// A call whose intent could not be recorded never runs, and its span must say
+// so: an error status, error.code and success=false on the tool span, and a
+// failed turn.tool_execution event on the loop span. Tracers score a span
+// without an error status as a success. In a group, the member also carries
+// the group's dispatch attributes.
+func TestIntentFailure_TracedAsFailedCall(t *testing.T) {
+	for name, parallel := range map[string]bool{"sequential": false, "group": true} {
+		t.Run(name, func(t *testing.T) {
+			log := &intentFailingLog{recordingEventLog: &recordingEventLog{}, failPos: 1}
+			tracer := observability.NewMockTracer()
+			tr := &flightTracker{}
+			ag := parallelAgent(t, func(c *Config) { c.ParallelReadTools = parallel },
+				batchOf(probeCall("id-1", "read_a", "1"), probeCall("id-2", "read_b", "2")),
+				WithEventLog(log), WithTracer(tracer))
+			ag.RegisterTool(&parallelProbe{name: "read_a", safe: true, tr: tr})
+			ag.RegisterTool(&parallelProbe{name: "read_b", safe: true, tr: tr})
+
+			_, err := ag.Chat(context.Background(), "intent-fail-trace", "go")
+			require.NoError(t, err)
+
+			var failed *observability.Span
+			for _, sp := range tracer.GetSpansByName("agent.tool_execution") {
+				if sp.Attributes["tool_name"] == "read_b" {
+					failed = sp
+				}
+			}
+			require.NotNil(t, failed, "read_b has a tool span")
+			assert.Equal(t, observability.StatusError, failed.Status.Code)
+			assert.Equal(t, "event_log_intent_failed", failed.Attributes["error.code"])
+			assert.Equal(t, "false", failed.Attributes["success"])
+			if parallel {
+				assert.Equal(t, true, failed.Attributes["dispatch.parallel"])
+				assert.Equal(t, 2, failed.Attributes["dispatch.group_size"])
+			}
+
+			var event map[string]interface{}
+			for _, sp := range tracer.GetSpansByName("agent.conversation_loop") {
+				for _, e := range sp.Events {
+					if e.Name == "turn.tool_execution" && e.Attributes["tool_name"] == "read_b" {
+						event = e.Attributes
+					}
+				}
+			}
+			require.NotNil(t, event, "read_b has a turn.tool_execution event")
+			assert.Equal(t, false, event["success"])
+			assert.Equal(t, 2, event["index"])
+		})
+	}
 }
