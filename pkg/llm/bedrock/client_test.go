@@ -215,7 +215,7 @@ func TestClient_ConvertTools(t *testing.T) {
 		},
 	}
 
-	apiTools, err := client.convertTools(context.Background(), []shuttle.Tool{mockTool})
+	apiTools, err := client.convertTools(context.Background(), []shuttle.Tool{mockTool}, make(map[string]string))
 	require.NoError(t, err)
 
 	require.Len(t, apiTools, 1)
@@ -489,7 +489,7 @@ func TestClient_ConvertResponse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resp := client.convertResponse(tt.response)
+			resp := client.convertResponse(tt.response, nil)
 			require.NotNil(t, resp)
 			tt.validate(t, resp)
 		})
@@ -1036,7 +1036,6 @@ func TestClient_ImplementsLLMProviderInterface(t *testing.T) {
 		region:      "us-east-1",
 		maxTokens:   4096,
 		temperature: 1.0,
-		toolNameMap: make(map[string]string),
 	}
 
 	// Type assertion to verify interface implementation
