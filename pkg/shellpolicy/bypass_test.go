@@ -310,3 +310,47 @@ func TestAnalyze_SubscriptArithmetic(t *testing.T) {
 		{cmd: `[ "$x" -eq 1 ]; printf -v 'a[1]' x; test -v 'a[@]'; [[ -v HOME ]]`, want: Allow, static: Allow},
 	})
 }
+
+// N8: eval -- and trap -- name the command they run, not "--"; trap options
+// and a reset run nothing.
+func TestAnalyze_NestedDashDash(t *testing.T) {
+	runBypassCases(t, []bypassCase{
+		{cmd: `eval -- 'rm a.txt'`, want: Ask, static: Ask, why: "rm (1:1): not on the shell allowlist"},
+		{cmd: `trap -- 'rm a.txt' EXIT`, want: Ask, static: Ask, why: "rm (1:1): not on the shell allowlist"},
+		{cmd: `eval -- "$c"`, want: Allow, static: Deny},
+		{cmd: `trap -p; trap - EXIT; trap -l; trap -- - INT; eval --`, want: Allow, static: Allow},
+	})
+}
+
+// N9: bash opens a network connection for a /dev/tcp or /dev/udp path, which
+// does not exist on disk, so the read check never saw it.
+func TestAnalyze_NetworkDevices(t *testing.T) {
+	runBypassCases(t, []bypassCase{
+		{cmd: `cat < /dev/tcp/127.0.0.1/80`, want: Deny, static: Deny, why: "/dev/tcp/127.0.0.1/80 (1:5): opens a network connection"},
+		{cmd: `echo x > /dev/udp/127.0.0.1/53`, want: Deny, static: Deny},
+		{cmd: `cat /dev/tcp/127.0.0.1/80`, want: Deny, static: Deny},
+		{cmd: `cat 0<>/dev/tcp/127.0.0.1/80`, want: Deny, static: Deny},
+		{cmd: `echo /dev/tcp/x; cat /dev/null`, want: Allow, static: Allow},
+	})
+	opt, _ := escapeSession(t)
+	err := Readonly().CheckOpen("/dev/tcp/127.0.0.1/80", opt.WorkingDir, false, opt.Roots, &Grant{ReadPaths: []string{"/"}})
+	assert.ErrorContains(t, err, "network connection", "no grant opens a network connection")
+	err = Readonly().CheckLaunch([]string{"cat", "/dev/udp/127.0.0.1/53"}, opt.WorkingDir, opt.Roots, &Grant{ReadPaths: []string{"/"}})
+	assert.ErrorContains(t, err, "network connection")
+}
+
+// Found while fixing the review: mapfile's -C callback is code, and set -k
+// turns any NAME=value argument into an environment assignment
+// (set -k; find . LD_PRELOAD=/tmp/x.so). Bash 5.2 ran both; the jailed shell
+// supports neither.
+func TestAnalyze_UnsupportedBuiltinOptions(t *testing.T) {
+	runBypassCases(t, []bypassCase{
+		{cmd: `mapfile -C 'touch p' -c 1 arr <<< x`, want: Deny, static: Deny, why: "mapfile -C"},
+		{cmd: `readarray -tC'touch p' arr <<< x`, want: Deny, static: Deny},
+		{cmd: `set -k; find . LD_PRELOAD=/tmp/x.so`, want: Deny, static: Deny, why: "set -k"},
+		{cmd: `set -euk`, want: Deny, static: Deny},
+		{cmd: `set -euo keyword`, want: Deny, static: Deny, why: "set -o keyword"},
+		{cmd: `set -o "$o"`, want: Allow, static: Deny},
+		{cmd: `set -euo pipefail; set -x; set +k; set -- -k; mapfile -t -c 1 arr < /dev/null`, want: Allow, static: Allow},
+	})
+}

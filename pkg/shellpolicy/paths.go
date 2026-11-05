@@ -56,12 +56,20 @@ func (a *analyzer) readPath(path string, n syntax.Node, outer *syntax.Pos) {
 	if path == "" || devicePaths[path] || strings.HasPrefix(path, "~") {
 		return
 	}
+	if netDevice(path) {
+		a.add(Deny, n, outer, path, "opens a network connection")
+		return
+	}
 	a.paths = append(a.paths, pathCheck{path: path, n: n, outer: outer})
 }
 
 // writePath records a path the command writes.
 func (a *analyzer) writePath(path string, n syntax.Node, outer *syntax.Pos) {
 	if devicePaths[path] {
+		return
+	}
+	if netDevice(path) {
+		a.add(Deny, n, outer, path, "opens a network connection")
 		return
 	}
 	a.paths = append(a.paths, pathCheck{path: path, write: true, n: n, outer: outer})

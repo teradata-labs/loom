@@ -88,6 +88,9 @@ func (p *Policy) CheckOpen(path, dir string, write bool, roots Roots, g *Grant) 
 	if devicePaths[path] {
 		return nil
 	}
+	if netDevice(path) {
+		return &LaunchError{Name: path, Reason: "opens a network connection"}
+	}
 	full := ResolvePath(dir, path)
 	if write {
 		if inRoots(full, roots.Write) {
@@ -113,6 +116,9 @@ func (p *Policy) CheckListDir(dir string, roots Roots, g *Grant) error {
 func checkReadAt(name, path, dir string, roots Roots, g *Grant) error {
 	if devicePaths[path] {
 		return nil
+	}
+	if netDevice(path) {
+		return &LaunchError{Name: name, Reason: "opens a network connection (" + path + ")"}
 	}
 	full := ResolvePath(dir, path)
 	if _, err := os.Stat(full); err != nil {

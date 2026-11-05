@@ -453,6 +453,9 @@ func (a *analyzer) builtin(x *syntax.CallExpr, name string, rest []*syntax.Word,
 	if name == "unset" {
 		a.unsetNames(x, rest, outer)
 	}
+	if !a.supportedOptions(x, name, rest, outer) {
+		return
+	}
 	if !a.p.Builtins[name] {
 		if a.opt.Static && (name == "source" || name == "." || name == "alias" || name == "shopt") {
 			a.add(Deny, x, outer, name, "runs commands the static check cannot see")
@@ -463,11 +466,16 @@ func (a *analyzer) builtin(x *syntax.CallExpr, name string, rest []*syntax.Word,
 	}
 	switch name {
 	case "eval":
-		a.nested(x, rest, depth, outer)
+		a.nested(x, dropDashes(rest), depth, outer)
 	case "trap":
-		if len(rest) > 0 {
-			a.nested(x, rest[:1], depth, outer)
+		action := dropDashes(rest)
+		if len(action) == 0 {
+			break
 		}
+		if s, ok := literal(action[0]); ok && (s == "-" || s == "-p" || s == "-l" || s == "-P") {
+			break // a reset, or a listing: no code
+		}
+		a.nested(x, action[:1], depth, outer)
 	case "cd", "pushd":
 		a.chdir(x, name, rest, outer)
 	case "popd":
@@ -506,6 +514,81 @@ func (a *analyzer) unsetNames(x *syntax.CallExpr, words []*syntax.Word, outer *s
 			a.unsetFuncs[s] = true
 		}
 	}
+}
+
+// dropDashes drops the "--" that may end eval's and trap's options.
+func dropDashes(words []*syntax.Word) []*syntax.Word {
+	if len(words) > 0 {
+		if s, ok := literal(words[0]); ok && s == "--" {
+			return words[1:]
+		}
+	}
+	return words
+}
+
+// supportedOptions refuses the builtin options that run code or change what
+// runs, which the jailed shell does not implement: mapfile/readarray -C (a
+// callback evaluated as code) and set -k / set -o keyword (every NAME=value
+// argument becomes an environment assignment of the command). Under static
+// a computed set option may be either. It reports whether the call may be
+// judged further.
+func (a *analyzer) supportedOptions(x *syntax.CallExpr, name string, rest []*syntax.Word, outer *syntax.Pos) bool {
+	switch name {
+	case "mapfile", "readarray":
+		for _, w := range rest {
+			s, ok := literal(w)
+			if !ok || s == "--" {
+				break
+			}
+			if !strings.HasPrefix(s, "-") {
+				continue
+			}
+			for _, c := range s[1:] {
+				if c == 'C' {
+					a.add(Deny, x, outer, name+" -C", "runs a callback as code; not supported by the jailed shell")
+					return false
+				}
+				if strings.ContainsRune("dnOsuc", c) {
+					break // the rest is the option's value
+				}
+			}
+		}
+	case "set":
+		for i := 0; i < len(rest); i++ {
+			s, ok := literal(rest[i])
+			if !ok {
+				if a.opt.Static {
+					a.add(Deny, x, outer, "set "+wordText(rest[i]), "a set option computed at run time may be -k, which static enforcement cannot follow")
+					return false
+				}
+				return true
+			}
+			if s == "--" || s == "-" || !strings.HasPrefix(s, "-") {
+				return true // the rest are positional parameters ("+o" turns options off)
+			}
+			for _, c := range s[1:] {
+				switch c {
+				case 'k':
+					a.add(Deny, x, outer, "set -k", "turns NAME=value arguments into environment assignments; not supported by the jailed shell")
+					return false
+				case 'o':
+					if i+1 < len(rest) {
+						i++
+						v, ok := literal(rest[i])
+						if !ok && a.opt.Static {
+							a.add(Deny, x, outer, "set -o "+wordText(rest[i]), "a set option computed at run time may be keyword, which static enforcement cannot follow")
+							return false
+						}
+						if ok && v == "keyword" {
+							a.add(Deny, x, outer, "set -o keyword", "turns NAME=value arguments into environment assignments; not supported by the jailed shell")
+							return false
+						}
+					}
+				}
+			}
+		}
+	}
+	return true
 }
 
 // nested parses the literal argument of eval or trap as a command of its own.
@@ -585,6 +668,18 @@ func (a *analyzer) redirects(st *syntax.Stmt, outer *syntax.Pos) {
 
 // devicePaths are always allowed as redirect targets and arguments.
 var devicePaths = map[string]bool{"/dev/null": true, "/dev/stdin": true, "/dev/stdout": true, "/dev/stderr": true}
+
+// netDevice reports whether bash opens a network connection for path: a
+// redirect to /dev/tcp/HOST/PORT or /dev/udp/HOST/PORT, which need not exist
+// on disk.
+func netDevice(path string) bool {
+	for _, p := range []string{path, filepath.Clean(path)} {
+		if strings.HasPrefix(p, "/dev/tcp/") || strings.HasPrefix(p, "/dev/udp/") {
+			return true
+		}
+	}
+	return false
+}
 
 // literal returns the word's value when it is fully literal: no parameter,
 // command, arithmetic or process expansion, no glob, brace or tilde expansion,
