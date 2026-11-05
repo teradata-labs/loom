@@ -103,9 +103,12 @@ type Options struct {
 	// Static marks a binding with no runner behind it ("enforcement:
 	// static"): anything Analyze cannot see (a program name computed at run
 	// time, a non-literal eval or trap, source, aliases, a path argument or
-	// redirect target built from ~, a parameter or a substitution) is refused
-	// rather than left to the runner, and so is a program whose profile needs
-	// run-time hardening (Profile.Harden or Profile.Env).
+	// redirect target built from ~, a parameter or a substitution, a cd it
+	// cannot follow, a .. after a glob, a computed subscript, arithmetic over
+	// a value not proven to be an integer) is refused rather than left to the
+	// runner, and so is a program whose profile needs run-time hardening
+	// (Profile.Harden or Profile.Env). Glob arguments are expanded and each
+	// name they match is path-checked.
 	Static bool
 }
 
