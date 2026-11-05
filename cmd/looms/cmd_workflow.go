@@ -1405,8 +1405,8 @@ func createLLMProvider() (agent.LLMProvider, string) {
 			accessKeyID, secretAccessKey, sessionToken := resolveBedrockCredentials(config.LLM)
 			client, err := bedrockmantle.NewClientForModel(bedrockmantle.Config{
 				Region:          mantleRegion(config.LLM),
-				Endpoint:        config.LLM.BedrockMantleEndpoint,
-				APIKey:          config.LLM.BedrockMantleAPIKey,
+				Endpoint:        loomconfig.ExpandEnvPlaceholders(config.LLM.BedrockMantleEndpoint),
+				APIKey:          resolveBedrockMantleAPIKey(config.LLM),
 				AccessKeyID:     accessKeyID,
 				SecretAccessKey: secretAccessKey,
 				SessionToken:    sessionToken,

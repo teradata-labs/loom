@@ -588,6 +588,17 @@ func resolveBedrockCredentials(cfg LLMConfig) (accessKeyID, secretAccessKey, ses
 		loomconfig.ExpandEnvPlaceholders(cfg.BedrockSessionToken)
 }
 
+// resolveBedrockMantleAPIKey returns the Bedrock API key for the bedrock-mantle
+// provider: llm.bedrock_mantle_api_key with ${ENV_VAR} placeholders expanded,
+// or BEDROCK_MANTLE_API_KEY when the config field is empty. An empty result
+// selects SigV4 signing from the AWS credential chain.
+func resolveBedrockMantleAPIKey(cfg LLMConfig) string {
+	if key := loomconfig.ExpandEnvPlaceholders(cfg.BedrockMantleAPIKey); key != "" {
+		return key
+	}
+	return os.Getenv("BEDROCK_MANTLE_API_KEY")
+}
+
 func buildProviderPool(cfg *Config, _ *factory.ProviderFactory, logger *zap.Logger) (map[string]agent.LLMProvider, error) {
 	if len(cfg.Providers) == 0 {
 		return nil, nil
@@ -677,7 +688,7 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		client, err := bedrockmantle.NewClientForModel(bedrockmantle.Config{
 			Region:            mantleRegion(cfg),
 			Endpoint:          loomconfig.ExpandEnvPlaceholders(cfg.BedrockMantleEndpoint),
-			APIKey:            apiKey(loomconfig.ExpandEnvPlaceholders(cfg.BedrockMantleAPIKey), "BEDROCK_MANTLE_API_KEY"),
+			APIKey:            resolveBedrockMantleAPIKey(cfg),
 			AccessKeyID:       accessKeyID,
 			SecretAccessKey:   secretAccessKey,
 			SessionToken:      sessionToken,
@@ -974,14 +985,10 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			model = serverConfig.LLM.BedrockMantleModel
 		}
 		accessKeyID, secretAccessKey, sessionToken := resolveBedrockCredentials(serverConfig.LLM)
-		mantleKey := loomconfig.ExpandEnvPlaceholders(serverConfig.LLM.BedrockMantleAPIKey)
-		if mantleKey == "" {
-			mantleKey = os.Getenv("BEDROCK_MANTLE_API_KEY")
-		}
 		client, err := bedrockmantle.NewClientForModel(bedrockmantle.Config{
 			Region:            mantleRegion(serverConfig.LLM),
 			Endpoint:          loomconfig.ExpandEnvPlaceholders(serverConfig.LLM.BedrockMantleEndpoint),
-			APIKey:            mantleKey,
+			APIKey:            resolveBedrockMantleAPIKey(serverConfig.LLM),
 			AccessKeyID:       accessKeyID,
 			SecretAccessKey:   secretAccessKey,
 			SessionToken:      sessionToken,

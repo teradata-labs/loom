@@ -14,7 +14,14 @@
 package main
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -143,4 +150,84 @@ func TestCreateLLMProviderFromProtoConfig_BedrockMantle(t *testing.T) {
 		require.True(t, ok, "expected *bedrockmantle.Client, got %T", p)
 		assert.Equal(t, bedrockmantle.DefaultModel, client.Model())
 	})
+}
+
+// TestWorkflowCreateLLMProvider_BedrockMantleAPIKeyFromEnv is a regression test
+// for the `looms workflow` provider path: with only BEDROCK_MANTLE_API_KEY set
+// (no key in config) the provider must send that key as a bearer token, the
+// same way the serve path does, instead of falling back to SigV4.
+func TestWorkflowCreateLLMProvider_BedrockMantleAPIKeyFromEnv(t *testing.T) {
+	tests := []struct {
+		name      string
+		cfgKey    string
+		cfgEndpt  func(url string) string
+		wantToken string
+	}{
+		{
+			name:      "env var only",
+			cfgKey:    "",
+			cfgEndpt:  func(url string) string { return url },
+			wantToken: "ABSK-from-env",
+		},
+		{
+			name:      "placeholders in config",
+			cfgKey:    "${TEST_MANTLE_KEY_PLACEHOLDER}",
+			cfgEndpt:  func(string) string { return "${TEST_MANTLE_ENDPOINT_PLACEHOLDER}" },
+			wantToken: "ABSK-from-placeholder",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Hermetic AWS environment: no shared config, no credentials file,
+			// no IMDS. Only the bearer key can authenticate the request.
+			empty := filepath.Join(t.TempDir(), "empty-aws")
+			require.NoError(t, os.WriteFile(empty, nil, 0o600))
+			t.Setenv("AWS_CONFIG_FILE", empty)
+			t.Setenv("AWS_SHARED_CREDENTIALS_FILE", empty)
+			t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+			t.Setenv("AWS_PROFILE", "")
+			t.Setenv("AWS_ACCESS_KEY_ID", "")
+			t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+			t.Setenv("AWS_SESSION_TOKEN", "")
+
+			var gotAuth atomic.Value
+			gotAuth.Store("")
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotAuth.Store(r.Header.Get("Authorization"))
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"object":"list","data":[]}`))
+			}))
+			t.Cleanup(srv.Close)
+
+			if tt.cfgKey == "" {
+				t.Setenv("BEDROCK_MANTLE_API_KEY", tt.wantToken)
+			} else {
+				t.Setenv("BEDROCK_MANTLE_API_KEY", "")
+				t.Setenv("TEST_MANTLE_KEY_PLACEHOLDER", tt.wantToken)
+				t.Setenv("TEST_MANTLE_ENDPOINT_PLACEHOLDER", srv.URL)
+			}
+
+			saved := config
+			t.Cleanup(func() { config = saved })
+			config = &Config{LLM: LLMConfig{
+				Provider:              "bedrock-mantle",
+				BedrockRegion:         "us-west-2",
+				BedrockMantleEndpoint: tt.cfgEndpt(srv.URL),
+				BedrockMantleAPIKey:   tt.cfgKey,
+				BedrockMantleModel:    "openai.gpt-oss-120b",
+			}}
+
+			p, label := createLLMProvider()
+			require.Equal(t, "AWS Bedrock Mantle (config)", label)
+			client, ok := p.(*bedrockmantle.Client)
+			require.True(t, ok, "expected *bedrockmantle.Client, got %T", p)
+			assert.Equal(t, srv.URL, client.BaseURL())
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			require.NoError(t, client.HealthCheck(ctx))
+			assert.Equal(t, "Bearer "+tt.wantToken, gotAuth.Load())
+		})
+	}
 }
