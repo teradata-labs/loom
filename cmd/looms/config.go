@@ -1690,7 +1690,7 @@ func (c *Config) Validate() error {
 		// - User might be using environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
 		// The Bedrock client will handle auth validation at runtime
 
-	case "bedrock-mantle":
+	case bedrockmantle.ProviderName:
 		if mantleRegion(c.LLM) == "" {
 			return fmt.Errorf("bedrock-mantle region is required (set llm.bedrock_mantle_region or llm.bedrock_region in config, or LOOM_LLM_BEDROCK_MANTLE_REGION env var)")
 		}

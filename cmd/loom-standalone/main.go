@@ -180,7 +180,7 @@ func startEmbeddedServer(port int, llmProvider, llmAPIKey, llmModel string, temp
 			return nil, fmt.Errorf("failed to create bedrock client: %w", err)
 		}
 
-	case "bedrock-mantle":
+	case bedrockmantle.ProviderName:
 		if llmModel == "" {
 			llmModel = bedrockmantle.DefaultModel
 		}
