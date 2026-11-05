@@ -3,7 +3,7 @@
 Technical reference for connecting Loom to the Amazon Bedrock `bedrock-mantle` endpoint.
 
 **Version**: v1.4.0
-**Status**: ⚠️ Partial. The provider is implemented and tested in the Go library (`pkg/llm/bedrockmantle`), the provider factory, and the agent registry. The `looms` server YAML (`llm.bedrock_mantle_*`) and CLI wiring are not done yet; see [What is not done yet](#what-is-not-done-yet).
+**Status**: ✅ Implemented. Provider (`pkg/llm/bedrockmantle`), provider factory, agent registry, `looms` server config (`llm.bedrock_mantle_*`), `looms` CLI and `loom-standalone`. Catalog pricing covers Claude Haiku 4.5 and Opus 4.7 only; see [Cost accounting](#cost-accounting) and [What is not done yet](#what-is-not-done-yet).
 
 ## Table of Contents
 
@@ -39,6 +39,28 @@ What you give up on Mantle: Guardrails, cross-region inference profiles (`us.` a
 
 ## Configuration
 
+### Through `looms.yaml` (server and CLI)
+
+```yaml
+llm:
+  provider: bedrock-mantle
+  bedrock_mantle_model: anthropic.claude-haiku-4-5
+  # bedrock_mantle_region: us-west-2   # defaults to bedrock_region (which defaults to us-west-2)
+  # bedrock_mantle_endpoint: https://bedrock-mantle.us-west-2.api.aws  # PrivateLink override only
+  # bedrock_profile: bedrock            # SigV4 via a named AWS profile; otherwise keys or role from the AWS credential chain
+```
+
+| Key | Environment | Keyring | Notes |
+|---|---|---|---|
+| `llm.bedrock_mantle_region` | `LOOM_LLM_BEDROCK_MANTLE_REGION` | | Falls back to `llm.bedrock_region` |
+| `llm.bedrock_mantle_endpoint` | `LOOM_LLM_BEDROCK_MANTLE_ENDPOINT` | | Base URL override. A trailing `/` or `/v1` is stripped |
+| `llm.bedrock_mantle_api_key` | `BEDROCK_MANTLE_API_KEY` | `looms config set-key bedrock_mantle_api_key` | Bedrock API key. Empty selects SigV4 |
+| `llm.bedrock_mantle_model` | `LOOM_LLM_BEDROCK_MANTLE_MODEL` | | Default `anthropic.claude-haiku-4-5` |
+
+SigV4 credentials are the Bedrock ones: `llm.bedrock_profile`, or `bedrock_access_key_id` / `bedrock_secret_access_key` / `bedrock_session_token` from the keyring, or the AWS default chain (env keys, SSO, IAM role). When a profile is set, explicit keys are ignored, as for the `bedrock` provider.
+
+The provider is selectable everywhere `looms` builds an LLM: the main server LLM, `llm.provider_pool` entries (they inherit the Mantle region, endpoint and API key from the main LLM when omitted), per-agent `llm:` blocks in agent YAML (model from the agent, credentials from the server), `looms workflow`, and `looms config init` (option 4). `loom-standalone --provider bedrock-mantle` reads `BEDROCK_MANTLE_REGION` (then `AWS_REGION`, then `us-west-2`) and `BEDROCK_MANTLE_API_KEY` from the environment.
+
 ### Through the provider factory (Go)
 
 ```go
@@ -70,7 +92,7 @@ llm:
   max_tokens: 4096
 ```
 
-The registry path reads only environment variables: `BEDROCK_MANTLE_REGION` (then `AWS_REGION`), `BEDROCK_MANTLE_ENDPOINT`, `BEDROCK_MANTLE_API_KEY`, and the default AWS credential chain (`AWS_PROFILE`, env keys, SSO, IAM role) for SigV4.
+Under `looms serve`, the agent block selects the provider and model; region, endpoint and credentials come from the server's `llm.bedrock_mantle_*` and `llm.bedrock_*` settings above. When the agent registry is used directly from Go (without `looms`), it reads only environment variables: `BEDROCK_MANTLE_REGION` (then `AWS_REGION`), `BEDROCK_MANTLE_ENDPOINT`, `BEDROCK_MANTLE_API_KEY`, and the default AWS credential chain (`AWS_PROFILE`, env keys, SSO, IAM role) for SigV4.
 
 ### Directly (Go)
 
@@ -154,7 +176,7 @@ Other Mantle models are priced by the inner client's fallback table, which is **
 Unit tests run with the rest of the repository:
 
 ```bash
-go test -tags fts5 -race ./pkg/llm/bedrockmantle/ ./pkg/llm/factory/ ./pkg/llm/anthropic/ ./pkg/llm/openai/
+go test -tags fts5 -race ./pkg/llm/bedrockmantle/ ./pkg/llm/factory/ ./pkg/llm/anthropic/ ./pkg/llm/openai/ ./cmd/looms/
 ```
 
 The live suite needs a region and a credential that is allowed to call `bedrock-mantle:CreateInference`:
@@ -168,8 +190,7 @@ It covers the health check, Claude chat, streaming, tool calls and prompt cachin
 
 ## What is not done yet
 
-- 📋 `looms` server config: `llm.bedrock_mantle_region`, `llm.bedrock_mantle_api_key`, `llm.bedrock_mantle_endpoint`, `llm.bedrock_mantle_model` in `looms.yaml`, `looms config set-key`, and the provider switch in `cmd/looms`. Until then `looms serve` cannot select this provider; the factory and agent-registry paths can.
-- 📋 Provider-name plumbing elsewhere in the tree (`internal/config` provider list, `pkg/agent/config_loader.go` allowlist, `pkg/agent/model_context_limits.go` defaults, metaagent validator, OTel `gen_ai.system` mapping, `cmd/loom-standalone`).
+- 📋 `quickstart.sh` does not offer Mantle in its setup menu and `pkg/builder` has no `WithBedrockMantleLLM` helper; use `looms config init` (option 4) or `looms.yaml`.
 - 📋 Catalog entries for the other Claude models Mantle lists (Sonnet 5, Opus 5.x, Opus 4.8, Fable 5) and for non-Claude models, once their rates are verified.
 - 📋 OpenAI Responses API, server-side tools, background inference, Projects and Workspaces.
 
