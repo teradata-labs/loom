@@ -33,7 +33,7 @@ import (
 const DefaultShadowQueryLimit = 10_000
 
 // DecisionShadowStore persists decision shadow rows in SQLite
-// (migration 000011).
+// (migration 000012).
 type DecisionShadowStore struct {
 	db     *sql.DB
 	tracer observability.Tracer

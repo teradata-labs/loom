@@ -688,7 +688,7 @@ func TestRLS_SoftDeleteRestoreIsolation(t *testing.T) {
 	require.NotNil(t, loaded, "Session should be restored and loadable")
 }
 
-// TestRLS_DecisionShadowHonorsJWTSub verifies that decision_shadow (000026)
+// TestRLS_DecisionShadowHonorsJWTSub verifies that decision_shadow (000027)
 // resolves its caller through loom_current_user_id(), like every other
 // per-user table since 000016: a Supabase-authenticated caller that sets only
 // request.jwt.claims sees its own rows and no one else's.
