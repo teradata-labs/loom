@@ -171,12 +171,36 @@ func TestStreamableHTTP_JSONRefusalLogsAtWarn(t *testing.T) {
 	}
 }
 
-// The synthesized code must not collide with a code that means something else
-// to a standard client. The published TypeScript SDK uses -32001 for
-// RequestTimeout, and a caller reading a size refusal as a timeout would
-// retry it, which can only fail the same way again.
+// A code loom synthesizes itself must not be mistakable for one the peer
+// sent. MCP 2026-07-28 ("Error Codes") closes both halves of the JSON-RPC
+// server-error range to a code like this and says local errors SHOULD be
+// allocated outside -32768..-32000 entirely.
+//
+// The table below is the whole of what the specification and the SDK allocate.
+// An earlier version of this test checked the SDK enum ONLY, which is why it
+// passed while the code sat on -32002 — the specification's "Resource not
+// found". Checking one source and calling it settled is the defect this test
+// now exists to prevent, so the spec rows come first.
 func TestCodeResponseTooLarge_DoesNotCollideWithStandardCodes(t *testing.T) {
-	// @modelcontextprotocol/sdk v1.32.2, ErrorCode.
+	// Allocated by the MCP SPECIFICATION. Verified against
+	// modelcontextprotocol/modelcontextprotocol: schema/*/schema.ts and
+	// docs/specification/*/server/resources.mdx ("Error Handling").
+	spec := map[int]string{
+		-32002: "Resource not found (2025-11-25 and earlier; reserved, never reused)",
+		-32003: "MissingRequiredClientCapability (pre-2026-07-28 numbering)",
+		-32004: "UnsupportedProtocolVersion (pre-2026-07-28 numbering)",
+		-32020: "HeaderMismatch",
+		-32021: "MissingRequiredClientCapability",
+		-32022: "UnsupportedProtocolVersion",
+		-32042: "URL elicitation required (2025-11-25 only; reserved)",
+		-32600: "InvalidRequest",
+		-32601: "MethodNotFound",
+		-32602: "InvalidParams / resource not found from 2026-07-28",
+		-32603: "InternalError",
+		-32700: "ParseError",
+	}
+	// Allocated by the published TypeScript SDK (@modelcontextprotocol/sdk
+	// v1.32.2), ErrorCode.
 	tsSDK := map[int]string{
 		-32000: "ConnectionClosed",
 		-32001: "RequestTimeout",
@@ -187,17 +211,32 @@ func TestCodeResponseTooLarge_DoesNotCollideWithStandardCodes(t *testing.T) {
 		-32603: "InternalError",
 		-32700: "ParseError",
 	}
+
+	if name, clash := spec[CodeResponseTooLarge]; clash {
+		t.Fatalf("CodeResponseTooLarge (%d) collides with the MCP specification's %s", CodeResponseTooLarge, name)
+	}
 	if name, clash := tsSDK[CodeResponseTooLarge]; clash {
 		t.Fatalf("CodeResponseTooLarge (%d) collides with the TypeScript SDK's %s", CodeResponseTooLarge, name)
 	}
-	// And it must stay inside the implementation-defined range the doc claims.
-	if CodeResponseTooLarge > -32000 || CodeResponseTooLarge < -32019 {
-		t.Fatalf("CodeResponseTooLarge (%d) is outside -32000..-32019", CodeResponseTooLarge)
+
+	// The structural rule, which is what makes this robust against codes the
+	// specification has not allocated YET: a locally-synthesized error must
+	// sit outside the JSON-RPC reserved range altogether.
+	if CodeResponseTooLarge <= -32000 && CodeResponseTooLarge >= -32768 {
+		t.Fatalf("CodeResponseTooLarge (%d) is inside the JSON-RPC reserved range -32768..-32000; "+
+			"MCP 2026-07-28 says a locally-synthesized error SHOULD be allocated outside it", CodeResponseTooLarge)
 	}
-	// CodeStreamLost shares -32000 with ConnectionClosed on purpose: it means
-	// the same thing to a caller. Pinned so the overlap stays deliberate.
+	// And specifically not in the specification's own sub-range, which an
+	// implementation MUST NOT emit undefined codes from.
+	if CodeResponseTooLarge <= -32020 && CodeResponseTooLarge >= -32099 {
+		t.Fatalf("CodeResponseTooLarge (%d) is in -32020..-32099, reserved for the MCP specification", CodeResponseTooLarge)
+	}
+
+	// CodeStreamLost stays at -32000: the value predates the allocation
+	// policy, is grandfathered, and callers match on it. Pinned so that
+	// staying put remains a decision rather than an oversight.
 	if CodeStreamLost != -32000 {
-		t.Fatalf("CodeStreamLost moved to %d; the ConnectionClosed overlap was deliberate", CodeStreamLost)
+		t.Fatalf("CodeStreamLost moved to %d; its -32000 value is deliberate and grandfathered", CodeStreamLost)
 	}
 }
 
@@ -247,6 +286,73 @@ func TestStreamableHTTP_RefusalOnIdlessStreamSynthesizesNothing(t *testing.T) {
 
 	// But it must be on the record.
 	if logs.FilterMessageSnippet("no request id").Len() == 0 {
+		t.Fatalf("the refusal must be logged at Warn; Warn+ entries: %d", logs.Len())
+	}
+}
+
+// Q3: once the final response has been delivered, no request is waiting for an
+// answer any more. A later oversized message on the same POST stream must not
+// synthesize a second error for that id — it would match no pending request and
+// only produce "received unrecognized message" noise, which is exactly the rule
+// the id-less case above already follows.
+func TestStreamableHTTP_RefusalAfterTheFinalResponseSynthesizesNothing(t *testing.T) {
+	const limit = 512
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flush := func() {
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}
+		// The final response for the request, within the bound.
+		_, _ = w.Write([]byte("data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}\n\n"))
+		flush()
+		// Then an oversized message on the SAME stream, after the answer.
+		_, _ = w.Write([]byte("data: " + strings.Repeat("x", limit*4) + "\n\n"))
+		flush()
+	}))
+	defer srv.Close()
+
+	core, logs := observer.New(zapcore.WarnLevel)
+	tr, err := NewStreamableHTTPTransport(StreamableHTTPConfig{
+		Endpoint:         srv.URL,
+		MaxResponseBytes: limit,
+		Logger:           zap.New(core),
+	})
+	if err != nil {
+		t.Fatalf("new transport: %v", err)
+	}
+	defer func() { _ = tr.Close() }()
+
+	if err := tr.Send(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	// The real answer must arrive.
+	rctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	first, rerr := tr.Receive(rctx)
+	if rerr != nil {
+		t.Fatalf("the final response must be delivered: %v", rerr)
+	}
+	if !strings.Contains(string(first), `"result"`) {
+		t.Fatalf("want the server's result first, got %q", string(first))
+	}
+
+	// Nothing more: no second error for an id that is already answered.
+	rctx2, cancel2 := context.WithTimeout(context.Background(), 750*time.Millisecond)
+	defer cancel2()
+	extra, rerr2 := tr.Receive(rctx2)
+	if rerr2 == nil {
+		t.Fatalf("a refusal after the final response must not be synthesized, got %q", string(extra))
+	}
+	if !errors.Is(rerr2, context.DeadlineExceeded) {
+		t.Fatalf("want the channel to stay empty (deadline), got %v", rerr2)
+	}
+
+	// It still has to be on the record.
+	if logs.FilterMessageSnippet("over the configured size limit").Len() == 0 {
 		t.Fatalf("the refusal must be logged at Warn; Warn+ entries: %d", logs.Len())
 	}
 }

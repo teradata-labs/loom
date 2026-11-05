@@ -8422,9 +8422,16 @@ type MCPServerInfo struct {
 	// Uptime in seconds
 	UptimeSeconds int64 `protobuf:"varint,10,opt,name=uptime_seconds,json=uptimeSeconds,proto3" json:"uptime_seconds,omitempty"`
 	// Number of tools exposed by this server
-	ToolCount     int32 `protobuf:"varint,11,opt,name=tool_count,json=toolCount,proto3" json:"tool_count,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ToolCount int32 `protobuf:"varint,11,opt,name=tool_count,json=toolCount,proto3" json:"tool_count,omitempty"`
+	// Bound on one JSON-RPC message from this server (streamable-http only),
+	// as CONFIGURED. 0 means none was set and the 16 MiB default
+	// (transport.DefaultMaxResponseBytes) is in force; reporting the configured
+	// value rather than the effective one keeps "unset" distinguishable from
+	// "explicitly 16 MiB". Reported whatever the transport, so a stdio server
+	// shows what its config says even though the bound does not apply there.
+	MaxResponseBytes int64 `protobuf:"varint,12,opt,name=max_response_bytes,json=maxResponseBytes,proto3" json:"max_response_bytes,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *MCPServerInfo) Reset() {
@@ -8534,6 +8541,13 @@ func (x *MCPServerInfo) GetToolCount() int32 {
 	return 0
 }
 
+func (x *MCPServerInfo) GetMaxResponseBytes() int64 {
+	if x != nil {
+		return x.MaxResponseBytes
+	}
+	return 0
+}
+
 // ToolFilterConfig configures which tools to register from an MCP server.
 type ToolFilterConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -8626,7 +8640,10 @@ type AddMCPServerRequest struct {
 	// Enable stream resumption (for streamable-http transport)
 	EnableResumption bool `protobuf:"varint,12,opt,name=enable_resumption,json=enableResumption,proto3" json:"enable_resumption,omitempty"`
 	// Bound on one JSON-RPC message from this server (streamable-http only).
-	// 0 selects the 16 MiB default. See MCPServerConfig.max_response_bytes.
+	// Over it the read stops and the response is refused, never truncated.
+	// 0 selects the 16 MiB default (transport.DefaultMaxResponseBytes); see
+	// manager.ServerConfig.MaxResponseBytes for the full semantics, including
+	// the clamp at transport.MaxResponseLimit and why stdio is unbounded.
 	MaxResponseBytes int64 `protobuf:"varint,13,opt,name=max_response_bytes,json=maxResponseBytes,proto3" json:"max_response_bytes,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
@@ -8847,7 +8864,10 @@ type UpdateMCPServerRequest struct {
 	// Enable stream resumption (for streamable-http transport)
 	EnableResumption bool `protobuf:"varint,13,opt,name=enable_resumption,json=enableResumption,proto3" json:"enable_resumption,omitempty"`
 	// Bound on one JSON-RPC message from this server (streamable-http only).
-	// 0 selects the 16 MiB default. See MCPServerConfig.max_response_bytes.
+	// Over it the read stops and the response is refused, never truncated.
+	// 0 selects the 16 MiB default (transport.DefaultMaxResponseBytes); see
+	// manager.ServerConfig.MaxResponseBytes for the full semantics, including
+	// the clamp at transport.MaxResponseLimit and why stdio is unbounded.
 	MaxResponseBytes int64 `protobuf:"varint,14,opt,name=max_response_bytes,json=maxResponseBytes,proto3" json:"max_response_bytes,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
@@ -11683,7 +11703,7 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"totalCount\"6\n" +
 	"\x13GetMCPServerRequest\x12\x1f\n" +
 	"\vserver_name\x18\x01 \x01(\tR\n" +
-	"serverName\"\x86\x03\n" +
+	"serverName\"\xb4\x03\n" +
 	"\rMCPServerInfo\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aenabled\x18\x02 \x01(\bR\aenabled\x12\x1c\n" +
@@ -11697,7 +11717,8 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\x0euptime_seconds\x18\n" +
 	" \x01(\x03R\ruptimeSeconds\x12\x1d\n" +
 	"\n" +
-	"tool_count\x18\v \x01(\x05R\ttoolCount\x1a6\n" +
+	"tool_count\x18\v \x01(\x05R\ttoolCount\x12,\n" +
+	"\x12max_response_bytes\x18\f \x01(\x03R\x10maxResponseBytes\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"X\n" +

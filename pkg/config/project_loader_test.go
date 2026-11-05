@@ -368,30 +368,3 @@ func TestMCPConfigConversion(t *testing.T) {
 	require.NotNil(t, mem)
 	assert.True(t, mem.Tools.GetAll())
 }
-
-// convertMCPConfig must carry max_response_bytes through to the proto. A
-// setting silently dropped in conversion is indistinguishable, from the
-// outside, from one that was never added.
-func TestConvertMCPConfig_CarriesMaxResponseBytes(t *testing.T) {
-	cfg := convertMCPConfig(&MCPServersConfigYAML{
-		Servers: map[string]MCPServerConfigYAML{
-			"big": {
-				Enabled:          true,
-				Transport:        "streamable-http",
-				MaxResponseBytes: 64 << 20,
-			},
-			"default": {
-				Enabled:   true,
-				Transport: "streamable-http",
-			},
-		},
-	})
-
-	if got := cfg.Servers["big"].MaxResponseBytes; got != 64<<20 {
-		t.Fatalf("max_response_bytes was dropped in conversion: got %d, want %d", got, 64<<20)
-	}
-	// Unset must stay 0, which is what selects the transport default.
-	if got := cfg.Servers["default"].MaxResponseBytes; got != 0 {
-		t.Fatalf("an unset bound must stay 0 so the transport default applies, got %d", got)
-	}
-}

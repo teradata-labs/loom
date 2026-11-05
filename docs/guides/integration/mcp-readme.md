@@ -145,6 +145,7 @@ mcp:
       url: https://api.example.com/mcp
       enabled: true
       protocol_version: auto   # auto (default) | legacy | exact revision, e.g. "2026-07-28"
+      max_response_bytes: 16777216   # optional; omit for the 16 MiB default
 ```
 
 **`protocol_version` values:**
@@ -153,6 +154,14 @@ mcp:
 - an exact revision (e.g. `"2026-07-28"`, `"2025-03-26"`) — require the server to speak exactly that revision; fails loudly instead of silently downgrading
 
 Verify what a server actually negotiates with `just mcp-probe -url <endpoint>` (see the [MCP Probe guide](../mcp-probe.md)).
+
+**`max_response_bytes`** bounds ONE JSON-RPC message from this server, on both the plain-JSON and the SSE path. Omit it, or set `0`, for the default of **16 MiB**. Over the bound the read stops and the response is refused, never truncated, and the caller gets JSON-RPC error `-33001`; a truncated JSON-RPC message cannot be decoded, so losing the tail quietly would be worse than a clear error.
+
+- The bound is **per message, not per stream**, so a long-lived `subscriptions/listen` stream may deliver many bounded messages.
+- Raise it for a server whose `resources/read`, resource blob or wide query result legitimately exceeds 16 MiB.
+- For effectively no limit, set `4611686018427387903` (`math.MaxInt64/2`). Larger values are clamped to it: the read paths add to the bound before using it, and at `math.MaxInt64` that arithmetic overflows and hangs the call instead of refusing it.
+- It has **no effect on `stdio`**, which is deliberately unbounded — a stdio server is a child process this host already launched and trusts, and the pipe applies its own backpressure.
+- Settable at runtime through `AddMCPServer` / `UpdateMCPServer`, which persist it to `looms.yaml`; `ListMCPServers` / `GetMCPServer` report the configured value (`0` meaning the default applies).
 
 **Use streamable-http when:**
 - Connecting to remote MCP servers

@@ -23,15 +23,33 @@ import (
 	"strings"
 )
 
-// sseLineOverheadBytes is the slack readLine allows ABOVE the remaining data
-// bound, for the parts of a line that are not data: the field prefix
-// ("data: " is 6 bytes, "event: " is 7) and the terminator ("\r\n").
+// SSE field names, as bytes, so a line can be dispatched without converting
+// it to a string first.
+var (
+	sseFieldID    = []byte("id")
+	sseFieldEvent = []byte("event")
+	sseFieldData  = []byte("data")
+)
+
+// sseLineOverheadBytes is the slack readLine allows ABOVE the data bound when
+// deciding how long a single line may be, for the parts of a line that are not
+// data: the field prefix ("data: " is 6 bytes, "event: " is 7) and the
+// terminator ("\r\n").
 //
-// It exists because charging those bytes to the data bound refused a message
-// whose data was exactly at the limit. The data is charged exactly, in
-// ParseEvent, so this constant decides only how much of ONE line may sit in
-// memory before the refusal (at most limit+64 bytes), never how much data is
-// accepted.
+// The allowance is a fixed addition to the WHOLE bound, not to what is left of
+// it. An earlier revision subtracted the data accumulated so far, which made a
+// line's admissibility depend on what came before it: with the data already at
+// the limit, the remaining budget was 0 and a following `id:` line of any
+// length was refused, while the same event with the `id:` line FIRST parsed.
+// A non-data line is not charged to the data bound at all, so it must not be
+// refused by it.
+//
+// What this bounds is therefore how much of ONE line may sit in memory before
+// a refusal: at most limit+64 bytes. It never decides how much data is
+// accepted - ParseEvent charges the data exactly and is the authoritative
+// bound. Peak memory for one event is consequently its data (up to the limit)
+// plus the line being read (up to limit+64), so a small constant multiple of
+// the limit rather than the limit itself.
 const sseLineOverheadBytes = 64
 
 // SSEEvent is one parsed Server-Sent Events message.
@@ -49,6 +67,11 @@ type SSEParser struct {
 	// subscriptions/listen, which stays open for its lifetime and delivers
 	// many events. Zero means unbounded.
 	limit int64
+	// lineBuf is reused by readLine for every line of every event, so a
+	// stream of many small lines does not allocate one buffer per line. The
+	// slice readLine returns is a view into it, valid only until the next
+	// readLine call: callers must copy anything they keep.
+	lineBuf []byte
 }
 
 // NewSSEParser creates a new SSE parser with no size bound.
@@ -90,41 +113,53 @@ func NewSSEParserWithLimit(r io.Reader, maxBytes int64) *SSEParser {
 //	(blank line terminates event)
 func (p *SSEParser) ParseEvent() (*SSEEvent, error) {
 	event := &SSEEvent{}
-	var dataLines []string
-	// size accumulates this event's data bytes. Reset per call, so the bound
-	// is per message and a long-lived stream is not capped in total.
-	var size int64
+	// data accumulates this event's payload in ONE buffer, as it arrives.
+	//
+	// An earlier revision kept a []string of data lines and joined them at
+	// the end. That held three copies at once - every line, the slice of
+	// headers addressing them, and the joined result - so a server sending
+	// many small data lines cost far more heap than the bound allowed: at the
+	// 16 MiB default, 16.7M empty "data:" lines stayed "under the bound" on
+	// the joined size while costing well over a GiB. The bound exists to
+	// protect the heap, so what it measures must be what is held.
+	//
+	// data.Len() IS the joined size, so it doubles as the running total the
+	// bound is checked against and the two cannot drift apart.
+	var data bytes.Buffer
+	// sawData distinguishes "no data line yet" from "one empty data line",
+	// which data.Len() alone cannot: both are zero bytes.
+	var sawData bool
 
 	for {
-		line, err := p.readLine(size)
+		line, err := p.readLine()
 		if err != nil {
-			if err == io.EOF && len(dataLines) > 0 {
+			if err == io.EOF && sawData {
 				// Process partial event before EOF
-				event.Data = []byte(strings.Join(dataLines, "\n"))
+				event.Data = data.Bytes()
 				return event, nil
 			}
 			return nil, err
 		}
 
-		line = strings.TrimSuffix(line, "\n")
-		line = strings.TrimSuffix(line, "\r")
+		line = bytes.TrimSuffix(line, []byte("\n"))
+		line = bytes.TrimSuffix(line, []byte("\r"))
 
 		// Empty line terminates event
-		if line == "" {
-			if len(dataLines) > 0 {
-				event.Data = []byte(strings.Join(dataLines, "\n"))
+		if len(line) == 0 {
+			if sawData {
+				event.Data = data.Bytes()
 				return event, nil
 			}
 			continue
 		}
 
 		// Skip comments (lines starting with :)
-		if strings.HasPrefix(line, ":") {
+		if line[0] == ':' {
 			continue
 		}
 
 		// Parse field
-		colonIdx := strings.Index(line, ":")
+		colonIdx := bytes.IndexByte(line, ':')
 		if colonIdx == -1 {
 			continue // Invalid line, skip
 		}
@@ -133,33 +168,35 @@ func (p *SSEParser) ParseEvent() (*SSEEvent, error) {
 		value := line[colonIdx+1:]
 
 		// Remove optional leading space after colon
-		value = strings.TrimPrefix(value, " ")
+		value = bytes.TrimPrefix(value, []byte(" "))
 
-		switch field {
-		case "id":
-			event.ID = value
-		case "event":
-			// We expect "message" events, ignore others
-			// Non-message events are silently ignored
-			_ = value
-		case "data":
-			// size is exactly what strings.Join(dataLines, "\n") will cost,
-			// so the bound is the JSON-RPC message's own size.
+		switch {
+		case bytes.Equal(field, sseFieldID):
+			// Copied: value is a view into the reusable line buffer.
+			event.ID = string(value)
+		case bytes.Equal(field, sseFieldEvent):
+			// We expect "message" events, ignore others.
+			// Non-message events are silently ignored.
+		case bytes.Equal(field, sseFieldData):
+			// The event is charged exactly what it will hold: this line's
+			// bytes, plus the newline joining it to the previous line.
 			//
 			// The joining newline is charged too. Without it an empty "data:"
-			// line costs nothing: the budget never shrinks, and a server that
-			// sends "data:\n" forever grows dataLines and the joined result
-			// without limit, which is the allocation this bound exists to
-			// prevent.
+			// line costs nothing, the budget never shrinks, and a server that
+			// sends "data:\n" forever grows the event without limit - which
+			// is the allocation this bound exists to prevent.
 			cost := int64(len(value))
-			if len(dataLines) > 0 {
+			if sawData {
 				cost++ // the "\n" joining this line to the previous one
 			}
-			if p.limit > 0 && size+cost > p.limit {
+			if p.limit > 0 && int64(data.Len())+cost > p.limit {
 				return nil, &ResponseTooLargeError{Limit: p.limit}
 			}
-			size += cost
-			dataLines = append(dataLines, value)
+			if sawData {
+				data.WriteByte('\n')
+			}
+			data.Write(value)
+			sawData = true
 		}
 	}
 }
@@ -167,46 +204,52 @@ func (p *SSEParser) ParseEvent() (*SSEEvent, error) {
 // readLine reads one SSE line, refusing to buffer a single line that would
 // carry this event past its bound.
 //
+// The returned slice is a view into the parser's reusable line buffer and is
+// valid only until the next readLine call. Keeping any part of it means
+// copying it.
+//
 // The per-line guard matters because a streamable-http server sends an entire
 // JSON-RPC message as ONE "data:" line: without it, bufio would buffer that
 // whole line before ParseEvent's accumulated-size check ever ran, which is
 // exactly the allocation the bound exists to prevent.
 //
-// The budget is what is LEFT of the data bound plus sseLineOverheadBytes, so
-// the field prefix and the terminator are not charged to the data itself.
+// The budget is the data bound plus sseLineOverheadBytes, and deliberately
+// does NOT shrink as the event's data accumulates: a line is not data until it
+// has been read and its field seen, and a non-data line is never charged to
+// the data bound. ParseEvent charges the data exactly and is the authoritative
+// bound on it.
+//
 // Reading proceeds in bufio-sized chunks; a byte-at-a-time loop cost one heap
-// allocation per byte on every SSE response.
-func (p *SSEParser) readLine(accumulated int64) (string, error) {
-	if p.limit <= 0 {
-		return p.reader.ReadString('\n')
-	}
-	budget := p.limit - accumulated
-	if budget < 0 {
-		budget = 0
-	}
-	budget += sseLineOverheadBytes
+// allocation per byte, and a fresh buffer per line cost one per line.
+func (p *SSEParser) readLine() ([]byte, error) {
+	p.lineBuf = p.lineBuf[:0]
 
-	var buf []byte
+	// Negative means unbounded, which is what NewSSEParser asks for.
+	budget := int64(-1)
+	if p.limit > 0 {
+		budget = p.limit + sseLineOverheadBytes
+	}
+
 	for {
 		// ReadSlice returns a view into bufio's buffer, valid only until the
 		// next read, so the chunk is copied before looping.
 		chunk, err := p.reader.ReadSlice('\n')
-		if int64(len(buf))+int64(len(chunk)) > budget {
+		if budget >= 0 && int64(len(p.lineBuf))+int64(len(chunk)) > budget {
 			// More line than the budget admits. Refuse rather than buffer it.
-			return "", &ResponseTooLargeError{Limit: p.limit}
+			return nil, &ResponseTooLargeError{Limit: p.limit}
 		}
-		buf = append(buf, chunk...)
+		p.lineBuf = append(p.lineBuf, chunk...)
 		switch {
 		case err == nil:
-			return string(buf), nil
+			return p.lineBuf, nil
 		case errors.Is(err, bufio.ErrBufferFull):
 			// bufio's buffer filled before the delimiter; keep reading.
 			continue
-		case errors.Is(err, io.EOF) && len(buf) > 0:
+		case errors.Is(err, io.EOF) && len(p.lineBuf) > 0:
 			// A final line with no trailing newline.
-			return string(buf), nil
+			return p.lineBuf, nil
 		default:
-			return "", err
+			return nil, err
 		}
 	}
 }

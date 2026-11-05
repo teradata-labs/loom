@@ -3604,7 +3604,7 @@
         "maxResponseBytes": {
           "type": "string",
           "format": "int64",
-          "description": "Bound on one JSON-RPC message from this server (streamable-http only).\n0 selects the 16 MiB default. See MCPServerConfig.max_response_bytes."
+          "description": "Bound on one JSON-RPC message from this server (streamable-http only).\nOver it the read stops and the response is refused, never truncated.\n0 selects the 16 MiB default (transport.DefaultMaxResponseBytes); see\nmanager.ServerConfig.MaxResponseBytes for the full semantics, including\nthe clamp at transport.MaxResponseLimit and why stdio is unbounded."
         }
       },
       "description": "UpdateMCPServerRequest updates an MCP server."
@@ -3819,7 +3819,7 @@
         "maxResponseBytes": {
           "type": "string",
           "format": "int64",
-          "description": "Bound on one JSON-RPC message from this server (streamable-http only).\n0 selects the 16 MiB default. See MCPServerConfig.max_response_bytes."
+          "description": "Bound on one JSON-RPC message from this server (streamable-http only).\nOver it the read stops and the response is refused, never truncated.\n0 selects the 16 MiB default (transport.DefaultMaxResponseBytes); see\nmanager.ServerConfig.MaxResponseBytes for the full semantics, including\nthe clamp at transport.MaxResponseLimit and why stdio is unbounded."
         }
       },
       "description": "AddMCPServerRequest adds a new MCP server."
@@ -6570,6 +6570,11 @@
           "type": "integer",
           "format": "int32",
           "title": "Number of tools exposed by this server"
+        },
+        "maxResponseBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Bound on one JSON-RPC message from this server (streamable-http only),\nas CONFIGURED. 0 means none was set and the 16 MiB default\n(transport.DefaultMaxResponseBytes) is in force; reporting the configured\nvalue rather than the effective one keeps \"unset\" distinguishable from\n\"explicitly 16 MiB\". Reported whatever the transport, so a stdio server\nshows what its config says even though the bound does not apply there."
         }
       },
       "description": "MCPServerInfo provides information about an MCP server."

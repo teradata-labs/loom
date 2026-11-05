@@ -828,30 +828,8 @@ type MCPServerConfig struct {
 	TimeoutSeconds int32                  `protobuf:"varint,5,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
 	Tools          *MCPToolSelection      `protobuf:"bytes,6,opt,name=tools,proto3" json:"tools,omitempty"`
 	Env            map[string]string      `protobuf:"bytes,7,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// max_response_bytes bounds ONE JSON-RPC message read from this server over
-	// the streamable-http transport, on both the plain-JSON and the SSE path.
-	// Over it the read stops and the response is refused, never truncated: a
-	// truncated JSON-RPC message cannot be decoded, and losing the tail quietly
-	// is worse than a clear error.
-	//
-	// 0 selects the default of 16 MiB (transport.DefaultMaxResponseBytes). Raise
-	// it for a server whose resources/read, resource blob or wide query result
-	// legitimately exceeds that. To ask for effectively no limit, set it to
-	// 4611686018427387903 (transport.MaxResponseLimit, math.MaxInt64/2); larger
-	// values are clamped to it, because the read paths add to the bound before
-	// using it and at math.MaxInt64 that arithmetic overflows and hangs the
-	// call instead of refusing it.
-	//
-	// The bound is per message, not per stream, so a long-lived
-	// subscriptions/listen stream may deliver many bounded messages.
-	//
-	// It has no effect on the stdio transport, which is deliberately unbounded:
-	// a stdio server is a child process this host already launched and trusts,
-	// so the response is not attacker-controlled in the way a remote HTTP
-	// server's is, and the pipe applies its own backpressure.
-	MaxResponseBytes int64 `protobuf:"varint,8,opt,name=max_response_bytes,json=maxResponseBytes,proto3" json:"max_response_bytes,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *MCPServerConfig) Reset() {
@@ -931,13 +909,6 @@ func (x *MCPServerConfig) GetEnv() map[string]string {
 		return x.Env
 	}
 	return nil
-}
-
-func (x *MCPServerConfig) GetMaxResponseBytes() int64 {
-	if x != nil {
-		return x.MaxResponseBytes
-	}
-	return 0
 }
 
 type MCPToolSelection struct {
@@ -1199,7 +1170,7 @@ const file_loom_v1_project_proto_rawDesc = "" +
 	"\aservers\x18\x01 \x03(\v2&.loom.v1.MCPServersConfig.ServersEntryR\aservers\x1aT\n" +
 	"\fServersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12.\n" +
-	"\x05value\x18\x02 \x01(\v2\x18.loom.v1.MCPServerConfigR\x05value:\x028\x01\"\xec\x02\n" +
+	"\x05value\x18\x02 \x01(\v2\x18.loom.v1.MCPServerConfigR\x05value:\x028\x01\"\xbe\x02\n" +
 	"\x0fMCPServerConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1c\n" +
 	"\ttransport\x18\x02 \x01(\tR\ttransport\x12\x18\n" +
@@ -1207,8 +1178,7 @@ const file_loom_v1_project_proto_rawDesc = "" +
 	"\x04args\x18\x04 \x03(\tR\x04args\x12'\n" +
 	"\x0ftimeout_seconds\x18\x05 \x01(\x05R\x0etimeoutSeconds\x12/\n" +
 	"\x05tools\x18\x06 \x01(\v2\x19.loom.v1.MCPToolSelectionR\x05tools\x123\n" +
-	"\x03env\x18\a \x03(\v2!.loom.v1.MCPServerConfig.EnvEntryR\x03env\x12,\n" +
-	"\x12max_response_bytes\x18\b \x01(\x03R\x10maxResponseBytes\x1a6\n" +
+	"\x03env\x18\a \x03(\v2!.loom.v1.MCPServerConfig.EnvEntryR\x03env\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x9d\x01\n" +

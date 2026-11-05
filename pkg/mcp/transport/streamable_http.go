@@ -447,17 +447,29 @@ func (t *StreamableHTTPTransport) handleSSEStream(ctx context.Context, body io.R
 					t.logger.Warn("SSE message rejected: over the configured size limit",
 						zap.Int64("limit_bytes", tooLarge.Limit),
 						zap.String("endpoint", t.endpoint))
+					// Whether an answer was already delivered has to be read
+					// BEFORE sawFinal is set for the refusal itself.
+					alreadyAnswered := sawFinal
 					sawFinal = true
-					// Only synthesize when there is a request waiting for an
-					// answer. On a stream with no request id (a notification
-					// POST, or a GET listen stream) an error with "id":null
-					// matches no pending request: the client cannot route it
-					// and logs "received unrecognized message" at Warn, so the
-					// only effect is noise. This follows the same rule as the
-					// stream-lost path, which sawFinal already suppresses when
-					// expectedID is nil.
+					// Only synthesize when a request is still waiting for an
+					// answer, because an error that matches no pending request
+					// cannot be routed by the client: it logs "received
+					// unrecognized message" at Warn and the only effect is
+					// noise. Two cases qualify, and they are the same rule the
+					// stream-lost path follows:
+					//
+					//   - no request id at all (a notification POST, or a GET
+					//     listen stream): the error would carry "id":null;
+					//   - the final response for this id has already been
+					//     delivered, so the caller has its answer and a second
+					//     message for that id is unroutable.
 					if expectedID == nil {
 						t.logger.Warn("oversized SSE message on a stream with no request id; no error synthesized",
+							zap.Int64("limit_bytes", tooLarge.Limit))
+						return
+					}
+					if alreadyAnswered {
+						t.logger.Warn("oversized SSE message after the final response; no error synthesized",
 							zap.Int64("limit_bytes", tooLarge.Limit))
 						return
 					}

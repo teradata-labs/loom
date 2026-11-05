@@ -147,3 +147,60 @@ func TestSSEParser_SingleOversizedLineRefused(t *testing.T) {
 		t.Fatalf("an oversized single line must be refused, got %v", err)
 	}
 }
+
+// A non-data line is never charged to the data bound, so it must not be
+// refused by it. An earlier revision subtracted the accumulated data from the
+// line budget, which made a line's admissibility depend on what came before:
+// with data already at the limit the budget was 0, and a following `id:` line
+// of any length was refused - while the same event with the `id:` line FIRST
+// parsed. Order decided the outcome.
+func TestSSEParser_NonDataLineIsNotChargedToTheDataBound(t *testing.T) {
+	const limit = 100
+	data := strings.Repeat("x", limit)
+	id := strings.Repeat("i", 80)
+
+	t.Run("data at the limit, then a long id line", func(t *testing.T) {
+		ev, err := NewSSEParserWithLimit(
+			strings.NewReader("data: "+data+"\nid: "+id+"\n\n"), limit).ParseEvent()
+		if err != nil {
+			t.Fatalf("a non-data line after data at the limit must parse, got %v", err)
+		}
+		if string(ev.Data) != data {
+			t.Fatalf("data corrupted: got %d bytes, want %d", len(ev.Data), len(data))
+		}
+		if ev.ID != id {
+			t.Fatalf("the id must survive: got %d bytes, want %d", len(ev.ID), len(id))
+		}
+	})
+
+	t.Run("the same event in the other order", func(t *testing.T) {
+		ev, err := NewSSEParserWithLimit(
+			strings.NewReader("id: "+id+"\ndata: "+data+"\n\n"), limit).ParseEvent()
+		if err != nil {
+			t.Fatalf("order must not decide the outcome, got %v", err)
+		}
+		if string(ev.Data) != data {
+			t.Fatalf("data corrupted: got %d bytes", len(ev.Data))
+		}
+	})
+
+	t.Run("the data bound itself still holds", func(t *testing.T) {
+		// One byte more of DATA is still refused: moving the line allowance
+		// must not have loosened the bound on data.
+		_, err := NewSSEParserWithLimit(
+			strings.NewReader("data: "+data+"y\n\n"), limit).ParseEvent()
+		if !errors.Is(err, ErrResponseTooLarge) {
+			t.Fatalf("one byte of data over the bound must be refused, got %v", err)
+		}
+	})
+
+	t.Run("one line may still not be buffered without limit", func(t *testing.T) {
+		// The per-line guard is what stops an enormous single line being
+		// buffered before ParseEvent could charge it.
+		_, err := NewSSEParserWithLimit(
+			strings.NewReader("id: "+strings.Repeat("i", 10*limit)+"\n\n"), limit).ParseEvent()
+		if !errors.Is(err, ErrResponseTooLarge) {
+			t.Fatalf("a line far over the bound must still be refused, got %v", err)
+		}
+	})
+}

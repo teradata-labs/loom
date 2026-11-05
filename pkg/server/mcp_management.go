@@ -57,6 +57,7 @@ func (s *MultiAgentServer) ListMCPServers(ctx context.Context, req *loomv1.ListM
 			protoServers[i].Command = cfg.Command
 			protoServers[i].Args = cfg.Args
 			protoServers[i].Env = cfg.Env
+			protoServers[i].MaxResponseBytes = cfg.MaxResponseBytes
 		}
 
 		// Get tool count if connected
@@ -99,6 +100,7 @@ func (s *MultiAgentServer) GetMCPServer(ctx context.Context, req *loomv1.GetMCPS
 				info.Command = cfg.Command
 				info.Args = cfg.Args
 				info.Env = cfg.Env
+				info.MaxResponseBytes = cfg.MaxResponseBytes
 			}
 
 			// Get tool count if connected
@@ -229,6 +231,8 @@ func (s *MultiAgentServer) AddMCPServer(ctx context.Context, req *loomv1.AddMCPS
 			Args:      req.Args,
 			Env:       req.Env,
 			Status:    "running",
+
+			MaxResponseBytes: req.MaxResponseBytes,
 		}
 
 		// Get tool count
@@ -248,6 +252,8 @@ func (s *MultiAgentServer) AddMCPServer(ctx context.Context, req *loomv1.AddMCPS
 			Args:      req.Args,
 			Env:       req.Env,
 			Status:    "stopped",
+
+			MaxResponseBytes: req.MaxResponseBytes,
 		}
 	}
 
@@ -812,6 +818,16 @@ func (s *MultiAgentServer) addMCPServerToConfig(req *loomv1.AddMCPServerRequest)
 		serverConfig["tool_filter"] = filterMap
 	}
 
+	// A limit set through the API has to survive a restart the way `enabled`
+	// does. Only a real value is written: zero on the wire means "use the
+	// default" and is indistinguishable from "leave it alone" (the proto field
+	// is a plain int64, not optional). Writing the zero through would shadow a
+	// limit set by hand in YAML, since this map is an override layer over the
+	// file — verified by dumping the written config both ways.
+	if req.MaxResponseBytes > 0 {
+		serverConfig["max_response_bytes"] = req.MaxResponseBytes
+	}
+
 	v.Set(fmt.Sprintf("mcp.servers.%s", req.Name), serverConfig)
 
 	if err := v.WriteConfig(); err != nil {
@@ -861,6 +877,16 @@ func (s *MultiAgentServer) updateMCPServerInConfig(req *loomv1.UpdateMCPServerRe
 			filterMap["exclude"] = req.ToolFilter.Exclude
 		}
 		serverConfig["tool_filter"] = filterMap
+	}
+
+	// A limit set through the API has to survive a restart the way `enabled`
+	// does. Only a real value is written: zero on the wire means "use the
+	// default" and is indistinguishable from "leave it alone" (the proto field
+	// is a plain int64, not optional). Writing the zero through would shadow a
+	// limit set by hand in YAML, since this map is an override layer over the
+	// file — verified by dumping the written config both ways.
+	if req.MaxResponseBytes > 0 {
+		serverConfig["max_response_bytes"] = req.MaxResponseBytes
 	}
 
 	v.Set(fmt.Sprintf("mcp.servers.%s", req.ServerName), serverConfig)
