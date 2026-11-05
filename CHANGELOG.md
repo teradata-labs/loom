@@ -126,7 +126,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The agent config loader warns when a `task_board` block is written anywhere other than `memory.task_board`, where it is silently ignored.
 - Both task stores order list pages on a unique tiebreak, so offset paging no longer double-counts or drops rows.
 - `GetBoard` returns `Internal` on a count failure instead of silently reporting zeros.
-- LLM slot scheduler: starvation aging no longer moves a waiter's priority class. `loom scheduler waiters` shows the class a request actually has, and its `PROMOTIONS` column (and `GetSlotState.promotions_total` / `SlotWaiter.promotions`) now counts starvation tiers crossed. Each tier raises the rank the waiter is dispatched at by one class step, capped at `RESOURCE_HOLDER`, so a `NEW` waiter one tier old is still served behind a real `RESOURCE_HOLDER`. See `docs/architecture/llm-slot-scheduler.md`.
+- LLM slot scheduler: starvation aging no longer moves a waiter's priority class. `loom scheduler waiters` shows the class a request actually has, and its `PROMOTIONS` column (and `GetSlotState.promotions_total` / `SlotWaiter.promotions`) now counts starvation tiers crossed. Each tier raises the rank the waiter is dispatched at by one class step, capped at `RESOURCE_HOLDER`, so a `NEW` waiter one tier old is still served behind a real `RESOURCE_HOLDER`. `PROMOTIONS` and `promotions_total` now count the tiers crossed by every waiter, including `RESOURCE_HOLDER` waiters and waiters already at the top rank, so the counter keeps growing by about one per `starvation_age_s` while a waiter waits; previously it stopped at two per waiter. See `docs/architecture/llm-slot-scheduler.md`.
 
 ### Fixed
 

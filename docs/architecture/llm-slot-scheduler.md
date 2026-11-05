@@ -368,7 +368,10 @@ YAML). The scheduler consumes it; it does not replace it.
 Per scope: `loom_llm_slots_active`, `loom_llm_parked`, `loom_llm_door_queue`,
 `loom_llm_effective_tpm`, `loom_llm_reserved_outstanding`,
 `loom_llm_wait_seconds` (histogram, by priority class),
-`loom_llm_promotions_total` (starvation tiers crossed), `loom_llm_admission_rejects_total`.
+`loom_llm_admission_rejects_total`. Starvation tiers crossed are reported only
+as the `GetSlotState.promotions_total` proto field (and per waiter as
+`SlotWaiter.promotions`); there is no `loom_llm_promotions_total`
+Prometheus/OTel metric.
 Every park/wake/grant is a span event on the conversation trace, so a slow
 agent's timeline shows *where* it waited and *why* it was woken. Scheduler
 state queryable live via `LLMSchedulerService.GetSlotState`.
