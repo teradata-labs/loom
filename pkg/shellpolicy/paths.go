@@ -15,10 +15,13 @@
 package shellpolicy
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
+	"mvdan.cc/sh/v3/pattern"
 	"mvdan.cc/sh/v3/syntax"
 )
 
@@ -207,10 +210,11 @@ func cdpathSearched(target string) bool {
 // may be in. A read of an existing path outside the read roots is an Ask
 // granting each resolved path; a write outside the write roots is a Deny.
 func (a *analyzer) finishPaths() {
-	if len(a.paths) == 0 && len(a.cds) == 0 {
+	if len(a.paths) == 0 && len(a.cds) == 0 && len(a.globs) == 0 {
 		return
 	}
 	dirs := a.workingDirs()
+	a.finishGlobs(dirs)
 	for _, c := range a.paths {
 		bases := dirs
 		if filepath.IsAbs(c.path) {
@@ -235,6 +239,140 @@ func (a *analyzer) finishPaths() {
 		}
 		if len(outside) > 0 {
 			a.add(Ask, c.n, c.outer, c.path, "reads outside the session")
+			for _, full := range outside {
+				a.grant.add("read", full)
+			}
+		}
+	}
+}
+
+// maxGlobMatches bounds how many names one glob may match under static
+// enforcement before the command is refused.
+const maxGlobMatches = 4096
+
+// errTooManyMatches is returned by globExpand past maxGlobMatches.
+var errTooManyMatches = errors.New("matches too many names")
+
+// globCheck is a glob argument expanded and path-checked under static
+// enforcement, where no runner checks the names it matches.
+type globCheck struct {
+	pat   string // the word as written: unquoted literal text with its escapes
+	n     syntax.Node
+	outer *syntax.Pos
+}
+
+// staticGlob records a glob argument for finishPaths to expand. A ".." after
+// a glob component is refused: what it climbs out of depends on what the
+// glob matches when the command runs.
+func (a *analyzer) staticGlob(w *syntax.Word, outer *syntax.Pos) {
+	var raw strings.Builder
+	for _, p := range w.Parts {
+		raw.WriteString(p.(*syntax.Lit).Value) // globDir accepted the word: every part is a Lit
+	}
+	pat := raw.String()
+	globbed := false
+	for _, comp := range strings.Split(pat, "/") {
+		if globbed && unescapeUnquoted(comp) == ".." {
+			a.add(Deny, w, outer, wordText(w), "a .. after a glob climbs out of whatever the glob matches, which static enforcement cannot check")
+			return
+		}
+		if pattern.HasMeta(comp, 0) {
+			globbed = true
+		}
+	}
+	a.globs = append(a.globs, globCheck{pat: pat, n: w, outer: outer})
+}
+
+// globExpand returns the names pat matches from dir, as relative or absolute
+// paths built from the pattern's own components. It matches more than bash
+// does, never less: wildcards match a leading dot, and a component that
+// starts with "." also matches "." and ".." (bash before 5.2 does that).
+func globExpand(dir, pat string, limit int) ([]string, error) {
+	cur := []string{""}
+	if strings.HasPrefix(pat, "/") {
+		cur = []string{"/"}
+	}
+	for _, comp := range strings.Split(pat, "/") {
+		if comp == "" {
+			continue
+		}
+		if !pattern.HasMeta(comp, 0) {
+			lit := unescapeUnquoted(comp)
+			for i := range cur {
+				cur[i] = joinGlob(cur[i], lit)
+			}
+			continue
+		}
+		expr, err := pattern.Regexp(comp, pattern.Filenames|pattern.EntireString|pattern.GlobLeadingDot)
+		if err != nil {
+			return nil, err
+		}
+		rx, err := regexp.Compile(expr)
+		if err != nil {
+			return nil, err
+		}
+		var next []string
+		for _, c := range cur {
+			names := []string{}
+			if strings.HasPrefix(comp, ".") {
+				names = append(names, ".", "..")
+			}
+			from := c
+			if from == "" {
+				from = "."
+			}
+			entries, _ := os.ReadDir(ResolvePath(dir, from)) // an unreadable directory matches nothing
+			for _, e := range entries {
+				names = append(names, e.Name())
+			}
+			for _, name := range names {
+				if rx.MatchString(name) {
+					next = append(next, joinGlob(c, name))
+					if len(next) > limit {
+						return nil, errTooManyMatches
+					}
+				}
+			}
+		}
+		cur = next
+	}
+	return cur, nil
+}
+
+func joinGlob(dir, name string) string {
+	switch dir {
+	case "":
+		return name
+	case "/":
+		return "/" + name
+	}
+	return dir + "/" + name
+}
+
+// finishGlobs expands each recorded glob from every directory the command
+// may be in and judges each name it matches like a literal path.
+func (a *analyzer) finishGlobs(dirs []workDir) {
+	for _, g := range a.globs {
+		var outside []string
+		for _, d := range dirs {
+			matches, err := globExpand(d.physical, g.pat, maxGlobMatches)
+			if err != nil {
+				a.add(Deny, g.n, g.outer, g.pat, "a glob that "+err.Error()+" cannot be checked")
+				outside = nil
+				break
+			}
+			for _, m := range matches {
+				full := ResolvePath(d.physical, m)
+				if _, err := os.Stat(full); err != nil {
+					continue
+				}
+				if !inRoots(full, a.opt.Roots.Read) {
+					outside = append(outside, full)
+				}
+			}
+		}
+		if len(outside) > 0 {
+			a.add(Ask, g.n, g.outer, g.pat, "matches names outside the session")
 			for _, full := range outside {
 				a.grant.add("read", full)
 			}

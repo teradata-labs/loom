@@ -141,3 +141,51 @@ func TestAnalyze_InheritedCDPATH(t *testing.T) {
 		assert.Contains(t, v.Reason(), "o (1:4): reads outside the session")
 	}
 }
+
+// N2: a .. after a glob is refused under static, and every name a glob
+// matches is path-checked, so a symlink it matches is followed. A literal ..
+// after a symlink leaves the symlink's target, as the kernel opens it.
+func TestAnalyze_GlobPaths(t *testing.T) {
+	runBypassCases(t, []bypassCase{
+		{cmd: `cat */../../o/secret.txt`, want: Allow, static: Deny, why: "a .. after a glob"},
+		{cmd: `cat s?b/../../o/secret.txt`, want: Allow, static: Deny},
+		{cmd: `cat */k`, want: Allow, static: Ask, why: "*/k (1:5): matches names outside the session"},
+		{cmd: `cat l*`, want: Allow, static: Ask},
+		{cmd: `cd sub; cat ../l*/k`, want: Ask, static: Ask},
+		{cmd: `cat .*/o/secret.txt`, want: Allow, static: Ask},
+		{cmd: `cat link/../secret.txt`, want: Ask, static: Ask, why: "reads outside the session"},
+		{cmd: `echo x > link/../new.txt`, want: Deny, static: Deny, why: "writes outside the session"},
+		{cmd: `cat *.txt sub/* [av]*.txt`, want: Allow, static: Allow},
+		{cmd: `[ -f a.txt ] && [ "$x" = y ]`, want: Allow, static: Allow},
+	})
+}
+
+// A glob that matches too many names, or that bash cannot parse, cannot be
+// checked under static.
+func TestGlobExpand(t *testing.T) {
+	opt, _ := escapeSession(t)
+	w := opt.WorkingDir
+	got, err := globExpand(w, "*.txt", 10)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"a.txt", "victim.txt"}, got)
+	got, err = globExpand(w, "l*/k", 10)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"link/k"}, got)
+	got, err = globExpand(w, ".*", 10)
+	require.NoError(t, err)
+	assert.Subset(t, got, []string{".", ".."}, "a leading-dot component also matches . and ..")
+	got, err = globExpand(w, w+"/s*", 10)
+	require.NoError(t, err)
+	assert.Equal(t, []string{w + "/sub"}, got)
+	_, err = globExpand(w, "*", 1)
+	assert.ErrorIs(t, err, errTooManyMatches)
+
+	o := opt
+	o.Static = true
+	for i := 0; i < maxGlobMatches+1; i++ {
+		require.NoError(t, os.WriteFile(filepath.Join(w, "sub", "f"+itoa(i)), nil, 0o600))
+	}
+	v := Readonly().Analyze(`cat sub/*`, o)
+	assert.Equal(t, Deny, v.Kind, v.Reason())
+	assert.Contains(t, v.Reason(), "matches too many names")
+}

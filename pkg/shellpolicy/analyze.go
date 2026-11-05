@@ -167,6 +167,7 @@ type analyzer struct {
 	// command can change to is known.
 	paths []pathCheck
 	cds   []cdTarget
+	globs []globCheck
 }
 
 // funcCall is a call to a declared function, kept to judge it as a command
@@ -376,6 +377,9 @@ func (a *analyzer) program(x *syntax.CallExpr, nameWord *syntax.Word, name strin
 			}
 			if dir, ok := globDir(w); ok {
 				a.readPath(dir, w, outer)
+				if a.opt.Static {
+					a.staticGlob(w, outer)
+				}
 			} else if a.opt.Static {
 				a.add(Deny, w, outer, wordText(w), "an argument computed at run time (tilde, parameter or command substitution) cannot be path-checked")
 			}
@@ -548,7 +552,7 @@ func literal(w *syntax.Word) (string, bool) {
 		switch x := part.(type) {
 		case *syntax.Lit:
 			v := x.Value
-			if strings.ContainsAny(v, "*?[") || hasBraceExpansion(v) || (i == 0 && strings.HasPrefix(v, "~")) {
+			if strings.ContainsAny(v, "*?") || opensBracket(w.Parts, i, v) || hasBraceExpansion(v) || (i == 0 && strings.HasPrefix(v, "~")) {
 				return "", false
 			}
 			b.WriteString(unescapeUnquoted(v))
@@ -573,6 +577,35 @@ func literal(w *syntax.Word) (string, bool) {
 		}
 	}
 	return b.String(), true
+}
+
+// opensBracket reports whether a "[" in v, the unquoted part i of a word,
+// starts a glob bracket expression: bash needs a "]" after it ("[" alone, as
+// in the test command, is literal). A part that is not literal text may hold
+// the "]".
+func opensBracket(parts []syntax.WordPart, i int, v string) bool {
+	k := strings.IndexByte(v, '[')
+	if k < 0 {
+		return false
+	}
+	if strings.IndexByte(v[k+1:], ']') >= 0 {
+		return true
+	}
+	for _, p := range parts[i+1:] {
+		switch x := p.(type) {
+		case *syntax.Lit:
+			if strings.Contains(x.Value, "]") {
+				return true
+			}
+		case *syntax.SglQuoted:
+			if strings.Contains(x.Value, "]") {
+				return true
+			}
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 func hasBraceExpansion(v string) bool {
