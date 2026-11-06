@@ -1010,7 +1010,10 @@ client := mistral.NewClient(mistral.Config{
   other 4xx/5xx are not retried, and retried 5xx are counted apart from
   throttling (`RateLimiterMetrics.TransientRequests`) and do not feed the
   scheduler's throttle signal. Once the budget is spent the error surfaces as
-  `llm.RetriesExhaustedError`; the agent loop does not retry it again
+  `llm.RetriesExhaustedError`. The agent does not retry an exhausted 5xx
+  again. It waits out an exhausted 429 and calls again (throttle patience,
+  10-minute wall-clock budget), and each new call runs the limiter's budget
+  again
 - `TokensPerMinute` is **observational only today**: token consumption is
   tracked and reported in rate-limiter metrics, but it is never enforced —
   size `RequestsPerSecond` against your TPM quota instead
