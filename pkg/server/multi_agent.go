@@ -1430,15 +1430,11 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 				TtftMs:         event.TTFT,
 			}
 
-			// Include HITL request if present
+			// Include HITL request if present. The shared converter keeps this
+			// stream's card identical to Weave's, context_json included — an
+			// ask hold's joined reason travels there.
 			if event.HITLRequest != nil {
-				protoProgress.HitlRequest = &loomv1.HITLRequestInfo{
-					RequestId:      event.HITLRequest.RequestID,
-					Question:       event.HITLRequest.Question,
-					RequestType:    event.HITLRequest.RequestType,
-					Priority:       event.HITLRequest.Priority,
-					TimeoutSeconds: types.SafeInt32(int(event.HITLRequest.Timeout.Seconds())),
-				}
+				protoProgress.HitlRequest = convertHITLRequestToProto(event.HITLRequest)
 			}
 
 			// Include tool lifecycle fields if present
