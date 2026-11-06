@@ -21,8 +21,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/teradata-labs/loom/pkg/llm/catalog"
-
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/bedrock"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
@@ -645,62 +643,9 @@ func (c *SDKClient) convertResponseFromSDK(message *anthropic.Message, toolNameM
 	return llmResp
 }
 
-// calculateCost estimates cost for Bedrock Claude models.
-// Cache pricing: cache_creation at 1.25x input, cache_read at 0.10x input.
+// calculateCost estimates cost for Bedrock Claude models; see bedrockClaudeCost.
 func (c *SDKClient) calculateCost(inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int) float64 {
-	// The catalog (pkg/llm/catalog) is the source of truth; the substring
-	// switch below is only the fallback for model ids it does not list.
-	inputPricePerMillion, outputPricePerMillion, ok := catalog.LookupPricing("bedrock", c.modelID)
-	if ok {
-		return float64(inputTokens)*inputPricePerMillion/1_000_000 +
-			float64(outputTokens)*outputPricePerMillion/1_000_000 +
-			float64(cacheCreationTokens)*inputPricePerMillion*1.25/1_000_000 +
-			float64(cacheReadTokens)*inputPricePerMillion*0.10/1_000_000
-	}
-
-	// IMPORTANT: check "opus-4-1" BEFORE "opus-4" because strings.Contains("opus-4-5", "opus-4") is true.
-	// Opus 4.1 is the expensive model ($15/$75); Opus 4.5/4.6 are cheaper ($5/$25).
-	switch {
-	case strings.Contains(c.modelID, "claude-opus-5"):
-		// Claude Opus 5: $5 per 1M input, $25 per 1M output
-		inputPricePerMillion = 5.0
-		outputPricePerMillion = 25.0
-	case strings.Contains(c.modelID, "claude-sonnet-5"):
-		// Claude Sonnet 5: $3 per 1M input, $15 per 1M output
-		inputPricePerMillion = 3.0
-		outputPricePerMillion = 15.0
-	case strings.Contains(c.modelID, "claude-opus-4-1"):
-		// Claude Opus 4.1: $15 per 1M input, $75 per 1M output
-		inputPricePerMillion = 15.0
-		outputPricePerMillion = 75.0
-	case strings.Contains(c.modelID, "claude-opus-4"):
-		// Claude Opus 4.5/4.6: $5 per 1M input, $25 per 1M output
-		inputPricePerMillion = 5.0
-		outputPricePerMillion = 25.0
-	case strings.Contains(c.modelID, "claude-haiku-4"):
-		// Claude Haiku 4: $1 per 1M input, $5 per 1M output
-		inputPricePerMillion = 1.0
-		outputPricePerMillion = 5.0
-	case strings.Contains(c.modelID, "claude-sonnet-4"):
-		// Claude Sonnet 4: $3 per 1M input, $15 per 1M output
-		inputPricePerMillion = 3.0
-		outputPricePerMillion = 15.0
-	default:
-		// No invented rate for an uncatalogued model — see the same guard in
-		// client.go. Fable-5 was billed at Sonnet's card for a whole trial
-		// because this branch answered confidently instead of admitting it did
-		// not know. Zero is visibly wrong; a plausible number is not.
-		zap.L().Warn("bedrock: model not in pricing catalog — cost reported as 0",
-			zap.String("model", c.modelID))
-		return 0
-	}
-
-	inputCost := float64(inputTokens) * inputPricePerMillion / 1_000_000
-	outputCost := float64(outputTokens) * outputPricePerMillion / 1_000_000
-	// Cache write at 1.25x input price, cache read at 0.10x input price
-	cacheWriteCost := float64(cacheCreationTokens) * inputPricePerMillion * 1.25 / 1_000_000
-	cacheReadCost := float64(cacheReadTokens) * inputPricePerMillion * 0.10 / 1_000_000
-	return inputCost + outputCost + cacheWriteCost + cacheReadCost
+	return bedrockClaudeCost(c.modelID, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens)
 }
 
 // ChatStream streams tokens as they're generated from Bedrock using the Anthropic SDK.
