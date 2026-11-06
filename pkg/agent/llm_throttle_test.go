@@ -291,7 +291,8 @@ func TestThrottlePatienceWait_ContextEndKeepsThrottleError(t *testing.T) {
 }
 
 // Each throttle wait adds one span event to the span in the call's context,
-// with the wait and the wall-clock time throttled when the wait ends.
+// after the wait ends: the planned wait, the time actually waited, and the
+// wall-clock time throttled when the wait ended.
 func TestThrottlePatienceWait_AddsSpanEvent(t *testing.T) {
 	span := &observability.Span{Name: "agent.chat"}
 	base := observability.ContextWithSpan(context.Background(), span)
@@ -316,9 +317,81 @@ func TestThrottlePatienceWait_AddsSpanEvent(t *testing.T) {
 		ev := span.Events[i]
 		assert.Equal(t, "llm.throttle_wait", ev.Name)
 		assert.Equal(t, tt.wantWait, ev.Attributes["wait_ms"], "event %d wait", i)
+		assert.Equal(t, tt.wantWait, ev.Attributes["waited_ms"], "event %d waited: a full wait waits the planned time", i)
 		assert.Equal(t, tt.wantTotal, ev.Attributes["throttled_total_ms"], "event %d running total", i)
 		assert.Equal(t, throttleBudget.Milliseconds(), ev.Attributes["budget_ms"], "event %d budget", i)
+		assert.Equal(t, false, ev.Attributes["interrupted"], "event %d interrupted", i)
 	}
+}
+
+// stalledThrottleClock is a throttleClock whose waits never fire: only the
+// caller's context can end them. called is closed when the first wait starts,
+// and Advance moves the clock, so a test can end a wait part-way through.
+type stalledThrottleClock struct {
+	mu     sync.Mutex
+	now    time.Time
+	called chan struct{}
+	once   sync.Once
+}
+
+func (c *stalledThrottleClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *stalledThrottleClock) After(time.Duration) <-chan time.Time {
+	c.once.Do(func() { close(c.called) })
+	return make(chan time.Time) // never fires
+}
+
+func (c *stalledThrottleClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+// F4 (Josh-Schoen, PR #359): a wait that the context ends part-way through
+// is recorded as the time actually waited, not as the planned wait, and is
+// marked interrupted. The event used to be emitted before the wait, so an
+// interrupted wait counted in full in throttled_total_ms.
+func TestThrottlePatienceWait_InterruptedWaitRecordsTimeWaited(t *testing.T) {
+	const (
+		before = 5 * time.Second        // throttled before this wait began
+		waited = 300 * time.Millisecond // how far into the wait the context ends
+	)
+	clk := &stalledThrottleClock{now: time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC), called: make(chan struct{})}
+	start := clk.Now()
+	clk.Advance(before)
+
+	span := &observability.Span{Name: "agent.chat"}
+	base, cancel := context.WithCancel(observability.ContextWithSpan(context.Background(), span))
+	defer cancel()
+	ctx := &agentContext{Context: base, tracer: observability.NewNoOpTracer()}
+
+	p := throttlePatience{clock: clk, attemptStart: start}
+	go func() {
+		select {
+		case <-clk.called:
+		case <-time.After(10 * time.Second): // backstop: the wait never started
+		}
+		clk.Advance(waited)
+		cancel()
+	}()
+
+	throttleErr := llm.NewThrottleError(fmt.Errorf("API error (status 429): rate_limit_exceeded"), 30*time.Second)
+	err := p.wait(ctx, throttleErr)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+
+	require.Len(t, span.Events, 1, "an interrupted wait still adds its span event")
+	ev := span.Events[0]
+	assert.Equal(t, "llm.throttle_wait", ev.Name)
+	assert.Equal(t, (30 * time.Second).Milliseconds(), ev.Attributes["wait_ms"], "the planned wait")
+	assert.Equal(t, waited.Milliseconds(), ev.Attributes["waited_ms"], "the time actually waited")
+	assert.Equal(t, (before + waited).Milliseconds(), ev.Attributes["throttled_total_ms"],
+		"the running total counts only the time actually waited")
+	assert.Equal(t, true, ev.Attributes["interrupted"])
 }
 
 // No span in the context: the wait still works and adds nothing.

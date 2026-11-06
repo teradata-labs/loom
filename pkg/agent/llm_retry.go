@@ -491,29 +491,45 @@ func (p *throttlePatience) wait(ctx Context, err error) error {
 		zap.Duration("throttled_so_far", elapsed),
 		zap.Error(err),
 	)
-	// The pause can last minutes, so make it visible on the trace too: the
-	// event lands on the span already in the call's context (the agent's
-	// top-level chat span), next to the turn's other span events.
-	// throttled_total_ms is the wall-clock time throttled when this wait ends.
-	if span := observability.SpanFromContext(ctx); span != nil {
-		span.AddEvent("llm.throttle_wait", map[string]interface{}{
-			"wait_ms":            wait.Milliseconds(),
-			"throttled_total_ms": (elapsed + wait).Milliseconds(),
-			"budget_ms":          throttleBudget.Milliseconds(),
-		})
-	}
 	select {
 	case <-ctx.Done():
+		p.recordWait(ctx, wait, now, true)
 		// Wrap both: callers match the context error (errors.Is), and the
 		// throttle error keeps its classification and retry-after hint.
 		return fmt.Errorf("llm throttled and context ended during wait: %w: %w", err, ctx.Err())
 	case <-p.clock.After(wait):
 	}
+	p.recordWait(ctx, wait, now, false)
 	p.delay *= 2
 	if p.delay > throttleMaxDelay {
 		p.delay = throttleMaxDelay
 	}
 	return nil
+}
+
+// recordWait adds one llm.throttle_wait event for a wait that has ended. The
+// pause can last minutes, so it is visible on the trace too: the event lands
+// on the span already in the call's context (the agent's top-level chat
+// span), next to the turn's other span events. It is emitted after the wait,
+// so it records the time actually waited, not the planned wait:
+//   - wait_ms: the planned wait;
+//   - waited_ms: the time actually waited (less than wait_ms when the
+//     context ended during the wait);
+//   - throttled_total_ms: the wall-clock time throttled when the wait ended;
+//   - interrupted: true when the context ended during the wait.
+func (p *throttlePatience) recordWait(ctx Context, wait time.Duration, waitStart time.Time, interrupted bool) {
+	span := observability.SpanFromContext(ctx)
+	if span == nil {
+		return
+	}
+	end := p.now()
+	span.AddEvent("llm.throttle_wait", map[string]interface{}{
+		"wait_ms":            wait.Milliseconds(),
+		"waited_ms":          end.Sub(waitStart).Milliseconds(),
+		"throttled_total_ms": end.Sub(p.start).Milliseconds(),
+		"budget_ms":          throttleBudget.Milliseconds(),
+		"interrupted":        interrupted,
+	})
 }
 
 // toolInputActivityInterval throttles the IsToolInputStream progress events
