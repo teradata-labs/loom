@@ -338,7 +338,7 @@ spec:
 
 | Category | Behavior |
 |---|---|
-| **Configurable** (list in `spec.tools`) | `http_request`, `web_search`, `file_read`, `file_write`, `analyze_image`, `parse_document`, `grpc_call`, `shell_execute`, `contact_human`, `agent_management`, `tool_search`, `run_lua` (also needs the server's `tools.lua.enabled` and an admission chain or permission checker; see [lua-script-api.md](lua-script-api.md)) |
+| **Configurable** (list in `spec.tools`) | `http_request`, `web_search`, `file_read`, `file_write`, `analyze_image`, `parse_document`, `grpc_call`, `shell_execute`, `contact_human`, `agent_management`, `tool_search`, `run_lua` (also needs the server's `tools.lua.enabled` and an admission chain or permission checker), `manage_lua_scripts` (also needs `run_lua` and `tools.lua.scripts.save_enabled`); see [lua-script-api.md](lua-script-api.md). A custom tool with `implementation: lua://<name>` registers the published saved script `<name>` as `lua_<name>`. |
 | **Registered at construction** (not listed in `spec.tools`; present from the first turn when their subsystem is wired) | `load_pattern` (always), `manage_skills` (skill orchestrator wired), `graph_memory` (graph memory store configured and enabled), `task_board` (task manager wired and `task_board.enabled`) |
 | **Progressively disclosed** (registered dynamically after triggering conditions) | `get_error_details` (after first error), `conversation_memory` (after first L2 swap), `session_memory` (after 3+ sessions), `query_tool_result` (after first large result or first tool result returned by reference) |
 | **Workflow-injected** (auto-added for workflow agents) | `send_message`, `publish`, `shared_memory_read`, `shared_memory_write`, `top_n_query`, `group_by_query` |
