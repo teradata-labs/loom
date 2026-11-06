@@ -23,6 +23,7 @@ v0.3.0; once upstream has released every change, it can be replaced by the modul
 | Change | Upstream PR | Files |
 |---|---|---|
 | `string.format("%p")` without an argument panicked; it now returns an error | [#130](https://github.com/arnodel/golua/pull/130), merged, in v0.4.0 | `lib/stringlib/format.go` |
+| `go vet` reported an unreachable fallback return after every `Stat` switch branch already returned; the dead return was removed | loom issue [#573](https://github.com/teradata-labs/loom/issues/573) | `parsing/parser.go` |
 | `base.Load` wrote shared function flags on every runtime: a data race between concurrent runtimes | [#131](https://github.com/arnodel/golua/pull/131), merged, in v0.4.0 | `lib/base/base.go`, `lib/base/ipairs.go` |
 | Metamethods the VM calls directly recursed on the Go stack without limit and aborted the process; nested loops are now limited to 1000 (a catchable "stack overflow") | [#132](https://github.com/arnodel/golua/pull/132), merged, in v0.4.0 | `runtime/thread.go` |
 | `Interrupt` stops a running context from another goroutine; `PopContext` restores the parent before charging it | [#133](https://github.com/arnodel/golua/pull/133), open | `runtime/interrupt.go` (new), `runtime/runtimecontext.go`, `runtime/runtimecontextmanager.go`, `runtime/runtimecontextmanager_noquotas.go` |
