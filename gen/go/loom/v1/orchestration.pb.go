@@ -2703,7 +2703,11 @@ type AgentExecutionCost struct {
 	// Model used
 	Model string `protobuf:"bytes,5,opt,name=model,proto3" json:"model,omitempty"`
 	// Provider
-	Provider      string `protobuf:"bytes,6,opt,name=provider,proto3" json:"provider,omitempty"`
+	Provider string `protobuf:"bytes,6,opt,name=provider,proto3" json:"provider,omitempty"`
+	// Successful LLM calls this agent made for this result (its whole turn:
+	// tool-loop iterations and final synthesis). 0 from producers that predate
+	// this field.
+	LlmCalls      int32 `protobuf:"varint,7,opt,name=llm_calls,json=llmCalls,proto3" json:"llm_calls,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2778,6 +2782,13 @@ func (x *AgentExecutionCost) GetProvider() string {
 		return x.Provider
 	}
 	return ""
+}
+
+func (x *AgentExecutionCost) GetLlmCalls() int32 {
+	if x != nil {
+		return x.LlmCalls
+	}
+	return 0
 }
 
 // WorkflowCost tracks costs across all agents in a workflow.
@@ -3809,14 +3820,15 @@ const file_loom_v1_orchestration_proto_rawDesc = "" +
 	"\x04cost\x18\x06 \x01(\v2\x1b.loom.v1.AgentExecutionCostR\x04cost\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcc\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xe9\x01\n" +
 	"\x12AgentExecutionCost\x12!\n" +
 	"\ftotal_tokens\x18\x01 \x01(\x05R\vtotalTokens\x12!\n" +
 	"\finput_tokens\x18\x02 \x01(\x05R\vinputTokens\x12#\n" +
 	"\routput_tokens\x18\x03 \x01(\x05R\foutputTokens\x12\x19\n" +
 	"\bcost_usd\x18\x04 \x01(\x01R\acostUsd\x12\x14\n" +
 	"\x05model\x18\x05 \x01(\tR\x05model\x12\x1a\n" +
-	"\bprovider\x18\x06 \x01(\tR\bprovider\"\x88\x02\n" +
+	"\bprovider\x18\x06 \x01(\tR\bprovider\x12\x1b\n" +
+	"\tllm_calls\x18\a \x01(\x05R\bllmCalls\"\x88\x02\n" +
 	"\fWorkflowCost\x12$\n" +
 	"\x0etotal_cost_usd\x18\x01 \x01(\x01R\ftotalCostUsd\x12P\n" +
 	"\x0fagent_costs_usd\x18\x02 \x03(\v2(.loom.v1.WorkflowCost.AgentCostsUsdEntryR\ragentCostsUsd\x12!\n" +

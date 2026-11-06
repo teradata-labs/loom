@@ -30,6 +30,9 @@ type PipelineExecutor struct {
 	// checkpoints. Set by the iterative executor's plain-pipeline fallback so
 	// suspension/resume verify against the host-visible iterative pattern.
 	fingerprintOverride string
+
+	// aux collects the LLM calls this executor makes itself (run_usage.go).
+	aux auxUsage
 }
 
 // NewPipelineExecutor creates a new pipeline executor.
@@ -748,10 +751,11 @@ func (e *PipelineExecutor) runStageAgent(
 		ConfidenceScore: 1.0,
 		DurationMs:      duration.Milliseconds(),
 		Cost: &loomv1.AgentExecutionCost{
-			TotalTokens:  types.SafeInt32(response.Usage.TotalTokens),
-			InputTokens:  types.SafeInt32(response.Usage.InputTokens),
-			OutputTokens: types.SafeInt32(response.Usage.OutputTokens),
-			CostUsd:      response.Usage.CostUSD,
+			TotalTokens:  types.SafeInt32(response.TurnUsage.TotalTokens),
+			InputTokens:  types.SafeInt32(response.TurnUsage.InputTokens),
+			OutputTokens: types.SafeInt32(response.TurnUsage.OutputTokens),
+			CostUsd:      response.TurnUsage.CostUSD,
+			LlmCalls:     types.SafeInt32(response.TurnLLMCalls),
 		},
 	}
 
@@ -903,6 +907,7 @@ func (e *PipelineExecutor) validateStageOutput(ctx context.Context, workflowID s
 	if err != nil {
 		return false, fmt.Errorf("validation LLM call failed: %w", err)
 	}
+	e.aux.addCall(response.Usage)
 
 	// Simple validation: check if response contains "valid" or "yes"
 	// In a real implementation, this could be more sophisticated
@@ -920,7 +925,7 @@ func (e *PipelineExecutor) calculateCost(results []*loomv1.AgentResult) *loomv1.
 		if result.Cost != nil {
 			cost.TotalCostUsd += result.Cost.CostUsd
 			cost.TotalTokens += result.Cost.TotalTokens
-			cost.LlmCalls++
+			cost.LlmCalls += resultLLMCalls(result.Cost)
 
 			// Aggregate by agent
 			if existing, ok := cost.AgentCostsUsd[result.AgentId]; ok {
@@ -931,6 +936,7 @@ func (e *PipelineExecutor) calculateCost(results []*loomv1.AgentResult) *loomv1.
 		}
 	}
 
+	e.aux.applyTo(cost)
 	return cost
 }
 

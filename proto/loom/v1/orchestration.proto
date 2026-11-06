@@ -730,6 +730,11 @@ message AgentExecutionCost {
 
   // Provider
   string provider = 6;
+
+  // Successful LLM calls this agent made for this result (its whole turn:
+  // tool-loop iterations and final synthesis). 0 from producers that predate
+  // this field.
+  int32 llm_calls = 7;
 }
 
 // WorkflowCost tracks costs across all agents in a workflow.
