@@ -43,6 +43,87 @@ func TestMantleRegion_FallsBackToBedrockRegion(t *testing.T) {
 	assert.Empty(t, mantleRegion(LLMConfig{}))
 }
 
+func TestMantleConfigFrom(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+		cfg  LLMConfig
+		want bedrockmantle.Config
+	}{
+		{
+			name: "bedrock region and static SigV4 keys",
+			env:  map[string]string{"BEDROCK_MANTLE_API_KEY": ""},
+			cfg: LLMConfig{
+				BedrockRegion:          "us-west-2",
+				BedrockAccessKeyID:     testMantleAccessKeyID,
+				BedrockSecretAccessKey: testMantleSecretKey,
+				BedrockSessionToken:    "session",
+				BedrockMantleModel:     "openai.gpt-oss-120b",
+				MaxTokens:              2048,
+				Temperature:            0.5,
+				Timeout:                30,
+			},
+			want: bedrockmantle.Config{
+				Region:          "us-west-2",
+				AccessKeyID:     testMantleAccessKeyID,
+				SecretAccessKey: testMantleSecretKey,
+				SessionToken:    "session",
+				Model:           "openai.gpt-oss-120b",
+				MaxTokens:       2048,
+				Temperature:     0.5,
+			},
+		},
+		{
+			name: "a profile drops explicit SigV4 keys",
+			env:  map[string]string{"BEDROCK_MANTLE_API_KEY": ""},
+			cfg: LLMConfig{
+				BedrockRegion:          "us-west-2",
+				BedrockAccessKeyID:     testMantleAccessKeyID,
+				BedrockSecretAccessKey: testMantleSecretKey,
+				BedrockProfile:         "bedrock",
+			},
+			want: bedrockmantle.Config{Region: "us-west-2", Profile: "bedrock"},
+		},
+		{
+			name: "mantle region wins and placeholders expand",
+			env: map[string]string{
+				"BEDROCK_MANTLE_API_KEY":      "",
+				"TEST_MANTLE_HELPER_KEY":      "key-from-placeholder",
+				"TEST_MANTLE_HELPER_ENDPOINT": "https://mantle.example.test",
+			},
+			cfg: LLMConfig{
+				BedrockRegion:         "us-west-2",
+				BedrockMantleRegion:   "eu-west-1",
+				BedrockMantleEndpoint: "${TEST_MANTLE_HELPER_ENDPOINT}",
+				BedrockMantleAPIKey:   "${TEST_MANTLE_HELPER_KEY}",
+			},
+			want: bedrockmantle.Config{
+				Region:   "eu-west-1",
+				Endpoint: "https://mantle.example.test",
+				APIKey:   "key-from-placeholder",
+			},
+		},
+		{
+			name: "empty config key falls back to BEDROCK_MANTLE_API_KEY",
+			env:  map[string]string{"BEDROCK_MANTLE_API_KEY": "key-from-env"},
+			cfg:  LLMConfig{BedrockMantleRegion: "us-east-1"},
+			want: bedrockmantle.Config{Region: "us-east-1", APIKey: "key-from-env"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for k, v := range tt.env {
+				t.Setenv(k, v)
+			}
+			got := mantleConfigFrom(tt.cfg)
+			assert.Equal(t, tt.want, got)
+			assert.Zero(t, got.Timeout, "callers set Timeout")
+			assert.Zero(t, got.RateLimiterConfig, "callers set RateLimiterConfig")
+		})
+	}
+}
+
 func TestValidate_BedrockMantle(t *testing.T) {
 	base := func(llm LLMConfig) *Config {
 		llm.Provider = "bedrock-mantle"
@@ -99,6 +180,62 @@ func TestInheritCredentials_BedrockMantle(t *testing.T) {
 	assert.Equal(t, "us-east-2", own.BedrockMantleRegion, "pool entry's own value wins")
 	assert.Equal(t, "own-key", own.BedrockMantleAPIKey)
 	assert.Equal(t, "https://mantle.example.test", own.BedrockMantleEndpoint)
+}
+
+// TestInheritCredentials_PoolEntryMantleRegionPrecedence checks that a region
+// set on a provider-pool entry wins over the main LLM's inherited
+// bedrock_mantle_region (review item S5 on #558).
+func TestInheritCredentials_PoolEntryMantleRegionPrecedence(t *testing.T) {
+	tests := []struct {
+		name       string
+		entry      LLMConfig
+		main       LLMConfig
+		wantRegion string
+	}{
+		{
+			name:       "entry sets bedrock_region only: entry region wins",
+			entry:      LLMConfig{BedrockRegion: "ap-southeast-2"},
+			main:       LLMConfig{BedrockRegion: "us-west-2", BedrockMantleRegion: "eu-west-1"},
+			wantRegion: "ap-southeast-2",
+		},
+		{
+			name:       "entry sets bedrock_mantle_region: that region",
+			entry:      LLMConfig{BedrockRegion: "ap-southeast-2", BedrockMantleRegion: "us-east-2"},
+			main:       LLMConfig{BedrockRegion: "us-west-2", BedrockMantleRegion: "eu-west-1"},
+			wantRegion: "us-east-2",
+		},
+		{
+			name:       "entry sets bedrock_mantle_region only: that region",
+			entry:      LLMConfig{BedrockMantleRegion: "us-east-2"},
+			main:       LLMConfig{BedrockRegion: "us-west-2", BedrockMantleRegion: "eu-west-1"},
+			wantRegion: "us-east-2",
+		},
+		{
+			name:       "entry sets neither: inherited mantle region",
+			entry:      LLMConfig{},
+			main:       LLMConfig{BedrockRegion: "us-west-2", BedrockMantleRegion: "eu-west-1"},
+			wantRegion: "eu-west-1",
+		},
+		{
+			name:       "main has no mantle region, entry sets neither: inherited bedrock_region",
+			entry:      LLMConfig{},
+			main:       LLMConfig{BedrockRegion: "us-west-2"},
+			wantRegion: "us-west-2",
+		},
+		{
+			name:       "main has no mantle region, entry sets bedrock_region: entry region",
+			entry:      LLMConfig{BedrockRegion: "ap-southeast-2"},
+			main:       LLMConfig{BedrockRegion: "us-west-2"},
+			wantRegion: "ap-southeast-2",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := inheritCredentials(tt.entry, tt.main)
+			assert.Equal(t, tt.wantRegion, mantleRegion(got))
+			assert.Equal(t, tt.wantRegion, mantleConfigFrom(got).Region)
+		})
+	}
 }
 
 func TestGetDefaultModelForProvider_BedrockMantle(t *testing.T) {

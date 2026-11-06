@@ -1401,20 +1401,8 @@ func createLLMProvider() (agent.LLMProvider, string) {
 				return client, "AWS Bedrock (config)"
 			}
 
-		case "bedrock-mantle":
-			accessKeyID, secretAccessKey, sessionToken := resolveBedrockCredentials(config.LLM)
-			client, err := bedrockmantle.NewClientForModel(bedrockmantle.Config{
-				Region:          mantleRegion(config.LLM),
-				Endpoint:        loomconfig.ExpandEnvPlaceholders(config.LLM.BedrockMantleEndpoint),
-				APIKey:          resolveBedrockMantleAPIKey(config.LLM),
-				AccessKeyID:     accessKeyID,
-				SecretAccessKey: secretAccessKey,
-				SessionToken:    sessionToken,
-				Profile:         config.LLM.BedrockProfile,
-				Model:           config.LLM.BedrockMantleModel,
-				MaxTokens:       config.LLM.MaxTokens,
-				Temperature:     config.LLM.Temperature,
-			})
+		case bedrockmantle.ProviderName:
+			client, err := bedrockmantle.NewClientForModel(mantleConfigFrom(config.LLM))
 			if err == nil {
 				return client, "AWS Bedrock Mantle (config)"
 			}

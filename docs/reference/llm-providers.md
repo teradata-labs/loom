@@ -49,7 +49,7 @@ Reference for all supported LLM providers and their configuration.
 | **Mistral AI** | ✅ Implemented | Native | 128k-262k | $0.075-$8/1M tokens | Reasoning, code models |
 | **Google Gemini** | ✅ Implemented | Native | 1.05M | $0-$12/1M tokens | Long context, multimodal |
 | **HuggingFace** | ✅ Implemented | Native (model-dependent) | Varies | ~$0.20-$1.00/1M tokens (estimated) | Open-source models |
-| **AWS Bedrock Mantle** | ✅ Implemented | Native | 4k-1M | $0.04-$55/1M tokens (53 cataloged models) | Mantle-only models, OpenAI/Anthropic-compatible AWS endpoint |
+| **AWS Bedrock Mantle** | ⚠️ Partial (GPT-5.x/6.x unpriced; Responses API planned) | Native | 4k-1M | $0.04-$55/1M tokens (53 cataloged models) | Mantle-only models, OpenAI/Anthropic-compatible AWS endpoint |
 | **Google Vertex AI** | 📋 Planned | TBD | TBD | TBD | GCP infrastructure |
 
 ### Authentication Methods
@@ -649,7 +649,7 @@ Any other model on the HF Inference API can be used; unlisted models fall back t
 
 ### 9. AWS Bedrock Mantle
 
-**Status**: ✅ Implemented. Provider (`pkg/llm/bedrockmantle`), provider factory, agent registry, `looms` server config (`llm.bedrock_mantle_*`), `looms` CLI, `loom-standalone`, `quickstart.sh` (option 4) and `pkg/builder` (`WithBedrockMantleLLM`). The catalog prices 11 Claude and 42 open-weight Mantle models; GPT-5.x/6.x are served but have no published rate yet.
+**Status**: ⚠️ Partial. Implemented: provider (`pkg/llm/bedrockmantle`), provider factory, agent registry, `looms` server config (`llm.bedrock_mantle_*`), `looms` CLI, `loom-standalone`, `quickstart.sh` (option 4) and `pkg/builder` (`WithBedrockMantleLLM`). The catalog prices 11 Claude and 42 open-weight Mantle models. Not done: GPT-5.x/6.x are served but have no published rate yet, and the OpenAI Responses API is planned (📋).
 
 Amazon Bedrock's second endpoint surface (`https://bedrock-mantle.{region}.api.aws`). It speaks the Anthropic Messages API for Claude and the OpenAI Chat Completions API for every other vendor; it does not speak Converse or InvokeModel, so the `bedrock` provider cannot reach it. Loom reuses its anthropic and openai clients behind one provider.
 
@@ -752,7 +752,7 @@ llm:
 
 | Feature | Anthropic | Bedrock | Bedrock Mantle | Ollama | OpenAI | Azure OpenAI | Mistral | Gemini | HuggingFace | Vertex AI |
 |---------|-----------|---------|----------------|--------|--------|--------------|---------|--------|-------------|-----------|
-| **Status** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 📋 Planned |
+| **Status** | ✅ | ✅ | ⚠️ Partial | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 📋 Planned |
 | **Native Tool Calling** | ✅ | ✅ | ✅ | ✅ (auto-detect) | ✅ | ✅ | ✅ | ✅ | ✅ (model-dependent) | 📋 |
 | **Streaming** | ✅ | ✅ (Claude) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | 📋 |
 | **Cost** | $1-$75/1M | $1-$75/1M | $0.04-$55/1M | Free | $0.10-$180/1M | $0.40-$15/1M | $0.075-$8/1M | $0-$12/1M | ~$0.20-$1/1M | TBD |

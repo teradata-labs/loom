@@ -174,7 +174,7 @@ func runConfigInit(cmd *cobra.Command, args []string) {
 	case "3":
 		llmProvider = "ollama"
 	case "4":
-		llmProvider = "bedrock-mantle"
+		llmProvider = bedrockmantle.ProviderName
 	}
 
 	// Detect available backends
@@ -222,7 +222,7 @@ func runConfigInit(cmd *cobra.Command, args []string) {
 		fmt.Println("   Option B - Direct credentials (stored in keyring):")
 		fmt.Println("     looms config set-key bedrock_access_key_id")
 		fmt.Println("     looms config set-key bedrock_secret_access_key")
-	case "bedrock-mantle":
+	case bedrockmantle.ProviderName:
 		fmt.Println("1. Configure AWS credentials for SigV4 (choose one method):")
 		fmt.Println("   Option A - AWS Profile/SSO:")
 		fmt.Println("     aws configure  # or set AWS_PROFILE / llm.bedrock_profile")
@@ -502,7 +502,7 @@ llm:
   bedrock_model_id: anthropic.claude-sonnet-4-5-20250929-v1:0
   # bedrock_profile: default  # Use AWS profile for authentication
 `
-	case "bedrock-mantle":
+	case bedrockmantle.ProviderName:
 		config += `  provider: bedrock-mantle
   bedrock_mantle_region: us-west-2
   bedrock_mantle_model: ` + bedrockmantle.DefaultModel + `
