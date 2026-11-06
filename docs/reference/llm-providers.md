@@ -49,7 +49,7 @@ Reference for all supported LLM providers and their configuration.
 | **Mistral AI** | ✅ Implemented | Native | 128k-262k | $0.075-$8/1M tokens | Reasoning, code models |
 | **Google Gemini** | ✅ Implemented | Native | 1.05M | $0-$12/1M tokens | Long context, multimodal |
 | **HuggingFace** | ✅ Implemented | Native (model-dependent) | Varies | ~$0.20-$1.00/1M tokens (estimated) | Open-source models |
-| **AWS Bedrock Mantle** | ⚠️ Partial (catalog pricing for Haiku 4.5 and Opus 4.7 only) | Native | 200k-1M (Claude) | $1-$25/1M tokens (cataloged Claude models) | Mantle-only models, OpenAI/Anthropic-compatible AWS endpoint |
+| **AWS Bedrock Mantle** | ⚠️ Partial (GPT-5.x/6.x unpriced; Responses API planned) | Native | 4k-1M | $0.04-$55/1M tokens (53 cataloged models) | Mantle-only models, OpenAI/Anthropic-compatible AWS endpoint |
 | **Google Vertex AI** | 📋 Planned | TBD | TBD | TBD | GCP infrastructure |
 
 ### Authentication Methods
@@ -649,14 +649,14 @@ Any other model on the HF Inference API can be used; unlisted models fall back t
 
 ### 9. AWS Bedrock Mantle
 
-**Status**: ⚠️ Partial. Provider (`pkg/llm/bedrockmantle`), provider factory, agent registry, `looms` server config (`llm.bedrock_mantle_*`), `looms` CLI and `loom-standalone`. Catalog pricing covers Claude Haiku 4.5 and Opus 4.7 only.
+**Status**: ⚠️ Partial. Implemented: provider (`pkg/llm/bedrockmantle`), provider factory, agent registry, `looms` server config (`llm.bedrock_mantle_*`), `looms` CLI, `loom-standalone`, `quickstart.sh` (option 4) and `pkg/builder` (`WithBedrockMantleLLM`). The catalog prices 11 Claude and 42 open-weight Mantle models. Not done: GPT-5.x/6.x are served but have no published rate yet, and the OpenAI Responses API is planned (📋).
 
 Amazon Bedrock's second endpoint surface (`https://bedrock-mantle.{region}.api.aws`). It speaks the Anthropic Messages API for Claude and the OpenAI Chat Completions API for every other vendor; it does not speak Converse or InvokeModel, so the `bedrock` provider cannot reach it. Loom reuses its anthropic and openai clients behind one provider.
 
 **Why Mantle**:
 - Models served only on Mantle (Gemma 4, GPT-5.x/6.x, Claude Mythos 5 per AWS)
 - SigV4 or Bedrock API key auth; no `anthropic-beta` header (Mantle rejects it)
-- Same per-token rates as `bedrock-runtime`
+- Same per-token rates as `bedrock-runtime` for the same endpoint type; a bare Mantle id is a regional (single-Region) endpoint, so Claude 4.5+ bills the 10% regional premium over `global.*` profiles
 
 **Configuration** (`looms.yaml`, factory fields or environment):
 
@@ -677,6 +677,15 @@ factory.FactoryConfig{
 }
 ```
 
+```go
+// pkg/builder: SigV4 from the AWS credential chain, model from
+// LOOM_LLM_BEDROCK_MANTLE_MODEL (default anthropic.claude-haiku-4-5)
+agent, err := builder.NewAgentBuilder().
+    WithBackend(backend).
+    WithBedrockMantleLLM("us-west-2").
+    Build()
+```
+
 ```yaml
 # agent YAML
 llm:
@@ -687,7 +696,7 @@ llm:
 **Limitations**:
 - No Guardrails, cross-region inference profiles (`us.`/`global.` ids return 404), or prompt routing on Mantle
 - Model listing is not an entitlement check; unsubscribed models fail with a marketplace-subscription 401/403
-- Only Claude Haiku 4.5 and Opus 4.7 are priced in the catalog; other Mantle models are costed by fallback rates
+- GPT-5.x/6.x ids are served on Mantle but have no published AWS rate, so they are costed by the openai client's fallback rates; service tiers other than standard (flex, priority, batch) are not modelled
 
 **Detailed Guide**: [llm-bedrock-mantle.md](./llm-bedrock-mantle.md)
 
@@ -741,19 +750,19 @@ llm:
 
 ### Feature Matrix
 
-| Feature | Anthropic | Bedrock | Ollama | OpenAI | Azure OpenAI | Mistral | Gemini | HuggingFace | Vertex AI |
-|---------|-----------|---------|--------|--------|--------------|---------|--------|-------------|-----------|
-| **Status** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 📋 Planned |
-| **Native Tool Calling** | ✅ | ✅ | ✅ (auto-detect) | ✅ | ✅ | ✅ | ✅ | ✅ (model-dependent) | 📋 |
-| **Streaming** | ✅ | ✅ (Claude) | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | 📋 |
-| **Cost** | $1-$75/1M | $1-$75/1M | Free | $0.10-$180/1M | $0.40-$15/1M | $0.075-$8/1M | $0-$12/1M | ~$0.20-$1/1M | TBD |
-| **Context Window** | 200k-1M | 200k-1M | Varies | 128k-1.05M | 128k-1.05M | 128k-262k | 1.05M | Varies | TBD |
-| **Latency** | Medium | Low-Medium | Very Low (GPU) | Medium | Medium | Medium | Medium | Medium | TBD |
-| **Privacy** | Cloud | Cloud | 100% Local | Cloud | Cloud | Cloud | Cloud | Cloud | Cloud |
-| **Internet Required** | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Hardware Required** | ❌ | ❌ | GPU rec'd | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Enterprise Integration** | Basic | AWS | None | Basic | Azure | Basic | Basic | Basic | GCP |
-| **Compliance** | Anthropic | AWS | N/A | OpenAI | Microsoft | Mistral | Google | Varies | Google |
+| Feature | Anthropic | Bedrock | Bedrock Mantle | Ollama | OpenAI | Azure OpenAI | Mistral | Gemini | HuggingFace | Vertex AI |
+|---------|-----------|---------|----------------|--------|--------|--------------|---------|--------|-------------|-----------|
+| **Status** | ✅ | ✅ | ⚠️ Partial | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 📋 Planned |
+| **Native Tool Calling** | ✅ | ✅ | ✅ | ✅ (auto-detect) | ✅ | ✅ | ✅ | ✅ | ✅ (model-dependent) | 📋 |
+| **Streaming** | ✅ | ✅ (Claude) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | 📋 |
+| **Cost** | $1-$75/1M | $1-$75/1M | $0.04-$55/1M | Free | $0.10-$180/1M | $0.40-$15/1M | $0.075-$8/1M | $0-$12/1M | ~$0.20-$1/1M | TBD |
+| **Context Window** | 200k-1M | 200k-1M | 4k-1M | Varies | 128k-1.05M | 128k-1.05M | 128k-262k | 1.05M | Varies | TBD |
+| **Latency** | Medium | Low-Medium | Low-Medium (queued) | Very Low (GPU) | Medium | Medium | Medium | Medium | Medium | TBD |
+| **Privacy** | Cloud | Cloud | Cloud | 100% Local | Cloud | Cloud | Cloud | Cloud | Cloud | Cloud |
+| **Internet Required** | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Hardware Required** | ❌ | ❌ | ❌ | GPU rec'd | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Enterprise Integration** | Basic | AWS | AWS | None | Basic | Azure | Basic | Basic | Basic | GCP |
+| **Compliance** | Anthropic | AWS | AWS | N/A | OpenAI | Microsoft | Mistral | Google | Varies | Google |
 
 
 ### Cost Comparison
@@ -764,6 +773,7 @@ Based on similar quality tiers (as of 2026):
 |----------|-------|----------------|-----------------|---------------|
 | **Anthropic** | Sonnet 4.6 | $3.00 | $15.00 | $0.0165 |
 | **Bedrock** | Sonnet 4.6 | $3.00 | $15.00 | $0.0165 |
+| **Bedrock Mantle** | Sonnet 5 | $2.20 | $11.00 | $0.0121 |
 | **Ollama** | Qwen 3 | $0 | $0 | $0 |
 | **OpenAI** | GPT-4.1 | $2.00 | $8.00 | $0.009 |
 | **Azure OpenAI** | GPT-4.1 | $2.00 | $8.00 | $0.009 |
