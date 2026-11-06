@@ -86,9 +86,12 @@ in general.
 
 ## Bundled C libraries
 
-The binaries are built with `CGO_ENABLED=1`. `github.com/mutecomm/go-sqlcipher` is
-MIT as a Go module, but compiles in C source from three upstream projects, and its
-LICENSE file is a composite covering all of them:
+Release archives are built with `CGO_ENABLED=1`; the runtime image
+(`docker/Dockerfile.runtime`) is not, and uses the pure-Go `modernc.org/sqlite`
+instead. The generator resolves both modes and lists the union. In the cgo builds,
+`github.com/mutecomm/go-sqlcipher` is MIT as a Go module, but compiles in C source
+from three upstream projects, and its LICENSE file is a composite covering all of
+them:
 
 - `mattn/go-sqlite3` (SQLite driver and amalgamation) — MIT
 - `sqlcipher/sqlcipher` (encrypted SQLite) — BSD-3-Clause, © 2008 ZETETIC LLC

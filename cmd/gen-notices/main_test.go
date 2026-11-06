@@ -321,3 +321,11 @@ func TestCollectIndependentOfAmbientCgo(t *testing.T) {
 	assert.Equal(t, outputs[0], outputs[1], "CGO_ENABLED=0 must not change the output")
 	assert.Equal(t, outputs[0], outputs[2], "CGO_ENABLED=1 must not change the output")
 }
+
+// TestRenderThirdPartyCgoStatement checks the generated header does not claim
+// every distributed binary is built with cgo: the runtime image is not.
+func TestRenderThirdPartyCgoStatement(t *testing.T) {
+	out := string(renderThirdParty([]component{{ImportPath: "example.com/a", License: "MIT"}}, "GO"))
+	assert.Contains(t, out, "Release archives are built with cgo; the runtime image is not")
+	assert.NotContains(t, out, "The binaries are built with cgo")
+}
