@@ -120,3 +120,52 @@ func TestClaudeCost_RegionalPremiumAppliedOnce(t *testing.T) {
 	assert.InDelta(t, in, gIn*1.10, 1e-9, "global. input is the card, 10%% below Mantle")
 	assert.InDelta(t, out, gOut*1.10, 1e-9, "global. output is the card, 10%% below Mantle")
 }
+
+// The Haiku 5.5 long-context card (over a 100K-token prompt) carries the same
+// premium as the row it replaces. Mantle rows are first-party × 1.10, so a
+// Mantle prompt over 100K is $0.55/$2.75; the anthropic namespace keeps the
+// card ($0.50/$2.50); the bedrock client applies BedrockEndpointMultiplier on
+// top of the card, so us. is $0.55/$2.75 (not × 1.21) and global. is
+// $0.50/$2.50. Haiku 5.5 is the only model with a long-context card.
+func TestClaudeCost_LongContextCardCarriesRowPremium(t *testing.T) {
+	const output = 1_000_000
+	tests := []struct {
+		name            string
+		namespace, id   string
+		mantleClient    bool
+		prompt          int
+		wantIn, wantOut float64
+	}{
+		{name: "mantle at 100K", namespace: CatalogProvider, id: "anthropic.claude-haiku-5-5", mantleClient: true, prompt: 100_000, wantIn: 0.11, wantOut: 0.55},
+		{name: "mantle over 100K", namespace: CatalogProvider, id: "anthropic.claude-haiku-5-5", mantleClient: true, prompt: 200_000, wantIn: 0.55, wantOut: 2.75},
+		{name: "anthropic over 100K", namespace: "anthropic", id: "claude-haiku-5-5", prompt: 200_000, wantIn: 0.50, wantOut: 2.50},
+		{name: "bedrock us. over 100K", namespace: "bedrock", id: "us.anthropic.claude-haiku-5-5", prompt: 200_000, wantIn: 0.55, wantOut: 2.75},
+		{name: "bedrock global. over 100K", namespace: "bedrock", id: "global.anthropic.claude-haiku-5-5", prompt: 200_000, wantIn: 0.50, wantOut: 2.50},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.mantleClient {
+				body := fmt.Sprintf(`{"id":"msg_1","type":"message","role":"assistant","model":%q,"stop_reason":"end_turn","content":[{"type":"text","text":"OK"}],"usage":{"input_tokens":%d,"output_tokens":%d,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}`, tt.id, tt.prompt, output)
+				srv := httptest.NewServer(newRecorder(jsonResponder(http.StatusOK, body)))
+				defer srv.Close()
+
+				c, err := NewClientForModel(Config{Endpoint: srv.URL, Region: "us-west-2", APIKey: "ABSKtest", Model: tt.id})
+				require.NoError(t, err)
+				resp, err := c.Chat(context.Background(), userMessage("Reply OK"), nil)
+				require.NoError(t, err)
+				want := float64(tt.prompt)*tt.wantIn/1e6 + float64(output)*tt.wantOut/1e6
+				assert.InDelta(t, want, resp.Usage.CostUSD, 1e-9)
+				return
+			}
+			in, out, ok := catalog.RequestPricing(tt.namespace, tt.id, tt.prompt)
+			require.True(t, ok)
+			if tt.namespace == "bedrock" {
+				// The bedrock client's formula (pkg/llm/bedrock bedrockClaudeCost).
+				m := catalog.BedrockEndpointMultiplier(tt.id)
+				in, out = in*m, out*m
+			}
+			assert.InDelta(t, tt.wantIn, in, 1e-9, "input")
+			assert.InDelta(t, tt.wantOut, out, 1e-9, "output")
+		})
+	}
+}
