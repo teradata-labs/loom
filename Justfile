@@ -47,7 +47,6 @@ proto-format:
 proto-format-check:
     buf format --diff --exit-code
 
-# Verify proto generation is up to date
 # Regenerate NOTICE and THIRD-PARTY-NOTICES.md from the shipped binaries' deps
 notices:
     @echo "Generating third-party notices..."
@@ -63,6 +62,7 @@ notices-check:
     fi
     echo "✅ Third-party notices are up to date"
 
+# Verify proto generation is up to date
 proto-gen-check: proto
     #!/usr/bin/env bash
     set -euo pipefail
