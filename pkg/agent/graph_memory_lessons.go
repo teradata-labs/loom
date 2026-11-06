@@ -44,7 +44,11 @@ import (
 // drained there (takeToolLedger). An error hit on turn 1 and fixed on turn 2
 // is therefore structurally unmineable: the pair spans two ledgers and no
 // single pass ever sees both halves. Only within-turn error→fix transitions
-// mint lessons.
+// mint lessons. A turn with an empty ledger (chat only) mines nothing: the
+// whole-history fallback runs only for a session that never recorded a
+// ledger in this process (one restored from storage), and at most once per
+// session (claimLessonHistoryFallback). That one fallback pass is the single
+// exception to the within-turn rule: it sees the restored history whole.
 //
 // LANE MEMBERSHIP IS STRUCTURAL: mined lessons live in their own partition
 // (lessonPartition) that no other writer targets, and the "lesson" memory
@@ -413,7 +417,56 @@ func (a *Agent) recordToolLedger(sessionID string, tc types.ToolCall, result *sh
 	if len(a.toolLedgers[sessionID]) < maxLedgerEvents {
 		a.toolLedgers[sessionID] = append(a.toolLedgers[sessionID], ev)
 	}
+	a.markLessonHistoryCoveredLocked(sessionID)
 	a.toolLedgerMu.Unlock()
+}
+
+// markLessonHistoryCovered records that the session's history must not be
+// mined by the whole-history fallback: its tool calls are, or were, covered
+// by a per-turn ledger, or the fallback already mined it once.
+func (a *Agent) markLessonHistoryCovered(sessionID string) {
+	a.toolLedgerMu.Lock()
+	a.markLessonHistoryCoveredLocked(sessionID)
+	a.toolLedgerMu.Unlock()
+}
+
+// markLessonHistoryCoveredLocked is markLessonHistoryCovered with
+// toolLedgerMu already held.
+func (a *Agent) markLessonHistoryCoveredLocked(sessionID string) {
+	if a.lessonCoveredSessions == nil {
+		a.lessonCoveredSessions = map[string]struct{}{}
+	}
+	a.lessonCoveredSessions[sessionID] = struct{}{}
+}
+
+// claimLessonHistoryFallback reports whether the whole-history fallback may
+// mine this session, and marks the session covered in the same step, so the
+// fallback runs at most once per session per process. It is true only for a
+// session that never recorded a ledger here: in practice one restored from
+// storage after a restart. Any other session's earlier turns were already
+// mined from their own ledgers, so walking its history again would mine the
+// same pairs again — one extra LLM call and one duplicate lesson per
+// chat-only turn (PR #357 review, F1).
+func (a *Agent) claimLessonHistoryFallback(sessionID string) bool {
+	a.toolLedgerMu.Lock()
+	defer a.toolLedgerMu.Unlock()
+	if _, covered := a.lessonCoveredSessions[sessionID]; covered {
+		return false
+	}
+	a.markLessonHistoryCoveredLocked(sessionID)
+	return true
+}
+
+// forgetLessonSession drops every piece of per-session lesson state: the
+// tool ledger, the history-coverage marker and the error-lane injection
+// record. Called from DeleteSession, so these maps stay bounded by live
+// sessions.
+func (a *Agent) forgetLessonSession(sessionID string) {
+	a.toolLedgerMu.Lock()
+	delete(a.toolLedgers, sessionID)
+	delete(a.lessonCoveredSessions, sessionID)
+	a.toolLedgerMu.Unlock()
+	a.clearErrorLessonState(sessionID)
 }
 
 // takeToolLedger removes and returns the session's ledger (mining consumes
@@ -876,10 +929,14 @@ func (a *Agent) extractLessonsAtEnd(ctx context.Context, sessionID string) {
 	var pairs []lessonPair
 	if len(events) > 0 {
 		pairs = pairEvents(events)
-	} else if haveSession && session != nil {
-		// Fallback (restored sessions, ledgerless paths): the compiled view.
-		// It under-reports long conversations — compilation evicts early
-		// turns — which is exactly why the ledger is primary.
+	} else if haveSession && session != nil && a.claimLessonHistoryFallback(sessionID) {
+		// Fallback for a session that never recorded a ledger in this
+		// process (one restored from storage): mine its history, once. A
+		// session that did record one is never walked again — its earlier
+		// turns were mined from their own ledgers, and an empty ledger now
+		// means a chat-only turn with nothing new to mine. The history view
+		// under-reports long conversations (compilation evicts early turns),
+		// which is why the ledger is primary.
 		pairs = mineLessonPairs(session.GetMessages())
 	}
 	// Drop pairs the ledger observed no change in, BEFORE mining (Fix A).

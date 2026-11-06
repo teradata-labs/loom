@@ -72,6 +72,18 @@ transitions mint lessons. (The measured campaign ran single-turn tasks, where
 this distinction does not arise; interactive multi-turn use loses those
 cross-turn pairs.)
 
+A turn with an empty ledger (a chat-only follow-up) mines nothing. The
+whole-history fallback (`mineLessonPairs` over the session's messages) runs
+only for a session that never recorded a ledger in this process, which in
+practice means a session restored from storage after a restart, and at most
+once per session (`claimLessonHistoryFallback`). Without that rule every
+chat-only turn after a fixed error walked the whole session again, found the
+earlier pair, and made one more mining call that stored one more copy of the
+same lesson. The single fallback pass of a restored session is the one
+exception to the within-turn rule: it sees the restored history whole, so it
+can pair an error and a fix from different turns, and it can store again a
+lesson the previous process already mined from the same history.
+
 ## Fix A — diff-grounded lessons
 
 Ground the lesson text in the *literal observed change*, computed

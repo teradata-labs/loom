@@ -286,6 +286,11 @@ type Agent struct {
 	// from the compiled message view.
 	toolLedgerMu sync.Mutex
 	toolLedgers  map[string][]minedEvent
+	// lessonCoveredSessions (also guarded by toolLedgerMu) marks the
+	// sessions whose history the lesson miner must not walk again: every
+	// session that recorded a ledger in this process, and every session the
+	// whole-history fallback already mined. Freed by DeleteSession.
+	lessonCoveredSessions map[string]struct{}
 	// errorLessonMu guards errorLessonState: per-session tracking for
 	// error-triggered lesson recall (graph_memory_lessons.go) — which
 	// lessons were already injected and how many injections have fired.
