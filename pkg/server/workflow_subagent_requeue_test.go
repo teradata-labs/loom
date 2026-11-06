@@ -95,9 +95,21 @@ func TestRunWorkflowSubAgent_RequeuesMessagesOnChatError(t *testing.T) {
 	}, 5*time.Second, 10*time.Millisecond, "message should be requeued after a failed Chat")
 
 	failedCalls, _ := llm.snapshot()
+	// After the failed turn the session already holds the user row Chat
+	// persisted before the LLM error. Count it so the healed retry can prove
+	// it did not append a second copy.
+	session, ok := subAgent.GetSession("worker-session")
+	require.True(t, ok, "failed Chat should have created the worker session")
+	userRowsBeforeRetry := 0
+	for _, m := range session.GetMessages() {
+		if m.Role == "user" {
+			userRowsBeforeRetry++
+		}
+	}
+	require.Equal(t, 1, userRowsBeforeRetry, "failed Chat should leave exactly one user row")
 
 	// Second delivery once the LLM recovers: the same message is redelivered
-	// and acknowledged.
+	// and acknowledged without duplicating the user row.
 	llm.heal()
 	notifyChan <- struct{}{}
 	require.Eventually(t, func() bool {
@@ -107,4 +119,15 @@ func TestRunWorkflowSubAgent_RequeuesMessagesOnChatError(t *testing.T) {
 
 	_, seen := llm.snapshot()
 	assert.Contains(t, seen[len(seen)-1], "do the thing", "the retry should carry the original message")
+
+	session, ok = subAgent.GetSession("worker-session")
+	require.True(t, ok)
+	userRows := 0
+	for _, m := range session.GetMessages() {
+		if m.Role == "user" {
+			userRows++
+		}
+	}
+	assert.Equal(t, 1, userRows, "healed retry must not duplicate the user message in the session")
+	assert.Empty(t, queue.GetPendingMessagesInfo(agentID), "acked message must leave the pending set")
 }
