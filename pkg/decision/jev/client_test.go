@@ -278,6 +278,62 @@ func TestDecideStatusMapping(t *testing.T) {
 	}
 }
 
+// TestDecideDoesNotFollowRedirects pins that a 3xx from the configured
+// endpoint is never followed: following it would re-POST the request state
+// to whatever host the Location names. The redirect comes back as a
+// non-retryable APIError after one attempt, whether the client is the
+// default one or a caller-supplied HTTPClient.
+func TestDecideDoesNotFollowRedirects(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		status     int
+		callerHTTP bool
+	}{
+		{name: "307 default client", status: http.StatusTemporaryRedirect},
+		{name: "308 default client", status: http.StatusPermanentRedirect},
+		{name: "302 default client", status: http.StatusFound},
+		{name: "301 default client", status: http.StatusMovedPermanently},
+		{name: "307 caller client", status: http.StatusTemporaryRedirect, callerHTTP: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var otherCalls atomic.Int32
+			var otherBody atomic.Value
+			other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				otherCalls.Add(1)
+				b, _ := io.ReadAll(r.Body)
+				otherBody.Store(string(b))
+				_, _ = w.Write([]byte(goodBody))
+			}))
+			t.Cleanup(other.Close)
+
+			var calls atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				w.Header().Set("Location", other.URL+r.URL.Path)
+				w.WriteHeader(tt.status)
+			}))
+			t.Cleanup(srv.Close)
+
+			c := newClient(t, srv, func(cfg *Config) {
+				if tt.callerHTTP {
+					cfg.HTTPClient = &http.Client{}
+				}
+			})
+			_, err := c.Decide(context.Background(), fullRequest(t))
+			require.Error(t, err)
+			var apiErr *APIError
+			require.ErrorAs(t, err, &apiErr, "a redirect must surface as an APIError, got %v", err)
+			assert.Equal(t, tt.status, apiErr.Status)
+			assert.False(t, isRetryable(err), "a redirect must not be retried")
+			assert.Equal(t, int32(1), calls.Load(), "one attempt, no retries")
+			assert.Equal(t, int32(0), otherCalls.Load(), "the redirect target must not be reached; it received %v", otherBody.Load())
+		})
+	}
+}
+
 func TestDecideRetriesThenSucceeds(t *testing.T) {
 	t.Parallel()
 	var calls atomic.Int32
