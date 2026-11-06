@@ -16,8 +16,9 @@ package postgres
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"fmt"
+	"io"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -474,6 +475,9 @@ func scanHumanRequestRow(row pgx.Row) (*shuttle.HumanRequest, error) {
 		decoder.UseNumber()
 		if err := decoder.Decode(&req.Params); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal human request params: %w", err)
+		}
+		if err := decoder.Decode(&struct{}{}); err != io.EOF {
+			return nil, fmt.Errorf("failed to unmarshal human request params: trailing data")
 		}
 	}
 	if paramsTruncated != nil {
