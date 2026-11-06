@@ -477,12 +477,36 @@ func isThrottlingError(err error) bool {
 	if errors.As(err, &te) {
 		return true
 	}
+	// Context-length refusals are deterministic request errors. Their token
+	// counts can contain the digits "429", so they must not enter the retry or
+	// scheduler throttle paths merely because of a substring match.
+	if errors.Is(err, ErrContextTooLong) {
+		return false
+	}
+
 	errStr := err.Error()
-	return contains(errStr, "429") ||
+	return hasStandalone429(errStr) ||
 		contains(errStr, "ThrottlingException") ||
 		contains(errStr, "TooManyRequests") ||
 		contains(errStr, "rate limit") ||
 		contains(errStr, "throttle")
+}
+
+// hasStandalone429 matches an HTTP status token, not the same digits embedded
+// in an unrelated number (for example, a context token count of 204296).
+func hasStandalone429(s string) bool {
+	for i := 0; i <= len(s)-3; i++ {
+		if s[i:i+3] != "429" {
+			continue
+		}
+		beforeDigit := i > 0 && s[i-1] >= '0' && s[i-1] <= '9'
+		after := i + 3
+		afterDigit := after < len(s) && s[after] >= '0' && s[after] <= '9'
+		if !beforeDigit && !afterDigit {
+			return true
+		}
+	}
+	return false
 }
 
 func contains(s, substr string) bool {
