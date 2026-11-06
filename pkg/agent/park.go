@@ -23,7 +23,6 @@ package agent
 // the human's decision and re-enters the conversation loop.
 
 import (
-	"encoding/json"
 	"context"
 	"encoding/json"
 	"errors"
