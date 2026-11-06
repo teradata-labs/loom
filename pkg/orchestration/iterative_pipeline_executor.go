@@ -41,6 +41,10 @@ const (
 // Stages can trigger restarts of earlier stages via pub/sub messaging, enabling
 // autonomous agent negotiation and self-correction.
 type IterativePipelineExecutor struct {
+	// aux collects the validation calls of the per-stage inner executors
+	// (run_usage.go); calculateCost runs on a fresh executor and would lose them.
+	aux auxUsage
+
 	orchestrator *Orchestrator
 	pattern      *loomv1.IterativeWorkflowPattern
 	messageBus   *communication.MessageBus
@@ -392,6 +396,7 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 		stageOutputs[stage.AgentId] = truncatedForStorage
 		e.fullOutputs[stage.AgentId] = result.Output
 		allResults = append(allResults, result)
+		e.aux.absorb(&executor.aux)
 
 		// Try to parse stage output as JSON and add to structured context
 		if e.structuredContext != nil {
@@ -660,6 +665,7 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 	// Calculate total cost
 	executor := NewPipelineExecutor(e.orchestrator, e.pattern.Pipeline, e.workflowID)
 	cost := executor.calculateCost(allResults)
+	e.aux.applyTo(cost)
 
 	metadata := map[string]string{
 		"stage_count":      fmt.Sprintf("%d", len(e.pattern.Pipeline.Stages)),

@@ -22,6 +22,8 @@ type SwarmExecutor struct {
 	orchestrator *Orchestrator
 	pattern      *loomv1.SwarmPattern
 	workflowID   string
+	// aux collects the LLM calls this executor makes itself (run_usage.go).
+	aux auxUsage
 }
 
 // NewSwarmExecutor creates a new swarm executor.
@@ -288,10 +290,11 @@ func (e *SwarmExecutor) collectVoteWithContext(ctx context.Context, workflowID, 
 
 	// Build cost info
 	cost := &loomv1.AgentExecutionCost{
-		TotalTokens:  types.SafeInt32(response.Usage.TotalTokens),
-		InputTokens:  types.SafeInt32(response.Usage.InputTokens),
-		OutputTokens: types.SafeInt32(response.Usage.OutputTokens),
-		CostUsd:      response.Usage.CostUSD,
+		TotalTokens:  types.SafeInt32(response.TurnUsage.TotalTokens),
+		InputTokens:  types.SafeInt32(response.TurnUsage.InputTokens),
+		OutputTokens: types.SafeInt32(response.TurnUsage.OutputTokens),
+		CostUsd:      response.TurnUsage.CostUSD,
+		LlmCalls:     types.SafeInt32(response.TurnLLMCalls),
 	}
 
 	return vote, modelName, cost, nil
@@ -344,10 +347,11 @@ func (e *SwarmExecutor) collectVote(ctx context.Context, workflowID, agentID str
 
 	// Build cost info
 	cost := &loomv1.AgentExecutionCost{
-		TotalTokens:  types.SafeInt32(response.Usage.TotalTokens),
-		InputTokens:  types.SafeInt32(response.Usage.InputTokens),
-		OutputTokens: types.SafeInt32(response.Usage.OutputTokens),
-		CostUsd:      response.Usage.CostUSD,
+		TotalTokens:  types.SafeInt32(response.TurnUsage.TotalTokens),
+		InputTokens:  types.SafeInt32(response.TurnUsage.InputTokens),
+		OutputTokens: types.SafeInt32(response.TurnUsage.OutputTokens),
+		CostUsd:      response.TurnUsage.CostUSD,
+		LlmCalls:     types.SafeInt32(response.TurnLLMCalls),
 	}
 
 	return vote, modelName, cost, nil
@@ -639,6 +643,7 @@ func (e *SwarmExecutor) invokeJudge(ctx context.Context, votes []*loomv1.SwarmVo
 	if err != nil {
 		return "", fmt.Errorf("judge chat failed: %w", err)
 	}
+	e.aux.addTurn(response)
 
 	// Parse judge's decision (should be a simple choice)
 	decision := strings.TrimSpace(response.Content)
@@ -750,6 +755,9 @@ func (e *SwarmExecutor) retryVoteCollection(
 			zap.Int("max_retries", maxRetries))
 
 		response, chatErr := agent.Chat(ctx, sessionID, retryPrompt)
+		if chatErr == nil {
+			e.aux.addTurn(response)
+		}
 		if chatErr != nil {
 			e.orchestrator.logger.Warn("Vote retry failed",
 				zap.String("agent_id", agentID),
@@ -843,6 +851,7 @@ func (e *SwarmExecutor) retryJudge(
 		if chatErr != nil {
 			continue
 		}
+		e.aux.addTurn(response)
 
 		decision := strings.TrimSpace(response.Content)
 
@@ -889,19 +898,22 @@ func (e *SwarmExecutor) buildJudgeRetryPrompt(distribution map[string]int32, pre
 // calculateCost sums up the costs from all agent results.
 func (e *SwarmExecutor) calculateCost(results []*loomv1.AgentResult) *loomv1.WorkflowCost {
 	var totalCostUsd float64
-	var totalTokens int32
+	var totalTokens, llmCalls int32
 
 	for _, result := range results {
 		if result.Cost != nil {
 			totalCostUsd += result.Cost.CostUsd
 			totalTokens += result.Cost.TotalTokens
+			llmCalls += resultLLMCalls(result.Cost)
 		}
 	}
 
-	return &loomv1.WorkflowCost{
+	cost := &loomv1.WorkflowCost{
 		TotalCostUsd:  totalCostUsd,
 		TotalTokens:   totalTokens,
 		AgentCostsUsd: make(map[string]float64), // Could populate if needed
-		LlmCalls:      types.SafeInt32(len(results)),
+		LlmCalls:      llmCalls,
 	}
+	e.aux.applyTo(cost)
+	return cost
 }

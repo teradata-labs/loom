@@ -108,6 +108,7 @@ func TestResponse_TurnUsageSumsEveryLLMCall(t *testing.T) {
 		CacheCreationInputTokens: 50,
 	}
 	got := resp.TurnUsage
+	assert.Equal(t, 3, resp.TurnLLMCalls, "TurnLLMCalls counts every call TurnUsage sums")
 	assert.InDelta(t, 0.17, got.CostUSD, 1e-9)
 	got.CostUSD = 0
 	assert.Equal(t, want, got)
@@ -127,6 +128,7 @@ func TestResponse_TurnUsageEqualsUsageForSingleCall(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, resp.Usage, resp.TurnUsage)
 	assert.Equal(t, 15, resp.TurnUsage.TotalTokens)
+	assert.Equal(t, 1, resp.TurnLLMCalls)
 }
 
 // The empty-response retry is an extra billed call; TurnUsage carries it,
@@ -143,6 +145,7 @@ func TestResponse_TurnUsageIncludesEmptyResponseRetry(t *testing.T) {
 	assert.Equal(t, "second try", resp.Content)
 	assert.Equal(t, 125, resp.Usage.TotalTokens)
 	assert.Equal(t, 225, resp.TurnUsage.TotalTokens)
+	assert.Equal(t, 2, resp.TurnLLMCalls, "the retried empty response was a billed call")
 	assert.InDelta(t, 0.022, resp.TurnUsage.CostUSD, 1e-9)
 }
 

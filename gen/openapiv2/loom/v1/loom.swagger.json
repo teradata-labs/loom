@@ -4059,6 +4059,11 @@
         "provider": {
           "type": "string",
           "title": "Provider"
+        },
+        "llmCalls": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Successful LLM calls this agent made for this result (its whole turn:\ntool-loop iterations and final synthesis). 0 from producers that predate\nthis field."
         }
       },
       "description": "AgentExecutionCost tracks LLM costs for an agent in a workflow."
