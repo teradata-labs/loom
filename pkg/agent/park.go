@@ -731,6 +731,10 @@ type parkItem struct {
 	kind     string // "approval" | "question" | "resource"
 	question string
 	uri      string // resource items only: the awaited resource
+	// reason is the Ask's Reason for an approval item: every asking hook's
+	// reason, joined by the admission chain. The approval delivers every one
+	// of those hooks' grants, so the card must show all of them.
+	reason string
 }
 
 // maybeParkBatch is the pre-scan: every call of the batch — contact_human
@@ -752,7 +756,7 @@ func (a *Agent) maybeParkBatch(ctx Context, sess *Session, llmResp *LLMResponse,
 			continue
 		}
 		if d.Kind == shuttle.Ask {
-			items = append(items, parkItem{call: call, seq: i, kind: "approval"})
+			items = append(items, parkItem{call: call, seq: i, kind: "approval", reason: d.Reason})
 		}
 	}
 	return a.parkItems(ctx, sess, items, llmResp.Usage, turnUsage)
@@ -917,7 +921,10 @@ func checkParkItemIDs(items []parkItem) error {
 const parkParamsMaxBytes = 65536
 
 // buildParkParams renders one descriptor per item, keyed by the item's
-// ToolCall.ID — the batch↔request binding the resume validates.
+// ToolCall.ID — the batch↔request binding the resume validates. An approval
+// item's descriptor carries the Ask's joined reason under "reason", so the
+// card names everything the approval's grants cover; the overflow digest below
+// shrinks only "params" and never drops it.
 func buildParkParams(items []parkItem) (map[string]interface{}, bool) {
 	truncated := false
 	out := make(map[string]interface{}, len(items))
@@ -940,6 +947,9 @@ func buildParkParams(items []parkItem) (map[string]interface{}, bool) {
 		}
 		if it.kind == "resource" {
 			desc["uri"] = it.uri
+		}
+		if it.kind == "approval" && it.reason != "" {
+			desc["reason"] = it.reason
 		}
 		out[it.call.ID] = desc
 	}
@@ -1621,6 +1631,14 @@ func (a *Agent) completeParkedBatch(ctx Context, sess *Session, batch Message, r
 	// is in place — the same pairing rule the loop's drain protects.
 	for _, sidecar := range st.pendingSidecars {
 		a.appendMessage(ctx, sess, sidecar, false)
+	}
+
+	// Error-triggered lesson recall, mirroring the conversation loop's drain.
+	// dispatchOneCall fills st.errTexts on both paths, so without this a
+	// resumed batch's failures would collect lesson evidence and silently
+	// drop it — the drift sharing the dispatch body exists to prevent.
+	if len(st.errTexts) > 0 {
+		a.injectErrorLessons(ctx, sess, st.errTexts)
 	}
 }
 

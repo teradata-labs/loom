@@ -217,6 +217,10 @@ Carries information about a human-in-the-loop request when the agent needs human
 - `context_json` (string): Additional context as JSON
 - `question_id` (string): Question ID for clarification questions (used with `AnswerClarificationQuestion` RPC)
 - `options` (repeated string): Suggested options for the user (if applicable)
+- `kind` (string): How the stored request was classified at origin: `approval`, `question` or `resource`. Empty means unclassified; treat it as `question`.
+- `summary` (string): Display digest of the stored request (tool and arguments for an approval, the question text for a question)
+- `params_json` (string): The stored request's parameter map as JSON. For an in-turn approval, the held call's parameters. For a parked turn (`request_type` `parked`), an object keyed by held tool call ID whose values are the item descriptors; an approval item's descriptor carries `reason`, every asking admission hook's reason joined with `"; "`. Empty for a question.
+- `params_truncated` (bool): True when the server's size bound cut entries out of `params_json`
 
 
 #### partial_content
@@ -1159,7 +1163,7 @@ message SessionStatusUpdate {
 Sent when a new message is added to the session conversation (e.g., from a sub-agent response, tool result, or user input).
 
 **Fields**:
-- `role`: Message role - `user`, `assistant`, `tool`, `skill_body`, `hygiene_injection`, `empty_response_retry`, or `synthesis_prompt` (only these roles are sent). `skill_body`, `hygiene_injection`, `empty_response_retry`, and `synthesis_prompt` are synthetic, agent-authored roles — a loaded skill's instructions, a hygiene-retry nudge, an empty-response retry nudge, and a forced-final-answer synthesis prompt, respectively — persisted separately from the literal end user; see `pkg/agent/llm_retry.go`'s `IsSyntheticWireUserRole`.
+- `role`: Message role - `user`, `assistant`, `tool`, `skill_body`, `hygiene_injection`, `empty_response_retry`, `synthesis_prompt`, or `lesson_reminder` (only these roles are sent). `skill_body`, `hygiene_injection`, `empty_response_retry`, `synthesis_prompt`, and `lesson_reminder` are synthetic, agent-authored roles — a loaded skill's instructions, a hygiene-retry nudge, an empty-response retry nudge, a forced-final-answer synthesis prompt, and an error-time graph-memory lesson, respectively — persisted separately from the literal end user; see `pkg/agent/llm_retry.go`'s `IsSyntheticWireUserRole`.
 - `content`: The message text
 - `message_timestamp`: When the message was created (Unix timestamp)
 - `tool_name`: 🚧 Defined in proto but not yet populated by the server implementation

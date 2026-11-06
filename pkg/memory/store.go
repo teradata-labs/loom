@@ -76,8 +76,14 @@ type RecallOpts struct {
 	EntityIDs   []string // scope to entities (empty = all)
 	Tags        []string // filter by tags
 	MinSalience float64
-	MaxTokens   int // 0 = no limit
-	Limit       int // max results
+	// BelowSalience is a STRICT upper bound on salience (salience < this);
+	// 0 = no ceiling. Pairs with MinSalience to select a band — the lesson
+	// lane uses it to ask for demoted lessons specifically (below the recall
+	// floor) rather than filtering a wider result set in Go, where the
+	// store's salience ordering would have truncated them away.
+	BelowSalience float64
+	MaxTokens     int // 0 = no limit
+	Limit         int // max results
 }
 
 // ContextForOpts configures a composite context query.

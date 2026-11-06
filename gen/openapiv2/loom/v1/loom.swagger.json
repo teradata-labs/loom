@@ -5705,6 +5705,10 @@
           "type": "integer",
           "format": "int32",
           "description": "Number of recent messages to include in each extraction window.\nDefault: 0 (auto = extraction_cadence * 3, minimum 15).\nSet higher to give the extractor more conversational context per cycle.\nUseful when extraction_cadence is low (e.g., 1) to avoid tiny windows."
+        },
+        "fleetLessonSharing": {
+          "type": "boolean",
+          "description": "Share verified lessons across all agents on this server. Opt-in.\nWhen true, lessons mined from the tool ledger (observed error-\u003efix\ntransitions) are stored in a shared partition visible to every agent,\nand each agent's dedicated lesson recall lane draws from that pool.\nWhen false (default), lessons stay private to the agent that earned\nthem: stored in a partition derived from its graph-memory key\n(\"\u003ckey\u003e__lessons\", where the key is the agent's GraphMemoryAgentID when\nset, otherwise its name) that no other writer targets, and recalled only\nby it.\n\nSECURITY: mined lessons derive from tool output and the model's own tool\ninputs, and are shown to the model as trusted guidance (the graph-memory\ncontext block at conversation start, a \u003csystem-reminder\u003e after a\nmatching error). Enabling this makes one server's output guidance for\nevery agent -- do not enable it when running untrusted tool servers, or\ntools that return text an untrusted party wrote.\nSee docs/reference/security-model.md."
         }
       },
       "description": "GraphMemoryConfig configures the salience-driven graph-backed episodic memory layer."
@@ -5779,6 +5783,22 @@
             "type": "string"
           },
           "title": "Suggested options for the user (if applicable)"
+        },
+        "kind": {
+          "type": "string",
+          "description": "Classifies the stored request at origin: \"approval\" (hook-held call or a\nparked batch containing one), \"question\" (contact_human, or a parked\nbatch of only questions), or \"resource\" (a parked resource wait). Empty\nmeans the producer did not classify it; treat it as \"question\"."
+        },
+        "summary": {
+          "type": "string",
+          "description": "Display digest of the stored request: the held tool and its arguments\nfor an approval, the question text for a question. For a parked batch it\njoins each item's tool+args digest with \"; \", cut to 200 characters."
+        },
+        "paramsJson": {
+          "type": "string",
+          "description": "The stored request's parameter map as JSON, mirroring context_json. For\nan in-turn approval it is the held call's parameters. For a parked turn\n(request_type \"parked\") it maps each held ToolCall ID to that item's\ndescriptor; an approval item's descriptor carries \"reason\", the joined\nreason of every admission hook that asked, which is what the approval's\ngrants cover. Empty when the request has no parameters (a question)."
+        },
+        "paramsTruncated": {
+          "type": "boolean",
+          "description": "True when the server's size bound cut whole entries out of params_json,\nso the card shows only part of what is being approved."
         }
       },
       "description": "HITLRequestInfo carries information about a human-in-the-loop request."
