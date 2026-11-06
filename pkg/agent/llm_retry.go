@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/llm"
@@ -367,6 +368,45 @@ type realThrottleClock struct{}
 
 func (realThrottleClock) Now() time.Time                         { return time.Now() }
 func (realThrottleClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
+
+// virtualThrottleClock is a throttleClock that never sleeps: After moves the
+// clock forward by the wait and fires at once. It does not follow the wall
+// clock, so only the patience waits count toward the budget.
+type virtualThrottleClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *virtualThrottleClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *virtualThrottleClock) After(d time.Duration) <-chan time.Time {
+	c.mu.Lock()
+	c.now = c.now.Add(d)
+	fired := c.now
+	c.mu.Unlock()
+	ch := make(chan time.Time, 1)
+	ch <- fired
+	return ch
+}
+
+// WithInstantThrottleWaitsForTesting is for tests outside this package only.
+// It puts the agent's throttle patience on a virtual clock: each throttle
+// wait returns at once and moves that clock forward by the wait. The budget,
+// the backoff steps and the error that surfaces when the budget is used up
+// do not change; only the real sleeping is removed. A test that drives an
+// always-throttling provider through a server or harness thus sees the
+// throttle error after the full budget of virtual time, in milliseconds.
+// Do not use it in production: it removes the pause between calls to a
+// throttled provider.
+func WithInstantThrottleWaitsForTesting() Option {
+	return func(a *Agent) {
+		a.throttleClock = &virtualThrottleClock{now: time.Unix(0, 0)}
+	}
+}
 
 // newThrottlePatience returns the patience state for one LLM call, on the
 // agent's throttle clock (the real clock unless a test set one).

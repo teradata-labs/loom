@@ -316,3 +316,85 @@ func TestNonThrottleExhausted_NeverWaitsOnAnyPath(t *testing.T) {
 		}
 	}
 }
+
+// throttlingLLM fails every invocation with err and never moves any clock.
+type throttlingLLM struct {
+	err   error
+	mu    sync.Mutex
+	calls int
+}
+
+func (s *throttlingLLM) Name() string  { return "throttling-stub" }
+func (s *throttlingLLM) Model() string { return "throttling-stub-model" }
+
+func (s *throttlingLLM) Chat(context.Context, []Message, []shuttle.Tool) (*LLMResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls++
+	return nil, s.err
+}
+
+func (s *throttlingLLM) Calls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+// WithInstantThrottleWaitsForTesting keeps the real budget and backoff and
+// only removes the sleeping: a permanent throttle surfaces with the same
+// budget error after the full budget of virtual time, in real milliseconds.
+func TestWithInstantThrottleWaitsForTesting(t *testing.T) {
+	plain429 := errors.New("API error (status 429): rate_limit_exceeded")
+	for _, path := range []throttlePath{
+		{name: "retry-enabled", retry: patientRetry()},
+		{name: "retry-disabled", retry: RetryConfig{}},
+	} {
+		t.Run(path.name, func(t *testing.T) {
+			t.Parallel()
+			stub := &throttlingLLM{err: plain429}
+			a := &Agent{id: "t-instant-" + path.name, llm: stub, config: &Config{Retry: path.retry}}
+			WithInstantThrottleWaitsForTesting()(a)
+			clk, ok := a.throttleClock.(*virtualThrottleClock)
+			require.True(t, ok, "the option must install the virtual throttle clock")
+
+			ctxBase, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			ctx := &agentContext{Context: ctxBase, tracer: observability.NewNoOpTracer()}
+
+			virtualStart := clk.Now()
+			realStart := time.Now()
+			resp, err := a.chatWithRetry(ctx, []Message{{Role: "user", Content: "hi"}}, nil)
+			realTook := time.Since(realStart)
+			virtualTook := clk.Now().Sub(virtualStart)
+
+			require.Error(t, err)
+			assert.Nil(t, resp)
+			assert.Contains(t, err.Error(), "patience budget", "the budget error surfaces unchanged")
+			assert.True(t, llm.IsThrottle(err))
+			assert.GreaterOrEqual(t, stub.Calls(), 2, "patience must have re-invoked at least once")
+			assert.LessOrEqual(t, virtualTook, throttleBudget, "the virtual waits stay within the budget")
+			assert.Greater(t, virtualTook, throttleBudget-throttleMaxDelay,
+				"the budget is spent in virtual time before the error surfaces")
+			assert.Less(t, realTook, 10*time.Second, "no real sleeping")
+		})
+	}
+}
+
+// The virtual clock is safe for concurrent use, as an agent's throttle clock
+// is shared by every concurrent LLM call of that agent.
+func TestVirtualThrottleClock_Concurrent(t *testing.T) {
+	clk := &virtualThrottleClock{now: time.Unix(0, 0)}
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 100 {
+				<-clk.After(time.Second)
+				_ = clk.Now()
+			}
+		}()
+	}
+	wg.Wait()
+	assert.Equal(t, time.Unix(0, 0).Add(1600*time.Second), clk.Now())
+}
