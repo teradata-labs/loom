@@ -182,6 +182,7 @@ func (pr *Profile) attachedPath(group string) string {
 func Readonly() *Policy {
 	p := &Policy{
 		Name:     "readonly",
+		flat:     Spec{Name: "readonly"},
 		Builtins: map[string]bool{},
 		Programs: map[string]*Profile{},
 		Never:    map[string]bool{"sudo": true, "su": true, "doas": true, "pkexec": true},
