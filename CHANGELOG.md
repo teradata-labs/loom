@@ -139,6 +139,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An int32-overflowing `implicit_tasks.max_per_session` failed open to the default cap instead of disabling emission.
 - Fork-join and swarm stage titles showed raw agent UUIDs; stage output copied into task notes could split a multi-byte rune and fail proto marshalling.
 
+### Security
+
+#### Spreadsheet parsing
+- **`github.com/xuri/excelize/v2` moves from v2.11.0 to v2.11.1 for 15 Dependabot advisories.** `govulncheck` reports 6 of them (four called from `parse_document`'s Excel path, `parseExcel`), so a crafted spreadsheet could exhaust memory or crash the server. `parse_document` is reachable by any agent that lists it in `tools.builtin`, that activates a skill listing it in `required_tools`, or, under `looms serve`, that has `tool_search` enabled (the default there unless `tools.minimal` or `tools.none` is set). The bump also moves `richardlehane/mscfb` to v1.0.9, `xuri/efp` to the pseudo-version excelize v2.11.1 requires, and `golang.org/x/net` to v0.62.0, which also fixes two `x/net` advisories.
+- **`golang.org/x/image` moves from v0.41.0 to v0.45.0.** The TUI's image rendering uses it. `govulncheck` lists 5 advisories against v0.41.0 (GO-2026-4961, -5061, -5062, -5066, -6222) and finds no call to any of them; v0.45.0 has none.
+
 ## [1.4.0] - 2026-08-12
 
 ### Breaking Changes

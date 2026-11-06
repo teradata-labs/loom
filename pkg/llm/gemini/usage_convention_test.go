@@ -41,7 +41,7 @@ func TestConvertResponse_InputTokensExcludeCache(t *testing.T) {
 	c := NewClient(Config{APIKey: "test", Model: "gemini-2.5-flash"})
 	got := c.convertResponse(&GenerateContentResponse{UsageMetadata: UsageMetadata{
 		PromptTokenCount: 10000, CandidatesTokenCount: 200, TotalTokenCount: 10200, CachedContentTokenCount: 8192,
-	}}).Usage
+	}}, nil).Usage
 
 	assert.Equal(t, 1808, got.InputTokens)
 	assert.Equal(t, 2008, got.TotalTokens)
