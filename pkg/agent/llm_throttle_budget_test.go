@@ -317,6 +317,37 @@ func TestNonThrottleExhausted_NeverWaitsOnAnyPath(t *testing.T) {
 	}
 }
 
+// F1 (Josh-Schoen, PR #359, 2026-11-06): a context-too-long refusal is never
+// a throttle, even when its text matches llm.IsThrottle's substring fallback.
+// Anthropic puts the raw 400 body into the error, and a token count such as
+// 204296 contains "429". Before the fix, all three paths waited this error
+// out as a throttle and re-sent a prompt that can never fit, for up to the
+// whole budget, before compaction relief could run. It must return at once,
+// after one provider call, with ErrContextTooLong in the chain.
+func TestContextTooLong_NeverWaitedOutAsThrottle(t *testing.T) {
+	tooLong := fmt.Errorf("API error (status 400): prompt is too long: 204296 tokens > 200000 maximum: %w",
+		llm.ErrContextTooLong)
+	require.True(t, llm.IsThrottle(tooLong),
+		"precondition: the substring fallback classifies this refusal as a throttle")
+
+	for _, path := range throttlePaths() {
+		t.Run(path.name, func(t *testing.T) {
+			t.Parallel()
+			clk := newFakeThrottleClock()
+			resp, err, stub, took := runClockedCall(t, path, clk, time.Second, -1, tooLong)
+
+			require.Error(t, err)
+			assert.Nil(t, resp)
+			assert.ErrorIs(t, err, llm.ErrContextTooLong, "the refusal must reach relief as context-too-long")
+			assert.NotContains(t, err.Error(), "patience budget")
+			assert.NotContains(t, err.Error(), "llm throttled")
+			assert.Equal(t, 1, stub.Calls(), "a context-too-long refusal must not be re-sent")
+			assert.Empty(t, clk.Sleeps(), "a context-too-long refusal must never start a throttle wait")
+			assert.Equal(t, time.Second, took, "only the one provider invocation may take time")
+		})
+	}
+}
+
 // throttlingLLM fails every invocation with err and never moves any clock.
 type throttlingLLM struct {
 	err   error

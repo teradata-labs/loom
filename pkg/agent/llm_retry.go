@@ -218,7 +218,7 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 		for {
 			patience.beginAttempt()
 			resp, err := a.llm.Chat(a.providerCtx(ctx, messages), messages, tools)
-			if err == nil || !llm.IsThrottle(err) {
+			if err == nil || !isRetryableThrottle(err) {
 				return resp, err
 			}
 			if waitErr := a.absorbThrottle(ctx, &patience, err); waitErr != nil {
@@ -256,8 +256,10 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 		// so the rule is the same as on the retry-disabled and streaming
 		// paths: an error that is a throttle through any wrapping (a provider
 		// RateLimiter that ran out of its own retries wraps the last 429) is
-		// waited out under the budget; anything else is not.
-		if llm.IsThrottle(err) {
+		// waited out under the budget; anything else is not. A
+		// context-too-long refusal is never a throttle (isRetryableThrottle),
+		// so it falls through to the ErrContextTooLong check below.
+		if isRetryableThrottle(err) {
 			if waitErr := a.absorbThrottle(ctx, &patience, err); waitErr != nil {
 				return nil, waitErr
 			}
@@ -429,6 +431,18 @@ func (p *throttlePatience) now() time.Time {
 		p.clock = realThrottleClock{}
 	}
 	return p.clock.Now()
+}
+
+// isRetryableThrottle reports whether err is a throttle that throttle patience
+// should wait out. A positively-identified context-too-long refusal never is,
+// even when llm.IsThrottle classifies it as one: IsThrottle falls back to a
+// substring match on the error text, and a provider that puts the raw 400
+// body into the error (Anthropic: "prompt is too long: 204296 tokens > ...")
+// can contain "429". Waiting that out would re-send a prompt that can never
+// fit for the whole budget, before relief can run. All three paths use this
+// one check, so they cannot drift.
+func isRetryableThrottle(err error) bool {
+	return llm.IsThrottle(err) && !errors.Is(err, llm.ErrContextTooLong)
 }
 
 // absorbThrottle records the throttle with the slot scheduler, then waits it
@@ -680,7 +694,7 @@ func (a *Agent) chatWithStreaming(ctx Context, messages []Message, tools []shutt
 		if err == nil {
 			break
 		}
-		if llm.IsThrottle(err) {
+		if isRetryableThrottle(err) {
 			if waitErr := a.absorbThrottle(ctx, &patience, err); waitErr != nil {
 				return nil, waitErr
 			}
