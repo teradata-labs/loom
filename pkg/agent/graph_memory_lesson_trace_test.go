@@ -38,7 +38,7 @@ func assertSpanAttrs(t *testing.T, span *observability.Span, want map[string]int
 	}
 }
 
-// The error-triggered injection lane adds a system message mid-conversation;
+// The error-triggered injection lane adds a lesson reminder mid-conversation;
 // it must leave a span with what it recalled and injected (review:
 // Josh-Schoen F3 — injection previously left no record anywhere).
 func TestInjectErrorLessonsTraced(t *testing.T) {

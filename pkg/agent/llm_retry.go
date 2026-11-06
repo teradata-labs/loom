@@ -36,18 +36,20 @@ const (
 	roleHygieneInjection   = "hygiene_injection"
 	roleEmptyResponseRetry = "empty_response_retry"
 	roleSynthesisPrompt    = "synthesis_prompt"
+	roleLessonReminder     = "lesson_reminder"
 )
 
 // IsSyntheticWireUserRole reports whether role is a persisted Loom-internal
 // role that must be delivered to the LLM as user-turn content — the
 // skill-body sidecar, a hygiene retry injection, an empty-response retry
-// nudge, or a synthesis prompt — as opposed to the literal end user.
+// nudge, a synthesis prompt, or an error-time lesson reminder — as opposed
+// to the literal end user.
 // Exported so pkg/server's live-streaming gate (isNewMessageUpdateRole)
 // shares this definition instead of maintaining the same string set
 // independently.
 func IsSyntheticWireUserRole(role string) bool {
 	switch role {
-	case roleSkillBody, roleHygieneInjection, roleEmptyResponseRetry, roleSynthesisPrompt:
+	case roleSkillBody, roleHygieneInjection, roleEmptyResponseRetry, roleSynthesisPrompt, roleLessonReminder:
 		return true
 	default:
 		return false

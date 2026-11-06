@@ -216,7 +216,7 @@ mining pair (no lesson minted) and cannot score an outcome-credit recovery
 ## Trust boundary: tool output becomes durable system-prompt text
 
 **A mined lesson is derived from text a tool server controls, and it is
-re-emitted to the model at SYSTEM role.** This is a deliberate trust
+re-emitted to the model as trusted harness guidance.** This is a deliberate trust
 decision, and it is written down here for the same reason the lease contract
 is written down in `pkg/shuttle/lease.go`: the mechanism is invisible at the
 call site and the posture it assumes is not obvious from the code.
@@ -231,9 +231,16 @@ The path, end to end:
 2. The ledger keeps both (`errText`, `resultPreview`), and the mining prompt
    quotes them verbatim: `ERROR:`, `SUCCEEDED RESULT:`, `LATER USE OF THE
    SAME OBJECT:`.
-3. The mined lesson is stored and later injected as a message with
-   `Role: "system"` — which the Anthropic client hoists into the API's
-   top-level `system` field, i.e. the agent's real system prompt.
+3. The mined lesson is stored and later shown to the model in two places.
+   At conversation start it rides the graph-memory context block, a message
+   with `Role: "system"` that the Anthropic client hoists into the API's
+   top-level `system` field, i.e. the agent's real system prompt. At error
+   time it is appended as a user-role `<system-reminder>` (persisted role
+   `lesson_reminder`, folded to `user` by `normalizeWireRoles`). It is not a
+   system message there on purpose: a system message added after a tool
+   result is hoisted ahead of the whole conversation and misses every
+   message-level cache breakpoint. The reminder wrapper still marks it as
+   harness text, so the model reads it as guidance, not as the user's ask.
 4. With `fleet_lesson_sharing` on, it lands in `__fleet_lessons__` and is
    visible to **every agent on the server, indefinitely**.
 

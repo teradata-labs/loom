@@ -265,7 +265,9 @@ func errorLessonQuery(errText string) string {
 // conversation-start lane cannot: a lesson whose trigger is an error that
 // has not happened yet shares no vocabulary with the task, so it can only
 // be delivered at failure time. Called after the whole tool batch is
-// appended (never between a tool_use and its tool_result).
+// appended (never between a tool_use and its tool_result). The lessons land
+// as a user-role <system-reminder> (roleLessonReminder), never at system
+// role.
 func (a *Agent) injectErrorLessons(ctx context.Context, session *types.Session, errTexts []string) {
 	if a.graphMemoryStore == nil || len(errTexts) == 0 {
 		return
@@ -372,9 +374,18 @@ func (a *Agent) injectErrorLessons(ctx context.Context, session *types.Session, 
 			sb.WriteString("\n")
 		}
 	}
+	// A user-role <system-reminder>, never a system message — the same rule
+	// as withReminder in runConversationLoop. Providers fold system-role
+	// messages into the system parameter at the HEAD of the request (the
+	// Anthropic client moves every one there), so a system message added
+	// after a tool result would sit ahead of every message and miss every
+	// message-level cache breakpoint, up to maxErrorLessonInjections times
+	// per session. Appended at the tail it stays in place and later calls
+	// cache it. The synthetic role keeps it from being read as the human's
+	// turn; normalizeWireRoles sends it as "user".
 	session.AddMessage(ctx, types.Message{
-		Role:    "system",
-		Content: sb.String(),
+		Role:    roleLessonReminder,
+		Content: "<system-reminder>\n" + strings.TrimRight(sb.String(), "\n") + "\n</system-reminder>",
 	})
 	injectedVerified, injectedProbation = len(verified), len(probation)
 	outcome = "injected"

@@ -91,7 +91,7 @@ func TestResumeSession_FailedDispatchInjectsErrorLesson(t *testing.T) {
 
 	var lessonMsgs int
 	for _, m := range sess.GetMessages() {
-		if m.Role == "system" && strings.Contains(m.Content, "matched to the error just hit") {
+		if m.Role == roleLessonReminder && strings.Contains(m.Content, "matched to the error just hit") {
 			lessonMsgs++
 			assert.Contains(t, m.Content, "BIGINT")
 		}

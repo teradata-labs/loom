@@ -163,7 +163,7 @@ several subsystems act on tool output as data:
 |---------|--------------------------|--------|
 | Tool result content | The entire payload | Enters the conversation as a tool result the model reads |
 | `Result.Metadata` lease events | Any `(kind, id)` acquire/release | Pins the conversation in the scheduler's `RESOURCE_HOLDER` class, or demotes a genuine holder (`pkg/shuttle/lease.go`) |
-| Tool error text and result previews | The strings quoted into the lesson-mining prompt | Can be mined into a stored "verified lesson" that is later injected at **system** role (`docs/architecture/lesson-grounding-and-credit.md`) |
+| Tool error text and result previews | The strings quoted into the lesson-mining prompt | Can be mined into a stored "verified lesson" that is later shown to the model as trusted guidance: inside the **system**-role graph-memory context block, or as a `<system-reminder>` after a failed tool call (`docs/architecture/lesson-grounding-and-credit.md`) |
 
 The lesson channel is the durable one, so it is called out explicitly:
 

@@ -631,7 +631,7 @@ func TestInjectErrorLessons(t *testing.T) {
 
 	msgs := session.GetMessages()
 	require.Len(t, msgs, 1)
-	assert.Equal(t, "system", msgs[0].Role)
+	assert.Equal(t, roleLessonReminder, msgs[0].Role)
 	assert.Contains(t, msgs[0].Content, "BIGINT")
 	assert.Contains(t, msgs[0].Content, "matched to the error just hit")
 

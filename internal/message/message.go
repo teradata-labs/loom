@@ -48,6 +48,11 @@ const (
 	// turn/execution budget is exhausted. Same wire-folding treatment as
 	// SkillBody, different producer.
 	SynthesisPrompt Role = "synthesis_prompt"
+
+	// LessonReminder is an error-time lesson from graph memory, wrapped in
+	// <system-reminder> and appended after a failed tool batch. Same
+	// wire-folding treatment as SkillBody, different producer.
+	LessonReminder Role = "lesson_reminder"
 )
 
 // FinishReason represents the reason a message finished.
