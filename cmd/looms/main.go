@@ -13,6 +13,11 @@
 // limitations under the License.
 package main
 
+// gitCommit is the source revision this binary was built from. Image builds
+// set it with -ldflags "-X main.gitCommit=<sha>" (deploy/longmemeval/
+// Dockerfile); a plain go build leaves it "unknown".
+var gitCommit = "unknown"
+
 func main() {
 	Execute()
 }
