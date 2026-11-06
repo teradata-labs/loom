@@ -685,3 +685,36 @@ func SafeUint(n int) uint {
 	}
 	return uint(n)
 }
+
+// DiscardTurn removes every message belonging to turn from the flat history and
+// adjusts the session totals. Segmented memory is left to the caller (it lives
+// in pkg/agent). turn <= 0 is a no-op.
+func (s *Session) DiscardTurn(turn int64) {
+	if turn <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	kept := make([]Message, 0, len(s.Messages))
+	var removedCost float64
+	var removedTokens int
+	for _, m := range s.Messages {
+		if m.Turn == turn {
+			removedCost += m.CostUSD
+			removedTokens += m.TokenCount
+			continue
+		}
+		kept = append(kept, m)
+	}
+	s.Messages = kept
+	s.TotalCostUSD -= removedCost
+	if s.TotalCostUSD < 0 {
+		s.TotalCostUSD = 0
+	}
+	s.TotalTokens -= removedTokens
+	if s.TotalTokens < 0 {
+		s.TotalTokens = 0
+	}
+	s.UpdatedAt = time.Now()
+}

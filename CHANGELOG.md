@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Spawned agents retry a bus message when Chat fails
 - **A failed `Chat` no longer drops a spawned agent's bus message on the first error.** `processSpawnedAgentMessages` logged a WARN and moved on when the spawned agent's `Chat` failed (a transient LLM error, or the 2-minute timeout), so the message was lost with no retry. It now tries up to 3 times, waiting 1 s and then 2 s between attempts, and stops early if the agent's context is cancelled. If every attempt fails it logs an ERROR with the message ID (#532).
+- **Retries no longer duplicate the user message in the session.** `Agent.Chat` persists the user turn before the conversation loop runs, so a naïve retry left 2–3 copies of the bus prompt behind. Failed attempts now call `DiscardIncompleteTurn` before the next try (and parked turns are not retried), so a healed retry keeps exactly one user row (#535).
 
 #### Token counting: the encoding ships in the binary
 - **The token counter no longer downloads its encoding.** `pkg/agent`'s counter fetched `cl100k_base` from `openaipublic.blob.core.windows.net` on first use; without network access (an air-gapped or locked-down server, a sandboxed CI runner) it fell back to a characters/4 estimate for the life of the process, which skews relief and budget decisions. It now loads the encoding bundled by `github.com/pkoukk/tiktoken-go-loader` (MIT; its `cl100k_base.tiktoken` has the SHA-256 that OpenAI's tiktoken verifies). The binary grows by about 7 MB.

@@ -127,6 +127,17 @@ func TestProcessSpawnedAgentMessages_RetriesFailedChat(t *testing.T) {
 	require.NotNil(t, reply, "the retried message should get a reply")
 	assert.Equal(t, "spawned-worker", reply.GetFromAgent())
 	assert.Equal(t, "processed", string(reply.GetPayload().GetValue()))
+
+	// A healed retry must not leave the bus prompt duplicated in the session.
+	sess, ok := spawned.agent.GetSession(spawned.subSessionID)
+	require.True(t, ok, "spawned session should exist after a successful retry")
+	userRows := 0
+	for _, m := range sess.GetMessages() {
+		if m.Role == "user" {
+			userRows++
+		}
+	}
+	assert.Equal(t, 1, userRows, "session must hold the user message once after a healed retry")
 }
 
 // TestProcessSpawnedAgentMessages_GivesUpAfterMaxAttempts checks the retry is
@@ -147,7 +158,16 @@ func TestProcessSpawnedAgentMessages_GivesUpAfterMaxAttempts(t *testing.T) {
 
 	assert.Equal(t, []int{1, 2}, retries, "Chat should be tried spawnedChatMaxAttempts times")
 	assert.Nil(t, replyTo(senderCh, "msg-1"), "no reply should be published when every attempt fails")
-	assert.Positive(t, llm.callCount())
+	assert.GreaterOrEqual(t, llm.callCount(), spawnedChatMaxAttempts,
+		"each Chat attempt must reach the LLM at least once")
+
+	// Failed attempts discard their incomplete user turns, so giving up leaves
+	// no orphan prompt behind.
+	if sess, ok := spawned.agent.GetSession(spawned.subSessionID); ok {
+		for _, m := range sess.GetMessages() {
+			assert.NotEqual(t, "user", m.Role, "give-up must not leave an incomplete user turn")
+		}
+	}
 }
 
 // TestProcessSpawnedAgentMessages_StopsRetryingWhenCancelled checks a cancelled

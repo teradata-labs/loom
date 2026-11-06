@@ -372,6 +372,32 @@ func (sm *SegmentedMemory) DropTurnPayloads() {
 	}
 }
 
+// DiscardTurn removes every L1 message belonging to turn. Used to roll back an
+// incomplete Chat turn before a caller retries Chat with the same user content.
+// turn <= 0 is a no-op.
+func (sm *SegmentedMemory) DiscardTurn(turn int64) {
+	if turn <= 0 {
+		return
+	}
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	if len(sm.contextMessages) == 0 {
+		return
+	}
+	kept := make([]Message, 0, len(sm.contextMessages))
+	for _, m := range sm.contextMessages {
+		if m.Turn == turn {
+			continue
+		}
+		kept = append(kept, m)
+	}
+	sm.contextMessages = kept
+	sm.l1Dirty = true
+	sm.fullRecount()
+	sm.tokenCountDirty = false
+}
+
 // AddMessage appends a message to L1 (HLD §1: arrival appends — nothing is
 // examined, sized, flagged, or transformed at arrival). The incremental token
 // caches are updated for reporting only; no mechanism here acts on them.

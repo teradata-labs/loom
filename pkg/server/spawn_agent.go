@@ -7,6 +7,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -730,6 +731,10 @@ var spawnedChatRetryDelay = func(attempt int) time.Duration {
 // retrying with a growing delay when it fails. A bus message has no queue
 // behind it to redeliver it, so without a retry a transient LLM error or a
 // timeout would silently drop it. It stops early when ctx is cancelled.
+//
+// Each Chat persists the user turn before the conversation loop runs. A failed
+// attempt therefore leaves an orphan user row; DiscardIncompleteTurn removes it
+// before the next attempt so a healed retry does not duplicate the prompt.
 func (s *MultiAgentServer) chatSpawnedAgentWithRetry(
 	ctx context.Context,
 	spawned *spawnedAgentContext,
@@ -754,6 +759,24 @@ func (s *MultiAgentServer) chatSpawnedAgentWithRetry(
 			return resp, nil
 		}
 		lastErr = err
+
+		// A parked turn is waiting for a human, not a transient failure. Do not
+		// roll it back or retry — that would erase the parked batch or re-run it.
+		var turnParked *agent.TurnParkedError
+		var sessionParked *agent.SessionParkedError
+		if errors.As(err, &turnParked) || errors.As(err, &sessionParked) {
+			return nil, err
+		}
+
+		// Chat already wrote the user message for this attempt. Drop that
+		// incomplete turn so a retry appends it once, not again.
+		if discardErr := spawned.agent.DiscardIncompleteTurn(ctx, spawned.subSessionID); discardErr != nil {
+			logger.Warn("Failed to discard incomplete spawned-agent turn before retry",
+				zap.String("agent", spawned.subAgentID),
+				zap.String("session", spawned.subSessionID),
+				zap.String("message_id", msg.Id),
+				zap.Error(discardErr))
+		}
 
 		if attempt < spawnedChatMaxAttempts && ctx.Err() == nil {
 			logger.Warn("Spawned agent failed to process message, retrying",

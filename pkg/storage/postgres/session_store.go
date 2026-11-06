@@ -310,6 +310,39 @@ func (s *SessionStore) DeleteSession(ctx context.Context, sessionID string) erro
 	return nil
 }
 
+// DeleteMessagesByTurn removes every message row for sessionID with the given
+// turn. Used by agent.DiscardIncompleteTurn so a Chat retry does not leave a
+// duplicate user message on disk. Scoped to the caller's tenant.
+func (s *SessionStore) DeleteMessagesByTurn(ctx context.Context, sessionID string, turn int64) error {
+	ctx, span := s.tracer.StartSpan(ctx, "pg_session_store.delete_messages_by_turn")
+	defer s.tracer.EndSpan(span)
+	span.SetAttribute("session_id", sessionID)
+	span.SetAttribute("turn", turn)
+
+	if turn <= 0 {
+		return nil
+	}
+
+	return execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		userID := UserIDFromContext(ctx)
+		tag, err := tx.Exec(ctx, `
+			DELETE FROM messages m
+			USING sessions sess
+			WHERE m.session_id = sess.id
+			  AND m.session_id = $1
+			  AND m.turn = $2
+			  AND sess.user_id = $3
+			  AND sess.deleted_at IS NULL`,
+			sessionID, turn, userID)
+		if err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to delete messages for turn %d: %w", turn, err)
+		}
+		span.SetAttribute("rows_deleted", tag.RowsAffected())
+		return nil
+	})
+}
+
 // LoadAgentSessions returns session IDs for a specific agent.
 func (s *SessionStore) LoadAgentSessions(ctx context.Context, agentID string) ([]string, error) {
 	ctx, span := s.tracer.StartSpan(ctx, "pg_session_store.load_agent_sessions")

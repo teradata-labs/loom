@@ -1501,6 +1501,40 @@ func (s *SessionStore) DeleteSession(ctx context.Context, sessionID string) erro
 	return nil
 }
 
+// DeleteMessagesByTurn removes every message row for sessionID with the given
+// turn. Used by DiscardIncompleteTurn so a Chat retry does not leave a
+// duplicate user message on disk. Ownership-scoped: a foreign session is a
+// silent no-op.
+func (s *SessionStore) DeleteMessagesByTurn(ctx context.Context, sessionID string, turn int64) error {
+	ctx, span := s.tracer.StartSpan(ctx, "session_store.delete_messages_by_turn")
+	defer s.tracer.EndSpan(span)
+	span.SetAttribute("session_id", sessionID)
+	span.SetAttribute("turn", turn)
+
+	if turn <= 0 {
+		return nil
+	}
+	if err := s.requireOwnedSession(ctx, sessionID); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// messages_fts5 rows are removed by the DELETE trigger on messages.
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM messages WHERE session_id = ? AND turn = ?`,
+		sessionID, turn)
+	if err != nil {
+		span.RecordError(err)
+		return fmt.Errorf("failed to delete messages for turn %d: %w", turn, err)
+	}
+	if n, raErr := res.RowsAffected(); raErr == nil {
+		span.SetAttribute("rows_deleted", n)
+	}
+	return nil
+}
+
 // ListSessions returns all session IDs.
 func (s *SessionStore) ListSessions(ctx context.Context) ([]string, error) {
 	ctx, span := s.tracer.StartSpan(ctx, "session_store.list_sessions")
