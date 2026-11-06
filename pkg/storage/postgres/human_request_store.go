@@ -16,6 +16,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"fmt"
 	"time"
 
@@ -469,7 +470,9 @@ func scanHumanRequestRow(row pgx.Row) (*shuttle.HumanRequest, error) {
 	// existed — leaves Params nil. params_truncated carries a false default, so
 	// a pre-params row reads false rather than NULL; NULL is still tolerated.
 	if paramsJSON != nil && *paramsJSON != "" {
-		if err := json.Unmarshal([]byte(*paramsJSON), &req.Params); err != nil {
+		decoder := json.NewDecoder(strings.NewReader(*paramsJSON))
+		decoder.UseNumber()
+		if err := decoder.Decode(&req.Params); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal human request params: %w", err)
 		}
 	}
