@@ -5783,6 +5783,22 @@
             "type": "string"
           },
           "title": "Suggested options for the user (if applicable)"
+        },
+        "kind": {
+          "type": "string",
+          "description": "Classifies the stored request at origin: \"approval\" (hook-held call or a\nparked batch containing one), \"question\" (contact_human, or a parked\nbatch of only questions), or \"resource\" (a parked resource wait). Empty\nmeans the producer did not classify it; treat it as \"question\"."
+        },
+        "summary": {
+          "type": "string",
+          "description": "Display digest of the stored request: the held tool and its arguments\nfor an approval, the question text for a question. For a parked batch it\njoins each item's tool+args digest with \"; \", cut to 200 characters."
+        },
+        "paramsJson": {
+          "type": "string",
+          "description": "The stored request's parameter map as JSON, mirroring context_json. For\nan in-turn approval it is the held call's parameters. For a parked turn\n(request_type \"parked\") it maps each held ToolCall ID to that item's\ndescriptor; an approval item's descriptor carries \"reason\", the joined\nreason of every admission hook that asked, which is what the approval's\ngrants cover. Empty when the request has no parameters (a question)."
+        },
+        "paramsTruncated": {
+          "type": "boolean",
+          "description": "True when the server's size bound cut whole entries out of params_json,\nso the card shows only part of what is being approved."
         }
       },
       "description": "HITLRequestInfo carries information about a human-in-the-loop request."
