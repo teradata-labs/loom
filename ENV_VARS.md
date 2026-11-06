@@ -14,6 +14,7 @@ This document describes all environment variables used in the Loom project.
   - [Mistral AI](#mistral-ai)
   - [Google Gemini](#google-gemini)
   - [HuggingFace](#huggingface)
+  - [looms server credential variables (`LOOM_LLM_*`)](#looms-server-credential-variables-loom_llm_)
 - [AWS Credentials](#aws-credentials)
 - [Observability (Hawk)](#observability-hawk)
 - [Observability (OTLP)](#observability-otlp)
@@ -436,6 +437,58 @@ looms config set-key huggingface_token
 
 ---
 
+### looms server credential variables (`LOOM_LLM_*`)
+
+**Used in:** `cmd/looms/config.go` (`setDefaults`, `stringToStringMapHook`, `loadSecretsFromKeyring`)
+
+`looms` maps every config key to `LOOM_` + the key in upper case with dots replaced by underscores (`llm.bedrock_bearer_token` becomes `LOOM_LLM_BEDROCK_BEARER_TOKEN`). The variables below set the `llm.*` credential and endpoint keys of `looms serve`. They are separate from the provider-native variables above (`ANTHROPIC_API_KEY`, `AWS_BEARER_TOKEN_BEDROCK`, ...), which the provider clients and SDKs read on their own.
+
+**Credentials** (keyring key in brackets; `looms config set-key <key>` stores it):
+
+| Variable | Config key | Keyring key |
+|---|---|---|
+| `LOOM_LLM_ANTHROPIC_API_KEY` | `llm.anthropic_api_key` | `anthropic_api_key` |
+| `LOOM_LLM_BEDROCK_ACCESS_KEY_ID` | `llm.bedrock_access_key_id` | `bedrock_access_key_id` |
+| `LOOM_LLM_BEDROCK_SECRET_ACCESS_KEY` | `llm.bedrock_secret_access_key` | `bedrock_secret_access_key` |
+| `LOOM_LLM_BEDROCK_SESSION_TOKEN` | `llm.bedrock_session_token` | `bedrock_session_token` |
+| `LOOM_LLM_BEDROCK_BEARER_TOKEN` | `llm.bedrock_bearer_token` | `bedrock_bearer_token` |
+| `LOOM_LLM_OPENAI_API_KEY` | `llm.openai_api_key` | `openai_api_key` |
+| `LOOM_LLM_AZURE_OPENAI_API_KEY` | `llm.azure_openai_api_key` | `azure_openai_api_key` |
+| `LOOM_LLM_AZURE_OPENAI_ENTRA_TOKEN` | `llm.azure_openai_entra_token` | `azure_openai_entra_token` |
+| `LOOM_LLM_MISTRAL_API_KEY` | `llm.mistral_api_key` | `mistral_api_key` |
+| `LOOM_LLM_GEMINI_API_KEY` | `llm.gemini_api_key` | `gemini_api_key` |
+| `LOOM_LLM_HUGGINGFACE_TOKEN` | `llm.huggingface_token` | `huggingface_token` |
+| `LOOM_LLM_LITELLM_API_KEY` | `llm.litellm_api_key` | none |
+
+**Endpoints and other non-secret keys:**
+
+| Variable | Config key | Accepts |
+|---|---|---|
+| `LOOM_LLM_BEDROCK_PROFILE` | `llm.bedrock_profile` | an AWS profile name |
+| `LOOM_LLM_LITELLM_ENDPOINT` | `llm.litellm_endpoint` | the LiteLLM gateway URL |
+| `LOOM_LLM_LITELLM_MODEL` | `llm.litellm_model` | the gateway model name |
+| `LOOM_LLM_LITELLM_EXTRA_HEADERS` | `llm.litellm_extra_headers` | see below |
+
+**Precedence:** explicit flag > environment variable > config file > keyring. The keyring is read only for a credential that is still empty after the others are loaded, so an exported `LOOM_LLM_*` variable wins over a keyring entry for the same key.
+
+#### LOOM_LLM_LITELLM_EXTRA_HEADERS
+
+Extra HTTP headers sent with every LiteLLM request. Two formats are accepted:
+
+```bash
+# Comma-separated key=value pairs, split on the first '=' (values may contain '=')
+export LOOM_LLM_LITELLM_EXTRA_HEADERS='X-Team=research,X-Trace=abc'
+
+# A JSON object of strings (use this when a value contains a comma)
+export LOOM_LLM_LITELLM_EXTRA_HEADERS='{"X-Team":"a,b","X-Trace":"abc"}'
+```
+
+An empty value means no headers. When the variable is set it replaces `llm.litellm_extra_headers` from the config file; the two are not merged.
+
+**A malformed value stops `looms serve` at startup** (for example `Authorization: Bearer ...`, with a colon instead of `=`). The error reads `failed to unmarshal config (check LOOM_LLM_LITELLM_EXTRA_HEADERS)` and names the config key and the entry's position (`entry 1 of 1 is not key=value`), or the byte offset of a JSON syntax error. It never includes the value or any part of it, because header values are often credentials.
+
+---
+
 ## AWS Credentials
 
 These environment variables are used for AWS Bedrock authentication and other AWS services.
@@ -716,6 +769,8 @@ export OTEL_SERVICE_NAME=my-agent
 ---
 
 ## Web Search Tools
+
+`looms serve` also reads the web-search keys from `LOOM_TOOLS_WEB_SEARCH_BRAVE_API_KEY`, `LOOM_TOOLS_WEB_SEARCH_TAVILY_API_KEY` and `LOOM_TOOLS_WEB_SEARCH_SERPAPI_KEY` (config keys `tools.web_search.brave_api_key`, `tools.web_search.tavily_api_key`, `tools.web_search.serpapi_key`; keyring keys `brave_search_api_key`, `tavily_api_key`, `serpapi_key`). The same precedence applies: an exported variable wins over the keyring. When one of them is set, `looms serve` exports it to the tool as `BRAVE_API_KEY`, `TAVILY_API_KEY` or `SERPAPI_KEY`, replacing any value already in that variable.
 
 ### TAVILY_API_KEY
 **Used in:** `pkg/shuttle/builtin/web_search.go`
