@@ -104,7 +104,7 @@ graph — test-only and build-time modules are not distributed and are excluded.
 | `github.com/pkoukk/tiktoken-go-loader` | `v0.0.2` |
 | `github.com/r3labs/sse/v2` | `v2.10.0` |
 | `github.com/remyoudompheng/bigfft` | `v0.0.0-20230129092748-24d4a6f8daec` |
-| `github.com/richardlehane/mscfb` | `v1.0.7` |
+| `github.com/richardlehane/mscfb` | `v1.0.9` |
 | `github.com/richardlehane/msoleps` | `v1.0.6` |
 | `github.com/rivo/uniseg` | `v0.4.7` |
 | `github.com/robfig/cron/v3` | `v3.0.1` |
@@ -131,8 +131,8 @@ graph — test-only and build-time modules are not distributed and are excluded.
 | `github.com/xeipuuv/gojsonreference` | `v0.0.0-20180127040603-bd5ef7bd5415` |
 | `github.com/xeipuuv/gojsonschema` | `v1.2.0` |
 | `github.com/xo/terminfo` | `v1.0.0` |
-| `github.com/xuri/efp` | `v0.0.1` |
-| `github.com/xuri/excelize/v2` | `v2.11.0` |
+| `github.com/xuri/efp` | `v0.0.3-0.20260924042702-217b81952dec` |
+| `github.com/xuri/excelize/v2` | `v2.11.1` |
 | `github.com/xuri/nfp` | `v0.0.2-0.20250530014748-2ddeb826f9a9` |
 | `github.com/zalando/go-keyring` | `v0.2.8` |
 | `github.com/zalando/go-keyring/internal/shellescape` | `v0.2.8` |
@@ -150,9 +150,9 @@ graph — test-only and build-time modules are not distributed and are excluded.
 | `go.yaml.in/yaml/v3` | `v3.0.5` |
 | `go.yaml.in/yaml/v4` | `v4.0.0-rc.2` |
 | `golang.org/x/crypto` | `v0.58.0` |
-| `golang.org/x/image` | `v0.41.0` |
+| `golang.org/x/image` | `v0.45.0` |
 | `golang.org/x/mod` | `v0.42.0` |
-| `golang.org/x/net` | `v0.61.0` |
+| `golang.org/x/net` | `v0.62.0` |
 | `golang.org/x/sync` | `v0.24.0` |
 | `golang.org/x/sys` | `v0.49.0` |
 | `golang.org/x/term` | `v0.47.0` |
@@ -5432,7 +5432,7 @@ SOFTWARE.
 ```
 BSD 3-Clause License
 
-Copyright (c) 2017 - 2025 Ri Xu All rights reserved.
+Copyright (c) 2017 - 2026 Ri Xu All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are met:
