@@ -1,6 +1,6 @@
 # golua (vendored, patched)
 
-This directory holds a copy of the Lua 5.4 interpreter
+This directory holds a copy of the Lua 5.5 interpreter
 [`github.com/arnodel/golua`](https://github.com/arnodel/golua), Apache-2.0 (see
 `LICENSE`), used only by `pkg/luasandbox`. It is not a loom API: import
 `pkg/luasandbox`, not these packages.
@@ -8,30 +8,34 @@ This directory holds a copy of the Lua 5.4 interpreter
 | | |
 |---|---|
 | Upstream | `arnodel/golua` branch `lua5.5`, commit `a129ef2` (tag `v0.3.0`) |
-| Patched source | [`ilsiepotamus/golua`](https://github.com/ilsiepotamus/golua) branch `combined/sandbox-hardening`, commit `c2d4961`, plus the four changes marked "loom-only" below |
+| Patched source | [`ilsiepotamus/golua`](https://github.com/ilsiepotamus/golua) branch `combined/sandbox-hardening`, commit `c2d4961`, plus the six changes marked "loom-only" below |
 | Packages copied | the 20 packages `pkg/luasandbox` needs, non-test files only, imports rewritten to this path |
 
 ## Why it is vendored
 
 `pkg/luasandbox` runs untrusted scripts inside a shared server process. Building it
 turned up defects in golua that an embedder cannot work around safely from outside.
-Each fix is proposed upstream; once upstream releases them, this copy can be replaced
-by the module again.
+Upstream status (checked 2026-11-05): arnodel/golua merged #130, #131, #132, #134, #135,
+#136 and #138 on 2026-10-11 and released them in v0.4.0. #133 (`Interrupt`) is still
+open. The six loom-only changes are not yet proposed. This copy is still based on
+v0.3.0; once upstream has released every change, it can be replaced by the module again.
 
 | Change | Upstream PR | Files |
 |---|---|---|
-| `string.format("%p")` without an argument panicked; it now returns an error | [#130](https://github.com/arnodel/golua/pull/130) | `lib/stringlib/format.go` |
-| `base.Load` wrote shared function flags on every runtime: a data race between concurrent runtimes | [#131](https://github.com/arnodel/golua/pull/131) | `lib/base/base.go`, `lib/base/ipairs.go` |
-| Metamethods the VM calls directly recursed on the Go stack without limit and aborted the process; nested loops are now limited to 1000 (a catchable "stack overflow") | [#132](https://github.com/arnodel/golua/pull/132) | `runtime/thread.go` |
-| `Interrupt` stops a running context from another goroutine; `PopContext` restores the parent before charging it | [#133](https://github.com/arnodel/golua/pull/133) | `runtime/interrupt.go` (new), `runtime/runtimecontext.go`, `runtime/runtimecontextmanager.go`, `runtime/runtimecontextmanager_noquotas.go` |
-| Deeply nested source exhausted the Go stack in the parser and compiler; nesting is now limited to 400 levels ("too many syntax levels") | [#134](https://github.com/arnodel/golua/pull/134) | `parsing/parser.go` |
-| Tables were charged 8% to 29% of what they allocate; they are now charged what they allocate (within about 10%) | [#135](https://github.com/arnodel/golua/pull/135) | `runtime/table.go`, `runtime/hashtable.go`, `runtime/luacont.go` |
-| 64-bit Lua integers were narrowed to `int` with a plain conversion, which wraps where `int` is 32 bits: wrong positions, miscompiled literals and two panics on linux/386. They now saturate (`runtime.ClampToInt`) or are compared in `int64`; `math.ldexp` no longer overflows near `math.MaxInt` on any platform; already-correct narrowings put the bound check next to the conversion | [#136](https://github.com/arnodel/golua/pull/136) | `runtime/numconv.go`, `runtime/hashtable.go`, `code/instructions.go`, `ircomp/compinstr.go`, `ast/string.go`, `lib/base/error.go`, `lib/base/select.go`, `lib/mathlib/mathlib.go`, `lib/stringlib/{format,matching,packer,packing,stringlib}.go`, `lib/tablelib/tablelib.go`, `lib/utf8lib/utf8lib.go` |
-| The AST tree dump (`HWrite`) passed `Name`/`NameAttrib` structs to `%s` and used names as format strings, printing struct dumps such as `{{%!s(*token.Pos=<nil>) …} c}` instead of `c <const>`; `go vet`'s printf check (module `go` ≥ 1.24) reports all eight sites, so `go test` refused to build the package here | [#138](https://github.com/arnodel/golua/pull/138) | `ast/{forstat,function,functioncall,globalstat,gotostat,localstat,name}.go` |
+| `string.format("%p")` without an argument panicked; it now returns an error | [#130](https://github.com/arnodel/golua/pull/130), merged, in v0.4.0 | `lib/stringlib/format.go` |
+| `base.Load` wrote shared function flags on every runtime: a data race between concurrent runtimes | [#131](https://github.com/arnodel/golua/pull/131), merged, in v0.4.0 | `lib/base/base.go`, `lib/base/ipairs.go` |
+| Metamethods the VM calls directly recursed on the Go stack without limit and aborted the process; nested loops are now limited to 1000 (a catchable "stack overflow") | [#132](https://github.com/arnodel/golua/pull/132), merged, in v0.4.0 | `runtime/thread.go` |
+| `Interrupt` stops a running context from another goroutine; `PopContext` restores the parent before charging it | [#133](https://github.com/arnodel/golua/pull/133), open | `runtime/interrupt.go` (new), `runtime/runtimecontext.go`, `runtime/runtimecontextmanager.go`, `runtime/runtimecontextmanager_noquotas.go` |
+| Deeply nested source exhausted the Go stack in the parser and compiler; nesting is now limited to 400 levels ("too many syntax levels") | [#134](https://github.com/arnodel/golua/pull/134), merged, in v0.4.0 | `parsing/parser.go` |
+| Tables were charged 8% to 29% of what they allocate; they are now charged what they allocate (within about 10%) | [#135](https://github.com/arnodel/golua/pull/135), merged, in v0.4.0 | `runtime/table.go`, `runtime/hashtable.go`, `runtime/luacont.go` |
+| 64-bit Lua integers were narrowed to `int` with a plain conversion, which wraps where `int` is 32 bits: wrong positions, miscompiled literals and two panics on linux/386. They now saturate (`runtime.ClampToInt`) or are compared in `int64`; `math.ldexp` no longer overflows near `math.MaxInt` on any platform; already-correct narrowings put the bound check next to the conversion | [#136](https://github.com/arnodel/golua/pull/136), merged, in v0.4.0 | `runtime/numconv.go`, `runtime/hashtable.go`, `code/instructions.go`, `ircomp/compinstr.go`, `ast/string.go`, `lib/base/error.go`, `lib/base/select.go`, `lib/mathlib/mathlib.go`, `lib/stringlib/{format,matching,packer,packing,stringlib}.go`, `lib/tablelib/tablelib.go`, `lib/utf8lib/utf8lib.go` |
+| The AST tree dump (`HWrite`) passed `Name`/`NameAttrib` structs to `%s` and used names as format strings, printing struct dumps such as `{{%!s(*token.Pos=<nil>) …} c}` instead of `c <const>`; `go vet`'s printf check (module `go` ≥ 1.24) reports all eight sites, so `go test` refused to build the package here | [#138](https://github.com/arnodel/golua/pull/138), merged, in v0.4.0 | `ast/{forstat,function,functioncall,globalstat,gotostat,localstat,name}.go` |
 | Named vararg tables (`function f(... xs)`) were not charged at all, and `table.create` skipped its header charge under a memory quota | not yet proposed; loom-only until it is in the fork | `runtime/varargtable.go`, `runtime/luacont.go`, `lib/tablelib/tablelib.go` |
 | `string.match` with a start past the end reached the anchored matcher, which sliced out of range (a Go panic); it now returns no match, as reference Lua does | not yet proposed; loom-only until it is in the fork | `lib/stringlib/matching.go` |
 | Scanning, parsing and compiling checked no limit, so a large source compiled to the end however short the deadline. The scanner (`WithPoll`), the AST compiler (`CompileLuaChunkWithPoll`) and the IR compiler (`ConstantCompiler.SetPoll`) now call a poll function every 256 tokens, nodes or instructions; the runtime passes one that terminates the current context when its `Interrupt` has fired, it is hard-stopped or it is past its time limit, and the parse functions re-raise that termination instead of reporting it as a syntax error | not yet proposed; loom-only until it is in the fork | `scanner/scanner.go`, `astcomp/{astcomp,compexp,compstat}.go`, `ircomp/ircomp.go`, `runtime/lib.go`, `runtime/runtimecontextmanager.go`, `runtime/runtimecontextmanager_noquotas.go` |
 | A string pattern match ran in Go with the whole remaining CPU budget and checked neither the `Interrupt` nor the time limit until it returned, so a backtracking pattern (`string.find(string.rep("a", 60), "a*a*a*a*a*a*b")` takes about 3.5 s) outlasted both a short deadline and a cancel. The matcher now calls a poll function every 1024 steps; `find`, `match`, `gmatch` and `gsub` pass the new `Runtime.PollStop`, which terminates the current context as the compile poll does. `Match` and `MatchFromStart` also re-raise panics other than an exhausted budget, which they used to swallow | not yet proposed; loom-only until it is in the fork | `lib/stringlib/pattern/{matcher,pattern}.go`, `lib/stringlib/matching.go`, `runtime/lib.go` |
+| `string.rep(s, n, sep)` with `s` and `sep` both empty has a result of size 0, so the memory charge saw nothing, and it then looped n times in Go with no CPU charge and no `Interrupt` poll: `string.rep("", 2^62, "")` did not return within 3 s against a 300 ms wall or a cancel at 100 ms, and would run for centuries. It now returns `""` at once, as reference Lua does | not yet proposed; loom-only until it is in the fork | `lib/stringlib/stringlib.go` |
+| Expanding a named vararg table (`...` after `function f(... xs)`) whose `n` is larger than its array part built `n` values with `make` and `n` reads, uncharged, and a script controls `n` up to 2^30 - 1. With a 32 MiB budget and `xs.n = 1 << 24`, passing `...` to a call grew the heap by 384 MiB before the memory limit fired, and `{...}` ran to completion. The expansion now charges `n` values of memory and `n` CPU before it allocates | not yet proposed; loom-only until it is in the fork | `runtime/varargtable.go`, `runtime/luacont.go` |
 
 Every modified file starts with a "Modified for loom" notice. No other file differs
 from upstream except for the rewritten import paths.

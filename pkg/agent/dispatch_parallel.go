@@ -145,25 +145,49 @@ func (a *Agent) groupIneligibility(name string) string {
 }
 
 // dispatchGroup runs one group and returns how many calls it consumed.
+//
+// Preparation stops at the first member that cannot run: a lost session lease
+// (no row) or a failed intent record. The members prepared before it still
+// run and settle. That matches the sequential path, which never checks the
+// lease between a call's intent and its run: a call whose intent is recorded
+// is always run and settled. Skipping them after a lease loss would not save
+// the operator any gaps, since their result writes use the same cancelled
+// context either way.
+//
+// A member whose intent failed settles last, after the members before it, so
+// its error row still lands in call order. Resume credits rows to calls in
+// order within a ToolUseID (locateParkedBatch), and Gemini (whose IDs are
+// function names) and Ollama (no IDs) pair results with calls by order.
 func (a *Agent) dispatchGroup(ctx Context, session *Session, calls []ToolCall, first int, st *batchState) int {
 	consumed := len(calls)
 	pcs := make([]*preparedCall, 0, len(calls))
+	var unrecorded *preparedCall
 	for j, c := range calls {
 		pc, finished := a.prepareCall(ctx, session, c, first+j, st)
-		// Unreachable by construction: parallelGroupLen's caps and dedup
-		// checks mean no member can hit prepareCall's cap or dedup row. If it
-		// ever fires, that row is already committed before the members
-		// prepared above settle, so row order for this batch is not
-		// guaranteed.
+		// The cap and dedup rows are unreachable by construction:
+		// parallelGroupLen's caps and dedup checks mean no member can hit
+		// them, so finished here means the lease was lost.
 		if finished {
+			consumed = j + 1
+			break
+		}
+		if pc.intentErr != nil {
+			unrecorded = pc
 			consumed = j + 1
 			break
 		}
 		pcs = append(pcs, pc)
 	}
-	for _, pc := range pcs {
+	// group_size counts every member prepared together, including one whose
+	// intent failed: it was dispatched as part of this group even though it
+	// does not run.
+	members := pcs
+	if unrecorded != nil {
+		members = append(members[:len(members):len(members)], unrecorded)
+	}
+	for _, pc := range members {
 		pc.toolSpan.SetAttribute("dispatch.parallel", true)
-		pc.toolSpan.SetAttribute("dispatch.group_size", len(pcs))
+		pc.toolSpan.SetAttribute("dispatch.group_size", len(members))
 	}
 
 	results := make([]*shuttle.Result, len(pcs))
@@ -191,6 +215,9 @@ func (a *Agent) dispatchGroup(ctx Context, session *Session, calls []ToolCall, f
 
 	for j, pc := range pcs {
 		a.settleCall(ctx, session, pc, st, results[j], errs[j])
+	}
+	if unrecorded != nil {
+		a.settleCall(ctx, session, unrecorded, st, nil, nil)
 	}
 	return consumed
 }

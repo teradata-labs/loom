@@ -24,7 +24,7 @@ type Program struct {
 	// Name is the chunk name shown in error messages ("inline" or a saved
 	// script's name). Empty means "inline".
 	Name string
-	// Source is the Lua 5.4 source text.
+	// Source is the Lua 5.5 source text.
 	Source string
 	// Args becomes the Lua global table `args`. Values must be
 	// JSON-compatible; anything else is converted through encoding/json.

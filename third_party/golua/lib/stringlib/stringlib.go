@@ -1,4 +1,5 @@
-// Modified for loom, 2026: positions and string.rep counts saturate instead of wrapping where int is 32 bits (golua PR #136).
+// Modified for loom, 2026: positions and string.rep counts saturate instead of wrapping where int is 32 bits (golua PR #136);
+// string.rep returns "" at once when the result is empty.
 // See third_party/golua/README.md for the list of changes from upstream.
 
 package stringlib
@@ -212,6 +213,12 @@ func rep(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 	sz := sz1 + sz2
 	if sz1/n != len(s) || sz2/(n-1) != len(sep) || sz < 0 {
 		return nil, errors.New("rep causes overflow")
+	}
+	if sz == 0 {
+		// Both strings are empty. The memory charge below would see 0 bytes
+		// and the loop would run n times with no CPU charge and no interrupt
+		// poll, so a huge n would never end. Reference Lua returns "" here.
+		return c.PushingNext1(t.Runtime, rt.StringValue("")), nil
 	}
 	t.RequireBytes(n*len(s) + (n-1)*len(sep))
 	builder.Grow(sz)

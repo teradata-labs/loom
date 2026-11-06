@@ -5,7 +5,9 @@ builtin `run_lua` tool (`pkg/agent`), off by default (`tools.lua.enabled`). 📋
 saved scripts (`manage_lua_scripts`, `lua_<name>` tools). Design and rationale:
 [architecture/lua-script-engine.md](../architecture/lua-script-engine.md).
 
-**Interpreter**: `github.com/arnodel/golua` v0.3.0, Lua 5.4.
+**Interpreter**: `github.com/arnodel/golua` v0.3.0 (vendored), Lua 5.5. `_VERSION` is
+`"Golua 5.5"`, and Lua 5.5 syntax is accepted, such as `global` declarations and named
+varargs (`function f(... xs)`).
 
 ---
 
