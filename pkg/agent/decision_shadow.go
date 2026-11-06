@@ -329,7 +329,7 @@ func (a *Agent) liveDecide(ctx context.Context, sessionID string, req *loomv1.De
 	budget := decision.Budget(a.decisionRouter.Decider(), len(req.Questions), liveDecidePerWave, maxLiveDecideBudget)
 	liveCtx, cancel := context.WithTimeout(decision.WithSessionID(ctx, sessionID), budget)
 	defer cancel()
-	return a.decisionRouter.Decide(liveCtx, req)
+	return a.decisionRouter.DecideLive(liveCtx, req)
 }
 
 // rerankRequest builds the recall rerank request for a candidate list.
@@ -547,7 +547,7 @@ func (a *Agent) liveExtractGate(ctx context.Context, sessionID, window string) (
 	budget := decision.Budget(a.decisionRouter.Decider(), len(req.Questions), liveDecidePerWave, maxLiveDecideBudget)
 	liveCtx, cancel := context.WithTimeout(decision.WithSessionID(ctx, sessionID), budget)
 	defer cancel()
-	out = a.decisionRouter.Decide(liveCtx, req)
+	out = a.decisionRouter.DecideLive(liveCtx, req)
 	return req, out, out.Act()
 }
 

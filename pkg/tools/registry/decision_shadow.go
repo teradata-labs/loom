@@ -219,7 +219,7 @@ func (d *searchDecision) liveRerank(ctx context.Context, logger *zap.Logger, que
 	budget := decision.Budget(d.router.Decider(), len(req.Questions), liveDecidePerWave, maxLiveDecideBudget)
 	liveCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
-	out = d.router.Decide(liveCtx, req)
+	out = d.router.DecideLive(liveCtx, req)
 	if !out.Act() {
 		return nil, false, req, out, nil
 	}

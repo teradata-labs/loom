@@ -135,7 +135,7 @@ func (r *Router) liveRoute(ctx context.Context, sessionID, message string, node 
 	budget := decision.Budget(d.router.Decider(), len(req.Questions), routeLivePerWave, routeMaxLiveBudget)
 	liveCtx, cancel := context.WithTimeout(decision.WithSessionID(ctx, sessionID), budget)
 	defer cancel()
-	out = d.router.Decide(liveCtx, req)
+	out = d.router.DecideLive(liveCtx, req)
 	if !out.Act() {
 		return sel, false, req, out
 	}

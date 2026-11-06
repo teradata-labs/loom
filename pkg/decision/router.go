@@ -141,6 +141,10 @@ type Router struct {
 	bands map[string]Band
 
 	budget *budget
+
+	// liveWarn rate limits DecideLive's error warnings; nil uses the
+	// process-wide defaultLiveErrorWarner. Tests set their own.
+	liveWarn *liveErrorWarner
 }
 
 // RouterOption configures a Router.
