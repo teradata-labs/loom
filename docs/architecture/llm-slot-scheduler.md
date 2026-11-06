@@ -122,7 +122,9 @@ its execution arm (pacing within a grant, retrying throttles within a grant).
 When the limiter's retries do not clear a throttle, the agent waits it out at
 the call level (`throttlePatience` in `pkg/agent/llm_retry.go`): it waits the
 longer of the retry-after hint and a 2 s→60 s step, then calls again, up to a
-10-minute budget of wait time. That wait also happens inside the grant.
+10-minute wall-clock budget measured from the first throttled call. The budget
+covers the waits and the re-invoked calls with the limiter's retries inside
+them. That wait also happens inside the grant.
 
 The correct mental model is an **I/O scheduler** (deadline/elevator), not an
 interrupt controller in the strict sense: the scarce resource is
@@ -147,8 +149,8 @@ slot per conversation (the conversation loop is sequential anyway).
 Grant lifetime: a slot covers one LLM call *including its throttle retries*,
 both the limiter's in-grant retries and the agent-level throttle waits. The
 grant is released only when the call returns, so a throttled call holds its
-slot for the whole wait (10 minutes of wait time at most, plus the time of the
-re-invoked calls). This is a design choice: the scope is throttled, so a slot
+slot for the whole wait (10 minutes of wall-clock time at most, plus the one
+re-invoked call that can start before the budget is reached). This is a design choice: the scope is throttled, so a slot
 given to another waiter would most likely get a 429 too, and the throttle has
 already halved the scope's ceiling.
 The grant carries a token reservation (§3.4); the reservation is trued-up from
@@ -335,7 +337,7 @@ YAML). The scheduler consumes it; it does not replace it.
 | `runConversationLoop` | blocks synchronously on LLM call | requests slot; on `ErrParked` suspends via the session-persistence path (same shape as HITL suspend) and resumes on wake |
 | MCP handle auto-release | at conversation end | unchanged; plus *reclaimable-under-pressure* marking while parked, and handle-holding feeds `RESOURCE_HOLDER` priority |
 | `tokens_per_minute` | metrics-only, never enforced | enforced by the scheduler, reservation-aware, header-calibrated |
-| 429 handling | in-grant blind exponential backoff (working as of PR #350) | in-grant retry with `Retry-After`-scheduled wake; storm collapses admission ceiling; a throttle that outlasts the limiter's retries is waited out at the agent level (retry-after or 2 s→60 s steps, 10-minute wait budget), still inside the grant |
+| 429 handling | in-grant blind exponential backoff (working as of PR #350) | in-grant retry with `Retry-After`-scheduled wake; storm collapses admission ceiling; a throttle that outlasts the limiter's retries is waited out at the agent level (retry-after or 2 s→60 s steps, 10-minute wall-clock budget), still inside the grant |
 | `loom chat` under saturation | agents die mid-flight | queued at the door with visible position/estimate, or `RESOURCE_EXHAUSTED` + retry-after |
 
 ## 6. Failure modes and invariants

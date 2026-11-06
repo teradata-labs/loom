@@ -213,14 +213,18 @@ func TestChatWithStreaming_ThrottleDoesNotKill(t *testing.T) {
 	}
 }
 
-// The patience budget is a hard stop: once cumulative throttle waiting would
-// exceed it, the throttle error surfaces instead of waiting again.
+// The patience budget is a hard stop: once the wall-clock time throttled plus
+// the next wait would exceed it, the throttle error surfaces instead of
+// waiting again.
 func TestThrottlePatienceBudget(t *testing.T) {
-	p := throttlePatience{total: throttleBudget - time.Second}
+	clk := newFakeThrottleClock()
+	p := throttlePatience{clock: clk, start: clk.Now().Add(-(throttleBudget - time.Second))}
 	ctx := newCtxDumpContext("sess-throttle-budget", observability.NewNoOpTracer(), nil)
 	err := p.wait(ctx, fmt.Errorf("API error (status 429): still throttled"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "patience budget")
+	assert.True(t, llm.IsThrottle(err), "the budget error must keep the throttle classification")
+	assert.Empty(t, clk.Sleeps(), "no wait may start once the budget is reached")
 }
 
 // An absorbed throttle must still reach the slot scheduler's AIMD seam.
@@ -273,7 +277,8 @@ func TestThrottlePatienceWait_ContextEndKeepsThrottleError(t *testing.T) {
 	cancel() // the context has already ended when the wait starts
 	ctx := &agentContext{Context: base, tracer: observability.NewNoOpTracer()}
 
-	var p throttlePatience
+	clk := newFakeThrottleClock()
+	p := throttlePatience{clock: clk}
 	err := p.wait(ctx, throttleErr)
 	require.Error(t, err)
 
@@ -281,19 +286,20 @@ func TestThrottlePatienceWait_ContextEndKeepsThrottleError(t *testing.T) {
 	assert.ErrorIs(t, err, throttleErr, "the throttle error must stay in the chain")
 	assert.Equal(t, hint, llm.RetryAfter(err), "the provider's retry-after hint must survive")
 	assert.True(t, llm.IsThrottle(err))
-	assert.Zero(t, p.total, "an interrupted wait must not count against the budget")
+	assert.Empty(t, clk.Sleeps(), "an ended context must not start a wait")
+	assert.Zero(t, p.delay, "an ended context must not advance the wait step")
 }
 
 // Each throttle wait adds one span event to the span in the call's context,
-// with the wait and the running total of throttle wait so far (this wait
-// included).
+// with the wait and the wall-clock time throttled when the wait ends.
 func TestThrottlePatienceWait_AddsSpanEvent(t *testing.T) {
 	span := &observability.Span{Name: "agent.chat"}
 	base := observability.ContextWithSpan(context.Background(), span)
 	ctx := &agentContext{Context: base, tracer: observability.NewNoOpTracer()}
 
-	// A small starting delay keeps the test fast; the doubling still applies.
-	p := throttlePatience{delay: time.Millisecond}
+	// The fake clock makes the running total exact: each wait advances it by
+	// exactly the wait. The doubling still applies.
+	p := throttlePatience{clock: newFakeThrottleClock(), delay: time.Millisecond}
 	throttleErr := fmt.Errorf("API error (status 429): rate_limit_exceeded")
 	require.NoError(t, p.wait(ctx, throttleErr))
 	require.NoError(t, p.wait(ctx, throttleErr))
@@ -318,7 +324,8 @@ func TestThrottlePatienceWait_AddsSpanEvent(t *testing.T) {
 // No span in the context: the wait still works and adds nothing.
 func TestThrottlePatienceWait_NoSpanInContext(t *testing.T) {
 	ctx := &agentContext{Context: context.Background(), tracer: observability.NewNoOpTracer()}
-	p := throttlePatience{delay: time.Millisecond}
+	clk := newFakeThrottleClock()
+	p := throttlePatience{clock: clk, delay: time.Millisecond}
 	require.NoError(t, p.wait(ctx, fmt.Errorf("API error (status 429): rate_limit_exceeded")))
-	assert.Equal(t, time.Millisecond, p.total)
+	assert.Equal(t, []time.Duration{time.Millisecond}, clk.Sleeps())
 }

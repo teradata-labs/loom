@@ -213,8 +213,9 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 	// rather than failing: disabling retry opts out of retrying FAILURES,
 	// not out of honoring provider flow control.
 	if !a.config.Retry.Enabled || a.config.Retry.MaxRetries == 0 {
-		var patience throttlePatience
+		patience := a.newThrottlePatience()
 		for {
+			patience.beginAttempt()
 			resp, err := a.llm.Chat(a.providerCtx(ctx, messages), messages, tools)
 			if err == nil || !llm.IsThrottle(err) {
 				return resp, err
@@ -226,11 +227,12 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 	}
 
 	var lastErr error
-	var patience throttlePatience
+	patience := a.newThrottlePatience()
 	delay := a.config.Retry.InitialDelay
 
 	for attempt := 0; attempt <= a.config.Retry.MaxRetries; attempt++ {
 		// Attempt LLM call
+		patience.beginAttempt()
 		response, err := a.llm.Chat(a.providerCtx(ctx, messages), messages, tools)
 		if err == nil {
 			// Success! Log if we had previous failures
@@ -241,6 +243,25 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 				)
 			}
 			return response, nil
+		}
+
+		// Throttling is flow control, not failure: it never consumes a retry
+		// attempt. Wait out the provider-stated window (or a patient default)
+		// and go again, bounded by the wall-clock patience budget and the
+		// conversation's own deadline. If the context has already ended, the
+		// wait returns at once with both errors.
+		//
+		// This check comes FIRST, before any check that makes an error final,
+		// so the rule is the same as on the retry-disabled and streaming
+		// paths: an error that is a throttle through any wrapping (a provider
+		// RateLimiter that ran out of its own retries wraps the last 429) is
+		// waited out under the budget; anything else is not.
+		if llm.IsThrottle(err) {
+			if waitErr := a.absorbThrottle(ctx, &patience, err); waitErr != nil {
+				return nil, waitErr
+			}
+			attempt--
+			continue
 		}
 
 		// A positively-identified context-too-long refusal is returned
@@ -256,18 +277,6 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("llm call failed (attempt %d/%d): %w (context cancelled)",
 				attempt+1, a.config.Retry.MaxRetries+1, err)
-		}
-
-		// Throttling is flow control, not failure: it never consumes a retry
-		// attempt. Wait out the provider-stated window (or a patient default)
-		// and go again, bounded by the patience budget and the conversation's
-		// own deadline.
-		if llm.IsThrottle(err) {
-			if waitErr := a.absorbThrottle(ctx, &patience, err); waitErr != nil {
-				return nil, waitErr
-			}
-			attempt--
-			continue
 		}
 
 		// If this is the last attempt, don't sleep
@@ -311,24 +320,76 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 
 // throttlePatience paces re-invocation against provider throttling (429 and
 // kin). Waits honor the provider-stated retry-after when the error names one,
-// escalate 2s→60s otherwise, and give up only past a total WAIT budget — a
-// throttled conversation pauses, it does not die. The budget counts the
-// sleeps only, not the time spent inside each re-invoked call (which
-// includes a provider RateLimiter's own retries), so the wall-clock stall
-// can run past it.
+// escalate 2s→60s otherwise, and give up only past a wall-clock budget — a
+// throttled conversation pauses, it does not die.
+//
+// The budget is WALL-CLOCK time since the start of the first provider
+// invocation of this LLM call that returned a throttle. It covers the
+// patience waits AND the time spent inside each re-invoked call, which
+// includes a provider RateLimiter's own retries and backoff. Before each wait
+// the agent checks elapsed + next wait against the budget, so the last
+// re-invoked call can still run after the budget is reached: the worst case
+// is the budget plus one invocation.
+//
+// The same rule holds on all three paths (retry-enabled non-streaming,
+// streaming, retry-disabled): an error that is a throttle through any
+// wrapping is waited out under the budget; any other error is not.
 type throttlePatience struct {
+	clock throttleClock
 	delay time.Duration
-	total time.Duration
+	// attemptStart is when the current provider invocation began.
+	attemptStart time.Time
+	// start is the attemptStart of the first invocation that returned a
+	// throttle; zero until then. The budget is measured from it.
+	start time.Time
 }
 
 const (
 	throttleInitialDelay = 2 * time.Second
 	throttleMaxDelay     = 60 * time.Second
-	// throttleBudget bounds total throttle waiting (sleep time only) per LLM
-	// call so a caller without a deadline cannot park forever on a hard-down
-	// provider.
+	// throttleBudget bounds the wall-clock time one LLM call can spend
+	// throttled — patience waits plus the re-invoked calls (and their
+	// RateLimiter retries) — so a caller without a deadline cannot park
+	// forever on a hard-down provider. It is measured from the start of the
+	// first throttled invocation and checked before each wait.
 	throttleBudget = 10 * time.Minute
 )
+
+// throttleClock is the time source of throttlePatience: Now for the budget,
+// After for the waits. Production uses realThrottleClock.
+type throttleClock interface {
+	Now() time.Time
+	After(d time.Duration) <-chan time.Time
+}
+
+// realThrottleClock is the wall clock.
+type realThrottleClock struct{}
+
+func (realThrottleClock) Now() time.Time                         { return time.Now() }
+func (realThrottleClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
+
+// newThrottlePatience returns the patience state for one LLM call, on the
+// agent's throttle clock (the real clock unless a test set one).
+func (a *Agent) newThrottlePatience() throttlePatience {
+	if a.throttleClock != nil {
+		return throttlePatience{clock: a.throttleClock}
+	}
+	return throttlePatience{clock: realThrottleClock{}}
+}
+
+// beginAttempt records the start of a provider invocation. Call it right
+// before each invocation, so the budget also covers the time the first
+// throttled invocation spent inside the provider (its limiter retries).
+func (p *throttlePatience) beginAttempt() {
+	p.attemptStart = p.now()
+}
+
+func (p *throttlePatience) now() time.Time {
+	if p.clock == nil {
+		p.clock = realThrottleClock{}
+	}
+	return p.clock.Now()
+}
 
 // absorbThrottle records the throttle with the slot scheduler, then waits it
 // out. The observation has to happen HERE, at absorption: chatWithRetry's
@@ -345,7 +406,21 @@ func (a *Agent) absorbThrottle(ctx Context, p *throttlePatience, err error) erro
 	return p.wait(ctx, err)
 }
 
+// wait waits out one throttle, or returns the error that ends the call: the
+// throttle error once elapsed + the next wait would pass throttleBudget, or
+// the throttle error joined with the context error if ctx ends first.
 func (p *throttlePatience) wait(ctx Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fmt.Errorf("llm throttled and context ended before wait: %w: %w", err, ctxErr)
+	}
+	now := p.now()
+	if p.start.IsZero() {
+		p.start = p.attemptStart
+		if p.start.IsZero() {
+			p.start = now
+		}
+	}
+	elapsed := now.Sub(p.start)
 	if p.delay == 0 {
 		p.delay = throttleInitialDelay
 	}
@@ -353,21 +428,23 @@ func (p *throttlePatience) wait(ctx Context, err error) error {
 	if hint := llm.RetryAfter(err); hint > wait {
 		wait = hint
 	}
-	if p.total+wait > throttleBudget {
-		return fmt.Errorf("llm throttled beyond %s patience budget: %w", throttleBudget, err)
+	if elapsed+wait > throttleBudget {
+		return fmt.Errorf("llm throttled for %s; the next %s wait would pass the %s patience budget: %w",
+			elapsed, wait, throttleBudget, err)
 	}
 	zap.L().Warn("llm throttled; conversation paused, not failed",
 		zap.Duration("wait", wait),
-		zap.Duration("throttled_so_far", p.total),
+		zap.Duration("throttled_so_far", elapsed),
 		zap.Error(err),
 	)
 	// The pause can last minutes, so make it visible on the trace too: the
 	// event lands on the span already in the call's context (the agent's
 	// top-level chat span), next to the turn's other span events.
+	// throttled_total_ms is the wall-clock time throttled when this wait ends.
 	if span := observability.SpanFromContext(ctx); span != nil {
 		span.AddEvent("llm.throttle_wait", map[string]interface{}{
 			"wait_ms":            wait.Milliseconds(),
-			"throttled_total_ms": (p.total + wait).Milliseconds(),
+			"throttled_total_ms": (elapsed + wait).Milliseconds(),
 			"budget_ms":          throttleBudget.Milliseconds(),
 		})
 	}
@@ -376,9 +453,8 @@ func (p *throttlePatience) wait(ctx Context, err error) error {
 		// Wrap both: callers match the context error (errors.Is), and the
 		// throttle error keeps its classification and retry-after hint.
 		return fmt.Errorf("llm throttled and context ended during wait: %w: %w", err, ctx.Err())
-	case <-time.After(wait):
+	case <-p.clock.After(wait):
 	}
-	p.total += wait
 	p.delay *= 2
 	if p.delay > throttleMaxDelay {
 		p.delay = throttleMaxDelay
@@ -549,9 +625,10 @@ func (a *Agent) chatWithStreaming(ctx Context, messages []Message, tools []shutt
 	// previous behavior ("streaming already handles errors") returned the
 	// first 429 straight up the stack and killed the conversation. Buffered
 	// state resets per attempt so a retried stream never duplicates tokens.
-	var patience throttlePatience
+	patience := a.newThrottlePatience()
 	var resp *LLMResponse
 	for {
+		patience.beginAttempt()
 		buffer.Reset()
 		tokenCount = 0
 		ttft = 0
