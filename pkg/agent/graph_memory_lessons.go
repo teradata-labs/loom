@@ -16,7 +16,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"strings"
 	"time"
 	"unicode"
@@ -352,12 +351,14 @@ func (a *Agent) injectErrorLessons(ctx context.Context, session *types.Session, 
 	// The heading has to match what is actually below it: a delivery holding
 	// only a re-trial candidate is not a delivery of verified lessons.
 	if len(verified) > 0 {
-		sb.WriteString("[Verified Lessons — matched to the error just hit]\n")
+		sb.WriteString(a.lessonPrompt(ctx, lessonPromptHeadingErrorVerified))
 	} else {
-		sb.WriteString("[Lesson Re-trial — matched to the error just hit]\n")
+		sb.WriteString(a.lessonPrompt(ctx, lessonPromptHeadingErrorRetrial))
 	}
+	sb.WriteString("\n")
 	if len(verified) > 0 {
-		sb.WriteString("These fixes were observed to succeed on this error in prior work:\n")
+		sb.WriteString(a.lessonPrompt(ctx, lessonPromptErrorVerifiedIntro))
+		sb.WriteString("\n")
 		for _, m := range verified {
 			sb.WriteString("- ")
 			sb.WriteString(m.Content)
@@ -368,7 +369,8 @@ func (a *Agent) injectErrorLessons(ctx context.Context, session *types.Session, 
 	// would be a lie — the outcome record has it preceding failures — so it
 	// is labelled for what it is and the model is left free to ignore it.
 	if len(probation) > 0 {
-		sb.WriteString("Under re-trial (this one has preceded failures before — use only if it clearly fits):\n")
+		sb.WriteString(a.lessonPrompt(ctx, lessonPromptErrorRetrialIntro))
+		sb.WriteString("\n")
 		for _, m := range probation {
 			sb.WriteString("- ")
 			sb.WriteString(m.Content)
@@ -767,55 +769,6 @@ func sqlClass(sql string) string {
 	return verb
 }
 
-// buildLessonMiningPrompt asks for one reusable cause→fix memory per
-// verified transition. The evidence is the ledger excerpt itself, so the
-// model is describing an observed fix, never endorsing a theory.
-func buildLessonMiningPrompt(pairs []lessonPair, task string) string {
-	var sb strings.Builder
-	sb.WriteString("Each numbered item below is a CLAIMED fix from a tool-execution ledger: a tool call ")
-	sb.WriteString("that failed, the error it produced, and the later call of the same kind that stopped ")
-	sb.WriteString("erroring. Audit these claims: an error going away proves nothing about the ")
-	sb.WriteString("work being right. Name what each change did — and what it traded away.\n\n")
-	if task != "" {
-		sb.WriteString("THE CONVERSATION'S TASK (context for judging whether a fix served it — ")
-		sb.WriteString("lessons must still generalize beyond this task):\n")
-		sb.WriteString(task)
-		sb.WriteString("\n\n")
-	}
-	for i, p := range pairs {
-		fmt.Fprintf(&sb, "%d. tool: %s\n   FAILED INPUT: %s\n   ERROR: %s\n", i+1, p.Tool, p.FailingIn, p.ErrorText)
-		for _, b := range p.Intervening {
-			fmt.Fprintf(&sb, "   CALL BETWEEN FAILURE AND SUCCESS: %s\n", b)
-		}
-		fmt.Fprintf(&sb, "   SUCCEEDED INPUT: %s\n", p.SucceedsIn)
-		if p.SucceedsResult != "" {
-			fmt.Fprintf(&sb, "   SUCCEEDED RESULT: %s\n", p.SucceedsResult)
-		}
-		for _, d := range p.Downstream {
-			fmt.Fprintf(&sb, "   LATER USE OF THE SAME OBJECT: %s\n", d)
-		}
-		if len(p.ChangedFragments) > 0 {
-			fmt.Fprintf(&sb, "   OBSERVED CHANGED FRAGMENTS: %s\n", strings.Join(p.ChangedFragments, ", "))
-		}
-		sb.WriteString("\n")
-	}
-	sb.WriteString(`For each item, extract ONE memory stating the lesson in reusable, situation-independent form — one or two sentences, the cause, the change, and its trade-off; not the story. Compare the failed and succeeded inputs: the difference between them is the change. When the failed and succeeded inputs are identical or nearly identical, the change happened in the CALLS BETWEEN FAILURE AND SUCCESS — name THAT change as the lesson.
-
-State the trade-off and its applicability condition whenever the change has one. A change that silences an error by discarding or nulling data is a trade, not a free fix. Example of a clean fix: "inserting 16-digit identifiers into an INTEGER column overflows — declare such columns BIGINT". Example of a trade-off lesson: "wrapping CC_Number in a defensive CAST silences numeric overflow but NULLs unconvertible values — safe only when the column is not used as a key or in counts downstream".
-
-Judge each claim against the evidence:
-- LATER USE OF THE SAME OBJECT shows what the "fixed" object actually held afterward. Zeros, NULLs, or empty rows where the task expected data mean the change corrupted the data — record the lesson as a WARNING against that change, stating what it broke, not as a fix.
-- SUCCEEDED RESULT: a success that did no work is NOT a fix. An empty result set, zero rows inserted/affected (e.g. "activity_count":0 on an INSERT), or all-NULL values means the change silenced the error by matching nothing. Skip such items entirely.
-- Skip an item if the succeeded input does not actually address the error (e.g. it succeeded by abandoning the approach).
-
-The OBSERVED CHANGED FRAGMENTS line lists what the recovery ACTUALLY changed, computed mechanically from the ledger. The lesson MUST quote these fragments verbatim. When several fragments changed, name ALL of them in the lesson — never pick one and present it as the sole cause; the ledger cannot tell which mattered, and neither can you.
-
-Return ONLY a JSON object:
-{"entities": [], "relationships": [], "memories": [{"content": "cause, change, and trade-off", "summary": "short summary", "memory_type": "lesson", "tags": ["lesson"], "salience": 0.9, "entities": [], "event_date": "", "event_date_confidence": ""}]}
-`)
-	return sb.String()
-}
-
 // fleetLessons returns up to maxFleetLessons verified lessons matching the
 // query from the lesson partition (fleet-shared when opted in, otherwise the
 // agent's own derived one). A dedicated lane, deliberately outside the
@@ -974,7 +927,7 @@ func (a *Agent) extractLessonsAtEnd(ctx context.Context, sessionID string) {
 		llmProvider = a.compressorLLM
 	}
 	response, err := llmProvider.Chat(extractCtx, []types.Message{
-		{Role: "user", Content: buildLessonMiningPrompt(pairs, task)},
+		{Role: "user", Content: a.lessonMiningPrompt(ctx, pairs, task)},
 	}, nil)
 	if err != nil {
 		zap.L().Debug("lesson mining: LLM call failed", zap.Error(err))

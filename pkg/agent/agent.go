@@ -4327,7 +4327,8 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 
 	var sb strings.Builder
 	if len(lessons) > 0 {
-		sb.WriteString("Verified lessons from prior work (each fix was observed to succeed):\n")
+		sb.WriteString(a.lessonPrompt(ctx, lessonPromptHeadingStart))
+		sb.WriteString("\n")
 		for _, m := range lessons {
 			sb.WriteString("- ")
 			sb.WriteString(m.Content)
