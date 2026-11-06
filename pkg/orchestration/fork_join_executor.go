@@ -293,10 +293,7 @@ func (e *ForkJoinExecutor) executeAgentWithSpan(ctx context.Context, workflowID 
 func (e *ForkJoinExecutor) mergeResults(ctx context.Context, workflowID string, results []*loomv1.AgentResult) (string, error) {
 	switch e.pattern.MergeStrategy {
 	case loomv1.MergeStrategy_FIRST:
-		if len(results) > 0 {
-			return results[0].Output, nil
-		}
-		return "", nil
+		return firstSuccessfulOutput(results), nil
 
 	case loomv1.MergeStrategy_CONCATENATE:
 		var builder strings.Builder
@@ -461,4 +458,20 @@ func truncateForLog(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// firstSuccessfulOutput is the FIRST merge: the output of the first
+// configured agent that did not fail. Results are in configured order, so a
+// failed agent 0 would otherwise make its error text the workflow's answer.
+// If every agent failed, it returns the first result's output.
+func firstSuccessfulOutput(results []*loomv1.AgentResult) string {
+	for _, r := range results {
+		if r != nil && r.Metadata["error"] == "" {
+			return r.Output
+		}
+	}
+	if len(results) > 0 && results[0] != nil {
+		return results[0].Output
+	}
+	return ""
 }

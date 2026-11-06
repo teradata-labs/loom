@@ -7,6 +7,7 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -78,42 +79,42 @@ func TestFanInResultsKeepConfiguredOrder(t *testing.T) {
 	tests := []struct {
 		name     string
 		strategy loomv1.MergeStrategy
-		run      func(o *Orchestrator, agents []*agent.Agent, strategy loomv1.MergeStrategy) (*loomv1.WorkflowResult, error)
+		run      func(ctx context.Context, o *Orchestrator, agents []*agent.Agent, strategy loomv1.MergeStrategy) (*loomv1.WorkflowResult, error)
 	}{
 		{
 			name:     "fork-join concatenate",
 			strategy: loomv1.MergeStrategy_CONCATENATE,
-			run: func(o *Orchestrator, agents []*agent.Agent, s loomv1.MergeStrategy) (*loomv1.WorkflowResult, error) {
-				return o.Fork("analyze").WithAgents(agents...).Join(s).Execute(context.Background())
+			run: func(ctx context.Context, o *Orchestrator, agents []*agent.Agent, s loomv1.MergeStrategy) (*loomv1.WorkflowResult, error) {
+				return o.Fork("analyze").WithAgents(agents...).Join(s).Execute(ctx)
 			},
 		},
 		{
 			name:     "fork-join first",
 			strategy: loomv1.MergeStrategy_FIRST,
-			run: func(o *Orchestrator, agents []*agent.Agent, s loomv1.MergeStrategy) (*loomv1.WorkflowResult, error) {
-				return o.Fork("analyze").WithAgents(agents...).Join(s).Execute(context.Background())
+			run: func(ctx context.Context, o *Orchestrator, agents []*agent.Agent, s loomv1.MergeStrategy) (*loomv1.WorkflowResult, error) {
+				return o.Fork("analyze").WithAgents(agents...).Join(s).Execute(ctx)
 			},
 		},
 		{
 			name:     "parallel concatenate",
 			strategy: loomv1.MergeStrategy_CONCATENATE,
-			run: func(o *Orchestrator, agents []*agent.Agent, s loomv1.MergeStrategy) (*loomv1.WorkflowResult, error) {
+			run: func(ctx context.Context, o *Orchestrator, agents []*agent.Agent, s loomv1.MergeStrategy) (*loomv1.WorkflowResult, error) {
 				b := o.Parallel()
 				for i, ag := range agents {
 					b = b.WithTask(ag, fmt.Sprintf("task %d", i))
 				}
-				return b.WithMergeStrategy(s).Execute(context.Background())
+				return b.WithMergeStrategy(s).Execute(ctx)
 			},
 		},
 		{
 			name:     "parallel first",
 			strategy: loomv1.MergeStrategy_FIRST,
-			run: func(o *Orchestrator, agents []*agent.Agent, s loomv1.MergeStrategy) (*loomv1.WorkflowResult, error) {
+			run: func(ctx context.Context, o *Orchestrator, agents []*agent.Agent, s loomv1.MergeStrategy) (*loomv1.WorkflowResult, error) {
 				b := o.Parallel()
 				for i, ag := range agents {
 					b = b.WithTask(ag, fmt.Sprintf("task %d", i))
 				}
-				return b.WithMergeStrategy(s).Execute(context.Background())
+				return b.WithMergeStrategy(s).Execute(ctx)
 			},
 		},
 	}
@@ -126,8 +127,13 @@ func TestFanInResultsKeepConfiguredOrder(t *testing.T) {
 				LLMProvider: newMockLLMProvider("merged"),
 			})
 			agents := reverseOrderAgents(t, n)
+			// The gates chain agent i to agent i+1, so they deadlock if an
+			// LLM semaphore has fewer slots than agents. The timeout makes
+			// that a failure instead of a hang.
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
 
-			result, err := tt.run(o, agents, tt.strategy)
+			result, err := tt.run(ctx, o, agents, tt.strategy)
 			require.NoError(t, err)
 			require.Len(t, result.AgentResults, n)
 
@@ -138,6 +144,89 @@ func TestFanInResultsKeepConfiguredOrder(t *testing.T) {
 			if tt.strategy == loomv1.MergeStrategy_FIRST {
 				assert.Equal(t, "output of agent 0", result.MergedOutput, "FIRST must pick the first configured agent")
 			}
+		})
+	}
+}
+
+// failingLLMProvider fails every call.
+type failingLLMProvider struct{}
+
+func (failingLLMProvider) Chat(context.Context, []llmtypes.Message, []shuttle.Tool) (*llmtypes.LLMResponse, error) {
+	return nil, errors.New("provider unavailable")
+}
+
+func (failingLLMProvider) Name() string  { return "failing" }
+func (failingLLMProvider) Model() string { return "failing-model" }
+
+// FIRST returns the first configured agent that succeeded. A failed agent 0
+// must not make its error text the workflow's answer.
+func TestFirstMergeSkipsFailedAgents(t *testing.T) {
+	newAgents := func(t *testing.T) []*agent.Agent {
+		return []*agent.Agent{
+			createMockAgent(t, "agent0", failingLLMProvider{}),
+			createMockAgent(t, "agent1", &gatedLLMProvider{response: "output of agent 1", done: make(chan struct{})}),
+		}
+	}
+	tests := []struct {
+		name string
+		run  func(ctx context.Context, o *Orchestrator, agents []*agent.Agent) (*loomv1.WorkflowResult, error)
+	}{
+		{
+			name: "fork-join",
+			run: func(ctx context.Context, o *Orchestrator, agents []*agent.Agent) (*loomv1.WorkflowResult, error) {
+				return o.Fork("analyze").WithAgents(agents...).Join(loomv1.MergeStrategy_FIRST).Execute(ctx)
+			},
+		},
+		{
+			name: "parallel",
+			run: func(ctx context.Context, o *Orchestrator, agents []*agent.Agent) (*loomv1.WorkflowResult, error) {
+				b := o.Parallel()
+				for i, ag := range agents {
+					b = b.WithTask(ag, fmt.Sprintf("task %d", i))
+				}
+				return b.WithMergeStrategy(loomv1.MergeStrategy_FIRST).Execute(ctx)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			o := NewOrchestrator(Config{
+				Logger:      zaptest.NewLogger(t),
+				Tracer:      observability.NewNoOpTracer(),
+				LLMProvider: newMockLLMProvider("merged"),
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+
+			result, err := tt.run(ctx, o, newAgents(t))
+			require.NoError(t, err)
+			require.Len(t, result.AgentResults, 2)
+			assert.NotEmpty(t, result.AgentResults[0].Metadata["error"], "agent 0 should have failed")
+			assert.Equal(t, "output of agent 1", result.MergedOutput)
+		})
+	}
+}
+
+func TestFirstSuccessfulOutput(t *testing.T) {
+	failed := func(out string) *loomv1.AgentResult {
+		return &loomv1.AgentResult{Output: out, Metadata: map[string]string{"error": "boom"}}
+	}
+	ok := func(out string) *loomv1.AgentResult { return &loomv1.AgentResult{Output: out} }
+
+	tests := []struct {
+		name    string
+		results []*loomv1.AgentResult
+		want    string
+	}{
+		{"empty", nil, ""},
+		{"first succeeds", []*loomv1.AgentResult{ok("a"), ok("b")}, "a"},
+		{"first failed", []*loomv1.AgentResult{failed("Error: a"), ok("b")}, "b"},
+		{"nil slot skipped", []*loomv1.AgentResult{nil, ok("b")}, "b"},
+		{"all failed falls back to the first", []*loomv1.AgentResult{failed("Error: a"), failed("Error: b")}, "Error: a"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, firstSuccessfulOutput(tt.results))
 		})
 	}
 }

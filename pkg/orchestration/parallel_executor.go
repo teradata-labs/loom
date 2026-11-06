@@ -386,10 +386,7 @@ func (e *ParallelExecutor) executeTaskWithLeveling(ctx context.Context, task *lo
 func (e *ParallelExecutor) mergeResults(ctx context.Context, results []*loomv1.AgentResult) (string, error) {
 	switch e.pattern.MergeStrategy {
 	case loomv1.MergeStrategy_FIRST:
-		if len(results) > 0 {
-			return results[0].Output, nil
-		}
-		return "", nil
+		return firstSuccessfulOutput(results), nil
 
 	case loomv1.MergeStrategy_CONCATENATE:
 		var builder strings.Builder
