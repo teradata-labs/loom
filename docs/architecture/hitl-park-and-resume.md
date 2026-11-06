@@ -170,8 +170,13 @@ resume-time advertised set, so a tool registered for the session while the batch
 waited, or one recovery had removed from the requesting call, stays invisible to
 a script engine (`run_lua`). A row with no recorded projection (parked by a build
 before this field) gives its calls none, and `run_lua` refuses to run with
-`POLICY_DENIED`. Tests: `TestParkedRunLua_UsesTheRequestingCallsProjection`,
-`TestParkedRunLua_FailsClosedWithoutAProjection`.
+`POLICY_DENIED`. `ResumeSession` (crash resume) knows no projection for the
+crashed batch: it dispatches never-attempted calls with none, and a re-park from
+it records none, so the later resume takes the same no-record path. Tests:
+`TestParkedRunLua_UsesTheRequestingCallsProjection`,
+`TestParkedRunLua_FailsClosedWithoutAProjection`,
+`TestResumeSession_DispatchesWithoutAProjection`,
+`TestResumeSession_ReParkRecordsNoProjection`.
 
 ### 3.3 Claiming the decision
 

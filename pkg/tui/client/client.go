@@ -345,6 +345,22 @@ func (c *Client) DeleteSession(ctx context.Context, sessionID string) error {
 	return err
 }
 
+// ResumeSession asks the server to finish a turn of sessionID that a crash
+// interrupted (see the LoomService.ResumeSession RPC).
+func (c *Client) ResumeSession(ctx context.Context, sessionID string) (*loomv1.ResumeSessionResponse, error) {
+	return c.client.ResumeSession(ctx, &loomv1.ResumeSessionRequest{SessionId: sessionID})
+}
+
+// ResolveExecutionGap records an operator's finding for sessionID's current
+// execution gap. resultJSON is required for a SUCCEEDED outcome.
+func (c *Client) ResolveExecutionGap(ctx context.Context, sessionID string, outcome loomv1.ExecutionGapOutcome, resultJSON string) (*loomv1.ResolveExecutionGapResponse, error) {
+	return c.client.ResolveExecutionGap(ctx, &loomv1.ResolveExecutionGapRequest{
+		SessionId:  sessionID,
+		Outcome:    outcome,
+		ResultJson: resultJSON,
+	})
+}
+
 // GetConversationHistory retrieves conversation history for a session.
 func (c *Client) GetConversationHistory(ctx context.Context, sessionID string) ([]*loomv1.Message, error) {
 	req := &loomv1.GetConversationHistoryRequest{
