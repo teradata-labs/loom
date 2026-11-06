@@ -16,8 +16,8 @@ supplies. This continues the batch-first tool surface (one call doing the work o
 several) with control flow added.
 
 The engine is a thin, defensive layer over the pure-Go interpreter
-[`github.com/arnodel/golua`](https://github.com/arnodel/golua) v0.3.0 (Lua 5.4,
-Apache-2.0), vendored in `third_party/golua` with twelve fixes: eight proposed upstream and four not
+[`github.com/arnodel/golua`](https://github.com/arnodel/golua) v0.3.0 (Lua 5.5,
+Apache-2.0), vendored in `third_party/golua` with fourteen fixes: seven since merged upstream and released in v0.4.0, one still open upstream (#133) and six not
 yet proposed (see "Vendored interpreter" below). Its job is to make an untrusted script safe to run in a shared process:
 bounded in time, CPU, memory and tool calls, unable to crash or block the host, and
 unable to escape through the Lua standard library.
@@ -155,7 +155,7 @@ behaviour it relies on into a regression test.
 
 golua has no `context.Context` integration, and its stop API (`SetStopLevel`,
 `KillContext`) is unusable from another goroutine. The vendored golua adds an
-`Interrupt` (upstream PR #133): a flag any goroutine may set, checked on every CPU
+`Interrupt` (upstream PR #133, still open): a flag any goroutine may set, checked on every CPU
 charge of the context it is installed in. The engine installs one in the run's root
 context and arms it with `context.AfterFunc(runCtx, ...)`, whose goroutine only sets the
 flag. A script is therefore stopped at its next interpreter step when the caller cancels,
@@ -213,24 +213,26 @@ engine loads the base library per run. The `package` library is not loaded; `str
 Building and attacking the engine (an independent adversarial review, every finding
 reproduced in a separate process) turned up six defects in golua v0.3.0 that an embedder
 cannot fix safely from outside. A seventh came from CodeQL, once the vendored source was
-inside the repository, and an eighth from `go vet`. Review of the engine found four more
-(the last four rows). All are fixed in `third_party/golua`; the first eight are proposed
-upstream; the last four are not yet in the `ilsiepotamus/golua` fork either. When upstream releases them, the directory can be replaced by the module again.
+inside the repository, and an eighth from `go vet`. Review of the engine found six more
+(the last six rows). All are fixed in `third_party/golua`. Of the first eight, upstream merged all but #133
+and released them in v0.4.0; #133 is still open. The last six are not yet in the `ilsiepotamus/golua` fork either. When upstream has released every fix, the directory can be replaced by the module again.
 
 | Defect in v0.3.0 (measured) | Fix | Upstream PR |
 |---|---|---|
-| A metamethod the VM calls directly (`__index`/`__newindex` functions, operators, comparisons, `__len`, `__concat`, `__close`) runs in a nested interpreter loop that no depth limit counted; ten one-line self-triggering scripts each aborted the process at 1 GB of Go stack | nested loops limited to 1000, a catchable "stack overflow" (under 8 MiB of stack at the limit) | [#132](https://github.com/arnodel/golua/pull/132) |
-| Tables charged 8% to 29% of what they allocate; real memory reached 10.5 times the budget | tables charged what they allocate (91% to 100% of Go's own count) | [#135](https://github.com/arnodel/golua/pull/135) |
-| No way to stop a running script from another goroutine | `Interrupt`; `PopContext` restores the parent before charging it | [#133](https://github.com/arnodel/golua/pull/133) |
-| `base.Load` data race between concurrent runtimes | compliance declared once, at init | [#131](https://github.com/arnodel/golua/pull/131) |
-| Parser and compiler recursion unbounded | 400 syntax levels, matching the reference suite's limits test | [#134](https://github.com/arnodel/golua/pull/134) |
-| `string.format("%p")` without an argument panicked | returns an error | [#130](https://github.com/arnodel/golua/pull/130) |
-| 64-bit integers narrowed with a plain `int(n)`, which wraps where `int` is 32 bits (CodeQL reported 26 sites): on linux/386 integer literals were miscompiled, positions wrapped, and `select` and table growth panicked; on every platform `math.ldexp(2.0, math.maxinteger)` returned 0 | conversions saturate or compare in `int64`, `math.ldexp` bounds its exponent, and every narrowing has its bound check next to it; the Go tests and the reference suite pass on linux/386 | [#136](https://github.com/arnodel/golua/pull/136) |
-| The AST dump (`HWrite`) passed name structs to `%s` and used names as format strings; `go vet` refused to build the package | names rendered as text | [#138](https://github.com/arnodel/golua/pull/138) |
+| A metamethod the VM calls directly (`__index`/`__newindex` functions, operators, comparisons, `__len`, `__concat`, `__close`) runs in a nested interpreter loop that no depth limit counted; ten one-line self-triggering scripts each aborted the process at 1 GB of Go stack | nested loops limited to 1000, a catchable "stack overflow" (under 8 MiB of stack at the limit) | [#132](https://github.com/arnodel/golua/pull/132), merged, in v0.4.0 |
+| Tables charged 8% to 29% of what they allocate; real memory reached 10.5 times the budget | tables charged what they allocate (91% to 100% of Go's own count) | [#135](https://github.com/arnodel/golua/pull/135), merged, in v0.4.0 |
+| No way to stop a running script from another goroutine | `Interrupt`; `PopContext` restores the parent before charging it | [#133](https://github.com/arnodel/golua/pull/133), open |
+| `base.Load` data race between concurrent runtimes | compliance declared once, at init | [#131](https://github.com/arnodel/golua/pull/131), merged, in v0.4.0 |
+| Parser and compiler recursion unbounded | 400 syntax levels, matching the reference suite's limits test | [#134](https://github.com/arnodel/golua/pull/134), merged, in v0.4.0 |
+| `string.format("%p")` without an argument panicked | returns an error | [#130](https://github.com/arnodel/golua/pull/130), merged, in v0.4.0 |
+| 64-bit integers narrowed with a plain `int(n)`, which wraps where `int` is 32 bits (CodeQL reported 26 sites): on linux/386 integer literals were miscompiled, positions wrapped, and `select` and table growth panicked; on every platform `math.ldexp(2.0, math.maxinteger)` returned 0 | conversions saturate or compare in `int64`, `math.ldexp` bounds its exponent, and every narrowing has its bound check next to it; the Go tests and the reference suite pass on linux/386 | [#136](https://github.com/arnodel/golua/pull/136), merged, in v0.4.0 |
+| The AST dump (`HWrite`) passed name structs to `%s` and used names as format strings; `go vet` refused to build the package | names rendered as text | [#138](https://github.com/arnodel/golua/pull/138), merged, in v0.4.0 |
 | Named vararg tables (`function f(... xs)`) and `table.create` under a memory quota were not charged: 50,000 retained tables cost the same as 50,000 integers | the vararg table charges its header, array part and `n` slot; `table.create` charges its header | not yet proposed |
 | `string.match` with a start position past the end slices out of range inside the anchored matcher (a Go panic, an engine error for the run); the #136 saturation added `math.maxinteger` as a trigger | a start past the end returns no match, as in reference Lua | not yet proposed |
 | Scanning, parsing and compiling never checked a limit: at the 1 MiB source ceiling they took about 0.3 s (3.4 s under the race detector) before the first limit check, whatever the wall budget or the caller's context | the scanner, the AST compiler and the IR compiler call a poll function every 256 tokens, nodes or instructions; the runtime's poll terminates the current context when its `Interrupt` has fired, it is hard-stopped or it is past its time limit | not yet proposed |
 | A string pattern match ran in Go with the whole remaining CPU budget and checked neither the `Interrupt` nor the time limit until it returned: `string.find(string.rep("a", 60), "a*a*a*a*a*a*b")` took about 3.5 s against a 200 ms wall or a cancel at 100 ms, the same for `match`, `gmatch` and `gsub` (the time grows with about the sixth power of the subject length) | the matcher calls the runtime's poll every 1024 steps, so the match ends on time; the matcher also re-raises panics other than an exhausted budget instead of swallowing them | not yet proposed |
+| `string.rep(s, n, sep)` with `s` and `sep` both empty has a result of size 0, so the memory charge sees nothing, and then loops n times in Go with no CPU charge and no `Interrupt` poll: `string.rep("", 2^62, "")` did not return within 3 s against a 300 ms wall or a cancel at 100 ms | an empty result returns `""` at once, as in reference Lua | not yet proposed |
+| Expanding a named vararg table whose `n` is larger than its array part allocated `n` values uncharged, and a script controls `n` up to 2^30 - 1: with a 32 MiB budget and `xs.n = 1 << 24`, passing `...` to a call grew the heap by 384 MiB before the memory limit fired, and `{...}` ran to completion | the expansion charges `n` values of memory and `n` CPU before it allocates | not yet proposed |
 
 Before the fixes were in place the engine carried workarounds: function-valued
 VM metamethods were refused, capacity planning assumed 12 times the budget, and
@@ -260,7 +262,9 @@ Go stops at the first entry that cannot fit and charges CPU per entry visited, s
   call's projection: the park records the names, and the resume narrows the
   resume-time set to them, so nothing registered or re-enabled while the batch waited
   becomes visible; a parked row without the record gets no projection and the run is
-  refused (`docs/architecture/hitl-park-and-resume.md` §3.2).
+  refused (`docs/architecture/hitl-park-and-resume.md` §3.2). A crashed batch has no
+  record either: `ResumeSession` dispatches its never-attempted calls with no
+  projection, and a re-park from it records none, so `run_lua` is refused there too.
 - **Filtering.** `Policy.Visible(projection, trust)` then applies the engine's hard-deny
   list, the reserved names (`run_lua`, `manage_lua_scripts`, `lua_*`, added by the bridge
   whatever the host configured), `Deny`, `DenyForShared` for scripts the runner did not
@@ -338,6 +342,8 @@ bound.
 | Metamethod recursion is a catchable error, not a process crash | `TestMetamethodRecursionIsACatchableError` (each script aborted the process on upstream v0.3.0) |
 | Metamethods of every kind work | `TestMetamethodsWork` |
 | Cancellation stops pure computation immediately, through nested `pcall` | `TestPureComputeCancellationIsImmediate` |
+| `string.rep` with an empty string and an empty separator returns `""` at once, so even `n = 2^62` ends within the wall budget and a loop of such calls stops at a cancel | `TestBudgetsStopHostileScripts` (the `empty string.rep` subtests) |
+| Expanding a named vararg table is charged before it allocates, at both expansion sites | `TestNamedVarargExpansionIsCharged` |
 | Internal panics end the run as `engine_error`, not `host_error` | `TestInternalPanicsAreEngineErrors`, `TestFormatPWithoutArgumentIsAnError` |
 | Error text is bounded and carries no heap addresses | `TestErrorTextIsBounded` |
 | Converting a huge table fails fast | `TestConversionIsBoundedBeforeAllocating` |
@@ -367,8 +373,9 @@ per-run budget is 128 MiB (about 384 MB worst case); a 4 GiB pod runs 4 at once.
 - **No coroutines.** golua runs each coroutine on its own goroutine and suspended ones
   survive `Runtime.Close`, so the library is not loaded. (Upstream golua's coroutine
   tests also report data races under `-race`; the engine never reaches that code.)
-- **Lua 5.4 only, golua dialect.** `error` inside `pcall` prefixes a position where
-  reference Lua does not; numbers are not coerced to strings for tool names.
+- **Lua 5.5, golua dialect.** `_VERSION` is `Golua 5.5`, and Lua 5.5 syntax is accepted:
+  `global` declarations and named varargs (`function f(... xs)`). `error` inside `pcall`
+  prefixes a position where reference Lua does not; numbers are not coerced to strings for tool names.
 - **JSON nulls.** Object fields that are null are dropped; null array elements become
   `json.null` so positions survive. An empty table encodes as `{}`.
 - **YOLO counts as a guard.** loom defaults to `tools.permissions.yolo: true`, which
@@ -378,8 +385,10 @@ per-run budget is 128 MiB (about 384 MB worst case); a 4 GiB pod runs 4 at once.
 
 ## Upstream Status
 
-The first eight fixes above are open as upstream PRs #130 to #136 and #138 from the
-`ilsiepotamus/golua` fork. The last four are not yet in the fork or proposed upstream. Not proposed: `SetStopLevel(HardStop)` on a context that is not current kills it
+The first eight fixes above went upstream as PRs #130 to #136 and #138 from the
+`ilsiepotamus/golua` fork. arnodel/golua merged #130, #131, #132, #134, #135, #136 and #138
+on 2026-10-11 and released them in v0.4.0; #133 (`Interrupt`) is still open (checked
+2026-11-05). The vendored copy is still based on v0.3.0. The last six are not yet in the fork or proposed upstream. Not proposed: `SetStopLevel(HardStop)` on a context that is not current kills it
 immediately, raising the termination from the current context, so a `pcall` swallows it
 and the stopped context is left killed and current. The engine does not use
 `SetStopLevel`. Upstream's coroutine data races (above) are also not addressed.

@@ -1,4 +1,5 @@
-// Modified for loom, 2026: newVarargTable reports what it allocates so named varargs are charged.
+// Modified for loom, 2026: newVarargTable reports what it allocates so named varargs are charged;
+// expandVarargs charges the values it builds from a vararg table before allocating them.
 // See third_party/golua/README.md for the list of changes from upstream.
 
 package runtime
@@ -34,8 +35,10 @@ func newVarargTable(values []Value) (*Table, uint64) {
 // vararg *Table) into a []Value slice. For a raw slice it returns it directly.
 // For a table, it validates t.n and returns the elements t[1]..t[n].
 // When the table's underlying array is large enough, it returns a sub-slice
-// of that array to avoid allocation.
-func expandVarargs(v Value) ([]Value, error) {
+// of that array to avoid allocation. Otherwise it charges t the CPU and memory
+// for n values before it allocates them: a script controls n (up to
+// maxVarargN), so an uncharged expansion could allocate gigabytes.
+func expandVarargs(t *Thread, v Value) ([]Value, error) {
 	tbl, ok := v.TryTable()
 	if !ok {
 		return v.AsArray(), nil
@@ -50,6 +53,8 @@ func expandVarargs(v Value) ([]Value, error) {
 		return tbl.array.values[:n], nil
 	}
 	// Slow path: some elements are in the hash part, build a new slice.
+	t.RequireCPU(uint64(n))
+	t.RequireArrSize(unsafe.Sizeof(Value{}), int(n))
 	vals := make([]Value, n)
 	for i := int64(1); i <= n; i++ {
 		vals[i-1] = tbl.Get(IntValue(i))

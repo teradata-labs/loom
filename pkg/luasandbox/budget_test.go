@@ -83,6 +83,56 @@ func TestBudgetsStopHostileScripts(t *testing.T) {
 			assert.Less(t, grew, 4*lim.MemoryBytes+collectorLag, "heap grew %d MiB against a %d MiB budget", grew>>20, lim.MemoryBytes>>20)
 		})
 	}
+
+	// string.rep with an empty string and an empty separator has a result of
+	// size 0, so the memory charge sees nothing. It must return "" at once, as
+	// reference Lua does, and not loop n times in Go without charging CPU or
+	// polling the interrupt (2^62 iterations would never end). Run is called on
+	// a goroutine so that a regression fails here instead of hanging the test
+	// binary.
+	const emptyRep = `return string.rep("", 2^62, "")`
+	runBounded := func(t *testing.T, ctx context.Context, lim Limits, bound time.Duration) (*RunResult, time.Duration) {
+		t.Helper()
+		done := make(chan *RunResult, 1)
+		start := time.Now()
+		go func() { done <- Run(ctx, Program{Source: emptyRep}, lim, newFakeHost()) }()
+		select {
+		case res := <-done:
+			return res, time.Since(start)
+		case <-time.After(bound):
+			t.Fatalf("string.rep(\"\", 2^62, \"\") did not return within %v", bound)
+			return nil, 0
+		}
+	}
+	t.Run("empty string.rep within wall", func(t *testing.T) {
+		lim := small()
+		lim.CPUTicks, lim.Wall = 1<<40, 300*time.Millisecond
+		res, elapsed := runBounded(t, context.Background(), lim, slack(lim.Wall))
+		require.Equal(t, OutcomeOK, res.Outcome, res.Error)
+		assert.Equal(t, "", res.Value)
+		assert.Less(t, elapsed, slack(lim.Wall), "the run must end within its wall budget")
+	})
+	t.Run("empty string.rep in a loop stops at cancel", func(t *testing.T) {
+		// Each call is now O(1), so a loop of them is ordinary interpreted
+		// work that the interrupt stops.
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		lim := small()
+		lim.CPUTicks, lim.Wall = 1<<40, 20*time.Second
+		time.AfterFunc(100*time.Millisecond, cancel)
+		done := make(chan *RunResult, 1)
+		start := time.Now()
+		go func() {
+			done <- Run(ctx, Program{Source: `while true do string.rep("", 2^62, "") end`}, lim, newFakeHost())
+		}()
+		select {
+		case res := <-done:
+			assert.Equal(t, OutcomeCancelled, res.Outcome, res.Error)
+			assert.Less(t, time.Since(start), slack(300*time.Millisecond))
+		case <-time.After(slack(300 * time.Millisecond)):
+			t.Fatal("a cancel did not stop string.rep(\"\", 2^62, \"\")")
+		}
+	})
 }
 
 // sampleHeapPeak samples the live heap every millisecond until the returned

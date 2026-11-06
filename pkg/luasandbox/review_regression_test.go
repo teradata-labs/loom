@@ -99,6 +99,39 @@ func TestNamedVarargAndCreatedTablesAreCharged(t *testing.T) {
 	}
 }
 
+// TestNamedVarargExpansionIsCharged sets a named vararg table's n far past its
+// stored values, so expanding ... must build n values from the hash part. That
+// slice is charged before it is allocated: the run ends at the memory budget
+// and the heap stays near it. Both expansion sites are covered: passing ... to
+// a call (OpEtcId) and building a table from it (the etc table constructor).
+// n is set with 1 << 24, an integer: 2^24 is a float, which the vararg table
+// refuses ("no proper 'n'") before it expands anything.
+func TestNamedVarargExpansionIsCharged(t *testing.T) {
+	scripts := map[string]string{
+		"call":        `local function f(... xs) xs.n = 1 << 24 return select("#", ...) end return f()`,
+		"constructor": `local function f(... xs) xs.n = 1 << 24 local t = {...} return #t end return f()`,
+	}
+	for name, src := range scripts {
+		t.Run(name, func(t *testing.T) {
+			lim := small()
+			lim.MemoryBytes = 32 << 20
+			if raceEnabled {
+				lim.Wall *= 10
+			}
+			stop := sampleHeapPeak()
+			res := Run(context.Background(), Program{Source: src}, lim, newFakeHost())
+			base, peak := stop()
+			require.Equal(t, OutcomeBudgetExceeded, res.Outcome, res.Error)
+			assert.Equal(t, LimitMemory, res.Limit, res.Error)
+			// 2^24 values are 256 MiB; uncharged, the heap grew 384 MiB (12x
+			// the budget) for the call, and the constructor ran to completion. The bound matches TestBudgetsStopHostileScripts.
+			const collectorLag = 64 << 20
+			grew := peak - min(base, peak)
+			assert.Less(t, grew, 4*lim.MemoryBytes+collectorLag, "heap grew %d MiB against a %d MiB budget", grew>>20, lim.MemoryBytes>>20)
+		})
+	}
+}
+
 func TestStrictArrayConversionFitsExactly(t *testing.T) {
 	encode := func(budget int, src string) *RunResult {
 		lim := small()

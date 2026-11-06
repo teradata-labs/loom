@@ -1,5 +1,5 @@
 // Modified for loom, 2026: NEWTABLE charges the table header (golua PR #135); named vararg tables
-// charge their header and storage.
+// charge their header and storage, and expanding one charges the values it builds.
 // See third_party/golua/README.md for the list of changes from upstream.
 
 package runtime
@@ -308,7 +308,7 @@ RunLoop:
 				case code.OpEtcId:
 					cont := getReg(regs, cells, dst).AsCont()
 					var etc []Value
-					etc, err = expandVarargs(val)
+					etc, err = expandVarargs(t, val)
 					if err != nil {
 						break
 					}
@@ -463,7 +463,7 @@ RunLoop:
 			}
 		case code.Type6Pfx:
 			dst := opcode.GetA()
-			etc, etcErr := expandVarargs(getReg(regs, cells, opcode.GetB()))
+			etc, etcErr := expandVarargs(t, getReg(regs, cells, opcode.GetB()))
 			if etcErr != nil {
 				c.pc = pc
 				return nil, etcErr
