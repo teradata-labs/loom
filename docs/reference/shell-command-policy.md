@@ -16,6 +16,10 @@ The hook decides what starts. It does not contain what a started program does.
 
 Design: Teradata-PE/avmo-tera-cloud `docs/design/lua-script-tool/06-shell-command-policy.md`.
 
+## Platform support
+
+The analyzer judges paths as POSIX paths. On Windows, Go's `path/filepath` does not treat `/etc/x` as absolute, so a command such as `echo x > /etc/x` run with `shell: bash` would be allowed there, where Linux and macOS ask. On Windows the `command-policy` hook therefore refuses (Deny) every call it governs, whatever the `shell` parameter and the enforcement, with the reason `command-policy: the command policy judges POSIX paths and cannot judge commands on Windows`. The refusal happens per call: a `command-policy` binding still builds on Windows, so the server starts.
+
 ## Binding
 
 ```yaml
@@ -134,11 +138,13 @@ The hook additionally turns an **Ask into a Deny** when the call's JSON-encoded 
 
 | Parameter of the call | Verdict |
 |---|---|
-| `shell` absent, empty, `bash`, `sh`, or `default` on a host where that means bash or sh (not Windows) | the command is judged as above |
-| `shell` set to anything else (`powershell`, `cmd`, `default` on Windows), or not a string | Deny: the command is parsed as bash, so a command another shell runs cannot be judged |
+| `shell` absent, empty, `bash`, `sh`, or `default` (bash, else sh) | the command is judged as above |
+| `shell` set to anything else (`powershell`, `cmd`, `zsh`), or not a string | Deny: the command is parsed as bash, so a command another shell runs cannot be judged |
 | `env` (merged into the command's environment by `shell_execute`): a name `ExecEnvName` reports | Ask in both modes, granting the name in `Env`; the reason shows it as `NAME (env parameter)` |
 | `env`: `CDPATH` | `static`: Deny |
 | `env`: any other name, or an entry whose value is not a string (the tool ignores it) | no verdict |
+
+On Windows every call is refused before these parameters are read (see [Platform support](#platform-support)).
 
 ## Reasons
 
@@ -231,6 +237,7 @@ Each returns a `*shellpolicy.LaunchError{Name, Reason}`, or nil.
 - **Review bypasses:** the commands from the PR #430 review and the vectors found while fixing them (`bypass_test.go`), 133 commands, each run under both enforcement modes. The review's commands and the new vectors were run in bash 5.2 (macOS bash 3.2 for `.*` matching `..`, git 2.50.1 for `git grep -O`) and did the harmful thing while the analyzer allowed them; the other rows are variants of those shapes and commands that must stay allowed.
 - **Run-time checks:** a 22-case table for `CheckLaunch`, and a 14-case table for the review's argument rules.
 - **Call parameters:** `TestDecide_ShellParam` and `TestDecide_EnvParam`.
+- **Windows refusal:** `TestDecide_RefusesOnWindows` sets the OS the hook judges for, so it runs on every host: on Windows every call is refused (default, `bash`, `sh` and other shells; `static` and `runtime`; through the factory and the executor), and the same calls are judged normally on Linux and macOS. The tests that check POSIX path semantics skip on Windows.
 - **Interpreter drift:** `TestImplementedBuiltinsMatchInterpreter` fails when an interpreter upgrade implements or drops a builtin.
 - **Executor:** an end-to-end test through `BuildChainFromConfig` and the executor.
 - **Fuzzing:** `FuzzAnalyze`, which also runs in the CI fuzz job.
