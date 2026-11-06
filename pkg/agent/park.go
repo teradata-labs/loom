@@ -23,6 +23,7 @@ package agent
 // the human's decision and re-enters the conversation loop.
 
 import (
+	"encoding/json"
 	"context"
 	"encoding/json"
 	"errors"
@@ -258,8 +259,13 @@ func verifyItemBinding(hr *shuttle.HumanRequest, batch Message) error {
 			if seq != idx {
 				return ErrStaleDecision
 			}
-		case float64: // JSON round-trip through a persistent store
+		case float64: // Legacy JSON round-trip through a persistent store.
 			if int(seq) != idx {
+				return ErrStaleDecision
+			}
+		case json.Number: // Exact JSON number returned by persistent stores.
+			n, err := seq.Int64()
+			if err != nil || n != int64(idx) {
 				return ErrStaleDecision
 			}
 		}
