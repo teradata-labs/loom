@@ -22,6 +22,7 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
+	"github.com/teradata-labs/loom/pkg/eventlog"
 	"github.com/teradata-labs/loom/pkg/fabric"
 	mcpadapter "github.com/teradata-labs/loom/pkg/mcp/adapter"
 	"github.com/teradata-labs/loom/pkg/memory"
@@ -81,6 +82,16 @@ type Agent struct {
 	// hitlPark, when non-nil, enables HITL park-and-resume: a batch needing a
 	// human decision ends the turn (TurnParkedError) instead of holding it.
 	hitlPark *hitlParkConfig
+
+	// eventLog, when non-nil, enables the durable, tool-call-granularity
+	// execution log (issue #229) for crash-resumable conversation loops. Nil
+	// disables it: every write-ahead call becomes a no-op, and ResumeSession
+	// is unavailable (returns ErrEventLogDisabled).
+	eventLog eventlog.EventLogStore
+
+	// leaseTTL overrides eventlog.DefaultSessionLeaseTTL for the session lease
+	// (session_lease.go). Zero uses the default; tests set it short.
+	leaseTTL time.Duration
 
 	// resourceAwait, when non-nil (WithResourceAwait), enables resource-await
 	// park: a successful tool result carrying AwaitResource ends the turn
