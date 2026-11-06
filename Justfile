@@ -407,6 +407,12 @@ dev-full: build-server
 interop:
     go test -tags "fts5 interop" -race -run Interop ./pkg/mcp/conformance/
 
+# Offline regression tests for the LongMemEval AKS rig (no cluster, no spend)
+lme-rig-test:
+    @echo "Testing the LongMemEval rig..."
+    LME_RIG_STRICT=1 bash deploy/longmemeval/render-test.sh
+    LME_RIG_STRICT=1 bash deploy/longmemeval/slice-loop-test.sh
+
 check: proto-lint proto-format-check proto-gen-check generate-weaver fmt-check vet lint test build security interop
     @echo "✅ All checks passed! (matches GitHub CI)"
 
