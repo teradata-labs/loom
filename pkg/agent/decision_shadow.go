@@ -208,7 +208,7 @@ func (a *Agent) roleLLMForDecision(role string) LLMProvider {
 
 // sessionIDFromContext recovers the session id for a shadow row. The agent
 // stamps "session_id" onto tool-execution contexts (contextWithValue in
-// executeToolWithSelfCorrection); decision.WithSessionID is the layer's own
+// runTool); decision.WithSessionID is the layer's own
 // key. Either is accepted; "" when neither is present.
 func sessionIDFromContext(ctx context.Context) string {
 	if ctx == nil {

@@ -103,7 +103,8 @@ type Config struct {
 	// (decision.SizeHinter); <= 0 means DefaultMaxQuestionsPerRequest.
 	MaxQuestionsPerRequest int
 	// HTTPClient overrides the transport; its Timeout is ignored in favour of
-	// per-attempt contexts.
+	// per-attempt contexts. New uses a copy whose CheckRedirect never follows
+	// a redirect.
 	HTTPClient *http.Client
 }
 
@@ -152,9 +153,18 @@ func New(cfg Config) (*Client, error) {
 	if cfg.PricePerMillionInputTokens == 0 {
 		cfg.PricePerMillionInputTokens = DefaultPricePerMillionInputTokens
 	}
+	// Never follow a redirect: Go re-POSTs the body (the request state) to
+	// whatever host Location names, and the state must go only to the
+	// configured decider endpoint. A 3xx then comes back as the response and
+	// becomes a non-retryable APIError in attempt. A caller-supplied client
+	// is copied, so its own CheckRedirect is replaced only on this copy.
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = &http.Client{}
+	} else {
+		hc := *cfg.HTTPClient
+		cfg.HTTPClient = &hc
 	}
+	cfg.HTTPClient.CheckRedirect = noRedirects
 	c := &Client{
 		cfg:  cfg,
 		url:  strings.TrimRight(cfg.BaseURL, "/") + "/" + strings.TrimLeft(cfg.Path, "/"),
@@ -303,6 +313,10 @@ func (e *TransportError) Error() string { return "jev: transport: " + e.Err.Erro
 
 // Unwrap returns the underlying error.
 func (e *TransportError) Unwrap() error { return e.Err }
+
+// noRedirects is the http.Client CheckRedirect that stops at the first 3xx
+// and returns it as the response.
+func noRedirects(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
 func statusError(status int, body []byte) error {
 	return &APIError{Status: status, Body: string(body)}
