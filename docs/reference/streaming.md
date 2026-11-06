@@ -217,6 +217,10 @@ Carries information about a human-in-the-loop request when the agent needs human
 - `context_json` (string): Additional context as JSON
 - `question_id` (string): Question ID for clarification questions (used with `AnswerClarificationQuestion` RPC)
 - `options` (repeated string): Suggested options for the user (if applicable)
+- `kind` (string): How the stored request was classified at origin: `approval`, `question` or `resource`. Empty means unclassified; treat it as `question`.
+- `summary` (string): Display digest of the stored request (tool and arguments for an approval, the question text for a question)
+- `params_json` (string): The stored request's parameter map as JSON. For an in-turn approval, the held call's parameters. For a parked turn (`request_type` `parked`), an object keyed by held tool call ID whose values are the item descriptors; an approval item's descriptor carries `reason`, every asking admission hook's reason joined with `"; "`. Empty for a question.
+- `params_truncated` (bool): True when the server's size bound cut entries out of `params_json`
 
 
 #### partial_content

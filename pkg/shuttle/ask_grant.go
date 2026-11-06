@@ -46,6 +46,17 @@ func ContextWithAskGrant(ctx context.Context, g *AskGrant) context.Context {
 	return context.WithValue(ctx, askGrantKey{}, g)
 }
 
+// ContextWithoutAskGrant returns ctx with any installed grant hidden, keeping
+// every other value. Code that makes tool calls of its own while running under
+// a granted call (a script engine, for example) uses it so the grant covers
+// only the call the human approved, never the calls that call goes on to make.
+func ContextWithoutAskGrant(ctx context.Context) context.Context {
+	if AskGrantFromContext(ctx) == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, askGrantKey{}, (*AskGrant)(nil))
+}
+
 // AskGrantFromContext returns the grant installed on ctx, or nil.
 func AskGrantFromContext(ctx context.Context) *AskGrant {
 	if g, ok := ctx.Value(askGrantKey{}).(*AskGrant); ok {
