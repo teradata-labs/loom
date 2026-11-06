@@ -114,6 +114,16 @@ jobs:
         with:
           version: v2.9.0
 
+      # The only regression tests for a runner that spends real Bedrock money
+      # on multi-day runs. STRICT so a missing jq/pyyaml fails the job instead
+      # of printing SKIP and going green.
+      - name: LongMemEval rig regression tests
+        env:
+          LME_RIG_STRICT: "1"
+        run: |
+          bash deploy/longmemeval/render-test.sh
+          bash deploy/longmemeval/slice-loop-test.sh
+
   # ============================================================================
   # Job 3: Unit Tests with Race Detection
   # ============================================================================
