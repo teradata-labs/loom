@@ -150,9 +150,10 @@ Grant lifetime: a slot covers one LLM call *including its throttle retries*,
 both the limiter's in-grant retries and the agent-level throttle waits. The
 grant is released only when the call returns, so a throttled call holds its
 slot for the whole wait (10 minutes of wall-clock time at most, plus the one
-re-invoked call that can start before the budget is reached). This is a design choice: the scope is throttled, so a slot
-given to another waiter would most likely get a 429 too, and the throttle has
-already halved the scope's ceiling.
+re-invoked call that can start before the budget is reached). This is a
+design choice: the scope is throttled, so a slot given to another waiter would
+most likely get a 429 too, and the throttle has already halved the scope's
+ceiling.
 The grant carries a token reservation (§3.4); the reservation is trued-up from
 the response's actual usage when it completes.
 

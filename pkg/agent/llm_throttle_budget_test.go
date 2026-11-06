@@ -280,9 +280,10 @@ func TestThrottleExhausted_SameOnAllPaths(t *testing.T) {
 // patience re-invocation, and the provider error stays in the chain.
 //
 // The retry-disabled and streaming paths return it at once. The retry-enabled
-// path still runs its own failure retry over it (MaxRetries+1 invocations)
-// until #411 lands: #411's llm.IsRetriesExhausted check makes it final there
-// too, and wantCalls for that row becomes 1.
+// path still runs its own failure retry over these stand-in errors
+// (MaxRetries+1 invocations): only #411's typed llm.RetriesExhaustedError is
+// final there. When #411 lands, add a row with that type and wantCalls 1 for
+// retry-enabled.
 func TestNonThrottleExhausted_NeverWaitsOnAnyPath(t *testing.T) {
 	cause := errors.New("API error (status 503): upstream unavailable")
 	errs := []struct {
@@ -293,7 +294,7 @@ func TestNonThrottleExhausted_NeverWaitsOnAnyPath(t *testing.T) {
 		{name: "typed wrap", err: &exhaustedWrapError{attempts: 6, err: cause}},
 	}
 	wantCalls := map[string]int{
-		"retry-enabled":  patientRetry().MaxRetries + 1, // #411: 1
+		"retry-enabled":  patientRetry().MaxRetries + 1, // agent failure retry
 		"streaming":      1,
 		"retry-disabled": 1,
 	}
