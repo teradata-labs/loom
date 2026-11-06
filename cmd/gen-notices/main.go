@@ -76,6 +76,20 @@ var platforms = []platform{
 	{"windows", "amd64"},
 }
 
+// cgoModes are the CGO_ENABLED values the dependency set is resolved for, and
+// UNIONED across. Both are shipped: the release archives are built with cgo
+// (CGO_ENABLED=1, linking mutecomm/go-sqlcipher), and the runtime image
+// (docker/Dockerfile.runtime) is built without it (CGO_ENABLED=0, linking the
+// pure-Go modernc.org/sqlite stack). Each `go list` call pins the value rather
+// than inheriting it: an inherited CGO_ENABLED drops one of the two stacks, so
+// the generated file would depend on the caller's environment.
+var cgoModes = []string{"1", "0"}
+
+// pinnedEnvKeys are the variables goListEnv sets for every `go list` call. Any
+// inherited value for them is removed first, so the caller's environment
+// cannot change the resolved dependency set.
+var pinnedEnvKeys = []string{"GOWORK", "GOOS", "GOARCH", "CGO_ENABLED"}
+
 // ownModule is excluded: it is the work being distributed, not a third party.
 const ownModule = "github.com/teradata-labs/loom"
 
@@ -187,16 +201,29 @@ func main() {
 // collect resolves every third-party package linked into the release binaries
 // and finds the license governing each.
 func collect() ([]component, error) {
+	return collectWith(listDeps)
+}
+
+// lister resolves the packages linked into one target for one platform and
+// one CGO_ENABLED value.
+type lister func(t target, plat platform, cgo string) ([]pkgInfo, error)
+
+// collectWith unions the package lists of every target, platform and cgo mode.
+// The lister is a parameter so tests can check the union without `go list`.
+func collectWith(list lister) ([]component, error) {
 	seen := map[string]component{} // license file path → component
 	unlicensed := map[string]bool{}
 	for _, t := range targets {
 		for _, plat := range platforms {
-			pkgs, err := listDeps(t, plat)
-			if err != nil {
-				return nil, fmt.Errorf("listing deps of %s for %s/%s: %w", t.pkg, plat.goos, plat.goarch, err)
-			}
-			if err := collectPkgs(pkgs, seen, unlicensed); err != nil {
-				return nil, err
+			for _, cgo := range cgoModes {
+				pkgs, err := list(t, plat, cgo)
+				if err != nil {
+					return nil, fmt.Errorf("listing deps of %s for %s/%s CGO_ENABLED=%s: %w",
+						t.pkg, plat.goos, plat.goarch, cgo, err)
+				}
+				if err := collectPkgs(pkgs, seen, unlicensed); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
@@ -271,7 +298,26 @@ func finish(seen map[string]component, unlicensed map[string]bool) ([]component,
 	return out, nil
 }
 
-func listDeps(t target, plat platform) ([]pkgInfo, error) {
+// goListEnv returns base with every pinnedEnvKeys entry removed and the pinned
+// values for one platform and cgo mode appended.
+func goListEnv(base []string, plat platform, cgo string) []string {
+	env := make([]string, 0, len(base)+len(pinnedEnvKeys))
+	for _, kv := range base {
+		pinned := false
+		for _, k := range pinnedEnvKeys {
+			if strings.HasPrefix(kv, k+"=") {
+				pinned = true
+				break
+			}
+		}
+		if !pinned {
+			env = append(env, kv)
+		}
+	}
+	return append(env, "GOWORK=off", "GOOS="+plat.goos, "GOARCH="+plat.goarch, "CGO_ENABLED="+cgo)
+}
+
+func listDeps(t target, plat platform, cgo string) ([]pkgInfo, error) {
 	args := []string{"list", "-deps", "-json"}
 	if t.tags != "" {
 		args = append(args, "-tags", t.tags)
@@ -279,10 +325,10 @@ func listDeps(t target, plat platform) ([]pkgInfo, error) {
 	args = append(args, t.pkg)
 
 	cmd := exec.Command("go", args...)
-	// GOOS/GOARCH are pinned rather than inherited: build constraints decide
-	// which modules are linked, so an unpinned run resolves the HOST's set and
-	// makes the generated file depend on who ran it.
-	cmd.Env = append(os.Environ(), "GOWORK=off", "GOOS="+plat.goos, "GOARCH="+plat.goarch)
+	// GOOS/GOARCH/CGO_ENABLED are pinned rather than inherited: build
+	// constraints decide which modules are linked, so an unpinned run resolves
+	// the HOST's set and makes the generated file depend on who ran it.
+	cmd.Env = goListEnv(os.Environ(), plat, cgo)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {

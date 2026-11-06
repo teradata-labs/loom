@@ -17,6 +17,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -223,4 +224,100 @@ func TestGoStdlibLicense(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, text, "The Go Authors")
 	assert.Contains(t, text, "Redistribution and use in source and binary forms")
+}
+
+// TestGoListEnvPinsAmbientValues checks that goListEnv removes any inherited
+// GOWORK, GOOS, GOARCH or CGO_ENABLED and sets exactly one pinned value for
+// each, so the caller's environment cannot change what `go list` resolves.
+func TestGoListEnvPinsAmbientValues(t *testing.T) {
+	plat := platform{"linux", "amd64"}
+	want := []string{"PATH=/bin", "GOWORK=off", "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0"}
+
+	tests := []struct {
+		name string
+		base []string
+	}{
+		{"nothing set", []string{"PATH=/bin"}},
+		{"CGO_ENABLED=1", []string{"PATH=/bin", "CGO_ENABLED=1"}},
+		{"CGO_ENABLED=0", []string{"CGO_ENABLED=0", "PATH=/bin"}},
+		{"everything set", []string{"GOOS=windows", "PATH=/bin", "GOARCH=arm64", "CGO_ENABLED=1", "GOWORK=/x/go.work"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, want, goListEnv(tt.base, plat, "0"))
+		})
+	}
+}
+
+// TestGoListEnvKeepsSimilarKeys checks that only exact keys are removed: a
+// variable whose name merely starts with a pinned key is kept.
+func TestGoListEnvKeepsSimilarKeys(t *testing.T) {
+	got := goListEnv([]string{"GOOSE=1", "CGO_ENABLED_X=1"}, platform{"darwin", "arm64"}, "1")
+	assert.Equal(t, []string{"GOOSE=1", "CGO_ENABLED_X=1",
+		"GOWORK=off", "GOOS=darwin", "GOARCH=arm64", "CGO_ENABLED=1"}, got)
+}
+
+// TestCollectIndependentOfAmbientCgo checks that the generated notices are the
+// UNION of the cgo and non-cgo dependency sets, and are byte-identical whether
+// CGO_ENABLED is unset, 0 or 1 in the caller's environment. The fake lister
+// resolves through goListEnv and reads CGO_ENABLED from the env it would pass
+// to `go list`, so an inherited value that leaked through would change the
+// result.
+func TestCollectIndependentOfAmbientCgo(t *testing.T) {
+	root := t.TempDir()
+	common := fakeModule(t, root, "common", "MIT common", "")
+	cgoOnly := fakeModule(t, root, "sqlcipher", "MIT sqlcipher", "")
+	pureOnly := fakeModule(t, root, "modernc", "BSD modernc", "modernc NOTICE")
+
+	calls := map[string]int{}
+	list := func(_ target, plat platform, cgo string) ([]pkgInfo, error) {
+		env := goListEnv(os.Environ(), plat, cgo)
+		effective := ""
+		for _, kv := range env { // exec.Cmd uses the last value of a key
+			if v, ok := strings.CutPrefix(kv, "CGO_ENABLED="); ok {
+				effective = v
+			}
+		}
+		calls[effective]++
+		pkgs := []pkgInfo{pkg("example.com/common", "example.com/common", common)}
+		if effective == "1" {
+			pkgs = append(pkgs, pkg("example.com/sqlcipher", "example.com/sqlcipher", cgoOnly))
+		} else {
+			pkgs = append(pkgs, pkg("example.com/modernc", "example.com/modernc", pureOnly))
+		}
+		return pkgs, nil
+	}
+
+	render := func(t *testing.T) string {
+		t.Helper()
+		comps, err := collectWith(list)
+		require.NoError(t, err)
+		var paths []string
+		for _, c := range comps {
+			paths = append(paths, c.ImportPath)
+		}
+		assert.Equal(t, []string{"example.com/common", "example.com/modernc", "example.com/sqlcipher"}, paths,
+			"the cgo and non-cgo sets must both be attributed")
+		return string(renderThirdParty(comps, "GO LICENSE")) + string(renderNotice(comps))
+	}
+
+	var outputs []string
+	for _, ambient := range []string{"unset", "0", "1"} {
+		t.Run("CGO_ENABLED="+ambient, func(t *testing.T) {
+			if ambient == "unset" {
+				t.Setenv("CGO_ENABLED", "") // registers restore on cleanup
+				require.NoError(t, os.Unsetenv("CGO_ENABLED"))
+			} else {
+				t.Setenv("CGO_ENABLED", ambient)
+			}
+			clear(calls)
+			outputs = append(outputs, render(t))
+			perMode := len(targets) * len(platforms)
+			assert.Equal(t, map[string]int{"1": perMode, "0": perMode}, calls,
+				"every target and platform must be resolved once per cgo mode")
+		})
+	}
+	require.Len(t, outputs, 3)
+	assert.Equal(t, outputs[0], outputs[1], "CGO_ENABLED=0 must not change the output")
+	assert.Equal(t, outputs[0], outputs[2], "CGO_ENABLED=1 must not change the output")
 }
