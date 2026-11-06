@@ -41,7 +41,6 @@ type Client struct {
 	maxTokens         int
 	temperature       float64
 	rateLimiter       *llm.RateLimiter
-	toolNameMap       map[string]string // sanitized name → original name
 }
 
 // Config holds configuration for the Gemini client.
@@ -118,10 +117,10 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 
 	// Convert tools to Gemini format
 	var functionDeclarations []FunctionDeclaration
-	c.toolNameMap = make(map[string]string)
+	nameMap := make(map[string]string) // per request: the client is shared across sessions
 	if len(tools) > 0 {
 		var err error
-		functionDeclarations, err = c.convertTools(ctx, tools, c.toolNameMap)
+		functionDeclarations, err = c.convertTools(ctx, tools, nameMap)
 		if err != nil {
 			return nil, err
 		}
@@ -151,7 +150,7 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 	}
 
 	// Convert response
-	return c.convertResponse(resp), nil
+	return c.convertResponse(resp, nameMap), nil
 }
 
 // callAPI makes the HTTP request to Gemini's API.
@@ -253,7 +252,10 @@ func (c *Client) sendOnce(apiURL string, body []byte) func(context.Context) (int
 }
 
 // convertResponse converts Gemini response to agent format.
-func (c *Client) convertResponse(resp *GenerateContentResponse) *llmtypes.LLMResponse {
+// convertResponse converts a Gemini response to the agent format. nameMap is
+// this request's sanitized → original tool-name table from convertTools; nil
+// leaves function-call names as the API returned them.
+func (c *Client) convertResponse(resp *GenerateContentResponse, nameMap map[string]string) *llmtypes.LLMResponse {
 	llmResp := &llmtypes.LLMResponse{
 		Usage: llmtypes.Usage{
 			// InputTokens/TotalTokens exclude cached tokens (loom convention);
@@ -299,7 +301,7 @@ func (c *Client) convertResponse(resp *GenerateContentResponse) *llmtypes.LLMRes
 
 			if part.FunctionCall != nil {
 				llmResp.StopReason = "tool_use"
-				reversedName := llm.ReverseToolName(c.toolNameMap, part.FunctionCall.Name)
+				reversedName := llm.ReverseToolName(nameMap, part.FunctionCall.Name)
 				llmResp.ToolCalls = append(llmResp.ToolCalls, llmtypes.ToolCall{
 					ID:               reversedName, // Gemini doesn't provide call IDs
 					Name:             reversedName,
@@ -650,10 +652,10 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	// 1. Build request body (reuse existing message and tool conversion)
 	contents := convertMessages(messages)
 	var functionDeclarations []FunctionDeclaration
-	c.toolNameMap = make(map[string]string)
+	nameMap := make(map[string]string) // per request: the client is shared across sessions
 	if len(tools) > 0 {
 		var err error
-		functionDeclarations, err = c.convertTools(ctx, tools, c.toolNameMap)
+		functionDeclarations, err = c.convertTools(ctx, tools, nameMap)
 		if err != nil {
 			return nil, err
 		}
@@ -769,7 +771,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				// Extract tool calls. A function-call part never reaches
 				// tokenCallback (text only); report it as stream activity.
 				if part.FunctionCall != nil {
-					reversedName := llm.ReverseToolName(c.toolNameMap, part.FunctionCall.Name)
+					reversedName := llm.ReverseToolName(nameMap, part.FunctionCall.Name)
 					toolCalls = append(toolCalls, llmtypes.ToolCall{
 						ID:               reversedName,
 						Name:             reversedName,

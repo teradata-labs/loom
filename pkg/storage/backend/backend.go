@@ -24,6 +24,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/checkpoint"
+	"github.com/teradata-labs/loom/pkg/eventlog"
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/task"
@@ -95,6 +96,15 @@ type TaskStoreProvider interface {
 type CheckpointStoreProvider interface {
 	// CheckpointStore returns the checkpoint store, or nil if not available.
 	CheckpointStore() checkpoint.CheckpointStore
+}
+
+// EventLogProvider is an optional interface that StorageBackend implementations
+// may satisfy to provide the durable, tool-call-granularity execution log
+// (issue #229). Only backends with the execution_events migration applied
+// implement this.
+type EventLogProvider interface {
+	// EventLogStore returns the event log store, or nil if not available.
+	EventLogStore() eventlog.EventLogStore
 }
 
 // StorageBackend is the top-level composed interface for all storage operations.
