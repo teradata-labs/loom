@@ -24,14 +24,14 @@ import (
 // prompts/memory/lessons.yaml; lessonPromptFallbacks holds the same text for
 // an agent without a registry, or with a registry that lacks a key.
 const (
-	lessonPromptMiningPreamble = "memory.lesson_mining_preamble"
-	lessonPromptMiningTaskHeading = "memory.lesson_mining_task_heading"
-	lessonPromptMiningInstructions = "memory.lesson_mining_instructions"
-	lessonPromptHeadingStart = "memory.lesson_heading_conversation_start"
+	lessonPromptMiningPreamble       = "memory.lesson_mining_preamble"
+	lessonPromptMiningTaskHeading    = "memory.lesson_mining_task_heading"
+	lessonPromptMiningInstructions   = "memory.lesson_mining_instructions"
+	lessonPromptHeadingStart         = "memory.lesson_heading_conversation_start"
 	lessonPromptHeadingErrorVerified = "memory.lesson_heading_error_verified"
-	lessonPromptHeadingErrorRetrial = "memory.lesson_heading_error_retrial"
-	lessonPromptErrorVerifiedIntro = "memory.lesson_error_verified_intro"
-	lessonPromptErrorRetrialIntro = "memory.lesson_error_retrial_intro"
+	lessonPromptHeadingErrorRetrial  = "memory.lesson_heading_error_retrial"
+	lessonPromptErrorVerifiedIntro   = "memory.lesson_error_verified_intro"
+	lessonPromptErrorRetrialIntro    = "memory.lesson_error_retrial_intro"
 )
 
 // lessonPromptFallbacks is the built-in text of every lesson-lane prompt,
@@ -40,7 +40,7 @@ const (
 // trailing newline, because the registry trims its entries; callers add the
 // line breaks around them.
 var lessonPromptFallbacks = map[string]string{
-	lessonPromptMiningPreamble: "Each numbered item below is a CLAIMED fix from a tool-execution ledger: a tool call that failed, the error it produced, and the later call of the same kind that stopped erroring. Audit these claims: an error going away proves nothing about the work being right. Name what each change did — and what it traded away.",
+	lessonPromptMiningPreamble:    "Each numbered item below is a CLAIMED fix from a tool-execution ledger: a tool call that failed, the error it produced, and the later call of the same kind that stopped erroring. Audit these claims: an error going away proves nothing about the work being right. Name what each change did — and what it traded away.",
 	lessonPromptMiningTaskHeading: "THE CONVERSATION'S TASK (context for judging whether a fix served it — lessons must still generalize beyond this task):",
 	lessonPromptMiningInstructions: `For each item, extract ONE memory stating the lesson in reusable, situation-independent form — one or two sentences, the cause, the change, and its trade-off; not the story. Compare the failed and succeeded inputs: the difference between them is the change. When the failed and succeeded inputs are identical or nearly identical, the change happened in the CALLS BETWEEN FAILURE AND SUCCESS — name THAT change as the lesson.
 
@@ -55,11 +55,11 @@ The OBSERVED CHANGED FRAGMENTS line lists what the recovery ACTUALLY changed, co
 
 Return ONLY a JSON object:
 {"entities": [], "relationships": [], "memories": [{"content": "cause, change, and trade-off", "summary": "short summary", "memory_type": "lesson", "tags": ["lesson"], "salience": 0.9, "entities": [], "event_date": "", "event_date_confidence": ""}]}`,
-	lessonPromptHeadingStart: "Verified lessons from prior work (each fix was observed to succeed):",
+	lessonPromptHeadingStart:         "Verified lessons from prior work (each fix was observed to succeed):",
 	lessonPromptHeadingErrorVerified: "[Verified Lessons — matched to the error just hit]",
-	lessonPromptHeadingErrorRetrial: "[Lesson Re-trial — matched to the error just hit]",
-	lessonPromptErrorVerifiedIntro: "These fixes were observed to succeed on this error in prior work:",
-	lessonPromptErrorRetrialIntro: "Under re-trial (this one has preceded failures before — use only if it clearly fits):",
+	lessonPromptHeadingErrorRetrial:  "[Lesson Re-trial — matched to the error just hit]",
+	lessonPromptErrorVerifiedIntro:   "These fixes were observed to succeed on this error in prior work:",
+	lessonPromptErrorRetrialIntro:    "Under re-trial (this one has preceded failures before — use only if it clearly fits):",
 }
 
 // lessonPrompt returns the registry text for a lesson-lane key, or the
