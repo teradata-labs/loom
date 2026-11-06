@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -30,6 +31,9 @@ import (
 )
 
 func TestCheckLaunch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
 	opt := session(t)
 	root := opt.Roots.Read[0]
 	hosts, err := filepath.EvalSymlinks("/etc/hosts")
@@ -81,6 +85,9 @@ func TestCheckLaunch(t *testing.T) {
 }
 
 func TestCheckBuiltinOpenListDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
 	opt := session(t)
 	root := opt.Roots.Read[0]
 	pol := Readonly()

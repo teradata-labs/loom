@@ -36,6 +36,10 @@ const (
 	envParam   = "env"
 )
 
+// goos is the operating system the hook judges commands for. It is
+// runtime.GOOS; tests set it to judge as another OS would.
+var goos = runtime.GOOS
+
 // OptionsFunc supplies the working directory and roots for one call. An error
 // denies the call.
 type OptionsFunc func(req shuttle.AdmissionRequest) (Options, error)
@@ -69,6 +73,9 @@ func Decide(pol *Policy, req shuttle.AdmissionRequest, opts OptionsFunc, static 
 	if strings.TrimSpace(command) == "" {
 		return shuttle.Decision{Kind: shuttle.Deny, Reason: "command-policy: the call has no command"}
 	}
+	if why := unsupportedOS(); why != "" {
+		return shuttle.Decision{Kind: shuttle.Deny, Reason: "command-policy: " + why}
+	}
 	if why := unanalyzableShell(req.Params); why != "" {
 		return shuttle.Decision{Kind: shuttle.Deny, Reason: "command-policy: " + why}
 	}
@@ -97,6 +104,18 @@ func Decide(pol *Policy, req shuttle.AdmissionRequest, opts OptionsFunc, static 
 	}
 }
 
+// unsupportedOS returns why no call can be judged on this OS, or "": the
+// analyzer judges paths as POSIX paths through path/filepath, which on Windows
+// does not treat "/etc/x" as absolute, so a judgement there would fail open.
+// Every call is refused on Windows, whatever its shell parameter and
+// enforcement. The binding still builds, so a Windows server starts.
+func unsupportedOS() string {
+	if goos == "windows" {
+		return "the command policy judges POSIX paths and cannot judge commands on Windows"
+	}
+	return ""
+}
+
 // unanalyzableShell returns why the call's command cannot be judged, or "":
 // the policy parses commands as bash, so a call that runs the command under
 // another shell (shell_execute's "shell": powershell, cmd, or "default" on
@@ -115,7 +134,7 @@ func unanalyzableShell(params map[string]interface{}) string {
 	case "", "bash", "sh":
 		return ""
 	case "default":
-		if runtime.GOOS != "windows" {
+		if goos != "windows" {
 			return "" // bash, else sh
 		}
 	}

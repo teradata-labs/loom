@@ -18,6 +18,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -110,6 +111,9 @@ func TestAnalyze_FunctionShadowing(t *testing.T) {
 // N1: relative paths after cd resolve against every directory the command
 // can change to, and under static a cd the analyzer cannot follow is refused.
 func TestAnalyze_ChangedDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
 	runBypassCases(t, []bypassCase{
 		{cmd: `cd sub && cat ../../o/secret.txt`, want: Ask, static: Ask, why: "../../o/secret.txt (1:11): reads outside the session"},
 		{cmd: `pushd sub && cat ../../o/secret.txt`, want: Ask, static: Ask},
@@ -133,6 +137,9 @@ func TestAnalyze_ChangedDirectory(t *testing.T) {
 // N1: an inherited CDPATH sends a bare cd target to another directory. An
 // empty entry is the current directory and a relative one is relative to it.
 func TestAnalyze_InheritedCDPATH(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
 	opt, base := escapeSession(t)
 	t.Setenv("CDPATH", ":sub:"+base)
 	for _, static := range []bool{false, true} {
@@ -148,6 +155,9 @@ func TestAnalyze_InheritedCDPATH(t *testing.T) {
 // matches is path-checked, so a symlink it matches is followed. A literal ..
 // after a symlink leaves the symlink's target, as the kernel opens it.
 func TestAnalyze_GlobPaths(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
 	runBypassCases(t, []bypassCase{
 		{cmd: `cat */../../o/secret.txt`, want: Allow, static: Deny, why: "a .. after a glob"},
 		{cmd: `cat s?b/../../o/secret.txt`, want: Allow, static: Deny},
@@ -165,6 +175,9 @@ func TestAnalyze_GlobPaths(t *testing.T) {
 // A glob that matches too many names, or that bash cannot parse, cannot be
 // checked under static.
 func TestGlobExpand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
 	opt, _ := escapeSession(t)
 	w := opt.WorkingDir
 	got, err := globExpand(w, "*.txt", 10)
@@ -225,6 +238,9 @@ func TestAnalyze_AttachedOptionValues(t *testing.T) {
 // N6 and N7 at run time: the runner applies the same argument rules to each
 // launch.
 func TestCheckLaunch_ReviewBypasses(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
 	opt, base := escapeSession(t)
 	w := opt.WorkingDir
 	secret := filepath.Join(base, "o", "secret.txt")
