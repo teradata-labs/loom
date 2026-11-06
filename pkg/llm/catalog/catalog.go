@@ -1090,9 +1090,11 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 		//     bare Mantle id is a regional, single-Region endpoint, which for
 		//     Claude 4.5 and later carries a 10 percent premium over the global
 		//     endpoint (platform.claude.com/docs/en/build-with-claude/
-		//     claude-in-amazon-bedrock, "Regions"). Haiku 5.5 is the card for
-		//     prompts up to 100K tokens; above that Anthropic bills $0.50/$2.50
-		//     (× 1.10 here), which the catalog does not model.
+		//     claude-in-amazon-bedrock, "Regions"). The anthropic client that
+		//     prices these rows applies no BedrockEndpointMultiplier, so the
+		//     premium is counted once. Haiku 5.5 is the card for prompts up to
+		//     100K tokens; above that RequestPricing returns the long-context
+		//     card, $0.50/$2.50, without the premium (AWS bills $0.55/$2.75).
 		//   - Everything else: the AWS Price List API for AmazonBedrock, offer
 		//     version 20261102165015, "<id>-mantle-…-tokens-standard" SKUs
 		//     (us-west-2 and us-east-1 are identical). Standard tier only: flex,

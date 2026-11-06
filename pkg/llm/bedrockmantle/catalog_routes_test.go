@@ -15,6 +15,10 @@
 package bedrockmantle
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -63,4 +67,56 @@ func TestCatalog_DefaultModelIsCataloged(t *testing.T) {
 	require.True(t, ok, "DefaultModel %q must be priced in the catalog", DefaultModel)
 	assert.Greater(t, in, 0.0)
 	assert.Greater(t, out, 0.0)
+}
+
+// The Mantle Claude rows already include the 10% regional premium (first-party
+// card x 1.10), and Mantle prices through the anthropic client, which applies
+// no endpoint multiplier. A bare Mantle id ("anthropic.claude-…") is one that
+// catalog.BedrockEndpointMultiplier classifies as regional, so applying it on
+// this path would count the premium twice (x 1.21). This pins the cost a
+// response carries to the row: Opus 4.7 is $5.50 / $27.50 per 1M tokens, the
+// same as the bedrock client's estimate for a us. or eu. profile (card x
+// BedrockEndpointMultiplier) and 10% above a global. profile.
+func TestClaudeCost_RegionalPremiumAppliedOnce(t *testing.T) {
+	const model = "anthropic.claude-opus-4-7"
+	in, out, ok := catalog.RequestPricing(CatalogProvider, model, 1)
+	require.True(t, ok)
+	require.InDelta(t, 5.50, in, 1e-9, "Mantle Opus 4.7 input row")
+	require.InDelta(t, 27.50, out, 1e-9, "Mantle Opus 4.7 output row")
+
+	tests := []struct {
+		name          string
+		input, output int
+		want          float64
+	}{
+		{name: "1M input tokens", input: 1_000_000, want: 5.50},
+		{name: "1M output tokens", output: 1_000_000, want: 27.50},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := fmt.Sprintf(`{"id":"msg_1","type":"message","role":"assistant","model":%q,"stop_reason":"end_turn","content":[{"type":"text","text":"OK"}],"usage":{"input_tokens":%d,"output_tokens":%d,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}`, model, tt.input, tt.output)
+			srv := httptest.NewServer(newRecorder(jsonResponder(http.StatusOK, body)))
+			defer srv.Close()
+
+			c, err := NewClientForModel(Config{Endpoint: srv.URL, Region: "us-west-2", APIKey: "ABSKtest", Model: model})
+			require.NoError(t, err)
+			resp, err := c.Chat(context.Background(), userMessage("Reply OK"), nil)
+			require.NoError(t, err)
+			assert.InDelta(t, tt.want, resp.Usage.CostUSD, 1e-9, "premium counted once, not x 1.21")
+		})
+	}
+
+	// Parity with the bedrock client's formula for the same model.
+	for _, id := range []string{"us.anthropic.claude-opus-4-7-v1:0", "eu.anthropic.claude-opus-4-7-v1:0"} {
+		bIn, bOut, ok := catalog.RequestPricing("bedrock", id, 1)
+		require.True(t, ok, id)
+		m := catalog.BedrockEndpointMultiplier(id)
+		assert.InDelta(t, in, bIn*m, 1e-9, "%s input", id)
+		assert.InDelta(t, out, bOut*m, 1e-9, "%s output", id)
+	}
+	gIn, gOut, ok := catalog.RequestPricing("bedrock", "global.anthropic.claude-opus-4-7-v1:0", 1)
+	require.True(t, ok)
+	assert.InDelta(t, 1.0, catalog.BedrockEndpointMultiplier("global.anthropic.claude-opus-4-7-v1:0"), 1e-9)
+	assert.InDelta(t, in, gIn*1.10, 1e-9, "global. input is the card, 10%% below Mantle")
+	assert.InDelta(t, out, gOut*1.10, 1e-9, "global. output is the card, 10%% below Mantle")
 }
