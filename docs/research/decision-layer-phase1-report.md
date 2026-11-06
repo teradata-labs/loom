@@ -235,3 +235,18 @@ loom decision report --db <db> --site tool.failure_kind
 ```
 
 Reports as generated: `~/replay/replay-{mixed,errors,random}-report.md` on the rig; copies in the session scratchpad.
+
+### Provenance
+
+The figures in this report, in the files under `decision-shadow-reports/`, and in the "First results" lines of `docs/architecture/decision-layer.md` are not measurements of the code as merged, and nobody can re-derive them from the repository.
+
+- **Data.** Every figure comes from a slim copy of the local telemetry database `~/.loom/loom.db` and from replays on the gauntlet rig (`~/replay/`). Neither the database nor the rig output is in the repository. The files under `decision-shadow-reports/` are copies of the rendered reports, not the data behind them.
+- **Dates and code.** §2.1–2.3 ran on 2026-09-22 with code from `1f4c3a10` (the shadow harness and replay CLI) to `c8eb7a43` (this report, which also commits the reworded retry question that §2.3 used). §2.4 ran on 2026-09-23 with the Jev client and the extended ladder from `7eb3d6c6`, which is the "original reference" there. The "refined reference" is the foreign-key rule (`foreign key → not_found`) that `8168e07f` committed together with the first Jev results. Git does not record which build each run used, so no single commit can be named for a run.
+- **Re-scoring.** The Jev rows under the refined reference were not produced by a new Jev run. A step outside the repository re-scored them by pairing each row back to its execution in sample order. No re-scoring step exists in the repository, and `loom decision report` cannot re-score: it reads the reference stored on each row. The two Jev `-v2` files therefore carry the output of that step, not plain `loom decision report` output. §2.4 states that the gpt-4o slices were run again with the refined binary, which is what the gpt-4o `-v2` files report.
+- **The reference changed after the runs.** `cc7d2541` (2026-10-01) makes the original six-class ladder run first and keeps its answer; the five newer classes now refine only `unknown`, and an HTTP 429 must be a whole number. Compared with the ladder the 2026-09-23 runs used:
+  - A message with a saturation marker that also contains "timeout" or "exceeded" is now `timeout`, so the reference is `transient` with retry `true`, not `server_saturated` with retry `false`. Examples: "Rate limit exceeded", "… session handle budget exceeded", "Query timeout: too many connections".
+  - A saturation message that also matches another original rule takes that rule's class: "syntax" gives `bad_input` (for example "[Session 4291] … Syntax error"), a permission phrase gives `auth`, and a missing column or table gives `not_found` (for example "Column rate_limit does not exist").
+  - An overflow, foreign-key, constraint or invalid-input message that also contains "timeout" or "exceeded" is now `transient` with retry `true`, not `bad_input` or `not_found`.
+
+  The 2026-09-22 runs used the original ladder, with the saturation check applied only to what that ladder left `unknown`. For the example messages above, that reference gives the same answers as the shipped one. Whether the 230 saturated rows in §2.4 contain such wording cannot be checked from the repository.
+- **The replay request changed after the runs.** `9815a41f` (2026-10-01) makes `loom decision replay` send the result's error code and message from `result_json`. The runs sent an empty error code with the persisted "Code: Message" text. A replay today sends different requests and computes the reference from different inputs.
