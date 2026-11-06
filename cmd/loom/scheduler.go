@@ -72,7 +72,7 @@ func init() {
 	schedulerCmd.PersistentFlags().StringVar(&schedulerScope, "scope", "", "Provider quota scope (default: all scopes)")
 
 	schedulerSetCmd.Flags().Int64Var(&setTPM, "tpm", -1, "Enforced tokens per minute (0 = recalibrate from provider headers)")
-	schedulerSetCmd.Flags().Int32Var(&setStarvationAge, "starvation-age-s", -1, "Seconds before a parked request is promoted one priority class")
+	schedulerSetCmd.Flags().Int32Var(&setStarvationAge, "starvation-age-s", -1, "Seconds per starvation tier; each tier a parked request waits raises its dispatch rank one class step (its class label is unchanged)")
 	schedulerSetCmd.Flags().Float32Var(&setUtilization, "utilization", -1, "Target utilization of measured capacity, (0, 1]")
 	schedulerSetCmd.Flags().Float32Var(&setHeadroom, "interactive-headroom", -1, "Fraction of the budget reserved for interactive turns, [0, 1)")
 
