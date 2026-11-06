@@ -176,6 +176,23 @@ The lesson channel is the durable one, so it is called out explicitly:
   `__fleet_lessons__` partition and is visible to every agent on the server
   indefinitely.
 
+A trusted tool server is not enough. **Untrusted content can pass through a
+trusted tool.** A database error can quote a value a user stored, a web or
+file tool returns text someone else wrote, and the model's own tool inputs are
+quoted into the mining prompt as well (`FAILED INPUT`, `SUCCEEDED INPUT`,
+`CALL BETWEEN FAILURE AND SUCCESS`). So an instruction planted in a tool's
+error text, or a model steered by injected content into staging an
+error-then-fix pair itself, can come back in a later session as a "verified
+lesson": in the graph-memory context block at conversation start, or as a
+`<system-reminder>` after a matching error. A planted sentence that names the
+changed fragments (for example `INTEGER` and `BIGINT`) passes the grounding
+gate, because the gate checks that the lesson names the observed change, not
+where its words came from. The mining prompt does not fence or mark quoted
+tool text today. Treat lesson mining as reading every tool's output and inputs
+into durable guidance: if a tool can return text that an untrusted party
+wrote, do not enable `fleet_lesson_sharing` for that agent, and consider
+turning off graph-memory extraction (`enable_extraction: false`) for it.
+
 **Deployments running untrusted MCP servers must not enable
 `fleet_lesson_sharing`** (it is off by default), and should strip or ignore
 tool-supplied metadata keys at the adapter boundary.
@@ -400,6 +417,13 @@ SQLite does **not** support Row-Level Security. When Loom runs with a SQLite bac
 - There is no per-user data isolation.
 
 SQLite mode is single-tenant only. For multi-tenant deployments, use the PostgreSQL backend.
+
+This includes graph memory and its lessons. The SQLite graph-memory store does
+not scope rows by user (every row has `user_id = 'default-user'`, and no query
+filters on it), so a lesson mined in one user's session is recalled and
+injected in every other user's session of the same agent. A lesson can quote
+one user's SQL, table names or values, and it is shown to the other users'
+model as verified guidance.
 
 See `docs/reference/sqlite-guidance.md` for details on SQLite limitations.
 

@@ -258,6 +258,23 @@ deployment posture everywhere else in the tool layer (see the same statement
 for lease events in `pkg/shuttle/lease.go` and the trust model in
 `docs/reference/security-model.md`).
 
+**Untrusted content through a trusted tool.** The server does not have to be
+hostile. Tool error text and results can quote what someone else wrote (a
+value a user stored, a fetched page, a file), and the model's own tool inputs
+are quoted too (`FAILED INPUT`, `SUCCEEDED INPUT`, `CALL BETWEEN FAILURE AND
+SUCCESS`). An instruction planted in an error string, or a model steered by
+injected content into staging the error-then-fix pair itself, can be mined
+and served back in a later session as a verified lesson. A planted sentence
+that names the changed fragments passes the grounding gate. The mining
+prompt does not fence quoted tool text yet; fencing it is a cheap follow-up.
+See `docs/reference/security-model.md`.
+
+**Per-user scope.** On SQLite, graph memory is not scoped by user, so a lesson
+mined in one user's session is injected into every other user's session of
+the same agent, and it can quote that user's SQL. On PostgreSQL with a
+non-superuser role, row-level security keeps lessons per user. See
+`docs/reference/sqlite-guidance.md`.
+
 **Deployment rule: a deployment that runs untrusted MCP servers must not
 enable `fleet_lesson_sharing`.** Private mode limits the blast radius to the
 agent that talked to the server; fleet mode makes one server's output every
