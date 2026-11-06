@@ -303,10 +303,10 @@ func runHitlList(cmd *cobra.Command, args []string) {
 		label := hitlListLabel(req)
 
 		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%v\t%s\n",
-			req.ID,
-			req.AgentID,
-			req.Priority,
-			req.RequestType,
+			escapeControlChars(req.ID),
+			escapeControlChars(req.AgentID),
+			escapeControlChars(req.Priority),
+			escapeControlChars(req.RequestType),
 			age,
 			label,
 		)
@@ -354,13 +354,14 @@ func runHitlShow(cmd *cobra.Command, args []string) {
 	span.SetAttribute("priority", req.Priority)
 	span.SetAttribute("success", true)
 
-	// Print request details
-	fmt.Printf("Request ID:     %s\n", req.ID)
-	fmt.Printf("Agent ID:       %s\n", req.AgentID)
-	fmt.Printf("Session ID:     %s\n", req.SessionID)
-	fmt.Printf("Type:           %s\n", req.RequestType)
-	fmt.Printf("Priority:       %s\n", req.Priority)
-	fmt.Printf("Status:         %s\n", req.Status)
+	// Print request details. Every field is escaped: priority and type come
+	// from contact_human's tool input, the session ID from the Weave client.
+	fmt.Printf("Request ID:     %s\n", escapeControlChars(req.ID))
+	fmt.Printf("Agent ID:       %s\n", escapeControlChars(req.AgentID))
+	fmt.Printf("Session ID:     %s\n", escapeControlChars(req.SessionID))
+	fmt.Printf("Type:           %s\n", escapeControlChars(req.RequestType))
+	fmt.Printf("Priority:       %s\n", escapeControlChars(req.Priority))
+	fmt.Printf("Status:         %s\n", escapeControlChars(req.Status))
 	fmt.Printf("\n")
 	fmt.Printf("Question:       %s\n", escapeControlChars(req.Question))
 	if req.Summary != "" && req.Summary != req.Question {
@@ -391,7 +392,7 @@ func runHitlShow(cmd *cobra.Command, args []string) {
 
 	// Print response info if responded
 	if req.Status != "pending" {
-		fmt.Printf("Response Status: %s\n", req.Status)
+		fmt.Printf("Response Status: %s\n", escapeControlChars(req.Status))
 		fmt.Printf("Response:        %s\n", escapeControlChars(req.Response))
 		if req.RespondedBy != "" {
 			fmt.Printf("Responded By:    %s\n", escapeControlChars(req.RespondedBy))

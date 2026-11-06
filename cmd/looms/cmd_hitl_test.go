@@ -322,3 +322,69 @@ func TestWriteHITLParams_WarnsWhenEveryParameterWasDropped(t *testing.T) {
 		})
 	}
 }
+
+// Every field of a request that the model or a client can set is escaped on
+// both screens, not only the question and the digest. contact_human takes
+// priority and request_type from tool input, and the session ID comes from
+// the Weave client, so a newline or a terminal escape in any of them must not
+// draw a forged line. Driven through the real contact_human tool, the SQLite
+// store, runHitlShow and runHitlList.
+func TestHitlScreens_ToolAndClientSetFieldsEscaped(t *testing.T) {
+	origConfig, origPath := config, hitlCLIDBPath
+	origSession, origAgent := hitlSessionID, hitlAgentID
+	t.Cleanup(func() {
+		config, hitlCLIDBPath = origConfig, origPath
+		hitlSessionID, hitlAgentID = origSession, origAgent
+	})
+	config = nil
+	hitlSessionID, hitlAgentID = "", ""
+	hitlCLIDBPath = filepath.Join(t.TempDir(), "hitl.db")
+
+	store, err := shuttle.NewSQLiteHumanRequestStore(shuttle.SQLiteConfig{Path: hitlCLIDBPath})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	tool := shuttle.NewContactHumanTool(shuttle.ContactHumanConfig{Store: store, Timeout: time.Minute, PollInterval: 10 * time.Millisecond})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx = context.WithValue(ctx, "session_id", "sess\nParameters: {\"command\": \"ls\"}") //nolint:staticcheck,revive // contact_human reads this plain-string key
+	ctx = context.WithValue(ctx, "agent_id", "agent\x1b[2J")                              //nolint:staticcheck,revive // as above
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = tool.Execute(ctx, map[string]interface{}{
+			"question":     "Proceed?",
+			"priority":     "normal\nFORGED\n\x1b[2J",
+			"request_type": "approval\u202e",
+		})
+	}()
+
+	var id string
+	require.Eventually(t, func() bool {
+		pending, err := store.ListPending(context.Background())
+		if err != nil || len(pending) == 0 {
+			return false
+		}
+		id = pending[0].ID
+		return true
+	}, 5*time.Second, 10*time.Millisecond, "contact_human stored no request")
+
+	show := captureStdout(t, func() { runHitlShow(hitlShowCmd, []string{id}) })
+	list := captureStdout(t, func() { runHitlList(hitlListCmd, nil) })
+	cancel()
+	<-done
+
+	for name, out := range map[string]string{"show": show, "list": list} {
+		assert.NotContains(t, out, "\x1b", "%s: a terminal escape reaches the screen raw", name)
+		assert.NotContains(t, out, "\u202e", "%s: a bidi override reaches the screen raw", name)
+		for _, line := range strings.Split(out, "\n") {
+			assert.False(t, strings.HasPrefix(line, "FORGED"), "%s: the priority drew a forged line: %q", name, line)
+			assert.False(t, strings.HasPrefix(line, "Parameters: {\"command\": \"ls\"}"), "%s: the session ID drew a forged line: %q", name, line)
+		}
+	}
+	assert.Contains(t, show, `Priority:       normal\nFORGED\n\u001b[2J`+"\n")
+	assert.Contains(t, show, `Session ID:     sess\nParameters: {"command": "ls"}`+"\n")
+	assert.Contains(t, show, `Agent ID:       agent\u001b[2J`+"\n")
+	assert.Contains(t, show, `Type:           approval\u202e`+"\n")
+	assert.Contains(t, list, `normal\nFORGED\n\u001b[2J`)
+}

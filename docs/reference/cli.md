@@ -55,8 +55,8 @@ Command reference for `loom` (client) and `looms` (server).
 | `looms config get-key` | Retrieve secret from keyring | `<key-name>` |
 | `looms config delete-key` | Delete secret from keyring | `<key-name>` |
 | `looms config list-keys` | List available secret keys | |
-| `looms hitl list` | List pending HITL requests (an approval is labelled with its call digest, e.g. `shell_execute command=rm notes.txt`; labels are cut to 70 characters; control, format (bidi, zero-width) and line-separator characters are shown escaped, e.g. `\n`, `\u202e`) | `--session`, `--agent`, `--db` |
-| `looms hitl show` | Show HITL request details; for an approval, also the call digest and the held call's parameters as JSON (for `shell_execute`, the whole command), noting any left out for size. Control, format (bidi, zero-width) and line-separator characters are escaped on every line the model or a responder wrote, and inside the JSON | `<request-id>`, `--db` |
+| `looms hitl list` | List pending HITL requests (an approval is labelled with its call digest, e.g. `shell_execute command=rm notes.txt`; labels are cut to 70 characters; control, format (bidi, zero-width) and line-separator characters are shown escaped in every column, e.g. `\n`, `\u202e`) | `--session`, `--agent`, `--db` |
+| `looms hitl show` | Show HITL request details; for an approval, also the call digest and the held call's parameters as JSON (for `shell_execute`, the whole command), noting any left out for size. Control, format (bidi, zero-width) and line-separator characters are escaped in every field shown (IDs, type, priority, status, question, digest, context, response), and inside the JSON | `<request-id>`, `--db` |
 | `looms hitl respond` | Respond to HITL request | `<request-id>`, `--status`, `--message` |
 | `looms upgrade` | Upgrade database schema | `--dry-run`, `--no-backup`, `--yes` |
 | `looms pattern create` | Create a new pattern | `<name>`, `--thread`, `--file` |
