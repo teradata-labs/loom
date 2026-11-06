@@ -184,7 +184,7 @@ func (p *Parser) Stat(t *token.Token) (ast.Stat, *token.Token) {
 		exp, t = p.PrefixExp(t)
 		return p.prefixExpStat(exp, t)
 	}
-	return nil, nil
+	// Every statement case above returns a statement and its next token.
 }
 
 // prefixExpStat finishes parsing a statement that started as a prefix
