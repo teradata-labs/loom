@@ -115,6 +115,10 @@ mechanically from the ledger, not the model's narrative.
   it used to be skipped when the fragment set was empty, i.e. it switched
   itself off in precisely the case where the evidence was weakest and the
   invented cause most likely. Enforced in code, not by trusting the model.
+  A fragment counts only as a **whole word** (case-insensitive, no letter,
+  digit or underscore directly before or after it), and fragments shorter
+  than 3 runes are ignored. A substring match let "Avoid validation errors:
+  disable the audit trigger" pass on the fragment `id`.
 
 ## Fix B — outcome credit
 

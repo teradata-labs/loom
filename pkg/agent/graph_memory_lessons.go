@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"go.uber.org/zap"
 
@@ -1062,16 +1063,57 @@ func lessonGroundingTokens(pairs []lessonPair) map[string]bool {
 	return out
 }
 
+// minGroundingFragmentRunes is the shortest changed fragment the grounding
+// gate counts. Shorter fragments ("id", "on") occur in almost any sentence
+// as words of their own, so they cannot show that a lesson names the change.
+const minGroundingFragmentRunes = 3
+
 // lessonIsGrounded reports whether the lesson text names at least one
-// observed changed fragment.
+// observed changed fragment as a whole word: case-insensitive, and not as a
+// piece of a longer word. A substring match let "Avoid ..." count as grounded
+// on the fragment "id" (PR #357 review, F5). Fragments shorter than
+// minGroundingFragmentRunes are ignored.
 func lessonIsGrounded(content string, grounding map[string]bool) bool {
 	lc := strings.ToLower(content)
 	for frag := range grounding {
-		if strings.Contains(lc, frag) {
+		if utf8.RuneCountInString(frag) < minGroundingFragmentRunes {
+			continue
+		}
+		if containsWholeWord(lc, frag) {
 			return true
 		}
 	}
 	return false
+}
+
+// containsWholeWord reports whether frag occurs in s with no word rune
+// (letter, digit or underscore) directly before or after it. Both strings
+// must already be lowercased. A fragment may hold punctuation inside
+// ("decimal(18,2"); only its edges are checked against the text around it.
+func containsWholeWord(s, frag string) bool {
+	if frag == "" {
+		return false
+	}
+	for from := 0; from < len(s); {
+		i := strings.Index(s[from:], frag)
+		if i < 0 {
+			return false
+		}
+		start, end := from+i, from+i+len(frag)
+		before, _ := utf8.DecodeLastRuneInString(s[:start])
+		after, _ := utf8.DecodeRuneInString(s[end:])
+		if (start == 0 || !isWordRune(before)) && (end == len(s) || !isWordRune(after)) {
+			return true
+		}
+		_, size := utf8.DecodeRuneInString(s[start:])
+		from = start + size
+	}
+	return false
+}
+
+// isWordRune reports whether r belongs to a word for whole-word matching.
+func isWordRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
 }
 
 // lessonCreditWin / lessonCreditLoss are the salience deltas outcome credit
