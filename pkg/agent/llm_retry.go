@@ -257,8 +257,9 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 		// This check comes FIRST, before any check that makes an error final,
 		// so the rule is the same as on the retry-disabled and streaming
 		// paths: an error that is a throttle through any wrapping (a provider
-		// RateLimiter that ran out of its own retries wraps the last 429) is
-		// waited out under the budget; anything else is not. A
+		// RateLimiter that ran out of its own retries returns an
+		// llm.RetriesExhaustedError that wraps the last 429) is waited out
+		// under the budget; anything else is not. A
 		// context-too-long refusal is never a throttle (isRetryableThrottle),
 		// so it falls through to the ErrContextTooLong check below.
 		if isRetryableThrottle(err) {
@@ -277,9 +278,10 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 		}
 
 		// The rate limiter already spent its whole MaxRetries budget on this
-		// error (throttling or a transient 5xx, with backoff and Retry-After
-		// honoured). Re-running that budget here would only multiply the wait —
-		// one retry budget, in one place.
+		// error, with backoff and Retry-After honoured. It is not a throttle
+		// (an exhausted throttle was waited out above), so it is a transient
+		// 5xx or another non-throttle cause. Re-running that budget here would
+		// only multiply the wait — one retry budget, in one place.
 		if llm.IsRetriesExhausted(err) {
 			return nil, err
 		}
@@ -346,7 +348,10 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 //
 // The same rule holds on all three paths (retry-enabled non-streaming,
 // streaming, retry-disabled): an error that is a throttle through any
-// wrapping is waited out under the budget; any other error is not.
+// wrapping, including an llm.RetriesExhaustedError that wraps a throttle, is
+// waited out under the budget; any other error is not. So an exhausted 5xx
+// (an llm.RetriesExhaustedError that wraps an llm.TransientError) and a
+// context-too-long refusal (isRetryableThrottle) are never waited out.
 type throttlePatience struct {
 	clock throttleClock
 	delay time.Duration

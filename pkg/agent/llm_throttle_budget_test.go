@@ -128,10 +128,11 @@ func (s *clockedStreamingLLM) ChatStream(_ context.Context, _ []Message, _ []shu
 	return &LLMResponse{Content: "ok", StopReason: "end_turn"}, nil
 }
 
-// exhaustedWrapError models a provider RateLimiter's "out of retries" error
-// (llm.RetriesExhaustedError from #411 has this shape): its own message names
-// no throttle, and it exposes the last provider error through Unwrap. The
-// patience rule must hold through it via errors.As, not via message text.
+// exhaustedWrapError is a stand-in for any "out of retries" wrapper that is
+// not llm.RetriesExhaustedError: its own message names no throttle, and it
+// exposes the last provider error through Unwrap. The patience rule must hold
+// through it via errors.As, not via message text. The tests below also use
+// the real llm.RetriesExhaustedError that the provider RateLimiter returns.
 type exhaustedWrapError struct {
 	attempts int
 	err      error
@@ -232,9 +233,11 @@ func TestThrottlePatience_WallClockBudgetBoundsPermanentThrottle(t *testing.T) {
 
 // The error a RateLimiter returns after it runs out of its own retries on a
 // throttle behaves the SAME on all three paths: it is waited out under the
-// budget and the call goes on. This holds through any wrapping, both a %w
-// chain that keeps the 429 text and a typed wrap whose message names no
-// throttle (the shape of #411's llm.RetriesExhaustedError).
+// budget and the call goes on. This holds through any wrapping: a %w chain
+// that keeps the 429 text, a typed wrap whose message names no throttle, and
+// the real llm.RetriesExhaustedError. The retry-enabled path checks for a
+// throttle before it checks llm.IsRetriesExhausted, so the exhausted
+// throttle is not final there either.
 func TestThrottleExhausted_SameOnAllPaths(t *testing.T) {
 	const hint = 5 * time.Second
 	errs := []struct {
@@ -249,6 +252,11 @@ func TestThrottleExhausted_SameOnAllPaths(t *testing.T) {
 		{
 			name: "typed wrap of a ThrottleError",
 			err:  &exhaustedWrapError{attempts: 6, err: llm.NewThrottleError(errors.New("provider asked us to slow down"), hint)},
+		},
+		{
+			name: "llm.RetriesExhaustedError of a ThrottleError",
+			err: &llm.RetriesExhaustedError{Attempts: 6, Cause: "throttling",
+				Err: llm.NewThrottleError(errors.New("API error (status 429): rate_limit_exceeded"), hint)},
 		},
 	}
 	for _, e := range errs {
@@ -280,25 +288,52 @@ func TestThrottleExhausted_SameOnAllPaths(t *testing.T) {
 // patience re-invocation, and the provider error stays in the chain.
 //
 // The retry-disabled and streaming paths return it at once. The retry-enabled
-// path still runs its own failure retry over these stand-in errors
-// (MaxRetries+1 invocations): only #411's typed llm.RetriesExhaustedError is
-// final there. When #411 lands, add a row with that type and wantCalls 1 for
-// retry-enabled.
+// path returns the real llm.RetriesExhaustedError at once too (the limiter
+// already spent the budget), but still runs its own failure retry over the
+// stand-in wrappers (MaxRetries+1 invocations), because only that typed error
+// is final there. The last row puts "429" and "rate limit" in the 5xx body:
+// the typed llm.TransientError wins over the message fallback, so it is still
+// not a throttle.
 func TestNonThrottleExhausted_NeverWaitsOnAnyPath(t *testing.T) {
 	cause := errors.New("API error (status 503): upstream unavailable")
+	sniffable := errors.New("API error (status 503): upstream rate limit proxy failed, request id 4290001")
 	errs := []struct {
-		name string
-		err  error
+		name  string
+		cause error
+		err   error
+		// retryEnabledCalls is the provider invocations on the retry-enabled
+		// path; streaming and retry-disabled always make one.
+		retryEnabledCalls int
 	}{
-		{name: "fmt wrap", err: fmt.Errorf("LLM request failed after 6 retries due to a transient server error: %w", cause)},
-		{name: "typed wrap", err: &exhaustedWrapError{attempts: 6, err: cause}},
-	}
-	wantCalls := map[string]int{
-		"retry-enabled":  patientRetry().MaxRetries + 1, // agent failure retry
-		"streaming":      1,
-		"retry-disabled": 1,
+		{
+			name: "fmt wrap", cause: cause,
+			err:               fmt.Errorf("LLM request failed after 6 retries due to a transient server error: %w", cause),
+			retryEnabledCalls: patientRetry().MaxRetries + 1, // agent failure retry
+		},
+		{
+			name: "typed wrap", cause: cause,
+			err:               &exhaustedWrapError{attempts: 6, err: cause},
+			retryEnabledCalls: patientRetry().MaxRetries + 1, // agent failure retry
+		},
+		{
+			name: "llm.RetriesExhaustedError of a TransientError", cause: cause,
+			err: &llm.RetriesExhaustedError{Attempts: 6, Cause: "a transient server error",
+				Err: llm.NewTransientError(cause, 503, 0)},
+			retryEnabledCalls: 1, // the limiter's budget is final
+		},
+		{
+			name: "llm.RetriesExhaustedError of a TransientError whose body names 429", cause: sniffable,
+			err: &llm.RetriesExhaustedError{Attempts: 6, Cause: "a transient server error",
+				Err: llm.NewTransientError(sniffable, 503, 0)},
+			retryEnabledCalls: 1, // the limiter's budget is final
+		},
 	}
 	for _, e := range errs {
+		wantCalls := map[string]int{
+			"retry-enabled":  e.retryEnabledCalls,
+			"streaming":      1,
+			"retry-disabled": 1,
+		}
 		for _, path := range throttlePaths() {
 			t.Run(e.name+"/"+path.name, func(t *testing.T) {
 				t.Parallel()
@@ -308,7 +343,7 @@ func TestNonThrottleExhausted_NeverWaitsOnAnyPath(t *testing.T) {
 
 				require.Error(t, err)
 				assert.Nil(t, resp)
-				assert.ErrorIs(t, err, cause, "the provider error must stay in the chain")
+				assert.ErrorIs(t, err, e.cause, "the provider error must stay in the chain")
 				assert.NotContains(t, err.Error(), "patience budget")
 				assert.Empty(t, clk.Sleeps(), "a non-throttle error must never start a throttle wait")
 				assert.Equal(t, wantCalls[path.name], stub.Calls())
