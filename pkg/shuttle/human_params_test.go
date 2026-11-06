@@ -313,8 +313,8 @@ func TestParams_InMemoryStore_RoundTrip(t *testing.T) {
 }
 
 // AC5 (sqlite): Params and ParamsTruncated survive Store → Get and
-// Store → ListBySession through the params_json/params_truncated columns, with
-// JSON's value types (objects, arrays, numbers as float64) preserved.
+// Store → ListBySession through the params_json/params_truncated columns.
+// Persistent stores decode JSON numbers as json.Number to preserve integers exactly.
 func TestParams_SQLiteStore_RoundTrip(t *testing.T) {
 	store := newTestSQLiteStore(t)
 	defer func() { _ = store.Close() }()
@@ -322,12 +322,13 @@ func TestParams_SQLiteStore_RoundTrip(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 
-	// Values as they read back through JSON: numbers are float64, nested objects
+	// Values as they read back through JSON: numbers are json.Number, nested objects
 	// are map[string]interface{}, arrays are []interface{}.
 	populated := map[string]interface{}{
 		"stmt":    "DELETE FROM users WHERE id=42",
 		"confirm": true,
-		"rows":    float64(42),
+		"rows":    json.Number("42"),
+		"large":   json.Number("9007199254740993"),
 		"filter":  map[string]interface{}{"col": "id", "op": ">"},
 		"cols":    []interface{}{"a", "b"},
 	}
