@@ -344,12 +344,17 @@ message GraphMemoryConfig {
   // transitions) are stored in a shared partition visible to every agent,
   // and each agent's dedicated lesson recall lane draws from that pool.
   // When false (default), lessons stay private to the agent that earned
-  // them: stored in a partition derived from its name ("<name>__lessons")
-  // that no other writer targets, and recalled only by it.
+  // them: stored in a partition derived from its graph-memory key
+  // ("<key>__lessons", where the key is the agent's GraphMemoryAgentID when
+  // set, otherwise its name) that no other writer targets, and recalled only
+  // by it.
   //
-  // SECURITY: mined lessons derive from tool-server output and are injected
-  // at system role. Enabling this makes one server's output every agent's
-  // system prompt -- do not enable it when running untrusted tool servers.
+  // SECURITY: mined lessons derive from tool output and the model's own tool
+  // inputs, and are shown to the model as trusted guidance (the graph-memory
+  // context block at conversation start, a <system-reminder> after a
+  // matching error). Enabling this makes one server's output guidance for
+  // every agent -- do not enable it when running untrusted tool servers, or
+  // tools that return text an untrusted party wrote.
   // See docs/reference/security-model.md.
   bool fleet_lesson_sharing = 15;
 }
