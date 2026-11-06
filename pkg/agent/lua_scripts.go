@@ -262,7 +262,7 @@ func (t *ManageLuaScriptsTool) InputSchema() *shuttle.JSONSchema {
 	return shuttle.NewObjectSchema("", map[string]*shuttle.JSONSchema{
 		"action":      {Type: "string", Enum: actions},
 		"name":        shuttle.NewStringSchema("Script name: ^[a-z][a-z0-9_]{2,40}$. Required except for list."),
-		"script":      shuttle.NewStringSchema("Lua 5.4 source. Required for save."),
+		"script":      shuttle.NewStringSchema("Lua 5.5 source. Required for save."),
 		"description": shuttle.NewStringSchema("One or two sentences on what the script does. Required for save."),
 		"manifest": shuttle.NewObjectSchema("Optional for save. Needed before publish.", map[string]*shuttle.JSONSchema{
 			"parameters": {Type: "object", Description: "JSON Schema (type object) for args when published as a tool. Max 20 properties, 4 KiB."},
