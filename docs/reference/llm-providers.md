@@ -18,7 +18,7 @@ Reference for all supported LLM providers and their configuration.
 - [Mistral AI](#6-mistral-ai) - Open and commercial models
 - [Google Gemini](#7-google-gemini) - Google AI Studio
 - [HuggingFace](#8-huggingface) - Open-source models via the HF Inference API
-- [AWS Bedrock Mantle](#9-aws-bedrock-mantle) - Claude and open-weight models via the `bedrock-mantle` endpoint (⚠️ Partial)
+- [AWS Bedrock Mantle](#9-aws-bedrock-mantle) - Claude and open-weight models via the `bedrock-mantle` endpoint
 
 ### Planned Providers
 - [Google Vertex AI](#10-google-vertex-ai) - GCP integration (Planned)
@@ -49,7 +49,7 @@ Reference for all supported LLM providers and their configuration.
 | **Mistral AI** | ✅ Implemented | Native | 128k-262k | $0.075-$8/1M tokens | Reasoning, code models |
 | **Google Gemini** | ✅ Implemented | Native | 1.05M | $0-$12/1M tokens | Long context, multimodal |
 | **HuggingFace** | ✅ Implemented | Native (model-dependent) | Varies | ~$0.20-$1.00/1M tokens (estimated) | Open-source models |
-| **AWS Bedrock Mantle** | ⚠️ Partial (library + agent YAML; `looms` config pending) | Native | 200k-1M (Claude) | $1-$25/1M tokens (cataloged Claude models) | Mantle-only models, OpenAI/Anthropic-compatible AWS endpoint |
+| **AWS Bedrock Mantle** | ⚠️ Partial (catalog pricing for Haiku 4.5 and Opus 4.7 only) | Native | 200k-1M (Claude) | $1-$25/1M tokens (cataloged Claude models) | Mantle-only models, OpenAI/Anthropic-compatible AWS endpoint |
 | **Google Vertex AI** | 📋 Planned | TBD | TBD | TBD | GCP infrastructure |
 
 ### Authentication Methods
@@ -64,7 +64,7 @@ Reference for all supported LLM providers and their configuration.
 | **Mistral** | `looms config set-key mistral_api_key` | `LOOM_LLM_MISTRAL_API_KEY` / `MISTRAL_API_KEY` | None (no CLI flag) |
 | **Gemini** | `looms config set-key gemini_api_key` | `LOOM_LLM_GEMINI_API_KEY` / `GEMINI_API_KEY` | None (no CLI flag) |
 | **HuggingFace** | `looms config set-key huggingface_token` | `LOOM_LLM_HUGGINGFACE_TOKEN` / `HUGGINGFACE_API_KEY` | None (no CLI flag) |
-| **Bedrock Mantle** | None yet (pending `looms` wiring) | `BEDROCK_MANTLE_API_KEY` (optional), `BEDROCK_MANTLE_REGION` / `AWS_REGION` | SigV4 from the AWS credential chain (default when no API key) |
+| **Bedrock Mantle** | `bedrock_mantle_api_key` (optional) | `BEDROCK_MANTLE_API_KEY` (optional), `LOOM_LLM_BEDROCK_MANTLE_REGION` or `llm.bedrock_region` | SigV4 from the AWS credential chain (default when no API key) |
 
 **Note**: The only LLM-provider API-key CLI flag registered in the `looms` binary is `--anthropic-key` (`cmd/looms/root.go`). Some error messages reference `--openai-key` and `--mistral-key`, but those flags are not implemented — use the keyring or environment variable instead.
 
@@ -649,7 +649,7 @@ Any other model on the HF Inference API can be used; unlisted models fall back t
 
 ### 9. AWS Bedrock Mantle
 
-**Status**: ⚠️ Partial. Implemented and tested in the Go library (`pkg/llm/bedrockmantle`), the provider factory (`bedrock-mantle`), and the agent registry. `looms` server YAML and CLI wiring are pending.
+**Status**: ⚠️ Partial. Provider (`pkg/llm/bedrockmantle`), provider factory, agent registry, `looms` server config (`llm.bedrock_mantle_*`), `looms` CLI and `loom-standalone`. Catalog pricing covers Claude Haiku 4.5 and Opus 4.7 only.
 
 Amazon Bedrock's second endpoint surface (`https://bedrock-mantle.{region}.api.aws`). It speaks the Anthropic Messages API for Claude and the OpenAI Chat Completions API for every other vendor; it does not speak Converse or InvokeModel, so the `bedrock` provider cannot reach it. Loom reuses its anthropic and openai clients behind one provider.
 
@@ -658,7 +658,16 @@ Amazon Bedrock's second endpoint surface (`https://bedrock-mantle.{region}.api.a
 - SigV4 or Bedrock API key auth; no `anthropic-beta` header (Mantle rejects it)
 - Same per-token rates as `bedrock-runtime`
 
-**Configuration** (factory fields or environment):
+**Configuration** (`looms.yaml`, factory fields or environment):
+
+```yaml
+# looms.yaml
+llm:
+  provider: bedrock-mantle
+  bedrock_mantle_model: anthropic.claude-haiku-4-5
+  # bedrock_mantle_region defaults to bedrock_region; SigV4 via bedrock_profile or the AWS credential chain
+  # bedrock_mantle_api_key: looms config set-key bedrock_mantle_api_key (optional; bearer instead of SigV4)
+```
 
 ```go
 factory.FactoryConfig{
@@ -676,7 +685,6 @@ llm:
 ```
 
 **Limitations**:
-- Not selectable from `looms.yaml` yet
 - No Guardrails, cross-region inference profiles (`us.`/`global.` ids return 404), or prompt routing on Mantle
 - Model listing is not an entitlement check; unsubscribed models fail with a marketplace-subscription 401/403
 - Only Claude Haiku 4.5 and Opus 4.7 are priced in the catalog; other Mantle models are costed by fallback rates

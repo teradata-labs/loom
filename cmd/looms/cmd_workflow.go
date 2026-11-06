@@ -32,6 +32,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
 	"github.com/teradata-labs/loom/pkg/llm/azureopenai"
 	"github.com/teradata-labs/loom/pkg/llm/bedrock"
+	"github.com/teradata-labs/loom/pkg/llm/bedrockmantle"
 	"github.com/teradata-labs/loom/pkg/llm/gemini"
 	"github.com/teradata-labs/loom/pkg/llm/huggingface"
 	"github.com/teradata-labs/loom/pkg/llm/mistral"
@@ -1400,6 +1401,12 @@ func createLLMProvider() (agent.LLMProvider, string) {
 				return client, "AWS Bedrock (config)"
 			}
 
+		case bedrockmantle.ProviderName:
+			client, err := bedrockmantle.NewClientForModel(mantleConfigFrom(config.LLM))
+			if err == nil {
+				return client, "AWS Bedrock Mantle (config)"
+			}
+
 		case "ollama":
 			client := ollama.NewClient(ollama.Config{
 				Endpoint:    config.LLM.OllamaEndpoint,
@@ -1513,6 +1520,7 @@ Option 3: AWS Bedrock (env var)
 Supported providers:
   - anthropic    (Anthropic Claude API)
   - bedrock      (AWS Bedrock)
+  - bedrock-mantle (AWS Bedrock Mantle endpoint)
   - ollama       (Local Ollama)
   - openai       (OpenAI GPT models)
   - azure-openai (Azure OpenAI Service)

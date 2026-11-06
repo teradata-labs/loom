@@ -43,6 +43,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
 	"github.com/teradata-labs/loom/pkg/llm/azureopenai"
 	"github.com/teradata-labs/loom/pkg/llm/bedrock"
+	"github.com/teradata-labs/loom/pkg/llm/bedrockmantle"
 	"github.com/teradata-labs/loom/pkg/llm/factory"
 	"github.com/teradata-labs/loom/pkg/llm/gemini"
 	"github.com/teradata-labs/loom/pkg/llm/huggingface"
@@ -533,8 +534,20 @@ func inheritCredentials(dst, src LLMConfig) LLMConfig {
 	if dst.BedrockProfile == "" {
 		dst.BedrockProfile = src.BedrockProfile
 	}
+	// An entry that sets its own bedrock_region keeps it for bedrock-mantle
+	// too: the main LLM's bedrock_mantle_region is inherited only when the
+	// entry sets neither region, so an explicit entry setting always wins.
+	if dst.BedrockMantleRegion == "" && dst.BedrockRegion == "" {
+		dst.BedrockMantleRegion = src.BedrockMantleRegion
+	}
 	if dst.BedrockRegion == "" {
 		dst.BedrockRegion = src.BedrockRegion
+	}
+	if dst.BedrockMantleEndpoint == "" {
+		dst.BedrockMantleEndpoint = src.BedrockMantleEndpoint
+	}
+	if dst.BedrockMantleAPIKey == "" {
+		dst.BedrockMantleAPIKey = src.BedrockMantleAPIKey
 	}
 	if dst.OllamaEndpoint == "" {
 		dst.OllamaEndpoint = src.OllamaEndpoint
@@ -577,6 +590,40 @@ func resolveBedrockCredentials(cfg LLMConfig) (accessKeyID, secretAccessKey, ses
 	return loomconfig.ExpandEnvPlaceholders(cfg.BedrockAccessKeyID),
 		loomconfig.ExpandEnvPlaceholders(cfg.BedrockSecretAccessKey),
 		loomconfig.ExpandEnvPlaceholders(cfg.BedrockSessionToken)
+}
+
+// resolveBedrockMantleAPIKey returns the Bedrock API key for the bedrock-mantle
+// provider: llm.bedrock_mantle_api_key with ${ENV_VAR} placeholders expanded,
+// or BEDROCK_MANTLE_API_KEY when the config field is empty. An empty result
+// selects SigV4 signing from the AWS credential chain.
+func resolveBedrockMantleAPIKey(cfg LLMConfig) string {
+	if key := loomconfig.ExpandEnvPlaceholders(cfg.BedrockMantleAPIKey); key != "" {
+		return key
+	}
+	return os.Getenv("BEDROCK_MANTLE_API_KEY")
+}
+
+// mantleConfigFrom builds the bedrockmantle.Config shared by every looms path
+// that constructs a bedrock-mantle client: the region (llm.bedrock_mantle_region,
+// else llm.bedrock_region), the endpoint with ${ENV_VAR} placeholders expanded,
+// the API key from resolveBedrockMantleAPIKey, the Bedrock SigV4 credentials
+// and profile, and the model, max tokens and temperature from cfg. Callers set
+// the fields their path overrides (Model, MaxTokens, Temperature, Timeout,
+// RateLimiterConfig).
+func mantleConfigFrom(cfg LLMConfig) bedrockmantle.Config {
+	accessKeyID, secretAccessKey, sessionToken := resolveBedrockCredentials(cfg)
+	return bedrockmantle.Config{
+		Region:          mantleRegion(cfg),
+		Endpoint:        loomconfig.ExpandEnvPlaceholders(cfg.BedrockMantleEndpoint),
+		APIKey:          resolveBedrockMantleAPIKey(cfg),
+		AccessKeyID:     accessKeyID,
+		SecretAccessKey: secretAccessKey,
+		SessionToken:    sessionToken,
+		Profile:         cfg.BedrockProfile,
+		Model:           cfg.BedrockMantleModel,
+		MaxTokens:       cfg.MaxTokens,
+		Temperature:     cfg.Temperature,
+	}
 }
 
 func buildProviderPool(cfg *Config, _ *factory.ProviderFactory, logger *zap.Logger) (map[string]agent.LLMProvider, error) {
@@ -658,6 +705,18 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		})
 		if err != nil {
 			return nil, fmt.Errorf("bedrock: %w", err)
+		}
+		return client, nil
+
+	case bedrockmantle.ProviderName:
+		// Mantle shares the Bedrock SigV4 credential fields; a Bedrock API key
+		// (bearer) is opt-in. The region falls back to llm.bedrock_region.
+		mcfg := mantleConfigFrom(cfg)
+		mcfg.Timeout = time.Duration(cfg.Timeout) * time.Second
+		mcfg.RateLimiterConfig = rlCfg
+		client, err := bedrockmantle.NewClientForModel(mcfg)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", bedrockmantle.ProviderName, err)
 		}
 		return client, nil
 
@@ -826,6 +885,11 @@ func getDefaultModelForProvider(cfg *Config) string {
 			return cfg.LLM.BedrockModelID
 		}
 		return "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+	case bedrockmantle.ProviderName:
+		if cfg.LLM.BedrockMantleModel != "" {
+			return cfg.LLM.BedrockMantleModel
+		}
+		return bedrockmantle.DefaultModel
 	case "ollama":
 		if cfg.LLM.OllamaModel != "" {
 			return cfg.LLM.OllamaModel
@@ -930,6 +994,21 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			Temperature:       temperature,
 			RateLimiterConfig: rlCfg,
 		})
+
+	case bedrockmantle.ProviderName:
+		mcfg := mantleConfigFrom(serverConfig.LLM)
+		if protoConfig.Model != "" {
+			mcfg.Model = protoConfig.Model
+		}
+		mcfg.MaxTokens = maxTokens
+		mcfg.Temperature = temperature
+		mcfg.Timeout = timeout
+		mcfg.RateLimiterConfig = rlCfg
+		client, err := bedrockmantle.NewClientForModel(mcfg)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", bedrockmantle.ProviderName, err)
+		}
+		return client, nil
 
 	case "ollama":
 		model := protoConfig.Model
@@ -1082,7 +1161,7 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		}), nil
 
 	default:
-		return nil, fmt.Errorf("unsupported LLM provider: %s (supported: anthropic, bedrock, ollama, openai, azure-openai, mistral, gemini, huggingface, litellm)", protoConfig.Provider)
+		return nil, fmt.Errorf("unsupported LLM provider: %s (supported: anthropic, bedrock, bedrock-mantle, ollama, openai, azure-openai, mistral, gemini, huggingface, litellm)", protoConfig.Provider)
 	}
 }
 
@@ -1733,6 +1812,12 @@ func runServe(cmd *cobra.Command, args []string) {
 		BedrockBearerToken:     config.LLM.BedrockBearerToken,
 		BedrockProfile:         config.LLM.BedrockProfile,
 		BedrockModelID:         config.LLM.BedrockModelID,
+
+		// Bedrock Mantle (SigV4 credentials are the Bedrock fields above)
+		BedrockMantleRegion:   mantleRegion(config.LLM),
+		BedrockMantleEndpoint: config.LLM.BedrockMantleEndpoint,
+		BedrockMantleAPIKey:   config.LLM.BedrockMantleAPIKey,
+		BedrockMantleModel:    config.LLM.BedrockMantleModel,
 
 		// Ollama
 		OllamaEndpoint: config.LLM.OllamaEndpoint,
