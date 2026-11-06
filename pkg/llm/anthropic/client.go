@@ -633,8 +633,13 @@ func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cache
 	// such as Bedrock Mantle), then the Claude family fallback, and the
 	// published long-context card. Anything unrecognised gets the Sonnet 4
 	// rate. Anthropic's three input buckets are additive; together they are
-	// the prompt.
-	inputPricePerM, outputPricePerM, ok := catalog.RequestPricing(c.catalogProvider, c.model, inputTokens+cacheReadTokens+cacheCreationTokens)
+	// the prompt. A Client built without NewClient has no catalogProvider;
+	// it prices under the default namespace, as NewClient would set it.
+	provider := c.catalogProvider
+	if provider == "" {
+		provider = DefaultCatalogProvider
+	}
+	inputPricePerM, outputPricePerM, ok := catalog.RequestPricing(provider, c.model, inputTokens+cacheReadTokens+cacheCreationTokens)
 	if !ok {
 		inputPricePerM, outputPricePerM = 3.0, 15.0
 	}
