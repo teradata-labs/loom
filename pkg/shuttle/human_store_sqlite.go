@@ -10,8 +10,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"strings"
 	"fmt"
+	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -641,6 +642,9 @@ func (s *SQLiteHumanRequestStore) scanRequest(row interface {
 		decoder.UseNumber()
 		if err := decoder.Decode(&req.Params); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal params: %w", err)
+		}
+		if err := decoder.Decode(&struct{}{}); err != io.EOF {
+			return nil, fmt.Errorf("failed to unmarshal params: trailing data")
 		}
 	}
 	if paramsTruncated.Valid {
