@@ -90,7 +90,7 @@ func TestNormalizeWireRoles_NoOpReturnsSameSliceWhenNothingToFold(t *testing.T) 
 
 // syntheticWireRoles lists every persisted role IsSyntheticWireUserRole must
 // accept, spelled via the package constants so tests follow a rename.
-var syntheticWireRoles = []string{roleSkillBody, roleHygieneInjection, roleEmptyResponseRetry, roleSynthesisPrompt}
+var syntheticWireRoles = []string{roleSkillBody, roleHygieneInjection, roleEmptyResponseRetry, roleSynthesisPrompt, roleLessonReminder}
 
 // pkg/agent cannot import internal/message in production code, so its role
 // constants duplicate the message package's values. This pins them together.
@@ -99,6 +99,7 @@ func TestSyntheticRoleConstantsMatchMessagePackage(t *testing.T) {
 	require.Equal(t, string(message.HygieneInjection), roleHygieneInjection)
 	require.Equal(t, string(message.EmptyResponseRetry), roleEmptyResponseRetry)
 	require.Equal(t, string(message.SynthesisPrompt), roleSynthesisPrompt)
+	require.Equal(t, string(message.LessonReminder), roleLessonReminder)
 	for _, role := range syntheticWireRoles {
 		require.True(t, IsSyntheticWireUserRole(role), role)
 	}
