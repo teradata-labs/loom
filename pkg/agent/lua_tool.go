@@ -64,7 +64,7 @@ const luaErrorOutputTail = 512
 // under 1,100 characters (TestRunLuaTool_SchemaAndDescription checks the cap); the
 // behaviour it describes is in "The run_lua tool" in
 // docs/reference/lua-script-api.md.
-const runLuaDescription = "Runs a short Lua 5.4 script in a sandbox inside the server and returns its result. " +
+const runLuaDescription = "Runs a short Lua 5.5 (Golua) script in a sandbox inside the server and returns its result. " +
 	"The script can call the tools you already have with `tools.call(name, args)`, so one run can replace many tool calls: " +
 	"loop over results, filter and join them, retry, aggregate, and return only what you need. " +
 	"Use this when you would otherwise make three or more dependent tool calls, or when you must compute over tool output before answering. " +
@@ -175,7 +175,7 @@ func (t *RunLuaTool) Backend() string     { return "" }
 
 func (t *RunLuaTool) InputSchema() *shuttle.JSONSchema {
 	return shuttle.NewObjectSchema("", map[string]*shuttle.JSONSchema{
-		"script":          shuttle.NewStringSchema("Lua 5.4 source. Mutually exclusive with name."),
+		"script":          shuttle.NewStringSchema("Lua 5.5 source. Mutually exclusive with name."),
 		"name":            shuttle.NewStringSchema("Name or id of a saved script to run. Mutually exclusive with script."),
 		"args":            {Type: "object", Description: "Values exposed to the script as the global table args. JSON only."},
 		"timeout_seconds": {Type: "integer", Description: "Wall-time cap for this run. Clamped to the site maximum."},
