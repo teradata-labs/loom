@@ -22,7 +22,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"strings"
 	"unicode/utf8"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
@@ -172,6 +171,13 @@ func FailureKindRequest(tool, errorCode, errorText string, input map[string]any)
 // FailureKindReference maps what Loom decides today (the Success flag plus
 // fabric.InferErrorType's substring ladder) onto the failure kinds, so a
 // shadow row compares like with like. It is the reference, not the truth.
+//
+// The mapping has no rule of its own: a failure the ladder calls unknown is
+// KindOther. Saturation is the ladder's (fabric's markers and its
+// whole-number 429). An extra fallback here could only disagree with the
+// ladder, because by the time it ran InferErrorType had already applied the
+// same check and said no; the one this package had matched "429" inside
+// longer numbers such as "[Session 4291]".
 func FailureKindReference(success bool, errorCode, errorText string) map[string]decision.Reference {
 	kind := KindOther
 	retry := "false"
@@ -191,34 +197,12 @@ func FailureKindReference(success bool, errorCode, errorText string) map[string]
 			retry = "true"
 		case fabric.ErrorTypeSaturated:
 			kind = KindServerSaturated
-		default:
-			if looksSaturated(errorCode, errorText) {
-				kind = KindServerSaturated
-			}
 		}
 	}
 	return map[string]decision.Reference{
 		QFailureKind: {Answer: kind, Source: ReferenceSourceInferErrorType},
 		QRetryHelps:  {Answer: retry, Source: ReferenceSourceInferErrorType},
 	}
-}
-
-// saturationMarkers are the substrings today's code would need to recognise
-// a saturated server; InferErrorType has none, which is one reason the
-// connect storms in the tool-calling assessment were never braked.
-var saturationMarkers = []string{
-	"budget_full", "rate limit", "rate_limit", "429", "too many", "overloaded",
-	"capacity", "backpressure", "quota", "throttl",
-}
-
-func looksSaturated(code, text string) bool {
-	lower := strings.ToLower(code + " " + text)
-	for _, m := range saturationMarkers {
-		if strings.Contains(lower, m) {
-			return true
-		}
-	}
-	return false
 }
 
 // InputDigest is a stable sha256 over the canonical JSON of a tool input.

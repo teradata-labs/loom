@@ -25,6 +25,7 @@ import (
 
 	"github.com/teradata-labs/loom/pkg/decision"
 	"github.com/teradata-labs/loom/pkg/decision/mock"
+	"github.com/teradata-labs/loom/pkg/fabric"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
@@ -101,6 +102,76 @@ func TestFailureKindReference(t *testing.T) {
 			assert.Equal(t, tt.wantKind, refs[QFailureKind].Answer)
 			assert.Equal(t, tt.wantRetry, refs[QRetryHelps].Answer)
 			assert.Equal(t, ReferenceSourceInferErrorType, refs[QFailureKind].Source)
+		})
+	}
+}
+
+// TestFailureKindReferenceAgreesWithLadder pins the reference to the shipped
+// ladder: for every failed result, the reference kind is exactly the kind
+// fabric.InferErrorType's answer maps to, with no saturation rule of its own.
+// The first three rows hold 429 inside a longer number; the ladder calls them
+// unknown, and a reference that called them server_saturated would count a
+// disagreement against the decider that the ladder never made.
+func TestFailureKindReferenceAgreesWithLadder(t *testing.T) {
+	t.Parallel()
+	ladderKind := map[string]string{
+		fabric.ErrorTypeSyntax:         KindBadInput,
+		fabric.ErrorTypeOverflow:       KindBadInput,
+		fabric.ErrorTypeConstraint:     KindBadInput,
+		fabric.ErrorTypeInvalidInput:   KindBadInput,
+		fabric.ErrorTypePermission:     KindAuth,
+		fabric.ErrorTypeColumnNotFound: KindNotFound,
+		fabric.ErrorTypeTableNotFound:  KindNotFound,
+		fabric.ErrorTypeNotFound:       KindNotFound,
+		fabric.ErrorTypeTimeout:        KindTransient,
+		fabric.ErrorTypeSaturated:      KindServerSaturated,
+		fabric.ErrorTypeUnknown:        KindOther,
+	}
+	tests := []struct {
+		name       string
+		code       string
+		text       string
+		wantLadder string
+		wantKind   string
+	}{
+		// 429 inside a longer number is not an HTTP status.
+		{name: "session id 4291", text: "[Session 4291] connection reset by peer", wantLadder: fabric.ErrorTypeUnknown, wantKind: KindOther},
+		{name: "bare S4291", text: "S4291", wantLadder: fabric.ErrorTypeUnknown, wantKind: KindOther},
+		{name: "row count 14290", text: "inserted 14290 rows then lost connection", wantLadder: fabric.ErrorTypeUnknown, wantKind: KindOther},
+		// Words the reference used to match that the ladder does not.
+		{name: "capacity alone", text: "insufficient capacity in pool", wantLadder: fabric.ErrorTypeUnknown, wantKind: KindOther},
+		{name: "quota alone", text: "quota reached for project", wantLadder: fabric.ErrorTypeUnknown, wantKind: KindOther},
+		{name: "too many open files", text: "too many open files", wantLadder: fabric.ErrorTypeUnknown, wantKind: KindOther},
+		// A whole-number 429, in the code or in the message.
+		{name: "429 code", code: "429", text: "Too Many Requests", wantLadder: fabric.ErrorTypeSaturated, wantKind: KindServerSaturated},
+		{name: "HTTP 429 in text", text: "upstream returned HTTP 429", wantLadder: fabric.ErrorTypeSaturated, wantKind: KindServerSaturated},
+		{name: "429 at start", text: "429: slow down", wantLadder: fabric.ErrorTypeSaturated, wantKind: KindServerSaturated},
+		// Each of fabric's saturation markers, in text the original ladder leaves unknown.
+		{name: "budget_full", text: `MCP_CALL_FAILED: {"code":"session_handle_budget_full"}`, wantLadder: fabric.ErrorTypeSaturated, wantKind: KindServerSaturated},
+		{name: "rate limit", text: "rate limit hit, slow down", wantLadder: fabric.ErrorTypeSaturated, wantKind: KindServerSaturated},
+		{name: "rate_limit code", code: "rate_limit", text: "try later", wantLadder: fabric.ErrorTypeSaturated, wantKind: KindServerSaturated},
+		{name: "too many requests", text: "Too Many Requests", wantLadder: fabric.ErrorTypeSaturated, wantKind: KindServerSaturated},
+		{name: "too many connections", text: "too many connections", wantLadder: fabric.ErrorTypeSaturated, wantKind: KindServerSaturated},
+		{name: "overloaded", text: "server overloaded", wantLadder: fabric.ErrorTypeSaturated, wantKind: KindServerSaturated},
+		{name: "server_busy", text: "server_busy: retry later", wantLadder: fabric.ErrorTypeSaturated, wantKind: KindServerSaturated},
+		{name: "backpressure", text: "backpressure applied", wantLadder: fabric.ErrorTypeSaturated, wantKind: KindServerSaturated},
+		{name: "throttled", text: "request throttled", wantLadder: fabric.ErrorTypeSaturated, wantKind: KindServerSaturated},
+		// The original ladder's "exceeded" rule runs first and its answer is
+		// final, so these saturation messages are timeout to the ladder and
+		// transient to the reference. The reference follows the ladder.
+		{name: "rate limit exceeded", text: "rate limit exceeded", wantLadder: fabric.ErrorTypeTimeout, wantKind: KindTransient},
+		{name: "quota exceeded", text: "quota exceeded", wantLadder: fabric.ErrorTypeTimeout, wantKind: KindTransient},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ladder := fabric.InferErrorType(tt.code, tt.text)
+			require.Equal(t, tt.wantLadder, ladder, "ladder answer")
+			want, ok := ladderKind[ladder]
+			require.True(t, ok, "ladder type %q has a kind", ladder)
+			require.Equal(t, tt.wantKind, want)
+			refs := FailureKindReference(false, tt.code, tt.text)
+			assert.Equal(t, want, refs[QFailureKind].Answer, "reference kind must equal the ladder's kind")
 		})
 	}
 }
