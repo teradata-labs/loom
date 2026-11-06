@@ -644,15 +644,19 @@ type WeaveProgress struct {
 	// and a size of 0; with either set, 0 means no arguments have arrived yet.
 	ToolInputBytes int64 `protobuf:"varint,23,opt,name=tool_input_bytes,json=toolInputBytes,proto3" json:"tool_input_bytes,omitempty"`
 	// The provider's stream index for this tool call (when
-	// is_tool_input_stream). It matches the call's position in the response's
-	// tool-call list on every streaming provider; the OpenAI-compatible ones
-	// (OpenAI, Azure, LiteLLM, Mistral, HuggingFace) also return their tool
-	// calls in stream index order. Gemini
-	// repeats the function name in tool_call_id, so two parallel calls to the
-	// same tool share an ID and only this index tells them apart. The agent's
-	// throttling keys on the same index, so events for one call never
-	// interleave with another's. A bare activity pulse (no tool_call_id, no
-	// tool_name, 0 bytes) carries index 0 without being call 0; skip pulses.
+	// is_tool_input_stream). OpenAI-compatible providers (OpenAI, Azure,
+	// LiteLLM, Mistral, HuggingFace) return their tool calls in stream index
+	// order, so the index is monotonic with position but not necessarily equal
+	// to it: an incomplete call with no id or name is dropped, and later calls
+	// keep their stream index while shifting position. Match a progress event
+	// to its tool-started event by tool_call_id. On providers that deliver
+	// calls in order (Anthropic, Bedrock, Gemini, Ollama) the index matches
+	// position when nothing is dropped. Gemini repeats the function name in
+	// tool_call_id, so two parallel calls to the same tool share an ID and
+	// only this index tells them apart. The agent's throttling keys on the
+	// same index, so events for one call never interleave with another's. A
+	// bare activity pulse (no tool_call_id, no tool_name, 0 bytes) carries
+	// index 0 without being call 0; skip pulses.
 	ToolCallIndex int32 `protobuf:"varint,24,opt,name=tool_call_index,json=toolCallIndex,proto3" json:"tool_call_index,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
