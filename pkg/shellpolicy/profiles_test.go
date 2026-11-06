@@ -15,6 +15,7 @@
 package shellpolicy
 
 import (
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -149,6 +150,9 @@ func TestPolicyHelpers(t *testing.T) {
 }
 
 func TestWithinDirAndResolvePath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
 	assert.True(t, WithinDir("/a", "/a/b"))
 	assert.False(t, WithinDir("/a", "/ab"))
 	assert.False(t, WithinDir("/a/b", "/a"))

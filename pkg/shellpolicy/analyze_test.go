@@ -17,6 +17,7 @@ package shellpolicy
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -39,6 +40,9 @@ func session(t *testing.T) Options {
 // The corpus from design 06 §11 (the hook column), plus the shapes the
 // analyzer has to walk into.
 func TestAnalyze_Corpus(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
 	opt := session(t)
 	pol := Readonly()
 	for _, tc := range []struct {
@@ -218,6 +222,9 @@ func TestAnalyze_Corpus(t *testing.T) {
 }
 
 func TestAnalyze_ReasonAndGrant(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
 	opt := session(t)
 	v := Readonly().Analyze("rm nope; npm install\ncat /etc/hosts", opt)
 	require.Equal(t, Ask, v.Kind)
@@ -293,6 +300,9 @@ func TestLiteral(t *testing.T) {
 }
 
 func TestGlobDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
 	for src, want := range map[string]string{`/etc/pass*`: "/etc", `*.txt`: ".", `a/b/c*`: "a/b", `/x*`: "/"} {
 		got, ok := globDir(parseWord(t, src))
 		assert.True(t, ok, src)
