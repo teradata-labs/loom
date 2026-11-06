@@ -357,7 +357,7 @@ func TestRateLimiter_RetryDelayRetryAfterFloor(t *testing.T) {
 		},
 		{
 			name: "wrapped throttle 20m is not capped",
-			err:  &RetriesExhaustedError{Attempts: 2, Cause: "throttling", Err: NewThrottleError(errors.New("API error (status 429)"), 20*time.Minute)},
+			err:  fmt.Errorf("provider call: %w", NewThrottleError(errors.New("API error (status 429)"), 20*time.Minute)),
 			want: 20 * time.Minute,
 		},
 		{
