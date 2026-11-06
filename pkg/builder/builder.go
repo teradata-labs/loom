@@ -201,6 +201,7 @@ func (b *AgentBuilder) WithOpenAILLMCustomModel(apiKey, model string) *AgentBuil
 }
 
 // WithAzureOpenAILLM configures Azure OpenAI as the LLM provider using API key authentication.
+// A construction error (missing endpoint, deployment or key) is returned by Build.
 func (b *AgentBuilder) WithAzureOpenAILLM(endpoint, deploymentID, apiKey string) *AgentBuilder {
 	client, err := azureopenai.NewClient(azureopenai.Config{
 		Endpoint:     endpoint,
@@ -208,7 +209,7 @@ func (b *AgentBuilder) WithAzureOpenAILLM(endpoint, deploymentID, apiKey string)
 		APIKey:       apiKey,
 	})
 	if err != nil {
-		// Store error for Build() to return
+		b.recordErr(fmt.Errorf("azure-openai: %w", err))
 		return b
 	}
 	b.llm = client
@@ -216,6 +217,7 @@ func (b *AgentBuilder) WithAzureOpenAILLM(endpoint, deploymentID, apiKey string)
 }
 
 // WithAzureOpenAIEntraAuth configures Azure OpenAI with Microsoft Entra ID authentication.
+// A construction error (missing endpoint, deployment or token) is returned by Build.
 func (b *AgentBuilder) WithAzureOpenAIEntraAuth(endpoint, deploymentID, entraToken string) *AgentBuilder {
 	client, err := azureopenai.NewClient(azureopenai.Config{
 		Endpoint:     endpoint,
@@ -223,7 +225,7 @@ func (b *AgentBuilder) WithAzureOpenAIEntraAuth(endpoint, deploymentID, entraTok
 		EntraToken:   entraToken,
 	})
 	if err != nil {
-		// Store error for Build() to return
+		b.recordErr(fmt.Errorf("azure-openai: %w", err))
 		return b
 	}
 	b.llm = client
