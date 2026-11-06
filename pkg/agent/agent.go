@@ -2130,6 +2130,26 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// Run conversation loop
 	response, err := a.runConversationLoop(agentCtx)
 
+	// Ledger-grounded lesson pass (PR #357): mine verified error→fix
+	// transitions from the tool ledger. Runs at the end of every Chat()
+	// call — i.e. per USER MESSAGE, not per conversation — because that is
+	// where the ledger drains, so only within-turn transitions are
+	// mineable. Runs regardless of outcome: a failed turn may still contain
+	// verified intermediate fixes.
+	if a.enableGraphMemoryExtraction {
+		a.graphExtractionWG.Add(1)
+		go func() {
+			defer a.graphExtractionWG.Done()
+			// Consumes the tool ledger AND the error-lane injection record
+			// (outcome credit) — no synchronous clear here, or the async
+			// pass would race with it and lose the credit evidence.
+			a.extractLessonsAtEnd(context.WithoutCancel(ctx), sessionID)
+		}()
+	} else {
+		// Error-triggered lesson tracking is per-conversation state.
+		a.clearErrorLessonState(sessionID)
+	}
+
 	// Close the turn's recorded task, if the runtime recorded one. Deferred
 	// until after the loop so the task spans the whole turn, and run even on
 	// error — a turn that failed still finished, and leaving the row IN_PROGRESS
@@ -3233,8 +3253,19 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 
 		// Resource-await park (park_resource.go): calls held during dispatch
 		// end the turn HERE, after every other call's row and sidecar landed.
+		// It runs before the lesson lane so the park sees the batch tail
+		// exactly as it did before lessons existed; a parked turn ends here
+		// and re-queries the lesson partition on resume instead.
 		if parkErr := a.maybeParkResourceBatch(ctx, session, st, llmResp); parkErr != nil {
 			return nil, parkErr
+		}
+
+		// Error-triggered lesson recall: failures in this batch re-query the
+		// lesson partition with the error text, so a lesson whose trigger is
+		// the error itself (invisible to the conversation-start lane, which
+		// matches task wording) lands right before the model's retry turn.
+		if len(st.errTexts) > 0 {
+			a.injectErrorLessons(ctx, session, st.errTexts)
 		}
 
 		// This step's batch finished dispatching inline (the common, non-crash
@@ -3291,6 +3322,12 @@ type batchState struct {
 	// persist (appendMessage is fail-open). The step's events are then the
 	// only durable record of that call, so the step must not be pruned.
 	rowNotPersisted bool
+
+	// errTexts: tool-error messages from this batch, buffered for the
+	// error-triggered lesson lane (graph_memory_lessons.go). It rides on
+	// batchState rather than the loop because dispatchOneCall — which fills
+	// it — is shared with ResumeChat's parked-batch completion.
+	errTexts []string
 
 	// Resource-await park (park_resource.go). parkableTail mirrors the
 	// pre-scan's durability gate and is set ONLY by the conversation loop —
@@ -3704,6 +3741,16 @@ func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, 
 		Timestamp:  time.Now(),
 	}, false); !persisted {
 		st.rowNotPersisted = true
+	}
+
+	// Mining ledger (graph_memory_lessons.go): record the execution now,
+	// before compilation can evict this turn.
+	a.recordToolLedger(session.ID, toolCall, result)
+
+	// Collect failure text for error-triggered lesson recall (injected AFTER
+	// the whole batch — never between a tool_use and its tool_result).
+	if result != nil && result.Error != nil && result.Error.Message != "" {
+		st.errTexts = append(st.errTexts, result.Error.Message)
 	}
 
 	// If the tool signaled a text_body sidecar (e.g. manage_skills(load)
@@ -4254,7 +4301,18 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 	// visible instead of being hidden behind a successful injection.
 	span.SetAttribute("recall.store_error", storeFailed)
 	span.SetAttribute("recall.candidates", len(candidates))
-	if len(candidates) == 0 {
+
+	// Dedicated lesson lane (PR #357): verified working knowledge rides
+	// regardless of the echo-memory ranking below. Fleet-shared only when
+	// GraphMemoryConfig.fleet_lesson_sharing is opted in; private otherwise.
+	// No probation here — nothing scores what a conversation-start injection
+	// leads to, so a demoted lesson offered here would be cost without
+	// evidence (see fleetLessons). Queried BEFORE the no-candidates return:
+	// an agent that mostly does tool work can hold lessons and no ordinary
+	// memory that matches, and its lessons must still reach the first request.
+	lessons := a.fleetLessons(ctx, searchQuery, budget, false)
+	span.SetAttribute("recall.lessons", len(lessons))
+	if len(candidates) == 0 && len(lessons) == 0 {
 		if storeFailed {
 			// Distinct from no_candidates: the store failed, this is not a miss.
 			outcome = "store_error"
@@ -4264,16 +4322,34 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 		return
 	}
 
-	// LLM re-rank: ask the LLM which candidates are actually relevant.
+	// LLM re-rank: ask the LLM which candidates are actually relevant
+	// (no candidates, no call — rerankMemories returns nil).
 	relevant := a.rerankMemories(ctx, userMessage, candidates)
-	if len(relevant) == 0 {
+	if len(relevant) == 0 && len(lessons) == 0 {
 		outcome = "rerank_none"
 		return
 	}
-	span.SetAttribute("recall.injected", len(relevant))
+	// recall.injected is the total the block carries; the two breakdowns
+	// split it the way lesson.injected / lesson.injected_verified /
+	// lesson.injected_probation split the error-time lane.
+	span.SetAttribute("recall.injected", len(relevant)+len(lessons))
+	span.SetAttribute("recall.injected_memories", len(relevant))
+	span.SetAttribute("recall.injected_lessons", len(lessons))
 
 	var sb strings.Builder
-	sb.WriteString("Relevant memories from past conversations:\n\n")
+	if len(lessons) > 0 {
+		sb.WriteString(a.lessonPrompt(ctx, lessonPromptHeadingStart))
+		sb.WriteString("\n")
+		for _, m := range lessons {
+			sb.WriteString("- ")
+			sb.WriteString(m.Content)
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
+	if len(relevant) > 0 {
+		sb.WriteString("Relevant memories from past conversations:\n\n")
+	}
 	for _, m := range relevant {
 		sb.WriteString("- ")
 		if m.EventDate != "" {
@@ -4648,6 +4724,9 @@ func (a *Agent) DeleteSession(sessionID string) {
 	// nil-receiver-safe, and a.implicitTasks is nil until a task manager is
 	// wired.
 	a.implicitTasks.ForgetSession(sessionID)
+	// Drop the lesson miner's per-session state (ledger, history-coverage
+	// marker, error-lane injection record) for the same reason.
+	a.forgetLessonSession(sessionID)
 	// Release the session's decision-layer budget accounting, which is
 	// likewise bounded by live sessions only because retirement frees it.
 	a.decisionRouter.ForgetSession(sessionID)

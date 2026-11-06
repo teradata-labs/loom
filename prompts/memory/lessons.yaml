@@ -1,0 +1,101 @@
+---
+# Lesson-lane prompts (pkg/agent/graph_memory_lesson_prompts.go). Each entry has a
+# built-in fallback with the same text (lessonPromptFallbacks); the test
+# TestLessonPromptsShippedYAMLMatchesFallback keeps the two identical. The
+# registry trims each entry, so the code adds the surrounding newlines.
+name: memory
+namespace: loom
+---
+prompts:
+  - id: lesson_mining_preamble
+    content: |
+      Each numbered item below is a CLAIMED fix from a tool-execution ledger: a tool call that failed, the error it produced, and the later call of the same kind that stopped erroring. Audit these claims: an error going away proves nothing about the work being right. Name what each change did — and what it traded away.
+    variables: {}
+    tags:
+      - memory
+      - lesson
+    metadata:
+      version: "v1.0"
+      description: "Opening of the lesson-mining prompt: the items are claimed fixes to audit"
+  - id: lesson_mining_task_heading
+    content: |
+      THE CONVERSATION'S TASK (context for judging whether a fix served it — lessons must still generalize beyond this task):
+    variables: {}
+    tags:
+      - memory
+      - lesson
+    metadata:
+      version: "v1.0"
+      description: "Heading above the conversation's task in the lesson-mining prompt"
+  - id: lesson_mining_instructions
+    content: |
+      For each item, extract ONE memory stating the lesson in reusable, situation-independent form — one or two sentences, the cause, the change, and its trade-off; not the story. Compare the failed and succeeded inputs: the difference between them is the change. When the failed and succeeded inputs are identical or nearly identical, the change happened in the CALLS BETWEEN FAILURE AND SUCCESS — name THAT change as the lesson.
+
+      State the trade-off and its applicability condition whenever the change has one. A change that silences an error by discarding or nulling data is a trade, not a free fix. Example of a clean fix: "inserting 16-digit identifiers into an INTEGER column overflows — declare such columns BIGINT". Example of a trade-off lesson: "wrapping CC_Number in a defensive CAST silences numeric overflow but NULLs unconvertible values — safe only when the column is not used as a key or in counts downstream".
+
+      Judge each claim against the evidence:
+      - LATER USE OF THE SAME OBJECT shows what the "fixed" object actually held afterward. Zeros, NULLs, or empty rows where the task expected data mean the change corrupted the data — record the lesson as a WARNING against that change, stating what it broke, not as a fix.
+      - SUCCEEDED RESULT: a success that did no work is NOT a fix. An empty result set, zero rows inserted/affected (e.g. "activity_count":0 on an INSERT), or all-NULL values means the change silenced the error by matching nothing. Skip such items entirely.
+      - Skip an item if the succeeded input does not actually address the error (e.g. it succeeded by abandoning the approach).
+
+      The OBSERVED CHANGED FRAGMENTS line lists what the recovery ACTUALLY changed, computed mechanically from the ledger. The lesson MUST quote these fragments verbatim. When several fragments changed, name ALL of them in the lesson — never pick one and present it as the sole cause; the ledger cannot tell which mattered, and neither can you.
+
+      Return ONLY a JSON object:
+      {"entities": [], "relationships": [], "memories": [{"content": "cause, change, and trade-off", "summary": "short summary", "memory_type": "lesson", "tags": ["lesson"], "salience": 0.9, "entities": [], "event_date": "", "event_date_confidence": ""}]}
+    variables: {}
+    tags:
+      - memory
+      - lesson
+    metadata:
+      version: "v1.0"
+      description: "Closing instructions and JSON contract of the lesson-mining prompt"
+  - id: lesson_heading_conversation_start
+    content: |
+      Verified lessons from prior work (each fix was observed to succeed):
+    variables: {}
+    tags:
+      - memory
+      - lesson
+    metadata:
+      version: "v1.0"
+      description: "Heading of the lessons in the conversation-start graph-memory block"
+  - id: lesson_heading_error_verified
+    content: |
+      [Verified Lessons — matched to the error just hit]
+    variables: {}
+    tags:
+      - memory
+      - lesson
+    metadata:
+      version: "v1.0"
+      description: "Heading of an error-time lesson reminder that holds verified lessons"
+  - id: lesson_heading_error_retrial
+    content: |
+      [Lesson Re-trial — matched to the error just hit]
+    variables: {}
+    tags:
+      - memory
+      - lesson
+    metadata:
+      version: "v1.0"
+      description: "Heading of an error-time lesson reminder that holds only a re-trial lesson"
+  - id: lesson_error_verified_intro
+    content: |
+      These fixes were observed to succeed on this error in prior work:
+    variables: {}
+    tags:
+      - memory
+      - lesson
+    metadata:
+      version: "v1.0"
+      description: "Line above the verified lessons in an error-time reminder"
+  - id: lesson_error_retrial_intro
+    content: |
+      Under re-trial (this one has preceded failures before — use only if it clearly fits):
+    variables: {}
+    tags:
+      - memory
+      - lesson
+    metadata:
+      version: "v1.0"
+      description: "Line above a demoted (re-trial) lesson in an error-time reminder"

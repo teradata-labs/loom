@@ -5796,6 +5796,10 @@
           "type": "integer",
           "format": "int32",
           "description": "Number of recent messages to include in each extraction window.\nDefault: 0 (auto = extraction_cadence * 3, minimum 15).\nSet higher to give the extractor more conversational context per cycle.\nUseful when extraction_cadence is low (e.g., 1) to avoid tiny windows."
+        },
+        "fleetLessonSharing": {
+          "type": "boolean",
+          "description": "Share verified lessons across all agents on this server. Opt-in.\nWhen true, lessons mined from the tool ledger (observed error-\u003efix\ntransitions) are stored in a shared partition visible to every agent,\nand each agent's dedicated lesson recall lane draws from that pool.\nWhen false (default), lessons stay private to the agent that earned\nthem: stored in a partition derived from its graph-memory key\n(\"\u003ckey\u003e__lessons\", where the key is the agent's GraphMemoryAgentID when\nset, otherwise its name) that no other writer targets, and recalled only\nby it.\n\nSECURITY: mined lessons derive from tool output and the model's own tool\ninputs, and are shown to the model as trusted guidance (the graph-memory\ncontext block at conversation start, a \u003csystem-reminder\u003e after a\nmatching error). Enabling this makes one server's output guidance for\nevery agent -- do not enable it when running untrusted tool servers, or\ntools that return text an untrusted party wrote.\nSee docs/reference/security-model.md."
         }
       },
       "description": "GraphMemoryConfig configures the salience-driven graph-backed episodic memory layer."
