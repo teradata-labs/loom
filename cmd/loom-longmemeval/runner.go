@@ -115,8 +115,11 @@ type EntryResult struct {
 	QuestionSessionID string               `json:"question_session_id,omitempty"`
 	HaystackSessions  []HaystackSessionRef `json:"haystack_sessions,omitempty"`
 
-	// grpcCode carries the gRPC status code of a failed Weave call so the
-	// runner can decide whether to abort the whole run. Unexported — never
+	// grpcCode carries the gRPC status code of the failed RPC (Weave,
+	// CreateSession, CreateAgentFromConfig) so the runner can decide whether
+	// to abort the whole run and the CLI can tell a transient outage from a
+	// deterministic failure (classifyOutcome). codes.OK on an entry with an
+	// Error means the failure did not come from an RPC. Unexported — never
 	// serialized to results.
 	grpcCode codes.Code
 
@@ -422,6 +425,7 @@ func (r *Runner) runEntry(ctx context.Context, entry Entry) EntryResult {
 		id, err := r.createTempAgent(ctx, entry.QuestionID)
 		if err != nil {
 			result.Error = fmt.Sprintf("create temp agent: %v", err)
+			result.grpcCode = status.Code(err)
 			result.Duration = time.Since(start)
 			return result
 		}
@@ -496,6 +500,13 @@ func (r *Runner) createTempAgent(ctx context.Context, questionID string) (string
 	cfg.Name = tempAgentName(r.runNonce, questionID)
 	cfg.Description = fmt.Sprintf("LongMemEval temp agent for %s", questionID)
 
+	// A runner killed before its deferred cleanup (SIGKILL, OOM, node loss)
+	// leaves this name registered with the earlier attempt's memory, and the
+	// create below would fail "already running". Remove any such leftover.
+	if _, err := r.client.DeleteAgent(ctx, &loomv1.DeleteAgentRequest{AgentId: cfg.Name, Force: true}); err != nil && status.Code(err) != codes.NotFound {
+		return "", fmt.Errorf("remove stale temp agent %s: %w", cfg.Name, err)
+	}
+
 	info, err := r.client.CreateAgentFromConfig(ctx, &loomv1.CreateAgentRequest{
 		Config: cfg,
 	})
@@ -521,6 +532,9 @@ func (r *Runner) deleteTempAgent(ctx context.Context, agentID string) {
 // buildWeaveRequest constructs a Weave request, attaching occurred_at when
 // a non-zero time is given so replayed turns anchor at their historical date.
 func buildWeaveRequest(sessionID, query, agentID string, occurredAt time.Time) *loomv1.WeaveRequest {
+	// TimeoutSeconds is not a per-call deadline: the server never reads
+	// WeaveRequest.timeout_seconds (#481), and the harness sets no context
+	// deadline on the call either.
 	req := &loomv1.WeaveRequest{
 		Query:          query,
 		SessionId:      sessionID,
@@ -632,6 +646,7 @@ func (r *Runner) runIngestWith(ctx context.Context, entry Entry, sessions []Sess
 	sessionID, err := r.createSession(ctx, fmt.Sprintf("lme-%s", entry.QuestionID), agentID)
 	if err != nil {
 		result.Error = fmt.Sprintf("create session: %v", err)
+		result.grpcCode = status.Code(err)
 		return result
 	}
 
@@ -682,6 +697,7 @@ func (r *Runner) runMultiSessionWith(ctx context.Context, entry Entry, sessions 
 		sessionID, err := r.createSession(ctx, sessName, agentID)
 		if err != nil {
 			result.Error = fmt.Sprintf("create session %d: %v", i, err)
+			result.grpcCode = status.Code(err)
 			return result
 		}
 		result.HaystackSessions = append(result.HaystackSessions, HaystackSessionRef{
@@ -710,6 +726,7 @@ func (r *Runner) runMultiSessionWith(ctx context.Context, entry Entry, sessions 
 	questionSessionID, err := r.createSession(ctx, fmt.Sprintf("lme-%s-q", entry.QuestionID), agentID)
 	if err != nil {
 		result.Error = fmt.Sprintf("create question session: %v", err)
+		result.grpcCode = status.Code(err)
 		return result
 	}
 	result.QuestionSessionID = questionSessionID
@@ -738,6 +755,7 @@ func (r *Runner) runContextStuffingWith(ctx context.Context, entry Entry, sessio
 	sessionID, err := r.createSession(ctx, fmt.Sprintf("lme-%s-cs", entry.QuestionID), agentID)
 	if err != nil {
 		result.Error = fmt.Sprintf("create session: %v", err)
+		result.grpcCode = status.Code(err)
 		return result
 	}
 	defer r.deleteSession(ctx, sessionID)
@@ -774,6 +792,7 @@ func (r *Runner) runConversationWith(ctx context.Context, entry Entry, sessions 
 	sessionID, err := r.createSession(ctx, fmt.Sprintf("lme-%s-conv", entry.QuestionID), agentID)
 	if err != nil {
 		result.Error = fmt.Sprintf("create session: %v", err)
+		result.grpcCode = status.Code(err)
 		return result
 	}
 
