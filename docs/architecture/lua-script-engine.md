@@ -276,7 +276,11 @@ Go stops at the first entry that cannot fit and charges CPU per entry visited, s
   returns `permission_denied`, so a script neither inherits an approval nor waits for a
   human. The call then runs through `ExecuteWithTool` under a deny grant, so a hook that
   answers `Ask` only at execution time (state changed since `Preflight`) is resolved at
-  once from the grant instead of reaching the blocking resolver.
+  once from the grant instead of reaching the blocking resolver. That deny grant is the
+  only `AskGrant` the bridge installs. A script runner must never expose
+  `shuttle.ContextWithAskGrant`, or any other way to build an approved grant, to script
+  code: an approved grant on a nested call's context lifts every `Ask` the chain returns
+  for it, with no person having seen the call.
 - **Guards.** `NewLuaHost` and `RegisterRunLuaTool` refuse when the executor has neither
   an admission chain nor a permission checker (`Executor.HasAdmissionGuards`), and when
   the call has no session.
