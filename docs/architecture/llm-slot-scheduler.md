@@ -153,14 +153,37 @@ rank, the waiter that reached the rank first is served first. `NEW` therefore
 cannot be starved forever by a hot fleet. One outstanding
 slot per conversation (the conversation loop is sequential anyway).
 
-Grant lifetime: a slot covers one LLM call *including its throttle retries*,
-both the limiter's in-grant retries and the agent-level throttle waits. The
-grant is released only when the call returns, so a throttled call holds its
-slot for the whole wait (10 minutes of wall-clock time at most, plus the one
-re-invoked call that can start before the budget is reached). This is a
-design choice: the scope is throttled, so a slot given to another waiter would
-most likely get a 429 too, and the throttle has already halved the scope's
-ceiling.
+Grant lifetime: a slot covers one LLM call *including its retries*, both the
+rate limiter's in-grant retries and the agent-level throttle waits. In the
+limiter, throttling (429) and transient server failures (500/502/503/504/529)
+share one `max_retries` budget and one backoff, so one provider invocation
+makes at most `max_retries + 1` attempts. The exponential backoff base is
+capped at 5 minutes before ±50% jitter, so a wait without `Retry-After` can
+reach 7.5 minutes for a 429 or a 5xx. A 429 `Retry-After` is not capped, so a
+long throttle window holds the grant for as long as the provider asks. A 5xx
+`Retry-After` is capped at 5 minutes. At the limiter defaults
+(`max_retries: 5`, `retry_backoff: 1s`) one invocation therefore spends ~31 s
+of nominal backoff (±50% jitter: ~15.5–46.5 s) plus admission pacing, and up to
+5 × 5 min when the provider sends a long 5xx `Retry-After` (unbounded for a
+long 429 `Retry-After`). When the budget is spent, the limiter returns an
+`llm.RetriesExhaustedError` that wraps the last provider error, and the agent
+acts on that wrapped cause the same way on all three paths (retry enabled,
+streaming, retry disabled). An exhausted throttle is not final: the agent's
+throttle patience waits the longer of the retry-after hint and a 2 s→60 s step,
+then calls the provider again, and each new invocation spends the limiter's
+budget again. This stops at a 10-minute wall-clock budget, measured from the
+start of the first throttled invocation and checked before each wait, so a
+permanent throttle holds the grant for 10 minutes plus at most one invocation.
+An exhausted 5xx is final: the agent does not retry it again, so a provider
+outage holds each scheduled call's slot for one limiter budget rather than
+releasing it on the first 5xx. A context-too-long refusal is never waited out,
+even when its text matches the throttle message fallback (a token count that
+contains "429"); it is returned after one invocation. The grant is released
+only when the call returns, so a throttled call holds its slot for the whole
+wait. This is a design choice: the scope is throttled, so a slot given to
+another waiter would most likely get a 429 too, and the throttle has already
+halved the scope's ceiling. Size `max_retries`/`retry_backoff` with these hold
+times in mind.
 The grant carries a token reservation (§3.4); the reservation is trued-up from
 the response's actual usage when it completes.
 

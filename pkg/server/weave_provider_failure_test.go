@@ -127,6 +127,10 @@ func TestWrapAgentErrorCodes(t *testing.T) {
 		{"Bedrock ValidationException", agentChain(bedrockRuntimeError(400, &brtypes.ValidationException{Message: aws.String("malformed input")})), codes.Internal},
 		{"Bedrock AccessDeniedException", agentChain(bedrockRuntimeError(403, &brtypes.AccessDeniedException{Message: aws.String("denied")})), codes.Internal},
 		{"untyped 5xx message", agentChain(errors.New("API error (status 503): upstream down")), codes.Internal},
+		// The direct HTTP clients type a 5xx that arrives before content
+		// (llm.TransientError exposes HTTPStatusCode); once the limiter's
+		// retries give up, the exhausted error still unwraps to it.
+		{"typed 5xx after the retry budget", agentChain(&llm.RetriesExhaustedError{Attempts: 4, Cause: "a transient server error", Err: llm.NewTransientError(errors.New("API error (status 503)"), 503, 0)}), codes.Unavailable},
 
 		// Order: a request that was canceled or ran out of time is reported
 		// as such even when the provider call it interrupted was throttled.
