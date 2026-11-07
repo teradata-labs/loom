@@ -2309,6 +2309,12 @@ func (r *Registry) reloadAgentFile(ctx context.Context, path, name string) {
 	callback := r.onReload
 	r.mu.RUnlock()
 
+	boundFileExists := false
+	if boundPathForConfigName != "" && filepath.Clean(boundPathForConfigName) != filepath.Clean(path) {
+		_, statErr := os.Stat(boundPathForConfigName)
+		boundFileExists = statErr == nil
+	}
+
 	if hasBoundAgent {
 		if config.Name != boundAgent {
 			r.logger.Error("Agent config name differs from registered agent for file",
@@ -2318,7 +2324,7 @@ func (r *Registry) reloadAgentFile(ctx context.Context, path, name string) {
 			return
 		}
 		name = boundAgent
-	} else if boundPathForConfigName != "" && filepath.Clean(boundPathForConfigName) != filepath.Clean(path) {
+	} else if boundFileExists {
 		r.logger.Error("Agent config name is already bound to another file",
 			zap.String("file", path),
 			zap.String("bound_file", boundPathForConfigName),

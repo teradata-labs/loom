@@ -1452,7 +1452,7 @@ func (c *Client) callAPI(ctx context.Context, req *ChatCompletionRequest) (*Chat
 	if resp.Error != nil {
 		statusCode := httpResp.StatusCode
 		if statusCode == http.StatusOK {
-			statusCode = httpStatusForOpenAIErrorType(resp.Error.Type)
+			statusCode = llm.HTTPStatusForErrorType(resp.Error.Type)
 		}
 		return nil, nil, llm.WrapHTTPStatus(statusCode,
 			fmt.Errorf("OpenAI API error: %s (type: %s)", resp.Error.Message, resp.Error.Type))
@@ -1465,22 +1465,6 @@ func (c *Client) callAPI(ctx context.Context, req *ChatCompletionRequest) (*Chat
 	}
 
 	return &resp, httpResp.Header, nil
-}
-
-func httpStatusForOpenAIErrorType(errType string) int {
-	switch strings.ToLower(errType) {
-	case "rate_limit_error":
-		return http.StatusTooManyRequests
-	case "server_error", "overloaded_error":
-		return http.StatusInternalServerError
-	case "timeout_error":
-		return http.StatusRequestTimeout
-	case "invalid_request_error", "authentication_error", "permission_error",
-		"not_found_error", "insufficient_quota", "billing_error":
-		return http.StatusBadRequest
-	default:
-		return 0
-	}
 }
 
 // Ensure Client implements LLMProvider interface.

@@ -511,6 +511,7 @@ func (s *MultiAgentServer) ReloadAgent(ctx context.Context, req *loomv1.ReloadAg
 					return nil, status.Errorf(codes.Internal, "failed to update reloaded agent: %v", updateErr)
 				}
 			} else if s.registry.HasReloadCallback() {
+				previousConfig := s.registry.GetConfig(ag.GetName())
 				s.mu.RLock()
 				beforeKeys := make(map[string]*agent.Agent, len(s.agents))
 				for k, v := range s.agents {
@@ -557,6 +558,9 @@ func (s *MultiAgentServer) ReloadAgent(ctx context.Context, req *loomv1.ReloadAg
 						s.mu.Unlock()
 						refreshed = candidate
 					} else {
+						if previousConfig != nil {
+							s.registry.RegisterConfig(previousConfig)
+						}
 						return nil, status.Errorf(codes.Internal, "reload callback did not replace agent %q", resolvedID)
 					}
 				}

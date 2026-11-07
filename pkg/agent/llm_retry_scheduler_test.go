@@ -32,6 +32,7 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/llm"
+	"github.com/teradata-labs/loom/pkg/llm/azureopenai"
 	"github.com/teradata-labs/loom/pkg/llm/gemini"
 	"github.com/teradata-labs/loom/pkg/llm/openai"
 	"github.com/teradata-labs/loom/pkg/llm/scheduler"
@@ -382,6 +383,33 @@ func TestDispatchChat_TransientModelFaultsAndTypedRefusals(t *testing.T) {
 		cfg.Retry.MaxRetries = 3
 		cfg.Retry.InitialDelay = time.Millisecond
 		a := &Agent{id: "retry-gemini-400", llm: client, config: cfg}
+		ctx := &agentContext{Context: context.Background(), tracer: observability.NewNoOpTracer()}
+
+		_, err = a.dispatchChat(ctx, []Message{{Role: "user", Content: "hi"}}, nil)
+		require.Error(t, err)
+		assert.Equal(t, 1, calls)
+	})
+
+	t.Run("real Azure OpenAI client HTML 403 gateway error fails in one call", func(t *testing.T) {
+		calls := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			calls++
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`<html><body>403 Forbidden</body></html>`))
+		}))
+		defer srv.Close()
+
+		client, err := azureopenai.NewClient(azureopenai.Config{
+			Endpoint:     srv.URL,
+			DeploymentID: "gpt-4o",
+			APIKey:       "bad-key",
+		})
+		require.NoError(t, err)
+		cfg := DefaultConfig()
+		cfg.Retry.MaxRetries = 3
+		cfg.Retry.InitialDelay = time.Millisecond
+		a := &Agent{id: "retry-azure-403", llm: client, config: cfg}
 		ctx := &agentContext{Context: context.Background(), tracer: observability.NewNoOpTracer()}
 
 		_, err = a.dispatchChat(ctx, []Message{{Role: "user", Content: "hi"}}, nil)

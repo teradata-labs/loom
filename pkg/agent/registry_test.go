@@ -1731,6 +1731,51 @@ func TestReloadAgentFile_RejectsSecondFileClaimingBoundAgentName(t *testing.T) {
 	}
 }
 
+// TestReloadAgentFile_RebindsMovedFile verifies that when an agent's bound YAML
+// file is moved/renamed on disk (so the old bound path no longer exists),
+// reloadAgentFile rebinds configPaths to the new path and ReloadAgent succeeds (F15).
+func TestReloadAgentFile_RebindsMovedFile(t *testing.T) {
+	registry, tmpDir := createTestRegistry(t)
+	ctx := context.Background()
+
+	agentsDir := filepath.Join(tmpDir, "agents")
+	require.NoError(t, os.MkdirAll(agentsDir, 0755))
+	oldPath := filepath.Join(agentsDir, "sql_expert.yaml")
+	newPath := filepath.Join(agentsDir, "sql-expert.yaml")
+
+	cfg := createTestAgentConfig("sql-expert")
+	cfg.Description = "v1"
+	cfg.SystemPrompt = "v1 prompt"
+	require.NoError(t, SaveAgentConfig(cfg, oldPath))
+	require.NoError(t, registry.LoadAgents(ctx))
+
+	before, err := registry.CreateAgent(ctx, "sql-expert")
+	require.NoError(t, err)
+
+	require.NoError(t, os.Rename(oldPath, newPath))
+	cfg.Description = "v2 after move"
+	cfg.SystemPrompt = "v2 prompt after move"
+	require.NoError(t, SaveAgentConfig(cfg, newPath))
+
+	registry.reloadAgentFile(ctx, newPath, "sql-expert")
+
+	assert.Equal(t, "v2 after move", registry.GetConfig("sql-expert").Description)
+	registry.mu.RLock()
+	recordedPath := registry.configPaths["sql-expert"]
+	registry.mu.RUnlock()
+	assert.Equal(t, filepath.Clean(newPath), filepath.Clean(recordedPath), "moved file must rebind configPaths")
+
+	// Subsequent ReloadAgent must read from the new path without error
+	cfg.Description = "v3 via ReloadAgent"
+	require.NoError(t, SaveAgentConfig(cfg, newPath))
+	require.NoError(t, registry.ReloadAgent(ctx, "sql-expert"))
+	assert.Equal(t, "v3 via ReloadAgent", registry.GetConfig("sql-expert").Description)
+	after, err := registry.GetAgent(ctx, "sql-expert")
+	require.NoError(t, err)
+	assert.NotSame(t, before, after)
+	assert.Equal(t, before.GetID(), after.GetID())
+}
+
 // reloadAgentWithConfig (used by ReloadAgent and the workflow watcher when
 // callback == nil) does not overwrite r.configs[name] if rebuilding the agent
 // fails.

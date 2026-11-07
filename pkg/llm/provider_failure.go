@@ -136,10 +136,29 @@ func isDeterministicHTTPStatus(code int) bool {
 func isDeterministicErrorName(name string) bool {
 	switch strings.ToLower(name) {
 	case "invalid_request_error", "authentication_error", "permission_error",
-		"not_found_error", "request_too_large", "billing_error":
+		"not_found_error", "request_too_large", "billing_error", "insufficient_quota":
 		return true
 	}
 	return false
+}
+
+// HTTPStatusForErrorType maps a provider error-type string (for example on an
+// HTTP 200 response carrying a structured error payload) to a representative
+// HTTP status code using the shared provider-failure and client-error tables.
+func HTTPStatusForErrorType(errType string) int {
+	switch f, ok := providerFailureForErrorName(errType); {
+	case ok && f == ProviderFailureThrottled:
+		return http.StatusTooManyRequests
+	case ok && f == ProviderFailureUnavailable:
+		if strings.EqualFold(errType, "timeout_error") {
+			return http.StatusRequestTimeout
+		}
+		return http.StatusInternalServerError
+	case isDeterministicErrorName(errType):
+		return http.StatusBadRequest
+	default:
+		return 0
+	}
 }
 
 // ClassifyProviderFailure reports whether err, anywhere in its wrap chain,
