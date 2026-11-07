@@ -1125,9 +1125,11 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		// Positive identification of the provider's context-too-long refusal
 		// (HLD §5.2 step 12) — the only relief trigger.
 		if llm.IsOpenAIContextTooLong(httpResp.StatusCode, respBody) {
-			return nil, fmt.Errorf("API error (status %d): %s: %w", httpResp.StatusCode, string(respBody), llm.ErrContextTooLong)
+			return nil, llm.WrapHTTPStatus(httpResp.StatusCode,
+				fmt.Errorf("API error (status %d): %s: %w", httpResp.StatusCode, string(respBody), llm.ErrContextTooLong))
 		}
-		return nil, fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody))
+		return nil, llm.WrapHTTPStatus(httpResp.StatusCode,
+			fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody)))
 	}
 
 	// 3. Process Server-Sent Events (SSE) stream
@@ -1429,26 +1431,37 @@ func (c *Client) callAPI(ctx context.Context, req *ChatCompletionRequest) (*Chat
 		return nil, nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	// Parse response
-	var resp ChatCompletionResponse
-	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return nil, nil, fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-
 	// Positive identification of the provider's context-too-long refusal
 	// (HLD §5.2 step 12) — the only relief trigger.
 	if llm.IsOpenAIContextTooLong(httpResp.StatusCode, respBody) {
-		return nil, nil, fmt.Errorf("API error (status %d): %s: %w", httpResp.StatusCode, string(respBody), llm.ErrContextTooLong)
+		return nil, nil, llm.WrapHTTPStatus(httpResp.StatusCode,
+			fmt.Errorf("API error (status %d): %s: %w", httpResp.StatusCode, string(respBody), llm.ErrContextTooLong))
+	}
+
+	// Parse response
+	var resp ChatCompletionResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		if httpResp.StatusCode != http.StatusOK {
+			return nil, nil, llm.WrapHTTPStatus(httpResp.StatusCode,
+				fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody)))
+		}
+		return nil, nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
 	// Check for API errors
 	if resp.Error != nil {
-		return nil, nil, fmt.Errorf("OpenAI API error: %s (type: %s)", resp.Error.Message, resp.Error.Type)
+		statusCode := httpResp.StatusCode
+		if statusCode == http.StatusOK {
+			statusCode = llm.HTTPStatusForErrorType(resp.Error.Type)
+		}
+		return nil, nil, llm.WrapHTTPStatus(statusCode,
+			fmt.Errorf("OpenAI API error: %s (type: %s)", resp.Error.Message, resp.Error.Type))
 	}
 
 	// Check status code
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, nil, fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody))
+		return nil, nil, llm.WrapHTTPStatus(httpResp.StatusCode,
+			fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody)))
 	}
 
 	return &resp, httpResp.Header, nil

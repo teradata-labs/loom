@@ -246,6 +246,13 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 			return nil, err
 		}
 
+		// Non-retryable 4xx client errors (authentication, permission, invalid
+		// request, not found, or an inner rate limiter that already exhausted
+		// its own retries) will not succeed on retry.
+		if isNonRetryableLLMError(err) {
+			return nil, err
+		}
+
 		lastErr = err
 
 		// Don't retry on context cancellation or deadline exceeded
@@ -291,6 +298,19 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 
 	return nil, fmt.Errorf("llm call failed after %d attempts: %w",
 		a.config.Retry.MaxRetries+1, lastErr)
+}
+
+// isNonRetryableLLMError reports whether err represents a deterministic 4xx
+// client error or an inner provider rate limiter that has already exhausted
+// its own retry loop.
+func isNonRetryableLLMError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if llm.IsRetriesExhausted(err) {
+		return true
+	}
+	return llm.IsDeterministicClientError(err)
 }
 
 // toolInputActivityInterval throttles the IsToolInputStream progress events
