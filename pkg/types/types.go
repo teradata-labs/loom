@@ -270,6 +270,15 @@ type ThinkingBlock struct {
 // LLMProvider defines the interface for LLM providers.
 // This allows pluggable LLM backends (Anthropic, Bedrock, Ollama, Azure, etc.).
 //
+// Wrapper implementations (such as quota, retry, or routing decorators) that
+// delegate to an inner LLMProvider should implement:
+//
+//	Unwrap() LLMProvider
+//
+// so that observability helpers such as llm.NewInstrumentedProvider can inspect
+// the provider chain and avoid creating duplicate llm.completion spans when an
+// inner layer is already instrumented with the same tracer.
+//
 // Note: The Chat method accepts context.Context (not agent.Context) to avoid
 // import cycles. Agent-specific context (session, tracer, progress) should be
 // handled at the agent layer, not in LLM providers.
