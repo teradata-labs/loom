@@ -55,7 +55,8 @@ type hitlParkConfig struct {
 // offered.
 const defaultParkTTL = 168 * time.Hour
 
-// WithHITLPark enables park-and-resume for governed calls and contact_human.
+// WithHITLPark enables park-and-resume for governed calls, contact_human and
+// shuttle.ParkableQuestion tools.
 // store persists the grouped request; ttl bounds how long a parked request
 // may wait for a decision (non-positive → 168h); notifier emits the pending
 // event. A nil store leaves park disabled and the legacy in-turn resolver
@@ -454,6 +455,46 @@ func (a *Agent) lockSession(sessionID string) func() {
 	return mu.Unlock
 }
 
+// guardPendingPark refuses only while the session holds a PENDING, unexpired
+// parked request. It is the narrow half of guardParkedTail: ResumeSession needs
+// just this, because its only hazard is minting a second request for a batch
+// that is still waiting on a human. The decided-but-unapplied branch is not
+// safe to reuse there — it matches any approved/rejected row inside its TTL
+// without checking it binds to the current tail, so an old, fully applied park
+// would block the crash-resume of an unrelated later turn.
+func (a *Agent) guardPendingPark(ctx context.Context, sessionID string) error {
+	if a.hitlPark == nil {
+		return nil
+	}
+	reqs, err := a.hitlPark.store.ListBySession(ctx, sessionID)
+	if err != nil {
+		zap.L().Warn("parked-tail guard: listing session requests failed; admitting turn",
+			zap.String("session_id", sessionID), zap.Error(err))
+		return nil
+	}
+	return a.pendingParkIn(ctx, sessionID, reqs)
+}
+
+// pendingParkIn is guardPendingPark over requests the caller already listed, so
+// a guard that needs the list for more than one check reads it once.
+func (a *Agent) pendingParkIn(ctx context.Context, sessionID string, reqs []*shuttle.HumanRequest) error {
+	now := time.Now()
+	for _, r := range reqs {
+		if r == nil || r.RequestType != "parked" || r.Status != "pending" {
+			continue
+		}
+		// A LAPSED row no longer holds the session: nothing sweeps parked rows,
+		// so matching on "pending" alone would let an undecided park refuse
+		// every future turn permanently.
+		if !r.ExpiresAt.IsZero() && now.After(r.ExpiresAt) {
+			a.reclaimLapsedPark(ctx, r)
+			continue
+		}
+		return &SessionParkedError{RequestID: r.ID, SessionID: sessionID, ExpiresAt: r.ExpiresAt}
+	}
+	return nil
+}
+
 // guardParkedTail refuses a new user turn while the session holds a PENDING
 // parked request. Store errors fail open with a warn — the embedder's own
 // admission probe is the primary gate; this guard closes its race with a park
@@ -468,22 +509,10 @@ func (a *Agent) guardParkedTail(ctx context.Context, sessionID string, sess *Ses
 			zap.String("session_id", sessionID), zap.Error(err))
 		return nil
 	}
-	now := time.Now()
-	for _, r := range reqs {
-		if r == nil || r.RequestType != "parked" || r.Status != "pending" {
-			continue
-		}
-		// A LAPSED row no longer holds the session. Nothing sweeps parked rows
-		// — a park has no waiter by design, and the only ExpireRequest callers
-		// are the in-turn waiters and the operator CLI — so matching on
-		// "pending" alone lets a park nobody ever decided refuse every future
-		// turn on this session, permanently.
-		if !r.ExpiresAt.IsZero() && now.After(r.ExpiresAt) {
-			a.reclaimLapsedPark(ctx, r)
-			continue
-		}
-		return &SessionParkedError{RequestID: r.ID, SessionID: sessionID, ExpiresAt: r.ExpiresAt}
+	if err := a.pendingParkIn(ctx, sessionID, reqs); err != nil {
+		return err
 	}
+	now := time.Now()
 
 	// A DECIDED row does not hold the session by status — but the
 	// embedder-recorded flow decides the row BEFORE calling ResumeChat, so
@@ -522,7 +551,7 @@ func unappliedParkedTail(sess *Session) *Message {
 	if sess == nil {
 		return nil
 	}
-	batch, rowless, err := locateParkedBatch(sess, nil)
+	batch, rowless, _, err := locateParkedBatch(sess, nil)
 	if err != nil || len(rowless) == 0 {
 		return nil
 	}
@@ -593,36 +622,126 @@ func (a *Agent) ReleaseParkedHandles(sessionID string) {
 	}
 }
 
-// isParkQuestion reproduces the pre-scan's question classification at
-// completion time: a registered contact_human whose preflight verdict is not
-// Deny. A contact_human that fails this — policy-denied, or unregistered —
-// was deliberately NOT a park item and must complete through the normal
-// dispatch ceremony (policy denial, "tool not found"), never through answer
-// synthesis: a caller-supplied answer for it would lift a Deny.
-func (a *Agent) isParkQuestion(ctx Context, call ToolCall) bool {
-	if call.Name != "contact_human" {
+// parkQuestionOf classifies a call as a park question: a registered
+// contact_human (legacy; pq is nil) or a registered ParkableQuestion whose
+// ParkQuestion says ok. Policy (Preflight) is the caller's concern.
+func (a *Agent) parkQuestionOf(ctx Context, call ToolCall) (question string, pq shuttle.ParkableQuestion, ok bool) {
+	if call.Name == "contact_human" {
+		if _, found := a.tools.Get("contact_human"); !found {
+			return "", nil, false
+		}
+		return extractHITLInfo(call.Input).Question, nil, true
+	}
+	t, found := a.tools.Get(call.Name)
+	if !found {
+		return "", nil, false
+	}
+	p, isPQ := t.(shuttle.ParkableQuestion)
+	if !isPQ {
+		return "", nil, false
+	}
+	spanCtx, span := ctx.Tracer().StartSpan(ctx, "agent.park_question")
+	defer ctx.Tracer().EndSpan(span)
+	span.SetAttribute("tool", call.Name)
+	q, ok := p.ParkQuestion(spanCtx, call.Input)
+	span.SetAttribute("parks", ok)
+	return q, p, ok
+}
+
+// parkedAsQuestion reports whether a rowless call completes through answer
+// synthesis on resume. The kind recorded on the park row is the authority: a
+// ParkableQuestion's classification depends on its input and on tool state, so
+// re-asking ParkQuestion could flip between park and resume and either run
+// Execute under an approval nobody gave or discard the human's answer. A
+// policy Deny is re-checked fresh and is never lifted: a denied call
+// completes through the normal dispatch ceremony instead. A contact_human
+// that is no longer registered also dispatches ("tool not found").
+//
+// Rows written before kinds were recorded carry none; for those only a
+// registered contact_human is treated as a question, as before.
+func (a *Agent) parkedAsQuestion(ctx Context, call ToolCall, kinds map[string]string) bool {
+	switch kinds[call.ID] {
+	case "question":
+	case "":
+		if call.Name != "contact_human" {
+			return false
+		}
+	default:
 		return false
 	}
-	if _, ok := a.tools.Get("contact_human"); !ok {
-		return false
+	if call.Name == "contact_human" {
+		if _, found := a.tools.Get("contact_human"); !found {
+			return false
+		}
 	}
 	return a.executor.Preflight(ctx, call.Name, call.Input).Kind != shuttle.Deny
 }
 
+// parkedAnswerResult builds the result of a parked question from the human's
+// non-empty answer. Execute never runs here: the question was asked and
+// answered. A tool that is no longer registered yields a tool_not_found error
+// result; one that is registered but no longer a ParkableQuestion yields
+// internal_error. Both are visible to the model. The tool_not_found message
+// matches dispatch's unknown-tool error, but dispatch returns a Go error with
+// no result or code, and it first tries dynamic registration, which this
+// check does not.
+func (a *Agent) parkedAnswerResult(ctx Context, call ToolCall, answer string) *shuttle.Result {
+	if call.Name == "contact_human" {
+		return &shuttle.Result{
+			Success: true,
+			Data: map[string]interface{}{
+				"response":     answer,
+				"responded_by": "user",
+				"status":       "responded",
+			},
+		}
+	}
+	t, found := a.tools.Get(call.Name)
+	if !found {
+		return &shuttle.Result{Success: false, Error: &shuttle.Error{
+			Code:    "tool_not_found",
+			Message: fmt.Sprintf("tool not found: %s", call.Name),
+		}}
+	}
+	pq, _ := t.(shuttle.ParkableQuestion)
+	if pq == nil {
+		return &shuttle.Result{Success: false, Error: &shuttle.Error{
+			Code:    "internal_error",
+			Message: "tool is no longer available to build a result for the human's answer",
+		}}
+	}
+	spanCtx, span := ctx.Tracer().StartSpan(ctx, "agent.park_answer_result")
+	defer ctx.Tracer().EndSpan(span)
+	span.SetAttribute("tool", call.Name)
+	res := pq.ParkAnswerResult(spanCtx, call.Input, answer)
+	if res == nil {
+		res = &shuttle.Result{Success: false, Error: &shuttle.Error{
+			Code:    "internal_error",
+			Message: "tool returned no result for the answer",
+		}}
+	}
+	return res
+}
+
 // parkItem is one batch call needing a human: an approval-gated call or a
-// contact_human question.
+// contact_human or ParkableQuestion question.
 type parkItem struct {
 	call     ToolCall
 	seq      int
 	kind     string // "approval" | "question" | "resource"
 	question string
 	uri      string // resource items only: the awaited resource
+	// reason is the Ask's Reason for an approval item: every asking hook's
+	// reason, joined by the admission chain. The approval delivers every one
+	// of those hooks' grants, so the card must show all of them.
+	reason string
 }
 
 // maybeParkBatch is the pre-scan: every call of the batch — contact_human
-// included — is preflighted; a Deny is never lifted (the call falls to the
-// dispatch loop and denies as today), a contact_human survives as a question
-// item, an Ask as an approval item. With no items it returns nil and the
+// and ParkableQuestion tools included — is preflighted; a Deny is never
+// lifted (the call falls to the dispatch loop and denies as today), a
+// contact_human or ParkableQuestion survives as a question item, an Ask as an
+// approval item. With no items it returns nil and the
 // serial dispatch loop runs exactly as today. With items it persists ONE
 // grouped request and ends the turn with TurnParkedError.
 func (a *Agent) maybeParkBatch(ctx Context, sess *Session, llmResp *LLMResponse, turnUsage Usage) error {
@@ -632,20 +751,53 @@ func (a *Agent) maybeParkBatch(ctx Context, sess *Session, llmResp *LLMResponse,
 		if d.Kind == shuttle.Deny {
 			continue
 		}
-		if call.Name == "contact_human" {
-			// Unregistered contact_human keeps today's "tool not found" at
-			// execution.
-			if _, ok := a.tools.Get("contact_human"); !ok {
-				continue
-			}
-			info := extractHITLInfo(call.Input)
-			items = append(items, parkItem{call: call, seq: i, kind: "question", question: info.Question})
+		if q, _, ok := a.parkQuestionOf(ctx, call); ok {
+			items = append(items, parkItem{call: call, seq: i, kind: "question", question: q})
 			continue
 		}
 		if d.Kind == shuttle.Ask {
-			items = append(items, parkItem{call: call, seq: i, kind: "approval"})
+			items = append(items, parkItem{call: call, seq: i, kind: "approval", reason: d.Reason})
 		}
 	}
+	return a.parkItems(ctx, sess, items, llmResp.Usage, turnUsage)
+}
+
+// classifyParkItems runs maybeParkBatch's per-call classification (Deny
+// never lifted; a contact_human survives as a question item; an Ask as an
+// approval item) over an arbitrary subset of calls, with each item's seq
+// supplied by the parallel positions slice rather than assumed to be a fresh
+// range index — required when the subset is not the full original batch
+// (ResumeSession's never-attempted calls are a subset of a crashed batch
+// whose other calls already resolved before the crash; verifyItemBinding
+// requires seq to be each call's TRUE position in the original batch).
+//
+// positions[i] is calls[i]'s true index in the original batch. It is a slice
+// and not a ToolCall.ID-keyed map on purpose: see locateParkedBatch's doc
+// comment — empty and duplicated call IDs make such a map silently return one
+// call's position for all of its colliding siblings.
+func (a *Agent) classifyParkItems(ctx Context, calls []ToolCall, positions []int) []parkItem {
+	var items []parkItem
+	for idx, call := range calls {
+		d := a.executor.Preflight(ctx, call.Name, call.Input)
+		if d.Kind == shuttle.Deny {
+			continue
+		}
+		if q, _, ok := a.parkQuestionOf(ctx, call); ok {
+			items = append(items, parkItem{call: call, seq: positions[idx], kind: "question", question: q})
+			continue
+		}
+		if d.Kind == shuttle.Ask {
+			items = append(items, parkItem{call: call, seq: positions[idx], kind: "approval"})
+		}
+	}
+	return items
+}
+
+// parkItems persists a HumanRequest covering items and ends the turn with a
+// TurnParkedError. No-op (nil error) if items is empty. Shared by
+// maybeParkBatch (the normal pre-dispatch scan) and ResumeSession's re-park
+// path (classifying only the still-unresolved subset of a resumed batch).
+func (a *Agent) parkItems(ctx Context, sess *Session, items []parkItem, usage, turnUsage Usage) error {
 	if len(items) == 0 {
 		return nil
 	}
@@ -712,7 +864,7 @@ func (a *Agent) maybeParkBatch(ctx Context, sess *Session, llmResp *LLMResponse,
 		RequestID: hr.ID,
 		SessionID: sess.ID,
 		ExpiresAt: hr.ExpiresAt,
-		Usage:     llmResp.Usage,
+		Usage:     usage,
 		TurnUsage: turnUsage,
 	}
 }
@@ -769,7 +921,10 @@ func checkParkItemIDs(items []parkItem) error {
 const parkParamsMaxBytes = 65536
 
 // buildParkParams renders one descriptor per item, keyed by the item's
-// ToolCall.ID — the batch↔request binding the resume validates.
+// ToolCall.ID — the batch↔request binding the resume validates. An approval
+// item's descriptor carries the Ask's joined reason under "reason", so the
+// card names everything the approval's grants cover; the overflow digest below
+// shrinks only "params" and never drops it.
 func buildParkParams(items []parkItem) (map[string]interface{}, bool) {
 	truncated := false
 	out := make(map[string]interface{}, len(items))
@@ -792,6 +947,9 @@ func buildParkParams(items []parkItem) (map[string]interface{}, bool) {
 		}
 		if it.kind == "resource" {
 			desc["uri"] = it.uri
+		}
+		if it.kind == "approval" && it.reason != "" {
+			desc["reason"] = it.reason
 		}
 		out[it.call.ID] = desc
 	}
@@ -841,7 +999,7 @@ func parkSummary(items []parkItem) string {
 // human patience). Response.ToolExecutions on a resumed turn covers the
 // post-resume loop only — the parked batch's executions are authoritative in
 // the persisted tool rows and tool-execution records.
-func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkDecision, progressCallback types.ProgressCallback) (*Response, error) {
+func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkDecision, progressCallback types.ProgressCallback) (_ *Response, retErr error) {
 	if a.hitlPark == nil {
 		return nil, ErrParkDisabled
 	}
@@ -862,6 +1020,15 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	// deliver an already-decided resume at most once itself.
 	unlock := a.lockSession(sessionID)
 	defer unlock()
+
+	// Across processes and agents, the session lease (event log only) is what
+	// keeps a live turn or a crash resume from running alongside this one.
+	ctx, releaseLease, err := a.holdSessionLease(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseLease()
+	defer func() { retErr = leaseLostError(ctx, retErr) }()
 
 	startTime := time.Now()
 	ctx, span := a.tracer.StartSpan(ctx, "agent.conversation.resume")
@@ -953,7 +1120,7 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	// parked half recorded instead of describing a different turn.
 	turnIndex, turnUserMessage := parkedTurnIdentity(sess)
 
-	batch, rowless, err := locateParkedBatch(sess, itemIDs)
+	batch, rowless, positions, err := locateParkedBatch(sess, itemIDs)
 	if err != nil {
 		// Close the row ONLY on positive evidence that the turn is dead:
 		// ErrNotParkedTail means a later turn's user row is physically present
@@ -1094,7 +1261,7 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	}
 
 	if len(rowless) > 0 {
-		a.completeParkedBatch(agentCtx, sess, batch, rowless, effective, itemIDs, parkedItemKinds(hr))
+		a.completeParkedBatch(agentCtx, sess, batch, rowless, positions, effective, itemIDs, parkedItemKinds(hr))
 	}
 
 	response, err := a.runConversationLoop(agentCtx)
@@ -1145,7 +1312,7 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 		return nil, fmt.Errorf("conversation loop failed: %w", err)
 	}
 
-	a.appendMessage(ctx, sess, Message{
+	_, replyPersisted := a.appendMessage(ctx, sess, Message{
 		Role:       "assistant",
 		Content:    response.Content,
 		AgentID:    a.GetID(),
@@ -1153,6 +1320,7 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 		TokenCount: response.Usage.TotalTokens,
 		CostUSD:    response.Usage.CostUSD,
 	}, false)
+	a.pruneFinishedTurn(ctx, sess.ID, replyPersisted)
 
 	if err := a.memory.PersistSession(ctx, sess); err != nil {
 		zap.L().Warn("Failed to persist session",
@@ -1212,8 +1380,9 @@ func rawSessionMessages(sess *Session) []Message {
 // about which turn is being resumed.
 //
 // The user message is the FIRST user row of that turn, not the last. The loop
-// appends further user-role rows WITHIN a turn (sidecar drain, empty-response
-// nudge, hygiene fixup, synthesis prompt), all stamped with the same turn; the
+// appends further user-turn rows WITHIN a turn (sidecar drain, empty-response
+// nudge, hygiene fixup, synthesis prompt; persisted under synthetic roles, see
+// IsSyntheticWireUserRole), all stamped with the same turn; the
 // request that opened the turn is the one a board row should be named after.
 //
 // A session with no assistant batch yields turn 0 and no message. Nothing acts
@@ -1236,11 +1405,25 @@ func parkedTurnIdentity(sess *Session) (turnIndex int64, userMessage string) {
 }
 
 // locateParkedBatch finds the tail tool batch and validates the decision
-// against it. The walk is turn-aware: the loop itself appends user-role rows
+// against it. The walk is turn-aware: the loop itself appends user-turn rows
 // WITHIN a turn (sidecar drain, empty-response nudge, hygiene fixup,
-// synthesis prompt), all stamped with the current turn; only a user row of a
-// LATER turn — the sole turn-incrementing append — means history moved on.
-func locateParkedBatch(sess *Session, itemIDs []string) (Message, []ToolCall, error) {
+// synthesis prompt; persisted under synthetic roles, see
+// IsSyntheticWireUserRole), all stamped with the current turn; only a user
+// row of a LATER turn — the sole turn-incrementing append — means history moved on.
+//
+// The third return value is parallel to the second: positions[i] is
+// rowless[i]'s TRUE index in the returned batch's ToolCalls. Callers MUST use
+// it and must never re-derive a call's batch position from ToolCall.ID —
+// providers really do produce IDs that cannot serve as a key. Ollama can omit
+// the id entirely, and Gemini parallel calls reuse the function name as the id
+// (see parkItems' own comment and verifyItemBinding). A map keyed by
+// ToolCall.ID collapses every colliding or empty-id call onto whichever one
+// was written last, so every one of them reads back the SAME wrong index —
+// which silently backfills one call's recorded result onto another, or records
+// a live call's execution event at a position belonging to a sibling. This
+// function already walks the batch in true order to find the rowless calls, so
+// it is the one place that can hand out the real index for free.
+func locateParkedBatch(sess *Session, itemIDs []string) (Message, []ToolCall, []int, error) {
 	msgs := rawSessionMessages(sess)
 
 	k := -1
@@ -1251,23 +1434,27 @@ func locateParkedBatch(sess *Session, itemIDs []string) (Message, []ToolCall, er
 		}
 	}
 	if k < 0 {
-		return Message{}, nil, ErrNothingParked
+		return Message{}, nil, nil, ErrNothingParked
 	}
 	parkedTurn := msgs[k].Turn
 
-	seenRows := make(map[string]bool)
+	// rowCount[id] is how many tool rows follow the batch for that ToolUseID.
+	// A count, not a set: two calls can share an ID (Gemini reuses the function
+	// name for parallel calls to one tool) and a provider can omit it entirely
+	// (Ollama), so "an ID has a row" cannot say WHICH call the row belongs to.
+	rowCount := make(map[string]int)
 	finalReply := false
 	for _, m := range msgs[k+1:] {
 		switch m.Role {
 		case "user":
 			if m.Turn > parkedTurn {
-				return Message{}, nil, ErrNotParkedTail
+				return Message{}, nil, nil, ErrNotParkedTail
 			}
 			// Same-turn user rows are in-turn machinery — skip.
 		case "tool":
-			if m.ToolUseID != "" {
-				seenRows[m.ToolUseID] = true
-			}
+			// Empty IDs are counted too: every non-call tool row carries a real
+			// ID, so an empty-ID row can only belong to an empty-ID call.
+			rowCount[m.ToolUseID]++
 		case "assistant":
 			if len(m.ToolCalls) == 0 {
 				finalReply = true
@@ -1281,7 +1468,7 @@ func locateParkedBatch(sess *Session, itemIDs []string) (Message, []ToolCall, er
 	}
 	for _, id := range itemIDs {
 		if !callIDs[id] {
-			return Message{}, nil, ErrStaleDecision
+			return Message{}, nil, nil, ErrStaleDecision
 		}
 	}
 
@@ -1292,28 +1479,43 @@ func locateParkedBatch(sess *Session, itemIDs []string) (Message, []ToolCall, er
 	// executing them now, under a grant, would run tool bodies the finished
 	// turn declined to run.
 	if finalReply {
-		return Message{}, nil, ErrNothingParked
+		return Message{}, nil, nil, ErrNothingParked
 	}
 
+	// Match rows to calls positionally within each ID. Rows are appended in
+	// dispatch order and dispatch is serial, so the first rowCount[id] calls
+	// carrying an ID are the ones that have rows. Matching by ID alone would
+	// mark every call of a duplicated ID done as soon as one row landed, and
+	// would never mark an empty-ID call done at all.
+	//
+	// Limit: if one call's row write is lost (appendMessage is fail-open) while
+	// a later call with the same ID lands its row, the surviving row is credited
+	// to the earlier call. The execution-event log still holds the lost call's
+	// intent/result, which is what ResumeSession reconciles against.
 	var rowless []ToolCall
-	for _, c := range msgs[k].ToolCalls {
-		if !seenRows[c.ID] {
-			rowless = append(rowless, c)
+	var positions []int
+	for i, c := range msgs[k].ToolCalls {
+		if rowCount[c.ID] > 0 {
+			rowCount[c.ID]--
+			continue
 		}
+		rowless = append(rowless, c)
+		positions = append(positions, i)
 	}
 	// Every row present but NO final reply: the batch was applied and the
 	// turn died before its continuation (LLM outage, crash). Nothing to
 	// complete — but this is not "already complete": the loop must re-enter
 	// so the model sees the results and produces the turn's answer. Refusing
 	// here would strand the turn's answer permanently.
-	return msgs[k], rowless, nil
+	return msgs[k], rowless, positions, nil
 }
 
 // completeParkedBatch finishes the parked batch's tool_use↔tool_result pairs
 // in original batch order. Rejected: every rowless call gets a synthesized
 // permission_denied carrying the human's reason — no tool bodies run,
 // allow-classified calls included (block-all covers the refusal). Approved:
-// question items synthesize the human's answer as the contact_human result;
+// question items synthesize the human's answer as the contact_human result
+// (or the ParkableQuestion tool's ParkAnswerResult);
 // every other call executes through the normal dispatch ceremony.
 //
 // itemIDs are the calls the human's card actually described. ONLY those run
@@ -1322,7 +1524,12 @@ func locateParkedBatch(sess *Session, itemIDs []string) (Message, []ToolCall, er
 // dispatch ungranted, so an ask that appeared while the turn waited — a host
 // gate that trips on budget, quota, or time of day — parks or fails closed
 // exactly as it would in a fresh turn instead of being silently admitted.
-func (a *Agent) completeParkedBatch(ctx Context, sess *Session, batch Message, rowless []ToolCall, decision ParkDecision, itemIDs []string, kinds map[string]string) {
+//
+// positions is parallel to rowless and comes from locateParkedBatch: it
+// carries each rowless call's TRUE index in batch.ToolCalls, which is what
+// every execution-event row must be correlated by. See locateParkedBatch's
+// doc comment for why this is NOT derivable from ToolCall.ID.
+func (a *Agent) completeParkedBatch(ctx Context, sess *Session, batch Message, rowless []ToolCall, positions []int, decision ParkDecision, itemIDs []string, kinds map[string]string) {
 	maxPerTurn := a.config.MaxIterations
 	if maxPerTurn <= 0 {
 		maxPerTurn = 10
@@ -1347,10 +1554,14 @@ func (a *Agent) completeParkedBatch(ctx Context, sess *Session, batch Message, r
 		recovery:           recovery,
 		turnDedup:          make(map[string]*shuttle.Result),
 	}
-
-	seqOf := make(map[string]int, len(batch.ToolCalls))
-	for i, c := range batch.ToolCalls {
-		seqOf[c.ID] = i
+	// The loop recorded each call at its index in the LLM response; the saved
+	// batch can hold fewer calls (query_tool_result is dropped), so a call's
+	// events sit at eventPositions[position], not at position.
+	var eventPositions []int
+	st.stepIndex, eventPositions, st.stepErr = a.batchEventStep(ctx, sess.ID, batch)
+	if st.stepErr != nil {
+		zap.L().Warn("could not resolve the execution-event step for a parked batch; its calls will not run",
+			zap.String("session_id", sess.ID), zap.Error(st.stepErr))
 	}
 
 	// The grant lives only on this derived context — step 4's loop re-entry
@@ -1379,7 +1590,11 @@ func (a *Agent) completeParkedBatch(ctx Context, sess *Session, batch Message, r
 		granted[id] = true
 	}
 
-	for _, call := range rowless {
+	for j, call := range rowless {
+		eventPos := positions[j]
+		if eventPositions != nil {
+			eventPos = eventPositions[eventPos]
+		}
 		switch {
 		case kinds[call.ID] == "resource":
 			// The call's tool body already RAN when the turn parked — every
@@ -1395,7 +1610,7 @@ func (a *Agent) completeParkedBatch(ctx Context, sess *Session, batch Message, r
 				Success: false,
 				Error:   &shuttle.Error{Code: "permission_denied", Message: reason, Retryable: false},
 			}, st)
-		case a.isParkQuestion(ctx, call):
+		case a.parkedAsQuestion(ctx, call, kinds):
 			answer, ok := decision.Answers[call.ID]
 			if !ok || answer == "" {
 				a.synthesizeParkedResult(ctx, sess, call, &shuttle.Result{
@@ -1404,18 +1619,11 @@ func (a *Agent) completeParkedBatch(ctx Context, sess *Session, batch Message, r
 				}, st)
 				continue
 			}
-			a.synthesizeParkedResult(ctx, sess, call, &shuttle.Result{
-				Success: true,
-				Data: map[string]interface{}{
-					"response":     answer,
-					"responded_by": "user",
-					"status":       "responded",
-				},
-			}, st)
+			a.synthesizeParkedResult(ctx, sess, call, a.parkedAnswerResult(ctx, call, answer), st)
 		case granted[call.ID]:
-			a.dispatchOneCall(grantCtx, sess, call, seqOf[call.ID], st)
+			a.dispatchOneCall(grantCtx, sess, call, eventPos, st)
 		default:
-			a.dispatchOneCall(ctx, sess, call, seqOf[call.ID], st)
+			a.dispatchOneCall(ctx, sess, call, eventPos, st)
 		}
 	}
 
@@ -1423,6 +1631,14 @@ func (a *Agent) completeParkedBatch(ctx Context, sess *Session, batch Message, r
 	// is in place — the same pairing rule the loop's drain protects.
 	for _, sidecar := range st.pendingSidecars {
 		a.appendMessage(ctx, sess, sidecar, false)
+	}
+
+	// Error-triggered lesson recall, mirroring the conversation loop's drain.
+	// dispatchOneCall fills st.errTexts on both paths, so without this a
+	// resumed batch's failures would collect lesson evidence and silently
+	// drop it — the drift sharing the dispatch body exists to prevent.
+	if len(st.errTexts) > 0 {
+		a.injectErrorLessons(ctx, sess, st.errTexts)
 	}
 }
 

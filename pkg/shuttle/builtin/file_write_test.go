@@ -331,9 +331,10 @@ func TestFileWriteTool_BatchWrite(t *testing.T) {
 func TestFileWriteTool_BatchPartialFailure(t *testing.T) {
 	dir := t.TempDir()
 	tool := NewFileWriteTool(dir)
+	evil := outsidePath("evil.txt")
 	res, err := tool.Execute(context.Background(), map[string]interface{}{
 		"files": []interface{}{
-			map[string]interface{}{"path": "/etc/evil.txt", "content": "x"},
+			map[string]interface{}{"path": evil, "content": "x"},
 			map[string]interface{}{"path": "good.txt", "content": "y"},
 		},
 	})
@@ -341,7 +342,7 @@ func TestFileWriteTool_BatchPartialFailure(t *testing.T) {
 		t.Fatalf("partial batch must succeed: %v %+v", err, res)
 	}
 	out := res.Data.(string)
-	if !strings.Contains(out, "FAILED /etc/evil.txt") || !strings.Contains(out, "created good.txt") {
+	if !strings.Contains(out, "FAILED "+evil) || !strings.Contains(out, "created good.txt") {
 		t.Fatalf("expected mixed report: %q", out)
 	}
 }

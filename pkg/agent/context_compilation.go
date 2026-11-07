@@ -244,7 +244,7 @@ func (sm *SegmentedMemory) renderLocked(m *Message, t int64, callName map[string
 	// the leading text block (deep-copying so the stored row is untouched); if a
 	// turn somehow carries no text block, fall back to a stamp-only Content so
 	// grounding is never silently dropped.
-	if m.Role == "user" && !m.Timestamp.IsZero() {
+	if (m.Role == "user" || IsSyntheticWireUserRole(m.Role)) && !m.Timestamp.IsZero() {
 		stamp := "[" + m.Timestamp.UTC().Format("Mon 2006-01-02 15:04 MST") + "] "
 		r := *m
 		r.Content = stamp + m.Content
@@ -1243,7 +1243,8 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 	foldRegion := make([]Message, 0, count)
 	protected := make([]Message, 0, 2)
 	for i := 0; i < count; i++ {
-		if sm.contextMessages[i].Turn == tNow && sm.contextMessages[i].Role == "user" {
+		if sm.contextMessages[i].Turn == tNow &&
+			(sm.contextMessages[i].Role == "user" || IsSyntheticWireUserRole(sm.contextMessages[i].Role)) {
 			protected = append(protected, sm.contextMessages[i])
 			continue
 		}

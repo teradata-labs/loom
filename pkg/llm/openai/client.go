@@ -39,6 +39,8 @@ import (
 
 // Client implements the LLMProvider interface for OpenAI's API.
 type Client struct {
+	schemaPolicy           llm.ToolSchemaPolicy
+	strictToolSchemas      bool
 	apiKey                 string
 	model                  string
 	endpoint               string
@@ -55,6 +57,8 @@ type Client struct {
 	// catalogProvider is the catalog namespace calculateCost prices under.
 	// "openai" unless Config.CatalogProvider overrides it.
 	catalogProvider string
+	// singleLeadingSystem merges every system message into one leading message.
+	singleLeadingSystem bool
 }
 
 // DefaultCatalogProvider is the catalog namespace the client prices under
@@ -63,10 +67,11 @@ const DefaultCatalogProvider = "openai"
 
 // Config holds configuration for the OpenAI client.
 type Config struct {
-	APIKey   string
-	Model    string        // Default: gpt-4o
-	Endpoint string        // Default: https://api.openai.com/v1/chat/completions
-	Timeout  time.Duration // Default: 60s
+	StrictToolSchemas bool
+	APIKey            string
+	Model             string        // Default: gpt-4o
+	Endpoint          string        // Default: https://api.openai.com/v1/chat/completions
+	Timeout           time.Duration // Default: 60s
 	// StreamFirstByteTimeout limits the wait for the first response-body bytes in
 	// ChatStream. StreamIdleTimeout limits silence during subsequent network
 	// reads. Non-positive values use DefaultOpenAIStreamFirstByteTimeout and
@@ -99,6 +104,13 @@ type Config struct {
 	// client is told to look there. Without it a gateway alias never matches
 	// the "openai" namespace and is priced at the gpt-4o default below.
 	CatalogProvider string
+	// SingleLeadingSystem merges every system message into one leading system
+	// message. Off by default: the request keeps system messages where the agent
+	// put them. Turn it on for models whose chat template only allows a single
+	// system message at the start (e.g. Qwen on vLLM, which answers 400 "System
+	// message must be at the beginning"). Cache breakpoints are not emitted when
+	// it is on, since the merge invalidates their message positions.
+	SingleLeadingSystem bool
 }
 
 // Default OpenAI configuration values.
@@ -189,6 +201,7 @@ func NewClient(config Config) *Client {
 	}
 
 	return &Client{
+		strictToolSchemas:      config.StrictToolSchemas,
 		apiKey:                 config.APIKey,
 		model:                  config.Model,
 		endpoint:               config.Endpoint,
@@ -200,6 +213,7 @@ func NewClient(config Config) *Client {
 		rateLimiter:            rateLimiter,
 		extraHeaders:           copyHeaders(config.ExtraHeaders),
 		catalogProvider:        config.CatalogProvider,
+		singleLeadingSystem:    config.SingleLeadingSystem,
 		httpClient:             httpClient,
 		streamHTTPClient:       &streamHTTPClient,
 	}
@@ -293,6 +307,16 @@ func (c *Client) sendRequestWithClient(
 						fmt.Errorf("API error (status 429): %s", string(respBody)),
 						retryAfter)
 				}
+				// 500/502/503/504/529: retried by the rate limiter under the
+				// throttle budget; status known before any content streams.
+				if llm.IsTransientStatus(resp.StatusCode) {
+					retryAfter := llm.RetryAfterFromHeaders(resp.Header)
+					respBody, _ := io.ReadAll(io.LimitReader(resp.Body, llm.MaxErrorBodyBytes))
+					_ = resp.Body.Close()
+					return nil, llm.NewTransientError(
+						fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody)),
+						resp.StatusCode, retryAfter)
+				}
 				return resp, nil
 			})
 			if err == nil {
@@ -377,7 +401,10 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 
 	// Convert tools to OpenAI format with name sanitization
 	c.toolNameMap = make(map[string]string)
-	apiTools := c.convertTools(tools)
+	apiTools, err := c.convertTools(ctx, tools)
+	if err != nil {
+		return nil, err
+	}
 
 	// Build request
 	req := &ChatCompletionRequest{
@@ -570,6 +597,10 @@ func (c *Client) convertMessages(messages []llmtypes.Message) []ChatMessage {
 	// Emitted only for Anthropic-backed models: cache_control is Anthropic's
 	// field, and a strict OpenAI-native endpoint may reject the foreign key or
 	// the string→block content reshaping that carries it.
+	if c.singleLeadingSystem {
+		return mergeSystemMessages(apiMessages)
+	}
+
 	if c.emitsCacheControl() {
 		for i, msg := range messages {
 			if emittedIdx, ok := srcToEmitted[i]; ok && msg.CacheBreakpoint {
@@ -579,6 +610,28 @@ func (c *Client) convertMessages(messages []llmtypes.Message) []ChatMessage {
 	}
 
 	return apiMessages
+}
+
+// mergeSystemMessages joins every system message, in order, into one leading
+// system message. Qwen's chat template raises "System message must be at the
+// beginning" for any system message that is not the first message, including a
+// second consecutive one.
+func mergeSystemMessages(msgs []ChatMessage) []ChatMessage {
+	var systemTexts []string
+	rest := make([]ChatMessage, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Role != "system" {
+			rest = append(rest, m)
+			continue
+		}
+		if text, ok := m.Content.(string); ok && text != "" {
+			systemTexts = append(systemTexts, text)
+		}
+	}
+	if len(systemTexts) == 0 {
+		return rest
+	}
+	return append([]ChatMessage{{Role: "system", Content: strings.Join(systemTexts, "\n\n")}}, rest...)
 }
 
 // emitsCacheControl reports whether the configured model is Anthropic-backed —
@@ -687,11 +740,18 @@ func withCacheControl(content interface{}) interface{} {
 // convertTools converts shuttle tools to OpenAI format.
 // Tool names are sanitized to replace colons (MCP namespace separator)
 // with underscores for provider compatibility.
-func (c *Client) convertTools(tools []shuttle.Tool) []Tool {
+func (c *Client) convertTools(ctx context.Context, tools []shuttle.Tool) ([]Tool, error) {
 	var apiTools []Tool
 
 	for _, tool := range tools {
 		originalName := tool.Name()
+		parameters, keep, err := c.schemaPolicy.Prepare(ctx, originalName, tool.InputSchema(), c.strictToolSchemas, "enum", "not")
+		if err != nil {
+			return nil, err
+		}
+		if !keep {
+			continue
+		}
 		sanitizedName := llm.SanitizeToolName(originalName)
 		if c.toolNameMap != nil {
 			c.toolNameMap[sanitizedName] = originalName
@@ -706,80 +766,12 @@ func (c *Client) convertTools(tools []shuttle.Tool) []Tool {
 		}
 
 		// Convert JSONSchema to OpenAI's parameters format
-		schema := tool.InputSchema()
-		if schema != nil {
-			params := make(map[string]interface{})
-			params["type"] = schema.Type
-			if schema.Type == "" {
-				params["type"] = "object"
-			}
-
-			if schema.Properties != nil {
-				params["properties"] = c.convertSchemaProperties(schema.Properties)
-			}
-
-			if len(schema.Required) > 0 {
-				params["required"] = schema.Required
-			}
-
-			apiTool.Function.Parameters = params
-		}
+		apiTool.Function.Parameters = parameters
 
 		apiTools = append(apiTools, apiTool)
 	}
 
-	return apiTools
-}
-
-// convertSchemaProperties converts JSONSchema properties to OpenAI format.
-func (c *Client) convertSchemaProperties(props map[string]*shuttle.JSONSchema) map[string]interface{} {
-	if props == nil {
-		return nil
-	}
-
-	result := make(map[string]interface{})
-	for key, schema := range props {
-		propMap := make(map[string]interface{})
-		propType := schema.Type
-		if propType == "" {
-			propType = "string" // MCP tools may omit type; default to string
-		}
-		propMap["type"] = propType
-
-		if schema.Description != "" {
-			propMap["description"] = schema.Description
-		}
-		if schema.Enum != nil {
-			propMap["enum"] = schema.Enum
-		}
-		if schema.Default != nil {
-			propMap["default"] = schema.Default
-		}
-		if schema.Properties != nil {
-			propMap["properties"] = c.convertSchemaProperties(schema.Properties)
-			if propType == "string" {
-				propMap["type"] = "object"
-			}
-		}
-		if schema.Items != nil {
-			itemMap := make(map[string]interface{})
-			itemType := schema.Items.Type
-			if itemType == "" {
-				itemType = "string"
-			}
-			itemMap["type"] = itemType
-			if schema.Items.Description != "" {
-				itemMap["description"] = schema.Items.Description
-			}
-			propMap["items"] = itemMap
-			if propType == "string" {
-				propMap["type"] = "array"
-			}
-		}
-
-		result[key] = propMap
-	}
-	return result
+	return apiTools, nil
 }
 
 // convertResponse converts OpenAI response to agent format.
@@ -890,35 +882,24 @@ func (c *Client) convertResponse(resp *ChatCompletionResponse, providerCostUSD f
 }
 
 // anthropicFallbackPricing returns published Anthropic rates for a model id
-// proxied through an OpenAI-compatible endpoint. Mirrors the bedrock client's
-// substring matching so a gateway-proxied Claude is never priced as a GPT.
+// proxied through an OpenAI-compatible endpoint, so a gateway-proxied Claude is
+// never priced as a GPT. It delegates to catalog.ClaudeFamilyPricing, the
+// matcher shared with the anthropic and bedrock clients.
 func anthropicFallbackPricing(modelID string) (inputPerM, outputPerM float64, matched bool) {
-	switch {
-	case strings.Contains(modelID, "claude-opus-4-1"):
-		return 15.0, 75.0, true
-	case strings.Contains(modelID, "claude-opus"):
-		return 5.0, 25.0, true
-	case strings.Contains(modelID, "claude-haiku"):
-		return 1.0, 5.0, true
-	case strings.Contains(modelID, "claude-sonnet"), strings.Contains(modelID, "claude-3-5-sonnet"):
-		return 3.0, 15.0, true
-	}
-	return 0, 0, false
+	return catalog.ClaudeFamilyPricing(modelID)
 }
 
 // providerCostHeader is litellm's own computed cost for the call. It is
 // cache-aware and authoritative — preferred over any local estimate.
 const providerCostHeader = "x-litellm-response-cost"
 
-// Cache-tier multipliers on the input rate, by rate-card family. Anthropic
-// bills a 5-minute cache write at 1.25x and a cache read at 0.10x. OpenAI bills
-// a cached input token at 0.5x (gpt-4o: $1.25 cached against $2.50) and has no
-// separate write bucket, so a cache-creation token is simply an input token.
+// Cache-tier multipliers on the input rate for the OpenAI rate card. OpenAI
+// bills a cached input token at 0.5x (gpt-4o: $1.25 cached against $2.50) and
+// has no separate write bucket, so a cache-creation token is simply an input
+// token. Claude's multipliers are per model and come from pkg/llm/catalog.
 const (
-	anthropicCacheWriteMultiplier = 1.25
-	anthropicCacheReadMultiplier  = 0.10
-	openAICacheWriteMultiplier    = 1.0
-	openAICacheReadMultiplier     = 0.5
+	openAICacheWriteMultiplier = 1.0
+	openAICacheReadMultiplier  = 0.5
 )
 
 // parseProviderCost reads the gateway's reported cost, if it sent one.
@@ -977,18 +958,14 @@ func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cache
 	if provider == "" {
 		provider = DefaultCatalogProvider
 	}
-	inputCostPerM, outputCostPerM, ok := catalog.LookupPricing(provider, c.model)
-	if !ok {
-		// Gateways (litellm et al.) proxy non-OpenAI models through this
-		// OpenAI-compatible client under ids like "coding-agent/claude-sonnet-4-6".
-		// Falling through to the GPT rate card below would price them wrongly, so
-		// recognise the Anthropic family first. Order matters: check "opus-4-1"
-		// before "opus-4", since Contains("opus-4-5","opus-4") is true.
-		if in, out, matched := anthropicFallbackPricing(c.model); matched {
-			inputCostPerM, outputCostPerM = in, out
-			ok = true
-		}
-	}
+	// Gateways (litellm et al.) proxy non-OpenAI models through this
+	// OpenAI-compatible client under ids like "coding-agent/claude-sonnet-4-6".
+	// Falling through to the GPT rate card below would price them wrongly, so
+	// catalog.RequestPricing recognises the Anthropic family (the same matcher
+	// as anthropicFallbackPricing) after the catalog, and applies the published
+	// long-context card. prompt_tokens already includes the cached buckets, so
+	// it is the prompt length.
+	inputCostPerM, outputCostPerM, ok := catalog.RequestPricing(provider, c.model, inputTokens)
 	if !ok {
 		switch c.model {
 		case "gpt-4o":
@@ -1048,7 +1025,7 @@ func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cache
 	// model id, so it still identifies a Claude that the catalog priced.
 	cacheReadMult, cacheWriteMult := openAICacheReadMultiplier, openAICacheWriteMultiplier
 	if _, _, isAnthropic := anthropicFallbackPricing(c.model); isAnthropic {
-		cacheReadMult, cacheWriteMult = anthropicCacheReadMultiplier, anthropicCacheWriteMultiplier
+		cacheReadMult, cacheWriteMult = catalog.ClaudeCacheReadMultiplier(c.model), catalog.ClaudeCacheWriteMultiplier
 	}
 
 	uncached := inputTokens - cacheReadTokens - cacheCreationTokens
@@ -1098,7 +1075,10 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	// 1. Build request body (reuse existing message and tool conversion)
 	apiMessages := c.convertMessages(messages)
 	c.toolNameMap = make(map[string]string)
-	apiTools := c.convertTools(tools)
+	apiTools, err := c.convertTools(ctx, tools)
+	if err != nil {
+		return nil, err
+	}
 
 	req := &ChatCompletionRequest{
 		Model:         c.model,

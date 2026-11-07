@@ -81,8 +81,11 @@ func main() {
 
 	// Configure logging -- CRITICAL: never write to stdout (that's the MCP transport)
 	logger, logCloser := setupLogger(*logFile, *logLevel)
-	defer func() { _ = logger.Sync() }()
-	defer func() { _ = logCloser.Close() }()
+	defer func() {
+		// Sync before Close: syncing a closed file is a silent no-op.
+		_ = logger.Sync()
+		_ = logCloser.Close()
+	}()
 
 	logger.Info("starting loom-mcp server",
 		zap.String("grpc_addr", *grpcAddr),

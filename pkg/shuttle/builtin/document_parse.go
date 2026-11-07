@@ -141,6 +141,11 @@ func (t *DocumentParseTool) Backend() string {
 	return ""
 }
 
+// ConcurrencySafe marks this tool safe to run alongside other calls. Pure
+// read: opens and parses a file, no writes or shared state. Also covers the
+// analysis variant (parseCSVWithAnalysis).
+func (t *DocumentParseTool) ConcurrencySafe() bool { return true }
+
 // Execute parses a document and returns structured data.
 func (t *DocumentParseTool) Execute(ctx context.Context, params map[string]interface{}) (*shuttle.Result, error) {
 	// Extract file path
@@ -303,11 +308,8 @@ func (t *DocumentParseTool) cleanPath(path string) (string, error) {
 		"C:/Windows/SysWOW64",
 	}
 
-	slashPath := filepath.ToSlash(cleanPath)
-	for _, blocked := range blacklistedPaths {
-		if strings.HasPrefix(slashPath, blocked) {
-			return "", fmt.Errorf("access denied to system directory: %s", blocked)
-		}
+	if blocked, ok := matchBlockedPath(cleanPath, blacklistedPaths); ok {
+		return "", fmt.Errorf("access denied to system directory: %s", blocked)
 	}
 
 	return cleanPath, nil

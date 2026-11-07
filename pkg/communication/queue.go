@@ -255,7 +255,7 @@ func (q *MessageQueue) Enqueue(ctx context.Context, msg *QueueMessage) error {
 	// Check if this is a response message (has correlation ID)
 	// If so, route it to the waiting request instead of queuing
 	// IMPORTANT: Only route if this is a RESPONSE, not a REQUEST
-	// Correlation IDs are formatted as "corr-{fromAgent}-{timestamp}"
+	// Correlation IDs are formatted as "corr-{fromAgent}-{timestamp}-{seq}"
 	// Responses have ToAgent matching the original fromAgent
 	if msg.CorrelationID != "" {
 		q.mu.RLock()
@@ -264,7 +264,7 @@ func (q *MessageQueue) Enqueue(ctx context.Context, msg *QueueMessage) error {
 
 		if exists {
 			// Extract fromAgent from correlation ID to verify this is a response
-			// Format: "corr-{fromAgent}-{timestamp}"
+			// Format: "corr-{fromAgent}-{timestamp}-{seq}"
 			correlationParts := strings.SplitN(msg.CorrelationID, "-", 3)
 			if len(correlationParts) >= 2 {
 				requestFromAgent := correlationParts[1]

@@ -16,6 +16,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
@@ -35,12 +36,26 @@ type RecoverableError struct {
 func (e *RecoverableError) Error() string { return e.Message }
 func (e *RecoverableError) Unwrap() error { return e.Cause }
 
+// repeatHintThresholds are the run lengths at which the repeat-call hint fires
+// (the DeepSeek Harness defaults). Only agents that opt in use them.
+var repeatHintThresholds = []int{3, 5, 8}
+
 // RecoveryConfig holds tunables for the self-healing orchestrator. The
 // destructive trim knobs are gone with the second relief ladder (blueprint
 // A5): no code path outside releasePressure can remove or shrink a message.
-type RecoveryConfig struct{}
+type RecoveryConfig struct {
+	// RepeatHintThresholds are the lengths of a run of identical consecutive
+	// executed tool calls (same name and canonical input; a call rejected
+	// before execution neither counts nor resets the run) at which noteToolCall
+	// reports a hint. Nil or empty disables hints, which is the default: the
+	// agent opts in with behavior.repeat_call_hint (see registry.go). Hints
+	// exist only when the agent runs with EnableSelfHealing (the orchestrator
+	// is nil otherwise). A park/resume (park.go) builds a fresh orchestrator, so
+	// a run of identical calls restarts its count after a human decision.
+	RepeatHintThresholds []int
+}
 
-// DefaultRecoveryConfig returns sensible defaults.
+// DefaultRecoveryConfig returns the defaults: no repeat hints.
 func DefaultRecoveryConfig() *RecoveryConfig {
 	return &RecoveryConfig{}
 }
@@ -51,17 +66,86 @@ type recoveryOrchestrator struct {
 	config        *RecoveryConfig
 	disabledTools map[string]bool
 	span          *observability.Span
+
+	// Run of identical consecutive tool calls. repeatMu guards lastCallKey,
+	// repeatCount and pendingHint; repeatThresholds is read-only after
+	// construction.
+	repeatMu         sync.Mutex
+	lastCallKey      string
+	repeatCount      int
+	repeatThresholds map[int]bool
+	// pendingHint is the note for the next provider call. It is never stored in
+	// a tool row: a note in the row would break JSON and tabular results, and
+	// would persist into later turns.
+	pendingHint string
 }
 
 func newRecoveryOrchestrator(config *RecoveryConfig, span *observability.Span) *recoveryOrchestrator {
 	if config == nil {
 		config = DefaultRecoveryConfig()
 	}
-	return &recoveryOrchestrator{
-		config:        config,
-		disabledTools: make(map[string]bool),
-		span:          span,
+	thresholds := make(map[int]bool, len(config.RepeatHintThresholds))
+	for _, n := range config.RepeatHintThresholds {
+		thresholds[n] = true
 	}
+	return &recoveryOrchestrator{
+		config:           config,
+		disabledTools:    make(map[string]bool),
+		span:             span,
+		repeatThresholds: thresholds,
+	}
+}
+
+// noteToolCall records one executed tool call keyed by callKey (name + canonical
+// input) and reports the length of the current run of identical consecutive
+// calls and whether that length is a configured hint threshold.
+// A nil receiver returns (0, false).
+func (r *recoveryOrchestrator) noteToolCall(callKey string) (count int, hint bool) {
+	if r == nil {
+		return 0, false
+	}
+	r.repeatMu.Lock()
+	defer r.repeatMu.Unlock()
+	if callKey == r.lastCallKey {
+		r.repeatCount++
+	} else {
+		r.lastCallKey = callKey
+		r.repeatCount = 1
+	}
+	return r.repeatCount, r.repeatThresholds[r.repeatCount]
+}
+
+// repeatHintRecoveryConfig returns the recovery tunables an agent gets from its
+// metadata: the repeat-call thresholds when the agent opted in with
+// behavior.repeat_call_hint (config_loader.go), otherwise nil (no hints).
+func repeatHintRecoveryConfig(metadata map[string]string) *RecoveryConfig {
+	if metadata["_repeat_call_hint"] != "true" {
+		return nil
+	}
+	return &RecoveryConfig{RepeatHintThresholds: repeatHintThresholds}
+}
+
+// setRepeatHint stores the note to add to the next provider call.
+func (r *recoveryOrchestrator) setRepeatHint(note string) {
+	if r == nil {
+		return
+	}
+	r.repeatMu.Lock()
+	defer r.repeatMu.Unlock()
+	r.pendingHint = note
+}
+
+// takeRepeatHint returns the pending note and clears it, so each note reaches
+// exactly one provider call. A nil receiver returns "".
+func (r *recoveryOrchestrator) takeRepeatHint() string {
+	if r == nil {
+		return ""
+	}
+	r.repeatMu.Lock()
+	defer r.repeatMu.Unlock()
+	note := r.pendingHint
+	r.pendingHint = ""
+	return note
 }
 
 // recoverToolCB handles a tool whose circuit breaker has opened.

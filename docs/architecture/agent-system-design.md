@@ -442,12 +442,20 @@ result, err := a.executor.Execute(ctx, toolName, params)
 // Or ExecuteWithTool for a specific tool instance
 result, err := a.executor.ExecuteWithTool(ctx, tool, params)
 
-// The agent walks a response's tool calls in order. Each result is rendered
-// and appended before the next call runs, so tool_use↔tool_result adjacency
-// holds and a later call can see an earlier one's effect.
-for _, tc := range toolCalls {
-    result, err := a.executeToolWithSelfCorrection(ctx, tc.Name, tc.Input, session.ID)
-    session.AddMessage(ctx, toolMessage(tc, result, err))
+// dispatchBatch walks a response's tool calls in order. Each call is three
+// phases: prepareCall (caps, dedup, counters, span), runCall (runTool: the
+// circuit breaker and the executor) and settleCall (settleExecution's lease
+// and guardrail bookkeeping, recovery, the committed tool row). Rows commit in
+// call order, so tool_use↔tool_result adjacency holds. With
+// behavior.parallel_read_tools, consecutive concurrency-safe calls overlap
+// only in runCall; any other call runs alone after earlier rows commit.
+for i, tc := range toolCalls {
+    pc, finished := a.prepareCall(ctx, session, tc, i, st)
+    if finished { // a cap or dedup row is already committed
+        continue
+    }
+    result, err := a.runCall(ctx, pc, session.ID)
+    a.settleCall(ctx, session, pc, st, result, err)
 }
 ```
 
@@ -467,7 +475,7 @@ for _, tc := range toolCalls {
 
 **Responsibility**: Contain tool failures inside the conversation loop, and score responses out of band.
 
-**In the loop** (`executeToolWithSelfCorrection` in `pkg/agent/agent.go`): every tool call is wrapped by an optional per-tool circuit breaker and an optional guardrail engine. A success clears the session's error record; a failure is classified into an `ErrorAnalysisInfo` and handed to the guardrail engine, which shapes what the next turn sees. There is no response-scoring or retry-with-correction step inside the loop.
+**In the loop** (`runTool` and `settleExecution` in `pkg/agent/agent.go`): `runTool` wraps every tool call in an optional per-tool circuit breaker; `settleExecution` then runs in call order (in `settleCall`) and feeds the outcome to an optional guardrail engine, skipping a call the open breaker rejected. A success clears the session's error record; a failure is classified into an `ErrorAnalysisInfo` and handed to the guardrail engine, which shapes what the next turn sees. There is no response-scoring or retry-with-correction step inside the loop.
 
 **Out of band** (`pkg/evals/judges`): judge-based evaluation runs in the evals runner and the judge gRPC service over recorded agent responses. The conversation loop never calls a judge; `judgeLLM` on the Agent is the role-specific provider those callers resolve.
 
