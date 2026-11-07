@@ -22,6 +22,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -31,6 +32,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"github.com/teradata-labs/loom/pkg/skills"
 	"github.com/teradata-labs/loom/pkg/types"
 )
 
@@ -217,4 +219,45 @@ func TestLLMForRole(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, llm.RoleMemoryExtract, tagged.Role())
 	assert.Equal(t, llm.RoleAgent, instrumented.Role())
+}
+
+// TestWithTracerNil_SkillEvictionDoesNotPanic verifies that passing
+// WithTracer(nil) keeps a non-nil NoOpTracer so the skill-eviction callback
+// does not panic (F5).
+func TestWithTracerNil_SkillEvictionDoesNotPanic(t *testing.T) {
+	store := newTestGraphMemoryStore(t)
+	ctx := context.Background()
+	ent, err := store.CreateEntity(ctx, &memory.Entity{AgentID: "nil-tracer-agent", Name: "first", EntityType: "concept"})
+	require.NoError(t, err)
+	mem, err := store.Remember(ctx, &memory.Memory{
+		AgentID: "nil-tracer-agent", Content: "first skill note", MemoryType: memory.MemoryTypeFact, Salience: 0.5,
+		EntityIDs: []string{ent.ID},
+	})
+	require.NoError(t, err)
+
+	orch := skills.NewOrchestrator(skills.NewLibrary(), skills.WithMaxConcurrentSkills(1))
+	cfg := DefaultConfig()
+	cfg.Name = "nil-tracer-agent"
+
+	ag := NewAgent(&mockBackend{}, &extractionMockLLM{},
+		WithConfig(cfg),
+		WithTracer(nil),
+		WithSkillOrchestrator(orch),
+		WithGraphMemoryStore(store, &loomv1.GraphMemoryConfig{Enabled: true}),
+	)
+	require.NotNil(t, ag)
+	require.NotNil(t, ag.tracer, "WithTracer(nil) must keep a non-nil fallback tracer")
+
+	before, err := store.GetMemory(ctx, "nil-tracer-agent", mem.ID)
+	require.NoError(t, err)
+
+	require.NotPanics(t, func() {
+		orch.ActivateSkill("s1", &skills.Skill{Name: "first"}, "test", "", 0.1)
+		orch.ActivateSkill("s1", &skills.Skill{Name: "second"}, "test", "", 0.9)
+	})
+
+	require.Eventually(t, func() bool {
+		after, err := store.GetMemory(ctx, "nil-tracer-agent", mem.ID)
+		return err == nil && after.AccessCount > before.AccessCount
+	}, 3*time.Second, 20*time.Millisecond, "eviction callback must complete without panicking when WithTracer(nil) is used")
 }

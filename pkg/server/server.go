@@ -60,7 +60,8 @@ type Server struct {
 	activeProviderName string                       // currently active pool provider
 	evalStore          *evals.Store                 // optional; nil means no persistence
 	judgeServer        *JudgeServer                 // optional; nil means use hardcoded judge
-	tracer             observability.Tracer         // optional tracer for Weave/StreamWeave spans
+	mu                 sync.RWMutex
+	tracer             observability.Tracer // optional tracer for Weave/StreamWeave spans; guarded by mu
 
 	// allowTimeOverride accepts WeaveRequest.occurred_at (replay/import arrival
 	// times). Default false: client-supplied timestamps can poison temporal
@@ -101,7 +102,15 @@ func (s *Server) SetEvalStore(store *evals.Store) {
 
 // SetTracer configures the observability tracer for Server operations.
 func (s *Server) SetTracer(tracer observability.Tracer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.tracer = tracer
+}
+
+func (s *Server) getTracer() observability.Tracer {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.tracer
 }
 
 // NewServer creates a new LoomService server.
@@ -155,7 +164,7 @@ func (s *Server) Weave(ctx context.Context, req *loomv1.WeaveRequest) (weaveResp
 	}
 
 	weaveStart := time.Now()
-	tracer := s.tracer
+	tracer := s.getTracer()
 	ctx, span := startWeaveSpan(ctx, tracer, "server.Weave", req)
 	if span != nil {
 		defer func() {
@@ -250,7 +259,7 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 		return err
 	}
 
-	tracer := s.tracer
+	tracer := s.getTracer()
 	ctx, span := startWeaveSpan(ctx, tracer, "server.StreamWeave", req)
 	if span != nil {
 		defer func() {

@@ -317,7 +317,12 @@ func convertSpanToProto(span *observability.Span) *loomv1.Span {
 
 // RecordTraceSpan records a completed span in the server's local trace store.
 // Call this after ending a span to make it available via the GetTrace RPC.
+// Credentials and PII are redacted before storing so GetTrace never exposes
+// raw secrets or personal data.
 func (s *MultiAgentServer) RecordTraceSpan(span *observability.Span) {
+	if span == nil {
+		return
+	}
 	s.mu.RLock()
 	traceStoreLcl := s.traceStoreLocal
 	s.mu.RUnlock()
@@ -326,7 +331,10 @@ func (s *MultiAgentServer) RecordTraceSpan(span *observability.Span) {
 		return
 	}
 
-	traceStoreLcl.AddSpan(span)
+	traceStoreLcl.AddSpan(observability.RedactSpan(span, observability.PrivacyConfig{
+		RedactCredentials: true,
+		RedactPII:         true,
+	}))
 }
 
 // SetTraceStore initializes the server's local trace store for GetTrace RPC support.

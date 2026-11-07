@@ -97,14 +97,19 @@ type PhoenixClient struct {
 	baseURL    string
 	apiKey     string
 	http       *http.Client
+	timeout    time.Duration
 	logger     *zap.Logger
 	maxRetries int
 	retryDelay time.Duration
 
-	mu      sync.Mutex
-	stopped bool
-	queue   chan phoenixRequest
-	done    chan struct{}
+	mu        sync.Mutex
+	stopped   bool
+	queue     chan phoenixRequest
+	done      chan struct{}
+	abort     chan struct{}
+	abortOnce sync.Once
+	reqCtx    context.Context
+	reqCancel context.CancelFunc
 }
 
 type phoenixTarget struct {
@@ -157,18 +162,41 @@ func NewPhoenixClient(cfg PhoenixClientConfig) (*PhoenixClient, error) {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
+	reqCtx, reqCancel := context.WithCancel(context.Background())
 	c := &PhoenixClient{
 		baseURL:    base,
 		apiKey:     cfg.APIKey,
 		http:       httpClient,
+		timeout:    timeout,
 		logger:     logger,
 		maxRetries: maxRetries,
 		retryDelay: retryDelay,
 		queue:      make(chan phoenixRequest, queueSize),
 		done:       make(chan struct{}),
+		abort:      make(chan struct{}),
+		reqCtx:     reqCtx,
+		reqCancel:  reqCancel,
 	}
 	go c.run()
 	return c, nil
+}
+
+// ShutdownTimeout returns a shutdown budget sized from the client's per-request
+// timeout, retry count and retry delay (at least 15s, or 2 full retry cycles).
+func (c *PhoenixClient) ShutdownTimeout() time.Duration {
+	if c == nil {
+		return 10 * time.Second
+	}
+	var backoffSum time.Duration
+	for i := 0; i < c.maxRetries; i++ {
+		backoffSum += time.Duration(i+1) * c.retryDelay
+	}
+	perBatch := time.Duration(c.maxRetries+1)*c.timeout + backoffSum
+	budget := 2 * perBatch
+	if budget < 15*time.Second {
+		budget = 15 * time.Second
+	}
+	return budget
 }
 
 // AnnotateTraces queues annotations on traces (TargetID = OTel trace ID).
@@ -202,6 +230,11 @@ func (c *PhoenixClient) Stop(ctx context.Context) error {
 	case <-c.done:
 		return nil
 	case <-ctx.Done():
+		c.abortOnce.Do(func() {
+			close(c.abort)
+			c.reqCancel()
+		})
+		<-c.done
 		return ctx.Err()
 	}
 }
@@ -254,23 +287,43 @@ func validatePhoenixAnnotation(a PhoenixAnnotation) error {
 func (c *PhoenixClient) run() {
 	defer close(c.done)
 	for req := range c.queue {
-		c.send(req)
+		if !c.send(req) {
+			dropped := len(req.items)
+			droppedReqs := 1
+			for rem := range c.queue {
+				dropped += len(rem.items)
+				droppedReqs++
+			}
+			c.logger.Warn("phoenix annotations dropped at shutdown",
+				zap.Int("dropped_annotations", dropped),
+				zap.Int("dropped_requests", droppedReqs))
+			return
+		}
 	}
 }
 
-// send posts one request, retrying network errors, 429 and 5xx.
-func (c *PhoenixClient) send(req phoenixRequest) {
+// send posts one request, retrying network errors, 429 and 5xx. It returns
+// false only when Stop's context deadline aborted the send before completion.
+func (c *PhoenixClient) send(req phoenixRequest) bool {
+	select {
+	case <-c.abort:
+		return false
+	default:
+	}
 	body, err := json.Marshal(map[string]interface{}{"data": phoenixPayload(req)})
 	if err != nil {
 		c.logger.Warn("phoenix annotations not sent: encoding failed", zap.Error(err))
-		return
+		return true
 	}
 	endpoint := c.baseURL + req.target.path
 	for attempt := 0; ; attempt++ {
 		status, err := c.post(endpoint, body)
+		if c.reqCtx.Err() != nil {
+			return false
+		}
 		retryable := err != nil || status == http.StatusTooManyRequests || status >= 500
 		if err == nil && status >= 200 && status < 300 {
-			return
+			return true
 		}
 		if !retryable || attempt >= c.maxRetries {
 			fields := []zap.Field{zap.String("url", endpoint), zap.Int("count", len(req.items)), zap.Int("attempts", attempt+1)}
@@ -280,14 +333,20 @@ func (c *PhoenixClient) send(req phoenixRequest) {
 				fields = append(fields, zap.Int("status", status))
 			}
 			c.logger.Warn("phoenix annotations not sent", fields...)
-			return
+			return true
 		}
-		time.Sleep(time.Duration(attempt+1) * c.retryDelay)
+		timer := time.NewTimer(time.Duration(attempt+1) * c.retryDelay)
+		select {
+		case <-timer.C:
+		case <-c.abort:
+			timer.Stop()
+			return false
+		}
 	}
 }
 
 func (c *PhoenixClient) post(endpoint string, body []byte) (int, error) {
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(c.reqCtx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return 0, err
 	}

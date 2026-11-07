@@ -400,6 +400,9 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		store := a.graphMemoryStore
 		agentName := a.graphMemoryKey()
 		tracer := a.tracer
+		if tracer == nil {
+			tracer = observability.NewNoOpTracer()
+		}
 		a.skillOrchestrator.SetOnSkillEviction(func(sessionID string, skill *skills.Skill, activeFor time.Duration) {
 			// No request context reaches an eviction (Orchestrator.ActivateSkill
 			// takes none), so the boost is a trace of its own; its span groups
@@ -526,9 +529,14 @@ func (a *Agent) reFireSkillActivation(sessionID, skillName string) {
 // Option is a functional option for configuring an Agent.
 type Option func(*Agent)
 
-// WithTracer sets the observability tracer.
+// WithTracer sets the observability tracer. A nil tracer falls back to the
+// no-op tracer so span call sites never dereference nil.
 func WithTracer(tracer observability.Tracer) Option {
 	return func(a *Agent) {
+		if tracer == nil {
+			a.tracer = observability.NewNoOpTracer()
+			return
+		}
 		a.tracer = tracer
 	}
 }

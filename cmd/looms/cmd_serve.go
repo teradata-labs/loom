@@ -3836,7 +3836,7 @@ func runServe(cmd *cobra.Command, args []string) {
 
 		// Send queued Phoenix annotations after the spans they annotate.
 		if phoenixClient != nil {
-			stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			stopCtx, cancel := context.WithTimeout(context.Background(), phoenixClient.ShutdownTimeout())
 			defer cancel()
 			if err := phoenixClient.Stop(stopCtx); err != nil {
 				logger.Warn("Error sending queued Phoenix annotations", zap.Error(err))

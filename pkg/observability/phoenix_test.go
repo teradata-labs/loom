@@ -240,3 +240,59 @@ func TestNewPhoenixClient_RejectsBadURL(t *testing.T) {
 		}
 	}
 }
+
+// TestPhoenixClient_StopInterruptsRetryWaitAndLogsDroppedCount verifies that
+// when Stop's context expires while the worker is waiting to retry a 5xx
+// response (with more annotations queued), the retry wait is interrupted
+// immediately and the dropped annotation count is logged (F8).
+func TestPhoenixClient_StopInterruptsRetryWaitAndLogsDroppedCount(t *testing.T) {
+	firstAttempt := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		select {
+		case firstAttempt <- struct{}{}:
+		default:
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+
+	core, logs := observer.New(zap.WarnLevel)
+	c, err := NewPhoenixClient(PhoenixClientConfig{
+		BaseURL:    srv.URL,
+		MaxRetries: 3,
+		RetryDelay: 10 * time.Second,
+		Logger:     zap.New(core),
+	})
+	require := func(cond bool, msg string) {
+		t.Helper()
+		if !cond {
+			t.Fatal(msg)
+		}
+	}
+	require(err == nil, "NewPhoenixClient failed")
+	require(c.ShutdownTimeout() > 10*time.Second, "ShutdownTimeout must account for retries and request timeout")
+
+	require(c.AnnotateTraces([]PhoenixAnnotation{
+		{TargetID: "t1", Name: "loom.quality", AnnotatorKind: PhoenixAnnotatorLLM},
+		{TargetID: "t1", Name: "loom.safety", AnnotatorKind: PhoenixAnnotatorLLM},
+	}) == nil, "first AnnotateTraces failed")
+	<-firstAttempt
+
+	require(c.AnnotateTraces([]PhoenixAnnotation{
+		{TargetID: "t2", Name: "loom.overall", AnnotatorKind: PhoenixAnnotatorLLM},
+	}) == nil, "second AnnotateTraces failed")
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	stopErr := c.Stop(stopCtx)
+	elapsed := time.Since(start)
+
+	require(errors.Is(stopErr, context.DeadlineExceeded), "expected DeadlineExceeded from Stop")
+	require(elapsed < 2*time.Second, "Stop must interrupt the 10s retry sleep when ctx expires")
+
+	droppedLogs := logs.FilterMessage("phoenix annotations dropped at shutdown").All()
+	require(len(droppedLogs) == 1, "expected one 'phoenix annotations dropped at shutdown' warning")
+	require(droppedLogs[0].ContextMap()["dropped_annotations"] == int64(3), "expected dropped_annotations=3")
+}

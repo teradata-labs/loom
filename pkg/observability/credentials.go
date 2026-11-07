@@ -23,6 +23,11 @@ import (
 // RedactedValue replaces a credential value removed before export.
 const RedactedValue = "[REDACTED]"
 
+// RedactText removes credentials and PII from s.
+func RedactText(s string) string {
+	return redactPIIString(redactCredentialString(s))
+}
+
 // Credential redaction of attribute values. Dropping attributes whose own key
 // names a credential (isCredentialKey) is not enough: tool arguments, tool
 // results and the tool calls an LLM makes are exported as JSON or text inside
@@ -75,6 +80,10 @@ var (
 	// honoured), an array or object without nesting, a number or a literal.
 	plainCredentialPairPattern = regexp.MustCompile(
 		`"([A-Za-z0-9_.\-]{1,64})"(\s*:\s*)("(?:[^"\\]|\\.)*"|\[[^\[\]]*\]|\{[^{}]*\}|-?[0-9][0-9.eE+\-]*|true|false|null)`)
+	// key": "value" — a JSON string pair whose opening quote was consumed by an
+	// earlier unclosed quote in surrounding text.
+	unbalancedCredentialPairPattern = regexp.MustCompile(
+		`\b([A-Za-z][A-Za-z0-9_.\-]{0,63})"(\s*:\s*)("(?:[^"\\]|\\.)*")`)
 	// \"key\":\"value\" — JSON escaped inside a JSON string (for example a
 	// tool result carried in an LLM span's input). One or more backslashes
 	// precede each quote.
@@ -168,17 +177,28 @@ func credentialLike(v string) bool {
 // object or array is matched as a whole, so its contents are cleaned
 // recursively; pairs nested deeper are matched on their own, innermost first.
 func redactPlainCredentialPairs(s string) string {
-	return plainCredentialPairPattern.ReplaceAllStringFunc(s, func(m string) string {
+	s = plainCredentialPairPattern.ReplaceAllStringFunc(s, func(m string) string {
 		sub := plainCredentialPairPattern.FindStringSubmatch(m)
 		key, sep, value := sub[1], sub[2], sub[3]
+		if value == RedactedValue || value == `"`+RedactedValue+`"` {
+			return m
+		}
 		if isCredentialField(key) {
-			if value == `"`+RedactedValue+`"` {
-				return m
-			}
 			return `"` + key + `"` + sep + `"` + RedactedValue + `"`
 		}
 		if len(value) >= 2 && (value[0] == '{' || value[0] == '[') {
 			return `"` + key + `"` + sep + value[:1] + redactPlainCredentialPairs(value[1:len(value)-1]) + value[len(value)-1:]
+		}
+		return m
+	})
+	return unbalancedCredentialPairPattern.ReplaceAllStringFunc(s, func(m string) string {
+		sub := unbalancedCredentialPairPattern.FindStringSubmatch(m)
+		key, sep, value := sub[1], sub[2], sub[3]
+		if value == RedactedValue || value == `"`+RedactedValue+`"` {
+			return m
+		}
+		if isCredentialField(key) {
+			return key + `"` + sep + `"` + RedactedValue + `"`
 		}
 		return m
 	})

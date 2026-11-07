@@ -28,8 +28,10 @@ Loom exports its traces to [Arize Phoenix](https://github.com/Arize-ai/phoenix) 
 - Judge scores posted as Phoenix trace annotations (`phoenix_base_url`)
 
 📋 Planned:
+- Adopting exported 32-hex OTel trace and span IDs on `OTelTracer` spans so `WeaveResponse.traceId` matches Phoenix's trace ID directly (separate PR)
 - A configurable preview length (previews are 200 runes) (separate PR)
 - Experiment tags from `WeaveRequest.context` on the server and agent spans (separate PR)
+- Per-session `eval_runs` eval IDs (currently one process-wide `loom-session-<pid>` eval ID groups concurrent sessions)
 - Experiment-harness telemetry and per-game annotations (Mastermind, card sorting), after the harness moves to its own repository
 - The VM rollout below has not been run yet
 
@@ -122,7 +124,7 @@ Expected output: `114 spans` for the two-turn example. Loom-specific attributes 
 
 ### Task 3: Post judge scores to Phoenix
 
-Set `observability.phoenix_base_url` (the research preset does) and restart Loom. The API key, when Phoenix requires one, comes from the keyring key `phoenix_api_key` or the `PHOENIX_API_KEY` environment variable.
+Set `observability.phoenix_base_url` (the research preset does) and restart Loom. The API key, when Phoenix requires one, comes from the keyring key `phoenix_api_key`, the `PHOENIX_API_KEY` environment variable, or `observability.phoenix_api_key` in YAML (keyring or env preferred).
 
 Register a judge and evaluate a turn, passing its trace ID:
 

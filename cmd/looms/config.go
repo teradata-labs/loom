@@ -645,7 +645,7 @@ type ObservabilityConfig struct {
 	// PhoenixBaseURL is Phoenix's HTTP address, for example
 	// http://127.0.0.1:6006; empty turns annotations off. Independent of mode.
 	PhoenixBaseURL string `mapstructure:"phoenix_base_url"`
-	PhoenixAPIKey  string `mapstructure:"phoenix_api_key"` // From keyring or env only
+	PhoenixAPIKey  string `mapstructure:"phoenix_api_key"` // Can be set in YAML; keyring or PHOENIX_API_KEY env var preferred
 }
 
 // LoggingConfig holds logging configuration.

@@ -17,6 +17,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -24,7 +25,9 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
+	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
 // weaveEntryPoint runs one request through a server entry point and returns
@@ -118,7 +121,8 @@ func TestWeaveServerSpans_PreviewsFollowContentBound(t *testing.T) {
 
 			msg, _ := span.Attributes["message.preview"].(string)
 			resp, _ := span.Attributes["response.preview"].(string)
-			assert.Equal(t, observability.TruncateContent(query), msg)
+			assert.Equal(t, observability.TruncateContent(observability.RedactText(query)), msg)
+			assert.NotContains(t, msg, bearer, "previews are redacted when set")
 			assert.Less(t, len([]rune(msg)), len([]rune(query)), "message truncated")
 			assert.LessOrEqual(t, len([]rune(msg)), limit+1, "message bounded (plus the one-rune truncation marker)")
 			assert.LessOrEqual(t, len([]rune(resp)), limit+1, "response bounded (plus the one-rune truncation marker)")
@@ -140,4 +144,111 @@ func TestWeaveServerSpans_NoPreviewForEmptyQuery(t *testing.T) {
 	recordWeaveSpanUsage(span, &agent.Response{})
 	_, ok = span.Attributes["response.preview"]
 	assert.False(t, ok)
+}
+
+type staticReplyLLM struct {
+	reply string
+}
+
+func (l *staticReplyLLM) Chat(_ context.Context, _ []llmtypes.Message, _ []shuttle.Tool) (*llmtypes.LLMResponse, error) {
+	return &llmtypes.LLMResponse{Content: l.reply}, nil
+}
+func (l *staticReplyLLM) Name() string  { return "static" }
+func (l *staticReplyLLM) Model() string { return "static-v1" }
+
+// TestWeaveGetTrace_RedactsCredentialsAndPIIInPreviews verifies that credentials
+// and PII in the user's query and the agent's reply are redacted before
+// message.preview / response.preview reach GetTrace (F2), including when a
+// secret crosses the 200-rune preview boundary.
+func TestWeaveGetTrace_RedactsCredentialsAndPIIInPreviews(t *testing.T) {
+	const (
+		bearer     = "planted123bearer456token789"
+		email      = "alice.secret@example.com"
+		boundarySk = "sk-boundary1234567890abcdefghijklmnop"
+		replyKey   = "tvly-replysecret1234567890abcdef"
+		replySSN   = "123-45-6789"
+	)
+	// Place boundarySk so it starts before rune 200 and extends past rune 200.
+	prefix := "Contact " + email + " with Authorization: Bearer " + bearer + " "
+	padLen := observability.DefaultMaxContentLength - len([]rune(prefix)) - 10
+	require.Greater(t, padLen, 0)
+	query := prefix + strings.Repeat("x", padLen) + " " + boundarySk
+	reply := "Used key " + replyKey + " for SSN " + replySSN
+
+	for _, streaming := range []bool{false, true} {
+		name := "Weave"
+		if streaming {
+			name = "StreamWeave"
+		}
+		t.Run(name, func(t *testing.T) {
+			tr := observability.NewMockTracer()
+			ag := agent.NewAgent(&mockBackend{}, &staticReplyLLM{reply: reply}, agent.WithTracer(tr))
+			srv := NewMultiAgentServer(map[string]*agent.Agent{"default": ag}, nil)
+			srv.SetTracer(tr)
+
+			ctx := context.Background()
+			var traceID string
+			if !streaming {
+				resp, err := srv.Weave(ctx, &loomv1.WeaveRequest{Query: query, SessionId: "f2-weave"})
+				require.NoError(t, err)
+				traceID = resp.TraceId
+			} else {
+				stream := &mockStreamWeaveStream{ctx: ctx}
+				require.NoError(t, srv.StreamWeave(&loomv1.WeaveRequest{Query: query, SessionId: "f2-stream"}, stream))
+				require.NotEmpty(t, stream.progress)
+				traceID = stream.progress[len(stream.progress)-1].TraceId
+			}
+			require.NotEmpty(t, traceID)
+
+			traceResp, err := srv.GetTrace(ctx, &loomv1.GetTraceRequest{TraceId: traceID})
+			require.NoError(t, err)
+			require.NotEmpty(t, traceResp.Spans)
+
+			dumped := fmt.Sprintf("%+v", traceResp.Spans)
+			for _, secret := range []string{bearer, email, boundarySk, boundarySk[:10], replyKey, replySSN} {
+				assert.NotContains(t, dumped, secret, "GetTrace leaked %q", secret)
+			}
+		})
+	}
+}
+
+// TestServer_ConcurrentSetTracerAndWeave verifies that Server synchronizes
+// tracer reads and writes across SetTracer, Weave, and StreamWeave (F4).
+func TestServer_ConcurrentSetTracerAndWeave(t *testing.T) {
+	tr1 := observability.NewMockTracer()
+	tr2 := observability.NewMockTracer()
+	ag := agent.NewAgent(&mockBackend{}, &mockLLMForMultiAgent{}, agent.WithTracer(tr1))
+	srv := NewServer(ag, nil)
+	srv.SetTracer(tr1)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(3)
+		go func(iter int) {
+			defer wg.Done()
+			if iter%2 == 0 {
+				srv.SetTracer(tr2)
+			} else {
+				srv.SetTracer(tr1)
+			}
+		}(i)
+		go func(iter int) {
+			defer wg.Done()
+			_, err := srv.Weave(context.Background(), &loomv1.WeaveRequest{
+				Query:     "hello",
+				SessionId: fmt.Sprintf("race-weave-%d", iter),
+			})
+			assert.NoError(t, err)
+		}(i)
+		go func(iter int) {
+			defer wg.Done()
+			stream := &mockStreamWeaveStream{ctx: context.Background()}
+			err := srv.StreamWeave(&loomv1.WeaveRequest{
+				Query:     "hello",
+				SessionId: fmt.Sprintf("race-stream-%d", iter),
+			}, stream)
+			assert.NoError(t, err)
+		}(i)
+	}
+	wg.Wait()
 }
