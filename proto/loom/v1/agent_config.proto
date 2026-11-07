@@ -338,6 +338,25 @@ message GraphMemoryConfig {
   // Set higher to give the extractor more conversational context per cycle.
   // Useful when extraction_cadence is low (e.g., 1) to avoid tiny windows.
   int32 extraction_window_messages = 14;
+
+  // Share verified lessons across all agents on this server. Opt-in.
+  // When true, lessons mined from the tool ledger (observed error->fix
+  // transitions) are stored in a shared partition visible to every agent,
+  // and each agent's dedicated lesson recall lane draws from that pool.
+  // When false (default), lessons stay private to the agent that earned
+  // them: stored in a partition derived from its graph-memory key
+  // ("<key>__lessons", where the key is the agent's GraphMemoryAgentID when
+  // set, otherwise its name) that no other writer targets, and recalled only
+  // by it.
+  //
+  // SECURITY: mined lessons derive from tool output and the model's own tool
+  // inputs, and are shown to the model as trusted guidance (the graph-memory
+  // context block at conversation start, a <system-reminder> after a
+  // matching error). Enabling this makes one server's output guidance for
+  // every agent -- do not enable it when running untrusted tool servers, or
+  // tools that return text an untrusted party wrote.
+  // See docs/reference/security-model.md.
+  bool fleet_lesson_sharing = 15;
 }
 
 // TaskBoardConfig configures the dependency-aware task decomposition and kanban system.

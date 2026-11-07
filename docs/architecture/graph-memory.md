@@ -49,7 +49,7 @@ Salience-driven graph-backed episodic memory for persistent, cross-session agent
 2. **Salience-Driven Retrieval**: Not all memories are equal; salience scoring with time decay ensures the most important and recent memories surface first
 3. **Immutable Audit Trail**: Memory content is append-only with lineage tracking (SUPERSEDES, CONSOLIDATES), providing a complete historical record
 4. **Token Budget Control**: Automatic context truncation prevents memory injection from overflowing the LLM context window
-5. **Agent-Scoped Isolation**: Each agent maintains its own knowledge graph; no cross-agent leakage
+5. **Agent-Scoped Isolation**: Each agent maintains its own knowledge graph; no cross-agent leakage. The `agent_id` key is `Config.GraphMemoryAgentID` when set, otherwise `Config.Name`
 6. **Opt-Out by Default**: Graph memory is enabled when a store is available; agents must explicitly disable it
 
 **Non-goals**:
@@ -374,7 +374,7 @@ Uses multiplicative combination (`CombineScores` in `pkg/memory/salience.go:122`
 3. Format result via `EntityRecall.Format()` into structured text
 4. Return the note `[Graph Memory Context]\n{formatted_recall}`, which every LLM call of the turn carries in its trailing `<system-reminder>` user message (`withSystemReminder`, with the turn's soft reminder). It is never added to the session, so it is not persisted and a resumed turn recalls again. It is not a system message: the Anthropic client moves system messages into the request's `system` field, ahead of the conversation, where a note that changes every turn would miss the prompt cache on every call.
 
-   `TestGraphMemoryRecall_PromptCacheLive` (`pkg/agent/graph_memory_prompt_cache_live_test.go`, needs `ANTHROPIC_API_KEY`) runs an eight-message conversation against the Anthropic API and logs the cache read, cache write and uncached input tokens the API reports for each main call. `TestGraphMemoryRecall_PromptCache` checks the same properties offline on every run: one recall note per request, none in the `system` field, and each call reading back what the previous one cached.
+   `TestGraphMemoryRecall_PromptCacheLive` (`pkg/agent/graph_memory_prompt_cache_live_test.go`, needs `ANTHROPIC_API_KEY`) runs an eight-message conversation against the Anthropic API and logs the cache read, cache write and uncached input tokens the API reports for each main call. It requests thinking at level `auto` (`LOOM_LIVE_CACHE_THINKING` sets another, `none` turns it off) and logs how many thinking blocks each request replays. `TestGraphMemoryRecall_PromptCache` checks the same properties offline on every run, with every message a two-call tool turn whose first response carries a thinking block: one recall note per request, none in the `system` field, every earlier turn's thinking block replayed, and each call reading back what the previous one cached.
 
    One run each on 2026-10-27, `claude-haiku-5-5`, each message sent right after the previous one (inside the 5-minute cache lifetime). "Before" is `main` at 99c51663 with the live test added; "After" is this change. Totals are for every main call after the first; the runs made 16 and 14 main calls in all, because the model chose its own `graph_memory` tool calls, so compare the shares. Cost is loom's estimate (`calculateCost`), which prices `claude-haiku-5-5` at the generic Haiku fallback rate.
 
@@ -386,7 +386,9 @@ Uses multiplicative combination (`CombineScores` in `pkg/memory/salience.go:122`
    | Estimated cost | $0.0740 | $0.0383 |
    | Recall notes in the last request | 7 | 1 |
 
-   The after column also depends on settled turns keeping their thinking blocks while the context before them is unchanged (`compileLocked` in `pkg/agent/context_compilation.go`): current models keep earlier turns' thinking, so leaving it out changed the request from the first tool call of each earlier message that used tools.
+   These runs did not request thinking (the live test then left `ThinkingLevel` unset), so they measure the recall note's move only. With thinking on, the cache also depends on settled turns keeping their thinking blocks while the context before them is unchanged (`compileLocked` in `pkg/agent/context_compilation.go`): current models keep earlier turns' thinking, so leaving it out changes the request from the first tool call of each earlier message that used tools. The offline test covers that; a live run with thinking on has not been recorded here yet.
+
+   The recall note is not stored, but it is sent, so the relief estimate and the provider-count calibration include it (`SegmentedMemory.SetTransientTail`), as they include the advertised tool schemas.
 
 **Token Budget**: Controlled by config. Default: 20% of context window (200K * 20% = 40K tokens). Can be overridden with absolute `max_context_tokens`. Within `ContextFor()`, the budget is allocated in three phases: entity profile (200 tokens reserved), graph neighborhood (300 tokens reserved), and remaining budget for ranked memories via `AllocateMemoryBudget()` in `pkg/memory/budget.go`.
 
@@ -693,6 +695,8 @@ SELECT DISTINCT * FROM neighbor_walk
 **Description**: Knowledge graphs are isolated per `agent_id`. No cross-agent memory sharing.
 
 **Impact**: Two agents cannot share knowledge unless explicitly copied. This is by design for isolation.
+
+**Key**: `agent_id` is `Config.GraphMemoryAgentID` when set, otherwise `Config.Name`; set an ID to keep memories across a rename. Two agents given the same ID share one graph. The ID is set from Go only (`agent.WithGraphMemoryAgentID` or `agent.WithConfig`); there is no YAML or proto field. The `graph_memory.recall` span records the key as `graph_memory.agent_key`.
 
 ### Constraint 3: Keyword Search Only
 

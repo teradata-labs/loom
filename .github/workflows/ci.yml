@@ -102,7 +102,7 @@ jobs:
 
       - name: Run gofmt
         run: |
-          gofmt_output=$(find . -name '*.go' -not -path './vendor/*' -not -path './gen/*' -exec gofmt -l {} +)
+          gofmt_output=$(find . -name '*.go' -not -path './vendor/*' -not -path './gen/*' -not -path './third_party/*' -exec gofmt -l {} +)
           if [ -n "$gofmt_output" ]; then
             echo "The following files need formatting:"
             echo "$gofmt_output"
@@ -113,6 +113,16 @@ jobs:
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.9.0
+
+      # The only regression tests for a runner that spends real Bedrock money
+      # on multi-day runs. STRICT so a missing jq/pyyaml fails the job instead
+      # of printing SKIP and going green.
+      - name: LongMemEval rig regression tests
+        env:
+          LME_RIG_STRICT: "1"
+        run: |
+          bash deploy/longmemeval/render-test.sh
+          bash deploy/longmemeval/slice-loop-test.sh
 
   # ============================================================================
   # Job 3: Unit Tests with Race Detection
@@ -343,6 +353,13 @@ jobs:
 
           echo "✅ Observability package fuzz tests completed" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Run fuzz tests (luasandbox package)
+        run: |
+          set -euo pipefail
+          go test -tags fts5 -run=^$ -fuzz='^FuzzRun$' -fuzztime=30s ./pkg/luasandbox
+
+          echo "✅ Lua script engine fuzz tests completed" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Run fuzz tests with hawk (observability privacy)
         run: |
           set -euo pipefail
@@ -500,7 +517,7 @@ jobs:
       - name: Run Gosec Security Scanner
         uses: securego/gosec@5eb1d104ef85ff2c905c877eb600e8c1dee33a22 # v2.30.0
         with:
-          args: '-no-fail -fmt sarif -out results.sarif -exclude-dir=gen ./...'
+          args: '-no-fail -fmt sarif -out results.sarif -exclude-dir=gen -exclude-dir=third_party ./...'
 
       - name: Fix SARIF schema compliance
         run: |
@@ -576,9 +593,10 @@ jobs:
   # Job 7b: Windows Unit Tests
   # ============================================================================
   # Guards the Windows test-suite portability fixes (path separators, open file
-  # handles blocking temp-dir removal, POSIX-only assumptions). No -race and no
-  # service containers: the Linux `test` job owns race detection and the
-  # postgres-backed tests.
+  # handles blocking temp-dir removal, POSIX-only assumptions). The full suite
+  # runs without -race; -race runs only on the packages with OS-specific code
+  # that .github/scripts/windows-race-packages.sh detects. No service
+  # containers: the Linux `test` job owns the postgres-backed tests.
   test-windows:
     name: Unit Tests (Windows)
     runs-on: windows-latest
@@ -624,6 +642,25 @@ jobs:
       - name: Run tests
         shell: bash
         run: go test -tags fts5 -short -timeout=30m ./...
+
+      - name: Run platform-specific tests with race detection
+        # The full-repo run above has no -race because it would multiply the job
+        # time. This step runs -race on the packages with OS-specific code, found
+        # by .github/scripts/windows-race-packages.sh (files compiled for windows
+        # but not linux, and non-test code that reads runtime.GOOS), so new OS
+        # boundaries are picked up without editing this workflow. -short matches
+        # the step above and keeps test/loadtest (which only reads runtime.GOOS to
+        # report its environment) from running its scalability tests under -race.
+        shell: bash
+        run: |
+          pkgs=$(.github/scripts/windows-race-packages.sh)
+          echo "Packages with Windows-specific code:"
+          echo "$pkgs"
+          if [ -z "$pkgs" ]; then
+            echo "none found; skipping"
+            exit 0
+          fi
+          go test -tags fts5 -short -race -timeout=15m $pkgs
 
   # ============================================================================
   # Job 8: All Checks Passed

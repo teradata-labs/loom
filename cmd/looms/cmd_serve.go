@@ -36,6 +36,7 @@ import (
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
 	"github.com/teradata-labs/loom/pkg/embedding"
 	"github.com/teradata-labs/loom/pkg/evals"
+	"github.com/teradata-labs/loom/pkg/eventlog"
 	"github.com/teradata-labs/loom/pkg/fabric"
 	fabricfactory "github.com/teradata-labs/loom/pkg/fabric/factory"
 	"github.com/teradata-labs/loom/pkg/llm"
@@ -259,6 +260,35 @@ func registerYAMLBuiltinTools(
 			logger.Warn(indent+"  Unknown builtin tool", zap.String("name", toolName))
 		}
 	}
+}
+
+// serveAgentConfig is the agent.Config both serve paths (startup and hot
+// reload) start from: identity, prompt, ROM, metadata, turn and tool-execution
+// limits (behavior values, else the defaults 25 and 50), tracing, and the
+// metadata-encoded behavior flags (agent.ApplyMetadataBehavior).
+func serveAgentConfig(cfg *loomv1.AgentConfig, tracing bool) *agent.Config {
+	maxTurns := 25          // Default from pkg/agent/types.go:145
+	maxToolExecutions := 50 // Default from pkg/agent/types.go:146
+	if cfg.Behavior != nil {
+		if cfg.Behavior.MaxTurns > 0 {
+			maxTurns = int(cfg.Behavior.MaxTurns)
+		}
+		if cfg.Behavior.MaxToolExecutions > 0 {
+			maxToolExecutions = int(cfg.Behavior.MaxToolExecutions)
+		}
+	}
+	agentCfg := &agent.Config{
+		Name:              cfg.Name,
+		Description:       cfg.Description,
+		SystemPrompt:      cfg.SystemPrompt,
+		Rom:               cfg.Rom,      // ROM identifier for domain-specific knowledge
+		Metadata:          cfg.Metadata, // Metadata includes backend_path for ROM auto-detection
+		MaxTurns:          maxTurns,
+		MaxToolExecutions: maxToolExecutions,
+		EnableTracing:     tracing,
+	}
+	agent.ApplyMetadataBehavior(agentCfg, cfg.Metadata)
+	return agentCfg
 }
 
 // createPermissionChecker creates a PermissionChecker based on configuration.
@@ -1157,7 +1187,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		llmscheduler.Default().SetLogger(logger)
 	}
 
-	logger.Info("Starting Loom Server", zap.String("version", rootCmd.Version))
+	logger.Info("Starting Loom Server", zap.String("version", rootCmd.Version), zap.String("commit", gitCommit))
 
 	// Show actual config file used (not just the --config flag)
 	configFileUsed := viper.ConfigFileUsed()
@@ -1294,6 +1324,20 @@ func runServe(cmd *cobra.Command, args []string) {
 
 	// Extract individual stores from backend
 	store := storageBackend.SessionStorage()
+
+	// Durable execution log (opt-in, execution_log.enabled). Every agent built
+	// below records it, so `loom sessions resume` can finish a turn a crash
+	// interrupted. Enabled on a backend without support is a startup error,
+	// not a silent no-op: resume would then refuse every turn.
+	var executionLog eventlog.EventLogStore
+	if config.ExecutionLog.Enabled {
+		elp, ok := storageBackend.(backend.EventLogProvider)
+		if !ok || elp.EventLogStore() == nil {
+			logger.Fatal("execution_log.enabled is set, but the storage backend does not provide an execution log")
+		}
+		executionLog = elp.EventLogStore()
+		logger.Info("Execution log enabled: agents record write-ahead events for crash resume")
+	}
 
 	// Extract graph memory store if available (optional interface)
 	var graphMemoryStore memory.GraphMemoryStore
@@ -1797,6 +1841,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		PermissionChecker: permissionChecker,
 		AdmissionChain:    admissionChain,
 		IdentityResolver:  postgres.UserIDFromContext,
+		EventLogStore:     executionLog,
 	})
 	if err != nil {
 		logger.Warn("Failed to create agent registry", zap.Error(err))
@@ -1889,29 +1934,7 @@ func runServe(cmd *cobra.Command, args []string) {
 					agentOpts = append(agentOpts, agent.WithSystemPrompt(cfg.SystemPrompt))
 				}
 
-				// Create config from proto LLMConfig
-				// Set max_turns and max_tool_executions from behavior config if specified, otherwise use defaults
-				maxTurns := 25          // Default from pkg/agent/types.go:145
-				maxToolExecutions := 50 // Default from pkg/agent/types.go:146
-				if cfg.Behavior != nil {
-					if cfg.Behavior.MaxTurns > 0 {
-						maxTurns = int(cfg.Behavior.MaxTurns)
-					}
-					if cfg.Behavior.MaxToolExecutions > 0 {
-						maxToolExecutions = int(cfg.Behavior.MaxToolExecutions)
-					}
-				}
-
-				agentCfg := &agent.Config{
-					Name:              cfg.Name,
-					Description:       cfg.Description,
-					SystemPrompt:      cfg.SystemPrompt,
-					Rom:               cfg.Rom,      // ROM identifier for domain-specific knowledge
-					Metadata:          cfg.Metadata, // Metadata includes backend_path for ROM auto-detection
-					MaxTurns:          maxTurns,
-					MaxToolExecutions: maxToolExecutions,
-					EnableTracing:     config.Observability.Enabled,
-				}
+				agentCfg := serveAgentConfig(cfg, config.Observability.Enabled)
 
 				// Set context limits if specified in LLM config
 				if cfg.Llm != nil {
@@ -2022,6 +2045,7 @@ func runServe(cmd *cobra.Command, args []string) {
 				// deployment. A nil chain leaves tool execution a pass-through.
 				agentOpts = append(agentOpts, agent.WithAdmissionHooks(admissionChain))
 				agentOpts = append(agentOpts, agent.WithIdentityResolver(postgres.UserIDFromContext))
+				agentOpts = append(agentOpts, agent.WithEventLog(executionLog))
 
 				// Determine LLM provider for this agent
 				// If agent has specific LLM config, use it; otherwise use server default
@@ -3202,29 +3226,7 @@ func runServe(cmd *cobra.Command, args []string) {
 				backend = &mockBackend{}
 			}
 
-			// Create agent configuration
-			// Set max_turns and max_tool_executions from behavior config if specified, otherwise use defaults
-			maxTurns := 25          // Default from pkg/agent/types.go:145
-			maxToolExecutions := 50 // Default from pkg/agent/types.go:146
-			if agentConfig.Behavior != nil {
-				if agentConfig.Behavior.MaxTurns > 0 {
-					maxTurns = int(agentConfig.Behavior.MaxTurns)
-				}
-				if agentConfig.Behavior.MaxToolExecutions > 0 {
-					maxToolExecutions = int(agentConfig.Behavior.MaxToolExecutions)
-				}
-			}
-
-			cfg := &agent.Config{
-				Name:              agentConfig.Name,
-				Description:       agentConfig.Description,
-				MaxTurns:          maxTurns,
-				MaxToolExecutions: maxToolExecutions,
-				SystemPrompt:      agentConfig.SystemPrompt,
-				Rom:               agentConfig.Rom,      // ROM identifier for domain-specific knowledge
-				Metadata:          agentConfig.Metadata, // Metadata includes backend_path for ROM auto-detection
-				EnableTracing:     config.Observability.Enabled,
-			}
+			cfg := serveAgentConfig(agentConfig, config.Observability.Enabled)
 
 			// Transfer pattern configuration from proto if present
 			if agentConfig.Behavior != nil && agentConfig.Behavior.Patterns != nil {
@@ -3355,6 +3357,7 @@ func runServe(cmd *cobra.Command, args []string) {
 			// deployment. A nil chain leaves tool execution a pass-through.
 			agentOpts = append(agentOpts, agent.WithAdmissionHooks(admissionChain))
 			agentOpts = append(agentOpts, agent.WithIdentityResolver(postgres.UserIDFromContext))
+			agentOpts = append(agentOpts, agent.WithEventLog(executionLog))
 
 			// Wrap LLM provider with instrumentation for observability
 			if tracer != nil {
@@ -3954,6 +3957,7 @@ func initializeMCPManager(config *Config, logger *zap.Logger) (*mcpManager, erro
 			Headers:          expandMCPHeaders(serverConfig.Headers),
 			EnableSessions:   serverConfig.EnableSessions,
 			EnableResumption: serverConfig.EnableResumption,
+			TrustAnnotations: serverConfig.TrustAnnotations,
 			Enabled:          enabled,
 			ToolFilter: manager.ToolFilter{
 				All: true, // Register all tools from this server

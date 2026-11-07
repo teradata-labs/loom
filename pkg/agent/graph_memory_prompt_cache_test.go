@@ -84,7 +84,10 @@ func (l *cacheRecallLLM) Chat(ctx context.Context, msgs []llmtypes.Message, tool
 	return l.main.Chat(ctx, msgs, tools)
 }
 
-// stubAnthropic records request bodies and answers each with a fixed reply.
+// stubAnthropic records request bodies. A request that does not end in a tool
+// result is answered with a thinking block and a call to the note_fact tool,
+// the call's result with a fixed end_turn reply, so every message is a
+// two-call tool turn whose first assistant message carries thinking.
 type stubAnthropic struct {
 	mu     sync.Mutex
 	bodies [][]byte
@@ -94,12 +97,37 @@ func (s *stubAnthropic) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	s.mu.Lock()
 	s.bodies = append(s.bodies, body)
+	n := len(s.bodies)
 	s.mu.Unlock()
+
+	var req struct {
+		Messages []struct {
+			Content []map[string]any `json:"content"`
+		} `json:"messages"`
+	}
+	_ = json.Unmarshal(body, &req)
+	afterToolResult := false
+	if len(req.Messages) > 0 {
+		for _, b := range req.Messages[len(req.Messages)-1].Content {
+			if b["type"] == "tool_result" {
+				afterToolResult = true
+			}
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
+	if !afterToolResult {
+		_, _ = fmt.Fprintf(w, `{"id":"msg_%d","type":"message","role":"assistant","model":"claude-haiku-5-5",`+
+			`"content":[{"type":"thinking","thinking":%q,"signature":"sig-%d"},`+
+			`{"type":"tool_use","id":"toolu_%d","name":"note_fact","input":{"fact":"max"}}],`+
+			`"stop_reason":"tool_use","usage":{"input_tokens":100,"output_tokens":50}}`,
+			n, fmt.Sprintf("Request %d: note the fact about Max before answering.", n), n, n)
+		return
+	}
 	_, _ = fmt.Fprintf(w, `{"id":"msg_%d","type":"message","role":"assistant","model":"claude-haiku-5-5",`+
 		`"content":[{"type":"text","text":%q}],"stop_reason":"end_turn",`+
 		`"usage":{"input_tokens":100,"output_tokens":50}}`,
-		len(s.bodies), "Max sounds like a good dog. "+strings.Repeat("Here is a longer answer about dogs. ", 20))
+		n, "Max sounds like a good dog. "+strings.Repeat("Here is a longer answer about dogs. ", 20))
 }
 
 func (s *stubAnthropic) requests() [][]byte {
@@ -195,10 +223,12 @@ func (c *promptCache) send(blocks []cacheBlock) (cached, total int) {
 
 // TestGraphMemoryRecall_PromptCache sends eight messages in a row, each
 // recalling the memories extracted from the ones before it, and measures how
-// much of each message's request the prompt cache serves. The recall note
-// rides the trailing system reminder, so it changes only the end of the
-// request: the system prompt and the conversation before the new message stay
-// cached. Run with -v for the per-message numbers.
+// much of each request the prompt cache serves. Each message is a tool turn
+// whose first response carries a thinking block. The recall note rides the
+// trailing system reminder, so it changes only the end of the request, and
+// settled turns keep their thinking blocks, so the conversation before the new
+// message is sent as it was: the system prompt and that conversation stay
+// cached. Run with -v for the per-request numbers.
 func TestGraphMemoryRecall_PromptCache(t *testing.T) {
 	stub := &stubAnthropic{}
 	srv := httptest.NewServer(stub)
@@ -221,6 +251,7 @@ func TestGraphMemoryRecall_PromptCache(t *testing.T) {
 	gm.Enabled = true
 	gm.EnableExtraction = true
 	ag := NewAgent(&mockBackend{}, llm, WithConfig(cfg), WithGraphMemoryStore(store, gm))
+	ag.RegisterTool(namedStubTool{name: "note_fact"})
 
 	const messages = 8
 	ctx := context.Background()
@@ -232,7 +263,7 @@ func TestGraphMemoryRecall_PromptCache(t *testing.T) {
 	}
 
 	reqs := stub.requests()
-	require.Len(t, reqs, messages, "one main call per message")
+	require.Len(t, reqs, 2*messages, "two main calls per message: the tool call and the answer")
 
 	cache := &promptCache{written: map[string]bool{}}
 	var cachedLater, totalLater, prevReused int
@@ -240,8 +271,12 @@ func TestGraphMemoryRecall_PromptCache(t *testing.T) {
 		notes := strings.Count(string(body), graphMemoryContextMarker)
 		blocks := cacheBlocks(t, body)
 		cached, total := cache.send(blocks)
-		t.Logf("message %d: %5d of %5d bytes from cache (%3.0f%%), recall notes in request: %d",
-			i+1, cached, total, 100*float64(cached)/float64(total), notes)
+		thinking := strings.Count(string(body), `"type":"thinking"`)
+		t.Logf("request %2d: %5d of %5d bytes from cache (%3.0f%%), recall notes: %d, thinking blocks: %d",
+			i+1, cached, total, 100*float64(cached)/float64(total), notes, thinking)
+		// Every earlier message's thinking block is replayed (the context
+		// before it is unchanged), plus this message's own on its second call.
+		assert.Equal(t, i/2+i%2, thinking, "request %d: settled and in-turn thinking blocks replayed", i+1)
 		reused := total - blocks[len(blocks)-1].size
 		if i == 0 {
 			assert.Zero(t, cached, "nothing is cached before the first call")
@@ -252,22 +287,27 @@ func TestGraphMemoryRecall_PromptCache(t *testing.T) {
 		totalLater += total
 
 		// Every message after the first recalls the earlier ones' facts, in
-		// one note: the notes of earlier messages are not carried along.
-		assert.Equal(t, 1, notes, "message %d: one recall note per request", i+1)
+		// one note on both of its calls: the notes of earlier messages are not
+		// carried along. The first message has nothing to recall.
+		wantNotes := 1
+		if i < 2 {
+			wantNotes = 0
+		}
+		assert.Equal(t, wantNotes, notes, "request %d: recall notes in the request", i+1)
 
 		var req struct {
 			System []map[string]any `json:"system"`
 		}
 		require.NoError(t, json.Unmarshal(body, &req))
 		for _, b := range req.System {
-			assert.NotContains(t, b["text"], graphMemoryContextMarker, "message %d: recall note in the system field", i+1)
+			assert.NotContains(t, b["text"], graphMemoryContextMarker, "request %d: recall note in the system field", i+1)
 		}
 		// Everything the previous request sent before its last block (the
 		// trailing system reminder) is read back from the cache.
 		assert.GreaterOrEqual(t, cached, prevReused,
-			"message %d: the previous request, minus its trailing note, comes from the cache", i+1)
+			"request %d: the previous request, minus its trailing note, comes from the cache", i+1)
 		prevReused = reused
 	}
-	t.Logf("messages 2-%d: %d of %d bytes from cache (%.0f%%)",
-		messages, cachedLater, totalLater, 100*float64(cachedLater)/float64(totalLater))
+	t.Logf("requests 2-%d: %d of %d bytes from cache (%.0f%%)",
+		len(reqs), cachedLater, totalLater, 100*float64(cachedLater)/float64(totalLater))
 }

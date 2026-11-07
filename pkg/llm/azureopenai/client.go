@@ -37,6 +37,8 @@ import (
 // Client implements the LLMProvider interface for Azure OpenAI.
 // Azure OpenAI uses deployment-based routing and supports dual authentication.
 type Client struct {
+	schemaPolicy      llm.ToolSchemaPolicy
+	strictToolSchemas bool
 	// Azure-specific configuration
 	endpoint     string // https://{resource}.openai.azure.com
 	deploymentID string // User's deployment name (not model name)
@@ -59,15 +61,11 @@ type Client struct {
 	// Rate limiter
 	rateLimiter *llm.RateLimiter
 	capacity    llm.CapacityObserver
-
-	// Tool name mapping: sanitized name → original name
-	// Azure OpenAI requires tool names to match ^[a-zA-Z0-9_.\-]+$
-	// MCP tools use colon namespacing (e.g., "vantage-mcp:execute_sql")
-	toolNameMap map[string]string
 }
 
 // Config holds configuration for the Azure OpenAI client.
 type Config struct {
+	StrictToolSchemas bool
 	// Required: Azure OpenAI endpoint
 	// Format: https://{resource-name}.openai.azure.com
 	Endpoint string
@@ -145,16 +143,17 @@ func NewClient(config Config) (*Client, error) {
 	entraToken := strings.TrimPrefix(config.EntraToken, "Bearer ")
 
 	return &Client{
-		endpoint:     config.Endpoint,
-		deploymentID: config.DeploymentID,
-		apiVersion:   config.APIVersion,
-		apiKey:       config.APIKey,
-		entraToken:   entraToken,
-		maxTokens:    config.MaxTokens,
-		temperature:  config.Temperature,
-		modelName:    modelName,
-		rateLimiter:  rateLimiter,
-		capacity:     config.CapacityObserver,
+		strictToolSchemas: config.StrictToolSchemas,
+		endpoint:          config.Endpoint,
+		deploymentID:      config.DeploymentID,
+		apiVersion:        config.APIVersion,
+		apiKey:            config.APIKey,
+		entraToken:        entraToken,
+		maxTokens:         config.MaxTokens,
+		temperature:       config.Temperature,
+		modelName:         modelName,
+		rateLimiter:       rateLimiter,
+		capacity:          config.CapacityObserver,
 		httpClient: &http.Client{
 			Timeout: config.Timeout,
 		},
@@ -224,8 +223,11 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 
 	// Convert tools to OpenAI format with name sanitization
 	// Azure OpenAI requires names matching ^[a-zA-Z0-9_.\-]+$ (no colons)
-	c.toolNameMap = make(map[string]string)
-	apiTools := convertTools(tools, c.toolNameMap)
+	nameMap := make(map[string]string) // per request: the client is shared across sessions
+	apiTools, err := c.convertTools(ctx, tools, nameMap, c.strictToolSchemas)
+	if err != nil {
+		return nil, err
+	}
 
 	// Sanitize tool schemas to remove problematic fields
 	// Azure OpenAI is strict about: empty arrays, empty defaults, etc.
@@ -258,7 +260,7 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 	}
 
 	// Convert response with tool name reverse mapping
-	return c.convertResponse(resp), nil
+	return c.convertResponse(resp, nameMap), nil
 }
 
 // callAPI makes the HTTP request to Azure OpenAI's API.
@@ -308,6 +310,18 @@ func (c *Client) callAPI(ctx context.Context, req *openai.ChatCompletionRequest)
 				fmt.Errorf("API error (status 429): %s", string(respBody)),
 				llm.RetryAfterFromHeaders(resp.Header))
 		}
+		// A 5xx the server itself calls temporary is retried by the rate
+		// limiter under the throttle budget. The status is known before any
+		// content streams, so re-sending duplicates nothing.
+		if llm.IsTransientStatus(resp.StatusCode) {
+			// Bounded read: gateway 502/503 bodies are often multi-KB HTML
+			// pages, and this message is logged on every retry.
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, llm.MaxErrorBodyBytes))
+			_ = resp.Body.Close()
+			return nil, llm.NewTransientError(
+				fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody)),
+				resp.StatusCode, llm.RetryAfterFromHeaders(resp.Header))
+		}
 		return resp, nil
 	}
 
@@ -354,7 +368,11 @@ func (c *Client) callAPI(ctx context.Context, req *openai.ChatCompletionRequest)
 }
 
 // convertResponse converts OpenAI response to agent format.
-func (c *Client) convertResponse(resp *openai.ChatCompletionResponse) *llmtypes.LLMResponse {
+// convertResponse converts an Azure OpenAI response to the agent format.
+// nameMap is this request's sanitized → original tool-name table from
+// convertTools (Azure requires ^[a-zA-Z0-9_.\-]+$, MCP names carry colons);
+// nil leaves tool-call names as the API returned them.
+func (c *Client) convertResponse(resp *openai.ChatCompletionResponse, nameMap map[string]string) *llmtypes.LLMResponse {
 	llmResp := &llmtypes.LLMResponse{
 		Usage: llmtypes.Usage{
 			InputTokens:  resp.Usage.PromptTokens,
@@ -405,7 +423,7 @@ func (c *Client) convertResponse(resp *openai.ChatCompletionResponse) *llmtypes.
 			}
 
 			// Map sanitized name back to original name
-			toolName := llm.ReverseToolName(c.toolNameMap, tc.Function.Name)
+			toolName := llm.ReverseToolName(nameMap, tc.Function.Name)
 
 			llmResp.ToolCalls = append(llmResp.ToolCalls, llmtypes.ToolCall{
 				ID:    tc.ID,
@@ -605,11 +623,18 @@ func convertMessages(messages []llmtypes.Message) []openai.ChatMessage {
 	return apiMessages
 }
 
-func convertTools(tools []shuttle.Tool, nameMap map[string]string) []openai.Tool {
+func (c *Client) convertTools(ctx context.Context, tools []shuttle.Tool, nameMap map[string]string, strict bool) ([]openai.Tool, error) {
 	var apiTools []openai.Tool
 
 	for _, tool := range tools {
 		originalName := tool.Name()
+		parameters, keep, err := c.schemaPolicy.Prepare(ctx, originalName, tool.InputSchema(), strict, "enum", "not")
+		if err != nil {
+			return nil, err
+		}
+		if !keep {
+			continue
+		}
 		sanitizedName := llm.SanitizeToolName(originalName)
 
 		// Store mapping for reverse lookup in responses
@@ -625,80 +650,12 @@ func convertTools(tools []shuttle.Tool, nameMap map[string]string) []openai.Tool
 			},
 		}
 
-		schema := tool.InputSchema()
-		if schema != nil {
-			params := make(map[string]interface{})
-			params["type"] = schema.Type
-			if schema.Type == "" {
-				params["type"] = "object"
-			}
-
-			// Add properties only if they exist (same as regular OpenAI)
-			if schema.Properties != nil {
-				params["properties"] = convertSchemaProperties(schema.Properties)
-			}
-
-			if len(schema.Required) > 0 {
-				params["required"] = schema.Required
-			}
-
-			apiTool.Function.Parameters = params
-		}
+		apiTool.Function.Parameters = parameters
 
 		apiTools = append(apiTools, apiTool)
 	}
 
-	return apiTools
-}
-
-func convertSchemaProperties(props map[string]*shuttle.JSONSchema) map[string]interface{} {
-	if props == nil {
-		return nil
-	}
-
-	result := make(map[string]interface{})
-	for key, schema := range props {
-		propMap := make(map[string]interface{})
-		propType := schema.Type
-		if propType == "" {
-			propType = "string" // MCP tools may omit type; default to string
-		}
-		propMap["type"] = propType
-
-		if schema.Description != "" {
-			propMap["description"] = schema.Description
-		}
-		if schema.Enum != nil {
-			propMap["enum"] = schema.Enum
-		}
-		if schema.Default != nil {
-			propMap["default"] = schema.Default
-		}
-		if schema.Properties != nil {
-			propMap["properties"] = convertSchemaProperties(schema.Properties)
-			if propType == "string" {
-				propMap["type"] = "object"
-			}
-		}
-		if schema.Items != nil {
-			itemMap := make(map[string]interface{})
-			itemType := schema.Items.Type
-			if itemType == "" {
-				itemType = "string"
-			}
-			itemMap["type"] = itemType
-			if schema.Items.Description != "" {
-				itemMap["description"] = schema.Items.Description
-			}
-			propMap["items"] = itemMap
-			if propType == "string" {
-				propMap["type"] = "array"
-			}
-		}
-
-		result[key] = propMap
-	}
-	return result
+	return apiTools, nil
 }
 
 // ChatStream implements token-by-token streaming for Azure OpenAI.
@@ -708,8 +665,11 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 
 	// Build request (same as non-streaming)
 	apiMessages := convertMessages(messages)
-	c.toolNameMap = make(map[string]string)
-	apiTools := convertTools(tools, c.toolNameMap)
+	nameMap := make(map[string]string) // per request: the client is shared across sessions
+	apiTools, err := c.convertTools(ctx, tools, nameMap, c.strictToolSchemas)
+	if err != nil {
+		return nil, err
+	}
 
 	// Sanitize tool schemas (same as non-streaming)
 	apiTools = SanitizeToolSchemas(apiTools)
@@ -773,6 +733,18 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			return nil, llm.NewThrottleError(
 				fmt.Errorf("API error (status 429): %s", string(respBody)),
 				llm.RetryAfterFromHeaders(resp.Header))
+		}
+		// A 5xx the server itself calls temporary is retried by the rate
+		// limiter under the throttle budget. The status is known before any
+		// content streams, so re-sending duplicates nothing.
+		if llm.IsTransientStatus(resp.StatusCode) {
+			// Bounded read: gateway 502/503 bodies are often multi-KB HTML
+			// pages, and this message is logged on every retry.
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, llm.MaxErrorBodyBytes))
+			_ = resp.Body.Close()
+			return nil, llm.NewTransientError(
+				fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody)),
+				resp.StatusCode, llm.RetryAfterFromHeaders(resp.Header))
 		}
 		return resp, nil
 	}
@@ -867,7 +839,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 						tc.ID = tcDelta.ID
 					}
 					if tcDelta.Function.Name != "" {
-						tc.Name = llm.ReverseToolName(c.toolNameMap, tcDelta.Function.Name)
+						tc.Name = llm.ReverseToolName(nameMap, tcDelta.Function.Name)
 					}
 
 					if tcDelta.Function.Arguments != "" {

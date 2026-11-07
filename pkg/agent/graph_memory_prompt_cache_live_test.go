@@ -40,6 +40,8 @@ import (
 //	go test -tags fts5 -race ./pkg/agent/ -run TestGraphMemoryRecall_PromptCacheLive -v -timeout 15m
 //
 // LOOM_LIVE_CACHE_MODEL picks another model (default claude-haiku-5-5).
+// LOOM_LIVE_CACHE_THINKING sets the thinking level (default auto; "none"
+// turns thinking off).
 
 // usageRecordingLLM passes every call to the API and records the usage of the
 // main chat calls (not the graph memory side calls), with the number of
@@ -51,8 +53,9 @@ type usageRecordingLLM struct {
 }
 
 type liveMainCall struct {
-	usage llmtypes.Usage
-	notes int
+	usage    llmtypes.Usage
+	notes    int
+	thinking int // thinking blocks the request replayed
 }
 
 func isGraphMemorySideCall(msgs []llmtypes.Message) bool {
@@ -66,12 +69,13 @@ func (l *usageRecordingLLM) Chat(ctx context.Context, msgs []llmtypes.Message, t
 	if err != nil || isGraphMemorySideCall(msgs) {
 		return resp, err
 	}
-	notes := 0
+	notes, thinking := 0, 0
 	for _, m := range msgs {
 		notes += strings.Count(m.Content, graphMemoryContextMarker)
+		thinking += len(m.ThinkingBlocks)
 	}
 	l.mu.Lock()
-	l.calls = append(l.calls, liveMainCall{usage: resp.Usage, notes: notes})
+	l.calls = append(l.calls, liveMainCall{usage: resp.Usage, notes: notes, thinking: thinking})
 	l.mu.Unlock()
 	return resp, nil
 }
@@ -102,10 +106,18 @@ func TestGraphMemoryRecall_PromptCacheLive(t *testing.T) {
 		model = "claude-haiku-5-5"
 	}
 
+	thinkingLevel := os.Getenv("LOOM_LIVE_CACHE_THINKING")
+	if thinkingLevel == "" {
+		thinkingLevel = "auto"
+	}
+
 	llm := &usageRecordingLLM{LLMProvider: anthropic.NewClient(anthropic.Config{
-		APIKey:    apiKey,
-		Model:     model,
-		MaxTokens: 1024,
+		APIKey: apiKey,
+		Model:  model,
+		// Room for a thinking budget on models that take one (budget_tokens
+		// must stay under max_tokens).
+		MaxTokens:     4096,
+		ThinkingLevel: thinkingLevel,
 	})}
 
 	store := newTestGraphMemoryStore(t)
@@ -150,9 +162,9 @@ func TestGraphMemoryRecall_PromptCacheLive(t *testing.T) {
 	prevCached := 0
 	for i, c := range calls {
 		u := c.usage
-		t.Logf("call %d: input %5d = cache read %5d + cache write %5d + uncached %4d, cost $%.5f, recall notes %d",
+		t.Logf("call %d: input %5d = cache read %5d + cache write %5d + uncached %4d, cost $%.5f, recall notes %d, thinking blocks replayed %d",
 			i+1, u.CacheReadInputTokens+u.CacheCreationInputTokens+u.InputTokens,
-			u.CacheReadInputTokens, u.CacheCreationInputTokens, u.InputTokens, u.CostUSD, c.notes)
+			u.CacheReadInputTokens, u.CacheCreationInputTokens, u.InputTokens, u.CostUSD, c.notes, c.thinking)
 		if i > 0 {
 			read += u.CacheReadInputTokens
 			written += u.CacheCreationInputTokens
@@ -167,6 +179,6 @@ func TestGraphMemoryRecall_PromptCacheLive(t *testing.T) {
 	}
 	total := read + written + full
 	require.Positive(t, total)
-	t.Logf("calls 2-%d (%s): %d input tokens: %d read from cache (%.0f%%), %d written to cache, %d uncached; cost $%.4f",
-		len(calls), model, total, read, 100*float64(read)/float64(total), written, full, cost)
+	t.Logf("calls 2-%d (%s, thinking %s): %d input tokens: %d read from cache (%.0f%%), %d written to cache, %d uncached; cost $%.4f",
+		len(calls), model, thinkingLevel, total, read, 100*float64(read)/float64(total), written, full, cost)
 }

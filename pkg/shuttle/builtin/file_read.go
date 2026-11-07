@@ -303,6 +303,10 @@ func (t *FileReadTool) Backend() string {
 	return "" // Backend-agnostic
 }
 
+// ConcurrencySafe marks this tool safe to run alongside other calls. Pure
+// read: stat/read only; the lazy .gitignore load is guarded by sync.Once.
+func (t *FileReadTool) ConcurrencySafe() bool { return true }
+
 // isSensitiveReadPath checks if a path is in a sensitive system location.
 // Reading is less dangerous than writing, but we still protect some paths.
 func isSensitiveReadPath(path string) bool {

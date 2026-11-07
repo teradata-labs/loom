@@ -105,6 +105,16 @@ type SegmentedMemory struct {
 	// blocks themselves.
 	thinkingPrefix map[[sha256.Size]byte][sha256.Size]byte
 
+	// requestModel and requestToolsDigest identify the provider call beyond
+	// its messages (SetRequestIdentity); they seed the thinkingPrefix
+	// fingerprint.
+	requestModel       string
+	requestToolsDigest [sha256.Size]byte
+
+	// transientTail is the content of the never-stored message sent after the
+	// compiled context (SetTransientTail), counted by the estimate.
+	transientTail string
+
 	// Memory compression (the fold compressor)
 	compressor MemoryCompressor
 
@@ -720,6 +730,8 @@ func (sm *SegmentedMemory) ResetContext() {
 	sm.contextMessages = sm.contextMessages[:0]
 	sm.summary = summaryState{}
 	sm.patternName = ""
+	sm.thinkingPrefix = nil
+	sm.transientTail = ""
 
 	sm.fullRecount()
 	sm.tokenCountDirty = false

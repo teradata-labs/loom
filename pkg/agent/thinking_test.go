@@ -29,6 +29,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
 // assistantByContent returns the compiled assistant message with content c.
@@ -145,6 +146,89 @@ func TestCompile_ThinkingSettledStrippedWithoutRecord(t *testing.T) {
 	})
 	sm.AddMessage(ctx, Message{Role: "user", Content: "q2", Turn: 2})
 	assert.Empty(t, assistantByContent(t, sm.GetMessagesForLLM(), "a1").ThinkingBlocks)
+}
+
+// settledThinkingMemory records one settled turn whose assistant message
+// carries thinking blocks, written under the request identity (model, tools),
+// and opens the next turn.
+func settledThinkingMemory(t *testing.T, model string, tools []shuttle.Tool) *SegmentedMemory {
+	t.Helper()
+	sm := newCompileMemory(t)
+	ctx := context.Background()
+	sm.SetRequestIdentity(model, advertisedToolsDigest(tools))
+	sm.AddMessage(ctx, Message{Role: "user", Content: "q1", Turn: 1})
+	sm.AddMessage(ctx, Message{Role: "assistant", Content: "a1", Turn: 1,
+		ThinkingBlocks: []ThinkingBlock{{Type: "thinking", Thinking: "plan", Signature: "S1"}}})
+	sm.AddMessage(ctx, Message{Role: "user", Content: "q2", Turn: 2})
+	return sm
+}
+
+// TestCompile_ThinkingSettledStrippedAfterToolSetChange — the provider checks
+// a replayed block against the tools it was written under too. A tool-set
+// change (lazy disclosure, a skill load, a circuit-breaker filter) leaves the
+// messages as they were, so the request identity carries it: the blocks are
+// left out under a different tool set, and come back with the original one.
+func TestCompile_ThinkingSettledStrippedAfterToolSetChange(t *testing.T) {
+	toolsA := []shuttle.Tool{namedStubTool{name: "run_query"}}
+	toolsB := []shuttle.Tool{namedStubTool{name: "run_query"}, namedStubTool{name: "web_search"}}
+	sm := settledThinkingMemory(t, "claude-haiku-5-5", toolsA)
+
+	require.Len(t, assistantByContent(t, sm.GetMessagesForLLM(), "a1").ThinkingBlocks, 1,
+		"same tools: the settled blocks replay")
+
+	sm.SetRequestIdentity("claude-haiku-5-5", advertisedToolsDigest(toolsB))
+	assert.Empty(t, assistantByContent(t, sm.GetMessagesForLLM(), "a1").ThinkingBlocks,
+		"a tool added since the blocks were written: left out")
+
+	sm.SetRequestIdentity("claude-haiku-5-5", advertisedToolsDigest(nil))
+	assert.Empty(t, assistantByContent(t, sm.GetMessagesForLLM(), "a1").ThinkingBlocks,
+		"no tools (synthesis): left out")
+
+	sm.SetRequestIdentity("claude-haiku-5-5", advertisedToolsDigest(toolsA))
+	assert.Len(t, assistantByContent(t, sm.GetMessagesForLLM(), "a1").ThinkingBlocks, 1,
+		"the original tool set again: the blocks replay again")
+}
+
+// TestCompile_ThinkingSettledStrippedAfterModelChange — a model switch
+// (SetLLMProvider, the SwitchModel RPC) leaves the messages as they were;
+// the blocks were signed by the old model and are left out under the new one.
+func TestCompile_ThinkingSettledStrippedAfterModelChange(t *testing.T) {
+	tools := []shuttle.Tool{namedStubTool{name: "run_query"}}
+	sm := settledThinkingMemory(t, "claude-haiku-5-5", tools)
+
+	require.Len(t, assistantByContent(t, sm.GetMessagesForLLM(), "a1").ThinkingBlocks, 1)
+
+	sm.SetRequestIdentity("claude-opus-5-5", advertisedToolsDigest(tools))
+	assert.Empty(t, assistantByContent(t, sm.GetMessagesForLLM(), "a1").ThinkingBlocks,
+		"another model: the settled blocks are left out")
+}
+
+// TestAdvertisedToolsDigest — the digest follows what the provider is sent:
+// names, descriptions, schemas, in order.
+func TestAdvertisedToolsDigest(t *testing.T) {
+	a := namedStubTool{name: "a"}
+	b := namedStubTool{name: "b"}
+	assert.Equal(t, advertisedToolsDigest([]shuttle.Tool{a, b}), advertisedToolsDigest([]shuttle.Tool{a, b}))
+	assert.NotEqual(t, advertisedToolsDigest([]shuttle.Tool{a, b}), advertisedToolsDigest([]shuttle.Tool{b, a}))
+	assert.NotEqual(t, advertisedToolsDigest([]shuttle.Tool{a}), advertisedToolsDigest([]shuttle.Tool{a, b}))
+	assert.NotEqual(t, advertisedToolsDigest(nil), advertisedToolsDigest([]shuttle.Tool{a}))
+}
+
+// TestResetContext_ClearsThinkingPrefix — a reset drops the recorded
+// fingerprints with the rows they belong to, and compile goes back to not
+// fingerprinting at all.
+func TestResetContext_ClearsThinkingPrefix(t *testing.T) {
+	sm := settledThinkingMemory(t, "m", nil)
+	sm.mu.RLock()
+	require.NotEmpty(t, sm.thinkingPrefix)
+	sm.mu.RUnlock()
+
+	sm.ResetContext()
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	assert.Nil(t, sm.thinkingPrefix)
+	_, sum := sm.compilePrefixLocked(len(sm.thinkingPrefix) > 0)
+	assert.Equal(t, [32]byte{}, sum, "no recorded fingerprint: compile does not hash the context")
 }
 
 // TestPersist_ThinkingBlocksNeverStored — the persist seam drops blocks and

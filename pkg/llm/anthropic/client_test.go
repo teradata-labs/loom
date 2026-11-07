@@ -19,11 +19,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/types"
+	"github.com/xeipuuv/gojsonschema"
 )
 
 func TestNewClient(t *testing.T) {
@@ -263,6 +266,105 @@ func TestClient_ConvertMessages_SkillBodySidecarCoalesces(t *testing.T) {
 	}
 	if last.Content[1].Type != "text" || last.Content[1].Text != "ALPHA SKILL BODY" {
 		t.Errorf("second block must be the sidecar text, got %+v", last.Content[1])
+	}
+}
+
+func TestInputSchema_MarshalJSON(t *testing.T) {
+	tests := []struct {
+		name   string
+		schema InputSchema
+		want   string
+	}{
+		{
+			name: "legacy public fields without keyword map",
+			schema: InputSchema{
+				Type: "object",
+				Properties: map[string]map[string]interface{}{
+					"name": {"type": "string", "description": "Name"},
+				},
+				Required: []string{"name"},
+			},
+			want: `{"type":"object","properties":{"name":{"type":"string","description":"Name"}},"required":["name"]}`,
+		},
+		{
+			name: "nil object properties become empty object",
+			schema: InputSchema{
+				Type:     "object",
+				keywords: map[string]interface{}{"type": "object", "description": "Metadata"},
+			},
+			want: `{"type":"object","description":"Metadata","properties":{}}`,
+		},
+		{
+			name: "explicit empty properties replace stale properties",
+			schema: InputSchema{
+				Type:       "object",
+				Properties: map[string]map[string]interface{}{},
+				keywords: map[string]interface{}{
+					"type":       "object",
+					"properties": map[string]interface{}{"old": map[string]interface{}{"type": "string"}},
+					"required":   []string{"old"},
+				},
+			},
+			want: `{"type":"object","properties":{}}`,
+		},
+		{
+			name: "clearing public fields retains only composite keywords",
+			schema: InputSchema{
+				keywords: map[string]interface{}{
+					"type":       "integer",
+					"properties": map[string]interface{}{},
+					"required":   []string{"old"},
+					"anyOf":      []map[string]interface{}{{"type": "integer"}, {"type": "null"}},
+				},
+			},
+			want: `{"anyOf":[{"type":"integer"},{"type":"null"}]}`,
+		},
+		{
+			name: "public fields override keywords while preserving description",
+			schema: InputSchema{
+				Type: "object",
+				Properties: map[string]map[string]interface{}{
+					"name": {"type": "string"},
+				},
+				Required: []string{"name"},
+				keywords: map[string]interface{}{
+					"type":        "array",
+					"properties":  map[string]interface{}{"old": map[string]interface{}{"type": "integer"}},
+					"required":    []string{"old"},
+					"description": "Input",
+				},
+			},
+			want: `{"type":"object","description":"Input","properties":{"name":{"type":"string"}},"required":["name"]}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			before, err := json.Marshal(test.schema.keywords)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(test.schema)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got, want map[string]interface{}
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal([]byte(test.want), &want); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(want, got) {
+				t.Errorf("want %s, got %s", test.want, data)
+			}
+			after, err := json.Marshal(test.schema.keywords)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(before) != string(after) {
+				t.Errorf("marshaling mutated source keywords: before %s, after %s", before, after)
+			}
+		})
 	}
 }
 
@@ -518,6 +620,141 @@ data: {"type":"message_stop"}
 	}
 }
 
+func TestClient_ToolSchemaRequest(t *testing.T) {
+	const schemaJSON = `{"type":"object","description":"Task input","required":["tasks"],"allOf":[{"type":"object","properties":{},"not":{"required":["forbidden"]}}],"properties":{
+		"tasks":{"type":"array","description":"Tasks to create","items":{
+			"type":"object","description":"A task","required":["idx","subject","details"],"properties":{
+				"idx":{"type":"integer","description":"1-based task number","minimum":0,"maximum":100},
+				"subject":{"type":"string","description":"Short task title","minLength":0,"maxLength":80,"pattern":"^[A-Z]","format":"text","enum":["Task"],"default":"Task"},
+				"details":{"type":"object","required":["active"],"properties":{"active":{"type":"boolean","default":false}}},
+				"matrix":{"type":"array","items":{"type":"array","items":{"type":"integer"}}},
+				"nullable":{"anyOf":[{"type":"integer"},{"type":"null"}]},
+				"choice":{"oneOf":[{"type":"string"},{"type":"number"}]},
+				"excluded":{"not":{"type":"null"}},
+				"empty":{"type":"object","properties":{}}
+			}
+		}}
+	}}`
+	for _, mode := range []string{"chat", "stream"} {
+		t.Run(mode, func(t *testing.T) {
+			captured := make(chan map[string]interface{}, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request map[string]interface{}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Error(err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				captured <- request
+				if mode == "stream" {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = w.Write([]byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
+				} else {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}`))
+				}
+			}))
+			defer server.Close()
+			schema, err := shuttle.FromJSON([]byte(schemaJSON))
+			if err != nil {
+				t.Fatal(err)
+			}
+			inputTools := []shuttle.Tool{
+				&mockTool{name: "create_tasks", schema: schema},
+				&mockTool{name: "no_arguments", schema: &shuttle.JSONSchema{}},
+				&mockTool{name: "description_only", schema: &shuttle.JSONSchema{Description: "No arguments"}},
+				&mockTool{name: "incompatible", schema: &shuttle.JSONSchema{AnyOf: []*shuttle.JSONSchema{{Type: "object"}}}},
+			}
+			client := NewClient(Config{APIKey: "test-key", Endpoint: server.URL})
+			messages := []types.Message{{Role: "user", Content: "Create tasks"}}
+			span := &observability.Span{}
+			ctx := observability.ContextWithSpan(context.Background(), span)
+			if mode == "stream" {
+				_, err = client.ChatStream(ctx, messages, inputTools, nil)
+			} else {
+				_, err = client.Chat(ctx, messages, inputTools)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(span.Events) != 1 || span.Events[0].Attributes["tool"] != "incompatible" {
+				t.Fatalf("expected skipped-tool event, got %v", span.Events)
+			}
+			request := <-captured
+			tools, ok := request["tools"].([]interface{})
+			if !ok || len(tools) != 3 {
+				t.Fatalf("expected three tools, got %v", request["tools"])
+			}
+			var want map[string]interface{}
+			if err := json.Unmarshal([]byte(schemaJSON), &want); err != nil {
+				t.Fatal(err)
+			}
+			want["not"] = want["allOf"].([]interface{})[0].(map[string]interface{})["not"]
+			delete(want, "allOf")
+			got := tools[0].(map[string]interface{})["input_schema"]
+			if !reflect.DeepEqual(want, got) {
+				t.Errorf("expected full nested schema, got %v", got)
+			}
+			for _, forbidden := range []bool{false, true} {
+				sample := map[string]interface{}{"tasks": []interface{}{}}
+				if forbidden {
+					sample["forbidden"] = true
+				}
+				validation, err := gojsonschema.Validate(gojsonschema.NewGoLoader(got), gojsonschema.NewGoLoader(sample))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if validation.Valid() == forbidden {
+					t.Errorf("outgoing schema lost its prohibition for %v", sample)
+				}
+			}
+			for index := 1; index < len(tools); index++ {
+				expected := map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
+				if index == 2 {
+					expected["description"] = "No arguments"
+				}
+				if !reflect.DeepEqual(expected, tools[index].(map[string]interface{})["input_schema"]) {
+					t.Errorf("unexpected no-argument schema: %v", tools[index])
+				}
+				if inputTools[index].InputSchema().Type != "" {
+					t.Error("serialization mutated the root schema type")
+				}
+			}
+			client.strictToolSchemas = true
+			for _, keyword := range []string{"anyOf", "oneOf"} {
+				invalid, err := shuttle.FromJSON([]byte(`{"` + keyword + `":[{"type":"object"}]}`))
+				if err != nil {
+					t.Fatal(err)
+				}
+				invalidTools := []shuttle.Tool{&mockTool{name: "ambiguous", schema: invalid}}
+				if mode == "stream" {
+					_, err = client.ChatStream(context.Background(), messages, invalidTools, nil)
+				} else {
+					_, err = client.Chat(context.Background(), messages, invalidTools)
+				}
+				if err == nil || !strings.Contains(err.Error(), `tool "ambiguous" schema:`) || !strings.Contains(err.Error(), "root "+keyword) {
+					t.Fatalf("expected an explicit schema error, got %v", err)
+				}
+				if len(captured) != 0 {
+					t.Fatal("unsupported schema made an HTTP request")
+				}
+			}
+			client.strictToolSchemas = false
+			if mode == "stream" {
+				_, err = client.ChatStream(context.Background(), messages, inputTools[3:], nil)
+			} else {
+				_, err = client.Chat(context.Background(), messages, inputTools[3:])
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if request := <-captured; request["tools"] != nil {
+				t.Fatalf("all skipped tools should omit tools, got %v", request["tools"])
+			}
+		})
+	}
+}
+
 func TestClient_CalculateCost(t *testing.T) {
 	tests := []struct {
 		name                string
@@ -539,6 +776,20 @@ func TestClient_CalculateCost(t *testing.T) {
 		{"opus_4_1", "claude-opus-4-1-20250805", 1_000_000, 1_000_000, 0, 0, 90.0},
 		// Haiku — $1/$5
 		{"haiku_4_5", "claude-haiku-4-5-20251001", 1_000_000, 1_000_000, 0, 0, 6.0},
+		// Claude 3 ids put the generation first ("claude-3-haiku"), so they
+		// need their own rows rather than the Sonnet default.
+		{"haiku_3_5", "claude-3-5-haiku-20241022", 1_000_000, 1_000_000, 0, 0, 4.80},   // $0.80 + $4
+		{"haiku_3", "claude-3-haiku-20240307", 1_000_000, 1_000_000, 0, 0, 1.50},       // $0.25 + $1.25
+		{"opus_3", "claude-3-opus-20240229", 1_000_000, 1_000_000, 0, 0, 90.0},         // $15 + $75
+		{"opus_3_cache_read", "claude-3-opus-20240229", 0, 0, 1_000_000, 0, 1.50},      // $15 * 0.10
+		{"haiku_3_cache_write", "claude-3-haiku-20240307", 0, 0, 0, 1_000_000, 0.3125}, // $0.25 * 1.25
+		// Claude 5 family
+		{"fable_5_1", "claude-fable-5-1", 1_000_000, 1_000_000, 0, 0, 60.0},           // $10 + $50
+		{"fable_5", "claude-fable-5", 1_000_000, 1_000_000, 0, 0, 60.0},               // $10 + $50
+		{"opus_5_5", "claude-opus-5-5", 1_000_000, 1_000_000, 0, 0, 24.0},             // $4 + $20, not opus-5's $5/$25
+		{"opus_5", "claude-opus-5", 1_000_000, 1_000_000, 0, 0, 30.0},                 // $5 + $25
+		{"sonnet_5", "claude-sonnet-5", 1_000_000, 1_000_000, 0, 0, 12.0},             // $2 + $10, not sonnet-4's $3/$15
+		{"opus_4_8_uncataloged", "claude-opus-4-8", 1_000_000, 1_000_000, 0, 0, 30.0}, // family fallback
 		// Cache pricing derives from input price
 		{"sonnet_cache_read", "claude-sonnet-4-6", 0, 0, 1_000_000, 0, 0.3},           // $3 * 0.10
 		{"sonnet_cache_write", "claude-sonnet-4-6", 0, 0, 0, 1_000_000, 3.75},         // $3 * 1.25
@@ -546,6 +797,15 @@ func TestClient_CalculateCost(t *testing.T) {
 		{"opus_4_6_cache_write", "claude-opus-4-6", 0, 0, 0, 1_000_000, 6.25},         // $5 * 1.25
 		{"opus_4_1_cache_read", "claude-opus-4-1-20250805", 0, 0, 1_000_000, 0, 1.50}, // $15 * 0.10
 		{"haiku_cache_read", "claude-haiku-4-5-20251001", 0, 0, 1_000_000, 0, 0.10},   // $1 * 0.10
+		// Claude 5 cache reads are priced per model, not at a flat 0.10x
+		{"fable_5_1_cache_read", "claude-fable-5-1", 0, 0, 1_000_000, 0, 0.25},   // $10 * 0.025
+		{"fable_5_cache_read", "claude-fable-5", 0, 0, 1_000_000, 0, 1.00},       // $10 * 0.10
+		{"opus_5_5_cache_read", "claude-opus-5-5", 0, 0, 1_000_000, 0, 0.20},     // $4 * 0.05
+		{"sonnet_5_5_cache_read", "claude-sonnet-5-5", 0, 0, 1_000_000, 0, 0.10}, // $2 * 0.05
+		{"opus_5_5_cache_write", "claude-opus-5-5", 0, 0, 0, 1_000_000, 5.00},    // $4 * 1.25
+		// Haiku 5.5: $0.10/$0.50 up to a 100K prompt, $0.50/$2.50 above it
+		{"haiku_5_5_short_prompt", "claude-haiku-5-5", 100_000, 1_000_000, 0, 0, 0.51},                   // $0.01 + $0.50
+		{"haiku_5_5_long_prompt_counts_cache", "claude-haiku-5-5", 1_000, 1_000_000, 100_000, 0, 2.5055}, // $0.0005 + $2.50 + $0.005
 	}
 
 	for _, tt := range tests {

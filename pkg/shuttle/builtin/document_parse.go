@@ -141,6 +141,11 @@ func (t *DocumentParseTool) Backend() string {
 	return ""
 }
 
+// ConcurrencySafe marks this tool safe to run alongside other calls. Pure
+// read: opens and parses a file, no writes or shared state. Also covers the
+// analysis variant (parseCSVWithAnalysis).
+func (t *DocumentParseTool) ConcurrencySafe() bool { return true }
+
 // Execute parses a document and returns structured data.
 func (t *DocumentParseTool) Execute(ctx context.Context, params map[string]interface{}) (*shuttle.Result, error) {
 	// Extract file path

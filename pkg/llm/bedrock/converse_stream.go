@@ -39,7 +39,9 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message, to
 // convertMessagesToConverse converts internal messages to Bedrock Converse API format.
 // CRITICAL: AWS Bedrock requires all tool results from the same turn to be in a single user message.
 // We aggregate consecutive tool messages into one message with multiple tool_result blocks.
-func (c *Client) convertMessagesToConverse(messages []llmtypes.Message) ([]bedrocktypes.SystemContentBlock, []bedrocktypes.Message) {
+// Sanitized → original names of tool calls found in the history are recorded in
+// nameMap when it is non-nil.
+func (c *Client) convertMessagesToConverse(messages []llmtypes.Message, nameMap map[string]string) ([]bedrocktypes.SystemContentBlock, []bedrocktypes.Message) {
 	var systemBlocks []bedrocktypes.SystemContentBlock
 	var converseMessages []bedrocktypes.Message
 
@@ -145,7 +147,9 @@ func (c *Client) convertMessagesToConverse(messages []llmtypes.Message) ([]bedro
 				})
 
 				// Store name mapping for later
-				c.toolNameMap[llm.SanitizeToolName(tc.Name)] = tc.Name
+				if nameMap != nil {
+					nameMap[llm.SanitizeToolName(tc.Name)] = tc.Name
+				}
 			}
 
 			if len(contentBlocks) > 0 {
@@ -216,32 +220,31 @@ func appendUserOrCoalesceConverse(msgs []bedrocktypes.Message, blocks []bedrockt
 }
 
 // convertToolsToConverse converts shuttle tools to Bedrock Converse ToolConfiguration.
-func (c *Client) convertToolsToConverse(tools []shuttle.Tool) *bedrocktypes.ToolConfiguration {
+// When nameMap is non-nil it receives this request's sanitized → original names.
+func (c *Client) convertToolsToConverse(ctx context.Context, tools []shuttle.Tool, nameMap map[string]string) (*bedrocktypes.ToolConfiguration, error) {
 	var converseTools []bedrocktypes.Tool
-
-	// Clear previous mapping
-	c.toolNameMap = make(map[string]string)
 
 	for _, tool := range tools {
 		originalName := tool.Name()
+		schemaMap, keep, err := c.schemaPolicy.Prepare(ctx, originalName, tool.InputSchema(), c.strictToolSchemas)
+		if err != nil {
+			return nil, err
+		}
+		if !keep {
+			continue
+		}
 		sanitizedName := llm.SanitizeToolName(originalName)
 
 		// Store mapping for later conversion back
-		c.toolNameMap[sanitizedName] = originalName
+		if nameMap != nil {
+			nameMap[sanitizedName] = originalName
+		}
 
 		// Convert input schema
-		schema := tool.InputSchema()
 		var inputSchema bedrocktypes.ToolInputSchema
 
-		if schema != nil {
+		if schemaMap != nil {
 			// Build JSON schema document
-			schemaMap := map[string]interface{}{
-				"type":       "object",
-				"properties": convertSchemaProperties(schema.Properties),
-			}
-			if len(schema.Required) > 0 {
-				schemaMap["required"] = schema.Required
-			}
 
 			// Debug: Log the schema map before converting to document
 			if os.Getenv("LOOM_DEBUG_BEDROCK") == "1" {
@@ -267,7 +270,10 @@ func (c *Client) convertToolsToConverse(tools []shuttle.Tool) *bedrocktypes.Tool
 		})
 	}
 
+	if len(converseTools) == 0 {
+		return nil, nil
+	}
 	return &bedrocktypes.ToolConfiguration{
 		Tools: converseTools,
-	}
+	}, nil
 }

@@ -34,6 +34,7 @@ type Client struct {
 
 // Config holds configuration for the Mistral AI client.
 type Config struct {
+	StrictToolSchemas bool
 	// Required: Mistral API key from https://console.mistral.ai/
 	APIKey string
 
@@ -73,6 +74,7 @@ func NewClient(config Config) *Client {
 
 	// Create OpenAI client with Mistral endpoint
 	openaiClient := openai.NewClient(openai.Config{
+		StrictToolSchemas: config.StrictToolSchemas,
 		APIKey:            config.APIKey,
 		Model:             config.Model,
 		Endpoint:          "https://api.mistral.ai/v1/chat/completions",
