@@ -316,7 +316,7 @@ agent:
 	assert.True(t, serveCfg.PatternConfig.UseLLMClassifier)
 	require.NotNil(t, serveCfg.SkillsConfig)
 	assert.True(t, serveCfg.SkillsConfig.Enabled)
-	assert.Equal(t, []string{"alpha"}, serveCfg.SkillsConfig.DisabledSkills)
+	assert.Equal(t, []string{"alpha"}, serveCfg.SkillsConfig.DisabledSkills) //nolint:staticcheck // SA1019: verify legacy disabled_skills round-trip
 	assert.Equal(t, filepath.ToSlash(skillsDir), serveCfg.SkillsConfig.SkillsDir)
 	assert.Equal(t, 180000, serveCfg.MaxContextTokens)
 	assert.Equal(t, agent.EffectiveOutputReservation("anthropic", "claude-3-5-sonnet-20241022", 4096, 8192, 180000), serveCfg.ReservedOutputTokens)
