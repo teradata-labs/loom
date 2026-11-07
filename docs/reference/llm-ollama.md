@@ -492,8 +492,12 @@ client := ollama.NewClient(ollama.Config{
 
 1. On first tool call, Loom queries Ollama's `/api/show` for the model's capabilities
 2. If `capabilities` lists `tools`, native tools are enabled. Older Ollama returns no list, so Loom checks the template for tool-handling directives (e.g., `{{ .Tools }}`) instead
-3. If the probe fails (e.g., Ollama unreachable or busy past the 30 s timeout), falls back to a static known-models list
-4. A probe answer or a known model is cached for the client's lifetime. A failed probe on an unknown model is not, so the next request probes again
+3. If the probe fails (e.g., Ollama unreachable, an error status, or busy past the 30 s timeout), falls back to a static known-models list
+4. A probe answer is cached for the client's lifetime. A failed probe is remembered for 30 s: requests in that window use the known-models list without probing, and the first request after it probes again
+5. The probe runs under the request's context, so cancelling the request also stops a slow probe
+6. Each request decides its tool mode once. The history (assistant `tool_calls`, `tool` role results) and the `tools` block always use the same mode
+
+The decision is reported in the response metadata (`native_tools`, `tool_mode_source`), in a zap debug log line, and on the LLM span as `llm.ollama.tool_mode` (`native` or `prompt`), `llm.ollama.tool_mode_source` (`config`, `capabilities`, `template`, `fallback_list` or `probe_failed`), `llm.ollama.tool_mode_cached`, and `llm.ollama.tool_probe_error` when the probe failed.
 
 
 ### Checking Tool Support

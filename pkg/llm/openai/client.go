@@ -57,6 +57,8 @@ type Client struct {
 	// catalogProvider is the catalog namespace calculateCost prices under.
 	// "openai" unless Config.CatalogProvider overrides it.
 	catalogProvider string
+	// singleLeadingSystem merges every system message into one leading message.
+	singleLeadingSystem bool
 }
 
 // DefaultCatalogProvider is the catalog namespace the client prices under
@@ -102,6 +104,13 @@ type Config struct {
 	// client is told to look there. Without it a gateway alias never matches
 	// the "openai" namespace and is priced at the gpt-4o default below.
 	CatalogProvider string
+	// SingleLeadingSystem merges every system message into one leading system
+	// message. Off by default: the request keeps system messages where the agent
+	// put them. Turn it on for models whose chat template only allows a single
+	// system message at the start (e.g. Qwen on vLLM, which answers 400 "System
+	// message must be at the beginning"). Cache breakpoints are not emitted when
+	// it is on, since the merge invalidates their message positions.
+	SingleLeadingSystem bool
 }
 
 // Default OpenAI configuration values.
@@ -204,6 +213,7 @@ func NewClient(config Config) *Client {
 		rateLimiter:            rateLimiter,
 		extraHeaders:           copyHeaders(config.ExtraHeaders),
 		catalogProvider:        config.CatalogProvider,
+		singleLeadingSystem:    config.SingleLeadingSystem,
 		httpClient:             httpClient,
 		streamHTTPClient:       &streamHTTPClient,
 	}
@@ -296,6 +306,16 @@ func (c *Client) sendRequestWithClient(
 					return nil, llm.NewThrottleError(
 						fmt.Errorf("API error (status 429): %s", string(respBody)),
 						retryAfter)
+				}
+				// 500/502/503/504/529: retried by the rate limiter under the
+				// throttle budget; status known before any content streams.
+				if llm.IsTransientStatus(resp.StatusCode) {
+					retryAfter := llm.RetryAfterFromHeaders(resp.Header)
+					respBody, _ := io.ReadAll(io.LimitReader(resp.Body, llm.MaxErrorBodyBytes))
+					_ = resp.Body.Close()
+					return nil, llm.NewTransientError(
+						fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody)),
+						resp.StatusCode, retryAfter)
 				}
 				return resp, nil
 			})
@@ -577,6 +597,10 @@ func (c *Client) convertMessages(messages []llmtypes.Message) []ChatMessage {
 	// Emitted only for Anthropic-backed models: cache_control is Anthropic's
 	// field, and a strict OpenAI-native endpoint may reject the foreign key or
 	// the string→block content reshaping that carries it.
+	if c.singleLeadingSystem {
+		return mergeSystemMessages(apiMessages)
+	}
+
 	if c.emitsCacheControl() {
 		for i, msg := range messages {
 			if emittedIdx, ok := srcToEmitted[i]; ok && msg.CacheBreakpoint {
@@ -586,6 +610,28 @@ func (c *Client) convertMessages(messages []llmtypes.Message) []ChatMessage {
 	}
 
 	return apiMessages
+}
+
+// mergeSystemMessages joins every system message, in order, into one leading
+// system message. Qwen's chat template raises "System message must be at the
+// beginning" for any system message that is not the first message, including a
+// second consecutive one.
+func mergeSystemMessages(msgs []ChatMessage) []ChatMessage {
+	var systemTexts []string
+	rest := make([]ChatMessage, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Role != "system" {
+			rest = append(rest, m)
+			continue
+		}
+		if text, ok := m.Content.(string); ok && text != "" {
+			systemTexts = append(systemTexts, text)
+		}
+	}
+	if len(systemTexts) == 0 {
+		return rest
+	}
+	return append([]ChatMessage{{Role: "system", Content: strings.Join(systemTexts, "\n\n")}}, rest...)
 }
 
 // emitsCacheControl reports whether the configured model is Anthropic-backed —
@@ -836,35 +882,24 @@ func (c *Client) convertResponse(resp *ChatCompletionResponse, providerCostUSD f
 }
 
 // anthropicFallbackPricing returns published Anthropic rates for a model id
-// proxied through an OpenAI-compatible endpoint. Mirrors the bedrock client's
-// substring matching so a gateway-proxied Claude is never priced as a GPT.
+// proxied through an OpenAI-compatible endpoint, so a gateway-proxied Claude is
+// never priced as a GPT. It delegates to catalog.ClaudeFamilyPricing, the
+// matcher shared with the anthropic and bedrock clients.
 func anthropicFallbackPricing(modelID string) (inputPerM, outputPerM float64, matched bool) {
-	switch {
-	case strings.Contains(modelID, "claude-opus-4-1"):
-		return 15.0, 75.0, true
-	case strings.Contains(modelID, "claude-opus"):
-		return 5.0, 25.0, true
-	case strings.Contains(modelID, "claude-haiku"):
-		return 1.0, 5.0, true
-	case strings.Contains(modelID, "claude-sonnet"), strings.Contains(modelID, "claude-3-5-sonnet"):
-		return 3.0, 15.0, true
-	}
-	return 0, 0, false
+	return catalog.ClaudeFamilyPricing(modelID)
 }
 
 // providerCostHeader is litellm's own computed cost for the call. It is
 // cache-aware and authoritative — preferred over any local estimate.
 const providerCostHeader = "x-litellm-response-cost"
 
-// Cache-tier multipliers on the input rate, by rate-card family. Anthropic
-// bills a 5-minute cache write at 1.25x and a cache read at 0.10x. OpenAI bills
-// a cached input token at 0.5x (gpt-4o: $1.25 cached against $2.50) and has no
-// separate write bucket, so a cache-creation token is simply an input token.
+// Cache-tier multipliers on the input rate for the OpenAI rate card. OpenAI
+// bills a cached input token at 0.5x (gpt-4o: $1.25 cached against $2.50) and
+// has no separate write bucket, so a cache-creation token is simply an input
+// token. Claude's multipliers are per model and come from pkg/llm/catalog.
 const (
-	anthropicCacheWriteMultiplier = 1.25
-	anthropicCacheReadMultiplier  = 0.10
-	openAICacheWriteMultiplier    = 1.0
-	openAICacheReadMultiplier     = 0.5
+	openAICacheWriteMultiplier = 1.0
+	openAICacheReadMultiplier  = 0.5
 )
 
 // parseProviderCost reads the gateway's reported cost, if it sent one.
@@ -923,18 +958,14 @@ func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cache
 	if provider == "" {
 		provider = DefaultCatalogProvider
 	}
-	inputCostPerM, outputCostPerM, ok := catalog.LookupPricing(provider, c.model)
-	if !ok {
-		// Gateways (litellm et al.) proxy non-OpenAI models through this
-		// OpenAI-compatible client under ids like "coding-agent/claude-sonnet-4-6".
-		// Falling through to the GPT rate card below would price them wrongly, so
-		// recognise the Anthropic family first. Order matters: check "opus-4-1"
-		// before "opus-4", since Contains("opus-4-5","opus-4") is true.
-		if in, out, matched := anthropicFallbackPricing(c.model); matched {
-			inputCostPerM, outputCostPerM = in, out
-			ok = true
-		}
-	}
+	// Gateways (litellm et al.) proxy non-OpenAI models through this
+	// OpenAI-compatible client under ids like "coding-agent/claude-sonnet-4-6".
+	// Falling through to the GPT rate card below would price them wrongly, so
+	// catalog.RequestPricing recognises the Anthropic family (the same matcher
+	// as anthropicFallbackPricing) after the catalog, and applies the published
+	// long-context card. prompt_tokens already includes the cached buckets, so
+	// it is the prompt length.
+	inputCostPerM, outputCostPerM, ok := catalog.RequestPricing(provider, c.model, inputTokens)
 	if !ok {
 		switch c.model {
 		case "gpt-4o":
@@ -994,7 +1025,7 @@ func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cache
 	// model id, so it still identifies a Claude that the catalog priced.
 	cacheReadMult, cacheWriteMult := openAICacheReadMultiplier, openAICacheWriteMultiplier
 	if _, _, isAnthropic := anthropicFallbackPricing(c.model); isAnthropic {
-		cacheReadMult, cacheWriteMult = anthropicCacheReadMultiplier, anthropicCacheWriteMultiplier
+		cacheReadMult, cacheWriteMult = catalog.ClaudeCacheReadMultiplier(c.model), catalog.ClaudeCacheWriteMultiplier
 	}
 
 	uncached := inputTokens - cacheReadTokens - cacheCreationTokens
