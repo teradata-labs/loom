@@ -651,7 +651,7 @@ func TestInstrumentedProvider_ToolCallOutputIsBounded(t *testing.T) {
 
 func TestInstrumentedProvider_RedactsBoundaryCrossingSecretBeforeTruncation(t *testing.T) {
 	const secret = "hunter2boundarysecret987654"
-	padding := strings.Repeat("a", 170)
+	padding := strings.Repeat("a", 150)
 	mockProvider := &mockLLMProvider{
 		name:  "test-provider",
 		model: "test-model",
@@ -662,7 +662,12 @@ func TestInstrumentedProvider_RedactsBoundaryCrossingSecretBeforeTruncation(t *t
 	tracer := newMockTracer()
 	userMsg := `{"a_pad":"` + padding + `","password":"` + secret + `"}`
 	_, err := NewInstrumentedProvider(mockProvider, tracer).Chat(context.Background(),
-		[]llmtypes.Message{{Role: "user", Content: userMsg}}, nil)
+		[]llmtypes.Message{
+			{Role: "user", Content: "connect"},
+			{Role: "assistant", ToolCalls: []llmtypes.ToolCall{{ID: "call_0", Name: "read_cfg"}}},
+			{Role: "tool", Content: userMsg, ToolUseID: "call_0"},
+			{Role: "user", Content: userMsg},
+		}, nil)
 	require.NoError(t, err)
 	require.Len(t, tracer.spans, 1)
 
@@ -670,8 +675,11 @@ func TestInstrumentedProvider_RedactsBoundaryCrossingSecretBeforeTruncation(t *t
 	outVal, _ := tracer.spans[0].Attributes["output.value"].(string)
 	msgPrev, _ := tracer.spans[0].Attributes["message.preview"].(string)
 	assert.NotContains(t, inVal, secret[:6], "no prefix of boundary-crossing secret in input.value")
+	assert.Contains(t, inVal, observability.RedactedValue)
 	assert.NotContains(t, outVal, secret[:6], "no prefix of boundary-crossing secret in output.value")
+	assert.Contains(t, outVal, observability.RedactedValue)
 	assert.NotContains(t, msgPrev, secret[:6], "no prefix of boundary-crossing secret in message.preview")
+	assert.Contains(t, msgPrev, observability.RedactedValue)
 }
 
 func lastUserContent(messages []llmtypes.Message) string {

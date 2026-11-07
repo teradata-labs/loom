@@ -120,6 +120,12 @@ func TestRedactCredentialString(t *testing.T) {
 			keep:    []string{"engine=google", "q=loom"},
 		},
 		{
+			name:    "credential assignment with parentheses inside value and enclosing call",
+			in:      `connect(user="dbc", token=ab(cdefgh)ijk, secret=xy(z12345))`,
+			secrets: []string{"ab(cdefgh)ijk", "xy(z12345)", "cdefgh", "z12345"},
+			keep:    []string{`connect(user="dbc", token=[REDACTED], secret=[REDACTED])`},
+		},
+		{
 			name:    "quoted credential assignment in function call",
 			in:      `connect(user="dbc", password="` + plantedPass + `", api_key='` + plantedTavily + `')`,
 			secrets: []string{plantedPass, plantedTavily},

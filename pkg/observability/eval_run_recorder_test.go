@@ -58,6 +58,7 @@ func newRecordingOTelTracer(t *testing.T, privacy PrivacyConfig, filter SpanFilt
 	provider := sdktrace.NewTracerProvider(
 		sdktrace.WithSpanProcessor(newFilteringSpanProcessor(sdktrace.NewSimpleSpanProcessor(exp), filter)),
 		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+		sdktrace.WithIDGenerator(loomIDGenerator{}),
 	)
 	rec, path := newSQLiteRecorder(t)
 	return &OTelTracer{provider: provider, tracer: provider.Tracer("loom"), privacy: privacy, recorder: rec}, exp, path

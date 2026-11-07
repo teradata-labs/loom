@@ -105,7 +105,7 @@ var (
 	// function calls like connect(user="dbc", password="...")); replaced only
 	// when the name is a credential field.
 	credentialAssignmentPattern = regexp.MustCompile(
-		`\b([A-Za-z][A-Za-z0-9_.\-]{0,63})([ \t]*[=:][ \t]*)("(?:[^"\\]|\\.)*"|'[^']*'|[^\s&"',;()]{4,})`)
+		`\b([A-Za-z][A-Za-z0-9_.\-]{0,63})([ \t]*[=:][ \t]*)("(?:[^"\\]|\\.)*"|'[^']*'|[^\s&"',;]{4,})`)
 	// A credential word followed by its value in prose ("the password is
 	// hunter2", "cookie sid=abc1"); replaced only when the value looks like a
 	// credential (see credentialLike).
@@ -163,17 +163,25 @@ func redactCredentialStringOnce(s string) string {
 			return m
 		}
 		val := sub[3]
-		if val == RedactedValue || val == `"`+RedactedValue+`"` || val == `'`+RedactedValue+`'` {
-			return m
-		}
 		if len(val) >= 2 && (val[0] == '"' || val[0] == '\'') && val[len(val)-1] == val[0] {
-			if len(val)-2 < 4 {
+			if val[1:len(val)-1] == RedactedValue || len(val)-2 < 4 {
 				return m
 			}
 			q := val[:1]
 			return sub[1] + sub[2] + q + RedactedValue + q
 		}
-		return sub[1] + sub[2] + RedactedValue
+		suffix := ""
+		openParens := strings.Count(val, "(")
+		closeParens := strings.Count(val, ")")
+		for closeParens > openParens && strings.HasSuffix(val, ")") {
+			val = val[:len(val)-1]
+			suffix += ")"
+			closeParens--
+		}
+		if val == RedactedValue || len(val) < 4 {
+			return m
+		}
+		return sub[1] + sub[2] + RedactedValue + suffix
 	})
 	s = credentialMentionPattern.ReplaceAllStringFunc(s, func(m string) string {
 		sub := credentialMentionPattern.FindStringSubmatch(m)

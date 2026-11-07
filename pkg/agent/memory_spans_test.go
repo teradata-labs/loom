@@ -262,3 +262,20 @@ func TestWithTracerNil_SkillEvictionDoesNotPanic(t *testing.T) {
 		return err == nil && after.AccessCount > before.AccessCount
 	}, 3*time.Second, 20*time.Millisecond, "eviction callback must complete without panicking when WithTracer(nil) is used")
 }
+
+func TestExtractGraphMemoryAsync_ConcurrentParentSetAttributeNoRace(t *testing.T) {
+	tracer := observability.NewMockTracer()
+	a := extractionAgent(t, failingLLM{}, newTestGraphMemoryStore(t), tracer)
+	loopCtx, loopSpan := tracer.StartSpan(context.Background(), "agent.conversation_loop")
+	loopSpan.SetAttribute(observability.AttrSessionID, "extract-session")
+	extractCtx := context.WithoutCancel(loopCtx)
+	a.graphExtractionWG.Add(1)
+	go func() {
+		defer a.graphExtractionWG.Done()
+		a.extractGraphMemoryAsync(extractCtx, "extract-session")
+	}()
+	for i := 0; i < 1000; i++ {
+		loopSpan.SetAttribute("conversation.turns", i)
+	}
+	a.graphExtractionWG.Wait()
+}

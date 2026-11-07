@@ -15,6 +15,7 @@ package observability
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -22,7 +23,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
@@ -31,6 +31,39 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
+
+type rootTraceIDOverrideKey struct{}
+
+// loomIDGenerator is an sdktrace.IDGenerator that honors a valid 32-hex
+// ContextWithTraceID override on a root span without installing a synthetic
+// remote parent SpanContext.
+type loomIDGenerator struct{}
+
+func (loomIDGenerator) NewIDs(ctx context.Context) (oteltrace.TraceID, oteltrace.SpanID) {
+	var tid oteltrace.TraceID
+	if override, ok := ctx.Value(rootTraceIDOverrideKey{}).(oteltrace.TraceID); ok && override.IsValid() {
+		tid = override
+	} else {
+		_, _ = rand.Read(tid[:])
+		if !tid.IsValid() {
+			tid[0] = 1
+		}
+	}
+	return tid, newRandomSpanID()
+}
+
+func (loomIDGenerator) NewSpanID(_ context.Context, _ oteltrace.TraceID) oteltrace.SpanID {
+	return newRandomSpanID()
+}
+
+func newRandomSpanID() oteltrace.SpanID {
+	var sid oteltrace.SpanID
+	_, _ = rand.Read(sid[:])
+	if !sid.IsValid() {
+		sid[0] = 1
+	}
+	return sid
+}
 
 // OTelTracer exports Loom spans to any OTLP HTTP endpoint.
 // It bridges Loom's internal span model to the OTel SDK, translating
@@ -89,6 +122,7 @@ func NewOTelTracer(cfg OTelConfig) (*OTelTracer, error) {
 		sdktrace.WithSpanProcessor(processor),
 		sdktrace.WithResource(res),
 		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+		sdktrace.WithIDGenerator(loomIDGenerator{}),
 	)
 
 	return &OTelTracer{
@@ -102,14 +136,7 @@ func NewOTelTracer(cfg OTelConfig) (*OTelTracer, error) {
 // StartSpan creates a Loom span and a paired OTel span.
 // The Loom span is placed in the returned context for downstream context propagation.
 func (t *OTelTracer) StartSpan(ctx context.Context, name string, opts ...SpanOption) (context.Context, *Span) {
-	// Build Loom span — same logic as NoOpTracer to preserve context propagation.
-	traceID := uuid.New().String()
-	if override := traceIDFromContextOverride(ctx); override != "" {
-		traceID = override
-	}
 	loomSpan := &Span{
-		TraceID:    traceID,
-		SpanID:     uuid.New().String(),
 		Name:       name,
 		StartTime:  time.Now(),
 		Attributes: make(map[string]interface{}),
@@ -121,7 +148,6 @@ func (t *OTelTracer) StartSpan(ctx context.Context, name string, opts ...SpanOpt
 	// Link to parent Loom span if present; otherwise honor a 32-hex
 	// ContextWithTraceID override or record a non-hex override on the root span.
 	otelCtx := ctx
-	override := traceIDFromContextOverride(ctx)
 	if parent := SpanFromContext(ctx); parent != nil {
 		loomSpan.TraceID = parent.TraceID
 		loomSpan.ParentID = parent.SpanID
@@ -141,15 +167,10 @@ func (t *OTelTracer) StartSpan(ctx context.Context, name string, opts ...SpanOpt
 		} else if psc, ok := buildOTelSpanContext(parent.TraceID, parent.SpanID); ok {
 			otelCtx = oteltrace.ContextWithRemoteSpanContext(ctx, psc)
 		}
-	} else if override != "" {
+	} else if override := traceIDFromContextOverride(ctx); override != "" {
 		if tid, err := oteltrace.TraceIDFromHex(strings.ToLower(override)); err == nil && tid.IsValid() {
-			psc := oteltrace.NewSpanContext(oteltrace.SpanContextConfig{
-				TraceID:    tid,
-				SpanID:     oteltrace.SpanID{1},
-				TraceFlags: oteltrace.FlagsSampled,
-				Remote:     true,
-			})
-			otelCtx = oteltrace.ContextWithRemoteSpanContext(ctx, psc)
+			otelCtx = oteltrace.ContextWithSpanContext(ctx, oteltrace.SpanContext{})
+			otelCtx = context.WithValue(otelCtx, rootTraceIDOverrideKey{}, tid)
 		} else {
 			t.invalidOverrideOnce.Do(func() {
 				zap.L().Debug("OTelTracer ignoring non-hex ContextWithTraceID override; recording in loom.trace_id_override",
@@ -179,10 +200,14 @@ func inheritParentSessionID(child, parent *Span) {
 	if child == nil || parent == nil {
 		return
 	}
-	if _, has := child.Attributes[AttrSessionID]; !has {
-		if sid, ok := parent.Attributes[AttrSessionID].(string); ok && sid != "" {
-			child.Attributes[AttrSessionID] = sid
-		}
+	if child.sessionID.Load() != nil {
+		return
+	}
+	if _, has := child.Attributes[AttrSessionID]; has {
+		return
+	}
+	if sid := parent.sessionID.Load(); sid != nil && *sid != "" {
+		child.SetAttribute(AttrSessionID, *sid)
 	}
 }
 
@@ -336,9 +361,19 @@ func redactOTelSpan(span *Span, cfg PrivacyConfig) *Span {
 		allowed[k] = true
 	}
 
-	redacted := *span
-	redacted.Attributes = redactAttributes(span.Attributes, cfg, allowed)
-	redacted.Events = make([]Event, len(span.Events))
+	redacted := &Span{
+		TraceID:            span.TraceID,
+		SpanID:             span.SpanID,
+		ParentID:           span.ParentID,
+		Name:               span.Name,
+		Attributes:         redactAttributes(span.Attributes, cfg, allowed),
+		ResourceAttributes: span.ResourceAttributes,
+		StartTime:          span.StartTime,
+		EndTime:            span.EndTime,
+		Duration:           span.Duration,
+		Events:             make([]Event, len(span.Events)),
+		Status:             span.Status,
+	}
 	for i, event := range span.Events {
 		redacted.Events[i] = event
 		redacted.Events[i].Attributes = redactAttributes(event.Attributes, cfg, allowed)
@@ -349,7 +384,7 @@ func redactOTelSpan(span *Span, cfg PrivacyConfig) *Span {
 	if cfg.RedactPII {
 		redacted.Status.Message = redactPIIString(redacted.Status.Message)
 	}
-	return &redacted
+	return redacted
 }
 
 // redactAttributes returns a redacted copy of attrs (see redactOTelSpan).

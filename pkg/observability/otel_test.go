@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -463,6 +464,7 @@ func newInMemoryOTelTracer(t *testing.T) (*OTelTracer, *tracetest.InMemoryExport
 	provider := sdktrace.NewTracerProvider(
 		sdktrace.WithSyncer(exp), // synchronous export so spans are available immediately
 		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+		sdktrace.WithIDGenerator(loomIDGenerator{}),
 	)
 	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 	return &OTelTracer{
@@ -669,6 +671,35 @@ func TestStartSpan_LateChildAfterParentEndSharesTraceID(t *testing.T) {
 	}
 }
 
+func TestStartSpan_InheritsParentSessionIDConcurrently(t *testing.T) {
+	tr, _ := newInMemoryOTelTracer(t)
+	parentCtx, parent := tr.StartSpan(context.Background(), "agent.conversation_loop")
+	parent.SetAttribute(AttrSessionID, "sess-concurrent")
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			childCtx, child := tr.StartSpan(parentCtx, "graph_memory.extract")
+			if got := child.Attributes[AttrSessionID]; got != "sess-concurrent" {
+				t.Errorf("child session.id = %v, want sess-concurrent", got)
+			}
+			_, grandChild := tr.StartSpan(childCtx, SpanLLMCompletion)
+			if got := grandChild.Attributes[AttrSessionID]; got != "sess-concurrent" {
+				t.Errorf("grandchild session.id = %v, want sess-concurrent", got)
+			}
+			tr.EndSpan(grandChild)
+			tr.EndSpan(child)
+		}
+	}()
+	for i := 0; i < 1000; i++ {
+		parent.SetAttribute("conversation.turns", i)
+	}
+	wg.Wait()
+	tr.EndSpan(parent)
+}
+
 func TestStartSpan_ContextWithTraceIDOverride(t *testing.T) {
 	t.Run("valid 32-hex override survives to exporter", func(t *testing.T) {
 		tr, exp := newInMemoryOTelTracer(t)
@@ -690,6 +721,10 @@ func TestStartSpan_ContextWithTraceIDOverride(t *testing.T) {
 		}
 		if got := spans[0].SpanContext.TraceID().String(); got != hexTraceID {
 			t.Fatalf("exported TraceID = %s, want %s", got, hexTraceID)
+		}
+		if spans[0].Parent.IsValid() {
+			t.Fatalf("exported root has parent span %s (remote=%t), want invalid parent",
+				spans[0].Parent.SpanID(), spans[0].Parent.IsRemote())
 		}
 	})
 

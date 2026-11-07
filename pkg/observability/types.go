@@ -27,6 +27,7 @@
 package observability
 
 import (
+	"sync/atomic"
 	"time"
 )
 
@@ -93,6 +94,10 @@ type Span struct {
 	// Events and status
 	Events []Event
 	Status Status
+
+	// sessionID caches AttrSessionID atomically so child spans can inherit it
+	// in StartSpan without racing on concurrent parent SetAttribute writes.
+	sessionID atomic.Pointer[string]
 }
 
 // SetAttribute sets a key-value attribute on the span.
@@ -101,6 +106,11 @@ func (s *Span) SetAttribute(key string, value interface{}) {
 		s.Attributes = make(map[string]interface{})
 	}
 	s.Attributes[key] = value
+	if key == AttrSessionID {
+		if sid, ok := value.(string); ok {
+			s.sessionID.Store(&sid)
+		}
+	}
 }
 
 // AddEvent adds a timestamped event to the span.

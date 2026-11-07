@@ -570,35 +570,38 @@ Loom attribute keys (set in `pkg/llm/instrumented_provider.go`, `pkg/agent`, `pk
 
 ```
 StartSpan(ctx, name, opts):
-  loomSpan = newLoomSpan(ctx, name, opts)          // same as NoOpTracer
-  otelCtx, otelSpan = t.tracer.Start(ctx, name,
+  loomSpan = newLoomSpan(ctx, name, opts)          // links parent & inherits session.id
+  otelCtx, otelSpan = t.tracer.Start(otelCtx, name,
     trace.WithTimestamp(loomSpan.StartTime),
     trace.WithSpanKind(spanKindFor(name)),
   )
+  sc = otelSpan.SpanContext()
+  loomSpan.TraceID = sc.TraceID().String()         // 32-hex OTel trace ID
+  loomSpan.SpanID = sc.SpanID().String()           // 16-hex OTel span ID
   t.activeSpans.Store(loomSpan.SpanID, otelSpan)
   return ContextWithSpan(otelCtx, loomSpan), loomSpan
 
 EndSpan(span):
   span.EndTime = now()
   span.Duration = span.EndTime - span.StartTime
-  redacted = t.redact(span)                        // privacy filter
   raw, ok = t.activeSpans.LoadAndDelete(span.SpanID)
   if !ok: return                                   // span was never started (no-op)
   otelSpan = raw.(trace.Span)
+  t.recorder.Record(span)                          // optional local eval_runs row
+  redacted = redactOTelSpan(span, t.privacy)       // privacy filter
   otelSpan.SetAttributes(exportAttributes(span.Name, redacted.Attributes)...)
   for _, event := range redacted.Events:
     otelSpan.AddEvent(event.Name, ...)
   if span.Status.Code == StatusError:
-    otelSpan.SetStatus(codes.Error, span.Status.Message)
+    otelSpan.SetStatus(codes.Error, redacted.Status.Message)
   otelSpan.End(trace.WithTimestamp(span.EndTime))
-  t.activeSpans.Delete(span.SpanID)                // cleanup (LoadAndDelete covers this)
 ```
 
 **Complexity**: O(1) amortised for `sync.Map` operations.
 
 **Race safety**: `sync.Map` is goroutine-safe. Loom's context propagation ensures `EndSpan` is called by the same goroutine that called `StartSpan` (via `defer`), so no concurrent access to the same `SpanID` entry occurs in practice. `sync.Map` handles the edge case where it could.
 
-**TraceID / SpanID format**: OTel uses 128-bit trace IDs and 64-bit span IDs in W3C hex format. Loom uses UUID strings. The bridge converts Loom UUIDs to OTel IDs by stripping hyphens and truncating / zero-padding to the required byte lengths.
+**TraceID / SpanID format**: OTel uses 128-bit trace IDs (32 lowercase hex characters) and 64-bit span IDs (16 lowercase hex characters) in W3C format. `OTelTracer.StartSpan` sets `Span.TraceID` and `Span.SpanID` to the exported OTel hex IDs so `TraceIDFromContext`, `WeaveResponse.trace_id`, late child spans (started after their parent has ended via `buildOTelSpanContext`), and Phoenix annotations all use the exact IDs stored by the OTLP backend. A valid 32-hex `ContextWithTraceID` override on a root span is honored via the provider's `IDGenerator`; non-hex overrides (such as dashed UUIDs) are recorded on `loom.trace_id_override` while the SDK assigns a 32-hex trace ID.
 
 
 ### GenAI Attribute Translation
