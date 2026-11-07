@@ -7,6 +7,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -497,6 +498,9 @@ func (s *MultiAgentServer) ReloadAgent(ctx context.Context, req *loomv1.ReloadAg
 			var refreshed *agent.Agent
 			if s.registry.OwnsRuntimeAgent(ag) {
 				if reloadErr := s.registry.ReloadAgent(ctx, resolvedID); reloadErr != nil {
+					if errors.Is(reloadErr, agent.ErrAgentChanged) {
+						return nil, status.Errorf(codes.Aborted, "failed to reload agent from file: %v", reloadErr)
+					}
 					return nil, status.Errorf(codes.Internal, "failed to reload agent from file: %v", reloadErr)
 				}
 				refreshed, err = s.registry.GetAgent(ctx, resolvedID)
@@ -507,7 +511,17 @@ func (s *MultiAgentServer) ReloadAgent(ctx context.Context, req *loomv1.ReloadAg
 					return nil, status.Errorf(codes.Internal, "failed to update reloaded agent: %v", updateErr)
 				}
 			} else if s.registry.HasReloadCallback() {
+				s.mu.RLock()
+				beforeKeys := make(map[string]*agent.Agent, len(s.agents))
+				for k, v := range s.agents {
+					beforeKeys[k] = v
+				}
+				s.mu.RUnlock()
+
 				if reloadErr := s.registry.ForceReload(ctx, ag.GetName()); reloadErr != nil {
+					if errors.Is(reloadErr, agent.ErrAgentChanged) {
+						return nil, status.Errorf(codes.Aborted, "failed to reload agent from file: %v", reloadErr)
+					}
 					return nil, status.Errorf(codes.Internal, "failed to reload agent from file: %v", reloadErr)
 				}
 				refreshed, _, err = s.getAgent(resolvedID)
@@ -515,7 +529,34 @@ func (s *MultiAgentServer) ReloadAgent(ctx context.Context, req *loomv1.ReloadAg
 					return nil, status.Errorf(codes.Internal, "failed to retrieve reloaded agent: %v", err)
 				}
 				if refreshed == ag {
-					return nil, status.Errorf(codes.Internal, "reload callback did not replace agent %q", resolvedID)
+					// If the server and registry disagreed on the agent GUID,
+					// the callback may have registered the rebuilt agent under
+					// a different key (its registry GUID or name). Reconcile it
+					// onto resolvedID so the duplicate entry does not linger.
+					var extraKey string
+					var candidate *agent.Agent
+					s.mu.RLock()
+					for k, v := range s.agents {
+						if k != resolvedID && v != ag && v != nil && v.GetName() == ag.GetName() && beforeKeys[k] != v {
+							extraKey = k
+							candidate = v
+							break
+						}
+					}
+					s.mu.RUnlock()
+					if candidate != nil {
+						candidate.SetID(resolvedID)
+						s.mu.Lock()
+						delete(s.agents, extraKey)
+						if s.agentStates != nil {
+							delete(s.agentStates, extraKey)
+						}
+						s.agents[resolvedID] = candidate
+						s.mu.Unlock()
+						refreshed = candidate
+					} else {
+						return nil, status.Errorf(codes.Internal, "reload callback did not replace agent %q", resolvedID)
+					}
 				}
 			} else {
 				return nil, status.Errorf(codes.FailedPrecondition, "agent %q has no registry runtime or reload callback", resolvedID)

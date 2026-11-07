@@ -160,3 +160,55 @@ func TestBuildAgent_ProtoSkillsConfigReachesRuntime(t *testing.T) {
 	assert.True(t, cfg.SkillsConfig.Enabled)
 	assert.Equal(t, []string{"triage"}, cfg.SkillsConfig.DisabledSkills)
 }
+
+func TestRegistryAgentConfig_MatchesBuildAgentRuntimeConfig(t *testing.T) {
+	registry, _ := createTestRegistry(t)
+	cfgProto := &loomv1.AgentConfig{
+		Name:         "shared-config-agent",
+		Description:  "Shared config builder test",
+		SystemPrompt: "Verify parity.",
+		Rom:          "TD",
+		Llm: &loomv1.LLMConfig{
+			MaxTokens:            4096,
+			MaxContextTokens:     200000,
+			ReservedOutputTokens: 8192,
+		},
+		Behavior: &loomv1.BehaviorConfig{
+			MaxIterations:          15,
+			MaxTurns:               12,
+			MaxToolExecutions:      30,
+			OutputTokenCbThreshold: 5,
+			Patterns: &loomv1.PatternConfig{
+				Enabled:            true,
+				MinConfidence:      0.85,
+				MaxPatternsPerTurn: 3,
+				EnableTracking:     true,
+				UseLlmClassifier:   true,
+			},
+		},
+		Skills:   &loomv1.SkillsConfig{Enabled: true, DisabledSkills: []string{"alpha"}, SkillsDir: t.TempDir()},
+		Metadata: map[string]string{"_enable_self_healing": "false", "custom": "value"},
+	}
+
+	directCfg := RegistryAgentConfig(cfgProto, ResolveSkillsConfig(cfgProto))
+	builtAgent, err := registry.buildAgent(context.Background(), cfgProto)
+	require.NoError(t, err)
+	builtCfg := builtAgent.GetConfig()
+
+	assert.Equal(t, directCfg.Name, builtCfg.Name)
+	assert.Equal(t, directCfg.Description, builtCfg.Description)
+	assert.Equal(t, directCfg.SystemPrompt, builtCfg.SystemPrompt)
+	assert.Equal(t, directCfg.Rom, builtCfg.Rom)
+	assert.Equal(t, directCfg.Metadata, builtCfg.Metadata)
+	assert.Equal(t, directCfg.MaxIterations, builtCfg.MaxIterations)
+	assert.Equal(t, directCfg.MaxTurns, builtCfg.MaxTurns)
+	assert.Equal(t, directCfg.MaxToolExecutions, builtCfg.MaxToolExecutions)
+	assert.Equal(t, directCfg.OutputTokenCBThreshold, builtCfg.OutputTokenCBThreshold)
+	assert.Equal(t, directCfg.EnableSelfHealing, builtCfg.EnableSelfHealing)
+	assert.Equal(t, directCfg.Retry, builtCfg.Retry)
+	assert.Equal(t, directCfg.PatternConfig, builtCfg.PatternConfig)
+	assert.Equal(t, directCfg.SkillsConfig, builtCfg.SkillsConfig)
+	assert.Equal(t, 200000, directCfg.MaxContextTokens)
+	assert.Equal(t, EffectiveOutputReservation("", "", 4096, 8192, 200000), directCfg.ReservedOutputTokens)
+}
+

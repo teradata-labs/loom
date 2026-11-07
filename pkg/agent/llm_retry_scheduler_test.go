@@ -18,9 +18,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"testing"
 	"time"
 
+	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/aws/smithy-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -198,3 +202,116 @@ func TestChatWithRetryChargesMeteredTokensToScheduler(t *testing.T) {
 		})
 	}
 }
+
+type errorStubLLM struct {
+	calls int
+	err   error
+}
+
+func (s *errorStubLLM) Chat(_ context.Context, _ []Message, _ []shuttle.Tool) (*LLMResponse, error) {
+	s.calls++
+	return nil, s.err
+}
+func (s *errorStubLLM) Name() string  { return "err-stub" }
+func (s *errorStubLLM) Model() string { return "err-model" }
+
+func TestDispatchChat_SkipsNonRetryable4xxErrors(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       error
+		wantCalls int
+	}{
+		{
+			name:      "HTTP 400 status string",
+			err:       errors.New("API error (status 400): bad request"),
+			wantCalls: 1,
+		},
+		{
+			name:      "HTTP 401 unauthorized string",
+			err:       errors.New("API error (status 401): invalid api key"),
+			wantCalls: 1,
+		},
+		{
+			name:      "HTTP 403 forbidden string",
+			err:       errors.New("API error (status 403): forbidden"),
+			wantCalls: 1,
+		},
+		{
+			name:      "HTTP 404 not found string",
+			err:       errors.New("API error (status 404): model not found"),
+			wantCalls: 1,
+		},
+		{
+			name:      "HTTP 422 unprocessable entity",
+			err:       errors.New("API error (status 422): unprocessable"),
+			wantCalls: 1,
+		},
+		{
+			name:      "OpenAI authentication error body",
+			err:       errors.New("OpenAI API error: Incorrect API key provided (type: invalid_request_error, code: invalid_api_key)"),
+			wantCalls: 1,
+		},
+		{
+			name:      "Gemini 400 error body",
+			err:       errors.New("gemini API error: Invalid argument (code: 400, status: INVALID_ARGUMENT)"),
+			wantCalls: 1,
+		},
+		{
+			name:      "Anthropic SDK 400 error",
+			err:       fmt.Errorf("bedrock invoke failed: %w", &anthropic.Error{StatusCode: 400, Request: &http.Request{Method: http.MethodPost, URL: &url.URL{Path: "/v1/messages"}}}),
+			wantCalls: 1,
+		},
+		{
+			name:      "AWS Smithy client fault error",
+			err:       &smithy.GenericAPIError{Code: "ValidationException", Message: "invalid model id", Fault: smithy.FaultClient},
+			wantCalls: 1,
+		},
+		{
+			name:      "provider internal rate limiter already exhausted retries",
+			err:       errors.New("exceeded 5 retries due to throttling: API error (status 429): rate limit"),
+			wantCalls: 1,
+		},
+		{
+			name:      "HTTP 429 throttle is retried",
+			err:       llm.NewThrottleError(errors.New("API error (status 429): rate limit"), time.Millisecond),
+			wantCalls: 3,
+		},
+		{
+			name:      "HTTP 408 timeout is retried",
+			err:       errors.New("API error (status 408): request timeout"),
+			wantCalls: 3,
+		},
+		{
+			name:      "HTTP 500 server error is retried",
+			err:       errors.New("API error (status 500): internal error"),
+			wantCalls: 3,
+		},
+		{
+			name:      "HTTP 503 unavailable is retried",
+			err:       errors.New("API error (status 503): overloaded"),
+			wantCalls: 3,
+		},
+		{
+			name:      "AWS Smithy server fault is retried",
+			err:       &smithy.GenericAPIError{Code: "InternalServerException", Message: "transient", Fault: smithy.FaultServer},
+			wantCalls: 3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stub := &errorStubLLM{err: tt.err}
+			cfg := DefaultConfig()
+			cfg.Retry.MaxRetries = 2
+			cfg.Retry.InitialDelay = time.Millisecond
+			cfg.Retry.MaxDelay = 2 * time.Millisecond
+			a := &Agent{id: "retry-4xx-test", llm: stub, config: cfg}
+			ctx := &agentContext{Context: context.Background(), tracer: observability.NewNoOpTracer()}
+
+			_, err := a.dispatchChat(ctx, []Message{{Role: "user", Content: "hi"}}, nil)
+			require.Error(t, err)
+			assert.Equal(t, tt.wantCalls, stub.calls)
+		})
+	}
+}
+

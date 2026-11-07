@@ -1611,3 +1611,77 @@ func TestReloadAgentFile_NoCallbackRebuildsRegisteredAgent(t *testing.T) {
 	assert.NotSame(t, before, after, "the running agent must be replaced")
 	assert.Equal(t, before.GetID(), after.GetID(), "the rebuilt agent keeps its GUID")
 }
+
+// TestReloadAgentFile_DifferentFilenameFromConfigName verifies that an agent
+// YAML file whose filename stem differs from metadata.name (e.g.
+// sql_expert.yaml with name: sql-expert) loads and hot-reloads cleanly while
+// still rejecting a subsequent rename of metadata.name in that file.
+func TestReloadAgentFile_DifferentFilenameFromConfigName(t *testing.T) {
+	registry, tmpDir := createTestRegistry(t)
+	ctx := context.Background()
+
+	agentsDir := filepath.Join(tmpDir, "agents")
+	require.NoError(t, os.MkdirAll(agentsDir, 0755))
+	path := filepath.Join(agentsDir, "sql_expert.yaml")
+
+	cfg := createTestAgentConfig("sql-expert")
+	cfg.Description = "Initial description"
+	require.NoError(t, SaveAgentConfig(cfg, path))
+	require.NoError(t, registry.LoadAgents(ctx))
+
+	before, err := registry.CreateAgent(ctx, "sql-expert")
+	require.NoError(t, err)
+
+	// Hot-reload via reloadAgentFile using the underscore filename stem
+	cfg.Description = "Reloaded description"
+	require.NoError(t, SaveAgentConfig(cfg, path))
+	registry.reloadAgentFile(ctx, path, "sql_expert")
+
+	require.NotNil(t, registry.GetConfig("sql-expert"))
+	assert.Equal(t, "Reloaded description", registry.GetConfig("sql-expert").Description)
+	after, err := registry.GetAgent(ctx, "sql-expert")
+	require.NoError(t, err)
+	assert.NotSame(t, before, after)
+	assert.Equal(t, before.GetID(), after.GetID())
+
+	// ForceReload by agent name also uses the recorded path (sql_expert.yaml)
+	cfg.Description = "Force reloaded description"
+	require.NoError(t, SaveAgentConfig(cfg, path))
+	require.NoError(t, registry.ForceReload(ctx, "sql-expert"))
+	assert.Equal(t, "Force reloaded description", registry.GetConfig("sql-expert").Description)
+
+	// Renaming metadata.name inside sql_expert.yaml must still be rejected
+	renamed := createTestAgentConfig("renamed-expert")
+	require.NoError(t, SaveAgentConfig(renamed, path))
+	registry.reloadAgentFile(ctx, path, "sql_expert")
+	assert.Equal(t, "Force reloaded description", registry.GetConfig("sql-expert").Description)
+	assert.Nil(t, registry.GetConfig("renamed-expert"))
+}
+
+// TestReloadAgentWithConfig_FailedRebuildKeepsPreviousConfig verifies that
+// reloadAgentWithConfig (used by ReloadAgent and the workflow watcher when
+// callback == nil) does not overwrite r.configs[name] if rebuilding the agent
+// fails.
+func TestReloadAgentWithConfig_FailedRebuildKeepsPreviousConfig(t *testing.T) {
+	registry, tmpDir := createTestRegistry(t)
+	ctx := context.Background()
+	saveTestAgentFile(t, tmpDir, "wf-agent", "Original description")
+	require.NoError(t, registry.LoadAgents(ctx))
+	before, err := registry.CreateAgent(ctx, "wf-agent")
+	require.NoError(t, err)
+
+	badConfig := createTestAgentConfig("wf-agent")
+	badConfig.Description = "Broken config"
+	badConfig.Llm = &loomv1.LLMConfig{
+		Provider: "unsupported-provider-xyz",
+		Model:    "bad-model",
+	}
+
+	err = registry.reloadAgentWithConfig(ctx, "wf-agent", badConfig)
+	require.Error(t, err)
+	assert.Equal(t, "Original description", registry.GetConfig("wf-agent").Description)
+	after, err := registry.GetAgent(ctx, "wf-agent")
+	require.NoError(t, err)
+	assert.Same(t, before, after)
+}
+

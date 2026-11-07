@@ -163,3 +163,78 @@ func TestDeploymentFileReloadUsesStaticServerCallback(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, codes.Internal, status.Code(err))
 }
+
+func TestDeploymentFileReloadReconcilesCallbackGUIDMismatch(t *testing.T) {
+	registry, llm, dir := newDeploymentRegistry(t)
+	ctx := context.Background()
+	config := &loomv1.AgentConfig{Name: "deployed-mismatch", SystemPrompt: "Before."}
+	path := filepath.Join(dir, "agents", config.Name+".yaml")
+	require.NoError(t, agent.SaveAgentConfig(config, path))
+	require.NoError(t, registry.LoadAgents(ctx))
+	info, err := registry.GetAgentInfo(config.Name)
+	require.NoError(t, err)
+
+	srv := newTestMultiAgentServer(t)
+	srv.SetAgentRegistry(registry)
+
+	// Register the server agent under a different GUID than the registry's info.ID
+	const serverID = "server-custom-guid"
+	before := agent.NewAgent(&mockBackend{}, llm, agent.WithName(config.Name), agent.WithSystemPrompt(config.SystemPrompt))
+	before.SetID(serverID)
+	srv.AddAgent(serverID, before)
+
+	var callbackAgent *agent.Agent
+	registry.SetReloadCallback(func(name, guid string, updated *loomv1.AgentConfig) error {
+		callbackAgent = agent.NewAgent(&mockBackend{}, llm, agent.WithName(name), agent.WithSystemPrompt(updated.SystemPrompt))
+		callbackAgent.SetID(guid)
+		srv.AddAgent(guid, callbackAgent)
+		return nil
+	})
+
+	config.SystemPrompt = "After mismatch reconciliation."
+	require.NoError(t, agent.SaveAgentConfig(config, path))
+
+	_, err = srv.ReloadAgent(ctx, &loomv1.ReloadAgentRequest{AgentId: serverID, ReloadFromFile: true})
+	require.NoError(t, err)
+
+	after, _, err := srv.getAgent(serverID)
+	require.NoError(t, err)
+	assert.Same(t, callbackAgent, after)
+	assert.Equal(t, serverID, after.GetID())
+
+	// Verify the duplicate registry GUID key was cleaned up from srv.agents
+	srv.mu.RLock()
+	_, duplicateExists := srv.agents[info.ID]
+	srv.mu.RUnlock()
+	assert.False(t, duplicateExists, "duplicate entry under registry GUID must be removed")
+}
+
+func TestDeploymentFileReloadConcurrentChangeReturnsAborted(t *testing.T) {
+	registry, llm, dir := newDeploymentRegistry(t)
+	ctx := context.Background()
+	config := &loomv1.AgentConfig{Name: "deployed-conflict", SystemPrompt: "Initial."}
+	path := filepath.Join(dir, "agents", config.Name+".yaml")
+	require.NoError(t, agent.SaveAgentConfig(config, path))
+	require.NoError(t, registry.LoadAgents(ctx))
+	info, err := registry.GetAgentInfo(config.Name)
+	require.NoError(t, err)
+
+	srv := newTestMultiAgentServer(t)
+	srv.SetAgentRegistry(registry)
+	before := agent.NewAgent(&mockBackend{}, llm, agent.WithName(config.Name), agent.WithSystemPrompt(config.SystemPrompt))
+	before.SetID(info.ID)
+	srv.AddAgent(info.ID, before)
+
+	// Callback simulates a concurrent reload conflict (ErrAgentChanged)
+	registry.SetReloadCallback(func(string, string, *loomv1.AgentConfig) error {
+		return agent.ErrAgentChanged
+	})
+
+	config.SystemPrompt = "Reloaded."
+	require.NoError(t, agent.SaveAgentConfig(config, path))
+
+	_, err = srv.ReloadAgent(ctx, &loomv1.ReloadAgentRequest{AgentId: info.ID, ReloadFromFile: true})
+	require.Error(t, err)
+	assert.Equal(t, codes.Aborted, status.Code(err))
+}
+

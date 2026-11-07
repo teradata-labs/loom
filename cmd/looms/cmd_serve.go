@@ -1891,58 +1891,8 @@ func runServe(cmd *cobra.Command, args []string) {
 
 				// Create config from proto LLMConfig
 				// Set behavior limits from config if specified, otherwise use defaults.
-				maxIterations := agent.DefaultConfig().MaxIterations
-				maxTurns := 25          // Default from pkg/agent/types.go:145
-				maxToolExecutions := 50 // Default from pkg/agent/types.go:146
-				if cfg.Behavior != nil {
-					if cfg.Behavior.MaxIterations > 0 {
-						maxIterations = int(cfg.Behavior.MaxIterations)
-					}
-					if cfg.Behavior.MaxTurns > 0 {
-						maxTurns = int(cfg.Behavior.MaxTurns)
-					}
-					if cfg.Behavior.MaxToolExecutions > 0 {
-						maxToolExecutions = int(cfg.Behavior.MaxToolExecutions)
-					}
-				}
-
-				agentCfg := &agent.Config{
-					Name:              cfg.Name,
-					Description:       cfg.Description,
-					SystemPrompt:      cfg.SystemPrompt,
-					Rom:               cfg.Rom,      // ROM identifier for domain-specific knowledge
-					Metadata:          cfg.Metadata, // Metadata includes backend_path for ROM auto-detection
-					MaxIterations:     maxIterations,
-					MaxTurns:          maxTurns,
-					MaxToolExecutions: maxToolExecutions,
-					EnableTracing:     config.Observability.Enabled,
-				}
-
-				// Set context limits if specified in LLM config
-				if cfg.Llm != nil {
-					if cfg.Llm.MaxContextTokens > 0 {
-						agentCfg.MaxContextTokens = int(cfg.Llm.MaxContextTokens)
-					}
-					// The EFFECTIVE reservation, not the raw field: NewAgent
-					// re-applies SetContextLimits from this config onto the same
-					// Memory, so a raw (often zero) value here would clobber the
-					// value computed above and drop the reserve to window/10.
-					agentCfg.ReservedOutputTokens = agent.EffectiveOutputReservation(
-						cfg.Llm.Provider, cfg.Llm.Model,
-						int(cfg.Llm.MaxTokens), int(cfg.Llm.ReservedOutputTokens),
-						int(cfg.Llm.MaxContextTokens))
-				}
-
-				// Transfer pattern configuration from proto if present
-				if cfg.Behavior != nil && cfg.Behavior.Patterns != nil {
-					agentCfg.PatternConfig = &agent.PatternConfig{
-						Enabled:            cfg.Behavior.Patterns.Enabled,
-						MinConfidence:      float64(cfg.Behavior.Patterns.MinConfidence),
-						MaxPatternsPerTurn: int(cfg.Behavior.Patterns.MaxPatternsPerTurn),
-						EnableTracking:     cfg.Behavior.Patterns.EnableTracking,
-						UseLLMClassifier:   cfg.Behavior.Patterns.UseLlmClassifier,
-					}
-				}
+				agentCfg := agent.RegistryAgentConfig(cfg, agent.ResolveSkillsConfig(cfg))
+				agentCfg.EnableTracing = config.Observability.Enabled
 
 				// Set PatternsDir from metadata or the server-level default.
 				// Patterns are enabled by default (DefaultPatternConfig), so all agents
@@ -1953,12 +1903,6 @@ func runServe(cmd *cobra.Command, args []string) {
 					agentCfg.PatternsDir = config.PatternsDir
 				} else {
 					agentCfg.PatternsDir = filepath.Join(loomconfig.GetLoomDataDir(), "patterns")
-				}
-				// Skills config: just attach to agentCfg here. Discovery
-				// wiring requires the agent's LLM provider and is performed
-				// below once agentLLMProvider is resolved.
-				if sc := agent.ExtractSkillsConfig(cfg.Metadata); sc != nil && sc.Enabled {
-					agentCfg.SkillsConfig = sc
 				}
 
 				agentOpts = append(agentOpts, agent.WithConfig(agentCfg))
@@ -3208,44 +3152,8 @@ func runServe(cmd *cobra.Command, args []string) {
 			}
 
 			// Create agent configuration
-			// Set behavior limits from config if specified, otherwise use defaults.
-			maxIterations := agent.DefaultConfig().MaxIterations
-			maxTurns := 25          // Default from pkg/agent/types.go:145
-			maxToolExecutions := 50 // Default from pkg/agent/types.go:146
-			if agentConfig.Behavior != nil {
-				if agentConfig.Behavior.MaxIterations > 0 {
-					maxIterations = int(agentConfig.Behavior.MaxIterations)
-				}
-				if agentConfig.Behavior.MaxTurns > 0 {
-					maxTurns = int(agentConfig.Behavior.MaxTurns)
-				}
-				if agentConfig.Behavior.MaxToolExecutions > 0 {
-					maxToolExecutions = int(agentConfig.Behavior.MaxToolExecutions)
-				}
-			}
-
-			cfg := &agent.Config{
-				Name:              agentConfig.Name,
-				Description:       agentConfig.Description,
-				MaxIterations:     maxIterations,
-				MaxTurns:          maxTurns,
-				MaxToolExecutions: maxToolExecutions,
-				SystemPrompt:      agentConfig.SystemPrompt,
-				Rom:               agentConfig.Rom,      // ROM identifier for domain-specific knowledge
-				Metadata:          agentConfig.Metadata, // Metadata includes backend_path for ROM auto-detection
-				EnableTracing:     config.Observability.Enabled,
-			}
-
-			// Transfer pattern configuration from proto if present
-			if agentConfig.Behavior != nil && agentConfig.Behavior.Patterns != nil {
-				cfg.PatternConfig = &agent.PatternConfig{
-					Enabled:            agentConfig.Behavior.Patterns.Enabled,
-					MinConfidence:      float64(agentConfig.Behavior.Patterns.MinConfidence),
-					MaxPatternsPerTurn: int(agentConfig.Behavior.Patterns.MaxPatternsPerTurn),
-					EnableTracking:     agentConfig.Behavior.Patterns.EnableTracking,
-					UseLLMClassifier:   agentConfig.Behavior.Patterns.UseLlmClassifier,
-				}
-			}
+			cfg := agent.RegistryAgentConfig(agentConfig, agent.ResolveSkillsConfig(agentConfig))
+			cfg.EnableTracing = config.Observability.Enabled
 
 			// Set PatternsDir from metadata or the server-level default.
 			if pd, ok := agentConfig.Metadata["patterns_dir"]; ok && pd != "" {
@@ -3254,18 +3162,6 @@ func runServe(cmd *cobra.Command, args []string) {
 				cfg.PatternsDir = config.PatternsDir
 			} else {
 				cfg.PatternsDir = filepath.Join(loomconfig.GetLoomDataDir(), "patterns")
-			}
-
-			// Set context limits if specified in LLM config
-			if agentConfig.Llm != nil {
-				if agentConfig.Llm.MaxContextTokens > 0 {
-					cfg.MaxContextTokens = int(agentConfig.Llm.MaxContextTokens)
-				}
-				// The EFFECTIVE reservation — see the note at the other build site.
-				cfg.ReservedOutputTokens = agent.EffectiveOutputReservation(
-					agentConfig.Llm.Provider, agentConfig.Llm.Model,
-					int(agentConfig.Llm.MaxTokens), int(agentConfig.Llm.ReservedOutputTokens),
-					int(agentConfig.Llm.MaxContextTokens))
 			}
 
 			// Create memory instance for this agent
@@ -3369,6 +3265,63 @@ func runServe(cmd *cobra.Command, args []string) {
 			// Wrap LLM provider with instrumentation for observability
 			if tracer != nil {
 				llmProvider = llm.NewInstrumentedProvider(llmProvider, tracer)
+			}
+
+			// Wire per-role LLMs if declared in YAML (mirrors the cold-start path).
+			var reloadClassifierLLM agent.LLMProvider
+			if agentConfig.CompressorLlm != nil && agentConfig.CompressorLlm.Provider != "" {
+				compLLM, err := createLLMProviderFromProtoConfig(agentConfig.CompressorLlm, config, logger)
+				if err != nil {
+					logger.Warn("    Failed to create compressor LLM, extractor will use primary (hot-reload)",
+						zap.Error(err),
+						zap.String("provider", agentConfig.CompressorLlm.Provider),
+						zap.String("model", agentConfig.CompressorLlm.Model))
+				} else {
+					if tracer != nil {
+						compLLM = llm.NewInstrumentedProvider(compLLM, tracer)
+					}
+					agentOpts = append(agentOpts, agent.WithCompressorLLM(compLLM))
+					logger.Info("    Compressor LLM configured (hot-reload)",
+						zap.String("provider", agentConfig.CompressorLlm.Provider),
+						zap.String("model", agentConfig.CompressorLlm.Model))
+				}
+			}
+			if agentConfig.ClassifierLlm != nil && agentConfig.ClassifierLlm.Provider != "" {
+				classLLM, err := createLLMProviderFromProtoConfig(agentConfig.ClassifierLlm, config, logger)
+				if err != nil {
+					logger.Warn("    Failed to create classifier LLM, router will use primary (hot-reload)",
+						zap.Error(err),
+						zap.String("provider", agentConfig.ClassifierLlm.Provider),
+						zap.String("model", agentConfig.ClassifierLlm.Model))
+				} else {
+					if tracer != nil {
+						classLLM = llm.NewInstrumentedProvider(classLLM, tracer)
+					}
+					reloadClassifierLLM = classLLM
+					agentOpts = append(agentOpts, agent.WithClassifierLLM(classLLM))
+					logger.Info("    Classifier LLM configured (hot-reload)",
+						zap.String("provider", agentConfig.ClassifierLlm.Provider),
+						zap.String("model", agentConfig.ClassifierLlm.Model))
+				}
+			}
+
+			// Wire skills (orchestrator + Discovery + hierarchical router) via
+			// the shared BuildSkillsOptions helper, matching the cold-start path.
+			if cfg.SkillsConfig != nil && cfg.SkillsConfig.Enabled {
+				if registry != nil {
+					agentOpts = append(agentOpts,
+						registry.BuildSkillsOptions(cfg.SkillsConfig, reloadClassifierLLM, llmProvider, agentConfig.Name)...)
+				} else {
+					agentOpts = append(agentOpts,
+						agent.BuildSkillsOptions(agent.SkillsWiringDeps{
+							SkillsConfig:  cfg.SkillsConfig,
+							ClassifierLLM: reloadClassifierLLM,
+							PrimaryLLM:    llmProvider,
+							AgentName:     agentConfig.Name,
+							Tracer:        tracer,
+							Logger:        logger,
+						})...)
+				}
 			}
 
 			// Create new agent

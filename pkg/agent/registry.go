@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,6 +48,10 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// ErrAgentChanged is returned when an agent's registry entry changes while a
+// reload is in progress.
+var ErrAgentChanged = errors.New("agent changed while reloading")
+
 // ReloadCallback is called when an agent config changes.
 // It receives the agent name, agent GUID, and new configuration.
 // The GUID is the stable identifier that should be used for agent registration.
@@ -60,6 +65,7 @@ type Registry struct {
 	db           *sql.DB
 	agents       map[string]*Agent // Map of agent name -> Agent instance
 	configs      map[string]*loomv1.AgentConfig
+	configPaths  map[string]string             // Map of agent name -> source YAML path
 	agentInfo    map[string]*AgentInstanceInfo // Map of agent GUID -> AgentInstanceInfo
 	agentsByName map[string]string             // Map of agent name -> GUID for lookup
 	logger       *zap.Logger
@@ -205,6 +211,7 @@ func NewRegistry(config RegistryConfig) (*Registry, error) {
 		db:                db,
 		agents:            make(map[string]*Agent),
 		configs:           make(map[string]*loomv1.AgentConfig),
+		configPaths:       make(map[string]string),
 		agentInfo:         make(map[string]*AgentInstanceInfo),
 		agentsByName:      make(map[string]string),
 		logger:            config.Logger,
@@ -336,6 +343,7 @@ func (r *Registry) LoadAgents(ctx context.Context) error {
 
 		r.mu.Lock()
 		r.configs[config.Name] = config
+		r.configPaths[config.Name] = file
 
 		// Ensure agent has a GUID in the database
 		// Check if agent already exists (loaded from DB)
@@ -585,14 +593,24 @@ func (r *Registry) CreateAgent(ctx context.Context, name string) (*Agent, error)
 	return agent, nil
 }
 
-// registryAgentConfig builds the runtime Config of a registry agent:
+// RegistryAgentConfig builds the runtime Config of a registry agent:
 // DefaultConfig (LLM retry, self-healing, iteration limit), the behavior
-// limits when the config has a behavior block, the agent's self-healing
-// switch and its skills config. WithConfig replaces the whole Config, so a
-// bare literal here would turn LLM retries off for every agent built with a
-// behavior block.
-func registryAgentConfig(config *loomv1.AgentConfig, skillsConfig *skills.SkillsConfig) *Config {
+// limits and pattern config when the config has a behavior block, LLM context
+// limits, the agent's self-healing switch and its skills config (from
+// skillsConfig or resolved from config). WithConfig replaces the whole Config,
+// so a bare literal here would turn LLM retries off for every agent built with
+// a behavior block.
+func RegistryAgentConfig(config *loomv1.AgentConfig, skillsConfig *skills.SkillsConfig) *Config {
 	agentConfig := DefaultConfig()
+	if config == nil {
+		agentConfig.SkillsConfig = skillsConfig
+		return agentConfig
+	}
+	agentConfig.Name = config.Name
+	agentConfig.Description = config.Description
+	agentConfig.SystemPrompt = config.SystemPrompt
+	agentConfig.Rom = config.Rom
+	agentConfig.Metadata = maps.Clone(config.Metadata)
 	if b := config.Behavior; b != nil {
 		if b.MaxIterations != 0 {
 			agentConfig.MaxIterations = int(b.MaxIterations)
@@ -607,20 +625,45 @@ func registryAgentConfig(config *loomv1.AgentConfig, skillsConfig *skills.Skills
 		if agentConfig.OutputTokenCBThreshold == 0 {
 			agentConfig.OutputTokenCBThreshold = 8
 		}
+		if pc := b.Patterns; pc != nil {
+			patternCfg := DefaultPatternConfig()
+			patternCfg.Enabled = pc.Enabled
+			patternCfg.EnableTracking = pc.EnableTracking
+			patternCfg.UseLLMClassifier = pc.UseLlmClassifier
+			if pc.MinConfidence > 0 {
+				patternCfg.MinConfidence = float64(pc.MinConfidence)
+			}
+			if pc.MaxPatternsPerTurn > 0 {
+				patternCfg.MaxPatternsPerTurn = int(pc.MaxPatternsPerTurn)
+			}
+			agentConfig.PatternConfig = patternCfg
+		}
+	}
+	if config.Llm != nil {
+		if config.Llm.MaxContextTokens > 0 {
+			agentConfig.MaxContextTokens = int(config.Llm.MaxContextTokens)
+		}
+		agentConfig.ReservedOutputTokens = EffectiveOutputReservation(
+			config.Llm.Provider, config.Llm.Model,
+			int(config.Llm.MaxTokens), int(config.Llm.ReservedOutputTokens),
+			int(config.Llm.MaxContextTokens),
+		)
 	}
 	agentConfig.EnableSelfHealing = config.Metadata["_enable_self_healing"] != "false"
+	if skillsConfig == nil {
+		skillsConfig = ResolveSkillsConfig(config)
+	}
 	agentConfig.SkillsConfig = skillsConfig
 	return agentConfig
 }
 
-// resolveSkillsConfig returns the agent's skills config: the YAML form
+// ResolveSkillsConfig returns the agent's skills config: the YAML form
 // stashed in metadata, else the proto field when it is enabled, else nil.
-func (r *Registry) resolveSkillsConfig(config *loomv1.AgentConfig) *skills.SkillsConfig {
+func ResolveSkillsConfig(config *loomv1.AgentConfig) *skills.SkillsConfig {
+	if config == nil {
+		return nil
+	}
 	if sc := ExtractSkillsConfig(config.Metadata); sc != nil {
-		r.logger.Debug("skills config extracted from metadata",
-			zap.Bool("enabled", sc.Enabled),
-			zap.String("skills_dir", sc.SkillsDir),
-			zap.Int("max_concurrent", sc.MaxConcurrentSkills))
 		return sc
 	}
 	if config.Skills != nil && config.Skills.Enabled {
@@ -635,6 +678,19 @@ func (r *Registry) resolveSkillsConfig(config *loomv1.AgentConfig) *skills.Skill
 		}
 	}
 	return nil
+}
+
+// resolveSkillsConfig returns the agent's skills config: the YAML form
+// stashed in metadata, else the proto field when it is enabled, else nil.
+func (r *Registry) resolveSkillsConfig(config *loomv1.AgentConfig) *skills.SkillsConfig {
+	sc := ResolveSkillsConfig(config)
+	if sc != nil && config != nil && len(config.Metadata) > 0 && config.Metadata["_skills_config"] != "" {
+		r.logger.Debug("skills config extracted from metadata",
+			zap.Bool("enabled", sc.Enabled),
+			zap.String("skills_dir", sc.SkillsDir),
+			zap.Int("max_concurrent", sc.MaxConcurrentSkills))
+	}
+	return sc
 }
 
 // buildAgent creates an agent instance from proto configuration
@@ -662,7 +718,7 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 	// WithConfig replaces the whole runtime Config, so apply field options after it.
 	skillsConfig := r.resolveSkillsConfig(config)
 	opts := []Option{
-		WithConfig(registryAgentConfig(config, skillsConfig)),
+		WithConfig(RegistryAgentConfig(config, skillsConfig)),
 		WithName(config.Name),
 	}
 
@@ -1780,10 +1836,12 @@ func (r *Registry) DeleteAgent(ctx context.Context, nameOrID string, force bool)
 	}
 
 	// Remove from runtime
+	configPath := r.agentConfigPathLocked(info.Name)
 	delete(r.agents, info.Name)
 	delete(r.agentInfo, info.ID)
 	delete(r.agentsByName, info.Name)
 	delete(r.configs, info.Name)
+	delete(r.configPaths, info.Name)
 
 	// Delete from database
 	_, err := r.db.Exec("DELETE FROM agents WHERE id = ?", info.ID)
@@ -1794,7 +1852,6 @@ func (r *Registry) DeleteAgent(ctx context.Context, nameOrID string, force bool)
 	}
 
 	// Delete config file
-	configPath := filepath.Join(r.configDir, "agents", info.Name+".yaml")
 	if err := removeFile(configPath); err != nil {
 		r.logger.Warn("Failed to delete config file",
 			zap.String("path", configPath),
@@ -1806,6 +1863,28 @@ func (r *Registry) DeleteAgent(ctx context.Context, nameOrID string, force bool)
 		zap.String("id", info.ID))
 
 	return nil
+}
+
+// agentConfigPathLocked returns the recorded source path for name, or the
+// default agents/<name>.yaml path when none was recorded. Must be called with
+// r.mu held.
+func (r *Registry) agentConfigPathLocked(name string) string {
+	if p := r.configPaths[name]; p != "" {
+		return p
+	}
+	return filepath.Join(r.configDir, "agents", name+".yaml")
+}
+
+// agentForConfigPathLocked returns the agent name bound to path, if any.
+// Must be called with r.mu held.
+func (r *Registry) agentForConfigPathLocked(path string) (string, bool) {
+	cleaned := filepath.Clean(path)
+	for agentName, recordedPath := range r.configPaths {
+		if filepath.Clean(recordedPath) == cleaned {
+			return agentName, true
+		}
+	}
+	return "", false
 }
 
 // OwnsRuntimeAgent reports whether the registry built the active agent instance.
@@ -1837,18 +1916,40 @@ func (r *Registry) ReloadAgent(ctx context.Context, nameOrID string) error {
 			return fmt.Errorf("agent not found: %s", nameOrID)
 		}
 	}
+	configPath := r.agentConfigPathLocked(info.Name)
+	r.mu.RUnlock()
+
+	// Reload config from file
+	config, err := LoadAgentConfig(configPath)
+	if err != nil {
+		return fmt.Errorf("failed to reload config: %w", err)
+	}
+
+	return r.reloadAgentWithConfig(ctx, nameOrID, config)
+}
+
+// reloadAgentWithConfig validates config and atomically rebuilds and replaces
+// the registered agent identified by nameOrID.
+func (r *Registry) reloadAgentWithConfig(ctx context.Context, nameOrID string, config *loomv1.AgentConfig) error {
+	r.mu.RLock()
+	info, exists := r.agentInfo[nameOrID]
+	if !exists {
+		agentID, nameExists := r.agentsByName[nameOrID]
+		if !nameExists {
+			r.mu.RUnlock()
+			return fmt.Errorf("agent not found: %s", nameOrID)
+		}
+		info, exists = r.agentInfo[agentID]
+		if !exists {
+			r.mu.RUnlock()
+			return fmt.Errorf("agent not found: %s", nameOrID)
+		}
+	}
 	name, id := info.Name, info.ID
 	wasRunning := info.Status == "running"
 	previousAgent := r.agents[name]
 	previousConfig := r.configs[name]
 	r.mu.RUnlock()
-
-	// Reload config from file
-	configPath := filepath.Join(r.configDir, "agents", name+".yaml")
-	config, err := LoadAgentConfig(configPath)
-	if err != nil {
-		return fmt.Errorf("failed to reload config: %w", err)
-	}
 
 	if err := ValidateAgentConfig(config); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
@@ -1859,6 +1960,7 @@ func (r *Registry) ReloadAgent(ctx context.Context, nameOrID string) error {
 
 	var replacement *Agent
 	if previousAgent != nil || wasRunning {
+		var err error
 		replacement, err = r.buildAgent(ctx, config)
 		if err != nil {
 			return fmt.Errorf("failed to rebuild agent: %w", err)
@@ -1871,7 +1973,7 @@ func (r *Registry) ReloadAgent(ctx context.Context, nameOrID string) error {
 	if !exists || current.Name != name || r.agentsByName[name] != id ||
 		r.agents[name] != previousAgent || r.configs[name] != previousConfig {
 		r.mu.Unlock()
-		return fmt.Errorf("agent %q changed while reloading", name)
+		return fmt.Errorf("agent %q: %w", name, ErrAgentChanged)
 	}
 	if current.Status == "running" && replacement == nil {
 		r.mu.Unlock()
@@ -1920,8 +2022,15 @@ func (r *Registry) SetSharedMemory(sharedMemory interface{}) {
 // Useful for programmatic reloads (e.g., after metaagent creates an agent) or
 // when file watchers are unreliable (e.g., macOS fsnotify issues).
 func (r *Registry) ForceReload(ctx context.Context, name string) error {
+	r.mu.RLock()
+	if info, exists := r.agentInfo[name]; exists {
+		name = info.Name
+	}
+	configPath := r.agentConfigPathLocked(name)
+	callback := r.onReload
+	r.mu.RUnlock()
+
 	// Load config from file
-	configPath := filepath.Join(r.configDir, "agents", name+".yaml")
 	config, err := LoadAgentConfig(configPath)
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -1935,17 +2044,15 @@ func (r *Registry) ForceReload(ctx context.Context, name string) error {
 		return fmt.Errorf("reloaded config name %q differs from agent %q", config.Name, name)
 	}
 
-	r.mu.RLock()
-	callback := r.onReload
-	r.mu.RUnlock()
-
-	// Without a host callback the registry rebuilds the agent itself:
-	// ReloadAgent reads the file again and commits the config together with
-	// the rebuilt agent.
+	// Without a host callback the registry rebuilds the agent itself and
+	// commits the config together with the rebuilt agent.
 	if callback == nil {
-		if err := r.ReloadAgent(ctx, name); err != nil {
+		if err := r.reloadAgentWithConfig(ctx, name, config); err != nil {
 			return fmt.Errorf("failed to reload agent: %w", err)
 		}
+		r.mu.Lock()
+		r.configPaths[name] = configPath
+		r.mu.Unlock()
 		return nil
 	}
 
@@ -1966,6 +2073,7 @@ func (r *Registry) ForceReload(ctx context.Context, name string) error {
 	// failed reload leaves the config that matches the agent still running.
 	r.mu.Lock()
 	r.configs[name] = config
+	r.configPaths[name] = configPath
 	r.mu.Unlock()
 	r.logger.Info("Agent force-reloaded successfully", zap.String("agent", name))
 	return nil
@@ -2116,12 +2224,15 @@ func (r *Registry) WatchConfigs(ctx context.Context) error {
 									zap.String("guid", agentGUID))
 							}
 						} else {
-							r.mu.Lock()
-							r.configs[config.Name] = config
-							r.mu.Unlock()
-
-							// Fallback to internal reload if no callback set
-							if err := r.ReloadAgent(ctx, config.Name); err != nil {
+							if _, err := r.GetAgentInfo(config.Name); err != nil {
+								r.mu.Lock()
+								r.configs[config.Name] = config
+								r.mu.Unlock()
+								continue
+							}
+							// Fallback to internal reload if no callback set:
+							// commits the config together with the rebuilt agent.
+							if err := r.reloadAgentWithConfig(ctx, config.Name, config); err != nil {
 								r.logger.Error("Failed to reload workflow agent",
 									zap.String("workflow", name),
 									zap.String("agent", config.Name),
@@ -2149,10 +2260,10 @@ func (r *Registry) WatchConfigs(ctx context.Context) error {
 
 // reloadAgentFile applies a changed agent YAML file. The registry config is
 // updated only after the reload succeeds (by the host's reload callback, or by
-// ReloadAgent, which commits the config together with the rebuilt agent), so a
-// failed reload leaves the config that matches the agent still running. A file
-// for an agent that is not registered yet only records its config, which
-// CreateAgent builds from.
+// reloadAgentWithConfig, which commits the config together with the rebuilt
+// agent), so a failed reload leaves the config that matches the agent still
+// running. A file for an agent that is not registered yet only records its
+// config, which CreateAgent builds from.
 func (r *Registry) reloadAgentFile(ctx context.Context, path, name string) {
 	config, err := LoadAgentConfig(path)
 	if err != nil {
@@ -2168,30 +2279,56 @@ func (r *Registry) reloadAgentFile(ctx context.Context, path, name string) {
 			zap.Error(err))
 		return
 	}
-	if config.Name != name {
+
+	r.mu.RLock()
+	boundAgent, hasBoundAgent := r.agentForConfigPathLocked(path)
+	_, stemRegistered := r.configs[name]
+	if !stemRegistered {
+		_, stemRegistered = r.agentsByName[name]
+	}
+	_, configNameRegistered := r.configs[config.Name]
+	if !configNameRegistered {
+		_, configNameRegistered = r.agentsByName[config.Name]
+	}
+	callback := r.onReload
+	r.mu.RUnlock()
+
+	if hasBoundAgent {
+		if config.Name != boundAgent {
+			r.logger.Error("Agent config name differs from registered agent for file",
+				zap.String("file", path),
+				zap.String("agent", boundAgent),
+				zap.String("config_name", config.Name))
+			return
+		}
+		name = boundAgent
+	} else if config.Name != name && stemRegistered && !configNameRegistered {
 		r.logger.Error("Agent config name differs from its file name",
 			zap.String("file", path),
 			zap.String("agent", name),
 			zap.String("config_name", config.Name))
 		return
+	} else {
+		name = config.Name
 	}
-
-	r.mu.RLock()
-	callback := r.onReload
-	r.mu.RUnlock()
 
 	if callback == nil {
 		if _, err := r.GetAgentInfo(name); err != nil {
 			r.mu.Lock()
 			r.configs[name] = config
+			r.configPaths[name] = path
 			r.mu.Unlock()
 			return
 		}
-		if err := r.ReloadAgent(ctx, name); err != nil {
+		if err := r.reloadAgentWithConfig(ctx, name, config); err != nil {
 			r.logger.Error("Failed to reload agent",
 				zap.String("agent", name),
 				zap.Error(err))
+			return
 		}
+		r.mu.Lock()
+		r.configPaths[name] = path
+		r.mu.Unlock()
 		return
 	}
 
@@ -2251,6 +2388,7 @@ func (r *Registry) reloadAgentFile(ctx context.Context, path, name string) {
 	}
 	r.mu.Lock()
 	r.configs[name] = config
+	r.configPaths[name] = path
 	r.mu.Unlock()
 	r.logger.Info("Agent reloaded successfully",
 		zap.String("agent", name),
