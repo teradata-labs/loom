@@ -770,6 +770,18 @@ func WithEventLog(store eventlog.EventLogStore) Option {
 	}
 }
 
+// WithTransientTail lets the embedding application add live state to every
+// provider call. fn runs once per call (normal send and recovery resend); its
+// trimmed output rides inside the same trailing <system-reminder> user message
+// as the soft reminder, on a copy of the messages, so it is never stored in the
+// session and never changes the cached prefix. Empty output adds nothing; a nil
+// fn is the same as not setting the option.
+func WithTransientTail(fn func(ctx context.Context) string) Option {
+	return func(a *Agent) {
+		a.transientTail = fn
+	}
+}
+
 // captureBaseTools records the always-advertised tool set — every tool present
 // before any event-driven (session-scoped) registration. Idempotent: the first
 // call wins, so it must run before the first skill-required or progressive-
@@ -2821,6 +2833,11 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// recovery resend.
 		withReminder := func(msgs []Message, toolNote string) []Message {
 			tail := strings.TrimSpace(softReminder + "\n" + toolNote)
+			if a.transientTail != nil {
+				if extra := strings.TrimSpace(a.transientTail(ctx)); extra != "" {
+					tail = strings.TrimSpace(tail + "\n" + extra)
+				}
+			}
 			if tail == "" {
 				return msgs
 			}
