@@ -26,9 +26,10 @@ import (
 
 // Valid MCP transport types
 var validTransports = map[string]bool{
-	"stdio": true,
-	"http":  true,
-	"sse":   true,
+	"stdio":           true,
+	"http":            true,
+	"sse":             true,
+	"streamable-http": true,
 }
 
 // ListMCPServers lists all configured MCP servers.
@@ -126,18 +127,18 @@ func (s *MultiAgentServer) AddMCPServer(ctx context.Context, req *loomv1.AddMCPS
 	if req.Name == "" {
 		return nil, status.Error(codes.InvalidArgument, "server name is required")
 	}
-	if req.Command == "" {
-		return nil, status.Error(codes.InvalidArgument, "command is required")
-	}
 
 	// Set default transport
 	if req.Transport == "" {
 		req.Transport = "stdio"
 	}
+	if req.Transport == "stdio" && req.Command == "" {
+		return nil, status.Error(codes.InvalidArgument, "command is required")
+	}
 
 	// Validate transport type
 	if !validTransports[req.Transport] {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid transport type: %s (must be stdio, http, or sse)", req.Transport)
+		return nil, status.Errorf(codes.InvalidArgument, "invalid transport type: %s (must be stdio, http, sse, or streamable-http)", req.Transport)
 	}
 	if err := validateMCPRemoteURL(req.Transport, req.Url); err != nil {
 		return nil, err
@@ -301,13 +302,13 @@ func (s *MultiAgentServer) UpdateMCPServer(ctx context.Context, req *loomv1.Upda
 	if req.ServerName == "" {
 		return nil, status.Error(codes.InvalidArgument, "server name is required")
 	}
-	if req.Command == "" {
+	if (req.Transport == "" || req.Transport == "stdio") && req.Command == "" {
 		return nil, status.Error(codes.InvalidArgument, "command is required")
 	}
 
 	// Validate transport type
 	if req.Transport != "" && !validTransports[req.Transport] {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid transport type: %s (must be stdio, http, or sse)", req.Transport)
+		return nil, status.Errorf(codes.InvalidArgument, "invalid transport type: %s (must be stdio, http, sse, or streamable-http)", req.Transport)
 	}
 	if err := validateMCPRemoteURL(req.Transport, req.Url); err != nil {
 		return nil, err
@@ -575,24 +576,24 @@ func (s *MultiAgentServer) HealthCheckMCPServers(ctx context.Context, req *loomv
 func (s *MultiAgentServer) TestMCPServerConnection(ctx context.Context, req *loomv1.TestMCPServerConnectionRequest) (*loomv1.TestMCPServerConnectionResponse, error) {
 	startTime := time.Now()
 
+	// Set default transport
+	if req.Transport == "" {
+		req.Transport = "stdio"
+	}
+
 	// Validate required fields
-	if req.Command == "" {
+	if req.Transport == "stdio" && req.Command == "" {
 		return &loomv1.TestMCPServerConnectionResponse{
 			Success: false,
 			Error:   "command is required",
 		}, nil
 	}
 
-	// Set default transport
-	if req.Transport == "" {
-		req.Transport = "stdio"
-	}
-
 	// Validate transport type
 	if !validTransports[req.Transport] {
 		return &loomv1.TestMCPServerConnectionResponse{
 			Success: false,
-			Error:   fmt.Sprintf("invalid transport type: %s (must be stdio, http, or sse)", req.Transport),
+			Error:   fmt.Sprintf("invalid transport type: %s (must be stdio, http, sse, or streamable-http)", req.Transport),
 		}, nil
 	}
 
@@ -647,12 +648,15 @@ func (s *MultiAgentServer) TestMCPServerConnection(ctx context.Context, req *loo
 
 	// Build server config
 	serverConfig := manager.ServerConfig{
-		Command:    req.Command,
-		Args:       req.Args,
-		Env:        req.Env,
-		Transport:  req.Transport,
-		Enabled:    true,
-		ToolFilter: toolFilter,
+		Command:          req.Command,
+		Args:             req.Args,
+		Env:              req.Env,
+		Transport:        req.Transport,
+		URL:              req.Url,
+		EnableSessions:   req.EnableSessions,
+		EnableResumption: req.EnableResumption,
+		Enabled:          true,
+		ToolFilter:       toolFilter,
 	}
 
 	// Set test timeout

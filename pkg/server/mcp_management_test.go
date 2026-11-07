@@ -1,9 +1,14 @@
 package server
 
 import (
+	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/spf13/viper"
@@ -12,6 +17,10 @@ import (
 	"go.uber.org/zap"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/mcp/manager"
+	"github.com/teradata-labs/loom/pkg/mcp/protocol"
+	mcpserver "github.com/teradata-labs/loom/pkg/mcp/server"
+	"github.com/teradata-labs/loom/pkg/mcp/transport"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -392,4 +401,304 @@ func TestConcurrentMCPOperations(t *testing.T) {
 		assert.Equal(t, expectedEnabled, enabled,
 			"Server %s enabled field should match expected value", serverName)
 	}
+}
+
+// streamableFixtureTools is a static ToolProvider for the loopback fixture.
+type streamableFixtureTools []string
+
+func (f streamableFixtureTools) ListTools(context.Context) ([]protocol.Tool, error) {
+	tools := make([]protocol.Tool, len(f))
+	for i, name := range f {
+		tools[i] = protocol.Tool{Name: name, Description: name}
+	}
+	return tools, nil
+}
+
+func (f streamableFixtureTools) CallTool(context.Context, string, map[string]interface{}) (*protocol.CallToolResult, error) {
+	return &protocol.CallToolResult{}, nil
+}
+
+// newStreamableMCPFixture starts a loopback streamable-http MCP server and
+// returns its URL plus a counter of HTTP requests it has received.
+func newStreamableMCPFixture(t *testing.T, tools ...string) (string, *atomic.Int64) {
+	t.Helper()
+	mcpSrv := mcpserver.NewMCPServer("mgmt-fixture", "1.0.0", nil, mcpserver.WithToolProvider(streamableFixtureTools(tools)))
+	httpSrv, err := transport.NewStreamableHTTPServer(transport.StreamableHTTPServerConfig{
+		Handler:       mcpSrv.HandleMessage,
+		StreamHandler: mcpSrv,
+	})
+	require.NoError(t, err)
+	var requests atomic.Int64
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		httpSrv.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
+	return ts.URL, &requests
+}
+
+func newManagementTestServer(t *testing.T) (*MultiAgentServer, *manager.Manager, string) {
+	t.Helper()
+	mgr, err := manager.NewManager(manager.Config{
+		ClientInfo: manager.ClientInfo{Name: "mgmt-test", Version: "1.0.0"},
+	}, zap.NewNop())
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		// Manager.Stop is a no-op before Start, so close AddServer-started clients directly.
+		for _, name := range mgr.ServerNames() {
+			_ = mgr.StopServer(name)
+		}
+	})
+
+	configPath := filepath.Join(t.TempDir(), "looms.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte(""), 0o644))
+
+	srv := &MultiAgentServer{}
+	srv.SetMCPManager(mgr, configPath, zap.NewNop())
+	return srv, mgr, configPath
+}
+
+func readMCPServerConfig(t *testing.T, configPath string) *viper.Viper {
+	t.Helper()
+	v := viper.New()
+	v.SetConfigFile(configPath)
+	require.NoError(t, v.ReadInConfig())
+	return v
+}
+
+func listedToolNames(t *testing.T, srv *MultiAgentServer, name string) []string {
+	t.Helper()
+	resp, err := srv.ListMCPServerTools(context.Background(), &loomv1.ListMCPServerToolsRequest{ServerName: name})
+	require.NoError(t, err)
+	names := make([]string, len(resp.Tools))
+	for i, tool := range resp.Tools {
+		names[i] = tool.Name
+	}
+	return names
+}
+
+func TestAddMCPServerStreamableHTTP(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("remote_without_command_succeeds", func(t *testing.T) {
+		url, requests := newStreamableMCPFixture(t, "alpha", "beta")
+		srv, mgr, configPath := newManagementTestServer(t)
+
+		resp, err := srv.AddMCPServer(ctx, &loomv1.AddMCPServerRequest{
+			Name:             "remote",
+			Transport:        "streamable-http",
+			Url:              url,
+			EnableSessions:   true,
+			EnableResumption: true,
+			Enabled:          true,
+			AutoStart:        true,
+		})
+		require.NoError(t, err)
+		require.True(t, resp.Success, resp.Message)
+		assert.Equal(t, int32(2), resp.Server.ToolCount)
+		assert.Equal(t, "streamable-http", resp.Server.Transport)
+		assert.Positive(t, requests.Load())
+		assert.ElementsMatch(t, []string{"alpha", "beta"}, listedToolNames(t, srv, "remote"))
+
+		cfg, err := mgr.GetServerConfig("remote")
+		require.NoError(t, err)
+		assert.Equal(t, url, cfg.URL)
+		assert.True(t, cfg.EnableSessions)
+		assert.True(t, cfg.EnableResumption)
+
+		v := readMCPServerConfig(t, configPath)
+		assert.Equal(t, "streamable-http", v.GetString("mcp.servers.remote.transport"))
+		assert.Equal(t, url, v.GetString("mcp.servers.remote.url"))
+		assert.True(t, v.GetBool("mcp.servers.remote.enable_sessions"))
+		assert.True(t, v.GetBool("mcp.servers.remote.enable_resumption"))
+	})
+
+	t.Run("missing_url_rejected_locally", func(t *testing.T) {
+		_, requests := newStreamableMCPFixture(t, "alpha")
+		srv, _, configPath := newManagementTestServer(t)
+
+		resp, err := srv.AddMCPServer(ctx, &loomv1.AddMCPServerRequest{
+			Name:      "nourl",
+			Transport: "streamable-http",
+			Enabled:   true,
+			AutoStart: true,
+		})
+		require.NoError(t, err)
+		assert.False(t, resp.Success)
+		assert.Zero(t, requests.Load())
+		assert.False(t, readMCPServerConfig(t, configPath).IsSet("mcp.servers.nourl"))
+	})
+
+	t.Run("stdio_validation_preserved", func(t *testing.T) {
+		srv, _, _ := newManagementTestServer(t)
+		for _, transportName := range []string{"", "stdio"} {
+			_, err := srv.AddMCPServer(ctx, &loomv1.AddMCPServerRequest{Name: "s", Transport: transportName})
+			require.Equal(t, codes.InvalidArgument, status.Code(err))
+			assert.Contains(t, err.Error(), "command is required")
+		}
+		_, err := srv.AddMCPServer(ctx, &loomv1.AddMCPServerRequest{
+			Name: "s", Transport: "stdio", Command: "definitely-not-a-real-command-560",
+		})
+		require.Equal(t, codes.InvalidArgument, status.Code(err))
+		assert.Contains(t, err.Error(), "command not found")
+	})
+
+	t.Run("invalid_transport_lists_streamable_http", func(t *testing.T) {
+		srv, _, _ := newManagementTestServer(t)
+		_, err := srv.AddMCPServer(ctx, &loomv1.AddMCPServerRequest{Name: "s", Transport: "carrier-pigeon"})
+		require.Equal(t, codes.InvalidArgument, status.Code(err))
+		assert.Contains(t, err.Error(), "streamable-http")
+	})
+}
+
+func TestUpdateMCPServerStreamableHTTP(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("explicit_transport_update_restarts_against_new_url", func(t *testing.T) {
+		urlA, _ := newStreamableMCPFixture(t, "alpha")
+		urlB, requestsB := newStreamableMCPFixture(t, "beta", "gamma")
+		srv, mgr, configPath := newManagementTestServer(t)
+
+		resp, err := srv.AddMCPServer(ctx, &loomv1.AddMCPServerRequest{
+			Name: "remote", Transport: "streamable-http", Url: urlA,
+			EnableSessions: false, EnableResumption: true, Enabled: true, AutoStart: true,
+		})
+		require.NoError(t, err)
+		require.True(t, resp.Success, resp.Message)
+		assert.Equal(t, []string{"alpha"}, listedToolNames(t, srv, "remote"))
+
+		info, err := srv.UpdateMCPServer(ctx, &loomv1.UpdateMCPServerRequest{
+			ServerName:       "remote",
+			Transport:        "streamable-http",
+			Url:              urlB,
+			EnableSessions:   true,
+			EnableResumption: false,
+			Enabled:          true,
+			RestartIfRunning: true,
+		})
+		require.NoError(t, err)
+		assert.True(t, info.Connected)
+		assert.Positive(t, requestsB.Load())
+		assert.ElementsMatch(t, []string{"beta", "gamma"}, listedToolNames(t, srv, "remote"))
+
+		cfg, err := mgr.GetServerConfig("remote")
+		require.NoError(t, err)
+		assert.Equal(t, urlB, cfg.URL)
+		assert.True(t, cfg.EnableSessions)
+		assert.False(t, cfg.EnableResumption)
+
+		v := readMCPServerConfig(t, configPath)
+		assert.Equal(t, urlB, v.GetString("mcp.servers.remote.url"))
+		assert.True(t, v.GetBool("mcp.servers.remote.enable_sessions"))
+		assert.False(t, v.GetBool("mcp.servers.remote.enable_resumption"))
+	})
+
+	t.Run("missing_url_restart_rejected_locally", func(t *testing.T) {
+		urlA, _ := newStreamableMCPFixture(t, "alpha")
+		_, requestsB := newStreamableMCPFixture(t, "beta")
+		srv, _, configPath := newManagementTestServer(t)
+
+		resp, err := srv.AddMCPServer(ctx, &loomv1.AddMCPServerRequest{
+			Name: "remote", Transport: "streamable-http", Url: urlA, Enabled: true, AutoStart: true,
+		})
+		require.NoError(t, err)
+		require.True(t, resp.Success, resp.Message)
+
+		_, err = srv.UpdateMCPServer(ctx, &loomv1.UpdateMCPServerRequest{
+			ServerName: "remote", Transport: "streamable-http", Enabled: true, RestartIfRunning: true,
+		})
+		require.Error(t, err)
+		assert.Zero(t, requestsB.Load())
+		assert.Equal(t, urlA, readMCPServerConfig(t, configPath).GetString("mcp.servers.remote.url"))
+	})
+
+	t.Run("stdio_validation_preserved", func(t *testing.T) {
+		urlA, _ := newStreamableMCPFixture(t, "alpha")
+		srv, _, _ := newManagementTestServer(t)
+		resp, err := srv.AddMCPServer(ctx, &loomv1.AddMCPServerRequest{
+			Name: "remote", Transport: "streamable-http", Url: urlA, Enabled: true,
+		})
+		require.NoError(t, err)
+		require.True(t, resp.Success, resp.Message)
+
+		for _, transportName := range []string{"", "stdio"} {
+			_, err := srv.UpdateMCPServer(ctx, &loomv1.UpdateMCPServerRequest{ServerName: "remote", Transport: transportName})
+			require.Equal(t, codes.InvalidArgument, status.Code(err))
+			assert.Contains(t, err.Error(), "command is required")
+		}
+		_, err = srv.UpdateMCPServer(ctx, &loomv1.UpdateMCPServerRequest{
+			ServerName: "remote", Transport: "stdio", Command: "definitely-not-a-real-command-560",
+		})
+		require.Equal(t, codes.InvalidArgument, status.Code(err))
+		assert.Contains(t, err.Error(), "command not found")
+
+		_, err = srv.UpdateMCPServer(ctx, &loomv1.UpdateMCPServerRequest{ServerName: "remote", Transport: "carrier-pigeon"})
+		require.Equal(t, codes.InvalidArgument, status.Code(err))
+		assert.Contains(t, err.Error(), "streamable-http")
+	})
+}
+
+func TestTestMCPServerConnectionStreamableHTTP(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("remote_without_command_succeeds", func(t *testing.T) {
+		url, requests := newStreamableMCPFixture(t, "alpha", "beta")
+		srv, mgr, configPath := newManagementTestServer(t)
+
+		resp, err := srv.TestMCPServerConnection(ctx, &loomv1.TestMCPServerConnectionRequest{
+			Transport:        "streamable-http",
+			Url:              url,
+			EnableSessions:   true,
+			EnableResumption: true,
+		})
+		require.NoError(t, err)
+		require.True(t, resp.Success, resp.Error)
+		assert.Equal(t, int32(2), resp.ToolCount)
+		assert.Positive(t, requests.Load())
+
+		var tested []manager.ServerInfo
+		for _, info := range mgr.ListServers() {
+			if strings.HasPrefix(info.Name, "__test__") {
+				tested = append(tested, info)
+			}
+		}
+		require.Len(t, tested, 1)
+		cfg, err := mgr.GetServerConfig(tested[0].Name)
+		require.NoError(t, err)
+		assert.Equal(t, url, cfg.URL)
+		assert.True(t, cfg.EnableSessions)
+		assert.True(t, cfg.EnableResumption)
+		assert.False(t, tested[0].Connected, "test server must be stopped after the probe")
+
+		raw, err := os.ReadFile(configPath)
+		require.NoError(t, err)
+		assert.NotContains(t, string(raw), "__test__", "connection test must not persist config")
+	})
+
+	t.Run("missing_url_rejected_locally", func(t *testing.T) {
+		_, requests := newStreamableMCPFixture(t, "alpha")
+		srv, _, _ := newManagementTestServer(t)
+
+		resp, err := srv.TestMCPServerConnection(ctx, &loomv1.TestMCPServerConnectionRequest{Transport: "streamable-http"})
+		require.NoError(t, err)
+		assert.False(t, resp.Success)
+		assert.NotContains(t, resp.Error, "command is required")
+		assert.Zero(t, requests.Load())
+	})
+
+	t.Run("stdio_validation_preserved", func(t *testing.T) {
+		srv, _, _ := newManagementTestServer(t)
+		for _, transportName := range []string{"", "stdio"} {
+			resp, err := srv.TestMCPServerConnection(ctx, &loomv1.TestMCPServerConnectionRequest{Transport: transportName})
+			require.NoError(t, err)
+			assert.False(t, resp.Success)
+			assert.Contains(t, resp.Error, "command is required")
+		}
+		resp, err := srv.TestMCPServerConnection(ctx, &loomv1.TestMCPServerConnectionRequest{
+			Transport: "stdio", Command: "definitely-not-a-real-command-560",
+		})
+		require.NoError(t, err)
+		assert.False(t, resp.Success)
+		assert.Contains(t, resp.Error, "command not found")
+	})
 }
