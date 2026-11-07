@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+#### Tool calls cut off by the output token limit are not executed
+- **A tool call cut off at `max_tokens` was executed anyway.** When a response stopped at `max_tokens` before a call's arguments were complete, the agent counted the turn toward the output-token circuit breaker but still ran the incomplete call. The tool's own validation error (for example `value is required and must be a string` from `shared_memory_write`) never said the output was cut off, so the model repeated the same oversized call until the breaker ended the turn. In one observed run, 7 such rounds on Claude Opus 4.5 cost $0.90 and saved nothing.
+- **Now each call that is incomplete per its advertised schema gets an `OUTPUT_TRUNCATED` tool result instead of running.** The result names the tool, the output tokens used and the missing required arguments, and asks for the content in smaller pieces. Text comes from the new `errors.tool_execution.output_truncated` prompt (`prompts/errors/tool_execution.yaml`), with the same text built in when no prompt registry is loaded. The row is written before the HITL park pre-scan, so a cut-off call is never offered for approval and never runs when a parked batch resumes. Complete calls in the same response run as before. A `tool_call.truncated_not_executed` span event records each one. The circuit breaker still counts these turns as a backstop.
+- **Only a `max_tokens` stop qualifies.** A call missing a required argument in an ordinary response still runs and gets the tool's validation error.
+- **Arguments that depend on the call count too.** A tool can declare per-call requirements through `shuttle.ConditionalArgsTool` (`RequiredArgsFor`), and `workspace` does: `write` needs `filename` and `content`, `read` and `delete` need `filename`, `search` needs `query`. A `workspace` write cut off before its content previously satisfied the schema's only required field, `action`, so it ran and failed with a generic error that the circuit breaker did not count.
+- **Resume and parallel dispatch preserve the skip.** A truncation notice binds to its own call when IDs are reused; the remaining calls retain their batch positions. Crash resume backfills recorded notices and checks the recorded stop reason before attempting a rowless incomplete call. A lost notice prevents parking. The server and agent YAML output-token default remains 4096; model-catalog-sized defaults are not part of this change.
+
 ### Added
 
 #### Graph memory: ledger-mined lessons (on by default)

@@ -237,31 +237,37 @@ func parkedItemIDs(hr *shuttle.HumanRequest) []string {
 // batch — with per-response counter IDs two different batches can share IDs,
 // and an old decision must never execute a new batch's calls by collision.
 func verifyItemBinding(hr *shuttle.HumanRequest, batch Message) error {
-	byID := make(map[string]int, len(batch.ToolCalls))
-	for i, c := range batch.ToolCalls {
-		byID[c.ID] = i
-	}
 	for id, raw := range hr.Params {
 		desc, ok := raw.(map[string]interface{})
 		if !ok {
 			continue
 		}
-		idx, inBatch := byID[id]
-		if !inBatch {
-			continue // subset check upstream already refused if required
+		idx := -1
+		switch seq := desc["seq"].(type) {
+		case int:
+			idx = seq
+		case float64: // JSON round-trip through a persistent store
+			if seq < 0 || seq >= float64(len(batch.ToolCalls)) || seq != float64(int(seq)) {
+				return ErrStaleDecision
+			}
+			idx = int(seq)
+		case nil:
+			for i, call := range batch.ToolCalls {
+				if call.ID == id {
+					if idx >= 0 {
+						return ErrStaleDecision // a legacy descriptor cannot disambiguate a reused ID
+					}
+					idx = i
+				}
+			}
+		default:
+			return ErrStaleDecision
+		}
+		if idx < 0 || idx >= len(batch.ToolCalls) || batch.ToolCalls[idx].ID != id {
+			return ErrStaleDecision
 		}
 		if tool, _ := desc["tool"].(string); tool != "" && tool != batch.ToolCalls[idx].Name {
 			return ErrStaleDecision
-		}
-		switch seq := desc["seq"].(type) {
-		case int:
-			if seq != idx {
-				return ErrStaleDecision
-			}
-		case float64: // JSON round-trip through a persistent store
-			if int(seq) != idx {
-				return ErrStaleDecision
-			}
 		}
 		// The ARGUMENTS the human saw must be the arguments about to run.
 		// Tool and seq alone can carry no information at all: on Gemini
@@ -743,10 +749,16 @@ type parkItem struct {
 // contact_human or ParkableQuestion survives as a question item, an Ask as an
 // approval item. With no items it returns nil and the
 // serial dispatch loop runs exactly as today. With items it persists ONE
-// grouped request and ends the turn with TurnParkedError.
-func (a *Agent) maybeParkBatch(ctx Context, sess *Session, llmResp *LLMResponse, turnUsage Usage) error {
+// grouped request and ends the turn with TurnParkedError. Calls whose batch
+// index is in answered already have a tool row and are not preflighted.
+func (a *Agent) maybeParkBatch(ctx Context, sess *Session, llmResp *LLMResponse, turnUsage Usage, answered map[int]bool) error {
 	var items []parkItem
 	for i, call := range llmResp.ToolCalls {
+		// Already answered without running (a call cut off by the output
+		// token limit): nothing for a human to decide.
+		if answered[i] {
+			continue
+		}
 		d := a.executor.Preflight(ctx, call.Name, call.Input)
 		if d.Kind == shuttle.Deny {
 			continue
@@ -1443,6 +1455,7 @@ func locateParkedBatch(sess *Session, itemIDs []string) (Message, []ToolCall, []
 	// name for parallel calls to one tool) and a provider can omit it entirely
 	// (Ollama), so "an ID has a row" cannot say WHICH call the row belongs to.
 	rowCount := make(map[string]int)
+	answeredPositions := make(map[int]bool)
 	finalReply := false
 	for _, m := range msgs[k+1:] {
 		switch m.Role {
@@ -1452,6 +1465,10 @@ func locateParkedBatch(sess *Session, itemIDs []string) (Message, []ToolCall, []
 			}
 			// Same-turn user rows are in-turn machinery — skip.
 		case "tool":
+			if position, ok := truncatedToolRowPosition(m, msgs[k].ToolCalls); ok {
+				answeredPositions[position] = true
+				continue
+			}
 			// Empty IDs are counted too: every non-call tool row carries a real
 			// ID, so an empty-ID row can only belong to an empty-ID call.
 			rowCount[m.ToolUseID]++
@@ -1482,8 +1499,9 @@ func locateParkedBatch(sess *Session, itemIDs []string) (Message, []ToolCall, []
 		return Message{}, nil, nil, ErrNothingParked
 	}
 
-	// Match rows to calls positionally within each ID. Rows are appended in
-	// dispatch order and dispatch is serial, so the first rowCount[id] calls
+	// Truncation notices bind to their exact call even though they land before
+	// dispatch. Match the remaining rows positionally within each ID: the
+	// remaining calls settle in dispatch order, so the first rowCount[id] calls
 	// carrying an ID are the ones that have rows. Matching by ID alone would
 	// mark every call of a duplicated ID done as soon as one row landed, and
 	// would never mark an empty-ID call done at all.
@@ -1495,6 +1513,9 @@ func locateParkedBatch(sess *Session, itemIDs []string) (Message, []ToolCall, []
 	var rowless []ToolCall
 	var positions []int
 	for i, c := range msgs[k].ToolCalls {
+		if answeredPositions[i] {
+			continue
+		}
 		if rowCount[c.ID] > 0 {
 			rowCount[c.ID]--
 			continue

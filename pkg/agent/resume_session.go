@@ -199,6 +199,11 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (_ *Respons
 	st.allToolExecutions = &allExecs
 	tools := a.advertisedTools(sess)
 	st.tools = &tools
+	recordedResp, err := recordedLLMResponse(events, step)
+	if err != nil {
+		return nil, err
+	}
+	truncated := truncatedToolCallIndexes(recordedResp, tools)
 	if maxPerTurn := a.config.MaxIterations; maxPerTurn > 0 {
 		st.maxPerTurn = maxPerTurn
 	} else {
@@ -216,16 +221,9 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (_ *Respons
 		intentEvt, resultEvt := findEventPair(events, step, eventPos)
 
 		switch {
-		case intentEvt == nil:
-			// Never attempted: collected for dispatch below, after giving it
-			// the chance a fresh turn's pre-scan gives it to park for HITL.
-			neverAttempted = append(neverAttempted, call)
-			neverAttemptedPositions = append(neverAttemptedPositions, positions[j])
-			neverAttemptedEventPositions = append(neverAttemptedEventPositions, eventPos)
-
 		case resultEvt != nil:
-			// Known complete: backfill the row from the recorded result rather
-			// than re-invoking the tool.
+			// Synthesized outcomes can have a result without an execution
+			// intent. They are terminal too; never attempt the tool on replay.
 			persisted, err := a.backfillFromResultEvent(agentCtx, sess, call, *resultEvt)
 			if err != nil {
 				return nil, fmt.Errorf("backfilling call %s from recorded result: %w", call.ID, err)
@@ -233,6 +231,16 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (_ *Respons
 			if !persisted {
 				st.rowNotPersisted = true
 			}
+
+		case intentEvt == nil && truncated[eventPos]:
+			a.answerTruncatedToolCalls(agentCtx, sess, recordedResp, map[int]bool{eventPos: true}, st)
+
+		case intentEvt == nil:
+			// Never attempted: collected for dispatch below, after giving it
+			// the chance a fresh turn's pre-scan gives it to park for HITL.
+			neverAttempted = append(neverAttempted, call)
+			neverAttemptedPositions = append(neverAttemptedPositions, positions[j])
+			neverAttemptedEventPositions = append(neverAttemptedEventPositions, eventPos)
 
 		default:
 			// Intent with no result: outcome unknown. The gap is named by
@@ -378,6 +386,20 @@ func recordedStepForBatch(events []eventlog.ExecutionEvent, batch Message) (step
 		}
 	}
 	return 0, nil, false
+}
+
+func recordedLLMResponse(events []eventlog.ExecutionEvent, step int) (*LLMResponse, error) {
+	for _, event := range events {
+		if event.StepIndex != step || event.EventType != eventlog.EventLLMCallResult {
+			continue
+		}
+		var response LLMResponse
+		if err := json.Unmarshal(event.Payload, &response); err != nil {
+			return nil, fmt.Errorf("reading recorded LLM response at step %d: %w", step, err)
+		}
+		return &response, nil
+	}
+	return nil, ErrTurnNotRecorded
 }
 
 // matchRecordedCalls maps each call in saved (the batch as the session holds

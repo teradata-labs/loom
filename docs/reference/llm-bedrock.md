@@ -39,6 +39,15 @@ llm:
   timeout_seconds: 60
 ```
 
+When `max_tokens` is not set in the server or agent YAML, the default is
+4096. Bedrock reserves `max_tokens` against your tokens-per-minute and
+tokens-per-day quotas when a request starts, multiplied by the model's output
+burndown rate (5x for most Anthropic models), and returns the unused part when
+the request ends. An explicit 64,000 cap on Opus 4.5 reserves about 320,000
+TPM per in-flight request. If requests are throttled, set a smaller
+`max_tokens`. See
+[How tokens are counted in Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/quotas-token-burndown.html).
+
 ### Available Models
 
 | Model | Bedrock Model ID | Context | Max Output | Best For |

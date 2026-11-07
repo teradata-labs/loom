@@ -47,6 +47,7 @@ blocking resolver never invoked.
 
 | Preflight verdict | Outcome |
 |---|---|
+| Incomplete call on a `max_tokens` stop | `OUTPUT_TRUNCATED` result before preflight; never an approval or question item |
 | `Deny` | never a park item; falls to dispatch and denies as today |
 | `Ask` | **approval item** |
 | `contact_human`, registered, not denied | **question item** |
@@ -106,6 +107,10 @@ configured, so "persisted without error" is not the same as durable. Without a
 store the batch dispatches inline instead, where a governed call with no
 resolver fails closed.
 
+Any `OUTPUT_TRUNCATED` rows written before the pre-scan must also be durable.
+A failed notice write prevents both approval and resource-await parking;
+the incomplete call is still skipped during inline dispatch.
+
 ## 3. Resume
 
 `ResumeChat(ctx, sessionID, decision, progressCallback)` continues the parked
@@ -142,6 +147,12 @@ each item's recorded tool and batch position must still describe the tail
 call it names. And an applied batch whose turn died before its final reply
 is NOT refused — the resume re-enters the loop (re-executing nothing) so the
 model sees the results and produces the answer.
+
+Truncation notices can precede a sibling's result even when both calls share
+an ID. Their stored result binds by tool name and ordinal within that ID,
+rather than marking every call with that ID answered. Other rows retain
+dispatch-order matching. An approval descriptor's recorded `seq`, ID, tool
+and parameters must identify the same call; an ID alone is insufficient.
 
 ### 3.2 Applying the decision
 

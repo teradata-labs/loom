@@ -319,3 +319,24 @@ func TestPromptAwareTool_ContextCancellation(t *testing.T) {
 	desc := wrapped.Description()
 	assert.Equal(t, "Native description", desc)
 }
+
+type conditionalArgsStub struct{ mockTool }
+
+func (*conditionalArgsStub) RequiredArgsFor(params map[string]interface{}) []string {
+	if params["action"] == "write" {
+		return []string{"content"}
+	}
+	return nil
+}
+
+func TestPromptAwareTool_ForwardsRequiredArgsFor(t *testing.T) {
+	inner := &conditionalArgsStub{mockTool{name: "workspace"}}
+	wrapped := shuttle.NewPromptAwareTool(inner, &mockRegistry{}, "tools.workspace")
+	_, isWrapper := wrapped.(*shuttle.PromptAwareTool)
+	require.True(t, isWrapper, "precondition: a registry wraps the tool")
+
+	assert.Equal(t, []string{"content"}, shuttle.RequiredArgsFor(wrapped, map[string]interface{}{"action": "write"}))
+	assert.Nil(t, shuttle.RequiredArgsFor(wrapped, map[string]interface{}{"action": "list"}))
+	assert.Nil(t, shuttle.RequiredArgsFor(&mockTool{name: "plain"}, map[string]interface{}{"action": "write"}),
+		"tools without the interface declare nothing")
+}

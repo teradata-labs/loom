@@ -54,6 +54,9 @@ const maxParallelReads = 4
 func (a *Agent) dispatchBatch(ctx Context, session *Session, calls []ToolCall, st *batchState) {
 	if !a.config.ParallelReadTools {
 		for i, toolCall := range calls {
+			if st.answeredCalls[i] {
+				continue
+			}
 			if *st.toolExecutionCount >= a.config.MaxToolExecutions {
 				break
 			}
@@ -63,10 +66,21 @@ func (a *Agent) dispatchBatch(ctx Context, session *Session, calls []ToolCall, s
 	}
 
 	for i := 0; i < len(calls); {
+		if st.answeredCalls[i] {
+			i++
+			continue
+		}
 		if *st.toolExecutionCount >= a.config.MaxToolExecutions {
 			return
 		}
-		n, reason := a.parallelGroupLen(calls[i:], st)
+		end := len(calls)
+		for j := i + 1; j < end; j++ {
+			if st.answeredCalls[j] {
+				end = j
+				break
+			}
+		}
+		n, reason := a.parallelGroupLen(calls[i:end], st)
 		if n > 1 {
 			i += a.dispatchGroup(ctx, session, calls[i:i+n], i, st)
 			continue

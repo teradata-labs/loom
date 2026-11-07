@@ -84,6 +84,12 @@ func (p *PromptAwareTool) Execute(ctx context.Context, params map[string]interfa
 	return p.tool.Execute(ctx, params)
 }
 
+// RequiredArgsFor forwards the wrapped tool's call-dependent required
+// arguments, so wrapping a tool does not hide them.
+func (p *PromptAwareTool) RequiredArgsFor(params map[string]interface{}) []string {
+	return RequiredArgsFor(p.tool, params)
+}
+
 // Backend returns the backend type this tool requires (delegates to wrapped tool).
 func (p *PromptAwareTool) Backend() string {
 	return p.tool.Backend()

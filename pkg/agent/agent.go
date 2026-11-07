@@ -1832,8 +1832,6 @@ func (a *Agent) getGuidanceMessage(ctx context.Context, key string, vars map[str
 // getErrorMessage loads an error message from PromptRegistry or returns default.
 // Used for structured error messages with context variables.
 // Format: errors.{category}.{type} (e.g., "errors.llm.timeout", "errors.tool_execution.invalid_input")
-//
-//nolint:unused // Infrastructure for future error message integration
 func (a *Agent) getErrorMessage(ctx context.Context, category string, errorType string, vars map[string]interface{}) string {
 	// Try loading from PromptRegistry
 	if a.prompts != nil {
@@ -3187,22 +3185,6 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			Timestamp:      time.Now(),
 		}, false)
 
-		// HITL park pre-scan (park.go): with park enabled and the batch's
-		// assistant row durable, a batch needing a human decision ends the
-		// turn HERE — before anything executes. A non-durable assistant row
-		// skips parking (a request row must never strand against a missing
-		// batch) and the batch dispatches inline, fail-closed.
-		//
-		// Durable means BOTH: a store exists, and the write to it did not
-		// fail. PersistMessage returns nil when no store is configured, so
-		// assistantPersisted alone reports success for a batch that was never
-		// written anywhere — exactly the stranding this gate exists to stop.
-		if a.hitlPark != nil && assistantPersisted && a.memory.HasStore() {
-			if parkErr := a.maybeParkBatch(ctx, session, llmResp, turnUsage); parkErr != nil {
-				return nil, parkErr
-			}
-		}
-
 		// Execute tool calls with per-turn cap and deduplication.
 		// MaxIterations limits how many tool calls are executed from a single
 		// LLM response. Excess calls get "turn_limit_exceeded" error results.
@@ -3232,6 +3214,21 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			stepIndex:          thisStep,
 			parkableTail:       a.hitlPark != nil && assistantPersisted && a.memory.HasStore(),
 			batchIDCount:       batchIDCount,
+			answeredCalls:      truncatedToolCallIndexes(llmResp, tools),
+		}
+
+		// Answer cut-off calls before admission; neither dispatch nor a
+		// resumed approval may execute them.
+		a.answerTruncatedToolCalls(ctx, session, llmResp, st.answeredCalls, st)
+		st.parkableTail = st.parkableTail && !st.rowNotPersisted
+
+		// Every pre-answered row must be durable too. Otherwise a cold
+		// approval resume could mistake a lost truncation notice for an
+		// unattempted call. Without durable rows, dispatch inline, fail-closed.
+		if a.hitlPark != nil && assistantPersisted && !st.rowNotPersisted && a.memory.HasStore() {
+			if parkErr := a.maybeParkBatch(ctx, session, llmResp, turnUsage, st.answeredCalls); parkErr != nil {
+				return nil, parkErr
+			}
 		}
 
 		a.dispatchBatch(ctx, session, llmResp.ToolCalls, st)
@@ -3306,6 +3303,7 @@ type batchState struct {
 	turnToolCount   int
 	turnDedup       map[string]*shuttle.Result
 	pendingSidecars []Message
+	answeredCalls   map[int]bool
 
 	stepIndex int // the execution-event-log step this batch's calls are recorded under
 	// stepErr is set when stepIndex could not be resolved. No call may be

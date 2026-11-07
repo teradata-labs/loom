@@ -112,13 +112,10 @@ func (a *Agent) recordLLMResult(ctx context.Context, sessionID string, stepIndex
 	if a.eventLog == nil || resp == nil {
 		return
 	}
-	// The WHOLE LLMResponse is recorded — content, tool calls, usage and each
-	// call's opaque ThoughtSignature — deliberately, for a future replay
-	// consumer. Nothing reads an llm_call_result event back today: resume
-	// correlates and backfills at TOOL-call granularity only, so a crash
-	// before the assistant message persisted always costs a fresh (repaid)
-	// LLM call. This is forward-compatible recording, not a working replay
-	// path — don't assume it is wired up.
+	// The whole response binds saved batches to their recorded step and
+	// preserves stop_reason for crash-resume truncation checks. Resume still
+	// reconciles at tool-call granularity: a crash before the assistant
+	// message persisted costs a fresh LLM call.
 	payload, err := json.Marshal(resp)
 	if err != nil {
 		zap.L().Warn("failed to marshal LLMResponse for event log", zap.String("session_id", sessionID), zap.Error(err))
