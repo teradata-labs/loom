@@ -228,9 +228,40 @@ type LLMRateLimitYAML struct {
 
 // ToolsConfigYAML represents tools configuration in YAML
 type ToolsConfigYAML struct {
-	MCP     []MCPToolConfigYAML    `yaml:"mcp"`
-	Custom  []CustomToolConfigYAML `yaml:"custom"`
-	Builtin []string               `yaml:"builtin"`
+	MCP      []MCPToolConfigYAML    `yaml:"mcp"`
+	Custom   []CustomToolConfigYAML `yaml:"custom"`
+	Builtin  []string               `yaml:"builtin"`
+	Disabled bool                   `yaml:"disabled,omitempty"`
+}
+
+// UnmarshalYAML applies the same tools field types to both agent YAML formats.
+// Empty and null lists are equivalent; populated-list conflicts are checked once
+// after conversion to proto by validateToolsConfig.
+func (t *ToolsConfigYAML) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("tools must be a mapping")
+	}
+	for i := 0; i < len(node.Content); i += 2 {
+		key, value := node.Content[i].Value, node.Content[i+1]
+		if value.Kind == yaml.AliasNode {
+			value = value.Alias
+		}
+		switch key {
+		case "none":
+			return fmt.Errorf("tools.none is a server setting; use tools.disabled for an agent")
+		case "disabled":
+			if value.Tag != "!!bool" {
+				return fmt.Errorf("tools.disabled must be a boolean")
+			}
+		case "builtin", "mcp", "custom":
+			if value.Kind != yaml.SequenceNode && value.Tag != "!!null" {
+				return fmt.Errorf("tools.%s must be a list or null", key)
+			}
+		}
+	}
+	// Use an alias to decode the fields without calling this method recursively.
+	type toolsConfigYAML ToolsConfigYAML
+	return node.Decode((*toolsConfigYAML)(t))
 }
 
 // MCPToolConfigYAML represents MCP tool configuration in YAML
@@ -446,7 +477,11 @@ func LoadConfigFromString(yamlContent string) (*loomv1.AgentConfig, error) {
 		if err := yaml.Unmarshal([]byte(yamlOnly), &k8sConfig); err != nil {
 			return nil, fmt.Errorf("failed to parse k8s-style YAML config: %w", err)
 		}
-		yamlConfig = convertK8sToLegacy(&k8sConfig)
+		converted, err := convertK8sToLegacy(&k8sConfig)
+		if err != nil {
+			return nil, err
+		}
+		yamlConfig = converted
 	} else {
 		// Legacy format
 		if err := yaml.Unmarshal([]byte(yamlOnly), &yamlConfig); err != nil {
@@ -498,7 +533,7 @@ func LoadConfigFromString(yamlContent string) (*loomv1.AgentConfig, error) {
 }
 
 // convertK8sToLegacy converts k8s-style config to legacy format.
-func convertK8sToLegacy(k8s *K8sStyleAgentConfig) AgentConfigYAML {
+func convertK8sToLegacy(k8s *K8sStyleAgentConfig) (AgentConfigYAML, error) {
 	var legacy AgentConfigYAML
 
 	// Basic fields from metadata
@@ -523,44 +558,12 @@ func convertK8sToLegacy(k8s *K8sStyleAgentConfig) AgentConfigYAML {
 	// Tools - handle both old ToolsConfigYAML and new simplified format
 	switch tools := k8s.Spec.Tools.(type) {
 	case map[string]interface{}:
-		// Old format with mcp/custom/builtin
-		if mcp, ok := tools["mcp"].([]interface{}); ok {
-			for _, m := range mcp {
-				if mcpMap, ok := m.(map[string]interface{}); ok {
-					server, _ := mcpMap["server"].(string)
-					var toolsList []string
-					if t, ok := mcpMap["tools"].([]interface{}); ok {
-						for _, tool := range t {
-							if toolStr, ok := tool.(string); ok {
-								toolsList = append(toolsList, toolStr)
-							}
-						}
-					}
-					legacy.Agent.Tools.MCP = append(legacy.Agent.Tools.MCP, MCPToolConfigYAML{
-						Server: server,
-						Tools:  toolsList,
-					})
-				}
-			}
+		var toolsNode yaml.Node
+		if err := toolsNode.Encode(tools); err != nil {
+			return legacy, fmt.Errorf("invalid spec.tools: %w", err)
 		}
-		if builtin, ok := tools["builtin"].([]interface{}); ok {
-			for _, b := range builtin {
-				if builtinStr, ok := b.(string); ok {
-					legacy.Agent.Tools.Builtin = append(legacy.Agent.Tools.Builtin, builtinStr)
-				}
-			}
-		}
-		if custom, ok := tools["custom"].([]interface{}); ok {
-			for _, c := range custom {
-				if customMap, ok := c.(map[string]interface{}); ok {
-					name, _ := customMap["name"].(string)
-					impl, _ := customMap["implementation"].(string)
-					legacy.Agent.Tools.Custom = append(legacy.Agent.Tools.Custom, CustomToolConfigYAML{
-						Name:           name,
-						Implementation: impl,
-					})
-				}
-			}
+		if err := toolsNode.Decode(&legacy.Agent.Tools); err != nil {
+			return legacy, fmt.Errorf("invalid spec.tools: %w", err)
 		}
 	case []interface{}:
 		// New simplified format - array of tool names (assume builtin)
@@ -601,7 +604,7 @@ func convertK8sToLegacy(k8s *K8sStyleAgentConfig) AgentConfigYAML {
 		legacy.Agent.Metadata["backend_type"] = k8s.Spec.Backend.Type
 	}
 
-	return legacy
+	return legacy, nil
 }
 
 // convertMetadata converts map[string]interface{} to map[string]string
@@ -707,9 +710,10 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 
 	// Convert tools config
 	config.Tools = &loomv1.ToolsConfig{
-		Mcp:     make([]*loomv1.MCPToolConfig, len(yaml.Agent.Tools.MCP)),
-		Custom:  make([]*loomv1.CustomToolConfig, len(yaml.Agent.Tools.Custom)),
-		Builtin: yaml.Agent.Tools.Builtin,
+		Mcp:      make([]*loomv1.MCPToolConfig, len(yaml.Agent.Tools.MCP)),
+		Custom:   make([]*loomv1.CustomToolConfig, len(yaml.Agent.Tools.Custom)),
+		Builtin:  yaml.Agent.Tools.Builtin,
+		Disabled: yaml.Agent.Tools.Disabled,
 	}
 
 	for i, mcp := range yaml.Agent.Tools.MCP {
@@ -944,7 +948,17 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 		config.Metadata["_parallel_read_tools"] = "true"
 	}
 
+	if err := validateToolsConfig(config.Tools); err != nil {
+		return nil, err
+	}
 	return config, nil
+}
+
+func validateToolsConfig(tools *loomv1.ToolsConfig) error {
+	if tools.GetDisabled() && (len(tools.GetBuiltin()) > 0 || len(tools.GetMcp()) > 0 || len(tools.GetCustom()) > 0) {
+		return fmt.Errorf("tools.disabled cannot be combined with builtin, mcp, or custom tools")
+	}
+	return nil
 }
 
 // ApplyMetadataBehavior maps the behavior flags yamlToProto encodes in an
@@ -1305,6 +1319,9 @@ func ValidateAgentConfig(config *loomv1.AgentConfig) error {
 	if config.Name == "" {
 		return fmt.Errorf("agent name is required")
 	}
+	if err := validateToolsConfig(config.Tools); err != nil {
+		return err
+	}
 
 	// LLM config is optional - agents inherit server's LLM provider if not specified
 	// Only validate if LLM config is actually provided (has provider or model set)
@@ -1423,6 +1440,7 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 		}
 
 		yaml.Agent.Tools.Builtin = config.Tools.Builtin
+		yaml.Agent.Tools.Disabled = config.Tools.Disabled
 	}
 
 	// Convert memory config

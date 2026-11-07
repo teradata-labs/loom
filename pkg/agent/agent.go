@@ -158,6 +158,9 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// through the process logger; zap.L() is a no-op unless the host installed
 	// one via zap.ReplaceGlobals (cmd_serve does).
 	a.executor.SetLogger(zap.L())
+	if a.disableToolSurface {
+		a.executor.DisableDynamicRegistration()
+	}
 
 	// Set permission checker on executor if provided
 	if a.permissionChecker != nil {
@@ -639,11 +642,21 @@ func WithoutBuiltinTool(name string) Option {
 	}
 }
 
+// WithoutTools hides every tool from the agent without disabling background subsystems.
+func WithoutTools() Option {
+	return func(a *Agent) {
+		a.disableToolSurface = true
+	}
+}
+
 // isBuiltinToolSuppressed reports whether the named tool has been suppressed
 // via WithoutBuiltinTool. Read-only; safe under the agent's normal mutex
 // discipline because the suppression map is set at construction and not
 // mutated afterwards.
 func (a *Agent) isBuiltinToolSuppressed(name string) bool {
+	if a.disableToolSurface {
+		return true
+	}
 	if len(a.suppressedBuiltinTools) == 0 {
 		return false
 	}
@@ -854,7 +867,7 @@ func (a *Agent) advertisedTools(session *Session) []shuttle.Tool {
 // activation; the field is parsed but not enforced. A future change can
 // add an MCPManager hook here.
 func (a *Agent) enforceRequiredSkillTools(sessionID string) {
-	if a.skillOrchestrator == nil {
+	if a.disableToolSurface || a.skillOrchestrator == nil {
 		return
 	}
 	active := a.skillOrchestrator.GetActiveSkills(sessionID)
@@ -868,7 +881,8 @@ func (a *Agent) enforceRequiredSkillTools(sessionID string) {
 		for _, name := range as.Skill.Tools.RequiredTools {
 			if !a.tools.IsRegistered(name) {
 				if tool := builtin.ByName(name); tool != nil {
-					a.tools.Register(tool)
+					// RegisterTool honours per-name builtin suppression.
+					a.RegisterTool(tool)
 					zap.L().Debug("skill required tool auto-registered (builtin)",
 						zap.String("skill", as.Skill.Name),
 						zap.String("tool", name))
@@ -1020,7 +1034,7 @@ func (a *Agent) UnregisterTool(name string) {
 // RegisterLazyTools registers tools that will only be added to the active tool set
 // when trigger(userMessage) returns true. Safe to call concurrently.
 func (a *Agent) RegisterLazyTools(tools []shuttle.Tool, trigger func(string) bool) {
-	if len(tools) == 0 || trigger == nil {
+	if a.disableToolSurface || len(tools) == 0 || trigger == nil {
 		return
 	}
 	a.mu.Lock()
@@ -1053,7 +1067,7 @@ func (a *Agent) evaluateLazyTools(msg string) {
 		if set.trigger(msg) {
 			for _, t := range set.tools {
 				if !a.tools.IsRegistered(t.Name()) {
-					a.tools.Register(t)
+					a.RegisterTool(t)
 				}
 			}
 		}
@@ -1097,7 +1111,7 @@ func (a *Agent) SetID(id string) {
 // When enabled, agents can use tools discovered via tool_search without explicit registration.
 // MCP tools and builtin tools found in the registry will be dynamically registered when first used.
 func (a *Agent) SetToolRegistryForDynamicDiscovery(toolRegistry shuttle.ToolRegistry, mcpManager shuttle.MCPManager) {
-	if a.executor == nil {
+	if a.executor == nil || a.disableToolSurface {
 		return
 	}
 	if toolRegistry != nil {
@@ -1357,7 +1371,7 @@ func (a *Agent) workflowCommPromptSupplement() string {
 // calls manage_skills with the load action for that skill. Returns an empty
 // string when no skill library is wired or when skills are disabled.
 func (a *Agent) skillMenuPromptSupplement() string {
-	if a.skillOrchestrator == nil {
+	if a.skillOrchestrator == nil || a.isBuiltinToolSuppressed("manage_skills") {
 		return ""
 	}
 	lib := a.skillOrchestrator.GetLibrary()
@@ -1411,7 +1425,7 @@ func (a *Agent) skillMenuPromptSupplement() string {
 // taskBoardPromptSupplement returns instructions for agents with task board enabled.
 // Returns empty string when task board is not available.
 func (a *Agent) taskBoardPromptSupplement() string {
-	if a.taskManager == nil || a.taskBoardConfig == nil || !a.taskBoardConfig.Enabled {
+	if a.taskManager == nil || a.taskBoardConfig == nil || !a.taskBoardConfig.Enabled || a.isBuiltinToolSuppressed("task_board") {
 		return ""
 	}
 	return `
@@ -1458,7 +1472,7 @@ func (a *Agent) checkAndRegisterTaskBoardTool() {
 	}
 
 	tbTool := NewTaskBoardTool(a.taskManager, a.taskDecomposer, a.GetID(), a.llm, a.taskBoardConfig)
-	a.tools.Register(tbTool)
+	a.RegisterTool(tbTool)
 }
 
 // checkAndRegisterManageSkillsTool registers the manage_skills builtin whenever
@@ -1478,7 +1492,7 @@ func (a *Agent) checkAndRegisterManageSkillsTool() {
 		return
 	}
 
-	a.tools.Register(a.newManageSkillsTool())
+	a.RegisterTool(a.newManageSkillsTool())
 }
 
 // newManageSkillsTool builds the manage_skills tool with this agent's skill
@@ -1520,7 +1534,7 @@ func (a *Agent) checkAndRegisterLoadPatternTool() {
 		return
 	}
 
-	a.tools.Register(NewLoadPatternTool(a.orchestrator))
+	a.RegisterTool(NewLoadPatternTool(a.orchestrator))
 }
 
 // buildTaskContext queries the task store and builds a compact context block
@@ -4114,7 +4128,7 @@ func (a *Agent) checkAndRegisterGraphMemoryTool() {
 	}
 
 	tool := shuttle.Tool(NewGraphMemoryTool(a.graphMemoryStore, a.graphMemoryKey()))
-	a.tools.Register(tool)
+	a.RegisterTool(tool)
 }
 
 // graphMemoryKey is the agent ID that keys graph memory reads and writes.

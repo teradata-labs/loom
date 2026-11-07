@@ -51,7 +51,7 @@ definitions (in `looms.yaml`) and the **standalone agent YAML** files loaded by 
 | `spec.llm` | `LLMConfigYAML` | inherits server | LLM provider and model |
 | `spec.system_prompt` | `string` | optional | System prompt text |
 | `spec.rom` | `string` | `""` | Read-only memory ID (`TD`, `teradata`, `weaver`, `auto`, `none`, `""`) |
-| `spec.tools` | `[]string` or `ToolsConfigYAML` | optional | Tool list |
+| `spec.tools` | `[]string` or `ToolsConfigYAML` | optional | Tool list or per-agent `disabled` policy |
 | `spec.memory` | `MemoryConfigYAML` | `type: memory` | Session storage |
 | `spec.config` | `BehaviorConfigYAML` | defaults below | Behavior limits |
 | `spec.backend_path` | `string` | optional | Path to backend YAML |
@@ -344,6 +344,42 @@ spec:
 | **Workflow-injected** (auto-added for workflow agents) | `send_message`, `publish`, `shared_memory_read`, `shared_memory_write`, `top_n_query`, `group_by_query` |
 
 `tools.minimal` suppresses `graph_memory` and `task_board`; `tools.none` additionally suppresses `conversation_memory`, `session_memory`, `get_error_details`, `query_tool_result`, and the workflow-injected tools. `manage_skills` and `load_pattern` are not suppressed by either policy. `manage_ephemeral_agents` is not suppressed by `tools.none`; see the manage_ephemeral_agents section for opt-in/opt-out details.
+
+#### spec.tools.disabled (per-agent)
+
+**Type**: `bool`
+**Default**: `false`
+**Required**: No
+**Status**: 🚧 In Development (unreleased).
+
+When `true`, no tool is registered for this agent, including automatically
+registered, skill-required, and dynamically discovered tools. Dynamic discovery
+is not wired for the agent, and its tool executor refuses on-demand
+registration: a call to an unregistered tool name fails with
+`dynamic tool registration is disabled for this agent` without searching the
+tool registry or contacting an MCP server. It cannot be
+combined with `builtin`, `mcp`, or `custom` entries in the same agent config;
+loading or validating such a config returns an error. Other agents keep their
+own tool surfaces. The graph-memory store, background extraction, and automatic
+recall remain controlled by `spec.memory.graph_memory.enabled`, independently
+of whether the `graph_memory` tool is visible.
+
+```yaml
+apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: experiment-agent
+spec:
+  tools:
+    disabled: true
+  memory:
+    graph_memory:
+      enabled: true
+```
+
+The legacy `agent:` form uses `agent.tools.disabled: true` with the same
+behavior. This is a different setting from the server-wide `tools.none`, which
+applies to all agents and keeps the tools each agent's YAML declares.
 
 #### manage_skills
 

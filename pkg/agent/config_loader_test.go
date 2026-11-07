@@ -1066,6 +1066,205 @@ spec:
 	assert.InDelta(t, 0.7, gmYAML.DefaultSalience, 0.001)
 }
 
+func TestToolsDisabledConfigRoundTrip(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		yaml string
+	}{
+		{"k8s", `
+apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: no-tools
+spec:
+  tools:
+    disabled: true
+  memory:
+    graph_memory:
+      enabled: true
+`},
+		{"legacy", `
+agent:
+  name: no-tools
+  tools:
+    disabled: true
+  memory:
+    graph_memory:
+      enabled: true
+`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			config, err := LoadConfigFromString(tt.yaml)
+			require.NoError(t, err)
+			assert.True(t, config.GetTools().GetDisabled())
+			assert.True(t, config.GetMemory().GetGraphMemory().GetEnabled())
+			require.NoError(t, ValidateAgentConfig(config))
+
+			path := filepath.Join(t.TempDir(), "agent.yaml")
+			require.NoError(t, SaveAgentConfig(config, path))
+			reloaded, err := LoadAgentConfig(path)
+			require.NoError(t, err)
+			assert.True(t, reloaded.GetTools().GetDisabled())
+			assert.True(t, reloaded.GetMemory().GetGraphMemory().GetEnabled())
+		})
+	}
+
+	config, err := LoadConfigFromString("agent:\n  name: default-tools\n")
+	require.NoError(t, err)
+	assert.False(t, config.GetTools().GetDisabled())
+}
+
+func TestToolsDisabledConfigRejectsConflicts(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{"k8s builtin", `
+apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: invalid
+spec:
+  tools:
+    disabled: true
+    builtin: [web_search]
+`, "tools.disabled cannot be combined"},
+		{"k8s mcp", `
+apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: invalid
+spec:
+  tools:
+    disabled: true
+    mcp:
+      - server: example
+        tools: [search]
+`, "tools.disabled cannot be combined"},
+		{"k8s custom", `
+apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: invalid
+spec:
+  tools:
+    disabled: true
+    custom:
+      - name: example
+        implementation: /path/to/tool
+`, "tools.disabled cannot be combined"},
+		{"legacy builtin", `
+agent:
+  name: invalid
+  tools:
+    disabled: true
+    builtin: [web_search]
+`, "tools.disabled cannot be combined"},
+		{"non-boolean", `
+apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: invalid
+spec:
+  tools:
+    disabled: "true"
+`, "tools.disabled must be a boolean"},
+		{"invalid builtin list", `
+apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: invalid
+spec:
+  tools:
+    disabled: true
+    builtin: web_search
+`, "tools.builtin must be a list"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := LoadConfigFromString(tt.yaml)
+			require.ErrorContains(t, err, tt.want)
+		})
+	}
+	config := &loomv1.AgentConfig{
+		Name:  "invalid",
+		Tools: &loomv1.ToolsConfig{Disabled: true, Builtin: []string{"web_search"}},
+	}
+	require.ErrorContains(t, ValidateAgentConfig(config), "tools.disabled cannot be combined")
+}
+
+func TestToolsDisabledConfigListValidation(t *testing.T) {
+	for _, format := range []struct {
+		name   string
+		prefix string
+	}{
+		{"k8s", "apiVersion: loom/v1\nkind: Agent\nmetadata:\n  name: tools-validation\nspec:\n  tools:\n"},
+		{"legacy", "agent:\n  name: tools-validation\n  tools:\n"},
+	} {
+		for _, policy := range []struct {
+			name     string
+			yaml     string
+			disabled bool
+		}{
+			{"omitted", "", false},
+			{"false", "    disabled: false\n", false},
+			{"true", "    disabled: true\n", true},
+		} {
+			for _, field := range []struct {
+				name      string
+				populated string
+			}{
+				{"builtin", "[web_search]"},
+				{"mcp", "[{server: example, tools: [search]}]"},
+				{"custom", "[{name: example, implementation: /path/to/tool}]"},
+			} {
+				for _, value := range []struct {
+					name string
+					yaml string
+					want string
+				}{
+					{"null", "null", ""},
+					{"empty", "[]", ""},
+					{"populated", field.populated, ""},
+					{"scalar", "web_search", "tools." + field.name + " must be a list or null"},
+					{"mapping", "{}", "tools." + field.name + " must be a list or null"},
+				} {
+					t.Run(format.name+"/"+policy.name+"/"+field.name+"/"+value.name, func(t *testing.T) {
+						config, err := LoadConfigFromString(format.prefix + policy.yaml + "    " + field.name + ": " + value.yaml + "\n")
+						want := value.want
+						if policy.disabled && value.name == "populated" {
+							want = "tools.disabled cannot be combined"
+						}
+						if want != "" {
+							require.ErrorContains(t, err, want)
+							return
+						}
+						require.NoError(t, err)
+						assert.Equal(t, policy.disabled, config.GetTools().GetDisabled())
+						if value.name == "populated" {
+							assert.Equal(t, 1, len(config.GetTools().GetBuiltin())+len(config.GetTools().GetMcp())+len(config.GetTools().GetCustom()))
+						} else {
+							assert.Empty(t, config.GetTools().GetBuiltin())
+							assert.Empty(t, config.GetTools().GetMcp())
+							assert.Empty(t, config.GetTools().GetCustom())
+						}
+					})
+				}
+			}
+		}
+		for _, value := range []string{"\"true\"", "1", "null", "[]"} {
+			t.Run(format.name+"/disabled-type/"+value, func(t *testing.T) {
+				_, err := LoadConfigFromString(format.prefix + "    disabled: " + value + "\n")
+				require.ErrorContains(t, err, "tools.disabled must be a boolean")
+			})
+		}
+		t.Run(format.name+"/server-none-is-not-agent-policy", func(t *testing.T) {
+			_, err := LoadConfigFromString(format.prefix + "    none: true\n")
+			require.ErrorContains(t, err, "tools.none is a server setting; use tools.disabled for an agent")
+		})
+	}
+}
+
 func TestGraphMemoryConfig_LegacyYAML(t *testing.T) {
 	// Test legacy format with graph_memory config
 	yamlContent := `
