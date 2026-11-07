@@ -90,6 +90,11 @@ type Agent struct {
 	// is unavailable (returns ErrEventLogDisabled).
 	eventLog eventlog.EventLogStore
 
+	// unknownOutcome decides what ResumeSession does with a call whose intent
+	// is recorded but whose result is not. The zero value stops with an
+	// ExecutionGap, as before.
+	unknownOutcome UnknownOutcomePolicy
+
 	// leaseTTL overrides eventlog.DefaultSessionLeaseTTL for the session lease
 	// (session_lease.go). Zero uses the default; tests set it short.
 	leaseTTL time.Duration

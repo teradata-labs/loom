@@ -770,6 +770,16 @@ func WithEventLog(store eventlog.EventLogStore) Option {
 	}
 }
 
+// WithUnknownOutcomePolicy sets what ResumeSession does with a call whose
+// outcome is unknown (intent recorded, no result). The default stops with an
+// ExecutionGap for an operator to resolve; UnknownOutcomeFail lets the turn go
+// on with a failed result that says the outcome is unknown.
+func WithUnknownOutcomePolicy(p UnknownOutcomePolicy) Option {
+	return func(a *Agent) {
+		a.unknownOutcome = p
+	}
+}
+
 // captureBaseTools records the always-advertised tool set — every tool present
 // before any event-driven (session-scoped) registration. Idempotent: the first
 // call wins, so it must run before the first skill-required or progressive-
@@ -2887,7 +2897,9 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			}
 			llmResp, err = sendChat(tools)
 			if err == nil {
-				a.recordLLMResult(ctx, session.ID, thisStep, llmResp)
+				if recErr := a.recordLLMResult(ctx, session.ID, thisStep, llmResp); recErr != nil {
+					return nil, recErr
+				}
 			}
 		}
 		if err != nil && errors.Is(err, llm.ErrContextTooLong) {
@@ -2913,7 +2925,9 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				// the result.
 				llmResp, err = sendChat(tools)
 				if err == nil {
-					a.recordLLMResult(ctx, session.ID, thisStep, llmResp)
+					if recErr := a.recordLLMResult(ctx, session.ID, thisStep, llmResp); recErr != nil {
+						return nil, recErr
+					}
 				}
 				if err != nil && errors.Is(err, llm.ErrContextTooLong) {
 					zap.L().Error("context too long after relief: turn ends",

@@ -82,9 +82,12 @@ type EventLogStore interface {
 	RecordIntent(ctx context.Context, sessionID string, stepIndex, batchPosition int, eventType EventType, toolUseID string, payload []byte) error
 
 	// RecordResult durably writes the matching *_result event after the call
-	// completes. Best-effort for the caller: the action already happened, so
-	// a failure is logged and leaves an (intent, no result) gap, the same
-	// state a crash mid-call produces. Same retry and conflict rules as
+	// completes. For a tool_call_result it is best-effort for the caller: the
+	// action already happened, so a failure is logged and leaves an (intent, no
+	// result) gap, the same state a crash mid-call produces. For an
+	// llm_call_result whose response has tool calls it is a precondition, like
+	// RecordIntent: the caller retries it and, if it still fails, ends the turn
+	// before any of those calls runs. Same retry and conflict rules as
 	// RecordIntent.
 	RecordResult(ctx context.Context, sessionID string, stepIndex, batchPosition int, eventType EventType, toolUseID string, payload []byte) error
 
