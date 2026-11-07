@@ -17,13 +17,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/aws/smithy-go"
 	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/llm/scheduler"
 	"github.com/teradata-labs/loom/pkg/shuttle"
@@ -304,12 +300,6 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 		a.config.Retry.MaxRetries+1, lastErr)
 }
 
-func isNonRetryableHTTPStatus(code int) bool {
-	return code >= 400 && code < 500 &&
-		code != http.StatusRequestTimeout &&
-		code != http.StatusTooManyRequests
-}
-
 // isNonRetryableLLMError reports whether err represents a deterministic 4xx
 // client error or an inner provider rate limiter that has already exhausted
 // its own retry loop.
@@ -317,71 +307,10 @@ func isNonRetryableLLMError(err error) bool {
 	if err == nil {
 		return false
 	}
-
-	var statusCoder interface{ HTTPStatusCode() int }
-	if errors.As(err, &statusCoder) && isNonRetryableHTTPStatus(statusCoder.HTTPStatusCode()) {
+	if llm.IsRetriesExhausted(err) {
 		return true
 	}
-
-	var anthropicErr *anthropic.Error
-	if errors.As(err, &anthropicErr) && isNonRetryableHTTPStatus(anthropicErr.StatusCode) {
-		return true
-	}
-
-	var apiErr smithy.APIError
-	if errors.As(err, &apiErr) && apiErr.ErrorFault() == smithy.FaultClient && !llm.IsThrottle(err) {
-		return true
-	}
-
-	msg := err.Error()
-	// When a provider's internal rate limiter already exhausted its retries,
-	// do not amplify the failure with an outer retry loop.
-	if strings.Contains(msg, "retries due to throttling") {
-		return true
-	}
-
-	// Throttling / 429 errors without an exhausted internal retry loop remain
-	// retryable here.
-	if llm.IsThrottle(err) {
-		return false
-	}
-
-	// HTTP provider clients format status codes as "API error (status NNN): ..."
-	// or "(code: NNN)".
-	for _, marker := range []string{"API error (status ", "(code: "} {
-		if idx := strings.Index(msg, marker); idx >= 0 {
-			rest := msg[idx+len(marker):]
-			end := 0
-			for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
-				end++
-			}
-			if end > 0 {
-				if code, convErr := strconv.Atoi(rest[:end]); convErr == nil && isNonRetryableHTTPStatus(code) {
-					return true
-				}
-			}
-		}
-	}
-
-	// OpenAI and Azure OpenAI format structured error bodies with "(type: <type>, code: <code>)".
-	lower := strings.ToLower(msg)
-	if strings.Contains(lower, "openai api error:") {
-		for _, token := range []string{
-			"type: invalid_request_error",
-			"type: authentication_error",
-			"type: permission_error",
-			"type: not_found_error",
-			"type: insufficient_quota",
-			"code: invalid_api_key",
-			"code: model_not_found",
-		} {
-			if strings.Contains(lower, token) {
-				return true
-			}
-		}
-	}
-
-	return false
+	return llm.IsDeterministicClientError(err)
 }
 
 // toolInputActivityInterval throttles the IsToolInputStream progress events

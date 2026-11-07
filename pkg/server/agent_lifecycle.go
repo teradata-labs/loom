@@ -546,12 +546,14 @@ func (s *MultiAgentServer) ReloadAgent(ctx context.Context, req *loomv1.ReloadAg
 					s.mu.RUnlock()
 					if candidate != nil {
 						candidate.SetID(resolvedID)
+						if updateErr := s.UpdateAgent(resolvedID, candidate); updateErr != nil {
+							return nil, status.Errorf(codes.Internal, "failed to update reloaded agent: %v", updateErr)
+						}
 						s.mu.Lock()
 						delete(s.agents, extraKey)
 						if s.agentStates != nil {
 							delete(s.agentStates, extraKey)
 						}
-						s.agents[resolvedID] = candidate
 						s.mu.Unlock()
 						refreshed = candidate
 					} else {

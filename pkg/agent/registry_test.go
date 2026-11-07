@@ -1658,7 +1658,79 @@ func TestReloadAgentFile_DifferentFilenameFromConfigName(t *testing.T) {
 	assert.Nil(t, registry.GetConfig("renamed-expert"))
 }
 
-// TestReloadAgentWithConfig_FailedRebuildKeepsPreviousConfig verifies that
+// TestReloadAgentFile_RejectsSecondFileClaimingBoundAgentName verifies that a
+// second file declaring the same metadata.name as an already-bound file cannot
+// hijack the agent's runtime, config, or recorded source path (F9).
+func TestReloadAgentFile_RejectsSecondFileClaimingBoundAgentName(t *testing.T) {
+	for _, withCallback := range []bool{false, true} {
+		name := "registry_owned"
+		if withCallback {
+			name = "callback_owned"
+		}
+		t.Run(name, func(t *testing.T) {
+			registry, tmpDir := createTestRegistry(t)
+			ctx := context.Background()
+
+			agentsDir := filepath.Join(tmpDir, "agents")
+			require.NoError(t, os.MkdirAll(agentsDir, 0755))
+			origPath := filepath.Join(agentsDir, "sql_expert.yaml")
+			draftPath := filepath.Join(agentsDir, "sql_expert_draft.yaml")
+
+			origCfg := createTestAgentConfig("sql-expert")
+			origCfg.Description = "Original sql-expert"
+			origCfg.SystemPrompt = "Original sql-expert prompt"
+			require.NoError(t, SaveAgentConfig(origCfg, origPath))
+			require.NoError(t, registry.LoadAgents(ctx))
+
+			before, err := registry.CreateAgent(ctx, "sql-expert")
+			require.NoError(t, err)
+
+			callbackCalls := 0
+			if withCallback {
+				registry.SetReloadCallback(func(cbName, guid string, cfg *loomv1.AgentConfig) error {
+					callbackCalls++
+					return nil
+				})
+			}
+
+			// Write a second file claiming the same metadata.name ("sql-expert")
+			draftCfg := createTestAgentConfig("sql-expert")
+			draftCfg.Description = "Draft impostor"
+			draftCfg.SystemPrompt = "Draft impostor prompt"
+			require.NoError(t, SaveAgentConfig(draftCfg, draftPath))
+
+			registry.reloadAgentFile(ctx, draftPath, "sql_expert_draft")
+
+			assert.Equal(t, 0, callbackCalls, "impostor file must be rejected before the reload callback runs")
+			assert.Equal(t, "Original sql-expert", registry.GetConfig("sql-expert").Description)
+			assert.Equal(t, "Original sql-expert prompt", registry.GetConfig("sql-expert").SystemPrompt)
+			registry.mu.RLock()
+			recordedPath := registry.configPaths["sql-expert"]
+			registry.mu.RUnlock()
+			assert.Equal(t, filepath.Clean(origPath), filepath.Clean(recordedPath),
+				"recorded source path must remain sql_expert.yaml")
+			current, err := registry.GetAgent(ctx, "sql-expert")
+			require.NoError(t, err)
+			assert.Same(t, before, current, "original runtime instance must survive")
+
+			// A subsequent legitimate edit to the original file must still reload
+			origCfg.Description = "Legitimate update on sql_expert.yaml"
+			require.NoError(t, SaveAgentConfig(origCfg, origPath))
+			registry.reloadAgentFile(ctx, origPath, "sql_expert")
+
+			assert.Equal(t, "Legitimate update on sql_expert.yaml", registry.GetConfig("sql-expert").Description)
+			if withCallback {
+				assert.Equal(t, 1, callbackCalls, "legitimate edit must invoke the reload callback")
+			} else {
+				reloaded, err := registry.GetAgent(ctx, "sql-expert")
+				require.NoError(t, err)
+				assert.NotSame(t, before, reloaded, "legitimate edit must rebuild the runtime agent")
+				assert.Equal(t, before.GetID(), reloaded.GetID())
+			}
+		})
+	}
+}
+
 // reloadAgentWithConfig (used by ReloadAgent and the workflow watcher when
 // callback == nil) does not overwrite r.configs[name] if rebuilding the agent
 // fails.
@@ -1684,4 +1756,3 @@ func TestReloadAgentWithConfig_FailedRebuildKeepsPreviousConfig(t *testing.T) {
 	require.NoError(t, err)
 	assert.Same(t, before, after)
 }
-

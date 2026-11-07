@@ -2297,6 +2297,7 @@ func (r *Registry) reloadAgentFile(ctx context.Context, path, name string) {
 
 	r.mu.RLock()
 	boundAgent, hasBoundAgent := r.agentForConfigPathLocked(path)
+	boundPathForConfigName := r.configPaths[config.Name]
 	_, stemRegistered := r.configs[name]
 	if !stemRegistered {
 		_, stemRegistered = r.agentsByName[name]
@@ -2317,6 +2318,12 @@ func (r *Registry) reloadAgentFile(ctx context.Context, path, name string) {
 			return
 		}
 		name = boundAgent
+	} else if boundPathForConfigName != "" && filepath.Clean(boundPathForConfigName) != filepath.Clean(path) {
+		r.logger.Error("Agent config name is already bound to another file",
+			zap.String("file", path),
+			zap.String("bound_file", boundPathForConfigName),
+			zap.String("config_name", config.Name))
+		return
 	} else if config.Name != name && stemRegistered && !configNameRegistered {
 		r.logger.Error("Agent config name differs from its file name",
 			zap.String("file", path),

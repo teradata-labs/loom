@@ -19,17 +19,21 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"testing"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	bedrocktypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/aws/smithy-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/llm"
+	"github.com/teradata-labs/loom/pkg/llm/gemini"
+	"github.com/teradata-labs/loom/pkg/llm/openai"
 	"github.com/teradata-labs/loom/pkg/llm/scheduler"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/session"
@@ -203,6 +207,193 @@ func TestChatWithRetryChargesMeteredTokensToScheduler(t *testing.T) {
 	}
 }
 
+type scriptedErrorStubLLM struct {
+	calls int
+	fn    func(call int, ctx context.Context) (*LLMResponse, error)
+}
+
+func (s *scriptedErrorStubLLM) Chat(ctx context.Context, _ []Message, _ []shuttle.Tool) (*LLMResponse, error) {
+	s.calls++
+	return s.fn(s.calls, ctx)
+}
+func (s *scriptedErrorStubLLM) Name() string  { return "scripted-err-stub" }
+func (s *scriptedErrorStubLLM) Model() string { return "scripted-err-model" }
+
+func TestDispatchChat_TransientModelFaultsAndTypedRefusals(t *testing.T) {
+	timeoutMsg := "The model took too long to respond"
+	streamMsg := "The model stream was interrupted"
+	notReadyMsg := "The model is not ready"
+	throttleMsg := "Rate exceeded"
+
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{
+			name: "wrapped Bedrock ModelTimeoutException retries and succeeds on call 2",
+			err:  fmt.Errorf("bedrock invoke failed: %w", &bedrocktypes.ModelTimeoutException{Message: &timeoutMsg}),
+		},
+		{
+			name: "wrapped Bedrock ModelStreamErrorException retries and succeeds on call 2",
+			err:  fmt.Errorf("bedrock invoke failed: %w", &bedrocktypes.ModelStreamErrorException{Message: &streamMsg}),
+		},
+		{
+			name: "wrapped Bedrock ModelNotReadyException retries and succeeds on call 2",
+			err:  fmt.Errorf("bedrock invoke failed: %w", &bedrocktypes.ModelNotReadyException{Message: &notReadyMsg}),
+		},
+		{
+			name: "wrapped Bedrock ThrottlingException retries and succeeds on call 2",
+			err:  fmt.Errorf("bedrock invoke failed: %w", &bedrocktypes.ThrottlingException{Message: &throttleMsg}),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := &scriptedErrorStubLLM{
+				fn: func(call int, _ context.Context) (*LLMResponse, error) {
+					if call == 1 {
+						return nil, tc.err
+					}
+					return &LLMResponse{Content: "recovered"}, nil
+				},
+			}
+			cfg := DefaultConfig()
+			cfg.Retry.MaxRetries = 2
+			cfg.Retry.InitialDelay = time.Millisecond
+			cfg.Retry.MaxDelay = 2 * time.Millisecond
+			a := &Agent{id: "retry-transient-fault", llm: stub, config: cfg}
+			ctx := &agentContext{Context: context.Background(), tracer: observability.NewNoOpTracer()}
+
+			resp, err := a.dispatchChat(ctx, []Message{{Role: "user", Content: "hi"}}, nil)
+			require.NoError(t, err)
+			require.NotNil(t, resp)
+			assert.Equal(t, "recovered", resp.Content)
+			assert.Equal(t, 2, stub.calls)
+		})
+	}
+
+	t.Run("typed permanent Smithy client refusal takes one call", func(t *testing.T) {
+		stub := &scriptedErrorStubLLM{
+			fn: func(int, context.Context) (*LLMResponse, error) {
+				return nil, fmt.Errorf("bedrock invoke failed: %w", &smithy.GenericAPIError{
+					Code:    "ValidationException",
+					Message: "invalid model identifier",
+					Fault:   smithy.FaultClient,
+				})
+			},
+		}
+		cfg := DefaultConfig()
+		cfg.Retry.MaxRetries = 3
+		cfg.Retry.InitialDelay = time.Millisecond
+		a := &Agent{id: "retry-perm-smithy", llm: stub, config: cfg}
+		ctx := &agentContext{Context: context.Background(), tracer: observability.NewNoOpTracer()}
+
+		_, err := a.dispatchChat(ctx, []Message{{Role: "user", Content: "hi"}}, nil)
+		require.Error(t, err)
+		assert.Equal(t, 1, stub.calls)
+	})
+
+	t.Run("exhausted inner rate-limiter budget takes one outer call", func(t *testing.T) {
+		stub := &scriptedErrorStubLLM{
+			fn: func(int, context.Context) (*LLMResponse, error) {
+				return nil, &llm.RetriesExhaustedError{
+					Attempts: 6,
+					Cause:    "throttling",
+					Err:      llm.NewThrottleError(errors.New("API error (status 429): rate limit"), 0),
+				}
+			},
+		}
+		cfg := DefaultConfig()
+		cfg.Retry.MaxRetries = 3
+		cfg.Retry.InitialDelay = time.Millisecond
+		a := &Agent{id: "retry-exhausted-inner", llm: stub, config: cfg}
+		ctx := &agentContext{Context: context.Background(), tracer: observability.NewNoOpTracer()}
+
+		_, err := a.dispatchChat(ctx, []Message{{Role: "user", Content: "hi"}}, nil)
+		require.Error(t, err)
+		assert.Equal(t, 1, stub.calls)
+	})
+
+	t.Run("context cancellation during call stops immediately", func(t *testing.T) {
+		callCtx, cancel := context.WithCancel(context.Background())
+		stub := &scriptedErrorStubLLM{
+			fn: func(int, context.Context) (*LLMResponse, error) {
+				cancel()
+				return nil, errors.New("request interrupted")
+			},
+		}
+		cfg := DefaultConfig()
+		cfg.Retry.MaxRetries = 3
+		cfg.Retry.InitialDelay = time.Millisecond
+		a := &Agent{id: "retry-cancel", llm: stub, config: cfg}
+		ctx := &agentContext{Context: callCtx, tracer: observability.NewNoOpTracer()}
+
+		_, err := a.dispatchChat(ctx, []Message{{Role: "user", Content: "hi"}}, nil)
+		require.Error(t, err)
+		assert.Equal(t, 1, stub.calls)
+	})
+
+	t.Run("real OpenAI client HTTP 401 and JSON error body fail in one call", func(t *testing.T) {
+		calls := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			calls++
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":{"message":"Incorrect API key provided","type":"authentication_error","code":"invalid_api_key"}}`))
+		}))
+		defer srv.Close()
+
+		client := openai.NewClient(openai.Config{APIKey: "bad-key", Endpoint: srv.URL, Model: "gpt-4o"})
+		cfg := DefaultConfig()
+		cfg.Retry.MaxRetries = 3
+		cfg.Retry.InitialDelay = time.Millisecond
+		a := &Agent{id: "retry-openai-401", llm: client, config: cfg}
+		ctx := &agentContext{Context: context.Background(), tracer: observability.NewNoOpTracer()}
+
+		_, err := a.dispatchChat(ctx, []Message{{Role: "user", Content: "hi"}}, nil)
+		require.Error(t, err)
+		assert.Equal(t, 1, calls)
+	})
+
+	t.Run("real Gemini client HTTP 400 error fails in one call", func(t *testing.T) {
+		calls := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			calls++
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"code":400,"message":"API key not valid","status":"INVALID_ARGUMENT"}}`))
+		}))
+		defer srv.Close()
+
+		u, err := url.Parse(srv.URL)
+		require.NoError(t, err)
+		origTransport := http.DefaultTransport
+		http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			cloned := req.Clone(req.Context())
+			cloned.URL.Scheme = u.Scheme
+			cloned.URL.Host = u.Host
+			return origTransport.RoundTrip(cloned)
+		})
+		defer func() { http.DefaultTransport = origTransport }()
+
+		client := gemini.NewClient(gemini.Config{
+			APIKey: "bad-key",
+			Model:  "gemini-2.5-flash",
+		})
+		cfg := DefaultConfig()
+		cfg.Retry.MaxRetries = 3
+		cfg.Retry.InitialDelay = time.Millisecond
+		a := &Agent{id: "retry-gemini-400", llm: client, config: cfg}
+		ctx := &agentContext{Context: context.Background(), tracer: observability.NewNoOpTracer()}
+
+		_, err = a.dispatchChat(ctx, []Message{{Role: "user", Content: "hi"}}, nil)
+		require.Error(t, err)
+		assert.Equal(t, 1, calls)
+	})
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
 type errorStubLLM struct {
 	calls int
 	err   error
@@ -222,38 +413,38 @@ func TestDispatchChat_SkipsNonRetryable4xxErrors(t *testing.T) {
 		wantCalls int
 	}{
 		{
-			name:      "HTTP 400 status string",
-			err:       errors.New("API error (status 400): bad request"),
+			name:      "HTTP 400 status error",
+			err:       llm.WrapHTTPStatus(http.StatusBadRequest, errors.New("API error (status 400): bad request")),
 			wantCalls: 1,
 		},
 		{
-			name:      "HTTP 401 unauthorized string",
-			err:       errors.New("API error (status 401): invalid api key"),
+			name:      "HTTP 401 unauthorized error",
+			err:       llm.WrapHTTPStatus(http.StatusUnauthorized, errors.New("API error (status 401): invalid api key")),
 			wantCalls: 1,
 		},
 		{
-			name:      "HTTP 403 forbidden string",
-			err:       errors.New("API error (status 403): forbidden"),
+			name:      "HTTP 403 forbidden error",
+			err:       llm.WrapHTTPStatus(http.StatusForbidden, errors.New("API error (status 403): forbidden")),
 			wantCalls: 1,
 		},
 		{
-			name:      "HTTP 404 not found string",
-			err:       errors.New("API error (status 404): model not found"),
+			name:      "HTTP 404 not found error",
+			err:       llm.WrapHTTPStatus(http.StatusNotFound, errors.New("API error (status 404): model not found")),
 			wantCalls: 1,
 		},
 		{
 			name:      "HTTP 422 unprocessable entity",
-			err:       errors.New("API error (status 422): unprocessable"),
+			err:       llm.WrapHTTPStatus(http.StatusUnprocessableEntity, errors.New("API error (status 422): unprocessable")),
 			wantCalls: 1,
 		},
 		{
 			name:      "OpenAI authentication error body",
-			err:       errors.New("OpenAI API error: Incorrect API key provided (type: invalid_request_error, code: invalid_api_key)"),
+			err:       llm.WrapHTTPStatus(http.StatusUnauthorized, errors.New("OpenAI API error: Incorrect API key provided (type: authentication_error)")),
 			wantCalls: 1,
 		},
 		{
 			name:      "Gemini 400 error body",
-			err:       errors.New("gemini API error: Invalid argument (code: 400, status: INVALID_ARGUMENT)"),
+			err:       llm.WrapHTTPStatus(http.StatusBadRequest, errors.New("gemini API error: Invalid argument (code: 400)")),
 			wantCalls: 1,
 		},
 		{
@@ -267,8 +458,12 @@ func TestDispatchChat_SkipsNonRetryable4xxErrors(t *testing.T) {
 			wantCalls: 1,
 		},
 		{
-			name:      "provider internal rate limiter already exhausted retries",
-			err:       errors.New("exceeded 5 retries due to throttling: API error (status 429): rate limit"),
+			name: "provider internal rate limiter already exhausted retries",
+			err: &llm.RetriesExhaustedError{
+				Attempts: 5,
+				Cause:    "throttling",
+				Err:      llm.NewThrottleError(errors.New("API error (status 429): rate limit"), 0),
+			},
 			wantCalls: 1,
 		},
 		{
@@ -278,17 +473,17 @@ func TestDispatchChat_SkipsNonRetryable4xxErrors(t *testing.T) {
 		},
 		{
 			name:      "HTTP 408 timeout is retried",
-			err:       errors.New("API error (status 408): request timeout"),
+			err:       llm.WrapHTTPStatus(http.StatusRequestTimeout, errors.New("API error (status 408): request timeout")),
 			wantCalls: 3,
 		},
 		{
 			name:      "HTTP 500 server error is retried",
-			err:       errors.New("API error (status 500): internal error"),
+			err:       llm.WrapHTTPStatus(http.StatusInternalServerError, errors.New("API error (status 500): internal error")),
 			wantCalls: 3,
 		},
 		{
 			name:      "HTTP 503 unavailable is retried",
-			err:       errors.New("API error (status 503): overloaded"),
+			err:       llm.WrapHTTPStatus(http.StatusServiceUnavailable, errors.New("API error (status 503): overloaded")),
 			wantCalls: 3,
 		},
 		{
@@ -314,4 +509,3 @@ func TestDispatchChat_SkipsNonRetryable4xxErrors(t *testing.T) {
 		})
 	}
 }
-

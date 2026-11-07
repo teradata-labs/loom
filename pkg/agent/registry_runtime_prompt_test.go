@@ -163,6 +163,7 @@ func TestBuildAgent_ProtoSkillsConfigReachesRuntime(t *testing.T) {
 
 func TestRegistryAgentConfig_MatchesBuildAgentRuntimeConfig(t *testing.T) {
 	registry, _ := createTestRegistry(t)
+	skillsDir := t.TempDir()
 	cfgProto := &loomv1.AgentConfig{
 		Name:         "shared-config-agent",
 		Description:  "Shared config builder test",
@@ -186,29 +187,45 @@ func TestRegistryAgentConfig_MatchesBuildAgentRuntimeConfig(t *testing.T) {
 				UseLlmClassifier:   true,
 			},
 		},
-		Skills:   &loomv1.SkillsConfig{Enabled: true, DisabledSkills: []string{"alpha"}, SkillsDir: t.TempDir()},
-		Metadata: map[string]string{"_enable_self_healing": "false", "custom": "value"},
+		Skills: &loomv1.SkillsConfig{Enabled: true, DisabledSkills: []string{"alpha"}, SkillsDir: skillsDir},
+		Metadata: map[string]string{
+			"_enable_self_healing":    "false",
+			"_tool_change_note":       "true",
+			"_context_relief_warning": "true",
+			"custom":                  "value",
+		},
 	}
 
-	directCfg := RegistryAgentConfig(cfgProto, ResolveSkillsConfig(cfgProto))
 	builtAgent, err := registry.buildAgent(context.Background(), cfgProto)
 	require.NoError(t, err)
 	builtCfg := builtAgent.GetConfig()
+	defaults := DefaultConfig()
 
-	assert.Equal(t, directCfg.Name, builtCfg.Name)
-	assert.Equal(t, directCfg.Description, builtCfg.Description)
-	assert.Equal(t, directCfg.SystemPrompt, builtCfg.SystemPrompt)
-	assert.Equal(t, directCfg.Rom, builtCfg.Rom)
-	assert.Equal(t, directCfg.Metadata, builtCfg.Metadata)
-	assert.Equal(t, directCfg.MaxIterations, builtCfg.MaxIterations)
-	assert.Equal(t, directCfg.MaxTurns, builtCfg.MaxTurns)
-	assert.Equal(t, directCfg.MaxToolExecutions, builtCfg.MaxToolExecutions)
-	assert.Equal(t, directCfg.OutputTokenCBThreshold, builtCfg.OutputTokenCBThreshold)
-	assert.Equal(t, directCfg.EnableSelfHealing, builtCfg.EnableSelfHealing)
-	assert.Equal(t, directCfg.Retry, builtCfg.Retry)
-	assert.Equal(t, directCfg.PatternConfig, builtCfg.PatternConfig)
-	assert.Equal(t, directCfg.SkillsConfig, builtCfg.SkillsConfig)
-	assert.Equal(t, 200000, directCfg.MaxContextTokens)
-	assert.Equal(t, EffectiveOutputReservation("", "", 4096, 8192, 200000), directCfg.ReservedOutputTokens)
+	// Assert concrete expected values so a regression in RegistryAgentConfig cannot pass by matching itself
+	assert.Equal(t, "shared-config-agent", builtCfg.Name)
+	assert.Equal(t, "Shared config builder test", builtCfg.Description)
+	assert.Equal(t, "Verify parity.", builtCfg.SystemPrompt)
+	assert.Equal(t, "TD", builtCfg.Rom)
+	assert.Equal(t, "value", builtCfg.Metadata["custom"])
+	assert.Equal(t, 15, builtCfg.MaxIterations)
+	assert.Equal(t, 12, builtCfg.MaxTurns)
+	assert.Equal(t, 30, builtCfg.MaxToolExecutions)
+	assert.Equal(t, 5, builtCfg.OutputTokenCBThreshold)
+	assert.False(t, builtCfg.EnableSelfHealing)
+	assert.True(t, builtCfg.ToolChangeNote)
+	assert.True(t, builtCfg.ContextReliefWarning)
+	assert.Equal(t, defaults.Retry, builtCfg.Retry)
+	assert.True(t, builtCfg.Retry.Enabled)
+	require.NotNil(t, builtCfg.PatternConfig)
+	assert.True(t, builtCfg.PatternConfig.Enabled)
+	assert.InDelta(t, 0.85, builtCfg.PatternConfig.MinConfidence, 0.0001)
+	assert.Equal(t, 3, builtCfg.PatternConfig.MaxPatternsPerTurn)
+	assert.True(t, builtCfg.PatternConfig.EnableTracking)
+	assert.True(t, builtCfg.PatternConfig.UseLLMClassifier)
+	require.NotNil(t, builtCfg.SkillsConfig)
+	assert.True(t, builtCfg.SkillsConfig.Enabled)
+	assert.Equal(t, []string{"alpha"}, builtCfg.SkillsConfig.DisabledSkills)
+	assert.Equal(t, skillsDir, builtCfg.SkillsConfig.SkillsDir)
+	assert.Equal(t, 200000, builtCfg.MaxContextTokens)
+	assert.Equal(t, EffectiveOutputReservation("", "", 4096, 8192, 200000), builtCfg.ReservedOutputTokens)
 }
-

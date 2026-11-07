@@ -16,8 +16,13 @@ import (
 	"github.com/stretchr/testify/require"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
+	"github.com/teradata-labs/loom/pkg/communication"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
+	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -174,13 +179,23 @@ func TestDeploymentFileReloadReconcilesCallbackGUIDMismatch(t *testing.T) {
 	info, err := registry.GetAgentInfo(config.Name)
 	require.NoError(t, err)
 
-	srv := newTestMultiAgentServer(t)
+	srv := NewMultiAgentServer(map[string]*agent.Agent{}, nil)
 	srv.SetAgentRegistry(registry)
+	logger := zaptest.NewLogger(t)
+	queue, err := communication.NewMessageQueue(":memory:", observability.NewNoOpTracer(), logger)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = queue.Close() })
+	require.NoError(t, srv.ConfigureCommunication(nil, queue, nil, nil, nil, logger))
 
 	// Register the server agent under a different GUID than the registry's info.ID
 	const serverID = "server-custom-guid"
+	require.NotEqual(t, serverID, info.ID)
 	before := agent.NewAgent(&mockBackend{}, llm, agent.WithName(config.Name), agent.WithSystemPrompt(config.SystemPrompt))
 	before.SetID(serverID)
+	before.AdoptApprovedSet(shuttle.NewApprovedSet())
+	sctx := session.WithSessionID(ctx, "sess-mismatch")
+	approvedCall := shuttle.Canonicalize("execute_query", map[string]interface{}{"sql": "SELECT 42"}, "sql")
+	require.NoError(t, before.ApprovedSet().Record(sctx, "approved_sql", []shuttle.CallIdentity{approvedCall}))
 	srv.AddAgent(serverID, before)
 
 	var callbackAgent *agent.Agent
@@ -201,12 +216,81 @@ func TestDeploymentFileReloadReconcilesCallbackGUIDMismatch(t *testing.T) {
 	require.NoError(t, err)
 	assert.Same(t, callbackAgent, after)
 	assert.Equal(t, serverID, after.GetID())
+	ok, err := after.ApprovedSet().Contains(sctx, "approved_sql", approvedCall)
+	require.NoError(t, err)
+	assert.True(t, ok, "existing session must retain its approved set across GUID-reconciled reload")
 
-	// Verify the duplicate registry GUID key was cleaned up from srv.agents
-	srv.mu.RLock()
-	_, duplicateExists := srv.agents[info.ID]
-	srv.mu.RUnlock()
-	assert.False(t, duplicateExists, "duplicate entry under registry GUID must be removed")
+	// Verify communication tools on the replacement use the canonical serverID, not info.ID
+	var sendTool shuttle.Tool
+	for _, tool := range after.RegisteredTools() {
+		if tool.Name() == "send_message" {
+			sendTool = tool
+			break
+		}
+	}
+	require.NotNil(t, sendTool, "send_message tool must be injected on the replacement agent")
+	res, err := sendTool.Execute(ctx, map[string]interface{}{
+		"to_agent": "peer-agent",
+		"message":  "ping after reload",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	require.True(t, res.Success, "send_message failed: %+v", res.Error)
+	msg, err := queue.Dequeue(ctx, "peer-agent")
+	require.NoError(t, err)
+	require.NotNil(t, msg)
+	assert.Equal(t, serverID, msg.FromAgent, "communication tools must use the original server GUID")
+
+	// Verify the duplicate registry GUID key was cleaned up and exactly one entry survives
+	assert.Equal(t, []string{serverID}, srv.GetAgentIDs(), "exactly one agent entry must survive")
+}
+
+func TestDeploymentFileReloadRegistryOwnedConflictReturnsAborted(t *testing.T) {
+	dir := t.TempDir()
+	llm := &deploymentPromptLLM{}
+	var registry *agent.Registry
+	reloading := false
+	logger := zaptest.NewLogger(t, zaptest.WrapOptions(zap.Hooks(func(entry zapcore.Entry) error {
+		if reloading && entry.Message == "Using default LLM provider" && registry != nil {
+			registry.RegisterConfig(&loomv1.AgentConfig{
+				Name:         "deployed-reg-conflict",
+				SystemPrompt: "Concurrent edit during rebuild.",
+			})
+		}
+		return nil
+	})))
+	var err error
+	registry, err = agent.NewRegistry(agent.RegistryConfig{
+		ConfigDir:   dir,
+		DBPath:      filepath.Join(dir, "agents.db"),
+		LLMProvider: llm,
+		Logger:      logger,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = registry.Close() })
+
+	srv := newTestMultiAgentServer(t)
+	srv.SetAgentRegistry(registry)
+	ctx := context.Background()
+
+	initial := &loomv1.AgentConfig{
+		Name:         "deployed-reg-conflict",
+		SystemPrompt: "Initial prompt.",
+	}
+	created, err := srv.CreateAgentFromConfig(ctx, &loomv1.CreateAgentRequest{Config: initial})
+	require.NoError(t, err)
+
+	path := filepath.Join(dir, "agents", initial.Name+".yaml")
+	updated := &loomv1.AgentConfig{
+		Name:         initial.Name,
+		SystemPrompt: "Updated prompt.",
+	}
+	require.NoError(t, agent.SaveAgentConfig(updated, path))
+
+	reloading = true
+	_, err = srv.ReloadAgent(ctx, &loomv1.ReloadAgentRequest{AgentId: created.Id, ReloadFromFile: true})
+	require.Error(t, err)
+	assert.Equal(t, codes.Aborted, status.Code(err))
 }
 
 func TestDeploymentFileReloadConcurrentChangeReturnsAborted(t *testing.T) {
@@ -237,4 +321,3 @@ func TestDeploymentFileReloadConcurrentChangeReturnsAborted(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, codes.Aborted, status.Code(err))
 }
-

@@ -356,12 +356,18 @@ func (c *Client) callAPI(ctx context.Context, req *openai.ChatCompletionRequest)
 
 	// Check for API errors
 	if resp.Error != nil {
-		return nil, fmt.Errorf("azure OpenAI API error: %s (type: %s)", resp.Error.Message, resp.Error.Type)
+		statusCode := httpResp.StatusCode
+		if statusCode == http.StatusOK {
+			statusCode = http.StatusBadRequest
+		}
+		return nil, llm.WrapHTTPStatus(statusCode,
+			fmt.Errorf("azure OpenAI API error: %s (type: %s)", resp.Error.Message, resp.Error.Type))
 	}
 
 	// Check status code
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody))
+		return nil, llm.WrapHTTPStatus(httpResp.StatusCode,
+			fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody)))
 	}
 
 	return &resp, nil
