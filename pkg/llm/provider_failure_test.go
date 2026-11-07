@@ -228,3 +228,31 @@ func TestIsDeterministicClientError(t *testing.T) {
 		})
 	}
 }
+
+func TestHTTPStatusForErrorType(t *testing.T) {
+	tests := []struct {
+		errType string
+		want    int
+	}{
+		{"rate_limit_error", http.StatusTooManyRequests},
+		{"server_error", http.StatusInternalServerError},
+		{"overloaded_error", http.StatusInternalServerError},
+		{"api_error", http.StatusInternalServerError},
+		{"timeout_error", http.StatusRequestTimeout},
+		{"invalid_request_error", http.StatusBadRequest},
+		{"authentication_error", http.StatusBadRequest},
+		{"permission_error", http.StatusBadRequest},
+		{"not_found_error", http.StatusBadRequest},
+		{"request_too_large", http.StatusBadRequest},
+		{"insufficient_quota", http.StatusBadRequest},
+		{"billing_error", http.StatusBadRequest},
+		{"unknown_error_type", 0},
+		{"", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.errType, func(t *testing.T) {
+			assert.Equal(t, tt.want, HTTPStatusForErrorType(tt.errType))
+		})
+	}
+}

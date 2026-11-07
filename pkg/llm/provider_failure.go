@@ -274,7 +274,7 @@ func providerFailureForErrorName(name string) (f ProviderFailure, ok bool) {
 	switch strings.ToLower(name) {
 	case "rate_limit_error", "throttlingexception":
 		return ProviderFailureThrottled, true
-	case "overloaded_error", "api_error", "timeout_error",
+	case "overloaded_error", "api_error", "server_error", "timeout_error",
 		"internalserverexception", "serviceunavailableexception",
 		"modelnotreadyexception", "modelstreamerrorexception",
 		"modeltimeoutexception":
