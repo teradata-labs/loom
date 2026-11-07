@@ -516,3 +516,106 @@ func TestInstrumentedProvider_ConcurrentCalls(t *testing.T) {
 	// Verify spans (should have one per call)
 	assert.Equal(t, concurrency, len(tracer.spans))
 }
+
+type streamableMockLLMProvider struct {
+	mockLLMProvider
+	chunks []string
+}
+
+func (s *streamableMockLLMProvider) ChatStream(ctx context.Context, messages []llmtypes.Message, tools []shuttle.Tool, cb llmtypes.TokenCallback) (*llmtypes.LLMResponse, error) {
+	for _, chunk := range s.chunks {
+		if cb != nil {
+			cb(chunk)
+		}
+	}
+	return s.Chat(ctx, messages, tools)
+}
+
+func sumCostMetrics(tr *mockTracer) float64 {
+	var total float64
+	for _, m := range tr.metrics {
+		if m.name == observability.MetricLLMCost {
+			total += m.value
+		}
+	}
+	return total
+}
+
+type quotaWrapperProvider struct {
+	inner    llmtypes.LLMProvider
+	calls    int
+	streamed int
+}
+
+func (w *quotaWrapperProvider) Chat(ctx context.Context, messages []llmtypes.Message, tools []shuttle.Tool) (*llmtypes.LLMResponse, error) {
+	w.calls++
+	return w.inner.Chat(ctx, messages, tools)
+}
+
+func (w *quotaWrapperProvider) ChatStream(ctx context.Context, messages []llmtypes.Message, tools []shuttle.Tool, cb llmtypes.TokenCallback) (*llmtypes.LLMResponse, error) {
+	w.streamed++
+	if sp, ok := w.inner.(llmtypes.StreamingLLMProvider); ok {
+		return sp.ChatStream(ctx, messages, tools, cb)
+	}
+	return w.inner.Chat(ctx, messages, tools)
+}
+
+func (w *quotaWrapperProvider) Name() string                 { return w.inner.Name() }
+func (w *quotaWrapperProvider) Model() string                { return w.inner.Model() }
+func (w *quotaWrapperProvider) Unwrap() llmtypes.LLMProvider { return w.inner }
+
+func TestNewInstrumentedProvider_DoesNotWrapTwice(t *testing.T) {
+	base := &mockLLMProvider{
+		name:  "test-provider",
+		model: "test-model",
+		response: &llmtypes.LLMResponse{
+			Content: "ok",
+			Usage:   llmtypes.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15, CostUSD: 0.002},
+		},
+	}
+	tracer := newMockTracer()
+	once := NewInstrumentedProvider(base, tracer)
+	twice := NewInstrumentedProvider(once, tracer)
+	thrice := NewInstrumentedProvider(twice, tracer)
+
+	_, err := thrice.Chat(context.Background(), []llmtypes.Message{{Role: "user", Content: "hi"}}, nil)
+	require.NoError(t, err)
+	require.Len(t, tracer.spans, 1, "one llm.completion span per call, however often it is wrapped")
+	assert.InDelta(t, 0.002, sumCostMetrics(tracer), 1e-9, "cost counted once")
+
+	other := newMockTracer()
+	_, err = NewInstrumentedProvider(once, other).Chat(context.Background(), []llmtypes.Message{{Role: "user", Content: "hi"}}, nil)
+	require.NoError(t, err)
+	assert.Len(t, other.spans, 1, "a different tracer still traces the call")
+}
+
+func TestNewInstrumentedProvider_UnwrapsDecoratorChain(t *testing.T) {
+	base := &streamableMockLLMProvider{
+		mockLLMProvider: mockLLMProvider{
+			name:  "wrapped-provider",
+			model: "wrapped-model",
+			response: &llmtypes.LLMResponse{
+				Content: "wrapped ok",
+				Usage:   llmtypes.Usage{InputTokens: 20, OutputTokens: 10, TotalTokens: 30, CostUSD: 0.005},
+			},
+		},
+		chunks: []string{"wrapped ", "ok"},
+	}
+	tracer := newMockTracer()
+	innerInstrumented := NewInstrumentedProvider(base, tracer)
+	wrapper := &quotaWrapperProvider{inner: innerInstrumented}
+	outerInstrumented := NewInstrumentedProvider(wrapper, tracer)
+
+	resp, err := outerInstrumented.Chat(context.Background(), []llmtypes.Message{{Role: "user", Content: "hi"}}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "wrapped ok", resp.Content)
+	assert.Equal(t, 1, wrapper.calls, "decorator wrapper must execute")
+	require.Len(t, tracer.spans, 1, "wrapped instrumented provider must emit exactly one llm.completion span")
+	assert.InDelta(t, 0.005, sumCostMetrics(tracer), 1e-9, "cost must be counted once")
+
+	_, err = outerInstrumented.ChatStream(context.Background(), []llmtypes.Message{{Role: "user", Content: "stream"}}, nil, func(string) {})
+	require.NoError(t, err)
+	assert.Equal(t, 1, wrapper.streamed, "decorator streaming wrapper must execute")
+	require.Len(t, tracer.spans, 2, "streaming call through wrapped instrumented provider must emit one span")
+	assert.InDelta(t, 0.010, sumCostMetrics(tracer), 1e-9, "streaming cost must be counted once")
+}

@@ -16,6 +16,7 @@ package llm
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -38,14 +39,64 @@ type InstrumentedProvider struct {
 
 	// tracer is used for creating spans
 	tracer observability.Tracer
+
+	// passthrough is true when provider is a non-InstrumentedProvider wrapper
+	// whose Unwrap() chain already contains an *InstrumentedProvider for the
+	// same tracer; Chat and ChatStream delegate to provider without starting
+	// a second llm.completion span.
+	passthrough bool
 }
 
-// NewInstrumentedProvider creates a new instrumented LLM provider.
+// NewInstrumentedProvider creates a new instrumented LLM provider. If provider
+// (or any layer in its Unwrap() chain) is already instrumented with the same
+// tracer, the call will not emit a duplicate llm.completion span.
 func NewInstrumentedProvider(provider llmtypes.LLMProvider, tracer observability.Tracer) *InstrumentedProvider {
-	return &InstrumentedProvider{
-		provider: provider,
-		tracer:   tracer,
+	if inner, ok := provider.(*InstrumentedProvider); ok && sameTracer(inner.tracer, tracer) {
+		c := *inner
+		return &c
 	}
+	return &InstrumentedProvider{
+		provider:    provider,
+		tracer:      tracer,
+		passthrough: findInstrumentedProvider(provider, tracer) != nil,
+	}
+}
+
+// Unwrap returns the underlying LLMProvider wrapped by p.
+func (p *InstrumentedProvider) Unwrap() llmtypes.LLMProvider {
+	if p == nil {
+		return nil
+	}
+	return p.provider
+}
+
+// findInstrumentedProvider walks the Unwrap() chain of provider and returns
+// the first *InstrumentedProvider that uses tracer, or nil.
+func findInstrumentedProvider(provider llmtypes.LLMProvider, tracer observability.Tracer) *InstrumentedProvider {
+	type unwrapper interface {
+		Unwrap() llmtypes.LLMProvider
+	}
+	for depth := 0; provider != nil && depth < 32; depth++ {
+		if ip, ok := provider.(*InstrumentedProvider); ok && sameTracer(ip.tracer, tracer) {
+			return ip
+		}
+		u, ok := provider.(unwrapper)
+		if !ok {
+			return nil
+		}
+		provider = u.Unwrap()
+	}
+	return nil
+}
+
+// sameTracer reports whether a and b are the same tracer. Tracers of a
+// non-comparable dynamic type are treated as different rather than compared.
+func sameTracer(a, b observability.Tracer) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	ta := reflect.TypeOf(a)
+	return ta == reflect.TypeOf(b) && ta.Comparable() && a == b
 }
 
 // Name returns the underlying provider name.
@@ -69,6 +120,9 @@ func (p *InstrumentedProvider) HealthCheck(ctx context.Context) error {
 
 // Chat sends a conversation to the LLM and captures detailed observability data.
 func (p *InstrumentedProvider) Chat(ctx context.Context, messages []llmtypes.Message, tools []shuttle.Tool) (*llmtypes.LLMResponse, error) {
+	if p.passthrough {
+		return p.provider.Chat(ctx, messages, tools)
+	}
 	// Start span — propagate context so the LLM span is a proper child
 	// of whatever parent span exists (e.g., agent.conversation).
 	ctx, span := p.tracer.StartSpan(ctx, observability.SpanLLMCompletion)
@@ -255,6 +309,9 @@ func (p *InstrumentedProvider) ChatStream(ctx context.Context, messages []llmtyp
 	streamingProvider, ok := p.provider.(llmtypes.StreamingLLMProvider)
 	if !ok {
 		return nil, fmt.Errorf("provider %s does not support streaming", p.provider.Name())
+	}
+	if p.passthrough {
+		return streamingProvider.ChatStream(ctx, messages, tools, tokenCallback)
 	}
 
 	// Start span — propagate context so the streaming span is a proper child
