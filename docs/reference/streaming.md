@@ -129,6 +129,7 @@ message WeaveProgress {
   bool is_tool_input_stream = 22;     // True while the model is still writing a tool call's arguments
   int64 tool_input_bytes = 23;        // Argument bytes received so far (when is_tool_input_stream)
   int32 tool_call_index = 24;         // The provider's stream index for the call (when is_tool_input_stream)
+  string trace_id = 25;               // Trace ID for observability (included in completion event)
 }
 ```
 

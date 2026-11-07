@@ -315,6 +315,7 @@ func completedProgressFromResponse(resp *loomv1.WeaveResponse) *loomv1.WeaveProg
 		PartialContent: resp.Text,
 		ContextState:   resp.ContextState,
 		Cost:           resp.Cost,
+		TraceId:        resp.TraceId,
 	}
 }
 

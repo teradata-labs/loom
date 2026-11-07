@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -635,6 +636,16 @@ type ObservabilityConfig struct {
 	OTLPHeaders      map[string]string `mapstructure:"otlp_headers"`       // e.g. Authorization: Bearer <key>
 	OTLPInsecure     bool              `mapstructure:"otlp_insecure"`      // Use plaintext HTTP (local dev only)
 	OTLPIncludeSpans []string          `mapstructure:"otlp_include_spans"` // Span name prefixes to export; empty = all
+	// OTLPRecordEvalRuns keeps writing the embedded-mode eval_runs record
+	// (storage_type: sqlite, sqlite_path, flush_interval) while spans are
+	// exported over OTLP. Default false.
+	OTLPRecordEvalRuns bool `mapstructure:"otlp_record_eval_runs"`
+
+	// Arize Phoenix REST API, for annotations (judge scores on traces).
+	// PhoenixBaseURL is Phoenix's HTTP address, for example
+	// http://127.0.0.1:6006; empty turns annotations off. Independent of mode.
+	PhoenixBaseURL string `mapstructure:"phoenix_base_url"`
+	PhoenixAPIKey  string `mapstructure:"phoenix_api_key"` // Can be set in YAML; keyring or PHOENIX_API_KEY env var preferred
 }
 
 // LoggingConfig holds logging configuration.
@@ -1536,6 +1547,11 @@ func GetSecretMappings() []SecretMapping {
 			IsSet:      func(c *Config) bool { return c.Observability.HawkAPIKey != "" },
 		},
 		{
+			KeyringKey: "phoenix_api_key",
+			Setter:     func(c *Config, val string) { c.Observability.PhoenixAPIKey = val },
+			IsSet:      func(c *Config) bool { return c.Observability.PhoenixAPIKey != "" },
+		},
+		{
 			KeyringKey: "supabase_jwt_secret",
 			Setter:     func(c *Config, val string) { c.Server.Auth.Supabase.JWTSecret = val },
 			IsSet:      func(c *Config) bool { return c.Server.Auth.Supabase.JWTSecret != "" },
@@ -1945,10 +1961,19 @@ func (c *Config) Validate() error {
 			if c.Observability.OTLPEndpoint == "" && observability.ResolveOTLPEndpointEnv() == "" {
 				return fmt.Errorf("observability.otlp_endpoint is required when mode=otel (set otlp_endpoint, OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, OTEL_EXPORTER_OTLP_ENDPOINT, or LOOM_OTLP_ENDPOINT)")
 			}
+			if c.Observability.OTLPRecordEvalRuns &&
+				(c.Observability.StorageType != "sqlite" || c.Observability.SQLitePath == "") {
+				return fmt.Errorf("observability.otlp_record_eval_runs requires storage_type: sqlite and a sqlite_path")
+			}
 		case "none":
 			// No-op mode: no validation needed
 		default:
 			return fmt.Errorf("observability.mode must be 'embedded', 'service', 'otel', or 'none' (got: %s)", mode)
+		}
+		if u := c.Observability.PhoenixBaseURL; u != "" {
+			if parsed, err := url.Parse(u); err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+				return fmt.Errorf("observability.phoenix_base_url must be an http or https URL (got: %s)", u)
+			}
 		}
 	}
 

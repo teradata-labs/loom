@@ -1225,24 +1225,7 @@ func runServe(cmd *cobra.Command, args []string) {
 				zap.String("storage_type", config.Observability.StorageType),
 				zap.String("sqlite_path", config.Observability.SQLitePath))
 
-			storageType := config.Observability.StorageType
-			if storageType == "" {
-				storageType = "memory"
-			}
-
-			flushInterval := 30 * time.Second
-			if config.Observability.FlushInterval != "" {
-				if duration, err := time.ParseDuration(config.Observability.FlushInterval); err == nil {
-					flushInterval = duration
-				}
-			}
-
-			embeddedTracer, err := observability.NewEmbeddedTracer(&observability.EmbeddedConfig{
-				StorageType:   storageType,
-				SQLitePath:    config.Observability.SQLitePath,
-				FlushInterval: flushInterval,
-				Logger:        logger,
-			})
+			embeddedTracer, err := observability.NewEmbeddedTracer(embeddedStorageConfig(config.Observability, serveEmbeddedFlushInterval, logger))
 			if err != nil {
 				logger.Warn("Failed to create embedded tracer, using no-op tracer", zap.Error(err))
 				tracer = observability.NewNoOpTracer()
@@ -1258,6 +1241,10 @@ func runServe(cmd *cobra.Command, args []string) {
 			hawkTracer, err := observability.NewHawkTracer(observability.HawkConfig{
 				Endpoint: config.Observability.HawkEndpoint,
 				APIKey:   config.Observability.HawkAPIKey,
+				Privacy: observability.PrivacyConfig{
+					RedactCredentials: true,
+					RedactPII:         true,
+				},
 			})
 			if err != nil {
 				logger.Warn("Failed to create Hawk tracer, using no-op tracer", zap.Error(err))
@@ -1269,20 +1256,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		case "otel":
 			logger.Info("Observability enabled with OTLP export",
 				zap.String("endpoint", config.Observability.OTLPEndpoint))
-			otelTracer, err := observability.NewOTelTracer(observability.OTelConfig{
-				Endpoint:       config.Observability.OTLPEndpoint,
-				Headers:        config.Observability.OTLPHeaders,
-				Insecure:       config.Observability.OTLPInsecure,
-				ServiceName:    otlpServiceName("looms"),
-				ServiceVersion: rootCmd.Version,
-				Privacy: observability.PrivacyConfig{
-					RedactCredentials: true,
-					RedactPII:         true,
-				},
-				SpanFilter: observability.SpanFilterConfig{
-					IncludePrefixes: config.Observability.OTLPIncludeSpans,
-				},
-			})
+			otelTracer, err := newOTLPTracer(config.Observability, "looms", rootCmd.Version, serveEmbeddedFlushInterval, logger)
 			if err != nil {
 				logger.Warn("Failed to create OTLP tracer, using no-op tracer", zap.Error(err))
 				tracer = observability.NewNoOpTracer()
@@ -2071,7 +2045,7 @@ func runServe(cmd *cobra.Command, args []string) {
 
 				// Wrap LLM provider with instrumentation for observability
 				if tracer != nil {
-					agentLLMProvider = llm.NewInstrumentedProvider(agentLLMProvider, tracer)
+					agentLLMProvider = llm.NewInstrumentedProvider(agentLLMProvider, tracer, llm.WithRole(llm.RoleAgent))
 				}
 
 				// Wire per-role LLMs if declared in YAML. These route auxiliary
@@ -2088,7 +2062,7 @@ func runServe(cmd *cobra.Command, args []string) {
 							zap.String("model", cfg.CompressorLlm.Model))
 					} else {
 						if tracer != nil {
-							compLLM = llm.NewInstrumentedProvider(compLLM, tracer)
+							compLLM = llm.NewInstrumentedProvider(compLLM, tracer, llm.WithRole(llm.RoleCompressor))
 						}
 						agentOpts = append(agentOpts, agent.WithCompressorLLM(compLLM))
 						logger.Info("    Compressor LLM configured",
@@ -2105,7 +2079,7 @@ func runServe(cmd *cobra.Command, args []string) {
 							zap.String("model", cfg.ClassifierLlm.Model))
 					} else {
 						if tracer != nil {
-							classLLM = llm.NewInstrumentedProvider(classLLM, tracer)
+							classLLM = llm.NewInstrumentedProvider(classLLM, tracer, llm.WithRole(llm.RoleClassifier))
 						}
 						staticClassifierLLM = classLLM
 						agentOpts = append(agentOpts, agent.WithClassifierLLM(classLLM))
@@ -2462,6 +2436,16 @@ func runServe(cmd *cobra.Command, args []string) {
 	judgeServer := server.NewJudgeServer(tracer, logger)
 	loomv1.RegisterJudgeServiceServer(grpcServer, judgeServer)
 	logger.Info("Judge service registered")
+
+	// Judge scores go to Arize Phoenix as trace annotations when
+	// observability.phoenix_base_url is set.
+	phoenixClient, err := newPhoenixClient(config.Observability, logger)
+	if err != nil {
+		logger.Warn("Phoenix annotations disabled", zap.Error(err))
+	} else if phoenixClient != nil {
+		judgeServer.SetPhoenixClient(phoenixClient)
+		logger.Info("Phoenix annotations enabled", zap.String("url", config.Observability.PhoenixBaseURL))
+	}
 
 	// Register SkillsImportService — the gRPC surface for the skills
 	// importer (BulkImportSkills streaming + AddSkill + ClassifySkill).
@@ -3359,13 +3343,17 @@ func runServe(cmd *cobra.Command, args []string) {
 			agentOpts = append(agentOpts, agent.WithIdentityResolver(postgres.UserIDFromContext))
 			agentOpts = append(agentOpts, agent.WithEventLog(executionLog))
 
-			// Wrap LLM provider with instrumentation for observability
+			// Wrap LLM provider with instrumentation for observability. A
+			// reload-local variable keeps the shared llmProvider unwrapped:
+			// assigning the wrapper back to it made every later reload and
+			// every later use of llmProvider see an agent-role wrapper.
+			reloadLLM := llmProvider
 			if tracer != nil {
-				llmProvider = llm.NewInstrumentedProvider(llmProvider, tracer)
+				reloadLLM = llm.NewInstrumentedProvider(reloadLLM, tracer, llm.WithRole(llm.RoleAgent))
 			}
 
 			// Create new agent
-			newAgent := agent.NewAgent(backend, llmProvider, agentOpts...)
+			newAgent := agent.NewAgent(backend, reloadLLM, agentOpts...)
 
 			// Wire pattern effectiveness tracker for metrics collection
 			if patternTracker != nil {
@@ -3847,6 +3835,15 @@ func runServe(cmd *cobra.Command, args []string) {
 				logger.Warn("Error shutting down OTLP tracer", zap.Error(err))
 			} else {
 				logger.Info("OTLP tracer flushed and shut down")
+			}
+		}
+
+		// Send queued Phoenix annotations after the spans they annotate.
+		if phoenixClient != nil {
+			stopCtx, cancel := context.WithTimeout(context.Background(), phoenixClient.ShutdownTimeout())
+			defer cancel()
+			if err := phoenixClient.Stop(stopCtx); err != nil {
+				logger.Warn("Error sending queued Phoenix annotations", zap.Error(err))
 			}
 		}
 

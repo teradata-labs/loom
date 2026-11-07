@@ -35,6 +35,9 @@ Add approval workflows to agents.
 
 ## Integration
 
+**[Arize Phoenix observability →](guides/integration/phoenix-observability/)**
+Export traces to Phoenix, tag experiment turns and post judge scores as annotations.
+
 **[MCP Integration →](guides/integration/mcp-readme/)**
 Connect to Model Context Protocol servers.
 

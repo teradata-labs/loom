@@ -376,6 +376,9 @@ func (s *MultiAgentServer) SetTracer(tracer observability.Tracer) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.tracer = tracer
+	if s.singleServer != nil {
+		s.singleServer.SetTracer(tracer)
+	}
 	// Ensure trace store is initialized for GetTrace RPC support.
 	// NewMultiAgentServer already initializes it, but this is a safety net
 	// for servers constructed without the constructor (e.g., tests).
@@ -1027,6 +1030,22 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 		return nil, err
 	}
 
+	weaveStart := time.Now()
+	s.mu.RLock()
+	tracer := s.tracer
+	s.mu.RUnlock()
+
+	ctx, span := startWeaveSpan(ctx, tracer, "server.Weave", req)
+	if span != nil {
+		defer func() {
+			if weaveErr != nil {
+				span.RecordError(weaveErr)
+			}
+			tracer.EndSpan(span)
+			s.RecordTraceSpan(span)
+		}()
+	}
+
 	// Get agent: if no agent_id specified but session_id is, look up which agent owns the session.
 	// This fixes the bug where Weave(session_id=X) without agent_id falls through to the
 	// default agent instead of the agent that created/owns the session.
@@ -1076,6 +1095,11 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 	sessionID := req.SessionId
 	if sessionID == "" {
 		sessionID = GenerateSessionID()
+	}
+
+	if span != nil {
+		span.SetAttribute(observability.AttrSessionID, sessionID)
+		span.SetAttribute("agent.id", agentID)
 	}
 
 	// Slot scheduling: install this turn's SlotInfo (origin from the
@@ -1131,20 +1155,6 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 			zap.Error(err))
 	}
 
-	// Start a trace span for the Weave operation if tracer is configured
-	s.mu.RLock()
-	tracer := s.tracer
-	s.mu.RUnlock()
-
-	var span *observability.Span
-	if tracer != nil {
-		ctx, span = tracer.StartSpan(ctx, "server.Weave",
-			observability.WithAttribute(observability.AttrSessionID, sessionID),
-			observability.WithAttribute("agent.id", agentID),
-			observability.WithAttribute("query.length", len(req.Query)),
-		)
-	}
-
 	// Reset context window if requested (before processing the message)
 	if req.ResetContext {
 		ag.ResetSessionContext(sessionID)
@@ -1158,22 +1168,10 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 	// Execute agent chat
 	resp, err := ag.Chat(ctx, sessionID, req.Query)
 	if err != nil {
-		if span != nil {
-			span.RecordError(err)
-			tracer.EndSpan(span)
-			s.RecordTraceSpan(span)
-		}
 		return nil, wrapAgentError(err)
 	}
 
-	// End trace span and record it to the local store for GetTrace retrieval
-	if span != nil {
-		span.SetAttribute("response.length", len(resp.Content))
-		span.SetAttribute("usage.input_tokens", resp.Usage.InputTokens)
-		span.SetAttribute("usage.output_tokens", resp.Usage.OutputTokens)
-		tracer.EndSpan(span)
-		s.RecordTraceSpan(span)
-	}
+	recordWeaveSpanUsage(span, resp)
 
 	// Build context state snapshot (after response, reflects post-conversation state)
 	var contextState *loomv1.ContextState
@@ -1191,20 +1189,11 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 	return &loomv1.WeaveResponse{
 		Text:         resp.Content,
 		SessionId:    sessionID,
+		TraceId:      resolveWeaveTraceID(span, resp),
 		AgentId:      agentID,
 		ContextState: contextState,
-		Cost: &loomv1.CostInfo{
-			LlmCost: &loomv1.LLMCost{
-				Provider:                 ag.GetLLMProviderName(),
-				Model:                    ag.GetLLMModel(),
-				InputTokens:              types.SafeInt32(resp.Usage.InputTokens),
-				OutputTokens:             types.SafeInt32(resp.Usage.OutputTokens),
-				CostUsd:                  resp.Usage.CostUSD,
-				CacheReadInputTokens:     types.SafeInt32(resp.Usage.CacheReadInputTokens),
-				CacheCreationInputTokens: types.SafeInt32(resp.Usage.CacheCreationInputTokens),
-			},
-			TotalCostUsd: resp.Usage.CostUSD,
-		},
+		Cost:         buildWeaveCostInfo(ag.GetLLMProviderName(), ag.GetLLMModel(), resp),
+		Metadata:     buildExecutionMetadata(resp, contextState, time.Since(weaveStart)),
 	}, nil
 }
 
@@ -1265,6 +1254,22 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 		return err
 	}
 
+	weaveStart := time.Now()
+	s.mu.RLock()
+	tracer := s.tracer
+	s.mu.RUnlock()
+
+	ctx, span := startWeaveSpan(ctx, tracer, "server.StreamWeave", req)
+	if span != nil {
+		defer func() {
+			if weaveErr != nil {
+				span.RecordError(weaveErr)
+			}
+			tracer.EndSpan(span)
+			s.RecordTraceSpan(span)
+		}()
+	}
+
 	// Get agent: if no agent_id specified but session_id is, look up which agent owns the session.
 	var ag *agent.Agent
 	var resolvedAgentID string
@@ -1274,7 +1279,7 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 	// selection — an inaccessible session is not-found, never a fallback to
 	// the explicit or default agent (see Weave).
 	if req.SessionId != "" {
-		ownerAg, ownerID, exists, accessible := s.findSessionOwner(stream.Context(), req.SessionId, postgres.UserIDFromContext(stream.Context()))
+		ownerAg, ownerID, exists, accessible := s.findSessionOwner(ctx, req.SessionId, postgres.UserIDFromContext(ctx))
 		if exists {
 			if !accessible {
 				return status.Error(codes.NotFound, "session not found")
@@ -1310,6 +1315,11 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 	sessionID := req.SessionId
 	if sessionID == "" {
 		sessionID = GenerateSessionID()
+	}
+
+	if span != nil {
+		span.SetAttribute(observability.AttrSessionID, sessionID)
+		span.SetAttribute("agent.id", resolvedAgentID)
 	}
 
 	// Slot scheduling: install this turn's SlotInfo. Origin comes from the
@@ -1351,7 +1361,7 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 	}
 
 	// Spawn workflow sub-agents if this is a workflow coordinator
-	if err := s.spawnWorkflowSubAgents(stream.Context(), ag, resolvedAgentID, sessionID); err != nil {
+	if err := s.spawnWorkflowSubAgents(ctx, ag, resolvedAgentID, sessionID); err != nil {
 		s.logger.Warn("Failed to spawn workflow sub-agents (workflow may run with limited functionality)",
 			zap.String("workflow", resolvedAgentID),
 			zap.Error(err))
@@ -1469,6 +1479,7 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 			Message:        errContent,
 			Timestamp:      time.Now().Unix(),
 			PartialContent: errContent,
+			TraceId:        resolveWeaveTraceID(span, finalResult.resp),
 		}
 		// Best-effort: if resp has partial content from synthesis fallback, include it
 		if finalResult.resp != nil && finalResult.resp.Content != "" {
@@ -1481,6 +1492,8 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 
 	// Send final completion event with result, cost, and context state
 	resp := finalResult.resp
+	recordWeaveSpanUsage(span, resp)
+	traceID := resolveWeaveTraceID(span, resp)
 
 	// Build context state snapshot
 	var contextState *loomv1.ContextState
@@ -1494,6 +1507,7 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 		}
 	}
 
+	cost := buildWeaveCostInfo(ag.GetLLMProviderName(), ag.GetLLMModel(), resp)
 	completionProgress := &loomv1.WeaveProgress{
 		Stage:     loomv1.ExecutionStage_EXECUTION_STAGE_COMPLETED,
 		Progress:  100,
@@ -1505,27 +1519,19 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 		},
 		PartialContent: sanitizeUTF8(resp.Content),
 		ContextState:   contextState,
-		Cost: &loomv1.CostInfo{
-			TotalCostUsd: resp.Usage.CostUSD,
-			LlmCost: &loomv1.LLMCost{
-				Provider:                 ag.GetLLMProviderName(),
-				Model:                    ag.GetLLMModel(),
-				InputTokens:              types.SafeInt32(resp.Usage.InputTokens),
-				OutputTokens:             types.SafeInt32(resp.Usage.OutputTokens),
-				CostUsd:                  resp.Usage.CostUSD,
-				CacheReadInputTokens:     types.SafeInt32(resp.Usage.CacheReadInputTokens),
-				CacheCreationInputTokens: types.SafeInt32(resp.Usage.CacheCreationInputTokens),
-			},
-		},
+		Cost:           cost,
+		TraceId:        traceID,
 	}
 
 	// Record the terminal result for idempotency joiners (D1 dedupe).
 	dedupeFinal = &loomv1.WeaveResponse{
 		Text:         sanitizeUTF8(resp.Content),
 		SessionId:    sessionID,
+		TraceId:      traceID,
 		AgentId:      resolvedAgentID,
 		ContextState: contextState,
-		Cost:         completionProgress.Cost,
+		Cost:         cost,
+		Metadata:     buildExecutionMetadata(resp, contextState, time.Since(weaveStart)),
 	}
 
 	return stream.Send(completionProgress)

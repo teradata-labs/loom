@@ -146,7 +146,7 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		if a.classifierLLM != nil {
 			classifierProvider = a.classifierLLM
 		}
-		llmClassifierConfig := patterns.DefaultLLMClassifierConfig(classifierProvider)
+		llmClassifierConfig := patterns.DefaultLLMClassifierConfig(llmForRole(classifierProvider, roleClassifier))
 		llmClassifier := patterns.NewLLMIntentClassifier(llmClassifierConfig)
 		a.orchestrator.SetIntentClassifier(llmClassifier)
 	}
@@ -399,8 +399,22 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	if a.skillOrchestrator != nil && a.graphMemoryStore != nil {
 		store := a.graphMemoryStore
 		agentName := a.graphMemoryKey()
+		tracer := a.tracer
+		if tracer == nil {
+			tracer = observability.NewNoOpTracer()
+		}
 		a.skillOrchestrator.SetOnSkillEviction(func(sessionID string, skill *skills.Skill, activeFor time.Duration) {
-			ctx := context.Background()
+			// No request context reaches an eviction (Orchestrator.ActivateSkill
+			// takes none), so the boost is a trace of its own; its span groups
+			// the store calls that would otherwise each be a root.
+			ctx, span := tracer.StartSpan(context.Background(), "graph_memory.salience_boost")
+			defer tracer.EndSpan(span)
+			if sessionID != "" {
+				span.SetAttribute(observability.AttrSessionID, sessionID)
+			}
+			span.SetAttribute("salience.trigger", "skill_eviction")
+			span.SetAttribute("skill.name", skill.Name)
+			span.SetAttribute("agent.name", agentName)
 
 			// Build search query from skill name + first 3 keywords.
 			query := skill.Name
@@ -450,7 +464,9 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 				}
 			}
 
+			span.SetAttribute("salience.memories_touched", len(deduped))
 			if touchErr := store.TouchMemories(ctx, deduped); touchErr != nil {
+				span.RecordError(touchErr)
 				zap.L().Debug("eviction salience boost: TouchMemories failed",
 					zap.String("skill", skill.Name),
 					zap.Error(touchErr))
@@ -516,9 +532,14 @@ func (a *Agent) reFireSkillActivation(sessionID, skillName string) {
 // Option is a functional option for configuring an Agent.
 type Option func(*Agent)
 
-// WithTracer sets the observability tracer.
+// WithTracer sets the observability tracer. A nil tracer falls back to the
+// no-op tracer so span call sites never dereference nil.
 func WithTracer(tracer observability.Tracer) Option {
 	return func(a *Agent) {
+		if tracer == nil {
+			a.tracer = observability.NewNoOpTracer()
+			return
+		}
 		a.tracer = tracer
 	}
 }
@@ -1935,19 +1956,6 @@ func hasTextBlock(blocks []ContentBlock) bool {
 	return false
 }
 
-// maxPreviewLen is the maximum number of runes recorded in span preview attributes
-// to avoid bloating OTLP traces with large message bodies.
-const maxPreviewLen = 200
-
-// truncatePreview returns up to maxPreviewLen runes of s, appending "…" when truncated.
-func truncatePreview(s string) string {
-	runes := []rune(s)
-	if len(runes) <= maxPreviewLen {
-		return s
-	}
-	return string(runes[:maxPreviewLen]) + "…"
-}
-
 // chat runs the full conversation lifecycle — span setup, user-message
 // persistence, graph-memory kick-off, the conversation loop, and success/error
 // telemetry — shared by the three public chat entry points. See chatParams for
@@ -1994,7 +2002,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// Set initial attributes
 	span.SetAttribute(observability.AttrSessionID, sessionID)
 	span.SetAttribute("message.length", len(userMessage))
-	span.SetAttribute("message.preview", truncatePreview(userMessage))
+	span.SetAttribute("message.preview", observability.TruncateContent(observability.RedactText(userMessage)))
 	if p.reportContentBlocks {
 		span.SetAttribute("message.content_blocks", len(p.contentBlocks))
 	}
@@ -2005,6 +2013,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	span.SetAttribute("llm.model", currentLLM.Model())
 	span.SetAttribute("config.max_turns", a.config.MaxTurns)
 	span.SetAttribute("config.max_tool_executions", a.config.MaxToolExecutions)
+	a.setAgentSpanIdentity(span)
 
 	// Record conversation started event
 	startedEvent := map[string]interface{}{
@@ -2110,6 +2119,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// the attribution as soon as it is set.
 	ctx, taskBinding := taskctx.ContextWithBinding(ctx)
 	turnIndex := userMsg.Turn
+	span.SetAttribute("session.turn", turnIndex)
 
 	// Create agent context (a nil progressCallback is fine — no events emitted)
 	agentCtx := &agentContext{
@@ -2270,7 +2280,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	span.SetAttribute("conversation.cost.usd", response.TurnUsage.CostUSD)
 	span.SetAttribute("conversation.stop_reason", response.Metadata["stop_reason"])
 	span.SetAttribute("response.length", len(response.Content))
-	span.SetAttribute("response.preview", truncatePreview(response.Content))
+	span.SetAttribute("response.preview", observability.TruncateContent(observability.RedactText(response.Content)))
 
 	// Check if we hit limits
 	if maxTurnsHit, ok := response.Metadata["max_turns_hit"].(bool); ok && maxTurnsHit {
@@ -2290,8 +2300,35 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	})
 
 	a.recordConversationMetrics(sessionID, response, duration)
+	setResponseTraceID(response, span)
 
 	return response, nil
+}
+
+// setAgentSpanIdentity records which agent a turn span belongs to, and one
+// OpenInference metadata attribute (a JSON object string) holding
+// graph_memory_enabled.
+func (a *Agent) setAgentSpanIdentity(span *observability.Span) {
+	span.SetAttribute("agent.id", a.GetID())
+	span.SetAttribute("agent.name", a.config.Name)
+	md := map[string]interface{}{
+		"graph_memory_enabled": a.graphMemoryStore != nil && a.graphMemoryConfig != nil && a.graphMemoryConfig.Enabled,
+	}
+	if b, err := json.Marshal(md); err == nil {
+		span.SetAttribute("metadata", string(b))
+	}
+}
+
+// setResponseTraceID records the turn's trace ID in the response metadata, so
+// a caller can find the turn in the trace backend.
+func setResponseTraceID(response *Response, span *observability.Span) {
+	if response == nil || span == nil || span.TraceID == "" {
+		return
+	}
+	if response.Metadata == nil {
+		response.Metadata = make(map[string]interface{})
+	}
+	response.Metadata["trace_id"] = span.TraceID
 }
 
 // recordConversationMetrics emits the six metrics that describe one completed
@@ -2576,9 +2613,12 @@ func extractHITLInfo(input map[string]interface{}) *HITLRequestInfo {
 // This implements the core agent behavior: LLM generates tool calls,
 // we execute them, feed results back to LLM, repeat until completion.
 func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
-	// Start trace span — always created; NoOpTracer handles disabled case
-	_, span := ctx.Tracer().StartSpan(ctx, "agent.conversation_loop")
+	// Start trace span — always created; NoOpTracer handles disabled case.
+	// Everything below runs under it, so LLM and tool spans nest under the
+	// loop span rather than under agent.chat.
+	loopCtx, span := ctx.Tracer().StartSpan(ctx, "agent.conversation_loop")
 	defer ctx.Tracer().EndSpan(span)
+	ctx = withSpanContext(ctx, loopCtx)
 
 	session := ctx.Session()
 
@@ -2591,6 +2631,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	toolExecutionCount := 0
 	var allToolExecutions []ToolExecution
 	var turnUsage Usage                         // sum of every successful LLM call this turn → Response.TurnUsage
+	llmCalls := 0                               // number of calls turnUsage sums → Metadata["llm_calls"]
 	emptyRetried := false                       // one-shot flag: retry empty LLM response at most once per conversation
 	hygieneRetries := 0                         // capped count of REQUIRE_FIX retries the end-of-turn auditor has triggered
 	var hygieneLast *hygiene.EnforcementOutcome // last outcome, surfaced into Response.Metadata
@@ -2934,6 +2975,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			return nil, fmt.Errorf("LLM call failed: %w", err)
 		}
 		addUsage(&turnUsage, llmResp.Usage)
+		llmCalls++
 		a.observePromptUsage(session, llmResp.Usage)
 
 		// Record LLM response on conversation_loop span
@@ -3150,6 +3192,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 
 			meta := map[string]interface{}{
 				"turns":           turnCount,
+				"llm_calls":       llmCalls,
 				"tool_executions": toolExecutionCount,
 				"stop_reason":     llmResp.StopReason,
 				"empty_retried":   emptyRetried,
@@ -3286,7 +3329,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	// If we hit max turns/executions, make one final LLM call to synthesize results
 	// This ensures the agent provides meaningful output instead of a generic error message
 	emitProgress(ctx, StageSynthesis, 90, "Synthesizing tool execution results", "")
-	return a.synthesizeFinalResponse(ctx, session, turnCount, toolExecutionCount, allToolExecutions, turnUsage)
+	return a.synthesizeFinalResponse(ctx, session, turnCount, toolExecutionCount, allToolExecutions, turnUsage, llmCalls)
 }
 
 // batchState carries the loop-level state the per-call dispatch body reads
@@ -3373,6 +3416,7 @@ type preparedCall struct {
 	index     int
 	dedupKey  string
 	toolSpan  *observability.Span
+	toolCtx   context.Context // carries toolSpan, so the tool's own spans nest under it
 	intentErr error
 }
 
@@ -3482,9 +3526,11 @@ func (a *Agent) prepareCall(ctx Context, session *Session, toolCall ToolCall, i 
 		emitToolStarted(ctx, 50+clampInt32(*st.toolExecutionCount*5), toolCall)
 	}
 
-	// Execute tool with tracing — always created
-	_, toolSpan := ctx.Tracer().StartSpan(ctx, "agent.tool_execution")
-	toolSpan.SetAttribute("tool_name", toolCall.Name)
+	// Execute tool with tracing — always created. settleCall ends the span
+	// after the tool row is committed, so an error the commit records on it is
+	// exported with it.
+	toolCtx, toolSpan := ctx.Tracer().StartSpan(ctx, "agent.tool_execution")
+	setToolSpanInput(toolSpan, toolCall)
 	if st.barrierReason != "" {
 		toolSpan.SetAttribute("dispatch.parallel", false)
 		toolSpan.SetAttribute("dispatch.barrier_reason", st.barrierReason)
@@ -3497,7 +3543,7 @@ func (a *Agent) prepareCall(ctx Context, session *Session, toolCall ToolCall, i 
 	// A failed intent is returned on the prepared call, not committed here: the
 	// call must not run, and settleCall commits its error row so that a group
 	// member's row still lands after the rows of the members before it.
-	return &preparedCall{call: toolCall, index: i, dedupKey: dedupKey, toolSpan: toolSpan, intentErr: intentErr}, false
+	return &preparedCall{call: toolCall, index: i, dedupKey: dedupKey, toolSpan: toolSpan, toolCtx: toolCtx, intentErr: intentErr}, false
 }
 
 // settleUnrecordedCall commits the row of a call whose intent could not be
@@ -3513,7 +3559,7 @@ func (a *Agent) settleUnrecordedCall(ctx Context, session *Session, pc *prepared
 	}
 	// Traced like any failed call, so the span is not read as a success.
 	addToolExecutionEvent(st, pc, result, nil)
-	endToolSpan(ctx, pc.toolSpan, result, nil)
+	recordToolSpanOutcome(pc.toolSpan, result, nil)
 	a.appendMessage(ctx, session, Message{
 		Role:       "tool",
 		Content:    fmt.Sprintf("event_log_intent_failed — could not durably record this call before executing it: %v. Not executed.", pc.intentErr),
@@ -3532,9 +3578,10 @@ func (a *Agent) settleUnrecordedCall(ctx Context, session *Session, pc *prepared
 // the executor call, and nothing else. It must not touch the session, the
 // batch state, the lease ledger, guardrails, the failure tracker, the dedup
 // cache or the transcript — settleCall owns all of those. See runTool for the
-// shared state executor.Execute can still reach.
+// shared state executor.Execute can still reach. Spans the tool starts nest
+// under the call's tool span.
 func (a *Agent) runCall(ctx Context, pc *preparedCall, sessionID string) (*shuttle.Result, error) {
-	return a.runTool(ctx, pc.call.Name, pc.call.Input, sessionID)
+	return a.runTool(withSpanContext(ctx, pc.toolCtx), pc.call.Name, pc.call.Input, sessionID)
 }
 
 // settleCall is the sequential back half of dispatchOneCall: lease events and
@@ -3543,6 +3590,8 @@ func (a *Agent) runCall(ctx Context, pc *preparedCall, sessionID string) (*shutt
 // Calls must be settled in call order. A call whose intent was not recorded
 // (pc.intentErr) was never run; it settles as its error row alone.
 func (a *Agent) settleCall(ctx Context, session *Session, pc *preparedCall, st *batchState, result *shuttle.Result, err error) {
+	toolSpan := pc.toolSpan
+	defer ctx.Tracer().EndSpan(toolSpan)
 	if pc.intentErr != nil {
 		a.settleUnrecordedCall(ctx, session, pc, st)
 		return
@@ -3550,7 +3599,6 @@ func (a *Agent) settleCall(ctx Context, session *Session, pc *preparedCall, st *
 	span := st.span
 	toolCall := pc.call
 	i := pc.index
-	toolSpan := pc.toolSpan
 
 	a.settleExecution(ctx, session.ID, toolCall.Input, result, err)
 	a.recordToolResult(ctx, session.ID, st.stepIndex, i, toolCall.ID, result, err)
@@ -3588,7 +3636,7 @@ func (a *Agent) settleCall(ctx Context, session *Session, pc *preparedCall, st *
 		}
 	}
 
-	endToolSpan(ctx, toolSpan, result, err)
+	recordToolSpanOutcome(toolSpan, result, err)
 
 	// Resource-await hold (park_resource.go): a successful result asking to be
 	// awaited is withheld from the transcript — no execution record, no tool
@@ -3621,8 +3669,10 @@ func addToolExecutionEvent(st *batchState, pc *preparedCall, result *shuttle.Res
 	st.span.AddEvent("turn.tool_execution", toolEvent)
 }
 
-// endToolSpan records a settled call's outcome on its tool span and ends it.
-func endToolSpan(ctx Context, toolSpan *observability.Span, result *shuttle.Result, err error) {
+// recordToolSpanOutcome records a settled call's outcome on its tool span.
+func recordToolSpanOutcome(toolSpan *observability.Span, result *shuttle.Result, err error) {
+	success := err == nil && (result == nil || result.Success)
+
 	if err != nil {
 		toolSpan.RecordError(err)
 	} else if result != nil && !result.Success && result.Error != nil {
@@ -3630,11 +3680,60 @@ func endToolSpan(ctx Context, toolSpan *observability.Span, result *shuttle.Resu
 		toolSpan.SetAttribute("error.code", result.Error.Code)
 		toolSpan.SetAttribute("error.message", result.Error.Message)
 	}
-	toolSpan.SetAttribute("success", fmt.Sprintf("%t", err == nil && (result == nil || result.Success)))
+
+	toolSpan.SetAttribute("success", success)
 	if result != nil {
-		toolSpan.SetAttribute("execution_time_ms", fmt.Sprintf("%d", result.ExecutionTimeMs))
+		toolSpan.SetAttribute("execution_time_ms", result.ExecutionTimeMs)
 	}
-	ctx.Tracer().EndSpan(toolSpan)
+	if out := toolOutputPreview(result, err); out != "" {
+		toolSpan.SetAttribute("output.value", out)
+	}
+}
+
+// setToolSpanInput records the call on an agent.tool_execution span: the tool
+// name, the OTel GenAI operation and call ID, and the arguments as
+// OpenInference input.value, redacted of credentials and PII before being
+// bounded by TruncateContent. input.mime_type is set only when the arguments
+// are whole, since truncated JSON is not JSON.
+func setToolSpanInput(span *observability.Span, call ToolCall) {
+	span.SetAttribute("tool_name", call.Name)
+	span.SetAttribute(observability.AttrToolName, call.Name)
+	span.SetAttribute("gen_ai.operation.name", "execute_tool")
+	if call.ID != "" {
+		span.SetAttribute("gen_ai.tool.call.id", call.ID)
+	}
+	args := canonicalJSON(call.Input)
+	redacted := observability.RedactText(args)
+	in := observability.TruncateContent(redacted)
+	span.SetAttribute("input.value", in)
+	if in == redacted {
+		span.SetAttribute("input.mime_type", "application/json")
+	}
+}
+
+// toolOutputPreview renders a tool result for the tool span's output.value:
+// the error for a failed call, else the result data (a string as it is,
+// anything else as JSON), redacted of credentials and PII before being bounded
+// by TruncateContent.
+func toolOutputPreview(result *shuttle.Result, err error) string {
+	var raw string
+	switch {
+	case err != nil:
+		raw = "error: " + err.Error()
+	case result == nil:
+		return ""
+	case !result.Success && result.Error != nil:
+		raw = "error: " + result.Error.Code + ": " + result.Error.Message
+	default:
+		if s, ok := result.Data.(string); ok {
+			raw = s
+		} else if b, mErr := json.Marshal(result.Data); mErr == nil {
+			raw = string(b)
+		} else {
+			raw = fmt.Sprintf("%v", result.Data)
+		}
+	}
+	return observability.TruncateContent(observability.RedactText(raw))
 }
 
 // commitToolRow is the commit tail of dispatchOneCall — execution record,
@@ -3784,7 +3883,7 @@ func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, 
 // conversation loop exhausts its turn/execution budget, so the agent yields
 // meaningful output instead of a generic limit error. Moved verbatim from
 // the loop tail when the batch body was extracted into dispatchOneCall.
-func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount, toolExecutionCount int, allToolExecutions []ToolExecution, turnUsage Usage) (*Response, error) {
+func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount, toolExecutionCount int, allToolExecutions []ToolExecution, turnUsage Usage, llmCalls int) (*Response, error) {
 	// Add a synthesis request to the conversation
 	// Include explicit format instructions since they may have been compressed in context
 	synthesisPrompt := "You must provide your final answer NOW with whatever information you have gathered so far. Summarize your findings: what actions were taken, what results were produced, and any remaining steps the user would need to complete manually. Be concise and actionable. You MUST respond with text — do not return an empty response."
@@ -3832,6 +3931,7 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount
 			ToolExecutions: allToolExecutions,
 			Metadata: map[string]interface{}{
 				"turns":           turnCount,
+				"llm_calls":       llmCalls,
 				"tool_executions": toolExecutionCount,
 				"max_turns_hit":   turnCount >= a.config.MaxTurns,
 				"max_exec_hit":    toolExecutionCount >= a.config.MaxToolExecutions,
@@ -3847,6 +3947,7 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount
 	}
 
 	addUsage(&turnUsage, finalResp.Usage)
+	llmCalls++
 	return &Response{
 		Content:        content,
 		Usage:          finalResp.Usage,
@@ -3855,6 +3956,7 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount
 		Thinking:       finalResp.Thinking,
 		Metadata: map[string]interface{}{
 			"turns":           turnCount + 1, // Include synthesis turn
+			"llm_calls":       llmCalls,
 			"tool_executions": toolExecutionCount,
 			"max_turns_hit":   turnCount >= a.config.MaxTurns,
 			"max_exec_hit":    toolExecutionCount >= a.config.MaxToolExecutions,
@@ -4180,6 +4282,10 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 	// (az512h). One span, outcome always set.
 	ctx, span := a.tracer.StartSpan(ctx, "graph_memory.recall")
 	defer a.tracer.EndSpan(span)
+	if session != nil && session.ID != "" {
+		span.SetAttribute(observability.AttrSessionID, session.ID)
+	}
+	span.SetAttribute("agent.name", a.config.Name)
 	// Which memory partition this recall queries; differs from the agent name
 	// when GraphMemoryAgentID is set.
 	span.SetAttribute("graph_memory.agent_key", a.graphMemoryKey())
@@ -4222,7 +4328,9 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 		outcome = "no_query"
 		return
 	}
-	span.SetAttribute("recall.query", truncatePreview(searchQuery))
+	redactedQuery := observability.TruncateContent(observability.RedactText(searchQuery))
+	span.SetAttribute("recall.query", redactedQuery)
+	span.SetAttribute("input.value", redactedQuery)
 
 	// Gather candidate memories from multiple sources.
 	seen := make(map[string]bool)
@@ -4290,6 +4398,9 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 	// visible instead of being hidden behind a successful injection.
 	span.SetAttribute("recall.store_error", storeFailed)
 	span.SetAttribute("recall.candidates", len(candidates))
+	if len(candidates) > 0 {
+		span.SetAttribute("recall.candidate_ids", memoryIDs(candidates))
+	}
 
 	// Dedicated lesson lane (PR #357): verified working knowledge rides
 	// regardless of the echo-memory ranking below. Fleet-shared only when
@@ -4324,6 +4435,7 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 	span.SetAttribute("recall.injected", len(relevant)+len(lessons))
 	span.SetAttribute("recall.injected_memories", len(relevant))
 	span.SetAttribute("recall.injected_lessons", len(lessons))
+	span.SetAttribute("recall.selected_ids", memoryIDs(relevant))
 
 	var sb strings.Builder
 	if len(lessons) > 0 {
@@ -4353,11 +4465,34 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 		sb.WriteString("\n")
 	}
 
+	injected := sb.String()
+	tc := a.tokenCounter
+	if tc == nil {
+		tc = GetTokenCounter()
+	}
+	span.SetAttribute("recall.injected_tokens", tc.CountTokens(injected))
+	span.SetAttribute("output.value", observability.TruncateContent(observability.RedactText(injected)))
+	// OpenInference retriever documents, which Phoenix lists on the span.
+	for i, m := range relevant {
+		prefix := fmt.Sprintf("retrieval.documents.%d.document.", i)
+		span.SetAttribute(prefix+"id", m.ID)
+		span.SetAttribute(prefix+"content", observability.TruncateContent(observability.RedactText(m.Content)))
+	}
+
 	session.AddMessage(ctx, types.Message{
 		Role:    "system",
-		Content: graphMemoryContextMarker + "\n" + sb.String(),
+		Content: graphMemoryContextMarker + "\n" + injected,
 	})
 	outcome = "injected"
+}
+
+// memoryIDs returns the IDs of memories, in order.
+func memoryIDs(memories []*memory.Memory) []string {
+	ids := make([]string, len(memories))
+	for i, m := range memories {
+		ids[i] = m.ID
+	}
+	return ids
 }
 
 // multiHopRecall finds the user entity and traverses 2 hops outward to collect
@@ -4468,6 +4603,7 @@ func (a *Agent) rerankMemories(ctx context.Context, userMessage string, candidat
 	if a.compressorLLM != nil {
 		llmProvider = a.compressorLLM
 	}
+	llmProvider = llmForRole(llmProvider, roleMemoryRerank)
 
 	resp, err := llmProvider.Chat(rerankCtx, []types.Message{
 		{Role: "user", Content: sb.String()},
@@ -4524,6 +4660,7 @@ func (a *Agent) extractSearchQuery(ctx context.Context, userMessage string) (que
 	if a.compressorLLM != nil {
 		llmProvider = a.compressorLLM
 	}
+	llmProvider = llmForRole(llmProvider, roleMemoryQuery)
 
 	resp, err := llmProvider.Chat(extractCtx, []types.Message{
 		{Role: "user", Content: prompt},
@@ -4920,7 +5057,7 @@ func (a *Agent) SetLLMProviderForRole(role loomv1.LLMRole, llm LLMProvider) {
 		a.classifierLLM = llm
 		// Update the orchestrator's intent classifier if pattern classification is enabled
 		if a.orchestrator != nil && a.config.PatternConfig.UseLLMClassifier && llm != nil {
-			llmClassifierConfig := patterns.DefaultLLMClassifierConfig(llm)
+			llmClassifierConfig := patterns.DefaultLLMClassifierConfig(llmForRole(llm, roleClassifier))
 			llmClassifier := patterns.NewLLMIntentClassifier(llmClassifierConfig)
 			a.orchestrator.SetIntentClassifier(llmClassifier)
 		}

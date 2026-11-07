@@ -907,24 +907,7 @@ func newWorkflowRuntime() (*workflowRuntime, error) {
 				zap.String("storage_type", config.Observability.StorageType),
 				zap.String("sqlite_path", config.Observability.SQLitePath))
 
-			storageType := config.Observability.StorageType
-			if storageType == "" {
-				storageType = "memory"
-			}
-
-			flushInterval := 5 * time.Second // Shorter flush for workflows
-			if config.Observability.FlushInterval != "" {
-				if duration, err := time.ParseDuration(config.Observability.FlushInterval); err == nil {
-					flushInterval = duration
-				}
-			}
-
-			embeddedTracer, err := observability.NewEmbeddedTracer(&observability.EmbeddedConfig{
-				StorageType:   storageType,
-				SQLitePath:    config.Observability.SQLitePath,
-				FlushInterval: flushInterval,
-				Logger:        logger,
-			})
+			embeddedTracer, err := observability.NewEmbeddedTracer(embeddedStorageConfig(config.Observability, workflowEmbeddedFlushInterval, logger))
 			if err != nil {
 				logger.Warn("Failed to create embedded tracer, using no-op tracer", zap.Error(err))
 				tracer = observability.NewNoOpTracer()
@@ -941,6 +924,10 @@ func newWorkflowRuntime() (*workflowRuntime, error) {
 			hawkTracer, err := observability.NewHawkTracer(observability.HawkConfig{
 				Endpoint: config.Observability.HawkEndpoint,
 				APIKey:   config.Observability.HawkAPIKey,
+				Privacy: observability.PrivacyConfig{
+					RedactCredentials: true,
+					RedactPII:         true,
+				},
 			})
 			if err != nil {
 				logger.Warn("Failed to create Hawk tracer, using no-op tracer", zap.Error(err))
@@ -953,20 +940,7 @@ func newWorkflowRuntime() (*workflowRuntime, error) {
 		case "otel":
 			logger.Info("Observability enabled with OTLP export",
 				zap.String("endpoint", config.Observability.OTLPEndpoint))
-			otelTracer, err := observability.NewOTelTracer(observability.OTelConfig{
-				Endpoint:       config.Observability.OTLPEndpoint,
-				Headers:        config.Observability.OTLPHeaders,
-				Insecure:       config.Observability.OTLPInsecure,
-				ServiceName:    otlpServiceName("looms-workflow"),
-				ServiceVersion: rootCmd.Version,
-				Privacy: observability.PrivacyConfig{
-					RedactCredentials: true,
-					RedactPII:         true,
-				},
-				SpanFilter: observability.SpanFilterConfig{
-					IncludePrefixes: config.Observability.OTLPIncludeSpans,
-				},
-			})
+			otelTracer, err := newOTLPTracer(config.Observability, "looms-workflow", rootCmd.Version, workflowEmbeddedFlushInterval, logger)
 			if err != nil {
 				logger.Warn("Failed to create OTLP tracer, using no-op tracer", zap.Error(err))
 				tracer = observability.NewNoOpTracer()
