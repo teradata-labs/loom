@@ -23,9 +23,18 @@ import (
 // RedactedValue replaces a credential value removed before export.
 const RedactedValue = "[REDACTED]"
 
-// RedactText removes credentials and PII from s.
+// RedactText removes credentials and PII from s, repeating until no further
+// replacements occur so adjacent tokens exposed by a redaction marker are
+// cleaned on the first call.
 func RedactText(s string) string {
-	return redactPIIString(redactCredentialString(s))
+	for i := 0; i < 8; i++ {
+		next := redactPIIString(redactCredentialStringOnce(s))
+		if next == s {
+			return s
+		}
+		s = next
+	}
+	return s
 }
 
 // Credential redaction of attribute values. Dropping attributes whose own key
@@ -115,8 +124,23 @@ var (
 		`(?i)([?&](?:api_key|apikey|access_token|refresh_token|token|password|secret|key|auth|sig|signature)=)[^&#\s"'\\]+`)
 )
 
-// redactCredentialString removes credentials from one string value.
+// redactCredentialString removes credentials from one string value, repeating
+// until a fixed point is reached so a token concatenated immediately after a
+// fixed-length key (for example AKIA...ghp_..., where replacing the first key
+// with [REDACTED] introduces a word boundary before the second) is also
+// redacted on the first call.
 func redactCredentialString(s string) string {
+	for i := 0; i < 8; i++ {
+		next := redactCredentialStringOnce(s)
+		if next == s {
+			return s
+		}
+		s = next
+	}
+	return s
+}
+
+func redactCredentialStringOnce(s string) string {
 	if len(s) < 8 {
 		return s
 	}

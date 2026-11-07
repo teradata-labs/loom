@@ -38,6 +38,7 @@ func FuzzRedactCredentialString(f *testing.F) {
 	f.Add("https://example.com/v1/search?q=loom&api_key=tvly-1234567890abcdefghij&sig=deadbeef1234")
 	f.Add("AWS key AKIAIOSFODNN7EXAMPLE and GitHub ghp_1234567890abcdefghijklmnopqrstuvwxyzABCD")
 	f.Add("0AKIAIOSFODNN7EXAMPLE0")
+	f.Add("0000000 AKIA0000000000000000ghp_000000000000000000000000000000")
 
 	const (
 		plantedSk     = "sk-plantedFuzzSecret1234567890abcdef"
