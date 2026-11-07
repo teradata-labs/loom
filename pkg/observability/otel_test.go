@@ -82,6 +82,22 @@ func TestBuildOTelSpanContext(t *testing.T) {
 			t.Error("same input should produce same SpanID")
 		}
 	})
+
+	t.Run("OTel hex IDs round-trip unchanged", func(t *testing.T) {
+		traceID := "4bf92f3577b34da6a3ce929d0e0e4736"
+		spanID := "00f067aa0ba902b7"
+
+		sc, ok := buildOTelSpanContext(traceID, spanID)
+		if !ok {
+			t.Fatal("expected valid span context for hex IDs")
+		}
+		if got := sc.TraceID().String(); got != traceID {
+			t.Errorf("TraceID = %s, want %s", got, traceID)
+		}
+		if got := sc.SpanID().String(); got != spanID {
+			t.Errorf("SpanID = %s, want %s", got, spanID)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -594,6 +610,146 @@ func TestOTelTracerExportsParentChildLinkage(t *testing.T) {
 	if childSpan.Parent.SpanID() != parentSpan.SpanContext.SpanID() {
 		t.Fatalf("child parent ID %s does not match parent span ID %s", childSpan.Parent.SpanID(), parentSpan.SpanContext.SpanID())
 	}
+}
+
+// TestStartSpan_SyncsLoomAndOTelIDs verifies that the Loom span carries the
+// exported OTel IDs, so TraceIDFromContext names the trace the backend stores.
+func TestStartSpan_SyncsLoomAndOTelIDs(t *testing.T) {
+	tr, exp := newInMemoryOTelTracer(t)
+
+	ctx, root := tr.StartSpan(context.Background(), "server.Weave")
+	childCtx, child := tr.StartSpan(ctx, "agent.chat")
+	if got := TraceIDFromContext(ctx); got != root.TraceID {
+		t.Errorf("TraceIDFromContext(root ctx) = %s, want %s", got, root.TraceID)
+	}
+	if got := TraceIDFromContext(childCtx); got != root.TraceID {
+		t.Errorf("TraceIDFromContext(child ctx) = %s, want root trace %s", got, root.TraceID)
+	}
+	tr.EndSpan(child)
+	tr.EndSpan(root)
+
+	byName := make(map[string]tracetest.SpanStub)
+	for _, s := range exp.GetSpans() {
+		byName[s.Name] = s
+	}
+	for _, loomSpan := range []*Span{root, child} {
+		stub, ok := byName[loomSpan.Name]
+		if !ok {
+			t.Fatalf("%s not exported", loomSpan.Name)
+		}
+		if got := stub.SpanContext.TraceID().String(); got != loomSpan.TraceID {
+			t.Errorf("%s: exported trace ID %s, Loom trace ID %s", loomSpan.Name, got, loomSpan.TraceID)
+		}
+		if got := stub.SpanContext.SpanID().String(); got != loomSpan.SpanID {
+			t.Errorf("%s: exported span ID %s, Loom span ID %s", loomSpan.Name, got, loomSpan.SpanID)
+		}
+	}
+	if child.ParentID != root.SpanID {
+		t.Errorf("child.ParentID = %s, want %s", child.ParentID, root.SpanID)
+	}
+}
+
+// TestStartSpan_LateChildAfterParentEndSharesTraceID covers spans started
+// after their parent ended (asynchronous memory extraction): the parent is no
+// longer active, so linkage goes through buildOTelSpanContext and must land on
+// the parent's exported trace and span IDs rather than a new trace.
+func TestStartSpan_LateChildAfterParentEndSharesTraceID(t *testing.T) {
+	tr, exp := newInMemoryOTelTracer(t)
+
+	parentCtx, parent := tr.StartSpan(context.Background(), "agent.chat")
+	tr.EndSpan(parent)
+
+	_, late := tr.StartSpan(parentCtx, "graph_memory.extract")
+	tr.EndSpan(late)
+
+	byName := make(map[string]tracetest.SpanStub)
+	for _, s := range exp.GetSpans() {
+		byName[s.Name] = s
+	}
+	parentStub, lateStub := byName["agent.chat"], byName["graph_memory.extract"]
+	if lateStub.SpanContext.TraceID() != parentStub.SpanContext.TraceID() {
+		t.Errorf("late child trace %s, parent trace %s: child was split into a new trace",
+			lateStub.SpanContext.TraceID(), parentStub.SpanContext.TraceID())
+	}
+	if lateStub.Parent.SpanID() != parentStub.SpanContext.SpanID() {
+		t.Errorf("late child parent %s, want exported parent span %s",
+			lateStub.Parent.SpanID(), parentStub.SpanContext.SpanID())
+	}
+	if !lateStub.Parent.IsRemote() {
+		t.Error("late child should link through the synthetic (remote) parent context")
+	}
+}
+
+func TestStartSpan_ContextWithTraceIDOverride(t *testing.T) {
+	t.Run("valid 32-hex override survives to exporter", func(t *testing.T) {
+		tr, exp := newInMemoryOTelTracer(t)
+		const hexTraceID = "4bf92f3577b34da6a3ce929d0e0e4736"
+
+		ctx := ContextWithTraceID(context.Background(), hexTraceID)
+		spanCtx, root := tr.StartSpan(ctx, "server.Weave")
+		tr.EndSpan(root)
+
+		if root.TraceID != hexTraceID {
+			t.Fatalf("root.TraceID = %s, want %s", root.TraceID, hexTraceID)
+		}
+		if got := TraceIDFromContext(spanCtx); got != hexTraceID {
+			t.Fatalf("TraceIDFromContext = %s, want %s", got, hexTraceID)
+		}
+		if root.ParentID != "" {
+			t.Fatalf("root.ParentID = %q, want empty", root.ParentID)
+		}
+		spans := exp.GetSpans()
+		if len(spans) != 1 {
+			t.Fatalf("exported spans = %d, want 1", len(spans))
+		}
+		if got := spans[0].SpanContext.TraceID().String(); got != hexTraceID {
+			t.Fatalf("exported TraceID = %s, want %s", got, hexTraceID)
+		}
+	})
+
+	t.Run("UUID override is recorded on loom.trace_id_override and SDK assigns 32-hex ID", func(t *testing.T) {
+		tr, exp := newInMemoryOTelTracer(t)
+		const uuidOverride = "550e8400-e29b-41d4-a716-446655440000"
+
+		ctx := ContextWithTraceID(context.Background(), uuidOverride)
+		_, root := tr.StartSpan(ctx, "server.Weave")
+		tr.EndSpan(root)
+
+		if root.TraceID == uuidOverride || len(root.TraceID) != 32 {
+			t.Fatalf("root.TraceID = %q, want 32-hex SDK trace ID", root.TraceID)
+		}
+		if got := root.Attributes["loom.trace_id_override"]; got != uuidOverride {
+			t.Fatalf("loom.trace_id_override = %v, want %q", got, uuidOverride)
+		}
+		spans := exp.GetSpans()
+		if len(spans) != 1 {
+			t.Fatalf("exported spans = %d, want 1", len(spans))
+		}
+		if got := spans[0].SpanContext.TraceID().String(); got != root.TraceID {
+			t.Fatalf("exported TraceID = %s, want %s", got, root.TraceID)
+		}
+	})
+
+	t.Run("parent span always wins over ContextWithTraceID", func(t *testing.T) {
+		tr, exp := newInMemoryOTelTracer(t)
+		parentCtx, parent := tr.StartSpan(context.Background(), "server.Weave")
+		overrideCtx := ContextWithTraceID(parentCtx, "4bf92f3577b34da6a3ce929d0e0e4736")
+		_, child := tr.StartSpan(overrideCtx, "agent.chat")
+		tr.EndSpan(child)
+		tr.EndSpan(parent)
+
+		if child.TraceID != parent.TraceID {
+			t.Fatalf("child.TraceID = %s, want parent %s", child.TraceID, parent.TraceID)
+		}
+		if _, hasOverrideAttr := child.Attributes["loom.trace_id_override"]; hasOverrideAttr {
+			t.Fatalf("child span must not record loom.trace_id_override when parent wins")
+		}
+		for _, s := range exp.GetSpans() {
+			if got := s.SpanContext.TraceID().String(); got != parent.TraceID {
+				t.Fatalf("exported %s TraceID = %s, want %s", s.Name, got, parent.TraceID)
+			}
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------

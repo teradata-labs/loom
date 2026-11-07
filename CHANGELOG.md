@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+#### OTLP export: spans adopt exported OTel trace and span IDs
+- **Under `observability.mode: otel`, Loom spans carry the 32-character hex trace ID and 16-character hex span ID assigned by the OTel SDK** instead of fresh UUIDs. This covers `TraceIDFromContext`, `WeaveResponse.trace_id`, `WeaveProgress.trace_id`, and `eval_runs.id` when `otlp_record_eval_runs` is enabled, and ensures late child spans started after their parent ended (such as async graph-memory extraction) link into the same exported trace.
+- **`ContextWithTraceID` on `OTelTracer`:** when no parent span is present, a valid 32-hex trace ID override is honored on both the Loom span and the exported OTel span (`trace.ContextWithRemoteSpanContext`). A non-hex override (for example a dashed UUID) is recorded on the root span under `loom.trace_id_override` (and logged once at debug) while the SDK assigns a valid 32-hex trace ID; a parent span always wins.
+
 ### Added
 
 #### Graph memory: ledger-mined lessons (on by default)
