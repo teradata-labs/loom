@@ -857,8 +857,9 @@ func TestMultiAgentServer_Weave_TraceIDAndTurnTelemetry(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 
-	// 1. TraceId is the server span's trace ID.
+	// 1. TraceId is the server span's exported 32-hex OTel trace ID.
 	require.NotEmpty(t, resp.TraceId)
+	assert.Regexp(t, "^[0-9a-f]{32}$", resp.TraceId)
 	traceResp, err := srv.GetTrace(context.Background(), &loomv1.GetTraceRequest{TraceId: resp.TraceId})
 	require.NoError(t, err)
 	require.Len(t, traceResp.Spans, 1)
@@ -902,6 +903,7 @@ func TestMultiAgentServer_StreamWeave_TraceIDAndTurnTelemetry(t *testing.T) {
 	last := stream.progress[len(stream.progress)-1]
 	assert.Equal(t, loomv1.ExecutionStage_EXECUTION_STAGE_COMPLETED, last.Stage)
 	require.NotEmpty(t, last.TraceId)
+	assert.Regexp(t, "^[0-9a-f]{32}$", last.TraceId)
 	lastCallCost(t, last.Cost)
 
 	// The COMPLETED event's trace ID is the server.StreamWeave span's.
@@ -984,6 +986,7 @@ func TestServer_WeaveAndStreamWeave_Phase3Telemetry(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.NotEmpty(t, resp.TraceId)
+	assert.Regexp(t, "^[0-9a-f]{32}$", resp.TraceId)
 	lastCallCost(t, resp.Cost)
 	require.NotNil(t, resp.Metadata)
 	assert.Equal(t, int32(2), resp.Metadata.LlmCalls)
@@ -997,5 +1000,6 @@ func TestServer_WeaveAndStreamWeave_Phase3Telemetry(t *testing.T) {
 	require.NotEmpty(t, stream.progress)
 	last := stream.progress[len(stream.progress)-1]
 	assert.NotEmpty(t, last.TraceId)
+	assert.Regexp(t, "^[0-9a-f]{32}$", last.TraceId)
 	lastCallCost(t, last.Cost)
 }

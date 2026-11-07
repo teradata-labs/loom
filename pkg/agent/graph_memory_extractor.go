@@ -268,14 +268,16 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 	defer cancel()
 
 	// One span per extraction, outcome always set. Started from ctx, it joins
-	// the turn's trace even when the turn has already ended. No session.id:
-	// the eval_runs analysis expects it only on server.Weave and agent.chat.
+	// the turn's trace even when the turn has already ended.
 	tracer := a.tracer
 	if tracer == nil {
 		tracer = observability.NewNoOpTracer()
 	}
 	extractCtx, span := tracer.StartSpan(extractCtx, "graph_memory.extract")
 	defer tracer.EndSpan(span)
+	if sessionID != "" {
+		span.SetAttribute(observability.AttrSessionID, sessionID)
+	}
 	span.SetAttribute("agent.name", a.config.Name)
 	outcome := "unknown"
 	var counts extractionCounts

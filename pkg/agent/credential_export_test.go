@@ -37,10 +37,12 @@ import (
 // settings looms serve uses) none of them is.
 func TestToolCredentialsAreRedactedOnExport(t *testing.T) {
 	const (
-		bearer = "planted123bearer456token"
-		tavily = "tvly-planted0123456789abcdef"
-		cookie = "sid=planted789cookie"
+		bearer         = "planted123bearer456token"
+		tavily         = "tvly-planted0123456789abcdef"
+		cookie         = "sid=planted789cookie"
+		boundarySecret = "hunter2boundarysecret987654"
 	)
+	padding := strings.Repeat("x", 168)
 	tracer := observability.NewMockTracer()
 	llmProvider := &mockLLMProvider{
 		name:  "test-llm",
@@ -52,7 +54,7 @@ func TestToolCredentialsAreRedactedOnExport(t *testing.T) {
 					"headers": map[string]interface{}{"Authorization": "Bearer " + bearer, "Accept": "application/json"},
 				}},
 				{ID: "call_search", Name: "web_search", Input: map[string]interface{}{
-					"query": "AI conferences", "api_key": tavily,
+					"a_pad": padding, "password": boundarySecret, "query": "AI conferences", "api_key": tavily,
 				}},
 			}},
 			{Content: "done", StopReason: "end_turn"},
@@ -88,19 +90,21 @@ func TestToolCredentialsAreRedactedOnExport(t *testing.T) {
 		return fmt.Sprintf("%v %v %v", s.Attributes, s.Events, s.Status)
 	}
 
-	// The path is exercised: unredacted spans hold every planted credential.
+	// Previews are redacted before truncation when set on the span, and after
+	// RedactSpan on export: neither full secrets nor boundary-crossing prefixes survive.
 	var raw strings.Builder
 	for _, s := range spans {
 		raw.WriteString(dump(s))
 	}
-	for _, secret := range []string{bearer, tavily, cookie} {
-		require.Contains(t, raw.String(), secret, "the turn's spans must carry %q before redaction, or the test proves nothing", secret)
+	require.Contains(t, raw.String(), observability.RedactedValue, "redacted marker must be recorded on spans")
+	for _, secret := range []string{bearer, tavily, cookie, boundarySecret, boundarySecret[:6]} {
+		assert.NotContains(t, raw.String(), secret, "recorded span leaked %q", secret)
 	}
 
 	export := observability.PrivacyConfig{RedactCredentials: true, RedactPII: true} // as looms serve configures OTLP export
 	for _, s := range spans {
 		out := dump(observability.RedactSpan(s, export))
-		for _, secret := range []string{bearer, tavily, cookie} {
+		for _, secret := range []string{bearer, tavily, cookie, boundarySecret, boundarySecret[:6]} {
 			assert.NotContains(t, out, secret, "span %s exports %q", s.Name, secret)
 		}
 	}

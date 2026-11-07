@@ -924,6 +924,10 @@ func newWorkflowRuntime() (*workflowRuntime, error) {
 			hawkTracer, err := observability.NewHawkTracer(observability.HawkConfig{
 				Endpoint: config.Observability.HawkEndpoint,
 				APIKey:   config.Observability.HawkAPIKey,
+				Privacy: observability.PrivacyConfig{
+					RedactCredentials: true,
+					RedactPII:         true,
+				},
 			})
 			if err != nil {
 				logger.Warn("Failed to create Hawk tracer, using no-op tracer", zap.Error(err))

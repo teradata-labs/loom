@@ -474,7 +474,7 @@ server.Weave                          (CHAIN)  message.preview (input.value),
 
 **`metadata`.** `agent.chat` and `agent.conversation.resume` carry one OpenInference `metadata` attribute, a JSON object with `graph_memory_enabled` and the tags of `observability.ContextWithSpanMetadata`.
 
-**`session.id` stays on `server.Weave` and `agent.chat`.** The memory spans join the session through their trace. The experiment analysis reads `eval_runs` rows, which carry no span name or parent, and assigns rows without a session to sessions by row order; `session.id` on spans that can end after the turn would move those boundaries.
+**`session.id`.** Every span in a session carries `session.id`: `server.Weave`, `agent.chat`, `agent.conversation.resume`, `graph_memory.recall`, `graph_memory.extract` and skill-eviction `graph_memory.salience_boost` set it from the session, and child spans inherit it from their parent span.
 
 ### Phoenix Annotations
 

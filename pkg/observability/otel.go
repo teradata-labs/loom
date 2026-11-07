@@ -29,17 +29,19 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	oteltrace "go.opentelemetry.io/otel/trace"
+	"go.uber.org/zap"
 )
 
 // OTelTracer exports Loom spans to any OTLP HTTP endpoint.
 // It bridges Loom's internal span model to the OTel SDK, translating
 // attributes to GenAI semantic conventions on export.
 type OTelTracer struct {
-	provider    *sdktrace.TracerProvider
-	tracer      oteltrace.Tracer
-	activeSpans sync.Map // loom SpanID (string) → oteltrace.Span
-	privacy     PrivacyConfig
-	recorder    *EvalRunRecorder // optional local eval_runs record (OTelConfig.Recorder)
+	provider            *sdktrace.TracerProvider
+	tracer              oteltrace.Tracer
+	activeSpans         sync.Map // loom SpanID (string) → oteltrace.Span
+	privacy             PrivacyConfig
+	recorder            *EvalRunRecorder // optional local eval_runs record (OTelConfig.Recorder)
+	invalidOverrideOnce sync.Once
 }
 
 // NewOTelTracer creates a tracer that exports via OTLP HTTP.
@@ -116,11 +118,14 @@ func (t *OTelTracer) StartSpan(ctx context.Context, name string, opts ...SpanOpt
 		opt(loomSpan)
 	}
 
-	// Link to parent Loom span if present.
+	// Link to parent Loom span if present; otherwise honor a 32-hex
+	// ContextWithTraceID override or record a non-hex override on the root span.
 	otelCtx := ctx
+	override := traceIDFromContextOverride(ctx)
 	if parent := SpanFromContext(ctx); parent != nil {
 		loomSpan.TraceID = parent.TraceID
 		loomSpan.ParentID = parent.SpanID
+		inheritParentSessionID(loomSpan, parent)
 		if len(parent.ResourceAttributes) > 0 && len(loomSpan.ResourceAttributes) == 0 {
 			loomSpan.ResourceAttributes = make(map[string]string, len(parent.ResourceAttributes))
 			for k, v := range parent.ResourceAttributes {
@@ -136,15 +141,49 @@ func (t *OTelTracer) StartSpan(ctx context.Context, name string, opts ...SpanOpt
 		} else if psc, ok := buildOTelSpanContext(parent.TraceID, parent.SpanID); ok {
 			otelCtx = oteltrace.ContextWithRemoteSpanContext(ctx, psc)
 		}
+	} else if override != "" {
+		if tid, err := oteltrace.TraceIDFromHex(strings.ToLower(override)); err == nil && tid.IsValid() {
+			psc := oteltrace.NewSpanContext(oteltrace.SpanContextConfig{
+				TraceID:    tid,
+				SpanID:     oteltrace.SpanID{1},
+				TraceFlags: oteltrace.FlagsSampled,
+				Remote:     true,
+			})
+			otelCtx = oteltrace.ContextWithRemoteSpanContext(ctx, psc)
+		} else {
+			t.invalidOverrideOnce.Do(func() {
+				zap.L().Debug("OTelTracer ignoring non-hex ContextWithTraceID override; recording in loom.trace_id_override",
+					zap.String("trace_id_override", override))
+			})
+			loomSpan.SetAttribute("loom.trace_id_override", override)
+		}
 	}
 
 	otelCtx, otelSpan := t.tracer.Start(otelCtx, name,
 		oteltrace.WithTimestamp(loomSpan.StartTime),
 		oteltrace.WithSpanKind(spanKindFor(name)),
 	)
+
+	// Adopt the exported IDs so TraceIDFromContext, response trace IDs and
+	// late children (spans started after their parent ended, which take the
+	// synthetic-parent path above) all name the trace the backend stores.
+	sc := otelSpan.SpanContext()
+	loomSpan.TraceID = sc.TraceID().String()
+	loomSpan.SpanID = sc.SpanID().String()
 	t.activeSpans.Store(loomSpan.SpanID, otelSpan)
 
 	return ContextWithSpan(otelCtx, loomSpan), loomSpan
+}
+
+func inheritParentSessionID(child, parent *Span) {
+	if child == nil || parent == nil {
+		return
+	}
+	if _, has := child.Attributes[AttrSessionID]; !has {
+		if sid, ok := parent.Attributes[AttrSessionID].(string); ok && sid != "" {
+			child.Attributes[AttrSessionID] = sid
+		}
+	}
 }
 
 // EndSpan completes the span: calculates duration, applies privacy redaction,

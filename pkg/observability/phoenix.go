@@ -229,7 +229,17 @@ func (c *PhoenixClient) Stop(ctx context.Context) error {
 	select {
 	case <-c.done:
 		return nil
+	default:
+	}
+	select {
+	case <-c.done:
+		return nil
 	case <-ctx.Done():
+		select {
+		case <-c.done:
+			return nil
+		default:
+		}
 		c.abortOnce.Do(func() {
 			close(c.abort)
 			c.reqCancel()

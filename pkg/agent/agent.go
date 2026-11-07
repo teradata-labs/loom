@@ -409,6 +409,9 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 			// the store calls that would otherwise each be a root.
 			ctx, span := tracer.StartSpan(context.Background(), "graph_memory.salience_boost")
 			defer tracer.EndSpan(span)
+			if sessionID != "" {
+				span.SetAttribute(observability.AttrSessionID, sessionID)
+			}
 			span.SetAttribute("salience.trigger", "skill_eviction")
 			span.SetAttribute("skill.name", skill.Name)
 			span.SetAttribute("agent.name", agentName)
@@ -1999,7 +2002,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// Set initial attributes
 	span.SetAttribute(observability.AttrSessionID, sessionID)
 	span.SetAttribute("message.length", len(userMessage))
-	span.SetAttribute("message.preview", observability.TruncateContent(userMessage))
+	span.SetAttribute("message.preview", observability.TruncateContent(observability.RedactText(userMessage)))
 	if p.reportContentBlocks {
 		span.SetAttribute("message.content_blocks", len(p.contentBlocks))
 	}
@@ -2277,7 +2280,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	span.SetAttribute("conversation.cost.usd", response.TurnUsage.CostUSD)
 	span.SetAttribute("conversation.stop_reason", response.Metadata["stop_reason"])
 	span.SetAttribute("response.length", len(response.Content))
-	span.SetAttribute("response.preview", observability.TruncateContent(response.Content))
+	span.SetAttribute("response.preview", observability.TruncateContent(observability.RedactText(response.Content)))
 
 	// Check if we hit limits
 	if maxTurnsHit, ok := response.Metadata["max_turns_hit"].(bool); ok && maxTurnsHit {
@@ -3689,8 +3692,9 @@ func recordToolSpanOutcome(toolSpan *observability.Span, result *shuttle.Result,
 
 // setToolSpanInput records the call on an agent.tool_execution span: the tool
 // name, the OTel GenAI operation and call ID, and the arguments as
-// OpenInference input.value, bounded by TruncateContent. input.mime_type is
-// set only when the arguments are whole, since truncated JSON is not JSON.
+// OpenInference input.value, redacted of credentials and PII before being
+// bounded by TruncateContent. input.mime_type is set only when the arguments
+// are whole, since truncated JSON is not JSON.
 func setToolSpanInput(span *observability.Span, call ToolCall) {
 	span.SetAttribute("tool_name", call.Name)
 	span.SetAttribute(observability.AttrToolName, call.Name)
@@ -3699,33 +3703,37 @@ func setToolSpanInput(span *observability.Span, call ToolCall) {
 		span.SetAttribute("gen_ai.tool.call.id", call.ID)
 	}
 	args := canonicalJSON(call.Input)
-	in := observability.TruncateContent(args)
+	redacted := observability.RedactText(args)
+	in := observability.TruncateContent(redacted)
 	span.SetAttribute("input.value", in)
-	if in == args {
+	if in == redacted {
 		span.SetAttribute("input.mime_type", "application/json")
 	}
 }
 
 // toolOutputPreview renders a tool result for the tool span's output.value:
 // the error for a failed call, else the result data (a string as it is,
-// anything else as JSON), bounded by TruncateContent.
+// anything else as JSON), redacted of credentials and PII before being bounded
+// by TruncateContent.
 func toolOutputPreview(result *shuttle.Result, err error) string {
+	var raw string
 	switch {
 	case err != nil:
-		return observability.TruncateContent("error: " + err.Error())
+		raw = "error: " + err.Error()
 	case result == nil:
 		return ""
 	case !result.Success && result.Error != nil:
-		return observability.TruncateContent("error: " + result.Error.Code + ": " + result.Error.Message)
+		raw = "error: " + result.Error.Code + ": " + result.Error.Message
+	default:
+		if s, ok := result.Data.(string); ok {
+			raw = s
+		} else if b, mErr := json.Marshal(result.Data); mErr == nil {
+			raw = string(b)
+		} else {
+			raw = fmt.Sprintf("%v", result.Data)
+		}
 	}
-	if s, ok := result.Data.(string); ok {
-		return observability.TruncateContent(s)
-	}
-	b, err := json.Marshal(result.Data)
-	if err != nil {
-		return observability.TruncateContent(fmt.Sprintf("%v", result.Data))
-	}
-	return observability.TruncateContent(string(b))
+	return observability.TruncateContent(observability.RedactText(raw))
 }
 
 // commitToolRow is the commit tail of dispatchOneCall — execution record,
@@ -4274,6 +4282,9 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 	// (az512h). One span, outcome always set.
 	ctx, span := a.tracer.StartSpan(ctx, "graph_memory.recall")
 	defer a.tracer.EndSpan(span)
+	if session != nil && session.ID != "" {
+		span.SetAttribute(observability.AttrSessionID, session.ID)
+	}
 	span.SetAttribute("agent.name", a.config.Name)
 	// Which memory partition this recall queries; differs from the agent name
 	// when GraphMemoryAgentID is set.
@@ -4317,8 +4328,9 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 		outcome = "no_query"
 		return
 	}
-	span.SetAttribute("recall.query", observability.TruncateContent(searchQuery))
-	span.SetAttribute("input.value", observability.TruncateContent(searchQuery))
+	redactedQuery := observability.TruncateContent(observability.RedactText(searchQuery))
+	span.SetAttribute("recall.query", redactedQuery)
+	span.SetAttribute("input.value", redactedQuery)
 
 	// Gather candidate memories from multiple sources.
 	seen := make(map[string]bool)
@@ -4459,12 +4471,12 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 		tc = GetTokenCounter()
 	}
 	span.SetAttribute("recall.injected_tokens", tc.CountTokens(injected))
-	span.SetAttribute("output.value", observability.TruncateContent(injected))
+	span.SetAttribute("output.value", observability.TruncateContent(observability.RedactText(injected)))
 	// OpenInference retriever documents, which Phoenix lists on the span.
 	for i, m := range relevant {
 		prefix := fmt.Sprintf("retrieval.documents.%d.document.", i)
 		span.SetAttribute(prefix+"id", m.ID)
-		span.SetAttribute(prefix+"content", observability.TruncateContent(m.Content))
+		span.SetAttribute(prefix+"content", observability.TruncateContent(observability.RedactText(m.Content)))
 	}
 
 	session.AddMessage(ctx, types.Message{

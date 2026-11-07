@@ -180,6 +180,7 @@ func (t *EmbeddedTracer) StartSpan(ctx context.Context, name string, opts ...Spa
 	if parent := SpanFromContext(ctx); parent != nil {
 		span.TraceID = parent.TraceID
 		span.ParentID = parent.SpanID
+		inheritParentSessionID(span, parent)
 		// Inherit resource attributes from parent when child has none set
 		if len(parent.ResourceAttributes) > 0 && len(span.ResourceAttributes) == 0 {
 			span.ResourceAttributes = make(map[string]string, len(parent.ResourceAttributes))

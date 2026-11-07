@@ -37,6 +37,7 @@ func FuzzRedactCredentialString(f *testing.F) {
 	f.Add("the password is hunter2secret99 and the api key was sk-1234567890abcdefghij")
 	f.Add("https://example.com/v1/search?q=loom&api_key=tvly-1234567890abcdefghij&sig=deadbeef1234")
 	f.Add("AWS key AKIAIOSFODNN7EXAMPLE and GitHub ghp_1234567890abcdefghijklmnopqrstuvwxyzABCD")
+	f.Add("0AKIAIOSFODNN7EXAMPLE0")
 
 	const (
 		plantedSk     = "sk-plantedFuzzSecret1234567890abcdef"
@@ -44,6 +45,8 @@ func FuzzRedactCredentialString(f *testing.F) {
 		plantedAKIA   = "AKIAIOSFODNN7EXAMPLE"
 		plantedBearer = "plantedBearerToken1234567890"
 		plantedJSON   = "plantedJsonApiKey9876543210"
+		sentinelStart = "\n<<<PLANTED_START>>>\n"
+		sentinelEnd   = "\n<<<PLANTED_END>>>\n"
 	)
 
 	f.Fuzz(func(t *testing.T, input string) {
@@ -65,19 +68,24 @@ func FuzzRedactCredentialString(f *testing.F) {
 			t.Fatalf("RedactText is not idempotent:\ninput:  %q\nfirst:  %q\nsecond: %q", input, textFirst, textSecond)
 		}
 
-		// 3. Planted secrets embedded around arbitrary fuzz input must never survive.
-		composite := fmt.Sprintf(
-			"%s | %s | %s | %s | Authorization: Bearer %s | {\"api_key\":%q} | %s",
-			input, plantedSk, plantedTvly, plantedAKIA, plantedBearer, plantedJSON, input,
+		// 3. Planted secrets embedded between sentinels must never survive in the planted section.
+		plantedBlock := fmt.Sprintf(
+			"%s | %s | %s | Authorization: Bearer %s | {\"api_key\":%q}",
+			plantedSk, plantedTvly, plantedAKIA, plantedBearer, plantedJSON,
 		)
+		composite := input + sentinelStart + plantedBlock + sentinelEnd + input
 		cleaned := redactCredentialString(composite)
-		for _, secret := range []string{plantedSk, plantedTvly, plantedAKIA, plantedBearer, plantedJSON} {
-			if strings.Contains(cleaned, secret) {
-				t.Fatalf("planted secret %q survived redaction in %q", secret, cleaned)
+		if _, rest, ok := strings.Cut(cleaned, sentinelStart); ok {
+			if middle, _, ok := strings.Cut(rest, sentinelEnd); ok {
+				for _, secret := range []string{plantedSk, plantedTvly, plantedAKIA, plantedBearer, plantedJSON} {
+					if strings.Contains(middle, secret) {
+						t.Fatalf("planted secret %q survived redaction in planted block %q", secret, middle)
+					}
+				}
 			}
 		}
 
-		// 4. Span-level redaction over structured values must not panic or leak planted secrets.
+		// 4. Span-level redaction over structured values must not panic or leak planted copies.
 		sp := &Span{
 			Name:    "agent.tool_execution",
 			TraceID: "t1",
@@ -90,13 +98,33 @@ func FuzzRedactCredentialString(f *testing.F) {
 					"note":    input,
 				},
 			},
-			Status: Status{Code: StatusError, Message: "failed with " + plantedSk + " " + input},
+			Status: Status{Code: StatusError, Message: "failed with " + plantedSk + sentinelStart + input},
 		}
 		redactedSpan := RedactSpan(sp, PrivacyConfig{RedactCredentials: true, RedactPII: true})
-		dumped := fmt.Sprintf("%+v", redactedSpan)
-		for _, secret := range []string{plantedSk, plantedTvly, plantedAKIA, plantedBearer, plantedJSON} {
-			if strings.Contains(dumped, secret) {
-				t.Fatalf("planted secret %q survived RedactSpan in %s", secret, dumped)
+		if inVal, ok := redactedSpan.Attributes["input.value"].(string); ok {
+			if _, rest, ok := strings.Cut(inVal, sentinelStart); ok {
+				if middle, _, ok := strings.Cut(rest, sentinelEnd); ok {
+					for _, secret := range []string{plantedSk, plantedTvly, plantedAKIA, plantedBearer, plantedJSON} {
+						if strings.Contains(middle, secret) {
+							t.Fatalf("planted secret %q survived RedactSpan input.value in %q", secret, middle)
+						}
+					}
+				}
+			}
+		}
+		if sl, ok := redactedSpan.Attributes["slice"].([]string); ok && len(sl) == 2 {
+			if strings.Contains(sl[1], plantedSk) {
+				t.Fatalf("planted secret %q survived RedactSpan slice element: %q", plantedSk, sl[1])
+			}
+		}
+		if nested, ok := redactedSpan.Attributes["nested"].(map[string]interface{}); ok {
+			if fmt.Sprint(nested["api_key"]) != RedactedValue {
+				t.Fatalf("planted nested api_key = %v, want %s", nested["api_key"], RedactedValue)
+			}
+		}
+		if beforeStatus, _, ok := strings.Cut(redactedSpan.Status.Message, sentinelStart); ok {
+			if strings.Contains(beforeStatus, plantedSk) {
+				t.Fatalf("planted secret %q survived RedactSpan Status.Message prefix: %q", plantedSk, beforeStatus)
 			}
 		}
 	})

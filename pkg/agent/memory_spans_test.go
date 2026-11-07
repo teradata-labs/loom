@@ -111,13 +111,13 @@ func TestExtractGraphMemoryAsync_Span(t *testing.T) {
 	assert.Equal(t, 1, attrs["extract.memories_created"])
 	assert.Equal(t, 0, attrs["extract.store_errors"])
 	assert.Equal(t, "test-agent", attrs["agent.name"])
-	_, hasSession := attrs[observability.AttrSessionID]
-	assert.False(t, hasSession, "eval_runs analysis expects session.id only on server.Weave and agent.chat")
+	assert.Equal(t, "extract-session", attrs[observability.AttrSessionID])
 
 	llmSpans := tracer.GetSpansByName(observability.SpanLLMCompletion)
 	require.Len(t, llmSpans, 1)
 	assert.Equal(t, extract[0].SpanID, llmSpans[0].ParentID, "the extraction LLM call is a child of the extract span")
 	assert.Equal(t, llm.RoleMemoryExtract, llmSpans[0].Attributes["llm.role"])
+	assert.Equal(t, "extract-session", llmSpans[0].Attributes[observability.AttrSessionID])
 }
 
 func TestExtractGraphMemoryAsync_SpanOutcomes(t *testing.T) {
@@ -160,7 +160,7 @@ func TestInjectGraphMemoryContext_RecallSpan(t *testing.T) {
 		config:            &Config{Name: "recall-agent"},
 		tracer:            tracer,
 	}
-	session := &types.Session{}
+	session := &types.Session{ID: "recall-session"}
 	session.AddMessage(ctx, types.Message{Role: "user", Content: "what broke in the volatile table?"})
 
 	a.injectGraphMemoryContext(ctx, session)
@@ -170,6 +170,7 @@ func TestInjectGraphMemoryContext_RecallSpan(t *testing.T) {
 	recall := spans[0]
 	attrs := recall.Attributes
 	require.Equal(t, "injected", attrs["recall.outcome"])
+	assert.Equal(t, "recall-session", attrs[observability.AttrSessionID])
 	assert.Equal(t, "recall-agent", attrs["agent.name"])
 	assert.Equal(t, "volatile table overflow", attrs["input.value"])
 	assert.Contains(t, attrs["recall.candidate_ids"], stored.ID)

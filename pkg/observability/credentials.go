@@ -92,9 +92,11 @@ var (
 	// Header lines: "Authorization: Bearer x", "Cookie: a=b" (not JSON).
 	credentialHeaderPattern = regexp.MustCompile(
 		`(?im)\b(authorization|proxy-authorization|cookie|set-cookie|x-api-key|api-key|x-auth-token)([ \t]*:[ \t]*)[^\r\n"]+`)
-	// name=value and name: value outside JSON (log lines, env dumps, YAML);
-	// replaced only when the name is a credential field.
-	credentialAssignmentPattern = regexp.MustCompile(`\b([A-Za-z][A-Za-z0-9_.\-]{0,63})([ \t]*[=:][ \t]*)([^\s&"',;]{4,})`)
+	// name=value and name: value outside JSON (log lines, env dumps, YAML,
+	// function calls like connect(user="dbc", password="...")); replaced only
+	// when the name is a credential field.
+	credentialAssignmentPattern = regexp.MustCompile(
+		`\b([A-Za-z][A-Za-z0-9_.\-]{0,63})([ \t]*[=:][ \t]*)("(?:[^"\\]|\\.)*"|'[^']*'|[^\s&"',;()]{4,})`)
 	// A credential word followed by its value in prose ("the password is
 	// hunter2", "cookie sid=abc1"); replaced only when the value looks like a
 	// credential (see credentialLike).
@@ -133,8 +135,19 @@ func redactCredentialString(s string) string {
 	s = credentialHeaderPattern.ReplaceAllString(s, "${1}${2}"+RedactedValue)
 	s = credentialAssignmentPattern.ReplaceAllStringFunc(s, func(m string) string {
 		sub := credentialAssignmentPattern.FindStringSubmatch(m)
-		if !isCredentialField(sub[1]) || sub[3] == RedactedValue {
+		if !isCredentialField(sub[1]) {
 			return m
+		}
+		val := sub[3]
+		if val == RedactedValue || val == `"`+RedactedValue+`"` || val == `'`+RedactedValue+`'` {
+			return m
+		}
+		if len(val) >= 2 && (val[0] == '"' || val[0] == '\'') && val[len(val)-1] == val[0] {
+			if len(val)-2 < 4 {
+				return m
+			}
+			q := val[:1]
+			return sub[1] + sub[2] + q + RedactedValue + q
 		}
 		return sub[1] + sub[2] + RedactedValue
 	})

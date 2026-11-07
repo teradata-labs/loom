@@ -226,7 +226,7 @@ func (p *InstrumentedProvider) Chat(ctx context.Context, messages []llmtypes.Mes
 	}
 
 	// Bounded response preview — maps to gen_ai.completion → Opik output column.
-	if preview := observability.TruncateContent(resp.Content); preview != "" {
+	if preview := observability.TruncateContent(observability.RedactText(resp.Content)); preview != "" {
 		span.SetAttribute("response.preview", preview)
 	}
 	// A response that calls tools has its calls in OpenInference output.value,
@@ -487,7 +487,7 @@ func (p *InstrumentedProvider) ChatStream(ctx context.Context, messages []llmtyp
 	}
 
 	// Bounded response preview — maps to gen_ai.completion → Opik output column.
-	if preview := observability.TruncateContent(resp.Content); preview != "" {
+	if preview := observability.TruncateContent(observability.RedactText(resp.Content)); preview != "" {
 		span.SetAttribute("response.preview", preview)
 	}
 	// A response that calls tools has its calls in OpenInference output.value,
@@ -585,7 +585,7 @@ func lastUserMessagePreview(messages []llmtypes.Message) string {
 		if m.Role != "user" {
 			continue
 		}
-		return observability.TruncateContent(messageText(m))
+		return observability.TruncateContent(observability.RedactText(messageText(m)))
 	}
 	return ""
 }
@@ -609,13 +609,13 @@ func newInputPreview(messages []llmtypes.Message) string {
 		return ""
 	}
 	if len(newest) == 1 && newest[0].Role == "user" {
-		return observability.TruncateContent(messageText(newest[0]))
+		return observability.TruncateContent(observability.RedactText(messageText(newest[0])))
 	}
 	lines := make([]string, 0, len(newest))
 	for _, m := range newest {
 		lines = append(lines, m.Role+": "+messageText(m))
 	}
-	return observability.TruncateContent(strings.Join(lines, "\n"))
+	return observability.TruncateContent(observability.RedactText(strings.Join(lines, "\n")))
 }
 
 // messageText returns a message's text: its Content, else its text blocks
@@ -651,7 +651,7 @@ func toolCallOutputPreview(resp *llmtypes.LLMResponse) string {
 		}
 		lines = append(lines, tc.Name+"("+string(args)+")")
 	}
-	return observability.TruncateContent(strings.Join(lines, "\n"))
+	return observability.TruncateContent(observability.RedactText(strings.Join(lines, "\n")))
 }
 
 // Ensure InstrumentedProvider implements LLMProvider interface

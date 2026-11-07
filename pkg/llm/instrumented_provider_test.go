@@ -649,6 +649,31 @@ func TestInstrumentedProvider_ToolCallOutputIsBounded(t *testing.T) {
 	assert.Equal(t, observability.DefaultMaxContentLength+1, len([]rune(out)), "bounded, plus the ellipsis")
 }
 
+func TestInstrumentedProvider_RedactsBoundaryCrossingSecretBeforeTruncation(t *testing.T) {
+	const secret = "hunter2boundarysecret987654"
+	padding := strings.Repeat("a", 170)
+	mockProvider := &mockLLMProvider{
+		name:  "test-provider",
+		model: "test-model",
+		response: &llmtypes.LLMResponse{ToolCalls: []llmtypes.ToolCall{
+			{ID: "call_1", Name: "db_connect", Input: map[string]interface{}{"a_pad": padding, "password": secret}},
+		}},
+	}
+	tracer := newMockTracer()
+	userMsg := `{"a_pad":"` + padding + `","password":"` + secret + `"}`
+	_, err := NewInstrumentedProvider(mockProvider, tracer).Chat(context.Background(),
+		[]llmtypes.Message{{Role: "user", Content: userMsg}}, nil)
+	require.NoError(t, err)
+	require.Len(t, tracer.spans, 1)
+
+	inVal, _ := tracer.spans[0].Attributes["input.value"].(string)
+	outVal, _ := tracer.spans[0].Attributes["output.value"].(string)
+	msgPrev, _ := tracer.spans[0].Attributes["message.preview"].(string)
+	assert.NotContains(t, inVal, secret[:6], "no prefix of boundary-crossing secret in input.value")
+	assert.NotContains(t, outVal, secret[:6], "no prefix of boundary-crossing secret in output.value")
+	assert.NotContains(t, msgPrev, secret[:6], "no prefix of boundary-crossing secret in message.preview")
+}
+
 func lastUserContent(messages []llmtypes.Message) string {
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == "user" {

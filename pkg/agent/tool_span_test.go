@@ -58,6 +58,30 @@ func TestToolOutputPreview(t *testing.T) {
 	}
 }
 
+func TestSetToolSpanInput_RedactsBeforeTruncation(t *testing.T) {
+	const secret = "hunter2boundarysecret987654"
+	// Place "password":"<secret>" across rune 200 so truncation without prior
+	// redaction would cut off the closing quote and leak the secret prefix.
+	padding := strings.Repeat("a", 170)
+	span := &observability.Span{Attributes: map[string]interface{}{}}
+	setToolSpanInput(span, ToolCall{
+		Name: "db_connect",
+		Input: map[string]interface{}{
+			"a_padding": padding,
+			"password":  secret,
+		},
+	})
+
+	in, _ := span.Attributes["input.value"].(string)
+	assert.NotContains(t, in, secret[:6], "no prefix of a boundary-crossing secret may survive in input.value")
+
+	out := toolOutputPreview(&shuttle.Result{
+		Success: true,
+		Data:    `{"a_padding":"` + padding + `","password":"` + secret + `"}`,
+	}, nil)
+	assert.NotContains(t, out, secret[:6], "no prefix of a boundary-crossing secret may survive in output.value")
+}
+
 func TestWithSpanContext_CopiesAgentContext(t *testing.T) {
 	parent := &agentContext{Context: context.Background(), turnIndex: 4}
 	spanCtx, span := observability.NewMockTracer().StartSpan(parent, "child")

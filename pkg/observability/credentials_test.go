@@ -119,6 +119,12 @@ func TestRedactCredentialString(t *testing.T) {
 			secrets: []string{"planted0123"},
 			keep:    []string{"engine=google", "q=loom"},
 		},
+		{
+			name:    "quoted credential assignment in function call",
+			in:      `connect(user="dbc", password="` + plantedPass + `", api_key='` + plantedTavily + `')`,
+			secrets: []string{plantedPass, plantedTavily},
+			keep:    []string{`user="dbc"`, `password="[REDACTED]"`, `api_key='[REDACTED]'`},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
