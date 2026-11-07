@@ -104,29 +104,38 @@ func (a *Agent) recordLLMIntent(ctx context.Context, sessionID string, stepIndex
 	return a.recordIntentWithRetry(ctx, sessionID, stepIndex, 0, eventlog.EventLLMCallIntent, "", payload)
 }
 
-// recordLLMResult is best-effort: the call has already happened. Logs and
-// continues on failure — the same convention as appendMessage/
-// PersistToolExecution — leaving an (intent, no result) gap for
-// ResumeSession to detect if the process crashes before this lands.
-func (a *Agent) recordLLMResult(ctx context.Context, sessionID string, stepIndex int, resp *LLMResponse) {
+// recordLLMResult records the model's response. When the response carries tool
+// calls the write is a blocking precondition, like recordLLMIntent: the calls must
+// not run until the response is durable, because a crash after them would redo the
+// model call and could choose different calls. The error ends the turn and no tool
+// runs; resume then finds an intent without a result and calls the model again. A
+// response with no tool calls has nothing to protect, so its write stays
+// best-effort. The WHOLE LLMResponse is recorded (content, tool calls, usage and
+// each call's opaque ThoughtSignature) so a replay consumer can rebuild it.
+func (a *Agent) recordLLMResult(ctx context.Context, sessionID string, stepIndex int, resp *LLMResponse) error {
 	if a.eventLog == nil || resp == nil {
-		return
+		return nil
 	}
-	// The WHOLE LLMResponse is recorded — content, tool calls, usage and each
-	// call's opaque ThoughtSignature — deliberately, for a future replay
-	// consumer. Nothing reads an llm_call_result event back today: resume
-	// correlates and backfills at TOOL-call granularity only, so a crash
-	// before the assistant message persisted always costs a fresh (repaid)
-	// LLM call. This is forward-compatible recording, not a working replay
-	// path — don't assume it is wired up.
+	required := len(resp.ToolCalls) > 0
 	payload, err := json.Marshal(resp)
 	if err != nil {
+		if required {
+			return fmt.Errorf("marshalling llm_call_result: %w", err)
+		}
 		zap.L().Warn("failed to marshal LLMResponse for event log", zap.String("session_id", sessionID), zap.Error(err))
-		return
+		return nil
 	}
-	if err := a.eventLog.RecordResult(ctx, sessionID, stepIndex, 0, eventlog.EventLLMCallResult, "", payload); err != nil {
-		zap.L().Warn("failed to record llm_call_result event", zap.String("session_id", sessionID), zap.Error(err))
+	err = a.retryEventWrite(ctx, eventlog.EventLLMCallResult, func() error {
+		return a.eventLog.RecordResult(ctx, sessionID, stepIndex, 0, eventlog.EventLLMCallResult, "", payload)
+	})
+	if err == nil {
+		return nil
 	}
+	if required {
+		return fmt.Errorf("recording llm_call_result before its tool calls: %w", err)
+	}
+	zap.L().Warn("failed to record llm_call_result event", zap.String("session_id", sessionID), zap.Error(err))
+	return nil
 }
 
 // recordToolIntent: see recordLLMIntent — same blocking-precondition contract,
@@ -162,6 +171,14 @@ func (a *Agent) recordToolResult(ctx context.Context, sessionID string, stepInde
 const recordIntentMaxAttempts = 3
 
 func (a *Agent) recordIntentWithRetry(ctx context.Context, sessionID string, stepIndex, batchPosition int, eventType eventlog.EventType, toolUseID string, payload []byte) error {
+	return a.retryEventWrite(ctx, eventType, func() error {
+		return a.eventLog.RecordIntent(ctx, sessionID, stepIndex, batchPosition, eventType, toolUseID, payload)
+	})
+}
+
+// retryEventWrite runs write up to recordIntentMaxAttempts times with a short
+// backoff, for writes the loop must not proceed without.
+func (a *Agent) retryEventWrite(ctx context.Context, eventType eventlog.EventType, write func() error) error {
 	var lastErr error
 	for attempt := 0; attempt < recordIntentMaxAttempts; attempt++ {
 		if attempt > 0 {
@@ -171,7 +188,7 @@ func (a *Agent) recordIntentWithRetry(ctx context.Context, sessionID string, ste
 			case <-time.After(time.Duration(attempt) * 100 * time.Millisecond):
 			}
 		}
-		lastErr = a.eventLog.RecordIntent(ctx, sessionID, stepIndex, batchPosition, eventType, toolUseID, payload)
+		lastErr = write()
 		if lastErr == nil {
 			return nil
 		}
