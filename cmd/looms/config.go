@@ -719,6 +719,13 @@ type MCPServerConfig struct {
 	// EnableResumption enables stream resumption (for streamable-http transport)
 	EnableResumption bool `mapstructure:"enable_resumption"`
 
+	// MaxResponseBytes bounds one JSON-RPC message from this server
+	// (streamable-http only). 0 selects the 16 MiB default; raise it for a
+	// server that legitimately returns more, or set
+	// transport.MaxResponseLimit for effectively no limit. Ignored by stdio,
+	// which is unbounded on purpose.
+	MaxResponseBytes int64 `mapstructure:"max_response_bytes"`
+
 	// Enabled controls whether this server should be started (default: true)
 	// CRITICAL: This field MUST be explicitly written during add/update operations
 	// to prevent the server being disabled on restart (Go zero-value is false).
