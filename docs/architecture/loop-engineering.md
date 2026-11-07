@@ -48,7 +48,7 @@ LangChain's "The Art of Loop Engineering" (June 2026) describes four stacked loo
 
 The inner loop: model calls tools until done. Loom's implementation is `Agent.runConversationLoop` (`pkg/agent/agent.go:2187`).
 
-Pre-loop, once per `Chat`: freeze the base advertised tool set (`captureBaseTools`, `agent.go:2197`), initialize the self-healing recovery orchestrator if enabled (`agent.go:2208`), run lazy tool disclosure against the incoming user message, and inject graph-memory context (`injectGraphMemoryContext`, `agent.go:3216`).
+Pre-loop, once per `Chat`: freeze the base advertised tool set (`captureBaseTools`, `agent.go:2197`), initialize the self-healing recovery orchestrator if enabled (`agent.go:2208`), run lazy tool disclosure against the incoming user message, and recall graph-memory context (`graphMemoryNote`) for the transient `<system-reminder>` tail of every LLM call of the turn.
 
 Per-iteration order:
 

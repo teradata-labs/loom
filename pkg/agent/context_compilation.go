@@ -24,6 +24,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"sort"
 	"strconv"
 	"strings"
@@ -82,12 +83,41 @@ const evictedStubFormat = "[%s result, ~%d tokens, evicted from context — re-r
 // render cases, with pair atomicity restored by synthetic failed results.
 // Must hold lock.
 func (sm *SegmentedMemory) compileLocked() []Message {
+	// Fingerprinting hashes the whole context; it is only read when a
+	// settled thinking row has a recorded fingerprint to compare against.
+	out, _ := sm.compilePrefixLocked(len(sm.thinkingPrefix) > 0)
+	return out
+}
+
+// compilePrefixLocked is compileLocked plus, when fingerprint is set, the
+// fingerprint of the compiled list (see thinkingPrefix); without it no
+// settled turn keeps its thinking blocks and the sum is zero. Must hold lock.
+func (sm *SegmentedMemory) compilePrefixLocked(fingerprint bool) ([]Message, [sha256.Size]byte) {
 	out := make([]Message, 0, len(sm.contextMessages)+2)
+
+	// prefix fingerprints out as it grows: every append goes through push, so
+	// prefix.Sum at any point is the fingerprint of everything before the next
+	// message. It starts from the request identity — the model and the
+	// advertised tool schemas — which the provider also checks a replayed
+	// thinking block against, and which a tool or model change alters without
+	// changing a message.
+	var prefix hash.Hash
+	if fingerprint {
+		prefix = sha256.New()
+		writeField(prefix, sm.requestModel)
+		writeField(prefix, string(sm.requestToolsDigest[:]))
+	}
+	push := func(m Message) {
+		out = append(out, m)
+		if prefix != nil {
+			writeMessageFingerprint(prefix, &out[len(out)-1])
+		}
+	}
 
 	// Step 2: ROM. Its own cache breakpoint — the most stable prefix; survives a
 	// fold, which only invalidates from the summary downward.
 	if sm.romContent != "" {
-		out = append(out, Message{Role: "system", Content: sm.romContent, CacheBreakpoint: true})
+		push(Message{Role: "system", Content: sm.romContent, CacheBreakpoint: true})
 	}
 
 	// Step 3: the summary's newest version, one system message. Its own cache
@@ -99,7 +129,7 @@ func (sm *SegmentedMemory) compileLocked() []Message {
 		// summary is the weakest claimant — a fold rewrites the summary itself,
 		// so the fallback it would provide lands on ROM's entry anyway, and on
 		// an evict-only pass it saves re-sending the summary alone.
-		out = append(out, Message{Role: "system", Content: sm.summary.text})
+		push(Message{Role: "system", Content: sm.summary.text})
 	}
 
 	// Step 5: T — the session's current turn number.
@@ -125,7 +155,14 @@ func (sm *SegmentedMemory) compileLocked() []Message {
 	msgs := sm.contextMessages
 	lastStable, frozen := len(out)-1, false
 	emit := func(m *Message) {
-		out = append(out, sm.renderLocked(m, t, callName))
+		r := sm.renderLocked(m, t, callName)
+		if prefix != nil && m.Role == "assistant" && len(m.ThinkingBlocks) > 0 && r.ThinkingBlocks == nil &&
+			sm.thinkingPrefixMatchesLocked(m, prefix) {
+			// A settled turn keeps its thinking blocks while everything before
+			// them renders as it did when the model wrote them (thinkingPrefix).
+			r.ThinkingBlocks = m.ThinkingBlocks
+		}
+		push(r)
 		if m.Turn == t && ((m.Role == "tool" && !m.Evicted && len(m.Content) > sm.threshold) ||
 			(m.Role == "tool" && sm.pressureOffloadedLocked(m, t)) ||
 			(m.Role == "assistant" && hasQueryToolResultCall(m))) {
@@ -162,7 +199,7 @@ func (sm *SegmentedMemory) compileLocked() []Message {
 			}
 			for _, c := range m.ToolCalls {
 				if c.ID != "" && missing[c.ID] {
-					out = append(out, Message{
+					push(Message{
 						Role:      "tool",
 						ToolUseID: c.ID,
 						Content:   syntheticFailedResult,
@@ -197,7 +234,109 @@ func (sm *SegmentedMemory) compileLocked() []Message {
 		}
 	}
 
-	return out
+	var sum [sha256.Size]byte
+	if prefix != nil {
+		prefix.Sum(sum[:0])
+	}
+	return out, sum
+}
+
+// Settled-turn thinking blocks (thinkingPrefix). Current models keep earlier
+// turns' thinking blocks in context, so leaving them out of a settled turn
+// changes the request from that turn's first assistant message on: the
+// prompt cache misses there on the next message. They may only be sent while
+// everything before them is unchanged, though: the provider checks that a
+// replayed block follows the same system prompt, tools and messages it was
+// written after (an edit is a 400 on enforced accounts), and loom does edit
+// settled history — offload stubs re-render at the settle boundary, the turn
+// end drops payloads, relief evicts and folds. So AddMessage records, for each
+// assistant message with thinking blocks, the fingerprint of the compiled
+// context the model had just been sent, and compile keeps the blocks on a
+// settled turn only while the context before them still fingerprints the
+// same. The fingerprint starts from the model ID and a digest of the
+// advertised tool schemas (SetRequestIdentity), so a tool-set change (lazy
+// disclosure, a skill load, a circuit-breaker filter) or a model switch drops
+// the blocks too; either already misses the prompt cache from the tool list
+// on, so dropping them costs no cache. The transient tail (withSystemReminder)
+// is outside the fingerprint, as it is outside the history within a turn.
+
+// recordThinkingPrefixLocked records the compiled-context fingerprint for an
+// assistant message about to be appended. Must hold the write lock.
+func (sm *SegmentedMemory) recordThinkingPrefixLocked(msg *Message) {
+	if msg.Role != "assistant" || len(msg.ThinkingBlocks) == 0 {
+		return
+	}
+	_, sum := sm.compilePrefixLocked(true)
+	if sm.thinkingPrefix == nil {
+		sm.thinkingPrefix = make(map[[sha256.Size]byte][sha256.Size]byte)
+	}
+	if len(sm.thinkingPrefix) > 4096 { // bound: entries for folded-away rows are never read again
+		sm.thinkingPrefix = make(map[[sha256.Size]byte][sha256.Size]byte)
+	}
+	sm.thinkingPrefix[thinkingBlocksKey(msg.ThinkingBlocks)] = sum
+}
+
+// thinkingPrefixMatchesLocked reports whether m's thinking blocks were
+// written after a context that fingerprints as prefix does now.
+func (sm *SegmentedMemory) thinkingPrefixMatchesLocked(m *Message, prefix hash.Hash) bool {
+	want, ok := sm.thinkingPrefix[thinkingBlocksKey(m.ThinkingBlocks)]
+	if !ok {
+		return false
+	}
+	var got [sha256.Size]byte
+	prefix.Sum(got[:0])
+	return got == want
+}
+
+// thinkingBlocksKey identifies an assistant message by its thinking blocks
+// (signatures are unique per response).
+func thinkingBlocksKey(blocks []ThinkingBlock) [sha256.Size]byte {
+	h := sha256.New()
+	for _, b := range blocks {
+		writeField(h, b.Type)
+		writeField(h, b.Thinking)
+		writeField(h, b.Signature)
+	}
+	var sum [sha256.Size]byte
+	h.Sum(sum[:0])
+	return sum
+}
+
+// writeMessageFingerprint writes every field of a compiled message that
+// reaches the provider (not CacheBreakpoint, which changes call to call
+// without changing the content).
+func writeMessageFingerprint(h hash.Hash, m *Message) {
+	writeField(h, m.Role)
+	writeField(h, m.Content)
+	for _, b := range m.ContentBlocks {
+		writeField(h, b.Type)
+		writeField(h, b.Text)
+		if b.Image != nil {
+			writeField(h, b.Image.Source.Type)
+			writeField(h, b.Image.Source.MediaType)
+			writeField(h, b.Image.Source.Data)
+			writeField(h, b.Image.Source.URL)
+		}
+	}
+	for _, b := range m.ThinkingBlocks {
+		writeField(h, b.Type)
+		writeField(h, b.Thinking)
+		writeField(h, b.Signature)
+	}
+	for _, c := range m.ToolCalls {
+		writeField(h, c.ID)
+		writeField(h, c.Name)
+		input, _ := json.Marshal(c.Input) // map keys marshal sorted
+		writeField(h, string(input))
+	}
+	writeField(h, m.ToolUseID)
+	writeField(h, "\x1e") // message separator
+}
+
+// writeField writes s length-prefixed, so field boundaries cannot shift.
+func writeField(h hash.Hash, s string) {
+	h.Write([]byte(strconv.Itoa(len(s)) + ":"))
+	h.Write([]byte(s))
 }
 
 // hasQueryToolResultCall reports whether an assistant message issues a
@@ -223,9 +362,9 @@ func hasQueryToolResultCall(m *Message) bool {
 // size or exemption, because the alternative is a turn that cannot be sent.
 func (sm *SegmentedMemory) renderLocked(m *Message, t int64, callName map[string]string) Message {
 	if m.Role == "assistant" && len(m.ThinkingBlocks) > 0 && m.Turn < t {
-		// Settled turns render without thinking blocks: the provider ignores
-		// them there, and the strip is a deterministic render (same one-time
-		// prefix rewrite as the stub re-render at the settle boundary).
+		// Settled turns render without thinking blocks here (the fold
+		// compressor's input). compileLocked puts them back while the prefix
+		// they were written after is unchanged (thinkingPrefix).
 		r := *m
 		r.ThinkingBlocks = nil
 		return r
@@ -590,7 +729,7 @@ func (sm *SegmentedMemory) estimateCompiledLocked(compiled []Message) int {
 	f := sm.calibrationLocked()
 
 	// Cheap tier — byte bound, no tokenization.
-	bytes := sm.kernelBytes
+	bytes := sm.kernelBytes + len(sm.transientTail)
 	for i := range compiled {
 		bytes += len(compiled[i].Content)
 		if len(compiled[i].ToolCalls) > 0 {
@@ -611,8 +750,8 @@ func (sm *SegmentedMemory) estimateCompiledLocked(compiled []Message) int {
 	return int(float64(sm.accurateTokensLocked(compiled)) * f)
 }
 
-// accurateTokensLocked is the uncalibrated tiktoken count of KERNEL plus the
-// compiled messages. Must hold lock.
+// accurateTokensLocked is the uncalibrated tiktoken count of KERNEL, the
+// compiled messages and the transient tail (SetTransientTail). Must hold lock.
 func (sm *SegmentedMemory) accurateTokensLocked(compiled []Message) int {
 	tc := sm.tokenCounter
 	if tc == nil {
@@ -621,6 +760,9 @@ func (sm *SegmentedMemory) accurateTokensLocked(compiled []Message) int {
 	tokens := tokenFigure(sm.kernelBytes)
 	for i := range compiled {
 		tokens += sm.msgTokensLocked(tc, &compiled[i])
+	}
+	if sm.transientTail != "" {
+		tokens += sm.msgTokensLocked(tc, &Message{Role: "user", Content: sm.transientTail})
 	}
 	return tokens
 }
@@ -1608,6 +1750,31 @@ func (sm *SegmentedMemory) SetAdvertisedToolsBytes(bytes int) {
 	sm.kernelDirty = false
 	sm.updateTokenCount()
 	sm.tokenCountDirty = false
+}
+
+// SetTransientTail records the content of the transient message the agent
+// appends after the compiled context on its provider calls (the
+// <system-reminder> tail of withSystemReminder: the graph memory recall note,
+// soft reminders, the tool-change note), or "" when there is none. The tail is
+// never stored, but it is sent, so it counts in the relief estimate like the
+// advertised tool schemas do, and in the count ObservePromptTokens compares
+// the provider's prompt size against. Set it before ReleasePressure and leave
+// it set through ObservePromptTokens for the same call.
+func (sm *SegmentedMemory) SetTransientTail(content string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.transientTail = content
+}
+
+// SetRequestIdentity records what the provider call is made with besides the
+// compiled messages: the model ID and a digest of the advertised tool schemas
+// (advertisedToolsDigest). Settled thinking blocks are replayed only while it
+// is the one they were written under (thinkingPrefix).
+func (sm *SegmentedMemory) SetRequestIdentity(model string, toolsDigest [sha256.Size]byte) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.requestModel = model
+	sm.requestToolsDigest = toolsDigest
 }
 
 // SetSkillDeactivationHook wires the skills orchestrator's deactivation path,

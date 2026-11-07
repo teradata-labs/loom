@@ -36,15 +36,16 @@ func TestRebuiltToolTurn_DetectsAStoreRebuild(t *testing.T) {
 	assert.True(t, rebuiltToolTurn(rebuilt),
 		"an assistant tool_use row with no thinking blocks is the store-rebuild shape")
 
-	// Settled turns render without their blocks by design, so a missing block
-	// in an older turn is not this problem.
+	// A settled turn replays its blocks only while the context before them is
+	// unchanged (thinkingPrefix), and a reload has none to replay, so a
+	// missing block in an older turn is not this problem.
 	settled := []Message{
 		{Role: "assistant", Turn: 1, ToolCalls: []ToolCall{{ID: "old", Name: "shell_execute"}}},
 		{Role: "tool", Turn: 1, ToolUseID: "old", Content: "ok"},
 		{Role: "user", Turn: 4, Content: "next"},
 	}
 	assert.False(t, rebuiltToolTurn(settled),
-		"only the newest turn is examined — settled turns are stripped on purpose")
+		"only the newest turn is examined — settled turns may lose their blocks by design")
 
 	// A turn that has not called a tool yet has nothing to pair.
 	assert.False(t, rebuiltToolTurn([]Message{{Role: "user", Turn: 5, Content: "hi"}}))

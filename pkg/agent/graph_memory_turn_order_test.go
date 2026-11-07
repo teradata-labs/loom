@@ -106,10 +106,11 @@ func (l *turnOrderLLM) extractions() int {
 	return l.extractCalls
 }
 
-// memoryBlockIn returns the injected graph-memory block of a main chat request, or "".
+// memoryBlockIn returns the message of a main chat request that carries the
+// graph memory recall note, or "".
 func memoryBlockIn(req []llmtypes.Message) string {
 	for _, m := range req {
-		if strings.HasPrefix(m.Content, graphMemoryContextMarker) {
+		if strings.Contains(m.Content, graphMemoryContextMarker) {
 			return m.Content
 		}
 	}
@@ -186,9 +187,27 @@ func TestGraphMemory_EarlierTurnRecalledOnNextTurn(t *testing.T) {
 	_, err = ag.Chat(ctx, "s-recall", "What is my dog's name?")
 	require.NoError(t, err)
 
-	block := memoryBlockIn(llm.mainRequest(t, 1))
+	req := llm.mainRequest(t, 1)
+	block := memoryBlockIn(req)
 	require.NotEmpty(t, block, "the next turn must recall the earlier turn's fact")
 	assert.Contains(t, block, "Max")
+
+	// The note rides the trailing <system-reminder> user message, after the
+	// conversation, never a system message (which the Anthropic client would
+	// move into the cached system field) and never the session.
+	last := req[len(req)-1]
+	assert.True(t, last.Role == "user" && strings.HasPrefix(last.Content, "<system-reminder>"),
+		"the recall note is the request's trailing system reminder")
+	assert.Contains(t, last.Content, graphMemoryContextMarker)
+	for _, m := range req {
+		if m.Role == "system" {
+			assert.NotContains(t, m.Content, graphMemoryContextMarker)
+		}
+	}
+	sess := ag.memory.GetOrCreateSessionWithAgent(ctx, "s-recall", ag.config.Name, "")
+	for _, m := range rawSessionMessages(sess) {
+		assert.NotContains(t, m.Content, graphMemoryContextMarker, "the recall note is never stored")
+	}
 }
 
 // Extraction now runs alongside the LLM call, so the turn can return first.
