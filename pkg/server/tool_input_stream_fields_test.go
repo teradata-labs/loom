@@ -34,11 +34,13 @@ func TestApplyToolInputStreamFields_CarriesCallIdentityAndSize(t *testing.T) {
 		ToolName:          "files",
 		ToolCallID:        "call_1",
 		ToolInputBytes:    2048,
+		ToolCallIndex:     2,
 	})
 
 	assert.True(t, progress.IsToolInputStream)
 	assert.Equal(t, "call_1", progress.ToolCallId)
 	assert.Equal(t, int64(2048), progress.ToolInputBytes)
+	assert.Equal(t, int32(2), progress.ToolCallIndex)
 	assert.Equal(t, "files", progress.ToolName)
 }
 

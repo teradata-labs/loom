@@ -81,6 +81,13 @@ type ServerConfig struct {
 
 	// Timeout for server operations (e.g., "30s", "1m")
 	Timeout string `yaml:"timeout" json:"timeout"`
+
+	// TrustAnnotations opts this server in to having its tool annotations
+	// (readOnlyHint, destructiveHint) believed. Default false: the MCP spec
+	// treats annotations as untrusted unless the server is trusted, so with
+	// behavior.parallel_read_tools on, a tool of an untrusted server is never
+	// run concurrently with others.
+	TrustAnnotations bool `yaml:"trust_annotations" json:"trust_annotations"`
 }
 
 // ToolFilter controls which tools are registered from a server.

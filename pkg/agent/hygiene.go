@@ -73,7 +73,7 @@ func (a *Agent) runEndOfTurnHygiene(ctx context.Context, session *Session, retry
 		// normalizeWireRoles), but persisted under its own role so it is
 		// never mistaken for something the human typed.
 		a.appendMessage(ctx, session, Message{
-			Role:      "hygiene_injection",
+			Role:      roleHygieneInjection,
 			Content:   outcome.InjectionMessage,
 			AgentID:   a.GetID(),
 			Timestamp: time.Now(),

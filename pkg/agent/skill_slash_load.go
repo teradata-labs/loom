@@ -124,7 +124,7 @@ func (a *Agent) loadSkillFromSlashCommand(ctx context.Context, session *Session,
 	// differently.
 	if body, ok := result.Metadata["text_body"].(string); ok && body != "" {
 		a.appendMessage(ctx, session, Message{
-			Role:      "skill_body",
+			Role:      roleSkillBody,
 			Content:   body,
 			AgentID:   a.GetID(),
 			Timestamp: time.Now(),

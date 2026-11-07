@@ -6,6 +6,7 @@
 package azureopenai
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -116,6 +117,53 @@ func TestSanitizeToolSchemas_RemovesEmptyDefaults(t *testing.T) {
 	default3, hasDefault3 := param3["default"]
 	assert.True(t, hasDefault3, "zero default should be kept")
 	assert.Equal(t, 0, default3.(int), "default should be 0")
+}
+
+func TestSanitizeToolSchemas_Composites(t *testing.T) {
+	for _, keyword := range []string{"anyOf", "oneOf", "allOf", "not"} {
+		for _, typed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/typed=%t", keyword, typed), func(t *testing.T) {
+				branch := map[string]interface{}{
+					"default": "",
+					"properties": map[string]interface{}{
+						"empty": map[string]interface{}{"default": ""},
+						"zero":  map[string]interface{}{"default": 0},
+						"false": map[string]interface{}{"default": false},
+					},
+					"items": map[string]interface{}{"default": ""},
+				}
+				var value interface{} = []interface{}{branch}
+				if typed {
+					value = []map[string]interface{}{branch}
+				}
+				if keyword == "not" {
+					value = branch
+				}
+				params := map[string]interface{}{"properties": map[string]interface{}{
+					"choice": map[string]interface{}{keyword: value},
+				}}
+				result := sanitizeParameters(params)
+				choice := result["properties"].(map[string]interface{})["choice"].(map[string]interface{})
+				var sanitized map[string]interface{}
+				switch branches := choice[keyword].(type) {
+				case map[string]interface{}:
+					sanitized = branches
+				case []interface{}:
+					sanitized = branches[0].(map[string]interface{})
+				case []map[string]interface{}:
+					sanitized = branches[0]
+				}
+				require.NotNil(t, sanitized)
+				assert.NotContains(t, sanitized, "default")
+				properties := sanitized["properties"].(map[string]interface{})
+				assert.NotContains(t, properties["empty"], "default")
+				assert.Equal(t, 0, properties["zero"].(map[string]interface{})["default"])
+				assert.Equal(t, false, properties["false"].(map[string]interface{})["default"])
+				assert.NotContains(t, sanitized["items"], "default")
+				assert.Equal(t, "", branch["default"])
+			})
+		}
+	}
 }
 
 func TestSanitizeToolSchemas_PreservesValidSchema(t *testing.T) {

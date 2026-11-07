@@ -339,7 +339,10 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 	}
 
 	if finalResult.err != nil {
-		return status.Errorf(codes.Internal, "agent error: %v", finalResult.err)
+		// Same status mapping as Weave and the multi-agent StreamWeave:
+		// cancellation, deadline, and provider capacity failures keep
+		// retryable codes instead of collapsing into Internal.
+		return wrapAgentError(finalResult.err)
 	}
 
 	// Send final completion event with result and context state
@@ -413,29 +416,50 @@ func convertAgentStageToProto(stage agent.ExecutionStage) loomv1.ExecutionStage 
 	}
 }
 
-// convertHITLRequestToProto converts agent.HITLRequestInfo to proto HITLRequestInfo.
+// convertHITLRequestToProto converts agent.HITLRequestInfo to proto
+// HITLRequestInfo. Every progress stream (Weave and the multi-agent stream)
+// builds its card through here, so a gRPC client sees the same card on both:
+// Context goes to context_json, and the stored request's Kind, Summary, Params
+// and ParamsTruncated go to kind, summary, params_json and params_truncated.
+// For a parked turn, params_json is the per-item descriptor map, which carries
+// each approval item's joined admission-hook reason.
 func convertHITLRequestToProto(info *agent.HITLRequestInfo) *loomv1.HITLRequestInfo {
 	if info == nil {
 		return nil
 	}
 
-	// Serialize context to JSON
-	var contextJSON string
-	if len(info.Context) > 0 {
-		jsonBytes, err := json.Marshal(info.Context)
-		if err == nil {
-			contextJSON = string(jsonBytes)
-		}
-	}
-
 	return &loomv1.HITLRequestInfo{
-		RequestId:      info.RequestID,
-		Question:       info.Question,
-		RequestType:    info.RequestType,
-		Priority:       info.Priority,
-		TimeoutSeconds: types.SafeInt32(int(info.Timeout.Seconds())),
-		ContextJson:    contextJSON,
+		RequestId:       info.RequestID,
+		Question:        info.Question,
+		RequestType:     info.RequestType,
+		Priority:        info.Priority,
+		TimeoutSeconds:  types.SafeInt32(int(info.Timeout.Seconds())),
+		ContextJson:     hitlMapJSON(info.RequestID, "context", info.Context),
+		Kind:            info.Kind,
+		Summary:         info.Summary,
+		ParamsJson:      hitlMapJSON(info.RequestID, "params", info.Params),
+		ParamsTruncated: info.ParamsTruncated,
 	}
+}
+
+// hitlMapJSON serializes one of a HITL card's maps for its *_json field. An
+// empty map yields "". A map that cannot be serialized also yields "" (the
+// rest of the card still goes out, so the human is still asked) and is logged
+// with the request ID so the missing field can be traced; values are not
+// logged because they may hold tool arguments.
+func hitlMapJSON(requestID, field string, m map[string]interface{}) string {
+	if len(m) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		zap.L().Warn("HITL card field dropped: not serializable to JSON",
+			zap.String("request_id", requestID),
+			zap.String("field", field),
+			zap.Error(err))
+		return ""
+	}
+	return string(b)
 }
 
 // applyToolLifecycleFields populates tool lifecycle fields on a WeaveProgress proto
@@ -451,7 +475,8 @@ func sanitizeUTF8(s string) string {
 }
 
 // applyToolInputStreamFields marks a tool-input stream event and carries the
-// call's id and argument bytes so far, so clients can show the tool before it starts.
+// call's id, position and argument bytes so far, so clients can show the tool
+// before it starts and tell parallel calls to the same tool apart.
 func applyToolInputStreamFields(proto *loomv1.WeaveProgress, event agent.ProgressEvent) {
 	if !event.IsToolInputStream {
 		return
@@ -460,6 +485,7 @@ func applyToolInputStreamFields(proto *loomv1.WeaveProgress, event agent.Progres
 	proto.IsToolInputStream = true
 	proto.ToolCallId = event.ToolCallID
 	proto.ToolInputBytes = event.ToolInputBytes
+	proto.ToolCallIndex = event.ToolCallIndex
 }
 
 func applyToolLifecycleFields(proto *loomv1.WeaveProgress, event agent.ProgressEvent) {

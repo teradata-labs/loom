@@ -18,10 +18,12 @@ import (
 	"database/sql"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
+	"github.com/teradata-labs/loom/pkg/eventlog"
 	"github.com/teradata-labs/loom/pkg/fabric"
 	mcpadapter "github.com/teradata-labs/loom/pkg/mcp/adapter"
 	"github.com/teradata-labs/loom/pkg/memory"
@@ -81,6 +83,16 @@ type Agent struct {
 	// hitlPark, when non-nil, enables HITL park-and-resume: a batch needing a
 	// human decision ends the turn (TurnParkedError) instead of holding it.
 	hitlPark *hitlParkConfig
+
+	// eventLog, when non-nil, enables the durable, tool-call-granularity
+	// execution log (issue #229) for crash-resumable conversation loops. Nil
+	// disables it: every write-ahead call becomes a no-op, and ResumeSession
+	// is unavailable (returns ErrEventLogDisabled).
+	eventLog eventlog.EventLogStore
+
+	// leaseTTL overrides eventlog.DefaultSessionLeaseTTL for the session lease
+	// (session_lease.go). Zero uses the default; tests set it short.
+	leaseTTL time.Duration
 
 	// resourceAwait, when non-nil (WithResourceAwait), enables resource-await
 	// park: a successful tool result carrying AwaitResource ends the turn
@@ -269,6 +281,26 @@ type Agent struct {
 	graphExtractionCadence             int
 	graphToolExecutionsSinceExtraction int
 	graphExtractionWG                  sync.WaitGroup // tracks in-flight async extractions
+	// toolLedgerMu guards toolLedgers: per-session tool-execution ledgers
+	// for the lesson miner (graph_memory_lessons.go). Recorded at execution
+	// time so mining is immune to context compilation evicting early turns
+	// from the compiled message view.
+	toolLedgerMu sync.Mutex
+	toolLedgers  map[string][]minedEvent
+	// lessonCoveredSessions (also guarded by toolLedgerMu) marks the
+	// sessions whose history the lesson miner must not walk again: every
+	// session that recorded a ledger in this process, and every session the
+	// whole-history fallback already mined. Freed by DeleteSession.
+	lessonCoveredSessions map[string]struct{}
+	// errorLessonMu guards errorLessonState: per-session tracking for
+	// error-triggered lesson recall (graph_memory_lessons.go) — which
+	// lessons were already injected and how many injections have fired.
+	errorLessonMu    sync.Mutex
+	errorLessonState map[string]*errorLessonSession
+	// lessonTrials counts error-lane lesson recalls; every
+	// lessonRetrialInterval-th one carries a demoted lesson so demotion
+	// stays reversible (graph_memory_lessons.go).
+	lessonTrials atomic.Uint64
 
 	// Conversation-turn-based graph extraction (fires on LLM responses, not tool use).
 	graphConversationExtractionCadence int // 0 = disabled
@@ -302,6 +334,11 @@ type WorkflowCommunicationContext struct {
 type Config struct {
 	// Name is the agent name (used for identification and logging)
 	Name string
+
+	// GraphMemoryAgentID is the stable key for graph memory reads and writes.
+	// Empty means Name (unchanged behaviour). Use an ID that survives renames;
+	// the agent's own ID is a fresh UUID per instance and would lose memory on restart.
+	GraphMemoryAgentID string
 
 	// Description is a human-readable description of the agent's purpose
 	Description string
@@ -376,6 +413,22 @@ type Config struct {
 	// RecoveryConfig holds tunables for the self-healing orchestrator.
 	// Nil uses DefaultRecoveryConfig().
 	RecoveryConfig *RecoveryConfig
+
+	// ContextReliefWarning adds a transient note to a send where context relief
+	// ran and left the estimate over its release mark. Default false; the YAML
+	// key is behavior.context_relief_warning.
+	ContextReliefWarning bool
+
+	// ToolChangeNote adds a transient note to a provider call whose advertised
+	// tools differ from the previous successful call of the same turn. Default
+	// false; the YAML key is behavior.tool_change_note.
+	ToolChangeNote bool
+
+	// ParallelReadTools runs consecutive concurrency-safe tool calls of one
+	// model response in parallel (at most maxParallelReads at once); rows still
+	// commit in call order. Default false; the YAML key is
+	// behavior.parallel_read_tools. See dispatchBatch.
+	ParallelReadTools bool
 
 	// Debug holds opt-in diagnostic switches, all off by default.
 	Debug DebugConfig

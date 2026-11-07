@@ -17,7 +17,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/teradata-labs/loom/pkg/llm/catalog"
 	"io"
 	"os"
 	"strings"
@@ -38,13 +37,15 @@ import (
 // SDKClient implements the LLMProvider interface using the official Anthropic SDK for Bedrock.
 // This is simpler and better maintained than the direct AWS SDK approach.
 type SDKClient struct {
-	client        anthropic.Client
-	modelID       string
-	region        string
-	maxTokens     int64
-	temperature   float64
-	thinkingLevel string
-	rateLimiter   *llm.RateLimiter
+	schemaPolicy      llm.ToolSchemaPolicy
+	strictToolSchemas bool
+	client            anthropic.Client
+	modelID           string
+	region            string
+	maxTokens         int64
+	temperature       float64
+	thinkingLevel     string
+	rateLimiter       *llm.RateLimiter
 }
 
 // NewSDKClient creates a new Bedrock client using the Anthropic SDK.
@@ -176,13 +177,14 @@ func NewSDKClient(cfg Config) (*SDKClient, error) {
 	)
 
 	return &SDKClient{
-		client:        client,
-		modelID:       cfg.ModelID,
-		thinkingLevel: cfg.ThinkingLevel,
-		region:        cfg.Region,
-		maxTokens:     int64(cfg.MaxTokens),
-		temperature:   cfg.Temperature,
-		rateLimiter:   rateLimiter,
+		strictToolSchemas: cfg.StrictToolSchemas,
+		client:            client,
+		modelID:           cfg.ModelID,
+		thinkingLevel:     cfg.ThinkingLevel,
+		region:            cfg.Region,
+		maxTokens:         int64(cfg.MaxTokens),
+		temperature:       cfg.Temperature,
+		rateLimiter:       rateLimiter,
 	}, nil
 }
 
@@ -247,7 +249,11 @@ func (c *SDKClient) Chat(ctx context.Context, messages []llmtypes.Message, tools
 	var toolNameMap map[string]string
 	if len(tools) > 0 {
 		var sdkTools []anthropic.ToolParam
-		sdkTools, toolNameMap = c.convertToolsToSDK(tools)
+		var conversionErr error
+		sdkTools, toolNameMap, conversionErr = c.convertToolsToSDK(ctx, tools)
+		if conversionErr != nil {
+			return nil, conversionErr
+		}
 		// Mark the last tool with cache_control so the entire tool list is cached
 		if len(sdkTools) > 0 {
 			sdkTools[len(sdkTools)-1].CacheControl = anthropic.NewCacheControlEphemeralParam()
@@ -259,7 +265,9 @@ func (c *SDKClient) Chat(ctx context.Context, messages []llmtypes.Message, tools
 				OfTool: &sdkTools[i],
 			}
 		}
-		params.Tools = toolUnions
+		if len(toolUnions) > 0 {
+			params.Tools = toolUnions
+		}
 	}
 
 	// Call API with rate limiting if configured
@@ -538,12 +546,19 @@ func appendUserOrCoalesceSDK(msgs []anthropic.MessageParam, blocks []anthropic.C
 // convertToolsToSDK converts tools to SDK format and returns this request's
 // sanitized→original tool-name mapping alongside them. The mapping is returned
 // rather than stored on the client so concurrent requests stay independent.
-func (c *SDKClient) convertToolsToSDK(tools []shuttle.Tool) ([]anthropic.ToolParam, map[string]string) {
+func (c *SDKClient) convertToolsToSDK(ctx context.Context, tools []shuttle.Tool) ([]anthropic.ToolParam, map[string]string, error) {
 	var sdkTools []anthropic.ToolParam
 	toolNameMap := make(map[string]string, len(tools))
 
 	for _, tool := range tools {
 		originalName := tool.Name()
+		schemaMap, keep, err := c.schemaPolicy.Prepare(ctx, originalName, tool.InputSchema(), c.strictToolSchemas)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !keep {
+			continue
+		}
 		sanitizedName := llm.SanitizeToolName(originalName)
 		toolNameMap[sanitizedName] = originalName
 
@@ -552,24 +567,23 @@ func (c *SDKClient) convertToolsToSDK(tools []shuttle.Tool) ([]anthropic.ToolPar
 			Description: anthropic.String(tool.Description()),
 		}
 
-		schema := tool.InputSchema()
-		if schema != nil {
+		if schemaMap != nil {
 			// Marshal and unmarshal to get proper anthropic.ToolInputSchemaParam
-			schemaMap := map[string]interface{}{
-				"type":       schema.Type,
-				"properties": schema.Properties,
-				"required":   schema.Required,
+			schemaJSON, err := json.Marshal(schemaMap)
+			if err != nil {
+				return nil, nil, fmt.Errorf("tool %q schema encoding: %w", originalName, err)
 			}
-			schemaJSON, _ := json.Marshal(schemaMap)
 			var inputSchema anthropic.ToolInputSchemaParam
-			_ = json.Unmarshal(schemaJSON, &inputSchema)
+			if err := json.Unmarshal(schemaJSON, &inputSchema); err != nil {
+				return nil, nil, fmt.Errorf("tool %q SDK schema: %w", originalName, err)
+			}
 			sdkTool.InputSchema = inputSchema
 		}
 
 		sdkTools = append(sdkTools, sdkTool)
 	}
 
-	return sdkTools, toolNameMap
+	return sdkTools, toolNameMap, nil
 }
 
 // convertResponseFromSDK converts Anthropic SDK response to agent format.
@@ -629,62 +643,9 @@ func (c *SDKClient) convertResponseFromSDK(message *anthropic.Message, toolNameM
 	return llmResp
 }
 
-// calculateCost estimates cost for Bedrock Claude models.
-// Cache pricing: cache_creation at 1.25x input, cache_read at 0.10x input.
+// calculateCost estimates cost for Bedrock Claude models; see bedrockClaudeCost.
 func (c *SDKClient) calculateCost(inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int) float64 {
-	// The catalog (pkg/llm/catalog) is the source of truth; the substring
-	// switch below is only the fallback for model ids it does not list.
-	inputPricePerMillion, outputPricePerMillion, ok := catalog.LookupPricing("bedrock", c.modelID)
-	if ok {
-		return float64(inputTokens)*inputPricePerMillion/1_000_000 +
-			float64(outputTokens)*outputPricePerMillion/1_000_000 +
-			float64(cacheCreationTokens)*inputPricePerMillion*1.25/1_000_000 +
-			float64(cacheReadTokens)*inputPricePerMillion*0.10/1_000_000
-	}
-
-	// IMPORTANT: check "opus-4-1" BEFORE "opus-4" because strings.Contains("opus-4-5", "opus-4") is true.
-	// Opus 4.1 is the expensive model ($15/$75); Opus 4.5/4.6 are cheaper ($5/$25).
-	switch {
-	case strings.Contains(c.modelID, "claude-opus-5"):
-		// Claude Opus 5: $5 per 1M input, $25 per 1M output
-		inputPricePerMillion = 5.0
-		outputPricePerMillion = 25.0
-	case strings.Contains(c.modelID, "claude-sonnet-5"):
-		// Claude Sonnet 5: $3 per 1M input, $15 per 1M output
-		inputPricePerMillion = 3.0
-		outputPricePerMillion = 15.0
-	case strings.Contains(c.modelID, "claude-opus-4-1"):
-		// Claude Opus 4.1: $15 per 1M input, $75 per 1M output
-		inputPricePerMillion = 15.0
-		outputPricePerMillion = 75.0
-	case strings.Contains(c.modelID, "claude-opus-4"):
-		// Claude Opus 4.5/4.6: $5 per 1M input, $25 per 1M output
-		inputPricePerMillion = 5.0
-		outputPricePerMillion = 25.0
-	case strings.Contains(c.modelID, "claude-haiku-4"):
-		// Claude Haiku 4: $1 per 1M input, $5 per 1M output
-		inputPricePerMillion = 1.0
-		outputPricePerMillion = 5.0
-	case strings.Contains(c.modelID, "claude-sonnet-4"):
-		// Claude Sonnet 4: $3 per 1M input, $15 per 1M output
-		inputPricePerMillion = 3.0
-		outputPricePerMillion = 15.0
-	default:
-		// No invented rate for an uncatalogued model — see the same guard in
-		// client.go. Fable-5 was billed at Sonnet's card for a whole trial
-		// because this branch answered confidently instead of admitting it did
-		// not know. Zero is visibly wrong; a plausible number is not.
-		zap.L().Warn("bedrock: model not in pricing catalog — cost reported as 0",
-			zap.String("model", c.modelID))
-		return 0
-	}
-
-	inputCost := float64(inputTokens) * inputPricePerMillion / 1_000_000
-	outputCost := float64(outputTokens) * outputPricePerMillion / 1_000_000
-	// Cache write at 1.25x input price, cache read at 0.10x input price
-	cacheWriteCost := float64(cacheCreationTokens) * inputPricePerMillion * 1.25 / 1_000_000
-	cacheReadCost := float64(cacheReadTokens) * inputPricePerMillion * 0.10 / 1_000_000
-	return inputCost + outputCost + cacheWriteCost + cacheReadCost
+	return bedrockClaudeCost(c.modelID, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens)
 }
 
 // ChatStream streams tokens as they're generated from Bedrock using the Anthropic SDK.
@@ -720,7 +681,11 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	var toolNameMap map[string]string
 	if len(tools) > 0 {
 		var sdkTools []anthropic.ToolParam
-		sdkTools, toolNameMap = c.convertToolsToSDK(tools)
+		var conversionErr error
+		sdkTools, toolNameMap, conversionErr = c.convertToolsToSDK(ctx, tools)
+		if conversionErr != nil {
+			return nil, conversionErr
+		}
 		// Mark the last tool with cache_control so the entire tool list is cached
 		if len(sdkTools) > 0 {
 			sdkTools[len(sdkTools)-1].CacheControl = anthropic.NewCacheControlEphemeralParam()
@@ -731,7 +696,9 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				OfTool: &sdkTools[i],
 			}
 		}
-		params.Tools = toolUnions
+		if len(toolUnions) > 0 {
+			params.Tools = toolUnions
+		}
 	}
 
 	// Acquire rate limit slot before initiating the stream to prevent Bedrock throttling.
@@ -785,14 +752,15 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			}
 			// Check if this is a tool use block
 			if event.ContentBlock.Type == "tool_use" {
-				// Start tracking a new tool call - reverse map sanitized name
-				toolCall := llmtypes.ToolCall{
+				// Start tracking a new tool call - reverse map sanitized name.
+				// The SDK path sends the call's id and name here, before any
+				// argument deltas.
+				toolCallIndex := len(toolCalls)
+				toolCalls = append(toolCalls, llmtypes.ToolCall{
 					ID:    event.ContentBlock.ID,
 					Name:  llm.ReverseToolName(toolNameMap, event.ContentBlock.Name),
 					Input: make(map[string]interface{}), // Will be populated from deltas
-				}
-				toolCallIndex := len(toolCalls)
-				toolCalls = append(toolCalls, toolCall)
+				})
 				// Initialize buffer for this tool's input JSON
 				toolInputBuffers[event.Index] = &strings.Builder{}
 				// Map block index to tool call index
@@ -828,15 +796,25 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			if event.Delta.Type == "input_json_delta" {
 				// Tool-input deltas never reach tokenCallback (text only);
 				// report them as stream activity, then accumulate the JSON.
-				llmtypes.NotifyStreamActivity(ctx)
-				// Accumulate the JSON delta (uses PartialJSON field, not Text)
-				if buf, exists := toolInputBuffers[event.Index]; exists {
+				// The buffer is the only copy of the arguments: it is parsed at
+				// content_block_stop, so a call truncated mid-argument leaves
+				// ToolCall.Input empty instead of leaking a stray key.
+				if buf, exists := toolInputBuffers[event.Index]; exists && event.Delta.PartialJSON != "" {
 					buf.WriteString(event.Delta.PartialJSON)
+					if toolIdx, ok := blockIndexToToolIndex[event.Index]; ok && toolIdx < len(toolCalls) {
+						llmtypes.NotifyToolInputProgress(ctx, llmtypes.ToolInputProgress{
+							Index:      toolIdx,
+							ToolCallID: toolCalls[toolIdx].ID,
+							ToolName:   toolCalls[toolIdx].Name,
+							Bytes:      buf.Len(),
+						})
+					}
 				}
+				llmtypes.NotifyStreamActivity(ctx)
 			}
 
 		case "content_block_stop":
-			// If we have accumulated input JSON for this block, parse it
+			// Finalize tool input: parse accumulated JSON
 			if buf, exists := toolInputBuffers[event.Index]; exists && buf.Len() > 0 {
 				var input map[string]interface{}
 				if err := json.Unmarshal([]byte(buf.String()), &input); err == nil {
@@ -845,10 +823,11 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 						toolCalls[toolIdx].Input = input
 					}
 				}
-				// Clean up buffer
-				delete(toolInputBuffers, event.Index)
 			}
-
+			// Clean up state for this block — unconditionally, so a
+			// call with no arguments doesn't leave its entries behind.
+			delete(toolInputBuffers, event.Index)
+			delete(blockIndexToToolIndex, event.Index)
 		case "message_delta":
 			// Update stop reason and output tokens
 			if event.Delta.StopReason != "" {

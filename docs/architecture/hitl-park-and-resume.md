@@ -51,7 +51,46 @@ blocking resolver never invoked.
 | `Ask` | **approval item** |
 | `contact_human`, registered, not denied | **question item** |
 | `contact_human`, unregistered | never an item; "tool not found" at execution |
+| `shuttle.ParkableQuestion` tool, registered, `ParkQuestion` ok, not denied | **question item** |
 | `Allow` / `NoDecision` | never an item; dispatches normally at resume |
+
+A tool is not limited to the literal name `contact_human` to park as a
+question. A tool that implements `shuttle.ParkableQuestion`
+(`ParkQuestion(ctx, input)` reports whether the call parks and the question
+text; `ParkAnswerResult(ctx, input, answer)` builds the tool result from the
+human's answer) is parked like `contact_human`: its `Execute` never runs for a
+parked call, and on an approved resume the agent synthesizes the result from
+`ParkAnswerResult`. Both methods run inside an `agent.park_question` /
+`agent.park_answer_result` span and receive its context.
+
+Behavior to know when writing such a tool:
+
+- **The recorded kind is the authority on resume.** `ParkQuestion` is called
+  when the turn parks; the result is recorded as the descriptor's `kind`.
+  Resume uses that record and does not call `ParkQuestion` again, so a
+  classification that depends on input types (JSON turns integers into
+  `float64`), configuration or tool state cannot flip between park and resume.
+  A policy `Deny` is still re-checked on resume and is never lifted. If the
+  tool is no longer registered at resume, the call gets a `tool_not_found`
+  result; if it is registered but no longer a `ParkableQuestion`, it gets an
+  `internal_error` result. Neither runs `Execute`. Only the message
+  (`tool not found: <name>`) matches dispatch's unknown-tool error; dispatch
+  returns a Go error with no `shuttle.Result` or code, so an unregistered
+  `contact_human` still persists no result.
+- **`Execute` still runs** when the call is not parked: park is disabled (an
+  in-turn resolver is used instead), `ParkQuestion` reports `ok=false` (the
+  model sees a repairable tool error), or the batch has an empty or duplicate
+  call ID (`checkParkItemIDs`, which makes the batch dispatch inline).
+- **Policy `Ask` yields only the question.** The question check precedes the
+  `Ask` check, as for `contact_human`, so a `ParkableQuestion` under an `Ask`
+  verdict gets the question card and no separate approval item.
+- **`params` may be truncated.** The descriptor carries the call input under
+  `params`, bounded like every other item: an input over the per-call limit
+  (or a batch over the whole-map limit) is replaced by a digest and marked
+  `params_truncated`. A card that renders a form from `params` must handle
+  that, or put what it needs in the question text.
+- A rejected resume gives `permission_denied`, an empty answer gives
+  `MISSING_ANSWER`, and a `nil` from `ParkAnswerResult` gives `internal_error`.
 
 One or more items parks the **whole batch**: a single grouped `human_requests`
 row whose `params` carry one descriptor per item keyed by `ToolCall.ID`, a
@@ -122,7 +161,50 @@ else.
 
 The grant lives only on the derived context handed to the parked batch's
 dispatch. The loop re-entry that follows runs ungranted, so a new ask in the
-continuation parks again.
+continuation parks again. Inside the dispatch, the grant is spent on each call's
+admission and is not on the context the tool body receives, so a tool that
+calls other tools through the executor cannot lift their asks with it.
+
+What the tool body does receive is the call's **admission grants**: the
+`Decision.Grant` of every hook that asked, collected in hook order whenever the
+call's Ask resolved to Allow (`shuttle.AdmissionGrantsFromContext`). On resume
+the hooks re-evaluate the same parameters, so the grants are recomputed rather
+than stored. A tool that enforces policy while it runs (a shell runner that must
+allow exactly the programs the person saw) reads them; a call allowed outright,
+or a nested call, gets none.
+
+Because the grant is recomputed, **an asking hook must be deterministic for the
+same call**: given the same tool name, parameters and caller identity, its
+`Evaluate` must return the same `Ask` reason and an equal `Grant` at park time
+and at resume. The approval request records the combined reason and the
+parameters, not the grant itself, so nothing at resume checks that the
+recomputed grant matches what the card described. A hook whose grant depends on
+anything else (a clock, a counter, a lookup that can change while the person
+decides) can hand the tool body a grant the person never saw. The approval
+request carries every asking hook's reason, in chain order and deduplicated,
+joined with `"; "`, on both card paths:
+
+- **Parked:** each approval item's descriptor in the row's `params` has the
+  joined text under `reason` (omitted when no asking hook gave one). Question
+  and resource items carry no `reason`. `NewProgressNotifier` copies the row's
+  `Params` into the progress event's `HITLRequestInfo.Params`, which the gRPC
+  streams (Weave and the multi-agent stream) serialize to
+  `hitl_request.params_json`: a JSON object keyed by held ToolCall ID whose
+  values are the item descriptors. The parked card's `context_json` stays
+  `{"kind":"parked"}`; read the reasons from `params_json`.
+- **In-turn (ask resolver):** the row's `Context["reason"]`.
+  `NewProgressNotifier` forwards the row's `Context["reason"]` (and no other
+  context key) in the progress event's `HITLRequestInfo.Context`, which the
+  gRPC streams serialize to `hitl_request.context_json`. The held call's
+  parameters go to `params_json`.
+
+On both paths the gRPC card also carries the row's `kind` (`approval`,
+`question` or `resource`), `summary` (the display digest) and
+`params_truncated` (true when the size bound cut entries out of `params`).
+The bundled TUI does not render `params_json` yet: its dialog shows only the
+question text. `looms hitl show` does not show it either: it prints the
+request's `Context` (so an in-turn card's reason appears) but not its `Params`,
+where a parked item's reason is stored.
 
 ### 3.3 Claiming the decision
 
@@ -287,14 +369,18 @@ closed.
   the approver is the literal string `"human"`, so nothing records *who*
   approved. (The embedder-recorded flow does not have this problem — there the
   row is decided first and its status overrides the payload.)
-- 📋 **`AskGrant` is a blanket context value.** It lifts any `Ask` downstream of
-  the granted call's context, not just that call. No in-tree tool re-enters the
-  executor, so it is unreachable today — but a code-mode or agent-delegation
-  tool would inherit approve-all under one approval.
 - 📋 No proto/gRPC surface for resume; park is a library API for embedders.
   Whether loom should expose resume over gRPC is a product decision, not an
   oversight — every other conversation entry point reaches clients through the
   Weave surface, so the asymmetry is worth a deliberate answer.
+
+**Fixed (no longer a gap):** an `AskGrant` no longer reaches nested calls. It
+was a blanket context value that lifted any `Ask` downstream of the granted
+call's context. The executor withholds the grant from every tool body once the
+call's own admission has used it (`toolBodyContext` in
+`pkg/shuttle/admission_grants.go`), so a code-mode or agent-delegation tool that
+re-enters the executor gets its nested calls asked afresh. Tested by
+`TestAskGrant_NotInheritedByNestedCalls`.
 
 ## 9. A note on hook evaluation count
 
