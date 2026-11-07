@@ -133,8 +133,11 @@ func TestUpdateMCPServer_RestartKeepsTheConfiguredResponseBound(t *testing.T) {
 		RestartIfRunning: true,
 		ToolFilter:       &loomv1.ToolFilterConfig{All: true},
 	})
-	// Expected, and not what this test is about: see #529 in the doc above.
-	require.Error(t, updateErr, "the reconnect fails because the request carries no transport (#529)")
+	// Not asserted on, deliberately. Today the reconnect fails because the
+	// request carries no transport (#529, #560); once either is fixed it will
+	// succeed. Either way it is not what this test checks, so asserting on it
+	// would make this test fail for an unrelated reason the day that changes.
+	t.Logf("update returned err=%v (incidental: #529/#560, not what this test checks)", updateErr)
 
 	// What matters: the stored config kept the configured bound.
 	got, err := mgr.GetServerConfig("srv")

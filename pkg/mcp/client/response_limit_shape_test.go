@@ -123,6 +123,20 @@ func TestResponseTooLarge_SameShapeOnBothPaths(t *testing.T) {
 				t.Fatalf("errors.Is(err, transport.ErrResponseTooLarge) must be true on the %s path; got %T: %v",
 					tc.name, err, err)
 			}
+
+			// The adapted form must stay unwrappable to the JSON-RPC error it
+			// wraps, which is what the CHANGELOG promises a caller who wants
+			// the code. Only the SSE path has one to reach: the JSON path
+			// fails inside Send and never produces a *protocol.Error.
+			if tc.sse {
+				var rpcErr *protocol.Error
+				if !errors.As(err, &rpcErr) {
+					t.Fatalf("an adapted refusal must still unwrap to its *protocol.Error; got %T: %v", err, err)
+				}
+				if rpcErr.Code != transport.CodeResponseTooLarge {
+					t.Fatalf("want the wrapped code %d, got %d", transport.CodeResponseTooLarge, rpcErr.Code)
+				}
+			}
 		})
 	}
 }

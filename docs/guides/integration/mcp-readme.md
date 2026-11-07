@@ -161,7 +161,7 @@ Verify what a server actually negotiates with `just mcp-probe -url <endpoint>` (
 - Raise it for a server whose `resources/read`, resource blob or wide query result legitimately exceeds 16 MiB.
 - For effectively no limit, set `4611686018427387903` (`math.MaxInt64/2`). Larger values are clamped to it: the read paths add to the bound before using it, and at `math.MaxInt64` that arithmetic overflows and hangs the call instead of refusing it.
 - It has **no effect on `stdio`**, which is deliberately unbounded — a stdio server is a child process this host already launched and trusts, and the pipe applies its own backpressure.
-- Settable at runtime through `AddMCPServer` / `UpdateMCPServer`, which persist it to `looms.yaml`; `ListMCPServers` / `GetMCPServer` report the configured value (`0` meaning the default applies).
+- Set it in `looms.yaml`, which is the only way today. The management RPCs cannot add or update a `streamable-http` server at all — they accept `stdio`, `http` and `sse`, and require a `command` — so `AddMCPServer` / `UpdateMCPServer` either refuse the request or accept it for a legacy transport that ignores the limit. Tracked as [#560](https://github.com/teradata-labs/loom/issues/560). `ListMCPServers` / `GetMCPServer` do report the configured value (`0` meaning the default applies).
 
 **Use streamable-http when:**
 - Connecting to remote MCP servers
