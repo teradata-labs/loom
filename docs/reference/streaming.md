@@ -128,6 +128,7 @@ message WeaveProgress {
   ContextState context_state = 21;    // Context window state (included in completion event)
   bool is_tool_input_stream = 22;     // True while the model is still writing a tool call's arguments
   int64 tool_input_bytes = 23;        // Argument bytes received so far (when is_tool_input_stream)
+  int32 tool_call_index = 24;         // The provider's stream index for the call (when is_tool_input_stream)
 }
 ```
 
@@ -216,6 +217,10 @@ Carries information about a human-in-the-loop request when the agent needs human
 - `context_json` (string): Additional context as JSON
 - `question_id` (string): Question ID for clarification questions (used with `AnswerClarificationQuestion` RPC)
 - `options` (repeated string): Suggested options for the user (if applicable)
+- `kind` (string): How the stored request was classified at origin: `approval`, `question` or `resource`. Empty means unclassified; treat it as `question`.
+- `summary` (string): Display digest of the stored request (tool and arguments for an approval, the question text for a question)
+- `params_json` (string): The stored request's parameter map as JSON. For an in-turn approval, the held call's parameters. For a parked turn (`request_type` `parked`), an object keyed by held tool call ID whose values are the item descriptors; an approval item's descriptor carries `reason`, every asking admission hook's reason joined with `"; "`. Empty for a question.
+- `params_truncated` (bool): True when the server's size bound cut entries out of `params_json`
 
 
 #### partial_content
@@ -366,6 +371,10 @@ Context window state after the response. Reports how full the context window is.
 
 True while the model is still writing a tool call's arguments, before `is_tool_started`. The event carries no argument content. `tool_name` and `tool_call_id` identify the call when the provider reports them; a provider that does not report them sends a bare liveness pulse with both empty.
 
+All streaming providers report the call identity: OpenAI-compatible (OpenAI, Azure OpenAI, LiteLLM, Mistral, HuggingFace), Anthropic and Bedrock's Claude path stream it per argument delta; Ollama and Gemini deliver each tool call complete in one chunk and report it once with the full size.
+
+Gemini has no call IDs: `tool_call_id` repeats the function name, so two parallel calls to the same tool share one ID. Clients that key on `tool_call_id` should key on `tool_call_index` instead — the provider's stream index for the call, which the agent's throttling also keys on.
+
 The first event for a call, and the event that first supplies its name or id, are sent immediately. Later events are throttled to about one per second per call.
 
 
@@ -377,7 +386,20 @@ The first event for a call, and the event that first supplies its name or id, ar
 
 Bytes of tool-call argument JSON received so far. Because events are throttled, the last value a client sees can lag the final size until `is_tool_started` arrives.
 
-A value of 0 with no `tool_call_id` and no `tool_name` means the provider does not report sizes (a bare pulse). With either set, 0 means no arguments have arrived yet.
+A value of 0 with no `tool_call_id` and no `tool_name` means the provider does not report sizes (a bare pulse). With either set, 0 means no arguments have arrived yet. Ollama and Gemini report the full argument size in a single event per call; the other providers report it growing per delta.
+
+For Ollama, the size is the raw argument JSON as the model produced it when it arrives as a string; when Ollama pre-parses the arguments into an object, the size is of the re-serialized JSON, which can differ slightly from what the model emitted.
+
+
+#### tool_call_index
+
+**Type**: `int32`
+**Required**: No (only when `is_tool_input_stream` is true)
+**Available since**: unreleased (after v1.4.0)
+
+The provider's stream index for the tool call. On providers that deliver calls in order (Anthropic, Bedrock, Gemini, Ollama) it matches the call's position in the response's tool-call list. On OpenAI-compatible providers (OpenAI, Azure OpenAI, LiteLLM, Mistral, HuggingFace) the final tool-call list is built from a map, so its order is not guaranteed to match this index — match a progress event to its `is_tool_started` event by `tool_call_id` there. Gemini repeats the function name in `tool_call_id`, so two parallel calls to the same tool share an ID and only this index tells them apart. The agent's throttling keys on the same index, so events for one call never interleave with another's.
+
+A bare activity pulse (no `tool_call_id`, no `tool_name`, 0 bytes) carries index 0 without being call 0; clients should skip pulses before interpreting the index.
 
 
 ## Execution Stages
@@ -801,10 +823,33 @@ When execution fails, a `FAILED` stage event is emitted:
 
 ### gRPC Error
 
-After FAILED event, stream terminates with gRPC error:
+After the FAILED event, the stream terminates with a gRPC error. The code says
+whether a retry can succeed. The same mapping applies to unary `Weave`, and the
+HTTP gateway translates it for `POST /v1/weave`:
 
-**Error code**: `Internal` (13)
-**Error message**: Same as FAILED event message
+| Code | HTTP (`/v1/weave`) | When | Retry? |
+|------|--------------------|------|--------|
+| `Canceled` (1) | 499 | The caller canceled the request | Caller's choice |
+| `DeadlineExceeded` (4) | 504 | The request deadline elapsed | Yes |
+| `ResourceExhausted` (8) | 429 | The LLM provider throttled the call and looms' own retries (rate limiter, agent retry loop) did not get through; also a full admission-door queue | Yes, with backoff |
+| `Unavailable` (14) | 503 | The LLM provider had a temporary server fault or timeout (HTTP 408/500/502/503/504/529, Bedrock `InternalServerException`/`ServiceUnavailableException`/`ModelNotReadyException`/`ModelTimeoutException`, an `overloaded_error` from the Anthropic SDK) past looms' retries, or its response stream stalled | Yes, with backoff |
+| `Internal` (13) | 500 | Any other agent failure, including a deterministic provider refusal (validation error, auth failure, other 4xx) | Not without changing the request |
+
+A provider 5xx maps to `Unavailable` only when the provider client typed the
+status. Both Bedrock clients do (AWS SDK and Anthropic SDK errors carry the
+status), and so do the direct HTTP clients (Anthropic API, OpenAI, Azure
+OpenAI, Gemini, Ollama) for a 5xx that arrives before any content: they return
+an `llm.TransientError`, and after looms' retries give up the
+`llm.RetriesExhaustedError` still unwraps to it. A 5xx after content has
+started streaming is not typed and maps to `Internal`. A throttle maps to
+`ResourceExhausted` for every provider.
+
+**Error message**: the FAILED event's error, prefixed by the classification
+(`LLM provider throttled the request: ...`, `LLM provider temporarily
+unavailable: ...`, `agent execution failed: ...`).
+
+In v1.4.0 and earlier, every one of these except `Canceled`, `DeadlineExceeded` and
+a stream stall returned `Internal`.
 
 ### HTTP/SSE Error
 
@@ -817,7 +862,7 @@ After FAILED event, SSE stream closes:
 
 | Error Message | Cause | Resolution |
 |---------------|-------|------------|
-| `LLM call failed: API rate limit exceeded` | Provider rate limit hit | Retry with exponential backoff |
+| `LLM call failed: API rate limit exceeded` | Provider rate limit hit (status `ResourceExhausted`) | Retry with exponential backoff |
 | `Tool execution failed: connection refused` | Backend service down | Check backend service status |
 | `Guardrails exceeded: max turns reached` | Conversation too long | Increase `guardrails.max_turns` |
 | `Session not found` | Invalid session_id | Verify session_id or create new session |
@@ -1118,7 +1163,7 @@ message SessionStatusUpdate {
 Sent when a new message is added to the session conversation (e.g., from a sub-agent response, tool result, or user input).
 
 **Fields**:
-- `role`: Message role - `user`, `assistant`, `tool`, `skill_body`, `hygiene_injection`, `empty_response_retry`, or `synthesis_prompt` (only these roles are sent). `skill_body`, `hygiene_injection`, `empty_response_retry`, and `synthesis_prompt` are synthetic, agent-authored roles — a loaded skill's instructions, a hygiene-retry nudge, an empty-response retry nudge, and a forced-final-answer synthesis prompt, respectively — persisted separately from the literal end user; see `pkg/agent/llm_retry.go`'s `IsSyntheticWireUserRole`.
+- `role`: Message role - `user`, `assistant`, `tool`, `skill_body`, `hygiene_injection`, `empty_response_retry`, `synthesis_prompt`, or `lesson_reminder` (only these roles are sent). `skill_body`, `hygiene_injection`, `empty_response_retry`, `synthesis_prompt`, and `lesson_reminder` are synthetic, agent-authored roles — a loaded skill's instructions, a hygiene-retry nudge, an empty-response retry nudge, a forced-final-answer synthesis prompt, and an error-time graph-memory lesson, respectively — persisted separately from the literal end user; see `pkg/agent/llm_retry.go`'s `IsSyntheticWireUserRole`.
 - `content`: The message text
 - `message_timestamp`: When the message was created (Unix timestamp)
 - `tool_name`: 🚧 Defined in proto but not yet populated by the server implementation

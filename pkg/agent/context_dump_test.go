@@ -187,9 +187,26 @@ func redirectCtxDumpSink(t *testing.T) string {
 	t.Setenv(envDebugDirVar, root)
 	// Release every sink opened during this test before t.TempDir()'s own
 	// cleanup removes the directory it lives in -- Windows can't remove a
-	// file a still-open handle points at. No test in this package runs in
-	// parallel, so draining the process-wide list here is scoped correctly.
-	t.Cleanup(closeLiveContextDumpers)
+	// file a still-open handle points at. The sinks are tracked per test, so
+	// this does not depend on tests running serially.
+	var (
+		mu     sync.Mutex
+		opened []*contextDumper
+	)
+	prev := onContextDumperOpened
+	onContextDumperOpened = func(d *contextDumper) {
+		mu.Lock()
+		defer mu.Unlock()
+		opened = append(opened, d)
+	}
+	t.Cleanup(func() {
+		onContextDumperOpened = prev
+		mu.Lock()
+		defer mu.Unlock()
+		for _, d := range opened {
+			_ = d.close()
+		}
+	})
 	return filepath.Join(root, "context-dumps")
 }
 

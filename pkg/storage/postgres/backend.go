@@ -24,6 +24,8 @@ import (
 	"github.com/teradata-labs/loom/internal/pgxdriver"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/artifacts"
+	"github.com/teradata-labs/loom/pkg/checkpoint"
+	"github.com/teradata-labs/loom/pkg/eventlog"
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
@@ -42,6 +44,8 @@ type Backend struct {
 	humanRequestStore *HumanRequestStore
 	taskStore         *TaskStore
 	graphMemoryStore  *GraphMemoryStore
+	checkpointStore   *CheckpointStore
+	eventLogStore     *EventLogStore
 	migrator          *Migrator
 	tracer            observability.Tracer
 	logger            *zap.Logger
@@ -84,6 +88,8 @@ func NewBackend(ctx context.Context, cfg *loomv1.PostgresStorageConfig, tracer o
 		humanRequestStore: NewHumanRequestStore(pool, tracer),
 		taskStore:         NewTaskStore(pool, tracer),
 		graphMemoryStore:  NewGraphMemoryStore(pool, tc, tracer),
+		checkpointStore:   NewCheckpointStore(pool, tracer),
+		eventLogStore:     NewEventLogStore(pool, tracer),
 		migrator:          migrator,
 		tracer:            tracer,
 		logger:            logger,
@@ -113,6 +119,16 @@ func (b *Backend) TaskStore() task.TaskStore {
 // GraphMemoryStore implements backend.GraphMemoryProvider.
 func (b *Backend) GraphMemoryStore() memory.GraphMemoryStore {
 	return b.graphMemoryStore
+}
+
+// CheckpointStore implements backend.CheckpointStoreProvider.
+func (b *Backend) CheckpointStore() checkpoint.CheckpointStore {
+	return b.checkpointStore
+}
+
+// EventLogStore implements backend.EventLogProvider.
+func (b *Backend) EventLogStore() eventlog.EventLogStore {
+	return b.eventLogStore
 }
 
 // Migrate runs all pending PostgreSQL migrations.

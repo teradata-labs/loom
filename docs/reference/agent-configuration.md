@@ -488,6 +488,7 @@ Under `spec.memory.graph_memory`.
 | `min_salience_threshold` | `float64` | `0.1` | Minimum salience for recall |
 | `max_recall_candidates` | `int` | `50` | Max memories to consider during recall |
 | `default_salience` | `float64` | `0.5` | Initial salience for new memories |
+| `fleet_lesson_sharing` | `bool` | `false` (opt-in) | Store mined lessons in one partition shared by every agent on the server (`__fleet_lessons__`) instead of the agent's private `<key>__lessons` partition (key: `Config.GraphMemoryAgentID` when set, otherwise the agent name). Affects only where lessons are stored and recalled; the lesson lane below runs either way. Do not enable it with untrusted tool servers: see [Security Model](security-model.md). |
 
 ```yaml
 spec:
@@ -509,6 +510,18 @@ spec:
     graph_memory:
       enabled: false
 ```
+
+#### Lesson lane (on by default)
+
+Agents with graph memory get a lesson lane without any configuration. `fleet_lesson_sharing` changes only which partition it uses. Design: [Lesson grounding and outcome credit](../architecture/lesson-grounding-and-credit.md).
+
+- **Mining, at turn end.** When graph memory and `enable_extraction` are both on (the defaults), the end of every `Chat()` call (one user message) starts a background pass over that turn's tool ledger. It looks for a failed call followed by a later successful call of the same kind with an observable change between them. If it finds at least one such pair, it makes **one extra LLM call**, using the `compressor_llm` role if set, otherwise the agent's LLM, with a 30 s timeout. A turn with no error-then-fix pair makes no call, and a chat-only turn does not mine earlier turns again. Only a session that recorded no ledger in this process (for example, one restored from storage after a restart) is mined from its message history instead, and only once. The lessons it returns are stored with `memory_type: lesson`. A lesson that names none of the changed fragments is dropped.
+- **Recall.** At conversation start, matching lessons are added to the graph-memory context block, also when no ordinary memory matches. When a tool batch contains failures, the error text is used to query the lesson partition again, and any lessons not yet shown are appended to the conversation as a **user-role `<system-reminder>` message** before the model's retry turn. It is stored under the synthetic role `lesson_reminder` and sent to the provider as `user`, never as `system`: providers move system messages to the head of the request, so a system message added after a tool result would miss every message-level cache breakpoint. This happens at most 5 times per session. Error-time injection needs only graph memory to be enabled, not `enable_extraction`.
+- **Outcome credit.** Lessons injected at error time are scored against the rest of that turn's ledger: a later success of the failing kind of call raises salience, a failure after the injection with no recovery lowers it, and a turn that simply ends scores nothing. Credit needs a store with `AdjustSalience` (the SQLite and Postgres stores both have it).
+- **Tracing.** Each pass emits a span with its counts: `graph_memory.lesson_mining`, `graph_memory.lesson_credit` and `graph_memory.lesson_injection`. Conversation-start lessons are counted on the `graph_memory.recall` span: `recall.injected` is the total, `recall.injected_memories` and `recall.injected_lessons` split it.
+- **Prompt text.** The mining prompt and the injection headings are prompt-registry entries `memory.lesson_*` in `prompts/memory/lessons.yaml`. When the agent has a prompt registry with those keys, their text is used; otherwise the built-in text, which is identical to the shipped file, is used.
+
+Lessons come from tool output and reach the model as trusted guidance: at conversation start inside the graph-memory context block (a `system` message), at error time as a `<system-reminder>`. See [Security Model](security-model.md) for what that means with untrusted tool servers. To turn the lane off, disable graph memory (`enabled: false`). Setting `enable_extraction: false` stops mining but not recall of lessons already stored.
 
 ---
 

@@ -16,12 +16,19 @@ package bedrock
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/types"
+	"github.com/xeipuuv/gojsonschema"
 )
 
 func TestNewClient_Defaults(t *testing.T) {
@@ -208,7 +215,8 @@ func TestClient_ConvertTools(t *testing.T) {
 		},
 	}
 
-	apiTools := client.convertTools([]shuttle.Tool{mockTool})
+	apiTools, err := client.convertTools(context.Background(), []shuttle.Tool{mockTool}, make(map[string]string))
+	require.NoError(t, err)
 
 	require.Len(t, apiTools, 1)
 
@@ -234,50 +242,146 @@ func TestClient_ConvertTools(t *testing.T) {
 	assert.Equal(t, []string{"city"}, required)
 }
 
-func TestClient_ConvertSchemaProperties(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    map[string]*shuttle.JSONSchema
-		expected map[string]interface{}
-	}{
-		{
-			name:     "nil properties",
-			input:    nil,
-			expected: nil,
-		},
-		{
-			name: "simple string property",
-			input: map[string]*shuttle.JSONSchema{
-				"name": {Type: "string", Description: "User name"},
-			},
-			expected: map[string]interface{}{
-				"name": map[string]interface{}{
-					"type":        "string",
-					"description": "User name",
-				},
-			},
-		},
-		{
-			name: "property with enum",
-			input: map[string]*shuttle.JSONSchema{
-				"status": {
-					Type: "string",
-					Enum: []interface{}{"active", "inactive"},
-				},
-			},
-			expected: map[string]interface{}{
-				"status": map[string]interface{}{
-					"type": "string",
-					"enum": []interface{}{"active", "inactive"},
-				},
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := convertSchemaProperties(tt.input)
-			assert.Equal(t, tt.expected, result)
+func TestClient_ToolSchemaRequest(t *testing.T) {
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "")
+	const schemaJSON = `{"type":"object","description":"Task input","required":["tasks"],"allOf":[{"type":"object","properties":{},"not":{"required":["forbidden"]}}],"properties":{
+		"tasks":{"type":"array","description":"Tasks to create","items":{
+			"type":"object","description":"A task","required":["idx","subject","details"],"properties":{
+				"idx":{"type":"integer","description":"1-based task number","minimum":0,"maximum":100},
+				"subject":{"type":"string","description":"Short task title","minLength":0,"maxLength":80,"pattern":"^[A-Z]","format":"text","enum":["Task"],"default":"Task"},
+				"details":{"type":"object","required":["active"],"properties":{"active":{"type":"boolean","default":false}}},
+				"matrix":{"type":"array","items":{"type":"array","items":{"type":"integer"}}},
+				"nullable":{"anyOf":[{"type":"integer"},{"type":"null"}]},
+				"choice":{"oneOf":[{"type":"string"},{"type":"number"}]},
+				"excluded":{"not":{"type":"null"}},
+				"empty":{"type":"object","properties":{}}
+			}
+		}}
+	}}`
+	for _, mode := range []string{"chat", "stream", "converse"} {
+		t.Run(mode, func(t *testing.T) {
+			captured := make(chan map[string]interface{}, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request map[string]interface{}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Error(err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				captured <- request
+				w.Header().Set("Content-Type", "application/json")
+				if mode == "converse" {
+					_, _ = w.Write([]byte(`{"output":{"message":{"role":"assistant","content":[{"text":"ok"}]}},"stopReason":"end_turn","usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2},"metrics":{"latencyMs":1}}`))
+				} else {
+					_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}`))
+				}
+			}))
+			defer server.Close()
+			schema, err := shuttle.FromJSON([]byte(schemaJSON))
+			require.NoError(t, err)
+			inputTools := []shuttle.Tool{
+				&mockTool{name: "create_tasks", schema: schema},
+				&mockTool{name: "no_arguments", schema: &shuttle.JSONSchema{}},
+				&mockTool{name: "description_only", schema: &shuttle.JSONSchema{Description: "No arguments"}},
+				&mockTool{name: "incompatible", schema: &shuttle.JSONSchema{AnyOf: []*shuttle.JSONSchema{{Type: "object"}}}},
+			}
+			client := &Client{
+				client: bedrockruntime.New(bedrockruntime.Options{
+					Region:       "us-east-1",
+					BaseEndpoint: aws.String(server.URL),
+					Credentials:  credentials.NewStaticCredentialsProvider("test-key", "test-secret", ""),
+					HTTPClient:   server.Client(),
+				}),
+				modelID:   DefaultBedrockModelID,
+				maxTokens: DefaultBedrockMaxTokens,
+			}
+			messages := []types.Message{{Role: "user", Content: "Create tasks"}}
+			span := &observability.Span{}
+			ctx := observability.ContextWithSpan(context.Background(), span)
+			switch mode {
+			case "stream":
+				_, err = client.ChatStream(ctx, messages, inputTools, nil)
+			case "converse":
+				_, err = client.ChatConverse(ctx, messages, inputTools)
+			default:
+				_, err = client.Chat(ctx, messages, inputTools)
+			}
+			require.NoError(t, err)
+			require.Len(t, span.Events, 1)
+			assert.Equal(t, "incompatible", span.Events[0].Attributes["tool"])
+			request := <-captured
+			var inputSchema interface{}
+			var noArgumentSchemas []interface{}
+			if mode == "converse" {
+				config := request["toolConfig"].(map[string]interface{})
+				tools := config["tools"].([]interface{})
+				require.Len(t, tools, 3)
+				spec := tools[0].(map[string]interface{})["toolSpec"].(map[string]interface{})
+				inputSchema = spec["inputSchema"].(map[string]interface{})["json"]
+				for _, tool := range tools[1:] {
+					spec := tool.(map[string]interface{})["toolSpec"].(map[string]interface{})
+					noArgumentSchemas = append(noArgumentSchemas, spec["inputSchema"].(map[string]interface{})["json"])
+				}
+			} else {
+				tools := request["tools"].([]interface{})
+				require.Len(t, tools, 3)
+				inputSchema = tools[0].(map[string]interface{})["input_schema"]
+				for _, tool := range tools[1:] {
+					noArgumentSchemas = append(noArgumentSchemas, tool.(map[string]interface{})["input_schema"])
+				}
+			}
+			data, err := json.Marshal(inputSchema)
+			require.NoError(t, err)
+			var expected map[string]interface{}
+			require.NoError(t, json.Unmarshal([]byte(schemaJSON), &expected))
+			expected["not"] = expected["allOf"].([]interface{})[0].(map[string]interface{})["not"]
+			delete(expected, "allOf")
+			expectedJSON, err := json.Marshal(expected)
+			require.NoError(t, err)
+			assert.JSONEq(t, string(expectedJSON), string(data))
+			for _, forbidden := range []bool{false, true} {
+				sample := map[string]interface{}{"tasks": []interface{}{}}
+				if forbidden {
+					sample["forbidden"] = true
+				}
+				validation, err := gojsonschema.Validate(gojsonschema.NewGoLoader(inputSchema), gojsonschema.NewGoLoader(sample))
+				require.NoError(t, err)
+				assert.Equal(t, !forbidden, validation.Valid(), "outgoing schema lost its prohibition for %v", sample)
+			}
+			assert.Equal(t, map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}, noArgumentSchemas[0])
+			assert.Equal(t, map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "description": "No arguments"}, noArgumentSchemas[1])
+			assert.Empty(t, inputTools[1].InputSchema().Type)
+			assert.Empty(t, inputTools[2].InputSchema().Type)
+			client.strictToolSchemas = true
+			for _, keyword := range []string{"anyOf", "oneOf"} {
+				invalid, err := shuttle.FromJSON([]byte(`{"` + keyword + `":[{"type":"object"}]}`))
+				require.NoError(t, err)
+				invalidTools := []shuttle.Tool{&mockTool{name: "ambiguous", schema: invalid}}
+				switch mode {
+				case "stream":
+					_, err = client.ChatStream(context.Background(), messages, invalidTools, nil)
+				case "converse":
+					_, err = client.ChatConverse(context.Background(), messages, invalidTools)
+				default:
+					_, err = client.Chat(context.Background(), messages, invalidTools)
+				}
+				require.ErrorContains(t, err, `tool "ambiguous" schema:`)
+				require.ErrorContains(t, err, "root "+keyword)
+				assert.Empty(t, captured, "unsupported schema made an HTTP request")
+			}
+			client.strictToolSchemas = false
+			switch mode {
+			case "stream":
+				_, err = client.ChatStream(context.Background(), messages, inputTools[3:], nil)
+			case "converse":
+				_, err = client.ChatConverse(context.Background(), messages, inputTools[3:])
+			default:
+				_, err = client.Chat(context.Background(), messages, inputTools[3:])
+			}
+			require.NoError(t, err)
+			emptyRequest := <-captured
+			assert.NotContains(t, emptyRequest, "tools")
+			assert.NotContains(t, emptyRequest, "toolConfig")
 		})
 	}
 }
@@ -317,8 +421,8 @@ func TestClient_ConvertResponse(t *testing.T) {
 				assert.Equal(t, 50, resp.Usage.InputTokens)
 				assert.Equal(t, 100, resp.Usage.OutputTokens)
 				assert.Equal(t, 150, resp.Usage.TotalTokens)
-				// Cost: 50 * $3/1M + 100 * $15/1M = $0.00015 + $0.0015 = $0.00165
-				assert.InDelta(t, 0.00165, resp.Usage.CostUSD, 0.0001)
+				// Cost: (50 * $3/1M + 100 * $15/1M) x 1.1 regional = $0.001815
+				assert.InDelta(t, 0.001815, resp.Usage.CostUSD, 0.00001)
 			},
 		},
 		{
@@ -385,7 +489,7 @@ func TestClient_ConvertResponse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resp := client.convertResponse(tt.response)
+			resp := client.convertResponse(tt.response, nil)
 			require.NotNil(t, resp)
 			tt.validate(t, resp)
 		})
@@ -395,7 +499,7 @@ func TestClient_ConvertResponse(t *testing.T) {
 func TestClient_CalculateCost(t *testing.T) {
 	// Pricing arithmetic is exercised against a catalogued model; an empty
 	// modelID now reports zero by design (see the uncatalogued-model case).
-	client := &Client{modelID: "us.anthropic.claude-sonnet-5"}
+	client := &Client{modelID: "global.anthropic.claude-sonnet-5"}
 
 	tests := []struct {
 		name         string
@@ -407,19 +511,19 @@ func TestClient_CalculateCost(t *testing.T) {
 			name:         "1M input + 1M output",
 			inputTokens:  1_000_000,
 			outputTokens: 1_000_000,
-			expectedCost: 18.0, // $3 + $15
+			expectedCost: 12.0, // $2 + $10
 		},
 		{
 			name:         "1K input + 1K output",
 			inputTokens:  1_000,
 			outputTokens: 1_000,
-			expectedCost: 0.018, // $0.003 + $0.015
+			expectedCost: 0.012, // $0.002 + $0.010
 		},
 		{
 			name:         "small request",
 			inputTokens:  100,
 			outputTokens: 200,
-			expectedCost: 0.0033, // $0.0003 + $0.003
+			expectedCost: 0.0022, // $0.0002 + $0.002
 		},
 		{
 			name:         "zero tokens",
@@ -445,11 +549,13 @@ func TestClient_CalculateCost_ModelPricing(t *testing.T) {
 	const tokens = 1_000_000 // use 1M tokens for easy mental math
 
 	tests := []struct {
-		name         string
-		modelID      string
-		inputTokens  int
-		outputTokens int
-		wantCost     float64
+		name                string
+		modelID             string
+		inputTokens         int
+		outputTokens        int
+		cacheReadTokens     int
+		cacheCreationTokens int
+		wantCost            float64
 	}{
 		// --- Opus 4.1 (most expensive) ---
 		{
@@ -465,7 +571,7 @@ func TestClient_CalculateCost_ModelPricing(t *testing.T) {
 			modelID:      "us.anthropic.claude-opus-4-5-20250929-v1:0",
 			inputTokens:  tokens,
 			outputTokens: tokens,
-			wantCost:     30.0, // $5 + $25
+			wantCost:     33.0, // ($5 + $25) x 1.1 regional
 		},
 		// --- Opus 4.6 (must NOT match 4.1 pricing) ---
 		{
@@ -473,7 +579,7 @@ func TestClient_CalculateCost_ModelPricing(t *testing.T) {
 			modelID:      "us.anthropic.claude-opus-4-6-20260301-v1:0",
 			inputTokens:  tokens,
 			outputTokens: tokens,
-			wantCost:     30.0, // $5 + $25
+			wantCost:     33.0, // ($5 + $25) x 1.1 regional
 		},
 		// --- Opus 4 bare (no sub-version) ---
 		{
@@ -489,7 +595,7 @@ func TestClient_CalculateCost_ModelPricing(t *testing.T) {
 			modelID:      "us.anthropic.claude-haiku-4-5-20250929-v1:0",
 			inputTokens:  tokens,
 			outputTokens: tokens,
-			wantCost:     6.0, // $1 + $5
+			wantCost:     6.6, // ($1 + $5) x 1.1 regional
 		},
 		// --- Sonnet 4 ---
 		{
@@ -497,9 +603,111 @@ func TestClient_CalculateCost_ModelPricing(t *testing.T) {
 			modelID:      "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
 			inputTokens:  tokens,
 			outputTokens: tokens,
-			wantCost:     18.0, // $3 + $15
+			wantCost:     19.8, // ($3 + $15) x 1.1 regional
+		},
+		// --- Claude 5 family ---
+		{
+			name:         "fable 5 cross-region",
+			modelID:      "us.anthropic.claude-fable-5",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     66.0, // ($10 + $50) x 1.1 regional
+		},
+		{
+			name:         "fable 5.1 uncataloged profile",
+			modelID:      "global.anthropic.claude-fable-5-1",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     60.0, // $10 + $50 via the family fallback
+		},
+		{
+			name:         "opus 5.5 must not match opus 5",
+			modelID:      "us.anthropic.claude-opus-5-5",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     26.4, // ($4 + $20) x 1.1 regional
+		},
+		{
+			name:         "opus 5 cross-region",
+			modelID:      "us.anthropic.claude-opus-5",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     33.0, // ($5 + $25) x 1.1 regional
+		},
+		{
+			name:         "sonnet 5 global",
+			modelID:      "global.anthropic.claude-sonnet-5",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     12.0, // $2 + $10
 		},
 		// --- Uncatalogued model reports no cost rather than a guessed one ---
+		// --- Paired global/regional controls (10% regional premium, 4.5+) ---
+		{
+			name:         "fable 5 global (control for the regional row)",
+			modelID:      "global.anthropic.claude-fable-5",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     60.0,
+		},
+		{
+			name:         "opus 5.5 global (control for the regional row)",
+			modelID:      "global.anthropic.claude-opus-5-5",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     24.0,
+		},
+		{
+			name:         "opus 4.1 regional carries no premium (pre-4.5)",
+			modelID:      "us.anthropic.claude-opus-4-1-20250805-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     90.0,
+		},
+		// --- Cache reads are priced per model ---
+		{
+			name:            "fable 5.1 global cache read at 0.025x",
+			modelID:         "global.anthropic.claude-fable-5-1",
+			cacheReadTokens: tokens,
+			wantCost:        0.25,
+		},
+		{
+			name:            "opus 5.5 global cache read at 0.05x",
+			modelID:         "global.anthropic.claude-opus-5-5",
+			cacheReadTokens: tokens,
+			wantCost:        0.20,
+		},
+		{
+			name:                "opus 5.5 regional premium covers every bucket",
+			modelID:             "us.anthropic.claude-opus-5-5",
+			inputTokens:         tokens,
+			outputTokens:        tokens,
+			cacheReadTokens:     tokens,
+			cacheCreationTokens: tokens,
+			wantCost:            32.12, // ($4 + $20 + $5 write + $0.20 read) x 1.1
+		},
+		// --- Inference-profile ARNs price by the profile id they carry ---
+		{
+			name:         "sonnet 4.5 global profile ARN carries no regional premium",
+			modelID:      "arn:aws:bedrock:us-east-1:123456789012:inference-profile/global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     18.0, // $3 + $15, global
+		},
+		{
+			name:         "sonnet 4.5 regional profile ARN carries the regional premium",
+			modelID:      "arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     19.8, // ($3 + $15) x 1.1 regional
+		},
+		{
+			name:         "sonnet 4.5 foundation-model ARN is in-region",
+			modelID:      "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     19.8, // ($3 + $15) x 1.1 regional
+		},
 		{
 			name:         "uncatalogued model reports zero, never an invented rate",
 			modelID:      "us.anthropic.claude-unknown-9-20260101-v1:0",
@@ -512,7 +720,7 @@ func TestClient_CalculateCost_ModelPricing(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client := &Client{modelID: tt.modelID}
-			got := client.calculateCost(tt.inputTokens, tt.outputTokens, 0, 0)
+			got := client.calculateCost(tt.inputTokens, tt.outputTokens, tt.cacheReadTokens, tt.cacheCreationTokens)
 			assert.InDelta(t, tt.wantCost, got, 0.001,
 				"model=%s: expected cost $%.2f, got $%.2f", tt.modelID, tt.wantCost, got)
 		})
@@ -533,6 +741,27 @@ func TestSDKClient_CalculateCost_ModelPricing(t *testing.T) {
 		cacheCreationTokens int
 		wantCost            float64
 	}{
+		// --- Claude 5 family (this client used to skip the catalog) ---
+		{
+			name:         "sonnet 5 no cache",
+			modelID:      "us.anthropic.claude-sonnet-5",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     13.2, // ($2 + $10) x 1.1 regional
+		},
+		{
+			name:         "opus 5.5 no cache",
+			modelID:      "us.anthropic.claude-opus-5-5",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     26.4, // ($4 + $20) x 1.1 regional
+		},
+		{
+			name:            "fable 5 cache read",
+			modelID:         "us.anthropic.claude-fable-5",
+			cacheReadTokens: tokens,
+			wantCost:        1.1, // $10 * 0.10 x 1.1 regional
+		},
 		// --- Opus 4.1 (most expensive) ---
 		{
 			name:         "opus 4.1 no cache",
@@ -547,7 +776,7 @@ func TestSDKClient_CalculateCost_ModelPricing(t *testing.T) {
 			modelID:      "us.anthropic.claude-opus-4-5-20250929-v1:0",
 			inputTokens:  tokens,
 			outputTokens: tokens,
-			wantCost:     30.0, // $5 + $25
+			wantCost:     33.0, // ($5 + $25) x 1.1 regional
 		},
 		// --- Opus 4.6 (must NOT match 4.1 pricing) ---
 		{
@@ -555,7 +784,7 @@ func TestSDKClient_CalculateCost_ModelPricing(t *testing.T) {
 			modelID:      "us.anthropic.claude-opus-4-6-20260301-v1:0",
 			inputTokens:  tokens,
 			outputTokens: tokens,
-			wantCost:     30.0, // $5 + $25
+			wantCost:     33.0, // ($5 + $25) x 1.1 regional
 		},
 		// --- Haiku 4 ---
 		{
@@ -563,7 +792,7 @@ func TestSDKClient_CalculateCost_ModelPricing(t *testing.T) {
 			modelID:      "us.anthropic.claude-haiku-4-5-20250929-v1:0",
 			inputTokens:  tokens,
 			outputTokens: tokens,
-			wantCost:     6.0, // $1 + $5
+			wantCost:     6.6, // ($1 + $5) x 1.1 regional
 		},
 		// --- Sonnet 4 ---
 		{
@@ -571,7 +800,7 @@ func TestSDKClient_CalculateCost_ModelPricing(t *testing.T) {
 			modelID:      "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
 			inputTokens:  tokens,
 			outputTokens: tokens,
-			wantCost:     18.0, // $3 + $15
+			wantCost:     19.8, // ($3 + $15) x 1.1 regional
 		},
 		// --- Cache pricing with Sonnet ---
 		{
@@ -584,7 +813,7 @@ func TestSDKClient_CalculateCost_ModelPricing(t *testing.T) {
 			// base: $3 + $15 = $18
 			// cache write: 200K * $3 * 1.25 / 1M = $0.75
 			// cache read:  500K * $3 * 0.10 / 1M = $0.15
-			wantCost: 18.90,
+			wantCost: 20.79,
 		},
 		// --- Cache pricing with Opus 4.5 ---
 		{
@@ -597,9 +826,75 @@ func TestSDKClient_CalculateCost_ModelPricing(t *testing.T) {
 			// base: $5 + $25 = $30
 			// cache write: 200K * $5 * 1.25 / 1M = $1.25
 			// cache read:  500K * $5 * 0.10 / 1M = $0.25
-			wantCost: 31.50,
+			wantCost: 34.65,
 		},
 		// --- Uncatalogued model reports no cost rather than a guessed one ---
+		// --- Paired global/regional controls (10% regional premium, 4.5+) ---
+		{
+			name:         "fable 5 global (control for the regional row)",
+			modelID:      "global.anthropic.claude-fable-5",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     60.0,
+		},
+		{
+			name:         "opus 5.5 global (control for the regional row)",
+			modelID:      "global.anthropic.claude-opus-5-5",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     24.0,
+		},
+		{
+			name:         "opus 4.1 regional carries no premium (pre-4.5) [sdk]",
+			modelID:      "us.anthropic.claude-opus-4-1-20250805-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     90.0,
+		},
+		// --- Cache reads are priced per model ---
+		{
+			name:            "fable 5.1 global cache read at 0.025x",
+			modelID:         "global.anthropic.claude-fable-5-1",
+			cacheReadTokens: tokens,
+			wantCost:        0.25,
+		},
+		{
+			name:            "opus 5.5 global cache read at 0.05x",
+			modelID:         "global.anthropic.claude-opus-5-5",
+			cacheReadTokens: tokens,
+			wantCost:        0.20,
+		},
+		{
+			name:                "opus 5.5 regional premium covers every bucket",
+			modelID:             "us.anthropic.claude-opus-5-5",
+			inputTokens:         tokens,
+			outputTokens:        tokens,
+			cacheReadTokens:     tokens,
+			cacheCreationTokens: tokens,
+			wantCost:            32.12, // ($4 + $20 + $5 write + $0.20 read) x 1.1
+		},
+		// --- Inference-profile ARNs price by the profile id they carry ---
+		{
+			name:         "sonnet 4.5 global profile ARN carries no regional premium",
+			modelID:      "arn:aws:bedrock:us-east-1:123456789012:inference-profile/global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     18.0, // $3 + $15, global
+		},
+		{
+			name:         "sonnet 4.5 regional profile ARN carries the regional premium",
+			modelID:      "arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     19.8, // ($3 + $15) x 1.1 regional
+		},
+		{
+			name:         "sonnet 4.5 foundation-model ARN is in-region",
+			modelID:      "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0",
+			inputTokens:  tokens,
+			outputTokens: tokens,
+			wantCost:     19.8, // ($3 + $15) x 1.1 regional
+		},
 		{
 			name:         "uncatalogued model reports zero, never an invented rate",
 			modelID:      "anthropic.claude-unknown-9-20260101-v1:0",
@@ -932,7 +1227,6 @@ func TestClient_ImplementsLLMProviderInterface(t *testing.T) {
 		region:      "us-east-1",
 		maxTokens:   4096,
 		temperature: 1.0,
-		toolNameMap: make(map[string]string),
 	}
 
 	// Type assertion to verify interface implementation

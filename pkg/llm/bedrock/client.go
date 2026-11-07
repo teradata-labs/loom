@@ -38,15 +38,13 @@ import (
 // preventing AWS Bedrock throttling when multiple agents make concurrent requests.
 // Client implements the LLMProvider interface for AWS Bedrock.
 type Client struct {
-	client      *bedrockruntime.Client
-	modelID     string
-	region      string
-	maxTokens   int
-	temperature float64
-	// toolNameMap maps sanitized tool names (used by Bedrock) to original names (used by agent)
-	// This is needed because Bedrock requires tool names to match ^[a-zA-Z0-9_-]{1,64}$
-	// but MCP tools use names like "filesystem:read_file"
-	toolNameMap map[string]string
+	schemaPolicy      llm.ToolSchemaPolicy
+	strictToolSchemas bool
+	client            *bedrockruntime.Client
+	modelID           string
+	region            string
+	maxTokens         int
+	temperature       float64
 	// useConverse selects AWS's model-agnostic Converse API over the Anthropic
 	// Messages payload. Anthropic models take the native payload (it carries
 	// thinking blocks and cache_control, which Converse does not expose the same
@@ -60,6 +58,7 @@ type Client struct {
 
 // Config holds configuration for the Bedrock client.
 type Config struct {
+	StrictToolSchemas bool
 	// AWS Configuration
 	Region          string // Required: AWS region (e.g., us-east-1, us-west-2)
 	AccessKeyID     string // Optional: if not using IAM role/profile
@@ -206,13 +205,13 @@ func NewClient(cfg Config) (*Client, error) {
 	}
 
 	return &Client{
-		client:      bedrockruntime.NewFromConfig(awsCfg),
-		modelID:     cfg.ModelID,
-		region:      cfg.Region,
-		maxTokens:   cfg.MaxTokens,
-		temperature: cfg.Temperature,
-		toolNameMap: make(map[string]string),
-		rateLimiter: rateLimiter,
+		strictToolSchemas: cfg.StrictToolSchemas,
+		client:            bedrockruntime.NewFromConfig(awsCfg),
+		modelID:           cfg.ModelID,
+		region:            cfg.Region,
+		maxTokens:         cfg.MaxTokens,
+		temperature:       cfg.Temperature,
+		rateLimiter:       rateLimiter,
 	}, nil
 }
 
@@ -256,9 +255,17 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 		request["system"] = systemPrompt
 	}
 
-	// Add tools if provided
+	// Add tools if provided. The sanitized → original tool-name map is per
+	// request: the client is shared across sessions (server provider pool).
+	nameMap := make(map[string]string)
 	if len(tools) > 0 {
-		request["tools"] = c.convertTools(tools)
+		apiTools, err := c.convertTools(ctx, tools, nameMap)
+		if err != nil {
+			return nil, err
+		}
+		if len(apiTools) > 0 {
+			request["tools"] = apiTools
+		}
 	}
 
 	// Marshal request
@@ -322,7 +329,7 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 	}
 
 	// Convert to agent format
-	llmResp := c.convertResponse(&response)
+	llmResp := c.convertResponse(&response, nameMap)
 
 	// Record token usage for rate limiter metrics
 	if c.rateLimiter != nil {
@@ -358,9 +365,17 @@ func (c *Client) chatStreamDisabled(ctx context.Context, messages []llmtypes.Mes
 		request["system"] = systemPrompt
 	}
 
-	// Add tools if provided
+	// Add tools if provided. The sanitized → original tool-name map is per
+	// request: the client is shared across sessions (server provider pool).
+	nameMap := make(map[string]string)
 	if len(tools) > 0 {
-		request["tools"] = c.convertTools(tools)
+		apiTools, err := c.convertTools(ctx, tools, nameMap)
+		if err != nil {
+			return nil, err
+		}
+		if len(apiTools) > 0 {
+			request["tools"] = apiTools
+		}
 	}
 
 	// Marshal request
@@ -510,7 +525,7 @@ func (c *Client) chatStreamDisabled(ctx context.Context, messages []llmtypes.Mes
 
 	// Map sanitized tool names back to original names
 	for i := range toolCalls {
-		if originalName, exists := c.toolNameMap[toolCalls[i].Name]; exists {
+		if originalName, exists := nameMap[toolCalls[i].Name]; exists {
 			toolCalls[i].Name = originalName
 		}
 	}
@@ -648,115 +663,48 @@ func (c *Client) convertMessages(messages []llmtypes.Message) (string, []map[str
 }
 
 // convertTools converts shuttle tools to Bedrock/Anthropic format.
-// Uses standard Anthropic Messages API format with sanitized tool names.
-func (c *Client) convertTools(tools []shuttle.Tool) []map[string]interface{} {
+// Uses standard Anthropic Messages API format with sanitized tool names
+// (Bedrock requires ^[a-zA-Z0-9_-]{1,64}$; MCP names carry colons). When
+// nameMap is non-nil it receives this request's sanitized → original names.
+func (c *Client) convertTools(ctx context.Context, tools []shuttle.Tool, nameMap map[string]string) ([]map[string]interface{}, error) {
 	var apiTools []map[string]interface{}
-
-	// Clear previous mapping
-	c.toolNameMap = make(map[string]string)
 
 	for _, tool := range tools {
 		originalName := tool.Name()
+		schemaMap, keep, err := c.schemaPolicy.Prepare(ctx, originalName, tool.InputSchema(), c.strictToolSchemas)
+		if err != nil {
+			return nil, err
+		}
+		if !keep {
+			continue
+		}
 		sanitizedName := llm.SanitizeToolName(originalName)
 
 		// Store mapping for later conversion back
-		c.toolNameMap[sanitizedName] = originalName
+		if nameMap != nil {
+			nameMap[sanitizedName] = originalName
+		}
 
 		apiTool := map[string]interface{}{
 			"name":        sanitizedName,
 			"description": tool.Description(),
 		}
 
-		schema := tool.InputSchema()
-		if schema != nil {
-			// Ensure type field is not empty (default to "object")
-			schemaType := schema.Type
-			if schemaType == "" {
-				schemaType = "object"
-			}
-
-			apiTool["input_schema"] = map[string]interface{}{
-				"type":       schemaType,
-				"properties": convertSchemaProperties(schema.Properties),
-				"required":   schema.Required,
-			}
+		if schemaMap != nil {
+			apiTool["input_schema"] = schemaMap
 		}
 
 		apiTools = append(apiTools, apiTool)
 	}
 
-	return apiTools
-}
-
-// convertSchemaProperties converts JSONSchema properties to Anthropic/Bedrock format.
-func convertSchemaProperties(props map[string]*shuttle.JSONSchema) map[string]interface{} {
-	if props == nil {
-		return nil
-	}
-
-	result := make(map[string]interface{})
-	for key, schema := range props {
-		propMap := make(map[string]interface{})
-		propType := schema.Type
-		if propType == "" {
-			propType = "string" // MCP tools may omit type; default to string
-		}
-		propMap["type"] = propType
-
-		if schema.Description != "" {
-			propMap["description"] = schema.Description
-		}
-		if schema.Enum != nil {
-			propMap["enum"] = schema.Enum
-		}
-		if schema.Default != nil {
-			propMap["default"] = schema.Default
-		}
-		if schema.Properties != nil {
-			propMap["properties"] = convertSchemaProperties(schema.Properties)
-			if propType == "string" {
-				propMap["type"] = "object"
-			}
-		}
-		if schema.Items != nil {
-			propMap["items"] = convertSchemaItem(schema.Items)
-			if propType == "string" {
-				propMap["type"] = "array"
-			}
-		}
-
-		result[key] = propMap
-	}
-	return result
-}
-
-// convertSchemaItem converts a JSONSchema item for arrays.
-func convertSchemaItem(item *shuttle.JSONSchema) map[string]interface{} {
-	itemMap := make(map[string]interface{})
-	itemType := item.Type
-	if itemType == "" {
-		itemType = "string" // MCP tools may omit type; default to string
-	}
-	itemMap["type"] = itemType
-
-	if item.Description != "" {
-		itemMap["description"] = item.Description
-	}
-	if item.Enum != nil {
-		itemMap["enum"] = item.Enum
-	}
-	if item.Properties != nil {
-		itemMap["properties"] = convertSchemaProperties(item.Properties)
-		if itemType == "string" {
-			itemMap["type"] = "object"
-		}
-	}
-
-	return itemMap
+	return apiTools, nil
 }
 
 // convertResponse converts Bedrock response to agent format.
-func (c *Client) convertResponse(resp *bedrockResponse) *llmtypes.LLMResponse {
+// convertResponse converts a Bedrock (Anthropic Messages) response to the
+// agent format. nameMap is this request's sanitized → original tool-name
+// table from convertTools; nil leaves tool-use names as returned.
+func (c *Client) convertResponse(resp *bedrockResponse, nameMap map[string]string) *llmtypes.LLMResponse {
 	llmResp := &llmtypes.LLMResponse{
 		StopReason: resp.StopReason,
 		Usage: llmtypes.Usage{
@@ -788,7 +736,7 @@ func (c *Client) convertResponse(resp *bedrockResponse) *llmtypes.LLMResponse {
 			}
 			if sanitizedName, ok := block["name"].(string); ok {
 				// Map sanitized name back to original name
-				if originalName, exists := c.toolNameMap[sanitizedName]; exists {
+				if originalName, exists := nameMap[sanitizedName]; exists {
 					toolCall.Name = originalName
 				} else {
 					// Fallback: use sanitized name if mapping not found
@@ -805,64 +753,43 @@ func (c *Client) convertResponse(resp *bedrockResponse) *llmtypes.LLMResponse {
 	return llmResp
 }
 
-// calculateCost estimates cost for Bedrock Claude models.
-// Pricing varies by model and region - these are approximate.
-//
-// Cache tiers: a cache write bills at 1.25x the input rate and a cache read at
-// 0.10x. Bedrock/Anthropic report input_tokens EXCLUSIVE of cached tokens, so
-// the three buckets are additive (unlike the OpenAI-compatible shape, where
-// prompt_tokens includes them). Mirrors SDKClient.calculateCost.
+// calculateCost estimates cost for Bedrock Claude models. Mirrors
+// SDKClient.calculateCost; both delegate to bedrockClaudeCost.
 func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int) float64 {
-	// The catalog (pkg/llm/catalog) is the source of truth for pricing. Fall back
-	// to substring matching only for model ids it does not list.
-	// IMPORTANT: in the fallback, check "opus-4-1" BEFORE "opus-4" because
-	// strings.Contains("opus-4-5", "opus-4") is true. Opus 4.1 is the expensive
-	// model ($15/$75); Opus 4.5/4.6 are cheaper ($5/$25).
-	inputPricePerMillion, outputPricePerMillion, ok := catalog.LookupPricing("bedrock", c.modelID)
+	return bedrockClaudeCost(c.modelID, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens)
+}
+
+// bedrockClaudeCost prices one Bedrock Claude call. The catalog
+// (pkg/llm/catalog) is the source of truth: catalog.RequestPricing resolves the
+// catalog, then catalog.ClaudeFamilyPricing for any Claude profile id it does
+// not list, and the published long-context card; anything unrecognised
+// reports 0.
+//
+// Bedrock/Anthropic report input_tokens EXCLUSIVE of cached tokens, so the
+// three input buckets are additive (unlike the OpenAI-compatible shape, where
+// prompt_tokens includes them). A cache write bills at 1.25x the input rate and
+// a cache read at the model's own multiplier. Regional endpoints carry the
+// premium catalog.BedrockEndpointMultiplier reports, on every bucket.
+func bedrockClaudeCost(modelID string, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int) float64 {
+	// The three input buckets are additive; together they are the prompt.
+	inputPricePerMillion, outputPricePerMillion, ok := catalog.RequestPricing("bedrock", modelID, inputTokens+cacheReadTokens+cacheCreationTokens)
 	if !ok {
-		switch {
-		case strings.Contains(c.modelID, "claude-opus-5"):
-			// Claude Opus 5: $5 per 1M input, $25 per 1M output
-			inputPricePerMillion = 5.0
-			outputPricePerMillion = 25.0
-		case strings.Contains(c.modelID, "claude-sonnet-5"):
-			// Claude Sonnet 5: $3 per 1M input, $15 per 1M output
-			inputPricePerMillion = 3.0
-			outputPricePerMillion = 15.0
-		case strings.Contains(c.modelID, "claude-opus-4-1"):
-			// Claude Opus 4.1: $15 per 1M input, $75 per 1M output
-			inputPricePerMillion = 15.0
-			outputPricePerMillion = 75.0
-		case strings.Contains(c.modelID, "claude-opus-4"):
-			// Claude Opus 4.5/4.6: $5 per 1M input, $25 per 1M output
-			inputPricePerMillion = 5.0
-			outputPricePerMillion = 25.0
-		case strings.Contains(c.modelID, "claude-haiku-4"):
-			// Claude Haiku 4: $1 per 1M input, $5 per 1M output
-			inputPricePerMillion = 1.0
-			outputPricePerMillion = 5.0
-		case strings.Contains(c.modelID, "claude-sonnet-4"):
-			// Claude Sonnet 4: $3 per 1M input, $15 per 1M output
-			inputPricePerMillion = 3.0
-			outputPricePerMillion = 15.0
-		default:
-			// An uncatalogued model gets no invented rate. Guessing Sonnet's
-			// card here is how Opus-5 was under-billed for a whole campaign and
-			// Fable by 3.3x: a plausible number is worse than an obvious zero,
-			// because nobody audits a cost that looks reasonable. Report zero
-			// and say so — the token counts are still recorded, so the real
-			// figure can be computed once the model is catalogued.
-			zap.L().Warn("bedrock: model not in pricing catalog — cost reported as 0",
-				zap.String("model", c.modelID))
-			return 0
-		}
+		// An uncatalogued model gets no invented rate. Guessing Sonnet's
+		// card here is how Opus-5 was under-billed for a whole campaign and
+		// Fable by 3.3x: a plausible number is worse than an obvious zero,
+		// because nobody audits a cost that looks reasonable. Report zero
+		// and say so — the token counts are still recorded, so the real
+		// figure can be computed once the model is catalogued.
+		zap.L().Warn("bedrock: model not in pricing catalog — cost reported as 0",
+			zap.String("model", modelID))
+		return 0
 	}
 
 	inputCost := float64(inputTokens) * inputPricePerMillion / 1_000_000
 	outputCost := float64(outputTokens) * outputPricePerMillion / 1_000_000
-	cacheWriteCost := float64(cacheCreationTokens) * inputPricePerMillion * 1.25 / 1_000_000
-	cacheReadCost := float64(cacheReadTokens) * inputPricePerMillion * 0.10 / 1_000_000
-	return inputCost + outputCost + cacheWriteCost + cacheReadCost
+	cacheWriteCost := float64(cacheCreationTokens) * inputPricePerMillion * catalog.ClaudeCacheWriteMultiplier / 1_000_000
+	cacheReadCost := float64(cacheReadTokens) * inputPricePerMillion * catalog.ClaudeCacheReadMultiplier(modelID) / 1_000_000
+	return (inputCost + outputCost + cacheWriteCost + cacheReadCost) * catalog.BedrockEndpointMultiplier(modelID)
 }
 
 // bedrockResponse represents Bedrock's response format (Anthropic-compatible).

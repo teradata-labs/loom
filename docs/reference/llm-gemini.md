@@ -226,7 +226,11 @@ Images are supported via base64-encoded inline data. When a message includes `Co
 Tools registered with the agent are converted to Gemini `FunctionDeclaration` objects. The provider handles:
 - Tool name sanitization (Gemini has stricter naming rules than other providers) and reverse mapping on response
 - Schema conversion including nested properties, arrays with items, and enum values
-- Empty type defaults: properties with empty `type` default to `"string"`; properties with sub-`properties` default to `"object"`; properties with `items` default to `"array"`
+- Empty type defaults: properties with empty `type` default to `"string"`; properties with sub-`properties` default to `"object"`; properties with `items` default to `"array"`. An untyped tool root defaults to `"object"`. Only each `anyOf` branch node skips inference, so empty or constraint-only branch nodes do not become string constraints. Properties and items below that node resume normal recursive fill-in, including nullable object/array descendants.
+- Conservative format annotations: STRING retains only `enum` and `date-time`, INTEGER retains `int32` and `int64`, and NUMBER retains `float` and `double`. Other values, including STRING `uri` and `text`, are omitted recursively without changing the source schema. This is not a claim of live acceptance of every retained keyword combination.
+- Incompatible tool roots, null nested schema nodes, and unsupported nested composites are omitted per tool rather than failing every request. Root composites and root `enum` are not advertised. Warnings are emitted once per tool and failure reason per client, with an omission event on each active request span; a changed schema can therefore produce a new warning. Go embedders can opt into pre-HTTP errors with the library-only `Config.StrictToolSchemas`; YAML, the factory, `loom`, and `looms` do not expose that switch. See [Tool Schema Compatibility](./llm-providers/#tool-schema-compatibility).
+
+Gemini skips tools containing unsupported nested `oneOf`, `allOf`, or `not`, or returns a strict error naming the tool and schema path. These keywords are not silently discarded. Type fill-in and format filtering are provider-compatibility behavior, not full JSON Schema validation; tool-side validation remains necessary.
 
 When the model returns `FunctionCall` parts, the response `StopReason` is set to `"tool_use"`.
 

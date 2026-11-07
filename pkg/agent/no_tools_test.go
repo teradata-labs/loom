@@ -16,7 +16,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"github.com/teradata-labs/loom/pkg/skills"
+	"github.com/teradata-labs/loom/pkg/task"
 )
 
 type noToolsDiscoveryRegistry struct {
@@ -179,4 +182,33 @@ func TestRegistry_PerAgentNoToolsKeepsGraphMemory(t *testing.T) {
 	require.NoError(t, err)
 	assert.Positive(t, normal.ToolCount())
 	assert.Contains(t, normal.ListTools(), "graph_memory")
+}
+
+func TestWithoutToolsOmitsToolPromptSupplements(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "skills")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	for name, body := range manualModeFixtures {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600))
+	}
+	orch := skills.NewOrchestrator(skills.NewLibrary(skills.WithSearchPaths(dir)))
+	mgr := task.NewManager(nil, nil, observability.NewNoOpTracer(), nil)
+
+	cfg := DefaultConfig()
+	cfg.SkillsConfig = &skills.SkillsConfig{Enabled: true}
+	build := func(extra ...Option) *Agent {
+		opts := append([]Option{
+			WithConfig(cfg),
+			WithSkillOrchestrator(orch),
+			WithTaskBoard(mgr, nil, &loomv1.TaskBoardConfig{Enabled: true}),
+		}, extra...)
+		return NewAgent(&mockBackend{}, &mockToolCallingLLM{}, opts...)
+	}
+
+	enabled := build()
+	assert.Contains(t, enabled.taskBoardPromptSupplement(), "task_board")
+	assert.Contains(t, enabled.skillMenuPromptSupplement(), "manage_skills")
+
+	disabled := build(WithoutTools())
+	assert.Empty(t, disabled.taskBoardPromptSupplement())
+	assert.Empty(t, disabled.skillMenuPromptSupplement())
 }

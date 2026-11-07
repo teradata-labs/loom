@@ -55,3 +55,24 @@ prompts:
     metadata:
       version: "v1.0"
       description: "Tool execution failure recovery"
+
+  - id: repeated_tool_call
+    content: |
+      (note: this is call {{.count}} in a row to {{.tool_name}} with identical arguments. Read this result before calling again: change the arguments, try a different approach, or finish. Calling again is fine when the data can change between calls, for example when polling a job that is still running.)
+    variables:
+      count:
+        name: count
+        type: 1  # STRING
+        required: true
+        description: "Number of consecutive identical calls"
+      tool_name:
+        name: tool_name
+        type: 1  # STRING
+        required: true
+        description: "Name of the repeated tool"
+    tags:
+      - guidance
+      - self_correction
+    metadata:
+      version: "v1.0"
+      description: "Advisory note after repeated identical tool calls"

@@ -348,6 +348,7 @@ type GraphMemoryConfigYAML struct {
 	MaxEntitiesPerExtraction      int     `yaml:"max_entities_per_extraction"`
 	ConversationExtractionCadence int     `yaml:"conversation_extraction_cadence"`
 	ExtractionTimeoutSeconds      int     `yaml:"extraction_timeout_seconds"`
+	FleetLessonSharing            bool    `yaml:"fleet_lesson_sharing"` // opt-in: share mined lessons across all agents
 }
 
 // MemoryCompressionConfigYAML represents memory compression configuration in YAML
@@ -379,6 +380,16 @@ type BehaviorConfigYAML struct {
 	Skills                 SkillsConfigYAML   `yaml:"skills"`
 	OutputTokenCBThreshold int                `yaml:"output_token_cb_threshold"`
 	EnableSelfHealing      *bool              `yaml:"enable_self_healing"`
+	// RepeatCallHint opts the agent into the repeat-call note (default off).
+	RepeatCallHint *bool `yaml:"repeat_call_hint"`
+	// ToolChangeNote opts the agent into the tool-change note (default off).
+	ToolChangeNote bool `yaml:"tool_change_note"`
+	// ContextReliefWarning opts the agent into the context-relief warning
+	// (default off).
+	ContextReliefWarning bool `yaml:"context_relief_warning"`
+	// ParallelReadTools opts the agent into running consecutive
+	// concurrency-safe tool calls of one response in parallel (default off).
+	ParallelReadTools bool `yaml:"parallel_read_tools"`
 }
 
 // SkillsConfigYAML represents skills configuration in YAML
@@ -904,6 +915,39 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 		config.Metadata["_enable_self_healing"] = "false"
 	}
 
+	// Stash the repeat-call opt-in the same way; registry.go turns it into
+	// RecoveryConfig thresholds. Off unless the YAML sets it true.
+	if yaml.Agent.Behavior.RepeatCallHint != nil && *yaml.Agent.Behavior.RepeatCallHint {
+		if config.Metadata == nil {
+			config.Metadata = make(map[string]string)
+		}
+		config.Metadata["_repeat_call_hint"] = "true"
+	}
+
+	// The tool-change note is opt-in the same way.
+	if yaml.Agent.Behavior.ToolChangeNote {
+		if config.Metadata == nil {
+			config.Metadata = make(map[string]string)
+		}
+		config.Metadata["_tool_change_note"] = "true"
+	}
+
+	// The context-relief warning is opt-in the same way.
+	if yaml.Agent.Behavior.ContextReliefWarning {
+		if config.Metadata == nil {
+			config.Metadata = make(map[string]string)
+		}
+		config.Metadata["_context_relief_warning"] = "true"
+	}
+
+	// Parallel dispatch of read-only tool calls is opt-in the same way.
+	if yaml.Agent.Behavior.ParallelReadTools {
+		if config.Metadata == nil {
+			config.Metadata = make(map[string]string)
+		}
+		config.Metadata["_parallel_read_tools"] = "true"
+	}
+
 	if err := validateToolsConfig(config.Tools); err != nil {
 		return nil, err
 	}
@@ -915,6 +959,16 @@ func validateToolsConfig(tools *loomv1.ToolsConfig) error {
 		return fmt.Errorf("tools.disabled cannot be combined with builtin, mcp, or custom tools")
 	}
 	return nil
+}
+
+// ApplyMetadataBehavior maps the behavior flags yamlToProto encodes in an
+// agent's metadata onto cfg. Every place that builds a Config from a
+// loomv1.AgentConfig calls it, so a YAML key cannot work in one host and be
+// ignored in another. It maps only _parallel_read_tools for now; the sibling
+// flags (_tool_change_note, _context_relief_warning, _repeat_call_hint) are
+// tracked in issue #526.
+func ApplyMetadataBehavior(cfg *Config, md map[string]string) {
+	cfg.ParallelReadTools = md["_parallel_read_tools"] == "true"
 }
 
 // parseMemoryCompressionConfig converts YAML memory compression config to proto
@@ -1077,6 +1131,7 @@ func parseGraphMemoryConfig(yaml *GraphMemoryConfigYAML) *loomv1.GraphMemoryConf
 		MaxEntitiesPerExtraction:      maxEntitiesPerExtraction,
 		ConversationExtractionCadence: conversationExtractionCadence,
 		ExtractionTimeoutSeconds:      extractionTimeoutSeconds,
+		FleetLessonSharing:            yaml.FleetLessonSharing,
 	}
 }
 
@@ -1413,6 +1468,7 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 				MaxEntitiesPerExtraction:      int(config.Memory.GraphMemory.MaxEntitiesPerExtraction),
 				ConversationExtractionCadence: int(config.Memory.GraphMemory.ConversationExtractionCadence),
 				ExtractionTimeoutSeconds:      int(config.Memory.GraphMemory.ExtractionTimeoutSeconds),
+				FleetLessonSharing:            config.Memory.GraphMemory.FleetLessonSharing,
 			}
 		}
 	}
