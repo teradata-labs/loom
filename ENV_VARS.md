@@ -15,6 +15,7 @@ This document describes all environment variables used in the Loom project.
   - [Google Gemini](#google-gemini)
   - [HuggingFace](#huggingface)
   - [looms server credential variables (`LOOM_LLM_*`)](#looms-server-credential-variables-loom_llm_)
+- [Decision Layer](#decision-layer)
 - [AWS Credentials](#aws-credentials)
 - [Observability (Hawk)](#observability-hawk)
 - [Observability (OTLP)](#observability-otlp)
@@ -486,6 +487,58 @@ export LOOM_LLM_LITELLM_EXTRA_HEADERS='{"X-Team":"a,b","X-Trace":"abc"}'
 An empty value means no headers. When the variable is set it replaces `llm.litellm_extra_headers` from the config file; the two are not merged.
 
 **A malformed value stops `looms serve` at startup** (for example `Authorization: Bearer ...`, with a colon instead of `=`). The error reads `failed to unmarshal config (check LOOM_LLM_LITELLM_EXTRA_HEADERS)` and names the config key and the entry's position (`entry 1 of 1 is not key=value`), or the byte offset of a JSON syntax error. It never includes the value or any part of it, because header values are often credentials.
+
+---
+
+## Decision Layer
+
+Settings for the typed decision layer (`pkg/decision`, shadow mode only; see `docs/architecture/decision-layer.md`). They matter only for an agent whose YAML has a `decision:` block with `provider: jev`, and for `loom decision replay --decider jev`. Agent YAML can set neither the credential nor the endpoint.
+
+### LOOM_DECISION_BASE_URL
+**Used in:** `cmd/looms/config.go` (binds `decision.base_url` in `looms.yaml`), `pkg/decision/jev/config.go`
+
+Server-level decider endpoint, installed by every `looms` command when its config loads. It takes precedence over `TYPESAFE_BASE_URL`. Must be an `https` URL; plain `http` is refused unless the host is loopback and `LOOM_DECISION_ALLOW_INSECURE_HTTP` is true. A refused value is fatal for `looms serve` (config validation); other `looms` commands print a warning, leave the endpoint unset and fall back to `TYPESAFE_BASE_URL` or the provider default. `loom decision replay` does not read it; use its `--base-url` flag.
+
+```bash
+export LOOM_DECISION_BASE_URL=https://ai-gateway.vercel.sh/typesafe
+```
+
+### LOOM_DECISION_ALLOW_INSECURE_HTTP
+**Used in:** `cmd/looms/config.go` (binds `decision.allow_insecure_http`)
+**Default:** `false`
+
+Allows an `http://` `LOOM_DECISION_BASE_URL` on a loopback host (a local proxy or mock decider). Non-loopback `http` is refused even when set. The `loom decision replay` equivalent is `--allow-insecure-http`.
+
+```bash
+export LOOM_DECISION_BASE_URL=http://127.0.0.1:4000
+export LOOM_DECISION_ALLOW_INSECURE_HTTP=true
+```
+
+### TYPESAFE_BASE_URL
+**Used in:** `pkg/decision/jev/config.go`
+
+Decider endpoint when neither `decision.base_url` / `LOOM_DECISION_BASE_URL` (looms) nor `--base-url` (loom CLI) is set. Same `https` rule. With none of them set, the endpoint is `https://api.typesafe.ai`, or `https://ai-gateway.vercel.sh/typesafe` when the only key present is `AI_GATEWAY_API_KEY`.
+
+### TYPESAFE_API_KEY
+**Used in:** `pkg/decision/jev/config.go`
+
+TypeSafe API key. Consulted first. Sent as `Authorization: Bearer <key>` to the resolved endpoint.
+
+```bash
+export TYPESAFE_API_KEY=your-key
+```
+
+### AI_GATEWAY_API_KEY
+**Used in:** `pkg/decision/jev/config.go`
+
+Vercel AI Gateway key, consulted when `TYPESAFE_API_KEY` is unset. When no endpoint is configured it also selects the gateway URL; the gateway serves Jev only as `typesafe-ai/jev`, a floating alias, so the agent's `decision.model` must be that id (or empty) with `allow_alias: true`.
+
+### JEV_API_KEY
+**Used in:** `pkg/decision/jev/config.go`
+
+Alias some community tooling uses, consulted last, after `TYPESAFE_API_KEY` and `AI_GATEWAY_API_KEY`. It does not change the endpoint.
+
+With none of the three keys set, `provider: jev` is disabled for the agent with a logged warning (agent construction does not fail).
 
 ---
 
