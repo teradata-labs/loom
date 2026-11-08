@@ -231,12 +231,19 @@ func TestRenderExtractionWindowDropsToolPayloads(t *testing.T) {
 		{Role: "user", Content: "my daughter Ada starts school"},
 		{Role: "tool", Content: `{"rows":[{"ssn":"123-45-6789"}]}`},
 		{Role: "assistant", Content: "Noted."},
+		{Role: roleLessonReminder, Content: "lesson: query_x failed with ERR-SENTINEL-42"},
+		{Role: roleSkillBody, Content: "skill body SKILL-SENTINEL"},
 		{Role: "user", Content: "   "},
 	})
 	assert.Contains(t, got, "[user] my daughter Ada starts school")
 	assert.Contains(t, got, "[assistant] Noted.")
 	assert.NotContains(t, got, "ssn", "tool payloads never reach the decider")
 	assert.NotContains(t, got, "[user]   ", "blank turns are dropped")
+	// Review #410 F9: lesson reminders come from tool output, and other
+	// synthetic roles are Loom's own prompt text; neither reaches the decider.
+	assert.NotContains(t, got, "ERR-SENTINEL-42")
+	assert.NotContains(t, got, "["+roleLessonReminder+"]")
+	assert.NotContains(t, got, "SKILL-SENTINEL")
 }
 
 // Review #410 M4: the window is oldest-first, so cutting it to the first

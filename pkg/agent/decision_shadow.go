@@ -513,11 +513,14 @@ func (a *Agent) decisionConfigSummary() string {
 
 // renderExtractionWindow renders recent turns for the extraction gate. Role
 // and text only: the gate judges whether the conversation said anything
-// durable, and tool payloads are neither durable nor safe to ship.
+// durable, and tool payloads are neither durable nor safe to ship. Synthetic
+// Loom roles (lesson reminders, skill bodies, hygiene and retry prompts) are
+// dropped too: they are Loom's own text, not conversation, and a lesson
+// reminder is derived from tool output.
 func renderExtractionWindow(messages []types.Message) string {
 	var b strings.Builder
 	for _, m := range messages {
-		if m.Role == "tool" || strings.TrimSpace(m.Content) == "" {
+		if m.Role == "tool" || IsSyntheticWireUserRole(m.Role) || strings.TrimSpace(m.Content) == "" {
 			continue
 		}
 		fmt.Fprintf(&b, "[%s] %s\n", m.Role, m.Content)
