@@ -204,20 +204,28 @@ func Readonly() *Policy {
 			p.Programs[n] = &Profile{MaxPositional: -1, NoPathArgs: true}
 		}
 	}
-	plain("cat", "head", "tail", "wc", "cut", "comm", "cmp", "od",
+	plain("cat", "head", "tail", "cut", "comm", "cmp", "od",
 		"ls", "stat", "realpath",
 		"md5sum", "sha1sum", "sha256sum", "shasum", "md5")
 	noPaths("tr", "basename", "dirname", "seq", "sleep", "uname", "whoami", "id", "which")
+	// --files0-from=F reads the names of the files to read from F, which
+	// path confinement never sees (GNU sort printed a file named in F).
+	// wc and du leak the named files' counts and sizes the same way.
+	p.Programs["wc"] = &Profile{MaxPositional: -1, RefuseLong: []string{"--files0-from"}}
 	// Options that take a file name attached to them ("-f../x") are listed
-	// in pathShort, so the attached name is path-checked too.
+	// in pathShort, so the attached name is path-checked too. -R
+	// (--dereference-recursive) follows every symlink it meets out of the
+	// roots; -r follows only those on the command line, which are checked.
 	for _, n := range []string{"grep", "egrep", "fgrep"} {
-		p.Programs[n] = &Profile{MaxPositional: -1, ShortWithValue: "efmABCdD", pathShort: "f"}
+		p.Programs[n] = &Profile{MaxPositional: -1, RefuseShort: "R", RefuseLong: []string{"--dereference-recursive"},
+			ShortWithValue: "efmABCdD", pathShort: "f"}
 	}
 	p.Programs["diff"] = &Profile{MaxPositional: -1, ShortWithValue: "CUDFIxXSWL", pathShort: "X"}
-	p.Programs["du"] = &Profile{MaxPositional: -1, ShortWithValue: "XBdtI", pathShort: "X"}
+	p.Programs["du"] = &Profile{MaxPositional: -1, RefuseLong: []string{"--files0-from"},
+		ShortWithValue: "XBdtI", pathShort: "X"}
 	p.Programs["jq"] = &Profile{MaxPositional: -1, ShortWithValue: "L", pathShort: "L"}
 	p.Programs["sort"] = &Profile{MaxPositional: -1, RefuseShort: "oT", ShortWithValue: "ktS",
-		RefuseLong: []string{"--output", "--compress-program", "--temporary-directory"}}
+		RefuseLong: []string{"--output", "--compress-program", "--temporary-directory", "--files0-from"}}
 	p.Programs["uniq"] = &Profile{MaxPositional: 1, ShortWithValue: "fsw"}
 	p.Programs["find"] = &Profile{MaxPositional: -1, RefuseArgs: []string{
 		"-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls"}}

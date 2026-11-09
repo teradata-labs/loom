@@ -494,3 +494,49 @@ func runInterpreter(t *testing.T, src string) (string, [][]string) {
 	_ = r.Run(ctx, file)
 	return out.String(), launches
 }
+
+// R4: --files0-from reads the names of the files to read from a file, which
+// path confinement cannot see. sort, wc and du refuse it, in any spelling.
+func TestAnalyze_Files0From(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
+	runBypassCases(t, []bypassCase{
+		{cmd: `printf '../o/secret.txt\0' > l; sort --files0-from=l`, want: Ask, static: Ask, why: "sort (1:33): --files0-from is outside the profile"},
+		{cmd: `sort --files0-from l`, want: Ask, static: Ask, why: "--files0-from"},
+		{cmd: `sort --files0=l`, want: Ask, static: Ask, why: "--files0-from"},
+		{cmd: `wc --files0-from=l`, want: Ask, static: Ask, why: "wc (1:1): --files0-from"},
+		{cmd: `wc -c --files0-from l`, want: Ask, static: Ask},
+		{cmd: `du --files0-from=l`, want: Ask, static: Ask, why: "du (1:1): --files0-from"},
+		{cmd: `du -sh --files0 l`, want: Ask, static: Ask},
+		{cmd: `sort -k2 a.txt; wc -l a.txt; du -sh .; sort -- --files0-from=l`, want: Allow, static: Allow},
+	})
+	opt, _ := escapeSession(t)
+	for _, argv := range [][]string{
+		{"sort", "--files0-from=l"}, {"wc", "--files0-from", "l"}, {"du", "--files0=l"},
+	} {
+		err := Readonly().CheckLaunch(argv, opt.WorkingDir, opt.Roots, nil)
+		assert.ErrorContains(t, err, "--files0-from is outside the profile", "%v at run time", argv)
+	}
+}
+
+// R5: grep -R (--dereference-recursive) follows every symlink it meets, so a
+// symlink in the session leads it out of the roots. grep -r follows only the
+// symlinks named on the command line, which path confinement checks.
+func TestAnalyze_GrepDereferenceRecursive(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
+	runBypassCases(t, []bypassCase{
+		{cmd: `grep -R x .`, want: Ask, static: Ask, why: "grep (1:1): -R is outside the profile"},
+		{cmd: `grep -Rn x .`, want: Ask, static: Ask, why: "-R is outside the profile"},
+		{cmd: `grep -inR x .`, want: Ask, static: Ask},
+		{cmd: `grep --dereference-recursive x .`, want: Ask, static: Ask, why: "--dereference-recursive"},
+		{cmd: `grep --dereference x .`, want: Ask, static: Ask, why: "--dereference-recursive"},
+		{cmd: `egrep -R x .; fgrep -R x .`, want: Ask, static: Ask},
+		{cmd: `grep -r x .; grep -rn x .; grep -eR a.txt; grep -AR x a.txt; grep -- -R a.txt`, want: Allow, static: Allow},
+	})
+	opt, _ := escapeSession(t)
+	err := Readonly().CheckLaunch([]string{"grep", "-Rn", "x", "."}, opt.WorkingDir, opt.Roots, nil)
+	assert.ErrorContains(t, err, "-R is outside the profile", "grep -R at run time")
+}
