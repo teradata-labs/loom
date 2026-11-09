@@ -140,7 +140,7 @@ func TestClient_ConvertResponseDropsIncompleteToolCalls(t *testing.T) {
 					Message:      ChatMessage{ToolCalls: []ToolCall{tt.call}},
 					FinishReason: "tool_calls",
 				}},
-			}, 0)
+			}, 0, nil)
 
 			assert.Empty(t, response.ToolCalls)
 			assert.Equal(t, "end_turn", response.StopReason)
@@ -423,7 +423,7 @@ func TestClient_ConvertTools(t *testing.T) {
 	}
 
 	tools := []shuttle.Tool{mockTool}
-	got, err := client.convertTools(context.Background(), tools)
+	got, err := client.convertTools(context.Background(), tools, nil)
 	require.NoError(t, err)
 
 	require.Len(t, got, 1)
@@ -445,7 +445,7 @@ func TestClient_ConvertTools_EmptySchema(t *testing.T) {
 	for _, schema := range []*shuttle.JSONSchema{{}, {Description: "No arguments"}, {Properties: map[string]*shuttle.JSONSchema{}}} {
 		client := NewClient(Config{APIKey: "test"})
 		tool := &mockShuttleTool{name: "no_arguments", schema: schema}
-		tools, err := client.convertTools(context.Background(), []shuttle.Tool{tool})
+		tools, err := client.convertTools(context.Background(), []shuttle.Tool{tool}, nil)
 		require.NoError(t, err)
 		require.Len(t, tools, 1)
 		assert.Equal(t, "object", tools[0].Function.Parameters["type"])
@@ -571,7 +571,7 @@ func TestClient_ConvertResponse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := client.convertResponse(tt.resp, 0)
+			got := client.convertResponse(tt.resp, 0, nil)
 
 			assert.Equal(t, tt.want.Content, got.Content)
 			assert.Equal(t, tt.want.StopReason, got.StopReason)

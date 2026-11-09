@@ -44,6 +44,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
 	"github.com/teradata-labs/loom/pkg/llm/azureopenai"
 	"github.com/teradata-labs/loom/pkg/llm/bedrock"
+	"github.com/teradata-labs/loom/pkg/llm/bedrockmantle"
 	"github.com/teradata-labs/loom/pkg/llm/factory"
 	"github.com/teradata-labs/loom/pkg/llm/gemini"
 	"github.com/teradata-labs/loom/pkg/llm/huggingface"
@@ -52,6 +53,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/ollama"
 	"github.com/teradata-labs/loom/pkg/llm/openai"
 	llmscheduler "github.com/teradata-labs/loom/pkg/llm/scheduler"
+	"github.com/teradata-labs/loom/pkg/luasandbox"
 	"github.com/teradata-labs/loom/pkg/mcp/apps"
 	"github.com/teradata-labs/loom/pkg/mcp/manager"
 	"github.com/teradata-labs/loom/pkg/memory"
@@ -215,6 +217,8 @@ func registerYAMLBuiltinTools(
 		"update_ui_app":                   "UI app subsystem (AppCompiler/AppProvider)",
 		"delete_ui_app":                   "UI app subsystem (AppCompiler/AppProvider)",
 		"contact_human":                   "HITL store (registerContactHumanFromYAML)",
+		"run_lua":                         "Lua subsystem (tools.lua.enabled, registerLuaTools)",
+		"manage_lua_scripts":              "Lua subsystem (saved scripts; not available yet)",
 	}
 
 	logger.Info(indent+"Registering builtin tools", zap.Int("count", len(cfg.Tools.Builtin)))
@@ -938,6 +942,27 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			RateLimiterConfig: rlCfg,
 		})
 
+	case "bedrock-mantle":
+		// Mirrors the registry case in pkg/agent/registry.go: the server config
+		// has no bedrock-mantle fields, so region, endpoint and API key come
+		// from the environment. Without BEDROCK_MANTLE_API_KEY every request is
+		// SigV4-signed from the default AWS credential chain. An empty model
+		// selects bedrockmantle.DefaultModel inside the constructor.
+		region := os.Getenv("BEDROCK_MANTLE_REGION")
+		if region == "" {
+			region = os.Getenv("AWS_REGION")
+		}
+		return bedrockmantle.NewClientForModel(bedrockmantle.Config{
+			Region:            region,
+			Endpoint:          os.Getenv("BEDROCK_MANTLE_ENDPOINT"),
+			APIKey:            os.Getenv("BEDROCK_MANTLE_API_KEY"),
+			Model:             protoConfig.Model,
+			MaxTokens:         maxTokens,
+			Temperature:       temperature,
+			Timeout:           timeout,
+			RateLimiterConfig: rlCfg,
+		})
+
 	case "ollama":
 		model := protoConfig.Model
 		if model == "" {
@@ -1089,7 +1114,46 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		}), nil
 
 	default:
-		return nil, fmt.Errorf("unsupported LLM provider: %s (supported: anthropic, bedrock, ollama, openai, azure-openai, mistral, gemini, huggingface, litellm)", protoConfig.Provider)
+		return nil, fmt.Errorf("unsupported LLM provider: %s (supported: anthropic, bedrock, bedrock-mantle, ollama, openai, azure-openai, mistral, gemini, huggingface, litellm)", protoConfig.Provider)
+	}
+}
+
+// customLLMFallbackAllowed reports whether `looms serve` may run an agent role
+// (primary, compressor_llm or classifier_llm) on a substitute LLM when the
+// provider that the agent YAML declares for that role cannot be built. The
+// startup agent loop calls it before it falls back. It returns false for
+// bedrock-mantle: an operator selects Mantle to keep model traffic in their
+// AWS account, so a silent move to another provider is not acceptable. The
+// loop skips such an agent and logs an error instead. Other providers keep the
+// existing fall-back-to-default behaviour.
+func customLLMFallbackAllowed(provider string) bool {
+	switch provider {
+	case "bedrock-mantle":
+		return false
+	default:
+		return true
+	}
+}
+
+// skipAgentForUnbuildableLLM is called by the `looms serve` startup agent loop
+// when customLLMFallbackAllowed refuses a fallback. It logs the refusal at error
+// level, so the operator sees that the agent did not start, and closes the
+// agent's execution backend, which the loop opened before it built the LLMs.
+// The caller then skips the agent.
+func skipAgentForUnbuildableLLM(logger *zap.Logger, agentName, role string, llmCfg *loomv1.LLMConfig, backend fabric.ExecutionBackend, buildErr error) {
+	logger.Error("    Skipping agent: its LLM provider cannot be built and the provider does not allow a fallback LLM",
+		zap.String("name", agentName),
+		zap.String("role", role),
+		zap.String("provider", llmCfg.GetProvider()),
+		zap.String("model", llmCfg.GetModel()),
+		zap.Error(buildErr))
+	if backend == nil {
+		return
+	}
+	if err := backend.Close(); err != nil {
+		logger.Warn("    Failed to close backend of skipped agent",
+			zap.String("name", agentName),
+			zap.Error(err))
 	}
 }
 
@@ -1822,6 +1886,28 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Fatal("Failed to build admission chain", zap.Error(err))
 	}
 
+	// run_lua wiring (tools.lua, off by default): one policy and one run gate
+	// for the whole server, sized from the process memory limit. A malformed
+	// tool pattern aborts startup, like a malformed hook binding.
+	luaRT, err := newLuaRuntime(config.Tools.Lua, luaGuards{
+		YOLO:         config.Tools.Permissions.YOLO,
+		HookBindings: len(config.Tools.Hooks.Bindings),
+	}, luasandbox.ProcessMemoryLimit(), loomconfig.GetLoomDataDir(), logger)
+	if err != nil {
+		logger.Fatal("Invalid tools.lua configuration", zap.Error(err))
+	}
+	if luaRT != nil {
+		logger.Info("Lua scripts enabled (run_lua)",
+			zap.Int("run_slots", luaRT.slots),
+			zap.Int("runs_per_agent", luaRT.perKey),
+			zap.Uint64("memory_bytes_per_run", luaRT.runMem),
+			zap.Bool("save_enabled", luaRT.scripts.SaveEnabled),
+			zap.Bool("publish_as_tool_enabled", luaRT.scripts.PublishEnabled))
+		for _, loadErr := range luaRT.store.LoadErrors() {
+			logger.Warn("Skipped a saved Lua script that could not be loaded", zap.Error(loadErr))
+		}
+	}
+
 	// Initialize empty agents map - all agents loaded from $LOOM_DATA_DIR/agents/ via registry below
 	agents := initializeAgentsMap()
 	logger.Info("Agents will be loaded from $LOOM_DATA_DIR/agents/ directory via registry system")
@@ -1855,6 +1941,8 @@ func runServe(cmd *cobra.Command, args []string) {
 		// the chain would silently become ungoverned (C-007).
 		PermissionChecker: permissionChecker,
 		AdmissionChain:    admissionChain,
+		RunLuaTool:        luaRT.registryOptions(),
+		LuaScripts:        luaRT.scriptsRegistryOptions(),
 		IdentityResolver:  postgres.UserIDFromContext,
 		EventLogStore:     executionLog,
 	})
@@ -2076,6 +2164,10 @@ func runServe(cmd *cobra.Command, args []string) {
 						zap.String("provider", cfg.Llm.Provider),
 						zap.String("model", cfg.Llm.Model))
 					customLLM, err := createLLMProviderFromProtoConfig(cfg.Llm, config, logger)
+					if err != nil && !customLLMFallbackAllowed(cfg.Llm.Provider) {
+						skipAgentForUnbuildableLLM(logger, cfg.Name, "llm", cfg.Llm, backend, err)
+						continue
+					}
 					if err != nil {
 						logger.Warn("    Failed to create custom LLM provider, using server default",
 							zap.Error(err))
@@ -2102,6 +2194,10 @@ func runServe(cmd *cobra.Command, args []string) {
 				var staticClassifierLLM agent.LLMProvider
 				if cfg.CompressorLlm != nil && cfg.CompressorLlm.Provider != "" {
 					compLLM, err := createLLMProviderFromProtoConfig(cfg.CompressorLlm, config, logger)
+					if err != nil && !customLLMFallbackAllowed(cfg.CompressorLlm.Provider) {
+						skipAgentForUnbuildableLLM(logger, cfg.Name, "compressor_llm", cfg.CompressorLlm, backend, err)
+						continue
+					}
 					if err != nil {
 						logger.Warn("    Failed to create compressor LLM, extractor will use primary",
 							zap.Error(err),
@@ -2119,6 +2215,10 @@ func runServe(cmd *cobra.Command, args []string) {
 				}
 				if cfg.ClassifierLlm != nil && cfg.ClassifierLlm.Provider != "" {
 					classLLM, err := createLLMProviderFromProtoConfig(cfg.ClassifierLlm, config, logger)
+					if err != nil && !customLLMFallbackAllowed(cfg.ClassifierLlm.Provider) {
+						skipAgentForUnbuildableLLM(logger, cfg.Name, "classifier_llm", cfg.ClassifierLlm, backend, err)
+						continue
+					}
 					if err != nil {
 						logger.Warn("    Failed to create classifier LLM, router will use primary",
 							zap.Error(err),
@@ -2187,6 +2287,7 @@ func runServe(cmd *cobra.Command, args []string) {
 				// hot-reload path via registerYAMLBuiltinTools so the two
 				// paths cannot drift.
 				registerYAMLBuiltinTools(ag, cfg, registry, logger, "    ", "agent_management")
+				registerLuaTools(ag, cfg, luaRT, logger, "    ")
 
 				// Register contact_human tool with the shared HITL store (if listed in builtin tools)
 				if cfg.Tools != nil {
@@ -2718,6 +2819,12 @@ func runServe(cmd *cobra.Command, args []string) {
 	if uiRegistry.Count() > 0 {
 		loomService.SetAppProvider(uiRegistry)
 		logger.Info("UI apps registered for gRPC", zap.Int("count", uiRegistry.Count()))
+	}
+
+	// Saved Lua scripts over RPC (ListLuaScripts/GetLuaScript/SaveLuaScript/
+	// DeleteLuaScript); left unset, they return FailedPrecondition.
+	if luaRT != nil {
+		loomService.SetLuaScriptStore(luaRT.store)
 	}
 
 	// Wire up the UI app compiler for dynamic app creation (CreateUIApp/UpdateUIApp RPCs)
@@ -3434,6 +3541,7 @@ func runServe(cmd *cobra.Command, args []string) {
 			// on toolName=="shell_execute" and silently dropped YAML-declared
 			// shell_execute on hot reload under tools.minimal/none.
 			registerYAMLBuiltinTools(newAgent, agentConfig, registry, logger, "  ", "agent_management (reload)")
+			registerLuaTools(newAgent, agentConfig, luaRT, logger, "  ")
 
 			// Register contact_human tool with shared HITL store (if listed in builtin tools)
 			if agentConfig.Tools != nil {

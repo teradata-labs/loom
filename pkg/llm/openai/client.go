@@ -54,7 +54,6 @@ type Client struct {
 	temperature            float64
 	thinkingLevel          string // "", "none": off; any other value requests thinking on Claude models (adaptive or enabled+budget, per model)
 	rateLimiter            *llm.RateLimiter
-	toolNameMap            map[string]string // sanitized name → original name
 	extraHeaders           map[string]string // additional headers sent with every request
 	// catalogProvider is the catalog namespace calculateCost prices under.
 	// "openai" unless Config.CatalogProvider overrides it.
@@ -113,6 +112,11 @@ type Config struct {
 	// message must be at the beginning"). Cache breakpoints are not emitted when
 	// it is on, since the merge invalidates their message positions.
 	SingleLeadingSystem bool
+	// WrapTransport, when set, wraps both the blocking and the streaming HTTP
+	// transports after the client has tuned them. It receives the transport to
+	// wrap and returns the RoundTripper to use. Used to sign requests (AWS
+	// SigV4 for Bedrock Mantle) and to inject test doubles.
+	WrapTransport func(http.RoundTripper) http.RoundTripper
 }
 
 // Default OpenAI configuration values.
@@ -193,6 +197,10 @@ func NewClient(config Config) *Client {
 	streamHTTPClient := *httpClient
 	streamHTTPClient.Timeout = 0
 	streamHTTPClient.Transport = streamTransport
+	if config.WrapTransport != nil {
+		httpClient.Transport = config.WrapTransport(httpTransport)
+		streamHTTPClient.Transport = config.WrapTransport(streamTransport)
+	}
 
 	// Initialize rate limiter if enabled — keyed by credential+endpoint+model
 	// so clients with independent quotas do not throttle each other.
@@ -401,9 +409,11 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 	// Convert messages to OpenAI format
 	apiMessages := c.convertMessages(messages)
 
-	// Convert tools to OpenAI format with name sanitization
-	c.toolNameMap = make(map[string]string)
-	apiTools, err := c.convertTools(ctx, tools)
+	// Convert tools to OpenAI format with name sanitization. The sanitized →
+	// original map is per request: clients are shared across sessions (the
+	// server's provider pool), so it must never live on the Client.
+	nameMap := make(map[string]string)
+	apiTools, err := c.convertTools(ctx, tools, nameMap)
 	if err != nil {
 		return nil, err
 	}
@@ -433,7 +443,7 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 	}
 
 	// Convert response. The gateway's own cost (cache-aware) wins when present.
-	return c.convertResponse(resp, parseProviderCost(hdr)), nil
+	return c.convertResponse(resp, parseProviderCost(hdr), nameMap), nil
 }
 
 // convertMessages converts agent messages to OpenAI format.
@@ -742,7 +752,10 @@ func withCacheControl(content interface{}) interface{} {
 // convertTools converts shuttle tools to OpenAI format.
 // Tool names are sanitized to replace colons (MCP namespace separator)
 // with underscores for provider compatibility.
-func (c *Client) convertTools(ctx context.Context, tools []shuttle.Tool) ([]Tool, error) {
+// convertTools converts tools to the OpenAI wire format. Sanitized names are
+// recorded in nameMap (sanitized → original) when it is non-nil so responses
+// can be mapped back with llm.ReverseToolName.
+func (c *Client) convertTools(ctx context.Context, tools []shuttle.Tool, nameMap map[string]string) ([]Tool, error) {
 	var apiTools []Tool
 
 	for _, tool := range tools {
@@ -755,8 +768,8 @@ func (c *Client) convertTools(ctx context.Context, tools []shuttle.Tool) ([]Tool
 			continue
 		}
 		sanitizedName := llm.SanitizeToolName(originalName)
-		if c.toolNameMap != nil {
-			c.toolNameMap[sanitizedName] = originalName
+		if nameMap != nil {
+			nameMap[sanitizedName] = originalName
 		}
 
 		apiTool := Tool{
@@ -777,7 +790,7 @@ func (c *Client) convertTools(ctx context.Context, tools []shuttle.Tool) ([]Tool
 }
 
 // convertResponse converts OpenAI response to agent format.
-func (c *Client) convertResponse(resp *ChatCompletionResponse, providerCostUSD float64) *llmtypes.LLMResponse {
+func (c *Client) convertResponse(resp *ChatCompletionResponse, providerCostUSD float64, nameMap map[string]string) *llmtypes.LLMResponse {
 	finishReason := ""
 	if len(resp.Choices) > 0 {
 		finishReason = resp.Choices[0].FinishReason
@@ -848,6 +861,9 @@ func (c *Client) convertResponse(resp *ChatCompletionResponse, providerCostUSD f
 		if llmResp.Thinking == "" {
 			llmResp.Thinking = choice.Message.ReasoningContent
 		}
+		if llmResp.Thinking == "" {
+			llmResp.Thinking = choice.Message.Reasoning
+		}
 		completeThinkingBlocks(llmResp.ThinkingBlocks, llmResp.Thinking)
 
 		// Extract tool calls
@@ -871,7 +887,7 @@ func (c *Client) convertResponse(resp *ChatCompletionResponse, providerCostUSD f
 
 			llmResp.ToolCalls = append(llmResp.ToolCalls, llmtypes.ToolCall{
 				ID:    tc.ID,
-				Name:  llm.ReverseToolName(c.toolNameMap, tc.Function.Name),
+				Name:  llm.ReverseToolName(nameMap, tc.Function.Name),
 				Input: input,
 			})
 		}
@@ -1076,8 +1092,8 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 
 	// 1. Build request body (reuse existing message and tool conversion)
 	apiMessages := c.convertMessages(messages)
-	c.toolNameMap = make(map[string]string)
-	apiTools, err := c.convertTools(ctx, tools)
+	nameMap := make(map[string]string)
+	apiTools, err := c.convertTools(ctx, tools, nameMap)
 	if err != nil {
 		return nil, err
 	}
@@ -1202,6 +1218,8 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			// the token callback (thinking is not user-visible output).
 			if choice.Delta.ReasoningContent != "" {
 				reasoningBuffer.WriteString(choice.Delta.ReasoningContent)
+			} else if choice.Delta.Reasoning != "" {
+				reasoningBuffer.WriteString(choice.Delta.Reasoning)
 			}
 			for _, tb := range choice.Delta.ThinkingBlocks {
 				idx := 0
@@ -1241,7 +1259,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 						tc.ID = tcDelta.ID
 					}
 					if tcDelta.Function.Name != "" {
-						tc.Name = llm.ReverseToolName(c.toolNameMap, tcDelta.Function.Name)
+						tc.Name = llm.ReverseToolName(nameMap, tcDelta.Function.Name)
 					}
 
 					// Accumulate function arguments (they come in chunks)
