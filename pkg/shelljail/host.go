@@ -99,8 +99,9 @@ type Runner struct {
 // it resolves to now, and checks that git accepts the hardening flags (git is
 // left unpinned, so calls to it need approval, when it does not). It returns
 // warnings for programs it left out: one naming every program not found on
-// the search path, and one for git when its hardening cannot be applied. It
-// does not run the self-test.
+// the search path (except one whose Profile.Alternates names a program that
+// was found), and one for git when its hardening cannot be applied. It does
+// not run the self-test.
 func NewRunner(cfg Config) (*Runner, []string, error) {
 	if !supported {
 		return nil, nil, fmt.Errorf("jailed shell mode is not supported on %s", runtime.GOOS)
@@ -149,12 +150,15 @@ func NewRunner(cfg Config) (*Runner, []string, error) {
 	}
 	var warnings, missing []string
 	for _, name := range cfg.Policy.ProgramNames() {
-		p := LookPath(name, r.search)
-		if p == "" {
-			missing = append(missing, name)
+		if p := LookPath(name, r.search); p != "" {
+			r.pinned[name] = p
+		}
+	}
+	for _, name := range cfg.Policy.ProgramNames() {
+		if _, ok := r.pinned[name]; ok || r.hasPinnedAlternate(cfg.Policy.Programs[name]) {
 			continue
 		}
-		r.pinned[name] = p
+		missing = append(missing, name)
 	}
 	if len(missing) > 0 {
 		sort.Strings(missing)
@@ -167,6 +171,21 @@ func NewRunner(cfg Config) (*Runner, []string, error) {
 	}
 	sort.Strings(warnings)
 	return r, warnings, nil
+}
+
+// hasPinnedAlternate reports whether one of prof's Alternates was pinned, so
+// the missing program is another platform's name for a program this host has
+// (md5 on Linux, md5sum on older macOS) and not worth a startup warning.
+func (r *Runner) hasPinnedAlternate(prof *shellpolicy.Profile) bool {
+	if prof == nil {
+		return false
+	}
+	for _, alt := range prof.Alternates {
+		if _, ok := r.pinned[alt]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveAll(paths []string) []string {

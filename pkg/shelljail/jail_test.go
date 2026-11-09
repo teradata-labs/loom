@@ -24,6 +24,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -568,18 +569,81 @@ func TestNewRunner_Validation(t *testing.T) {
 	_, _, err = NewRunner(Config{Policy: shellpolicy.Readonly(), LoomDataDir: "/x", SearchPath: []string{"bin"}})
 	assert.ErrorContains(t, err, "not absolute")
 
+	// The host decides which policy programs exist and whether git accepts
+	// --attr-source (git 2.39 does not), so only the test's own names and the
+	// shape of the warnings are asserted.
 	r, warnings, err := NewRunner(Config{Policy: shellpolicy.Readonly().Extend("p", []string{"no-such-program-xyz"}, nil), LoomDataDir: "/x"})
 	require.NoError(t, err)
-	require.Len(t, warnings, 1, "missing programs are reported in one line: %q", warnings)
-	assert.Contains(t, warnings[0], "not found on the search path")
-	assert.Contains(t, warnings[0], "no-such-program-xyz")
-	_, warnings, err = NewRunner(Config{Policy: shellpolicy.Readonly().Extend("p", []string{"no-such-a", "no-such-b"}, nil), LoomDataDir: "/x"})
+	assert.Contains(t, missingNames(t, warnings), "no-such-program-xyz", "a missing program is reported")
+	_, warnings, err = NewRunner(Config{Policy: shellpolicy.Readonly().Extend("p", []string{"no-such-b", "no-such-a"}, nil), LoomDataDir: "/x"})
 	require.NoError(t, err)
-	require.Len(t, warnings, 1, "%q", warnings)
-	assert.Contains(t, warnings[0], ": no-such-a, no-such-b")
+	names := missingNames(t, warnings)
+	assert.Subset(t, names, []string{"no-such-a", "no-such-b"}, "every missing program is in the one line")
+	assert.True(t, sort.StringsAreSorted(names), "the names are sorted: %q", names)
 	assert.NotContains(t, r.Pinned(), "no-such-program-xyz")
 	for name, path := range r.Pinned() {
 		assert.True(t, filepath.IsAbs(path), name)
+	}
+}
+
+// missingNames returns the program names in NewRunner's one "not found"
+// warning, failing when there is not exactly one, or when any other warning is
+// not the git one.
+func missingNames(t *testing.T, warnings []string) []string {
+	t.Helper()
+	var found []string
+	for _, w := range warnings {
+		if strings.HasPrefix(w, "git: ") {
+			continue
+		}
+		require.Contains(t, w, "not found on the search path", "the only other warning is the git one: %q", warnings)
+		found = append(found, w)
+	}
+	require.Len(t, found, 1, "missing programs are reported in one line: %q", warnings)
+	_, list, ok := strings.Cut(found[0], "exit 127: ")
+	require.True(t, ok, "the warning ends with the names: %q", found[0])
+	return strings.Split(list, ", ")
+}
+
+// fakeBin makes a directory holding an executable stub for each name, for a
+// search path whose contents the test decides.
+func fakeBin(t *testing.T, names ...string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, n := range names {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, n), []byte("#!/bin/sh\n"), 0o700)) // #nosec G306 -- a test stub that must be executable
+	}
+	return dir
+}
+
+// A program the readonly policy lists for another platform (md5 on Linux,
+// md5sum on older macOS) is not reported missing when the host has the
+// program it stands in for; a host with neither is told.
+func TestNewRunner_AlternatesAreNotReportedMissing(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		have        []string
+		reported    []string
+		notReported []string
+	}{
+		{"GNU host", []string{"md5sum", "sha1sum", "sha256sum", "shasum"}, nil, []string{"md5", "md5sum", "sha1sum", "sha256sum", "shasum"}},
+		{"GNU host without perl", []string{"md5sum", "sha1sum", "sha256sum"}, []string{"shasum"}, []string{"md5", "sha1sum", "sha256sum"}},
+		{"older macOS", []string{"md5", "shasum"}, nil, []string{"md5", "md5sum", "sha1sum", "sha256sum", "shasum"}},
+		{"neither", nil, []string{"md5", "md5sum", "sha1sum", "sha256sum", "shasum"}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, warnings, err := NewRunner(Config{Policy: shellpolicy.Readonly(), LoomDataDir: "/x", SearchPath: []string{fakeBin(t, tc.have...)}})
+			require.NoError(t, err)
+			names := missingNames(t, warnings)
+			assert.Subset(t, names, tc.reported, "programs with no stand-in are reported")
+			for _, n := range tc.notReported {
+				assert.NotContains(t, names, n, "%s is present or has a stand-in", n)
+			}
+			for _, n := range tc.have {
+				assert.Contains(t, r.Pinned(), n, "a present program is pinned")
+			}
+			assert.Contains(t, names, "cat", "a program with no stand-in is still reported")
+		})
 	}
 }
 

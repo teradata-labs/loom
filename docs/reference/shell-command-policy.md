@@ -264,7 +264,7 @@ tools:
 
 In jailed mode, `serve` also:
 
-1. **Pins programs.** It resolves every allowlisted program once on `search_path` and logs one warning naming every program it cannot find (for example `md5sum`, `sha1sum` and `sha256sum` on older macOS releases, or `md5` on most Linux systems). A missing program fails with exit 127.
+1. **Pins programs.** It resolves every allowlisted program once on `search_path` and logs one warning naming every program it cannot find. A missing program fails with exit 127. The readonly policy lists the GNU and BSD names of the checksum programs side by side (`Profile.Alternates`): `md5` stands in for `md5sum` and the reverse, and `shasum` for `sha1sum` and `sha256sum`. A missing name whose stand-in was found is not in the warning, so a Linux host is not told about `md5` and an older macOS host is not told about `md5sum`, `sha1sum` or `sha256sum`. A host with neither name is told.
 2. **Checks git.** It drops git when git does not accept `--attr-source`, so that git calls need approval rather than running without the hardening.
 3. **Runs a self-test.** It runs `echo` through the jail. A binary that does not call `shelljail.Main()` first in `main()` fails this check.
 
