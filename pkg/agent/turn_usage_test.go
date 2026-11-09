@@ -178,3 +178,28 @@ func TestAddUsage_RateLimitTokensSumsMeteredFigure(t *testing.T) {
 		})
 	}
 }
+
+// A scripted replay turn (WithScriptedResponse, the benchmark harness's
+// replay_assistant_message) makes no provider call, so it reports no LLM call
+// and no usage. Orchestration sums TurnLLMCalls as the run's call count.
+func TestResponse_ScriptedReplayCountsNoLLMCall(t *testing.T) {
+	llm := &usageScriptLLM{responses: []*LLMResponse{{
+		Content:    "a provider answer",
+		StopReason: "end_turn",
+		Usage:      llmtypes.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15, CostUSD: 0.001},
+	}}}
+	ag := newUsageTestAgent(llm)
+
+	ctx := WithScriptedResponse(context.Background(), "replayed answer")
+	resp, err := ag.Chat(ctx, "scripted-replay-session", "hello")
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "replayed answer", resp.Content, "the scripted text is the turn's answer")
+
+	llm.mu.Lock()
+	served := llm.idx
+	llm.mu.Unlock()
+	require.Zero(t, served, "precondition: the provider was not called")
+	assert.Zero(t, resp.TurnLLMCalls, "a replayed turn made no LLM call")
+	assert.Equal(t, Usage{}, resp.TurnUsage, "a replayed turn has no usage")
+}

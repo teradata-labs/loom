@@ -2418,9 +2418,19 @@ type Response struct {
 	// N tool-loop iterations has N−1 calls that Usage does not represent.
 	TurnUsage Usage
 
-	// TurnLLMCalls is the number of successful LLM calls that TurnUsage sums.
-	// Orchestration reports it as the run's LLM call count; one turn with N
+	// TurnLLMCalls is the number of successful LLM calls that TurnUsage sums:
+	// every call of the conversation loop (tool-loop iterations, the
+	// empty-response and hygiene retries, the final synthesis). A scripted
+	// replay turn (WithScriptedResponse) makes no call and counts 0.
+	// Orchestration reports it as the agent's LLM call count; one turn with N
 	// tool-loop iterations is N+ calls, not one.
+	//
+	// Not counted, here or in TurnUsage: LLM calls made outside the
+	// conversation loop's provider call. Examples are graph-memory recall
+	// (extractSearchQuery, rerankMemories), graph-memory extraction and lesson
+	// mining (both in the background), the memory compressor, segmented-memory
+	// reranking, the skills router, and the pattern intent classifier and
+	// reranker.
 	TurnLLMCalls int
 
 	// ToolExecutions contains tools that were executed
@@ -2890,8 +2900,10 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// override is ignored (falls through to a normal provider call).
 		var llmResp *LLMResponse
 		var err error
+		providerCalled := true // false for a scripted replay: no call to count
 		if scripted, ok := scriptedResponseFromContext(ctx); ok && strings.TrimSpace(scripted) != "" {
 			llmResp = &LLMResponse{Content: scripted, StopReason: "end_turn"}
+			providerCalled = false
 		} else {
 			if intentErr := a.recordLLMIntent(ctx, session.ID, thisStep, len(messages), a.llm.Model()); intentErr != nil {
 				return nil, fmt.Errorf("recording LLM call intent: %w", intentErr)
@@ -2945,7 +2957,9 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			return nil, fmt.Errorf("LLM call failed: %w", err)
 		}
 		addUsage(&turnUsage, llmResp.Usage)
-		turnCalls++
+		if providerCalled {
+			turnCalls++
+		}
 		a.observePromptUsage(session, llmResp.Usage)
 
 		// Record LLM response on conversation_loop span
