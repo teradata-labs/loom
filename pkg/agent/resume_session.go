@@ -208,6 +208,8 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (_ *Respons
 		return nil, err
 	}
 	truncated := truncatedToolCallIndexes(recordedResp, tools)
+	st.answeredCalls = truncated
+	st.outputTokens = recordedResp.Usage.OutputTokens
 	if maxPerTurn := a.config.MaxIterations; maxPerTurn > 0 {
 		st.maxPerTurn = maxPerTurn
 	} else {
@@ -236,13 +238,10 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (_ *Respons
 				st.rowNotPersisted = true
 			}
 
-		case intentEvt == nil && truncated[eventPos]:
-			a.answerTruncatedToolCalls(agentCtx, sess, recordedResp, map[int]bool{eventPos: true}, st)
-			toolExecCount++
-
 		case intentEvt == nil:
-			// Never attempted: collected for dispatch below, after giving it
-			// the chance a fresh turn's pre-scan gives it to park for HITL.
+			// Never attempted (including calls cut off at max_tokens whose
+			// notice was not yet written): collected in batch order so any
+			// park check and subsequent row writes preserve call order.
 			neverAttempted = append(neverAttempted, call)
 			neverAttemptedPositions = append(neverAttemptedPositions, positions[j])
 			neverAttemptedEventPositions = append(neverAttemptedEventPositions, eventPos)
@@ -261,10 +260,26 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (_ *Respons
 	// Re-park check: a never-attempted call may be Ask-classified or a
 	// contact_human whose intent was never recorded. Classifying against each
 	// call's true batch position keeps verifyItemBinding's "seq is the call's
-	// position in the original batch" invariant for a later resume.
+	// position in the original batch" invariant for a later resume. Cut-off
+	// calls are excluded from preflight and recorded on the park request so
+	// ResumeChat writes their OUTPUT_TRUNCATED rows in batch order.
 	if a.hitlPark != nil && a.memory.HasStore() && len(neverAttempted) > 0 {
-		items := a.classifyParkItems(agentCtx, neverAttempted, neverAttemptedPositions)
-		if parkErr := a.parkItems(agentCtx, sess, items, Usage{}, Usage{}, nil, false); parkErr != nil {
+		var parkCandidates []ToolCall
+		var parkCandidatePositions []int
+		var truncatedBatchPositions map[int]bool
+		for j, call := range neverAttempted {
+			if truncated[neverAttemptedEventPositions[j]] {
+				if truncatedBatchPositions == nil {
+					truncatedBatchPositions = make(map[int]bool)
+				}
+				truncatedBatchPositions[neverAttemptedPositions[j]] = true
+				continue
+			}
+			parkCandidates = append(parkCandidates, call)
+			parkCandidatePositions = append(parkCandidatePositions, neverAttemptedPositions[j])
+		}
+		items := a.classifyParkItems(agentCtx, parkCandidates, parkCandidatePositions)
+		if parkErr := a.parkItems(agentCtx, sess, items, recordedResp.Usage, Usage{}, nil, false, truncatedBatchPositions); parkErr != nil {
 			var parked *TurnParkedError
 			if errors.As(parkErr, &parked) {
 				parkedAgain = true
@@ -277,7 +292,12 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (_ *Respons
 		}
 	}
 	for j, call := range neverAttempted {
-		a.dispatchOneCall(agentCtx, sess, call, neverAttemptedEventPositions[j], st)
+		eventPos := neverAttemptedEventPositions[j]
+		if truncated[eventPos] {
+			a.answerTruncatedToolCall(agentCtx, sess, batch.ToolCalls, neverAttemptedPositions[j], eventPos, st)
+			continue
+		}
+		a.dispatchOneCall(agentCtx, sess, call, eventPos, st)
 	}
 	if leaseErr := sessionLeaseLost(ctx); leaseErr != nil {
 		return nil, leaseErr

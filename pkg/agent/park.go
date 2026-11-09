@@ -775,7 +775,7 @@ func (a *Agent) maybeParkBatch(ctx Context, sess *Session, llmResp *LLMResponse,
 			items = append(items, parkItem{call: call, seq: i, kind: "approval", reason: d.Reason})
 		}
 	}
-	return a.parkItems(ctx, sess, items, llmResp.Usage, turnUsage, advertised, true)
+	return a.parkItems(ctx, sess, items, llmResp.Usage, turnUsage, advertised, true, answered)
 }
 
 // classifyParkItems runs maybeParkBatch's per-call classification (Deny
@@ -819,7 +819,7 @@ func (a *Agent) classifyParkItems(ctx Context, calls []ToolCall, positions []int
 // (ResumeSession knows none for a crashed batch), so the later ResumeChat
 // takes the legacy path and a script engine fails closed instead of being
 // handed the resume-time set.
-func (a *Agent) parkItems(ctx Context, sess *Session, items []parkItem, usage, turnUsage Usage, advertised []shuttle.Tool, hasProjection bool) error {
+func (a *Agent) parkItems(ctx Context, sess *Session, items []parkItem, usage, turnUsage Usage, advertised []shuttle.Tool, hasProjection bool, answered map[int]bool) error {
 	if len(items) == 0 {
 		return nil
 	}
@@ -862,6 +862,7 @@ func (a *Agent) parkItems(ctx Context, sess *Session, items []parkItem, usage, t
 	if hasProjection {
 		reqCtx = parkedRequestContext(advertised)
 	}
+	recordParkedTruncatedCalls(reqCtx, answered, usage.OutputTokens)
 	hr := &shuttle.HumanRequest{
 		ID:              uuid.New().String(),
 		AgentID:         a.GetID(),
@@ -1306,7 +1307,8 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 			zap.L().Warn("parked request records no tool projection; scripts in the batch will not run",
 				zap.String("session_id", sessionID), zap.String("request_id", hr.ID))
 		}
-		a.completeParkedBatch(agentCtx, sess, batch, rowless, positions, effective, itemIDs, parkedItemKinds(hr), projection, hasProjection)
+		truncatedCalls, outputTokens := parkedTruncatedCalls(hr)
+		a.completeParkedBatchWithTruncated(agentCtx, sess, batch, rowless, positions, effective, itemIDs, parkedItemKinds(hr), projection, hasProjection, truncatedCalls, outputTokens)
 	}
 
 	response, err := a.runConversationLoop(agentCtx)
@@ -1591,6 +1593,10 @@ func locateParkedBatch(sess *Session, itemIDs []string) (Message, []ToolCall, []
 // projection (hasProjection false) calls get none and a script engine fails
 // closed.
 func (a *Agent) completeParkedBatch(ctx Context, sess *Session, batch Message, rowless []ToolCall, positions []int, decision ParkDecision, itemIDs []string, kinds map[string]string, projection []string, hasProjection bool) {
+	a.completeParkedBatchWithTruncated(ctx, sess, batch, rowless, positions, decision, itemIDs, kinds, projection, hasProjection, nil, 0)
+}
+
+func (a *Agent) completeParkedBatchWithTruncated(ctx Context, sess *Session, batch Message, rowless []ToolCall, positions []int, decision ParkDecision, itemIDs []string, kinds map[string]string, projection []string, hasProjection bool, truncatedCalls map[int]bool, outputTokens int) {
 	maxPerTurn := a.config.MaxIterations
 	if maxPerTurn <= 0 {
 		maxPerTurn = 10
@@ -1620,6 +1626,8 @@ func (a *Agent) completeParkedBatch(ctx Context, sess *Session, batch Message, r
 		recovery:           recovery,
 		turnDedup:          make(map[string]*shuttle.Result),
 		noProjection:       !hasProjection,
+		answeredCalls:      truncatedCalls,
+		outputTokens:       outputTokens,
 	}
 	// The loop recorded each call at its index in the LLM response; the saved
 	// batch can hold fewer calls (query_tool_result is dropped), so a call's
@@ -1663,6 +1671,8 @@ func (a *Agent) completeParkedBatch(ctx Context, sess *Session, batch Message, r
 			eventPos = eventPositions[eventPos]
 		}
 		switch {
+		case st.answeredCalls[positions[j]]:
+			a.answerTruncatedToolCall(ctx, sess, batch.ToolCalls, positions[j], eventPos, st)
 		case kinds[call.ID] == "resource":
 			// The call's tool body already RAN when the turn parked — every
 			// resource arm synthesizes, none dispatches, whatever the decision

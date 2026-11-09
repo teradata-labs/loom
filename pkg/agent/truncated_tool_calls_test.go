@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -124,10 +125,21 @@ func toolRowFor(msgs []llmtypes.Message, callID string) (string, bool) {
 	return "", false
 }
 
+// toolRowContents returns the contents of all tool-role messages in msgs, in order.
+func toolRowContents(msgs []llmtypes.Message) []string {
+	var rows []string
+	for _, m := range msgs {
+		if m.Role == "tool" {
+			rows = append(rows, m.Content)
+		}
+	}
+	return rows
+}
+
 var cutOffWrite = llmtypes.ToolCall{
 	ID:    "c-cut",
 	Name:  "shared_memory_write",
-	Input: map[string]interface{}{"key": "conf-intel-2027-ai-worldwide-discovery"},
+	Input: map[string]interface{}{"key": "part-2"},
 }
 
 func TestTruncatedToolCall_NotExecutedAndModelTold(t *testing.T) {
@@ -161,7 +173,7 @@ func TestTruncatedToolCall_CompleteCallInSameBatchStillRuns(t *testing.T) {
 	complete := llmtypes.ToolCall{
 		ID:    "c-ok",
 		Name:  "shared_memory_write",
-		Input: map[string]interface{}{"key": "part-1", "value": "NeurIPS 2027"},
+		Input: map[string]interface{}{"key": "part-1", "value": "first chunk"},
 	}
 	llm := &recordingStopReasonLLM{responses: []scriptedResponse{
 		{toolCalls: []llmtypes.ToolCall{complete, cutOffWrite}, stopReason: "max_tokens"},
@@ -180,6 +192,11 @@ func TestTruncatedToolCall_CompleteCallInSameBatchStillRuns(t *testing.T) {
 	require.True(t, ok)
 	assert.Contains(t, cutRow, outputTruncatedCode)
 
+	rows := toolRowContents(next)
+	require.Len(t, rows, 2)
+	assert.NotContains(t, rows[0], outputTruncatedCode, "row 0 answers the complete call")
+	assert.Contains(t, rows[1], outputTruncatedCode, "row 1 answers the cut-off call")
+
 	t.Run("later cut-off call does not preempt earlier complete call budget", func(t *testing.T) {
 		budgetTool := &requiredCountingTool{name: "shared_memory_write"}
 		budgetLLM := &recordingStopReasonLLM{responses: []scriptedResponse{
@@ -191,6 +208,74 @@ func TestTruncatedToolCall_CompleteCallInSameBatchStillRuns(t *testing.T) {
 		_, err := budgetAgent.Chat(context.Background(), "s-budget-order", "research")
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), budgetTool.runs.Load(), "complete call at index 0 must run before index 1's cut-off call consumes the budget")
+	})
+}
+
+func TestTruncatedToolCall_NoticeRowOrder(t *testing.T) {
+	t.Run("inline dispatch preserves call order for order-paired providers", func(t *testing.T) {
+		tool := &requiredCountingTool{name: "shared_memory_write"}
+		llm := &recordingStopReasonLLM{responses: []scriptedResponse{{
+			stopReason: "max_tokens",
+			toolCalls: []llmtypes.ToolCall{
+				{ID: "shared_memory_write", Name: "shared_memory_write", Input: map[string]interface{}{"key": "part-1", "value": "v"}},
+				{ID: "shared_memory_write", Name: "shared_memory_write", Input: map[string]interface{}{"key": "part-2"}},
+			},
+		}}}
+		ag := newTruncationAgent(t, llm, tool)
+		_, err := ag.Chat(context.Background(), "s-order", "write two parts")
+		require.NoError(t, err)
+
+		rows := toolRowContents(llm.requestAt(t, 1))
+		require.Len(t, rows, 2)
+		assert.False(t, strings.Contains(rows[0], "OUTPUT_TRUNCATED"), "row 0 answers the complete call")
+		assert.True(t, strings.Contains(rows[1], "OUTPUT_TRUNCATED"), "row 1 answers the cut-off call")
+	})
+
+	t.Run("parked batch preserves call order after ResumeChat", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.PatternConfig = DefaultPatternConfig()
+		cfg.PatternConfig.UseLLMClassifier = false
+
+		sessions, err := NewSessionStore(filepath.Join(t.TempDir(), "park-order.db"), observability.NewNoOpTracer())
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = sessions.Close() })
+		store := shuttle.NewInMemoryHumanRequestStore()
+
+		llm := &recordingStopReasonLLM{responses: []scriptedResponse{{
+			stopReason: "max_tokens",
+			toolCalls: []llmtypes.ToolCall{
+				{ID: "shared_memory_write", Name: "shared_memory_write", Input: map[string]interface{}{"key": "part-1", "value": "v"}},
+				{ID: "shared_memory_write", Name: "shared_memory_write", Input: map[string]interface{}{"key": "part-2"}},
+			},
+		}}}
+		tool := &requiredCountingTool{name: "shared_memory_write"}
+		newAgent := func() *Agent {
+			ag := NewAgent(&mockBackend{}, llm,
+				WithConfig(cfg),
+				WithMemory(NewMemoryWithStore(sessions)),
+				WithHITLPark(store, 0, NewProgressNotifier()),
+				WithAdmissionHooks(shuttle.NewChain([]shuttle.Hook{scopedAskHook{tool: "shared_memory_write"}}, nil, nil)),
+			)
+			ag.RegisterTool(tool)
+			return ag
+		}
+
+		_, err = newAgent().Chat(context.Background(), "s-park-order", "write two parts")
+		var parked *TurnParkedError
+		require.True(t, errors.As(err, &parked), "expected park, got %v", err)
+
+		_, err = newAgent().ResumeChat(context.Background(), "s-park-order", ParkDecision{
+			RequestID: parked.RequestID,
+			Approved:  true,
+		}, nil)
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), tool.runs.Load())
+		assert.Equal(t, []map[string]interface{}{{"key": "part-1", "value": "v"}}, tool.executedInputs())
+
+		rows := toolRowContents(llm.requestAt(t, 1))
+		require.Len(t, rows, 2)
+		assert.False(t, strings.Contains(rows[0], "OUTPUT_TRUNCATED"), "row 0 answers the approved complete call")
+		assert.True(t, strings.Contains(rows[1], "OUTPUT_TRUNCATED"), "row 1 answers the cut-off call")
 	})
 }
 
@@ -235,6 +320,15 @@ func TestTruncatedToolCall_ParallelReadDispatch(t *testing.T) {
 				}
 			}
 			assert.Equal(t, want, positions, "only complete calls record execution intents, at their original positions")
+			rows := toolRowContents(llm.requestAt(t, 1))
+			require.Len(t, rows, 4)
+			for i, row := range rows {
+				if i == cutPosition {
+					assert.Contains(t, row, outputTruncatedCode, "row %d answers the cut-off call", i)
+				} else {
+					assert.NotContains(t, row, outputTruncatedCode, "row %d answers a complete call", i)
+				}
+			}
 		})
 	}
 }
@@ -271,9 +365,10 @@ func TestTruncatedToolCall_CrashResumeBeforeNotice(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, int64(1), tool.runs.Load(), "resume must run only the complete call")
 			assert.Equal(t, []map[string]interface{}{{"key": "saved", "value": "expected"}}, tool.executedInputs())
-			row, ok := toolRowFor(llm.requestAt(t, 0), id)
-			require.True(t, ok)
-			assert.Contains(t, row, "OUTPUT_TRUNCATED")
+			rows := toolRowContents(llm.requestAt(t, 0))
+			require.Len(t, rows, 2)
+			assert.NotContains(t, rows[0], "OUTPUT_TRUNCATED", "row 0 answers the complete call")
+			assert.Contains(t, rows[1], "OUTPUT_TRUNCATED", "row 1 answers the cut-off call")
 		})
 	}
 }
@@ -360,6 +455,27 @@ func TestOutputTruncatedMessage_FromPromptRegistry(t *testing.T) {
 	ag.prompts = registry
 	noMissing := ag.outputTruncatedMessage(nil, "shared_memory_write", 4096, nil)
 	assert.Contains(t, noMissing, "(missing: not determined)")
+
+	// If a deployment overrides output_truncated with a variable the code does
+	// not pass, getErrorMessage rejects the uninterpolated {{placeholder}} and
+	// falls back to the built-in message.
+	customDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(customDir, "errors"), 0750))
+	customYAML := `---
+name: errors
+namespace: loom.tool_execution
+---
+prompts:
+  - id: output_truncated
+    content: "OUTPUT_TRUNCATED: {{.tool_name}} needed {{.extra_var}}"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(customDir, "errors", "tool_execution.yaml"), []byte(customYAML), 0600))
+	customReg := prompts.NewFileRegistry(customDir)
+	require.NoError(t, customReg.Reload(context.Background()))
+	ag.prompts = customReg
+	withUnknownVar := ag.outputTruncatedMessage(nil, "shared_memory_write", 4096, []string{"value"})
+	assert.NotContains(t, withUnknownVar, "{{")
+	assert.Equal(t, strings.TrimSpace(fallback), strings.TrimSpace(withUnknownVar))
 }
 
 // A cut-off call is never put in front of a human: the park pre-scan skips
@@ -387,7 +503,7 @@ func TestTruncatedToolCall_NotParkedNorRunOnResume(t *testing.T) {
 			complete := llmtypes.ToolCall{
 				ID:    "c-ok",
 				Name:  "shared_memory_write",
-				Input: map[string]interface{}{"key": "part-1", "value": "NeurIPS 2027"},
+				Input: map[string]interface{}{"key": "part-1", "value": "first chunk"},
 			}
 			cut := cutOffWrite
 			cut.ID = tc.cutID
@@ -429,8 +545,18 @@ func TestTruncatedToolCall_NotParkedNorRunOnResume(t *testing.T) {
 			}, nil)
 			assert.NoError(t, err)
 			assert.Equal(t, int64(1), tool.runs.Load(), "approval runs the complete call only")
-			assert.Equal(t, []map[string]interface{}{{"key": "part-1", "value": "NeurIPS 2027"}}, tool.executedInputs(),
+			assert.Equal(t, []map[string]interface{}{{"key": "part-1", "value": "first chunk"}}, tool.executedInputs(),
 				"one execution is not enough: it must be the complete call, not its cut-off sibling")
+
+			rows := toolRowContents(llm.requestAt(t, 1))
+			require.Len(t, rows, 2)
+			if tc.cutFirst {
+				assert.Contains(t, rows[0], outputTruncatedCode, "row 0 answers the cut-off call")
+				assert.NotContains(t, rows[1], outputTruncatedCode, "row 1 answers the complete call")
+			} else {
+				assert.NotContains(t, rows[0], outputTruncatedCode, "row 0 answers the complete call")
+				assert.Contains(t, rows[1], outputTruncatedCode, "row 1 answers the cut-off call")
+			}
 		})
 	}
 }
@@ -472,7 +598,7 @@ func (t *actionCountingTool) Execute(_ context.Context, _ map[string]interface{}
 // the tool's call-dependent requirements show the call is incomplete.
 func TestTruncatedToolCall_ActionDependentArgsCount(t *testing.T) {
 	tool := &actionCountingTool{}
-	cut := llmtypes.ToolCall{ID: "c-ws", Name: "workspace", Input: map[string]interface{}{"action": "write", "filename": "conferences.json"}}
+	cut := llmtypes.ToolCall{ID: "c-ws", Name: "workspace", Input: map[string]interface{}{"action": "write", "filename": "a.txt"}}
 	llm := &recordingStopReasonLLM{responses: []scriptedResponse{
 		{content: "Writing the file.", toolCalls: []llmtypes.ToolCall{cut}, stopReason: "max_tokens"},
 	}}

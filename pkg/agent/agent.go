@@ -1838,11 +1838,13 @@ func (a *Agent) getGuidanceMessage(ctx context.Context, key string, vars map[str
 // Used for structured error messages with context variables.
 // Format: errors.{category}.{type} (e.g., "errors.llm.timeout", "errors.tool_execution.invalid_input")
 func (a *Agent) getErrorMessage(ctx context.Context, category string, errorType string, vars map[string]interface{}) string {
-	// Try loading from PromptRegistry
+	// Try loading from PromptRegistry. A rendered message that still holds an
+	// uninterpolated {{placeholder}} (a custom prompt referencing a variable
+	// the caller did not supply) is never shown: the fallback runs.
 	if a.prompts != nil {
 		fullKey := fmt.Sprintf("errors.%s.%s", category, errorType)
 		msg, err := a.prompts.Get(ctx, fullKey, vars)
-		if err == nil && msg != "" {
+		if err == nil && msg != "" && !strings.Contains(msg, "{{") {
 			return msg
 		}
 	}
@@ -3220,17 +3222,15 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			parkableTail:       a.hitlPark != nil && assistantPersisted && a.memory.HasStore(),
 			batchIDCount:       batchIDCount,
 			answeredCalls:      truncatedToolCallIndexes(llmResp, tools),
+			outputTokens:       llmResp.Usage.OutputTokens,
 		}
 
-		// Answer cut-off calls before admission; neither dispatch nor a
-		// resumed approval may execute them.
-		a.answerTruncatedToolCalls(ctx, session, llmResp, st.answeredCalls, st)
-		st.parkableTail = st.parkableTail && !st.rowNotPersisted
-
-		// Every pre-answered row must be durable too. Otherwise a cold
-		// approval resume could mistake a lost truncation notice for an
-		// unattempted call. Without durable rows, dispatch inline, fail-closed.
-		if a.hitlPark != nil && assistantPersisted && !st.rowNotPersisted && a.memory.HasStore() {
+		// HITL park pre-scan (park.go): with park enabled and the batch's
+		// assistant row durable, a batch needing a human decision ends the
+		// turn HERE — before anything executes. Cut-off calls in answeredCalls
+		// are skipped by the pre-scan and recorded on the park request so
+		// ResumeChat writes their OUTPUT_TRUNCATED rows in batch order.
+		if a.hitlPark != nil && assistantPersisted && a.memory.HasStore() {
 			if parkErr := a.maybeParkBatch(ctx, session, llmResp, turnUsage, tools, st.answeredCalls); parkErr != nil {
 				return nil, parkErr
 			}
@@ -3314,6 +3314,7 @@ type batchState struct {
 	turnDedup       map[string]*shuttle.Result
 	pendingSidecars []Message
 	answeredCalls   map[int]bool
+	outputTokens    int
 
 	stepIndex int // the execution-event-log step this batch's calls are recorded under
 	// stepErr is set when stepIndex could not be resolved. No call may be
