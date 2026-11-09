@@ -261,16 +261,19 @@ func ResolvePath(dir, path string) string {
 		}
 		next := filepath.Join(cur, c)
 		// cur holds no symlink, so only the new component can be one. An
-		// Lstat of it is enough unless it is a symlink, which EvalSymlinks
+		// Lstat of it is enough unless it is a link, which EvalSymlinks
 		// then resolves. Calling EvalSymlinks for every component walks the
 		// whole prefix again each time, which is quadratic in the depth.
+		// ModeIrregular counts as a link: since Go 1.23 Lstat reports a
+		// Windows junction (mount point) as irregular, not as a symlink, and
+		// EvalSymlinks still follows it.
 		fi, err := os.Lstat(next)
 		if err != nil {
 			// The rest does not exist (or is beneath a file): no symlink in
 			// it can be followed.
 			return filepath.Join(cur, filepath.Join(comps[i:]...))
 		}
-		if fi.Mode()&os.ModeSymlink == 0 {
+		if fi.Mode()&(os.ModeSymlink|os.ModeIrregular) == 0 {
 			cur = next
 			continue
 		}
