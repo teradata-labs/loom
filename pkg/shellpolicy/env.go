@@ -179,11 +179,13 @@ func isArithAssign(op syntax.BinAritOperator) bool {
 }
 
 // varBuiltin judges the variables a builtin sets by name: read (bash's
-// options; -a takes the array name), mapfile and readarray, printf -v, and
-// getopts. A computed word where a name may stand is judged as a computed
-// name.
+// options; -a takes the array name), mapfile and readarray, printf -v,
+// wait -p, and getopts. A computed word where a name may stand is judged as a
+// computed name.
 func (a *analyzer) varBuiltin(x *syntax.CallExpr, name string, rest []*syntax.Word, outer *syntax.Pos) {
 	switch name {
+	case "wait":
+		a.waitName(x, rest, outer)
 	case "read":
 		a.optionNames(x, rest, "dinNptu", "a", outer)
 	case "mapfile", "readarray":
@@ -216,6 +218,40 @@ func (a *analyzer) varBuiltin(x *syntax.CallExpr, name string, rest []*syntax.Wo
 				a.setsByBuiltin(x, outer, s)
 			} else if a.opt.Static {
 				a.setsComputedVar(x, outer, rest[0])
+			}
+		}
+	}
+}
+
+// waitName judges the variable wait -p NAME assigns (bash 5.1): -p NAME,
+// -pNAME, or -p last in a group (-np NAME). Bash evaluates a subscript in
+// NAME as arithmetic, like printf -v's. wait's positional words are job and
+// process ids, not names. A computed word where an option may stand may be
+// -p, so the word after it is judged as a name. The jailed shell refuses
+// wait -p (TestInterpreter_WaitPRefused).
+func (a *analyzer) waitName(x *syntax.CallExpr, rest []*syntax.Word, outer *syntax.Pos) {
+	for i := 0; i < len(rest); i++ {
+		s, ok := literal(rest[i])
+		if !ok {
+			if i+1 < len(rest) {
+				if next, lit := literal(rest[i+1]); lit {
+					a.setsByBuiltin(x, outer, next)
+				} else if a.opt.Static {
+					a.setsComputedVar(x, outer, rest[i+1])
+				}
+			}
+			return
+		}
+		if s == "--" || s == "-" || !strings.HasPrefix(s, "-") {
+			return // the ids
+		}
+		group := s[1:]
+		if j := strings.IndexByte(group, 'p'); j >= 0 {
+			if value := group[j+1:]; value != "" {
+				a.setsByBuiltin(x, outer, value)
+			} else if i+1 < len(rest) {
+				i++
+				a.nameWord(x, rest[i], outer)
 			}
 		}
 	}

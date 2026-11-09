@@ -317,6 +317,7 @@ func (a *analyzer) source(src string, depth int, outer *syntax.Pos) {
 			if x.Param != nil && x.Exp != nil && (x.Exp.Op == syntax.AssignUnset || x.Exp.Op == syntax.AssignUnsetOrNull) {
 				a.setsVar(x, outer, x.Param.Value) // ${NAME=value}, ${NAME:=value}
 			}
+			a.promptExpansion(x, outer)
 			a.paramArith(x, outer)
 		case *syntax.ArithmExp:
 			a.arith(x.X, outer)
@@ -541,6 +542,21 @@ func (a *analyzer) unsetNames(x *syntax.CallExpr, words []*syntax.Word, outer *s
 			a.unsetFuncs[s] = true
 		}
 	}
+}
+
+// promptExpansion judges the @P operator (${x@P}): bash expands the value as
+// a prompt string, which runs the command substitutions in it, so a value the
+// analyzer never parsed as code runs. Static enforcement refuses it. The
+// jailed shell leaves the value as it is and starts nothing
+// (TestInterpreter_PromptExpansionRunsNothing), so runtime gives no verdict.
+func (a *analyzer) promptExpansion(x *syntax.ParamExp, outer *syntax.Pos) {
+	if !a.opt.Static || x.Exp == nil || x.Exp.Op != syntax.OtherParamOps {
+		return
+	}
+	if op, ok := literal(x.Exp.Word); ok && op != "P" {
+		return // @Q, @E, @A, @a, @U, @u, @L, @K, @k run nothing
+	}
+	a.add(Deny, x, outer, "${"+paramName(x)+"@P}", "prompt expansion runs the command substitutions in the value, which static enforcement cannot see")
 }
 
 // dropDashes drops the "--" that may end eval's and trap's options.

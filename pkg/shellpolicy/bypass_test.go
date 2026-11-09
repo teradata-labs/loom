@@ -15,14 +15,20 @@
 package shellpolicy
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"mvdan.cc/sh/v3/interp"
+	"mvdan.cc/sh/v3/syntax"
 )
 
 // The tests in this file hold the commands from the PR #430 review
@@ -412,4 +418,79 @@ func TestAnalyze_TooManyDirectories(t *testing.T) {
 	v = Readonly().Analyze(cmd, opt)
 	assert.Equal(t, Deny, v.Kind)
 	assert.Contains(t, v.Reason(), "more directories than static enforcement follows")
+}
+
+// The tests below hold the commands from the second PR #430 review
+// (Josh-Schoen, R1-R6, at 256b705f). Each unsafe command did the harmful
+// thing in bash 5.2 (or dash, for R3) while the analyzer allowed it.
+
+// R1: ${x@P} prompt-expands the value, and prompt expansion runs the command
+// substitutions in it. Static enforcement refuses the @P operator. The
+// jailed shell does not prompt-expand (TestInterpreter_PromptExpansionRunsNothing),
+// so runtime gives no verdict. The other @ operators run nothing.
+func TestAnalyze_PromptExpansion(t *testing.T) {
+	runBypassCases(t, []bypassCase{
+		{cmd: `x='$(touch p)'; echo "${x@P}"`, want: Allow, static: Deny, why: "${x@P} (1:"},
+		{cmd: `x='$(cat ../o/secret.txt)'; echo "${x@P}"`, want: Allow, static: Deny, why: "prompt expansion"},
+		{cmd: `a=('$(touch p)'); echo ${a[@]@P}`, want: Allow, static: Deny},
+		{cmd: `eval 'echo ${x@P}'`, want: Allow, static: Deny},
+		{cmd: `x='$(touch p)'; echo "${x}" "${x@Q}" "${x@E}" "${x@U}" "${x@A}" "${x@a}"`, want: Allow, static: Allow},
+	})
+}
+
+// R1 under runtime: the jailed shell (mvdan.cc/sh's interpreter) leaves the
+// value of ${x@P} as it is and starts nothing. An interpreter upgrade that
+// implements prompt expansion fails here, and the analyzer must then refuse
+// @P under runtime too.
+func TestInterpreter_PromptExpansionRunsNothing(t *testing.T) {
+	out, launches := runInterpreter(t, `x='$(touch p)'; echo "${x@P}"`)
+	assert.Equal(t, "$(touch p)\n", out, "the interpreter prints the value unexpanded")
+	assert.Empty(t, launches, "the interpreter starts no program for ${x@P}")
+}
+
+// R2: wait -p NAME (bash 5.1) assigns NAME, and a subscript in it is
+// evaluated as arithmetic. Static enforcement judges the name like printf -v.
+// The jailed shell refuses wait -p (TestInterpreter_WaitPRefused).
+func TestAnalyze_WaitP(t *testing.T) {
+	runBypassCases(t, []bypassCase{
+		{cmd: `sleep 0 & wait -n -p 'a[$(touch p)]'`, want: Allow, static: Deny, why: "subscript"},
+		{cmd: `wait -np 'a[$(touch p)]'`, want: Allow, static: Deny, why: "subscript"},
+		{cmd: `wait -p'a[$(touch p)]'`, want: Allow, static: Deny, why: "subscript"},
+		{cmd: `wait -fnp 'a[$(touch p)]' 1`, want: Allow, static: Deny, why: "subscript"},
+		{cmd: `wait "$o" 'a[$(touch p)]'`, want: Allow, static: Deny, why: "subscript"},
+		{cmd: `wait "$o" "$v"`, want: Allow, static: Deny, why: "computed at run time"},
+		{cmd: `wait -p "$v"`, want: Ask, static: Deny, why: "computed at run time"},
+		{cmd: `wait -p PATH`, want: Ask, static: Ask, why: "sets PATH"},
+		{cmd: `sleep 0 & wait -n -p pid; wait "$!"; wait -- 1 'a[$(touch p)]'; wait`, want: Allow, static: Allow},
+	})
+}
+
+// R2 under runtime: the jailed shell refuses wait -p, so no name is assigned.
+func TestInterpreter_WaitPRefused(t *testing.T) {
+	out, launches := runInterpreter(t, `wait -p 'a[$(touch p)]' 2>&1`)
+	assert.Contains(t, out, "unsupported option", "the interpreter refuses wait -p")
+	assert.Empty(t, launches, "the interpreter starts no program for wait -p")
+}
+
+// runInterpreter runs src in mvdan.cc/sh's interpreter with an exec handler
+// that records each program launch and starts none. It returns the output
+// and the launches.
+func runInterpreter(t *testing.T, src string) (string, [][]string) {
+	t.Helper()
+	file, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(src), "")
+	require.NoError(t, err, "parse %q", src)
+	var out bytes.Buffer
+	var launches [][]string
+	r, err := interp.New(interp.StdIO(strings.NewReader(""), &out, &out), interp.Dir(t.TempDir()),
+		interp.ExecHandlers(func(interp.ExecHandlerFunc) interp.ExecHandlerFunc {
+			return func(_ context.Context, args []string) error {
+				launches = append(launches, args)
+				return interp.ExitStatus(127)
+			}
+		}))
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = r.Run(ctx, file)
+	return out.String(), launches
 }

@@ -106,16 +106,17 @@ Under `runtime` the runner checks each launch against the shell's current direct
 
 ### Arithmetic and subscripts (`static` only)
 
-Bash evaluates an array subscript as arithmetic, and the command substitutions in an arithmetic subscript run. A subscript reaches bash in a variable name (`printf -v 'a[$(cmd)]' x`) and in any value arithmetic reads (`x='a[$(cmd)]'; echo $(( x ))`, or `[[ $x -eq 1 ]]`). The runner sees each launch such a substitution makes, so under `runtime` none of this is refused. Under `static`:
+Bash evaluates an array subscript as arithmetic, and the command substitutions in an arithmetic subscript run. A subscript reaches bash in a variable name (`printf -v 'a[$(cmd)]' x`, `wait -p 'a[$(cmd)]'`) and in any value arithmetic reads (`x='a[$(cmd)]'; echo $(( x ))`, or `[[ $x -eq 1 ]]`). The runner sees each launch such a substitution makes, so under `runtime` none of this is refused. The jailed shell (mvdan.cc/sh v3.14.1) also refuses `wait -p` and does not prompt-expand `${name@P}`; `TestInterpreter_WaitPRefused` and `TestInterpreter_PromptExpansionRunsNothing` fail when an interpreter upgrade changes that. Under `static`:
 
 | The command… | Verdict |
 |---|---|
-| names a variable with a subscript that is not an integer, `@` or `*`, in `printf -v`, `read`, `mapfile`, `getopts`, `unset`, `declare` and its variants, a name reference target, `test -v`, `[ -v` or `[[ -v` | Deny |
+| names a variable with a subscript that is not an integer, `@` or `*`, in `printf -v`, `read`, `mapfile`, `getopts`, `wait -p`, `unset`, `declare` and its variants, a name reference target, `test -v`, `[ -v` or `[[ -v` | Deny |
 | gives `test -v`, `[ -v` or `[[ -v` a computed name | Deny |
 | uses `declare -i` (or `local`, `typeset` with `-i`): every later assignment to the name is arithmetic | Deny |
 | has arithmetic (`$(( ))`, `(( ))`, `let`, a C-style `for`, `[[ … -eq … ]]` and the other comparisons, a subscript, a `${s:offset:length}` slice) that reads a variable, unless the variable is proven to hold an integer | Deny |
 | has arithmetic over a command substitution, a positional parameter, or any expansion other than `$name`, `${name}`, `$#`, `$?`, `$$`, `$!` or a length `${#name}` | Deny |
 | uses an indirect expansion `${!name}` (not `${!prefix*}` or `${!array[@]}`) | Deny |
+| uses the prompt-expansion operator `${name@P}`: bash expands the value as a prompt string, which runs the command substitutions in it (`x='$(cmd)'; echo "${x@P}"` runs `cmd`). The other `@` operators (`@Q`, `@E`, `@A`, `@a`, `@U`, `@u`, `@L`, `@K`, `@k`) run nothing | Deny |
 
 A variable is **proven to hold an integer** at a read when nothing in the command assigns it anything but an integer (a literal integer, an arithmetic expansion, `$#`/`$?`/`$$`/`$!` or a length), and either a top-level statement assigned it an integer before the read (a bare assignment, `declare`/`export`/`readonly`/`typeset` without `-n` or `-i`, `(( ))` or `let`; not in the background and without redirects), or the read is inside a C-style `for` whose init assigns it, or inside a `for NAME in` loop over literal integers. `read`, `mapfile`, `printf -v`, `getopts`, `select`, a name reference to it, `${NAME:=…}` with a non-integer value, and a `for NAME in` loop over anything else make the variable unproven everywhere. Variables bash sets from data (`REPLY`, `MAPFILE`, `OPTARG`, `BASH_REMATCH`, `PWD`, `OLDPWD`, `DIRSTACK`, `_`, and the `BASH_*`/`FUNCNAME` call-stack arrays) are never proven. The check does not know whether an array is associative, so a non-integer subscript of an associative array is refused too.
 
@@ -123,8 +124,8 @@ So `i=0; (( i++ )); echo $(( i + 1 ))`, `for ((i=0; i<3; i++)); do …; done` an
 
 | Variables the command sets | Verdict |
 |---|---|
-| a name `shellpolicy.ExecEnvName` reports (its value changes what runs or loads), set in any form: a prefix (`PATH=/x ls`), a bare assignment (`PATH=/x`), `export`/`declare`/`typeset`/`readonly`/`local`/`nameref` (with or without `-x`, and the target of `-n`), `env NAME=…`, a `for`/`select` variable, `read`, `mapfile`/`readarray`, `printf -v`, `getopts`, `${NAME:=…}`/`${NAME=…}`, or arithmetic (`(( NAME = 1 ))`, `let`, `++`) | Ask in both modes, naming the variable; the grant lists it in `Env` |
-| a variable whose name is computed at run time in one of those forms (`export "$n=…"`, `read "$v"`, `env "$a" …`) | `runtime`: Ask. `static`: Deny |
+| a name `shellpolicy.ExecEnvName` reports (its value changes what runs or loads), set in any form: a prefix (`PATH=/x ls`), a bare assignment (`PATH=/x`), `export`/`declare`/`typeset`/`readonly`/`local`/`nameref` (with or without `-x`, and the target of `-n`), `env NAME=…`, a `for`/`select` variable, `read`, `mapfile`/`readarray`, `printf -v`, `wait -p`, `getopts`, `${NAME:=…}`/`${NAME=…}`, or arithmetic (`(( NAME = 1 ))`, `let`, `++`) | Ask in both modes, naming the variable; the grant lists it in `Env` |
+| a variable whose name is computed at run time in one of those forms (`export "$n=…"`, `read "$v"`, `wait -p "$v"`, `env "$a" …`) | `runtime`: Ask. `static`: Deny |
 | `env -S` or `env -P` (more assignments, or another search path) | Ask |
 | an `IFS=` prefix on `read`, `mapfile` or `readarray` (it only sets that builtin's field separator) | no verdict |
 | `CDPATH`, in any form | `static`: Deny (see "Changing directory"). `runtime`: no verdict |
@@ -234,7 +235,7 @@ Each returns a `*shellpolicy.LaunchError{Name, Reason}`, or nil.
 
 - `pkg/shellpolicy`: 96.1% statement coverage.
 - **Corpus:** the design's bypass corpus plus the environment-assignment and static-path cases, 144 commands, each run under both enforcement modes.
-- **Review bypasses:** the commands from the PR #430 review and the vectors found while fixing them (`bypass_test.go`), 133 commands, each run under both enforcement modes. The review's commands and the new vectors were run in bash 5.2 (macOS bash 3.2 for `.*` matching `..`, git 2.50.1 for `git grep -O`) and did the harmful thing while the analyzer allowed them; the other rows are variants of those shapes and commands that must stay allowed.
+- **Review bypasses:** the commands from the PR #430 reviews (N1-N10 and R1-R6) and the vectors found while fixing them (`bypass_test.go`), 147 commands, each run under both enforcement modes. The review's commands and the new vectors were run in bash 5.2 (macOS bash 3.2 for `.*` matching `..`, git 2.50.1 for `git grep -O`) and did the harmful thing while the analyzer allowed them; the other rows are variants of those shapes and commands that must stay allowed.
 - **Run-time checks:** a 22-case table for `CheckLaunch`, and a 14-case table for the review's argument rules.
 - **Call parameters:** `TestDecide_ShellParam` and `TestDecide_EnvParam`.
 - **Windows refusal:** `TestDecide_RefusesOnWindows` sets the OS the hook judges for, so it runs on every host: on Windows every call is refused (default, `bash`, `sh` and other shells; `static` and `runtime`; through the factory and the executor), and the same calls are judged normally on Linux and macOS. The tests that check POSIX path semantics skip on Windows.
