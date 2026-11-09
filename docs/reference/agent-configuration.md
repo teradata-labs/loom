@@ -22,6 +22,7 @@ definitions (in `looms.yaml`) and the **standalone agent YAML** files loaded by 
   - [LLM Configuration](#llm-configuration)
   - [Role-Specific LLM Overrides](#role-specific-llm-overrides)
   - [Provider Pool](#provider-pool)
+  - [Decision Layer](#decision-layer)
   - [System Prompt and ROM](#system-prompt-and-rom)
   - [Tools Configuration](#tools-configuration)
   - [Memory Configuration](#memory-configuration)
@@ -62,6 +63,7 @@ definitions (in `looms.yaml`) and the **standalone agent YAML** files loaded by 
 | `spec.compressor_llm` | `LLMConfigYAML` | inherits main | Compressor LLM override |
 | `spec.active_provider` | `string` | optional | Named provider from global pool |
 | `spec.allowed_providers` | `[]string` | optional | Restrict to subset of pool |
+| `spec.decision` | `DecisionConfigYAML` | off | Typed decision layer, shadow mode only |
 
 ---
 
@@ -261,6 +263,55 @@ spec:
   allowed_providers:
     - claude-opus
     - llama-local
+```
+
+---
+
+### Decision Layer
+
+Under `spec.decision` (k8s-style) or `agent.decision` (legacy). Off when the block is absent or `provider` is empty or `off`. With a provider set, the agent runs the decider in the background at `recall.rerank`, `tool_search.rerank` and `tool.failure_kind` and stores shadow rows beside what Loom decided; nothing acts on a decider answer in this release. See [`decision-layer.md`](../architecture/decision-layer.md), including what each site sends to the decider.
+
+Source: `DecisionConfigYAML` in `pkg/agent/config_loader.go`; rules in `decision.ValidateConfig` (`pkg/decision/config.go`), which runs on every path that accepts a decision config. A configuration the agent cannot use (no LLM for `llm`, no credential for `jev`) disables the layer with a logged warning; it does not fail agent construction.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `provider` | `string` | `off` | `off`, `llm` (adapter over one of the agent's LLMs), `jev` (TypeSafe System One API) or `mock`. Case-insensitive in YAML |
+| `llm_role` | `string` | main LLM | With `llm`: `classifier`, `compressor`, `judge` or `orchestrator`; an unset or unconfigured role uses the main LLM |
+| `model` | `string` | `jev-1.13.0` (jev direct), `typesafe-ai/jev` (gateway) | jev model id (the `llm` provider uses its role LLM's own model and ignores this). Floating aliases (`jev-latest`, `jev-preview`, `latest`, `typesafe-ai/jev`) are rejected unless `allow_alias: true` |
+| `allow_alias` | `bool` | `false` | Accept a floating alias. Required for the Vercel AI Gateway, whose only id is `typesafe-ai/jev` |
+| `timeout_ms` | `int` | `0` (5 s for jev, 20 s for llm) | Per-request timeout; must be `>= 0` |
+| `max_per_session` | `int` | `0` (no cap) | Decider calls per session before the router falls back; must be `>= 0` |
+| `max_cost_usd_per_session` | `float` | `0` (no cap) | Decider spend per session in USD; must be `>= 0` |
+| `requests_per_minute` | `int` | `0` (jev default 1,000) | jev only. Process-wide: agents with the same decider settings share one client and one limit. Set from the tier in use (gateway free tier: 30) |
+| `bands` | list | none (every site shadow) | Per-site bands, below |
+| `base_url` | `string` | — | **Rejected.** The decider endpoint is server-level only (`decision.base_url` in `looms.yaml` / `LOOM_DECISION_BASE_URL`, or `TYPESAFE_BASE_URL`; see `ENV_VARS.md`) |
+
+Credentials are never read from YAML: `jev` uses `TYPESAFE_API_KEY`, else `AI_GATEWAY_API_KEY`, else `JEV_API_KEY`.
+
+**Band fields** (`bands[]`):
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `site` | `string` | **required** | Call site, e.g. `recall.rerank`, `tool_search.rerank`, `tool.failure_kind`. Unique within the list |
+| `act_min` | `float` | `0` | Confidence at or above which the router reports the answer as usable; in `[0, 1]` |
+| `mode` | `string` | `replace` | `replace` or `tighten_only` (`tighten-only` and `tighten` also accepted) |
+| `shadow` | `bool` | `false` | Record only, never act |
+
+A site with no band is shadow. A band without `shadow: true` is accepted, but in this release the router records its confident answers as `DECISION_PATH_DECIDER` although no site acts on them, so the agent logs a `decision config` warning naming the site once when it builds its decider. Such a band becomes live, with no config change, when its site is wired to act. Write `shadow: true` until then.
+
+```yaml
+spec:
+  decision:
+    provider: jev
+    model: typesafe-ai/jev       # through the Vercel AI Gateway (AI_GATEWAY_API_KEY)
+    allow_alias: true
+    timeout_ms: 2000
+    max_per_session: 200
+    requests_per_minute: 28      # gateway free tier allows 30
+    bands:
+      - site: recall.rerank
+        act_min: 0.9
+        shadow: true
 ```
 
 ---
