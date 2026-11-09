@@ -32,7 +32,7 @@ import (
 // freshly allocated and safe to mutate by the caller.
 //
 // Fields:
-//   - ShowInDropdown: false for bedrock and azure-openai (endpoint-configured, not user-selected)
+//   - ShowInDropdown: false for bedrock, bedrock-mantle and azure-openai (endpoint-configured, not user-selected)
 //   - IsReasoning: true for o-series, Magistral, extended/adaptive thinking models
 //   - Capabilities: "text", "vision", "tool-use", "thinking", "image-gen"
 func BuildCatalog() map[string][]*loomv1.ModelInfo {
@@ -1071,6 +1071,40 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 				MaxOutputTokens:     100_000,
 				CostPer_1MInputUsd:  1.10,
 				CostPer_1MOutputUsd: 4.40,
+				IsReasoning:         true,
+				ShowInDropdown:      false,
+			},
+		},
+
+		// ── AWS Bedrock Mantle ──────────────────────────────────────────────────────
+		// The bedrock-mantle endpoint uses its own ids (no us./global. inference-
+		// profile prefix; Mantle rejects those with 404). Only models observed
+		// live on the endpoint on 2026-11-04 whose rates are already verified in
+		// this catalog are listed; Mantle bills the same per-token rates as
+		// bedrock-runtime (AWS endpoints reference). ShowInDropdown=false —
+		// endpoint-configured like bedrock. See pkg/llm/bedrockmantle.
+		"bedrock-mantle": {
+			{
+				Id:                  "anthropic.claude-opus-4-7",
+				Name:                "Claude Opus 4.7 (Bedrock Mantle)",
+				Provider:            "bedrock-mantle",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       1_000_000,
+				MaxOutputTokens:     128_000,
+				CostPer_1MInputUsd:  5.0,
+				CostPer_1MOutputUsd: 25.0,
+				IsReasoning:         true,
+				ShowInDropdown:      false,
+			},
+			{
+				Id:                  "anthropic.claude-haiku-4-5",
+				Name:                "Claude Haiku 4.5 (Bedrock Mantle)",
+				Provider:            "bedrock-mantle",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       200_000,
+				MaxOutputTokens:     64_000,
+				CostPer_1MInputUsd:  1.0,
+				CostPer_1MOutputUsd: 5.0,
 				IsReasoning:         true,
 				ShowInDropdown:      false,
 			},

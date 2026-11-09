@@ -32,6 +32,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
 	"github.com/teradata-labs/loom/pkg/llm/azureopenai"
 	"github.com/teradata-labs/loom/pkg/llm/bedrock"
+	"github.com/teradata-labs/loom/pkg/llm/bedrockmantle"
 	"github.com/teradata-labs/loom/pkg/llm/gemini"
 	"github.com/teradata-labs/loom/pkg/llm/huggingface"
 	"github.com/teradata-labs/loom/pkg/llm/mistral"
@@ -829,6 +830,7 @@ func (terminalGateHandler) RequestDecision(_ context.Context, req *loomv1.HITLGa
 // CLI workflow execution, plus the teardown for those dependencies.
 type workflowRuntime struct {
 	orchestrator *orchestration.Orchestrator // nil until startOrchestrator runs
+	registry     *agent.Registry             // nil until startOrchestrator runs
 	logger       *zap.Logger
 	tracer       observability.Tracer
 	// openCheckpoints opens the checkpoint store on demand; see
@@ -837,8 +839,13 @@ type workflowRuntime struct {
 	closers         []func()
 }
 
-// Close tears down runtime dependencies in reverse construction order.
+// Close waits for the agents' background decision shadows, then tears down
+// runtime dependencies in reverse construction order. The wait comes first
+// because the shadow store is one of the closers.
 func (rt *workflowRuntime) Close() {
+	if rt.registry != nil {
+		rt.registry.WaitDecisionShadows()
+	}
 	for i := len(rt.closers) - 1; i >= 0; i-- {
 		rt.closers[i]()
 	}
@@ -1027,6 +1034,20 @@ func (rt *workflowRuntime) startOrchestrator(pattern *loomv1.WorkflowPattern, pr
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create agent registry: %w", err)
+	}
+	rt.registry = registry
+
+	// Decision-layer shadow store: the same storage backend `looms serve`
+	// uses, so shadow rows from workflow runs land where `loom decision
+	// report` reads. Without this an agent's decision layer would evaluate
+	// and trace its comparisons but persist none of them.
+	if storageBackend, sbErr := backend.NewStorageBackend(context.Background(), config.BuildProtoStorageConfig(), tracer); sbErr != nil {
+		logger.Warn("Storage backend unavailable; decision shadow rows will not be persisted", zap.Error(sbErr))
+	} else {
+		rt.closers = append(rt.closers, func() { _ = storageBackend.Close() })
+		if dsp, ok := storageBackend.(backend.DecisionShadowProvider); ok {
+			registry.SetDecisionShadowStore(dsp.DecisionShadowStore())
+		}
 	}
 
 	// Initialize MessageBus and SharedMemory for workflow communication
@@ -1374,6 +1395,12 @@ func createLLMProvider() (agent.LLMProvider, string) {
 				return client, "AWS Bedrock (config)"
 			}
 
+		case bedrockmantle.ProviderName:
+			client, err := bedrockmantle.NewClientForModel(mantleConfigFrom(config.LLM))
+			if err == nil {
+				return client, "AWS Bedrock Mantle (config)"
+			}
+
 		case "ollama":
 			client := ollama.NewClient(ollama.Config{
 				Endpoint:    config.LLM.OllamaEndpoint,
@@ -1487,6 +1514,7 @@ Option 3: AWS Bedrock (env var)
 Supported providers:
   - anthropic    (Anthropic Claude API)
   - bedrock      (AWS Bedrock)
+  - bedrock-mantle (AWS Bedrock Mantle endpoint)
   - ollama       (Local Ollama)
   - openai       (OpenAI GPT models)
   - azure-openai (Azure OpenAI Service)

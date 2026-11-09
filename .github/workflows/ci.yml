@@ -114,6 +114,19 @@ jobs:
         with:
           version: v2.9.0
 
+      # Attribution files are generated from the dependency tree, so any
+      # dependency bump can silently invalidate them. `just check` runs this,
+      # but a Dependabot PR never does — so without it in CI the committed
+      # NOTICE/THIRD-PARTY-NOTICES.md drift the moment a bump merges, and we
+      # ship legally inaccurate attribution.
+      - name: Check third-party notices are up to date
+        run: |
+          if ! GOWORK=off go run ./cmd/gen-notices -check; then
+            echo "::error::Third-party notices are out of date. Run 'just notices' and commit."
+            exit 1
+          fi
+          echo "Third-party notices are up to date"
+
       # The only regression tests for a runner that spends real Bedrock money
       # on multi-day runs. STRICT so a missing jq/pyyaml fails the job instead
       # of printing SKIP and going green.
@@ -353,6 +366,18 @@ jobs:
           go test -run=^$ -fuzz='^FuzzRedactCredentialString$' -fuzztime=30s ./pkg/observability
 
           echo "✅ Observability package fuzz tests completed" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run fuzz tests (decision layer)
+        run: |
+          set -euo pipefail
+          go test -run=^$ -fuzz='^FuzzToValueRoundTrip$' -fuzztime=30s ./pkg/decision
+          go test -run=^$ -fuzz='^FuzzValidateState$' -fuzztime=30s ./pkg/decision
+          go test -run=^$ -fuzz='^FuzzParseAnswers$' -fuzztime=30s ./pkg/decision/llm
+          go test -run=^$ -fuzz='^FuzzExtractObject$' -fuzztime=30s ./pkg/decision/llm
+          go test -run=^$ -fuzz='^FuzzCheckEndpoint$' -fuzztime=30s ./pkg/decision/jev
+          go test -run=^$ -fuzz='^FuzzInferErrorTypeKeepsOriginalClasses$' -fuzztime=30s ./pkg/fabric
+
+          echo "✅ Decision layer fuzz tests completed" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run fuzz tests (luasandbox package)
         run: |
