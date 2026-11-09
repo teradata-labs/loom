@@ -1903,10 +1903,6 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 		s.mu.RUnlock()
 	}
 
-	if len(subAgentIDs) == 0 {
-		return fmt.Errorf("no sub-agents found for workflow '%s'", workflowName)
-	}
-
 	// Resolve and validate every sub-agent BEFORE registering notifications,
 	// subscribing to topics, or starting any background goroutines.
 	type resolvedWorkflowWorker struct {
@@ -1969,6 +1965,13 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 					zap.Error(err))
 			}
 		}
+	}
+
+	// Keep main's order: the coordinator subscription and YAML workers above
+	// are side effects a YAML-only workflow relies on, so this guard runs
+	// after them. All participants were validated before any side effect.
+	if len(subAgentIDs) == 0 {
+		return fmt.Errorf("no sub-agents found for workflow '%s'", workflowName)
 	}
 
 	s.logger.Info("Found workflow sub-agents",

@@ -250,15 +250,18 @@ spec:
 		"yaml-only-policy": coordinator, "helper": helper,
 	}, registry)
 
+	// Same behavior as main: the coordinator subscribes and the YAML worker
+	// starts, and the call still reports that no registry sub-agents exist.
 	err = srv.spawnWorkflowSubAgents(context.Background(), coordinator, "yaml-only-policy", GenerateSessionID())
 	require.ErrorContains(t, err, "no sub-agents found")
 	srv.workflowSubAgentsMu.RLock()
 	activeCount := len(srv.workflowSubAgents)
 	srv.workflowSubAgentsMu.RUnlock()
-	assert.Zero(t, activeCount)
-	assert.Empty(t, srv.messageBus.GetSubscriptionsByAgent("yaml-only-policy"))
+	assert.Equal(t, 1, activeCount, "the YAML worker must start, as on main")
+	assert.Len(t, srv.messageBus.GetSubscriptionsByAgent("yaml-only-policy"), 1,
+		"the coordinator must subscribe to its workflow topic, as on main")
 	_, registered := srv.messageQueue.GetNotificationChannel("yaml-only-policy:worker")
-	assert.False(t, registered)
+	assert.True(t, registered)
 }
 
 func TestSpawn_DisabledToolsRequiresNoSubscriptions(t *testing.T) {
