@@ -15,6 +15,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 )
 
 // ConditionalExecutor executes a conditional pattern.
@@ -22,6 +23,9 @@ type ConditionalExecutor struct {
 	orchestrator *Orchestrator
 	pattern      *loomv1.ConditionalPattern
 	workflowID   string
+	// aux collects the condition agent's turns, the first evaluation and every
+	// retry (run_usage.go). Execute adds them to the selected branch's cost.
+	aux auxUsage
 }
 
 // NewConditionalExecutor creates a new conditional executor.
@@ -146,6 +150,14 @@ func (e *ConditionalExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResu
 		zap.Duration("duration", duration),
 		zap.String("selected_branch", branchKey))
 
+	// The run's cost is the branch's cost plus the condition agent's turns.
+	// Clone the branch cost so the branch's own result is not changed.
+	cost := &loomv1.WorkflowCost{}
+	if branchResult.Cost != nil {
+		cost = proto.Clone(branchResult.Cost).(*loomv1.WorkflowCost)
+	}
+	e.aux.applyTo(cost)
+
 	// Wrap the branch result with conditional metadata
 	return &loomv1.WorkflowResult{
 		PatternType:  "conditional",
@@ -158,7 +170,7 @@ func (e *ConditionalExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResu
 			"condition_agent":  e.pattern.ConditionAgentId,
 		},
 		DurationMs: duration.Milliseconds(),
-		Cost:       branchResult.Cost, // Inherit cost from branch execution
+		Cost:       cost,
 	}, nil
 }
 
@@ -182,6 +194,7 @@ func (e *ConditionalExecutor) evaluateConditionWithSpan(ctx context.Context, con
 	if err != nil {
 		return "", "", fmt.Errorf("condition agent chat failed: %w", err)
 	}
+	e.aux.addTurn(response)
 
 	// Get model information
 	model := conditionAgent.GetLLMModel()
@@ -299,6 +312,7 @@ func (e *ConditionalExecutor) retryConditionEvaluation(
 				zap.Error(err))
 			continue
 		}
+		e.aux.addTurn(response)
 
 		result := strings.TrimSpace(strings.ToLower(response.Content))
 

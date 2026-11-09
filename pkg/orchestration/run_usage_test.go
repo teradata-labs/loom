@@ -175,22 +175,178 @@ func TestAuxUsage_ConcurrentAdds(t *testing.T) {
 	assert.InDelta(t, 0.5+0.05+0.1, c.TotalCostUsd, 1e-9)
 }
 
-func TestAuxUsage_AbsorbMovesCalls(t *testing.T) {
-	var outer, inner auxUsage
-	inner.addCall(usage(100, 0.01))
-	inner.addCall(usage(50, 0.005))
-	outer.addCall(usage(10, 0.001))
+// scriptedAgent answers each turn with the next scripted reply; every reply is
+// one LLM call of the given size.
+func scriptedAgent(t *testing.T, name string, tokens int, replies ...string) *agent.Agent {
+	t.Helper()
+	responses := make([]*types.LLMResponse, 0, len(replies))
+	for _, r := range replies {
+		responses = append(responses, &types.LLMResponse{Content: r, StopReason: "end_turn", Usage: usage(tokens, float64(tokens)/10000)})
+	}
+	return createMockAgent(t, name, &scriptedLLM{responses: responses})
+}
 
-	outer.absorb(&inner)
-	outer.absorb(&inner) // a second absorb must not double-count
+// singleStage is a one-stage pipeline on agentID.
+func singleStage(agentID string) *loomv1.WorkflowPattern {
+	return &loomv1.WorkflowPattern{Pattern: &loomv1.WorkflowPattern_Pipeline{Pipeline: &loomv1.PipelinePattern{
+		InitialPrompt: "go",
+		Stages:        []*loomv1.PipelineStage{{AgentId: agentID, PromptTemplate: "{{previous}}"}},
+	}}}
+}
 
-	c := &loomv1.WorkflowCost{}
-	outer.applyTo(c)
-	assert.Equal(t, int32(3), c.LlmCalls)
-	assert.Equal(t, int32(160), c.TotalTokens)
-	assert.InDelta(t, 0.016, c.TotalCostUsd, 1e-9)
+// Workflow costs must also count the calls a run makes and then throws away:
+// the conditional classifier's turn and its retries, a pipeline stage attempt
+// that a retry replaced, and an iterative stage attempt that failed structure
+// validation. Each case reproduces one row of the reviewer's ledger probe on
+// PR #571: the want columns are the calls the mock providers actually served.
+func TestWorkflowCost_CountsClassifierAndDiscardedAttempts(t *testing.T) {
+	const validStageJSON = `{"stage_id": "worker", "outputs": {"answer": 42}}`
 
-	empty := &loomv1.WorkflowCost{}
-	inner.applyTo(empty)
-	assert.Zero(t, empty.LlmCalls, "absorb empties the inner collector")
+	tests := []struct {
+		name string
+		// validator is the orchestrator LLM (stage validation); nil = none.
+		validator  []*types.LLMResponse
+		agents     map[string]*agent.Agent
+		pattern    *loomv1.WorkflowPattern
+		wantCalls  int32
+		wantTokens int32
+	}{
+		{
+			name: "conditional classifier and branch",
+			agents: func() map[string]*agent.Agent {
+				return map[string]*agent.Agent{
+					"classifier": scriptedAgent(t, "classifier", 100, "alpha"),
+					"worker":     scriptedAgent(t, "worker", 200, "worked"),
+				}
+			}(),
+			pattern: &loomv1.WorkflowPattern{Pattern: &loomv1.WorkflowPattern_Conditional{Conditional: &loomv1.ConditionalPattern{
+				ConditionAgentId: "classifier",
+				ConditionPrompt:  "alpha or beta?",
+				Branches:         map[string]*loomv1.WorkflowPattern{"alpha": singleStage("worker"), "beta": singleStage("worker")},
+			}}},
+			wantCalls:  2,   // classifier 1 + branch 1
+			wantTokens: 300, // 100 + 200
+		},
+		{
+			name: "conditional classifier retry",
+			agents: func() map[string]*agent.Agent {
+				return map[string]*agent.Agent{
+					"classifier": scriptedAgent(t, "classifier", 100, "unknown", "alpha"),
+					"worker":     scriptedAgent(t, "worker", 200, "worked"),
+				}
+			}(),
+			pattern: &loomv1.WorkflowPattern{Pattern: &loomv1.WorkflowPattern_Conditional{Conditional: &loomv1.ConditionalPattern{
+				ConditionAgentId: "classifier",
+				ConditionPrompt:  "alpha or beta?",
+				Branches:         map[string]*loomv1.WorkflowPattern{"alpha": singleStage("worker"), "beta": singleStage("worker")},
+				RetryPolicy:      &loomv1.OutputRetryPolicy{MaxRetries: 1},
+			}}},
+			wantCalls:  3,   // classifier 1 + classifier retry 1 + branch 1
+			wantTokens: 400, // 100 + 100 + 200
+		},
+		{
+			name: "pipeline stage retry_policy with one retry",
+			validator: []*types.LLMResponse{
+				{Content: "no", StopReason: "end_turn", Usage: usage(100, 0.01)},
+				{Content: "valid", StopReason: "end_turn", Usage: usage(100, 0.01)},
+			},
+			agents: func() map[string]*agent.Agent {
+				return map[string]*agent.Agent{"worker": scriptedAgent(t, "worker", 200, "first try", "second try")}
+			}(),
+			pattern: &loomv1.WorkflowPattern{Pattern: &loomv1.WorkflowPattern_Pipeline{Pipeline: &loomv1.PipelinePattern{
+				InitialPrompt: "go",
+				Stages: []*loomv1.PipelineStage{{
+					AgentId:          "worker",
+					PromptTemplate:   "{{previous}}",
+					ValidationPrompt: "Is this valid? {{output}}",
+					RetryPolicy:      &loomv1.OutputRetryPolicy{MaxRetries: 1},
+				}},
+			}}},
+			wantCalls:  4,   // attempt 1 + validation + retry + validation
+			wantTokens: 600, // 200 + 100 + 200 + 100
+		},
+		{
+			name: "pipeline stage retries exhausted",
+			validator: []*types.LLMResponse{
+				{Content: "no", StopReason: "end_turn", Usage: usage(100, 0.01)},
+				{Content: "no", StopReason: "end_turn", Usage: usage(100, 0.01)},
+			},
+			agents: func() map[string]*agent.Agent {
+				return map[string]*agent.Agent{"worker": scriptedAgent(t, "worker", 200, "first try", "second try")}
+			}(),
+			pattern: &loomv1.WorkflowPattern{Pattern: &loomv1.WorkflowPattern_Pipeline{Pipeline: &loomv1.PipelinePattern{
+				InitialPrompt: "go",
+				Stages: []*loomv1.PipelineStage{{
+					AgentId:          "worker",
+					PromptTemplate:   "{{previous}}",
+					ValidationPrompt: "Is this valid? {{output}}",
+					RetryPolicy:      &loomv1.OutputRetryPolicy{MaxRetries: 1},
+				}},
+			}}},
+			wantCalls:  4,   // the kept first attempt, the dropped retry, two validations
+			wantTokens: 600, // 200 + 100 + 200 + 100
+		},
+		{
+			name: "iterative structure-validation retry",
+			agents: func() map[string]*agent.Agent {
+				return map[string]*agent.Agent{"worker": scriptedAgent(t, "worker", 200, "not structured", validStageJSON)}
+			}(),
+			pattern: &loomv1.WorkflowPattern{Pattern: &loomv1.WorkflowPattern_Iterative{Iterative: &loomv1.IterativeWorkflowPattern{
+				Pipeline: &loomv1.PipelinePattern{
+					InitialPrompt: "go",
+					Stages:        []*loomv1.PipelineStage{{AgentId: "worker", PromptTemplate: "{{previous}}"}},
+				},
+				MaxIterations: 1,
+				RestartPolicy: &loomv1.RestartPolicy{Enabled: true, MaxValidationRetries: 1},
+			}}},
+			wantCalls:  2,   // the rejected attempt + the accepted retry
+			wantTokens: 400, // 200 + 200
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			o := NewOrchestrator(Config{
+				Logger:      zaptest.NewLogger(t),
+				Tracer:      observability.NewNoOpTracer(),
+				LLMProvider: &scriptedLLM{responses: tt.validator},
+			})
+			for id, ag := range tt.agents {
+				o.RegisterAgent(id, ag)
+			}
+
+			result, err := o.ExecutePattern(context.Background(), tt.pattern)
+			require.NoError(t, err, "the workflow must run to completion")
+			require.NotNil(t, result.Cost, "a completed workflow reports a cost")
+
+			assert.Equal(t, tt.wantCalls, result.Cost.LlmCalls, "llm_calls must equal the calls the providers served")
+			assert.Equal(t, tt.wantTokens, result.Cost.TotalTokens, "total_tokens must equal the tokens the providers served")
+			assert.InDelta(t, float64(tt.wantTokens)/10000, result.Cost.TotalCostUsd, 1e-9, "total_cost_usd must equal the cost the providers served")
+		})
+	}
+}
+
+func TestAuxUsage_AddResultCost(t *testing.T) {
+	tests := []struct {
+		name       string
+		cost       *loomv1.AgentExecutionCost
+		wantCalls  int32
+		wantTokens int32
+		wantUSD    float64
+	}{
+		{"whole turn", &loomv1.AgentExecutionCost{TotalTokens: 1500, CostUsd: 0.15, LlmCalls: 2}, 2, 1500, 0.15},
+		{"producer predates llm_calls", &loomv1.AgentExecutionCost{TotalTokens: 200, CostUsd: 0.02}, 1, 200, 0.02},
+		{"nil cost carries nothing", nil, 0, 0, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var a auxUsage
+			a.addResultCost(tt.cost)
+			c := &loomv1.WorkflowCost{}
+			a.applyTo(c)
+			assert.Equal(t, tt.wantCalls, c.LlmCalls, "llm_calls of the discarded attempt")
+			assert.Equal(t, tt.wantTokens, c.TotalTokens, "tokens of the discarded attempt")
+			assert.InDelta(t, tt.wantUSD, c.TotalCostUsd, 1e-9, "USD of the discarded attempt")
+		})
+	}
 }

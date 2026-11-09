@@ -51,7 +51,9 @@ type pipelineState struct {
 	// Index of the stage to execute first.
 	startIndex int
 
-	// Append-only execution history (all attempts) for cost accounting.
+	// One result per executed stage pass, in execution order. A stage
+	// attempt that a retry replaced is not here; its cost goes to the
+	// executor's aux collector (run_usage.go), which is not checkpointed.
 	allResults []*loomv1.AgentResult
 
 	// Full output per completed stage of the current pass, index-aligned.
@@ -401,6 +403,9 @@ func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time,
 					priorOutputs := stageOutputs[:len(stageOutputs)-1]
 					retryResult, retryModel := e.retryStage(ctx, workflowID, stage, currentInput, priorOutputs, stageNum, result.Output, validationFailure)
 					if retryResult != nil {
+						// The retry replaces the failed attempt's result; keep
+						// the replaced attempt's calls in the run's cost.
+						e.aux.addResultCost(result.Cost)
 						result = retryResult
 						allResults[len(allResults)-1] = result
 						stageOutputs[len(stageOutputs)-1] = result.Output
@@ -1039,6 +1044,10 @@ func (e *PipelineExecutor) retryStage(
 				zap.Int("attempt", attempt))
 			return result, model
 		}
+
+		// This attempt failed validation and its result is dropped; keep its
+		// calls in the run's cost.
+		e.aux.addResultCost(result.Cost)
 
 		// Update failure info for next retry prompt
 		failedOutput = result.Output

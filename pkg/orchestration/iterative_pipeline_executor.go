@@ -41,8 +41,9 @@ const (
 // Stages can trigger restarts of earlier stages via pub/sub messaging, enabling
 // autonomous agent negotiation and self-correction.
 type IterativePipelineExecutor struct {
-	// aux collects the validation calls of the per-stage inner executors
-	// (run_usage.go); calculateCost runs on a fresh executor and would lose them.
+	// aux collects the cost of stage attempts that failed structure
+	// validation and were replaced by a retry (run_usage.go). calculateCost
+	// sees only the kept results, so these would be lost.
 	aux auxUsage
 
 	orchestrator *Orchestrator
@@ -396,7 +397,6 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 		stageOutputs[stage.AgentId] = truncatedForStorage
 		e.fullOutputs[stage.AgentId] = result.Output
 		allResults = append(allResults, result)
-		e.aux.absorb(&executor.aux)
 
 		// Try to parse stage output as JSON and add to structured context
 		if e.structuredContext != nil {
@@ -1212,6 +1212,9 @@ func (e *IterativePipelineExecutor) executeStageWithValidationRetries(
 
 		// Validation failed
 		if retryNum < maxRetries {
+			// The next attempt replaces this result; keep its calls in the
+			// run's cost.
+			e.aux.addResultCost(result.Cost)
 			e.orchestrator.logger.Warn("Stage output validation failed, retrying with fresh context",
 				zap.String("stage_id", stage.AgentId),
 				zap.Int("stage_num", stageNum),
