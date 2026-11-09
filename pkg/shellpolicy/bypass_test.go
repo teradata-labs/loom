@@ -778,3 +778,20 @@ func TestAnalyze_DiffDirectoryOperand(t *testing.T) {
 	err := Readonly().CheckLaunch([]string{"diff", "sub", "sub"}, opt.WorkingDir, opt.Roots, &Grant{Programs: []string{"diff"}})
 	assert.NoError(t, err, "an approved diff runs with any operands")
 }
+
+// BSD grep -S follows every symlink while it recurses (macOS's grep -rS
+// printed the secret). GNU grep has no -S.
+func TestAnalyze_GrepFollowSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
+	runBypassCases(t, []bypassCase{
+		{cmd: `grep -rS x .`, want: Ask, static: Ask, why: "grep (1:1): -S is outside the profile"},
+		{cmd: `grep -S -r x .`, want: Ask, static: Ask},
+		{cmd: `egrep -rnS x .`, want: Ask, static: Ask},
+		{cmd: `grep -rs x .; grep -rO x .; grep -rp x .; grep -eS a.txt`, want: Allow, static: Allow},
+	})
+	runLaunchCases(t, []launchCase{
+		{argv: []string{"grep", "-rS", "x", "."}, block: "-S is outside the profile"},
+	})
+}

@@ -221,8 +221,9 @@ func Readonly() *Policy {
 	// in pathShort, so the attached name is path-checked too. -R
 	// (--dereference-recursive) follows every symlink it meets out of the
 	// roots; -r follows only those on the command line, which are checked.
+	// BSD grep -S follows every symlink too (GNU grep has no -S).
 	for _, n := range []string{"grep", "egrep", "fgrep"} {
-		p.Programs[n] = &Profile{MaxPositional: -1, RefuseShort: "R", RefuseLong: []string{"--dereference-recursive"},
+		p.Programs[n] = &Profile{MaxPositional: -1, RefuseShort: "RS", RefuseLong: []string{"--dereference-recursive"},
 			ShortWithValue: "efmABCdD", pathShort: "f"}
 	}
 	// diff compares the files in a directory operand (and, with -r, in its
