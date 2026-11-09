@@ -27,6 +27,7 @@ import (
 	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
+	"github.com/teradata-labs/loom/pkg/decision/sites"
 	"github.com/teradata-labs/loom/pkg/eventlog"
 	"github.com/teradata-labs/loom/pkg/fabric"
 	"github.com/teradata-labs/loom/pkg/llm"
@@ -119,6 +120,10 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	if a.config.PatternConfig == nil {
 		a.config.PatternConfig = DefaultPatternConfig()
 	}
+
+	// Decision layer: resolve the configured decider against the LLMs the
+	// options just installed. Off unless configured.
+	a.initDecisionRouter()
 
 	// Initialize automatic graph memory extraction if graph memory is enabled.
 	if a.graphMemoryStore != nil && a.graphMemoryConfig != nil &&
@@ -2125,6 +2130,26 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// Run conversation loop
 	response, err := a.runConversationLoop(agentCtx)
 
+	// Ledger-grounded lesson pass (PR #357): mine verified error→fix
+	// transitions from the tool ledger. Runs at the end of every Chat()
+	// call — i.e. per USER MESSAGE, not per conversation — because that is
+	// where the ledger drains, so only within-turn transitions are
+	// mineable. Runs regardless of outcome: a failed turn may still contain
+	// verified intermediate fixes.
+	if a.enableGraphMemoryExtraction {
+		a.graphExtractionWG.Add(1)
+		go func() {
+			defer a.graphExtractionWG.Done()
+			// Consumes the tool ledger AND the error-lane injection record
+			// (outcome credit) — no synchronous clear here, or the async
+			// pass would race with it and lose the credit evidence.
+			a.extractLessonsAtEnd(context.WithoutCancel(ctx), sessionID)
+		}()
+	} else {
+		// Error-triggered lesson tracking is per-conversation state.
+		a.clearErrorLessonState(sessionID)
+	}
+
 	// Close the turn's recorded task, if the runtime recorded one. Deferred
 	// until after the loop so the task spans the whole turn, and run even on
 	// error — a turn that failed still finished, and leaving the row IN_PROGRESS
@@ -3228,8 +3253,19 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 
 		// Resource-await park (park_resource.go): calls held during dispatch
 		// end the turn HERE, after every other call's row and sidecar landed.
+		// It runs before the lesson lane so the park sees the batch tail
+		// exactly as it did before lessons existed; a parked turn ends here
+		// and re-queries the lesson partition on resume instead.
 		if parkErr := a.maybeParkResourceBatch(ctx, session, st, llmResp); parkErr != nil {
 			return nil, parkErr
+		}
+
+		// Error-triggered lesson recall: failures in this batch re-query the
+		// lesson partition with the error text, so a lesson whose trigger is
+		// the error itself (invisible to the conversation-start lane, which
+		// matches task wording) lands right before the model's retry turn.
+		if len(st.errTexts) > 0 {
+			a.injectErrorLessons(ctx, session, st.errTexts)
 		}
 
 		// This step's batch finished dispatching inline (the common, non-crash
@@ -3291,6 +3327,12 @@ type batchState struct {
 	// persist (appendMessage is fail-open). The step's events are then the
 	// only durable record of that call, so the step must not be pruned.
 	rowNotPersisted bool
+
+	// errTexts: tool-error messages from this batch, buffered for the
+	// error-triggered lesson lane (graph_memory_lessons.go). It rides on
+	// batchState rather than the loop because dispatchOneCall — which fills
+	// it — is shared with ResumeChat's parked-batch completion.
+	errTexts []string
 
 	// Resource-await park (park_resource.go). parkableTail mirrors the
 	// pre-scan's durability gate and is set ONLY by the conversation loop —
@@ -3540,7 +3582,7 @@ func (a *Agent) settleCall(ctx Context, session *Session, pc *preparedCall, st *
 	i := pc.index
 	toolSpan := pc.toolSpan
 
-	a.settleExecution(ctx, session.ID, toolCall.Input, result, err)
+	a.settleExecution(ctx, session.ID, toolCall.Name, toolCall.Input, result, err)
 	a.recordToolResult(ctx, session.ID, st.stepIndex, i, toolCall.ID, result, err)
 
 	// Tier 1: if tool CB fired, disable tool and inject synthetic result.
@@ -3724,6 +3766,16 @@ func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, 
 		Timestamp:  time.Now(),
 	}, false); !persisted {
 		st.rowNotPersisted = true
+	}
+
+	// Mining ledger (graph_memory_lessons.go): record the execution now,
+	// before compilation can evict this turn.
+	a.recordToolLedger(session.ID, toolCall, result)
+
+	// Collect failure text for error-triggered lesson recall (injected AFTER
+	// the whole batch — never between a tool_use and its tool_result).
+	if result != nil && result.Error != nil && result.Error.Message != "" {
+		st.errTexts = append(st.errTexts, result.Error.Message)
 	}
 
 	// If the tool signaled a text_body sidecar (e.g. manage_skills(load)
@@ -3999,7 +4051,7 @@ func (a *Agent) runTool(ctx Context, toolName string, input map[string]interface
 // settleExecution is the session-shared bookkeeping for an executed tool
 // result: lease events and guardrails error tracking. It must run sequentially
 // and in call order. A call the breaker rejected never ran, so it is skipped.
-func (a *Agent) settleExecution(ctx Context, sessionID string, input map[string]interface{}, result *shuttle.Result, err error) {
+func (a *Agent) settleExecution(ctx Context, sessionID, toolName string, input map[string]interface{}, result *shuttle.Result, err error) {
 	var breakerOpen *toolBreakerOpenError
 	if errors.As(err, &breakerOpen) {
 		return
@@ -4011,6 +4063,12 @@ func (a *Agent) settleExecution(ctx Context, sessionID string, input map[string]
 	// path replays cached results without re-executing, so replayed events
 	// are never double-applied).
 	a.applyLeaseEvents(ctx, sessionID, result)
+
+	// Decision layer shadow (plan Phase 1, site tool.failure_kind): classify
+	// this result in the background and record it against what the Success
+	// flag and InferErrorType say. Brake-only by design once live; today it
+	// only records.
+	a.shadowFailureKind(ctx, sessionID, toolName, input, result, err)
 
 	// If execution succeeded and guardrails enabled, clear error record
 	if err == nil && result != nil && result.Success && a.guardrails != nil {
@@ -4268,7 +4326,18 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 	// visible instead of being hidden behind a successful injection.
 	span.SetAttribute("recall.store_error", storeFailed)
 	span.SetAttribute("recall.candidates", len(candidates))
-	if len(candidates) == 0 {
+
+	// Dedicated lesson lane (PR #357): verified working knowledge rides
+	// regardless of the echo-memory ranking below. Fleet-shared only when
+	// GraphMemoryConfig.fleet_lesson_sharing is opted in; private otherwise.
+	// No probation here — nothing scores what a conversation-start injection
+	// leads to, so a demoted lesson offered here would be cost without
+	// evidence (see fleetLessons). Queried BEFORE the no-candidates return:
+	// an agent that mostly does tool work can hold lessons and no ordinary
+	// memory that matches, and its lessons must still reach the first request.
+	lessons := a.fleetLessons(ctx, searchQuery, budget, false)
+	span.SetAttribute("recall.lessons", len(lessons))
+	if len(candidates) == 0 && len(lessons) == 0 {
 		if storeFailed {
 			// Distinct from no_candidates: the store failed, this is not a miss.
 			outcome = "store_error"
@@ -4278,16 +4347,34 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 		return
 	}
 
-	// LLM re-rank: ask the LLM which candidates are actually relevant.
+	// LLM re-rank: ask the LLM which candidates are actually relevant
+	// (no candidates, no call — rerankMemories returns nil).
 	relevant := a.rerankMemories(ctx, userMessage, candidates)
-	if len(relevant) == 0 {
+	if len(relevant) == 0 && len(lessons) == 0 {
 		outcome = "rerank_none"
 		return
 	}
-	span.SetAttribute("recall.injected", len(relevant))
+	// recall.injected is the total the block carries; the two breakdowns
+	// split it the way lesson.injected / lesson.injected_verified /
+	// lesson.injected_probation split the error-time lane.
+	span.SetAttribute("recall.injected", len(relevant)+len(lessons))
+	span.SetAttribute("recall.injected_memories", len(relevant))
+	span.SetAttribute("recall.injected_lessons", len(lessons))
 
 	var sb strings.Builder
-	sb.WriteString("Relevant memories from past conversations:\n\n")
+	if len(lessons) > 0 {
+		sb.WriteString(a.lessonPrompt(ctx, lessonPromptHeadingStart))
+		sb.WriteString("\n")
+		for _, m := range lessons {
+			sb.WriteString("- ")
+			sb.WriteString(m.Content)
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
+	if len(relevant) > 0 {
+		sb.WriteString("Relevant memories from past conversations:\n\n")
+	}
 	for _, m := range relevant {
 		sb.WriteString("- ")
 		if m.EventDate != "" {
@@ -4387,9 +4474,23 @@ func (a *Agent) findUserEntity(ctx context.Context, agentID string) *memory.Enti
 	return nil
 }
 
-// rerankMemories uses the LLM to select the most relevant memories for a user message
-// from a pool of FTS5 candidates. Returns only the memories the LLM deems relevant.
+// rerankMemories selects the most relevant memories for a user message from a
+// pool of FTS5 candidates. The existing LLM rerank decides; when the decision
+// layer is wired, the decider's per-candidate relevance is evaluated in the
+// background and recorded against that decision as a shadow row (plan Phase
+// 1, site recall.rerank). Nothing branches on the decider yet.
 func (a *Agent) rerankMemories(ctx context.Context, userMessage string, candidates []*memory.Memory) []*memory.Memory {
+	kept := a.rerankMemoriesLLM(ctx, userMessage, candidates)
+	if a.decisionRouter != nil && len(candidates) > 0 {
+		a.shadowRerank(ctx, sessionIDFromContext(ctx), sites.SiteRecallRerank, userMessage, candidates, kept, sites.ReferenceSourceLLMRerank)
+	}
+	return kept
+}
+
+// rerankMemoriesLLM is the generative rerank: a numbered candidate list and a
+// "return only the numbers" instruction. Returns only the memories the LLM
+// deems relevant; on any failure it returns every candidate.
+func (a *Agent) rerankMemoriesLLM(ctx context.Context, userMessage string, candidates []*memory.Memory) []*memory.Memory {
 	if len(candidates) == 0 {
 		return nil
 	}
@@ -4648,6 +4749,12 @@ func (a *Agent) DeleteSession(sessionID string) {
 	// nil-receiver-safe, and a.implicitTasks is nil until a task manager is
 	// wired.
 	a.implicitTasks.ForgetSession(sessionID)
+	// Drop the lesson miner's per-session state (ledger, history-coverage
+	// marker, error-lane injection record) for the same reason.
+	a.forgetLessonSession(sessionID)
+	// Release the session's decision-layer budget accounting, which is
+	// likewise bounded by live sessions only because retirement frees it.
+	a.decisionRouter.ForgetSession(sessionID)
 }
 
 // ApprovedSet returns the executor's approved-set accessor; nil until one is
@@ -4696,6 +4803,7 @@ func (a *Agent) ClearAllSessions() {
 	a.mu.Unlock()
 	a.dropAllInTurnSQLite()
 	a.leases.reset()
+	a.decisionRouter.ForgetAllSessions()
 }
 
 // CreateSession creates a new session without sending a message to the LLM.

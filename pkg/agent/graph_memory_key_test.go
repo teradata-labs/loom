@@ -196,9 +196,23 @@ func TestGraphMemory_RecallUsesKey(t *testing.T) {
 		ids := spy.calls[kind]
 		require.NotEmpty(t, ids, "%s was never called", kind)
 		for _, id := range ids {
+			// The lesson lane recalls from its own partition, derived from the key.
+			if kind == "Recall" && id == "u1"+lessonPartitionSuffix {
+				continue
+			}
 			assert.Equal(t, "u1", id, "%s must read under the key, not the Name", kind)
 		}
 	}
+}
+
+// Private lessons live in a partition derived from the key, so renaming an
+// agent that has a stable GraphMemoryAgentID keeps its lessons.
+func TestLessonPartition_UsesKey(t *testing.T) {
+	a := &Agent{config: &Config{Name: "renamed", GraphMemoryAgentID: "u1"}}
+	assert.Equal(t, "u1"+lessonPartitionSuffix, a.lessonPartition())
+
+	b := &Agent{config: &Config{Name: "name"}}
+	assert.Equal(t, "name"+lessonPartitionSuffix, b.lessonPartition())
 }
 
 // Extraction writes entities, edges and memories under the key.
