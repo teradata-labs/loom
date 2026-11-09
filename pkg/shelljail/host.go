@@ -236,33 +236,50 @@ func (r *Runner) SessionsRoot() string { return r.sessionsRoot }
 // DataDir returns LoomDataDir with its symlinks resolved.
 func (r *Runner) DataDir() string { return r.dataDir }
 
-// SessionDirs returns the session's scratchpad and artifact directories,
-// creating them. The scratchpad is a jailed command's default working
-// directory and HOME. Both lie in the session's own directory
-// (artifacts/sessions/<id> under the data directory), which must resolve
-// beneath SessionsRoot.
-func (r *Runner) SessionDirs(sessionID string) (scratch, artifactDir string, err error) {
+// SessionDirs returns the session's scratchpad and artifact directories and
+// the session's own directory (artifacts/sessions/<id>, which also holds
+// user/ uploads), creating the first two, all with symlinks resolved. The
+// scratchpad is a jailed command's default working directory and HOME.
+// Options calls it for every call, for the hook and the tool alike. The
+// session directory is resolved from its own path, never derived from where
+// the scratchpad resolves, and must lie beneath SessionsRoot; the scratchpad
+// and artifact directories must lie beneath the session directory. So a
+// scratchpad that is a symlink to the data directory, the sessions directory
+// or another session is refused instead of widening the read roots to it.
+func (r *Runner) SessionDirs(sessionID string) (scratch, artifactDir, sessionDir string, err error) {
 	if sessionID == "" {
-		return "", "", errors.New("the jailed shell runs only inside a session")
+		return "", "", "", errors.New("the jailed shell runs only inside a session")
+	}
+	if sessionDir, err = artifacts.SessionArtifactsRoot(sessionID); err != nil {
+		return "", "", "", err
 	}
 	if scratch, err = artifacts.GetScratchpadDir(sessionID); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	if artifactDir, err = artifacts.GetArtifactDir(sessionID, artifacts.SourceAgent); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	for _, d := range []string{scratch, artifactDir} {
 		if err := os.MkdirAll(d, 0o750); err != nil {
-			return "", "", err
+			return "", "", "", err
 		}
 	}
+	sessionDir = shellpolicy.ResolvePath("/", sessionDir)
 	scratch, artifactDir = shellpolicy.ResolvePath("/", scratch), shellpolicy.ResolvePath("/", artifactDir)
+	if !strictlyWithin(r.sessionsRoot, sessionDir) {
+		return "", "", "", fmt.Errorf("session directory %s is outside the sessions directory %s (resolved at startup)", sessionDir, r.sessionsRoot)
+	}
 	for _, d := range []string{scratch, artifactDir} {
-		if !shellpolicy.WithinDir(r.sessionsRoot, d) {
-			return "", "", fmt.Errorf("session directory %s is outside the sessions directory %s (resolved at startup)", d, r.sessionsRoot)
+		if !strictlyWithin(sessionDir, d) {
+			return "", "", "", fmt.Errorf("session path %s is outside the session directory %s", d, sessionDir)
 		}
 	}
-	return scratch, artifactDir, nil
+	return scratch, artifactDir, sessionDir, nil
+}
+
+// strictlyWithin reports whether path lies beneath root and is not root.
+func strictlyWithin(root, path string) bool {
+	return filepath.Clean(root) != filepath.Clean(path) && shellpolicy.WithinDir(root, path)
 }
 
 // Options returns the working directory and roots for a call: the call's
@@ -274,7 +291,7 @@ func (r *Runner) SessionDirs(sessionID string) (scratch, artifactDir string, err
 // to the session's scratchpad and artifact directories and the extra write
 // roots. The hook and the tool both use it, so they judge the same paths.
 func (r *Runner) Options(sessionID, workingDir string) (shellpolicy.Options, error) {
-	scratch, artifactDir, err := r.SessionDirs(sessionID)
+	scratch, artifactDir, sessionDir, err := r.SessionDirs(sessionID)
 	if err != nil {
 		return shellpolicy.Options{}, err
 	}
@@ -283,8 +300,6 @@ func (r *Runner) Options(sessionID, workingDir string) (shellpolicy.Options, err
 		dir = shellpolicy.ResolvePath(scratch, workingDir)
 	}
 	write := append([]string{scratch, artifactDir}, r.extraWrite...)
-	// The session's own directory: scratchpad, agent/ and user/ share it.
-	sessionDir := filepath.Dir(scratch)
 	read := append([]string{sessionDir}, r.extraRead...)
 	read = append(read, write...)
 	return shellpolicy.Options{WorkingDir: dir, Roots: shellpolicy.Roots{Read: read, Write: write}}, nil

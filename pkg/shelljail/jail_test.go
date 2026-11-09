@@ -705,6 +705,36 @@ func TestOptions_SymlinkedArtifactsDir(t *testing.T) {
 	assert.ErrorContains(t, err, "outside the sessions directory", "a repoint after startup is refused")
 }
 
+// The session's read root comes from the session's own path, not from where
+// its scratchpad resolves: a scratchpad that is a symlink elsewhere in the
+// data directory made the whole data directory readable.
+func TestOptions_SymlinkedScratchpadIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		target func(data, session string) string
+	}{
+		{"elsewhere in the data directory", func(data, _ string) string { return filepath.Join(data, "elsewhere") }},
+		{"the data directory itself", func(data, _ string) string { return data }},
+		{"the session directory", func(_, session string) string { return session }},
+		{"another session", func(data, _ string) string {
+			return filepath.Join(data, "artifacts", "sessions", "sess-other", "scratchpad")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			data := os.Getenv("LOOM_DATA_DIR")
+			session := filepath.Dir(f.scratch)
+			target := tc.target(data, session)
+			require.NoError(t, os.MkdirAll(target, 0o750))
+			require.NoError(t, os.RemoveAll(f.scratch))
+			require.NoError(t, os.Symlink(target, f.scratch))
+			opt, err := f.r.Options(testSession, "")
+			assert.ErrorContains(t, err, "outside the session directory", "a scratchpad that leaves the session is refused")
+			assert.NotContains(t, opt.Roots.Read, data, "the data directory is never a read root")
+		})
+	}
+}
+
 func TestFilterEnvAndNames(t *testing.T) {
 	kept, dropped := FilterEnv([]string{"A=1", "LD_LIBRARY_PATH=/x", "GIT_DIR=/y", "HF_TOKEN=z", "PYTHONPATH=/p", "BASH_FUNC_f%%=() { :; }", "A=2"})
 	assert.Equal(t, []string{"A=1", "A=2"}, kept)
