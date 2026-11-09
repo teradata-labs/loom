@@ -139,7 +139,10 @@ The hook additionally turns an **Ask into a Deny** when the call's JSON-encoded 
 
 | Parameter of the call | Verdict |
 |---|---|
-| `shell` absent, empty, `bash`, `sh`, or `default` (bash, else sh) | the command is judged as above |
+| `shell` set to `bash` | the command is judged as above |
+| `shell` absent, empty or `default`, when `bash` is on the server's `PATH` (`shell_execute` then runs bash) | the command is judged as above |
+| `shell` absent, empty or `default`, when `bash` is not on `PATH` (`shell_execute` then runs `sh`) | Deny |
+| `shell` set to `sh` | Deny: `sh` can be dash (Debian, Ubuntu), which parses some commands differently from bash. Dash has no `$'…'` quoting, so ``echo $'\' ; touch x ; #'`` is one `echo` to bash and runs `touch` in dash |
 | `shell` set to anything else (`powershell`, `cmd`, `zsh`), or not a string | Deny: the command is parsed as bash, so a command another shell runs cannot be judged |
 | `env` (merged into the command's environment by `shell_execute`): a name `ExecEnvName` reports | Ask in both modes, granting the name in `Env`; the reason shows it as `NAME (env parameter)` |
 | `env`: `CDPATH` | `static`: Deny |
@@ -237,7 +240,7 @@ Each returns a `*shellpolicy.LaunchError{Name, Reason}`, or nil.
 - **Corpus:** the design's bypass corpus plus the environment-assignment and static-path cases, 144 commands, each run under both enforcement modes.
 - **Review bypasses:** the commands from the PR #430 reviews (N1-N10 and R1-R6) and the vectors found while fixing them (`bypass_test.go`), 147 commands, each run under both enforcement modes. The review's commands and the new vectors were run in bash 5.2 (macOS bash 3.2 for `.*` matching `..`, git 2.50.1 for `git grep -O`) and did the harmful thing while the analyzer allowed them; the other rows are variants of those shapes and commands that must stay allowed.
 - **Run-time checks:** a 22-case table for `CheckLaunch`, and a 14-case table for the review's argument rules.
-- **Call parameters:** `TestDecide_ShellParam` and `TestDecide_EnvParam`.
+- **Call parameters:** `TestDecide_ShellParam`, `TestDecide_ShellNeedsBash` (sets whether the hook finds bash on `PATH`, so it runs on every host) and `TestDecide_EnvParam`.
 - **Windows refusal:** `TestDecide_RefusesOnWindows` sets the OS the hook judges for, so it runs on every host: on Windows every call is refused (default, `bash`, `sh` and other shells; `static` and `runtime`; through the factory and the executor), and the same calls are judged normally on Linux and macOS. The tests that check POSIX path semantics skip on Windows.
 - **Interpreter drift:** `TestImplementedBuiltinsMatchInterpreter` fails when an interpreter upgrade implements or drops a builtin.
 - **Executor:** an end-to-end test through `BuildChainFromConfig` and the executor.
