@@ -29,6 +29,7 @@ Command reference for `loom` (client) and `looms` (server).
 - [loom artifacts](#loom-artifacts) - Manage artifacts
 - [loom mcp](#loom-mcp) - Manage MCP servers
 - [loom providers](#loom-providers) - Manage LLM provider pool
+- [loom decision](#loom-decision) - Replay and report typed-decision shadow comparisons
 
 ### Reference
 - [Global Server Flags](#global-server-flags) - Flags available on all `looms` commands
@@ -97,6 +98,8 @@ Command reference for `loom` (client) and `looms` (server).
 | `loom sessions list` | List sessions | `--limit`, `--offset` |
 | `loom sessions show` | Show session details | `<session-id>` |
 | `loom sessions delete` | Delete session | `<session-id>` |
+| `loom sessions resume` | Finish a turn a server crash interrupted | `<session-id>`, `--timeout` |
+| `loom sessions resolve-gap` | Record the outcome of a call resume could not determine | `<session-id>`, `--outcome`, `--result` |
 | `loom artifacts list` | List artifacts | `--source`, `--content-type`, `--tags` |
 | `loom artifacts search` | Full-text search artifacts | `<query>`, `--limit` |
 | `loom artifacts show` | Show artifact details | `<artifact-id-or-name>` |
@@ -113,6 +116,8 @@ Command reference for `loom` (client) and `looms` (server).
 | `loom skills add` | Add a single skill (dir or zip) via `SkillsImportService` | `<path>`, `--out`, `--force`, `--classify`, `--taxonomy`, `--zip` |
 | `loom skills classify` | Re-classify an existing skill in the catalog | `<skill-name>`, `--taxonomy` |
 | `loom skills migrate` | Migrate a legacy `enabled_skills`/`disabled_skills` config to bindings | `<agent.yaml>` |
+| `loom decision replay` | Run recorded tool executions through the failure-kind decider and write shadow rows | `--db`, `--decider`, `--limit`, `--errors-only`, `--sample`, `--dry-run` |
+| `loom decision report` | Print agreement and calibration for shadow rows | `--db`, `--site`, `--since`, `--limit` |
 
 
 ## Global Server Flags
@@ -1005,6 +1010,8 @@ loom sessions <subcommand> [flags]
 | `list` | List conversation sessions |
 | `show <session-id>` | Show session details |
 | `delete <session-id>` | Delete a session and its conversation history |
+| `resume <session-id>` | Finish a turn that a server crash interrupted (needs `execution_log.enabled`) |
+| `resolve-gap <session-id>` | Record the outcome of the tool call `resume` reported as an execution gap |
 
 **Flags (list):**
 
@@ -1030,6 +1037,44 @@ Delete a session:
 ```bash
 loom sessions delete sess_abc123def456
 ```
+
+#### loom sessions resume
+
+Calls the server's `ResumeSession` RPC. The server finishes the session's
+interrupted turn on the agent it built for the session, using the execution
+log. See the [Crash Resume guide](../guides/crash-resume.md).
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--timeout` | duration | `10m` | How long to wait for the resumed turn, which runs LLM and tool calls |
+
+| Result | Output | Exit code |
+|--------|--------|-----------|
+| Turn finished | `Resumed session <id>.` and the reply | 0 |
+| Last turn already complete | `Nothing to resume: ...` | 0 |
+| Turn stopped for a human decision | `Session <id> is waiting for a human decision again.` | 0 |
+| Execution gap | The call's tool, call ID, step and position, and the `resolve-gap` commands | 1 |
+| Refused (gRPC `FAILED_PRECONDITION`) | The turn was not recorded, its batch was not saved, the execution log is off, or a human decision is pending | 1 |
+| Busy (gRPC `ABORTED`) | Another process holds the session's lease (a live turn or another resume) | 1 |
+| Not found (gRPC `NOT_FOUND`) | No such session for the caller | 1 |
+
+#### loom sessions resolve-gap
+
+Calls the server's `ResolveExecutionGap` RPC: records an operator's finding for
+the tool call that `resume` reported as an execution gap, then exits. Run
+`loom sessions resume` again afterwards.
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--outcome` | string | (required) | `succeeded` or `failed` |
+| `--result` | string (JSON) | | The call's result; required with `--outcome succeeded` |
+
+```bash
+loom sessions resolve-gap sess_abc123def456 --outcome succeeded --result '{"rows": 3}'
+loom sessions resolve-gap sess_abc123def456 --outcome failed
+```
+
+Exits 1 with gRPC `FAILED_PRECONDITION` when the session has no execution gap.
 
 
 ### loom artifacts
@@ -1379,6 +1424,70 @@ loom skills migrate examples/agent.yaml > examples/agent-migrated.yaml
 ```
 
 **See also**: [`skills-import.md`](../architecture/skills-import.md) (importer internals + taxonomy format), [`skills-import-guide.md`](../guides/skills-import-guide.md) (workflow guide).
+
+---
+
+### loom decision
+
+Shadow-evaluate the typed decision layer (`pkg/decision`) against Loom's own telemetry. Both subcommands open the local SQLite `loom.db` directly; they do not talk to a server, and they cannot read shadow rows a Postgres-backed server stored. Agreement is with what Loom decides today, not with ground truth. See [`decision-layer.md`](../architecture/decision-layer.md).
+
+**Usage:**
+```bash
+loom decision <subcommand> [flags]
+```
+
+**Subcommands:**
+
+| Subcommand | Description |
+|------------|-------------|
+| `replay` | Run recorded `tool_executions` rows through the `tool.failure_kind` request and store one shadow row per question, comparing the decider's answer with the `Success` flag plus `fabric.InferErrorType`. |
+| `report` | Read shadow rows for a site and print agreement, expected calibration error, confusion, decider error rate, latency percentiles and token and cost totals as Markdown. |
+
+**Flags (both):**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--db` | string | `$LOOM_DATA_DIR/loom.db` | Path to `loom.db` |
+
+**Flags (replay):**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--decider` | string | `llm` | `jev`, `llm` or `mock` (`mock` returns a fixed answer, for exercising the pipeline) |
+| `--provider` | string | `$LOOM_LLM_PROVIDER`, else `anthropic` | LLM provider for `--decider llm`; credentials from the usual provider env vars |
+| `--model` | string | provider default | Model for `--decider llm`; with `--decider jev`, the Jev model id |
+| `--base-url` | string | `$TYPESAFE_BASE_URL`, else provider default | Endpoint for `--decider jev`, `https` only. `LOOM_DECISION_BASE_URL` is not read here |
+| `--allow-insecure-http` | bool | `false` | With `--decider jev`: allow an `http://` `--base-url` on a loopback host |
+| `--rpm` | float | `0` (client default, 1,000) | With `--decider jev`: requests per minute (the Vercel AI Gateway free tier allows 30) |
+| `--limit` | int | `1000` | Maximum executions to replay, newest first |
+| `--errors-only` | bool | `false` | Replay only executions that recorded an error |
+| `--sample` | string | `newest` | `newest` or `random` (random reaches across the whole history) |
+| `--seed` | int | `0` | With `--sample random`: a fixed order so two deciders score the same rows (`0` = random) |
+| `--concurrency` | int | `4` | Decider calls in flight at once |
+| `--dry-run` | bool | `false` | Build requests and references, call no decider, write nothing |
+
+`--decider jev` reads `TYPESAFE_API_KEY`, else `AI_GATEWAY_API_KEY`, else `JEV_API_KEY` (see `ENV_VARS.md`), and sends each replayed row's tool name, error code, error text (up to 2,000 runes) and input digest to the endpoint.
+
+**Flags (report):**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--site` | string | `tool.failure_kind` | Site to report on (empty = all sites) |
+| `--since` | string | `""` | Only rows recorded after a duration ago (`24h`), a day count (`7d`) or an RFC3339 time |
+| `--limit` | int | `0` (store default) | Maximum rows to read, newest first |
+
+**Examples:**
+```bash
+# Exercise the pipeline without a provider
+loom decision replay --decider mock --dry-run --limit 50
+
+# Score 600 random failed executions with Jev through the gateway free tier
+AI_GATEWAY_API_KEY=... loom decision replay --decider jev \
+  --errors-only --sample random --seed 7 --limit 600 --rpm 28
+
+# Report the last week
+loom decision report --site tool.failure_kind --since 7d
+```
 
 
 ## Environment Variables

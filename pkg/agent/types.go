@@ -18,10 +18,13 @@ import (
 	"database/sql"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
+	"github.com/teradata-labs/loom/pkg/decision"
+	"github.com/teradata-labs/loom/pkg/eventlog"
 	"github.com/teradata-labs/loom/pkg/fabric"
 	mcpadapter "github.com/teradata-labs/loom/pkg/mcp/adapter"
 	"github.com/teradata-labs/loom/pkg/memory"
@@ -82,6 +85,16 @@ type Agent struct {
 	// human decision ends the turn (TurnParkedError) instead of holding it.
 	hitlPark *hitlParkConfig
 
+	// eventLog, when non-nil, enables the durable, tool-call-granularity
+	// execution log (issue #229) for crash-resumable conversation loops. Nil
+	// disables it: every write-ahead call becomes a no-op, and ResumeSession
+	// is unavailable (returns ErrEventLogDisabled).
+	eventLog eventlog.EventLogStore
+
+	// leaseTTL overrides eventlog.DefaultSessionLeaseTTL for the session lease
+	// (session_lease.go). Zero uses the default; tests set it short.
+	leaseTTL time.Duration
+
 	// resourceAwait, when non-nil (WithResourceAwait), enables resource-await
 	// park: a successful tool result carrying AwaitResource ends the turn
 	// parked until the named resource reaches a terminal state. Requires
@@ -119,6 +132,16 @@ type Agent struct {
 	orchestratorLLM LLMProvider // For merge/synthesis in fork-join orchestration
 	classifierLLM   LLMProvider // For intent classification / pattern selection
 	compressorLLM   LLMProvider // For memory compression / semantic search reranking
+
+	// Decision layer (pkg/decision). decisionCfg and decisionShadowStore come
+	// from WithDecisionConfig; initDecisionRouter builds decisionRouter and
+	// decisionRecorder from them after options are applied. decisionWG tracks
+	// background shadow evaluations so tests and shutdown can wait.
+	decisionCfg         *loomv1.DecisionConfig
+	decisionShadowStore decision.ShadowStore
+	decisionRouter      *decision.Router
+	decisionRecorder    *decision.ShadowRecorder
+	decisionWG          sync.WaitGroup
 
 	// Tracer for observability
 	tracer observability.Tracer
@@ -268,6 +291,26 @@ type Agent struct {
 	graphExtractionCadence             int
 	graphToolExecutionsSinceExtraction int
 	graphExtractionWG                  sync.WaitGroup // tracks in-flight async extractions
+	// toolLedgerMu guards toolLedgers: per-session tool-execution ledgers
+	// for the lesson miner (graph_memory_lessons.go). Recorded at execution
+	// time so mining is immune to context compilation evicting early turns
+	// from the compiled message view.
+	toolLedgerMu sync.Mutex
+	toolLedgers  map[string][]minedEvent
+	// lessonCoveredSessions (also guarded by toolLedgerMu) marks the
+	// sessions whose history the lesson miner must not walk again: every
+	// session that recorded a ledger in this process, and every session the
+	// whole-history fallback already mined. Freed by DeleteSession.
+	lessonCoveredSessions map[string]struct{}
+	// errorLessonMu guards errorLessonState: per-session tracking for
+	// error-triggered lesson recall (graph_memory_lessons.go) — which
+	// lessons were already injected and how many injections have fired.
+	errorLessonMu    sync.Mutex
+	errorLessonState map[string]*errorLessonSession
+	// lessonTrials counts error-lane lesson recalls; every
+	// lessonRetrialInterval-th one carries a demoted lesson so demotion
+	// stays reversible (graph_memory_lessons.go).
+	lessonTrials atomic.Uint64
 
 	// Conversation-turn-based graph extraction (fires on LLM responses, not tool use).
 	graphConversationExtractionCadence int // 0 = disabled

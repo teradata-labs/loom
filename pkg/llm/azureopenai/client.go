@@ -63,11 +63,6 @@ type Client struct {
 	// Rate limiter
 	rateLimiter *llm.RateLimiter
 	capacity    llm.CapacityObserver
-
-	// Tool name mapping: sanitized name → original name
-	// Azure OpenAI requires tool names to match ^[a-zA-Z0-9_.\-]+$
-	// MCP tools use colon namespacing (e.g., "vantage-mcp:execute_sql")
-	toolNameMap map[string]string
 }
 
 // Config holds configuration for the Azure OpenAI client.
@@ -230,8 +225,8 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 
 	// Convert tools to OpenAI format with name sanitization
 	// Azure OpenAI requires names matching ^[a-zA-Z0-9_.\-]+$ (no colons)
-	c.toolNameMap = make(map[string]string)
-	apiTools, err := c.convertTools(ctx, tools, c.toolNameMap, c.strictToolSchemas)
+	nameMap := make(map[string]string) // per request: the client is shared across sessions
+	apiTools, err := c.convertTools(ctx, tools, nameMap, c.strictToolSchemas)
 	if err != nil {
 		return nil, err
 	}
@@ -267,7 +262,7 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 	}
 
 	// Convert response with tool name reverse mapping
-	return c.convertResponse(resp), nil
+	return c.convertResponse(resp, nameMap), nil
 }
 
 // callAPI makes the HTTP request to Azure OpenAI's API.
@@ -317,6 +312,18 @@ func (c *Client) callAPI(ctx context.Context, req *openai.ChatCompletionRequest)
 				fmt.Errorf("API error (status 429): %s", string(respBody)),
 				llm.RetryAfterFromHeaders(resp.Header))
 		}
+		// A 5xx the server itself calls temporary is retried by the rate
+		// limiter under the throttle budget. The status is known before any
+		// content streams, so re-sending duplicates nothing.
+		if llm.IsTransientStatus(resp.StatusCode) {
+			// Bounded read: gateway 502/503 bodies are often multi-KB HTML
+			// pages, and this message is logged on every retry.
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, llm.MaxErrorBodyBytes))
+			_ = resp.Body.Close()
+			return nil, llm.NewTransientError(
+				fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody)),
+				resp.StatusCode, llm.RetryAfterFromHeaders(resp.Header))
+		}
 		return resp, nil
 	}
 
@@ -363,7 +370,11 @@ func (c *Client) callAPI(ctx context.Context, req *openai.ChatCompletionRequest)
 }
 
 // convertResponse converts OpenAI response to agent format.
-func (c *Client) convertResponse(resp *openai.ChatCompletionResponse) *llmtypes.LLMResponse {
+// convertResponse converts an Azure OpenAI response to the agent format.
+// nameMap is this request's sanitized → original tool-name table from
+// convertTools (Azure requires ^[a-zA-Z0-9_.\-]+$, MCP names carry colons);
+// nil leaves tool-call names as the API returned them.
+func (c *Client) convertResponse(resp *openai.ChatCompletionResponse, nameMap map[string]string) *llmtypes.LLMResponse {
 	llmResp := &llmtypes.LLMResponse{
 		Usage: llmtypes.Usage{
 			InputTokens:  resp.Usage.PromptTokens,
@@ -414,7 +425,7 @@ func (c *Client) convertResponse(resp *openai.ChatCompletionResponse) *llmtypes.
 			}
 
 			// Map sanitized name back to original name
-			toolName := llm.ReverseToolName(c.toolNameMap, tc.Function.Name)
+			toolName := llm.ReverseToolName(nameMap, tc.Function.Name)
 
 			llmResp.ToolCalls = append(llmResp.ToolCalls, llmtypes.ToolCall{
 				ID:    tc.ID,
@@ -656,8 +667,8 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 
 	// Build request (same as non-streaming)
 	apiMessages := convertMessages(messages)
-	c.toolNameMap = make(map[string]string)
-	apiTools, err := c.convertTools(ctx, tools, c.toolNameMap, c.strictToolSchemas)
+	nameMap := make(map[string]string) // per request: the client is shared across sessions
+	apiTools, err := c.convertTools(ctx, tools, nameMap, c.strictToolSchemas)
 	if err != nil {
 		return nil, err
 	}
@@ -724,6 +735,18 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			return nil, llm.NewThrottleError(
 				fmt.Errorf("API error (status 429): %s", string(respBody)),
 				llm.RetryAfterFromHeaders(resp.Header))
+		}
+		// A 5xx the server itself calls temporary is retried by the rate
+		// limiter under the throttle budget. The status is known before any
+		// content streams, so re-sending duplicates nothing.
+		if llm.IsTransientStatus(resp.StatusCode) {
+			// Bounded read: gateway 502/503 bodies are often multi-KB HTML
+			// pages, and this message is logged on every retry.
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, llm.MaxErrorBodyBytes))
+			_ = resp.Body.Close()
+			return nil, llm.NewTransientError(
+				fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody)),
+				resp.StatusCode, llm.RetryAfterFromHeaders(resp.Header))
 		}
 		return resp, nil
 	}
@@ -818,7 +841,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 						tc.ID = tcDelta.ID
 					}
 					if tcDelta.Function.Name != "" {
-						tc.Name = llm.ReverseToolName(c.toolNameMap, tcDelta.Function.Name)
+						tc.Name = llm.ReverseToolName(nameMap, tcDelta.Function.Name)
 					}
 
 					if tcDelta.Function.Arguments != "" {

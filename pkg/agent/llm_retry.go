@@ -36,18 +36,20 @@ const (
 	roleHygieneInjection   = "hygiene_injection"
 	roleEmptyResponseRetry = "empty_response_retry"
 	roleSynthesisPrompt    = "synthesis_prompt"
+	roleLessonReminder     = "lesson_reminder"
 )
 
 // IsSyntheticWireUserRole reports whether role is a persisted Loom-internal
 // role that must be delivered to the LLM as user-turn content — the
 // skill-body sidecar, a hygiene retry injection, an empty-response retry
-// nudge, or a synthesis prompt — as opposed to the literal end user.
+// nudge, a synthesis prompt, or an error-time lesson reminder — as opposed
+// to the literal end user.
 // Exported so pkg/server's live-streaming gate (isNewMessageUpdateRole)
 // shares this definition instead of maintaining the same string set
 // independently.
 func IsSyntheticWireUserRole(role string) bool {
 	switch role {
-	case roleSkillBody, roleHygieneInjection, roleEmptyResponseRetry, roleSynthesisPrompt:
+	case roleSkillBody, roleHygieneInjection, roleEmptyResponseRetry, roleSynthesisPrompt, roleLessonReminder:
 		return true
 	default:
 		return false
@@ -233,6 +235,14 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 		// immediately, never retried (blueprint A5): relief, not retry, is the
 		// only response to it.
 		if errors.Is(err, llm.ErrContextTooLong) {
+			return nil, err
+		}
+
+		// The rate limiter already spent its whole MaxRetries budget on this
+		// error (throttling or a transient 5xx, with backoff and Retry-After
+		// honoured). Re-running that budget here would only multiply the wait —
+		// one retry budget, in one place.
+		if llm.IsRetriesExhausted(err) {
 			return nil, err
 		}
 
