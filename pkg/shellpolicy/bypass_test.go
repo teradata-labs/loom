@@ -652,3 +652,52 @@ func TestResolvePath_MatchesPerComponentEvalSymlinks(t *testing.T) {
 		assert.Equal(t, reference(w, p), ResolvePath(w, p), "ResolvePath(w, %q)", p)
 	}
 }
+
+// Follow-ups to R5: other programs that follow symlinks out of the roots
+// while they walk a directory. In the escapeSession layout w/link points to
+// o/ssh, outside the session. Each was checked on macOS's BSD tools:
+// du -aL, ls -RL, find -L and find -LE listed o/ssh's names, grep -rS
+// printed the secret, and diff printed it when given a directory that holds
+// a symlink to it.
+
+// launchCase is one launch for runLaunchCases: block is a substring of the
+// reason, or "" for an allowed launch.
+type launchCase struct {
+	argv  []string
+	block string
+}
+
+// runLaunchCases checks each argv at run time in the escapeSession layout.
+func runLaunchCases(t *testing.T, cases []launchCase) {
+	t.Helper()
+	opt, _ := escapeSession(t)
+	for _, tc := range cases {
+		err := Readonly().CheckLaunch(tc.argv, opt.WorkingDir, opt.Roots, nil)
+		if tc.block == "" {
+			assert.NoError(t, err, "%v at run time", tc.argv)
+			continue
+		}
+		assert.ErrorContains(t, err, tc.block, "%v at run time", tc.argv)
+	}
+}
+
+// du -L (--dereference) follows every symlink; -H, -D and
+// --dereference-args follow only the operands, which are path-checked.
+func TestAnalyze_DuDereference(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
+	runBypassCases(t, []bypassCase{
+		{cmd: `du -L .`, want: Ask, static: Ask, why: "du (1:1): -L is outside the profile"},
+		{cmd: `du -aL .`, want: Ask, static: Ask, why: "-L is outside the profile"},
+		{cmd: `du -sLh .`, want: Ask, static: Ask},
+		{cmd: `du --dereference .`, want: Ask, static: Ask, why: "--dereference is outside the profile"},
+		{cmd: `du --dereference=x .`, want: Ask, static: Ask},
+		{cmd: `du -a .; du -sh .; du -H .; du -D .; du --dereference-args .; du -d1 .; du -- -L`, want: Allow, static: Allow},
+	})
+	runLaunchCases(t, []launchCase{
+		{argv: []string{"du", "-aL", "."}, block: "-L is outside the profile"},
+		{argv: []string{"du", "--dereference", "."}, block: "--dereference"},
+		{argv: []string{"du", "--dereference-args", "."}},
+	})
+}

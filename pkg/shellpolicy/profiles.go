@@ -221,7 +221,10 @@ func Readonly() *Policy {
 			ShortWithValue: "efmABCdD", pathShort: "f"}
 	}
 	p.Programs["diff"] = &Profile{MaxPositional: -1, ShortWithValue: "CUDFIxXSWL", pathShort: "X"}
-	p.Programs["du"] = &Profile{MaxPositional: -1, RefuseLong: []string{"--files0-from"},
+	// du -L (--dereference) follows every symlink it meets out of the
+	// roots; -H, -D and --dereference-args follow only the operands, which
+	// are path-checked.
+	p.Programs["du"] = &Profile{MaxPositional: -1, RefuseShort: "L", RefuseLong: []string{"--files0-from", "--dereference"},
 		ShortWithValue: "XBdtI", pathShort: "X"}
 	p.Programs["jq"] = &Profile{MaxPositional: -1, ShortWithValue: "L", pathShort: "L"}
 	p.Programs["sort"] = &Profile{MaxPositional: -1, RefuseShort: "oT", ShortWithValue: "ktS",
