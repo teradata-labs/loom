@@ -456,7 +456,7 @@ func gitProfile() *Profile {
 		Harden:        gitHarden,
 		Env: []string{
 			"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_ATTR_NOSYSTEM=1",
-			"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0",
+			"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "GIT_NO_LAZY_FETCH=1",
 		},
 	}
 }
@@ -528,6 +528,25 @@ func gitCheck(args []string) string {
 	return ""
 }
 
+// gitTransports are git's built-in transports and remote helpers.
+var gitTransports = []string{"ext", "fd", "file", "git", "ssh", "http", "https", "ftp", "ftps"}
+
+// gitNoTransport turns every transport off: a partial clone fetches a
+// missing blob from its promisor remote on git show, log -p, diff and
+// blame, and the repository's config picks the transport (core.sshCommand,
+// or an ext:: URL that runs a command). GIT_NO_LAZY_FETCH=1 in the profile's
+// Env stops the fetch on git 2.44 and later; for older git these options
+// refuse the transport. Each protocol.<name>.allow is set as well as
+// protocol.allow, because the repository's own protocol.<name>.allow
+// overrides protocol.allow, and the command line overrides the repository.
+var gitNoTransport = func() []string {
+	out := []string{"-c", "protocol.allow=never"}
+	for _, t := range gitTransports {
+		out = append(out, "-c", "protocol."+t+".allow=never")
+	}
+	return out
+}()
+
 // gitRepoCheck refuses a git command that would use a bare repository:
 // one found from dir, after each -C, before any directory holding a .git.
 // A clone can track such a repository, with a config that sets
@@ -589,8 +608,9 @@ func gitHarden(args []string) []string {
 		"-c", "diff.external=", "-c", "core.attributesFile=/dev/null",
 		"-c", "log.showSignature=false", "-c", "gpg.program=gpg", "-c", "gpg.ssh.program=ssh-keygen",
 		"-c", "gpg.x509.program=gpgsm", "-c", "safe.bareRepository=explicit",
-		"--no-pager", "--attr-source=" + EmptyTreeHash,
 	}
+	out = append(out, gitNoTransport...)
+	out = append(out, "--no-pager", "--attr-source="+EmptyTreeHash)
 	out = append(out, globals...)
 	if sub < 0 {
 		return out

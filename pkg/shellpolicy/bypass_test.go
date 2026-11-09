@@ -1129,3 +1129,20 @@ func TestAnalyze_WriteThroughDanglingSymlink(t *testing.T) {
 		assert.ErrorContains(t, err, tc.block, "write %s", tc.path)
 	}
 }
+
+// F7: in a partial clone missing a blob, git show, log -p, diff and blame
+// fetch it from the promisor remote, and the repository's config picks the
+// transport: core.sshCommand, or an ext:: URL with protocol.ext.allow. git
+// 2.50.1 ran core.sshCommand under gitHarden's prefix. GIT_NO_LAZY_FETCH=1
+// (git 2.44) stops the fetch; for older git, every built-in transport is
+// set to never on the command line, which overrides the repository's
+// protocol.<name>.allow.
+func TestGitHarden_NoLazyFetch(t *testing.T) {
+	git := Readonly().Programs["git"]
+	assert.Contains(t, git.Env, "GIT_NO_LAZY_FETCH=1", "the git profile turns lazy fetch off")
+	harden := strings.Join(git.Harden(fields("show HEAD:f")), " ")
+	for _, proto := range []string{"ext", "fd", "file", "git", "ssh", "http", "https", "ftp", "ftps"} {
+		assert.Contains(t, harden, "-c protocol."+proto+".allow=never", "transport %s is off", proto)
+	}
+	assert.Contains(t, harden, "-c protocol.allow=never", "every other transport is off")
+}

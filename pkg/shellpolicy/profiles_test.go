@@ -115,7 +115,11 @@ func TestGitHarden(t *testing.T) {
 	prefix := []string{"-c", "core.fsmonitor=false", "-c", "core.pager=cat", "-c", "core.hooksPath=/dev/null",
 		"-c", "diff.external=", "-c", "core.attributesFile=/dev/null",
 		"-c", "log.showSignature=false", "-c", "gpg.program=gpg", "-c", "gpg.ssh.program=ssh-keygen",
-		"-c", "gpg.x509.program=gpgsm", "-c", "safe.bareRepository=explicit", "--no-pager", "--attr-source=" + EmptyTreeHash}
+		"-c", "gpg.x509.program=gpgsm", "-c", "safe.bareRepository=explicit", "-c", "protocol.allow=never",
+		"-c", "protocol.ext.allow=never", "-c", "protocol.fd.allow=never", "-c", "protocol.file.allow=never",
+		"-c", "protocol.git.allow=never", "-c", "protocol.ssh.allow=never", "-c", "protocol.http.allow=never",
+		"-c", "protocol.https.allow=never", "-c", "protocol.ftp.allow=never", "-c", "protocol.ftps.allow=never",
+		"--no-pager", "--attr-source=" + EmptyTreeHash}
 	assert.Equal(t, append(append([]string{}, prefix...), "status", "-s"), git.Harden(fields("status -s")))
 	assert.Equal(t, append(append([]string{}, prefix...), "-C", "sub", "log", "--no-ext-diff", "--no-textconv", "-p"),
 		git.Harden(fields("-C sub log -p")))
