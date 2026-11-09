@@ -205,13 +205,14 @@ func Readonly() *Policy {
 		}
 	}
 	plain("cat", "head", "tail", "cut", "comm", "cmp", "od",
-		"ls", "stat", "realpath",
+		"stat", "realpath",
 		"md5sum", "sha1sum", "sha256sum", "shasum", "md5")
 	noPaths("tr", "basename", "dirname", "seq", "sleep", "uname", "whoami", "id", "which")
 	// --files0-from=F reads the names of the files to read from F, which
 	// path confinement never sees (GNU sort printed a file named in F).
 	// wc and du leak the named files' counts and sizes the same way.
 	p.Programs["wc"] = &Profile{MaxPositional: -1, RefuseLong: []string{"--files0-from"}}
+	p.Programs["ls"] = &Profile{MaxPositional: -1, Check: lsCheck}
 	// Options that take a file name attached to them ("-f../x") are listed
 	// in pathShort, so the attached name is path-checked too. -R
 	// (--dereference-recursive) follows every symlink it meets out of the
@@ -243,6 +244,39 @@ func Readonly() *Policy {
 		RefuseLong: []string{"--set", "--file", "--reference"}, Check: dateCheck}
 	p.Programs["git"] = gitProfile()
 	return p
+}
+
+// lsCheck refuses ls -L (--dereference) together with -R (--recursive):
+// ls then lists the directories symlinks point to, recursively, so a symlink
+// in the session leads it out of the read roots. Each alone stays allowed:
+// -R does not follow symlinks, and -L alone lists one level of the operands.
+// Every letter of a short option group counts, so a GNU option value such as
+// "-IRL" (ignore pattern "RL") is refused too; that costs an approval, never
+// a listing outside the roots. Long options are matched by abbreviation.
+func lsCheck(args []string) string {
+	recursive, deref := false, false
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		switch {
+		case strings.HasPrefix(a, "--"):
+			name, _, _ := strings.Cut(a, "=")
+			if len(name) > 2 && strings.HasPrefix("--recursive", name) {
+				recursive = true
+			}
+			if len(name) > 2 && strings.HasPrefix("--dereference", name) {
+				deref = true
+			}
+		case strings.HasPrefix(a, "-") && a != "-":
+			recursive = recursive || strings.ContainsRune(a[1:], 'R')
+			deref = deref || strings.ContainsRune(a[1:], 'L')
+		}
+	}
+	if recursive && deref {
+		return "ls -L with -R lists the directories symlinks point to, out of the read roots"
+	}
+	return ""
 }
 
 // dateCheck refuses BSD date's positional time setting ("date 202601010000").

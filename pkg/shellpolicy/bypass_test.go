@@ -701,3 +701,28 @@ func TestAnalyze_DuDereference(t *testing.T) {
 		{argv: []string{"du", "--dereference-args", "."}},
 	})
 }
+
+// ls -L with -R (--recursive) lists the directories symlinks point to,
+// recursively. Each alone follows nothing out of the roots: -R does not
+// follow symlinks, and -L alone lists one level.
+func TestAnalyze_LsRecursiveDereference(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
+	runBypassCases(t, []bypassCase{
+		{cmd: `ls -RL .`, want: Ask, static: Ask, why: "ls (1:1): ls -L with -R lists the directories symlinks point to"},
+		{cmd: `ls -LR`, want: Ask, static: Ask},
+		{cmd: `ls -R -L .`, want: Ask, static: Ask},
+		{cmd: `ls -laRL`, want: Ask, static: Ask},
+		{cmd: `ls --recursive --dereference .`, want: Ask, static: Ask},
+		{cmd: `ls -R --dereference .`, want: Ask, static: Ask},
+		{cmd: `ls --rec -L`, want: Ask, static: Ask},
+		{cmd: `ls --deref -R`, want: Ask, static: Ask},
+		{cmd: `ls -R .; ls -L .; ls -lL; ls -RH .; ls -R --dereference-command-line .; ls -R -- -L`, want: Allow, static: Allow},
+	})
+	runLaunchCases(t, []launchCase{
+		{argv: []string{"ls", "-RL", "."}, block: "ls -L with -R"},
+		{argv: []string{"ls", "--recursive", "--dereference"}, block: "ls -L with -R"},
+		{argv: []string{"ls", "-R", "."}},
+	})
+}

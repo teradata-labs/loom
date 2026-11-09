@@ -187,7 +187,8 @@ When the Ask is approved, the tool body reads the grants with `shellpolicy.Merge
 
 | Program | Argument rules |
 |---|---|
-| `cat head tail cut comm cmp od ls stat realpath md5sum sha1sum sha256sum shasum md5` | path confinement |
+| `cat head tail cut comm cmp od stat realpath md5sum sha1sum sha256sum shasum md5` | path confinement |
+| `ls` | path confinement; refuses `-L` or `--dereference` together with `-R` or `--recursive` (ls then lists the directories symlinks point to, out of the read roots). Each alone is allowed. Every letter of a short option group counts |
 | `wc` | path confinement; refuses `--files0-from` (it reads the names of the files to count from a file, which path confinement does not see) |
 | `grep egrep fgrep` | path confinement, including a file attached to `-f` (`-f/x`); refuses `-R` and `--dereference-recursive`, which follow every symlink they meet out of the read roots (`-r` follows only the symlinks named on the command line, and path confinement checks those); `-e -f -m -A -B -C -d -D` take a value |
 | `diff` | path confinement, including a file attached to `-X`; `-C -U -D -F -I -x -X -S -W -L` take a value |
@@ -241,7 +242,7 @@ Each returns a `*shellpolicy.LaunchError{Name, Reason}`, or nil.
 
 - `pkg/shellpolicy`: 96.4% statement coverage.
 - **Corpus:** the design's bypass corpus plus the environment-assignment and static-path cases, 144 commands, each run under both enforcement modes.
-- **Review bypasses:** the commands from the PR #430 reviews (N1-N10 and R1-R6), the vectors found while fixing them, and the other programs that follow symlinks out of the roots (follow-ups to R5) (`bypass_test.go`), 168 commands, each run under both enforcement modes. The review's commands and the new vectors were run in bash 5.2 (macOS bash 3.2 for `.*` matching `..`, git 2.50.1 for `git grep -O`) and did the harmful thing while the analyzer allowed them; the other rows are variants of those shapes and commands that must stay allowed.
+- **Review bypasses:** the commands from the PR #430 reviews (N1-N10 and R1-R6), the vectors found while fixing them, and the other programs that follow symlinks out of the roots (follow-ups to R5) (`bypass_test.go`), 177 commands, each run under both enforcement modes. The review's commands and the new vectors were run in bash 5.2 (macOS bash 3.2 for `.*` matching `..`, git 2.50.1 for `git grep -O`) and did the harmful thing while the analyzer allowed them; the other rows are variants of those shapes and commands that must stay allowed.
 - **Run-time checks:** a 22-case table for `CheckLaunch`, and a 14-case table for the review's argument rules.
 - **Call parameters:** `TestDecide_ShellParam`, `TestDecide_ShellNeedsBash` (sets whether the hook finds bash on `PATH`, so it runs on every host) and `TestDecide_EnvParam`.
 - **Windows refusal:** `TestDecide_RefusesOnWindows` sets the OS the hook judges for, so it runs on every host: on Windows every call is refused (default, `bash`, `sh` and other shells; `static` and `runtime`; through the factory and the executor), and the same calls are judged normally on Linux and macOS. The tests that check POSIX path semantics skip on Windows.
