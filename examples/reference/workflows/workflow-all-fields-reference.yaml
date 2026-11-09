@@ -306,6 +306,14 @@ spec:
     - perf-analyzer
   merge_strategy: concatenate             # OPTIONAL: default concatenate
   timeout_seconds: 300                    # OPTIONAL
+  join:                                   # OPTIONAL: bounded hand-off to the join step
+    agent_id: presenter                   # OPTIONAL: run the join through this registered agent
+    prompt_template: |                    # OPTIONAL: {{prompt}}, {{branches}}, {{branch_count}}
+      Build a deck for: {{prompt}}
+      {{branches}}
+    max_branch_bytes: 4096                # OPTIONAL: inline cap per branch (0 = 8192)
+    max_input_tokens: 60000               # OPTIONAL: whole-input budget (0 = half the agent's usable window)
+    overflow_strategy: pre_reduce         # OPTIONAL: pre_reduce (default) | truncate | fail
 
 ---
 # --- PIPELINE PATTERN ---
@@ -345,6 +353,9 @@ spec:
       prompt: "Write docs"
   merge_strategy: concatenate             # OPTIONAL
   timeout_seconds: 600                    # OPTIONAL
+  join:                                   # OPTIONAL: same fields as fork-join; {{prompt}} is empty for parallel
+    agent_id: editor
+    max_branch_bytes: 4096
 
 ---
 # --- CONDITIONAL PATTERN ---
@@ -516,6 +527,17 @@ spec:
 #   - first: Use first result
 #   - best: LLM selects best
 #   - summary: LLM summarizes all
+#
+# JOIN POLICY (fork-join, parallel; spec.join):
+#   Full branch outputs are stored in SharedMemory (key <workflow-id>-branch-N-output);
+#   the inline copy handed to the join is capped per branch and budgeted as a whole.
+#   - agent_id: run the join through this agent (its tools, context relief apply)
+#   - prompt_template: {{prompt}} {{branches}} {{branch_count}}; strategy default when empty
+#   - max_branch_bytes: inline cap per branch, 0 = 8192
+#   - max_input_tokens: token budget, 0 = half the join agent's usable window (none without agent)
+#   - overflow_strategy: pre_reduce (compressor LLM card per oversize branch) | truncate | fail
+#   Without agent_id a policy applies to LLM merge strategies only (concatenate/first rejected).
+#   See docs/reference/workflow-join.md
 #
 # VOTING STRATEGIES (swarm):
 #   - majority: >50% agreement

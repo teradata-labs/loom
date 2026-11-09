@@ -29,6 +29,9 @@ prompt:
         - fork-join requires: prompt (NOT topic!), agent_ids, merge_strategy
         - pipeline requires: initial_prompt, stages (array with agent_id + prompt_template using {{previous}})
         - parallel requires: tasks (array with agent_id + prompt per task, NOT agent_ids!)
+        - fork-join and parallel may add join: {agent_id, prompt_template with {{branches}}, max_branch_bytes,
+          max_input_tokens, overflow_strategy} when a final agent must build one result from all branches;
+          a join block without agent_id is rejected on concatenate/first
         - swarm requires: question (NOT topic!), agent_ids, strategy
         - coordination requires: entrypoint, agents (array), communication (pattern + hub or topic)
   constraints:

@@ -2117,6 +2117,19 @@ func (e *ForkJoinExecutor) buildVotingPrompt(results []*loomv1.AgentResult) stri
 // pattern: build a strategy-specific prompt, call GetMergeLLM().Chat() once.
 ```
 
+**Bounded join (JoinPolicy)**: the raw merge call above puts every branch output
+inline with no size check, so chatty branches fail at the provider context
+limit after every branch has been paid for. `ForkJoinPattern.join_policy` and
+`ParallelPattern.join_policy` (`pkg/orchestration/join.go`) replace it with a
+bounded hand-off: full outputs stored in SharedMemory under
+`<workflow-id>-branch-N-output`, an inline copy capped per branch, a token
+budget on the whole rendered input enforced by pre-reducing oversize branches
+with the compressor LLM, truncating, or failing before the call, and
+optionally the join run through a registered agent's `Chat` so it has tools
+(`shared_memory_read`), context relief and the context-too-long backstop.
+Without a policy the raw path runs unchanged. See
+[Workflow Join Policy](../reference/workflow-join.md).
+
 
 ### Template Variable Substitution
 
@@ -2338,6 +2351,15 @@ Result: "Optimize query: SELECT * FROM customers WHERE age > 30"
 **Impact**: Fork-join with these strategies fails if orchestrator has no LLM provider.
 
 **Workaround**: Use CONCATENATE or FIRST merge strategy (no LLM required), or provide LLM provider to orchestrator.
+
+
+### Constraint 5: Unbounded Merge Input Without a Join Policy
+
+**Description**: Without `join_policy`, the LLM merge strategies send every branch output inline in one raw call, with no size check, no tools and no context relief.
+
+**Impact**: Enough branch text fails the merge at the provider context limit after every branch has been paid for. Pipeline `{{history}}` / `pass_full_history` have the same exposure between stages.
+
+**Workaround**: Set `join_policy` (see [Workflow Join Policy](../reference/workflow-join.md)): the full outputs go to SharedMemory, the inline copy is capped and budgeted, and the join can run through an agent. Bound branch outputs at the source as well with `output_policy.output_schema`.
 
 
 ## Performance Characteristics

@@ -71,3 +71,7 @@ best_practices: |
   - Use concatenate merge for comprehensive coverage
   - Use synthesis merge when you need a unified summary
   - Each agent should have different expertise in their system_prompt
+  - When a final agent must build something from all branches (a deck, a report),
+    add a `join:` block with `agent_id` instead of relying on merge_strategy: the
+    join then runs as that agent with bounded input (full outputs in SharedMemory,
+    inline copies capped by max_branch_bytes, whole input held to max_input_tokens)

@@ -59,7 +59,7 @@ spec:
 ---
 
 ### 3. **fork-join** - Parallel Analysis with Merge
-**File:** (See `tests/workflows/test-data/` for examples)
+**File:** `fork-join-presentation.yaml`
 
 All agents execute in parallel on the same prompt, results are merged.
 
@@ -71,9 +71,25 @@ spec:
   merge_strategy: concatenate
 ```
 
+When a final agent has to build something from every branch (a deck, a report), add a `join` block. The join then runs as that agent with bounded input: full branch outputs go to SharedMemory, the inline copies are capped, and the whole prompt is held to a token budget. See `docs/reference/workflow-join.md`.
+
+```yaml
+spec:
+  type: fork-join
+  prompt: "Analyze Q3 results"
+  agent_ids: [finance-analyst, sales-analyst, ops-analyst]
+  join:
+    agent_id: presenter
+    prompt_template: "Build a deck for: {{prompt}}\n\n{{branches}}"
+    max_branch_bytes: 4096
+    max_input_tokens: 40000
+    overflow_strategy: pre_reduce
+```
+
 **Use Cases:**
 - Multi-perspective code reviews
 - Parallel analysis (quality, security, performance)
+- Parallel analyses joined into one deliverable by a dedicated agent
 
 ---
 

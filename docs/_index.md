@@ -88,4 +88,7 @@ Retry agent output that fails a schema or format check, with feedback in the ret
 **[Capability Leveling →](reference/workflow-leveling/)**
 Escalate a weak model's failed stage output up a ladder of stronger models.
 
+**[Workflow Join Policy →](reference/workflow-join/)**
+Bound the fork-join and parallel hand-off to the join step, and run the join through an agent.
+
 **[All Reference Docs →](reference/)**
