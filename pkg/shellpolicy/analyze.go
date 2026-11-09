@@ -197,6 +197,9 @@ type analyzer struct {
 	cds    []cdTarget
 	globs  []globCheck
 	dirOps []dirOperand
+	// repoChecks are calls whose profile judges the directory they run in
+	// (Profile.RepoCheck), judged from every directory the command can be in.
+	repoChecks []repoCheck
 	// tooManyCds is set once the command has more than maxCdTargets cd or
 	// pushd targets; the targets past the limit are not recorded.
 	tooManyCds bool
@@ -464,6 +467,9 @@ func (a *analyzer) program(x *syntax.CallExpr, nameWord *syntax.Word, name strin
 	if v := prof.violation(lits, complete); v != "" {
 		a.ask(nameWord, outer, name, v, "program", name)
 		return
+	}
+	if prof.RepoCheck != nil && complete {
+		a.repoChecks = append(a.repoChecks, repoCheck{check: prof.RepoCheck, args: lits, prog: name, n: nameWord, outer: outer})
 	}
 	if a.opt.Static && globbed && prof.MaxPositional >= 0 {
 		// No runner counts the names the glob expands to.

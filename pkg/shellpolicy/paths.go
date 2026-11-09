@@ -72,6 +72,28 @@ func (a *analyzer) dirOperand(path string, glob bool, prog string, n syntax.Node
 	a.dirOps = append(a.dirOps, dirOperand{path: path, glob: glob, prog: prog, n: n, outer: outer})
 }
 
+// repoCheck is a call whose profile judges the directory it runs in.
+type repoCheck struct {
+	check func(dir string, args []string) string
+	args  []string
+	prog  string
+	n     syntax.Node
+	outer *syntax.Pos
+}
+
+// finishRepoChecks judges each recorded call from every directory the
+// command may be in: the first violation is an Ask granting the program.
+func (a *analyzer) finishRepoChecks(dirs []workDir) {
+	for _, c := range a.repoChecks {
+		for _, d := range dirs {
+			if v := c.check(d.physical, c.args); v != "" {
+				a.ask(c.n, c.outer, c.prog, v, "program", c.prog)
+				break
+			}
+		}
+	}
+}
+
 // workDir is one directory the command may be in: the logical path bash's
 // cd -L computes, and the directory it really is.
 type workDir struct {
@@ -251,12 +273,13 @@ func cdpathSearched(target string) bool {
 // may be in. A read of an existing path outside the read roots is an Ask
 // granting each resolved path; a write outside the write roots is a Deny.
 func (a *analyzer) finishPaths() {
-	if len(a.paths) == 0 && len(a.cds) == 0 && len(a.globs) == 0 && len(a.dirOps) == 0 {
+	if len(a.paths) == 0 && len(a.cds) == 0 && len(a.globs) == 0 && len(a.dirOps) == 0 && len(a.repoChecks) == 0 {
 		return
 	}
 	dirs := a.workingDirs()
 	a.finishGlobs(dirs)
 	a.finishDirOperands(dirs)
+	a.finishRepoChecks(dirs)
 	for _, c := range a.paths {
 		bases := dirs
 		if filepath.IsAbs(c.path) {

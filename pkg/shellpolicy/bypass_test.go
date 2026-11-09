@@ -1003,3 +1003,62 @@ func TestAnalyze_ChecksumCheck(t *testing.T) {
 		{argv: []string{"shasum", "--check", "sums"}, block: "--check"},
 	})
 }
+
+// The tests below hold the findings from the fourth PR #430 review
+// (Josh-Schoen, F5-F7, at 27af16a2).
+
+// F5: a clone can track a bare repository (HEAD, objects/, refs/, an index
+// and a config with core.worktree=.. and a filter). git -C evil diff, or git
+// run inside it, uses that repository and runs its filter: git 2.50.1 did,
+// with gitHarden's prefix. gitHarden sets safe.bareRepository=explicit
+// (git 2.38 and later), and since older git ignores that key, the policy
+// also asks when git would discover a bare repository from the directory it
+// runs in. A normal repository and its .git directory stay allowed.
+func TestAnalyze_GitBareRepository(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
+	opt := gitSession(t)
+	w := opt.WorkingDir
+	pol := Readonly()
+	for _, tc := range []struct {
+		cmd  string
+		want VerdictKind // runtime; static denies git
+		why  string
+	}{
+		{cmd: `git -C meta diff`, want: Ask, why: "git (1:1): git would use the bare repository"},
+		{cmd: `cd meta && git status`, want: Ask, why: "git would use the bare repository"},
+		{cmd: `cd meta/refs && git diff`, want: Ask},
+		{cmd: `git -C sub -C ../meta log`, want: Ask},
+		{cmd: `git status; git -C sub diff; cd .git && git log; git -C .git/refs log`, want: Allow},
+	} {
+		v := pol.Analyze(tc.cmd, opt)
+		if assert.Equal(t, tc.want, v.Kind, "%q (runtime): %s", tc.cmd, v.Reason()) && tc.why != "" {
+			assert.Contains(t, v.Reason(), tc.why, "%q (runtime)", tc.cmd)
+		}
+		o := opt
+		o.Static = true
+		assert.Equal(t, Deny, pol.Analyze(tc.cmd, o).Kind, "%q (static): git needs the runner's hardening", tc.cmd)
+	}
+	for _, tc := range []struct {
+		argv  []string
+		dir   string
+		grant *Grant
+		block string
+	}{
+		{argv: []string{"git", "-C", "meta", "diff"}, dir: w, block: "git would use the bare repository " + filepath.Join(w, "meta")},
+		{argv: []string{"git", "status"}, dir: filepath.Join(w, "meta"), block: "bare repository"},
+		{argv: []string{"git", "diff"}, dir: filepath.Join(w, "meta", "refs"), block: "bare repository"},
+		{argv: []string{"git", "-C", "meta", "diff"}, dir: w, grant: &Grant{Programs: []string{"git"}}},
+		{argv: []string{"git", "status"}, dir: w},
+		{argv: []string{"git", "log"}, dir: filepath.Join(w, ".git")},
+		{argv: []string{"git", "diff"}, dir: filepath.Join(w, "sub")},
+	} {
+		err := pol.CheckLaunch(tc.argv, tc.dir, opt.Roots, tc.grant)
+		if tc.block == "" {
+			assert.NoError(t, err, "%v in %s", tc.argv, tc.dir)
+			continue
+		}
+		assert.ErrorContains(t, err, tc.block, "%v in %s", tc.argv, tc.dir)
+	}
+}

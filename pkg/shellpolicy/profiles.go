@@ -15,6 +15,8 @@
 package shellpolicy
 
 import (
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -53,6 +55,12 @@ type Profile struct {
 	Harden func(args []string) []string
 	// Env lists extra NAME=value pairs the program runs with (run time only).
 	Env []string
+	// RepoCheck is an extra rule over the directory the program runs in
+	// and its arguments (git: the repository it would use); it returns the
+	// violation, or "". The analyzer calls it with each directory the
+	// command can be in, when every argument is literal; CheckLaunch calls
+	// it with the shell's directory.
+	RepoCheck func(dir string, args []string) string
 	// NoDirOperands marks a program that reads every file in a directory
 	// operand and follows the symlinks it meets there (diff): an operand
 	// that is an existing directory is outside the profile.
@@ -444,6 +452,7 @@ func gitProfile() *Profile {
 	return &Profile{
 		MaxPositional: -1,
 		Check:         gitCheck,
+		RepoCheck:     gitRepoCheck,
 		Harden:        gitHarden,
 		Env: []string{
 			"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_ATTR_NOSYSTEM=1",
@@ -519,20 +528,67 @@ func gitCheck(args []string) string {
 	return ""
 }
 
+// gitRepoCheck refuses a git command that would use a bare repository:
+// one found from dir, after each -C, before any directory holding a .git.
+// A clone can track such a repository, with a config that sets
+// core.worktree and a filter, so git diff run in it runs the filter.
+func gitRepoCheck(dir string, args []string) string {
+	globals, _ := gitSplit(args)
+	d := dir
+	for i := 0; i < len(globals); i++ {
+		if globals[i] == "-C" && i+1 < len(globals) {
+			d = ResolvePath(d, globals[i+1])
+		}
+		if gitValueGlobals[globals[i]] {
+			i++
+		}
+	}
+	if bare := bareRepoAt(d); bare != "" {
+		return "git would use the bare repository " + bare + ", whose own config can make git run programs"
+	}
+	return ""
+}
+
+// bareRepoAt returns the bare repository git discovers from dir, or "":
+// walking up from dir, the first directory that holds a .git entry is a
+// normal repository (""), and the first that is itself a git directory is
+// bare unless it is named .git. dir is resolved, as git's getcwd is.
+func bareRepoAt(dir string) string {
+	for p := filepath.Clean(dir); ; {
+		if _, err := os.Lstat(filepath.Join(p, ".git")); err == nil {
+			return ""
+		}
+		if isGitDir(p) {
+			if filepath.Base(p) == ".git" {
+				return ""
+			}
+			return p
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return ""
+		}
+		p = parent
+	}
+}
+
 // gitHarden prepends the options that stop git running programs from the
 // repository's own config (design 06 Probe 9), and adds --no-ext-diff and
 // --no-textconv to the subcommands that diff. core.attributesFile=/dev/null
 // drops an attributes file the config names; log.showSignature=false and
 // the gpg program defaults stop git log and git show running a signature
-// program the config names. Nothing here can drop $GIT_DIR/info/attributes:
-// a write into a git directory is an Ask instead (inGitDir).
+// program the config names. safe.bareRepository=explicit (git 2.38) makes git
+// refuse a bare repository it would discover, such as one a clone tracks;
+// gitRepoCheck refuses the same for older git, which ignores the key.
+// Nothing here can drop $GIT_DIR/info/attributes: a write into a git
+// directory is an Ask instead (inGitDir).
 func gitHarden(args []string) []string {
 	globals, sub := gitSplit(args)
 	out := []string{
 		"-c", "core.fsmonitor=false", "-c", "core.pager=cat", "-c", "core.hooksPath=/dev/null",
 		"-c", "diff.external=", "-c", "core.attributesFile=/dev/null",
 		"-c", "log.showSignature=false", "-c", "gpg.program=gpg", "-c", "gpg.ssh.program=ssh-keygen",
-		"-c", "gpg.x509.program=gpgsm",
+		"-c", "gpg.x509.program=gpgsm", "-c", "safe.bareRepository=explicit",
 		"--no-pager", "--attr-source=" + EmptyTreeHash,
 	}
 	out = append(out, globals...)

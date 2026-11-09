@@ -59,6 +59,11 @@ func (p *Policy) CheckLaunch(argv []string, dir string, roots Roots, g *Grant) e
 	if v := prof.violation(argv[1:], true); v != "" {
 		return &LaunchError{Name: name, Reason: v}
 	}
+	if prof.RepoCheck != nil {
+		if v := prof.RepoCheck(resolvedDir, argv[1:]); v != "" {
+			return &LaunchError{Name: name, Reason: v}
+		}
+	}
 	if prof.NoPathArgs {
 		return nil
 	}
