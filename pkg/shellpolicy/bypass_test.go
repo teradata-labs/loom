@@ -403,15 +403,17 @@ func TestAnalyze_ReviewEdgeShapes(t *testing.T) {
 	})
 }
 
-// More cd targets than the analyzer follows are refused under static.
+// More directories than the analyzer follows are refused under static. One
+// cd target reaches them all in a nested tree, so the limit on cd targets
+// (TestAnalyze_TooManyCdTargets) does not stop the command first.
 func TestAnalyze_TooManyDirectories(t *testing.T) {
 	opt, _ := escapeSession(t)
-	cmd := ""
+	d := opt.WorkingDir
 	for i := 0; i < maxDirs+2; i++ {
-		require.NoError(t, os.Mkdir(filepath.Join(opt.WorkingDir, "d"+itoa(i)), 0o700))
-		cmd += "cd d" + itoa(i) + "; "
+		d = filepath.Join(d, "d")
+		require.NoError(t, os.Mkdir(d, 0o700))
 	}
-	cmd += "ls"
+	cmd := "cd d; ls"
 	v := Readonly().Analyze(cmd, opt)
 	assert.Equal(t, Allow, v.Kind, "runtime: the runner checks each launch: %s", v.Reason())
 	opt.Static = true
@@ -539,4 +541,114 @@ func TestAnalyze_GrepDereferenceRecursive(t *testing.T) {
 	opt, _ := escapeSession(t)
 	err := Readonly().CheckLaunch([]string{"grep", "-Rn", "x", "."}, opt.WorkingDir, opt.Roots, nil)
 	assert.ErrorContains(t, err, "-R is outside the profile", "grep -R at run time")
+}
+
+// R6: the time to follow cd targets grows with their number, and the hook
+// runs before shell_execute's 40,000-character limit. Past maxCdTargets
+// literal cd or pushd targets the command is refused in both modes, before
+// any of them is followed.
+func TestAnalyze_TooManyCdTargets(t *testing.T) {
+	opt, _ := escapeSession(t)
+	cmd := strings.Repeat("cd ..;", 40000/len("cd ..;"))
+	pol := Readonly()
+	for _, static := range []bool{false, true} {
+		o := opt
+		o.Static = static
+		start := time.Now()
+		v := pol.Analyze(cmd, o)
+		t.Logf("static=%v: %d cd targets judged in %v", static, 40000/len("cd ..;"), time.Since(start))
+		assert.Equal(t, Deny, v.Kind, "static=%v: %s", static, v.Reason())
+		assert.Contains(t, v.Reason(), "more than "+itoa(maxCdTargets)+" cd or pushd targets", "static=%v", static)
+	}
+	within := strings.Repeat("cd sub; ", maxCdTargets) + "ls"
+	for _, static := range []bool{false, true} {
+		o := opt
+		o.Static = static
+		v := pol.Analyze(within, o)
+		assert.Equal(t, Allow, v.Kind, "static=%v: %d cd targets are followed: %s", static, maxCdTargets, v.Reason())
+	}
+}
+
+// R6, found while fixing it: with at most maxCdTargets targets the time
+// still grew with the depth of the tree, because workingDirs checked every
+// directory against every target on each pass and ResolvePath walked the
+// whole prefix again for each component. 64 targets in a tree 80 levels
+// deep did not finish in 120 s under -race; each directory is now followed
+// through each target once, and ResolvePath is linear in the depth. The
+// bound is generous so a slow CI host does not fail it.
+func TestAnalyze_CdFollowingIsBounded(t *testing.T) {
+	opt, _ := escapeSession(t)
+	d := opt.WorkingDir
+	for i := 0; i < 80; i++ {
+		d = filepath.Join(d, "d")
+		require.NoError(t, os.Mkdir(d, 0o700))
+	}
+	var b strings.Builder
+	b.WriteString("cd d; cd ..; ")
+	for i := 0; i < maxCdTargets-2; i++ {
+		b.WriteString("cd x" + itoa(i) + "; ")
+	}
+	b.WriteString("cat a.txt")
+	for _, static := range []bool{false, true} {
+		o := opt
+		o.Static = static
+		start := time.Now()
+		v := Readonly().Analyze(b.String(), o)
+		elapsed := time.Since(start)
+		t.Logf("static=%v: %v in %v", static, v.Kind, elapsed)
+		assert.Less(t, elapsed, 30*time.Second, "static=%v: following %d cd targets is bounded", static, maxCdTargets)
+		want := Ask // cd .. reaches the parent of the session
+		if static {
+			want = Deny // more than maxDirs directories
+		}
+		assert.Equal(t, want, v.Kind, "static=%v: %s", static, v.Reason())
+	}
+}
+
+// ResolvePath resolves a symlink-free prefix with one Lstat per component.
+// It returns what resolving each component with filepath.EvalSymlinks
+// returns, for symlinks that are relative, absolute, chained, to a file,
+// dangling or looping, and for a .. after a symlink.
+func TestResolvePath_MatchesPerComponentEvalSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
+	reference := func(dir, path string) string {
+		if !filepath.IsAbs(path) {
+			path = dir + "/" + path
+		}
+		cur := "/"
+		comps := strings.Split(path, "/")
+		for i, c := range comps {
+			switch c {
+			case "", ".":
+				continue
+			case "..":
+				cur = filepath.Dir(cur)
+				continue
+			}
+			resolved, err := filepath.EvalSymlinks(filepath.Join(cur, c))
+			if err != nil {
+				return filepath.Join(cur, filepath.Join(comps[i:]...))
+			}
+			cur = resolved
+		}
+		return cur
+	}
+	opt, base := escapeSession(t)
+	w := opt.WorkingDir
+	require.NoError(t, os.MkdirAll(filepath.Join(w, "a", "b"), 0o700))
+	require.NoError(t, os.Symlink("a/b", filepath.Join(w, "rel")))
+	require.NoError(t, os.Symlink(filepath.Join(base, "o"), filepath.Join(w, "abs")))
+	require.NoError(t, os.Symlink("rel", filepath.Join(w, "chain")))
+	require.NoError(t, os.Symlink("victim.txt", filepath.Join(w, "file")))
+	require.NoError(t, os.Symlink("missing", filepath.Join(w, "dangling")))
+	require.NoError(t, os.Symlink("loop", filepath.Join(w, "loop")))
+	for _, p := range []string{
+		"a/b", "rel", "rel/..", "rel/../..", "chain/x", "abs/secret.txt", "abs/../w/a",
+		"link/k", "link/../secret.txt", "file", "file/x", "dangling", "dangling/x", "loop", "loop/x",
+		"missing/x/y", "./a/./b/", "../../..", "/", base + "/o/ssh",
+	} {
+		assert.Equal(t, reference(w, p), ResolvePath(w, p), "ResolvePath(w, %q)", p)
+	}
 }

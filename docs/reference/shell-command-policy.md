@@ -104,6 +104,8 @@ The analyzer collects every literal `cd` and `pushd` target in the command, wher
 
 Under `runtime` the runner checks each launch against the shell's current directory, so none of these is refused there.
 
+In both modes, a command with more than 64 literal `cd` and `pushd` targets is a Deny, and the targets past the limit are not followed. The hook runs before `shell_execute`'s own command-length limit, and the time to follow the targets grows with their number. Each directory found is followed through each target once, so the work is bounded by 64 directories times 64 targets.
+
 ### Arithmetic and subscripts (`static` only)
 
 Bash evaluates an array subscript as arithmetic, and the command substitutions in an arithmetic subscript run. A subscript reaches bash in a variable name (`printf -v 'a[$(cmd)]' x`, `wait -p 'a[$(cmd)]'`) and in any value arithmetic reads (`x='a[$(cmd)]'; echo $(( x ))`, or `[[ $x -eq 1 ]]`). The runner sees each launch such a substitution makes, so under `runtime` none of this is refused. The jailed shell (mvdan.cc/sh v3.14.1) also refuses `wait -p` and does not prompt-expand `${name@P}`; `TestInterpreter_WaitPRefused` and `TestInterpreter_PromptExpansionRunsNothing` fail when an interpreter upgrade changes that. Under `static`:
@@ -237,7 +239,7 @@ Each returns a `*shellpolicy.LaunchError{Name, Reason}`, or nil.
 
 ## Tests
 
-- `pkg/shellpolicy`: 96.1% statement coverage.
+- `pkg/shellpolicy`: 96.4% statement coverage.
 - **Corpus:** the design's bypass corpus plus the environment-assignment and static-path cases, 144 commands, each run under both enforcement modes.
 - **Review bypasses:** the commands from the PR #430 reviews (N1-N10 and R1-R6) and the vectors found while fixing them (`bypass_test.go`), 162 commands, each run under both enforcement modes. The review's commands and the new vectors were run in bash 5.2 (macOS bash 3.2 for `.*` matching `..`, git 2.50.1 for `git grep -O`) and did the harmful thing while the analyzer allowed them; the other rows are variants of those shapes and commands that must stay allowed.
 - **Run-time checks:** a 22-case table for `CheckLaunch`, and a 14-case table for the review's argument rules.

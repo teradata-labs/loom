@@ -28,6 +28,7 @@ package shellpolicy
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -259,10 +260,23 @@ func ResolvePath(dir, path string) string {
 			continue
 		}
 		next := filepath.Join(cur, c)
-		resolved, err := filepath.EvalSymlinks(next)
+		// cur holds no symlink, so only the new component can be one. An
+		// Lstat of it is enough unless it is a symlink, which EvalSymlinks
+		// then resolves. Calling EvalSymlinks for every component walks the
+		// whole prefix again each time, which is quadratic in the depth.
+		fi, err := os.Lstat(next)
 		if err != nil {
 			// The rest does not exist (or is beneath a file): no symlink in
 			// it can be followed.
+			return filepath.Join(cur, filepath.Join(comps[i:]...))
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			cur = next
+			continue
+		}
+		resolved, err := filepath.EvalSymlinks(next)
+		if err != nil {
+			// A dangling or looping symlink: nothing beneath it opens.
 			return filepath.Join(cur, filepath.Join(comps[i:]...))
 		}
 		cur = resolved

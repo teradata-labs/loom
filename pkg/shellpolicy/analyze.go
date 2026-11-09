@@ -196,6 +196,9 @@ type analyzer struct {
 	paths []pathCheck
 	cds   []cdTarget
 	globs []globCheck
+	// tooManyCds is set once the command has more than maxCdTargets cd or
+	// pushd targets; the targets past the limit are not recorded.
+	tooManyCds bool
 
 	// What static enforcement knows about the variables arithmetic reads:
 	// intDefs are the end offsets of top-level integer assignments,

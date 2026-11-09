@@ -29,6 +29,13 @@ import (
 // command. Past it, static enforcement refuses the command.
 const maxDirs = 64
 
+// maxCdTargets bounds how many literal cd and pushd targets the analyzer
+// records for one command. Following them takes time that grows with their
+// number (a 40,000-character chain of "cd ..;" took seconds), and the hook
+// runs before shell_execute's own command-length limit, so past it the
+// command is refused in both modes.
+const maxCdTargets = 64
+
 // pathCheck is a path the command reads or writes, judged once every
 // directory the command can change to is known.
 type pathCheck struct {
@@ -109,6 +116,13 @@ func (a *analyzer) chdir(x *syntax.CallExpr, name string, rest []*syntax.Word, o
 			continue // -L, -P, -e, -@, pushd -n
 		}
 		targets++
+		if len(a.cds) >= maxCdTargets {
+			if !a.tooManyCds {
+				a.tooManyCds = true
+				a.add(Deny, w, outer, name, "the command has more than "+itoa(maxCdTargets)+" cd or pushd targets, more than the policy follows")
+			}
+			continue
+		}
 		a.cds = append(a.cds, cdTarget{path: s, n: w, outer: outer})
 	}
 	if targets == 0 && a.opt.Static {
@@ -135,38 +149,37 @@ func isDigits(s string) bool {
 // workingDirs returns every directory the command may be in: the working
 // directory and, repeatedly, every directory a recorded cd target reaches
 // from one already found. A cd target outside the read roots is an Ask.
+// Each directory is followed through each target once, so the work is at
+// most maxDirs times maxCdTargets candidate checks.
 func (a *analyzer) workingDirs() []workDir {
 	start := workDir{logical: filepath.Clean(a.opt.WorkingDir), physical: ResolvePath("/", a.opt.WorkingDir)}
 	dirs := []workDir{start}
 	seen := map[workDir]bool{start: true}
 	asked := make(map[int]bool, len(a.cds))
 	overflow := false
-	for changed := true; changed; {
-		changed = false
+	for i := 0; i < len(dirs); i++ {
+		d := dirs[i]
 		for ti, t := range a.cds {
-			for _, d := range dirs[:len(dirs):len(dirs)] {
-				for _, c := range cdCandidates(d, t.path) {
-					if fi, err := os.Stat(c.physical); err != nil || !fi.IsDir() {
-						continue // cd fails and the directory stays
-					}
-					if !inRoots(c.physical, a.opt.Roots.Read) {
-						if !asked[ti] {
-							a.add(Ask, t.n, t.outer, t.path, "reads outside the session")
-							asked[ti] = true
-						}
-						a.grant.add("read", c.physical)
-					}
-					if seen[c] {
-						continue
-					}
-					if len(dirs) >= maxDirs {
-						overflow = true
-						continue
-					}
-					seen[c] = true
-					dirs = append(dirs, c)
-					changed = true
+			for _, c := range cdCandidates(d, t.path) {
+				if fi, err := os.Stat(c.physical); err != nil || !fi.IsDir() {
+					continue // cd fails and the directory stays
 				}
+				if !inRoots(c.physical, a.opt.Roots.Read) {
+					if !asked[ti] {
+						a.add(Ask, t.n, t.outer, t.path, "reads outside the session")
+						asked[ti] = true
+					}
+					a.grant.add("read", c.physical)
+				}
+				if seen[c] {
+					continue
+				}
+				if len(dirs) >= maxDirs {
+					overflow = true
+					continue
+				}
+				seen[c] = true
+				dirs = append(dirs, c)
 			}
 		}
 	}
