@@ -25,7 +25,7 @@ func TestLoadMigrations(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, migrations, "should have embedded migrations")
 
-	// Verify we have all 26 migrations.
+	// Verify we have all 27 migrations.
 	// Bumped from 11 by 000012_skill_index and 000013_task_idempotency
 	// (skills overhaul Phases 4 and 8), then 000014_analytics_views,
 	// 000015_rls_infrastructure_tables, 000016_rls_honor_jwt_sub,
@@ -33,8 +33,9 @@ func TestLoadMigrations(t *testing.T) {
 	// 000019_context_compilation, 000020_tool_exec_admission_decision,
 	// 000021_human_request_kind_summary, 000022_human_request_params,
 	// 000023_tool_outcomes_admission_decision, 000024_task_attribution,
-	// 000025_workflow_checkpoints, then 000026_execution_events.
-	assert.Len(t, migrations, 26, "should have 26 migration versions")
+	// 000025_workflow_checkpoints, 000026_execution_events, then
+	// 000027_decision_shadow (typed decision layer, pkg/decision).
+	assert.Len(t, migrations, 27, "should have 27 migration versions")
 
 	// Verify ordering
 	for i := 1; i < len(migrations); i++ {
@@ -77,6 +78,7 @@ func TestLoadMigrations_SpecificVersions(t *testing.T) {
 		{10, "graph_memory", "graph_entities"},
 		{25, "workflow_checkpoints", "CREATE TABLE IF NOT EXISTS workflow_checkpoints"},
 		{26, "execution_events", "CREATE TABLE execution_events"},
+		{27, "decision_shadow", "CREATE TABLE IF NOT EXISTS decision_shadow"},
 	}
 
 	for _, tt := range tests {

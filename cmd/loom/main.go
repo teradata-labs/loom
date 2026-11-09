@@ -82,6 +82,7 @@ Support:
 	rootCmd.AddCommand(providersCmd)
 	rootCmd.AddCommand(schedulerCmd)
 	rootCmd.AddCommand(skillsCmd)
+	rootCmd.AddCommand(decisionCmd)
 }
 
 func main() {
