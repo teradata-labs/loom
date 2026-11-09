@@ -81,14 +81,14 @@ With a join agent set, the agent always runs, whatever `merge_strategy` says. Th
 
 `{{prompt}}` and `{{branch_count}}` are replaced first and `{{branches}}` last by splicing, so placeholder-like text inside a branch output is never substituted. A template without `{{branches}}` gets the sections appended, so the join never runs blind.
 
-When the template is empty, the merge strategy's prompt is used with the same bounded sections: the `summary`, `consensus`, `voting` and `best` wording matches the raw merge path; `concatenate`, `first` and an unset strategy get a plain "combine these outputs" instruction (they only reach the LLM with a join agent).
+When the template is empty, the merge strategy's prompt is used with the same bounded sections: the `summary`, `consensus`, `voting` and `best` instructions mirror the raw merge path's wording (with the branch count added); `concatenate`, `first` and an unset strategy get a plain "combine these outputs" instruction (they only reach the LLM with a join agent).
 
 Each section looks like:
 
 ```
 ### Branch 2: agent sales
 <inline copy>
-[Branch output truncated: 4096 of 31870 bytes shown. Full output in SharedMemory: shared_memory_read(namespace="workflow", key="fork-join-7f3a-branch-2-output")]
+[Branch output truncated: 4096 of 31870 bytes shown. Full output in SharedMemory: shared_memory_read(namespace="workflow", key="fork-join-7f3a9c1e-branch-2-output")]
 ```
 
 A failed branch renders as `### Branch N: agent X (FAILED)` followed by its error text.
