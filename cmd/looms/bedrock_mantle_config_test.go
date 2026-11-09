@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
@@ -369,24 +370,29 @@ func TestWorkflowCreateLLMProvider_BedrockMantleAPIKeyFromEnv(t *testing.T) {
 	}
 }
 
-// Agent YAML under `looms serve` takes region and endpoint from the server
-// config first; the environment fills only what the server config leaves empty.
+// On the agent-YAML path an explicit llm.bedrock_mantle_region wins, then
+// BEDROCK_MANTLE_REGION, then AWS_REGION, then the region mantleConfigFrom
+// resolved (llm.bedrock_region). The endpoint env fills only an empty endpoint.
 func TestWithMantleEnvFallback(t *testing.T) {
 	tests := []struct {
 		name         string
 		in           bedrockmantle.Config
+		cfg          LLMConfig
 		mantleRegion string
 		awsRegion    string
 		endpoint     string
 		wantRegion   string
 		wantEndpoint string
 	}{
-		{name: "server config wins", in: bedrockmantle.Config{Region: "eu-west-1", Endpoint: "https://server.example/v1"},
-			mantleRegion: "us-west-2", awsRegion: "us-east-1", endpoint: "https://env.example/v1",
-			wantRegion: "eu-west-1", wantEndpoint: "https://server.example/v1"},
-		{name: "BEDROCK_MANTLE_REGION before AWS_REGION", mantleRegion: "us-west-2", awsRegion: "us-east-1",
-			wantRegion: "us-west-2"},
-		{name: "AWS_REGION last", awsRegion: "us-east-1", wantRegion: "us-east-1"},
+		{name: "explicit bedrock_mantle_region and endpoint win",
+			in:  bedrockmantle.Config{Region: "eu-west-1", Endpoint: "https://server.example/v1"},
+			cfg: LLMConfig{BedrockMantleRegion: "eu-west-1"}, mantleRegion: "us-west-2", awsRegion: "us-east-1",
+			endpoint: "https://env.example/v1", wantRegion: "eu-west-1", wantEndpoint: "https://server.example/v1"},
+		{name: "BEDROCK_MANTLE_REGION beats bedrock_region", in: bedrockmantle.Config{Region: "us-west-2"},
+			mantleRegion: "us-east-2", awsRegion: "us-east-1", wantRegion: "us-east-2"},
+		{name: "AWS_REGION beats bedrock_region", in: bedrockmantle.Config{Region: "us-west-2"},
+			awsRegion: "us-east-1", wantRegion: "us-east-1"},
+		{name: "no env keeps bedrock_region", in: bedrockmantle.Config{Region: "us-west-2"}, wantRegion: "us-west-2"},
 		{name: "endpoint from env", endpoint: "https://env.example/v1", wantEndpoint: "https://env.example/v1"},
 	}
 	for _, tt := range tests {
@@ -394,9 +400,52 @@ func TestWithMantleEnvFallback(t *testing.T) {
 			t.Setenv("BEDROCK_MANTLE_REGION", tt.mantleRegion)
 			t.Setenv("AWS_REGION", tt.awsRegion)
 			t.Setenv("BEDROCK_MANTLE_ENDPOINT", tt.endpoint)
-			got := withMantleEnvFallback(tt.in)
+			got := withMantleEnvFallback(tt.in, tt.cfg)
 			assert.Equal(t, tt.wantRegion, got.Region)
 			assert.Equal(t, tt.wantEndpoint, got.Endpoint)
+		})
+	}
+}
+
+// Through the real LoadConfig, llm.bedrock_region carries its built-in default
+// (us-west-2), so an environment region must win over it on the agent-YAML path;
+// an explicit llm.bedrock_mantle_region still wins over the environment.
+func TestCreateLLMProviderFromProtoConfig_BedrockMantleRegionThroughLoadConfig(t *testing.T) {
+	tests := []struct {
+		name         string
+		yaml         string
+		mantleRegion string
+		awsRegion    string
+		wantBaseURL  string
+	}{
+		{name: "BEDROCK_MANTLE_REGION beats the bedrock_region default", yaml: "server:\n  port: 60051\n",
+			mantleRegion: "us-east-1", wantBaseURL: "https://bedrock-mantle.us-east-1.api.aws"},
+		{name: "AWS_REGION beats the bedrock_region default", yaml: "server:\n  port: 60051\n",
+			awsRegion: "eu-west-1", wantBaseURL: "https://bedrock-mantle.eu-west-1.api.aws"},
+		{name: "llm.bedrock_mantle_region beats the environment", yaml: "server:\n  port: 60051\nllm:\n  bedrock_mantle_region: ap-southeast-2\n",
+			mantleRegion: "us-east-1", wantBaseURL: "https://bedrock-mantle.ap-southeast-2.api.aws"},
+		{name: "no setting anywhere keeps the bedrock_region default", yaml: "server:\n  port: 60051\n",
+			wantBaseURL: "https://bedrock-mantle.us-west-2.api.aws"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolateAWSEnv(t)
+			t.Setenv("BEDROCK_MANTLE_REGION", tt.mantleRegion)
+			t.Setenv("AWS_REGION", tt.awsRegion)
+			t.Setenv("BEDROCK_MANTLE_ENDPOINT", "")
+			t.Setenv("BEDROCK_MANTLE_API_KEY", "ABSKtest")
+			viper.Reset()
+			t.Cleanup(viper.Reset)
+			cfgPath := filepath.Join(t.TempDir(), "looms.yaml")
+			require.NoError(t, os.WriteFile(cfgPath, []byte(tt.yaml), 0o600))
+			cfg, err := LoadConfig(cfgPath)
+			require.NoError(t, err)
+
+			provider, err := createLLMProviderFromProtoConfig(&loomv1.LLMConfig{Provider: "bedrock-mantle", Model: "anthropic.claude-haiku-4-5"}, cfg, zap.NewNop())
+			require.NoError(t, err)
+			client, ok := provider.(*bedrockmantle.Client)
+			require.True(t, ok, "provider must be a bedrock-mantle client")
+			assert.Equal(t, tt.wantBaseURL, client.BaseURL())
 		})
 	}
 }

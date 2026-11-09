@@ -613,26 +613,21 @@ func resolveBedrockMantleAPIKey(cfg LLMConfig) string {
 	return os.Getenv("BEDROCK_MANTLE_API_KEY")
 }
 
-// mantleConfigFrom builds the bedrockmantle.Config shared by every looms path
-// that constructs a bedrock-mantle client: the region (llm.bedrock_mantle_region,
-// else llm.bedrock_region), the endpoint with ${ENV_VAR} placeholders expanded,
-// the API key from resolveBedrockMantleAPIKey, the Bedrock SigV4 credentials
-// and profile, and the model, max tokens and temperature from cfg. Callers set
-// the fields their path overrides (Model, MaxTokens, Temperature, Timeout,
-// RateLimiterConfig).
-// withMantleEnvFallback fills the region and endpoint that the server config
-// leaves empty from the environment, as the agent registry does: the region
-// from BEDROCK_MANTLE_REGION, else AWS_REGION, and the endpoint from
-// BEDROCK_MANTLE_ENDPOINT. Agent YAML that `looms serve` loads with
-// llm.provider: bedrock-mantle therefore builds on a server whose looms.yaml
-// has no bedrock_mantle_* settings. The API key already falls back to
+// withMantleEnvFallback applies the environment to a bedrock-mantle client
+// built for agent YAML under `looms serve`, as the agent registry does. The
+// region is llm.bedrock_mantle_region when the operator set it, else
+// BEDROCK_MANTLE_REGION, else AWS_REGION, else what mantleConfigFrom resolved
+// (llm.bedrock_region, which has a built-in default, so the environment must
+// be read before it). The endpoint is BEDROCK_MANTLE_ENDPOINT when
+// llm.bedrock_mantle_endpoint is empty. The API key already falls back to
 // BEDROCK_MANTLE_API_KEY in resolveBedrockMantleAPIKey.
-func withMantleEnvFallback(mcfg bedrockmantle.Config) bedrockmantle.Config {
-	if mcfg.Region == "" {
-		mcfg.Region = os.Getenv("BEDROCK_MANTLE_REGION")
-	}
-	if mcfg.Region == "" {
-		mcfg.Region = os.Getenv("AWS_REGION")
+func withMantleEnvFallback(mcfg bedrockmantle.Config, cfg LLMConfig) bedrockmantle.Config {
+	if cfg.BedrockMantleRegion == "" {
+		if region := os.Getenv("BEDROCK_MANTLE_REGION"); region != "" {
+			mcfg.Region = region
+		} else if region := os.Getenv("AWS_REGION"); region != "" {
+			mcfg.Region = region
+		}
 	}
 	if mcfg.Endpoint == "" {
 		mcfg.Endpoint = os.Getenv("BEDROCK_MANTLE_ENDPOINT")
@@ -640,6 +635,13 @@ func withMantleEnvFallback(mcfg bedrockmantle.Config) bedrockmantle.Config {
 	return mcfg
 }
 
+// mantleConfigFrom builds the bedrockmantle.Config shared by every looms path
+// that constructs a bedrock-mantle client: the region (llm.bedrock_mantle_region,
+// else llm.bedrock_region), the endpoint with ${ENV_VAR} placeholders expanded,
+// the API key from resolveBedrockMantleAPIKey, the Bedrock SigV4 credentials
+// and profile, and the model, max tokens and temperature from cfg. Callers set
+// the fields their path overrides (Model, MaxTokens, Temperature, Timeout,
+// RateLimiterConfig).
 func mantleConfigFrom(cfg LLMConfig) bedrockmantle.Config {
 	accessKeyID, secretAccessKey, sessionToken := resolveBedrockCredentials(cfg)
 	return bedrockmantle.Config{
@@ -1026,7 +1028,7 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		})
 
 	case bedrockmantle.ProviderName:
-		mcfg := withMantleEnvFallback(mantleConfigFrom(serverConfig.LLM))
+		mcfg := withMantleEnvFallback(mantleConfigFrom(serverConfig.LLM), serverConfig.LLM)
 		if protoConfig.Model != "" {
 			mcfg.Model = protoConfig.Model
 		}
