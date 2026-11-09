@@ -744,7 +744,11 @@ type parkItem struct {
 // approval item. With no items it returns nil and the
 // serial dispatch loop runs exactly as today. With items it persists ONE
 // grouped request and ends the turn with TurnParkedError.
-func (a *Agent) maybeParkBatch(ctx Context, sess *Session, llmResp *LLMResponse, turnUsage Usage) error {
+//
+// advertised is the tool list sent to the model for the provider call that
+// produced llmResp. The request records its names, so the batch's calls see
+// the same projection when they run after approval.
+func (a *Agent) maybeParkBatch(ctx Context, sess *Session, llmResp *LLMResponse, turnUsage Usage, advertised []shuttle.Tool) error {
 	var items []parkItem
 	for i, call := range llmResp.ToolCalls {
 		d := a.executor.Preflight(ctx, call.Name, call.Input)
@@ -759,7 +763,7 @@ func (a *Agent) maybeParkBatch(ctx Context, sess *Session, llmResp *LLMResponse,
 			items = append(items, parkItem{call: call, seq: i, kind: "approval", reason: d.Reason})
 		}
 	}
-	return a.parkItems(ctx, sess, items, llmResp.Usage, turnUsage)
+	return a.parkItems(ctx, sess, items, llmResp.Usage, turnUsage, advertised, true)
 }
 
 // classifyParkItems runs maybeParkBatch's per-call classification (Deny
@@ -797,7 +801,13 @@ func (a *Agent) classifyParkItems(ctx Context, calls []ToolCall, positions []int
 // TurnParkedError. No-op (nil error) if items is empty. Shared by
 // maybeParkBatch (the normal pre-dispatch scan) and ResumeSession's re-park
 // path (classifying only the still-unresolved subset of a resumed batch).
-func (a *Agent) parkItems(ctx Context, sess *Session, items []parkItem, usage, turnUsage Usage) error {
+//
+// advertised is the projection of the provider call whose batch parks, and
+// the request records its names. hasProjection false records no projection
+// (ResumeSession knows none for a crashed batch), so the later ResumeChat
+// takes the legacy path and a script engine fails closed instead of being
+// handed the resume-time set.
+func (a *Agent) parkItems(ctx Context, sess *Session, items []parkItem, usage, turnUsage Usage, advertised []shuttle.Tool, hasProjection bool) error {
 	if len(items) == 0 {
 		return nil
 	}
@@ -836,12 +846,16 @@ func (a *Agent) parkItems(ctx Context, sess *Session, items []parkItem, usage, t
 	now := time.Now()
 	params, truncated := buildParkParams(items)
 	kind, question := parkKindAndQuestion(items)
+	reqCtx := map[string]interface{}{"kind": "parked"}
+	if hasProjection {
+		reqCtx = parkedRequestContext(advertised)
+	}
 	hr := &shuttle.HumanRequest{
 		ID:              uuid.New().String(),
 		AgentID:         a.GetID(),
 		SessionID:       sess.ID,
 		Question:        question,
-		Context:         map[string]interface{}{"kind": "parked"},
+		Context:         reqCtx,
 		RequestType:     "parked",
 		Priority:        "normal",
 		Kind:            kind,
@@ -866,6 +880,20 @@ func (a *Agent) parkItems(ctx Context, sess *Session, items []parkItem, usage, t
 		ExpiresAt: hr.ExpiresAt,
 		Usage:     usage,
 		TurnUsage: turnUsage,
+	}
+}
+
+// parkedRequestContext is the Context of a parked request: its origin
+// discriminator and the projection of the provider call whose batch parked.
+// The projection is written on every park, not only when run_lua is
+// registered: the resume (completeParkedBatch) restricts the whole batch's
+// tool set to the recorded names and treats a missing record as a legacy row
+// (no tools, no projection, and a warning), so skipping it would send every
+// Lua-off resume down that path.
+func parkedRequestContext(advertised []shuttle.Tool) map[string]interface{} {
+	return map[string]interface{}{
+		"kind":                   "parked",
+		parkProjectionContextKey: toolNames(advertised),
 	}
 }
 
@@ -1261,7 +1289,12 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	}
 
 	if len(rowless) > 0 {
-		a.completeParkedBatch(agentCtx, sess, batch, rowless, positions, effective, itemIDs, parkedItemKinds(hr))
+		projection, hasProjection := parkedProjection(hr)
+		if !hasProjection {
+			zap.L().Warn("parked request records no tool projection; scripts in the batch will not run",
+				zap.String("session_id", sessionID), zap.String("request_id", hr.ID))
+		}
+		a.completeParkedBatch(agentCtx, sess, batch, rowless, positions, effective, itemIDs, parkedItemKinds(hr), projection, hasProjection)
 	}
 
 	response, err := a.runConversationLoop(agentCtx)
@@ -1529,7 +1562,14 @@ func locateParkedBatch(sess *Session, itemIDs []string) (Message, []ToolCall, []
 // carries each rowless call's TRUE index in batch.ToolCalls, which is what
 // every execution-event row must be correlated by. See locateParkedBatch's
 // doc comment for why this is NOT derivable from ToolCall.ID.
-func (a *Agent) completeParkedBatch(ctx Context, sess *Session, batch Message, rowless []ToolCall, positions []int, decision ParkDecision, itemIDs []string, kinds map[string]string) {
+//
+// projection is the tool names the park recorded for the requesting provider
+// call. Calls see the resume-time advertised set narrowed to it, so nothing
+// registered while the batch waited, and nothing recovery had removed from
+// the requesting call, becomes visible to a script. Without a recorded
+// projection (hasProjection false) calls get none and a script engine fails
+// closed.
+func (a *Agent) completeParkedBatch(ctx Context, sess *Session, batch Message, rowless []ToolCall, positions []int, decision ParkDecision, itemIDs []string, kinds map[string]string, projection []string, hasProjection bool) {
 	maxPerTurn := a.config.MaxIterations
 	if maxPerTurn <= 0 {
 		maxPerTurn = 10
@@ -1537,6 +1577,11 @@ func (a *Agent) completeParkedBatch(ctx Context, sess *Session, batch Message, r
 	resumeExecCount := 0
 	var resumeExecs []ToolExecution
 	tools := a.advertisedTools(sess)
+	if hasProjection {
+		tools = restrictToProjection(tools, projection)
+	} else {
+		tools = nil
+	}
 	var recovery *recoveryOrchestrator
 	_, span := ctx.Tracer().StartSpan(ctx, "agent.resume_batch")
 	defer ctx.Tracer().EndSpan(span)
@@ -1553,6 +1598,7 @@ func (a *Agent) completeParkedBatch(ctx Context, sess *Session, batch Message, r
 		tools:              &tools,
 		recovery:           recovery,
 		turnDedup:          make(map[string]*shuttle.Result),
+		noProjection:       !hasProjection,
 	}
 	// The loop recorded each call at its index in the LLM response; the saved
 	// batch can hold fewer calls (query_tool_result is dropped), so a call's
@@ -1631,6 +1677,14 @@ func (a *Agent) completeParkedBatch(ctx Context, sess *Session, batch Message, r
 	// is in place — the same pairing rule the loop's drain protects.
 	for _, sidecar := range st.pendingSidecars {
 		a.appendMessage(ctx, sess, sidecar, false)
+	}
+
+	// Error-triggered lesson recall, mirroring the conversation loop's drain.
+	// dispatchOneCall fills st.errTexts on both paths, so without this a
+	// resumed batch's failures would collect lesson evidence and silently
+	// drop it — the drift sharing the dispatch body exists to prevent.
+	if len(st.errTexts) > 0 {
+		a.injectErrorLessons(ctx, sess, st.errTexts)
 	}
 }
 

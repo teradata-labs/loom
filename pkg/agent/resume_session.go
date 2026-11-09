@@ -192,6 +192,10 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (_ *Respons
 		turnDedup: make(map[string]*shuttle.Result),
 		recovery:  recovery,
 		stepIndex: step,
+		// The event log records no tool projection for the provider call
+		// that produced a crashed batch, so its calls get none and a script
+		// engine fails closed, as on a ResumeChat of a park with no record.
+		noProjection: true,
 	}
 	var toolExecCount int
 	var allExecs []ToolExecution
@@ -251,7 +255,7 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (_ *Respons
 	// position in the original batch" invariant for a later resume.
 	if a.hitlPark != nil && a.memory.HasStore() && len(neverAttempted) > 0 {
 		items := a.classifyParkItems(agentCtx, neverAttempted, neverAttemptedPositions)
-		if parkErr := a.parkItems(agentCtx, sess, items, Usage{}, Usage{}); parkErr != nil {
+		if parkErr := a.parkItems(agentCtx, sess, items, Usage{}, Usage{}, nil, false); parkErr != nil {
 			var parked *TurnParkedError
 			if errors.As(parkErr, &parked) {
 				parkedAgain = true
@@ -268,6 +272,14 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (_ *Respons
 	}
 	if leaseErr := sessionLeaseLost(ctx); leaseErr != nil {
 		return nil, leaseErr
+	}
+
+	// Error-triggered lesson recall, mirroring the conversation loop and
+	// ResumeChat. dispatchOneCall fills st.errTexts on every path that shares
+	// it, so without this drain a crash-resumed batch's failures would collect
+	// lesson evidence and silently drop it before the model's retry turn.
+	if len(st.errTexts) > 0 {
+		a.injectErrorLessons(agentCtx, sess, st.errTexts)
 	}
 
 	// Every call in the tail batch is now resolved (backfilled, or
