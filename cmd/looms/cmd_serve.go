@@ -268,31 +268,13 @@ func registerYAMLBuiltinTools(
 }
 
 // serveAgentConfig is the agent.Config both serve paths (startup and hot
-// reload) start from: identity, prompt, ROM, metadata, turn and tool-execution
-// limits (behavior values, else the defaults 25 and 50), tracing, and the
-// metadata-encoded behavior flags (agent.ApplyMetadataBehavior).
+// reload) start from: delegated to agent.RegistryAgentConfig so registry,
+// startup, and hot-reload builds share a single source of truth for
+// DefaultConfig(), behavior limits, pattern config, context limits, skills
+// config, and metadata-encoded behavior flags.
 func serveAgentConfig(cfg *loomv1.AgentConfig, tracing bool) *agent.Config {
-	maxTurns := 25          // Default from pkg/agent/types.go:145
-	maxToolExecutions := 50 // Default from pkg/agent/types.go:146
-	if cfg.Behavior != nil {
-		if cfg.Behavior.MaxTurns > 0 {
-			maxTurns = int(cfg.Behavior.MaxTurns)
-		}
-		if cfg.Behavior.MaxToolExecutions > 0 {
-			maxToolExecutions = int(cfg.Behavior.MaxToolExecutions)
-		}
-	}
-	agentCfg := &agent.Config{
-		Name:              cfg.Name,
-		Description:       cfg.Description,
-		SystemPrompt:      cfg.SystemPrompt,
-		Rom:               cfg.Rom,      // ROM identifier for domain-specific knowledge
-		Metadata:          cfg.Metadata, // Metadata includes backend_path for ROM auto-detection
-		MaxTurns:          maxTurns,
-		MaxToolExecutions: maxToolExecutions,
-		EnableTracing:     tracing,
-	}
-	agent.ApplyMetadataBehavior(agentCfg, cfg.Metadata)
+	agentCfg := agent.RegistryAgentConfig(cfg, agent.ResolveSkillsConfig(cfg))
+	agentCfg.EnableTracing = tracing
 	return agentCfg
 }
 
@@ -544,8 +526,20 @@ func inheritCredentials(dst, src LLMConfig) LLMConfig {
 	if dst.BedrockProfile == "" {
 		dst.BedrockProfile = src.BedrockProfile
 	}
+	// An entry that sets its own bedrock_region keeps it for bedrock-mantle
+	// too: the main LLM's bedrock_mantle_region is inherited only when the
+	// entry sets neither region, so an explicit entry setting always wins.
+	if dst.BedrockMantleRegion == "" && dst.BedrockRegion == "" {
+		dst.BedrockMantleRegion = src.BedrockMantleRegion
+	}
 	if dst.BedrockRegion == "" {
 		dst.BedrockRegion = src.BedrockRegion
+	}
+	if dst.BedrockMantleEndpoint == "" {
+		dst.BedrockMantleEndpoint = src.BedrockMantleEndpoint
+	}
+	if dst.BedrockMantleAPIKey == "" {
+		dst.BedrockMantleAPIKey = src.BedrockMantleAPIKey
 	}
 	if dst.OllamaEndpoint == "" {
 		dst.OllamaEndpoint = src.OllamaEndpoint
@@ -588,6 +582,62 @@ func resolveBedrockCredentials(cfg LLMConfig) (accessKeyID, secretAccessKey, ses
 	return loomconfig.ExpandEnvPlaceholders(cfg.BedrockAccessKeyID),
 		loomconfig.ExpandEnvPlaceholders(cfg.BedrockSecretAccessKey),
 		loomconfig.ExpandEnvPlaceholders(cfg.BedrockSessionToken)
+}
+
+// resolveBedrockMantleAPIKey returns the Bedrock API key for the bedrock-mantle
+// provider: llm.bedrock_mantle_api_key with ${ENV_VAR} placeholders expanded,
+// or BEDROCK_MANTLE_API_KEY when the config field is empty. An empty result
+// selects SigV4 signing from the AWS credential chain.
+func resolveBedrockMantleAPIKey(cfg LLMConfig) string {
+	if key := loomconfig.ExpandEnvPlaceholders(cfg.BedrockMantleAPIKey); key != "" {
+		return key
+	}
+	return os.Getenv("BEDROCK_MANTLE_API_KEY")
+}
+
+// withMantleEnvFallback applies the environment to a bedrock-mantle client
+// built for agent YAML under `looms serve`, as the agent registry does. The
+// region is llm.bedrock_mantle_region when the operator set it, else
+// BEDROCK_MANTLE_REGION, else AWS_REGION, else what mantleConfigFrom resolved
+// (llm.bedrock_region, which has a built-in default, so the environment must
+// be read before it). The endpoint is BEDROCK_MANTLE_ENDPOINT when
+// llm.bedrock_mantle_endpoint is empty. The API key already falls back to
+// BEDROCK_MANTLE_API_KEY in resolveBedrockMantleAPIKey.
+func withMantleEnvFallback(mcfg bedrockmantle.Config, cfg LLMConfig) bedrockmantle.Config {
+	if cfg.BedrockMantleRegion == "" {
+		if region := os.Getenv("BEDROCK_MANTLE_REGION"); region != "" {
+			mcfg.Region = region
+		} else if region := os.Getenv("AWS_REGION"); region != "" {
+			mcfg.Region = region
+		}
+	}
+	if mcfg.Endpoint == "" {
+		mcfg.Endpoint = os.Getenv("BEDROCK_MANTLE_ENDPOINT")
+	}
+	return mcfg
+}
+
+// mantleConfigFrom builds the bedrockmantle.Config shared by every looms path
+// that constructs a bedrock-mantle client: the region (llm.bedrock_mantle_region,
+// else llm.bedrock_region), the endpoint with ${ENV_VAR} placeholders expanded,
+// the API key from resolveBedrockMantleAPIKey, the Bedrock SigV4 credentials
+// and profile, and the model, max tokens and temperature from cfg. Callers set
+// the fields their path overrides (Model, MaxTokens, Temperature, Timeout,
+// RateLimiterConfig).
+func mantleConfigFrom(cfg LLMConfig) bedrockmantle.Config {
+	accessKeyID, secretAccessKey, sessionToken := resolveBedrockCredentials(cfg)
+	return bedrockmantle.Config{
+		Region:          mantleRegion(cfg),
+		Endpoint:        loomconfig.ExpandEnvPlaceholders(cfg.BedrockMantleEndpoint),
+		APIKey:          resolveBedrockMantleAPIKey(cfg),
+		AccessKeyID:     accessKeyID,
+		SecretAccessKey: secretAccessKey,
+		SessionToken:    sessionToken,
+		Profile:         cfg.BedrockProfile,
+		Model:           cfg.BedrockMantleModel,
+		MaxTokens:       cfg.MaxTokens,
+		Temperature:     cfg.Temperature,
+	}
 }
 
 func buildProviderPool(cfg *Config, _ *factory.ProviderFactory, logger *zap.Logger) (map[string]agent.LLMProvider, error) {
@@ -669,6 +719,18 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		})
 		if err != nil {
 			return nil, fmt.Errorf("bedrock: %w", err)
+		}
+		return client, nil
+
+	case bedrockmantle.ProviderName:
+		// Mantle shares the Bedrock SigV4 credential fields; a Bedrock API key
+		// (bearer) is opt-in. The region falls back to llm.bedrock_region.
+		mcfg := mantleConfigFrom(cfg)
+		mcfg.Timeout = time.Duration(cfg.Timeout) * time.Second
+		mcfg.RateLimiterConfig = rlCfg
+		client, err := bedrockmantle.NewClientForModel(mcfg)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", bedrockmantle.ProviderName, err)
 		}
 		return client, nil
 
@@ -837,6 +899,11 @@ func getDefaultModelForProvider(cfg *Config) string {
 			return cfg.LLM.BedrockModelID
 		}
 		return "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+	case bedrockmantle.ProviderName:
+		if cfg.LLM.BedrockMantleModel != "" {
+			return cfg.LLM.BedrockMantleModel
+		}
+		return bedrockmantle.DefaultModel
 	case "ollama":
 		if cfg.LLM.OllamaModel != "" {
 			return cfg.LLM.OllamaModel
@@ -942,26 +1009,20 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			RateLimiterConfig: rlCfg,
 		})
 
-	case "bedrock-mantle":
-		// Mirrors the registry case in pkg/agent/registry.go: the server config
-		// has no bedrock-mantle fields, so region, endpoint and API key come
-		// from the environment. Without BEDROCK_MANTLE_API_KEY every request is
-		// SigV4-signed from the default AWS credential chain. An empty model
-		// selects bedrockmantle.DefaultModel inside the constructor.
-		region := os.Getenv("BEDROCK_MANTLE_REGION")
-		if region == "" {
-			region = os.Getenv("AWS_REGION")
+	case bedrockmantle.ProviderName:
+		mcfg := withMantleEnvFallback(mantleConfigFrom(serverConfig.LLM), serverConfig.LLM)
+		if protoConfig.Model != "" {
+			mcfg.Model = protoConfig.Model
 		}
-		return bedrockmantle.NewClientForModel(bedrockmantle.Config{
-			Region:            region,
-			Endpoint:          os.Getenv("BEDROCK_MANTLE_ENDPOINT"),
-			APIKey:            os.Getenv("BEDROCK_MANTLE_API_KEY"),
-			Model:             protoConfig.Model,
-			MaxTokens:         maxTokens,
-			Temperature:       temperature,
-			Timeout:           timeout,
-			RateLimiterConfig: rlCfg,
-		})
+		mcfg.MaxTokens = maxTokens
+		mcfg.Temperature = temperature
+		mcfg.Timeout = timeout
+		mcfg.RateLimiterConfig = rlCfg
+		client, err := bedrockmantle.NewClientForModel(mcfg)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", bedrockmantle.ProviderName, err)
+		}
+		return client, nil
 
 	case "ollama":
 		model := protoConfig.Model
@@ -1813,6 +1874,12 @@ func runServe(cmd *cobra.Command, args []string) {
 		BedrockProfile:         config.LLM.BedrockProfile,
 		BedrockModelID:         config.LLM.BedrockModelID,
 
+		// Bedrock Mantle (SigV4 credentials are the Bedrock fields above)
+		BedrockMantleRegion:   mantleRegion(config.LLM),
+		BedrockMantleEndpoint: config.LLM.BedrockMantleEndpoint,
+		BedrockMantleAPIKey:   config.LLM.BedrockMantleAPIKey,
+		BedrockMantleModel:    config.LLM.BedrockMantleModel,
+
 		// Ollama
 		OllamaEndpoint: config.LLM.OllamaEndpoint,
 		OllamaModel:    config.LLM.OllamaModel,
@@ -2052,32 +2119,6 @@ func runServe(cmd *cobra.Command, args []string) {
 
 				agentCfg := serveAgentConfig(cfg, config.Observability.Enabled)
 
-				// Set context limits if specified in LLM config
-				if cfg.Llm != nil {
-					if cfg.Llm.MaxContextTokens > 0 {
-						agentCfg.MaxContextTokens = int(cfg.Llm.MaxContextTokens)
-					}
-					// The EFFECTIVE reservation, not the raw field: NewAgent
-					// re-applies SetContextLimits from this config onto the same
-					// Memory, so a raw (often zero) value here would clobber the
-					// value computed above and drop the reserve to window/10.
-					agentCfg.ReservedOutputTokens = agent.EffectiveOutputReservation(
-						cfg.Llm.Provider, cfg.Llm.Model,
-						int(cfg.Llm.MaxTokens), int(cfg.Llm.ReservedOutputTokens),
-						int(cfg.Llm.MaxContextTokens))
-				}
-
-				// Transfer pattern configuration from proto if present
-				if cfg.Behavior != nil && cfg.Behavior.Patterns != nil {
-					agentCfg.PatternConfig = &agent.PatternConfig{
-						Enabled:            cfg.Behavior.Patterns.Enabled,
-						MinConfidence:      float64(cfg.Behavior.Patterns.MinConfidence),
-						MaxPatternsPerTurn: int(cfg.Behavior.Patterns.MaxPatternsPerTurn),
-						EnableTracking:     cfg.Behavior.Patterns.EnableTracking,
-						UseLLMClassifier:   cfg.Behavior.Patterns.UseLlmClassifier,
-					}
-				}
-
 				// Set PatternsDir from metadata or the server-level default.
 				// Patterns are enabled by default (DefaultPatternConfig), so all agents
 				// need a patterns directory to find filesystem patterns.
@@ -2087,12 +2128,6 @@ func runServe(cmd *cobra.Command, args []string) {
 					agentCfg.PatternsDir = config.PatternsDir
 				} else {
 					agentCfg.PatternsDir = filepath.Join(loomconfig.GetLoomDataDir(), "patterns")
-				}
-				// Skills config: just attach to agentCfg here. Discovery
-				// wiring requires the agent's LLM provider and is performed
-				// below once agentLLMProvider is resolved.
-				if sc := agent.ExtractSkillsConfig(cfg.Metadata); sc != nil && sc.Enabled {
-					agentCfg.SkillsConfig = sc
 				}
 
 				agentOpts = append(agentOpts, agent.WithConfig(agentCfg))
@@ -3371,17 +3406,6 @@ func runServe(cmd *cobra.Command, args []string) {
 
 			cfg := serveAgentConfig(agentConfig, config.Observability.Enabled)
 
-			// Transfer pattern configuration from proto if present
-			if agentConfig.Behavior != nil && agentConfig.Behavior.Patterns != nil {
-				cfg.PatternConfig = &agent.PatternConfig{
-					Enabled:            agentConfig.Behavior.Patterns.Enabled,
-					MinConfidence:      float64(agentConfig.Behavior.Patterns.MinConfidence),
-					MaxPatternsPerTurn: int(agentConfig.Behavior.Patterns.MaxPatternsPerTurn),
-					EnableTracking:     agentConfig.Behavior.Patterns.EnableTracking,
-					UseLLMClassifier:   agentConfig.Behavior.Patterns.UseLlmClassifier,
-				}
-			}
-
 			// Set PatternsDir from metadata or the server-level default.
 			if pd, ok := agentConfig.Metadata["patterns_dir"]; ok && pd != "" {
 				cfg.PatternsDir = pd
@@ -3389,18 +3413,6 @@ func runServe(cmd *cobra.Command, args []string) {
 				cfg.PatternsDir = config.PatternsDir
 			} else {
 				cfg.PatternsDir = filepath.Join(loomconfig.GetLoomDataDir(), "patterns")
-			}
-
-			// Set context limits if specified in LLM config
-			if agentConfig.Llm != nil {
-				if agentConfig.Llm.MaxContextTokens > 0 {
-					cfg.MaxContextTokens = int(agentConfig.Llm.MaxContextTokens)
-				}
-				// The EFFECTIVE reservation — see the note at the other build site.
-				cfg.ReservedOutputTokens = agent.EffectiveOutputReservation(
-					agentConfig.Llm.Provider, agentConfig.Llm.Model,
-					int(agentConfig.Llm.MaxTokens), int(agentConfig.Llm.ReservedOutputTokens),
-					int(agentConfig.Llm.MaxContextTokens))
 			}
 
 			// Create memory instance for this agent
@@ -3509,6 +3521,63 @@ func runServe(cmd *cobra.Command, args []string) {
 			// Wrap LLM provider with instrumentation for observability
 			if tracer != nil {
 				llmProvider = llm.NewInstrumentedProvider(llmProvider, tracer)
+			}
+
+			// Wire per-role LLMs if declared in YAML (mirrors the cold-start path).
+			var reloadClassifierLLM agent.LLMProvider
+			if agentConfig.CompressorLlm != nil && agentConfig.CompressorLlm.Provider != "" {
+				compLLM, err := createLLMProviderFromProtoConfig(agentConfig.CompressorLlm, config, logger)
+				if err != nil {
+					logger.Warn("    Failed to create compressor LLM, extractor will use primary (hot-reload)",
+						zap.Error(err),
+						zap.String("provider", agentConfig.CompressorLlm.Provider),
+						zap.String("model", agentConfig.CompressorLlm.Model))
+				} else {
+					if tracer != nil {
+						compLLM = llm.NewInstrumentedProvider(compLLM, tracer)
+					}
+					agentOpts = append(agentOpts, agent.WithCompressorLLM(compLLM))
+					logger.Info("    Compressor LLM configured (hot-reload)",
+						zap.String("provider", agentConfig.CompressorLlm.Provider),
+						zap.String("model", agentConfig.CompressorLlm.Model))
+				}
+			}
+			if agentConfig.ClassifierLlm != nil && agentConfig.ClassifierLlm.Provider != "" {
+				classLLM, err := createLLMProviderFromProtoConfig(agentConfig.ClassifierLlm, config, logger)
+				if err != nil {
+					logger.Warn("    Failed to create classifier LLM, router will use primary (hot-reload)",
+						zap.Error(err),
+						zap.String("provider", agentConfig.ClassifierLlm.Provider),
+						zap.String("model", agentConfig.ClassifierLlm.Model))
+				} else {
+					if tracer != nil {
+						classLLM = llm.NewInstrumentedProvider(classLLM, tracer)
+					}
+					reloadClassifierLLM = classLLM
+					agentOpts = append(agentOpts, agent.WithClassifierLLM(classLLM))
+					logger.Info("    Classifier LLM configured (hot-reload)",
+						zap.String("provider", agentConfig.ClassifierLlm.Provider),
+						zap.String("model", agentConfig.ClassifierLlm.Model))
+				}
+			}
+
+			// Wire skills (orchestrator + Discovery + hierarchical router) via
+			// the shared BuildSkillsOptions helper, matching the cold-start path.
+			if cfg.SkillsConfig != nil && cfg.SkillsConfig.Enabled {
+				if registry != nil {
+					agentOpts = append(agentOpts,
+						registry.BuildSkillsOptions(cfg.SkillsConfig, reloadClassifierLLM, llmProvider, agentConfig.Name)...)
+				} else {
+					agentOpts = append(agentOpts,
+						agent.BuildSkillsOptions(agent.SkillsWiringDeps{
+							SkillsConfig:  cfg.SkillsConfig,
+							ClassifierLLM: reloadClassifierLLM,
+							PrimaryLLM:    llmProvider,
+							AgentName:     agentConfig.Name,
+							Tracer:        tracer,
+							Logger:        logger,
+						})...)
+				}
 			}
 
 			// Create new agent

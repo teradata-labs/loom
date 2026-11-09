@@ -226,7 +226,7 @@ func TestAnalyze_GlobPositional(t *testing.T) {
 // scanned for refused option letters.
 func TestAnalyze_AttachedOptionValues(t *testing.T) {
 	runBypassCases(t, []bypassCase{
-		{cmd: `file -f../o/secret.txt`, want: Ask, static: Ask, why: "../o/secret.txt (1:1): reads outside the read roots"},
+		{cmd: `file -f../o/secret.txt`, want: Ask, static: Ask, why: "file (1:1): -f is outside the profile"}, // F2 refuses -f outright
 		{cmd: `file -m../o/secret.txt victim.txt`, want: Ask, static: Ask},
 		{cmd: `grep -f../o/secret.txt victim.txt`, want: Ask, static: Ask},
 		{cmd: `grep -if../o/secret.txt victim.txt`, want: Ask, static: Ask},
@@ -255,7 +255,7 @@ func TestCheckLaunch_ReviewBypasses(t *testing.T) {
 		argv  []string
 		block string // a substring of the reason; "" means allowed
 	}{
-		{argv: []string{"file", "-f" + secret}, block: "outside the read roots"},
+		{argv: []string{"file", "-f" + secret}, block: "-f is outside the profile"}, // F2 refuses -f outright
 		{argv: []string{"file", "-m../o/secret.txt", "victim.txt"}, block: "outside the read roots"},
 		{argv: []string{"grep", "-f" + secret, "a.txt"}, block: "outside the read roots"},
 		{argv: []string{"date", "-f", secret}, block: "-f is outside the profile"},
@@ -811,4 +811,338 @@ func TestAnalyze_FindFiles0From(t *testing.T) {
 	runLaunchCases(t, []launchCase{
 		{argv: []string{"find", "-files0-from", "l"}, block: "-files0-from is outside the profile"},
 	})
+}
+
+// The tests below hold the findings from the third PR #430 review
+// (Josh-Schoen, F1-F4, at 76bce862).
+
+// gitSession is escapeSession plus a repository: w/.git with info/ and a
+// config, a bare repository w/meta (no .git in its name: git knows it by
+// HEAD, objects/ and refs/), and symlinks w/cfg to .git/config and w/gd to
+// .git.
+func gitSession(t *testing.T) Options {
+	t.Helper()
+	opt, _ := escapeSession(t)
+	w := opt.WorkingDir
+	for _, d := range []string{".git/info", ".git/objects", ".git/refs", "meta/objects", "meta/refs"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(w, d), 0o700))
+	}
+	for _, f := range []string{".git/config", ".git/HEAD", "meta/HEAD", "meta/config"} {
+		require.NoError(t, os.WriteFile(filepath.Join(w, f), []byte("x\n"), 0o600))
+	}
+	require.NoError(t, os.Symlink(filepath.Join(w, ".git", "config"), filepath.Join(w, "cfg")))
+	require.NoError(t, os.Symlink(".git", filepath.Join(w, "gd")))
+	return opt
+}
+
+// F1: a file the command writes into a git directory changes what git runs:
+// .git/info/attributes and core.attributesFile name a filter, .git/config
+// defines it, and gitHarden's --attr-source replaces only the worktree's
+// attributes. git 2.50.1 with gitHarden's prefix ran a clean filter from
+// .git/info/attributes. A write into a git directory is an Ask in both
+// modes, granting that path; the run-time CheckOpen refuses it unless the
+// path was granted. git's own writes (the index) are not the command's.
+func TestAnalyze_WriteIntoGitDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
+	opt := gitSession(t)
+	w := opt.WorkingDir
+	pol := Readonly()
+	for _, tc := range []struct {
+		cmd  string
+		want VerdictKind
+		why  string
+	}{
+		{cmd: `printf '* filter=x\n' > .git/info/attributes`, want: Ask, why: ".git/info/attributes (1:23): writes into a git directory"},
+		{cmd: `printf '[filter "x"]\n\tclean = touch pwned\n' >> .git/config`, want: Ask, why: "writes into a git directory"},
+		{cmd: `echo x > sub/../.git/config`, want: Ask},
+		{cmd: `echo x > cfg`, want: Ask},
+		{cmd: `echo x > gd/info/attributes`, want: Ask},
+		{cmd: `echo x > .git/new-file`, want: Ask},
+		{cmd: `echo x > meta/config`, want: Ask, why: "meta/config (1:8): writes into a git directory"},
+		{cmd: `cd .git && echo x > config`, want: Ask},
+		{cmd: `echo x > .git`, want: Ask},
+		{cmd: `echo x > .gitattributes; echo x > .github; echo x > sub/x.git; echo x > a.txt; cat .git/config`, want: Allow},
+	} {
+		for _, static := range []bool{false, true} {
+			o := opt
+			o.Static = static
+			v := pol.Analyze(tc.cmd, o)
+			if !assert.Equal(t, tc.want, v.Kind, "%q (static=%v): %s", tc.cmd, static, v.Reason()) {
+				continue
+			}
+			if tc.why != "" {
+				assert.Contains(t, v.Reason(), tc.why, "%q (static=%v)", tc.cmd, static)
+			}
+			if v.Kind == Ask {
+				require.NotNil(t, v.Grant, "%q: an Ask carries a grant", tc.cmd)
+				assert.NotEmpty(t, v.Grant.WritePaths, "%q: the grant names the path written", tc.cmd)
+			}
+		}
+	}
+	v := pol.Analyze(`echo x > .git/info/attributes`, opt)
+	require.NotNil(t, v.Grant)
+	assert.Equal(t, []string{filepath.Join(w, ".git", "info", "attributes")}, v.Grant.WritePaths, "the grant is the resolved path")
+
+	for _, tc := range []struct {
+		path  string
+		grant *Grant
+		block string
+	}{
+		{path: ".git/info/attributes", block: "writes into a git directory"},
+		{path: "cfg", block: "writes into a git directory"},
+		{path: "meta/config", block: "writes into a git directory"},
+		{path: ".git/info/attributes", grant: &Grant{WritePaths: []string{filepath.Join(w, ".git", "info", "attributes")}}},
+		{path: ".git/config", grant: &Grant{WritePaths: []string{filepath.Join(w, ".git", "info", "attributes")}}, block: "writes into a git directory"},
+		{path: ".git/config", grant: &Grant{ReadPaths: []string{w}}, block: "writes into a git directory"},
+		{path: "a.txt"},
+		{path: ".gitattributes"},
+	} {
+		err := pol.CheckOpen(tc.path, w, true, opt.Roots, tc.grant)
+		if tc.block == "" {
+			assert.NoError(t, err, "write %s (grant %+v)", tc.path, tc.grant)
+			continue
+		}
+		assert.ErrorContains(t, err, tc.block, "write %s (grant %+v)", tc.path, tc.grant)
+	}
+	assert.NoError(t, pol.CheckOpen(".git/config", w, false, opt.Roots, nil), "reading .git/config is not a write")
+	merged := MergeGrants([]any{&Grant{WritePaths: []string{"/a"}}, &Grant{WritePaths: []string{"/a", "/b"}}})
+	assert.Equal(t, []string{"/a", "/b"}, merged.WritePaths, "MergeGrants keeps each write path once")
+}
+
+// F2: file -f F (--files-from F) reads the names of the files to check from
+// F, which path confinement never sees, as sort --files0-from did (R4).
+// file 5.41 named an SSH key and a database outside the session.
+func TestAnalyze_FileFilesFrom(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
+	runBypassCases(t, []bypassCase{
+		{cmd: `printf '../o/ssh/k\n' > l; file -f l`, want: Ask, static: Ask, why: "file (1:28): -f is outside the profile"},
+		{cmd: `file -bf l`, want: Ask, static: Ask},
+		{cmd: `file -fl`, want: Ask, static: Ask},
+		{cmd: `file --files-from l`, want: Ask, static: Ask, why: "--files-from is outside the profile"},
+		{cmd: `file --files-from=l`, want: Ask, static: Ask},
+		{cmd: `file --files=l`, want: Ask, static: Ask},
+		{cmd: `file a.txt; file -b a.txt; file -m a.txt victim.txt; file -mf victim.txt; file -- -f`, want: Allow, static: Allow},
+	})
+	runLaunchCases(t, []launchCase{
+		{argv: []string{"file", "-f", "l"}, block: "-f is outside the profile"},
+		{argv: []string{"file", "--files-from=l"}, block: "--files-from"},
+	})
+}
+
+// F3: jq's import and include load a module by path from the program text,
+// and modulemeta reads one, so a session symlink leads them out of the
+// roots (jq refuses .. itself). A program file (-f, --from-file) can hold
+// them too. Each is an Ask.
+func TestAnalyze_JqModules(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
+	runBypassCases(t, []bypassCase{
+		{cmd: `jq -n 'import "link/k" as $s; $s'`, want: Ask, static: Ask, why: "jq (1:1): jq import, include and modulemeta load modules by path"},
+		{cmd: `jq -n 'include "link/k"; .'`, want: Ask, static: Ask},
+		{cmd: `jq -n 'import # comment
+"link/k" as $s; $s'`, want: Ask, static: Ask},
+		{cmd: `jq -n --arg m lo/secret '$m | modulemeta'`, want: Ask, static: Ask},
+		{cmd: `jq -f prog.jq a.txt`, want: Ask, static: Ask, why: "-f is outside the profile"},
+		{cmd: `jq -nf prog.jq`, want: Ask, static: Ask},
+		{cmd: `jq --from-file prog.jq a.txt`, want: Ask, static: Ask, why: "--from-file is outside the profile"},
+		{cmd: `jq . a.txt; jq -r '.include, .imports, ."import"' a.txt; jq -n '"import"'; jq -L sub . a.txt`, want: Allow, static: Allow},
+	})
+	runLaunchCases(t, []launchCase{
+		{argv: []string{"jq", "-n", `import "link/k" as $s; $s`}, block: "jq import, include and modulemeta"},
+		{argv: []string{"jq", "-f", "prog.jq"}, block: "-f is outside the profile"},
+		{argv: []string{"jq", ".", "a.txt"}},
+	})
+}
+
+// jqUsesModule reads module words only where jq reads code.
+func TestJqUsesModule(t *testing.T) {
+	for src, want := range map[string]bool{
+		`import "a" as $a; .`:              true,
+		`include "a"; .`:                   true,
+		`import#c` + "\n" + `"a" as $a; .`: true,
+		`"x" | modulemeta`:                 true,
+		`"\("a" | modulemeta)"`:            true,
+		`"\\" | modulemeta`:                true,
+		`"\("\(1)") \(include)"`:           true,
+		`"import"`:                         false,
+		`.include, .imports, ."import"`:    false,
+		`$import, $__loc__`:                false,
+		`# import "a"` + "\n" + `.`:        false,
+		`"\"import\""`:                     false,
+		`{"include": 1} | .modulemeta`:     false,
+		`importx, xinclude, modulemeta2`:   false,
+	} {
+		assert.Equal(t, want, jqUsesModule(src), "jqUsesModule(%q)", src)
+	}
+}
+
+// F4: md5sum, sha1sum, sha256sum and shasum -c (--check) read the names to
+// check from a sums file, which path confinement never sees: the output
+// tells whether a file outside the session exists and matches a hash.
+// BSD md5 -c compares against a string, not a file, so md5 keeps it.
+func TestAnalyze_ChecksumCheck(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
+	runBypassCases(t, []bypassCase{
+		{cmd: `md5sum -c sums`, want: Ask, static: Ask, why: "md5sum (1:1): -c is outside the profile"},
+		{cmd: `sha1sum --check sums`, want: Ask, static: Ask, why: "--check is outside the profile"},
+		{cmd: `sha256sum --check=sums`, want: Ask, static: Ask},
+		{cmd: `sha256sum -wc sums`, want: Ask, static: Ask},
+		{cmd: `shasum -a 256 -c sums`, want: Ask, static: Ask},
+		{cmd: `shasum --che sums`, want: Ask, static: Ask},
+		{cmd: `md5sum a.txt; sha256sum -b a.txt; shasum -a 256 a.txt; md5 -c abc a.txt; sha1sum -- -c`, want: Allow, static: Allow},
+	})
+	runLaunchCases(t, []launchCase{
+		{argv: []string{"sha256sum", "-c", "sums"}, block: "-c is outside the profile"},
+		{argv: []string{"shasum", "--check", "sums"}, block: "--check"},
+	})
+}
+
+// The tests below hold the findings from the fourth PR #430 review
+// (Josh-Schoen, F5-F7, at 27af16a2).
+
+// F5: a clone can track a bare repository (HEAD, objects/, refs/, an index
+// and a config with core.worktree=.. and a filter). git -C evil diff, or git
+// run inside it, uses that repository and runs its filter: git 2.50.1 did,
+// with gitHarden's prefix. gitHarden sets safe.bareRepository=explicit
+// (git 2.38 and later), and since older git ignores that key, the policy
+// also asks when git would discover a bare repository from the directory it
+// runs in. A normal repository and its .git directory stay allowed.
+func TestAnalyze_GitBareRepository(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
+	opt := gitSession(t)
+	w := opt.WorkingDir
+	pol := Readonly()
+	for _, tc := range []struct {
+		cmd  string
+		want VerdictKind // runtime; static denies git
+		why  string
+	}{
+		{cmd: `git -C meta diff`, want: Ask, why: "git (1:1): git would use the bare repository"},
+		{cmd: `cd meta && git status`, want: Ask, why: "git would use the bare repository"},
+		{cmd: `cd meta/refs && git diff`, want: Ask},
+		{cmd: `git -C sub -C ../meta log`, want: Ask},
+		{cmd: `git status; git -C sub diff; cd .git && git log; git -C .git/refs log`, want: Allow},
+	} {
+		v := pol.Analyze(tc.cmd, opt)
+		if assert.Equal(t, tc.want, v.Kind, "%q (runtime): %s", tc.cmd, v.Reason()) && tc.why != "" {
+			assert.Contains(t, v.Reason(), tc.why, "%q (runtime)", tc.cmd)
+		}
+		o := opt
+		o.Static = true
+		assert.Equal(t, Deny, pol.Analyze(tc.cmd, o).Kind, "%q (static): git needs the runner's hardening", tc.cmd)
+	}
+	for _, tc := range []struct {
+		argv  []string
+		dir   string
+		grant *Grant
+		block string
+	}{
+		{argv: []string{"git", "-C", "meta", "diff"}, dir: w, block: "git would use the bare repository " + filepath.Join(w, "meta")},
+		{argv: []string{"git", "status"}, dir: filepath.Join(w, "meta"), block: "bare repository"},
+		{argv: []string{"git", "diff"}, dir: filepath.Join(w, "meta", "refs"), block: "bare repository"},
+		{argv: []string{"git", "-C", "meta", "diff"}, dir: w, grant: &Grant{Programs: []string{"git"}}},
+		{argv: []string{"git", "status"}, dir: w},
+		{argv: []string{"git", "log"}, dir: filepath.Join(w, ".git")},
+		{argv: []string{"git", "diff"}, dir: filepath.Join(w, "sub")},
+	} {
+		err := pol.CheckLaunch(tc.argv, tc.dir, opt.Roots, tc.grant)
+		if tc.block == "" {
+			assert.NoError(t, err, "%v in %s", tc.argv, tc.dir)
+			continue
+		}
+		assert.ErrorContains(t, err, tc.block, "%v in %s", tc.argv, tc.dir)
+	}
+}
+
+// F6: > and >> follow a symlink to a target that does not exist yet and
+// create it, so a write is judged at the target, not at the symlink. A
+// symlink to a new file outside the session is a Deny, and one into a git
+// directory is an Ask (dc -> .git/commondir, then git diff, ran a filter).
+func TestAnalyze_WriteThroughDanglingSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
+	opt := gitSession(t)
+	w := opt.WorkingDir
+	for link, target := range map[string]string{
+		"ol": "../o/new.txt",            // outside, not there yet
+		"dl": ".git/info/attributes",    // into the git directory, not there yet
+		"dc": ".git/commondir",          // the review's route
+		"c1": "c2",                      // a chain of two
+		"c2": ".git/x",                  //
+		"rl": "link/../new.txt",         // link is o/ssh, so this is o/new.txt
+		"al": filepath.Join(w, "n.txt"), // absolute, inside, not there yet
+		"nl": "new.txt",                 // inside, not there yet
+	} {
+		require.NoError(t, os.Symlink(target, filepath.Join(w, link)))
+	}
+	pol := Readonly()
+	for _, tc := range []struct {
+		cmd  string
+		want VerdictKind
+		why  string
+	}{
+		{cmd: `echo x > ol`, want: Deny, why: "ol (1:8): writes outside the write roots"},
+		{cmd: `echo x >> rl`, want: Deny},
+		{cmd: `printf '../cm\n' > dc`, want: Ask, why: "dc (1:18): writes into a git directory"},
+		{cmd: `echo x > dl`, want: Ask},
+		{cmd: `echo x > c1`, want: Ask},
+		{cmd: `echo x > nl; echo x >> al; cat ol`, want: Allow},
+	} {
+		for _, static := range []bool{false, true} {
+			o := opt
+			o.Static = static
+			v := pol.Analyze(tc.cmd, o)
+			if assert.Equal(t, tc.want, v.Kind, "%q (static=%v): %s", tc.cmd, static, v.Reason()) && tc.why != "" {
+				assert.Contains(t, v.Reason(), tc.why, "%q (static=%v)", tc.cmd, static)
+			}
+		}
+	}
+	v := pol.Analyze(`echo x > dc`, opt)
+	require.NotNil(t, v.Grant)
+	assert.Equal(t, []string{filepath.Join(w, ".git", "commondir")}, v.Grant.WritePaths, "the grant is the symlink's target")
+	for _, tc := range []struct {
+		path  string
+		block string
+	}{
+		{path: "ol", block: "writes outside the write roots"},
+		{path: "rl", block: "writes outside the write roots"},
+		{path: "dc", block: "writes into a git directory"},
+		{path: "c1", block: "writes into a git directory"},
+		{path: "nl"},
+		{path: "al"},
+	} {
+		err := pol.CheckOpen(tc.path, w, true, opt.Roots, nil)
+		if tc.block == "" {
+			assert.NoError(t, err, "write %s", tc.path)
+			continue
+		}
+		assert.ErrorContains(t, err, tc.block, "write %s", tc.path)
+	}
+}
+
+// F7: in a partial clone missing a blob, git show, log -p, diff and blame
+// fetch it from the promisor remote, and the repository's config picks the
+// transport: core.sshCommand, or an ext:: URL with protocol.ext.allow. git
+// 2.50.1 ran core.sshCommand under gitHarden's prefix. GIT_NO_LAZY_FETCH=1
+// (git 2.44) stops the fetch; for older git, every built-in transport is
+// set to never on the command line, which overrides the repository's
+// protocol.<name>.allow.
+func TestGitHarden_NoLazyFetch(t *testing.T) {
+	git := Readonly().Programs["git"]
+	assert.Contains(t, git.Env, "GIT_NO_LAZY_FETCH=1", "the git profile turns lazy fetch off")
+	harden := strings.Join(git.Harden(fields("show HEAD:f")), " ")
+	for _, proto := range []string{"ext", "fd", "file", "git", "ssh", "http", "https", "ftp", "ftps"} {
+		assert.Contains(t, harden, "-c protocol."+proto+".allow=never", "transport %s is off", proto)
+	}
+	assert.Contains(t, harden, "-c protocol.allow=never", "every other transport is off")
 }

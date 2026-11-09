@@ -66,6 +66,10 @@ type Grant struct {
 	Programs  []string `json:"programs,omitempty"`
 	Builtins  []string `json:"builtins,omitempty"`
 	ReadPaths []string `json:"read_paths,omitempty"`
+	// WritePaths are resolved paths inside the write roots that may be
+	// written although they lie in a git directory (inGitDir). Each is one
+	// exact path, not a tree.
+	WritePaths []string `json:"write_paths,omitempty"`
 	// Env names the variables the command sets whose value changes what runs
 	// (ExecEnvName), or the words naming ones computed at run time. No
 	// per-launch check reads it yet: approving the call is what lets it run.
@@ -88,6 +92,7 @@ func MergeGrants(grants []any) *Grant {
 		out.Programs = appendNew(out.Programs, gr.Programs...)
 		out.Builtins = appendNew(out.Builtins, gr.Builtins...)
 		out.ReadPaths = appendNew(out.ReadPaths, gr.ReadPaths...)
+		out.WritePaths = appendNew(out.WritePaths, gr.WritePaths...)
 		out.Env = appendNew(out.Env, gr.Env...)
 	}
 	return out
@@ -130,6 +135,11 @@ func (g *Grant) allowsRead(path string) bool {
 	return false
 }
 
+// allowsWrite reports whether path is one of the granted write paths.
+func (g *Grant) allowsWrite(path string) bool {
+	return g != nil && contains(g.WritePaths, path)
+}
+
 func contains(list []string, s string) bool {
 	for _, v := range list {
 		if v == s {
@@ -148,13 +158,15 @@ func (g *Grant) add(kind, item string) {
 		g.Builtins = appendNew(g.Builtins, item)
 	case "read":
 		g.ReadPaths = appendNew(g.ReadPaths, item)
+	case "write":
+		g.WritePaths = appendNew(g.WritePaths, item)
 	case "env":
 		g.Env = appendNew(g.Env, item)
 	}
 }
 
 func (g *Grant) empty() bool {
-	return len(g.Programs) == 0 && len(g.Builtins) == 0 && len(g.ReadPaths) == 0 && len(g.Env) == 0
+	return len(g.Programs) == 0 && len(g.Builtins) == 0 && len(g.ReadPaths) == 0 && len(g.WritePaths) == 0 && len(g.Env) == 0
 }
 
 // Extend returns a copy of p named name, with extra programs allowed (each

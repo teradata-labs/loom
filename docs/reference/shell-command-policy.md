@@ -82,6 +82,7 @@ A word is **literal** when it has no parameter, command, arithmetic or process e
 | a path argument built from `~`, a parameter (`$HOME`, `${X}`) or a command or process substitution, for a program whose arguments are paths | `runtime`: no verdict (the runner checks the expanded path). `static`: Deny |
 | a literal `cd` or `pushd` target outside the read roots | Ask, granting the resolved path |
 | a write redirect (`>`, `>>`, `>\|`, `&>`, `&>>`, `<>`, `>& file`) to a literal path outside the write roots | Deny |
+| a write redirect to a literal path inside the write roots that lies in a git directory: a component named `.git`, or an ancestor that git takes for a repository (a `HEAD` file and `objects` and `refs` directories, such as a bare repository) | Ask in both modes, granting that exact resolved path (`Grant.WritePaths`). A file written there can define a filter in the config and name it in `info/attributes` or `core.attributesFile`, and git runs it (see the git profile) |
 | a write redirect, a read redirect or a `<&`/`>&` target that is computed | `static` only: Deny |
 | a read redirect (`<`, `<& file`) from outside the read roots | Ask, granting the resolved path |
 | `/dev/null`, `/dev/stdin`, `/dev/stdout`, `/dev/stderr` | always allowed |
@@ -89,7 +90,7 @@ A word is **literal** when it has no parameter, command, arithmetic or process e
 | redirects on file descriptors above 2, `coproc`, bats `@test` | Deny (the interpreter does not support them) |
 | a command that does not parse as bash | Deny, with the parser's message |
 
-Relative paths resolve against every directory the command can change to (see "Changing directory"). Paths are resolved the way the kernel opens them: one component at a time, so a `..` after a symlink leaves the symlink's target (`link/../x` is next to the target, not next to `link`). They are compared by whole path components.
+Relative paths resolve against every directory the command can change to (see "Changing directory"). Paths are resolved the way the kernel opens them: one component at a time, so a `..` after a symlink leaves the symlink's target (`link/../x` is next to the target, not next to `link`). They are compared by whole path components. A path written to is judged at what the write reaches: a final symlink is followed even when its target does not exist yet, since `>` and `>>` create the target (PR #430 review F6: `echo x > ol`, with `ol` a symlink to a new file outside the session, created that file). So a write through such a symlink outside the write roots is a Deny, and one into a git directory is an Ask granting the target.
 
 Paths, `cd` targets and globs are judged after the whole command is walked, so the order of the parts does not matter. Findings are reported in order of position.
 
@@ -172,10 +173,11 @@ On Ask, `Decision.Grant` is a `*shellpolicy.Grant`:
 
 ```go
 type Grant struct {
-    Programs  []string // names or exact paths that may run, with any arguments, for this call
-    Builtins  []string
-    ReadPaths []string // resolved paths that may be read, with everything beneath them
-    Env       []string // variables the command sets that change what runs (no run-time check reads this; the jail drops these names from every program's environment)
+    Programs   []string // names or exact paths that may run, with any arguments, for this call
+    Builtins   []string
+    ReadPaths  []string // resolved paths that may be read, with everything beneath them
+    WritePaths []string // exact resolved paths in a git directory that may be written
+    Env        []string // variables the command sets that change what runs (no run-time check reads this; the jail drops these names from every program's environment)
 }
 ```
 
@@ -189,18 +191,19 @@ When the Ask is approved, the tool body reads the grants with `shellpolicy.Merge
 
 | Program | Argument rules |
 |---|---|
-| `cat head tail cut comm cmp od stat realpath md5sum sha1sum sha256sum shasum md5` | path confinement |
+| `cat head tail cut comm cmp od stat realpath md5` | path confinement (BSD `md5 -c` compares against a string, not a file) |
+| `md5sum sha1sum sha256sum shasum` | path confinement; refuses `-c` and `--check`, which read the names of the files to hash from a sums file that path confinement does not see, and tell whether each exists and matches |
 | `ls` | path confinement; refuses `-L` or `--dereference` together with `-R` or `--recursive` (ls then lists the directories symlinks point to, out of the read roots). Each alone is allowed. Every letter of a short option group counts |
 | `wc` | path confinement; refuses `--files0-from` (it reads the names of the files to count from a file, which path confinement does not see) |
 | `grep egrep fgrep` | path confinement, including a file attached to `-f` (`-f/x`); refuses `-R`, `--dereference-recursive` and BSD grep's `-S`, which follow every symlink they meet out of the read roots (`-r` follows only the symlinks named on the command line, and path confinement checks those); `-e -f -m -A -B -C -d -D` take a value |
 | `diff` | path confinement, including a file attached to `-X`; `-C -U -D -F -I -x -X -S -W -L` take a value. An operand that is an existing directory (also through `--from-file=` or `--to-file=`, and, under `static`, a glob match) is an Ask, with or without `-r`: diff compares the files in it and follows the symlinks it meets there, so `diff sub other` printed a file outside the session through a symlink in `sub`. `Profile.NoDirOperands` marks this; `CheckLaunch` applies it to the expanded operands |
 | `du` | path confinement, including a file attached to `-X`; refuses `--files0-from`, and `-L` and `--dereference` (they follow every symlink out of the read roots; `-H`, `-D` and `--dereference-args` follow only the operands, which path confinement checks); `-X -B -d -t -I` take a value |
-| `jq` | path confinement, including a directory attached to `-L` |
+| `jq` | path confinement, including a directory attached to `-L`. Refuses `import`, `include` and `modulemeta` in any argument read as jq code (outside string literals and comments, not as a field `.import` or a variable `$import`): jq looks the module path up itself, so a symlink in the session leads it out of the read roots (jq refuses `..` in the path). Refuses `-f` and `--from-file`, since a program file can hold them. A file argument named like a module word (`include.json`) also needs approval |
 | `tr basename dirname seq sleep uname whoami id which` | none (arguments are not files) |
 | `sort` | refuses `-o`, `-T`, `--output`, `--compress-program`, `--temporary-directory`, `--files0-from` (GNU sort reads the files named in that file, so `sort --files0-from=list` printed a file outside the session); `-k -t -S` take a value |
 | `uniq` | at most one positional argument (`-f`, `-s`, `-w` take a value). Under `static`, a glob argument is an Ask, since nothing counts the names it expands to |
 | `find` | refuses `-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, `-fprint`, `-fprint0`, `-fprintf`, `-fls`; refuses GNU `-files0-from` (it reads the starting points from a file, which path confinement does not see); refuses `-L` and `-follow`, which follow every symlink out of the read roots, also inside a BSD option group (`-LE`, `-xL`). `-H` follows only the starting points, which path confinement resolves, so it is allowed (`find -H link` asks when `link` leads outside) |
-| `file` | refuses `-C`, `--compile`; path confinement includes a file attached to `-f` or `-m`; `-e -F -f -m -P` take a value |
+| `file` | refuses `-C`, `--compile`, and `-f`, `--files-from` (they read the names of the files to check from a file, which path confinement does not see; file 5.41 named an SSH key and a database outside the session); path confinement includes a file attached to `-m`; `-e -F -f -m -P` take a value |
 | `base64` | refuses `-o`, `--output`; path confinement includes a file attached to `-i` (BSD input file); `-w -b -i` take a value |
 | `date` | refuses `-s`, `--set`, `-f`, `--file`, `-r`, `--reference` (date's arguments are not path-checked, and those options read a file), and a positional time such as `202601010000`; `-d -v` take a value. So BSD `date -j -f FORMAT` and `date -r SECONDS` need approval |
 | `git` | the git profile below |
@@ -218,12 +221,18 @@ When the Ask is approved, the tool body reads the grants with `shellpolicy.Merge
 - **Hardening.** Under `static` enforcement no runner applies this hardening, so `git` is denied there. `Profile.Harden` prepends the following at run time, and adds `--no-ext-diff --no-textconv` to `diff`, `log` and `show`:
 
   ```
-  -c core.fsmonitor=false -c core.pager=cat -c core.hooksPath=/dev/null -c diff.external= --no-pager --attr-source=4b825dc642cb6eb9a060e54bf8d69288fbee4904
+  -c core.fsmonitor=false -c core.pager=cat -c core.hooksPath=/dev/null -c diff.external= -c core.attributesFile=/dev/null -c log.showSignature=false -c gpg.program=gpg -c gpg.ssh.program=ssh-keygen -c gpg.x509.program=gpgsm -c safe.bareRepository=explicit -c protocol.allow=never -c protocol.ext.allow=never -c protocol.fd.allow=never -c protocol.file.allow=never -c protocol.git.allow=never -c protocol.ssh.allow=never -c protocol.http.allow=never -c protocol.https.allow=never -c protocol.ftp.allow=never -c protocol.ftps.allow=never --no-pager --attr-source=4b825dc642cb6eb9a060e54bf8d69288fbee4904
   ```
 
-- **Environment.** `Profile.Env` sets `GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 GIT_OPTIONAL_LOCKS=0`.
+- **Environment.** `Profile.Env` sets `GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1`.
 
-With the hardening applied, git 2.50.1 ran no program from the repository's own config (fsmonitor, pager, external diff, clean filter, textconv). The measurement is design Probe 9.
+With the hardening applied, git 2.50.1 ran no program from the repository's own config for fsmonitor, the pager, an external diff, textconv, or a clean filter named in the worktree's `.gitattributes` (design Probe 9). The hardening does **not** stop every filter:
+
+- `--attr-source` replaces only the worktree's attributes. A filter named in `$GIT_DIR/info/attributes` still runs: with this prefix, git 2.50.1 ran a `clean` filter from `.git/info/attributes` on `git diff` (PR #430 review F1). No option drops that file without naming the filter, so a write into a git directory is an Ask (see "Paths and redirects"). A repository that already holds such a file and filter when the command starts is not covered.
+- **Bare repositories.** A clone can track a bare repository (`HEAD`, `objects/`, `refs/`, an `index`, and a `config` with `core.worktree=..` and a filter). `git -C evil diff`, or `git diff` run inside it, used that repository and ran its filter with git 2.50.1 and the prefix above, with nothing written (PR #430 review F5). `-c safe.bareRepository=explicit` (git 2.38 and later) makes git refuse it. Older git ignores that key, so the git profile also has a `RepoCheck`: when git would discover a bare repository from the directory it runs in (after each `-C`; the first ancestor holding a `.git` entry is a normal repository, and a git directory named `.git` is allowed), the analyzer asks under `runtime`, granting `git`, and `CheckLaunch` refuses the launch unless `git` is granted.
+- **Lazy fetch.** In a partial clone missing a blob, `git show`, `log -p`, `diff` and `blame` fetch it from the promisor remote, over a transport the repository's config picks: `core.sshCommand`, or an `ext::` URL with `protocol.ext.allow=always`. git 2.50.1 ran `core.sshCommand` that way under the earlier prefix (PR #430 review F7). `GIT_NO_LAZY_FETCH=1` (git 2.44 and later) stops the fetch. For older git, every built-in transport is set to `never` on the command line; `protocol.allow=never` alone is not enough, since the repository's `protocol.<name>.allow` overrides it. With these, git 2.50.1 refused the transport and ran nothing. A remote helper outside that list (`git-remote-<name>` on `PATH`) is stopped only by `protocol.allow=never` and, on git 2.44 and later, by `GIT_NO_LAZY_FETCH`; a repository config that sets its `protocol.<name>.allow` reaches it on older git.
+- `-c core.attributesFile=/dev/null` drops an attributes file the config names. Without it, git 2.50.1 ran the filter.
+- `-c log.showSignature=false` and the three `gpg.*program` defaults stop `git log` and `git show` from running a signature program the config names. Without them, a repository config that set `log.showSignature`, `gpg.ssh.program` and `gpg.ssh.allowedSignersFile` made git 2.50.1 run its program on `git log` for a signed commit. `--show-signature` then runs the system `gpg`, `ssh-keygen` or `gpgsm`.
 
 `Policy.Extend(name, allow, never)` derives a policy. Added programs get path confinement only. A program on both lists is never allowed. `Policy.Validate` rejects a policy with no name, an allowlisted name containing `/`, or a name that is both allowed and never allowed.
 
@@ -303,9 +312,9 @@ These are for a runner that executes the command and sees each launch with its e
 
 | Call | Judges |
 |---|---|
-| `CheckLaunch(argv, dir, roots, grant)` | one program launch: the never list, the current directory, the grant, the allowlist, the profile, and path confinement |
+| `CheckLaunch(argv, dir, roots, grant)` | one program launch: the never list, the current directory, the grant, the allowlist, the profile (including `Profile.RepoCheck`, which for git refuses a bare repository found from `dir`), and path confinement |
 | `CheckBuiltin(name, grant)` | a builtin |
-| `CheckOpen(path, dir, write, roots, grant)` | a file the shell opens (a redirect or `source`). A read grant never covers a write. |
+| `CheckOpen(path, dir, write, roots, grant)` | a file the shell opens (a redirect or `source`). A read grant never covers a write. A write into a git directory needs its exact resolved path in `Grant.WritePaths`. The programs the command starts open their own files (git writes its index), which this does not judge |
 | `CheckListDir(dir, roots, grant)` | a directory listed to expand a glob |
 
 Each returns a `*shellpolicy.LaunchError{Name, Reason}`, or nil.
@@ -323,7 +332,7 @@ Each returns a `*shellpolicy.LaunchError{Name, Reason}`, or nil.
 - `cmd/looms`: config decoding, validation and `serve` setup.
 - `pkg/shellpolicy`: 96.5% statement coverage.
 - **Corpus:** the design's bypass corpus plus the environment-assignment and static-path cases, 144 commands, each run under both enforcement modes.
-- **Review bypasses:** the commands from the PR #430 reviews (N1-N10 and R1-R6), the vectors found while fixing them, the other programs that follow symlinks out of the roots (follow-ups to R5), and GNU `find -files0-from` (a follow-up to R4) (`bypass_test.go`), 197 commands, each run under both enforcement modes. The review's commands and the new vectors were run in bash 5.2 (macOS bash 3.2 for `.*` matching `..`, git 2.50.1 for `git grep -O`) and did the harmful thing while the analyzer allowed them; the other rows are variants of those shapes and commands that must stay allowed.
+- **Review bypasses:** the commands from the PR #430 reviews (N1-N10 and R1-R6), the vectors found while fixing them, the other programs that follow symlinks out of the roots (follow-ups to R5), and GNU `find -files0-from` (a follow-up to R4) (`bypass_test.go`), 240 commands, each run under both enforcement modes. The review's commands and the new vectors were run in bash 5.2 (macOS bash 3.2 for `.*` matching `..`, git 2.50.1 for `git grep -O`) and did the harmful thing while the analyzer allowed them; the other rows are variants of those shapes and commands that must stay allowed.
 - **Run-time checks:** a 22-case table for `CheckLaunch`, and a 14-case table for the review's argument rules.
 - **Call parameters:** `TestDecide_ShellParam`, `TestDecide_ShellNeedsBash` (sets whether the hook finds bash on `PATH`, so it runs on every host) and `TestDecide_EnvParam`.
 - **Windows refusal:** `TestDecide_RefusesOnWindows` sets the OS the hook judges for, so it runs on every host: on Windows every call is refused (default, `bash`, `sh` and other shells; `static` and `runtime`; through the factory and the executor), and the same calls are judged normally on Linux and macOS. The tests that check POSIX path semantics skip on Windows.

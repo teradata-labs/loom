@@ -15,6 +15,8 @@
 package shellpolicy
 
 import (
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -53,6 +55,12 @@ type Profile struct {
 	Harden func(args []string) []string
 	// Env lists extra NAME=value pairs the program runs with (run time only).
 	Env []string
+	// RepoCheck is an extra rule over the directory the program runs in
+	// and its arguments (git: the repository it would use); it returns the
+	// violation, or "". The analyzer calls it with each directory the
+	// command can be in, when every argument is literal; CheckLaunch calls
+	// it with the shell's directory.
+	RepoCheck func(dir string, args []string) string
 	// NoDirOperands marks a program that reads every file in a directory
 	// operand and follows the symlinks it meets there (diff): an operand
 	// that is an existing directory is outside the profile.
@@ -215,8 +223,13 @@ func Readonly() *Policy {
 		}
 	}
 	plain("cat", "head", "tail", "cut", "comm", "cmp", "od",
-		"stat", "realpath",
-		"md5sum", "sha1sum", "sha256sum", "shasum", "md5")
+		"stat", "realpath", "md5")
+	// -c (--check) reads the names of the files to hash from a sums file,
+	// which path confinement never sees, and tells whether each exists and
+	// matches. BSD md5 -c compares against a string, so md5 keeps it.
+	for _, n := range []string{"md5sum", "sha1sum", "sha256sum", "shasum"} {
+		p.Programs[n] = &Profile{MaxPositional: -1, RefuseShort: "c", RefuseLong: []string{"--check"}}
+	}
 	// GNU systems ship md5sum, sha1sum and sha256sum; macOS ships md5 and
 	// shasum (and, on recent releases, the GNU names too). Each name stands
 	// in for the other platform's, so only a host with neither is told one
@@ -251,7 +264,10 @@ func Readonly() *Policy {
 	// are path-checked.
 	p.Programs["du"] = &Profile{MaxPositional: -1, RefuseShort: "L", RefuseLong: []string{"--files0-from", "--dereference"},
 		ShortWithValue: "XBdtI", pathShort: "X"}
-	p.Programs["jq"] = &Profile{MaxPositional: -1, ShortWithValue: "L", pathShort: "L"}
+	// jq's import, include and modulemeta load a module by path, which path
+	// confinement never sees; a program file (-f, --from-file) can hold them.
+	p.Programs["jq"] = &Profile{MaxPositional: -1, ShortWithValue: "L", pathShort: "L",
+		RefuseShort: "f", RefuseLong: []string{"--from-file"}, Check: jqCheck}
 	p.Programs["sort"] = &Profile{MaxPositional: -1, RefuseShort: "oT", ShortWithValue: "ktS",
 		RefuseLong: []string{"--output", "--compress-program", "--temporary-directory", "--files0-from"}}
 	p.Programs["uniq"] = &Profile{MaxPositional: 1, ShortWithValue: "fsw"}
@@ -262,8 +278,10 @@ func Readonly() *Policy {
 	p.Programs["find"] = &Profile{MaxPositional: -1, Check: findCheck, RefuseArgs: []string{
 		"-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls",
 		"-follow", "-files0-from"}}
-	p.Programs["file"] = &Profile{MaxPositional: -1, RefuseShort: "C", RefuseLong: []string{"--compile"},
-		ShortWithValue: "eFfmP", pathShort: "fm"}
+	// file -f F (--files-from F) reads the names of the files to check from
+	// F, which path confinement never sees, as sort --files0-from does.
+	p.Programs["file"] = &Profile{MaxPositional: -1, RefuseShort: "Cf", RefuseLong: []string{"--compile", "--files-from"},
+		ShortWithValue: "eFfmP", pathShort: "m"}
 	p.Programs["base64"] = &Profile{MaxPositional: -1, RefuseShort: "o", RefuseLong: []string{"--output"},
 		ShortWithValue: "wbi", pathShort: "i"}
 	// date's arguments are not path-checked (they are formats and times), so
@@ -330,6 +348,78 @@ func findCheck(args []string) string {
 	return ""
 }
 
+// jqModuleWords are the jq keywords and builtins that load a module file by
+// path: import and include in the program, and modulemeta at run time.
+var jqModuleWords = map[string]bool{"import": true, "include": true, "modulemeta": true}
+
+// jqCheck refuses a jq argument that uses a module: jq looks the path up
+// itself, so a symlink in the session leads it out of the read roots (jq
+// refuses ".." in the path, but not a symlink). Every argument is read as
+// jq code, because which one is the program depends on jq's options; a file
+// name such as include.json costs an approval, never a module load.
+func jqCheck(args []string) string {
+	for _, a := range args {
+		if jqUsesModule(a) {
+			return "jq import, include and modulemeta load modules by path, which path confinement does not see"
+		}
+	}
+	return ""
+}
+
+// jqUsesModule reports whether src, read as jq code, holds one of
+// jqModuleWords as a name: outside string literals and comments, and not a
+// field (.import) or a variable ($import). It follows string interpolation
+// (\(...)), whose code is checked too. It ends a comment at the newline, so
+// it reads at least as much code as jq does.
+func jqUsesModule(src string) bool {
+	var interp []int // paren depth at which each open interpolation ends
+	inStr := false
+	depth := 0
+	for i := 0; i < len(src); i++ {
+		c := src[i]
+		if inStr {
+			switch c {
+			case '\\':
+				if i+1 < len(src) && src[i+1] == '(' {
+					interp = append(interp, depth)
+					depth++
+					inStr = false
+				}
+				i++
+			case '"':
+				inStr = false
+			}
+			continue
+		}
+		switch {
+		case c == '#':
+			for i < len(src) && src[i] != '\n' {
+				i++
+			}
+		case c == '"':
+			inStr = true
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+			if n := len(interp); n > 0 && depth == interp[n-1] {
+				interp = interp[:n-1]
+				inStr = true
+			}
+		case c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z':
+			j := i
+			for j < len(src) && (src[j] == '_' || src[j] >= 'a' && src[j] <= 'z' || src[j] >= 'A' && src[j] <= 'Z' || src[j] >= '0' && src[j] <= '9') {
+				j++
+			}
+			if jqModuleWords[src[i:j]] && (i == 0 || (src[i-1] != '.' && src[i-1] != '$')) {
+				return true
+			}
+			i = j - 1
+		}
+	}
+	return false
+}
+
 // dateCheck refuses BSD date's positional time setting ("date 202601010000").
 var dateSetArg = regexp.MustCompile(`^[0-9]{4,}(\.[0-9]{2})?$`)
 
@@ -378,10 +468,11 @@ func gitProfile() *Profile {
 	return &Profile{
 		MaxPositional: -1,
 		Check:         gitCheck,
+		RepoCheck:     gitRepoCheck,
 		Harden:        gitHarden,
 		Env: []string{
 			"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_ATTR_NOSYSTEM=1",
-			"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0",
+			"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "GIT_NO_LAZY_FETCH=1",
 		},
 	}
 }
@@ -453,15 +544,89 @@ func gitCheck(args []string) string {
 	return ""
 }
 
+// gitTransports are git's built-in transports and remote helpers.
+var gitTransports = []string{"ext", "fd", "file", "git", "ssh", "http", "https", "ftp", "ftps"}
+
+// gitNoTransport turns every transport off: a partial clone fetches a
+// missing blob from its promisor remote on git show, log -p, diff and
+// blame, and the repository's config picks the transport (core.sshCommand,
+// or an ext:: URL that runs a command). GIT_NO_LAZY_FETCH=1 in the profile's
+// Env stops the fetch on git 2.44 and later; for older git these options
+// refuse the transport. Each protocol.<name>.allow is set as well as
+// protocol.allow, because the repository's own protocol.<name>.allow
+// overrides protocol.allow, and the command line overrides the repository.
+var gitNoTransport = func() []string {
+	out := []string{"-c", "protocol.allow=never"}
+	for _, t := range gitTransports {
+		out = append(out, "-c", "protocol."+t+".allow=never")
+	}
+	return out
+}()
+
+// gitRepoCheck refuses a git command that would use a bare repository:
+// one found from dir, after each -C, before any directory holding a .git.
+// A clone can track such a repository, with a config that sets
+// core.worktree and a filter, so git diff run in it runs the filter.
+func gitRepoCheck(dir string, args []string) string {
+	globals, _ := gitSplit(args)
+	d := dir
+	for i := 0; i < len(globals); i++ {
+		if globals[i] == "-C" && i+1 < len(globals) {
+			d = ResolvePath(d, globals[i+1])
+		}
+		if gitValueGlobals[globals[i]] {
+			i++
+		}
+	}
+	if bare := bareRepoAt(d); bare != "" {
+		return "git would use the bare repository " + bare + ", whose own config can make git run programs"
+	}
+	return ""
+}
+
+// bareRepoAt returns the bare repository git discovers from dir, or "":
+// walking up from dir, the first directory that holds a .git entry is a
+// normal repository (""), and the first that is itself a git directory is
+// bare unless it is named .git. dir is resolved, as git's getcwd is.
+func bareRepoAt(dir string) string {
+	for p := filepath.Clean(dir); ; {
+		if _, err := os.Lstat(filepath.Join(p, ".git")); err == nil {
+			return ""
+		}
+		if isGitDir(p) {
+			if filepath.Base(p) == ".git" {
+				return ""
+			}
+			return p
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return ""
+		}
+		p = parent
+	}
+}
+
 // gitHarden prepends the options that stop git running programs from the
 // repository's own config (design 06 Probe 9), and adds --no-ext-diff and
-// --no-textconv to the subcommands that diff.
+// --no-textconv to the subcommands that diff. core.attributesFile=/dev/null
+// drops an attributes file the config names; log.showSignature=false and
+// the gpg program defaults stop git log and git show running a signature
+// program the config names. safe.bareRepository=explicit (git 2.38) makes git
+// refuse a bare repository it would discover, such as one a clone tracks;
+// gitRepoCheck refuses the same for older git, which ignores the key.
+// Nothing here can drop $GIT_DIR/info/attributes: a write into a git
+// directory is an Ask instead (inGitDir).
 func gitHarden(args []string) []string {
 	globals, sub := gitSplit(args)
 	out := []string{
 		"-c", "core.fsmonitor=false", "-c", "core.pager=cat", "-c", "core.hooksPath=/dev/null",
-		"-c", "diff.external=", "--no-pager", "--attr-source=" + EmptyTreeHash,
+		"-c", "diff.external=", "-c", "core.attributesFile=/dev/null",
+		"-c", "log.showSignature=false", "-c", "gpg.program=gpg", "-c", "gpg.ssh.program=ssh-keygen",
+		"-c", "gpg.x509.program=gpgsm", "-c", "safe.bareRepository=explicit",
 	}
+	out = append(out, gitNoTransport...)
+	out = append(out, "--no-pager", "--attr-source="+EmptyTreeHash)
 	out = append(out, globals...)
 	if sub < 0 {
 		return out

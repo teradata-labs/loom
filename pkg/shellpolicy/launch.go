@@ -59,6 +59,11 @@ func (p *Policy) CheckLaunch(argv []string, dir string, roots Roots, g *Grant) e
 	if v := prof.violation(argv[1:], true); v != "" {
 		return &LaunchError{Name: name, Reason: v}
 	}
+	if prof.RepoCheck != nil {
+		if v := prof.RepoCheck(resolvedDir, argv[1:]); v != "" {
+			return &LaunchError{Name: name, Reason: v}
+		}
+	}
 	if prof.NoPathArgs {
 		return nil
 	}
@@ -86,7 +91,9 @@ func (p *Policy) CheckBuiltin(name string, g *Grant) error {
 
 // CheckOpen judges a file the shell itself opens (a redirect or source): path
 // as written, dir the shell's current directory, write whether it is opened
-// for writing.
+// for writing. A write into a git directory (inGitDir) needs that exact
+// path in the grant. The programs the command starts open their own files
+// (git writes its index), which are not judged here.
 func (p *Policy) CheckOpen(path, dir string, write bool, roots Roots, g *Grant) error {
 	if devicePaths[path] {
 		return nil
@@ -96,10 +103,14 @@ func (p *Policy) CheckOpen(path, dir string, write bool, roots Roots, g *Grant) 
 	}
 	full := ResolvePath(dir, path)
 	if write {
-		if inRoots(full, roots.Write) {
-			return nil
+		full = resolveWritePath(dir, path)
+		if !inRoots(full, roots.Write) {
+			return &LaunchError{Name: path, Reason: "writes outside the write roots"}
 		}
-		return &LaunchError{Name: path, Reason: "writes outside the write roots"}
+		if inGitDir(full) && !g.allowsWrite(full) {
+			return &LaunchError{Name: path, Reason: gitWriteWhy + ", and it was not approved for this call"}
+		}
+		return nil
 	}
 	if inRoots(full, roots.Read) || g.allowsRead(full) {
 		return nil
