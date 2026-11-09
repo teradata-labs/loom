@@ -750,3 +750,31 @@ func TestAnalyze_FindFollow(t *testing.T) {
 		{argv: []string{"find", "-H", "."}},
 	})
 }
+
+// diff compares the files in a directory operand (and, with -r, in its
+// subdirectories) and follows the symlinks it meets, so a symlink in the
+// session leads it out. A directory operand is an Ask, whether or not -r is
+// given; diff over files stays allowed.
+func TestAnalyze_DiffDirectoryOperand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
+	runBypassCases(t, []bypassCase{
+		{cmd: `diff sub sub`, want: Ask, static: Ask, why: "sub (1:1): diff compares the files in a directory"},
+		{cmd: `diff -r . sub`, want: Ask, static: Ask, why: "diff compares the files in a directory"},
+		{cmd: `diff -ru a.txt sub`, want: Ask, static: Ask},
+		{cmd: `diff --recursive --from-file=sub a.txt`, want: Ask, static: Ask},
+		{cmd: `cd sub; diff ../a.txt ..`, want: Ask, static: Ask},
+		{cmd: `diff s* a.txt`, want: Allow, static: Ask, why: "diff compares the files in a directory"},
+		{cmd: `diff a.txt victim.txt; diff -u a.txt - < victim.txt; diff -r a.txt victim.txt; diff missing a.txt`, want: Allow, static: Allow},
+	})
+	runLaunchCases(t, []launchCase{
+		{argv: []string{"diff", "sub", "sub"}, block: "diff compares the files in a directory"},
+		{argv: []string{"diff", "-r", "a.txt", "./sub/"}, block: "diff compares the files in a directory"},
+		{argv: []string{"diff", "--to-file=sub", "a.txt"}, block: "diff compares the files in a directory"},
+		{argv: []string{"diff", "-r", "a.txt", "victim.txt"}},
+	})
+	opt, _ := escapeSession(t)
+	err := Readonly().CheckLaunch([]string{"diff", "sub", "sub"}, opt.WorkingDir, opt.Roots, &Grant{Programs: []string{"diff"}})
+	assert.NoError(t, err, "an approved diff runs with any operands")
+}

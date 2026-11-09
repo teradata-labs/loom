@@ -66,6 +66,9 @@ func (p *Policy) CheckLaunch(argv []string, dir string, roots Roots, g *Grant) e
 		if err := checkReadAt(name, c, dir, roots, g); err != nil {
 			return err
 		}
+		if prof.NoDirOperands && isDir(ResolvePath(dir, c)) {
+			return &LaunchError{Name: name, Reason: dirOperandWhy(name) + " (" + c + ")"}
+		}
 	}
 	return nil
 }

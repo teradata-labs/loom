@@ -53,6 +53,10 @@ type Profile struct {
 	Harden func(args []string) []string
 	// Env lists extra NAME=value pairs the program runs with (run time only).
 	Env []string
+	// NoDirOperands marks a program that reads every file in a directory
+	// operand and follows the symlinks it meets there (diff): an operand
+	// that is an existing directory is outside the profile.
+	NoDirOperands bool
 
 	// pathShort lists the ShortWithValue options whose value names a file:
 	// a value attached to one ("-f../x") is path-checked like a positional
@@ -221,7 +225,10 @@ func Readonly() *Policy {
 		p.Programs[n] = &Profile{MaxPositional: -1, RefuseShort: "R", RefuseLong: []string{"--dereference-recursive"},
 			ShortWithValue: "efmABCdD", pathShort: "f"}
 	}
-	p.Programs["diff"] = &Profile{MaxPositional: -1, ShortWithValue: "CUDFIxXSWL", pathShort: "X"}
+	// diff compares the files in a directory operand (and, with -r, in its
+	// subdirectories) and follows the symlinks it meets there, so a
+	// directory operand is outside the profile, with or without -r.
+	p.Programs["diff"] = &Profile{MaxPositional: -1, ShortWithValue: "CUDFIxXSWL", pathShort: "X", NoDirOperands: true}
 	// du -L (--dereference) follows every symlink it meets out of the
 	// roots; -H, -D and --dereference-args follow only the operands, which
 	// are path-checked.

@@ -52,6 +52,26 @@ type cdTarget struct {
 	outer *syntax.Pos
 }
 
+// dirOperand is an operand of a program whose profile refuses directory
+// operands (Profile.NoDirOperands), judged once every directory the command
+// can change to is known. glob marks a glob pattern (static only), whose
+// matches are judged.
+type dirOperand struct {
+	path  string
+	glob  bool
+	prog  string
+	n     syntax.Node
+	outer *syntax.Pos
+}
+
+// dirOperand records an operand of prog that must not be a directory.
+func (a *analyzer) dirOperand(path string, glob bool, prog string, n syntax.Node, outer *syntax.Pos) {
+	if path == "" || devicePaths[path] || strings.HasPrefix(path, "~") {
+		return
+	}
+	a.dirOps = append(a.dirOps, dirOperand{path: path, glob: glob, prog: prog, n: n, outer: outer})
+}
+
 // workDir is one directory the command may be in: the logical path bash's
 // cd -L computes, and the directory it really is.
 type workDir struct {
@@ -231,11 +251,12 @@ func cdpathSearched(target string) bool {
 // may be in. A read of an existing path outside the read roots is an Ask
 // granting each resolved path; a write outside the write roots is a Deny.
 func (a *analyzer) finishPaths() {
-	if len(a.paths) == 0 && len(a.cds) == 0 && len(a.globs) == 0 {
+	if len(a.paths) == 0 && len(a.cds) == 0 && len(a.globs) == 0 && len(a.dirOps) == 0 {
 		return
 	}
 	dirs := a.workingDirs()
 	a.finishGlobs(dirs)
+	a.finishDirOperands(dirs)
 	for _, c := range a.paths {
 		bases := dirs
 		if filepath.IsAbs(c.path) {
@@ -286,11 +307,7 @@ type globCheck struct {
 // a glob component is refused: what it climbs out of depends on what the
 // glob matches when the command runs.
 func (a *analyzer) staticGlob(w *syntax.Word, outer *syntax.Pos) {
-	var raw strings.Builder
-	for _, p := range w.Parts {
-		raw.WriteString(p.(*syntax.Lit).Value) // globDir accepted the word: every part is a Lit
-	}
-	pat := raw.String()
+	pat := globPattern(w)
 	globbed := false
 	for _, comp := range strings.Split(pat, "/") {
 		if globbed && unescapeUnquoted(comp) == ".." {
@@ -302,6 +319,62 @@ func (a *analyzer) staticGlob(w *syntax.Word, outer *syntax.Pos) {
 		}
 	}
 	a.globs = append(a.globs, globCheck{pat: pat, n: w, outer: outer})
+}
+
+// globPattern returns a glob word as written: its unquoted literal text with
+// its escapes. globDir accepted the word, so every part is a Lit.
+func globPattern(w *syntax.Word) string {
+	var raw strings.Builder
+	for _, p := range w.Parts {
+		raw.WriteString(p.(*syntax.Lit).Value)
+	}
+	return raw.String()
+}
+
+// finishDirOperands judges each recorded directory operand from every
+// directory the command may be in: an existing directory, or a glob match
+// that is one, is an Ask granting the program. A glob that cannot be
+// expanded is refused by finishGlobs.
+func (a *analyzer) finishDirOperands(dirs []workDir) {
+	for _, o := range a.dirOps {
+		bases := dirs
+		if filepath.IsAbs(o.path) {
+			bases = dirs[:1]
+		}
+		found := ""
+		for _, d := range bases {
+			names := []string{o.path}
+			if o.glob {
+				m, err := globExpand(d.physical, o.path, maxGlobMatches)
+				if err != nil {
+					continue
+				}
+				names = m
+			}
+			for _, nm := range names {
+				if isDir(ResolvePath(d.physical, nm)) {
+					found = nm
+					break
+				}
+			}
+			if found != "" {
+				break
+			}
+		}
+		if found != "" {
+			a.ask(o.n, o.outer, found, dirOperandWhy(o.prog), "program", o.prog)
+		}
+	}
+}
+
+// dirOperandWhy says why a directory operand of prog needs approval.
+func dirOperandWhy(prog string) string {
+	return prog + " compares the files in a directory, and follows the symlinks in it out of the read roots"
+}
+
+func isDir(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.IsDir()
 }
 
 // globExpand returns the names pat matches from dir, as relative or absolute

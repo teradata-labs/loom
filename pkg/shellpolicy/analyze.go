@@ -193,9 +193,10 @@ type analyzer struct {
 
 	// paths and cds are judged by finishPaths, once every directory the
 	// command can change to is known.
-	paths []pathCheck
-	cds   []cdTarget
-	globs []globCheck
+	paths  []pathCheck
+	cds    []cdTarget
+	globs  []globCheck
+	dirOps []dirOperand
 	// tooManyCds is set once the command has more than maxCdTargets cd or
 	// pushd targets; the targets past the limit are not recorded.
 	tooManyCds bool
@@ -449,6 +450,9 @@ func (a *analyzer) program(x *syntax.CallExpr, nameWord *syntax.Word, name strin
 				a.readPath(dir, w, outer)
 				if a.opt.Static {
 					a.staticGlob(w, outer)
+					if prof.NoDirOperands {
+						a.dirOperand(globPattern(w), true, name, w, outer)
+					}
 				}
 			} else if a.opt.Static {
 				a.add(Deny, w, outer, wordText(w), "an argument computed at run time (tilde, parameter or command substitution) cannot be path-checked")
@@ -472,6 +476,9 @@ func (a *analyzer) program(x *syntax.CallExpr, nameWord *syntax.Word, name strin
 	}
 	for _, c := range prof.pathCandidates(lits) {
 		a.readPath(c, x, outer)
+		if prof.NoDirOperands {
+			a.dirOperand(c, false, name, x, outer)
+		}
 	}
 }
 
