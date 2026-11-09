@@ -274,6 +274,14 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (_ *Respons
 		return nil, leaseErr
 	}
 
+	// Error-triggered lesson recall, mirroring the conversation loop and
+	// ResumeChat. dispatchOneCall fills st.errTexts on every path that shares
+	// it, so without this drain a crash-resumed batch's failures would collect
+	// lesson evidence and silently drop it before the model's retry turn.
+	if len(st.errTexts) > 0 {
+		a.injectErrorLessons(agentCtx, sess, st.errTexts)
+	}
+
 	// Every call in the tail batch is now resolved (backfilled, or
 	// dispatched), so the step carries no further replay value once its rows
 	// are durable.
