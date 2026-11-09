@@ -132,7 +132,10 @@ func (e *ForkJoinExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 func (e *ForkJoinExecutor) executeFork(ctx context.Context, workflowID string) ([]*loomv1.AgentResult, map[string]string, error) {
 	var wg sync.WaitGroup
 	var modelsMu sync.Mutex
-	resultsChan := make(chan *loomv1.AgentResult, len(e.pattern.AgentIds))
+	// Each branch writes its own slot, so results keep the configured order
+	// whatever order the branches finish in. Callers map results back to
+	// their agents by index.
+	results := make([]*loomv1.AgentResult, len(e.pattern.AgentIds))
 	errorsChan := make(chan error, len(e.pattern.AgentIds))
 	modelsUsed := make(map[string]string)
 
@@ -190,20 +193,13 @@ func (e *ForkJoinExecutor) executeFork(ctx context.Context, workflowID string) (
 				modelsUsed[id] = model
 				modelsMu.Unlock()
 			}
-			resultsChan <- result
+			results[branchIdx] = result
 		}(idx, agentID)
 	}
 
 	// Wait for all goroutines to complete
 	wg.Wait()
-	close(resultsChan)
 	close(errorsChan)
-
-	// Collect results
-	results := make([]*loomv1.AgentResult, 0, len(e.pattern.AgentIds))
-	for result := range resultsChan {
-		results = append(results, result)
-	}
 
 	// Check for errors
 	errs := make([]error, 0)
@@ -300,10 +296,7 @@ func (e *ForkJoinExecutor) executeAgentWithSpan(ctx context.Context, workflowID 
 func (e *ForkJoinExecutor) mergeResults(ctx context.Context, workflowID string, results []*loomv1.AgentResult) (string, error) {
 	switch e.pattern.MergeStrategy {
 	case loomv1.MergeStrategy_FIRST:
-		if len(results) > 0 {
-			return results[0].Output, nil
-		}
-		return "", nil
+		return firstSuccessfulOutput(results), nil
 
 	case loomv1.MergeStrategy_CONCATENATE:
 		var builder strings.Builder
@@ -470,4 +463,20 @@ func truncateForLog(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// firstSuccessfulOutput is the FIRST merge: the output of the first
+// configured agent that did not fail. Results are in configured order, so a
+// failed agent 0 would otherwise make its error text the workflow's answer.
+// If every agent failed, it returns the first result's output.
+func firstSuccessfulOutput(results []*loomv1.AgentResult) string {
+	for _, r := range results {
+		if r != nil && r.Metadata["error"] == "" {
+			return r.Output
+		}
+	}
+	if len(results) > 0 && results[0] != nil {
+		return results[0].Output
+	}
+	return ""
 }

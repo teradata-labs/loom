@@ -135,6 +135,39 @@ func TestRegistry_CreateLLMProvider_LiteLLM(t *testing.T) {
 	assert.Equal(t, "openai/test-model", provider.Model())
 }
 
+func TestRegistry_CreateLLMProvider_BedrockMantle(t *testing.T) {
+	registry, _ := createTestRegistry(t)
+	t.Setenv("BEDROCK_MANTLE_REGION", "us-west-2")
+	t.Setenv("BEDROCK_MANTLE_API_KEY", "ABSKtest")
+	t.Setenv("BEDROCK_MANTLE_ENDPOINT", "")
+
+	provider, err := registry.createLLMProvider(&loomv1.LLMConfig{
+		Provider:  "bedrock-mantle",
+		Model:     "anthropic.claude-haiku-4-5",
+		MaxTokens: 2048,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, provider)
+	assert.Equal(t, "bedrock-mantle", provider.Name())
+	assert.Equal(t, "anthropic.claude-haiku-4-5", provider.Model())
+}
+
+func TestRegistry_CreateLLMProvider_BedrockMantle_MissingRegion(t *testing.T) {
+	registry, _ := createTestRegistry(t)
+	t.Setenv("BEDROCK_MANTLE_REGION", "")
+	t.Setenv("BEDROCK_MANTLE_ENDPOINT", "")
+	t.Setenv("BEDROCK_MANTLE_API_KEY", "ABSKtest")
+	t.Setenv("AWS_REGION", "")
+
+	_, err := registry.createLLMProvider(&loomv1.LLMConfig{
+		Provider: "bedrock-mantle",
+		Model:    "anthropic.claude-haiku-4-5",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "region is required")
+}
+
 func TestRegistry_LoadAgents(t *testing.T) {
 	registry, tmpDir := createTestRegistry(t)
 	ctx := context.Background()
@@ -163,6 +196,53 @@ func TestRegistry_LoadAgents(t *testing.T) {
 	assert.Contains(t, registry.configs, "agent1")
 	assert.Contains(t, registry.configs, "agent2")
 	registry.mu.RUnlock()
+}
+
+// TestRegistry_LoadAgents_BedrockMantleYAML is a regression test for the agent
+// YAML provider allowlist: an agent with `llm: provider: bedrock-mantle` must go
+// through LoadAgents (LoadAgentConfig + ValidateAgentConfig) and be creatable,
+// not be skipped as an unsupported provider.
+func TestRegistry_LoadAgents_BedrockMantleYAML(t *testing.T) {
+	registry, tmpDir := createTestRegistry(t)
+	ctx := context.Background()
+
+	empty := filepath.Join(tmpDir, "empty-aws")
+	require.NoError(t, os.WriteFile(empty, nil, 0600))
+	t.Setenv("AWS_CONFIG_FILE", empty)
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", empty)
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+	t.Setenv("BEDROCK_MANTLE_REGION", "us-west-2")
+	t.Setenv("BEDROCK_MANTLE_ENDPOINT", "")
+	t.Setenv("BEDROCK_MANTLE_API_KEY", "ABSKtest")
+
+	agentsDir := filepath.Join(tmpDir, "agents")
+	require.NoError(t, os.MkdirAll(agentsDir, 0755))
+	yaml := `apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: mantle_agent
+  description: Agent on the bedrock-mantle provider
+spec:
+  system_prompt: You are a test assistant
+  llm:
+    provider: bedrock-mantle
+    model: anthropic.claude-haiku-4-5
+    max_tokens: 2048
+    temperature: 0.5
+`
+	require.NoError(t, os.WriteFile(filepath.Join(agentsDir, "mantle_agent.yaml"), []byte(yaml), 0600))
+
+	require.NoError(t, registry.LoadAgents(ctx))
+
+	registry.mu.RLock()
+	cfg, ok := registry.configs["mantle_agent"]
+	registry.mu.RUnlock()
+	require.True(t, ok, "agent with provider bedrock-mantle was skipped by LoadAgents")
+	assert.Equal(t, "bedrock-mantle", cfg.GetLlm().GetProvider())
+
+	ag, err := registry.CreateAgent(ctx, "mantle_agent")
+	require.NoError(t, err)
+	require.NotNil(t, ag)
 }
 
 func TestRegistry_CreateAgent(t *testing.T) {

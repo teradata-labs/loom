@@ -47,6 +47,21 @@ proto-format:
 proto-format-check:
     buf format --diff --exit-code
 
+# Regenerate NOTICE and THIRD-PARTY-NOTICES.md from the shipped binaries' deps
+notices:
+    @echo "Generating third-party notices..."
+    @GOWORK=off go run ./cmd/gen-notices
+
+# Fail if the committed notices no longer match the dependency tree
+notices-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! GOWORK=off go run ./cmd/gen-notices -check; then
+        echo "::error::Third-party notices are out of date. Run 'just notices' and commit."
+        exit 1
+    fi
+    echo "✅ Third-party notices are up to date"
+
 # Verify proto generation is up to date
 proto-gen-check: proto
     #!/usr/bin/env bash
@@ -289,7 +304,7 @@ build-bin name:
 
 # Run go vet
 vet:
-    go vet ./...
+    go vet $(go list ./... | grep -v /third_party/)
 
 # Run linter
 lint:
@@ -297,14 +312,14 @@ lint:
 
 # Format code
 fmt:
-    gofmt -s -w .
-    goimports -w .
+    find . -name '*.go' -not -path './vendor/*' -not -path './gen/*' -not -path './third_party/*' -exec gofmt -s -w {} +
+    find . -name '*.go' -not -path './vendor/*' -not -path './gen/*' -not -path './third_party/*' -exec goimports -w {} +
 
 # Check code formatting (fails if unformatted files exist)
 fmt-check:
     #!/usr/bin/env bash
     set -euo pipefail
-    unformatted=$(find . -name '*.go' -not -path './vendor/*' -not -path './gen/*' -exec gofmt -l {} +)
+    unformatted=$(find . -name '*.go' -not -path './vendor/*' -not -path './gen/*' -not -path './third_party/*' -exec gofmt -l {} +)
     if [ -n "$unformatted" ]; then
         echo "The following files need formatting:"
         echo "$unformatted"
@@ -325,7 +340,7 @@ deps:
 # Run security scanner
 security:
     @echo "Running security scan..."
-    @gosec -exclude-dir=gen -fmt=text ./...
+    @gosec -exclude-dir=gen -exclude-dir=third_party -fmt=text ./...
 
 # Clean build artifacts
 [confirm("Remove build outputs, binaries under LOOM_BIN_DIR (default ~/.local/bin), all Loom data under LOOM_DATA_DIR (default ~/.loom), and stop looms processes? Non-interactive: just --yes clean")]
@@ -413,7 +428,7 @@ lme-rig-test:
     LME_RIG_STRICT=1 bash deploy/longmemeval/render-test.sh
     LME_RIG_STRICT=1 bash deploy/longmemeval/slice-loop-test.sh
 
-check: proto-lint proto-format-check proto-gen-check generate-weaver fmt-check vet lint test build security interop
+check: proto-lint proto-format-check proto-gen-check notices-check generate-weaver fmt-check vet lint test build security interop
     @echo "✅ All checks passed! (matches GitHub CI)"
 
 # Watch for changes and run tests

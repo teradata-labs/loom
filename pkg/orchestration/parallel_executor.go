@@ -126,7 +126,10 @@ func (e *ParallelExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 func (e *ParallelExecutor) executeParallel(ctx context.Context) ([]*loomv1.AgentResult, map[string]string, error) {
 	var wg sync.WaitGroup
 	var modelsMu sync.Mutex
-	resultsChan := make(chan *loomv1.AgentResult, len(e.pattern.Tasks))
+	// Each branch writes its own slot, so results keep the configured order
+	// whatever order the branches finish in. Callers map results back to
+	// their agents by index.
+	results := make([]*loomv1.AgentResult, len(e.pattern.Tasks))
 	errorsChan := make(chan error, len(e.pattern.Tasks))
 	modelsUsed := make(map[string]string)
 
@@ -186,20 +189,13 @@ func (e *ParallelExecutor) executeParallel(ctx context.Context) ([]*loomv1.Agent
 				modelsUsed[t.AgentId] = model
 				modelsMu.Unlock()
 			}
-			resultsChan <- result
+			results[taskIndex] = result
 		}(i, task)
 	}
 
 	// Wait for all goroutines to complete
 	wg.Wait()
-	close(resultsChan)
 	close(errorsChan)
-
-	// Collect results
-	results := make([]*loomv1.AgentResult, 0, len(e.pattern.Tasks))
-	for result := range resultsChan {
-		results = append(results, result)
-	}
 
 	// Check for errors
 	errs := make([]error, 0)
@@ -393,10 +389,7 @@ func (e *ParallelExecutor) executeTaskWithLeveling(ctx context.Context, task *lo
 func (e *ParallelExecutor) mergeResults(ctx context.Context, results []*loomv1.AgentResult) (string, error) {
 	switch e.pattern.MergeStrategy {
 	case loomv1.MergeStrategy_FIRST:
-		if len(results) > 0 {
-			return results[0].Output, nil
-		}
-		return "", nil
+		return firstSuccessfulOutput(results), nil
 
 	case loomv1.MergeStrategy_CONCATENATE:
 		var builder strings.Builder

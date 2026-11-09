@@ -114,6 +114,7 @@ looms-sqlite-test.yaml
 # Generated binaries in project root
 generate-weaver
 /loom-longmemeval
+/gen-notices
 
 # LongMemEval benchmark downloaded dataset (~285MB, fetched by
 # `loom-longmemeval download`). Not for source control.

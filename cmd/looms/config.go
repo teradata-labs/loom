@@ -27,6 +27,8 @@ import (
 	"github.com/spf13/viper"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
+	"github.com/teradata-labs/loom/pkg/decision/jev"
+	"github.com/teradata-labs/loom/pkg/llm/bedrockmantle"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/zalando/go-keyring"
@@ -112,6 +114,11 @@ type Config struct {
 	// Embedding configures vector embeddings for hybrid semantic memory search.
 	Embedding EmbeddingConfig `mapstructure:"embedding"`
 
+	// Decision holds the server-level settings of the typed decision layer
+	// (pkg/decision). Agent and judge configs choose the provider, model and
+	// bands; only this block (or TYPESAFE_BASE_URL) chooses the endpoint.
+	Decision DecisionServerConfig `mapstructure:"decision"`
+
 	// SkipEmbeddedAgents disables auto-installation of guide, weaver, and bundled
 	// skills into the agents/skills directories on startup. Set to true for runtime
 	// pods that should only serve the explicitly configured agent(s).
@@ -122,6 +129,46 @@ type Config struct {
 	// $LOOM_DATA_DIR/patterns when both are empty.
 	PatternsDir string `mapstructure:"patterns_dir"`
 }
+
+// DecisionServerConfig is the operator's decider endpoint. The endpoint
+// decides where the server's decider credential (TYPESAFE_API_KEY,
+// AI_GATEWAY_API_KEY, JEV_API_KEY) is sent, which is why agent and judge
+// configs cannot set it.
+//
+//	decision:
+//	  base_url: https://ai-gateway.vercel.sh/typesafe   # LOOM_DECISION_BASE_URL
+//	  allow_insecure_http: false                         # LOOM_DECISION_ALLOW_INSECURE_HTTP
+type DecisionServerConfig struct {
+	// BaseURL overrides TYPESAFE_BASE_URL and the provider defaults. Must be
+	// https.
+	BaseURL string `mapstructure:"base_url"`
+	// AllowInsecureHTTP permits an http:// endpoint on a loopback host (a
+	// local proxy or mock decider in development). Non-loopback http is
+	// refused even with it set.
+	AllowInsecureHTTP bool `mapstructure:"allow_insecure_http"`
+}
+
+// endpoint converts the block to the jev package's server endpoint.
+func (d DecisionServerConfig) endpoint() jev.ServerEndpoint {
+	return jev.ServerEndpoint{BaseURL: d.BaseURL, AllowInsecureHTTP: d.AllowInsecureHTTP}
+}
+
+// applyDecisionServerConfig installs the server-level decider endpoint for
+// this process. Every looms command runs it once the config is loaded, so
+// serve, workflow run and eval all build deciders against the same
+// operator-chosen endpoint.
+func applyDecisionServerConfig(c *Config) error {
+	if err := jev.SetServerEndpoint(c.Decision.endpoint()); err != nil {
+		return fmt.Errorf("%s: %w", decisionEndpointSources, err)
+	}
+	return nil
+}
+
+// decisionEndpointSources prefixes an endpoint error with where the value can
+// have come from, so an operator who set the environment variable, not the
+// YAML key, sees the name they used.
+const decisionEndpointSources = "decision.base_url (looms.yaml decision.base_url or LOOM_DECISION_BASE_URL; " +
+	"decision.allow_insecure_http is LOOM_DECISION_ALLOW_INSECURE_HTTP)"
 
 // EmbeddingConfig configures the vector embedding provider for hybrid memory search.
 // Once set, the model should not be changed without re-embedding (different models
@@ -338,6 +385,14 @@ type LLMConfig struct {
 	BedrockBearerToken     string `mapstructure:"bedrock_bearer_token"`      // From CLI/env/keyring only
 	BedrockProfile         string `mapstructure:"bedrock_profile"`
 	BedrockModelID         string `mapstructure:"bedrock_model_id"`
+
+	// Bedrock Mantle-specific (the bedrock-mantle endpoint). The region falls
+	// back to BedrockRegion; SigV4 credentials are shared with the Bedrock
+	// fields above (profile, access key, secret, session token).
+	BedrockMantleRegion   string `mapstructure:"bedrock_mantle_region"`
+	BedrockMantleEndpoint string `mapstructure:"bedrock_mantle_endpoint"`
+	BedrockMantleAPIKey   string `mapstructure:"bedrock_mantle_api_key"` // From CLI/env/keyring only
+	BedrockMantleModel    string `mapstructure:"bedrock_mantle_model"`
 
 	// SchedulerEnabled turns on the LLM slot scheduler: per-quota-scope
 	// admission where waiting is a state, not an error
@@ -766,6 +821,10 @@ type ToolsConfig struct {
 
 	// ShellExecute holds shell_execute tool configuration
 	ShellExecute ShellExecuteConfig `mapstructure:"shell_execute"`
+
+	// Lua holds the run_lua tool configuration (off by default). See
+	// lua_tools.go and docs/architecture/lua-script-engine.md.
+	Lua LuaToolsConfig `mapstructure:"lua"`
 }
 
 // ToolExecutorConfig holds tool executor settings.
@@ -1266,6 +1325,11 @@ func setDefaults() {
 	viper.SetDefault("skip_embedded_agents", false)
 	viper.SetDefault("patterns_dir", "")
 
+	// Decision layer server-level endpoint (registered so AutomaticEnv binds
+	// LOOM_DECISION_BASE_URL and LOOM_DECISION_ALLOW_INSECURE_HTTP).
+	viper.SetDefault("decision.base_url", "")
+	viper.SetDefault("decision.allow_insecure_http", false)
+
 	// Clarification defaults
 	viper.SetDefault("server.clarification.rpc_timeout_seconds", 5)
 	viper.SetDefault("server.clarification.channel_send_timeout_ms", 100)
@@ -1300,6 +1364,9 @@ func setDefaults() {
 	viper.SetDefault("llm.anthropic_model", "claude-sonnet-4-5-20250929")
 	viper.SetDefault("llm.bedrock_region", "us-west-2")
 	viper.SetDefault("llm.bedrock_model_id", "us.anthropic.claude-sonnet-4-5-20250929-v1:0") // Cross-region inference profile
+	viper.SetDefault("llm.bedrock_mantle_region", "")                                        // empty = inherit llm.bedrock_region
+	viper.SetDefault("llm.bedrock_mantle_endpoint", "")
+	viper.SetDefault("llm.bedrock_mantle_model", bedrockmantle.DefaultModel)
 	viper.SetDefault("llm.ollama_endpoint", "http://localhost:11434")
 	viper.SetDefault("llm.ollama_model", "llama3.1:8b")
 	viper.SetDefault("llm.openai_model", "gpt-4.1")
@@ -1407,6 +1474,7 @@ func setDefaults() {
 	// Default both false to preserve existing behavior.
 	viper.SetDefault("tools.minimal", false)
 	viper.SetDefault("tools.none", false)
+	setLuaDefaults()
 	// Check LOOM_YOLO environment variable
 	if os.Getenv("LOOM_YOLO") == "true" || os.Getenv("LOOM_YOLO") == "1" {
 		viper.Set("tools.permissions.yolo", true)
@@ -1501,6 +1569,16 @@ type SecretMapping struct {
 	IsSet      func(*Config) bool // Returns true if the value is already set (skip keyring lookup)
 }
 
+// mantleRegion returns the region the bedrock-mantle provider should use:
+// llm.bedrock_mantle_region when set, otherwise llm.bedrock_region (which
+// has a default), so a Bedrock user can switch provider without new config.
+func mantleRegion(l LLMConfig) string {
+	if l.BedrockMantleRegion != "" {
+		return l.BedrockMantleRegion
+	}
+	return l.BedrockRegion
+}
+
 // GetSecretMappings returns all secret mappings for the application.
 // Developers can extend this by adding new SecretMapping entries.
 func GetSecretMappings() []SecretMapping {
@@ -1529,6 +1607,11 @@ func GetSecretMappings() []SecretMapping {
 			KeyringKey: "bedrock_bearer_token",
 			Setter:     func(c *Config, val string) { c.LLM.BedrockBearerToken = val },
 			IsSet:      func(c *Config) bool { return c.LLM.BedrockBearerToken != "" },
+		},
+		{
+			KeyringKey: "bedrock_mantle_api_key",
+			Setter:     func(c *Config, val string) { c.LLM.BedrockMantleAPIKey = val },
+			IsSet:      func(c *Config) bool { return c.LLM.BedrockMantleAPIKey != "" },
 		},
 		{
 			KeyringKey: "hawk_api_key",
@@ -1796,6 +1879,10 @@ func (c *Config) Validate() error {
 		return err
 	}
 
+	if err := c.Decision.endpoint().Validate(); err != nil {
+		return fmt.Errorf("%s: %w", decisionEndpointSources, err)
+	}
+
 	// Validate LLM config
 	if c.LLM.Provider == "" {
 		return fmt.Errorf("llm.provider is required")
@@ -1816,6 +1903,14 @@ func (c *Config) Validate() error {
 		// - User might be using IAM role (default credentials chain)
 		// - User might be using environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
 		// The Bedrock client will handle auth validation at runtime
+
+	case bedrockmantle.ProviderName:
+		if mantleRegion(c.LLM) == "" {
+			return fmt.Errorf("bedrock-mantle region is required (set llm.bedrock_mantle_region or llm.bedrock_region in config, or LOOM_LLM_BEDROCK_MANTLE_REGION env var)")
+		}
+		// Credentials are not required here for the same reasons as bedrock:
+		// SigV4 may come from a profile, an IAM role or ambient AWS env vars, and
+		// the Bedrock API key is optional. The client validates at construction.
 
 	case "ollama":
 		if c.LLM.OllamaEndpoint == "" {
@@ -1860,7 +1955,7 @@ func (c *Config) Validate() error {
 		// endpoint and API key are optional — defaults apply
 
 	default:
-		return fmt.Errorf("unsupported LLM provider: %s (must be anthropic, bedrock, ollama, openai, azure-openai, mistral, gemini, huggingface, or litellm)", c.LLM.Provider)
+		return fmt.Errorf("unsupported LLM provider: %s (must be anthropic, bedrock, bedrock-mantle, ollama, openai, azure-openai, mistral, gemini, huggingface, or litellm)", c.LLM.Provider)
 	}
 
 	// Door admission knobs: a negative value is a configuration error, not a
@@ -2048,7 +2143,7 @@ server:
   # allow_assistant_override: false  # Set to true to honor WeaveRequest.replay_assistant_message (generation-free conversation replay only)
 
 llm:
-  # Provider options: anthropic, bedrock, ollama, openai, azure-openai, mistral
+  # Provider options: anthropic, bedrock, bedrock-mantle, ollama, openai, azure-openai, mistral, gemini, huggingface, litellm
   provider: anthropic
 
   # Anthropic configuration
@@ -2063,6 +2158,12 @@ llm:
   # bedrock_secret_access_key: set via keyring or env (LOOM_LLM_BEDROCK_SECRET_ACCESS_KEY)
   # bedrock_session_token: set via keyring or env (LOOM_LLM_BEDROCK_SESSION_TOKEN)
   # bedrock_bearer_token: set via keyring or env (AWS_BEARER_TOKEN_BEDROCK)
+
+  # AWS Bedrock Mantle configuration (bedrock-mantle endpoint; docs/reference/llm-bedrock-mantle.md)
+  # bedrock_mantle_region: us-west-2  # defaults to bedrock_region
+  # bedrock_mantle_model: anthropic.claude-haiku-4-5
+  # bedrock_mantle_endpoint: https://bedrock-mantle.us-west-2.api.aws  # PrivateLink override only
+  # bedrock_mantle_api_key: set via keyring (looms config set-key bedrock_mantle_api_key); empty = SigV4 via bedrock_profile or the AWS credential chain
 
   # Ollama configuration (local inference)
   ollama_endpoint: http://localhost:11434
@@ -2150,6 +2251,30 @@ tools:
     # Brave Search also excellent (2000 searches/month FREE)
     # DuckDuckGo works without API key (factual queries only, limited results)
 
+  # run_lua: lets the model run a short Lua script that calls its own tools
+  # through the same admission hooks as direct calls. Off by default; an agent
+  # must also list run_lua in tools.builtin, and must have tools.hooks or
+  # tools.permissions configured. The default tools.permissions.yolo: true
+  # counts as configured but admits every call the lua deny lists leave, so
+  # set a restrictive permission policy or hook before enabling this.
+  # lua:
+  #   enabled: false
+  #   limits:                       # zero = engine default; capped at the engine ceilings
+  #     wall_seconds: 120
+  #     cpu_ticks: 2000000000
+  #     memory_bytes: 134217728     # 128 MiB per run (total allocation); ceiling 512 MiB
+  #     max_tool_calls: 100
+  #     max_concurrent_runs: 0      # 0 = derived from the process memory limit
+  #     max_concurrent_runs_per_key: 2
+  #   tools:
+  #     allow: []                   # empty = every tool the model can see
+  #     deny: [shell_execute, shell_execute_sandbox, agent_management, project_manager, git_contribute, propose_skill_edit]
+  #     deny_for_shared: [http_request, web_browse, web_search, file_write, files, workspace]
+  #   scripts_dir: ""               # default <LOOM_DATA_DIR>/lua_scripts
+  #   scripts:
+  #     save_enabled: true          # agents listing manage_lua_scripts may save scripts
+  #     publish_as_tool_enabled: false  # allow publishing a script as a lua_<name> tool
+
 logging:
   level: info  # debug, info, warn, error
   format: text # text, json
@@ -2207,6 +2332,7 @@ mcp:
 #   looms config set-key anthropic_api_key
 #   looms config set-key bedrock_access_key_id
 #   looms config set-key bedrock_secret_access_key
+#   looms config set-key bedrock_mantle_api_key
 #   looms config set-key hawk_api_key
 #   looms config set-key brave_search_api_key
 #   looms config set-key tavily_api_key

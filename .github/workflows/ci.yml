@@ -102,7 +102,7 @@ jobs:
 
       - name: Run gofmt
         run: |
-          gofmt_output=$(find . -name '*.go' -not -path './vendor/*' -not -path './gen/*' -exec gofmt -l {} +)
+          gofmt_output=$(find . -name '*.go' -not -path './vendor/*' -not -path './gen/*' -not -path './third_party/*' -exec gofmt -l {} +)
           if [ -n "$gofmt_output" ]; then
             echo "The following files need formatting:"
             echo "$gofmt_output"
@@ -113,6 +113,19 @@ jobs:
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.9.0
+
+      # Attribution files are generated from the dependency tree, so any
+      # dependency bump can silently invalidate them. `just check` runs this,
+      # but a Dependabot PR never does — so without it in CI the committed
+      # NOTICE/THIRD-PARTY-NOTICES.md drift the moment a bump merges, and we
+      # ship legally inaccurate attribution.
+      - name: Check third-party notices are up to date
+        run: |
+          if ! GOWORK=off go run ./cmd/gen-notices -check; then
+            echo "::error::Third-party notices are out of date. Run 'just notices' and commit."
+            exit 1
+          fi
+          echo "Third-party notices are up to date"
 
       # The only regression tests for a runner that spends real Bedrock money
       # on multi-day runs. STRICT so a missing jq/pyyaml fails the job instead
@@ -353,6 +366,25 @@ jobs:
 
           echo "✅ Observability package fuzz tests completed" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Run fuzz tests (decision layer)
+        run: |
+          set -euo pipefail
+          go test -run=^$ -fuzz='^FuzzToValueRoundTrip$' -fuzztime=30s ./pkg/decision
+          go test -run=^$ -fuzz='^FuzzValidateState$' -fuzztime=30s ./pkg/decision
+          go test -run=^$ -fuzz='^FuzzParseAnswers$' -fuzztime=30s ./pkg/decision/llm
+          go test -run=^$ -fuzz='^FuzzExtractObject$' -fuzztime=30s ./pkg/decision/llm
+          go test -run=^$ -fuzz='^FuzzCheckEndpoint$' -fuzztime=30s ./pkg/decision/jev
+          go test -run=^$ -fuzz='^FuzzInferErrorTypeKeepsOriginalClasses$' -fuzztime=30s ./pkg/fabric
+
+          echo "✅ Decision layer fuzz tests completed" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run fuzz tests (luasandbox package)
+        run: |
+          set -euo pipefail
+          go test -tags fts5 -run=^$ -fuzz='^FuzzRun$' -fuzztime=30s ./pkg/luasandbox
+
+          echo "✅ Lua script engine fuzz tests completed" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Run fuzz tests with hawk (observability privacy)
         run: |
           set -euo pipefail
@@ -510,7 +542,7 @@ jobs:
       - name: Run Gosec Security Scanner
         uses: securego/gosec@5eb1d104ef85ff2c905c877eb600e8c1dee33a22 # v2.30.0
         with:
-          args: '-no-fail -fmt sarif -out results.sarif -exclude-dir=gen ./...'
+          args: '-no-fail -fmt sarif -out results.sarif -exclude-dir=gen -exclude-dir=third_party ./...'
 
       - name: Fix SARIF schema compliance
         run: |
