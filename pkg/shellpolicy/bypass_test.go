@@ -932,3 +932,51 @@ func TestAnalyze_FileFilesFrom(t *testing.T) {
 		{argv: []string{"file", "--files-from=l"}, block: "--files-from"},
 	})
 }
+
+// F3: jq's import and include load a module by path from the program text,
+// and modulemeta reads one, so a session symlink leads them out of the
+// roots (jq refuses .. itself). A program file (-f, --from-file) can hold
+// them too. Each is an Ask.
+func TestAnalyze_JqModules(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
+	runBypassCases(t, []bypassCase{
+		{cmd: `jq -n 'import "link/k" as $s; $s'`, want: Ask, static: Ask, why: "jq (1:1): jq import, include and modulemeta load modules by path"},
+		{cmd: `jq -n 'include "link/k"; .'`, want: Ask, static: Ask},
+		{cmd: `jq -n 'import # comment
+"link/k" as $s; $s'`, want: Ask, static: Ask},
+		{cmd: `jq -n --arg m lo/secret '$m | modulemeta'`, want: Ask, static: Ask},
+		{cmd: `jq -f prog.jq a.txt`, want: Ask, static: Ask, why: "-f is outside the profile"},
+		{cmd: `jq -nf prog.jq`, want: Ask, static: Ask},
+		{cmd: `jq --from-file prog.jq a.txt`, want: Ask, static: Ask, why: "--from-file is outside the profile"},
+		{cmd: `jq . a.txt; jq -r '.include, .imports, ."import"' a.txt; jq -n '"import"'; jq -L sub . a.txt`, want: Allow, static: Allow},
+	})
+	runLaunchCases(t, []launchCase{
+		{argv: []string{"jq", "-n", `import "link/k" as $s; $s`}, block: "jq import, include and modulemeta"},
+		{argv: []string{"jq", "-f", "prog.jq"}, block: "-f is outside the profile"},
+		{argv: []string{"jq", ".", "a.txt"}},
+	})
+}
+
+// jqUsesModule reads module words only where jq reads code.
+func TestJqUsesModule(t *testing.T) {
+	for src, want := range map[string]bool{
+		`import "a" as $a; .`:              true,
+		`include "a"; .`:                   true,
+		`import#c` + "\n" + `"a" as $a; .`: true,
+		`"x" | modulemeta`:                 true,
+		`"\("a" | modulemeta)"`:            true,
+		`"\\" | modulemeta`:                true,
+		`"\("\(1)") \(include)"`:           true,
+		`"import"`:                         false,
+		`.include, .imports, ."import"`:    false,
+		`$import, $__loc__`:                false,
+		`# import "a"` + "\n" + `.`:        false,
+		`"\"import\""`:                     false,
+		`{"include": 1} | .modulemeta`:     false,
+		`importx, xinclude, modulemeta2`:   false,
+	} {
+		assert.Equal(t, want, jqUsesModule(src), "jqUsesModule(%q)", src)
+	}
+}

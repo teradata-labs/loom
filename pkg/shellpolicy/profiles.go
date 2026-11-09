@@ -235,7 +235,10 @@ func Readonly() *Policy {
 	// are path-checked.
 	p.Programs["du"] = &Profile{MaxPositional: -1, RefuseShort: "L", RefuseLong: []string{"--files0-from", "--dereference"},
 		ShortWithValue: "XBdtI", pathShort: "X"}
-	p.Programs["jq"] = &Profile{MaxPositional: -1, ShortWithValue: "L", pathShort: "L"}
+	// jq's import, include and modulemeta load a module by path, which path
+	// confinement never sees; a program file (-f, --from-file) can hold them.
+	p.Programs["jq"] = &Profile{MaxPositional: -1, ShortWithValue: "L", pathShort: "L",
+		RefuseShort: "f", RefuseLong: []string{"--from-file"}, Check: jqCheck}
 	p.Programs["sort"] = &Profile{MaxPositional: -1, RefuseShort: "oT", ShortWithValue: "ktS",
 		RefuseLong: []string{"--output", "--compress-program", "--temporary-directory", "--files0-from"}}
 	p.Programs["uniq"] = &Profile{MaxPositional: 1, ShortWithValue: "fsw"}
@@ -314,6 +317,78 @@ func findCheck(args []string) string {
 		}
 	}
 	return ""
+}
+
+// jqModuleWords are the jq keywords and builtins that load a module file by
+// path: import and include in the program, and modulemeta at run time.
+var jqModuleWords = map[string]bool{"import": true, "include": true, "modulemeta": true}
+
+// jqCheck refuses a jq argument that uses a module: jq looks the path up
+// itself, so a symlink in the session leads it out of the read roots (jq
+// refuses ".." in the path, but not a symlink). Every argument is read as
+// jq code, because which one is the program depends on jq's options; a file
+// name such as include.json costs an approval, never a module load.
+func jqCheck(args []string) string {
+	for _, a := range args {
+		if jqUsesModule(a) {
+			return "jq import, include and modulemeta load modules by path, which path confinement does not see"
+		}
+	}
+	return ""
+}
+
+// jqUsesModule reports whether src, read as jq code, holds one of
+// jqModuleWords as a name: outside string literals and comments, and not a
+// field (.import) or a variable ($import). It follows string interpolation
+// (\(...)), whose code is checked too. It ends a comment at the newline, so
+// it reads at least as much code as jq does.
+func jqUsesModule(src string) bool {
+	var interp []int // paren depth at which each open interpolation ends
+	inStr := false
+	depth := 0
+	for i := 0; i < len(src); i++ {
+		c := src[i]
+		if inStr {
+			switch c {
+			case '\\':
+				if i+1 < len(src) && src[i+1] == '(' {
+					interp = append(interp, depth)
+					depth++
+					inStr = false
+				}
+				i++
+			case '"':
+				inStr = false
+			}
+			continue
+		}
+		switch {
+		case c == '#':
+			for i < len(src) && src[i] != '\n' {
+				i++
+			}
+		case c == '"':
+			inStr = true
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+			if n := len(interp); n > 0 && depth == interp[n-1] {
+				interp = interp[:n-1]
+				inStr = true
+			}
+		case c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z':
+			j := i
+			for j < len(src) && (src[j] == '_' || src[j] >= 'a' && src[j] <= 'z' || src[j] >= 'A' && src[j] <= 'Z' || src[j] >= '0' && src[j] <= '9') {
+				j++
+			}
+			if jqModuleWords[src[i:j]] && (i == 0 || (src[i-1] != '.' && src[i-1] != '$')) {
+				return true
+			}
+			i = j - 1
+		}
+	}
+	return false
 }
 
 // dateCheck refuses BSD date's positional time setting ("date 202601010000").
