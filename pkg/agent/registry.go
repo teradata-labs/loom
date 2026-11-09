@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/artifacts"
+	"github.com/teradata-labs/loom/pkg/decision"
 	"github.com/teradata-labs/loom/pkg/eventlog"
 	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
@@ -80,6 +81,7 @@ type Registry struct {
 	identityResolver  func(context.Context) string // Resolves AdmissionRequest.UserID from the call context
 	eventLog          eventlog.EventLogStore       // Attached to every agent built from config; nil leaves recording off
 	artifactStore     interface{}                  // artifacts.Store for workspace tool
+	runLuaTool        *RunLuaToolOptions           // run_lua wiring; nil when tools.lua is disabled
 
 	// providerPool is the server-level named provider pool injected by cmd_serve.go.
 	// Agents can reference pool entries by name in their LLM config (e.g., provider: "fast").
@@ -121,6 +123,11 @@ type Registry struct {
 	graphMemoryStore    memory.GraphMemoryStore
 	graphMemoryEmbedder memory.Embedder
 
+	// decisionShadowStore is the server-level store for typed-decision shadow
+	// rows (pkg/decision). Every agent built through buildAgent receives it
+	// with its DecisionConfig; nil means shadows are traced but not persisted.
+	decisionShadowStore decision.ShadowStore
+
 	// suppressedBuiltinTools is the server-level tool-surface policy. Each
 	// agent built through buildAgent receives WithoutBuiltinTool for every
 	// entry. Subsystems (extractor, task manager, error store) keep running
@@ -161,6 +168,11 @@ type RegistryConfig struct {
 	AdmissionChain    *shuttle.Chain               // Admission hook chain for tool-call admission
 	IdentityResolver  func(context.Context) string // Resolves AdmissionRequest.UserID from the call context
 	ArtifactStore     interface{}                  // artifacts.Store for workspace tool
+
+	// RunLuaTool, when set, makes run_lua available to agents that list it in
+	// tools.builtin (the server sets it only when tools.lua.enabled). nil
+	// leaves run_lua unregistered even when listed.
+	RunLuaTool *RunLuaToolOptions
 
 	// Database encryption (opt-in for enterprise deployments)
 	EncryptDatabase bool   // Enable SQLCipher encryption
@@ -227,6 +239,7 @@ func NewRegistry(config RegistryConfig) (*Registry, error) {
 		identityResolver:  config.IdentityResolver,
 		eventLog:          config.EventLogStore,
 		artifactStore:     config.ArtifactStore,
+		runLuaTool:        config.RunLuaTool,
 	}
 
 	// Load existing agents from database to restore GUIDs
@@ -288,6 +301,16 @@ func (r *Registry) SetGraphMemoryStore(store memory.GraphMemoryStore, embedder m
 	r.logger.Info("Graph memory store configured in registry",
 		zap.Bool("store_present", store != nil),
 		zap.Bool("embedder_present", embedder != nil))
+}
+
+// SetDecisionShadowStore configures the server-level decision shadow store.
+// Agents built afterwards persist their shadow comparisons to it.
+func (r *Registry) SetDecisionShadowStore(store decision.ShadowStore) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.decisionShadowStore = store
+	r.logger.Info("Decision shadow store configured in registry",
+		zap.Bool("store_present", store != nil))
 }
 
 // SetSuppressedBuiltinTools configures the server-level tool-surface policy.
@@ -596,6 +619,14 @@ func (r *Registry) CreateAgent(ctx context.Context, name string) (*Agent, error)
 
 // buildAgent creates an agent instance from proto configuration
 func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (*Agent, error) {
+	// Decision layer config is validated here as well as in
+	// ValidateAgentConfig: RegisterConfig accepts a config without
+	// validating it, and an agent-chosen decider endpoint must fail the
+	// build rather than be dropped quietly.
+	if err := decision.ValidateConfig(config.GetDecision()); err != nil {
+		return nil, fmt.Errorf("agent %q: %w", config.GetName(), err)
+	}
+
 	// Create LLM provider from config.
 	//
 	// AgentConfig.ActiveProvider is the named-pool selector for the primary
@@ -795,8 +826,13 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 	taskDec := r.taskDecomposer
 	gmStore := r.graphMemoryStore
 	gmEmbedder := r.graphMemoryEmbedder
+	shadowStore := r.decisionShadowStore
 	suppressedTools := append([]string(nil), r.suppressedBuiltinTools...)
 	r.mu.RUnlock()
+
+	// Decision layer: the agent resolves the configured decider against its
+	// own LLMs after options apply; nil config means off.
+	opts = append(opts, WithDecisionConfig(config.GetDecision(), shadowStore))
 	if taskMgr != nil {
 		tbCfg := config.GetMemory().GetTaskBoard()
 		if tbCfg == nil {
@@ -966,6 +1002,10 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 			if toolName == "manage_ephemeral_agents" {
 				continue
 			}
+			if toolName == RunLuaToolName {
+				r.registerRunLua(agent, config.Name)
+				continue
+			}
 			tool := builtin.ByName(toolName)
 			if tool != nil {
 				// Wrap with PromptAwareTool if prompts registry available
@@ -1000,7 +1040,9 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 		// No backward compatibility: tool_search must be explicitly listed in config
 
 		if shouldRegisterToolSearch {
-			st := toolregistry.NewSearchTool(r.toolRegistry)
+			// The agent's own decision layer (if any) travels with its
+			// SearchTool; the shared tool registry holds no router.
+			st := toolregistry.NewSearchTool(r.toolRegistry, agent.SearchToolOptions()...)
 			// Hide tools the agent's permission policy would refuse, so the model
 			// never discovers (and then calls) a disabled tool via tool_search.
 			// Read lazily so it reflects the checker regardless of wiring order.
@@ -2308,6 +2350,25 @@ func (r *Registry) Close() error {
 	return errors.Join(r.watcher.Close(), r.db.Close())
 }
 
+// WaitDecisionShadows blocks until every registered agent's in-flight
+// decision shadow evaluations have been recorded. Shadows run in background
+// goroutines detached from the turn that produced them, so a short-lived
+// process (looms workflow run) calls this before exit or it loses the rows
+// its last turn produced. A long-lived server never needs to.
+func (r *Registry) WaitDecisionShadows() {
+	r.mu.RLock()
+	agents := make([]*Agent, 0, len(r.agents))
+	for _, a := range r.agents {
+		if a != nil {
+			agents = append(agents, a)
+		}
+	}
+	r.mu.RUnlock()
+	for _, a := range agents {
+		a.WaitDecisionShadows()
+	}
+}
+
 // DB returns the registry's underlying SQLite handle. Exported so peer
 // services (e.g., the SkillsImportService) can construct their own
 // index.Store without re-opening the file. Read-only intent: callers
@@ -2793,4 +2854,29 @@ func removeFile(path string) error {
 		return nil
 	}
 	return err
+}
+
+// registerRunLua registers run_lua on an agent whose config lists it. It
+// stays unregistered when the server has Lua disabled, when the agent
+// suppresses it, and when the agent has no admission guard at all (fail
+// closed); each case is logged with its reason.
+func (r *Registry) registerRunLua(ag *Agent, agentName string) {
+	if r.runLuaTool == nil {
+		r.logger.Info("run_lua listed but tools.lua.enabled is false; not registered",
+			zap.String("agent", agentName))
+		return
+	}
+	err := ag.RegisterRunLuaTool(*r.runLuaTool)
+	switch {
+	case err == nil:
+		r.logger.Info("Registered run_lua", zap.String("agent", agentName))
+	case errors.Is(err, ErrLuaNoGuards):
+		r.logger.Warn("run_lua not registered: the agent has no admission chain and no permission checker, "+
+			"so scripts would run unguarded; configure tools.hooks or tools.permissions",
+			zap.String("agent", agentName))
+	case errors.Is(err, ErrLuaToolSuppressed):
+		r.logger.Info("run_lua suppressed on this agent; not registered", zap.String("agent", agentName))
+	default:
+		r.logger.Warn("run_lua not registered", zap.String("agent", agentName), zap.Error(err))
+	}
 }

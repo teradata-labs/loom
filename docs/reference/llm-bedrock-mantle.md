@@ -94,6 +94,8 @@ llm:
 
 Under `looms serve`, the agent block selects the provider and model; region, endpoint and credentials come from the server's `llm.bedrock_mantle_*` and `llm.bedrock_*` settings above. When the agent registry is used directly from Go (without `looms`), it reads only environment variables: `BEDROCK_MANTLE_REGION` (then `AWS_REGION`), `BEDROCK_MANTLE_ENDPOINT`, `BEDROCK_MANTLE_API_KEY`, and the default AWS credential chain (`AWS_PROFILE`, env keys, SSO, IAM role) for SigV4.
 
+The same applies to agent YAML that `looms serve` loads from `$LOOM_DATA_DIR/agents/` at startup, for `llm`, `compressor_llm` and `classifier_llm`: the agent block selects the provider and model, and region, endpoint and credentials come from the server settings above. If the client cannot be built (for example, no region and no endpoint is set), `looms serve` logs an error and does not start that agent. It does not run the agent on the server's default LLM or on the primary LLM, as it does for other providers, because that would send the traffic outside the AWS account.
+
 ### Directly (Go)
 
 ```go
@@ -158,7 +160,7 @@ Claude is not served on Chat Completions (400 "does not support the '/v1/chat/co
 | Guardrails, cross-region profiles, prompt routing | ❌ not offered on Mantle | ❌ |
 | OpenAI Responses API | ❌ not implemented (Loom's openai client speaks Chat Completions) | ❌ |
 
-Under load, Mantle queues rather than rejecting: 60 concurrent Haiku requests from one client all returned 200 with a p50 of 0.67 seconds and no `retry-after` or rate-limit headers. Loom's client-side rate limiter still applies when configured, but has nothing to read from Mantle's responses at that load.
+Under load, Mantle queues rather than rejecting: 60 concurrent Haiku requests from one client all returned 200 with a p50 of 0.67 seconds and no `retry-after` or rate-limit headers. Loom's client-side rate limiter still applies when configured, but has nothing to read from Mantle's responses at that load. When a rate limiter is configured (agent YAML loaded by the agent registry or by `looms serve`), a Mantle 500, 502, 503, 504 or 529 that arrives before any content streams is retried under the limiter's budget and backoff, the same as a 429. The provider factory passes no limiter, so on that path the error surfaces on the first attempt, as it does for every other provider.
 
 ## Cost accounting
 
