@@ -350,3 +350,56 @@ func TestAuxUsage_AddResultCost(t *testing.T) {
 		})
 	}
 }
+
+// A swarm tie calls the judge agent, and an unmatched judge answer calls it
+// again under the retry policy. Both judge turns are calls of the run.
+func TestSwarmCost_CountsJudgeAndJudgeRetries(t *testing.T) {
+	tests := []struct {
+		name         string
+		judgeReplies []string
+		wantDecision string
+		wantCalls    int32
+		wantTokens   int32
+	}{
+		{
+			name:         "judge breaks the tie",
+			judgeReplies: []string{"PostgreSQL"},
+			wantDecision: "PostgreSQL",
+			wantCalls:    3,   // 2 votes + 1 judge turn
+			wantTokens:   500, // 200 + 200 + 100
+		},
+		{
+			name:         "judge retried once",
+			judgeReplies: []string{"I think SQLite would be better", "PostgreSQL"},
+			wantDecision: "PostgreSQL",
+			wantCalls:    4,   // 2 votes + judge + judge retry
+			wantTokens:   600, // 200 + 200 + 100 + 100
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			o := NewOrchestrator(Config{Logger: zaptest.NewLogger(t), Tracer: observability.NewNoOpTracer()})
+			o.RegisterAgent("voter1", scriptedAgent(t, "voter1", 200, "VOTE: PostgreSQL\nCONFIDENCE: 0.9\nREASONING: Best for OLTP"))
+			o.RegisterAgent("voter2", scriptedAgent(t, "voter2", 200, "VOTE: MySQL\nCONFIDENCE: 0.9\nREASONING: Simpler to manage"))
+			o.RegisterAgent("judge", scriptedAgent(t, "judge", 100, tt.judgeReplies...))
+
+			result, err := o.ExecutePattern(context.Background(), &loomv1.WorkflowPattern{
+				Pattern: &loomv1.WorkflowPattern_Swarm{Swarm: &loomv1.SwarmPattern{
+					Question:            "Which database?",
+					AgentIds:            []string{"voter1", "voter2"},
+					Strategy:            loomv1.VotingStrategy_MAJORITY,
+					ConfidenceThreshold: 0.5,
+					JudgeAgentId:        "judge",
+					RetryPolicy:         &loomv1.OutputRetryPolicy{MaxRetries: 1},
+				}},
+			})
+			require.NoError(t, err, "the swarm must reach a decision")
+			require.Equal(t, tt.wantDecision, result.MergedOutput, "precondition: the judge decided the tie")
+
+			assert.Equal(t, tt.wantCalls, result.Cost.LlmCalls, "llm_calls must include every judge turn")
+			assert.Equal(t, tt.wantTokens, result.Cost.TotalTokens, "total_tokens must include every judge turn")
+			assert.InDelta(t, float64(tt.wantTokens)/10000, result.Cost.TotalCostUsd, 1e-9, "total_cost_usd must include every judge turn")
+		})
+	}
+}
