@@ -812,3 +812,101 @@ func TestAnalyze_FindFiles0From(t *testing.T) {
 		{argv: []string{"find", "-files0-from", "l"}, block: "-files0-from is outside the profile"},
 	})
 }
+
+// The tests below hold the findings from the third PR #430 review
+// (Josh-Schoen, F1-F4, at 76bce862).
+
+// gitSession is escapeSession plus a repository: w/.git with info/ and a
+// config, a bare repository w/meta (no .git in its name: git knows it by
+// HEAD, objects/ and refs/), and symlinks w/cfg to .git/config and w/gd to
+// .git.
+func gitSession(t *testing.T) Options {
+	t.Helper()
+	opt, _ := escapeSession(t)
+	w := opt.WorkingDir
+	for _, d := range []string{".git/info", ".git/objects", ".git/refs", "meta/objects", "meta/refs"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(w, d), 0o700))
+	}
+	for _, f := range []string{".git/config", ".git/HEAD", "meta/HEAD", "meta/config"} {
+		require.NoError(t, os.WriteFile(filepath.Join(w, f), []byte("x\n"), 0o600))
+	}
+	require.NoError(t, os.Symlink(filepath.Join(w, ".git", "config"), filepath.Join(w, "cfg")))
+	require.NoError(t, os.Symlink(".git", filepath.Join(w, "gd")))
+	return opt
+}
+
+// F1: a file the command writes into a git directory changes what git runs:
+// .git/info/attributes and core.attributesFile name a filter, .git/config
+// defines it, and gitHarden's --attr-source replaces only the worktree's
+// attributes. git 2.50.1 with gitHarden's prefix ran a clean filter from
+// .git/info/attributes. A write into a git directory is an Ask in both
+// modes, granting that path; the run-time CheckOpen refuses it unless the
+// path was granted. git's own writes (the index) are not the command's.
+func TestAnalyze_WriteIntoGitDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
+	opt := gitSession(t)
+	w := opt.WorkingDir
+	pol := Readonly()
+	for _, tc := range []struct {
+		cmd  string
+		want VerdictKind
+		why  string
+	}{
+		{cmd: `printf '* filter=x\n' > .git/info/attributes`, want: Ask, why: ".git/info/attributes (1:23): writes into a git directory"},
+		{cmd: `printf '[filter "x"]\n\tclean = touch pwned\n' >> .git/config`, want: Ask, why: "writes into a git directory"},
+		{cmd: `echo x > sub/../.git/config`, want: Ask},
+		{cmd: `echo x > cfg`, want: Ask},
+		{cmd: `echo x > gd/info/attributes`, want: Ask},
+		{cmd: `echo x > .git/new-file`, want: Ask},
+		{cmd: `echo x > meta/config`, want: Ask, why: "meta/config (1:8): writes into a git directory"},
+		{cmd: `cd .git && echo x > config`, want: Ask},
+		{cmd: `echo x > .git`, want: Ask},
+		{cmd: `echo x > .gitattributes; echo x > .github; echo x > sub/x.git; echo x > a.txt; cat .git/config`, want: Allow},
+	} {
+		for _, static := range []bool{false, true} {
+			o := opt
+			o.Static = static
+			v := pol.Analyze(tc.cmd, o)
+			if !assert.Equal(t, tc.want, v.Kind, "%q (static=%v): %s", tc.cmd, static, v.Reason()) {
+				continue
+			}
+			if tc.why != "" {
+				assert.Contains(t, v.Reason(), tc.why, "%q (static=%v)", tc.cmd, static)
+			}
+			if v.Kind == Ask {
+				require.NotNil(t, v.Grant, "%q: an Ask carries a grant", tc.cmd)
+				assert.NotEmpty(t, v.Grant.WritePaths, "%q: the grant names the path written", tc.cmd)
+			}
+		}
+	}
+	v := pol.Analyze(`echo x > .git/info/attributes`, opt)
+	require.NotNil(t, v.Grant)
+	assert.Equal(t, []string{filepath.Join(w, ".git", "info", "attributes")}, v.Grant.WritePaths, "the grant is the resolved path")
+
+	for _, tc := range []struct {
+		path  string
+		grant *Grant
+		block string
+	}{
+		{path: ".git/info/attributes", block: "writes into a git directory"},
+		{path: "cfg", block: "writes into a git directory"},
+		{path: "meta/config", block: "writes into a git directory"},
+		{path: ".git/info/attributes", grant: &Grant{WritePaths: []string{filepath.Join(w, ".git", "info", "attributes")}}},
+		{path: ".git/config", grant: &Grant{WritePaths: []string{filepath.Join(w, ".git", "info", "attributes")}}, block: "writes into a git directory"},
+		{path: ".git/config", grant: &Grant{ReadPaths: []string{w}}, block: "writes into a git directory"},
+		{path: "a.txt"},
+		{path: ".gitattributes"},
+	} {
+		err := pol.CheckOpen(tc.path, w, true, opt.Roots, tc.grant)
+		if tc.block == "" {
+			assert.NoError(t, err, "write %s (grant %+v)", tc.path, tc.grant)
+			continue
+		}
+		assert.ErrorContains(t, err, tc.block, "write %s (grant %+v)", tc.path, tc.grant)
+	}
+	assert.NoError(t, pol.CheckOpen(".git/config", w, false, opt.Roots, nil), "reading .git/config is not a write")
+	merged := MergeGrants([]any{&Grant{WritePaths: []string{"/a"}}, &Grant{WritePaths: []string{"/a", "/b"}}})
+	assert.Equal(t, []string{"/a", "/b"}, merged.WritePaths, "MergeGrants keeps each write path once")
+}

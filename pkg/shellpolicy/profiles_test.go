@@ -113,7 +113,9 @@ func TestGitProfile(t *testing.T) {
 func TestGitHarden(t *testing.T) {
 	git := Readonly().Programs["git"]
 	prefix := []string{"-c", "core.fsmonitor=false", "-c", "core.pager=cat", "-c", "core.hooksPath=/dev/null",
-		"-c", "diff.external=", "--no-pager", "--attr-source=" + EmptyTreeHash}
+		"-c", "diff.external=", "-c", "core.attributesFile=/dev/null",
+		"-c", "log.showSignature=false", "-c", "gpg.program=gpg", "-c", "gpg.ssh.program=ssh-keygen",
+		"-c", "gpg.x509.program=gpgsm", "--no-pager", "--attr-source=" + EmptyTreeHash}
 	assert.Equal(t, append(append([]string{}, prefix...), "status", "-s"), git.Harden(fields("status -s")))
 	assert.Equal(t, append(append([]string{}, prefix...), "-C", "sub", "log", "--no-ext-diff", "--no-textconv", "-p"),
 		git.Harden(fields("-C sub log -p")))

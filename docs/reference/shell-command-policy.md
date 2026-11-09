@@ -80,6 +80,7 @@ A word is **literal** when it has no parameter, command, arithmetic or process e
 | a path argument built from `~`, a parameter (`$HOME`, `${X}`) or a command or process substitution, for a program whose arguments are paths | `runtime`: no verdict (the runner checks the expanded path). `static`: Deny |
 | a literal `cd` or `pushd` target outside the read roots | Ask, granting the resolved path |
 | a write redirect (`>`, `>>`, `>\|`, `&>`, `&>>`, `<>`, `>& file`) to a literal path outside the write roots | Deny |
+| a write redirect to a literal path inside the write roots that lies in a git directory: a component named `.git`, or an ancestor that git takes for a repository (a `HEAD` file and `objects` and `refs` directories, such as a bare repository), judged after symlinks are resolved | Ask in both modes, granting that exact resolved path (`Grant.WritePaths`). A file written there can define a filter in the config and name it in `info/attributes` or `core.attributesFile`, and git runs it (see the git profile) |
 | a write redirect, a read redirect or a `<&`/`>&` target that is computed | `static` only: Deny |
 | a read redirect (`<`, `<& file`) from outside the read roots | Ask, granting the resolved path |
 | `/dev/null`, `/dev/stdin`, `/dev/stdout`, `/dev/stderr` | always allowed |
@@ -170,10 +171,11 @@ On Ask, `Decision.Grant` is a `*shellpolicy.Grant`:
 
 ```go
 type Grant struct {
-    Programs  []string // names or exact paths that may run, with any arguments, for this call
-    Builtins  []string
-    ReadPaths []string // resolved paths that may be read, with everything beneath them
-    Env       []string // variables the command sets that change what runs (no run-time check reads this yet)
+    Programs   []string // names or exact paths that may run, with any arguments, for this call
+    Builtins   []string
+    ReadPaths  []string // resolved paths that may be read, with everything beneath them
+    WritePaths []string // exact resolved paths in a git directory that may be written
+    Env        []string // variables the command sets that change what runs (no run-time check reads this yet)
 }
 ```
 
@@ -216,12 +218,16 @@ When the Ask is approved, the tool body reads the grants with `shellpolicy.Merge
 - **Hardening.** Under `static` enforcement no runner applies this hardening, so `git` is denied there. `Profile.Harden` prepends the following at run time, and adds `--no-ext-diff --no-textconv` to `diff`, `log` and `show`:
 
   ```
-  -c core.fsmonitor=false -c core.pager=cat -c core.hooksPath=/dev/null -c diff.external= --no-pager --attr-source=4b825dc642cb6eb9a060e54bf8d69288fbee4904
+  -c core.fsmonitor=false -c core.pager=cat -c core.hooksPath=/dev/null -c diff.external= -c core.attributesFile=/dev/null -c log.showSignature=false -c gpg.program=gpg -c gpg.ssh.program=ssh-keygen -c gpg.x509.program=gpgsm --no-pager --attr-source=4b825dc642cb6eb9a060e54bf8d69288fbee4904
   ```
 
 - **Environment.** `Profile.Env` sets `GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 GIT_OPTIONAL_LOCKS=0`.
 
-With the hardening applied, git 2.50.1 ran no program from the repository's own config (fsmonitor, pager, external diff, clean filter, textconv). The measurement is design Probe 9.
+With the hardening applied, git 2.50.1 ran no program from the repository's own config for fsmonitor, the pager, an external diff, textconv, or a clean filter named in the worktree's `.gitattributes` (design Probe 9). The hardening does **not** stop every filter:
+
+- `--attr-source` replaces only the worktree's attributes. A filter named in `$GIT_DIR/info/attributes` still runs: with this prefix, git 2.50.1 ran a `clean` filter from `.git/info/attributes` on `git diff` (PR #430 review F1). No option drops that file without naming the filter, so a write into a git directory is an Ask (see "Paths and redirects"). A repository that already holds such a file and filter when the command starts is not covered.
+- `-c core.attributesFile=/dev/null` drops an attributes file the config names. Without it, git 2.50.1 ran the filter.
+- `-c log.showSignature=false` and the three `gpg.*program` defaults stop `git log` and `git show` from running a signature program the config names. Without them, a repository config that set `log.showSignature`, `gpg.ssh.program` and `gpg.ssh.allowedSignersFile` made git 2.50.1 run its program on `git log` for a signed commit. `--show-signature` then runs the system `gpg`, `ssh-keygen` or `gpgsm`.
 
 `Policy.Extend(name, allow, never)` derives a policy. Added programs get path confinement only. A program on both lists is never allowed. `Policy.Validate` rejects a policy with no name, an allowlisted name containing `/`, or a name that is both allowed and never allowed.
 
@@ -233,7 +239,7 @@ These are for a runner that executes the command and sees each launch with its e
 |---|---|
 | `CheckLaunch(argv, dir, roots, grant)` | one program launch: the never list, the current directory, the grant, the allowlist, the profile, and path confinement |
 | `CheckBuiltin(name, grant)` | a builtin |
-| `CheckOpen(path, dir, write, roots, grant)` | a file the shell opens (a redirect or `source`). A read grant never covers a write. |
+| `CheckOpen(path, dir, write, roots, grant)` | a file the shell opens (a redirect or `source`). A read grant never covers a write. A write into a git directory needs its exact resolved path in `Grant.WritePaths`. The programs the command starts open their own files (git writes its index), which this does not judge |
 | `CheckListDir(dir, roots, grant)` | a directory listed to expand a glob |
 
 Each returns a `*shellpolicy.LaunchError{Name, Reason}`, or nil.
@@ -242,7 +248,7 @@ Each returns a `*shellpolicy.LaunchError{Name, Reason}`, or nil.
 
 - `pkg/shellpolicy`: 96.4% statement coverage.
 - **Corpus:** the design's bypass corpus plus the environment-assignment and static-path cases, 144 commands, each run under both enforcement modes.
-- **Review bypasses:** the commands from the PR #430 reviews (N1-N10 and R1-R6), the vectors found while fixing them, the other programs that follow symlinks out of the roots (follow-ups to R5), and GNU `find -files0-from` (a follow-up to R4) (`bypass_test.go`), 197 commands, each run under both enforcement modes. The review's commands and the new vectors were run in bash 5.2 (macOS bash 3.2 for `.*` matching `..`, git 2.50.1 for `git grep -O`) and did the harmful thing while the analyzer allowed them; the other rows are variants of those shapes and commands that must stay allowed.
+- **Review bypasses:** the commands from the PR #430 reviews (N1-N10 and R1-R6), the vectors found while fixing them, the other programs that follow symlinks out of the roots (follow-ups to R5), and GNU `find -files0-from` (a follow-up to R4) (`bypass_test.go`), 207 commands, each run under both enforcement modes. The review's commands and the new vectors were run in bash 5.2 (macOS bash 3.2 for `.*` matching `..`, git 2.50.1 for `git grep -O`) and did the harmful thing while the analyzer allowed them; the other rows are variants of those shapes and commands that must stay allowed.
 - **Run-time checks:** a 22-case table for `CheckLaunch`, and a 14-case table for the review's argument rules.
 - **Call parameters:** `TestDecide_ShellParam`, `TestDecide_ShellNeedsBash` (sets whether the hook finds bash on `PATH`, so it runs on every host) and `TestDecide_EnvParam`.
 - **Windows refusal:** `TestDecide_RefusesOnWindows` sets the OS the hook judges for, so it runs on every host: on Windows every call is refused (default, `bash`, `sh` and other shells; `static` and `runtime`; through the factory and the executor), and the same calls are judged normally on Linux and macOS. The tests that check POSIX path semantics skip on Windows.

@@ -439,12 +439,19 @@ func gitCheck(args []string) string {
 
 // gitHarden prepends the options that stop git running programs from the
 // repository's own config (design 06 Probe 9), and adds --no-ext-diff and
-// --no-textconv to the subcommands that diff.
+// --no-textconv to the subcommands that diff. core.attributesFile=/dev/null
+// drops an attributes file the config names; log.showSignature=false and
+// the gpg program defaults stop git log and git show running a signature
+// program the config names. Nothing here can drop $GIT_DIR/info/attributes:
+// a write into a git directory is an Ask instead (inGitDir).
 func gitHarden(args []string) []string {
 	globals, sub := gitSplit(args)
 	out := []string{
 		"-c", "core.fsmonitor=false", "-c", "core.pager=cat", "-c", "core.hooksPath=/dev/null",
-		"-c", "diff.external=", "--no-pager", "--attr-source=" + EmptyTreeHash,
+		"-c", "diff.external=", "-c", "core.attributesFile=/dev/null",
+		"-c", "log.showSignature=false", "-c", "gpg.program=gpg", "-c", "gpg.ssh.program=ssh-keygen",
+		"-c", "gpg.x509.program=gpgsm",
+		"--no-pager", "--attr-source=" + EmptyTreeHash,
 	}
 	out = append(out, globals...)
 	if sub < 0 {
