@@ -30,7 +30,7 @@ Loom exports its traces to [Arize Phoenix](https://github.com/Arize-ai/phoenix) 
 📋 Planned:
 - A configurable preview length (previews are 200 runes) (separate PR)
 - Experiment tags from `WeaveRequest.context` on the server and agent spans (separate PR)
-- Per-session `eval_runs` eval IDs (currently one process-wide `loom-session-<pid>` eval ID groups concurrent sessions)
+- Per-session `eval_runs` eval IDs (currently one process-wide `loom-session-<unix-seconds>` eval ID groups concurrent sessions)
 - Experiment-harness telemetry and per-game annotations (Mastermind, card sorting), after the harness moves to its own repository
 - The VM rollout below has not been run yet
 
@@ -197,7 +197,7 @@ Run this after changing Loom's tracing code or the Phoenix version. Use a three-
 
 ## VM Rollout
 
-📋 Not run yet. The build for it exists (the merge above, built with `go build -tags fts5` for `linux/amd64` with `CGO_ENABLED=0`; record its commit and SHA-256 with the run). Planned layout: Phoenix and PostgreSQL in Docker on a private network, Phoenix reachable only on the VM's loopback address, and the workstation connecting through an SSH tunnel. Back up the Loom databases and the previous binary and configuration first, and do not restart Loom while an experiment is running.
+📋 Not run yet. Build `looms` from the commit under test with `go build -tags fts5` for `linux/amd64` with `CGO_ENABLED=0`, and record that commit and the binary's SHA-256 with the run. Planned layout: Phoenix and PostgreSQL in Docker on a private network, Phoenix reachable only on the VM's loopback address, and the workstation connecting through an SSH tunnel. Back up the Loom databases and the previous binary and configuration first, and do not restart Loom while an experiment is running.
 
 ```bash
 docker network create phoenix-net
@@ -251,7 +251,7 @@ Record the Loom commit, the `looms` binary SHA-256 and both image tags with each
 
 **Spans missing from an export.** The export stopped at the first page; follow `next_cursor` (Task 1).
 
-**A `Weave` response has no `traceId`.** The server runs without a tracer (`observability.enabled: false` or `mode: none`).
+**A `Weave` response has a dashed-UUID `traceId` that Phoenix does not find.** The server is not exporting over OTLP. With `observability.enabled: false`, `mode: none`, `mode: embedded`, `mode: service`, or an OTLP exporter that failed to start (Loom logs `Failed to create OTLP tracer`), the server's tracer assigns UUID trace IDs. Phoenix stores only the 32-hex IDs of `mode: otel`, and annotations need that ID too.
 
 **No annotations after an evaluation.** Check that `phoenix_base_url` is set (Loom logs `Phoenix annotations enabled` at startup), that the evaluation's `traceId` is the 32-hex ID from the `Weave` response, and look for `phoenix annotations not sent` warnings, which carry the HTTP status.
 

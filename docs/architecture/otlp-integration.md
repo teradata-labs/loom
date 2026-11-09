@@ -860,7 +860,7 @@ The redaction function operates on a copy so exporting a span does not mutate th
 
 ### Content Bounds
 
-Message, response and recall-query previews are bounded where they are recorded, by `observability.TruncateContent`, before they become span attributes: the first 200 runes (`observability.DefaultMaxContentLength`) are kept and `…` is appended, for every tracer. The bound is not configurable yet. The `input.value` and `output.value` the instrumented LLM provider sets are bounded the same way.
+Message, response, tool and recall-query previews are bounded where they are recorded, by `observability.RedactPreview`, before they become span attributes: credentials and PII are removed from the first 4096 runes (`observability.RedactionWindowRunes`), then the first 200 runes (`observability.DefaultMaxContentLength`) are kept and `…` is appended. Redacting before truncating keeps a secret that crosses rune 200 from surviving as a fragment; redacting only the window keeps the cost of a preview independent of the input size (about 4 ms for a 1 MB JSON tool result). A credential value cut by the window edge is redacted to the end of the window. LLM and tool span previews are not built for NoOp spans (`Span.IsRecording`), so `mode: none` and disabled observability pay nothing for them. The bound is not configurable yet. The `input.value` and `output.value` the instrumented LLM provider sets are bounded the same way.
 
 One exception: the `llm.thinking` span event carries a model's full extended-thinking text and is not bounded. It is exported, after redaction, with the span.
 

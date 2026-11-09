@@ -2445,6 +2445,13 @@ func runServe(cmd *cobra.Command, args []string) {
 	} else if phoenixClient != nil {
 		judgeServer.SetPhoenixClient(phoenixClient)
 		logger.Info("Phoenix annotations enabled", zap.String("url", config.Observability.PhoenixBaseURL))
+		if _, otlp := tracer.(*observability.OTelTracer); !otlp {
+			// Only OTelTracer assigns the 32-hex trace IDs Phoenix stores; the
+			// other tracers assign UUIDs, and annotations on them are retried
+			// until they are dropped.
+			logger.Warn("phoenix_base_url is set but traces are not exported over OTLP; annotations will not match any Phoenix trace",
+				zap.String("tracer", fmt.Sprintf("%T", tracer)))
+		}
 	}
 
 	// Register SkillsImportService — the gRPC surface for the skills

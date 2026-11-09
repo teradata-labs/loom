@@ -295,11 +295,16 @@ func (t *OTelTracer) Shutdown(ctx context.Context) error {
 	return err
 }
 
-// buildOTelSpanContext constructs an OTel SpanContext from Loom UUID-based IDs.
+// buildOTelSpanContext constructs an OTel SpanContext from a parent span's
+// Loom IDs. StartSpan uses it only for a parent that is not active in this
+// tracer (one started by another tracer, or ended before the child started);
+// a parent that is active is linked through its live SDK span instead.
 //
-// Loom uses UUID strings (e.g. "550e8400-e29b-41d4-a716-446655440000").
-// A UUID stripped of dashes yields 32 hex chars = 16 bytes, exactly an OTel TraceID.
-// The SpanID uses the first 16 hex chars of the UUID = 8 bytes.
+// It accepts both ID forms a parent can carry: the 32-hex trace ID and 16-hex
+// span ID that OTelTracer adopts from the SDK, and the dashed UUIDs of the
+// other tracers (e.g. "550e8400-e29b-41d4-a716-446655440000"), which yield 32
+// hex chars once the dashes are removed. The span ID uses the first 16 hex
+// chars.
 func buildOTelSpanContext(loomTraceID, loomSpanID string) (oteltrace.SpanContext, bool) {
 	tHex := strings.ReplaceAll(loomTraceID, "-", "")
 	sHex := strings.ReplaceAll(loomSpanID, "-", "")
@@ -331,13 +336,6 @@ func buildOTelSpanContext(loomTraceID, loomSpanID string) (oteltrace.SpanContext
 	return sc, sc.IsValid()
 }
 
-// redactOTelSpan applies privacy rules before attributes are exported, to
-// span and event attributes alike: credential-like keys are dropped, and PII
-// patterns (emailPattern, phonePattern, etc., defined in privacy.go) are
-// replaced in string values, in each element of string slices, and in maps and
-// lists, which are exported as JSON. With RedactPII the status message is
-// redacted too. Keys in AllowedAttributes are exported unchanged. The caller's
-// span is not modified.
 // RedactSpan returns a copy of span cleaned the way OTLP export cleans it:
 // attributes whose key names a credential are dropped, credentials inside
 // attribute values (JSON documents, embedded JSON, header lines, Bearer/Basic
@@ -351,6 +349,13 @@ func RedactSpan(span *Span, cfg PrivacyConfig) *Span {
 	return redactOTelSpan(span, cfg)
 }
 
+// redactOTelSpan applies privacy rules before attributes are exported, to
+// span and event attributes alike: credential-like keys are dropped, and PII
+// patterns (emailPattern, phonePattern, etc., defined in privacy.go) are
+// replaced in string values, in each element of string slices, and in maps and
+// lists, which are exported as JSON. With RedactPII the status message is
+// redacted too. Keys in AllowedAttributes are exported unchanged. The caller's
+// span is not modified.
 func redactOTelSpan(span *Span, cfg PrivacyConfig) *Span {
 	if !cfg.RedactCredentials && !cfg.RedactPII {
 		return span

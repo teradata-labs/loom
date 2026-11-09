@@ -31,10 +31,11 @@ import (
 
 // TestToolCredentialsAreRedactedOnExport runs a turn whose tool calls carry
 // credentials in their arguments and results, and checks every span the turn
-// records: before redaction the credentials are there (tool span input and
-// output, the LLM span that made the calls, the follow-up LLM span that reads
-// the results); after the export redaction (observability.RedactSpan with the
-// settings looms serve uses) none of them is.
+// records (tool span input and output, the LLM span that made the calls, the
+// follow-up LLM span that reads the results). The previews are already
+// redacted when they are set on the span, so neither the recorded spans nor
+// the export (observability.RedactSpan with the settings looms serve uses)
+// hold any credential, whole or as a prefix cut at the preview boundary.
 func TestToolCredentialsAreRedactedOnExport(t *testing.T) {
 	const (
 		bearer         = "planted123bearer456token"
