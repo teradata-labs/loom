@@ -454,6 +454,12 @@ const (
 	// calibrationMinSampleTokens skips small prompts, where fixed provider
 	// overhead (tool-use system text, framing) dominates the ratio.
 	calibrationMinSampleTokens = 2000
+	// unsampledStepCalibration scales the step count (StepSendCount) until the
+	// provider's first count is observed: the undercount measured above. The
+	// fold's marks sit below the window by design and start at 1.0; the step
+	// count is held against the provider's exact refusal line, where a known
+	// undercount passes a step the provider refuses.
+	unsampledStepCalibration = 1.25
 )
 
 // calibrationLocked returns the current estimate scale factor. Must hold lock.

@@ -358,6 +358,10 @@ func TestTheStepCountIsScaledByTheCalibration(t *testing.T) {
 	sm.AddMessage(ctx, Message{Role: "user", Content: "read the tables", Turn: 1})
 	sm.AddMessage(ctx, Message{Role: "assistant", Turn: 1, ToolCalls: []ToolCall{{ID: "q1", Name: "rows"}}})
 	sm.AddMessage(ctx, Message{Role: "tool", ToolUseID: "q1", Turn: 1, Content: strings.Repeat("id=12345 name=widget qty=7\n", 30)})
+	cheap0, exact0 := sm.StepSendCount(300, 1<<30), sm.StepSendCount(300, 1)
+	sm.mu.Lock()
+	sm.estimateCalibration = 1.0 // the provider's first count observed, at loom's own figure
+	sm.mu.Unlock()
 	cheap1, exact1 := sm.StepSendCount(300, 1<<30), sm.StepSendCount(300, 1)
 	sm.mu.Lock()
 	sm.estimateCalibration = 2.0
@@ -365,6 +369,11 @@ func TestTheStepCountIsScaledByTheCalibration(t *testing.T) {
 	cheap2, exact2 := sm.StepSendCount(300, 1<<30), sm.StepSendCount(300, 1)
 	assert.InDelta(t, 2.0, float64(cheap2)/float64(cheap1), 0.02, "the cheap tier is not scaled by the calibration")
 	assert.InDelta(t, 2.0, float64(exact2)/float64(exact1), 0.02, "the tokenizer tier is not scaled by the calibration")
+	// Until the provider's first count is observed, the step is counted at the
+	// undercount loom has measured, not at 1.0: a step the tokenizer puts just
+	// under the refusal line is the one the provider refuses.
+	assert.InDelta(t, unsampledStepCalibration, float64(cheap0)/float64(cheap1), 0.02, "the unsampled cheap tier is not held at the measured undercount")
+	assert.InDelta(t, unsampledStepCalibration, float64(exact0)/float64(exact1), 0.02, "the unsampled tokenizer tier is not held at the measured undercount")
 }
 
 // A step that fits is sent as it is: nothing is replaced.

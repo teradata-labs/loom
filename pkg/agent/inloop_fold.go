@@ -312,7 +312,8 @@ func (sm *SegmentedMemory) InFlightResults() int {
 // under ceiling the send certainly fits and that count is returned. Over it,
 // the memory is counted with the tokenizer and extraBytes at tokenFigure, so
 // a step is replaced only when it really does not fit. Both tiers are scaled
-// by the provider calibration.
+// by the provider calibration, or by unsampledStepCalibration until the
+// provider's first count has been observed.
 func (sm *SegmentedMemory) StepSendCount(extraBytes, ceiling int) int {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -329,6 +330,9 @@ func (sm *SegmentedMemory) StepSendCount(extraBytes, ceiling int) int {
 		}
 	}
 	f := sm.calibrationLocked()
+	if sm.estimateCalibration == 0 {
+		f = unsampledStepCalibration
+	}
 	cheap := sm.estimateLocked() + int(float64(bytes)/cheapBytesPerToken*f)
 	if ceiling <= 0 || cheap <= ceiling {
 		return cheap
