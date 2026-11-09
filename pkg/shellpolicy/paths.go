@@ -289,6 +289,7 @@ func (a *analyzer) finishPaths() {
 		for _, d := range bases {
 			full := ResolvePath(d.physical, c.path)
 			if c.write {
+				full = resolveWritePath(d.physical, c.path)
 				if !inRoots(full, a.opt.Roots.Write) {
 					a.add(Deny, c.n, c.outer, c.path, "writes outside the session")
 					gitWrites = nil
@@ -319,6 +320,35 @@ func (a *analyzer) finishPaths() {
 			}
 		}
 	}
+}
+
+// maxSymlinkHops bounds how many final symlinks resolveWritePath follows,
+// as the kernel's limit does; past it the open fails.
+const maxSymlinkHops = 40
+
+// resolveWritePath is ResolvePath for a path the command opens for writing.
+// ResolvePath leaves a final symlink whose target does not exist yet as the
+// symlink's own path, but > and >> follow it and create the target, so the
+// target is what the write reaches: each final symlink is followed, its
+// target resolved like the rest (relative to the symlink's directory, with
+// a ".." after a symlink leaving that symlink's target).
+func resolveWritePath(dir, path string) string {
+	full := ResolvePath(dir, path)
+	for i := 0; i < maxSymlinkHops; i++ {
+		fi, err := os.Lstat(full)
+		if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+			return full
+		}
+		target, err := os.Readlink(full)
+		if err != nil {
+			return full
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Dir(full) + string(filepath.Separator) + target
+		}
+		full = ResolvePath("/", target)
+	}
+	return full
 }
 
 // gitWriteWhy says why a write into a git directory needs approval.

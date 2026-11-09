@@ -103,6 +103,7 @@ func (p *Policy) CheckOpen(path, dir string, write bool, roots Roots, g *Grant) 
 	}
 	full := ResolvePath(dir, path)
 	if write {
+		full = resolveWritePath(dir, path)
 		if !inRoots(full, roots.Write) {
 			return &LaunchError{Name: path, Reason: "writes outside the session"}
 		}

@@ -1062,3 +1062,70 @@ func TestAnalyze_GitBareRepository(t *testing.T) {
 		assert.ErrorContains(t, err, tc.block, "%v in %s", tc.argv, tc.dir)
 	}
 }
+
+// F6: > and >> follow a symlink to a target that does not exist yet and
+// create it, so a write is judged at the target, not at the symlink. A
+// symlink to a new file outside the session is a Deny, and one into a git
+// directory is an Ask (dc -> .git/commondir, then git diff, ran a filter).
+func TestAnalyze_WriteThroughDanglingSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
+	opt := gitSession(t)
+	w := opt.WorkingDir
+	for link, target := range map[string]string{
+		"ol": "../o/new.txt",            // outside, not there yet
+		"dl": ".git/info/attributes",    // into the git directory, not there yet
+		"dc": ".git/commondir",          // the review's route
+		"c1": "c2",                      // a chain of two
+		"c2": ".git/x",                  //
+		"rl": "link/../new.txt",         // link is o/ssh, so this is o/new.txt
+		"al": filepath.Join(w, "n.txt"), // absolute, inside, not there yet
+		"nl": "new.txt",                 // inside, not there yet
+	} {
+		require.NoError(t, os.Symlink(target, filepath.Join(w, link)))
+	}
+	pol := Readonly()
+	for _, tc := range []struct {
+		cmd  string
+		want VerdictKind
+		why  string
+	}{
+		{cmd: `echo x > ol`, want: Deny, why: "ol (1:8): writes outside the session"},
+		{cmd: `echo x >> rl`, want: Deny},
+		{cmd: `printf '../cm\n' > dc`, want: Ask, why: "dc (1:18): writes into a git directory"},
+		{cmd: `echo x > dl`, want: Ask},
+		{cmd: `echo x > c1`, want: Ask},
+		{cmd: `echo x > nl; echo x >> al; cat ol`, want: Allow},
+	} {
+		for _, static := range []bool{false, true} {
+			o := opt
+			o.Static = static
+			v := pol.Analyze(tc.cmd, o)
+			if assert.Equal(t, tc.want, v.Kind, "%q (static=%v): %s", tc.cmd, static, v.Reason()) && tc.why != "" {
+				assert.Contains(t, v.Reason(), tc.why, "%q (static=%v)", tc.cmd, static)
+			}
+		}
+	}
+	v := pol.Analyze(`echo x > dc`, opt)
+	require.NotNil(t, v.Grant)
+	assert.Equal(t, []string{filepath.Join(w, ".git", "commondir")}, v.Grant.WritePaths, "the grant is the symlink's target")
+	for _, tc := range []struct {
+		path  string
+		block string
+	}{
+		{path: "ol", block: "writes outside the session"},
+		{path: "rl", block: "writes outside the session"},
+		{path: "dc", block: "writes into a git directory"},
+		{path: "c1", block: "writes into a git directory"},
+		{path: "nl"},
+		{path: "al"},
+	} {
+		err := pol.CheckOpen(tc.path, w, true, opt.Roots, nil)
+		if tc.block == "" {
+			assert.NoError(t, err, "write %s", tc.path)
+			continue
+		}
+		assert.ErrorContains(t, err, tc.block, "write %s", tc.path)
+	}
+}
