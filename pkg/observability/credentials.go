@@ -202,7 +202,95 @@ func redactCredentialStringOnce(s string) string {
 	})
 	s = knownKeyPattern.ReplaceAllString(s, RedactedValue)
 	s = jwtPattern.ReplaceAllString(s, RedactedValue)
-	return urlCredentialParamPattern.ReplaceAllString(s, "${1}"+RedactedValue)
+	s = urlCredentialParamPattern.ReplaceAllString(s, "${1}"+RedactedValue)
+	return redactUnterminatedCredentialValue(s)
+}
+
+// credentialValueOpenerPattern matches a credential-shaped key followed by the
+// opening of a quoted, array or object value: "key": " (plain or escaped JSON),
+// "key": [ or {, and key=" / key: ' assignments. The value itself is not
+// matched; redactUnterminatedCredentialValue checks whether it is closed.
+var credentialValueOpenerPattern = regexp.MustCompile( //nolint:gochecknoglobals
+	`(?:(\\*)"([A-Za-z0-9_.\-]{1,64})\\*"|\b([A-Za-z][A-Za-z0-9_.\-]{0,63}))([ \t]*[:=][ \t]*)(\\*"|'|\[|\{)`)
+
+// redactUnterminatedCredentialValue handles text cut inside a credential value,
+// as happens when a tool result or LLM input is bounded before it is redacted:
+// the patterns above need a closing quote or bracket, so the start of a long
+// value whose end was cut off would otherwise survive. When the value of a
+// credential key is not closed before the end of s, everything from the value
+// on is replaced by RedactedValue. The earliest such key wins.
+func redactUnterminatedCredentialValue(s string) string {
+	for _, m := range credentialValueOpenerPattern.FindAllStringSubmatchIndex(s, -1) {
+		key := ""
+		switch {
+		case m[4] >= 0:
+			key = s[m[4]:m[5]]
+		case m[6] >= 0:
+			key = s[m[6]:m[7]]
+		}
+		if !isCredentialField(key) {
+			continue
+		}
+		opener := s[m[10]:m[11]]
+		if valueClosed(s[m[11]:], opener) {
+			continue
+		}
+		if s[m[11]:] == RedactedValue {
+			return s
+		}
+		return s[:m[11]] + RedactedValue
+	}
+	return s
+}
+
+// valueClosed reports whether rest, the text after a value's opener, contains
+// the matching close: an unescaped '"' for a plain JSON string, the same run of
+// backslashes and '"' for an escaped one, "'" for a single-quoted value, and
+// the balancing bracket (outside JSON strings) for an array or object.
+func valueClosed(rest, opener string) bool {
+	switch opener {
+	case `"`:
+		for i := 0; i < len(rest); i++ {
+			switch rest[i] {
+			case '\\':
+				i++
+			case '"':
+				return true
+			}
+		}
+		return false
+	case "'":
+		return strings.Contains(rest, "'")
+	case "[", "{":
+		depth := 1
+		inString := false
+		for i := 0; i < len(rest); i++ {
+			c := rest[i]
+			if inString {
+				switch c {
+				case '\\':
+					i++
+				case '"':
+					inString = false
+				}
+				continue
+			}
+			switch c {
+			case '"':
+				inString = true
+			case '[', '{':
+				depth++
+			case ']', '}':
+				depth--
+				if depth == 0 {
+					return true
+				}
+			}
+		}
+		return false
+	default: // escaped quote: backslashes then '"'
+		return strings.Contains(rest, opener)
+	}
 }
 
 // credentialLike reports whether a word after a credential word looks like a

@@ -42,7 +42,7 @@ func startWeaveSpan(
 		observability.WithAttribute("query.length", len(req.GetQuery())),
 	}
 	if q := req.GetQuery(); q != "" {
-		opts = append(opts, observability.WithAttribute("message.preview", observability.TruncateContent(observability.RedactText(q))))
+		opts = append(opts, observability.WithAttribute("message.preview", observability.RedactPreview(q)))
 	}
 	if req.GetSessionId() != "" {
 		opts = append(opts, observability.WithAttribute(observability.AttrSessionID, req.GetSessionId()))
@@ -75,7 +75,7 @@ func recordWeaveSpanUsage(span *observability.Span, resp *agent.Response) {
 	usage := turnUsage(resp)
 	span.SetAttribute("response.length", len(resp.Content))
 	if resp.Content != "" {
-		span.SetAttribute("response.preview", observability.TruncateContent(observability.RedactText(resp.Content)))
+		span.SetAttribute("response.preview", observability.RedactPreview(resp.Content))
 	}
 	span.SetAttribute("usage.input_tokens", usage.InputTokens)
 	span.SetAttribute("usage.output_tokens", usage.OutputTokens)

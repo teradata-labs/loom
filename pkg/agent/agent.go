@@ -2002,7 +2002,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// Set initial attributes
 	span.SetAttribute(observability.AttrSessionID, sessionID)
 	span.SetAttribute("message.length", len(userMessage))
-	span.SetAttribute("message.preview", observability.TruncateContent(observability.RedactText(userMessage)))
+	span.SetAttribute("message.preview", observability.RedactPreview(userMessage))
 	if p.reportContentBlocks {
 		span.SetAttribute("message.content_blocks", len(p.contentBlocks))
 	}
@@ -2280,7 +2280,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	span.SetAttribute("conversation.cost.usd", response.TurnUsage.CostUSD)
 	span.SetAttribute("conversation.stop_reason", response.Metadata["stop_reason"])
 	span.SetAttribute("response.length", len(response.Content))
-	span.SetAttribute("response.preview", observability.TruncateContent(observability.RedactText(response.Content)))
+	span.SetAttribute("response.preview", observability.RedactPreview(response.Content))
 
 	// Check if we hit limits
 	if maxTurnsHit, ok := response.Metadata["max_turns_hit"].(bool); ok && maxTurnsHit {
@@ -3685,6 +3685,9 @@ func recordToolSpanOutcome(toolSpan *observability.Span, result *shuttle.Result,
 	if result != nil {
 		toolSpan.SetAttribute("execution_time_ms", result.ExecutionTimeMs)
 	}
+	if !toolSpan.IsRecording() {
+		return
+	}
 	if out := toolOutputPreview(result, err); out != "" {
 		toolSpan.SetAttribute("output.value", out)
 	}
@@ -3693,8 +3696,9 @@ func recordToolSpanOutcome(toolSpan *observability.Span, result *shuttle.Result,
 // setToolSpanInput records the call on an agent.tool_execution span: the tool
 // name, the OTel GenAI operation and call ID, and the arguments as
 // OpenInference input.value, redacted of credentials and PII before being
-// bounded by TruncateContent. input.mime_type is set only when the arguments
-// are whole, since truncated JSON is not JSON.
+// bounded (RedactPreview). input.mime_type is set only when the arguments are
+// whole, since truncated JSON is not JSON. The preview is skipped for a span
+// that is not recorded, so a turn with tracing off pays nothing for it.
 func setToolSpanInput(span *observability.Span, call ToolCall) {
 	span.SetAttribute("tool_name", call.Name)
 	span.SetAttribute(observability.AttrToolName, call.Name)
@@ -3702,11 +3706,12 @@ func setToolSpanInput(span *observability.Span, call ToolCall) {
 	if call.ID != "" {
 		span.SetAttribute("gen_ai.tool.call.id", call.ID)
 	}
-	args := canonicalJSON(call.Input)
-	redacted := observability.RedactText(args)
-	in := observability.TruncateContent(redacted)
+	if !span.IsRecording() {
+		return
+	}
+	in, whole := observability.RedactPreviewWhole(canonicalJSON(call.Input))
 	span.SetAttribute("input.value", in)
-	if in == redacted {
+	if whole {
 		span.SetAttribute("input.mime_type", "application/json")
 	}
 }
@@ -3714,7 +3719,7 @@ func setToolSpanInput(span *observability.Span, call ToolCall) {
 // toolOutputPreview renders a tool result for the tool span's output.value:
 // the error for a failed call, else the result data (a string as it is,
 // anything else as JSON), redacted of credentials and PII before being bounded
-// by TruncateContent.
+// (RedactPreview).
 func toolOutputPreview(result *shuttle.Result, err error) string {
 	var raw string
 	switch {
@@ -3733,7 +3738,7 @@ func toolOutputPreview(result *shuttle.Result, err error) string {
 			raw = fmt.Sprintf("%v", result.Data)
 		}
 	}
-	return observability.TruncateContent(observability.RedactText(raw))
+	return observability.RedactPreview(raw)
 }
 
 // commitToolRow is the commit tail of dispatchOneCall — execution record,
@@ -4328,7 +4333,7 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 		outcome = "no_query"
 		return
 	}
-	redactedQuery := observability.TruncateContent(observability.RedactText(searchQuery))
+	redactedQuery := observability.RedactPreview(searchQuery)
 	span.SetAttribute("recall.query", redactedQuery)
 	span.SetAttribute("input.value", redactedQuery)
 
@@ -4471,12 +4476,12 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 		tc = GetTokenCounter()
 	}
 	span.SetAttribute("recall.injected_tokens", tc.CountTokens(injected))
-	span.SetAttribute("output.value", observability.TruncateContent(observability.RedactText(injected)))
+	span.SetAttribute("output.value", observability.RedactPreview(injected))
 	// OpenInference retriever documents, which Phoenix lists on the span.
 	for i, m := range relevant {
 		prefix := fmt.Sprintf("retrieval.documents.%d.document.", i)
 		span.SetAttribute(prefix+"id", m.ID)
-		span.SetAttribute(prefix+"content", observability.TruncateContent(observability.RedactText(m.Content)))
+		span.SetAttribute(prefix+"content", observability.RedactPreview(m.Content))
 	}
 
 	session.AddMessage(ctx, types.Message{

@@ -43,6 +43,8 @@ func (t *NoOpTracer) StartSpan(ctx context.Context, name string, opts ...SpanOpt
 		Name:       name,
 		StartTime:  time.Now(),
 		Attributes: make(map[string]interface{}),
+		// NoOpTracer drops every span, so previews built for it are wasted.
+		notRecorded: true,
 	}
 
 	// Apply options

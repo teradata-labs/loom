@@ -290,7 +290,7 @@ func recordJudgeVerdict(span *observability.Span, result *loomv1.JudgeResult) {
 	}
 	span.SetAttribute("judge.score", result.OverallScore)
 	span.SetAttribute("judge.verdict", result.Verdict)
-	span.SetAttribute("judge.reasoning", observability.TruncateContent(observability.RedactText(result.Reasoning)))
+	span.SetAttribute("judge.reasoning", observability.RedactPreview(result.Reasoning))
 	for dim, score := range result.DimensionScores {
 		span.SetAttribute("judge.dimension_scores."+dim, score)
 	}

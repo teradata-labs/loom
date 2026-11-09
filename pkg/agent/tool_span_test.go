@@ -15,6 +15,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -95,4 +96,47 @@ func TestWithSpanContext_CopiesAgentContext(t *testing.T) {
 	assert.Same(t, span, observability.SpanFromContext(child))
 	assert.Nil(t, observability.SpanFromContext(parent))
 	assert.Equal(t, int64(4), child.(*agentContext).turnIndex)
+}
+
+func TestToolSpanPreviews_SkippedWhenSpanIsNotRecorded(t *testing.T) {
+	_, span := observability.NewNoOpTracer().StartSpan(context.Background(), "agent.tool_execution")
+	setToolSpanInput(span, ToolCall{Name: "query", Input: map[string]interface{}{"sql": "select 1"}})
+
+	assert.Equal(t, "query", span.Attributes["tool_name"], "cheap identity attributes are still set")
+	_, hasInput := span.Attributes["input.value"]
+	assert.False(t, hasInput, "no preview is built for a NoOp span")
+}
+
+// largeToolResult is about 1 MB of JSON rows, the shape of a SQL tool result.
+func largeToolResult() *shuttle.Result {
+	rows := make([]map[string]interface{}, 12_000)
+	for i := range rows {
+		rows[i] = map[string]interface{}{"customer_id": i, "name": "Customer", "region": "EMEA", "note": "order shipped via ground"}
+	}
+	return &shuttle.Result{Success: true, Data: rows}
+}
+
+// BenchmarkToolOutputPreview_1MBJSON measures the tool span's output preview
+// for a 1 MB result. "string" is a result whose data is already JSON text;
+// "structured" also pays for json.Marshal of the rows, which the preview needs
+// to render them and which redaction does not add to.
+func BenchmarkToolOutputPreview_1MBJSON(b *testing.B) {
+	structured := largeToolResult()
+	text, err := json.Marshal(structured.Data)
+	if err != nil {
+		b.Fatal(err)
+	}
+	for _, bc := range []struct {
+		name   string
+		result *shuttle.Result
+	}{
+		{"string", &shuttle.Result{Success: true, Data: string(text)}},
+		{"structured", structured},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				_ = toolOutputPreview(bc.result, nil)
+			}
+		})
+	}
 }

@@ -142,16 +142,19 @@ func (p *InstrumentedProvider) Chat(ctx context.Context, messages []llmtypes.Mes
 		span.SetAttribute("llm.tools.names", toolNames)
 	}
 
-	// Last user message — maps to gen_ai.prompt → Opik input column.
-	preview := lastUserMessagePreview(messages)
-	if preview != "" {
-		span.SetAttribute("message.preview", preview)
-	}
-	// OpenInference input.value is derived from message.preview on export,
-	// unless the request's newest input is something else (tool results after
-	// a tool call, or messages added after the user message).
-	if input := newInputPreview(messages); input != "" && input != preview {
-		span.SetAttribute("input.value", input)
+	// Last user message — maps to gen_ai.prompt → Opik input column. The
+	// previews are skipped for a span that is not exported.
+	if span.IsRecording() {
+		preview := lastUserMessagePreview(messages)
+		if preview != "" {
+			span.SetAttribute("message.preview", preview)
+		}
+		// OpenInference input.value is derived from message.preview on export,
+		// unless the request's newest input is something else (tool results
+		// after a tool call, or messages added after the user message).
+		if input := newInputPreview(messages); input != "" && input != preview {
+			span.SetAttribute("input.value", input)
+		}
 	}
 
 	// Record event: LLM call started
@@ -226,14 +229,16 @@ func (p *InstrumentedProvider) Chat(ctx context.Context, messages []llmtypes.Mes
 	}
 
 	// Bounded response preview — maps to gen_ai.completion → Opik output column.
-	if preview := observability.TruncateContent(observability.RedactText(resp.Content)); preview != "" {
-		span.SetAttribute("response.preview", preview)
-	}
-	// A response that calls tools has its calls in OpenInference output.value,
-	// which is otherwise derived from response.preview (empty for a call-only
-	// response).
-	if output := toolCallOutputPreview(resp); output != "" {
-		span.SetAttribute("output.value", output)
+	if span.IsRecording() {
+		if preview := observability.RedactPreview(resp.Content); preview != "" {
+			span.SetAttribute("response.preview", preview)
+		}
+		// A response that calls tools has its calls in OpenInference
+		// output.value, which is otherwise derived from response.preview (empty
+		// for a call-only response).
+		if output := toolCallOutputPreview(resp); output != "" {
+			span.SetAttribute("output.value", output)
+		}
 	}
 
 	// Capture content length (for analysis)
@@ -350,16 +355,19 @@ func (p *InstrumentedProvider) ChatStream(ctx context.Context, messages []llmtyp
 		span.SetAttribute("llm.tools.names", toolNames)
 	}
 
-	// Last user message — maps to gen_ai.prompt → Opik input column.
-	preview := lastUserMessagePreview(messages)
-	if preview != "" {
-		span.SetAttribute("message.preview", preview)
-	}
-	// OpenInference input.value is derived from message.preview on export,
-	// unless the request's newest input is something else (tool results after
-	// a tool call, or messages added after the user message).
-	if input := newInputPreview(messages); input != "" && input != preview {
-		span.SetAttribute("input.value", input)
+	// Last user message — maps to gen_ai.prompt → Opik input column. The
+	// previews are skipped for a span that is not exported.
+	if span.IsRecording() {
+		preview := lastUserMessagePreview(messages)
+		if preview != "" {
+			span.SetAttribute("message.preview", preview)
+		}
+		// OpenInference input.value is derived from message.preview on export,
+		// unless the request's newest input is something else (tool results
+		// after a tool call, or messages added after the user message).
+		if input := newInputPreview(messages); input != "" && input != preview {
+			span.SetAttribute("input.value", input)
+		}
 	}
 
 	// Record event: streaming started
@@ -487,14 +495,16 @@ func (p *InstrumentedProvider) ChatStream(ctx context.Context, messages []llmtyp
 	}
 
 	// Bounded response preview — maps to gen_ai.completion → Opik output column.
-	if preview := observability.TruncateContent(observability.RedactText(resp.Content)); preview != "" {
-		span.SetAttribute("response.preview", preview)
-	}
-	// A response that calls tools has its calls in OpenInference output.value,
-	// which is otherwise derived from response.preview (empty for a call-only
-	// response).
-	if output := toolCallOutputPreview(resp); output != "" {
-		span.SetAttribute("output.value", output)
+	if span.IsRecording() {
+		if preview := observability.RedactPreview(resp.Content); preview != "" {
+			span.SetAttribute("response.preview", preview)
+		}
+		// A response that calls tools has its calls in OpenInference
+		// output.value, which is otherwise derived from response.preview (empty
+		// for a call-only response).
+		if output := toolCallOutputPreview(resp); output != "" {
+			span.SetAttribute("output.value", output)
+		}
 	}
 
 	// Capture content length (for analysis)
@@ -585,7 +595,7 @@ func lastUserMessagePreview(messages []llmtypes.Message) string {
 		if m.Role != "user" {
 			continue
 		}
-		return observability.TruncateContent(observability.RedactText(messageText(m)))
+		return observability.RedactPreview(messageText(m))
 	}
 	return ""
 }
@@ -609,13 +619,13 @@ func newInputPreview(messages []llmtypes.Message) string {
 		return ""
 	}
 	if len(newest) == 1 && newest[0].Role == "user" {
-		return observability.TruncateContent(observability.RedactText(messageText(newest[0])))
+		return observability.RedactPreview(messageText(newest[0]))
 	}
 	lines := make([]string, 0, len(newest))
 	for _, m := range newest {
 		lines = append(lines, m.Role+": "+messageText(m))
 	}
-	return observability.TruncateContent(observability.RedactText(strings.Join(lines, "\n")))
+	return observability.RedactPreview(strings.Join(lines, "\n"))
 }
 
 // messageText returns a message's text: its Content, else its text blocks
@@ -651,7 +661,7 @@ func toolCallOutputPreview(resp *llmtypes.LLMResponse) string {
 		}
 		lines = append(lines, tc.Name+"("+string(args)+")")
 	}
-	return observability.TruncateContent(observability.RedactText(strings.Join(lines, "\n")))
+	return observability.RedactPreview(strings.Join(lines, "\n"))
 }
 
 // Ensure InstrumentedProvider implements LLMProvider interface

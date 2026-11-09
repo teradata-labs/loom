@@ -712,3 +712,40 @@ func TestInstrumentedProvider_Role(t *testing.T) {
 	_, hasRole := tracer.spans[2].Attributes["llm.role"]
 	assert.False(t, hasRole, "no role, no attribute")
 }
+
+// noopCapturingTracer is a NoOpTracer that keeps the spans it hands out, so a
+// test can check what was built for spans that are not recorded.
+type noopCapturingTracer struct {
+	*observability.NoOpTracer
+	mu    sync.Mutex
+	spans []*observability.Span
+}
+
+func (n *noopCapturingTracer) StartSpan(ctx context.Context, name string, opts ...observability.SpanOption) (context.Context, *observability.Span) {
+	ctx, span := n.NoOpTracer.StartSpan(ctx, name, opts...)
+	n.mu.Lock()
+	n.spans = append(n.spans, span)
+	n.mu.Unlock()
+	return ctx, span
+}
+
+func TestInstrumentedProvider_SkipsPreviewsWhenSpanIsNotRecorded(t *testing.T) {
+	mockProvider := &mockLLMProvider{
+		name:  "test-provider",
+		model: "test-model",
+		response: &llmtypes.LLMResponse{Content: "done", ToolCalls: []llmtypes.ToolCall{
+			{ID: "call_1", Name: "query", Input: map[string]interface{}{"sql": "select 1"}},
+		}},
+	}
+	tracer := &noopCapturingTracer{NoOpTracer: observability.NewNoOpTracer()}
+	_, err := NewInstrumentedProvider(mockProvider, tracer).Chat(context.Background(),
+		[]llmtypes.Message{{Role: "user", Content: "run the query"}}, nil)
+	require.NoError(t, err)
+	require.Len(t, tracer.spans, 1)
+
+	for _, k := range []string{"message.preview", "input.value", "response.preview", "output.value"} {
+		_, ok := tracer.spans[0].Attributes[k]
+		assert.False(t, ok, "%s is not built for a NoOp span", k)
+	}
+	assert.Equal(t, "test-model", tracer.spans[0].Attributes[observability.AttrLLMModel], "non-preview attributes are still set")
+}
