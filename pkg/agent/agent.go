@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"sort"
 	"strconv"
@@ -538,7 +539,8 @@ func WithPrompts(registry prompts.PromptRegistry) Option {
 	}
 }
 
-// WithConfig sets the agent configuration.
+// WithConfig replaces the entire agent configuration. Apply it before options
+// that set individual configuration fields.
 func WithConfig(config *Config) Option {
 	return func(a *Agent) {
 		a.config = config
@@ -704,6 +706,20 @@ func WithSystemPrompt(prompt string) Option {
 func WithDescription(description string) Option {
 	return func(a *Agent) {
 		a.config.Description = description
+	}
+}
+
+// WithROM sets the ROM identifier used to compose the system prompt.
+func WithROM(rom string) Option {
+	return func(a *Agent) {
+		a.config.Rom = rom
+	}
+}
+
+// WithMetadata sets a copy of the agent metadata.
+func WithMetadata(metadata map[string]string) Option {
+	return func(a *Agent) {
+		a.config.Metadata = maps.Clone(metadata)
 	}
 }
 
