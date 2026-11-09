@@ -32,12 +32,16 @@ type jailedFixture struct {
 	scratch string
 }
 
-func newJailedFixture(t *testing.T) *jailedFixture {
+func newJailedFixture(t *testing.T, mutate ...func(*shelljail.Config)) *jailedFixture {
 	t.Helper()
 	data, err := filepath.EvalSymlinks(t.TempDir())
 	require.NoError(t, err)
 	t.Setenv("LOOM_DATA_DIR", data)
-	r, _, err := shelljail.NewRunner(shelljail.Config{Policy: shellpolicy.Readonly(), LoomDataDir: data, Strict: true})
+	cfg := shelljail.Config{Policy: shellpolicy.Readonly(), LoomDataDir: data, Strict: true}
+	for _, m := range mutate {
+		m(&cfg)
+	}
+	r, _, err := shelljail.NewRunner(cfg)
 	require.NoError(t, err)
 	tool := NewShellExecuteTool("")
 	tool.SetLoomDataDir(data)
@@ -121,6 +125,22 @@ func TestJailedShell_TimeoutReportsTheLimit(t *testing.T) {
 	assert.Equal(t, "TIMEOUT", res.Error.Code)
 	assert.Less(t, time.Since(start), 5*time.Second)
 	assert.Equal(t, "timeout", jailOf(t, res)["limit"])
+}
+
+// A command that exhausts the jail's memory reports the memory limit, and the
+// result carries one line instead of the Go runtime's crash dump, whether the
+// watchdog or RLIMIT_DATA (Linux) stopped it.
+func TestJailedShell_MemoryLimitIsReportedWithoutTheRuntimeDump(t *testing.T) {
+	f := newJailedFixture(t, func(c *shelljail.Config) { c.Limits.MemoryBytes = 192 << 20 })
+	res, err := f.tool.Execute(f.ctx, map[string]interface{}{"command": `x=a; while :; do x=$x$x; done`, "timeout_seconds": float64(30)})
+	require.NoError(t, err)
+	require.NotNil(t, res.Error, "the command must fail")
+	assert.Equal(t, "memory", jailOf(t, res)["limit"], "the jail names the memory limit: %+v", res.Data)
+	assert.Contains(t, res.Error.Message, "the command hit the jail's memory limit")
+	assert.False(t, res.Error.Retryable, "a limit is not retryable")
+	stderr, _ := shellData(t, res)["stderr"].(string)
+	assert.Contains(t, stderr, shelljail.MemoryStoppedMessage, "stderr says why the command stopped")
+	assert.NotContains(t, stderr, "goroutine ", "the runtime dump is withheld from the model")
 }
 
 func TestJailedShell_Refusals(t *testing.T) {

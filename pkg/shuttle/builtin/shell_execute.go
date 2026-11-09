@@ -657,9 +657,6 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 		killProcessTree(tree)
 		res := child.Result()
 		res.EnvDropped = mergeNames(jailEnvDropped, res.EnvDropped)
-		if timedOut && res.Limit == "" {
-			res.Limit = "timeout"
-		}
 		jailResult = &res
 	}
 
@@ -667,10 +664,33 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	// read of what they write happens under their lock.
 	mu.Lock()
 	overflowErr := outputErr
-	stdout := compactShellOutput(strings.Join(stdoutLines, "\n"))
-	stderr := compactShellOutput(strings.Join(stderrLines, "\n"))
+	rawStdout := strings.Join(stdoutLines, "\n")
+	rawStderr := strings.Join(stderrLines, "\n")
 	totalOutputBytes := outputBytes
 	mu.Unlock()
+
+	if child != nil {
+		// A jail child that died for lack of memory before its watchdog saw it
+		// (RLIMIT_DATA on Linux) reports nothing and leaves a Go runtime crash
+		// dump on stderr. Settle names the memory limit and keeps the dump out
+		// of the result. Only the dump's first line (the runtime's own failure
+		// message) and its size are logged, at Debug: the rest is goroutine
+		// stacks, and anything a background program wrote after it.
+		visible, dump := child.Settle(jailResult, rawStderr)
+		if dump != "" {
+			first, _, _ := strings.Cut(dump, "\n")
+			t.log().Debug("shell_execute: the jailed shell died at its memory limit; runtime output withheld from the result",
+				zap.String("session_id", sessionID),
+				zap.String("runtime_message", first[:runeBoundaryBefore(first, 200)]),
+				zap.Int("withheld_bytes", len(dump)))
+		}
+		rawStderr = visible
+		if timedOut && jailResult.Limit == "" {
+			jailResult.Limit = "timeout"
+		}
+	}
+	stdout := compactShellOutput(rawStdout)
+	stderr := compactShellOutput(rawStderr)
 
 	// Check for output overflow (detected during streaming)
 	if overflowErr != nil {

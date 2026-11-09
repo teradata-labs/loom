@@ -65,7 +65,7 @@ func runChild(in io.Reader, stdout, stderr io.Writer, resultOut io.Writer) int {
 	}
 	stopWatchdog := startWatchdog(spec.Limits.MemoryBytes/3, 2*time.Millisecond, func() {
 		rep.limit("memory")
-		_, _ = fmt.Fprintln(stderr, "jail: the shell passed its memory limit and was stopped")
+		_, _ = fmt.Fprintln(stderr, MemoryStoppedMessage)
 		os.Exit(137)
 	})
 	defer stopWatchdog()

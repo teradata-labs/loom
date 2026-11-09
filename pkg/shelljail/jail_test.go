@@ -106,7 +106,8 @@ func (f *fixture) jailed(t *testing.T, command string, grant *shellpolicy.Grant,
 		waitErr = <-done
 	}
 	KillGroup(child.Cmd)
-	out := run{stdout: stdout.String(), stderr: stderr.String(), res: child.Result(), took: time.Since(start)}
+	out := run{res: child.Result(), took: time.Since(start), stdout: stdout.String()}
+	out.stderr, _ = child.Settle(&out.res, stderr.String())
 	if ee, ok := waitErr.(*exec.ExitError); ok {
 		out.code = ee.ExitCode()
 	} else if waitErr != nil {
@@ -470,8 +471,59 @@ func TestJail_MemoryBombIsStopped(t *testing.T) {
 	got := f.jailed(t, `x=a; while :; do x=$x$x; done`, nil, 30*time.Second)
 	assert.NotEqual(t, 0, got.code)
 	assert.Less(t, got.took, 20*time.Second)
-	stopped := got.res.Limit == "memory" || strings.Contains(got.stderr, "out of memory")
-	assert.True(t, stopped, "limit %q, exit %d, stderr %q", got.res.Limit, got.code, truncate(got.stderr, 300))
+	// Whether the watchdog or RLIMIT_DATA stops it, the caller sees the
+	// memory limit and one line, never the runtime's crash dump.
+	assert.Equal(t, "memory", got.res.Limit, "exit %d, stderr %q", got.code, truncate(got.stderr, 300))
+	assert.True(t, strings.HasSuffix(got.stderr, MemoryStoppedMessage+"\n"), "stderr ends with the limit line: %q", truncate(got.stderr, 300))
+	assert.NotContains(t, got.stderr, "goroutine ", "no runtime dump reaches the caller")
+}
+
+// Settle names the memory limit only for a child that died without reporting
+// and left a memory-failure dump; everything else is passed through.
+func TestChild_Settle(t *testing.T) {
+	const prefix = "partial output\n"
+	dumps := map[string]string{
+		"fatal error":     "fatal error: runtime: cannot allocate memory\n\nruntime stack:\nruntime.throw(...)\n",
+		"out of memory":   "runtime: out of memory: cannot allocate 268435456-byte block (402653184 in use)\nfatal error: out of memory\n\ngoroutine 1 [running]:\n",
+		"runtime SIGSEGV": "SIGSEGV: segmentation violation\nPC=0x4368d8 m=8 sigcode=1 addr=0x0\n\ngoroutine 0 gp=0x4ae5282845a0 m=8 [idle]:\n",
+		"pthread_create":  "runtime/cgo: pthread_create failed: Resource temporarily unavailable\nSIGABRT: abort\n",
+		"os thread":       "runtime: failed to create new OS thread (have 7 already; errno=12)\nfatal error: newosproc\n",
+		"tsan":            "==6932==ERROR: ThreadSanitizer failed to allocate 0x27000 (159744) bytes at address 2180006a9000 (errno: 12)\n",
+		"tsan out of mem": "==109==ERROR: ThreadSanitizer: out of memory: failed to allocate 0x20000 (131072) bytes of TracePart (error code: 12)\nThreadSanitizer: CHECK failed: sanitizer_common.cpp:61\n",
+	}
+	for name, dump := range dumps {
+		t.Run(name, func(t *testing.T) {
+			c := &Child{memoryLimit: 1 << 20}
+			res := Result{}
+			visible, withheld := c.Settle(&res, prefix+dump)
+			assert.Equal(t, "memory", res.Limit, "a memory-failure dump names the limit")
+			assert.Equal(t, prefix+MemoryStoppedMessage+"\n", visible, "the dump is replaced by one line")
+			assert.Equal(t, dump, withheld, "the dump is returned for the log")
+		})
+	}
+	passThrough := []struct {
+		name   string
+		child  Child
+		res    Result
+		stderr string
+	}{
+		{"the child reported", Child{memoryLimit: 1 << 20, reported: true}, Result{}, dumps["fatal error"]},
+		{"no memory limit", Child{}, Result{}, dumps["fatal error"]},
+		{"a limit is already named", Child{memoryLimit: 1 << 20}, Result{Limit: "timeout"}, dumps["fatal error"]},
+		{"a jail error", Child{memoryLimit: 1 << 20}, Result{Error: "cannot read the jail spec"}, dumps["fatal error"]},
+		{"a Go panic", Child{memoryLimit: 1 << 20}, Result{}, "panic: runtime error: invalid memory address or nil pointer dereference\n[signal SIGSEGV: segmentation violation code=0x1 addr=0x0]\n"},
+		{"a marker inside a line", Child{memoryLimit: 1 << 20}, Result{}, "grep: found 'fatal error: runtime: out of memory' in log.txt\n"},
+		{"plain error output", Child{memoryLimit: 1 << 20}, Result{}, "ls: x: No such file or directory\n"},
+	}
+	for _, tc := range passThrough {
+		t.Run(tc.name, func(t *testing.T) {
+			res := tc.res
+			visible, withheld := tc.child.Settle(&res, tc.stderr)
+			assert.Equal(t, tc.res, res, "the result is unchanged")
+			assert.Equal(t, tc.stderr, visible, "stderr is unchanged")
+			assert.Empty(t, withheld, "nothing is withheld")
+		})
+	}
 }
 
 func TestJail_InProcessHandlersUnderRace(t *testing.T) {

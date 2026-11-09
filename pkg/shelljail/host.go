@@ -327,6 +327,10 @@ type Child struct {
 	Cmd *exec.Cmd
 	res *os.File
 	wr  *os.File
+	// memoryLimit is the spec's Limits.MemoryBytes, which Settle needs.
+	memoryLimit uint64
+	// reported is set by Result when the child wrote its Result.
+	reported bool
 }
 
 // Command prepares the child for spec. The caller attaches stdout and stderr
@@ -356,7 +360,7 @@ func (r *Runner) Command(spec Spec) (*Child, error) {
 	cmd.Stdin = bytes.NewReader(raw)
 	cmd.ExtraFiles = []*os.File{wr}
 	newProcessGroup(cmd)
-	return &Child{Cmd: cmd, res: rd, wr: wr}, nil
+	return &Child{Cmd: cmd, res: rd, wr: wr, memoryLimit: spec.Limits.MemoryBytes}, nil
 }
 
 // Started closes the host's copy of the result pipe's write end; call it
@@ -376,8 +380,80 @@ func (c *Child) Result() Result {
 	if err != nil && len(raw) == 0 {
 		return res
 	}
-	_ = json.Unmarshal(raw, &res)
+	c.reported = json.Unmarshal(raw, &res) == nil
 	return res
+}
+
+// memoryDeathMarkers start the output the Go runtime (and, in a -race test
+// binary, ThreadSanitizer) prints when it dies because it cannot get memory.
+// Each is matched at the start of a line. On Linux the child runs under
+// RLIMIT_DATA, so an allocation that passes the limit before the heap
+// watchdog samples it kills the interpreter with one of these, and the child
+// never reports. A raw "SIGSEGV: segmentation violation" line is the runtime's
+// own dump for a fault outside any goroutine; a fault in Go code starts with
+// "panic:" instead and is not matched.
+var memoryDeathMarkers = []string{
+	"fatal error: runtime: cannot allocate memory",
+	"fatal error: runtime: out of memory",
+	"fatal error: out of memory",
+	"runtime: out of memory",
+	"runtime: cannot map pages",
+	"runtime: failed to create new OS thread",
+	"runtime/cgo: pthread_create failed",
+	"SIGSEGV: segmentation violation",
+}
+
+// tsanMemoryMarkers are ThreadSanitizer's allocation failures, printed after
+// a "==<pid>==ERROR: " prefix ("ThreadSanitizer failed to allocate ..." and
+// "ThreadSanitizer: out of memory: failed to allocate ...").
+var tsanMemoryMarkers = []string{"ThreadSanitizer failed to allocate", "ThreadSanitizer: out of memory"}
+
+// MemoryStoppedMessage is the line a command's stderr ends with when the jail
+// stopped it at its memory limit: printed by the watchdog, or put in place of
+// the runtime's crash dump by Settle.
+const MemoryStoppedMessage = "jail: the shell passed its memory limit and was stopped"
+
+// memoryDeathAt returns the byte offset in stderr of the first line that
+// starts a memory-failure dump, or -1.
+func memoryDeathAt(stderr string) int {
+	off := 0
+	for _, line := range strings.SplitAfter(stderr, "\n") {
+		trimmed := strings.TrimRight(line, "\r\n")
+		for _, m := range memoryDeathMarkers {
+			if strings.HasPrefix(trimmed, m) {
+				return off
+			}
+		}
+		if strings.HasPrefix(trimmed, "==") {
+			for _, m := range tsanMemoryMarkers {
+				if strings.Contains(trimmed, m) {
+					return off
+				}
+			}
+		}
+		off += len(line)
+	}
+	return -1
+}
+
+// Settle completes res, which Result returned for this child, once the child
+// has exited and stderr holds all of its error output. shell_execute and the
+// tests call it after Result. When the child had a memory limit, did not
+// report, and stderr shows the interpreter dying for lack of memory, Settle
+// sets res.Limit to "memory" and returns stderr with the dump replaced by
+// MemoryStoppedMessage; the dump is returned separately for a debug log and
+// never reaches the model. In every other case it returns stderr unchanged
+// and an empty dump.
+func (c *Child) Settle(res *Result, stderr string) (visible, dump string) {
+	if res == nil || c.reported || c.memoryLimit == 0 || res.Limit != "" || res.Error != "" {
+		return stderr, ""
+	}
+	at := memoryDeathAt(stderr)
+	if at < 0 {
+		return stderr, ""
+	}
+	res.Limit = "memory"
+	return stderr[:at] + MemoryStoppedMessage + "\n", stderr[at:]
 }
 
 // SelfTest runs "echo" through the jail and requires its answer. A host that
