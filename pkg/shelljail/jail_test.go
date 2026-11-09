@@ -660,11 +660,11 @@ func TestOptionsAndBaseEnv(t *testing.T) {
 	assert.NotContains(t, opt.Roots.Read, os.Getenv("LOOM_DATA_DIR"), "the data directory as a whole is not")
 	assert.NotContains(t, opt.Roots.Read, shellpolicy.ResolvePath("/", "/tmp"))
 
-	// A session whose directories resolve outside the runner's data directory
-	// (LOOM_DATA_DIR changed under it) is refused rather than judged.
+	// A session whose directories resolve outside the runner's sessions
+	// directory (LOOM_DATA_DIR changed under it) is refused rather than judged.
 	t.Setenv("LOOM_DATA_DIR", t.TempDir())
 	_, err = f.r.Options(testSession, "")
-	assert.ErrorContains(t, err, "outside the loom data directory")
+	assert.ErrorContains(t, err, "outside the sessions directory")
 
 	env, dropped := f.r.BaseEnv("/home/x", map[string]string{"SESSION_ID": "s"}, map[string]string{
 		"FOO": "1", "GH_TOKEN": "t", "PATH": "/evil", "LD_PRELOAD": "x", "DB_URL": "postgres://u:p@h/d",
@@ -674,6 +674,35 @@ func TestOptionsAndBaseEnv(t *testing.T) {
 	assert.Contains(t, env, "FOO=1")
 	assert.NotContains(t, strings.Join(env, "\n"), "/evil")
 	assert.Equal(t, []string{"DB_URL", "GH_TOKEN", "LD_PRELOAD"}, dropped)
+}
+
+// An artifacts/ directory that is a symlink to another disk is resolved when
+// the runner is made, so jailed calls work in that layout; repointing it
+// afterwards is refused.
+func TestOptions_SymlinkedArtifactsDir(t *testing.T) {
+	data, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	elsewhere, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, os.Symlink(elsewhere, filepath.Join(data, "artifacts")))
+	t.Setenv("LOOM_DATA_DIR", data)
+
+	r, _, err := NewRunner(Config{Policy: shellpolicy.Readonly(), LoomDataDir: data})
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(elsewhere, "sessions"), r.SessionsRoot(), "the sessions directory is resolved at startup")
+	opt, err := r.Options(testSession, "")
+	require.NoError(t, err, "a symlinked artifacts/ is a supported layout")
+	session := filepath.Join(elsewhere, "sessions", testSession)
+	assert.Equal(t, filepath.Join(session, "scratchpad"), opt.WorkingDir)
+	assert.Contains(t, opt.Roots.Read, session, "the session's own directory is readable")
+	assert.NotContains(t, opt.Roots.Read, data, "the data directory as a whole is not")
+
+	moved, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, os.Remove(filepath.Join(data, "artifacts")))
+	require.NoError(t, os.Symlink(moved, filepath.Join(data, "artifacts")))
+	_, err = r.Options(testSession, "")
+	assert.ErrorContains(t, err, "outside the sessions directory", "a repoint after startup is refused")
 }
 
 func TestFilterEnvAndNames(t *testing.T) {

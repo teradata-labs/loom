@@ -69,9 +69,11 @@ type Config struct {
 	Limits Limits
 	// Strict runs every command with set -u (design decision D10).
 	Strict bool
-	// LoomDataDir is the data directory sessions live in. A session whose
-	// directories resolve outside it cannot run jailed commands. Reads are not
-	// granted to it as a whole: it holds the database, the server config and
+	// LoomDataDir is the data directory sessions live in. NewRunner resolves
+	// its artifacts/sessions directory once, so a symlinked artifacts/ (on
+	// another disk) works; a session whose directories resolve outside that
+	// directory cannot run jailed commands. Reads are not granted to the data
+	// directory as a whole: it holds the database, the server config and
 	// every other session's files.
 	LoomDataDir string
 	// ExtraRead and ExtraWrite add roots for every session (read_roots and
@@ -84,15 +86,20 @@ type Config struct {
 
 // Runner starts jailed commands. It is safe for concurrent use.
 type Runner struct {
-	exe        string
-	policy     *shellpolicy.Policy
-	search     []string
-	pinned     map[string]string
-	limits     Limits
-	strict     bool
-	dataDir    string
-	extraRead  []string
-	extraWrite []string
+	exe    string
+	policy *shellpolicy.Policy
+	search []string
+	pinned map[string]string
+	limits Limits
+	strict bool
+	// dataDir is LoomDataDir with its symlinks resolved.
+	dataDir string
+	// sessionsRoot is <LoomDataDir>/artifacts/sessions with its symlinks
+	// resolved at NewRunner; every session's directories must resolve
+	// beneath it.
+	sessionsRoot string
+	extraRead    []string
+	extraWrite   []string
 }
 
 // NewRunner validates cfg, pins every allowlisted program to the absolute path
@@ -132,15 +139,16 @@ func NewRunner(cfg Config) (*Runner, []string, error) {
 		return nil, nil, errors.New("jailed shell needs the loom data directory")
 	}
 	r := &Runner{
-		exe:        exe,
-		policy:     cfg.Policy,
-		search:     append([]string{}, search...),
-		pinned:     map[string]string{},
-		limits:     cfg.Limits,
-		strict:     cfg.Strict,
-		dataDir:    shellpolicy.ResolvePath("/", cfg.LoomDataDir),
-		extraRead:  resolveAll(cfg.ExtraRead),
-		extraWrite: resolveAll(cfg.ExtraWrite),
+		exe:          exe,
+		policy:       cfg.Policy,
+		search:       append([]string{}, search...),
+		pinned:       map[string]string{},
+		limits:       cfg.Limits,
+		strict:       cfg.Strict,
+		dataDir:      shellpolicy.ResolvePath("/", cfg.LoomDataDir),
+		sessionsRoot: shellpolicy.ResolvePath("/", filepath.Join(cfg.LoomDataDir, "artifacts", "sessions")),
+		extraRead:    resolveAll(cfg.ExtraRead),
+		extraWrite:   resolveAll(cfg.ExtraWrite),
 	}
 	if r.limits.MemoryBytes == 0 {
 		r.limits.MemoryBytes = DefaultMemoryBytes
@@ -220,11 +228,19 @@ func (r *Runner) Pinned() map[string]string {
 	return out
 }
 
+// SessionsRoot returns the directory every session's directories must
+// resolve beneath: <LoomDataDir>/artifacts/sessions, resolved when the runner
+// was made. serve logs it when it lies outside the data directory.
+func (r *Runner) SessionsRoot() string { return r.sessionsRoot }
+
+// DataDir returns LoomDataDir with its symlinks resolved.
+func (r *Runner) DataDir() string { return r.dataDir }
+
 // SessionDirs returns the session's scratchpad and artifact directories,
 // creating them. The scratchpad is a jailed command's default working
 // directory and HOME. Both lie in the session's own directory
 // (artifacts/sessions/<id> under the data directory), which must resolve
-// inside LoomDataDir.
+// beneath SessionsRoot.
 func (r *Runner) SessionDirs(sessionID string) (scratch, artifactDir string, err error) {
 	if sessionID == "" {
 		return "", "", errors.New("the jailed shell runs only inside a session")
@@ -242,8 +258,8 @@ func (r *Runner) SessionDirs(sessionID string) (scratch, artifactDir string, err
 	}
 	scratch, artifactDir = shellpolicy.ResolvePath("/", scratch), shellpolicy.ResolvePath("/", artifactDir)
 	for _, d := range []string{scratch, artifactDir} {
-		if !shellpolicy.WithinDir(r.dataDir, d) {
-			return "", "", fmt.Errorf("session directory %s is outside the loom data directory %s", d, r.dataDir)
+		if !shellpolicy.WithinDir(r.sessionsRoot, d) {
+			return "", "", fmt.Errorf("session directory %s is outside the sessions directory %s (resolved at startup)", d, r.sessionsRoot)
 		}
 	}
 	return scratch, artifactDir, nil
