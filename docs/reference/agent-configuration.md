@@ -22,6 +22,7 @@ definitions (in `looms.yaml`) and the **standalone agent YAML** files loaded by 
   - [LLM Configuration](#llm-configuration)
   - [Role-Specific LLM Overrides](#role-specific-llm-overrides)
   - [Provider Pool](#provider-pool)
+  - [Decision Layer](#decision-layer)
   - [System Prompt and ROM](#system-prompt-and-rom)
   - [Tools Configuration](#tools-configuration)
   - [Memory Configuration](#memory-configuration)
@@ -62,6 +63,7 @@ definitions (in `looms.yaml`) and the **standalone agent YAML** files loaded by 
 | `spec.compressor_llm` | `LLMConfigYAML` | inherits main | Compressor LLM override |
 | `spec.active_provider` | `string` | optional | Named provider from global pool |
 | `spec.allowed_providers` | `[]string` | optional | Restrict to subset of pool |
+| `spec.decision` | `DecisionConfigYAML` | off | Typed decision layer, shadow mode only |
 
 ---
 
@@ -265,6 +267,55 @@ spec:
 
 ---
 
+### Decision Layer
+
+Under `spec.decision` (k8s-style) or `agent.decision` (legacy). Off when the block is absent or `provider` is empty or `off`. With a provider set, the agent runs the decider in the background at `recall.rerank`, `tool_search.rerank` and `tool.failure_kind` and stores shadow rows beside what Loom decided; nothing acts on a decider answer in this release. See [`decision-layer.md`](../architecture/decision-layer.md), including what each site sends to the decider.
+
+Source: `DecisionConfigYAML` in `pkg/agent/config_loader.go`; rules in `decision.ValidateConfig` (`pkg/decision/config.go`), which runs on every path that accepts a decision config. A configuration the agent cannot use (no LLM for `llm`, no credential for `jev`) disables the layer with a logged warning; it does not fail agent construction.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `provider` | `string` | `off` | `off`, `llm` (adapter over one of the agent's LLMs), `jev` (TypeSafe System One API) or `mock`. Case-insensitive in YAML |
+| `llm_role` | `string` | main LLM | With `llm`: `classifier`, `compressor`, `judge` or `orchestrator`; an unset or unconfigured role uses the main LLM |
+| `model` | `string` | `jev-1.13.0` (jev direct), `typesafe-ai/jev` (gateway) | jev model id (the `llm` provider uses its role LLM's own model and ignores this). Floating aliases (`jev-latest`, `jev-preview`, `latest`, `typesafe-ai/jev`) are rejected unless `allow_alias: true` |
+| `allow_alias` | `bool` | `false` | Accept a floating alias. Required for the Vercel AI Gateway, whose only id is `typesafe-ai/jev` |
+| `timeout_ms` | `int` | `0` (5 s for jev, 20 s for llm) | Per-request timeout; must be `>= 0` |
+| `max_per_session` | `int` | `0` (no cap) | Decider calls per session before the router falls back; must be `>= 0` |
+| `max_cost_usd_per_session` | `float` | `0` (no cap) | Decider spend per session in USD; must be `>= 0` |
+| `requests_per_minute` | `int` | `0` (jev default 1,000) | jev only. Process-wide: agents with the same decider settings share one client and one limit. Set from the tier in use (gateway free tier: 30) |
+| `bands` | list | none (every site shadow) | Per-site bands, below |
+| `base_url` | `string` | — | **Rejected.** The decider endpoint is server-level only (`decision.base_url` in `looms.yaml` / `LOOM_DECISION_BASE_URL`, or `TYPESAFE_BASE_URL`; see `ENV_VARS.md`) |
+
+Credentials are never read from YAML: `jev` uses `TYPESAFE_API_KEY`, else `AI_GATEWAY_API_KEY`, else `JEV_API_KEY`.
+
+**Band fields** (`bands[]`):
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `site` | `string` | **required** | Call site, e.g. `recall.rerank`, `tool_search.rerank`, `tool.failure_kind`. Unique within the list |
+| `act_min` | `float` | `0` | Confidence at or above which the router reports the answer as usable; in `[0, 1]` |
+| `mode` | `string` | `replace` | `replace` or `tighten_only` (`tighten-only` and `tighten` also accepted) |
+| `shadow` | `bool` | `false` | Record only, never act |
+
+A site with no band is shadow. A band without `shadow: true` is accepted, but in this release the router records its confident answers as `DECISION_PATH_DECIDER` although no site acts on them, so the agent logs a `decision config` warning naming the site once when it builds its decider. Such a band becomes live, with no config change, when its site is wired to act. Write `shadow: true` until then.
+
+```yaml
+spec:
+  decision:
+    provider: jev
+    model: typesafe-ai/jev       # through the Vercel AI Gateway (AI_GATEWAY_API_KEY)
+    allow_alias: true
+    timeout_ms: 2000
+    max_per_session: 200
+    requests_per_minute: 28      # gateway free tier allows 30
+    bands:
+      - site: recall.rerank
+        act_min: 0.9
+        shadow: true
+```
+
+---
+
 ### System Prompt and ROM
 
 #### spec.system_prompt
@@ -338,7 +389,7 @@ spec:
 
 | Category | Behavior |
 |---|---|
-| **Configurable** (list in `spec.tools`) | `http_request`, `web_search`, `file_read`, `file_write`, `analyze_image`, `parse_document`, `grpc_call`, `shell_execute`, `contact_human`, `agent_management`, `tool_search` |
+| **Configurable** (list in `spec.tools`) | `http_request`, `web_search`, `file_read`, `file_write`, `analyze_image`, `parse_document`, `grpc_call`, `shell_execute`, `contact_human`, `agent_management`, `tool_search`, `run_lua` (also needs the server's `tools.lua.enabled` and an admission chain or permission checker; see [lua-script-api.md](lua-script-api.md)) |
 | **Registered at construction** (not listed in `spec.tools`; present from the first turn when their subsystem is wired) | `load_pattern` (always), `manage_skills` (skill orchestrator wired), `graph_memory` (graph memory store configured and enabled), `task_board` (task manager wired and `task_board.enabled`) |
 | **Progressively disclosed** (registered dynamically after triggering conditions) | `get_error_details` (after first error), `conversation_memory` (after first L2 swap), `session_memory` (after 3+ sessions), `query_tool_result` (after first large result or first tool result returned by reference) |
 | **Workflow-injected** (auto-added for workflow agents) | `send_message`, `publish`, `shared_memory_read`, `shared_memory_write`, `top_n_query`, `group_by_query` |
@@ -452,6 +503,7 @@ Under `spec.memory.graph_memory`.
 | `min_salience_threshold` | `float64` | `0.1` | Minimum salience for recall |
 | `max_recall_candidates` | `int` | `50` | Max memories to consider during recall |
 | `default_salience` | `float64` | `0.5` | Initial salience for new memories |
+| `fleet_lesson_sharing` | `bool` | `false` (opt-in) | Store mined lessons in one partition shared by every agent on the server (`__fleet_lessons__`) instead of the agent's private `<key>__lessons` partition (key: `Config.GraphMemoryAgentID` when set, otherwise the agent name). Affects only where lessons are stored and recalled; the lesson lane below runs either way. Do not enable it with untrusted tool servers: see [Security Model](security-model.md). |
 
 ```yaml
 spec:
@@ -473,6 +525,18 @@ spec:
     graph_memory:
       enabled: false
 ```
+
+#### Lesson lane (on by default)
+
+Agents with graph memory get a lesson lane without any configuration. `fleet_lesson_sharing` changes only which partition it uses. Design: [Lesson grounding and outcome credit](../architecture/lesson-grounding-and-credit.md).
+
+- **Mining, at turn end.** When graph memory and `enable_extraction` are both on (the defaults), the end of every `Chat()` call (one user message) starts a background pass over that turn's tool ledger. It looks for a failed call followed by a later successful call of the same kind with an observable change between them. If it finds at least one such pair, it makes **one extra LLM call**, using the `compressor_llm` role if set, otherwise the agent's LLM, with a 30 s timeout. A turn with no error-then-fix pair makes no call, and a chat-only turn does not mine earlier turns again. Only a session that recorded no ledger in this process (for example, one restored from storage after a restart) is mined from its message history instead, and only once. The lessons it returns are stored with `memory_type: lesson`. A lesson that names none of the changed fragments is dropped.
+- **Recall.** At conversation start, matching lessons are added to the graph-memory context block, also when no ordinary memory matches. When a tool batch contains failures, the error text is used to query the lesson partition again, and any lessons not yet shown are appended to the conversation as a **user-role `<system-reminder>` message** before the model's retry turn. It is stored under the synthetic role `lesson_reminder` and sent to the provider as `user`, never as `system`: providers move system messages to the head of the request, so a system message added after a tool result would miss every message-level cache breakpoint. This happens at most 5 times per session. Error-time injection needs only graph memory to be enabled, not `enable_extraction`.
+- **Outcome credit.** Lessons injected at error time are scored against the rest of that turn's ledger: a later success of the failing kind of call raises salience, a failure after the injection with no recovery lowers it, and a turn that simply ends scores nothing. Credit needs a store with `AdjustSalience` (the SQLite and Postgres stores both have it).
+- **Tracing.** Each pass emits a span with its counts: `graph_memory.lesson_mining`, `graph_memory.lesson_credit` and `graph_memory.lesson_injection`. Conversation-start lessons are counted on the `graph_memory.recall` span: `recall.injected` is the total, `recall.injected_memories` and `recall.injected_lessons` split it.
+- **Prompt text.** The mining prompt and the injection headings are prompt-registry entries `memory.lesson_*` in `prompts/memory/lessons.yaml`. When the agent has a prompt registry with those keys, their text is used; otherwise the built-in text, which is identical to the shipped file, is used.
+
+Lessons come from tool output and reach the model as trusted guidance: at conversation start inside the graph-memory context block (a `system` message), at error time as a `<system-reminder>`. See [Security Model](security-model.md) for what that means with untrusted tool servers. To turn the lane off, disable graph memory (`enabled: false`). Setting `enable_extraction: false` stops mining but not recall of lessons already stored.
 
 ---
 

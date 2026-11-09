@@ -16,6 +16,7 @@ admin token authentication, and deployment requirements.
 - [Trust Model: x-user-id Header](#trust-model-x-user-id-header)
 - [What Loom Validates](#what-loom-validates)
 - [What Loom Does NOT Do](#what-loom-does-not-do)
+- [Trust Model: Tool Servers](#trust-model-tool-servers)
 - [PostgreSQL Row-Level Security (RLS)](#postgresql-row-level-security-rls)
 - [Admin Token Authentication](#admin-token-authentication)
 - [Deployment Requirements](#deployment-requirements)
@@ -150,6 +151,51 @@ If a client connects directly to the Loom gRPC server without a trusted proxy in
 
 **This is not a bug. It is the expected deployment model.** Loom is a backend service that
 sits behind an authenticating proxy.
+
+
+## Trust Model: Tool Servers
+
+Connected tool servers -- MCP servers, backends, YAML-declared tools -- are
+**operator-chosen and trusted**. Loom does not sandbox what a tool returns, and
+several subsystems act on tool output as data:
+
+| Channel | What the server controls | Effect |
+|---------|--------------------------|--------|
+| Tool result content | The entire payload | Enters the conversation as a tool result the model reads |
+| `Result.Metadata` lease events | Any `(kind, id)` acquire/release | Pins the conversation in the scheduler's `RESOURCE_HOLDER` class, or demotes a genuine holder (`pkg/shuttle/lease.go`) |
+| Tool error text and result previews | The strings quoted into the lesson-mining prompt | Can be mined into a stored "verified lesson" that is later shown to the model as trusted guidance: inside the **system**-role graph-memory context block, or as a `<system-reminder>` after a failed tool call (`docs/architecture/lesson-grounding-and-credit.md`) |
+
+The lesson channel is the durable one, so it is called out explicitly:
+
+- Mined lessons derive from tool output; a hostile or compromised tool server
+  can plant durable, high-salience guidance in agent system prompts.
+- The grounding gate defends against the *model's* narrative, not against the
+  *server's* content: an attacker controlling both the error and the
+  succeeding call controls the observed "change" as well.
+- With `fleet_lesson_sharing` enabled, such a lesson lands in the shared
+  `__fleet_lessons__` partition and is visible to every agent on the server
+  indefinitely.
+
+A trusted tool server is not enough. **Untrusted content can pass through a
+trusted tool.** A database error can quote a value a user stored, a web or
+file tool returns text someone else wrote, and the model's own tool inputs are
+quoted into the mining prompt as well (`FAILED INPUT`, `SUCCEEDED INPUT`,
+`CALL BETWEEN FAILURE AND SUCCESS`). So an instruction planted in a tool's
+error text, or a model steered by injected content into staging an
+error-then-fix pair itself, can come back in a later session as a "verified
+lesson": in the graph-memory context block at conversation start, or as a
+`<system-reminder>` after a matching error. A planted sentence that names the
+changed fragments (for example `INTEGER` and `BIGINT`) passes the grounding
+gate, because the gate checks that the lesson names the observed change, not
+where its words came from. The mining prompt does not fence or mark quoted
+tool text today. Treat lesson mining as reading every tool's output and inputs
+into durable guidance: if a tool can return text that an untrusted party
+wrote, do not enable `fleet_lesson_sharing` for that agent, and consider
+turning off graph-memory extraction (`enable_extraction: false`) for it.
+
+**Deployments running untrusted MCP servers must not enable
+`fleet_lesson_sharing`** (it is off by default), and should strip or ignore
+tool-supplied metadata keys at the adapter boundary.
 
 
 ## PostgreSQL Row-Level Security (RLS)
@@ -372,6 +418,13 @@ SQLite does **not** support Row-Level Security. When Loom runs with a SQLite bac
 
 SQLite mode is single-tenant only. For multi-tenant deployments, use the PostgreSQL backend.
 
+This includes graph memory and its lessons. The SQLite graph-memory store does
+not scope rows by user (every row has `user_id = 'default-user'`, and no query
+filters on it), so a lesson mined in one user's session is recalled and
+injected in every other user's session of the same agent. A lesson can quote
+one user's SQL, table names or values, and it is shown to the other users'
+model as verified guidance.
+
 See `docs/reference/sqlite-guidance.md` for details on SQLite limitations.
 
 
@@ -466,10 +519,14 @@ export LOOM_ADMIN_TOKEN="$(openssl rand -hex 32)"
 | Denial of service | Rate limiting at the proxy or load balancer |
 | Man-in-the-middle | TLS between all components (see `docs/reference/tls.md`) |
 | Privilege escalation via user ID guessing | Use opaque, unguessable user IDs (UUIDs, not sequential integers) |
+| Prompt injection from a hostile tool server (including durable "lessons" mined from tool output) | Run only operator-trusted tool servers; keep `fleet_lesson_sharing` off when servers are untrusted |
+| Scheduler priority escalation via forged lease metadata | Strip tool-supplied metadata at the adapter boundary for untrusted servers |
 
 
 ## See Also
 
+- `docs/architecture/lesson-grounding-and-credit.md` -- lesson mining trust boundary (tool output to system prompt)
+- `pkg/shuttle/lease.go` -- lease-event trust model (tool-declared scheduling priority)
 - `docs/reference/tls.md` -- TLS/HTTPS configuration (mTLS, Let's Encrypt, self-signed)
 - `docs/reference/sqlite-guidance.md` -- SQLite limitations including multi-tenancy
 - `pkg/server/interceptors.go` -- User ID interceptor implementation
