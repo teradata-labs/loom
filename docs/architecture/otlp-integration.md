@@ -23,6 +23,8 @@ Architecture for exporting Loom traces via OpenTelemetry Protocol (OTLP), enabli
 - [Key Interactions](#key-interactions)
   - [Span Export Flow](#span-export-flow)
   - [Attribute Translation Flow](#attribute-translation-flow)
+  - [Turn Span Tree](#turn-span-tree)
+  - [Phoenix Annotations](#phoenix-annotations)
 - [Data Structures](#data-structures)
   - [OTelConfig](#otelconfig-struct)
   - [Span Mapping Table](#span-mapping-table)
@@ -227,7 +229,7 @@ The `OTelTracer` owns an OTel `TracerProvider` internally. On `StartSpan`, it cr
 │    1. Calculate duration (same as all tracers)       │
 │    2. Apply privacy redaction                        │
 │    3. Load otelSpan from activeSpans                 │
-│    4. Call translateAttrs(otelSpan, span.Attributes) │
+│    4. SetAttributes(exportAttributes(name, attrs))   │
 │    5. Set OTel span status from span.Status          │
 │    6. Call otelSpan.End()                            │
 │                                                      │
@@ -403,7 +405,7 @@ Agent Code      OTelTracer       OTel SDK          OTLP HTTP
     ├─ EndSpan ─────▶│                │                  │
     │               ├─ calcDuration   │                  │
     │               ├─ redact(span)   │                  │
-    │               ├─ translateAttrs │                  │
+    │               ├─ exportAttrs    │                  │
     │               ├─ load otelSpan  │                  │
     │               ├─ otelSpan.SetAttributes            │
     │               ├─ otelSpan.SetStatus                │
@@ -423,23 +425,68 @@ Agent Code      OTelTracer       OTel SDK          OTLP HTTP
 ### Attribute Translation Flow
 
 ```
-Loom Span.Attributes        translateAttrs()        OTel Span
-  {                               │                  .SetAttribute(
-    "llm.provider": "anthropic"   ├── gen_ai.system      "gen_ai.system", "anthropic")
-    "llm.model": "claude-..."     ├── gen_ai.request.model  "claude-...")
-    "llm.tokens.input": 1234      ├── gen_ai.usage.input_tokens  1234)
-    "llm.tokens.output": 567      ├── gen_ai.usage.output_tokens  567)
-    "llm.cost": 0.0023            ├── (pass-through as "loom.llm.cost")
-    "tool.name": "query_db"       ├── gen_ai.tool.name  "query_db")
-    "session.id": "abc-123"       ├── session.id  "abc-123")
-    "error.message": "timeout"    └── exception.message  "timeout")
-  }
+Loom Span.Attributes        exportAttributes()      OTel Span
+  {                               │                  .SetAttributes(
+    "llm.provider": "anthropic"   ├── gen_ai.system, gen_ai.provider.name  "anthropic"
+    "llm.model": "claude-..."     ├── gen_ai.request.model  "claude-..."
+    "llm.tokens.input": 100       ├── gen_ai.usage.input_tokens  100
+    "llm.tokens.cache_read": 900  ├── gen_ai.usage.cache_read.input_tokens  900
+    "llm.cost.usd": 0.0023        ├── gen_ai.usage.cost  0.0023
+    "pattern.name": "sql"         ├── loom.pattern.name  "sql"
+    "session.id": "abc-123"       └── session.id  "abc-123"
+  }                               + derived: openinference.span.kind "LLM",
+                                    llm.token_count.prompt 1000, ...
 ```
 
-**Pass-through rule**: Loom attributes with no OTel equivalent are forwarded with a `loom.` prefix. This preserves Loom-specific metadata (e.g., `loom.llm.cost`, `loom.pattern.name`) without polluting the `gen_ai.*` namespace.
+**Pass-through rule**: Loom attributes with no OTel equivalent are forwarded with a `loom.` prefix. This preserves Loom-specific metadata (e.g., `loom.pattern.name`, `loom.conversation.turns`) without polluting the `gen_ai.*` namespace. Keys that are already OpenInference or OTel names (see the table) are exported unchanged.
 
-**Privacy-first ordering**: Redaction runs before translation. Attributes removed by the redactor are never passed to `translateAttrs`.
+**Privacy-first ordering**: Redaction runs before translation. Attributes removed by the redactor are never passed to `exportAttributes`, and derived values such as `input.value` are computed from the redacted attributes.
 
+**Credentials inside values** (`credentials.go`): dropping attributes by key is not enough, because tool arguments, tool results and LLM tool calls are exported as JSON or text inside `input.value` / `output.value`. With `RedactCredentials`, every attribute value, event attribute, status message and Phoenix annotation text is cleaned: a JSON document has credential-named fields replaced with `[REDACTED]` at any depth; remaining text is matched for credential-named `"key": value` pairs (plain, escaped inside a string, or truncated), credential header lines, `name=value` assignments, credentials named in prose (a credential word followed by a value that mixes letters and digits or contains `=`), `Bearer`/`Basic` credentials, well-known key formats, JWTs and credential URL parameters. The patterns favour removing too much over leaking: a tool parameter named `api_key` loses its description too. `observability.RedactSpan` exposes the same cleaning for tests and callers.
+
+
+### Turn Span Tree
+
+One `Weave` turn exports as one trace. The agent opens a span for each stage and runs the stage under it, so a span's children are the work that stage caused:
+
+```
+server.Weave                          (CHAIN)  message.preview (input.value),
+│                                              response.preview (output.value)
+└── agent.chat                        (AGENT)  agent.id, agent.name, session.id,
+    │                                          session.turn, metadata
+    └── agent.conversation_loop       (CHAIN)
+        ├── graph_memory.recall       (RETRIEVER)  input.value = search query,
+        │   ├── llm.completion        (LLM, llm.role = memory_query)
+        │   └── llm.completion        (LLM, llm.role = memory_rerank)
+        ├── llm.completion            (LLM, llm.role = agent)
+        ├── agent.tool_execution      (TOOL)   input.value = arguments,
+        │   └── mcp.tools.call / ...           output.value = result
+        ├── llm.completion            (LLM, llm.role = agent)
+        ├── memory.release_pressure   (CHAIN)  when a pass sheds
+        │   └── llm.completion        (LLM, llm.role = memory_compress)
+        └── graph_memory.extract      (CHAIN)  may end after the turn
+            └── llm.completion        (LLM, llm.role = memory_extract)
+```
+
+`agent.conversation_loop` runs under its own span through a copy of the agent `Context` whose embedded `context.Context` carries the span (`withSpanContext`); the caller's `Context` is not changed, so the parallel tool calls of one batch each get their own copy. `agent.tool_execution` passes its span to the tool the same way, and ends after the tool row is committed. Extraction and the task-close salience boost run on `context.WithoutCancel` copies of the turn context: they may end after the turn, and with the synchronized span IDs (Loom-to-OTel Span Bridge) they still join its trace. The skill-eviction salience boost has no request context (`Orchestrator.ActivateSkill` takes none) and is a trace of its own.
+
+**`llm.role`.** Each `llm.completion` names the job of the call. A provider gets a role where it is built (`agent`, `compressor`, `classifier`, `judge`, `orchestrator`), and the calls Loom makes for itself set a purpose role where they are made (`memory_query`, `memory_rerank`, `memory_extract`, `memory_compress`, `memory_search_rerank`, `skills_router`). The second kind is needed because an agent without a `compressor_llm` sends those calls through its own provider.
+
+**`metadata`.** `agent.chat` and `agent.conversation.resume` carry one OpenInference `metadata` attribute, a JSON object with `graph_memory_enabled` and the tags of `observability.ContextWithSpanMetadata`.
+
+**`session.id`.** Every span in a session carries `session.id`: `server.Weave`, `agent.chat`, `agent.conversation.resume`, `graph_memory.recall`, `graph_memory.extract` and skill-eviction `graph_memory.salience_boost` set it from the session, and child spans inherit it from their parent span.
+
+### Phoenix Annotations
+
+Scores reach Phoenix on a second path, Phoenix's REST API, because OTLP carries spans only. `observability.PhoenixClient` posts to `/v1/trace_annotations`, `/v1/span_annotations` and `/v1/session_annotations`:
+
+```
+JudgeServer.EvaluateWithJudges ──▶ LLMJudge.Evaluate ──▶ judge.evaluation span (score, verdict)
+                                          │
+                                          └─ AnnotateTraces(trace_id) ─ ─ ─▶ queue ─▶ worker ─▶ POST /v1/trace_annotations
+```
+
+The `Annotate*` calls only validate and enqueue; one worker sends, so an unreachable Phoenix costs the caller nothing and is logged. The client uses Phoenix's asynchronous mode: the synchronous mode answers 404 for a trace the OTLP batch processor has not exported yet, while the asynchronous one keeps the annotation and retries (Phoenix 20.22.0: 60 attempts, 10 s apart). Each annotation has an identifier (judge ID and dimension), so a repeated evaluation upserts instead of adding rows. Label and explanation are PII-redacted like span attributes. `looms serve` stops the client after the OTLP flush, so queued annotations follow their spans.
 
 ## Data Structures
 
@@ -469,27 +516,46 @@ MaxBatchSize > 0                 (defaults to 512 if zero)
 
 ### Span Mapping Table
 
-Loom attribute constants (`pkg/observability/instrumentation.go`) → OTel GenAI semantic conventions (OTel semconv v1.28+):
+Loom attribute keys (set in `pkg/llm/instrumented_provider.go`, `pkg/agent`, `pkg/server`) → exported OTel attributes, as defined by `loomToGenAI`, `loomAlsoExport` and `openInferencePassthrough` in `pkg/observability/otel_attrs.go`:
 
-| Loom Constant | Loom Value | OTel Attribute | Notes |
+| Loom key | Example | Exported as | Notes |
 |---|---|---|---|
-| `AttrLLMProvider` | `"anthropic"` | `gen_ai.system` | |
-| `AttrLLMModel` | `"claude-sonnet-4-5"` | `gen_ai.request.model` | |
-| `AttrLLMInputTokens` | `1234` | `gen_ai.usage.input_tokens` | |
-| `AttrLLMOutputTokens` | `567` | `gen_ai.usage.output_tokens` | |
-| `AttrLLMCacheReadTokens` | `890` | `gen_ai.usage.cache_read_input_tokens` | |
-| `AttrLLMTemperature` | `0.7` | `gen_ai.request.temperature` | |
-| `AttrLLMMaxTokens` | `4096` | `gen_ai.request.max_tokens` | |
-| `AttrLLMStopReason` | `"end_turn"` | `gen_ai.response.finish_reasons` | wrapped as array |
-| `AttrToolName` | `"query_db"` | `gen_ai.tool.name` | |
-| `AttrSessionID` | `"sess-abc"` | `session.id` | resource attr |
-| `AttrAgentID` | `"agent-1"` | `loom.agent.id` | no OTel equiv → prefix |
-| `AttrLLMCost` | `0.0023` | `loom.llm.cost` | no OTel equiv → prefix |
-| `AttrPatternName` | `"sql-analysis"` | `loom.pattern.name` | no OTel equiv → prefix |
-| `AttrErrorMessage` | `"timeout"` | `exception.message` | OTel exception semconv |
-| `AttrErrorType` | `"DeadlineExceeded"` | `exception.type` | |
-| `ResourceAttrServiceName` | `"looms"` | `service.name` | resource attribute |
-| `ResourceAttrServiceVersion` | `"1.3.0"` | `service.version` | resource attribute |
+| `llm.provider` | `"bedrock"` | `gen_ai.system` and `gen_ai.provider.name` | value normalized by `genAISystemNorm`: `bedrock`→`aws.bedrock`, `azure-openai`→`azure.ai.openai`, `gemini`→`gcp.gemini`, `mistral`→`mistral_ai`, `huggingface`→`hugging_face` |
+| `llm.model` | `"claude-sonnet-4-5"` | `gen_ai.request.model` | |
+| `llm.operation` | `"chat"` | `gen_ai.operation.name` | |
+| `llm.tokens.input` | `100` | `gen_ai.usage.input_tokens` | Loom reports the uncached remainder |
+| `llm.tokens.output` | `20` | `gen_ai.usage.output_tokens` | |
+| `llm.tokens.total` | `120` | `gen_ai.usage.total_tokens` | |
+| `llm.tokens.cache_read` | `900` | `gen_ai.usage.cache_read.input_tokens` | set only when non-zero |
+| `llm.tokens.cache_write` | `176` | `gen_ai.usage.cache_creation.input_tokens` | set only when non-zero |
+| `llm.temperature` / `llm.max_tokens` | `0.7` / `4096` | `gen_ai.request.temperature` / `gen_ai.request.max_tokens` | |
+| `llm.stop_reason` | `"end_turn"` | `gen_ai.response.finish_reasons` | |
+| `llm.cost.usd` | `0.0023` | `gen_ai.usage.cost` | |
+| `message.preview` / `response.preview` | text | `gen_ai.prompt` / `gen_ai.completion` | Opik Input/Output columns |
+| `tool.name`, `mcp.tool.name` | `"query_db"` | `gen_ai.tool.name` | |
+| `mcp.tool.args` | JSON | `gen_ai.tool.call.arguments` | |
+| `agent_id`, `agent.id` | GUID | `gen_ai.agent.id` | |
+| `agent.name` | `"phoenix-smoke"` | `agent.name` and `gen_ai.agent.name` | OpenInference + OTel |
+| `session.id`, `user.id`, `trace.id` | | unchanged | |
+| `error.message` / `error.type` / `error.stack` | | `exception.message` / `exception.type` / `exception.stacktrace` | OTel exception semconv |
+| `conversation.tokens.*`, `conversation.cost.usd` | | `loom.conversation.*` | agent-level totals; deliberately **not** `gen_ai.usage.*`, which backends sum over a trace |
+| keys starting `openinference.`, `input.`, `output.`, `llm.token_count.`, `llm.cost.`, `llm.input_messages.`, `llm.output_messages.`, `retrieval.documents.`, `gen_ai.`, and `llm.invocation_parameters`, `tool.parameters`, `tool.description`, `tool.id`, `graph.node.id`, `metadata` | | unchanged | already OpenInference / OTel names. `metadata` is OpenInference's JSON object string; Loom's own `metadata.*` keys (for example `metadata.keys`, a count) stay `loom.`-prefixed |
+| anything else | | `loom.<key>` | no data dropped |
+
+**Collisions and value types.** Each OTel key is exported once. When several Loom keys export to the same key (`tool.name` and `mcp.tool.name`; `agent_id` and `agent.id`; a mapped key and an attribute the span already sets under the `gen_ai.*` name), the key set under its exported name wins, otherwise the lexically first Loom key, so the exported value does not depend on map iteration order. List values (`[]string`, `[]int`, `[]int64`, `[]float64`, `[]bool`) export as OTLP arrays; maps and `[]interface{}` export as JSON strings.
+
+**Derived OpenInference attributes** (`deriveOpenInferenceAttrs`), exported for every key the span does not already export (an empty explicit `openinference.span.kind` counts as absent). Derived totals use the span's explicit counts where it sets them:
+
+| Attribute | Rule |
+|---|---|
+| `openinference.span.kind` | by span name: `llm.completion` → `LLM`; `agent.chat`, `agent.chat_with_progress`, `agent.chat_with_content_blocks`, `agent.conversation.resume` → `AGENT`; `agent.tool_execution`, `tool.execute`, `mcp.tools.call` → `TOOL`; `graph_memory.recall`, `memory.search_messages` → `RETRIEVER`; `memory.rerank_search_results` → `RERANKER`; everything else → `CHAIN` |
+| `input.value` / `output.value` | from `message.preview` / `response.preview`. `llm.completion` spans set them explicitly where the previews would mislead: `input.value` holds the messages after the last assistant message (tool results, or messages added after the user message) as `role: text` lines, and `output.value` holds a tool-calling response's text plus one `name(arguments JSON)` line per call |
+| `llm.token_count.prompt` | LLM spans only: `llm.tokens.input + cache_read + cache_write` (OpenInference counts cached prompt tokens; Loom's input does not) |
+| `llm.token_count.completion` / `llm.token_count.total` | `llm.tokens.output` / prompt + completion |
+| `llm.token_count.prompt_details.cache_read` / `.cache_write` | when the Loom cache attribute is present |
+| `llm.cost.total` | from `llm.cost.usd` |
+
+`llm.provider`, `llm.system` and `llm.model_name` are not set: Arize Phoenix derives them from `gen_ai.provider.name` / `gen_ai.system` and `gen_ai.request.model`, and an explicit value would replace its OpenInference mapping (for example `aws.bedrock` → `aws`).
 
 **Span name pass-through**: Loom span names (`llm.completion`, `tool.execute`, `agent.chat`, etc.) are forwarded as-is to OTel. These are already meaningful; backends display them in their trace UIs without transformation.
 
@@ -504,35 +570,38 @@ Loom attribute constants (`pkg/observability/instrumentation.go`) → OTel GenAI
 
 ```
 StartSpan(ctx, name, opts):
-  loomSpan = newLoomSpan(ctx, name, opts)          // same as NoOpTracer
-  otelCtx, otelSpan = t.tracer.Start(ctx, name,
+  loomSpan = newLoomSpan(ctx, name, opts)          // links parent & inherits session.id
+  otelCtx, otelSpan = t.tracer.Start(otelCtx, name,
     trace.WithTimestamp(loomSpan.StartTime),
     trace.WithSpanKind(spanKindFor(name)),
   )
+  sc = otelSpan.SpanContext()
+  loomSpan.TraceID = sc.TraceID().String()         // 32-hex OTel trace ID
+  loomSpan.SpanID = sc.SpanID().String()           // 16-hex OTel span ID
   t.activeSpans.Store(loomSpan.SpanID, otelSpan)
   return ContextWithSpan(otelCtx, loomSpan), loomSpan
 
 EndSpan(span):
   span.EndTime = now()
   span.Duration = span.EndTime - span.StartTime
-  redacted = t.redact(span)                        // privacy filter
   raw, ok = t.activeSpans.LoadAndDelete(span.SpanID)
   if !ok: return                                   // span was never started (no-op)
   otelSpan = raw.(trace.Span)
-  translateAttrs(otelSpan, redacted.Attributes)
+  t.recorder.Record(span)                          // optional local eval_runs row
+  redacted = redactOTelSpan(span, t.privacy)       // privacy filter
+  otelSpan.SetAttributes(exportAttributes(span.Name, redacted.Attributes)...)
   for _, event := range redacted.Events:
     otelSpan.AddEvent(event.Name, ...)
   if span.Status.Code == StatusError:
-    otelSpan.SetStatus(codes.Error, span.Status.Message)
+    otelSpan.SetStatus(codes.Error, redacted.Status.Message)
   otelSpan.End(trace.WithTimestamp(span.EndTime))
-  t.activeSpans.Delete(span.SpanID)                // cleanup (LoadAndDelete covers this)
 ```
 
 **Complexity**: O(1) amortised for `sync.Map` operations.
 
 **Race safety**: `sync.Map` is goroutine-safe. Loom's context propagation ensures `EndSpan` is called by the same goroutine that called `StartSpan` (via `defer`), so no concurrent access to the same `SpanID` entry occurs in practice. `sync.Map` handles the edge case where it could.
 
-**TraceID / SpanID format**: OTel uses 128-bit trace IDs and 64-bit span IDs in W3C hex format. Loom uses UUID strings. The bridge converts Loom UUIDs to OTel IDs by stripping hyphens and truncating / zero-padding to the required byte lengths.
+**TraceID / SpanID format**: OTel uses 128-bit trace IDs (32 lowercase hex characters) and 64-bit span IDs (16 lowercase hex characters) in W3C format. `OTelTracer.StartSpan` sets `Span.TraceID` and `Span.SpanID` to the exported OTel hex IDs so `TraceIDFromContext`, `WeaveResponse.trace_id`, late child spans (started after their parent has ended via `buildOTelSpanContext`), and Phoenix annotations all use the exact IDs stored by the OTLP backend. A valid 32-hex `ContextWithTraceID` override on a root span is honored via the provider's `IDGenerator`; non-hex overrides (such as dashed UUIDs) are recorded on `loom.trace_id_override` while the SDK assigns a 32-hex trace ID.
 
 
 ### GenAI Attribute Translation
@@ -542,17 +611,22 @@ EndSpan(span):
 **Solution**: Static lookup table applied at `EndSpan`.
 
 ```
-translateAttrs(otelSpan trace.Span, attrs map[string]interface{}):
-  for key, value in attrs:
-    if otelKey = loomToGenAI[key]; otelKey != "":
-      otelSpan.SetAttribute(otelKey, value)
-    else:
-      otelSpan.SetAttribute("loom." + key, value)   // preserve with namespace
+exportAttributes(spanName string, attrs map[string]interface{}) []attribute.KeyValue:
+  out = {}                                          // exported key -> (value, direct)
+  for key in sorted(keys(attrs)):
+    if key == "openinference.span.kind": continue   // exported once, below
+    otelKey, direct = exportKey(key)                // loomToGenAI, passthrough, or "loom." + key
+    put(out, otelKey, attrs[key], direct)           // direct beats mapped; else first key wins
+    if extra = loomAlsoExport[key]; extra != "":
+      put(out, extra, attrs[key], false)
+  for kv in deriveOpenInferenceAttrs(spanName, attrs):
+    if kv.Key not in out: out[kv.Key] = kv          // derive only what the span does not export
+  return values(out) sorted by key
 ```
 
 `loomToGenAI` is a `map[string]string` constant defined in `otel_attrs.go`. Lookups are O(1). The table is initialised once at package init.
 
-**Invariant**: Every Loom attribute is represented in the exported OTel span — either under its canonical `gen_ai.*` name or under a `loom.*` prefixed fallback. No data is silently dropped.
+**Invariant**: Every Loom attribute key is represented in the exported OTel span, under its canonical name or a `loom.*` prefixed fallback, and each exported key appears once. Loom keys that export to the same OTel key contribute one value, chosen by the precedence rule in the Span Mapping Table; credential keys removed by redaction are the only other omission.
 
 
 ## Design Trade-offs
@@ -580,7 +654,7 @@ translateAttrs(otelSpan trace.Span, attrs map[string]interface{}):
 
 **Consequences**:
 - Two code paths to maintain (OTelTracer + optional OTLPSpanExporter)
-- Option A cannot simultaneously write to embedded storage — hybrid mode requires Option B
+- Option A can also keep the embedded `eval_runs` record through an `EvalRunRecorder` (Decision 4); Option B remains the path for exporting spans from `EmbeddedTracer` to non-OTLP stores
 
 ---
 
@@ -622,6 +696,36 @@ translateAttrs(otelSpan trace.Span, attrs map[string]interface{}):
 - Binary size remains smaller (one exporter package vs. two)
 - Can add `otlptracegrpc` later without breaking the interface
 
+
+### Decision 4: Local eval_runs Record During OTLP Export
+
+**Problem**: `observability.mode` selects exactly one tracer. Experiment analysis reads `eval_runs` rows (one per span, Loom-native attribute names in `configuration_json`) from the embedded SQLite store, so switching a deployment to `mode: otel` stops the rows that analysis depends on.
+
+**Chosen approach**: `EvalRunRecorder` holds the storage half of `EmbeddedTracer` (span-to-row conversion, the per-session `evals` row, the `eval_metrics` flush loop, shutdown). `EmbeddedTracer` delegates to it, and `OTelTracer` calls the same recorder from `EndSpan` when `OTelConfig.Recorder` is set (`observability.otlp_record_eval_runs`).
+
+```
+                      OTelTracer.EndSpan(span)
+                               │
+             ┌─────────────────┴──────────────────┐
+             ▼                                    ▼
+   EvalRunRecorder.Record(span)        redactOTelSpan → exportAttributes
+   (as recorded: unredacted,                       │
+    Loom-native keys, unfiltered)                  ▼
+             │                         SDK span → filteringSpanProcessor
+             ▼                                    → BatchSpanProcessor → OTLP
+   {eval_runs row} in SQLite
+```
+
+**Invariant**: for the same span, the row written under `mode: otel` with a recorder equals the row `mode: embedded` writes, except for `eval_id` and timing columns. A golden test (`TestEvalRunRecorder_RowParityWithEmbedded`) checks this. Previews are bounded when a span records them (Content Bounds).
+
+**Alternatives considered**:
+- **OTLPSpanExporter on `EmbeddedTracer`** (Decision 1, Option B): embedded mode stays the tracer, spans are forwarded over OTLP. Rejected for this purpose because span identity and parent linkage (synced OTel IDs, late children after a parent ends) live in `OTelTracer`; an exporter would rebuild them from UUIDs.
+- **A fan-out tracer** wrapping both tracers: each span would get two independent ID sets, so the context could carry only one of them and the record and the export would disagree on IDs.
+- **Phoenix as the only record**: rejected because existing analysis would need porting and batches recorded before and after the switch would live in different stores.
+
+**Consequences**: the recorder writes before redaction, matching `mode: embedded`; operators who enable it keep an unredacted local file next to a redacted export. Recording runs on the `EndSpan` path, so a slow SQLite write delays the caller as it does in embedded mode, and rows keep the order in which spans ended. `Close` (called by `OTelTracer.Shutdown`) waits for the periodic metrics flush and for writes already in progress before the final flush and closing the storage; a span that ends after that is not recorded.
+
+---
 
 ## Constraints and Limitations
 
@@ -750,7 +854,17 @@ The `OTelTracer` follows the same best-effort strategy as `HawkTracer`:
 
 `PrivacyConfig` is applied by `redactOTelSpan` in `OTelTracer.EndSpan` before attributes are passed to the OTel SDK. Credential and PII redaction default to enabled when no privacy configuration is supplied.
 
+Span attributes and span event attributes are treated alike. Keys that name credentials (an exact list such as `password`, `api_key` and `token`, plus any key containing `password`, `secret`, or both `api` and `key`) are dropped. The email, phone, SSN and card patterns are replaced in string values, in each element of a string slice, and in maps and lists, which are then exported as their redacted JSON. With PII redaction the span status message is redacted too, since error messages can carry user input. Keys in `AllowedAttributes` are exported unchanged. Resource attributes (`service.name` and the like) are not redacted.
+
 The redaction function operates on a copy so exporting a span does not mutate the caller-owned span or event attributes.
+
+### Content Bounds
+
+Message, response, tool and recall-query previews are bounded where they are recorded, by `observability.RedactPreview`, before they become span attributes: credentials and PII are removed from the first 4096 runes (`observability.RedactionWindowRunes`), then the first 200 runes (`observability.DefaultMaxContentLength`) are kept and `…` is appended. Redacting before truncating keeps a secret that crosses rune 200 from surviving as a fragment; redacting only the window keeps the cost of a preview independent of the input size (about 4 ms for a 1 MB JSON tool result). A credential value cut by the window edge is redacted to the end of the window. LLM and tool span previews are not built for NoOp spans (`Span.IsRecording`), so `mode: none` and disabled observability pay nothing for them. The bound is not configurable yet. The `input.value` and `output.value` the instrumented LLM provider sets are bounded the same way.
+
+One exception: the `llm.thinking` span event carries a model's full extended-thinking text and is not bounded. It is exported, after redaction, with the span.
+
+Bounding at the source rather than in `EndSpan` keeps one limit for every consumer of the span (OTLP export, the embedded store, and exporters attached to `EmbeddedTracer`). Redaction still runs at export on whatever length was recorded, so raising the bound increases the text the PII patterns scan but does not bypass them.
 
 ### Transport Security
 

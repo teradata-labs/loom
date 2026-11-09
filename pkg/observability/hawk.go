@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -147,6 +146,7 @@ func (t *HawkTracer) StartSpan(ctx context.Context, name string, opts ...SpanOpt
 	if parent := SpanFromContext(ctx); parent != nil {
 		span.TraceID = parent.TraceID
 		span.ParentID = parent.SpanID
+		inheritParentSessionID(span, parent)
 		// Inherit resource attributes from parent when child has none set
 		if len(parent.ResourceAttributes) > 0 && len(span.ResourceAttributes) == 0 {
 			span.ResourceAttributes = make(map[string]string, len(parent.ResourceAttributes))
@@ -350,31 +350,41 @@ func (t *HawkTracer) redact(span *Span) *Span {
 		allowed[key] = true
 	}
 
-	// Redact credential keys (remove entire attribute)
+	// Redact credential keys (remove entire attribute) and credentials inside string values
 	if t.config.Privacy.RedactCredentials {
-		credentialKeys := []string{
-			"password", "api_key", "token", "secret", "authorization",
-			"access_token", "refresh_token", "bearer", "apikey",
-			"client_secret", "private_key", "ssh_key", "aws_secret",
-		}
-		for _, key := range credentialKeys {
-			if !allowed[key] {
+		for key := range span.Attributes {
+			if !allowed[key] && isCredentialField(key) {
 				delete(span.Attributes, key)
 			}
 		}
 
-		// Also check for credential patterns in attribute keys
-		for key := range span.Attributes {
-			keyLower := strings.ToLower(key)
-			if !allowed[key] {
-				if strings.Contains(keyLower, "password") ||
-					strings.Contains(keyLower, "secret") ||
-					strings.Contains(keyLower, "token") ||
-					strings.Contains(keyLower, "key") && strings.Contains(keyLower, "api") {
-					delete(span.Attributes, key)
+		for key, value := range span.Attributes {
+			if allowed[key] {
+				continue
+			}
+			if strVal, ok := value.(string); ok {
+				if redacted := redactCredentialString(strVal); redacted != strVal {
+					span.Attributes[key] = redacted
 				}
 			}
 		}
+		for i := range span.Events {
+			for key, value := range span.Events[i].Attributes {
+				if allowed[key] {
+					continue
+				}
+				if isCredentialField(key) {
+					delete(span.Events[i].Attributes, key)
+					continue
+				}
+				if strVal, ok := value.(string); ok {
+					if redacted := redactCredentialString(strVal); redacted != strVal {
+						span.Events[i].Attributes[key] = redacted
+					}
+				}
+			}
+		}
+		span.Status.Message = redactCredentialString(span.Status.Message)
 	}
 
 	// Redact PII patterns from attribute values
@@ -387,23 +397,11 @@ func (t *HawkTracer) redact(span *Span) *Span {
 			// Only redact string values
 			if strVal, ok := value.(string); ok {
 				redacted := strVal
-
-				// Redact emails
 				redacted = emailPattern.ReplaceAllString(redacted, "[EMAIL_REDACTED]")
-
-				// Redact phone numbers
 				redacted = phonePattern.ReplaceAllString(redacted, "[PHONE_REDACTED]")
-
-				// Redact SSN
 				redacted = ssnPattern.ReplaceAllString(redacted, "[SSN_REDACTED]")
-
-				// Redact credit cards
 				redacted = creditCardPattern.ReplaceAllString(redacted, "[CARD_REDACTED]")
 
-				// Optionally redact IP addresses (can be debated if PII)
-				// redacted = ipv4Pattern.ReplaceAllString(redacted, "[IP_REDACTED]")
-
-				// Update attribute if changed
 				if redacted != strVal {
 					span.Attributes[key] = redacted
 				}

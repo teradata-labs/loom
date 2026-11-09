@@ -954,6 +954,9 @@ message WeaveProgress {
   // interleave with another's. A bare activity pulse (no tool_call_id, no
   // tool_name, 0 bytes) carries index 0 without being call 0; skip pulses.
   int32 tool_call_index = 24;
+
+  // Trace ID for observability (populated on terminal events such as COMPLETED)
+  string trace_id = 25;
 }
 
 // HITLRequestInfo carries information about a human-in-the-loop request.

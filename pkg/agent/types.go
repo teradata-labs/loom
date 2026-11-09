@@ -592,6 +592,21 @@ type agentContext struct {
 	userMessage string
 }
 
+// withSpanContext returns a copy of ctx whose embedded context.Context is
+// spanCtx, so spans started from it nest under the span spanCtx carries. The
+// caller's Context is not modified, so concurrent tool calls of one batch each
+// get their own copy. A Context that is not an *agentContext is returned
+// unchanged.
+func withSpanContext(ctx Context, spanCtx context.Context) Context {
+	ac, ok := ctx.(*agentContext)
+	if !ok {
+		return ctx
+	}
+	child := *ac
+	child.Context = spanCtx
+	return &child
+}
+
 func (c *agentContext) Session() *Session {
 	return c.session
 }

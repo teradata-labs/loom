@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -125,19 +126,13 @@ func TestLoomToGenAIMappings(t *testing.T) {
 		"llm.tokens.input":       "gen_ai.usage.input_tokens",
 		"llm.tokens.output":      "gen_ai.usage.output_tokens",
 		"llm.tokens.total":       "gen_ai.usage.total_tokens",
-		"llm.tokens.cache_read":  "gen_ai.usage.cache_read_input_tokens",
-		"llm.tokens.cache_write": "gen_ai.usage.cache_creation_input_tokens",
+		"llm.tokens.cache_read":  "gen_ai.usage.cache_read.input_tokens",
+		"llm.tokens.cache_write": "gen_ai.usage.cache_creation.input_tokens",
 		"llm.stop_reason":        "gen_ai.response.finish_reasons",
 		"llm.cost.usd":           "gen_ai.usage.cost",
 		// Input/Output columns (Opik + standard content representation)
 		"message.preview":  "gen_ai.prompt",
 		"response.preview": "gen_ai.completion",
-		// Conversation span token aggregates
-		"conversation.tokens.input":  "gen_ai.usage.input_tokens",
-		"conversation.tokens.output": "gen_ai.usage.output_tokens",
-		"conversation.tokens.total":  "gen_ai.usage.total_tokens",
-		"conversation.cost.usd":      "gen_ai.usage.cost",
-		"conversation.stop_reason":   "gen_ai.response.finish_reasons",
 		// Tool/MCP
 		"tool.name":     "gen_ai.tool.name",
 		"mcp.tool.name": "gen_ai.tool.name",
@@ -147,6 +142,7 @@ func TestLoomToGenAIMappings(t *testing.T) {
 		"mcp.server.version": "server.version",
 		// Agent identity (OTel GenAI agent semconv, draft)
 		"agent_id": "gen_ai.agent.id",
+		"agent.id": "gen_ai.agent.id",
 		// Error / exception semconv
 		"error.message": "exception.message",
 		"error.type":    "exception.type",
@@ -160,6 +156,16 @@ func TestLoomToGenAIMappings(t *testing.T) {
 			t.Errorf("loomToGenAI[%q] = %q, want %q", loomKey, got, otelKey)
 		}
 	}
+	// Agent-level conversation totals must not map to gen_ai.usage.*: they
+	// would be counted again on top of the llm.completion spans they sum.
+	for _, k := range []string{
+		"conversation.tokens.input", "conversation.tokens.output", "conversation.tokens.total",
+		"conversation.cost.usd", "conversation.stop_reason",
+	} {
+		if mapped, ok := loomToGenAI[k]; ok {
+			t.Errorf("loomToGenAI[%q] = %q, want unmapped (exported as loom.%s)", k, mapped, k)
+		}
+	}
 }
 
 func TestGenAISystemNormalization(t *testing.T) {
@@ -167,15 +173,15 @@ func TestGenAISystemNormalization(t *testing.T) {
 		provider string
 		want     string
 	}{
-		{"anthropic", "anthropic"},         // already matches spec — no normalization
-		{"openai", "openai"},               // already matches spec
-		{"ollama", "ollama"},               // community convention, kept as-is
-		{"mistral", "mistral"},             // kept as-is
-		{"bedrock", "aws.bedrock"},         // normalized
-		{"bedrock-mantle", "aws.bedrock"},  // normalized (Mantle endpoint of the same service)
-		{"azure-openai", "azure_openai"},   // normalized
-		{"gemini", "google.generative_ai"}, // normalized
-		{"huggingface", "hugging_face"},    // normalized
+		{"anthropic", "anthropic"},          // already matches spec — no normalization
+		{"openai", "openai"},                // already matches spec
+		{"ollama", "ollama"},                // community convention, kept as-is
+		{"mistral", "mistral_ai"},           // normalized
+		{"bedrock", "aws.bedrock"},          // normalized
+		{"bedrock-mantle", "aws.bedrock"},   // normalized (Mantle endpoint of the same service)
+		{"azure-openai", "azure.ai.openai"}, // normalized
+		{"gemini", "gcp.gemini"},            // normalized
+		{"huggingface", "hugging_face"},     // normalized
 	}
 	for _, tc := range tests {
 		t.Run(tc.provider, func(t *testing.T) {
@@ -459,6 +465,7 @@ func newInMemoryOTelTracer(t *testing.T) (*OTelTracer, *tracetest.InMemoryExport
 	provider := sdktrace.NewTracerProvider(
 		sdktrace.WithSyncer(exp), // synchronous export so spans are available immediately
 		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+		sdktrace.WithIDGenerator(loomIDGenerator{}),
 	)
 	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 	return &OTelTracer{
@@ -595,6 +602,173 @@ func TestOTelTracerExportsParentChildLinkage(t *testing.T) {
 	if childSpan.Parent.SpanID() != parentSpan.SpanContext.SpanID() {
 		t.Fatalf("child parent ID %s does not match parent span ID %s", childSpan.Parent.SpanID(), parentSpan.SpanContext.SpanID())
 	}
+}
+
+func TestStartSpan_SyncsLoomAndOTelIDs(t *testing.T) {
+	tr, exp := newInMemoryOTelTracer(t)
+
+	ctx, root := tr.StartSpan(context.Background(), "server.Weave", WithAttribute(AttrSessionID, "sess-sync"))
+	childCtx, child := tr.StartSpan(ctx, "agent.chat")
+	if got := TraceIDFromContext(ctx); got != root.TraceID {
+		t.Errorf("TraceIDFromContext(root ctx) = %s, want %s", got, root.TraceID)
+	}
+	if got := TraceIDFromContext(childCtx); got != root.TraceID {
+		t.Errorf("TraceIDFromContext(child ctx) = %s, want root trace %s", got, root.TraceID)
+	}
+	if got := child.Attributes[AttrSessionID]; got != "sess-sync" {
+		t.Errorf("child session.id = %v, want sess-sync", got)
+	}
+	tr.EndSpan(child)
+	tr.EndSpan(root)
+
+	byName := make(map[string]tracetest.SpanStub)
+	for _, s := range exp.GetSpans() {
+		byName[s.Name] = s
+	}
+	for _, loomSpan := range []*Span{root, child} {
+		stub, ok := byName[loomSpan.Name]
+		if !ok {
+			t.Fatalf("%s not exported", loomSpan.Name)
+		}
+		if got := stub.SpanContext.TraceID().String(); got != loomSpan.TraceID {
+			t.Errorf("%s: exported trace ID %s, Loom trace ID %s", loomSpan.Name, got, loomSpan.TraceID)
+		}
+		if got := stub.SpanContext.SpanID().String(); got != loomSpan.SpanID {
+			t.Errorf("%s: exported span ID %s, Loom span ID %s", loomSpan.Name, got, loomSpan.SpanID)
+		}
+	}
+	if child.ParentID != root.SpanID {
+		t.Errorf("child.ParentID = %s, want %s", child.ParentID, root.SpanID)
+	}
+}
+
+func TestStartSpan_LateChildAfterParentEndSharesTraceID(t *testing.T) {
+	tr, exp := newInMemoryOTelTracer(t)
+
+	parentCtx, parent := tr.StartSpan(context.Background(), "agent.chat", WithAttribute(AttrSessionID, "sess-late"))
+	tr.EndSpan(parent)
+
+	_, late := tr.StartSpan(parentCtx, "graph_memory.extract")
+	tr.EndSpan(late)
+
+	byName := make(map[string]tracetest.SpanStub)
+	for _, s := range exp.GetSpans() {
+		byName[s.Name] = s
+	}
+	parentStub, lateStub := byName["agent.chat"], byName["graph_memory.extract"]
+	if lateStub.SpanContext.TraceID() != parentStub.SpanContext.TraceID() {
+		t.Errorf("late child trace %s, parent trace %s: child was split into a new trace",
+			lateStub.SpanContext.TraceID(), parentStub.SpanContext.TraceID())
+	}
+	if lateStub.Parent.SpanID() != parentStub.SpanContext.SpanID() {
+		t.Errorf("late child parent %s, want exported parent span %s",
+			lateStub.Parent.SpanID(), parentStub.SpanContext.SpanID())
+	}
+	if !lateStub.Parent.IsRemote() {
+		t.Error("late child should link through the synthetic (remote) parent context")
+	}
+	if got := late.Attributes[AttrSessionID]; got != "sess-late" {
+		t.Errorf("late child session.id = %v, want sess-late", got)
+	}
+}
+
+func TestStartSpan_InheritsParentSessionIDConcurrently(t *testing.T) {
+	tr, _ := newInMemoryOTelTracer(t)
+	parentCtx, parent := tr.StartSpan(context.Background(), "agent.conversation_loop")
+	parent.SetAttribute(AttrSessionID, "sess-concurrent")
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			childCtx, child := tr.StartSpan(parentCtx, "graph_memory.extract")
+			if got := child.Attributes[AttrSessionID]; got != "sess-concurrent" {
+				t.Errorf("child session.id = %v, want sess-concurrent", got)
+			}
+			_, grandChild := tr.StartSpan(childCtx, SpanLLMCompletion)
+			if got := grandChild.Attributes[AttrSessionID]; got != "sess-concurrent" {
+				t.Errorf("grandchild session.id = %v, want sess-concurrent", got)
+			}
+			tr.EndSpan(grandChild)
+			tr.EndSpan(child)
+		}
+	}()
+	for i := 0; i < 1000; i++ {
+		parent.SetAttribute("conversation.turns", i)
+	}
+	wg.Wait()
+	tr.EndSpan(parent)
+}
+
+func TestStartSpan_ContextWithTraceIDOverride(t *testing.T) {
+	t.Run("valid 32-hex override survives to exporter", func(t *testing.T) {
+		tr, exp := newInMemoryOTelTracer(t)
+		const hexTraceID = "4bf92f3577b34da6a3ce929d0e0e4736"
+
+		ctx := ContextWithTraceID(context.Background(), hexTraceID)
+		spanCtx, root := tr.StartSpan(ctx, "server.Weave")
+		tr.EndSpan(root)
+
+		if root.TraceID != hexTraceID {
+			t.Fatalf("root.TraceID = %s, want %s", root.TraceID, hexTraceID)
+		}
+		if got := TraceIDFromContext(spanCtx); got != hexTraceID {
+			t.Fatalf("TraceIDFromContext = %s, want %s", got, hexTraceID)
+		}
+		spans := exp.GetSpans()
+		if len(spans) != 1 {
+			t.Fatalf("exported spans = %d, want 1", len(spans))
+		}
+		if got := spans[0].SpanContext.TraceID().String(); got != hexTraceID {
+			t.Fatalf("exported TraceID = %s, want %s", got, hexTraceID)
+		}
+		if spans[0].Parent.IsValid() {
+			t.Fatalf("exported root has parent span %s (remote=%t), want invalid parent",
+				spans[0].Parent.SpanID(), spans[0].Parent.IsRemote())
+		}
+	})
+
+	t.Run("UUID override is recorded on loom.trace_id_override and SDK assigns 32-hex ID", func(t *testing.T) {
+		tr, exp := newInMemoryOTelTracer(t)
+		const uuidOverride = "550e8400-e29b-41d4-a716-446655440000"
+
+		ctx := ContextWithTraceID(context.Background(), uuidOverride)
+		_, root := tr.StartSpan(ctx, "server.Weave")
+		tr.EndSpan(root)
+
+		if root.TraceID == uuidOverride || len(root.TraceID) != 32 {
+			t.Fatalf("root.TraceID = %q, want 32-hex SDK trace ID", root.TraceID)
+		}
+		if got := root.Attributes["loom.trace_id_override"]; got != uuidOverride {
+			t.Fatalf("loom.trace_id_override = %v, want %q", got, uuidOverride)
+		}
+		spans := exp.GetSpans()
+		if len(spans) != 1 {
+			t.Fatalf("exported spans = %d, want 1", len(spans))
+		}
+		if got := spans[0].SpanContext.TraceID().String(); got != root.TraceID {
+			t.Fatalf("exported TraceID = %s, want %s", got, root.TraceID)
+		}
+	})
+
+	t.Run("parent span always wins over ContextWithTraceID", func(t *testing.T) {
+		tr, exp := newInMemoryOTelTracer(t)
+		parentCtx, parent := tr.StartSpan(context.Background(), "server.Weave")
+		overrideCtx := ContextWithTraceID(parentCtx, "4bf92f3577b34da6a3ce929d0e0e4736")
+		_, child := tr.StartSpan(overrideCtx, "agent.chat")
+		tr.EndSpan(child)
+		tr.EndSpan(parent)
+
+		if child.TraceID != parent.TraceID {
+			t.Fatalf("child.TraceID = %s, want parent %s", child.TraceID, parent.TraceID)
+		}
+		for _, s := range exp.GetSpans() {
+			if got := s.SpanContext.TraceID().String(); got != parent.TraceID {
+				t.Fatalf("exported %s TraceID = %s, want %s", s.Name, got, parent.TraceID)
+			}
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -746,4 +920,62 @@ func TestResolveOTelConfigInsecure(t *testing.T) {
 
 func TestOTelTracerImplementsTracer(t *testing.T) {
 	var _ Tracer = (*OTelTracer)(nil) // compile-time check duplicated for clarity
+}
+
+func TestRedactOTelSpan_ListsEventsAndStatus(t *testing.T) {
+	cfg := PrivacyConfig{RedactCredentials: true, RedactPII: true}
+
+	t.Run("each string slice element is redacted on a copy", func(t *testing.T) {
+		names := []string{"ok", "mail user@test.org"}
+		out := redactOTelSpan(&Span{Attributes: map[string]interface{}{"recall.selected_ids": names}}, cfg)
+		got, ok := out.Attributes["recall.selected_ids"].([]string)
+		if !ok || len(got) != 2 || got[0] != "ok" || strings.Contains(got[1], "user@test.org") {
+			t.Fatalf("redacted slice = %#v", out.Attributes["recall.selected_ids"])
+		}
+		if names[1] != "mail user@test.org" {
+			t.Error("caller slice was mutated")
+		}
+	})
+	t.Run("credential keys are dropped from events", func(t *testing.T) {
+		out := redactOTelSpan(&Span{Events: []Event{{Attributes: map[string]interface{}{
+			"api_key": "k", "x_secret_value": "s", "tool": "file_read",
+		}}}}, cfg)
+		ev := out.Events[0].Attributes
+		for _, k := range []string{"api_key", "x_secret_value"} {
+			if _, ok := ev[k]; ok {
+				t.Errorf("event attribute %q must be dropped", k)
+			}
+		}
+		if ev["tool"] != "file_read" {
+			t.Errorf("tool = %v", ev["tool"])
+		}
+	})
+	t.Run("maps are exported as redacted JSON", func(t *testing.T) {
+		out := redactOTelSpan(&Span{Attributes: map[string]interface{}{
+			"tool.args": map[string]interface{}{"to": "user@test.org"},
+		}}, cfg)
+		got, ok := out.Attributes["tool.args"].(string)
+		if !ok || strings.Contains(got, "user@test.org") || !strings.Contains(got, "[EMAIL_REDACTED]") {
+			t.Fatalf("tool.args = %#v", out.Attributes["tool.args"])
+		}
+	})
+	t.Run("status message is redacted", func(t *testing.T) {
+		span := &Span{Status: Status{Code: StatusError, Message: "no account for user@test.org"}}
+		out := redactOTelSpan(span, cfg)
+		if strings.Contains(out.Status.Message, "user@test.org") {
+			t.Errorf("status message = %q", out.Status.Message)
+		}
+		if span.Status.Message != "no account for user@test.org" {
+			t.Error("caller status was mutated")
+		}
+	})
+	t.Run("allowed keys are kept in events", func(t *testing.T) {
+		out := redactOTelSpan(&Span{Events: []Event{{Attributes: map[string]interface{}{
+			"password": "kept", "content": "user@test.org",
+		}}}}, PrivacyConfig{RedactCredentials: true, RedactPII: true, AllowedAttributes: []string{"password", "content"}})
+		ev := out.Events[0].Attributes
+		if ev["password"] != "kept" || ev["content"] != "user@test.org" {
+			t.Errorf("allowed event attributes changed: %v", ev)
+		}
+	})
 }

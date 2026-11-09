@@ -321,7 +321,7 @@ func TestHawkTracer_CredentialKeyPatterns(t *testing.T) {
 		// Should remove
 		{"password in key", "user_password_hash", true},
 		{"secret in key", "database_secret_key", true},
-		{"token in key", "oauth_token_value", true},
+		{"token suffix in key", "oauth_token", true},
 		{"api key pattern", "stripe_api_key", true},
 
 		// Should keep
@@ -329,6 +329,11 @@ func TestHawkTracer_CredentialKeyPatterns(t *testing.T) {
 		{"database", "database_name", false},
 		{"service", "service_url", false},
 		{"metadata", "request_metadata", false},
+		{"llm input tokens", "llm.tokens.input", false},
+		{"llm output tokens", "llm.tokens.output", false},
+		{"llm total tokens", "llm.tokens.total", false},
+		{"conversation total tokens", "conversation.tokens.total", false},
+		{"usage total tokens", "usage.total_tokens", false},
 	}
 
 	for _, tt := range tests {
@@ -518,4 +523,40 @@ func TestHawkTracer_OnlyStringValuesRedacted(t *testing.T) {
 	assert.Equal(t, true, redacted.Attributes["bool"])
 	assert.Nil(t, redacted.Attributes["nil"])
 	assert.Equal(t, map[string]string{"email": "test@example.com"}, redacted.Attributes["map"])
+}
+
+func TestHawkTracer_PreservesTokenCountersWhileRemovingCredentials(t *testing.T) {
+	tracer := &HawkTracer{
+		config: HawkConfig{
+			Privacy: PrivacyConfig{
+				RedactCredentials: true,
+				RedactPII:         true,
+			},
+		},
+	}
+
+	span := &Span{
+		Attributes: map[string]interface{}{
+			"llm.tokens.input":          120,
+			"llm.tokens.output":         45,
+			"llm.tokens.total":          165,
+			"conversation.tokens.total": 330,
+			"usage.total_tokens":        330,
+			"api_key":                   "sk-secret0123456789abcdef",
+			"access_token":              "tok-secret",
+			"input.value":               `{"api_key":"sk-secret0123456789abcdef","query":"select 1"}`,
+		},
+	}
+
+	redacted := tracer.redact(span)
+	assert.Equal(t, 120, redacted.Attributes["llm.tokens.input"])
+	assert.Equal(t, 45, redacted.Attributes["llm.tokens.output"])
+	assert.Equal(t, 165, redacted.Attributes["llm.tokens.total"])
+	assert.Equal(t, 330, redacted.Attributes["conversation.tokens.total"])
+	assert.Equal(t, 330, redacted.Attributes["usage.total_tokens"])
+	_, hasAPIKey := redacted.Attributes["api_key"]
+	assert.False(t, hasAPIKey)
+	_, hasAccessToken := redacted.Attributes["access_token"]
+	assert.False(t, hasAccessToken)
+	assert.NotContains(t, redacted.Attributes["input.value"], "sk-secret0123456789abcdef")
 }

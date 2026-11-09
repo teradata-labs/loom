@@ -27,6 +27,7 @@
 package observability
 
 import (
+	"sync/atomic"
 	"time"
 )
 
@@ -93,6 +94,23 @@ type Span struct {
 	// Events and status
 	Events []Event
 	Status Status
+
+	// sessionID caches AttrSessionID atomically so child spans can inherit it
+	// in StartSpan without racing on concurrent parent SetAttribute writes.
+	sessionID atomic.Pointer[string]
+
+	// notRecorded is set by tracers that drop their spans (NoOpTracer), so
+	// callers can skip building attributes nobody will read. See IsRecording.
+	notRecorded bool
+}
+
+// IsRecording reports whether the tracer that made the span exports it. It is
+// false for a nil span and for spans from NoOpTracer. Use it to skip work that
+// only feeds exported attributes, such as the redacted content previews on LLM
+// and tool spans. A span that is also kept elsewhere (the server records its
+// Weave spans for GetTrace whatever the tracer) must not be gated on it.
+func (s *Span) IsRecording() bool {
+	return s != nil && !s.notRecorded
 }
 
 // SetAttribute sets a key-value attribute on the span.
@@ -101,6 +119,11 @@ func (s *Span) SetAttribute(key string, value interface{}) {
 		s.Attributes = make(map[string]interface{})
 	}
 	s.Attributes[key] = value
+	if key == AttrSessionID {
+		if sid, ok := value.(string); ok {
+			s.sessionID.Store(&sid)
+		}
+	}
 }
 
 // AddEvent adds a timestamped event to the span.

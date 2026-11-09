@@ -1064,6 +1064,7 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	span.SetAttribute(observability.AttrSessionID, sessionID)
 	span.SetAttribute("resume.request_id", decision.RequestID)
 	span.SetAttribute("resume.approved", decision.Approved)
+	a.setAgentSpanIdentity(span)
 
 	// NO DropTurnPayloads / dropInTurnSQLite — the parked turn is still the
 	// current turn. NO user append — resuming is not a new turn. NO graph
@@ -1147,6 +1148,7 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	// recovering the SAME index is what makes the resume rebind to the task the
 	// parked half recorded instead of describing a different turn.
 	turnIndex, turnUserMessage := parkedTurnIdentity(sess)
+	span.SetAttribute("session.turn", turnIndex)
 
 	batch, rowless, positions, err := locateParkedBatch(sess, itemIDs)
 	if err != nil {
@@ -1364,6 +1366,7 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	span.SetAttribute("conversation.duration_ms", duration.Milliseconds())
 	span.Status = observability.Status{Code: observability.StatusOK}
 	a.recordConversationMetrics(sessionID, response, duration)
+	setResponseTraceID(response, span)
 	return response, nil
 }
 
@@ -1583,8 +1586,11 @@ func (a *Agent) completeParkedBatch(ctx Context, sess *Session, batch Message, r
 		tools = nil
 	}
 	var recovery *recoveryOrchestrator
-	_, span := ctx.Tracer().StartSpan(ctx, "agent.resume_batch")
+	batchCtx, span := ctx.Tracer().StartSpan(ctx, "agent.resume_batch")
 	defer ctx.Tracer().EndSpan(span)
+	// Tool executions of the resumed batch nest under agent.resume_batch, as
+	// a normal turn's nest under agent.conversation_loop.
+	ctx = withSpanContext(ctx, batchCtx)
 	if a.config.EnableSelfHealing {
 		recovery = newRecoveryOrchestrator(a.config.RecoveryConfig, span)
 	}

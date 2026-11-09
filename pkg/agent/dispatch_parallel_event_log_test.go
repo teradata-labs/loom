@@ -220,7 +220,7 @@ func TestIntentFailure_TracedAsFailedCall(t *testing.T) {
 			require.NotNil(t, failed, "read_b has a tool span")
 			assert.Equal(t, observability.StatusError, failed.Status.Code)
 			assert.Equal(t, "event_log_intent_failed", failed.Attributes["error.code"])
-			assert.Equal(t, "false", failed.Attributes["success"])
+			assert.Equal(t, false, failed.Attributes["success"])
 			if parallel {
 				assert.Equal(t, true, failed.Attributes["dispatch.parallel"])
 				assert.Equal(t, 2, failed.Attributes["dispatch.group_size"])

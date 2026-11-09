@@ -363,6 +363,7 @@ jobs:
           set -euo pipefail
           go test -run=^$ -fuzz='^FuzzSpanAttributes$' -fuzztime=30s ./pkg/observability
           go test -run=^$ -fuzz='^FuzzSpanTimestamps$' -fuzztime=30s ./pkg/observability
+          go test -run=^$ -fuzz='^FuzzRedactCredentialString$' -fuzztime=30s ./pkg/observability
 
           echo "✅ Observability package fuzz tests completed" >> "$GITHUB_STEP_SUMMARY"
 
