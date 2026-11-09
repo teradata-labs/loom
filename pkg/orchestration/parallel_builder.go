@@ -22,6 +22,7 @@ type ParallelBuilder struct {
 	tasks         []*loomv1.AgentTask
 	mergeStrategy loomv1.MergeStrategy
 	timeoutSecs   int32
+	joinPolicy    *loomv1.JoinPolicy
 }
 
 // WithTask adds an independent task with a specific prompt.
@@ -85,6 +86,14 @@ func (b *ParallelBuilder) WithTimeout(seconds int) *ParallelBuilder {
 	return b
 }
 
+// WithJoinPolicy bounds the hand-off to the join step and, when the policy
+// names an agent, runs the join through that registered agent. See
+// loomv1.JoinPolicy.
+func (b *ParallelBuilder) WithJoinPolicy(policy *loomv1.JoinPolicy) *ParallelBuilder {
+	b.joinPolicy = policy
+	return b
+}
+
 // Execute runs all tasks in parallel and returns the merged result.
 func (b *ParallelBuilder) Execute(ctx context.Context) (*loomv1.WorkflowResult, error) {
 	// Validate configuration
@@ -99,6 +108,7 @@ func (b *ParallelBuilder) Execute(ctx context.Context) (*loomv1.WorkflowResult, 
 				Tasks:          b.tasks,
 				MergeStrategy:  b.mergeStrategy,
 				TimeoutSeconds: b.timeoutSecs,
+				JoinPolicy:     b.joinPolicy,
 			},
 		},
 	}

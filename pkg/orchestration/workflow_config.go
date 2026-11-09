@@ -336,6 +336,11 @@ func convertForkJoinPattern(spec map[string]interface{}) (*loomv1.WorkflowPatter
 		}
 	}
 
+	joinPolicy, err := parseJoinPolicy(spec, "spec", mergeStrategy)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidWorkflow, err.Error())
+	}
+
 	return &loomv1.WorkflowPattern{
 		Pattern: &loomv1.WorkflowPattern_ForkJoin{
 			ForkJoin: &loomv1.ForkJoinPattern{
@@ -343,6 +348,7 @@ func convertForkJoinPattern(spec map[string]interface{}) (*loomv1.WorkflowPatter
 				AgentIds:       agentIDs,
 				MergeStrategy:  mergeStrategy,
 				TimeoutSeconds: timeoutSeconds,
+				JoinPolicy:     joinPolicy,
 			},
 		},
 	}, nil
@@ -502,12 +508,18 @@ func convertParallelPattern(spec map[string]interface{}, logger *zap.Logger) (*l
 		}
 	}
 
+	joinPolicy, err := parseJoinPolicy(spec, "spec", mergeStrategy)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidWorkflow, err.Error())
+	}
+
 	return &loomv1.WorkflowPattern{
 		Pattern: &loomv1.WorkflowPattern_Parallel{
 			Parallel: &loomv1.ParallelPattern{
 				Tasks:          tasks,
 				MergeStrategy:  mergeStrategy,
 				TimeoutSeconds: timeoutSeconds,
+				JoinPolicy:     joinPolicy,
 			},
 		},
 	}, nil
@@ -1090,6 +1102,107 @@ func parseHITLGate(stageMap map[string]interface{}) (*loomv1.HITLGate, error) {
 }
 
 // parseMergeStrategy converts string to MergeStrategy enum
+// parseJoinPolicy parses an optional join block on a fork-join or parallel
+// spec. Returns nil when the spec has no join block.
+//
+// YAML shape:
+//
+//	join:
+//	  agent_id: presenter                  # optional: run the join through this agent
+//	  prompt_template: "...{{branches}}"   # optional: {{prompt}}, {{branches}}, {{branch_count}}
+//	  max_branch_bytes: 8192               # optional, >= 0; 0 = 8192
+//	  max_input_tokens: 60000              # optional, >= 0; 0 = derive from the join agent
+//	  overflow_strategy: pre_reduce        # optional: pre_reduce | truncate | fail
+//
+// Dead configuration is rejected: a block that sets nothing, and an
+// overflow_strategy that could never fire because no budget exists (no
+// agent_id to derive one from and no max_input_tokens). A join block without
+// agent_id on a concatenate or first merge is also rejected, since those
+// strategies build the final output from the branch text and are never cut.
+func parseJoinPolicy(spec map[string]interface{}, path string, strategy loomv1.MergeStrategy) (*loomv1.JoinPolicy, error) {
+	raw, ok := spec["join"]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	block, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("%s.join must be an object, got %T", path, raw)
+	}
+	path = path + ".join"
+
+	known := map[string]bool{"agent_id": true, "prompt_template": true, "max_branch_bytes": true, "max_input_tokens": true, "overflow_strategy": true}
+	for key := range block {
+		if !known[key] {
+			return nil, fmt.Errorf("%s.%s is not a join field (known: agent_id, prompt_template, max_branch_bytes, max_input_tokens, overflow_strategy)", path, key)
+		}
+	}
+
+	policy := &loomv1.JoinPolicy{}
+	var (
+		err error
+		set bool
+		any bool
+	)
+	if policy.AgentId, set, err = yamlStringField(block, path, "agent_id"); err != nil {
+		return nil, err
+	}
+	any = any || set
+	if policy.PromptTemplate, set, err = yamlStringField(block, path, "prompt_template"); err != nil {
+		return nil, err
+	}
+	any = any || set
+	if policy.MaxBranchBytes, set, err = yamlInt32Field(block, path, "max_branch_bytes"); err != nil {
+		return nil, err
+	}
+	any = any || set
+	if policy.MaxBranchBytes < 0 {
+		return nil, fmt.Errorf("%s.max_branch_bytes must be >= 0, got %d", path, policy.MaxBranchBytes)
+	}
+	if policy.MaxInputTokens, set, err = yamlInt32Field(block, path, "max_input_tokens"); err != nil {
+		return nil, err
+	}
+	any = any || set
+	if policy.MaxInputTokens < 0 {
+		return nil, fmt.Errorf("%s.max_input_tokens must be >= 0, got %d", path, policy.MaxInputTokens)
+	}
+	overflowRaw, set, err := yamlStringField(block, path, "overflow_strategy")
+	if err != nil {
+		return nil, err
+	}
+	any = any || set
+	if set {
+		policy.OverflowStrategy, err = parseJoinOverflowStrategy(overflowRaw)
+		if err != nil {
+			return nil, fmt.Errorf("%s.overflow_strategy: %w", path, err)
+		}
+		if policy.AgentId == "" && policy.MaxInputTokens == 0 {
+			return nil, fmt.Errorf("%s.overflow_strategy can never fire: set max_input_tokens, or agent_id so the budget derives from that agent's context window", path)
+		}
+	}
+	if !any {
+		return nil, fmt.Errorf("%s sets nothing; remove the block or set at least one field", path)
+	}
+	if policy.AgentId == "" && !joinPolicyActive(policy, strategy) {
+		return nil, fmt.Errorf("%s without agent_id has no effect on merge_strategy %s: concatenate and first return the branch text itself; set agent_id or use an LLM merge strategy", path, strings.ToLower(strategy.String()))
+	}
+	return policy, nil
+}
+
+// parseJoinOverflowStrategy maps the YAML spelling of a join overflow
+// strategy to its enum value.
+func parseJoinOverflowStrategy(raw string) (loomv1.JoinOverflowStrategy, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "pre_reduce", "pre-reduce", "reduce":
+		return loomv1.JoinOverflowStrategy_JOIN_OVERFLOW_STRATEGY_PRE_REDUCE, nil
+	case "truncate":
+		return loomv1.JoinOverflowStrategy_JOIN_OVERFLOW_STRATEGY_TRUNCATE, nil
+	case "fail":
+		return loomv1.JoinOverflowStrategy_JOIN_OVERFLOW_STRATEGY_FAIL, nil
+	default:
+		return loomv1.JoinOverflowStrategy_JOIN_OVERFLOW_STRATEGY_UNSPECIFIED, fmt.Errorf("unknown value %q (expected pre_reduce, truncate or fail)", raw)
+	}
+}
+
 func parseMergeStrategy(strategy string) loomv1.MergeStrategy {
 	switch strategy {
 	case "consensus":

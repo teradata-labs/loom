@@ -62,6 +62,12 @@ func (e *ParallelExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 			return nil, fmt.Errorf("agent not found for task %d: %s: %w", i, task.AgentId, err)
 		}
 	}
+	// The join agent too, before any task is paid for.
+	if jp := e.pattern.JoinPolicy; jp != nil && jp.AgentId != "" {
+		if _, err := e.orchestrator.GetAgent(ctx, jp.AgentId); err != nil {
+			return nil, fmt.Errorf("join agent not found: %s: %w", jp.AgentId, err)
+		}
+	}
 
 	// Create timeout context if specified
 	executeCtx := ctx
@@ -91,7 +97,12 @@ func (e *ParallelExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 		mergeSpan.SetAttribute("task.count", fmt.Sprintf("%d", len(results)))
 	}
 
-	mergedOutput, err := e.mergeResults(ctx, results)
+	mergedOutput, join, err := e.mergeResults(ctx, results)
+	if mergeSpan != nil && join != nil {
+		for k, v := range join.Metadata {
+			mergeSpan.SetAttribute(k, v)
+		}
+	}
 	e.orchestrator.tracer.EndSpan(mergeSpan)
 
 	if err != nil {
@@ -100,6 +111,20 @@ func (e *ParallelExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 
 	// Calculate total cost
 	cost := e.calculateCost(results)
+	addJoinCost(cost, join)
+
+	metadata := map[string]string{
+		"task_count":     fmt.Sprintf("%d", len(e.pattern.Tasks)),
+		"merge_strategy": e.pattern.MergeStrategy.String(),
+	}
+	if join != nil {
+		for k, v := range join.Metadata {
+			metadata[k] = v
+		}
+		if join.AgentID != "" && join.Model != "" {
+			modelsUsed[join.AgentID] = join.Model
+		}
+	}
 
 	duration := time.Since(startTime)
 	e.orchestrator.logger.Info("Parallel execution completed",
@@ -110,13 +135,10 @@ func (e *ParallelExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 		PatternType:  "parallel",
 		AgentResults: results,
 		MergedOutput: mergedOutput,
-		Metadata: map[string]string{
-			"task_count":     fmt.Sprintf("%d", len(e.pattern.Tasks)),
-			"merge_strategy": e.pattern.MergeStrategy.String(),
-		},
-		DurationMs: duration.Milliseconds(),
-		Cost:       cost,
-		ModelsUsed: modelsUsed,
+		Metadata:     metadata,
+		DurationMs:   duration.Milliseconds(),
+		Cost:         cost,
+		ModelsUsed:   modelsUsed,
 	}, nil
 }
 
@@ -382,11 +404,28 @@ func (e *ParallelExecutor) executeTaskWithLeveling(ctx context.Context, task *lo
 	return result, levelingWinningModel(result, ag.GetLLMModel()), nil
 }
 
-// mergeResults merges task results using the specified strategy.
-func (e *ParallelExecutor) mergeResults(ctx context.Context, results []*loomv1.AgentResult) (string, error) {
+// mergeResults merges task results using the specified strategy. Under an
+// active JoinPolicy the join is bounded (and, with a join agent, run through
+// that agent); the returned joinOutcome then carries its usage and metadata.
+// Without a policy the outcome is nil and the legacy paths run unchanged.
+func (e *ParallelExecutor) mergeResults(ctx context.Context, results []*loomv1.AgentResult) (string, *joinOutcome, error) {
+	if joinPolicyActive(e.pattern.JoinPolicy, e.pattern.MergeStrategy) {
+		jr := newJoiner(e.orchestrator, e.pattern.JoinPolicy, e.pattern.MergeStrategy, "parallel", e.workflowID, "")
+		outcome, err := jr.run(ctx, results)
+		if err != nil {
+			return "", nil, err
+		}
+		return outcome.Output, outcome, nil
+	}
+	if e.pattern.JoinPolicy != nil {
+		e.orchestrator.logger.Warn("join_policy without agent_id does not apply to this merge strategy; it bounds only the LLM merge strategies",
+			zap.String("workflow_id", e.workflowID),
+			zap.String("merge_strategy", e.pattern.MergeStrategy.String()))
+	}
+
 	switch e.pattern.MergeStrategy {
 	case loomv1.MergeStrategy_FIRST:
-		return firstSuccessfulOutput(results), nil
+		return firstSuccessfulOutput(results), nil, nil
 
 	case loomv1.MergeStrategy_CONCATENATE:
 		var builder strings.Builder
@@ -403,14 +442,15 @@ func (e *ParallelExecutor) mergeResults(ctx context.Context, results []*loomv1.A
 				builder.WriteString("\n\n")
 			}
 		}
-		return builder.String(), nil
+		return builder.String(), nil, nil
 
 	case loomv1.MergeStrategy_CONSENSUS, loomv1.MergeStrategy_SUMMARY, loomv1.MergeStrategy_VOTING, loomv1.MergeStrategy_BEST:
 		// These strategies require LLM-based merging
-		return e.llmMerge(ctx, results)
+		out, err := e.llmMerge(ctx, results)
+		return out, nil, err
 
 	default:
-		return "", fmt.Errorf("unsupported merge strategy: %s", e.pattern.MergeStrategy)
+		return "", nil, fmt.Errorf("unsupported merge strategy: %s", e.pattern.MergeStrategy)
 	}
 }
 
