@@ -763,7 +763,8 @@ type WeaveProgress struct {
 	// to it: the OpenAI client (and so LiteLLM, Mistral and HuggingFace) drops
 	// an incomplete call with no id or name, and later calls keep their stream
 	// index while shifting position. The Azure OpenAI client keeps such a
-	// call, with an empty ID. Match a progress event to its tool-started event
+	// call, with whichever of id and name is missing left empty. Match a
+	// progress event to its tool-started event
 	// by tool_call_id. On providers that deliver calls in order (Anthropic,
 	// Bedrock, Gemini, Ollama) the index matches position when nothing is
 	// dropped. Gemini repeats the function name in tool_call_id, so two
