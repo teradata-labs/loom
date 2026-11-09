@@ -980,3 +980,26 @@ func TestJqUsesModule(t *testing.T) {
 		assert.Equal(t, want, jqUsesModule(src), "jqUsesModule(%q)", src)
 	}
 }
+
+// F4: md5sum, sha1sum, sha256sum and shasum -c (--check) read the names to
+// check from a sums file, which path confinement never sees: the output
+// tells whether a file outside the session exists and matches a hash.
+// BSD md5 -c compares against a string, not a file, so md5 keeps it.
+func TestAnalyze_ChecksumCheck(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
+	runBypassCases(t, []bypassCase{
+		{cmd: `md5sum -c sums`, want: Ask, static: Ask, why: "md5sum (1:1): -c is outside the profile"},
+		{cmd: `sha1sum --check sums`, want: Ask, static: Ask, why: "--check is outside the profile"},
+		{cmd: `sha256sum --check=sums`, want: Ask, static: Ask},
+		{cmd: `sha256sum -wc sums`, want: Ask, static: Ask},
+		{cmd: `shasum -a 256 -c sums`, want: Ask, static: Ask},
+		{cmd: `shasum --che sums`, want: Ask, static: Ask},
+		{cmd: `md5sum a.txt; sha256sum -b a.txt; shasum -a 256 a.txt; md5 -c abc a.txt; sha1sum -- -c`, want: Allow, static: Allow},
+	})
+	runLaunchCases(t, []launchCase{
+		{argv: []string{"sha256sum", "-c", "sums"}, block: "-c is outside the profile"},
+		{argv: []string{"shasum", "--check", "sums"}, block: "--check"},
+	})
+}

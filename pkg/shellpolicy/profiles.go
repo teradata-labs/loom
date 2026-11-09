@@ -209,8 +209,13 @@ func Readonly() *Policy {
 		}
 	}
 	plain("cat", "head", "tail", "cut", "comm", "cmp", "od",
-		"stat", "realpath",
-		"md5sum", "sha1sum", "sha256sum", "shasum", "md5")
+		"stat", "realpath", "md5")
+	// -c (--check) reads the names of the files to hash from a sums file,
+	// which path confinement never sees, and tells whether each exists and
+	// matches. BSD md5 -c compares against a string, so md5 keeps it.
+	for _, n := range []string{"md5sum", "sha1sum", "sha256sum", "shasum"} {
+		p.Programs[n] = &Profile{MaxPositional: -1, RefuseShort: "c", RefuseLong: []string{"--check"}}
+	}
 	noPaths("tr", "basename", "dirname", "seq", "sleep", "uname", "whoami", "id", "which")
 	// --files0-from=F reads the names of the files to read from F, which
 	// path confinement never sees (GNU sort printed a file named in F).
