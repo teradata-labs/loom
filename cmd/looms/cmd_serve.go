@@ -53,6 +53,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/ollama"
 	"github.com/teradata-labs/loom/pkg/llm/openai"
 	llmscheduler "github.com/teradata-labs/loom/pkg/llm/scheduler"
+	"github.com/teradata-labs/loom/pkg/luasandbox"
 	"github.com/teradata-labs/loom/pkg/mcp/apps"
 	"github.com/teradata-labs/loom/pkg/mcp/manager"
 	"github.com/teradata-labs/loom/pkg/memory"
@@ -216,6 +217,8 @@ func registerYAMLBuiltinTools(
 		"update_ui_app":                   "UI app subsystem (AppCompiler/AppProvider)",
 		"delete_ui_app":                   "UI app subsystem (AppCompiler/AppProvider)",
 		"contact_human":                   "HITL store (registerContactHumanFromYAML)",
+		"run_lua":                         "Lua subsystem (tools.lua.enabled, registerLuaTools)",
+		"manage_lua_scripts":              "Lua subsystem (saved scripts; not available yet)",
 	}
 
 	logger.Info(indent+"Registering builtin tools", zap.Int("count", len(cfg.Tools.Builtin)))
@@ -1883,6 +1886,23 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Fatal("Failed to build admission chain", zap.Error(err))
 	}
 
+	// run_lua wiring (tools.lua, off by default): one policy and one run gate
+	// for the whole server, sized from the process memory limit. A malformed
+	// tool pattern aborts startup, like a malformed hook binding.
+	luaRT, err := newLuaRuntime(config.Tools.Lua, luaGuards{
+		YOLO:         config.Tools.Permissions.YOLO,
+		HookBindings: len(config.Tools.Hooks.Bindings),
+	}, luasandbox.ProcessMemoryLimit(), logger)
+	if err != nil {
+		logger.Fatal("Invalid tools.lua configuration", zap.Error(err))
+	}
+	if luaRT != nil {
+		logger.Info("Lua scripts enabled (run_lua)",
+			zap.Int("run_slots", luaRT.slots),
+			zap.Int("runs_per_agent", luaRT.perKey),
+			zap.Uint64("memory_bytes_per_run", luaRT.runMem))
+	}
+
 	// Initialize empty agents map - all agents loaded from $LOOM_DATA_DIR/agents/ via registry below
 	agents := initializeAgentsMap()
 	logger.Info("Agents will be loaded from $LOOM_DATA_DIR/agents/ directory via registry system")
@@ -1916,6 +1936,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		// the chain would silently become ungoverned (C-007).
 		PermissionChecker: permissionChecker,
 		AdmissionChain:    admissionChain,
+		RunLuaTool:        luaRT.registryOptions(),
 		IdentityResolver:  postgres.UserIDFromContext,
 		EventLogStore:     executionLog,
 	})
@@ -2260,6 +2281,7 @@ func runServe(cmd *cobra.Command, args []string) {
 				// hot-reload path via registerYAMLBuiltinTools so the two
 				// paths cannot drift.
 				registerYAMLBuiltinTools(ag, cfg, registry, logger, "    ", "agent_management")
+				registerLuaTools(ag, cfg, luaRT, logger, "    ")
 
 				// Register contact_human tool with the shared HITL store (if listed in builtin tools)
 				if cfg.Tools != nil {
@@ -3507,6 +3529,7 @@ func runServe(cmd *cobra.Command, args []string) {
 			// on toolName=="shell_execute" and silently dropped YAML-declared
 			// shell_execute on hot reload under tools.minimal/none.
 			registerYAMLBuiltinTools(newAgent, agentConfig, registry, logger, "  ", "agent_management (reload)")
+			registerLuaTools(newAgent, agentConfig, luaRT, logger, "  ")
 
 			// Register contact_human tool with shared HITL store (if listed in builtin tools)
 			if agentConfig.Tools != nil {
