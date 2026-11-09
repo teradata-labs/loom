@@ -3930,7 +3930,7 @@ func (a *Agent) fitStepToWindow(ctx Context, session *Session, noteKey string, e
 	if r := segMem.ReservedOutputTokens(); r > reserved {
 		reserved = r
 	}
-	ceiling := ProviderPromptCeiling(a.GetLLMProviderName(), a.GetLLMModel(), reserved, a.config.MaxContextTokens)
+	ceiling := ProviderPromptCeiling(a.GetLLMProviderName(), a.GetLLMModel(), reserved, a.config.MaxContextTokens, a.config.MaxModelContextTokens)
 	count := segMem.StepSendCount(extraBytes, ceiling)
 	if ceiling <= 0 || count <= ceiling {
 		return false

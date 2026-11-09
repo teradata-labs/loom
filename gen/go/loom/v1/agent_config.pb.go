@@ -713,8 +713,11 @@ type LLMConfig struct {
 	TopP float32 `protobuf:"fixed32,6,opt,name=top_p,json=topP,proto3" json:"top_p,omitempty"`
 	// Top-k sampling parameter
 	TopK int32 `protobuf:"varint,7,opt,name=top_k,json=topK,proto3" json:"top_k,omitempty"`
-	// Maximum context window tokens supported by the model
-	// If not set, will be auto-detected from model name or use provider default
+	// The context window loom budgets against: the fold keeps the settled
+	// conversation under the profile's threshold of this window less
+	// reserved_output_tokens. It may sit below the model's window to bound
+	// cost. If not set, the model's window (catalog, then model name, then
+	// provider default) is used.
 	// Examples: Claude Sonnet 4.5 = 200000, Llama 3.1 = 128000, Mistral = 32000
 	MaxContextTokens int32 `protobuf:"varint,8,opt,name=max_context_tokens,json=maxContextTokens,proto3" json:"max_context_tokens,omitempty"`
 	// Tokens reserved for model output (typically 10% of max_context_tokens)
@@ -735,9 +738,15 @@ type LLMConfig struct {
 	// factory.FactoryConfig, which does not carry a seed field, so a seed set in
 	// agent YAML has no effect there — wiring it through the factory is an open
 	// follow-up, not a shipped behavior.
-	Seed          *int64 `protobuf:"varint,11,opt,name=seed,proto3,oneof" json:"seed,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Seed *int64 `protobuf:"varint,11,opt,name=seed,proto3,oneof" json:"seed,omitempty"`
+	// The context window the model is served with, when it is below the
+	// model's listed window: a vLLM --max-model-len, a TGI --max-total-tokens,
+	// an Ollama num_ctx. A step whose results together would exceed it, less
+	// the reply reservation, has them replaced before the send. If not set,
+	// the model's listed window is the limit (on Ollama, max_context_tokens).
+	MaxModelContextTokens int32 `protobuf:"varint,12,opt,name=max_model_context_tokens,json=maxModelContextTokens,proto3" json:"max_model_context_tokens,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *LLMConfig) Reset() {
@@ -843,6 +852,13 @@ func (x *LLMConfig) GetRateLimit() *LLMRateLimitConfig {
 func (x *LLMConfig) GetSeed() int64 {
 	if x != nil && x.Seed != nil {
 		return *x.Seed
+	}
+	return 0
+}
+
+func (x *LLMConfig) GetMaxModelContextTokens() int32 {
+	if x != nil {
+		return x.MaxModelContextTokens
 	}
 	return 0
 }
@@ -2433,7 +2449,7 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x06config\x18\x02 \x01(\v2\x12.loom.v1.LLMConfigR\x06config\"\\\n" +
 	"\fProviderPool\x124\n" +
 	"\tproviders\x18\x01 \x03(\v2\x16.loom.v1.ProviderEntryR\tproviders\x12\x16\n" +
-	"\x06active\x18\x02 \x01(\tR\x06active\"\x91\x03\n" +
+	"\x06active\x18\x02 \x01(\tR\x06active\"\xca\x03\n" +
 	"\tLLMConfig\x12\x1a\n" +
 	"\bprovider\x18\x01 \x01(\tR\bprovider\x12\x14\n" +
 	"\x05model\x18\x02 \x01(\tR\x05model\x12 \n" +
@@ -2448,7 +2464,8 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\n" +
 	"rate_limit\x18\n" +
 	" \x01(\v2\x1b.loom.v1.LLMRateLimitConfigR\trateLimit\x12\x17\n" +
-	"\x04seed\x18\v \x01(\x03H\x00R\x04seed\x88\x01\x01B\a\n" +
+	"\x04seed\x18\v \x01(\x03H\x00R\x04seed\x88\x01\x01\x127\n" +
+	"\x18max_model_context_tokens\x18\f \x01(\x05R\x15maxModelContextTokensB\a\n" +
 	"\x05_seed\"\xd4\x02\n" +
 	"\x12LLMRateLimitConfig\x12\x1a\n" +
 	"\bdisabled\x18\x01 \x01(\bR\bdisabled\x12.\n" +

@@ -340,8 +340,16 @@ type Config struct {
 	// defaults (DefaultRetryConfig): a Config built without it is covered.
 	Retry RetryConfig
 
-	// MaxContextTokens is the model's context window size (0 = use defaults/auto-detect)
+	// MaxContextTokens is the window loom budgets against: the fold keeps the
+	// settled conversation under the profile's threshold of it. It may sit
+	// below the model's window (0 = the model's window).
 	MaxContextTokens int
+
+	// MaxModelContextTokens is the window the model is served with, when it
+	// is below the model's listed window (a vLLM --max-model-len, an Ollama
+	// num_ctx). It is the ceiling a step in flight is fitted to before the
+	// send (0 = the model's listed window).
+	MaxModelContextTokens int
 
 	// ReservedOutputTokens is the number of tokens reserved for model output (0 = use defaults, typically 10%)
 	ReservedOutputTokens int

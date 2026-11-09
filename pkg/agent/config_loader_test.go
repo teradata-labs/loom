@@ -873,15 +873,16 @@ func TestConvertLLMConfigYAMLToProto(t *testing.T) {
 		{
 			name: "full config converts correctly",
 			input: &LLMConfigYAML{
-				Provider:             "anthropic",
-				Model:                "claude-3-opus",
-				Temperature:          0.3,
-				MaxTokens:            2048,
-				TopP:                 0.95,
-				TopK:                 40,
-				MaxContextTokens:     100000,
-				ReservedOutputTokens: 4096,
-				StopSequences:        []string{"STOP"},
+				Provider:              "anthropic",
+				Model:                 "claude-3-opus",
+				Temperature:           0.3,
+				MaxTokens:             2048,
+				TopP:                  0.95,
+				TopK:                  40,
+				MaxContextTokens:      100000,
+				ReservedOutputTokens:  4096,
+				MaxModelContextTokens: 32768,
+				StopSequences:         []string{"STOP"},
 			},
 			validate: func(t *testing.T, cfg *loomv1.LLMConfig) {
 				assert.Equal(t, "anthropic", cfg.Provider)
@@ -892,6 +893,7 @@ func TestConvertLLMConfigYAMLToProto(t *testing.T) {
 				assert.Equal(t, int32(40), cfg.TopK)
 				assert.Equal(t, int32(100000), cfg.MaxContextTokens)
 				assert.Equal(t, int32(4096), cfg.ReservedOutputTokens)
+				assert.Equal(t, int32(32768), cfg.MaxModelContextTokens)
 				assert.Equal(t, []string{"STOP"}, cfg.StopSequences)
 			},
 		},
@@ -967,15 +969,16 @@ func TestConvertProtoToLLMConfigYAML(t *testing.T) {
 		{
 			name: "full config converts correctly",
 			input: &loomv1.LLMConfig{
-				Provider:             "anthropic",
-				Model:                "claude-3-opus",
-				Temperature:          0.3,
-				MaxTokens:            2048,
-				TopP:                 0.95,
-				TopK:                 40,
-				MaxContextTokens:     100000,
-				ReservedOutputTokens: 4096,
-				StopSequences:        []string{"STOP"},
+				Provider:              "anthropic",
+				Model:                 "claude-3-opus",
+				Temperature:           0.3,
+				MaxTokens:             2048,
+				TopP:                  0.95,
+				TopK:                  40,
+				MaxContextTokens:      100000,
+				ReservedOutputTokens:  4096,
+				MaxModelContextTokens: 32768,
+				StopSequences:         []string{"STOP"},
 			},
 			validate: func(t *testing.T, cfg *LLMConfigYAML) {
 				assert.Equal(t, "anthropic", cfg.Provider)
@@ -986,6 +989,7 @@ func TestConvertProtoToLLMConfigYAML(t *testing.T) {
 				assert.Equal(t, 40, cfg.TopK)
 				assert.Equal(t, 100000, cfg.MaxContextTokens)
 				assert.Equal(t, 4096, cfg.ReservedOutputTokens)
+				assert.Equal(t, 32768, cfg.MaxModelContextTokens)
 				assert.Equal(t, []string{"STOP"}, cfg.StopSequences)
 			},
 		},

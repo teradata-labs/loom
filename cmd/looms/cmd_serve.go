@@ -1925,6 +1925,7 @@ func runServe(cmd *cobra.Command, args []string) {
 					if cfg.Llm.MaxContextTokens > 0 {
 						agentCfg.MaxContextTokens = int(cfg.Llm.MaxContextTokens)
 					}
+					agentCfg.MaxModelContextTokens = int(cfg.Llm.MaxModelContextTokens)
 					// The EFFECTIVE reservation, not the raw field: NewAgent
 					// re-applies SetContextLimits from this config onto the same
 					// Memory, so a raw (often zero) value here would clobber the
@@ -3236,6 +3237,7 @@ func runServe(cmd *cobra.Command, args []string) {
 				if agentConfig.Llm.MaxContextTokens > 0 {
 					cfg.MaxContextTokens = int(agentConfig.Llm.MaxContextTokens)
 				}
+				cfg.MaxModelContextTokens = int(agentConfig.Llm.MaxModelContextTokens)
 				// The EFFECTIVE reservation — see the note at the other build site.
 				cfg.ReservedOutputTokens = agent.EffectiveOutputReservation(
 					agentConfig.Llm.Provider, agentConfig.Llm.Model,

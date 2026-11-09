@@ -212,8 +212,9 @@ All fields are optional. If `spec.llm` is omitted entirely, the agent inherits t
 | `stop_sequences` | `[]string` | `[]` | Stop generation sequences |
 | `top_p` | `float64` | `0.0` | Nucleus sampling (0.0 - 1.0) |
 | `top_k` | `int` | `0` | Top-k sampling |
-| `max_context_tokens` | `int` | auto-detected | Context window size (e.g., 200000 for Claude) |
+| `max_context_tokens` | `int` | the model's window | The window loom budgets against: the fold keeps the settled conversation under the profile's threshold of it. May sit below the model's window to bound cost |
 | `reserved_output_tokens` | `int` | 10% of context | Tokens reserved for model output |
+| `max_model_context_tokens` | `int` | the model's listed window | The window the model is served with, when below its listed one (vLLM `--max-model-len`, TGI `--max-total-tokens`, Ollama `num_ctx`). A step in flight is fitted to it before the send |
 
 ---
 
@@ -421,7 +422,7 @@ redacted `AgentInfo`. `ListAgents` omits `config` entirely. Agent YAML is
 environment-expanded before loading; arbitrary fields such as `system_prompt`
 and metadata are not secret-filtered, so do not embed credentials there.
 
-**Large tool results**: a result is bounded once, at arrival. Above the threshold it enters the conversation as its first bytes plus a tail that says how much was cut and names the result's `tool_use_id`, with which `query_tool_result` pages the whole of it this turn (registered by default, as on main; when it is suppressed, the tail says to narrow the call and re-run). What enters memory, what is stored and what the model is sent are the same bytes, so a compiled prefix stays valid for the whole session and the fold — not the threshold — is what controls context size. The one exception: a step whose results together do not fit the model's own window (the catalog's, not `max_context_tokens`) has them replaced, before the send, by a note telling the model to call fewer tools at once. On Ollama the window is the server's `num_ctx`, which loom does not set: `max_context_tokens` must state it.
+**Large tool results**: a result is bounded once, at arrival. Above the threshold it enters the conversation as its first bytes plus a tail that says how much was cut and names the result's `tool_use_id`, with which `query_tool_result` pages the whole of it this turn (registered by default, as on main; when it is suppressed, the tail says to narrow the call and re-run). What enters memory, what is stored and what the model is sent are the same bytes, so a compiled prefix stays valid for the whole session and the fold — not the threshold — is what controls context size. The one exception: a step whose results together do not fit the window the model is served with has them replaced, before the send, by a note telling the model to call fewer tools at once. That window is `max_model_context_tokens` when set, else the model's listed window (the catalog's, not `max_context_tokens`); on Ollama, whose `num_ctx` loom does not set, `max_context_tokens` stands in when neither is set.
 
 ---
 

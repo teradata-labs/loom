@@ -701,6 +701,9 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 		}
 		ApplyMetadataBehavior(agentConfig, config.Metadata)
 		agentConfig.RecoveryConfig = repeatHintRecoveryConfig(config.Metadata)
+		if config.Llm != nil {
+			agentConfig.MaxModelContextTokens = int(config.Llm.MaxModelContextTokens)
+		}
 		// Use defaults if not specified
 		if agentConfig.MaxToolExecutions == 0 {
 			agentConfig.MaxToolExecutions = 50

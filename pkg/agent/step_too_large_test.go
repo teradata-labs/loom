@@ -201,12 +201,36 @@ func TestAStepThatEndsTheToolBudgetIsCheckedAtSynthesis(t *testing.T) {
 	assert.Equal(t, 40, answer, "the synthesis note asks for more calls on a send with no tools")
 }
 
+// A model served with a window below its listed one — a vLLM --max-model-len,
+// a TGI --max-total-tokens — refuses what the listing says it takes. The served
+// window, max_model_context_tokens, is the ceiling when it is set: a step the
+// listed window would carry is fitted to the served one before the send, and
+// a server that refuses without a label never sees it.
+func TestAStepIsFittedToTheServedWindowWhenOneIsSet(t *testing.T) {
+	model := &windowedModel{limit: 19000, fanOut: 10, plain: true, provider: "anthropic", model: "claude-opus-5"}
+	ag, _ := windowedAgent(t, model, 16000)
+	ag.config.MaxModelContextTokens = 20000
+	resp, err := ag.Chat(context.Background(), "s-served", "read ten tables")
+	require.NoError(t, err, "the step was sent against the listed window and the server refused")
+	assert.Equal(t, "narrowed and done", resp.Content)
+	assert.True(t, model.told, "the step was not fitted to the served window")
+}
+
+// The served window comes first, on any provider; without one the listed
+// window is the ceiling, as before.
+func TestTheServedWindowIsTheCeilingBeforeTheListedOne(t *testing.T) {
+	served := ProviderPromptCeiling("anthropic", "claude-opus-5", 400, 60000, 32000)
+	assert.Equal(t, 32000-EffectiveOutputReservation("anthropic", "claude-opus-5", 0, 400, 32000), served)
+	listed := ProviderPromptCeiling("anthropic", "claude-opus-5", 400, 60000, 0)
+	assert.Greater(t, listed, 60000, "the listed window is not above the configured one; the test does not separate them")
+}
+
 // Ollama's window is the server's context length, which the model's listing
-// does not give: the configured window is the ceiling there, and the model's
-// listed window only when none is configured.
+// does not give: when no served window is set, the configured window is the
+// ceiling there, and the model's listed window only when none is configured.
 func TestOllamasCeilingIsTheConfiguredWindow(t *testing.T) {
-	listed := ProviderPromptCeiling("ollama", "llama3.1:8b", 400, 0)
-	configured := ProviderPromptCeiling("ollama", "llama3.1:8b", 400, 4096)
+	listed := ProviderPromptCeiling("ollama", "llama3.1:8b", 400, 0, 0)
+	configured := ProviderPromptCeiling("ollama", "llama3.1:8b", 400, 4096, 0)
 	assert.Equal(t, 4096-EffectiveOutputReservation("ollama", "llama3.1:8b", 0, 400, 4096), configured)
 	assert.Greater(t, listed, configured, "the listed window is not larger than 4096; the test does not separate them")
 }

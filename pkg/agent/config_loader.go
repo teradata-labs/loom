@@ -67,6 +67,10 @@ func convertLLMConfigYAMLToProto(y *LLMConfigYAML) (*loomv1.LLMConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	maxModelContextTokens, err := safeInt32(y.MaxModelContextTokens, "LLM.MaxModelContextTokens")
+	if err != nil {
+		return nil, err
+	}
 	var rateLimit *loomv1.LLMRateLimitConfig
 	if y.RateLimit != nil {
 		rateLimit = &loomv1.LLMRateLimitConfig{
@@ -81,17 +85,18 @@ func convertLLMConfigYAMLToProto(y *LLMConfigYAML) (*loomv1.LLMConfig, error) {
 		}
 	}
 	return &loomv1.LLMConfig{
-		Provider:             y.Provider,
-		Model:                y.Model,
-		Temperature:          float32(y.Temperature),
-		MaxTokens:            maxTokens,
-		StopSequences:        y.StopSequences,
-		TopP:                 float32(y.TopP),
-		TopK:                 topK,
-		MaxContextTokens:     maxContextTokens,
-		ReservedOutputTokens: reservedOutputTokens,
-		RateLimit:            rateLimit,
-		Seed:                 copyInt64Ptr(y.Seed),
+		Provider:              y.Provider,
+		Model:                 y.Model,
+		Temperature:           float32(y.Temperature),
+		MaxTokens:             maxTokens,
+		StopSequences:         y.StopSequences,
+		TopP:                  float32(y.TopP),
+		TopK:                  topK,
+		MaxContextTokens:      maxContextTokens,
+		ReservedOutputTokens:  reservedOutputTokens,
+		MaxModelContextTokens: maxModelContextTokens,
+		RateLimit:             rateLimit,
+		Seed:                  copyInt64Ptr(y.Seed),
 	}, nil
 }
 
@@ -115,17 +120,18 @@ func convertProtoToLLMConfigYAML(pb *loomv1.LLMConfig) *LLMConfigYAML {
 		}
 	}
 	return &LLMConfigYAML{
-		Provider:             pb.Provider,
-		Model:                pb.Model,
-		Temperature:          float64(pb.Temperature),
-		MaxTokens:            int(pb.MaxTokens),
-		StopSequences:        pb.StopSequences,
-		TopP:                 float64(pb.TopP),
-		TopK:                 int(pb.TopK),
-		MaxContextTokens:     int(pb.MaxContextTokens),
-		ReservedOutputTokens: int(pb.ReservedOutputTokens),
-		RateLimit:            rateLimit,
-		Seed:                 copyInt64Ptr(pb.Seed),
+		Provider:              pb.Provider,
+		Model:                 pb.Model,
+		Temperature:           float64(pb.Temperature),
+		MaxTokens:             int(pb.MaxTokens),
+		StopSequences:         pb.StopSequences,
+		TopP:                  float64(pb.TopP),
+		TopK:                  int(pb.TopK),
+		MaxContextTokens:      int(pb.MaxContextTokens),
+		ReservedOutputTokens:  int(pb.ReservedOutputTokens),
+		MaxModelContextTokens: int(pb.MaxModelContextTokens),
+		RateLimit:             rateLimit,
+		Seed:                  copyInt64Ptr(pb.Seed),
 	}
 }
 
@@ -190,16 +196,19 @@ type K8sStyleAgentConfig struct {
 
 // LLMConfigYAML represents LLM configuration in YAML
 type LLMConfigYAML struct {
-	Provider             string            `yaml:"provider"`
-	Model                string            `yaml:"model"`
-	Temperature          float64           `yaml:"temperature"`
-	MaxTokens            int               `yaml:"max_tokens"`
-	StopSequences        []string          `yaml:"stop_sequences"`
-	TopP                 float64           `yaml:"top_p"`
-	TopK                 int               `yaml:"top_k"`
-	MaxContextTokens     int               `yaml:"max_context_tokens"`
-	ReservedOutputTokens int               `yaml:"reserved_output_tokens"`
-	RateLimit            *LLMRateLimitYAML `yaml:"rate_limit"`
+	Provider             string   `yaml:"provider"`
+	Model                string   `yaml:"model"`
+	Temperature          float64  `yaml:"temperature"`
+	MaxTokens            int      `yaml:"max_tokens"`
+	StopSequences        []string `yaml:"stop_sequences"`
+	TopP                 float64  `yaml:"top_p"`
+	TopK                 int      `yaml:"top_k"`
+	MaxContextTokens     int      `yaml:"max_context_tokens"`
+	ReservedOutputTokens int      `yaml:"reserved_output_tokens"`
+	// MaxModelContextTokens is the window the model is served with, when it
+	// is below the model's listed window; see Config.MaxModelContextTokens.
+	MaxModelContextTokens int               `yaml:"max_model_context_tokens"`
+	RateLimit             *LLMRateLimitYAML `yaml:"rate_limit"`
 
 	// Seed pins the sampling seed for reproducible generations.
 	// A pointer so that an omitted key (nil → provider samples randomly) is
@@ -1401,16 +1410,17 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 	// Convert LLM config
 	if config.Llm != nil {
 		yaml.Agent.LLM = LLMConfigYAML{
-			Provider:             config.Llm.Provider,
-			Model:                config.Llm.Model,
-			Temperature:          float64(config.Llm.Temperature),
-			MaxTokens:            int(config.Llm.MaxTokens),
-			StopSequences:        config.Llm.StopSequences,
-			TopP:                 float64(config.Llm.TopP),
-			TopK:                 int(config.Llm.TopK),
-			MaxContextTokens:     int(config.Llm.MaxContextTokens),
-			ReservedOutputTokens: int(config.Llm.ReservedOutputTokens),
-			Seed:                 copyInt64Ptr(config.Llm.Seed),
+			Provider:              config.Llm.Provider,
+			Model:                 config.Llm.Model,
+			Temperature:           float64(config.Llm.Temperature),
+			MaxTokens:             int(config.Llm.MaxTokens),
+			StopSequences:         config.Llm.StopSequences,
+			TopP:                  float64(config.Llm.TopP),
+			TopK:                  int(config.Llm.TopK),
+			MaxContextTokens:      int(config.Llm.MaxContextTokens),
+			ReservedOutputTokens:  int(config.Llm.ReservedOutputTokens),
+			MaxModelContextTokens: int(config.Llm.MaxModelContextTokens),
+			Seed:                  copyInt64Ptr(config.Llm.Seed),
 		}
 	}
 

@@ -5846,7 +5846,7 @@
         "maxContextTokens": {
           "type": "integer",
           "format": "int32",
-          "title": "Maximum context window tokens supported by the model\nIf not set, will be auto-detected from model name or use provider default\nExamples: Claude Sonnet 4.5 = 200000, Llama 3.1 = 128000, Mistral = 32000"
+          "title": "The context window loom budgets against: the fold keeps the settled\nconversation under the profile's threshold of this window less\nreserved_output_tokens. It may sit below the model's window to bound\ncost. If not set, the model's window (catalog, then model name, then\nprovider default) is used.\nExamples: Claude Sonnet 4.5 = 200000, Llama 3.1 = 128000, Mistral = 32000"
         },
         "reservedOutputTokens": {
           "type": "integer",
@@ -5861,6 +5861,11 @@
           "type": "string",
           "format": "int64",
           "description": "Sampling seed for reproducible generations.\nExplicitly optional so that \"not set\" (sampling stays random, provider\ndefault) is distinguishable from an explicit seed of 0, which some\nproviders accept as a real seed value.\n\nHonored by: ollama, and only on the agent-registry construction path\n(pkg/agent/registry.go, which passes it into ollama.Config). Providers\nother than ollama ignore it. The looms serve path builds clients from\nfactory.FactoryConfig, which does not carry a seed field, so a seed set in\nagent YAML has no effect there — wiring it through the factory is an open\nfollow-up, not a shipped behavior."
+        },
+        "maxModelContextTokens": {
+          "type": "integer",
+          "format": "int32",
+          "description": "The context window the model is served with, when it is below the\nmodel's listed window: a vLLM --max-model-len, a TGI --max-total-tokens,\nan Ollama num_ctx. A step whose results together would exceed it, less\nthe reply reservation, has them replaced before the send. If not set,\nthe model's listed window is the limit (on Ollama, max_context_tokens)."
         }
       },
       "title": "LLMConfig configures the language model provider and parameters"

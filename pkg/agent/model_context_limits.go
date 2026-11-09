@@ -200,17 +200,21 @@ func EffectiveOutputReservation(provider, model string, configuredMaxTokens, con
 }
 
 // ProviderPromptCeiling is the largest prompt the provider accepts for
-// provider+model: the model's own window — the catalog's, else the
-// prefix-matched table's — less the output reservation. The configured
+// provider+model: the window the model is served with, less the output
+// reservation. servedWindow (max_model_context_tokens) states that window
+// when the server caps it below the model's listing — a vLLM --max-model-len,
+// a TGI --max-total-tokens — and comes first. Otherwise the model's listed
+// window: the catalog's, else the prefix-matched table's. The configured
 // max_context_tokens is where loom folds, not where the provider refuses, so
-// it is used only when neither knows the model. Ollama is the exception: its
-// window is the server's context length (num_ctx), which loom does not send
-// and the model's listing does not give, so the configured window — the
-// operator's statement of it — comes first there. Returns 0 when no window is
-// known.
-func ProviderPromptCeiling(provider, model string, configuredReserved, configuredWindow int) int {
+// it is used only when neither knows the model; Ollama is the exception, since
+// its window is the server's num_ctx, which loom does not send and the listing
+// does not give, so there the configured window comes before the listing.
+// Returns 0 when no window is known.
+func ProviderPromptCeiling(provider, model string, configuredReserved, configuredWindow, servedWindow int) int {
 	window := 0
-	if provider == "ollama" && configuredWindow > 0 {
+	if servedWindow > 0 {
+		window = servedWindow
+	} else if provider == "ollama" && configuredWindow > 0 {
 		window = configuredWindow
 	} else if info := catalog.Lookup(provider, model); info != nil && info.ContextWindow > 0 {
 		window = int(info.ContextWindow)
