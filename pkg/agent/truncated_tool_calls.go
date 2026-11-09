@@ -82,9 +82,10 @@ func missingRequiredArgs(tc ToolCall, tools []shuttle.Tool) []string {
 // that neither path, including a resumed parked batch, runs these calls: a
 // call with a tool row is no longer rowless.
 //
-// Each answered call counts as one tool execution, like a per-turn-cap skip,
-// so the whole-turn MaxToolExecutions budget still bounds a run of truncated
-// turns alongside the circuit breaker.
+// Each answered call counts as one tool execution at its batch position in
+// dispatchBatch, like a per-turn-cap skip, so the whole-turn MaxToolExecutions
+// budget still bounds a run of truncated turns without a later cut-off call
+// preempting an earlier complete call in the same batch.
 func (a *Agent) answerTruncatedToolCalls(ctx Context, session *Session, llmResp *LLMResponse, truncated map[int]bool, st *batchState) {
 	if len(truncated) == 0 {
 		return
@@ -141,7 +142,6 @@ func (a *Agent) answerTruncatedToolCalls(ctx Context, session *Session, llmResp 
 			zap.L().Warn("failed to persist truncated tool call result",
 				zap.String("session_id", session.ID), zap.String("tool", tc.Name), zap.Error(err))
 		}
-		*st.toolExecutionCount++
 	}
 }
 

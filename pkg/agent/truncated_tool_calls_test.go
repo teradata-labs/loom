@@ -179,6 +179,19 @@ func TestTruncatedToolCall_CompleteCallInSameBatchStillRuns(t *testing.T) {
 	cutRow, ok := toolRowFor(next, "c-cut")
 	require.True(t, ok)
 	assert.Contains(t, cutRow, outputTruncatedCode)
+
+	t.Run("later cut-off call does not preempt earlier complete call budget", func(t *testing.T) {
+		budgetTool := &requiredCountingTool{name: "shared_memory_write"}
+		budgetLLM := &recordingStopReasonLLM{responses: []scriptedResponse{
+			{toolCalls: []llmtypes.ToolCall{complete, cutOffWrite}, stopReason: "max_tokens"},
+		}}
+		budgetAgent := newTruncationAgent(t, budgetLLM, budgetTool)
+		budgetAgent.config.MaxToolExecutions = 1
+
+		_, err := budgetAgent.Chat(context.Background(), "s-budget-order", "research")
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), budgetTool.runs.Load(), "complete call at index 0 must run before index 1's cut-off call consumes the budget")
+	})
 }
 
 type parallelCountingTool struct{ requiredCountingTool }

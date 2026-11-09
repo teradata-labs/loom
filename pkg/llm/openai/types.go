@@ -59,6 +59,10 @@ type ChatMessage struct {
 	// back verbatim on assistant messages so signatures survive the round-trip.
 	ReasoningContent string              `json:"reasoning_content,omitempty"`
 	ThinkingBlocks   []WireThinkingBlock `json:"thinking_blocks,omitempty"`
+	// Reasoning is the field name gpt-oss models use for the same trace on
+	// Amazon Bedrock Mantle (observed live 2026-11-04). Read as a fallback for
+	// ReasoningContent; never sent.
+	Reasoning string `json:"reasoning,omitempty"`
 }
 
 // WireThinkingBlock is litellm's thinking block shape. Index appears only in
@@ -203,6 +207,10 @@ type ChatMessageDelta struct {
 	// signature arrives in a block fragment. Merge fragments by Index.
 	ReasoningContent string              `json:"reasoning_content,omitempty"`
 	ThinkingBlocks   []WireThinkingBlock `json:"thinking_blocks,omitempty"`
+	// Reasoning is the field name gpt-oss models use for the same trace on
+	// Amazon Bedrock Mantle (observed live 2026-11-04). Read as a fallback for
+	// ReasoningContent; never sent.
+	Reasoning string `json:"reasoning,omitempty"`
 }
 
 // ToolCallDelta represents a delta in a tool call.

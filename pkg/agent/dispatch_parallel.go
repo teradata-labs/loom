@@ -55,6 +55,7 @@ func (a *Agent) dispatchBatch(ctx Context, session *Session, calls []ToolCall, s
 	if !a.config.ParallelReadTools {
 		for i, toolCall := range calls {
 			if st.answeredCalls[i] {
+				*st.toolExecutionCount++
 				continue
 			}
 			if *st.toolExecutionCount >= a.config.MaxToolExecutions {
@@ -67,6 +68,7 @@ func (a *Agent) dispatchBatch(ctx Context, session *Session, calls []ToolCall, s
 
 	for i := 0; i < len(calls); {
 		if st.answeredCalls[i] {
+			*st.toolExecutionCount++
 			i++
 			continue
 		}
