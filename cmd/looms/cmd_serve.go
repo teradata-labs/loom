@@ -34,6 +34,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/communication"
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
+	"github.com/teradata-labs/loom/pkg/decision"
 	"github.com/teradata-labs/loom/pkg/embedding"
 	"github.com/teradata-labs/loom/pkg/evals"
 	"github.com/teradata-labs/loom/pkg/eventlog"
@@ -52,6 +53,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/ollama"
 	"github.com/teradata-labs/loom/pkg/llm/openai"
 	llmscheduler "github.com/teradata-labs/loom/pkg/llm/scheduler"
+	"github.com/teradata-labs/loom/pkg/luasandbox"
 	"github.com/teradata-labs/loom/pkg/mcp/apps"
 	"github.com/teradata-labs/loom/pkg/mcp/manager"
 	"github.com/teradata-labs/loom/pkg/memory"
@@ -215,6 +217,8 @@ func registerYAMLBuiltinTools(
 		"update_ui_app":                   "UI app subsystem (AppCompiler/AppProvider)",
 		"delete_ui_app":                   "UI app subsystem (AppCompiler/AppProvider)",
 		"contact_human":                   "HITL store (registerContactHumanFromYAML)",
+		"run_lua":                         "Lua subsystem (tools.lua.enabled, registerLuaTools)",
+		"manage_lua_scripts":              "Lua subsystem (saved scripts; not available yet)",
 	}
 
 	logger.Info(indent+"Registering builtin tools", zap.Int("count", len(cfg.Tools.Builtin)))
@@ -414,6 +418,7 @@ type registrySubsystemSink interface {
 	SetGraphMemoryStore(store memory.GraphMemoryStore, embedder memory.Embedder)
 	SetSuppressedBuiltinTools(names []string)
 	GraphMemoryEnabledFor(nameOrID string) bool
+	SetDecisionShadowStore(store decision.ShadowStore)
 }
 
 // resolveJudgeFallback picks the judge's fallback LLM: the pool's active
@@ -447,8 +452,13 @@ func wireRegistrySubsystems(
 	graphMemoryStore memory.GraphMemoryStore,
 	memoryEmbedder memory.Embedder,
 	suppressed []string,
+	decisionShadowStore decision.ShadowStore,
 	logger *zap.Logger,
 ) {
+	if decisionShadowStore != nil {
+		reg.SetDecisionShadowStore(decisionShadowStore)
+		logger.Info("Decision shadow store injected into agent registry")
+	}
 	if taskManager != nil {
 		reg.SetTaskManager(taskManager, taskDecomposer)
 		logger.Info("Task manager injected into agent registry",
@@ -601,6 +611,28 @@ func resolveBedrockMantleAPIKey(cfg LLMConfig) string {
 		return key
 	}
 	return os.Getenv("BEDROCK_MANTLE_API_KEY")
+}
+
+// withMantleEnvFallback applies the environment to a bedrock-mantle client
+// built for agent YAML under `looms serve`, as the agent registry does. The
+// region is llm.bedrock_mantle_region when the operator set it, else
+// BEDROCK_MANTLE_REGION, else AWS_REGION, else what mantleConfigFrom resolved
+// (llm.bedrock_region, which has a built-in default, so the environment must
+// be read before it). The endpoint is BEDROCK_MANTLE_ENDPOINT when
+// llm.bedrock_mantle_endpoint is empty. The API key already falls back to
+// BEDROCK_MANTLE_API_KEY in resolveBedrockMantleAPIKey.
+func withMantleEnvFallback(mcfg bedrockmantle.Config, cfg LLMConfig) bedrockmantle.Config {
+	if cfg.BedrockMantleRegion == "" {
+		if region := os.Getenv("BEDROCK_MANTLE_REGION"); region != "" {
+			mcfg.Region = region
+		} else if region := os.Getenv("AWS_REGION"); region != "" {
+			mcfg.Region = region
+		}
+	}
+	if mcfg.Endpoint == "" {
+		mcfg.Endpoint = os.Getenv("BEDROCK_MANTLE_ENDPOINT")
+	}
+	return mcfg
 }
 
 // mantleConfigFrom builds the bedrockmantle.Config shared by every looms path
@@ -996,7 +1028,7 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		})
 
 	case bedrockmantle.ProviderName:
-		mcfg := mantleConfigFrom(serverConfig.LLM)
+		mcfg := withMantleEnvFallback(mantleConfigFrom(serverConfig.LLM), serverConfig.LLM)
 		if protoConfig.Model != "" {
 			mcfg.Model = protoConfig.Model
 		}
@@ -1162,6 +1194,45 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 
 	default:
 		return nil, fmt.Errorf("unsupported LLM provider: %s (supported: anthropic, bedrock, bedrock-mantle, ollama, openai, azure-openai, mistral, gemini, huggingface, litellm)", protoConfig.Provider)
+	}
+}
+
+// customLLMFallbackAllowed reports whether `looms serve` may run an agent role
+// (primary, compressor_llm or classifier_llm) on a substitute LLM when the
+// provider that the agent YAML declares for that role cannot be built. The
+// startup agent loop calls it before it falls back. It returns false for
+// bedrock-mantle: an operator selects Mantle to keep model traffic in their
+// AWS account, so a silent move to another provider is not acceptable. The
+// loop skips such an agent and logs an error instead. Other providers keep the
+// existing fall-back-to-default behaviour.
+func customLLMFallbackAllowed(provider string) bool {
+	switch provider {
+	case "bedrock-mantle":
+		return false
+	default:
+		return true
+	}
+}
+
+// skipAgentForUnbuildableLLM is called by the `looms serve` startup agent loop
+// when customLLMFallbackAllowed refuses a fallback. It logs the refusal at error
+// level, so the operator sees that the agent did not start, and closes the
+// agent's execution backend, which the loop opened before it built the LLMs.
+// The caller then skips the agent.
+func skipAgentForUnbuildableLLM(logger *zap.Logger, agentName, role string, llmCfg *loomv1.LLMConfig, backend fabric.ExecutionBackend, buildErr error) {
+	logger.Error("    Skipping agent: its LLM provider cannot be built and the provider does not allow a fallback LLM",
+		zap.String("name", agentName),
+		zap.String("role", role),
+		zap.String("provider", llmCfg.GetProvider()),
+		zap.String("model", llmCfg.GetModel()),
+		zap.Error(buildErr))
+	if backend == nil {
+		return
+	}
+	if err := backend.Close(); err != nil {
+		logger.Warn("    Failed to close backend of skipped agent",
+			zap.String("name", agentName),
+			zap.Error(err))
 	}
 }
 
@@ -1422,6 +1493,14 @@ func runServe(cmd *cobra.Command, args []string) {
 	var graphMemoryStore memory.GraphMemoryStore
 	if gmp, ok := storageBackend.(backend.GraphMemoryProvider); ok {
 		graphMemoryStore = gmp.GraphMemoryStore()
+	}
+
+	// Extract the typed-decision shadow store if available (optional
+	// interface). Agents with a decision provider configured persist their
+	// shadow comparisons here; `loom decision report` reads them.
+	var decisionShadowStore decision.ShadowStore
+	if dsp, ok := storageBackend.(backend.DecisionShadowProvider); ok {
+		decisionShadowStore = dsp.DecisionShadowStore()
 	}
 
 	// Extract task store if available (optional interface)
@@ -1892,6 +1971,28 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Fatal("Failed to build admission chain", zap.Error(err))
 	}
 
+	// run_lua wiring (tools.lua, off by default): one policy and one run gate
+	// for the whole server, sized from the process memory limit. A malformed
+	// tool pattern aborts startup, like a malformed hook binding.
+	luaRT, err := newLuaRuntime(config.Tools.Lua, luaGuards{
+		YOLO:         config.Tools.Permissions.YOLO,
+		HookBindings: len(config.Tools.Hooks.Bindings),
+	}, luasandbox.ProcessMemoryLimit(), loomconfig.GetLoomDataDir(), logger)
+	if err != nil {
+		logger.Fatal("Invalid tools.lua configuration", zap.Error(err))
+	}
+	if luaRT != nil {
+		logger.Info("Lua scripts enabled (run_lua)",
+			zap.Int("run_slots", luaRT.slots),
+			zap.Int("runs_per_agent", luaRT.perKey),
+			zap.Uint64("memory_bytes_per_run", luaRT.runMem),
+			zap.Bool("save_enabled", luaRT.scripts.SaveEnabled),
+			zap.Bool("publish_as_tool_enabled", luaRT.scripts.PublishEnabled))
+		for _, loadErr := range luaRT.store.LoadErrors() {
+			logger.Warn("Skipped a saved Lua script that could not be loaded", zap.Error(loadErr))
+		}
+	}
+
 	// Initialize empty agents map - all agents loaded from $LOOM_DATA_DIR/agents/ via registry below
 	agents := initializeAgentsMap()
 	logger.Info("Agents will be loaded from $LOOM_DATA_DIR/agents/ directory via registry system")
@@ -1925,6 +2026,8 @@ func runServe(cmd *cobra.Command, args []string) {
 		// the chain would silently become ungoverned (C-007).
 		PermissionChecker: permissionChecker,
 		AdmissionChain:    admissionChain,
+		RunLuaTool:        luaRT.registryOptions(),
+		LuaScripts:        luaRT.scriptsRegistryOptions(),
 		IdentityResolver:  postgres.UserIDFromContext,
 		EventLogStore:     executionLog,
 	})
@@ -2072,6 +2175,12 @@ func runServe(cmd *cobra.Command, args []string) {
 				// tools.minimal/none never disables the extractor itself, so
 				// background entity extraction keeps running (via compressor_llm
 				// when declared) even when the tool is hidden from the LLM.
+
+				// Decision layer: the agent resolves its configured decider
+				// against its own LLMs after options apply; a nil config is
+				// off. Same wiring as registry.buildAgent.
+				agentOpts = append(agentOpts, agent.WithDecisionConfig(cfg.GetDecision(), decisionShadowStore))
+
 				if graphMemoryStore != nil {
 					gmCfg := cfg.Memory.GetGraphMemory()
 					explicitlyDisabled := gmCfg != nil && !gmCfg.Enabled
@@ -2140,6 +2249,10 @@ func runServe(cmd *cobra.Command, args []string) {
 						zap.String("provider", cfg.Llm.Provider),
 						zap.String("model", cfg.Llm.Model))
 					customLLM, err := createLLMProviderFromProtoConfig(cfg.Llm, config, logger)
+					if err != nil && !customLLMFallbackAllowed(cfg.Llm.Provider) {
+						skipAgentForUnbuildableLLM(logger, cfg.Name, "llm", cfg.Llm, backend, err)
+						continue
+					}
 					if err != nil {
 						logger.Warn("    Failed to create custom LLM provider, using server default",
 							zap.Error(err))
@@ -2166,6 +2279,10 @@ func runServe(cmd *cobra.Command, args []string) {
 				var staticClassifierLLM agent.LLMProvider
 				if cfg.CompressorLlm != nil && cfg.CompressorLlm.Provider != "" {
 					compLLM, err := createLLMProviderFromProtoConfig(cfg.CompressorLlm, config, logger)
+					if err != nil && !customLLMFallbackAllowed(cfg.CompressorLlm.Provider) {
+						skipAgentForUnbuildableLLM(logger, cfg.Name, "compressor_llm", cfg.CompressorLlm, backend, err)
+						continue
+					}
 					if err != nil {
 						logger.Warn("    Failed to create compressor LLM, extractor will use primary",
 							zap.Error(err),
@@ -2183,6 +2300,10 @@ func runServe(cmd *cobra.Command, args []string) {
 				}
 				if cfg.ClassifierLlm != nil && cfg.ClassifierLlm.Provider != "" {
 					classLLM, err := createLLMProviderFromProtoConfig(cfg.ClassifierLlm, config, logger)
+					if err != nil && !customLLMFallbackAllowed(cfg.ClassifierLlm.Provider) {
+						skipAgentForUnbuildableLLM(logger, cfg.Name, "classifier_llm", cfg.ClassifierLlm, backend, err)
+						continue
+					}
 					if err != nil {
 						logger.Warn("    Failed to create classifier LLM, router will use primary",
 							zap.Error(err),
@@ -2251,6 +2372,7 @@ func runServe(cmd *cobra.Command, args []string) {
 				// hot-reload path via registerYAMLBuiltinTools so the two
 				// paths cannot drift.
 				registerYAMLBuiltinTools(ag, cfg, registry, logger, "    ", "agent_management")
+				registerLuaTools(ag, cfg, luaRT, logger, "    ")
 
 				// Register contact_human tool with the shared HITL store (if listed in builtin tools)
 				if cfg.Tools != nil {
@@ -2313,7 +2435,9 @@ func runServe(cmd *cobra.Command, args []string) {
 				// Register tool_search and enable dynamic tool registration if tool registry available.
 				// Suppressed by tools.minimal=true so the LLM cannot discover or auto-load tools.
 				if toolRegistry != nil && !toolsMinimalActive() {
-					searchTool := toolregistry.NewSearchTool(toolRegistry)
+					// Per-agent: the agent's decision layer (if any) travels
+					// with its own SearchTool, never with the shared registry.
+					searchTool := toolregistry.NewSearchTool(toolRegistry, ag.SearchToolOptions()...)
 					// Hide tools the permission policy would refuse, so the model
 					// never discovers (then calls) a disabled tool via tool_search.
 					if permissionChecker != nil {
@@ -2711,7 +2835,7 @@ func runServe(cmd *cobra.Command, args []string) {
 	// policy. See wireRegistrySubsystems for the regression this guards.
 	if registry != nil {
 		wireRegistrySubsystems(registry, taskManager, taskDecomposer,
-			graphMemoryStore, memoryEmbedder, builtinToolsToSuppress(), logger)
+			graphMemoryStore, memoryEmbedder, builtinToolsToSuppress(), decisionShadowStore, logger)
 	}
 
 	// Wire the eval store for ABTest result persistence — pool-independent.
@@ -2780,6 +2904,12 @@ func runServe(cmd *cobra.Command, args []string) {
 	if uiRegistry.Count() > 0 {
 		loomService.SetAppProvider(uiRegistry)
 		logger.Info("UI apps registered for gRPC", zap.Int("count", uiRegistry.Count()))
+	}
+
+	// Saved Lua scripts over RPC (ListLuaScripts/GetLuaScript/SaveLuaScript/
+	// DeleteLuaScript); left unset, they return FailedPrecondition.
+	if luaRT != nil {
+		loomService.SetLuaScriptStore(luaRT.store)
 	}
 
 	// Wire up the UI app compiler for dynamic app creation (CreateUIApp/UpdateUIApp RPCs)
@@ -3391,6 +3521,10 @@ func runServe(cmd *cobra.Command, args []string) {
 			// Wire graph memory SUBSYSTEM (mirrors the static-loader path).
 			// tools.minimal/none never disables the extractor; tool surfacing
 			// is gated separately via WithoutBuiltinTool below.
+
+			// Decision layer, as at startup (hot-reload path).
+			agentOpts = append(agentOpts, agent.WithDecisionConfig(agentConfig.GetDecision(), decisionShadowStore))
+
 			if graphMemoryStore != nil {
 				gmCfg := agentConfig.GetMemory().GetGraphMemory()
 				explicitlyDisabled := gmCfg != nil && !gmCfg.Enabled
@@ -3492,6 +3626,7 @@ func runServe(cmd *cobra.Command, args []string) {
 			// on toolName=="shell_execute" and silently dropped YAML-declared
 			// shell_execute on hot reload under tools.minimal/none.
 			registerYAMLBuiltinTools(newAgent, agentConfig, registry, logger, "  ", "agent_management (reload)")
+			registerLuaTools(newAgent, agentConfig, luaRT, logger, "  ")
 
 			// Register contact_human tool with shared HITL store (if listed in builtin tools)
 			if agentConfig.Tools != nil {
@@ -3554,7 +3689,8 @@ func runServe(cmd *cobra.Command, args []string) {
 			// Register tool_search and enable dynamic tool registration if tool registry available.
 			// Suppressed by tools.minimal=true so the LLM cannot discover or auto-load tools.
 			if toolRegistry != nil && !toolsMinimalActive() {
-				searchTool := toolregistry.NewSearchTool(toolRegistry)
+				// Per-agent decision layer, as at startup.
+				searchTool := toolregistry.NewSearchTool(toolRegistry, newAgent.SearchToolOptions()...)
 				if permissionChecker != nil {
 					searchTool.SetToolFilter(permissionChecker.Advertisable)
 				}

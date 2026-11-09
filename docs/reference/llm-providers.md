@@ -694,6 +694,7 @@ llm:
 ```
 
 **Limitations**:
+- Under `looms serve`, an agent whose Mantle client cannot be built is not started (no fallback LLM)
 - No Guardrails, cross-region inference profiles (`us.`/`global.` ids return 404), or prompt routing on Mantle
 - Model listing is not an entitlement check; unsubscribed models fail with a marketplace-subscription 401/403
 - GPT-5.x/6.x ids are served on Mantle but have no published AWS rate, so they are costed by the openai client's fallback rates; service tiers other than standard (flex, priority, batch) are not modelled
