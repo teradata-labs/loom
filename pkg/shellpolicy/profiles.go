@@ -246,8 +246,10 @@ func Readonly() *Policy {
 	p.Programs["find"] = &Profile{MaxPositional: -1, Check: findCheck, RefuseArgs: []string{
 		"-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls",
 		"-follow", "-files0-from"}}
-	p.Programs["file"] = &Profile{MaxPositional: -1, RefuseShort: "C", RefuseLong: []string{"--compile"},
-		ShortWithValue: "eFfmP", pathShort: "fm"}
+	// file -f F (--files-from F) reads the names of the files to check from
+	// F, which path confinement never sees, as sort --files0-from does.
+	p.Programs["file"] = &Profile{MaxPositional: -1, RefuseShort: "Cf", RefuseLong: []string{"--compile", "--files-from"},
+		ShortWithValue: "eFfmP", pathShort: "m"}
 	p.Programs["base64"] = &Profile{MaxPositional: -1, RefuseShort: "o", RefuseLong: []string{"--output"},
 		ShortWithValue: "wbi", pathShort: "i"}
 	// date's arguments are not path-checked (they are formats and times), so

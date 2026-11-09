@@ -226,7 +226,7 @@ func TestAnalyze_GlobPositional(t *testing.T) {
 // scanned for refused option letters.
 func TestAnalyze_AttachedOptionValues(t *testing.T) {
 	runBypassCases(t, []bypassCase{
-		{cmd: `file -f../o/secret.txt`, want: Ask, static: Ask, why: "../o/secret.txt (1:1): reads outside the session"},
+		{cmd: `file -f../o/secret.txt`, want: Ask, static: Ask, why: "file (1:1): -f is outside the profile"}, // F2 refuses -f outright
 		{cmd: `file -m../o/secret.txt victim.txt`, want: Ask, static: Ask},
 		{cmd: `grep -f../o/secret.txt victim.txt`, want: Ask, static: Ask},
 		{cmd: `grep -if../o/secret.txt victim.txt`, want: Ask, static: Ask},
@@ -255,7 +255,7 @@ func TestCheckLaunch_ReviewBypasses(t *testing.T) {
 		argv  []string
 		block string // a substring of the reason; "" means allowed
 	}{
-		{argv: []string{"file", "-f" + secret}, block: "outside the session"},
+		{argv: []string{"file", "-f" + secret}, block: "-f is outside the profile"}, // F2 refuses -f outright
 		{argv: []string{"file", "-m../o/secret.txt", "victim.txt"}, block: "outside the session"},
 		{argv: []string{"grep", "-f" + secret, "a.txt"}, block: "outside the session"},
 		{argv: []string{"date", "-f", secret}, block: "-f is outside the profile"},
@@ -909,4 +909,26 @@ func TestAnalyze_WriteIntoGitDir(t *testing.T) {
 	assert.NoError(t, pol.CheckOpen(".git/config", w, false, opt.Roots, nil), "reading .git/config is not a write")
 	merged := MergeGrants([]any{&Grant{WritePaths: []string{"/a"}}, &Grant{WritePaths: []string{"/a", "/b"}}})
 	assert.Equal(t, []string{"/a", "/b"}, merged.WritePaths, "MergeGrants keeps each write path once")
+}
+
+// F2: file -f F (--files-from F) reads the names of the files to check from
+// F, which path confinement never sees, as sort --files0-from did (R4).
+// file 5.41 named an SSH key and a database outside the session.
+func TestAnalyze_FileFilesFrom(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
+	runBypassCases(t, []bypassCase{
+		{cmd: `printf '../o/ssh/k\n' > l; file -f l`, want: Ask, static: Ask, why: "file (1:28): -f is outside the profile"},
+		{cmd: `file -bf l`, want: Ask, static: Ask},
+		{cmd: `file -fl`, want: Ask, static: Ask},
+		{cmd: `file --files-from l`, want: Ask, static: Ask, why: "--files-from is outside the profile"},
+		{cmd: `file --files-from=l`, want: Ask, static: Ask},
+		{cmd: `file --files=l`, want: Ask, static: Ask},
+		{cmd: `file a.txt; file -b a.txt; file -m a.txt victim.txt; file -mf victim.txt; file -- -f`, want: Allow, static: Allow},
+	})
+	runLaunchCases(t, []launchCase{
+		{argv: []string{"file", "-f", "l"}, block: "-f is outside the profile"},
+		{argv: []string{"file", "--files-from=l"}, block: "--files-from"},
+	})
 }
