@@ -953,6 +953,12 @@ looms workflow run analytics-pipeline.yaml
 - **Agent registry**: Centralized agent lookup across workflows
 - **Pattern hot-reload**: Separate pattern library per agent with file watch
 
+**Coordinator initialization** (✅ Implemented):
+
+Agents with `role: coordinator` and `workflow: <name>` metadata discover workers from registry workflow metadata (with a loaded-agent fallback) or `spec.agents` in the workflow YAML at `~/.loom/workflows/<name>.yaml`. Workers declared only in YAML do not also need workflow metadata in their base agent configurations: the coordinator still receives its workflow communication context, queue-notification handler, and any configured topic subscription and broadcast handler.
+
+The initializer rejects workflows with no non-coordinator workers in either source with `no sub-agents found` before creating subscriptions, notification registrations, or background workers. YAML declarations retain the existing worker lookup and addressing rules; they do not create missing base-agent configurations. Worker lookup failures continue to be logged as warnings.
+
 
 ### Concurrent Session Support
 
