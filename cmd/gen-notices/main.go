@@ -238,6 +238,12 @@ func collectPkgs(pkgs []pkgInfo, seen map[string]component, unlicensed map[strin
 				continue // stdlib is covered by the Go toolchain notice below
 			}
 			if p.Module.Path == ownModule || strings.HasPrefix(p.Module.Path, ownModule+"/") {
+				// Loom's own packages are the work being distributed, except
+				// third-party code vendored under third_party/<name>/: it is
+				// linked into the binaries and keeps its own license.
+				if err := collectVendored(p, seen, unlicensed); err != nil {
+					return err
+				}
 				continue
 			}
 			licPath, err := findLicense(p.ImportPath, p.Module.Dir)
@@ -273,6 +279,57 @@ func collectPkgs(pkgs []pkgInfo, seen map[string]component, unlicensed map[strin
 				Notice:      readNotice(p.Module.Dir),
 			}
 		}
+	}
+	return nil
+}
+
+// vendoredDir is the directory, relative to the own module, that holds
+// third-party code copied into the loom module (for example the golua
+// interpreter in third_party/golua).
+const vendoredDir = "third_party"
+
+// collectVendored attributes an own-module package under third_party/<name>/
+// to the license in that directory. Such code has no module of its own, so
+// `go list` reports it as part of loom; skipping it with the rest of the own
+// module would ship its code without its license. A vendored directory with
+// no license file is an error, as for any other component.
+func collectVendored(p pkgInfo, seen map[string]component, unlicensed map[string]bool) error {
+	prefix := ownModule + "/" + vendoredDir + "/"
+	if !strings.HasPrefix(p.ImportPath, prefix) {
+		return nil
+	}
+	name, _, _ := strings.Cut(strings.TrimPrefix(p.ImportPath, prefix), "/")
+	govern := prefix + name
+	if _, ok := seen[govern]; ok {
+		return nil
+	}
+	root := filepath.Join(p.Module.Dir, vendoredDir, name)
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return fmt.Errorf("reading vendored directory %s: %w", root, err)
+	}
+	var found []string
+	for _, e := range entries {
+		if !e.IsDir() && isLicenseFile(e.Name()) {
+			found = append(found, e.Name())
+		}
+	}
+	if len(found) == 0 {
+		unlicensed[govern+" (vendored)"] = true
+		return nil
+	}
+	licPath := filepath.Join(root, preferLicense(found))
+	text, err := os.ReadFile(licPath)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", licPath, err)
+	}
+	seen[govern] = component{
+		ImportPath:  govern,
+		Module:      govern,
+		Version:     "vendored",
+		LicensePath: licPath,
+		License:     strings.TrimRight(string(text), "\n"),
+		Notice:      readNotice(root),
 	}
 	return nil
 }

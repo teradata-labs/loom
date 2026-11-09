@@ -39,6 +39,11 @@ Three properties of the generator matter for accuracy:
 - **License text is copied verbatim** from the dependency's own source. Nothing
   classifies or normalizes a license into an SPDX identifier — an identifier is a
   summary, and a summary is not what these licenses require us to ship.
+- **Code vendored under `third_party/<name>/` is attributed to that directory's
+  license.** It has no module of its own, so `go list` reports it as part of loom,
+  but it is third-party code linked into the binaries (for example the golua
+  interpreter in `third_party/golua`). A vendored directory without a license file
+  fails generation, as any other component does.
 - **A package with its own LICENSE is attributed separately** from its module.
   Some modules vendor subcomponents under a different license; rolling those up to
   the module root would attribute them wrongly.

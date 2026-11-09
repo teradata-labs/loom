@@ -129,6 +129,43 @@ func TestCollectPkgsUnionAcrossPlatforms(t *testing.T) {
 	}
 }
 
+// TestCollectPkgsVendoredThirdParty checks that own-module code vendored under
+// third_party/<name>/ is attributed to that directory's license, once for all
+// its packages, and that a vendored directory without a license is an error.
+// The rest of the own module stays excluded.
+func TestCollectPkgsVendoredThirdParty(t *testing.T) {
+	own := t.TempDir()
+	vend := filepath.Join(own, vendoredDir, "golua")
+	require.NoError(t, os.MkdirAll(filepath.Join(vend, "runtime"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(vend, "LICENSE"), []byte("Apache golua\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(own, vendoredDir, "nolicense"), 0o755))
+
+	t.Run("vendored packages are attributed to their directory", func(t *testing.T) {
+		seen := map[string]component{}
+		unlicensed := map[string]bool{}
+		require.NoError(t, collectPkgs([]pkgInfo{
+			pkg(ownModule+"/pkg/agent", ownModule, own),
+			pkg(ownModule+"/third_party/golua/runtime", ownModule, own),
+			pkg(ownModule+"/third_party/golua/lib/base", ownModule, own),
+		}, seen, unlicensed))
+		comps, err := finish(seen, unlicensed)
+		require.NoError(t, err)
+		require.Len(t, comps, 1, "one component per vendored directory; the own module stays excluded")
+		assert.Equal(t, ownModule+"/third_party/golua", comps[0].ImportPath)
+		assert.Equal(t, "vendored", comps[0].Version)
+		assert.Equal(t, "Apache golua", comps[0].License)
+	})
+
+	t.Run("vendored directory without a license is an error", func(t *testing.T) {
+		seen := map[string]component{}
+		unlicensed := map[string]bool{}
+		require.NoError(t, collectPkgs([]pkgInfo{pkg(ownModule+"/third_party/nolicense/x", ownModule, own)}, seen, unlicensed))
+		_, err := finish(seen, unlicensed)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), ownModule+"/third_party/nolicense")
+	})
+}
+
 // TestCollectPkgsCarriesLicenseAndNotice checks the verbatim license text and
 // NOTICE are attached to the component.
 func TestCollectPkgsCarriesLicenseAndNotice(t *testing.T) {
