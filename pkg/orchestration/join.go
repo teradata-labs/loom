@@ -192,11 +192,21 @@ func (j *joiner) run(ctx context.Context, results []*loomv1.AgentResult) (*joinO
 		}
 		rendered = j.render(tmpl, branches, withHeader)
 		inputTokens = j.counter.CountTokens(rendered)
-		j.orch.logger.Info("Join input bounded to budget",
-			zap.String("workflow_id", j.workflowID),
-			zap.String("overflow", overflow),
-			zap.Int("input_tokens", inputTokens),
-			zap.Int("budget_tokens", budget))
+		if inputTokens > budget {
+			// The share discount should make this unreachable; if a
+			// tokenizer quirk gets here, say so rather than hide it.
+			j.orch.logger.Warn("Join input still over budget after overflow handling; sending anyway",
+				zap.String("workflow_id", j.workflowID),
+				zap.String("overflow", overflow),
+				zap.Int("input_tokens", inputTokens),
+				zap.Int("budget_tokens", budget))
+		} else {
+			j.orch.logger.Info("Join input bounded to budget",
+				zap.String("workflow_id", j.workflowID),
+				zap.String("overflow", overflow),
+				zap.Int("input_tokens", inputTokens),
+				zap.Int("budget_tokens", budget))
+		}
 	}
 
 	var stored, truncated, reduced int
