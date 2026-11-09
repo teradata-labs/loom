@@ -27,6 +27,25 @@ import (
 	"github.com/teradata-labs/loom/pkg/types"
 )
 
+// assertParticipantRejectionLogged checks that exactly one Warn entry records
+// a tools-disabled rejection for the given operation and participant.
+func assertParticipantRejectionLogged(t *testing.T, logs *observer.ObservedLogs, operation, workflow, participant, role string) {
+	t.Helper()
+	var matched []observer.LoggedEntry
+	for _, entry := range logs.FilterMessage("Rejected workflow participant with tools disabled").All() {
+		if entry.ContextMap()["operation"] == operation {
+			matched = append(matched, entry)
+		}
+	}
+	require.Len(t, matched, 1, "%s must log its rejection once", operation)
+	entry := matched[0]
+	assert.Equal(t, zap.WarnLevel, entry.Level)
+	fields := entry.ContextMap()
+	assert.Equal(t, workflow, fields["workflow"])
+	assert.Equal(t, participant, fields["participant"])
+	assert.Equal(t, role, fields["role"])
+}
+
 // replyingLLM is a worker's brain that obeys the team block: when a message
 // arrives it answers by calling send_message back to the sender, because turn
 // text alone is delivered nowhere. It records the system prompt it was given so
@@ -356,6 +375,8 @@ func TestWovenWorkflow_RejectsToolsDisabledWorker(t *testing.T) {
 			})
 
 			srv := setupBroadcastTestServer(t, agents, registry)
+			core, logs := observer.New(zap.WarnLevel)
+			srv.logger = zap.New(core)
 			coordinatorID := tc.coordinator
 			if coordinatorID == "" {
 				coordinatorID = coordinatorAgent.GetID()
@@ -405,6 +426,11 @@ func TestWovenWorkflow_RejectsToolsDisabledWorker(t *testing.T) {
 			require.Error(t, streamErr, "StreamWeave must surface the incompatible workflow participant error")
 			require.ErrorIs(t, streamErr, ErrWorkflowParticipantToolsDisabled)
 			assert.Empty(t, stream.messages)
+
+			// Both rejections return before the tracer span starts, so each
+			// must leave one Warn line naming the workflow, participant and role.
+			assertParticipantRejectionLogged(t, logs, "Weave", "test-workflow", "test-workflow:worker", "worker")
+			assertParticipantRejectionLogged(t, logs, "StreamWeave", "test-workflow", "test-workflow:worker", "worker")
 
 			srv.workflowSubAgentsMu.RLock()
 			activeCount := len(srv.workflowSubAgents)

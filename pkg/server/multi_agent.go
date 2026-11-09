@@ -1137,6 +1137,7 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 	// Spawn workflow sub-agents if this is a workflow coordinator
 	if err := s.spawnWorkflowSubAgents(ctx, ag, agentID, sessionID); err != nil {
 		if errors.Is(err, ErrWorkflowParticipantToolsDisabled) {
+			logWorkflowParticipantRejected(s.logger, "Weave", err)
 			return nil, err
 		}
 		s.logger.Warn("Failed to spawn workflow sub-agents (workflow may run with limited functionality)",
@@ -1366,6 +1367,7 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 	// Spawn workflow sub-agents if this is a workflow coordinator
 	if err := s.spawnWorkflowSubAgents(stream.Context(), ag, resolvedAgentID, sessionID); err != nil {
 		if errors.Is(err, ErrWorkflowParticipantToolsDisabled) {
+			logWorkflowParticipantRejected(s.logger, "StreamWeave", err)
 			return err
 		}
 		s.logger.Warn("Failed to spawn workflow sub-agents (workflow may run with limited functionality)",
@@ -1603,6 +1605,22 @@ func (e *workflowParticipantToolsDisabledError) Unwrap() error {
 
 func (e *workflowParticipantToolsDisabledError) GRPCStatus() *status.Status {
 	return status.New(codes.FailedPrecondition, e.Error())
+}
+
+// logWorkflowParticipantRejected records a tools-disabled rejection at Warn.
+// The rejection returns before the operation's tracer span starts, so this
+// log line is the only server-side record of it.
+func logWorkflowParticipantRejected(logger *zap.Logger, operation string, err error) {
+	var policyErr *workflowParticipantToolsDisabledError
+	if logger == nil || !errors.As(err, &policyErr) {
+		return
+	}
+	logger.Warn("Rejected workflow participant with tools disabled",
+		zap.String("operation", operation),
+		zap.String("workflow", policyErr.workflowID),
+		zap.String("participant", policyErr.participantID),
+		zap.String("role", policyErr.role),
+		zap.Error(err))
 }
 
 // resolveWorkflowSubAgent resolves a workflow sub-agent by its workflow-prefixed ID,

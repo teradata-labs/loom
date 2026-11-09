@@ -22,6 +22,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 func TestWovenWorkflow_EnabledReloadKeepsSpawnedWorkerAndTeamBlock(t *testing.T) {
@@ -284,10 +285,13 @@ func TestSpawn_DisabledToolsRequiresNoSubscriptions(t *testing.T) {
 			if subscribed {
 				req.AutoSubscribe = []string{"policy-events"}
 			}
+			core, logs := observer.New(zap.WarnLevel)
+			srv.logger = zap.New(core)
 			resp, err := srv.SpawnSubAgent(context.Background(), req)
 			if subscribed {
 				require.ErrorIs(t, err, ErrWorkflowParticipantToolsDisabled)
 				assert.Nil(t, resp)
+				assertParticipantRejectionLogged(t, logs, "SpawnSubAgent", "spawn-policy", "spawn-policy:helper", "worker")
 				after, listErr := srv.sessionStore.ListSessions(context.Background())
 				require.NoError(t, listErr)
 				assert.ElementsMatch(t, before, after, "rejection must happen before saving a child session")
@@ -295,6 +299,8 @@ func TestSpawn_DisabledToolsRequiresNoSubscriptions(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 				require.NotNil(t, resp)
+				assert.Zero(t, logs.FilterMessage("Rejected workflow participant with tools disabled").Len(),
+					"a one-shot spawn is allowed and must not log a rejection")
 				assert.Equal(t, "completed", resp.Status)
 				assert.Equal(t, "done", resp.Output)
 			}
