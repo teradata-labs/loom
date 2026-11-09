@@ -831,15 +831,18 @@ HTTP gateway translates it for `POST /v1/weave`:
 |------|--------------------|------|--------|
 | `Canceled` (1) | 499 | The caller canceled the request | Caller's choice |
 | `DeadlineExceeded` (4) | 504 | The request deadline elapsed | Yes |
-| `ResourceExhausted` (8) | 429 | The LLM provider throttled the call and looms' own retries (rate limiter, agent retry loop) did not get through; also a full admission-door queue | Yes, with backoff |
+| `ResourceExhausted` (8) | 429 | The LLM provider throttled the call and looms' own retries (rate limiter, then the agent's throttle patience for up to 10 minutes) did not get through; also a full admission-door queue | Yes, with backoff |
 | `Unavailable` (14) | 503 | The LLM provider had a temporary server fault or timeout (HTTP 408/500/502/503/504/529, Bedrock `InternalServerException`/`ServiceUnavailableException`/`ModelNotReadyException`/`ModelTimeoutException`, an `overloaded_error` from the Anthropic SDK) past looms' retries, or its response stream stalled | Yes, with backoff |
 | `Internal` (13) | 500 | Any other agent failure, including a deterministic provider refusal (validation error, auth failure, other 4xx) | Not without changing the request |
 
 A provider 5xx maps to `Unavailable` only when the provider client typed the
-status: both Bedrock clients do (AWS SDK and Anthropic SDK errors carry the
-status). The direct HTTP clients (Anthropic API, OpenAI, Azure OpenAI, Gemini,
-Ollama) report a 5xx as a plain `API error (status N)` message, which still
-maps to `Internal`. A throttle maps to `ResourceExhausted` for every provider.
+status. Both Bedrock clients do (AWS SDK and Anthropic SDK errors carry the
+status), and so do the direct HTTP clients (Anthropic API, OpenAI, Azure
+OpenAI, Gemini, Ollama) for a 5xx that arrives before any content: they return
+an `llm.TransientError`, and after looms' retries give up the
+`llm.RetriesExhaustedError` still unwraps to it. A 5xx after content has
+started streaming is not typed and maps to `Internal`. A throttle maps to
+`ResourceExhausted` for every provider.
 
 **Error message**: the FAILED event's error, prefixed by the classification
 (`LLM provider throttled the request: ...`, `LLM provider temporarily
@@ -1160,7 +1163,7 @@ message SessionStatusUpdate {
 Sent when a new message is added to the session conversation (e.g., from a sub-agent response, tool result, or user input).
 
 **Fields**:
-- `role`: Message role - `user`, `assistant`, `tool`, `skill_body`, `hygiene_injection`, `empty_response_retry`, or `synthesis_prompt` (only these roles are sent). `skill_body`, `hygiene_injection`, `empty_response_retry`, and `synthesis_prompt` are synthetic, agent-authored roles — a loaded skill's instructions, a hygiene-retry nudge, an empty-response retry nudge, and a forced-final-answer synthesis prompt, respectively — persisted separately from the literal end user; see `pkg/agent/llm_retry.go`'s `IsSyntheticWireUserRole`.
+- `role`: Message role - `user`, `assistant`, `tool`, `skill_body`, `hygiene_injection`, `empty_response_retry`, `synthesis_prompt`, or `lesson_reminder` (only these roles are sent). `skill_body`, `hygiene_injection`, `empty_response_retry`, `synthesis_prompt`, and `lesson_reminder` are synthetic, agent-authored roles — a loaded skill's instructions, a hygiene-retry nudge, an empty-response retry nudge, a forced-final-answer synthesis prompt, and an error-time graph-memory lesson, respectively — persisted separately from the literal end user; see `pkg/agent/llm_retry.go`'s `IsSyntheticWireUserRole`.
 - `content`: The message text
 - `message_timestamp`: When the message was created (Unix timestamp)
 - `tool_name`: 🚧 Defined in proto but not yet populated by the server implementation

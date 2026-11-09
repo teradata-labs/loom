@@ -101,7 +101,11 @@ func startOutageServer(t *testing.T, providerErr error) loomv1.LoomServiceClient
 	cfg := agent.DefaultConfig()
 	cfg.Retry.InitialDelay = time.Millisecond
 	cfg.Retry.MaxDelay = 2 * time.Millisecond
-	ag := agent.NewAgent(nopBackend{}, &outageProvider{err: providerErr}, agent.WithConfig(cfg))
+	// A throttle is waited out under the agent's throttle budget before it
+	// surfaces; spend that budget in virtual time so the throttle case ends
+	// in milliseconds with the same error.
+	ag := agent.NewAgent(nopBackend{}, &outageProvider{err: providerErr}, agent.WithConfig(cfg),
+		agent.WithInstantThrottleWaitsForTesting())
 	srv := server.NewMultiAgentServer(map[string]*agent.Agent{"lme": ag}, nil)
 
 	lis := bufconn.Listen(1 << 20)
