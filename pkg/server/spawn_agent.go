@@ -92,6 +92,12 @@ func (s *MultiAgentServer) SpawnSubAgent(ctx context.Context, req *builtin.Spawn
 		return nil, fmt.Errorf("failed to load agent %s: %w", req.AgentID, err)
 	}
 
+	if len(req.AutoSubscribe) > 0 {
+		if err := s.validateWorkflowParticipant(namespace, "worker", subAgentID, ag, req.AgentID); err != nil {
+			return nil, err
+		}
+	}
+
 	logger.Debug("Loaded fresh agent instance for spawned agent",
 		zap.String("agent_id", req.AgentID),
 		zap.String("sub_agent_id", subAgentID))

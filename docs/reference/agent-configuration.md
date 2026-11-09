@@ -432,6 +432,14 @@ The legacy `agent:` form uses `agent.tools.disabled: true` with the same
 behavior. This is a different setting from the server-wide `tools.none`, which
 applies to all agents and keeps the tools each agent's YAML declares.
 
+**Workflow limitation**: workflows that require tool-based participant
+communication (`send_message`, `publish`) cannot use a `tools.disabled: true`
+agent as a coordinator or worker. Because `tools.disabled` suppresses all tool
+registration (including workflow-injected communication tools), workflow startup
+(`Weave`, `StreamWeave`, and workflow sub-agent auto-spawn) rejects the
+incompatible participant and returns an error before starting workflow workers
+or acknowledging queued messages.
+
 #### manage_skills
 
 **Registered when**: `spec.config.skills.enabled` is true and a skill library is wired.

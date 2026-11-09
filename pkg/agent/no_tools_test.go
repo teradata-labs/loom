@@ -212,3 +212,23 @@ func TestWithoutToolsOmitsToolPromptSupplements(t *testing.T) {
 	assert.Empty(t, disabled.taskBoardPromptSupplement())
 	assert.Empty(t, disabled.skillMenuPromptSupplement())
 }
+
+func TestAgent_ToolsDisabledAccessor(t *testing.T) {
+	var nilAgent *Agent
+	assert.False(t, nilAgent.ToolsDisabled(), "nil agent must report ToolsDisabled=false")
+
+	ordinary := NewAgent(nil, nil)
+	assert.False(t, ordinary.ToolsDisabled(), "ordinary agent must report ToolsDisabled=false")
+
+	emptyToolList := NewAgent(nil, nil,
+		WithoutBuiltinTool("query_tool_result"),
+		WithoutBuiltinTool("recall"),
+		WithoutBuiltinTool("load_pattern"),
+	)
+	require.Zero(t, emptyToolList.ToolCount(), "ordinary agent with built-in tools suppressed has zero registered tools")
+	assert.False(t, emptyToolList.ToolsDisabled(), "empty tool list on an ordinary agent must not be misclassified as WithoutTools()")
+
+	disabled := NewAgent(nil, nil, WithoutTools())
+	assert.True(t, disabled.ToolsDisabled(), "agent constructed with WithoutTools() must report ToolsDisabled=true")
+	assert.Zero(t, disabled.ToolCount())
+}

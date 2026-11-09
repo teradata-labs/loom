@@ -654,6 +654,16 @@ func WithoutTools() Option {
 	}
 }
 
+// ToolsDisabled reports whether the agent was constructed with WithoutTools().
+// This reflects the immutable per-agent zero-tool policy, not whether the
+// agent's tool registry currently happens to be empty.
+func (a *Agent) ToolsDisabled() bool {
+	if a == nil {
+		return false
+	}
+	return a.disableToolSurface
+}
+
 // isBuiltinToolSuppressed reports whether the named tool has been suppressed
 // via WithoutBuiltinTool. Read-only; safe under the agent's normal mutex
 // discipline because the suppression map is set at construction and not
