@@ -44,6 +44,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
 	"github.com/teradata-labs/loom/pkg/llm/azureopenai"
 	"github.com/teradata-labs/loom/pkg/llm/bedrock"
+	"github.com/teradata-labs/loom/pkg/llm/bedrockmantle"
 	"github.com/teradata-labs/loom/pkg/llm/factory"
 	"github.com/teradata-labs/loom/pkg/llm/gemini"
 	"github.com/teradata-labs/loom/pkg/llm/huggingface"
@@ -525,8 +526,20 @@ func inheritCredentials(dst, src LLMConfig) LLMConfig {
 	if dst.BedrockProfile == "" {
 		dst.BedrockProfile = src.BedrockProfile
 	}
+	// An entry that sets its own bedrock_region keeps it for bedrock-mantle
+	// too: the main LLM's bedrock_mantle_region is inherited only when the
+	// entry sets neither region, so an explicit entry setting always wins.
+	if dst.BedrockMantleRegion == "" && dst.BedrockRegion == "" {
+		dst.BedrockMantleRegion = src.BedrockMantleRegion
+	}
 	if dst.BedrockRegion == "" {
 		dst.BedrockRegion = src.BedrockRegion
+	}
+	if dst.BedrockMantleEndpoint == "" {
+		dst.BedrockMantleEndpoint = src.BedrockMantleEndpoint
+	}
+	if dst.BedrockMantleAPIKey == "" {
+		dst.BedrockMantleAPIKey = src.BedrockMantleAPIKey
 	}
 	if dst.OllamaEndpoint == "" {
 		dst.OllamaEndpoint = src.OllamaEndpoint
@@ -569,6 +582,62 @@ func resolveBedrockCredentials(cfg LLMConfig) (accessKeyID, secretAccessKey, ses
 	return loomconfig.ExpandEnvPlaceholders(cfg.BedrockAccessKeyID),
 		loomconfig.ExpandEnvPlaceholders(cfg.BedrockSecretAccessKey),
 		loomconfig.ExpandEnvPlaceholders(cfg.BedrockSessionToken)
+}
+
+// resolveBedrockMantleAPIKey returns the Bedrock API key for the bedrock-mantle
+// provider: llm.bedrock_mantle_api_key with ${ENV_VAR} placeholders expanded,
+// or BEDROCK_MANTLE_API_KEY when the config field is empty. An empty result
+// selects SigV4 signing from the AWS credential chain.
+func resolveBedrockMantleAPIKey(cfg LLMConfig) string {
+	if key := loomconfig.ExpandEnvPlaceholders(cfg.BedrockMantleAPIKey); key != "" {
+		return key
+	}
+	return os.Getenv("BEDROCK_MANTLE_API_KEY")
+}
+
+// withMantleEnvFallback applies the environment to a bedrock-mantle client
+// built for agent YAML under `looms serve`, as the agent registry does. The
+// region is llm.bedrock_mantle_region when the operator set it, else
+// BEDROCK_MANTLE_REGION, else AWS_REGION, else what mantleConfigFrom resolved
+// (llm.bedrock_region, which has a built-in default, so the environment must
+// be read before it). The endpoint is BEDROCK_MANTLE_ENDPOINT when
+// llm.bedrock_mantle_endpoint is empty. The API key already falls back to
+// BEDROCK_MANTLE_API_KEY in resolveBedrockMantleAPIKey.
+func withMantleEnvFallback(mcfg bedrockmantle.Config, cfg LLMConfig) bedrockmantle.Config {
+	if cfg.BedrockMantleRegion == "" {
+		if region := os.Getenv("BEDROCK_MANTLE_REGION"); region != "" {
+			mcfg.Region = region
+		} else if region := os.Getenv("AWS_REGION"); region != "" {
+			mcfg.Region = region
+		}
+	}
+	if mcfg.Endpoint == "" {
+		mcfg.Endpoint = os.Getenv("BEDROCK_MANTLE_ENDPOINT")
+	}
+	return mcfg
+}
+
+// mantleConfigFrom builds the bedrockmantle.Config shared by every looms path
+// that constructs a bedrock-mantle client: the region (llm.bedrock_mantle_region,
+// else llm.bedrock_region), the endpoint with ${ENV_VAR} placeholders expanded,
+// the API key from resolveBedrockMantleAPIKey, the Bedrock SigV4 credentials
+// and profile, and the model, max tokens and temperature from cfg. Callers set
+// the fields their path overrides (Model, MaxTokens, Temperature, Timeout,
+// RateLimiterConfig).
+func mantleConfigFrom(cfg LLMConfig) bedrockmantle.Config {
+	accessKeyID, secretAccessKey, sessionToken := resolveBedrockCredentials(cfg)
+	return bedrockmantle.Config{
+		Region:          mantleRegion(cfg),
+		Endpoint:        loomconfig.ExpandEnvPlaceholders(cfg.BedrockMantleEndpoint),
+		APIKey:          resolveBedrockMantleAPIKey(cfg),
+		AccessKeyID:     accessKeyID,
+		SecretAccessKey: secretAccessKey,
+		SessionToken:    sessionToken,
+		Profile:         cfg.BedrockProfile,
+		Model:           cfg.BedrockMantleModel,
+		MaxTokens:       cfg.MaxTokens,
+		Temperature:     cfg.Temperature,
+	}
 }
 
 func buildProviderPool(cfg *Config, _ *factory.ProviderFactory, logger *zap.Logger) (map[string]agent.LLMProvider, error) {
@@ -650,6 +719,18 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		})
 		if err != nil {
 			return nil, fmt.Errorf("bedrock: %w", err)
+		}
+		return client, nil
+
+	case bedrockmantle.ProviderName:
+		// Mantle shares the Bedrock SigV4 credential fields; a Bedrock API key
+		// (bearer) is opt-in. The region falls back to llm.bedrock_region.
+		mcfg := mantleConfigFrom(cfg)
+		mcfg.Timeout = time.Duration(cfg.Timeout) * time.Second
+		mcfg.RateLimiterConfig = rlCfg
+		client, err := bedrockmantle.NewClientForModel(mcfg)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", bedrockmantle.ProviderName, err)
 		}
 		return client, nil
 
@@ -818,6 +899,11 @@ func getDefaultModelForProvider(cfg *Config) string {
 			return cfg.LLM.BedrockModelID
 		}
 		return "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+	case bedrockmantle.ProviderName:
+		if cfg.LLM.BedrockMantleModel != "" {
+			return cfg.LLM.BedrockMantleModel
+		}
+		return bedrockmantle.DefaultModel
 	case "ollama":
 		if cfg.LLM.OllamaModel != "" {
 			return cfg.LLM.OllamaModel
@@ -922,6 +1008,21 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			Temperature:       temperature,
 			RateLimiterConfig: rlCfg,
 		})
+
+	case bedrockmantle.ProviderName:
+		mcfg := withMantleEnvFallback(mantleConfigFrom(serverConfig.LLM), serverConfig.LLM)
+		if protoConfig.Model != "" {
+			mcfg.Model = protoConfig.Model
+		}
+		mcfg.MaxTokens = maxTokens
+		mcfg.Temperature = temperature
+		mcfg.Timeout = timeout
+		mcfg.RateLimiterConfig = rlCfg
+		client, err := bedrockmantle.NewClientForModel(mcfg)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", bedrockmantle.ProviderName, err)
+		}
+		return client, nil
 
 	case "ollama":
 		model := protoConfig.Model
@@ -1074,7 +1175,46 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		}), nil
 
 	default:
-		return nil, fmt.Errorf("unsupported LLM provider: %s (supported: anthropic, bedrock, ollama, openai, azure-openai, mistral, gemini, huggingface, litellm)", protoConfig.Provider)
+		return nil, fmt.Errorf("unsupported LLM provider: %s (supported: anthropic, bedrock, bedrock-mantle, ollama, openai, azure-openai, mistral, gemini, huggingface, litellm)", protoConfig.Provider)
+	}
+}
+
+// customLLMFallbackAllowed reports whether `looms serve` may run an agent role
+// (primary, compressor_llm or classifier_llm) on a substitute LLM when the
+// provider that the agent YAML declares for that role cannot be built. The
+// startup agent loop calls it before it falls back. It returns false for
+// bedrock-mantle: an operator selects Mantle to keep model traffic in their
+// AWS account, so a silent move to another provider is not acceptable. The
+// loop skips such an agent and logs an error instead. Other providers keep the
+// existing fall-back-to-default behaviour.
+func customLLMFallbackAllowed(provider string) bool {
+	switch provider {
+	case "bedrock-mantle":
+		return false
+	default:
+		return true
+	}
+}
+
+// skipAgentForUnbuildableLLM is called by the `looms serve` startup agent loop
+// when customLLMFallbackAllowed refuses a fallback. It logs the refusal at error
+// level, so the operator sees that the agent did not start, and closes the
+// agent's execution backend, which the loop opened before it built the LLMs.
+// The caller then skips the agent.
+func skipAgentForUnbuildableLLM(logger *zap.Logger, agentName, role string, llmCfg *loomv1.LLMConfig, backend fabric.ExecutionBackend, buildErr error) {
+	logger.Error("    Skipping agent: its LLM provider cannot be built and the provider does not allow a fallback LLM",
+		zap.String("name", agentName),
+		zap.String("role", role),
+		zap.String("provider", llmCfg.GetProvider()),
+		zap.String("model", llmCfg.GetModel()),
+		zap.Error(buildErr))
+	if backend == nil {
+		return
+	}
+	if err := backend.Close(); err != nil {
+		logger.Warn("    Failed to close backend of skipped agent",
+			zap.String("name", agentName),
+			zap.Error(err))
 	}
 }
 
@@ -1734,6 +1874,12 @@ func runServe(cmd *cobra.Command, args []string) {
 		BedrockProfile:         config.LLM.BedrockProfile,
 		BedrockModelID:         config.LLM.BedrockModelID,
 
+		// Bedrock Mantle (SigV4 credentials are the Bedrock fields above)
+		BedrockMantleRegion:   mantleRegion(config.LLM),
+		BedrockMantleEndpoint: config.LLM.BedrockMantleEndpoint,
+		BedrockMantleAPIKey:   config.LLM.BedrockMantleAPIKey,
+		BedrockMantleModel:    config.LLM.BedrockMantleModel,
+
 		// Ollama
 		OllamaEndpoint: config.LLM.OllamaEndpoint,
 		OllamaModel:    config.LLM.OllamaModel,
@@ -1813,7 +1959,7 @@ func runServe(cmd *cobra.Command, args []string) {
 	luaRT, err := newLuaRuntime(config.Tools.Lua, luaGuards{
 		YOLO:         config.Tools.Permissions.YOLO,
 		HookBindings: len(config.Tools.Hooks.Bindings),
-	}, luasandbox.ProcessMemoryLimit(), logger)
+	}, luasandbox.ProcessMemoryLimit(), loomconfig.GetLoomDataDir(), logger)
 	if err != nil {
 		logger.Fatal("Invalid tools.lua configuration", zap.Error(err))
 	}
@@ -1821,7 +1967,12 @@ func runServe(cmd *cobra.Command, args []string) {
 		logger.Info("Lua scripts enabled (run_lua)",
 			zap.Int("run_slots", luaRT.slots),
 			zap.Int("runs_per_agent", luaRT.perKey),
-			zap.Uint64("memory_bytes_per_run", luaRT.runMem))
+			zap.Uint64("memory_bytes_per_run", luaRT.runMem),
+			zap.Bool("save_enabled", luaRT.scripts.SaveEnabled),
+			zap.Bool("publish_as_tool_enabled", luaRT.scripts.PublishEnabled))
+		for _, loadErr := range luaRT.store.LoadErrors() {
+			logger.Warn("Skipped a saved Lua script that could not be loaded", zap.Error(loadErr))
+		}
 	}
 
 	// Initialize empty agents map - all agents loaded from $LOOM_DATA_DIR/agents/ via registry below
@@ -1858,6 +2009,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		PermissionChecker: permissionChecker,
 		AdmissionChain:    admissionChain,
 		RunLuaTool:        luaRT.registryOptions(),
+		LuaScripts:        luaRT.scriptsRegistryOptions(),
 		IdentityResolver:  postgres.UserIDFromContext,
 		EventLogStore:     executionLog,
 	})
@@ -2047,6 +2199,10 @@ func runServe(cmd *cobra.Command, args []string) {
 						zap.String("provider", cfg.Llm.Provider),
 						zap.String("model", cfg.Llm.Model))
 					customLLM, err := createLLMProviderFromProtoConfig(cfg.Llm, config, logger)
+					if err != nil && !customLLMFallbackAllowed(cfg.Llm.Provider) {
+						skipAgentForUnbuildableLLM(logger, cfg.Name, "llm", cfg.Llm, backend, err)
+						continue
+					}
 					if err != nil {
 						logger.Warn("    Failed to create custom LLM provider, using server default",
 							zap.Error(err))
@@ -2073,6 +2229,10 @@ func runServe(cmd *cobra.Command, args []string) {
 				var staticClassifierLLM agent.LLMProvider
 				if cfg.CompressorLlm != nil && cfg.CompressorLlm.Provider != "" {
 					compLLM, err := createLLMProviderFromProtoConfig(cfg.CompressorLlm, config, logger)
+					if err != nil && !customLLMFallbackAllowed(cfg.CompressorLlm.Provider) {
+						skipAgentForUnbuildableLLM(logger, cfg.Name, "compressor_llm", cfg.CompressorLlm, backend, err)
+						continue
+					}
 					if err != nil {
 						logger.Warn("    Failed to create compressor LLM, extractor will use primary",
 							zap.Error(err),
@@ -2090,6 +2250,10 @@ func runServe(cmd *cobra.Command, args []string) {
 				}
 				if cfg.ClassifierLlm != nil && cfg.ClassifierLlm.Provider != "" {
 					classLLM, err := createLLMProviderFromProtoConfig(cfg.ClassifierLlm, config, logger)
+					if err != nil && !customLLMFallbackAllowed(cfg.ClassifierLlm.Provider) {
+						skipAgentForUnbuildableLLM(logger, cfg.Name, "classifier_llm", cfg.ClassifierLlm, backend, err)
+						continue
+					}
 					if err != nil {
 						logger.Warn("    Failed to create classifier LLM, router will use primary",
 							zap.Error(err),
@@ -2690,6 +2854,12 @@ func runServe(cmd *cobra.Command, args []string) {
 	if uiRegistry.Count() > 0 {
 		loomService.SetAppProvider(uiRegistry)
 		logger.Info("UI apps registered for gRPC", zap.Int("count", uiRegistry.Count()))
+	}
+
+	// Saved Lua scripts over RPC (ListLuaScripts/GetLuaScript/SaveLuaScript/
+	// DeleteLuaScript); left unset, they return FailedPrecondition.
+	if luaRT != nil {
+		loomService.SetLuaScriptStore(luaRT.store)
 	}
 
 	// Wire up the UI app compiler for dynamic app creation (CreateUIApp/UpdateUIApp RPCs)

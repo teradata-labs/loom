@@ -368,7 +368,7 @@ func TestValidateAgentConfig(t *testing.T) {
 
 func TestValidateAgentConfig_AcceptsEverySupportedLLMProvider(t *testing.T) {
 	providers := []string{
-		"anthropic", "bedrock", "litellm", "ollama", "openai",
+		"anthropic", "bedrock", "bedrock-mantle", "litellm", "ollama", "openai",
 		"azure-openai", "azureopenai", "mistral", "gemini", "huggingface",
 	}
 
