@@ -410,7 +410,7 @@ Under `spec.memory` (k8s-style) or `agent.memory` (legacy).
 | `path` | `string` | `""` | SQLite database file path |
 | `dsn` | `string` | `""` | PostgreSQL connection string |
 | `max_history` | `int` | `50` | Max conversation messages to retain |
-| `shared_memory_threshold_bytes` | `int64` | `16384` (16 KiB) | One byte threshold, three roles: arrival bound (a tool result strictly over it enters as its first bytes plus a tail), stored-row bound, and retrieval page bound — plus the tool executor's large-parameter offload. `>0` sets the bound (the compile/persist roles floor it at 256 bytes); `-1` keeps the 16 KiB default; `0` in YAML is indistinguishable from unset. `0` through the Go API `SetSharedMemoryThreshold` makes the executor store every tool parameter by reference and leaves the compile-time bound at its default. |
+| `shared_memory_threshold_bytes` | `int64` | `16384` (16 KiB) | One byte threshold, three roles: arrival bound (a tool result strictly over it enters as its first bytes plus a tail), stored-row bound, and retrieval page bound — plus the tool executor's large-parameter offload. `>0` sets the bound (the arrival and stored-row bounds floor it at 256 bytes); `-1` keeps the 16 KiB default; `0` in YAML is indistinguishable from unset. `0` through the Go API `SetSharedMemoryThreshold` makes the executor store every tool parameter by reference and leaves the arrival bound at its default. |
 | `max_tool_results` | `int` | `5` | Max tool results kept in conversation kernel |
 | `memory_compression` | object | optional | See [Memory Compression](#memory-compression-configuration) |
 | `graph_memory` | object | optional | See [Graph Memory](#graph-memory-configuration) |

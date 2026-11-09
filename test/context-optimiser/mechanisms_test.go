@@ -24,16 +24,16 @@ func drive(t *testing.T, r *rig, sid string, user string, resp ...scriptedTurn) 
 	return err
 }
 
-// TestMech_ThresholdRule — §5.2/§5.5: a result strictly OVER the threshold is an
-// offload stub; a result exactly AT the threshold renders whole (a page must
-// never stub itself).
+// TestMech_ThresholdRule — §5.2/§5.5: a result strictly OVER the threshold is
+// bounded at arrival, its first bytes and a tail; a result exactly AT the
+// threshold renders whole.
 func TestMech_ThresholdRule(t *testing.T) {
 	requireGate(t)
 	const threshold = 16384
 	r := newRig(t, routeOutDir(t, "threshold"), nil, 200000, 8000, threshold)
 	sid := "threshold"
 
-	// at threshold → whole; over threshold → offload stub. Same turn.
+	// at threshold → whole; over threshold → bounded. Same turn.
 	if err := drive(t, r, sid, "two scans",
 		callTools(emit("at", threshold, "string"), emit("over", threshold+50, "string")),
 		sayText("done")); err != nil {
@@ -279,7 +279,7 @@ func TestMech_OrphanSyntheticResult(t *testing.T) {
 // lastStable breakpoint, every compile marks the last markable message (the
 // till-NOW breakpoint), so the full context is cache-written each call. The
 // marker is only worth its write because the rendered context is append-only
-// within a turn — offload stubs render deterministically — so each call's
+// within a turn — a bounded row renders the same bytes every time — so each call's
 // context is a byte prefix of the next call's and the tip write is read back.
 // Total markers must stay within Anthropic's budget of 4.
 func TestMech_TillNowMarker(t *testing.T) {

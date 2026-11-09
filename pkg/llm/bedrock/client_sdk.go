@@ -390,8 +390,9 @@ func (c *SDKClient) outputConfig(ctx context.Context) anthropic.OutputConfigPara
 }
 
 // effort is the effort a call is made at: on an adaptive model the effort
-// sent, or the API's default, high, when none is; on an older model the
-// thinking level whose budget was sent, or none with thinking off.
+// sent, or empty when none was (the model's own default then applies); on an
+// older model the thinking level whose budget was sent, or none with thinking
+// off.
 func (c *SDKClient) effort() string {
 	if llm.IsAdaptiveThinkingModel(c.modelID) {
 		// The effort sent, or empty when none was: the API then applies the
@@ -701,9 +702,9 @@ func (c *SDKClient) calculateCost(inputTokens, outputTokens, cacheReadTokens, ca
 		inputPricePerMillion = 5.0
 		outputPricePerMillion = 25.0
 	case strings.Contains(c.modelID, "claude-sonnet-5"):
-		// Claude Sonnet 5: $3 per 1M input, $15 per 1M output
-		inputPricePerMillion = 3.0
-		outputPricePerMillion = 15.0
+		// Claude Sonnet 5: $2 per 1M input, $10 per 1M output
+		inputPricePerMillion = 2.0
+		outputPricePerMillion = 10.0
 	case strings.Contains(c.modelID, "claude-opus-4-1"):
 		// Claude Opus 4.1: $15 per 1M input, $75 per 1M output
 		inputPricePerMillion = 15.0

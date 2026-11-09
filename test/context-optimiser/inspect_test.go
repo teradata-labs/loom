@@ -49,8 +49,8 @@ func TestInspect_RenderCases(t *testing.T) {
 		t.Fatalf("turn 2: %v", err)
 	}
 
-	// Turn 3 — a LARGE tool result (> threshold), current turn: must render as
-	// the offload stub with message_id, payload held in memory this turn.
+	// Turn 3 — a LARGE tool result (> threshold), current turn: enters bounded,
+	// its first bytes and a tail naming the tool_use_id.
 	r.llm.turns = append(r.llm.turns,
 		callTools(emit("big", 40000, "string")),
 		sayText("Large result loaded."))

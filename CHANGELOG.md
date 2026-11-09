@@ -44,7 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 #### LLM transport
-- **Bedrock sends a tool schema with no `type` as `object`**, which the Converse API requires; a tool whose schema left it out was refused.
+- **The Bedrock Anthropic-SDK client sends a tool schema with no `type` as `object`**, as the raw-HTTP path already did; the top level of a tool's input is an object.
 - **Streaming calls are retried while no text has reached the client.** The streaming path bypassed retry ("streaming already handles errors" — it did not), so one transient provider failure killed the conversation. A stream that fails before its first token now runs under `Config.Retry` like a plain call; one that fails after its text went out is not re-sent. Context-too-long and 400/401/403 are never retried, and a throttled call the provider's rate limiter already retried through its budget is not sent again (`llm.ErrThrottleRetriesExhausted`), so the two retries do not multiply.
 
 #### Token counting: the encoding ships in the binary

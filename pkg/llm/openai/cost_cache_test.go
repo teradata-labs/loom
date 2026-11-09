@@ -111,10 +111,11 @@ func TestCalculateCost_CacheMultipliersFollowTheRateCard(t *testing.T) {
 	})
 }
 
-// OpenAI's cached-input discount is generational: 90% off from gpt-5/o-series
-// onward, 50% off on gpt-4. Since agentic runs read cache for ~90% of all input,
-// pricing a gpt-5 model at the gpt-4 tier overstates a run roughly four-fold —
-// enough to invert a cheaper-model comparison.
+// OpenAI's cached-input discount differs by model: the gpt-5 family bills a
+// cached token at 0.10x, o3, o4-mini and gpt-4.1 at 0.25x, o3-mini and gpt-4o
+// at 0.5x. Since agentic runs read cache for ~90% of all input, pricing a gpt-5
+// model at the gpt-4o tier overstates a run roughly four-fold — enough to
+// invert a cheaper-model comparison.
 func TestCalculateCost_GPT5FamilyGetsNinetyPercentCacheDiscount(t *testing.T) {
 	const (
 		promptTokens = 100_000 // includes the cached bucket below

@@ -39,7 +39,8 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 	return map[string][]*loomv1.ModelInfo{
 		// ── Anthropic ──────────────────────────────────────────────────────────────
 		// Verified against https://platform.claude.com/docs/en/docs/about-claude/models/overview
-		// on 2026-04-22. Deprecated Sonnet 4 / Opus 4 (20250514) intentionally omitted.
+		// on 2026-04-22; the Claude 5 entries against the pricing page on 2026-11-07.
+		// Deprecated Sonnet 4 / Opus 4 (20250514) intentionally omitted.
 		"anthropic": {
 			{
 				// Claude Opus 5 and Sonnet 5: rates from
@@ -764,13 +765,14 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 		// ShowInDropdown=false — Bedrock is endpoint-configured
 		// via deployment settings, not selected from a user-facing model picker.
 		// Both us.* (regional) and global.* (dynamic routing) forms are listed where
-		// applicable so ProviderFactory.normalizeModelID only needs to strip prefixes.
+		// applicable: lookup is an exact match on the full id, nothing strips the prefix.
 		"bedrock": {
 			// Non-Anthropic families served through Converse. Rates are the
 			// us-west-2 on-demand rates of the AWS Price List,
 			// https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonBedrock/current/us-west-2/index.json;
-			// none of them offer prompt caching on Bedrock, so cache lanes stay
-			// zero and the whole prompt volume prices as plain input.
+			// these entries carry no cache multipliers of their own; cache tokens
+			// Converse reports for them, if any, price at the Anthropic multipliers
+			// in calculateCost.
 			{
 				Id:                  "zai.glm-5",
 				Name:                "GLM-5 (Bedrock)",

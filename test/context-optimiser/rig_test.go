@@ -16,8 +16,8 @@
 // and captures the exact context handed to the provider at every call, so the
 // resulting stages can be read against what the context OUGHT to be.
 //
-// The routes assert the relief machinery's behaviour — fold, offload,
-// eviction, the cache-marker budget, skill deactivation — and run in CI. Each
+// The routes assert the relief machinery's behaviour — the arrival bound, the
+// fold, the cache-marker budget, skill deactivation — and run in CI. Each
 // dispatched context is also written to LOOM_DEBUG_DIR so a failing route can
 // be read stage by stage.
 //

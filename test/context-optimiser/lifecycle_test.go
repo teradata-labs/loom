@@ -5,12 +5,12 @@
 // step and checked against the HLD. Relief is driven by injecting the provider
 // refusal (refuse); fold's summary is deterministic (scripted compressor).
 //
-// TWO relief moments, because eviction and fold are sequential relief steps and
-// fold consumes eviction's output — one refusal cannot show both:
-//   - moment 1 (few results, little conversation): eviction ALONE relieves, so
-//     evicted stubs are visible in the resend context.
-//   - moment 2 (much conversation, unevictable): eviction is insufficient, so
-//     fold fires and the summary is installed.
+// TWO relief moments, both folds, because a fold sheds what is settled at the
+// time and a later turn settles more:
+//   - moment 1 (a few large scans, little conversation): the fold sheds the
+//     settled scans and the summary row is in the resend context.
+//   - moment 2 (much conversation): a second fold, now over conversation, and
+//     the summary stands in for it.
 //
 //	LOOM_CONTEXT_OPTIMISER=1 go test -tags fts5 -run TestFullLifecycle ./test/context-optimiser/ -v
 //
@@ -32,8 +32,8 @@ func TestFullLifecycle(t *testing.T) {
 
 	const threshold = 16384
 	// budget 12k / reserved 2k → usable 10k, target 7.5k tokens (~22.5 KB by
-	// bytes/3). A few large results trip an injected refusal that eviction alone
-	// clears; later, ~24 KB of conversation forces fold.
+	// bytes/3). A few large results trip an injected refusal that a fold
+	// clears; later, ~24 KB of conversation forces a second fold.
 	out := routeOutDir(t, "lifecycle")
 	r := newRig(t, out, nil, 12000, 2000, threshold)
 	comp := &countingCompressor{summary: "SESSION STATE: grant audit in progress; decisions recorded."}
@@ -56,7 +56,7 @@ func TestFullLifecycle(t *testing.T) {
 		sayText("Loaded."))
 	// 2. small result → whole
 	step("Small scan.", callTools(emit("small", 300, "string")), sayText("noted"))
-	// 3. large result → offload stub (current turn)
+	// 3. large result → bounded at arrival (current turn)
 	step("Big scan.", callTools(emit("big1", 40000, "string")), sayText("loaded big1"))
 	// 4-5. two more large results
 	step("Another scan.", callTools(emit("big2", 40000, "string")), sayText("ok"))
@@ -116,8 +116,6 @@ func TestFullLifecycle(t *testing.T) {
 			}
 		}
 	}
-	// E. §4.5/§5.5 message_id is the DURABLE id — resolves to a real row.
-	assertOffloadIDsAreDurable(t, r, sid, stages[len(stages)-1])
 	// F. §8 reload parity: a twin rebuilt from the rows compiles identically.
 	live := compiledContext(t, r.liveSession(t, sid))
 	restored := compiledContext(t, r.restoredSession(t, sid, 12000, 2000, threshold))
@@ -162,40 +160,6 @@ func contextText(st stage) string {
 		b.WriteByte('\n')
 	}
 	return b.String()
-}
-
-func between(s, a, b string) string {
-	i := strings.Index(s, a)
-	if i < 0 {
-		return ""
-	}
-	s = s[i+len(a):]
-	j := strings.Index(s, b)
-	if j < 0 {
-		return ""
-	}
-	return s[:j]
-}
-
-func assertOffloadIDsAreDurable(t *testing.T, r *rig, sid string, st stage) {
-	t.Helper()
-	rows := durableMessages(t, r, sid)
-	for arrIdx, m := range st.Messages {
-		if !strings.Contains(m.Content, "held in memory this turn") {
-			continue
-		}
-		id := between(m.Content, "message_id=", ",")
-		found := false
-		for _, row := range rows {
-			if row.ID == id {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("E. offload stub message_id=%s (array index %d) resolves to no durable row — id is not the seq", id, arrIdx)
-		}
-	}
 }
 
 func writeStages(t *testing.T, out string, stages []stage) {

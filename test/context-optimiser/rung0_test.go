@@ -146,7 +146,8 @@ func TestRung0_FoldIsTheOnlyValve(t *testing.T) {
 
 // TestRung0_MultiTurnShedsThePast — settled turns carry the mass, the current
 // turn is small: relief must shed the settled turns and leave the current turn's
-// consumed rows whole. Here turns genuinely advance (three Chat() entries), so
+// consumed rows whole. Here turns genuinely advance (25 Chat() entries: 24
+// settled, one current), so
 // the ladder's recent-turn window is live rather than matching everything.
 func TestRung0_MultiTurnShedsThePast(t *testing.T) {
 	requireGate(t)
