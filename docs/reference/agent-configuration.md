@@ -197,6 +197,39 @@ Human-readable description of the agent.
 
 Arbitrary key-value pairs. Merged into the proto `metadata` map as strings (complex values are JSON-encoded).
 
+#### Workflow worker resolution
+
+**Status**: ✅ Implemented
+
+Registry-listed workers and auto-spawned workers use the same lookup order for a
+`workflow:role` address:
+
+1. The exact workflow-prefixed address.
+2. The exact configured base agent name, when supplied by workflow YAML spawning;
+   otherwise, the role after `:`.
+3. A live, registered non-coordinator whose `metadata.workflow` equals the requested
+   workflow and whose name contains the role as a hyphen-delimited segment. A
+   workflow-prefixed candidate must match both the workflow and the exact role;
+   `review:worker-helper` cannot stand in for `review:worker`.
+
+| Address | Loaded names | Resolution |
+|---|---|---|
+| `review:worker` | `review:worker`, `worker` | `review:worker` (exact address wins) |
+| `review:worker` | `worker` | `worker` (base-name fallback) |
+| `review:worker` | `domain-worker-agent`, with `metadata.workflow: review` | `domain-worker-agent` (metadata fallback) |
+
+Metadata fallback requires exactly one matching live agent. For example, `homeworker`
+and `workerish` do not match role `worker`; two matching names such as `alpha-worker`
+and `beta-worker` are ambiguous and produce `FailedPrecondition`, not an arbitrary
+selection. No live match produces `NotFound`. Coordinator-driven startup logs and
+skips unresolved workers; auto-spawning returns the resolution error. An empty
+workflow or role is not a valid auto-spawn address.
+
+Lookup does not instantiate missing agents or change which registry entries are
+admitted to a workflow. A running worker keeps the agent instance selected at
+spawn time for subsequent messages; later registrations affect future spawns, not
+the running worker's conversation.
+
 ---
 
 ### LLM Configuration
