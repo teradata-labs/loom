@@ -330,6 +330,11 @@ type Agent struct {
 	// Shares the context-dump switch; a no-op on the production path. See
 	// context_debug.go.
 	ctxDebug *contextDebug
+
+	// Time source of the throttle-patience budget and its waits (see
+	// throttlePatience in llm_retry.go). Nil means the real clock; tests set
+	// a fake so a 10-minute budget runs without real sleeps.
+	throttleClock throttleClock
 }
 
 // WorkflowCommunicationContext contains dynamic workflow communication info injected into prompts

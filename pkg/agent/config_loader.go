@@ -1502,20 +1502,21 @@ func ValidateAgentConfig(config *loomv1.AgentConfig) error {
 
 		// Validate provider is supported
 		validProviders := map[string]bool{
-			"anthropic":    true,
-			"bedrock":      true,
-			"litellm":      true,
-			"ollama":       true,
-			"openai":       true,
-			"azure-openai": true,
-			"azureopenai":  true,
-			"mistral":      true,
-			"gemini":       true,
-			"huggingface":  true,
+			"anthropic":      true,
+			"bedrock":        true,
+			"bedrock-mantle": true,
+			"litellm":        true,
+			"ollama":         true,
+			"openai":         true,
+			"azure-openai":   true,
+			"azureopenai":    true,
+			"mistral":        true,
+			"gemini":         true,
+			"huggingface":    true,
 		}
 		provider := strings.ToLower(config.Llm.Provider)
 		if !validProviders[provider] {
-			return fmt.Errorf("unsupported LLM provider: %s (must be one of: anthropic, bedrock, litellm, ollama, openai, azure-openai, mistral, gemini, huggingface)", config.Llm.Provider)
+			return fmt.Errorf("unsupported LLM provider: %s (must be one of: anthropic, bedrock, bedrock-mantle, litellm, ollama, openai, azure-openai, mistral, gemini, huggingface)", config.Llm.Provider)
 		}
 
 		// Validate temperature range
@@ -1570,6 +1571,7 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 	yaml.Agent.Name = config.Name
 	yaml.Agent.Description = config.Description
 	yaml.Agent.SystemPrompt = config.SystemPrompt
+	yaml.Agent.ROM = config.Rom
 	yaml.Agent.Metadata = convertMetadataToInterface(config.Metadata)
 
 	// Convert LLM config

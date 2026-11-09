@@ -107,7 +107,10 @@ func TestSwarmTieBreakDecision_NoneOfTheseFallsBackToJudge(t *testing.T) {
 	assert.Equal(t, 1, dec.CallCount(), "the live answer is recorded, not re-asked")
 	require.NotNil(t, res.Cost)
 	assert.Equal(t, int32(5), res.Cost.LlmCalls, "four votes + the judge; the judge used to be missing from the cost")
-	assert.InDelta(t, 0.001, res.Cost.AgentCostsUsd["judge"], 1e-9)
+	// Four votes and the judge at 0.001 each: the judge's own call is in the
+	// run total (auxUsage, run_usage.go), not in agent_costs_usd.
+	assert.NotContains(t, res.Cost.AgentCostsUsd, "judge")
+	assert.InDelta(t, 0.005, res.Cost.TotalCostUsd, 1e-9)
 
 	judge.WaitDecisionShadows()
 	rows, err := store.QueryShadow(context.Background(), decision.ShadowQuery{})

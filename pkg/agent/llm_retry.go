@@ -18,10 +18,12 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/llm/scheduler"
+	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	llmtypes "github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
@@ -203,22 +205,37 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 	progressCallback := ctx.ProgressCallback()
 	useStreaming := supportsStreaming && progressCallback != nil
 
-	// If using streaming, bypass retry logic (streaming already handles errors)
+	// Streaming skips the failure-retry loop below: chatWithStreaming returns
+	// any non-throttle error at once, and waits out throttles itself.
 	if useStreaming {
 		return a.chatWithStreaming(ctx, messages, tools, progressCallback)
 	}
 
 	// Non-streaming path with retry logic
-	// If retry is disabled, call LLM directly
+	// If retry is disabled, call LLM directly — but throttling still pauses
+	// rather than failing: disabling retry opts out of retrying FAILURES,
+	// not out of honoring provider flow control.
 	if !a.config.Retry.Enabled || a.config.Retry.MaxRetries == 0 {
-		return a.llm.Chat(a.providerCtx(ctx, messages), messages, tools)
+		patience := a.newThrottlePatience()
+		for {
+			patience.beginAttempt()
+			resp, err := a.llm.Chat(a.providerCtx(ctx, messages), messages, tools)
+			if err == nil || !isRetryableThrottle(err) {
+				return resp, err
+			}
+			if waitErr := a.absorbThrottle(ctx, &patience, err); waitErr != nil {
+				return nil, waitErr
+			}
+		}
 	}
 
 	var lastErr error
+	patience := a.newThrottlePatience()
 	delay := a.config.Retry.InitialDelay
 
 	for attempt := 0; attempt <= a.config.Retry.MaxRetries; attempt++ {
 		// Attempt LLM call
+		patience.beginAttempt()
 		response, err := a.llm.Chat(a.providerCtx(ctx, messages), messages, tools)
 		if err == nil {
 			// Success! Log if we had previous failures
@@ -231,6 +248,28 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 			return response, nil
 		}
 
+		// Throttling is flow control, not failure: it never consumes a retry
+		// attempt. Wait out the provider-stated window (or a patient default)
+		// and go again, bounded by the wall-clock patience budget and the
+		// conversation's own deadline. If the context has already ended, the
+		// wait returns at once with both errors.
+		//
+		// This check comes FIRST, before any check that makes an error final,
+		// so the rule is the same as on the retry-disabled and streaming
+		// paths: an error that is a throttle through any wrapping (a provider
+		// RateLimiter that ran out of its own retries returns an
+		// llm.RetriesExhaustedError that wraps the last 429) is waited out
+		// under the budget; anything else is not. A
+		// context-too-long refusal is never a throttle (isRetryableThrottle),
+		// so it falls through to the ErrContextTooLong check below.
+		if isRetryableThrottle(err) {
+			if waitErr := a.absorbThrottle(ctx, &patience, err); waitErr != nil {
+				return nil, waitErr
+			}
+			attempt--
+			continue
+		}
+
 		// A positively-identified context-too-long refusal is returned
 		// immediately, never retried (blueprint A5): relief, not retry, is the
 		// only response to it.
@@ -239,10 +278,17 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 		}
 
 		// The rate limiter already spent its whole MaxRetries budget on this
-		// error (throttling or a transient 5xx, with backoff and Retry-After
-		// honoured). Re-running that budget here would only multiply the wait —
-		// one retry budget, in one place.
+		// error, with backoff and Retry-After honoured. It is not a throttle
+		// (an exhausted throttle was waited out above), so it is a transient
+		// 5xx or another non-throttle cause. Re-running that budget here would
+		// only multiply the wait — one retry budget, in one place.
 		if llm.IsRetriesExhausted(err) {
+			return nil, err
+		}
+
+		// Deterministic 4xx client refusals (authentication, permission,
+		// invalid request, not found) will not succeed on retry.
+		if llm.IsDeterministicClientError(err) {
 			return nil, err
 		}
 
@@ -291,6 +337,220 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 
 	return nil, fmt.Errorf("llm call failed after %d attempts: %w",
 		a.config.Retry.MaxRetries+1, lastErr)
+}
+
+// throttlePatience paces re-invocation against provider throttling (429 and
+// kin). Waits honor the provider-stated retry-after when the error names one,
+// escalate 2s→60s otherwise, and give up only past a wall-clock budget — a
+// throttled conversation pauses, it does not die.
+//
+// The budget is WALL-CLOCK time since the start of the first provider
+// invocation of this LLM call that returned a throttle. It covers the
+// patience waits AND the time spent inside each re-invoked call, which
+// includes a provider RateLimiter's own retries and backoff. Before each wait
+// the agent checks elapsed + next wait against the budget, so the last
+// re-invoked call can still run after the budget is reached: the worst case
+// is the budget plus one invocation.
+//
+// The same rule holds on all three paths (retry-enabled non-streaming,
+// streaming, retry-disabled): an error that is a throttle through any
+// wrapping, including an llm.RetriesExhaustedError that wraps a throttle, is
+// waited out under the budget; any other error is not. So an exhausted 5xx
+// (an llm.RetriesExhaustedError that wraps an llm.TransientError) and a
+// context-too-long refusal (isRetryableThrottle) are never waited out.
+type throttlePatience struct {
+	clock throttleClock
+	delay time.Duration
+	// attemptStart is when the current provider invocation began.
+	attemptStart time.Time
+	// start is the attemptStart of the first invocation that returned a
+	// throttle; zero until then. The budget is measured from it.
+	start time.Time
+}
+
+const (
+	throttleInitialDelay = 2 * time.Second
+	throttleMaxDelay     = 60 * time.Second
+	// throttleBudget bounds the wall-clock time one LLM call can spend
+	// throttled — patience waits plus the re-invoked calls (and their
+	// RateLimiter retries) — so a caller without a deadline cannot park
+	// forever on a hard-down provider. It is measured from the start of the
+	// first throttled invocation and checked before each wait.
+	throttleBudget = 10 * time.Minute
+)
+
+// throttleClock is the time source of throttlePatience: Now for the budget,
+// After for the waits. Production uses realThrottleClock.
+type throttleClock interface {
+	Now() time.Time
+	After(d time.Duration) <-chan time.Time
+}
+
+// realThrottleClock is the wall clock.
+type realThrottleClock struct{}
+
+func (realThrottleClock) Now() time.Time                         { return time.Now() }
+func (realThrottleClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
+
+// virtualThrottleClock is a throttleClock that never sleeps: After moves the
+// clock forward by the wait and fires at once. It does not follow the wall
+// clock, so only the patience waits count toward the budget.
+type virtualThrottleClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *virtualThrottleClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *virtualThrottleClock) After(d time.Duration) <-chan time.Time {
+	c.mu.Lock()
+	c.now = c.now.Add(d)
+	fired := c.now
+	c.mu.Unlock()
+	ch := make(chan time.Time, 1)
+	ch <- fired
+	return ch
+}
+
+// WithInstantThrottleWaitsForTesting is for tests outside this package only.
+// It puts the agent's throttle patience on a virtual clock: each throttle
+// wait returns at once and moves that clock forward by the wait. The budget,
+// the backoff steps and the error that surfaces when the budget is used up
+// do not change; only the real sleeping is removed. A test that drives an
+// always-throttling provider through a server or harness thus sees the
+// throttle error after the full budget of virtual time, in milliseconds.
+// Do not use it in production: it removes the pause between calls to a
+// throttled provider.
+func WithInstantThrottleWaitsForTesting() Option {
+	return func(a *Agent) {
+		a.throttleClock = &virtualThrottleClock{now: time.Unix(0, 0)}
+	}
+}
+
+// newThrottlePatience returns the patience state for one LLM call, on the
+// agent's throttle clock (the real clock unless a test set one).
+func (a *Agent) newThrottlePatience() throttlePatience {
+	if a.throttleClock != nil {
+		return throttlePatience{clock: a.throttleClock}
+	}
+	return throttlePatience{clock: realThrottleClock{}}
+}
+
+// beginAttempt records the start of a provider invocation. Call it right
+// before each invocation, so the budget also covers the time the first
+// throttled invocation spent inside the provider (its limiter retries).
+func (p *throttlePatience) beginAttempt() {
+	p.attemptStart = p.now()
+}
+
+func (p *throttlePatience) now() time.Time {
+	if p.clock == nil {
+		p.clock = realThrottleClock{}
+	}
+	return p.clock.Now()
+}
+
+// isRetryableThrottle reports whether err is a throttle that throttle patience
+// should wait out. A positively-identified context-too-long refusal never is,
+// even when llm.IsThrottle classifies it as one: IsThrottle falls back to a
+// substring match on the error text, and a provider that puts the raw 400
+// body into the error (Anthropic: "prompt is too long: 204296 tokens > ...")
+// can contain "429". Waiting that out would re-send a prompt that can never
+// fit for the whole budget, before relief can run. All three paths use this
+// one check, so they cannot drift.
+func isRetryableThrottle(err error) bool {
+	return llm.IsThrottle(err) && !errors.Is(err, llm.ErrContextTooLong)
+}
+
+// absorbThrottle records the throttle with the slot scheduler, then waits it
+// out. The observation has to happen HERE, at absorption: chatWithRetry's
+// deferred observeSchedulerOutcome only ever sees the call's FINAL error, so
+// a throttle that patience rides out and then succeeds would reach the AIMD
+// seam as a SUCCESS and GROW the scope's ceiling — the exact opposite of what
+// a congestion signal must do. The scheduler already collapses repeat
+// observations within one congestion event, so absorbing a burst does not
+// halve the ceiling repeatedly.
+func (a *Agent) absorbThrottle(ctx Context, p *throttlePatience, err error) error {
+	if scheduler.Enabled() {
+		scheduler.ObserveThrottleForScope(a.schedulerScope(), llm.RetryAfter(err))
+	}
+	return p.wait(ctx, err)
+}
+
+// wait waits out one throttle, or returns the error that ends the call: the
+// throttle error once elapsed + the next wait would pass throttleBudget, or
+// the throttle error joined with the context error if ctx ends first.
+func (p *throttlePatience) wait(ctx Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fmt.Errorf("llm throttled and context ended before wait: %w: %w", err, ctxErr)
+	}
+	now := p.now()
+	if p.start.IsZero() {
+		p.start = p.attemptStart
+		if p.start.IsZero() {
+			p.start = now
+		}
+	}
+	elapsed := now.Sub(p.start)
+	if p.delay == 0 {
+		p.delay = throttleInitialDelay
+	}
+	wait := p.delay
+	if hint := llm.RetryAfter(err); hint > wait {
+		wait = hint
+	}
+	if elapsed+wait > throttleBudget {
+		return fmt.Errorf("llm throttled for %s; the next %s wait would pass the %s patience budget: %w",
+			elapsed, wait, throttleBudget, err)
+	}
+	zap.L().Warn("llm throttled; conversation paused, not failed",
+		zap.Duration("wait", wait),
+		zap.Duration("throttled_so_far", elapsed),
+		zap.Error(err),
+	)
+	select {
+	case <-ctx.Done():
+		p.recordWait(ctx, wait, now, true)
+		// Wrap both: callers match the context error (errors.Is), and the
+		// throttle error keeps its classification and retry-after hint.
+		return fmt.Errorf("llm throttled and context ended during wait: %w: %w", err, ctx.Err())
+	case <-p.clock.After(wait):
+	}
+	p.recordWait(ctx, wait, now, false)
+	p.delay *= 2
+	if p.delay > throttleMaxDelay {
+		p.delay = throttleMaxDelay
+	}
+	return nil
+}
+
+// recordWait adds one llm.throttle_wait event for a wait that has ended. The
+// pause can last minutes, so it is visible on the trace too: the event lands
+// on the span already in the call's context (the agent's top-level chat
+// span), next to the turn's other span events. It is emitted after the wait,
+// so it records the time actually waited, not the planned wait:
+//   - wait_ms: the planned wait;
+//   - waited_ms: the time actually waited (less than wait_ms when the
+//     context ended during the wait);
+//   - throttled_total_ms: the wall-clock time throttled when the wait ended;
+//   - interrupted: true when the context ended during the wait.
+func (p *throttlePatience) recordWait(ctx Context, wait time.Duration, waitStart time.Time, interrupted bool) {
+	span := observability.SpanFromContext(ctx)
+	if span == nil {
+		return
+	}
+	end := p.now()
+	span.AddEvent("llm.throttle_wait", map[string]interface{}{
+		"wait_ms":            wait.Milliseconds(),
+		"waited_ms":          end.Sub(waitStart).Milliseconds(),
+		"throttled_total_ms": end.Sub(p.start).Milliseconds(),
+		"budget_ms":          throttleBudget.Milliseconds(),
+		"interrupted":        interrupted,
+	})
 }
 
 // toolInputActivityInterval throttles the IsToolInputStream progress events
@@ -452,9 +712,31 @@ func (a *Agent) chatWithStreaming(ctx Context, messages []Message, tools []shutt
 		})
 	})
 
-	// Call streaming provider
-	resp, err := streamingProvider.ChatStream(streamCtx, messages, tools, tokenCallback)
-	if err != nil {
+	// Call streaming provider. Throttling pauses and re-invokes — the
+	// previous behavior ("streaming already handles errors") returned the
+	// first 429 straight up the stack and killed the conversation. Buffered
+	// state resets per attempt so a retried stream never duplicates tokens.
+	patience := a.newThrottlePatience()
+	var resp *LLMResponse
+	for {
+		patience.beginAttempt()
+		buffer.Reset()
+		tokenCount = 0
+		ttft = 0
+		ttftRecorded = false
+		clear(toolInputCalls)
+
+		var err error
+		resp, err = streamingProvider.ChatStream(streamCtx, messages, tools, tokenCallback)
+		if err == nil {
+			break
+		}
+		if isRetryableThrottle(err) {
+			if waitErr := a.absorbThrottle(ctx, &patience, err); waitErr != nil {
+				return nil, waitErr
+			}
+			continue
+		}
 		return nil, err
 	}
 

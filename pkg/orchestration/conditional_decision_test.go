@@ -188,7 +188,10 @@ func TestConditionalDecision_BelowBandFallsBackToAgent(t *testing.T) {
 	assert.Equal(t, 1, classifierLLM.calls())
 	require.NotNil(t, res.Cost)
 	assert.Equal(t, int32(2), res.Cost.LlmCalls, "classifier turn + branch worker; the classifier used to be missing")
-	assert.InDelta(t, 0.001, res.Cost.AgentCostsUsd["classifier"], 1e-9)
+	// The classifier's own call is in the run total only: agent_costs_usd stays the
+	// sum of the returned results (auxUsage, run_usage.go).
+	assert.NotContains(t, res.Cost.AgentCostsUsd, "classifier")
+	assert.InDelta(t, 0.001, res.Cost.TotalCostUsd-sumAgentCosts(res.Cost), 1e-9)
 
 	classifier.WaitDecisionShadows()
 	rows, err := store.QueryShadow(context.Background(), decision.ShadowQuery{})
@@ -290,4 +293,13 @@ func TestConditionalDecision_FallbackErrorStillRecordsTheLiveAnswer(t *testing.T
 	assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_FALLBACK, rows[0].Path)
 	assert.Equal(t, "bug", rows[0].CandidateAnswer)
 	assert.Equal(t, "", rows[0].ReferenceAnswer)
+}
+
+// sumAgentCosts is the total of a run's per-agent costs.
+func sumAgentCosts(c *loomv1.WorkflowCost) float64 {
+	var sum float64
+	for _, v := range c.GetAgentCostsUsd() {
+		sum += v
+	}
+	return sum
 }
