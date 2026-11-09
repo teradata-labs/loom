@@ -5865,7 +5865,7 @@
         "maxModelContextTokens": {
           "type": "integer",
           "format": "int32",
-          "description": "The context window the model is served with, when it is below the\nmodel's listed window: a vLLM --max-model-len, a TGI --max-total-tokens,\nan Ollama num_ctx. A step whose results together would exceed it, less\nthe reply reservation, has them replaced before the send. If not set,\nthe model's listed window is the limit (on Ollama, max_context_tokens)."
+          "description": "The context window the model is served with, when it is below the\nmodel's listed window: a vLLM --max-model-len, a TGI --max-total-tokens,\nan Ollama num_ctx. A step whose results together would exceed it, less\nthe reply reservation, has them replaced before the send. Taken as given,\nabove or below the listing. If not set, the model's listed window is the\nlimit (on Ollama, max_context_tokens)."
         }
       },
       "title": "LLMConfig configures the language model provider and parameters"

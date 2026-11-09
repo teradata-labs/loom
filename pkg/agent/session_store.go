@@ -2020,7 +2020,8 @@ func (s *SessionStore) SearchMessages(ctx context.Context, sessionID, query stri
 		// Search across ALL sessions owned by the caller when sessionID is empty
 		sqlQuery = `
 			SELECT m.role, m.content, m.tool_calls_json,
-			       m.tool_use_id, m.tool_result_json, m.timestamp, m.token_count, m.cost_usd
+			       m.tool_use_id, m.tool_result_json, m.timestamp, m.token_count, m.cost_usd,
+			       m.input_tokens, m.output_tokens, m.cache_read_tokens, m.cache_create_tokens, m.model, m.effort, m.cache_create_1h_tokens, m.cache_create_5m_tokens, m.thinking_tokens
 			FROM messages_fts5
 			JOIN messages m ON messages_fts5.message_id = m.id
 			JOIN sessions sess ON m.session_id = sess.id
@@ -2033,7 +2034,8 @@ func (s *SessionStore) SearchMessages(ctx context.Context, sessionID, query stri
 		// Search within specific session
 		sqlQuery = `
 			SELECT m.role, m.content, m.tool_calls_json,
-			       m.tool_use_id, m.tool_result_json, m.timestamp, m.token_count, m.cost_usd
+			       m.tool_use_id, m.tool_result_json, m.timestamp, m.token_count, m.cost_usd,
+			       m.input_tokens, m.output_tokens, m.cache_read_tokens, m.cache_create_tokens, m.model, m.effort, m.cache_create_1h_tokens, m.cache_create_5m_tokens, m.thinking_tokens
 			FROM messages_fts5
 			JOIN messages m ON messages_fts5.message_id = m.id
 			JOIN sessions sess ON m.session_id = sess.id
@@ -2064,6 +2066,15 @@ func (s *SessionStore) SearchMessages(ctx context.Context, sessionID, query stri
 			&timestamp,
 			&msg.TokenCount,
 			&msg.CostUSD,
+			&msg.InputTokens,
+			&msg.OutputTokens,
+			&msg.CacheReadTokens,
+			&msg.CacheCreateTokens,
+			&msg.Model,
+			&msg.Effort,
+			&msg.CacheCreate1hTokens,
+			&msg.CacheCreate5mTokens,
+			&msg.ThinkingTokens,
 		)
 		if err != nil {
 			span.RecordError(err)
@@ -2138,7 +2149,8 @@ func (s *SessionStore) SearchMessagesByAgent(ctx context.Context, agentID, query
 	// the caller's own sessions (the index spans every user's messages).
 	sqlQuery := `
 		SELECT m.role, m.content, m.tool_calls_json,
-		       m.tool_use_id, m.tool_result_json, m.timestamp, m.token_count, m.cost_usd
+		       m.tool_use_id, m.tool_result_json, m.timestamp, m.token_count, m.cost_usd,
+			       m.input_tokens, m.output_tokens, m.cache_read_tokens, m.cache_create_tokens, m.model, m.effort, m.cache_create_1h_tokens, m.cache_create_5m_tokens, m.thinking_tokens
 		FROM messages_fts5
 		JOIN messages m ON messages_fts5.message_id = m.id
 		JOIN sessions s ON m.session_id = s.id
@@ -2169,6 +2181,15 @@ func (s *SessionStore) SearchMessagesByAgent(ctx context.Context, agentID, query
 			&timestamp,
 			&msg.TokenCount,
 			&msg.CostUSD,
+			&msg.InputTokens,
+			&msg.OutputTokens,
+			&msg.CacheReadTokens,
+			&msg.CacheCreateTokens,
+			&msg.Model,
+			&msg.Effort,
+			&msg.CacheCreate1hTokens,
+			&msg.CacheCreate5mTokens,
+			&msg.ThinkingTokens,
 		)
 		if err != nil {
 			span.RecordError(err)

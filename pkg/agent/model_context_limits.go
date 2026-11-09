@@ -116,11 +116,13 @@ func GetModelContextLimits(modelName string) *ModelContextLimits {
 
 	// Try prefix matching for versioned models
 	// e.g., "llama3.1:8b" -> "llama3.1", "claude-3-5-sonnet-20241022" -> "claude-3-5-sonnet"
-	// Use longest matching prefix to avoid ambiguity (e.g., "llama3" vs "llama3.1")
+	// Use longest matching prefix to avoid ambiguity (e.g., "llama3" vs "llama3.1").
+	// The prefix must end at a separator: "gpt-4" names "gpt-4" and "gpt-4-0613",
+	// not "gpt-4o", which is another model with another window.
 	var bestMatch string
 	var bestLimits *ModelContextLimits
 	for baseModel, limits := range modelContextLimits {
-		if len(modelName) >= len(baseModel) && modelName[:len(baseModel)] == baseModel {
+		if len(modelName) >= len(baseModel) && modelName[:len(baseModel)] == baseModel && prefixEndsAtSeparator(modelName, len(baseModel)) {
 			// Keep the longest match
 			if len(baseModel) > len(bestMatch) {
 				bestMatch = baseModel
@@ -131,6 +133,19 @@ func GetModelContextLimits(modelName string) *ModelContextLimits {
 	}
 
 	return bestLimits
+}
+
+// prefixEndsAtSeparator reports whether modelName[at:] is empty or starts a
+// new segment (':' tag, '-' or '.' version, '@' or '/' qualifier).
+func prefixEndsAtSeparator(modelName string, at int) bool {
+	if at >= len(modelName) {
+		return true
+	}
+	switch modelName[at] {
+	case ':', '-', '.', '@', '/':
+		return true
+	}
+	return false
 }
 
 // GetProviderDefaultLimits returns sensible defaults for a provider.
@@ -209,8 +224,11 @@ func EffectiveOutputReservation(provider, model string, configuredMaxTokens, con
 // it is used only when neither knows the model; Ollama is the exception, since
 // its window is the server's num_ctx, which loom does not send and the listing
 // does not give, so there the configured window comes before the listing.
-// Returns 0 when no window is known.
-func ProviderPromptCeiling(provider, model string, configuredReserved, configuredWindow, servedWindow int) int {
+// reserved is the reply reservation as the agent's builder resolved it
+// (max_tokens included, EffectiveOutputReservation) and is taken as given;
+// only when none was resolved is one derived from the listing. Returns 0 when
+// no window is known.
+func ProviderPromptCeiling(provider, model string, reserved, configuredWindow, servedWindow int) int {
 	window := 0
 	if servedWindow > 0 {
 		window = servedWindow
@@ -227,7 +245,13 @@ func ProviderPromptCeiling(provider, model string, configuredReserved, configure
 	if window <= 0 {
 		return 0
 	}
-	return window - EffectiveOutputReservation(provider, model, 0, configuredReserved, window)
+	if reserved <= 0 {
+		reserved = EffectiveOutputReservation(provider, model, 0, 0, window)
+	}
+	if reserved >= window {
+		reserved = window / 2
+	}
+	return window - reserved
 }
 
 // ResolveContextLimits determines the context limits to use, with fallback precedence:

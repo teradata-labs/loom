@@ -17,6 +17,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -120,9 +121,9 @@ func windowedAgent(t *testing.T, model *windowedModel, resultBytes int) (*Agent,
 }
 
 // One step returning more results than the window holds — each under the
-// bound — does not end the turn. The provider refuses; the results are
-// replaced with a note that says so, each call having run; the model re-plans
-// and the turn goes on. The stored rows hold the note the model was sent.
+// bound — does not end the turn. Before the send, the results are replaced
+// with a note that says so, each call having run; the model re-plans and the
+// turn goes on. The stored rows hold the note the model was sent.
 func TestAStepTooLargeToSendBecomesANoteTheModelActsOn(t *testing.T) {
 	model := &windowedModel{limit: 19000, fanOut: 40}
 	ag, store := windowedAgent(t, model, 4000)
@@ -220,7 +221,7 @@ func TestAStepIsFittedToTheServedWindowWhenOneIsSet(t *testing.T) {
 // window is the ceiling, as before.
 func TestTheServedWindowIsTheCeilingBeforeTheListedOne(t *testing.T) {
 	served := ProviderPromptCeiling("anthropic", "claude-opus-5", 400, 60000, 32000)
-	assert.Equal(t, 32000-EffectiveOutputReservation("anthropic", "claude-opus-5", 0, 400, 32000), served)
+	assert.Equal(t, 32000-400, served)
 	listed := ProviderPromptCeiling("anthropic", "claude-opus-5", 400, 60000, 0)
 	assert.Greater(t, listed, 60000, "the listed window is not above the configured one; the test does not separate them")
 }
@@ -231,7 +232,7 @@ func TestTheServedWindowIsTheCeilingBeforeTheListedOne(t *testing.T) {
 func TestOllamasCeilingIsTheConfiguredWindow(t *testing.T) {
 	listed := ProviderPromptCeiling("ollama", "llama3.1:8b", 400, 0, 0)
 	configured := ProviderPromptCeiling("ollama", "llama3.1:8b", 400, 4096, 0)
-	assert.Equal(t, 4096-EffectiveOutputReservation("ollama", "llama3.1:8b", 0, 400, 4096), configured)
+	assert.Equal(t, 4096-400, configured)
 	assert.Greater(t, listed, configured, "the listed window is not larger than 4096; the test does not separate them")
 }
 
@@ -276,6 +277,94 @@ func TestTheCeilingReservesTheMemorysReply(t *testing.T) {
 	require.NoError(t, err, "the step was sent into the room kept for the reply")
 	assert.Equal(t, "narrowed and done", resp.Content)
 	assert.True(t, model.told)
+}
+
+// The window, like the reservation, may be set in the memory's limits only, as
+// the registry sets it: Ollama's ceiling is still the configured window then,
+// not the model's listing.
+func TestOllamasCeilingReadsTheMemorysWindowWhenTheConfigHasNone(t *testing.T) {
+	model := &windowedModel{limit: 19000, fanOut: 10, plain: true, provider: "ollama", model: "llama3.1:8b"}
+	ag, _ := windowedAgent(t, model, 16000)
+	ag.config.MaxContextTokens = 0
+	ag.memory.SetContextLimits(20000, 1000)
+	resp, err := ag.Chat(context.Background(), "s-ollama-mem", "read ten tables")
+	require.NoError(t, err, "the step was sent against the model's listing and the server refused")
+	assert.Equal(t, "narrowed and done", resp.Content)
+	assert.True(t, model.told)
+}
+
+// The registry carries the served window from the agent's config into the
+// agent it builds.
+func TestTheRegistryCarriesTheServedWindow(t *testing.T) {
+	registry, tmpDir := createTestRegistry(t)
+	agentsDir := filepath.Join(tmpDir, "agents")
+	require.NoError(t, os.MkdirAll(agentsDir, 0755))
+	config := createTestAgentConfig("served")
+	config.Llm.MaxModelContextTokens = 32768
+	require.NoError(t, SaveAgentConfig(config, filepath.Join(agentsDir, "served.yaml")))
+	require.NoError(t, registry.LoadAgents(context.Background()))
+	ag, err := registry.CreateAgent(context.Background(), "served")
+	require.NoError(t, err)
+	assert.Equal(t, 32768, ag.config.MaxModelContextTokens)
+}
+
+// The reply reservation the ceiling is given is the builder's resolved figure,
+// max_tokens included: it is taken as given, not raised again to the model's
+// listed output size, which would halve a served window.
+func TestTheCeilingTakesTheResolvedReservationAsGiven(t *testing.T) {
+	assert.Equal(t, 32768-4096, ProviderPromptCeiling("anthropic", "claude-sonnet-5", 4096, 0, 32768))
+	assert.Equal(t, 32768/2, ProviderPromptCeiling("anthropic", "claude-sonnet-5", 0, 0, 32768), "with no reservation resolved, the listing's output size is reserved, capped at half the window")
+}
+
+// A table prefix names the model and its versions, not another model that
+// happens to start the same way: "gpt-4" is not "gpt-4o".
+func TestThePrefixTableStopsAtASeparator(t *testing.T) {
+	assert.Nil(t, GetModelContextLimits("gpt-4o"))
+	assert.Nil(t, GetModelContextLimits("gpt-4o-mini"))
+	require.NotNil(t, GetModelContextLimits("gpt-4"))
+	assert.Equal(t, 8192, GetModelContextLimits("gpt-4").MaxContextTokens)
+	require.NotNil(t, GetModelContextLimits("llama3.1:8b"))
+	require.NotNil(t, GetModelContextLimits("claude-3-5-sonnet-20241022"))
+	assert.Equal(t, 0, ProviderPromptCeiling("openai", "gpt-4o", 1000, 0, 0), "an unlisted model with no configured window has no ceiling; the refusal path answers")
+}
+
+// The count can say a step fits when the provider's own count says it does
+// not: prose the tokenizer counts low against a server that counts high. A
+// labelled refusal then does what the check does: the results are replaced
+// after the relief pass and the turn answers.
+func TestALabelledRefusalAfterTheCountSaidFitIsTheBackstop(t *testing.T) {
+	model := &windowedModel{limit: 19000, fanOut: 10}
+	ag, _ := windowedAgent(t, model, 0)
+	prose := strings.Repeat("The quarterly report shows revenue growth across every region, led by the western offices. ", 66)
+	ag.RegisterTool(&shuttle.MockTool{
+		MockName: "rows",
+		MockExecute: func(context.Context, map[string]interface{}) (*shuttle.Result, error) {
+			return &shuttle.Result{Success: true, Data: prose}, nil
+		},
+	})
+	resp, err := ag.Chat(context.Background(), "s-backstop", "read ten tables")
+	require.NoError(t, err, "the refusal ended the turn")
+	assert.Equal(t, "narrowed and done", resp.Content)
+	assert.True(t, model.told)
+	assert.GreaterOrEqual(t, model.calls, 4, "the step was replaced before the send; the refusal path was not reached")
+}
+
+// Both tiers of the step count are scaled by the provider calibration, as the
+// estimate is: a provider that reports more tokens than loom counts moves the
+// step count up with it.
+func TestTheStepCountIsScaledByTheCalibration(t *testing.T) {
+	sm := newCompileMemory(t)
+	ctx := context.Background()
+	sm.AddMessage(ctx, Message{Role: "user", Content: "read the tables", Turn: 1})
+	sm.AddMessage(ctx, Message{Role: "assistant", Turn: 1, ToolCalls: []ToolCall{{ID: "q1", Name: "rows"}}})
+	sm.AddMessage(ctx, Message{Role: "tool", ToolUseID: "q1", Turn: 1, Content: strings.Repeat("id=12345 name=widget qty=7\n", 30)})
+	cheap1, exact1 := sm.StepSendCount(300, 1<<30), sm.StepSendCount(300, 1)
+	sm.mu.Lock()
+	sm.estimateCalibration = 2.0
+	sm.mu.Unlock()
+	cheap2, exact2 := sm.StepSendCount(300, 1<<30), sm.StepSendCount(300, 1)
+	assert.InDelta(t, 2.0, float64(cheap2)/float64(cheap1), 0.02, "the cheap tier is not scaled by the calibration")
+	assert.InDelta(t, 2.0, float64(exact2)/float64(exact1), 0.02, "the tokenizer tier is not scaled by the calibration")
 }
 
 // A step that fits is sent as it is: nothing is replaced.

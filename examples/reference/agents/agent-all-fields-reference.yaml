@@ -163,6 +163,7 @@ spec:
       min_l1_messages: 4               # OPTIONAL: Min messages after compression
       warning_threshold_percent: 60    # OPTIONAL: Warning threshold (0-100)
       critical_threshold_percent: 75   # OPTIONAL: Critical threshold (0-100)
+      protected_recent_turns: 16       # OPTIONAL: Recent turns of either role a fold keeps
 
       # Compression batch sizes
       batch_sizes:                     # OPTIONAL: Messages per compression batch

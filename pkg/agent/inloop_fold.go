@@ -25,11 +25,11 @@ package agent
 // testimony, not archaeology: no separate compressor call re-reading the
 // region at full input rate, no lock released across a network call, no
 // second prompt path. The compressor subsystem remains only as the failsafe
-// (ReleasePressure), which runs when the in-loop fold has failed.
+// (ReleasePressure), which runs when the provider refuses a send.
 //
-// What survives a collapse: prompt/ROM, the summary (L2), the operator's
-// user rows verbatim, the assistant TEXT of the newest K turns (call/result
-// pairs stripped whole — both sides always), and the pending pair. All tool
+// What survives a collapse: prompt/ROM, the summary (L2), the last K turns of
+// either role as text (call/result pairs stripped whole — both sides always),
+// and the pending pair. Older user rows go with the rest. All tool
 // calls and results outside the pending pair are excised: the summary has
 // just harvested every conclusion, and what remains of old tool traffic is
 // snapshot — re-fetchable, stale, and heavy.
@@ -96,9 +96,9 @@ func (a *Agent) foldAsk(ctx context.Context) string {
 // NeedsFold reports whether the past has crossed the start mark. The summary
 // is left out of the comparison: it is the floor the next fold stands on, not
 // part of what a fold can shed, and counting it made every fold bring the next
-// one closer as the summary grew. The pressure path keeps the full estimate —
-// that is the provider-window guard, where the whole prompt is the right
-// number.
+// one closer as the summary grew. The pressure path keeps the summary in the
+// estimate. Neither path counts the step in flight, which StepSendCount fits
+// separately.
 func (sm *SegmentedMemory) NeedsFold() bool {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -306,12 +306,13 @@ func (sm *SegmentedMemory) InFlightResults() int {
 
 // StepSendCount is the size of the next send while a step is in flight,
 // against ceiling. It counts in two tiers, as the estimate does. The cheap
-// tier counts the settled context as the fold counts it — the fold holds it
-// under G — and the step's results plus extraBytes (what the send adds past
-// memory) high, at cheapBytesPerToken bytes a token; at or under ceiling the
-// send certainly fits and that count is returned. Over it, the whole send is
-// counted with the tokenizer, so a step is replaced only when it really does
-// not fit. Both tiers are scaled by the provider calibration.
+// tier counts the settled context by the estimate, summary included — the
+// fold holds it under G — and the step's results plus extraBytes (what the
+// send adds past memory) high, at cheapBytesPerToken bytes a token; at or
+// under ceiling the send certainly fits and that count is returned. Over it,
+// the memory is counted with the tokenizer and extraBytes at tokenFigure, so
+// a step is replaced only when it really does not fit. Both tiers are scaled
+// by the provider calibration.
 func (sm *SegmentedMemory) StepSendCount(extraBytes, ceiling int) int {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -342,6 +343,14 @@ func (sm *SegmentedMemory) ReservedOutputTokens() int {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	return sm.tokenBudget.ReservedTokens
+}
+
+// ContextWindowTokens is the window this memory was set with, max_context_tokens
+// as the agent's builder resolved it.
+func (sm *SegmentedMemory) ContextWindowTokens() int {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	return sm.tokenBudget.MaxTokens
 }
 
 // ReplaceInFlightResults replaces the results of the step in flight — every

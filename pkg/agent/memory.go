@@ -611,8 +611,8 @@ func newestFold(ctx context.Context, store SessionStorage, sessionID string) (in
 }
 
 // SetProtectedRecentTurns configures K (config ProtectedRecentTurns) — the
-// agent steps the in-loop fold keeps, the user turns the pressure ladder
-// starts from — for existing and future sessions.
+// recent turns of either role the in-loop fold keeps, the user turns the
+// pressure ladder starts from — for existing and future sessions.
 func (m *Memory) SetProtectedRecentTurns(k int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

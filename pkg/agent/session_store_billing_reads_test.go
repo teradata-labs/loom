@@ -68,4 +68,13 @@ func TestEverySQLiteReadReturnsTheBilling(t *testing.T) {
 	forAgent, err := store.LoadMessagesForAgent(ctx, "helper")
 	require.NoError(t, err)
 	check("LoadMessagesForAgent", forAgent)
+	found, err := store.SearchMessages(ctx, "parent", "answer", 10)
+	require.NoError(t, err)
+	check("SearchMessages", found)
+	foundAll, err := store.SearchMessages(ctx, "", "answer", 10)
+	require.NoError(t, err)
+	check("SearchMessages(all sessions)", foundAll)
+	byAgent, err := store.SearchMessagesByAgent(ctx, "lead", "answer", 10)
+	require.NoError(t, err)
+	check("SearchMessagesByAgent", byAgent)
 }

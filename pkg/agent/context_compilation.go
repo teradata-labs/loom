@@ -357,7 +357,8 @@ func (sm *SegmentedMemory) estimateLocked() int { return sm.estimateOptLocked(fa
 // estimateOptLocked is estimateLocked with one option: skipSummary leaves the
 // summary row out of the count. The fold trigger uses it — the summary is the
 // floor the next fold stands on, not something a fold can shed. The pressure
-// path never sets it: against the provider window the whole prompt counts.
+// path never sets it: the summary counts there. Neither path counts the step
+// in flight, which StepSendCount fits separately.
 // Both tiers are scaled by the provider calibration factor, so the cheap
 // tier's early exit compares like with like. Must hold lock.
 func (sm *SegmentedMemory) estimateOptLocked(skipSummary bool) int {
@@ -604,8 +605,8 @@ func (sm *SegmentedMemory) releaseMarkLocked(penalty int) int {
 
 // --- releasePressure (HLD §5.2) ----------------------------------------------
 
-// ReleasePressure is the relief pass, called at compile before every send. It
-// SELF-GATES on loom's own accounting: if the estimate is under the start mark
+// ReleasePressure is the pressure ladder, run once after the provider refuses a
+// send as too long. It SELF-GATES on loom's own accounting: if the estimate is under the start mark
 // (HWM, §5.1) there is no pressure and it is a no-op. Otherwise it sheds to the
 // release mark (LWM) via the escalating fold ladder below — recompiling and
 // re-estimating after each op, returning the instant the estimate reaches the
@@ -1101,11 +1102,11 @@ type CurrentTurnOverflow struct {
 
 // CurrentTurnOverflow is kept for callers written against it and reports no
 // overflow. Each tool result is bounded as it arrives, so a send that does not
-// fit is a step returning more than the window holds; the provider refuses it,
-// and that refusal is answered where it happens: relief, one resend, then
-// context_exhausted.
+// fit is a step returning more than the window holds; that step is fitted to
+// the window before the send (fitStepToWindow), its results replaced by a note.
 //
-// Deprecated: overflow is the provider's refusal, not a pre-send estimate.
+// Deprecated: a step that does not fit is caught before the send and its
+// results replaced; this reports nothing.
 func (sm *SegmentedMemory) CurrentTurnOverflow() (CurrentTurnOverflow, bool) {
 	warnDeprecatedOnce("SegmentedMemory.CurrentTurnOverflow", "a send that does not fit is the provider's refusal, answered by relief")
 	return CurrentTurnOverflow{}, false

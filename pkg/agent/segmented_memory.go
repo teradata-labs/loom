@@ -265,8 +265,9 @@ func (sm *SegmentedMemory) SetSessionStore(store SessionStorage, sessionID strin
 
 // SetOffloadExemptTools is kept for callers written against it. Exemption is
 // decided where a result arrives, on the agent's Memory (Memory.
-// SetOffloadExemptTools): an exempt tool's result enters whole, and nothing
-// cuts a row after that, so there is nothing for a session's memory to do.
+// SetOffloadExemptTools): an exempt tool's result enters whole, and no size
+// bound touches a row after that (only a step too large for the window has its
+// results replaced), so there is nothing for a session's memory to do.
 //
 // Deprecated: set the exempt tools on Memory or Agent.
 func (sm *SegmentedMemory) SetOffloadExemptTools(names []string) {
@@ -274,8 +275,7 @@ func (sm *SegmentedMemory) SetOffloadExemptTools(names []string) {
 }
 
 // SetThreshold sets the one threshold value in bytes (HLD §5.1: one value,
-// three roles — compile-time offload bound, persist-time row bound, retrieval
-// page bound). Non-positive values keep the current threshold; positive values
+// three roles — arrival bound, stored-row bound, retrieval page bound). Non-positive values keep the current threshold; positive values
 // below minThreshold clamp to it — the truncation tail alone runs ~150 bytes,
 // so a tinier bound could not hold stored = core + tail ≤ threshold.
 func (sm *SegmentedMemory) SetThreshold(bytes int64) {

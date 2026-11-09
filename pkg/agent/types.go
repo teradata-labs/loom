@@ -347,8 +347,8 @@ type Config struct {
 
 	// MaxModelContextTokens is the window the model is served with, when it
 	// is below the model's listed window (a vLLM --max-model-len, an Ollama
-	// num_ctx). It is the ceiling a step in flight is fitted to before the
-	// send (0 = the model's listed window).
+	// num_ctx). Less the reply reservation, it is the ceiling a step in flight
+	// is fitted to before the send (0 = the model's listed window).
 	MaxModelContextTokens int
 
 	// ReservedOutputTokens is the number of tokens reserved for model output (0 = use defaults, typically 10%)

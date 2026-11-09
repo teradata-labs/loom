@@ -186,7 +186,7 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		a.memory.SetContextLimits(a.config.MaxContextTokens, a.config.ReservedOutputTokens)
 	}
 
-	// K — protected newest user turns (HLD §5.1, §9).
+	// K — the recent turns of either role a fold keeps (HLD §5.1, §9).
 	if a.config.ProtectedRecentTurns > 0 {
 		a.memory.SetProtectedRecentTurns(a.config.ProtectedRecentTurns)
 	}
@@ -2852,7 +2852,8 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// the summary — the agent summarises itself on its own warm cache. The
 		// step in flight is fitted to the window below (fitStepToWindow).
 		// A prompt the provider still refuses as too long is answered where the
-		// refusal happens: one relief pass and one resend.
+		// refusal happens: one relief pass and one resend, then the step's
+		// results replaced and one more.
 		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil && !foldPending && foldRetries < 2 && !scriptedTurn(ctx) && segMem.NeedsFold() {
 			foldPending = true
 			zap.L().Info("inloopFold: armed",
@@ -3911,10 +3912,12 @@ func advertisedToolsBytes(tools []shuttle.Tool) int {
 // Overflow can come only from it: everything before it was in a send the
 // provider accepted, each result is bounded at arrival, and the model sets how
 // many there are. The send — with extraBytes for what it adds past memory — is
-// counted against the provider's own ceiling, the model's window, not
-// max_context_tokens (StepSendCount); past it the results are replaced with the
-// note named by noteKey, as on a refusal. Every provider is covered, whether
-// or not it labels its refusal. Reports whether it replaced them.
+// counted (StepSendCount) against the provider's ceiling (ProviderPromptCeiling:
+// the served window, else the listed one; max_context_tokens on Ollama or when
+// nothing lists the model), less the reply reservation; past it the results
+// are replaced with the note named by noteKey, as on a refusal. Every provider
+// is covered, whether or not it labels its refusal. Reports whether it
+// replaced them.
 func (a *Agent) fitStepToWindow(ctx Context, session *Session, noteKey string, extraBytes int, span *observability.Span, turnCount int) bool {
 	segMem, ok := session.SegmentedMem.(*SegmentedMemory)
 	if !ok || segMem == nil {
@@ -3924,13 +3927,19 @@ func (a *Agent) fitStepToWindow(ctx Context, session *Session, noteKey string, e
 	if n == 0 {
 		return false
 	}
-	// The reply reservation is the larger of the config's and the memory's: a
-	// builder may resolve max_tokens into the memory's limits only.
+	// A builder may set the window and the reply reservation in the memory's
+	// limits only (the registry does): the reservation is the larger of the
+	// config's and the memory's, and the window is the memory's when the
+	// config has none.
 	reserved := a.config.ReservedOutputTokens
 	if r := segMem.ReservedOutputTokens(); r > reserved {
 		reserved = r
 	}
-	ceiling := ProviderPromptCeiling(a.GetLLMProviderName(), a.GetLLMModel(), reserved, a.config.MaxContextTokens, a.config.MaxModelContextTokens)
+	configured := a.config.MaxContextTokens
+	if configured <= 0 {
+		configured = segMem.ContextWindowTokens()
+	}
+	ceiling := ProviderPromptCeiling(a.GetLLMProviderName(), a.GetLLMModel(), reserved, configured, a.config.MaxModelContextTokens)
 	count := segMem.StepSendCount(extraBytes, ceiling)
 	if ceiling <= 0 || count <= ceiling {
 		return false
