@@ -14,15 +14,20 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
+	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
+	"github.com/teradata-labs/loom/pkg/decision/jev"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/zalando/go-keyring"
@@ -108,6 +113,11 @@ type Config struct {
 	// Embedding configures vector embeddings for hybrid semantic memory search.
 	Embedding EmbeddingConfig `mapstructure:"embedding"`
 
+	// Decision holds the server-level settings of the typed decision layer
+	// (pkg/decision). Agent and judge configs choose the provider, model and
+	// bands; only this block (or TYPESAFE_BASE_URL) chooses the endpoint.
+	Decision DecisionServerConfig `mapstructure:"decision"`
+
 	// SkipEmbeddedAgents disables auto-installation of guide, weaver, and bundled
 	// skills into the agents/skills directories on startup. Set to true for runtime
 	// pods that should only serve the explicitly configured agent(s).
@@ -118,6 +128,46 @@ type Config struct {
 	// $LOOM_DATA_DIR/patterns when both are empty.
 	PatternsDir string `mapstructure:"patterns_dir"`
 }
+
+// DecisionServerConfig is the operator's decider endpoint. The endpoint
+// decides where the server's decider credential (TYPESAFE_API_KEY,
+// AI_GATEWAY_API_KEY, JEV_API_KEY) is sent, which is why agent and judge
+// configs cannot set it.
+//
+//	decision:
+//	  base_url: https://ai-gateway.vercel.sh/typesafe   # LOOM_DECISION_BASE_URL
+//	  allow_insecure_http: false                         # LOOM_DECISION_ALLOW_INSECURE_HTTP
+type DecisionServerConfig struct {
+	// BaseURL overrides TYPESAFE_BASE_URL and the provider defaults. Must be
+	// https.
+	BaseURL string `mapstructure:"base_url"`
+	// AllowInsecureHTTP permits an http:// endpoint on a loopback host (a
+	// local proxy or mock decider in development). Non-loopback http is
+	// refused even with it set.
+	AllowInsecureHTTP bool `mapstructure:"allow_insecure_http"`
+}
+
+// endpoint converts the block to the jev package's server endpoint.
+func (d DecisionServerConfig) endpoint() jev.ServerEndpoint {
+	return jev.ServerEndpoint{BaseURL: d.BaseURL, AllowInsecureHTTP: d.AllowInsecureHTTP}
+}
+
+// applyDecisionServerConfig installs the server-level decider endpoint for
+// this process. Every looms command runs it once the config is loaded, so
+// serve, workflow run and eval all build deciders against the same
+// operator-chosen endpoint.
+func applyDecisionServerConfig(c *Config) error {
+	if err := jev.SetServerEndpoint(c.Decision.endpoint()); err != nil {
+		return fmt.Errorf("%s: %w", decisionEndpointSources, err)
+	}
+	return nil
+}
+
+// decisionEndpointSources prefixes an endpoint error with where the value can
+// have come from, so an operator who set the environment variable, not the
+// YAML key, sees the name they used.
+const decisionEndpointSources = "decision.base_url (looms.yaml decision.base_url or LOOM_DECISION_BASE_URL; " +
+	"decision.allow_insecure_http is LOOM_DECISION_ALLOW_INSECURE_HTTP)"
 
 // EmbeddingConfig configures the vector embedding provider for hybrid memory search.
 // Once set, the model should not be changed without re-embedding (different models
@@ -762,6 +812,10 @@ type ToolsConfig struct {
 
 	// ShellExecute holds shell_execute tool configuration
 	ShellExecute ShellExecuteConfig `mapstructure:"shell_execute"`
+
+	// Lua holds the run_lua tool configuration (off by default). See
+	// lua_tools.go and docs/architecture/lua-script-engine.md.
+	Lua LuaToolsConfig `mapstructure:"lua"`
 }
 
 // ToolExecutorConfig holds tool executor settings.
@@ -1105,7 +1159,10 @@ func LoadConfig(cfgFile string) (*Config, error) {
 	// Note: Viper lowercases all keys, including map keys. This is fixed later
 	// by fixMCPEnvCase() which restores original case from YAML for MCP env vars.
 	var config Config
-	if err := viper.Unmarshal(&config); err != nil {
+	if err := viper.Unmarshal(&config, withStringToStringMapHook); err != nil {
+		if vars := malformedMapEnvVars(err); len(vars) > 0 {
+			return nil, fmt.Errorf("failed to unmarshal config (check %s): %w", strings.Join(vars, ", "), err)
+		}
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
@@ -1148,6 +1205,105 @@ func LoadConfig(cfgFile string) (*Config, error) {
 	return &config, nil
 }
 
+// withStringToStringMapHook adds stringToStringMapHook to viper's default
+// decode hooks (duration and string-slice parsing), keeping them intact.
+func withStringToStringMapHook(c *mapstructure.DecoderConfig) {
+	c.DecodeHook = mapstructure.ComposeDecodeHookFunc(c.DecodeHook, stringToStringMapHook)
+}
+
+// stringToStringMapHook decodes a string into a map[string]string field. The
+// only way a string reaches such a field is an environment variable (e.g.
+// LOOM_LLM_LITELLM_EXTRA_HEADERS) overriding a map key, and without this hook
+// mapstructure either fails the whole load or silently decodes it to nil.
+//
+// Accepted forms:
+//   - a JSON object: {"X-Team":"a","X-Trace":"b"} (use this when a value
+//     contains a comma)
+//   - comma-separated key=value pairs: X-Team=a,X-Trace=b (split on the first
+//     '=', so values may contain '=', e.g. base64 padding)
+//
+// An empty or all-whitespace string decodes to an empty map. Any other
+// string is an error, so a malformed value fails loudly instead of being
+// dropped. The error never contains the value or any part of it: these maps
+// hold HTTP headers, and a likely typo such as "Authorization: Bearer <token>"
+// (colon instead of '=') would otherwise print the credential at startup. It
+// names the entry's position instead; mapstructure adds the config key and
+// LoadConfig adds the environment variable.
+func stringToStringMapHook(from, to reflect.Type, data any) (any, error) {
+	if from.Kind() != reflect.String || to != reflect.TypeOf(map[string]string(nil)) {
+		return data, nil
+	}
+	raw := strings.TrimSpace(data.(string))
+	out := map[string]string{}
+	if raw == "" {
+		return out, nil
+	}
+	if strings.HasPrefix(raw, "{") {
+		if err := json.Unmarshal([]byte(raw), &out); err != nil {
+			// Report only the byte offset of a syntax error: json error text
+			// can quote parts of the input.
+			var syntaxErr *json.SyntaxError
+			if errors.As(err, &syntaxErr) {
+				return nil, &malformedMapError{reason: fmt.Sprintf(
+					"value is not a valid JSON object of strings (syntax error at byte %d)", syntaxErr.Offset)}
+			}
+			return nil, &malformedMapError{reason: "value is not a valid JSON object of strings (truncated, or an entry is not a string)"}
+		}
+		return out, nil
+	}
+	pairs := strings.Split(raw, ",")
+	for i, pair := range pairs {
+		k, v, ok := strings.Cut(pair, "=")
+		k = strings.TrimSpace(k)
+		if !ok || k == "" {
+			return nil, &malformedMapError{reason: fmt.Sprintf(
+				"entry %d of %d is not key=value (or use a JSON object)", i+1, len(pairs))}
+		}
+		out[k] = strings.TrimSpace(v)
+	}
+	return out, nil
+}
+
+// malformedMapError is returned by stringToStringMapHook. Its message
+// describes what is wrong and where, and deliberately carries no part of the
+// value (which may hold a credential) so it is safe to print and log.
+type malformedMapError struct {
+	reason string
+}
+
+func (e *malformedMapError) Error() string {
+	return e.reason + "; the value is not shown because it may contain a credential"
+}
+
+// malformedMapEnvVars walks a config decode error and returns the environment
+// variable name for every map key that stringToStringMapHook rejected, e.g.
+// llm.litellm_extra_headers -> LOOM_LLM_LITELLM_EXTRA_HEADERS (same mapping
+// as the env key replacer in LoadConfig).
+func malformedMapEnvVars(err error) []string {
+	var vars []string
+	var walk func(error)
+	walk = func(e error) {
+		if e == nil {
+			return
+		}
+		var malformed *malformedMapError
+		if decErr, ok := e.(*mapstructure.DecodeError); ok && errors.As(decErr.Unwrap(), &malformed) {
+			vars = append(vars, "LOOM_"+strings.ToUpper(strings.ReplaceAll(decErr.Name(), ".", "_")))
+			return
+		}
+		switch u := e.(type) {
+		case interface{ Unwrap() []error }:
+			for _, inner := range u.Unwrap() {
+				walk(inner)
+			}
+		case interface{ Unwrap() error }:
+			walk(u.Unwrap())
+		}
+	}
+	walk(err)
+	return vars
+}
+
 // setDefaults sets default configuration values.
 func setDefaults() {
 	// Server defaults
@@ -1159,6 +1315,11 @@ func setDefaults() {
 	viper.SetDefault("server.allow_assistant_override", false)
 	viper.SetDefault("skip_embedded_agents", false)
 	viper.SetDefault("patterns_dir", "")
+
+	// Decision layer server-level endpoint (registered so AutomaticEnv binds
+	// LOOM_DECISION_BASE_URL and LOOM_DECISION_ALLOW_INSECURE_HTTP).
+	viper.SetDefault("decision.base_url", "")
+	viper.SetDefault("decision.allow_insecure_http", false)
 
 	// Clarification defaults
 	viper.SetDefault("server.clarification.rpc_timeout_seconds", 5)
@@ -1206,6 +1367,33 @@ func setDefaults() {
 	viper.SetDefault("llm.max_tokens", 4096)
 	viper.SetDefault("llm.timeout_seconds", 0)
 	viper.SetDefault("llm.concurrency_limit", 2)
+
+	// LLM credentials (env/keyring/CLI only). Registered empty so AutomaticEnv
+	// binds e.g. LOOM_LLM_BEDROCK_BEARER_TOKEN on Unmarshal; without a known key
+	// viper silently drops the env var. An empty default is indistinguishable
+	// from "unset" after Unmarshal, so the keyring fallback still applies.
+	viper.SetDefault("llm.anthropic_api_key", "")
+	viper.SetDefault("llm.bedrock_access_key_id", "")
+	viper.SetDefault("llm.bedrock_secret_access_key", "")
+	viper.SetDefault("llm.bedrock_session_token", "")
+	viper.SetDefault("llm.bedrock_bearer_token", "")
+	viper.SetDefault("llm.openai_api_key", "")
+	viper.SetDefault("llm.azure_openai_api_key", "")
+	viper.SetDefault("llm.azure_openai_entra_token", "")
+	viper.SetDefault("llm.mistral_api_key", "")
+	viper.SetDefault("llm.gemini_api_key", "")
+	viper.SetDefault("llm.huggingface_token", "")
+	viper.SetDefault("llm.litellm_api_key", "")
+
+	// Non-secret LLM keys with no built-in value, registered for the same
+	// reason: without a known key, LOOM_LLM_BEDROCK_PROFILE etc. are dropped.
+	// Every consumer tests these with == "" / len() == 0, so an empty default
+	// behaves exactly like an absent key. The headers env var is a string;
+	// withStringToStringMapHook decodes it.
+	viper.SetDefault("llm.bedrock_profile", "")
+	viper.SetDefault("llm.litellm_endpoint", "")
+	viper.SetDefault("llm.litellm_model", "")
+	viper.SetDefault("llm.litellm_extra_headers", map[string]string{})
 
 	// Database defaults (legacy - use loom data directory)
 	defaultDBPath := filepath.Join(loomconfig.GetLoomDataDir(), "loom.db")
@@ -1274,6 +1462,7 @@ func setDefaults() {
 	// Default both false to preserve existing behavior.
 	viper.SetDefault("tools.minimal", false)
 	viper.SetDefault("tools.none", false)
+	setLuaDefaults()
 	// Check LOOM_YOLO environment variable
 	if os.Getenv("LOOM_YOLO") == "true" || os.Getenv("LOOM_YOLO") == "1" {
 		viper.Set("tools.permissions.yolo", true)
@@ -1294,6 +1483,12 @@ func setDefaults() {
 	viper.SetDefault("tools.web_search.endpoints.tavily", "https://api.tavily.com/search")
 	viper.SetDefault("tools.web_search.endpoints.serpapi", "https://serpapi.com/search")
 	viper.SetDefault("tools.web_search.endpoints.duckduckgo", "https://api.duckduckgo.com/")
+	// Web search credentials (env/keyring only), registered so AutomaticEnv
+	// binds LOOM_TOOLS_WEB_SEARCH_*_KEY on Unmarshal. The keyring fallback
+	// tests != "", so an empty default leaves it unchanged.
+	viper.SetDefault("tools.web_search.brave_api_key", "")
+	viper.SetDefault("tools.web_search.tavily_api_key", "")
+	viper.SetDefault("tools.web_search.serpapi_key", "")
 
 	// Tool executor defaults
 	viper.SetDefault("tools.executor.timeout_seconds", 30)
@@ -1657,6 +1852,10 @@ func (c *Config) Validate() error {
 		return err
 	}
 
+	if err := c.Decision.endpoint().Validate(); err != nil {
+		return fmt.Errorf("%s: %w", decisionEndpointSources, err)
+	}
+
 	// Validate LLM config
 	if c.LLM.Provider == "" {
 		return fmt.Errorf("llm.provider is required")
@@ -2010,6 +2209,26 @@ tools:
     # Note: Tavily provides AI-optimized results (1000 searches/month FREE)
     # Brave Search also excellent (2000 searches/month FREE)
     # DuckDuckGo works without API key (factual queries only, limited results)
+
+  # run_lua: lets the model run a short Lua script that calls its own tools
+  # through the same admission hooks as direct calls. Off by default; an agent
+  # must also list run_lua in tools.builtin, and must have tools.hooks or
+  # tools.permissions configured. The default tools.permissions.yolo: true
+  # counts as configured but admits every call the lua deny lists leave, so
+  # set a restrictive permission policy or hook before enabling this.
+  # lua:
+  #   enabled: false
+  #   limits:                       # zero = engine default; capped at the engine ceilings
+  #     wall_seconds: 120
+  #     cpu_ticks: 2000000000
+  #     memory_bytes: 134217728     # 128 MiB per run (total allocation); ceiling 512 MiB
+  #     max_tool_calls: 100
+  #     max_concurrent_runs: 0      # 0 = derived from the process memory limit
+  #     max_concurrent_runs_per_key: 2
+  #   tools:
+  #     allow: []                   # empty = every tool the model can see
+  #     deny: [shell_execute, shell_execute_sandbox, agent_management, project_manager, git_contribute, propose_skill_edit]
+  #     deny_for_shared: [http_request, web_browse, web_search, file_write, files, workspace]
 
 logging:
   level: info  # debug, info, warn, error
