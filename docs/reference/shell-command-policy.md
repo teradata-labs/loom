@@ -312,7 +312,7 @@ Each returns a `*shellpolicy.LaunchError{Name, Reason}`, or nil.
 
 ## Tests
 
-- `pkg/shelljail` (87.8% coverage):
+- `pkg/shelljail` (87.9% statement coverage on macOS, 88.0% on Linux):
   - the corpus, through a real child and in-process under `-race`;
   - git runs nothing from repository config;
   - a timeout kills background programs;
@@ -321,7 +321,7 @@ Each returns a `*shellpolicy.LaunchError{Name, Reason}`, or nil.
   - the self-test catches a binary that is not a jail.
 - `pkg/shuttle/builtin`: the full hook → approval → jail path through the executor.
 - `cmd/looms`: config decoding, validation and `serve` setup.
-- `pkg/shellpolicy`: 96.4% statement coverage.
+- `pkg/shellpolicy`: 96.5% statement coverage.
 - **Corpus:** the design's bypass corpus plus the environment-assignment and static-path cases, 144 commands, each run under both enforcement modes.
 - **Review bypasses:** the commands from the PR #430 reviews (N1-N10 and R1-R6), the vectors found while fixing them, the other programs that follow symlinks out of the roots (follow-ups to R5), and GNU `find -files0-from` (a follow-up to R4) (`bypass_test.go`), 197 commands, each run under both enforcement modes. The review's commands and the new vectors were run in bash 5.2 (macOS bash 3.2 for `.*` matching `..`, git 2.50.1 for `git grep -O`) and did the harmful thing while the analyzer allowed them; the other rows are variants of those shapes and commands that must stay allowed.
 - **Run-time checks:** a 22-case table for `CheckLaunch`, and a 14-case table for the review's argument rules.

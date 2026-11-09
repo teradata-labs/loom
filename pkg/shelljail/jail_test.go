@@ -475,7 +475,9 @@ func TestJail_MemoryBombIsStopped(t *testing.T) {
 	// Whether the watchdog or RLIMIT_DATA stops it, the caller sees the
 	// memory limit and one line, never the runtime's crash dump.
 	assert.Equal(t, "memory", got.res.Limit, "exit %d, stderr %q", got.code, truncate(got.stderr, 300))
-	assert.True(t, strings.HasSuffix(got.stderr, MemoryStoppedMessage+"\n"), "stderr ends with the limit line: %q", truncate(got.stderr, 300))
+	// Contains, not a suffix: a -cover test binary, run as the child, adds a
+	// GOCOVERDIR warning when it exits.
+	assert.Contains(t, got.stderr, MemoryStoppedMessage+"\n", "stderr carries the limit line: %q", truncate(got.stderr, 300))
 	assert.NotContains(t, got.stderr, "goroutine ", "no runtime dump reaches the caller")
 }
 
