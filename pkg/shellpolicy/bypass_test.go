@@ -15,14 +15,20 @@
 package shellpolicy
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"mvdan.cc/sh/v3/interp"
+	"mvdan.cc/sh/v3/syntax"
 )
 
 // The tests in this file hold the commands from the PR #430 review
@@ -397,19 +403,412 @@ func TestAnalyze_ReviewEdgeShapes(t *testing.T) {
 	})
 }
 
-// More cd targets than the analyzer follows are refused under static.
+// More directories than the analyzer follows are refused under static. One
+// cd target reaches them all in a nested tree, so the limit on cd targets
+// (TestAnalyze_TooManyCdTargets) does not stop the command first.
 func TestAnalyze_TooManyDirectories(t *testing.T) {
 	opt, _ := escapeSession(t)
-	cmd := ""
+	d := opt.WorkingDir
 	for i := 0; i < maxDirs+2; i++ {
-		require.NoError(t, os.Mkdir(filepath.Join(opt.WorkingDir, "d"+itoa(i)), 0o700))
-		cmd += "cd d" + itoa(i) + "; "
+		d = filepath.Join(d, "d")
+		require.NoError(t, os.Mkdir(d, 0o700))
 	}
-	cmd += "ls"
+	cmd := "cd d; ls"
 	v := Readonly().Analyze(cmd, opt)
 	assert.Equal(t, Allow, v.Kind, "runtime: the runner checks each launch: %s", v.Reason())
 	opt.Static = true
 	v = Readonly().Analyze(cmd, opt)
 	assert.Equal(t, Deny, v.Kind)
 	assert.Contains(t, v.Reason(), "more directories than static enforcement follows")
+}
+
+// The tests below hold the commands from the second PR #430 review
+// (Josh-Schoen, R1-R6, at 256b705f). Each unsafe command did the harmful
+// thing in bash 5.2 (or dash, for R3) while the analyzer allowed it.
+
+// R1: ${x@P} prompt-expands the value, and prompt expansion runs the command
+// substitutions in it. Static enforcement refuses the @P operator. The
+// jailed shell does not prompt-expand (TestInterpreter_PromptExpansionRunsNothing),
+// so runtime gives no verdict. The other @ operators run nothing.
+func TestAnalyze_PromptExpansion(t *testing.T) {
+	runBypassCases(t, []bypassCase{
+		{cmd: `x='$(touch p)'; echo "${x@P}"`, want: Allow, static: Deny, why: "${x@P} (1:"},
+		{cmd: `x='$(cat ../o/secret.txt)'; echo "${x@P}"`, want: Allow, static: Deny, why: "prompt expansion"},
+		{cmd: `a=('$(touch p)'); echo ${a[@]@P}`, want: Allow, static: Deny},
+		{cmd: `eval 'echo ${x@P}'`, want: Allow, static: Deny},
+		{cmd: `x='$(touch p)'; echo "${x}" "${x@Q}" "${x@E}" "${x@U}" "${x@A}" "${x@a}"`, want: Allow, static: Allow},
+	})
+}
+
+// R1 under runtime: the jailed shell (mvdan.cc/sh's interpreter) leaves the
+// value of ${x@P} as it is and starts nothing. An interpreter upgrade that
+// implements prompt expansion fails here, and the analyzer must then refuse
+// @P under runtime too.
+func TestInterpreter_PromptExpansionRunsNothing(t *testing.T) {
+	out, launches := runInterpreter(t, `x='$(touch p)'; echo "${x@P}"`)
+	assert.Equal(t, "$(touch p)\n", out, "the interpreter prints the value unexpanded")
+	assert.Empty(t, launches, "the interpreter starts no program for ${x@P}")
+}
+
+// R2: wait -p NAME (bash 5.1) assigns NAME, and a subscript in it is
+// evaluated as arithmetic. Static enforcement judges the name like printf -v.
+// The jailed shell refuses wait -p (TestInterpreter_WaitPRefused).
+func TestAnalyze_WaitP(t *testing.T) {
+	runBypassCases(t, []bypassCase{
+		{cmd: `sleep 0 & wait -n -p 'a[$(touch p)]'`, want: Allow, static: Deny, why: "subscript"},
+		{cmd: `wait -np 'a[$(touch p)]'`, want: Allow, static: Deny, why: "subscript"},
+		{cmd: `wait -p'a[$(touch p)]'`, want: Allow, static: Deny, why: "subscript"},
+		{cmd: `wait -fnp 'a[$(touch p)]' 1`, want: Allow, static: Deny, why: "subscript"},
+		{cmd: `wait "$o" 'a[$(touch p)]'`, want: Allow, static: Deny, why: "subscript"},
+		{cmd: `wait "$o" "$v"`, want: Allow, static: Deny, why: "computed at run time"},
+		{cmd: `wait -p "$v"`, want: Ask, static: Deny, why: "computed at run time"},
+		{cmd: `wait -p PATH`, want: Ask, static: Ask, why: "sets PATH"},
+		{cmd: `sleep 0 & wait -n -p pid; wait "$!"; wait -- 1 'a[$(touch p)]'; wait`, want: Allow, static: Allow},
+	})
+}
+
+// R2 under runtime: the jailed shell refuses wait -p, so no name is assigned.
+func TestInterpreter_WaitPRefused(t *testing.T) {
+	out, launches := runInterpreter(t, `wait -p 'a[$(touch p)]' 2>&1`)
+	assert.Contains(t, out, "unsupported option", "the interpreter refuses wait -p")
+	assert.Empty(t, launches, "the interpreter starts no program for wait -p")
+}
+
+// runInterpreter runs src in mvdan.cc/sh's interpreter with an exec handler
+// that records each program launch and starts none. It returns the output
+// and the launches.
+func runInterpreter(t *testing.T, src string) (string, [][]string) {
+	t.Helper()
+	file, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(src), "")
+	require.NoError(t, err, "parse %q", src)
+	var out bytes.Buffer
+	var launches [][]string
+	r, err := interp.New(interp.StdIO(strings.NewReader(""), &out, &out), interp.Dir(t.TempDir()),
+		interp.ExecHandlers(func(interp.ExecHandlerFunc) interp.ExecHandlerFunc {
+			return func(_ context.Context, args []string) error {
+				launches = append(launches, args)
+				return interp.ExitStatus(127)
+			}
+		}))
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = r.Run(ctx, file)
+	return out.String(), launches
+}
+
+// R4: --files0-from reads the names of the files to read from a file, which
+// path confinement cannot see. sort, wc and du refuse it, in any spelling.
+func TestAnalyze_Files0From(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
+	runBypassCases(t, []bypassCase{
+		{cmd: `printf '../o/secret.txt\0' > l; sort --files0-from=l`, want: Ask, static: Ask, why: "sort (1:33): --files0-from is outside the profile"},
+		{cmd: `sort --files0-from l`, want: Ask, static: Ask, why: "--files0-from"},
+		{cmd: `sort --files0=l`, want: Ask, static: Ask, why: "--files0-from"},
+		{cmd: `wc --files0-from=l`, want: Ask, static: Ask, why: "wc (1:1): --files0-from"},
+		{cmd: `wc -c --files0-from l`, want: Ask, static: Ask},
+		{cmd: `du --files0-from=l`, want: Ask, static: Ask, why: "du (1:1): --files0-from"},
+		{cmd: `du -sh --files0 l`, want: Ask, static: Ask},
+		{cmd: `sort -k2 a.txt; wc -l a.txt; du -sh .; sort -- --files0-from=l`, want: Allow, static: Allow},
+	})
+	opt, _ := escapeSession(t)
+	for _, argv := range [][]string{
+		{"sort", "--files0-from=l"}, {"wc", "--files0-from", "l"}, {"du", "--files0=l"},
+	} {
+		err := Readonly().CheckLaunch(argv, opt.WorkingDir, opt.Roots, nil)
+		assert.ErrorContains(t, err, "--files0-from is outside the profile", "%v at run time", argv)
+	}
+}
+
+// R5: grep -R (--dereference-recursive) follows every symlink it meets, so a
+// symlink in the session leads it out of the roots. grep -r follows only the
+// symlinks named on the command line, which path confinement checks.
+func TestAnalyze_GrepDereferenceRecursive(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
+	runBypassCases(t, []bypassCase{
+		{cmd: `grep -R x .`, want: Ask, static: Ask, why: "grep (1:1): -R is outside the profile"},
+		{cmd: `grep -Rn x .`, want: Ask, static: Ask, why: "-R is outside the profile"},
+		{cmd: `grep -inR x .`, want: Ask, static: Ask},
+		{cmd: `grep --dereference-recursive x .`, want: Ask, static: Ask, why: "--dereference-recursive"},
+		{cmd: `grep --dereference x .`, want: Ask, static: Ask, why: "--dereference-recursive"},
+		{cmd: `egrep -R x .; fgrep -R x .`, want: Ask, static: Ask},
+		{cmd: `grep -r x .; grep -rn x .; grep -eR a.txt; grep -AR x a.txt; grep -- -R a.txt`, want: Allow, static: Allow},
+	})
+	opt, _ := escapeSession(t)
+	err := Readonly().CheckLaunch([]string{"grep", "-Rn", "x", "."}, opt.WorkingDir, opt.Roots, nil)
+	assert.ErrorContains(t, err, "-R is outside the profile", "grep -R at run time")
+}
+
+// R6: the time to follow cd targets grows with their number, and the hook
+// runs before shell_execute's 40,000-character limit. Past maxCdTargets
+// literal cd or pushd targets the command is refused in both modes, before
+// any of them is followed.
+func TestAnalyze_TooManyCdTargets(t *testing.T) {
+	opt, _ := escapeSession(t)
+	cmd := strings.Repeat("cd ..;", 40000/len("cd ..;"))
+	pol := Readonly()
+	for _, static := range []bool{false, true} {
+		o := opt
+		o.Static = static
+		start := time.Now()
+		v := pol.Analyze(cmd, o)
+		t.Logf("static=%v: %d cd targets judged in %v", static, 40000/len("cd ..;"), time.Since(start))
+		assert.Equal(t, Deny, v.Kind, "static=%v: %s", static, v.Reason())
+		assert.Contains(t, v.Reason(), "more than "+itoa(maxCdTargets)+" cd or pushd targets", "static=%v", static)
+	}
+	within := strings.Repeat("cd sub; ", maxCdTargets) + "ls"
+	for _, static := range []bool{false, true} {
+		o := opt
+		o.Static = static
+		v := pol.Analyze(within, o)
+		assert.Equal(t, Allow, v.Kind, "static=%v: %d cd targets are followed: %s", static, maxCdTargets, v.Reason())
+	}
+}
+
+// R6, found while fixing it: with at most maxCdTargets targets the time
+// still grew with the depth of the tree, because workingDirs checked every
+// directory against every target on each pass and ResolvePath walked the
+// whole prefix again for each component. 64 targets in a tree 80 levels
+// deep did not finish in 120 s under -race; each directory is now followed
+// through each target once, and ResolvePath is linear in the depth. The
+// bound is generous so a slow CI host does not fail it.
+func TestAnalyze_CdFollowingIsBounded(t *testing.T) {
+	opt, _ := escapeSession(t)
+	d := opt.WorkingDir
+	for i := 0; i < 80; i++ {
+		d = filepath.Join(d, "d")
+		require.NoError(t, os.Mkdir(d, 0o700))
+	}
+	var b strings.Builder
+	b.WriteString("cd d; cd ..; ")
+	for i := 0; i < maxCdTargets-2; i++ {
+		b.WriteString("cd x" + itoa(i) + "; ")
+	}
+	b.WriteString("cat a.txt")
+	for _, static := range []bool{false, true} {
+		o := opt
+		o.Static = static
+		start := time.Now()
+		v := Readonly().Analyze(b.String(), o)
+		elapsed := time.Since(start)
+		t.Logf("static=%v: %v in %v", static, v.Kind, elapsed)
+		assert.Less(t, elapsed, 30*time.Second, "static=%v: following %d cd targets is bounded", static, maxCdTargets)
+		want := Ask // cd .. reaches the parent of the session
+		if static {
+			want = Deny // more than maxDirs directories
+		}
+		assert.Equal(t, want, v.Kind, "static=%v: %s", static, v.Reason())
+	}
+}
+
+// ResolvePath resolves a symlink-free prefix with one Lstat per component.
+// It returns what resolving each component with filepath.EvalSymlinks
+// returns, for symlinks that are relative, absolute, chained, to a file,
+// dangling or looping, and for a .. after a symlink.
+func TestResolvePath_MatchesPerComponentEvalSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
+	reference := func(dir, path string) string {
+		if !filepath.IsAbs(path) {
+			path = dir + "/" + path
+		}
+		cur := "/"
+		comps := strings.Split(path, "/")
+		for i, c := range comps {
+			switch c {
+			case "", ".":
+				continue
+			case "..":
+				cur = filepath.Dir(cur)
+				continue
+			}
+			resolved, err := filepath.EvalSymlinks(filepath.Join(cur, c))
+			if err != nil {
+				return filepath.Join(cur, filepath.Join(comps[i:]...))
+			}
+			cur = resolved
+		}
+		return cur
+	}
+	opt, base := escapeSession(t)
+	w := opt.WorkingDir
+	require.NoError(t, os.MkdirAll(filepath.Join(w, "a", "b"), 0o700))
+	require.NoError(t, os.Symlink("a/b", filepath.Join(w, "rel")))
+	require.NoError(t, os.Symlink(filepath.Join(base, "o"), filepath.Join(w, "abs")))
+	require.NoError(t, os.Symlink("rel", filepath.Join(w, "chain")))
+	require.NoError(t, os.Symlink("victim.txt", filepath.Join(w, "file")))
+	require.NoError(t, os.Symlink("missing", filepath.Join(w, "dangling")))
+	require.NoError(t, os.Symlink("loop", filepath.Join(w, "loop")))
+	for _, p := range []string{
+		"a/b", "rel", "rel/..", "rel/../..", "chain/x", "abs/secret.txt", "abs/../w/a",
+		"link/k", "link/../secret.txt", "file", "file/x", "dangling", "dangling/x", "loop", "loop/x",
+		"missing/x/y", "./a/./b/", "../../..", "/", base + "/o/ssh",
+	} {
+		assert.Equal(t, reference(w, p), ResolvePath(w, p), "ResolvePath(w, %q)", p)
+	}
+}
+
+// Follow-ups to R5: other programs that follow symlinks out of the roots
+// while they walk a directory. In the escapeSession layout w/link points to
+// o/ssh, outside the session. Each was checked on macOS's BSD tools:
+// du -aL, ls -RL, find -L and find -LE listed o/ssh's names, grep -rS
+// printed the secret, and diff printed it when given a directory that holds
+// a symlink to it.
+
+// launchCase is one launch for runLaunchCases: block is a substring of the
+// reason, or "" for an allowed launch.
+type launchCase struct {
+	argv  []string
+	block string
+}
+
+// runLaunchCases checks each argv at run time in the escapeSession layout.
+func runLaunchCases(t *testing.T, cases []launchCase) {
+	t.Helper()
+	opt, _ := escapeSession(t)
+	for _, tc := range cases {
+		err := Readonly().CheckLaunch(tc.argv, opt.WorkingDir, opt.Roots, nil)
+		if tc.block == "" {
+			assert.NoError(t, err, "%v at run time", tc.argv)
+			continue
+		}
+		assert.ErrorContains(t, err, tc.block, "%v at run time", tc.argv)
+	}
+}
+
+// du -L (--dereference) follows every symlink; -H, -D and
+// --dereference-args follow only the operands, which are path-checked.
+func TestAnalyze_DuDereference(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
+	runBypassCases(t, []bypassCase{
+		{cmd: `du -L .`, want: Ask, static: Ask, why: "du (1:1): -L is outside the profile"},
+		{cmd: `du -aL .`, want: Ask, static: Ask, why: "-L is outside the profile"},
+		{cmd: `du -sLh .`, want: Ask, static: Ask},
+		{cmd: `du --dereference .`, want: Ask, static: Ask, why: "--dereference is outside the profile"},
+		{cmd: `du --dereference=x .`, want: Ask, static: Ask},
+		{cmd: `du -a .; du -sh .; du -H .; du -D .; du --dereference-args .; du -d1 .; du -- -L`, want: Allow, static: Allow},
+	})
+	runLaunchCases(t, []launchCase{
+		{argv: []string{"du", "-aL", "."}, block: "-L is outside the profile"},
+		{argv: []string{"du", "--dereference", "."}, block: "--dereference"},
+		{argv: []string{"du", "--dereference-args", "."}},
+	})
+}
+
+// ls -L with -R (--recursive) lists the directories symlinks point to,
+// recursively. Each alone follows nothing out of the roots: -R does not
+// follow symlinks, and -L alone lists one level.
+func TestAnalyze_LsRecursiveDereference(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
+	runBypassCases(t, []bypassCase{
+		{cmd: `ls -RL .`, want: Ask, static: Ask, why: "ls (1:1): ls -L with -R lists the directories symlinks point to"},
+		{cmd: `ls -LR`, want: Ask, static: Ask},
+		{cmd: `ls -R -L .`, want: Ask, static: Ask},
+		{cmd: `ls -laRL`, want: Ask, static: Ask},
+		{cmd: `ls --recursive --dereference .`, want: Ask, static: Ask},
+		{cmd: `ls -R --dereference .`, want: Ask, static: Ask},
+		{cmd: `ls --rec -L`, want: Ask, static: Ask},
+		{cmd: `ls --deref -R`, want: Ask, static: Ask},
+		{cmd: `ls -R .; ls -L .; ls -lL; ls -RH .; ls -R --dereference-command-line .; ls -R -- -L`, want: Allow, static: Allow},
+	})
+	runLaunchCases(t, []launchCase{
+		{argv: []string{"ls", "-RL", "."}, block: "ls -L with -R"},
+		{argv: []string{"ls", "--recursive", "--dereference"}, block: "ls -L with -R"},
+		{argv: []string{"ls", "-R", "."}},
+	})
+}
+
+// find -L and -follow follow every symlink, and BSD find takes its options
+// in a group (-LE, -xL). find -H follows only the starting points, which
+// path confinement resolves, so it stays allowed: find -H link asks because
+// link itself leads out of the session.
+func TestAnalyze_FindFollow(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
+	runBypassCases(t, []bypassCase{
+		{cmd: `find -L .`, want: Ask, static: Ask, why: "find (1:1): find -L is outside the profile"},
+		{cmd: `find -LE .`, want: Ask, static: Ask, why: "find -LE is outside the profile"},
+		{cmd: `find -xL . -name k`, want: Ask, static: Ask},
+		{cmd: `find . -follow -name k`, want: Ask, static: Ask, why: "-follow is outside the profile"},
+		{cmd: `find -H link`, want: Ask, static: Ask, why: "link (1:1): reads outside the read roots"},
+		{cmd: `find . -name '*.txt' -type f; find -H .; find -P .; find -x . -ls; find . -links 1; find -E . -regex 'a.*'`, want: Allow, static: Allow},
+	})
+	runLaunchCases(t, []launchCase{
+		{argv: []string{"find", "-L", "."}, block: "find -L is outside the profile"},
+		{argv: []string{"find", "-xL", "."}, block: "find -xL is outside the profile"},
+		{argv: []string{"find", ".", "-follow"}, block: "-follow"},
+		{argv: []string{"find", "-H", "."}},
+	})
+}
+
+// diff compares the files in a directory operand (and, with -r, in its
+// subdirectories) and follows the symlinks it meets, so a symlink in the
+// session leads it out. A directory operand is an Ask, whether or not -r is
+// given; diff over files stays allowed.
+func TestAnalyze_DiffDirectoryOperand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
+	runBypassCases(t, []bypassCase{
+		{cmd: `diff sub sub`, want: Ask, static: Ask, why: "sub (1:1): diff compares the files in a directory"},
+		{cmd: `diff -r . sub`, want: Ask, static: Ask, why: "diff compares the files in a directory"},
+		{cmd: `diff -ru a.txt sub`, want: Ask, static: Ask},
+		{cmd: `diff --recursive --from-file=sub a.txt`, want: Ask, static: Ask},
+		{cmd: `cd sub; diff ../a.txt ..`, want: Ask, static: Ask},
+		{cmd: `diff s* a.txt`, want: Allow, static: Ask, why: "diff compares the files in a directory"},
+		{cmd: `diff a.txt victim.txt; diff -u a.txt - < victim.txt; diff -r a.txt victim.txt; diff missing a.txt`, want: Allow, static: Allow},
+	})
+	runLaunchCases(t, []launchCase{
+		{argv: []string{"diff", "sub", "sub"}, block: "diff compares the files in a directory"},
+		{argv: []string{"diff", "-r", "a.txt", "./sub/"}, block: "diff compares the files in a directory"},
+		{argv: []string{"diff", "--to-file=sub", "a.txt"}, block: "diff compares the files in a directory"},
+		{argv: []string{"diff", "-r", "a.txt", "victim.txt"}},
+	})
+	opt, _ := escapeSession(t)
+	err := Readonly().CheckLaunch([]string{"diff", "sub", "sub"}, opt.WorkingDir, opt.Roots, &Grant{Programs: []string{"diff"}})
+	assert.NoError(t, err, "an approved diff runs with any operands")
+}
+
+// BSD grep -S follows every symlink while it recurses (macOS's grep -rS
+// printed the secret). GNU grep has no -S.
+func TestAnalyze_GrepFollowSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
+	runBypassCases(t, []bypassCase{
+		{cmd: `grep -rS x .`, want: Ask, static: Ask, why: "grep (1:1): -S is outside the profile"},
+		{cmd: `grep -S -r x .`, want: Ask, static: Ask},
+		{cmd: `egrep -rnS x .`, want: Ask, static: Ask},
+		{cmd: `grep -rs x .; grep -rO x .; grep -rp x .; grep -eS a.txt`, want: Allow, static: Allow},
+	})
+	runLaunchCases(t, []launchCase{
+		{argv: []string{"grep", "-rS", "x", "."}, block: "-S is outside the profile"},
+	})
+}
+
+// Follow-up to R4: GNU find -files0-from F (findutils 4.9) reads its
+// starting points from F, which path confinement never sees, as sort
+// --files0-from did. BSD find has no such option.
+func TestAnalyze_FindFiles0From(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
+	runBypassCases(t, []bypassCase{
+		{cmd: `printf '../o\0' > l; find -files0-from l -name secret.txt`, want: Ask, static: Ask, why: "find (1:22): -files0-from is outside the profile"},
+		{cmd: `find -files0-from l`, want: Ask, static: Ask},
+		{cmd: `find . -name files0-from`, want: Allow, static: Allow},
+	})
+	runLaunchCases(t, []launchCase{
+		{argv: []string{"find", "-files0-from", "l"}, block: "-files0-from is outside the profile"},
+	})
 }

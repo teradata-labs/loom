@@ -106,18 +106,21 @@ The analyzer collects every literal `cd` and `pushd` target in the command, wher
 
 Under `runtime` the runner checks each launch against the shell's current directory, so none of these is refused there.
 
+In both modes, a command with more than 64 literal `cd` and `pushd` targets is a Deny, and the targets past the limit are not followed. The hook runs before `shell_execute`'s own command-length limit, and the time to follow the targets grows with their number. Each directory found is followed through each target once, so the work is bounded by 64 directories times 64 targets.
+
 ### Arithmetic and subscripts (`static` only)
 
-Bash evaluates an array subscript as arithmetic, and the command substitutions in an arithmetic subscript run. A subscript reaches bash in a variable name (`printf -v 'a[$(cmd)]' x`) and in any value arithmetic reads (`x='a[$(cmd)]'; echo $(( x ))`, or `[[ $x -eq 1 ]]`). The runner sees each launch such a substitution makes, so under `runtime` none of this is refused. Under `static`:
+Bash evaluates an array subscript as arithmetic, and the command substitutions in an arithmetic subscript run. A subscript reaches bash in a variable name (`printf -v 'a[$(cmd)]' x`, `wait -p 'a[$(cmd)]'`) and in any value arithmetic reads (`x='a[$(cmd)]'; echo $(( x ))`, or `[[ $x -eq 1 ]]`). The runner sees each launch such a substitution makes, so under `runtime` none of this is refused. The jailed shell (mvdan.cc/sh v3.14.1) also refuses `wait -p` and does not prompt-expand `${name@P}`; `TestInterpreter_WaitPRefused` and `TestInterpreter_PromptExpansionRunsNothing` fail when an interpreter upgrade changes that. Under `static`:
 
 | The command… | Verdict |
 |---|---|
-| names a variable with a subscript that is not an integer, `@` or `*`, in `printf -v`, `read`, `mapfile`, `getopts`, `unset`, `declare` and its variants, a name reference target, `test -v`, `[ -v` or `[[ -v` | Deny |
+| names a variable with a subscript that is not an integer, `@` or `*`, in `printf -v`, `read`, `mapfile`, `getopts`, `wait -p`, `unset`, `declare` and its variants, a name reference target, `test -v`, `[ -v` or `[[ -v` | Deny |
 | gives `test -v`, `[ -v` or `[[ -v` a computed name | Deny |
 | uses `declare -i` (or `local`, `typeset` with `-i`): every later assignment to the name is arithmetic | Deny |
 | has arithmetic (`$(( ))`, `(( ))`, `let`, a C-style `for`, `[[ … -eq … ]]` and the other comparisons, a subscript, a `${s:offset:length}` slice) that reads a variable, unless the variable is proven to hold an integer | Deny |
 | has arithmetic over a command substitution, a positional parameter, or any expansion other than `$name`, `${name}`, `$#`, `$?`, `$$`, `$!` or a length `${#name}` | Deny |
 | uses an indirect expansion `${!name}` (not `${!prefix*}` or `${!array[@]}`) | Deny |
+| uses the prompt-expansion operator `${name@P}`: bash expands the value as a prompt string, which runs the command substitutions in it (`x='$(cmd)'; echo "${x@P}"` runs `cmd`). The other `@` operators (`@Q`, `@E`, `@A`, `@a`, `@U`, `@u`, `@L`, `@K`, `@k`) run nothing | Deny |
 
 A variable is **proven to hold an integer** at a read when nothing in the command assigns it anything but an integer (a literal integer, an arithmetic expansion, `$#`/`$?`/`$$`/`$!` or a length), and either a top-level statement assigned it an integer before the read (a bare assignment, `declare`/`export`/`readonly`/`typeset` without `-n` or `-i`, `(( ))` or `let`; not in the background and without redirects), or the read is inside a C-style `for` whose init assigns it, or inside a `for NAME in` loop over literal integers. `read`, `mapfile`, `printf -v`, `getopts`, `select`, a name reference to it, `${NAME:=…}` with a non-integer value, and a `for NAME in` loop over anything else make the variable unproven everywhere. Variables bash sets from data (`REPLY`, `MAPFILE`, `OPTARG`, `BASH_REMATCH`, `PWD`, `OLDPWD`, `DIRSTACK`, `_`, and the `BASH_*`/`FUNCNAME` call-stack arrays) are never proven. The check does not know whether an array is associative, so a non-integer subscript of an associative array is refused too.
 
@@ -125,8 +128,8 @@ So `i=0; (( i++ )); echo $(( i + 1 ))`, `for ((i=0; i<3; i++)); do …; done` an
 
 | Variables the command sets | Verdict |
 |---|---|
-| a name `shellpolicy.ExecEnvName` reports (its value changes what runs or loads), set in any form: a prefix (`PATH=/x ls`), a bare assignment (`PATH=/x`), `export`/`declare`/`typeset`/`readonly`/`local`/`nameref` (with or without `-x`, and the target of `-n`), `env NAME=…`, a `for`/`select` variable, `read`, `mapfile`/`readarray`, `printf -v`, `getopts`, `${NAME:=…}`/`${NAME=…}`, or arithmetic (`(( NAME = 1 ))`, `let`, `++`) | Ask in both modes, naming the variable; the grant lists it in `Env` |
-| a variable whose name is computed at run time in one of those forms (`export "$n=…"`, `read "$v"`, `env "$a" …`) | `runtime`: Ask. `static`: Deny |
+| a name `shellpolicy.ExecEnvName` reports (its value changes what runs or loads), set in any form: a prefix (`PATH=/x ls`), a bare assignment (`PATH=/x`), `export`/`declare`/`typeset`/`readonly`/`local`/`nameref` (with or without `-x`, and the target of `-n`), `env NAME=…`, a `for`/`select` variable, `read`, `mapfile`/`readarray`, `printf -v`, `wait -p`, `getopts`, `${NAME:=…}`/`${NAME=…}`, or arithmetic (`(( NAME = 1 ))`, `let`, `++`) | Ask in both modes, naming the variable; the grant lists it in `Env` |
+| a variable whose name is computed at run time in one of those forms (`export "$n=…"`, `read "$v"`, `wait -p "$v"`, `env "$a" …`) | `runtime`: Ask. `static`: Deny |
 | `env -S` or `env -P` (more assignments, or another search path) | Ask |
 | an `IFS=` prefix on `read`, `mapfile` or `readarray` (it only sets that builtin's field separator) | no verdict |
 | `CDPATH`, in any form | `static`: Deny (see "Changing directory"). `runtime`: no verdict |
@@ -140,7 +143,10 @@ The hook additionally turns an **Ask into a Deny** when the call's JSON-encoded 
 
 | Parameter of the call | Verdict |
 |---|---|
-| `shell` absent, empty, `bash`, `sh`, or `default` (bash, else sh) | the command is judged as above |
+| `shell` set to `bash` | the command is judged as above |
+| `shell` absent, empty or `default`, when `bash` is on the server's `PATH` (`shell_execute` then runs bash) | the command is judged as above |
+| `shell` absent, empty or `default`, when `bash` is not on `PATH` (`shell_execute` then runs `sh`) | Deny |
+| `shell` set to `sh` | Deny: `sh` can be dash (Debian, Ubuntu), which parses some commands differently from bash. Dash has no `$'…'` quoting, so ``echo $'\' ; touch x ; #'`` is one `echo` to bash and runs `touch` in dash |
 | `shell` set to anything else (`powershell`, `cmd`, `zsh`), or not a string | Deny: the command is parsed as bash, so a command another shell runs cannot be judged |
 | `env` (merged into the command's environment by `shell_execute`): a name `ExecEnvName` reports | Ask in both modes, granting the name in `Env`; the reason shows it as `NAME (env parameter)` |
 | `env`: `CDPATH` | `static`: Deny |
@@ -183,15 +189,17 @@ When the Ask is approved, the tool body reads the grants with `shellpolicy.Merge
 
 | Program | Argument rules |
 |---|---|
-| `cat head tail wc cut comm cmp od ls stat realpath md5sum sha1sum sha256sum shasum md5` | path confinement |
-| `grep egrep fgrep` | path confinement, including a file attached to `-f` (`-f/x`); `-e -f -m -A -B -C -d -D` take a value |
-| `diff` | path confinement, including a file attached to `-X`; `-C -U -D -F -I -x -X -S -W -L` take a value |
-| `du` | path confinement, including a file attached to `-X`; `-X -B -d -t -I` take a value |
+| `cat head tail cut comm cmp od stat realpath md5sum sha1sum sha256sum shasum md5` | path confinement |
+| `ls` | path confinement; refuses `-L` or `--dereference` together with `-R` or `--recursive` (ls then lists the directories symlinks point to, out of the read roots). Each alone is allowed. Every letter of a short option group counts |
+| `wc` | path confinement; refuses `--files0-from` (it reads the names of the files to count from a file, which path confinement does not see) |
+| `grep egrep fgrep` | path confinement, including a file attached to `-f` (`-f/x`); refuses `-R`, `--dereference-recursive` and BSD grep's `-S`, which follow every symlink they meet out of the read roots (`-r` follows only the symlinks named on the command line, and path confinement checks those); `-e -f -m -A -B -C -d -D` take a value |
+| `diff` | path confinement, including a file attached to `-X`; `-C -U -D -F -I -x -X -S -W -L` take a value. An operand that is an existing directory (also through `--from-file=` or `--to-file=`, and, under `static`, a glob match) is an Ask, with or without `-r`: diff compares the files in it and follows the symlinks it meets there, so `diff sub other` printed a file outside the session through a symlink in `sub`. `Profile.NoDirOperands` marks this; `CheckLaunch` applies it to the expanded operands |
+| `du` | path confinement, including a file attached to `-X`; refuses `--files0-from`, and `-L` and `--dereference` (they follow every symlink out of the read roots; `-H`, `-D` and `--dereference-args` follow only the operands, which path confinement checks); `-X -B -d -t -I` take a value |
 | `jq` | path confinement, including a directory attached to `-L` |
 | `tr basename dirname seq sleep uname whoami id which` | none (arguments are not files) |
-| `sort` | refuses `-o`, `-T`, `--output`, `--compress-program`, `--temporary-directory`; `-k -t -S` take a value |
+| `sort` | refuses `-o`, `-T`, `--output`, `--compress-program`, `--temporary-directory`, `--files0-from` (GNU sort reads the files named in that file, so `sort --files0-from=list` printed a file outside the session); `-k -t -S` take a value |
 | `uniq` | at most one positional argument (`-f`, `-s`, `-w` take a value). Under `static`, a glob argument is an Ask, since nothing counts the names it expands to |
-| `find` | refuses `-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, `-fprint`, `-fprint0`, `-fprintf`, `-fls` |
+| `find` | refuses `-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, `-fprint`, `-fprint0`, `-fprintf`, `-fls`; refuses GNU `-files0-from` (it reads the starting points from a file, which path confinement does not see); refuses `-L` and `-follow`, which follow every symlink out of the read roots, also inside a BSD option group (`-LE`, `-xL`). `-H` follows only the starting points, which path confinement resolves, so it is allowed (`find -H link` asks when `link` leads outside) |
 | `file` | refuses `-C`, `--compile`; path confinement includes a file attached to `-f` or `-m`; `-e -F -f -m -P` take a value |
 | `base64` | refuses `-o`, `--output`; path confinement includes a file attached to `-i` (BSD input file); `-w -b -i` take a value |
 | `date` | refuses `-s`, `--set`, `-f`, `--file`, `-r`, `--reference` (date's arguments are not path-checked, and those options read a file), and a positional time such as `202601010000`; `-d -v` take a value. So BSD `date -j -f FORMAT` and `date -r SECONDS` need approval |
@@ -313,11 +321,11 @@ Each returns a `*shellpolicy.LaunchError{Name, Reason}`, or nil.
   - the self-test catches a binary that is not a jail.
 - `pkg/shuttle/builtin`: the full hook → approval → jail path through the executor.
 - `cmd/looms`: config decoding, validation and `serve` setup.
-- `pkg/shellpolicy`: 96.1% statement coverage.
+- `pkg/shellpolicy`: 96.4% statement coverage.
 - **Corpus:** the design's bypass corpus plus the environment-assignment and static-path cases, 144 commands, each run under both enforcement modes.
-- **Review bypasses:** the commands from the PR #430 review and the vectors found while fixing them (`bypass_test.go`), 133 commands, each run under both enforcement modes. The review's commands and the new vectors were run in bash 5.2 (macOS bash 3.2 for `.*` matching `..`, git 2.50.1 for `git grep -O`) and did the harmful thing while the analyzer allowed them; the other rows are variants of those shapes and commands that must stay allowed.
+- **Review bypasses:** the commands from the PR #430 reviews (N1-N10 and R1-R6), the vectors found while fixing them, the other programs that follow symlinks out of the roots (follow-ups to R5), and GNU `find -files0-from` (a follow-up to R4) (`bypass_test.go`), 197 commands, each run under both enforcement modes. The review's commands and the new vectors were run in bash 5.2 (macOS bash 3.2 for `.*` matching `..`, git 2.50.1 for `git grep -O`) and did the harmful thing while the analyzer allowed them; the other rows are variants of those shapes and commands that must stay allowed.
 - **Run-time checks:** a 22-case table for `CheckLaunch`, and a 14-case table for the review's argument rules.
-- **Call parameters:** `TestDecide_ShellParam` and `TestDecide_EnvParam`.
+- **Call parameters:** `TestDecide_ShellParam`, `TestDecide_ShellNeedsBash` (sets whether the hook finds bash on `PATH`, so it runs on every host) and `TestDecide_EnvParam`.
 - **Windows refusal:** `TestDecide_RefusesOnWindows` sets the OS the hook judges for, so it runs on every host: on Windows every call is refused (default, `bash`, `sh` and other shells; `static` and `runtime`; through the factory and the executor), and the same calls are judged normally on Linux and macOS. The tests that check POSIX path semantics skip on Windows.
 - **Interpreter drift:** `TestImplementedBuiltinsMatchInterpreter` fails when an interpreter upgrade implements or drops a builtin.
 - **Executor:** an end-to-end test through `BuildChainFromConfig` and the executor.

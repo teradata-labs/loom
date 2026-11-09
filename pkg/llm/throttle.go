@@ -58,11 +58,16 @@ func IsThrottle(err error) bool {
 }
 
 // RetryAfter extracts the server-specified wait carried on err (via a
-// ThrottleError anywhere in its chain), or 0 when none was specified.
+// ThrottleError or TransientError anywhere in its chain), or 0 when none
+// was specified.
 func RetryAfter(err error) time.Duration {
 	var te *ThrottleError
 	if errors.As(err, &te) && te.RetryAfter > 0 {
 		return te.RetryAfter
+	}
+	var tr *TransientError
+	if errors.As(err, &tr) && tr.RetryAfter > 0 {
+		return tr.RetryAfter
 	}
 	return 0
 }

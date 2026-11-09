@@ -17,6 +17,7 @@ package shellpolicy
 import (
 	"context"
 	"errors"
+	osexec "os/exec"
 	"strings"
 	"testing"
 
@@ -33,12 +34,28 @@ func fixedOptions(opt Options) OptionsFunc {
 // judgeAs makes the hook judge as it would on osName for the rest of the test.
 // The hook tests that check how a call is judged run as "linux", so they still
 // check the judgement on a Windows host, where the hook otherwise refuses
-// every call. Their commands do not depend on POSIX path semantics.
+// every call. Their commands do not depend on POSIX path semantics. The judged
+// host has bash on PATH (bashOnPath), whatever the test host has.
 func judgeAs(t *testing.T, osName string) {
 	t.Helper()
 	prev := goos
 	goos = osName
 	t.Cleanup(func() { goos = prev })
+	bashOnPath(t, true)
+}
+
+// bashOnPath makes the hook find bash on PATH, or not, for the rest of the
+// test. Every other program is missing.
+func bashOnPath(t *testing.T, found bool) {
+	t.Helper()
+	prev := lookPath
+	lookPath = func(file string) (string, error) {
+		if found && file == "bash" {
+			return "/bin/bash", nil
+		}
+		return "", osexec.ErrNotFound
+	}
+	t.Cleanup(func() { lookPath = prev })
 }
 
 func decide(t *testing.T, opt Options, static bool, params map[string]interface{}) shuttle.Decision {
@@ -198,7 +215,7 @@ func TestDecide_ShellParam(t *testing.T) {
 			{shell: "zsh", want: shuttle.Deny},
 			{shell: 7, want: shuttle.Deny},
 			{shell: "bash", want: shuttle.Allow},
-			{shell: "sh", want: shuttle.Allow},
+			{shell: "sh", want: shuttle.Deny},
 			{shell: "", want: shuttle.Allow},
 			{shell: nil, want: shuttle.Allow},
 			{shell: "default", want: shuttle.Allow},
@@ -207,7 +224,7 @@ func TestDecide_ShellParam(t *testing.T) {
 				d := decide(t, opt, static, map[string]interface{}{"command": "echo @(Remove-Item x)", "shell": tc.shell})
 				assert.Equal(t, tc.want, d.Kind, "%s: shell %v (static=%v): %s", osName, tc.shell, static, d.Reason)
 				if tc.want == shuttle.Deny {
-					assert.Contains(t, d.Reason, "only bash and sh", "%s: shell %v", osName, tc.shell)
+					assert.Contains(t, d.Reason, "only bash commands can be judged", "%s: shell %v", osName, tc.shell)
 				}
 			}
 		}
@@ -216,7 +233,7 @@ func TestDecide_ShellParam(t *testing.T) {
 	}
 
 	judgeAs(t, "windows")
-	assert.Contains(t, unanalyzableShell(map[string]interface{}{"shell": "default"}), "only bash and sh", `"default" is PowerShell or cmd on Windows`)
+	assert.Contains(t, unanalyzableShell(map[string]interface{}{"shell": "default"}), "only bash commands can be judged", `"default" is PowerShell or cmd on Windows`)
 	assert.Empty(t, unanalyzableShell(map[string]interface{}{"shell": "bash"}))
 }
 
@@ -335,4 +352,45 @@ func TestDecide_EnvParam(t *testing.T) {
 	assert.Contains(t, d.Reason, "CDPATH (env parameter)")
 	d = decide(t, opt, false, map[string]interface{}{"command": "ls", "env": map[string]interface{}{"PATH": 7}})
 	assert.Equal(t, shuttle.Allow, d.Kind, "the tool ignores a value that is not a string")
+}
+
+// R3 (PR #430 review, Josh-Schoen): the policy parses the command as bash,
+// but shell_execute runs "sh" from PATH for shell: sh, and for an absent,
+// empty or "default" shell when bash is not on PATH. On Debian and Ubuntu sh
+// is dash, which has no $'...' quoting, so echo $'\' ; touch pwned ; #' was
+// one argument to bash and three commands to dash. Only bash is judged.
+func TestDecide_ShellNeedsBash(t *testing.T) {
+	opt := session(t)
+	const dashSplit = `echo $'\' ; touch pwned ; #'`
+	judgeAs(t, "linux")
+	for _, tc := range []struct {
+		shell interface{}
+		bash  bool
+		want  shuttle.DecisionKind
+		why   string
+	}{
+		{shell: "sh", bash: true, want: shuttle.Deny, why: `runs under shell "sh"`},
+		{shell: "sh", bash: false, want: shuttle.Deny, why: `runs under shell "sh"`},
+		{shell: "bash", bash: true, want: shuttle.Allow},
+		{shell: nil, bash: true, want: shuttle.Allow},
+		{shell: "", bash: true, want: shuttle.Allow},
+		{shell: "default", bash: true, want: shuttle.Allow},
+		{shell: nil, bash: false, want: shuttle.Deny, why: "bash is not on PATH"},
+		{shell: "", bash: false, want: shuttle.Deny, why: "bash is not on PATH"},
+		{shell: "default", bash: false, want: shuttle.Deny, why: "bash is not on PATH"},
+	} {
+		bashOnPath(t, tc.bash)
+		for _, static := range []bool{false, true} {
+			params := map[string]interface{}{"command": dashSplit}
+			if tc.shell != nil {
+				params["shell"] = tc.shell
+			}
+			d := decide(t, opt, static, params)
+			assert.Equal(t, tc.want, d.Kind, "shell %v, bash on PATH %v (static=%v): %s", tc.shell, tc.bash, static, d.Reason)
+			if tc.why != "" {
+				assert.Contains(t, d.Reason, tc.why, "shell %v, bash on PATH %v", tc.shell, tc.bash)
+				assert.Contains(t, d.Reason, "only bash commands can be judged", "shell %v, bash on PATH %v", tc.shell, tc.bash)
+			}
+		}
+	}
 }

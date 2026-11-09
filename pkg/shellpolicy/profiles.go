@@ -53,6 +53,10 @@ type Profile struct {
 	Harden func(args []string) []string
 	// Env lists extra NAME=value pairs the program runs with (run time only).
 	Env []string
+	// NoDirOperands marks a program that reads every file in a directory
+	// operand and follows the symlinks it meets there (diff): an operand
+	// that is an existing directory is outside the profile.
+	NoDirOperands bool
 
 	// pathShort lists the ShortWithValue options whose value names a file:
 	// a value attached to one ("-f../x") is path-checked like a positional
@@ -205,23 +209,44 @@ func Readonly() *Policy {
 			p.Programs[n] = &Profile{MaxPositional: -1, NoPathArgs: true}
 		}
 	}
-	plain("cat", "head", "tail", "wc", "cut", "comm", "cmp", "od",
-		"ls", "stat", "realpath",
+	plain("cat", "head", "tail", "cut", "comm", "cmp", "od",
+		"stat", "realpath",
 		"md5sum", "sha1sum", "sha256sum", "shasum", "md5")
 	noPaths("tr", "basename", "dirname", "seq", "sleep", "uname", "whoami", "id", "which")
+	// --files0-from=F reads the names of the files to read from F, which
+	// path confinement never sees (GNU sort printed a file named in F).
+	// wc and du leak the named files' counts and sizes the same way.
+	p.Programs["wc"] = &Profile{MaxPositional: -1, RefuseLong: []string{"--files0-from"}}
+	p.Programs["ls"] = &Profile{MaxPositional: -1, Check: lsCheck}
 	// Options that take a file name attached to them ("-f../x") are listed
-	// in pathShort, so the attached name is path-checked too.
+	// in pathShort, so the attached name is path-checked too. -R
+	// (--dereference-recursive) follows every symlink it meets out of the
+	// roots; -r follows only those on the command line, which are checked.
+	// BSD grep -S follows every symlink too (GNU grep has no -S).
 	for _, n := range []string{"grep", "egrep", "fgrep"} {
-		p.Programs[n] = &Profile{MaxPositional: -1, ShortWithValue: "efmABCdD", pathShort: "f"}
+		p.Programs[n] = &Profile{MaxPositional: -1, RefuseShort: "RS", RefuseLong: []string{"--dereference-recursive"},
+			ShortWithValue: "efmABCdD", pathShort: "f"}
 	}
-	p.Programs["diff"] = &Profile{MaxPositional: -1, ShortWithValue: "CUDFIxXSWL", pathShort: "X"}
-	p.Programs["du"] = &Profile{MaxPositional: -1, ShortWithValue: "XBdtI", pathShort: "X"}
+	// diff compares the files in a directory operand (and, with -r, in its
+	// subdirectories) and follows the symlinks it meets there, so a
+	// directory operand is outside the profile, with or without -r.
+	p.Programs["diff"] = &Profile{MaxPositional: -1, ShortWithValue: "CUDFIxXSWL", pathShort: "X", NoDirOperands: true}
+	// du -L (--dereference) follows every symlink it meets out of the
+	// roots; -H, -D and --dereference-args follow only the operands, which
+	// are path-checked.
+	p.Programs["du"] = &Profile{MaxPositional: -1, RefuseShort: "L", RefuseLong: []string{"--files0-from", "--dereference"},
+		ShortWithValue: "XBdtI", pathShort: "X"}
 	p.Programs["jq"] = &Profile{MaxPositional: -1, ShortWithValue: "L", pathShort: "L"}
 	p.Programs["sort"] = &Profile{MaxPositional: -1, RefuseShort: "oT", ShortWithValue: "ktS",
-		RefuseLong: []string{"--output", "--compress-program", "--temporary-directory"}}
+		RefuseLong: []string{"--output", "--compress-program", "--temporary-directory", "--files0-from"}}
 	p.Programs["uniq"] = &Profile{MaxPositional: 1, ShortWithValue: "fsw"}
-	p.Programs["find"] = &Profile{MaxPositional: -1, RefuseArgs: []string{
-		"-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls"}}
+	// find -L and -follow follow every symlink out of the roots; -H follows
+	// only the starting points, which are path-checked. findCheck refuses
+	// -L inside a BSD option group (-LE, -xL). GNU find -files0-from F reads
+	// the starting points from F, which path confinement never sees.
+	p.Programs["find"] = &Profile{MaxPositional: -1, Check: findCheck, RefuseArgs: []string{
+		"-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls",
+		"-follow", "-files0-from"}}
 	p.Programs["file"] = &Profile{MaxPositional: -1, RefuseShort: "C", RefuseLong: []string{"--compile"},
 		ShortWithValue: "eFfmP", pathShort: "fm"}
 	p.Programs["base64"] = &Profile{MaxPositional: -1, RefuseShort: "o", RefuseLong: []string{"--output"},
@@ -233,6 +258,61 @@ func Readonly() *Policy {
 		RefuseLong: []string{"--set", "--file", "--reference"}, Check: dateCheck}
 	p.Programs["git"] = gitProfile()
 	return p
+}
+
+// lsCheck refuses ls -L (--dereference) together with -R (--recursive):
+// ls then lists the directories symlinks point to, recursively, so a symlink
+// in the session leads it out of the read roots. Each alone stays allowed:
+// -R does not follow symlinks, and -L alone lists one level of the operands.
+// Every letter of a short option group counts, so a GNU option value such as
+// "-IRL" (ignore pattern "RL") is refused too; that costs an approval, never
+// a listing outside the roots. Long options are matched by abbreviation.
+func lsCheck(args []string) string {
+	recursive, deref := false, false
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		switch {
+		case strings.HasPrefix(a, "--"):
+			name, _, _ := strings.Cut(a, "=")
+			if len(name) > 2 && strings.HasPrefix("--recursive", name) {
+				recursive = true
+			}
+			if len(name) > 2 && strings.HasPrefix("--dereference", name) {
+				deref = true
+			}
+		case strings.HasPrefix(a, "-") && a != "-":
+			recursive = recursive || strings.ContainsRune(a[1:], 'R')
+			deref = deref || strings.ContainsRune(a[1:], 'L')
+		}
+	}
+	if recursive && deref {
+		return "ls -L with -R lists the directories symlinks point to, out of the read roots"
+	}
+	return ""
+}
+
+// findOptionLetters are the letters of BSD find's options that take no
+// value (find [-H | -L | -P] [-EXdsx]). BSD find reads them as one group
+// ("-LE"); GNU find takes -H, -L and -P only as separate arguments. No
+// GNU or BSD find primary is spelled with these letters and an L, so such a
+// group is an option group, not an expression.
+const findOptionLetters = "EHLPXdsx"
+
+// findCheck refuses an option group that contains -L ("-L", "-LE", "-xL"):
+// find then follows every symlink it meets out of the read roots.
+func findCheck(args []string) string {
+	for _, a := range args {
+		if len(a) < 2 || a[0] != '-' || a[1] == '-' {
+			continue
+		}
+		group := a[1:]
+		if strings.ContainsRune(group, 'L') && strings.Trim(group, findOptionLetters) == "" {
+			return "find " + a + " is outside the profile"
+		}
+	}
+	return ""
 }
 
 // dateCheck refuses BSD date's positional time setting ("date 202601010000").
