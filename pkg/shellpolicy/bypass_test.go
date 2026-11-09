@@ -795,3 +795,20 @@ func TestAnalyze_GrepFollowSymlinks(t *testing.T) {
 		{argv: []string{"grep", "-rS", "x", "."}, block: "-S is outside the profile"},
 	})
 }
+
+// Follow-up to R4: GNU find -files0-from F (findutils 4.9) reads its
+// starting points from F, which path confinement never sees, as sort
+// --files0-from did. BSD find has no such option.
+func TestAnalyze_FindFiles0From(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
+	runBypassCases(t, []bypassCase{
+		{cmd: `printf '../o\0' > l; find -files0-from l -name secret.txt`, want: Ask, static: Ask, why: "find (1:22): -files0-from is outside the profile"},
+		{cmd: `find -files0-from l`, want: Ask, static: Ask},
+		{cmd: `find . -name files0-from`, want: Allow, static: Allow},
+	})
+	runLaunchCases(t, []launchCase{
+		{argv: []string{"find", "-files0-from", "l"}, block: "-files0-from is outside the profile"},
+	})
+}

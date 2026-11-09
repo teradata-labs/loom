@@ -241,10 +241,11 @@ func Readonly() *Policy {
 	p.Programs["uniq"] = &Profile{MaxPositional: 1, ShortWithValue: "fsw"}
 	// find -L and -follow follow every symlink out of the roots; -H follows
 	// only the starting points, which are path-checked. findCheck refuses
-	// -L inside a BSD option group (-LE, -xL).
+	// -L inside a BSD option group (-LE, -xL). GNU find -files0-from F reads
+	// the starting points from F, which path confinement never sees.
 	p.Programs["find"] = &Profile{MaxPositional: -1, Check: findCheck, RefuseArgs: []string{
 		"-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls",
-		"-follow"}}
+		"-follow", "-files0-from"}}
 	p.Programs["file"] = &Profile{MaxPositional: -1, RefuseShort: "C", RefuseLong: []string{"--compile"},
 		ShortWithValue: "eFfmP", pathShort: "fm"}
 	p.Programs["base64"] = &Profile{MaxPositional: -1, RefuseShort: "o", RefuseLong: []string{"--output"},
