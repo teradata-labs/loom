@@ -620,6 +620,26 @@ func resolveBedrockMantleAPIKey(cfg LLMConfig) string {
 // and profile, and the model, max tokens and temperature from cfg. Callers set
 // the fields their path overrides (Model, MaxTokens, Temperature, Timeout,
 // RateLimiterConfig).
+// withMantleEnvFallback fills the region and endpoint that the server config
+// leaves empty from the environment, as the agent registry does: the region
+// from BEDROCK_MANTLE_REGION, else AWS_REGION, and the endpoint from
+// BEDROCK_MANTLE_ENDPOINT. Agent YAML that `looms serve` loads with
+// llm.provider: bedrock-mantle therefore builds on a server whose looms.yaml
+// has no bedrock_mantle_* settings. The API key already falls back to
+// BEDROCK_MANTLE_API_KEY in resolveBedrockMantleAPIKey.
+func withMantleEnvFallback(mcfg bedrockmantle.Config) bedrockmantle.Config {
+	if mcfg.Region == "" {
+		mcfg.Region = os.Getenv("BEDROCK_MANTLE_REGION")
+	}
+	if mcfg.Region == "" {
+		mcfg.Region = os.Getenv("AWS_REGION")
+	}
+	if mcfg.Endpoint == "" {
+		mcfg.Endpoint = os.Getenv("BEDROCK_MANTLE_ENDPOINT")
+	}
+	return mcfg
+}
+
 func mantleConfigFrom(cfg LLMConfig) bedrockmantle.Config {
 	accessKeyID, secretAccessKey, sessionToken := resolveBedrockCredentials(cfg)
 	return bedrockmantle.Config{
@@ -1006,7 +1026,7 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		})
 
 	case bedrockmantle.ProviderName:
-		mcfg := mantleConfigFrom(serverConfig.LLM)
+		mcfg := withMantleEnvFallback(mantleConfigFrom(serverConfig.LLM))
 		if protoConfig.Model != "" {
 			mcfg.Model = protoConfig.Model
 		}

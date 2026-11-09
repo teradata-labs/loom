@@ -368,3 +368,35 @@ func TestWorkflowCreateLLMProvider_BedrockMantleAPIKeyFromEnv(t *testing.T) {
 		})
 	}
 }
+
+// Agent YAML under `looms serve` takes region and endpoint from the server
+// config first; the environment fills only what the server config leaves empty.
+func TestWithMantleEnvFallback(t *testing.T) {
+	tests := []struct {
+		name         string
+		in           bedrockmantle.Config
+		mantleRegion string
+		awsRegion    string
+		endpoint     string
+		wantRegion   string
+		wantEndpoint string
+	}{
+		{name: "server config wins", in: bedrockmantle.Config{Region: "eu-west-1", Endpoint: "https://server.example/v1"},
+			mantleRegion: "us-west-2", awsRegion: "us-east-1", endpoint: "https://env.example/v1",
+			wantRegion: "eu-west-1", wantEndpoint: "https://server.example/v1"},
+		{name: "BEDROCK_MANTLE_REGION before AWS_REGION", mantleRegion: "us-west-2", awsRegion: "us-east-1",
+			wantRegion: "us-west-2"},
+		{name: "AWS_REGION last", awsRegion: "us-east-1", wantRegion: "us-east-1"},
+		{name: "endpoint from env", endpoint: "https://env.example/v1", wantEndpoint: "https://env.example/v1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("BEDROCK_MANTLE_REGION", tt.mantleRegion)
+			t.Setenv("AWS_REGION", tt.awsRegion)
+			t.Setenv("BEDROCK_MANTLE_ENDPOINT", tt.endpoint)
+			got := withMantleEnvFallback(tt.in)
+			assert.Equal(t, tt.wantRegion, got.Region)
+			assert.Equal(t, tt.wantEndpoint, got.Endpoint)
+		})
+	}
+}
