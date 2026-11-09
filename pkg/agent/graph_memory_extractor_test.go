@@ -421,16 +421,18 @@ func TestNormalizeEntityName(t *testing.T) {
 	assert.Equal(t, "", normalizeEntityName("  "))
 }
 
-func TestIsValidMemoryType(t *testing.T) {
-	assert.True(t, isValidMemoryType("fact"))
-	assert.True(t, isValidMemoryType("preference"))
-	assert.True(t, isValidMemoryType("decision"))
-	assert.True(t, isValidMemoryType("experience"))
-	assert.True(t, isValidMemoryType("failure"))
-	assert.True(t, isValidMemoryType("observation"))
-	assert.True(t, isValidMemoryType("consolidation"))
-	assert.False(t, isValidMemoryType("note"))
-	assert.False(t, isValidMemoryType(""))
+func TestIsPerTurnMemoryType(t *testing.T) {
+	assert.True(t, isPerTurnMemoryType("fact"))
+	assert.True(t, isPerTurnMemoryType("preference"))
+	assert.True(t, isPerTurnMemoryType("decision"))
+	assert.True(t, isPerTurnMemoryType("experience"))
+	assert.True(t, isPerTurnMemoryType("failure"))
+	assert.True(t, isPerTurnMemoryType("observation"))
+	assert.True(t, isPerTurnMemoryType("consolidation"))
+	assert.False(t, isPerTurnMemoryType("note"))
+	assert.False(t, isPerTurnMemoryType(""))
+	// The lesson class belongs to the ledger miner alone.
+	assert.False(t, isPerTurnMemoryType("lesson"))
 }
 
 func TestExtractGraphMemoryAsync_EntityRolesAndUserMarker(t *testing.T) {

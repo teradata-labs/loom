@@ -34,8 +34,10 @@ import (
 	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/communication"
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
+	"github.com/teradata-labs/loom/pkg/decision"
 	"github.com/teradata-labs/loom/pkg/embedding"
 	"github.com/teradata-labs/loom/pkg/evals"
+	"github.com/teradata-labs/loom/pkg/eventlog"
 	"github.com/teradata-labs/loom/pkg/fabric"
 	fabricfactory "github.com/teradata-labs/loom/pkg/fabric/factory"
 	"github.com/teradata-labs/loom/pkg/llm"
@@ -412,6 +414,7 @@ type registrySubsystemSink interface {
 	SetGraphMemoryStore(store memory.GraphMemoryStore, embedder memory.Embedder)
 	SetSuppressedBuiltinTools(names []string)
 	GraphMemoryEnabledFor(nameOrID string) bool
+	SetDecisionShadowStore(store decision.ShadowStore)
 }
 
 // resolveJudgeFallback picks the judge's fallback LLM: the pool's active
@@ -445,8 +448,13 @@ func wireRegistrySubsystems(
 	graphMemoryStore memory.GraphMemoryStore,
 	memoryEmbedder memory.Embedder,
 	suppressed []string,
+	decisionShadowStore decision.ShadowStore,
 	logger *zap.Logger,
 ) {
+	if decisionShadowStore != nil {
+		reg.SetDecisionShadowStore(decisionShadowStore)
+		logger.Info("Decision shadow store injected into agent registry")
+	}
 	if taskManager != nil {
 		reg.SetTaskManager(taskManager, taskDecomposer)
 		logger.Info("Task manager injected into agent registry",
@@ -1186,7 +1194,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		llmscheduler.Default().SetLogger(logger)
 	}
 
-	logger.Info("Starting Loom Server", zap.String("version", rootCmd.Version))
+	logger.Info("Starting Loom Server", zap.String("version", rootCmd.Version), zap.String("commit", gitCommit))
 
 	// Show actual config file used (not just the --config flag)
 	configFileUsed := viper.ConfigFileUsed()
@@ -1324,10 +1332,32 @@ func runServe(cmd *cobra.Command, args []string) {
 	// Extract individual stores from backend
 	store := storageBackend.SessionStorage()
 
+	// Durable execution log (opt-in, execution_log.enabled). Every agent built
+	// below records it, so `loom sessions resume` can finish a turn a crash
+	// interrupted. Enabled on a backend without support is a startup error,
+	// not a silent no-op: resume would then refuse every turn.
+	var executionLog eventlog.EventLogStore
+	if config.ExecutionLog.Enabled {
+		elp, ok := storageBackend.(backend.EventLogProvider)
+		if !ok || elp.EventLogStore() == nil {
+			logger.Fatal("execution_log.enabled is set, but the storage backend does not provide an execution log")
+		}
+		executionLog = elp.EventLogStore()
+		logger.Info("Execution log enabled: agents record write-ahead events for crash resume")
+	}
+
 	// Extract graph memory store if available (optional interface)
 	var graphMemoryStore memory.GraphMemoryStore
 	if gmp, ok := storageBackend.(backend.GraphMemoryProvider); ok {
 		graphMemoryStore = gmp.GraphMemoryStore()
+	}
+
+	// Extract the typed-decision shadow store if available (optional
+	// interface). Agents with a decision provider configured persist their
+	// shadow comparisons here; `loom decision report` reads them.
+	var decisionShadowStore decision.ShadowStore
+	if dsp, ok := storageBackend.(backend.DecisionShadowProvider); ok {
+		decisionShadowStore = dsp.DecisionShadowStore()
 	}
 
 	// Extract task store if available (optional interface)
@@ -1826,6 +1856,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		PermissionChecker: permissionChecker,
 		AdmissionChain:    admissionChain,
 		IdentityResolver:  postgres.UserIDFromContext,
+		EventLogStore:     executionLog,
 	})
 	if err != nil {
 		logger.Warn("Failed to create agent registry", zap.Error(err))
@@ -1972,6 +2003,12 @@ func runServe(cmd *cobra.Command, args []string) {
 				// tools.minimal/none never disables the extractor itself, so
 				// background entity extraction keeps running (via compressor_llm
 				// when declared) even when the tool is hidden from the LLM.
+
+				// Decision layer: the agent resolves its configured decider
+				// against its own LLMs after options apply; a nil config is
+				// off. Same wiring as registry.buildAgent.
+				agentOpts = append(agentOpts, agent.WithDecisionConfig(cfg.GetDecision(), decisionShadowStore))
+
 				if graphMemoryStore != nil {
 					gmCfg := cfg.Memory.GetGraphMemory()
 					explicitlyDisabled := gmCfg != nil && !gmCfg.Enabled
@@ -2030,6 +2067,7 @@ func runServe(cmd *cobra.Command, args []string) {
 				// deployment. A nil chain leaves tool execution a pass-through.
 				agentOpts = append(agentOpts, agent.WithAdmissionHooks(admissionChain))
 				agentOpts = append(agentOpts, agent.WithIdentityResolver(postgres.UserIDFromContext))
+				agentOpts = append(agentOpts, agent.WithEventLog(executionLog))
 
 				// Determine LLM provider for this agent
 				// If agent has specific LLM config, use it; otherwise use server default
@@ -2212,7 +2250,9 @@ func runServe(cmd *cobra.Command, args []string) {
 				// Register tool_search and enable dynamic tool registration if tool registry available.
 				// Suppressed by tools.minimal=true so the LLM cannot discover or auto-load tools.
 				if toolRegistry != nil && !toolsMinimalActive() {
-					searchTool := toolregistry.NewSearchTool(toolRegistry)
+					// Per-agent: the agent's decision layer (if any) travels
+					// with its own SearchTool, never with the shared registry.
+					searchTool := toolregistry.NewSearchTool(toolRegistry, ag.SearchToolOptions()...)
 					// Hide tools the permission policy would refuse, so the model
 					// never discovers (then calls) a disabled tool via tool_search.
 					if permissionChecker != nil {
@@ -2610,7 +2650,7 @@ func runServe(cmd *cobra.Command, args []string) {
 	// policy. See wireRegistrySubsystems for the regression this guards.
 	if registry != nil {
 		wireRegistrySubsystems(registry, taskManager, taskDecomposer,
-			graphMemoryStore, memoryEmbedder, builtinToolsToSuppress(), logger)
+			graphMemoryStore, memoryEmbedder, builtinToolsToSuppress(), decisionShadowStore, logger)
 	}
 
 	// Wire the eval store for ABTest result persistence — pool-independent.
@@ -3291,6 +3331,10 @@ func runServe(cmd *cobra.Command, args []string) {
 			// Wire graph memory SUBSYSTEM (mirrors the static-loader path).
 			// tools.minimal/none never disables the extractor; tool surfacing
 			// is gated separately via WithoutBuiltinTool below.
+
+			// Decision layer, as at startup (hot-reload path).
+			agentOpts = append(agentOpts, agent.WithDecisionConfig(agentConfig.GetDecision(), decisionShadowStore))
+
 			if graphMemoryStore != nil {
 				gmCfg := agentConfig.GetMemory().GetGraphMemory()
 				explicitlyDisabled := gmCfg != nil && !gmCfg.Enabled
@@ -3342,6 +3386,7 @@ func runServe(cmd *cobra.Command, args []string) {
 			// deployment. A nil chain leaves tool execution a pass-through.
 			agentOpts = append(agentOpts, agent.WithAdmissionHooks(admissionChain))
 			agentOpts = append(agentOpts, agent.WithIdentityResolver(postgres.UserIDFromContext))
+			agentOpts = append(agentOpts, agent.WithEventLog(executionLog))
 
 			// Wrap LLM provider with instrumentation for observability
 			if tracer != nil {
@@ -3453,7 +3498,8 @@ func runServe(cmd *cobra.Command, args []string) {
 			// Register tool_search and enable dynamic tool registration if tool registry available.
 			// Suppressed by tools.minimal=true so the LLM cannot discover or auto-load tools.
 			if toolRegistry != nil && !toolsMinimalActive() {
-				searchTool := toolregistry.NewSearchTool(toolRegistry)
+				// Per-agent decision layer, as at startup.
+				searchTool := toolregistry.NewSearchTool(toolRegistry, newAgent.SearchToolOptions()...)
 				if permissionChecker != nil {
 					searchTool.SetToolFilter(permissionChecker.Advertisable)
 				}

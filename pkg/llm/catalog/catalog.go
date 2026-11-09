@@ -39,13 +39,49 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 	return map[string][]*loomv1.ModelInfo{
 		// ── Anthropic ──────────────────────────────────────────────────────────────
 		// Verified against https://platform.claude.com/docs/en/docs/about-claude/models/overview
-		// on 2026-04-22; the Claude 5 entries against the pricing page on 2026-11-07.
-		// Deprecated Sonnet 4 / Opus 4 (20250514) intentionally omitted.
+		// on 2026-04-22; the Claude 5 family (Fable 5/5.1, Opus 5/5.5, Sonnet 5)
+		// added 2026-09-30 from Anthropic's published first-party rates. Deprecated Sonnet 4 / Opus 4 (20250514) intentionally omitted.
 		"anthropic": {
 			{
-				// Claude Opus 5 and Sonnet 5: rates from
-				// https://platform.claude.com/docs/en/about-claude/pricing (Sonnet 5's
-				// $2/$10 is its standard price; the planned $3/$15 did not happen).
+				// Most capable widely released model. Thinking is always on.
+				Id:                  "claude-fable-5-1",
+				Name:                "Claude Fable 5.1",
+				Provider:            "anthropic",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       1_000_000,
+				MaxOutputTokens:     128_000,
+				CostPer_1MInputUsd:  10.0,
+				CostPer_1MOutputUsd: 50.0,
+				IsReasoning:         true,
+				ShowInDropdown:      true,
+			},
+			{
+				// Superseded by Fable 5.1 at the same price; still served.
+				Id:                  "claude-fable-5",
+				Name:                "Claude Fable 5",
+				Provider:            "anthropic",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       1_000_000,
+				MaxOutputTokens:     128_000,
+				CostPer_1MInputUsd:  10.0,
+				CostPer_1MOutputUsd: 50.0,
+				IsReasoning:         true,
+				ShowInDropdown:      false,
+			},
+			{
+				// Launching. Cheaper than Opus 5; thinking cannot be disabled, effort defaults to medium.
+				Id:                  "claude-opus-5-5",
+				Name:                "Claude Opus 5.5",
+				Provider:            "anthropic",
+				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
+				ContextWindow:       1_000_000,
+				MaxOutputTokens:     128_000,
+				CostPer_1MInputUsd:  4.0,
+				CostPer_1MOutputUsd: 20.0,
+				IsReasoning:         true,
+				ShowInDropdown:      false,
+			},
+			{
 				Id:                  "claude-opus-5",
 				Name:                "Claude Opus 5",
 				Provider:            "anthropic",
@@ -70,7 +106,7 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 				ShowInDropdown:      true,
 			},
 			{
-				// Current flagship. Uses adaptive thinking (not extended thinking).
+				// Uses adaptive thinking (not extended thinking).
 				Id:                  "claude-opus-4-7",
 				Name:                "Claude Opus 4.7",
 				Provider:            "anthropic",
@@ -840,12 +876,11 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 				IsReasoning:         true,
 				ShowInDropdown:      false,
 			},
+			// Claude 5 inference-profile ids are un-suffixed (no "-v1:0"), so
+			// they need their own rows: the "-v1:0" rows below never match them.
+			// Rates are Anthropic's first-party card; ClaudeFamilyPricing prices
+			// any Claude 5 profile id not listed here (e.g. 5.5 / 5.1) the same.
 			{
-				// Claude Fable 5, Opus 5 and Sonnet 5 on Bedrock: the AWS Price List
-				// does not carry them, so these entries take Anthropic's published
-				// rates (https://platform.claude.com/docs/en/about-claude/pricing). A
-				// deployment on its own rate overrides them through the registered
-				// catalog Source (catalog.Register).
 				Id:                  "us.anthropic.claude-fable-5",
 				Name:                "Claude Fable 5 (Bedrock)",
 				Provider:            "bedrock",
@@ -859,7 +894,7 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 			},
 			{
 				Id:                  "global.anthropic.claude-fable-5",
-				Name:                "Claude Fable 5 (Bedrock global)",
+				Name:                "Claude Fable 5 (Bedrock, global)",
 				Provider:            "bedrock",
 				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
 				ContextWindow:       1_000_000,
@@ -883,7 +918,7 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 			},
 			{
 				Id:                  "global.anthropic.claude-opus-5",
-				Name:                "Claude Opus 5 (Bedrock global)",
+				Name:                "Claude Opus 5 (Bedrock, global)",
 				Provider:            "bedrock",
 				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
 				ContextWindow:       1_000_000,
@@ -907,7 +942,7 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 			},
 			{
 				Id:                  "global.anthropic.claude-sonnet-5",
-				Name:                "Claude Sonnet 5 (Bedrock global)",
+				Name:                "Claude Sonnet 5 (Bedrock, global)",
 				Provider:            "bedrock",
 				Capabilities:        []string{"text", "vision", "tool-use", "thinking"},
 				ContextWindow:       1_000_000,

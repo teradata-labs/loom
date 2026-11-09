@@ -49,7 +49,12 @@ type RateLimiterConfig struct {
 	// Default: 200ms
 	MinDelay time.Duration
 
-	// MaxRetries is the maximum number of retries for 429 throttling errors.
+	// MaxRetries is the maximum number of retries for a retryable error:
+	// throttling (429 and SDK-level equivalents) and a provider-typed
+	// transient server failure (TransientError: 500/502/503/504/529 on a
+	// response whose status was known before any content streamed). Both
+	// classes share this one budget and one backoff; once it is spent the
+	// error is returned as a RetriesExhaustedError.
 	// Default: 5
 	MaxRetries int
 
@@ -135,6 +140,7 @@ type rateLimitedResult struct {
 type RateLimiterMetrics struct {
 	TotalRequests      int64
 	ThrottledRequests  int64
+	TransientRequests  int64 // provider-typed 5xx retried under the throttle budget
 	QueuedRequests     int64
 	DroppedRequests    int64
 	AverageQueueTimeMs int64
@@ -221,7 +227,15 @@ func NewRateLimiter(config RateLimiterConfig) *RateLimiter {
 	return rl
 }
 
-// Do executes a function call with rate limiting and automatic retry on throttling.
+// Do executes a function call with rate limiting and automatic retry of
+// retryable errors: throttling (429 and SDK-level equivalents) and transient
+// server failures (TransientError: 500/502/503/504/529). Both are retried
+// under the one MaxRetries budget with jittered exponential backoff, floored
+// by any server Retry-After. The exponential backoff base is capped at 5
+// minutes before ±50% jitter, so a wait without Retry-After can reach 7.5
+// minutes. A 429 Retry-After is not capped. A 5xx Retry-After is capped at 5
+// minutes. An exhausted budget returns a RetriesExhaustedError. Any other
+// error is returned as-is.
 func (rl *RateLimiter) Do(ctx context.Context, call func(context.Context) (interface{}, error)) (interface{}, error) {
 	if !rl.config.Enabled {
 		// Rate limiting disabled - call directly
@@ -356,24 +370,40 @@ func (rl *RateLimiter) execute(req *rateLimitedRequest) {
 	result, err := req.call(req.ctx)
 	rl.recordMetric("request", 0)
 
-	// Success or non-retryable error: deliver as-is.
-	if err == nil || !isThrottlingError(err) {
+	// Success or non-retryable error: deliver as-is. Two error classes are
+	// retried, under one budget and one backoff: throttling (429 and the
+	// SDK-level equivalents) and a provider-typed transient server failure
+	// (TransientError: 500/502/503/504/529 on a response whose status was
+	// known before any content streamed).
+	// The typed classification wins: a TransientError's body may well contain
+	// "429" or "rate limit" (request ids, upstream prose), and string-sniffing
+	// it into throttling would feed a server outage into the throttle signal.
+	transient := IsTransient(err)
+	throttled := !transient && isThrottlingError(err)
+	if err == nil || (!throttled && !transient) {
 		rl.deliver(req, &rateLimitedResult{result: result, err: err})
 		return
 	}
 
-	rl.recordMetric("throttled", 0)
+	cause := "throttling"
+	if transient {
+		cause = "a transient server error"
+		rl.recordMetric("transient", 0)
+	} else {
+		rl.recordMetric("throttled", 0)
+	}
 
 	if req.attempt >= rl.config.MaxRetries {
-		// All attempts exhausted.
-		rl.deliver(req, &rateLimitedResult{err: fmt.Errorf(
-			"LLM request failed after %d retries due to throttling: %w: %w",
-			rl.config.MaxRetries+1, ErrThrottleRetriesExhausted, err)})
+		// All attempts exhausted. The typed wrap lets callers with their own
+		// retry loop recognise a budget that has already been spent here.
+		rl.deliver(req, &rateLimitedResult{err: &RetriesExhaustedError{
+			Attempts: rl.config.MaxRetries + 1, Cause: cause, Err: err}})
 		return
 	}
 
 	delay := rl.retryDelay(req.attempt, err)
-	rl.config.Logger.Warn("LLM request throttled, retrying",
+	rl.config.Logger.Warn("LLM request failed, retrying",
+		zap.String("cause", cause),
 		zap.Int("attempt", req.attempt+1),
 		zap.Int("max_retries", rl.config.MaxRetries),
 		zap.Duration("backoff", delay),
@@ -414,8 +444,10 @@ func (rl *RateLimiter) deliver(req *rateLimitedRequest, res *rateLimitedResult) 
 	}
 }
 
-// maxRetryDelay caps the exponential backoff so pathological attempt counts
-// cannot produce multi-hour waits.
+// maxRetryDelay caps the exponential backoff base (before ±50% jitter, so a
+// jittered wait can reach 1.5*maxRetryDelay) so pathological attempt counts
+// cannot produce multi-hour waits. It also caps a transient (5xx) error's
+// Retry-After; a throttle's (429) Retry-After is not capped.
 const maxRetryDelay = 5 * time.Minute
 
 // retryDelay computes the wait before retry attempt attempt+1: exponential
@@ -439,9 +471,18 @@ func (rl *RateLimiter) retryDelay(attempt int, err error) time.Duration {
 
 	// Honor the server-specified wait when it is longer than the jittered
 	// backoff (delta-seconds, HTTP-date, and x-ratelimit reset forms all
-	// arrive here via ThrottleError.RetryAfter).
+	// arrive here via ThrottleError/TransientError.RetryAfter). For a
+	// transient (5xx) error the Retry-After is capped at maxRetryDelay: a 503
+	// during a maintenance window can carry Retry-After: 3600 or an HTTP-date
+	// an hour out, and sleeping that long inside execute() would pin the
+	// caller and its scheduler grant. A throttle's (429) Retry-After is not
+	// capped: a quota-limited provider that asks for 20 minutes would only
+	// throttle a caller that came back sooner, spending the retry budget.
 	if ra := RetryAfter(err); ra > delay {
 		delay = ra
+		if IsTransient(err) && delay > maxRetryDelay {
+			delay = maxRetryDelay
+		}
 	}
 	return delay
 }
@@ -476,6 +517,14 @@ func isThrottlingError(err error) bool {
 	var te *ThrottleError
 	if errors.As(err, &te) {
 		return true
+	}
+	// A typed transient server failure is never throttling, regardless of
+	// what its body says: 5xx bodies routinely carry request ids or upstream
+	// prose containing "429" / "rate limit", and sniffing those would feed a
+	// server outage into the scheduler's throttle signal.
+	var tr *TransientError
+	if errors.As(err, &tr) {
+		return false
 	}
 	errStr := err.Error()
 	return contains(errStr, "429") ||
@@ -550,6 +599,8 @@ func (rl *RateLimiter) recordMetric(event string, value int64) {
 	case "throttled":
 		rl.metrics.ThrottledRequests++
 		rl.metrics.LastThrottleTime = time.Now()
+	case "transient":
+		rl.metrics.TransientRequests++
 	case "queued":
 		rl.metrics.QueuedRequests++
 	case "dropped":
@@ -615,6 +666,7 @@ func (rl *RateLimiter) reportMetrics() {
 			rl.config.Logger.Debug("Rate limiter metrics",
 				zap.Int64("total_requests", metrics.TotalRequests),
 				zap.Int64("throttled_requests", metrics.ThrottledRequests),
+				zap.Int64("transient_requests", metrics.TransientRequests),
 				zap.Int64("queued_requests", metrics.QueuedRequests),
 				zap.Int64("dropped_requests", metrics.DroppedRequests),
 				zap.Int64("current_queue_depth", metrics.CurrentQueueDepth),

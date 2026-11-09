@@ -412,7 +412,11 @@ type AgentConfig struct {
 	// Empty means all pool providers are allowed.
 	AllowedProviders []string `protobuf:"bytes,19,rep,name=allowed_providers,json=allowedProviders,proto3" json:"allowed_providers,omitempty"`
 	// Skills configuration for this agent
-	Skills        *SkillsConfig `protobuf:"bytes,20,opt,name=skills,proto3" json:"skills,omitempty"`
+	Skills *SkillsConfig `protobuf:"bytes,20,opt,name=skills,proto3" json:"skills,omitempty"`
+	// Decision layer configuration (pkg/decision): which decider answers typed
+	// auxiliary judgments and, per call site, whether its answers are acted on
+	// or only shadow-recorded. Absent or provider "off" disables the layer.
+	Decision      *DecisionConfig `protobuf:"bytes,21,opt,name=decision,proto3" json:"decision,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -583,6 +587,13 @@ func (x *AgentConfig) GetAllowedProviders() []string {
 func (x *AgentConfig) GetSkills() *SkillsConfig {
 	if x != nil {
 		return x.Skills
+	}
+	return nil
+}
+
+func (x *AgentConfig) GetDecision() *DecisionConfig {
+	if x != nil {
+		return x.Decision
 	}
 	return nil
 }
@@ -1331,8 +1342,26 @@ type GraphMemoryConfig struct {
 	// Set higher to give the extractor more conversational context per cycle.
 	// Useful when extraction_cadence is low (e.g., 1) to avoid tiny windows.
 	ExtractionWindowMessages int32 `protobuf:"varint,14,opt,name=extraction_window_messages,json=extractionWindowMessages,proto3" json:"extraction_window_messages,omitempty"`
-	unknownFields            protoimpl.UnknownFields
-	sizeCache                protoimpl.SizeCache
+	// Share verified lessons across all agents on this server. Opt-in.
+	// When true, lessons mined from the tool ledger (observed error->fix
+	// transitions) are stored in a shared partition visible to every agent,
+	// and each agent's dedicated lesson recall lane draws from that pool.
+	// When false (default), lessons stay private to the agent that earned
+	// them: stored in a partition derived from its graph-memory key
+	// ("<key>__lessons", where the key is the agent's GraphMemoryAgentID when
+	// set, otherwise its name) that no other writer targets, and recalled only
+	// by it.
+	//
+	// SECURITY: mined lessons derive from tool output and the model's own tool
+	// inputs, and are shown to the model as trusted guidance (the graph-memory
+	// context block at conversation start, a <system-reminder> after a
+	// matching error). Enabling this makes one server's output guidance for
+	// every agent -- do not enable it when running untrusted tool servers, or
+	// tools that return text an untrusted party wrote.
+	// See docs/reference/security-model.md.
+	FleetLessonSharing bool `protobuf:"varint,15,opt,name=fleet_lesson_sharing,json=fleetLessonSharing,proto3" json:"fleet_lesson_sharing,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *GraphMemoryConfig) Reset() {
@@ -1461,6 +1490,13 @@ func (x *GraphMemoryConfig) GetExtractionWindowMessages() int32 {
 		return x.ExtractionWindowMessages
 	}
 	return 0
+}
+
+func (x *GraphMemoryConfig) GetFleetLessonSharing() bool {
+	if x != nil {
+		return x.FleetLessonSharing
+	}
+	return false
 }
 
 // TaskBoardConfig configures the dependency-aware task decomposition and kanban system.
@@ -2419,7 +2455,7 @@ var File_loom_v1_agent_config_proto protoreflect.FileDescriptor
 
 const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\n" +
-	"\x1aloom/v1/agent_config.proto\x12\aloom.v1\x1a\x13loom/v1/skill.proto\x1a\x12loom/v1/task.proto\"\xf0\a\n" +
+	"\x1aloom/v1/agent_config.proto\x12\aloom.v1\x1a\x16loom/v1/decision.proto\x1a\x13loom/v1/skill.proto\x1a\x12loom/v1/task.proto\"\xa5\b\n" +
 	"\vAgentConfig\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12$\n" +
@@ -2441,7 +2477,8 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x0ecompressor_llm\x18\x11 \x01(\v2\x12.loom.v1.LLMConfigR\rcompressorLlm\x12'\n" +
 	"\x0factive_provider\x18\x12 \x01(\tR\x0eactiveProvider\x12+\n" +
 	"\x11allowed_providers\x18\x13 \x03(\tR\x10allowedProviders\x12-\n" +
-	"\x06skills\x18\x14 \x01(\v2\x15.loom.v1.SkillsConfigR\x06skills\x1a;\n" +
+	"\x06skills\x18\x14 \x01(\v2\x15.loom.v1.SkillsConfigR\x06skills\x123\n" +
+	"\bdecision\x18\x15 \x01(\v2\x17.loom.v1.DecisionConfigR\bdecision\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"O\n" +
@@ -2500,7 +2537,7 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x10max_tool_results\x18\a \x01(\x05R\x0emaxToolResults\x12=\n" +
 	"\fgraph_memory\x18\b \x01(\v2\x1a.loom.v1.GraphMemoryConfigR\vgraphMemory\x127\n" +
 	"\n" +
-	"task_board\x18\t \x01(\v2\x18.loom.v1.TaskBoardConfigR\ttaskBoard\"\xc7\x05\n" +
+	"task_board\x18\t \x01(\v2\x18.loom.v1.TaskBoardConfigR\ttaskBoard\"\xf9\x05\n" +
 	"\x11GraphMemoryConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x124\n" +
 	"\x16context_budget_percent\x18\x02 \x01(\x05R\x14contextBudgetPercent\x12,\n" +
@@ -2517,7 +2554,8 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x1bmax_entities_per_extraction\x18\v \x01(\x05R\x18maxEntitiesPerExtraction\x12F\n" +
 	"\x1fconversation_extraction_cadence\x18\f \x01(\x05R\x1dconversationExtractionCadence\x12<\n" +
 	"\x1aextraction_timeout_seconds\x18\r \x01(\x05R\x18extractionTimeoutSeconds\x12<\n" +
-	"\x1aextraction_window_messages\x18\x0e \x01(\x05R\x18extractionWindowMessages\"\xd8\x02\n" +
+	"\x1aextraction_window_messages\x18\x0e \x01(\x05R\x18extractionWindowMessages\x120\n" +
+	"\x14fleet_lesson_sharing\x18\x0f \x01(\bR\x12fleetLessonSharing\"\xd8\x02\n" +
 	"\x0fTaskBoardConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12%\n" +
 	"\x0eauto_decompose\x18\x02 \x01(\bR\rautoDecompose\x12\x1b\n" +
@@ -2669,7 +2707,8 @@ var file_loom_v1_agent_config_proto_goTypes = []any{
 	nil,                                 // 26: loom.v1.AgentConfig.MetadataEntry
 	nil,                                 // 27: loom.v1.AgentProfile.OverridesEntry
 	(*SkillsConfig)(nil),                // 28: loom.v1.SkillsConfig
-	(DecomposeStrategy)(0),              // 29: loom.v1.DecomposeStrategy
+	(*DecisionConfig)(nil),              // 29: loom.v1.DecisionConfig
+	(DecomposeStrategy)(0),              // 30: loom.v1.DecomposeStrategy
 }
 var file_loom_v1_agent_config_proto_depIdxs = []int32{
 	8,  // 0: loom.v1.AgentConfig.llm:type_name -> loom.v1.LLMConfig
@@ -2683,35 +2722,36 @@ var file_loom_v1_agent_config_proto_depIdxs = []int32{
 	8,  // 8: loom.v1.AgentConfig.classifier_llm:type_name -> loom.v1.LLMConfig
 	8,  // 9: loom.v1.AgentConfig.compressor_llm:type_name -> loom.v1.LLMConfig
 	28, // 10: loom.v1.AgentConfig.skills:type_name -> loom.v1.SkillsConfig
-	8,  // 11: loom.v1.ProviderEntry.config:type_name -> loom.v1.LLMConfig
-	6,  // 12: loom.v1.ProviderPool.providers:type_name -> loom.v1.ProviderEntry
-	9,  // 13: loom.v1.LLMConfig.rate_limit:type_name -> loom.v1.LLMRateLimitConfig
-	11, // 14: loom.v1.ToolsConfig.mcp:type_name -> loom.v1.MCPToolConfig
-	12, // 15: loom.v1.ToolsConfig.custom:type_name -> loom.v1.CustomToolConfig
-	18, // 16: loom.v1.MemoryConfig.memory_compression:type_name -> loom.v1.MemoryCompressionConfig
-	14, // 17: loom.v1.MemoryConfig.graph_memory:type_name -> loom.v1.GraphMemoryConfig
-	15, // 18: loom.v1.MemoryConfig.task_board:type_name -> loom.v1.TaskBoardConfig
-	29, // 19: loom.v1.TaskBoardConfig.default_strategy:type_name -> loom.v1.DecomposeStrategy
-	16, // 20: loom.v1.TaskBoardConfig.implicit_tasks:type_name -> loom.v1.ImplicitTaskConfig
-	1,  // 21: loom.v1.ImplicitTaskConfig.mode:type_name -> loom.v1.ImplicitTaskMode
-	2,  // 22: loom.v1.ImplicitTaskConfig.triggers:type_name -> loom.v1.ImplicitTaskTrigger
-	2,  // 23: loom.v1.ImplicitTaskConfig.excluded_triggers:type_name -> loom.v1.ImplicitTaskTrigger
-	3,  // 24: loom.v1.MemoryCompressionConfig.workload_profile:type_name -> loom.v1.WorkloadProfile
-	17, // 25: loom.v1.MemoryCompressionConfig.batch_sizes:type_name -> loom.v1.MemoryCompressionBatchSizes
-	20, // 26: loom.v1.BehaviorConfig.patterns:type_name -> loom.v1.PatternConfig
-	22, // 27: loom.v1.AgentTemplate.parameters:type_name -> loom.v1.TemplateParameter
-	5,  // 28: loom.v1.AgentTemplate.template_config:type_name -> loom.v1.AgentConfig
-	5,  // 29: loom.v1.AgentProfile.defaults:type_name -> loom.v1.AgentConfig
-	27, // 30: loom.v1.AgentProfile.overrides:type_name -> loom.v1.AgentProfile.OverridesEntry
-	25, // 31: loom.v1.EphemeralAgentPolicy.trigger:type_name -> loom.v1.SpawnTrigger
-	5,  // 32: loom.v1.EphemeralAgentPolicy.template:type_name -> loom.v1.AgentConfig
-	4,  // 33: loom.v1.SpawnTrigger.type:type_name -> loom.v1.SpawnTriggerType
-	5,  // 34: loom.v1.AgentProfile.OverridesEntry.value:type_name -> loom.v1.AgentConfig
-	35, // [35:35] is the sub-list for method output_type
-	35, // [35:35] is the sub-list for method input_type
-	35, // [35:35] is the sub-list for extension type_name
-	35, // [35:35] is the sub-list for extension extendee
-	0,  // [0:35] is the sub-list for field type_name
+	29, // 11: loom.v1.AgentConfig.decision:type_name -> loom.v1.DecisionConfig
+	8,  // 12: loom.v1.ProviderEntry.config:type_name -> loom.v1.LLMConfig
+	6,  // 13: loom.v1.ProviderPool.providers:type_name -> loom.v1.ProviderEntry
+	9,  // 14: loom.v1.LLMConfig.rate_limit:type_name -> loom.v1.LLMRateLimitConfig
+	11, // 15: loom.v1.ToolsConfig.mcp:type_name -> loom.v1.MCPToolConfig
+	12, // 16: loom.v1.ToolsConfig.custom:type_name -> loom.v1.CustomToolConfig
+	18, // 17: loom.v1.MemoryConfig.memory_compression:type_name -> loom.v1.MemoryCompressionConfig
+	14, // 18: loom.v1.MemoryConfig.graph_memory:type_name -> loom.v1.GraphMemoryConfig
+	15, // 19: loom.v1.MemoryConfig.task_board:type_name -> loom.v1.TaskBoardConfig
+	30, // 20: loom.v1.TaskBoardConfig.default_strategy:type_name -> loom.v1.DecomposeStrategy
+	16, // 21: loom.v1.TaskBoardConfig.implicit_tasks:type_name -> loom.v1.ImplicitTaskConfig
+	1,  // 22: loom.v1.ImplicitTaskConfig.mode:type_name -> loom.v1.ImplicitTaskMode
+	2,  // 23: loom.v1.ImplicitTaskConfig.triggers:type_name -> loom.v1.ImplicitTaskTrigger
+	2,  // 24: loom.v1.ImplicitTaskConfig.excluded_triggers:type_name -> loom.v1.ImplicitTaskTrigger
+	3,  // 25: loom.v1.MemoryCompressionConfig.workload_profile:type_name -> loom.v1.WorkloadProfile
+	17, // 26: loom.v1.MemoryCompressionConfig.batch_sizes:type_name -> loom.v1.MemoryCompressionBatchSizes
+	20, // 27: loom.v1.BehaviorConfig.patterns:type_name -> loom.v1.PatternConfig
+	22, // 28: loom.v1.AgentTemplate.parameters:type_name -> loom.v1.TemplateParameter
+	5,  // 29: loom.v1.AgentTemplate.template_config:type_name -> loom.v1.AgentConfig
+	5,  // 30: loom.v1.AgentProfile.defaults:type_name -> loom.v1.AgentConfig
+	27, // 31: loom.v1.AgentProfile.overrides:type_name -> loom.v1.AgentProfile.OverridesEntry
+	25, // 32: loom.v1.EphemeralAgentPolicy.trigger:type_name -> loom.v1.SpawnTrigger
+	5,  // 33: loom.v1.EphemeralAgentPolicy.template:type_name -> loom.v1.AgentConfig
+	4,  // 34: loom.v1.SpawnTrigger.type:type_name -> loom.v1.SpawnTriggerType
+	5,  // 35: loom.v1.AgentProfile.OverridesEntry.value:type_name -> loom.v1.AgentConfig
+	36, // [36:36] is the sub-list for method output_type
+	36, // [36:36] is the sub-list for method input_type
+	36, // [36:36] is the sub-list for extension type_name
+	36, // [36:36] is the sub-list for extension extendee
+	0,  // [0:36] is the sub-list for field type_name
 }
 
 func init() { file_loom_v1_agent_config_proto_init() }
@@ -2719,6 +2759,7 @@ func file_loom_v1_agent_config_proto_init() {
 	if File_loom_v1_agent_config_proto != nil {
 		return
 	}
+	file_loom_v1_decision_proto_init()
 	file_loom_v1_skill_proto_init()
 	file_loom_v1_task_proto_init()
 	file_loom_v1_agent_config_proto_msgTypes[3].OneofWrappers = []any{}

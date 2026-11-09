@@ -27,6 +27,8 @@ import (
 	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
+	"github.com/teradata-labs/loom/pkg/decision/sites"
+	"github.com/teradata-labs/loom/pkg/eventlog"
 	"github.com/teradata-labs/loom/pkg/fabric"
 	"github.com/teradata-labs/loom/pkg/llm"
 	mcpadapter "github.com/teradata-labs/loom/pkg/mcp/adapter"
@@ -118,6 +120,10 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	if a.config.PatternConfig == nil {
 		a.config.PatternConfig = DefaultPatternConfig()
 	}
+
+	// Decision layer: resolve the configured decider against the LLMs the
+	// options just installed. Off unless configured.
+	a.initDecisionRouter()
 
 	// Initialize automatic graph memory extraction if graph memory is enabled.
 	if a.graphMemoryStore != nil && a.graphMemoryConfig != nil &&
@@ -756,6 +762,16 @@ func WithSkillDiscovery(d *discovery.Discovery) Option {
 func WithSkillTaskEmitter(e *skilltasks.Emitter) Option {
 	return func(a *Agent) {
 		a.skillTaskEmitter = e
+	}
+}
+
+// WithEventLog enables the durable, tool-call-granularity execution log
+// (issue #229) for crash-resumable conversation loops. A nil store leaves
+// recording disabled — every write-ahead call becomes a no-op, and
+// ResumeSession is unavailable (returns ErrEventLogDisabled).
+func WithEventLog(store eventlog.EventLogStore) Option {
+	return func(a *Agent) {
+		a.eventLog = store
 	}
 }
 
@@ -1954,7 +1970,7 @@ func truncatePreview(s string) string {
 // telemetry — shared by the three public chat entry points. See chatParams for
 // how each entry point tailors span name, multimodal content, and progress
 // reporting.
-func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, p chatParams) (*Response, error) {
+func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, p chatParams) (_ *Response, retErr error) {
 	// Providers build the request exclusively from ContentBlocks when present,
 	// dropping Content — so an image-only block set would silently send the
 	// image without the question text. Keep userMessage truly canonical by
@@ -2022,6 +2038,17 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 
 	// Get or create session with agent metadata for proper ReferenceStore namespacing
 	session := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
+
+	// With an event log, one process at a time drives a session's loop
+	// (session_lease.go): a concurrent turn or crash resume would otherwise
+	// record events and dispatch calls at the same steps. Taken after the
+	// session exists, because the lease row references it.
+	ctx, releaseLease, err := a.holdSessionLease(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseLease()
+	defer func() { retErr = leaseLostError(ctx, retErr) }()
 
 	// A session holding backend leases from a previous turn starts this turn
 	// in the RESOURCE_HOLDER class — the previous turn's SlotInfo died with
@@ -2111,6 +2138,26 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// Run conversation loop
 	response, err := a.runConversationLoop(agentCtx)
 
+	// Ledger-grounded lesson pass (PR #357): mine verified error→fix
+	// transitions from the tool ledger. Runs at the end of every Chat()
+	// call — i.e. per USER MESSAGE, not per conversation — because that is
+	// where the ledger drains, so only within-turn transitions are
+	// mineable. Runs regardless of outcome: a failed turn may still contain
+	// verified intermediate fixes.
+	if a.enableGraphMemoryExtraction {
+		a.graphExtractionWG.Add(1)
+		go func() {
+			defer a.graphExtractionWG.Done()
+			// Consumes the tool ledger AND the error-lane injection record
+			// (outcome credit) — no synchronous clear here, or the async
+			// pass would race with it and lose the credit evidence.
+			a.extractLessonsAtEnd(context.WithoutCancel(ctx), sessionID)
+		}()
+	} else {
+		// Error-triggered lesson tracking is per-conversation state.
+		a.clearErrorLessonState(sessionID)
+	}
+
 	// Close the turn's recorded task, if the runtime recorded one. Deferred
 	// until after the loop so the task spans the whole turn, and run even on
 	// error — a turn that failed still finished, and leaving the row IN_PROGRESS
@@ -2198,28 +2245,27 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// call's Usage (last-turn); intermediate tool-use turns already wrote
 	// their own rows above, so SUM(messages.cost) over the session equals
 	// the whole conversation's cost.
-	{
-		a.appendMessage(ctx, session, Message{
-			Role: "assistant",
-			// Turn-ending message: thinking text rides for persistence; blocks
-			// would be stripped by the next turn's compile, so none are carried.
-			Content:           response.Content,
-			Thinking:          response.Thinking,
-			AgentID:           a.GetID(), // Track which agent generated this response
-			Timestamp:         time.Now(),
-			TokenCount:        response.Usage.TotalTokens,
-			CostUSD:           response.Usage.CostUSD,
-			InputTokens:       response.Usage.InputTokens,
-			OutputTokens:      response.Usage.OutputTokens,
-			CacheReadTokens:   response.Usage.CacheReadInputTokens,
-			CacheCreateTokens: response.Usage.CacheCreationInputTokens,
+	_, replyPersisted := a.appendMessage(ctx, session, Message{
+		Role: "assistant",
+		// Turn-ending message: thinking text rides for persistence; blocks
+		// would be stripped by the next turn's compile, so none are carried.
+		Content:           response.Content,
+		Thinking:          response.Thinking,
+		AgentID:           a.GetID(), // Track which agent generated this response
+		Timestamp:         time.Now(),
+		TokenCount:        response.Usage.TotalTokens,
+		CostUSD:           response.Usage.CostUSD,
+		InputTokens:       response.Usage.InputTokens,
+		OutputTokens:      response.Usage.OutputTokens,
+		CacheReadTokens:   response.Usage.CacheReadInputTokens,
+		CacheCreateTokens: response.Usage.CacheCreationInputTokens,
 
-			CacheCreate1hTokens: response.Usage.CacheCreation1hInputTokens,
-			CacheCreate5mTokens: response.Usage.CacheCreation5mInputTokens,
-			ThinkingTokens:      response.Usage.ThinkingTokens,
-			Effort:              response.Usage.Effort,
-		}, false)
-	}
+		CacheCreate1hTokens: response.Usage.CacheCreation1hInputTokens,
+		CacheCreate5mTokens: response.Usage.CacheCreation5mInputTokens,
+		ThinkingTokens:      response.Usage.ThinkingTokens,
+		Effort:              response.Usage.Effort,
+	}, false)
+	a.pruneFinishedTurn(ctx, session.ID, replyPersisted)
 
 	// Persist session
 	if err := a.memory.PersistSession(ctx, session); err != nil {
@@ -2763,9 +2809,29 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		}()
 	}
 
+	// stepIndex is the durable execution-event-log step counter for this
+	// invocation, read once at loop entry (see EventLogStore.NextStepIndex)
+	// and advanced once per loop iteration (see thisStep below).
+	stepIndex, stepErr := a.currentStepIndex(ctx, session.ID)
+	if stepErr != nil {
+		return nil, fmt.Errorf("reading the execution-event step counter: %w", stepErr)
+	}
+
 	// Conversation loop
 	for turnCount < a.config.MaxTurns && toolExecutionCount < a.config.MaxToolExecutions {
+		if leaseErr := sessionLeaseLost(ctx); leaseErr != nil {
+			return nil, leaseErr
+		}
 		turnCount++
+
+		// thisStep is captured once per iteration, before any branch
+		// (continue/return/fall-through) can run, so exactly one step_index
+		// is consumed per iteration regardless of which exit path it takes.
+		// See the two `continue` statements below in the zero-tool-call
+		// branch: neither reaches a loop-tail increment, so the increment
+		// must happen here instead.
+		thisStep := stepIndex
+		stepIndex++
 
 		// Record turn start on conversation_loop span
 		span.AddEvent("turn.started", map[string]interface{}{
@@ -2972,7 +3038,13 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		if scripted, ok := scriptedResponseFromContext(ctx); ok && strings.TrimSpace(scripted) != "" {
 			llmResp = &LLMResponse{Content: scripted, StopReason: "end_turn"}
 		} else {
+			if intentErr := a.recordLLMIntent(ctx, session.ID, thisStep, len(messages), a.llm.Model()); intentErr != nil {
+				return nil, fmt.Errorf("recording LLM call intent: %w", intentErr)
+			}
 			llmResp, err = sendChat(tools)
+			if err == nil {
+				a.recordLLMResult(ctx, session.ID, thisStep, llmResp)
+			}
 		}
 		if err != nil && errors.Is(err, llm.ErrContextTooLong) {
 			if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
@@ -2990,7 +3062,15 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				if segMem2, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem2 != nil {
 					segMem2.SetAdvertisedToolsBytes(advertisedToolsBytes(tools))
 				}
+				// Same logical step: a resend after ErrContextTooLong is the
+				// same LLM call with a shorter context, so it reuses the
+				// intent already recorded at thisStep (re-recording it with
+				// the new message count would conflict) and records only
+				// the result.
 				llmResp, err = sendChat(tools)
+				if err == nil {
+					a.recordLLMResult(ctx, session.ID, thisStep, llmResp)
+				}
 				// Still refused, and the step in flight has results: they are
 				// what does not fit, and no relief may remove them. They are
 				// replaced with a note saying so — each call ran; call fewer
@@ -3008,6 +3088,9 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 							span.AddEvent("turn.step_results_replaced", map[string]interface{}{"turn": turnCount, "results": replaced})
 							messages = session.GetMessages()
 							llmResp, err = sendChat(tools)
+							if err == nil {
+								a.recordLLMResult(ctx, session.ID, thisStep, llmResp)
+							}
 						}
 					}
 				}
@@ -3242,6 +3325,14 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// If LLM returned text (no tool calls), we're done — unless the response
 		// is empty, in which case we retry once with a nudge message.
 		if len(llmResp.ToolCalls) == 0 {
+			// Zero tool calls means this step is fully resolved the instant
+			// the LLM responds — there is no tool_call_intent to await a
+			// result for. Prune here, before any of this branch's three
+			// exits (two `continue` retries below, or the final `return`),
+			// since none of them reach the loop-tail prune call. No tool rows
+			// belong to this step, so there is nothing whose durability to
+			// check.
+			a.pruneStepIfResolved(ctx, session.ID, thisStep, true)
 			if strings.TrimSpace(llmResp.Content) == "" && !emptyRetried {
 				// One-shot retry: nudge the LLM to produce a response.
 				emptyRetried = true
@@ -3379,6 +3470,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			tools:              &tools,
 			recovery:           recovery,
 			turnDedup:          make(map[string]*shuttle.Result),
+			stepIndex:          thisStep,
 			parkableTail:       a.hitlPark != nil && assistantPersisted && a.memory.HasStore(),
 			batchIDCount:       batchIDCount,
 		}
@@ -3397,9 +3489,39 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 
 		// Resource-await park (park_resource.go): calls held during dispatch
 		// end the turn HERE, after every other call's row and sidecar landed.
+		// It runs before the lesson lane so the park sees the batch tail
+		// exactly as it did before lessons existed; a parked turn ends here
+		// and re-queries the lesson partition on resume instead.
 		if parkErr := a.maybeParkResourceBatch(ctx, session, st, llmResp); parkErr != nil {
 			return nil, parkErr
 		}
+
+		// Error-triggered lesson recall: failures in this batch re-query the
+		// lesson partition with the error text, so a lesson whose trigger is
+		// the error itself (invisible to the conversation-start lane, which
+		// matches task wording) lands right before the model's retry turn.
+		if len(st.errTexts) > 0 {
+			a.injectErrorLessons(ctx, session, st.errTexts)
+		}
+
+		// This step's batch finished dispatching inline (the common, non-crash
+		// path), so the step is NORMALLY fully resolved and carries no further
+		// replay value. A step that ended in an ExecutionGap or a parked HITL
+		// batch never reaches this line (the loop returns/parks earlier), so
+		// its events are correctly retained.
+		//
+		// "Normally" is the whole point: this line is also reached when the
+		// MaxToolExecutions break above stopped the per-call loop partway
+		// through the batch, so not every call got a row — and any of the
+		// fail-open result/persist writes inside dispatchOneCall can have
+		// silently failed. Whether the step is actually resolved is therefore
+		// not knowable from here, which is why pruneStepIfResolved verifies
+		// intent↔result pairing against the log itself before deleting
+		// anything rather than trusting this call site. It also needs the
+		// batch's rows to be durable: if the assistant message or a tool row
+		// failed to persist, a resume after a crash reads a session without
+		// them and must find this step's events to avoid re-running a call.
+		a.pruneStepIfResolved(ctx, session.ID, thisStep, assistantPersisted && !st.rowNotPersisted)
 	}
 
 	// If we hit max turns/executions, make one final LLM call to synthesize results
@@ -3425,6 +3547,23 @@ type batchState struct {
 	turnToolCount   int
 	turnDedup       map[string]*shuttle.Result
 	pendingSidecars []Message
+
+	stepIndex int // the execution-event-log step this batch's calls are recorded under
+	// stepErr is set when stepIndex could not be resolved. No call may be
+	// recorded under a guessed step, and an unrecorded call must not run, so
+	// every dispatch fails its intent with this error.
+	stepErr error
+
+	// rowNotPersisted is set when a tool row for a call in this batch failed to
+	// persist (appendMessage is fail-open). The step's events are then the
+	// only durable record of that call, so the step must not be pruned.
+	rowNotPersisted bool
+
+	// errTexts: tool-error messages from this batch, buffered for the
+	// error-triggered lesson lane (graph_memory_lessons.go). It rides on
+	// batchState rather than the loop because dispatchOneCall — which fills
+	// it — is shared with ResumeChat's parked-batch completion.
+	errTexts []string
 
 	// Resource-await park (park_resource.go). parkableTail mirrors the
 	// pre-scan's durability gate and is set ONLY by the conversation loop —
@@ -3458,27 +3597,43 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 	if finished {
 		return
 	}
-	result, err := a.runCall(ctx, pc, session.ID)
+	var result *shuttle.Result
+	var err error
+	if pc.intentErr == nil {
+		result, err = a.runCall(ctx, pc, session.ID)
+	}
 	a.settleCall(ctx, session, pc, st, result, err)
 }
 
-// preparedCall is one call that passed the per-turn cap and dedup checks and
-// is ready to execute: the call, its batch index, its dedup key, and the open
-// tool span that settleCall ends.
+// preparedCall is one call that passed the per-turn cap and dedup checks: the
+// call, its batch index, its dedup key, and the open tool span that settleCall
+// ends. intentErr is set when the call's intent could not be recorded; the
+// call must then not run, and settleCall commits its error row.
 type preparedCall struct {
-	call     ToolCall
-	index    int
-	dedupKey string
-	toolSpan *observability.Span
+	call      ToolCall
+	index     int
+	dedupKey  string
+	toolSpan  *observability.Span
+	intentErr error
 }
 
 // prepareCall is the sequential front half of dispatchOneCall: the per-turn
-// cap row, the dedup replay row, the two counter increments, and the
-// contact_human / implicit-task / tool-started-progress block, ending with the
-// tool span opened. finished is true when a row was already committed (cap or
-// dedup); pc is then nil and the caller must not run the call.
+// cap row, the dedup replay row, the two counter increments, the
+// contact_human / implicit-task / tool-started-progress block, the tool span
+// and the intent record. finished is true when the call needs nothing more:
+// a row was already committed (cap or dedup), or the session lease is lost
+// (no row); pc is then nil and the caller must not run the call. Otherwise
+// the caller runs pc unless pc.intentErr is set, then settles it.
 func (a *Agent) prepareCall(ctx Context, session *Session, toolCall ToolCall, i int, st *batchState) (pc *preparedCall, finished bool) {
 	span := st.span
+
+	// After the session lease is lost, another process may be dispatching
+	// this batch, so this one must not start the call. Returning before the
+	// intent and the tool row leaves the call "never attempted", which is how
+	// the new holder's resume will see it.
+	if sessionLeaseLost(ctx) != nil {
+		return nil, true
+	}
 
 	// Per-turn cap: skip remaining calls with an error result
 	if st.turnToolCount >= st.maxPerTurn {
@@ -3576,7 +3731,42 @@ func (a *Agent) prepareCall(ctx Context, session *Session, toolCall ToolCall, i 
 		toolSpan.SetAttribute("dispatch.barrier_reason", st.barrierReason)
 	}
 
-	return &preparedCall{call: toolCall, index: i, dedupKey: dedupKey, toolSpan: toolSpan}, false
+	intentErr := st.stepErr
+	if intentErr == nil {
+		intentErr = a.recordToolIntent(ctx, session.ID, st.stepIndex, i, toolCall)
+	}
+	// A failed intent is returned on the prepared call, not committed here: the
+	// call must not run, and settleCall commits its error row so that a group
+	// member's row still lands after the rows of the members before it.
+	return &preparedCall{call: toolCall, index: i, dedupKey: dedupKey, toolSpan: toolSpan, intentErr: intentErr}, false
+}
+
+// settleUnrecordedCall commits the row of a call whose intent could not be
+// recorded. Same treatment as an LLM-intent failure: the call never runs. The
+// batch loop has no per-call error return, so this synthesizes a tool-result
+// error like the turn_limit_exceeded path does, and the turn continues instead
+// of the whole conversation loop failing on one event-log hiccup.
+func (a *Agent) settleUnrecordedCall(ctx Context, session *Session, pc *preparedCall, st *batchState) {
+	toolCall := pc.call
+	result := &shuttle.Result{
+		Success: false,
+		Error:   &shuttle.Error{Code: "event_log_intent_failed", Message: pc.intentErr.Error()},
+	}
+	// Traced like any failed call, so the span is not read as a success.
+	addToolExecutionEvent(st, pc, result, nil)
+	endToolSpan(ctx, pc.toolSpan, result, nil)
+	a.appendMessage(ctx, session, Message{
+		Role:       "tool",
+		Content:    fmt.Sprintf("event_log_intent_failed — could not durably record this call before executing it: %v. Not executed.", pc.intentErr),
+		ToolUseID:  toolCall.ID,
+		ToolResult: result,
+		AgentID:    a.id,
+		Timestamp:  time.Now(),
+	}, false)
+	*st.allToolExecutions = append(*st.allToolExecutions, ToolExecution{ToolName: toolCall.Name, Input: toolCall.Input, Error: pc.intentErr})
+	// No *st.toolExecutionCount++ here: prepareCall already advanced the
+	// counter before the intent check. A call that never ran must consume
+	// exactly one unit of the MaxToolExecutions budget, not two.
 }
 
 // runCall is the execution middle of dispatchOneCall: the circuit breaker and
@@ -3591,14 +3781,20 @@ func (a *Agent) runCall(ctx Context, pc *preparedCall, sessionID string) (*shutt
 // settleCall is the sequential back half of dispatchOneCall: lease events and
 // guardrails bookkeeping, tier-1 circuit-breaker recovery, the span events,
 // ending the tool span, the resource-await hold, and the committed tool row.
-// Calls must be settled in call order.
+// Calls must be settled in call order. A call whose intent was not recorded
+// (pc.intentErr) was never run; it settles as its error row alone.
 func (a *Agent) settleCall(ctx Context, session *Session, pc *preparedCall, st *batchState, result *shuttle.Result, err error) {
+	if pc.intentErr != nil {
+		a.settleUnrecordedCall(ctx, session, pc, st)
+		return
+	}
 	span := st.span
 	toolCall := pc.call
 	i := pc.index
 	toolSpan := pc.toolSpan
 
-	a.settleExecution(ctx, session.ID, toolCall.Input, result, err)
+	a.settleExecution(ctx, session.ID, toolCall.Name, toolCall.Input, result, err)
+	a.recordToolResult(ctx, session.ID, st.stepIndex, i, toolCall.ID, result, err)
 
 	// Tier 1: if tool CB fired, disable tool and inject synthetic result.
 	if err != nil && strings.Contains(err.Error(), "circuit breaker open") && st.recovery != nil {
@@ -3607,26 +3803,7 @@ func (a *Agent) settleCall(ctx Context, session *Session, pc *preparedCall, st *
 		err = nil
 	}
 
-	// Record tool execution on conversation_loop span
-	{
-		toolSuccess := err == nil && (result == nil || result.Success)
-		toolEvent := map[string]interface{}{
-			"turn":      st.turnCount,
-			"tool_name": toolCall.Name,
-			"success":   toolSuccess,
-			"index":     i + 1,
-			"total":     st.batchLen,
-		}
-		if err != nil {
-			toolEvent["error"] = err.Error()
-		} else if result != nil && !result.Success && result.Error != nil {
-			toolEvent["error"] = result.Error.Message
-		}
-		if result != nil {
-			toolEvent["execution_time_ms"] = result.ExecutionTimeMs
-		}
-		span.AddEvent("turn.tool_execution", toolEvent)
-	}
+	addToolExecutionEvent(st, pc, result, err)
 
 	// Add instrumentation for HITL completion
 	if toolCall.Name == "contact_human" {
@@ -3652,24 +3829,7 @@ func (a *Agent) settleCall(ctx Context, session *Session, pc *preparedCall, st *
 		}
 	}
 
-	// Record tool execution results on span
-	{
-		success := err == nil && (result == nil || result.Success)
-
-		if err != nil {
-			toolSpan.RecordError(err)
-		} else if result != nil && !result.Success && result.Error != nil {
-			toolSpan.RecordError(fmt.Errorf("%s: %s", result.Error.Code, result.Error.Message))
-			toolSpan.SetAttribute("error.code", result.Error.Code)
-			toolSpan.SetAttribute("error.message", result.Error.Message)
-		}
-
-		toolSpan.SetAttribute("success", fmt.Sprintf("%t", success))
-		if result != nil {
-			toolSpan.SetAttribute("execution_time_ms", fmt.Sprintf("%d", result.ExecutionTimeMs))
-		}
-		ctx.Tracer().EndSpan(toolSpan)
-	}
+	endToolSpan(ctx, toolSpan, result, err)
 
 	// Resource-await hold (park_resource.go): a successful result asking to be
 	// awaited is withheld from the transcript — no execution record, no tool
@@ -3680,6 +3840,42 @@ func (a *Agent) settleCall(ctx Context, session *Session, pc *preparedCall, st *
 	}
 
 	a.commitToolRow(ctx, session, toolCall, st, result, err, toolSpan)
+}
+
+// addToolExecutionEvent records a settled call on the conversation loop span.
+func addToolExecutionEvent(st *batchState, pc *preparedCall, result *shuttle.Result, err error) {
+	toolEvent := map[string]interface{}{
+		"turn":      st.turnCount,
+		"tool_name": pc.call.Name,
+		"success":   err == nil && (result == nil || result.Success),
+		"index":     pc.index + 1,
+		"total":     st.batchLen,
+	}
+	if err != nil {
+		toolEvent["error"] = err.Error()
+	} else if result != nil && !result.Success && result.Error != nil {
+		toolEvent["error"] = result.Error.Message
+	}
+	if result != nil {
+		toolEvent["execution_time_ms"] = result.ExecutionTimeMs
+	}
+	st.span.AddEvent("turn.tool_execution", toolEvent)
+}
+
+// endToolSpan records a settled call's outcome on its tool span and ends it.
+func endToolSpan(ctx Context, toolSpan *observability.Span, result *shuttle.Result, err error) {
+	if err != nil {
+		toolSpan.RecordError(err)
+	} else if result != nil && !result.Success && result.Error != nil {
+		toolSpan.RecordError(fmt.Errorf("%s: %s", result.Error.Code, result.Error.Message))
+		toolSpan.SetAttribute("error.code", result.Error.Code)
+		toolSpan.SetAttribute("error.message", result.Error.Message)
+	}
+	toolSpan.SetAttribute("success", fmt.Sprintf("%t", err == nil && (result == nil || result.Success)))
+	if result != nil {
+		toolSpan.SetAttribute("execution_time_ms", fmt.Sprintf("%d", result.ExecutionTimeMs))
+	}
+	ctx.Tracer().EndSpan(toolSpan)
 }
 
 // commitToolRow is the commit tail of dispatchOneCall — execution record,
@@ -3772,14 +3968,26 @@ func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, 
 	}
 
 	// Add tool result to conversation
-	a.appendMessage(ctx, session, Message{
+	if _, persisted := a.appendMessage(ctx, session, Message{
 		Role:       "tool",
 		Content:    formattedResult,
 		ToolUseID:  toolCall.ID, // Store ID for Bedrock/Anthropic format conversion
 		ToolResult: result,
 		AgentID:    a.GetID(), // Track which agent executed this tool
 		Timestamp:  time.Now(),
-	}, false)
+	}, false); !persisted {
+		st.rowNotPersisted = true
+	}
+
+	// Mining ledger (graph_memory_lessons.go): record the execution now,
+	// before compilation can evict this turn.
+	a.recordToolLedger(session.ID, toolCall, result)
+
+	// Collect failure text for error-triggered lesson recall (injected AFTER
+	// the whole batch — never between a tool_use and its tool_result).
+	if result != nil && result.Error != nil && result.Error.Message != "" {
+		st.errTexts = append(st.errTexts, result.Error.Message)
+	}
 
 	// If the tool signaled a text_body sidecar (e.g. manage_skills(load)
 	// — the skill body belongs under the user-instruction slot, not the
@@ -4098,7 +4306,7 @@ func (a *Agent) runTool(ctx Context, toolName string, input map[string]interface
 // settleExecution is the session-shared bookkeeping for an executed tool
 // result: lease events and guardrails error tracking. It must run sequentially
 // and in call order. A call the breaker rejected never ran, so it is skipped.
-func (a *Agent) settleExecution(ctx Context, sessionID string, input map[string]interface{}, result *shuttle.Result, err error) {
+func (a *Agent) settleExecution(ctx Context, sessionID, toolName string, input map[string]interface{}, result *shuttle.Result, err error) {
 	var breakerOpen *toolBreakerOpenError
 	if errors.As(err, &breakerOpen) {
 		return
@@ -4110,6 +4318,12 @@ func (a *Agent) settleExecution(ctx Context, sessionID string, input map[string]
 	// path replays cached results without re-executing, so replayed events
 	// are never double-applied).
 	a.applyLeaseEvents(ctx, sessionID, result)
+
+	// Decision layer shadow (plan Phase 1, site tool.failure_kind): classify
+	// this result in the background and record it against what the Success
+	// flag and InferErrorType say. Brake-only by design once live; today it
+	// only records.
+	a.shadowFailureKind(ctx, sessionID, toolName, input, result, err)
 
 	// If execution succeeded and guardrails enabled, clear error record
 	if err == nil && result != nil && result.Success && a.guardrails != nil {
@@ -4367,7 +4581,18 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 	// visible instead of being hidden behind a successful injection.
 	span.SetAttribute("recall.store_error", storeFailed)
 	span.SetAttribute("recall.candidates", len(candidates))
-	if len(candidates) == 0 {
+
+	// Dedicated lesson lane (PR #357): verified working knowledge rides
+	// regardless of the echo-memory ranking below. Fleet-shared only when
+	// GraphMemoryConfig.fleet_lesson_sharing is opted in; private otherwise.
+	// No probation here — nothing scores what a conversation-start injection
+	// leads to, so a demoted lesson offered here would be cost without
+	// evidence (see fleetLessons). Queried BEFORE the no-candidates return:
+	// an agent that mostly does tool work can hold lessons and no ordinary
+	// memory that matches, and its lessons must still reach the first request.
+	lessons := a.fleetLessons(ctx, searchQuery, budget, false)
+	span.SetAttribute("recall.lessons", len(lessons))
+	if len(candidates) == 0 && len(lessons) == 0 {
 		if storeFailed {
 			// Distinct from no_candidates: the store failed, this is not a miss.
 			outcome = "store_error"
@@ -4377,16 +4602,34 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 		return
 	}
 
-	// LLM re-rank: ask the LLM which candidates are actually relevant.
+	// LLM re-rank: ask the LLM which candidates are actually relevant
+	// (no candidates, no call — rerankMemories returns nil).
 	relevant := a.rerankMemories(ctx, userMessage, candidates)
-	if len(relevant) == 0 {
+	if len(relevant) == 0 && len(lessons) == 0 {
 		outcome = "rerank_none"
 		return
 	}
-	span.SetAttribute("recall.injected", len(relevant))
+	// recall.injected is the total the block carries; the two breakdowns
+	// split it the way lesson.injected / lesson.injected_verified /
+	// lesson.injected_probation split the error-time lane.
+	span.SetAttribute("recall.injected", len(relevant)+len(lessons))
+	span.SetAttribute("recall.injected_memories", len(relevant))
+	span.SetAttribute("recall.injected_lessons", len(lessons))
 
 	var sb strings.Builder
-	sb.WriteString("Relevant memories from past conversations:\n\n")
+	if len(lessons) > 0 {
+		sb.WriteString(a.lessonPrompt(ctx, lessonPromptHeadingStart))
+		sb.WriteString("\n")
+		for _, m := range lessons {
+			sb.WriteString("- ")
+			sb.WriteString(m.Content)
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
+	if len(relevant) > 0 {
+		sb.WriteString("Relevant memories from past conversations:\n\n")
+	}
 	for _, m := range relevant {
 		sb.WriteString("- ")
 		if m.EventDate != "" {
@@ -4486,9 +4729,23 @@ func (a *Agent) findUserEntity(ctx context.Context, agentID string) *memory.Enti
 	return nil
 }
 
-// rerankMemories uses the LLM to select the most relevant memories for a user message
-// from a pool of FTS5 candidates. Returns only the memories the LLM deems relevant.
+// rerankMemories selects the most relevant memories for a user message from a
+// pool of FTS5 candidates. The existing LLM rerank decides; when the decision
+// layer is wired, the decider's per-candidate relevance is evaluated in the
+// background and recorded against that decision as a shadow row (plan Phase
+// 1, site recall.rerank). Nothing branches on the decider yet.
 func (a *Agent) rerankMemories(ctx context.Context, userMessage string, candidates []*memory.Memory) []*memory.Memory {
+	kept := a.rerankMemoriesLLM(ctx, userMessage, candidates)
+	if a.decisionRouter != nil && len(candidates) > 0 {
+		a.shadowRerank(ctx, sessionIDFromContext(ctx), sites.SiteRecallRerank, userMessage, candidates, kept, sites.ReferenceSourceLLMRerank)
+	}
+	return kept
+}
+
+// rerankMemoriesLLM is the generative rerank: a numbered candidate list and a
+// "return only the numbers" instruction. Returns only the memories the LLM
+// deems relevant; on any failure it returns every candidate.
+func (a *Agent) rerankMemoriesLLM(ctx context.Context, userMessage string, candidates []*memory.Memory) []*memory.Memory {
 	if len(candidates) == 0 {
 		return nil
 	}
@@ -4744,6 +5001,12 @@ func (a *Agent) DeleteSession(sessionID string) {
 	// nil-receiver-safe, and a.implicitTasks is nil until a task manager is
 	// wired.
 	a.implicitTasks.ForgetSession(sessionID)
+	// Drop the lesson miner's per-session state (ledger, history-coverage
+	// marker, error-lane injection record) for the same reason.
+	a.forgetLessonSession(sessionID)
+	// Release the session's decision-layer budget accounting, which is
+	// likewise bounded by live sessions only because retirement frees it.
+	a.decisionRouter.ForgetSession(sessionID)
 }
 
 // ApprovedSet returns the executor's approved-set accessor; nil until one is
@@ -4791,6 +5054,7 @@ func (a *Agent) ClearAllSessions() {
 	a.sessionToolLedger = make(map[string]map[string]bool)
 	a.mu.Unlock()
 	a.leases.reset()
+	a.decisionRouter.ForgetAllSessions()
 }
 
 // CreateSession creates a new session without sending a message to the LLM.

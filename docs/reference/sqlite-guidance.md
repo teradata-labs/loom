@@ -101,6 +101,7 @@ When Loom runs with a SQLite storage backend:
 2. **No Row Level Security (RLS)**: SQLite does not support RLS. All data is accessible to all callers.
 3. **`require_user_id` is ignored**: Even if `require_user_id` is set to `true` in configuration, the SQLite backend forces it to `false`. A warning is logged at startup: `"SQLite backend does not support user ID requirement; require_user_id ignored"`.
 4. **All sessions visible to all users**: Any caller can list, read, and modify any session.
+5. **Graph memory and lessons are shared by every user of an agent**: the SQLite graph-memory store does not scope rows by user (every row has `user_id = 'default-user'`, and no query filters on it). A lesson mined from the tool calls in one user's session is recalled and injected, as verified guidance, in every other user's session of the same agent, and it can quote that user's SQL, table names or values. With `fleet_lesson_sharing` on, it reaches every agent on the server as well. On PostgreSQL with a non-superuser role, row-level security keeps lessons per user.
 
 ### When to Use SQLite
 

@@ -25,6 +25,8 @@ import (
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/checkpoint"
+	"github.com/teradata-labs/loom/pkg/decision"
+	"github.com/teradata-labs/loom/pkg/eventlog"
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
@@ -44,9 +46,12 @@ type Backend struct {
 	taskStore         *TaskStore
 	graphMemoryStore  *GraphMemoryStore
 	checkpointStore   *CheckpointStore
-	migrator          *Migrator
-	tracer            observability.Tracer
-	logger            *zap.Logger
+	// decisionShadowStore persists typed-decision shadow rows (pkg/decision).
+	decisionShadowStore *DecisionShadowStore
+	eventLogStore       *EventLogStore
+	migrator            *Migrator
+	tracer              observability.Tracer
+	logger              *zap.Logger
 }
 
 // NewBackend creates a new PostgreSQL storage backend from proto configuration.
@@ -80,16 +85,18 @@ func NewBackend(ctx context.Context, cfg *loomv1.PostgresStorageConfig, tracer o
 	tc := agent.GetTokenCounter()
 
 	return &Backend{
-		pool:              pool,
-		sessionStore:      NewSessionStore(pool, tracer, logger.Named("session")),
-		artifactStore:     NewArtifactStore(pool, tracer),
-		humanRequestStore: NewHumanRequestStore(pool, tracer),
-		taskStore:         NewTaskStore(pool, tracer),
-		graphMemoryStore:  NewGraphMemoryStore(pool, tc, tracer),
-		checkpointStore:   NewCheckpointStore(pool, tracer),
-		migrator:          migrator,
-		tracer:            tracer,
-		logger:            logger,
+		pool:                pool,
+		sessionStore:        NewSessionStore(pool, tracer, logger.Named("session")),
+		artifactStore:       NewArtifactStore(pool, tracer),
+		humanRequestStore:   NewHumanRequestStore(pool, tracer),
+		taskStore:           NewTaskStore(pool, tracer),
+		graphMemoryStore:    NewGraphMemoryStore(pool, tc, tracer),
+		checkpointStore:     NewCheckpointStore(pool, tracer),
+		decisionShadowStore: NewDecisionShadowStore(pool, tracer),
+		eventLogStore:       NewEventLogStore(pool, tracer),
+		migrator:            migrator,
+		tracer:              tracer,
+		logger:              logger,
 	}, nil
 }
 
@@ -113,6 +120,12 @@ func (b *Backend) TaskStore() task.TaskStore {
 	return b.taskStore
 }
 
+// DecisionShadowStore returns the typed-decision shadow store. Satisfies
+// backend.DecisionShadowProvider through the wrapper in pkg/storage/backend.
+func (b *Backend) DecisionShadowStore() decision.ShadowStore {
+	return b.decisionShadowStore
+}
+
 // GraphMemoryStore implements backend.GraphMemoryProvider.
 func (b *Backend) GraphMemoryStore() memory.GraphMemoryStore {
 	return b.graphMemoryStore
@@ -121,6 +134,11 @@ func (b *Backend) GraphMemoryStore() memory.GraphMemoryStore {
 // CheckpointStore implements backend.CheckpointStoreProvider.
 func (b *Backend) CheckpointStore() checkpoint.CheckpointStore {
 	return b.checkpointStore
+}
+
+// EventLogStore implements backend.EventLogProvider.
+func (b *Backend) EventLogStore() eventlog.EventLogStore {
+	return b.eventLogStore
 }
 
 // Migrate runs all pending PostgreSQL migrations.
