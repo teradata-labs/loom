@@ -186,12 +186,15 @@ func newFailingProvider(t *testing.T, err error) *failingProvider {
 
 // newFailingAgent keeps the agent's own LLM retry loop enabled — it is one
 // of the wrap layers under test — with millisecond backoff so the test is
-// fast.
+// fast. The agent waits out a throttle under its throttle budget before the
+// throttle error surfaces; the instant-waits option spends that budget in
+// virtual time, so an always-throttling provider still ends the turn with
+// the throttle error, without real minutes of waiting.
 func newFailingAgent(p *failingProvider) *agent.Agent {
 	cfg := agent.DefaultConfig()
 	cfg.Retry.InitialDelay = time.Millisecond
 	cfg.Retry.MaxDelay = 2 * time.Millisecond
-	return agent.NewAgent(&mockBackend{}, p, agent.WithConfig(cfg))
+	return agent.NewAgent(&mockBackend{}, p, agent.WithConfig(cfg), agent.WithInstantThrottleWaitsForTesting())
 }
 
 func newFailingServer(p *failingProvider) *MultiAgentServer {

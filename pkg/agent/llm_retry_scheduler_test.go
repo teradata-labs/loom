@@ -122,8 +122,17 @@ func TestFunnelObservesThrottleAndSuccessProviderAgnostic(t *testing.T) {
 	sched := scheduler.Default().For(a.schedulerScope(), scheduler.Config{})
 	before := sched.State().EffectiveTokensPerMinute
 
+	// A throttle now PAUSES the conversation rather than failing it (see
+	// throttlePatience in llm_retry.go), so a permanently-throttling stub
+	// surfaces its error at the caller's deadline instead of immediately.
+	// The deadline is what bounds this call; the AIMD observation itself
+	// happens at absorption, before the first wait.
 	stub.throttle = true
-	_, err := a.chatWithRetry(ctx, []Message{{Role: "user", Content: "hi"}}, nil)
+	throttledCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_, err := a.chatWithRetry(
+		&agentContext{Context: throttledCtx, tracer: observability.NewNoOpTracer()},
+		[]Message{{Role: "user", Content: "hi"}}, nil)
 	require.Error(t, err)
 	st := sched.State()
 	assert.Equal(t, before/2, st.EffectiveTokensPerMinute,
@@ -260,7 +269,7 @@ func TestDispatchChat_TransientModelFaultsAndTypedRefusals(t *testing.T) {
 			cfg.Retry.MaxRetries = 2
 			cfg.Retry.InitialDelay = time.Millisecond
 			cfg.Retry.MaxDelay = 2 * time.Millisecond
-			a := &Agent{id: "retry-transient-fault", llm: stub, config: cfg}
+			a := &Agent{id: "retry-transient-fault", llm: stub, config: cfg, throttleClock: &virtualThrottleClock{now: time.Unix(0, 0)}}
 			ctx := &agentContext{Context: context.Background(), tracer: observability.NewNoOpTracer()}
 
 			resp, err := a.dispatchChat(ctx, []Message{{Role: "user", Content: "hi"}}, nil)
@@ -292,13 +301,13 @@ func TestDispatchChat_TransientModelFaultsAndTypedRefusals(t *testing.T) {
 		assert.Equal(t, 1, stub.calls)
 	})
 
-	t.Run("exhausted inner rate-limiter budget takes one outer call", func(t *testing.T) {
+	t.Run("exhausted inner rate-limiter budget on a 5xx takes one outer call", func(t *testing.T) {
 		stub := &scriptedErrorStubLLM{
 			fn: func(int, context.Context) (*LLMResponse, error) {
 				return nil, &llm.RetriesExhaustedError{
 					Attempts: 6,
-					Cause:    "throttling",
-					Err:      llm.NewThrottleError(errors.New("API error (status 429): rate limit"), 0),
+					Cause:    "transient",
+					Err:      llm.NewTransientError(errors.New("API error (status 503): overloaded"), http.StatusServiceUnavailable, 0),
 				}
 			},
 		}
@@ -436,9 +445,13 @@ func (s *errorStubLLM) Model() string { return "err-model" }
 
 func TestDispatchChat_SkipsNonRetryable4xxErrors(t *testing.T) {
 	tests := []struct {
-		name      string
-		err       error
-		wantCalls int
+		name string
+		err  error
+		// wantCalls is the exact provider call count. wantThrottled instead
+		// asserts the throttle was waited out under the throttle budget: more
+		// calls than the retry budget allows, ending in a throttle error.
+		wantCalls     int
+		wantThrottled bool
 	}{
 		{
 			name:      "HTTP 400 status error",
@@ -486,18 +499,27 @@ func TestDispatchChat_SkipsNonRetryable4xxErrors(t *testing.T) {
 			wantCalls: 1,
 		},
 		{
-			name: "provider internal rate limiter already exhausted retries",
+			name: "provider internal rate limiter exhausted on a 5xx is final",
+			err: &llm.RetriesExhaustedError{
+				Attempts: 5,
+				Cause:    "transient",
+				Err:      llm.NewTransientError(errors.New("API error (status 503): overloaded"), http.StatusServiceUnavailable, 0),
+			},
+			wantCalls: 1,
+		},
+		{
+			name: "provider internal rate limiter exhausted on a throttle is waited out",
 			err: &llm.RetriesExhaustedError{
 				Attempts: 5,
 				Cause:    "throttling",
 				Err:      llm.NewThrottleError(errors.New("API error (status 429): rate limit"), 0),
 			},
-			wantCalls: 1,
+			wantThrottled: true,
 		},
 		{
-			name:      "HTTP 429 throttle is retried",
-			err:       llm.NewThrottleError(errors.New("API error (status 429): rate limit"), time.Millisecond),
-			wantCalls: 3,
+			name:          "HTTP 429 throttle is waited out",
+			err:           llm.NewThrottleError(errors.New("API error (status 429): rate limit"), time.Millisecond),
+			wantThrottled: true,
 		},
 		{
 			name:      "HTTP 408 timeout is retried",
@@ -528,11 +550,18 @@ func TestDispatchChat_SkipsNonRetryable4xxErrors(t *testing.T) {
 			cfg.Retry.MaxRetries = 2
 			cfg.Retry.InitialDelay = time.Millisecond
 			cfg.Retry.MaxDelay = 2 * time.Millisecond
-			a := &Agent{id: "retry-4xx-test", llm: stub, config: cfg}
+			// Throttle waits run on a virtual clock, so the throttle budget
+			// elapses at once.
+			a := &Agent{id: "retry-4xx-test", llm: stub, config: cfg, throttleClock: &virtualThrottleClock{now: time.Unix(0, 0)}}
 			ctx := &agentContext{Context: context.Background(), tracer: observability.NewNoOpTracer()}
 
 			_, err := a.dispatchChat(ctx, []Message{{Role: "user", Content: "hi"}}, nil)
 			require.Error(t, err)
+			if tt.wantThrottled {
+				assert.True(t, llm.IsThrottle(err), "want a throttle error, got %v", err)
+				assert.Greater(t, stub.calls, cfg.Retry.MaxRetries+1)
+				return
+			}
 			assert.Equal(t, tt.wantCalls, stub.calls)
 		})
 	}
