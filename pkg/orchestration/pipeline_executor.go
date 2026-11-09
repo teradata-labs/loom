@@ -30,6 +30,9 @@ type PipelineExecutor struct {
 	// checkpoints. Set by the iterative executor's plain-pipeline fallback so
 	// suspension/resume verify against the host-visible iterative pattern.
 	fingerprintOverride string
+
+	// aux collects the LLM calls this executor makes itself (run_usage.go).
+	aux auxUsage
 }
 
 // NewPipelineExecutor creates a new pipeline executor.
@@ -48,7 +51,9 @@ type pipelineState struct {
 	// Index of the stage to execute first.
 	startIndex int
 
-	// Append-only execution history (all attempts) for cost accounting.
+	// One result per executed stage pass, in execution order. A stage
+	// attempt that a retry replaced is not here; its cost goes to the
+	// executor's aux collector (run_usage.go), which is not checkpointed.
 	allResults []*loomv1.AgentResult
 
 	// Full output per completed stage of the current pass, index-aligned.
@@ -398,6 +403,9 @@ func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time,
 					priorOutputs := stageOutputs[:len(stageOutputs)-1]
 					retryResult, retryModel := e.retryStage(ctx, workflowID, stage, currentInput, priorOutputs, stageNum, result.Output, validationFailure)
 					if retryResult != nil {
+						// The retry replaces the failed attempt's result; keep
+						// the replaced attempt's calls in the run's cost.
+						e.aux.addResultCost(result.Cost)
 						result = retryResult
 						allResults[len(allResults)-1] = result
 						stageOutputs[len(stageOutputs)-1] = result.Output
@@ -748,10 +756,11 @@ func (e *PipelineExecutor) runStageAgent(
 		ConfidenceScore: 1.0,
 		DurationMs:      duration.Milliseconds(),
 		Cost: &loomv1.AgentExecutionCost{
-			TotalTokens:  types.SafeInt32(response.Usage.TotalTokens),
-			InputTokens:  types.SafeInt32(response.Usage.InputTokens),
-			OutputTokens: types.SafeInt32(response.Usage.OutputTokens),
-			CostUsd:      response.Usage.CostUSD,
+			TotalTokens:  types.SafeInt32(response.TurnUsage.TotalTokens),
+			InputTokens:  types.SafeInt32(response.TurnUsage.InputTokens),
+			OutputTokens: types.SafeInt32(response.TurnUsage.OutputTokens),
+			CostUsd:      response.TurnUsage.CostUSD,
+			LlmCalls:     types.SafeInt32(response.TurnLLMCalls),
 		},
 	}
 
@@ -903,6 +912,7 @@ func (e *PipelineExecutor) validateStageOutput(ctx context.Context, workflowID s
 	if err != nil {
 		return false, fmt.Errorf("validation LLM call failed: %w", err)
 	}
+	e.aux.addCall(response.Usage)
 
 	// Simple validation: check if response contains "valid" or "yes"
 	// In a real implementation, this could be more sophisticated
@@ -920,7 +930,7 @@ func (e *PipelineExecutor) calculateCost(results []*loomv1.AgentResult) *loomv1.
 		if result.Cost != nil {
 			cost.TotalCostUsd += result.Cost.CostUsd
 			cost.TotalTokens += result.Cost.TotalTokens
-			cost.LlmCalls++
+			cost.LlmCalls += resultLLMCalls(result.Cost)
 
 			// Aggregate by agent
 			if existing, ok := cost.AgentCostsUsd[result.AgentId]; ok {
@@ -931,6 +941,7 @@ func (e *PipelineExecutor) calculateCost(results []*loomv1.AgentResult) *loomv1.
 		}
 	}
 
+	e.aux.applyTo(cost)
 	return cost
 }
 
@@ -1033,6 +1044,10 @@ func (e *PipelineExecutor) retryStage(
 				zap.Int("attempt", attempt))
 			return result, model
 		}
+
+		// This attempt failed validation and its result is dropped; keep its
+		// calls in the run's cost.
+		e.aux.addResultCost(result.Cost)
 
 		// Update failure info for next retry prompt
 		failedOutput = result.Output
