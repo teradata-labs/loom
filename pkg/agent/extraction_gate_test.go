@@ -233,6 +233,7 @@ func TestRenderExtractionWindowDropsToolPayloads(t *testing.T) {
 		{Role: "assistant", Content: "Noted."},
 		{Role: roleLessonReminder, Content: "lesson: query_x failed with ERR-SENTINEL-42"},
 		{Role: roleSkillBody, Content: "skill body SKILL-SENTINEL"},
+		{Role: "system", Content: graphMemoryContextMarker + "\nlesson: RECALL-SENTINEL-7"},
 		{Role: "user", Content: "   "},
 	})
 	assert.Contains(t, got, "[user] my daughter Ada starts school")
@@ -244,6 +245,11 @@ func TestRenderExtractionWindowDropsToolPayloads(t *testing.T) {
 	assert.NotContains(t, got, "ERR-SENTINEL-42")
 	assert.NotContains(t, got, "["+roleLessonReminder+"]")
 	assert.NotContains(t, got, "SKILL-SENTINEL")
+	// Review #410 F9, second route: the conversation-start recall block is a
+	// system message that carries the same lessons (and stored memories).
+	assert.NotContains(t, got, "RECALL-SENTINEL-7")
+	assert.NotContains(t, got, graphMemoryContextMarker)
+	assert.NotContains(t, got, "[system]")
 }
 
 // Review #410 M4: the window is oldest-first, so cutting it to the first

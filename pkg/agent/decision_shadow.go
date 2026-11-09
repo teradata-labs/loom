@@ -516,11 +516,13 @@ func (a *Agent) decisionConfigSummary() string {
 // durable, and tool payloads are neither durable nor safe to ship. Synthetic
 // Loom roles (lesson reminders, skill bodies, hygiene and retry prompts) are
 // dropped too: they are Loom's own text, not conversation, and a lesson
-// reminder is derived from tool output.
+// reminder is derived from tool output. So are system messages: the only one
+// a session holds is the conversation-start [Graph Memory Context] block,
+// which carries recalled lessons and already-stored memories.
 func renderExtractionWindow(messages []types.Message) string {
 	var b strings.Builder
 	for _, m := range messages {
-		if m.Role == "tool" || IsSyntheticWireUserRole(m.Role) || strings.TrimSpace(m.Content) == "" {
+		if m.Role == "tool" || m.Role == "system" || IsSyntheticWireUserRole(m.Role) || strings.TrimSpace(m.Content) == "" {
 			continue
 		}
 		fmt.Fprintf(&b, "[%s] %s\n", m.Role, m.Content)
