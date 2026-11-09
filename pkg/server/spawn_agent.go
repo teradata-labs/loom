@@ -93,7 +93,7 @@ func (s *MultiAgentServer) SpawnSubAgent(ctx context.Context, req *builtin.Spawn
 	}
 
 	if len(req.AutoSubscribe) > 0 {
-		if err := s.validateWorkflowParticipant(namespace, "worker", subAgentID, ag, req.AgentID); err != nil {
+		if err := validateWorkflowParticipant(namespace, "worker", subAgentID, ag); err != nil {
 			return nil, err
 		}
 	}

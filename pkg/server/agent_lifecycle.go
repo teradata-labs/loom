@@ -498,13 +498,6 @@ func (s *MultiAgentServer) ReloadAgent(ctx context.Context, req *loomv1.ReloadAg
 			info, infoErr := s.registry.GetAgentInfo(resolvedID)
 			if infoErr == nil {
 				newConfig = s.registry.GetConfig(info.Name)
-				if rebuiltAgent, getErr := s.registry.GetAgent(ctx, info.Name); getErr == nil && rebuiltAgent != nil {
-					rebuiltAgent.SetID(resolvedID)
-					if updateErr := s.UpdateAgent(resolvedID, rebuiltAgent); updateErr != nil {
-						return nil, status.Errorf(codes.Internal, "failed to update agent: %v", updateErr)
-					}
-					ag = rebuiltAgent
-				}
 			}
 		} else {
 			return nil, status.Error(codes.FailedPrecondition, "reload_from_file requires an agent registry; no registry configured")

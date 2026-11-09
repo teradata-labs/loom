@@ -14,6 +14,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -110,8 +112,8 @@ func wovenWorkflow(t *testing.T) (*MultiAgentServer, *replyingLLM, *replyingLLM,
 	workerLLM := &replyingLLM{}
 	backend := &mockBackend{}
 
-	coordinatorAgent := agent.NewAgent(backend, coordinatorLLM)
-	workerAgent := agent.NewAgent(backend, workerLLM)
+	coordinatorAgent := agent.NewAgent(backend, coordinatorLLM, agent.WithName("test-workflow"))
+	workerAgent := agent.NewAgent(backend, workerLLM, agent.WithName("test-workflow:worker"))
 
 	agents := map[string]*agent.Agent{
 		"test-workflow":        coordinatorAgent,
@@ -137,14 +139,6 @@ func wovenWorkflow(t *testing.T) (*MultiAgentServer, *replyingLLM, *replyingLLM,
 	})
 
 	srv := setupBroadcastTestServer(t, agents, registry)
-
-	// The server re-keys its agent map by GUID; the workflow addresses agents
-	// by name (registry metadata), so make both names directly resolvable.
-	srv.mu.Lock()
-	for name, ag := range agents {
-		srv.agents[name] = ag
-	}
-	srv.mu.Unlock()
 
 	// The coordinator's inbound path is driven by the server-level queue
 	// monitor, which production starts once at boot.
@@ -324,11 +318,11 @@ func TestWovenWorkflow_FanOutRepliesReachCoordinator(t *testing.T) {
 // acknowledging queued messages.
 func TestWovenWorkflow_RejectsToolsDisabledWorker(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		workerKey string
+		name        string
+		coordinator string
 	}{
-		{name: "workflow_prefixed_worker", workerKey: "test-workflow:worker"},
-		{name: "base_name_worker", workerKey: "worker"},
+		{name: "coordinator_name", coordinator: "test-workflow"},
+		{name: "coordinator_guid"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			coordinatorLLM := &replyingLLM{}
@@ -336,11 +330,11 @@ func TestWovenWorkflow_RejectsToolsDisabledWorker(t *testing.T) {
 			backend := &mockBackend{}
 
 			coordinatorAgent := agent.NewAgent(backend, coordinatorLLM, agent.WithName("test-workflow"))
-			workerAgent := agent.NewAgent(backend, workerLLM, agent.WithName(tc.workerKey), agent.WithoutTools())
+			workerAgent := agent.NewAgent(backend, workerLLM, agent.WithName("test-workflow:worker"), agent.WithoutTools())
 
 			agents := map[string]*agent.Agent{
-				"test-workflow": coordinatorAgent,
-				tc.workerKey:    workerAgent,
+				"test-workflow":        coordinatorAgent,
+				"test-workflow:worker": workerAgent,
 			}
 
 			logger := newTestLogger(t)
@@ -362,11 +356,10 @@ func TestWovenWorkflow_RejectsToolsDisabledWorker(t *testing.T) {
 			})
 
 			srv := setupBroadcastTestServer(t, agents, registry)
-			srv.mu.Lock()
-			for name, ag := range agents {
-				srv.agents[name] = ag
+			coordinatorID := tc.coordinator
+			if coordinatorID == "" {
+				coordinatorID = coordinatorAgent.GetID()
 			}
-			srv.mu.Unlock()
 
 			assert.Empty(t, workerAgent.ListTools(), "WithoutTools worker must have zero tools, including send_message")
 
@@ -382,7 +375,7 @@ func TestWovenWorkflow_RejectsToolsDisabledWorker(t *testing.T) {
 			}))
 
 			sessionID := GenerateSessionID()
-			err = srv.spawnWorkflowSubAgents(ctx, coordinatorAgent, "test-workflow", sessionID)
+			err = srv.spawnWorkflowSubAgents(ctx, coordinatorAgent, coordinatorID, sessionID)
 			require.Error(t, err, "workflow startup must reject a tool-disabled worker")
 			require.ErrorIs(t, err, ErrWorkflowParticipantToolsDisabled)
 			assert.ErrorContains(t, err, "test-workflow:worker")
@@ -390,7 +383,7 @@ func TestWovenWorkflow_RejectsToolsDisabledWorker(t *testing.T) {
 
 			// Verify Weave surfaces the rejection to the caller rather than logging and continuing.
 			weaveResp, weaveErr := srv.Weave(ctx, &loomv1.WeaveRequest{
-				AgentId:   "test-workflow",
+				AgentId:   coordinatorID,
 				SessionId: sessionID,
 				Query:     "delegate to worker",
 			})
@@ -405,7 +398,7 @@ func TestWovenWorkflow_RejectsToolsDisabledWorker(t *testing.T) {
 			// Verify StreamWeave also surfaces the rejection to the caller.
 			stream := &mockStreamWeaveServer{ctx: ctx}
 			streamErr := srv.StreamWeave(&loomv1.WeaveRequest{
-				AgentId:   "test-workflow",
+				AgentId:   coordinatorID,
 				SessionId: sessionID,
 				Query:     "delegate to worker",
 			}, stream)
@@ -417,6 +410,10 @@ func TestWovenWorkflow_RejectsToolsDisabledWorker(t *testing.T) {
 			activeCount := len(srv.workflowSubAgents)
 			srv.workflowSubAgentsMu.RUnlock()
 			assert.Zero(t, activeCount, "rejected workflow startup must leave no registered workflow contexts")
+			_, registered := srv.messageQueue.GetNotificationChannel("test-workflow:worker")
+			assert.False(t, registered)
+			assert.Empty(t, srv.messageBus.GetSubscriptionsByAgent("test-workflow"))
+			assert.Empty(t, srv.messageBus.GetSubscriptionsByAgent("test-workflow:worker"))
 
 			assert.Empty(t, workerLLM.message(), "disabled worker must not process queued messages")
 			assert.Empty(t, coordinatorLLM.prompt(), "coordinator turn must not run when workflow validation fails")
@@ -522,9 +519,8 @@ func TestWovenWorkflow_AutoSpawnRejectsToolsDisabledWorker(t *testing.T) {
 	})
 
 	srv := setupBroadcastTestServer(t, agents, registry)
-	srv.mu.Lock()
-	srv.agents["worker"] = workerAgent
-	srv.mu.Unlock()
+	core, logs := observer.New(zap.DebugLevel)
+	srv.logger = zap.New(core)
 
 	ctx := context.Background()
 	require.NoError(t, srv.messageQueue.Enqueue(ctx, &communication.QueueMessage{
@@ -542,23 +538,38 @@ func TestWovenWorkflow_AutoSpawnRejectsToolsDisabledWorker(t *testing.T) {
 	require.ErrorIs(t, err, ErrWorkflowParticipantToolsDisabled)
 	assert.ErrorContains(t, err, "test-workflow:worker")
 
-	// Start the queue monitor and verify it also refuses to start the worker or consume the message.
-	monitorCtx, stopMonitor := context.WithCancel(ctx)
-	srv.StartMessageQueueMonitor(monitorCtx)
-	t.Cleanup(stopMonitor)
-
-	time.Sleep(1200 * time.Millisecond)
+	rejected := make(map[string]*agent.Agent)
+	for range 3 {
+		srv.notifyQueuedWorkflowAgents(ctx, rejected)
+	}
+	assert.Equal(t, 1, logs.FilterMessage("Refusing to auto-spawn workflow sub-agent with tools disabled").Len())
+	assert.Same(t, workerAgent, rejected["test-workflow:worker"])
 
 	srv.workflowSubAgentsMu.RLock()
 	activeCount := len(srv.workflowSubAgents)
 	srv.workflowSubAgentsMu.RUnlock()
 	assert.Zero(t, activeCount, "auto-spawn monitor must not register a disabled worker")
 	assert.Empty(t, workerLLM.message(), "disabled worker must not process auto-spawned message")
+	_, registered := srv.messageQueue.GetNotificationChannel("test-workflow:worker")
+	assert.False(t, registered)
 
 	pending, deqErr := srv.messageQueue.Dequeue(ctx, "test-workflow:worker")
 	require.NoError(t, deqErr)
 	require.NotNil(t, pending, "message must remain unacknowledged in queue")
 	assert.Equal(t, "auto-task-1", pending.ID)
+	require.NoError(t, srv.messageQueue.Requeue(ctx, pending.ID))
+
+	replacement := agent.NewAgent(backend, &replyingLLM{}, agent.WithName("worker"))
+	replacement.SetID(workerAgent.GetID())
+	require.NoError(t, srv.UpdateAgent(workerAgent.GetID(), replacement))
+	srv.notifyQueuedWorkflowAgents(ctx, rejected)
+	assert.Empty(t, rejected, "a new enabled instance must clear the rejection")
+	srv.workflowSubAgentsMu.RLock()
+	running := srv.workflowSubAgents["auto:test-workflow:worker"]
+	srv.workflowSubAgentsMu.RUnlock()
+	require.NotNil(t, running)
+	assert.Same(t, replacement, running.agent)
+	assert.Equal(t, 1, logs.FilterMessage("Refusing to auto-spawn workflow sub-agent with tools disabled").Len())
 }
 
 // TestWovenWorkflow_ReloadWithToolsDisabledRejectsSubsequentWorkflowAndAutoSpawn

@@ -912,11 +912,8 @@ func (s *MultiAgentServer) UpdateAgent(id string, ag *agent.Agent) error {
 	// Now acquire lock ONLY for the agent swap (minimal critical section)
 	s.mu.Lock()
 
-	// Check if agent exists using GUID (or provided id if keyed by name)
+	// Check if agent exists using GUID
 	old, ok := s.agents[agentGUID]
-	if !ok && id != "" {
-		old, ok = s.agents[id]
-	}
 	if !ok {
 		s.mu.Unlock()
 		return fmt.Errorf("agent not found: %s (GUID: %s)", id, agentGUID)
@@ -927,25 +924,12 @@ func (s *MultiAgentServer) UpdateAgent(id string, ag *agent.Agent) error {
 	// swap that discarded it would deny statements a human already approved.
 	ag.AdoptApprovedSet(old.ApprovedSet())
 
-	// Atomic swap using GUID key and any alias keys pointing to the outgoing instance
-	for key, existing := range s.agents {
-		if existing == old {
-			s.agents[key] = ag
-		}
-	}
+	// Atomic swap using GUID key
 	s.agents[agentGUID] = ag
 	s.mu.Unlock()
 
 	if ag.ToolsDisabled() {
-		s.stopWorkflowSubAgentsForAgent(old, id, agentGUID, ag.GetName())
-	} else {
-		s.workflowSubAgentsMu.Lock()
-		for _, wctx := range s.workflowSubAgents {
-			if wctx.agent == old {
-				wctx.agent = ag
-			}
-		}
-		s.workflowSubAgentsMu.Unlock()
+		s.stopWorkflowSubAgentsForAgent(old)
 	}
 
 	return nil
@@ -1600,6 +1584,7 @@ type workflowParticipantToolsDisabledError struct {
 	workflowID    string
 	participantID string
 	role          string
+	agent         *agent.Agent
 }
 
 func (e *workflowParticipantToolsDisabledError) Error() string {
@@ -1673,80 +1658,24 @@ func (s *MultiAgentServer) resolveWorkflowSubAgent(agentID string, baseAgentName
 	return nil, "", fmt.Errorf("failed to get agent (tried '%s', '%s', and registry search): %w", agentID, baseAgentName, err)
 }
 
-// validateWorkflowParticipant checks that a resolved workflow coordinator or worker
-// does not have tools disabled on either the live Agent instance or its registry config.
-func (s *MultiAgentServer) validateWorkflowParticipant(workflowName, role, participantID string, ag *agent.Agent, candidateNames ...string) error {
-	if ag != nil && ag.ToolsDisabled() {
+func validateWorkflowParticipant(workflowName, role, participantID string, ag *agent.Agent) error {
+	if ag.ToolsDisabled() {
 		return &workflowParticipantToolsDisabledError{
 			workflowID:    workflowName,
 			participantID: participantID,
 			role:          role,
-		}
-	}
-	if s.registry != nil {
-		if cfg := s.registry.GetConfig(participantID); cfg != nil {
-			if cfg.GetTools().GetDisabled() {
-				return &workflowParticipantToolsDisabledError{
-					workflowID:    workflowName,
-					participantID: participantID,
-					role:          role,
-				}
-			}
-		} else {
-			for _, cand := range candidateNames {
-				if cand == "" {
-					continue
-				}
-				if c := s.registry.GetConfig(cand); c != nil && c.GetTools().GetDisabled() {
-					return &workflowParticipantToolsDisabledError{
-						workflowID:    workflowName,
-						participantID: participantID,
-						role:          role,
-					}
-				}
-			}
-		}
-		if ag != nil {
-			if name := ag.GetName(); name != "" && name != "unnamed-agent" {
-				if cfg := s.registry.GetConfig(name); cfg != nil && cfg.GetTools().GetDisabled() {
-					return &workflowParticipantToolsDisabledError{
-						workflowID:    workflowName,
-						participantID: participantID,
-						role:          role,
-					}
-				}
-			}
-			if info, err := s.registry.GetAgentInfo(ag.GetID()); err == nil && info != nil && info.Name != "" {
-				if cfg := s.registry.GetConfig(info.Name); cfg != nil && cfg.GetTools().GetDisabled() {
-					return &workflowParticipantToolsDisabledError{
-						workflowID:    workflowName,
-						participantID: participantID,
-						role:          role,
-					}
-				}
-			}
+			agent:         ag,
 		}
 	}
 	return nil
 }
 
-// stopWorkflowSubAgentsForAgent cancels and deregisters any active workflow contexts
-// associated with an outgoing agent instance or its identifiers when tools are disabled.
-func (s *MultiAgentServer) stopWorkflowSubAgentsForAgent(old *agent.Agent, ids ...string) {
+func (s *MultiAgentServer) stopWorkflowSubAgentsForAgent(old *agent.Agent) {
 	s.workflowSubAgentsMu.Lock()
 	var unregisterIDs []string
 	var unsubIDs []string
 	for key, wctx := range s.workflowSubAgents {
-		match := old != nil && wctx.agent == old
-		if !match {
-			for _, cand := range ids {
-				if cand != "" && cand != "unnamed-agent" && strings.HasSuffix(key, ":"+cand) {
-					match = true
-					break
-				}
-			}
-		}
-		if !match {
+		if wctx.agent != old {
 			continue
 		}
 		if wctx.cancelFunc != nil {
@@ -1790,13 +1719,6 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 		return nil // No registry available
 	}
 
-	// Refresh coordinatorAgent from the server map if a replacement was swapped in
-	// (e.g., via UpdateAgent or ReloadAgent), while still validating the passed instance.
-	passedCoordinatorDisabled := coordinatorAgent != nil && coordinatorAgent.ToolsDisabled()
-	if currentCoord, _, err := s.getAgent(coordinatorID); err == nil && currentCoord != nil {
-		coordinatorAgent = currentCoord
-	}
-
 	// coordinatorID may be a GUID (from getAgent resolution) — resolve to name for config lookup
 	protoConfig := s.registry.GetConfig(coordinatorID)
 	if protoConfig == nil && coordinatorAgent != nil {
@@ -1809,14 +1731,6 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 					zap.String("guid", coordinatorID),
 					zap.String("agent_name", agentName))
 				coordinatorID = agentName // Use the name from here on
-			}
-		}
-	}
-	if protoConfig == nil {
-		if info, err := s.registry.GetAgentInfo(coordinatorID); err == nil && info != nil && info.Name != "" {
-			if cfg := s.registry.GetConfig(info.Name); cfg != nil {
-				protoConfig = cfg
-				coordinatorID = info.Name
 			}
 		}
 	}
@@ -1849,20 +1763,7 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 		return nil // Not a workflow coordinator
 	}
 
-	// Re-check if coordinatorID (now resolved to config name) maps to a newer instance in s.agents
-	if currentCoord, _, err := s.getAgent(coordinatorID); err == nil && currentCoord != nil {
-		coordinatorAgent = currentCoord
-	}
-
-	// Validate the coordinator before any workflow side effects.
-	if passedCoordinatorDisabled {
-		return &workflowParticipantToolsDisabledError{
-			workflowID:    workflowName,
-			participantID: coordinatorID,
-			role:          "coordinator",
-		}
-	}
-	if err := s.validateWorkflowParticipant(workflowName, "coordinator", coordinatorID, coordinatorAgent, protoConfig.Name); err != nil {
+	if err := validateWorkflowParticipant(workflowName, "coordinator", coordinatorID, coordinatorAgent); err != nil {
 		return err
 	}
 
@@ -1884,6 +1785,7 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 		subAgentID string
 		agentName  string
 		roleName   string
+		agent      *agent.Agent
 	}
 	var yamlSubAgentSpecs []yamlSubAgentSpec
 
@@ -1934,8 +1836,14 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 							}
 							subAgentID := fmt.Sprintf("%s:%s", workflowName, nameForID)
 
-							subAgent, _, _ := s.resolveWorkflowSubAgent(subAgentID, agentName)
-							if err := s.validateWorkflowParticipant(workflowName, "worker", subAgentID, subAgent, agentName, roleName); err != nil {
+							subAgent, _, err := s.resolveWorkflowSubAgent(subAgentID, agentName)
+							if err != nil {
+								s.logger.Warn("Failed to get workflow sub-agent",
+									zap.String("sub_agent_id", subAgentID),
+									zap.Error(err))
+								continue
+							}
+							if err := validateWorkflowParticipant(workflowName, "worker", subAgentID, subAgent); err != nil {
 								return err
 							}
 
@@ -1943,6 +1851,7 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 								subAgentID: subAgentID,
 								agentName:  agentName,
 								roleName:   roleName,
+								agent:      subAgent,
 							})
 						}
 					}
@@ -1994,7 +1903,7 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 		s.mu.RUnlock()
 	}
 
-	if len(subAgentIDs) == 0 && len(yamlSubAgentSpecs) == 0 {
+	if len(subAgentIDs) == 0 {
 		return fmt.Errorf("no sub-agents found for workflow '%s'", workflowName)
 	}
 
@@ -2006,21 +1915,14 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 	}
 	resolvedWorkers := make([]resolvedWorkflowWorker, 0, len(subAgentIDs))
 	for _, subAgentID := range subAgentIDs {
-		var baseName string
-		if parts := strings.SplitN(subAgentID, ":", 2); len(parts) == 2 {
-			baseName = parts[1]
-		}
-		if err := s.validateWorkflowParticipant(workflowName, "worker", subAgentID, nil, baseName); err != nil {
-			return err
-		}
-		subAgent, _, err := s.resolveWorkflowSubAgent(subAgentID, baseName)
+		subAgent, _, err := s.getAgent(subAgentID)
 		if err != nil {
 			s.logger.Warn("Failed to get sub-agent",
 				zap.String("sub_agent", subAgentID),
 				zap.Error(err))
 			continue
 		}
-		if err := s.validateWorkflowParticipant(workflowName, "worker", subAgentID, subAgent, baseName); err != nil {
+		if err := validateWorkflowParticipant(workflowName, "worker", subAgentID, subAgent); err != nil {
 			return err
 		}
 		resolvedWorkers = append(resolvedWorkers, resolvedWorkflowWorker{
@@ -2061,10 +1963,7 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 				zap.String("agent_name", spec.agentName),
 				zap.String("role_name", spec.roleName))
 
-			if err := s.autoSpawnWorkflowSubAgent(ctx, spec.subAgentID, spec.agentName); err != nil {
-				if errors.Is(err, ErrWorkflowParticipantToolsDisabled) {
-					return err
-				}
+			if err := s.startWorkflowSubAgent(ctx, workflowName, spec.subAgentID, spec.agent); err != nil {
 				s.logger.Warn("Failed to spawn workflow sub-agent",
 					zap.String("sub_agent_id", spec.subAgentID),
 					zap.Error(err))
@@ -2237,13 +2136,6 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 	for _, worker := range resolvedWorkers {
 		subAgentID := worker.id
 		subAgent := worker.agent
-		if currentSub, _, err := s.resolveWorkflowSubAgent(subAgentID); err == nil && currentSub != nil {
-			subAgent = currentSub
-		}
-		if err := s.validateWorkflowParticipant(workflowName, "worker", subAgentID, subAgent); err != nil {
-			s.stopWorkflowSubAgentsForAgent(coordinatorAgent, coordinatorID)
-			return err
-		}
 
 		// Generate unique session ID for each sub-agent (not shared with coordinator)
 		subAgentSessionID := GenerateSessionID()
@@ -2859,9 +2751,7 @@ func (s *MultiAgentServer) StartMessageQueueMonitor(ctx context.Context) {
 			s.workflowSubAgents = make(map[string]*workflowSubAgentContext)
 		}()
 
-		// Track workflow sub-agents whose auto-spawn was rejected due to disabled tools
-		// so the 1s monitor loop logs the policy rejection once per agent instance/config
-		// instead of spinning in an uncontrolled retry/logging loop while the message stays queued.
+		// Log a policy rejection once until the resolved instance changes.
 		rejectedAutoSpawn := make(map[string]*agent.Agent)
 
 		for {
@@ -2870,68 +2760,56 @@ func (s *MultiAgentServer) StartMessageQueueMonitor(ctx context.Context) {
 				s.logger.Info("Message queue monitor stopped - cleaning up workflow agents")
 				return
 			case <-ticker.C:
-				// Get agents with pending messages
-				agentsWithMessages := s.messageQueue.GetAgentsWithPendingMessages(ctx)
-
-				for _, agentID := range agentsWithMessages {
-					// Check if this is a workflow sub-agent we're tracking
-					// Since we now use composite keys (coordinatorSessionID:agentID), we need to find matching entries
-					s.workflowSubAgentsMu.RLock()
-					var matchingContexts []*workflowSubAgentContext
-					for key, ctx := range s.workflowSubAgents {
-						// Check if the key ends with ":agentID"
-						if len(key) > len(agentID)+1 && key[len(key)-len(agentID)-1:] == ":"+agentID {
-							matchingContexts = append(matchingContexts, ctx)
-						}
-					}
-					s.workflowSubAgentsMu.RUnlock()
-
-					if len(matchingContexts) > 0 {
-						// Notify all matching sub-agents (different sessions may have same sub-agent)
-						for _, subAgentCtx := range matchingContexts {
-							select {
-							case subAgentCtx.notifyChan <- struct{}{}:
-								// Notified workflow agent
-							default:
-								// Channel full, agent already has pending notification
-							}
-						}
-					} else {
-						// WORKFLOW AUTO-SPAWN: Check if this is a workflow sub-agent that needs spawning
-						// Format: "workflow-name:agent-id" (contains colon)
-						if strings.Contains(agentID, ":") {
-							if prevAgent, rejected := rejectedAutoSpawn[agentID]; rejected {
-								currAgent, _, _ := s.resolveWorkflowSubAgent(agentID)
-								parts := strings.SplitN(agentID, ":", 2)
-								var wfName, baseName string
-								if len(parts) == 2 {
-									wfName, baseName = parts[0], parts[1]
-								}
-								if currAgent == prevAgent && s.validateWorkflowParticipant(wfName, "worker", agentID, currAgent, baseName) != nil {
-									continue
-								}
-								delete(rejectedAutoSpawn, agentID)
-							}
-							// Try to spawn this workflow sub-agent
-							if err := s.autoSpawnWorkflowSubAgent(ctx, agentID); err != nil {
-								if errors.Is(err, ErrWorkflowParticipantToolsDisabled) {
-									currAgent, _, _ := s.resolveWorkflowSubAgent(agentID)
-									rejectedAutoSpawn[agentID] = currAgent
-									s.logger.Error("Refusing to auto-spawn workflow sub-agent with tools disabled",
-										zap.String("agent", agentID),
-										zap.Error(err))
-								} else {
-									s.logger.Warn("Failed to auto-spawn workflow sub-agent",
-										zap.String("agent", agentID),
-										zap.Error(err))
-								}
-							}
-						}
-					}
-				}
+				s.notifyQueuedWorkflowAgents(ctx, rejectedAutoSpawn)
 			}
 		}
 	})
+}
+
+func (s *MultiAgentServer) notifyQueuedWorkflowAgents(ctx context.Context, rejectedAutoSpawn map[string]*agent.Agent) {
+	for _, agentID := range s.messageQueue.GetAgentsWithPendingMessages(ctx) {
+		s.workflowSubAgentsMu.RLock()
+		var matchingContexts []*workflowSubAgentContext
+		for key, wctx := range s.workflowSubAgents {
+			if strings.HasSuffix(key, ":"+agentID) {
+				matchingContexts = append(matchingContexts, wctx)
+			}
+		}
+		s.workflowSubAgentsMu.RUnlock()
+
+		if len(matchingContexts) > 0 {
+			for _, wctx := range matchingContexts {
+				select {
+				case wctx.notifyChan <- struct{}{}:
+				default:
+				}
+			}
+			continue
+		}
+		if !strings.Contains(agentID, ":") {
+			continue
+		}
+		if previous, rejected := rejectedAutoSpawn[agentID]; rejected {
+			current, _, err := s.resolveWorkflowSubAgent(agentID)
+			if err == nil && current == previous && current.ToolsDisabled() {
+				continue
+			}
+			delete(rejectedAutoSpawn, agentID)
+		}
+		if err := s.autoSpawnWorkflowSubAgent(ctx, agentID); err != nil {
+			var policyErr *workflowParticipantToolsDisabledError
+			if errors.As(err, &policyErr) {
+				rejectedAutoSpawn[agentID] = policyErr.agent
+				s.logger.Error("Refusing to auto-spawn workflow sub-agent with tools disabled",
+					zap.String("agent", agentID),
+					zap.Error(err))
+			} else {
+				s.logger.Warn("Failed to auto-spawn workflow sub-agent",
+					zap.String("agent", agentID),
+					zap.Error(err))
+			}
+		}
+	}
 }
 
 // autoSpawnWorkflowSubAgent automatically spawns a workflow sub-agent when the monitor detects
@@ -2964,10 +2842,15 @@ func (s *MultiAgentServer) autoSpawnWorkflowSubAgent(ctx context.Context, agentI
 		return err
 	}
 
-	if err := s.validateWorkflowParticipant(workflowName, "worker", agentID, subAgent, baseAgentName, roleName); err != nil {
+	if err := validateWorkflowParticipant(workflowName, "worker", agentID, subAgent); err != nil {
 		return err
 	}
 
+	return s.startWorkflowSubAgent(ctx, workflowName, agentID, subAgent)
+}
+
+// startWorkflowSubAgent uses the instance validated before workflow side effects.
+func (s *MultiAgentServer) startWorkflowSubAgent(ctx context.Context, workflowName, agentID string, subAgent *agent.Agent) error {
 	// Generate unique session ID for this sub-agent
 	subAgentSessionID := GenerateSessionID()
 
@@ -3053,23 +2936,9 @@ func (s *MultiAgentServer) runWorkflowSubAgent(ctx context.Context, ag *agent.Ag
 			s.logger.Info("Workflow sub-agent notified of pending message",
 				zap.String("agent", agentID))
 
-			// Verify the participant still permits tool-based workflow communication
-			// before dequeuing or acknowledging any message (guards against reload/replacement).
-			currentAgent := ag
-			if resolved, _, resolveErr := s.resolveWorkflowSubAgent(agentID); resolveErr == nil && resolved != nil {
-				currentAgent = resolved
-			}
-			var baseName string
-			if parts := strings.SplitN(agentID, ":", 2); len(parts) == 2 {
-				baseName = parts[1]
-			}
-			if ag.ToolsDisabled() || s.validateWorkflowParticipant(workflowName, "worker", agentID, currentAgent, baseName) != nil {
-				s.logger.Error("Stopping workflow sub-agent because tools are disabled",
-					zap.String("agent", agentID),
-					zap.String("workflow", workflowName))
+			if ctx.Err() != nil {
 				return
 			}
-			ag = currentAgent
 
 			// Dequeue and inject pending queue messages. The LLM concurrency
 			// slot (prevents rate limiting) is taken inside chatInjected, only

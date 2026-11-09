@@ -25,6 +25,10 @@ class Loom < Formula
     bin.install "loom-darwin-arm64" => "loom" if Hardware::CPU.arm?
     bin.install "loom-darwin-amd64" => "loom" if Hardware::CPU.intel?
 
+    # The release tarball carries the attribution files at its top level;
+    # install them so the notices stay with the binary after download.
+    doc.install "LICENSE", "NOTICE", "THIRD-PARTY-NOTICES.md"
+
     # HOME is sandboxed during install, so patterns go into the keg;
     # users copy them to ~/.loom/patterns (see caveats).
     resource("loom-patterns").stage do
@@ -67,5 +71,6 @@ class Loom < Formula
   test do
     assert_match "Usage:", shell_output("#{bin}/loom --help")
     assert_predicate pkgshare/"patterns", :directory?
+    assert_predicate doc/"THIRD-PARTY-NOTICES.md", :exist?
   end
 end

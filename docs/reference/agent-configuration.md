@@ -440,6 +440,17 @@ registration (including workflow-injected communication tools), workflow startup
 incompatible participant and returns an error before starting workflow workers
 or acknowledging queued messages.
 
+`SpawnSubAgent` also rejects a disabled agent when `AutoSubscribe` requests
+tool-based broadcast participation. A one-shot sub-agent without subscriptions
+can still return its answer directly to its caller without tools.
+
+Replacing an agent with tools disabled stops workflow contexts running on that
+outgoing instance. It does not stop another agent with the same workflow role
+name. Enabled replacements leave existing workers on their spawned instances,
+including their communication instructions; subsequent starts use the replacement.
+The queue monitor logs an auto-spawn rejection once per disabled instance and
+leaves its messages queued. An enabled replacement allows auto-spawn to retry.
+
 #### manage_skills
 
 **Registered when**: `spec.config.skills.enabled` is true and a skill library is wired.
