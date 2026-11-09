@@ -231,8 +231,12 @@ func Readonly() *Policy {
 	p.Programs["sort"] = &Profile{MaxPositional: -1, RefuseShort: "oT", ShortWithValue: "ktS",
 		RefuseLong: []string{"--output", "--compress-program", "--temporary-directory", "--files0-from"}}
 	p.Programs["uniq"] = &Profile{MaxPositional: 1, ShortWithValue: "fsw"}
-	p.Programs["find"] = &Profile{MaxPositional: -1, RefuseArgs: []string{
-		"-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls"}}
+	// find -L and -follow follow every symlink out of the roots; -H follows
+	// only the starting points, which are path-checked. findCheck refuses
+	// -L inside a BSD option group (-LE, -xL).
+	p.Programs["find"] = &Profile{MaxPositional: -1, Check: findCheck, RefuseArgs: []string{
+		"-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls",
+		"-follow"}}
 	p.Programs["file"] = &Profile{MaxPositional: -1, RefuseShort: "C", RefuseLong: []string{"--compile"},
 		ShortWithValue: "eFfmP", pathShort: "fm"}
 	p.Programs["base64"] = &Profile{MaxPositional: -1, RefuseShort: "o", RefuseLong: []string{"--output"},
@@ -275,6 +279,28 @@ func lsCheck(args []string) string {
 	}
 	if recursive && deref {
 		return "ls -L with -R lists the directories symlinks point to, out of the read roots"
+	}
+	return ""
+}
+
+// findOptionLetters are the letters of BSD find's options that take no
+// value (find [-H | -L | -P] [-EXdsx]). BSD find reads them as one group
+// ("-LE"); GNU find takes -H, -L and -P only as separate arguments. No
+// GNU or BSD find primary is spelled with these letters and an L, so such a
+// group is an option group, not an expression.
+const findOptionLetters = "EHLPXdsx"
+
+// findCheck refuses an option group that contains -L ("-L", "-LE", "-xL"):
+// find then follows every symlink it meets out of the read roots.
+func findCheck(args []string) string {
+	for _, a := range args {
+		if len(a) < 2 || a[0] != '-' || a[1] == '-' {
+			continue
+		}
+		group := a[1:]
+		if strings.ContainsRune(group, 'L') && strings.Trim(group, findOptionLetters) == "" {
+			return "find " + a + " is outside the profile"
+		}
 	}
 	return ""
 }

@@ -726,3 +726,27 @@ func TestAnalyze_LsRecursiveDereference(t *testing.T) {
 		{argv: []string{"ls", "-R", "."}},
 	})
 }
+
+// find -L and -follow follow every symlink, and BSD find takes its options
+// in a group (-LE, -xL). find -H follows only the starting points, which
+// path confinement resolves, so it stays allowed: find -H link asks because
+// link itself leads out of the session.
+func TestAnalyze_FindFollow(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
+	}
+	runBypassCases(t, []bypassCase{
+		{cmd: `find -L .`, want: Ask, static: Ask, why: "find (1:1): find -L is outside the profile"},
+		{cmd: `find -LE .`, want: Ask, static: Ask, why: "find -LE is outside the profile"},
+		{cmd: `find -xL . -name k`, want: Ask, static: Ask},
+		{cmd: `find . -follow -name k`, want: Ask, static: Ask, why: "-follow is outside the profile"},
+		{cmd: `find -H link`, want: Ask, static: Ask, why: "link (1:1): reads outside the session"},
+		{cmd: `find . -name '*.txt' -type f; find -H .; find -P .; find -x . -ls; find . -links 1; find -E . -regex 'a.*'`, want: Allow, static: Allow},
+	})
+	runLaunchCases(t, []launchCase{
+		{argv: []string{"find", "-L", "."}, block: "find -L is outside the profile"},
+		{argv: []string{"find", "-xL", "."}, block: "find -xL is outside the profile"},
+		{argv: []string{"find", ".", "-follow"}, block: "-follow"},
+		{argv: []string{"find", "-H", "."}},
+	})
+}
