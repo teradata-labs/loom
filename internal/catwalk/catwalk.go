@@ -19,12 +19,13 @@ type InferenceProvider string
 
 // Known inference providers.
 const (
-	InferenceProviderAnthropic InferenceProvider = "anthropic"
-	InferenceProviderOpenAI    InferenceProvider = "openai"
-	InferenceProviderGoogle    InferenceProvider = "google"
-	InferenceProviderAzure     InferenceProvider = "azure"
-	InferenceProviderBedrock   InferenceProvider = "bedrock"
-	InferenceProviderOllama    InferenceProvider = "ollama"
+	InferenceProviderAnthropic     InferenceProvider = "anthropic"
+	InferenceProviderOpenAI        InferenceProvider = "openai"
+	InferenceProviderGoogle        InferenceProvider = "google"
+	InferenceProviderAzure         InferenceProvider = "azure"
+	InferenceProviderBedrock       InferenceProvider = "bedrock"
+	InferenceProviderBedrockMantle InferenceProvider = "bedrock-mantle"
+	InferenceProviderOllama        InferenceProvider = "ollama"
 )
 
 // Type identifies a provider type.
@@ -32,12 +33,13 @@ type Type string
 
 // Known provider types.
 const (
-	TypeAnthropic Type = "anthropic"
-	TypeOpenAI    Type = "openai"
-	TypeGoogle    Type = "google"
-	TypeAzure     Type = "azure"
-	TypeBedrock   Type = "bedrock"
-	TypeOllama    Type = "ollama"
+	TypeAnthropic     Type = "anthropic"
+	TypeOpenAI        Type = "openai"
+	TypeGoogle        Type = "google"
+	TypeAzure         Type = "azure"
+	TypeBedrock       Type = "bedrock"
+	TypeBedrockMantle Type = "bedrock-mantle"
+	TypeOllama        Type = "ollama"
 )
 
 // Provider represents a model provider.
@@ -80,6 +82,15 @@ func GetProviders() []Provider {
 			Type: TypeBedrock,
 			Models: []Model{
 				{ID: "anthropic.claude-sonnet-4-20250514-v1:0", Name: "Claude Sonnet 4 (Bedrock)", ContextWindow: 200000},
+			},
+		},
+		{
+			ID:   InferenceProviderBedrockMantle,
+			Name: "Amazon Bedrock Mantle",
+			Type: TypeBedrockMantle,
+			Models: []Model{
+				{ID: "anthropic.claude-haiku-4-5", Name: "Claude Haiku 4.5 (Bedrock Mantle)", ContextWindow: 200000},
+				{ID: "anthropic.claude-opus-4-7", Name: "Claude Opus 4.7 (Bedrock Mantle)", ContextWindow: 1000000},
 			},
 		},
 		{
