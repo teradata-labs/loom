@@ -2116,10 +2116,11 @@ type LevelingPolicy struct {
 	// the cost of one call.
 	//
 	// The running total is a floor on real spend rather than an exact figure:
-	// per-attempt cost is read from the returned AgentResult, which carries
-	// the final LLM response's usage, so an attempt that ran a tool loop
-	// reports less than it spent and the gate can admit a call that a precise
-	// accounting would have blocked.
+	// per-attempt cost is read from the returned AgentResult. That cost covers
+	// the agent's whole conversation turn, but not the LLM calls the agent
+	// makes outside it (graph-memory recall, memory compression and similar),
+	// so the gate can admit a call that a precise accounting would have
+	// blocked.
 	//
 	// A judge call skipped by the ceiling accepts the output unexamined, with
 	// a warning in the leveling report.
@@ -2704,9 +2705,15 @@ type AgentExecutionCost struct {
 	Model string `protobuf:"bytes,5,opt,name=model,proto3" json:"model,omitempty"`
 	// Provider
 	Provider string `protobuf:"bytes,6,opt,name=provider,proto3" json:"provider,omitempty"`
-	// Successful LLM calls this agent made for this result (its whole turn:
-	// tool-loop iterations and final synthesis). 0 from producers that predate
-	// this field.
+	// Successful LLM calls behind this result: the agent's whole conversation
+	// turn (tool-loop iterations, empty-response and hygiene retries, final
+	// synthesis). 0 from producers that predate this field.
+	//
+	// Not counted: LLM calls the agent makes outside its conversation loop,
+	// such as graph-memory recall and extraction, memory compression, the
+	// skills router and the pattern classifier. On a leveled stage, cost_usd
+	// covers the whole leveling ladder, but llm_calls and the token fields
+	// describe only the winning attempt.
 	LlmCalls      int32 `protobuf:"varint,7,opt,name=llm_calls,json=llmCalls,proto3" json:"llm_calls,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2798,9 +2805,25 @@ type WorkflowCost struct {
 	TotalCostUsd float64 `protobuf:"fixed64,1,opt,name=total_cost_usd,json=totalCostUsd,proto3" json:"total_cost_usd,omitempty"`
 	// Per-agent cost breakdown
 	AgentCostsUsd map[string]float64 `protobuf:"bytes,2,rep,name=agent_costs_usd,json=agentCostsUsd,proto3" json:"agent_costs_usd,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"fixed64,2,opt,name=value"`
-	// Total tokens used across all agents
+	// Total tokens used across all agents. It counts the same calls as
+	// llm_calls.
 	TotalTokens int32 `protobuf:"varint,3,opt,name=total_tokens,json=totalTokens,proto3" json:"total_tokens,omitempty"`
-	// Number of LLM calls made
+	// Number of LLM calls the run made. For the fork-join, parallel, pipeline,
+	// iterative, swarm and conditional patterns it is the sum of each agent
+	// result's llm_calls (a result with 0 counts as one call), plus the calls
+	// the executor makes itself: the LLM merge, stage validation, the swarm
+	// judge and the judge and vote retries, the conditional classifier and its
+	// retries, and stage attempts that a retry replaced.
+	//
+	// Not counted:
+	//   - LLM calls an agent makes outside its conversation loop (see
+	//     AgentExecutionCost.llm_calls).
+	//   - The losing calls of a leveled stage. Their USD is in total_cost_usd;
+	//     their calls and tokens are not.
+	//   - Debate, pair-programming and teacher-student runs, which report an
+	//     empty cost.
+	//   - After a HITL resume, the executor's own calls made before the
+	//     suspension. They are not checkpointed.
 	LlmCalls      int32 `protobuf:"varint,4,opt,name=llm_calls,json=llmCalls,proto3" json:"llm_calls,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

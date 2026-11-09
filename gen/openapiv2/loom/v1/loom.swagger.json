@@ -4182,7 +4182,7 @@
         "llmCalls": {
           "type": "integer",
           "format": "int32",
-          "description": "Successful LLM calls this agent made for this result (its whole turn:\ntool-loop iterations and final synthesis). 0 from producers that predate\nthis field."
+          "description": "Successful LLM calls behind this result: the agent's whole conversation\nturn (tool-loop iterations, empty-response and hygiene retries, final\nsynthesis). 0 from producers that predate this field.\n\nNot counted: LLM calls the agent makes outside its conversation loop,\nsuch as graph-memory recall and extraction, memory compression, the\nskills router and the pattern classifier. On a leveled stage, cost_usd\ncovers the whole leveling ladder, but llm_calls and the token fields\ndescribe only the winning attempt."
         }
       },
       "description": "AgentExecutionCost tracks LLM costs for an agent in a workflow."
@@ -6411,7 +6411,7 @@
         "maxCostUsd": {
           "type": "number",
           "format": "double",
-          "description": "Cost gate in USD applied between actions, not a hard cap. 0 = no gate.\n\nBefore each same-model retry, each escalation rung and each judge call\nthe spend accounted for so far is compared against this ceiling, and the\naction is skipped when the ceiling is already reached. The action in\nprogress is never interrupted, so the ceiling is normally overshot by\nthe cost of one call.\n\nThe running total is a floor on real spend rather than an exact figure:\nper-attempt cost is read from the returned AgentResult, which carries\nthe final LLM response's usage, so an attempt that ran a tool loop\nreports less than it spent and the gate can admit a call that a precise\naccounting would have blocked.\n\nA judge call skipped by the ceiling accepts the output unexamined, with\na warning in the leveling report.\n\nUse it to bound runaway escalation, not to guarantee a billing limit."
+          "description": "Cost gate in USD applied between actions, not a hard cap. 0 = no gate.\n\nBefore each same-model retry, each escalation rung and each judge call\nthe spend accounted for so far is compared against this ceiling, and the\naction is skipped when the ceiling is already reached. The action in\nprogress is never interrupted, so the ceiling is normally overshot by\nthe cost of one call.\n\nThe running total is a floor on real spend rather than an exact figure:\nper-attempt cost is read from the returned AgentResult. That cost covers\nthe agent's whole conversation turn, but not the LLM calls the agent\nmakes outside it (graph-memory recall, memory compression and similar),\nso the gate can admit a call that a precise accounting would have\nblocked.\n\nA judge call skipped by the ceiling accepts the output unexamined, with\na warning in the leveling report.\n\nUse it to bound runaway escalation, not to guarantee a billing limit."
         },
         "ladder": {
           "type": "array",
@@ -10978,12 +10978,12 @@
         "totalTokens": {
           "type": "integer",
           "format": "int32",
-          "title": "Total tokens used across all agents"
+          "description": "Total tokens used across all agents. It counts the same calls as\nllm_calls."
         },
         "llmCalls": {
           "type": "integer",
           "format": "int32",
-          "title": "Number of LLM calls made"
+          "description": "Number of LLM calls the run made. For the fork-join, parallel, pipeline,\niterative, swarm and conditional patterns it is the sum of each agent\nresult's llm_calls (a result with 0 counts as one call), plus the calls\nthe executor makes itself: the LLM merge, stage validation, the swarm\njudge and the judge and vote retries, the conditional classifier and its\nretries, and stage attempts that a retry replaced.\n\nNot counted:\n- LLM calls an agent makes outside its conversation loop (see\n  AgentExecutionCost.llm_calls).\n- The losing calls of a leveled stage. Their USD is in total_cost_usd;\n  their calls and tokens are not.\n- Debate, pair-programming and teacher-student runs, which report an\n  empty cost.\n- After a HITL resume, the executor's own calls made before the\n  suspension. They are not checkpointed."
         }
       },
       "description": "WorkflowCost tracks costs across all agents in a workflow."
