@@ -676,7 +676,7 @@ llm:
 ```
 
 **Limitations**:
-- Not selectable from `looms.yaml` yet
+- Not selectable as the server-level LLM in `looms.yaml` yet; agent YAML under `looms serve` works, and an agent whose Mantle client cannot be built is not started (no fallback)
 - No Guardrails, cross-region inference profiles (`us.`/`global.` ids return 404), or prompt routing on Mantle
 - Model listing is not an entitlement check; unsubscribed models fail with a marketplace-subscription 401/403
 - Only Claude Haiku 4.5 and Opus 4.7 are priced in the catalog; other Mantle models are costed by fallback rates

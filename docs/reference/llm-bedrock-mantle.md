@@ -72,6 +72,8 @@ llm:
 
 The registry path reads only environment variables: `BEDROCK_MANTLE_REGION` (then `AWS_REGION`), `BEDROCK_MANTLE_ENDPOINT`, `BEDROCK_MANTLE_API_KEY`, and the default AWS credential chain (`AWS_PROFILE`, env keys, SSO, IAM role) for SigV4.
 
+The same applies to agent YAML that `looms serve` loads from `$LOOM_DATA_DIR/agents/` at startup, for `llm`, `compressor_llm` and `classifier_llm`. The server reads the same environment variables. If the client cannot be built (for example, no region and no endpoint is set), `looms serve` logs an error and does not start that agent. It does not run the agent on the server's default LLM or on the primary LLM, as it does for other providers, because that would send the traffic outside the AWS account.
+
 ### Directly (Go)
 
 ```go
@@ -168,7 +170,7 @@ It covers the health check, Claude chat, streaming, tool calls and prompt cachin
 
 ## What is not done yet
 
-- 📋 `looms` server config: `llm.bedrock_mantle_region`, `llm.bedrock_mantle_api_key`, `llm.bedrock_mantle_endpoint`, `llm.bedrock_mantle_model` in `looms.yaml`, `looms config set-key`, and the provider switch in `cmd/looms`. Until then `looms serve` cannot select this provider; the factory and agent-registry paths can.
+- 📋 `looms` server config: `llm.bedrock_mantle_region`, `llm.bedrock_mantle_api_key`, `llm.bedrock_mantle_endpoint`, `llm.bedrock_mantle_model` in `looms.yaml`, `looms config set-key`, and the server-level provider switch in `cmd/looms` (`createProviderWithRateLimit`). Until then the `looms serve` server-level LLM cannot be this provider. Agent YAML with `llm.provider: bedrock-mantle` works under `looms serve` (see [Through agent YAML](#through-agent-yaml-agent-registry)).
 - 📋 Provider-name plumbing elsewhere in the tree (`internal/config` provider list, `pkg/agent/model_context_limits.go` defaults, metaagent validator, OTel `gen_ai.system` mapping, `cmd/loom-standalone`).
 - 📋 Catalog entries for the other Claude models Mantle lists (Sonnet 5, Opus 5.x, Opus 4.8, Fable 5) and for non-Claude models, once their rates are verified.
 - 📋 OpenAI Responses API, server-side tools, background inference, Projects and Workspaces.
