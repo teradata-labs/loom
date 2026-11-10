@@ -24,6 +24,8 @@ type ForkJoinExecutor struct {
 	orchestrator *Orchestrator
 	pattern      *loomv1.ForkJoinPattern
 	workflowID   string
+	// aux collects the LLM calls this executor makes itself (run_usage.go).
+	aux auxUsage
 }
 
 // NewForkJoinExecutor creates a new fork-join executor.
@@ -130,7 +132,10 @@ func (e *ForkJoinExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 func (e *ForkJoinExecutor) executeFork(ctx context.Context, workflowID string) ([]*loomv1.AgentResult, map[string]string, error) {
 	var wg sync.WaitGroup
 	var modelsMu sync.Mutex
-	resultsChan := make(chan *loomv1.AgentResult, len(e.pattern.AgentIds))
+	// Each branch writes its own slot, so results keep the configured order
+	// whatever order the branches finish in. Callers map results back to
+	// their agents by index.
+	results := make([]*loomv1.AgentResult, len(e.pattern.AgentIds))
 	errorsChan := make(chan error, len(e.pattern.AgentIds))
 	modelsUsed := make(map[string]string)
 
@@ -188,20 +193,13 @@ func (e *ForkJoinExecutor) executeFork(ctx context.Context, workflowID string) (
 				modelsUsed[id] = model
 				modelsMu.Unlock()
 			}
-			resultsChan <- result
+			results[branchIdx] = result
 		}(idx, agentID)
 	}
 
 	// Wait for all goroutines to complete
 	wg.Wait()
-	close(resultsChan)
 	close(errorsChan)
-
-	// Collect results
-	results := make([]*loomv1.AgentResult, 0, len(e.pattern.AgentIds))
-	for result := range resultsChan {
-		results = append(results, result)
-	}
 
 	// Check for errors
 	errs := make([]error, 0)
@@ -283,10 +281,11 @@ func (e *ForkJoinExecutor) executeAgentWithSpan(ctx context.Context, workflowID 
 		ConfidenceScore: 1.0,
 		DurationMs:      duration.Milliseconds(),
 		Cost: &loomv1.AgentExecutionCost{
-			TotalTokens:  types.SafeInt32(response.Usage.TotalTokens),
-			InputTokens:  types.SafeInt32(response.Usage.InputTokens),
-			OutputTokens: types.SafeInt32(response.Usage.OutputTokens),
-			CostUsd:      response.Usage.CostUSD,
+			TotalTokens:  types.SafeInt32(response.TurnUsage.TotalTokens),
+			InputTokens:  types.SafeInt32(response.TurnUsage.InputTokens),
+			OutputTokens: types.SafeInt32(response.TurnUsage.OutputTokens),
+			CostUsd:      response.TurnUsage.CostUSD,
+			LlmCalls:     types.SafeInt32(response.TurnLLMCalls),
 		},
 	}
 
@@ -297,10 +296,7 @@ func (e *ForkJoinExecutor) executeAgentWithSpan(ctx context.Context, workflowID 
 func (e *ForkJoinExecutor) mergeResults(ctx context.Context, workflowID string, results []*loomv1.AgentResult) (string, error) {
 	switch e.pattern.MergeStrategy {
 	case loomv1.MergeStrategy_FIRST:
-		if len(results) > 0 {
-			return results[0].Output, nil
-		}
-		return "", nil
+		return firstSuccessfulOutput(results), nil
 
 	case loomv1.MergeStrategy_CONCATENATE:
 		var builder strings.Builder
@@ -375,6 +371,7 @@ func (e *ForkJoinExecutor) llmMerge(ctx context.Context, workflowID string, resu
 	if err != nil {
 		return "", fmt.Errorf("LLM merge failed: %w", err)
 	}
+	e.aux.addCall(response.Usage)
 
 	return response.Content, nil
 }
@@ -445,7 +442,7 @@ func (e *ForkJoinExecutor) calculateCost(results []*loomv1.AgentResult) *loomv1.
 		if result.Cost != nil {
 			cost.TotalCostUsd += result.Cost.CostUsd
 			cost.TotalTokens += result.Cost.TotalTokens
-			cost.LlmCalls++
+			cost.LlmCalls += resultLLMCalls(result.Cost)
 
 			// Aggregate by agent
 			if existing, ok := cost.AgentCostsUsd[result.AgentId]; ok {
@@ -456,6 +453,7 @@ func (e *ForkJoinExecutor) calculateCost(results []*loomv1.AgentResult) *loomv1.
 		}
 	}
 
+	e.aux.applyTo(cost)
 	return cost
 }
 
@@ -465,4 +463,20 @@ func truncateForLog(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// firstSuccessfulOutput is the FIRST merge: the output of the first
+// configured agent that did not fail. Results are in configured order, so a
+// failed agent 0 would otherwise make its error text the workflow's answer.
+// If every agent failed, it returns the first result's output.
+func firstSuccessfulOutput(results []*loomv1.AgentResult) string {
+	for _, r := range results {
+		if r != nil && r.Metadata["error"] == "" {
+			return r.Output
+		}
+	}
+	if len(results) > 0 && results[0] != nil {
+		return results[0].Output
+	}
+	return ""
 }

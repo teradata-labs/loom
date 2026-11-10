@@ -26,6 +26,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
 	"github.com/teradata-labs/loom/pkg/llm/azureopenai"
 	"github.com/teradata-labs/loom/pkg/llm/bedrock"
+	"github.com/teradata-labs/loom/pkg/llm/bedrockmantle"
 	"github.com/teradata-labs/loom/pkg/llm/gemini"
 	"github.com/teradata-labs/loom/pkg/llm/huggingface"
 	"github.com/teradata-labs/loom/pkg/llm/mistral"
@@ -53,6 +54,10 @@ type AgentBuilder struct {
 
 	guardrails bool
 	breakers   bool
+
+	// err is the first construction error recorded by a With*LLM helper.
+	// Build returns it instead of the misleading "LLM provider is required".
+	err error
 }
 
 // NewAgentBuilder creates a new agent builder.
@@ -85,11 +90,56 @@ func (b *AgentBuilder) WithBedrockLLM(region string) *AgentBuilder {
 		ModelID: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
 	})
 	if err != nil {
-		// Store error for Build() to return
+		b.recordErr(fmt.Errorf("bedrock: %w", err))
 		return b
 	}
 	b.llm = client
 	return b
+}
+
+// DefaultBedrockMantleModel is the Mantle model id WithBedrockMantleLLM uses
+// when LOOM_LLM_BEDROCK_MANTLE_MODEL is unset.
+const DefaultBedrockMantleModel = bedrockmantle.DefaultModel
+
+// WithBedrockMantleLLM configures the Amazon Bedrock bedrock-mantle endpoint
+// as the LLM provider. Claude ids ("anthropic.claude-…") go to the Anthropic
+// Messages API and every other vendor to the OpenAI Chat Completions API; see
+// pkg/llm/bedrockmantle. Requests are signed with SigV4 from the AWS
+// credential chain (profile, SSO, role, static keys) unless a Bedrock API key
+// is present in BEDROCK_MANTLE_API_KEY, in which case the key is sent as a
+// bearer credential. The model comes from LOOM_LLM_BEDROCK_MANTLE_MODEL, else
+// DefaultBedrockMantleModel. An empty region falls back to
+// BEDROCK_MANTLE_REGION, then AWS_REGION; with no region at all, Build returns
+// the construction error.
+func (b *AgentBuilder) WithBedrockMantleLLM(region string) *AgentBuilder {
+	if region == "" {
+		region = os.Getenv("BEDROCK_MANTLE_REGION")
+	}
+	if region == "" {
+		region = os.Getenv("AWS_REGION")
+	}
+	model := os.Getenv("LOOM_LLM_BEDROCK_MANTLE_MODEL")
+	if model == "" {
+		model = DefaultBedrockMantleModel
+	}
+	client, err := bedrockmantle.NewClientForModel(bedrockmantle.Config{
+		Region: region,
+		APIKey: os.Getenv("BEDROCK_MANTLE_API_KEY"),
+		Model:  model,
+	})
+	if err != nil {
+		b.recordErr(err)
+		return b
+	}
+	b.llm = client
+	return b
+}
+
+// recordErr keeps the first construction error; later ones would only hide it.
+func (b *AgentBuilder) recordErr(err error) {
+	if b.err == nil {
+		b.err = err
+	}
 }
 
 // DefaultOllamaEndpoint is the default Ollama server endpoint.
@@ -151,6 +201,7 @@ func (b *AgentBuilder) WithOpenAILLMCustomModel(apiKey, model string) *AgentBuil
 }
 
 // WithAzureOpenAILLM configures Azure OpenAI as the LLM provider using API key authentication.
+// A construction error (missing endpoint, deployment or key) is returned by Build.
 func (b *AgentBuilder) WithAzureOpenAILLM(endpoint, deploymentID, apiKey string) *AgentBuilder {
 	client, err := azureopenai.NewClient(azureopenai.Config{
 		Endpoint:     endpoint,
@@ -158,7 +209,7 @@ func (b *AgentBuilder) WithAzureOpenAILLM(endpoint, deploymentID, apiKey string)
 		APIKey:       apiKey,
 	})
 	if err != nil {
-		// Store error for Build() to return
+		b.recordErr(fmt.Errorf("azure-openai: %w", err))
 		return b
 	}
 	b.llm = client
@@ -166,6 +217,7 @@ func (b *AgentBuilder) WithAzureOpenAILLM(endpoint, deploymentID, apiKey string)
 }
 
 // WithAzureOpenAIEntraAuth configures Azure OpenAI with Microsoft Entra ID authentication.
+// A construction error (missing endpoint, deployment or token) is returned by Build.
 func (b *AgentBuilder) WithAzureOpenAIEntraAuth(endpoint, deploymentID, entraToken string) *AgentBuilder {
 	client, err := azureopenai.NewClient(azureopenai.Config{
 		Endpoint:     endpoint,
@@ -173,7 +225,7 @@ func (b *AgentBuilder) WithAzureOpenAIEntraAuth(endpoint, deploymentID, entraTok
 		EntraToken:   entraToken,
 	})
 	if err != nil {
-		// Store error for Build() to return
+		b.recordErr(fmt.Errorf("azure-openai: %w", err))
 		return b
 	}
 	b.llm = client
@@ -348,6 +400,9 @@ func (b *AgentBuilder) WithTools(tools ...interface{}) *AgentBuilder {
 
 // Build creates the agent.
 func (b *AgentBuilder) Build() (*agent.Agent, error) {
+	if b.err != nil {
+		return nil, b.err
+	}
 	if b.backend == nil {
 		return nil, fmt.Errorf("backend is required")
 	}

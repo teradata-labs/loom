@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
@@ -33,14 +34,28 @@ type SearchTool struct {
 	// deployment); the model would then call one and eat a denial — a wasted turn
 	// and a policy decision miscounted as a tool failure. Nil means no filtering.
 	advertisable func(toolName string) bool
+	// decision is the owning agent's decision layer (WithDecision); nil
+	// means none. It is per SearchTool, so per agent, by construction.
+	decision   *searchDecision
+	decisionWG sync.WaitGroup
 }
 
-// NewSearchTool creates a new tool search tool.
-func NewSearchTool(registry *Registry) *SearchTool {
-	return &SearchTool{
+// NewSearchTool creates a new tool search tool. Each agent gets its own
+// SearchTool; pass WithDecision to give it that agent's decision layer.
+func NewSearchTool(registry *Registry, opts ...SearchToolOption) *SearchTool {
+	t := &SearchTool{
 		registry: registry,
 	}
+	for _, o := range opts {
+		o(t)
+	}
+	return t
 }
+
+// WaitDecisionShadows blocks until shadow evaluations this SearchTool ran on
+// its own WaitGroup finish. A binding with Track set runs them on the
+// owner's books instead, and the owner waits.
+func (t *SearchTool) WaitDecisionShadows() { t.decisionWG.Wait() }
 
 // SetToolFilter installs a predicate that decides whether a discovered tool is
 // offered to the agent. Tools for which it returns false are dropped from the
@@ -149,14 +164,14 @@ func (t *SearchTool) Execute(ctx context.Context, params map[string]interface{})
 	}
 
 	// Perform search
-	resp, err := t.registry.Search(ctx, &loomv1.SearchToolsRequest{
+	resp, err := t.registry.search(ctx, &loomv1.SearchToolsRequest{
 		Query:             query,
 		Mode:              mode,
 		CapabilityFilters: capabilities,
 		MaxResults:        maxResults,
 		IncludeSchema:     true,
 		TaskContext:       taskContext,
-	})
+	}, t.decision)
 	if err != nil {
 		return &shuttle.Result{
 			Success: false,
