@@ -2879,6 +2879,9 @@ func BuildSkillsOptions(deps SkillsWiringDeps) []Option {
 		if routerLLM == nil {
 			routerLLM = deps.PrimaryLLM
 		}
+		if routerLLM != nil && deps.Tracer != nil {
+			routerLLM = llm.NewInstrumentedProvider(routerLLM, deps.Tracer)
+		}
 	}
 
 	discOpts := []skilldiscovery.Option{

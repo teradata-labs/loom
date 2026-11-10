@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+#### Observability: single `llm.completion` span per call across provider wrappers, judges, and skill routers
+- **`llm.NewInstrumentedProvider` no longer double-traces a provider that is already instrumented with the same tracer**, whether passed directly or wrapped inside a decorator implementing `Unwrap() llmtypes.LLMProvider`. Each LLM call emits one `llm.completion` span and records token and cost metrics once, while outer decorators still run.
+- **`judges.NewLLMJudge` and `agent.BuildSkillsOptions`** now instrument their resolved LLM providers through `llm.NewInstrumentedProvider` when a tracer is configured.
+
 ### Added
 
 #### Third-party license notices ship with every release
