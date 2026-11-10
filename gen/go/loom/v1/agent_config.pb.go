@@ -755,7 +755,7 @@ type LLMConfig struct {
 	// an Ollama num_ctx. A step whose results together would exceed it, less
 	// the reply reservation, has them replaced before the send. Taken as given,
 	// above or below the listing. If not set, the model's listed window is the
-	// limit (on Ollama, max_context_tokens).
+	// limit, on every provider.
 	MaxModelContextTokens int32 `protobuf:"varint,12,opt,name=max_model_context_tokens,json=maxModelContextTokens,proto3" json:"max_model_context_tokens,omitempty"`
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache

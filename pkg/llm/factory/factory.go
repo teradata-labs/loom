@@ -23,6 +23,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
 	"github.com/teradata-labs/loom/pkg/llm/azureopenai"
 	"github.com/teradata-labs/loom/pkg/llm/bedrock"
+	"github.com/teradata-labs/loom/pkg/llm/bedrockmantle"
 	"github.com/teradata-labs/loom/pkg/llm/catalog"
 	"github.com/teradata-labs/loom/pkg/llm/gemini"
 	"github.com/teradata-labs/loom/pkg/llm/huggingface"
@@ -65,6 +66,16 @@ type FactoryConfig struct {
 	BedrockProfile         string
 	BedrockBearerToken     string
 	BedrockModelID         string
+
+	// Bedrock Mantle configuration (bedrock-mantle endpoint). Region or
+	// Endpoint is required. APIKey selects bearer auth; when empty, requests
+	// are SigV4-signed with the Bedrock credential settings above
+	// (BedrockAccessKeyID/SecretAccessKey/SessionToken, BedrockProfile) or
+	// the default AWS credential chain.
+	BedrockMantleRegion   string
+	BedrockMantleEndpoint string
+	BedrockMantleAPIKey   string
+	BedrockMantleModel    string
 
 	// Ollama configuration
 	OllamaEndpoint string
@@ -130,6 +141,10 @@ func NewProviderFactory(config FactoryConfig) *ProviderFactory {
 	config.BedrockSecretAccessKey = loomconfig.ExpandEnvPlaceholders(config.BedrockSecretAccessKey)
 	config.BedrockSessionToken = loomconfig.ExpandEnvPlaceholders(config.BedrockSessionToken)
 	config.BedrockBearerToken = loomconfig.ExpandEnvPlaceholders(config.BedrockBearerToken)
+	config.BedrockMantleRegion = loomconfig.ExpandEnvPlaceholders(config.BedrockMantleRegion)
+	config.BedrockMantleEndpoint = loomconfig.ExpandEnvPlaceholders(config.BedrockMantleEndpoint)
+	config.BedrockMantleAPIKey = loomconfig.ExpandEnvPlaceholders(config.BedrockMantleAPIKey)
+	config.BedrockMantleModel = loomconfig.ExpandEnvPlaceholders(config.BedrockMantleModel)
 	config.OllamaEndpoint = loomconfig.ExpandEnvPlaceholders(config.OllamaEndpoint)
 	config.OpenAIAPIKey = loomconfig.ExpandEnvPlaceholders(config.OpenAIAPIKey)
 	config.AzureOpenAIEndpoint = loomconfig.ExpandEnvPlaceholders(config.AzureOpenAIEndpoint)
@@ -189,6 +204,8 @@ func (f *ProviderFactory) CreateProvider(provider, model string) (interface{}, e
 		return f.createAnthropicProvider(model)
 	case "bedrock":
 		return f.createBedrockProvider(model)
+	case "bedrock-mantle":
+		return f.createBedrockMantleProvider(model)
 	case "ollama":
 		return f.createOllamaProvider(model)
 	case "openai":
@@ -266,6 +283,59 @@ func (f *ProviderFactory) createBedrockProvider(model string) (interface{}, erro
 	// others use the AWS Converse client. Routing is centralized in the bedrock
 	// package so every construction site behaves identically (NewClientForModel).
 	return bedrock.NewClientForModel(cfg)
+}
+
+// createBedrockMantleProvider builds a client for the bedrock-mantle endpoint.
+// Region falls back to BEDROCK_MANTLE_REGION then AWS_REGION; the API key to
+// BEDROCK_MANTLE_API_KEY. An ambient AWS_BEARER_TOKEN_BEDROCK is deliberately
+// not used: Mantle rejected long-term keys in the organizations probed, so
+// bearer auth is opt-in and SigV4 is the default.
+func (f *ProviderFactory) createBedrockMantleProvider(model string) (interface{}, error) {
+	if model == "" {
+		model = f.config.BedrockMantleModel
+	}
+	if model == "" {
+		model = bedrockmantle.DefaultModel
+	}
+
+	region := f.config.BedrockMantleRegion
+	if region == "" {
+		region = os.Getenv("BEDROCK_MANTLE_REGION")
+	}
+	if region == "" {
+		region = os.Getenv("AWS_REGION")
+	}
+	endpoint := f.config.BedrockMantleEndpoint
+	if endpoint == "" {
+		endpoint = os.Getenv("BEDROCK_MANTLE_ENDPOINT")
+	}
+	if region == "" && endpoint == "" {
+		return nil, fmt.Errorf("bedrock-mantle region not configured (set BEDROCK_MANTLE_REGION or AWS_REGION, or BEDROCK_MANTLE_ENDPOINT)")
+	}
+
+	apiKey := f.config.BedrockMantleAPIKey
+	if apiKey == "" {
+		apiKey = os.Getenv("BEDROCK_MANTLE_API_KEY")
+	}
+
+	client, err := bedrockmantle.NewClientForModel(bedrockmantle.Config{
+		Region:          region,
+		Endpoint:        endpoint,
+		APIKey:          apiKey,
+		AccessKeyID:     f.config.BedrockAccessKeyID,
+		SecretAccessKey: f.config.BedrockSecretAccessKey,
+		SessionToken:    f.config.BedrockSessionToken,
+		Profile:         f.config.BedrockProfile,
+		Model:           model,
+		MaxTokens:       f.resolveMaxOutput("bedrock-mantle", model),
+		Temperature:     f.config.Temperature,
+		Timeout:         time.Duration(f.config.Timeout) * time.Second,
+		ThinkingLevel:   f.config.ThinkingLevel,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return client, nil
 }
 
 func (f *ProviderFactory) createOllamaProvider(model string) (interface{}, error) {

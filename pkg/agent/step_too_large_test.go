@@ -26,9 +26,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"github.com/teradata-labs/loom/pkg/storage"
 	llmtypes "github.com/teradata-labs/loom/pkg/types"
 )
 
@@ -226,14 +228,54 @@ func TestTheServedWindowIsTheCeilingBeforeTheListedOne(t *testing.T) {
 	assert.Greater(t, listed, 60000, "the listed window is not above the configured one; the test does not separate them")
 }
 
-// Ollama's window is the server's context length, which the model's listing
-// does not give: when no served window is set, the configured window is the
-// ceiling there, and the model's listed window only when none is configured.
-func TestOllamasCeilingIsTheConfiguredWindow(t *testing.T) {
+// No provider has a rule of its own: Ollama's ceiling is the model's listed
+// window like any other's, whatever max_context_tokens says, and a server
+// that runs a smaller num_ctx states it as the served window.
+func TestNoProviderHasItsOwnCeilingRule(t *testing.T) {
 	listed := ProviderPromptCeiling("ollama", "llama3.1:8b", 400, 0, 0)
-	configured := ProviderPromptCeiling("ollama", "llama3.1:8b", 400, 4096, 0)
-	assert.Equal(t, 4096-400, configured)
-	assert.Greater(t, listed, configured, "the listed window is not larger than 4096; the test does not separate them")
+	assert.Equal(t, listed, ProviderPromptCeiling("ollama", "llama3.1:8b", 400, 4096, 0), "the configured window stood in for the listing on Ollama")
+	assert.Equal(t, 4096-400, ProviderPromptCeiling("ollama", "llama3.1:8b", 400, 4096, 4096))
+}
+
+// The reservation is the max_tokens that goes on the wire: with max_tokens
+// set, the catalog's output size is not sent and is not reserved; unset, the
+// catalog's figure is what the factory sends.
+func TestTheReservationIsTheMaxTokensThatIsSent(t *testing.T) {
+	assert.Equal(t, 8192, EffectiveOutputReservation("anthropic", "claude-sonnet-4-5-20250929", 8192, 0, 0))
+	unset := EffectiveOutputReservation("anthropic", "claude-sonnet-4-5-20250929", 0, 0, 0)
+	assert.Greater(t, unset, 8192, "with max_tokens unset the catalog's output size is reserved")
+	assert.Equal(t, 20000, EffectiveOutputReservation("anthropic", "claude-sonnet-4-5-20250929", 8192, 20000, 0), "a larger configured reserve stands")
+}
+
+// The undercount prior is Claude's measurement and applies to Claude models
+// only: another provider's first step is counted at 1.0.
+func TestTheUnsampledPriorIsForTheModelsItWasMeasuredOn(t *testing.T) {
+	assert.Equal(t, claudeUnsampledStepCalibration, unsampledStepCalibration("anthropic", "claude-opus-5"))
+	assert.Equal(t, claudeUnsampledStepCalibration, unsampledStepCalibration("bedrock", "us.anthropic.claude-sonnet-5"))
+	assert.Equal(t, 1.0, unsampledStepCalibration("openai", "gpt-5"))
+	assert.Equal(t, 1.0, unsampledStepCalibration("ollama", "llama3.1:8b"))
+	assert.Equal(t, 1.0, unsampledStepCalibration("bedrock", "zai.glm-5"))
+}
+
+// 0 through SetSharedMemoryThreshold keeps main's meaning for the executor,
+// every tool parameter stored by reference, and leaves the arrival bound at
+// its default.
+func TestAZeroThresholdStoresEveryParameterByReference(t *testing.T) {
+	ag, _ := windowedAgent(t, &windowedModel{limit: 19000}, 0)
+	ag.SetSharedMemory(storage.NewSharedMemoryStore(&storage.Config{}))
+	ag.SetSharedMemoryThreshold(0)
+	assert.EqualValues(t, 0, ag.executor.SharedMemoryThreshold())
+	ag.SetSharedMemoryThreshold(-1)
+	assert.EqualValues(t, storage.DefaultSharedMemoryThreshold, ag.executor.SharedMemoryThreshold())
+	ag.SetSharedMemoryThreshold(4096)
+	assert.EqualValues(t, 4096, ag.executor.SharedMemoryThreshold())
+}
+
+// The served window reaches the agent's config from a proto config with no
+// behavior block, as the meta-agent registers them.
+func TestTheServedWindowNeedsNoBehaviorBlock(t *testing.T) {
+	cfg := RegistryAgentConfig(&loomv1.AgentConfig{Name: "capped", Llm: &loomv1.LLMConfig{MaxModelContextTokens: 32768}}, nil)
+	assert.Equal(t, 32768, cfg.MaxModelContextTokens)
 }
 
 // A step that fits is not replaced because the cheap count says it might not:
@@ -279,16 +321,15 @@ func TestTheCeilingReservesTheMemorysReply(t *testing.T) {
 	assert.True(t, model.told)
 }
 
-// The window, like the reservation, may be set in the memory's limits only, as
-// the registry sets it: Ollama's ceiling is still the configured window then,
-// not the model's listing.
-func TestOllamasCeilingReadsTheMemorysWindowWhenTheConfigHasNone(t *testing.T) {
-	model := &windowedModel{limit: 19000, fanOut: 10, plain: true, provider: "ollama", model: "llama3.1:8b"}
+// The window, like the reservation, may be set in the memory's limits only:
+// for a model nothing lists, the ceiling is still the configured window then.
+func TestTheCeilingReadsTheMemorysWindowWhenTheConfigHasNone(t *testing.T) {
+	model := &windowedModel{limit: 19000, fanOut: 10, plain: true}
 	ag, _ := windowedAgent(t, model, 16000)
 	ag.config.MaxContextTokens = 0
 	ag.memory.SetContextLimits(20000, 1000)
-	resp, err := ag.Chat(context.Background(), "s-ollama-mem", "read ten tables")
-	require.NoError(t, err, "the step was sent against the model's listing and the server refused")
+	resp, err := ag.Chat(context.Background(), "s-mem-window", "read ten tables")
+	require.NoError(t, err, "the step was sent with no ceiling and the server refused")
 	assert.Equal(t, "narrowed and done", resp.Content)
 	assert.True(t, model.told)
 }
@@ -325,7 +366,7 @@ func TestThePrefixTableStopsAtASeparator(t *testing.T) {
 	assert.Equal(t, 8192, GetModelContextLimits("gpt-4").MaxContextTokens)
 	require.NotNil(t, GetModelContextLimits("llama3.1:8b"))
 	require.NotNil(t, GetModelContextLimits("claude-3-5-sonnet-20241022"))
-	assert.Equal(t, 0, ProviderPromptCeiling("openai", "gpt-4o", 1000, 0, 0), "an unlisted model with no configured window has no ceiling; the refusal path answers")
+	assert.Equal(t, 0, ProviderPromptCeiling("openai", "gpt-4o", 1000, 0, 0), "with no window listed and none given, there is no ceiling to compute")
 }
 
 // The count can say a step fits when the provider's own count says it does
@@ -358,22 +399,22 @@ func TestTheStepCountIsScaledByTheCalibration(t *testing.T) {
 	sm.AddMessage(ctx, Message{Role: "user", Content: "read the tables", Turn: 1})
 	sm.AddMessage(ctx, Message{Role: "assistant", Turn: 1, ToolCalls: []ToolCall{{ID: "q1", Name: "rows"}}})
 	sm.AddMessage(ctx, Message{Role: "tool", ToolUseID: "q1", Turn: 1, Content: strings.Repeat("id=12345 name=widget qty=7\n", 30)})
-	cheap0, exact0 := sm.StepSendCount(300, 1<<30), sm.StepSendCount(300, 1)
+	cheap0, exact0 := sm.StepSendCount(300, 1<<30, claudeUnsampledStepCalibration), sm.StepSendCount(300, 1, claudeUnsampledStepCalibration)
 	sm.mu.Lock()
 	sm.estimateCalibration = 1.0 // the provider's first count observed, at loom's own figure
 	sm.mu.Unlock()
-	cheap1, exact1 := sm.StepSendCount(300, 1<<30), sm.StepSendCount(300, 1)
+	cheap1, exact1 := sm.StepSendCount(300, 1<<30, claudeUnsampledStepCalibration), sm.StepSendCount(300, 1, claudeUnsampledStepCalibration)
 	sm.mu.Lock()
 	sm.estimateCalibration = 2.0
 	sm.mu.Unlock()
-	cheap2, exact2 := sm.StepSendCount(300, 1<<30), sm.StepSendCount(300, 1)
+	cheap2, exact2 := sm.StepSendCount(300, 1<<30, claudeUnsampledStepCalibration), sm.StepSendCount(300, 1, claudeUnsampledStepCalibration)
 	assert.InDelta(t, 2.0, float64(cheap2)/float64(cheap1), 0.02, "the cheap tier is not scaled by the calibration")
 	assert.InDelta(t, 2.0, float64(exact2)/float64(exact1), 0.02, "the tokenizer tier is not scaled by the calibration")
 	// Until the provider's first count is observed, the step is counted at the
 	// undercount loom has measured, not at 1.0: a step the tokenizer puts just
 	// under the refusal line is the one the provider refuses.
-	assert.InDelta(t, unsampledStepCalibration, float64(cheap0)/float64(cheap1), 0.02, "the unsampled cheap tier is not held at the measured undercount")
-	assert.InDelta(t, unsampledStepCalibration, float64(exact0)/float64(exact1), 0.02, "the unsampled tokenizer tier is not held at the measured undercount")
+	assert.InDelta(t, claudeUnsampledStepCalibration, float64(cheap0)/float64(cheap1), 0.02, "the unsampled cheap tier is not held at the measured undercount")
+	assert.InDelta(t, claudeUnsampledStepCalibration, float64(exact0)/float64(exact1), 0.02, "the unsampled tokenizer tier is not held at the measured undercount")
 }
 
 // A step that fits is sent as it is: nothing is replaced.

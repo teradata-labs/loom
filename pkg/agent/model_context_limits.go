@@ -154,8 +154,8 @@ func GetProviderDefaultLimits(provider string) ModelContextLimits {
 	switch provider {
 	case "anthropic":
 		return ModelContextLimits{MaxContextTokens: 200000, ReservedOutputTokens: 20000}
-	case "bedrock":
-		// Bedrock varies by model, but Claude is most common
+	case "bedrock", "bedrock-mantle":
+		// Bedrock varies by model, but Claude is most common (on both endpoints)
 		return ModelContextLimits{MaxContextTokens: 200000, ReservedOutputTokens: 20000}
 	case "ollama":
 		// Conservative default for local models
@@ -179,22 +179,18 @@ func GetProviderDefaultLimits(provider string) ModelContextLimits {
 // marks sit above the provider's refusal line, where proactive relief can
 // never fire.
 //
-// loom resolves the wire max_tokens in two places with different rules
-// (registry builds clients from llm.max_tokens; the factory falls back to the
-// catalog), so the reservation takes the largest value any build path could
-// send:
+// The reservation covers the max_tokens that goes on the wire:
 //
 //  1. the configured reserve (llm.reserved_output_tokens), or 10% of the
 //     window when unset — the historical default;
 //  2. llm.max_tokens, when explicitly configured — sent verbatim by every
-//     build path;
-//  3. the model's catalog MaxOutputTokens — what the factory sends when
-//     llm.max_tokens is unset.
+//     build path, so it is what is reserved;
+//  3. the model's catalog MaxOutputTokens, only when llm.max_tokens is unset —
+//     what the factory then sends (factory.resolveMaxOutput). With max_tokens
+//     set the catalog figure is not sent, and reserving it would take room
+//     from the prompt that the provider accepts.
 //
-// Taking the maximum only ever grows the reservation, so it never changes what
-// loom asks the provider for; it can make relief fire earlier than strictly
-// necessary, which is the safe direction. Returns 0 when nothing is known, so
-// callers keep their existing defaults.
+// Returns 0 when nothing is known, so callers keep their existing defaults.
 func EffectiveOutputReservation(provider, model string, configuredMaxTokens, configuredReserved, maxContextTokens int) int {
 	reservation := configuredReserved
 	if reservation <= 0 && maxContextTokens > 0 {
@@ -203,8 +199,10 @@ func EffectiveOutputReservation(provider, model string, configuredMaxTokens, con
 	if configuredMaxTokens > reservation {
 		reservation = configuredMaxTokens
 	}
-	if info := catalog.Lookup(provider, model); info != nil && int(info.MaxOutputTokens) > reservation {
-		reservation = int(info.MaxOutputTokens)
+	if configuredMaxTokens <= 0 {
+		if info := catalog.Lookup(provider, model); info != nil && int(info.MaxOutputTokens) > reservation {
+			reservation = int(info.MaxOutputTokens)
+		}
 	}
 	// The reserve must leave a working budget: never claim more than half the
 	// window (the SegmentedMemory constructor applies the same cap).
@@ -221,9 +219,9 @@ func EffectiveOutputReservation(provider, model string, configuredMaxTokens, con
 // a TGI --max-total-tokens — and comes first. Otherwise the model's listed
 // window: the catalog's, else the prefix-matched table's. The configured
 // max_context_tokens is where loom folds, not where the provider refuses, so
-// it is used only when neither knows the model; Ollama is the exception, since
-// its window is the server's num_ctx, which loom does not send and the listing
-// does not give, so there the configured window comes before the listing.
+// it is used only when neither knows the model. No provider is named: a
+// server that caps its window (an Ollama num_ctx included) states it in
+// servedWindow.
 // reserved is the reply reservation as the agent's builder resolved it
 // (max_tokens included, EffectiveOutputReservation) and is taken as given;
 // only when none was resolved is one derived from the listing. Returns 0 when
@@ -232,8 +230,6 @@ func ProviderPromptCeiling(provider, model string, reserved, configuredWindow, s
 	window := 0
 	if servedWindow > 0 {
 		window = servedWindow
-	} else if provider == "ollama" && configuredWindow > 0 {
-		window = configuredWindow
 	} else if info := catalog.Lookup(provider, model); info != nil && info.ContextWindow > 0 {
 		window = int(info.ContextWindow)
 	} else if limits := GetModelContextLimits(model); limits != nil {

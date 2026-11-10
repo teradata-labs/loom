@@ -68,7 +68,7 @@ func TestConvertResponse_InputTokensExcludeCache(t *testing.T) {
 		CacheReadInputTokens: 16817, CacheCreationInputTokens: 361,
 	}}
 
-	got := c.convertResponse(resp, 0).Usage
+	got := c.convertResponse(resp, 0, nil).Usage
 
 	assert.Equal(t, 5, got.InputTokens)
 	assert.Equal(t, 336, got.OutputTokens)

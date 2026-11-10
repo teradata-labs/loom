@@ -108,6 +108,7 @@ func TestResponse_TurnUsageSumsEveryLLMCall(t *testing.T) {
 		CacheCreationInputTokens: 50,
 	}
 	got := resp.TurnUsage
+	assert.Equal(t, 3, resp.TurnLLMCalls, "TurnLLMCalls counts every call TurnUsage sums")
 	assert.InDelta(t, 0.17, got.CostUSD, 1e-9)
 	got.CostUSD = 0
 	assert.Equal(t, want, got)
@@ -127,6 +128,7 @@ func TestResponse_TurnUsageEqualsUsageForSingleCall(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, resp.Usage, resp.TurnUsage)
 	assert.Equal(t, 15, resp.TurnUsage.TotalTokens)
+	assert.Equal(t, 1, resp.TurnLLMCalls)
 }
 
 // The empty-response retry is an extra billed call; TurnUsage carries it,
@@ -143,6 +145,7 @@ func TestResponse_TurnUsageIncludesEmptyResponseRetry(t *testing.T) {
 	assert.Equal(t, "second try", resp.Content)
 	assert.Equal(t, 125, resp.Usage.TotalTokens)
 	assert.Equal(t, 225, resp.TurnUsage.TotalTokens)
+	assert.Equal(t, 2, resp.TurnLLMCalls, "the retried empty response was a billed call")
 	assert.InDelta(t, 0.022, resp.TurnUsage.CostUSD, 1e-9)
 }
 
@@ -183,4 +186,29 @@ func TestAddUsage_RateLimitTokensSumsMeteredFigure(t *testing.T) {
 			assert.Equal(t, 17519+110, dst.ThroughputTokens())
 		})
 	}
+}
+
+// A scripted replay turn (WithScriptedResponse, the benchmark harness's
+// replay_assistant_message) makes no provider call, so it reports no LLM call
+// and no usage. Orchestration sums TurnLLMCalls as the run's call count.
+func TestResponse_ScriptedReplayCountsNoLLMCall(t *testing.T) {
+	llm := &usageScriptLLM{responses: []*LLMResponse{{
+		Content:    "a provider answer",
+		StopReason: "end_turn",
+		Usage:      llmtypes.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15, CostUSD: 0.001},
+	}}}
+	ag := newUsageTestAgent(llm)
+
+	ctx := WithScriptedResponse(context.Background(), "replayed answer")
+	resp, err := ag.Chat(ctx, "scripted-replay-session", "hello")
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "replayed answer", resp.Content, "the scripted text is the turn's answer")
+
+	llm.mu.Lock()
+	served := llm.idx
+	llm.mu.Unlock()
+	require.Zero(t, served, "precondition: the provider was not called")
+	assert.Zero(t, resp.TurnLLMCalls, "a replayed turn made no LLM call")
+	assert.Equal(t, Usage{}, resp.TurnUsage, "a replayed turn has no usage")
 }

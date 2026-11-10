@@ -51,7 +51,7 @@ spec:
   # LLM CONFIGURATION (optional - inherits from server if not specified)
   # ==========================================================================
   llm:
-    provider: anthropic                # OPTIONAL: anthropic|bedrock|ollama|openai
+    provider: anthropic                # OPTIONAL: anthropic|bedrock|bedrock-mantle|ollama|openai
     model: claude-3-5-sonnet-20241022  # OPTIONAL: Model identifier
     temperature: 0.7                   # OPTIONAL: 0.0-1.0 (default: 0.7)
     max_tokens: 4096                   # OPTIONAL: Max response tokens
@@ -361,6 +361,7 @@ spec:
 # PROVIDER OPTIONS:
 #   anthropic: Claude models
 #   bedrock: AWS Bedrock (Claude, Llama, etc.)
+#   bedrock-mantle: AWS Bedrock Mantle endpoint (Claude, gpt-oss, Gemma, etc.)
 #   ollama: Local models
 #   openai: OpenAI models (future)
 #

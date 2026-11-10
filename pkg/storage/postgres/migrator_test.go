@@ -78,7 +78,9 @@ func TestLoadMigrations_SpecificVersions(t *testing.T) {
 		{25, "workflow_checkpoints", "CREATE TABLE IF NOT EXISTS workflow_checkpoints"},
 		{26, "execution_events", "CREATE TABLE execution_events"},
 		{27, "decision_shadow", "CREATE TABLE IF NOT EXISTS decision_shadow"},
-		{28, "message_billing", "cache_create_1h_tokens"},
+		{28, "decision_shadow_error", "ADD COLUMN IF NOT EXISTS error"},
+		{29, "decision_shadow_subject", "ADD COLUMN IF NOT EXISTS subject"},
+		{30, "message_billing", "cache_create_1h_tokens"},
 	}
 
 	for _, tt := range tests {

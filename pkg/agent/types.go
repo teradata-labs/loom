@@ -34,6 +34,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/skills"
 	"github.com/teradata-labs/loom/pkg/skills/discovery"
 	"github.com/teradata-labs/loom/pkg/skills/hygiene"
+	skillindex "github.com/teradata-labs/loom/pkg/skills/index"
 	skilltasks "github.com/teradata-labs/loom/pkg/skills/tasks"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/task"
@@ -141,6 +142,9 @@ type Agent struct {
 	decisionRouter      *decision.Router
 	decisionRecorder    *decision.ShadowRecorder
 	decisionWG          sync.WaitGroup
+	// skillRouteRouters are the skill routers BuildSkillsOptions built for
+	// this agent; attachSkillRouteDecision gives them decisionRouter.
+	skillRouteRouters []*skillindex.Router
 
 	// Tracer for observability
 	tracer observability.Tracer
@@ -319,6 +323,11 @@ type Agent struct {
 	// Shares the context-dump switch; a no-op on the production path. See
 	// context_debug.go.
 	ctxDebug *contextDebug
+
+	// Time source of the throttle-patience budget and its waits (see
+	// throttlePatience in llm_retry.go). Nil means the real clock; tests set
+	// a fake so a 10-minute budget runs without real sleeps.
+	throttleClock throttleClock
 }
 
 // WorkflowCommunicationContext contains dynamic workflow communication info injected into prompts
@@ -379,8 +388,7 @@ type Config struct {
 	// Backend configuration
 	BackendConfig map[string]interface{}
 
-	// Retry configuration for LLM calls. The zero value retries with the
-	// defaults (DefaultRetryConfig): a Config built without it is covered.
+	// Retry configuration for LLM calls
 	Retry RetryConfig
 
 	// MaxContextTokens is the window loom budgets against: the fold keeps the
@@ -471,14 +479,9 @@ type PatternConfig struct {
 	UseLLMClassifier bool
 }
 
-// RetryConfig configures exponential backoff retry logic for LLM calls.
-//
-// The zero value means the defaults (DefaultRetryConfig), so an agent whose
-// Config never names retry still survives a transient provider failure. Retry
-// is off when MaxRetries is negative, or when Enabled is false on a config that
-// sets MaxRetries.
+// RetryConfig configures exponential backoff retry logic for LLM calls
 type RetryConfig struct {
-	// MaxRetries is the maximum number of retry attempts (negative = no retries)
+	// MaxRetries is the maximum number of retry attempts (0 = no retries)
 	MaxRetries int
 
 	// InitialDelay is the initial delay before the first retry
@@ -490,42 +493,8 @@ type RetryConfig struct {
 	// Multiplier is the exponential backoff multiplier (e.g., 2.0 for doubling)
 	Multiplier float64
 
-	// Enabled enables retry logic. A config that sets MaxRetries and leaves
-	// Enabled false has retry off, as before.
+	// Enabled enables retry logic
 	Enabled bool
-}
-
-// DefaultRetryConfig is the retry a Config gets when it names none.
-func DefaultRetryConfig() RetryConfig {
-	return RetryConfig{
-		Enabled:      true,
-		MaxRetries:   3,
-		InitialDelay: 100 * time.Millisecond,
-		MaxDelay:     5 * time.Second,
-		Multiplier:   2.0,
-	}
-}
-
-// effective is the retry a call runs under: the defaults for a zero config,
-// and no retries for one that turns retry off.
-func (r RetryConfig) effective() RetryConfig {
-	if r == (RetryConfig{}) {
-		return DefaultRetryConfig()
-	}
-	if r.MaxRetries < 0 || (!r.Enabled && r.MaxRetries > 0) {
-		return RetryConfig{}
-	}
-	d := DefaultRetryConfig()
-	if r.InitialDelay <= 0 {
-		r.InitialDelay = d.InitialDelay
-	}
-	if r.MaxDelay <= 0 {
-		r.MaxDelay = d.MaxDelay
-	}
-	if r.Multiplier < 1 {
-		r.Multiplier = d.Multiplier
-	}
-	return r
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -538,7 +507,13 @@ func DefaultConfig() *Config {
 		EnableTracing:     true,
 		EnableSelfHealing: true,
 		BackendConfig:     make(map[string]interface{}),
-		Retry:             DefaultRetryConfig(),
+		Retry: RetryConfig{
+			Enabled:      true,
+			MaxRetries:   3,
+			InitialDelay: 100 * time.Millisecond,
+			MaxDelay:     5 * time.Second,
+			Multiplier:   2.0,
+		},
 	}
 }
 

@@ -41,6 +41,11 @@ const (
 // Stages can trigger restarts of earlier stages via pub/sub messaging, enabling
 // autonomous agent negotiation and self-correction.
 type IterativePipelineExecutor struct {
+	// aux collects the cost of stage attempts that failed structure
+	// validation and were replaced by a retry (run_usage.go). calculateCost
+	// sees only the kept results, so these would be lost.
+	aux auxUsage
+
 	orchestrator *Orchestrator
 	pattern      *loomv1.IterativeWorkflowPattern
 	messageBus   *communication.MessageBus
@@ -660,6 +665,7 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 	// Calculate total cost
 	executor := NewPipelineExecutor(e.orchestrator, e.pattern.Pipeline, e.workflowID)
 	cost := executor.calculateCost(allResults)
+	e.aux.applyTo(cost)
 
 	metadata := map[string]string{
 		"stage_count":      fmt.Sprintf("%d", len(e.pattern.Pipeline.Stages)),
@@ -1206,6 +1212,9 @@ func (e *IterativePipelineExecutor) executeStageWithValidationRetries(
 
 		// Validation failed
 		if retryNum < maxRetries {
+			// The next attempt replaces this result; keep its calls in the
+			// run's cost.
+			e.aux.addResultCost(result.Cost)
 			e.orchestrator.logger.Warn("Stage output validation failed, retrying with fresh context",
 				zap.String("stage_id", stage.AgentId),
 				zap.Int("stage_num", stageNum),

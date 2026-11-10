@@ -454,13 +454,25 @@ const (
 	// calibrationMinSampleTokens skips small prompts, where fixed provider
 	// overhead (tool-use system text, framing) dominates the ratio.
 	calibrationMinSampleTokens = 2000
-	// unsampledStepCalibration scales the step count (StepSendCount) until the
-	// provider's first count is observed: the undercount measured above. The
-	// fold's marks sit below the window by design and start at 1.0; the step
-	// count is held against the provider's exact refusal line, where a known
-	// undercount passes a step the provider refuses.
-	unsampledStepCalibration = 1.25
+	// claudeUnsampledStepCalibration scales a Claude model's step count
+	// (StepSendCount) until the provider's first count is observed: the
+	// undercount measured above, which is Claude's. The fold's marks sit below
+	// the window by design and start at 1.0; the step count is held against
+	// the provider's exact refusal line, where a known undercount passes a
+	// step the provider refuses.
+	claudeUnsampledStepCalibration = 1.25
 )
+
+// unsampledStepCalibration is the factor a step count runs at before the
+// provider's first count is observed: the measured undercount for the models
+// it was measured on (Claude, on any provider), and 1.0 for every other, where
+// tiktoken is the provider's own tokenizer or no undercount is known.
+func unsampledStepCalibration(provider, model string) float64 {
+	if provider == "anthropic" || strings.Contains(strings.ToLower(model), "claude") {
+		return claudeUnsampledStepCalibration
+	}
+	return 1.0
+}
 
 // calibrationLocked returns the current estimate scale factor. Must hold lock.
 func (sm *SegmentedMemory) calibrationLocked() float64 {
