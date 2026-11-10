@@ -1781,8 +1781,10 @@ func (sm *SegmentedMemory) SetAdvertisedToolsBytes(bytes int) {
 // one reminder of each kind, the first: a later call can't replace it, since
 // the turn's request only grows (PinTurnNotes), and sending each new value
 // would stack contradictory copies. An empty Kind is an event note (a repeat
-// hint, a tool-set delta), new information each time; it is sent unless the
-// same text was already sent this turn.
+// hint, a tool-set delta), new information each time; it is skipped only when
+// the same text was already pinned since the turn's last new row, which is the
+// resend of a refused call. The same text on a later step is a new event (a
+// tool added again after relief removed it) and is sent again.
 type TurnReminder struct {
 	Kind string
 	Text string
@@ -1796,8 +1798,9 @@ const (
 	ReminderContextRelief = "context_relief"
 )
 
-// key is what makes two reminders the same for once-per-turn sending: the
-// kind, or for an event note its text.
+// key is what makes two reminders the same: the kind, or for an event note
+// its text. A kind is matched against the whole turn, an event note only
+// against the notes pinned since the last new row (unsentRemindersLocked).
 func (r TurnReminder) key() string {
 	if r.Kind != "" {
 		return "kind:" + r.Kind
@@ -1806,12 +1809,16 @@ func (r TurnReminder) key() string {
 }
 
 // unsentRemindersLocked returns the reminders of rs, trimmed, that turn t
-// has not sent yet (by key), each key once. Must hold lock.
+// has not sent yet, each key once: a status kind sent anywhere in the turn is
+// skipped, an event note only when a note pinned since the last new row
+// (same arrivals) carries the same text. Must hold lock.
 func (sm *SegmentedMemory) unsentRemindersLocked(t int64, rs []TurnReminder) []TurnReminder {
 	sent := make(map[string]bool)
 	for _, n := range sm.turnNotesLocked(t) {
 		for _, k := range n.keys {
-			sent[k] = true
+			if strings.HasPrefix(k, "kind:") || n.arrivals == sm.arrivals {
+				sent[k] = true
+			}
 		}
 	}
 	var out []TurnReminder
@@ -1853,11 +1860,14 @@ type turnNote struct {
 	after   int      // current-turn rows that preceded it when it was sent
 	keys    []string // its reminders' keys (TurnReminder.key), so a later call skips them
 	content string   // the <system-reminder> message (systemReminderContent)
+	// arrivals is SegmentedMemory.arrivals when it was sent: a call with no
+	// new row since (a resend) doesn't send its event notes again.
+	arrivals uint64
 }
 
 // PinTurnNotes records the reminders the agent is about to send on a
 // provider call. Reminders the turn already sent are skipped (TurnReminder:
-// a status kind once per turn, an event note once per text), and the rest
+// a status kind once per turn, an event note once per step), and the rest
 // become one <system-reminder> user message that compile emits at this
 // position for the rest of the turn.
 //
@@ -1893,10 +1903,11 @@ func (sm *SegmentedMemory) PinTurnNotes(reminders ...TurnReminder) {
 		keys[i] = r.key()
 	}
 	sm.turnNotes = append(sm.turnNotes, turnNote{
-		turn:    t,
-		after:   after,
-		keys:    keys,
-		content: systemReminderContent(reminderTexts(fresh)...),
+		turn:     t,
+		after:    after,
+		keys:     keys,
+		content:  systemReminderContent(reminderTexts(fresh)...),
+		arrivals: sm.arrivals,
 	})
 }
 

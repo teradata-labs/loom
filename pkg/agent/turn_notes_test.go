@@ -80,8 +80,8 @@ func TestPinTurnNotes_StayInPlaceForTheTurn(t *testing.T) {
 // TestPinTurnNotes_StatusReminderOncePerTurn (review F5): a status reminder
 // whose text changes each call (the tool budget's count) is sent once per
 // turn, so five calls in the reminder window compile one copy, not five
-// contradictory ones. Event notes (repeat hints) are each sent once per text.
-// The next turn sends the status reminder again.
+// contradictory ones. Event notes (repeat hints) are sent on every step that
+// carries one. The next turn sends the status reminder again.
 func TestPinTurnNotes_StatusReminderOncePerTurn(t *testing.T) {
 	ctx := context.Background()
 	sm := NewSegmentedMemory("ROM", 200000, 20000)
@@ -105,7 +105,7 @@ func TestPinTurnNotes_StatusReminderOncePerTurn(t *testing.T) {
 	}
 	budget, hints := countReminders()
 	assert.Equal(t, 1, budget, "one tool-budget reminder per turn")
-	assert.Equal(t, 2, hints, "each distinct event note once")
+	assert.Equal(t, 5, hints, "an event note is sent on each step, even when its text repeats")
 	compiled := strings.Join(compiledRoles(sm.GetMessagesForLLM()), "\n")
 	assert.Contains(t, compiled, "(75 of 100 max)", "the first copy is the one kept")
 
@@ -121,6 +121,58 @@ func TestPinTurnNotes_StatusReminderOncePerTurn(t *testing.T) {
 	assert.Equal(t, 1, budget)
 	assert.Contains(t, strings.Join(compiledRoles(sm.GetMessagesForLLM()), "\n"), "(80 of 100 max)",
 		"the next turn sends the kind again")
+}
+
+// TestPinTurnNotes_EventNoteRepeatsOnALaterStep (review F7): a tool-set
+// delta whose text matches an earlier one of the turn (x added, removed by
+// relief, added again) is a new event and is sent again, so the newest note
+// the model sees matches the advertised tools. A resend of a refused call adds
+// no row, so it doesn't send its notes twice, even when relief removed rows of
+// the current turn in between (which a row-position key would miss).
+func TestPinTurnNotes_EventNoteRepeatsOnALaterStep(t *testing.T) {
+	ctx := context.Background()
+	sm := NewSegmentedMemory("ROM", 200000, 20000)
+	sm.AddMessage(ctx, Message{Role: "user", Content: "q1", Turn: 1})
+
+	notes := func() []string {
+		var out []string
+		for _, m := range sm.GetMessagesForLLM() {
+			if IsSystemReminder(m) {
+				out = append(out, strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(m.Content, "<system-reminder>\n"), "</system-reminder>")))
+			}
+		}
+		return out
+	}
+	step := func(i int, note string) {
+		sm.PinTurnNotes(TurnReminder{Text: note})
+		id := fmt.Sprintf("c%d", i)
+		sm.AddMessage(ctx, Message{Role: "assistant", ToolCalls: []ToolCall{{ID: id, Name: "t"}}, Turn: 1})
+		sm.AddMessage(ctx, Message{Role: "tool", ToolUseID: id, Content: "r", Turn: 1})
+	}
+	step(0, "Tools added: x.")
+	step(1, "Tools removed: x.")
+	step(2, "Tools added: x.")
+	assert.Equal(t, []string{"Tools added: x.", "Tools removed: x.", "Tools added: x."}, notes())
+
+	// A refused send and its resend: no row between them.
+	sm.PinTurnNotes(TurnReminder{Text: "Tools removed: x."})
+	sm.PinTurnNotes(TurnReminder{Text: "Tools removed: x."})
+	assert.Len(t, notes(), 4, "a resend doesn't send the refused call's event note again")
+
+	// Relief drops current-turn rows before the resend; it is still the same step.
+	sm.PinTurnNotes(TurnReminder{Text: "hint"})
+	sm.mu.Lock()
+	sm.contextMessages = sm.contextMessages[:3]
+	sm.mu.Unlock()
+	sm.PinTurnNotes(TurnReminder{Text: "hint"})
+	got := notes()
+	hints := 0
+	for _, n := range got {
+		if n == "hint" {
+			hints++
+		}
+	}
+	assert.Equal(t, 1, hints, "rows removed by relief don't make a resend a new step")
 }
 
 // TestPinTurnNotes_PendingTailSkipsPinnedNotes — the pre-send estimate counts

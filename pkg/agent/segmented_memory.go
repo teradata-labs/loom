@@ -121,6 +121,13 @@ type SegmentedMemory struct {
 	// what an earlier one sent (context_compilation.go). In memory only.
 	turnNotes []turnNote
 
+	// arrivals counts the rows ever appended to L1 (AddMessage,
+	// ReplayMessages). Relief removing or folding rows doesn't lower it, so
+	// two provider calls with no new row between them (a send and its resend
+	// after a refusal) see the same value. PinTurnNotes uses it to send an
+	// event note once per step (TurnReminder).
+	arrivals uint64
+
 	// Memory compression (the fold compressor)
 	compressor MemoryCompressor
 
@@ -405,6 +412,7 @@ func (sm *SegmentedMemory) AddMessage(ctx context.Context, msg Message) {
 
 	sm.recordThinkingPrefixLocked(&msg)
 	sm.contextMessages = append(sm.contextMessages, msg)
+	sm.arrivals++
 
 	// Incremental L1 token update (reporting only).
 	msgTokens := 10 + sm.tokenCounter.CountTokens(msg.Content) // 10 = message overhead
@@ -536,6 +544,7 @@ func (sm *SegmentedMemory) ReplayMessages(ctx context.Context, messages []Messag
 	}
 
 	sm.contextMessages = append(sm.contextMessages, messages...)
+	sm.arrivals += uint64(len(messages))
 	sm.l1Dirty = true
 	sm.updateTokenCount()
 	sm.tokenCountDirty = false
