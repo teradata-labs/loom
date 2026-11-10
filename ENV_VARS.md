@@ -124,11 +124,14 @@ just clean
 - The running application never needs to know where its binary is installed
 
 ### LOOM_YOLO
-**Default:** `false`
-**Values:** `true`, `1`, `false`, `0`
-**Used in:** `cmd/looms/config.go`
+**Default:** unset (YOLO itself defaults to on; see `LOOM_TOOLS_PERMISSIONS_YOLO`)
+**Values:** `true`, `1`
+**Used in:** `cmd/looms/config.go` (`setDefaults`)
 
-Enables YOLO mode, which bypasses all tool permission prompts for autonomous operation.
+Turns YOLO mode on, which bypasses all tool permission prompts for autonomous operation.
+It only turns YOLO on, and it wins over the config file: `LOOM_YOLO=false` or `0` does
+nothing. To turn YOLO off, use `LOOM_TOOLS_PERMISSIONS_YOLO=false` or
+`tools.permissions.yolo: false`.
 
 ```bash
 export LOOM_YOLO=true
@@ -137,6 +140,35 @@ export LOOM_YOLO=1
 ```
 
 ⚠️ **Warning:** YOLO mode allows agents to execute tools without user approval. Use with caution.
+
+### LOOM_TOOLS_PERMISSIONS_YOLO
+**Default:** `true` (`viper.SetDefault("tools.permissions.yolo", true)`)
+**Values:** `true`, `false`
+**Used in:** `cmd/looms/config.go` (bound by viper `AutomaticEnv` from the `tools.permissions.yolo` key)
+
+The environment form of `tools.permissions.yolo`. It overrides the config file. Unlike
+`LOOM_YOLO`, it can turn YOLO off:
+
+```bash
+export LOOM_TOOLS_PERMISSIONS_YOLO=false
+```
+
+### LOOM_TOOLS_LUA_ENABLED
+**Default:** `false`
+**Values:** `true`, `false`
+**Used in:** `cmd/looms/lua_tools.go` (`LuaToolsConfig.Enabled`, bound by viper `AutomaticEnv` from the `tools.lua.enabled` key)
+
+The environment form of `tools.lua.enabled`, the server switch for the `run_lua` tool.
+When it is false, `run_lua` is never registered, even on agents that list it in
+`tools.builtin`. When it is true, an agent also needs `run_lua` in `tools.builtin` and an
+admission guard (`tools.hooks` or `tools.permissions`). Under the default YOLO checker
+with no `tools.hooks` bindings, serve logs a startup warning that every tool call a
+script makes is allowed without a check. See
+[Lua script API](docs/reference/lua-script-api.md#enabling-it).
+
+```bash
+export LOOM_TOOLS_LUA_ENABLED=true
+```
 
 ### LOOM_DB_KEY
 **Used in:** `pkg/agent/db_config.go`
@@ -155,6 +187,31 @@ Directory for caching tool results and artifacts. If not set, uses system temp d
 ```bash
 export LOOM_TOOL_CACHE_DIR=/path/to/cache
 ```
+
+### LOOM_SHELL_PASS_ENV
+**Default:** empty (no variables passed)
+**Format:** comma-separated variable names, exact (case-sensitive) match; blanks and surrounding spaces are ignored
+**Used in:** `pkg/shuttle/builtin/shell_execute.go` (`PassEnvVar`)
+
+The `shell_execute` tool withholds server environment variables whose names look like credentials (`GH_TOKEN`, `AWS_ACCESS_KEY_ID`, `AWS_SESSION_TOKEN`, `NPM_TOKEN`, `LOOM_OTLP_HEADERS`, ...) and variables whose value is a URL with a password. The full pattern list is in [docs/architecture/artifacts.md](docs/architecture/artifacts.md). A command that needs one of them, such as `gh` or `aws`, reports that it is not logged in. `LOOM_SHELL_PASS_ENV` re-allows the named server variables:
+
+```bash
+export LOOM_SHELL_PASS_ENV=GH_TOKEN,AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,AWS_SESSION_TOKEN
+```
+
+The value is read when the tool is created (at server start), so changing it needs a restart. It applies only to the inherited server environment; a call's own `env` parameter is filtered regardless. Programs embedding Loom can call `ShellExecuteTool.SetPassEnv` instead.
+
+Each call logs the names it withheld (never the values) at Debug level, with the session ID, as `shell_execute withheld credential-like server environment variables from the command`.
+
+It applies to bash mode only. In jailed mode (`tools.shell_execute.mode: jailed`) a command's environment is built from scratch and no server variable reaches it, so this setting has no effect there.
+
+### LOOM_SHELLJAIL_CHILD
+**Internal. Do not set.**
+**Used in:** `pkg/shelljail/spec.go` (`MarkerEnv`), `pkg/shelljail/child.go` (`Main`)
+
+Jailed `shell_execute` runs each command in a child process: the server re-executes its own binary with `LOOM_SHELLJAIL_CHILD=1` and only a few other variables, and sends the command spec on stdin. `shelljail.Main()`, which `looms` calls first in `main()`, sees the value `1` and runs the jailed interpreter instead of the server, then exits. Any other value, or none, starts the binary normally.
+
+Operators must not set it. With `LOOM_SHELLJAIL_CHILD=1` in its environment, `looms` does not start as a server: it waits for a jail spec on stdin and exits with status 125 when none arrives.
 
 ---
 
@@ -492,12 +549,12 @@ An empty value means no headers. When the variable is set it replaces `llm.litel
 
 ## Decision Layer
 
-Settings for the typed decision layer (`pkg/decision`, shadow mode only; see `docs/architecture/decision-layer.md`). They matter only for an agent whose YAML has a `decision:` block with `provider: jev`, and for `loom decision replay --decider jev`. Agent YAML can set neither the credential nor the endpoint.
+Settings for the typed decision layer (`pkg/decision`, shadow by default and live per site with a band; see `docs/architecture/decision-layer.md`). They matter only for an agent or a `JUDGE_TYPE_DECISION` judge whose `decision:` block has `provider: jev`, and for `loom decision replay --decider jev` and `loom decision ask --decider jev`. Agent YAML can set neither the credential nor the endpoint.
 
 ### LOOM_DECISION_BASE_URL
 **Used in:** `cmd/looms/config.go` (binds `decision.base_url` in `looms.yaml`), `pkg/decision/jev/config.go`
 
-Server-level decider endpoint, installed by every `looms` command when its config loads. It takes precedence over `TYPESAFE_BASE_URL`. Must be an `https` URL; plain `http` is refused unless the host is loopback and `LOOM_DECISION_ALLOW_INSECURE_HTTP` is true. A refused value is fatal for `looms serve` (config validation); other `looms` commands print a warning, leave the endpoint unset and fall back to `TYPESAFE_BASE_URL` or the provider default. `loom decision replay` does not read it; use its `--base-url` flag.
+Server-level decider endpoint, installed by every `looms` command when its config loads. It takes precedence over `TYPESAFE_BASE_URL`. Must be an `https` URL; plain `http` is refused unless the host is loopback and `LOOM_DECISION_ALLOW_INSECURE_HTTP` is true. A refused value is fatal for `looms serve` (config validation); other `looms` commands print a warning, leave the endpoint unset and fall back to `TYPESAFE_BASE_URL` or the provider default. `loom decision replay` and `loom decision ask` do not read it; use their `--base-url` flag.
 
 ```bash
 export LOOM_DECISION_BASE_URL=https://ai-gateway.vercel.sh/typesafe
@@ -507,7 +564,7 @@ export LOOM_DECISION_BASE_URL=https://ai-gateway.vercel.sh/typesafe
 **Used in:** `cmd/looms/config.go` (binds `decision.allow_insecure_http`)
 **Default:** `false`
 
-Allows an `http://` `LOOM_DECISION_BASE_URL` on a loopback host (a local proxy or mock decider). Non-loopback `http` is refused even when set. The `loom decision replay` equivalent is `--allow-insecure-http`.
+Allows an `http://` `LOOM_DECISION_BASE_URL` on a loopback host (a local proxy or mock decider). Non-loopback `http` is refused even when set. The `loom decision replay` and `loom decision ask` equivalent is `--allow-insecure-http`.
 
 ```bash
 export LOOM_DECISION_BASE_URL=http://127.0.0.1:4000
@@ -1059,7 +1116,10 @@ Loom uses the following naming conventions:
 4. **LOOM_DEBUG_** prefix: Debug flags
    - Example: `LOOM_DEBUG_BEDROCK`
 
-5. **Standard names**: Standard environment variables from external tools
+5. **LOOM_TOOLS_** prefix: `tools.*` config keys, derived by viper (dots become underscores)
+   - Example: `LOOM_TOOLS_LUA_ENABLED`, `LOOM_TOOLS_PERMISSIONS_YOLO`
+
+6. **Standard names**: Standard environment variables from external tools
    - Example: `AWS_REGION`, `ANTHROPIC_API_KEY`, `DOCKER_HOST`
 
 ---

@@ -248,6 +248,14 @@ message AgentPosition {
 
   // Provider name (e.g., "anthropic", "bedrock", "ollama")
   string provider = 10;
+
+  // LLM usage and cost of producing this position. Scalars rather than
+  // AgentExecutionCost because that message lives in orchestration.proto,
+  // which imports this file.
+  int32 input_tokens = 11;
+  int32 output_tokens = 12;
+  int32 total_tokens = 13;
+  double cost_usd = 14;
 }
 
 // SwarmVote represents a single agent's vote in swarm intelligence.

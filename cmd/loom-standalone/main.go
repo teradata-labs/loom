@@ -29,6 +29,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/fabric"
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
 	"github.com/teradata-labs/loom/pkg/llm/bedrock"
+	"github.com/teradata-labs/loom/pkg/llm/bedrockmantle"
 	"github.com/teradata-labs/loom/pkg/llm/ollama"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/prompts"
@@ -70,7 +71,7 @@ and the TUI connects to it. No separate server process needed.`,
 
 func init() {
 	rootCmd.Flags().IntVar(&port, "port", 0, "Server port (0 = random available port)")
-	rootCmd.Flags().StringVar(&provider, "provider", "anthropic", "LLM provider (anthropic, bedrock, ollama)")
+	rootCmd.Flags().StringVar(&provider, "provider", "anthropic", "LLM provider (anthropic, bedrock, bedrock-mantle, ollama)")
 	rootCmd.Flags().StringVar(&apiKey, "api-key", "", "LLM API key (for anthropic)")
 	rootCmd.Flags().StringVar(&model, "model", "", "LLM model (provider-specific)")
 	rootCmd.Flags().Float64Var(&temperature, "temperature", 1.0, "LLM temperature")
@@ -177,6 +178,31 @@ func startEmbeddedServer(port int, llmProvider, llmAPIKey, llmModel string, temp
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create bedrock client: %w", err)
+		}
+
+	case bedrockmantle.ProviderName:
+		if llmModel == "" {
+			llmModel = bedrockmantle.DefaultModel
+		}
+		// Same region default as the bedrock case; BEDROCK_MANTLE_REGION or
+		// AWS_REGION override it. SigV4 comes from the AWS credential chain
+		// unless BEDROCK_MANTLE_API_KEY is set.
+		region := os.Getenv("BEDROCK_MANTLE_REGION")
+		if region == "" {
+			region = os.Getenv("AWS_REGION")
+		}
+		if region == "" {
+			region = "us-west-2"
+		}
+		llmProv, err = bedrockmantle.NewClientForModel(bedrockmantle.Config{
+			Region:      region,
+			APIKey:      os.Getenv("BEDROCK_MANTLE_API_KEY"),
+			Model:       llmModel,
+			MaxTokens:   maxTok,
+			Temperature: temp,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create bedrock-mantle client: %w", err)
 		}
 
 	case "ollama":

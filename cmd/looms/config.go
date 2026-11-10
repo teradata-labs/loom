@@ -28,6 +28,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
 	"github.com/teradata-labs/loom/pkg/decision/jev"
+	"github.com/teradata-labs/loom/pkg/llm/bedrockmantle"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/zalando/go-keyring"
@@ -384,6 +385,14 @@ type LLMConfig struct {
 	BedrockBearerToken     string `mapstructure:"bedrock_bearer_token"`      // From CLI/env/keyring only
 	BedrockProfile         string `mapstructure:"bedrock_profile"`
 	BedrockModelID         string `mapstructure:"bedrock_model_id"`
+
+	// Bedrock Mantle-specific (the bedrock-mantle endpoint). The region falls
+	// back to BedrockRegion; SigV4 credentials are shared with the Bedrock
+	// fields above (profile, access key, secret, session token).
+	BedrockMantleRegion   string `mapstructure:"bedrock_mantle_region"`
+	BedrockMantleEndpoint string `mapstructure:"bedrock_mantle_endpoint"`
+	BedrockMantleAPIKey   string `mapstructure:"bedrock_mantle_api_key"` // From CLI/env/keyring only
+	BedrockMantleModel    string `mapstructure:"bedrock_mantle_model"`
 
 	// SchedulerEnabled turns on the LLM slot scheduler: per-quota-scope
 	// admission where waiting is a state, not an error
@@ -765,6 +774,13 @@ type MCPServerConfig struct {
 	// EnableResumption enables stream resumption (for streamable-http transport)
 	EnableResumption bool `mapstructure:"enable_resumption"`
 
+	// MaxResponseBytes bounds one JSON-RPC message from this server
+	// (streamable-http only). 0 selects the 16 MiB default; raise it for a
+	// server that legitimately returns more, or set
+	// transport.MaxResponseLimit for effectively no limit. Ignored by stdio,
+	// which is unbounded on purpose.
+	MaxResponseBytes int64 `mapstructure:"max_response_bytes"`
+
 	// Enabled controls whether this server should be started (default: true)
 	// CRITICAL: This field MUST be explicitly written during add/update operations
 	// to prevent the server being disabled on restart (Go zero-value is false).
@@ -812,6 +828,10 @@ type ToolsConfig struct {
 
 	// ShellExecute holds shell_execute tool configuration
 	ShellExecute ShellExecuteConfig `mapstructure:"shell_execute"`
+
+	// Lua holds the run_lua tool configuration (off by default). See
+	// lua_tools.go and docs/architecture/lua-script-engine.md.
+	Lua LuaToolsConfig `mapstructure:"lua"`
 }
 
 // ToolExecutorConfig holds tool executor settings.
@@ -840,6 +860,49 @@ type ShellExecuteConfig struct {
 
 	// EnablePathValidation enables path traversal validation (default: true)
 	EnablePathValidation bool `mapstructure:"enable_path_validation"`
+
+	// Mode selects how commands run: "bash" (default: bash -c) or "jailed"
+	// (a pure-Go shell interpreter in a child process that checks every
+	// program launch against Policy; see docs/reference/shell-command-policy.md).
+	Mode string `mapstructure:"mode"`
+
+	// Policy names the shell policy jailed commands run under (default
+	// "readonly"). A command-policy hook binding scoped to shell_execute must
+	// name the same policy.
+	Policy string `mapstructure:"policy"`
+
+	// Policies defines named policies beyond the built-in "readonly", each
+	// extending readonly or another of these.
+	Policies map[string]ShellPolicyConfig `mapstructure:"policies"`
+
+	// SearchPath lists the directories allowlisted programs are resolved in,
+	// once at startup (default /usr/local/bin, /usr/bin, /bin).
+	SearchPath []string `mapstructure:"search_path"`
+
+	// MemoryBytes and FileBytes bound each jailed command (defaults 512 MiB
+	// and 256 MiB). Memory is a hard limit on Linux and a watchdog elsewhere.
+	MemoryBytes uint64 `mapstructure:"memory_bytes"`
+	FileBytes   uint64 `mapstructure:"file_bytes"`
+
+	// Strict runs jailed commands with set -u (default: true).
+	Strict bool `mapstructure:"strict"`
+
+	// ReadRoots and WriteRoots add directories jailed commands may read and
+	// write, beyond the session's own directory (read) and the session's
+	// scratchpad and artifact directories (write). The rest of LOOM_DATA_DIR
+	// (the database, the server config, other sessions) is not readable.
+	ReadRoots  []string `mapstructure:"read_roots"`
+	WriteRoots []string `mapstructure:"write_roots"`
+}
+
+// ShellPolicyConfig is one named shell policy.
+type ShellPolicyConfig struct {
+	// Extends names the policy this one builds on (default "readonly").
+	Extends string `mapstructure:"extends"`
+	// Allow adds programs that run without approval (path confinement only).
+	Allow []string `mapstructure:"allow"`
+	// Never adds programs no approval can lift.
+	Never []string `mapstructure:"never"`
 }
 
 // ToolPermissionsConfig holds tool permission settings.
@@ -1351,6 +1414,9 @@ func setDefaults() {
 	viper.SetDefault("llm.anthropic_model", "claude-sonnet-4-5-20250929")
 	viper.SetDefault("llm.bedrock_region", "us-west-2")
 	viper.SetDefault("llm.bedrock_model_id", "us.anthropic.claude-sonnet-4-5-20250929-v1:0") // Cross-region inference profile
+	viper.SetDefault("llm.bedrock_mantle_region", "")                                        // empty = inherit llm.bedrock_region
+	viper.SetDefault("llm.bedrock_mantle_endpoint", "")
+	viper.SetDefault("llm.bedrock_mantle_model", bedrockmantle.DefaultModel)
 	viper.SetDefault("llm.ollama_endpoint", "http://localhost:11434")
 	viper.SetDefault("llm.ollama_model", "llama3.1:8b")
 	viper.SetDefault("llm.openai_model", "gpt-4.1")
@@ -1458,6 +1524,7 @@ func setDefaults() {
 	// Default both false to preserve existing behavior.
 	viper.SetDefault("tools.minimal", false)
 	viper.SetDefault("tools.none", false)
+	setLuaDefaults()
 	// Check LOOM_YOLO environment variable
 	if os.Getenv("LOOM_YOLO") == "true" || os.Getenv("LOOM_YOLO") == "1" {
 		viper.Set("tools.permissions.yolo", true)
@@ -1536,6 +1603,9 @@ func setDefaults() {
 	viper.SetDefault("tools.shell_execute.restrict_writes", true)        // Enforce write restrictions
 	viper.SetDefault("tools.shell_execute.restrict_reads", "session")    // Session-only reads by default
 	viper.SetDefault("tools.shell_execute.enable_path_validation", true) // Enable path validation
+	viper.SetDefault("tools.shell_execute.mode", "bash")                 // jailed is opt-in
+	viper.SetDefault("tools.shell_execute.policy", "readonly")           // the jail's runtime policy
+	viper.SetDefault("tools.shell_execute.strict", true)                 // set -u in jailed mode (D10)
 
 	// Embedding defaults
 	viper.SetDefault("embedding.enabled", false)
@@ -1550,6 +1620,16 @@ type SecretMapping struct {
 	KeyringKey string
 	Setter     func(*Config, string)
 	IsSet      func(*Config) bool // Returns true if the value is already set (skip keyring lookup)
+}
+
+// mantleRegion returns the region the bedrock-mantle provider should use:
+// llm.bedrock_mantle_region when set, otherwise llm.bedrock_region (which
+// has a default), so a Bedrock user can switch provider without new config.
+func mantleRegion(l LLMConfig) string {
+	if l.BedrockMantleRegion != "" {
+		return l.BedrockMantleRegion
+	}
+	return l.BedrockRegion
 }
 
 // GetSecretMappings returns all secret mappings for the application.
@@ -1580,6 +1660,11 @@ func GetSecretMappings() []SecretMapping {
 			KeyringKey: "bedrock_bearer_token",
 			Setter:     func(c *Config, val string) { c.LLM.BedrockBearerToken = val },
 			IsSet:      func(c *Config) bool { return c.LLM.BedrockBearerToken != "" },
+		},
+		{
+			KeyringKey: "bedrock_mantle_api_key",
+			Setter:     func(c *Config, val string) { c.LLM.BedrockMantleAPIKey = val },
+			IsSet:      func(c *Config) bool { return c.LLM.BedrockMantleAPIKey != "" },
 		},
 		{
 			KeyringKey: "hawk_api_key",
@@ -1847,6 +1932,10 @@ func (c *Config) Validate() error {
 		return err
 	}
 
+	if err := c.validateShellExecute(); err != nil {
+		return err
+	}
+
 	if err := c.Decision.endpoint().Validate(); err != nil {
 		return fmt.Errorf("%s: %w", decisionEndpointSources, err)
 	}
@@ -1871,6 +1960,14 @@ func (c *Config) Validate() error {
 		// - User might be using IAM role (default credentials chain)
 		// - User might be using environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
 		// The Bedrock client will handle auth validation at runtime
+
+	case bedrockmantle.ProviderName:
+		if mantleRegion(c.LLM) == "" {
+			return fmt.Errorf("bedrock-mantle region is required (set llm.bedrock_mantle_region or llm.bedrock_region in config, or LOOM_LLM_BEDROCK_MANTLE_REGION env var)")
+		}
+		// Credentials are not required here for the same reasons as bedrock:
+		// SigV4 may come from a profile, an IAM role or ambient AWS env vars, and
+		// the Bedrock API key is optional. The client validates at construction.
 
 	case "ollama":
 		if c.LLM.OllamaEndpoint == "" {
@@ -1915,7 +2012,7 @@ func (c *Config) Validate() error {
 		// endpoint and API key are optional — defaults apply
 
 	default:
-		return fmt.Errorf("unsupported LLM provider: %s (must be anthropic, bedrock, ollama, openai, azure-openai, mistral, gemini, huggingface, or litellm)", c.LLM.Provider)
+		return fmt.Errorf("unsupported LLM provider: %s (must be anthropic, bedrock, bedrock-mantle, ollama, openai, azure-openai, mistral, gemini, huggingface, or litellm)", c.LLM.Provider)
 	}
 
 	// Door admission knobs: a negative value is a configuration error, not a
@@ -2103,7 +2200,7 @@ server:
   # allow_assistant_override: false  # Set to true to honor WeaveRequest.replay_assistant_message (generation-free conversation replay only)
 
 llm:
-  # Provider options: anthropic, bedrock, ollama, openai, azure-openai, mistral
+  # Provider options: anthropic, bedrock, bedrock-mantle, ollama, openai, azure-openai, mistral, gemini, huggingface, litellm
   provider: anthropic
 
   # Anthropic configuration
@@ -2118,6 +2215,12 @@ llm:
   # bedrock_secret_access_key: set via keyring or env (LOOM_LLM_BEDROCK_SECRET_ACCESS_KEY)
   # bedrock_session_token: set via keyring or env (LOOM_LLM_BEDROCK_SESSION_TOKEN)
   # bedrock_bearer_token: set via keyring or env (AWS_BEARER_TOKEN_BEDROCK)
+
+  # AWS Bedrock Mantle configuration (bedrock-mantle endpoint; docs/reference/llm-bedrock-mantle.md)
+  # bedrock_mantle_region: us-west-2  # defaults to bedrock_region
+  # bedrock_mantle_model: anthropic.claude-haiku-4-5
+  # bedrock_mantle_endpoint: https://bedrock-mantle.us-west-2.api.aws  # PrivateLink override only
+  # bedrock_mantle_api_key: set via keyring (looms config set-key bedrock_mantle_api_key); empty = SigV4 via bedrock_profile or the AWS credential chain
 
   # Ollama configuration (local inference)
   ollama_endpoint: http://localhost:11434
@@ -2205,6 +2308,30 @@ tools:
     # Brave Search also excellent (2000 searches/month FREE)
     # DuckDuckGo works without API key (factual queries only, limited results)
 
+  # run_lua: lets the model run a short Lua script that calls its own tools
+  # through the same admission hooks as direct calls. Off by default; an agent
+  # must also list run_lua in tools.builtin, and must have tools.hooks or
+  # tools.permissions configured. The default tools.permissions.yolo: true
+  # counts as configured but admits every call the lua deny lists leave, so
+  # set a restrictive permission policy or hook before enabling this.
+  # lua:
+  #   enabled: false
+  #   limits:                       # zero = engine default; capped at the engine ceilings
+  #     wall_seconds: 120
+  #     cpu_ticks: 2000000000
+  #     memory_bytes: 134217728     # 128 MiB per run (total allocation); ceiling 512 MiB
+  #     max_tool_calls: 100
+  #     max_concurrent_runs: 0      # 0 = derived from the process memory limit
+  #     max_concurrent_runs_per_key: 2
+  #   tools:
+  #     allow: []                   # empty = every tool the model can see
+  #     deny: [shell_execute, shell_execute_sandbox, agent_management, project_manager, git_contribute, propose_skill_edit]
+  #     deny_for_shared: [http_request, web_browse, web_search, file_write, files, workspace]
+  #   scripts_dir: ""               # default <LOOM_DATA_DIR>/lua_scripts
+  #   scripts:
+  #     save_enabled: true          # agents listing manage_lua_scripts may save scripts
+  #     publish_as_tool_enabled: false  # allow publishing a script as a lua_<name> tool
+
 logging:
   level: info  # debug, info, warn, error
   format: text # text, json
@@ -2262,6 +2389,7 @@ mcp:
 #   looms config set-key anthropic_api_key
 #   looms config set-key bedrock_access_key_id
 #   looms config set-key bedrock_secret_access_key
+#   looms config set-key bedrock_mantle_api_key
 #   looms config set-key hawk_api_key
 #   looms config set-key brave_search_api_key
 #   looms config set-key tavily_api_key

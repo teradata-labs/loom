@@ -15,9 +15,11 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"sort"
 	"strconv"
@@ -124,6 +126,7 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// Decision layer: resolve the configured decider against the LLMs the
 	// options just installed. Off unless configured.
 	a.initDecisionRouter()
+	a.attachSkillRouteDecision()
 
 	// Initialize automatic graph memory extraction if graph memory is enabled.
 	if a.graphMemoryStore != nil && a.graphMemoryConfig != nil &&
@@ -293,6 +296,7 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	a.checkAndRegisterTaskBoardTool()
 	a.checkAndRegisterManageSkillsTool()
 	a.checkAndRegisterLoadPatternTool()
+	a.checkAndRegisterDecideTool()
 
 	// Auto-wire the skill task emitter when both the skill subsystem AND
 	// the task subsystem are configured. The emitter is the bridge between
@@ -535,9 +539,32 @@ func WithPrompts(registry prompts.PromptRegistry) Option {
 	}
 }
 
-// WithConfig sets the agent configuration.
+// WithConfig replaces the entire agent configuration. Apply it before options
+// that set individual configuration fields.
 func WithConfig(config *Config) Option {
 	return func(a *Agent) {
+		if config == nil {
+			return
+		}
+		// Identity fields that other options write (WithName, WithDescription,
+		// WithSystemPrompt) survive a later WithConfig whose copy of them is
+		// empty. Every registry- and CLI-built agent applied WithSystemPrompt
+		// and then WithConfig with a fresh Config, and lost its system prompt;
+		// agents configured to hold a stance answered on the merits instead.
+		if prev := a.config; prev != nil {
+			if config.Name == "" {
+				config.Name = prev.Name
+			}
+			if config.Description == "" {
+				config.Description = prev.Description
+			}
+			if config.SystemPrompt == "" {
+				config.SystemPrompt = prev.SystemPrompt
+			}
+			if config.SystemPromptKey == "" {
+				config.SystemPromptKey = prev.SystemPromptKey
+			}
+		}
 		a.config = config
 	}
 }
@@ -681,6 +708,20 @@ func WithSystemPrompt(prompt string) Option {
 func WithDescription(description string) Option {
 	return func(a *Agent) {
 		a.config.Description = description
+	}
+}
+
+// WithROM sets the ROM identifier used to compose the system prompt.
+func WithROM(rom string) Option {
+	return func(a *Agent) {
+		a.config.Rom = rom
+	}
+}
+
+// WithMetadata sets a copy of the agent metadata.
+func WithMetadata(metadata map[string]string) Option {
+	return func(a *Agent) {
+		a.config.Metadata = maps.Clone(metadata)
 	}
 }
 
@@ -2236,8 +2277,10 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// Add assistant response to history
 	_, replyPersisted := a.appendMessage(ctx, session, Message{
 		Role: "assistant",
-		// Turn-ending message: thinking text rides for persistence; blocks
-		// would be stripped by the next turn's compile, so none are carried.
+		// Turn-ending message: thinking text rides for persistence; no blocks
+		// are carried, as no later call of this turn replays them. (Settled
+		// tool-loop messages keep theirs while the context before them is
+		// unchanged: thinkingPrefix in context_compilation.go.)
 		Content:    response.Content,
 		Thinking:   response.Thinking,
 		AgentID:    a.GetID(), // Track which agent generated this response
@@ -2418,6 +2461,21 @@ type Response struct {
 	// N tool-loop iterations has N−1 calls that Usage does not represent.
 	TurnUsage Usage
 
+	// TurnLLMCalls is the number of successful LLM calls that TurnUsage sums:
+	// every call of the conversation loop (tool-loop iterations, the
+	// empty-response and hygiene retries, the final synthesis). A scripted
+	// replay turn (WithScriptedResponse) makes no call and counts 0.
+	// Orchestration reports it as the agent's LLM call count; one turn with N
+	// tool-loop iterations is N+ calls, not one.
+	//
+	// Not counted, here or in TurnUsage: LLM calls made outside the
+	// conversation loop's provider call. Examples are graph-memory recall
+	// (extractSearchQuery, rerankMemories), graph-memory extraction and lesson
+	// mining (both in the background), the memory compressor, segmented-memory
+	// reranking, the skills router, and the pattern intent classifier and
+	// reranker.
+	TurnLLMCalls int
+
 	// ToolExecutions contains tools that were executed
 	ToolExecutions []ToolExecution
 
@@ -2596,6 +2654,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	toolExecutionCount := 0
 	var allToolExecutions []ToolExecution
 	var turnUsage Usage                         // sum of every successful LLM call this turn → Response.TurnUsage
+	turnCalls := 0                              // count of the calls in turnUsage → Response.TurnLLMCalls
 	emptyRetried := false                       // one-shot flag: retry empty LLM response at most once per conversation
 	hygieneRetries := 0                         // capped count of REQUIRE_FIX retries the end-of-turn auditor has triggered
 	var hygieneLast *hygiene.EnforcementOutcome // last outcome, surfaced into Response.Metadata
@@ -2619,25 +2678,21 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	{
 		msgs := session.GetMessages()
 		for i := len(msgs) - 1; i >= 0; i-- {
-			if msgs[i].Role == "user" {
+			if msgs[i].Role == "user" && !IsSystemReminder(msgs[i]) {
 				a.evaluateLazyTools(msgs[i].Content)
 				break
 			}
 		}
 	}
 
-	// Inject graph memory context (if enabled and available). A resumed turn
-	// skips it: the loop is being RE-entered for a turn that already got its
-	// context block before it parked, so injecting again would duplicate the
-	// block in the prompt and pay a second recall round-trip per resume.
-	// A resumed turn already ran this once — but only if the block SURVIVED.
-	// injectGraphMemoryContext appends through Session.AddMessage, which is
-	// in-memory only and never persisted, so a resume in a fresh process finds
-	// nothing there. Suppressing on "is a resume" alone would leave exactly
-	// the turn carrying the human-approved action with no recall at all.
-	if !isResumedTurn(ctx) || !hasGraphMemoryContext(session) {
-		a.injectGraphMemoryContext(ctx, session)
-	}
+	// Recall graph memory for this turn (if enabled and available). The note
+	// rides this turn's LLM calls as a <system-reminder> user message
+	// (withReminder: pinned after the turn's user message for the rest of the
+	// turn), never the stored session: it changes with every user message, and
+	// as a system message it would land in the provider's system field at the
+	// head of the request and miss the prompt cache on every call. A resumed
+	// turn recalls again, since nothing of it was stored.
+	memoryNote := a.graphMemoryNote(ctx, session)
 
 	// Extract the incoming user message only after recall, in parallel with the LLM
 	// call. A resume has no new user message, so it must not extract again.
@@ -2689,21 +2744,24 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// === FEATURE INTEGRATION: Soft Reminders ===
 		// Compute reminders if approaching limits (non-intrusive, doesn't remove
 		// tools). Thresholds: 75% of max (but minimum of 10 tools / 8 turns).
-		// The reminder is applied transiently at the provider call — appended as
-		// a trailing system message, never onto the ROM message (which would
-		// invalidate the ROM cache prefix at exactly the high-pressure moment)
-		// and never persisted, so it survives any relief recompile of messages.
-		softReminder := ""
+		// The reminder is added at the provider call (withReminder): pinned as a
+		// <system-reminder> user message for the rest of the turn, never onto
+		// the ROM message (which would invalidate the ROM cache prefix at
+		// exactly the high-pressure moment) and never persisted. Each budget
+		// reminder is sent once per turn, on the first call that crosses its
+		// threshold (TurnReminder): its count is the one at that call.
+		reminders := []TurnReminder{{Kind: ReminderGraphMemory, Text: memoryNote}}
 		if session.SegmentedMem != nil {
 			// Check tool execution reminder
 			toolReminder := buildSoftReminder(toolExecutionCount, a.config.MaxToolExecutions)
 			// Check turn count reminder
 			turnReminder := buildTurnReminder(turnCount, a.config.MaxTurns)
 
-			// Combine reminders if both are active
-			softReminder = toolReminder + turnReminder
+			reminders = append(reminders,
+				TurnReminder{Kind: ReminderToolBudget, Text: toolReminder},
+				TurnReminder{Kind: ReminderTurnBudget, Text: turnReminder})
 
-			if softReminder != "" {
+			if toolReminder != "" || turnReminder != "" {
 				span.AddEvent("soft_reminder.added", map[string]interface{}{
 					"tool_count":        toolExecutionCount,
 					"turn_count":        turnCount,
@@ -2717,11 +2775,13 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			}
 		}
 
-		// The repeat-call note from the last tool batch rides this provider call
-		// only (see withReminder). The orchestrator is per turn, so an unsent note
-		// cannot reach a later turn.
+		// The repeat-call note from the last tool batch is sent on this provider
+		// call, and stays where it was sent for the rest of the turn (see
+		// withReminder). It is an event note: a later batch's hint is sent too.
+		// The orchestrator is per turn, so an unsent note cannot reach a later
+		// turn.
 		if note := recovery.takeRepeatHint(); note != "" {
-			softReminder = strings.TrimSpace(softReminder + "\n" + note)
+			reminders = append(reminders, TurnReminder{Text: note})
 		}
 
 		// Emit LLM generation progress
@@ -2738,7 +2798,12 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// part of the compiled artifact and feed releasePressure's estimate.
 		// Recomputed per provider call, which covers every registration change.
 		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
-			segMem.SetAdvertisedToolsBytes(advertisedToolsBytes(tools))
+			a.setAdvertisedTools(segMem, tools)
+			// The reminders known before relief runs: the recall note, the soft
+			// reminders and the repeat hint. Reminders the turn already sent are
+			// compiled or not sent again; the rest count as the pending tail
+			// until sendChat pins them.
+			segMem.SetTransientTail(reminders...)
 		}
 
 		// Mutation-debug: the per-session tool projection about to be advertised
@@ -2769,17 +2834,20 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				messages = session.GetMessages()
 				tools = a.advertisedTools(session)
 				tools = recovery.activeTools(tools)
-				segMem.SetAdvertisedToolsBytes(advertisedToolsBytes(tools))
+				a.setAdvertisedTools(segMem, tools)
 			}
 			// Opt-in (behavior.context_relief_warning). Relief ran and left the
 			// estimate over its release mark, whether or not it shed; under the
-			// start mark it returns 0, 0 and this is false, so the note rides
-			// only the sends where relief ran. It is transient: softReminder is
-			// read at send time.
+			// start mark it returns 0, 0 and this is false, so the note is sent
+			// only from a call where relief ran, once per turn (TurnReminder):
+			// later calls of the turn can't replace its percentage.
 			if a.config.ContextReliefWarning && estimate > target {
 				used, available, _ := segMem.GetTokenBudgetUsage()
 				usable := used + available
-				softReminder += buildContextReminder(estimate, target, usable)
+				reminders = append(reminders, TurnReminder{
+					Kind: ReminderContextRelief,
+					Text: buildContextReminder(estimate, target, usable),
+				})
 				span.AddEvent("context_reminder.added", map[string]interface{}{
 					"turn":            turnCount,
 					"estimate_tokens": estimate,
@@ -2820,25 +2888,25 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			}
 		}
 
-		// withReminder appends the transient tail — the turn's soft reminder —
-		// as one trailing message on a copy: transient, past every cache
-		// breakpoint, never stored, carried by both the normal send and the
-		// recovery resend.
+		// withReminder adds the reminder notes — the graph memory recall note,
+		// the turn's soft reminder and, with behavior.tool_change_note on, the
+		// tool-set delta — to the messages of this send. With segmented memory
+		// they are pinned (PinTurnNotes): sent as a <system-reminder> user
+		// message after the turn's rows so far, and kept at that position for
+		// the rest of the turn, so a later call never removes what an earlier
+		// one sent before the model's thinking (the provider rejects a
+		// replayed thinking block whose preceding messages changed). A
+		// reminder the turn already sent is not sent again (TurnReminder).
+		// Both the normal send and the recovery resend go through here.
+		// Without segmented memory the notes ride a trailing message on a copy
+		// (withSystemReminder).
 		withReminder := func(msgs []Message, toolNote string) []Message {
-			tail := strings.TrimSpace(softReminder + "\n" + toolNote)
-			if tail == "" {
-				return msgs
+			rs := append(reminders[:len(reminders):len(reminders)], TurnReminder{Text: toolNote})
+			if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
+				segMem.PinTurnNotes(rs...)
+				return session.GetMessages()
 			}
-			out := make([]Message, len(msgs), len(msgs)+1)
-			copy(out, msgs)
-			// USER role, never system: gateways fold trailing system-role
-			// messages into the Anthropic system parameter at the HEAD of the
-			// request, where this mutating block would invalidate every cache
-			// segment on every call. A trailing user message stays in place —
-			// after the till-NOW breakpoint, outside every cached segment.
-			// The reminder tag marks it as harness state, not a user ask.
-			return append(out, Message{Role: "user",
-				Content: "<system-reminder>\n" + tail + "\n</system-reminder>"})
+			return withSystemReminder(msgs, reminderTexts(rs)...)
 		}
 
 		// sendChat is the one provider call of this iteration. With
@@ -2884,8 +2952,10 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// override is ignored (falls through to a normal provider call).
 		var llmResp *LLMResponse
 		var err error
+		providerCalled := true // false for a scripted replay: no call to count
 		if scripted, ok := scriptedResponseFromContext(ctx); ok && strings.TrimSpace(scripted) != "" {
 			llmResp = &LLMResponse{Content: scripted, StopReason: "end_turn"}
+			providerCalled = false
 		} else {
 			if intentErr := a.recordLLMIntent(ctx, session.ID, thisStep, len(messages), a.llm.Model()); intentErr != nil {
 				return nil, fmt.Errorf("recording LLM call intent: %w", intentErr)
@@ -2909,7 +2979,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				tools = a.advertisedTools(session)
 				tools = recovery.activeTools(tools)
 				if segMem2, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem2 != nil {
-					segMem2.SetAdvertisedToolsBytes(advertisedToolsBytes(tools))
+					a.setAdvertisedTools(segMem2, tools)
 				}
 				// Same logical step: a resend after ErrContextTooLong is the
 				// same LLM call with a shorter context, so it reuses the
@@ -2939,6 +3009,9 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			return nil, fmt.Errorf("LLM call failed: %w", err)
 		}
 		addUsage(&turnUsage, llmResp.Usage)
+		if providerCalled {
+			turnCalls++
+		}
 		a.observePromptUsage(session, llmResp.Usage)
 
 		// Record LLM response on conversation_loop span
@@ -3173,6 +3246,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				Content:        content,
 				Usage:          llmResp.Usage,
 				TurnUsage:      turnUsage,
+				TurnLLMCalls:   turnCalls,
 				ToolExecutions: allToolExecutions,
 				Thinking:       llmResp.Thinking,
 				Metadata:       meta,
@@ -3203,7 +3277,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// assistantPersisted alone reports success for a batch that was never
 		// written anywhere — exactly the stranding this gate exists to stop.
 		if a.hitlPark != nil && assistantPersisted && a.memory.HasStore() {
-			if parkErr := a.maybeParkBatch(ctx, session, llmResp, turnUsage); parkErr != nil {
+			if parkErr := a.maybeParkBatch(ctx, session, llmResp, turnUsage, tools); parkErr != nil {
 				return nil, parkErr
 			}
 		}
@@ -3291,7 +3365,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	// If we hit max turns/executions, make one final LLM call to synthesize results
 	// This ensures the agent provides meaningful output instead of a generic error message
 	emitProgress(ctx, StageSynthesis, 90, "Synthesizing tool execution results", "")
-	return a.synthesizeFinalResponse(ctx, session, turnCount, toolExecutionCount, allToolExecutions, turnUsage)
+	return a.synthesizeFinalResponse(ctx, session, memoryNote, turnCount, toolExecutionCount, allToolExecutions, turnUsage, turnCalls)
 }
 
 // batchState carries the loop-level state the per-call dispatch body reads
@@ -3307,6 +3381,11 @@ type batchState struct {
 	allToolExecutions  *[]ToolExecution
 	tools              *[]shuttle.Tool
 	recovery           *recoveryOrchestrator
+	// noProjection is set by the resume path when the parked batch carries
+	// no record of the tools its provider call advertised. Calls then get no
+	// projection on their context, so a script engine refuses to run
+	// instead of trusting the resume-time set.
+	noProjection bool
 
 	turnToolCount   int
 	turnDedup       map[string]*shuttle.Result
@@ -3379,6 +3458,11 @@ type preparedCall struct {
 	dedupKey  string
 	toolSpan  *observability.Span
 	intentErr error
+	// projection is the advertised tool set runCall attaches to the call's
+	// context; noProjection means attach none (a resumed batch with no
+	// recorded projection), so a script engine fails closed.
+	projection   []shuttle.Tool
+	noProjection bool
 }
 
 // prepareCall is the sequential front half of dispatchOneCall: the per-turn
@@ -3502,7 +3586,18 @@ func (a *Agent) prepareCall(ctx Context, session *Session, toolCall ToolCall, i 
 	// A failed intent is returned on the prepared call, not committed here: the
 	// call must not run, and settleCall commits its error row so that a group
 	// member's row still lands after the rows of the members before it.
-	return &preparedCall{call: toolCall, index: i, dedupKey: dedupKey, toolSpan: toolSpan, intentErr: intentErr}, false
+	//
+	// The call's context will record the tools this provider call advertised
+	// (after recovery filtering), so a script engine never re-derives a wider
+	// set. On resume st.tools is the requesting call's recorded projection,
+	// narrowed by the resume-time set (completeParkedBatch); with no record
+	// the call gets no projection and a script engine fails closed. Read here,
+	// in the sequential front half, so a parallel group sees the same set.
+	pc = &preparedCall{call: toolCall, index: i, dedupKey: dedupKey, toolSpan: toolSpan, intentErr: intentErr, noProjection: st.noProjection}
+	if !st.noProjection && st.tools != nil {
+		pc.projection = *st.tools
+	}
+	return pc, false
 }
 
 // settleUnrecordedCall commits the row of a call whose intent could not be
@@ -3539,7 +3634,11 @@ func (a *Agent) settleUnrecordedCall(ctx Context, session *Session, pc *prepared
 // cache or the transcript — settleCall owns all of those. See runTool for the
 // shared state executor.Execute can still reach.
 func (a *Agent) runCall(ctx Context, pc *preparedCall, sessionID string) (*shuttle.Result, error) {
-	return a.runTool(ctx, pc.call.Name, pc.call.Input, sessionID)
+	callCtx := ctx
+	if !pc.noProjection {
+		callCtx = withAdvertisedProjection(ctx, pc.projection)
+	}
+	return a.runTool(callCtx, pc.call.Name, pc.call.Input, sessionID)
 }
 
 // settleCall is the sequential back half of dispatchOneCall: lease events and
@@ -3789,7 +3888,7 @@ func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, 
 // conversation loop exhausts its turn/execution budget, so the agent yields
 // meaningful output instead of a generic limit error. Moved verbatim from
 // the loop tail when the batch body was extracted into dispatchOneCall.
-func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount, toolExecutionCount int, allToolExecutions []ToolExecution, turnUsage Usage) (*Response, error) {
+func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNote string, turnCount, toolExecutionCount int, allToolExecutions []ToolExecution, turnUsage Usage, turnCalls int) (*Response, error) {
 	// Add a synthesis request to the conversation
 	// Include explicit format instructions since they may have been compressed in context
 	synthesisPrompt := "You must provide your final answer NOW with whatever information you have gathered so far. Summarize your findings: what actions were taken, what results were produced, and any remaining steps the user would need to complete manually. Be concise and actionable. You MUST respond with text — do not return an empty response."
@@ -3807,7 +3906,8 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount
 	// deeper and resend once.
 	segMem, _ := session.SegmentedMem.(*SegmentedMemory)
 	if segMem != nil {
-		segMem.SetAdvertisedToolsBytes(0)
+		a.setAdvertisedTools(segMem, nil)
+		segMem.SetTransientTail(TurnReminder{Kind: ReminderGraphMemory, Text: memoryNote})
 		if shed, estimate, target := segMem.ReleasePressure(ctx, 0); shed {
 			zap.L().Info("relief: shed before synthesis",
 				zap.String("session_id", session.ID),
@@ -3815,14 +3915,23 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount
 				zap.Int("target_tokens", target))
 		}
 	}
-	finalResp, err := a.chatWithRetry(ctx, session.GetMessages(), nil)
+	// The recall note was pinned by the loop's first call; pinning again is a
+	// no-op then, and pins it here when the loop never sent it.
+	synthesisMessages := func() []Message {
+		if segMem != nil {
+			segMem.PinTurnNotes(TurnReminder{Kind: ReminderGraphMemory, Text: memoryNote})
+			return session.GetMessages()
+		}
+		return withSystemReminder(session.GetMessages(), memoryNote)
+	}
+	finalResp, err := a.chatWithRetry(ctx, synthesisMessages(), nil)
 	if err != nil && errors.Is(err, llm.ErrContextTooLong) && segMem != nil {
 		_, estimate, target := segMem.ReleasePressure(ctx, pressureRecoveryPenalty)
 		zap.L().Info("context too long at synthesis: relief pass complete, resending once",
 			zap.String("session_id", session.ID),
 			zap.Int("estimate_tokens", estimate),
 			zap.Int("target_tokens", target))
-		finalResp, err = a.chatWithRetry(ctx, session.GetMessages(), nil)
+		finalResp, err = a.chatWithRetry(ctx, synthesisMessages(), nil)
 	}
 	if err == nil {
 		a.observePromptUsage(session, finalResp.Usage)
@@ -3834,6 +3943,7 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount
 			Content:        maxTurnsMessage,
 			Usage:          Usage{},
 			TurnUsage:      turnUsage, // the loop's calls were still billed
+			TurnLLMCalls:   turnCalls,
 			ToolExecutions: allToolExecutions,
 			Metadata: map[string]interface{}{
 				"turns":           turnCount,
@@ -3852,10 +3962,12 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount
 	}
 
 	addUsage(&turnUsage, finalResp.Usage)
+	turnCalls++
 	return &Response{
 		Content:        content,
 		Usage:          finalResp.Usage,
 		TurnUsage:      turnUsage,
+		TurnLLMCalls:   turnCalls,
 		ToolExecutions: allToolExecutions,
 		Thinking:       finalResp.Thinking,
 		Metadata: map[string]interface{}{
@@ -3871,6 +3983,39 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount
 // advertisedToolsBytes measures the serialized bytes of the advertised tool
 // schemas as they ride the provider tools parameter (name + description +
 // input schema JSON).
+// advertisedToolsDigest is a digest of the advertised tool schemas in the
+// order they are sent: what a settled thinking block's fingerprint is bound
+// to besides the model and the messages (SetRequestIdentity).
+func advertisedToolsDigest(tools []shuttle.Tool) [sha256.Size]byte {
+	h := sha256.New()
+	for _, t := range tools {
+		writeField(h, t.Name())
+		writeField(h, t.Description())
+		schema := ""
+		if s := t.InputSchema(); s != nil {
+			if b, err := json.Marshal(s); err == nil {
+				schema = string(b)
+			}
+		}
+		writeField(h, schema)
+	}
+	var sum [sha256.Size]byte
+	h.Sum(sum[:0])
+	return sum
+}
+
+// setAdvertisedTools records the tools a provider call sends on the session's
+// segmented memory: their schema bytes for the relief estimate, and with the
+// model ID the request identity settled thinking is bound to.
+func (a *Agent) setAdvertisedTools(segMem *SegmentedMemory, tools []shuttle.Tool) {
+	segMem.SetAdvertisedToolsBytes(advertisedToolsBytes(tools))
+	model := ""
+	if a.llm != nil {
+		model = a.llm.Model()
+	}
+	segMem.SetRequestIdentity(model, advertisedToolsDigest(tools))
+}
+
 func advertisedToolsBytes(tools []shuttle.Tool) int {
 	bytes := 0
 	for _, t := range tools {
@@ -4164,27 +4309,59 @@ func (a *Agent) FlushGraphMemoryExtraction() {
 	a.graphExtractionWG.Wait()
 }
 
-// graphMemoryContextMarker opens the injected graph-memory block, and is how a
-// resumed turn tells "already injected" from "injected in a process that is
-// gone" — the block lives only in memory (Session.AddMessage is not persisted).
-const graphMemoryContextMarker = "[Graph Memory Context]"
-
-// hasGraphMemoryContext reports whether this session still carries an injected
-// graph-memory block.
-func hasGraphMemoryContext(session *types.Session) bool {
-	for _, m := range session.GetMessages() {
-		if strings.HasPrefix(m.Content, graphMemoryContextMarker) {
-			return true
-		}
+// withSystemReminder returns msgs with the non-empty notes appended as one
+// trailing user message wrapped in <system-reminder> tags (a copy; msgs is
+// not changed), or msgs itself when there are none.
+//
+// USER role, never system: providers and gateways fold system-role messages
+// into the system prompt at the HEAD of the request (Anthropic's "system"
+// field), where a note that changes with every request would invalidate
+// every cached segment after it. A trailing user message stays in place,
+// after the till-NOW breakpoint, outside every cached segment. The tag marks
+// it as harness state, not a user ask.
+func withSystemReminder(msgs []Message, notes ...string) []Message {
+	content := systemReminderContent(notes...)
+	if content == "" {
+		return msgs
 	}
-	return false
+	out := make([]Message, len(msgs), len(msgs)+1)
+	copy(out, msgs)
+	return append(out, Message{Role: "user", Content: content})
 }
 
-// injectGraphMemoryContext queries graph memory for the current topic and injects
-// relevant context into the conversation as a system message.
-func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Session) {
+// IsSystemReminder reports whether m is a reminder message (withSystemReminder,
+// PinTurnNotes) rather than something the user wrote. The compiled view of a
+// session holds the current turn's pinned reminders until the next turn, so a
+// reader that shows the conversation leaves these rows out.
+func IsSystemReminder(m Message) bool {
+	return m.Role == "user" && strings.HasPrefix(m.Content, "<system-reminder>\n")
+}
+
+// systemReminderContent is the content of the message withSystemReminder
+// appends for notes, or "" when every note is empty.
+func systemReminderContent(notes ...string) string {
+	var parts []string
+	for _, note := range notes {
+		if note = strings.TrimSpace(note); note != "" {
+			parts = append(parts, note)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "<system-reminder>\n" + strings.Join(parts, "\n\n") + "\n</system-reminder>"
+}
+
+// graphMemoryContextMarker opens the graph memory recall note.
+const graphMemoryContextMarker = "[Graph Memory Context]"
+
+// graphMemoryNote queries graph memory for the current topic and returns the
+// relevant memories as a note for this turn's LLM calls, or "" when there are
+// none. The note is never added to the stored session; it is pinned for the
+// rest of the turn only (PinTurnNotes).
+func (a *Agent) graphMemoryNote(ctx context.Context, session *types.Session) string {
 	if a.graphMemoryStore == nil || a.graphMemoryConfig == nil || !a.graphMemoryConfig.Enabled {
-		return
+		return ""
 	}
 	// The recall path had zero observability: every gate below returned
 	// silently, which is how a fleet ran with recall dead and nobody knew
@@ -4204,21 +4381,21 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 	budget := a.graphMemoryTokenBudget()
 	if budget <= 0 {
 		outcome = "no_budget"
-		return
+		return ""
 	}
 
 	// Get the last user message.
 	var userMessage string
 	msgs := session.GetMessages()
 	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == "user" && msgs[i].Content != "" {
+		if msgs[i].Role == "user" && msgs[i].Content != "" && !IsSystemReminder(msgs[i]) {
 			userMessage = msgs[i].Content
 			break
 		}
 	}
 	if userMessage == "" {
 		outcome = "no_user_message"
-		return
+		return ""
 	}
 
 	// Use LLM to distill the user message into a search query for memory recall.
@@ -4231,7 +4408,7 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 	span.SetAttribute("recall.query_source", querySource)
 	if searchQuery == "" {
 		outcome = "no_query"
-		return
+		return ""
 	}
 	span.SetAttribute("recall.query", truncatePreview(searchQuery))
 
@@ -4319,7 +4496,7 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 		} else {
 			outcome = "no_candidates"
 		}
-		return
+		return ""
 	}
 
 	// LLM re-rank: ask the LLM which candidates are actually relevant
@@ -4327,7 +4504,7 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 	relevant := a.rerankMemories(ctx, userMessage, candidates)
 	if len(relevant) == 0 && len(lessons) == 0 {
 		outcome = "rerank_none"
-		return
+		return ""
 	}
 	// recall.injected is the total the block carries; the two breakdowns
 	// split it the way lesson.injected / lesson.injected_verified /
@@ -4364,11 +4541,8 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 		sb.WriteString("\n")
 	}
 
-	session.AddMessage(ctx, types.Message{
-		Role:    "system",
-		Content: graphMemoryContextMarker + "\n" + sb.String(),
-	})
 	outcome = "injected"
+	return graphMemoryContextMarker + "\n" + strings.TrimRight(sb.String(), "\n")
 }
 
 // multiHopRecall finds the user entity and traverses 2 hops outward to collect
@@ -4450,14 +4624,32 @@ func (a *Agent) findUserEntity(ctx context.Context, agentID string) *memory.Enti
 }
 
 // rerankMemories selects the most relevant memories for a user message from a
-// pool of FTS5 candidates. The existing LLM rerank decides; when the decision
-// layer is wired, the decider's per-candidate relevance is evaluated in the
-// background and recorded against that decision as a shadow row (plan Phase
-// 1, site recall.rerank). Nothing branches on the decider yet.
+// pool of FTS5 candidates (site recall.rerank).
+//
+// With a live band, the decider answers first and, when the band says to act,
+// its per-candidate relevance is the result and the generative rerank is
+// skipped. Otherwise the existing LLM rerank decides and the decider's answer
+// (already obtained on a live band, obtained in the background on a shadow
+// band) is recorded against it as shadow rows.
 func (a *Agent) rerankMemories(ctx context.Context, userMessage string, candidates []*memory.Memory) []*memory.Memory {
+	sessionID := sessionIDFromContext(ctx)
+	if kept, acted, req, out, notActed := a.liveRerank(ctx, sessionID, sites.SiteRecallRerank, userMessage, candidates); acted {
+		// Live: nothing to compare against; the row records what was acted
+		// on, with each candidate's provenance as its subject. Candidates
+		// kept without acting on their answer are recorded as FALLBACK.
+		a.recordDecisionAsync(ctx, sessionID, req, out, sites.RerankActedReferences(len(candidates), memorySubjects(candidates), notActed))
+		return kept
+	} else if req != nil {
+		// Live band, but the decider did not clear it: the LLM decides and
+		// the answer already in hand is recorded against it.
+		kept := a.rerankMemoriesLLM(ctx, userMessage, candidates)
+		a.recordDecisionAsync(ctx, sessionID, req, out,
+			sites.RerankReferenceSubjects(len(candidates), keptIndexes(candidates, kept), sites.ReferenceSourceLLMRerank, memorySubjects(candidates)))
+		return kept
+	}
 	kept := a.rerankMemoriesLLM(ctx, userMessage, candidates)
 	if a.decisionRouter != nil && len(candidates) > 0 {
-		a.shadowRerank(ctx, sessionIDFromContext(ctx), sites.SiteRecallRerank, userMessage, candidates, kept, sites.ReferenceSourceLLMRerank)
+		a.shadowRerank(ctx, sessionID, sites.SiteRecallRerank, userMessage, candidates, kept, sites.ReferenceSourceLLMRerank)
 	}
 	return kept
 }

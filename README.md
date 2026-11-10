@@ -220,12 +220,13 @@ Assign different LLM providers per operational role (judge, orchestrator, classi
 
 ### LLM Providers
 
-8 providers, 73 cataloged models with mid-session switching:
+9 providers, 126 cataloged models with mid-session switching:
 
 | Provider | Models |
 |----------|--------|
 | **Anthropic** | Claude Opus 4.7, Claude Opus 4.6, Claude Sonnet 4.6, Claude Opus 4.5, Claude Sonnet 4.5, Claude Haiku 4.5, Claude Opus 4.1 |
 | **AWS Bedrock** | Claude Opus 4.7 (regional + global), Claude Opus 4.6, Claude Sonnet 4.6, Claude Opus 4.5, Claude Sonnet 4.5, Claude Haiku 4.5, Claude Opus 4.1 |
+| **AWS Bedrock Mantle** | Claude Fable 5.1, Fable 5, Mythos 5, Opus 5.5, Opus 5, Opus 4.8, Opus 4.7, Sonnet 5.5, Sonnet 5, Haiku 5.5, Haiku 4.5; gpt-oss (4), Gemma 4 (3), Gemma 3 (3), Grok 4.3/4.6, DeepSeek V3.1/V3.2, Kimi K2 Thinking/K2.5, MiniMax M2/M2.1/M2.5, Mistral (8), Nemotron (4), Qwen3 (7), GLM 4.7/4.7 Flash/5, Palmyra Vision 7B (53 cataloged; GPT-5.x/6.x served but unpriced). See [docs/reference/llm-bedrock-mantle.md](docs/reference/llm-bedrock-mantle.md) |
 | **OpenAI** | GPT-5.4 Pro, GPT-5.4, GPT-5.4 Mini, GPT-5.4 Nano, GPT-5.3 Codex, GPT-5.3 Chat, GPT-5.2, GPT-5.1, GPT-5, GPT-4.1, GPT-4.1 Mini, GPT-4.1 Nano, o3-pro, o3, o3-mini, o4-mini |
 | **Azure OpenAI** | GPT-5.4, GPT-5.4 Mini, GPT-5.3 Chat, GPT-5, GPT-4.1, GPT-4.1 Mini, o3, o4-mini |
 | **Google Gemini** | Gemini 3.1 Pro, Gemini 3.1 Flash-Lite, Gemini 3 Pro, Gemini 3 Flash (Preview), Gemini 2.5 Pro, Gemini 2.5 Flash, Gemini 2.5 Flash-Lite |

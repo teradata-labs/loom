@@ -14,11 +14,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
@@ -108,4 +112,279 @@ func TestRunHitlExpire_RetiresStrandedRow(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "timeout", got.Status, "the stranded row is terminally retired")
 	require.Contains(t, got.RespondedBy, "operator:", "the closing actor is the operator")
+}
+
+func TestHITLListLabel(t *testing.T) {
+	assert.Equal(t, `shell_execute command=rm notes.txt`, hitlListLabel(&shuttle.HumanRequest{
+		Question: `Approve tool call "shell_execute"?`, Summary: `shell_execute command=rm notes.txt`}),
+		"an approval lists its call digest, not the generic question")
+	assert.Equal(t, "What is the deadline?", hitlListLabel(&shuttle.HumanRequest{Question: "What is the deadline?"}))
+	long := hitlListLabel(&shuttle.HumanRequest{Question: strings.Repeat("é", 100)})
+	assert.Equal(t, 70, len([]rune(long)), "cut on a rune boundary")
+	assert.True(t, strings.HasSuffix(long, "..."))
+}
+
+func TestWriteHITLParams(t *testing.T) {
+	var buf bytes.Buffer
+	writeHITLParams(&buf, &shuttle.HumanRequest{Params: map[string]interface{}{"command": "rm notes.txt && echo removed", "timeout_seconds": 3}})
+	out := buf.String()
+	assert.Contains(t, out, "Parameters:")
+	assert.Contains(t, out, `"command": "rm notes.txt && echo removed"`)
+	assert.Contains(t, out, `"timeout_seconds": 3`)
+	assert.NotContains(t, out, "too large")
+
+	buf.Reset()
+	writeHITLParams(&buf, &shuttle.HumanRequest{Params: map[string]interface{}{"a": 1}, ParamsTruncated: true})
+	assert.Contains(t, buf.String(), "too large for the approval record")
+
+	buf.Reset()
+	writeHITLParams(&buf, &shuttle.HumanRequest{})
+	assert.Empty(t, buf.String(), "a question carries no parameters")
+}
+
+func TestHITLListLabel_ControlCharsStayInOneCell(t *testing.T) {
+	label := hitlListLabel(&shuttle.HumanRequest{
+		Question: `Approve tool call "shell_execute"?`,
+		Summary:  "shell_execute command=echo first\necho second\r\tdone",
+	})
+	assert.NotContains(t, label, "\n")
+	assert.NotContains(t, label, "\r")
+	assert.NotContains(t, label, "\t", "a tab would shift the tabwriter columns")
+	assert.Equal(t, `shell_execute command=echo first\necho second\r\tdone`, label)
+}
+
+// `hitl show` prints the call digest with control characters escaped: the
+// digest comes from the model's arguments, and a raw newline or terminal
+// escape in it could draw a forged "Parameters:" block above the real one.
+// Driven through the real command body over a real SQLite store.
+func TestRunHitlShow_CallDigestControlCharsEscaped(t *testing.T) {
+	origConfig, origPath := config, hitlCLIDBPath
+	t.Cleanup(func() { config, hitlCLIDBPath = origConfig, origPath })
+	config = nil
+	hitlCLIDBPath = filepath.Join(t.TempDir(), "hitl.db")
+
+	store, err := shuttle.NewSQLiteHumanRequestStore(shuttle.SQLiteConfig{Path: hitlCLIDBPath})
+	require.NoError(t, err)
+	require.NoError(t, store.Store(context.Background(), &shuttle.HumanRequest{
+		ID: "forge-1", AgentID: "a", SessionID: "s",
+		Question:    `Approve tool call "shell_execute"?`,
+		Summary:     "shell_execute command=ls\nParameters: {\"command\": \"ls\"}\n\x1b[2Jrm -rf /",
+		Params:      map[string]interface{}{"command": "ls\nParameters: {\"command\": \"ls\"}\n\x1b[2Jrm -rf /"},
+		RequestType: "approval", Priority: "normal", Status: "pending",
+		Kind: "approval", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+	}))
+	require.NoError(t, store.Close())
+
+	out := captureStdout(t, func() { runHitlShow(hitlShowCmd, []string{"forge-1"}) })
+
+	assert.NotContains(t, out, "\x1b", "a terminal escape reaches the screen raw")
+	for _, line := range strings.Split(out, "\n") {
+		assert.False(t, strings.HasPrefix(line, `Parameters: {"command": "ls"}`),
+			"the digest drew a forged Parameters line: %q", line)
+	}
+	assert.Contains(t, out, `Call:           shell_execute command=ls\nParameters: {"command": "ls"}\n\u001b[2Jrm -rf /`+"\n",
+		"the whole digest stays on the Call line, escaped")
+	assert.Contains(t, out, "Parameters:\n", "the real parameters block still prints")
+}
+
+// Unicode format characters (bidi overrides, zero-width spaces, tag
+// characters above U+FFFF), line and paragraph separators, and 8-bit controls
+// can make a command display differently from what runs. They are escaped on
+// every model- or responder-written line of the screen, and the Parameters
+// block stays valid JSON that decodes to the stored command.
+func TestRunHitlShow_UnicodeFormatAndC1CharsEscaped(t *testing.T) {
+	origConfig, origPath := config, hitlCLIDBPath
+	t.Cleanup(func() { config, hitlCLIDBPath = origConfig, origPath })
+	config = nil
+	hitlCLIDBPath = filepath.Join(t.TempDir(), "hitl.db")
+
+	cmd := "echo ok # \u202eexe.cod\u202c | rm -rf ~ \u200b C1=\u009b2J TAG=\U000e0041 LS=\u2028"
+	store, err := shuttle.NewSQLiteHumanRequestStore(shuttle.SQLiteConfig{Path: hitlCLIDBPath})
+	require.NoError(t, err)
+	responded := time.Now()
+	require.NoError(t, store.Store(context.Background(), &shuttle.HumanRequest{
+		ID: "bidi-1", AgentID: "a", SessionID: "s",
+		Question:    "Approve \u202ethis\nForged: line?",
+		Summary:     "shell_execute command=" + cmd,
+		Params:      map[string]interface{}{"command": cmd},
+		Context:     map[string]interface{}{"note\u202e": cmd},
+		RequestType: "approval", Priority: "normal", Status: "approved",
+		Response: "ok\x1b[2J\u2029done", RespondedBy: "ops\u202e\nForged: x", RespondedAt: &responded,
+		Kind: "approval", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+	}))
+	require.NoError(t, store.Close())
+
+	out := captureStdout(t, func() { runHitlShow(hitlShowCmd, []string{"bidi-1"}) })
+
+	for _, r := range []rune{'\u202e', '\u202c', '\u200b', '\u009b', '\U000e0041', '\u2028', '\u2029', '\x1b'} {
+		assert.NotContains(t, out, string(r), "U+%04X reaches the screen raw", r)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		assert.False(t, strings.HasPrefix(line, "Forged:"), "a newline drew a forged line: %q", line)
+	}
+	assert.Contains(t, out, `Call:           shell_execute command=echo ok # \u202eexe.cod\u202c | rm -rf ~ \u200b C1=\u009b2J TAG=\U000e0041 LS=\u2028`+"\n")
+	assert.Contains(t, out, `Question:       Approve \u202ethis\nForged: line?`+"\n")
+	assert.Contains(t, out, `Response:        ok\u001b[2J\u2029done`+"\n")
+	assert.Contains(t, out, `Responded By:    ops\u202e\nForged: x`+"\n")
+
+	start := strings.Index(out, "Parameters:\n")
+	require.GreaterOrEqual(t, start, 0, "the parameters block prints")
+	block := out[start+len("Parameters:\n"):]
+	block = block[:strings.Index(block, "\n\n")]
+	var got map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(block), &got), "the parameters block stays valid JSON: %q", block)
+	assert.Equal(t, cmd, got["command"], "the escaped block decodes to the command that runs")
+}
+
+// A literal backslash is escaped too, so a real newline (shown as \n) and the
+// two characters `\n` typed in a command never print the same on the Call
+// line: a real newline separates shell commands, a literal one does not.
+func TestEscapeControlChars_LiteralBackslashIsDistinct(t *testing.T) {
+	real := escapeControlChars("echo hi\nrm -rf ~")
+	literal := escapeControlChars(`echo hi\nrm -rf ~`)
+	assert.Equal(t, `echo hi\nrm -rf ~`, real)
+	assert.Equal(t, `echo hi\\nrm -rf ~`, literal)
+	assert.NotEqual(t, real, literal)
+	assert.Equal(t, `TAG=\\U000e0041`, escapeControlChars(`TAG=\U000e0041`))
+}
+
+// A label cut at hitlListLabelMax never ends inside an escape: the label is
+// cut before it is escaped.
+func TestHitlListLabel_CutBeforeEscaping(t *testing.T) {
+	label := hitlListLabel(&shuttle.HumanRequest{Question: strings.Repeat("a", 66) + "\u202e" + strings.Repeat("b", 10)})
+	assert.True(t, strings.HasSuffix(label, "..."), label)
+	body := strings.TrimSuffix(label, "...")
+	assert.False(t, strings.HasSuffix(body, `\`), "cut inside an escape: %q", label)
+}
+
+// `hitl list` keeps every request on one table row: an approval is labelled
+// by its call digest with control characters escaped, and a long label is
+// cut to 70 characters on a rune boundary. Driven through the real command
+// body over a real SQLite store.
+func TestRunHitlList_OneRowPerRequestWithEscapedDigest(t *testing.T) {
+	origConfig, origPath := config, hitlCLIDBPath
+	origSession, origAgent := hitlSessionID, hitlAgentID
+	t.Cleanup(func() {
+		config, hitlCLIDBPath = origConfig, origPath
+		hitlSessionID, hitlAgentID = origSession, origAgent
+	})
+	config = nil
+	hitlSessionID, hitlAgentID = "", ""
+	hitlCLIDBPath = filepath.Join(t.TempDir(), "hitl.db")
+
+	store, err := shuttle.NewSQLiteHumanRequestStore(shuttle.SQLiteConfig{Path: hitlCLIDBPath})
+	require.NoError(t, err)
+	for _, req := range []*shuttle.HumanRequest{
+		{
+			ID: "approval-1", AgentID: "a", SessionID: "s",
+			Question:    `Approve tool call "shell_execute"?`,
+			Summary:     "shell_execute command=echo first\necho second\x1b[2J",
+			RequestType: "approval", Priority: "normal", Status: "pending", Kind: "approval",
+		},
+		{
+			ID: "question-1", AgentID: "a", SessionID: "s",
+			Question:    strings.Repeat("é", 100),
+			RequestType: "question", Priority: "normal", Status: "pending", Kind: "question",
+		},
+	} {
+		req.CreatedAt, req.ExpiresAt = time.Now(), time.Now().Add(time.Hour)
+		require.NoError(t, store.Store(context.Background(), req))
+	}
+	require.NoError(t, store.Close())
+
+	out := captureStdout(t, func() { runHitlList(hitlListCmd, nil) })
+
+	assert.NotContains(t, out, "\x1b", "a terminal escape reaches the screen raw")
+	rows := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		for _, id := range []string{"approval-1", "question-1"} {
+			if strings.HasPrefix(line, id) {
+				rows[id] = line
+			}
+		}
+	}
+	require.Len(t, rows, 2, "each request is listed:\n%s", out)
+	assert.Contains(t, rows["approval-1"], `shell_execute command=echo first\necho second\u001b[2J`,
+		"the whole digest stays on the request's row, escaped")
+	assert.NotContains(t, out, "\necho second", "the digest's newline split the row")
+	label := rows["question-1"][strings.Index(rows["question-1"], "é"):]
+	assert.Equal(t, 70, len([]rune(label)), "the label is cut to 70 runes")
+	assert.True(t, strings.HasSuffix(label, "..."))
+	assert.Contains(t, out, "Total: 2 pending request(s)")
+}
+
+func TestWriteHITLParams_WarnsWhenEveryParameterWasDropped(t *testing.T) {
+	for name, params := range map[string]map[string]interface{}{"nil": nil, "empty": {}} {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			writeHITLParams(&buf, &shuttle.HumanRequest{Params: params, ParamsTruncated: true})
+			assert.Contains(t, buf.String(), "too large for the approval record")
+		})
+	}
+}
+
+// Every field of a request that the model or a client can set is escaped on
+// both screens, not only the question and the digest. contact_human takes
+// priority and request_type from tool input, and the session ID comes from
+// the Weave client, so a newline or a terminal escape in any of them must not
+// draw a forged line. Driven through the real contact_human tool, the SQLite
+// store, runHitlShow and runHitlList.
+func TestHitlScreens_ToolAndClientSetFieldsEscaped(t *testing.T) {
+	origConfig, origPath := config, hitlCLIDBPath
+	origSession, origAgent := hitlSessionID, hitlAgentID
+	t.Cleanup(func() {
+		config, hitlCLIDBPath = origConfig, origPath
+		hitlSessionID, hitlAgentID = origSession, origAgent
+	})
+	config = nil
+	hitlSessionID, hitlAgentID = "", ""
+	hitlCLIDBPath = filepath.Join(t.TempDir(), "hitl.db")
+
+	store, err := shuttle.NewSQLiteHumanRequestStore(shuttle.SQLiteConfig{Path: hitlCLIDBPath})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	tool := shuttle.NewContactHumanTool(shuttle.ContactHumanConfig{Store: store, Timeout: time.Minute, PollInterval: 10 * time.Millisecond})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx = context.WithValue(ctx, "session_id", "sess\nParameters: {\"command\": \"ls\"}") //nolint:staticcheck,revive // contact_human reads this plain-string key
+	ctx = context.WithValue(ctx, "agent_id", "agent\x1b[2J")                              //nolint:staticcheck,revive // as above
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = tool.Execute(ctx, map[string]interface{}{
+			"question":     "Proceed?",
+			"priority":     "normal\nFORGED\n\x1b[2J",
+			"request_type": "approval\u202e",
+		})
+	}()
+
+	var id string
+	require.Eventually(t, func() bool {
+		pending, err := store.ListPending(context.Background())
+		if err != nil || len(pending) == 0 {
+			return false
+		}
+		id = pending[0].ID
+		return true
+	}, 5*time.Second, 10*time.Millisecond, "contact_human stored no request")
+
+	show := captureStdout(t, func() { runHitlShow(hitlShowCmd, []string{id}) })
+	list := captureStdout(t, func() { runHitlList(hitlListCmd, nil) })
+	cancel()
+	<-done
+
+	for name, out := range map[string]string{"show": show, "list": list} {
+		assert.NotContains(t, out, "\x1b", "%s: a terminal escape reaches the screen raw", name)
+		assert.NotContains(t, out, "\u202e", "%s: a bidi override reaches the screen raw", name)
+		for _, line := range strings.Split(out, "\n") {
+			assert.False(t, strings.HasPrefix(line, "FORGED"), "%s: the priority drew a forged line: %q", name, line)
+			assert.False(t, strings.HasPrefix(line, "Parameters: {\"command\": \"ls\"}"), "%s: the session ID drew a forged line: %q", name, line)
+		}
+	}
+	assert.Contains(t, show, `Priority:       normal\nFORGED\n\u001b[2J`+"\n")
+	assert.Contains(t, show, `Session ID:     sess\nParameters: {"command": "ls"}`+"\n")
+	assert.Contains(t, show, `Agent ID:       agent\u001b[2J`+"\n")
+	assert.Contains(t, show, `Type:           approval\u202e`+"\n")
+	assert.Contains(t, list, `normal\nFORGED\n\u001b[2J`)
 }

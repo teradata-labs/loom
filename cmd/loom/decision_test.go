@@ -69,7 +69,7 @@ func ptr(s string) *string { return &s }
 
 func resetDecisionFlags(t *testing.T) {
 	t.Helper()
-	prev := []any{decisionDBPath, decisionSite, decisionLimit, decisionSince, decisionDecider, decisionProvider, decisionModel, decisionDryRun, decisionErrors, decisionSample, decisionSeed, decisionRPM}
+	prev := []any{decisionDBPath, decisionSite, decisionLimit, decisionSince, decisionDecider, decisionProvider, decisionModel, decisionDryRun, decisionErrors, decisionSample, decisionSeed, decisionRPM, reportLimit}
 	t.Cleanup(func() {
 		decisionDBPath = prev[0].(string)
 		decisionSite = prev[1].(string)
@@ -83,6 +83,7 @@ func resetDecisionFlags(t *testing.T) {
 		decisionSample = prev[9].(string)
 		decisionSeed = prev[10].(int64)
 		decisionRPM = prev[11].(float64)
+		reportLimit = prev[12].(int)
 	})
 }
 
@@ -152,7 +153,7 @@ func TestDecisionReplayAndReport(t *testing.T) {
 	assert.Contains(t, out.String(), "replaying 3 tool executions")
 
 	// Report over both replays.
-	decisionSite, decisionLimit, decisionSince = sites.SiteFailureKind, 0, ""
+	decisionSite, reportLimit, decisionSince = sites.SiteFailureKind, 0, ""
 	var rep bytes.Buffer
 	decisionReportCmd.SetOut(&rep)
 	require.NoError(t, runDecisionReport(decisionReportCmd, nil))
@@ -186,7 +187,7 @@ func TestDecisionReplayConcurrent(t *testing.T) {
 	assert.Contains(t, out.String(), "8 shadow rows written")
 	assert.Contains(t, out.String(), "4 workers")
 
-	decisionSite, decisionLimit, decisionSince = sites.SiteFailureKind, 0, ""
+	decisionSite, reportLimit, decisionSince = sites.SiteFailureKind, 0, ""
 	var rep bytes.Buffer
 	decisionReportCmd.SetOut(&rep)
 	require.NoError(t, runDecisionReport(decisionReportCmd, nil))
@@ -208,7 +209,7 @@ func TestDecisionReplayPrintsDistinctDeciderErrors(t *testing.T) {
 func TestDecisionReportEmptyAndMissingDB(t *testing.T) {
 	resetDecisionFlags(t)
 	path := seedTelemetryDB(t)
-	decisionDBPath, decisionSite, decisionLimit, decisionSince = path, "nothing.here", 0, ""
+	decisionDBPath, decisionSite, reportLimit, decisionSince = path, "nothing.here", 0, ""
 	var rep bytes.Buffer
 	decisionReportCmd.SetOut(&rep)
 	require.NoError(t, runDecisionReport(decisionReportCmd, nil))

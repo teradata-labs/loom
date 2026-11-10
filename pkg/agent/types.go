@@ -35,6 +35,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/skills"
 	"github.com/teradata-labs/loom/pkg/skills/discovery"
 	"github.com/teradata-labs/loom/pkg/skills/hygiene"
+	skillindex "github.com/teradata-labs/loom/pkg/skills/index"
 	skilltasks "github.com/teradata-labs/loom/pkg/skills/tasks"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/task"
@@ -142,6 +143,9 @@ type Agent struct {
 	decisionRouter      *decision.Router
 	decisionRecorder    *decision.ShadowRecorder
 	decisionWG          sync.WaitGroup
+	// skillRouteRouters are the skill routers BuildSkillsOptions built for
+	// this agent; attachSkillRouteDecision gives them decisionRouter.
+	skillRouteRouters []*skillindex.Router
 
 	// Tracer for observability
 	tracer observability.Tracer
@@ -326,6 +330,11 @@ type Agent struct {
 	// Shares the context-dump switch; a no-op on the production path. See
 	// context_debug.go.
 	ctxDebug *contextDebug
+
+	// Time source of the throttle-patience budget and its waits (see
+	// throttlePatience in llm_retry.go). Nil means the real clock; tests set
+	// a fake so a 10-minute budget runs without real sleeps.
+	throttleClock throttleClock
 }
 
 // WorkflowCommunicationContext contains dynamic workflow communication info injected into prompts

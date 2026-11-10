@@ -182,3 +182,33 @@ func TestPendingEmit_InTurnCardCarriesJoinedAskReasons(t *testing.T) {
 	require.Equal(t, [][]any{{cardGrantProgram, cardGrantDestination}}, tool.seen(),
 		"approval delivers both grants to the tool body, in hook order")
 }
+
+// TestClassifyParkItems_ApprovalCarriesJoinedAskReasons covers the
+// ResumeSession re-park path: classifyParkItems builds the approval item from
+// the same Preflight, so its descriptor must name every asking hook's reason
+// like maybeParkBatch's does.
+func TestClassifyParkItems_ApprovalCarriesJoinedAskReasons(t *testing.T) {
+	store := shuttle.NewInMemoryHumanRequestStore()
+	chain := shuttle.NewChain(twoReasonHooks("export_csv"), nil,
+		shuttle.NewHITLAskResolver(store, 2*time.Second, 10*time.Millisecond, NewProgressNotifier()))
+	cfg := DefaultConfig()
+	cfg.PatternConfig = DefaultPatternConfig()
+	cfg.PatternConfig.UseLLMClassifier = false
+	ag := NewAgent(&mockBackend{}, &mockSimpleLLM{}, WithConfig(cfg), WithAdmissionHooks(chain))
+	ag.RegisterTool(&grantRecordingTool{name: "export_csv"})
+
+	ctx := context.Background()
+	sess := ag.memory.GetOrCreateSessionWithAgent(ctx, "s-classify-reasons", ag.config.Name, "")
+	agentCtx := &agentContext{Context: ctx, session: sess, tracer: ag.tracer}
+	items := ag.classifyParkItems(agentCtx, []llmtypes.ToolCall{exportCall()}, []int{3})
+	require.Len(t, items, 1)
+	require.Equal(t, "approval", items[0].kind)
+	require.Equal(t, 3, items[0].seq)
+	require.Equal(t, cardJoinedReason, items[0].reason)
+
+	params, truncated := buildParkParams(items)
+	require.False(t, truncated)
+	desc, ok := params["c-export"].(map[string]interface{})
+	require.True(t, ok, "no descriptor for the held call: %#v", params)
+	require.Equal(t, cardJoinedReason, desc["reason"])
+}
