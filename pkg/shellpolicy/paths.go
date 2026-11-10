@@ -29,6 +29,13 @@ import (
 // command. Past it, static enforcement refuses the command.
 const maxDirs = 64
 
+// maxCdTargets bounds how many literal cd and pushd targets the analyzer
+// records for one command. Following them takes time that grows with their
+// number (a 40,000-character chain of "cd ..;" took seconds), and the hook
+// runs before shell_execute's own command-length limit, so past it the
+// command is refused in both modes.
+const maxCdTargets = 64
+
 // pathCheck is a path the command reads or writes, judged once every
 // directory the command can change to is known.
 type pathCheck struct {
@@ -43,6 +50,48 @@ type cdTarget struct {
 	path  string
 	n     syntax.Node
 	outer *syntax.Pos
+}
+
+// dirOperand is an operand of a program whose profile refuses directory
+// operands (Profile.NoDirOperands), judged once every directory the command
+// can change to is known. glob marks a glob pattern (static only), whose
+// matches are judged.
+type dirOperand struct {
+	path  string
+	glob  bool
+	prog  string
+	n     syntax.Node
+	outer *syntax.Pos
+}
+
+// dirOperand records an operand of prog that must not be a directory.
+func (a *analyzer) dirOperand(path string, glob bool, prog string, n syntax.Node, outer *syntax.Pos) {
+	if path == "" || devicePaths[path] || strings.HasPrefix(path, "~") {
+		return
+	}
+	a.dirOps = append(a.dirOps, dirOperand{path: path, glob: glob, prog: prog, n: n, outer: outer})
+}
+
+// repoCheck is a call whose profile judges the directory it runs in.
+type repoCheck struct {
+	check func(dir string, args []string) string
+	args  []string
+	prog  string
+	n     syntax.Node
+	outer *syntax.Pos
+}
+
+// finishRepoChecks judges each recorded call from every directory the
+// command may be in: the first violation is an Ask granting the program.
+func (a *analyzer) finishRepoChecks(dirs []workDir) {
+	for _, c := range a.repoChecks {
+		for _, d := range dirs {
+			if v := c.check(d.physical, c.args); v != "" {
+				a.ask(c.n, c.outer, c.prog, v, "program", c.prog)
+				break
+			}
+		}
+	}
 }
 
 // workDir is one directory the command may be in: the logical path bash's
@@ -109,6 +158,13 @@ func (a *analyzer) chdir(x *syntax.CallExpr, name string, rest []*syntax.Word, o
 			continue // -L, -P, -e, -@, pushd -n
 		}
 		targets++
+		if len(a.cds) >= maxCdTargets {
+			if !a.tooManyCds {
+				a.tooManyCds = true
+				a.add(Deny, w, outer, name, "the command has more than "+itoa(maxCdTargets)+" cd or pushd targets, more than the policy follows")
+			}
+			continue
+		}
 		a.cds = append(a.cds, cdTarget{path: s, n: w, outer: outer})
 	}
 	if targets == 0 && a.opt.Static {
@@ -135,38 +191,37 @@ func isDigits(s string) bool {
 // workingDirs returns every directory the command may be in: the working
 // directory and, repeatedly, every directory a recorded cd target reaches
 // from one already found. A cd target outside the read roots is an Ask.
+// Each directory is followed through each target once, so the work is at
+// most maxDirs times maxCdTargets candidate checks.
 func (a *analyzer) workingDirs() []workDir {
 	start := workDir{logical: filepath.Clean(a.opt.WorkingDir), physical: ResolvePath("/", a.opt.WorkingDir)}
 	dirs := []workDir{start}
 	seen := map[workDir]bool{start: true}
 	asked := make(map[int]bool, len(a.cds))
 	overflow := false
-	for changed := true; changed; {
-		changed = false
+	for i := 0; i < len(dirs); i++ {
+		d := dirs[i]
 		for ti, t := range a.cds {
-			for _, d := range dirs[:len(dirs):len(dirs)] {
-				for _, c := range cdCandidates(d, t.path) {
-					if fi, err := os.Stat(c.physical); err != nil || !fi.IsDir() {
-						continue // cd fails and the directory stays
-					}
-					if !inRoots(c.physical, a.opt.Roots.Read) {
-						if !asked[ti] {
-							a.add(Ask, t.n, t.outer, t.path, "reads outside the read roots")
-							asked[ti] = true
-						}
-						a.grant.add("read", c.physical)
-					}
-					if seen[c] {
-						continue
-					}
-					if len(dirs) >= maxDirs {
-						overflow = true
-						continue
-					}
-					seen[c] = true
-					dirs = append(dirs, c)
-					changed = true
+			for _, c := range cdCandidates(d, t.path) {
+				if fi, err := os.Stat(c.physical); err != nil || !fi.IsDir() {
+					continue // cd fails and the directory stays
 				}
+				if !inRoots(c.physical, a.opt.Roots.Read) {
+					if !asked[ti] {
+						a.add(Ask, t.n, t.outer, t.path, "reads outside the read roots")
+						asked[ti] = true
+					}
+					a.grant.add("read", c.physical)
+				}
+				if seen[c] {
+					continue
+				}
+				if len(dirs) >= maxDirs {
+					overflow = true
+					continue
+				}
+				seen[c] = true
+				dirs = append(dirs, c)
 			}
 		}
 	}
@@ -218,23 +273,30 @@ func cdpathSearched(target string) bool {
 // may be in. A read of an existing path outside the read roots is an Ask
 // granting each resolved path; a write outside the write roots is a Deny.
 func (a *analyzer) finishPaths() {
-	if len(a.paths) == 0 && len(a.cds) == 0 && len(a.globs) == 0 {
+	if len(a.paths) == 0 && len(a.cds) == 0 && len(a.globs) == 0 && len(a.dirOps) == 0 && len(a.repoChecks) == 0 {
 		return
 	}
 	dirs := a.workingDirs()
 	a.finishGlobs(dirs)
+	a.finishDirOperands(dirs)
+	a.finishRepoChecks(dirs)
 	for _, c := range a.paths {
 		bases := dirs
 		if filepath.IsAbs(c.path) {
 			bases = dirs[:1]
 		}
-		var outside []string
+		var outside, gitWrites []string
 		for _, d := range bases {
 			full := ResolvePath(d.physical, c.path)
 			if c.write {
+				full = resolveWritePath(d.physical, c.path)
 				if !inRoots(full, a.opt.Roots.Write) {
 					a.add(Deny, c.n, c.outer, c.path, "writes outside the write roots")
+					gitWrites = nil
 					break
+				}
+				if inGitDir(full) {
+					gitWrites = append(gitWrites, full)
 				}
 				continue
 			}
@@ -251,7 +313,75 @@ func (a *analyzer) finishPaths() {
 				a.grant.add("read", full)
 			}
 		}
+		if len(gitWrites) > 0 {
+			a.add(Ask, c.n, c.outer, c.path, gitWriteWhy)
+			for _, full := range gitWrites {
+				a.grant.add("write", full)
+			}
+		}
 	}
+}
+
+// maxSymlinkHops bounds how many final symlinks resolveWritePath follows,
+// as the kernel's limit does; past it the open fails.
+const maxSymlinkHops = 40
+
+// resolveWritePath is ResolvePath for a path the command opens for writing.
+// ResolvePath leaves a final symlink whose target does not exist yet as the
+// symlink's own path, but > and >> follow it and create the target, so the
+// target is what the write reaches: each final symlink is followed, its
+// target resolved like the rest (relative to the symlink's directory, with
+// a ".." after a symlink leaving that symlink's target).
+func resolveWritePath(dir, path string) string {
+	full := ResolvePath(dir, path)
+	for i := 0; i < maxSymlinkHops; i++ {
+		fi, err := os.Lstat(full)
+		if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+			return full
+		}
+		target, err := os.Readlink(full)
+		if err != nil {
+			return full
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Dir(full) + string(filepath.Separator) + target
+		}
+		full = ResolvePath("/", target)
+	}
+	return full
+}
+
+// gitWriteWhy says why a write into a git directory needs approval.
+const gitWriteWhy = "writes into a git directory, whose config and attributes can make git run programs"
+
+// inGitDir reports whether path (resolved) lies in a git directory, or is
+// one: a component named .git (a repository's directory, or the .git file
+// of a linked worktree), or an existing ancestor that git takes for a
+// repository (a HEAD file, and objects and refs directories), such as a
+// bare repository. A write there can define a filter in config and name it
+// in info/attributes or core.attributesFile, which gitHarden's
+// --attr-source does not replace, so git diff and git status run it.
+func inGitDir(path string) bool {
+	for p := filepath.Clean(path); ; {
+		if filepath.Base(p) == ".git" || isGitDir(p) {
+			return true
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return false
+		}
+		p = parent
+	}
+}
+
+// isGitDir reports whether dir looks like a git directory to git: it holds
+// a HEAD file and objects and refs directories.
+func isGitDir(dir string) bool {
+	fi, err := os.Stat(filepath.Join(dir, "HEAD"))
+	if err != nil || fi.IsDir() {
+		return false
+	}
+	return isDir(filepath.Join(dir, "objects")) && isDir(filepath.Join(dir, "refs"))
 }
 
 // maxGlobMatches bounds how many names one glob may match under static
@@ -273,11 +403,7 @@ type globCheck struct {
 // a glob component is refused: what it climbs out of depends on what the
 // glob matches when the command runs.
 func (a *analyzer) staticGlob(w *syntax.Word, outer *syntax.Pos) {
-	var raw strings.Builder
-	for _, p := range w.Parts {
-		raw.WriteString(p.(*syntax.Lit).Value) // globDir accepted the word: every part is a Lit
-	}
-	pat := raw.String()
+	pat := globPattern(w)
 	globbed := false
 	for _, comp := range strings.Split(pat, "/") {
 		if globbed && unescapeUnquoted(comp) == ".." {
@@ -289,6 +415,62 @@ func (a *analyzer) staticGlob(w *syntax.Word, outer *syntax.Pos) {
 		}
 	}
 	a.globs = append(a.globs, globCheck{pat: pat, n: w, outer: outer})
+}
+
+// globPattern returns a glob word as written: its unquoted literal text with
+// its escapes. globDir accepted the word, so every part is a Lit.
+func globPattern(w *syntax.Word) string {
+	var raw strings.Builder
+	for _, p := range w.Parts {
+		raw.WriteString(p.(*syntax.Lit).Value)
+	}
+	return raw.String()
+}
+
+// finishDirOperands judges each recorded directory operand from every
+// directory the command may be in: an existing directory, or a glob match
+// that is one, is an Ask granting the program. A glob that cannot be
+// expanded is refused by finishGlobs.
+func (a *analyzer) finishDirOperands(dirs []workDir) {
+	for _, o := range a.dirOps {
+		bases := dirs
+		if filepath.IsAbs(o.path) {
+			bases = dirs[:1]
+		}
+		found := ""
+		for _, d := range bases {
+			names := []string{o.path}
+			if o.glob {
+				m, err := globExpand(d.physical, o.path, maxGlobMatches)
+				if err != nil {
+					continue
+				}
+				names = m
+			}
+			for _, nm := range names {
+				if isDir(ResolvePath(d.physical, nm)) {
+					found = nm
+					break
+				}
+			}
+			if found != "" {
+				break
+			}
+		}
+		if found != "" {
+			a.ask(o.n, o.outer, found, dirOperandWhy(o.prog), "program", o.prog)
+		}
+	}
+}
+
+// dirOperandWhy says why a directory operand of prog needs approval.
+func dirOperandWhy(prog string) string {
+	return prog + " compares the files in a directory, and follows the symlinks in it out of the read roots"
+}
+
+func isDir(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.IsDir()
 }
 
 // globExpand returns the names pat matches from dir, as relative or absolute

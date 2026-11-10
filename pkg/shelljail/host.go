@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -69,9 +70,11 @@ type Config struct {
 	Limits Limits
 	// Strict runs every command with set -u (design decision D10).
 	Strict bool
-	// LoomDataDir is the data directory sessions live in. A session whose
-	// directories resolve outside it cannot run jailed commands. Reads are not
-	// granted to it as a whole: it holds the database, the server config and
+	// LoomDataDir is the data directory sessions live in. NewRunner resolves
+	// its artifacts/sessions directory once, so a symlinked artifacts/ (on
+	// another disk) works; a session whose directories resolve outside that
+	// directory cannot run jailed commands. Reads are not granted to the data
+	// directory as a whole: it holds the database, the server config and
 	// every other session's files.
 	LoomDataDir string
 	// ExtraRead and ExtraWrite add roots for every session (read_roots and
@@ -84,23 +87,29 @@ type Config struct {
 
 // Runner starts jailed commands. It is safe for concurrent use.
 type Runner struct {
-	exe        string
-	policy     *shellpolicy.Policy
-	search     []string
-	pinned     map[string]string
-	limits     Limits
-	strict     bool
-	dataDir    string
-	extraRead  []string
-	extraWrite []string
+	exe    string
+	policy *shellpolicy.Policy
+	search []string
+	pinned map[string]string
+	limits Limits
+	strict bool
+	// dataDir is LoomDataDir with its symlinks resolved.
+	dataDir string
+	// sessionsRoot is <LoomDataDir>/artifacts/sessions with its symlinks
+	// resolved at NewRunner; every session's directories must resolve
+	// beneath it.
+	sessionsRoot string
+	extraRead    []string
+	extraWrite   []string
 }
 
 // NewRunner validates cfg, pins every allowlisted program to the absolute path
 // it resolves to now, and checks that git accepts the hardening flags (git is
 // left unpinned, so calls to it need approval, when it does not). It returns
 // warnings for programs it left out: one naming every program not found on
-// the search path, and one for git when its hardening cannot be applied. It
-// does not run the self-test.
+// the search path (except one whose Profile.Alternates names a program that
+// was found), and one for git when its hardening cannot be applied. It does
+// not run the self-test.
 func NewRunner(cfg Config) (*Runner, []string, error) {
 	if !supported {
 		return nil, nil, fmt.Errorf("jailed shell mode is not supported on %s", runtime.GOOS)
@@ -131,15 +140,16 @@ func NewRunner(cfg Config) (*Runner, []string, error) {
 		return nil, nil, errors.New("jailed shell needs the loom data directory")
 	}
 	r := &Runner{
-		exe:        exe,
-		policy:     cfg.Policy,
-		search:     append([]string{}, search...),
-		pinned:     map[string]string{},
-		limits:     cfg.Limits,
-		strict:     cfg.Strict,
-		dataDir:    shellpolicy.ResolvePath("/", cfg.LoomDataDir),
-		extraRead:  resolveAll(cfg.ExtraRead),
-		extraWrite: resolveAll(cfg.ExtraWrite),
+		exe:          exe,
+		policy:       cfg.Policy,
+		search:       append([]string{}, search...),
+		pinned:       map[string]string{},
+		limits:       cfg.Limits,
+		strict:       cfg.Strict,
+		dataDir:      shellpolicy.ResolvePath("/", cfg.LoomDataDir),
+		sessionsRoot: shellpolicy.ResolvePath("/", filepath.Join(cfg.LoomDataDir, "artifacts", "sessions")),
+		extraRead:    resolveAll(cfg.ExtraRead),
+		extraWrite:   resolveAll(cfg.ExtraWrite),
 	}
 	if r.limits.MemoryBytes == 0 {
 		r.limits.MemoryBytes = DefaultMemoryBytes
@@ -149,12 +159,15 @@ func NewRunner(cfg Config) (*Runner, []string, error) {
 	}
 	var warnings, missing []string
 	for _, name := range cfg.Policy.ProgramNames() {
-		p := LookPath(name, r.search)
-		if p == "" {
-			missing = append(missing, name)
+		if p := LookPath(name, r.search); p != "" {
+			r.pinned[name] = p
+		}
+	}
+	for _, name := range cfg.Policy.ProgramNames() {
+		if _, ok := r.pinned[name]; ok || r.hasPinnedAlternate(cfg.Policy.Programs[name]) {
 			continue
 		}
-		r.pinned[name] = p
+		missing = append(missing, name)
 	}
 	if len(missing) > 0 {
 		sort.Strings(missing)
@@ -167,6 +180,21 @@ func NewRunner(cfg Config) (*Runner, []string, error) {
 	}
 	sort.Strings(warnings)
 	return r, warnings, nil
+}
+
+// hasPinnedAlternate reports whether one of prof's Alternates was pinned, so
+// the missing program is another platform's name for a program this host has
+// (md5 on Linux, md5sum on older macOS) and not worth a startup warning.
+func (r *Runner) hasPinnedAlternate(prof *shellpolicy.Profile) bool {
+	if prof == nil {
+		return false
+	}
+	for _, alt := range prof.Alternates {
+		if _, ok := r.pinned[alt]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveAll(paths []string) []string {
@@ -201,33 +229,58 @@ func (r *Runner) Pinned() map[string]string {
 	return out
 }
 
-// SessionDirs returns the session's scratchpad and artifact directories,
-// creating them. The scratchpad is a jailed command's default working
-// directory and HOME. Both lie in the session's own directory
-// (artifacts/sessions/<id> under the data directory), which must resolve
-// inside LoomDataDir.
-func (r *Runner) SessionDirs(sessionID string) (scratch, artifactDir string, err error) {
+// SessionsRoot returns the directory every session's directories must
+// resolve beneath: <LoomDataDir>/artifacts/sessions, resolved when the runner
+// was made. serve logs it when it lies outside the data directory.
+func (r *Runner) SessionsRoot() string { return r.sessionsRoot }
+
+// DataDir returns LoomDataDir with its symlinks resolved.
+func (r *Runner) DataDir() string { return r.dataDir }
+
+// SessionDirs returns the session's scratchpad and artifact directories and
+// the session's own directory (artifacts/sessions/<id>, which also holds
+// user/ uploads), creating the first two, all with symlinks resolved. The
+// scratchpad is a jailed command's default working directory and HOME.
+// Options calls it for every call, for the hook and the tool alike. The
+// session directory is resolved from its own path, never derived from where
+// the scratchpad resolves, and must lie beneath SessionsRoot; the scratchpad
+// and artifact directories must lie beneath the session directory. So a
+// scratchpad that is a symlink to the data directory, the sessions directory
+// or another session is refused instead of widening the read roots to it.
+func (r *Runner) SessionDirs(sessionID string) (scratch, artifactDir, sessionDir string, err error) {
 	if sessionID == "" {
-		return "", "", errors.New("the jailed shell runs only inside a session")
+		return "", "", "", errors.New("the jailed shell runs only inside a session")
+	}
+	if sessionDir, err = artifacts.SessionArtifactsRoot(sessionID); err != nil {
+		return "", "", "", err
 	}
 	if scratch, err = artifacts.GetScratchpadDir(sessionID); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	if artifactDir, err = artifacts.GetArtifactDir(sessionID, artifacts.SourceAgent); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	for _, d := range []string{scratch, artifactDir} {
 		if err := os.MkdirAll(d, 0o750); err != nil {
-			return "", "", err
+			return "", "", "", err
 		}
 	}
+	sessionDir = shellpolicy.ResolvePath("/", sessionDir)
 	scratch, artifactDir = shellpolicy.ResolvePath("/", scratch), shellpolicy.ResolvePath("/", artifactDir)
+	if !strictlyWithin(r.sessionsRoot, sessionDir) {
+		return "", "", "", fmt.Errorf("session directory %s is outside the sessions directory %s (resolved at startup)", sessionDir, r.sessionsRoot)
+	}
 	for _, d := range []string{scratch, artifactDir} {
-		if !shellpolicy.WithinDir(r.dataDir, d) {
-			return "", "", fmt.Errorf("session directory %s is outside the loom data directory %s", d, r.dataDir)
+		if !strictlyWithin(sessionDir, d) {
+			return "", "", "", fmt.Errorf("session path %s is outside the session directory %s", d, sessionDir)
 		}
 	}
-	return scratch, artifactDir, nil
+	return scratch, artifactDir, sessionDir, nil
+}
+
+// strictlyWithin reports whether path lies beneath root and is not root.
+func strictlyWithin(root, path string) bool {
+	return filepath.Clean(root) != filepath.Clean(path) && shellpolicy.WithinDir(root, path)
 }
 
 // Options returns the working directory and roots for a call: the call's
@@ -239,7 +292,7 @@ func (r *Runner) SessionDirs(sessionID string) (scratch, artifactDir string, err
 // to the session's scratchpad and artifact directories and the extra write
 // roots. The hook and the tool both use it, so they judge the same paths.
 func (r *Runner) Options(sessionID, workingDir string) (shellpolicy.Options, error) {
-	scratch, artifactDir, err := r.SessionDirs(sessionID)
+	scratch, artifactDir, sessionDir, err := r.SessionDirs(sessionID)
 	if err != nil {
 		return shellpolicy.Options{}, err
 	}
@@ -248,8 +301,6 @@ func (r *Runner) Options(sessionID, workingDir string) (shellpolicy.Options, err
 		dir = shellpolicy.ResolvePath(scratch, workingDir)
 	}
 	write := append([]string{scratch, artifactDir}, r.extraWrite...)
-	// The session's own directory: scratchpad, agent/ and user/ share it.
-	sessionDir := filepath.Dir(scratch)
 	read := append([]string{sessionDir}, r.extraRead...)
 	read = append(read, write...)
 	return shellpolicy.Options{WorkingDir: dir, Roots: shellpolicy.Roots{Read: read, Write: write}}, nil
@@ -327,6 +378,10 @@ type Child struct {
 	Cmd *exec.Cmd
 	res *os.File
 	wr  *os.File
+	// memoryLimit is the spec's Limits.MemoryBytes, which Settle needs.
+	memoryLimit uint64
+	// reported is set by Result when the child wrote its Result.
+	reported bool
 }
 
 // Command prepares the child for spec. The caller attaches stdout and stderr
@@ -356,7 +411,7 @@ func (r *Runner) Command(spec Spec) (*Child, error) {
 	cmd.Stdin = bytes.NewReader(raw)
 	cmd.ExtraFiles = []*os.File{wr}
 	newProcessGroup(cmd)
-	return &Child{Cmd: cmd, res: rd, wr: wr}, nil
+	return &Child{Cmd: cmd, res: rd, wr: wr, memoryLimit: spec.Limits.MemoryBytes}, nil
 }
 
 // Started closes the host's copy of the result pipe's write end; call it
@@ -376,8 +431,78 @@ func (c *Child) Result() Result {
 	if err != nil && len(raw) == 0 {
 		return res
 	}
-	_ = json.Unmarshal(raw, &res)
+	c.reported = json.Unmarshal(raw, &res) == nil
 	return res
+}
+
+// memoryDeathMarkers start the output the Go runtime (and, in a -race test
+// binary, ThreadSanitizer) prints when it dies because it cannot get memory.
+// Each is matched at the start of a line. On Linux the child runs under
+// RLIMIT_DATA, so an allocation that passes the limit before the heap
+// watchdog samples it kills the interpreter with one of these, and the child
+// never reports. A raw "SIGSEGV: segmentation violation" line is the runtime's
+// own dump for a fault outside any goroutine; a fault in Go code starts with
+// "panic:" instead and is not matched.
+var memoryDeathMarkers = []string{
+	"fatal error: runtime: cannot allocate memory",
+	"fatal error: runtime: out of memory",
+	"fatal error: out of memory",
+	"runtime: out of memory",
+	"runtime: cannot map pages",
+	"runtime: failed to create new OS thread",
+	"runtime/cgo: pthread_create failed",
+	"SIGSEGV: segmentation violation",
+}
+
+// tsanMemoryDeath matches ThreadSanitizer's allocation failures with their
+// "==<pid>==ERROR: " prefix ("ThreadSanitizer failed to allocate ..." and
+// "ThreadSanitizer: out of memory: failed to allocate ..."). The prefix can
+// follow other text on the line, because the runtime's "fatal error: " and
+// the sanitizer's report interleave.
+var tsanMemoryDeath = regexp.MustCompile(`==[0-9]+==ERROR: ThreadSanitizer(?: failed to allocate|: out of memory)`)
+
+// MemoryStoppedMessage is the line a command's stderr ends with when the jail
+// stopped it at its memory limit: printed by the watchdog, or put in place of
+// the runtime's crash dump by Settle.
+const MemoryStoppedMessage = "jail: the shell passed its memory limit and was stopped"
+
+// memoryDeathAt returns the byte offset in stderr of the first line that
+// starts a memory-failure dump, or -1.
+func memoryDeathAt(stderr string) int {
+	off := 0
+	for _, line := range strings.SplitAfter(stderr, "\n") {
+		trimmed := strings.TrimRight(line, "\r\n")
+		for _, m := range memoryDeathMarkers {
+			if strings.HasPrefix(trimmed, m) {
+				return off
+			}
+		}
+		if tsanMemoryDeath.MatchString(trimmed) {
+			return off
+		}
+		off += len(line)
+	}
+	return -1
+}
+
+// Settle completes res, which Result returned for this child, once the child
+// has exited and stderr holds all of its error output. shell_execute and the
+// tests call it after Result. When the child had a memory limit, did not
+// report, and stderr shows the interpreter dying for lack of memory, Settle
+// sets res.Limit to "memory" and returns stderr with the dump replaced by
+// MemoryStoppedMessage; the dump is returned separately for a debug log and
+// never reaches the model. In every other case it returns stderr unchanged
+// and an empty dump.
+func (c *Child) Settle(res *Result, stderr string) (visible, dump string) {
+	if res == nil || c.reported || c.memoryLimit == 0 || res.Limit != "" || res.Error != "" {
+		return stderr, ""
+	}
+	at := memoryDeathAt(stderr)
+	if at < 0 {
+		return stderr, ""
+	}
+	res.Limit = "memory"
+	return stderr[:at] + MemoryStoppedMessage + "\n", stderr[at:]
 }
 
 // SelfTest runs "echo" through the jail and requires its answer. A host that

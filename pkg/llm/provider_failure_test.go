@@ -194,3 +194,65 @@ func TestClassifyProviderFailureTypedStatusOutranksMessage(t *testing.T) {
 		assert.Equal(t, ProviderFailureNone, ClassifyProviderFailure(err), "%v", err)
 	}
 }
+
+func TestIsDeterministicClientError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"unclassified transport error", errors.New("connection reset by peer"), false},
+		{"HTTPStatusError 400", WrapHTTPStatus(400, errors.New("bad request")), true},
+		{"HTTPStatusError 401", WrapHTTPStatus(401, errors.New("unauthorized")), true},
+		{"HTTPStatusError 403", WrapHTTPStatus(403, errors.New("forbidden")), true},
+		{"HTTPStatusError 404", WrapHTTPStatus(404, errors.New("not found")), true},
+		{"HTTPStatusError 422", WrapHTTPStatus(422, errors.New("unprocessable")), true},
+		{"HTTPStatusError 408 timeout is retryable", WrapHTTPStatus(408, errors.New("request timeout")), false},
+		{"HTTPStatusError 429 throttle is retryable", WrapHTTPStatus(429, errors.New("too many requests")), false},
+		{"HTTPStatusError 503 is retryable", WrapHTTPStatus(503, errors.New("service unavailable")), false},
+		{"Anthropic SDK 400", sdkAPIError(t, 400, `{"message":"messages: field required"}`), true},
+		{"Anthropic SDK mid-stream invalid_request_error on 200", sdkAPIError(t, 200, `{"type":"error","error":{"type":"invalid_request_error","message":"bad"}}`), true},
+		{"Anthropic SDK mid-stream overloaded_error on 200", sdkAPIError(t, 200, `{"type":"error","error":{"type":"overloaded_error","message":"busy"}}`), false},
+		{"AWS ValidationException is deterministic", &brtypes.ValidationException{Message: aws.String("bad model")}, true},
+		{"AWS AccessDeniedException is deterministic", &brtypes.AccessDeniedException{Message: aws.String("denied")}, true},
+		{"AWS ModelTimeoutException is transient", &brtypes.ModelTimeoutException{Message: aws.String("timeout")}, false},
+		{"AWS ModelStreamErrorException is transient", &brtypes.ModelStreamErrorException{Message: aws.String("stream error")}, false},
+		{"AWS ModelNotReadyException is transient", &brtypes.ModelNotReadyException{Message: aws.String("not ready")}, false},
+		{"AWS ThrottlingException is transient", &brtypes.ThrottlingException{Message: aws.String("rate exceeded")}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, IsDeterministicClientError(tt.err))
+		})
+	}
+}
+
+func TestHTTPStatusForErrorType(t *testing.T) {
+	tests := []struct {
+		errType string
+		want    int
+	}{
+		{"rate_limit_error", http.StatusTooManyRequests},
+		{"server_error", http.StatusInternalServerError},
+		{"overloaded_error", http.StatusInternalServerError},
+		{"api_error", http.StatusInternalServerError},
+		{"timeout_error", http.StatusRequestTimeout},
+		{"invalid_request_error", http.StatusBadRequest},
+		{"authentication_error", http.StatusBadRequest},
+		{"permission_error", http.StatusBadRequest},
+		{"not_found_error", http.StatusBadRequest},
+		{"request_too_large", http.StatusBadRequest},
+		{"insufficient_quota", http.StatusBadRequest},
+		{"billing_error", http.StatusBadRequest},
+		{"unknown_error_type", 0},
+		{"", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.errType, func(t *testing.T) {
+			assert.Equal(t, tt.want, HTTPStatusForErrorType(tt.errType))
+		})
+	}
+}

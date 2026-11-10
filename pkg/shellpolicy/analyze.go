@@ -193,9 +193,16 @@ type analyzer struct {
 
 	// paths and cds are judged by finishPaths, once every directory the
 	// command can change to is known.
-	paths []pathCheck
-	cds   []cdTarget
-	globs []globCheck
+	paths  []pathCheck
+	cds    []cdTarget
+	globs  []globCheck
+	dirOps []dirOperand
+	// repoChecks are calls whose profile judges the directory they run in
+	// (Profile.RepoCheck), judged from every directory the command can be in.
+	repoChecks []repoCheck
+	// tooManyCds is set once the command has more than maxCdTargets cd or
+	// pushd targets; the targets past the limit are not recorded.
+	tooManyCds bool
 
 	// What static enforcement knows about the variables arithmetic reads:
 	// intDefs are the end offsets of top-level integer assignments,
@@ -317,6 +324,7 @@ func (a *analyzer) source(src string, depth int, outer *syntax.Pos) {
 			if x.Param != nil && x.Exp != nil && (x.Exp.Op == syntax.AssignUnset || x.Exp.Op == syntax.AssignUnsetOrNull) {
 				a.setsVar(x, outer, x.Param.Value) // ${NAME=value}, ${NAME:=value}
 			}
+			a.promptExpansion(x, outer)
 			a.paramArith(x, outer)
 		case *syntax.ArithmExp:
 			a.arith(x.X, outer)
@@ -445,6 +453,9 @@ func (a *analyzer) program(x *syntax.CallExpr, nameWord *syntax.Word, name strin
 				a.readPath(dir, w, outer)
 				if a.opt.Static {
 					a.staticGlob(w, outer)
+					if prof.NoDirOperands {
+						a.dirOperand(globPattern(w), true, name, w, outer)
+					}
 				}
 			} else if a.opt.Static {
 				a.add(Deny, w, outer, wordText(w), "an argument computed at run time (tilde, parameter or command substitution) cannot be path-checked")
@@ -457,6 +468,9 @@ func (a *analyzer) program(x *syntax.CallExpr, nameWord *syntax.Word, name strin
 		a.ask(nameWord, outer, name, v, "program", name)
 		return
 	}
+	if prof.RepoCheck != nil && complete {
+		a.repoChecks = append(a.repoChecks, repoCheck{check: prof.RepoCheck, args: lits, prog: name, n: nameWord, outer: outer})
+	}
 	if a.opt.Static && globbed && prof.MaxPositional >= 0 {
 		// No runner counts the names the glob expands to.
 		a.ask(nameWord, outer, name, "a glob may expand to more than "+itoa(prof.MaxPositional)+
@@ -468,6 +482,9 @@ func (a *analyzer) program(x *syntax.CallExpr, nameWord *syntax.Word, name strin
 	}
 	for _, c := range prof.pathCandidates(lits) {
 		a.readPath(c, x, outer)
+		if prof.NoDirOperands {
+			a.dirOperand(c, false, name, x, outer)
+		}
 	}
 }
 
@@ -541,6 +558,21 @@ func (a *analyzer) unsetNames(x *syntax.CallExpr, words []*syntax.Word, outer *s
 			a.unsetFuncs[s] = true
 		}
 	}
+}
+
+// promptExpansion judges the @P operator (${x@P}): bash expands the value as
+// a prompt string, which runs the command substitutions in it, so a value the
+// analyzer never parsed as code runs. Static enforcement refuses it. The
+// jailed shell leaves the value as it is and starts nothing
+// (TestInterpreter_PromptExpansionRunsNothing), so runtime gives no verdict.
+func (a *analyzer) promptExpansion(x *syntax.ParamExp, outer *syntax.Pos) {
+	if !a.opt.Static || x.Exp == nil || x.Exp.Op != syntax.OtherParamOps {
+		return
+	}
+	if op, ok := literal(x.Exp.Word); ok && op != "P" {
+		return // @Q, @E, @A, @a, @U, @u, @L, @K, @k run nothing
+	}
+	a.add(Deny, x, outer, "${"+paramName(x)+"@P}", "prompt expansion runs the command substitutions in the value, which static enforcement cannot see")
 }
 
 // dropDashes drops the "--" that may end eval's and trap's options.

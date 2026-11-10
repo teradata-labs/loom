@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -177,6 +178,25 @@ func TestShellExecute_TimeoutKillsBackgroundChildren(t *testing.T) {
 	assert.True(t, waitGone(pid, 2*time.Second), "background child %d survived the timeout", pid)
 }
 
+// A background child that outlives the shell, still holding the output pipes,
+// must be killed by the timeout too. The shell exits at once (no wait), so the
+// call can only end on the timeout. This is the Unix counterpart of the
+// Windows Job Object case (TestShellExecute_WindowsTimeoutKillsOrphanedDescendant).
+func TestShellExecute_TimeoutKillsChildOfExitedShell(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	res, err := NewShellExecuteTool("").Execute(context.Background(), map[string]interface{}{
+		"command":         "sleep 30 & echo $! > " + pidFile,
+		"timeout_seconds": float64(1),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, res.Error)
+	assert.Equal(t, "TIMEOUT", res.Error.Code)
+
+	pid := readPID(t, pidFile)
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	assert.True(t, waitGone(pid, 2*time.Second), "child %d of the exited shell survived the timeout", pid)
+}
+
 // Cancelling the turn must do the same.
 func TestShellExecute_CancelKillsBackgroundChildren(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "child.pid")
@@ -243,6 +263,77 @@ func TestShellExecute_NewlineFreeOverflowStopsPromptly(t *testing.T) {
 	}
 }
 
+// elidedMarker matches the marker compactShellOutput puts in place of the
+// middle of a long stream.
+var elidedMarker = regexp.MustCompile(`\n\[\.\.\. (\d+) bytes elided — rerun with a filter \(grep/tail\) to see the middle \.\.\.\]\n`)
+
+// collectedLen returns the length of a stream as collected, before
+// compactShellOutput replaced its middle with the elision marker.
+func collectedLen(t *testing.T, s string) int {
+	t.Helper()
+	m := elidedMarker.FindStringSubmatchIndex(s)
+	if m == nil {
+		return len(s)
+	}
+	elided, err := strconv.Atoi(s[m[2]:m[3]])
+	require.NoError(t, err)
+	return len(s) - (m[1] - m[0]) + elided
+}
+
+// A final line with no trailing newline whose length is an exact multiple of
+// the 64 KiB read buffer used to vanish: ReadLine hands back a full buffer
+// with isPrefix=true, then io.EOF, and the pending line was dropped on EOF.
+// Lengths either side of the boundary and a final line after normal lines are
+// covered too, on both streams.
+func TestShellExecute_OutputOnReadBufferBoundaryIsKept(t *testing.T) {
+	const buf = 64 * 1024
+	flood := func(n int) string {
+		return "head -c " + strconv.Itoa(n) + " /dev/zero | tr '\\0' a"
+	}
+	for _, tc := range []struct {
+		name    string
+		command string
+		want    int    // collected stream length: its lines joined with "\n"
+		prefix  string // expected start of the stream, when set
+	}{
+		{name: "exactly 64KiB", command: flood(buf), want: buf, prefix: "aaa"},
+		{name: "exactly 128KiB", command: flood(2 * buf), want: 2 * buf, prefix: "aaa"},
+		{name: "64KiB minus one", command: flood(buf - 1), want: buf - 1, prefix: "aaa"},
+		{name: "64KiB plus one", command: flood(buf + 1), want: buf + 1, prefix: "aaa"},
+		{
+			name:    "lines then 64KiB final line without newline",
+			command: "printf 'first\\nsecond\\n'; " + flood(buf),
+			want:    len("first\nsecond\n") + buf,
+			prefix:  "first\nsecond\naaa",
+		},
+		{
+			name:    "lines then short final line without newline",
+			command: "printf 'first\\nsecond\\nlast'",
+			want:    len("first\nsecond\nlast"),
+			prefix:  "first\nsecond\nlast",
+		},
+	} {
+		for _, stream := range []struct{ name, redirect, other string }{
+			{"stdout", "", "stderr"},
+			{"stderr", " >&2", "stdout"},
+		} {
+			t.Run(tc.name+"/"+stream.name, func(t *testing.T) {
+				res, err := NewShellExecuteTool("").Execute(context.Background(), map[string]interface{}{
+					"command":         "{ " + tc.command + "; }" + stream.redirect,
+					"timeout_seconds": float64(30),
+				})
+				require.NoError(t, err)
+				require.True(t, res.Success, "%+v", res.Error)
+				data := shellData(t, res)
+				got := data[stream.name].(string)
+				assert.Equal(t, tc.want, collectedLen(t, got), "%s lost bytes", stream.name)
+				assert.True(t, strings.HasPrefix(got, tc.prefix), "%s starts %q", stream.name, got[:min(len(got), 32)])
+				assert.Empty(t, data[stream.other], "%s should be empty", stream.other)
+			})
+		}
+	}
+}
+
 // working_dir confinement must follow symlinks: a link inside LOOM_DATA_DIR
 // that points outside it is outside it.
 func TestShellExecute_WorkingDirSymlinkEscapeIsRefused(t *testing.T) {
@@ -264,25 +355,6 @@ func TestShellExecute_WorkingDirSymlinkEscapeIsRefused(t *testing.T) {
 	res, err = tool.Execute(ctx, map[string]interface{}{"command": "pwd", "working_dir": inside})
 	require.NoError(t, err)
 	assert.True(t, res.Success, "a real directory inside LOOM_DATA_DIR is allowed: %+v", res.Error)
-}
-
-func TestPathWithin(t *testing.T) {
-	for _, tc := range []struct {
-		root, path string
-		want       bool
-	}{
-		{"/a/data", "/a/data", true},
-		{"/a/data", "/a/data/x/y", true},
-		{"/a/data", "/a/data-evil", false},
-		{"/a/data", "/a/datax/y", false},
-		{"/a/data", "/a", false},
-		{"/a/data", "/a/data/../other", false},
-		{"/tmp", "/tmpfoo", false},
-		{"/tmp", "/tmp/foo", true},
-		{"/", "/anything", true},
-	} {
-		assert.Equal(t, tc.want, pathWithin(tc.path, tc.root), "pathWithin(%q, %q)", tc.path, tc.root)
-	}
 }
 
 func TestIsSensitiveEnvName(t *testing.T) {

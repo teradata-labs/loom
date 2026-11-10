@@ -88,8 +88,10 @@ type Blocked struct {
 type Result struct {
 	Blocked    []Blocked `json:"blocked,omitempty"`
 	EnvDropped []string  `json:"env_dropped,omitempty"`
-	// Limit names the limit that ended the command: "memory", "cpu",
-	// "file_size", or "timeout" (set by the host).
+	// Limit names the limit that ended the command: "memory" (set by the
+	// child's watchdog, or by Child.Settle on the host when RLIMIT_DATA
+	// stopped the interpreter first) or "timeout" (set by the host). The CPU
+	// and file-size rlimits end a command without naming themselves.
 	Limit string `json:"limit,omitempty"`
 	// Error is a failure of the jail itself (an unreadable spec).
 	Error string `json:"error,omitempty"`

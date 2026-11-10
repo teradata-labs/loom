@@ -18,6 +18,7 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"io/fs"
 	"sort"
 	"strconv"
 	"strings"
@@ -316,7 +317,15 @@ func (m *Migrator) validateAppliedMigrations(ctx context.Context) error {
 
 // loadMigrations reads all embedded SQL migration files and pairs up/down files.
 func loadMigrations() ([]Migration, error) {
-	entries, err := migrationFS.ReadDir("migrations")
+	return loadMigrationsFrom(migrationFS)
+}
+
+// loadMigrationsFrom reads the migrations directory of fsys. Two up files
+// (or two down files) with the same version are an error naming both:
+// keyed by version, the later file would silently replace the earlier one,
+// and a fresh database would then skip the replaced migration.
+func loadMigrationsFrom(fsys fs.FS) ([]Migration, error) {
+	entries, err := fs.ReadDir(fsys, "migrations")
 	if err != nil {
 		return nil, fmt.Errorf("failed to read migrations directory: %w", err)
 	}
@@ -325,6 +334,8 @@ func loadMigrations() ([]Migration, error) {
 	upFiles := make(map[int]string)
 	downFiles := make(map[int]string)
 	descriptions := make(map[int]string)
+	upNames := make(map[int]string)
+	downNames := make(map[int]string)
 
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -346,7 +357,7 @@ func loadMigrations() ([]Migration, error) {
 			continue
 		}
 
-		content, err := migrationFS.ReadFile("migrations/" + name)
+		content, err := fs.ReadFile(fsys, "migrations/"+name)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read migration file %s: %w", name, err)
 		}
@@ -354,10 +365,18 @@ func loadMigrations() ([]Migration, error) {
 		// Extract description from filename
 		remainder := parts[1]
 		if strings.HasSuffix(remainder, ".up.sql") {
+			if prev, dup := upNames[version]; dup {
+				return nil, fmt.Errorf("duplicate migration version %d: %s and %s", version, prev, name)
+			}
+			upNames[version] = name
 			desc := strings.TrimSuffix(remainder, ".up.sql")
 			descriptions[version] = desc
 			upFiles[version] = string(content)
 		} else if strings.HasSuffix(remainder, ".down.sql") {
+			if prev, dup := downNames[version]; dup {
+				return nil, fmt.Errorf("duplicate migration version %d: %s and %s", version, prev, name)
+			}
+			downNames[version] = name
 			downFiles[version] = string(content)
 		}
 	}

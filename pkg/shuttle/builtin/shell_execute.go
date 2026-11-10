@@ -438,8 +438,9 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 		// symlink, and a link repointed after the check would otherwise carry the
 		// command outside LOOM_DATA_DIR.
 		cmd.Dir = resolvedWorkingDir
-		// Own process group, so a timeout, cancellation or output overflow can kill
-		// the shell's whole process group, not only the shell (killProcessTree).
+		// Own process group (a Job Object on Windows, see containProcessTree), so a
+		// timeout, cancellation or output overflow can kill the shell's whole
+		// process tree, not only the shell (killProcessTree).
 		setProcessGroup(cmd)
 
 		// Set environment variables: the server's environment minus anything that
@@ -510,6 +511,21 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 			ExecutionTimeMs: time.Since(start).Milliseconds(),
 		}, nil
 	}
+	// On Windows the shell was started suspended; this puts it in a Job Object
+	// and resumes it. On Unix it does nothing.
+	tree, err := containProcessTree(cmd)
+	if err != nil {
+		_ = cmd.Wait() // containProcessTree killed the shell; release it
+		return &shuttle.Result{
+			Success: false,
+			Error: &shuttle.Error{
+				Code:    "EXECUTION_FAILED",
+				Message: fmt.Sprintf("Failed to start command: %v", err),
+			},
+			ExecutionTimeMs: time.Since(start).Milliseconds(),
+		}, nil
+	}
+	defer releaseProcessTree(tree)
 
 	// Stream output concurrently
 	var stdoutLines, stderrLines []string
@@ -534,11 +550,8 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 		var line []byte
 		for {
 			frag, isPrefix, err := reader.ReadLine()
-			if err != nil {
-				return
-			}
 			n := int64(len(frag))
-			if !isPrefix {
+			if !isPrefix && err == nil {
 				n++ // the newline
 			}
 			mu.Lock()
@@ -550,11 +563,20 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 				return
 			}
 			line = append(line, frag...)
-			if !isPrefix {
-				*lines = append(*lines, string(line))
+			// On EOF or any other read error, keep the pending line: a
+			// final line with no newline whose length is an exact multiple
+			// of the buffer arrives as full isPrefix fragments followed by
+			// an error with no bytes, and was dropped here.
+			if !isPrefix || err != nil {
+				if err == nil || len(line) > 0 {
+					*lines = append(*lines, string(line))
+				}
 				line = line[:0]
 			}
 			mu.Unlock()
+			if err != nil {
+				return
+			}
 		}
 	}
 
@@ -583,7 +605,7 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	// status and the output streams. It never blocks for long: a process that
 	// escaped the group (setsid) may keep a pipe open.
 	stop := func() {
-		killProcessTree(cmd)
+		killProcessTree(tree)
 		// One group kill can miss a process the shell forks while the kill is
 		// being delivered (the shell wakes from waiting on a killed pipeline and
 		// starts the next command first). The straggler holds the pipes open, so
@@ -598,7 +620,7 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 			case waitErr = <-waitDone:
 				break wait
 			case <-rekill.C:
-				rekillProcessGroup(cmd)
+				rekillProcessGroup(tree)
 			case <-deadline.C:
 				break wait
 			}
@@ -632,12 +654,9 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	// the background dies with the call. Then collect what the jail reported.
 	var jailResult *shelljail.Result
 	if child != nil {
-		killProcessTree(cmd)
+		killProcessTree(tree)
 		res := child.Result()
 		res.EnvDropped = mergeNames(jailEnvDropped, res.EnvDropped)
-		if timedOut && res.Limit == "" {
-			res.Limit = "timeout"
-		}
 		jailResult = &res
 	}
 
@@ -645,10 +664,35 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 	// read of what they write happens under their lock.
 	mu.Lock()
 	overflowErr := outputErr
-	stdout := compactShellOutput(strings.Join(stdoutLines, "\n"))
-	stderr := compactShellOutput(strings.Join(stderrLines, "\n"))
+	rawStdout := strings.Join(stdoutLines, "\n")
+	rawStderr := strings.Join(stderrLines, "\n")
 	totalOutputBytes := outputBytes
 	mu.Unlock()
+
+	if child != nil {
+		// A jail child that died for lack of memory before its watchdog saw it
+		// (RLIMIT_DATA on Linux) reports nothing and leaves a Go runtime crash
+		// dump on stderr. Settle names the memory limit and keeps the dump out
+		// of the result. Only the dump's first line (the runtime's own failure
+		// message) and its size are logged, at Debug: the rest is goroutine
+		// stacks, and anything a background program wrote after it.
+		// A timeout is named first, so Settle never reads a timed-out
+		// command's own output as a memory death (review #431 N1).
+		if timedOut && jailResult.Limit == "" {
+			jailResult.Limit = "timeout"
+		}
+		visible, dump := child.Settle(jailResult, rawStderr)
+		if dump != "" {
+			first, _, _ := strings.Cut(dump, "\n")
+			t.log().Debug("shell_execute: the jailed shell died at its memory limit; runtime output withheld from the result",
+				zap.String("session_id", sessionID),
+				zap.String("runtime_message", first[:runeBoundaryBefore(first, 200)]),
+				zap.Int("withheld_bytes", len(dump)))
+		}
+		rawStderr = visible
+	}
+	stdout := compactShellOutput(rawStdout)
+	stderr := compactShellOutput(rawStderr)
 
 	// Check for output overflow (detected during streaming)
 	if overflowErr != nil {

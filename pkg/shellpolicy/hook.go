@@ -17,6 +17,7 @@ package shellpolicy
 import (
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"runtime"
 	"sort"
 	"strings"
@@ -39,6 +40,11 @@ const (
 // goos is the operating system the hook judges commands for. It is
 // runtime.GOOS; tests set it to judge as another OS would.
 var goos = runtime.GOOS
+
+// lookPath finds a program on PATH, as shell_execute does when it picks the
+// shell. It is exec.LookPath; tests replace it to judge as a host with or
+// without bash.
+var lookPath = exec.LookPath
 
 // OptionsFunc supplies the working directory and roots for one call. An error
 // denies the call.
@@ -117,28 +123,39 @@ func unsupportedOS() string {
 }
 
 // unanalyzableShell returns why the call's command cannot be judged, or "":
-// the policy parses commands as bash, so a call that runs the command under
-// another shell (shell_execute's "shell": powershell, cmd, or "default" on
-// Windows, where it means PowerShell or cmd) is refused. A shell value that is
-// not a string is refused too, since nothing says which shell runs it.
+// the policy parses commands as bash, so only a call that bash runs is
+// judged. shell_execute runs bash for "bash". For an absent, empty or
+// "default" shell it runs bash when bash is on PATH, and sh otherwise; for
+// "sh" it runs sh. On Debian and Ubuntu sh is dash, which parses some
+// commands differently from bash (it has no $'...' quoting, so
+// echo $'\' ; touch x ; #' runs touch there), so "sh", and the default shell
+// on a host without bash, are refused. Every other shell (powershell, cmd,
+// zsh, or "default" on Windows, where it means PowerShell or cmd) is refused,
+// and so is a shell value that is not a string, since nothing says which
+// shell runs it.
 func unanalyzableShell(params map[string]interface{}) string {
-	v, ok := params[shellParam]
-	if !ok || v == nil {
-		return ""
-	}
-	s, ok := v.(string)
-	if !ok {
-		return fmt.Sprintf("the %s parameter is not a string, so the shell that runs the command is unknown; only bash and sh commands can be judged", shellParam)
+	const judged = "only bash commands can be judged"
+	s := ""
+	if v, ok := params[shellParam]; ok && v != nil {
+		str, ok := v.(string)
+		if !ok {
+			return fmt.Sprintf("the %s parameter is not a string, so the shell that runs the command is unknown; %s", shellParam, judged)
+		}
+		s = str
 	}
 	switch s {
-	case "", "bash", "sh":
+	case "bash":
 		return ""
-	case "default":
-		if goos != "windows" {
-			return "" // bash, else sh
+	case "", "default":
+		if goos == "windows" {
+			break
 		}
+		if _, err := lookPath("bash"); err != nil {
+			return "the command runs under the default shell, and bash is not on PATH, so sh runs it; " + judged
+		}
+		return ""
 	}
-	return fmt.Sprintf("the command runs under shell %q, which the policy cannot parse; only bash and sh commands can be judged", s)
+	return fmt.Sprintf("the command runs under shell %q, which the policy cannot parse; %s", s, judged)
 }
 
 // envNames returns the names of the variables the call's env parameter puts

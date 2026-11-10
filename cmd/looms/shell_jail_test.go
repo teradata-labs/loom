@@ -137,6 +137,43 @@ func TestSetupShellJail(t *testing.T) {
 	assert.ErrorContains(t, err, "not absolute")
 }
 
+// serve says where jailed sessions live when a symlinked artifacts/ puts them
+// outside the data directory, and says nothing in the usual layout.
+func TestSetupShellJail_LogsSessionsOutsideTheDataDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("jailed mode is not supported on windows")
+	}
+	t.Cleanup(func() { builtin.SetShellJail(nil) })
+	c := &Config{}
+	c.Tools.ShellExecute = ShellExecuteConfig{Mode: "jailed", Strict: true}
+	for _, tc := range []struct {
+		name    string
+		symlink bool
+	}{{"usual layout", false}, {"symlinked artifacts", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := filepath.EvalSymlinks(t.TempDir())
+			require.NoError(t, err)
+			t.Setenv("LOOM_DATA_DIR", data)
+			if tc.symlink {
+				elsewhere, err := filepath.EvalSymlinks(t.TempDir())
+				require.NoError(t, err)
+				require.NoError(t, os.Symlink(elsewhere, filepath.Join(data, "artifacts")))
+			}
+			logger, logs := observedLogger()
+			_, err = setupShellJail(context.Background(), c, data, logger)
+			require.NoError(t, err)
+			entries := logs.FilterMessageSnippet("session directories resolve outside the data directory").All()
+			if !tc.symlink {
+				assert.Empty(t, entries, "the usual layout logs nothing")
+				return
+			}
+			require.Len(t, entries, 1, "one startup line names the sessions directory")
+			assert.Equal(t, data, entries[0].ContextMap()["data_dir"])
+			assert.NotContains(t, entries[0].ContextMap()["sessions_dir"], data)
+		})
+	}
+}
+
 // With the jail on, a command-policy binding that leaves enforcement unset runs
 // static and denies what the jail would re-check, so serve warns once for it;
 // explicit enforcement and other kinds stay quiet.

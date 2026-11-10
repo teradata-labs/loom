@@ -139,8 +139,8 @@ func GetProviderDefaultLimits(provider string) ModelContextLimits {
 	switch provider {
 	case "anthropic":
 		return ModelContextLimits{MaxContextTokens: 200000, ReservedOutputTokens: 20000}
-	case "bedrock":
-		// Bedrock varies by model, but Claude is most common
+	case "bedrock", "bedrock-mantle":
+		// Bedrock varies by model, but Claude is most common (on both endpoints)
 		return ModelContextLimits{MaxContextTokens: 200000, ReservedOutputTokens: 20000}
 	case "ollama":
 		// Conservative default for local models

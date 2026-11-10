@@ -24,6 +24,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -106,7 +107,8 @@ func (f *fixture) jailed(t *testing.T, command string, grant *shellpolicy.Grant,
 		waitErr = <-done
 	}
 	KillGroup(child.Cmd)
-	out := run{stdout: stdout.String(), stderr: stderr.String(), res: child.Result(), took: time.Since(start)}
+	out := run{res: child.Result(), took: time.Since(start), stdout: stdout.String()}
+	out.stderr, _ = child.Settle(&out.res, stderr.String())
 	if ee, ok := waitErr.(*exec.ExitError); ok {
 		out.code = ee.ExitCode()
 	} else if waitErr != nil {
@@ -470,8 +472,64 @@ func TestJail_MemoryBombIsStopped(t *testing.T) {
 	got := f.jailed(t, `x=a; while :; do x=$x$x; done`, nil, 30*time.Second)
 	assert.NotEqual(t, 0, got.code)
 	assert.Less(t, got.took, 20*time.Second)
-	stopped := got.res.Limit == "memory" || strings.Contains(got.stderr, "out of memory")
-	assert.True(t, stopped, "limit %q, exit %d, stderr %q", got.res.Limit, got.code, truncate(got.stderr, 300))
+	// Whether the watchdog or RLIMIT_DATA stops it, the caller sees the
+	// memory limit and one line, never the runtime's crash dump.
+	assert.Equal(t, "memory", got.res.Limit, "exit %d, stderr %q", got.code, truncate(got.stderr, 300))
+	// Contains, not a suffix: a -cover test binary, run as the child, adds a
+	// GOCOVERDIR warning when it exits.
+	assert.Contains(t, got.stderr, MemoryStoppedMessage+"\n", "stderr carries the limit line: %q", truncate(got.stderr, 300))
+	assert.NotContains(t, got.stderr, "goroutine ", "no runtime dump reaches the caller")
+}
+
+// Settle names the memory limit only for a child that died without reporting
+// and left a memory-failure dump; everything else is passed through.
+func TestChild_Settle(t *testing.T) {
+	const prefix = "partial output\n"
+	dumps := map[string]string{
+		"fatal error":     "fatal error: runtime: cannot allocate memory\n\nruntime stack:\nruntime.throw(...)\n",
+		"out of memory":   "runtime: out of memory: cannot allocate 268435456-byte block (402653184 in use)\nfatal error: out of memory\n\ngoroutine 1 [running]:\n",
+		"runtime SIGSEGV": "SIGSEGV: segmentation violation\nPC=0x4368d8 m=8 sigcode=1 addr=0x0\n\ngoroutine 0 gp=0x4ae5282845a0 m=8 [idle]:\n",
+		"pthread_create":  "runtime/cgo: pthread_create failed: Resource temporarily unavailable\nSIGABRT: abort\n",
+		"os thread":       "runtime: failed to create new OS thread (have 7 already; errno=12)\nfatal error: newosproc\n",
+		"tsan":            "==6932==ERROR: ThreadSanitizer failed to allocate 0x27000 (159744) bytes at address 2180006a9000 (errno: 12)\n",
+		"tsan out of mem": "==109==ERROR: ThreadSanitizer: out of memory: failed to allocate 0x20000 (131072) bytes of TracePart (error code: 12)\nThreadSanitizer: CHECK failed: sanitizer_common.cpp:61\n",
+		// Review #431: the runtime's line and the sanitizer's can interleave.
+		"tsan interleaved": "fatal error: ==4302==ERROR: ThreadSanitizer: out of memory: failed to allocate 0x20000 (131072) bytes of TracePart (error code: 12)\n",
+	}
+	for name, dump := range dumps {
+		t.Run(name, func(t *testing.T) {
+			c := &Child{memoryLimit: 1 << 20}
+			res := Result{}
+			visible, withheld := c.Settle(&res, prefix+dump)
+			assert.Equal(t, "memory", res.Limit, "a memory-failure dump names the limit")
+			assert.Equal(t, prefix+MemoryStoppedMessage+"\n", visible, "the dump is replaced by one line")
+			assert.Equal(t, dump, withheld, "the dump is returned for the log")
+		})
+	}
+	passThrough := []struct {
+		name   string
+		child  Child
+		res    Result
+		stderr string
+	}{
+		{"the child reported", Child{memoryLimit: 1 << 20, reported: true}, Result{}, dumps["fatal error"]},
+		{"no memory limit", Child{}, Result{}, dumps["fatal error"]},
+		{"a limit is already named", Child{memoryLimit: 1 << 20}, Result{Limit: "timeout"}, dumps["fatal error"]},
+		{"a jail error", Child{memoryLimit: 1 << 20}, Result{Error: "cannot read the jail spec"}, dumps["fatal error"]},
+		{"a Go panic", Child{memoryLimit: 1 << 20}, Result{}, "panic: runtime error: invalid memory address or nil pointer dereference\n[signal SIGSEGV: segmentation violation code=0x1 addr=0x0]\n"},
+		{"a marker inside a line", Child{memoryLimit: 1 << 20}, Result{}, "grep: found 'fatal error: runtime: out of memory' in log.txt\n"},
+		{"a sanitizer marker without its prefix", Child{memoryLimit: 1 << 20}, Result{}, "grep: found 'ThreadSanitizer: out of memory' in log.txt\n"},
+		{"plain error output", Child{memoryLimit: 1 << 20}, Result{}, "ls: x: No such file or directory\n"},
+	}
+	for _, tc := range passThrough {
+		t.Run(tc.name, func(t *testing.T) {
+			res := tc.res
+			visible, withheld := tc.child.Settle(&res, tc.stderr)
+			assert.Equal(t, tc.res, res, "the result is unchanged")
+			assert.Equal(t, tc.stderr, visible, "stderr is unchanged")
+			assert.Empty(t, withheld, "nothing is withheld")
+		})
+	}
 }
 
 func TestJail_InProcessHandlersUnderRace(t *testing.T) {
@@ -516,18 +574,81 @@ func TestNewRunner_Validation(t *testing.T) {
 	_, _, err = NewRunner(Config{Policy: shellpolicy.Readonly(), LoomDataDir: "/x", SearchPath: []string{"bin"}})
 	assert.ErrorContains(t, err, "not absolute")
 
+	// The host decides which policy programs exist and whether git accepts
+	// --attr-source (git 2.39 does not), so only the test's own names and the
+	// shape of the warnings are asserted.
 	r, warnings, err := NewRunner(Config{Policy: shellpolicy.Readonly().Extend("p", []string{"no-such-program-xyz"}, nil), LoomDataDir: "/x"})
 	require.NoError(t, err)
-	require.Len(t, warnings, 1, "missing programs are reported in one line: %q", warnings)
-	assert.Contains(t, warnings[0], "not found on the search path")
-	assert.Contains(t, warnings[0], "no-such-program-xyz")
-	_, warnings, err = NewRunner(Config{Policy: shellpolicy.Readonly().Extend("p", []string{"no-such-a", "no-such-b"}, nil), LoomDataDir: "/x"})
+	assert.Contains(t, missingNames(t, warnings), "no-such-program-xyz", "a missing program is reported")
+	_, warnings, err = NewRunner(Config{Policy: shellpolicy.Readonly().Extend("p", []string{"no-such-b", "no-such-a"}, nil), LoomDataDir: "/x"})
 	require.NoError(t, err)
-	require.Len(t, warnings, 1, "%q", warnings)
-	assert.Contains(t, warnings[0], ": no-such-a, no-such-b")
+	names := missingNames(t, warnings)
+	assert.Subset(t, names, []string{"no-such-a", "no-such-b"}, "every missing program is in the one line")
+	assert.True(t, sort.StringsAreSorted(names), "the names are sorted: %q", names)
 	assert.NotContains(t, r.Pinned(), "no-such-program-xyz")
 	for name, path := range r.Pinned() {
 		assert.True(t, filepath.IsAbs(path), name)
+	}
+}
+
+// missingNames returns the program names in NewRunner's one "not found"
+// warning, failing when there is not exactly one, or when any other warning is
+// not the git one.
+func missingNames(t *testing.T, warnings []string) []string {
+	t.Helper()
+	var found []string
+	for _, w := range warnings {
+		if strings.HasPrefix(w, "git: ") {
+			continue
+		}
+		require.Contains(t, w, "not found on the search path", "the only other warning is the git one: %q", warnings)
+		found = append(found, w)
+	}
+	require.Len(t, found, 1, "missing programs are reported in one line: %q", warnings)
+	_, list, ok := strings.Cut(found[0], "exit 127: ")
+	require.True(t, ok, "the warning ends with the names: %q", found[0])
+	return strings.Split(list, ", ")
+}
+
+// fakeBin makes a directory holding an executable stub for each name, for a
+// search path whose contents the test decides.
+func fakeBin(t *testing.T, names ...string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, n := range names {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, n), []byte("#!/bin/sh\n"), 0o700)) // #nosec G306 -- a test stub that must be executable
+	}
+	return dir
+}
+
+// A program the readonly policy lists for another platform (md5 on Linux,
+// md5sum on older macOS) is not reported missing when the host has the
+// program it stands in for; a host with neither is told.
+func TestNewRunner_AlternatesAreNotReportedMissing(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		have        []string
+		reported    []string
+		notReported []string
+	}{
+		{"GNU host", []string{"md5sum", "sha1sum", "sha256sum", "shasum"}, nil, []string{"md5", "md5sum", "sha1sum", "sha256sum", "shasum"}},
+		{"GNU host without perl", []string{"md5sum", "sha1sum", "sha256sum"}, []string{"shasum"}, []string{"md5", "sha1sum", "sha256sum"}},
+		{"older macOS", []string{"md5", "shasum"}, nil, []string{"md5", "md5sum", "sha1sum", "sha256sum", "shasum"}},
+		{"neither", nil, []string{"md5", "md5sum", "sha1sum", "sha256sum", "shasum"}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, warnings, err := NewRunner(Config{Policy: shellpolicy.Readonly(), LoomDataDir: "/x", SearchPath: []string{fakeBin(t, tc.have...)}})
+			require.NoError(t, err)
+			names := missingNames(t, warnings)
+			assert.Subset(t, names, tc.reported, "programs with no stand-in are reported")
+			for _, n := range tc.notReported {
+				assert.NotContains(t, names, n, "%s is present or has a stand-in", n)
+			}
+			for _, n := range tc.have {
+				assert.Contains(t, r.Pinned(), n, "a present program is pinned")
+			}
+			assert.Contains(t, names, "cat", "a program with no stand-in is still reported")
+		})
 	}
 }
 
@@ -544,11 +665,11 @@ func TestOptionsAndBaseEnv(t *testing.T) {
 	assert.NotContains(t, opt.Roots.Read, os.Getenv("LOOM_DATA_DIR"), "the data directory as a whole is not")
 	assert.NotContains(t, opt.Roots.Read, shellpolicy.ResolvePath("/", "/tmp"))
 
-	// A session whose directories resolve outside the runner's data directory
-	// (LOOM_DATA_DIR changed under it) is refused rather than judged.
+	// A session whose directories resolve outside the runner's sessions
+	// directory (LOOM_DATA_DIR changed under it) is refused rather than judged.
 	t.Setenv("LOOM_DATA_DIR", t.TempDir())
 	_, err = f.r.Options(testSession, "")
-	assert.ErrorContains(t, err, "outside the loom data directory")
+	assert.ErrorContains(t, err, "outside the sessions directory")
 
 	env, dropped := f.r.BaseEnv("/home/x", map[string]string{"SESSION_ID": "s"}, map[string]string{
 		"FOO": "1", "GH_TOKEN": "t", "PATH": "/evil", "LD_PRELOAD": "x", "DB_URL": "postgres://u:p@h/d",
@@ -558,6 +679,65 @@ func TestOptionsAndBaseEnv(t *testing.T) {
 	assert.Contains(t, env, "FOO=1")
 	assert.NotContains(t, strings.Join(env, "\n"), "/evil")
 	assert.Equal(t, []string{"DB_URL", "GH_TOKEN", "LD_PRELOAD"}, dropped)
+}
+
+// An artifacts/ directory that is a symlink to another disk is resolved when
+// the runner is made, so jailed calls work in that layout; repointing it
+// afterwards is refused.
+func TestOptions_SymlinkedArtifactsDir(t *testing.T) {
+	data, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	elsewhere, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, os.Symlink(elsewhere, filepath.Join(data, "artifacts")))
+	t.Setenv("LOOM_DATA_DIR", data)
+
+	r, _, err := NewRunner(Config{Policy: shellpolicy.Readonly(), LoomDataDir: data})
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(elsewhere, "sessions"), r.SessionsRoot(), "the sessions directory is resolved at startup")
+	opt, err := r.Options(testSession, "")
+	require.NoError(t, err, "a symlinked artifacts/ is a supported layout")
+	session := filepath.Join(elsewhere, "sessions", testSession)
+	assert.Equal(t, filepath.Join(session, "scratchpad"), opt.WorkingDir)
+	assert.Contains(t, opt.Roots.Read, session, "the session's own directory is readable")
+	assert.NotContains(t, opt.Roots.Read, data, "the data directory as a whole is not")
+
+	moved, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, os.Remove(filepath.Join(data, "artifacts")))
+	require.NoError(t, os.Symlink(moved, filepath.Join(data, "artifacts")))
+	_, err = r.Options(testSession, "")
+	assert.ErrorContains(t, err, "outside the sessions directory", "a repoint after startup is refused")
+}
+
+// The session's read root comes from the session's own path, not from where
+// its scratchpad resolves: a scratchpad that is a symlink elsewhere in the
+// data directory made the whole data directory readable.
+func TestOptions_SymlinkedScratchpadIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		target func(data, session string) string
+	}{
+		{"elsewhere in the data directory", func(data, _ string) string { return filepath.Join(data, "elsewhere") }},
+		{"the data directory itself", func(data, _ string) string { return data }},
+		{"the session directory", func(_, session string) string { return session }},
+		{"another session", func(data, _ string) string {
+			return filepath.Join(data, "artifacts", "sessions", "sess-other", "scratchpad")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			data := os.Getenv("LOOM_DATA_DIR")
+			session := filepath.Dir(f.scratch)
+			target := tc.target(data, session)
+			require.NoError(t, os.MkdirAll(target, 0o750))
+			require.NoError(t, os.RemoveAll(f.scratch))
+			require.NoError(t, os.Symlink(target, f.scratch))
+			opt, err := f.r.Options(testSession, "")
+			assert.ErrorContains(t, err, "outside the session directory", "a scratchpad that leaves the session is refused")
+			assert.NotContains(t, opt.Roots.Read, data, "the data directory is never a read root")
+		})
+	}
 }
 
 func TestFilterEnvAndNames(t *testing.T) {

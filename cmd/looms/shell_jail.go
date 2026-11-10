@@ -121,6 +121,14 @@ func setupShellJail(ctx context.Context, config *Config, loomDataDir string, log
 	for _, w := range warnings {
 		logger.Warn("Jailed shell: programs left out", zap.String("detail", w))
 	}
+	if !shellpolicy.WithinDir(runner.DataDir(), runner.SessionsRoot()) {
+		// A symlinked artifacts/ (for example on another disk) is supported;
+		// this line tells the operator where jailed sessions must live, since
+		// the directory was resolved now and a later repoint is refused.
+		logger.Info("Jailed shell: session directories resolve outside the data directory",
+			zap.String("data_dir", runner.DataDir()),
+			zap.String("sessions_dir", runner.SessionsRoot()))
+	}
 	if err := runner.SelfTest(ctx); err != nil {
 		return nil, err
 	}
