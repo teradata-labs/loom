@@ -30,6 +30,27 @@ import (
 // today.
 var ErrContextTooLong = errors.New("context too long")
 
+// IsThinkingBlockRefused positively identifies a provider's refusal of a
+// replayed thinking block.
+//
+// A thinking block is signed over what preceded it when the model made it:
+// the system prompt, the tool list and every message before it. Replayed on
+// top of anything else it is refused with a 400, and the remedy is the one
+// the refusal names — remove the block. Models up to claude-opus-5 do not
+// check the binding; claude-fable-5 does, on all three.
+//
+// The wording is the provider's own and reaches every client verbatim — in
+// anthropic's error body, in the Bedrock SDK's stream error, in a gateway's
+// passed-through 400 — so one matcher on the error text serves them all.
+func IsThinkingBlockRefused(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "Invalid `signature` in `thinking` block") ||
+		strings.Contains(msg, "bound to a different conversation")
+}
+
 // ErrStreamTimeout marks a provider response stream that stopped producing
 // bytes while the caller's context remained active.
 var ErrStreamTimeout = errors.New("provider stream timeout")

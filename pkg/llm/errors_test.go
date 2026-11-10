@@ -90,3 +90,30 @@ func TestIsBedrockContextTooLong(t *testing.T) {
 		})
 	}
 }
+
+// The refusal of a replayed thinking block is identified by the provider's own
+// wording, in whatever envelope a client reports it; nothing else is taken for it.
+func TestIsThinkingBlockRefused(t *testing.T) {
+	for _, refused := range []string{
+		"stream error: POST \"https://bedrock-runtime.us-west-2.amazonaws.com/v1/messages\": 400 Bad Request {\"message\":\"messages.3.content.0: Invalid `signature` in `thinking` block. The block is bound to a different conversation. Remove the block.\"}",
+		"API error (status 400): {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"messages.1.content.0: Invalid `signature` in `thinking` block\"}}",
+		"messages.1.content.0: The block is bound to a different conversation. The `tools` list differs",
+	} {
+		if !IsThinkingBlockRefused(errors.New(refused)) {
+			t.Errorf("not identified: %s", refused)
+		}
+	}
+	for _, other := range []string{
+		"API error (status 400): prompt is too long: 250000 tokens > 200000 maximum",
+		"API error (status 400): messages.1.content.0.thinking: Field required",
+		"API error (status 400): Expected `thinking` or `redacted_thinking`, but found `tool_use`",
+		"stream error: received exception internalServerException",
+	} {
+		if IsThinkingBlockRefused(errors.New(other)) {
+			t.Errorf("wrongly identified: %s", other)
+		}
+	}
+	if IsThinkingBlockRefused(nil) {
+		t.Error("nil is not a refusal")
+	}
+}

@@ -181,6 +181,9 @@ func (sm *SegmentedMemory) ApplyFoldReply(ctx context.Context, summary string) (
 
 	sm.summary = summaryState{n: n1, text: newText}
 	sm.contextMessages = kept
+	// The pending pair is kept whole, on top of a past that is now a summary:
+	// its thinking block was made on the past that is gone.
+	sm.dropThinkingLocked()
 	sm.l1Dirty = true
 	sm.updateTokenCount()
 	sm.tokenCountDirty = false
@@ -194,6 +197,32 @@ func (sm *SegmentedMemory) ApplyFoldReply(ctx context.Context, summary string) (
 		zap.Int("summary_bytes", len(newText)),
 		zap.Int("version", n1))
 	return true, estimate
+}
+
+// DropThinking removes every thinking block the context holds.
+//
+// A block is replay material for the request that follows the one it was made
+// on, and it is signed over what preceded it: the system prompt, the tool list
+// and every message before it. Once any of that has changed the block belongs
+// to a conversation that no longer exists, and a provider that checks the
+// binding refuses the whole request. Two things change it. A fold rewrites
+// the messages, so a committed fold drops the blocks of the rows it keeps.
+// Anything else — a tool list that changed mid-turn, a system prompt that
+// did — is known only to the provider, so its refusal drops them
+// (chatWithRetry). The rows keep their words and their tool calls: only the
+// reasoning that led to them goes, and the model reasons again from what it
+// reads. The window estimate is taken from the compile, so it follows.
+func (sm *SegmentedMemory) DropThinking() {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.dropThinkingLocked()
+}
+
+// dropThinkingLocked is DropThinking for a caller that holds the lock.
+func (sm *SegmentedMemory) dropThinkingLocked() {
+	for i := range sm.contextMessages {
+		sm.contextMessages[i].ThinkingBlocks = nil
+	}
 }
 
 // foldSplitLocked is the in-loop fold's cut of the context: what a full fold
