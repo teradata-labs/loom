@@ -17,7 +17,10 @@
 package shelljail
 
 import (
+	"bufio"
+	"bytes"
 	"os"
+	"strconv"
 	"syscall"
 )
 
@@ -28,7 +31,7 @@ func applyLimits(l Limits) error {
 		res int
 		v   uint64
 	}{
-		{syscall.RLIMIT_DATA, l.MemoryBytes},
+		{syscall.RLIMIT_DATA, dataLimit(l.MemoryBytes, raceBuild, currentVmData)},
 		{syscall.RLIMIT_FSIZE, l.FileBytes},
 		{syscall.RLIMIT_CPU, l.CPUSeconds},
 	} {
@@ -46,4 +49,48 @@ func applyLimits(l Limits) error {
 	// raising it, still runs the jail.
 	_ = os.WriteFile("/proc/self/oom_score_adj", []byte("1000"), 0)
 	return nil
+}
+
+// dataLimit is the RLIMIT_DATA the child sets. RLIMIT_DATA counts the mappings
+// the process already has, and the child sets it on itself after it starts.
+// A normal build starts with about 40 MiB, so memoryBytes is the limit. A
+// -race build starts with the ThreadSanitizer's mappings (about 1.1 GiB on
+// linux/amd64, more than the 512 MiB default), and every later allocation
+// failed: the jail child died with exit 2 or 66 before it ran anything. In a
+// race build only, memoryBytes is counted from that starting point instead.
+// The watchdog, which reads the Go heap, is the same in both builds.
+func dataLimit(memoryBytes uint64, race bool, vmData func() (uint64, bool)) uint64 {
+	if memoryBytes == 0 || !race {
+		return memoryBytes
+	}
+	base, ok := vmData()
+	if !ok {
+		return memoryBytes
+	}
+	return memoryBytes + base
+}
+
+// currentVmData is the process's VmData from /proc/self/status, in bytes.
+func currentVmData() (uint64, bool) {
+	b, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		return 0, false
+	}
+	return parseVmData(b)
+}
+
+// parseVmData reads the "VmData:  <n> kB" line of /proc/<pid>/status.
+func parseVmData(status []byte) (uint64, bool) {
+	sc := bufio.NewScanner(bytes.NewReader(status))
+	for sc.Scan() {
+		f := bytes.Fields(sc.Bytes())
+		if len(f) == 3 && string(f[0]) == "VmData:" && string(f[2]) == "kB" {
+			kb, err := strconv.ParseUint(string(f[1]), 10, 64)
+			if err != nil {
+				return 0, false
+			}
+			return kb << 10, true
+		}
+	}
+	return 0, false
 }
