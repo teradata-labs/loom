@@ -493,6 +493,8 @@ func TestChild_Settle(t *testing.T) {
 		"os thread":       "runtime: failed to create new OS thread (have 7 already; errno=12)\nfatal error: newosproc\n",
 		"tsan":            "==6932==ERROR: ThreadSanitizer failed to allocate 0x27000 (159744) bytes at address 2180006a9000 (errno: 12)\n",
 		"tsan out of mem": "==109==ERROR: ThreadSanitizer: out of memory: failed to allocate 0x20000 (131072) bytes of TracePart (error code: 12)\nThreadSanitizer: CHECK failed: sanitizer_common.cpp:61\n",
+		// Review #431: the runtime's line and the sanitizer's can interleave.
+		"tsan interleaved": "fatal error: ==4302==ERROR: ThreadSanitizer: out of memory: failed to allocate 0x20000 (131072) bytes of TracePart (error code: 12)\n",
 	}
 	for name, dump := range dumps {
 		t.Run(name, func(t *testing.T) {
@@ -516,6 +518,7 @@ func TestChild_Settle(t *testing.T) {
 		{"a jail error", Child{memoryLimit: 1 << 20}, Result{Error: "cannot read the jail spec"}, dumps["fatal error"]},
 		{"a Go panic", Child{memoryLimit: 1 << 20}, Result{}, "panic: runtime error: invalid memory address or nil pointer dereference\n[signal SIGSEGV: segmentation violation code=0x1 addr=0x0]\n"},
 		{"a marker inside a line", Child{memoryLimit: 1 << 20}, Result{}, "grep: found 'fatal error: runtime: out of memory' in log.txt\n"},
+		{"a sanitizer marker without its prefix", Child{memoryLimit: 1 << 20}, Result{}, "grep: found 'ThreadSanitizer: out of memory' in log.txt\n"},
 		{"plain error output", Child{memoryLimit: 1 << 20}, Result{}, "ls: x: No such file or directory\n"},
 	}
 	for _, tc := range passThrough {

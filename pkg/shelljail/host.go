@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -453,10 +454,12 @@ var memoryDeathMarkers = []string{
 	"SIGSEGV: segmentation violation",
 }
 
-// tsanMemoryMarkers are ThreadSanitizer's allocation failures, printed after
-// a "==<pid>==ERROR: " prefix ("ThreadSanitizer failed to allocate ..." and
-// "ThreadSanitizer: out of memory: failed to allocate ...").
-var tsanMemoryMarkers = []string{"ThreadSanitizer failed to allocate", "ThreadSanitizer: out of memory"}
+// tsanMemoryDeath matches ThreadSanitizer's allocation failures with their
+// "==<pid>==ERROR: " prefix ("ThreadSanitizer failed to allocate ..." and
+// "ThreadSanitizer: out of memory: failed to allocate ..."). The prefix can
+// follow other text on the line, because the runtime's "fatal error: " and
+// the sanitizer's report interleave.
+var tsanMemoryDeath = regexp.MustCompile(`==[0-9]+==ERROR: ThreadSanitizer(?: failed to allocate|: out of memory)`)
 
 // MemoryStoppedMessage is the line a command's stderr ends with when the jail
 // stopped it at its memory limit: printed by the watchdog, or put in place of
@@ -474,12 +477,8 @@ func memoryDeathAt(stderr string) int {
 				return off
 			}
 		}
-		if strings.HasPrefix(trimmed, "==") {
-			for _, m := range tsanMemoryMarkers {
-				if strings.Contains(trimmed, m) {
-					return off
-				}
-			}
+		if tsanMemoryDeath.MatchString(trimmed) {
+			return off
 		}
 		off += len(line)
 	}

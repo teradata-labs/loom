@@ -676,6 +676,11 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 		// of the result. Only the dump's first line (the runtime's own failure
 		// message) and its size are logged, at Debug: the rest is goroutine
 		// stacks, and anything a background program wrote after it.
+		// A timeout is named first, so Settle never reads a timed-out
+		// command's own output as a memory death (review #431 N1).
+		if timedOut && jailResult.Limit == "" {
+			jailResult.Limit = "timeout"
+		}
 		visible, dump := child.Settle(jailResult, rawStderr)
 		if dump != "" {
 			first, _, _ := strings.Cut(dump, "\n")
@@ -685,9 +690,6 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 				zap.Int("withheld_bytes", len(dump)))
 		}
 		rawStderr = visible
-		if timedOut && jailResult.Limit == "" {
-			jailResult.Limit = "timeout"
-		}
 	}
 	stdout := compactShellOutput(rawStdout)
 	stderr := compactShellOutput(rawStderr)

@@ -127,6 +127,22 @@ func TestJailedShell_TimeoutReportsTheLimit(t *testing.T) {
 	assert.Equal(t, "timeout", jailOf(t, res)["limit"])
 }
 
+// A timed-out command whose own output looks like a Go memory failure is still
+// a timeout, and keeps all of its stderr (review #431 N1).
+func TestJailedShell_TimeoutWithMemoryTextIsATimeout(t *testing.T) {
+	f := newJailedFixture(t)
+	res, err := f.tool.Execute(f.ctx, map[string]interface{}{
+		"command":         "echo 'fatal error: runtime: out of memory' >&2; echo AFTER >&2; sleep 30",
+		"timeout_seconds": float64(1),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "TIMEOUT", res.Error.Code)
+	assert.Equal(t, "timeout", jailOf(t, res)["limit"])
+	stderr, _ := shellData(t, res)["stderr"].(string)
+	assert.Contains(t, stderr, "AFTER", "stderr is not cut at the memory-like line")
+	assert.NotContains(t, stderr, shelljail.MemoryStoppedMessage)
+}
+
 // A command that exhausts the jail's memory reports the memory limit, and the
 // result carries one line instead of the Go runtime's crash dump, whether the
 // watchdog or RLIMIT_DATA (Linux) stopped it.
