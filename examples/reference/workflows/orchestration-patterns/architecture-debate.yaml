@@ -22,7 +22,8 @@ spec:
 
   # Bound the two prompts that carry other agents' full positions: each
   # debater's round 2+ response prompt and the moderator's synthesis. Full
-  # positions go to SharedMemory (key architecture-debate-...-round-R-position-<agent>)
+  # positions go to SharedMemory (key debate-<run-id>-round-R-position-<agent>; the
+  # debate engine ids every run debate-<8 hex chars>, and the prompts name the keys)
   # and the inline copies are capped; the whole prompt is held to half the
   # receiving agent's usable context window, pre-reducing oversize positions
   # with its compressor LLM. See docs/reference/workflow-join.md.

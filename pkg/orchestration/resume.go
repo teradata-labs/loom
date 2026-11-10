@@ -56,13 +56,13 @@ func (o *Orchestrator) ResumeWorkflow(ctx context.Context, pattern *loomv1.Workf
 	case *loomv1.WorkflowPattern_Pipeline:
 		executor := NewPipelineExecutor(o, p.Pipeline, ckpt.WorkflowId)
 		result, err := executor.Resume(ctx, ckpt, decision)
-		o.finishWorkflowMemory(ctx, ckpt.WorkflowId, err)
+		o.cleanupWorkflowMemory(ctx, ckpt.WorkflowId)
 		return result, err
 
 	case *loomv1.WorkflowPattern_Iterative:
 		executor := NewIterativePipelineExecutor(o, p.Iterative, o.messageBus, ckpt.WorkflowId)
 		result, err := executor.Resume(ctx, ckpt, decision)
-		o.finishWorkflowMemory(ctx, ckpt.WorkflowId, err)
+		o.cleanupWorkflowMemory(ctx, ckpt.WorkflowId)
 		return result, err
 
 	default:

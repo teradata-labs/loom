@@ -161,7 +161,7 @@ func NewOrchestrator(config Config) *Orchestrator {
 }
 
 // SharedMemory returns the SharedMemory store the orchestrator stashes
-// hand-off outputs in (stage-N-output, <workflow-id>-branch-N-output,
+// hand-off outputs in (<workflow-id>-stage-N-output, <workflow-id>-branch-N-output,
 // <workflow-id>-round-R-position-<agent-id>), or nil when none is configured.
 func (o *Orchestrator) SharedMemory() *communication.SharedMemoryStore {
 	return o.sharedMemory
@@ -408,9 +408,10 @@ func (o *Orchestrator) ExecutePattern(ctx context.Context, pattern *loomv1.Workf
 		return nil, fmt.Errorf("unknown workflow pattern type")
 	}
 
-	// The run's SharedMemory stash is an execution artifact: drop it once the
-	// run has ended (a HITL suspension keeps it for the resume).
-	o.finishWorkflowMemory(ctx, wfID, err)
+	// The run's SharedMemory stash is an execution artifact: drop it as soon as
+	// the run returns. A HITL suspension is no exception; the checkpoint holds
+	// the stage outputs and the resume re-seeds the keys from it.
+	o.cleanupWorkflowMemory(ctx, wfID)
 
 	if err != nil {
 		// Emit error progress

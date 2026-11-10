@@ -7,7 +7,6 @@ package orchestration
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -58,6 +57,22 @@ func managedKeyWorkflow(key string) string {
 	return ""
 }
 
+// workflowOwnsKey reports whether key belongs to workflowID: an
+// executor-managed key whose embedded id is workflowID, or any other key
+// that starts with "<workflow-id>-", the prefix the prompt header asks agents
+// to use for the keys they write. Keys without a workflow prefix belong to
+// no run (on a shared store they are shared) and are never reset,
+// snapshotted or deleted on a run's behalf.
+func workflowOwnsKey(key, workflowID string) bool {
+	if workflowID == "" {
+		return false
+	}
+	if owner := managedKeyWorkflow(key); owner != "" {
+		return owner == workflowID
+	}
+	return strings.HasPrefix(key, workflowID+"-")
+}
+
 // isStageOutputKey reports whether key is one of this workflow's stage
 // output keys (re-seeded from checkpoint snapshots, so never snapshotted).
 func isStageOutputKey(key, workflowID string) bool {
@@ -67,14 +82,17 @@ func isStageOutputKey(key, workflowID string) bool {
 // sharedMemoryWriteHint is the line every SharedMemory header carries so an
 // agent that writes its own keys keeps them with its workflow.
 func sharedMemoryWriteHint(workflowID string) string {
-	return fmt.Sprintf("Keys you write with shared_memory_write should start with `%s-` so they stay with this workflow.\n", workflowID)
+	return fmt.Sprintf("Keys you write with shared_memory_write should start with `%s-` so they stay with this workflow (a restart that resets SharedMemory clears them, a checkpoint keeps them); keys without that prefix are shared with every workflow on this store.\n", workflowID)
 }
 
-// cleanupWorkflowMemory deletes one workflow's executor-managed keys once the
-// workflow has ended. Without it the store grows with every run for the life
-// of the server. Agent-written keys and other workflows' keys are left alone.
-// It runs on a context that survives the run's cancellation, bounded by a
-// short timeout, and only logs on failure.
+// cleanupWorkflowMemory deletes one workflow's executor-managed keys once a
+// run has returned, a HITL suspension included: the checkpoint carries every
+// stage output and restoreWorkflowMemory re-seeds the keys from it on resume,
+// so nothing in the store is needed across the pause, and a host that drops
+// the checkpoint (the gRPC server has no resume path) would otherwise keep the
+// stash for the life of the process. Agent-written keys and other workflows'
+// keys are left alone. It runs on a context that survives the run's
+// cancellation, bounded by a short timeout, and only logs on failure.
 func (o *Orchestrator) cleanupWorkflowMemory(ctx context.Context, workflowID string) {
 	if o.sharedMemory == nil || workflowID == "" {
 		return
@@ -108,16 +126,6 @@ func (o *Orchestrator) cleanupWorkflowMemory(ctx context.Context, workflowID str
 		o.logger.Debug("workflow SharedMemory stash cleaned up",
 			zap.String("workflow_id", workflowID), zap.Int("keys", deleted))
 	}
-}
-
-// finishWorkflowMemory runs the cleanup when a workflow has ended: any result,
-// or any error other than a HITL suspension, whose stash the resume needs.
-func (o *Orchestrator) finishWorkflowMemory(ctx context.Context, workflowID string, err error) {
-	var suspended *WorkflowSuspended
-	if errors.As(err, &suspended) {
-		return
-	}
-	o.cleanupWorkflowMemory(ctx, workflowID)
 }
 
 // CleanupHandoffs implements collaboration.HandoffCleaner: a collaboration

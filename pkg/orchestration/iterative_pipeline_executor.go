@@ -166,9 +166,12 @@ func (e *IterativePipelineExecutor) Execute(ctx context.Context) (*loomv1.Workfl
 		maxIterations = 3 // Default max iterations
 	}
 
+	// One bus serves every workflow a server runs: without an explicit
+	// restart_topic each run listens on its own topic, so a request from one
+	// run cannot restart another run whose stage ids match.
 	restartTopic := e.pattern.RestartTopic
 	if restartTopic == "" {
-		restartTopic = "workflow.restart"
+		restartTopic = communication.RestartTopicFor(workflowID)
 	}
 
 	// Check if restart policy is enabled
@@ -204,6 +207,10 @@ func (e *IterativePipelineExecutor) Execute(ctx context.Context) (*loomv1.Workfl
 	// Subscribe to restart topic
 	e.subscribeToRestarts(subCtx, restartTopic)
 	defer e.unsubscribeFromRestarts(restartTopic)
+
+	// Stage agents publish restart requests through the publish_restart tool,
+	// which reads the run's topic from the context of the turn that calls it.
+	ctx = communication.WithRestartTopic(ctx, restartTopic)
 
 	// Execute pipeline with restart handling
 	result, err := e.executeWithRestarts(ctx, workflowID, maxIterations)
@@ -672,6 +679,10 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 						zap.Error(err))
 					// Continue execution despite reset failure
 				}
+				// The reset also removed the stashes of the stages this restart
+				// keeps; their {{previous}} copies and history entries still
+				// point at those keys, so put them back.
+				e.reseedRetainedStages(ctx, targetIndex)
 			}
 
 			// Update last restart time
@@ -1451,14 +1462,14 @@ func (e *IterativePipelineExecutor) resetWorkflowNamespace(ctx context.Context) 
 		return fmt.Errorf("failed to list workflow namespace keys: %w", err)
 	}
 
-	// Delete each key in the namespace
-	// One store may serve every workflow a server runs: delete this
-	// workflow's executor-managed keys and the keys agents wrote without a
-	// workflow prefix, never another workflow's managed stash.
+	// One store may serve every workflow a server runs: delete this run's own
+	// keys (its executor-managed stash and the keys its agents wrote under the
+	// "<workflow-id>-" prefix the header asks for) and any unscoped legacy
+	// stage-N-output key. Other workflows' keys, prefixed or not, stay.
 	var deletionErrors []error
 	deleted := 0
 	for _, key := range listResp.Keys {
-		if owner := managedKeyWorkflow(key); owner != "" && owner != e.workflowID {
+		if !workflowOwnsKey(key, e.workflowID) && !legacyStageOutputKeyPattern.MatchString(key) {
 			continue
 		}
 		deleted++
@@ -1484,9 +1495,46 @@ func (e *IterativePipelineExecutor) resetWorkflowNamespace(ctx context.Context) 
 	}
 
 	e.orchestrator.logger.Info("Workflow namespace reset successfully",
-		zap.Int("keys_deleted", len(listResp.Keys)))
+		zap.String("workflow_id", e.workflowID),
+		zap.Int("keys_deleted", deleted),
+		zap.Int("keys_skipped", len(listResp.Keys)-deleted))
 
 	return nil
+}
+
+// reseedRetainedStages puts back, after a reset_shared_memory wipe, the full
+// outputs of the stages before the restart target (the ones the restart
+// keeps and whose stash had succeeded) under their <workflow-id>-stage-N-output
+// keys. The retained {{previous}} copies and history entries carry notices
+// naming those keys; without the re-seed the restarted stage would be told to
+// fetch a key the run itself deleted. Stages from the target on run again
+// and stash their new output then. A stage whose Put fails is marked
+// unstashed and is rendered in full from then on.
+func (e *IterativePipelineExecutor) reseedRetainedStages(ctx context.Context, targetIndex int) {
+	if e.orchestrator.sharedMemory == nil {
+		return
+	}
+	for i, stage := range e.pattern.Pipeline.Stages {
+		if i >= targetIndex {
+			break
+		}
+		if !e.stashed[stage.AgentId] {
+			continue
+		}
+		full, ok := e.fullOutputs[stage.AgentId]
+		if !ok {
+			e.stashed[stage.AgentId] = false
+			continue
+		}
+		key := stageOutputKey(e.workflowID, i+1)
+		if err := e.storeStageOutputInMemory(ctx, key, stage.AgentId, full); err != nil {
+			e.orchestrator.logger.Warn("Failed to re-seed a retained stage output after the reset; later stages get it inline in full",
+				zap.String("stage_id", stage.AgentId),
+				zap.String("memory_key", key),
+				zap.Error(err))
+			e.stashed[stage.AgentId] = false
+		}
+	}
 }
 
 // buildCheckpoint captures the durable suspension state of the iterative

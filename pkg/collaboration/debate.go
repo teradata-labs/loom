@@ -46,11 +46,14 @@ func (d *DebateOrchestrator) positionStored(workflowID, key string) bool {
 	return ok
 }
 
-// markPositionsStored records the keyed entries a successful hand-off stored.
-func (d *DebateOrchestrator) markPositionsStored(workflowID string, entries []HandoffEntry) {
-	for _, e := range entries {
-		if e.Key != "" {
-			d.storedPositions.Store(workflowID+"|"+e.Key, struct{}{})
+// markPositionsStored records the keys a hand-off reports as stored. A key
+// whose Put failed is not among them, so the next prompt that carries that
+// position asks the bounder to store it again instead of pointing at a key
+// that is not in the store.
+func (d *DebateOrchestrator) markPositionsStored(workflowID string, keys []string) {
+	for _, key := range keys {
+		if key != "" {
+			d.storedPositions.Store(workflowID+"|"+key, struct{}{})
 		}
 	}
 }
@@ -133,6 +136,14 @@ func (d *DebateOrchestrator) Execute(ctx context.Context, config *loomv1.DebateP
 	// for patterns built directly.
 	if id := config.GetJoinPolicy().GetAgentId(); id != "" {
 		return nil, fmt.Errorf("debate join_policy.agent_id %q is not used: moderator_agent_id is the join agent and each debater receives its own response prompt; remove agent_id", id)
+	}
+
+	// A configured moderator must exist before any round is paid for: the
+	// synthesis is the last step, and failing there wastes every round.
+	if id := config.ModeratorAgentId; id != "" {
+		if _, err := d.provider.GetAgent(ctx, id); err != nil {
+			return nil, fmt.Errorf("debate moderator_agent_id %q: %w", id, err)
+		}
 	}
 
 	// Positions stored under a join policy are this run's artifact: drop them
@@ -496,18 +507,16 @@ func consensusPositions(positions []*loomv1.AgentPosition) []sites.Position {
 // getInternalModerator retrieves or uses first debating agent as internal moderator.
 // The internal moderator is used for summarization and synthesis tasks.
 func (d *DebateOrchestrator) getInternalModerator(ctx context.Context, config *loomv1.DebatePattern) (*agent.Agent, error) {
-	// If user specified a moderator, use that
+	// A configured moderator is the summarizer; Execute checked it exists
+	// before the first round, so a miss here is an error, not a fallback.
 	if config.ModeratorAgentId != "" {
 		moderator, err := d.provider.GetAgent(ctx, config.ModeratorAgentId)
 		if err != nil {
-			d.logger.Warn("User-specified moderator not found, falling back to first debater",
-				zap.String("moderator_id", config.ModeratorAgentId),
-				zap.Error(err))
-		} else {
-			d.logger.Info("Using user-specified moderator for internal summarization",
-				zap.String("moderator_id", config.ModeratorAgentId))
-			return moderator, nil
+			return nil, fmt.Errorf("debate moderator_agent_id %q: %w", config.ModeratorAgentId, err)
 		}
+		d.logger.Info("Using user-specified moderator for internal summarization",
+			zap.String("moderator_id", config.ModeratorAgentId))
+		return moderator, nil
 	}
 
 	// Fallback: use first debating agent as moderator for summarization
@@ -719,7 +728,7 @@ Respond briefly to the key points the other agents raised: which do you challeng
 		if err != nil {
 			return nil, nil, err
 		}
-		d.markPositionsStored(workflowID, entries)
+		d.markPositionsStored(workflowID, fit.StoredKeys)
 		addHandoffUsage(cost, agentID, fit)
 		prompt = fit.Prompt
 	} else {
@@ -1093,7 +1102,7 @@ func (d *DebateOrchestrator) synthesizeWithModerator(ctx context.Context, workfl
 		if err != nil {
 			return "", nil, err
 		}
-		d.markPositionsStored(workflowID, entries)
+		d.markPositionsStored(workflowID, fit.StoredKeys)
 		addHandoffUsage(cost, config.ModeratorAgentId, fit)
 		prompt = fit.Prompt
 	} else {

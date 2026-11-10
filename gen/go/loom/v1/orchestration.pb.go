@@ -859,7 +859,7 @@ func (x *JoinPolicy) GetOverflowStrategy() JoinOverflowStrategy {
 //
 // Regardless of this policy, each history entry is the same inline copy the
 // next stage gets as {{previous}}: when the orchestrator has a SharedMemory
-// store the full output is under "stage-N-output" and the entry is cut to
+// store the full output is under "<workflow-id>-stage-N-output" and the entry is cut to
 // MaxStageOutputBytes (8192) with a notice naming that key; without a store
 // the entry is the full output. Setting a HistoryPolicy adds a whole-prompt
 // token budget enforced with overflow_strategy, and lets the per-entry cap
@@ -1771,7 +1771,11 @@ type IterativeWorkflowPattern struct {
 	// Which stage IDs are allowed to trigger restarts
 	// Empty = all stages can trigger restarts
 	RestartTriggers []string `protobuf:"bytes,4,rep,name=restart_triggers,json=restartTriggers,proto3" json:"restart_triggers,omitempty"`
-	// Topic for restart coordination messages (default: "workflow.restart")
+	// Topic for restart coordination messages. Empty (the default) gives each
+	// run its own topic, "workflow.restart.<workflow-id>", so on a bus shared by
+	// many runs a request restarts only the run that published it; the
+	// publish_restart tool follows the running pipeline's topic. Set it only
+	// when an external publisher must know the topic in advance.
 	RestartTopic  string `protobuf:"bytes,5,opt,name=restart_topic,json=restartTopic,proto3" json:"restart_topic,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

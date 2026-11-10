@@ -4288,12 +4288,27 @@ func (s *MultiAgentServer) ensureCommunicationTools(ag *agent.Agent, agentID str
 	if ag == nil || (s.messageQueue == nil && s.messageBus == nil && s.sharedMemoryComm == nil) {
 		return
 	}
+	commTools := builtin.CommunicationTools(s.messageQueue, s.messageBus, s.sharedMemoryComm, agentID)
+	if len(commTools) == 0 {
+		return
+	}
+	// Once per agent: the registry caches agents across calls, so skip when
+	// every tool this server would inject is already registered (whatever
+	// subset of queue, bus and store is configured).
+	registered := make(map[string]bool)
 	for _, name := range ag.ListTools() {
-		if name == "shared_memory_read" {
-			return
+		registered[name] = true
+	}
+	missing := false
+	for _, tool := range commTools {
+		if !registered[tool.Name()] {
+			missing = true
+			break
 		}
 	}
-	commTools := builtin.CommunicationTools(s.messageQueue, s.messageBus, s.sharedMemoryComm, agentID)
+	if !missing {
+		return
+	}
 	ag.RegisterTools(commTools...)
 	if s.logger != nil {
 		s.logger.Info("Communication tools injected into workflow agent",
@@ -4468,7 +4483,6 @@ func (s *MultiAgentServer) StreamWorkflow(req *loomv1.ExecuteWorkflowRequest, st
 	}
 }
 
-// createOrchestratorWithProgress creates an orchestrator with the given agents, configuration, and optional progress callback.
 // createOrchestratorWithProgress builds the orchestrator for one ExecuteWorkflow
 // call. sharedMemory and messageBus are the server's workflow communication
 // store and bus (ConfigureCommunication); the orchestrator stashes stage,
@@ -4491,7 +4505,7 @@ func createOrchestratorWithProgress(agents map[string]*agent.Agent, registry *ag
 		Logger:           logger,
 		ProgressCallback: progressCallback, // Wire up progress callback
 		TaskManager:      taskManager,      // Persistent workflow tracking
-		SharedMemory:     sharedMemory,     // Workflow hand-off stash (stage-N-output, branch, position keys)
+		SharedMemory:     sharedMemory,     // Workflow hand-off stash (<workflow-id>-stage-N-output, branch, position keys)
 		MessageBus:       messageBus,       // Iterative restart coordination
 	})
 

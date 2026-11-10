@@ -126,6 +126,22 @@ func (t *PublishRestartTool) Execute(ctx context.Context, params map[string]inte
 		}
 	}
 
+	// The topic is the running pipeline's own (set by the iterative executor
+	// on the turn's context). Without it this turn is not part of an
+	// iterative run with restarts enabled, and there is nothing to publish to.
+	topic := communication.RestartTopicFromContext(ctx)
+	if topic == "" {
+		return &shuttle.Result{
+			Success: false,
+			Error: &shuttle.Error{
+				Code:       "RESTART_NOT_ACTIVE",
+				Message:    "No iterative pipeline with restarts enabled is running this turn, so there is no restart topic to publish to",
+				Suggestion: "publish_restart only works from a stage of an iterative workflow whose restart_policy.enabled is true",
+			},
+			ExecutionTimeMs: time.Since(start).Milliseconds(),
+		}, nil
+	}
+
 	// Create RestartRequest message
 	restartReq := &loomv1.RestartRequest{
 		RequesterStageId: t.agentID,
@@ -152,7 +168,7 @@ func (t *PublishRestartTool) Execute(ctx context.Context, params map[string]inte
 	// Create BusMessage
 	busMsg := &loomv1.BusMessage{
 		Id:        fmt.Sprintf("restart-request-%d", time.Now().UnixNano()),
-		Topic:     "workflow.restart",
+		Topic:     topic,
 		FromAgent: t.agentID,
 		Payload: &loomv1.MessagePayload{
 			Data: &loomv1.MessagePayload_Value{
@@ -168,7 +184,7 @@ func (t *PublishRestartTool) Execute(ctx context.Context, params map[string]inte
 	}
 
 	// Publish to MessageBus
-	publishedCount, filteredCount, err := t.messageBus.Publish(ctx, "workflow.restart", busMsg)
+	publishedCount, filteredCount, err := t.messageBus.Publish(ctx, topic, busMsg)
 	if err != nil {
 		return &shuttle.Result{
 			Success: false,
@@ -185,6 +201,7 @@ func (t *PublishRestartTool) Execute(ctx context.Context, params map[string]inte
 	// Build success result
 	result := map[string]interface{}{
 		"status":          "request_published",
+		"topic":           topic,
 		"requester":       t.agentID,
 		"target_stage":    targetStageID,
 		"reason":          reason,

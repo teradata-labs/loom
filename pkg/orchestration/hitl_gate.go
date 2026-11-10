@@ -264,10 +264,15 @@ func snapshotWorkflowMemory(ctx context.Context, o *Orchestrator, workflowID str
 
 	var entries []*loomv1.CheckpointMemoryEntry
 	for _, key := range listResp.Keys {
+		// Stage outputs are re-seeded from the stage snapshots; everything
+		// else the checkpoint keeps must be this workflow's own (its managed
+		// keys and the keys its agents wrote under the workflow prefix). On a
+		// shared store an unprefixed key may be another run's, so it is not
+		// captured and not written back on resume.
 		if legacyStageOutputKeyPattern.MatchString(key) || isStageOutputKey(key, workflowID) {
 			continue
 		}
-		if owner := managedKeyWorkflow(key); owner != "" && owner != workflowID {
+		if !workflowOwnsKey(key, workflowID) {
 			continue
 		}
 		getResp, err := o.sharedMemory.Get(ctx, &loomv1.GetSharedMemoryRequest{

@@ -67,11 +67,12 @@ type HandoffRequest struct {
 type HandoffResult struct {
 	Prompt      string
 	InputTokens int
-	Budget      int    // 0 when no budget applied
-	Overflow    string // none | pre_reduce | truncate
-	Stored      int    // entries whose full text is in SharedMemory
-	Truncated   int    // entries whose inline copy was cut
-	Reduced     int    // entries replaced by an LLM-reduced card
+	Budget      int      // 0 when no budget applied
+	Overflow    string   // none | pre_reduce | truncate
+	Stored      int      // entries whose full text is in SharedMemory
+	StoredKeys  []string // keys of those entries (a failed Put leaves its key out)
+	Truncated   int      // entries whose inline copy was cut
+	Reduced     int      // entries replaced by an LLM-reduced card
 	Usage       types.Usage
 	LLMCalls    int32 // pre-reduce calls made
 }

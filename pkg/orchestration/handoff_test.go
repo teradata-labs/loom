@@ -76,7 +76,7 @@ func TestOrchestrator_BoundHandoff_UnstoredEntriesAreStillCapped(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 0, res.Stored, "no SharedMemory store")
 	assert.Equal(t, 1, res.Truncated, "debate hand-offs cut even unstored entries (the join rule)")
-	assert.Contains(t, res.Prompt, "SharedMemory is not configured")
+	assert.Contains(t, res.Prompt, "not in SharedMemory")
 }
 
 func TestOrchestrator_BoundHandoff_OverBudgetFailMapsToCollaborationSentinel(t *testing.T) {

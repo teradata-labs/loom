@@ -70,12 +70,19 @@ func (o *Orchestrator) BoundHandoff(ctx context.Context, req *collaboration.Hand
 		}
 		return nil, err
 	}
+	var storedKeys []string
+	for _, e := range entries {
+		if e.memKey != "" {
+			storedKeys = append(storedKeys, e.memKey)
+		}
+	}
 	return &collaboration.HandoffResult{
 		Prompt:      fit.Rendered,
 		InputTokens: fit.InputTokens,
 		Budget:      fit.Budget,
 		Overflow:    fit.Overflow,
 		Stored:      fit.Stored,
+		StoredKeys:  storedKeys,
 		Truncated:   fit.Truncated,
 		Reduced:     fit.Reduced,
 		Usage:       fit.Usage,

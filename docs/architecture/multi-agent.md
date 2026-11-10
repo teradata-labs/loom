@@ -1,7 +1,7 @@
 
 # Multi-Agent Orchestration Architecture
 
-Architecture of Loom's multi-agent orchestration system with 9 workflow patterns, fluent API, Kubernetes-style YAML configuration, and tri-modal communication for coordinating multiple agents.
+Architecture of Loom's multi-agent orchestration system with 7 implemented workflow patterns (2 planned), fluent API, Kubernetes-style YAML configuration, and tri-modal communication for coordinating multiple agents.
 
 **Target Audience**: Architects, academics, and advanced developers
 
@@ -644,7 +644,7 @@ func (e *IterativePipelineExecutor) Execute(ctx context.Context) (*loomv1.Workfl
     maxIterations := e.pattern.MaxIterations
 
     // Subscribe to restart topic
-    restartTopic := e.pattern.RestartTopic  // default: "workflow.restart"
+    restartTopic := e.pattern.RestartTopic  // default: "workflow.restart.<workflow-id>", one topic per run
     restartCh := e.messageBus.Subscribe(restartTopic)
 
     for iteration <= maxIterations {
@@ -848,7 +848,7 @@ func (e *Engine) Execute(ctx context.Context, pattern *loomv1.WorkflowPattern) (
 
 **Debate Pattern** (`pkg/collaboration/debate.go`, `DebateOrchestrator.Execute`). What actually runs, per round:
 
-1. Every agent in `agent_ids` is asked for a position (`POSITION:` / `ARGUMENTS:` / `CONFIDENCE:`; an unformatted reply is taken whole as the position) with the topic and the **summarized** history of earlier rounds. The summaries come from the moderator agent (the first debater when no moderator is set): one LLM call per position over 250 characters, capped at 300 characters.
+1. Every agent in `agent_ids` is asked for a position (`POSITION:` / `ARGUMENTS:` / `CONFIDENCE:`; an unformatted reply is taken whole as the position) with the topic and the **summarized** history of earlier rounds. The summaries come from the moderator agent (the first debater when no moderator is set): one LLM call per position longer than 250 characters or carrying more than two arguments, capped at 300 characters.
 2. From round 2 on, each agent is shown the **other agents' positions**, in `agent_ids` order, and asked to respond.
 3. The round's synthesis line is a heuristic (participant count, average confidence, first 100 characters of each position), and consensus is `average confidence >= 0.8` unless the moderator's decision layer has a live band for `debate.consensus`.
 

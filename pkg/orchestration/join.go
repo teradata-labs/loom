@@ -59,15 +59,15 @@ const (
 	joinShareSafetyPercent = 95
 
 	joinTruncatedNotice      = "[Branch output truncated: %d of %d bytes shown. Full output in SharedMemory: shared_memory_read(namespace=\"workflow\", key=\"%s\")]"
-	joinTruncatedNoMemNotice = "[Branch output truncated: %d of %d bytes shown. SharedMemory is not configured, so the rest is not retrievable.]"
+	joinTruncatedNoMemNotice = "[Branch output truncated: %d of %d bytes shown. The full output is not in SharedMemory, so the rest is not retrievable.]"
 	joinReducedNotice        = "[Branch output reduced from %d bytes by the compressor LLM. Full output in SharedMemory: shared_memory_read(namespace=\"workflow\", key=\"%s\")]"
-	joinReducedNoMemNotice   = "[Branch output reduced from %d bytes by the compressor LLM. SharedMemory is not configured, so the full text is not retrievable.]"
+	joinReducedNoMemNotice   = "[Branch output reduced from %d bytes by the compressor LLM. The full output is not in SharedMemory, so the full text is not retrievable.]"
 
 	// Stage-style notices continue the pipeline's own wording
 	// (StageOutputTruncationNoticeTemplate) for history entries.
-	stageTruncatedNoMemNotice = "\n\n[OUTPUT TRUNCATED: %d of %d bytes shown - SharedMemory is not configured, so the rest is not retrievable]"
+	stageTruncatedNoMemNotice = "\n\n[OUTPUT TRUNCATED: %d of %d bytes shown - The full output is not in SharedMemory, so the rest is not retrievable]"
 	stageReducedNotice        = "\n\n[OUTPUT REDUCED from %d bytes by the compressor LLM - Full data stored in SharedMemory. Use shared_memory_read(namespace=\"workflow\", key=\"%s\") to fetch complete output]"
-	stageReducedNoMemNotice   = "\n\n[OUTPUT REDUCED from %d bytes by the compressor LLM - SharedMemory is not configured, so the full text is not retrievable]"
+	stageReducedNoMemNotice   = "\n\n[OUTPUT REDUCED from %d bytes by the compressor LLM - The full output is not in SharedMemory, so the full text is not retrievable]"
 )
 
 // ErrJoinInputOverBudget is returned when the rendered hand-off exceeds

@@ -58,11 +58,12 @@ func (m *scriptedLLM) recorded() []string {
 // fakeBounder cuts every entry over cap bytes and records each request.
 // With fail set it returns ErrHandoffOverBudget.
 type fakeBounder struct {
-	mu    sync.Mutex
-	cap   int
-	fail  bool
-	calls int32
-	reqs  []*HandoffRequest
+	mu      sync.Mutex
+	cap     int
+	fail    bool
+	failPut map[string]bool // keys whose store Put "failed": reported as not stored
+	calls   int32
+	reqs    []*HandoffRequest
 }
 
 func (f *fakeBounder) BoundHandoff(_ context.Context, req *HandoffRequest) (*HandoffResult, error) {
@@ -76,8 +77,9 @@ func (f *fakeBounder) BoundHandoff(_ context.Context, req *HandoffRequest) (*Han
 	res := &HandoffResult{Overflow: "none", LLMCalls: f.calls, Usage: types.Usage{TotalTokens: int(f.calls) * 10, CostUSD: float64(f.calls) * 0.01}}
 	for i, e := range req.Entries {
 		p := HandoffPiece{Index: e.Index, AgentID: e.AgentID, Inline: e.Text, Key: e.Key, FullSize: len(e.Text)}
-		if e.Key != "" {
+		if e.Key != "" && !f.failPut[e.Key] {
 			res.Stored++
+			res.StoredKeys = append(res.StoredKeys, e.Key)
 		}
 		if f.cap > 0 && len(e.Text) > f.cap {
 			p.Inline = e.Text[:f.cap]
@@ -427,4 +429,55 @@ func TestPairProgrammingAndTeacherStudent_NotImplemented(t *testing.T) {
 	_, err = engine.Execute(context.Background(), &loomv1.WorkflowPattern{Pattern: &loomv1.WorkflowPattern_TeacherStudent{TeacherStudent: &loomv1.TeacherStudentPattern{}}})
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrPatternNotImplemented))
+}
+
+// A configured moderator that does not exist fails the debate before any
+// round is paid for, instead of after every round at the synthesis.
+func TestDebate_Execute_MissingModeratorFailsBeforeAnyRound(t *testing.T) {
+	a, llmA := scriptedAgent("a", "pos a")
+	b, llmB := scriptedAgent("b", "pos b")
+	d := NewDebateOrchestrator(&boundingProvider{agents: map[string]*agent.Agent{"a": a, "b": b}, bounder: &fakeBounder{}})
+	_, err := d.Execute(context.Background(), &loomv1.DebatePattern{
+		Topic: "t", AgentIds: []string{"a", "b"}, Rounds: 2, ModeratorAgentId: "moderator",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `moderator_agent_id "moderator"`)
+	assert.Contains(t, err.Error(), "no agent moderator")
+	assert.Empty(t, llmA.recorded(), "no debater was asked for a position")
+	assert.Empty(t, llmB.recorded())
+}
+
+// A position whose store Put failed is not marked stored: the next prompt
+// that carries it asks the bounder to store it again instead of pointing at
+// a key that is not in the store.
+func TestDebate_FailedPutIsNotMarkedStored(t *testing.T) {
+	a, _ := scriptedAgent("a", "pos a")
+	b, _ := scriptedAgent("b", "pos b")
+	c, _ := scriptedAgent("c", "pos c")
+	bounder := &fakeBounder{failPut: map[string]bool{"wf-round-2-position-c": true}}
+	d := NewDebateOrchestrator(&boundingProvider{agents: map[string]*agent.Agent{"a": a, "b": b, "c": c}, bounder: bounder})
+	config := &loomv1.DebatePattern{Topic: "t", AgentIds: []string{"a", "b", "c"}, JoinPolicy: &loomv1.JoinPolicy{MaxBranchBytes: 1}}
+
+	_, _, err := d.executeRound(context.Background(), "wf", 2, config, nil, a, &loomv1.WorkflowCost{})
+	require.NoError(t, err)
+	reqs := bounder.requests()
+	require.Len(t, reqs, 3)
+	storedIn := func(req *HandoffRequest) map[string]bool {
+		m := map[string]bool{}
+		for _, e := range req.Entries {
+			m[e.Key] = e.Stored
+		}
+		return m
+	}
+	// a's hand-off carried b and c; b's Put succeeded, c's failed. b's prompt
+	// carries a (new) and c: c is offered again, not referenced.
+	second := storedIn(reqs[1])
+	assert.False(t, second["wf-round-2-position-a"], "a appears for the first time")
+	assert.False(t, second["wf-round-2-position-c"], "c's Put failed in the first hand-off: not marked stored")
+	// c's prompt carries a (stored by b's hand-off) and b (stored by a's).
+	third := storedIn(reqs[2])
+	assert.True(t, third["wf-round-2-position-a"])
+	assert.True(t, third["wf-round-2-position-b"])
+	assert.False(t, d.positionStored("wf", "wf-round-2-position-c"), "still not stored: every Put of c failed")
+	assert.True(t, d.positionStored("wf", "wf-round-2-position-b"))
 }

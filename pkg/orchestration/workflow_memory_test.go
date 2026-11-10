@@ -50,19 +50,41 @@ func seedWorkflowKeys(t *testing.T, store *communication.SharedMemoryStore, keys
 	}
 }
 
+func TestWorkflowOwnsKey(t *testing.T) {
+	tests := []struct {
+		key, workflow string
+		owns          bool
+	}{
+		{"wf-a-stage-1-output", "wf-a", true},
+		{"wf-a-branch-2-output", "wf-a", true},
+		{"wf-a-round-1-position-x", "wf-a", true},
+		{"wf-a-notes", "wf-a", true},
+		{"wf-a-b-stage-1-output", "wf-a", false}, // managed key of another run, even with a matching prefix
+		{"wf-b-stage-1-output", "wf-a", false},
+		{"wf-b-notes", "wf-a", false},
+		{"analysis-notes", "wf-a", false}, // no prefix: shared, nobody's
+		{"stage-1-output", "wf-a", false}, // legacy unscoped stash
+		{"wf-a", "wf-a", false},
+		{"wf-a-notes", "", false},
+	}
+	for _, tc := range tests {
+		assert.Equal(t, tc.owns, workflowOwnsKey(tc.key, tc.workflow), "%s owned by %q", tc.key, tc.workflow)
+	}
+}
+
 func TestSnapshotWorkflowMemory_OnlyThisWorkflowsEntriesAndAgentKeys(t *testing.T) {
 	orch := newJoinTestOrchestrator(t, nil, true)
 	seedWorkflowKeys(t, orch.sharedMemory,
-		"wf-a-stage-1-output", "wf-a-branch-1-output", "wf-a-round-1-position-x",
-		"wf-b-stage-1-output", "wf-b-branch-1-output", "wf-b-round-1-position-y",
+		"wf-a-stage-1-output", "wf-a-branch-1-output", "wf-a-round-1-position-x", "wf-a-notes",
+		"wf-b-stage-1-output", "wf-b-branch-1-output", "wf-b-round-1-position-y", "wf-b-notes",
 		"stage-1-output", "analysis-notes")
 	entries := snapshotWorkflowMemory(context.Background(), orch, "wf-a")
 	keys := make([]string, 0, len(entries))
 	for _, e := range entries {
 		keys = append(keys, e.Key)
 	}
-	assert.ElementsMatch(t, []string{"wf-a-branch-1-output", "wf-a-round-1-position-x", "analysis-notes"}, keys,
-		"own stage keys are re-seeded from the stage snapshots; other workflows' managed keys are not this workflow's data")
+	assert.ElementsMatch(t, []string{"wf-a-branch-1-output", "wf-a-round-1-position-x", "wf-a-notes"}, keys,
+		"own stage keys are re-seeded from the stage snapshots; other workflows' keys, prefixed or not, are not this workflow's data")
 }
 
 func TestRestoreWorkflowMemory_ReseedsScopedStageKeys(t *testing.T) {
@@ -86,11 +108,8 @@ func TestCleanupWorkflowMemory_RemovesOnlyThisWorkflowsManagedKeys(t *testing.T)
 	assert.ElementsMatch(t, []string{"wf-b-stage-1-output", "stage-1-output", "analysis-notes", "wf-a-notes"},
 		workflowMemoryKeys(t, orch.sharedMemory), "agent-written keys and other workflows' keys stay")
 
-	var suspended error = &WorkflowSuspended{}
 	seedWorkflowKeys(t, orch.sharedMemory, "wf-b-branch-1-output")
-	orch.finishWorkflowMemory(context.Background(), "wf-b", suspended)
-	assert.Contains(t, workflowMemoryKeys(t, orch.sharedMemory), "wf-b-branch-1-output", "a suspension keeps the stash for the resume")
-	orch.finishWorkflowMemory(context.Background(), "wf-b", nil)
+	orch.cleanupWorkflowMemory(context.Background(), "wf-b")
 	assert.NotContains(t, workflowMemoryKeys(t, orch.sharedMemory), "wf-b-branch-1-output")
 	assert.NotContains(t, workflowMemoryKeys(t, orch.sharedMemory), "wf-b-stage-1-output")
 
@@ -101,14 +120,14 @@ func TestCleanupWorkflowMemory_RemovesOnlyThisWorkflowsManagedKeys(t *testing.T)
 func TestIterativeReset_LeavesOtherWorkflowsManagedKeys(t *testing.T) {
 	orch := newJoinTestOrchestrator(t, nil, true)
 	seedWorkflowKeys(t, orch.sharedMemory,
-		"iterative-0001-stage-1-output", "iterative-0001-stage-2-output",
-		"wf-other-stage-1-output", "wf-other-branch-1-output", "debate-x-round-1-position-a",
+		"iterative-0001-stage-1-output", "iterative-0001-stage-2-output", "iterative-0001-notes",
+		"wf-other-stage-1-output", "wf-other-branch-1-output", "wf-other-notes", "debate-x-round-1-position-a",
 		"analysis-notes", "stage-1-output")
 	e := NewIterativePipelineExecutor(orch, &loomv1.IterativeWorkflowPattern{Pipeline: &loomv1.PipelinePattern{}}, nil, "iterative-0001")
 	require.NoError(t, e.resetWorkflowNamespace(context.Background()))
-	assert.ElementsMatch(t, []string{"wf-other-stage-1-output", "wf-other-branch-1-output", "debate-x-round-1-position-a"},
+	assert.ElementsMatch(t, []string{"wf-other-stage-1-output", "wf-other-branch-1-output", "wf-other-notes", "debate-x-round-1-position-a", "analysis-notes"},
 		workflowMemoryKeys(t, orch.sharedMemory),
-		"the reset clears this workflow's stash and unprefixed agent keys, never another workflow's managed keys")
+		"the reset clears this run's own keys (its stash, its agents' prefixed keys, legacy unscoped stage keys); other workflows' keys and unprefixed keys stay")
 }
 
 // Two pipelines share one store, as every workflow on a looms server does. A's
@@ -176,5 +195,54 @@ func TestConcurrentPipelinesOnOneStore_KeepTheirOwnStageOutputs(t *testing.T) {
 	assert.True(t, strings.HasPrefix(aFetched, "A-ONE"), "A fetched its own stage 1, got %q", aFetched[:min(40, len(aFetched))])
 	for _, k := range workflowMemoryKeys(t, store) {
 		assert.Empty(t, managedKeyWorkflow(k), "both runs cleaned up their stash; found %s", k)
+	}
+}
+
+// A gRPC server never installs a HITL handler and keeps no checkpoint, so a
+// gated pipeline it runs suspends and is never resumed. The stash must not
+// outlive the suspension: the checkpoint carries the stage outputs and the
+// resume re-seeds the keys from it.
+func TestPipelineGate_SuspensionDropsStashAndResumeReseedsIt(t *testing.T) {
+	t.Parallel()
+
+	store, err := communication.NewSharedMemoryStore(observability.NewNoOpTracer(), zaptest.NewLogger(t))
+	require.NoError(t, err)
+	orch := NewOrchestrator(Config{
+		Logger:       zaptest.NewLogger(t),
+		Tracer:       observability.NewNoOpTracer(),
+		SharedMemory: store,
+		// No HITLHandler: every gate suspends, as on the gRPC server.
+	})
+	var keysSeenByExecutor []string
+	orch.RegisterAgent("analyst", createMockAgent(t, "analyst", newRecordingLLMProvider("requirements: orders table")))
+	orch.RegisterAgent("designer", createMockAgent(t, "designer", newRecordingLLMProvider("CREATE TABLE orders (...)")))
+	orch.RegisterAgent("executor", createMockAgent(t, "executor", newFuncLLMProvider(func(string) (string, error) {
+		keysSeenByExecutor = workflowMemoryKeys(t, store)
+		return "Table created successfully", nil
+	})))
+
+	pattern := gatedPipelinePattern(&loomv1.HITLGate{})
+	_, err = orch.ExecutePattern(context.Background(), pattern)
+	var suspended *WorkflowSuspended
+	require.ErrorAs(t, err, &suspended)
+	wfID := suspended.Checkpoint.WorkflowId
+	require.NotEmpty(t, wfID)
+	require.Len(t, suspended.Checkpoint.StageSnapshots, 2)
+	assert.Equal(t, "CREATE TABLE orders (...)", suspended.Checkpoint.StageSnapshots[1].FullOutput,
+		"the checkpoint, not the store, carries the stage outputs across the pause")
+
+	for _, key := range workflowMemoryKeys(t, store) {
+		assert.NotEqual(t, wfID, managedKeyWorkflow(key), "managed key %q survived the suspension", key)
+	}
+
+	result, err := orch.ResumeWorkflow(context.Background(), pattern, suspended.Checkpoint,
+		&loomv1.GateDecision{Action: loomv1.GateAction_GATE_ACTION_APPROVE})
+	require.NoError(t, err)
+	assert.Equal(t, "Table created successfully", result.MergedOutput)
+	assert.ElementsMatch(t, []string{stageOutputKey(wfID, 1), stageOutputKey(wfID, 2)}, keysSeenByExecutor,
+		"the resume re-seeds the earlier stages' keys before the next stage runs")
+
+	for _, key := range workflowMemoryKeys(t, store) {
+		assert.NotEqual(t, wfID, managedKeyWorkflow(key), "managed key %q survived the resumed run", key)
 	}
 }

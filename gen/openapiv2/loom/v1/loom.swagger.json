@@ -6152,7 +6152,7 @@
           "description": "What to do when the rendered prompt exceeds max_input_tokens. The\noverflow strategies act on the history entries only; {{previous}} and\nthe stage's own template text are never cut. UNSPECIFIED behaves as\nPRE_REDUCE, which reduces oversize entries with the stage agent's\ncompressor-role LLM (its main LLM when none is configured)."
         }
       },
-      "description": "HistoryPolicy bounds what a pipeline stage receives through {{history}}\nand pass_full_history: every prior stage's output rendered into one\nprompt.\n\nRegardless of this policy, each history entry is the same inline copy the\nnext stage gets as {{previous}}: when the orchestrator has a SharedMemory\nstore the full output is under \"stage-N-output\" and the entry is cut to\nMaxStageOutputBytes (8192) with a notice naming that key; without a store\nthe entry is the full output. Setting a HistoryPolicy adds a whole-prompt\ntoken budget enforced with overflow_strategy, and lets the per-entry cap\nbe tuned."
+      "description": "HistoryPolicy bounds what a pipeline stage receives through {{history}}\nand pass_full_history: every prior stage's output rendered into one\nprompt.\n\nRegardless of this policy, each history entry is the same inline copy the\nnext stage gets as {{previous}}: when the orchestrator has a SharedMemory\nstore the full output is under \"\u003cworkflow-id\u003e-stage-N-output\" and the entry is cut to\nMaxStageOutputBytes (8192) with a notice naming that key; without a store\nthe entry is the full output. Setting a HistoryPolicy adds a whole-prompt\ntoken budget enforced with overflow_strategy, and lets the per-entry cap\nbe tuned."
     },
     "v1HygieneConfig": {
       "type": "object",
@@ -6265,7 +6265,7 @@
         },
         "restartTopic": {
           "type": "string",
-          "title": "Topic for restart coordination messages (default: \"workflow.restart\")"
+          "description": "Topic for restart coordination messages. Empty (the default) gives each\nrun its own topic, \"workflow.restart.\u003cworkflow-id\u003e\", so on a bus shared by\nmany runs a request restarts only the run that published it; the\npublish_restart tool follows the running pipeline's topic. Set it only\nwhen an external publisher must know the topic in advance."
         }
       },
       "description": "IterativeWorkflowPattern extends PipelinePattern with autonomous restart capabilities.\nStages can trigger restarts of earlier stages via pub/sub coordination, enabling\nagents to negotiate and self-correct without human intervention.\n\nExample use case: Stage 6 hits processing limits and requests Stage 2 to find\na different table with fewer rows."

@@ -200,7 +200,7 @@ func TestJoiner_CollectBranches_DefaultCapAndNoMemory(t *testing.T) {
 	assert.Equal(t, joinBranchFull, branches[1].action)
 
 	rendered := j.renderJoinBranches(branches)
-	assert.Contains(t, rendered, "SharedMemory is not configured")
+	assert.Contains(t, rendered, "not in SharedMemory")
 	assert.NotContains(t, rendered, "shared_memory_read")
 }
 
