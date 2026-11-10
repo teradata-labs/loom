@@ -121,13 +121,13 @@ func TestAnalyze_ChangedDirectory(t *testing.T) {
 		t.Skip("POSIX path semantics; the policy refuses every call on Windows")
 	}
 	runBypassCases(t, []bypassCase{
-		{cmd: `cd sub && cat ../../o/secret.txt`, want: Ask, static: Ask, why: "../../o/secret.txt (1:11): reads outside the session"},
+		{cmd: `cd sub && cat ../../o/secret.txt`, want: Ask, static: Ask, why: "../../o/secret.txt (1:11): reads outside the read roots"},
 		{cmd: `pushd sub && cat ../../o/secret.txt`, want: Ask, static: Ask},
 		{cmd: `cat ../../o/secret.txt; cd sub`, want: Ask, static: Ask},
 		{cmd: `eval 'cd sub'; cat ../../o/secret.txt`, want: Ask, static: Ask},
 		{cmd: `f() { cd sub; }; f; cat < ../../o/secret.txt`, want: Ask, static: Ask},
 		{cmd: `cd sub; cd ..; cd sub; cat ../../o/ssh/k`, want: Ask, static: Ask},
-		{cmd: `cd /; echo x > y`, want: Deny, static: Deny, why: "y (1:14): writes outside the session"},
+		{cmd: `cd /; echo x > y`, want: Deny, static: Deny, why: "y (1:14): writes outside the write roots"},
 		{cmd: `cd && cat .ssh/config`, want: Allow, static: Deny, why: "cd (1:1)"},
 		{cmd: `cd -P && cat x`, want: Allow, static: Deny},
 		{cmd: `cd - && cat secret.txt`, want: Allow, static: Deny, why: "$OLDPWD"},
@@ -152,8 +152,8 @@ func TestAnalyze_InheritedCDPATH(t *testing.T) {
 		opt.Static = static
 		v := Readonly().Analyze(`cd o && cat secret.txt`, opt)
 		assert.Equal(t, Ask, v.Kind, "static=%v: %s", static, v.Reason())
-		assert.Contains(t, v.Reason(), "secret.txt (1:9): reads outside the session")
-		assert.Contains(t, v.Reason(), "o (1:4): reads outside the session")
+		assert.Contains(t, v.Reason(), "secret.txt (1:9): reads outside the read roots")
+		assert.Contains(t, v.Reason(), "o (1:4): reads outside the read roots")
 	}
 }
 
@@ -167,12 +167,12 @@ func TestAnalyze_GlobPaths(t *testing.T) {
 	runBypassCases(t, []bypassCase{
 		{cmd: `cat */../../o/secret.txt`, want: Allow, static: Deny, why: "a .. after a glob"},
 		{cmd: `cat s?b/../../o/secret.txt`, want: Allow, static: Deny},
-		{cmd: `cat */k`, want: Allow, static: Ask, why: "*/k (1:5): matches names outside the session"},
+		{cmd: `cat */k`, want: Allow, static: Ask, why: "*/k (1:5): matches names outside the read roots"},
 		{cmd: `cat l*`, want: Allow, static: Ask},
 		{cmd: `cd sub; cat ../l*/k`, want: Ask, static: Ask},
 		{cmd: `cat .*/o/secret.txt`, want: Allow, static: Ask},
-		{cmd: `cat link/../secret.txt`, want: Ask, static: Ask, why: "reads outside the session"},
-		{cmd: `echo x > link/../new.txt`, want: Deny, static: Deny, why: "writes outside the session"},
+		{cmd: `cat link/../secret.txt`, want: Ask, static: Ask, why: "reads outside the read roots"},
+		{cmd: `echo x > link/../new.txt`, want: Deny, static: Deny, why: "writes outside the write roots"},
 		{cmd: `cat *.txt sub/* [av]*.txt`, want: Allow, static: Allow},
 		{cmd: `[ -f a.txt ] && [ "$x" = y ]`, want: Allow, static: Allow},
 	})
@@ -256,8 +256,8 @@ func TestCheckLaunch_ReviewBypasses(t *testing.T) {
 		block string // a substring of the reason; "" means allowed
 	}{
 		{argv: []string{"file", "-f" + secret}, block: "-f is outside the profile"}, // F2 refuses -f outright
-		{argv: []string{"file", "-m../o/secret.txt", "victim.txt"}, block: "outside the session"},
-		{argv: []string{"grep", "-f" + secret, "a.txt"}, block: "outside the session"},
+		{argv: []string{"file", "-m../o/secret.txt", "victim.txt"}, block: "outside the read roots"},
+		{argv: []string{"grep", "-f" + secret, "a.txt"}, block: "outside the read roots"},
 		{argv: []string{"date", "-f", secret}, block: "-f is outside the profile"},
 		{argv: []string{"date", "--file=" + secret}, block: "--file"},
 		{argv: []string{"git", "grep", "-Otouch pwned", "a"}, block: "-O"},
@@ -268,7 +268,7 @@ func TestCheckLaunch_ReviewBypasses(t *testing.T) {
 		{argv: []string{"git", "diff", "--text"}},
 		{argv: []string{"git", "grep", "--or", "-e", "a", "--only-matching"}},
 		{argv: []string{"grep", "-f", "a.txt", "victim.txt"}},
-		{argv: []string{"cat", "link/../secret.txt"}, block: "outside the session"},
+		{argv: []string{"cat", "link/../secret.txt"}, block: "outside the read roots"},
 	} {
 		err := pol.CheckLaunch(tc.argv, w, opt.Roots, nil)
 		if tc.block == "" {
@@ -740,7 +740,7 @@ func TestAnalyze_FindFollow(t *testing.T) {
 		{cmd: `find -LE .`, want: Ask, static: Ask, why: "find -LE is outside the profile"},
 		{cmd: `find -xL . -name k`, want: Ask, static: Ask},
 		{cmd: `find . -follow -name k`, want: Ask, static: Ask, why: "-follow is outside the profile"},
-		{cmd: `find -H link`, want: Ask, static: Ask, why: "link (1:1): reads outside the session"},
+		{cmd: `find -H link`, want: Ask, static: Ask, why: "link (1:1): reads outside the read roots"},
 		{cmd: `find . -name '*.txt' -type f; find -H .; find -P .; find -x . -ls; find . -links 1; find -E . -regex 'a.*'`, want: Allow, static: Allow},
 	})
 	runLaunchCases(t, []launchCase{
@@ -1091,7 +1091,7 @@ func TestAnalyze_WriteThroughDanglingSymlink(t *testing.T) {
 		want VerdictKind
 		why  string
 	}{
-		{cmd: `echo x > ol`, want: Deny, why: "ol (1:8): writes outside the session"},
+		{cmd: `echo x > ol`, want: Deny, why: "ol (1:8): writes outside the write roots"},
 		{cmd: `echo x >> rl`, want: Deny},
 		{cmd: `printf '../cm\n' > dc`, want: Ask, why: "dc (1:18): writes into a git directory"},
 		{cmd: `echo x > dl`, want: Ask},
@@ -1114,8 +1114,8 @@ func TestAnalyze_WriteThroughDanglingSymlink(t *testing.T) {
 		path  string
 		block string
 	}{
-		{path: "ol", block: "writes outside the session"},
-		{path: "rl", block: "writes outside the session"},
+		{path: "ol", block: "writes outside the write roots"},
+		{path: "rl", block: "writes outside the write roots"},
 		{path: "dc", block: "writes into a git directory"},
 		{path: "c1", block: "writes into a git directory"},
 		{path: "nl"},

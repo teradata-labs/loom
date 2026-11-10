@@ -65,6 +65,11 @@ type Profile struct {
 	// operand and follows the symlinks it meets there (diff): an operand
 	// that is an existing directory is outside the profile.
 	NoDirOperands bool
+	// Alternates names programs that do the same job under another
+	// platform's name (BSD md5 for GNU md5sum). The readonly policy lists
+	// both so a command works on either platform. A runner that cannot find
+	// this program does not report it missing when it found one of these.
+	Alternates []string
 
 	// pathShort lists the ShortWithValue options whose value names a file:
 	// a value attached to one ("-f../x") is path-checked like a positional
@@ -194,6 +199,7 @@ func (pr *Profile) attachedPath(group string) string {
 func Readonly() *Policy {
 	p := &Policy{
 		Name:     "readonly",
+		flat:     Spec{Name: "readonly"},
 		Builtins: map[string]bool{},
 		Programs: map[string]*Profile{},
 		Never:    map[string]bool{"sudo": true, "su": true, "doas": true, "pkexec": true},
@@ -223,6 +229,16 @@ func Readonly() *Policy {
 	// matches. BSD md5 -c compares against a string, so md5 keeps it.
 	for _, n := range []string{"md5sum", "sha1sum", "sha256sum", "shasum"} {
 		p.Programs[n] = &Profile{MaxPositional: -1, RefuseShort: "c", RefuseLong: []string{"--check"}}
+	}
+	// GNU systems ship md5sum, sha1sum and sha256sum; macOS ships md5 and
+	// shasum (and, on recent releases, the GNU names too). Each name stands
+	// in for the other platform's, so only a host with neither is told one
+	// is missing.
+	for name, alts := range map[string][]string{
+		"md5": {"md5sum"}, "md5sum": {"md5"},
+		"sha1sum": {"shasum"}, "sha256sum": {"shasum"},
+	} {
+		p.Programs[name].Alternates = alts
 	}
 	noPaths("tr", "basename", "dirname", "seq", "sleep", "uname", "whoami", "id", "which")
 	// --files0-from=F reads the names of the files to read from F, which

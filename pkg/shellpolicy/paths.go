@@ -208,7 +208,7 @@ func (a *analyzer) workingDirs() []workDir {
 				}
 				if !inRoots(c.physical, a.opt.Roots.Read) {
 					if !asked[ti] {
-						a.add(Ask, t.n, t.outer, t.path, "reads outside the session")
+						a.add(Ask, t.n, t.outer, t.path, "reads outside the read roots")
 						asked[ti] = true
 					}
 					a.grant.add("read", c.physical)
@@ -291,7 +291,7 @@ func (a *analyzer) finishPaths() {
 			if c.write {
 				full = resolveWritePath(d.physical, c.path)
 				if !inRoots(full, a.opt.Roots.Write) {
-					a.add(Deny, c.n, c.outer, c.path, "writes outside the session")
+					a.add(Deny, c.n, c.outer, c.path, "writes outside the write roots")
 					gitWrites = nil
 					break
 				}
@@ -308,7 +308,7 @@ func (a *analyzer) finishPaths() {
 			}
 		}
 		if len(outside) > 0 {
-			a.add(Ask, c.n, c.outer, c.path, "reads outside the session")
+			a.add(Ask, c.n, c.outer, c.path, "reads outside the read roots")
 			for _, full := range outside {
 				a.grant.add("read", full)
 			}
@@ -562,7 +562,7 @@ func (a *analyzer) finishGlobs(dirs []workDir) {
 			}
 		}
 		if len(outside) > 0 {
-			a.add(Ask, g.n, g.outer, g.pat, "matches names outside the session")
+			a.add(Ask, g.n, g.outer, g.pat, "matches names outside the read roots")
 			for _, full := range outside {
 				a.grant.add("read", full)
 			}
