@@ -204,6 +204,18 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// existing deactivation path plus the per-session tool ledger.
 	a.memory.SetSkillDeactivationHook(a.deactivateSkillForFold)
 
+	// Per-message labels (WithMessageLabeler / WithLabelJoin): wired here, not
+	// at option time, so the labeler lands on the memory that survives a later
+	// WithMemory. Rides messages through compaction (the fold summary carries
+	// the replaced labels' join) and replay (the restore path re-runs the
+	// labeler where each row re-enters the context).
+	if a.messageLabeler != nil {
+		a.memory.SetMessageLabeler(a.messageLabeler)
+	}
+	if a.labelJoin != nil {
+		a.memory.SetLabelJoin(a.labelJoin)
+	}
+
 	// Initialize shared memory store for large tool results (#2: Persistent Global Storage)
 	// Use global singleton so references work across agent instances and survive restarts.
 	// The global store provides:
@@ -572,6 +584,28 @@ func WithConfig(config *Config) Option {
 func WithMemory(memory *Memory) Option {
 	return func(a *Agent) {
 		a.memory = memory
+	}
+}
+
+// WithMessageLabeler sets a per-message labeler. The agent calls fn once when
+// a message enters a session's context — arrival, or the restore replay that
+// rebuilds one after a restart — and stores the returned map on the message.
+// Label values are opaque: nothing in the agent interprets them. When a
+// compaction summary replaces labelled messages, their labels ride the
+// summary message joined by WithLabelJoin.
+func WithMessageLabeler(fn func(msg *Message) map[string]string) Option {
+	return func(a *Agent) {
+		a.messageLabeler = fn
+	}
+}
+
+// WithLabelJoin sets the join used when a compaction summary replaces
+// labelled messages: fn is applied pairwise over the replaced messages'
+// labels, in context order. When unset, a default join is used: for each key
+// present in either map, the lexicographically greater value wins.
+func WithLabelJoin(fn func(a, b map[string]string) map[string]string) Option {
+	return func(a *Agent) {
+		a.labelJoin = fn
 	}
 }
 
