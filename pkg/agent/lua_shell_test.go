@@ -17,6 +17,7 @@
 package agent
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -91,6 +92,19 @@ return {listed.stdout, asked.error.code, computed.error.code}`})
 			assert.Equal(t, []any{"alpha", luasandbox.CodeApprovalRequired, tc.wantComputed}, res.Data)
 			_, err = os.Stat(notes)
 			assert.NoError(t, err, "neither rm ran")
+
+			// Review #432 F1: a file outside the session, named directly or
+			// inside a --files0-from list, is never read through the gate.
+			db := filepath.Join(data, "loom.db")
+			require.NoError(t, os.WriteFile(db, []byte("SECRETDB\n"), 0o600))
+			res, err = tool.Execute(runLuaCtx("shell_execute"), map[string]interface{}{"script": `
+local direct = tools.call("shell_execute", {command = "sort ` + db + `"})
+local listed = tools.call("shell_execute", {command = "printf '` + db + `\\0' > l; sort --files0-from=l"})
+return {direct.error and direct.error.code or direct.stdout, listed.error and listed.error.code or listed.stdout}`})
+			require.NoError(t, err)
+			require.True(t, res.Success, "%+v", res.Error)
+			assert.Equal(t, []any{luasandbox.CodeApprovalRequired, luasandbox.CodeApprovalRequired}, res.Data)
+			assert.NotContains(t, fmt.Sprint(res.Data), "SECRETDB")
 		})
 	}
 }
