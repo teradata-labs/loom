@@ -342,7 +342,7 @@ spec:
     - agent_id: implementer
       prompt_template: "Implement: {{previous}}"
     - agent_id: reviewer
-      prompt_template: "Review everything: {{history}}"  # each entry capped at 8 KiB with a stage-N-output SharedMemory pointer
+      prompt_template: "Review everything: {{history}}"  # each entry capped at 8 KiB with a <workflow-id>-stage-N-output SharedMemory pointer
   pass_full_history: true                 # OPTIONAL: default false
   history:                                # OPTIONAL: token budget for {{history}} / pass_full_history prompts
     max_entry_bytes: 4096                 # OPTIONAL: inline cap per prior stage (0 = 8192)
@@ -556,7 +556,7 @@ spec:
 #   full positions are stored under <workflow-id>-round-R-position-<agent-id>.
 #
 # HISTORY POLICY (pipeline, iterative pipeline; spec.history):
-#   {{history}} / pass_full_history entries are always capped at 8 KiB with a stage-N-output
+#   {{history}} / pass_full_history entries are always capped at 8 KiB with a <workflow-id>-stage-N-output
 #   pointer when SharedMemory is configured (same as {{previous}}). The block adds a
 #   whole-prompt token budget:
 #   - max_entry_bytes: inline cap per prior stage, 0 = 8192

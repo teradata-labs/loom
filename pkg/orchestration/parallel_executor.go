@@ -92,8 +92,10 @@ func (e *ParallelExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 		return nil, fmt.Errorf("parallel execution failed: %w", err)
 	}
 
-	// Merge results using specified strategy with merge span
-	ctx, mergeSpan := e.orchestrator.tracer.StartSpan(ctx, "parallel.merge")
+	// Merge results using specified strategy with merge span. The join runs
+	// under the same timeout as the tasks: with a join agent it is a tool
+	// loop plus parallel reduce calls, not one call.
+	ctx, mergeSpan := e.orchestrator.tracer.StartSpan(executeCtx, "parallel.merge")
 	if mergeSpan != nil {
 		mergeSpan.SetAttribute("merge.strategy", e.pattern.MergeStrategy.String())
 		mergeSpan.SetAttribute("task.count", fmt.Sprintf("%d", len(results)))

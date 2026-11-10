@@ -74,7 +74,9 @@ spec:
 
 **Join agent.** `join.agent_id` names a registered agent. The join then runs as that agent's conversation turn (`agent.Chat`) under session `<workflow-id>-join-<agent-id>`: its own system prompt and tools apply (including `shared_memory_read` when configured), its context relief and the provider context-too-long backstop apply, and its output is the workflow's `merged_output`. The agent may also be one of the branch agents. It is validated before any branch runs, and `ExtractAgentIDs` includes it, so the multi-agent server loads it with the branch agents. With a join agent set, the agent always runs, whatever `merge_strategy` says; the strategy only selects the default prompt when `prompt_template` is empty.
 
-**Prompt template.** `{{prompt}}` (the fan-out prompt; empty for parallel) and `{{branch_count}}` are replaced first, `{{branches}}` last by splicing, so placeholder-like text inside a branch output is never substituted. A template without `{{branches}}` gets the sections appended. When the template is empty, the merge strategy's prompt is used with the same bounded sections. Each section looks like:
+**Prompt template.** `{{prompt}}` (the fan-out prompt; empty for parallel) and `{{branch_count}}` are replaced first, `{{branches}}` last by splicing, so placeholder-like text inside a branch output is never substituted. A template without `{{branches}}` gets the sections appended. When the template is empty, the merge strategy's prompt is used with the same bounded sections. Each receiving agent's header also carries `Keys you write with shared_memory_write should start with \`<workflow-id>-\` so they stay with this workflow.`
+
+Each section looks like:
 
 ```
 ### Branch 2: agent sales
@@ -90,13 +92,13 @@ A failed branch renders as `### Branch N: agent X (FAILED)` followed by its erro
 
 A stage that compiles everything reads `{{history}}`, or runs under `pass_full_history: true` with neither placeholder in its template (the history is then appended as `Previous stages:`).
 
-**Always, policy or not:** each history entry is the same inline copy the next stage receives as `{{previous}}`. With a SharedMemory store, the full output is under `stage-N-output` (stored at stage completion) and the entry is cut to 8 KiB with the pipeline's own notice:
+**Always, policy or not:** each history entry is the same inline copy the next stage receives as `{{previous}}`. With a SharedMemory store, the full output is under `<workflow-id>-stage-N-output` (stored at stage completion) and the entry is cut to 8 KiB with the pipeline's own notice:
 
 ```
 Stage 1 output:
 <inline copy>
 
-[OUTPUT TRUNCATED - Full data stored in SharedMemory. Use shared_memory_read(namespace="workflow", key="stage-1-output") to fetch complete output]
+[OUTPUT TRUNCATED - Full data stored in SharedMemory. Use shared_memory_read(namespace="workflow", key="<workflow-id>-stage-1-output") to fetch complete output]
 ```
 
 Without a store, nothing is cut that the stage could not fetch back: entries are the full outputs, as before. No extra LLM calls are made either way.
@@ -253,7 +255,7 @@ Pipeline and iterative pipeline (present when at least one stage prompt carried 
 
 | Key | Value |
 |-----|-------|
-| `history.stages_rendered` | stage prompts that carried history |
+| `history.stages_rendered` | stage prompts that carried history, retry attempts included |
 | `history.budget_applied` | `true` when a `history` block was set |
 | `history.stages_over_budget` | of those, prompts that needed an overflow strategy |
 | `history.entries_truncated` / `history.entries_reduced` | entries cut (per-entry cap or truncate); replaced by a reduced card |
@@ -272,15 +274,16 @@ Cost: the receiving turn's usage and every pre-reduce call are added to `Workflo
 
 ## Limits and open items
 
-- **The receiving agent needs `shared_memory_read` to use the stored outputs.** The policy stores and announces the keys; it does not inject the tool. Give the agent `shared_memory_read` in its tools config, and wire the same SharedMemory store into the orchestrator (`orchestration.Config.SharedMemory`) and the agent tools.
-- **Pipeline stage keys (`stage-N-output`) are not scoped by workflow ID**; join branch keys and debate position keys are. Concurrent pipelines in one SharedMemory store overwrite each other's stashes. Changing the pipeline keys changes documented prompts and is not done here.
-- **Pipeline history assumes the stash succeeded.** When the store `Put` failed at stage completion the executor passed the full output inline as `{{previous}}` and logged a warning; a later history entry for that stage still carries a `stage-N-output` pointer, as `{{previous}}` does on resume.
+- **The receiving agent needs `shared_memory_read` to use the stored outputs.** `looms workflow run` registers the communication tools on every workflow agent, and `looms serve` registers them on the agents an `ExecuteWorkflow` call loads from the registry (the registry's own builtin table does not know `shared_memory_read`, so listing it under `tools.builtin` is not enough). An embedder that builds agents itself must wire `builtin.CommunicationTools` against the same SharedMemory store it gives the orchestrator (`orchestration.Config.SharedMemory`).
+- **Every executor-managed key carries the workflow id** (`<workflow-id>-stage-N-output`, `<workflow-id>-branch-N-output`, `<workflow-id>-round-R-position-<agent-id>`), so concurrent workflows on one store, which is what a `looms serve` runs, never read, snapshot, reset or delete each other's stashes. The prompts list the exact keys and ask agents to prefix keys they write themselves with the workflow id; nothing enforces that for agent-written keys.
+- **A run's stash is dropped when the run ends.** The orchestrator deletes the workflow's managed keys after `ExecutePattern` or a resumed run returns (not on a HITL suspension, whose resume needs them), and the debate engine does the same for its positions, so a long-lived server does not accumulate every run's outputs. Agent-written keys are left alone.
+- **A stage whose stash failed is passed in full.** The executors record per stage whether the store `Put` succeeded; a history entry for a stage without a stash is rendered in full with no pointer, as `{{previous}}` is for that stage. A resumed run re-seeds every completed stage first.
 - **Without a moderator, a debate's output is not a synthesis** but the last round's confidence summary line, and `checkConsensus` is an average-confidence threshold. The policy bounds the moderator's work; it does not add a moderator.
 - **Budget derivation assumes the agent's configured window.** With `max_context_tokens` unset it uses the 200000 / 20000 defaults; set `max_input_tokens` explicitly for a smaller model.
 
 ## See Also
 
 - [Multi-Agent Orchestration](../architecture/multi-agent.md): the executors and the collaboration engine
-- [Iterative Workflows](workflow-iterative.md): the pipeline stage hand-off (`{{previous}}`, `stage-N-output`)
+- [Iterative Workflows](workflow-iterative.md): the pipeline stage hand-off (`{{previous}}`, `<workflow-id>-stage-N-output`)
 - [Workflow Output Retry](workflow-output-retry.md): bound outputs at the source with `output_policy`
 - `examples/reference/workflows/orchestration-patterns/fork-join-presentation.yaml`, `pipeline-history-report.yaml`, `architecture-debate.yaml`

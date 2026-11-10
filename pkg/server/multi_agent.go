@@ -4089,7 +4089,13 @@ func (s *MultiAgentServer) resolveWorkflowPattern(req *loomv1.ExecuteWorkflowReq
 	}
 	pattern, err := orchestration.LoadWorkflowFromYAML(path)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to load workflow %q: %v", ref, err)
+		// A spec the loader rejects is the caller's file to fix, not a
+		// server fault.
+		code := codes.Internal
+		if errors.Is(err, orchestration.ErrInvalidWorkflow) {
+			code = codes.InvalidArgument
+		}
+		return nil, status.Errorf(code, "failed to load workflow %q: %v", ref, err)
 	}
 	return pattern, nil
 }
@@ -4262,11 +4268,38 @@ func (s *MultiAgentServer) getOrLoadAgent(ctx context.Context, agentID string, r
 		return nil, fmt.Errorf("failed to get agent from registry: %w", err)
 	}
 
-	// Optionally cache in server for future use
-	// (Uncomment if you want to cache loaded agents)
-	// s.AddAgent(agentID, ag)
+	// A registry-built agent has none of the server's communication tools:
+	// the registry's builtin table does not know shared_memory_read, and the
+	// server injects those tools only into agents added through AddAgent.
+	// Workflow agents need them to fetch the hand-off outputs the
+	// orchestrator stashes under <workflow-id>-… keys, so give them the same
+	// set the server's own agents get.
+	s.ensureCommunicationTools(ag, agentID)
 
 	return ag, nil
+}
+
+// ensureCommunicationTools registers the server's communication tools
+// (send_message, publish, shared_memory_read / write, ...) on an agent that
+// does not have them yet. Idempotent: an agent that already carries
+// shared_memory_read is left alone, so a registry agent shared across
+// workflow runs is wired once.
+func (s *MultiAgentServer) ensureCommunicationTools(ag *agent.Agent, agentID string) {
+	if ag == nil || (s.messageQueue == nil && s.messageBus == nil && s.sharedMemoryComm == nil) {
+		return
+	}
+	for _, name := range ag.ListTools() {
+		if name == "shared_memory_read" {
+			return
+		}
+	}
+	commTools := builtin.CommunicationTools(s.messageQueue, s.messageBus, s.sharedMemoryComm, agentID)
+	ag.RegisterTools(commTools...)
+	if s.logger != nil {
+		s.logger.Info("Communication tools injected into workflow agent",
+			zap.String("agent_id", agentID),
+			zap.Int("num_tools", len(commTools)))
+	}
 }
 
 // StreamWorkflow executes a workflow and streams progress updates to the client.

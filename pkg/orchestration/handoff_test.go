@@ -153,7 +153,22 @@ func synthesisPrompt(t *testing.T, moderator *funcLLMProvider) string {
 
 func TestDebate_JoinPolicy_EndToEnd(t *testing.T) {
 	orch := newJoinTestOrchestrator(t, nil, true)
-	moderator := debateAgents(t, orch)
+	debateAgents(t, orch)
+	// The moderator sees the stored positions while it synthesizes; the run
+	// cleans them up after.
+	var keysAtSynthesis []string
+	moderator := newFuncLLMProvider(func(p string) (string, error) {
+		switch {
+		case strings.Contains(p, "# All Debate Rounds"):
+			keysAtSynthesis = workflowMemoryKeys(t, orch.sharedMemory)
+			return "SYNTHESIS", nil
+		case isReducePrompt(p):
+			return "card", nil
+		default:
+			return "summary", nil
+		}
+	})
+	orch.RegisterAgent("moderator", createMockAgent(t, "moderator", moderator))
 
 	result, err := orch.ExecutePattern(context.Background(), debatePattern(2, &loomv1.JoinPolicy{MaxBranchBytes: 1024}))
 	require.NoError(t, err)
@@ -177,15 +192,17 @@ func TestDebate_JoinPolicy_EndToEnd(t *testing.T) {
 	assert.Contains(t, sp, "Synthesize this debate into a clear consensus")
 	assert.Less(t, len(sp), 4*1024+6000, "four capped positions plus header and instruction")
 
-	keys := workflowMemoryKeys(t, orch.sharedMemory)
 	for _, want := range []string{"round-1-position-advocate", "round-1-position-skeptic", "round-2-position-advocate", "round-2-position-skeptic"} {
 		found := false
-		for _, k := range keys {
+		for _, k := range keysAtSynthesis {
 			if strings.HasSuffix(k, want) {
 				found = true
 			}
 		}
-		assert.True(t, found, "missing stored position %s in %v", want, keys)
+		assert.True(t, found, "missing stored position %s in %v", want, keysAtSynthesis)
+	}
+	for _, k := range workflowMemoryKeys(t, orch.sharedMemory) {
+		assert.Empty(t, managedKeyWorkflow(k), "the debate's positions are cleaned up when the run ends; found %s", k)
 	}
 }
 

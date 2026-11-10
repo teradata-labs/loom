@@ -64,6 +64,11 @@ type pipelineState struct {
 	// Full output per completed stage of the current pass, index-aligned.
 	stageOutputs []string
 
+	// Whether each completed stage's full output is in SharedMemory,
+	// index-aligned with stageOutputs. A history entry for a stage whose
+	// stash failed is passed in full instead of cut with a pointer.
+	stashed []bool
+
 	// Input for the next stage ({{previous}}).
 	currentInput string
 
@@ -163,6 +168,9 @@ func (e *PipelineExecutor) Resume(ctx context.Context, ckpt *loomv1.WorkflowChec
 	if workflowID == "" {
 		workflowID = e.workflowID
 	}
+	// The resumed run is the checkpointed workflow: its SharedMemory keys
+	// and sessions carry that id.
+	e.workflowID = workflowID
 
 	ctx, workflowSpan := e.orchestrator.tracer.StartSpan(ctx, "workflow.pipeline.resume")
 	defer e.orchestrator.tracer.EndSpan(workflowSpan)
@@ -238,7 +246,8 @@ func (e *PipelineExecutor) Resume(ctx context.Context, ckpt *loomv1.WorkflowChec
 
 	// Restore agent-written SharedMemory and re-seed stage-N-output keys so
 	// shared_memory_read and truncation notices keep working after resume.
-	restoreWorkflowMemory(ctx, e.orchestrator, ckpt)
+	restoreWorkflowMemory(ctx, e.orchestrator, ckpt, workflowID)
+	state.stashed = allStashed(len(state.stageOutputs), e.orchestrator.sharedMemory != nil)
 
 	e.orchestrator.logger.Info("Resuming pipeline execution",
 		zap.String("workflow_id", workflowID),
@@ -255,7 +264,7 @@ func (e *PipelineExecutor) deriveInputFromOutput(stageNum int, fullOutput string
 	if e.orchestrator.sharedMemory == nil {
 		return fullOutput
 	}
-	out, _ := truncateStageOutput(fullOutput, MaxStageOutputBytes, fmt.Sprintf("stage-%d-output", stageNum))
+	out, _ := truncateStageOutput(fullOutput, MaxStageOutputBytes, stageOutputKey(e.workflowID, stageNum))
 	return out
 }
 
@@ -285,7 +294,7 @@ func (e *PipelineExecutor) buildCheckpoint(ctx context.Context, workflowID strin
 		ValidationWarnings: state.validationWarnings,
 		GateRevisionCounts: state.gateRevisions,
 		PendingGate:        gateReq,
-		SharedMemory:       snapshotWorkflowMemory(ctx, e.orchestrator),
+		SharedMemory:       snapshotWorkflowMemory(ctx, e.orchestrator, workflowID),
 		CreatedAtMs:        time.Now().UnixMilli(),
 	}, nil
 }
@@ -295,6 +304,7 @@ func (e *PipelineExecutor) buildCheckpoint(ctx context.Context, workflowID strin
 func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time, workflowID string, state *pipelineState) (*loomv1.WorkflowResult, error) {
 	allResults := state.allResults
 	stageOutputs := state.stageOutputs
+	stashed := state.stashed
 	currentInput := state.currentInput
 	modelsUsed := state.modelsUsed
 	validationWarnings := state.validationWarnings
@@ -320,7 +330,7 @@ func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time,
 		// agent's budget. Revision feedback (from a HITL gate REVISE
 		// decision) is threaded into the first stage executed after the
 		// jump, then consumed; the call also blanks stray placeholders.
-		prompt, historyFit, err := e.boundStagePrompt(ctx, stage, stageNum, currentInput, stageOutputs, nil, e.stageHeader(len(stageOutputs)))
+		prompt, historyFit, err := e.boundStagePrompt(ctx, stage, stageNum, currentInput, stageOutputs, stashed, nil, e.stageHeader(len(stageOutputs)))
 		if err != nil {
 			e.orchestrator.tracer.EndSpan(stageSpan)
 			return nil, err
@@ -420,7 +430,7 @@ func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time,
 					// Pass prior stage outputs (excluding current failed output) to avoid
 					// leaking the failed output into {{history}} in the retry prompt.
 					priorOutputs := stageOutputs[:len(stageOutputs)-1]
-					retryResult, retryModel := e.retryStage(ctx, workflowID, stage, currentInput, priorOutputs, stageNum, result.Output, validationFailure)
+					retryResult, retryModel := e.retryStage(ctx, workflowID, stage, currentInput, priorOutputs, stashed, stageNum, result.Output, validationFailure)
 					if retryResult != nil {
 						// The retry replaces the failed attempt's result; keep
 						// the replaced attempt's calls in the run's cost.
@@ -451,6 +461,7 @@ func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time,
 			// revise bookkeeping) sees the current pass, not stale slices.
 			state.allResults = allResults
 			state.stageOutputs = stageOutputs
+			state.stashed = stashed
 			state.modelsUsed = modelsUsed
 			state.validationWarnings = validationWarnings
 
@@ -497,6 +508,9 @@ func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time,
 					return nil, fmt.Errorf("gate on stage %s exceeded max_revisions (%d)", stage.AgentId, maxGateRevisions(stage.HitlGate))
 				}
 				stageOutputs = stageOutputs[:target]
+				if len(stashed) > target {
+					stashed = stashed[:target]
+				}
 				if target == 0 {
 					currentInput = e.pattern.InitialPrompt
 				} else {
@@ -517,24 +531,27 @@ func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time,
 		}
 
 		// Update input for next stage. Hybrid context passing: stash the FULL stage
-		// output in SharedMemory (key stage-N-output) so a later stage can fetch it
+		// output in SharedMemory (key <workflow-id>-stage-N-output) so a later stage can fetch it
 		// by reference, and pass the next stage a truncated summary when the output
 		// is large (> MaxStageOutputBytes). Small outputs pass through inline,
 		// unchanged. stageOutputs keeps the full text (final output + {{history}}).
 		// When SharedMemory is unavailable, fall back to full inline (original
 		// behavior) so no existing deployment regresses.
+		stashedThis := false
 		if e.orchestrator.sharedMemory != nil {
-			stageMemoryKey := fmt.Sprintf("stage-%d-output", stageNum)
+			stageMemoryKey := stageOutputKey(workflowID, stageNum)
 			if err := e.storeStageOutputInMemory(ctx, stageMemoryKey, stage.AgentId, result.Output); err != nil {
 				e.orchestrator.logger.Warn("failed to stash stage output in SharedMemory; passing full output inline",
 					zap.Int("stage", stageNum), zap.Error(err))
 				currentInput = result.Output
 			} else {
+				stashedThis = true
 				currentInput, _ = truncateStageOutput(result.Output, MaxStageOutputBytes, stageMemoryKey)
 			}
 		} else {
 			currentInput = result.Output
 		}
+		stashed = append(stashed, stashedThis)
 
 		i++
 	}
@@ -611,12 +628,13 @@ func (e *PipelineExecutor) storeStageOutputInMemory(ctx context.Context, key, ag
 func (e *PipelineExecutor) buildSharedMemoryContextHeader(stageCount int) string {
 	var b strings.Builder
 	b.WriteString("## AVAILABLE CONTEXT (SharedMemory)\n")
-	b.WriteString("Full outputs from previous stages are stored in SharedMemory.\n")
-	b.WriteString("Use `shared_memory_read(namespace=\"workflow\", key=\"stage-N-output\")` to fetch any stage's complete output (use this if a stage's input below looks truncated).\n\n")
+	b.WriteString("Full outputs from previous stages are stored in SharedMemory namespace \"workflow\".\n")
+	b.WriteString("Use `shared_memory_read(namespace=\"workflow\", key=\"<key>\")` with one of the keys below to fetch a stage's complete output (use this if a stage's input below looks truncated).\n\n")
 	b.WriteString("Available keys:\n")
 	for i := 1; i <= stageCount; i++ {
-		b.WriteString(fmt.Sprintf("- `stage-%d-output`\n", i))
+		b.WriteString(fmt.Sprintf("- `%s`\n", stageOutputKey(e.workflowID, i)))
 	}
+	b.WriteString(sharedMemoryWriteHint(e.workflowID))
 	b.WriteString("\n---\n\n")
 	return b.String()
 }
@@ -1094,6 +1112,7 @@ func (e *PipelineExecutor) retryStage(
 	stage *loomv1.PipelineStage,
 	previousInput string,
 	allOutputs []string,
+	stashed []bool,
 	stageNum int,
 	failedOutput string,
 	validationFailure string,
@@ -1105,7 +1124,7 @@ func (e *PipelineExecutor) retryStage(
 			return nil, ""
 		}
 		// Build retry prompt with validation feedback
-		basePrompt, historyFit, err := e.boundStagePrompt(ctx, stage, stageNum, previousInput, allOutputs, nil, e.stageHeader(len(allOutputs)))
+		basePrompt, historyFit, err := e.boundStagePrompt(ctx, stage, stageNum, previousInput, allOutputs, stashed, nil, e.stageHeader(len(allOutputs)))
 		if err != nil {
 			e.orchestrator.logger.Warn("Stage retry prompt could not be bounded; giving up on retries",
 				zap.Int("stage", stageNum),

@@ -56,7 +56,7 @@ spec:
 - Content refinement (draft → edit → review)
 - Sequential transformations
 
-A final stage that compiles everything reads `{{history}}`. Each entry is the same 8 KiB copy the next stage gets as `{{previous}}`, with a `stage-N-output` SharedMemory pointer for the rest. Add a `history` block to hold the whole prompt to the stage agent's token budget (`pipeline-history-report.yaml`):
+A final stage that compiles everything reads `{{history}}`. Each entry is the same 8 KiB copy the next stage gets as `{{previous}}`, with a `<workflow-id>-stage-N-output` SharedMemory pointer for the rest. Add a `history` block to hold the whole prompt to the stage agent's token budget (`pipeline-history-report.yaml`):
 
 ```yaml
 spec:

@@ -17,14 +17,14 @@ import (
 	"go.uber.org/zap"
 )
 
-// AgentProvider retrieves agents by ID.
-// This interface allows different agent sources (registry, orchestrator, etc.)
 // ErrPatternNotImplemented is returned by the collaboration patterns that
 // exist in proto and are routed by the engine but have no execution yet
 // (pair programming, teacher-student). The gRPC server maps it to
 // codes.Unimplemented. Test with errors.Is.
 var ErrPatternNotImplemented = errors.New("collaboration pattern is not implemented")
 
+// AgentProvider retrieves agents by ID.
+// This interface allows different agent sources (registry, orchestrator, etc.)
 type AgentProvider interface {
 	// GetAgent retrieves an agent by ID.
 	// Context parameter allows for cancellation and deadlines.

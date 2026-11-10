@@ -23,20 +23,27 @@ import (
 )
 
 // scriptedLLM answers every prompt with content and records the prompts.
+// A prompt containing failOn (when set) fails instead.
 type scriptedLLM struct {
 	mu      sync.Mutex
 	content string
+	failOn  string
 	prompts []string
 }
 
 func (m *scriptedLLM) Chat(_ context.Context, messages []llmtypes.Message, _ []shuttle.Tool) (*llmtypes.LLMResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	prompt := ""
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == "user" {
-			m.prompts = append(m.prompts, messages[i].Content)
+			prompt = messages[i].Content
+			m.prompts = append(m.prompts, prompt)
 			break
 		}
+	}
+	if m.failOn != "" && strings.Contains(prompt, m.failOn) {
+		return nil, errors.New("scripted failure")
 	}
 	return &llmtypes.LLMResponse{Content: m.content, StopReason: "stop", Usage: llmtypes.Usage{TotalTokens: 30, CostUSD: 0.001}}, nil
 }
@@ -292,17 +299,81 @@ func TestDebate_ExecuteRound_OverBudgetIsFatal(t *testing.T) {
 	assert.Zero(t, stats.bounded)
 }
 
+// A response turn that fails for an ordinary reason (the provider errors on
+// the round 2 "respond to the others" prompt) is not fatal: the position
+// stands, the round completes, and only that agent's responses are missing.
 func TestDebate_ExecuteRound_ChatFailureStaysNonFatal(t *testing.T) {
+	aLLM := &scriptedLLM{content: "pos a", failOn: "Other agents have presented these positions"}
+	a := agent.NewAgent(nil, aLLM, agent.WithName("a"))
+	b, bLLM := scriptedAgent("b", "pos b")
+	d := NewDebateOrchestrator(&plainProvider{agents: map[string]*agent.Agent{"a": a, "b": b}})
+	config := &loomv1.DebatePattern{Topic: "t", AgentIds: []string{"a", "b"}}
+
+	round, stats, err := d.executeRound(context.Background(), "wf", 2, config, nil, a, &loomv1.WorkflowCost{})
+	require.NoError(t, err, "an ordinary response failure is not fatal")
+	require.Len(t, round.Positions, 2)
+	assert.Empty(t, round.Positions[0].Responses, "a's response turn failed, so it has none")
+	assert.Equal(t, "pos b", round.Positions[1].Responses["all"], "b responded")
+	assert.Zero(t, stats.bounded, "no policy: nothing bounded")
+	assert.Len(t, bLLM.recorded(), 2, "b: position then response")
+	aPrompts := aLLM.recorded()
+	require.GreaterOrEqual(t, len(aPrompts), 2, "a: position, then the failed response attempt (the agent retries a failed call)")
+	assert.Contains(t, aPrompts[len(aPrompts)-1], "Other agents have presented these positions", "the failures were the response turn, not the position")
+	assert.Contains(t, aPrompts[0], "POSITION:", "the position turn came first and succeeded")
+
+	// A missing debater still fails the position pass.
+	ghost := &loomv1.DebatePattern{Topic: "t", AgentIds: []string{"a", "ghost"}}
+	r, _, err := d.executeRound(context.Background(), "wf", 1, ghost, nil, a, &loomv1.WorkflowCost{})
+	require.Error(t, err)
+	assert.Nil(t, r)
+}
+
+func TestDebate_Execute_RejectsJoinPolicyAgentID(t *testing.T) {
 	a, _ := scriptedAgent("a", "pos a")
 	b, _ := scriptedAgent("b", "pos b")
-	failing := &boundingProvider{agents: map[string]*agent.Agent{"a": a, "b": b}, bounder: &fakeBounder{}}
-	d := NewDebateOrchestrator(failing)
-	config := &loomv1.DebatePattern{Topic: "t", AgentIds: []string{"a", "b", "ghost"}}
-	// "ghost" has a position (seeded below) but no agent: its response turn
-	// fails on GetAgent, which is not a budget error.
-	round, _, err := d.executeRound(context.Background(), "wf", 1, config, nil, a, &loomv1.WorkflowCost{})
-	require.Error(t, err, "a missing debater fails the position pass")
-	assert.Nil(t, round)
+	d := NewDebateOrchestrator(&boundingProvider{agents: map[string]*agent.Agent{"a": a, "b": b}, bounder: &fakeBounder{}})
+	_, err := d.Execute(context.Background(), &loomv1.DebatePattern{
+		Topic: "t", AgentIds: []string{"a", "b"}, Rounds: 1,
+		JoinPolicy: &loomv1.JoinPolicy{AgentId: "someone"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `join_policy.agent_id "someone" is not used`)
+	assert.Contains(t, err.Error(), "moderator_agent_id is the join agent")
+	assert.Empty(t, (&fakeBounder{}).requests())
+}
+
+// A position carried into several prompts of one run is stored once: later
+// hand-offs mark it Stored so the bounder references the key without
+// writing again, and the bookkeeping is dropped when the run ends.
+func TestDebate_PositionsAreStoredOncePerRun(t *testing.T) {
+	a, _ := scriptedAgent("a", "pos a")
+	b, _ := scriptedAgent("b", "pos b")
+	c, _ := scriptedAgent("c", "pos c")
+	bounder := &fakeBounder{}
+	d := NewDebateOrchestrator(&boundingProvider{agents: map[string]*agent.Agent{"a": a, "b": b, "c": c}, bounder: bounder})
+	config := &loomv1.DebatePattern{Topic: "t", AgentIds: []string{"a", "b", "c"}, JoinPolicy: &loomv1.JoinPolicy{MaxBranchBytes: 1}}
+
+	_, _, err := d.executeRound(context.Background(), "wf", 2, config, nil, a, &loomv1.WorkflowCost{})
+	require.NoError(t, err)
+	reqs := bounder.requests()
+	require.Len(t, reqs, 3, "one response prompt per debater")
+	// a's prompt carries b and c (first time: not yet stored); b's prompt
+	// carries a (new) and c (stored by a's hand-off); c's carries a and b
+	// (both stored).
+	stored := func(req *HandoffRequest) []bool {
+		out := make([]bool, len(req.Entries))
+		for i, e := range req.Entries {
+			out[i] = e.Stored
+		}
+		return out
+	}
+	assert.Equal(t, []bool{false, false}, stored(reqs[0]))
+	assert.Equal(t, []bool{false, true}, stored(reqs[1]))
+	assert.Equal(t, []bool{true, true}, stored(reqs[2]))
+	assert.True(t, d.positionStored("wf", positionKey("wf", 2, "a")))
+
+	d.forgetStoredPositions("wf")
+	assert.False(t, d.positionStored("wf", positionKey("wf", 2, "a")), "bookkeeping is per run")
 }
 
 func TestHandoffResult_Metadata(t *testing.T) {
@@ -317,10 +388,23 @@ func TestHandoffResult_Metadata(t *testing.T) {
 	}, r.Metadata("join", "positions"))
 }
 
-func TestSpliceHandoffTemplate(t *testing.T) {
-	got := spliceHandoffTemplate("On {{prompt}} ({{branch_count}}):\n{{branches}}", "topic", "section with {{prompt}} inside", 2)
+func TestSpliceTemplate(t *testing.T) {
+	got := SpliceTemplate("On {{prompt}} ({{branch_count}}):\n{{branches}}", "topic", "section with {{prompt}} inside", 2)
 	assert.Equal(t, "On topic (2):\nsection with {{prompt}} inside", got, "{{branches}} is spliced last so section text is never re-scanned")
-	assert.Equal(t, "no placeholder\n\nS", spliceHandoffTemplate("no placeholder", "t", "S", 1), "sections are appended when the template has no {{branches}}")
+	assert.Equal(t, "no placeholder\n\nS", SpliceTemplate("no placeholder", "t", "S", 1), "sections are appended when the template has no {{branches}}")
+}
+
+func TestSharedMemoryHeader(t *testing.T) {
+	assert.Empty(t, SharedMemoryHeader([]HandoffPiece{{Index: 1, AgentID: "a", Inline: "x"}}, "positions", "wf"), "nothing stored, no header")
+	h := SharedMemoryHeader([]HandoffPiece{
+		{Index: 1, AgentID: "a", Inline: "x", Key: "wf-round-1-position-a", FullSize: 9000},
+		{Index: 2, AgentID: "b", Inline: "y"},
+	}, "positions", "wf")
+	assert.True(t, strings.HasPrefix(h, "## AVAILABLE CONTEXT (SharedMemory)\n"))
+	assert.Contains(t, h, "Full text of 1 of 2 positions is stored")
+	assert.Contains(t, h, "- `wf-round-1-position-a`: agent a, 9000 bytes")
+	assert.Contains(t, h, "should start with `wf-`")
+	assert.True(t, strings.HasSuffix(h, "\n---\n\n"))
 }
 
 func TestPairProgrammingAndTeacherStudent_NotImplemented(t *testing.T) {

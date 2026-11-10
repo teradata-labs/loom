@@ -103,9 +103,13 @@ func TestPipeline_HistoryEntriesAreCappedLikePrevious(t *testing.T) {
 	assert.Contains(t, p, "Stage 1 output:")
 	assert.Contains(t, p, "Stage 2 output:")
 	assert.Equal(t, 2, strings.Count(p, "[OUTPUT TRUNCATED - Full data stored in SharedMemory"), "each entry carries the {{previous}} notice once")
-	assert.Contains(t, p, `key="stage-1-output"`)
-	assert.Contains(t, p, `key="stage-2-output"`)
+	assert.Regexp(t, `key="pipeline-[0-9a-f]+-stage-1-output"`, p, "keys are scoped by workflow id")
+	assert.Regexp(t, `key="pipeline-[0-9a-f]+-stage-2-output"`, p)
+	assert.NotContains(t, p, `key="stage-1-output"`, "no unscoped key")
 	assert.Less(t, len(p), 2*MaxStageOutputBytes+4096, "two capped entries plus template and header")
+	for _, k := range workflowMemoryKeys(t, orch.sharedMemory) {
+		assert.Empty(t, managedKeyWorkflow(k), "the run's stash is cleaned up when the run ends; found %s", k)
+	}
 
 	assert.Equal(t, "1", result.Metadata["history.stages_rendered"])
 	assert.Equal(t, "false", result.Metadata["history.budget_applied"])
@@ -282,7 +286,7 @@ func TestIterativePipeline_HistoryIsBoundedOnceFromFullOutputs(t *testing.T) {
 
 	p := final.recorded()[0]
 	assert.Equal(t, 1, strings.Count(p, "[OUTPUT TRUNCATED - Full data stored in SharedMemory"), "cut once at render time, never twice")
-	assert.Contains(t, p, `key="stage-1-output"`)
+	assert.Regexp(t, `key="iterative-[0-9a-f]+-stage-1-output"`, p)
 	assert.Less(t, len(p), MaxStageOutputBytes+4096)
 	assert.Equal(t, "1", result.Metadata["history.stages_rendered"])
 	assert.Equal(t, "1", result.Metadata["history.entries_truncated"])

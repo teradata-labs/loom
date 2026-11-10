@@ -6297,7 +6297,7 @@
           "description": "What to do when the rendered join input exceeds max_input_tokens.\nUNSPECIFIED behaves as PRE_REDUCE."
         }
       },
-      "description": "JoinPolicy bounds the hand-off from a fan-out pattern's branches to its\njoin step and, optionally, runs that step through a registered agent.\n\nFull branch outputs are always stored in SharedMemory (WORKFLOW namespace,\nkey \"\u003cpattern\u003e-branch-N-output\") when the orchestrator has a SharedMemory\nstore, so the join can fetch any branch in full with shared_memory_read.\nThe inline copy handed to the join is bounded in two steps: a per-branch\nbyte cap (max_branch_bytes), then a whole-input token budget\n(max_input_tokens) enforced with overflow_strategy."
+      "description": "JoinPolicy bounds the hand-off from a fan-out pattern's branches to its\njoin step and, optionally, runs that step through a registered agent.\n\nFull branch outputs are always stored in SharedMemory (WORKFLOW namespace,\nkey \"\u003cworkflow-id\u003e-branch-N-output\") when the orchestrator has a SharedMemory\nstore, so the join can fetch any branch in full with shared_memory_read.\nThe inline copy handed to the join is bounded in two steps: a per-branch\nbyte cap (max_branch_bytes), then a whole-input token budget\n(max_input_tokens) enforced with overflow_strategy."
     },
     "v1LLMConfig": {
       "type": "object",

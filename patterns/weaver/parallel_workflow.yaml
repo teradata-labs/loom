@@ -61,7 +61,7 @@ best_practices: |
   - Fork-join = same prompt to multiple agents (fan-out, fan-in)
   - Each task must have both agent_id and prompt fields
   - Use concatenate merge to collect all results
-  - Use synthesis merge to summarize across tasks
+  - Use merge_strategy: summary to summarize across tasks (synthesis is not a merge strategy)
   - When a final agent must combine all task outputs, add a `join:` block with
     `agent_id`; the join runs as that agent with bounded input (full outputs in
     SharedMemory, inline copies capped, whole input held to a token budget)

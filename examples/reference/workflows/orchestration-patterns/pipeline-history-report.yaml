@@ -32,7 +32,7 @@ spec:
         {{history}}
 
   # Every {{history}} entry is already the 8 KiB copy the next stage would
-  # get as {{previous}}, with a stage-N-output pointer. This block adds a
+  # get as {{previous}}, with a <workflow-id>-stage-N-output pointer. This block adds a
   # whole-prompt token budget for the report-writer: when the four entries
   # plus the template exceed it, oversize entries are reduced to cards by
   # the report-writer's compressor LLM (its main LLM when none is set).

@@ -27,7 +27,7 @@ parameters:
     example: "3"
   - name: merge_strategy
     type: string
-    description: How to combine results (concatenate, synthesis, ranked)
+    description: How to combine results (concatenate, summary, consensus, voting, best, first)
     required: false
     example: "concatenate"
 
@@ -69,7 +69,7 @@ best_practices: |
   - Fork-join = same prompt to multiple agents (fan-out, fan-in)
   - Parallel = different prompts to different agents (independent tasks)
   - Use concatenate merge for comprehensive coverage
-  - Use synthesis merge when you need a unified summary
+  - Use merge_strategy: summary when you need a unified summary (synthesis is not a merge strategy)
   - Each agent should have different expertise in their system_prompt
   - When a final agent must build something from all branches (a deck, a report),
     add a `join:` block with `agent_id` instead of relying on merge_strategy: the

@@ -17,6 +17,7 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
+	"github.com/teradata-labs/loom/pkg/collaboration"
 	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
 )
@@ -56,10 +57,6 @@ const (
 	// re-rendered input lands under the budget even though token counts are
 	// not exactly additive across concatenated sections.
 	joinShareSafetyPercent = 95
-
-	joinPlaceholderPrompt      = "{{prompt}}"
-	joinPlaceholderBranches    = "{{branches}}"
-	joinPlaceholderBranchCount = "{{branch_count}}"
 
 	joinTruncatedNotice      = "[Branch output truncated: %d of %d bytes shown. Full output in SharedMemory: shared_memory_read(namespace=\"workflow\", key=\"%s\")]"
 	joinTruncatedNoMemNotice = "[Branch output truncated: %d of %d bytes shown. SharedMemory is not configured, so the rest is not retrievable.]"
@@ -484,28 +481,34 @@ func (j *joiner) budget(receiver *agent.Agent) int {
 	return usable * DefaultJoinInputBudgetPercent / 100
 }
 
-// render fills the template. {{prompt}} and {{branch_count}} are replaced
-// first; {{branches}} last and by splicing, so placeholder-like text inside a
-// branch output is never re-scanned. A template without {{branches}} gets the
-// sections appended, so the join never runs blind.
+// render fills the template (collaboration.SpliceTemplate: {{prompt}} and
+// {{branch_count}} first, {{branches}} last by splicing, sections appended
+// when the template has no {{branches}}) and, for a join agent, prepends the
+// SharedMemory key header.
 func (j *joiner) render(tmpl string, branches []joinBranch, withHeader bool) string {
-	body := spliceJoinTemplate(tmpl, j.prompt, j.renderJoinBranches(branches), len(branches))
+	body := collaboration.SpliceTemplate(tmpl, j.prompt, j.renderJoinBranches(branches), len(branches))
 	if !withHeader {
 		return body
 	}
-	return sharedMemoryJoinHeader(branches) + body
+	return collaboration.SharedMemoryHeader(j.pieces(branches), "branches", j.workflowID) + body
 }
 
-// spliceJoinTemplate fills a join template: {{prompt}} and {{branch_count}}
-// by replacement, {{branches}} last by splicing (appended when absent).
-func spliceJoinTemplate(tmpl, prompt, sections string, count int) string {
-	body := strings.ReplaceAll(tmpl, joinPlaceholderPrompt, prompt)
-	body = strings.ReplaceAll(body, joinPlaceholderBranchCount, strconv.Itoa(count))
-	if !strings.Contains(body, joinPlaceholderBranches) {
-		return body + "\n\n" + sections
+// pieces renders the branches in the shape collaboration callers receive:
+// the inline copy, its notice and the key that holds the full text.
+func (j *joiner) pieces(branches []joinBranch) []collaboration.HandoffPiece {
+	out := make([]collaboration.HandoffPiece, len(branches))
+	for i := range branches {
+		b := &branches[i]
+		out[i] = collaboration.HandoffPiece{
+			Index:    b.index,
+			AgentID:  b.agentID,
+			Inline:   b.inline,
+			Notice:   j.noticeFor(b, b.action),
+			Key:      b.memKey,
+			FullSize: len(b.full),
+		}
 	}
-	parts := strings.Split(body, joinPlaceholderBranches)
-	return strings.Join(parts, sections)
+	return out
 }
 
 // renderJoinBranches renders one section per branch: a heading, the inline
@@ -526,32 +529,6 @@ func (j *joiner) renderJoinBranches(branches []joinBranch) string {
 		}
 		b.WriteString("\n")
 	}
-	return b.String()
-}
-
-// sharedMemoryJoinHeader lists the SharedMemory keys holding full branch
-// outputs, for a join agent that can call shared_memory_read. Empty when no
-// branch was stored.
-func sharedMemoryJoinHeader(branches []joinBranch) string {
-	stored := 0
-	for _, b := range branches {
-		if b.memKey != "" {
-			stored++
-		}
-	}
-	if stored == 0 {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString("## AVAILABLE CONTEXT (SharedMemory)\n")
-	b.WriteString(fmt.Sprintf("Full outputs of %d of %d branches are stored in SharedMemory namespace \"workflow\":\n", stored, len(branches)))
-	for _, br := range branches {
-		if br.memKey == "" {
-			continue
-		}
-		b.WriteString(fmt.Sprintf("- `%s`: branch %d, agent %s, %d bytes\n", br.memKey, br.index, br.agentID, len(br.full)))
-	}
-	b.WriteString("Use `shared_memory_read(namespace=\"workflow\", key=\"<key>\")` to fetch a branch whose section below is marked truncated or reduced.\n\n---\n\n")
 	return b.String()
 }
 
@@ -762,7 +739,7 @@ func (j *joiner) reduceOne(ctx context.Context, llm agent.LLMProvider, b *joinBr
 // execute runs the join call: the join agent's turn, or one raw merge-LLM
 // call when no agent is configured. The call count of an agent turn is the
 // turn's own successful LLM call count (one for a plain completion, more
-// when the agent ran a tool loop).
+// when the agent ran a tool loop, zero when the turn made none).
 func (j *joiner) execute(ctx context.Context, joinAgent *agent.Agent, prompt string) (string, string, types.Usage, int32, error) {
 	if joinAgent != nil {
 		if sem := j.orch.llmSemaphore; sem != nil {
@@ -780,13 +757,11 @@ func (j *joiner) execute(ctx context.Context, joinAgent *agent.Agent, prompt str
 		}
 		usage := resp.TurnUsage
 		if usage.TotalTokens == 0 && usage.CostUSD == 0 {
+			// Providers that do not fill TurnUsage report the turn's usage
+			// in Usage.
 			usage = resp.Usage
 		}
-		calls := types.SafeInt32(resp.TurnLLMCalls)
-		if calls == 0 {
-			calls = 1
-		}
-		return resp.Content, joinAgent.GetLLMModel(), usage, calls, nil
+		return resp.Content, joinAgent.GetLLMModel(), usage, types.SafeInt32(resp.TurnLLMCalls), nil
 	}
 
 	mergeLLM := j.orch.GetMergeLLM()

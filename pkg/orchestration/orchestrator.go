@@ -371,41 +371,46 @@ func (o *Orchestrator) ExecutePattern(ctx context.Context, pattern *loomv1.Workf
 	// Route to appropriate executor based on pattern type
 	var result *loomv1.WorkflowResult
 	var err error
+	var wfID string
 
 	switch p := pattern.Pattern.(type) {
 	case *loomv1.WorkflowPattern_ForkJoin:
-		wfID := o.resolveWorkflowID("fork-join", pattern)
+		wfID = o.resolveWorkflowID("fork-join", pattern)
 		executor := NewForkJoinExecutor(o, p.ForkJoin, wfID)
 		result, err = executor.Execute(ctx)
 
 	case *loomv1.WorkflowPattern_Pipeline:
-		wfID := o.resolveWorkflowID("pipeline", pattern)
+		wfID = o.resolveWorkflowID("pipeline", pattern)
 		executor := NewPipelineExecutor(o, p.Pipeline, wfID)
 		result, err = executor.Execute(ctx)
 
 	case *loomv1.WorkflowPattern_Parallel:
-		wfID := o.resolveWorkflowID("parallel", pattern)
+		wfID = o.resolveWorkflowID("parallel", pattern)
 		executor := NewParallelExecutor(o, p.Parallel, wfID)
 		result, err = executor.Execute(ctx)
 
 	case *loomv1.WorkflowPattern_Conditional:
-		wfID := o.resolveWorkflowID("conditional", pattern)
+		wfID = o.resolveWorkflowID("conditional", pattern)
 		executor := NewConditionalExecutor(o, p.Conditional, wfID)
 		result, err = executor.Execute(ctx)
 
 	case *loomv1.WorkflowPattern_Iterative:
-		wfID := o.resolveWorkflowID("iterative", pattern)
+		wfID = o.resolveWorkflowID("iterative", pattern)
 		executor := NewIterativePipelineExecutor(o, p.Iterative, o.messageBus, wfID)
 		result, err = executor.Execute(ctx)
 
 	case *loomv1.WorkflowPattern_Swarm:
-		wfID := o.resolveWorkflowID("swarm", pattern)
+		wfID = o.resolveWorkflowID("swarm", pattern)
 		executor := NewSwarmExecutor(o, p.Swarm, wfID)
 		result, err = executor.Execute(ctx)
 
 	default:
 		return nil, fmt.Errorf("unknown workflow pattern type")
 	}
+
+	// The run's SharedMemory stash is an execution artifact: drop it once the
+	// run has ended (a HITL suspension keeps it for the resume).
+	o.finishWorkflowMemory(ctx, wfID, err)
 
 	if err != nil {
 		// Emit error progress

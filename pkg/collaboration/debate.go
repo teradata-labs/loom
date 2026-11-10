@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -31,6 +32,38 @@ type DebateOrchestrator struct {
 	// DebatePattern.join_policy; nil when the provider cannot (then a
 	// policy is logged and ignored).
 	bounder HandoffBounder
+
+	// storedPositions remembers which position keys a run has already put
+	// in SharedMemory ("<workflow-id>|<key>"), so a position carried into
+	// several prompts is written once. Runs share the orchestrator, so this
+	// is keyed by workflow id and forgotten when the run ends.
+	storedPositions sync.Map
+}
+
+// positionStored reports whether a run already stored a position key.
+func (d *DebateOrchestrator) positionStored(workflowID, key string) bool {
+	_, ok := d.storedPositions.Load(workflowID + "|" + key)
+	return ok
+}
+
+// markPositionsStored records the keyed entries a successful hand-off stored.
+func (d *DebateOrchestrator) markPositionsStored(workflowID string, entries []HandoffEntry) {
+	for _, e := range entries {
+		if e.Key != "" {
+			d.storedPositions.Store(workflowID+"|"+e.Key, struct{}{})
+		}
+	}
+}
+
+// forgetStoredPositions drops a run's bookkeeping when the run ends.
+func (d *DebateOrchestrator) forgetStoredPositions(workflowID string) {
+	prefix := workflowID + "|"
+	d.storedPositions.Range(func(k, _ any) bool {
+		if s, ok := k.(string); ok && strings.HasPrefix(s, prefix) {
+			d.storedPositions.Delete(k)
+		}
+		return true
+	})
 }
 
 // debateHandoffStats aggregates, over a debate, what bounding the round 2+
@@ -93,6 +126,21 @@ func (d *DebateOrchestrator) Execute(ctx context.Context, config *loomv1.DebateP
 
 	// Generate unique workflow ID for session tracking
 	workflowID := fmt.Sprintf("debate-%s", uuid.New().String()[:8])
+
+	// The moderator is the join agent: a join_policy.agent_id has no meaning
+	// here, and accepting it would promise a synthesis author the engine does
+	// not use. The YAML loader and the builder reject it; so does the engine,
+	// for patterns built directly.
+	if id := config.GetJoinPolicy().GetAgentId(); id != "" {
+		return nil, fmt.Errorf("debate join_policy.agent_id %q is not used: moderator_agent_id is the join agent and each debater receives its own response prompt; remove agent_id", id)
+	}
+
+	// Positions stored under a join policy are this run's artifact: drop them
+	// when the run ends, however it ends.
+	if cleaner, ok := d.provider.(HandoffCleaner); ok && d.handoffPolicy(config) != nil {
+		defer cleaner.CleanupHandoffs(ctx, workflowID)
+	}
+	defer d.forgetStoredPositions(workflowID)
 
 	// Start workflow-level span for complete observability hierarchy
 	ctx, span := d.tracer.StartSpan(ctx, "workflow.debate")
@@ -181,6 +229,12 @@ func (d *DebateOrchestrator) Execute(ctx context.Context, config *loomv1.DebateP
 				roundSpan.SetAttribute("round.status", "completed")
 				roundSpan.SetAttribute("round.consensus_reached", fmt.Sprintf("%t", round.ConsensusReached))
 				roundSpan.SetAttribute("round.positions", fmt.Sprintf("%d", len(round.Positions)))
+			}
+			if roundStats.bounded > 0 {
+				roundSpan.SetAttribute("join.response_prompts_bounded", fmt.Sprintf("%d", roundStats.bounded))
+				roundSpan.SetAttribute("join.response_prompts_over_budget", fmt.Sprintf("%d", roundStats.overBudget))
+				roundSpan.SetAttribute("join.response_positions_truncated", fmt.Sprintf("%d", roundStats.truncated))
+				roundSpan.SetAttribute("join.response_positions_reduced", fmt.Sprintf("%d", roundStats.reduced))
 			}
 		}
 		d.tracer.EndSpan(roundSpan)
@@ -619,6 +673,7 @@ func (d *DebateOrchestrator) getAgentResponses(ctx context.Context, workflowID, 
 		}
 		if policy != nil {
 			entry.Key = positionKey(workflowID, roundNum, otherID)
+			entry.Stored = d.positionStored(workflowID, entry.Key)
 		}
 		entries = append(entries, entry)
 	}
@@ -635,7 +690,7 @@ func (d *DebateOrchestrator) getAgentResponses(ctx context.Context, workflowID, 
 			}
 			others = append(others, section)
 		}
-		return sharedMemoryHandoffHeader(pieces, "positions") + fmt.Sprintf(`You previously took this position:
+		return SharedMemoryHeader(pieces, "positions", workflowID) + fmt.Sprintf(`You previously took this position:
 %s
 
 Other agents have presented these positions:
@@ -664,6 +719,7 @@ Respond briefly to the key points the other agents raised: which do you challeng
 		if err != nil {
 			return nil, nil, err
 		}
+		d.markPositionsStored(workflowID, entries)
 		addHandoffUsage(cost, agentID, fit)
 		prompt = fit.Prompt
 	} else {
@@ -690,32 +746,6 @@ func unboundedPieces(entries []HandoffEntry) []HandoffPiece {
 		pieces[i] = HandoffPiece{Index: e.Index, AgentID: e.AgentID, Inline: e.Text, FullSize: len(e.Text)}
 	}
 	return pieces
-}
-
-// sharedMemoryHandoffHeader lists the SharedMemory keys holding full
-// entries, for a receiver that can call shared_memory_read. Empty when no
-// entry was stored.
-func sharedMemoryHandoffHeader(pieces []HandoffPiece, unit string) string {
-	stored := 0
-	for _, p := range pieces {
-		if p.Key != "" {
-			stored++
-		}
-	}
-	if stored == 0 {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString("## AVAILABLE CONTEXT (SharedMemory)\n")
-	b.WriteString(fmt.Sprintf("Full text of %d of %d %s is stored in SharedMemory namespace \"workflow\":\n", stored, len(pieces), unit))
-	for _, p := range pieces {
-		if p.Key == "" {
-			continue
-		}
-		b.WriteString(fmt.Sprintf("- `%s`: agent %s, %d bytes\n", p.Key, p.AgentID, p.FullSize))
-	}
-	b.WriteString("Use `shared_memory_read(namespace=\"workflow\", key=\"<key>\")` to fetch one whose section below is marked truncated or reduced.\n\n---\n\n")
-	return b.String()
 }
 
 // parseAgentResponse extracts position, arguments, and confidence from agent output.
@@ -818,7 +848,7 @@ func (d *DebateOrchestrator) summarizePosition(ctx context.Context, workflowID, 
 	}
 
 	// Build summarization prompt
-	prompt := fmt.Sprintf(`As the debate moderator, summarize this agent's position into 2-3 concise sentences (max 200 chars) that capture the core argument:
+	prompt := fmt.Sprintf(`Summarize this debate position into 2-3 concise sentences (max 200 chars) that capture the core argument:
 
 Agent: %s
 
@@ -1012,6 +1042,7 @@ func (d *DebateOrchestrator) synthesizeWithModerator(ctx context.Context, workfl
 			entry := HandoffEntry{Index: idx, AgentID: pos.AgentId, Text: text}
 			if policy != nil {
 				entry.Key = positionKey(workflowID, round.RoundNumber, pos.AgentId)
+				entry.Stored = d.positionStored(workflowID, entry.Key)
 			}
 			entries = append(entries, entry)
 			roundOf[idx] = round.RoundNumber
@@ -1037,9 +1068,9 @@ func (d *DebateOrchestrator) synthesizeWithModerator(ctx context.Context, workfl
 			}
 			rounds.WriteString("\n")
 		}
-		header := sharedMemoryHandoffHeader(pieces, "positions")
+		header := SharedMemoryHeader(pieces, "positions", workflowID)
 		if policy != nil && strings.TrimSpace(policy.PromptTemplate) != "" {
-			return header + spliceHandoffTemplate(policy.PromptTemplate, config.Topic, rounds.String(), len(pieces))
+			return header + SpliceTemplate(policy.PromptTemplate, config.Topic, rounds.String(), len(pieces))
 		}
 		return header + fmt.Sprintf("# Debate Topic\n%s\n\n# All Debate Rounds\n\n%s\n%s", config.Topic, rounds.String(), debateSynthesisInstruction)
 	}
@@ -1062,6 +1093,7 @@ func (d *DebateOrchestrator) synthesizeWithModerator(ctx context.Context, workfl
 		if err != nil {
 			return "", nil, err
 		}
+		d.markPositionsStored(workflowID, entries)
 		addHandoffUsage(cost, config.ModeratorAgentId, fit)
 		prompt = fit.Prompt
 	} else {
@@ -1075,19 +1107,6 @@ func (d *DebateOrchestrator) synthesizeWithModerator(ctx context.Context, workfl
 	addDebateUsage(cost, config.ModeratorAgentId, resp.Usage)
 
 	return resp.Content, fit, nil
-}
-
-// spliceHandoffTemplate fills a join prompt template: {{prompt}} and
-// {{branch_count}} by replacement, {{branches}} last by splicing so text
-// inside a position is never re-scanned; a template without {{branches}}
-// gets the sections appended.
-func spliceHandoffTemplate(tmpl, prompt, sections string, count int) string {
-	body := strings.ReplaceAll(tmpl, "{{prompt}}", prompt)
-	body = strings.ReplaceAll(body, "{{branch_count}}", fmt.Sprintf("%d", count))
-	if !strings.Contains(body, "{{branches}}") {
-		return body + "\n\n" + sections
-	}
-	return strings.Join(strings.Split(body, "{{branches}}"), sections)
 }
 
 // calculateMetrics computes collaboration quality metrics.

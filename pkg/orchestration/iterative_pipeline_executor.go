@@ -71,6 +71,10 @@ type IterativePipelineExecutor struct {
 	// Latest FULL (untruncated) output per stage, for checkpoint snapshots
 	fullOutputs map[string]string
 
+	// Whether each stage's full output is in SharedMemory (agent_id -> bool).
+	// A history entry for a stage whose stash failed is passed in full.
+	stashed map[string]bool
+
 	// Feedback threaded into the next executed stage's prompt (consumed once).
 	// Set by HITL gate REVISE decisions and by restart requests (reason +
 	// parameters — previously logged only, never reaching the target stage).
@@ -116,6 +120,7 @@ func NewIterativePipelineExecutor(
 		lastRestartTime:  make(map[string]time.Time),
 		gateRevisions:    make(map[string]int32),
 		fullOutputs:      make(map[string]string),
+		stashed:          make(map[string]bool),
 	}
 }
 
@@ -246,6 +251,10 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 		modelsUsed = e.resume.modelsUsed
 		validationWarnings = e.resume.validationWarnings
 		e.fullOutputs = e.resume.fullOutputs
+		// The resume re-seeded every completed stage when there is a store.
+		for id := range e.fullOutputs {
+			e.stashed[id] = e.orchestrator.sharedMemory != nil
+		}
 		if e.resume.iteration > 0 {
 			e.currentIteration = e.resume.iteration
 		}
@@ -311,17 +320,20 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 		}
 
 		// Pass all previous stage outputs. Each history entry is cut to
-		// MaxStageOutputBytes with the stage-N-output notice at render time
+		// MaxStageOutputBytes with the <workflow-id>-stage-N-output notice at render time
 		// (the same copy the next stage gets as {{previous}}); a
 		// HistoryPolicy on the pipeline fits the whole prompt to the stage
 		// agent's token budget as well.
 		outputsSlice := make([]string, 0, stageIndex)
+		stashedSlice := make([]bool, 0, stageIndex)
 		for i := 0; i < stageIndex; i++ {
-			if out, ok := e.fullOutputs[e.pattern.Pipeline.Stages[i].AgentId]; ok {
+			id := e.pattern.Pipeline.Stages[i].AgentId
+			if out, ok := e.fullOutputs[id]; ok {
 				outputsSlice = append(outputsSlice, out)
+				stashedSlice = append(stashedSlice, e.stashed[id])
 			}
 		}
-		prompt, historyFit, err := e.boundStagePromptWithStructuredContext(execCtx, stage, stageNum, currentInput, outputsSlice)
+		prompt, historyFit, err := e.boundStagePromptWithStructuredContext(execCtx, stage, stageNum, currentInput, outputsSlice, stashedSlice)
 		if err != nil {
 			e.orchestrator.tracer.EndSpan(promptSpan)
 			return nil, err
@@ -393,28 +405,39 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 		}
 
 		// Hybrid context passing: store full output in SharedMemory, pass truncated summary
-		// SharedMemory key format: "stage-N-output" (e.g., "stage-1-output")
-		stageMemoryKey := fmt.Sprintf("stage-%d-output", stageNum)
+		// SharedMemory key format: "<workflow-id>-stage-N-output"
+		stageMemoryKey := stageOutputKey(e.workflowID, stageNum)
 
-		// Store FULL (non-truncated) output in SharedMemory for on-demand retrieval
-		if err := e.storeStageOutputInMemory(execCtx, stageMemoryKey, stage.AgentId, result.Output); err != nil {
-			e.orchestrator.logger.Warn("Failed to store full output in SharedMemory (continuing with truncation only)",
-				zap.String("stage_id", stage.AgentId),
-				zap.Int("stage_num", stageNum),
-				zap.String("memory_key", stageMemoryKey),
-				zap.Error(err))
-		} else {
-			e.orchestrator.logger.Debug("Stored full stage output in SharedMemory",
-				zap.String("stage_id", stage.AgentId),
-				zap.Int("stage_num", stageNum),
-				zap.String("memory_key", stageMemoryKey),
-				zap.Int("output_size", len(result.Output)))
+		// Store FULL (non-truncated) output in SharedMemory for on-demand
+		// retrieval. Without a store nothing is cut: a notice naming a key
+		// nobody can fetch would only mislead the next stage.
+		stored := false
+		if e.orchestrator.sharedMemory != nil {
+			if err := e.storeStageOutputInMemory(execCtx, stageMemoryKey, stage.AgentId, result.Output); err != nil {
+				e.orchestrator.logger.Warn("Failed to store full output in SharedMemory (passing full output inline)",
+					zap.String("stage_id", stage.AgentId),
+					zap.Int("stage_num", stageNum),
+					zap.String("memory_key", stageMemoryKey),
+					zap.Error(err))
+			} else {
+				stored = true
+				e.orchestrator.logger.Debug("Stored full stage output in SharedMemory",
+					zap.String("stage_id", stage.AgentId),
+					zap.Int("stage_num", stageNum),
+					zap.String("memory_key", stageMemoryKey),
+					zap.Int("output_size", len(result.Output)))
+			}
 		}
 
-		// Store truncated output for context passing (includes SharedMemory reference if truncated)
-		truncatedForStorage, _ := truncateStageOutput(result.Output, MaxStageOutputBytes, stageMemoryKey)
+		// Store the hand-off copy for context passing: cut with the
+		// SharedMemory reference when the full text is retrievable, else full.
+		truncatedForStorage := result.Output
+		if stored {
+			truncatedForStorage, _ = truncateStageOutput(result.Output, MaxStageOutputBytes, stageMemoryKey)
+		}
 		stageOutputs[stage.AgentId] = truncatedForStorage
 		e.fullOutputs[stage.AgentId] = result.Output
+		e.stashed[stage.AgentId] = stored
 		allResults = append(allResults, result)
 
 		// Try to parse stage output as JSON and add to structured context
@@ -467,7 +490,10 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 
 		// Update current input for next stage (use truncated output with SharedMemory reference)
 		// Full output already stored in SharedMemory above - agents can fetch via shared_memory_read
-		truncatedOutput, wasTruncated := truncateStageOutput(result.Output, MaxStageOutputBytes, stageMemoryKey)
+		truncatedOutput, wasTruncated := result.Output, false
+		if stored {
+			truncatedOutput, wasTruncated = truncateStageOutput(result.Output, MaxStageOutputBytes, stageMemoryKey)
+		}
 		if wasTruncated {
 			e.orchestrator.logger.Info("Stage output truncated (full data available in SharedMemory)",
 				zap.String("stage_id", stage.AgentId),
@@ -531,6 +557,7 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 				for i := target; i < len(e.pattern.Pipeline.Stages); i++ {
 					delete(stageOutputs, e.pattern.Pipeline.Stages[i].AgentId)
 					delete(e.fullOutputs, e.pattern.Pipeline.Stages[i].AgentId)
+					delete(e.stashed, e.pattern.Pipeline.Stages[i].AgentId)
 				}
 				if target == 0 {
 					currentInput = e.pattern.Pipeline.InitialPrompt
@@ -715,13 +742,13 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 // hybrid context passing (v3.13+), also prepends a SharedMemory context
 // header that lists available stage outputs agents can fetch via the
 // shared_memory_read tool. The fit is nil when the prompt carries no history.
-func (e *IterativePipelineExecutor) boundStagePromptWithStructuredContext(ctx context.Context, stage *loomv1.PipelineStage, stageNum int, previousOutput string, allOutputs []string) (string, *handoffFit, error) {
+func (e *IterativePipelineExecutor) boundStagePromptWithStructuredContext(ctx context.Context, stage *loomv1.PipelineStage, stageNum int, previousOutput string, allOutputs []string, stashed []bool) (string, *handoffFit, error) {
 	executor := NewPipelineExecutor(e.orchestrator, e.pattern.Pipeline, e.workflowID)
 	header := ""
-	if len(allOutputs) > 0 {
+	if len(allOutputs) > 0 && e.orchestrator.sharedMemory != nil {
 		header = e.buildSharedMemoryContextHeader(len(allOutputs))
 	}
-	return executor.boundStagePrompt(ctx, stage, stageNum, previousOutput, allOutputs, e.structuredContext, header)
+	return executor.boundStagePrompt(ctx, stage, stageNum, previousOutput, allOutputs, stashed, e.structuredContext, header)
 }
 
 // buildSharedMemoryContextHeader creates a header listing available SharedMemory keys.
@@ -729,14 +756,15 @@ func (e *IterativePipelineExecutor) boundStagePromptWithStructuredContext(ctx co
 func (e *IterativePipelineExecutor) buildSharedMemoryContextHeader(stageCount int) string {
 	var builder strings.Builder
 	builder.WriteString("## AVAILABLE CONTEXT (SharedMemory)\n")
-	builder.WriteString("Full outputs from previous stages are stored in SharedMemory.\n")
-	builder.WriteString("Use `shared_memory_read(namespace=\"workflow\", key=\"stage-N-output\")` to fetch any stage's complete output.\n\n")
+	builder.WriteString("Full outputs from previous stages are stored in SharedMemory namespace \"workflow\".\n")
+	builder.WriteString("Use `shared_memory_read(namespace=\"workflow\", key=\"<key>\")` with one of the keys below to fetch a stage's complete output.\n\n")
 	builder.WriteString("Available keys:\n")
 
 	for i := 1; i <= stageCount; i++ {
-		builder.WriteString(fmt.Sprintf("- `stage-%d-output`\n", i))
+		builder.WriteString(fmt.Sprintf("- `%s`\n", stageOutputKey(e.workflowID, i)))
 	}
 
+	builder.WriteString(sharedMemoryWriteHint(e.workflowID))
 	builder.WriteString("\n---\n\n")
 	return builder.String()
 }
@@ -1424,8 +1452,16 @@ func (e *IterativePipelineExecutor) resetWorkflowNamespace(ctx context.Context) 
 	}
 
 	// Delete each key in the namespace
+	// One store may serve every workflow a server runs: delete this
+	// workflow's executor-managed keys and the keys agents wrote without a
+	// workflow prefix, never another workflow's managed stash.
 	var deletionErrors []error
+	deleted := 0
 	for _, key := range listResp.Keys {
+		if owner := managedKeyWorkflow(key); owner != "" && owner != e.workflowID {
+			continue
+		}
+		deleted++
 		deleteReq := &loomv1.DeleteSharedMemoryRequest{
 			Namespace: loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_WORKFLOW,
 			Key:       key,
@@ -1442,9 +1478,9 @@ func (e *IterativePipelineExecutor) resetWorkflowNamespace(ctx context.Context) 
 
 	if len(deletionErrors) > 0 {
 		e.orchestrator.logger.Warn("Workflow namespace reset completed with some errors",
-			zap.Int("total_keys", len(listResp.Keys)),
+			zap.Int("total_keys", deleted),
 			zap.Int("failed", len(deletionErrors)))
-		return fmt.Errorf("failed to delete %d/%d keys", len(deletionErrors), len(listResp.Keys))
+		return fmt.Errorf("failed to delete %d/%d keys", len(deletionErrors), deleted)
 	}
 
 	e.orchestrator.logger.Info("Workflow namespace reset successfully",
@@ -1501,7 +1537,7 @@ func (e *IterativePipelineExecutor) buildCheckpoint(
 		Iteration:          types.SafeInt32(e.currentIteration),
 		GateRevisionCounts: e.gateRevisions,
 		PendingGate:        gateReq,
-		SharedMemory:       snapshotWorkflowMemory(ctx, e.orchestrator),
+		SharedMemory:       snapshotWorkflowMemory(ctx, e.orchestrator, e.workflowID),
 		CreatedAtMs:        time.Now().UnixMilli(),
 	}, nil
 }
@@ -1529,6 +1565,11 @@ func (e *IterativePipelineExecutor) Resume(ctx context.Context, ckpt *loomv1.Wor
 	}
 	if fp != ckpt.ConfigFingerprint {
 		return nil, fmt.Errorf("resume: workflow definition changed since suspension (fingerprint %s != checkpoint %s) — re-run the workflow instead", fp, ckpt.ConfigFingerprint)
+	}
+	// The resumed run is the checkpointed workflow: its SharedMemory keys
+	// and sessions carry that id.
+	if ckpt.WorkflowId != "" {
+		e.workflowID = ckpt.WorkflowId
 	}
 
 	stages := e.pattern.Pipeline.Stages
@@ -1558,7 +1599,7 @@ func (e *IterativePipelineExecutor) Resume(ctx context.Context, ckpt *loomv1.Wor
 			continue
 		}
 		state.fullOutputs[snap.AgentId] = snap.FullOutput
-		truncated, _ := truncateStageOutput(snap.FullOutput, MaxStageOutputBytes, fmt.Sprintf("stage-%d-output", i+1))
+		truncated, _ := truncateStageOutput(snap.FullOutput, MaxStageOutputBytes, stageOutputKey(e.workflowID, i+1))
 		state.stageOutputs[snap.AgentId] = truncated
 	}
 
@@ -1603,7 +1644,7 @@ func (e *IterativePipelineExecutor) Resume(ctx context.Context, ckpt *loomv1.Wor
 
 	// Restore agent-written SharedMemory and re-seed stage output keys before
 	// the resumed loop starts.
-	restoreWorkflowMemory(ctx, e.orchestrator, ckpt)
+	restoreWorkflowMemory(ctx, e.orchestrator, ckpt, e.workflowID)
 
 	e.resume = state
 	e.orchestrator.logger.Info("Resuming iterative pipeline execution",

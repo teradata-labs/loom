@@ -667,7 +667,7 @@ spec:
 ```
 
 **Variable Substitution** (plain `{{name}}`, no leading dot):
-- `{{previous}}`: Previous stage output; for the first stage, the initial prompt. Capped at 8 KiB with a `stage-N-output` SharedMemory pointer when SharedMemory is configured.
+- `{{previous}}`: Previous stage output; for the first stage, the initial prompt. Capped at 8 KiB with a `<workflow-id>-stage-N-output` SharedMemory pointer when SharedMemory is configured.
 - `{{history}}`: All previous outputs, each capped the same way; `pass_full_history: true` appends them when a template names neither placeholder. A `history` block adds a whole-prompt token budget.
 
 **Performance Metrics**:

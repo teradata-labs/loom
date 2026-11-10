@@ -216,8 +216,9 @@ func TestJoiner_Render_PlaceholdersHeaderAndSplicing(t *testing.T) {
 	out := j.render(tmpl, branches, true)
 
 	assert.True(t, strings.HasPrefix(out, "## AVAILABLE CONTEXT (SharedMemory)"), "join agent gets the key header")
-	assert.Contains(t, out, "- `wf-9-branch-1-output`: branch 1, agent a1")
-	assert.Contains(t, out, "- `wf-9-branch-2-output`: branch 2, agent a2")
+	assert.Contains(t, out, "- `wf-9-branch-1-output`: agent a1")
+	assert.Contains(t, out, "should start with `wf-9-`", "the join agent is told how to keep its own writes with the workflow")
+	assert.Contains(t, out, "- `wf-9-branch-2-output`: agent a2, 5005 bytes")
 	assert.Contains(t, out, "Task: THE PROMPT over 2 branches.")
 	assert.Contains(t, out, "### Branch 1: agent a1\nliteral {{prompt}} and {{branch_count}} stay as written inside a branch")
 	assert.Contains(t, out, "### Branch 2: agent a2\n")
@@ -237,11 +238,11 @@ func TestJoiner_DefaultTemplatesCoverEveryStrategy(t *testing.T) {
 		loomv1.MergeStrategy_CONCATENATE, loomv1.MergeStrategy_FIRST, loomv1.MergeStrategy_BEST, loomv1.MergeStrategy_SUMMARY,
 	} {
 		withPrompt := defaultJoinTemplate(s, true)
-		assert.Contains(t, withPrompt, joinPlaceholderBranches, s.String())
-		assert.Contains(t, withPrompt, joinPlaceholderPrompt, s.String())
+		assert.Contains(t, withPrompt, "{{branches}}", s.String())
+		assert.Contains(t, withPrompt, "{{prompt}}", s.String())
 		without := defaultJoinTemplate(s, false)
-		assert.Contains(t, without, joinPlaceholderBranches, s.String())
-		assert.NotContains(t, without, joinPlaceholderPrompt, s.String())
+		assert.Contains(t, without, "{{branches}}", s.String())
+		assert.NotContains(t, without, "{{prompt}}", s.String())
 	}
 }
 
@@ -530,8 +531,13 @@ func TestCutAtLineBoundary(t *testing.T) {
 // --- executor integration ---
 
 func TestForkJoin_JoinAgent_EndToEnd(t *testing.T) {
-	joinLLM := newRecordingLLMProvider("DECK")
 	orch := newJoinTestOrchestrator(t, nil, true)
+	// The join agent sees the stash while it runs; the run cleans it up after.
+	var keysAtJoin []string
+	joinLLM := newFuncLLMProvider(func(string) (string, error) {
+		keysAtJoin = workflowMemoryKeys(t, orch.sharedMemory)
+		return "DECK", nil
+	})
 	for i := 1; i <= 3; i++ {
 		name := fmt.Sprintf("analyst-%d", i)
 		orch.RegisterAgent(name, createMockAgent(t, name, newMockLLMProvider(bigText(name, 30_000))))
@@ -560,9 +566,9 @@ func TestForkJoin_JoinAgent_EndToEnd(t *testing.T) {
 	assert.Equal(t, "none", result.Metadata["join.overflow"])
 	assert.Equal(t, int32(4), result.Cost.LlmCalls, "three branches plus the join turn")
 	assert.Greater(t, result.Cost.AgentCostsUsd["presenter"], 0.0)
-	assert.Equal(t, "recording-mock-model", result.ModelsUsed["presenter"])
+	assert.Equal(t, "func-mock-model", result.ModelsUsed["presenter"])
 
-	prompts := joinLLM.recordedPrompts()
+	prompts := joinLLM.recorded()
 	require.Len(t, prompts, 1)
 	assert.Contains(t, prompts[0], "## AVAILABLE CONTEXT (SharedMemory)")
 	assert.Contains(t, prompts[0], "Build a deck for: Analyze Q3")
@@ -570,14 +576,16 @@ func TestForkJoin_JoinAgent_EndToEnd(t *testing.T) {
 	assert.Contains(t, prompts[0], "### Branch 3: agent analyst-3")
 	assert.Contains(t, prompts[0], "Branch output truncated: ")
 
-	keys := workflowMemoryKeys(t, orch.sharedMemory)
 	stored := 0
-	for _, k := range keys {
+	for _, k := range keysAtJoin {
 		if strings.HasSuffix(k, "-branch-1-output") || strings.HasSuffix(k, "-branch-2-output") || strings.HasSuffix(k, "-branch-3-output") {
 			stored++
 		}
 	}
-	assert.Equal(t, 3, stored, "every branch's full output is in SharedMemory")
+	assert.Equal(t, 3, stored, "every branch's full output is in SharedMemory while the join runs")
+	for _, k := range workflowMemoryKeys(t, orch.sharedMemory) {
+		assert.Empty(t, managedKeyWorkflow(k), "the run's stash is cleaned up when the run ends; found %s", k)
+	}
 }
 
 func TestForkJoin_JoinAgentMissing_FailsBeforeAnyBranchRuns(t *testing.T) {

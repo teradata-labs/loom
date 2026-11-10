@@ -1124,7 +1124,6 @@ func parseHITLGate(stageMap map[string]interface{}) (*loomv1.HITLGate, error) {
 	return gate, nil
 }
 
-// parseMergeStrategy converts string to MergeStrategy enum
 // parseJoinPolicy parses an optional join block on a fork-join or parallel
 // spec. Returns nil when the spec has no join block.
 //
@@ -1302,6 +1301,7 @@ func parseJoinOverflowStrategy(raw string) (loomv1.JoinOverflowStrategy, error) 
 	}
 }
 
+// parseMergeStrategy converts string to MergeStrategy enum
 func parseMergeStrategy(strategy string) loomv1.MergeStrategy {
 	switch strategy {
 	case "consensus":

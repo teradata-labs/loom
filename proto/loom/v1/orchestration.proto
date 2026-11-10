@@ -99,7 +99,7 @@ message ForkJoinPattern {
 // join step and, optionally, runs that step through a registered agent.
 //
 // Full branch outputs are always stored in SharedMemory (WORKFLOW namespace,
-// key "<pattern>-branch-N-output") when the orchestrator has a SharedMemory
+// key "<workflow-id>-branch-N-output") when the orchestrator has a SharedMemory
 // store, so the join can fetch any branch in full with shared_memory_read.
 // The inline copy handed to the join is bounded in two steps: a per-branch
 // byte cap (max_branch_bytes), then a whole-input token budget

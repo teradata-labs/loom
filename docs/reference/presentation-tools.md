@@ -762,7 +762,7 @@ stages:
 ### Context Strategy
 
 - **Stages 1-9**: Use `{{previous}}` (lightweight, see only last stage)
-- **Stage 10**: Use `{{history}}` (see all stages for summary; each entry is capped at 8 KiB with a `stage-N-output` pointer, and a `history` block can hold the whole prompt to a token budget)
+- **Stage 10**: Use `{{history}}` (see all stages for summary; each entry is capped at 8 KiB with a `<workflow-id>-stage-N-output` pointer, and a `history` block can hold the whole prompt to a token budget)
 - **Stage 11**: Use `{{previous}}` (lightweight, see Stage 10's summary) + presentation tools for deep dives
 
 This achieves optimal context management:

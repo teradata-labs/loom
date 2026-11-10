@@ -43,7 +43,9 @@ func (o *Orchestrator) BoundHandoff(ctx context.Context, req *collaboration.Hand
 	for _, in := range req.Entries {
 		e := handoffEntry{index: in.Index, agentID: in.AgentID, full: in.Text}
 		if in.Key != "" && o.sharedMemory != nil {
-			if err := j.store(ctx, in.Key, in.AgentID, in.Index, in.Text); err != nil {
+			if in.Stored {
+				e.memKey = in.Key
+			} else if err := j.store(ctx, in.Key, in.AgentID, in.Index, in.Text); err != nil {
 				o.logger.Warn("failed to store hand-off entry in SharedMemory; receiver gets the inline copy only",
 					zap.String("workflow_id", req.WorkflowID),
 					zap.String("scope", req.Scope),
@@ -58,19 +60,7 @@ func (o *Orchestrator) BoundHandoff(ctx context.Context, req *collaboration.Hand
 	branches := j.branchesFor(entries, true)
 
 	render := func(bs []joinBranch) string {
-		pieces := make([]collaboration.HandoffPiece, len(bs))
-		for i := range bs {
-			b := &bs[i]
-			pieces[i] = collaboration.HandoffPiece{
-				Index:    b.index,
-				AgentID:  b.agentID,
-				Inline:   b.inline,
-				Notice:   j.noticeFor(b, b.action),
-				Key:      b.memKey,
-				FullSize: len(b.full),
-			}
-		}
-		return req.Render(pieces)
+		return req.Render(j.pieces(bs))
 	}
 
 	fit, err := j.fit(ctx, req.Receiver, branches, j.budget(req.Receiver), render)

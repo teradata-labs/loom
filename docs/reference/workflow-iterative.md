@@ -195,7 +195,7 @@ The **Iterative Workflow Pattern** extends the standard pipeline pattern with **
 │                      SharedMemory                               │
 │  Full Stage Output Storage                                      │
 │  • Namespace: WORKFLOW                                          │
-│  • Keys: "stage-N-output"                                       │
+│  • Keys: "<workflow-id>-stage-N-output"                                       │
 │  • Auto-compression: > 1KB                                      │
 │  • Metadata: agent_id, stored_at, full_size                     │
 └─────────────────────────────────────────────────────────────────┘
@@ -285,7 +285,7 @@ for currentIteration <= maxIterations {
 **How**:
 - Truncate outputs > 8KB in prompt context
 - Store full outputs in SharedMemory
-- Add reference message: "Full data in shared_memory_read(key='stage-N-output')"
+- Add reference message: "Full data in shared_memory_read(key='<workflow-id>-stage-N-output')"
 
 **Trade-off**: Requires SharedMemory implementation, but prevents token bloat and provides escape hatch.
 
@@ -855,7 +855,7 @@ func truncateStageOutput(output string, maxBytes int, memoryKey string) (string,
     // Include reference to SharedMemory key
     notice := fmt.Sprintf(
         StageOutputTruncationNoticeTemplate,
-        memoryKey,  // e.g., "stage-1-output"
+        memoryKey,  // e.g., "<workflow-id>-stage-1-output"
     )
 
     return truncated + notice, true
@@ -881,7 +881,7 @@ Truncated Output (8KB):
   "events": ["purchase", "add_to_cart", ...],  // First 200 events
   "schema": {...},
 
-[OUTPUT TRUNCATED - Full data stored in SharedMemory. Use shared_memory_read(namespace="workflow", key="stage-1-output") to fetch complete output]
+[OUTPUT TRUNCATED - Full data stored in SharedMemory. Use shared_memory_read(namespace="workflow", key="<workflow-id>-stage-1-output") to fetch complete output]
 ```
 
 
@@ -893,7 +893,7 @@ Truncated Output (8KB):
 ```go
 func (e *IterativePipelineExecutor) storeStageOutputInMemory(
     ctx context.Context,
-    key string,      // "stage-1-output", "stage-2-output", etc.
+    key string,      // "<workflow-id>-stage-1-output", "<workflow-id>-stage-2-output", etc.
     agentID string,  // Agent that produced output
     output string,   // Full output (no truncation)
 ) error {
@@ -931,8 +931,8 @@ func (e *IterativePipelineExecutor) storeStageOutputInMemory(
 - `N`: 1-based stage number (not 0-based)
 
 **Examples**:
-- Stage 1: `stage-1-output`
-- Stage 2: `stage-2-output`
+- Stage 1: `<workflow-id>-stage-1-output`
+- Stage 2: `<workflow-id>-stage-2-output`
 - Stage 10: `stage-10-output`
 
 **Implementation**:
@@ -967,13 +967,13 @@ if strings.Contains(prompt, "{{structured_context}}") {
 
 **Built-in Template Variables** (substituted by pipeline executor):
 - `{{previous}}`: Last stage's output (truncated to 8KB)
-- `{{history}}`: All previous outputs formatted with stage numbers; each entry is the same 8KB copy `{{previous}}` carries, with the `stage-N-output` notice. A `history` block on the pipeline adds a whole-prompt token budget (see [Workflow Join Policy](workflow-join.md#pipeline-history)).
+- `{{history}}`: All previous outputs formatted with stage numbers; each entry is the same 8KB copy `{{previous}}` carries, with the `<workflow-id>-stage-N-output` notice. A `history` block on the pipeline adds a whole-prompt token budget (see [Workflow Join Policy](workflow-join.md#pipeline-history)).
 - `{{structured_context}}`: Full structured context as JSON
 
 **User-defined Template Variables** (substituted by `InterpolateVariables` from `ExecuteWorkflowRequest.variables`):
 - `{{table_name}}`, `{{database}}`, etc. - any key in the `variables` map
 
-**Note**: There is no `{{stage-N-output}}` template variable. To access specific previous stage outputs, agents should use the `shared_memory_read` tool with key `"stage-N-output"`.
+**Note**: There is no `{{stage-N-output}}` template variable. To access specific previous stage outputs, agents should use the `shared_memory_read` tool with key `"<workflow-id>-stage-N-output"`.
 
 
 ### Retrieval Pattern
@@ -986,14 +986,14 @@ tools:
     description: "Retrieve full stage output from SharedMemory"
     parameters:
       namespace: "workflow"
-      key: "stage-1-output"
+      key: "<workflow-id>-stage-1-output"
 ```
 
 **Tool Execution**:
 ```go
 func (t *SharedMemoryReadTool) Execute(ctx context.Context, params map[string]interface{}) (*ToolResult, error) {
     namespace := params["namespace"].(string)  // "workflow"
-    key := params["key"].(string)              // "stage-1-output"
+    key := params["key"].(string)              // "<workflow-id>-stage-1-output"
 
     req := &loomv1.GetSharedMemoryRequest{
         Namespace: parseNamespace(namespace),
@@ -1317,7 +1317,7 @@ enum SharedMemoryNamespace {
 ```go
 req := &loomv1.PutSharedMemoryRequest{
     Namespace: loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_WORKFLOW,
-    Key:       "stage-1-output",
+    Key:       "<workflow-id>-stage-1-output",
     Value:     []byte(fullOutput),
     AgentId:   "discover_events",
     Metadata: map[string]string{
@@ -1344,7 +1344,7 @@ resp, err := sharedMemory.Put(ctx, req)
 ```go
 req := &loomv1.GetSharedMemoryRequest{
     Namespace: loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_WORKFLOW,
-    Key:       "stage-1-output",
+    Key:       "<workflow-id>-stage-1-output",
 }
 
 resp, err := sharedMemory.Get(ctx, req)
@@ -1368,7 +1368,7 @@ version := resp.Value.Version               // Optimistic concurrency version
 ```go
 req := &loomv1.DeleteSharedMemoryRequest{
     Namespace: loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_WORKFLOW,
-    Key:       "stage-1-output",
+    Key:       "<workflow-id>-stage-1-output",
 }
 
 _, err := sharedMemory.Delete(ctx, req)
@@ -1412,8 +1412,8 @@ for _, key := range resp.Keys {
 
 **Output**:
 ```
-Key: stage-1-output
-Key: stage-2-output
+Key: <workflow-id>-stage-1-output
+Key: <workflow-id>-stage-2-output
 ```
 
 **Note**: `ListSharedMemoryKeysResponse` returns key names only (not values or metadata). To get metadata for a specific key, use a separate `Get` call.
@@ -1706,7 +1706,7 @@ restart_policy:
 **Description**: Whether to keep previous iteration's stage outputs in `stageOutputs` map.
 
 **Behavior**:
-- `true`: Keep outputs from previous iteration (retained in the `stageOutputs` map and in SharedMemory under key `stage-N-output`; read via the `shared_memory_read` tool, not via a `{{stage-N-output}}` template variable)
+- `true`: Keep outputs from previous iteration (retained in the `stageOutputs` map and in SharedMemory under key `<workflow-id>-stage-N-output`; read via the `shared_memory_read` tool, not via a `{{stage-N-output}}` template variable)
 - `false`: Clear outputs from restarted stage onward
 
 **Example**:
@@ -2099,7 +2099,7 @@ func TestIterativePipeline_RestartCoordination(t *testing.T) {
 **Store full outputs**:
 ```go
 // Always store full output in SharedMemory
-storeStageOutputInMemory(ctx, "stage-1-output", agentID, fullOutput)
+storeStageOutputInMemory(ctx, "<workflow-id>-stage-1-output", agentID, fullOutput)
 ```
 
 **Reference in prompts**:
@@ -2109,7 +2109,7 @@ stages:
     prompt_template: |
       Analyze data from discovery stage.
 
-      **Full data available**: Use shared_memory_read(namespace="workflow", key="stage-1-output")
+      **Full data available**: Use shared_memory_read(namespace="workflow", key="<workflow-id>-stage-1-output")
       to retrieve complete output if needed.
 
       **Summary**: {{previous}}
@@ -2458,7 +2458,7 @@ grep "shared_memory" loom.log
 
 1. **Namespace Reset Between Stages**:
    ```
-   Error: key 'stage-1-output' not found after restart
+   Error: key '<workflow-id>-stage-1-output' not found after restart
    ```
    **Resolution**: Set `reset_shared_memory: false`:
    ```yaml
@@ -2468,7 +2468,7 @@ grep "shared_memory" loom.log
 
 2. **Wrong Key Format**:
    ```
-   Error: key 'stage_1_output' not found (should be 'stage-1-output')
+   Error: key 'stage_1_output' not found (should be '<workflow-id>-stage-1-output')
    ```
    **Resolution**: Use correct key format: `stage-{N}-output` (1-based, hyphenated).
 
@@ -2626,7 +2626,7 @@ Error: stage 'discovery' not authorized to trigger restarts
 
 **Example**:
 ```
-Error: shared memory key not found: stage-1-output
+Error: shared memory key not found: <workflow-id>-stage-1-output
 ```
 
 **Resolution**:

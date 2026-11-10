@@ -18,7 +18,8 @@ import (
 // A pipeline stage that reads {{history}} (or runs under pass_full_history)
 // receives every prior stage's output in one prompt. {{previous}} has been
 // bounded since the hybrid hand-off: the full output is in SharedMemory under
-// stage-N-output and the next stage gets an 8 KiB copy with a notice. History
+// <workflow-id>-stage-N-output and the next stage gets an 8 KiB copy with a
+// notice. History
 // entries now get the same treatment, and a HistoryPolicy adds a whole-prompt
 // token budget enforced with the join overflow strategies. The joiner does
 // the capping and fitting; this file renders the result as the stage prompt.
@@ -51,6 +52,26 @@ func stageRendersHistory(stage *loomv1.PipelineStage, passFullHistory bool, prio
 		return true
 	}
 	return passFullHistory && !strings.Contains(tmpl, "{{previous}}")
+}
+
+// stageStashed reports whether prior stage i's full output is in
+// SharedMemory: the recorded flag when the run tracked one, else whether a
+// store exists at all (a resumed run re-seeds every completed stage).
+func stageStashed(stashed []bool, i int, haveStore bool) bool {
+	if i < len(stashed) {
+		return stashed[i]
+	}
+	return haveStore && len(stashed) == 0
+}
+
+// allStashed is the stashed slice of a resumed run: every completed stage
+// was re-seeded when the orchestrator has a store.
+func allStashed(n int, haveStore bool) []bool {
+	out := make([]bool, n)
+	for i := range out {
+		out[i] = haveStore
+	}
+	return out
 }
 
 // historyStats aggregates, over a run, what bounding the history hand-offs
@@ -96,15 +117,19 @@ func (s *historyStats) addTo(metadata map[string]string) {
 // boundStagePrompt builds a stage's prompt. Prior outputs rendered through
 // {{history}} / pass_full_history are each the inline copy {{previous}}
 // would carry (full when SharedMemory has no copy, else cut to the per-entry
-// cap with the stage-N-output notice). With a HistoryPolicy the whole prompt
+// cap with the <workflow-id>-stage-N-output notice). With a HistoryPolicy the whole prompt
 // is token-counted against the stage agent's budget and the history entries
 // are reduced or truncated to fit, or the stage fails, per the policy.
 //
-// header is prepended to the prompt (the SharedMemory key list); it counts
-// toward the budget. The returned fit is nil when the prompt carries no
-// history. Pre-reduce usage is in fit.Usage / fit.LLMCalls for the caller
-// to add to the run's cost.
-func (e *PipelineExecutor) boundStagePrompt(ctx context.Context, stage *loomv1.PipelineStage, stageNum int, previousOutput string, allOutputs []string, structuredCtx *StructuredContext, header string) (string, *handoffFit, error) {
+// stashed says, per prior stage, whether its full output is in SharedMemory;
+// an entry whose stash failed is passed in full, as {{previous}} was for
+// that stage. nil means every entry is stashed when the orchestrator has a
+// store (the resume path, which re-seeds every stage). header is prepended
+// to the prompt (the SharedMemory key list); it counts toward the budget.
+// The returned fit is nil when the prompt carries no history. Pre-reduce
+// usage is in fit.Usage / fit.LLMCalls for the caller to add to the run's
+// cost.
+func (e *PipelineExecutor) boundStagePrompt(ctx context.Context, stage *loomv1.PipelineStage, stageNum int, previousOutput string, allOutputs []string, stashed []bool, structuredCtx *StructuredContext, header string) (string, *handoffFit, error) {
 	if !stageRendersHistory(stage, e.pattern.PassFullHistory, len(allOutputs)) {
 		return header + e.buildStagePromptWithContext(stage, previousOutput, allOutputs, structuredCtx), nil, nil
 	}
@@ -119,10 +144,8 @@ func (e *PipelineExecutor) boundStagePrompt(ctx context.Context, stage *loomv1.P
 		if i < len(e.pattern.Stages) {
 			entry.agentID = e.pattern.Stages[i].AgentId
 		}
-		if e.orchestrator.sharedMemory != nil {
-			// Stored at stage completion (storeStageOutputInMemory); the
-			// same assumption deriveInputFromOutput makes for {{previous}}.
-			entry.memKey = fmt.Sprintf("stage-%d-output", i+1)
+		if stageStashed(stashed, i, e.orchestrator.sharedMemory != nil) {
+			entry.memKey = stageOutputKey(e.workflowID, i+1)
 		}
 		entries = append(entries, entry)
 	}

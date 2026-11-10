@@ -98,8 +98,10 @@ func (e *ForkJoinExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 		return nil, fmt.Errorf("fork execution failed: %w", err)
 	}
 
-	// Merge results using specified strategy with join span
-	ctx, joinSpan := e.orchestrator.tracer.StartSpan(ctx, "fork_join.join")
+	// Merge results using specified strategy with join span. The join runs
+	// under the same timeout as the branches: with a join agent it is a tool
+	// loop plus parallel reduce calls, not one call.
+	ctx, joinSpan := e.orchestrator.tracer.StartSpan(executeCtx, "fork_join.join")
 	if joinSpan != nil {
 		joinSpan.SetAttribute("merge.strategy", e.pattern.MergeStrategy.String())
 		joinSpan.SetAttribute("branch.count", fmt.Sprintf("%d", len(results)))
