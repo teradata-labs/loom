@@ -289,8 +289,15 @@ spec:
     - architect
     - pragmatist
   rounds: 3                                # OPTIONAL: default 1
-  merge_strategy: consensus                # OPTIONAL: consensus|voting|concatenate|first|best|summary
-  moderator_agent_id: senior-architect     # OPTIONAL
+  moderator_agent_id: senior-architect     # OPTIONAL: writes the synthesis; without it the result is a confidence summary line
+  join:                                    # OPTIONAL: bound the synthesis and round 2+ response prompts (no agent_id here)
+    prompt_template: |                     # OPTIONAL: synthesis prompt; {{prompt}}=topic {{branches}}=positions {{branch_count}}
+      Decide on: {{prompt}}
+      {{branches}}
+    max_branch_bytes: 4096                 # OPTIONAL: inline cap per position (0 = 8192)
+    max_input_tokens: 60000                # OPTIONAL: whole-prompt budget (0 = half the receiving agent's usable window)
+    overflow_strategy: pre_reduce          # OPTIONAL: pre_reduce (default) | truncate | fail
+  # merge_strategy is NOT a debate field: the loader rejects it (the engine never read it)
 
 ---
 # --- FORK-JOIN PATTERN ---
@@ -334,7 +341,13 @@ spec:
         include_valid_values: true        # Include schema/criteria in retry prompt (default: true)
     - agent_id: implementer
       prompt_template: "Implement: {{previous}}"
+    - agent_id: reviewer
+      prompt_template: "Review everything: {{history}}"  # each entry capped at 8 KiB with a stage-N-output SharedMemory pointer
   pass_full_history: true                 # OPTIONAL: default false
+  history:                                # OPTIONAL: token budget for {{history}} / pass_full_history prompts
+    max_entry_bytes: 4096                 # OPTIONAL: inline cap per prior stage (0 = 8192)
+    max_input_tokens: 60000               # OPTIONAL: whole-prompt budget (0 = half the stage agent's usable window)
+    overflow_strategy: pre_reduce         # OPTIONAL: pre_reduce (default) | truncate | fail
 
 ---
 # --- PARALLEL PATTERN ---
@@ -537,6 +550,19 @@ spec:
 #   - max_input_tokens: token budget, 0 = half the join agent's usable window (none without agent)
 #   - overflow_strategy: pre_reduce (compressor LLM card per oversize branch) | truncate | fail
 #   Without agent_id a policy applies to LLM merge strategies only (concatenate/first rejected).
+#
+# JOIN POLICY ON DEBATE (spec.join): same fields minus agent_id (the moderator is the join
+#   agent). Bounds each debater's round 2+ response prompt and the moderator synthesis;
+#   full positions are stored under <workflow-id>-round-R-position-<agent-id>.
+#
+# HISTORY POLICY (pipeline, iterative pipeline; spec.history):
+#   {{history}} / pass_full_history entries are always capped at 8 KiB with a stage-N-output
+#   pointer when SharedMemory is configured (same as {{previous}}). The block adds a
+#   whole-prompt token budget:
+#   - max_entry_bytes: inline cap per prior stage, 0 = 8192
+#   - max_input_tokens: token budget, 0 = half the stage agent's usable window
+#   - overflow_strategy: pre_reduce (default) | truncate | fail
+#   Rejected when no stage uses {{history}} and pass_full_history is false.
 #   See docs/reference/workflow-join.md
 #
 # VOTING STRATEGIES (swarm):

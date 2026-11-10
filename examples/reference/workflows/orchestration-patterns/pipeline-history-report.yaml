@@ -1,0 +1,46 @@
+# Pipeline History Report Workflow
+# Research stages feed a final stage that compiles everything it can see
+# through {{history}}, with the hand-off bounded so the compiler never gets
+# a prompt its model cannot take.
+
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: pipeline-history-report
+  description: Three research stages compiled into one report by a final stage reading {{history}}
+  labels:
+    category: reporting
+    complexity: medium
+
+spec:
+  type: pipeline
+  initial_prompt: "Prepare the quarterly operations review"
+  stages:
+    - agent_id: finance-analyst
+      prompt_template: "Analyze the quarter's finances for: {{previous}}"
+    - agent_id: sales-analyst
+      prompt_template: "Analyze the quarter's sales pipeline for the same review. Finance said: {{previous}}"
+    - agent_id: ops-analyst
+      prompt_template: "Analyze operations for the same review. Sales said: {{previous}}"
+    - agent_id: report-writer
+      prompt_template: |
+        Write the quarterly operations review as a 10-section report.
+        Each section below is a research stage's output. A section marked
+        OUTPUT TRUNCATED or OUTPUT REDUCED has its full text in SharedMemory;
+        fetch it with shared_memory_read when the summary is not enough.
+
+        {{history}}
+
+  # Every {{history}} entry is already the 8 KiB copy the next stage would
+  # get as {{previous}}, with a stage-N-output pointer. This block adds a
+  # whole-prompt token budget for the report-writer: when the four entries
+  # plus the template exceed it, oversize entries are reduced to cards by
+  # the report-writer's compressor LLM (its main LLM when none is set).
+  history:
+    max_entry_bytes: 6144
+    max_input_tokens: 48000
+    overflow_strategy: pre_reduce
+
+# Agent configs used (from $LOOM_DATA_DIR/agents/):
+# - finance-analyst.yaml, sales-analyst.yaml, ops-analyst.yaml: research agents
+# - report-writer.yaml: give it shared_memory_read so it can pull any stage back in full

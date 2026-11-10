@@ -775,10 +775,10 @@ func (e *ToolExecutor) ExecuteConcurrent(ctx context.Context, tools []Tool) []Re
 3. **Fork-Join**: Parallel execution with merged results
 4. **Debate**: Agents argue different perspectives
 5. **Conditional**: Route based on agent decisions
-6. **Swarm**: Dynamic agent collaboration
-7. **Pair Programming**: Two agents collaborate on code
-8. **Teacher-Student**: Knowledge transfer between agents
-9. **Iterative**: Loop-based refinement workflow
+6. **Swarm**: Collective voting
+7. **Iterative**: Loop-based refinement workflow
+8. 📋 **Pair Programming** (planned, proto only; `Execute` returns `ErrPatternNotImplemented`)
+9. 📋 **Teacher-Student** (planned, proto only; `Execute` returns `ErrPatternNotImplemented`)
 
 **Configuration**:
 

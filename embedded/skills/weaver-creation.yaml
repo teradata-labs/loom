@@ -25,9 +25,15 @@ prompt:
     10. For event-driven workflows: sub-agents auto-spawn on message receipt.
         Do NOT use manage_ephemeral_agents. Do NOT create receive_message tools.
     11. WORKFLOW FIELD RULES — do NOT mix fields between types:
-        - debate requires: topic, agent_ids, rounds, merge_strategy
+        - debate requires: topic, agent_ids, rounds; optional moderator_agent_id (the agent that writes
+          the synthesis) and join: {max_branch_bytes, max_input_tokens, overflow_strategy, prompt_template}
+          to bound the synthesis and round 2+ response prompts. NEVER merge_strategy on debate (rejected)
+          and never join.agent_id on debate (the moderator is the join agent)
         - fork-join requires: prompt (NOT topic!), agent_ids, merge_strategy
-        - pipeline requires: initial_prompt, stages (array with agent_id + prompt_template using {{previous}})
+        - pipeline requires: initial_prompt, stages (array with agent_id + prompt_template using {{previous}});
+          a stage that compiles everything uses {{history}} (each entry capped at 8 KiB with a SharedMemory
+          pointer); add history: {max_entry_bytes, max_input_tokens, overflow_strategy} to hold that prompt
+          to the stage agent's token budget
         - parallel requires: tasks (array with agent_id + prompt per task, NOT agent_ids!)
         - fork-join and parallel may add join: {agent_id, prompt_template with {{branches}}, max_branch_bytes,
           max_input_tokens, overflow_strategy} when a final agent must build one result from all branches;

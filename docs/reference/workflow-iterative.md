@@ -967,7 +967,7 @@ if strings.Contains(prompt, "{{structured_context}}") {
 
 **Built-in Template Variables** (substituted by pipeline executor):
 - `{{previous}}`: Last stage's output (truncated to 8KB)
-- `{{history}}`: All previous outputs formatted with stage numbers
+- `{{history}}`: All previous outputs formatted with stage numbers; each entry is the same 8KB copy `{{previous}}` carries, with the `stage-N-output` notice. A `history` block on the pipeline adds a whole-prompt token budget (see [Workflow Join Policy](workflow-join.md#pipeline-history)).
 - `{{structured_context}}`: Full structured context as JSON
 
 **User-defined Template Variables** (substituted by `InterpolateVariables` from `ExecuteWorkflowRequest.variables`):

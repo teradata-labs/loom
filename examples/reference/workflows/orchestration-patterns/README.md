@@ -17,7 +17,7 @@ Orchestration patterns define **how** multiple agents collaborate on a task usin
 ### 1. **debate** - Structured Debate
 **File:** `architecture-debate.yaml`
 
-Multiple agents debate a topic through structured rounds, with optional moderator.
+Multiple agents debate a topic through structured rounds, with optional moderator. The moderator writes the synthesis; without one the result is a one-line confidence summary of the last round. A `join` block bounds the moderator's synthesis prompt and each agent's round 2+ response prompt (full positions go to SharedMemory, inline copies are capped, the prompt is held to the receiving agent's token budget). `merge_strategy` is not a debate field and is rejected.
 
 ```yaml
 spec:
@@ -36,7 +36,7 @@ spec:
 ---
 
 ### 2. **pipeline** - Sequential Processing
-**File:** `feature-pipeline.yaml`
+**Files:** `feature-pipeline.yaml`, `pipeline-history-report.yaml`
 
 Agents execute sequentially, where each stage's output becomes the next stage's input.
 
@@ -55,6 +55,23 @@ spec:
 - Feature implementation (design → code → test)
 - Content refinement (draft → edit → review)
 - Sequential transformations
+
+A final stage that compiles everything reads `{{history}}`. Each entry is the same 8 KiB copy the next stage gets as `{{previous}}`, with a `stage-N-output` SharedMemory pointer for the rest. Add a `history` block to hold the whole prompt to the stage agent's token budget (`pipeline-history-report.yaml`):
+
+```yaml
+spec:
+  type: pipeline
+  initial_prompt: "Prepare the quarterly review"
+  stages:
+    - agent_id: finance-analyst
+      prompt_template: "Analyze finances: {{previous}}"
+    - agent_id: report-writer
+      prompt_template: "Write the report from: {{history}}"
+  history:
+    max_entry_bytes: 6144
+    max_input_tokens: 48000
+    overflow_strategy: pre_reduce   # pre_reduce | truncate | fail
+```
 
 ---
 
