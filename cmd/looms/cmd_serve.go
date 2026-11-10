@@ -268,31 +268,13 @@ func registerYAMLBuiltinTools(
 }
 
 // serveAgentConfig is the agent.Config both serve paths (startup and hot
-// reload) start from: identity, prompt, ROM, metadata, turn and tool-execution
-// limits (behavior values, else the defaults 25 and 50), tracing, and the
-// metadata-encoded behavior flags (agent.ApplyMetadataBehavior).
+// reload) start from: delegated to agent.RegistryAgentConfig so registry,
+// startup, and hot-reload builds share a single source of truth for
+// DefaultConfig(), behavior limits, pattern config, context limits, skills
+// config, and metadata-encoded behavior flags.
 func serveAgentConfig(cfg *loomv1.AgentConfig, tracing bool) *agent.Config {
-	maxTurns := 25          // Default from pkg/agent/types.go:145
-	maxToolExecutions := 50 // Default from pkg/agent/types.go:146
-	if cfg.Behavior != nil {
-		if cfg.Behavior.MaxTurns > 0 {
-			maxTurns = int(cfg.Behavior.MaxTurns)
-		}
-		if cfg.Behavior.MaxToolExecutions > 0 {
-			maxToolExecutions = int(cfg.Behavior.MaxToolExecutions)
-		}
-	}
-	agentCfg := &agent.Config{
-		Name:              cfg.Name,
-		Description:       cfg.Description,
-		SystemPrompt:      cfg.SystemPrompt,
-		Rom:               cfg.Rom,      // ROM identifier for domain-specific knowledge
-		Metadata:          cfg.Metadata, // Metadata includes backend_path for ROM auto-detection
-		MaxTurns:          maxTurns,
-		MaxToolExecutions: maxToolExecutions,
-		EnableTracing:     tracing,
-	}
-	agent.ApplyMetadataBehavior(agentCfg, cfg.Metadata)
+	agentCfg := agent.RegistryAgentConfig(cfg, agent.ResolveSkillsConfig(cfg))
+	agentCfg.EnableTracing = tracing
 	return agentCfg
 }
 
@@ -1966,7 +1948,20 @@ func runServe(cmd *cobra.Command, args []string) {
 		time.Second,
 		hitlNotifier(),
 	)
-	admissionChain, err := createAdmissionChain(config, shuttle.ChainDeps{Perm: permissionChecker, Ask: askResolver, Custom: shuttle.ProcessCustomHookRegistry()}, logger)
+	// Jailed shell mode (tools.shell_execute.mode: jailed): pin programs, run
+	// the self-test, and install the runner before any agent registers
+	// shell_execute. A failure aborts startup rather than fall back to bash.
+	commandPolicy, err := setupShellJail(context.Background(), config, loomconfig.GetLoomDataDir(), logger)
+	if err != nil {
+		logger.Fatal("Failed to start the jailed shell", zap.Error(err))
+	}
+
+	admissionChain, err := createAdmissionChain(config, shuttle.ChainDeps{
+		Perm:          permissionChecker,
+		Ask:           askResolver,
+		Custom:        shuttle.ProcessCustomHookRegistry(),
+		CommandPolicy: commandPolicy,
+	}, logger)
 	if err != nil {
 		logger.Fatal("Failed to build admission chain", zap.Error(err))
 	}
@@ -1975,13 +1970,17 @@ func runServe(cmd *cobra.Command, args []string) {
 	// for the whole server, sized from the process memory limit. A malformed
 	// tool pattern aborts startup, like a malformed hook binding.
 	luaRT, err := newLuaRuntime(config.Tools.Lua, luaGuards{
-		YOLO:         config.Tools.Permissions.YOLO,
-		HookBindings: len(config.Tools.Hooks.Bindings),
+		YOLO:          config.Tools.Permissions.YOLO,
+		HookBindings:  len(config.Tools.Hooks.Bindings),
+		ShellGoverned: scriptShellGoverned(config),
 	}, luasandbox.ProcessMemoryLimit(), loomconfig.GetLoomDataDir(), logger)
 	if err != nil {
 		logger.Fatal("Invalid tools.lua configuration", zap.Error(err))
 	}
 	if luaRT != nil {
+		for _, w := range luaRT.warnings {
+			logger.Warn("tools.lua", zap.String("detail", w))
+		}
 		logger.Info("Lua scripts enabled (run_lua)",
 			zap.Int("run_slots", luaRT.slots),
 			zap.Int("runs_per_agent", luaRT.perKey),
@@ -1995,6 +1994,9 @@ func runServe(cmd *cobra.Command, args []string) {
 
 	// Initialize empty agents map - all agents loaded from $LOOM_DATA_DIR/agents/ via registry below
 	agents := initializeAgentsMap()
+	// Proto configs of the statically loaded agents, keyed like agents, so the
+	// server can report them from GetAgent/ListAgents (SetAgentConfig below).
+	staticAgentConfigs := make(map[string]*loomv1.AgentConfig)
 	logger.Info("Agents will be loaded from $LOOM_DATA_DIR/agents/ directory via registry system")
 
 	// Also load agents from $LOOM_DATA_DIR/agents/ directory (created by meta-agent)
@@ -2124,32 +2126,6 @@ func runServe(cmd *cobra.Command, args []string) {
 
 				agentCfg := serveAgentConfig(cfg, config.Observability.Enabled)
 
-				// Set context limits if specified in LLM config
-				if cfg.Llm != nil {
-					if cfg.Llm.MaxContextTokens > 0 {
-						agentCfg.MaxContextTokens = int(cfg.Llm.MaxContextTokens)
-					}
-					// The EFFECTIVE reservation, not the raw field: NewAgent
-					// re-applies SetContextLimits from this config onto the same
-					// Memory, so a raw (often zero) value here would clobber the
-					// value computed above and drop the reserve to window/10.
-					agentCfg.ReservedOutputTokens = agent.EffectiveOutputReservation(
-						cfg.Llm.Provider, cfg.Llm.Model,
-						int(cfg.Llm.MaxTokens), int(cfg.Llm.ReservedOutputTokens),
-						int(cfg.Llm.MaxContextTokens))
-				}
-
-				// Transfer pattern configuration from proto if present
-				if cfg.Behavior != nil && cfg.Behavior.Patterns != nil {
-					agentCfg.PatternConfig = &agent.PatternConfig{
-						Enabled:            cfg.Behavior.Patterns.Enabled,
-						MinConfidence:      float64(cfg.Behavior.Patterns.MinConfidence),
-						MaxPatternsPerTurn: int(cfg.Behavior.Patterns.MaxPatternsPerTurn),
-						EnableTracking:     cfg.Behavior.Patterns.EnableTracking,
-						UseLLMClassifier:   cfg.Behavior.Patterns.UseLlmClassifier,
-					}
-				}
-
 				// Set PatternsDir from metadata or the server-level default.
 				// Patterns are enabled by default (DefaultPatternConfig), so all agents
 				// need a patterns directory to find filesystem patterns.
@@ -2159,12 +2135,6 @@ func runServe(cmd *cobra.Command, args []string) {
 					agentCfg.PatternsDir = config.PatternsDir
 				} else {
 					agentCfg.PatternsDir = filepath.Join(loomconfig.GetLoomDataDir(), "patterns")
-				}
-				// Skills config: just attach to agentCfg here. Discovery
-				// wiring requires the agent's LLM provider and is performed
-				// below once agentLLMProvider is resolved.
-				if sc := agent.ExtractSkillsConfig(cfg.Metadata); sc != nil && sc.Enabled {
-					agentCfg.SkillsConfig = sc
 				}
 
 				agentOpts = append(agentOpts, agent.WithConfig(agentCfg))
@@ -2478,6 +2448,7 @@ func runServe(cmd *cobra.Command, args []string) {
 
 				// Store agent with GUID as key for stable references
 				agents[agentGUID] = ag
+				staticAgentConfigs[agentGUID] = cfg
 			}
 		}
 		// DO NOT close registry - keep it alive for hot-reload
@@ -2637,6 +2608,9 @@ func runServe(cmd *cobra.Command, args []string) {
 		grpcServer = grpc.NewServer(serverOpts...)
 	}
 	loomService := server.NewMultiAgentServer(agents, store)
+	for guid, cfg := range staticAgentConfigs {
+		loomService.SetAgentConfig(guid, cfg)
+	}
 	// Authenticated deployments are multi-tenant: blank identities must not
 	// act as session-ownership wildcards. Unauthenticated deployments keep
 	// the explicit single-tenant compatibility mode.
@@ -3443,17 +3417,6 @@ func runServe(cmd *cobra.Command, args []string) {
 
 			cfg := serveAgentConfig(agentConfig, config.Observability.Enabled)
 
-			// Transfer pattern configuration from proto if present
-			if agentConfig.Behavior != nil && agentConfig.Behavior.Patterns != nil {
-				cfg.PatternConfig = &agent.PatternConfig{
-					Enabled:            agentConfig.Behavior.Patterns.Enabled,
-					MinConfidence:      float64(agentConfig.Behavior.Patterns.MinConfidence),
-					MaxPatternsPerTurn: int(agentConfig.Behavior.Patterns.MaxPatternsPerTurn),
-					EnableTracking:     agentConfig.Behavior.Patterns.EnableTracking,
-					UseLLMClassifier:   agentConfig.Behavior.Patterns.UseLlmClassifier,
-				}
-			}
-
 			// Set PatternsDir from metadata or the server-level default.
 			if pd, ok := agentConfig.Metadata["patterns_dir"]; ok && pd != "" {
 				cfg.PatternsDir = pd
@@ -3461,18 +3424,6 @@ func runServe(cmd *cobra.Command, args []string) {
 				cfg.PatternsDir = config.PatternsDir
 			} else {
 				cfg.PatternsDir = filepath.Join(loomconfig.GetLoomDataDir(), "patterns")
-			}
-
-			// Set context limits if specified in LLM config
-			if agentConfig.Llm != nil {
-				if agentConfig.Llm.MaxContextTokens > 0 {
-					cfg.MaxContextTokens = int(agentConfig.Llm.MaxContextTokens)
-				}
-				// The EFFECTIVE reservation — see the note at the other build site.
-				cfg.ReservedOutputTokens = agent.EffectiveOutputReservation(
-					agentConfig.Llm.Provider, agentConfig.Llm.Model,
-					int(agentConfig.Llm.MaxTokens), int(agentConfig.Llm.ReservedOutputTokens),
-					int(agentConfig.Llm.MaxContextTokens))
 			}
 
 			// Create memory instance for this agent
@@ -3581,6 +3532,63 @@ func runServe(cmd *cobra.Command, args []string) {
 			// Wrap LLM provider with instrumentation for observability
 			if tracer != nil {
 				llmProvider = llm.NewInstrumentedProvider(llmProvider, tracer)
+			}
+
+			// Wire per-role LLMs if declared in YAML (mirrors the cold-start path).
+			var reloadClassifierLLM agent.LLMProvider
+			if agentConfig.CompressorLlm != nil && agentConfig.CompressorLlm.Provider != "" {
+				compLLM, err := createLLMProviderFromProtoConfig(agentConfig.CompressorLlm, config, logger)
+				if err != nil {
+					logger.Warn("    Failed to create compressor LLM, extractor will use primary (hot-reload)",
+						zap.Error(err),
+						zap.String("provider", agentConfig.CompressorLlm.Provider),
+						zap.String("model", agentConfig.CompressorLlm.Model))
+				} else {
+					if tracer != nil {
+						compLLM = llm.NewInstrumentedProvider(compLLM, tracer)
+					}
+					agentOpts = append(agentOpts, agent.WithCompressorLLM(compLLM))
+					logger.Info("    Compressor LLM configured (hot-reload)",
+						zap.String("provider", agentConfig.CompressorLlm.Provider),
+						zap.String("model", agentConfig.CompressorLlm.Model))
+				}
+			}
+			if agentConfig.ClassifierLlm != nil && agentConfig.ClassifierLlm.Provider != "" {
+				classLLM, err := createLLMProviderFromProtoConfig(agentConfig.ClassifierLlm, config, logger)
+				if err != nil {
+					logger.Warn("    Failed to create classifier LLM, router will use primary (hot-reload)",
+						zap.Error(err),
+						zap.String("provider", agentConfig.ClassifierLlm.Provider),
+						zap.String("model", agentConfig.ClassifierLlm.Model))
+				} else {
+					if tracer != nil {
+						classLLM = llm.NewInstrumentedProvider(classLLM, tracer)
+					}
+					reloadClassifierLLM = classLLM
+					agentOpts = append(agentOpts, agent.WithClassifierLLM(classLLM))
+					logger.Info("    Classifier LLM configured (hot-reload)",
+						zap.String("provider", agentConfig.ClassifierLlm.Provider),
+						zap.String("model", agentConfig.ClassifierLlm.Model))
+				}
+			}
+
+			// Wire skills (orchestrator + Discovery + hierarchical router) via
+			// the shared BuildSkillsOptions helper, matching the cold-start path.
+			if cfg.SkillsConfig != nil && cfg.SkillsConfig.Enabled {
+				if registry != nil {
+					agentOpts = append(agentOpts,
+						registry.BuildSkillsOptions(cfg.SkillsConfig, reloadClassifierLLM, llmProvider, agentConfig.Name)...)
+				} else {
+					agentOpts = append(agentOpts,
+						agent.BuildSkillsOptions(agent.SkillsWiringDeps{
+							SkillsConfig:  cfg.SkillsConfig,
+							ClassifierLLM: reloadClassifierLLM,
+							PrimaryLLM:    llmProvider,
+							AgentName:     agentConfig.Name,
+							Tracer:        tracer,
+							Logger:        logger,
+						})...)
+				}
 			}
 
 			// Create new agent
@@ -3735,12 +3743,14 @@ func runServe(cmd *cobra.Command, args []string) {
 				if err := loomService.UpdateAgent(agentGUIDToUse, newAgent); err != nil {
 					return fmt.Errorf("failed to update agent in server: %w", err)
 				}
+				loomService.SetAgentConfig(agentGUIDToUse, agentConfig)
 				logger.Info("  Agent reloaded in server successfully",
 					zap.String("agent", name),
 					zap.String("guid", agentGUIDToUse))
 			} else {
 				// New agent from metaagent: add to server
 				loomService.AddAgent(agentGUIDToUse, newAgent)
+				loomService.SetAgentConfig(agentGUIDToUse, agentConfig)
 				logger.Info("  Agent added to server successfully",
 					zap.String("agent", name),
 					zap.String("guid", agentGUIDToUse))

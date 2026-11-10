@@ -177,10 +177,12 @@ func TestClient_WrapTransport(t *testing.T) {
 
 func TestCalculateCost_GatewayCatalogProvider(t *testing.T) {
 	// Mantle ids live in the "bedrock-mantle" catalog namespace. Pricing must
-	// resolve there instead of through the substring fallback.
+	// resolve there instead of through the substring fallback, which would
+	// return the first-party (global) card. A bare Mantle id is a regional
+	// endpoint, so the namespace carries the 10 percent regional premium.
 	client := NewClient(Config{APIKey: "k", Model: "anthropic.claude-haiku-4-5", CatalogProvider: "bedrock-mantle"})
 	cost := client.calculateCost(1_000_000, 1_000_000, 0, 0)
-	assert.InDelta(t, 1.0+5.0, cost, 1e-9, "Haiku 4.5 on Mantle: $1/M in, $5/M out")
+	assert.InDelta(t, 1.10+5.50, cost, 1e-9, "Haiku 4.5 on Mantle: $1.10/M in, $5.50/M out (regional rate)")
 
 	defaultNS := NewClient(Config{APIKey: "k", Model: "claude-haiku-4-5-20251001"})
 	assert.Equal(t, DefaultCatalogProvider, defaultNS.catalogProvider)

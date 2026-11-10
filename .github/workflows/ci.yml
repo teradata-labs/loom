@@ -385,6 +385,13 @@ jobs:
 
           echo "✅ Lua script engine fuzz tests completed" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Run fuzz tests (shellpolicy package)
+        run: |
+          set -euo pipefail
+          go test -run=^$ -fuzz='^FuzzAnalyze$' -fuzztime=30s ./pkg/shellpolicy
+
+          echo "✅ Shellpolicy package fuzz tests completed" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Run fuzz tests with hawk (observability privacy)
         run: |
           set -euo pipefail
@@ -553,7 +560,7 @@ jobs:
           mv results-fixed.sarif results.sarif
 
       - name: Upload SARIF file
-        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         continue-on-error: true  # Don't fail the build if code scanning is not enabled
         with:
           sarif_file: results.sarif

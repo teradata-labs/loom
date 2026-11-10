@@ -58,6 +58,7 @@ func newTestGraphMemoryStore(t *testing.T) memory.GraphMemoryStore {
 type extractionMockLLM struct {
 	mu       sync.Mutex
 	response string
+	err      error // when set, Chat fails with it
 	calls    int
 }
 
@@ -65,6 +66,9 @@ func (m *extractionMockLLM) Chat(_ context.Context, _ []types.Message, _ []shutt
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls++
+	if m.err != nil {
+		return nil, m.err
+	}
 	return &types.LLMResponse{
 		Content:   m.response,
 		ToolCalls: []types.ToolCall{},
