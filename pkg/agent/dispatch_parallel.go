@@ -57,6 +57,10 @@ func (a *Agent) dispatchBatch(ctx Context, session *Session, calls []ToolCall, s
 			if *st.toolExecutionCount >= a.config.MaxToolExecutions {
 				break
 			}
+			if st.answeredCalls[i] {
+				a.answerTruncatedToolCall(ctx, session, calls, i, i, st)
+				continue
+			}
 			a.dispatchOneCall(ctx, session, toolCall, i, st)
 		}
 		return
@@ -66,7 +70,19 @@ func (a *Agent) dispatchBatch(ctx Context, session *Session, calls []ToolCall, s
 		if *st.toolExecutionCount >= a.config.MaxToolExecutions {
 			return
 		}
-		n, reason := a.parallelGroupLen(calls[i:], st)
+		if st.answeredCalls[i] {
+			a.answerTruncatedToolCall(ctx, session, calls, i, i, st)
+			i++
+			continue
+		}
+		end := len(calls)
+		for j := i + 1; j < end; j++ {
+			if st.answeredCalls[j] {
+				end = j
+				break
+			}
+		}
+		n, reason := a.parallelGroupLen(calls[i:end], st)
 		if n > 1 {
 			i += a.dispatchGroup(ctx, session, calls[i:i+n], i, st)
 			continue

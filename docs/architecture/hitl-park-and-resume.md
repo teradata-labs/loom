@@ -47,6 +47,7 @@ blocking resolver never invoked.
 
 | Preflight verdict | Outcome |
 |---|---|
+| Incomplete call on a `max_tokens` stop | skipped by preflight (never an approval or question item); answered with `OUTPUT_TRUNCATED` at its batch position during dispatch or resume |
 | `Deny` | never a park item; falls to dispatch and denies as today |
 | `Ask` | **approval item** |
 | `contact_human`, registered, not denied | **question item** |
@@ -106,6 +107,12 @@ configured, so "persisted without error" is not the same as durable. Without a
 store the batch dispatches inline instead, where a governed call with no
 resolver fails closed.
 
+Incomplete calls on a `max_tokens` stop are skipped by the pre-scan and
+recorded on the park request's context so `ResumeChat` writes their
+`OUTPUT_TRUNCATED` rows in batch order alongside the approved calls. On the
+inline dispatch path, a failed `OUTPUT_TRUNCATED` row write prevents
+resource-await parking.
+
 ## 3. Resume
 
 `ResumeChat(ctx, sessionID, decision, progressCallback)` continues the parked
@@ -142,6 +149,14 @@ each item's recorded tool and batch position must still describe the tail
 call it names. And an applied batch whose turn died before its final reply
 is NOT refused — the resume re-enters the loop (re-executing nothing) so the
 model sees the results and produces the answer.
+
+Parked requests also record which batch positions were cut off at
+`max_tokens`, so `completeParkedBatch` writes `OUTPUT_TRUNCATED` rows in call
+order rather than ahead of earlier siblings. Each notice result also carries
+its tool name and ordinal within that ID so `locateParkedBatch` binds a
+persisted notice to its own call even when a provider reuses IDs. An approval
+descriptor's recorded `seq`, ID, tool and parameters must identify the same
+call; an ID alone is insufficient.
 
 ### 3.2 Applying the decision
 

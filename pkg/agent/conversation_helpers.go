@@ -549,7 +549,23 @@ func classifyToolCall(tc ToolCall, tools []shuttle.Tool) toolCallState {
 		return toolCallStateIncomplete
 	}
 
-	return checkAgainstSchema(schema, map[string]interface{}(input), 0)
+	state := checkAgainstSchema(schema, map[string]interface{}(input), 0)
+	if state == toolCallStateComplete && len(missingConditionalArgs(tool, input)) > 0 {
+		return toolCallStateIncomplete
+	}
+	return state
+}
+
+// missingConditionalArgs lists the call-dependent required arguments (see
+// shuttle.ConditionalArgsTool) that input does not carry.
+func missingConditionalArgs(tool shuttle.Tool, input map[string]interface{}) []string {
+	var missing []string
+	for _, name := range shuttle.RequiredArgsFor(tool, input) {
+		if v, ok := input[name]; !ok || v == nil {
+			missing = append(missing, name)
+		}
+	}
+	return missing
 }
 
 // inputLooksEmpty is the historical truncation heuristic: an absent input, or

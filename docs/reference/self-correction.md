@@ -103,6 +103,33 @@ ag := agent.NewAgent(backend, llmProvider,
 ```
 
 
+## Tool calls cut off by the output limit
+
+✅ **Implemented:** when a provider response stops at `max_tokens`, calls
+whose arguments are known to be incomplete get an `OUTPUT_TRUNCATED` result
+instead of executing. The result names missing arguments and asks for smaller
+pieces. Calls whose arguments are present still run, subject to the normal
+execution budgets; a missing argument on an ordinary stop still reaches the
+tool's validation. A non-empty argument map whose completeness cannot be
+established is not automatically skipped.
+
+The check uses the advertised schema and normalized parameter names. Tools
+with action-dependent requirements can implement `shuttle.ConditionalArgsTool`;
+`PromptAwareTool` forwards this declaration. For `workspace`, `write` requires
+`filename` and `content`, `read` and `delete` require `filename`, and `search`
+requires `query`.
+
+Truncated calls are excluded from approval requests and parallel-read groups.
+Their notices bind to a specific call even when a provider reuses its ID.
+Crash resume preserves a recorded truncation result, or uses the recorded
+`max_tokens` stop before dispatching a never-attempted incomplete call.
+The output-token circuit breaker remains a backstop. Notice text comes from
+`errors.tool_execution.output_truncated` in the prompt registry, with a built-in
+fallback.
+
+This behavior does not raise the server or agent YAML `max_tokens` default:
+it remains 4096. A larger output cap is an explicit configuration choice.
+
 ## Overview
 
 Loom's self-correction system provides **automatic error recovery** through three integrated components:
