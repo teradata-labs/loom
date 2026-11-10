@@ -31,7 +31,6 @@ spec:
     - architect
     - pragmatist
   rounds: 3
-  merge_strategy: consensus
   moderator_agent_id: senior-architect
 `
 
