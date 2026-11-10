@@ -2182,7 +2182,7 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 				zap.String("new_session", subAgentSessionID))
 			existingCtx.cancelFunc() // Cancel the old goroutine
 		}
-		s.workflowSubAgents[subAgentKey] = &workflowSubAgentContext{
+		registeredContext := &workflowSubAgentContext{
 			agent:       subAgent,
 			sessionID:   subAgentSessionID,
 			workflowID:  workflowName,
@@ -2190,7 +2190,38 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 			cancelFunc:  cancel,
 			lastChecked: time.Now(),
 		}
+		s.workflowSubAgents[subAgentKey] = registeredContext
 		s.workflowSubAgentsMu.Unlock()
+
+		removeRegisteredContext := func() {
+			cancel()
+			s.workflowSubAgentsMu.Lock()
+			if s.workflowSubAgents[subAgentKey] == registeredContext {
+				delete(s.workflowSubAgents, subAgentKey)
+			}
+			s.workflowSubAgentsMu.Unlock()
+		}
+
+		currentAgent, _, err := s.getAgent(subAgent.GetID())
+		if err != nil {
+			removeRegisteredContext()
+			s.logger.Warn("Workflow participant changed before startup",
+				zap.String("sub_agent_id", subAgentID),
+				zap.Error(err))
+			continue
+		}
+		if currentAgent == nil {
+			removeRegisteredContext()
+			s.logger.Warn("Workflow participant is unavailable before startup",
+				zap.String("sub_agent_id", subAgentID))
+			continue
+		}
+		if currentAgent != subAgent && currentAgent.ToolsDisabled() {
+			removeRegisteredContext()
+			rejectionErr := validateWorkflowParticipant(workflowName, "worker", subAgentID, currentAgent)
+			logWorkflowParticipantRejected(s.logger, "startWorkflowSubAgent", rejectionErr)
+			continue
+		}
 
 		// Register with message queue for event-driven notifications
 		if s.messageQueue != nil {
@@ -2811,7 +2842,7 @@ func (s *MultiAgentServer) notifyQueuedWorkflowAgents(ctx context.Context, rejec
 			continue
 		}
 		if previous, rejected := rejectedAutoSpawn[agentID]; rejected {
-			current, _, err := s.resolveWorkflowSubAgent(agentID)
+			current, _, err := s.getAgent(previous.GetID())
 			if err == nil && current == previous && current.ToolsDisabled() {
 				continue
 			}
@@ -2894,7 +2925,7 @@ func (s *MultiAgentServer) startWorkflowSubAgent(ctx context.Context, workflowNa
 			zap.String("key", subAgentKey))
 		existingCtx.cancelFunc()
 	}
-	s.workflowSubAgents[subAgentKey] = &workflowSubAgentContext{
+	registeredContext := &workflowSubAgentContext{
 		agent:       subAgent,
 		sessionID:   subAgentSessionID,
 		workflowID:  workflowName,
@@ -2902,7 +2933,33 @@ func (s *MultiAgentServer) startWorkflowSubAgent(ctx context.Context, workflowNa
 		cancelFunc:  cancel,
 		lastChecked: time.Now(),
 	}
+	s.workflowSubAgents[subAgentKey] = registeredContext
 	s.workflowSubAgentsMu.Unlock()
+
+	removeRegisteredContext := func() {
+		cancel()
+		s.workflowSubAgentsMu.Lock()
+		if s.workflowSubAgents[subAgentKey] == registeredContext {
+			delete(s.workflowSubAgents, subAgentKey)
+		}
+		s.workflowSubAgentsMu.Unlock()
+	}
+
+	currentAgent, _, err := s.getAgent(subAgent.GetID())
+	if err != nil {
+		removeRegisteredContext()
+		return fmt.Errorf("workflow participant %q changed before startup: %w", agentID, err)
+	}
+	if currentAgent == nil {
+		removeRegisteredContext()
+		return fmt.Errorf("workflow participant %q is no longer available", agentID)
+	}
+	if currentAgent != subAgent && currentAgent.ToolsDisabled() {
+		removeRegisteredContext()
+		rejectionErr := validateWorkflowParticipant(workflowName, "worker", agentID, currentAgent)
+		logWorkflowParticipantRejected(s.logger, "startWorkflowSubAgent", rejectionErr)
+		return rejectionErr
+	}
 
 	// Register with message queue for event-driven notifications
 	if s.messageQueue != nil {

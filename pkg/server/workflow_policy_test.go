@@ -148,12 +148,14 @@ func TestWovenWorkflow_StartupKeepsValidatedWorkerInstances(t *testing.T) {
 		})
 	}
 	srv := setupBroadcastTestServer(t, agents, registry)
-	replacement := agent.NewAgent(nil, nil, agent.WithName("test-workflow:second"), agent.WithoutTools())
+	replacementLLM := &replyingLLM{}
+	replacement := agent.NewAgent(nil, replacementLLM, agent.WithName("test-workflow:second"), agent.WithoutTools())
 	replacement.SetID(second.GetID())
 
 	var swapped bool
 	var once sync.Once
-	srv.logger = srv.logger.WithOptions(zap.Hooks(func(entry zapcore.Entry) error {
+	core, logs := observer.New(zap.DebugLevel)
+	srv.logger = zap.New(core).WithOptions(zap.Hooks(func(entry zapcore.Entry) error {
 		if entry.Message == "Registered coordinator for event-driven message notifications (monitor-based)" {
 			once.Do(func() {
 				require.NoError(t, srv.UpdateAgent(second.GetID(), replacement))
@@ -170,9 +172,12 @@ func TestWovenWorkflow_StartupKeepsValidatedWorkerInstances(t *testing.T) {
 	activeCount := len(srv.workflowSubAgents)
 	secondContext := srv.workflowSubAgents[sessionID+":test-workflow:second"]
 	srv.workflowSubAgentsMu.RUnlock()
-	assert.Equal(t, 3, activeCount, "successful startup must own all its worker contexts")
-	require.NotNil(t, secondContext)
-	assert.Same(t, second, secondContext.agent, "startup must use the enabled instance it validated")
+	assert.Equal(t, 2, activeCount, "a worker disabled during startup must not start")
+	assert.Nil(t, secondContext, "a worker disabled during startup must not retain a context")
+	assertParticipantRejectionLogged(t, logs, "startWorkflowSubAgent", "test-workflow", "test-workflow:second", "worker")
+	assert.Empty(t, replacementLLM.message(), "a worker disabled during startup must not process messages")
+	_, registered := srv.messageQueue.GetNotificationChannel("test-workflow:second")
+	assert.False(t, registered, "a rejected worker must not register a notification channel")
 	require.ErrorIs(t, srv.spawnWorkflowSubAgents(context.Background(), coordinator, "test-workflow", GenerateSessionID()),
 		ErrWorkflowParticipantToolsDisabled, "later startups must reject the disabled replacement")
 }

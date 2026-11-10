@@ -598,6 +598,51 @@ func TestWovenWorkflow_AutoSpawnRejectsToolsDisabledWorker(t *testing.T) {
 	assert.Equal(t, 1, logs.FilterMessage("Refusing to auto-spawn workflow sub-agent with tools disabled").Len())
 }
 
+func TestWovenWorkflow_AutoSpawnCachesMetadataResolutionForDisabledWorker(t *testing.T) {
+	workerAgent := agent.NewAgent(&mockBackend{}, &replyingLLM{}, agent.WithName("configured-worker-helper"), agent.WithoutTools())
+	logger := newTestLogger(t)
+	registry, err := agent.NewRegistry(agent.RegistryConfig{
+		ConfigDir: t.TempDir(),
+		DBPath:    ":memory:",
+		Logger:    logger,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = registry.Close() })
+	registry.RegisterConfig(&loomv1.AgentConfig{
+		Name:     "configured-worker-helper",
+		Metadata: map[string]string{"role": "executor", "workflow": "test-workflow"},
+	})
+
+	srv := setupBroadcastTestServer(t, map[string]*agent.Agent{"configured-worker-helper": workerAgent}, registry)
+	core, logs := observer.New(zap.DebugLevel)
+	srv.logger = zap.New(core)
+	ctx := context.Background()
+	const agentID = "test-workflow:worker"
+	require.NoError(t, srv.messageQueue.Enqueue(ctx, &communication.QueueMessage{
+		ID:          "auto-metadata-task",
+		FromAgent:   "test-workflow",
+		ToAgent:     agentID,
+		MessageType: "task",
+		Payload: &loomv1.MessagePayload{
+			Data: &loomv1.MessagePayload_Value{Value: []byte("auto-spawn task")},
+		},
+	}))
+
+	rejected := make(map[string]*agent.Agent)
+	for range 4 {
+		srv.notifyQueuedWorkflowAgents(ctx, rejected)
+	}
+
+	assert.Equal(t, 1, logs.FilterMessage("Found matching agent in registry via workflow metadata search").Len(),
+		"cached rejections must not repeat the metadata resolver's Info log")
+	assert.Equal(t, 1, logs.FilterMessage("Refusing to auto-spawn workflow sub-agent with tools disabled").Len())
+	assert.Same(t, workerAgent, rejected[agentID])
+	srv.workflowSubAgentsMu.RLock()
+	activeCount := len(srv.workflowSubAgents)
+	srv.workflowSubAgentsMu.RUnlock()
+	assert.Zero(t, activeCount, "a disabled worker must not be registered")
+}
+
 // TestWovenWorkflow_ReloadWithToolsDisabledRejectsSubsequentWorkflowAndAutoSpawn
 // verifies that replacing or reloading an initially enabled worker with
 // tools.disabled: true stops any active workflow worker and prevents subsequent
