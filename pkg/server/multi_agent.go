@@ -7,6 +7,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -910,11 +911,11 @@ func (s *MultiAgentServer) UpdateAgent(id string, ag *agent.Agent) error {
 
 	// Now acquire lock ONLY for the agent swap (minimal critical section)
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	// Check if agent exists using GUID
 	old, ok := s.agents[agentGUID]
 	if !ok {
+		s.mu.Unlock()
 		return fmt.Errorf("agent not found: %s (GUID: %s)", id, agentGUID)
 	}
 
@@ -925,6 +926,11 @@ func (s *MultiAgentServer) UpdateAgent(id string, ag *agent.Agent) error {
 
 	// Atomic swap using GUID key
 	s.agents[agentGUID] = ag
+	s.mu.Unlock()
+
+	if ag.ToolsDisabled() {
+		s.stopWorkflowSubAgentsForAgent(old)
+	}
 
 	return nil
 }
@@ -1130,6 +1136,10 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 
 	// Spawn workflow sub-agents if this is a workflow coordinator
 	if err := s.spawnWorkflowSubAgents(ctx, ag, agentID, sessionID); err != nil {
+		if errors.Is(err, ErrWorkflowParticipantToolsDisabled) {
+			logWorkflowParticipantRejected(s.logger, "Weave", err)
+			return nil, err
+		}
 		s.logger.Warn("Failed to spawn workflow sub-agents (workflow may run with limited functionality)",
 			zap.String("workflow", agentID),
 			zap.Error(err))
@@ -1356,6 +1366,10 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 
 	// Spawn workflow sub-agents if this is a workflow coordinator
 	if err := s.spawnWorkflowSubAgents(stream.Context(), ag, resolvedAgentID, sessionID); err != nil {
+		if errors.Is(err, ErrWorkflowParticipantToolsDisabled) {
+			logWorkflowParticipantRejected(s.logger, "StreamWeave", err)
+			return err
+		}
 		s.logger.Warn("Failed to spawn workflow sub-agents (workflow may run with limited functionality)",
 			zap.String("workflow", resolvedAgentID),
 			zap.Error(err))
@@ -1563,6 +1577,151 @@ func turnIdentityContext(ctx context.Context) context.Context {
 	return postgres.ContextWithUserID(context.Background(), postgres.UserIDFromContext(ctx))
 }
 
+// ErrWorkflowParticipantToolsDisabled indicates that a workflow participant
+// has tools disabled (WithoutTools / tools.disabled: true) and therefore
+// cannot use required workflow communication tools such as send_message.
+var ErrWorkflowParticipantToolsDisabled = errors.New("workflow participant has tools disabled")
+
+type workflowParticipantToolsDisabledError struct {
+	workflowID    string
+	participantID string
+	role          string
+	agent         *agent.Agent
+}
+
+func (e *workflowParticipantToolsDisabledError) Error() string {
+	if e.workflowID != "" && e.role != "" {
+		return fmt.Sprintf("workflow %q %s %q has tools disabled (tools.disabled: true) and cannot participate in tool-based workflow communication", e.workflowID, e.role, e.participantID)
+	}
+	if e.workflowID != "" {
+		return fmt.Sprintf("workflow %q participant %q has tools disabled (tools.disabled: true) and cannot participate in tool-based workflow communication", e.workflowID, e.participantID)
+	}
+	return fmt.Sprintf("workflow participant %q has tools disabled (tools.disabled: true) and cannot participate in tool-based workflow communication", e.participantID)
+}
+
+func (e *workflowParticipantToolsDisabledError) Unwrap() error {
+	return ErrWorkflowParticipantToolsDisabled
+}
+
+func (e *workflowParticipantToolsDisabledError) GRPCStatus() *status.Status {
+	return status.New(codes.FailedPrecondition, e.Error())
+}
+
+// logWorkflowParticipantRejected records a tools-disabled rejection at Warn.
+// The rejection returns before the operation's tracer span starts, so this
+// log line is the only server-side record of it.
+func logWorkflowParticipantRejected(logger *zap.Logger, operation string, err error) {
+	var policyErr *workflowParticipantToolsDisabledError
+	if logger == nil || !errors.As(err, &policyErr) {
+		return
+	}
+	logger.Warn("Rejected workflow participant with tools disabled",
+		zap.String("operation", operation),
+		zap.String("workflow", policyErr.workflowID),
+		zap.String("participant", policyErr.participantID),
+		zap.String("role", policyErr.role),
+		zap.Error(err))
+}
+
+// resolveWorkflowSubAgent resolves a workflow sub-agent by its workflow-prefixed ID,
+// falling back to its base agent name or matching workflow metadata in the registry.
+func (s *MultiAgentServer) resolveWorkflowSubAgent(agentID string, baseAgentNames ...string) (*agent.Agent, string, error) {
+	subAgent, resolvedID, err := s.getAgent(agentID)
+	if err == nil && subAgent != nil {
+		return subAgent, resolvedID, nil
+	}
+
+	parts := strings.SplitN(agentID, ":", 2)
+	if len(parts) != 2 {
+		return nil, "", err
+	}
+	workflowName := parts[0]
+	roleName := parts[1]
+
+	baseAgentName := roleName
+	if len(baseAgentNames) > 0 && baseAgentNames[0] != "" {
+		baseAgentName = baseAgentNames[0]
+	}
+
+	if s.logger != nil {
+		s.logger.Debug("Agent not found with workflow prefix, trying base name",
+			zap.String("workflow_prefixed", agentID),
+			zap.String("base_name", baseAgentName))
+	}
+
+	subAgent, resolvedID, err = s.getAgent(baseAgentName)
+	if err == nil && subAgent != nil {
+		return subAgent, resolvedID, nil
+	}
+
+	if s.registry != nil {
+		configs := s.registry.ListConfigs()
+		for _, config := range configs {
+			if config.Metadata["workflow"] == workflowName && config.Metadata["role"] != "coordinator" {
+				if strings.HasSuffix(config.Name, roleName) || strings.Contains(config.Name, roleName) {
+					if s.logger != nil {
+						s.logger.Info("Found matching agent in registry via workflow metadata search",
+							zap.String("role_name", roleName),
+							zap.String("found_agent", config.Name))
+					}
+					subAgent, resolvedID, err = s.getAgent(config.Name)
+					if err == nil && subAgent != nil {
+						return subAgent, resolvedID, nil
+					}
+				}
+			}
+		}
+	}
+
+	return nil, "", fmt.Errorf("failed to get agent (tried '%s', '%s', and registry search): %w", agentID, baseAgentName, err)
+}
+
+func validateWorkflowParticipant(workflowName, role, participantID string, ag *agent.Agent) error {
+	if ag.ToolsDisabled() {
+		return &workflowParticipantToolsDisabledError{
+			workflowID:    workflowName,
+			participantID: participantID,
+			role:          role,
+			agent:         ag,
+		}
+	}
+	return nil
+}
+
+func (s *MultiAgentServer) stopWorkflowSubAgentsForAgent(old *agent.Agent) {
+	s.workflowSubAgentsMu.Lock()
+	var unregisterIDs []string
+	var unsubIDs []string
+	for key, wctx := range s.workflowSubAgents {
+		if wctx.agent != old {
+			continue
+		}
+		if wctx.cancelFunc != nil {
+			wctx.cancelFunc()
+		}
+		if wctx.broadcastCancelFunc != nil {
+			wctx.broadcastCancelFunc()
+		}
+		unsubIDs = append(unsubIDs, wctx.subscriptionIDs...)
+		if idx := strings.IndexByte(key, ':'); idx >= 0 && idx+1 < len(key) {
+			unregisterIDs = append(unregisterIDs, key[idx+1:])
+		}
+		delete(s.workflowSubAgents, key)
+	}
+	s.workflowSubAgentsMu.Unlock()
+
+	if s.messageBus != nil {
+		for _, subID := range unsubIDs {
+			s.messageBus.UnregisterNotificationChannel(subID)
+		}
+	}
+	if s.messageQueue != nil {
+		for _, targetID := range unregisterIDs {
+			s.messageQueue.UnregisterNotificationChannel(targetID)
+		}
+	}
+}
+
 func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinatorAgent *agent.Agent, coordinatorID, sessionID string) error {
 	if s.logger != nil {
 		s.logger.Debug("spawnWorkflowSubAgents called",
@@ -1580,7 +1739,7 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 
 	// coordinatorID may be a GUID (from getAgent resolution) — resolve to name for config lookup
 	protoConfig := s.registry.GetConfig(coordinatorID)
-	if protoConfig == nil {
+	if protoConfig == nil && coordinatorAgent != nil {
 		// Try using the agent's actual name (GetName) since coordinatorID might be a GUID
 		agentName := coordinatorAgent.GetName()
 		if agentName != coordinatorID {
@@ -1622,6 +1781,10 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 		return nil // Not a workflow coordinator
 	}
 
+	if err := validateWorkflowParticipant(workflowName, "coordinator", coordinatorID, coordinatorAgent); err != nil {
+		return err
+	}
+
 	s.logger.Info("Detected workflow coordinator, initializing workflow",
 		zap.String("coordinator", coordinatorID),
 		zap.String("workflow", workflowName),
@@ -1636,7 +1799,15 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 	}
 	workflowPath := filepath.Join(homeDir, ".loom", "workflows", workflowName+".yaml")
 
-	// Extract workflow topic for auto-subscribe
+	type yamlSubAgentSpec struct {
+		subAgentID string
+		agentName  string
+		roleName   string
+		agent      *agent.Agent
+	}
+	var yamlSubAgentSpecs []yamlSubAgentSpec
+
+	// Extract workflow topic and YAML sub-agent specs before performing side effects
 	var workflowTopic string
 	if _, statErr := os.Stat(workflowPath); statErr == nil { // #nosec -- workflowPath is filepath.Join(homeDir, ".loom", "workflows", name+".yaml")
 		s.logger.Info("Loading workflow definition for auto-subscribe",
@@ -1654,36 +1825,13 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 				if commMap, ok := commInterface.(map[string]interface{}); ok {
 					if topic, ok := commMap["topic"].(string); ok && topic != "" {
 						workflowTopic = topic
-
-						// Auto-subscribe coordinator to workflow topic
-						s.logger.Info("Auto-subscribing coordinator to workflow topic",
-							zap.String("coordinator", coordinatorID),
-							zap.String("topic", topic))
-
-						if s.messageBus != nil {
-							_, err := s.messageBus.Subscribe(ctx, coordinatorID, topic, nil, 100)
-							if err != nil {
-								s.logger.Warn("Failed to auto-subscribe coordinator",
-									zap.String("coordinator", coordinatorID),
-									zap.String("topic", topic),
-									zap.Error(err))
-							} else {
-								s.logger.Info("Successfully auto-subscribed coordinator",
-									zap.String("coordinator", coordinatorID),
-									zap.String("topic", topic))
-							}
-						}
 					}
 				}
 			}
 
-			// SPAWN SUB-AGENTS: Parse agents list from workflow and spawn them
+			// Parse agents list from workflow and validate them before side effects
 			if agentsInterface, ok := workflowConfig.Spec["agents"]; ok {
 				if agentsList, ok := agentsInterface.([]interface{}); ok {
-					s.logger.Info("Spawning workflow sub-agents from workflow definition",
-						zap.String("workflow", workflowName),
-						zap.Int("num_agents", len(agentsList)))
-
 					for _, agentInterface := range agentsList {
 						if agentMap, ok := agentInterface.(map[string]interface{}); ok {
 							agentName, _ := agentMap["agent"].(string)
@@ -1706,17 +1854,23 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 							}
 							subAgentID := fmt.Sprintf("%s:%s", workflowName, nameForID)
 
-							s.logger.Info("Spawning workflow sub-agent",
-								zap.String("sub_agent_id", subAgentID),
-								zap.String("agent_name", agentName),
-								zap.String("role_name", roleName))
-
-							// Spawn the sub-agent, passing base agent name for registry lookup
-							if err := s.autoSpawnWorkflowSubAgent(ctx, subAgentID, agentName); err != nil {
-								s.logger.Warn("Failed to spawn workflow sub-agent",
+							subAgent, _, err := s.resolveWorkflowSubAgent(subAgentID, agentName)
+							if err != nil {
+								s.logger.Warn("Failed to get workflow sub-agent",
 									zap.String("sub_agent_id", subAgentID),
 									zap.Error(err))
+								continue
 							}
+							if err := validateWorkflowParticipant(workflowName, "worker", subAgentID, subAgent); err != nil {
+								return err
+							}
+
+							yamlSubAgentSpecs = append(yamlSubAgentSpecs, yamlSubAgentSpec{
+								subAgentID: subAgentID,
+								agentName:  agentName,
+								roleName:   roleName,
+								agent:      subAgent,
+							})
 						}
 					}
 				}
@@ -1767,6 +1921,73 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 		s.mu.RUnlock()
 	}
 
+	// Resolve and validate every sub-agent BEFORE registering notifications,
+	// subscribing to topics, or starting any background goroutines.
+	type resolvedWorkflowWorker struct {
+		id    string
+		agent *agent.Agent
+	}
+	resolvedWorkers := make([]resolvedWorkflowWorker, 0, len(subAgentIDs))
+	for _, subAgentID := range subAgentIDs {
+		subAgent, _, err := s.getAgent(subAgentID)
+		if err != nil {
+			s.logger.Warn("Failed to get sub-agent",
+				zap.String("sub_agent", subAgentID),
+				zap.Error(err))
+			continue
+		}
+		if err := validateWorkflowParticipant(workflowName, "worker", subAgentID, subAgent); err != nil {
+			return err
+		}
+		resolvedWorkers = append(resolvedWorkers, resolvedWorkflowWorker{
+			id:    subAgentID,
+			agent: subAgent,
+		})
+	}
+
+	// Now that all participants are validated, perform workflow topic subscription and YAML spawning
+	if workflowTopic != "" {
+		s.logger.Info("Auto-subscribing coordinator to workflow topic",
+			zap.String("coordinator", coordinatorID),
+			zap.String("topic", workflowTopic))
+
+		if s.messageBus != nil {
+			_, err := s.messageBus.Subscribe(ctx, coordinatorID, workflowTopic, nil, 100)
+			if err != nil {
+				s.logger.Warn("Failed to auto-subscribe coordinator",
+					zap.String("coordinator", coordinatorID),
+					zap.String("topic", workflowTopic),
+					zap.Error(err))
+			} else {
+				s.logger.Info("Successfully auto-subscribed coordinator",
+					zap.String("coordinator", coordinatorID),
+					zap.String("topic", workflowTopic))
+			}
+		}
+	}
+
+	if len(yamlSubAgentSpecs) > 0 {
+		s.logger.Info("Spawning workflow sub-agents from workflow definition",
+			zap.String("workflow", workflowName),
+			zap.Int("num_agents", len(yamlSubAgentSpecs)))
+
+		for _, spec := range yamlSubAgentSpecs {
+			s.logger.Info("Spawning workflow sub-agent",
+				zap.String("sub_agent_id", spec.subAgentID),
+				zap.String("agent_name", spec.agentName),
+				zap.String("role_name", spec.roleName))
+
+			if err := s.startWorkflowSubAgent(ctx, workflowName, spec.subAgentID, spec.agent); err != nil {
+				s.logger.Warn("Failed to spawn workflow sub-agent",
+					zap.String("sub_agent_id", spec.subAgentID),
+					zap.Error(err))
+			}
+		}
+	}
+
+	// Keep main's order: the coordinator subscription and YAML workers above
+	// are side effects a YAML-only workflow relies on, so this guard runs
+	// after them. All participants were validated before any side effect.
 	if len(subAgentIDs) == 0 {
 		return fmt.Errorf("no sub-agents found for workflow '%s'", workflowName)
 	}
@@ -1932,15 +2153,10 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 		}
 	})
 
-	// Spawn each sub-agent in a background goroutine with long-lived context
-	for _, subAgentID := range subAgentIDs {
-		subAgent, _, err := s.getAgent(subAgentID)
-		if err != nil {
-			s.logger.Warn("Failed to get sub-agent",
-				zap.String("sub_agent", subAgentID),
-				zap.Error(err))
-			continue
-		}
+	// Spawn each validated sub-agent in a background goroutine with long-lived context
+	for _, worker := range resolvedWorkers {
+		subAgentID := worker.id
+		subAgent := worker.agent
 
 		// Generate unique session ID for each sub-agent (not shared with coordinator)
 		subAgentSessionID := GenerateSessionID()
@@ -1966,7 +2182,7 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 				zap.String("new_session", subAgentSessionID))
 			existingCtx.cancelFunc() // Cancel the old goroutine
 		}
-		s.workflowSubAgents[subAgentKey] = &workflowSubAgentContext{
+		registeredContext := &workflowSubAgentContext{
 			agent:       subAgent,
 			sessionID:   subAgentSessionID,
 			workflowID:  workflowName,
@@ -1974,7 +2190,38 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 			cancelFunc:  cancel,
 			lastChecked: time.Now(),
 		}
+		s.workflowSubAgents[subAgentKey] = registeredContext
 		s.workflowSubAgentsMu.Unlock()
+
+		removeRegisteredContext := func() {
+			cancel()
+			s.workflowSubAgentsMu.Lock()
+			if s.workflowSubAgents[subAgentKey] == registeredContext {
+				delete(s.workflowSubAgents, subAgentKey)
+			}
+			s.workflowSubAgentsMu.Unlock()
+		}
+
+		currentAgent, _, err := s.getAgent(subAgent.GetID())
+		if err != nil {
+			removeRegisteredContext()
+			s.logger.Warn("Workflow participant changed before startup",
+				zap.String("sub_agent_id", subAgentID),
+				zap.Error(err))
+			continue
+		}
+		if currentAgent == nil {
+			removeRegisteredContext()
+			s.logger.Warn("Workflow participant is unavailable before startup",
+				zap.String("sub_agent_id", subAgentID))
+			continue
+		}
+		if currentAgent != subAgent && currentAgent.ToolsDisabled() {
+			removeRegisteredContext()
+			rejectionErr := validateWorkflowParticipant(workflowName, "worker", subAgentID, currentAgent)
+			logWorkflowParticipantRejected(s.logger, "startWorkflowSubAgent", rejectionErr)
+			continue
+		}
 
 		// Register with message queue for event-driven notifications
 		if s.messageQueue != nil {
@@ -2556,54 +2803,65 @@ func (s *MultiAgentServer) StartMessageQueueMonitor(ctx context.Context) {
 			s.workflowSubAgents = make(map[string]*workflowSubAgentContext)
 		}()
 
+		// Log a policy rejection once until the resolved instance changes.
+		rejectedAutoSpawn := make(map[string]*agent.Agent)
+
 		for {
 			select {
 			case <-ctx.Done():
 				s.logger.Info("Message queue monitor stopped - cleaning up workflow agents")
 				return
 			case <-ticker.C:
-				// Get agents with pending messages
-				agentsWithMessages := s.messageQueue.GetAgentsWithPendingMessages(ctx)
-
-				for _, agentID := range agentsWithMessages {
-					// Check if this is a workflow sub-agent we're tracking
-					// Since we now use composite keys (coordinatorSessionID:agentID), we need to find matching entries
-					s.workflowSubAgentsMu.RLock()
-					var matchingContexts []*workflowSubAgentContext
-					for key, ctx := range s.workflowSubAgents {
-						// Check if the key ends with ":agentID"
-						if len(key) > len(agentID)+1 && key[len(key)-len(agentID)-1:] == ":"+agentID {
-							matchingContexts = append(matchingContexts, ctx)
-						}
-					}
-					s.workflowSubAgentsMu.RUnlock()
-
-					if len(matchingContexts) > 0 {
-						// Notify all matching sub-agents (different sessions may have same sub-agent)
-						for _, subAgentCtx := range matchingContexts {
-							select {
-							case subAgentCtx.notifyChan <- struct{}{}:
-								// Notified workflow agent
-							default:
-								// Channel full, agent already has pending notification
-							}
-						}
-					} else {
-						// WORKFLOW AUTO-SPAWN: Check if this is a workflow sub-agent that needs spawning
-						// Format: "workflow-name:agent-id" (contains colon)
-						if strings.Contains(agentID, ":") {
-							// Try to spawn this workflow sub-agent
-							if err := s.autoSpawnWorkflowSubAgent(ctx, agentID); err != nil {
-								s.logger.Warn("Failed to auto-spawn workflow sub-agent",
-									zap.String("agent", agentID),
-									zap.Error(err))
-							}
-						}
-					}
-				}
+				s.notifyQueuedWorkflowAgents(ctx, rejectedAutoSpawn)
 			}
 		}
 	})
+}
+
+func (s *MultiAgentServer) notifyQueuedWorkflowAgents(ctx context.Context, rejectedAutoSpawn map[string]*agent.Agent) {
+	for _, agentID := range s.messageQueue.GetAgentsWithPendingMessages(ctx) {
+		s.workflowSubAgentsMu.RLock()
+		var matchingContexts []*workflowSubAgentContext
+		for key, wctx := range s.workflowSubAgents {
+			if strings.HasSuffix(key, ":"+agentID) {
+				matchingContexts = append(matchingContexts, wctx)
+			}
+		}
+		s.workflowSubAgentsMu.RUnlock()
+
+		if len(matchingContexts) > 0 {
+			for _, wctx := range matchingContexts {
+				select {
+				case wctx.notifyChan <- struct{}{}:
+				default:
+				}
+			}
+			continue
+		}
+		if !strings.Contains(agentID, ":") {
+			continue
+		}
+		if previous, rejected := rejectedAutoSpawn[agentID]; rejected {
+			current, _, err := s.getAgent(previous.GetID())
+			if err == nil && current == previous && current.ToolsDisabled() {
+				continue
+			}
+			delete(rejectedAutoSpawn, agentID)
+		}
+		if err := s.autoSpawnWorkflowSubAgent(ctx, agentID); err != nil {
+			var policyErr *workflowParticipantToolsDisabledError
+			if errors.As(err, &policyErr) {
+				rejectedAutoSpawn[agentID] = policyErr.agent
+				s.logger.Error("Refusing to auto-spawn workflow sub-agent with tools disabled",
+					zap.String("agent", agentID),
+					zap.Error(err))
+			} else {
+				s.logger.Warn("Failed to auto-spawn workflow sub-agent",
+					zap.String("agent", agentID),
+					zap.Error(err))
+			}
+		}
+	}
 }
 
 // autoSpawnWorkflowSubAgent automatically spawns a workflow sub-agent when the monitor detects
@@ -2631,42 +2889,20 @@ func (s *MultiAgentServer) autoSpawnWorkflowSubAgent(ctx context.Context, agentI
 		zap.String("role_name", roleName),
 		zap.String("base_agent", baseAgentName))
 
-	// Try to get the agent from registry using the workflow-prefixed ID first
-	subAgent, _, err := s.getAgent(agentID)
+	subAgent, _, err := s.resolveWorkflowSubAgent(agentID, baseAgentName)
 	if err != nil {
-		// If not found with workflow prefix, try the base agent name
-		s.logger.Debug("Agent not found with workflow prefix, trying base name",
-			zap.String("workflow_prefixed", agentID),
-			zap.String("base_name", baseAgentName))
-
-		subAgent, _, err = s.getAgent(baseAgentName)
-		if err != nil {
-			// Last resort: search registry for agent with matching workflow metadata
-			// This handles the case where the monitor auto-spawns without knowing the base agent name
-			if s.registry != nil {
-				configs := s.registry.ListConfigs()
-				for _, config := range configs {
-					if config.Metadata["workflow"] == workflowName && config.Metadata["role"] != "coordinator" {
-						// Check if this agent's name matches the role name pattern
-						// e.g., "dnd-world-builder" might be the agent for role "world-builder"
-						if strings.HasSuffix(config.Name, roleName) || strings.Contains(config.Name, roleName) {
-							s.logger.Info("Found matching agent in registry via workflow metadata search",
-								zap.String("role_name", roleName),
-								zap.String("found_agent", config.Name))
-							subAgent, _, err = s.getAgent(config.Name)
-							if err == nil {
-								break
-							}
-						}
-					}
-				}
-			}
-			if subAgent == nil {
-				return fmt.Errorf("failed to get agent (tried '%s', '%s', and registry search): %w", agentID, baseAgentName, err)
-			}
-		}
+		return err
 	}
 
+	if err := validateWorkflowParticipant(workflowName, "worker", agentID, subAgent); err != nil {
+		return err
+	}
+
+	return s.startWorkflowSubAgent(ctx, workflowName, agentID, subAgent)
+}
+
+// startWorkflowSubAgent uses the instance validated before workflow side effects.
+func (s *MultiAgentServer) startWorkflowSubAgent(ctx context.Context, workflowName, agentID string, subAgent *agent.Agent) error {
 	// Generate unique session ID for this sub-agent
 	subAgentSessionID := GenerateSessionID()
 
@@ -2689,7 +2925,7 @@ func (s *MultiAgentServer) autoSpawnWorkflowSubAgent(ctx context.Context, agentI
 			zap.String("key", subAgentKey))
 		existingCtx.cancelFunc()
 	}
-	s.workflowSubAgents[subAgentKey] = &workflowSubAgentContext{
+	registeredContext := &workflowSubAgentContext{
 		agent:       subAgent,
 		sessionID:   subAgentSessionID,
 		workflowID:  workflowName,
@@ -2697,7 +2933,33 @@ func (s *MultiAgentServer) autoSpawnWorkflowSubAgent(ctx context.Context, agentI
 		cancelFunc:  cancel,
 		lastChecked: time.Now(),
 	}
+	s.workflowSubAgents[subAgentKey] = registeredContext
 	s.workflowSubAgentsMu.Unlock()
+
+	removeRegisteredContext := func() {
+		cancel()
+		s.workflowSubAgentsMu.Lock()
+		if s.workflowSubAgents[subAgentKey] == registeredContext {
+			delete(s.workflowSubAgents, subAgentKey)
+		}
+		s.workflowSubAgentsMu.Unlock()
+	}
+
+	currentAgent, _, err := s.getAgent(subAgent.GetID())
+	if err != nil {
+		removeRegisteredContext()
+		return fmt.Errorf("workflow participant %q changed before startup: %w", agentID, err)
+	}
+	if currentAgent == nil {
+		removeRegisteredContext()
+		return fmt.Errorf("workflow participant %q is no longer available", agentID)
+	}
+	if currentAgent != subAgent && currentAgent.ToolsDisabled() {
+		removeRegisteredContext()
+		rejectionErr := validateWorkflowParticipant(workflowName, "worker", agentID, currentAgent)
+		logWorkflowParticipantRejected(s.logger, "startWorkflowSubAgent", rejectionErr)
+		return rejectionErr
+	}
 
 	// Register with message queue for event-driven notifications
 	if s.messageQueue != nil {
@@ -2751,6 +3013,10 @@ func (s *MultiAgentServer) runWorkflowSubAgent(ctx context.Context, ag *agent.Ag
 			// Received notification of pending message
 			s.logger.Info("Workflow sub-agent notified of pending message",
 				zap.String("agent", agentID))
+
+			if ctx.Err() != nil {
+				return
+			}
 
 			// Dequeue and inject pending queue messages. The LLM concurrency
 			// slot (prevents rate limiting) is taken inside chatInjected, only

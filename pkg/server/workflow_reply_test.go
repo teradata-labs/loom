@@ -14,6 +14,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
@@ -22,6 +26,25 @@ import (
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/types"
 )
+
+// assertParticipantRejectionLogged checks that exactly one Warn entry records
+// a tools-disabled rejection for the given operation and participant.
+func assertParticipantRejectionLogged(t *testing.T, logs *observer.ObservedLogs, operation, workflow, participant, role string) {
+	t.Helper()
+	var matched []observer.LoggedEntry
+	for _, entry := range logs.FilterMessage("Rejected workflow participant with tools disabled").All() {
+		if entry.ContextMap()["operation"] == operation {
+			matched = append(matched, entry)
+		}
+	}
+	require.Len(t, matched, 1, "%s must log its rejection once", operation)
+	entry := matched[0]
+	assert.Equal(t, zap.WarnLevel, entry.Level)
+	fields := entry.ContextMap()
+	assert.Equal(t, workflow, fields["workflow"])
+	assert.Equal(t, participant, fields["participant"])
+	assert.Equal(t, role, fields["role"])
+}
 
 // replyingLLM is a worker's brain that obeys the team block: when a message
 // arrives it answers by calling send_message back to the sender, because turn
@@ -108,8 +131,8 @@ func wovenWorkflow(t *testing.T) (*MultiAgentServer, *replyingLLM, *replyingLLM,
 	workerLLM := &replyingLLM{}
 	backend := &mockBackend{}
 
-	coordinatorAgent := agent.NewAgent(backend, coordinatorLLM)
-	workerAgent := agent.NewAgent(backend, workerLLM)
+	coordinatorAgent := agent.NewAgent(backend, coordinatorLLM, agent.WithName("test-workflow"))
+	workerAgent := agent.NewAgent(backend, workerLLM, agent.WithName("test-workflow:worker"))
 
 	agents := map[string]*agent.Agent{
 		"test-workflow":        coordinatorAgent,
@@ -135,14 +158,6 @@ func wovenWorkflow(t *testing.T) (*MultiAgentServer, *replyingLLM, *replyingLLM,
 	})
 
 	srv := setupBroadcastTestServer(t, agents, registry)
-
-	// The server re-keys its agent map by GUID; the workflow addresses agents
-	// by name (registry metadata), so make both names directly resolvable.
-	srv.mu.Lock()
-	for name, ag := range agents {
-		srv.agents[name] = ag
-	}
-	srv.mu.Unlock()
 
 	// The coordinator's inbound path is driven by the server-level queue
 	// monitor, which production starts once at boot.
@@ -314,4 +329,446 @@ func TestWovenWorkflow_FanOutRepliesReachCoordinator(t *testing.T) {
 		assert.Contains(t, llm.prompt(), "test-workflow",
 			"%s must be told the coordinator's address", name)
 	}
+}
+
+// TestWovenWorkflow_RejectsToolsDisabledWorker proves F9: a workflow worker
+// configured with WithoutTools() cannot call send_message, so starting the
+// workflow must fail explicitly before registering background workers or
+// acknowledging queued messages.
+func TestWovenWorkflow_RejectsToolsDisabledWorker(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		coordinator string
+	}{
+		{name: "coordinator_name", coordinator: "test-workflow"},
+		{name: "coordinator_guid"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			coordinatorLLM := &replyingLLM{}
+			workerLLM := &replyingLLM{}
+			backend := &mockBackend{}
+
+			coordinatorAgent := agent.NewAgent(backend, coordinatorLLM, agent.WithName("test-workflow"))
+			workerAgent := agent.NewAgent(backend, workerLLM, agent.WithName("test-workflow:worker"), agent.WithoutTools())
+
+			agents := map[string]*agent.Agent{
+				"test-workflow":        coordinatorAgent,
+				"test-workflow:worker": workerAgent,
+			}
+
+			logger := newTestLogger(t)
+			registry, err := agent.NewRegistry(agent.RegistryConfig{
+				ConfigDir: t.TempDir(),
+				DBPath:    ":memory:",
+				Logger:    logger,
+			})
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = registry.Close() })
+
+			registry.RegisterConfig(&loomv1.AgentConfig{
+				Name:     "test-workflow",
+				Metadata: map[string]string{"role": "coordinator", "workflow": "test-workflow"},
+			})
+			registry.RegisterConfig(&loomv1.AgentConfig{
+				Name:     "test-workflow:worker",
+				Metadata: map[string]string{"role": "executor", "workflow": "test-workflow"},
+			})
+
+			srv := setupBroadcastTestServer(t, agents, registry)
+			core, logs := observer.New(zap.WarnLevel)
+			srv.logger = zap.New(core)
+			coordinatorID := tc.coordinator
+			if coordinatorID == "" {
+				coordinatorID = coordinatorAgent.GetID()
+			}
+
+			assert.Empty(t, workerAgent.ListTools(), "WithoutTools worker must have zero tools, including send_message")
+
+			ctx := context.Background()
+			require.NoError(t, srv.messageQueue.Enqueue(ctx, &communication.QueueMessage{
+				ID:          "task-disabled-1",
+				FromAgent:   "test-workflow",
+				ToAgent:     "test-workflow:worker",
+				MessageType: "task",
+				Payload: &loomv1.MessagePayload{
+					Data: &loomv1.MessagePayload_Value{Value: []byte("compute with no tools")},
+				},
+			}))
+
+			sessionID := GenerateSessionID()
+			err = srv.spawnWorkflowSubAgents(ctx, coordinatorAgent, coordinatorID, sessionID)
+			require.Error(t, err, "workflow startup must reject a tool-disabled worker")
+			require.ErrorIs(t, err, ErrWorkflowParticipantToolsDisabled)
+			assert.ErrorContains(t, err, "test-workflow:worker")
+			assert.ErrorContains(t, err, "tools.disabled")
+
+			// Verify Weave surfaces the rejection to the caller rather than logging and continuing.
+			weaveResp, weaveErr := srv.Weave(ctx, &loomv1.WeaveRequest{
+				AgentId:   coordinatorID,
+				SessionId: sessionID,
+				Query:     "delegate to worker",
+			})
+			require.Error(t, weaveErr, "Weave must surface the incompatible workflow participant error")
+			assert.Nil(t, weaveResp)
+			require.ErrorIs(t, weaveErr, ErrWorkflowParticipantToolsDisabled)
+			st, ok := status.FromError(weaveErr)
+			require.True(t, ok)
+			assert.Equal(t, codes.FailedPrecondition, st.Code())
+			assert.Contains(t, st.Message(), "test-workflow:worker")
+
+			// Verify StreamWeave also surfaces the rejection to the caller.
+			stream := &mockStreamWeaveServer{ctx: ctx}
+			streamErr := srv.StreamWeave(&loomv1.WeaveRequest{
+				AgentId:   coordinatorID,
+				SessionId: sessionID,
+				Query:     "delegate to worker",
+			}, stream)
+			require.Error(t, streamErr, "StreamWeave must surface the incompatible workflow participant error")
+			require.ErrorIs(t, streamErr, ErrWorkflowParticipantToolsDisabled)
+			assert.Empty(t, stream.messages)
+
+			// Both rejections return before the tracer span starts, so each
+			// must leave one Warn line naming the workflow, participant and role.
+			assertParticipantRejectionLogged(t, logs, "Weave", "test-workflow", "test-workflow:worker", "worker")
+			assertParticipantRejectionLogged(t, logs, "StreamWeave", "test-workflow", "test-workflow:worker", "worker")
+
+			srv.workflowSubAgentsMu.RLock()
+			activeCount := len(srv.workflowSubAgents)
+			srv.workflowSubAgentsMu.RUnlock()
+			assert.Zero(t, activeCount, "rejected workflow startup must leave no registered workflow contexts")
+			_, registered := srv.messageQueue.GetNotificationChannel("test-workflow:worker")
+			assert.False(t, registered)
+			assert.Empty(t, srv.messageBus.GetSubscriptionsByAgent("test-workflow"))
+			assert.Empty(t, srv.messageBus.GetSubscriptionsByAgent("test-workflow:worker"))
+
+			assert.Empty(t, workerLLM.message(), "disabled worker must not process queued messages")
+			assert.Empty(t, coordinatorLLM.prompt(), "coordinator turn must not run when workflow validation fails")
+
+			pending, deqErr := srv.messageQueue.Dequeue(ctx, "test-workflow:worker")
+			require.NoError(t, deqErr)
+			require.NotNil(t, pending, "queued message must remain unacknowledged after rejection")
+			assert.Equal(t, "task-disabled-1", pending.ID)
+		})
+	}
+}
+
+// TestWovenWorkflow_RejectsToolsDisabledCoordinator verifies that a workflow
+// coordinator configured with WithoutTools() is rejected before registering
+// notifications, starting workers, or running a coordinator turn.
+func TestWovenWorkflow_RejectsToolsDisabledCoordinator(t *testing.T) {
+	coordinatorLLM := &replyingLLM{}
+	workerLLM := &replyingLLM{}
+	backend := &mockBackend{}
+
+	coordinatorAgent := agent.NewAgent(backend, coordinatorLLM, agent.WithName("test-workflow"), agent.WithoutTools())
+	workerAgent := agent.NewAgent(backend, workerLLM, agent.WithName("test-workflow:worker"))
+
+	agents := map[string]*agent.Agent{
+		"test-workflow":        coordinatorAgent,
+		"test-workflow:worker": workerAgent,
+	}
+
+	logger := newTestLogger(t)
+	registry, err := agent.NewRegistry(agent.RegistryConfig{
+		ConfigDir: t.TempDir(),
+		DBPath:    ":memory:",
+		Logger:    logger,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = registry.Close() })
+
+	registry.RegisterConfig(&loomv1.AgentConfig{
+		Name:     "test-workflow",
+		Metadata: map[string]string{"role": "coordinator", "workflow": "test-workflow"},
+	})
+	registry.RegisterConfig(&loomv1.AgentConfig{
+		Name:     "test-workflow:worker",
+		Metadata: map[string]string{"role": "executor", "workflow": "test-workflow"},
+	})
+
+	srv := setupBroadcastTestServer(t, agents, registry)
+	srv.mu.Lock()
+	for name, ag := range agents {
+		srv.agents[name] = ag
+	}
+	srv.mu.Unlock()
+
+	ctx := context.Background()
+	sessionID := GenerateSessionID()
+
+	weaveResp, weaveErr := srv.Weave(ctx, &loomv1.WeaveRequest{
+		AgentId:   "test-workflow",
+		SessionId: sessionID,
+		Query:     "coordinate workflow",
+	})
+	require.Error(t, weaveErr)
+	assert.Nil(t, weaveResp)
+	require.ErrorIs(t, weaveErr, ErrWorkflowParticipantToolsDisabled)
+	assert.ErrorContains(t, weaveErr, "coordinator")
+	assert.ErrorContains(t, weaveErr, "test-workflow")
+	st, ok := status.FromError(weaveErr)
+	require.True(t, ok)
+	assert.Equal(t, codes.FailedPrecondition, st.Code())
+
+	srv.workflowSubAgentsMu.RLock()
+	activeCount := len(srv.workflowSubAgents)
+	srv.workflowSubAgentsMu.RUnlock()
+	assert.Zero(t, activeCount, "rejected coordinator must leave no registered workflow contexts")
+	assert.Empty(t, coordinatorLLM.prompt(), "disabled coordinator must not execute a turn")
+}
+
+// TestWovenWorkflow_AutoSpawnRejectsToolsDisabledWorker verifies that
+// autoSpawnWorkflowSubAgent and the queue monitor refuse to start a disabled
+// worker and leave queued messages unacknowledged.
+func TestWovenWorkflow_AutoSpawnRejectsToolsDisabledWorker(t *testing.T) {
+	workerLLM := &replyingLLM{}
+	backend := &mockBackend{}
+
+	workerAgent := agent.NewAgent(backend, workerLLM, agent.WithName("worker"), agent.WithoutTools())
+	agents := map[string]*agent.Agent{
+		"worker": workerAgent,
+	}
+
+	logger := newTestLogger(t)
+	registry, err := agent.NewRegistry(agent.RegistryConfig{
+		ConfigDir: t.TempDir(),
+		DBPath:    ":memory:",
+		Logger:    logger,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = registry.Close() })
+
+	registry.RegisterConfig(&loomv1.AgentConfig{
+		Name:     "test-workflow:worker",
+		Metadata: map[string]string{"role": "executor", "workflow": "test-workflow"},
+		Tools:    &loomv1.ToolsConfig{Disabled: true},
+	})
+
+	srv := setupBroadcastTestServer(t, agents, registry)
+	core, logs := observer.New(zap.DebugLevel)
+	srv.logger = zap.New(core)
+
+	ctx := context.Background()
+	require.NoError(t, srv.messageQueue.Enqueue(ctx, &communication.QueueMessage{
+		ID:          "auto-task-1",
+		FromAgent:   "test-workflow",
+		ToAgent:     "test-workflow:worker",
+		MessageType: "task",
+		Payload: &loomv1.MessagePayload{
+			Data: &loomv1.MessagePayload_Value{Value: []byte("auto-spawn task")},
+		},
+	}))
+
+	err = srv.autoSpawnWorkflowSubAgent(ctx, "test-workflow:worker")
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrWorkflowParticipantToolsDisabled)
+	assert.ErrorContains(t, err, "test-workflow:worker")
+
+	rejected := make(map[string]*agent.Agent)
+	for range 3 {
+		srv.notifyQueuedWorkflowAgents(ctx, rejected)
+	}
+	assert.Equal(t, 1, logs.FilterMessage("Refusing to auto-spawn workflow sub-agent with tools disabled").Len())
+	assert.Same(t, workerAgent, rejected["test-workflow:worker"])
+
+	srv.workflowSubAgentsMu.RLock()
+	activeCount := len(srv.workflowSubAgents)
+	srv.workflowSubAgentsMu.RUnlock()
+	assert.Zero(t, activeCount, "auto-spawn monitor must not register a disabled worker")
+	assert.Empty(t, workerLLM.message(), "disabled worker must not process auto-spawned message")
+	_, registered := srv.messageQueue.GetNotificationChannel("test-workflow:worker")
+	assert.False(t, registered)
+
+	pending, deqErr := srv.messageQueue.Dequeue(ctx, "test-workflow:worker")
+	require.NoError(t, deqErr)
+	require.NotNil(t, pending, "message must remain unacknowledged in queue")
+	assert.Equal(t, "auto-task-1", pending.ID)
+	require.NoError(t, srv.messageQueue.Requeue(ctx, pending.ID))
+
+	replacement := agent.NewAgent(backend, &replyingLLM{}, agent.WithName("worker"))
+	replacement.SetID(workerAgent.GetID())
+	require.NoError(t, srv.UpdateAgent(workerAgent.GetID(), replacement))
+	srv.notifyQueuedWorkflowAgents(ctx, rejected)
+	assert.Empty(t, rejected, "a new enabled instance must clear the rejection")
+	srv.workflowSubAgentsMu.RLock()
+	running := srv.workflowSubAgents["auto:test-workflow:worker"]
+	srv.workflowSubAgentsMu.RUnlock()
+	require.NotNil(t, running)
+	assert.Same(t, replacement, running.agent)
+	assert.Equal(t, 1, logs.FilterMessage("Refusing to auto-spawn workflow sub-agent with tools disabled").Len())
+}
+
+func TestWovenWorkflow_AutoSpawnCachesMetadataResolutionForDisabledWorker(t *testing.T) {
+	workerAgent := agent.NewAgent(&mockBackend{}, &replyingLLM{}, agent.WithName("configured-worker-helper"), agent.WithoutTools())
+	logger := newTestLogger(t)
+	registry, err := agent.NewRegistry(agent.RegistryConfig{
+		ConfigDir: t.TempDir(),
+		DBPath:    ":memory:",
+		Logger:    logger,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = registry.Close() })
+	registry.RegisterConfig(&loomv1.AgentConfig{
+		Name:     "configured-worker-helper",
+		Metadata: map[string]string{"role": "executor", "workflow": "test-workflow"},
+	})
+
+	srv := setupBroadcastTestServer(t, map[string]*agent.Agent{"configured-worker-helper": workerAgent}, registry)
+	core, logs := observer.New(zap.DebugLevel)
+	srv.logger = zap.New(core)
+	ctx := context.Background()
+	const agentID = "test-workflow:worker"
+	require.NoError(t, srv.messageQueue.Enqueue(ctx, &communication.QueueMessage{
+		ID:          "auto-metadata-task",
+		FromAgent:   "test-workflow",
+		ToAgent:     agentID,
+		MessageType: "task",
+		Payload: &loomv1.MessagePayload{
+			Data: &loomv1.MessagePayload_Value{Value: []byte("auto-spawn task")},
+		},
+	}))
+
+	rejected := make(map[string]*agent.Agent)
+	for range 4 {
+		srv.notifyQueuedWorkflowAgents(ctx, rejected)
+	}
+
+	assert.Equal(t, 1, logs.FilterMessage("Found matching agent in registry via workflow metadata search").Len(),
+		"cached rejections must not repeat the metadata resolver's Info log")
+	assert.Equal(t, 1, logs.FilterMessage("Refusing to auto-spawn workflow sub-agent with tools disabled").Len())
+	assert.Same(t, workerAgent, rejected[agentID])
+	srv.workflowSubAgentsMu.RLock()
+	activeCount := len(srv.workflowSubAgents)
+	srv.workflowSubAgentsMu.RUnlock()
+	assert.Zero(t, activeCount, "a disabled worker must not be registered")
+}
+
+// TestWovenWorkflow_ReloadWithToolsDisabledRejectsSubsequentWorkflowAndAutoSpawn
+// verifies that replacing or reloading an initially enabled worker with
+// tools.disabled: true stops any active workflow worker and prevents subsequent
+// workflow startup or auto-spawn from bypassing the policy.
+func TestWovenWorkflow_ReloadWithToolsDisabledRejectsSubsequentWorkflowAndAutoSpawn(t *testing.T) {
+	srv, _, workerLLM, _ := wovenWorkflow(t)
+	ctx := context.Background()
+
+	workerOrig, workerGUID, err := srv.getAgent("test-workflow:worker")
+	require.NoError(t, err)
+	require.False(t, workerOrig.ToolsDisabled())
+
+	// Replace the worker via UpdateAgent with a WithoutTools() instance sharing the same GUID.
+	disabledWorker := agent.NewAgent(&mockBackend{}, workerLLM, agent.WithName("test-workflow:worker"), agent.WithoutTools())
+	disabledWorker.SetID(workerGUID)
+	require.NoError(t, srv.UpdateAgent("test-workflow:worker", disabledWorker))
+
+	// Active workflow sub-agent entry for the replaced worker must be stopped and removed.
+	srv.workflowSubAgentsMu.RLock()
+	_, workerStillActive := srv.workflowSubAgents["test-workflow:worker"]
+	for key := range srv.workflowSubAgents {
+		if strings.HasSuffix(key, ":test-workflow:worker") {
+			workerStillActive = true
+		}
+	}
+	srv.workflowSubAgentsMu.RUnlock()
+	assert.False(t, workerStillActive, "UpdateAgent with tools disabled must stop active workflow worker contexts")
+
+	// Enqueue a message after the reload/replacement and verify neither auto-spawn nor a new workflow accepts it.
+	require.NoError(t, srv.messageQueue.Enqueue(ctx, &communication.QueueMessage{
+		ID:          "task-after-reload",
+		FromAgent:   "test-workflow",
+		ToAgent:     "test-workflow:worker",
+		MessageType: "task",
+		Payload: &loomv1.MessagePayload{
+			Data: &loomv1.MessagePayload_Value{Value: []byte("task after disabling tools")},
+		},
+	}))
+
+	err = srv.autoSpawnWorkflowSubAgent(ctx, "test-workflow:worker")
+	require.ErrorIs(t, err, ErrWorkflowParticipantToolsDisabled)
+
+	newSessionID := GenerateSessionID()
+	_, weaveErr := srv.Weave(ctx, &loomv1.WeaveRequest{
+		AgentId:   "test-workflow",
+		SessionId: newSessionID,
+		Query:     "run workflow after worker reload",
+	})
+	require.ErrorIs(t, weaveErr, ErrWorkflowParticipantToolsDisabled)
+
+	assert.Empty(t, workerLLM.message(), "reloaded disabled worker must not process queued messages")
+	pending, deqErr := srv.messageQueue.Dequeue(ctx, "test-workflow:worker")
+	require.NoError(t, deqErr)
+	require.NotNil(t, pending, "queued message must remain unacknowledged after reload")
+	assert.Equal(t, "task-after-reload", pending.ID)
+}
+
+// TestWovenWorkflow_StandaloneDisabledAgentAndEmptyToolOrdinaryWorker verifies
+// that standalone disabled agents continue to work and that an ordinary agent
+// whose initial tool list is empty is not misclassified as WithoutTools().
+func TestWovenWorkflow_StandaloneDisabledAgentAndEmptyToolOrdinaryWorker(t *testing.T) {
+	ctx := context.Background()
+	backend := &mockBackend{}
+
+	standaloneLLM := &replyingLLM{}
+	standaloneDisabled := agent.NewAgent(backend, standaloneLLM, agent.WithName("standalone-disabled"), agent.WithoutTools())
+
+	coordinatorLLM := &replyingLLM{}
+	workerLLM := &replyingLLM{}
+	coordinatorAgent := agent.NewAgent(backend, coordinatorLLM, agent.WithName("test-workflow"))
+	// Construct an ordinary worker whose built-in tools are suppressed so its initial tool list is empty before server injection.
+	emptyToolOrdinaryWorker := agent.NewAgent(backend, workerLLM,
+		agent.WithName("test-workflow:worker"),
+		agent.WithoutBuiltinTool("query_tool_result"),
+		agent.WithoutBuiltinTool("recall"),
+		agent.WithoutBuiltinTool("load_pattern"),
+	)
+	require.Zero(t, emptyToolOrdinaryWorker.ToolCount(), "precondition: ordinary worker starts with zero tools before server injection")
+	require.False(t, emptyToolOrdinaryWorker.ToolsDisabled())
+
+	agents := map[string]*agent.Agent{
+		"standalone-disabled":  standaloneDisabled,
+		"test-workflow":        coordinatorAgent,
+		"test-workflow:worker": emptyToolOrdinaryWorker,
+	}
+
+	logger := newTestLogger(t)
+	registry, err := agent.NewRegistry(agent.RegistryConfig{
+		ConfigDir: t.TempDir(),
+		DBPath:    ":memory:",
+		Logger:    logger,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = registry.Close() })
+
+	registry.RegisterConfig(&loomv1.AgentConfig{
+		Name:  "standalone-disabled",
+		Tools: &loomv1.ToolsConfig{Disabled: true},
+	})
+	registry.RegisterConfig(&loomv1.AgentConfig{
+		Name:     "test-workflow",
+		Metadata: map[string]string{"role": "coordinator", "workflow": "test-workflow"},
+	})
+	registry.RegisterConfig(&loomv1.AgentConfig{
+		Name:     "test-workflow:worker",
+		Metadata: map[string]string{"role": "executor", "workflow": "test-workflow"},
+	})
+
+	srv := setupBroadcastTestServer(t, agents, registry)
+	srv.mu.Lock()
+	for name, ag := range agents {
+		srv.agents[name] = ag
+	}
+	srv.mu.Unlock()
+
+	// 1. Standalone disabled agent still works via Weave and exposes zero tools.
+	standaloneResp, err := srv.Weave(ctx, &loomv1.WeaveRequest{
+		AgentId: "standalone-disabled",
+		Query:   "hello standalone",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, standaloneResp)
+	assert.Equal(t, "done", standaloneResp.Text)
+	assert.Empty(t, standaloneDisabled.ListTools())
+
+	// 2. Ordinary worker that started with an empty tool list receives communication tools and succeeds in workflow.
+	assert.Contains(t, emptyToolOrdinaryWorker.ListTools(), "send_message")
+	require.NoError(t, srv.spawnWorkflowSubAgents(ctx, coordinatorAgent, "test-workflow", GenerateSessionID()))
 }

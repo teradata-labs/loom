@@ -360,7 +360,7 @@ func (v *AgentValidator) validateBackends(config *agent.AgentConfigYAML, result 
 	hasCustomTools := len(config.Agent.Tools.Custom) > 0
 	hasBuiltinTools := len(config.Agent.Tools.Builtin) > 0
 
-	if !hasMCPBackend && !hasCustomTools && !hasBuiltinTools {
+	if !config.Agent.Tools.Disabled && !hasMCPBackend && !hasCustomTools && !hasBuiltinTools {
 		result.Warnings = append(result.Warnings, ValidationWarning{
 			Field:   "agent.tools",
 			Message: "No tools configured, agent may have limited functionality",

@@ -157,6 +157,19 @@ func builtinToolsToSuppress() []string {
 	return suppressed
 }
 
+// newServedAgent applies the same tool policy when loading or reloading an
+// agent. Server tools.none keeps explicitly declared tools; per-agent
+// tools.disabled prevents every registration, including later server wiring.
+func newServedAgent(cfg *loomv1.AgentConfig, backend fabric.ExecutionBackend, provider agent.LLMProvider, opts ...agent.Option) *agent.Agent {
+	for _, name := range builtinToolsToSuppress() {
+		opts = append(opts, agent.WithoutBuiltinTool(name))
+	}
+	if cfg.GetTools().GetDisabled() {
+		opts = append(opts, agent.WithoutTools())
+	}
+	return agent.NewAgent(backend, provider, opts...)
+}
+
 // registerYAMLBuiltinTools registers tools declared in cfg.Tools.Builtin onto
 // ag. Single source of truth for tool-name → registration-path policy, used by
 // both the static loader (cold start) and the agent-config hot-reload watcher.
@@ -194,7 +207,7 @@ func registerYAMLBuiltinTools(
 	indent string,
 	agentManagementLogTag string,
 ) {
-	if cfg.Tools == nil || len(cfg.Tools.Builtin) == 0 {
+	if cfg.GetTools().GetDisabled() || cfg.Tools == nil || len(cfg.Tools.Builtin) == 0 {
 		return
 	}
 
@@ -2190,15 +2203,6 @@ func runServe(cmd *cobra.Command, args []string) {
 					}
 				}
 
-				// Tool-surface gating. tools.minimal hides graph_memory + task_board
-				// (the two agent-side progressive-disclosure tools that previously
-				// over-coupled to subsystem wiring). tools.none additionally hides
-				// the other progressive-disclosure tools so the LLM only sees what
-				// the YAML explicitly declared.
-				for _, name := range builtinToolsToSuppress() {
-					agentOpts = append(agentOpts, agent.WithoutBuiltinTool(name))
-				}
-
 				// Add PermissionChecker if configured
 				if permissionChecker != nil {
 					agentOpts = append(agentOpts, agent.WithPermissionChecker(permissionChecker))
@@ -2314,12 +2318,12 @@ func runServe(cmd *cobra.Command, args []string) {
 					}
 				}
 
-				ag := agent.NewAgent(backend, agentLLMProvider, agentOpts...)
+				ag := newServedAgent(cfg, backend, agentLLMProvider, agentOpts...)
 
 				// Always register shell_execute and workspace for all agents,
 				// unless tools.minimal=true (--minimal-tools) is set, in which
 				// case the agent only sees what its YAML declares.
-				if !toolsMinimalActive() {
+				if !toolsMinimalActive() && !cfg.GetTools().GetDisabled() {
 					var shellTool shuttle.Tool
 					if cfg.Name == "weaver" {
 						weaverBaseDir := filepath.Join(loomDataDir, "examples", "reference")
@@ -3512,11 +3516,6 @@ func runServe(cmd *cobra.Command, args []string) {
 				}
 			}
 
-			// Tool-surface gating — see builtinToolsToSuppress() for policy.
-			for _, name := range builtinToolsToSuppress() {
-				agentOpts = append(agentOpts, agent.WithoutBuiltinTool(name))
-			}
-
 			// Add PermissionChecker if configured
 			if permissionChecker != nil {
 				agentOpts = append(agentOpts, agent.WithPermissionChecker(permissionChecker))
@@ -3592,7 +3591,7 @@ func runServe(cmd *cobra.Command, args []string) {
 			}
 
 			// Create new agent
-			newAgent := agent.NewAgent(backend, llmProvider, agentOpts...)
+			newAgent := newServedAgent(agentConfig, backend, llmProvider, agentOpts...)
 
 			// Wire pattern effectiveness tracker for metrics collection
 			if patternTracker != nil {
@@ -3609,7 +3608,7 @@ func runServe(cmd *cobra.Command, args []string) {
 			// Always register shell_execute and workspace for all agents,
 			// unless tools.minimal=true (--minimal-tools) is set, in which
 			// case the agent only sees what its YAML declares.
-			if !toolsMinimalActive() {
+			if !toolsMinimalActive() && !agentConfig.GetTools().GetDisabled() {
 				var shellTool shuttle.Tool
 				if agentConfig.Name == "weaver" {
 					weaverBaseDir := filepath.Join(loomDataDir, "examples", "reference")

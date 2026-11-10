@@ -162,6 +162,9 @@ func directAgentOptions(config *loomv1.AgentConfig) []agent.Option {
 	if len(config.Metadata) > 0 {
 		opts = append(opts, agent.WithMetadata(config.Metadata))
 	}
+	if config.GetTools().GetDisabled() {
+		opts = append(opts, agent.WithoutTools())
+	}
 	return opts
 }
 

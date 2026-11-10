@@ -75,6 +75,7 @@ type Executor struct {
 	mcpManager          MCPManager                   // MCP manager for dynamic MCP tool registration
 	builtinToolProvider BuiltinToolProvider          // Builtin tool provider for dynamic builtin tool registration
 	logger              *zap.Logger                  // Structured logger; never nil (defaults to no-op)
+	dynamicDisabled     bool                         // Refuses every dynamic registration (agents with no tool surface)
 
 	// Metrics for large parameter optimization
 	largeParamStores      atomic.Int64 // Count of parameters stored
@@ -164,6 +165,14 @@ func (e *Executor) ApprovedSet() ApprovedSetAccessor {
 // the resolver here. A nil resolver yields an empty UserID.
 func (e *Executor) SetIdentityResolver(resolver func(context.Context) string) {
 	e.identityResolver = resolver
+}
+
+// DisableDynamicRegistration stops the executor from registering any tool on
+// demand: Execute fails for unregistered names and ResolveAndRegister always
+// errors, without consulting the tool registry or MCP manager. Agents with no
+// tool surface set this so a model-emitted tool name can't mount a tool.
+func (e *Executor) DisableDynamicRegistration() {
+	e.dynamicDisabled = true
 }
 
 // SetToolRegistry configures the tool registry for dynamic tool discovery.
@@ -728,6 +737,9 @@ func toLowerUnderscore(s string) string {
 // This enables agents to use tools they discover via tool_search without explicit registration.
 // Returns the registered tool, or nil if registration fails or tool not found.
 func (e *Executor) tryDynamicRegistration(ctx context.Context, toolName string) (Tool, error) {
+	if e.dynamicDisabled {
+		return nil, fmt.Errorf("dynamic tool registration is disabled for this agent")
+	}
 	// Fast path: the tool may already be registered locally under its
 	// server-qualified name (e.g., "teradata-aiop-mcp-server:base_readQuery")
 	// while the LLM called it using either:
@@ -823,6 +835,9 @@ func (e *Executor) tryDynamicRegistration(ctx context.Context, toolName string) 
 //     to those servers, so a bare name (execute_sql) is bound to the server the
 //     skill declared rather than resolved non-deterministically across servers.
 func (e *Executor) ResolveAndRegister(ctx context.Context, name string, servers []string) (Tool, error) {
+	if e.dynamicDisabled {
+		return nil, fmt.Errorf("dynamic tool registration is disabled for this agent")
+	}
 	if e.toolRegistry == nil {
 		return nil, fmt.Errorf("tool registry not configured")
 	}
