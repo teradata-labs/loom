@@ -165,6 +165,14 @@ type Message struct {
 	// the context; see pkg/task.Attribution.
 	TaskID string
 
+	// Labels carries per-message labels assigned when the message entered a
+	// session's context (agent.WithMessageLabeler); label values are opaque —
+	// nothing in the agent interprets them. A compaction summary that replaces
+	// labelled messages carries their join (agent.WithLabelJoin) instead.
+	// In-memory only: never persisted; on a restore the labeler runs again as
+	// each row re-enters the context.
+	Labels map[string]string
+
 	// Timestamp when the message was created
 	Timestamp time.Time
 
