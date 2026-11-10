@@ -113,8 +113,17 @@ func TestFunnelObservesThrottleAndSuccessProviderAgnostic(t *testing.T) {
 	sched := scheduler.Default().For(a.schedulerScope(), scheduler.Config{})
 	before := sched.State().EffectiveTokensPerMinute
 
+	// A throttle now PAUSES the conversation rather than failing it (see
+	// throttlePatience in llm_retry.go), so a permanently-throttling stub
+	// surfaces its error at the caller's deadline instead of immediately.
+	// The deadline is what bounds this call; the AIMD observation itself
+	// happens at absorption, before the first wait.
 	stub.throttle = true
-	_, err := a.chatWithRetry(ctx, []Message{{Role: "user", Content: "hi"}}, nil)
+	throttledCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_, err := a.chatWithRetry(
+		&agentContext{Context: throttledCtx, tracer: observability.NewNoOpTracer()},
+		[]Message{{Role: "user", Content: "hi"}}, nil)
 	require.Error(t, err)
 	st := sched.State()
 	assert.Equal(t, before/2, st.EffectiveTokensPerMinute,

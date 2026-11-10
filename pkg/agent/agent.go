@@ -28,6 +28,7 @@ import (
 	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
+	"github.com/teradata-labs/loom/pkg/decision/sites"
 	"github.com/teradata-labs/loom/pkg/eventlog"
 	"github.com/teradata-labs/loom/pkg/fabric"
 	"github.com/teradata-labs/loom/pkg/llm"
@@ -120,6 +121,10 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	if a.config.PatternConfig == nil {
 		a.config.PatternConfig = DefaultPatternConfig()
 	}
+
+	// Decision layer: resolve the configured decider against the LLMs the
+	// options just installed. Off unless configured.
+	a.initDecisionRouter()
 
 	// Initialize automatic graph memory extraction if graph memory is enabled.
 	if a.graphMemoryStore != nil && a.graphMemoryConfig != nil &&
@@ -3192,7 +3197,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// assistantPersisted alone reports success for a batch that was never
 		// written anywhere — exactly the stranding this gate exists to stop.
 		if a.hitlPark != nil && assistantPersisted && a.memory.HasStore() {
-			if parkErr := a.maybeParkBatch(ctx, session, llmResp, turnUsage); parkErr != nil {
+			if parkErr := a.maybeParkBatch(ctx, session, llmResp, turnUsage, tools); parkErr != nil {
 				return nil, parkErr
 			}
 		}
@@ -3296,6 +3301,11 @@ type batchState struct {
 	allToolExecutions  *[]ToolExecution
 	tools              *[]shuttle.Tool
 	recovery           *recoveryOrchestrator
+	// noProjection is set by the resume path when the parked batch carries
+	// no record of the tools its provider call advertised. Calls then get no
+	// projection on their context, so a script engine refuses to run
+	// instead of trusting the resume-time set.
+	noProjection bool
 
 	turnToolCount   int
 	turnDedup       map[string]*shuttle.Result
@@ -3368,6 +3378,11 @@ type preparedCall struct {
 	dedupKey  string
 	toolSpan  *observability.Span
 	intentErr error
+	// projection is the advertised tool set runCall attaches to the call's
+	// context; noProjection means attach none (a resumed batch with no
+	// recorded projection), so a script engine fails closed.
+	projection   []shuttle.Tool
+	noProjection bool
 }
 
 // prepareCall is the sequential front half of dispatchOneCall: the per-turn
@@ -3491,7 +3506,18 @@ func (a *Agent) prepareCall(ctx Context, session *Session, toolCall ToolCall, i 
 	// A failed intent is returned on the prepared call, not committed here: the
 	// call must not run, and settleCall commits its error row so that a group
 	// member's row still lands after the rows of the members before it.
-	return &preparedCall{call: toolCall, index: i, dedupKey: dedupKey, toolSpan: toolSpan, intentErr: intentErr}, false
+	//
+	// The call's context will record the tools this provider call advertised
+	// (after recovery filtering), so a script engine never re-derives a wider
+	// set. On resume st.tools is the requesting call's recorded projection,
+	// narrowed by the resume-time set (completeParkedBatch); with no record
+	// the call gets no projection and a script engine fails closed. Read here,
+	// in the sequential front half, so a parallel group sees the same set.
+	pc = &preparedCall{call: toolCall, index: i, dedupKey: dedupKey, toolSpan: toolSpan, intentErr: intentErr, noProjection: st.noProjection}
+	if !st.noProjection && st.tools != nil {
+		pc.projection = *st.tools
+	}
+	return pc, false
 }
 
 // settleUnrecordedCall commits the row of a call whose intent could not be
@@ -3528,7 +3554,11 @@ func (a *Agent) settleUnrecordedCall(ctx Context, session *Session, pc *prepared
 // cache or the transcript — settleCall owns all of those. See runTool for the
 // shared state executor.Execute can still reach.
 func (a *Agent) runCall(ctx Context, pc *preparedCall, sessionID string) (*shuttle.Result, error) {
-	return a.runTool(ctx, pc.call.Name, pc.call.Input, sessionID)
+	callCtx := ctx
+	if !pc.noProjection {
+		callCtx = withAdvertisedProjection(ctx, pc.projection)
+	}
+	return a.runTool(callCtx, pc.call.Name, pc.call.Input, sessionID)
 }
 
 // settleCall is the sequential back half of dispatchOneCall: lease events and
@@ -3546,7 +3576,7 @@ func (a *Agent) settleCall(ctx Context, session *Session, pc *preparedCall, st *
 	i := pc.index
 	toolSpan := pc.toolSpan
 
-	a.settleExecution(ctx, session.ID, toolCall.Input, result, err)
+	a.settleExecution(ctx, session.ID, toolCall.Name, toolCall.Input, result, err)
 	a.recordToolResult(ctx, session.ID, st.stepIndex, i, toolCall.ID, result, err)
 
 	// Tier 1: if tool CB fired, disable tool and inject synthetic result.
@@ -4049,7 +4079,7 @@ func (a *Agent) runTool(ctx Context, toolName string, input map[string]interface
 // settleExecution is the session-shared bookkeeping for an executed tool
 // result: lease events and guardrails error tracking. It must run sequentially
 // and in call order. A call the breaker rejected never ran, so it is skipped.
-func (a *Agent) settleExecution(ctx Context, sessionID string, input map[string]interface{}, result *shuttle.Result, err error) {
+func (a *Agent) settleExecution(ctx Context, sessionID, toolName string, input map[string]interface{}, result *shuttle.Result, err error) {
 	var breakerOpen *toolBreakerOpenError
 	if errors.As(err, &breakerOpen) {
 		return
@@ -4061,6 +4091,12 @@ func (a *Agent) settleExecution(ctx Context, sessionID string, input map[string]
 	// path replays cached results without re-executing, so replayed events
 	// are never double-applied).
 	a.applyLeaseEvents(ctx, sessionID, result)
+
+	// Decision layer shadow (plan Phase 1, site tool.failure_kind): classify
+	// this result in the background and record it against what the Success
+	// flag and InferErrorType say. Brake-only by design once live; today it
+	// only records.
+	a.shadowFailureKind(ctx, sessionID, toolName, input, result, err)
 
 	// If execution succeeded and guardrails enabled, clear error record
 	if err == nil && result != nil && result.Success && a.guardrails != nil {
@@ -4486,9 +4522,23 @@ func (a *Agent) findUserEntity(ctx context.Context, agentID string) *memory.Enti
 	return nil
 }
 
-// rerankMemories uses the LLM to select the most relevant memories for a user message
-// from a pool of FTS5 candidates. Returns only the memories the LLM deems relevant.
+// rerankMemories selects the most relevant memories for a user message from a
+// pool of FTS5 candidates. The existing LLM rerank decides; when the decision
+// layer is wired, the decider's per-candidate relevance is evaluated in the
+// background and recorded against that decision as a shadow row (plan Phase
+// 1, site recall.rerank). Nothing branches on the decider yet.
 func (a *Agent) rerankMemories(ctx context.Context, userMessage string, candidates []*memory.Memory) []*memory.Memory {
+	kept := a.rerankMemoriesLLM(ctx, userMessage, candidates)
+	if a.decisionRouter != nil && len(candidates) > 0 {
+		a.shadowRerank(ctx, sessionIDFromContext(ctx), sites.SiteRecallRerank, userMessage, candidates, kept, sites.ReferenceSourceLLMRerank)
+	}
+	return kept
+}
+
+// rerankMemoriesLLM is the generative rerank: a numbered candidate list and a
+// "return only the numbers" instruction. Returns only the memories the LLM
+// deems relevant; on any failure it returns every candidate.
+func (a *Agent) rerankMemoriesLLM(ctx context.Context, userMessage string, candidates []*memory.Memory) []*memory.Memory {
 	if len(candidates) == 0 {
 		return nil
 	}
@@ -4750,6 +4800,9 @@ func (a *Agent) DeleteSession(sessionID string) {
 	// Drop the lesson miner's per-session state (ledger, history-coverage
 	// marker, error-lane injection record) for the same reason.
 	a.forgetLessonSession(sessionID)
+	// Release the session's decision-layer budget accounting, which is
+	// likewise bounded by live sessions only because retirement frees it.
+	a.decisionRouter.ForgetSession(sessionID)
 }
 
 // ApprovedSet returns the executor's approved-set accessor; nil until one is
@@ -4798,6 +4851,7 @@ func (a *Agent) ClearAllSessions() {
 	a.mu.Unlock()
 	a.dropAllInTurnSQLite()
 	a.leases.reset()
+	a.decisionRouter.ForgetAllSessions()
 }
 
 // CreateSession creates a new session without sending a message to the LLM.
