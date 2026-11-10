@@ -548,12 +548,29 @@ type DebatePattern struct {
 	AgentIds []string `protobuf:"bytes,2,rep,name=agent_ids,json=agentIds,proto3" json:"agent_ids,omitempty"`
 	// Number of debate rounds
 	Rounds int32 `protobuf:"varint,3,opt,name=rounds,proto3" json:"rounds,omitempty"`
-	// Strategy for merging final outputs
+	// Deprecated: the debate engine never read this field. The final output
+	// is the moderator's synthesis when moderator_agent_id is set, else the
+	// last round's heuristic synthesis line. The YAML loader rejects an
+	// explicit value. Kept for wire compatibility only.
+	//
+	// Deprecated: Marked as deprecated in loom/v1/orchestration.proto.
 	MergeStrategy MergeStrategy `protobuf:"varint,4,opt,name=merge_strategy,json=mergeStrategy,proto3,enum=loom.v1.MergeStrategy" json:"merge_strategy,omitempty"`
 	// Optional: Moderator agent ID to guide debate
 	ModeratorAgentId string `protobuf:"bytes,5,opt,name=moderator_agent_id,json=moderatorAgentId,proto3" json:"moderator_agent_id,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Bounds the two hand-offs that carry other agents' full output into one
+	// prompt: each agent's "respond to the others" prompt in rounds after the
+	// first, and the moderator's final synthesis prompt. Full positions are
+	// stored in SharedMemory (key "<workflow-id>-round-R-position-<agent-id>")
+	// when the orchestrator has a store; the inline copy is capped per
+	// position and budgeted as a whole against the receiving agent's context
+	// window. agent_id must be empty: the moderator is the join agent, and
+	// the responding agent is the receiver of its own response prompt.
+	// prompt_template applies to the moderator synthesis only ({{prompt}} is
+	// the topic, {{branches}} the positions, {{branch_count}} their number).
+	// Unset: the pre-existing unbounded behaviour.
+	JoinPolicy    *JoinPolicy `protobuf:"bytes,6,opt,name=join_policy,json=joinPolicy,proto3" json:"join_policy,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *DebatePattern) Reset() {
@@ -607,6 +624,7 @@ func (x *DebatePattern) GetRounds() int32 {
 	return 0
 }
 
+// Deprecated: Marked as deprecated in loom/v1/orchestration.proto.
 func (x *DebatePattern) GetMergeStrategy() MergeStrategy {
 	if x != nil {
 		return x.MergeStrategy
@@ -619,6 +637,13 @@ func (x *DebatePattern) GetModeratorAgentId() string {
 		return x.ModeratorAgentId
 	}
 	return ""
+}
+
+func (x *DebatePattern) GetJoinPolicy() *JoinPolicy {
+	if x != nil {
+		return x.JoinPolicy
+	}
+	return nil
 }
 
 // ForkJoinPattern executes multiple agents in parallel on the same prompt,
@@ -732,7 +757,8 @@ type JoinPolicy struct {
 	// tools (shared_memory_read among them when configured), context relief
 	// and the provider context-too-long backstop. Must be registered with
 	// the orchestrator; it may also be one of the branch agents. The agent
-	// runs under session "<workflow-id>-join-<agent-id>".
+	// runs under session "<workflow-id>-join-<agent-id>". On DebatePattern
+	// this must be empty (moderator_agent_id is the join agent).
 	AgentId string `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
 	// Prompt template for the join. Placeholders:
 	//
@@ -827,6 +853,90 @@ func (x *JoinPolicy) GetOverflowStrategy() JoinOverflowStrategy {
 	return JoinOverflowStrategy_JOIN_OVERFLOW_STRATEGY_UNSPECIFIED
 }
 
+// HistoryPolicy bounds what a pipeline stage receives through {{history}}
+// and pass_full_history: every prior stage's output rendered into one
+// prompt.
+//
+// Regardless of this policy, each history entry is the same inline copy the
+// next stage gets as {{previous}}: when the orchestrator has a SharedMemory
+// store the full output is under "stage-N-output" and the entry is cut to
+// MaxStageOutputBytes (8192) with a notice naming that key; without a store
+// the entry is the full output. Setting a HistoryPolicy adds a whole-prompt
+// token budget enforced with overflow_strategy, and lets the per-entry cap
+// be tuned.
+type HistoryPolicy struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Per-entry cap on the bytes rendered inline for each prior stage. 0 =
+	// 8192 (MaxStageOutputBytes). Applies only when the full output is in
+	// SharedMemory; without a store entries are never cut. Negative is
+	// rejected at load.
+	MaxEntryBytes int32 `protobuf:"varint,1,opt,name=max_entry_bytes,json=maxEntryBytes,proto3" json:"max_entry_bytes,omitempty"`
+	// Token budget for the whole rendered stage prompt (template, header and
+	// every history entry). 0 = half of the stage agent's usable context
+	// window (max_context_tokens less reserved_output_tokens). Negative is
+	// rejected at load.
+	MaxInputTokens int32 `protobuf:"varint,2,opt,name=max_input_tokens,json=maxInputTokens,proto3" json:"max_input_tokens,omitempty"`
+	// What to do when the rendered prompt exceeds max_input_tokens. The
+	// overflow strategies act on the history entries only; {{previous}} and
+	// the stage's own template text are never cut. UNSPECIFIED behaves as
+	// PRE_REDUCE, which reduces oversize entries with the stage agent's
+	// compressor-role LLM (its main LLM when none is configured).
+	OverflowStrategy JoinOverflowStrategy `protobuf:"varint,3,opt,name=overflow_strategy,json=overflowStrategy,proto3,enum=loom.v1.JoinOverflowStrategy" json:"overflow_strategy,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *HistoryPolicy) Reset() {
+	*x = HistoryPolicy{}
+	mi := &file_loom_v1_orchestration_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HistoryPolicy) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HistoryPolicy) ProtoMessage() {}
+
+func (x *HistoryPolicy) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_orchestration_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HistoryPolicy.ProtoReflect.Descriptor instead.
+func (*HistoryPolicy) Descriptor() ([]byte, []int) {
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *HistoryPolicy) GetMaxEntryBytes() int32 {
+	if x != nil {
+		return x.MaxEntryBytes
+	}
+	return 0
+}
+
+func (x *HistoryPolicy) GetMaxInputTokens() int32 {
+	if x != nil {
+		return x.MaxInputTokens
+	}
+	return 0
+}
+
+func (x *HistoryPolicy) GetOverflowStrategy() JoinOverflowStrategy {
+	if x != nil {
+		return x.OverflowStrategy
+	}
+	return JoinOverflowStrategy_JOIN_OVERFLOW_STRATEGY_UNSPECIFIED
+}
+
 // PipelinePattern executes agents sequentially where each agent's output
 // becomes input for the next agent.
 type PipelinePattern struct {
@@ -837,13 +947,17 @@ type PipelinePattern struct {
 	Stages []*PipelineStage `protobuf:"bytes,2,rep,name=stages,proto3" json:"stages,omitempty"`
 	// Whether to pass full history to each stage (default: false, only previous)
 	PassFullHistory bool `protobuf:"varint,3,opt,name=pass_full_history,json=passFullHistory,proto3" json:"pass_full_history,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Bounds {{history}} / pass_full_history with a whole-prompt token budget.
+	// Unset: entries are still capped per stage like {{previous}} (see
+	// HistoryPolicy), but no budget check runs and no extra LLM calls are made.
+	HistoryPolicy *HistoryPolicy `protobuf:"bytes,4,opt,name=history_policy,json=historyPolicy,proto3" json:"history_policy,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PipelinePattern) Reset() {
 	*x = PipelinePattern{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[4]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -855,7 +969,7 @@ func (x *PipelinePattern) String() string {
 func (*PipelinePattern) ProtoMessage() {}
 
 func (x *PipelinePattern) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[4]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -868,7 +982,7 @@ func (x *PipelinePattern) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PipelinePattern.ProtoReflect.Descriptor instead.
 func (*PipelinePattern) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{4}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *PipelinePattern) GetInitialPrompt() string {
@@ -890,6 +1004,13 @@ func (x *PipelinePattern) GetPassFullHistory() bool {
 		return x.PassFullHistory
 	}
 	return false
+}
+
+func (x *PipelinePattern) GetHistoryPolicy() *HistoryPolicy {
+	if x != nil {
+		return x.HistoryPolicy
+	}
+	return nil
 }
 
 // PipelineStage represents a single stage in a pipeline.
@@ -946,7 +1067,7 @@ type PipelineStage struct {
 
 func (x *PipelineStage) Reset() {
 	*x = PipelineStage{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[5]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -958,7 +1079,7 @@ func (x *PipelineStage) String() string {
 func (*PipelineStage) ProtoMessage() {}
 
 func (x *PipelineStage) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[5]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -971,7 +1092,7 @@ func (x *PipelineStage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PipelineStage.ProtoReflect.Descriptor instead.
 func (*PipelineStage) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{5}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *PipelineStage) GetAgentId() string {
@@ -1062,7 +1183,7 @@ type HITLGate struct {
 
 func (x *HITLGate) Reset() {
 	*x = HITLGate{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[6]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1074,7 +1195,7 @@ func (x *HITLGate) String() string {
 func (*HITLGate) ProtoMessage() {}
 
 func (x *HITLGate) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[6]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1087,7 +1208,7 @@ func (x *HITLGate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HITLGate.ProtoReflect.Descriptor instead.
 func (*HITLGate) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{6}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *HITLGate) GetPromptTemplate() string {
@@ -1158,7 +1279,7 @@ type HITLGateRequest struct {
 
 func (x *HITLGateRequest) Reset() {
 	*x = HITLGateRequest{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[7]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1170,7 +1291,7 @@ func (x *HITLGateRequest) String() string {
 func (*HITLGateRequest) ProtoMessage() {}
 
 func (x *HITLGateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[7]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1183,7 +1304,7 @@ func (x *HITLGateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HITLGateRequest.ProtoReflect.Descriptor instead.
 func (*HITLGateRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{7}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *HITLGateRequest) GetWorkflowId() string {
@@ -1258,7 +1379,7 @@ type GateDecision struct {
 
 func (x *GateDecision) Reset() {
 	*x = GateDecision{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[8]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1270,7 +1391,7 @@ func (x *GateDecision) String() string {
 func (*GateDecision) ProtoMessage() {}
 
 func (x *GateDecision) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[8]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1283,7 +1404,7 @@ func (x *GateDecision) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GateDecision.ProtoReflect.Descriptor instead.
 func (*GateDecision) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{8}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *GateDecision) GetAction() GateAction {
@@ -1371,7 +1492,7 @@ type WorkflowCheckpoint struct {
 
 func (x *WorkflowCheckpoint) Reset() {
 	*x = WorkflowCheckpoint{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[9]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1383,7 +1504,7 @@ func (x *WorkflowCheckpoint) String() string {
 func (*WorkflowCheckpoint) ProtoMessage() {}
 
 func (x *WorkflowCheckpoint) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[9]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1396,7 +1517,7 @@ func (x *WorkflowCheckpoint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkflowCheckpoint.ProtoReflect.Descriptor instead.
 func (*WorkflowCheckpoint) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{9}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *WorkflowCheckpoint) GetCheckpointVersion() int32 {
@@ -1517,7 +1638,7 @@ type CheckpointStageSnapshot struct {
 
 func (x *CheckpointStageSnapshot) Reset() {
 	*x = CheckpointStageSnapshot{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[10]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1529,7 +1650,7 @@ func (x *CheckpointStageSnapshot) String() string {
 func (*CheckpointStageSnapshot) ProtoMessage() {}
 
 func (x *CheckpointStageSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[10]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1542,7 +1663,7 @@ func (x *CheckpointStageSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CheckpointStageSnapshot.ProtoReflect.Descriptor instead.
 func (*CheckpointStageSnapshot) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{10}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *CheckpointStageSnapshot) GetAgentId() string {
@@ -1576,7 +1697,7 @@ type CheckpointMemoryEntry struct {
 
 func (x *CheckpointMemoryEntry) Reset() {
 	*x = CheckpointMemoryEntry{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[11]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1588,7 +1709,7 @@ func (x *CheckpointMemoryEntry) String() string {
 func (*CheckpointMemoryEntry) ProtoMessage() {}
 
 func (x *CheckpointMemoryEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[11]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1601,7 +1722,7 @@ func (x *CheckpointMemoryEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CheckpointMemoryEntry.ProtoReflect.Descriptor instead.
 func (*CheckpointMemoryEntry) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{11}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *CheckpointMemoryEntry) GetKey() string {
@@ -1658,7 +1779,7 @@ type IterativeWorkflowPattern struct {
 
 func (x *IterativeWorkflowPattern) Reset() {
 	*x = IterativeWorkflowPattern{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[12]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1670,7 +1791,7 @@ func (x *IterativeWorkflowPattern) String() string {
 func (*IterativeWorkflowPattern) ProtoMessage() {}
 
 func (x *IterativeWorkflowPattern) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[12]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1683,7 +1804,7 @@ func (x *IterativeWorkflowPattern) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IterativeWorkflowPattern.ProtoReflect.Descriptor instead.
 func (*IterativeWorkflowPattern) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{12}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *IterativeWorkflowPattern) GetPipeline() *PipelinePattern {
@@ -1743,7 +1864,7 @@ type RestartPolicy struct {
 
 func (x *RestartPolicy) Reset() {
 	*x = RestartPolicy{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[13]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1755,7 +1876,7 @@ func (x *RestartPolicy) String() string {
 func (*RestartPolicy) ProtoMessage() {}
 
 func (x *RestartPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[13]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1768,7 +1889,7 @@ func (x *RestartPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestartPolicy.ProtoReflect.Descriptor instead.
 func (*RestartPolicy) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{13}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *RestartPolicy) GetEnabled() bool {
@@ -1835,7 +1956,7 @@ type RestartRequest struct {
 
 func (x *RestartRequest) Reset() {
 	*x = RestartRequest{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[14]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1847,7 +1968,7 @@ func (x *RestartRequest) String() string {
 func (*RestartRequest) ProtoMessage() {}
 
 func (x *RestartRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[14]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1860,7 +1981,7 @@ func (x *RestartRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestartRequest.ProtoReflect.Descriptor instead.
 func (*RestartRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{14}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *RestartRequest) GetRequesterStageId() string {
@@ -1924,7 +2045,7 @@ type RestartResponse struct {
 
 func (x *RestartResponse) Reset() {
 	*x = RestartResponse{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[15]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1936,7 +2057,7 @@ func (x *RestartResponse) String() string {
 func (*RestartResponse) ProtoMessage() {}
 
 func (x *RestartResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[15]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1949,7 +2070,7 @@ func (x *RestartResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestartResponse.ProtoReflect.Descriptor instead.
 func (*RestartResponse) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{15}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *RestartResponse) GetTargetStageId() string {
@@ -2006,7 +2127,7 @@ type ParallelPattern struct {
 
 func (x *ParallelPattern) Reset() {
 	*x = ParallelPattern{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[16]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2018,7 +2139,7 @@ func (x *ParallelPattern) String() string {
 func (*ParallelPattern) ProtoMessage() {}
 
 func (x *ParallelPattern) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[16]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2031,7 +2152,7 @@ func (x *ParallelPattern) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ParallelPattern.ProtoReflect.Descriptor instead.
 func (*ParallelPattern) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{16}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ParallelPattern) GetTasks() []*AgentTask {
@@ -2091,7 +2212,7 @@ type AgentTask struct {
 
 func (x *AgentTask) Reset() {
 	*x = AgentTask{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[17]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2103,7 +2224,7 @@ func (x *AgentTask) String() string {
 func (*AgentTask) ProtoMessage() {}
 
 func (x *AgentTask) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[17]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2116,7 +2237,7 @@ func (x *AgentTask) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentTask.ProtoReflect.Descriptor instead.
 func (*AgentTask) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{17}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *AgentTask) GetAgentId() string {
@@ -2187,7 +2308,7 @@ type LevelingRung struct {
 
 func (x *LevelingRung) Reset() {
 	*x = LevelingRung{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[18]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2199,7 +2320,7 @@ func (x *LevelingRung) String() string {
 func (*LevelingRung) ProtoMessage() {}
 
 func (x *LevelingRung) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[18]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2212,7 +2333,7 @@ func (x *LevelingRung) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LevelingRung.ProtoReflect.Descriptor instead.
 func (*LevelingRung) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{18}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *LevelingRung) GetProvider() string {
@@ -2249,7 +2370,7 @@ type LevelingTierPolicy struct {
 
 func (x *LevelingTierPolicy) Reset() {
 	*x = LevelingTierPolicy{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[19]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2261,7 +2382,7 @@ func (x *LevelingTierPolicy) String() string {
 func (*LevelingTierPolicy) ProtoMessage() {}
 
 func (x *LevelingTierPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[19]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2274,7 +2395,7 @@ func (x *LevelingTierPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LevelingTierPolicy.ProtoReflect.Descriptor instead.
 func (*LevelingTierPolicy) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{19}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *LevelingTierPolicy) GetRetryBudget() int32 {
@@ -2348,7 +2469,7 @@ type LevelingPolicy struct {
 
 func (x *LevelingPolicy) Reset() {
 	*x = LevelingPolicy{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[20]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2360,7 +2481,7 @@ func (x *LevelingPolicy) String() string {
 func (*LevelingPolicy) ProtoMessage() {}
 
 func (x *LevelingPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[20]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2373,7 +2494,7 @@ func (x *LevelingPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LevelingPolicy.ProtoReflect.Descriptor instead.
 func (*LevelingPolicy) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{20}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *LevelingPolicy) GetEnabled() bool {
@@ -2454,7 +2575,7 @@ type ConditionalPattern struct {
 
 func (x *ConditionalPattern) Reset() {
 	*x = ConditionalPattern{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[21]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2466,7 +2587,7 @@ func (x *ConditionalPattern) String() string {
 func (*ConditionalPattern) ProtoMessage() {}
 
 func (x *ConditionalPattern) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[21]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2479,7 +2600,7 @@ func (x *ConditionalPattern) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConditionalPattern.ProtoReflect.Descriptor instead.
 func (*ConditionalPattern) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{21}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *ConditionalPattern) GetConditionAgentId() string {
@@ -2553,7 +2674,7 @@ type WorkflowResult struct {
 
 func (x *WorkflowResult) Reset() {
 	*x = WorkflowResult{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[22]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2565,7 +2686,7 @@ func (x *WorkflowResult) String() string {
 func (*WorkflowResult) ProtoMessage() {}
 
 func (x *WorkflowResult) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[22]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2578,7 +2699,7 @@ func (x *WorkflowResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkflowResult.ProtoReflect.Descriptor instead.
 func (*WorkflowResult) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{22}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *WorkflowResult) GetPatternType() string {
@@ -2734,7 +2855,7 @@ type DebateResult struct {
 
 func (x *DebateResult) Reset() {
 	*x = DebateResult{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[23]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2746,7 +2867,7 @@ func (x *DebateResult) String() string {
 func (*DebateResult) ProtoMessage() {}
 
 func (x *DebateResult) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[23]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2759,7 +2880,7 @@ func (x *DebateResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DebateResult.ProtoReflect.Descriptor instead.
 func (*DebateResult) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{23}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *DebateResult) GetRounds() []*DebateRound {
@@ -2818,7 +2939,7 @@ type AgentResult struct {
 
 func (x *AgentResult) Reset() {
 	*x = AgentResult{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[24]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2830,7 +2951,7 @@ func (x *AgentResult) String() string {
 func (*AgentResult) ProtoMessage() {}
 
 func (x *AgentResult) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[24]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2843,7 +2964,7 @@ func (x *AgentResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentResult.ProtoReflect.Descriptor instead.
 func (*AgentResult) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{24}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *AgentResult) GetAgentId() string {
@@ -2919,7 +3040,7 @@ type AgentExecutionCost struct {
 
 func (x *AgentExecutionCost) Reset() {
 	*x = AgentExecutionCost{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[25]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2931,7 +3052,7 @@ func (x *AgentExecutionCost) String() string {
 func (*AgentExecutionCost) ProtoMessage() {}
 
 func (x *AgentExecutionCost) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[25]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2944,7 +3065,7 @@ func (x *AgentExecutionCost) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentExecutionCost.ProtoReflect.Descriptor instead.
 func (*AgentExecutionCost) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{25}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *AgentExecutionCost) GetTotalTokens() int32 {
@@ -3029,7 +3150,7 @@ type WorkflowCost struct {
 
 func (x *WorkflowCost) Reset() {
 	*x = WorkflowCost{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[26]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3041,7 +3162,7 @@ func (x *WorkflowCost) String() string {
 func (*WorkflowCost) ProtoMessage() {}
 
 func (x *WorkflowCost) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[26]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3054,7 +3175,7 @@ func (x *WorkflowCost) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkflowCost.ProtoReflect.Descriptor instead.
 func (*WorkflowCost) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{26}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *WorkflowCost) GetTotalCostUsd() float64 {
@@ -3108,7 +3229,7 @@ type WorkflowExecution struct {
 
 func (x *WorkflowExecution) Reset() {
 	*x = WorkflowExecution{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[27]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3120,7 +3241,7 @@ func (x *WorkflowExecution) String() string {
 func (*WorkflowExecution) ProtoMessage() {}
 
 func (x *WorkflowExecution) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[27]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3133,7 +3254,7 @@ func (x *WorkflowExecution) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkflowExecution.ProtoReflect.Descriptor instead.
 func (*WorkflowExecution) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{27}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *WorkflowExecution) GetId() string {
@@ -3209,7 +3330,7 @@ type ExecuteWorkflowRequest struct {
 
 func (x *ExecuteWorkflowRequest) Reset() {
 	*x = ExecuteWorkflowRequest{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[28]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3221,7 +3342,7 @@ func (x *ExecuteWorkflowRequest) String() string {
 func (*ExecuteWorkflowRequest) ProtoMessage() {}
 
 func (x *ExecuteWorkflowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[28]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3234,7 +3355,7 @@ func (x *ExecuteWorkflowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteWorkflowRequest.ProtoReflect.Descriptor instead.
 func (*ExecuteWorkflowRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{28}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ExecuteWorkflowRequest) GetPattern() *WorkflowPattern {
@@ -3294,7 +3415,7 @@ type WorkflowSummary struct {
 
 func (x *WorkflowSummary) Reset() {
 	*x = WorkflowSummary{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[29]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3306,7 +3427,7 @@ func (x *WorkflowSummary) String() string {
 func (*WorkflowSummary) ProtoMessage() {}
 
 func (x *WorkflowSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[29]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3319,7 +3440,7 @@ func (x *WorkflowSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkflowSummary.ProtoReflect.Descriptor instead.
 func (*WorkflowSummary) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{29}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *WorkflowSummary) GetName() string {
@@ -3352,7 +3473,7 @@ type ListWorkflowsRequest struct {
 
 func (x *ListWorkflowsRequest) Reset() {
 	*x = ListWorkflowsRequest{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[30]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3364,7 +3485,7 @@ func (x *ListWorkflowsRequest) String() string {
 func (*ListWorkflowsRequest) ProtoMessage() {}
 
 func (x *ListWorkflowsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[30]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3377,7 +3498,7 @@ func (x *ListWorkflowsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListWorkflowsRequest.ProtoReflect.Descriptor instead.
 func (*ListWorkflowsRequest) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{30}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{31}
 }
 
 // ListWorkflowsResponse returns the saved workflows.
@@ -3390,7 +3511,7 @@ type ListWorkflowsResponse struct {
 
 func (x *ListWorkflowsResponse) Reset() {
 	*x = ListWorkflowsResponse{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[31]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3402,7 +3523,7 @@ func (x *ListWorkflowsResponse) String() string {
 func (*ListWorkflowsResponse) ProtoMessage() {}
 
 func (x *ListWorkflowsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[31]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3415,7 +3536,7 @@ func (x *ListWorkflowsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListWorkflowsResponse.ProtoReflect.Descriptor instead.
 func (*ListWorkflowsResponse) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{31}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ListWorkflowsResponse) GetWorkflows() []*WorkflowSummary {
@@ -3438,7 +3559,7 @@ type ExecuteWorkflowResponse struct {
 
 func (x *ExecuteWorkflowResponse) Reset() {
 	*x = ExecuteWorkflowResponse{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[32]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3450,7 +3571,7 @@ func (x *ExecuteWorkflowResponse) String() string {
 func (*ExecuteWorkflowResponse) ProtoMessage() {}
 
 func (x *ExecuteWorkflowResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[32]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3463,7 +3584,7 @@ func (x *ExecuteWorkflowResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteWorkflowResponse.ProtoReflect.Descriptor instead.
 func (*ExecuteWorkflowResponse) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{32}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *ExecuteWorkflowResponse) GetExecutionId() string {
@@ -3508,7 +3629,7 @@ type ScheduleConfig struct {
 
 func (x *ScheduleConfig) Reset() {
 	*x = ScheduleConfig{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[33]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3520,7 +3641,7 @@ func (x *ScheduleConfig) String() string {
 func (*ScheduleConfig) ProtoMessage() {}
 
 func (x *ScheduleConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[33]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3533,7 +3654,7 @@ func (x *ScheduleConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScheduleConfig.ProtoReflect.Descriptor instead.
 func (*ScheduleConfig) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{33}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *ScheduleConfig) GetCron() string {
@@ -3619,7 +3740,7 @@ type ScheduledWorkflow struct {
 
 func (x *ScheduledWorkflow) Reset() {
 	*x = ScheduledWorkflow{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[34]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3631,7 +3752,7 @@ func (x *ScheduledWorkflow) String() string {
 func (*ScheduledWorkflow) ProtoMessage() {}
 
 func (x *ScheduledWorkflow) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[34]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3644,7 +3765,7 @@ func (x *ScheduledWorkflow) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScheduledWorkflow.ProtoReflect.Descriptor instead.
 func (*ScheduledWorkflow) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{34}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *ScheduledWorkflow) GetId() string {
@@ -3752,7 +3873,7 @@ type ScheduleStats struct {
 
 func (x *ScheduleStats) Reset() {
 	*x = ScheduleStats{}
-	mi := &file_loom_v1_orchestration_proto_msgTypes[35]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3764,7 +3885,7 @@ func (x *ScheduleStats) String() string {
 func (*ScheduleStats) ProtoMessage() {}
 
 func (x *ScheduleStats) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_orchestration_proto_msgTypes[35]
+	mi := &file_loom_v1_orchestration_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3777,7 +3898,7 @@ func (x *ScheduleStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScheduleStats.ProtoReflect.Descriptor instead.
 func (*ScheduleStats) Descriptor() ([]byte, []int) {
-	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{35}
+	return file_loom_v1_orchestration_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *ScheduleStats) GetTotalExecutions() int32 {
@@ -3840,13 +3961,15 @@ const file_loom_v1_orchestration_proto_rawDesc = "" +
 	"\vworkflow_id\x18\n" +
 	" \x01(\tR\n" +
 	"workflowIdB\t\n" +
-	"\apattern\"\xc7\x01\n" +
+	"\apattern\"\x81\x02\n" +
 	"\rDebatePattern\x12\x14\n" +
 	"\x05topic\x18\x01 \x01(\tR\x05topic\x12\x1b\n" +
 	"\tagent_ids\x18\x02 \x03(\tR\bagentIds\x12\x16\n" +
-	"\x06rounds\x18\x03 \x01(\x05R\x06rounds\x12=\n" +
-	"\x0emerge_strategy\x18\x04 \x01(\x0e2\x16.loom.v1.MergeStrategyR\rmergeStrategy\x12,\n" +
-	"\x12moderator_agent_id\x18\x05 \x01(\tR\x10moderatorAgentId\"\xab\x02\n" +
+	"\x06rounds\x18\x03 \x01(\x05R\x06rounds\x12A\n" +
+	"\x0emerge_strategy\x18\x04 \x01(\x0e2\x16.loom.v1.MergeStrategyB\x02\x18\x01R\rmergeStrategy\x12,\n" +
+	"\x12moderator_agent_id\x18\x05 \x01(\tR\x10moderatorAgentId\x124\n" +
+	"\vjoin_policy\x18\x06 \x01(\v2\x13.loom.v1.JoinPolicyR\n" +
+	"joinPolicy\"\xab\x02\n" +
 	"\x0fForkJoinPattern\x12\x16\n" +
 	"\x06prompt\x18\x01 \x01(\tR\x06prompt\x12\x1b\n" +
 	"\tagent_ids\x18\x02 \x03(\tR\bagentIds\x12=\n" +
@@ -3861,11 +3984,16 @@ const file_loom_v1_orchestration_proto_rawDesc = "" +
 	"\x0fprompt_template\x18\x02 \x01(\tR\x0epromptTemplate\x12(\n" +
 	"\x10max_branch_bytes\x18\x03 \x01(\x05R\x0emaxBranchBytes\x12(\n" +
 	"\x10max_input_tokens\x18\x04 \x01(\x05R\x0emaxInputTokens\x12J\n" +
-	"\x11overflow_strategy\x18\x05 \x01(\x0e2\x1d.loom.v1.JoinOverflowStrategyR\x10overflowStrategy\"\x94\x01\n" +
+	"\x11overflow_strategy\x18\x05 \x01(\x0e2\x1d.loom.v1.JoinOverflowStrategyR\x10overflowStrategy\"\xad\x01\n" +
+	"\rHistoryPolicy\x12&\n" +
+	"\x0fmax_entry_bytes\x18\x01 \x01(\x05R\rmaxEntryBytes\x12(\n" +
+	"\x10max_input_tokens\x18\x02 \x01(\x05R\x0emaxInputTokens\x12J\n" +
+	"\x11overflow_strategy\x18\x03 \x01(\x0e2\x1d.loom.v1.JoinOverflowStrategyR\x10overflowStrategy\"\xd3\x01\n" +
 	"\x0fPipelinePattern\x12%\n" +
 	"\x0einitial_prompt\x18\x01 \x01(\tR\rinitialPrompt\x12.\n" +
 	"\x06stages\x18\x02 \x03(\v2\x16.loom.v1.PipelineStageR\x06stages\x12*\n" +
-	"\x11pass_full_history\x18\x03 \x01(\bR\x0fpassFullHistory\"\x92\x03\n" +
+	"\x11pass_full_history\x18\x03 \x01(\bR\x0fpassFullHistory\x12=\n" +
+	"\x0ehistory_policy\x18\x04 \x01(\v2\x16.loom.v1.HistoryPolicyR\rhistoryPolicy\"\x92\x03\n" +
 	"\rPipelineStage\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12'\n" +
 	"\x0fprompt_template\x18\x02 \x01(\tR\x0epromptTemplate\x12+\n" +
@@ -4178,7 +4306,7 @@ func file_loom_v1_orchestration_proto_rawDescGZIP() []byte {
 }
 
 var file_loom_v1_orchestration_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_loom_v1_orchestration_proto_msgTypes = make([]protoimpl.MessageInfo, 49)
+var file_loom_v1_orchestration_proto_msgTypes = make([]protoimpl.MessageInfo, 50)
 var file_loom_v1_orchestration_proto_goTypes = []any{
 	(JoinOverflowStrategy)(0),        // 0: loom.v1.JoinOverflowStrategy
 	(GateTimeoutAction)(0),           // 1: loom.v1.GateTimeoutAction
@@ -4189,138 +4317,142 @@ var file_loom_v1_orchestration_proto_goTypes = []any{
 	(*DebatePattern)(nil),            // 6: loom.v1.DebatePattern
 	(*ForkJoinPattern)(nil),          // 7: loom.v1.ForkJoinPattern
 	(*JoinPolicy)(nil),               // 8: loom.v1.JoinPolicy
-	(*PipelinePattern)(nil),          // 9: loom.v1.PipelinePattern
-	(*PipelineStage)(nil),            // 10: loom.v1.PipelineStage
-	(*HITLGate)(nil),                 // 11: loom.v1.HITLGate
-	(*HITLGateRequest)(nil),          // 12: loom.v1.HITLGateRequest
-	(*GateDecision)(nil),             // 13: loom.v1.GateDecision
-	(*WorkflowCheckpoint)(nil),       // 14: loom.v1.WorkflowCheckpoint
-	(*CheckpointStageSnapshot)(nil),  // 15: loom.v1.CheckpointStageSnapshot
-	(*CheckpointMemoryEntry)(nil),    // 16: loom.v1.CheckpointMemoryEntry
-	(*IterativeWorkflowPattern)(nil), // 17: loom.v1.IterativeWorkflowPattern
-	(*RestartPolicy)(nil),            // 18: loom.v1.RestartPolicy
-	(*RestartRequest)(nil),           // 19: loom.v1.RestartRequest
-	(*RestartResponse)(nil),          // 20: loom.v1.RestartResponse
-	(*ParallelPattern)(nil),          // 21: loom.v1.ParallelPattern
-	(*AgentTask)(nil),                // 22: loom.v1.AgentTask
-	(*LevelingRung)(nil),             // 23: loom.v1.LevelingRung
-	(*LevelingTierPolicy)(nil),       // 24: loom.v1.LevelingTierPolicy
-	(*LevelingPolicy)(nil),           // 25: loom.v1.LevelingPolicy
-	(*ConditionalPattern)(nil),       // 26: loom.v1.ConditionalPattern
-	(*WorkflowResult)(nil),           // 27: loom.v1.WorkflowResult
-	(*DebateResult)(nil),             // 28: loom.v1.DebateResult
-	(*AgentResult)(nil),              // 29: loom.v1.AgentResult
-	(*AgentExecutionCost)(nil),       // 30: loom.v1.AgentExecutionCost
-	(*WorkflowCost)(nil),             // 31: loom.v1.WorkflowCost
-	(*WorkflowExecution)(nil),        // 32: loom.v1.WorkflowExecution
-	(*ExecuteWorkflowRequest)(nil),   // 33: loom.v1.ExecuteWorkflowRequest
-	(*WorkflowSummary)(nil),          // 34: loom.v1.WorkflowSummary
-	(*ListWorkflowsRequest)(nil),     // 35: loom.v1.ListWorkflowsRequest
-	(*ListWorkflowsResponse)(nil),    // 36: loom.v1.ListWorkflowsResponse
-	(*ExecuteWorkflowResponse)(nil),  // 37: loom.v1.ExecuteWorkflowResponse
-	(*ScheduleConfig)(nil),           // 38: loom.v1.ScheduleConfig
-	(*ScheduledWorkflow)(nil),        // 39: loom.v1.ScheduledWorkflow
-	(*ScheduleStats)(nil),            // 40: loom.v1.ScheduleStats
-	nil,                              // 41: loom.v1.WorkflowCheckpoint.ModelsUsedEntry
-	nil,                              // 42: loom.v1.WorkflowCheckpoint.GateRevisionCountsEntry
-	nil,                              // 43: loom.v1.CheckpointMemoryEntry.MetadataEntry
-	nil,                              // 44: loom.v1.RestartRequest.ParametersEntry
-	nil,                              // 45: loom.v1.AgentTask.MetadataEntry
-	nil,                              // 46: loom.v1.LevelingPolicy.TierPoliciesEntry
-	nil,                              // 47: loom.v1.ConditionalPattern.BranchesEntry
-	nil,                              // 48: loom.v1.WorkflowResult.MetadataEntry
-	nil,                              // 49: loom.v1.WorkflowResult.ModelsUsedEntry
-	nil,                              // 50: loom.v1.AgentResult.MetadataEntry
-	nil,                              // 51: loom.v1.WorkflowCost.AgentCostsUsdEntry
-	nil,                              // 52: loom.v1.ExecuteWorkflowRequest.VariablesEntry
-	nil,                              // 53: loom.v1.ScheduleConfig.VariablesEntry
-	(*SwarmPattern)(nil),             // 54: loom.v1.SwarmPattern
-	(*PairProgrammingPattern)(nil),   // 55: loom.v1.PairProgrammingPattern
-	(*TeacherStudentPattern)(nil),    // 56: loom.v1.TeacherStudentPattern
-	(*OutputPolicy)(nil),             // 57: loom.v1.OutputPolicy
-	(*OutputRetryPolicy)(nil),        // 58: loom.v1.OutputRetryPolicy
-	(LLMRole)(0),                     // 59: loom.v1.LLMRole
-	(*SwarmResult)(nil),              // 60: loom.v1.SwarmResult
-	(*PairProgrammingResult)(nil),    // 61: loom.v1.PairProgrammingResult
-	(*TeacherStudentResult)(nil),     // 62: loom.v1.TeacherStudentResult
-	(*CollaborationMetrics)(nil),     // 63: loom.v1.CollaborationMetrics
-	(*DebateRound)(nil),              // 64: loom.v1.DebateRound
+	(*HistoryPolicy)(nil),            // 9: loom.v1.HistoryPolicy
+	(*PipelinePattern)(nil),          // 10: loom.v1.PipelinePattern
+	(*PipelineStage)(nil),            // 11: loom.v1.PipelineStage
+	(*HITLGate)(nil),                 // 12: loom.v1.HITLGate
+	(*HITLGateRequest)(nil),          // 13: loom.v1.HITLGateRequest
+	(*GateDecision)(nil),             // 14: loom.v1.GateDecision
+	(*WorkflowCheckpoint)(nil),       // 15: loom.v1.WorkflowCheckpoint
+	(*CheckpointStageSnapshot)(nil),  // 16: loom.v1.CheckpointStageSnapshot
+	(*CheckpointMemoryEntry)(nil),    // 17: loom.v1.CheckpointMemoryEntry
+	(*IterativeWorkflowPattern)(nil), // 18: loom.v1.IterativeWorkflowPattern
+	(*RestartPolicy)(nil),            // 19: loom.v1.RestartPolicy
+	(*RestartRequest)(nil),           // 20: loom.v1.RestartRequest
+	(*RestartResponse)(nil),          // 21: loom.v1.RestartResponse
+	(*ParallelPattern)(nil),          // 22: loom.v1.ParallelPattern
+	(*AgentTask)(nil),                // 23: loom.v1.AgentTask
+	(*LevelingRung)(nil),             // 24: loom.v1.LevelingRung
+	(*LevelingTierPolicy)(nil),       // 25: loom.v1.LevelingTierPolicy
+	(*LevelingPolicy)(nil),           // 26: loom.v1.LevelingPolicy
+	(*ConditionalPattern)(nil),       // 27: loom.v1.ConditionalPattern
+	(*WorkflowResult)(nil),           // 28: loom.v1.WorkflowResult
+	(*DebateResult)(nil),             // 29: loom.v1.DebateResult
+	(*AgentResult)(nil),              // 30: loom.v1.AgentResult
+	(*AgentExecutionCost)(nil),       // 31: loom.v1.AgentExecutionCost
+	(*WorkflowCost)(nil),             // 32: loom.v1.WorkflowCost
+	(*WorkflowExecution)(nil),        // 33: loom.v1.WorkflowExecution
+	(*ExecuteWorkflowRequest)(nil),   // 34: loom.v1.ExecuteWorkflowRequest
+	(*WorkflowSummary)(nil),          // 35: loom.v1.WorkflowSummary
+	(*ListWorkflowsRequest)(nil),     // 36: loom.v1.ListWorkflowsRequest
+	(*ListWorkflowsResponse)(nil),    // 37: loom.v1.ListWorkflowsResponse
+	(*ExecuteWorkflowResponse)(nil),  // 38: loom.v1.ExecuteWorkflowResponse
+	(*ScheduleConfig)(nil),           // 39: loom.v1.ScheduleConfig
+	(*ScheduledWorkflow)(nil),        // 40: loom.v1.ScheduledWorkflow
+	(*ScheduleStats)(nil),            // 41: loom.v1.ScheduleStats
+	nil,                              // 42: loom.v1.WorkflowCheckpoint.ModelsUsedEntry
+	nil,                              // 43: loom.v1.WorkflowCheckpoint.GateRevisionCountsEntry
+	nil,                              // 44: loom.v1.CheckpointMemoryEntry.MetadataEntry
+	nil,                              // 45: loom.v1.RestartRequest.ParametersEntry
+	nil,                              // 46: loom.v1.AgentTask.MetadataEntry
+	nil,                              // 47: loom.v1.LevelingPolicy.TierPoliciesEntry
+	nil,                              // 48: loom.v1.ConditionalPattern.BranchesEntry
+	nil,                              // 49: loom.v1.WorkflowResult.MetadataEntry
+	nil,                              // 50: loom.v1.WorkflowResult.ModelsUsedEntry
+	nil,                              // 51: loom.v1.AgentResult.MetadataEntry
+	nil,                              // 52: loom.v1.WorkflowCost.AgentCostsUsdEntry
+	nil,                              // 53: loom.v1.ExecuteWorkflowRequest.VariablesEntry
+	nil,                              // 54: loom.v1.ScheduleConfig.VariablesEntry
+	(*SwarmPattern)(nil),             // 55: loom.v1.SwarmPattern
+	(*PairProgrammingPattern)(nil),   // 56: loom.v1.PairProgrammingPattern
+	(*TeacherStudentPattern)(nil),    // 57: loom.v1.TeacherStudentPattern
+	(*OutputPolicy)(nil),             // 58: loom.v1.OutputPolicy
+	(*OutputRetryPolicy)(nil),        // 59: loom.v1.OutputRetryPolicy
+	(LLMRole)(0),                     // 60: loom.v1.LLMRole
+	(*SwarmResult)(nil),              // 61: loom.v1.SwarmResult
+	(*PairProgrammingResult)(nil),    // 62: loom.v1.PairProgrammingResult
+	(*TeacherStudentResult)(nil),     // 63: loom.v1.TeacherStudentResult
+	(*CollaborationMetrics)(nil),     // 64: loom.v1.CollaborationMetrics
+	(*DebateRound)(nil),              // 65: loom.v1.DebateRound
 }
 var file_loom_v1_orchestration_proto_depIdxs = []int32{
 	6,  // 0: loom.v1.WorkflowPattern.debate:type_name -> loom.v1.DebatePattern
 	7,  // 1: loom.v1.WorkflowPattern.fork_join:type_name -> loom.v1.ForkJoinPattern
-	9,  // 2: loom.v1.WorkflowPattern.pipeline:type_name -> loom.v1.PipelinePattern
-	21, // 3: loom.v1.WorkflowPattern.parallel:type_name -> loom.v1.ParallelPattern
-	26, // 4: loom.v1.WorkflowPattern.conditional:type_name -> loom.v1.ConditionalPattern
-	54, // 5: loom.v1.WorkflowPattern.swarm:type_name -> loom.v1.SwarmPattern
-	55, // 6: loom.v1.WorkflowPattern.pair_programming:type_name -> loom.v1.PairProgrammingPattern
-	56, // 7: loom.v1.WorkflowPattern.teacher_student:type_name -> loom.v1.TeacherStudentPattern
-	17, // 8: loom.v1.WorkflowPattern.iterative:type_name -> loom.v1.IterativeWorkflowPattern
+	10, // 2: loom.v1.WorkflowPattern.pipeline:type_name -> loom.v1.PipelinePattern
+	22, // 3: loom.v1.WorkflowPattern.parallel:type_name -> loom.v1.ParallelPattern
+	27, // 4: loom.v1.WorkflowPattern.conditional:type_name -> loom.v1.ConditionalPattern
+	55, // 5: loom.v1.WorkflowPattern.swarm:type_name -> loom.v1.SwarmPattern
+	56, // 6: loom.v1.WorkflowPattern.pair_programming:type_name -> loom.v1.PairProgrammingPattern
+	57, // 7: loom.v1.WorkflowPattern.teacher_student:type_name -> loom.v1.TeacherStudentPattern
+	18, // 8: loom.v1.WorkflowPattern.iterative:type_name -> loom.v1.IterativeWorkflowPattern
 	3,  // 9: loom.v1.DebatePattern.merge_strategy:type_name -> loom.v1.MergeStrategy
-	3,  // 10: loom.v1.ForkJoinPattern.merge_strategy:type_name -> loom.v1.MergeStrategy
-	57, // 11: loom.v1.ForkJoinPattern.agent_output_policy:type_name -> loom.v1.OutputPolicy
-	8,  // 12: loom.v1.ForkJoinPattern.join_policy:type_name -> loom.v1.JoinPolicy
-	0,  // 13: loom.v1.JoinPolicy.overflow_strategy:type_name -> loom.v1.JoinOverflowStrategy
-	10, // 14: loom.v1.PipelinePattern.stages:type_name -> loom.v1.PipelineStage
-	58, // 15: loom.v1.PipelineStage.retry_policy:type_name -> loom.v1.OutputRetryPolicy
-	57, // 16: loom.v1.PipelineStage.output_policy:type_name -> loom.v1.OutputPolicy
-	11, // 17: loom.v1.PipelineStage.hitl_gate:type_name -> loom.v1.HITLGate
-	25, // 18: loom.v1.PipelineStage.leveling_policy:type_name -> loom.v1.LevelingPolicy
-	1,  // 19: loom.v1.HITLGate.on_timeout:type_name -> loom.v1.GateTimeoutAction
-	2,  // 20: loom.v1.GateDecision.action:type_name -> loom.v1.GateAction
-	15, // 21: loom.v1.WorkflowCheckpoint.stage_snapshots:type_name -> loom.v1.CheckpointStageSnapshot
-	29, // 22: loom.v1.WorkflowCheckpoint.all_results:type_name -> loom.v1.AgentResult
-	41, // 23: loom.v1.WorkflowCheckpoint.models_used:type_name -> loom.v1.WorkflowCheckpoint.ModelsUsedEntry
-	42, // 24: loom.v1.WorkflowCheckpoint.gate_revision_counts:type_name -> loom.v1.WorkflowCheckpoint.GateRevisionCountsEntry
-	12, // 25: loom.v1.WorkflowCheckpoint.pending_gate:type_name -> loom.v1.HITLGateRequest
-	16, // 26: loom.v1.WorkflowCheckpoint.shared_memory:type_name -> loom.v1.CheckpointMemoryEntry
-	43, // 27: loom.v1.CheckpointMemoryEntry.metadata:type_name -> loom.v1.CheckpointMemoryEntry.MetadataEntry
-	9,  // 28: loom.v1.IterativeWorkflowPattern.pipeline:type_name -> loom.v1.PipelinePattern
-	18, // 29: loom.v1.IterativeWorkflowPattern.restart_policy:type_name -> loom.v1.RestartPolicy
-	44, // 30: loom.v1.RestartRequest.parameters:type_name -> loom.v1.RestartRequest.ParametersEntry
-	22, // 31: loom.v1.ParallelPattern.tasks:type_name -> loom.v1.AgentTask
-	3,  // 32: loom.v1.ParallelPattern.merge_strategy:type_name -> loom.v1.MergeStrategy
-	8,  // 33: loom.v1.ParallelPattern.join_policy:type_name -> loom.v1.JoinPolicy
-	45, // 34: loom.v1.AgentTask.metadata:type_name -> loom.v1.AgentTask.MetadataEntry
-	57, // 35: loom.v1.AgentTask.output_policy:type_name -> loom.v1.OutputPolicy
-	25, // 36: loom.v1.AgentTask.leveling_policy:type_name -> loom.v1.LevelingPolicy
-	59, // 37: loom.v1.LevelingRung.role:type_name -> loom.v1.LLMRole
-	23, // 38: loom.v1.LevelingPolicy.ladder:type_name -> loom.v1.LevelingRung
-	46, // 39: loom.v1.LevelingPolicy.tier_policies:type_name -> loom.v1.LevelingPolicy.TierPoliciesEntry
-	47, // 40: loom.v1.ConditionalPattern.branches:type_name -> loom.v1.ConditionalPattern.BranchesEntry
-	5,  // 41: loom.v1.ConditionalPattern.default_branch:type_name -> loom.v1.WorkflowPattern
-	58, // 42: loom.v1.ConditionalPattern.retry_policy:type_name -> loom.v1.OutputRetryPolicy
-	29, // 43: loom.v1.WorkflowResult.agent_results:type_name -> loom.v1.AgentResult
-	48, // 44: loom.v1.WorkflowResult.metadata:type_name -> loom.v1.WorkflowResult.MetadataEntry
-	31, // 45: loom.v1.WorkflowResult.cost:type_name -> loom.v1.WorkflowCost
-	28, // 46: loom.v1.WorkflowResult.debate_result:type_name -> loom.v1.DebateResult
-	60, // 47: loom.v1.WorkflowResult.swarm_result:type_name -> loom.v1.SwarmResult
-	61, // 48: loom.v1.WorkflowResult.pair_programming_result:type_name -> loom.v1.PairProgrammingResult
-	62, // 49: loom.v1.WorkflowResult.teacher_student_result:type_name -> loom.v1.TeacherStudentResult
-	63, // 50: loom.v1.WorkflowResult.metrics:type_name -> loom.v1.CollaborationMetrics
-	49, // 51: loom.v1.WorkflowResult.models_used:type_name -> loom.v1.WorkflowResult.ModelsUsedEntry
-	64, // 52: loom.v1.DebateResult.rounds:type_name -> loom.v1.DebateRound
-	50, // 53: loom.v1.AgentResult.metadata:type_name -> loom.v1.AgentResult.MetadataEntry
-	30, // 54: loom.v1.AgentResult.cost:type_name -> loom.v1.AgentExecutionCost
-	51, // 55: loom.v1.WorkflowCost.agent_costs_usd:type_name -> loom.v1.WorkflowCost.AgentCostsUsdEntry
-	5,  // 56: loom.v1.WorkflowExecution.pattern:type_name -> loom.v1.WorkflowPattern
-	27, // 57: loom.v1.WorkflowExecution.result:type_name -> loom.v1.WorkflowResult
-	5,  // 58: loom.v1.ExecuteWorkflowRequest.pattern:type_name -> loom.v1.WorkflowPattern
-	52, // 59: loom.v1.ExecuteWorkflowRequest.variables:type_name -> loom.v1.ExecuteWorkflowRequest.VariablesEntry
-	34, // 60: loom.v1.ListWorkflowsResponse.workflows:type_name -> loom.v1.WorkflowSummary
-	27, // 61: loom.v1.ExecuteWorkflowResponse.result:type_name -> loom.v1.WorkflowResult
-	53, // 62: loom.v1.ScheduleConfig.variables:type_name -> loom.v1.ScheduleConfig.VariablesEntry
-	4,  // 63: loom.v1.ScheduleConfig.session_mode:type_name -> loom.v1.ScheduledSessionMode
-	5,  // 64: loom.v1.ScheduledWorkflow.pattern:type_name -> loom.v1.WorkflowPattern
-	38, // 65: loom.v1.ScheduledWorkflow.schedule:type_name -> loom.v1.ScheduleConfig
-	40, // 66: loom.v1.ScheduledWorkflow.stats:type_name -> loom.v1.ScheduleStats
-	24, // 67: loom.v1.LevelingPolicy.TierPoliciesEntry.value:type_name -> loom.v1.LevelingTierPolicy
-	5,  // 68: loom.v1.ConditionalPattern.BranchesEntry.value:type_name -> loom.v1.WorkflowPattern
-	69, // [69:69] is the sub-list for method output_type
-	69, // [69:69] is the sub-list for method input_type
-	69, // [69:69] is the sub-list for extension type_name
-	69, // [69:69] is the sub-list for extension extendee
-	0,  // [0:69] is the sub-list for field type_name
+	8,  // 10: loom.v1.DebatePattern.join_policy:type_name -> loom.v1.JoinPolicy
+	3,  // 11: loom.v1.ForkJoinPattern.merge_strategy:type_name -> loom.v1.MergeStrategy
+	58, // 12: loom.v1.ForkJoinPattern.agent_output_policy:type_name -> loom.v1.OutputPolicy
+	8,  // 13: loom.v1.ForkJoinPattern.join_policy:type_name -> loom.v1.JoinPolicy
+	0,  // 14: loom.v1.JoinPolicy.overflow_strategy:type_name -> loom.v1.JoinOverflowStrategy
+	0,  // 15: loom.v1.HistoryPolicy.overflow_strategy:type_name -> loom.v1.JoinOverflowStrategy
+	11, // 16: loom.v1.PipelinePattern.stages:type_name -> loom.v1.PipelineStage
+	9,  // 17: loom.v1.PipelinePattern.history_policy:type_name -> loom.v1.HistoryPolicy
+	59, // 18: loom.v1.PipelineStage.retry_policy:type_name -> loom.v1.OutputRetryPolicy
+	58, // 19: loom.v1.PipelineStage.output_policy:type_name -> loom.v1.OutputPolicy
+	12, // 20: loom.v1.PipelineStage.hitl_gate:type_name -> loom.v1.HITLGate
+	26, // 21: loom.v1.PipelineStage.leveling_policy:type_name -> loom.v1.LevelingPolicy
+	1,  // 22: loom.v1.HITLGate.on_timeout:type_name -> loom.v1.GateTimeoutAction
+	2,  // 23: loom.v1.GateDecision.action:type_name -> loom.v1.GateAction
+	16, // 24: loom.v1.WorkflowCheckpoint.stage_snapshots:type_name -> loom.v1.CheckpointStageSnapshot
+	30, // 25: loom.v1.WorkflowCheckpoint.all_results:type_name -> loom.v1.AgentResult
+	42, // 26: loom.v1.WorkflowCheckpoint.models_used:type_name -> loom.v1.WorkflowCheckpoint.ModelsUsedEntry
+	43, // 27: loom.v1.WorkflowCheckpoint.gate_revision_counts:type_name -> loom.v1.WorkflowCheckpoint.GateRevisionCountsEntry
+	13, // 28: loom.v1.WorkflowCheckpoint.pending_gate:type_name -> loom.v1.HITLGateRequest
+	17, // 29: loom.v1.WorkflowCheckpoint.shared_memory:type_name -> loom.v1.CheckpointMemoryEntry
+	44, // 30: loom.v1.CheckpointMemoryEntry.metadata:type_name -> loom.v1.CheckpointMemoryEntry.MetadataEntry
+	10, // 31: loom.v1.IterativeWorkflowPattern.pipeline:type_name -> loom.v1.PipelinePattern
+	19, // 32: loom.v1.IterativeWorkflowPattern.restart_policy:type_name -> loom.v1.RestartPolicy
+	45, // 33: loom.v1.RestartRequest.parameters:type_name -> loom.v1.RestartRequest.ParametersEntry
+	23, // 34: loom.v1.ParallelPattern.tasks:type_name -> loom.v1.AgentTask
+	3,  // 35: loom.v1.ParallelPattern.merge_strategy:type_name -> loom.v1.MergeStrategy
+	8,  // 36: loom.v1.ParallelPattern.join_policy:type_name -> loom.v1.JoinPolicy
+	46, // 37: loom.v1.AgentTask.metadata:type_name -> loom.v1.AgentTask.MetadataEntry
+	58, // 38: loom.v1.AgentTask.output_policy:type_name -> loom.v1.OutputPolicy
+	26, // 39: loom.v1.AgentTask.leveling_policy:type_name -> loom.v1.LevelingPolicy
+	60, // 40: loom.v1.LevelingRung.role:type_name -> loom.v1.LLMRole
+	24, // 41: loom.v1.LevelingPolicy.ladder:type_name -> loom.v1.LevelingRung
+	47, // 42: loom.v1.LevelingPolicy.tier_policies:type_name -> loom.v1.LevelingPolicy.TierPoliciesEntry
+	48, // 43: loom.v1.ConditionalPattern.branches:type_name -> loom.v1.ConditionalPattern.BranchesEntry
+	5,  // 44: loom.v1.ConditionalPattern.default_branch:type_name -> loom.v1.WorkflowPattern
+	59, // 45: loom.v1.ConditionalPattern.retry_policy:type_name -> loom.v1.OutputRetryPolicy
+	30, // 46: loom.v1.WorkflowResult.agent_results:type_name -> loom.v1.AgentResult
+	49, // 47: loom.v1.WorkflowResult.metadata:type_name -> loom.v1.WorkflowResult.MetadataEntry
+	32, // 48: loom.v1.WorkflowResult.cost:type_name -> loom.v1.WorkflowCost
+	29, // 49: loom.v1.WorkflowResult.debate_result:type_name -> loom.v1.DebateResult
+	61, // 50: loom.v1.WorkflowResult.swarm_result:type_name -> loom.v1.SwarmResult
+	62, // 51: loom.v1.WorkflowResult.pair_programming_result:type_name -> loom.v1.PairProgrammingResult
+	63, // 52: loom.v1.WorkflowResult.teacher_student_result:type_name -> loom.v1.TeacherStudentResult
+	64, // 53: loom.v1.WorkflowResult.metrics:type_name -> loom.v1.CollaborationMetrics
+	50, // 54: loom.v1.WorkflowResult.models_used:type_name -> loom.v1.WorkflowResult.ModelsUsedEntry
+	65, // 55: loom.v1.DebateResult.rounds:type_name -> loom.v1.DebateRound
+	51, // 56: loom.v1.AgentResult.metadata:type_name -> loom.v1.AgentResult.MetadataEntry
+	31, // 57: loom.v1.AgentResult.cost:type_name -> loom.v1.AgentExecutionCost
+	52, // 58: loom.v1.WorkflowCost.agent_costs_usd:type_name -> loom.v1.WorkflowCost.AgentCostsUsdEntry
+	5,  // 59: loom.v1.WorkflowExecution.pattern:type_name -> loom.v1.WorkflowPattern
+	28, // 60: loom.v1.WorkflowExecution.result:type_name -> loom.v1.WorkflowResult
+	5,  // 61: loom.v1.ExecuteWorkflowRequest.pattern:type_name -> loom.v1.WorkflowPattern
+	53, // 62: loom.v1.ExecuteWorkflowRequest.variables:type_name -> loom.v1.ExecuteWorkflowRequest.VariablesEntry
+	35, // 63: loom.v1.ListWorkflowsResponse.workflows:type_name -> loom.v1.WorkflowSummary
+	28, // 64: loom.v1.ExecuteWorkflowResponse.result:type_name -> loom.v1.WorkflowResult
+	54, // 65: loom.v1.ScheduleConfig.variables:type_name -> loom.v1.ScheduleConfig.VariablesEntry
+	4,  // 66: loom.v1.ScheduleConfig.session_mode:type_name -> loom.v1.ScheduledSessionMode
+	5,  // 67: loom.v1.ScheduledWorkflow.pattern:type_name -> loom.v1.WorkflowPattern
+	39, // 68: loom.v1.ScheduledWorkflow.schedule:type_name -> loom.v1.ScheduleConfig
+	41, // 69: loom.v1.ScheduledWorkflow.stats:type_name -> loom.v1.ScheduleStats
+	25, // 70: loom.v1.LevelingPolicy.TierPoliciesEntry.value:type_name -> loom.v1.LevelingTierPolicy
+	5,  // 71: loom.v1.ConditionalPattern.BranchesEntry.value:type_name -> loom.v1.WorkflowPattern
+	72, // [72:72] is the sub-list for method output_type
+	72, // [72:72] is the sub-list for method input_type
+	72, // [72:72] is the sub-list for extension type_name
+	72, // [72:72] is the sub-list for extension extendee
+	0,  // [0:72] is the sub-list for field type_name
 }
 
 func init() { file_loom_v1_orchestration_proto_init() }
@@ -4341,8 +4473,8 @@ func file_loom_v1_orchestration_proto_init() {
 		(*WorkflowPattern_TeacherStudent)(nil),
 		(*WorkflowPattern_Iterative)(nil),
 	}
-	file_loom_v1_orchestration_proto_msgTypes[20].OneofWrappers = []any{}
-	file_loom_v1_orchestration_proto_msgTypes[22].OneofWrappers = []any{
+	file_loom_v1_orchestration_proto_msgTypes[21].OneofWrappers = []any{}
+	file_loom_v1_orchestration_proto_msgTypes[23].OneofWrappers = []any{
 		(*WorkflowResult_DebateResult)(nil),
 		(*WorkflowResult_SwarmResult)(nil),
 		(*WorkflowResult_PairProgrammingResult)(nil),
@@ -4354,7 +4486,7 @@ func file_loom_v1_orchestration_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_loom_v1_orchestration_proto_rawDesc), len(file_loom_v1_orchestration_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   49,
+			NumMessages:   50,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

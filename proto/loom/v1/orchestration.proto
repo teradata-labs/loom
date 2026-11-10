@@ -48,11 +48,27 @@ message DebatePattern {
   // Number of debate rounds
   int32 rounds = 3;
 
-  // Strategy for merging final outputs
-  MergeStrategy merge_strategy = 4;
+  // Deprecated: the debate engine never read this field. The final output
+  // is the moderator's synthesis when moderator_agent_id is set, else the
+  // last round's heuristic synthesis line. The YAML loader rejects an
+  // explicit value. Kept for wire compatibility only.
+  MergeStrategy merge_strategy = 4 [deprecated = true];
 
   // Optional: Moderator agent ID to guide debate
   string moderator_agent_id = 5;
+
+  // Bounds the two hand-offs that carry other agents' full output into one
+  // prompt: each agent's "respond to the others" prompt in rounds after the
+  // first, and the moderator's final synthesis prompt. Full positions are
+  // stored in SharedMemory (key "<workflow-id>-round-R-position-<agent-id>")
+  // when the orchestrator has a store; the inline copy is capped per
+  // position and budgeted as a whole against the receiving agent's context
+  // window. agent_id must be empty: the moderator is the join agent, and
+  // the responding agent is the receiver of its own response prompt.
+  // prompt_template applies to the moderator synthesis only ({{prompt}} is
+  // the topic, {{branches}} the positions, {{branch_count}} their number).
+  // Unset: the pre-existing unbounded behaviour.
+  JoinPolicy join_policy = 6;
 }
 
 // ForkJoinPattern executes multiple agents in parallel on the same prompt,
@@ -95,7 +111,8 @@ message JoinPolicy {
   // tools (shared_memory_read among them when configured), context relief
   // and the provider context-too-long backstop. Must be registered with
   // the orchestrator; it may also be one of the branch agents. The agent
-  // runs under session "<workflow-id>-join-<agent-id>".
+  // runs under session "<workflow-id>-join-<agent-id>". On DebatePattern
+  // this must be empty (moderator_agent_id is the join agent).
   string agent_id = 1;
 
   // Prompt template for the join. Placeholders:
@@ -148,6 +165,38 @@ enum JoinOverflowStrategy {
   JOIN_OVERFLOW_STRATEGY_FAIL = 3;
 }
 
+// HistoryPolicy bounds what a pipeline stage receives through {{history}}
+// and pass_full_history: every prior stage's output rendered into one
+// prompt.
+//
+// Regardless of this policy, each history entry is the same inline copy the
+// next stage gets as {{previous}}: when the orchestrator has a SharedMemory
+// store the full output is under "stage-N-output" and the entry is cut to
+// MaxStageOutputBytes (8192) with a notice naming that key; without a store
+// the entry is the full output. Setting a HistoryPolicy adds a whole-prompt
+// token budget enforced with overflow_strategy, and lets the per-entry cap
+// be tuned.
+message HistoryPolicy {
+  // Per-entry cap on the bytes rendered inline for each prior stage. 0 =
+  // 8192 (MaxStageOutputBytes). Applies only when the full output is in
+  // SharedMemory; without a store entries are never cut. Negative is
+  // rejected at load.
+  int32 max_entry_bytes = 1;
+
+  // Token budget for the whole rendered stage prompt (template, header and
+  // every history entry). 0 = half of the stage agent's usable context
+  // window (max_context_tokens less reserved_output_tokens). Negative is
+  // rejected at load.
+  int32 max_input_tokens = 2;
+
+  // What to do when the rendered prompt exceeds max_input_tokens. The
+  // overflow strategies act on the history entries only; {{previous}} and
+  // the stage's own template text are never cut. UNSPECIFIED behaves as
+  // PRE_REDUCE, which reduces oversize entries with the stage agent's
+  // compressor-role LLM (its main LLM when none is configured).
+  JoinOverflowStrategy overflow_strategy = 3;
+}
+
 // PipelinePattern executes agents sequentially where each agent's output
 // becomes input for the next agent.
 message PipelinePattern {
@@ -159,6 +208,11 @@ message PipelinePattern {
 
   // Whether to pass full history to each stage (default: false, only previous)
   bool pass_full_history = 3;
+
+  // Bounds {{history}} / pass_full_history with a whole-prompt token budget.
+  // Unset: entries are still capped per stage like {{previous}} (see
+  // HistoryPolicy), but no budget check runs and no extra LLM calls are made.
+  HistoryPolicy history_policy = 4;
 }
 
 // PipelineStage represents a single stage in a pipeline.

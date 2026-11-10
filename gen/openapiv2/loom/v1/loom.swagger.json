@@ -5226,11 +5226,15 @@
         },
         "mergeStrategy": {
           "$ref": "#/definitions/v1MergeStrategy",
-          "title": "Strategy for merging final outputs"
+          "description": "Deprecated: the debate engine never read this field. The final output\nis the moderator's synthesis when moderator_agent_id is set, else the\nlast round's heuristic synthesis line. The YAML loader rejects an\nexplicit value. Kept for wire compatibility only."
         },
         "moderatorAgentId": {
           "type": "string",
           "title": "Optional: Moderator agent ID to guide debate"
+        },
+        "joinPolicy": {
+          "$ref": "#/definitions/v1JoinPolicy",
+          "description": "Bounds the two hand-offs that carry other agents' full output into one\nprompt: each agent's \"respond to the others\" prompt in rounds after the\nfirst, and the moderator's final synthesis prompt. Full positions are\nstored in SharedMemory (key \"\u003cworkflow-id\u003e-round-R-position-\u003cagent-id\u003e\")\nwhen the orchestrator has a store; the inline copy is capped per\nposition and budgeted as a whole against the receiving agent's context\nwindow. agent_id must be empty: the moderator is the join agent, and\nthe responding agent is the receiver of its own response prompt.\nprompt_template applies to the moderator synthesis only ({{prompt}} is\nthe topic, {{branches}} the positions, {{branch_count}} their number).\nUnset: the pre-existing unbounded behaviour."
         }
       },
       "description": "DebatePattern orchestrates multiple agents to debate a topic and reach consensus.\nAgents see each other's responses from previous rounds and build on them."
@@ -6120,6 +6124,26 @@
       },
       "description": "HealthStatus returns system health."
     },
+    "v1HistoryPolicy": {
+      "type": "object",
+      "properties": {
+        "maxEntryBytes": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Per-entry cap on the bytes rendered inline for each prior stage. 0 =\n8192 (MaxStageOutputBytes). Applies only when the full output is in\nSharedMemory; without a store entries are never cut. Negative is\nrejected at load."
+        },
+        "maxInputTokens": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Token budget for the whole rendered stage prompt (template, header and\nevery history entry). 0 = half of the stage agent's usable context\nwindow (max_context_tokens less reserved_output_tokens). Negative is\nrejected at load."
+        },
+        "overflowStrategy": {
+          "$ref": "#/definitions/v1JoinOverflowStrategy",
+          "description": "What to do when the rendered prompt exceeds max_input_tokens. The\noverflow strategies act on the history entries only; {{previous}} and\nthe stage's own template text are never cut. UNSPECIFIED behaves as\nPRE_REDUCE, which reduces oversize entries with the stage agent's\ncompressor-role LLM (its main LLM when none is configured)."
+        }
+      },
+      "description": "HistoryPolicy bounds what a pipeline stage receives through {{history}}\nand pass_full_history: every prior stage's output rendered into one\nprompt.\n\nRegardless of this policy, each history entry is the same inline copy the\nnext stage gets as {{previous}}: when the orchestrator has a SharedMemory\nstore the full output is under \"stage-N-output\" and the entry is cut to\nMaxStageOutputBytes (8192) with a notice naming that key; without a store\nthe entry is the full output. Setting a HistoryPolicy adds a whole-prompt\ntoken budget enforced with overflow_strategy, and lets the per-entry cap\nbe tuned."
+    },
     "v1HygieneConfig": {
       "type": "object",
       "properties": {
@@ -6252,7 +6276,7 @@
       "properties": {
         "agentId": {
           "type": "string",
-          "description": "Agent that performs the join. When set, the join runs through this\nagent's conversation loop (agent.Chat) instead of a single raw call to\nthe orchestrator merge LLM: the agent gets its own system prompt and\ntools (shared_memory_read among them when configured), context relief\nand the provider context-too-long backstop. Must be registered with\nthe orchestrator; it may also be one of the branch agents. The agent\nruns under session \"\u003cworkflow-id\u003e-join-\u003cagent-id\u003e\"."
+          "description": "Agent that performs the join. When set, the join runs through this\nagent's conversation loop (agent.Chat) instead of a single raw call to\nthe orchestrator merge LLM: the agent gets its own system prompt and\ntools (shared_memory_read among them when configured), context relief\nand the provider context-too-long backstop. Must be registered with\nthe orchestrator; it may also be one of the branch agents. The agent\nruns under session \"\u003cworkflow-id\u003e-join-\u003cagent-id\u003e\". On DebatePattern\nthis must be empty (moderator_agent_id is the join agent)."
         },
         "promptTemplate": {
           "type": "string",
@@ -7842,6 +7866,10 @@
         "passFullHistory": {
           "type": "boolean",
           "title": "Whether to pass full history to each stage (default: false, only previous)"
+        },
+        "historyPolicy": {
+          "$ref": "#/definitions/v1HistoryPolicy",
+          "description": "Bounds {{history}} / pass_full_history with a whole-prompt token budget.\nUnset: entries are still capped per stage like {{previous}} (see\nHistoryPolicy), but no budget check runs and no extra LLM calls are made."
         }
       },
       "description": "PipelinePattern executes agents sequentially where each agent's output\nbecomes input for the next agent."
