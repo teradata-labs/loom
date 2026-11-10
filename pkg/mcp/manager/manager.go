@@ -170,6 +170,8 @@ func (m *Manager) startServer(ctx context.Context, name string, config ServerCon
 			Headers:          config.Headers,
 			EnableSessions:   config.EnableSessions,
 			EnableResumption: config.EnableResumption,
+			// Zero selects transport.DefaultMaxResponseBytes (16 MiB).
+			MaxResponseBytes: config.MaxResponseBytes,
 			Logger:           m.logger.With(zap.String("server", name)),
 		})
 	case "http", "sse":
