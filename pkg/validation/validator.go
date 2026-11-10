@@ -427,19 +427,23 @@ func validateOrchestrationSchema(spec map[string]interface{}, patternType string
 	validFields := map[string][]string{
 		"debate": {
 			"pattern", "type", // Pattern identifier
-			"topic", "agent_ids", "rounds", "merge_strategy", "moderator_agent_id", // Debate-specific
+			"topic", "agent_ids", "rounds", "moderator_agent_id", // Debate-specific
+			"join", // Bounded hand-off for response and synthesis prompts (parsed by convertDebatePattern)
 		},
 		"fork-join": {
 			"pattern", "type", // Pattern identifier
 			"prompt", "agent_ids", "merge_strategy", "timeout_seconds", // Fork-join specific
+			"join", // Bounded hand-off / join agent (parsed by convertForkJoinPattern)
 		},
 		"pipeline": {
 			"pattern", "type", // Pattern identifier
 			"initial_prompt", "stages", "pass_full_history", // Pipeline specific
+			"history", // Bounded {{history}} hand-off (parsed by convertPipelinePattern)
 		},
 		"parallel": {
 			"pattern", "type", // Pattern identifier
 			"tasks", "merge_strategy", "timeout_seconds", // Parallel specific
+			"join", // Bounded hand-off / join agent (parsed by convertParallelPattern)
 		},
 		"conditional": {
 			"pattern", "type", // Pattern identifier
@@ -491,6 +495,10 @@ func validateOrchestrationSchema(spec map[string]interface{}, patternType string
 				suggestion = "Use 'type' or 'pattern' instead of 'workflow_type'"
 			case "aggregation":
 				suggestion = "Use 'merge_strategy' instead of 'aggregation'"
+			case "merge_strategy":
+				if patternType == "debate" {
+					suggestion = "Debate ignores 'merge_strategy': the output is the moderator's synthesis (moderator_agent_id) or the last round's synthesis line; remove it, or bound the synthesis with 'join'"
+				}
 			}
 
 			if suggestion != "" {

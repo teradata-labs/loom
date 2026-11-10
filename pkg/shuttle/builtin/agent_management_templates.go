@@ -425,7 +425,11 @@ func buildWorkflowYAMLFromTemplate(workflowName string, tmpl *loomv1.WorkflowTem
 		spec["agent_ids"] = append([]string{}, agentNames...)
 		spec["topic"] = p.Debate.Topic
 		spec["rounds"] = p.Debate.Rounds
-		spec["merge_strategy"] = mergeStrategyName(p.Debate.MergeStrategy)
+		// Debate has no merge_strategy: the loader rejects it as dead
+		// configuration. A moderator, when set, writes the synthesis.
+		if p.Debate.ModeratorAgentId != "" {
+			spec["moderator_agent_id"] = p.Debate.ModeratorAgentId
+		}
 	case *loomv1.WorkflowPattern_Swarm:
 		spec["type"] = "swarm"
 		spec["agent_ids"] = append([]string{}, agentNames...)
