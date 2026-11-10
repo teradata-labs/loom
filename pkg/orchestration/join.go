@@ -21,13 +21,18 @@ import (
 	"go.uber.org/zap"
 )
 
-// The join step of a fan-out pattern (fork-join, parallel) hands every
-// branch output to one consumer. Without a JoinPolicy that hand-off is one
-// raw merge-LLM call with every branch inline, and it fails on the provider's
-// context limit once the branches are chatty enough, after every branch has
-// been paid for. This file is the bounded alternative: full outputs go to
-// SharedMemory, the inline copy is capped per branch and budgeted as a whole,
-// and the join may run through a real agent that can fetch any branch back.
+// A hand-off carries several agents' outputs into one prompt that a single
+// consumer receives: the join step of a fan-out pattern (fork-join,
+// parallel), a pipeline stage reading {{history}}, a debate agent answering
+// the other positions, the debate moderator writing the synthesis. Left
+// unbounded, that prompt grows with the producers' verbosity until the
+// provider refuses it, after every producer has been paid for.
+//
+// This file is the bounded hand-off: full outputs go to SharedMemory, the
+// inline copy is capped per entry and budgeted as a whole, and the consumer
+// may be a real agent that can fetch any entry back. The joiner type runs
+// the fan-out join end to end (run); pipeline history and the debate engine
+// use its store/cap/fit core (branchesFor, fit) with their own rendering.
 
 const (
 	// DefaultJoinBranchBytes is the per-branch inline cap applied when
@@ -35,19 +40,19 @@ const (
 	// hand-off (MaxStageOutputBytes).
 	DefaultJoinBranchBytes = MaxStageOutputBytes
 
-	// DefaultJoinInputBudgetPercent is the share of the join agent's usable
-	// context window (max_context_tokens less reserved output tokens) that
-	// the rendered join input may take when JoinPolicy.max_input_tokens is
+	// DefaultJoinInputBudgetPercent is the share of the receiving agent's
+	// usable context window (max_context_tokens less reserved output
+	// tokens) that the rendered hand-off may take when max_input_tokens is
 	// 0. The rest is left for the agent's system prompt, tool definitions
-	// and the tool calls it makes during the join.
+	// and the tool calls it makes during its turn.
 	DefaultJoinInputBudgetPercent = 50
 
-	// MinJoinBranchShareTokens is the smallest per-branch token share the
+	// MinJoinBranchShareTokens is the smallest per-entry token share the
 	// overflow strategies will work with. A budget that leaves less than
-	// this per branch is an error: a card that small carries nothing.
+	// this per entry is an error: a card that small carries nothing.
 	MinJoinBranchShareTokens = 64
 
-	// joinShareSafetyPercent discounts the computed per-branch share so the
+	// joinShareSafetyPercent discounts the computed per-entry share so the
 	// re-rendered input lands under the budget even though token counts are
 	// not exactly additive across concatenated sections.
 	joinShareSafetyPercent = 95
@@ -60,15 +65,21 @@ const (
 	joinTruncatedNoMemNotice = "[Branch output truncated: %d of %d bytes shown. SharedMemory is not configured, so the rest is not retrievable.]"
 	joinReducedNotice        = "[Branch output reduced from %d bytes by the compressor LLM. Full output in SharedMemory: shared_memory_read(namespace=\"workflow\", key=\"%s\")]"
 	joinReducedNoMemNotice   = "[Branch output reduced from %d bytes by the compressor LLM. SharedMemory is not configured, so the full text is not retrievable.]"
+
+	// Stage-style notices continue the pipeline's own wording
+	// (StageOutputTruncationNoticeTemplate) for history entries.
+	stageTruncatedNoMemNotice = "\n\n[OUTPUT TRUNCATED: %d of %d bytes shown - SharedMemory is not configured, so the rest is not retrievable]"
+	stageReducedNotice        = "\n\n[OUTPUT REDUCED from %d bytes by the compressor LLM - Full data stored in SharedMemory. Use shared_memory_read(namespace=\"workflow\", key=\"%s\") to fetch complete output]"
+	stageReducedNoMemNotice   = "\n\n[OUTPUT REDUCED from %d bytes by the compressor LLM - SharedMemory is not configured, so the full text is not retrievable]"
 )
 
-// ErrJoinInputOverBudget is returned when the rendered join input exceeds
-// JoinPolicy.max_input_tokens and overflow_strategy is FAIL, or when the
-// budget leaves fewer than MinJoinBranchShareTokens per branch so no
-// overflow strategy can make the input fit.
+// ErrJoinInputOverBudget is returned when the rendered hand-off exceeds
+// max_input_tokens and overflow_strategy is FAIL, or when the budget leaves
+// fewer than MinJoinBranchShareTokens per entry so no overflow strategy can
+// make the input fit.
 var ErrJoinInputOverBudget = errors.New("join input exceeds token budget")
 
-// joinBranchAction names what happened to a branch's inline copy.
+// joinBranchAction names what happened to an entry's inline copy.
 type joinBranchAction string
 
 const (
@@ -77,7 +88,30 @@ const (
 	joinBranchReduced   joinBranchAction = "reduced"
 )
 
-// joinBranch is one fan-out result as the join sees it.
+// joinNoticeStyle selects the wording of the notice an entry carries when
+// its inline copy is not the full text.
+type joinNoticeStyle int
+
+const (
+	// noticeStyleJoin: "[Branch output truncated: ...]", for fan-out joins
+	// and debate hand-offs. Rendered on its own line after the inline copy.
+	noticeStyleJoin joinNoticeStyle = iota
+	// noticeStyleStage: the pipeline stage wording ("\n\n[OUTPUT TRUNCATED
+	// - Full data stored in SharedMemory ...]"), appended to the inline
+	// copy, so a history entry reads exactly like {{previous}} does.
+	noticeStyleStage
+)
+
+// handoffEntry is one producer output as handed to the joiner.
+type handoffEntry struct {
+	index   int    // 1-based position in the hand-off
+	agentID string // producer
+	full    string
+	memKey  string // SharedMemory key holding full; "" when not stored
+	failed  bool   // an error result: rendered as is, never stored or cut
+}
+
+// joinBranch is one hand-off entry as the consumer sees it.
 type joinBranch struct {
 	index   int // 1-based, configured order
 	agentID string
@@ -100,14 +134,46 @@ type joinOutcome struct {
 	Metadata map[string]string
 }
 
-// joiner performs the join step of a fan-out pattern under a JoinPolicy.
+// handoffFit is a rendered hand-off brought within its budget: the prompt
+// to send, how it compares to the budget, what the overflow strategy did to
+// the entries and what that cost.
+type handoffFit struct {
+	Rendered    string
+	InputTokens int
+	Budget      int    // 0 when no budget applied
+	Overflow    string // none | pre_reduce | truncate
+	Usage       types.Usage
+	LLMCalls    int32
+	Stored      int // entries whose full text is in SharedMemory
+	Truncated   int // entries whose inline copy was cut
+	Reduced     int // entries replaced by an LLM-reduced card
+}
+
+// metadata renders the fit for result metadata and span attributes under
+// prefix (e.g. "join") with unit naming the entries (e.g. "branches").
+func (f *handoffFit) metadata(prefix, unit string) map[string]string {
+	return map[string]string{
+		prefix + ".input_tokens":           strconv.Itoa(f.InputTokens),
+		prefix + ".budget_tokens":          strconv.Itoa(f.Budget),
+		prefix + ".overflow":               f.Overflow,
+		prefix + "." + unit + "_stored":    strconv.Itoa(f.Stored),
+		prefix + "." + unit + "_truncated": strconv.Itoa(f.Truncated),
+		prefix + "." + unit + "_reduced":   strconv.Itoa(f.Reduced),
+	}
+}
+
+// joiner bounds a hand-off under a JoinPolicy and, for fan-out patterns,
+// performs the join step itself.
 type joiner struct {
 	orch       *Orchestrator
 	policy     *loomv1.JoinPolicy
 	strategy   loomv1.MergeStrategy
-	patternKey string // "fork-join" | "parallel": span naming
+	patternKey string // "fork-join" | "parallel" | "pipeline" | "debate": store metadata, logs
 	workflowID string
-	prompt     string // fan-out prompt; "" for parallel
+	prompt     string // the task the hand-off serves (fan-out prompt, debate topic); "" when none
+	scope      string // names this hand-off in reduce sessions and logs: "join", "stage-3-history", ...
+	storeType  string // SharedMemory metadata "type" for stored entries
+	notice     joinNoticeStyle
 	counter    *agent.TokenCounter
 }
 
@@ -119,6 +185,9 @@ func newJoiner(orch *Orchestrator, policy *loomv1.JoinPolicy, strategy loomv1.Me
 		patternKey: patternKey,
 		workflowID: workflowID,
 		prompt:     prompt,
+		scope:      "join",
+		storeType:  "branch_output",
+		notice:     noticeStyleJoin,
 		counter:    agent.GetTokenCounter(),
 	}
 }
@@ -157,79 +226,21 @@ func (j *joiner) run(ctx context.Context, results []*loomv1.AgentResult) (*joinO
 
 	branches := j.collectBranches(ctx, results)
 	tmpl := j.template()
-	budget := j.budget(joinAgent)
 	withHeader := joinAgent != nil
-	rendered := j.render(tmpl, branches, withHeader)
-	inputTokens := j.counter.CountTokens(rendered)
-
-	outcome := &joinOutcome{Metadata: map[string]string{}}
-	overflow := "none"
-
-	if budget > 0 && inputTokens > budget {
-		strategy := j.policy.OverflowStrategy
-		if strategy == loomv1.JoinOverflowStrategy_JOIN_OVERFLOW_STRATEGY_UNSPECIFIED {
-			strategy = loomv1.JoinOverflowStrategy_JOIN_OVERFLOW_STRATEGY_PRE_REDUCE
-		}
-		switch strategy {
-		case loomv1.JoinOverflowStrategy_JOIN_OVERFLOW_STRATEGY_FAIL:
-			return nil, fmt.Errorf("%w: %d tokens rendered for %d branches, budget %d; overflow_strategy is fail",
-				ErrJoinInputOverBudget, inputTokens, len(branches), budget)
-		case loomv1.JoinOverflowStrategy_JOIN_OVERFLOW_STRATEGY_TRUNCATE:
-			overflow = "truncate"
-			if err := j.fitByTruncation(branches, rendered, budget); err != nil {
-				return nil, err
-			}
-		case loomv1.JoinOverflowStrategy_JOIN_OVERFLOW_STRATEGY_PRE_REDUCE:
-			overflow = "pre_reduce"
-			usage, calls, err := j.fitByReduction(ctx, joinAgent, branches, rendered, budget)
-			if err != nil {
-				return nil, err
-			}
-			outcome.Usage = addUsage(outcome.Usage, usage)
-			outcome.LLMCalls += calls
-		default:
-			return nil, fmt.Errorf("unsupported join overflow strategy: %s", strategy)
-		}
-		rendered = j.render(tmpl, branches, withHeader)
-		inputTokens = j.counter.CountTokens(rendered)
-		if inputTokens > budget {
-			// The share discount should make this unreachable; if a
-			// tokenizer quirk gets here, say so rather than hide it.
-			j.orch.logger.Warn("Join input still over budget after overflow handling; sending anyway",
-				zap.String("workflow_id", j.workflowID),
-				zap.String("overflow", overflow),
-				zap.Int("input_tokens", inputTokens),
-				zap.Int("budget_tokens", budget))
-		} else {
-			j.orch.logger.Info("Join input bounded to budget",
-				zap.String("workflow_id", j.workflowID),
-				zap.String("overflow", overflow),
-				zap.Int("input_tokens", inputTokens),
-				zap.Int("budget_tokens", budget))
-		}
+	fit, err := j.fit(ctx, joinAgent, branches, j.budget(joinAgent), func(bs []joinBranch) string {
+		return j.render(tmpl, bs, withHeader)
+	})
+	if err != nil {
+		return nil, err
 	}
 
-	var stored, truncated, reduced int
-	for _, b := range branches {
-		if b.memKey != "" {
-			stored++
-		}
-		switch b.action {
-		case joinBranchTruncated:
-			truncated++
-		case joinBranchReduced:
-			reduced++
-		case joinBranchFull:
-		}
+	outcome := &joinOutcome{
+		Usage:    fit.Usage,
+		LLMCalls: fit.LLMCalls,
+		Metadata: fit.metadata("join", "branches"),
 	}
-	outcome.Metadata["join.input_tokens"] = strconv.Itoa(inputTokens)
-	outcome.Metadata["join.budget_tokens"] = strconv.Itoa(budget)
-	outcome.Metadata["join.overflow"] = overflow
-	outcome.Metadata["join.branches_stored"] = strconv.Itoa(stored)
-	outcome.Metadata["join.branches_truncated"] = strconv.Itoa(truncated)
-	outcome.Metadata["join.branches_reduced"] = strconv.Itoa(reduced)
 
-	output, model, usage, calls, err := j.execute(ctx, joinAgent, rendered)
+	output, model, usage, calls, err := j.execute(ctx, joinAgent, fit.Rendered)
 	if err != nil {
 		return nil, err
 	}
@@ -247,39 +258,133 @@ func (j *joiner) run(ctx context.Context, results []*loomv1.AgentResult) (*joinO
 	return outcome, nil
 }
 
+// fit renders the hand-off and, when a budget applies and the rendering
+// exceeds it, brings the entries under budget with the policy's overflow
+// strategy and renders again. receiver is the agent that will get the
+// prompt; its compressor-role LLM does the pre-reduce (the orchestrator
+// merge LLM when receiver is nil). budget 0 means no check.
+func (j *joiner) fit(ctx context.Context, receiver *agent.Agent, branches []joinBranch, budget int, render func([]joinBranch) string) (*handoffFit, error) {
+	fit := &handoffFit{Budget: budget, Overflow: "none"}
+	fit.Rendered = render(branches)
+	fit.InputTokens = j.counter.CountTokens(fit.Rendered)
+
+	if budget > 0 && fit.InputTokens > budget {
+		strategy := j.policy.OverflowStrategy
+		if strategy == loomv1.JoinOverflowStrategy_JOIN_OVERFLOW_STRATEGY_UNSPECIFIED {
+			strategy = loomv1.JoinOverflowStrategy_JOIN_OVERFLOW_STRATEGY_PRE_REDUCE
+		}
+		switch strategy {
+		case loomv1.JoinOverflowStrategy_JOIN_OVERFLOW_STRATEGY_FAIL:
+			return nil, fmt.Errorf("%w: %s: %d tokens rendered for %d entries, budget %d; overflow_strategy is fail",
+				ErrJoinInputOverBudget, j.scope, fit.InputTokens, len(branches), budget)
+		case loomv1.JoinOverflowStrategy_JOIN_OVERFLOW_STRATEGY_TRUNCATE:
+			fit.Overflow = "truncate"
+			if err := j.fitByTruncation(branches, fit.Rendered, budget); err != nil {
+				return nil, err
+			}
+		case loomv1.JoinOverflowStrategy_JOIN_OVERFLOW_STRATEGY_PRE_REDUCE:
+			fit.Overflow = "pre_reduce"
+			usage, calls, err := j.fitByReduction(ctx, receiver, branches, fit.Rendered, budget)
+			if err != nil {
+				return nil, err
+			}
+			fit.Usage = addUsage(fit.Usage, usage)
+			fit.LLMCalls += calls
+		default:
+			return nil, fmt.Errorf("unsupported join overflow strategy: %s", strategy)
+		}
+		fit.Rendered = render(branches)
+		fit.InputTokens = j.counter.CountTokens(fit.Rendered)
+		if fit.InputTokens > budget {
+			// The share discount should make this unreachable; if a
+			// tokenizer quirk gets here, say so rather than hide it.
+			j.orch.logger.Warn("Hand-off still over budget after overflow handling; sending anyway",
+				zap.String("workflow_id", j.workflowID),
+				zap.String("scope", j.scope),
+				zap.String("overflow", fit.Overflow),
+				zap.Int("input_tokens", fit.InputTokens),
+				zap.Int("budget_tokens", budget))
+		} else {
+			j.orch.logger.Info("Hand-off bounded to budget",
+				zap.String("workflow_id", j.workflowID),
+				zap.String("scope", j.scope),
+				zap.String("overflow", fit.Overflow),
+				zap.Int("input_tokens", fit.InputTokens),
+				zap.Int("budget_tokens", budget))
+		}
+	}
+
+	for _, b := range branches {
+		if b.memKey != "" {
+			fit.Stored++
+		}
+		switch b.action {
+		case joinBranchTruncated:
+			fit.Truncated++
+		case joinBranchReduced:
+			fit.Reduced++
+		case joinBranchFull:
+		}
+	}
+	return fit, nil
+}
+
 // collectBranches turns the fan-out results into join branches: the full
 // output is stored in SharedMemory when the orchestrator has one, and the
 // inline copy is cut to the per-branch byte cap.
 func (j *joiner) collectBranches(ctx context.Context, results []*loomv1.AgentResult) []joinBranch {
-	maxBytes := int(j.policy.MaxBranchBytes)
-	if maxBytes <= 0 {
-		maxBytes = DefaultJoinBranchBytes
-	}
-	branches := make([]joinBranch, 0, len(results))
+	entries := make([]handoffEntry, 0, len(results))
 	for i, r := range results {
 		if r == nil {
 			continue
 		}
-		b := joinBranch{
+		entries = append(entries, handoffEntry{
 			index:   i + 1,
 			agentID: r.AgentId,
 			full:    r.Output,
-			inline:  r.Output,
-			action:  joinBranchFull,
 			failed:  r.Metadata["error"] != "",
+		})
+	}
+	for i := range entries {
+		e := &entries[i]
+		if e.failed || j.orch.sharedMemory == nil {
+			continue
 		}
-		if !b.failed && j.orch.sharedMemory != nil {
-			key := fmt.Sprintf("%s-branch-%d-output", j.workflowID, b.index)
-			if err := j.storeBranch(ctx, key, b); err != nil {
-				j.orch.logger.Warn("failed to store branch output in SharedMemory; join gets the inline copy only",
-					zap.String("workflow_id", j.workflowID),
-					zap.Int("branch", b.index),
-					zap.Error(err))
-			} else {
-				b.memKey = key
-			}
+		key := fmt.Sprintf("%s-branch-%d-output", j.workflowID, e.index)
+		if err := j.store(ctx, key, e.agentID, e.index, e.full); err != nil {
+			j.orch.logger.Warn("failed to store branch output in SharedMemory; join gets the inline copy only",
+				zap.String("workflow_id", j.workflowID),
+				zap.Int("branch", e.index),
+				zap.Error(err))
+			continue
 		}
-		if !b.failed && len(b.full) > maxBytes {
+		e.memKey = key
+	}
+	return j.branchesFor(entries, true)
+}
+
+// branchesFor builds the branches of a hand-off whose entries are already
+// stored (or not) by the caller, applying the per-entry byte cap. With
+// cutUnstored false an entry whose full text is not in SharedMemory is
+// passed in full: the pipeline rule, where nothing is cut that the next
+// stage could not fetch back. Failed entries are never cut.
+func (j *joiner) branchesFor(entries []handoffEntry, cutUnstored bool) []joinBranch {
+	maxBytes := int(j.policy.GetMaxBranchBytes())
+	if maxBytes <= 0 {
+		maxBytes = DefaultJoinBranchBytes
+	}
+	branches := make([]joinBranch, 0, len(entries))
+	for _, e := range entries {
+		b := joinBranch{
+			index:   e.index,
+			agentID: e.agentID,
+			full:    e.full,
+			inline:  e.full,
+			memKey:  e.memKey,
+			action:  joinBranchFull,
+			failed:  e.failed,
+		}
+		if !b.failed && (b.memKey != "" || cutUnstored) && len(b.full) > maxBytes {
 			b.inline = cutAtLineBoundary(b.full, maxBytes)
 			b.action = joinBranchTruncated
 		}
@@ -288,20 +393,23 @@ func (j *joiner) collectBranches(ctx context.Context, results []*loomv1.AgentRes
 	return branches
 }
 
-// storeBranch stashes one branch's full output in the WORKFLOW namespace.
-func (j *joiner) storeBranch(ctx context.Context, key string, b joinBranch) error {
+// store stashes one entry's full text in the WORKFLOW namespace.
+func (j *joiner) store(ctx context.Context, key, agentID string, index int, full string) error {
+	if j.orch.sharedMemory == nil {
+		return fmt.Errorf("SharedMemory not available")
+	}
 	_, err := j.orch.sharedMemory.Put(ctx, &loomv1.PutSharedMemoryRequest{
 		Namespace: loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_WORKFLOW,
 		Key:       key,
-		Value:     []byte(b.full),
-		AgentId:   b.agentID,
+		Value:     []byte(full),
+		AgentId:   agentID,
 		Metadata: map[string]string{
-			"type":        "branch_output",
+			"type":        j.storeType,
 			"pattern":     j.patternKey,
 			"workflow_id": j.workflowID,
-			"branch":      strconv.Itoa(b.index),
-			"agent_id":    b.agentID,
-			"full_size":   strconv.Itoa(len(b.full)),
+			"branch":      strconv.Itoa(index),
+			"agent_id":    agentID,
+			"full_size":   strconv.Itoa(len(full)),
 		},
 	})
 	return err
@@ -349,19 +457,19 @@ func defaultJoinTemplate(strategy loomv1.MergeStrategy, withPrompt bool) string 
 	return b.String()
 }
 
-// budget is the token budget for the rendered join input: the policy's
-// explicit value, else a share of the join agent's usable context window,
-// else 0 (no check) when there is no agent to derive it from.
-func (j *joiner) budget(joinAgent *agent.Agent) int {
-	if j.policy.MaxInputTokens > 0 {
+// budget is the token budget for the rendered hand-off: the policy's
+// explicit value, else a share of the receiving agent's usable context
+// window, else 0 (no check) when there is no agent to derive it from.
+func (j *joiner) budget(receiver *agent.Agent) int {
+	if j.policy.GetMaxInputTokens() > 0 {
 		return int(j.policy.MaxInputTokens)
 	}
-	if joinAgent == nil {
+	if receiver == nil {
 		return 0
 	}
 	defaults := agent.DefaultTokenBudgetConfig()
 	maxCtx, reserved := defaults.MaxContextTokens, defaults.ReservedOutputTokens
-	if cfg := joinAgent.GetConfig(); cfg != nil {
+	if cfg := receiver.GetConfig(); cfg != nil {
 		if cfg.MaxContextTokens > 0 {
 			maxCtx = cfg.MaxContextTokens
 		}
@@ -381,48 +489,40 @@ func (j *joiner) budget(joinAgent *agent.Agent) int {
 // branch output is never re-scanned. A template without {{branches}} gets the
 // sections appended, so the join never runs blind.
 func (j *joiner) render(tmpl string, branches []joinBranch, withHeader bool) string {
-	body := strings.ReplaceAll(tmpl, joinPlaceholderPrompt, j.prompt)
-	body = strings.ReplaceAll(body, joinPlaceholderBranchCount, strconv.Itoa(len(branches)))
-	sections := renderJoinBranches(branches)
-	if !strings.Contains(body, joinPlaceholderBranches) {
-		body = body + "\n\n" + sections
-	} else {
-		parts := strings.Split(body, joinPlaceholderBranches)
-		body = strings.Join(parts, sections)
-	}
+	body := spliceJoinTemplate(tmpl, j.prompt, j.renderJoinBranches(branches), len(branches))
 	if !withHeader {
 		return body
 	}
 	return sharedMemoryJoinHeader(branches) + body
 }
 
+// spliceJoinTemplate fills a join template: {{prompt}} and {{branch_count}}
+// by replacement, {{branches}} last by splicing (appended when absent).
+func spliceJoinTemplate(tmpl, prompt, sections string, count int) string {
+	body := strings.ReplaceAll(tmpl, joinPlaceholderPrompt, prompt)
+	body = strings.ReplaceAll(body, joinPlaceholderBranchCount, strconv.Itoa(count))
+	if !strings.Contains(body, joinPlaceholderBranches) {
+		return body + "\n\n" + sections
+	}
+	parts := strings.Split(body, joinPlaceholderBranches)
+	return strings.Join(parts, sections)
+}
+
 // renderJoinBranches renders one section per branch: a heading, the inline
 // copy and, when that copy is not the full output, the notice that says so
 // and names the SharedMemory key.
-func renderJoinBranches(branches []joinBranch) string {
+func (j *joiner) renderJoinBranches(branches []joinBranch) string {
 	var b strings.Builder
-	for _, br := range branches {
+	for i := range branches {
+		br := &branches[i]
 		if br.failed {
 			b.WriteString(fmt.Sprintf("### Branch %d: agent %s (FAILED)\n%s\n\n", br.index, br.agentID, br.inline))
 			continue
 		}
 		b.WriteString(fmt.Sprintf("### Branch %d: agent %s\n%s\n", br.index, br.agentID, br.inline))
-		switch br.action {
-		case joinBranchTruncated:
-			if br.memKey != "" {
-				b.WriteString(fmt.Sprintf(joinTruncatedNotice, len(br.inline), len(br.full), br.memKey))
-			} else {
-				b.WriteString(fmt.Sprintf(joinTruncatedNoMemNotice, len(br.inline), len(br.full)))
-			}
+		if notice := j.noticeFor(br, br.action); notice != "" {
+			b.WriteString(notice)
 			b.WriteString("\n")
-		case joinBranchReduced:
-			if br.memKey != "" {
-				b.WriteString(fmt.Sprintf(joinReducedNotice, len(br.full), br.memKey))
-			} else {
-				b.WriteString(fmt.Sprintf(joinReducedNoMemNotice, len(br.full)))
-			}
-			b.WriteString("\n")
-		case joinBranchFull:
 		}
 		b.WriteString("\n")
 	}
@@ -455,12 +555,12 @@ func sharedMemoryJoinHeader(branches []joinBranch) string {
 	return b.String()
 }
 
-// branchShare is the per-branch token share under a budget: the budget less
-// everything that is not branch text, divided among the branches, with the
+// branchShare is the per-entry token share under a budget: the budget less
+// everything that is not entry text, divided among the entries, with the
 // safety discount. It errors when the share is too small to carry anything.
 func (j *joiner) branchShare(branches []joinBranch, rendered string, budget int) (int, error) {
 	if len(branches) == 0 {
-		return 0, fmt.Errorf("%w: no branches to fit", ErrJoinInputOverBudget)
+		return 0, fmt.Errorf("%w: %s: nothing to fit", ErrJoinInputOverBudget, j.scope)
 	}
 	inlineTokens := 0
 	for _, b := range branches {
@@ -472,13 +572,13 @@ func (j *joiner) branchShare(branches []joinBranch, rendered string, budget int)
 	}
 	share := (budget - overhead) / len(branches) * joinShareSafetyPercent / 100
 	if share < MinJoinBranchShareTokens {
-		return 0, fmt.Errorf("%w: budget %d leaves %d tokens per branch for %d branches (template and headers take %d); at least %d is required",
-			ErrJoinInputOverBudget, budget, share, len(branches), overhead, MinJoinBranchShareTokens)
+		return 0, fmt.Errorf("%w: %s: budget %d leaves %d tokens per entry for %d entries (template and headers take %d); at least %d is required",
+			ErrJoinInputOverBudget, j.scope, budget, share, len(branches), overhead, MinJoinBranchShareTokens)
 	}
 	return share, nil
 }
 
-// fitByTruncation cuts every branch over its share down to it. No LLM calls.
+// fitByTruncation cuts every entry over its share down to it. No LLM calls.
 func (j *joiner) fitByTruncation(branches []joinBranch, rendered string, budget int) error {
 	share, err := j.branchShare(branches, rendered, budget)
 	if err != nil {
@@ -490,7 +590,7 @@ func (j *joiner) fitByTruncation(branches []joinBranch, rendered string, budget 
 	return nil
 }
 
-// truncateBranchToShare makes a branch's inline copy fit its share, notice
+// truncateBranchToShare makes an entry's inline copy fit its share, notice
 // included, when it does not already.
 func (j *joiner) truncateBranchToShare(b *joinBranch, share int) {
 	if b.failed {
@@ -504,45 +604,64 @@ func (j *joiner) truncateBranchToShare(b *joinBranch, share int) {
 	b.action = joinBranchTruncated
 }
 
-// noticeFor renders the notice a branch would carry under an action, for
-// token accounting.
+// noticeFor renders the notice an entry would carry under an action, in the
+// joiner's notice style. Empty for a full copy.
 func (j *joiner) noticeFor(b *joinBranch, action joinBranchAction) string {
-	switch action {
-	case joinBranchReduced:
-		if b.memKey != "" {
-			return fmt.Sprintf(joinReducedNotice, len(b.full), b.memKey)
+	switch j.notice {
+	case noticeStyleStage:
+		switch action {
+		case joinBranchReduced:
+			if b.memKey != "" {
+				return fmt.Sprintf(stageReducedNotice, len(b.full), b.memKey)
+			}
+			return fmt.Sprintf(stageReducedNoMemNotice, len(b.full))
+		case joinBranchTruncated:
+			if b.memKey != "" {
+				return fmt.Sprintf(StageOutputTruncationNoticeTemplate, b.memKey)
+			}
+			return fmt.Sprintf(stageTruncatedNoMemNotice, len(b.inline), len(b.full))
+		case joinBranchFull:
 		}
-		return fmt.Sprintf(joinReducedNoMemNotice, len(b.full))
-	case joinBranchTruncated:
-		if b.memKey != "" {
-			return fmt.Sprintf(joinTruncatedNotice, len(b.inline), len(b.full), b.memKey)
+		return ""
+	default:
+		switch action {
+		case joinBranchReduced:
+			if b.memKey != "" {
+				return fmt.Sprintf(joinReducedNotice, len(b.full), b.memKey)
+			}
+			return fmt.Sprintf(joinReducedNoMemNotice, len(b.full))
+		case joinBranchTruncated:
+			if b.memKey != "" {
+				return fmt.Sprintf(joinTruncatedNotice, len(b.inline), len(b.full), b.memKey)
+			}
+			return fmt.Sprintf(joinTruncatedNoMemNotice, len(b.inline), len(b.full))
+		case joinBranchFull:
 		}
-		return fmt.Sprintf(joinTruncatedNoMemNotice, len(b.inline), len(b.full))
-	case joinBranchFull:
+		return ""
 	}
-	return ""
 }
 
-// fitByReduction asks an LLM to reduce every branch over its share to a card
+// fitByReduction asks an LLM to reduce every entry over its share to a card
 // of at most that share, in parallel under the orchestrator LLM semaphore,
 // then truncates anything that still does not fit. The reduce LLM is the
-// join agent's compressor role (its main LLM when none is configured), else
-// the orchestrator merge LLM; with neither it falls back to truncation.
-func (j *joiner) fitByReduction(ctx context.Context, joinAgent *agent.Agent, branches []joinBranch, rendered string, budget int) (types.Usage, int32, error) {
+// receiving agent's compressor role (its main LLM when none is configured),
+// else the orchestrator merge LLM; with neither it falls back to truncation.
+func (j *joiner) fitByReduction(ctx context.Context, receiver *agent.Agent, branches []joinBranch, rendered string, budget int) (types.Usage, int32, error) {
 	share, err := j.branchShare(branches, rendered, budget)
 	if err != nil {
 		return types.Usage{}, 0, err
 	}
 
 	var reduceLLM agent.LLMProvider
-	if joinAgent != nil {
-		reduceLLM = joinAgent.GetLLMForRole(loomv1.LLMRole_LLM_ROLE_COMPRESSOR)
+	if receiver != nil {
+		reduceLLM = receiver.GetLLMForRole(loomv1.LLMRole_LLM_ROLE_COMPRESSOR)
 	} else {
 		reduceLLM = j.orch.GetMergeLLM()
 	}
 	if reduceLLM == nil {
-		j.orch.logger.Warn("no LLM available to pre-reduce join input; truncating instead",
-			zap.String("workflow_id", j.workflowID))
+		j.orch.logger.Warn("no LLM available to pre-reduce hand-off; truncating instead",
+			zap.String("workflow_id", j.workflowID),
+			zap.String("scope", j.scope))
 		for i := range branches {
 			j.truncateBranchToShare(&branches[i], share)
 		}
@@ -576,9 +695,10 @@ func (j *joiner) fitByReduction(ctx context.Context, joinAgent *agent.Agent, bra
 			b := &branches[i]
 			reduced, u, err := j.reduceOne(ctx, reduceLLM, b, share)
 			if err != nil {
-				j.orch.logger.Warn("branch pre-reduce failed; truncating that branch instead",
+				j.orch.logger.Warn("entry pre-reduce failed; truncating that entry instead",
 					zap.String("workflow_id", j.workflowID),
-					zap.Int("branch", b.index),
+					zap.String("scope", j.scope),
+					zap.Int("entry", b.index),
 					zap.Error(err))
 				j.truncateBranchToShare(b, share)
 				return
@@ -599,7 +719,7 @@ func (j *joiner) fitByReduction(ctx context.Context, joinAgent *agent.Agent, bra
 	return usage, calls, nil
 }
 
-// reduceOne runs one reduce call for a branch. It holds the orchestrator LLM
+// reduceOne runs one reduce call for an entry. It holds the orchestrator LLM
 // semaphore for the call when one is configured.
 func (j *joiner) reduceOne(ctx context.Context, llm agent.LLMProvider, b *joinBranch, share int) (string, types.Usage, error) {
 	if sem := j.orch.llmSemaphore; sem != nil {
@@ -613,17 +733,17 @@ func (j *joiner) reduceOne(ctx context.Context, llm agent.LLMProvider, b *joinBr
 	// Roughly three words per four tokens; the share is a token bound.
 	words := share * 3 / 4
 	var p strings.Builder
-	p.WriteString(fmt.Sprintf("Reduce the following output from agent %s to at most %d words so it fits a bounded hand-off to a join step.\n", b.agentID, words))
-	p.WriteString("Keep every number, name, decision and conclusion; drop repetition, preamble and anything the join does not need.\n")
+	p.WriteString(fmt.Sprintf("Reduce the following output from agent %s to at most %d words so it fits a bounded hand-off to the agent that consumes it.\n", b.agentID, words))
+	p.WriteString("Keep every number, name, decision and conclusion; drop repetition, preamble and anything the consumer does not need.\n")
 	if j.prompt != "" {
-		p.WriteString("The join task is: ")
+		p.WriteString("The hand-off serves this task: ")
 		p.WriteString(j.prompt)
 		p.WriteString("\n")
 	}
 	p.WriteString("Output only the reduced text, nothing else.\n\n--- OUTPUT TO REDUCE ---\n")
 	p.WriteString(b.full)
 
-	sessionID := fmt.Sprintf("%s-join-reduce-%d", j.workflowID, b.index)
+	sessionID := fmt.Sprintf("%s-%s-reduce-%d", j.workflowID, j.scope, b.index)
 	resp, err := llm.Chat(j.mergeContext(ctx, sessionID), []agent.Message{{
 		Role:      "user",
 		Content:   p.String(),
@@ -640,7 +760,9 @@ func (j *joiner) reduceOne(ctx context.Context, llm agent.LLMProvider, b *joinBr
 }
 
 // execute runs the join call: the join agent's turn, or one raw merge-LLM
-// call when no agent is configured.
+// call when no agent is configured. The call count of an agent turn is the
+// turn's own successful LLM call count (one for a plain completion, more
+// when the agent ran a tool loop).
 func (j *joiner) execute(ctx context.Context, joinAgent *agent.Agent, prompt string) (string, string, types.Usage, int32, error) {
 	if joinAgent != nil {
 		if sem := j.orch.llmSemaphore; sem != nil {
@@ -660,7 +782,11 @@ func (j *joiner) execute(ctx context.Context, joinAgent *agent.Agent, prompt str
 		if usage.TotalTokens == 0 && usage.CostUSD == 0 {
 			usage = resp.Usage
 		}
-		return resp.Content, joinAgent.GetLLMModel(), usage, 1, nil
+		calls := types.SafeInt32(resp.TurnLLMCalls)
+		if calls == 0 {
+			calls = 1
+		}
+		return resp.Content, joinAgent.GetLLMModel(), usage, calls, nil
 	}
 
 	mergeLLM := j.orch.GetMergeLLM()

@@ -79,6 +79,9 @@ type IterativePipelineExecutor struct {
 
 	// Resume state rehydrated from a WorkflowCheckpoint (nil for fresh runs)
 	resume *iterativeResumeState
+
+	// history aggregates what bounding {{history}} hand-offs did in this run.
+	history historyStats
 }
 
 // iterativeResumeState carries checkpoint-rehydrated loop state into
@@ -307,15 +310,31 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 			promptSpan.SetAttribute("has_structured_context", fmt.Sprintf("%t", e.structuredContext != nil))
 		}
 
-		// Pass all previous stage outputs (each already truncated to MaxStageOutputBytes)
-		// Per-stage truncation prevents token bloat while maintaining full context visibility
+		// Pass all previous stage outputs. Each history entry is cut to
+		// MaxStageOutputBytes with the stage-N-output notice at render time
+		// (the same copy the next stage gets as {{previous}}); a
+		// HistoryPolicy on the pipeline fits the whole prompt to the stage
+		// agent's token budget as well.
 		outputsSlice := make([]string, 0, stageIndex)
 		for i := 0; i < stageIndex; i++ {
-			if out, ok := stageOutputs[e.pattern.Pipeline.Stages[i].AgentId]; ok {
+			if out, ok := e.fullOutputs[e.pattern.Pipeline.Stages[i].AgentId]; ok {
 				outputsSlice = append(outputsSlice, out)
 			}
 		}
-		prompt := e.buildStagePromptWithStructuredContext(stage, currentInput, outputsSlice)
+		prompt, historyFit, err := e.boundStagePromptWithStructuredContext(execCtx, stage, stageNum, currentInput, outputsSlice)
+		if err != nil {
+			e.orchestrator.tracer.EndSpan(promptSpan)
+			return nil, err
+		}
+		if historyFit != nil {
+			e.aux.add(historyFit.Usage, historyFit.LLMCalls)
+			e.history.add(historyFit)
+			if promptSpan != nil {
+				for k, v := range historyFit.metadata("history", "entries") {
+					promptSpan.SetAttribute(k, v)
+				}
+			}
+		}
 		// Thread pending revision/restart feedback into this stage's prompt
 		// (consumed once; blanks stray placeholders otherwise).
 		prompt = injectRevisionFeedback(prompt, e.pendingFeedback, e.feedbackSource)
@@ -678,6 +697,7 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 	if len(validationWarnings) > 0 {
 		metadata["validation_warnings"] = strings.Join(validationWarnings, "; ")
 	}
+	e.history.addTo(metadata)
 
 	return &loomv1.WorkflowResult{
 		PatternType:  "iterative_pipeline",
@@ -689,20 +709,19 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 	}, nil
 }
 
-// buildStagePromptWithStructuredContext constructs the prompt with structured context injection.
-// For hybrid context passing (v3.13+), also prepends a SharedMemory context header that lists
-// available stage outputs agents can fetch via shared_memory_read tool.
-func (e *IterativePipelineExecutor) buildStagePromptWithStructuredContext(stage *loomv1.PipelineStage, previousOutput string, allOutputs []string) string {
+// boundStagePromptWithStructuredContext constructs the prompt with structured
+// context injection. allOutputs are the FULL prior outputs; history entries
+// are bounded at render time (see PipelineExecutor.boundStagePrompt). For
+// hybrid context passing (v3.13+), also prepends a SharedMemory context
+// header that lists available stage outputs agents can fetch via the
+// shared_memory_read tool. The fit is nil when the prompt carries no history.
+func (e *IterativePipelineExecutor) boundStagePromptWithStructuredContext(ctx context.Context, stage *loomv1.PipelineStage, stageNum int, previousOutput string, allOutputs []string) (string, *handoffFit, error) {
 	executor := NewPipelineExecutor(e.orchestrator, e.pattern.Pipeline, e.workflowID)
-	basePrompt := executor.buildStagePromptWithContext(stage, previousOutput, allOutputs, e.structuredContext)
-
-	// Prepend SharedMemory context header if there are previous stages
+	header := ""
 	if len(allOutputs) > 0 {
-		header := e.buildSharedMemoryContextHeader(len(allOutputs))
-		return header + basePrompt
+		header = e.buildSharedMemoryContextHeader(len(allOutputs))
 	}
-
-	return basePrompt
+	return executor.boundStagePrompt(ctx, stage, stageNum, previousOutput, allOutputs, e.structuredContext, header)
 }
 
 // buildSharedMemoryContextHeader creates a header listing available SharedMemory keys.

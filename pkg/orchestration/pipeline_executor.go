@@ -35,6 +35,9 @@ type PipelineExecutor struct {
 
 	// aux collects the LLM calls this executor makes itself (run_usage.go).
 	aux auxUsage
+
+	// history aggregates what bounding {{history}} hand-offs did in this run.
+	history historyStats
 }
 
 // NewPipelineExecutor creates a new pipeline executor.
@@ -312,10 +315,25 @@ func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time,
 			zap.Int("total_stages", len(e.pattern.Stages)),
 			zap.String("agent_id", stage.AgentId))
 
-		// Build prompt for this stage. Revision feedback (from a HITL gate
-		// REVISE decision) is threaded into the first stage executed after
-		// the jump, then consumed; the call also blanks stray placeholders.
-		prompt := e.buildStagePrompt(stage, currentInput, stageOutputs)
+		// Build prompt for this stage. History entries are bounded like
+		// {{previous}} and, under a HistoryPolicy, fitted to the stage
+		// agent's budget. Revision feedback (from a HITL gate REVISE
+		// decision) is threaded into the first stage executed after the
+		// jump, then consumed; the call also blanks stray placeholders.
+		prompt, historyFit, err := e.boundStagePrompt(ctx, stage, stageNum, currentInput, stageOutputs, nil, e.stageHeader(len(stageOutputs)))
+		if err != nil {
+			e.orchestrator.tracer.EndSpan(stageSpan)
+			return nil, err
+		}
+		if historyFit != nil {
+			e.aux.add(historyFit.Usage, historyFit.LLMCalls)
+			e.history.add(historyFit)
+			if stageSpan != nil {
+				for k, v := range historyFit.metadata("history", "entries") {
+					stageSpan.SetAttribute(k, v)
+				}
+			}
+		}
 		prompt = injectRevisionFeedback(prompt, state.revisionFeedback, state.revisionSource)
 		state.revisionFeedback = ""
 
@@ -326,7 +344,6 @@ func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time,
 		var (
 			result         *loomv1.AgentResult
 			model          string
-			err            error
 			levelingReport *LevelingReport
 		)
 		if stage.GetLevelingPolicy().GetEnabled() {
@@ -543,6 +560,7 @@ func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time,
 	if len(validationWarnings) > 0 {
 		metadata["validation_warnings"] = strings.Join(validationWarnings, "; ")
 	}
+	e.history.addTo(metadata)
 
 	return &loomv1.WorkflowResult{
 		PatternType:  "pipeline",
@@ -555,18 +573,16 @@ func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time,
 	}, nil
 }
 
-// buildStagePrompt constructs the prompt for a pipeline stage.
-func (e *PipelineExecutor) buildStagePrompt(stage *loomv1.PipelineStage, previousOutput string, allOutputs []string) string {
-	prompt := e.buildStagePromptWithContext(stage, previousOutput, allOutputs, nil)
-	// When prior stages' full outputs are stashed in SharedMemory, tell the agent
-	// how to fetch them by key so it can recover full upstream context even when
-	// {{previous}} was truncated. Only the plain pipeline path adds this header;
-	// the iterative executor adds its own (it calls buildStagePromptWithContext
-	// directly, bypassing this wrapper).
-	if e.orchestrator.sharedMemory != nil && len(allOutputs) > 0 {
-		return e.buildSharedMemoryContextHeader(len(allOutputs)) + prompt
+// stageHeader is the SharedMemory key list prepended to a stage prompt when
+// prior stages' full outputs are stashed, so the agent can recover full
+// upstream context even when {{previous}} or a history entry was cut. Empty
+// without a store or before the first stage. The iterative executor builds
+// its own header.
+func (e *PipelineExecutor) stageHeader(priorStages int) string {
+	if e.orchestrator.sharedMemory == nil || priorStages == 0 {
+		return ""
 	}
-	return prompt
+	return e.buildSharedMemoryContextHeader(priorStages)
 }
 
 // storeStageOutputInMemory stashes a stage's full output in the WORKFLOW
@@ -1089,7 +1105,18 @@ func (e *PipelineExecutor) retryStage(
 			return nil, ""
 		}
 		// Build retry prompt with validation feedback
-		basePrompt := e.buildStagePrompt(stage, previousInput, allOutputs)
+		basePrompt, historyFit, err := e.boundStagePrompt(ctx, stage, stageNum, previousInput, allOutputs, nil, e.stageHeader(len(allOutputs)))
+		if err != nil {
+			e.orchestrator.logger.Warn("Stage retry prompt could not be bounded; giving up on retries",
+				zap.Int("stage", stageNum),
+				zap.Int("attempt", attempt),
+				zap.Error(err))
+			return nil, ""
+		}
+		if historyFit != nil {
+			e.aux.add(historyFit.Usage, historyFit.LLMCalls)
+			e.history.add(historyFit)
+		}
 		retryPrompt := e.buildStageRetryPrompt(basePrompt, failedOutput, validationFailure, stage.OutputSchema, stage.RetryPolicy.IncludeValidValues, attempt, maxRetries)
 
 		// Fresh session ID for retry
