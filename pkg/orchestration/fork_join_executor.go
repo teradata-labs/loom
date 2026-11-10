@@ -85,13 +85,14 @@ func (e *ForkJoinExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 		defer cancel()
 	}
 
-	// Execute all agents in parallel with fork span
-	ctx, forkSpan := e.orchestrator.tracer.StartSpan(ctx, "fork_join.fork")
+	// Execute all agents in parallel with fork span. The branches run under
+	// the fork span and the pattern timeout.
+	forkCtx, forkSpan := e.orchestrator.tracer.StartSpan(executeCtx, "fork_join.fork")
 	if forkSpan != nil {
 		forkSpan.SetAttribute("branch.count", fmt.Sprintf("%d", len(e.pattern.AgentIds)))
 	}
 
-	results, modelsUsed, err := e.executeFork(executeCtx, workflowID)
+	results, modelsUsed, err := e.executeFork(forkCtx, workflowID)
 	e.orchestrator.tracer.EndSpan(forkSpan)
 
 	if err != nil {

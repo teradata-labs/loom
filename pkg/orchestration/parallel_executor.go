@@ -79,13 +79,14 @@ func (e *ParallelExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 		defer cancel()
 	}
 
-	// Execute all tasks in parallel with parallel span
-	ctx, parallelSpan := e.orchestrator.tracer.StartSpan(ctx, "parallel.execute")
+	// Execute all tasks in parallel with parallel span. The tasks run under
+	// the parallel span and the pattern timeout.
+	parallelCtx, parallelSpan := e.orchestrator.tracer.StartSpan(executeCtx, "parallel.execute")
 	if parallelSpan != nil {
 		parallelSpan.SetAttribute("task.count", fmt.Sprintf("%d", len(e.pattern.Tasks)))
 	}
 
-	results, modelsUsed, err := e.executeParallel(executeCtx)
+	results, modelsUsed, err := e.executeParallel(parallelCtx)
 	e.orchestrator.tracer.EndSpan(parallelSpan)
 
 	if err != nil {
