@@ -363,11 +363,11 @@ func TestTransientTail_CountedByReliefAndCalibration(t *testing.T) {
 		sm.mu.Unlock()
 		require.Less(t, before, start, "fixture: the stored context alone is under the start mark")
 
-		tail := systemReminderContent("[Graph Memory Context]\n" + denseText("mem", 150))
-		tailTokens := GetTokenCounter().CountTokens(tail)
+		note := "[Graph Memory Context]\n" + denseText("mem", 150)
+		tailTokens := GetTokenCounter().CountTokens(systemReminderContent(note))
 		require.Greater(t, before+tailTokens, start, "fixture: context plus tail is over the start mark")
 
-		sm.SetTransientTail(tail)
+		sm.SetTransientTail(note)
 		shed, estimate, target := sm.ReleasePressure(ctx, 0)
 		assert.True(t, shed, "relief must count the tail and shed before the send")
 		assert.LessOrEqual(t, estimate, target)
@@ -387,7 +387,8 @@ func TestTransientTail_CountedByReliefAndCalibration(t *testing.T) {
 
 	t.Run("calibration counts the tail", func(t *testing.T) {
 		sm := parallelBatchMemory(t, 200000, 20000, 10, "run_query")
-		tail := systemReminderContent("[Graph Memory Context]\n" + denseText("mem", 75))
+		note := "[Graph Memory Context]\n" + denseText("mem", 75)
+		tail := systemReminderContent(note)
 		sm.mu.Lock()
 		stored := sm.accurateTokensLocked(sm.compileLocked())
 		sm.mu.Unlock()
@@ -395,7 +396,7 @@ func TestTransientTail_CountedByReliefAndCalibration(t *testing.T) {
 
 		// The provider counts exactly what was sent, tokenizer for tokenizer:
 		// the compiled context plus the tail.
-		sm.SetTransientTail(tail)
+		sm.SetTransientTail(note)
 		sent := stored + GetTokenCounter().CountTokens(tail)
 		require.Greater(t, float64(sent)/float64(stored), 1.05,
 			"fixture: the tail is large enough that leaving it out would skew the factor")

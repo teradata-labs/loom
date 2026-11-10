@@ -142,6 +142,7 @@ type cacheBlock struct {
 	key    string // cumulative hash of every block up to and including this one
 	size   int    // bytes of this block, a stand-in for tokens
 	marked bool   // carries cache_control
+	noted  bool   // a graph memory recall note
 }
 
 // cacheBlocks flattens a captured Messages API body into cache order. The
@@ -168,7 +169,8 @@ func cacheBlocks(t *testing.T, body []byte) []cacheBlock {
 		require.NoError(t, err)
 		_, _ = io.WriteString(h, prefix)
 		_, _ = h.Write(enc)
-		out = append(out, cacheBlock{key: fmt.Sprintf("%x", h.Sum(nil)), size: len(enc), marked: marked})
+		out = append(out, cacheBlock{key: fmt.Sprintf("%x", h.Sum(nil)), size: len(enc), marked: marked,
+			noted: strings.Contains(string(enc), graphMemoryContextMarker)})
 	}
 	for _, b := range req.Tools {
 		add("tool:", b)
@@ -182,6 +184,62 @@ func cacheBlocks(t *testing.T, body []byte) []cacheBlock {
 		}
 	}
 	return out
+}
+
+// thinkingPrefixFailures checks the provider's preserved-thinking rule over
+// captured request bodies: a thinking block stays valid only while everything
+// sent before it — tools, system and every earlier message — is unchanged.
+// stubAnthropic signs request n's thinking block "sig-n", so the block's
+// prefix is all of request n; every later request that replays it must send
+// that same prefix before it (cache_control markers aside). It returns the
+// number of replays that fail.
+func thinkingPrefixFailures(t *testing.T, reqs [][]byte) int {
+	t.Helper()
+	written := make(map[string]string) // signature → key of the prefix it was written after
+	failures := 0
+	for i, body := range reqs {
+		var req struct {
+			Messages []struct {
+				Content []map[string]any `json:"content"`
+			} `json:"messages"`
+		}
+		require.NoError(t, json.Unmarshal(body, &req))
+		blocks := cacheBlocks(t, body)
+		// Signatures in content order, aligned with blocks past tools and system.
+		var sigs []string
+		for _, m := range req.Messages {
+			for _, b := range m.Content {
+				sig, _ := b["signature"].(string)
+				if b["type"] != "thinking" {
+					sig = ""
+				}
+				sigs = append(sigs, sig)
+			}
+		}
+		offset := len(blocks) - len(sigs)
+		for j, sig := range sigs {
+			if sig == "" {
+				continue
+			}
+			want, ok := written[sig]
+			if !ok {
+				t.Errorf("request %d: replays %s, which no earlier request produced", i+1, sig)
+				continue
+			}
+			got := ""
+			if k := offset + j - 1; k >= 0 {
+				got = blocks[k].key
+			}
+			if got != want {
+				failures++
+				t.Logf("request %d: %s follows a prefix that changed since it was written", i+1, sig)
+			}
+		}
+		if len(blocks) > 0 {
+			written[fmt.Sprintf("sig-%d", i+1)] = blocks[len(blocks)-1].key
+		}
+	}
+	return failures
 }
 
 // promptCache models Anthropic's prefix cache for requests sent within the
@@ -224,11 +282,13 @@ func (c *promptCache) send(blocks []cacheBlock) (cached, total int) {
 // TestGraphMemoryRecall_PromptCache sends eight messages in a row, each
 // recalling the memories extracted from the ones before it, and measures how
 // much of each request the prompt cache serves. Each message is a tool turn
-// whose first response carries a thinking block. The recall note rides the
-// trailing system reminder, so it changes only the end of the request, and
-// settled turns keep their thinking blocks, so the conversation before the new
-// message is sent as it was: the system prompt and that conversation stay
-// cached. Run with -v for the per-request numbers.
+// whose first response carries a thinking block. The recall note is a
+// <system-reminder> pinned after the message for the rest of its turn, so the
+// request only grows within a turn and never carries an earlier turn's note:
+// the system prompt and the conversation up to the previous message stay
+// cached. Every replayed thinking block follows the prefix it was written
+// after (thinkingPrefixFailures); a settled turn that had a recall note drops
+// its blocks, since the note is gone. Run with -v for the per-request numbers.
 func TestGraphMemoryRecall_PromptCache(t *testing.T) {
 	stub := &stubAnthropic{}
 	srv := httptest.NewServer(stub)
@@ -274,10 +334,24 @@ func TestGraphMemoryRecall_PromptCache(t *testing.T) {
 		thinking := strings.Count(string(body), `"type":"thinking"`)
 		t.Logf("request %2d: %5d of %5d bytes from cache (%3.0f%%), recall notes: %d, thinking blocks: %d",
 			i+1, cached, total, 100*float64(cached)/float64(total), notes, thinking)
-		// Every earlier message's thinking block is replayed (the context
-		// before it is unchanged), plus this message's own on its second call.
-		assert.Equal(t, i/2+i%2, thinking, "request %d: settled and in-turn thinking blocks replayed", i+1)
-		reused := total - blocks[len(blocks)-1].size
+		// The first message recalled nothing, so its thinking block is
+		// replayed while its prefix holds. Later settled messages had a recall
+		// note before their block, gone once they settled, so theirs are left
+		// out. This message's own block rides its second call.
+		wantThinking := i % 2
+		if i >= 2 {
+			wantThinking++
+		}
+		assert.Equal(t, wantThinking, thinking, "request %d: settled and in-turn thinking blocks replayed", i+1)
+		// What the next request can read back: everything before this
+		// request's recall note (the note goes when the turn settles).
+		reused := 0
+		for _, b := range blocks {
+			if b.noted {
+				break
+			}
+			reused += b.size
+		}
 		if i == 0 {
 			assert.Zero(t, cached, "nothing is cached before the first call")
 			prevReused = reused
@@ -302,12 +376,13 @@ func TestGraphMemoryRecall_PromptCache(t *testing.T) {
 		for _, b := range req.System {
 			assert.NotContains(t, b["text"], graphMemoryContextMarker, "request %d: recall note in the system field", i+1)
 		}
-		// Everything the previous request sent before its last block (the
-		// trailing system reminder) is read back from the cache.
+		// Everything the previous request sent before its recall note is
+		// read back from the cache.
 		assert.GreaterOrEqual(t, cached, prevReused,
-			"request %d: the previous request, minus its trailing note, comes from the cache", i+1)
+			"request %d: the previous request, up to its recall note, comes from the cache", i+1)
 		prevReused = reused
 	}
 	t.Logf("requests 2-%d: %d of %d bytes from cache (%.0f%%)",
 		len(reqs), cachedLater, totalLater, 100*float64(cachedLater)/float64(totalLater))
+	assert.Zero(t, thinkingPrefixFailures(t, reqs), "every replayed thinking block follows the prefix it was written after")
 }

@@ -154,7 +154,23 @@ func (sm *SegmentedMemory) compilePrefixLocked(fingerprint bool) ([]Message, [sh
 	// before the first of these is turn-stable and safe to cache.
 	msgs := sm.contextMessages
 	lastStable, frozen := len(out)-1, false
+	// The turn's pinned reminders (turnNotes), each after the current-turn
+	// rows that preceded it when it was sent. A reminder is gone once the turn
+	// settles, so like (a) and (b) it freezes the message breakpoint: the next
+	// turn can read the cache up to the row before the turn's first reminder.
+	notes := sm.turnNotesLocked(t)
+	seen := 0
+	flushNotes := func(all bool) {
+		for len(notes) > 0 && (all || notes[0].after <= seen) {
+			push(Message{Role: "user", Content: notes[0].content, Turn: t})
+			frozen = true
+			notes = notes[1:]
+		}
+	}
 	emit := func(m *Message) {
+		if m.Turn == t {
+			seen++
+		}
 		r := sm.renderLocked(m, t, callName)
 		if prefix != nil && m.Role == "assistant" && len(m.ThinkingBlocks) > 0 && r.ThinkingBlocks == nil &&
 			sm.thinkingPrefixMatchesLocked(m, prefix) {
@@ -211,7 +227,9 @@ func (sm *SegmentedMemory) compilePrefixLocked(fingerprint bool) ([]Message, [sh
 			}
 			i = j - 1
 		}
+		flushNotes(false)
 	}
+	flushNotes(true)
 
 	// The message breakpoint (ROM/summary already carry their own).
 	if lastStable >= 0 && !out[lastStable].CacheBreakpoint {
@@ -257,8 +275,9 @@ func (sm *SegmentedMemory) compilePrefixLocked(fingerprint bool) ([]Message, [sh
 // advertised tool schemas (SetRequestIdentity), so a tool-set change (lazy
 // disclosure, a skill load, a circuit-breaker filter) or a model switch drops
 // the blocks too; either already misses the prompt cache from the tool list
-// on, so dropping them costs no cache. The transient tail (withSystemReminder)
-// is outside the fingerprint, as it is outside the history within a turn.
+// on, so dropping them costs no cache. The turn's reminders (turnNotes) are
+// compiled in place, so they are inside the fingerprint: a block written after
+// a reminder is not replayed once the turn settles and the reminder is gone.
 
 // recordThinkingPrefixLocked records the compiled-context fingerprint for an
 // assistant message about to be appended. Must hold the write lock.
@@ -751,7 +770,8 @@ func (sm *SegmentedMemory) estimateCompiledLocked(compiled []Message) int {
 }
 
 // accurateTokensLocked is the uncalibrated tiktoken count of KERNEL, the
-// compiled messages and the transient tail (SetTransientTail). Must hold lock.
+// compiled messages (pinned turn notes included) and the pending tail
+// (SetTransientTail). Must hold lock.
 func (sm *SegmentedMemory) accurateTokensLocked(compiled []Message) int {
 	tc := sm.tokenCounter
 	if tc == nil {
@@ -1752,18 +1772,102 @@ func (sm *SegmentedMemory) SetAdvertisedToolsBytes(bytes int) {
 	sm.tokenCountDirty = false
 }
 
-// SetTransientTail records the content of the transient message the agent
-// appends after the compiled context on its provider calls (the
-// <system-reminder> tail of withSystemReminder: the graph memory recall note,
-// soft reminders, the tool-change note), or "" when there is none. The tail is
-// never stored, but it is sent, so it counts in the relief estimate like the
-// advertised tool schemas do, and in the count ObservePromptTokens compares
-// the provider's prompt size against. Set it before ReleasePressure and leave
-// it set through ObservePromptTokens for the same call.
-func (sm *SegmentedMemory) SetTransientTail(content string) {
+// SetTransientTail records the reminder notes the agent is about to send on
+// its next provider call and has not pinned yet (PinTurnNotes): the graph
+// memory recall note, soft reminders, the tool-change note. Notes already
+// pinned this turn are compiled, so they are left out here. The pending
+// reminder counts in the relief estimate like the advertised tool schemas do.
+// Set it before ReleasePressure; PinTurnNotes clears it at the send.
+func (sm *SegmentedMemory) SetTransientTail(notes ...string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	sm.transientTail = content
+	pinned := make(map[string]bool)
+	for _, n := range sm.turnNotesLocked(sm.currentTurnLocked()) {
+		for _, note := range n.notes {
+			pinned[note] = true
+		}
+	}
+	var pending []string
+	for _, note := range notes {
+		if note = strings.TrimSpace(note); note != "" && !pinned[note] {
+			pending = append(pending, note)
+		}
+	}
+	sm.transientTail = systemReminderContent(pending...)
+}
+
+// turnNote is one reminder message sent on a provider call of turn (PinTurnNotes).
+type turnNote struct {
+	turn    int64
+	after   int      // current-turn rows that preceded it when it was sent
+	notes   []string // its notes, so a later call does not send one twice
+	content string   // the <system-reminder> message (systemReminderContent)
+}
+
+// PinTurnNotes records the reminder notes the agent is about to send on a
+// provider call: the graph memory recall note, soft reminders, the
+// tool-change note. Notes already pinned this turn are skipped, and the rest
+// become one <system-reminder> user message that compile emits at this
+// position for the rest of the turn.
+//
+// The reminder can't be a tail that each call appends and the next one
+// drops: the model's thinking blocks of this turn were written after it, and
+// the provider rejects a replayed block whose preceding messages changed
+// (preserved thinking: "a thinking block stays valid only while everything
+// you sent before it is unchanged"). Pinned in place, the request only grows
+// within the turn. When the next turn starts the notes are no longer
+// compiled, and the thinking fingerprint (thinkingPrefix) keeps the blocks
+// written after them from being replayed.
+//
+// It also clears the pending tail (SetTransientTail): once pinned, the notes
+// are counted as compiled messages.
+func (sm *SegmentedMemory) PinTurnNotes(notes ...string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.transientTail = ""
+	t := sm.currentTurnLocked()
+	kept := sm.turnNotesLocked(t)
+	sm.turnNotes = kept
+	pinned := make(map[string]bool)
+	for _, n := range kept {
+		for _, note := range n.notes {
+			pinned[note] = true
+		}
+	}
+	var fresh []string
+	for _, note := range notes {
+		if note = strings.TrimSpace(note); note != "" && !pinned[note] {
+			pinned[note] = true
+			fresh = append(fresh, note)
+		}
+	}
+	if len(fresh) == 0 {
+		return
+	}
+	after := 0
+	for i := range sm.contextMessages {
+		if sm.contextMessages[i].Turn == t {
+			after++
+		}
+	}
+	sm.turnNotes = append(sm.turnNotes, turnNote{
+		turn:    t,
+		after:   after,
+		notes:   fresh,
+		content: systemReminderContent(fresh...),
+	})
+}
+
+// turnNotesLocked returns the pinned notes of turn t, in the order they were
+// sent; notes of other turns are never compiled again. Must hold lock.
+func (sm *SegmentedMemory) turnNotesLocked(t int64) []turnNote {
+	var kept []turnNote
+	for _, n := range sm.turnNotes {
+		if n.turn == t {
+			kept = append(kept, n)
+		}
+	}
+	return kept
 }
 
 // SetRequestIdentity records what the provider call is made with besides the

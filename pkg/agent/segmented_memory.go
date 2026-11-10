@@ -111,9 +111,15 @@ type SegmentedMemory struct {
 	requestModel       string
 	requestToolsDigest [sha256.Size]byte
 
-	// transientTail is the content of the never-stored message sent after the
-	// compiled context (SetTransientTail), counted by the estimate.
+	// transientTail is the content of the reminder the agent is about to send
+	// and has not pinned yet (SetTransientTail), counted by the estimate.
 	transientTail string
+
+	// turnNotes are the reminders sent on this turn's provider calls
+	// (PinTurnNotes). Compile emits each at the position it was sent from,
+	// for the rest of its turn, so a later call of the turn never removes
+	// what an earlier one sent (context_compilation.go). In memory only.
+	turnNotes []turnNote
 
 	// Memory compression (the fold compressor)
 	compressor MemoryCompressor
@@ -732,6 +738,7 @@ func (sm *SegmentedMemory) ResetContext() {
 	sm.patternName = ""
 	sm.thinkingPrefix = nil
 	sm.transientTail = ""
+	sm.turnNotes = nil
 
 	sm.fullRecount()
 	sm.tokenCountDirty = false
