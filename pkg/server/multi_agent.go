@@ -7,6 +7,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"github.com/teradata-labs/loom/internal/version"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/artifacts"
+	"github.com/teradata-labs/loom/pkg/collaboration"
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/evals"
 	"github.com/teradata-labs/loom/pkg/llm/factory"
@@ -4177,7 +4179,7 @@ func (s *MultiAgentServer) ExecuteWorkflow(ctx context.Context, req *loomv1.Exec
 		if updateErr := s.workflowStore.UpdateStatus(executionID, WorkflowStatusFailed, err.Error()); updateErr != nil && s.logger != nil {
 			s.logger.Warn("Failed to update workflow status", zap.String("execution_id", executionID), zap.Error(updateErr))
 		}
-		return nil, status.Errorf(codes.Internal, "workflow execution failed: %v", err)
+		return nil, status.Errorf(workflowErrorCode(err), "workflow execution failed: %v", err)
 	}
 
 	// Store result
@@ -4193,6 +4195,16 @@ func (s *MultiAgentServer) ExecuteWorkflow(ctx context.Context, req *loomv1.Exec
 		ExecutionId: executionID,
 		Result:      result,
 	}, nil
+}
+
+// workflowErrorCode maps a workflow execution error to its gRPC code: a
+// pattern that exists in proto but has no execution yet (pair programming,
+// teacher-student) is Unimplemented, everything else Internal.
+func workflowErrorCode(err error) codes.Code {
+	if errors.Is(err, collaboration.ErrPatternNotImplemented) {
+		return codes.Unimplemented
+	}
+	return codes.Internal
 }
 
 // executeWorkflowInternalWithProgress executes a workflow pattern using the orchestrator with optional progress callback.
@@ -4391,7 +4403,7 @@ func (s *MultiAgentServer) StreamWorkflow(req *loomv1.ExecuteWorkflowRequest, st
 					return err
 				}
 
-				return status.Errorf(codes.Internal, "workflow execution failed: %v", result.err)
+				return status.Errorf(workflowErrorCode(result.err), "workflow execution failed: %v", result.err)
 			}
 
 			// Store successful result

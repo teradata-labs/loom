@@ -12,39 +12,22 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
 
-// PairProgrammingOrchestrator manages driver/navigator collaboration.
+// PairProgrammingOrchestrator is the executor slot for PairProgrammingPattern.
+// The pattern is defined in proto and routed here, but no driver/navigator
+// loop exists yet: Execute returns ErrPatternNotImplemented so a caller gets
+// a clear failure instead of a fabricated result.
 type PairProgrammingOrchestrator struct {
 	provider AgentProvider
 }
 
-// NewPairProgrammingOrchestrator creates a new pair programming orchestrator.
+// NewPairProgrammingOrchestrator creates the executor slot.
 func NewPairProgrammingOrchestrator(provider AgentProvider) *PairProgrammingOrchestrator {
 	return &PairProgrammingOrchestrator{
 		provider: provider,
 	}
 }
 
-// Execute runs a pair programming session.
-func (p *PairProgrammingOrchestrator) Execute(ctx context.Context, config *loomv1.PairProgrammingPattern) (*loomv1.WorkflowResult, error) {
-	result := &loomv1.WorkflowResult{
-		PatternType:  "pair_programming",
-		AgentResults: make([]*loomv1.AgentResult, 0),
-		Metadata:     make(map[string]string),
-		Cost:         &loomv1.WorkflowCost{AgentCostsUsd: make(map[string]float64)},
-	}
-
-	pairResult := &loomv1.PairProgrammingResult{
-		Cycles:               make([]*loomv1.ReviewCycle, 0),
-		ResolvedIssues:       make([]string, 0),
-		RemainingSuggestions: make([]string, 0),
-	}
-
-	// Placeholder implementation
-	result.MergedOutput = fmt.Sprintf("Pair programming result for task: %s", config.Task)
-
-	result.CollaborationResult = &loomv1.WorkflowResult_PairProgrammingResult{
-		PairProgrammingResult: pairResult,
-	}
-
-	return result, nil
+// Execute always fails with ErrPatternNotImplemented. It makes no LLM call.
+func (p *PairProgrammingOrchestrator) Execute(_ context.Context, config *loomv1.PairProgrammingPattern) (*loomv1.WorkflowResult, error) {
+	return nil, fmt.Errorf("%w: pair_programming (task %q)", ErrPatternNotImplemented, config.GetTask())
 }

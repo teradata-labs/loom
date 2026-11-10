@@ -7,6 +7,7 @@ package collaboration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -25,6 +26,38 @@ type DebateOrchestrator struct {
 	provider AgentProvider
 	tracer   observability.Tracer
 	logger   *zap.Logger
+
+	// bounder bounds the response and synthesis prompts under a
+	// DebatePattern.join_policy; nil when the provider cannot (then a
+	// policy is logged and ignored).
+	bounder HandoffBounder
+}
+
+// debateHandoffStats aggregates, over a debate, what bounding the round 2+
+// response prompts did.
+type debateHandoffStats struct {
+	bounded    int // response prompts rendered through the bounder
+	overBudget int // of those, prompts that needed an overflow strategy
+	truncated  int
+	reduced    int
+}
+
+func (s *debateHandoffStats) add(r *HandoffResult) {
+	if r == nil {
+		return
+	}
+	s.bounded++
+	if r.Overflow != "none" {
+		s.overBudget++
+	}
+	s.truncated += r.Truncated
+	s.reduced += r.Reduced
+}
+
+// positionKey is the SharedMemory key holding an agent's full position for
+// a round, when a join policy stores positions.
+func positionKey(workflowID string, round int32, agentID string) string {
+	return fmt.Sprintf("%s-round-%d-position-%s", workflowID, round, agentID)
 }
 
 // NewDebateOrchestrator creates a new debate orchestrator.
@@ -38,7 +71,20 @@ func NewDebateOrchestratorWithObservability(provider AgentProvider, tracer obser
 		provider: provider,
 		tracer:   tracer,
 		logger:   logger,
+		bounder:  handoffBounderOf(provider),
 	}
+}
+
+// handoffPolicy returns the join policy to bound this debate's hand-offs
+// with, or nil when there is none or the provider cannot bound.
+func (d *DebateOrchestrator) handoffPolicy(config *loomv1.DebatePattern) *loomv1.JoinPolicy {
+	if config.GetJoinPolicy() == nil {
+		return nil
+	}
+	if d.bounder == nil {
+		return nil
+	}
+	return config.JoinPolicy
 }
 
 // Execute runs a multi-agent debate with specified rounds and topic.
@@ -97,6 +143,12 @@ func (d *DebateOrchestrator) Execute(ctx context.Context, config *loomv1.DebateP
 		return nil, fmt.Errorf("failed to get internal moderator: %w", err)
 	}
 
+	if config.JoinPolicy != nil && d.bounder == nil {
+		d.logger.Warn("debate join_policy set but the agent provider cannot bound hand-offs; response and synthesis prompts are unbounded",
+			zap.String("workflow_id", workflowID))
+	}
+	var responseStats debateHandoffStats
+
 	// Track debate history for context
 	debateHistory := make([]string, 0)
 
@@ -114,7 +166,11 @@ func (d *DebateOrchestrator) Execute(ctx context.Context, config *loomv1.DebateP
 			zap.Int32("round", roundNum),
 			zap.Int32("total_rounds", config.Rounds))
 
-		round, err := d.executeRound(ctx, workflowID, roundNum, config, debateHistory, internalModerator, result.Cost)
+		round, roundStats, err := d.executeRound(ctx, workflowID, roundNum, config, debateHistory, internalModerator, result.Cost)
+		responseStats.bounded += roundStats.bounded
+		responseStats.overBudget += roundStats.overBudget
+		responseStats.truncated += roundStats.truncated
+		responseStats.reduced += roundStats.reduced
 
 		// End round span
 		if roundSpan != nil {
@@ -181,7 +237,7 @@ func (d *DebateOrchestrator) Execute(ctx context.Context, config *loomv1.DebateP
 			modSpan.SetAttribute("moderator.rounds_reviewed", fmt.Sprintf("%d", len(debateResult.Rounds)))
 		}
 
-		synthesis, err := d.synthesizeWithModerator(ctx, workflowID, config, debateResult, result.Cost)
+		synthesis, synthesisFit, err := d.synthesizeWithModerator(ctx, workflowID, config, debateResult, result.Cost)
 
 		if modSpan != nil {
 			if err != nil {
@@ -191,8 +247,20 @@ func (d *DebateOrchestrator) Execute(ctx context.Context, config *loomv1.DebateP
 				modSpan.SetAttribute("moderator.status", "completed")
 				modSpan.SetAttribute("moderator.synthesis_length", fmt.Sprintf("%d", len(synthesis)))
 			}
+			if synthesisFit != nil {
+				for k, v := range synthesisFit.Metadata("join", "positions") {
+					modSpan.SetAttribute(k, v)
+				}
+			}
 		}
 		d.tracer.EndSpan(modSpan)
+		if synthesisFit != nil {
+			for k, v := range synthesisFit.Metadata("join", "positions") {
+				result.Metadata[k] = v
+			}
+			result.Metadata["join.mode"] = "moderator"
+			result.Metadata["join.agent_id"] = config.ModeratorAgentId
+		}
 
 		if err != nil {
 			return nil, fmt.Errorf("moderator synthesis failed: %w", err)
@@ -227,6 +295,12 @@ func (d *DebateOrchestrator) Execute(ctx context.Context, config *loomv1.DebateP
 	result.Metadata["rounds"] = fmt.Sprintf("%d", config.Rounds)
 	result.Metadata["agent_count"] = fmt.Sprintf("%d", len(config.AgentIds))
 	result.Metadata["consensus_achieved"] = fmt.Sprintf("%t", debateResult.ConsensusAchieved)
+	if d.handoffPolicy(config) != nil {
+		result.Metadata["debate.response_prompts_bounded"] = fmt.Sprintf("%d", responseStats.bounded)
+		result.Metadata["debate.response_prompts_over_budget"] = fmt.Sprintf("%d", responseStats.overBudget)
+		result.Metadata["debate.response_positions_truncated"] = fmt.Sprintf("%d", responseStats.truncated)
+		result.Metadata["debate.response_positions_reduced"] = fmt.Sprintf("%d", responseStats.reduced)
+	}
 
 	duration := time.Since(startTime)
 	d.logger.Info("Debate completed",
@@ -238,7 +312,9 @@ func (d *DebateOrchestrator) Execute(ctx context.Context, config *loomv1.DebateP
 }
 
 // executeRound runs a single round of debate where all agents present positions.
-func (d *DebateOrchestrator) executeRound(ctx context.Context, workflowID string, roundNum int32, config *loomv1.DebatePattern, history []string, moderator *agent.Agent, cost *loomv1.WorkflowCost) (*loomv1.DebateRound, error) {
+// The returned stats describe the bounded response prompts of this round.
+func (d *DebateOrchestrator) executeRound(ctx context.Context, workflowID string, roundNum int32, config *loomv1.DebatePattern, history []string, moderator *agent.Agent, cost *loomv1.WorkflowCost) (*loomv1.DebateRound, debateHandoffStats, error) {
+	var stats debateHandoffStats
 	round := &loomv1.DebateRound{
 		RoundNumber:      roundNum,
 		Positions:        make([]*loomv1.AgentPosition, 0),
@@ -253,7 +329,7 @@ func (d *DebateOrchestrator) executeRound(ctx context.Context, workflowID string
 	for _, agentID := range config.AgentIds {
 		position, err := d.getAgentPosition(ctx, workflowID, agentID, contextPrompt, roundNum, cost)
 		if err != nil {
-			return nil, fmt.Errorf("agent %s failed: %w", agentID, err)
+			return nil, stats, fmt.Errorf("agent %s failed: %w", agentID, err)
 		}
 		positions[agentID] = position
 		round.Positions = append(round.Positions, position)
@@ -262,9 +338,19 @@ func (d *DebateOrchestrator) executeRound(ctx context.Context, workflowID string
 	// Let agents respond to each other's positions (second pass)
 	if roundNum > 1 {
 		for _, agentID := range config.AgentIds {
-			responses, err := d.getAgentResponses(ctx, workflowID, agentID, positions, contextPrompt, roundNum, cost)
+			responses, fit, err := d.getAgentResponses(ctx, workflowID, agentID, config, positions, roundNum, cost)
+			stats.add(fit)
 			if err != nil {
-				// Non-fatal: log and continue
+				if errors.Is(err, ErrHandoffOverBudget) {
+					// The policy asked for failure (or cannot fit): fatal.
+					return nil, stats, fmt.Errorf("round %d response prompt for %s: %w", roundNum, agentID, err)
+				}
+				// A failed response turn is non-fatal: the position stands.
+				d.logger.Warn("Debate response turn failed; continuing without it",
+					zap.String("workflow_id", workflowID),
+					zap.Int32("round", roundNum),
+					zap.String("agent_id", agentID),
+					zap.Error(err))
 				continue
 			}
 			positions[agentID].Responses = responses
@@ -278,7 +364,7 @@ func (d *DebateOrchestrator) executeRound(ctx context.Context, workflowID string
 	// decision layer has a live band for the site.
 	round.ConsensusReached = d.decideConsensus(ctx, workflowID, roundNum, config.Topic, round, moderator)
 
-	return round, nil
+	return round, stats, nil
 }
 
 // decideConsensus resolves a round's consensus flag (site debate.consensus).
@@ -500,11 +586,16 @@ Be specific and evidence-based. Anticipate the strongest objection to your posit
 	}, nil
 }
 
-// getAgentResponses gets agent responses to other agents' positions.
-func (d *DebateOrchestrator) getAgentResponses(ctx context.Context, workflowID, agentID string, positions map[string]*loomv1.AgentPosition, contextPrompt string, roundNum int32, cost *loomv1.WorkflowCost) (map[string]string, error) {
+// getAgentResponses gets an agent's response to the other agents' positions
+// of this round. The other positions are rendered in config.AgentIds order.
+// Under a join policy (with a bounder) each is stored in SharedMemory, the
+// inline copy is capped and the whole prompt is fitted to the responding
+// agent's token budget; the returned HandoffResult says what that did (nil
+// without a policy).
+func (d *DebateOrchestrator) getAgentResponses(ctx context.Context, workflowID, agentID string, config *loomv1.DebatePattern, positions map[string]*loomv1.AgentPosition, roundNum int32, cost *loomv1.WorkflowCost) (map[string]string, *HandoffResult, error) {
 	a, err := d.provider.GetAgent(ctx, agentID)
 	if err != nil {
-		return nil, fmt.Errorf("agent not found: %s: %w", agentID, err)
+		return nil, nil, fmt.Errorf("agent not found: %s: %w", agentID, err)
 	}
 
 	// Generate unique session ID for this agent's responses
@@ -512,42 +603,119 @@ func (d *DebateOrchestrator) getAgentResponses(ctx context.Context, workflowID, 
 
 	myPosition := positions[agentID]
 	responses := make(map[string]string)
+	policy := d.handoffPolicy(config)
 
-	// Build prompt with other agents' positions
-	otherPositions := make([]string, 0)
-	for otherID, pos := range positions {
-		if otherID == agentID {
+	// The other agents' positions, in configured order.
+	entries := make([]HandoffEntry, 0, len(positions))
+	for i, otherID := range config.AgentIds {
+		pos, ok := positions[otherID]
+		if !ok || otherID == agentID {
 			continue
 		}
-		positionText := fmt.Sprintf("Agent %s:\nPosition: %s\nArguments:\n%s",
-			otherID, pos.Position, strings.Join(pos.Arguments, "\n"))
-		otherPositions = append(otherPositions, positionText)
+		entry := HandoffEntry{
+			Index:   i + 1,
+			AgentID: otherID,
+			Text:    fmt.Sprintf("Position: %s\nArguments:\n%s", pos.Position, strings.Join(pos.Arguments, "\n")),
+		}
+		if policy != nil {
+			entry.Key = positionKey(workflowID, roundNum, otherID)
+		}
+		entries = append(entries, entry)
+	}
+	if len(entries) == 0 {
+		return responses, nil, nil
 	}
 
-	if len(otherPositions) == 0 {
-		return responses, nil
-	}
-
-	prompt := fmt.Sprintf(`You previously took this position:
+	render := func(pieces []HandoffPiece) string {
+		others := make([]string, 0, len(pieces))
+		for _, p := range pieces {
+			section := fmt.Sprintf("Agent %s:\n%s", p.AgentID, p.Inline)
+			if p.Notice != "" {
+				section += "\n" + p.Notice
+			}
+			others = append(others, section)
+		}
+		return sharedMemoryHandoffHeader(pieces, "positions") + fmt.Sprintf(`You previously took this position:
 %s
 
 Other agents have presented these positions:
 %s
 
 Respond briefly to the key points the other agents raised: which do you challenge, and why; which do you concede. Conceding a point is not adopting the other side's position. Hold the standpoint set out in your instructions unless those instructions tell you to change your mind on the evidence.`,
-		myPosition.Position,
-		strings.Join(otherPositions, "\n\n---\n\n"))
+			myPosition.Position,
+			strings.Join(others, "\n\n---\n\n"))
+	}
+
+	var (
+		prompt string
+		fit    *HandoffResult
+	)
+	if policy != nil {
+		fit, err = d.bounder.BoundHandoff(ctx, &HandoffRequest{
+			WorkflowID: workflowID,
+			Pattern:    "debate",
+			Scope:      fmt.Sprintf("round-%d-response-%s", roundNum, agentID),
+			Receiver:   a,
+			Policy:     policy,
+			Task:       config.Topic,
+			Entries:    entries,
+			Render:     render,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		addHandoffUsage(cost, agentID, fit)
+		prompt = fit.Prompt
+	} else {
+		prompt = render(unboundedPieces(entries))
+	}
 
 	resp, err := a.Chat(ctx, sessionID, prompt)
 	if err != nil {
-		return nil, err
+		return nil, fit, err
 	}
 	addDebateUsage(cost, agentID, resp.Usage)
 
 	// For simplicity, use full response as general response
 	responses["all"] = resp.Content
 
-	return responses, nil
+	return responses, fit, nil
+}
+
+// unboundedPieces renders entries as full, unstored pieces: the pre-policy
+// behaviour.
+func unboundedPieces(entries []HandoffEntry) []HandoffPiece {
+	pieces := make([]HandoffPiece, len(entries))
+	for i, e := range entries {
+		pieces[i] = HandoffPiece{Index: e.Index, AgentID: e.AgentID, Inline: e.Text, FullSize: len(e.Text)}
+	}
+	return pieces
+}
+
+// sharedMemoryHandoffHeader lists the SharedMemory keys holding full
+// entries, for a receiver that can call shared_memory_read. Empty when no
+// entry was stored.
+func sharedMemoryHandoffHeader(pieces []HandoffPiece, unit string) string {
+	stored := 0
+	for _, p := range pieces {
+		if p.Key != "" {
+			stored++
+		}
+	}
+	if stored == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## AVAILABLE CONTEXT (SharedMemory)\n")
+	b.WriteString(fmt.Sprintf("Full text of %d of %d %s is stored in SharedMemory namespace \"workflow\":\n", stored, len(pieces), unit))
+	for _, p := range pieces {
+		if p.Key == "" {
+			continue
+		}
+		b.WriteString(fmt.Sprintf("- `%s`: agent %s, %d bytes\n", p.Key, p.AgentID, p.FullSize))
+	}
+	b.WriteString("Use `shared_memory_read(namespace=\"workflow\", key=\"<key>\")` to fetch one whose section below is marked truncated or reduced.\n\n---\n\n")
+	return b.String()
 }
 
 // parseAgentResponse extracts position, arguments, and confidence from agent output.
@@ -803,50 +971,123 @@ func (d *DebateOrchestrator) checkConsensus(round *loomv1.DebateRound) bool {
 	return avgConfidence >= 0.8
 }
 
-// synthesizeWithModerator uses a moderator agent to synthesize final consensus.
-func (d *DebateOrchestrator) synthesizeWithModerator(ctx context.Context, workflowID string, config *loomv1.DebatePattern, result *loomv1.DebateResult, cost *loomv1.WorkflowCost) (string, error) {
-	moderator, err := d.provider.GetAgent(ctx, config.ModeratorAgentId)
-	if err != nil {
-		return "", fmt.Errorf("moderator agent not found: %s: %w", config.ModeratorAgentId, err)
-	}
-
-	// Generate unique session ID for moderator synthesis
-	sessionID := fmt.Sprintf("%s-moderator-synthesis", workflowID)
-
-	// Build synthesis prompt with all rounds
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("# Debate Topic\n%s\n\n", config.Topic))
-	sb.WriteString("# All Debate Rounds\n\n")
-
-	for _, round := range result.Rounds {
-		sb.WriteString(fmt.Sprintf("## Round %d\n", round.RoundNumber))
-		for _, pos := range round.Positions {
-			sb.WriteString(fmt.Sprintf("**%s** (%.0f%% confidence):\n%s\n\n",
-				pos.AgentId, pos.Confidence*100, pos.Position))
-			if len(pos.Arguments) > 0 {
-				sb.WriteString(fmt.Sprintf("Arguments: %s\n\n", strings.Join(pos.Arguments, "; ")))
-			}
-		}
-		sb.WriteString("\n")
-	}
-
-	prompt := fmt.Sprintf(`%s
-
-Synthesize this debate into a clear consensus or identify the strongest position. Consider:
+// debateSynthesisInstruction closes the moderator's synthesis prompt.
+const debateSynthesisInstruction = `Synthesize this debate into a clear consensus or identify the strongest position. Consider:
 - Points of agreement across agents
 - Strongest evidence-based arguments
 - Areas of disagreement and why
 - Most practical/actionable conclusion
 
-Provide a concise synthesis that captures the essence of the debate and identifies the best path forward.`, sb.String())
+Provide a concise synthesis that captures the essence of the debate and identifies the best path forward.`
+
+// synthesizeWithModerator uses a moderator agent to synthesize final
+// consensus from every round's positions. Under a join policy (with a
+// bounder) each position is stored in SharedMemory, the inline copy is
+// capped and the whole prompt is fitted to the moderator's token budget;
+// join_policy.prompt_template, when set, replaces the default wording
+// ({{prompt}} = topic, {{branches}} = the rendered rounds, {{branch_count}}
+// = number of positions). The returned HandoffResult is nil without a policy.
+func (d *DebateOrchestrator) synthesizeWithModerator(ctx context.Context, workflowID string, config *loomv1.DebatePattern, result *loomv1.DebateResult, cost *loomv1.WorkflowCost) (string, *HandoffResult, error) {
+	moderator, err := d.provider.GetAgent(ctx, config.ModeratorAgentId)
+	if err != nil {
+		return "", nil, fmt.Errorf("moderator agent not found: %s: %w", config.ModeratorAgentId, err)
+	}
+
+	// Generate unique session ID for moderator synthesis
+	sessionID := fmt.Sprintf("%s-moderator-synthesis", workflowID)
+	policy := d.handoffPolicy(config)
+
+	// One entry per position across all rounds, in round then configured
+	// order; roundOf and confidenceOf let the renderer group them.
+	entries := make([]HandoffEntry, 0)
+	roundOf := make(map[int]int32)
+	confidenceOf := make(map[int]float32)
+	for _, round := range result.Rounds {
+		for _, pos := range round.Positions {
+			text := pos.Position
+			if len(pos.Arguments) > 0 {
+				text += fmt.Sprintf("\n\nArguments: %s", strings.Join(pos.Arguments, "; "))
+			}
+			idx := len(entries) + 1
+			entry := HandoffEntry{Index: idx, AgentID: pos.AgentId, Text: text}
+			if policy != nil {
+				entry.Key = positionKey(workflowID, round.RoundNumber, pos.AgentId)
+			}
+			entries = append(entries, entry)
+			roundOf[idx] = round.RoundNumber
+			confidenceOf[idx] = pos.Confidence
+		}
+	}
+
+	render := func(pieces []HandoffPiece) string {
+		var rounds strings.Builder
+		current := int32(-1)
+		for _, p := range pieces {
+			if r := roundOf[p.Index]; r != current {
+				if current != -1 {
+					rounds.WriteString("\n")
+				}
+				rounds.WriteString(fmt.Sprintf("## Round %d\n", r))
+				current = r
+			}
+			rounds.WriteString(fmt.Sprintf("**%s** (%.0f%% confidence):\n%s\n", p.AgentID, confidenceOf[p.Index]*100, p.Inline))
+			if p.Notice != "" {
+				rounds.WriteString(p.Notice)
+				rounds.WriteString("\n")
+			}
+			rounds.WriteString("\n")
+		}
+		header := sharedMemoryHandoffHeader(pieces, "positions")
+		if policy != nil && strings.TrimSpace(policy.PromptTemplate) != "" {
+			return header + spliceHandoffTemplate(policy.PromptTemplate, config.Topic, rounds.String(), len(pieces))
+		}
+		return header + fmt.Sprintf("# Debate Topic\n%s\n\n# All Debate Rounds\n\n%s\n%s", config.Topic, rounds.String(), debateSynthesisInstruction)
+	}
+
+	var (
+		prompt string
+		fit    *HandoffResult
+	)
+	if policy != nil {
+		fit, err = d.bounder.BoundHandoff(ctx, &HandoffRequest{
+			WorkflowID: workflowID,
+			Pattern:    "debate",
+			Scope:      "moderator-synthesis",
+			Receiver:   moderator,
+			Policy:     policy,
+			Task:       config.Topic,
+			Entries:    entries,
+			Render:     render,
+		})
+		if err != nil {
+			return "", nil, err
+		}
+		addHandoffUsage(cost, config.ModeratorAgentId, fit)
+		prompt = fit.Prompt
+	} else {
+		prompt = render(unboundedPieces(entries))
+	}
 
 	resp, err := moderator.Chat(ctx, sessionID, prompt)
 	if err != nil {
-		return "", fmt.Errorf("moderator synthesis failed: %w", err)
+		return "", fit, fmt.Errorf("moderator synthesis failed: %w", err)
 	}
 	addDebateUsage(cost, config.ModeratorAgentId, resp.Usage)
 
-	return resp.Content, nil
+	return resp.Content, fit, nil
+}
+
+// spliceHandoffTemplate fills a join prompt template: {{prompt}} and
+// {{branch_count}} by replacement, {{branches}} last by splicing so text
+// inside a position is never re-scanned; a template without {{branches}}
+// gets the sections appended.
+func spliceHandoffTemplate(tmpl, prompt, sections string, count int) string {
+	body := strings.ReplaceAll(tmpl, "{{prompt}}", prompt)
+	body = strings.ReplaceAll(body, "{{branch_count}}", fmt.Sprintf("%d", count))
+	if !strings.Contains(body, "{{branches}}") {
+		return body + "\n\n" + sections
+	}
+	return strings.Join(strings.Split(body, "{{branches}}"), sections)
 }
 
 // calculateMetrics computes collaboration quality metrics.

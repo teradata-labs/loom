@@ -24,6 +24,7 @@ type DebateBuilder struct {
 	rounds        int32
 	mergeStrategy loomv1.MergeStrategy
 	moderatorID   string
+	joinPolicy    *loomv1.JoinPolicy
 }
 
 // WithAgents adds agents to the debate.
@@ -52,10 +53,22 @@ func (b *DebateBuilder) WithRounds(rounds int) *DebateBuilder {
 	return b
 }
 
-// WithMergeStrategy sets how to merge the final outputs.
-// Options: CONSENSUS, VOTING, SUMMARY, CONCATENATE, FIRST, BEST.
+// WithMergeStrategy records a merge strategy that the debate engine never
+// reads. The debate's output is the moderator's synthesis when a moderator
+// is set, else the last round's synthesis line.
+//
+// Deprecated: has no effect; kept so existing callers compile. Use
+// WithModerator for a synthesized outcome and WithJoinPolicy to bound it.
 func (b *DebateBuilder) WithMergeStrategy(strategy loomv1.MergeStrategy) *DebateBuilder {
 	b.mergeStrategy = strategy
+	return b
+}
+
+// WithJoinPolicy bounds the two prompts that carry other agents' full
+// positions: each debater's round 2+ response prompt and the moderator's
+// synthesis. agent_id must be empty (the moderator is the join agent).
+func (b *DebateBuilder) WithJoinPolicy(policy *loomv1.JoinPolicy) *DebateBuilder {
+	b.joinPolicy = policy
 	return b
 }
 
@@ -80,16 +93,20 @@ func (b *DebateBuilder) Execute(ctx context.Context) (*loomv1.WorkflowResult, er
 	if b.rounds < 1 {
 		return nil, fmt.Errorf("debate requires at least 1 round, got %d", b.rounds)
 	}
+	if b.joinPolicy.GetAgentId() != "" {
+		return nil, fmt.Errorf("debate join policy must not set agent_id (the moderator is the join agent), got %q", b.joinPolicy.GetAgentId())
+	}
 
-	// Build debate pattern
+	// Build debate pattern. The deprecated merge_strategy is not carried:
+	// nothing reads it.
 	pattern := &loomv1.WorkflowPattern{
 		Pattern: &loomv1.WorkflowPattern_Debate{
 			Debate: &loomv1.DebatePattern{
 				Topic:            b.topic,
 				AgentIds:         b.agentIDs,
 				Rounds:           b.rounds,
-				MergeStrategy:    b.mergeStrategy,
 				ModeratorAgentId: b.moderatorID,
+				JoinPolicy:       b.joinPolicy,
 			},
 		},
 	}

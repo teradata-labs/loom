@@ -38,6 +38,21 @@ func addDebateUsage(cost *loomv1.WorkflowCost, agentID string, u types.Usage) {
 
 // positionCost renders a position's usage fields as an AgentExecutionCost
 // for the workflow's AgentResult.
+// addHandoffUsage folds a bounded hand-off's pre-reduce calls into the
+// debate cost, attributed to the agent whose compressor LLM made them.
+func addHandoffUsage(cost *loomv1.WorkflowCost, agentID string, r *HandoffResult) {
+	if cost == nil || r == nil || r.LLMCalls == 0 {
+		return
+	}
+	cost.TotalCostUsd += r.Usage.CostUSD
+	cost.TotalTokens += types.SafeInt32(r.Usage.TotalTokens)
+	cost.LlmCalls += r.LLMCalls
+	if cost.AgentCostsUsd == nil {
+		cost.AgentCostsUsd = make(map[string]float64)
+	}
+	cost.AgentCostsUsd[agentID] += r.Usage.CostUSD
+}
+
 func positionCost(p *loomv1.AgentPosition) *loomv1.AgentExecutionCost {
 	if p == nil {
 		return nil
