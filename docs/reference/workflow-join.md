@@ -237,6 +237,8 @@ result, err = orch.Debate("Monolith or microservices?").
 
 ## Result metadata and cost
 
+`looms workflow run` prints every result metadata key under `Metadata:` after the cost lines; over gRPC the same keys are in `WorkflowResult.metadata`.
+
 Fork-join and parallel (`WorkflowResult.metadata`, and the `fork_join.join` / `parallel.merge` span):
 
 | Key | Value |

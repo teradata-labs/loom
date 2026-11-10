@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -754,7 +755,9 @@ func printWorkflowResult(result *loomv1.WorkflowResult, duration time.Duration) 
 	fmt.Printf("\nDuration: %.2fs\n", duration.Seconds())
 	fmt.Printf("Total cost: $%.4f\n", result.Cost.TotalCostUsd)
 	fmt.Printf("Total tokens: %d\n", result.Cost.TotalTokens)
-	fmt.Printf("LLM calls: %d\n\n", result.Cost.LlmCalls)
+	fmt.Printf("LLM calls: %d\n", result.Cost.LlmCalls)
+	fmt.Print(formatWorkflowMetadata(result.Metadata))
+	fmt.Println()
 
 	// Print detailed results based on pattern type
 	if debateResult := result.GetDebateResult(); debateResult != nil {
@@ -766,6 +769,31 @@ func printWorkflowResult(result *loomv1.WorkflowResult, duration time.Duration) 
 		fmt.Println(result.MergedOutput)
 		fmt.Println(strings.Repeat("-", 80))
 	}
+}
+
+// formatWorkflowMetadata renders a result's metadata as sorted "key: value"
+// lines under a "Metadata:" heading, so the bounded hand-off counters
+// (join.*, history.*, debate.*) and the pattern's own keys are visible on
+// the CLI without a tracer. Empty when there is no metadata.
+func formatWorkflowMetadata(md map[string]string) string {
+	if len(md) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(md))
+	for k := range md {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	b.WriteString("Metadata:\n")
+	for _, k := range keys {
+		v := md[k]
+		if len(v) > 200 {
+			v = v[:197] + "..."
+		}
+		b.WriteString(fmt.Sprintf("  %s: %s\n", k, v))
+	}
+	return b.String()
 }
 
 // stdinIsTTY reports whether stdin is an interactive terminal.
@@ -1561,61 +1589,12 @@ Then run again.
 
 // extractAgentIDs extracts all agent IDs from a workflow pattern
 func extractAgentIDs(pattern *loomv1.WorkflowPattern) []string {
-	ids := make(map[string]bool)
-
-	switch p := pattern.Pattern.(type) {
-	case *loomv1.WorkflowPattern_Debate:
-		for _, id := range p.Debate.AgentIds {
-			ids[id] = true
-		}
-		if p.Debate.ModeratorAgentId != "" {
-			ids[p.Debate.ModeratorAgentId] = true
-		}
-	case *loomv1.WorkflowPattern_ForkJoin:
-		for _, id := range p.ForkJoin.AgentIds {
-			ids[id] = true
-		}
-	case *loomv1.WorkflowPattern_Pipeline:
-		for _, stage := range p.Pipeline.Stages {
-			ids[stage.AgentId] = true
-		}
-	case *loomv1.WorkflowPattern_Parallel:
-		for _, task := range p.Parallel.Tasks {
-			ids[task.AgentId] = true
-		}
-	case *loomv1.WorkflowPattern_Conditional:
-		ids[p.Conditional.ConditionAgentId] = true
-		// Extract from branches (recursively)
-		for _, branch := range p.Conditional.Branches {
-			for _, id := range extractAgentIDs(branch) {
-				ids[id] = true
-			}
-		}
-		if p.Conditional.DefaultBranch != nil {
-			for _, id := range extractAgentIDs(p.Conditional.DefaultBranch) {
-				ids[id] = true
-			}
-		}
-	case *loomv1.WorkflowPattern_Swarm:
-		for _, id := range p.Swarm.AgentIds {
-			ids[id] = true
-		}
-		if p.Swarm.JudgeAgentId != "" {
-			ids[p.Swarm.JudgeAgentId] = true
-		}
-	case *loomv1.WorkflowPattern_Iterative:
-		if p.Iterative.Pipeline != nil {
-			for _, stage := range p.Iterative.Pipeline.Stages {
-				ids[stage.AgentId] = true
-			}
-		}
-	}
-
-	result := make([]string, 0, len(ids))
-	for id := range ids {
-		result = append(result, id)
-	}
-	return result
+	// One extractor for every caller (this CLI, the multi-agent server's
+	// ExecuteWorkflow): it knows every agent a pattern can name, including a
+	// fork-join / parallel join agent and a debate moderator. A local copy
+	// here once missed the join agent, so a join agent that was not also a
+	// branch agent was never created.
+	return orchestration.ExtractAgentIDs(pattern)
 }
 
 // getPatternType returns the pattern type as a string

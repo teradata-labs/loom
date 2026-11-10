@@ -160,6 +160,18 @@ func NewOrchestrator(config Config) *Orchestrator {
 	return o
 }
 
+// SharedMemory returns the SharedMemory store the orchestrator stashes
+// hand-off outputs in (stage-N-output, <workflow-id>-branch-N-output,
+// <workflow-id>-round-R-position-<agent-id>), or nil when none is configured.
+func (o *Orchestrator) SharedMemory() *communication.SharedMemoryStore {
+	return o.sharedMemory
+}
+
+// MessageBus returns the orchestrator's message bus, or nil.
+func (o *Orchestrator) MessageBus() *communication.MessageBus {
+	return o.messageBus
+}
+
 // SetProgressCallback sets or updates the progress callback.
 // This allows updating the callback after orchestrator creation.
 func (o *Orchestrator) SetProgressCallback(callback WorkflowProgressCallback) {

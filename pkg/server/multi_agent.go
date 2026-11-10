@@ -4230,7 +4230,7 @@ func (s *MultiAgentServer) executeWorkflowInternalWithProgress(ctx context.Conte
 	if tracer == nil {
 		tracer = observability.NewNoOpTracer()
 	}
-	orchestrator := createOrchestratorWithProgress(agents, registry, s.logger, tracer, progressCallback, s.taskManager)
+	orchestrator := createOrchestratorWithProgress(agents, registry, s.logger, tracer, progressCallback, s.taskManager, s.sharedMemoryComm, s.messageBus)
 
 	// Execute pattern
 	result, err := orchestrator.ExecutePattern(ctx, pattern)
@@ -4436,7 +4436,13 @@ func (s *MultiAgentServer) StreamWorkflow(req *loomv1.ExecuteWorkflowRequest, st
 }
 
 // createOrchestratorWithProgress creates an orchestrator with the given agents, configuration, and optional progress callback.
-func createOrchestratorWithProgress(agents map[string]*agent.Agent, registry *agent.Registry, logger *zap.Logger, tracer observability.Tracer, progressCallback orchestration.WorkflowProgressCallback, taskManager *task.Manager) *orchestration.Orchestrator {
+// createOrchestratorWithProgress builds the orchestrator for one ExecuteWorkflow
+// call. sharedMemory and messageBus are the server's workflow communication
+// store and bus (ConfigureCommunication); the orchestrator stashes stage,
+// branch and debate outputs in that store and the agents' shared_memory_read
+// tool reads from the same one. Without them (nil) every hand-off is inline
+// only, which is what this path did before the store was passed through.
+func createOrchestratorWithProgress(agents map[string]*agent.Agent, registry *agent.Registry, logger *zap.Logger, tracer observability.Tracer, progressCallback orchestration.WorkflowProgressCallback, taskManager *task.Manager, sharedMemory *communication.SharedMemoryStore, messageBus *communication.MessageBus) *orchestration.Orchestrator {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
@@ -4452,6 +4458,8 @@ func createOrchestratorWithProgress(agents map[string]*agent.Agent, registry *ag
 		Logger:           logger,
 		ProgressCallback: progressCallback, // Wire up progress callback
 		TaskManager:      taskManager,      // Persistent workflow tracking
+		SharedMemory:     sharedMemory,     // Workflow hand-off stash (stage-N-output, branch, position keys)
+		MessageBus:       messageBus,       // Iterative restart coordination
 	})
 
 	// Register all agents with orchestrator
