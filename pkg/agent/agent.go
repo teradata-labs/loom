@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"sort"
 	"strconv"
@@ -125,6 +126,7 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// Decision layer: resolve the configured decider against the LLMs the
 	// options just installed. Off unless configured.
 	a.initDecisionRouter()
+	a.attachSkillRouteDecision()
 
 	// Initialize automatic graph memory extraction if graph memory is enabled.
 	if a.graphMemoryStore != nil && a.graphMemoryConfig != nil &&
@@ -294,6 +296,7 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	a.checkAndRegisterTaskBoardTool()
 	a.checkAndRegisterManageSkillsTool()
 	a.checkAndRegisterLoadPatternTool()
+	a.checkAndRegisterDecideTool()
 
 	// Auto-wire the skill task emitter when both the skill subsystem AND
 	// the task subsystem are configured. The emitter is the bridge between
@@ -536,9 +539,32 @@ func WithPrompts(registry prompts.PromptRegistry) Option {
 	}
 }
 
-// WithConfig sets the agent configuration.
+// WithConfig replaces the entire agent configuration. Apply it before options
+// that set individual configuration fields.
 func WithConfig(config *Config) Option {
 	return func(a *Agent) {
+		if config == nil {
+			return
+		}
+		// Identity fields that other options write (WithName, WithDescription,
+		// WithSystemPrompt) survive a later WithConfig whose copy of them is
+		// empty. Every registry- and CLI-built agent applied WithSystemPrompt
+		// and then WithConfig with a fresh Config, and lost its system prompt;
+		// agents configured to hold a stance answered on the merits instead.
+		if prev := a.config; prev != nil {
+			if config.Name == "" {
+				config.Name = prev.Name
+			}
+			if config.Description == "" {
+				config.Description = prev.Description
+			}
+			if config.SystemPrompt == "" {
+				config.SystemPrompt = prev.SystemPrompt
+			}
+			if config.SystemPromptKey == "" {
+				config.SystemPromptKey = prev.SystemPromptKey
+			}
+		}
 		a.config = config
 	}
 }
@@ -682,6 +708,20 @@ func WithSystemPrompt(prompt string) Option {
 func WithDescription(description string) Option {
 	return func(a *Agent) {
 		a.config.Description = description
+	}
+}
+
+// WithROM sets the ROM identifier used to compose the system prompt.
+func WithROM(rom string) Option {
+	return func(a *Agent) {
+		a.config.Rom = rom
+	}
+}
+
+// WithMetadata sets a copy of the agent metadata.
+func WithMetadata(metadata map[string]string) Option {
+	return func(a *Agent) {
+		a.config.Metadata = maps.Clone(metadata)
 	}
 }
 
@@ -2421,6 +2461,21 @@ type Response struct {
 	// N tool-loop iterations has N−1 calls that Usage does not represent.
 	TurnUsage Usage
 
+	// TurnLLMCalls is the number of successful LLM calls that TurnUsage sums:
+	// every call of the conversation loop (tool-loop iterations, the
+	// empty-response and hygiene retries, the final synthesis). A scripted
+	// replay turn (WithScriptedResponse) makes no call and counts 0.
+	// Orchestration reports it as the agent's LLM call count; one turn with N
+	// tool-loop iterations is N+ calls, not one.
+	//
+	// Not counted, here or in TurnUsage: LLM calls made outside the
+	// conversation loop's provider call. Examples are graph-memory recall
+	// (extractSearchQuery, rerankMemories), graph-memory extraction and lesson
+	// mining (both in the background), the memory compressor, segmented-memory
+	// reranking, the skills router, and the pattern intent classifier and
+	// reranker.
+	TurnLLMCalls int
+
 	// ToolExecutions contains tools that were executed
 	ToolExecutions []ToolExecution
 
@@ -2599,6 +2654,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	toolExecutionCount := 0
 	var allToolExecutions []ToolExecution
 	var turnUsage Usage                         // sum of every successful LLM call this turn → Response.TurnUsage
+	turnCalls := 0                              // count of the calls in turnUsage → Response.TurnLLMCalls
 	emptyRetried := false                       // one-shot flag: retry empty LLM response at most once per conversation
 	hygieneRetries := 0                         // capped count of REQUIRE_FIX retries the end-of-turn auditor has triggered
 	var hygieneLast *hygiene.EnforcementOutcome // last outcome, surfaced into Response.Metadata
@@ -2885,8 +2941,10 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// override is ignored (falls through to a normal provider call).
 		var llmResp *LLMResponse
 		var err error
+		providerCalled := true // false for a scripted replay: no call to count
 		if scripted, ok := scriptedResponseFromContext(ctx); ok && strings.TrimSpace(scripted) != "" {
 			llmResp = &LLMResponse{Content: scripted, StopReason: "end_turn"}
+			providerCalled = false
 		} else {
 			if intentErr := a.recordLLMIntent(ctx, session.ID, thisStep, len(messages), a.llm.Model()); intentErr != nil {
 				return nil, fmt.Errorf("recording LLM call intent: %w", intentErr)
@@ -2940,6 +2998,9 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			return nil, fmt.Errorf("LLM call failed: %w", err)
 		}
 		addUsage(&turnUsage, llmResp.Usage)
+		if providerCalled {
+			turnCalls++
+		}
 		a.observePromptUsage(session, llmResp.Usage)
 
 		// Record LLM response on conversation_loop span
@@ -3174,6 +3235,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				Content:        content,
 				Usage:          llmResp.Usage,
 				TurnUsage:      turnUsage,
+				TurnLLMCalls:   turnCalls,
 				ToolExecutions: allToolExecutions,
 				Thinking:       llmResp.Thinking,
 				Metadata:       meta,
@@ -3292,7 +3354,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	// If we hit max turns/executions, make one final LLM call to synthesize results
 	// This ensures the agent provides meaningful output instead of a generic error message
 	emitProgress(ctx, StageSynthesis, 90, "Synthesizing tool execution results", "")
-	return a.synthesizeFinalResponse(ctx, session, memoryNote, turnCount, toolExecutionCount, allToolExecutions, turnUsage)
+	return a.synthesizeFinalResponse(ctx, session, memoryNote, turnCount, toolExecutionCount, allToolExecutions, turnUsage, turnCalls)
 }
 
 // batchState carries the loop-level state the per-call dispatch body reads
@@ -3815,7 +3877,7 @@ func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, 
 // conversation loop exhausts its turn/execution budget, so the agent yields
 // meaningful output instead of a generic limit error. Moved verbatim from
 // the loop tail when the batch body was extracted into dispatchOneCall.
-func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNote string, turnCount, toolExecutionCount int, allToolExecutions []ToolExecution, turnUsage Usage) (*Response, error) {
+func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNote string, turnCount, toolExecutionCount int, allToolExecutions []ToolExecution, turnUsage Usage, turnCalls int) (*Response, error) {
 	// Add a synthesis request to the conversation
 	// Include explicit format instructions since they may have been compressed in context
 	synthesisPrompt := "You must provide your final answer NOW with whatever information you have gathered so far. Summarize your findings: what actions were taken, what results were produced, and any remaining steps the user would need to complete manually. Be concise and actionable. You MUST respond with text — do not return an empty response."
@@ -3870,6 +3932,7 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNot
 			Content:        maxTurnsMessage,
 			Usage:          Usage{},
 			TurnUsage:      turnUsage, // the loop's calls were still billed
+			TurnLLMCalls:   turnCalls,
 			ToolExecutions: allToolExecutions,
 			Metadata: map[string]interface{}{
 				"turns":           turnCount,
@@ -3888,10 +3951,12 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNot
 	}
 
 	addUsage(&turnUsage, finalResp.Usage)
+	turnCalls++
 	return &Response{
 		Content:        content,
 		Usage:          finalResp.Usage,
 		TurnUsage:      turnUsage,
+		TurnLLMCalls:   turnCalls,
 		ToolExecutions: allToolExecutions,
 		Thinking:       finalResp.Thinking,
 		Metadata: map[string]interface{}{
@@ -4545,14 +4610,32 @@ func (a *Agent) findUserEntity(ctx context.Context, agentID string) *memory.Enti
 }
 
 // rerankMemories selects the most relevant memories for a user message from a
-// pool of FTS5 candidates. The existing LLM rerank decides; when the decision
-// layer is wired, the decider's per-candidate relevance is evaluated in the
-// background and recorded against that decision as a shadow row (plan Phase
-// 1, site recall.rerank). Nothing branches on the decider yet.
+// pool of FTS5 candidates (site recall.rerank).
+//
+// With a live band, the decider answers first and, when the band says to act,
+// its per-candidate relevance is the result and the generative rerank is
+// skipped. Otherwise the existing LLM rerank decides and the decider's answer
+// (already obtained on a live band, obtained in the background on a shadow
+// band) is recorded against it as shadow rows.
 func (a *Agent) rerankMemories(ctx context.Context, userMessage string, candidates []*memory.Memory) []*memory.Memory {
+	sessionID := sessionIDFromContext(ctx)
+	if kept, acted, req, out, notActed := a.liveRerank(ctx, sessionID, sites.SiteRecallRerank, userMessage, candidates); acted {
+		// Live: nothing to compare against; the row records what was acted
+		// on, with each candidate's provenance as its subject. Candidates
+		// kept without acting on their answer are recorded as FALLBACK.
+		a.recordDecisionAsync(ctx, sessionID, req, out, sites.RerankActedReferences(len(candidates), memorySubjects(candidates), notActed))
+		return kept
+	} else if req != nil {
+		// Live band, but the decider did not clear it: the LLM decides and
+		// the answer already in hand is recorded against it.
+		kept := a.rerankMemoriesLLM(ctx, userMessage, candidates)
+		a.recordDecisionAsync(ctx, sessionID, req, out,
+			sites.RerankReferenceSubjects(len(candidates), keptIndexes(candidates, kept), sites.ReferenceSourceLLMRerank, memorySubjects(candidates)))
+		return kept
+	}
 	kept := a.rerankMemoriesLLM(ctx, userMessage, candidates)
 	if a.decisionRouter != nil && len(candidates) > 0 {
-		a.shadowRerank(ctx, sessionIDFromContext(ctx), sites.SiteRecallRerank, userMessage, candidates, kept, sites.ReferenceSourceLLMRerank)
+		a.shadowRerank(ctx, sessionID, sites.SiteRecallRerank, userMessage, candidates, kept, sites.ReferenceSourceLLMRerank)
 	}
 	return kept
 }

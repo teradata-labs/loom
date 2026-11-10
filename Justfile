@@ -47,6 +47,21 @@ proto-format:
 proto-format-check:
     buf format --diff --exit-code
 
+# Regenerate NOTICE and THIRD-PARTY-NOTICES.md from the shipped binaries' deps
+notices:
+    @echo "Generating third-party notices..."
+    @GOWORK=off go run ./cmd/gen-notices
+
+# Fail if the committed notices no longer match the dependency tree
+notices-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! GOWORK=off go run ./cmd/gen-notices -check; then
+        echo "::error::Third-party notices are out of date. Run 'just notices' and commit."
+        exit 1
+    fi
+    echo "✅ Third-party notices are up to date"
+
 # Verify proto generation is up to date
 proto-gen-check: proto
     #!/usr/bin/env bash
@@ -413,7 +428,7 @@ lme-rig-test:
     LME_RIG_STRICT=1 bash deploy/longmemeval/render-test.sh
     LME_RIG_STRICT=1 bash deploy/longmemeval/slice-loop-test.sh
 
-check: proto-lint proto-format-check proto-gen-check generate-weaver fmt-check vet lint test build security interop
+check: proto-lint proto-format-check proto-gen-check notices-check generate-weaver fmt-check vet lint test build security interop
     @echo "✅ All checks passed! (matches GitHub CI)"
 
 # Watch for changes and run tests

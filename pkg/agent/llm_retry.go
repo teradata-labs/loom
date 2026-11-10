@@ -287,6 +287,12 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 			return nil, err
 		}
 
+		// Deterministic 4xx client refusals (authentication, permission,
+		// invalid request, not found) will not succeed on retry.
+		if llm.IsDeterministicClientError(err) {
+			return nil, err
+		}
+
 		lastErr = err
 
 		// Don't retry on context cancellation or deadline exceeded

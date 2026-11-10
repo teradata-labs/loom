@@ -201,6 +201,18 @@ export LOOM_SHELL_PASS_ENV=GH_TOKEN,AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,AWS_
 
 The value is read when the tool is created (at server start), so changing it needs a restart. It applies only to the inherited server environment; a call's own `env` parameter is filtered regardless. Programs embedding Loom can call `ShellExecuteTool.SetPassEnv` instead.
 
+Each call logs the names it withheld (never the values) at Debug level, with the session ID, as `shell_execute withheld credential-like server environment variables from the command`.
+
+It applies to bash mode only. In jailed mode (`tools.shell_execute.mode: jailed`) a command's environment is built from scratch and no server variable reaches it, so this setting has no effect there.
+
+### LOOM_SHELLJAIL_CHILD
+**Internal. Do not set.**
+**Used in:** `pkg/shelljail/spec.go` (`MarkerEnv`), `pkg/shelljail/child.go` (`Main`)
+
+Jailed `shell_execute` runs each command in a child process: the server re-executes its own binary with `LOOM_SHELLJAIL_CHILD=1` and only a few other variables, and sends the command spec on stdin. `shelljail.Main()`, which `looms` calls first in `main()`, sees the value `1` and runs the jailed interpreter instead of the server, then exits. Any other value, or none, starts the binary normally.
+
+Operators must not set it. With `LOOM_SHELLJAIL_CHILD=1` in its environment, `looms` does not start as a server: it waits for a jail spec on stdin and exits with status 125 when none arrives.
+
 ---
 
 ## LLM Providers
@@ -537,12 +549,12 @@ An empty value means no headers. When the variable is set it replaces `llm.litel
 
 ## Decision Layer
 
-Settings for the typed decision layer (`pkg/decision`, shadow mode only; see `docs/architecture/decision-layer.md`). They matter only for an agent whose YAML has a `decision:` block with `provider: jev`, and for `loom decision replay --decider jev`. Agent YAML can set neither the credential nor the endpoint.
+Settings for the typed decision layer (`pkg/decision`, shadow by default and live per site with a band; see `docs/architecture/decision-layer.md`). They matter only for an agent or a `JUDGE_TYPE_DECISION` judge whose `decision:` block has `provider: jev`, and for `loom decision replay --decider jev` and `loom decision ask --decider jev`. Agent YAML can set neither the credential nor the endpoint.
 
 ### LOOM_DECISION_BASE_URL
 **Used in:** `cmd/looms/config.go` (binds `decision.base_url` in `looms.yaml`), `pkg/decision/jev/config.go`
 
-Server-level decider endpoint, installed by every `looms` command when its config loads. It takes precedence over `TYPESAFE_BASE_URL`. Must be an `https` URL; plain `http` is refused unless the host is loopback and `LOOM_DECISION_ALLOW_INSECURE_HTTP` is true. A refused value is fatal for `looms serve` (config validation); other `looms` commands print a warning, leave the endpoint unset and fall back to `TYPESAFE_BASE_URL` or the provider default. `loom decision replay` does not read it; use its `--base-url` flag.
+Server-level decider endpoint, installed by every `looms` command when its config loads. It takes precedence over `TYPESAFE_BASE_URL`. Must be an `https` URL; plain `http` is refused unless the host is loopback and `LOOM_DECISION_ALLOW_INSECURE_HTTP` is true. A refused value is fatal for `looms serve` (config validation); other `looms` commands print a warning, leave the endpoint unset and fall back to `TYPESAFE_BASE_URL` or the provider default. `loom decision replay` and `loom decision ask` do not read it; use their `--base-url` flag.
 
 ```bash
 export LOOM_DECISION_BASE_URL=https://ai-gateway.vercel.sh/typesafe
@@ -552,7 +564,7 @@ export LOOM_DECISION_BASE_URL=https://ai-gateway.vercel.sh/typesafe
 **Used in:** `cmd/looms/config.go` (binds `decision.allow_insecure_http`)
 **Default:** `false`
 
-Allows an `http://` `LOOM_DECISION_BASE_URL` on a loopback host (a local proxy or mock decider). Non-loopback `http` is refused even when set. The `loom decision replay` equivalent is `--allow-insecure-http`.
+Allows an `http://` `LOOM_DECISION_BASE_URL` on a loopback host (a local proxy or mock decider). Non-loopback `http` is refused even when set. The `loom decision replay` and `loom decision ask` equivalent is `--allow-insecure-http`.
 
 ```bash
 export LOOM_DECISION_BASE_URL=http://127.0.0.1:4000

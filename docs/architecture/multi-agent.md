@@ -1980,6 +1980,15 @@ message WorkflowCost {
 }
 ```
 
+**What the cost totals count.** For the fork-join, parallel, pipeline, iterative, swarm and conditional patterns, `total_cost_usd`, `total_tokens` and `llm_calls` sum each agent result's whole conversation turn (`agent.Response.TurnUsage` and `TurnLLMCalls`, including tool-loop iterations). They also add the calls the executor makes itself: the LLM merge, stage validation, the swarm judge and the judge and vote retries, the conditional classifier and its retries, and stage attempts that a retry replaced (`pkg/orchestration/run_usage.go`). These are not counted:
+
+- LLM calls an agent makes outside its conversation loop: graph-memory recall and extraction, lesson mining, the memory compressor, segmented-memory reranking, the skills router, and the pattern classifier and reranker.
+- The losing calls of a leveled stage. Their USD is in `total_cost_usd`; their calls and tokens are not.
+- Debate, pair-programming and teacher-student runs. They return an empty `WorkflowCost`.
+- After a HITL resume, the executor's own calls made before the suspension. They are not checkpointed.
+
+`agent_costs_usd` sums the returned agent results only. It does not include the executor's own calls or replaced attempts.
+
 
 ### WorkflowConfig YAML
 
