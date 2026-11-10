@@ -1636,7 +1636,14 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 	}
 	workflowPath := filepath.Join(homeDir, ".loom", "workflows", workflowName+".yaml")
 
-	// Extract workflow topic for auto-subscribe
+	type yamlSubAgentSpec struct {
+		subAgentID string
+		agentName  string
+		roleName   string
+	}
+	var yamlSubAgentSpecs []yamlSubAgentSpec
+
+	// Collect participants before subscribing or spawning workers.
 	var workflowTopic string
 	if _, statErr := os.Stat(workflowPath); statErr == nil { // #nosec -- workflowPath is filepath.Join(homeDir, ".loom", "workflows", name+".yaml")
 		s.logger.Info("Loading workflow definition for auto-subscribe",
@@ -1654,36 +1661,13 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 				if commMap, ok := commInterface.(map[string]interface{}); ok {
 					if topic, ok := commMap["topic"].(string); ok && topic != "" {
 						workflowTopic = topic
-
-						// Auto-subscribe coordinator to workflow topic
-						s.logger.Info("Auto-subscribing coordinator to workflow topic",
-							zap.String("coordinator", coordinatorID),
-							zap.String("topic", topic))
-
-						if s.messageBus != nil {
-							_, err := s.messageBus.Subscribe(ctx, coordinatorID, topic, nil, 100)
-							if err != nil {
-								s.logger.Warn("Failed to auto-subscribe coordinator",
-									zap.String("coordinator", coordinatorID),
-									zap.String("topic", topic),
-									zap.Error(err))
-							} else {
-								s.logger.Info("Successfully auto-subscribed coordinator",
-									zap.String("coordinator", coordinatorID),
-									zap.String("topic", topic))
-							}
-						}
 					}
 				}
 			}
 
-			// SPAWN SUB-AGENTS: Parse agents list from workflow and spawn them
+			// Parse sub-agent declarations from the workflow.
 			if agentsInterface, ok := workflowConfig.Spec["agents"]; ok {
 				if agentsList, ok := agentsInterface.([]interface{}); ok {
-					s.logger.Info("Spawning workflow sub-agents from workflow definition",
-						zap.String("workflow", workflowName),
-						zap.Int("num_agents", len(agentsList)))
-
 					for _, agentInterface := range agentsList {
 						if agentMap, ok := agentInterface.(map[string]interface{}); ok {
 							agentName, _ := agentMap["agent"].(string)
@@ -1706,17 +1690,11 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 							}
 							subAgentID := fmt.Sprintf("%s:%s", workflowName, nameForID)
 
-							s.logger.Info("Spawning workflow sub-agent",
-								zap.String("sub_agent_id", subAgentID),
-								zap.String("agent_name", agentName),
-								zap.String("role_name", roleName))
-
-							// Spawn the sub-agent, passing base agent name for registry lookup
-							if err := s.autoSpawnWorkflowSubAgent(ctx, subAgentID, agentName); err != nil {
-								s.logger.Warn("Failed to spawn workflow sub-agent",
-									zap.String("sub_agent_id", subAgentID),
-									zap.Error(err))
-							}
+							yamlSubAgentSpecs = append(yamlSubAgentSpecs, yamlSubAgentSpec{
+								subAgentID: subAgentID,
+								agentName:  agentName,
+								roleName:   roleName,
+							})
 						}
 					}
 				}
@@ -1767,8 +1745,45 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 		s.mu.RUnlock()
 	}
 
-	if len(subAgentIDs) == 0 {
+	if len(subAgentIDs) == 0 && len(yamlSubAgentSpecs) == 0 {
 		return fmt.Errorf("no sub-agents found for workflow '%s'", workflowName)
+	}
+
+	if workflowTopic != "" && s.messageBus != nil {
+		s.logger.Info("Auto-subscribing coordinator to workflow topic",
+			zap.String("coordinator", coordinatorID),
+			zap.String("topic", workflowTopic))
+
+		_, err := s.messageBus.Subscribe(ctx, coordinatorID, workflowTopic, nil, 100)
+		if err != nil {
+			s.logger.Warn("Failed to auto-subscribe coordinator",
+				zap.String("coordinator", coordinatorID),
+				zap.String("topic", workflowTopic),
+				zap.Error(err))
+		} else {
+			s.logger.Info("Successfully auto-subscribed coordinator",
+				zap.String("coordinator", coordinatorID),
+				zap.String("topic", workflowTopic))
+		}
+	}
+
+	if len(yamlSubAgentSpecs) > 0 {
+		s.logger.Info("Spawning workflow sub-agents from workflow definition",
+			zap.String("workflow", workflowName),
+			zap.Int("num_agents", len(yamlSubAgentSpecs)))
+
+		for _, spec := range yamlSubAgentSpecs {
+			s.logger.Info("Spawning workflow sub-agent",
+				zap.String("sub_agent_id", spec.subAgentID),
+				zap.String("agent_name", spec.agentName),
+				zap.String("role_name", spec.roleName))
+
+			if err := s.autoSpawnWorkflowSubAgent(ctx, spec.subAgentID, spec.agentName); err != nil {
+				s.logger.Warn("Failed to spawn workflow sub-agent",
+					zap.String("sub_agent_id", spec.subAgentID),
+					zap.Error(err))
+			}
+		}
 	}
 
 	s.logger.Info("Found workflow sub-agents",
