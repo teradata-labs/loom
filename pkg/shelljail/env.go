@@ -1,0 +1,133 @@
+// Copyright 2026 Teradata
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//	http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package shelljail
+
+import (
+	"net/url"
+	"sort"
+	"strings"
+
+	"github.com/teradata-labs/loom/pkg/shellpolicy"
+)
+
+// sensitiveEnvNames are withheld by exact (upper-cased) name.
+var sensitiveEnvNames = map[string]bool{
+	"DATABASE_PASSWORD": true,
+	"DB_PASS":           true,
+}
+
+// sensitiveEnvSubstrings are withheld wherever they appear in a name, so
+// PASSPHRASE, ZZ_PRIVATEKEY and SESSIONCOOKIE match without underscores.
+var sensitiveEnvSubstrings = []string{
+	"SECRET", "PASSWORD", "PASSWD", "PASSPHRASE", "PASSCODE", "CREDENTIAL",
+	"APIKEY", "PRIVATE_KEY", "PRIVATEKEY", "AUTHTOKEN", "ACCESSKEY", "SIGNINGKEY",
+	"BEARER", "COOKIE", "JWT", "WEBHOOK",
+}
+
+// sensitiveEnvSegments are withheld when they are a whole underscore-separated
+// part of a name, so AWS_ACCESS_KEY_ID and LOOM_OTLP_HEADERS match while
+// KEYBOARD_LAYOUT and GIT_AUTHOR_NAME do not.
+// HEADERS covers LOOM_OTLP_HEADERS and OTEL_EXPORTER_OTLP_HEADERS, which carry
+// "Authorization=Bearer ..." values.
+var sensitiveEnvSegments = map[string]bool{
+	"KEY": true, "PASS": true, "DSN": true,
+	"AUTH": true, "AUTHORIZATION": true, "HEADERS": true,
+}
+
+// sensitiveEnvSegmentSuffixes are withheld when an underscore-separated part
+// ends with them, so GH_TOKEN, GITHUBTOKEN and ZZ_APITOKEN match while
+// TOKENIZERS_PARALLELISM does not.
+var sensitiveEnvSegmentSuffixes = []string{"TOKEN"}
+
+// sensitiveEnvNameSuffixes are withheld when the whole name ends with them.
+// "_PWD" catches DB_PWD-style passwords while the shell's own PWD and OLDPWD
+// still pass.
+var sensitiveEnvNameSuffixes = []string{"DATABASE_URL", "_PWD"}
+
+// passedEnvNames match the rules above but are passed on purpose.
+// SSH_AUTH_SOCK is a socket path, not a secret; commands that can reach it can
+// use the operator's loaded SSH keys (documented in docs/architecture/artifacts.md).
+var passedEnvNames = map[string]bool{"SSH_AUTH_SOCK": true}
+
+// SensitiveEnvName reports whether an environment variable's name looks like
+// it holds a credential. Names are compared upper-cased. Bash-mode
+// shell_execute and the jail both use it, so both withhold the same names.
+func SensitiveEnvName(name string) bool {
+	upper := strings.ToUpper(name)
+	if passedEnvNames[upper] {
+		return false
+	}
+	if sensitiveEnvNames[upper] {
+		return true
+	}
+	for _, suffix := range sensitiveEnvNameSuffixes {
+		if strings.HasSuffix(upper, suffix) {
+			return true
+		}
+	}
+	for _, sub := range sensitiveEnvSubstrings {
+		if strings.Contains(upper, sub) {
+			return true
+		}
+	}
+	for _, seg := range strings.Split(upper, "_") {
+		if sensitiveEnvSegments[seg] {
+			return true
+		}
+		for _, suffix := range sensitiveEnvSegmentSuffixes {
+			if strings.HasSuffix(seg, suffix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// URLHasPassword reports whether value is a URL with a password in its
+// userinfo (postgres://user:pw@host).
+func URLHasPassword(value string) bool {
+	if !strings.Contains(value, "://") || !strings.Contains(value, "@") {
+		return false
+	}
+	u, err := url.Parse(value)
+	if err != nil || u.User == nil {
+		return false
+	}
+	_, ok := u.User.Password()
+	return ok
+}
+
+// FilterEnv splits NAME=value entries into those a jailed program may receive
+// and the names it may not: credentials (SensitiveEnvName, URLHasPassword)
+// and names that change what a program executes or loads
+// (shellpolicy.ExecEnvName, the list the command-policy hook asks about, so
+// the hook and the jail never disagree on it). The dropped names are sorted
+// and unique. Callers that force their own PATH remove it before calling.
+func FilterEnv(entries []string) (kept, dropped []string) {
+	seen := map[string]bool{}
+	for _, kv := range entries {
+		name, value, _ := strings.Cut(kv, "=")
+		if SensitiveEnvName(name) || URLHasPassword(value) || shellpolicy.ExecEnvName(name) {
+			if !seen[name] {
+				seen[name] = true
+				dropped = append(dropped, name)
+			}
+			continue
+		}
+		kept = append(kept, kv)
+	}
+	sort.Strings(dropped)
+	return kept, dropped
+}

@@ -23,6 +23,7 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
+	"github.com/teradata-labs/loom/pkg/decision"
 	"github.com/teradata-labs/loom/pkg/eventlog"
 	"github.com/teradata-labs/loom/pkg/fabric"
 	mcpadapter "github.com/teradata-labs/loom/pkg/mcp/adapter"
@@ -34,6 +35,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/skills"
 	"github.com/teradata-labs/loom/pkg/skills/discovery"
 	"github.com/teradata-labs/loom/pkg/skills/hygiene"
+	skillindex "github.com/teradata-labs/loom/pkg/skills/index"
 	skilltasks "github.com/teradata-labs/loom/pkg/skills/tasks"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/task"
@@ -131,6 +133,19 @@ type Agent struct {
 	orchestratorLLM LLMProvider // For merge/synthesis in fork-join orchestration
 	classifierLLM   LLMProvider // For intent classification / pattern selection
 	compressorLLM   LLMProvider // For memory compression / semantic search reranking
+
+	// Decision layer (pkg/decision). decisionCfg and decisionShadowStore come
+	// from WithDecisionConfig; initDecisionRouter builds decisionRouter and
+	// decisionRecorder from them after options are applied. decisionWG tracks
+	// background shadow evaluations so tests and shutdown can wait.
+	decisionCfg         *loomv1.DecisionConfig
+	decisionShadowStore decision.ShadowStore
+	decisionRouter      *decision.Router
+	decisionRecorder    *decision.ShadowRecorder
+	decisionWG          sync.WaitGroup
+	// skillRouteRouters are the skill routers BuildSkillsOptions built for
+	// this agent; attachSkillRouteDecision gives them decisionRouter.
+	skillRouteRouters []*skillindex.Router
 
 	// Tracer for observability
 	tracer observability.Tracer
@@ -315,6 +330,11 @@ type Agent struct {
 	// Shares the context-dump switch; a no-op on the production path. See
 	// context_debug.go.
 	ctxDebug *contextDebug
+
+	// Time source of the throttle-patience budget and its waits (see
+	// throttlePatience in llm_retry.go). Nil means the real clock; tests set
+	// a fake so a 10-minute budget runs without real sleeps.
+	throttleClock throttleClock
 }
 
 // WorkflowCommunicationContext contains dynamic workflow communication info injected into prompts

@@ -87,10 +87,11 @@ var loomToGenAI = map[string]string{ //nolint:gochecknoglobals
 // genAISystemNorm normalizes provider names to OTel GenAI spec values for gen_ai.system.
 // Spec: https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-spans/#generative-ai-request-attributes
 var genAISystemNorm = map[string]string{ //nolint:gochecknoglobals
-	"bedrock":      "aws.bedrock",
-	"azure-openai": "azure_openai",
-	"gemini":       "google.generative_ai",
-	"huggingface":  "hugging_face",
+	"bedrock":        "aws.bedrock",
+	"bedrock-mantle": "aws.bedrock", // same service, second endpoint surface
+	"azure-openai":   "azure_openai",
+	"gemini":         "google.generative_ai",
+	"huggingface":    "hugging_face",
 	// anthropic, openai, ollama, mistral already match the spec
 }
 
