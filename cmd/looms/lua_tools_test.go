@@ -315,3 +315,123 @@ func TestLuaTools_DefaultPolicyHidesTheShell(t *testing.T) {
 	visible := pol.Visible([]string{"shell_execute", "file_read", "shell_execute_sandbox"}, luasandbox.TrustOwn)
 	assert.Equal(t, []string{"file_read"}, visible)
 }
+
+func TestKeepShellDenied(t *testing.T) {
+	for name, tc := range map[string]struct {
+		deny     []string
+		governed bool
+		want     []string
+		warns    bool
+	}{
+		"listed stays":                {deny: []string{"shell_execute", "x"}, want: []string{"shell_execute", "x"}},
+		"a pattern covers it":         {deny: []string{"shell_*"}, want: []string{"shell_*"}},
+		"removed and ungoverned":      {deny: []string{"x"}, want: []string{"x", "shell_execute"}, warns: true},
+		"removed and governed":        {deny: []string{"x"}, governed: true, want: []string{"x"}},
+		"empty list, ungoverned":      {deny: nil, want: []string{"shell_execute"}, warns: true},
+		"listed and governed is fine": {deny: []string{"shell_execute"}, governed: true, want: []string{"shell_execute"}},
+	} {
+		got, warning := keepShellDenied(tc.deny, tc.governed)
+		assert.Equal(t, tc.want, got, name)
+		assert.Equal(t, tc.warns, warning != "", name)
+	}
+}
+
+func TestScriptShellGoverned(t *testing.T) {
+	binding := shuttle.HookBinding{Kind: "command-policy", Scope: "shell_execute", Policy: "readonly"}
+	for name, tc := range map[string]struct {
+		mode     string
+		bindings []shuttle.HookBinding
+		want     bool
+	}{
+		"jailed with a binding":     {mode: "jailed", bindings: []shuttle.HookBinding{binding}, want: true},
+		"jailed with a wildcard":    {mode: "jailed", bindings: []shuttle.HookBinding{{Kind: "command-policy", Scope: "shell_*", Policy: "readonly"}}, want: true},
+		"jailed without a binding":  {mode: "jailed"},
+		"bash with a binding":       {mode: "bash", bindings: []shuttle.HookBinding{binding}},
+		"binding on another tool":   {mode: "jailed", bindings: []shuttle.HookBinding{{Kind: "command-policy", Scope: "shell_execute_sandbox", Policy: "p"}}},
+		"another kind on the shell": {mode: "jailed", bindings: []shuttle.HookBinding{{Kind: "ask", Scope: "shell_execute"}}},
+		// A matcher narrows the calls a binding judges, so the hook would let
+		// every other script call through unjudged: it does not govern.
+		"jailed with a narrowed matcher": {mode: "jailed", bindings: []shuttle.HookBinding{{Kind: "command-policy", Scope: "shell_execute", Policy: "readonly",
+			Matcher: shuttle.MatcherSpec{ParamPath: "working_dir", Op: "equals", Value: "/nonexistent"}}}},
+		"narrowed static binding": {mode: "jailed", bindings: []shuttle.HookBinding{{Kind: "command-policy", Scope: "shell_execute", Policy: "readonly", Enforcement: "static",
+			Matcher: shuttle.MatcherSpec{ParamPath: "command", Op: "contains", Value: "ls"}}}},
+		"jailed with an empty matcher":   {mode: "jailed", bindings: []shuttle.HookBinding{{Kind: "command-policy", Scope: "shell_execute", Policy: "readonly", Matcher: shuttle.MatcherSpec{}}}, want: true},
+		"static enforcement, unfiltered": {mode: "jailed", bindings: []shuttle.HookBinding{{Kind: "command-policy", Scope: "shell_execute", Policy: "readonly", Enforcement: "static"}}, want: true},
+		"narrowed binding next to an unfiltered one": {mode: "jailed", bindings: []shuttle.HookBinding{
+			{Kind: "command-policy", Scope: "shell_execute", Policy: "readonly", Matcher: shuttle.MatcherSpec{ParamPath: "command", Op: "regex", Value: "^ls"}},
+			binding,
+		}, want: true},
+	} {
+		c := &Config{}
+		c.Tools.ShellExecute.Mode = tc.mode
+		c.Tools.Hooks.Bindings = tc.bindings
+		assert.Equal(t, tc.want, scriptShellGoverned(c), name)
+	}
+	assert.False(t, scriptShellGoverned(nil))
+}
+
+// Removing shell_execute from tools.lua.tools.deny gives it to the runner's
+// own scripts only when it is governed, and never to shared scripts.
+func TestLuaTools_ShellForScripts(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	setDefaults()
+	var cfg Config
+	require.NoError(t, viper.Unmarshal(&cfg))
+	cfg.Tools.Lua.Enabled = true
+	var deny []string
+	for _, d := range cfg.Tools.Lua.Tools.Deny {
+		if d != "shell_execute" {
+			deny = append(deny, d)
+		}
+	}
+	cfg.Tools.Lua.Tools.Deny = deny
+	assert.Contains(t, cfg.Tools.Lua.Tools.DenyForShared, "shell_execute", "shared scripts never get the shell by default")
+
+	tools := []string{"shell_execute", "file_read"}
+	ungoverned, err := newLuaRuntime(cfg.Tools.Lua, luaGuards{}, 4<<30, t.TempDir(), zap.NewNop())
+	require.NoError(t, err)
+	require.Len(t, ungoverned.warnings, 1)
+	pol, err := ungoverned.options.Policy(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"file_read"}, pol.Visible(tools, luasandbox.TrustOwn), "ungoverned: hidden even from own scripts")
+
+	governed, err := newLuaRuntime(cfg.Tools.Lua, luaGuards{ShellGoverned: true}, 4<<30, t.TempDir(), zap.NewNop())
+	require.NoError(t, err)
+	assert.Empty(t, governed.warnings)
+	pol, err = governed.options.Policy(context.Background())
+	require.NoError(t, err)
+	assert.ElementsMatch(t, tools, pol.Visible(tools, luasandbox.TrustOwn), "governed: the runner's own scripts get the shell")
+	assert.Equal(t, []string{"file_read"}, pol.Visible(tools, luasandbox.TrustShared), "shared scripts never do")
+
+	// An operator-set deny_for_shared replaces the default list wholesale;
+	// shared scripts still never get the shell, governed or not.
+	for _, guards := range []luaGuards{{}, {ShellGoverned: true}} {
+		custom := cfg.Tools.Lua
+		custom.Tools.DenyForShared = []string{"foo"}
+		rt, err := newLuaRuntime(custom, guards, 4<<30, t.TempDir(), zap.NewNop())
+		require.NoError(t, err)
+		pol, err := rt.options.Policy(context.Background())
+		require.NoError(t, err)
+		assert.Contains(t, pol.DenyForShared, "shell_execute", "governed=%v", guards.ShellGoverned)
+		assert.Contains(t, pol.DenyForShared, "foo", "governed=%v", guards.ShellGoverned)
+		assert.Equal(t, []string{"file_read"}, pol.Visible(tools, luasandbox.TrustShared), "governed=%v: custom deny_for_shared", guards.ShellGoverned)
+	}
+}
+
+func TestKeepShellDeniedForShared(t *testing.T) {
+	for name, tc := range map[string]struct {
+		deny []string
+		want []string
+	}{
+		"default list keeps it":        {deny: []string{"http_request", "shell_execute"}, want: []string{"http_request", "shell_execute"}},
+		"a pattern covers it":          {deny: []string{"shell_*"}, want: []string{"shell_*"}},
+		"operator list without it":     {deny: []string{"foo"}, want: []string{"foo", "shell_execute"}},
+		"empty list":                   {deny: nil, want: []string{"shell_execute"}},
+		"a pattern for something else": {deny: []string{"web_*"}, want: []string{"web_*", "shell_execute"}},
+	} {
+		in := append([]string(nil), tc.deny...)
+		assert.Equal(t, tc.want, keepShellDeniedForShared(tc.deny), name)
+		assert.Equal(t, in, tc.deny, "%s: input not modified", name)
+	}
+}

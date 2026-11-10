@@ -791,7 +791,7 @@ func (a *Agent) classifyParkItems(ctx Context, calls []ToolCall, positions []int
 			continue
 		}
 		if d.Kind == shuttle.Ask {
-			items = append(items, parkItem{call: call, seq: positions[idx], kind: "approval"})
+			items = append(items, parkItem{call: call, seq: positions[idx], kind: "approval", reason: d.Reason})
 		}
 	}
 	return items
