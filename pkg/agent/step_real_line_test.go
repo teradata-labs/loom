@@ -174,3 +174,30 @@ func TestAnAgentWithNoLimitsReservesTheListedOutput(t *testing.T) {
 	assert.Equal(t, "narrowed and done", resp.Content)
 	assert.True(t, model.told)
 }
+
+// A model nothing lists, with no window configured, is not fitted to loom's
+// own default window: a proxy alias for a large model takes a step past
+// 200,000 less a tenth, and the step is sent whole.
+func TestAnUnlistedModelWithNoWindowIsNotFitted(t *testing.T) {
+	model := &tokModel{provider: "litellm", model: "prod-large", limit: 1000000 - 4096, fanOut: 80}
+	ag := realLineAgent(t, model, &loomv1.LLMConfig{}, 2450)
+	resp, err := ag.Chat(context.Background(), "s-unlisted", "read every table")
+	require.NoError(t, err)
+	assert.Equal(t, "read them all", resp.Content)
+	assert.False(t, model.told, "a step the provider accepts was fitted to loom's default window")
+	assert.Greater(t, model.seen, 185000)
+}
+
+// The first provider count is the calibration, not half of it: after one
+// sample at 1.25, the next step is counted at 1.25.
+func TestTheFirstSampleIsTheCalibration(t *testing.T) {
+	sm := newCompileMemory(t)
+	ctx := context.Background()
+	sm.AddMessage(ctx, Message{Role: "user", Content: strings.Repeat("the quarterly report shows growth across every region. ", 400), Turn: 1})
+	sm.mu.Lock()
+	counted := sm.accurateTokensLocked(sm.compileLocked())
+	sm.mu.Unlock()
+	require.GreaterOrEqual(t, counted, calibrationMinSampleTokens)
+	sm.ObservePromptTokens(counted * 5 / 4)
+	assert.InDelta(t, 1.25, sm.EstimateCalibration(), 0.01)
+}

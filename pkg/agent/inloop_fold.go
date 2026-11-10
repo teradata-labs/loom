@@ -349,14 +349,6 @@ func (sm *SegmentedMemory) ReservedOutputTokens() int {
 	return sm.tokenBudget.ReservedTokens
 }
 
-// ContextWindowTokens is the window this memory was set with, max_context_tokens
-// as the agent's builder resolved it.
-func (sm *SegmentedMemory) ContextWindowTokens() int {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-	return sm.tokenBudget.MaxTokens
-}
-
 // ReplaceInFlightResults replaces the results of the step in flight — every
 // tool row after the last assistant row — with note, keeping each row's tool
 // call id so every call still has its result. It is the answer to a step whose

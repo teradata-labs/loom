@@ -504,8 +504,14 @@ func (sm *SegmentedMemory) ObservePromptTokens(actual int) {
 		return
 	}
 	ratio := min(max(float64(actual)/float64(counted), calibrationMin), calibrationMax)
-	f := sm.calibrationLocked()
-	sm.estimateCalibration = min(max(f+calibrationAlpha*(ratio-f), calibrationMin), calibrationMax)
+	if sm.estimateCalibration == 0 {
+		// The first sample is the calibration: averaging it with 1.0 would
+		// leave the factor below a measured undercount for the next sends.
+		sm.estimateCalibration = ratio
+	} else {
+		f := sm.calibrationLocked()
+		sm.estimateCalibration = min(max(f+calibrationAlpha*(ratio-f), calibrationMin), calibrationMax)
+	}
 	zap.L().Debug("relief: estimate calibration",
 		zap.String("session_id", sm.sessionID),
 		zap.Int("provider_prompt_tokens", actual),

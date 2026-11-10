@@ -4225,10 +4225,8 @@ func (a *Agent) fitStepToWindow(ctx Context, session *Session, noteKey string, e
 	if n == 0 {
 		return false
 	}
-	// A builder may set the window and the reply reservation in the memory's
-	// limits only (the registry does): the reservation is the larger of the
-	// config's and the memory's, and the window is the memory's when the
-	// config has none.
+	// The reply reservation is the larger of the config's and the memory's: a
+	// builder may resolve it into the memory's limits only.
 	reserved := a.config.ReservedOutputTokens
 	if r := segMem.ReservedOutputTokens(); r > reserved {
 		reserved = r
@@ -4243,11 +4241,10 @@ func (a *Agent) fitStepToWindow(ctx Context, session *Session, noteKey string, e
 			reserved = r
 		}
 	}
-	configured := a.config.MaxContextTokens
-	if configured <= 0 {
-		configured = segMem.ContextWindowTokens()
-	}
-	ceiling := ProviderPromptCeiling(provider, model, reserved, configured, a.config.MaxModelContextTokens)
+	// A model nothing lists, with no window configured, has no ceiling here:
+	// the memory's default window is loom's own figure, not the provider's,
+	// and the refusal path answers as it does on main.
+	ceiling := ProviderPromptCeiling(provider, model, reserved, a.config.MaxContextTokens, a.config.MaxModelContextTokens)
 	count := segMem.StepSendCount(extraBytes, ceiling, unsampledStepCalibration(provider, model))
 	if ceiling <= 0 || count <= ceiling {
 		return false
@@ -5406,9 +5403,9 @@ func (a *Agent) GetAllRoleLLMs() map[loomv1.LLMRole]LLMProvider {
 
 // SetSharedMemoryThreshold configures the byte bound above which a tool result
 // enters truncated, and the tool executor's large-parameter threshold.
-// For the arrival bound, non-positive values mean
-// storage.DefaultSharedMemoryThreshold: the bound is unconditional, so no
-// input disables it. For the executor, as on main: -1 is the default, 0 stores
+// The arrival bound takes positive values only and otherwise keeps the bound
+// it has (storage.DefaultSharedMemoryThreshold unless set): it is
+// unconditional, so no input disables it. For the executor, as on main: -1 is the default, 0 stores
 // every tool parameter by reference, >0 only those over N bytes.
 func (a *Agent) SetSharedMemoryThreshold(threshold int64) {
 	a.sharedMemoryThreshold = threshold
@@ -5420,7 +5417,7 @@ func (a *Agent) SetSharedMemoryThreshold(threshold int64) {
 		a.executor.SetSharedMemory(a.sharedMemory, eff)
 	}
 	// The arrival bound takes positive values only; anything else keeps the
-	// default (Memory.SetThresholdBytes ignores it).
+	// bound it has (Memory.SetThresholdBytes ignores it).
 	if a.memory != nil {
 		a.memory.SetThresholdBytes(threshold)
 	}

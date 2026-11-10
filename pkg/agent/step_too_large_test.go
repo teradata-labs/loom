@@ -321,19 +321,6 @@ func TestTheCeilingReservesTheMemorysReply(t *testing.T) {
 	assert.True(t, model.told)
 }
 
-// The window, like the reservation, may be set in the memory's limits only:
-// for a model nothing lists, the ceiling is still the configured window then.
-func TestTheCeilingReadsTheMemorysWindowWhenTheConfigHasNone(t *testing.T) {
-	model := &windowedModel{limit: 19000, fanOut: 10, plain: true}
-	ag, _ := windowedAgent(t, model, 16000)
-	ag.config.MaxContextTokens = 0
-	ag.memory.SetContextLimits(20000, 1000)
-	resp, err := ag.Chat(context.Background(), "s-mem-window", "read ten tables")
-	require.NoError(t, err, "the step was sent with no ceiling and the server refused")
-	assert.Equal(t, "narrowed and done", resp.Content)
-	assert.True(t, model.told)
-}
-
 // The registry carries the served window from the agent's config into the
 // agent it builds.
 func TestTheRegistryCarriesTheServedWindow(t *testing.T) {

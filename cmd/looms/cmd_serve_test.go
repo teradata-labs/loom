@@ -276,7 +276,6 @@ agent:
     output_token_cb_threshold: 6
     enable_self_healing: false
     tool_change_note: true
-    context_relief_warning: true
     patterns:
       enabled: true
       min_confidence: 0.8
