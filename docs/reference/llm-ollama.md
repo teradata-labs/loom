@@ -490,14 +490,14 @@ client := ollama.NewClient(ollama.Config{
 
 **How `auto` mode works**:
 
-1. On first tool call, Loom queries Ollama's `/api/show` for the model's capabilities
+1. On the first request that offers tools or carries tool calls in its history, Loom queries Ollama's `/api/show` for the model's capabilities. A request with neither isn't probed: it waits for nothing and reports `no_tools`. Requests that arrive while a probe is running wait for that one probe instead of sending their own
 2. If `capabilities` lists `tools`, native tools are enabled. Older Ollama returns no list, so Loom checks the template for tool-handling directives (e.g., `{{ .Tools }}`) instead
 3. If the probe fails (e.g., Ollama unreachable, an error status, or busy past the 30 s timeout), falls back to a static known-models list
 4. A probe answer is cached for the client's lifetime. A failed probe is remembered for 30 s: requests in that window use the known-models list without probing, and the first request after it probes again
 5. The probe runs under the request's context, so cancelling the request also stops a slow probe
 6. Each request decides its tool mode once. The history (assistant `tool_calls`, `tool` role results) and the `tools` block always use the same mode
 
-The decision is reported in the response metadata (`native_tools`, `tool_mode_source`), in a zap debug log line, and on the LLM span as `llm.ollama.tool_mode` (`native` or `prompt`), `llm.ollama.tool_mode_source` (`config`, `capabilities`, `template`, `fallback_list` or `probe_failed`), `llm.ollama.tool_mode_cached`, and `llm.ollama.tool_probe_error` when the probe failed.
+The decision is reported in the response metadata (`native_tools`, `tool_mode_source`), in a zap debug log line, and on the LLM span as `llm.ollama.tool_mode` (`native` or `prompt`), `llm.ollama.tool_mode_source` (`config`, `capabilities`, `template`, `fallback_list`, `probe_failed` or `no_tools`), `llm.ollama.tool_mode_cached`, and `llm.ollama.tool_probe_error` when the probe failed.
 
 
 ### Checking Tool Support
@@ -740,7 +740,7 @@ Loom automatically discovers your installed Ollama models — no manual registry
 ### How It Works
 
 1. **Model Registry**: At startup, Loom queries Ollama's `/api/tags` endpoint to discover all installed models
-2. **Tool Support Probe**: On first tool call, Loom queries `/api/show` for the model's capabilities to detect tool support
+2. **Tool Support Probe**: On the first request that uses tools, Loom queries `/api/show` for the model's capabilities to detect tool support
 3. **Fallback**: If Ollama is unreachable, Loom uses a static list of known-working models
 4. **Max Tokens**: Automatically scaled based on model name substrings (default→4096, names containing 13b-34b→6144, 70b+→8192; see [max_tokens](#max_tokens) for details)
 

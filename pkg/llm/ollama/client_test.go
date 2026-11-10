@@ -16,9 +16,11 @@ package ollama
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -784,7 +786,7 @@ func TestClient_ChatStream_HungProbeHonorsCallerCancel(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	_, err := client.ChatStream(ctx, []llmtypes.Message{{Role: "user", Content: "hi"}}, nil, nil)
+	_, err := client.ChatStream(ctx, []llmtypes.Message{{Role: "user", Content: "hi"}}, probeTestTools(), nil)
 	elapsed := time.Since(start)
 
 	require.Error(t, err)
@@ -796,6 +798,104 @@ func TestClient_ChatStream_HungProbeHonorsCallerCancel(t *testing.T) {
 	client.probeMu.Lock()
 	defer client.probeMu.Unlock()
 	assert.True(t, client.probeRetryAt.IsZero(), "a cancelled probe isn't remembered as failed")
+}
+
+// probeTestTools is one tool, so a request needs a tool-mode decision.
+func probeTestTools() []shuttle.Tool {
+	return []shuttle.Tool{&shuttle.MockTool{
+		MockName:   "weather:get",
+		MockSchema: &shuttle.JSONSchema{Type: "object", Properties: map[string]*shuttle.JSONSchema{"city": {Type: "string"}}},
+	}}
+}
+
+// okChatHandler answers /api/show with the "tools" capability after delay,
+// counting the probes, and /api/chat with a finished reply.
+func okChatHandler(showCalls *atomic.Int32, delay time.Duration) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/show":
+			showCalls.Add(1)
+			time.Sleep(delay)
+			_ = json.NewEncoder(w).Encode(map[string]any{"capabilities": []string{"completion", "tools"}})
+		case "/api/chat":
+			_ = json.NewEncoder(w).Encode(chatResponse{Model: "m", Message: ollamaMessage{Role: "assistant", Content: "ok"}, Done: true})
+		}
+	}
+}
+
+func TestClient_ChatStream_ConcurrentFirstRequestsShareOneProbe(t *testing.T) {
+	var showCalls atomic.Int32
+	server := httptest.NewServer(okChatHandler(&showCalls, 200*time.Millisecond))
+	defer server.Close()
+
+	client := NewClient(Config{Endpoint: server.URL, Model: "some-unknown-model:14b"})
+	const sessions = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, sessions)
+	for i := 0; i < sessions; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, err := client.ChatStream(context.Background(), []llmtypes.Message{{Role: "user", Content: "hi"}}, probeTestTools(), nil)
+			if err == nil && resp.Metadata["native_tools"] != true {
+				err = fmt.Errorf("native_tools = %v, want true", resp.Metadata["native_tools"])
+			}
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		assert.NoError(t, err)
+	}
+	assert.Equal(t, int32(1), showCalls.Load(), "one probe for all first requests")
+}
+
+func TestClient_ChatStream_ProbeWaiterHonorsItsOwnCancel(t *testing.T) {
+	// A request waiting for another request's slow probe can still give up.
+	var showCalls atomic.Int32
+	server := httptest.NewServer(okChatHandler(&showCalls, 2*time.Second))
+	defer server.Close()
+
+	client := NewClient(Config{Endpoint: server.URL, Model: "some-unknown-model:14b"})
+	go func() {
+		_, _ = client.ChatStream(context.Background(), []llmtypes.Message{{Role: "user", Content: "hi"}}, probeTestTools(), nil)
+	}()
+	require.Eventually(t, func() bool { return showCalls.Load() == 1 }, 2*time.Second, 10*time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := client.ChatStream(ctx, []llmtypes.Message{{Role: "user", Content: "hi"}}, probeTestTools(), nil)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Less(t, time.Since(start), time.Second, "the waiter stops at its own deadline")
+	assert.Equal(t, int32(1), showCalls.Load(), "the waiter didn't start a probe of its own")
+}
+
+func TestClient_ChatStream_NoToolsSkipsProbe(t *testing.T) {
+	// A request with no tools and no tool history doesn't wait for /api/show.
+	var showCalls atomic.Int32
+	server := httptest.NewServer(okChatHandler(&showCalls, time.Second))
+	defer server.Close()
+
+	client := NewClient(Config{Endpoint: server.URL, Model: "some-unknown-model:14b"})
+	start := time.Now()
+	resp, err := client.ChatStream(context.Background(), []llmtypes.Message{{Role: "user", Content: "Summarize this."}}, nil, nil)
+	require.NoError(t, err)
+	assert.Less(t, time.Since(start), 500*time.Millisecond)
+	assert.Equal(t, int32(0), showCalls.Load())
+	assert.Equal(t, "no_tools", resp.Metadata["tool_mode_source"])
+
+	// Tool history still needs the decision.
+	history := []llmtypes.Message{
+		{Role: "user", Content: "What's the weather?"},
+		{Role: "assistant", ToolCalls: []llmtypes.ToolCall{{ID: "call_1", Name: "weather:get", Input: map[string]interface{}{}}}},
+		{Role: "tool", ToolUseID: "call_1", Content: `{"temp_c":18}`},
+	}
+	_, err = client.ChatStream(context.Background(), history, nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), showCalls.Load())
 }
 
 // TestClient_ChatStream_RecordsToolModeOnSpan pins the observability of the
@@ -814,7 +914,7 @@ func TestClient_ChatStream_RecordsToolModeOnSpan(t *testing.T) {
 
 	client := NewClient(Config{Endpoint: server.URL, Model: "qwen3:8b"})
 	ctx, span := observability.NewNoOpTracer().StartSpan(context.Background(), "test")
-	_, err := client.ChatStream(ctx, []llmtypes.Message{{Role: "user", Content: "hi"}}, nil, nil)
+	_, err := client.ChatStream(ctx, []llmtypes.Message{{Role: "user", Content: "hi"}}, probeTestTools(), nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, "native", span.Attributes["llm.ollama.tool_mode"])

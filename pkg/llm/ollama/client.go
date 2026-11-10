@@ -55,6 +55,7 @@ type Client struct {
 	probeRetryAt time.Time        // after a failed probe, no new probe before this time
 	probeLastErr error            // the failed probe's error, reported during the backoff
 	probeBackoff time.Duration    // how long a failed probe is remembered
+	probeWait    chan struct{}    // non-nil while a probe runs; closed when it ends
 }
 
 // fallbackToolSupportedModels is used when the /api/show probe fails (e.g. Ollama
@@ -214,6 +215,7 @@ const (
 	toolModeSourceTemplate     = "template"      // older Ollama: /api/show template checked for tool directives
 	toolModeSourceFallbackList = "fallback_list" // probe failed; the model matched fallbackToolSupportedModels
 	toolModeSourceProbeFailed  = "probe_failed"  // probe failed; the model is not in the fallback list
+	toolModeSourceNoTools      = "no_tools"      // no tools and no tool history: not probed, nothing to decide
 )
 
 // probeTimeout bounds one /api/show probe. Ollama can take several seconds to
@@ -262,30 +264,58 @@ func (c *Client) resolveToolMode(ctx context.Context) toolModeDecision {
 	// The client is shared across sessions: the cache is read and written
 	// under probeMu. The probe itself runs unlocked so a slow /api/show never
 	// blocks a caller that could otherwise give up on its own context.
+	// Concurrent first requests share one probe: the rest wait for it, each
+	// still free to give up on its own context.
 	c.probeMu.Lock()
-	if c.probeDone {
-		d := c.probeResult
+	for {
+		if c.probeDone {
+			d := c.probeResult
+			c.probeMu.Unlock()
+			d.cached = true
+			return d
+		}
+		if time.Now().Before(c.probeRetryAt) {
+			d := c.fallbackDecision(c.probeLastErr)
+			c.probeMu.Unlock()
+			d.cached = true
+			return d
+		}
+		if c.probeWait == nil {
+			break
+		}
+		wait := c.probeWait
 		c.probeMu.Unlock()
-		d.cached = true
-		return d
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			d := c.fallbackDecision(ctx.Err())
+			d.cached = true
+			return d
+		}
+		c.probeMu.Lock()
 	}
-	if time.Now().Before(c.probeRetryAt) {
-		d := c.fallbackDecision(c.probeLastErr)
-		c.probeMu.Unlock()
-		d.cached = true
-		return d
-	}
+	done := make(chan struct{})
+	c.probeWait = done
 	c.probeMu.Unlock()
 
 	native, source, err := c.probeToolSupport(ctx)
+
+	c.probeMu.Lock()
+	c.probeWait = nil
+	close(done)
+	if err == nil {
+		c.probeDone = true
+		c.probeResult = toolModeDecision{native: native, source: source}
+	} else if ctx.Err() == nil {
+		// A probe stopped by the caller's own cancellation isn't remembered:
+		// a waiting request probes again.
+		c.probeRetryAt = time.Now().Add(c.probeBackoff)
+		c.probeLastErr = err
+	}
+	c.probeMu.Unlock()
+
 	if err != nil {
 		d := c.fallbackDecision(err)
-		if ctx.Err() == nil {
-			c.probeMu.Lock()
-			c.probeRetryAt = time.Now().Add(c.probeBackoff)
-			c.probeLastErr = err
-			c.probeMu.Unlock()
-		}
 		zap.L().Debug("ollama tool mode: /api/show probe failed, using fallback list",
 			zap.String("model", c.model),
 			zap.String("tool_mode", d.mode()),
@@ -296,15 +326,46 @@ func (c *Client) resolveToolMode(ctx context.Context) toolModeDecision {
 	}
 
 	d := toolModeDecision{native: native, source: source}
-	c.probeMu.Lock()
-	c.probeDone = true
-	c.probeResult = d
-	c.probeMu.Unlock()
 	zap.L().Debug("ollama tool mode: probed /api/show",
 		zap.String("model", c.model),
 		zap.String("tool_mode", d.mode()),
 		zap.String("source", d.source))
 	return d
+}
+
+// toolModeWithoutTools is the decision for a request with no tools and no
+// tool calls or results in its history. Both modes send it the same way, so
+// it isn't worth a probe: a request with nothing to do with tools never waits
+// for a slow /api/show.
+func (c *Client) toolModeWithoutTools() toolModeDecision {
+	switch c.toolMode {
+	case ToolModeNative:
+		return toolModeDecision{native: true, source: toolModeSourceConfig}
+	case ToolModePrompt:
+		return toolModeDecision{native: false, source: toolModeSourceConfig}
+	}
+	c.probeMu.Lock()
+	defer c.probeMu.Unlock()
+	if c.probeDone {
+		d := c.probeResult
+		d.cached = true
+		return d
+	}
+	return toolModeDecision{native: false, source: toolModeSourceNoTools}
+}
+
+// usesTools reports whether a request offers tools or carries tool calls or
+// results in its history.
+func usesTools(messages []llmtypes.Message, tools []shuttle.Tool) bool {
+	if len(tools) > 0 {
+		return true
+	}
+	for _, m := range messages {
+		if m.Role == "tool" || len(m.ToolCalls) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // fallbackDecision matches the model against fallbackToolSupportedModels by
@@ -604,7 +665,10 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 
 	// 1. Decide the tool mode once for the whole request, then build the
 	// request body from that one decision.
-	toolMode := c.resolveToolMode(ctx)
+	toolMode := c.toolModeWithoutTools()
+	if usesTools(messages, tools) {
+		toolMode = c.resolveToolMode(ctx)
+	}
 	recordToolMode(ctx, toolMode)
 	if err := ctx.Err(); err != nil {
 		return nil, err
