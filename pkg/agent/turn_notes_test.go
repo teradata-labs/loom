@@ -55,19 +55,19 @@ func TestPinTurnNotes_StayInPlaceForTheTurn(t *testing.T) {
 	sm := NewSegmentedMemory("ROM", 200000, 20000)
 	sm.AddMessage(ctx, Message{Role: "user", Content: "q1", Turn: 1})
 
-	sm.PinTurnNotes("recall", "")
+	sm.PinTurnNotes(TurnReminder{Kind: ReminderGraphMemory, Text: "recall"}, TurnReminder{})
 	reminder := systemReminderContent("recall")
 	assert.Equal(t, []string{"user:q1", "user:" + reminder}, compiledRoles(sm.GetMessagesForLLM()))
 
 	sm.AddMessage(ctx, Message{Role: "assistant", ToolCalls: []ToolCall{{ID: "c1", Name: "t"}}, Turn: 1})
 	sm.AddMessage(ctx, Message{Role: "tool", ToolUseID: "c1", Content: "r1", Turn: 1})
-	sm.PinTurnNotes("recall", "soft")
+	sm.PinTurnNotes(TurnReminder{Kind: ReminderGraphMemory, Text: "recall"}, TurnReminder{Text: "soft"})
 	soft := systemReminderContent("soft")
 	assert.Equal(t, []string{"user:q1", "user:" + reminder, "assistant:", "tool:r1", "user:" + soft},
 		compiledRoles(sm.GetMessagesForLLM()),
 		"the earlier reminder stays where it was sent; only the new note is added, after the rows since")
 
-	sm.PinTurnNotes("recall", "soft")
+	sm.PinTurnNotes(TurnReminder{Kind: ReminderGraphMemory, Text: "recall"}, TurnReminder{Text: "soft"})
 	assert.Len(t, compiledRoles(sm.GetMessagesForLLM()), 5, "a note already pinned this turn is not sent again")
 
 	sm.AddMessage(ctx, Message{Role: "assistant", Content: "a1", Turn: 1})
@@ -77,6 +77,52 @@ func TestPinTurnNotes_StayInPlaceForTheTurn(t *testing.T) {
 	}
 }
 
+// TestPinTurnNotes_StatusReminderOncePerTurn (review F5): a status reminder
+// whose text changes each call (the tool budget's count) is sent once per
+// turn, so five calls in the reminder window compile one copy, not five
+// contradictory ones. Event notes (repeat hints) are each sent once per text.
+// The next turn sends the status reminder again.
+func TestPinTurnNotes_StatusReminderOncePerTurn(t *testing.T) {
+	ctx := context.Background()
+	sm := NewSegmentedMemory("ROM", 200000, 20000)
+	sm.AddMessage(ctx, Message{Role: "user", Content: "q1", Turn: 1})
+
+	countReminders := func() (budget, hints int) {
+		for _, line := range compiledRoles(sm.GetMessagesForLLM()) {
+			budget += strings.Count(line, "You have executed many tool calls")
+			hints += strings.Count(line, "repeat hint")
+		}
+		return budget, hints
+	}
+	for i := 0; i < 5; i++ {
+		sm.PinTurnNotes(
+			TurnReminder{Kind: ReminderToolBudget, Text: buildSoftReminder(75+i, 100)},
+			TurnReminder{Text: fmt.Sprintf("repeat hint %d", i%2)},
+		)
+		id := fmt.Sprintf("c%d", i)
+		sm.AddMessage(ctx, Message{Role: "assistant", ToolCalls: []ToolCall{{ID: id, Name: "t"}}, Turn: 1})
+		sm.AddMessage(ctx, Message{Role: "tool", ToolUseID: id, Content: "r", Turn: 1})
+	}
+	budget, hints := countReminders()
+	assert.Equal(t, 1, budget, "one tool-budget reminder per turn")
+	assert.Equal(t, 2, hints, "each distinct event note once")
+	compiled := strings.Join(compiledRoles(sm.GetMessagesForLLM()), "\n")
+	assert.Contains(t, compiled, "(75 of 100 max)", "the first copy is the one kept")
+
+	sm.SetTransientTail(TurnReminder{Kind: ReminderToolBudget, Text: buildSoftReminder(80, 100)})
+	sm.mu.RLock()
+	assert.Empty(t, sm.transientTail, "a kind sent this turn is not pending again")
+	sm.mu.RUnlock()
+
+	sm.AddMessage(ctx, Message{Role: "assistant", Content: "a1", Turn: 1})
+	sm.AddMessage(ctx, Message{Role: "user", Content: "q2", Turn: 2})
+	sm.PinTurnNotes(TurnReminder{Kind: ReminderToolBudget, Text: buildSoftReminder(80, 100)})
+	budget, _ = countReminders()
+	assert.Equal(t, 1, budget)
+	assert.Contains(t, strings.Join(compiledRoles(sm.GetMessagesForLLM()), "\n"), "(80 of 100 max)",
+		"the next turn sends the kind again")
+}
+
 // TestPinTurnNotes_PendingTailSkipsPinnedNotes — the pre-send estimate counts
 // only the notes not pinned yet; once pinned, they are compiled messages.
 func TestPinTurnNotes_PendingTailSkipsPinnedNotes(t *testing.T) {
@@ -84,17 +130,17 @@ func TestPinTurnNotes_PendingTailSkipsPinnedNotes(t *testing.T) {
 	sm := NewSegmentedMemory("ROM", 200000, 20000)
 	sm.AddMessage(ctx, Message{Role: "user", Content: "q1", Turn: 1})
 
-	sm.SetTransientTail("recall", "soft")
+	sm.SetTransientTail(TurnReminder{Kind: ReminderGraphMemory, Text: "recall"}, TurnReminder{Text: "soft"})
 	sm.mu.RLock()
 	assert.Equal(t, systemReminderContent("recall", "soft"), sm.transientTail)
 	sm.mu.RUnlock()
 
-	sm.PinTurnNotes("recall")
+	sm.PinTurnNotes(TurnReminder{Kind: ReminderGraphMemory, Text: "recall"})
 	sm.mu.RLock()
 	assert.Empty(t, sm.transientTail, "pinning clears the pending tail")
 	sm.mu.RUnlock()
 
-	sm.SetTransientTail("recall", "soft")
+	sm.SetTransientTail(TurnReminder{Kind: ReminderGraphMemory, Text: "recall"}, TurnReminder{Text: "soft"})
 	sm.mu.RLock()
 	assert.Equal(t, systemReminderContent("soft"), sm.transientTail, "the pinned note is compiled, not pending")
 	sm.mu.RUnlock()
@@ -236,4 +282,60 @@ func TestTurnNotes_ReliefCountsRecallNoteBeforeFirstSend(t *testing.T) {
 		require.True(t, noted, "fixture: the first send carries the recall note")
 		assert.Positive(t, folds, "relief must count the pending recall note and shed before the send")
 	})
+}
+
+// budgetLoopLLM calls the probe tool (each call with new arguments, so no
+// repeat hint) for its first toolCalls calls, then answers. It records the
+// messages of every call.
+type budgetLoopLLM struct {
+	mu        sync.Mutex
+	toolCalls int
+	calls     [][]llmtypes.Message
+}
+
+func (l *budgetLoopLLM) Name() string  { return "mock" }
+func (l *budgetLoopLLM) Model() string { return "mock-v1" }
+
+func (l *budgetLoopLLM) Chat(_ context.Context, msgs []llmtypes.Message, _ []shuttle.Tool) (*llmtypes.LLMResponse, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.calls = append(l.calls, append([]llmtypes.Message(nil), msgs...))
+	n := len(l.calls)
+	usage := llmtypes.Usage{InputTokens: 10, OutputTokens: 5}
+	if n > l.toolCalls {
+		return &llmtypes.LLMResponse{Content: "done", Usage: usage}, nil
+	}
+	return &llmtypes.LLMResponse{
+		ToolCalls: []llmtypes.ToolCall{{ID: fmt.Sprintf("c%d", n), Name: "probe", Input: map[string]interface{}{"n": n}}},
+		Usage:     usage,
+	}, nil
+}
+
+// TestTurnNotes_ToolBudgetReminderOncePerTurnInLoop (review F5, agent
+// level): with a budget of 20 tool executions the reminder window is 15–17.
+// Three calls of one turn fall in it, and the turn's last request carries one
+// tool-budget reminder, the count of the first call in the window.
+func TestTurnNotes_ToolBudgetReminderOncePerTurnInLoop(t *testing.T) {
+	llm := &budgetLoopLLM{toolCalls: 19}
+	ag := reliefSeamAgent(t, llm, "s-budget", NewSegmentedMemory("ROM", 200000, 20000))
+	ag.config.MaxToolExecutions = 20
+	ag.config.MaxTurns = 100
+	ag.RegisterTool(namedStubTool{name: "probe"})
+
+	_, err := ag.Chat(context.Background(), "s-budget", "go")
+	require.NoError(t, err)
+
+	llm.mu.Lock()
+	defer llm.mu.Unlock()
+	require.Len(t, llm.calls, 20)
+	reminders, rows := 0, 0
+	for _, m := range llm.calls[len(llm.calls)-1] {
+		if c := strings.Count(m.Content, "You have executed many tool calls"); c > 0 {
+			reminders += c
+			rows++
+			assert.Contains(t, m.Content, "(15 of 20 max)")
+		}
+	}
+	assert.Equal(t, 1, reminders, "one tool-budget reminder per turn")
+	assert.Equal(t, 1, rows)
 }

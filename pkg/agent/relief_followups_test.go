@@ -367,7 +367,7 @@ func TestTransientTail_CountedByReliefAndCalibration(t *testing.T) {
 		tailTokens := GetTokenCounter().CountTokens(systemReminderContent(note))
 		require.Greater(t, before+tailTokens, start, "fixture: context plus tail is over the start mark")
 
-		sm.SetTransientTail(note)
+		sm.SetTransientTail(TurnReminder{Text: note})
 		shed, estimate, target := sm.ReleasePressure(ctx, 0)
 		assert.True(t, shed, "relief must count the tail and shed before the send")
 		assert.LessOrEqual(t, estimate, target)
@@ -396,7 +396,7 @@ func TestTransientTail_CountedByReliefAndCalibration(t *testing.T) {
 
 		// The provider counts exactly what was sent, tokenizer for tokenizer:
 		// the compiled context plus the tail.
-		sm.SetTransientTail(note)
+		sm.SetTransientTail(TurnReminder{Text: note})
 		sent := stored + GetTokenCounter().CountTokens(tail)
 		require.Greater(t, float64(sent)/float64(stored), 1.05,
 			"fixture: the tail is large enough that leaving it out would skew the factor")
@@ -409,7 +409,7 @@ func TestTransientTail_CountedByReliefAndCalibration(t *testing.T) {
 
 	t.Run("reset clears the tail", func(t *testing.T) {
 		sm := NewSegmentedMemory("ROM", 200000, 20000)
-		sm.SetTransientTail("note")
+		sm.SetTransientTail(TurnReminder{Text: "note"})
 		sm.ResetContext()
 		sm.mu.RLock()
 		defer sm.mu.RUnlock()

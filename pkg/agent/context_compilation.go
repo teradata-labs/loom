@@ -1772,41 +1772,92 @@ func (sm *SegmentedMemory) SetAdvertisedToolsBytes(bytes int) {
 	sm.tokenCountDirty = false
 }
 
-// SetTransientTail records the reminder notes the agent is about to send on
-// its next provider call and has not pinned yet (PinTurnNotes): the graph
-// memory recall note, soft reminders, the tool-change note. Notes already
-// pinned this turn are compiled, so they are left out here. The pending
-// reminder counts in the relief estimate like the advertised tool schemas do.
-// Set it before ReleasePressure; PinTurnNotes clears it at the send.
-func (sm *SegmentedMemory) SetTransientTail(notes ...string) {
+// TurnReminder is one note the agent sends on a provider call as harness
+// state: the graph memory recall note, a soft budget reminder, the context
+// relief warning, a repeat-call hint, the tool-change note.
+//
+// Kind names a status reminder whose text changes from call to call (the
+// tool budget's count, the relief warning's percentage). A turn sends at most
+// one reminder of each kind, the first: a later call can't replace it, since
+// the turn's request only grows (PinTurnNotes), and sending each new value
+// would stack contradictory copies. An empty Kind is an event note (a repeat
+// hint, a tool-set delta), new information each time; it is sent unless the
+// same text was already sent this turn.
+type TurnReminder struct {
+	Kind string
+	Text string
+}
+
+// Reminder kinds the agent sends at most once per turn (TurnReminder.Kind).
+const (
+	ReminderGraphMemory   = "graph_memory"
+	ReminderToolBudget    = "tool_budget"
+	ReminderTurnBudget    = "turn_budget"
+	ReminderContextRelief = "context_relief"
+)
+
+// key is what makes two reminders the same for once-per-turn sending: the
+// kind, or for an event note its text.
+func (r TurnReminder) key() string {
+	if r.Kind != "" {
+		return "kind:" + r.Kind
+	}
+	return "text:" + r.Text
+}
+
+// unsentRemindersLocked returns the reminders of rs, trimmed, that turn t
+// has not sent yet (by key), each key once. Must hold lock.
+func (sm *SegmentedMemory) unsentRemindersLocked(t int64, rs []TurnReminder) []TurnReminder {
+	sent := make(map[string]bool)
+	for _, n := range sm.turnNotesLocked(t) {
+		for _, k := range n.keys {
+			sent[k] = true
+		}
+	}
+	var out []TurnReminder
+	for _, r := range rs {
+		r.Text = strings.TrimSpace(r.Text)
+		if r.Text == "" || sent[r.key()] {
+			continue
+		}
+		sent[r.key()] = true
+		out = append(out, r)
+	}
+	return out
+}
+
+func reminderTexts(rs []TurnReminder) []string {
+	texts := make([]string, len(rs))
+	for i, r := range rs {
+		texts[i] = r.Text
+	}
+	return texts
+}
+
+// SetTransientTail records the reminders the agent is about to send on its
+// next provider call and has not pinned yet (PinTurnNotes). Reminders this
+// turn already sent are compiled, or are not sent again (TurnReminder), so
+// they are left out here. The pending reminder counts in the relief estimate
+// like the advertised tool schemas do. Set it before ReleasePressure;
+// PinTurnNotes clears it at the send.
+func (sm *SegmentedMemory) SetTransientTail(reminders ...TurnReminder) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	pinned := make(map[string]bool)
-	for _, n := range sm.turnNotesLocked(sm.currentTurnLocked()) {
-		for _, note := range n.notes {
-			pinned[note] = true
-		}
-	}
-	var pending []string
-	for _, note := range notes {
-		if note = strings.TrimSpace(note); note != "" && !pinned[note] {
-			pending = append(pending, note)
-		}
-	}
-	sm.transientTail = systemReminderContent(pending...)
+	pending := sm.unsentRemindersLocked(sm.currentTurnLocked(), reminders)
+	sm.transientTail = systemReminderContent(reminderTexts(pending)...)
 }
 
 // turnNote is one reminder message sent on a provider call of turn (PinTurnNotes).
 type turnNote struct {
 	turn    int64
 	after   int      // current-turn rows that preceded it when it was sent
-	notes   []string // its notes, so a later call does not send one twice
+	keys    []string // its reminders' keys (TurnReminder.key), so a later call skips them
 	content string   // the <system-reminder> message (systemReminderContent)
 }
 
-// PinTurnNotes records the reminder notes the agent is about to send on a
-// provider call: the graph memory recall note, soft reminders, the
-// tool-change note. Notes already pinned this turn are skipped, and the rest
+// PinTurnNotes records the reminders the agent is about to send on a
+// provider call. Reminders the turn already sent are skipped (TurnReminder:
+// a status kind once per turn, an event note once per text), and the rest
 // become one <system-reminder> user message that compile emits at this
 // position for the rest of the turn.
 //
@@ -1821,26 +1872,13 @@ type turnNote struct {
 //
 // It also clears the pending tail (SetTransientTail): once pinned, the notes
 // are counted as compiled messages.
-func (sm *SegmentedMemory) PinTurnNotes(notes ...string) {
+func (sm *SegmentedMemory) PinTurnNotes(reminders ...TurnReminder) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.transientTail = ""
 	t := sm.currentTurnLocked()
-	kept := sm.turnNotesLocked(t)
-	sm.turnNotes = kept
-	pinned := make(map[string]bool)
-	for _, n := range kept {
-		for _, note := range n.notes {
-			pinned[note] = true
-		}
-	}
-	var fresh []string
-	for _, note := range notes {
-		if note = strings.TrimSpace(note); note != "" && !pinned[note] {
-			pinned[note] = true
-			fresh = append(fresh, note)
-		}
-	}
+	sm.turnNotes = sm.turnNotesLocked(t)
+	fresh := sm.unsentRemindersLocked(t, reminders)
 	if len(fresh) == 0 {
 		return
 	}
@@ -1850,11 +1888,15 @@ func (sm *SegmentedMemory) PinTurnNotes(notes ...string) {
 			after++
 		}
 	}
+	keys := make([]string, len(fresh))
+	for i, r := range fresh {
+		keys[i] = r.key()
+	}
 	sm.turnNotes = append(sm.turnNotes, turnNote{
 		turn:    t,
 		after:   after,
-		notes:   fresh,
-		content: systemReminderContent(fresh...),
+		keys:    keys,
+		content: systemReminderContent(reminderTexts(fresh)...),
 	})
 }
 

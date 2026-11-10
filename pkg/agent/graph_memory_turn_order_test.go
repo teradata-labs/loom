@@ -192,9 +192,10 @@ func TestGraphMemory_EarlierTurnRecalledOnNextTurn(t *testing.T) {
 	require.NotEmpty(t, block, "the next turn must recall the earlier turn's fact")
 	assert.Contains(t, block, "Max")
 
-	// The note rides the trailing <system-reminder> user message, after the
-	// conversation, never a system message (which the Anthropic client would
-	// move into the cached system field) and never the session.
+	// This is the turn's first call, so its pinned <system-reminder> user
+	// message is the request's last; later calls of the turn keep it at this
+	// position (PinTurnNotes). Never a system message (which the Anthropic
+	// client would move into the cached system field) and never the session.
 	last := req[len(req)-1]
 	assert.True(t, last.Role == "user" && strings.HasPrefix(last.Content, "<system-reminder>"),
 		"the recall note is the request's trailing system reminder")

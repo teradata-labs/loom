@@ -2678,7 +2678,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	{
 		msgs := session.GetMessages()
 		for i := len(msgs) - 1; i >= 0; i-- {
-			if msgs[i].Role == "user" && !isSystemReminder(msgs[i]) {
+			if msgs[i].Role == "user" && !IsSystemReminder(msgs[i]) {
 				a.evaluateLazyTools(msgs[i].Content)
 				break
 			}
@@ -2747,18 +2747,21 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// The reminder is added at the provider call (withReminder): pinned as a
 		// <system-reminder> user message for the rest of the turn, never onto
 		// the ROM message (which would invalidate the ROM cache prefix at
-		// exactly the high-pressure moment) and never persisted.
-		softReminder := ""
+		// exactly the high-pressure moment) and never persisted. Each budget
+		// reminder is sent once per turn, on the first call that crosses its
+		// threshold (TurnReminder): its count is the one at that call.
+		reminders := []TurnReminder{{Kind: ReminderGraphMemory, Text: memoryNote}}
 		if session.SegmentedMem != nil {
 			// Check tool execution reminder
 			toolReminder := buildSoftReminder(toolExecutionCount, a.config.MaxToolExecutions)
 			// Check turn count reminder
 			turnReminder := buildTurnReminder(turnCount, a.config.MaxTurns)
 
-			// Combine reminders if both are active
-			softReminder = toolReminder + turnReminder
+			reminders = append(reminders,
+				TurnReminder{Kind: ReminderToolBudget, Text: toolReminder},
+				TurnReminder{Kind: ReminderTurnBudget, Text: turnReminder})
 
-			if softReminder != "" {
+			if toolReminder != "" || turnReminder != "" {
 				span.AddEvent("soft_reminder.added", map[string]interface{}{
 					"tool_count":        toolExecutionCount,
 					"turn_count":        turnCount,
@@ -2772,11 +2775,13 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			}
 		}
 
-		// The repeat-call note from the last tool batch rides this provider call
-		// only (see withReminder). The orchestrator is per turn, so an unsent note
-		// cannot reach a later turn.
+		// The repeat-call note from the last tool batch is sent on this provider
+		// call, and stays where it was sent for the rest of the turn (see
+		// withReminder). It is an event note: a later batch's hint is sent too.
+		// The orchestrator is per turn, so an unsent note cannot reach a later
+		// turn.
 		if note := recovery.takeRepeatHint(); note != "" {
-			softReminder = strings.TrimSpace(softReminder + "\n" + note)
+			reminders = append(reminders, TurnReminder{Text: note})
 		}
 
 		// Emit LLM generation progress
@@ -2794,10 +2799,11 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// Recomputed per provider call, which covers every registration change.
 		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
 			a.setAdvertisedTools(segMem, tools)
-			// The reminder notes known before relief runs: the recall note and
-			// the soft reminders. Notes already pinned this turn are compiled;
-			// the rest count as the pending tail until sendChat pins them.
-			segMem.SetTransientTail(memoryNote, softReminder)
+			// The reminders known before relief runs: the recall note, the soft
+			// reminders and the repeat hint. Reminders the turn already sent are
+			// compiled or not sent again; the rest count as the pending tail
+			// until sendChat pins them.
+			segMem.SetTransientTail(reminders...)
 		}
 
 		// Mutation-debug: the per-session tool projection about to be advertised
@@ -2832,13 +2838,16 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			}
 			// Opt-in (behavior.context_relief_warning). Relief ran and left the
 			// estimate over its release mark, whether or not it shed; under the
-			// start mark it returns 0, 0 and this is false, so the note rides
-			// only the sends where relief ran. It is transient: softReminder is
-			// read at send time.
+			// start mark it returns 0, 0 and this is false, so the note is sent
+			// only from a call where relief ran, once per turn (TurnReminder):
+			// later calls of the turn can't replace its percentage.
 			if a.config.ContextReliefWarning && estimate > target {
 				used, available, _ := segMem.GetTokenBudgetUsage()
 				usable := used + available
-				softReminder += buildContextReminder(estimate, target, usable)
+				reminders = append(reminders, TurnReminder{
+					Kind: ReminderContextRelief,
+					Text: buildContextReminder(estimate, target, usable),
+				})
 				span.AddEvent("context_reminder.added", map[string]interface{}{
 					"turn":            turnCount,
 					"estimate_tokens": estimate,
@@ -2886,16 +2895,18 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// message after the turn's rows so far, and kept at that position for
 		// the rest of the turn, so a later call never removes what an earlier
 		// one sent before the model's thinking (the provider rejects a
-		// replayed thinking block whose preceding messages changed). A note
-		// already pinned this turn is not sent again. Both the normal send and
-		// the recovery resend go through here. Without segmented memory the
-		// notes ride a trailing message on a copy (withSystemReminder).
+		// replayed thinking block whose preceding messages changed). A
+		// reminder the turn already sent is not sent again (TurnReminder).
+		// Both the normal send and the recovery resend go through here.
+		// Without segmented memory the notes ride a trailing message on a copy
+		// (withSystemReminder).
 		withReminder := func(msgs []Message, toolNote string) []Message {
+			rs := append(reminders[:len(reminders):len(reminders)], TurnReminder{Text: toolNote})
 			if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
-				segMem.PinTurnNotes(memoryNote, softReminder, toolNote)
+				segMem.PinTurnNotes(rs...)
 				return session.GetMessages()
 			}
-			return withSystemReminder(msgs, memoryNote, softReminder, toolNote)
+			return withSystemReminder(msgs, reminderTexts(rs)...)
 		}
 
 		// sendChat is the one provider call of this iteration. With
@@ -3896,7 +3907,7 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNot
 	segMem, _ := session.SegmentedMem.(*SegmentedMemory)
 	if segMem != nil {
 		a.setAdvertisedTools(segMem, nil)
-		segMem.SetTransientTail(memoryNote)
+		segMem.SetTransientTail(TurnReminder{Kind: ReminderGraphMemory, Text: memoryNote})
 		if shed, estimate, target := segMem.ReleasePressure(ctx, 0); shed {
 			zap.L().Info("relief: shed before synthesis",
 				zap.String("session_id", session.ID),
@@ -3908,7 +3919,7 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNot
 	// no-op then, and pins it here when the loop never sent it.
 	synthesisMessages := func() []Message {
 		if segMem != nil {
-			segMem.PinTurnNotes(memoryNote)
+			segMem.PinTurnNotes(TurnReminder{Kind: ReminderGraphMemory, Text: memoryNote})
 			return session.GetMessages()
 		}
 		return withSystemReminder(session.GetMessages(), memoryNote)
@@ -4318,9 +4329,11 @@ func withSystemReminder(msgs []Message, notes ...string) []Message {
 	return append(out, Message{Role: "user", Content: content})
 }
 
-// isSystemReminder reports whether m is a reminder message (withSystemReminder,
-// PinTurnNotes) rather than something the user wrote.
-func isSystemReminder(m Message) bool {
+// IsSystemReminder reports whether m is a reminder message (withSystemReminder,
+// PinTurnNotes) rather than something the user wrote. The compiled view of a
+// session holds the current turn's pinned reminders until the next turn, so a
+// reader that shows the conversation leaves these rows out.
+func IsSystemReminder(m Message) bool {
 	return m.Role == "user" && strings.HasPrefix(m.Content, "<system-reminder>\n")
 }
 
@@ -4344,7 +4357,8 @@ const graphMemoryContextMarker = "[Graph Memory Context]"
 
 // graphMemoryNote queries graph memory for the current topic and returns the
 // relevant memories as a note for this turn's LLM calls, or "" when there are
-// none. The note is transient: it is never added to the session.
+// none. The note is never added to the stored session; it is pinned for the
+// rest of the turn only (PinTurnNotes).
 func (a *Agent) graphMemoryNote(ctx context.Context, session *types.Session) string {
 	if a.graphMemoryStore == nil || a.graphMemoryConfig == nil || !a.graphMemoryConfig.Enabled {
 		return ""
@@ -4374,7 +4388,7 @@ func (a *Agent) graphMemoryNote(ctx context.Context, session *types.Session) str
 	var userMessage string
 	msgs := session.GetMessages()
 	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == "user" && msgs[i].Content != "" && !isSystemReminder(msgs[i]) {
+		if msgs[i].Role == "user" && msgs[i].Content != "" && !IsSystemReminder(msgs[i]) {
 			userMessage = msgs[i].Content
 			break
 		}
