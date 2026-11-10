@@ -469,3 +469,30 @@ func TestRewriteToolResultsIsTheOwners(t *testing.T) {
 	assert.Equal(t, "the note", msgs[2].Content)
 	assert.Equal(t, "q", msgs[0].Content, "a row that is not a tool result was rewritten")
 }
+
+// The cheap tier is the settled estimate plus the step's bytes once, at
+// cheapBytesPerToken; what the send adds past memory is counted in both tiers;
+// and a count equal to the ceiling fits.
+func TestTheStepCountIsWhatItSaysItIs(t *testing.T) {
+	sm := newCompileMemory(t)
+	ctx := context.Background()
+	sm.AddMessage(ctx, Message{Role: "user", Content: "read the tables", Turn: 1})
+	sm.AddMessage(ctx, Message{Role: "assistant", Turn: 1, ToolCalls: []ToolCall{{ID: "q1", Name: "rows"}}})
+	result := strings.Repeat("id=12345 name=widget qty=7\n", 30)
+	sm.AddMessage(ctx, Message{Role: "tool", ToolUseID: "q1", Turn: 1, Content: result})
+	sm.mu.Lock()
+	sm.estimateCalibration = 1.0
+	settled := sm.estimateLocked()
+	sm.mu.Unlock()
+
+	cheap := sm.StepSendCount(0, 1<<30, 1)
+	assert.Equal(t, settled+int(float64(len(result))/cheapBytesPerToken), cheap, "the cheap tier is not the settled estimate plus the step's bytes once")
+	assert.Equal(t, 3000/int(cheapBytesPerToken), sm.StepSendCount(3000, 1<<30, 1)-cheap, "the cheap tier does not count what the send adds")
+
+	exact := sm.StepSendCount(0, 1, 1)
+	require.NotEqual(t, cheap, exact, "the two tiers agree; the test does not separate them")
+	assert.Equal(t, tokenFigure(3000), sm.StepSendCount(3000, 1, 1)-exact, "the tokenizer tier does not count what the send adds")
+
+	assert.Equal(t, cheap, sm.StepSendCount(0, cheap, 1), "a cheap count equal to the ceiling fits and is returned")
+	assert.Equal(t, exact, sm.StepSendCount(0, cheap-1, 1), "a cheap count over the ceiling is counted with the tokenizer")
+}

@@ -358,3 +358,31 @@ func TestInloopFold_AFoldCallDoesNotMoveCalibration(t *testing.T) {
 	}
 	assert.Equal(t, factor(100), factor(900000), "a fold call's reported prompt moved the calibration factor")
 }
+
+// A fold call does not carry the step in flight, so the step is not fitted to
+// the window on that send: results that fit once the fold has shed the past
+// are not replaced because they stood beside a past the fold was about to shed.
+func TestInloopFold_AFoldCallDoesNotFitTheStepItDoesNotCarry(t *testing.T) {
+	// Six steps of about 2,200 tokens each under a 10,000-token ceiling: the
+	// fold arms with a step in flight beside a past that together pass the
+	// ceiling, and every send after a fold fits.
+	model := &foldingStream{steps: 6}
+	ag, store := foldingAgent(t, model)
+	result := strings.Repeat("id=12345 name=widget qty=7\n", 200)
+	ag.RegisterTool(&shuttle.MockTool{
+		MockName: "step",
+		MockExecute: func(context.Context, map[string]interface{}) (*shuttle.Result, error) {
+			return &shuttle.Result{Success: true, Data: result}, nil
+		},
+	})
+	_, err := ag.Chat(context.Background(), "s-fold-step", "do the long job")
+	require.NoError(t, err)
+	require.Contains(t, model.foldAt, true, "no fold call was made; the test does not reach the case")
+	msgs, err := store.LoadMessages(context.Background(), "s-fold-step")
+	require.NoError(t, err)
+	for _, m := range msgs {
+		if m.Role == "tool" {
+			assert.NotContains(t, m.Content, "together too large for the context", "a fold call fitted, and replaced, a step it does not carry")
+		}
+	}
+}
