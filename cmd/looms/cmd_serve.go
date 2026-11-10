@@ -1970,13 +1970,17 @@ func runServe(cmd *cobra.Command, args []string) {
 	// for the whole server, sized from the process memory limit. A malformed
 	// tool pattern aborts startup, like a malformed hook binding.
 	luaRT, err := newLuaRuntime(config.Tools.Lua, luaGuards{
-		YOLO:         config.Tools.Permissions.YOLO,
-		HookBindings: len(config.Tools.Hooks.Bindings),
+		YOLO:          config.Tools.Permissions.YOLO,
+		HookBindings:  len(config.Tools.Hooks.Bindings),
+		ShellGoverned: scriptShellGoverned(config),
 	}, luasandbox.ProcessMemoryLimit(), loomconfig.GetLoomDataDir(), logger)
 	if err != nil {
 		logger.Fatal("Invalid tools.lua configuration", zap.Error(err))
 	}
 	if luaRT != nil {
+		for _, w := range luaRT.warnings {
+			logger.Warn("tools.lua", zap.String("detail", w))
+		}
 		logger.Info("Lua scripts enabled (run_lua)",
 			zap.Int("run_slots", luaRT.slots),
 			zap.Int("runs_per_agent", luaRT.perKey),
@@ -4184,6 +4188,7 @@ func initializeMCPManager(config *Config, logger *zap.Logger) (*mcpManager, erro
 			Headers:          expandMCPHeaders(serverConfig.Headers),
 			EnableSessions:   serverConfig.EnableSessions,
 			EnableResumption: serverConfig.EnableResumption,
+			MaxResponseBytes: serverConfig.MaxResponseBytes,
 			TrustAnnotations: serverConfig.TrustAnnotations,
 			Enabled:          enabled,
 			ToolFilter: manager.ToolFilter{

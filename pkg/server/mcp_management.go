@@ -57,6 +57,7 @@ func (s *MultiAgentServer) ListMCPServers(ctx context.Context, req *loomv1.ListM
 			protoServers[i].Command = cfg.Command
 			protoServers[i].Args = cfg.Args
 			protoServers[i].Env = cfg.Env
+			protoServers[i].MaxResponseBytes = cfg.MaxResponseBytes
 		}
 
 		// Get tool count if connected
@@ -99,6 +100,7 @@ func (s *MultiAgentServer) GetMCPServer(ctx context.Context, req *loomv1.GetMCPS
 				info.Command = cfg.Command
 				info.Args = cfg.Args
 				info.Env = cfg.Env
+				info.MaxResponseBytes = cfg.MaxResponseBytes
 			}
 
 			// Get tool count if connected
@@ -193,6 +195,7 @@ func (s *MultiAgentServer) AddMCPServer(ctx context.Context, req *loomv1.AddMCPS
 		URL:              req.Url, // Note: req.Url from proto (lowercase 'rl')
 		EnableSessions:   req.EnableSessions,
 		EnableResumption: req.EnableResumption,
+		MaxResponseBytes: req.MaxResponseBytes,
 		Enabled:          req.Enabled,
 		ToolFilter:       toolFilter,
 	}
@@ -228,6 +231,8 @@ func (s *MultiAgentServer) AddMCPServer(ctx context.Context, req *loomv1.AddMCPS
 			Args:      req.Args,
 			Env:       req.Env,
 			Status:    "running",
+
+			MaxResponseBytes: req.MaxResponseBytes,
 		}
 
 		// Get tool count
@@ -247,6 +252,8 @@ func (s *MultiAgentServer) AddMCPServer(ctx context.Context, req *loomv1.AddMCPS
 			Args:      req.Args,
 			Env:       req.Env,
 			Status:    "stopped",
+
+			MaxResponseBytes: req.MaxResponseBytes,
 		}
 	}
 
@@ -358,6 +365,23 @@ func (s *MultiAgentServer) UpdateMCPServer(ctx context.Context, req *loomv1.Upda
 		toolFilter.Exclude = req.ToolFilter.Exclude
 	}
 
+	// Zero means "use the default", which on a plain int64 is indistinguishable
+	// from "leave it alone". This config REPLACES the running one, so passing the
+	// zero through would drop a configured limit back to the 16 MiB default on any
+	// unrelated update that restarts the server, and because GetMCPServer and
+	// ListMCPServers read GetServerConfig, the API would then report the default
+	// while looms.yaml still said otherwise.
+	//
+	// The persisted file does not need this (viper layers the written map over the
+	// file, so a key the request omits keeps its value), but the RUNNING server
+	// does: that is the half the persisted-config path does not cover.
+	maxResponseBytes := req.MaxResponseBytes
+	if maxResponseBytes == 0 {
+		if existing, err := s.mcpManager.GetServerConfig(req.ServerName); err == nil {
+			maxResponseBytes = existing.MaxResponseBytes
+		}
+	}
+
 	// Build server config
 	serverConfig := manager.ServerConfig{
 		Command:          req.Command,
@@ -367,6 +391,7 @@ func (s *MultiAgentServer) UpdateMCPServer(ctx context.Context, req *loomv1.Upda
 		URL:              req.Url, // Note: req.Url from proto (lowercase 'rl')
 		EnableSessions:   req.EnableSessions,
 		EnableResumption: req.EnableResumption,
+		MaxResponseBytes: maxResponseBytes,
 		Enabled:          req.Enabled,
 		ToolFilter:       toolFilter,
 	}
@@ -810,6 +835,16 @@ func (s *MultiAgentServer) addMCPServerToConfig(req *loomv1.AddMCPServerRequest)
 		serverConfig["tool_filter"] = filterMap
 	}
 
+	// A limit set through the API has to survive a restart the way `enabled`
+	// does. Only a real value is written: zero on the wire means "use the
+	// default" and is indistinguishable from "leave it alone" (the proto field
+	// is a plain int64, not optional). Writing the zero through would shadow a
+	// limit set by hand in YAML, since this map is an override layer over the
+	// file — verified by dumping the written config both ways.
+	if req.MaxResponseBytes > 0 {
+		serverConfig["max_response_bytes"] = req.MaxResponseBytes
+	}
+
 	v.Set(fmt.Sprintf("mcp.servers.%s", req.Name), serverConfig)
 
 	if err := v.WriteConfig(); err != nil {
@@ -859,6 +894,16 @@ func (s *MultiAgentServer) updateMCPServerInConfig(req *loomv1.UpdateMCPServerRe
 			filterMap["exclude"] = req.ToolFilter.Exclude
 		}
 		serverConfig["tool_filter"] = filterMap
+	}
+
+	// A limit set through the API has to survive a restart the way `enabled`
+	// does. Only a real value is written: zero on the wire means "use the
+	// default" and is indistinguishable from "leave it alone" (the proto field
+	// is a plain int64, not optional). Writing the zero through would shadow a
+	// limit set by hand in YAML, since this map is an override layer over the
+	// file — verified by dumping the written config both ways.
+	if req.MaxResponseBytes > 0 {
+		serverConfig["max_response_bytes"] = req.MaxResponseBytes
 	}
 
 	v.Set(fmt.Sprintf("mcp.servers.%s", req.ServerName), serverConfig)
