@@ -60,7 +60,8 @@ type HumanRequest struct {
 
 	// Params carries the held call's full parameter map for an approval; a
 	// question has no held call and leaves it empty. Stamped at origin, never
-	// re-derived downstream.
+	// re-derived downstream. Persistent SQLite and PostgreSQL stores decode JSON
+	// numbers as json.Number; the in-memory store preserves the original Go types.
 	Params map[string]interface{} `json:"params"`
 	// ParamsTruncated reports that the paramsMaxBytes bound cut whole pairs out
 	// of Params.

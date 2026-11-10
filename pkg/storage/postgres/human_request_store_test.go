@@ -15,6 +15,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -161,6 +162,25 @@ func TestHumanRequestStore_ExpireRequestIsTenantScoped(t *testing.T) {
 // PRIMARY path; the emitter rebind is only the legacy fallback) was inert on
 // exactly the deployed HITL-park shape. Same attribution rule as both SQLite
 // stores: explicit TaskID wins, ambient attribution is the fallback.
+func TestHumanRequestStore_ParamsRoundTripPreservesLargeIntegers(t *testing.T) {
+	store, ctx, _ := testHumanRequestStore(t)
+	sessionID := hrUniqueID("sess-params")
+	seedSession(t, ctx, store, sessionID)
+
+	req := pendingRequest(hrUniqueID("req-params"), sessionID, time.Now().Add(time.Hour))
+	req.Params = map[string]interface{}{
+		"small": json.Number("42"),
+		"large": json.Number("9007199254740993"),
+	}
+	require.NoError(t, store.Store(ctx, req))
+
+	got, err := store.Get(ctx, req.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, json.Number("42"), got.Params["small"])
+	require.Equal(t, json.Number("9007199254740993"), got.Params["large"])
+}
+
 func TestHumanRequestStore_TaskIDStampsAndRoundTrips(t *testing.T) {
 	store, ctx, _ := testHumanRequestStore(t)
 	sessionID := hrUniqueID("sess-task")
