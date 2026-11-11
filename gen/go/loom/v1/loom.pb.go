@@ -8862,9 +8862,9 @@ type MCPServerInfo struct {
 	Enabled bool `protobuf:"varint,2,opt,name=enabled,proto3" json:"enabled,omitempty"`
 	// Whether server is currently connected
 	Connected bool `protobuf:"varint,3,opt,name=connected,proto3" json:"connected,omitempty"`
-	// Transport type (stdio, http, sse)
+	// Transport type (stdio, http, sse, streamable-http)
 	Transport string `protobuf:"bytes,4,opt,name=transport,proto3" json:"transport,omitempty"`
-	// Command to execute
+	// Command for stdio transport
 	Command string `protobuf:"bytes,5,opt,name=command,proto3" json:"command,omitempty"`
 	// Command arguments
 	Args []string `protobuf:"bytes,6,rep,name=args,proto3" json:"args,omitempty"`
@@ -9074,9 +9074,9 @@ type AddMCPServerRequest struct {
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// Whether to enable the server
 	Enabled bool `protobuf:"varint,2,opt,name=enabled,proto3" json:"enabled,omitempty"`
-	// Transport type (stdio, http, sse)
+	// Transport type (stdio, http, sse, streamable-http)
 	Transport string `protobuf:"bytes,3,opt,name=transport,proto3" json:"transport,omitempty"`
-	// Command to execute
+	// Command to execute (required for enabled stdio transport)
 	Command string `protobuf:"bytes,4,opt,name=command,proto3" json:"command,omitempty"`
 	// Command arguments
 	Args []string `protobuf:"bytes,5,rep,name=args,proto3" json:"args,omitempty"`
@@ -9088,7 +9088,7 @@ type AddMCPServerRequest struct {
 	AutoStart bool `protobuf:"varint,8,opt,name=auto_start,json=autoStart,proto3" json:"auto_start,omitempty"`
 	// Tool filter configuration
 	ToolFilter *ToolFilterConfig `protobuf:"bytes,9,opt,name=tool_filter,json=toolFilter,proto3" json:"tool_filter,omitempty"`
-	// Server URL (required for http/sse transport)
+	// Server URL (required for enabled http, sse, and streamable-http transports)
 	Url string `protobuf:"bytes,10,opt,name=url,proto3" json:"url,omitempty"`
 	// Enable session management (for streamable-http transport)
 	EnableSessions bool `protobuf:"varint,11,opt,name=enable_sessions,json=enableSessions,proto3" json:"enable_sessions,omitempty"`
@@ -9296,9 +9296,9 @@ type UpdateMCPServerRequest struct {
 	ServerName string `protobuf:"bytes,1,opt,name=server_name,json=serverName,proto3" json:"server_name,omitempty"`
 	// Whether to enable the server
 	Enabled bool `protobuf:"varint,2,opt,name=enabled,proto3" json:"enabled,omitempty"`
-	// Transport type (stdio, http, sse)
+	// Transport type (stdio, http, sse, streamable-http)
 	Transport string `protobuf:"bytes,3,opt,name=transport,proto3" json:"transport,omitempty"`
-	// Command to execute
+	// Command to execute (required for enabled stdio transport)
 	Command string `protobuf:"bytes,4,opt,name=command,proto3" json:"command,omitempty"`
 	// Command arguments
 	Args []string `protobuf:"bytes,5,rep,name=args,proto3" json:"args,omitempty"`
@@ -9312,7 +9312,7 @@ type UpdateMCPServerRequest struct {
 	ToolFilter *ToolFilterConfig `protobuf:"bytes,9,opt,name=tool_filter,json=toolFilter,proto3" json:"tool_filter,omitempty"`
 	// Timeout in seconds for restart operation (default: 1 second)
 	TimeoutSeconds int32 `protobuf:"varint,10,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
-	// Server URL (required for http/sse transport)
+	// Server URL (required for enabled http, sse, and streamable-http transports)
 	Url string `protobuf:"bytes,11,opt,name=url,proto3" json:"url,omitempty"`
 	// Enable session management (for streamable-http transport)
 	EnableSessions bool `protobuf:"varint,12,opt,name=enable_sessions,json=enableSessions,proto3" json:"enable_sessions,omitempty"`
@@ -9780,9 +9780,9 @@ func (x *MCPServerHealth) GetLatencyMs() int64 {
 // TestMCPServerConnectionRequest tests an MCP server configuration.
 type TestMCPServerConnectionRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Transport type (stdio, http, sse)
+	// Transport type (stdio, http, sse, streamable-http)
 	Transport string `protobuf:"bytes,1,opt,name=transport,proto3" json:"transport,omitempty"`
-	// Command to execute
+	// Command to execute (required only for stdio transport)
 	Command string `protobuf:"bytes,2,opt,name=command,proto3" json:"command,omitempty"`
 	// Command arguments
 	Args []string `protobuf:"bytes,3,rep,name=args,proto3" json:"args,omitempty"`
@@ -9794,7 +9794,7 @@ type TestMCPServerConnectionRequest struct {
 	ToolFilter *ToolFilterConfig `protobuf:"bytes,6,opt,name=tool_filter,json=toolFilter,proto3" json:"tool_filter,omitempty"`
 	// Timeout for connection test in seconds (default: 10)
 	TimeoutSeconds int32 `protobuf:"varint,7,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
-	// Server URL (required for http/sse transport)
+	// Server URL (required for http, sse, and streamable-http transports)
 	Url string `protobuf:"bytes,8,opt,name=url,proto3" json:"url,omitempty"`
 	// Enable session management (for streamable-http transport)
 	EnableSessions bool `protobuf:"varint,9,opt,name=enable_sessions,json=enableSessions,proto3" json:"enable_sessions,omitempty"`

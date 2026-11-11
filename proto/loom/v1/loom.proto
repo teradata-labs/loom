@@ -2648,10 +2648,10 @@ message MCPServerInfo {
   // Whether server is currently connected
   bool connected = 3;
 
-  // Transport type (stdio, http, sse)
+  // Transport type (stdio, http, sse, streamable-http)
   string transport = 4;
 
-  // Command to execute
+  // Command for stdio transport
   string command = 5;
 
   // Command arguments
@@ -2701,10 +2701,10 @@ message AddMCPServerRequest {
   // Whether to enable the server
   bool enabled = 2;
 
-  // Transport type (stdio, http, sse)
+  // Transport type (stdio, http, sse, streamable-http)
   string transport = 3;
 
-  // Command to execute
+  // Command to execute (required for enabled stdio transport)
   string command = 4;
 
   // Command arguments
@@ -2722,7 +2722,7 @@ message AddMCPServerRequest {
   // Tool filter configuration
   ToolFilterConfig tool_filter = 9;
 
-  // Server URL (required for http/sse transport)
+  // Server URL (required for enabled http, sse, and streamable-http transports)
   string url = 10;
 
   // Enable session management (for streamable-http transport)
@@ -2759,10 +2759,10 @@ message UpdateMCPServerRequest {
   // Whether to enable the server
   bool enabled = 2;
 
-  // Transport type (stdio, http, sse)
+  // Transport type (stdio, http, sse, streamable-http)
   string transport = 3;
 
-  // Command to execute
+  // Command to execute (required for enabled stdio transport)
   string command = 4;
 
   // Command arguments
@@ -2783,7 +2783,7 @@ message UpdateMCPServerRequest {
   // Timeout in seconds for restart operation (default: 1 second)
   int32 timeout_seconds = 10;
 
-  // Server URL (required for http/sse transport)
+  // Server URL (required for enabled http, sse, and streamable-http transports)
   string url = 11;
 
   // Enable session management (for streamable-http transport)
@@ -2853,10 +2853,10 @@ message MCPServerHealth {
 
 // TestMCPServerConnectionRequest tests an MCP server configuration.
 message TestMCPServerConnectionRequest {
-  // Transport type (stdio, http, sse)
+  // Transport type (stdio, http, sse, streamable-http)
   string transport = 1;
 
-  // Command to execute
+  // Command to execute (required only for stdio transport)
   string command = 2;
 
   // Command arguments
@@ -2874,7 +2874,7 @@ message TestMCPServerConnectionRequest {
   // Timeout for connection test in seconds (default: 10)
   int32 timeout_seconds = 7;
 
-  // Server URL (required for http/sse transport)
+  // Server URL (required for http, sse, and streamable-http transports)
   string url = 8;
 
   // Enable session management (for streamable-http transport)
