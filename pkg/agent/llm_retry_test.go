@@ -49,11 +49,12 @@ func retryingAgent(llmProvider LLMProvider) *Agent {
 	}
 }
 
-// The rate limiter's exhausted retry budget is final for the agent loop: one
-// budget for throttling/transient errors, in one place. Before this guard a
-// persistent 5xx spent the limiter's whole budget and then the agent re-ran
-// that budget MaxRetries more times, multiplying the wait without changing
-// the outcome.
+// The rate limiter's exhausted retry budget on a transient 5xx is final for
+// the agent loop: one budget, in one place. (An exhausted throttle is not
+// final: throttle patience waits it out, see llm_throttle_budget_test.go.)
+// Before this guard a persistent 5xx spent the limiter's whole budget and
+// then the agent re-ran that budget MaxRetries more times, multiplying the
+// wait without changing the outcome.
 func TestDispatchChat_DoesNotReRetryLimiterExhaustion(t *testing.T) {
 	exhausted := &llm.RetriesExhaustedError{Attempts: 4, Cause: "a transient server error",
 		Err: llm.NewTransientError(errors.New("API error (status 503): unavailable"), 503, 0)}

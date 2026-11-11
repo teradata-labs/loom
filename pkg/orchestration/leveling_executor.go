@@ -87,9 +87,10 @@ type LevelingPolicy struct {
 	//
 	// The running total is also a floor on real spend rather than an exact
 	// figure: per-attempt cost is read from the AgentResult the attempt
-	// returned, which carries the final LLM response's usage. An attempt that
-	// ran a tool loop inside the agent reports less than it spent, so the gate
-	// can let a call through that a precise accounting would have blocked.
+	// returned. That cost covers the agent's whole conversation turn, but not
+	// the LLM calls the agent makes outside it (graph-memory recall, memory
+	// compression and similar), so the gate can let a call through that a
+	// precise accounting would have blocked.
 	//
 	// Use it to bound runaway escalation, not to guarantee a billing limit.
 	MaxCostUSD float64

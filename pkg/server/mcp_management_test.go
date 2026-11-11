@@ -81,6 +81,7 @@ func TestAddMCPServerPersistence(t *testing.T) {
 				EnableSessions:   true,
 				EnableResumption: true,
 				WorkingDir:       "/tmp/mcp",
+				MaxResponseBytes: 64 << 20,
 				Env: map[string]string{
 					"DEBUG": "true",
 					"PORT":  "8080",
@@ -105,6 +106,7 @@ func TestAddMCPServerPersistence(t *testing.T) {
 				assert.True(t, v.GetBool(prefix+".enable_sessions"))
 				assert.True(t, v.GetBool(prefix+".enable_resumption"))
 				assert.Equal(t, "/tmp/mcp", v.GetString(prefix+".working_dir"))
+				assert.Equal(t, int64(64<<20), v.GetInt64(prefix+".max_response_bytes"))
 
 				// Verify env map exists (exact structure depends on viper serialization)
 				assert.NotNil(t, v.Get(prefix+".env"))
@@ -216,6 +218,7 @@ func TestUpdateMCPServerPersistence(t *testing.T) {
 				EnableSessions:   true,
 				EnableResumption: true,
 				WorkingDir:       "/opt/mcp",
+				MaxResponseBytes: 32 << 20,
 				Env: map[string]string{
 					"NODE_ENV": "production",
 				},
@@ -237,6 +240,7 @@ func TestUpdateMCPServerPersistence(t *testing.T) {
 				assert.True(t, v.GetBool(prefix+".enable_sessions"))
 				assert.True(t, v.GetBool(prefix+".enable_resumption"))
 				assert.Equal(t, "/opt/mcp", v.GetString(prefix+".working_dir"))
+				assert.Equal(t, int64(32<<20), v.GetInt64(prefix+".max_response_bytes"))
 
 				// Verify env map exists
 				assert.NotNil(t, v.Get(prefix+".env"))
@@ -392,4 +396,87 @@ func TestConcurrentMCPOperations(t *testing.T) {
 		assert.Equal(t, expectedEnabled, enabled,
 			"Server %s enabled field should match expected value", serverName)
 	}
+}
+
+// TestMCPServerMaxResponseBytesPersistence covers the response bound across both
+// config helpers. A limit set through the management API has to survive a restart
+// the way `enabled` does, and because both helpers replace the whole server entry,
+// an update that leaves the field at zero must not erase a limit set by hand in
+// YAML.
+func TestMCPServerMaxResponseBytesPersistence(t *testing.T) {
+	newServer := func(t *testing.T, initial string) (*MultiAgentServer, string) {
+		t.Helper()
+		configPath := filepath.Join(t.TempDir(), "looms.yaml")
+		require.NoError(t, os.WriteFile(configPath, []byte(initial), 0o644))
+		return &MultiAgentServer{configPath: configPath, logger: zap.NewNop()}, configPath
+	}
+	reload := func(t *testing.T, configPath string) *viper.Viper {
+		t.Helper()
+		v := viper.New()
+		v.SetConfigFile(configPath)
+		require.NoError(t, v.ReadInConfig())
+		return v
+	}
+
+	const handSet = `mcp:
+  servers:
+    srv:
+      enabled: true
+      command: python3
+      transport: stdio
+      max_response_bytes: 33554432
+`
+
+	t.Run("add_persists_the_requested_limit", func(t *testing.T) {
+		server, configPath := newServer(t, "")
+		require.NoError(t, server.addMCPServerToConfig(&loomv1.AddMCPServerRequest{
+			Name: "srv", Enabled: true, Command: "python3", Transport: "stdio",
+			MaxResponseBytes: 64 << 20,
+		}))
+		assert.Equal(t, int64(64<<20), reload(t, configPath).GetInt64("mcp.servers.srv.max_response_bytes"))
+	})
+
+	t.Run("add_omits_the_key_when_the_request_leaves_it_unset", func(t *testing.T) {
+		server, configPath := newServer(t, "")
+		require.NoError(t, server.addMCPServerToConfig(&loomv1.AddMCPServerRequest{
+			Name: "srv", Enabled: true, Command: "python3", Transport: "stdio",
+		}))
+		// Absent, not zero: the key's absence is how the default is requested.
+		assert.False(t, reload(t, configPath).IsSet("mcp.servers.srv.max_response_bytes"))
+	})
+
+	t.Run("update_persists_the_requested_limit", func(t *testing.T) {
+		server, configPath := newServer(t, "")
+		require.NoError(t, server.addMCPServerToConfig(&loomv1.AddMCPServerRequest{
+			Name: "srv", Enabled: true, Command: "python3", Transport: "stdio",
+		}))
+		require.NoError(t, server.updateMCPServerInConfig(&loomv1.UpdateMCPServerRequest{
+			ServerName: "srv", Enabled: true, Command: "python3", Transport: "stdio",
+			MaxResponseBytes: 8 << 20,
+		}))
+		assert.Equal(t, int64(8<<20), reload(t, configPath).GetInt64("mcp.servers.srv.max_response_bytes"))
+	})
+
+	t.Run("update_keeps_a_hand_set_yaml_value_when_the_request_omits_it", func(t *testing.T) {
+		server, configPath := newServer(t, handSet)
+		require.NoError(t, server.updateMCPServerInConfig(&loomv1.UpdateMCPServerRequest{
+			ServerName: "srv", Enabled: true, Command: "node", Transport: "stdio",
+		}))
+		v := reload(t, configPath)
+		// This pins the config layer, not the helper: the written map is an
+		// override over the file, so a key the request leaves unset keeps the
+		// file's value. Writing a zero through would shadow it instead.
+		assert.Equal(t, int64(33554432), v.GetInt64("mcp.servers.srv.max_response_bytes"),
+			"an unrelated update must not erase a limit set by hand")
+		assert.Equal(t, "node", v.GetString("mcp.servers.srv.command"), "the update itself must still apply")
+	})
+
+	t.Run("update_overrides_a_hand_set_yaml_value_when_the_request_sets_it", func(t *testing.T) {
+		server, configPath := newServer(t, handSet)
+		require.NoError(t, server.updateMCPServerInConfig(&loomv1.UpdateMCPServerRequest{
+			ServerName: "srv", Enabled: true, Command: "python3", Transport: "stdio",
+			MaxResponseBytes: 1 << 20,
+		}))
+		assert.Equal(t, int64(1<<20), reload(t, configPath).GetInt64("mcp.servers.srv.max_response_bytes"))
+	})
 }

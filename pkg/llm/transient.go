@@ -87,10 +87,13 @@ func IsTransient(err error) bool {
 
 // RetriesExhaustedError is what the rate limiter returns when a retryable
 // error — throttling or a transient server failure — survived every attempt
-// in its MaxRetries budget. Callers that run their own retry loop around the
-// provider (the agent's non-streaming path does) must treat it as final: the
-// budget for this class of error lives in the limiter, and re-running it
-// outside would multiply the wait without changing the outcome.
+// in its MaxRetries budget. Callers that run their own failure-retry loop
+// around the provider (the agent's non-streaming path does) must treat it as
+// final: the budget for this class of error lives in the limiter, and
+// re-running it outside would multiply the wait without changing the outcome.
+// A throttle is the exception in pkg/agent: Unwrap exposes the last error, so
+// IsThrottle still reports a wrapped 429, and the agent's throttle patience
+// waits it out and calls again under its own wall-clock budget.
 type RetriesExhaustedError struct {
 	Attempts int    // total attempts made, MaxRetries+1
 	Cause    string // "throttling" or "a transient server error"

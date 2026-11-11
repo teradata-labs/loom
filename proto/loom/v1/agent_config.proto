@@ -7,6 +7,7 @@ syntax = "proto3";
 
 package loom.v1;
 
+import "loom/v1/decision.proto";
 import "loom/v1/skill.proto";
 import "loom/v1/task.proto";
 
@@ -91,6 +92,11 @@ message AgentConfig {
 
   // Skills configuration for this agent
   SkillsConfig skills = 20;
+
+  // Decision layer configuration (pkg/decision): which decider answers typed
+  // auxiliary judgments and, per call site, whether its answers are acted on
+  // or only shadow-recorded. Absent or provider "off" disables the layer.
+  DecisionConfig decision = 21;
 }
 
 // ProviderEntry is a named LLM configuration in the global provider pool.

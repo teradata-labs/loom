@@ -184,7 +184,7 @@ func (rb *ROMBuilder) BuildMetaAgentROM() (string, error) {
 			"pattern_categories": 8,
 			"supported_domains":  []string{"sql", "rest", "file", "document", "graphql", "mcp", "hybrid"},
 			"supported_backends": []string{"postgres", "teradata", "mysql", "sqlite", "http", "file"},
-			"llm_providers":      []string{"anthropic", "bedrock", "ollama"},
+			"llm_providers":      []string{"anthropic", "bedrock", "bedrock-mantle", "ollama"},
 			"template_thresholds": map[string]float64{
 				"sql":  0.70,
 				"rest": 0.60,

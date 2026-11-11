@@ -26,6 +26,7 @@ import (
 	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
+	"github.com/teradata-labs/loom/pkg/decision"
 	"github.com/teradata-labs/loom/pkg/evals/judges"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"go.uber.org/zap"
@@ -88,6 +89,13 @@ func (s *JudgeServer) RegisterJudge(ctx context.Context, req *loomv1.RegisterJud
 	if req.Config == nil {
 		return nil, status.Error(codes.InvalidArgument, "config is required")
 	}
+	// A JUDGE_TYPE_DECISION config carries a DecisionConfig. Its endpoint is
+	// server-level only (a caller must not choose where the server's decider
+	// key is sent), and its other fields follow the same rules as an
+	// agent's decision block.
+	if err := decision.ValidateConfig(req.Config.GetDecision()); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "judge config: %v", err)
+	}
 
 	// Derive an ID from the config name (slug) or generate a UUID.
 	id := req.Config.Id
@@ -105,6 +113,9 @@ func (s *JudgeServer) RegisterJudge(ctx context.Context, req *loomv1.RegisterJud
 	s.mu.Unlock()
 
 	s.logger.Debug("judge registered", zap.String("judge_id", id), zap.String("name", req.Config.Name))
+	// Once per registration, not per evaluation: evaluateSingle builds a
+	// judge on every call.
+	judges.LogConfigWarnings(s.logger, req.Config)
 
 	return &loomv1.RegisterJudgeResponse{
 		JudgeId: id,
@@ -213,7 +224,7 @@ func (s *JudgeServer) evaluateSingle(ctx context.Context, judgeID string, evalCt
 		return nil, status.Error(codes.FailedPrecondition, "no LLM provider available for evaluation; call SetProviderPool first")
 	}
 
-	judge, err := judges.NewLLMJudge(provider, cfg, s.tracer)
+	judge, err := judges.NewJudgeFromConfig(provider, cfg, s.tracer)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to create judge %q: %v", judgeID, err)
 	}

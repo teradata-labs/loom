@@ -66,6 +66,101 @@ type HTTPStatusCoder interface {
 	HTTPStatusCode() int
 }
 
+// HTTPStatusError wraps a provider error with the HTTP status code of the
+// failed response so callers can inspect HTTPStatusCoder without parsing error
+// message strings.
+type HTTPStatusError struct {
+	StatusCode int
+	Err        error
+}
+
+// WrapHTTPStatus attaches statusCode to err when statusCode > 0 and err != nil.
+func WrapHTTPStatus(statusCode int, err error) error {
+	if err == nil || statusCode <= 0 {
+		return err
+	}
+	return &HTTPStatusError{StatusCode: statusCode, Err: err}
+}
+
+func (e *HTTPStatusError) Error() string       { return e.Err.Error() }
+func (e *HTTPStatusError) Unwrap() error       { return e.Err }
+func (e *HTTPStatusError) HTTPStatusCode() int { return e.StatusCode }
+
+// IsDeterministicClientError reports whether err is a positively-identified,
+// non-retryable client refusal (for example HTTP 4xx excluding 408/429, an
+// Anthropic 4xx error or deterministic error type, or an AWS Smithy client
+// fault that is not a transient model/capacity failure).
+//
+// Any error that ClassifyProviderFailure classifies as ProviderFailureThrottled
+// or ProviderFailureUnavailable (including HTTP 408, HTTP 429,
+// ThrottlingException, ModelTimeoutException, ModelStreamErrorException, and
+// ModelNotReadyException) returns false. Unclassified errors with no typed
+// client-refusal signal also return false so outer retry loops can still retry
+// unknown transport or mock errors.
+func IsDeterministicClientError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if ClassifyProviderFailure(err) != ProviderFailureNone {
+		return false
+	}
+
+	var ae *anthropic.Error
+	if errors.As(err, &ae) {
+		if isDeterministicErrorName(string(ae.Type())) {
+			return true
+		}
+		if isDeterministicHTTPStatus(ae.StatusCode) {
+			return true
+		}
+	}
+
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) && apiErr.ErrorFault() == smithy.FaultClient {
+		return true
+	}
+
+	var sc HTTPStatusCoder
+	if errors.As(err, &sc) && isDeterministicHTTPStatus(sc.HTTPStatusCode()) {
+		return true
+	}
+
+	return false
+}
+
+func isDeterministicHTTPStatus(code int) bool {
+	return code >= http.StatusBadRequest && code < http.StatusInternalServerError &&
+		providerFailureForHTTPStatus(code) == ProviderFailureNone
+}
+
+func isDeterministicErrorName(name string) bool {
+	switch strings.ToLower(name) {
+	case "invalid_request_error", "authentication_error", "permission_error",
+		"not_found_error", "request_too_large", "billing_error", "insufficient_quota":
+		return true
+	}
+	return false
+}
+
+// HTTPStatusForErrorType maps a provider error-type string (for example on an
+// HTTP 200 response carrying a structured error payload) to a representative
+// HTTP status code using the shared provider-failure and client-error tables.
+func HTTPStatusForErrorType(errType string) int {
+	switch f, ok := providerFailureForErrorName(errType); {
+	case ok && f == ProviderFailureThrottled:
+		return http.StatusTooManyRequests
+	case ok && f == ProviderFailureUnavailable:
+		if strings.EqualFold(errType, "timeout_error") {
+			return http.StatusRequestTimeout
+		}
+		return http.StatusInternalServerError
+	case isDeterministicErrorName(errType):
+		return http.StatusBadRequest
+	default:
+		return 0
+	}
+}
+
 // ClassifyProviderFailure reports whether err, anywhere in its wrap chain,
 // is an LLM provider capacity failure.
 //
@@ -179,7 +274,7 @@ func providerFailureForErrorName(name string) (f ProviderFailure, ok bool) {
 	switch strings.ToLower(name) {
 	case "rate_limit_error", "throttlingexception":
 		return ProviderFailureThrottled, true
-	case "overloaded_error", "api_error", "timeout_error",
+	case "overloaded_error", "api_error", "server_error", "timeout_error",
 		"internalserverexception", "serviceunavailableexception",
 		"modelnotreadyexception", "modelstreamerrorexception",
 		"modeltimeoutexception":

@@ -66,7 +66,7 @@ func startRegistryServer(t *testing.T) loomv1.LoomServiceClient {
 }
 
 // A runner killed before its deferred cleanup (SIGKILL, OOM, node loss) leaves
-// lme-tmp-<qid> registered on the server. The retry of that entry must replace
+// lme-tmp-<run nonce>-<qid> registered on the server. The retry of that entry must replace
 // the stale agent rather than fail with "already running" — that failure is
 // Internal, so it would be charged to the chunk budget and quarantine a
 // healthy chunk, and the stale agent would carry the earlier attempt's memory.
@@ -76,7 +76,9 @@ func TestCreateTempAgentReplacesStaleAgent(t *testing.T) {
 		logger:    zap.NewNop(),
 		client:    startRegistryServer(t),
 		baseAgent: &loomv1.AgentConfig{Name: "lme-base"},
+		runNonce:  "0badc0de",
 	}
+	name := tempAgentName(r.runNonce, "q1")
 	ctx := context.Background()
 
 	staleID, err := r.createTempAgent(ctx, "q1")
@@ -90,10 +92,10 @@ func TestCreateTempAgentReplacesStaleAgent(t *testing.T) {
 	require.NoError(t, err)
 	var named int
 	for _, a := range list.GetAgents() {
-		if a.GetName() == "lme-tmp-q1" {
+		if a.GetName() == name {
 			named++
 			assert.NotEqual(t, staleID, a.GetId(), "the stale agent must be gone")
 		}
 	}
-	assert.Equal(t, 1, named, "exactly one lme-tmp-q1 after the retry")
+	assert.Equal(t, 1, named, "exactly one %s after the retry", name)
 }

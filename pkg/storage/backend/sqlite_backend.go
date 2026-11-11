@@ -24,6 +24,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/checkpoint"
+	"github.com/teradata-labs/loom/pkg/decision"
 	"github.com/teradata-labs/loom/pkg/eventlog"
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/observability"
@@ -45,12 +46,15 @@ type SQLiteBackend struct {
 	taskDB            *sql.DB // owned connection for task store; closed in Close()
 	checkpointStore   checkpoint.CheckpointStore
 	checkpointDB      *sql.DB // owned connection for checkpoint store; closed in Close()
-	eventLogStore     eventlog.EventLogStore
-	eventLogDB        *sql.DB // owned connection for event log store; closed in Close()
-	migrator          *sqlite.Migrator
-	migratorDB        *sql.DB // owned connection backing migrator; closed in Close()
-	dbPath            string
-	tracer            observability.Tracer
+	// decisionShadowStore persists typed-decision shadow rows (pkg/decision).
+	decisionShadowStore decision.ShadowStore
+	decisionDB          *sql.DB // owned connection for the shadow store; closed in Close()
+	eventLogStore       eventlog.EventLogStore
+	eventLogDB          *sql.DB // owned connection for event log store; closed in Close()
+	migrator            *sqlite.Migrator
+	migratorDB          *sql.DB // owned connection backing migrator; closed in Close()
+	dbPath              string
+	tracer              observability.Tracer
 }
 
 // NewSQLiteBackend creates a new SQLite-backed storage backend.
@@ -177,11 +181,28 @@ func NewSQLiteBackend(cfg *loomv1.SQLiteStorageConfig, tracer observability.Trac
 	}
 	checkpointStore := sqlite.NewCheckpointStore(checkpointDB, tracer)
 
+	// Create decision shadow store (same DB path, separate connection).
+	decisionDB, err := sql.Open("sqlite3", dsn)
+	if err != nil {
+		return nil, errors.Join(
+			fmt.Errorf("failed to open DB for decision shadow store: %w", err),
+			checkpointDB.Close(),
+			taskDB.Close(),
+			graphMemDB.Close(),
+			migratorDB.Close(),
+			sessionStore.Close(),
+			artifactStore.Close(),
+			humanStore.Close(),
+		)
+	}
+	decisionShadowStore := sqlite.NewDecisionShadowStore(decisionDB, tracer)
+
 	// Create event log store (uses same DB path, separate connection).
 	eventLogDB, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, errors.Join(
 			fmt.Errorf("failed to open DB for event log store: %w", err),
+			decisionDB.Close(),
 			checkpointDB.Close(),
 			taskDB.Close(),
 			graphMemDB.Close(),
@@ -194,21 +215,23 @@ func NewSQLiteBackend(cfg *loomv1.SQLiteStorageConfig, tracer observability.Trac
 	eventLogStore := sqlite.NewEventLogStore(eventLogDB, tracer)
 
 	return &SQLiteBackend{
-		sessionStore:      sessionStore,
-		artifactStore:     artifactStore,
-		humanRequestStore: humanStore,
-		graphMemoryStore:  graphMemoryStore,
-		graphMemDB:        graphMemDB,
-		taskStore:         taskStore,
-		taskDB:            taskDB,
-		checkpointStore:   checkpointStore,
-		checkpointDB:      checkpointDB,
-		eventLogStore:     eventLogStore,
-		eventLogDB:        eventLogDB,
-		migrator:          migrator,
-		migratorDB:        migratorDB,
-		dbPath:            dbPath,
-		tracer:            tracer,
+		sessionStore:        sessionStore,
+		artifactStore:       artifactStore,
+		humanRequestStore:   humanStore,
+		graphMemoryStore:    graphMemoryStore,
+		graphMemDB:          graphMemDB,
+		taskStore:           taskStore,
+		taskDB:              taskDB,
+		checkpointStore:     checkpointStore,
+		checkpointDB:        checkpointDB,
+		decisionShadowStore: decisionShadowStore,
+		decisionDB:          decisionDB,
+		eventLogStore:       eventLogStore,
+		eventLogDB:          eventLogDB,
+		migrator:            migrator,
+		migratorDB:          migratorDB,
+		dbPath:              dbPath,
+		tracer:              tracer,
 	}, nil
 }
 
@@ -308,6 +331,11 @@ func (b *SQLiteBackend) Close() error {
 			firstErr = fmt.Errorf("checkpoint db close: %w", err)
 		}
 	}
+	if b.decisionDB != nil {
+		if err := b.decisionDB.Close(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("decision shadow db close: %w", err)
+		}
+	}
 	if b.eventLogDB != nil {
 		if err := b.eventLogDB.Close(); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("event log db close: %w", err)
@@ -320,6 +348,11 @@ func (b *SQLiteBackend) Close() error {
 	}
 
 	return firstErr
+}
+
+// DecisionShadowStore implements DecisionShadowProvider.
+func (b *SQLiteBackend) DecisionShadowStore() decision.ShadowStore {
+	return b.decisionShadowStore
 }
 
 // GraphMemoryStore implements GraphMemoryProvider.
