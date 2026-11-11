@@ -817,12 +817,20 @@ func WithEventLog(store eventlog.EventLogStore) Option {
 }
 
 // WithTransientTail lets the embedding application add live state to every
-// provider call. fn runs once per call (normal send and recovery resend); its
-// trimmed output rides a trailing <system-reminder> user message after the
-// turn's built-in notes — joined into that message without segmented memory,
-// on a copy of the compiled view with it — never stored in the session and
-// never changing the cached prefix. Empty output adds nothing; a nil fn is
-// the same as not setting the option.
+// provider call. fn runs once per call (normal send, recovery resend, and the
+// budget-exhausted synthesis call); its trimmed output rides a trailing
+// <system-reminder> user message after the turn's built-in notes — joined into
+// that message without segmented memory, on a copy of the compiled view with
+// it — never stored in the session and never changing the cached prefix. Empty
+// output adds nothing; a nil fn is the same as not setting the option.
+//
+// fn must be safe for concurrent use: one agent may run it for several
+// sessions at once, and session.SessionIDFromContext(ctx) identifies the
+// session a call serves. The tail is harness-authority text — it rides a
+// <system-reminder> message the model treats as harness state — so never put
+// untrusted data in it. The ReleasePressure relief estimate does not count
+// the tail, so a large tail can still drive the request past the context
+// window and the recovery resend carries it again: keep it small.
 func WithTransientTail(fn func(ctx context.Context) string) Option {
 	return func(a *Agent) {
 		a.transientTail = fn
@@ -2922,6 +2930,9 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			if a.transientTail != nil {
 				tail = strings.TrimSpace(a.transientTail(ctx))
 			}
+			if tail != "" {
+				span.AddEvent("transient_tail.added", map[string]interface{}{"bytes": len(tail)})
+			}
 			rs := append(reminders[:len(reminders):len(reminders)], TurnReminder{Text: toolNote})
 			if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
 				segMem.PinTurnNotes(rs...)
@@ -3937,13 +3948,20 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNot
 		}
 	}
 	// The recall note was pinned by the loop's first call; pinning again is a
-	// no-op then, and pins it here when the loop never sent it.
+	// no-op then, and pins it here when the loop never sent it. The caller-
+	// supplied transient tail (WithTransientTail) rides this call too — it
+	// writes the final answer — recomputed per call like the loop's
+	// withReminder: after the built-in notes, on a copy, never stored.
 	synthesisMessages := func() []Message {
+		var tail string
+		if a.transientTail != nil {
+			tail = strings.TrimSpace(a.transientTail(ctx))
+		}
 		if segMem != nil {
 			segMem.PinTurnNotes(TurnReminder{Kind: ReminderGraphMemory, Text: memoryNote})
-			return session.GetMessages()
+			return withSystemReminder(session.GetMessages(), tail)
 		}
-		return withSystemReminder(session.GetMessages(), memoryNote)
+		return withSystemReminder(session.GetMessages(), memoryNote, tail)
 	}
 	finalResp, err := a.chatWithRetry(ctx, synthesisMessages(), nil)
 	if err != nil && errors.Is(err, llm.ErrContextTooLong) && segMem != nil {
