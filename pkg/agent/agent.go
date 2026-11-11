@@ -205,6 +205,18 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// existing deactivation path plus the per-session tool ledger.
 	a.memory.SetSkillDeactivationHook(a.deactivateSkillForFold)
 
+	// Per-message labels (WithMessageLabeler / WithLabelJoin): wired here, not
+	// at option time, so the labeler lands on the memory that survives a later
+	// WithMemory. Rides messages through compaction (the fold summary carries
+	// the replaced labels' join) and replay (the restore path re-runs the
+	// labeler where each row re-enters the context).
+	if a.messageLabeler != nil {
+		a.memory.SetMessageLabeler(a.messageLabeler)
+	}
+	if a.labelJoin != nil {
+		a.memory.SetLabelJoin(a.labelJoin)
+	}
+
 	// Initialize shared memory store for large tool results (#2: Persistent Global Storage)
 	// Use global singleton so references work across agent instances and survive restarts.
 	// The global store provides:
@@ -576,6 +588,28 @@ func WithMemory(memory *Memory) Option {
 	}
 }
 
+// WithMessageLabeler sets a per-message labeler. The agent calls fn once when
+// a message enters a session's context — arrival, or the restore replay that
+// rebuilds one after a restart — and stores the returned map on the message.
+// Label values are opaque: nothing in the agent interprets them. When a
+// compaction summary replaces labelled messages, their labels ride the
+// summary message joined by WithLabelJoin.
+func WithMessageLabeler(fn func(msg *Message) map[string]string) Option {
+	return func(a *Agent) {
+		a.messageLabeler = fn
+	}
+}
+
+// WithLabelJoin sets the join used when a compaction summary replaces
+// labelled messages: fn is applied pairwise over the replaced messages'
+// labels, in context order. When unset, a default join is used: for each key
+// present in either map, the lexicographically greater value wins.
+func WithLabelJoin(fn func(a, b map[string]string) map[string]string) Option {
+	return func(a *Agent) {
+		a.labelJoin = fn
+	}
+}
+
 // WithSharedMemory sets the SharedMemoryStore for large tool result storage.
 // This enables agents to store and reference large tool outputs efficiently.
 func WithSharedMemory(sharedMemory interface{}) Option {
@@ -823,6 +857,27 @@ func WithEventLog(store eventlog.EventLogStore) Option {
 func WithUnknownOutcomePolicy(p UnknownOutcomePolicy) Option {
 	return func(a *Agent) {
 		a.unknownOutcome = p
+	}
+}
+
+// WithTransientTail lets the embedding application add live state to every
+// provider call. fn runs once per call (normal send, recovery resend, and the
+// budget-exhausted synthesis call); its trimmed output rides a trailing
+// <system-reminder> user message after the turn's built-in notes — joined into
+// that message without segmented memory, on a copy of the compiled view with
+// it — never stored in the session and never changing the cached prefix. Empty
+// output adds nothing; a nil fn is the same as not setting the option.
+//
+// fn must be safe for concurrent use: one agent may run it for several
+// sessions at once, and session.SessionIDFromContext(ctx) identifies the
+// session a call serves. The tail is harness-authority text — it rides a
+// <system-reminder> message the model treats as harness state — so never put
+// untrusted data in it. The ReleasePressure relief estimate does not count
+// the tail, so a large tail can still drive the request past the context
+// window and the recovery resend carries it again: keep it small.
+func WithTransientTail(fn func(ctx context.Context) string) Option {
+	return func(a *Agent) {
+		a.transientTail = fn
 	}
 }
 
@@ -2909,14 +2964,25 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// reminder the turn already sent is not sent again (TurnReminder).
 		// Both the normal send and the recovery resend go through here.
 		// Without segmented memory the notes ride a trailing message on a copy
-		// (withSystemReminder).
+		// (withSystemReminder). A caller-supplied transient tail
+		// (WithTransientTail), when set, rides a trailing reminder message
+		// after the built-in notes — joined into that same message without
+		// segmented memory, on a copy of the compiled view with it, so a later
+		// call sees only its own tail.
 		withReminder := func(msgs []Message, toolNote string) []Message {
+			var tail string
+			if a.transientTail != nil {
+				tail = strings.TrimSpace(a.transientTail(ctx))
+			}
+			if tail != "" {
+				span.AddEvent("transient_tail.added", map[string]interface{}{"bytes": len(tail)})
+			}
 			rs := append(reminders[:len(reminders):len(reminders)], TurnReminder{Text: toolNote})
 			if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
 				segMem.PinTurnNotes(rs...)
-				return session.GetMessages()
+				return withSystemReminder(session.GetMessages(), tail)
 			}
-			return withSystemReminder(msgs, reminderTexts(rs)...)
+			return withSystemReminder(msgs, append(reminderTexts(rs), tail)...)
 		}
 
 		// sendChat is the one provider call of this iteration. With
@@ -3940,13 +4006,20 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNot
 		}
 	}
 	// The recall note was pinned by the loop's first call; pinning again is a
-	// no-op then, and pins it here when the loop never sent it.
+	// no-op then, and pins it here when the loop never sent it. The caller-
+	// supplied transient tail (WithTransientTail) rides this call too — it
+	// writes the final answer — recomputed per call like the loop's
+	// withReminder: after the built-in notes, on a copy, never stored.
 	synthesisMessages := func() []Message {
+		var tail string
+		if a.transientTail != nil {
+			tail = strings.TrimSpace(a.transientTail(ctx))
+		}
 		if segMem != nil {
 			segMem.PinTurnNotes(TurnReminder{Kind: ReminderGraphMemory, Text: memoryNote})
-			return session.GetMessages()
+			return withSystemReminder(session.GetMessages(), tail)
 		}
-		return withSystemReminder(session.GetMessages(), memoryNote)
+		return withSystemReminder(session.GetMessages(), memoryNote, tail)
 	}
 	finalResp, err := a.chatWithRetry(ctx, synthesisMessages(), nil)
 	if err != nil && errors.Is(err, llm.ErrContextTooLong) && segMem != nil {

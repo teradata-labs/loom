@@ -96,6 +96,18 @@ type Agent struct {
 	// is recorded but whose result is not. The zero value stops with an
 	// ExecutionGap, as before.
 	unknownOutcome UnknownOutcomePolicy
+	// transientTail, when non-nil, supplies caller text appended to the
+	// transient trailing reminder of every provider call (WithTransientTail).
+	transientTail func(ctx context.Context) string
+	// messageLabeler, when set (WithMessageLabeler), runs where a message
+	// enters a session's context — arrival or the restore replay — and its
+	// result is stored on the message. Label values are opaque.
+	messageLabeler func(*Message) map[string]string
+
+	// labelJoin, when set (WithLabelJoin), joins the labels of the messages a
+	// compaction summary replaces, applied pairwise in context order. Nil uses
+	// the default join (per key, the lexicographically greater value).
+	labelJoin func(a, b map[string]string) map[string]string
 
 	// leaseTTL overrides eventlog.DefaultSessionLeaseTTL for the session lease
 	// (session_lease.go). Zero uses the default; tests set it short.
