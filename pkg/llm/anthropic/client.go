@@ -430,9 +430,10 @@ func (c *Client) convertMessages(messages []llmtypes.Message) ([]TextBlockParam,
 		case "assistant":
 			var content []ContentBlock
 
-			// In-turn thinking replay: blocks ride back verbatim and FIRST
-			// (the response order). Empty text stays valid — MarshalJSON keeps
-			// the field present. Settled turns arrive already stripped.
+			// Thinking replay: blocks ride back verbatim and FIRST (the
+			// response order). Empty text stays valid — MarshalJSON keeps the
+			// field present. A settled turn carries its blocks only while the
+			// context before them is unchanged; the compile decides.
 			for _, tb := range msg.ThinkingBlocks {
 				if tb.Type == "redacted_thinking" {
 					content = append(content, ContentBlock{Type: "redacted_thinking", Data: tb.Thinking})
