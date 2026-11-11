@@ -1132,6 +1132,8 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 	remaining = append(remaining, protected...)
 	remaining = append(remaining, sm.contextMessages[count:]...)
 	sm.contextMessages = remaining
+	// What stays was made on the region that just left (dropThinkingLocked).
+	sm.dropThinkingLocked()
 	sm.l1Dirty = true
 	sm.updateTokenCount()
 	sm.tokenCountDirty = false

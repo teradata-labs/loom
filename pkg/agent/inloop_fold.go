@@ -181,6 +181,9 @@ func (sm *SegmentedMemory) ApplyFoldReply(ctx context.Context, summary string) (
 
 	sm.summary = summaryState{n: n1, text: newText}
 	sm.contextMessages = kept
+	// The pending pair is kept whole, on top of a past that is now a summary:
+	// its thinking block was made on the past that is gone.
+	sm.dropThinkingLocked()
 	sm.l1Dirty = true
 	sm.updateTokenCount()
 	sm.tokenCountDirty = false
@@ -194,6 +197,18 @@ func (sm *SegmentedMemory) ApplyFoldReply(ctx context.Context, summary string) (
 		zap.Int("summary_bytes", len(newText)),
 		zap.Int("version", n1))
 	return true, estimate
+}
+
+// dropThinkingLocked removes every thinking block the context holds. A block
+// is signed over what preceded it when the model made it, and a provider that
+// checks the binding (claude-fable-5) refuses a request that replays it on
+// anything else. A committed fold rewrites what precedes the rows it keeps, so
+// it drops their blocks. The rows keep their words and their tool calls, and
+// the window estimate is taken from the compile, so it follows. Must hold lock.
+func (sm *SegmentedMemory) dropThinkingLocked() {
+	for i := range sm.contextMessages {
+		sm.contextMessages[i].ThinkingBlocks = nil
+	}
 }
 
 // foldSplitLocked is the in-loop fold's cut of the context: what a full fold
