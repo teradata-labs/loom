@@ -44,6 +44,11 @@ turn without running a tool call a second time when its result was recorded.
    ```yaml
    execution_log:
      enabled: true
+     # What a resume does with a call that started but whose result was never
+     # recorded: "stop" (the default) reports an execution gap for an operator
+     # to resolve; "fail" records the call as failed with "outcome unknown"
+     # and lets the turn go on, for agents nobody is watching.
+     unknown_outcome: stop
    ```
 
 2. Restart the server. The startup log shows:
@@ -75,11 +80,17 @@ the session's last turn:
 | State of the turn | What resume does |
 |-------------------|------------------|
 | The user's message has no reply and no tool calls were saved | Re-runs the turn's LLM call |
+| The LLM response was recorded but its assistant message never saved and none of its tool calls started | **Replays the recorded response**: its tool batch is rebuilt from the log and run; the model is not asked again |
 | A tool call's result was recorded but its row was not saved | Saves the recorded result; the tool does not run again |
 | A tool call was never started | Runs it |
 | Every tool call has a result, but there is no reply | Asks the LLM for the reply |
-| A tool call started but its result was never recorded | Stops and reports an **execution gap** (see below) |
+| A tool call started but its result was never recorded | With `execution_log.unknown_outcome: stop` (the default), stops and reports an **execution gap** (see below); with `fail`, records the call as failed with "outcome unknown" and the turn goes on |
 | The turn already has its reply | Nothing (`Nothing to resume`) |
+
+The replay only fires for the response to the LLM call the crash actually
+interrupted (the highest recorded `llm_call_intent` step), so a response a
+failed turn left behind — a circuit-breaker exit, say — is never replayed as
+the answer to a later turn's message.
 
 An execution gap means the process died while that call was running, or just
 after it ran but before its result was recorded. The two look the same, so
@@ -222,10 +233,17 @@ loom sessions resume sess_checkout_7
 ## Limitations
 
 - Turns that ran with the log off are refused, not resumed.
-- Calls with an unknown outcome are never retried automatically; an operator
-  settles them.
+- Calls with an unknown outcome are never retried automatically. With
+  `execution_log.unknown_outcome: stop` (the default) an operator settles them
+  with `loom sessions resolve-gap`; with `fail`, resume records the call as
+  failed with "outcome unknown" and the turn goes on.
 - An LLM call interrupted by the crash is made again on resume, so its tokens
-  are paid twice. Recorded LLM responses are not replayed.
+  are paid twice — except when the response was already recorded: resume
+  replays a recorded response whose assistant message never saved and whose
+  tool calls never started, instead of asking the model again. The replay is
+  refused for any recorded response left behind by a turn that already failed
+  (a circuit-breaker exit, say), so a batch the model chose for an earlier
+  turn never runs against a later one.
 - Only agents built by `looms serve` record the log. Ephemeral sub-agents,
   `looms workflow run` agents, and agents embedded through the Go API (unless
   built with `agent.WithEventLog`) do not.

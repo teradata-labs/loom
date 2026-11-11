@@ -3105,6 +3105,16 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 						})
 						span.RecordError(err)
 
+						// The response was recorded, but its truncated calls are
+						// refused here and the assistant message is never
+						// appended: drop the recorded step, so a resume cannot
+						// replay a batch the breaker refused to run. Every other
+						// exit between recordLLMResult and the append leaves
+						// nothing replayable — they run only when the send
+						// itself failed, so the log holds an intent without a
+						// result, which is never a replay candidate.
+						a.pruneStepIfResolved(ctx, session.ID, thisStep, true)
+
 						// The output-token CB error propagates on the existing
 						// recoverable channel WITHOUT touching context — a CB
 						// trip is not a context decision (blueprint A5).

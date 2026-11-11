@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/teradata-labs/loom/pkg/eventlog"
+	"github.com/teradata-labs/loom/pkg/observability"
 	llmtypes "github.com/teradata-labs/loom/pkg/types"
 )
 
@@ -123,5 +124,48 @@ func TestUnknownOutcomePolicy_Valid(t *testing.T) {
 		if got := p.Valid(); got != want {
 			t.Errorf("%q.Valid() = %v, want %v", p, got, want)
 		}
+	}
+}
+
+// The fail policy mints a result the tool never returned, so the decision must
+// be visible outside the session row: a span event and a log line on the
+// resume span, naming the call it closed.
+func TestResumeSession_UnknownOutcomeFailIsTraced(t *testing.T) {
+	recorder := &recordingEventLog{}
+	tracer := observability.NewMockTracer()
+	cfg := DefaultConfig()
+	cfg.PatternConfig = DefaultPatternConfig()
+	cfg.PatternConfig.UseLLMClassifier = false
+	ag := NewAgent(&mockBackend{}, &mockSimpleLLM{}, WithConfig(cfg), WithEventLog(recorder), WithTracer(tracer), WithUnknownOutcomePolicy(UnknownOutcomeFail))
+	tool := &crashingTool{}
+	ag.tools.Register(tool)
+	threeCallBatch(t, ag, recorder, "s-unknown-traced")
+
+	if _, err := ag.ResumeSession(context.Background(), "s-unknown-traced"); err != nil {
+		t.Fatalf("ResumeSession = %v, want the turn to go on", err)
+	}
+
+	var found *observability.Event
+	for _, sp := range tracer.GetSpansByName("agent.conversation.resume_session") {
+		for i := range sp.Events {
+			if sp.Events[i].Name == "resume_session.unknown_outcome_failed" {
+				found = &sp.Events[i]
+			}
+		}
+	}
+	if found == nil {
+		t.Fatal("the fail decision left no resume_session.unknown_outcome_failed span event")
+	}
+	if found.Attributes["tool"] != "crashy" {
+		t.Errorf("event tool = %v, want crashy", found.Attributes["tool"])
+	}
+	if found.Attributes["call_id"] != "c2" {
+		t.Errorf("event call_id = %v, want c2", found.Attributes["call_id"])
+	}
+	if found.Attributes["step_index"] != 0 {
+		t.Errorf("event step_index = %v, want 0", found.Attributes["step_index"])
+	}
+	if found.Attributes["batch_position"] != 1 {
+		t.Errorf("event batch_position = %v, want 1", found.Attributes["batch_position"])
 	}
 }

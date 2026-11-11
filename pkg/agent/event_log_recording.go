@@ -149,7 +149,9 @@ func (a *Agent) recordToolIntent(ctx context.Context, sessionID string, stepInde
 	return a.recordIntentWithRetry(ctx, sessionID, stepIndex, batchPosition, eventlog.EventToolCallIntent, toolCall.ID, payload)
 }
 
-// recordToolResult: see recordLLMResult — best-effort.
+// recordToolResult is best-effort, unlike recordLLMResult (blocking when the
+// response carries tool calls): the action already happened, so a failed write
+// is logged and leaves an (intent, no result) gap for resume to surface.
 func (a *Agent) recordToolResult(ctx context.Context, sessionID string, stepIndex, batchPosition int, toolUseID string, result *shuttle.Result, execErr error) {
 	if a.eventLog == nil {
 		return
