@@ -206,6 +206,21 @@ question text. `looms hitl show` does not show it either: it prints the
 request's `Context` (so an in-turn card's reason appears) but not its `Params`,
 where a parked item's reason is stored.
 
+The park also records, in the request's `Context` under `advertised_tools`, the
+names of the tools the model was shown for the provider call whose batch parked
+(after recovery filtering). Resumed calls carry that projection narrowed by the
+resume-time advertised set, so a tool registered for the session while the batch
+waited, or one recovery had removed from the requesting call, stays invisible to
+a script engine (`run_lua`). A row with no recorded projection (parked by a build
+before this field) gives its calls none, and `run_lua` refuses to run with
+`POLICY_DENIED`. `ResumeSession` (crash resume) knows no projection for the
+crashed batch: it dispatches never-attempted calls with none, and a re-park from
+it records none, so the later resume takes the same no-record path. Tests:
+`TestParkedRunLua_UsesTheRequestingCallsProjection`,
+`TestParkedRunLua_FailsClosedWithoutAProjection`,
+`TestResumeSession_DispatchesWithoutAProjection`,
+`TestResumeSession_ReParkRecordsNoProjection`.
+
 ### 3.3 Claiming the decision
 
 In the standalone (pending-row) flow the row is closed **before the batch

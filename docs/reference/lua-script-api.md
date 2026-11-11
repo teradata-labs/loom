@@ -1,7 +1,8 @@
 # Lua Script API Reference
 
-**Status**: ✅ implemented in `pkg/luasandbox` (engine and Lua-facing API). 📋 Planned:
-the builtin `run_lua` tool that exposes it to models. Design and rationale:
+**Status**: ✅ implemented, off by default (`tools.lua.enabled`): the engine and Lua-facing
+API (`pkg/luasandbox`), the builtin `run_lua` tool, and saved scripts (`manage_lua_scripts`,
+`lua_<name>` tools, the `LoomService` Lua script RPCs). Design and rationale:
 [architecture/lua-script-engine.md](../architecture/lua-script-engine.md).
 
 **Interpreter**: `github.com/arnodel/golua` v0.3.0 (vendored), Lua 5.5. `_VERSION` is
@@ -9,6 +10,217 @@ the builtin `run_lua` tool that exposes it to models. Design and rationale:
 varargs (`function f(... xs)`).
 
 ---
+
+## The `run_lua` tool
+
+### Enabling it
+
+Three things must all hold for an agent to have `run_lua`:
+
+1. The server sets `tools.lua.enabled: true` (env `LOOM_TOOLS_LUA_ENABLED`). Default
+   `false`.
+2. The agent lists `run_lua` in `tools.builtin`.
+3. The agent's executor has an admission chain or a permission checker
+   (`tools.hooks` or `tools.permissions`). Otherwise `run_lua` is not registered and
+   serve logs one warning naming the reason. loom's default YOLO permission checker
+   counts, and admits every call; configure `tools.hooks` before enabling Lua on a
+   shared server. When `tools.lua.enabled` is on, `tools.permissions.yolo` is on
+   (also set by `--yolo` or `LOOM_YOLO=true`) and `tools.hooks` has no bindings, serve
+   logs one warning at startup naming `run_lua` and saying that every nested tool call
+   is allowed without a check. The warning does not change what registers.
+
+```yaml
+tools:
+  lua:
+    enabled: true
+    limits:                       # zero = engine default; capped at the engine ceilings
+      wall_seconds: 120
+      memory_bytes: 134217728     # 128 MiB per run, counted as total allocation
+      max_tool_calls: 100
+      max_concurrent_runs: 0      # 0 = derived from the process memory limit; a value only lowers it
+      max_concurrent_runs_per_key: 2
+    tools:
+      allow: []                   # empty = every tool the model can see
+      deny: [shell_execute, shell_execute_sandbox, agent_management, project_manager, git_contribute, propose_skill_edit]
+      deny_for_shared: [http_request, web_browse, web_search, file_write, files, workspace, shell_execute]
+```
+
+`shell_execute` is denied to scripts by default. It runs real programs with the server's
+permissions, and a script could run many of them without the model or a person seeing each
+one. Scripts get it only when both of these hold:
+
+- `tools.shell_execute.mode` is `jailed`, so every program a command starts is checked on
+  its real arguments; and
+- a `kind: command-policy` hook binding with no `matcher` governs `shell_execute`, so each
+  call is judged before it runs (see [shell-command-policy.md](shell-command-policy.md)).
+  A binding whose `matcher` narrows the calls it judges does not count, because a script
+  call the matcher does not select would run unjudged. Either `enforcement` mode counts.
+
+Then removing `shell_execute` from `deny` gives it to the runner's own scripts (inline
+scripts, and saved scripts the running agent owns; see "Who owns a saved script"). A command
+that needs approval returns `approval_required` to the script, and the model makes the call
+itself so a person can approve it. If either condition is missing, serve keeps
+`shell_execute` hidden from scripts whatever `deny` says, and logs a warning. Shared scripts
+(saved by another agent, or over the RPC) never get it: `deny_for_shared` lists it by
+default, and serve adds it back when a configured `deny_for_shared` leaves it out.
+
+A malformed tool pattern in `tools.lua.tools` aborts `looms serve`. Hosts embedding loom
+call `Agent.RegisterRunLuaTool(agent.RunLuaToolOptions{...})` themselves, or suppress
+loom's tool with `agent.WithoutBuiltinTool("run_lua")` and register their own.
+
+### Parameters
+
+| Parameter | Type | Meaning |
+|---|---|---|
+| `script` | string | Lua source to run. Exactly one of `script` and `name`. |
+| `name` | string | Name of a saved script (see "Saved scripts" below). |
+| `args` | object | Becomes the global table `args`. |
+| `timeout_seconds` | integer | Lowers the wall budget for this run; it can never raise it. |
+
+Any other parameter is `INVALID_PARAMS`.
+
+### What a script can call
+
+Only the tools the model was shown for the provider call that requested the run, minus
+the engine's hard-deny list, the reserved names (`run_lua`, `manage_lua_scripts`,
+`lua_*`), `tools.lua.tools.deny`, and `deny_for_shared` for scripts the runner did not
+write (shared scripts; see "Who owns a saved script" below); `allow`, when set, narrows
+further. Each call runs through the agent's admission
+chain like a direct call. A call that needs approval returns `approval_required` without
+running, and the model should make it directly.
+
+### Results
+
+| Run outcome | `Success` | `Data` or `Error.Code` |
+|---|---|---|
+| returned a value | true | the value |
+| returned nothing | true | `{"output": "<print capture>", "calls": N}` |
+| Lua error | false | `SCRIPT_ERROR`: position and message, the last 512 bytes of output, calls made |
+| a budget fired | false | `BUDGET_EXCEEDED`: the limit and the usage so far |
+| the turn was cancelled | false | `CANCELLED` |
+| every run slot busy | false | `LUA_BUSY` (retryable) |
+| refused (no session, no projection, no guard, policy unavailable) | false | `POLICY_DENIED` |
+| saved-script lookup | false | `SCRIPT_NOT_FOUND`, `AMBIGUOUS_SCRIPT`, `SCRIPT_NOT_ACCEPTED` |
+| bad parameters | false | `INVALID_PARAMS` |
+| host or engine failure | false | `HOST_ERROR` or `ENGINE_ERROR`; details only in the server log |
+
+`Result.Metadata["lua.run"]` always carries the run record: outcome, limit, usage, the
+call ledger (`tool`, `ok`, `code`, `millis`, `decision`), output and truncation flags.
+A call refused before the engine ran (`INVALID_PARAMS`, `POLICY_DENIED`, `LUA_BUSY`, the
+saved-script lookup codes) has outcome `refused`, its code under `refusal`, zero usage and
+an empty ledger.
+The nested calls are not tool rows of their own; the `run_lua` call is one row.
+
+**Where the run record lives.** The record is not shown to the model, and no client
+surfaces it yet. No code outside `pkg/agent/lua_tool.go` reads `lua.run`; the
+`Message` returned by `GetConversationHistory` has no tool-result field, and the
+streamed `WeaveProgress.tool_result` carries only `Result.Data`, so the TUI and other
+gRPC clients see the `run_lua` result, not its record. It is kept in two places:
+
+- **The session store.** The `run_lua` tool message is saved with its whole
+  `shuttle.Result` serialized in the `messages.tool_result_json` column (SQLite and
+  PostgreSQL), so the record is at `$.Metadata."lua.run"` in that row. The column is
+  bounded like the row: when the serialized result is larger than
+  `shared_memory_threshold_bytes` (16 KiB by default), `tool_result_json` is left empty
+  and the record is not stored (`pkg/agent/memory.go`).
+- **Traces.** Each run has a `lua.run` span (`lua.outcome`, `lua.cpu_ticks`,
+  `lua.memory_bytes`, `lua.wall_ms`, `lua.tool_calls`) and each nested call a
+  `lua.tool_call` span (`tool_name`, `lua.decision`) in the configured tracer.
+
+```sql
+-- SQLite: the call ledger of every run_lua row in a session
+SELECT id, json_extract(tool_result_json, '$.Metadata."lua.run".calls')
+FROM messages
+WHERE session_id = ? AND role = 'tool' AND tool_result_json IS NOT NULL
+  AND json_extract(tool_result_json, '$.Metadata."lua.run"') IS NOT NULL;
+```
+
+## Saved scripts
+
+A loom server keeps saved scripts in `tools.lua.scripts_dir` (default
+`<LOOM_DATA_DIR>/lua_scripts`): `<name>.lua` holds the source, `<name>.json` the metadata
+(description, manifest, version, published flag, owner), and `attachments.json` which agents
+have which script tools. Writes are atomic (temp file and rename). A corrupt file is skipped
+and logged at startup. Every agent on the server shares the store.
+
+```yaml
+tools:
+  lua:
+    enabled: true
+    scripts_dir: ""                  # default <LOOM_DATA_DIR>/lua_scripts
+    scripts:
+      save_enabled: true             # agents that list manage_lua_scripts may manage scripts
+      publish_as_tool_enabled: false # allow publishing a script as a lua_<name> tool
+```
+
+`run_lua` can run any saved script by `name` whenever Lua is enabled.
+
+### Who owns a saved script
+
+A script's owner is whoever saved its current version: the agent's name for a save through
+`manage_lua_scripts`, `server` for a save over the RPC. A new version saved by another agent
+changes the owner to that agent. When an agent runs a saved script (`run_lua name=...` or
+`lua_<name>`), the script is `own` trust only if that agent is its owner. Every other script
+runs as `shared`: one saved by another agent, and every script saved over the RPC, for every
+agent. `tools.lua.tools.deny_for_shared` removes its tools from shared scripts, so such a
+call returns `TOOL_NOT_VISIBLE` without running. The run record's `trust` field, and the
+`trust` that `get` and `list` return, show the tier for the calling agent.
+
+### `manage_lua_scripts`
+
+Registered on agents that list it in `tools.builtin` and also have `run_lua`, when
+`scripts.save_enabled` is true.
+
+| Action | Does |
+|---|---|
+| `save` | Validates the name (`^[a-z][a-z0-9_]{2,40}$`), a description, the manifest, and that the source compiles (it is never run), then stores it. An existing name is `DUPLICATE` unless `overwrite` is true; a new version keeps its published state and attachments. Returns `{name, version, tool_name, published}`. |
+| `get` | Returns the script with its source, manifest, version, owner, `updated_at`, and the `trust` (`own` or `shared`) it runs with on this agent. |
+| `list` | Returns `{scripts, total, truncated}`: up to 200 scripts, name-sorted, without source, each with the `trust` it runs with on this agent; `total` is the number of saved scripts and `truncated` is true when more than 200 exist. |
+| `delete` | Deletes the script and every attachment of it. |
+| `publish` | Needs `publish_as_tool_enabled` and a manifest with `parameters`. Every `requires` entry must be a tool the script, at its trust on this agent, can call (`TOOL_NOT_VISIBLE` otherwise). Marks the script published, attaches it to this agent, and registers `lua_<name>` at once. The tool is registered on the agent, not the session: every session of that agent is offered it from its next model call, and because the attachment is saved in `attachments.json`, the agent registers it again after a server restart. |
+| `unpublish` | Clears the published flag. The tool leaves this agent at once, and every other agent's copy refuses its next call. Attachments are kept, so publishing again restores them. |
+| `detach` | Removes `lua_<name>` from this agent only. |
+
+The manifest:
+
+| Field | Meaning |
+|---|---|
+| `parameters` | JSON Schema with `type: object` for the tool's arguments: at most 20 properties and 4 KiB, no `$ref`. |
+| `requires` | The tools the script calls. When set, the script may call only these; an empty list (`requires: []`) means no tool at all, and an absent `requires` means no restriction. Over the RPC, set `requires_set: true` to send an empty list: proto3 cannot tell an empty list from an absent one, so an empty `requires` without `requires_set` is stored as no restriction. Responses set `requires_set` whenever the stored manifest has a `requires` list, so a read saved back keeps it. |
+| `returns` | One line describing the return value. |
+
+### `lua_<name>` tools
+
+A published script attached to an agent becomes a tool named `lua_<name>`. Its description
+is `Saved Lua script. <description> Returns: <returns>`, and its input schema is
+`manifest.parameters`. The tool's arguments become the script's `args`. A call re-reads the
+script, so the newest version runs, and a deleted or unpublished script refuses. It runs the
+same way as `run_lua`: same gate, same bridge, with the script's `requires`. Scripts can
+never call `lua_*` tools.
+
+A `lua_<name>` tool belongs to the agent, not to a session. Once published, it is offered to
+every session of that agent, including sessions that were open before the publish, and it
+survives a restart: at startup each agent registers every published script in its
+attachments (`attachments.json`). This also holds after `publish_as_tool_enabled` is turned
+off, which only stops new publishes; `detach`, `unpublish` or `delete` removes the tool.
+
+An agent gets `lua_<name>` from its attachments, or from a custom tool in its YAML:
+
+```yaml
+tools:
+  builtin: [run_lua]
+  custom:
+    - name: weekly_report
+      implementation: lua://weekly_report   # must name a published script
+```
+
+### RPCs
+
+`LoomService.ListLuaScripts`, `GetLuaScript`, `SaveLuaScript` and `DeleteLuaScript`
+(`GET/POST /v1/lua-scripts`, `GET/DELETE /v1/lua-scripts/{name}`) work on the same store.
+They return `FailedPrecondition` while `tools.lua.enabled` is false. Saves over RPC record
+the owner `server`, and validation failures are `InvalidArgument`. A taken name without
+`overwrite` is `AlreadyExists`. Publishing is done with `manage_lua_scripts`.
 
 ## Go API
 
@@ -19,8 +231,9 @@ func Run(ctx context.Context, p Program, lim Limits, h Host) *RunResult
 ```
 
 Runs `p` on the caller's goroutine. Never returns nil, never panics. Returns when the
-script finishes, a limit fires, or `ctx` ends (seen at the script's next host call or
-`pcall` return; CPU and wall budgets bound everything else).
+script finishes, a limit fires, or `ctx` ends. When `ctx` ends the script stops at its
+next interpreter step, even when it only computes, and a running string pattern match
+stops within 1024 matcher steps.
 
 ### `Program`
 
@@ -103,6 +316,7 @@ worst-case peak, `PeakMemoryOverhead` (3) times its budget, within 40% of `memLi
 When two slots do not fit, it lowers the per-run budget instead, down to 16 MiB. When two
 16 MiB runs do not fit either (process memory under 240 MiB), it returns `0, 0`: the process
 is too small to run scripts within the 3× / 40% plan, and the host must not admit any run.
+`looms` then leaves `run_lua` off and logs a warning, even with `tools.lua.enabled: true`.
 
 | Process memory | Per-run budget asked | Slots | Per-run budget returned |
 |---|---|---|---|

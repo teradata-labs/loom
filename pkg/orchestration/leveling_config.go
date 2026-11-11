@@ -470,8 +470,10 @@ func backfillLevelingResultMetadata(result *loomv1.AgentResult, base map[string]
 // it was and hide exactly the spend leveling introduces. The report's total is
 // what this output cost, and that is what a billing consumer needs.
 //
-// Token counts are left alone: they describe the winning call, and the report
-// carries no per-rung token total to replace them with.
+// Token counts and llm_calls are left alone: they describe the winning
+// attempt, and the report carries no per-rung token or call total to replace
+// them with. A leveled stage therefore reports the whole ladder's USD but only
+// the winning attempt's calls and tokens.
 func adoptLevelingCost(result *loomv1.AgentResult, report *LevelingReport) {
 	if result == nil || report == nil {
 		return
