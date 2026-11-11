@@ -184,6 +184,16 @@ type SegmentedMemory struct {
 	// only while Compact runs; the fold hands it to the compressor.
 	compactFocus string
 
+	// foldRequireSummary makes a fold abort instead of dropping its region
+	// unsummarised when the compressor fails. Set only by AutoCompact: nothing
+	// forces that compaction, so losing history for it is never worth it.
+	foldRequireSummary bool
+
+	// lastAutoCompactTurn is the turn of the latest AutoCompact attempt, which
+	// spaces attempts out so a context the kept turns keep above the threshold
+	// does not pay a summary call every turn.
+	lastAutoCompactTurn int64
+
 	// estimateCalibration scales relief's tiktoken estimate toward the
 	// provider's own prompt count (ObservePromptTokens). Zero reads as 1.0.
 	estimateCalibration float64

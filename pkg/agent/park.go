@@ -1363,6 +1363,7 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 
 	span.SetAttribute("conversation.duration_ms", duration.Milliseconds())
 	span.Status = observability.Status{Code: observability.StatusOK}
+	a.maybeAutoCompact(ctx, sess, span, response)
 	a.recordConversationMetrics(sessionID, response, duration)
 	return response, nil
 }

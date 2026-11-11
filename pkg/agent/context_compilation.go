@@ -1562,6 +1562,12 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 			zap.Error(err))
 	}
 	if newText == "" {
+		if sm.foldRequireSummary {
+			zap.L().Warn("fold aborted: no summary was produced and this fold may not drop its region",
+				zap.String("session_id", sm.sessionID),
+				zap.Int64("boundary_turn", b))
+			return false
+		}
 		if askCompressor {
 			// Remember it for the rest of the pass: the next region would pay
 			// the same attempts against the same fault.

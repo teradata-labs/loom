@@ -2337,6 +2337,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 		"tokens":          response.TurnUsage.TotalTokens,
 	})
 
+	a.maybeAutoCompact(ctx, session, span, response)
 	a.recordConversationMetrics(sessionID, response, duration)
 
 	return response, nil
