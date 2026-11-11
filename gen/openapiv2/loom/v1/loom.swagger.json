@@ -3766,11 +3766,11 @@
         },
         "transport": {
           "type": "string",
-          "title": "Transport type (stdio, http, sse)"
+          "title": "Transport type (stdio, http, sse, streamable-http)"
         },
         "command": {
           "type": "string",
-          "title": "Command to execute"
+          "title": "Command to execute (required for enabled stdio transport)"
         },
         "args": {
           "type": "array",
@@ -3805,7 +3805,7 @@
         },
         "url": {
           "type": "string",
-          "title": "Server URL (required for http/sse transport)"
+          "title": "Server URL (required for enabled http, sse, and streamable-http transports)"
         },
         "enableSessions": {
           "type": "boolean",
@@ -3986,11 +3986,11 @@
         },
         "transport": {
           "type": "string",
-          "title": "Transport type (stdio, http, sse)"
+          "title": "Transport type (stdio, http, sse, streamable-http)"
         },
         "command": {
           "type": "string",
-          "title": "Command to execute"
+          "title": "Command to execute (required for enabled stdio transport)"
         },
         "args": {
           "type": "array",
@@ -4020,7 +4020,7 @@
         },
         "url": {
           "type": "string",
-          "title": "Server URL (required for http/sse transport)"
+          "title": "Server URL (required for enabled http, sse, and streamable-http transports)"
         },
         "enableSessions": {
           "type": "boolean",
@@ -7045,11 +7045,11 @@
         },
         "transport": {
           "type": "string",
-          "title": "Transport type (stdio, http, sse)"
+          "title": "Transport type (stdio, http, sse, streamable-http)"
         },
         "command": {
           "type": "string",
-          "title": "Command to execute"
+          "title": "Command for stdio transport"
         },
         "args": {
           "type": "array",
@@ -10016,11 +10016,11 @@
       "properties": {
         "transport": {
           "type": "string",
-          "title": "Transport type (stdio, http, sse)"
+          "title": "Transport type (stdio, http, sse, streamable-http)"
         },
         "command": {
           "type": "string",
-          "title": "Command to execute"
+          "title": "Command to execute (required only for stdio transport)"
         },
         "args": {
           "type": "array",
@@ -10051,7 +10051,7 @@
         },
         "url": {
           "type": "string",
-          "title": "Server URL (required for http/sse transport)"
+          "title": "Server URL (required for http, sse, and streamable-http transports)"
         },
         "enableSessions": {
           "type": "boolean",
