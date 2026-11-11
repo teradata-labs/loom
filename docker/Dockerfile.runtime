@@ -39,6 +39,11 @@ FROM gcr.io/distroless/static-debian12:nonroot
 # Binary
 COPY --from=builder /looms /looms
 
+# Attribution files that must travel with the binary: the permissive licenses
+# in the dependency tree require their text and Apache-2.0 section 4(d)
+# requires the NOTICE. Regenerate them with `just notices`.
+COPY --from=builder /src/LICENSE /src/NOTICE /src/THIRD-PARTY-NOTICES.md /usr/share/doc/loom/
+
 # Built-in skills library — Teradata runtime skills only
 COPY --from=builder /src/skills/ /opt/loom/skills/
 

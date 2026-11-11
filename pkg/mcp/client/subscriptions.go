@@ -164,7 +164,7 @@ func (c *Client) Subscribe(ctx context.Context, filter protocol.NotificationFilt
 				c.logger.Warn("subscription ended abnormally",
 					zap.String("subscription_id", subID),
 					zap.String("error", resp.Error.Error()))
-				cleanup(resp.Error)
+				cleanup(adaptResponseError(resp.Error))
 				return
 			}
 			c.logger.Debug("subscription closed gracefully", zap.String("subscription_id", subID))

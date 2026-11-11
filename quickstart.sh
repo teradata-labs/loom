@@ -473,14 +473,15 @@ else
   echo "  1) AWS Bedrock (with SSO/Profile) - For users with AWS profiles configured"
   echo "  2) AWS Bedrock (with Access Keys) - For users with AWS access keys"
   echo "  3) AWS Bedrock (with API Key / Bearer Token) - For Bedrock long-term API keys"
-  echo "  4) Anthropic API - Direct Anthropic access"
-  echo "  5) OpenAI - GPT-4 models, o1 reasoning models"
-  echo "  6) Azure OpenAI - Enterprise Microsoft integration"
-  echo "  7) Mistral AI - Open & commercial models"
-  echo "  8) Google Gemini - Google's latest AI models"
-  echo "  9) HuggingFace - 1M+ open source models"
-  echo " 10) Ollama - Local/offline models (requires tool calling support)"
-  echo " 11) Skip for now - Configure later manually"
+  echo "  4) AWS Bedrock Mantle (bedrock-mantle endpoint) - Claude + open-weight models; AWS profile or API key"
+  echo "  5) Anthropic API - Direct Anthropic access"
+  echo "  6) OpenAI - GPT-4 models, o1 reasoning models"
+  echo "  7) Azure OpenAI - Enterprise Microsoft integration"
+  echo "  8) Mistral AI - Open & commercial models"
+  echo "  9) Google Gemini - Google's latest AI models"
+  echo " 10) HuggingFace - 1M+ open source models"
+  echo " 11) Ollama - Local/offline models (requires tool calling support)"
+  echo " 12) Skip for now - Configure later manually"
   echo ""
   read -r -p "Enter choice [1]: " llm_choice
   llm_choice=${llm_choice:-1}
@@ -498,8 +499,8 @@ else
     echo "(Inference profiles use the 'us.' prefix for cross-region availability.)"
     echo ""
     echo "Common Claude models on Bedrock:"
-    echo "  1) us.anthropic.claude-sonnet-4-5-20250929-v1:0  (Sonnet 4.5 - balanced, default)"
-    echo "  2) us.anthropic.claude-opus-4-5-20251101-v1:0    (Opus 4.5 - most capable)"
+    echo "  1) us.anthropic.claude-sonnet-4-5-20250929-v1:0  (Sonnet 4.5, default)"
+    echo "  2) us.anthropic.claude-opus-4-5-20251101-v1:0    (Opus 4.5)"
     echo "  3) Enter a different inference profile ID (any model you have access to)"
     echo ""
     echo "This list is not exhaustive: if you have access to a model that isn't"
@@ -515,6 +516,38 @@ else
     esac
     if [ -z "$loom_model" ]; then
       loom_model="us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    fi
+  }
+
+  # select_mantle_model prompts for a bedrock-mantle model id and sets the
+  # global loom_model. Mantle ids carry no us./global. inference-profile prefix
+  # (Mantle has no cross-region profiles). Any id the endpoint lists works; the
+  # listing is not an entitlement check, so an unsubscribed model fails at the
+  # first request with a marketplace-subscription error.
+  select_mantle_model() {
+    echo ""
+    echo "Bedrock Mantle model configuration:"
+    echo "(Mantle ids have no 'us.' or 'global.' prefix.)"
+    echo ""
+    echo "Common models on Mantle:"
+    echo "  1) anthropic.claude-haiku-4-5   (Claude Haiku 4.5, default)"
+    echo "  2) anthropic.claude-sonnet-5    (Claude Sonnet 5)"
+    echo "  3) anthropic.claude-opus-4-7    (Claude Opus 4.7)"
+    echo "  4) openai.gpt-oss-120b          (gpt-oss 120B, open-weight, OpenAI Chat Completions API)"
+    echo "  5) Enter a different Mantle model id"
+    echo ""
+    read -r -p "Enter choice [1], or paste a full Mantle model id: " model_choice
+    model_choice=${model_choice:-1}
+    case "$model_choice" in
+      1) loom_model="anthropic.claude-haiku-4-5" ;;
+      2) loom_model="anthropic.claude-sonnet-5" ;;
+      3) loom_model="anthropic.claude-opus-4-7" ;;
+      4) loom_model="openai.gpt-oss-120b" ;;
+      5) read -r -p "Enter the Mantle model id: " loom_model ;;
+      *) loom_model="$model_choice" ;; # a full id pasted directly at the prompt
+    esac
+    if [ -z "$loom_model" ]; then
+      loom_model="anthropic.claude-haiku-4-5"
     fi
   }
 
@@ -631,6 +664,74 @@ else
   elif [ "$llm_choice" = "4" ]; then
     configure_llm="y"
     echo ""
+    echo "Configuring AWS Bedrock Mantle (bedrock-mantle endpoint)..."
+    echo "(Mantle serves Claude on the Anthropic Messages API and other vendors on the"
+    echo " OpenAI Chat Completions API. Requests are signed with SigV4 from an AWS profile"
+    echo " unless you store a Bedrock API key.)"
+    echo ""
+
+    # Prompt for AWS region
+    read -r -p "Enter your AWS region [us-west-2]: " aws_region
+    aws_region=${aws_region:-us-west-2}
+
+    echo ""
+    echo "How should Loom authenticate to Mantle?"
+    echo "  1) AWS profile / SSO (SigV4, default)"
+    echo "  2) Bedrock API key (stored securely in keyring)"
+    read -r -p "Enter choice [1]: " mantle_auth
+    mantle_auth=${mantle_auth:-1}
+
+    if [ "$mantle_auth" != "2" ]; then
+      read -r -p "Enter your AWS profile name [default]: " aws_profile
+      aws_profile=${aws_profile:-default}
+
+      echo ""
+      echo -e "${YELLOW}Do you need to authenticate with AWS SSO?${NC}"
+      read -r -p "Run 'aws sso login --profile $aws_profile' now? (y/n) [n]: " run_sso_login
+      run_sso_login=${run_sso_login:-n}
+      if [[ "$run_sso_login" =~ ^[Yy]$ ]]; then
+        if command -v aws &> /dev/null; then
+          aws sso login --profile "$aws_profile" || {
+            echo -e "${RED}Warning: AWS SSO login failed${NC}"
+            echo "You may need to run this manually before using Loom"
+          }
+        else
+          echo -e "${RED}Error: AWS CLI not found${NC}"
+          echo "Please install AWS CLI and run: aws sso login --profile $aws_profile"
+        fi
+      fi
+    fi
+
+    # Prompt for the model
+    select_mantle_model
+
+    echo ""
+    echo "Configuring AWS Bedrock Mantle..."
+
+    "$BIN_DIR/looms" config set llm.provider bedrock-mantle
+    "$BIN_DIR/looms" config set llm.bedrock_mantle_region "$aws_region"
+    "$BIN_DIR/looms" config set llm.bedrock_mantle_model "$loom_model"
+
+    if [ "$mantle_auth" = "2" ]; then
+      echo ""
+      echo "Setting Bedrock API key (securely stored in keyring)..."
+      echo "(Short-term keys are scoped to one region and expire after 12 hours.)"
+      "$BIN_DIR/looms" config set-key bedrock_mantle_api_key
+      echo -e "${GREEN}✓ AWS Bedrock Mantle configured with API key${NC}"
+      echo -e "${GREEN}  Region: $aws_region${NC}"
+      echo -e "${GREEN}  Model: $loom_model${NC}"
+      echo -e "${GREEN}  API key: Stored securely in keyring${NC}"
+    else
+      "$BIN_DIR/looms" config set llm.bedrock_profile "$aws_profile"
+      echo -e "${GREEN}✓ AWS Bedrock Mantle configured with SigV4${NC}"
+      echo -e "${GREEN}  Profile: $aws_profile${NC}"
+      echo -e "${GREEN}  Region: $aws_region${NC}"
+      echo -e "${GREEN}  Model: $loom_model${NC}"
+    fi
+
+  elif [ "$llm_choice" = "5" ]; then
+    configure_llm="y"
+    echo ""
     echo "Configuring Anthropic API..."
     echo ""
 
@@ -639,7 +740,7 @@ else
 
     echo -e "${GREEN}✓ Anthropic configured${NC}"
 
-  elif [ "$llm_choice" = "5" ]; then
+  elif [ "$llm_choice" = "6" ]; then
     configure_llm="y"
     echo ""
     echo "Configuring OpenAI API..."
@@ -650,7 +751,7 @@ else
 
     echo -e "${GREEN}✓ OpenAI configured${NC}"
 
-  elif [ "$llm_choice" = "6" ]; then
+  elif [ "$llm_choice" = "7" ]; then
     configure_llm="y"
     echo ""
     echo "Configuring Azure OpenAI..."
@@ -703,7 +804,7 @@ else
 
     echo -e "${GREEN}✓ Azure OpenAI configured${NC}"
 
-  elif [ "$llm_choice" = "7" ]; then
+  elif [ "$llm_choice" = "8" ]; then
     configure_llm="y"
     echo ""
     echo "Configuring Mistral AI..."
@@ -714,7 +815,7 @@ else
 
     echo -e "${GREEN}✓ Mistral AI configured${NC}"
 
-  elif [ "$llm_choice" = "8" ]; then
+  elif [ "$llm_choice" = "9" ]; then
     configure_llm="y"
     echo ""
     echo "Configuring Google Gemini..."
@@ -725,7 +826,7 @@ else
 
     echo -e "${GREEN}✓ Google Gemini configured${NC}"
 
-  elif [ "$llm_choice" = "9" ]; then
+  elif [ "$llm_choice" = "10" ]; then
     configure_llm="y"
     echo ""
     echo "Configuring HuggingFace..."
@@ -736,7 +837,7 @@ else
 
     echo -e "${GREEN}✓ HuggingFace configured${NC}"
 
-  elif [ "$llm_choice" = "10" ]; then
+  elif [ "$llm_choice" = "11" ]; then
     configure_llm="y"
     echo ""
     echo "Configuring Ollama (local/offline inference)..."
@@ -902,7 +1003,7 @@ echo ""
 STEP_NUM=1
 
 # If Ollama was configured, remind them to start it first
-if [ "$llm_choice" = "10" ] && [[ "$configure_llm" =~ ^[Yy]$ ]]; then
+if [ "$llm_choice" = "11" ] && [[ "$configure_llm" =~ ^[Yy]$ ]]; then
   echo -e "$STEP_NUM. Start Ollama (required for local inference):"
   echo ""
   echo -e "   In a terminal window:"
@@ -920,8 +1021,8 @@ if [[ ! "$configure_llm" =~ ^[Yy]$ ]]; then
   echo ""
   echo -e "   ${BLUE}looms config set llm.provider <provider>${NC}"
   echo ""
-  echo -e "   Available providers: anthropic, bedrock, openai, azure-openai,"
-  echo -e "   mistral, gemini, huggingface, ollama"
+  echo -e "   Available providers: anthropic, bedrock, bedrock-mantle, openai,"
+  echo -e "   azure-openai, mistral, gemini, huggingface, ollama"
   echo ""
   echo -e "   See: https://teradata-labs.github.io/loom/en/docs/guides/llm-providers/"
   echo ""

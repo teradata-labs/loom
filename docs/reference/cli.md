@@ -29,6 +29,7 @@ Command reference for `loom` (client) and `looms` (server).
 - [loom artifacts](#loom-artifacts) - Manage artifacts
 - [loom mcp](#loom-mcp) - Manage MCP servers
 - [loom providers](#loom-providers) - Manage LLM provider pool
+- [loom decision](#loom-decision) - Replay, report and ask typed decisions
 
 ### Reference
 - [Global Server Flags](#global-server-flags) - Flags available on all `looms` commands
@@ -55,8 +56,8 @@ Command reference for `loom` (client) and `looms` (server).
 | `looms config get-key` | Retrieve secret from keyring | `<key-name>` |
 | `looms config delete-key` | Delete secret from keyring | `<key-name>` |
 | `looms config list-keys` | List available secret keys | |
-| `looms hitl list` | List pending HITL requests | `--session`, `--agent`, `--db` |
-| `looms hitl show` | Show HITL request details | `<request-id>`, `--db` |
+| `looms hitl list` | List pending HITL requests (an approval is labelled with its call digest, e.g. `shell_execute command=rm notes.txt`; labels are cut to 70 characters; control, format (bidi, zero-width) and line-separator characters are shown escaped in every column, e.g. `\n`, `\u202e`) | `--session`, `--agent`, `--db` |
+| `looms hitl show` | Show HITL request details; for an approval, also the call digest and the held call's parameters as JSON (for `shell_execute`, the whole command), noting any left out for size. Control, format (bidi, zero-width) and line-separator characters are escaped in every field shown (IDs, type, priority, status, question, digest, context, response), and inside the JSON | `<request-id>`, `--db` |
 | `looms hitl respond` | Respond to HITL request | `<request-id>`, `--status`, `--message` |
 | `looms upgrade` | Upgrade database schema | `--dry-run`, `--no-backup`, `--yes` |
 | `looms pattern create` | Create a new pattern | `<name>`, `--thread`, `--file` |
@@ -115,6 +116,9 @@ Command reference for `loom` (client) and `looms` (server).
 | `loom skills add` | Add a single skill (dir or zip) via `SkillsImportService` | `<path>`, `--out`, `--force`, `--classify`, `--taxonomy`, `--zip` |
 | `loom skills classify` | Re-classify an existing skill in the catalog | `<skill-name>`, `--taxonomy` |
 | `loom skills migrate` | Migrate a legacy `enabled_skills`/`disabled_skills` config to bindings | `<agent.yaml>` |
+| `loom decision replay` | Run recorded tool executions through the failure-kind decider and write shadow rows | `--db`, `--decider`, `--limit`, `--errors-only`, `--sample`, `--dry-run` |
+| `loom decision report` | Print agreement and calibration for shadow rows | `--db`, `--site`, `--since`, `--limit` |
+| `loom decision ask` | Put one typed question to a decider and print its probabilities | `--decider`, `--kind`, `--options`, `--facts`, `--json` |
 
 
 ## Global Server Flags
@@ -1421,6 +1425,95 @@ loom skills migrate examples/agent.yaml > examples/agent-migrated.yaml
 ```
 
 **See also**: [`skills-import.md`](../architecture/skills-import.md) (importer internals + taxonomy format), [`skills-import-guide.md`](../guides/skills-import-guide.md) (workflow guide).
+
+---
+
+### loom decision
+
+Shadow-evaluate the typed decision layer (`pkg/decision`) against Loom's own telemetry, or ask a decider one question directly. `replay` and `report` open the local SQLite `loom.db` directly; they do not talk to a server, and they cannot read shadow rows a Postgres-backed server stored. Agreement is with what Loom decides today, not with ground truth. See [`decision-layer.md`](../architecture/decision-layer.md).
+
+**Usage:**
+```bash
+loom decision <subcommand> [flags]
+```
+
+**Subcommands:**
+
+| Subcommand | Description |
+|------------|-------------|
+| `replay` | Run recorded `tool_executions` rows through the `tool.failure_kind` request and store one shadow row per question, comparing the decider's answer with the `Success` flag plus `fabric.InferErrorType`. |
+| `report` | Read shadow rows for a site and print agreement, expected calibration error, confusion, decider error rate, the most frequent decider errors, latency percentiles and token and cost totals as Markdown. |
+| `ask` | Put one typed question about facts you supply to a decider and print the answer: the probability or label to branch on first, then the whole distribution, the decider's confidence, model, cost and latency. The same request the agent `decide` tool sends (site `tool.decide`). Writes nothing to `loom.db`. |
+
+**Flags (all subcommands):**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--db` | string | `$LOOM_DATA_DIR/loom.db` | Path to `loom.db` |
+
+**Flags (replay):**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--decider` | string | `llm` | `jev`, `llm` or `mock` (`mock` returns a fixed answer, for exercising the pipeline) |
+| `--provider` | string | `$LOOM_LLM_PROVIDER`, else `anthropic` | LLM provider for `--decider llm`; credentials from the usual provider env vars |
+| `--model` | string | provider default | Model for `--decider llm`; with `--decider jev`, the Jev model id |
+| `--base-url` | string | `$TYPESAFE_BASE_URL`, else provider default | Endpoint for `--decider jev`, `https` only. `LOOM_DECISION_BASE_URL` is not read here |
+| `--allow-insecure-http` | bool | `false` | With `--decider jev`: allow an `http://` `--base-url` on a loopback host |
+| `--rpm` | float | `0` (client default, 1,000) | With `--decider jev`: requests per minute (the Vercel AI Gateway free tier allows 30) |
+| `--limit` | int | `1000` | Maximum executions to replay, newest first |
+| `--errors-only` | bool | `false` | Replay only executions that recorded an error |
+| `--sample` | string | `newest` | `newest` or `random` (random reaches across the whole history) |
+| `--seed` | int | `0` | With `--sample random`: a fixed order so two deciders score the same rows (`0` = random) |
+| `--concurrency` | int | `4` | Decider calls in flight at once |
+| `--dry-run` | bool | `false` | Build requests and references, call no decider, write nothing |
+
+`--decider jev` reads `TYPESAFE_API_KEY`, else `AI_GATEWAY_API_KEY`, else `JEV_API_KEY` (see `ENV_VARS.md`), and sends each replayed row's tool name, error code, error text (up to 2,000 runes) and input digest to the endpoint.
+
+**Flags (report):**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--site` | string | `tool.failure_kind` | Site to report on (empty = all sites) |
+| `--since` | string | `""` | Only rows recorded after a duration ago (`24h`), a day count (`7d`) or an RFC3339 time |
+| `--limit` | int | `0` (store default) | Maximum rows to read, newest first |
+
+**Flags (ask):** `loom decision ask [flags] QUESTION` (exactly one question argument)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--decider` | string | `jev` | `jev`, `llm` or `mock` (`mock` scripts a plausible answer, so the command runs without credentials) |
+| `--kind` | string | `yes_no` | `yes_no`, `choice` or `scale` |
+| `--facts` | string | **required** | What the answer depends on: plain text, JSON text, or `@path` to read either from a file. A JSON object becomes structured facts. The decider sees only the facts and the question |
+| `--options` | strings | none | `choice`: the labels to choose among (`none_of_these` is added); `scale`: the levels, lowest first (2 to 10) |
+| `--when-yes` | string | `""` | `yes_no`: what a yes means |
+| `--when-no` | string | `""` | `yes_no`: what a no means |
+| `--json` | bool | `false` | Print the answer as JSON |
+| `--timeout` | duration | `30s` | Decider call timeout |
+| `--provider` | string | `$LOOM_LLM_PROVIDER`, else `anthropic` | LLM provider for `--decider llm` |
+| `--model` | string | decider default | Model for the chosen decider |
+| `--base-url` | string | `$TYPESAFE_BASE_URL`, else provider default | Endpoint for `--decider jev`, `https` only. `LOOM_DECISION_BASE_URL` is not read here |
+| `--allow-insecure-http` | bool | `false` | With `--decider jev`: allow an `http://` `--base-url` on a loopback host |
+| `--rpm` | float | `0` (client default) | With `--decider jev`: requests per minute |
+
+`--decider jev` sends the facts and the question to the endpoint, with the same credential order as `replay`.
+
+**Examples:**
+```bash
+# Exercise the pipeline without a provider
+loom decision replay --decider mock --dry-run --limit 50
+
+# Score 600 random failed executions with Jev through the gateway free tier
+AI_GATEWAY_API_KEY=... loom decision replay --decider jev \
+  --errors-only --sample random --seed 7 --limit 600 --rpm 28
+
+# Report the last week
+loom decision report --site tool.failure_kind --since 7d
+
+# Ask one question without an agent
+loom decision ask --decider jev --kind choice --options transient,auth,bad_input \
+  --facts @error.txt "What kind of failure is this?"
+```
 
 
 ## Environment Variables

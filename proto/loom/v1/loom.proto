@@ -23,6 +23,7 @@ import "loom/v1/agent_config.proto";
 import "loom/v1/apps.proto";
 import "loom/v1/bus.proto";
 import "loom/v1/communication.proto";
+import "loom/v1/lua_script.proto";
 import "loom/v1/orchestration.proto";
 import "loom/v1/server.proto";
 import "loom/v1/shared_memory.proto";
@@ -663,6 +664,32 @@ service LoomService {
   // DeleteUIApp deletes a dynamic UI app.
   rpc DeleteUIApp(DeleteUIAppRequest) returns (DeleteUIAppResponse) {
     option (google.api.http) = {delete: "/v1/apps/{name}"};
+  }
+
+  // Lua scripts (tools.lua). Every call returns FailedPrecondition when the
+  // server has Lua scripts disabled.
+
+  // ListLuaScripts lists saved Lua scripts, without their source.
+  rpc ListLuaScripts(ListLuaScriptsRequest) returns (ListLuaScriptsResponse) {
+    option (google.api.http) = {get: "/v1/lua-scripts"};
+  }
+
+  // GetLuaScript reads one saved Lua script, including its source.
+  rpc GetLuaScript(GetLuaScriptRequest) returns (GetLuaScriptResponse) {
+    option (google.api.http) = {get: "/v1/lua-scripts/{name}"};
+  }
+
+  // SaveLuaScript saves a Lua script. The source must compile.
+  rpc SaveLuaScript(SaveLuaScriptRequest) returns (SaveLuaScriptResponse) {
+    option (google.api.http) = {
+      post: "/v1/lua-scripts"
+      body: "*"
+    };
+  }
+
+  // DeleteLuaScript deletes a saved Lua script and its attachments.
+  rpc DeleteLuaScript(DeleteLuaScriptRequest) returns (DeleteLuaScriptResponse) {
+    option (google.api.http) = {delete: "/v1/lua-scripts/{name}"};
   }
 
   // ListComponentTypes returns the catalog of available component types
@@ -2644,6 +2671,14 @@ message MCPServerInfo {
 
   // Number of tools exposed by this server
   int32 tool_count = 11;
+
+  // Bound on one JSON-RPC message from this server (streamable-http only),
+  // as CONFIGURED. 0 means none was set and the 16 MiB default
+  // (transport.DefaultMaxResponseBytes) is in force; reporting the configured
+  // value rather than the effective one keeps "unset" distinguishable from
+  // "explicitly 16 MiB". Reported whatever the transport, so a stdio server
+  // shows what its config says even though the bound does not apply there.
+  int64 max_response_bytes = 12;
 }
 
 // ToolFilterConfig configures which tools to register from an MCP server.
@@ -2695,6 +2730,13 @@ message AddMCPServerRequest {
 
   // Enable stream resumption (for streamable-http transport)
   bool enable_resumption = 12;
+
+  // Bound on one JSON-RPC message from this server (streamable-http only).
+  // Over it the read stops and the response is refused, never truncated.
+  // 0 selects the 16 MiB default (transport.DefaultMaxResponseBytes); see
+  // manager.ServerConfig.MaxResponseBytes for the full semantics, including
+  // the clamp at transport.MaxResponseLimit and why stdio is unbounded.
+  int64 max_response_bytes = 13;
 }
 
 // AddMCPServerResponse confirms MCP server addition.
@@ -2749,6 +2791,13 @@ message UpdateMCPServerRequest {
 
   // Enable stream resumption (for streamable-http transport)
   bool enable_resumption = 13;
+
+  // Bound on one JSON-RPC message from this server (streamable-http only).
+  // Over it the read stops and the response is refused, never truncated.
+  // 0 selects the 16 MiB default (transport.DefaultMaxResponseBytes); see
+  // manager.ServerConfig.MaxResponseBytes for the full semantics, including
+  // the clamp at transport.MaxResponseLimit and why stdio is unbounded.
+  int64 max_response_bytes = 14;
 }
 
 // DeleteMCPServerRequest deletes an MCP server.
