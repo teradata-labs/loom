@@ -24,16 +24,16 @@ func drive(t *testing.T, r *rig, sid string, user string, resp ...scriptedTurn) 
 	return err
 }
 
-// TestMech_ThresholdRule — §5.2/§5.5: a result strictly OVER the threshold is an
-// offload stub; a result exactly AT the threshold renders whole (a page must
-// never stub itself).
+// TestMech_ThresholdRule — §5.2/§5.5: a result strictly OVER the threshold is
+// bounded at arrival, its first bytes and a tail; a result exactly AT the
+// threshold renders whole.
 func TestMech_ThresholdRule(t *testing.T) {
 	requireGate(t)
 	const threshold = 16384
 	r := newRig(t, routeOutDir(t, "threshold"), nil, 200000, 8000, threshold)
 	sid := "threshold"
 
-	// at threshold → whole; over threshold → offload stub. Same turn.
+	// at threshold → whole; over threshold → bounded. Same turn.
 	if err := drive(t, r, sid, "two scans",
 		callTools(emit("at", threshold, "string"), emit("over", threshold+50, "string")),
 		sayText("done")); err != nil {
@@ -42,68 +42,53 @@ func TestMech_ThresholdRule(t *testing.T) {
 	last := r.readStages(t)
 	final := last[len(last)-1]
 
-	var atWhole, overStub bool
+	// The bound applies as the result arrives (§4.1): the at-threshold row
+	// renders with the bytes it holds, the over-threshold row renders as its
+	// core plus the normative tail, in the session that produced them.
+	var atWhole, overBounded bool
 	for _, m := range final.Messages {
-		if m.Role != "tool" {
+		if m.Role != "tool" || !strings.Contains(m.Content, "scan-row") {
 			continue
 		}
-		if len(m.Content) == threshold && strings.Contains(m.Content, "scan-row") &&
-			!strings.Contains(m.Content, "held in memory") {
+		if len(m.Content) > threshold {
+			t.Errorf("rendered row is %d bytes — over the %d-byte bound", len(m.Content), threshold)
+		}
+		if len(m.Content) == threshold && !strings.Contains(m.Content, "[truncated:") {
 			atWhole = true
 		}
-		if strings.Contains(m.Content, "held in memory this turn") {
-			overStub = true
+		if strings.Contains(m.Content, "[truncated:") && strings.Contains(m.Content, "bytes shown") {
+			overBounded = true
 		}
 	}
 	if !atWhole {
-		t.Error("at-threshold result did not render whole — the strictly-over rule is off by one")
+		t.Error("at-threshold result did not render whole")
 	}
-	if !overStub {
-		t.Error("over-threshold result did not render as an offload stub")
-	}
-}
-
-// TestMech_EvictionFloor — §5.1: a tool row is evicted only if its stored bytes
-// ≥ 2× its rendered stub. A tiny result must survive eviction whole.
-func TestMech_EvictionFloor(t *testing.T) {
-	requireGate(t)
-	const threshold = 16384
-	r := newRig(t, routeOutDir(t, "floor"), nil, 12000, 2000, threshold)
-	sid := "floor"
-
-	// a tiny result (well under 2× a stub) in an early turn
-	if err := drive(t, r, sid, "tiny", callTools(emit("tiny", 250, "string")), sayText("noted")); err != nil {
-		t.Fatal(err)
-	}
-	// large results to build pressure past the proactive limit, so relief runs
-	// on loom's own accounting (no injected refusal — a forced refusal after a
-	// proactive shed would trigger a second, fold-escalating pass that is not
-	// what this route tests).
-	if err := drive(t, r, sid, "big1", callTools(emit("b1", 40000, "string")), sayText("ok")); err != nil {
-		t.Fatal(err)
-	}
-	if err := drive(t, r, sid, "big2", callTools(emit("b2", 40000, "string")), sayText("ok")); err != nil {
-		t.Fatal(err)
-	}
-	if err := drive(t, r, sid, "status", sayText("proceeding")); err != nil {
-		t.Fatal(err)
+	if !overBounded {
+		t.Error("over-threshold result did not render with the §4.1 truncation tail")
 	}
 
-	// After eviction the tiny result must still be present WHOLE (its raw payload),
-	// never turned into an evicted stub — stubbing it would not have paid.
-	rows := durableMessages(t, r, sid)
-	var tinySurvivedWhole bool
-	for _, m := range rows {
-		if m.Role == "tool" && len(m.Content) < 400 && strings.Contains(m.Content, "scan-row") &&
-			!strings.Contains(m.Content, "evicted from context") {
-			tinySurvivedWhole = true
+	// The stored row is the same bounded row, so a session reloaded from the
+	// store carries the bound instead of the payload.
+	var storedBounded bool
+	for _, m := range durableMessages(t, r, sid) {
+		if m.Role != "tool" || !strings.Contains(m.Content, "scan-row") {
+			continue
+		}
+		if len(m.Content) > threshold {
+			t.Errorf("stored row is %d bytes — over the %d-byte persist bound", len(m.Content), threshold)
+		}
+		if strings.Contains(m.Content, "[truncated:") && strings.Contains(m.Content, "bytes shown") {
+			storedBounded = true
 		}
 	}
-	if !tinySurvivedWhole {
-		t.Error("the tiny result was evicted — the 2× floor did not protect it")
+	if !storedBounded {
+		t.Error("no stored row carries the §4.1 truncation tail — the persist bound did not apply")
 	}
 }
 
+// (TestMech_EvictionFloor removed: it asserted the 2x-stub floor that gated
+// eviction. Eviction is gone — nothing rewrites a row in place — so there is no
+// per-row floor left to protect, and the fold sheds by turn, not by row size.)
 // TestMech_TerminalReliefExhausted — §5.2 step 12: when the CURRENT turn alone
 // overflows (relief may not touch it), the turn ends with the recoverable
 // context_exhausted error, never a crash or silent trim.
@@ -294,7 +279,7 @@ func TestMech_OrphanSyntheticResult(t *testing.T) {
 // lastStable breakpoint, every compile marks the last markable message (the
 // till-NOW breakpoint), so the full context is cache-written each call. The
 // marker is only worth its write because the rendered context is append-only
-// within a turn — offload stubs render deterministically — so each call's
+// within a turn — a bounded row renders the same bytes every time — so each call's
 // context is a byte prefix of the next call's and the tip write is read back.
 // Total markers must stay within Anthropic's budget of 4.
 func TestMech_TillNowMarker(t *testing.T) {

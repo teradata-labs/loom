@@ -255,6 +255,22 @@ agent:
 	assert.False(t, serveAgentConfig(build("    parallel_read_tools: false\n"), false).ParallelReadTools)
 }
 
+// An agent registered with no max_tokens sends the server's llm.max_tokens, so
+// that is its reply reservation, not the model's listed output size; one that
+// names a provider and sets its own reserves its own.
+func TestServeAgentConfig_ReservesTheMaxTokensItsClientSends(t *testing.T) {
+	build := func(maxTokens int32) *loomv1.AgentConfig {
+		return &loomv1.AgentConfig{Name: "reserve", Llm: &loomv1.LLMConfig{
+			Provider: "anthropic", Model: "claude-sonnet-4-5-20250929", MaxTokens: maxTokens,
+		}}
+	}
+	reserved := func(maxTokens int32) int {
+		return serveAgentConfig(agent.WithServerMaxTokens(build(maxTokens), 4096), false).ReservedOutputTokens
+	}
+	assert.Equal(t, 4096, reserved(0))
+	assert.Equal(t, 16000, reserved(16000))
+}
+
 func TestServeAgentConfig_RuntimeConfigParity(t *testing.T) {
 	skillsDir := t.TempDir()
 	cfgProto, err := agent.LoadConfigFromString(`
@@ -276,7 +292,6 @@ agent:
     output_token_cb_threshold: 6
     enable_self_healing: false
     tool_change_note: true
-    context_relief_warning: true
     patterns:
       enabled: true
       min_confidence: 0.8
@@ -307,7 +322,6 @@ agent:
 	assert.Equal(t, 6, serveCfg.OutputTokenCBThreshold)
 	assert.False(t, serveCfg.EnableSelfHealing)
 	assert.True(t, serveCfg.ToolChangeNote)
-	assert.True(t, serveCfg.ContextReliefWarning)
 	require.NotNil(t, serveCfg.PatternConfig)
 	assert.True(t, serveCfg.PatternConfig.Enabled)
 	assert.InDelta(t, 0.8, serveCfg.PatternConfig.MinConfidence, 0.0001)

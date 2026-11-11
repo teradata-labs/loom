@@ -724,8 +724,11 @@ type LLMConfig struct {
 	TopP float32 `protobuf:"fixed32,6,opt,name=top_p,json=topP,proto3" json:"top_p,omitempty"`
 	// Top-k sampling parameter
 	TopK int32 `protobuf:"varint,7,opt,name=top_k,json=topK,proto3" json:"top_k,omitempty"`
-	// Maximum context window tokens supported by the model
-	// If not set, will be auto-detected from model name or use provider default
+	// The context window loom budgets against: the fold keeps the settled
+	// conversation under the profile's threshold of this window less
+	// reserved_output_tokens. It may sit below the model's window to bound
+	// cost. If not set, the model's window (catalog, then model name, then
+	// provider default) is used.
 	// Examples: Claude Sonnet 4.5 = 200000, Llama 3.1 = 128000, Mistral = 32000
 	MaxContextTokens int32 `protobuf:"varint,8,opt,name=max_context_tokens,json=maxContextTokens,proto3" json:"max_context_tokens,omitempty"`
 	// Tokens reserved for model output (typically 10% of max_context_tokens)
@@ -746,9 +749,16 @@ type LLMConfig struct {
 	// factory.FactoryConfig, which does not carry a seed field, so a seed set in
 	// agent YAML has no effect there — wiring it through the factory is an open
 	// follow-up, not a shipped behavior.
-	Seed          *int64 `protobuf:"varint,11,opt,name=seed,proto3,oneof" json:"seed,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Seed *int64 `protobuf:"varint,11,opt,name=seed,proto3,oneof" json:"seed,omitempty"`
+	// The context window the model is served with, when it is below the
+	// model's listed window: a vLLM --max-model-len, a TGI --max-total-tokens,
+	// an Ollama num_ctx. A step whose results together would exceed it, less
+	// the reply reservation, has them replaced before the send. Taken as given,
+	// above or below the listing. If not set, the model's listed window is the
+	// limit, on every provider.
+	MaxModelContextTokens int32 `protobuf:"varint,12,opt,name=max_model_context_tokens,json=maxModelContextTokens,proto3" json:"max_model_context_tokens,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *LLMConfig) Reset() {
@@ -854,6 +864,13 @@ func (x *LLMConfig) GetRateLimit() *LLMRateLimitConfig {
 func (x *LLMConfig) GetSeed() int64 {
 	if x != nil && x.Seed != nil {
 		return *x.Seed
+	}
+	return 0
+}
+
+func (x *LLMConfig) GetMaxModelContextTokens() int32 {
+	if x != nil {
+		return x.MaxModelContextTokens
 	}
 	return 0
 }
@@ -1768,9 +1785,13 @@ type MemoryCompressionConfig struct {
 	// data_intensive=70, balanced=75, conversational=85
 	CriticalThresholdPercent int32 `protobuf:"varint,5,opt,name=critical_threshold_percent,json=criticalThresholdPercent,proto3" json:"critical_threshold_percent,omitempty"`
 	// Batch sizes for compression operations
-	BatchSizes    *MemoryCompressionBatchSizes `protobuf:"bytes,6,opt,name=batch_sizes,json=batchSizes,proto3" json:"batch_sizes,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	BatchSizes *MemoryCompressionBatchSizes `protobuf:"bytes,6,opt,name=batch_sizes,json=batchSizes,proto3" json:"batch_sizes,omitempty"`
+	// Recent turns a fold keeps, counting user messages and assistant steps
+	// alike; the fold summarises everything before them. It is also the top rung
+	// of the pressure ladder. 0 means the default, 16.
+	ProtectedRecentTurns int32 `protobuf:"varint,7,opt,name=protected_recent_turns,json=protectedRecentTurns,proto3" json:"protected_recent_turns,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *MemoryCompressionConfig) Reset() {
@@ -1843,6 +1864,13 @@ func (x *MemoryCompressionConfig) GetBatchSizes() *MemoryCompressionBatchSizes {
 		return x.BatchSizes
 	}
 	return nil
+}
+
+func (x *MemoryCompressionConfig) GetProtectedRecentTurns() int32 {
+	if x != nil {
+		return x.ProtectedRecentTurns
+	}
+	return 0
 }
 
 // BehaviorConfig defines agent behavior constraints
@@ -2459,7 +2487,7 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x06config\x18\x02 \x01(\v2\x12.loom.v1.LLMConfigR\x06config\"\\\n" +
 	"\fProviderPool\x124\n" +
 	"\tproviders\x18\x01 \x03(\v2\x16.loom.v1.ProviderEntryR\tproviders\x12\x16\n" +
-	"\x06active\x18\x02 \x01(\tR\x06active\"\x91\x03\n" +
+	"\x06active\x18\x02 \x01(\tR\x06active\"\xca\x03\n" +
 	"\tLLMConfig\x12\x1a\n" +
 	"\bprovider\x18\x01 \x01(\tR\bprovider\x12\x14\n" +
 	"\x05model\x18\x02 \x01(\tR\x05model\x12 \n" +
@@ -2474,7 +2502,8 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\n" +
 	"rate_limit\x18\n" +
 	" \x01(\v2\x1b.loom.v1.LLMRateLimitConfigR\trateLimit\x12\x17\n" +
-	"\x04seed\x18\v \x01(\x03H\x00R\x04seed\x88\x01\x01B\a\n" +
+	"\x04seed\x18\v \x01(\x03H\x00R\x04seed\x88\x01\x01\x127\n" +
+	"\x18max_model_context_tokens\x18\f \x01(\x05R\x15maxModelContextTokensB\a\n" +
 	"\x05_seed\"\xd4\x02\n" +
 	"\x12LLMRateLimitConfig\x12\x1a\n" +
 	"\bdisabled\x18\x01 \x01(\bR\bdisabled\x12.\n" +
@@ -2544,7 +2573,7 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x1bMemoryCompressionBatchSizes\x12\x16\n" +
 	"\x06normal\x18\x01 \x01(\x05R\x06normal\x12\x18\n" +
 	"\awarning\x18\x02 \x01(\x05R\awarning\x12\x1a\n" +
-	"\bcritical\x18\x03 \x01(\x05R\bcritical\"\xef\x02\n" +
+	"\bcritical\x18\x03 \x01(\x05R\bcritical\"\xa5\x03\n" +
 	"\x17MemoryCompressionConfig\x12C\n" +
 	"\x10workload_profile\x18\x01 \x01(\x0e2\x18.loom.v1.WorkloadProfileR\x0fworkloadProfile\x12&\n" +
 	"\x0fmax_l1_messages\x18\x02 \x01(\x05R\rmaxL1Messages\x12&\n" +
@@ -2552,7 +2581,8 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x19warning_threshold_percent\x18\x04 \x01(\x05R\x17warningThresholdPercent\x12<\n" +
 	"\x1acritical_threshold_percent\x18\x05 \x01(\x05R\x18criticalThresholdPercent\x12E\n" +
 	"\vbatch_sizes\x18\x06 \x01(\v2$.loom.v1.MemoryCompressionBatchSizesR\n" +
-	"batchSizes\"\xf7\x02\n" +
+	"batchSizes\x124\n" +
+	"\x16protected_recent_turns\x18\a \x01(\x05R\x14protectedRecentTurns\"\xf7\x02\n" +
 	"\x0eBehaviorConfig\x12%\n" +
 	"\x0emax_iterations\x18\x01 \x01(\x05R\rmaxIterations\x12'\n" +
 	"\x0ftimeout_seconds\x18\x02 \x01(\x05R\x0etimeoutSeconds\x120\n" +

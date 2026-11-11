@@ -116,11 +116,13 @@ func GetModelContextLimits(modelName string) *ModelContextLimits {
 
 	// Try prefix matching for versioned models
 	// e.g., "llama3.1:8b" -> "llama3.1", "claude-3-5-sonnet-20241022" -> "claude-3-5-sonnet"
-	// Use longest matching prefix to avoid ambiguity (e.g., "llama3" vs "llama3.1")
+	// Use longest matching prefix to avoid ambiguity (e.g., "llama3" vs "llama3.1").
+	// The prefix must end at a separator: "gpt-4" names "gpt-4" and "gpt-4-0613",
+	// not "gpt-4o", which is another model with another window.
 	var bestMatch string
 	var bestLimits *ModelContextLimits
 	for baseModel, limits := range modelContextLimits {
-		if len(modelName) >= len(baseModel) && modelName[:len(baseModel)] == baseModel {
+		if len(modelName) >= len(baseModel) && modelName[:len(baseModel)] == baseModel && prefixEndsAtSeparator(modelName, len(baseModel)) {
 			// Keep the longest match
 			if len(baseModel) > len(bestMatch) {
 				bestMatch = baseModel
@@ -131,6 +133,19 @@ func GetModelContextLimits(modelName string) *ModelContextLimits {
 	}
 
 	return bestLimits
+}
+
+// prefixEndsAtSeparator reports whether modelName[at:] is empty or starts a
+// new segment (':' tag, '-' or '.' version, '@' or '/' qualifier).
+func prefixEndsAtSeparator(modelName string, at int) bool {
+	if at >= len(modelName) {
+		return true
+	}
+	switch modelName[at] {
+	case ':', '-', '.', '@', '/':
+		return true
+	}
+	return false
 }
 
 // GetProviderDefaultLimits returns sensible defaults for a provider.
@@ -164,22 +179,18 @@ func GetProviderDefaultLimits(provider string) ModelContextLimits {
 // marks sit above the provider's refusal line, where proactive relief can
 // never fire.
 //
-// loom resolves the wire max_tokens in two places with different rules
-// (registry builds clients from llm.max_tokens; the factory falls back to the
-// catalog), so the reservation takes the largest value any build path could
-// send:
+// The reservation covers the max_tokens that goes on the wire:
 //
 //  1. the configured reserve (llm.reserved_output_tokens), or 10% of the
 //     window when unset — the historical default;
 //  2. llm.max_tokens, when explicitly configured — sent verbatim by every
-//     build path;
-//  3. the model's catalog MaxOutputTokens — what the factory sends when
-//     llm.max_tokens is unset.
+//     build path, so it is what is reserved;
+//  3. the model's catalog MaxOutputTokens, only when llm.max_tokens is unset —
+//     what the factory then sends (factory.resolveMaxOutput). With max_tokens
+//     set the catalog figure is not sent, and reserving it would take room
+//     from the prompt that the provider accepts.
 //
-// Taking the maximum only ever grows the reservation, so it never changes what
-// loom asks the provider for; it can make relief fire earlier than strictly
-// necessary, which is the safe direction. Returns 0 when nothing is known, so
-// callers keep their existing defaults.
+// Returns 0 when nothing is known, so callers keep their existing defaults.
 func EffectiveOutputReservation(provider, model string, configuredMaxTokens, configuredReserved, maxContextTokens int) int {
 	reservation := configuredReserved
 	if reservation <= 0 && maxContextTokens > 0 {
@@ -188,8 +199,10 @@ func EffectiveOutputReservation(provider, model string, configuredMaxTokens, con
 	if configuredMaxTokens > reservation {
 		reservation = configuredMaxTokens
 	}
-	if info := catalog.Lookup(provider, model); info != nil && int(info.MaxOutputTokens) > reservation {
-		reservation = int(info.MaxOutputTokens)
+	if configuredMaxTokens <= 0 {
+		if info := catalog.Lookup(provider, model); info != nil && int(info.MaxOutputTokens) > reservation {
+			reservation = int(info.MaxOutputTokens)
+		}
 	}
 	// The reserve must leave a working budget: never claim more than half the
 	// window (the SegmentedMemory constructor applies the same cap).
@@ -197,6 +210,44 @@ func EffectiveOutputReservation(provider, model string, configuredMaxTokens, con
 		reservation = maxContextTokens / 2
 	}
 	return reservation
+}
+
+// ProviderPromptCeiling is the largest prompt the provider accepts for
+// provider+model: the window the model is served with, less the output
+// reservation. servedWindow (max_model_context_tokens) states that window
+// when the server caps it below the model's listing — a vLLM --max-model-len,
+// a TGI --max-total-tokens — and comes first. Otherwise the model's listed
+// window: the catalog's, else the prefix-matched table's. The configured
+// max_context_tokens is where loom folds, not where the provider refuses, so
+// it is used only when neither knows the model. No provider is named: a
+// server that caps its window (an Ollama num_ctx included) states it in
+// servedWindow.
+// reserved is the reply reservation as the agent's builder resolved it
+// (max_tokens included, EffectiveOutputReservation) and is taken as given;
+// only when none was resolved is one derived from the listing. Returns 0 when
+// no window is known.
+func ProviderPromptCeiling(provider, model string, reserved, configuredWindow, servedWindow int) int {
+	window := 0
+	if servedWindow > 0 {
+		window = servedWindow
+	} else if info := catalog.Lookup(provider, model); info != nil && info.ContextWindow > 0 {
+		window = int(info.ContextWindow)
+	} else if limits := GetModelContextLimits(model); limits != nil {
+		window = limits.MaxContextTokens
+	}
+	if window <= 0 {
+		window = configuredWindow
+	}
+	if window <= 0 {
+		return 0
+	}
+	if reserved <= 0 {
+		reserved = EffectiveOutputReservation(provider, model, 0, 0, window)
+	}
+	if reserved >= window {
+		reserved = window / 2
+	}
+	return window - reserved
 }
 
 // ResolveContextLimits determines the context limits to use, with fallback precedence:

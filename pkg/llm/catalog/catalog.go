@@ -798,11 +798,84 @@ func BuildCatalog() map[string][]*loomv1.ModelInfo {
 		},
 
 		// ── AWS Bedrock ─────────────────────────────────────────────────────────────
-		// Claude 4.x models only. ShowInDropdown=false — Bedrock is endpoint-configured
+		// ShowInDropdown=false — Bedrock is endpoint-configured
 		// via deployment settings, not selected from a user-facing model picker.
 		// Both us.* (regional) and global.* (dynamic routing) forms are listed where
-		// applicable so ProviderFactory.normalizeModelID only needs to strip prefixes.
+		// applicable: lookup is an exact match on the full id, nothing strips the prefix.
 		"bedrock": {
+			// Non-Anthropic families served through Converse. Rates are the
+			// us-west-2 on-demand rates of the AWS Price List,
+			// https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonBedrock/current/us-west-2/index.json;
+			// these entries carry no cache multipliers of their own; cache tokens
+			// Converse reports for them, if any, price at the Anthropic multipliers
+			// in calculateCost.
+			{
+				Id:                  "zai.glm-5",
+				Name:                "GLM-5 (Bedrock)",
+				Provider:            "bedrock",
+				Capabilities:        []string{"text", "tool-use"},
+				ContextWindow:       200_000,
+				MaxOutputTokens:     96_000,
+				CostPer_1MInputUsd:  1.0,
+				CostPer_1MOutputUsd: 3.2,
+				ShowInDropdown:      false,
+			},
+			{
+				Id:                  "zai.glm-4.7",
+				Name:                "GLM-4.7 (Bedrock)",
+				Provider:            "bedrock",
+				Capabilities:        []string{"text", "tool-use"},
+				ContextWindow:       200_000,
+				MaxOutputTokens:     96_000,
+				CostPer_1MInputUsd:  0.6,
+				CostPer_1MOutputUsd: 2.2,
+				ShowInDropdown:      false,
+			},
+			{
+				Id:                  "zai.glm-4.7-flash",
+				Name:                "GLM-4.7 Flash (Bedrock)",
+				Provider:            "bedrock",
+				Capabilities:        []string{"text", "tool-use"},
+				ContextWindow:       200_000,
+				MaxOutputTokens:     96_000,
+				CostPer_1MInputUsd:  0.07,
+				CostPer_1MOutputUsd: 0.4,
+				ShowInDropdown:      false,
+			},
+			{
+				Id:                  "deepseek.v3.2",
+				Name:                "DeepSeek V3.2 (Bedrock)",
+				Provider:            "bedrock",
+				Capabilities:        []string{"text", "tool-use"},
+				ContextWindow:       128_000,
+				MaxOutputTokens:     32_000,
+				CostPer_1MInputUsd:  0.62,
+				CostPer_1MOutputUsd: 1.85,
+				ShowInDropdown:      false,
+			},
+			{
+				Id:                  "deepseek.v3-v1:0",
+				Name:                "DeepSeek V3.1 (Bedrock)",
+				Provider:            "bedrock",
+				Capabilities:        []string{"text", "tool-use"},
+				ContextWindow:       128_000,
+				MaxOutputTokens:     32_000,
+				CostPer_1MInputUsd:  0.58,
+				CostPer_1MOutputUsd: 1.68,
+				ShowInDropdown:      false,
+			},
+			{
+				Id:                  "us.deepseek.r1-v1:0",
+				Name:                "DeepSeek R1 (Bedrock)",
+				Provider:            "bedrock",
+				Capabilities:        []string{"text", "thinking"},
+				ContextWindow:       128_000,
+				MaxOutputTokens:     32_000,
+				CostPer_1MInputUsd:  1.35,
+				CostPer_1MOutputUsd: 5.4,
+				IsReasoning:         true,
+				ShowInDropdown:      false,
+			},
 			// Claude 5 inference-profile ids are un-suffixed (no "-v1:0"), so
 			// they need their own rows: the "-v1:0" rows below never match them.
 			// Rates are Anthropic's first-party card; ClaudeFamilyPricing prices

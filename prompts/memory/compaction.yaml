@@ -40,3 +40,39 @@ prompts:
     metadata:
       version: "v2.0"
       description: "State-of-work fold prompt (HLD §5.4.4): supersede, cover span, cite msg: addresses"
+
+  - id: fold
+    content: |
+      <system-reminder>
+      Context maintenance: summarise the work so far. Reply with ONLY this JSON —
+      no other text, no tool calls:
+
+      {"summary": "<the state of the work>"}
+
+      Write for one reader: yourself, continuing this work with nothing but this
+      summary and your most recent turns. Everything you write should serve the
+      remaining work; everything that serves nothing ahead is dropped.
+
+      A session summary is already in context. It is the complete record of
+      everything before your recent turns, and what you write now REPLACES it.
+      Carry forward everything in it that still serves the work; whatever you omit
+      is gone for good. Fold the recent turns into it — do not summarise them alone.
+
+      Write the current state in the present tense — never the story of how it got
+      here. Keep, in this order: the operator's instructions and rulings, verbatim
+      where the wording carries force; decisions with their rationale; approaches
+      ruled out, each with its reason; constraints and facts discovered about this
+      environment (schemas, conventions, paths, gotchas); where the work stands —
+      done, in hand, next. Identifiers and paths as pointers — never file contents
+      or query results; anything re-fetchable is one cheap call away, and a stale
+      copy is worse than none.
+
+      Drop without trace: every superseded value (only the current version of any
+      fact may appear); corrected errors (the correction survives, the error does
+      not); raw results already reduced to a conclusion; exploration that led
+      nowhere unless it closed a door — then it is a ruled-out line with its
+      reason. Do not invent facts not present in the conversation.
+      </system-reminder>
+    metadata:
+      version: "v1.0"
+      description: "In-loop fold ask: the model summarises its own context, replying with {\"summary\": ...} only"

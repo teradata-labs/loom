@@ -239,6 +239,24 @@ func TestTurnNotes_SettledThinkingNotReplayedAfterToolChange(t *testing.T) {
 	})
 }
 
+// reliefSeamAgent returns an agent whose session already holds sm, so the Chat
+// turn starts from a known context state (the session keeps an existing
+// SegmentedMem, see ensureSessionMemory).
+func reliefSeamAgent(t *testing.T, llm interface {
+	Chat(context.Context, []llmtypes.Message, []shuttle.Tool) (*llmtypes.LLMResponse, error)
+	Name() string
+	Model() string
+}, sessionID string, sm *SegmentedMemory, opts ...Option) *Agent {
+	t.Helper()
+	cfg := DefaultConfig()
+	cfg.PatternConfig = DefaultPatternConfig()
+	cfg.PatternConfig.UseLLMClassifier = false
+	ag := NewAgent(&mockBackend{}, llm, append([]Option{WithConfig(cfg)}, opts...)...)
+	session := ag.memory.GetOrCreateSession(context.Background(), sessionID)
+	session.SegmentedMem = sm
+	return ag
+}
+
 // recallReliefLLM answers graph memory's side calls itself and captures the
 // main calls, which it answers with a short text reply.
 type recallReliefLLM struct {
@@ -273,8 +291,7 @@ func TestTurnNotes_ReliefCountsRecallNoteBeforeFirstSend(t *testing.T) {
 		ctx := context.Background()
 		sm := NewSegmentedMemory("ROM", 16000, 1000)
 		sm.SetThreshold(16384)
-		comp := &countingCompressor{}
-		sm.SetCompressor(comp)
+		sm.SetCompressor(&countingCompressor{})
 		sm.mu.Lock()
 		start := sm.startMarkLocked(0)
 		sm.mu.Unlock()
@@ -307,13 +324,22 @@ func TestTurnNotes_ReliefCountsRecallNoteBeforeFirstSend(t *testing.T) {
 		llm := &recallReliefLLM{}
 		ag := reliefSeamAgent(t, llm, "s-relief", sm, WithGraphMemoryStore(store, gm))
 		ag.config.Name = "relief-agent"
-		ag.config.ContextReliefWarning = false
 		_, err := ag.Chat(ctx, "s-relief", "What about the walrus migration?")
 		require.NoError(t, err)
 		llm.mu.Lock()
 		defer llm.mu.Unlock()
 		require.NotEmpty(t, llm.main)
-		return comp.n(), llm.main[0]
+		// A fold is a main call that ends in the fold ask; sent is the first
+		// call that is not one.
+		for _, call := range llm.main {
+			if strings.Contains(call[len(call)-1].Content, foldInstruction) {
+				folds++
+			} else if sent == nil {
+				sent = call
+			}
+		}
+		require.NotNil(t, sent)
+		return folds, sent
 	}
 
 	t.Run("nothing to recall: under the start mark", func(t *testing.T) {
@@ -323,7 +349,7 @@ func TestTurnNotes_ReliefCountsRecallNoteBeforeFirstSend(t *testing.T) {
 			assert.NotContains(t, m.Content, graphMemoryContextMarker)
 		}
 	})
-	t.Run("large recall note: relief sheds before the send", func(t *testing.T) {
+	t.Run("large recall note: a fold is asked for before the send", func(t *testing.T) {
 		folds, sent := run(t, true)
 		noted := false
 		for _, m := range sent {
@@ -332,7 +358,7 @@ func TestTurnNotes_ReliefCountsRecallNoteBeforeFirstSend(t *testing.T) {
 			}
 		}
 		require.True(t, noted, "fixture: the first send carries the recall note")
-		assert.Positive(t, folds, "relief must count the pending recall note and shed before the send")
+		assert.Positive(t, folds, "the fold trigger must count the pending recall note before the send")
 	})
 }
 

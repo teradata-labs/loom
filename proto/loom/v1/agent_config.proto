@@ -139,8 +139,11 @@ message LLMConfig {
   // Top-k sampling parameter
   int32 top_k = 7;
 
-  // Maximum context window tokens supported by the model
-  // If not set, will be auto-detected from model name or use provider default
+  // The context window loom budgets against: the fold keeps the settled
+  // conversation under the profile's threshold of this window less
+  // reserved_output_tokens. It may sit below the model's window to bound
+  // cost. If not set, the model's window (catalog, then model name, then
+  // provider default) is used.
   // Examples: Claude Sonnet 4.5 = 200000, Llama 3.1 = 128000, Mistral = 32000
   int32 max_context_tokens = 8;
 
@@ -165,6 +168,14 @@ message LLMConfig {
   // agent YAML has no effect there — wiring it through the factory is an open
   // follow-up, not a shipped behavior.
   optional int64 seed = 11;
+
+  // The context window the model is served with, when it is below the
+  // model's listed window: a vLLM --max-model-len, a TGI --max-total-tokens,
+  // an Ollama num_ctx. A step whose results together would exceed it, less
+  // the reply reservation, has them replaced before the send. Taken as given,
+  // above or below the listing. If not set, the model's listed window is the
+  // limit, on every provider.
+  int32 max_model_context_tokens = 12;
 }
 
 // LLMRateLimitConfig configures client-side rate limiting for an LLM provider.
@@ -529,6 +540,11 @@ message MemoryCompressionConfig {
 
   // Batch sizes for compression operations
   MemoryCompressionBatchSizes batch_sizes = 6;
+
+  // Recent turns a fold keeps, counting user messages and assistant steps
+  // alike; the fold summarises everything before them. It is also the top rung
+  // of the pressure ladder. 0 means the default, 16.
+  int32 protected_recent_turns = 7;
 }
 
 // BehaviorConfig defines agent behavior constraints

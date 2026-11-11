@@ -25,7 +25,7 @@ func TestLoadMigrations(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, migrations, "should have embedded migrations")
 
-	// Verify we have all 29 migrations.
+	// Verify we have all 30 migrations.
 	// Bumped from 11 by 000012_skill_index and 000013_task_idempotency
 	// (skills overhaul Phases 4 and 8), then 000014_analytics_views,
 	// 000015_rls_infrastructure_tables, 000016_rls_honor_jwt_sub,
@@ -34,9 +34,10 @@ func TestLoadMigrations(t *testing.T) {
 	// 000021_human_request_kind_summary, 000022_human_request_params,
 	// 000023_tool_outcomes_admission_decision, 000024_task_attribution,
 	// 000025_workflow_checkpoints, 000026_execution_events,
-	// 000027_decision_shadow (typed decision layer, pkg/decision), then
-	// 000028_decision_shadow_error and 000029_decision_shadow_subject.
-	assert.Len(t, migrations, 29, "should have 29 migration versions")
+	// 000027_decision_shadow (typed decision layer, pkg/decision),
+	// 000028_decision_shadow_error and 000029_decision_shadow_subject, then
+	// 000030_message_billing.
+	assert.Len(t, migrations, 30, "should have 30 migration versions")
 
 	// Verify ordering
 	for i := 1; i < len(migrations); i++ {
@@ -82,6 +83,7 @@ func TestLoadMigrations_SpecificVersions(t *testing.T) {
 		{27, "decision_shadow", "CREATE TABLE IF NOT EXISTS decision_shadow"},
 		{28, "decision_shadow_error", "ADD COLUMN IF NOT EXISTS error"},
 		{29, "decision_shadow_subject", "ADD COLUMN IF NOT EXISTS subject"},
+		{30, "message_billing", "cache_create_1h_tokens"},
 	}
 
 	for _, tt := range tests {

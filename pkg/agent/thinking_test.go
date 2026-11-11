@@ -102,8 +102,7 @@ func TestCompile_ThinkingSettledKeptWhilePrefixUnchanged(t *testing.T) {
 // a settled turn's blocks renders differently from what the model was sent
 // when it wrote them, the blocks are left out: the provider rejects (or
 // drops) a block replayed after an edit to the context before it. Here a
-// current-turn oversize result renders as an offload stub and re-renders as
-// the prior-turn stub once the turn settles.
+// reminder pinned before the turn's answer is gone once the turn settles.
 func TestCompile_ThinkingSettledStrippedAfterPrefixChange(t *testing.T) {
 	sm := newCompileMemory(t)
 	ctx := context.Background()
@@ -112,6 +111,7 @@ func TestCompile_ThinkingSettledStrippedAfterPrefixChange(t *testing.T) {
 		ThinkingBlocks: []ThinkingBlock{{Type: "thinking", Thinking: "search first", Signature: "S0"}},
 		ToolCalls:      []ToolCall{{ID: "c1", Name: "web_search", Input: map[string]interface{}{"q": "x"}}}})
 	sm.AddMessage(ctx, Message{Role: "tool", ID: "42", ToolUseID: "c1", Content: strings.Repeat("d", 5000), Turn: 1})
+	sm.PinTurnNotes(TurnReminder{Kind: ReminderToolBudget, Text: "You have executed many tool calls"})
 	sm.AddMessage(ctx, Message{Role: "assistant", Content: "a1", Turn: 1,
 		ThinkingBlocks: []ThinkingBlock{{Type: "thinking", Thinking: "answer", Signature: "S1"}}})
 
@@ -128,9 +128,9 @@ func TestCompile_ThinkingSettledStrippedAfterPrefixChange(t *testing.T) {
 		}
 	}
 	require.NotNil(t, call)
-	assert.Len(t, call.ThinkingBlocks, 1, "the call's blocks precede the re-rendered result, so they are still valid")
+	assert.Len(t, call.ThinkingBlocks, 1, "the call's blocks precede the reminder, so they are still valid")
 	assert.Empty(t, assistantByContent(t, settled, "a1").ThinkingBlocks,
-		"the result before a1 re-rendered at settle, so a1's blocks are left out")
+		"the reminder before a1 is gone at settle, so a1's blocks are left out")
 }
 
 // TestCompile_ThinkingSettledStrippedWithoutRecord — blocks the compile has
@@ -227,7 +227,7 @@ func TestResetContext_ClearsThinkingPrefix(t *testing.T) {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	assert.Nil(t, sm.thinkingPrefix)
-	_, sum := sm.compilePrefixLocked(len(sm.thinkingPrefix) > 0)
+	_, sum := sm.compilePrefixLocked(sm.contextMessages, sm.currentTurnLocked(), len(sm.thinkingPrefix) > 0)
 	assert.Equal(t, [32]byte{}, sum, "no recorded fingerprint: compile does not hash the context")
 }
 

@@ -34,6 +34,11 @@ type CompressionProfile struct {
 	// estimate reaches this.
 	CriticalThresholdPercent int
 
+	// ProtectedRecentTurns is K: the recent turns a fold keeps, user messages
+	// and assistant steps alike, and the top rung of the pressure ladder.
+	// 0 means the default (defaultProtectedRecentTurns).
+	ProtectedRecentTurns int
+
 	// Number of messages to compress in normal conditions
 	NormalBatchSize int
 
@@ -130,6 +135,9 @@ func ResolveCompressionProfile(config *loomv1.MemoryCompressionConfig) (Compress
 	if config.CriticalThresholdPercent > 0 {
 		profile.CriticalThresholdPercent = int(config.CriticalThresholdPercent)
 	}
+	if config.ProtectedRecentTurns > 0 {
+		profile.ProtectedRecentTurns = int(config.ProtectedRecentTurns)
+	}
 
 	// Override batch sizes if specified
 	if config.BatchSizes != nil {
@@ -176,6 +184,10 @@ func (p CompressionProfile) Validate() error {
 	}
 	if p.CriticalThresholdPercent < 0 || p.CriticalThresholdPercent > 100 {
 		return fmt.Errorf("critical_threshold_percent must be 0-100, got %d", p.CriticalThresholdPercent)
+	}
+
+	if p.ProtectedRecentTurns < 0 {
+		return fmt.Errorf("protected_recent_turns must not be negative, got %d", p.ProtectedRecentTurns)
 	}
 
 	// Critical must be higher than warning
