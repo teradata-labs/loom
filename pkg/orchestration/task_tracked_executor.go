@@ -804,10 +804,10 @@ func (t *TaskTrackedOrchestrator) recordResults(
 	// position in a listing. Two orderings conspired against positional
 	// mapping: the listing orders by (priority, created_at) with no unique
 	// tiebreak, so a fork_join's HIGH merge row sorted ahead of the forks and
-	// consumed fork agent 1's result (the round-4 reproduction); and for the
-	// concurrent patterns AgentResults arrive in COMPLETION order, so even a
-	// correctly-sorted stage slice mis-pairs whenever the second agent
-	// finishes first. The result names its agent; stage rows record theirs at
+	// consumed fork agent 1's result (the round-4 reproduction); and the
+	// concurrent patterns used to return AgentResults in COMPLETION order (they
+	// now keep the configured order, but other producers such as swarm and
+	// conditional make no ordering promise). The result names its agent; stage rows record theirs at
 	// creation; stage_index only breaks ties when one agent appears in
 	// several stages (each result then claims the earliest unclaimed row).
 	stageRows := make([]*task.Task, 0, len(stageTasks))

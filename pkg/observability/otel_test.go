@@ -172,6 +172,7 @@ func TestGenAISystemNormalization(t *testing.T) {
 		{"ollama", "ollama"},               // community convention, kept as-is
 		{"mistral", "mistral"},             // kept as-is
 		{"bedrock", "aws.bedrock"},         // normalized
+		{"bedrock-mantle", "aws.bedrock"},  // normalized (Mantle endpoint of the same service)
 		{"azure-openai", "azure_openai"},   // normalized
 		{"gemini", "google.generative_ai"}, // normalized
 		{"huggingface", "hugging_face"},    // normalized

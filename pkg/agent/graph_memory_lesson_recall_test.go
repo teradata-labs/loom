@@ -54,13 +54,13 @@ func TestConversationStartLessonWithoutOrdinaryMemories(t *testing.T) {
 
 	session := &types.Session{ID: "s-start"}
 	session.AddMessage(ctx, types.Message{Role: "user", Content: "why does my INTEGER column overflow?"})
-	a.injectGraphMemoryContext(ctx, session)
+	note := a.graphMemoryNote(ctx, session)
 
-	msgs := session.GetMessages()
-	require.Len(t, msgs, 2, "the lesson must be injected with no ordinary memory present")
-	assert.Contains(t, msgs[1].Content, "Verified lessons from prior work (each fix was observed to succeed):")
-	assert.Contains(t, msgs[1].Content, "BIGINT")
-	assert.NotContains(t, msgs[1].Content, "Relevant memories from past conversations")
+	require.NotEmpty(t, note, "the lesson must be injected with no ordinary memory present")
+	assert.Len(t, session.GetMessages(), 1, "the recall note is never stored in the session")
+	assert.Contains(t, note, "Verified lessons from prior work (each fix was observed to succeed):")
+	assert.Contains(t, note, "BIGINT")
+	assert.NotContains(t, note, "Relevant memories from past conversations")
 
 	spans := tracer.GetSpansByName("graph_memory.recall")
 	require.Len(t, spans, 1)
@@ -101,7 +101,7 @@ func TestRecallSpanCountsLessonsAndMemories(t *testing.T) {
 
 	session := &types.Session{ID: "s-both"}
 	session.AddMessage(ctx, types.Message{Role: "user", Content: "why does my INTEGER column overflow?"})
-	a.injectGraphMemoryContext(ctx, session)
+	a.graphMemoryNote(ctx, session)
 
 	spans := tracer.GetSpansByName("graph_memory.recall")
 	require.Len(t, spans, 1)

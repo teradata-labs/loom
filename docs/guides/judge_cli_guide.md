@@ -181,6 +181,23 @@ Register the judge:
 looms judge register config/judges/quality-judge.yaml
 ```
 
+A judge can also be backed by a typed decision model instead of a generative
+LLM (`type: JUDGE_TYPE_DECISION`, see `docs/architecture/decision-layer.md`).
+Each criterion line becomes one yes/no question with a probability; the
+verdict is computed from those probabilities and no prose is generated:
+
+```yaml
+name: recall-quality
+type: JUDGE_TYPE_DECISION
+criteria: |
+  - The answer states the fact the question asks for.
+  - The answer does not contradict the conversation history.
+min_passing_score: 80
+decision:
+  provider: jev        # or llm (uses the judge LLM through the decision adapter)
+  requests_per_minute: 30
+```
+
 Register with retry and circuit breaker:
 
 ```bash

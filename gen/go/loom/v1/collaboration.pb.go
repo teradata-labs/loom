@@ -851,7 +851,14 @@ type AgentPosition struct {
 	// Model name used by this agent
 	Model string `protobuf:"bytes,9,opt,name=model,proto3" json:"model,omitempty"`
 	// Provider name (e.g., "anthropic", "bedrock", "ollama")
-	Provider      string `protobuf:"bytes,10,opt,name=provider,proto3" json:"provider,omitempty"`
+	Provider string `protobuf:"bytes,10,opt,name=provider,proto3" json:"provider,omitempty"`
+	// LLM usage and cost of producing this position. Scalars rather than
+	// AgentExecutionCost because that message lives in orchestration.proto,
+	// which imports this file.
+	InputTokens   int32   `protobuf:"varint,11,opt,name=input_tokens,json=inputTokens,proto3" json:"input_tokens,omitempty"`
+	OutputTokens  int32   `protobuf:"varint,12,opt,name=output_tokens,json=outputTokens,proto3" json:"output_tokens,omitempty"`
+	TotalTokens   int32   `protobuf:"varint,13,opt,name=total_tokens,json=totalTokens,proto3" json:"total_tokens,omitempty"`
+	CostUsd       float64 `protobuf:"fixed64,14,opt,name=cost_usd,json=costUsd,proto3" json:"cost_usd,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -954,6 +961,34 @@ func (x *AgentPosition) GetProvider() string {
 		return x.Provider
 	}
 	return ""
+}
+
+func (x *AgentPosition) GetInputTokens() int32 {
+	if x != nil {
+		return x.InputTokens
+	}
+	return 0
+}
+
+func (x *AgentPosition) GetOutputTokens() int32 {
+	if x != nil {
+		return x.OutputTokens
+	}
+	return 0
+}
+
+func (x *AgentPosition) GetTotalTokens() int32 {
+	if x != nil {
+		return x.TotalTokens
+	}
+	return 0
+}
+
+func (x *AgentPosition) GetCostUsd() float64 {
+	if x != nil {
+		return x.CostUsd
+	}
+	return 0
 }
 
 // SwarmVote represents a single agent's vote in swarm intelligence.
@@ -1712,7 +1747,7 @@ const file_loom_v1_collaboration_proto_rawDesc = "" +
 	"\fround_number\x18\x01 \x01(\x05R\vroundNumber\x124\n" +
 	"\tpositions\x18\x02 \x03(\v2\x16.loom.v1.AgentPositionR\tpositions\x12\x1c\n" +
 	"\tsynthesis\x18\x03 \x01(\tR\tsynthesis\x12+\n" +
-	"\x11consensus_reached\x18\x04 \x01(\bR\x10consensusReached\"\x9c\x03\n" +
+	"\x11consensus_reached\x18\x04 \x01(\bR\x10consensusReached\"\xa2\x04\n" +
 	"\rAgentPosition\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x1a\n" +
 	"\bposition\x18\x02 \x01(\tR\bposition\x12\x1c\n" +
@@ -1727,7 +1762,11 @@ const file_loom_v1_collaboration_proto_rawDesc = "" +
 	"\x0ftool_call_count\x18\b \x01(\x05R\rtoolCallCount\x12\x14\n" +
 	"\x05model\x18\t \x01(\tR\x05model\x12\x1a\n" +
 	"\bprovider\x18\n" +
-	" \x01(\tR\bprovider\x1a<\n" +
+	" \x01(\tR\bprovider\x12!\n" +
+	"\finput_tokens\x18\v \x01(\x05R\vinputTokens\x12#\n" +
+	"\routput_tokens\x18\f \x01(\x05R\foutputTokens\x12!\n" +
+	"\ftotal_tokens\x18\r \x01(\x05R\vtotalTokens\x12\x19\n" +
+	"\bcost_usd\x18\x0e \x01(\x01R\acostUsd\x1a<\n" +
 	"\x0eResponsesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xa0\x01\n" +

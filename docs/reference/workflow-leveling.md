@@ -237,7 +237,7 @@ A rung's winning output is attributed to the stage's own agent, so workflow resu
 
 These keys are absent when the primary's own output won. The executor's standard result metadata (`stage`, `agent_name`, or `task_index` and the task's own metadata) is backfilled onto a rung result, so downstream consumers read the same keys whichever rung won.
 
-`WorkflowResult` cost carries the **whole ladder's** spend, not the winning call's: producing a leveled stage's output also paid for the primary's retries, every losing rung, and every judge call. Token counts still describe the winning call.
+`WorkflowResult` cost carries the **whole ladder's** spend, not the winning call's: producing a leveled stage's output also paid for the primary's retries, every losing rung, and every judge call. Token counts and `llm_calls` still describe the winning attempt only.
 
 ### Ladder ordering
 
@@ -302,7 +302,7 @@ Cancelling the context stops the retry loop and the ladder at the next iteration
 `max_cost_usd` is an honest bound on runaway escalation. It is **not** a billing limit, and the doc comment on `LevelingPolicy.MaxCostUSD` says so in the same words:
 
 - **It is checked between actions** — before each same-model retry, each escalation rung, and each judge call. The action already in progress is never interrupted, so the ceiling can be, and normally is, **overshot by the cost of one call**.
-- **The running total is a floor, not an exact figure.** Per-attempt cost is read from the result the attempt returned, which carries the final LLM response's usage. An attempt that ran a tool loop inside the agent reports less than it spent, so the gate can let a call through that precise accounting would have blocked.
+- **The running total is a floor, not an exact figure.** Per-attempt cost is read from the result the attempt returned. That cost covers the agent's whole conversation turn, including its tool loop, but not the LLM calls the agent makes outside that loop (graph-memory recall, memory compression and similar). So the gate can let a call through that precise accounting would have blocked.
 - **A judge skipped by the ceiling accepts the output unexamined**, and says so rather than rejecting an output it never looked at:
 
 ```
@@ -375,7 +375,7 @@ The design record carries the full measurement history. Briefly, from `../plan-c
 
 - ⚠️ **Escalation rungs run without tools, system prompt, session, or memory.** A stage that depends on tool use cannot be rescued by escalation. 📋 Tool-carrying rungs are future work.
 - ⚠️ **The judge is Go-only.** No proto or YAML judge reference exists, by design: configuration alone must never be able to add a paid call. 📋 A config-reachable judge is not planned for this release.
-- ⚠️ **Cost accounting is a floor.** Per-attempt cost comes from the final LLM response's usage, so an attempt that ran a tool loop under-reports. `max_cost_usd` bounds runaway escalation; it does not guarantee a billing limit.
+- ⚠️ **Cost accounting is a floor.** Per-attempt cost covers the agent's whole conversation turn, but not the LLM calls the agent makes outside it (graph-memory recall, memory compression and similar), so an attempt can under-report. A leveled stage's `llm_calls` and token counts describe the winning attempt only. `max_cost_usd` bounds runaway escalation; it does not guarantee a billing limit.
 - ⚠️ **Tier is a price heuristic, not a capability measurement.** It is derived from catalog pricing and a reasoning flag. A mispriced or uncatalogued model gets the wrong tier, and `unknown` always short-circuits rather than guessing.
 - ⚠️ **Enabling leveling changes failure semantics** on a stage that previously hard-failed validation. See [Failure Semantics](#failure-semantics).
 - 📋 **Conditional, swarm, debate and fork-join patterns carry no leveling block.**

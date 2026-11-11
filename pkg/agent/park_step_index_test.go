@@ -81,7 +81,7 @@ func TestCompleteParkedBatch_RecordsAtResponsePosition(t *testing.T) {
 		t.Fatalf("setup: the call's index in the saved batch is %d, want 0", positions[0])
 	}
 	agentCtx := &agentContext{Context: ctx, session: sess, tracer: ag.tracer}
-	ag.completeParkedBatch(agentCtx, sess, batch, rowless, positions, ParkDecision{Approved: true}, nil, nil)
+	ag.completeParkedBatch(agentCtx, sess, batch, rowless, positions, ParkDecision{Approved: true}, nil, nil, toolNames(ag.advertisedTools(sess)), true)
 
 	if tool.calls != 1 {
 		t.Fatalf("crashy ran %d times, want 1", tool.calls)

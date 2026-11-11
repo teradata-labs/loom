@@ -27,6 +27,7 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/internal/sqlitedriver"
+	"github.com/teradata-labs/loom/pkg/decision/sites"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
@@ -521,6 +522,12 @@ func (r *Registry) updateSourceInfo(ctx context.Context, name string, source loo
 
 // Search performs LLM-assisted tool search.
 func (r *Registry) Search(ctx context.Context, req *loomv1.SearchToolsRequest) (*loomv1.SearchToolsResponse, error) {
+	return r.search(ctx, req, nil)
+}
+
+// search is Search with the calling agent's decision layer, when the call
+// came from that agent's SearchTool. The registry itself holds no router.
+func (r *Registry) search(ctx context.Context, req *loomv1.SearchToolsRequest, dl *searchDecision) (*loomv1.SearchToolsResponse, error) {
 	ctx, span := r.tracer.StartSpan(ctx, "tools.registry.search")
 	defer r.tracer.EndSpan(span)
 
@@ -557,11 +564,26 @@ func (r *Registry) Search(ctx context.Context, req *loomv1.SearchToolsRequest) (
 	metadata.FtsRetrievalMs = time.Since(ftsStart).Milliseconds()
 	metadata.CandidatesRetrieved = types.SafeInt32(len(candidates))
 
-	// Stage 3: LLM re-ranking (for BALANCED and ACCURATE modes)
+	// Stage 3: re-ranking (for BALANCED and ACCURATE modes). With a live
+	// decision band the decider ranks first and the LLM is skipped when it
+	// clears the band; otherwise the LLM ranks and the decider's answer is
+	// recorded against it.
 	var results []*loomv1.ToolSearchResult
 	if (mode == loomv1.SearchMode_SEARCH_MODE_BALANCED || mode == loomv1.SearchMode_SEARCH_MODE_ACCURATE) && r.llm != nil && len(candidates) > 0 {
 		rerankStart := time.Now()
-		results = r.rerankWithLLM(ctx, req.Query, req.TaskContext, candidates)
+		if decided, acted, dreq, dout, notActed := dl.liveRerank(ctx, r.logger, req.Query, candidates); acted {
+			results = decided
+			span.SetAttribute("tool_search.rerank", "decision")
+			dl.recordAsync(ctx, r.logger, dreq, dout, sites.RerankActedReferences(len(candidates), toolSubjects(candidates), notActed))
+		} else if dreq != nil {
+			results = r.rerankWithLLMOnly(ctx, req.Query, req.TaskContext, candidates)
+			span.SetAttribute("tool_search.rerank", "llm_after_decision")
+			dl.recordAsync(ctx, r.logger, dreq, dout,
+				sites.RerankReferenceSubjects(len(candidates), keptIndexes(candidates, results), sites.ReferenceSourceLLMRerank, toolSubjects(candidates)))
+		} else {
+			results = r.rerankWithLLM(ctx, req.Query, req.TaskContext, candidates, dl)
+			span.SetAttribute("tool_search.rerank", "llm")
+		}
 		metadata.LlmRerankingMs = time.Since(rerankStart).Milliseconds()
 	} else {
 		// FAST mode or no LLM - use FTS scores directly
@@ -795,8 +817,21 @@ Example output: ["send", "message", "notification", "alert", "webhook", "post"]`
 	return terms
 }
 
-// rerankWithLLM uses LLM to re-rank search candidates for better accuracy.
-func (r *Registry) rerankWithLLM(ctx context.Context, query, taskContext string, candidates []*loomv1.ToolSearchResult) []*loomv1.ToolSearchResult {
+// rerankWithLLM uses LLM to re-rank search candidates for better accuracy,
+// and shadow-records the calling agent's decider's view of the same
+// candidates when that agent has a decision layer (dl; nil: none).
+func (r *Registry) rerankWithLLM(ctx context.Context, query, taskContext string, candidates []*loomv1.ToolSearchResult, dl *searchDecision) []*loomv1.ToolSearchResult {
+	results := r.rerankWithLLMOnly(ctx, query, taskContext, candidates)
+	// Decision layer shadow (plan Phase 1, site tool_search.rerank): the
+	// decider scores the same candidates in the background and the result is
+	// recorded against the indexes the LLM kept. Nothing branches on it here.
+	dl.shadowRerank(ctx, r.logger, query, candidates, results)
+	return results
+}
+
+// rerankWithLLMOnly is the generative rerank with no decision-layer side
+// effects; callers that already hold a decider outcome use it.
+func (r *Registry) rerankWithLLMOnly(ctx context.Context, query, taskContext string, candidates []*loomv1.ToolSearchResult) []*loomv1.ToolSearchResult {
 	if r.llm == nil || len(candidates) == 0 {
 		return candidates
 	}
