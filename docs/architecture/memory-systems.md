@@ -1621,7 +1621,7 @@ Graph memory operates alongside the segmented memory system. While segmented mem
 | Retrieval | Chronological (L1/L2/Swap) | Salience-ranked + FTS search |
 | Budget | Manages full context window | Consumes ~20% of context budget (default) |
 
-**Integration**: Graph memory context is injected as a system message at each conversation turn, alongside the segmented memory layers. The token budget for graph memory injection is configurable (default 20% of context window via `DefaultGraphMemoryConfig()`).
+**Integration**: Graph memory context is recalled once per turn and sent as a `<system-reminder>` user message pinned after the turn's user message for every LLM call of that turn (`SegmentedMemory.PinTurnNotes`, so a later call never removes what an earlier one sent before the model's thinking); it is never stored in the session. It is not a system message: providers such as Anthropic move system messages into the request's `system` field ahead of the conversation, where a note that changes every turn would make every cache breakpoint miss. The token budget for graph memory injection is configurable (default 20% of context window via `DefaultGraphMemoryConfig()`).
 
 See [Graph Memory Architecture](graph-memory.md) for the full design.
 

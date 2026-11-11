@@ -153,6 +153,36 @@ func TestThinking_ReplayVerbatim(t *testing.T) {
 	}
 }
 
+// TestThinking_SettledTurnNotReplayed — blocks on a settled turn (Turn below
+// the newest) stay off the wire; reasoning APIs behind this client may reject
+// earlier turns' reasoning. The newest turn's blocks replay.
+func TestThinking_SettledTurnNotReplayed(t *testing.T) {
+	var gotBody string
+	srv := thinkingTestServer(t, &gotBody, plainResponse)
+	defer srv.Close()
+	c := NewClient(Config{Model: "claude-sonnet-5", Endpoint: srv.URL, MaxTokens: 64, ThinkingLevel: "auto"})
+
+	messages := []llmtypes.Message{
+		{Role: "user", Content: "q1", Turn: 1},
+		{Role: "assistant", Content: "a1", Turn: 1, ThinkingBlocks: []llmtypes.ThinkingBlock{
+			{Type: "thinking", Thinking: "old plan", Signature: "SIG_OLD"}}},
+		{Role: "user", Content: "q2", Turn: 2},
+		{Role: "assistant", Content: "working", Turn: 2, ThinkingBlocks: []llmtypes.ThinkingBlock{
+			{Type: "thinking", Thinking: "new plan", Signature: "SIG_NEW"},
+		}, ToolCalls: []llmtypes.ToolCall{{ID: "c1", Name: "shell", Input: map[string]interface{}{}}}},
+		{Role: "tool", ToolUseID: "c1", Content: "result", Turn: 2},
+	}
+	if _, err := c.Chat(context.Background(), messages, nil); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if strings.Contains(gotBody, "SIG_OLD") {
+		t.Errorf("settled turn's thinking reached the wire\nbody: %s", gotBody)
+	}
+	if !strings.Contains(gotBody, "SIG_NEW") {
+		t.Errorf("newest turn's thinking not replayed\nbody: %s", gotBody)
+	}
+}
+
 // TestThinking_StreamAssembly — reasoning_content deltas and thinking_blocks
 // fragments (signature arriving in its own fragment) assemble into the final
 // response; the token callback never sees thinking text.

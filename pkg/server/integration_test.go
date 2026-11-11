@@ -16,6 +16,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -1107,4 +1108,53 @@ func (m *mockStreamWeaveServer) SendHeader(md metadata.MD) error {
 }
 
 func (m *mockStreamWeaveServer) SetTrailer(md metadata.MD) {
+}
+
+// GetConversationHistory leaves out the current turn's pinned reminders: the
+// compiled view holds them until the next turn, but they are harness state,
+// not something the user or the assistant said.
+func TestServer_GetConversationHistory_OmitsSystemReminders(t *testing.T) {
+	ag := createTestAgent()
+	srv := NewServer(ag, nil)
+	ctx := context.Background()
+
+	_, err := srv.Weave(ctx, &loomv1.WeaveRequest{Query: "What is 2+2?", SessionId: "sess_reminders"})
+	if err != nil {
+		t.Fatalf("Weave failed: %v", err)
+	}
+	session, ok := ag.GetSession("sess_reminders")
+	if !ok {
+		t.Fatal("session not found")
+	}
+	segMem, ok := session.SegmentedMem.(*agent.SegmentedMemory)
+	if !ok || segMem == nil {
+		t.Fatal("expected the session to use segmented memory")
+	}
+	segMem.PinTurnNotes(agent.TurnReminder{Kind: agent.ReminderGraphMemory, Text: "[Graph Memory Context] recalled"})
+	compiled := 0
+	for _, m := range session.GetMessages() {
+		if agent.IsSystemReminder(m) {
+			compiled++
+		}
+	}
+	if compiled != 1 {
+		t.Fatalf("fixture: expected the compiled view to hold 1 reminder, got %d", compiled)
+	}
+
+	hist, err := srv.GetConversationHistory(ctx, &loomv1.GetConversationHistoryRequest{SessionId: "sess_reminders"})
+	if err != nil {
+		t.Fatalf("GetConversationHistory failed: %v", err)
+	}
+	var sawUser bool
+	for _, m := range hist.Messages {
+		if strings.Contains(m.Content, "<system-reminder>") {
+			t.Errorf("history returned a reminder row: %q", m.Content)
+		}
+		if m.Role == "user" && strings.Contains(m.Content, "2+2") {
+			sawUser = true
+		}
+	}
+	if !sawUser {
+		t.Error("history lost the user's message")
+	}
 }

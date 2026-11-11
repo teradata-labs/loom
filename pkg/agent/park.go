@@ -563,7 +563,7 @@ func unappliedParkedTail(sess *Session) *Message {
 type resumedTurnKey struct{}
 
 // contextWithResumedTurn marks ctx as a resume. Per-TURN entry work in
-// runConversationLoop — graph-memory context injection and extraction —
+// runConversationLoop — graph-memory extraction of the user message —
 // must not run twice for one turn just because the loop is entered twice.
 func contextWithResumedTurn(ctx context.Context) context.Context {
 	return context.WithValue(ctx, resumedTurnKey{}, true)
@@ -791,7 +791,7 @@ func (a *Agent) classifyParkItems(ctx Context, calls []ToolCall, positions []int
 			continue
 		}
 		if d.Kind == shuttle.Ask {
-			items = append(items, parkItem{call: call, seq: positions[idx], kind: "approval"})
+			items = append(items, parkItem{call: call, seq: positions[idx], kind: "approval", reason: d.Reason})
 		}
 	}
 	return items

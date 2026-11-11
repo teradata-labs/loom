@@ -15,6 +15,7 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -96,6 +97,36 @@ type SegmentedMemory struct {
 	// messages on every provider call. Keyed by the rendered string, so a stub,
 	// a whole row, and a folded form each cache separately.
 	msgTokenCache map[string]int
+
+	// thinkingPrefix maps an assistant message's thinking blocks
+	// (thinkingBlocksKey) to the fingerprint of the compiled context it was
+	// written after, so compile can keep a settled turn's blocks while that
+	// context is unchanged (context_compilation.go). In memory only, like the
+	// blocks themselves.
+	thinkingPrefix map[[sha256.Size]byte][sha256.Size]byte
+
+	// requestModel and requestToolsDigest identify the provider call beyond
+	// its messages (SetRequestIdentity); they seed the thinkingPrefix
+	// fingerprint.
+	requestModel       string
+	requestToolsDigest [sha256.Size]byte
+
+	// transientTail is the content of the reminder the agent is about to send
+	// and has not pinned yet (SetTransientTail), counted by the estimate.
+	transientTail string
+
+	// turnNotes are the reminders sent on this turn's provider calls
+	// (PinTurnNotes). Compile emits each at the position it was sent from,
+	// for the rest of its turn, so a later call of the turn never removes
+	// what an earlier one sent (context_compilation.go). In memory only.
+	turnNotes []turnNote
+
+	// arrivals counts the rows ever appended to L1 (AddMessage,
+	// ReplayMessages). Relief removing or folding rows doesn't lower it, so
+	// two provider calls with no new row between them (a send and its resend
+	// after a refusal) see the same value. PinTurnNotes uses it to send an
+	// event note once per step (TurnReminder).
+	arrivals uint64
 
 	// Memory compression (the fold compressor)
 	compressor MemoryCompressor
@@ -335,7 +366,9 @@ func (sm *SegmentedMemory) AddMessage(ctx context.Context, msg Message) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
+	sm.recordThinkingPrefixLocked(&msg)
 	sm.contextMessages = append(sm.contextMessages, msg)
+	sm.arrivals++
 
 	// Incremental L1 token update (reporting only).
 	msgTokens := 10 + sm.tokenCounter.CountTokens(msg.Content) // 10 = message overhead
@@ -467,6 +500,7 @@ func (sm *SegmentedMemory) ReplayMessages(ctx context.Context, messages []Messag
 	}
 
 	sm.contextMessages = append(sm.contextMessages, messages...)
+	sm.arrivals += uint64(len(messages))
 	sm.l1Dirty = true
 	sm.updateTokenCount()
 	sm.tokenCountDirty = false
@@ -696,6 +730,9 @@ func (sm *SegmentedMemory) ResetContext() {
 	sm.contextMessages = sm.contextMessages[:0]
 	sm.summary = summaryState{}
 	sm.patternName = ""
+	sm.thinkingPrefix = nil
+	sm.transientTail = ""
+	sm.turnNotes = nil
 
 	sm.fullRecount()
 	sm.tokenCountDirty = false

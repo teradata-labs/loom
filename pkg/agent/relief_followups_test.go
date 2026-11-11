@@ -235,3 +235,106 @@ func TestChat_AStepPastGIsNotEndedBeforeTheSend(t *testing.T) {
 	require.NoError(t, err, "a step past G was ended before the send")
 	assert.NotEmpty(t, resp.Content)
 }
+
+// --- the transient tail: sent, never stored, still counted -------------------
+
+// denseText is token-dense conversation text (never stubbed, so a fold is the
+// only way to shed it).
+func denseText(tag string, reps int) string {
+	var b strings.Builder
+	for i := 0; i < reps; i++ {
+		fmt.Fprintf(&b, "%s note %d: acct=%05d region=%d spend=%d.%02d; ", tag, i, i*37, i%7, i*113, i%100)
+	}
+	return b.String()
+}
+
+// TestTransientTail_CountedByReliefAndCalibration — the <system-reminder>
+// tail (graph memory recall note, soft reminders) is appended to a copy of the
+// compiled context and never stored, but it is sent. A large tail on a context
+// just under the start mark must make relief shed before the send, and the
+// calibration after the send must compare the provider's count with a count
+// that includes the tail.
+func TestTransientTail_CountedByReliefAndCalibration(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("relief sheds for the tail", func(t *testing.T) {
+		// usable 15000 → start 13500. Prior turns fill to ~85% of the start
+		// mark; the current turn is one short user message.
+		sm := NewSegmentedMemory("ROM", 16000, 1000)
+		sm.SetThreshold(16384)
+		comp := &countingCompressor{}
+		sm.SetCompressor(comp)
+		sm.mu.Lock()
+		start := sm.startMarkLocked(0)
+		sm.mu.Unlock()
+		turn := int64(1)
+		for {
+			sm.AddMessage(ctx, Message{Role: "user", Content: denseText(fmt.Sprintf("q%d", turn), 10), Turn: turn})
+			sm.AddMessage(ctx, Message{Role: "assistant", Content: denseText(fmt.Sprintf("a%d", turn), 10), Turn: turn})
+			turn++
+			sm.mu.Lock()
+			est := sm.accurateTokensLocked(sm.compileLocked()) // the tokenizer's count: the estimate is a byte bound far from the mark
+			sm.mu.Unlock()
+			if est >= start*85/100 {
+				break
+			}
+		}
+		sm.AddMessage(ctx, Message{Role: "user", Content: "next", Turn: turn})
+		sm.mu.Lock()
+		before := sm.accurateTokensLocked(sm.compileLocked())
+		sm.mu.Unlock()
+		require.Less(t, before, start, "fixture: the stored context alone is under the start mark")
+
+		note := "[Graph Memory Context]\n" + denseText("mem", 150)
+		tailTokens := GetTokenCounter().CountTokens(systemReminderContent(note))
+		require.Greater(t, before+tailTokens, start, "fixture: context plus tail is over the start mark")
+
+		sm.SetTransientTail(TurnReminder{Text: note})
+		shed, estimate, target := sm.ReleasePressure(ctx, 0)
+		assert.True(t, shed, "relief must count the tail and shed before the send")
+		assert.LessOrEqual(t, estimate, target)
+
+		// Without the tail the same context is under the mark: no shed.
+		sm2 := NewSegmentedMemory("ROM", 16000, 1000)
+		sm2.SetThreshold(16384)
+		sm2.SetCompressor(&countingCompressor{})
+		for i := int64(1); i < turn; i++ {
+			sm2.AddMessage(ctx, Message{Role: "user", Content: denseText(fmt.Sprintf("q%d", i), 10), Turn: i})
+			sm2.AddMessage(ctx, Message{Role: "assistant", Content: denseText(fmt.Sprintf("a%d", i), 10), Turn: i})
+		}
+		sm2.AddMessage(ctx, Message{Role: "user", Content: "next", Turn: turn})
+		shed2, _, _ := sm2.ReleasePressure(ctx, 0)
+		assert.False(t, shed2, "fixture: with no tail the context is under the start mark")
+	})
+
+	t.Run("calibration counts the tail", func(t *testing.T) {
+		sm := parallelBatchMemory(t, 200000, 20000, 10, "run_query")
+		note := "[Graph Memory Context]\n" + denseText("mem", 75)
+		tail := systemReminderContent(note)
+		sm.mu.Lock()
+		stored := sm.accurateTokensLocked(sm.compileLocked())
+		sm.mu.Unlock()
+		require.GreaterOrEqual(t, stored, calibrationMinSampleTokens)
+
+		// The provider counts exactly what was sent, tokenizer for tokenizer:
+		// the compiled context plus the tail.
+		sm.SetTransientTail(TurnReminder{Text: note})
+		sent := stored + GetTokenCounter().CountTokens(tail)
+		require.Greater(t, float64(sent)/float64(stored), 1.05,
+			"fixture: the tail is large enough that leaving it out would skew the factor")
+		for i := 0; i < 4; i++ {
+			sm.ObservePromptTokens(sent)
+		}
+		assert.InDelta(t, 1.0, sm.EstimateCalibration(), 0.001,
+			"a 1:1 count stays at 1.0 when the tail is counted")
+	})
+
+	t.Run("reset clears the tail", func(t *testing.T) {
+		sm := NewSegmentedMemory("ROM", 200000, 20000)
+		sm.SetTransientTail(TurnReminder{Text: "note"})
+		sm.ResetContext()
+		sm.mu.RLock()
+		defer sm.mu.RUnlock()
+		assert.Empty(t, sm.transientTail)
+	})
+}

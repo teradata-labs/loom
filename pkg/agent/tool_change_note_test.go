@@ -100,7 +100,9 @@ func TestAgent_ToolChangeNoteOnlyOnChangedCall(t *testing.T) {
 
 	session, ok := ag.GetSession(sid)
 	require.True(t, ok)
-	for _, m := range session.GetMessages() {
+	// The stored rows (the compiled view still holds the turn's pinned
+	// reminders until the next turn starts).
+	for _, m := range rawSessionMessages(session) {
 		assert.NotContains(t, m.Content, "Tools added", "the note must never be persisted")
 	}
 }
