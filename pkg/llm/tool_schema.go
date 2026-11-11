@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"sort"
 	"sync"
 
 	"github.com/teradata-labs/loom/pkg/observability"
@@ -102,7 +103,13 @@ func validateToolSchemaNode(schema *shuttle.JSONSchema, path string) error {
 	if schema == nil {
 		return fmt.Errorf("tool schema %s is null", path)
 	}
-	for name, property := range schema.Properties {
+	propertyNames := make([]string, 0, len(schema.Properties))
+	for name := range schema.Properties {
+		propertyNames = append(propertyNames, name)
+	}
+	sort.Strings(propertyNames)
+	for _, name := range propertyNames {
+		property := schema.Properties[name]
 		if err := validateToolSchemaNode(property, fmt.Sprintf("%s.properties[%q]", path, name)); err != nil {
 			return err
 		}
