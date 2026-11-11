@@ -189,6 +189,11 @@ type SegmentedMemory struct {
 	// forces that compaction, so losing history for it is never worth it.
 	foldRequireSummary bool
 
+	// foldAbortedNoSummary records that a fold aborted under foldRequireSummary
+	// because no summary was produced, so the caller can tell that apart from
+	// "nothing to fold".
+	foldAbortedNoSummary bool
+
 	// lastAutoCompactTurn is the turn of the latest AutoCompact attempt, which
 	// spaces attempts out so a context the kept turns keep above the threshold
 	// does not pay a summary call every turn.

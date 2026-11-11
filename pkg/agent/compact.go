@@ -35,6 +35,11 @@ const maxCompactFocusBytes = 2000
 // already running on the session's memory.
 var ErrCompactionBusy = errors.New("compaction already in progress for this session")
 
+// ErrSummaryUnavailable is returned when older turns needed folding but no
+// summary could be produced (no LLM compressor, or it failed) and nothing else
+// was compacted. History is untouched; trying again later may work.
+var ErrSummaryUnavailable = errors.New("could not summarize the older conversation")
+
 // CompactOptions steers a manual compaction.
 type CompactOptions struct {
 	// Focus is optional user guidance on what the summary must keep.
@@ -107,10 +112,19 @@ func (sm *SegmentedMemory) Compact(ctx context.Context, opts CompactOptions) (Co
 	}
 
 	res.ToolResultsStubbed = sm.evictLocked(ctx, boundary)
+	// A requested compaction must not report success after dropping turns with
+	// only a placeholder line: without a real summary the fold is skipped.
+	sm.foldRequireSummary, sm.foldAbortedNoSummary = true, false
 	res.TurnsFolded = sm.foldLocked(ctx, boundary)
+	sm.foldRequireSummary = false
+	summaryMissing := sm.foldAbortedNoSummary
+	sm.foldAbortedNoSummary = false
 	res.Compacted = res.ToolResultsStubbed || res.TurnsFolded
 	res.TokensAfter = sm.estimateLocked()
 	res.SummaryVersion = sm.summary.n
+	if summaryMissing && !res.Compacted {
+		return res, ErrSummaryUnavailable
+	}
 
 	zap.L().Info("compaction: manual compact complete",
 		zap.String("session_id", sm.sessionID),

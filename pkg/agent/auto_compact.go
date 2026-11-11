@@ -15,6 +15,7 @@ package agent
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/teradata-labs/loom/pkg/observability"
@@ -35,7 +36,60 @@ const (
 	// the context under this share of the threshold, the fold, an LLM call, is
 	// skipped.
 	autoCompactStubOnlyPercent = 80
+
+	// autoCompactAttemptsCap bounds the process-wide attempt record.
+	autoCompactAttemptsCap = 4096
 )
+
+// autoCompactAttempts remembers, per session, the turn of the last attempt.
+// An embedder may build fresh memory for every turn, which would lose a
+// per-instance record and let a session that stays above the threshold (or
+// whose summarizer is failing) pay for an attempt on every message. The record
+// is per process: another pod may attempt once more, which is rare and bounded.
+var autoCompactAttempts = struct {
+	mu    sync.Mutex
+	turns map[string]int64
+}{turns: map[string]int64{}}
+
+// autoCompactCoolingDownLocked reports whether the last attempt on this
+// session was fewer than autoCompactMinTurnGap turns ago. Must hold lock.
+func (sm *SegmentedMemory) autoCompactCoolingDownLocked(turn int64) bool {
+	last := sm.lastAutoCompactTurn
+	if sm.sessionID != "" {
+		autoCompactAttempts.mu.Lock()
+		defer autoCompactAttempts.mu.Unlock()
+		last = autoCompactAttempts.turns[sm.sessionID]
+	}
+	return last > 0 && turn-last < autoCompactMinTurnGap
+}
+
+// noteAutoCompactAttemptLocked records an attempt at turn. Must hold lock.
+func (sm *SegmentedMemory) noteAutoCompactAttemptLocked(turn int64) {
+	sm.lastAutoCompactTurn = turn
+	if sm.sessionID == "" {
+		return
+	}
+	autoCompactAttempts.mu.Lock()
+	defer autoCompactAttempts.mu.Unlock()
+	if len(autoCompactAttempts.turns) >= autoCompactAttemptsCap {
+		autoCompactAttempts.turns = map[string]int64{}
+	}
+	autoCompactAttempts.turns[sm.sessionID] = turn
+}
+
+// foldableTurnsLocked counts the distinct turns up to boundary still in
+// context. Folding batches at least autoCompactMinTurnGap of them per summary
+// call, a limit read from the stored rows, so it holds across restarts too.
+// Must hold lock.
+func (sm *SegmentedMemory) foldableTurnsLocked(boundary int64) int {
+	seen := map[int64]struct{}{}
+	for i := range sm.contextMessages {
+		if t := sm.contextMessages[i].Turn; t <= boundary {
+			seen[t] = struct{}{}
+		}
+	}
+	return len(seen)
+}
 
 // AutoCompact is the proactive compaction: once the context reaches percent of
 // the usable window it stubs older tool results (lossless, re-fetchable) and,
@@ -59,8 +113,7 @@ func (sm *SegmentedMemory) AutoCompact(ctx context.Context, percent int) (Compac
 	usable := sm.usableLocked()
 	turn := sm.currentTurnLocked()
 	boundary := turn - DefaultCompactKeepTurns
-	if sm.reliefInFlight || usable <= 0 || boundary < 1 ||
-		(sm.lastAutoCompactTurn > 0 && turn-sm.lastAutoCompactTurn < autoCompactMinTurnGap) {
+	if sm.reliefInFlight || usable <= 0 || boundary < 1 || sm.autoCompactCoolingDownLocked(turn) {
 		return res, nil
 	}
 	threshold := percent * usable / 100
@@ -74,10 +127,11 @@ func (sm *SegmentedMemory) AutoCompact(ctx context.Context, percent int) (Compac
 	sm.reliefInFlight = true
 	defer func() { sm.reliefInFlight = false }()
 	sm.compressorFailedThisPass = false
-	sm.lastAutoCompactTurn = turn
+	sm.noteAutoCompactAttemptLocked(turn)
 
 	res.ToolResultsStubbed = sm.evictLocked(ctx, boundary)
 	if sm.estimateLocked() > threshold*autoCompactStubOnlyPercent/100 &&
+		sm.foldableTurnsLocked(boundary) >= autoCompactMinTurnGap &&
 		sm.compressor != nil && sm.compressor.IsEnabled() {
 		sm.foldRequireSummary = true
 		res.TurnsFolded = sm.foldLocked(ctx, boundary)

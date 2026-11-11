@@ -1563,6 +1563,7 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 	}
 	if newText == "" {
 		if sm.foldRequireSummary {
+			sm.foldAbortedNoSummary = true
 			zap.L().Warn("fold aborted: no summary was produced and this fold may not drop its region",
 				zap.String("session_id", sm.sessionID),
 				zap.Int64("boundary_turn", b))
