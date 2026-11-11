@@ -108,3 +108,56 @@ func TestTransientTail_ChangesDoNotAlterPrefix(t *testing.T) {
 	}
 	assert.NotEqual(t, with[0][len(with[0])-1].Content, with[1][len(with[1])-1].Content)
 }
+
+// The budget-exhausted synthesis call writes the final answer, so it carries
+// the tail too: MaxTurns is reached after one loop call, and the synthesis
+// call that follows must ride the same trailing reminder.
+func TestTransientTail_SynthesisCallCarriesTail(t *testing.T) {
+	calls := 0
+	llm := &recordingToolLLM{mockToolCallingLLM: &mockToolCallingLLM{
+		responses: []mockLLMResponse{
+			{toolCalls: []llmtypes.ToolCall{{ID: "c1", Name: "stub", Input: map[string]interface{}{}}}},
+		},
+	}}
+	ag := NewAgent(&mockBackend{}, llm,
+		WithConfig(&Config{MaxTurns: 1, MaxToolExecutions: 10, MaxIterations: 10}),
+		WithTransientTail(func(context.Context) string {
+			calls++
+			return "live-state-synthesis"
+		}))
+	ag.RegisterTool(namedStubTool{name: "stub"})
+
+	_, err := ag.Chat(context.Background(), "tail_synthesis", "go")
+	require.NoError(t, err)
+
+	llm.recMu.Lock()
+	defer llm.recMu.Unlock()
+	require.Len(t, llm.seen, 2, "one loop call, one synthesis call")
+	last := llm.seen[1][len(llm.seen[1])-1]
+	assert.Equal(t, "user", last.Role)
+	assert.Equal(t, "<system-reminder>\nlive-state-synthesis\n</system-reminder>", last.Content)
+	assert.Equal(t, 2, calls, "fn runs once per provider call, synthesis included")
+}
+
+// Each provider call that carries a tail emits transient_tail.added with the
+// tail's byte length — never its text.
+func TestTransientTail_SpanEventCarriesByteLength(t *testing.T) {
+	tracer := &spanKeepingTracer{}
+	_, _ = tailTurn(t, "tail_event", WithTracer(tracer),
+		WithTransientTail(func(context.Context) string { return "12345" }))
+
+	evs := tracer.eventsNamed("transient_tail.added")
+	require.Len(t, evs, 2, "one event per provider call")
+	for i, ev := range evs {
+		assert.Equal(t, 5, ev.Attributes["bytes"], "event %d", i)
+	}
+}
+
+// An empty tail adds nothing and emits no event.
+func TestTransientTail_SpanEvent_EmptyTailNoEvent(t *testing.T) {
+	tracer := &spanKeepingTracer{}
+	_, _ = tailTurn(t, "tail_event_empty", WithTracer(tracer),
+		WithTransientTail(func(context.Context) string { return "  \n" }))
+
+	assert.Empty(t, tracer.eventsNamed("transient_tail.added"))
+}
