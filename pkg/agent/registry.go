@@ -75,6 +75,7 @@ type Registry struct {
 	watcher      *fsnotify.Watcher
 	mcpMgr       *manager.Manager
 	llmProvider  LLMProvider
+	maxTokens    int // the server's llm.max_tokens (WithServerMaxTokens)
 	tracer       observability.Tracer
 	sessionStore SessionStorage         // For persistent agent session traces
 	toolRegistry *toolregistry.Registry // Tool search registry for dynamic tool discovery
@@ -165,6 +166,10 @@ type RegistryConfig struct {
 	SessionStore SessionStorage         // For persistent agent session traces
 	ToolRegistry *toolregistry.Registry // Tool search registry for dynamic tool discovery
 
+	// MaxTokens is the server's llm.max_tokens: the max_tokens of an agent
+	// that sets none of its own (WithServerMaxTokens).
+	MaxTokens int
+
 	// EventLogStore, when set, is attached to every agent built from config
 	// (WithEventLog), so each records the durable execution log that
 	// ResumeSession needs. Nil leaves recording off.
@@ -245,6 +250,7 @@ func NewRegistry(config RegistryConfig) (*Registry, error) {
 		watcher:           watcher,
 		mcpMgr:            config.MCPManager,
 		llmProvider:       config.LLMProvider,
+		maxTokens:         config.MaxTokens,
 		tracer:            config.Tracer,
 		sessionStore:      config.SessionStore,
 		toolRegistry:      config.ToolRegistry,
@@ -633,6 +639,28 @@ func (r *Registry) CreateAgent(ctx context.Context, name string) (*Agent, error)
 	return agent, nil
 }
 
+// WithServerMaxTokens returns config with llm.max_tokens set to what the
+// agent's client sends on a server whose llm.max_tokens is serverMaxTokens:
+// the agent's own when it names a provider and sets one, otherwise the
+// server's. An agent that names no provider runs on the server's client, so
+// the server's replaces whatever it states. Every build of an agent starts
+// here, so the client that is built and the reply reservation read one
+// number. config is not modified; with no server figure it is returned as is.
+func WithServerMaxTokens(config *loomv1.AgentConfig, serverMaxTokens int) *loomv1.AgentConfig {
+	if config == nil || serverMaxTokens <= 0 {
+		return config
+	}
+	if llm := config.GetLlm(); llm.GetProvider() != "" && llm.GetMaxTokens() > 0 {
+		return config
+	}
+	resolved := proto.Clone(config).(*loomv1.AgentConfig)
+	if resolved.Llm == nil {
+		resolved.Llm = &loomv1.LLMConfig{}
+	}
+	resolved.Llm.MaxTokens = int32(serverMaxTokens) // #nosec G115 -- a token count from config
+	return resolved
+}
+
 // RegistryAgentConfig builds the runtime Config of a registry agent:
 // DefaultConfig (LLM retry, self-healing, iteration limit), the behavior
 // limits and pattern config when the config has a behavior block, LLM context
@@ -689,6 +717,7 @@ func RegistryAgentConfig(config *loomv1.AgentConfig, skillsConfig *skills.Skills
 			int(config.Llm.MaxContextTokens),
 		)
 		agentConfig.MaxModelContextTokens = int(config.Llm.MaxModelContextTokens)
+		agentConfig.MaxTokens = int(config.Llm.MaxTokens)
 	}
 	agentConfig.EnableSelfHealing = config.Metadata["_enable_self_healing"] != "false"
 	agentConfig.ToolChangeNote = config.Metadata["_tool_change_note"] == "true"
@@ -739,6 +768,8 @@ func (r *Registry) resolveSkillsConfig(config *loomv1.AgentConfig) *skills.Skill
 
 // buildAgent creates an agent instance from proto configuration
 func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (*Agent, error) {
+	config = WithServerMaxTokens(config, r.maxTokens)
+
 	// Decision layer config is validated here as well as in
 	// ValidateAgentConfig: RegisterConfig accepts a config without
 	// validating it, and an agent-chosen decider endpoint must fail the

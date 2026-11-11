@@ -83,15 +83,19 @@ func (m *tokModel) Chat(_ context.Context, msgs []Message, _ []shuttle.Tool) (*L
 }
 
 // realLineAgent is an agent built as the registry builds one from an LLM
-// config: the runtime config from RegistryAgentConfig, the memory's limits
-// from the same figures. Each rows call returns resultTokens tokens.
-func realLineAgent(t *testing.T, model *tokModel, llmCfg *loomv1.LLMConfig, resultTokens int) *Agent {
+// config on a server whose llm.max_tokens is serverMaxTokens: the runtime
+// config from RegistryAgentConfig, the memory's limits from the same figures.
+// A nil llmCfg is an agent with no llm block, on the server's client. Each
+// rows call returns resultTokens tokens.
+func realLineAgent(t *testing.T, model *tokModel, llmCfg *loomv1.LLMConfig, serverMaxTokens, resultTokens int) *Agent {
 	t.Helper()
 	store, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
-	llmCfg.Provider, llmCfg.Model = model.provider, model.model
-	cfg := RegistryAgentConfig(&loomv1.AgentConfig{Name: "real-line", Llm: llmCfg}, nil)
+	if llmCfg != nil {
+		llmCfg.Provider, llmCfg.Model = model.provider, model.model
+	}
+	cfg := RegistryAgentConfig(WithServerMaxTokens(&loomv1.AgentConfig{Name: "real-line", Llm: llmCfg}, serverMaxTokens), nil)
 	cfg.PatternConfig = DefaultPatternConfig()
 	cfg.PatternConfig.UseLLMClassifier = false
 	cfg.MaxToolExecutions = 200
@@ -115,7 +119,7 @@ func realLineAgent(t *testing.T, model *tokModel, llmCfg *loomv1.LLMConfig, resu
 // fits and is sent whole; reserving the catalog's 64,000 output replaced it.
 func TestAStepUnderTheWireLineIsSentWhole(t *testing.T) {
 	model := &tokModel{provider: "anthropic", model: "claude-sonnet-4-5-20250929", limit: 200000 - 8192, fanOut: 56}
-	ag := realLineAgent(t, model, &loomv1.LLMConfig{MaxTokens: 8192}, 2450)
+	ag := realLineAgent(t, model, &loomv1.LLMConfig{MaxTokens: 8192}, 4096, 2450)
 	resp, err := ag.Chat(context.Background(), "s-wire", "read every table")
 	require.NoError(t, err)
 	assert.Equal(t, "read them all", resp.Content)
@@ -127,7 +131,7 @@ func TestAStepUnderTheWireLineIsSentWhole(t *testing.T) {
 // refusal, so the turn answers.
 func TestAStepOverTheWireLineIsCaught(t *testing.T) {
 	model := &tokModel{provider: "anthropic", model: "claude-sonnet-4-5-20250929", limit: 200000 - 8192, fanOut: 80}
-	ag := realLineAgent(t, model, &loomv1.LLMConfig{MaxTokens: 8192}, 2450)
+	ag := realLineAgent(t, model, &loomv1.LLMConfig{MaxTokens: 8192}, 4096, 2450)
 	resp, err := ag.Chat(context.Background(), "s-over", "read every table")
 	require.NoError(t, err, "a step over the wire line reached the provider and was refused")
 	assert.Equal(t, "narrowed and done", resp.Content)
@@ -139,7 +143,7 @@ func TestAStepOverTheWireLineIsCaught(t *testing.T) {
 // provider's own tokenizer and is sent whole; Claude's prior replaced it.
 func TestAFirstStepOnAnotherProviderIsCountedAsItIs(t *testing.T) {
 	model := &tokModel{provider: "openai", model: "served-model", limit: 19000, fanOut: 7}
-	ag := realLineAgent(t, model, &loomv1.LLMConfig{MaxModelContextTokens: 20000, MaxTokens: 1000, ReservedOutputTokens: 1000}, 2380)
+	ag := realLineAgent(t, model, &loomv1.LLMConfig{MaxModelContextTokens: 20000, MaxTokens: 1000, ReservedOutputTokens: 1000}, 4096, 2380)
 	resp, err := ag.Chat(context.Background(), "s-first", "read seven tables")
 	require.NoError(t, err)
 	assert.Equal(t, "read them all", resp.Content)
@@ -147,16 +151,77 @@ func TestAFirstStepOnAnotherProviderIsCountedAsItIs(t *testing.T) {
 	assert.Greater(t, model.seen, 16000)
 }
 
-// Review round 5, Q9. An agent built with no limits and no max_tokens: the
-// client sends the model's listed output size, so the provider's line is the
-// window less that. The memory's default reservation is a tenth of the
-// window; a step between the two lines is caught, not sent and refused.
-func TestAnAgentWithNoLimitsReservesTheListedOutput(t *testing.T) {
-	model := &tokModel{provider: "anthropic", model: "claude-sonnet-4-5-20250929", limit: 200000 - 64000, fanOut: 57}
+// Review round 5, Q9. An agent that sets no max_tokens sends the server's
+// llm.max_tokens, 4,096 here, so the provider takes a prompt up to 200,000 -
+// 4,096. A 56-result step of about 137k tokens fits and is sent whole;
+// reserving the catalog's 64,000 output replaced it.
+func TestAnAgentWithNoMaxTokensReservesTheServers(t *testing.T) {
+	model := &tokModel{provider: "anthropic", model: "claude-sonnet-4-5-20250929", limit: 200000 - 4096, fanOut: 56}
+	ag := realLineAgent(t, model, &loomv1.LLMConfig{}, 4096, 2450)
+	resp, err := ag.Chat(context.Background(), "s-server-max", "read every table")
+	require.NoError(t, err)
+	assert.Equal(t, "read them all", resp.Content)
+	assert.False(t, model.told, "a step the provider accepts was replaced")
+	assert.Greater(t, model.seen, 130000, "the provider never saw the step whole")
+}
+
+// An agent with no llm block runs on the server's client, whose max_tokens is
+// 32,000 here: llama3.3 takes a prompt up to 128,000 - 32,000. A step of about
+// 100k tokens is over that line and under the window less the memory's
+// default tenth; it is caught, not sent and refused.
+func TestAnAgentOnTheServersClientReservesTheServersMaxTokens(t *testing.T) {
+	model := &tokModel{provider: "ollama", model: "llama3.3", limit: 128000 - 32000, fanOut: 41}
+	ag := realLineAgent(t, model, nil, 32000, 2450)
+	resp, err := ag.Chat(context.Background(), "s-server-client", "read every table")
+	require.NoError(t, err, "a step over the provider's line was sent and refused")
+	assert.Equal(t, "narrowed and done", resp.Content)
+	assert.True(t, model.told)
+}
+
+// The max_tokens on an agent's config, as every build starts from it, is the
+// agent's when it names a provider and sets one, otherwise the server's: an
+// agent with no provider is on the server's client, whatever it states. The
+// stored config is not changed.
+func TestTheMaxTokensOnTheConfigIsTheAgentsOrTheServers(t *testing.T) {
+	resolved := func(llm *loomv1.LLMConfig, server int) int32 {
+		return WithServerMaxTokens(&loomv1.AgentConfig{Name: "a", Llm: llm}, server).GetLlm().GetMaxTokens()
+	}
+	assert.EqualValues(t, 8192, resolved(&loomv1.LLMConfig{Provider: "anthropic", MaxTokens: 8192}, 4096))
+	assert.EqualValues(t, 4096, resolved(&loomv1.LLMConfig{Provider: "anthropic"}, 4096))
+	assert.EqualValues(t, 4096, resolved(&loomv1.LLMConfig{MaxTokens: 8192}, 4096))
+	assert.EqualValues(t, 4096, resolved(nil, 4096))
+	assert.EqualValues(t, 0, resolved(&loomv1.LLMConfig{Provider: "anthropic"}, 0))
+
+	stored := &loomv1.AgentConfig{Name: "a", Llm: &loomv1.LLMConfig{MaxTokens: 8192}}
+	WithServerMaxTokens(stored, 4096)
+	assert.EqualValues(t, 8192, stored.Llm.MaxTokens)
+}
+
+// The step is fitted against the max_tokens that is sent, not the fold's wider
+// reservation. llama3.3 with max_tokens 2,000 and reserved_output_tokens
+// 10,000: the provider takes a prompt up to 128,000 - 2,000. A step of about
+// 122k tokens fits and is sent whole; fitted against the 10,000 it was
+// replaced.
+func TestAStepIsFittedAgainstMaxTokensNotTheFoldReservation(t *testing.T) {
+	model := &tokModel{provider: "ollama", model: "llama3.3", limit: 128000 - 2000, fanOut: 50}
+	ag := realLineAgent(t, model, &loomv1.LLMConfig{MaxTokens: 2000, ReservedOutputTokens: 10000}, 4096, 2450)
+	resp, err := ag.Chat(context.Background(), "s-exact", "read every table")
+	require.NoError(t, err)
+	assert.Equal(t, "read them all", resp.Content)
+	assert.False(t, model.told, "a step the provider accepts was replaced")
+	assert.Greater(t, model.seen, 118000, "the provider never saw the step whole")
+}
+
+// An agent built in Go with no reservation, on a client that sends its
+// default 4,096: the provider takes a prompt up to 200,000 - 4,096. A
+// 56-result step of about 137k tokens fits and is sent whole; the model's
+// listed 64,000 output is not what such a client sends.
+func TestAGoBuiltAgentIsNotFittedToTheListedOutput(t *testing.T) {
+	model := &tokModel{provider: "anthropic", model: "claude-sonnet-4-5-20250929", limit: 200000 - 4096, fanOut: 56}
 	store, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
-	cfg := DefaultConfig() // a Go build that names no window and no reservation
+	cfg := DefaultConfig()
 	cfg.PatternConfig = DefaultPatternConfig()
 	cfg.PatternConfig.UseLLMClassifier = false
 	cfg.MaxToolExecutions, cfg.MaxIterations = 200, 200
@@ -169,10 +234,11 @@ func TestAnAgentWithNoLimitsReservesTheListedOutput(t *testing.T) {
 			return &shuttle.Result{Success: true, Data: fmt.Sprintf("table %v\n%s", in["i"], rows)}, nil
 		},
 	})
-	resp, err := ag.Chat(context.Background(), "s-nolimits", "read every table")
-	require.NoError(t, err, "a step over the provider's line was sent and refused")
-	assert.Equal(t, "narrowed and done", resp.Content)
-	assert.True(t, model.told)
+	resp, err := ag.Chat(context.Background(), "s-go-built", "read every table")
+	require.NoError(t, err)
+	assert.Equal(t, "read them all", resp.Content)
+	assert.False(t, model.told, "a step the provider accepts was replaced")
+	assert.Greater(t, model.seen, 130000)
 }
 
 // A model nothing lists, with no window configured, is not fitted to loom's
@@ -180,7 +246,7 @@ func TestAnAgentWithNoLimitsReservesTheListedOutput(t *testing.T) {
 // 200,000 less a tenth, and the step is sent whole.
 func TestAnUnlistedModelWithNoWindowIsNotFitted(t *testing.T) {
 	model := &tokModel{provider: "litellm", model: "prod-large", limit: 1000000 - 4096, fanOut: 80}
-	ag := realLineAgent(t, model, &loomv1.LLMConfig{}, 2450)
+	ag := realLineAgent(t, model, &loomv1.LLMConfig{}, 4096, 2450)
 	resp, err := ag.Chat(context.Background(), "s-unlisted", "read every table")
 	require.NoError(t, err)
 	assert.Equal(t, "read them all", resp.Content)

@@ -405,6 +405,12 @@ type Config struct {
 	// ReservedOutputTokens is the number of tokens reserved for model output (0 = use defaults, typically 10%)
 	ReservedOutputTokens int
 
+	// MaxTokens is the max_tokens the agent's client sends. The provider
+	// accepts a prompt up to its window less this, so it is what a step in
+	// flight is fitted against before the send; the fold keeps its own, wider
+	// reservation (0 = not stated, the fold's reservation is used).
+	MaxTokens int
+
 	// ProtectedRecentTurns is K: what a fold keeps of the recent thread. The
 	// in-loop fold keeps the last K turns, user messages and assistant steps
 	// alike, before the pending one; the pressure ladder behind it keeps the

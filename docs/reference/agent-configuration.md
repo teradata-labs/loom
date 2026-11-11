@@ -210,7 +210,7 @@ All fields are optional. If `spec.llm` is omitted entirely, the agent inherits t
 | `provider` | `string` | (server default) | Provider name. See [LLM Providers](#llm-providers). |
 | `model` | `string` | (server default) | Model identifier |
 | `temperature` | `float64` | `0.7` | Sampling temperature (0.0 - 1.0) |
-| `max_tokens` | `int` | `4096` | Maximum response tokens |
+| `max_tokens` | `int` | `4096` | Maximum response tokens. Sent by the agent's client when the agent names a `provider`; an agent on the server's client sends the server's `llm.max_tokens`. An agent registered through the API with none set also sends the server's. It is the reply reservation a step in flight is fitted against |
 | `stop_sequences` | `[]string` | `[]` | Stop generation sequences |
 | `top_p` | `float64` | `0.0` | Nucleus sampling (0.0 - 1.0) |
 | `top_k` | `int` | `0` | Top-k sampling |

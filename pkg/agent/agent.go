@@ -4225,22 +4225,18 @@ func (a *Agent) fitStepToWindow(ctx Context, session *Session, noteKey string, e
 	if n == 0 {
 		return false
 	}
-	// The reply reservation is the larger of the config's and the memory's: a
-	// builder may resolve it into the memory's limits only.
-	reserved := a.config.ReservedOutputTokens
-	if r := segMem.ReservedOutputTokens(); r > reserved {
-		reserved = r
-	}
-	provider, model := a.GetLLMProviderName(), a.GetLLMModel()
-	if a.config.ReservedOutputTokens <= 0 {
-		// No builder resolved the reply reservation, so the max_tokens on the
-		// wire is not known here; the memory's figure is then its default
-		// share of the window. A client built without max_tokens sends up to
-		// the model's listed output size, so that much is reserved.
-		if r := EffectiveOutputReservation(provider, model, 0, 0, 0); r > reserved {
+	// The reply reservation is the max_tokens the client sends: the provider
+	// accepts the prompt up to its window less that. When the builder states
+	// none, it is the fold's reservation, the larger of the config's and the
+	// memory's.
+	reserved := a.config.MaxTokens
+	if reserved <= 0 {
+		reserved = a.config.ReservedOutputTokens
+		if r := segMem.ReservedOutputTokens(); r > reserved {
 			reserved = r
 		}
 	}
+	provider, model := a.GetLLMProviderName(), a.GetLLMModel()
 	// A model nothing lists, with no window configured, has no ceiling here:
 	// the memory's default window is loom's own figure, not the provider's,
 	// and the refusal path answers as it does on main.
