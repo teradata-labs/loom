@@ -346,14 +346,15 @@ func TestContextReminder_WarnsOnlyWhenReliefCannotReachTarget(t *testing.T) {
 }
 
 // Nothing is sheddable: a fresh session whose only content is one user message
-// of about 10.8k tokens, over the 9900 start mark. Relief runs, sheds nothing,
-// and returns estimate > target. The warning must still reach the request.
+// of about 10k tokens, over the 9900 start mark but under the 11000 usable.
+// Relief runs, sheds nothing, and returns estimate > target. The warning must
+// still reach the request.
 func TestContextReminder_WarnsWhenStuckOverStartWithoutShed(t *testing.T) {
 	llm := &capturingLLM{response: "done"}
 	sm := NewSegmentedMemory("ROM", 12000, 1000)
 	ag := reliefSeamAgent(t, llm, "ctx_reminder_stuck", sm)
 
-	_, err := ag.Chat(context.Background(), "ctx_reminder_stuck", strings.Repeat("lorem ipsum ", 5300))
+	_, err := ag.Chat(context.Background(), "ctx_reminder_stuck", strings.Repeat("lorem ipsum ", 4900))
 	require.NoError(t, err)
 
 	last := llm.lastMessages()
@@ -371,7 +372,7 @@ func TestContextReminder_OffByDefault(t *testing.T) {
 	ag := reliefSeamAgent(t, llm, "ctx_reminder_off", sm, WithTracer(tracer))
 	ag.config.ContextReliefWarning = false
 
-	_, err := ag.Chat(context.Background(), "ctx_reminder_off", strings.Repeat("lorem ipsum ", 5300))
+	_, err := ag.Chat(context.Background(), "ctx_reminder_off", strings.Repeat("lorem ipsum ", 4900))
 	require.NoError(t, err)
 
 	for _, m := range llm.lastMessages() {
@@ -411,7 +412,7 @@ func TestContextReminder_SpanEvent(t *testing.T) {
 	sm := NewSegmentedMemory("ROM", 12000, 1000)
 	ag := reliefSeamAgent(t, llm, "ctx_reminder_event", sm, WithTracer(tracer))
 
-	_, err := ag.Chat(context.Background(), "ctx_reminder_event", strings.Repeat("lorem ipsum ", 5300))
+	_, err := ag.Chat(context.Background(), "ctx_reminder_event", strings.Repeat("lorem ipsum ", 4900))
 	require.NoError(t, err)
 
 	evs := tracer.eventsNamed("context_reminder.added")
@@ -451,7 +452,7 @@ func TestContextReminder_ResendAfterRefusalKeepsWarning(t *testing.T) {
 	sm := NewSegmentedMemory("ROM", 12000, 1000)
 	ag := reliefSeamAgent(t, l, "ctx_reminder_resend", sm)
 
-	_, err := ag.Chat(context.Background(), "ctx_reminder_resend", strings.Repeat("lorem ipsum ", 5300))
+	_, err := ag.Chat(context.Background(), "ctx_reminder_resend", strings.Repeat("lorem ipsum ", 4900))
 	require.NoError(t, err)
 
 	require.Len(t, l.calls, 2, "one refusal, one resend")

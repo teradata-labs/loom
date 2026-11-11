@@ -155,6 +155,11 @@ type SegmentedMemory struct {
 	// its compressor call, and this keeps a second pass from interleaving.
 	reliefInFlight bool
 
+	// fallbackTurns, when > 0, narrows what is sent to ROM, the summary and the
+	// newest fallbackTurns turns (EnsureFits). Send-side only: the store, relief
+	// and the estimate still see everything.
+	fallbackTurns int64
+
 	// pressureOffload names (by ToolUseID) the current-turn tool results that
 	// relief's last-resort rung renders as offload stubs (§5.2 step 6) even
 	// though they are at or under the threshold — the one relief operation
@@ -174,6 +179,10 @@ type SegmentedMemory struct {
 	// without this one broken provider can hold a pass for minutes and then
 	// still abort. Reset at the start of every pass; guarded by mu.
 	compressorFailedThisPass bool
+
+	// compactFocus is the user's steer for a manual compaction (Compact). Set
+	// only while Compact runs; the fold hands it to the compressor.
+	compactFocus string
 
 	// estimateCalibration scales relief's tiktoken estimate toward the
 	// provider's own prompt count (ObservePromptTokens). Zero reads as 1.0.
@@ -670,7 +679,17 @@ func (sm *SegmentedMemory) recountKernel() {
 func (sm *SegmentedMemory) GetMessagesForLLM() []Message {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
-	return sm.compileLocked()
+	return sm.sendViewLocked()
+}
+
+// sendViewLocked is the compiled context as sent: the whole of it, or the
+// fallback view when EnsureFits narrowed it. Must hold lock.
+func (sm *SegmentedMemory) sendViewLocked() []Message {
+	compiled := sm.compileLocked()
+	if sm.fallbackTurns > 0 {
+		return keepNewestTurns(compiled, sm.currentTurnLocked(), sm.fallbackTurns)
+	}
+	return compiled
 }
 
 // GetContextWindow renders the compiled context as a formatted string, via the

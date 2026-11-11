@@ -2886,6 +2886,10 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 						"tool_results":    o.ToolResults,
 					})
 			}
+			var pfErr error
+			if messages, tools, pfErr = a.preflightFit(ctx, session, segMem, recovery, messages, tools); pfErr != nil {
+				return nil, pfErr
+			}
 		}
 
 		// withReminder adds the reminder notes — the graph memory recall note,
@@ -2980,6 +2984,10 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				tools = recovery.activeTools(tools)
 				if segMem2, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem2 != nil {
 					a.setAdvertisedTools(segMem2, tools)
+				}
+				var pfErr error
+				if messages, tools, pfErr = a.preflightFit(ctx, session, segMem, recovery, messages, tools); pfErr != nil {
+					return nil, pfErr
 				}
 				// Same logical step: a resend after ErrContextTooLong is the
 				// same LLM call with a shorter context, so it reuses the
@@ -3905,6 +3913,8 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNot
 	// call carries none), shed before the send, and on a provider refusal shed
 	// deeper and resend once.
 	segMem, _ := session.SegmentedMem.(*SegmentedMemory)
+	var synthesisFit FitResult
+	synthesisFit.Fits = true
 	if segMem != nil {
 		a.setAdvertisedTools(segMem, nil)
 		segMem.SetTransientTail(TurnReminder{Kind: ReminderGraphMemory, Text: memoryNote})
@@ -3914,6 +3924,7 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNot
 				zap.Int("estimate_tokens", estimate),
 				zap.Int("target_tokens", target))
 		}
+		synthesisFit = segMem.EnsureFits(ctx)
 	}
 	// The recall note was pinned by the loop's first call; pinning again is a
 	// no-op then, and pins it here when the loop never sent it.
@@ -3924,7 +3935,15 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNot
 		}
 		return withSystemReminder(session.GetMessages(), memoryNote)
 	}
-	finalResp, err := a.chatWithRetry(ctx, synthesisMessages(), nil)
+	var finalResp *LLMResponse
+	var err error
+	if synthesisFit.Fits {
+		finalResp, err = a.chatWithRetry(ctx, synthesisMessages(), nil)
+	} else {
+		// Never send what the provider would refuse; the guidance fallback below answers.
+		err = fmt.Errorf("conversation too long: synthesis request is about %d tokens against a usable window of %d",
+			synthesisFit.Estimate, synthesisFit.Usable)
+	}
 	if err != nil && errors.Is(err, llm.ErrContextTooLong) && segMem != nil {
 		_, estimate, target := segMem.ReleasePressure(ctx, pressureRecoveryPenalty)
 		zap.L().Info("context too long at synthesis: relief pass complete, resending once",

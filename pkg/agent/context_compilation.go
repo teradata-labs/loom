@@ -831,7 +831,7 @@ func (sm *SegmentedMemory) ObservePromptTokens(actual int) {
 	if actual <= 0 {
 		return
 	}
-	counted := sm.accurateTokensLocked(sm.compileLocked())
+	counted := sm.accurateTokensLocked(sm.sendViewLocked())
 	if counted < calibrationMinSampleTokens {
 		return
 	}
@@ -994,6 +994,23 @@ func (sm *SegmentedMemory) ReleasePressure(ctx context.Context, penalty int) (sh
 	sm.reliefInFlight = true
 	defer func() { sm.reliefInFlight = false }()
 
+	var appliedOps []string
+	defer func() {
+		end := estimate
+		if end < 0 {
+			end = startEstimate
+		}
+		zap.L().Info("releasePressure: complete",
+			zap.String("session_id", sm.sessionID),
+			zap.Int64("turn", sm.currentTurnLocked()),
+			zap.Bool("shed", shed),
+			zap.Int("start_estimate_tokens", startEstimate),
+			zap.Int("end_estimate_tokens", end),
+			zap.Int("tokens_saved", startEstimate-end),
+			zap.Int("target_tokens", target),
+			zap.Strings("operations", appliedOps))
+	}()
+
 	t := sm.currentTurnLocked()
 	k := int64(sm.protectedRecentTurns)
 	if k <= 0 {
@@ -1054,6 +1071,7 @@ func (sm *SegmentedMemory) ReleasePressure(ctx context.Context, penalty int) (sh
 				continue
 			}
 			estimate = sm.estimateLocked()
+			appliedOps = append(appliedOps, op.name)
 			zap.L().Info("releasePressure: operation complete",
 				zap.String("session_id", sm.sessionID),
 				zap.String("operation", op.name),
@@ -1449,6 +1467,9 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 	input := make([]Message, 0, len(region)+1)
 	if sm.summary.text != "" {
 		input = append(input, Message{Role: "system", Content: "Current summary:\n" + sm.summary.text})
+	}
+	if sm.compactFocus != "" {
+		input = append(input, Message{Role: "system", Content: "The user asked this compaction to preserve, in priority order: " + sm.compactFocus})
 	}
 	for i := range region {
 		r := sm.renderLocked(&region[i], t, callName)
