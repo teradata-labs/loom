@@ -52,7 +52,9 @@ var autoCompactAttempts = struct {
 }{turns: map[string]int64{}}
 
 // autoCompactCoolingDownLocked reports whether the last attempt on this
-// session was fewer than autoCompactMinTurnGap turns ago. Must hold lock.
+// session was fewer than autoCompactMinTurnGap turns ago. A turn number below
+// the recorded one means the history was reset and numbering restarted, so the
+// old record no longer applies. Must hold lock.
 func (sm *SegmentedMemory) autoCompactCoolingDownLocked(turn int64) bool {
 	last := sm.lastAutoCompactTurn
 	if sm.sessionID != "" {
@@ -60,7 +62,8 @@ func (sm *SegmentedMemory) autoCompactCoolingDownLocked(turn int64) bool {
 		defer autoCompactAttempts.mu.Unlock()
 		last = autoCompactAttempts.turns[sm.sessionID]
 	}
-	return last > 0 && turn-last < autoCompactMinTurnGap
+	since := turn - last
+	return last > 0 && since >= 0 && since < autoCompactMinTurnGap
 }
 
 // noteAutoCompactAttemptLocked records an attempt at turn. Must hold lock.

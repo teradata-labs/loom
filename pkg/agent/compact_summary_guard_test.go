@@ -91,6 +91,32 @@ func TestAutoCompact_CooldownSurvivesFreshMemoryForTheSameSession(t *testing.T) 
 	assert.Equal(t, tried, failing.calls, "no repeat attempt within the turn gap")
 }
 
+// A reset deletes the history and restarts turn numbering at 1, so a record
+// from the old numbering (turn 100) must not suppress the new conversation.
+func TestAutoCompact_ResetRestartsTheCooldown(t *testing.T) {
+	const sessionID = "sess-cooldown-reset"
+	t.Cleanup(func() {
+		autoCompactAttempts.mu.Lock()
+		delete(autoCompactAttempts.turns, sessionID)
+		autoCompactAttempts.mu.Unlock()
+	})
+	autoCompactAttempts.mu.Lock()
+	autoCompactAttempts.turns[sessionID] = 100
+	autoCompactAttempts.mu.Unlock()
+
+	// After the reset and a reload the same session is at turn 6 again.
+	sm := proseMemory(t, 12000, 1000, 6)
+	sm.sessionID = sessionID
+	comp := &recordingCompressor{}
+	sm.SetCompressor(comp)
+
+	res, err := sm.AutoCompact(context.Background(), 65)
+
+	require.NoError(t, err)
+	assert.True(t, res.TurnsFolded, "the new conversation is not held back by the old numbering")
+	assert.NotEmpty(t, comp.input)
+}
+
 // Folds are batched: one summary call covers at least autoCompactMinTurnGap
 // turns, a limit derived from the stored rows, so it survives a restart too.
 func TestAutoCompact_FoldsOnlyOnceEnoughTurnsAreEligible(t *testing.T) {
