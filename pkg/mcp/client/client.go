@@ -621,7 +621,7 @@ func (c *Client) dispatchAndWait(ctx context.Context, req *protocol.Request) (*p
 			zap.String("method", req.Method),
 			zap.String("id", reqIDStr))
 		if resp.Error != nil {
-			return nil, resp.Error
+			return nil, adaptResponseError(resp.Error)
 		}
 		return resp, nil
 	}

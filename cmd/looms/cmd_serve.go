@@ -4188,6 +4188,7 @@ func initializeMCPManager(config *Config, logger *zap.Logger) (*mcpManager, erro
 			Headers:          expandMCPHeaders(serverConfig.Headers),
 			EnableSessions:   serverConfig.EnableSessions,
 			EnableResumption: serverConfig.EnableResumption,
+			MaxResponseBytes: serverConfig.MaxResponseBytes,
 			TrustAnnotations: serverConfig.TrustAnnotations,
 			Enabled:          enabled,
 			ToolFilter: manager.ToolFilter{
