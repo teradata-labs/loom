@@ -16,6 +16,7 @@ package azureopenai
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -753,6 +754,34 @@ func TestConvertTools_WithNilProperties(t *testing.T) {
 	required, ok := params["required"].([]string)
 	require.True(t, ok)
 	assert.Equal(t, []string{"command"}, required)
+}
+
+func TestClient_ChatStream_DroppedToolCallEndsTurn(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client, err := NewClient(Config{
+		Endpoint:     server.URL,
+		DeploymentID: "gpt-4o",
+		APIKey:       "test-key",
+		APIVersion:   "2024-10-21",
+	})
+	require.NoError(t, err)
+
+	response, err := client.ChatStream(
+		&mockContext{Context: context.Background()},
+		[]types.Message{{Role: "user", Content: "run it"}},
+		nil,
+		nil,
+	)
+
+	require.NoError(t, err)
+	assert.Empty(t, response.ToolCalls)
+	assert.Equal(t, "end_turn", response.StopReason)
 }
 
 func TestConvertTools_TopLevelNilProperties(t *testing.T) {

@@ -27,6 +27,8 @@ import (
 	"strings"
 	"time"
 
+	"go.uber.org/zap"
+
 	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/llm/catalog"
 	"github.com/teradata-labs/loom/pkg/llm/openai"
@@ -899,7 +901,19 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	}
 
 	// Parse accumulated tool call arguments
+	droppedToolCall := false
 	for _, tc := range toolCallMap {
+		// Skip tool calls with empty name or ID — Bedrock (and other strict
+		// providers) reject messages containing toolUse blocks where name or
+		// toolUseId is empty. This can happen when streaming produces partial
+		// delta chunks that initialize a slot before the name/id arrive.
+		if tc.ID == "" || tc.Name == "" {
+			zap.L().Warn("dropping incomplete streamed tool call",
+				zap.String("tool_call_id", tc.ID),
+				zap.String("tool_name", tc.Name))
+			droppedToolCall = true
+			continue
+		}
 		if argsStr, ok := tc.Input["_args"].(string); ok {
 			var parsedArgs map[string]interface{}
 			if err := json.Unmarshal([]byte(argsStr), &parsedArgs); err != nil {
@@ -933,7 +947,11 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	case "length":
 		stopReason = "max_tokens"
 	case "tool_calls", "function_call":
-		stopReason = "tool_use"
+		if droppedToolCall && len(toolCalls) == 0 {
+			stopReason = "end_turn"
+		} else {
+			stopReason = "tool_use"
+		}
 	case "content_filter":
 		stopReason = "content_filter"
 	default:
