@@ -190,7 +190,7 @@ func TestExtractSearchQueryFallbackAndProvenance(t *testing.T) {
 // A store failure must be distinguishable from an honest miss. Both used to
 // present as recall.outcome=no_candidates with no error recorded, which is why
 // az512h could not be diagnosed from its traces at all.
-func TestInjectGraphMemoryContextRecordsStoreErrors(t *testing.T) {
+func TestGraphMemoryNoteRecordsStoreErrors(t *testing.T) {
 	dir := t.TempDir()
 	db, err := sql.Open("sqlite3", filepath.Join(dir, "recall.db")+"?_fk=1&_journal_mode=WAL&_busy_timeout=5000")
 	require.NoError(t, err)
@@ -216,7 +216,7 @@ func TestInjectGraphMemoryContextRecordsStoreErrors(t *testing.T) {
 	// means "the store is broken", not "nothing matched".
 	require.NoError(t, db.Close())
 
-	a.injectGraphMemoryContext(context.Background(), session)
+	assert.Empty(t, a.graphMemoryNote(context.Background(), session))
 
 	spans := tracer.GetSpansByName("graph_memory.recall")
 	require.Len(t, spans, 1)
@@ -229,13 +229,13 @@ func TestInjectGraphMemoryContextRecordsStoreErrors(t *testing.T) {
 	assert.NotEmpty(t, span.Attributes[observability.AttrErrorMessage])
 	assert.Equal(t, "llm", span.Attributes["recall.query_source"])
 
-	// Nothing was injected, so the session is untouched apart from the user turn.
+	// The session is untouched apart from the user turn.
 	assert.Len(t, session.GetMessages(), 1)
 }
 
 // The query preview on the span is truncated like every other preview
 // attribute in this file, so a long recall query cannot bloat trace payloads.
-func TestInjectGraphMemoryContextTruncatesQueryAttribute(t *testing.T) {
+func TestGraphMemoryNoteTruncatesQueryAttribute(t *testing.T) {
 	store := newTestGraphMemoryStore(t)
 	longQuery := strings.Repeat("volatile ", 400)
 
@@ -251,7 +251,7 @@ func TestInjectGraphMemoryContextTruncatesQueryAttribute(t *testing.T) {
 	session := &types.Session{}
 	session.AddMessage(context.Background(), types.Message{Role: "user", Content: "what broke?"})
 
-	a.injectGraphMemoryContext(context.Background(), session)
+	a.graphMemoryNote(context.Background(), session)
 
 	spans := tracer.GetSpansByName("graph_memory.recall")
 	require.Len(t, spans, 1)

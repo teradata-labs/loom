@@ -24,6 +24,8 @@ type ParallelExecutor struct {
 	orchestrator *Orchestrator
 	pattern      *loomv1.ParallelPattern
 	workflowID   string
+	// aux collects the LLM calls this executor makes itself (run_usage.go).
+	aux auxUsage
 }
 
 // NewParallelExecutor creates a new parallel executor.
@@ -303,10 +305,11 @@ func (e *ParallelExecutor) runTaskAgent(
 		ConfidenceScore: 1.0,
 		DurationMs:      duration.Milliseconds(),
 		Cost: &loomv1.AgentExecutionCost{
-			TotalTokens:  types.SafeInt32(response.Usage.TotalTokens),
-			InputTokens:  types.SafeInt32(response.Usage.InputTokens),
-			OutputTokens: types.SafeInt32(response.Usage.OutputTokens),
-			CostUsd:      response.Usage.CostUSD,
+			TotalTokens:  types.SafeInt32(response.TurnUsage.TotalTokens),
+			InputTokens:  types.SafeInt32(response.TurnUsage.InputTokens),
+			OutputTokens: types.SafeInt32(response.TurnUsage.OutputTokens),
+			CostUsd:      response.TurnUsage.CostUSD,
+			LlmCalls:     types.SafeInt32(response.TurnLLMCalls),
 		},
 	}
 
@@ -464,6 +467,7 @@ func (e *ParallelExecutor) llmMerge(ctx context.Context, results []*loomv1.Agent
 	if err != nil {
 		return "", fmt.Errorf("LLM merge failed: %w", err)
 	}
+	e.aux.addCall(response.Usage)
 
 	return response.Content, nil
 }
@@ -531,7 +535,7 @@ func (e *ParallelExecutor) calculateCost(results []*loomv1.AgentResult) *loomv1.
 		if result.Cost != nil {
 			cost.TotalCostUsd += result.Cost.CostUsd
 			cost.TotalTokens += result.Cost.TotalTokens
-			cost.LlmCalls++
+			cost.LlmCalls += resultLLMCalls(result.Cost)
 
 			// Aggregate by agent
 			if existing, ok := cost.AgentCostsUsd[result.AgentId]; ok {
@@ -542,5 +546,6 @@ func (e *ParallelExecutor) calculateCost(results []*loomv1.AgentResult) *loomv1.
 		}
 	}
 
+	e.aux.applyTo(cost)
 	return cost
 }

@@ -115,9 +115,12 @@ type Message struct {
 	Thinking string
 
 	// ThinkingBlocks carries the assistant's extended-thinking blocks for
-	// in-turn replay (tool-loop continuations). Opaque: signatures are
-	// provider-signed and never interpreted. Never persisted — the compile
-	// strips settled turns and the persist seam drops them entirely.
+	// replay: always within the turn (tool-loop continuations), and on a
+	// settled turn only while the compiled context before the message — with
+	// the model ID and the advertised tool schemas — fingerprints as it did
+	// when the model wrote them (pkg/agent thinkingPrefix). Opaque: signatures
+	// are provider-signed and never interpreted. Never persisted — the persist
+	// seam drops them, so a reloaded session has none to replay.
 	ThinkingBlocks []ThinkingBlock
 
 	// ToolUseID is the ID of the tool_use block this result corresponds to (if role is tool)

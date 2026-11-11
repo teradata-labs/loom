@@ -107,11 +107,14 @@ func isStaticEntry(provider, modelID string, info *loomv1.ModelInfo) bool {
 // Rates resolve as LookupPricing(provider, modelID) first, then
 // ClaudeFamilyPricing. When they are Anthropic's published card — the
 // built-in catalog's row or the family fallback — the published long-context
-// card replaces them above its threshold (ClaudeLongContextPricing). A rate a
-// registered Source supplies is the embedder's pricing authority and is
-// returned unchanged at every prompt length: the long-context card is part of
-// the published price list, not of an embedder's negotiated or gateway rate,
-// and a Source row has no field to express a long-context rate of its own.
+// card replaces them above its threshold (ClaudeLongContextPricing), carrying
+// any premium the row holds over the first-party card (scaleLongContextCard):
+// a bedrock-mantle row at first-party × 1.10 gets the long-context card
+// × 1.10. A rate a registered Source supplies is the embedder's pricing
+// authority and is returned unchanged at every prompt length: the
+// long-context card is part of the published price list, not of an
+// embedder's negotiated or gateway rate, and a Source row has no field to
+// express a long-context rate of its own.
 //
 // This is the one rate resolution shared by the anthropic, bedrock and
 // openai clients' cost estimates.
@@ -123,8 +126,24 @@ func RequestPricing(provider, modelID string, promptTokens int) (inputPer1M, out
 	}
 	if published {
 		if in, out, long := ClaudeLongContextPricing(modelID, promptTokens); long {
-			inputPer1M, outputPer1M = in, out
+			inputPer1M, outputPer1M = scaleLongContextCard(modelID, inputPer1M, outputPer1M, in, out)
 		}
 	}
 	return inputPer1M, outputPer1M, found
+}
+
+// scaleLongContextCard returns the long-context card (longIn, longOut) scaled
+// by the ratio of a published row's base rates (rowIn, rowOut) to the model's
+// first-party card (ClaudeFamilyPricing). A row that is the first-party card
+// (the anthropic namespace, a family-fallback id, a bedrock row at the global
+// rate) has ratio 1 and gets the card unchanged. A row that already includes a
+// premium over the card (the bedrock-mantle rows, first-party × 1.10) gets the
+// same premium on the long-context card. Each bucket is scaled by its own
+// ratio. With no family card to compare against, the card is returned as is.
+func scaleLongContextCard(modelID string, rowIn, rowOut, longIn, longOut float64) (float64, float64) {
+	cardIn, cardOut, ok := ClaudeFamilyPricing(modelID)
+	if !ok || cardIn <= 0 || cardOut <= 0 {
+		return longIn, longOut
+	}
+	return longIn * (rowIn / cardIn), longOut * (rowOut / cardOut)
 }

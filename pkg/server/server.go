@@ -619,10 +619,16 @@ func (s *Server) GetConversationHistory(ctx context.Context, req *loomv1.GetConv
 		return nil, status.Error(codes.NotFound, "session not found")
 	}
 
+	// The compiled view holds the current turn's <system-reminder> rows
+	// (harness state pinned for the turn's provider calls, never stored);
+	// history shows what the user and the assistant said.
 	messages := session.GetMessages()
-	protoMessages := make([]*loomv1.Message, len(messages))
-	for i, msg := range messages {
-		protoMessages[i] = ConvertMessage(&msg)
+	protoMessages := make([]*loomv1.Message, 0, len(messages))
+	for i := range messages {
+		if agent.IsSystemReminder(messages[i]) {
+			continue
+		}
+		protoMessages = append(protoMessages, ConvertMessage(&messages[i]))
 	}
 
 	return &loomv1.ConversationHistory{
@@ -1045,7 +1051,7 @@ func (s *Server) runABTestSequentialScored(ctx context.Context, req *loomv1.ABTe
 		}
 		judgeConfig = cfg
 	}
-	judge, err := judges.NewLLMJudge(judgeLLM, judgeConfig, observability.NewNoOpTracer())
+	judge, err := judges.NewJudgeFromConfig(judgeLLM, judgeConfig, observability.NewNoOpTracer())
 	if err != nil {
 		return status.Errorf(codes.FailedPrecondition, "cannot create judge for scoring: %v", err)
 	}

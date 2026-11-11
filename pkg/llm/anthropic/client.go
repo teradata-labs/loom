@@ -430,9 +430,10 @@ func (c *Client) convertMessages(messages []llmtypes.Message) ([]TextBlockParam,
 		case "assistant":
 			var content []ContentBlock
 
-			// In-turn thinking replay: blocks ride back verbatim and FIRST
-			// (the response order). Empty text stays valid — MarshalJSON keeps
-			// the field present. Settled turns arrive already stripped.
+			// Thinking replay: blocks ride back verbatim and FIRST (the
+			// response order). Empty text stays valid — MarshalJSON keeps the
+			// field present. A settled turn carries its blocks only while the
+			// context before them is unchanged; the compile decides.
 			for _, tb := range msg.ThinkingBlocks {
 				if tb.Type == "redacted_thinking" {
 					content = append(content, ContentBlock{Type: "redacted_thinking", Data: tb.Thinking})
@@ -757,9 +758,11 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		// Positive identification of the provider's context-too-long refusal
 		// (HLD §5.2 step 12) — the only relief trigger.
 		if llm.IsAnthropicContextTooLong(httpResp.StatusCode, respBody) {
-			return nil, fmt.Errorf("API error (status %d): %s: %w", httpResp.StatusCode, string(respBody), llm.ErrContextTooLong)
+			return nil, llm.WrapHTTPStatus(httpResp.StatusCode,
+				fmt.Errorf("API error (status %d): %s: %w", httpResp.StatusCode, string(respBody), llm.ErrContextTooLong))
 		}
-		return nil, fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody))
+		return nil, llm.WrapHTTPStatus(httpResp.StatusCode,
+			fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody)))
 	}
 
 	// 3. Process Server-Sent Events (SSE) stream
@@ -1057,9 +1060,11 @@ func (c *Client) callAPI(ctx context.Context, req *MessagesRequest) (*MessagesRe
 		// Positive identification of the provider's context-too-long refusal
 		// (HLD §5.2 step 12) — the only relief trigger.
 		if llm.IsAnthropicContextTooLong(httpResp.StatusCode, respBody) {
-			return nil, fmt.Errorf("API error (status %d): %s: %w", httpResp.StatusCode, string(respBody), llm.ErrContextTooLong)
+			return nil, llm.WrapHTTPStatus(httpResp.StatusCode,
+				fmt.Errorf("API error (status %d): %s: %w", httpResp.StatusCode, string(respBody), llm.ErrContextTooLong))
 		}
-		return nil, fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody))
+		return nil, llm.WrapHTTPStatus(httpResp.StatusCode,
+			fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody)))
 	}
 
 	// Parse response

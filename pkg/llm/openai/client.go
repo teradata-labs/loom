@@ -451,7 +451,11 @@ func (c *Client) convertMessages(messages []llmtypes.Message) []ChatMessage {
 	var apiMessages []ChatMessage
 	srcToEmitted := make(map[int]int)
 	validToolCallIDs := make(map[string]struct{})
+	var newestTurn int64
 	for _, msg := range messages {
+		if msg.Turn > newestTurn {
+			newestTurn = msg.Turn
+		}
 		if msg.Role != "assistant" {
 			continue
 		}
@@ -566,11 +570,14 @@ func (c *Client) convertMessages(messages []llmtypes.Message) []ChatMessage {
 
 			// In-turn thinking replay: blocks ride back verbatim so the
 			// provider's signatures survive the round-trip. Settled turns
-			// arrive here already stripped by the compile. A block that is
-			// still text-empty (capture should have completed it) is dropped
-			// rather than replayed: Anthropic 400s on a thinking block with
-			// no thinking field, while a missing block is tolerated (probed).
-			if len(msg.ThinkingBlocks) > 0 {
+			// (Turn below the newest) can arrive with their blocks, for
+			// providers that keep earlier turns' thinking; reasoning APIs
+			// behind this client may reject earlier turns' reasoning, so
+			// they are not sent. A block that is still text-empty (capture
+			// should have completed it) is dropped rather than replayed:
+			// Anthropic 400s on a thinking block with no thinking field,
+			// while a missing block is tolerated (probed).
+			if len(msg.ThinkingBlocks) > 0 && msg.Turn >= newestTurn {
 				wire := make([]WireThinkingBlock, 0, len(msg.ThinkingBlocks))
 				for _, b := range msg.ThinkingBlocks {
 					if b.Thinking == "" && b.Type != "redacted_thinking" {
@@ -1143,9 +1150,11 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		// Positive identification of the provider's context-too-long refusal
 		// (HLD §5.2 step 12) — the only relief trigger.
 		if llm.IsOpenAIContextTooLong(httpResp.StatusCode, respBody) {
-			return nil, fmt.Errorf("API error (status %d): %s: %w", httpResp.StatusCode, string(respBody), llm.ErrContextTooLong)
+			return nil, llm.WrapHTTPStatus(httpResp.StatusCode,
+				fmt.Errorf("API error (status %d): %s: %w", httpResp.StatusCode, string(respBody), llm.ErrContextTooLong))
 		}
-		return nil, fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody))
+		return nil, llm.WrapHTTPStatus(httpResp.StatusCode,
+			fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody)))
 	}
 
 	// 3. Process Server-Sent Events (SSE) stream
@@ -1451,26 +1460,37 @@ func (c *Client) callAPI(ctx context.Context, req *ChatCompletionRequest) (*Chat
 		return nil, nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	// Parse response
-	var resp ChatCompletionResponse
-	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return nil, nil, fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-
 	// Positive identification of the provider's context-too-long refusal
 	// (HLD §5.2 step 12) — the only relief trigger.
 	if llm.IsOpenAIContextTooLong(httpResp.StatusCode, respBody) {
-		return nil, nil, fmt.Errorf("API error (status %d): %s: %w", httpResp.StatusCode, string(respBody), llm.ErrContextTooLong)
+		return nil, nil, llm.WrapHTTPStatus(httpResp.StatusCode,
+			fmt.Errorf("API error (status %d): %s: %w", httpResp.StatusCode, string(respBody), llm.ErrContextTooLong))
+	}
+
+	// Parse response
+	var resp ChatCompletionResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		if httpResp.StatusCode != http.StatusOK {
+			return nil, nil, llm.WrapHTTPStatus(httpResp.StatusCode,
+				fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody)))
+		}
+		return nil, nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
 	// Check for API errors
 	if resp.Error != nil {
-		return nil, nil, fmt.Errorf("OpenAI API error: %s (type: %s)", resp.Error.Message, resp.Error.Type)
+		statusCode := httpResp.StatusCode
+		if statusCode == http.StatusOK {
+			statusCode = llm.HTTPStatusForErrorType(resp.Error.Type)
+		}
+		return nil, nil, llm.WrapHTTPStatus(statusCode,
+			fmt.Errorf("OpenAI API error: %s (type: %s)", resp.Error.Message, resp.Error.Type))
 	}
 
 	// Check status code
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, nil, fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody))
+		return nil, nil, llm.WrapHTTPStatus(httpResp.StatusCode,
+			fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody)))
 	}
 
 	return &resp, httpResp.Header, nil
