@@ -604,11 +604,12 @@ func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time,
 	}, nil
 }
 
-// stageHeader is the SharedMemory key list prepended to a stage prompt when
-// prior stages' full outputs are stashed, so the agent can recover full
-// upstream context even when {{previous}} or a history entry was cut. Empty
-// without a store or before the first stage. The iterative executor builds
-// its own header.
+// stageHeader is the SharedMemory header prepended to a stage prompt when a
+// store is configured: the keys of the prior stages' full outputs, so the
+// agent can recover full upstream context even when {{previous}} or a
+// history entry was cut, and the write rule for its own keys; before the
+// first stage it is the write rule alone. Empty without a store. The
+// iterative executor uses the same builder.
 func (e *PipelineExecutor) stageHeader(priorStages int) string {
 	if e.orchestrator.sharedMemory == nil {
 		return ""

@@ -106,3 +106,21 @@ func TestScanWorkflowFiles_ListsSyntaxBrokenWorkflowFiles(t *testing.T) {
 	assert.Contains(t, workflows[0].Error, "yaml parse")
 	assert.Contains(t, formatWorkflowList(workflows), "broken.yaml (invalid)")
 }
+
+func TestLooksLikeWorkflowFile_Spellings(t *testing.T) {
+	dir := t.TempDir()
+	cases := map[string]bool{
+		"kind: Workflow\nspec: [broken":          true,
+		"kind: \"Workflow\"  # quoted\nspec: [x": true,
+		"  kind: 'Workflow'\nspec: [x":           true,
+		"kind: Agent\nspec: [x":                  false,
+		"kind: WorkflowTemplate\nspec: [x":       false,
+	}
+	i := 0
+	for body, want := range cases {
+		i++
+		path := filepath.Join(dir, "f"+string(rune('a'+i))+".yaml")
+		require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+		assert.Equal(t, want, looksLikeWorkflowFile(path), "%q", body)
+	}
+}

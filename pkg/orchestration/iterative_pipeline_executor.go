@@ -21,6 +21,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 )
 
 // Stage output truncation to prevent token bloat
@@ -1638,10 +1639,16 @@ func (e *IterativePipelineExecutor) Resume(ctx context.Context, ckpt *loomv1.Wor
 		state.stageOutputs[snap.AgentId] = snap.FullOutput
 	}
 
+	// previousStage is the stage whose output the resumed stage receives as
+	// {{previous}}; discardFrom is the first stage index a REVISE re-runs,
+	// whose snapshots the resumed state must not carry.
+	previousStage := ""
+	discardFrom := len(stages)
 	switch decision.Action {
 	case loomv1.GateAction_GATE_ACTION_APPROVE:
 		state.startStageIndex = gatedIndex + 1
-		state.currentInput = state.stageOutputs[stages[gatedIndex].AgentId]
+		previousStage = stages[gatedIndex].AgentId
+		state.currentInput = state.stageOutputs[previousStage]
 
 	case loomv1.GateAction_GATE_ACTION_REVISE:
 		gate := stages[gatedIndex].HitlGate
@@ -1664,11 +1671,13 @@ func (e *IterativePipelineExecutor) Resume(ctx context.Context, ckpt *loomv1.Wor
 			delete(state.stageOutputs, stages[i].AgentId)
 			delete(state.fullOutputs, stages[i].AgentId)
 		}
+		discardFrom = target
 		state.startStageIndex = target
 		if target == 0 {
 			state.currentInput = e.pattern.Pipeline.InitialPrompt
 		} else {
-			state.currentInput = state.stageOutputs[stages[target-1].AgentId]
+			previousStage = stages[target-1].AgentId
+			state.currentInput = state.stageOutputs[previousStage]
 		}
 		e.pendingFeedback = decision.Feedback
 		e.feedbackSource = "human reviewer"
@@ -1679,17 +1688,28 @@ func (e *IterativePipelineExecutor) Resume(ctx context.Context, ckpt *loomv1.Wor
 
 	// Restore agent-written SharedMemory and re-seed stage output keys before
 	// the resumed loop starts; remember which stages' keys are in the store.
-	seeded := restoreWorkflowMemory(ctx, e.orchestrator, ckpt, e.workflowID)
+	// A REVISE discards the snapshots from its target on, so they are
+	// neither re-seeded nor carried into the resumed state.
+	restoreCkpt := ckpt
+	if discardFrom < len(ckpt.StageSnapshots) {
+		restoreCkpt = proto.Clone(ckpt).(*loomv1.WorkflowCheckpoint)
+		restoreCkpt.StageSnapshots = restoreCkpt.StageSnapshots[:discardFrom]
+	}
+	seeded := restoreWorkflowMemory(ctx, e.orchestrator, restoreCkpt, e.workflowID)
 	state.stashed = make(map[string]bool, len(seeded))
-	for i, snap := range ckpt.StageSnapshots {
+	for i, snap := range restoreCkpt.StageSnapshots {
 		if i >= len(seeded) || snap.AgentId == "" || snap.FullOutput == "" {
 			continue
 		}
 		state.stashed[snap.AgentId] = seeded[i]
 		if seeded[i] {
+			// The {{previous}} copy is cut, with its key notice, only once the
+			// resume has put that key back; the stage whose output the resumed
+			// stage receives (approve: the gated stage; revise: the one before
+			// the target) gets the same cut copy the original pass handed over.
 			truncated, _ := truncateStageOutput(snap.FullOutput, MaxStageOutputBytes, stageOutputKey(e.workflowID, i+1))
 			state.stageOutputs[snap.AgentId] = truncated
-			if gated := stages[gatedIndex].AgentId; snap.AgentId == gated && decision.Action == loomv1.GateAction_GATE_ACTION_APPROVE {
+			if snap.AgentId == previousStage {
 				state.currentInput = truncated
 			}
 		}

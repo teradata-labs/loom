@@ -17,6 +17,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
 	"go.uber.org/zap/zaptest"
 )
 
@@ -155,4 +156,38 @@ func TestEnsureCommunicationTools_OncePerAgentWithBusOnly(t *testing.T) {
 
 	s.ensureCommunicationTools(ag, "presenter")
 	assert.Equal(t, count, ag.ToolCount(), "nothing registered twice")
+}
+
+type fakeAgentRegistry struct{}
+
+func (fakeAgentRegistry) GetConfig(string) *loomv1.AgentConfig { return nil }
+
+// The registry wiring is one helper for every injection site: it finds the
+// send_message tool when a queue produced one and reports when there is
+// none to wire (bus or store only).
+func TestWireSendMessageRegistry(t *testing.T) {
+	bus := communication.NewMessageBus(communication.NewMemoryStore(0), nil, observability.NewNoOpTracer(), zaptest.NewLogger(t))
+	busOnly := builtin.CommunicationTools(nil, bus, nil, "a")
+	assert.False(t, wireSendMessageRegistry(busOnly, fakeAgentRegistry{}, zaptest.NewLogger(t)), "no send_message without a queue")
+
+	queue, err := communication.NewMessageQueue(filepath.Join(t.TempDir(), "q.db"), observability.NewNoOpTracer(), zaptest.NewLogger(t))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = queue.Close() })
+	withQueue := builtin.CommunicationTools(queue, bus, nil, "a")
+	assert.True(t, wireSendMessageRegistry(withQueue, fakeAgentRegistry{}, zaptest.NewLogger(t)))
+}
+
+// An agent the server already wired is not re-registered on later workflow
+// runs, even when its config suppresses one of the injected names so the
+// name check alone would keep finding a tool "missing".
+func TestEnsureCommunicationTools_MarksTheAgentOnce(t *testing.T) {
+	bus := communication.NewMessageBus(communication.NewMemoryStore(0), nil, observability.NewNoOpTracer(), zaptest.NewLogger(t))
+	s := &MultiAgentServer{logger: zaptest.NewLogger(t), agents: map[string]*agent.Agent{}, messageBus: bus}
+	ag := agent.NewAgent(nil, &mockLLMForMultiAgent{}, agent.WithName("presenter"))
+	s.ensureCommunicationTools(ag, "presenter")
+	_, marked := s.commToolsInjected.Load(ag)
+	assert.True(t, marked)
+	count := ag.ToolCount()
+	s.ensureCommunicationTools(ag, "presenter")
+	assert.Equal(t, count, ag.ToolCount())
 }

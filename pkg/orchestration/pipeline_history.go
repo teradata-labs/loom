@@ -55,8 +55,9 @@ func stageRendersHistory(stage *loomv1.PipelineStage, passFullHistory bool, prio
 }
 
 // stageStashed reports whether prior stage i's full output is in
-// SharedMemory: the recorded flag when the run tracked one, else whether a
-// store exists at all (a resumed run re-seeds every completed stage).
+// SharedMemory: the recorded flag when the run tracked one (fresh runs record
+// each stash; resumed runs record which keys the restore put back), else
+// whether a store exists at all, for a caller that tracks no stashes.
 func stageStashed(stashed []bool, i int, haveStore bool) bool {
 	if i < len(stashed) {
 		return stashed[i]
@@ -114,7 +115,7 @@ func (s *historyStats) addTo(metadata map[string]string) {
 // stashed says, per prior stage, whether its full output is in SharedMemory;
 // an entry whose stash failed is passed in full, as {{previous}} was for
 // that stage. nil means every entry is stashed when the orchestrator has a
-// store (the resume path, which re-seeds every stage). header is prepended
+// store (a caller that tracks no stashes). header is prepended
 // to the prompt (the SharedMemory key list); it counts toward the budget.
 // The returned fit is nil when the prompt carries no history. Pre-reduce
 // usage is in fit.Usage / fit.LLMCalls for the caller to add to the run's

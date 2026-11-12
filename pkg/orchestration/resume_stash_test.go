@@ -19,10 +19,15 @@ import (
 )
 
 // gatedOrchestrator builds the three-agent gated pipeline harness with the
-// designer's reply under test control and an optional store.
+// designer's reply under test control and an optional store. It carries a
+// MessageBus so an iterative pattern with restarts enabled runs the iterative
+// executor itself (without a restart policy that executor falls back to the
+// plain pipeline, which would leave its own code untested).
 func gatedOrchestrator(t *testing.T, designerReply string, store *communication.SharedMemoryStore) (*Orchestrator, *recordingLLMProvider, *recordingLLMProvider, *recordingLLMProvider) {
 	t.Helper()
-	orch := NewOrchestrator(Config{Logger: zaptest.NewLogger(t), Tracer: observability.NewNoOpTracer(), SharedMemory: store})
+	tracer, logger := observability.NewNoOpTracer(), zaptest.NewLogger(t)
+	bus := communication.NewMessageBus(communication.NewMemoryStore(0), nil, tracer, logger)
+	orch := NewOrchestrator(Config{Logger: logger, Tracer: tracer, SharedMemory: store, MessageBus: bus})
 	analyst := newRecordingLLMProvider("requirements: orders table")
 	designer := newRecordingLLMProvider(designerReply)
 	executor := newRecordingLLMProvider("Table created successfully")
@@ -60,15 +65,24 @@ func TestPipeline_FirstStagePromptCarriesTheWriteHint(t *testing.T) {
 	assert.Contains(t, second[0], "should start with `wf-hint-`")
 }
 
+// iterativeGated wraps the gated pipeline in an iterative pattern with
+// restarts enabled, so the iterative executor (not its plain-pipeline
+// fallback) runs it.
+func iterativeGated(gate *loomv1.HITLGate, workflowID string) *loomv1.WorkflowPattern {
+	return &loomv1.WorkflowPattern{WorkflowId: workflowID, Pattern: &loomv1.WorkflowPattern_Iterative{Iterative: &loomv1.IterativeWorkflowPattern{
+		Pipeline:      gatedPipelinePattern(gate).GetPipeline(),
+		MaxIterations: 1,
+		RestartPolicy: &loomv1.RestartPolicy{Enabled: true},
+	}}}
+}
+
 // The iterative executor renders the same header as the plain pipeline.
 func TestIterativePipeline_FirstStagePromptCarriesTheWriteHint(t *testing.T) {
 	store, err := communication.NewSharedMemoryStore(observability.NewNoOpTracer(), zaptest.NewLogger(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	orch, analyst, _, _ := gatedOrchestrator(t, "CREATE TABLE orders (...)", store)
-	pattern := &loomv1.WorkflowPattern{WorkflowId: "wf-iter-hint", Pattern: &loomv1.WorkflowPattern_Iterative{Iterative: &loomv1.IterativeWorkflowPattern{
-		Pipeline: gatedPipelinePattern(nil).GetPipeline(), MaxIterations: 1,
-	}}}
+	pattern := iterativeGated(nil, "wf-iter-hint")
 	_, err = orch.ExecutePattern(context.Background(), pattern)
 	require.NoError(t, err)
 	first := analyst.recordedPrompts()
@@ -83,9 +97,7 @@ func TestIterativePipeline_FirstStagePromptCarriesTheWriteHint(t *testing.T) {
 func TestIterativeGate_ResumeWithoutStore_PassesFullOutput(t *testing.T) {
 	long := strings.Repeat("CREATE TABLE orders (...)\n", 400) // > MaxStageOutputBytes
 	orch, _, _, executor := gatedOrchestrator(t, long, nil)
-	pattern := &loomv1.WorkflowPattern{Pattern: &loomv1.WorkflowPattern_Iterative{Iterative: &loomv1.IterativeWorkflowPattern{
-		Pipeline: gatedPipelinePattern(&loomv1.HITLGate{}).GetPipeline(), MaxIterations: 1,
-	}}}
+	pattern := iterativeGated(&loomv1.HITLGate{}, "")
 
 	_, err := orch.ExecutePattern(context.Background(), pattern)
 	var suspended *WorkflowSuspended
@@ -124,4 +136,53 @@ func TestPipelineGate_ResumeWithFailedReseed_PassesFullOutput(t *testing.T) {
 	require.Len(t, prompts, 1)
 	assert.Contains(t, prompts[0], long, "the re-seed failed, so the executor gets the full output inline")
 	assert.NotContains(t, prompts[0], "OUTPUT TRUNCATED")
+}
+
+// On a REVISE resume with a store, the revise target's {{previous}} is the
+// same cut copy (with the re-seeded key's notice) the original pass handed
+// it, for the plain pipeline and for the iterative executor's own Resume.
+func TestGate_ReviseResume_PreviousIsCutWhenReseeded(t *testing.T) {
+	long := strings.Repeat("requirements: orders table\n", 400) // > MaxStageOutputBytes
+	cases := []struct {
+		name    string
+		pattern func() *loomv1.WorkflowPattern
+	}{
+		{"pipeline", func() *loomv1.WorkflowPattern { return gatedPipelinePattern(&loomv1.HITLGate{}) }},
+		{"iterative-own-resume", func() *loomv1.WorkflowPattern { return iterativeGated(&loomv1.HITLGate{}, "") }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store, err := communication.NewSharedMemoryStore(observability.NewNoOpTracer(), zaptest.NewLogger(t))
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = store.Close() })
+			orch := NewOrchestrator(Config{Logger: zaptest.NewLogger(t), Tracer: observability.NewNoOpTracer(), SharedMemory: store})
+			designer := newRecordingLLMProvider("CREATE TABLE orders (...)")
+			orch.RegisterAgent("analyst", createMockAgent(t, "analyst", newRecordingLLMProvider(long)))
+			orch.RegisterAgent("designer", createMockAgent(t, "designer", designer))
+			orch.RegisterAgent("executor", createMockAgent(t, "executor", newRecordingLLMProvider("Table created successfully")))
+
+			pattern := tc.pattern()
+			_, err = orch.ExecutePattern(context.Background(), pattern)
+			var suspended *WorkflowSuspended
+			require.ErrorAs(t, err, &suspended)
+			wfID := suspended.Checkpoint.WorkflowId
+			require.NotEmpty(t, wfID)
+			first := designer.recordedPrompts()
+			require.Len(t, first, 1)
+			assert.Contains(t, first[0], "OUTPUT TRUNCATED", "the original pass handed the designer the cut copy")
+
+			_, err = orch.ResumeWorkflow(context.Background(), pattern, suspended.Checkpoint,
+				&loomv1.GateDecision{Action: loomv1.GateAction_GATE_ACTION_REVISE, Feedback: "Use MULTISET"})
+			var again *WorkflowSuspended
+			require.ErrorAs(t, err, &again, "the revised designer output reaches the gate again")
+
+			prompts := designer.recordedPrompts()
+			require.Len(t, prompts, 2, "the designer ran again after REVISE")
+			revised := prompts[1]
+			assert.Contains(t, revised, "Use MULTISET", "the feedback reached the revise target")
+			assert.Contains(t, revised, "OUTPUT TRUNCATED", "the re-seeded stage-1 output is handed over cut")
+			assert.Contains(t, revised, stageOutputKey(wfID, 1), "the notice names the re-seeded key")
+			assert.NotContains(t, revised, long, "the full analyst output must not be inline")
+		})
+	}
 }

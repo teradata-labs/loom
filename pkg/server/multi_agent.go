@@ -114,6 +114,10 @@ type MultiAgentServer struct {
 
 	// Agent registry for workflow execution
 	registry *agent.Registry
+	// commToolsInjected marks the agents ensureCommunicationTools has wired
+	// (keyed by *agent.Agent), so an agent whose config suppresses one of the
+	// injected names is not re-registered and logged on every workflow run.
+	commToolsInjected sync.Map
 	// spawnEnabled is the explicit opt-in path for programmatic embedders that
 	// do not configure an agent registry.
 	spawnEnabled map[string]bool
@@ -4303,8 +4307,12 @@ func (s *MultiAgentServer) ensureCommunicationTools(ag *agent.Agent, agentID str
 		return
 	}
 	// Once per agent: the registry caches agents across calls, so skip when
-	// every tool this server would inject is already registered (whatever
-	// subset of queue, bus and store is configured).
+	// this server already wired the agent, or when every tool it would inject
+	// is already registered (whatever subset of queue, bus and store is
+	// configured).
+	if _, done := s.commToolsInjected.Load(ag); done {
+		return
+	}
 	registered := make(map[string]bool)
 	for _, name := range ag.ListTools() {
 		registered[name] = true
@@ -4317,14 +4325,36 @@ func (s *MultiAgentServer) ensureCommunicationTools(ag *agent.Agent, agentID str
 		}
 	}
 	if !missing {
+		s.commToolsInjected.Store(ag, struct{}{})
 		return
 	}
+	// The same wiring ConfigureCommunication gives the server's own agents:
+	// send_message resolves short agent names through the registry.
+	if s.registry != nil {
+		wireSendMessageRegistry(commTools, s.registry, s.logger)
+	}
 	ag.RegisterTools(commTools...)
+	s.commToolsInjected.Store(ag, struct{}{})
 	if s.logger != nil {
 		s.logger.Info("Communication tools injected into workflow agent",
 			zap.String("agent_id", agentID),
 			zap.Int("num_tools", len(commTools)))
 	}
+}
+
+// wireSendMessageRegistry gives the send_message tool among tools the agent
+// registry it uses to heal short agent ids into <workflow>:<agent>; it
+// reports whether a send_message tool was there to wire. Every site that
+// injects communication tools uses it, so the wiring does not depend on
+// which door loaded the agent.
+func wireSendMessageRegistry(tools []shuttle.Tool, registry builtin.AgentRegistry, logger *zap.Logger) bool {
+	for _, tool := range tools {
+		if sendTool, ok := tool.(*builtin.SendMessageTool); ok {
+			sendTool.SetAgentRegistry(registry, logger)
+			return true
+		}
+	}
+	return false
 }
 
 // StreamWorkflow executes a workflow and streams progress updates to the client.

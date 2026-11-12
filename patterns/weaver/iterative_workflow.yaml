@@ -15,6 +15,16 @@ use_cases:
   - "quality improvement loop"
 
 parameters:
+  - name: name
+    type: string
+    description: Workflow name prefix (the workflow is named <name>-iterative)
+    required: true
+    example: "code-quality"
+  - name: initial_prompt
+    type: string
+    description: The task handed to the first stage
+    required: true
+    example: "Write a SQL migration for the orders table"
   - name: max_iterations
     type: integer
     description: Maximum number of iterations before stopping
@@ -80,6 +90,9 @@ common_errors:
 best_practices: |
   - Always set max_iterations to prevent infinite loops
   - Use validation_prompt in review stages for quality gates
-  - restart_policy: on_failure restarts when validation fails
-  - restart_triggers are keywords that trigger a restart
+  - restart_policy is a map (enabled: true, restartable_stages: [<stage ids>]);
+    a string value such as on_failure is ignored by the loader and the
+    pipeline runs without restarts
+  - restart_triggers list the stage ids allowed to call
+    publish_restart_request, not keywords
   - Keep iterations focused on incremental improvement

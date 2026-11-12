@@ -24,7 +24,7 @@ import (
 )
 
 // topicProbeLLM records the restart topic the stage turn's context carries
-// (what the publish_restart tool would read) and answers through fn.
+// (what the publish_restart_request tool would read) and answers through fn.
 type topicProbeLLM struct {
 	*funcLLMProvider
 	mu     sync.Mutex
@@ -96,7 +96,7 @@ type twoRunOutcome struct {
 // once B is mid-run, then waits until the request is queued at A (and gives
 // B a moment to show whether it was queued there too); B's stage 2 waits for
 // A's publish before returning.
-func runTwoIterativeRuns(t *testing.T, patternA, patternB *loomv1.IterativeWorkflowPattern, topic string) twoRunOutcome {
+func runTwoIterativeRuns(t *testing.T, patternA, patternB *loomv1.IterativeWorkflowPattern, topic string, expectB bool) twoRunOutcome {
 	t.Helper()
 	tracer, logger := observability.NewNoOpTracer(), zaptest.NewLogger(t)
 	bus := communication.NewMessageBus(communication.NewMemoryStore(0), nil, tracer, logger)
@@ -122,7 +122,14 @@ func runTwoIterativeRuns(t *testing.T, patternA, patternB *loomv1.IterativeWorkf
 			<-bEntered // B is mid-run and subscribed
 			publishRestartOn(t, bus, topic, "s2", "s1")
 			waitForQueuedRestart(execA, 5*time.Second)
-			bQueued.Store(waitForQueuedRestart(execB, 200*time.Millisecond))
+			// When B shares the topic its copy is expected: wait for it with
+			// the full deadline. When it must not arrive, a short window is
+			// enough to show it did not (the assertion is negative).
+			bWindow := 200 * time.Millisecond
+			if expectB {
+				bWindow = 5 * time.Second
+			}
+			bQueued.Store(waitForQueuedRestart(execB, bWindow))
 			close(aPublished)
 		})
 		return "A two", nil
@@ -164,7 +171,7 @@ func assertOnlyARestarted(t *testing.T, out twoRunOutcome) {
 	assert.False(t, out.bQueued, "B's executor never received A's request")
 	require.NotEmpty(t, out.aTopics)
 	for _, topic := range out.aTopics {
-		assert.Equal(t, communication.RestartTopicFor("wf-a"), topic, "A's stage turns carry A's restart topic for the publish_restart tool")
+		assert.Equal(t, communication.RestartTopicFor("wf-a"), topic, "A's stage turns carry A's restart topic for the publish_restart_request tool")
 	}
 }
 
@@ -175,7 +182,7 @@ func TestIterativeRuns_RestartRequestsStayWithTheirRun(t *testing.T) {
 	out := runTwoIterativeRuns(t,
 		iterativeRestartPattern(twoStageRestartStages, nil, nil, false),
 		iterativeRestartPattern(twoStageRestartStages, nil, nil, false),
-		communication.RestartTopicFor("wf-a"))
+		communication.RestartTopicFor("wf-a"), false)
 	assertOnlyARestarted(t, out)
 }
 
@@ -208,7 +215,7 @@ func TestIterativeRuns_YAMLWithoutRestartTopic_StayIsolated(t *testing.T) {
 		require.Equal(t, "", pattern.GetIterative().RestartTopic, "the loader must not fill a shared default topic")
 		return pattern.GetIterative()
 	}
-	out := runTwoIterativeRuns(t, load(), load(), communication.RestartTopicFor("wf-a"))
+	out := runTwoIterativeRuns(t, load(), load(), communication.RestartTopicFor("wf-a"), false)
 	assertOnlyARestarted(t, out)
 }
 
@@ -218,11 +225,11 @@ func TestIterativeRuns_ExplicitSharedTopicReachesEveryRun(t *testing.T) {
 	a := iterativeRestartPattern(twoStageRestartStages, nil, nil, false)
 	b := iterativeRestartPattern(twoStageRestartStages, nil, nil, false)
 	a.RestartTopic, b.RestartTopic = "team.restart", "team.restart"
-	out := runTwoIterativeRuns(t, a, b, "team.restart")
+	out := runTwoIterativeRuns(t, a, b, "team.restart", true)
 	assert.Equal(t, "2", out.resA.Metadata["iterations_used"])
 	assert.True(t, out.bQueued, "B shares the explicit topic and receives the request")
 	for _, topic := range out.aTopics {
-		assert.Equal(t, "team.restart", topic, "the explicit topic is what the publish_restart tool sees")
+		assert.Equal(t, "team.restart", topic, "the explicit topic is what the publish_restart_request tool sees")
 	}
 }
 

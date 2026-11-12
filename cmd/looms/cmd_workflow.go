@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -1700,9 +1701,13 @@ func looksLikeWorkflowFile(path string) bool {
 		return false
 	}
 	for _, line := range strings.Split(string(data), "\n") {
-		if strings.TrimSpace(line) == "kind: Workflow" {
+		if workflowKindLine.MatchString(line) {
 			return true
 		}
 	}
 	return false
 }
+
+// workflowKindLine matches `kind: Workflow` with optional quotes and a
+// trailing comment, the spellings the loader accepts.
+var workflowKindLine = regexp.MustCompile(`^\s*kind:\s*["']?Workflow["']?\s*(#.*)?$`)

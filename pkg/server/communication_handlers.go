@@ -52,15 +52,9 @@ func (s *MultiAgentServer) ConfigureCommunication(
 		commTools := builtin.CommunicationTools(queue, bus, sharedMem, agentID)
 
 		// Configure send_message tool with registry for auto-healing agent IDs
-		if s.registry != nil {
-			for _, tool := range commTools {
-				if sendTool, ok := tool.(*builtin.SendMessageTool); ok {
-					sendTool.SetAgentRegistry(s.registry, logger)
-					logger.Debug("Configured send_message tool with agent registry for auto-healing",
-						zap.String("agent_id", agentID))
-					break
-				}
-			}
+		if s.registry != nil && wireSendMessageRegistry(commTools, s.registry, logger) {
+			logger.Debug("Configured send_message tool with agent registry for auto-healing",
+				zap.String("agent_id", agentID))
 		}
 
 		ag.RegisterTools(commTools...)
