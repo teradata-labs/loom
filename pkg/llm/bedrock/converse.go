@@ -120,13 +120,13 @@ func (c *Client) ChatConverse(ctx context.Context, messages []llmtypes.Message, 
 			return c.client.Converse(ctx, input)
 		})
 		if err != nil {
-			return nil, fmt.Errorf("bedrock converse failed: %w", err)
+			return nil, runtimeCallError("bedrock converse failed", err)
 		}
 		output = result.(*bedrockruntime.ConverseOutput)
 	} else {
 		output, err = c.client.Converse(ctx, input)
 		if err != nil {
-			return nil, fmt.Errorf("bedrock converse failed: %w", err)
+			return nil, runtimeCallError("bedrock converse failed", err)
 		}
 	}
 
