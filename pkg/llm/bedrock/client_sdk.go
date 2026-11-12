@@ -198,6 +198,11 @@ func (c *SDKClient) Model() string {
 	return c.modelID
 }
 
+// MaxTokens returns the max_tokens this client sends on each request
+// (types.MaxTokensReporter). The agent reads it to fit a step in flight
+// against the prompt the provider accepts.
+func (c *SDKClient) MaxTokens() int { return int(c.maxTokens) }
+
 // requiresStreaming reports whether the Anthropic SDK would reject a
 // non-streaming Messages.New call for this client's model + max_tokens.
 // The SDK pre-flights non-streaming requests via CalculateNonStreamingTimeout

@@ -331,6 +331,19 @@ type HealthChecker interface {
 	HealthCheck(ctx context.Context) error
 }
 
+// MaxTokensReporter is an optional interface a provider implements to report
+// the max_tokens it puts on each request. A provider accepts a prompt up to
+// its window less that figure, so the agent fits a step in flight against it
+// before the send. The agent asks the client in use, because the figure in
+// the agent's own config is not that client's when the agent runs on a pool
+// entry or after a runtime model switch. A provider that does not implement
+// it, or reports 0, leaves the agent with its configured figure.
+type MaxTokensReporter interface {
+	// MaxTokens returns the max_tokens sent on each request, or 0 when the
+	// provider does not know it.
+	MaxTokens() int
+}
+
 // TokenCallback is called for each token/chunk during streaming.
 // Implementations should be lightweight and non-blocking.
 type TokenCallback func(token string)

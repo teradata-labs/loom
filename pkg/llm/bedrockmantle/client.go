@@ -282,6 +282,18 @@ func (c *Client) Name() string { return ProviderName }
 // Model returns the configured Mantle model id.
 func (c *Client) Model() string { return c.model }
 
+// MaxTokens returns the max_tokens the inner client sends on each request
+// (types.MaxTokensReporter), or 0 when the inner client does not report it.
+// The agent reads it to fit a step in flight against the prompt the provider
+// accepts.
+func (c *Client) MaxTokens() int {
+	inner, _ := c.current()
+	if r, ok := inner.(types.MaxTokensReporter); ok {
+		return r.MaxTokens()
+	}
+	return 0
+}
+
 // BaseURL returns the endpoint base URL in use.
 func (c *Client) BaseURL() string { return c.baseURL }
 

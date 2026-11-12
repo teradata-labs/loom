@@ -21,6 +21,7 @@ type Usage = types.Usage
 type LLMResponse = types.LLMResponse
 type LLMProvider = types.LLMProvider
 type HealthChecker = types.HealthChecker
+type MaxTokensReporter = types.MaxTokensReporter
 type TokenCallback = types.TokenCallback
 type StreamingLLMProvider = types.StreamingLLMProvider
 

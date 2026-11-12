@@ -103,6 +103,11 @@ func (c *Client) Model() string {
 	return c.model
 }
 
+// MaxTokens returns the max_tokens this client sends on each request
+// (types.MaxTokensReporter). The agent reads it to fit a step in flight
+// against the prompt the provider accepts.
+func (c *Client) MaxTokens() int { return c.openai.MaxTokens() }
+
 // Chat sends a conversation to HuggingFace and returns the response.
 // This delegates to the OpenAI client since HuggingFace uses the same API format.
 func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []shuttle.Tool) (*llmtypes.LLMResponse, error) {

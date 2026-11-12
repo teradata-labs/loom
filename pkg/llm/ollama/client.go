@@ -206,6 +206,11 @@ func (c *Client) Model() string {
 	return c.model
 }
 
+// MaxTokens returns the max_tokens this client sends on each request
+// (types.MaxTokensReporter). The agent reads it to fit a step in flight
+// against the prompt the provider accepts.
+func (c *Client) MaxTokens() int { return c.maxTokens }
+
 // Sources of a tool-mode decision, reported in the response metadata
 // ("tool_mode_source"), the debug log and the llm.ollama.tool_mode_source
 // span attribute.

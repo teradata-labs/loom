@@ -4306,6 +4306,27 @@ type thinkingOffContext struct {
 // clients see the suppression mark and every value of the wrapped Context.
 func (c thinkingOffContext) Value(key any) any { return c.values.Value(key) }
 
+// wireMaxTokens is the max_tokens the agent's client sends, which
+// fitStepToWindow reserves. The client in use is asked first
+// (types.MaxTokensReporter): an agent on a provider pool entry, and an
+// agent after a runtime model switch (SetLLMProvider), run on a client that
+// was not built from the agent's config, so Config.MaxTokens is not that
+// client's figure. Reserving less than the client sends lets through a step
+// the provider then refuses, which ends the turn on a provider that does not
+// label the refusal. A client that does not report (an embedder's own
+// provider) leaves Config.MaxTokens. Returns 0 when neither states one.
+func (a *Agent) wireMaxTokens() int {
+	a.mu.RLock()
+	client := a.llm
+	a.mu.RUnlock()
+	if r, ok := client.(types.MaxTokensReporter); ok {
+		if n := r.MaxTokens(); n > 0 {
+			return n
+		}
+	}
+	return a.config.MaxTokens
+}
+
 // fitStepToWindow keeps the step in flight inside the provider's window.
 // Overflow can come only from it: everything before it was in a send the
 // provider accepted, each result is bounded at arrival, and the model sets how
@@ -4326,10 +4347,11 @@ func (a *Agent) fitStepToWindow(ctx Context, session *Session, noteKey string, e
 		return false
 	}
 	// The reply reservation is the max_tokens the client sends: the provider
-	// accepts the prompt up to its window less that. When the builder states
-	// none, it is the fold's reservation, the larger of the config's and the
-	// memory's.
-	reserved := a.config.MaxTokens
+	// accepts the prompt up to its window less that. The client in use states
+	// it (wireMaxTokens), else the builder's figure stands. When neither
+	// states one, it is the fold's reservation, the larger of the config's and
+	// the memory's.
+	reserved := a.wireMaxTokens()
 	if reserved <= 0 {
 		reserved = a.config.ReservedOutputTokens
 		if r := segMem.ReservedOutputTokens(); r > reserved {
