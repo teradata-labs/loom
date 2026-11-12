@@ -409,6 +409,13 @@ type Config struct {
 	// walks toward T−1 when shedding at K is not enough. 0 = default (16).
 	ProtectedRecentTurns int
 
+	// AutoCompactPercent turns on proactive compaction at the end of a turn:
+	// once the context reaches this percentage of the usable window, older tool
+	// results are stubbed and, if that is not enough, older turns are folded
+	// into the running summary, while there is still room to summarize well.
+	// 0 = off. It needs an LLM memory compressor to fold; without one only the
+	// lossless stubbing runs. Relief at the water marks remains the backstop.
+	AutoCompactPercent int
 	// PatternConfig controls pattern injection (nil = use defaults)
 	PatternConfig *PatternConfig
 
