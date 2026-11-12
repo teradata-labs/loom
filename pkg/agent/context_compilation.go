@@ -594,6 +594,23 @@ func (sm *SegmentedMemory) startMarkLocked(penalty int) int {
 	return applyPenalty(start, penalty) * sm.usableLocked() / 100
 }
 
+// ContextUsage is what a context meter reads: used is the size of the context
+// as it would be sent now — the whole compiled prompt, summary and in-flight
+// batch included, scaled to the provider's count — and foldAt is G, where the
+// fold starts. used over foldAt is how near the session is to its next fold,
+// and it falls when a fold has happened.
+//
+// used is not the fold trigger's own figure: the trigger leaves out what a
+// fold cannot shed and reads a byte bound while it is far from G. A meter
+// shows what the provider is sent, so used can stand a little over foldAt
+// while a fold is running.
+func (sm *SegmentedMemory) ContextUsage() (used, foldAt int) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	used = int(float64(sm.accurateTokensLocked(sm.compileLocked())) * sm.calibrationLocked())
+	return used, sm.startMarkLocked(0)
+}
+
 // releaseMarkLocked is the LWM: shed down to it — the profile's warning
 // threshold percent of the usable window. penalty lowers it in step with
 // startMarkLocked so the recovery pass sheds deeper. Must hold lock.

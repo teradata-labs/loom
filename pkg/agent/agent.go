@@ -1203,6 +1203,23 @@ func (a *Agent) GetContextState(sessionID string) *ContextState {
 	return state
 }
 
+// ContextUsage is how full a session's context is, for a meter: the context as
+// it would be sent now, and G, the size at which it is folded (see
+// SegmentedMemory.ContextUsage). ok is false for a session this agent does not
+// hold in memory, which has no context to measure.
+func (a *Agent) ContextUsage(sessionID string) (used, foldAt int, ok bool) {
+	sess, found := a.memory.GetSession(sessionID)
+	if !found {
+		return 0, 0, false
+	}
+	segMem, held := sess.SegmentedMem.(*SegmentedMemory)
+	if !held {
+		return 0, 0, false
+	}
+	used, foldAt = segMem.ContextUsage()
+	return used, foldAt, true
+}
+
 // ResetSessionContext clears the context window for a session, preserving ROM and
 // registered tools. Returns true if the session was found and reset, false otherwise.
 func (a *Agent) ResetSessionContext(sessionID string) bool {
