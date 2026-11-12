@@ -360,7 +360,11 @@ func (s *MultiAgentServer) SetToolRegistry(registry *toolregistry.Registry) {
 }
 
 // SetAgentRegistry injects the agent registry for workflow execution.
-// This should be called after NewMultiAgentServer() to enable ExecuteWorkflow RPC.
+// This should be called after NewMultiAgentServer() to enable ExecuteWorkflow RPC,
+// and before the gRPC server starts serving: the agent-preparation paths
+// (prepareAgent, ConfigureCommunication, ensureCommunicationTools) read the
+// registry and the communication components without the lock and assume they
+// are fixed once requests arrive.
 func (s *MultiAgentServer) SetAgentRegistry(registry *agent.Registry) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

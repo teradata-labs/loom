@@ -657,9 +657,12 @@ func WithoutSelfCorrection() Option {
 //
 // RegisterTool skips any suppressed name, so every tool a caller injects
 // after construction (the server's communication and restart tools among
-// them) honours it. The subsystems that also check suppression on their own
-// wiring are graph_memory, task_board, query_tool_result, recall,
-// manage_skills and load_pattern.
+// them) honours it, and so do the tools the constructor registers itself
+// (query_tool_result, recall). The subsystems that also check suppression
+// on their own wiring, before building the tool, are graph_memory,
+// task_board, manage_skills, load_pattern, the decision tool
+// (DecideToolName) and the Lua tools (RunLuaToolName,
+// ManageLuaScriptsToolName).
 func WithoutBuiltinTool(name string) Option {
 	return func(a *Agent) {
 		if name == "" {

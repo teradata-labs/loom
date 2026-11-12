@@ -58,9 +58,12 @@ spec:
 
 # Agent configs used (from $LOOM_DATA_DIR/agents/):
 # - finance-analyst.yaml, sales-analyst.yaml, ops-analyst.yaml: the branches
-# - presenter.yaml: the join agent; its tools.builtin must include
-#   shared_memory_read for the SharedMemory references to be usable, and the
-#   server's SharedMemory store must be the one wired into the orchestrator.
+# - presenter.yaml: the join agent. It needs shared_memory_read to follow the
+#   SharedMemory references: `looms workflow run` and `looms serve` register it
+#   on every workflow agent themselves (listing it under tools.builtin is not
+#   enough; the registry's builtin table does not know it), and an embedder
+#   must wire builtin.CommunicationTools against the store it gives the
+#   orchestrator. See docs/reference/workflow-join.md, Limits.
 #
 # Result metadata reports what the join did: join.mode, join.input_tokens,
 # join.budget_tokens, join.overflow, join.branches_stored/truncated/reduced.

@@ -415,6 +415,36 @@ func TestJoiner_Run_PreReduce_ReduceErrorFallsBackToTruncation(t *testing.T) {
 	assert.Contains(t, joinPrompt, "Branch output truncated")
 }
 
+// A reduce call the provider answered with empty content was still billed:
+// it counts in the join's calls and usage even though the entry falls back
+// to truncation.
+func TestJoiner_Run_PreReduce_EmptyReplyIsBilledAndTruncates(t *testing.T) {
+	joinLLM := newFuncLLMProvider(func(p string) (string, error) {
+		if isReducePrompt(p) {
+			return "", nil
+		}
+		return "DECK", nil
+	})
+	orch := newJoinTestOrchestrator(t, nil, true)
+	orch.RegisterAgent("presenter", createMockAgent(t, "presenter", joinLLM))
+	j := newJoiner(orch, &loomv1.JoinPolicy{AgentId: "presenter", MaxInputTokens: 1000}, loomv1.MergeStrategy_SUMMARY, "fork-join", "wf", "p")
+
+	outcome, err := j.run(context.Background(), branchResults(8000, 8000))
+	require.NoError(t, err)
+	assert.Equal(t, "DECK", outcome.Output)
+	assert.Equal(t, "0", outcome.Metadata["join.branches_reduced"])
+	assert.Equal(t, "2", outcome.Metadata["join.branches_truncated"], "both entries fall back to truncation")
+	reduces := 0
+	for _, p := range joinLLM.recorded() {
+		if isReducePrompt(p) {
+			reduces++
+		}
+	}
+	require.Equal(t, 2, reduces, "two reduce calls were made")
+	assert.Equal(t, int32(3), outcome.LLMCalls, "the join turn and both billed reduce calls")
+	assert.Equal(t, 3*30, outcome.Usage.TotalTokens, "the mock bills 30 tokens per call")
+}
+
 func TestJoiner_Run_PreReduce_NoReduceLLMTruncates(t *testing.T) {
 	// No orchestrator LLM and no join agent: nothing can reduce, so the
 	// budget is met by truncation and the join itself then fails for want

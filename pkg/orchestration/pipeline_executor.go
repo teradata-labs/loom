@@ -20,6 +20,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/catalog"
 	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 )
 
 // PipelineExecutor executes a pipeline pattern.
@@ -204,21 +205,15 @@ func (e *PipelineExecutor) Resume(ctx context.Context, ckpt *loomv1.WorkflowChec
 	if state.gateRevisions == nil {
 		state.gateRevisions = make(map[string]int32)
 	}
-	for _, snap := range ckpt.StageSnapshots {
-		state.stageOutputs = append(state.stageOutputs, snap.FullOutput)
-	}
-
-	// Restore agent-written SharedMemory and re-seed stage-N-output keys so
-	// shared_memory_read and truncation notices keep working after resume.
-	// A stage whose re-seed failed is rendered in full from here on, so the
-	// input the resumed stage gets is derived after the restore.
-	state.stashed = restoreWorkflowMemory(ctx, e.orchestrator, ckpt, workflowID)
-
+	// Validate the decision before anything touches the store. A REVISE
+	// discards the snapshots from its target on, so they are neither re-seeded
+	// nor carried into the resumed state (the iterative executor's Resume does
+	// the same): the store holds only the kept stages' keys when the revise
+	// target re-runs.
+	discardFrom := len(ckpt.StageSnapshots)
+	reviseTarget := -1
 	switch decision.Action {
 	case loomv1.GateAction_GATE_ACTION_APPROVE:
-		state.startIndex = gatedIndex + 1
-		state.currentInput = e.resumedInput(state, gatedIndex)
-
 	case loomv1.GateAction_GATE_ACTION_REVISE:
 		gate := e.pattern.Stages[gatedIndex].HitlGate
 		if gate == nil {
@@ -236,21 +231,38 @@ func (e *PipelineExecutor) Resume(ctx context.Context, ckpt *loomv1.WorkflowChec
 		if state.gateRevisions[gatedAgentID] > maxGateRevisions(gate) {
 			return nil, fmt.Errorf("resume: gate on stage %s exceeded max_revisions (%d)", gatedAgentID, maxGateRevisions(gate))
 		}
-		state.startIndex = target
-		state.stageOutputs = state.stageOutputs[:target]
-		if target < len(state.stashed) {
-			state.stashed = state.stashed[:target]
-		}
-		if target == 0 {
+		reviseTarget, discardFrom = target, target
+	default:
+		return nil, fmt.Errorf("resume: unsupported gate decision %s", decision.Action)
+	}
+	restoreCkpt := ckpt
+	if discardFrom < len(ckpt.StageSnapshots) {
+		restoreCkpt = proto.Clone(ckpt).(*loomv1.WorkflowCheckpoint)
+		restoreCkpt.StageSnapshots = restoreCkpt.StageSnapshots[:discardFrom]
+	}
+	for _, snap := range restoreCkpt.StageSnapshots {
+		state.stageOutputs = append(state.stageOutputs, snap.FullOutput)
+	}
+
+	// Restore agent-written SharedMemory and re-seed the kept stages'
+	// stage-N-output keys so shared_memory_read and truncation notices keep
+	// working after resume. A stage whose re-seed failed is rendered in full
+	// from here on, so the input the resumed stage gets is derived after the
+	// restore.
+	state.stashed = restoreWorkflowMemory(ctx, e.orchestrator, restoreCkpt, workflowID)
+
+	if reviseTarget < 0 {
+		state.startIndex = gatedIndex + 1
+		state.currentInput = e.resumedInput(state, gatedIndex)
+	} else {
+		state.startIndex = reviseTarget
+		if reviseTarget == 0 {
 			state.currentInput = e.pattern.InitialPrompt
 		} else {
-			state.currentInput = e.resumedInput(state, target-1)
+			state.currentInput = e.resumedInput(state, reviseTarget-1)
 		}
 		state.revisionFeedback = decision.Feedback
 		state.revisionSource = "human reviewer"
-
-	default:
-		return nil, fmt.Errorf("resume: unsupported gate decision %s", decision.Action)
 	}
 
 	e.orchestrator.logger.Info("Resuming pipeline execution",

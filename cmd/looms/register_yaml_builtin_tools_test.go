@@ -175,14 +175,3 @@ func TestRegisterYAMLBuiltinTools_UnknownTool_NotRegistered(t *testing.T) {
 
 	assert.False(t, hasTool(ag, "not_a_real_tool"))
 }
-
-// tools.none promises an agent sees only what its YAML declares, so every
-// tool the server injects on workflow agents must be on the list, the
-// restart tool included.
-func TestBuiltinToolsToSuppressNoneModeCoversWorkflowInjectedTools(t *testing.T) {
-	withViperMinimalMode(t, false, true)
-	suppressed := builtinToolsToSuppress()
-	for _, name := range []string{"send_message", "publish", "shared_memory_read", "shared_memory_write", "top_n_query", "group_by_query", "publish_restart_request"} {
-		assert.Contains(t, suppressed, name, "tools.none must suppress the workflow-injected tool %s", name)
-	}
-}

@@ -258,3 +258,82 @@ func TestIterativeGate_ReviseResume_DiscardsTheRevisedStagesStash(t *testing.T) 
 	assert.Contains(t, keysAtRevision, stageOutputKey("wf-revise-trim", 1), "the kept stage's stash is re-seeded")
 	assert.NotContains(t, keysAtRevision, stageOutputKey("wf-revise-trim", 2), "the revised stage's old stash is not restored")
 }
+
+// A plain-pipeline REVISE resume re-seeds only the stages it keeps, as the
+// iterative executor's Resume does: when the revise target re-runs, the store
+// holds the kept stage's stash and not the revised stage's old one.
+func TestPipelineGate_ReviseResume_DoesNotReseedTheRevisedStages(t *testing.T) {
+	store, err := communication.NewSharedMemoryStore(observability.NewNoOpTracer(), zaptest.NewLogger(t))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	orch := NewOrchestrator(Config{Logger: zaptest.NewLogger(t), Tracer: observability.NewNoOpTracer(), SharedMemory: store})
+	var designerCalls atomic.Int32
+	var keysAtRevision []string
+	orch.RegisterAgent("analyst", createMockAgent(t, "analyst", newRecordingLLMProvider("requirements: orders table")))
+	orch.RegisterAgent("designer", createMockAgent(t, "designer", newFuncLLMProvider(func(string) (string, error) {
+		if designerCalls.Add(1) == 2 {
+			keysAtRevision = workflowMemoryKeys(t, store)
+		}
+		return "CREATE TABLE orders (...)", nil
+	})))
+	orch.RegisterAgent("executor", createMockAgent(t, "executor", newRecordingLLMProvider("Table created successfully")))
+	pattern := gatedPipelinePattern(&loomv1.HITLGate{})
+	pattern.WorkflowId = "wf-plain-trim"
+
+	_, err = orch.ExecutePattern(context.Background(), pattern)
+	var suspended *WorkflowSuspended
+	require.ErrorAs(t, err, &suspended)
+	require.Equal(t, "pipeline", suspended.Checkpoint.PatternType)
+	require.Len(t, suspended.Checkpoint.StageSnapshots, 2, "the analyst and designer outputs are checkpointed")
+
+	_, err = orch.ResumeWorkflow(context.Background(), pattern, suspended.Checkpoint,
+		&loomv1.GateDecision{Action: loomv1.GateAction_GATE_ACTION_REVISE, Feedback: "Use MULTISET"})
+	var again *WorkflowSuspended
+	require.ErrorAs(t, err, &again, "the revised designer output reaches the gate again")
+	require.Equal(t, int32(2), designerCalls.Load())
+	assert.Contains(t, keysAtRevision, stageOutputKey("wf-plain-trim", 1), "the kept stage's stash is re-seeded")
+	assert.NotContains(t, keysAtRevision, stageOutputKey("wf-plain-trim", 2), "the revised stage's old stash is not restored")
+}
+
+// A REVISE resume on the iterative executor replays only the kept stages
+// into the structured context: the revise target's prompt carries the
+// analyst's stage-1 entry and not its own superseded stage-2 entry under
+// {{structured_context}}.
+func TestIterativeGate_ReviseResume_ReplaysOnlyKeptStagesIntoStructuredContext(t *testing.T) {
+	tracer, logger := observability.NewNoOpTracer(), zaptest.NewLogger(t)
+	bus := communication.NewMessageBus(communication.NewMemoryStore(0), nil, tracer, logger)
+	orch := NewOrchestrator(Config{Logger: logger, Tracer: tracer, MessageBus: bus})
+	designer := newRecordingLLMProvider(`{"outputs":{"ddl":"CREATE TABLE orders (...)"}}`)
+	orch.RegisterAgent("analyst", createMockAgent(t, "analyst", newRecordingLLMProvider(`{"outputs":{"requirements":["orders table"]}}`)))
+	orch.RegisterAgent("designer", createMockAgent(t, "designer", designer))
+	orch.RegisterAgent("executor", createMockAgent(t, "executor", newRecordingLLMProvider("Table created successfully")))
+	pattern := &loomv1.WorkflowPattern{WorkflowId: "wf-replay", Pattern: &loomv1.WorkflowPattern_Iterative{Iterative: &loomv1.IterativeWorkflowPattern{
+		Pipeline: &loomv1.PipelinePattern{
+			InitialPrompt: "Create an orders table",
+			Stages: []*loomv1.PipelineStage{
+				{AgentId: "analyst", PromptTemplate: "Analyze: {{previous}}"},
+				{AgentId: "designer", PromptTemplate: "Context: {{structured_context}}\nDesign DDL for: {{previous}}", HitlGate: &loomv1.HITLGate{}},
+				{AgentId: "executor", PromptTemplate: "Execute exactly: {{previous}}"},
+			},
+		},
+		MaxIterations: 1,
+		RestartPolicy: &loomv1.RestartPolicy{Enabled: true},
+	}}}
+
+	_, err := orch.ExecutePattern(context.Background(), pattern)
+	var suspended *WorkflowSuspended
+	require.ErrorAs(t, err, &suspended)
+	require.Equal(t, "iterative_pipeline", suspended.Checkpoint.PatternType, "the iterative executor ran, not a fallback")
+	first := designer.recordedPrompts()
+	require.Len(t, first, 1)
+	assert.Contains(t, first[0], `"stage-1"`, "the analyst's JSON is in the structured context on the first pass")
+
+	_, err = orch.ResumeWorkflow(context.Background(), pattern, suspended.Checkpoint,
+		&loomv1.GateDecision{Action: loomv1.GateAction_GATE_ACTION_REVISE, Feedback: "Use MULTISET"})
+	var again *WorkflowSuspended
+	require.ErrorAs(t, err, &again)
+	prompts := designer.recordedPrompts()
+	require.Len(t, prompts, 2, "the designer ran again after REVISE")
+	assert.Contains(t, prompts[1], `"stage-1"`, "the kept stage is replayed into the structured context")
+	assert.NotContains(t, prompts[1], `"stage-2"`, "the revised stage's superseded output is not replayed")
+}

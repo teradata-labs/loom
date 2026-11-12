@@ -525,7 +525,7 @@ message RestartResponse {
 3. **Reset SharedMemory** (if `reset_shared_memory = true`):
    ```go
    e.resetWorkflowNamespace(ctx)   // deletes this run's own keys only
-   e.reseedRetainedStages(ctx)     // puts the kept stages' stashes back
+   e.reseedRetainedStages(ctx, targetIndex) // puts the kept stages' stashes back (the stages before targetIndex)
    ```
 
 4. **Jump to Target Stage**:
@@ -1578,7 +1578,7 @@ restart_triggers:
 **Default**: `workflow.restart.<workflow-id>` (a topic per run)
 **Required**: No
 
-**Description**: Pub/sub topic for restart coordination messages. One MessageBus serves every workflow a `looms serve` runs, so by default each run listens on its own topic and a request from one run cannot restart another run whose stage ids match; the YAML loader leaves an omitted `restart_topic` empty so that default applies. The `publish_restart_request` tool, which `looms workflow run` and `looms serve` both register on workflow agents, follows the running pipeline's topic and refuses outside a run; the executor publishes its verdict on `<topic>.response.<stage>` (no in-tree consumer reads it yet). Set `restart_topic` only when an external publisher must know the topic in advance.
+**Description**: Pub/sub topic for restart coordination messages. One MessageBus serves every workflow a `looms serve` runs, so by default each run listens on its own topic and a request from one run cannot restart another run whose stage ids match; the YAML loader leaves an omitted `restart_topic` empty so that default applies. The `publish_restart_request` tool, which `looms workflow run` and `looms serve` both register on workflow agents, follows the running pipeline's topic and refuses outside a run; the executor publishes its verdict on `<topic>.response.<stage>` (no in-tree consumer reads it yet). Under the server's `tools.none` policy that tool is suppressed with the other workflow-injected tools (see the agent configuration reference), so an iterative run on such a server restarts only through an external publisher on its topic. Set `restart_topic` only when an external publisher must know the topic in advance.
 
 **Constraints**:
 - Leave it empty for a topic per run; every run that sets the same explicit value receives the others' requests

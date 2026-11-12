@@ -672,6 +672,14 @@ func (j *joiner) fitByReduction(ctx context.Context, receiver *agent.Agent, bran
 			b := &branches[i]
 			reduced, u, err := j.reduceOne(ctx, reduceLLM, b, share)
 			if err != nil {
+				if u.TotalTokens > 0 || u.CostUSD > 0 {
+					// The provider answered and billed the call but returned no
+					// usable content: the call still counts against the run.
+					mu.Lock()
+					usage = addUsage(usage, u)
+					calls++
+					mu.Unlock()
+				}
 				j.orch.logger.Warn("entry pre-reduce failed; truncating that entry instead",
 					zap.String("workflow_id", j.workflowID),
 					zap.String("scope", j.scope),
