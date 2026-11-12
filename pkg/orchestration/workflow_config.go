@@ -433,16 +433,20 @@ func convertPipelinePattern(spec map[string]interface{}, logger *zap.Logger) (*l
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrInvalidWorkflow, err.Error())
 	}
-	if historyPolicy != nil && !passFullHistory {
-		uses := false
-		for _, st := range stages {
-			if strings.Contains(st.PromptTemplate, "{{history}}") {
-				uses = true
+	// Dead configuration is rejected rather than carried: the block applies
+	// only where a stage renders history, decided with the executors' own
+	// predicate (a {{history}} placeholder, or pass_full_history appending to a
+	// later stage whose template names neither placeholder).
+	if historyPolicy != nil {
+		renders := false
+		for i, st := range stages {
+			if stageRendersHistory(st, passFullHistory, i) {
+				renders = true
 				break
 			}
 		}
-		if !uses {
-			return nil, fmt.Errorf("%w: spec.history has no effect: no stage prompt_template uses {{history}} and pass_full_history is false", ErrInvalidWorkflow)
+		if !renders {
+			return nil, fmt.Errorf("%w: spec.history has no effect: no stage could render history (no prompt_template uses {{history}}, and pass_full_history appends history only to a later stage whose template names neither {{history}} nor {{previous}})", ErrInvalidWorkflow)
 		}
 	}
 

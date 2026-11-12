@@ -301,6 +301,20 @@ func snapshotWorkflowMemory(ctx context.Context, o *Orchestrator, workflowID str
 // outputs are re-seeded under this workflow's own keys. Best-effort: the
 // result says, per stage snapshot, whether its key is in the store, so the
 // resumed run points only at keys that exist and renders the rest in full.
+// trimCheckpoint returns the checkpoint with only its first keep stage
+// snapshots: a REVISE resume discards the stages from its target on, so they
+// are neither re-seeded nor replayed. Both executors' Resume go through it so
+// they cannot drift apart again. The caller's checkpoint is left untouched; a
+// clone is returned only when something is dropped.
+func trimCheckpoint(ckpt *loomv1.WorkflowCheckpoint, keep int) *loomv1.WorkflowCheckpoint {
+	if keep >= len(ckpt.StageSnapshots) {
+		return ckpt
+	}
+	trimmed := proto.Clone(ckpt).(*loomv1.WorkflowCheckpoint)
+	trimmed.StageSnapshots = trimmed.StageSnapshots[:keep]
+	return trimmed
+}
+
 func restoreWorkflowMemory(ctx context.Context, o *Orchestrator, ckpt *loomv1.WorkflowCheckpoint, workflowID string) []bool {
 	seeded := make([]bool, len(ckpt.StageSnapshots))
 	if o.sharedMemory == nil {

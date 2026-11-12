@@ -125,6 +125,26 @@ spec:
     - agent_id: b
       prompt_template: "B: {{previous}}"
 `, "spec.history has no effect"},
+		{"pass_full_history with every later template naming previous", `
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: dead-history-pass-full
+spec:
+  type: pipeline
+  initial_prompt: "go"
+  pass_full_history: true
+  history:
+    max_input_tokens: 10
+    overflow_strategy: fail
+  stages:
+    - agent_id: a
+      prompt_template: "A"
+    - agent_id: b
+      prompt_template: "B: {{previous}}"
+    - agent_id: c
+      prompt_template: "C: {{previous}}"
+`, "spec.history has no effect"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

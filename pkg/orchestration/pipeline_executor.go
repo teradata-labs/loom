@@ -20,7 +20,6 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/catalog"
 	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
-	"google.golang.org/protobuf/proto"
 )
 
 // PipelineExecutor executes a pipeline pattern.
@@ -235,11 +234,7 @@ func (e *PipelineExecutor) Resume(ctx context.Context, ckpt *loomv1.WorkflowChec
 	default:
 		return nil, fmt.Errorf("resume: unsupported gate decision %s", decision.Action)
 	}
-	restoreCkpt := ckpt
-	if discardFrom < len(ckpt.StageSnapshots) {
-		restoreCkpt = proto.Clone(ckpt).(*loomv1.WorkflowCheckpoint)
-		restoreCkpt.StageSnapshots = restoreCkpt.StageSnapshots[:discardFrom]
-	}
+	restoreCkpt := trimCheckpoint(ckpt, discardFrom)
 	for _, snap := range restoreCkpt.StageSnapshots {
 		state.stageOutputs = append(state.stageOutputs, snap.FullOutput)
 	}

@@ -21,7 +21,6 @@ import (
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
-	"google.golang.org/protobuf/proto"
 )
 
 // Stage output truncation to prevent token bloat
@@ -1690,11 +1689,7 @@ func (e *IterativePipelineExecutor) Resume(ctx context.Context, ckpt *loomv1.Wor
 	// the resumed loop starts; remember which stages' keys are in the store.
 	// A REVISE discards the snapshots from its target on, so they are
 	// neither re-seeded nor carried into the resumed state.
-	restoreCkpt := ckpt
-	if discardFrom < len(ckpt.StageSnapshots) {
-		restoreCkpt = proto.Clone(ckpt).(*loomv1.WorkflowCheckpoint)
-		restoreCkpt.StageSnapshots = restoreCkpt.StageSnapshots[:discardFrom]
-	}
+	restoreCkpt := trimCheckpoint(ckpt, discardFrom)
 	state.snapshots = restoreCkpt.StageSnapshots // the context replay sees only the kept stages
 	seeded := restoreWorkflowMemory(ctx, e.orchestrator, restoreCkpt, e.workflowID)
 	state.stashed = make(map[string]bool, len(seeded))

@@ -7,8 +7,11 @@ package server
 
 import (
 	"context"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -90,6 +93,16 @@ func TestResolveWorkflowPattern(t *testing.T) {
 		_, err := s.resolveWorkflowPattern(&loomv1.ExecuteWorkflowRequest{WorkflowRef: "does-not-exist"}, reg)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "not found")
+	})
+
+	t.Run("a stored workflow the loader rejects is InvalidArgument, not Internal", func(t *testing.T) {
+		stale := strings.Replace(testDebateWorkflowYAML, "spec:\n", "spec:\n  merge_strategy: synthesis\n", 1)
+		require.NotEqual(t, testDebateWorkflowYAML, stale, "the fixture has a spec block to extend")
+		writeTestWorkflow(t, dir, "stale-debate", stale)
+		_, err := s.resolveWorkflowPattern(&loomv1.ExecuteWorkflowRequest{WorkflowRef: "stale-debate"}, reg)
+		require.Error(t, err)
+		assert.Equal(t, codes.InvalidArgument, status.Code(err), "the caller's file to fix, not a server fault")
+		assert.Contains(t, err.Error(), "merge_strategy")
 	})
 }
 

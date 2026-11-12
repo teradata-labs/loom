@@ -122,7 +122,7 @@ spec:
     overflow_strategy: pre_reduce    # pre_reduce (default) | truncate | fail
 ```
 
-`history: {}` enables the budget with defaults. The block is rejected when no stage uses `{{history}}` and `pass_full_history` is false, since it could never apply. An iterative workflow's nested `pipeline` takes the same block; the iterative executor renders history from the full outputs and bounds them once, at render time.
+`history: {}` enables the budget with defaults. The block is rejected when no stage could render history (no template uses `{{history}}`, and `pass_full_history` would append to no later stage because every later template names `{{previous}}`), since it could never apply. An iterative workflow's nested `pipeline` takes the same block; the iterative executor renders history from the full outputs and bounds them once, at render time.
 
 The pre-reduce LLM is the stage agent's compressor role (its main LLM when none is configured). The reduce calls are added to the run's cost and counted in `history.reduce_llm_calls`.
 
@@ -196,7 +196,7 @@ The loader rejects dead configuration rather than carrying it:
 | debate `join.agent_id` | `spec.join.agent_id is not used by debate: moderator_agent_id is the join agent` |
 | debate `merge_strategy` | `spec.merge_strategy has no effect on debate` |
 | `history: 5` / `history:` (nil) | `spec.history must be an object` |
-| `history` with no `{{history}}` stage and `pass_full_history: false` | `spec.history has no effect` |
+| `history` when no stage could render history (no `{{history}}`; under `pass_full_history`, every later template names `{{previous}}`) | `spec.history has no effect` |
 | unknown key | `spec.join.<key> is not a join field` / `spec.history.<key> is not a history field` |
 | `max_input_tokens: 10.5` | `must be a whole number` |
 
