@@ -137,11 +137,16 @@ func IsOpenAIContextTooLong(statusCode int, body []byte) bool {
 	//
 	// Servers that set no code state the refusal in their own words: OpenAI and
 	// vLLM "This model's maximum context length is N tokens", Mistral "too large
-	// for model with N maximum context length", TGI "`inputs` tokens +
-	// `max_new_tokens` must be <= N".
+	// for model with N maximum context length". TGI has two (router
+	// validation): "`inputs` tokens + `max_new_tokens` must be <= N" when the
+	// prompt and the reply together pass --max-total-tokens, and "`inputs`
+	// must have less than N tokens" when the prompt alone passes
+	// --max-input-tokens. Its "`max_new_tokens` must be <= N" is about the
+	// reply size alone and is not matched: a shorter prompt cannot answer it.
 	return strings.Contains(msg, "prompt is too long") ||
 		strings.Contains(msg, "exceed context limit") ||
 		strings.Contains(msg, "context_length_exceeded") ||
 		strings.Contains(msg, "maximum context length") ||
-		strings.Contains(msg, "`inputs` tokens + `max_new_tokens` must be <=")
+		strings.Contains(msg, "`inputs` tokens + `max_new_tokens` must be <=") ||
+		strings.Contains(msg, "`inputs` must have less than")
 }
