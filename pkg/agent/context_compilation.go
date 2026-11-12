@@ -1353,6 +1353,7 @@ func (sm *SegmentedMemory) evictLocked(ctx context.Context, b int64) bool {
 				zap.String("session_id", sm.sessionID),
 				zap.Int64("boundary_turn", b),
 				zap.Error(err))
+			sm.compactPersistErr = err
 			return false
 		}
 	}
@@ -1641,6 +1642,7 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 				zap.Int64("boundary_turn", b),
 				zap.Int("version", n1),
 				zap.Error(err))
+			sm.compactPersistErr = err
 			return false
 		}
 	}

@@ -194,6 +194,11 @@ type SegmentedMemory struct {
 	// "nothing to fold".
 	foldAbortedNoSummary bool
 
+	// compactPersistErr records the latest failure to persist an evict or fold
+	// (relief logs it and carries on), so a manual Compact can report that nothing
+	// was saved instead of an ordinary no-op.
+	compactPersistErr error
+
 	// lastAutoCompactTurn is the turn of the latest AutoCompact attempt, which
 	// spaces attempts out so a context the kept turns keep above the threshold
 	// does not pay a summary call every turn.

@@ -40,6 +40,11 @@ var ErrCompactionBusy = errors.New("compaction already in progress for this sess
 // was compacted. History is untouched; trying again later may work.
 var ErrSummaryUnavailable = errors.New("could not summarize the older conversation")
 
+// ErrCompactionNotSaved is returned when compacting failed to write to the
+// session store and nothing else was compacted. The summary call may already
+// have been paid for; history is untouched.
+var ErrCompactionNotSaved = errors.New("could not save the compaction")
+
 // CompactOptions steers a manual compaction.
 type CompactOptions struct {
 	// Focus is optional user guidance on what the summary must keep.
@@ -111,19 +116,26 @@ func (sm *SegmentedMemory) Compact(ctx context.Context, opts CompactOptions) (Co
 		return res, nil
 	}
 
+	sm.foldAbortedNoSummary, sm.compactPersistErr = false, nil
 	res.ToolResultsStubbed = sm.evictLocked(ctx, boundary)
 	// A requested compaction must not report success after dropping turns with
 	// only a placeholder line: without a real summary the fold is skipped.
-	sm.foldRequireSummary, sm.foldAbortedNoSummary = true, false
+	sm.foldRequireSummary = true
 	res.TurnsFolded = sm.foldLocked(ctx, boundary)
 	sm.foldRequireSummary = false
-	summaryMissing := sm.foldAbortedNoSummary
-	sm.foldAbortedNoSummary = false
+	summaryMissing, persistErr := sm.foldAbortedNoSummary, sm.compactPersistErr
+	sm.foldAbortedNoSummary, sm.compactPersistErr = false, nil
 	res.Compacted = res.ToolResultsStubbed || res.TurnsFolded
 	res.TokensAfter = sm.estimateLocked()
 	res.SummaryVersion = sm.summary.n
-	if summaryMissing && !res.Compacted {
-		return res, ErrSummaryUnavailable
+	if !res.Compacted {
+		// Nothing changed: say why rather than report an ordinary no-op.
+		if persistErr != nil {
+			return res, fmt.Errorf("%w: %w", ErrCompactionNotSaved, persistErr)
+		}
+		if summaryMissing {
+			return res, ErrSummaryUnavailable
+		}
 	}
 
 	zap.L().Info("compaction: manual compact complete",
