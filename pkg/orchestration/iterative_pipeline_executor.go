@@ -761,8 +761,8 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 func (e *IterativePipelineExecutor) boundStagePromptWithStructuredContext(ctx context.Context, stage *loomv1.PipelineStage, stageNum int, previousOutput string, allOutputs []string, stashed []bool) (string, *handoffFit, error) {
 	executor := NewPipelineExecutor(e.orchestrator, e.pattern.Pipeline, e.workflowID)
 	// The same header the plain pipeline gives its stages: the keys of the
-	// outputs so far and, from the first stage on, the write rule.
-	header := executor.stageHeader(len(allOutputs))
+	// stashed outputs so far and, from the first stage on, the write rule.
+	header := executor.stageHeader(stashed)
 	return executor.boundStagePrompt(ctx, stage, stageNum, previousOutput, allOutputs, stashed, e.structuredContext, header)
 }
 
@@ -1695,6 +1695,7 @@ func (e *IterativePipelineExecutor) Resume(ctx context.Context, ckpt *loomv1.Wor
 		restoreCkpt = proto.Clone(ckpt).(*loomv1.WorkflowCheckpoint)
 		restoreCkpt.StageSnapshots = restoreCkpt.StageSnapshots[:discardFrom]
 	}
+	state.snapshots = restoreCkpt.StageSnapshots // the context replay sees only the kept stages
 	seeded := restoreWorkflowMemory(ctx, e.orchestrator, restoreCkpt, e.workflowID)
 	state.stashed = make(map[string]bool, len(seeded))
 	for i, snap := range restoreCkpt.StageSnapshots {

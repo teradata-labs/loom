@@ -937,6 +937,8 @@ func (e *IterativePipelineExecutor) storeStageOutputInMemory(
 
 **Format**: `<workflow-id>-stage-{N}-output`
 
+The unscoped `stage-{N}-output` of earlier releases is neither written nor read. A stored prompt that hardcodes it must change: use the key the stage prompt's `## AVAILABLE CONTEXT` header lists (only stashed outputs are listed), or stop naming keys in prompts.
+
 **Where**:
 - `N`: 1-based stage number (not 0-based)
 
@@ -1576,7 +1578,7 @@ restart_triggers:
 **Default**: `workflow.restart.<workflow-id>` (a topic per run)
 **Required**: No
 
-**Description**: Pub/sub topic for restart coordination messages. One MessageBus serves every workflow a `looms serve` runs, so by default each run listens on its own topic and a request from one run cannot restart another run whose stage ids match; the YAML loader leaves an omitted `restart_topic` empty so that default applies. The `publish_restart_request` tool, which `looms workflow run` and `looms serve` both register on workflow agents, follows the running pipeline's topic and refuses outside a run; the executor answers on `<topic>.response.<stage>`. Set `restart_topic` only when an external publisher must know the topic in advance.
+**Description**: Pub/sub topic for restart coordination messages. One MessageBus serves every workflow a `looms serve` runs, so by default each run listens on its own topic and a request from one run cannot restart another run whose stage ids match; the YAML loader leaves an omitted `restart_topic` empty so that default applies. The `publish_restart_request` tool, which `looms workflow run` and `looms serve` both register on workflow agents, follows the running pipeline's topic and refuses outside a run; the executor publishes its verdict on `<topic>.response.<stage>` (no in-tree consumer reads it yet). Set `restart_topic` only when an external publisher must know the topic in advance.
 
 **Constraints**:
 - Leave it empty for a topic per run; every run that sets the same explicit value receives the others' requests

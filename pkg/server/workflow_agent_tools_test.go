@@ -18,7 +18,10 @@ import (
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 // The agents ExecuteWorkflow loads come from the registry, whose builtin
@@ -177,17 +180,23 @@ func TestWireSendMessageRegistry(t *testing.T) {
 	assert.True(t, wireSendMessageRegistry(withQueue, fakeAgentRegistry{}, zaptest.NewLogger(t)))
 }
 
-// An agent the server already wired is not re-registered on later workflow
-// runs, even when its config suppresses one of the injected names so the
-// name check alone would keep finding a tool "missing".
-func TestEnsureCommunicationTools_MarksTheAgentOnce(t *testing.T) {
+// An agent whose config suppresses one of the injected names (RegisterTool
+// skips it) must still be wired once: the guard treats a suppressed name as
+// satisfied, so later workflow runs neither re-register nor log again, and
+// nothing about the agent is retained by the server.
+func TestEnsureCommunicationTools_SuppressedNameIsInjectedOnce(t *testing.T) {
+	core, logs := observer.New(zapcore.InfoLevel)
 	bus := communication.NewMessageBus(communication.NewMemoryStore(0), nil, observability.NewNoOpTracer(), zaptest.NewLogger(t))
-	s := &MultiAgentServer{logger: zaptest.NewLogger(t), agents: map[string]*agent.Agent{}, messageBus: bus}
-	ag := agent.NewAgent(nil, &mockLLMForMultiAgent{}, agent.WithName("presenter"))
+	s := &MultiAgentServer{logger: zap.New(core), agents: map[string]*agent.Agent{}, messageBus: bus}
+	ag := agent.NewAgent(nil, &mockLLMForMultiAgent{}, agent.WithName("presenter"), agent.WithoutBuiltinTool("publish"))
+
 	s.ensureCommunicationTools(ag, "presenter")
-	_, marked := s.commToolsInjected.Load(ag)
-	assert.True(t, marked)
+	assert.NotContains(t, ag.ListTools(), "publish", "the suppressed name stays out")
+	assert.Contains(t, ag.ListTools(), "publish_restart_request")
 	count := ag.ToolCount()
 	s.ensureCommunicationTools(ag, "presenter")
+	s.ensureCommunicationTools(ag, "presenter")
 	assert.Equal(t, count, ag.ToolCount())
+	assert.Equal(t, 1, logs.FilterMessage("Communication tools injected into workflow agent").Len(),
+		"a suppressed builtin name must not cause a re-registration and a log line on every run")
 }

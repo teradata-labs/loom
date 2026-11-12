@@ -14,7 +14,7 @@ import (
 // context header lists each prior stage's key and tells the agent how to fetch
 // full upstream output (the recovery path when {{previous}} is truncated).
 func TestPipelineSharedMemoryHeader(t *testing.T) {
-	h := (&PipelineExecutor{workflowID: "pipeline-7f3a9c1e"}).buildSharedMemoryContextHeader(3)
+	h := (&PipelineExecutor{workflowID: "pipeline-7f3a9c1e"}).buildSharedMemoryContextHeader([]bool{true, true, true})
 	for _, key := range []string{"pipeline-7f3a9c1e-stage-1-output", "pipeline-7f3a9c1e-stage-2-output", "pipeline-7f3a9c1e-stage-3-output"} {
 		if !strings.Contains(h, "`"+key+"`") {
 			t.Errorf("header missing key %q:\n%s", key, h)
@@ -28,6 +28,20 @@ func TestPipelineSharedMemoryHeader(t *testing.T) {
 	}
 	if !strings.Contains(h, "should start with `pipeline-7f3a9c1e-`") {
 		t.Errorf("header should tell the agent to prefix its own keys with the workflow id:\n%s", h)
+	}
+
+	// A stage whose stash Put failed has no key to list; with none stashed
+	// the header is the write rule alone.
+	partial := (&PipelineExecutor{workflowID: "pipeline-7f3a9c1e"}).buildSharedMemoryContextHeader([]bool{true, false, true})
+	if strings.Contains(partial, "`pipeline-7f3a9c1e-stage-2-output`") {
+		t.Errorf("header must not list a key the store does not hold:\n%s", partial)
+	}
+	if !strings.Contains(partial, "`pipeline-7f3a9c1e-stage-3-output`") {
+		t.Errorf("header should still list the stashed keys:\n%s", partial)
+	}
+	none := (&PipelineExecutor{workflowID: "pipeline-7f3a9c1e"}).buildSharedMemoryContextHeader([]bool{false, false})
+	if strings.Contains(none, "Available keys") || !strings.Contains(none, "## SHARED MEMORY") {
+		t.Errorf("with nothing stashed the header is the write rule alone:\n%s", none)
 	}
 }
 

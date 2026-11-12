@@ -675,6 +675,12 @@ func WithoutBuiltinTool(name string) Option {
 // via WithoutBuiltinTool. Read-only; safe under the agent's normal mutex
 // discipline because the suppression map is set at construction and not
 // mutated afterwards.
+// IsBuiltinToolSuppressed reports whether RegisterTool would skip a tool of
+// this name because the agent was built WithoutBuiltinTool(name). Callers
+// that inject a standard tool set use it to tell "already present" from
+// "suppressed" without re-registering on every call.
+func (a *Agent) IsBuiltinToolSuppressed(name string) bool { return a.isBuiltinToolSuppressed(name) }
+
 func (a *Agent) isBuiltinToolSuppressed(name string) bool {
 	if len(a.suppressedBuiltinTools) == 0 {
 		return false

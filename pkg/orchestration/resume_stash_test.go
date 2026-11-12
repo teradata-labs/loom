@@ -8,6 +8,7 @@ package orchestration
 import (
 	"context"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -19,10 +20,11 @@ import (
 )
 
 // gatedOrchestrator builds the three-agent gated pipeline harness with the
-// designer's reply under test control and an optional store. It carries a
-// MessageBus so an iterative pattern with restarts enabled runs the iterative
-// executor itself (without a restart policy that executor falls back to the
-// plain pipeline, which would leave its own code untested).
+// designer's reply under test control and an optional store. The iterative
+// executor runs a pattern itself only when its restart policy is enabled
+// (iterativeGated sets that; without it the executor falls back to the plain
+// pipeline and its own code goes untested); the MessageBus lets that restart
+// subscription attach instead of logging that no bus is available.
 func gatedOrchestrator(t *testing.T, designerReply string, store *communication.SharedMemoryStore) (*Orchestrator, *recordingLLMProvider, *recordingLLMProvider, *recordingLLMProvider) {
 	t.Helper()
 	tracer, logger := observability.NewNoOpTracer(), zaptest.NewLogger(t)
@@ -144,11 +146,12 @@ func TestPipelineGate_ResumeWithFailedReseed_PassesFullOutput(t *testing.T) {
 func TestGate_ReviseResume_PreviousIsCutWhenReseeded(t *testing.T) {
 	long := strings.Repeat("requirements: orders table\n", 400) // > MaxStageOutputBytes
 	cases := []struct {
-		name    string
-		pattern func() *loomv1.WorkflowPattern
+		name        string
+		pattern     func() *loomv1.WorkflowPattern
+		patternType string // the executor that ran, read from the checkpoint
 	}{
-		{"pipeline", func() *loomv1.WorkflowPattern { return gatedPipelinePattern(&loomv1.HITLGate{}) }},
-		{"iterative-own-resume", func() *loomv1.WorkflowPattern { return iterativeGated(&loomv1.HITLGate{}, "") }},
+		{"pipeline", func() *loomv1.WorkflowPattern { return gatedPipelinePattern(&loomv1.HITLGate{}) }, "pipeline"},
+		{"iterative-own-resume", func() *loomv1.WorkflowPattern { return iterativeGated(&loomv1.HITLGate{}, "") }, "iterative_pipeline"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -165,6 +168,7 @@ func TestGate_ReviseResume_PreviousIsCutWhenReseeded(t *testing.T) {
 			_, err = orch.ExecutePattern(context.Background(), pattern)
 			var suspended *WorkflowSuspended
 			require.ErrorAs(t, err, &suspended)
+			require.Equal(t, tc.patternType, suspended.Checkpoint.PatternType, "the intended executor ran, not a fallback")
 			wfID := suspended.Checkpoint.WorkflowId
 			require.NotEmpty(t, wfID)
 			first := designer.recordedPrompts()
@@ -185,4 +189,72 @@ func TestGate_ReviseResume_PreviousIsCutWhenReseeded(t *testing.T) {
 			assert.NotContains(t, revised, long, "the full analyst output must not be inline")
 		})
 	}
+}
+
+// An inline-handler REVISE on the plain pipeline derives the revise target's
+// {{previous}} from the stash record, as the resume does: when that stage's
+// stash Put failed (here: the store was closed before the run) the target
+// gets the full output and no notice naming a key the store does not hold.
+func TestPipelineGate_InLoopRevise_FailedStash_PassesFullOutput(t *testing.T) {
+	long := strings.Repeat("requirements: orders table\n", 400) // > MaxStageOutputBytes
+	store, err := communication.NewSharedMemoryStore(observability.NewNoOpTracer(), zaptest.NewLogger(t))
+	require.NoError(t, err)
+	require.NoError(t, store.Close()) // every Put fails: nothing is stashed
+	handler := &scriptedHITLHandler{decisions: []*loomv1.GateDecision{
+		{Action: loomv1.GateAction_GATE_ACTION_REVISE, Feedback: "Use MULTISET"},
+		{Action: loomv1.GateAction_GATE_ACTION_APPROVE},
+	}}
+	orch := NewOrchestrator(Config{Logger: zaptest.NewLogger(t), Tracer: observability.NewNoOpTracer(), SharedMemory: store, HITLHandler: handler})
+	designer := newRecordingLLMProvider("CREATE TABLE orders (...)", "CREATE MULTISET TABLE orders (...)")
+	orch.RegisterAgent("analyst", createMockAgent(t, "analyst", newRecordingLLMProvider(long)))
+	orch.RegisterAgent("designer", createMockAgent(t, "designer", designer))
+	orch.RegisterAgent("executor", createMockAgent(t, "executor", newRecordingLLMProvider("Table created successfully")))
+
+	pattern := gatedPipelinePattern(&loomv1.HITLGate{})
+	pattern.WorkflowId = "wf-inloop-revise"
+	_, err = orch.ExecutePattern(context.Background(), pattern)
+	require.NoError(t, err)
+	prompts := designer.recordedPrompts()
+	require.Len(t, prompts, 2, "the designer ran again after the inline REVISE")
+	assert.Contains(t, prompts[0], long)
+	assert.NotContains(t, prompts[0], "OUTPUT TRUNCATED")
+	assert.Contains(t, prompts[1], "Use MULTISET")
+	assert.Contains(t, prompts[1], long, "the stash failed, so the revision gets the full output")
+	assert.NotContains(t, prompts[1], "OUTPUT TRUNCATED")
+	assert.NotContains(t, prompts[1], stageOutputKey("wf-inloop-revise", 1), "no notice naming a key the store does not hold")
+}
+
+// A REVISE resume on the iterative executor restores only the stages before
+// the revise target: the discarded stage's old stash is not put back, so the
+// revised stage never sees a stale copy of its own earlier output.
+func TestIterativeGate_ReviseResume_DiscardsTheRevisedStagesStash(t *testing.T) {
+	store, err := communication.NewSharedMemoryStore(observability.NewNoOpTracer(), zaptest.NewLogger(t))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	tracer, logger := observability.NewNoOpTracer(), zaptest.NewLogger(t)
+	orch := NewOrchestrator(Config{Logger: logger, Tracer: tracer, SharedMemory: store})
+	var designerCalls atomic.Int32
+	var keysAtRevision []string
+	orch.RegisterAgent("analyst", createMockAgent(t, "analyst", newRecordingLLMProvider("requirements: orders table")))
+	orch.RegisterAgent("designer", createMockAgent(t, "designer", newFuncLLMProvider(func(string) (string, error) {
+		if designerCalls.Add(1) == 2 {
+			keysAtRevision = workflowMemoryKeys(t, store)
+		}
+		return "CREATE TABLE orders (...)", nil
+	})))
+	orch.RegisterAgent("executor", createMockAgent(t, "executor", newRecordingLLMProvider("Table created successfully")))
+
+	pattern := iterativeGated(&loomv1.HITLGate{}, "wf-revise-trim")
+	_, err = orch.ExecutePattern(context.Background(), pattern)
+	var suspended *WorkflowSuspended
+	require.ErrorAs(t, err, &suspended)
+	require.Equal(t, "iterative_pipeline", suspended.Checkpoint.PatternType)
+
+	_, err = orch.ResumeWorkflow(context.Background(), pattern, suspended.Checkpoint,
+		&loomv1.GateDecision{Action: loomv1.GateAction_GATE_ACTION_REVISE, Feedback: "Use MULTISET"})
+	var again *WorkflowSuspended
+	require.ErrorAs(t, err, &again)
+	require.Equal(t, int32(2), designerCalls.Load())
+	assert.Contains(t, keysAtRevision, stageOutputKey("wf-revise-trim", 1), "the kept stage's stash is re-seeded")
+	assert.NotContains(t, keysAtRevision, stageOutputKey("wf-revise-trim", 2), "the revised stage's old stash is not restored")
 }

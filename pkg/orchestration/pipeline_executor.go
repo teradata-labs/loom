@@ -272,14 +272,22 @@ func (e *PipelineExecutor) deriveInputFromOutput(stageNum int, fullOutput string
 	return out
 }
 
-// resumedInput is the {{previous}} copy a resumed run hands the next stage:
-// cut with the key notice when the resume put that stage's key back, the
-// full output otherwise (no store, or a re-seed that failed).
+// resumedInput is the {{previous}} copy a resumed run hands the next stage.
 func (e *PipelineExecutor) resumedInput(state *pipelineState, idx int) string {
-	if idx < len(state.stashed) && state.stashed[idx] {
-		return e.deriveInputFromOutput(idx+1, state.stageOutputs[idx])
+	return e.previousInput(state.stageOutputs, state.stashed, idx)
+}
+
+// previousInput is the {{previous}} copy the stage after idx receives: cut
+// with the key notice when stage idx's full output is in the store (its
+// stash or re-seed succeeded), the full output otherwise (no store, a stash
+// Put that failed, a re-seed that failed). Every path that derives
+// {{previous}} after the first pass (resume, in-loop revision) uses it, so a
+// notice never names a key the store does not hold.
+func (e *PipelineExecutor) previousInput(stageOutputs []string, stashed []bool, idx int) string {
+	if idx < len(stashed) && stashed[idx] {
+		return e.deriveInputFromOutput(idx+1, stageOutputs[idx])
 	}
-	return state.stageOutputs[idx]
+	return stageOutputs[idx]
 }
 
 // buildCheckpoint captures the durable suspension state at the gate on stage
@@ -344,7 +352,7 @@ func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time,
 		// agent's budget. Revision feedback (from a HITL gate REVISE
 		// decision) is threaded into the first stage executed after the
 		// jump, then consumed; the call also blanks stray placeholders.
-		prompt, historyFit, err := e.boundStagePrompt(ctx, stage, stageNum, currentInput, stageOutputs, stashed, nil, e.stageHeader(len(stageOutputs)))
+		prompt, historyFit, err := e.boundStagePrompt(ctx, stage, stageNum, currentInput, stageOutputs, stashed, nil, e.stageHeader(stashed))
 		if err != nil {
 			e.orchestrator.tracer.EndSpan(stageSpan)
 			return nil, err
@@ -528,7 +536,7 @@ func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time,
 				if target == 0 {
 					currentInput = e.pattern.InitialPrompt
 				} else {
-					currentInput = e.deriveInputFromOutput(target, stageOutputs[target-1])
+					currentInput = e.previousInput(stageOutputs, stashed, target-1)
 				}
 				state.revisionFeedback = decision.Feedback
 				state.revisionSource = "human reviewer"
@@ -610,11 +618,11 @@ func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time,
 // history entry was cut, and the write rule for its own keys; before the
 // first stage it is the write rule alone. Empty without a store. The
 // iterative executor uses the same builder.
-func (e *PipelineExecutor) stageHeader(priorStages int) string {
+func (e *PipelineExecutor) stageHeader(stashed []bool) string {
 	if e.orchestrator.sharedMemory == nil {
 		return ""
 	}
-	return e.buildSharedMemoryContextHeader(priorStages)
+	return e.buildSharedMemoryContextHeader(stashed)
 }
 
 // storeStageOutputInMemory stashes a stage's full output in the WORKFLOW
@@ -644,9 +652,17 @@ func (e *PipelineExecutor) storeStageOutputInMemory(ctx context.Context, key, ag
 // must still hear the write rule: a key it writes without the workflow
 // prefix is shared store state that no checkpoint carries and no reset
 // clears, so the hint cannot wait for the second stage.
-func (e *PipelineExecutor) buildSharedMemoryContextHeader(stageCount int) string {
+func (e *PipelineExecutor) buildSharedMemoryContextHeader(stashed []bool) string {
+	// Only the keys that are in the store are listed: a stage whose stash
+	// Put failed is handed over in full and has no key to fetch.
+	var keys []string
+	for i, ok := range stashed {
+		if ok {
+			keys = append(keys, stageOutputKey(e.workflowID, i+1))
+		}
+	}
 	var b strings.Builder
-	if stageCount == 0 {
+	if len(keys) == 0 {
 		b.WriteString("## SHARED MEMORY (namespace \"workflow\")\n")
 		b.WriteString(sharedMemoryWriteHint(e.workflowID))
 		b.WriteString("\n---\n\n")
@@ -656,8 +672,8 @@ func (e *PipelineExecutor) buildSharedMemoryContextHeader(stageCount int) string
 	b.WriteString("Full outputs from previous stages are stored in SharedMemory namespace \"workflow\".\n")
 	b.WriteString("Use `shared_memory_read(namespace=\"workflow\", key=\"<key>\")` with one of the keys below to fetch a stage's complete output (use this if a stage's input below looks truncated).\n\n")
 	b.WriteString("Available keys:\n")
-	for i := 1; i <= stageCount; i++ {
-		b.WriteString(fmt.Sprintf("- `%s`\n", stageOutputKey(e.workflowID, i)))
+	for _, key := range keys {
+		b.WriteString(fmt.Sprintf("- `%s`\n", key))
 	}
 	b.WriteString(sharedMemoryWriteHint(e.workflowID))
 	b.WriteString("\n---\n\n")
@@ -1149,7 +1165,7 @@ func (e *PipelineExecutor) retryStage(
 			return nil, ""
 		}
 		// Build retry prompt with validation feedback
-		basePrompt, historyFit, err := e.boundStagePrompt(ctx, stage, stageNum, previousInput, allOutputs, stashed, nil, e.stageHeader(len(allOutputs)))
+		basePrompt, historyFit, err := e.boundStagePrompt(ctx, stage, stageNum, previousInput, allOutputs, stashed, nil, e.stageHeader(stashed))
 		if err != nil {
 			e.orchestrator.logger.Warn("Stage retry prompt could not be bounded; giving up on retries",
 				zap.Int("stage", stageNum),

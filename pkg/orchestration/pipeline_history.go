@@ -55,14 +55,10 @@ func stageRendersHistory(stage *loomv1.PipelineStage, passFullHistory bool, prio
 }
 
 // stageStashed reports whether prior stage i's full output is in
-// SharedMemory: the recorded flag when the run tracked one (fresh runs record
-// each stash; resumed runs record which keys the restore put back), else
-// whether a store exists at all, for a caller that tracks no stashes.
-func stageStashed(stashed []bool, i int, haveStore bool) bool {
-	if i < len(stashed) {
-		return stashed[i]
-	}
-	return haveStore && len(stashed) == 0
+// SharedMemory: fresh runs record each stash, resumed runs record which keys
+// the restore put back. An index the record does not cover is not stashed.
+func stageStashed(stashed []bool, i int) bool {
+	return i < len(stashed) && stashed[i]
 }
 
 // historyStats aggregates, over a run, what bounding the history hand-offs
@@ -114,8 +110,8 @@ func (s *historyStats) addTo(metadata map[string]string) {
 //
 // stashed says, per prior stage, whether its full output is in SharedMemory;
 // an entry whose stash failed is passed in full, as {{previous}} was for
-// that stage. nil means every entry is stashed when the orchestrator has a
-// store (a caller that tracks no stashes). header is prepended
+// that stage. An index the slice does not cover counts as not stashed.
+// header is prepended
 // to the prompt (the SharedMemory key list); it counts toward the budget.
 // The returned fit is nil when the prompt carries no history. Pre-reduce
 // usage is in fit.Usage / fit.LLMCalls for the caller to add to the run's
@@ -135,7 +131,7 @@ func (e *PipelineExecutor) boundStagePrompt(ctx context.Context, stage *loomv1.P
 		if i < len(e.pattern.Stages) {
 			entry.agentID = e.pattern.Stages[i].AgentId
 		}
-		if stageStashed(stashed, i, e.orchestrator.sharedMemory != nil) {
+		if stageStashed(stashed, i) {
 			entry.memKey = stageOutputKey(e.workflowID, i+1)
 		}
 		entries = append(entries, entry)
