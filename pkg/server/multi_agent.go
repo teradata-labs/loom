@@ -4338,8 +4338,8 @@ func (s *MultiAgentServer) ensureCommunicationTools(ag *agent.Agent, agentID str
 // wireSendMessageRegistry gives the send_message tool among tools the agent
 // registry it uses to heal short agent ids into <workflow>:<agent>; it
 // reports whether a send_message tool was there to wire. ConfigureCommunication
-// and ensureCommunicationTools use it; UpdateAgent and the looms serve
-// startup loop still inject plain tools (teradata-labs/loom#632).
+// and ensureCommunicationTools use it; AddAgent, UpdateAgent and the looms
+// serve startup loop still inject plain tools (teradata-labs/loom#632).
 func wireSendMessageRegistry(tools []shuttle.Tool, registry builtin.AgentRegistry, logger *zap.Logger) bool {
 	for _, tool := range tools {
 		if sendTool, ok := tool.(*builtin.SendMessageTool); ok {

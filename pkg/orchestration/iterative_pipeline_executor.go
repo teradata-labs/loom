@@ -1723,8 +1723,5 @@ func (e *IterativePipelineExecutor) Resume(ctx context.Context, ckpt *loomv1.Wor
 		zap.Int("start_stage", state.startStageIndex+1),
 		zap.Int("iteration", state.iteration))
 
-	if ckpt.WorkflowId != "" {
-		e.workflowID = ckpt.WorkflowId
-	}
 	return e.Execute(ctx)
 }

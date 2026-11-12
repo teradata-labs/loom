@@ -655,10 +655,11 @@ func WithoutSelfCorrection() Option {
 // disabling subsystem wiring. Pass one name per call; call repeatedly to
 // suppress multiple tools.
 //
-// Currently honoured for: graph_memory, task_board, query_tool_result,
-// recall, manage_skills, load_pattern. Other tools either
-// are registered eagerly by the caller (cmd_serve) and can be omitted there,
-// or are not subject to suppression.
+// RegisterTool skips any suppressed name, so every tool a caller injects
+// after construction (the server's communication and restart tools among
+// them) honours it. The subsystems that also check suppression on their own
+// wiring are graph_memory, task_board, query_tool_result, recall,
+// manage_skills and load_pattern.
 func WithoutBuiltinTool(name string) Option {
 	return func(a *Agent) {
 		if name == "" {
@@ -671,16 +672,16 @@ func WithoutBuiltinTool(name string) Option {
 	}
 }
 
-// isBuiltinToolSuppressed reports whether the named tool has been suppressed
-// via WithoutBuiltinTool. Read-only; safe under the agent's normal mutex
-// discipline because the suppression map is set at construction and not
-// mutated afterwards.
 // IsBuiltinToolSuppressed reports whether RegisterTool would skip a tool of
 // this name because the agent was built WithoutBuiltinTool(name). Callers
 // that inject a standard tool set use it to tell "already present" from
 // "suppressed" without re-registering on every call.
 func (a *Agent) IsBuiltinToolSuppressed(name string) bool { return a.isBuiltinToolSuppressed(name) }
 
+// isBuiltinToolSuppressed reports whether the named tool has been suppressed
+// via WithoutBuiltinTool. Read-only; safe under the agent's normal mutex
+// discipline because the suppression map is set at construction and not
+// mutated afterwards.
 func (a *Agent) isBuiltinToolSuppressed(name string) bool {
 	if len(a.suppressedBuiltinTools) == 0 {
 		return false

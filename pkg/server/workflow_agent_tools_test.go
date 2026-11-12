@@ -200,3 +200,57 @@ func TestEnsureCommunicationTools_SuppressedNameIsInjectedOnce(t *testing.T) {
 	assert.Equal(t, 1, logs.FilterMessage("Communication tools injected into workflow agent").Len(),
 		"a suppressed builtin name must not cause a re-registration and a log line on every run")
 }
+
+// Under tools.none the server suppresses every workflow-injected name on the
+// agent, the restart tool included (cmd/looms builtinToolsToSuppress); the
+// injection guard then finds nothing to add and registers and logs nothing.
+func TestEnsureCommunicationTools_ToolsNoneInjectsNothing(t *testing.T) {
+	core, logs := observer.New(zapcore.InfoLevel)
+	bus := communication.NewMessageBus(communication.NewMemoryStore(0), nil, observability.NewNoOpTracer(), zaptest.NewLogger(t))
+	s := &MultiAgentServer{logger: zap.New(core), agents: map[string]*agent.Agent{}, messageBus: bus}
+	opts := []agent.Option{agent.WithName("reviewer")}
+	for _, name := range []string{"send_message", "publish", "shared_memory_read", "shared_memory_write", "top_n_query", "group_by_query", "publish_restart_request"} {
+		opts = append(opts, agent.WithoutBuiltinTool(name))
+	}
+	ag := agent.NewAgent(nil, &mockLLMForMultiAgent{}, opts...)
+	before := ag.ListTools()
+
+	s.ensureCommunicationTools(ag, "reviewer")
+
+	assert.ElementsMatch(t, before, ag.ListTools(), "tools.none: the agent keeps exactly the tools it had")
+	assert.NotContains(t, ag.ListTools(), "publish_restart_request")
+	assert.Equal(t, 0, logs.FilterMessage("Communication tools injected into workflow agent").Len())
+}
+
+// The injection call site wires send_message to the agent registry (short
+// agent names heal to <workflow>:<agent>), the same wiring
+// ConfigureCommunication gives the server's own agents.
+func TestEnsureCommunicationTools_WiresSendMessageToTheRegistry(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	reg, err := agent.NewRegistry(agent.RegistryConfig{
+		ConfigDir:   dir,
+		DBPath:      filepath.Join(dir, "registry.db"),
+		Logger:      zaptest.NewLogger(t),
+		LLMProvider: &mockLLMForMultiAgent{},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = reg.Close() })
+	queue, err := communication.NewMessageQueue(filepath.Join(dir, "q.db"), observability.NewNoOpTracer(), zaptest.NewLogger(t))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = queue.Close() })
+
+	s := &MultiAgentServer{logger: zaptest.NewLogger(t), agents: map[string]*agent.Agent{}, messageQueue: queue}
+	s.SetAgentRegistry(reg)
+	ag := agent.NewAgent(nil, &mockLLMForMultiAgent{}, agent.WithName("presenter"))
+	s.ensureCommunicationTools(ag, "presenter")
+
+	var sendTool *builtin.SendMessageTool
+	for _, tool := range ag.RegisteredTools() {
+		if st, ok := tool.(*builtin.SendMessageTool); ok {
+			sendTool = st
+		}
+	}
+	require.NotNil(t, sendTool, "send_message is injected when a queue exists")
+	assert.True(t, sendTool.HasAgentRegistry(), "the injected send_message carries the agent registry")
+}
