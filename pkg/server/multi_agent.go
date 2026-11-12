@@ -4255,6 +4255,9 @@ func (s *MultiAgentServer) getOrLoadAgent(ctx context.Context, agentID string, r
 	s.mu.RUnlock()
 
 	if exists {
+		// Agents added through AddAgent carry the communication tools but
+		// not the restart tool; give every workflow agent the same set.
+		s.ensureCommunicationTools(ag, agentID)
 		return ag, nil
 	}
 
@@ -4280,15 +4283,22 @@ func (s *MultiAgentServer) getOrLoadAgent(ctx context.Context, agentID string, r
 }
 
 // ensureCommunicationTools registers the server's communication tools
-// (send_message, publish, shared_memory_read / write, ...) on an agent that
-// does not have them yet. Idempotent: an agent that already carries
-// shared_memory_read is left alone, so a registry agent shared across
-// workflow runs is wired once.
+// (send_message, publish, shared_memory_read / write, top_n_query,
+// group_by_query, and publish_restart_request when a bus exists) on a
+// workflow agent that does not have them all yet. Idempotent: an agent that
+// already carries every tool the server would inject is left alone, so an
+// agent shared across workflow runs is wired once.
 func (s *MultiAgentServer) ensureCommunicationTools(ag *agent.Agent, agentID string) {
 	if ag == nil || (s.messageQueue == nil && s.messageBus == nil && s.sharedMemoryComm == nil) {
 		return
 	}
 	commTools := builtin.CommunicationTools(s.messageQueue, s.messageBus, s.sharedMemoryComm, agentID)
+	if s.messageBus != nil {
+		// publish_restart_request publishes to the topic the running
+		// iterative pipeline put on the turn's context and refuses outside a
+		// run, so it is safe on an agent the registry shares across runs.
+		commTools = append(commTools, builtin.NewPublishRestartTool(s.messageBus, agentID))
+	}
 	if len(commTools) == 0 {
 		return
 	}

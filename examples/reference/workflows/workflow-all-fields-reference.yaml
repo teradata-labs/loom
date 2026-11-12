@@ -245,7 +245,7 @@ spec:
 
   # Pattern-specific fields (example: iterative)
   max_iterations: 5
-  restart_topic: "workflow.restart"
+  restart_topic: "workflow.restart"  # optional; an explicit topic is shared by every run that sets it. Omit it for a topic per run (workflow.restart.<workflow-id>)
   restart_policy:
     enabled: true
     restartable_stages:

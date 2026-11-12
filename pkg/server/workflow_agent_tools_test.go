@@ -149,6 +149,7 @@ func TestEnsureCommunicationTools_OncePerAgentWithBusOnly(t *testing.T) {
 	s.ensureCommunicationTools(ag, "presenter")
 	tools := ag.ListTools()
 	assert.Contains(t, tools, "publish")
+	assert.Contains(t, tools, "publish_restart_request", "a bus means a workflow agent can request a restart of its own run")
 	assert.NotContains(t, tools, "shared_memory_read")
 	count := ag.ToolCount()
 

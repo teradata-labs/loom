@@ -86,3 +86,23 @@ func TestFormatWorkflowList_AllValid(t *testing.T) {
 	assert.Contains(t, out, "Found 1 workflow(s):")
 	assert.NotContains(t, out, "invalid")
 }
+
+// A workflow file whose YAML does not parse is still a stored workflow: it
+// is listed with the parse error. A broken agent config in the same tree is
+// not a workflow and stays out of the listing.
+func TestScanWorkflowFiles_ListsSyntaxBrokenWorkflowFiles(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600))
+	}
+	write("broken.yaml", "apiVersion: loom/v1\nkind: Workflow\nmetadata:\n  name: broken\nspec:\n  type: pipeline\n  initial_prompt: go\n  stages:\n    - agent_id: a\n   prompt_template: \"bad indent\"\n")
+	write("broken-agent.yaml", "apiVersion: loom/v1\nkind: Agent\nmetadata:\n  name: x\nspec:\n  system_prompt: hi\n tools: [\n")
+
+	workflows, err := scanWorkflowFiles(dir)
+	require.NoError(t, err)
+	require.Len(t, workflows, 1, "the syntax-broken workflow is listed, the broken agent config is not: %+v", workflows)
+	assert.Equal(t, "broken.yaml", workflows[0].Path)
+	assert.False(t, workflows[0].IsValid)
+	assert.Contains(t, workflows[0].Error, "yaml parse")
+	assert.Contains(t, formatWorkflowList(workflows), "broken.yaml (invalid)")
+}

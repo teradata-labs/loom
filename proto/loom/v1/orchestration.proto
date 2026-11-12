@@ -425,9 +425,12 @@ message WorkflowCheckpoint {
   // The gate request awaiting a decision.
   HITLGateRequest pending_gate = 12;
 
-  // Snapshot of agent-written WORKFLOW-namespace SharedMemory entries
-  // (stage-N-output keys are excluded — they are re-seeded from
-  // stage_snapshots). Restored on resume.
+  // Snapshot of this run's own WORKFLOW-namespace SharedMemory entries: the
+  // keys its agents wrote under the "<workflow-id>-" prefix the prompts ask
+  // for, plus its branch and position stashes. Its stage output keys are
+  // excluded (re-seeded from stage_snapshots), and keys without the workflow
+  // prefix are shared store state the checkpoint does not carry. Restored on
+  // resume.
   repeated CheckpointMemoryEntry shared_memory = 13;
 
   // Checkpoint creation time (Unix milliseconds).
@@ -496,8 +499,8 @@ message IterativeWorkflowPattern {
   // Topic for restart coordination messages. Empty (the default) gives each
   // run its own topic, "workflow.restart.<workflow-id>", so on a bus shared by
   // many runs a request restarts only the run that published it; the
-  // publish_restart tool follows the running pipeline's topic. Set it only
-  // when an external publisher must know the topic in advance.
+  // publish_restart_request tool follows the running pipeline's topic. Set it
+  // only when an external publisher must know the topic in advance.
   string restart_topic = 5;
 }
 

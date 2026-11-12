@@ -717,8 +717,10 @@ func convertIterativePattern(spec map[string]interface{}, logger *zap.Logger) (*
 		}
 	}
 
-	// Extract restart_topic (optional, default: "workflow.restart")
-	restartTopic := "workflow.restart"
+	// Extract restart_topic (optional). Left empty when the YAML omits it so
+	// the executor gives the run its own topic, workflow.restart.<workflow-id>;
+	// an explicit value is a shared topic every run that sets it listens on.
+	restartTopic := ""
 	if topic, ok := spec["restart_topic"].(string); ok {
 		restartTopic = topic
 	}

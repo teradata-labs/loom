@@ -41,6 +41,7 @@ func TestPublishRestartTool_PublishesToTheRunsTopicFromContext(t *testing.T) {
 	require.True(t, res.Success, "%+v", res.Error)
 	data := res.Data.(map[string]interface{})
 	assert.Equal(t, "workflow.restart.run-a", data["topic"])
+	assert.Equal(t, "workflow.restart.run-a.response.analyst", data["response_topic"])
 	assert.Equal(t, 1, data["published_count"])
 
 	select {

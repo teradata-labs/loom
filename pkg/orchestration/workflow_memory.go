@@ -13,6 +13,7 @@ import (
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/collaboration"
 	"go.uber.org/zap"
 )
 
@@ -80,9 +81,10 @@ func isStageOutputKey(key, workflowID string) bool {
 }
 
 // sharedMemoryWriteHint is the line every SharedMemory header carries so an
-// agent that writes its own keys keeps them with its workflow.
+// agent that writes its own keys keeps them with its workflow; one text for
+// the pipeline, join and debate headers.
 func sharedMemoryWriteHint(workflowID string) string {
-	return fmt.Sprintf("Keys you write with shared_memory_write should start with `%s-` so they stay with this workflow (a restart that resets SharedMemory clears them, a checkpoint keeps them); keys without that prefix are shared with every workflow on this store.\n", workflowID)
+	return collaboration.SharedMemoryWriteHint(workflowID)
 }
 
 // cleanupWorkflowMemory deletes one workflow's executor-managed keys once a

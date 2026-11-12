@@ -19,6 +19,9 @@ func TestRestartTopic(t *testing.T) {
 	assert.Equal(t, "", RestartTopicFromContext(context.Background()), "no run: no topic")
 	assert.Equal(t, "", RestartTopicFromContext(nil)) //nolint:staticcheck // nil ctx must not panic
 
+	assert.Equal(t, "workflow.restart.run-a.response.s2", RestartResponseTopic(RestartTopicFor("run-a"), "s2"))
+	assert.Equal(t, "team.restart.response.s2", RestartResponseTopic("team.restart", "s2"))
+
 	ctx := WithRestartTopic(context.Background(), RestartTopicFor("run-a"))
 	assert.Equal(t, "workflow.restart.run-a", RestartTopicFromContext(ctx))
 	child, cancel := context.WithCancel(ctx)

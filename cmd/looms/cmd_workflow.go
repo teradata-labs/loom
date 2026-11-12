@@ -1154,7 +1154,7 @@ func (rt *workflowRuntime) startOrchestrator(pattern *loomv1.WorkflowPattern, pr
 	}
 
 	// Extract agent IDs from workflow
-	agentIDs := extractAgentIDs(pattern)
+	agentIDs := orchestration.ExtractAgentIDs(pattern) // one extractor for every caller: it knows the join agent and the moderator
 
 	// Check if this is an iterative workflow with restart enabled
 	isIterativeWithRestart := false
@@ -1381,12 +1381,21 @@ func scanWorkflowFiles(dir string) ([]workflowInfo, error) {
 			return nil
 		}
 		// Only files that declare kind: Workflow are workflow files; agent
-		// configs and other YAML in the same tree are not listed.
-		metadata := extractMetadata(path)
-		if metadata == nil || metadata.Kind != "Workflow" {
+		// configs and other YAML in the same tree are not listed. A workflow
+		// file whose YAML does not parse is still a workflow file the
+		// operator stored: list it with the parse error.
+		relPath, _ := filepath.Rel(dir, path)
+		metadata, metaErr := extractMetadata(path)
+		if metaErr != nil {
+			if !looksLikeWorkflowFile(path) {
+				return nil
+			}
+			workflows = append(workflows, workflowInfo{Path: relPath, Error: metaErr.Error()})
 			return nil
 		}
-		relPath, _ := filepath.Rel(dir, path)
+		if metadata.Kind != "Workflow" {
+			return nil
+		}
 		wf := workflowInfo{Path: relPath, Name: metadata.Name, Description: metadata.Description}
 		pattern, loadErr := orchestration.LoadWorkflowFromYAML(path)
 		if loadErr != nil {
@@ -1614,16 +1623,6 @@ Then run again.
 	return nil, ""
 }
 
-// extractAgentIDs extracts all agent IDs from a workflow pattern
-func extractAgentIDs(pattern *loomv1.WorkflowPattern) []string {
-	// One extractor for every caller (this CLI, the multi-agent server's
-	// ExecuteWorkflow): it knows every agent a pattern can name, including a
-	// fork-join / parallel join agent and a debate moderator. A local copy
-	// here once missed the join agent, so a join agent that was not also a
-	// branch agent was never created.
-	return orchestration.ExtractAgentIDs(pattern)
-}
-
 // getPatternType returns the pattern type as a string
 func getPatternType(pattern *loomv1.WorkflowPattern) string {
 	switch pattern.Pattern.(type) {
@@ -1649,7 +1648,7 @@ func getPatternType(pattern *loomv1.WorkflowPattern) string {
 // printPatternSummary prints a summary of the pattern
 func printPatternSummary(pattern *loomv1.WorkflowPattern) {
 	fmt.Printf("   Pattern: %s\n", getPatternType(pattern))
-	agentIDs := extractAgentIDs(pattern)
+	agentIDs := orchestration.ExtractAgentIDs(pattern) // one extractor for every caller: it knows the join agent and the moderator
 	fmt.Printf("   Agents: %d (%s)\n", len(agentIDs), strings.Join(agentIDs, ", "))
 }
 
@@ -1662,12 +1661,14 @@ type workflowFileMetadata struct {
 	Description string
 }
 
-func extractMetadata(path string) *workflowFileMetadata {
+// extractMetadata reads the kind and metadata of a YAML file; the error is
+// the read or parse error, so a caller can show why a file is unusable.
+func extractMetadata(path string) (*workflowFileMetadata, error) {
 	cleanPath := filepath.Clean(path)
 	// #nosec G304 -- path from CLI argument, cleaned for safety
 	data, err := os.ReadFile(cleanPath)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 
 	var config struct {
@@ -1679,12 +1680,29 @@ func extractMetadata(path string) *workflowFileMetadata {
 	}
 
 	if err := yaml.Unmarshal(data, &config); err != nil {
-		return nil
+		return nil, fmt.Errorf("yaml parse: %w", err)
 	}
 
 	return &workflowFileMetadata{
 		Kind:        config.Kind,
 		Name:        config.Metadata.Name,
 		Description: config.Metadata.Description,
+	}, nil
+}
+
+// looksLikeWorkflowFile reports whether an unparseable YAML file declares
+// kind: Workflow in its text, so a syntax-broken workflow is listed while a
+// broken agent config in the same tree is not.
+func looksLikeWorkflowFile(path string) bool {
+	// #nosec G304 -- path from CLI argument, cleaned for safety
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return false
 	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == "kind: Workflow" {
+			return true
+		}
+	}
+	return false
 }

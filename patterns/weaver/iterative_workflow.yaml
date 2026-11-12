@@ -37,12 +37,18 @@ templates:
       spec:
         type: iterative
         max_iterations: {{max_iterations}}
-        restart_topic: "{{restart_topic}}"
-        restart_policy: on_failure
+        # restart_topic is omitted on purpose: each run then listens on its own
+        # bus topic (workflow.restart.<workflow-id>).
+        restart_policy:
+          enabled: true
+          restartable_stages:
+            - creator
+          cooldown_seconds: 0
+          preserve_outputs: false
+        # Stage ids allowed to request a restart (the reviewer, through the
+        # publish_restart_request tool), not phrases.
         restart_triggers:
-          - "needs improvement"
-          - "retry"
-          - "not good enough"
+          - reviewer
         pipeline:
           initial_prompt: "{{initial_prompt}}"
           stages:
@@ -61,9 +67,12 @@ examples:
       max_iterations: 5, restart on quality failure.
 
 common_errors:
-  - error: "Missing restart_topic"
-    cause: "Iterative workflows need a topic to restart from"
-    fix: "Add 'restart_topic' with the topic text for restart context"
+  - error: "Restart policy disabled, executing as standard pipeline"
+    cause: "restart_policy was a string (e.g. on_failure) or missing; the loader only reads a restart_policy map with enabled: true"
+    fix: "Write restart_policy as a map: enabled: true, restartable_stages: [<stage ids>]"
+  - error: "stage X not authorized to trigger restarts"
+    cause: "restart_triggers must list stage ids, not phrases"
+    fix: "Set restart_triggers to the agent_id of the stage that calls publish_restart_request (usually the reviewer)"
   - error: "Infinite loop potential"
     cause: "No max_iterations set"
     fix: "Always set max_iterations (recommended: 3-10)"

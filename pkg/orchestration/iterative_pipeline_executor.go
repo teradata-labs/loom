@@ -54,6 +54,7 @@ type IterativePipelineExecutor struct {
 	// Track iterations and restart state
 	currentIteration int
 	restartRequests  chan *loomv1.RestartRequest
+	restartTopic     string // the topic this run listens on; responses go to <topic>.response.<stage>
 	restartResponses map[string]chan *loomv1.RestartResponse
 
 	// Cooldown tracking
@@ -100,6 +101,7 @@ type iterativeResumeState struct {
 	modelsUsed         map[string]string
 	validationWarnings []string
 	snapshots          []*loomv1.CheckpointStageSnapshot // ordered, for context replay
+	stashed            map[string]bool                   // agent_id -> the resume re-seeded its stash
 }
 
 // NewIterativePipelineExecutor creates a new iterative pipeline executor.
@@ -173,6 +175,7 @@ func (e *IterativePipelineExecutor) Execute(ctx context.Context) (*loomv1.Workfl
 	if restartTopic == "" {
 		restartTopic = communication.RestartTopicFor(workflowID)
 	}
+	e.restartTopic = restartTopic
 
 	// Check if restart policy is enabled
 	if e.pattern.RestartPolicy == nil || !e.pattern.RestartPolicy.Enabled {
@@ -208,8 +211,8 @@ func (e *IterativePipelineExecutor) Execute(ctx context.Context) (*loomv1.Workfl
 	e.subscribeToRestarts(subCtx, restartTopic)
 	defer e.unsubscribeFromRestarts(restartTopic)
 
-	// Stage agents publish restart requests through the publish_restart tool,
-	// which reads the run's topic from the context of the turn that calls it.
+	// Stage agents publish restart requests through the publish_restart_request
+	// tool, which reads the run's topic from the context of the turn that calls it.
 	ctx = communication.WithRestartTopic(ctx, restartTopic)
 
 	// Execute pipeline with restart handling
@@ -258,9 +261,10 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 		modelsUsed = e.resume.modelsUsed
 		validationWarnings = e.resume.validationWarnings
 		e.fullOutputs = e.resume.fullOutputs
-		// The resume re-seeded every completed stage when there is a store.
+		// The resume re-seeded the completed stages it could; a stage whose
+		// re-seed failed is rendered in full from here on.
 		for id := range e.fullOutputs {
-			e.stashed[id] = e.orchestrator.sharedMemory != nil
+			e.stashed[id] = e.resume.stashed[id]
 		}
 		if e.resume.iteration > 0 {
 			e.currentIteration = e.resume.iteration
@@ -755,29 +759,10 @@ func (e *IterativePipelineExecutor) executeWithRestarts(ctx context.Context, wor
 // shared_memory_read tool. The fit is nil when the prompt carries no history.
 func (e *IterativePipelineExecutor) boundStagePromptWithStructuredContext(ctx context.Context, stage *loomv1.PipelineStage, stageNum int, previousOutput string, allOutputs []string, stashed []bool) (string, *handoffFit, error) {
 	executor := NewPipelineExecutor(e.orchestrator, e.pattern.Pipeline, e.workflowID)
-	header := ""
-	if len(allOutputs) > 0 && e.orchestrator.sharedMemory != nil {
-		header = e.buildSharedMemoryContextHeader(len(allOutputs))
-	}
+	// The same header the plain pipeline gives its stages: the keys of the
+	// outputs so far and, from the first stage on, the write rule.
+	header := executor.stageHeader(len(allOutputs))
 	return executor.boundStagePrompt(ctx, stage, stageNum, previousOutput, allOutputs, stashed, e.structuredContext, header)
-}
-
-// buildSharedMemoryContextHeader creates a header listing available SharedMemory keys.
-// This enables agents to fetch full context from previous stages even when prompts use {{previous}}.
-func (e *IterativePipelineExecutor) buildSharedMemoryContextHeader(stageCount int) string {
-	var builder strings.Builder
-	builder.WriteString("## AVAILABLE CONTEXT (SharedMemory)\n")
-	builder.WriteString("Full outputs from previous stages are stored in SharedMemory namespace \"workflow\".\n")
-	builder.WriteString("Use `shared_memory_read(namespace=\"workflow\", key=\"<key>\")` with one of the keys below to fetch a stage's complete output.\n\n")
-	builder.WriteString("Available keys:\n")
-
-	for i := 1; i <= stageCount; i++ {
-		builder.WriteString(fmt.Sprintf("- `%s`\n", stageOutputKey(e.workflowID, i)))
-	}
-
-	builder.WriteString(sharedMemoryWriteHint(e.workflowID))
-	builder.WriteString("\n---\n\n")
-	return builder.String()
 }
 
 // parseAndAddStageOutput parses agent output as JSON and adds to structured context.
@@ -1348,8 +1333,9 @@ func (e *IterativePipelineExecutor) sendRestartResponse(requesterID string, resp
 		return
 	}
 
-	// Publish response on requester-specific topic
-	responseTopic := fmt.Sprintf("workflow.restart.response.%s", requesterID)
+	// Publish the response on the run's own response topic for the
+	// requester, so a same-named stage in another run never receives it.
+	responseTopic := communication.RestartResponseTopic(e.restartTopic, requesterID)
 	msg := &loomv1.BusMessage{
 		Id:        fmt.Sprintf("restart-response-%d", time.Now().UnixNano()),
 		Topic:     responseTopic,
@@ -1642,13 +1628,14 @@ func (e *IterativePipelineExecutor) Resume(ctx context.Context, ckpt *loomv1.Wor
 	if ckpt.GateRevisionCounts != nil {
 		e.gateRevisions = ckpt.GateRevisionCounts
 	}
-	for i, snap := range ckpt.StageSnapshots {
+	for _, snap := range ckpt.StageSnapshots {
 		if snap.FullOutput == "" {
 			continue
 		}
 		state.fullOutputs[snap.AgentId] = snap.FullOutput
-		truncated, _ := truncateStageOutput(snap.FullOutput, MaxStageOutputBytes, stageOutputKey(e.workflowID, i+1))
-		state.stageOutputs[snap.AgentId] = truncated
+		// The {{previous}} copy is cut, with its key notice, only once the
+		// resume has put that key back; set below, after restoreWorkflowMemory.
+		state.stageOutputs[snap.AgentId] = snap.FullOutput
 	}
 
 	switch decision.Action {
@@ -1691,8 +1678,22 @@ func (e *IterativePipelineExecutor) Resume(ctx context.Context, ckpt *loomv1.Wor
 	}
 
 	// Restore agent-written SharedMemory and re-seed stage output keys before
-	// the resumed loop starts.
-	restoreWorkflowMemory(ctx, e.orchestrator, ckpt, e.workflowID)
+	// the resumed loop starts; remember which stages' keys are in the store.
+	seeded := restoreWorkflowMemory(ctx, e.orchestrator, ckpt, e.workflowID)
+	state.stashed = make(map[string]bool, len(seeded))
+	for i, snap := range ckpt.StageSnapshots {
+		if i >= len(seeded) || snap.AgentId == "" || snap.FullOutput == "" {
+			continue
+		}
+		state.stashed[snap.AgentId] = seeded[i]
+		if seeded[i] {
+			truncated, _ := truncateStageOutput(snap.FullOutput, MaxStageOutputBytes, stageOutputKey(e.workflowID, i+1))
+			state.stageOutputs[snap.AgentId] = truncated
+			if gated := stages[gatedIndex].AgentId; snap.AgentId == gated && decision.Action == loomv1.GateAction_GATE_ACTION_APPROVE {
+				state.currentInput = truncated
+			}
+		}
+	}
 
 	e.resume = state
 	e.orchestrator.logger.Info("Resuming iterative pipeline execution",

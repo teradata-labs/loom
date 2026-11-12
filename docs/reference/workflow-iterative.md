@@ -558,7 +558,7 @@ func PublishRestartRequest(ctx context.Context, req *RestartRequest) error {
     }
 
     // The running pipeline's topic (workflow.restart.<workflow-id> unless
-    // restart_topic is set) is on the turn's context; the publish_restart
+    // restart_topic is set) is on the turn's context; the publish_restart_request
     // tool reads it from there and refuses to publish outside a run.
     topic := communication.RestartTopicFromContext(ctx)
     msg := &loomv1.BusMessage{
@@ -948,7 +948,7 @@ func (e *IterativePipelineExecutor) storeStageOutputInMemory(
 **Implementation**:
 ```go
 stageNum := stageIndex + 1  // Convert 0-based to 1-based
-stageKey := fmt.Sprintf("stage-%d-output", stageNum)
+stageKey := fmt.Sprintf("%s-stage-%d-output", workflowID, stageNum)
 ```
 
 
@@ -1576,11 +1576,10 @@ restart_triggers:
 **Default**: `workflow.restart.<workflow-id>` (a topic per run)
 **Required**: No
 
-**Description**: Pub/sub topic for restart coordination messages. One MessageBus serves every workflow a `looms serve` runs, so by default each run listens on its own topic and a request from one run cannot restart another run whose stage ids match. The `publish_restart` tool follows the running pipeline's topic. Set `restart_topic` only when an external publisher must know the topic in advance; runs that share an explicit topic receive each other's requests.
+**Description**: Pub/sub topic for restart coordination messages. One MessageBus serves every workflow a `looms serve` runs, so by default each run listens on its own topic and a request from one run cannot restart another run whose stage ids match; the YAML loader leaves an omitted `restart_topic` empty so that default applies. The `publish_restart_request` tool, which `looms workflow run` and `looms serve` both register on workflow agents, follows the running pipeline's topic and refuses outside a run; the executor answers on `<topic>.response.<stage>`. Set `restart_topic` only when an external publisher must know the topic in advance.
 
 **Constraints**:
-- Must be unique per workflow (if running multiple workflows concurrently)
-- Cannot be empty
+- Leave it empty for a topic per run; every run that sets the same explicit value receives the others' requests
 
 **Example**:
 ```yaml
@@ -2098,7 +2097,7 @@ func TestIterativePipeline_RestartCoordination(t *testing.T) {
             Data: &loomv1.MessagePayload_Value{Value: payload},
         },
     }
-    _, _, _ = messageBus.Publish(ctx, "workflow.restart", msg)
+    _, _, _ = messageBus.Publish(ctx, communication.RestartTopicFor(workflowID), msg)
 
     // Verify restart executed
     // ...

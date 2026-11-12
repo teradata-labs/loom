@@ -117,6 +117,15 @@ func SpliceTemplate(tmpl, prompt, sections string, count int) string {
 	return strings.Join(strings.Split(body, "{{branches}}"), sections)
 }
 
+// SharedMemoryWriteHint is the line every SharedMemory header carries so an
+// agent that writes its own keys keeps them with its workflow: a key with the
+// workflow prefix is the run's own (cleared by a reset_shared_memory restart,
+// kept by a checkpoint); a key without it is shared with every workflow on
+// the store.
+func SharedMemoryWriteHint(workflowID string) string {
+	return fmt.Sprintf("Keys you write with shared_memory_write should start with `%s-` so they stay with this workflow (a restart that resets SharedMemory clears them, a checkpoint keeps them); keys without that prefix are shared with every workflow on this store.\n", workflowID)
+}
+
 // SharedMemoryHeader lists the SharedMemory keys holding full entries, for a
 // receiver that can call shared_memory_read, and asks it to prefix the keys
 // it writes with the workflow id. unit names the entries ("branches",
@@ -142,7 +151,7 @@ func SharedMemoryHeader(pieces []HandoffPiece, unit, workflowID string) string {
 	}
 	b.WriteString("Use `shared_memory_read(namespace=\"workflow\", key=\"<key>\")` to fetch one whose section below is marked truncated or reduced.\n")
 	if workflowID != "" {
-		b.WriteString(fmt.Sprintf("Keys you write with shared_memory_write should start with `%s-` so they stay with this workflow.\n", workflowID))
+		b.WriteString(SharedMemoryWriteHint(workflowID))
 	}
 	b.WriteString("\n---\n\n")
 	return b.String()

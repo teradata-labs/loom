@@ -64,16 +64,6 @@ func stageStashed(stashed []bool, i int, haveStore bool) bool {
 	return haveStore && len(stashed) == 0
 }
 
-// allStashed is the stashed slice of a resumed run: every completed stage
-// was re-seeded when the orchestrator has a store.
-func allStashed(n int, haveStore bool) []bool {
-	out := make([]bool, n)
-	for i := range out {
-		out[i] = haveStore
-	}
-	return out
-}
-
 // historyStats aggregates, over a run, what bounding the history hand-offs
 // did, for the result metadata.
 type historyStats struct {

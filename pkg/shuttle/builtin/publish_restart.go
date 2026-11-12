@@ -136,7 +136,7 @@ func (t *PublishRestartTool) Execute(ctx context.Context, params map[string]inte
 			Error: &shuttle.Error{
 				Code:       "RESTART_NOT_ACTIVE",
 				Message:    "No iterative pipeline with restarts enabled is running this turn, so there is no restart topic to publish to",
-				Suggestion: "publish_restart only works from a stage of an iterative workflow whose restart_policy.enabled is true",
+				Suggestion: t.Name() + " only works from a stage of an iterative workflow whose restart_policy.enabled is true",
 			},
 			ExecutionTimeMs: time.Since(start).Milliseconds(),
 		}, nil
@@ -208,7 +208,7 @@ func (t *PublishRestartTool) Execute(ctx context.Context, params map[string]inte
 		"published_count": publishedCount,
 		"filtered_count":  filteredCount,
 		"timestamp":       time.Now().Format(time.RFC3339),
-		"response_topic":  fmt.Sprintf("workflow.restart.response.%s", t.agentID),
+		"response_topic":  communication.RestartResponseTopic(topic, t.agentID),
 		"message":         "Restart request published. The orchestrator will validate and process your request.",
 	}
 

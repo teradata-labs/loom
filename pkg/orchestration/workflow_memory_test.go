@@ -72,7 +72,7 @@ func TestWorkflowOwnsKey(t *testing.T) {
 	}
 }
 
-func TestSnapshotWorkflowMemory_OnlyThisWorkflowsEntriesAndAgentKeys(t *testing.T) {
+func TestSnapshotWorkflowMemory_OnlyThisWorkflowsKeys(t *testing.T) {
 	orch := newJoinTestOrchestrator(t, nil, true)
 	seedWorkflowKeys(t, orch.sharedMemory,
 		"wf-a-stage-1-output", "wf-a-branch-1-output", "wf-a-round-1-position-x", "wf-a-notes",

@@ -20,11 +20,18 @@ func RestartTopicFor(workflowID string) string {
 	return RestartTopicPrefix + workflowID
 }
 
+// RestartResponseTopic is where the executor listening on restartTopic
+// answers the stage that requested a restart: scoped by the run's topic, so
+// a same-named stage in another run never receives another run's verdict.
+func RestartResponseTopic(restartTopic, requesterStageID string) string {
+	return restartTopic + ".response." + requesterStageID
+}
+
 type restartTopicKey struct{}
 
 // WithRestartTopic records on ctx the topic the running iterative pipeline
-// listens on, so the publish_restart tool an agent calls during a stage
-// publishes to that run and no other.
+// listens on, so the publish_restart_request tool an agent calls during a
+// stage publishes to that run and no other.
 func WithRestartTopic(ctx context.Context, topic string) context.Context {
 	return context.WithValue(ctx, restartTopicKey{}, topic)
 }

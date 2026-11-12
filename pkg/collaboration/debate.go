@@ -138,14 +138,6 @@ func (d *DebateOrchestrator) Execute(ctx context.Context, config *loomv1.DebateP
 		return nil, fmt.Errorf("debate join_policy.agent_id %q is not used: moderator_agent_id is the join agent and each debater receives its own response prompt; remove agent_id", id)
 	}
 
-	// A configured moderator must exist before any round is paid for: the
-	// synthesis is the last step, and failing there wastes every round.
-	if id := config.ModeratorAgentId; id != "" {
-		if _, err := d.provider.GetAgent(ctx, id); err != nil {
-			return nil, fmt.Errorf("debate moderator_agent_id %q: %w", id, err)
-		}
-	}
-
 	// Positions stored under a join policy are this run's artifact: drop them
 	// when the run ends, however it ends.
 	if cleaner, ok := d.provider.(HandoffCleaner); ok && d.handoffPolicy(config) != nil {
@@ -507,8 +499,10 @@ func consensusPositions(positions []*loomv1.AgentPosition) []sites.Position {
 // getInternalModerator retrieves or uses first debating agent as internal moderator.
 // The internal moderator is used for summarization and synthesis tasks.
 func (d *DebateOrchestrator) getInternalModerator(ctx context.Context, config *loomv1.DebatePattern) (*agent.Agent, error) {
-	// A configured moderator is the summarizer; Execute checked it exists
-	// before the first round, so a miss here is an error, not a fallback.
+	// A configured moderator is the summarizer and the synthesis author.
+	// This runs before the first round, so a moderator that names no agent
+	// fails the debate here, before any round is paid for; falling back to
+	// the first debater would hide the misconfiguration until the synthesis.
 	if config.ModeratorAgentId != "" {
 		moderator, err := d.provider.GetAgent(ctx, config.ModeratorAgentId)
 		if err != nil {

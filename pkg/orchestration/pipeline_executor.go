@@ -208,10 +208,16 @@ func (e *PipelineExecutor) Resume(ctx context.Context, ckpt *loomv1.WorkflowChec
 		state.stageOutputs = append(state.stageOutputs, snap.FullOutput)
 	}
 
+	// Restore agent-written SharedMemory and re-seed stage-N-output keys so
+	// shared_memory_read and truncation notices keep working after resume.
+	// A stage whose re-seed failed is rendered in full from here on, so the
+	// input the resumed stage gets is derived after the restore.
+	state.stashed = restoreWorkflowMemory(ctx, e.orchestrator, ckpt, workflowID)
+
 	switch decision.Action {
 	case loomv1.GateAction_GATE_ACTION_APPROVE:
 		state.startIndex = gatedIndex + 1
-		state.currentInput = e.deriveInputFromOutput(gatedIndex+1, state.stageOutputs[gatedIndex])
+		state.currentInput = e.resumedInput(state, gatedIndex)
 
 	case loomv1.GateAction_GATE_ACTION_REVISE:
 		gate := e.pattern.Stages[gatedIndex].HitlGate
@@ -232,10 +238,13 @@ func (e *PipelineExecutor) Resume(ctx context.Context, ckpt *loomv1.WorkflowChec
 		}
 		state.startIndex = target
 		state.stageOutputs = state.stageOutputs[:target]
+		if target < len(state.stashed) {
+			state.stashed = state.stashed[:target]
+		}
 		if target == 0 {
 			state.currentInput = e.pattern.InitialPrompt
 		} else {
-			state.currentInput = e.deriveInputFromOutput(target, state.stageOutputs[target-1])
+			state.currentInput = e.resumedInput(state, target-1)
 		}
 		state.revisionFeedback = decision.Feedback
 		state.revisionSource = "human reviewer"
@@ -243,11 +252,6 @@ func (e *PipelineExecutor) Resume(ctx context.Context, ckpt *loomv1.WorkflowChec
 	default:
 		return nil, fmt.Errorf("resume: unsupported gate decision %s", decision.Action)
 	}
-
-	// Restore agent-written SharedMemory and re-seed stage-N-output keys so
-	// shared_memory_read and truncation notices keep working after resume.
-	restoreWorkflowMemory(ctx, e.orchestrator, ckpt, workflowID)
-	state.stashed = allStashed(len(state.stageOutputs), e.orchestrator.sharedMemory != nil)
 
 	e.orchestrator.logger.Info("Resuming pipeline execution",
 		zap.String("workflow_id", workflowID),
@@ -266,6 +270,16 @@ func (e *PipelineExecutor) deriveInputFromOutput(stageNum int, fullOutput string
 	}
 	out, _ := truncateStageOutput(fullOutput, MaxStageOutputBytes, stageOutputKey(e.workflowID, stageNum))
 	return out
+}
+
+// resumedInput is the {{previous}} copy a resumed run hands the next stage:
+// cut with the key notice when the resume put that stage's key back, the
+// full output otherwise (no store, or a re-seed that failed).
+func (e *PipelineExecutor) resumedInput(state *pipelineState, idx int) string {
+	if idx < len(state.stashed) && state.stashed[idx] {
+		return e.deriveInputFromOutput(idx+1, state.stageOutputs[idx])
+	}
+	return state.stageOutputs[idx]
 }
 
 // buildCheckpoint captures the durable suspension state at the gate on stage
@@ -596,7 +610,7 @@ func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time,
 // without a store or before the first stage. The iterative executor builds
 // its own header.
 func (e *PipelineExecutor) stageHeader(priorStages int) string {
-	if e.orchestrator.sharedMemory == nil || priorStages == 0 {
+	if e.orchestrator.sharedMemory == nil {
 		return ""
 	}
 	return e.buildSharedMemoryContextHeader(priorStages)
@@ -624,9 +638,19 @@ func (e *PipelineExecutor) storeStageOutputInMemory(ctx context.Context, key, ag
 }
 
 // buildSharedMemoryContextHeader lists the SharedMemory keys holding prior
-// stages' full outputs, with the call to fetch them.
+// stages' full outputs, with the call to fetch them, and the rule for the keys
+// the agent writes itself. The first stage has no prior output to list but
+// must still hear the write rule: a key it writes without the workflow
+// prefix is shared store state that no checkpoint carries and no reset
+// clears, so the hint cannot wait for the second stage.
 func (e *PipelineExecutor) buildSharedMemoryContextHeader(stageCount int) string {
 	var b strings.Builder
+	if stageCount == 0 {
+		b.WriteString("## SHARED MEMORY (namespace \"workflow\")\n")
+		b.WriteString(sharedMemoryWriteHint(e.workflowID))
+		b.WriteString("\n---\n\n")
+		return b.String()
+	}
 	b.WriteString("## AVAILABLE CONTEXT (SharedMemory)\n")
 	b.WriteString("Full outputs from previous stages are stored in SharedMemory namespace \"workflow\".\n")
 	b.WriteString("Use `shared_memory_read(namespace=\"workflow\", key=\"<key>\")` with one of the keys below to fetch a stage's complete output (use this if a stage's input below looks truncated).\n\n")

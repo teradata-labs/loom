@@ -298,10 +298,13 @@ func snapshotWorkflowMemory(ctx context.Context, o *Orchestrator, workflowID str
 // restoreWorkflowMemory writes checkpointed entries and the completed stages'
 // full outputs back into the WORKFLOW namespace before a resumed run starts,
 // so shared_memory_read and truncation notices keep working. The stage
-// outputs are re-seeded under this workflow's own keys. Best-effort.
-func restoreWorkflowMemory(ctx context.Context, o *Orchestrator, ckpt *loomv1.WorkflowCheckpoint, workflowID string) {
+// outputs are re-seeded under this workflow's own keys. Best-effort: the
+// result says, per stage snapshot, whether its key is in the store, so the
+// resumed run points only at keys that exist and renders the rest in full.
+func restoreWorkflowMemory(ctx context.Context, o *Orchestrator, ckpt *loomv1.WorkflowCheckpoint, workflowID string) []bool {
+	seeded := make([]bool, len(ckpt.StageSnapshots))
 	if o.sharedMemory == nil {
-		return
+		return seeded
 	}
 	for _, entry := range ckpt.SharedMemory {
 		if _, err := o.sharedMemory.Put(ctx, &loomv1.PutSharedMemoryRequest{
@@ -333,10 +336,13 @@ func restoreWorkflowMemory(ctx context.Context, o *Orchestrator, ckpt *loomv1.Wo
 				"full_size": fmt.Sprintf("%d", len(snap.FullOutput)),
 			},
 		}); err != nil {
-			o.logger.Warn("resume: failed to re-seed stage output in SharedMemory",
+			o.logger.Warn("resume: failed to re-seed stage output in SharedMemory; the resumed run gets that output inline in full",
 				zap.String("key", key), zap.Error(err))
+			continue
 		}
+		seeded[i] = true
 	}
+	return seeded
 }
 
 // validateGatePlacement rejects HITL gates on pattern types that cannot

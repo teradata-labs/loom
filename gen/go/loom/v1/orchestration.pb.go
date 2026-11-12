@@ -1467,9 +1467,12 @@ type WorkflowCheckpoint struct {
 	GateRevisionCounts map[string]int32 `protobuf:"bytes,11,rep,name=gate_revision_counts,json=gateRevisionCounts,proto3" json:"gate_revision_counts,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
 	// The gate request awaiting a decision.
 	PendingGate *HITLGateRequest `protobuf:"bytes,12,opt,name=pending_gate,json=pendingGate,proto3" json:"pending_gate,omitempty"`
-	// Snapshot of agent-written WORKFLOW-namespace SharedMemory entries
-	// (stage-N-output keys are excluded — they are re-seeded from
-	// stage_snapshots). Restored on resume.
+	// Snapshot of this run's own WORKFLOW-namespace SharedMemory entries: the
+	// keys its agents wrote under the "<workflow-id>-" prefix the prompts ask
+	// for, plus its branch and position stashes. Its stage output keys are
+	// excluded (re-seeded from stage_snapshots), and keys without the workflow
+	// prefix are shared store state the checkpoint does not carry. Restored on
+	// resume.
 	SharedMemory []*CheckpointMemoryEntry `protobuf:"bytes,13,rep,name=shared_memory,json=sharedMemory,proto3" json:"shared_memory,omitempty"`
 	// Checkpoint creation time (Unix milliseconds).
 	CreatedAtMs int64 `protobuf:"varint,14,opt,name=created_at_ms,json=createdAtMs,proto3" json:"created_at_ms,omitempty"`
@@ -1774,8 +1777,8 @@ type IterativeWorkflowPattern struct {
 	// Topic for restart coordination messages. Empty (the default) gives each
 	// run its own topic, "workflow.restart.<workflow-id>", so on a bus shared by
 	// many runs a request restarts only the run that published it; the
-	// publish_restart tool follows the running pipeline's topic. Set it only
-	// when an external publisher must know the topic in advance.
+	// publish_restart_request tool follows the running pipeline's topic. Set it
+	// only when an external publisher must know the topic in advance.
 	RestartTopic  string `protobuf:"bytes,5,opt,name=restart_topic,json=restartTopic,proto3" json:"restart_topic,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

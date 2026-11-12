@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
 
 func TestFormatWorkflowMetadata(t *testing.T) {
@@ -26,13 +25,4 @@ func TestFormatWorkflowMetadata(t *testing.T) {
 	assert.Equal(t, []string{"  agent_count: 3", "  history.entries_reduced: 2", "  join.overflow: pre_reduce"}, lines[1:4], "sorted")
 	assert.True(t, strings.HasSuffix(lines[4], "..."), "long values are cut")
 	assert.Less(t, len(lines[4]), 220)
-}
-
-// The CLI must create every agent a pattern names, the join agent included.
-func TestExtractAgentIDs_CLIUsesTheSharedExtractor(t *testing.T) {
-	ids := extractAgentIDs(&loomv1.WorkflowPattern{Pattern: &loomv1.WorkflowPattern_ForkJoin{ForkJoin: &loomv1.ForkJoinPattern{
-		AgentIds:   []string{"a", "b"},
-		JoinPolicy: &loomv1.JoinPolicy{AgentId: "presenter"},
-	}}})
-	assert.ElementsMatch(t, []string{"a", "b", "presenter"}, ids)
 }

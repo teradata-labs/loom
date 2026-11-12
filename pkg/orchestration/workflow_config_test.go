@@ -726,9 +726,9 @@ spec:
 	require.NotNil(t, iterative)
 
 	// Verify defaults
-	assert.Equal(t, int32(3), iterative.MaxIterations)          // Default max_iterations
-	assert.Equal(t, "workflow.restart", iterative.RestartTopic) // Default topic
-	assert.Nil(t, iterative.RestartPolicy)                      // No policy specified
+	assert.Equal(t, int32(3), iterative.MaxIterations) // Default max_iterations
+	assert.Equal(t, "", iterative.RestartTopic, "omitted restart_topic stays empty so the executor gives the run its own topic")
+	assert.Nil(t, iterative.RestartPolicy) // No policy specified
 }
 
 // TestLoadWorkflowFromYAML_IterativePattern_InvalidConfig tests error handling.
