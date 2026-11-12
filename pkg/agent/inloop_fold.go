@@ -204,11 +204,26 @@ func (sm *SegmentedMemory) ApplyFoldReply(ctx context.Context, summary string) (
 // checks the binding (claude-fable-5) refuses a request that replays it on
 // anything else. A committed fold rewrites what precedes the rows it keeps, so
 // it drops their blocks. The rows keep their words and their tool calls, and
-// the window estimate is taken from the compile, so it follows. Must hold lock.
+// the window estimate is taken from the compile, so it follows. The turn is
+// recorded (foldedTurn): the rows of the turn in flight now call tools without
+// a block, which one provider form does not accept with thinking on
+// (FoldedThisTurn). Must hold lock.
 func (sm *SegmentedMemory) dropThinkingLocked() {
 	for i := range sm.contextMessages {
 		sm.contextMessages[i].ThinkingBlocks = nil
 	}
+	sm.foldedTurn = sm.currentTurnLocked()
+}
+
+// FoldedThisTurn reports whether a committed fold dropped thinking blocks
+// during the turn in flight. The conversation loop calls it before each send
+// (Agent.foldedTurnCtx): a fold keeps the pending step without its block, and
+// the enabled+budget thinking form refuses a tool-calling message that has no
+// block while thinking is on. A later turn starts with thinking on again.
+func (sm *SegmentedMemory) FoldedThisTurn() bool {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.foldedTurn != 0 && sm.foldedTurn == sm.currentTurnLocked()
 }
 
 // foldSplitLocked is the in-loop fold's cut of the context: what a full fold

@@ -3050,7 +3050,8 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		}
 		sendChat := func(ts []shuttle.Tool) (*LLMResponse, error) {
 			if !a.config.ToolChangeNote {
-				return a.chatWithRetry(callCtx, outgoing(""), ts)
+				msgs := outgoing("")
+				return a.chatWithRetry(a.foldedTurnCtx(callCtx, session, msgs), msgs, ts)
 			}
 			names := make([]string, 0, len(ts))
 			for _, t := range ts {
@@ -3064,7 +3065,8 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			if note != "" {
 				span.AddEvent("tools.changed", map[string]interface{}{"note": note})
 			}
-			resp, err := a.chatWithRetry(callCtx, outgoing(note), ts)
+			msgs := outgoing(note)
+			resp, err := a.chatWithRetry(a.foldedTurnCtx(callCtx, session, msgs), msgs, ts)
 			if err == nil {
 				prevToolNames = names
 			}
@@ -4158,14 +4160,18 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNot
 		}
 		return withSystemReminder(session.GetMessages(), memoryNote)
 	}
-	finalResp, err := a.chatWithRetry(ctx, synthesisMessages(), nil)
+	sendSynthesis := func() (*LLMResponse, error) {
+		msgs := synthesisMessages()
+		return a.chatWithRetry(a.foldedTurnCtx(ctx, session, msgs), msgs, nil)
+	}
+	finalResp, err := sendSynthesis()
 	if err != nil && errors.Is(err, llm.ErrContextTooLong) && segMem != nil {
 		_, estimate, target := segMem.ReleasePressure(ctx, pressureRecoveryPenalty)
 		zap.L().Info("context too long at synthesis: relief pass complete, resending once",
 			zap.String("session_id", session.ID),
 			zap.Int("estimate_tokens", estimate),
 			zap.Int("target_tokens", target))
-		finalResp, err = a.chatWithRetry(ctx, synthesisMessages(), nil)
+		finalResp, err = sendSynthesis()
 	}
 	if err == nil {
 		a.observePromptUsage(session, finalResp.Usage)
@@ -4262,6 +4268,43 @@ func advertisedToolsBytes(tools []shuttle.Tool) int {
 	}
 	return bytes
 }
+
+// foldedTurnCtx returns the context for one provider call of the conversation
+// loop or of the synthesis send. It is ctx, except in a turn that a fold has
+// rewritten: a committed fold drops the thinking blocks of the rows it keeps
+// (SegmentedMemory.dropThinkingLocked), so the turn in flight then sends a
+// tool-calling assistant message with no block. The enabled+budget thinking
+// form refuses that message while thinking is on, which would end the turn
+// on the first send after the fold. Such a send goes out with thinking off
+// (llm.ContextSuppressThinking, which only that form reads; an adaptive model
+// accepts the message and keeps thinking). The next turn has thinking on
+// again. This is the same answer providerCtx gives a turn rebuilt from the
+// store; the trigger here is the fold, not a resume.
+func (a *Agent) foldedTurnCtx(ctx Context, session *Session, messages []Message) Context {
+	segMem, ok := session.SegmentedMem.(*SegmentedMemory)
+	if !ok || segMem == nil || !segMem.FoldedThisTurn() || !rebuiltToolTurn(messages) {
+		return ctx
+	}
+	if ac, ok := ctx.(*agentContext); ok {
+		off := *ac
+		off.Context = llm.ContextSuppressThinking(ac.Context)
+		return &off
+	}
+	return thinkingOffContext{Context: ctx, values: llm.ContextSuppressThinking(ctx)}
+}
+
+// thinkingOffContext is a Context whose values come from values: the same
+// session, tracer, progress callback, deadline and cancellation as the Context
+// it wraps, with the thinking-suppression mark added. foldedTurnCtx uses it
+// for a Context implementation it cannot copy.
+type thinkingOffContext struct {
+	Context
+	values context.Context
+}
+
+// Value returns the value for key from the marked context, so the provider
+// clients see the suppression mark and every value of the wrapped Context.
+func (c thinkingOffContext) Value(key any) any { return c.values.Value(key) }
 
 // fitStepToWindow keeps the step in flight inside the provider's window.
 // Overflow can come only from it: everything before it was in a send the

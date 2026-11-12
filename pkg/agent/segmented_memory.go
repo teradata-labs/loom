@@ -105,6 +105,12 @@ type SegmentedMemory struct {
 	// blocks themselves.
 	thinkingPrefix map[[sha256.Size]byte][sha256.Size]byte
 
+	// foldedTurn is the turn in which a committed fold last dropped the
+	// thinking blocks of the rows it kept (dropThinkingLocked). While that
+	// turn is the current one, its tool-calling rows have no blocks
+	// (FoldedThisTurn). In memory only, like the blocks themselves.
+	foldedTurn int64
+
 	// requestModel and requestToolsDigest identify the provider call beyond
 	// its messages (SetRequestIdentity); they seed the thinkingPrefix
 	// fingerprint.
@@ -731,6 +737,7 @@ func (sm *SegmentedMemory) ResetContext() {
 	sm.summary = summaryState{}
 	sm.patternName = ""
 	sm.thinkingPrefix = nil
+	sm.foldedTurn = 0
 	sm.transientTail = ""
 	sm.turnNotes = nil
 
