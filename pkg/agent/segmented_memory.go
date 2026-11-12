@@ -300,17 +300,6 @@ func (sm *SegmentedMemory) SetSessionStore(store SessionStorage, sessionID strin
 	sm.sessionID = sessionID
 }
 
-// SetOffloadExemptTools is kept for callers written against it. Exemption is
-// decided where a result arrives, on the agent's Memory (Memory.
-// SetOffloadExemptTools): an exempt tool's result enters whole, and no size
-// bound touches a row after that (only a step too large for the window has its
-// results replaced), so there is nothing for a session's memory to do.
-//
-// Deprecated: set the exempt tools on Memory or Agent.
-func (sm *SegmentedMemory) SetOffloadExemptTools(names []string) {
-	warnDeprecatedOnce("SegmentedMemory.SetOffloadExemptTools", "exemption is set on Memory or Agent, where a result arrives")
-}
-
 // SetThreshold sets the one threshold value in bytes (HLD §5.1: one value,
 // three roles — arrival bound, stored-row bound, retrieval page bound). Non-positive values keep the current threshold; positive values
 // below minThreshold clamp to it — the truncation tail alone runs ~150 bytes,
@@ -343,15 +332,6 @@ func (sm *SegmentedMemory) CurrentTurn() int64 {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	return sm.currentTurnLocked()
-}
-
-// DropTurnPayloads is kept for callers written against it. A tool result is
-// bounded once, when it arrives, so there is no whole payload left to drop at a
-// turn's end.
-//
-// Deprecated: nothing to drop; results are bounded at arrival.
-func (sm *SegmentedMemory) DropTurnPayloads() {
-	warnDeprecatedOnce("SegmentedMemory.DropTurnPayloads", "results are bounded at arrival; no whole payload is held to drop")
 }
 
 // currentTurnLocked computes max(Turn) over L1. Must hold lock.

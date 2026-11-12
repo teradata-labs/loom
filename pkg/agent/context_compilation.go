@@ -1286,26 +1286,6 @@ func (sm *SegmentedMemory) SetAdvertisedToolsBytes(bytes int) {
 	sm.tokenCountDirty = false
 }
 
-// CurrentTurnOverflow is kept for callers written against it.
-type CurrentTurnOverflow struct {
-	FloorTokens    int
-	StartTokens    int
-	StubbedResults int
-	ToolResults    int
-}
-
-// CurrentTurnOverflow is kept for callers written against it and reports no
-// overflow. Each tool result is bounded as it arrives, so a send that does not
-// fit is a step returning more than the window holds; that step is fitted to
-// the window before the send (fitStepToWindow), its results replaced by a note.
-//
-// Deprecated: a step that does not fit is caught before the send and its
-// results replaced; this reports nothing.
-func (sm *SegmentedMemory) CurrentTurnOverflow() (CurrentTurnOverflow, bool) {
-	warnDeprecatedOnce("SegmentedMemory.CurrentTurnOverflow", "a send that does not fit is the provider's refusal, answered by relief")
-	return CurrentTurnOverflow{}, false
-}
-
 // noteFoldedSkillsLocked is what a fold does about skills (§4.5): it returns the
 // skills whose manage_skills load pair lies in the folded region, and the
 // summary text with the full set of folded skills pinned at its end, so the

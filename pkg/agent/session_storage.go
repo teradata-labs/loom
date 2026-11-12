@@ -63,13 +63,9 @@ type SessionStorage interface {
 	// Tool executions
 	SaveToolExecution(ctx context.Context, sessionID string, exec ToolExecution) error
 
-	// Relief transactions (HLD §5.2 — write-once flags, one transaction per
-	// operation, set only inside releasePressure):
+	// Relief transaction (HLD §5.2 — write-once flags, one transaction per
+	// operation):
 	//
-	// MarkEvicted is kept for implementations written against it. Nothing in
-	// loom calls it: a tool result is bounded once at arrival and never evicted
-	// afterwards, so loom's own stores implement it as a no-op.
-	MarkEvicted(ctx context.Context, sessionID string, seqs []int64) error
 	// FoldMessages writes summary version n (snapshot_type='fold', content =
 	// JSON {"n","text"}) and sets the region's folded flags in ONE transaction
 	// (HLD §5.4.6) — a fold never stands in memory without its row.
@@ -133,22 +129,12 @@ type SoftDeleteStorage interface {
 // Compile-time check: SessionStore (SQLite) implements SessionStorage.
 var _ SessionStorage = (*SessionStore)(nil)
 
-// warnDeprecatedOnce logs, once per process, that a deprecated call was made
-// and does nothing: a caller written against it learns the behavior is gone.
-func warnDeprecatedOnce(name, why string) {
-	warnOnce(name, "deprecated call has no effect", zap.String("call", name), zap.String("why", why))
-}
-
 // warnOnce logs msg the first time key is seen in this process.
 func warnOnce(key, msg string, fields ...zap.Field) {
-	if _, done := deprecatedWarned.LoadOrStore(key, true); done {
+	if _, done := warnedOnce.LoadOrStore(key, true); done {
 		return
 	}
 	zap.L().Warn(msg, fields...)
 }
 
-var deprecatedWarned sync.Map
-
-// WarnDeprecatedOnce is warnDeprecatedOnce for SessionStorage implementations
-// outside this package.
-func WarnDeprecatedOnce(name, why string) { warnDeprecatedOnce(name, why) }
+var warnedOnce sync.Map
