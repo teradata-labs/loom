@@ -295,12 +295,6 @@ func snapshotWorkflowMemory(ctx context.Context, o *Orchestrator, workflowID str
 	return entries
 }
 
-// restoreWorkflowMemory writes checkpointed entries and the completed stages'
-// full outputs back into the WORKFLOW namespace before a resumed run starts,
-// so shared_memory_read and truncation notices keep working. The stage
-// outputs are re-seeded under this workflow's own keys. Best-effort: the
-// result says, per stage snapshot, whether its key is in the store, so the
-// resumed run points only at keys that exist and renders the rest in full.
 // trimCheckpoint returns the checkpoint with only its first keep stage
 // snapshots: a REVISE resume discards the stages from its target on, so they
 // are neither re-seeded nor replayed. Both executors' Resume go through it so
@@ -315,6 +309,12 @@ func trimCheckpoint(ckpt *loomv1.WorkflowCheckpoint, keep int) *loomv1.WorkflowC
 	return trimmed
 }
 
+// restoreWorkflowMemory writes checkpointed entries and the completed stages'
+// full outputs back into the WORKFLOW namespace before a resumed run starts,
+// so shared_memory_read and truncation notices keep working. The stage
+// outputs are re-seeded under this workflow's own keys. Best-effort: the
+// result says, per stage snapshot, whether its key is in the store, so the
+// resumed run points only at keys that exist and renders the rest in full.
 func restoreWorkflowMemory(ctx context.Context, o *Orchestrator, ckpt *loomv1.WorkflowCheckpoint, workflowID string) []bool {
 	seeded := make([]bool, len(ckpt.StageSnapshots))
 	if o.sharedMemory == nil {

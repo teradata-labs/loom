@@ -178,8 +178,10 @@ enum JoinOverflowStrategy {
 // be tuned.
 message HistoryPolicy {
   // Per-entry cap on the bytes rendered inline for each prior stage. 0 =
-  // 8192 (MaxStageOutputBytes). Applies only when the full output is in
-  // SharedMemory; without a store entries are never cut. Negative is
+  // 8192 (MaxStageOutputBytes). The cap applies only when the full output
+  // is in SharedMemory; without a store it leaves entries full. The budget
+  // strategies below still cut or reduce an oversize entry, stored or not,
+  // and its notice then says the rest is not retrievable. Negative is
   // rejected at load.
   int32 max_entry_bytes = 1;
 

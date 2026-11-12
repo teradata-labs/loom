@@ -6140,7 +6140,7 @@
         "maxEntryBytes": {
           "type": "integer",
           "format": "int32",
-          "description": "Per-entry cap on the bytes rendered inline for each prior stage. 0 =\n8192 (MaxStageOutputBytes). Applies only when the full output is in\nSharedMemory; without a store entries are never cut. Negative is\nrejected at load."
+          "description": "Per-entry cap on the bytes rendered inline for each prior stage. 0 =\n8192 (MaxStageOutputBytes). The cap applies only when the full output\nis in SharedMemory; without a store it leaves entries full. The budget\nstrategies below still cut or reduce an oversize entry, stored or not,\nand its notice then says the rest is not retrievable. Negative is\nrejected at load."
         },
         "maxInputTokens": {
           "type": "integer",

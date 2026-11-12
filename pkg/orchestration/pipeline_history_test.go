@@ -80,6 +80,23 @@ func historyPipeline(t *testing.T, orch *Orchestrator, final *funcLLMProvider, f
 	}
 }
 
+// Without a store the per-entry cap leaves entries full, but a budget still
+// has to be met: an oversize entry is truncated like a stored one and its
+// notice says the rest is not retrievable (no key to fetch), which is what the
+// proto comment on HistoryPolicy.max_entry_bytes and the reference promise.
+func TestPipeline_HistoryPolicyWithoutStore_BudgetStillCutsWithTheNoStoreNotice(t *testing.T) {
+	orch := newJoinTestOrchestrator(t, nil, false)
+	final := reportLLM()
+	policy := &loomv1.HistoryPolicy{MaxInputTokens: 1200, OverflowStrategy: loomv1.JoinOverflowStrategy_JOIN_OVERFLOW_STRATEGY_TRUNCATE}
+	result, err := orch.ExecutePattern(context.Background(), historyPipeline(t, orch, final, "Compile: {{history}}", false, policy))
+	require.NoError(t, err)
+	prompt := final.recorded()[0]
+	assert.LessOrEqual(t, agent.GetTokenCounter().CountTokens(prompt), 1200, "the budget is met by truncation")
+	assert.Equal(t, "2", result.Metadata["history.entries_truncated"], "both entries were cut without a store")
+	assert.Equal(t, 2, strings.Count(prompt, "not in SharedMemory, so the rest is not retrievable"), "each cut entry says the rest cannot be fetched")
+	assert.NotContains(t, prompt, "shared_memory_read", "no key is offered without a store")
+}
+
 func reportLLM() *funcLLMProvider {
 	return newFuncLLMProvider(func(p string) (string, error) {
 		if isReducePrompt(p) {

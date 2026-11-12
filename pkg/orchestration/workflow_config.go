@@ -446,7 +446,7 @@ func convertPipelinePattern(spec map[string]interface{}, logger *zap.Logger) (*l
 			}
 		}
 		if !renders {
-			return nil, fmt.Errorf("%w: spec.history has no effect: no stage could render history (no prompt_template uses {{history}}, and pass_full_history appends history only to a later stage whose template names neither {{history}} nor {{previous}})", ErrInvalidWorkflow)
+			return nil, fmt.Errorf("%w: spec.history has no effect: no stage could render history (no stage with prior stages has a prompt_template using {{history}}, and pass_full_history appends history only to a later stage whose template names neither {{history}} nor {{previous}})", ErrInvalidWorkflow)
 		}
 	}
 

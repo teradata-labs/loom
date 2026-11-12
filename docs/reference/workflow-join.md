@@ -101,7 +101,7 @@ Stage 1 output:
 [OUTPUT TRUNCATED - Full data stored in SharedMemory. Use shared_memory_read(namespace="workflow", key="<workflow-id>-stage-1-output") to fetch complete output]
 ```
 
-Without a store, nothing is cut that the stage could not fetch back: entries are the full outputs, as before. No extra LLM calls are made either way.
+Without a store, the per-entry cap cuts nothing: entries are the full outputs, as before, and no extra LLM calls are made either way. A `spec.history` budget still applies to them: an oversize entry is truncated or reduced like a stored one, and its notice then says the rest is not retrievable, since the stage has no key to fetch.
 
 **With `spec.history`:** the whole stage prompt (template, `{{previous}}`, the SharedMemory header and every entry) is held to a token budget derived from the stage agent, and oversize entries are reduced, truncated or the stage fails. `{{previous}}` and the template text are never cut; only the history entries are.
 
@@ -248,7 +248,7 @@ Fork-join and parallel (`WorkflowResult.metadata`, and the `fork_join.join` / `p
 | `join.mode` | `agent` or `merge_llm` |
 | `join.agent_id` | the join agent (agent mode only) |
 | `join.input_tokens` / `join.budget_tokens` | tokens of the prompt actually sent; the budget applied (`0` when none) |
-| `join.overflow` | `none`, `pre_reduce` or `truncate` |
+| `join.overflow` | `none`, `pre_reduce` or `truncate`: the strategy that ran; `join.branches_reduced` / `_truncated` say what happened to each entry, since a reduce call that fails, returns nothing or has no LLM falls back to truncation |
 | `join.branches_stored` / `_truncated` / `_reduced` | branches stored in SharedMemory; cut; replaced by a reduced card |
 
 Pipeline and iterative pipeline (present when at least one stage prompt carried history; per-stage detail on the `pipeline.stage.N` span, or the iterative `workflow.structured_context.build_prompt` span, under `history.*`):

@@ -867,8 +867,10 @@ func (x *JoinPolicy) GetOverflowStrategy() JoinOverflowStrategy {
 type HistoryPolicy struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Per-entry cap on the bytes rendered inline for each prior stage. 0 =
-	// 8192 (MaxStageOutputBytes). Applies only when the full output is in
-	// SharedMemory; without a store entries are never cut. Negative is
+	// 8192 (MaxStageOutputBytes). The cap applies only when the full output
+	// is in SharedMemory; without a store it leaves entries full. The budget
+	// strategies below still cut or reduce an oversize entry, stored or not,
+	// and its notice then says the rest is not retrievable. Negative is
 	// rejected at load.
 	MaxEntryBytes int32 `protobuf:"varint,1,opt,name=max_entry_bytes,json=maxEntryBytes,proto3" json:"max_entry_bytes,omitempty"`
 	// Token budget for the whole rendered stage prompt (template, header and

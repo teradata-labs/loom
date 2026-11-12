@@ -562,7 +562,9 @@ spec:
 #   - max_entry_bytes: inline cap per prior stage, 0 = 8192
 #   - max_input_tokens: token budget, 0 = half the stage agent's usable window
 #   - overflow_strategy: pre_reduce (default) | truncate | fail
-#   Rejected when no stage uses {{history}} and pass_full_history is false.
+#   Rejected when no stage could render history: no template uses {{history}},
+#   and pass_full_history would append to no later stage because every later
+#   template names {{previous}}.
 #   See docs/reference/workflow-join.md
 #
 # VOTING STRATEGIES (swarm):
