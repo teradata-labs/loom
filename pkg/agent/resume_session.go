@@ -523,12 +523,17 @@ func unsavedBatchStep(events []eventlog.ExecutionEvent, msgs []Message) (int, er
 	return 0, nil
 }
 
-// unsavedBatchStepWithFolded is unsavedBatchStep that also counts messages
-// compression has folded. Folded rows leave L1, which is all msgs holds, but
-// they are saved: a step the log kept because its tool row did not persist can
-// have its assistant message folded by a later turn, and it must not read as
-// lost. Only a step still unmatched is looked up, so a session without folds
-// pays no extra read; a failed read keeps the refusal.
+// unsavedBatchStepWithFolded is unsavedBatchStep checked again against the
+// store when the rows in memory do not match. msgs is L1, and L1 can show a
+// saved batch in a form that does not match its recorded response: a fold
+// removes folded rows from L1, and the in-loop fold keeps an assistant row
+// with its calls removed in memory (foldSplitLocked; on reload,
+// dropFoldedCalls). A step the log kept because one of its tool rows did not
+// persist can be in either state, and it must not read as lost. The store
+// holds every saved assistant row with its full tool_calls_json, folded or
+// not, so the second check matches the steps against those rows, in seq
+// order. Only a session with an unmatched step pays the extra read; a failed
+// read keeps the refusal.
 func (a *Agent) unsavedBatchStepWithFolded(ctx context.Context, sessionID string, events []eventlog.ExecutionEvent, msgs []Message) (int, error) {
 	step, err := unsavedBatchStep(events, msgs)
 	if !errors.Is(err, ErrBatchNotSaved) || a.memory == nil || a.memory.store == nil {
@@ -536,21 +541,20 @@ func (a *Agent) unsavedBatchStepWithFolded(ctx context.Context, sessionID string
 	}
 	rows, lerr := a.memory.store.ListMessagesBySeqRange(ctx, sessionID, 1, math.MaxInt64)
 	if lerr != nil {
-		zap.L().Warn("failed to read folded messages; keeping the unsaved-batch refusal",
+		zap.L().Warn("failed to read the stored messages; keeping the unsaved-batch refusal",
 			zap.String("session_id", sessionID), zap.Error(lerr))
 		return step, err
 	}
-	var all []Message
+	var stored []Message
 	for _, m := range rows {
-		if m.Folded && m.Role == "assistant" && len(m.ToolCalls) > 0 {
-			all = append(all, m)
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			stored = append(stored, m)
 		}
 	}
-	if len(all) == 0 {
+	if len(stored) == 0 {
 		return step, err
 	}
-	// Folded rows are older than everything in L1, and steps are matched in order.
-	return unsavedBatchStep(events, append(all, msgs...))
+	return unsavedBatchStep(events, stored)
 }
 
 // isQueryToolResultIntent reports whether a tool_call_intent event is for the
