@@ -599,19 +599,12 @@ func (s *MultiAgentServer) processSpawnedAgentMessages(ctx context.Context, spaw
 	// Drain all pending messages from all subscriptions
 	var messages []*BusMessage
 	for _, sub := range subscriptions {
-		// Non-blocking drain
-		for {
-			select {
-			case msg := <-sub.Channel:
-				messages = append(messages, &BusMessage{
-					msg:   msg,
-					topic: sub.Topic,
-				})
-			default:
-				goto nextSubscription
-			}
+		for _, msg := range sub.Drain() {
+			messages = append(messages, &BusMessage{
+				msg:   msg,
+				topic: sub.Topic,
+			})
 		}
-	nextSubscription:
 	}
 
 	if len(messages) == 0 {

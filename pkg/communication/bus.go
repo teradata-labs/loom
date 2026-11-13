@@ -108,6 +108,25 @@ type Subscription struct {
 	Created       time.Time
 }
 
+// Drain returns the messages waiting on the subscription, without blocking.
+// It stops when the channel is empty or closed: a closed channel (after
+// Unsubscribe or Close) still yields the messages buffered before the close,
+// and then only nil, so a loop that does not check for it never ends.
+func (s *Subscription) Drain() []*loomv1.BusMessage {
+	var messages []*loomv1.BusMessage
+	for {
+		select {
+		case msg, ok := <-s.Channel:
+			if !ok {
+				return messages
+			}
+			messages = append(messages, msg)
+		default:
+			return messages
+		}
+	}
+}
+
 // NewMessageBus creates a new message bus.
 func NewMessageBus(refStore ReferenceStore, policy *PolicyManager, tracer observability.Tracer, logger *zap.Logger) *MessageBus {
 	if policy == nil {

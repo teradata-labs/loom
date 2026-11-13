@@ -522,3 +522,44 @@ func TestBusValidation(t *testing.T) {
 	_, _, err = bus.Publish(ctx, "topic", nil)
 	assert.Error(t, err)
 }
+
+// TestSubscriptionDrain checks that Drain returns the buffered messages without
+// blocking, and that it stops on a closed subscription channel instead of
+// receiving nil messages forever (a closed channel is always ready).
+func TestSubscriptionDrain(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	bus := NewMessageBus(nil, nil, nil, logger)
+	ctx := context.Background()
+
+	sub, err := bus.Subscribe(ctx, "agent1", "drain.topic", nil, 10)
+	require.NoError(t, err)
+
+	assert.Empty(t, sub.Drain(), "an empty subscription drains to nothing, without blocking")
+
+	for _, id := range []string{"m1", "m2"} {
+		_, _, err = bus.Publish(ctx, "drain.topic", &loomv1.BusMessage{
+			Id:        id,
+			Topic:     "drain.topic",
+			FromAgent: "agent0",
+			Payload:   &loomv1.MessagePayload{Data: &loomv1.MessagePayload_Value{Value: []byte(id)}},
+			Timestamp: time.Now().UnixMilli(),
+		})
+		require.NoError(t, err)
+	}
+
+	// Close the bus with the two messages still buffered: their channel is
+	// now closed.
+	require.NoError(t, bus.Close())
+
+	done := make(chan []*loomv1.BusMessage, 1)
+	go func() { done <- sub.Drain() }()
+	select {
+	case got := <-done:
+		require.Len(t, got, 2, "messages buffered before the close are still returned")
+		assert.Equal(t, "m1", got[0].GetId())
+		assert.Equal(t, "m2", got[1].GetId())
+	case <-time.After(5 * time.Second):
+		t.Fatal("Drain did not return on a closed subscription channel")
+	}
+	assert.Empty(t, sub.Drain(), "a closed, empty subscription drains to nothing")
+}
