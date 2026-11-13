@@ -55,11 +55,15 @@ func (o *Orchestrator) ResumeWorkflow(ctx context.Context, pattern *loomv1.Workf
 	switch p := pattern.Pattern.(type) {
 	case *loomv1.WorkflowPattern_Pipeline:
 		executor := NewPipelineExecutor(o, p.Pipeline, ckpt.WorkflowId)
-		return executor.Resume(ctx, ckpt, decision)
+		result, err := executor.Resume(ctx, ckpt, decision)
+		o.cleanupWorkflowMemory(ctx, ckpt.WorkflowId)
+		return result, err
 
 	case *loomv1.WorkflowPattern_Iterative:
 		executor := NewIterativePipelineExecutor(o, p.Iterative, o.messageBus, ckpt.WorkflowId)
-		return executor.Resume(ctx, ckpt, decision)
+		result, err := executor.Resume(ctx, ckpt, decision)
+		o.cleanupWorkflowMemory(ctx, ckpt.WorkflowId)
+		return result, err
 
 	default:
 		return nil, fmt.Errorf("resume: pattern type %s does not support HITL gates", GetPatternType(pattern))

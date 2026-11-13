@@ -5236,11 +5236,15 @@
         },
         "mergeStrategy": {
           "$ref": "#/definitions/v1MergeStrategy",
-          "title": "Strategy for merging final outputs"
+          "description": "Deprecated: the debate engine never read this field. The final output\nis the moderator's synthesis when moderator_agent_id is set, else the\nlast round's heuristic synthesis line. The YAML loader rejects an\nexplicit value. Kept for wire compatibility only."
         },
         "moderatorAgentId": {
           "type": "string",
           "title": "Optional: Moderator agent ID to guide debate"
+        },
+        "joinPolicy": {
+          "$ref": "#/definitions/v1JoinPolicy",
+          "description": "Bounds the two hand-offs that carry other agents' full output into one\nprompt: each agent's \"respond to the others\" prompt in rounds after the\nfirst, and the moderator's final synthesis prompt. Full positions are\nstored in SharedMemory (key \"\u003cworkflow-id\u003e-round-R-position-\u003cagent-id\u003e\")\nwhen the orchestrator has a store; the inline copy is capped per\nposition and budgeted as a whole against the receiving agent's context\nwindow. agent_id must be empty: the moderator is the join agent, and\nthe responding agent is the receiver of its own response prompt.\nprompt_template applies to the moderator synthesis only ({{prompt}} is\nthe topic, {{branches}} the positions, {{branch_count}} their number).\nUnset: the pre-existing unbounded behaviour."
         }
       },
       "description": "DebatePattern orchestrates multiple agents to debate a topic and reach consensus.\nAgents see each other's responses from previous rounds and build on them."
@@ -5751,6 +5755,10 @@
         "agentOutputPolicy": {
           "$ref": "#/definitions/v1OutputPolicy",
           "description": "Optional: Output validation policy applied to each agent's output."
+        },
+        "joinPolicy": {
+          "$ref": "#/definitions/v1JoinPolicy",
+          "description": "Optional: how the branch outputs are handed to the join step and how\nlarge that hand-off may be. Without it the join is one raw call to the\norchestrator merge LLM with every branch output inline, unbounded."
         }
       },
       "description": "ForkJoinPattern executes multiple agents in parallel on the same prompt,\nthen merges their results according to the specified strategy."
@@ -6126,6 +6134,26 @@
       },
       "description": "HealthStatus returns system health."
     },
+    "v1HistoryPolicy": {
+      "type": "object",
+      "properties": {
+        "maxEntryBytes": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Per-entry cap on the bytes rendered inline for each prior stage. 0 =\n8192 (MaxStageOutputBytes). The cap applies only when the full output\nis in SharedMemory; without a store it leaves entries full. The budget\nstrategies below still cut or reduce an oversize entry, stored or not,\nand its notice then says the rest is not retrievable. Negative is\nrejected at load."
+        },
+        "maxInputTokens": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Token budget for the whole rendered stage prompt (template, header and\nevery history entry). 0 = half of the stage agent's usable context\nwindow (max_context_tokens less reserved_output_tokens). Negative is\nrejected at load."
+        },
+        "overflowStrategy": {
+          "$ref": "#/definitions/v1JoinOverflowStrategy",
+          "description": "What to do when the rendered prompt exceeds max_input_tokens. The\noverflow strategies act on the history entries only; {{previous}} and\nthe stage's own template text are never cut. UNSPECIFIED behaves as\nPRE_REDUCE, which reduces oversize entries with the stage agent's\ncompressor-role LLM (its main LLM when none is configured)."
+        }
+      },
+      "description": "HistoryPolicy bounds what a pipeline stage receives through {{history}}\nand pass_full_history: every prior stage's output rendered into one\nprompt.\n\nRegardless of this policy, each history entry is the same inline copy the\nnext stage gets as {{previous}}: when the orchestrator has a SharedMemory\nstore the full output is under \"\u003cworkflow-id\u003e-stage-N-output\" and the entry is cut to\nMaxStageOutputBytes (8192) with a notice naming that key; without a store\nthe entry is the full output. Setting a HistoryPolicy adds a whole-prompt\ntoken budget enforced with overflow_strategy, and lets the per-entry cap\nbe tuned."
+    },
     "v1HygieneConfig": {
       "type": "object",
       "properties": {
@@ -6237,10 +6265,49 @@
         },
         "restartTopic": {
           "type": "string",
-          "title": "Topic for restart coordination messages (default: \"workflow.restart\")"
+          "description": "Topic for restart coordination messages. Empty (the default) gives each\nrun its own topic, \"workflow.restart.\u003cworkflow-id\u003e\", so on a bus shared by\nmany runs a request restarts only the run that published it; the\npublish_restart_request tool follows the running pipeline's topic. Set it\nonly when an external publisher must know the topic in advance."
         }
       },
       "description": "IterativeWorkflowPattern extends PipelinePattern with autonomous restart capabilities.\nStages can trigger restarts of earlier stages via pub/sub coordination, enabling\nagents to negotiate and self-correct without human intervention.\n\nExample use case: Stage 6 hits processing limits and requests Stage 2 to find\na different table with fewer rows."
+    },
+    "v1JoinOverflowStrategy": {
+      "type": "string",
+      "enum": [
+        "JOIN_OVERFLOW_STRATEGY_UNSPECIFIED",
+        "JOIN_OVERFLOW_STRATEGY_PRE_REDUCE",
+        "JOIN_OVERFLOW_STRATEGY_TRUNCATE",
+        "JOIN_OVERFLOW_STRATEGY_FAIL"
+      ],
+      "default": "JOIN_OVERFLOW_STRATEGY_UNSPECIFIED",
+      "description": "JoinOverflowStrategy is what a JoinPolicy does when the rendered join\ninput exceeds its token budget. Every strategy leaves the full branch\noutputs in SharedMemory; only the inline copy changes.\n\n - JOIN_OVERFLOW_STRATEGY_PRE_REDUCE: Reduce each branch that exceeds its fair share of the budget to a\ncard of at most that share, using the join agent's compressor-role\nLLM (its main LLM when no compressor is configured) or, without a join\nagent, the orchestrator merge LLM. One extra LLM call per oversize\nbranch, run in parallel under the orchestrator LLM semaphore. A branch\nwhose reduction fails or still exceeds its share is truncated to the\nshare, so the result always fits the budget.\n - JOIN_OVERFLOW_STRATEGY_TRUNCATE: Cut each oversize branch to its fair share of the budget at a line\nboundary, with the SharedMemory notice. No extra LLM calls.\n - JOIN_OVERFLOW_STRATEGY_FAIL: Fail the workflow before paying for the join call."
+    },
+    "v1JoinPolicy": {
+      "type": "object",
+      "properties": {
+        "agentId": {
+          "type": "string",
+          "description": "Agent that performs the join. When set, the join runs through this\nagent's conversation loop (agent.Chat) instead of a single raw call to\nthe orchestrator merge LLM: the agent gets its own system prompt and\ntools (shared_memory_read among them when configured), context relief\nand the provider context-too-long backstop. Must be registered with\nthe orchestrator; it may also be one of the branch agents. The agent\nruns under session \"\u003cworkflow-id\u003e-join-\u003cagent-id\u003e\". On DebatePattern\nthis must be empty (moderator_agent_id is the join agent)."
+        },
+        "promptTemplate": {
+          "type": "string",
+          "description": "Prompt template for the join. Placeholders:\n  {{prompt}}        the fan-out prompt (fork-join) or \"\" (parallel)\n  {{branches}}      rendered branch sections: preview text plus, when\n                    the preview is not the full output, the\n                    SharedMemory key that holds the full text\n  {{branch_count}}  number of branches\nWhen empty, the merge_strategy's default prompt is used with the same\nbounded branch sections."
+        },
+        "maxBranchBytes": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Per-branch cap on the bytes rendered inline. A larger output is cut at\na line boundary and the section carries a notice naming the\nSharedMemory key that holds the full text. 0 = 8192, the pipeline\nstage hand-off default. Negative is rejected at load."
+        },
+        "maxInputTokens": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Token budget for the whole rendered join input (every branch section\nplus the template). 0 = derived from the join agent's context window\n(half of its max_context_tokens less reserved output tokens); with no\njoin agent, 0 disables the budget check. Negative is rejected at load."
+        },
+        "overflowStrategy": {
+          "$ref": "#/definitions/v1JoinOverflowStrategy",
+          "description": "What to do when the rendered join input exceeds max_input_tokens.\nUNSPECIFIED behaves as PRE_REDUCE."
+        }
+      },
+      "description": "JoinPolicy bounds the hand-off from a fan-out pattern's branches to its\njoin step and, optionally, runs that step through a registered agent.\n\nFull branch outputs are always stored in SharedMemory (WORKFLOW namespace,\nkey \"\u003cworkflow-id\u003e-branch-N-output\") when the orchestrator has a SharedMemory\nstore, so the join can fetch any branch in full with shared_memory_read.\nThe inline copy handed to the join is bounded in two steps: a per-branch\nbyte cap (max_branch_bytes), then a whole-input token budget\n(max_input_tokens) enforced with overflow_strategy."
     },
     "v1LLMConfig": {
       "type": "object",
@@ -7590,6 +7657,10 @@
           "type": "integer",
           "format": "int32",
           "title": "Optional: Timeout for all tasks"
+        },
+        "joinPolicy": {
+          "$ref": "#/definitions/v1JoinPolicy",
+          "description": "Optional: how the task outputs are handed to the join step and how\nlarge that hand-off may be. See JoinPolicy."
         }
       },
       "description": "ParallelPattern executes multiple independent agent tasks in parallel.\nUnlike fork-join, each task can have a different prompt."
@@ -7810,6 +7881,10 @@
         "passFullHistory": {
           "type": "boolean",
           "title": "Whether to pass full history to each stage (default: false, only previous)"
+        },
+        "historyPolicy": {
+          "$ref": "#/definitions/v1HistoryPolicy",
+          "description": "Bounds {{history}} / pass_full_history with a whole-prompt token budget.\nUnset: entries are still capped per stage like {{previous}} (see\nHistoryPolicy), but no budget check runs and no extra LLM calls are made."
         }
       },
       "description": "PipelinePattern executes agents sequentially where each agent's output\nbecomes input for the next agent."

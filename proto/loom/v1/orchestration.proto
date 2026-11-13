@@ -48,11 +48,27 @@ message DebatePattern {
   // Number of debate rounds
   int32 rounds = 3;
 
-  // Strategy for merging final outputs
-  MergeStrategy merge_strategy = 4;
+  // Deprecated: the debate engine never read this field. The final output
+  // is the moderator's synthesis when moderator_agent_id is set, else the
+  // last round's heuristic synthesis line. The YAML loader rejects an
+  // explicit value. Kept for wire compatibility only.
+  MergeStrategy merge_strategy = 4 [deprecated = true];
 
   // Optional: Moderator agent ID to guide debate
   string moderator_agent_id = 5;
+
+  // Bounds the two hand-offs that carry other agents' full output into one
+  // prompt: each agent's "respond to the others" prompt in rounds after the
+  // first, and the moderator's final synthesis prompt. Full positions are
+  // stored in SharedMemory (key "<workflow-id>-round-R-position-<agent-id>")
+  // when the orchestrator has a store; the inline copy is capped per
+  // position and budgeted as a whole against the receiving agent's context
+  // window. agent_id must be empty: the moderator is the join agent, and
+  // the responding agent is the receiver of its own response prompt.
+  // prompt_template applies to the moderator synthesis only ({{prompt}} is
+  // the topic, {{branches}} the positions, {{branch_count}} their number).
+  // Unset: the pre-existing unbounded behaviour.
+  JoinPolicy join_policy = 6;
 }
 
 // ForkJoinPattern executes multiple agents in parallel on the same prompt,
@@ -72,6 +88,115 @@ message ForkJoinPattern {
 
   // Optional: Output validation policy applied to each agent's output.
   OutputPolicy agent_output_policy = 5;
+
+  // Optional: how the branch outputs are handed to the join step and how
+  // large that hand-off may be. Without it the join is one raw call to the
+  // orchestrator merge LLM with every branch output inline, unbounded.
+  JoinPolicy join_policy = 6;
+}
+
+// JoinPolicy bounds the hand-off from a fan-out pattern's branches to its
+// join step and, optionally, runs that step through a registered agent.
+//
+// Full branch outputs are always stored in SharedMemory (WORKFLOW namespace,
+// key "<workflow-id>-branch-N-output") when the orchestrator has a SharedMemory
+// store, so the join can fetch any branch in full with shared_memory_read.
+// The inline copy handed to the join is bounded in two steps: a per-branch
+// byte cap (max_branch_bytes), then a whole-input token budget
+// (max_input_tokens) enforced with overflow_strategy.
+message JoinPolicy {
+  // Agent that performs the join. When set, the join runs through this
+  // agent's conversation loop (agent.Chat) instead of a single raw call to
+  // the orchestrator merge LLM: the agent gets its own system prompt and
+  // tools (shared_memory_read among them when configured), context relief
+  // and the provider context-too-long backstop. Must be registered with
+  // the orchestrator; it may also be one of the branch agents. The agent
+  // runs under session "<workflow-id>-join-<agent-id>". On DebatePattern
+  // this must be empty (moderator_agent_id is the join agent).
+  string agent_id = 1;
+
+  // Prompt template for the join. Placeholders:
+  //   {{prompt}}        the fan-out prompt (fork-join) or "" (parallel)
+  //   {{branches}}      rendered branch sections: preview text plus, when
+  //                     the preview is not the full output, the
+  //                     SharedMemory key that holds the full text
+  //   {{branch_count}}  number of branches
+  // When empty, the merge_strategy's default prompt is used with the same
+  // bounded branch sections.
+  string prompt_template = 2;
+
+  // Per-branch cap on the bytes rendered inline. A larger output is cut at
+  // a line boundary and the section carries a notice naming the
+  // SharedMemory key that holds the full text. 0 = 8192, the pipeline
+  // stage hand-off default. Negative is rejected at load.
+  int32 max_branch_bytes = 3;
+
+  // Token budget for the whole rendered join input (every branch section
+  // plus the template). 0 = derived from the join agent's context window
+  // (half of its max_context_tokens less reserved output tokens); with no
+  // join agent, 0 disables the budget check. Negative is rejected at load.
+  int32 max_input_tokens = 4;
+
+  // What to do when the rendered join input exceeds max_input_tokens.
+  // UNSPECIFIED behaves as PRE_REDUCE.
+  JoinOverflowStrategy overflow_strategy = 5;
+}
+
+// JoinOverflowStrategy is what a JoinPolicy does when the rendered join
+// input exceeds its token budget. Every strategy leaves the full branch
+// outputs in SharedMemory; only the inline copy changes.
+enum JoinOverflowStrategy {
+  JOIN_OVERFLOW_STRATEGY_UNSPECIFIED = 0;
+
+  // Reduce each branch that exceeds its fair share of the budget to a
+  // card of at most that share, using the join agent's compressor-role
+  // LLM (its main LLM when no compressor is configured) or, without a join
+  // agent, the orchestrator merge LLM. One extra LLM call per oversize
+  // branch, run in parallel under the orchestrator LLM semaphore. A branch
+  // whose reduction fails or still exceeds its share is truncated to the
+  // share, so the result always fits the budget.
+  JOIN_OVERFLOW_STRATEGY_PRE_REDUCE = 1;
+
+  // Cut each oversize branch to its fair share of the budget at a line
+  // boundary, with the SharedMemory notice. No extra LLM calls.
+  JOIN_OVERFLOW_STRATEGY_TRUNCATE = 2;
+
+  // Fail the workflow before paying for the join call.
+  JOIN_OVERFLOW_STRATEGY_FAIL = 3;
+}
+
+// HistoryPolicy bounds what a pipeline stage receives through {{history}}
+// and pass_full_history: every prior stage's output rendered into one
+// prompt.
+//
+// Regardless of this policy, each history entry is the same inline copy the
+// next stage gets as {{previous}}: when the orchestrator has a SharedMemory
+// store the full output is under "<workflow-id>-stage-N-output" and the entry is cut to
+// MaxStageOutputBytes (8192) with a notice naming that key; without a store
+// the entry is the full output. Setting a HistoryPolicy adds a whole-prompt
+// token budget enforced with overflow_strategy, and lets the per-entry cap
+// be tuned.
+message HistoryPolicy {
+  // Per-entry cap on the bytes rendered inline for each prior stage. 0 =
+  // 8192 (MaxStageOutputBytes). The cap applies only when the full output
+  // is in SharedMemory; without a store it leaves entries full. The budget
+  // strategies below still cut or reduce an oversize entry, stored or not,
+  // and its notice then says the rest is not retrievable. Negative is
+  // rejected at load.
+  int32 max_entry_bytes = 1;
+
+  // Token budget for the whole rendered stage prompt (template, header and
+  // every history entry). 0 = half of the stage agent's usable context
+  // window (max_context_tokens less reserved_output_tokens). Negative is
+  // rejected at load.
+  int32 max_input_tokens = 2;
+
+  // What to do when the rendered prompt exceeds max_input_tokens. The
+  // overflow strategies act on the history entries only; {{previous}} and
+  // the stage's own template text are never cut. UNSPECIFIED behaves as
+  // PRE_REDUCE, which reduces oversize entries with the stage agent's
+  // compressor-role LLM (its main LLM when none is configured).
+  JoinOverflowStrategy overflow_strategy = 3;
 }
 
 // PipelinePattern executes agents sequentially where each agent's output
@@ -85,6 +210,11 @@ message PipelinePattern {
 
   // Whether to pass full history to each stage (default: false, only previous)
   bool pass_full_history = 3;
+
+  // Bounds {{history}} / pass_full_history with a whole-prompt token budget.
+  // Unset: entries are still capped per stage like {{previous}} (see
+  // HistoryPolicy), but no budget check runs and no extra LLM calls are made.
+  HistoryPolicy history_policy = 4;
 }
 
 // PipelineStage represents a single stage in a pipeline.
@@ -297,9 +427,12 @@ message WorkflowCheckpoint {
   // The gate request awaiting a decision.
   HITLGateRequest pending_gate = 12;
 
-  // Snapshot of agent-written WORKFLOW-namespace SharedMemory entries
-  // (stage-N-output keys are excluded — they are re-seeded from
-  // stage_snapshots). Restored on resume.
+  // Snapshot of this run's own WORKFLOW-namespace SharedMemory entries: the
+  // keys its agents wrote under the "<workflow-id>-" prefix the prompts ask
+  // for, plus its branch and position stashes. Its stage output keys are
+  // excluded (re-seeded from stage_snapshots), and keys without the workflow
+  // prefix are shared store state the checkpoint does not carry. Restored on
+  // resume.
   repeated CheckpointMemoryEntry shared_memory = 13;
 
   // Checkpoint creation time (Unix milliseconds).
@@ -365,7 +498,11 @@ message IterativeWorkflowPattern {
   // Empty = all stages can trigger restarts
   repeated string restart_triggers = 4;
 
-  // Topic for restart coordination messages (default: "workflow.restart")
+  // Topic for restart coordination messages. Empty (the default) gives each
+  // run its own topic, "workflow.restart.<workflow-id>", so on a bus shared by
+  // many runs a request restarts only the run that published it; the
+  // publish_restart_request tool follows the running pipeline's topic. Set it
+  // only when an external publisher must know the topic in advance.
   string restart_topic = 5;
 }
 
@@ -442,6 +579,10 @@ message ParallelPattern {
 
   // Optional: Timeout for all tasks
   int32 timeout_seconds = 3;
+
+  // Optional: how the task outputs are handed to the join step and how
+  // large that hand-off may be. See JoinPolicy.
+  JoinPolicy join_policy = 4;
 }
 
 // AgentTask represents a single agent task with its own prompt.

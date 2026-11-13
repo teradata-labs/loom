@@ -160,6 +160,18 @@ func NewOrchestrator(config Config) *Orchestrator {
 	return o
 }
 
+// SharedMemory returns the SharedMemory store the orchestrator stashes
+// hand-off outputs in (<workflow-id>-stage-N-output, <workflow-id>-branch-N-output,
+// <workflow-id>-round-R-position-<agent-id>), or nil when none is configured.
+func (o *Orchestrator) SharedMemory() *communication.SharedMemoryStore {
+	return o.sharedMemory
+}
+
+// MessageBus returns the orchestrator's message bus, or nil.
+func (o *Orchestrator) MessageBus() *communication.MessageBus {
+	return o.messageBus
+}
+
 // SetProgressCallback sets or updates the progress callback.
 // This allows updating the callback after orchestrator creation.
 func (o *Orchestrator) SetProgressCallback(callback WorkflowProgressCallback) {
@@ -359,41 +371,47 @@ func (o *Orchestrator) ExecutePattern(ctx context.Context, pattern *loomv1.Workf
 	// Route to appropriate executor based on pattern type
 	var result *loomv1.WorkflowResult
 	var err error
+	var wfID string
 
 	switch p := pattern.Pattern.(type) {
 	case *loomv1.WorkflowPattern_ForkJoin:
-		wfID := o.resolveWorkflowID("fork-join", pattern)
+		wfID = o.resolveWorkflowID("fork-join", pattern)
 		executor := NewForkJoinExecutor(o, p.ForkJoin, wfID)
 		result, err = executor.Execute(ctx)
 
 	case *loomv1.WorkflowPattern_Pipeline:
-		wfID := o.resolveWorkflowID("pipeline", pattern)
+		wfID = o.resolveWorkflowID("pipeline", pattern)
 		executor := NewPipelineExecutor(o, p.Pipeline, wfID)
 		result, err = executor.Execute(ctx)
 
 	case *loomv1.WorkflowPattern_Parallel:
-		wfID := o.resolveWorkflowID("parallel", pattern)
+		wfID = o.resolveWorkflowID("parallel", pattern)
 		executor := NewParallelExecutor(o, p.Parallel, wfID)
 		result, err = executor.Execute(ctx)
 
 	case *loomv1.WorkflowPattern_Conditional:
-		wfID := o.resolveWorkflowID("conditional", pattern)
+		wfID = o.resolveWorkflowID("conditional", pattern)
 		executor := NewConditionalExecutor(o, p.Conditional, wfID)
 		result, err = executor.Execute(ctx)
 
 	case *loomv1.WorkflowPattern_Iterative:
-		wfID := o.resolveWorkflowID("iterative", pattern)
+		wfID = o.resolveWorkflowID("iterative", pattern)
 		executor := NewIterativePipelineExecutor(o, p.Iterative, o.messageBus, wfID)
 		result, err = executor.Execute(ctx)
 
 	case *loomv1.WorkflowPattern_Swarm:
-		wfID := o.resolveWorkflowID("swarm", pattern)
+		wfID = o.resolveWorkflowID("swarm", pattern)
 		executor := NewSwarmExecutor(o, p.Swarm, wfID)
 		result, err = executor.Execute(ctx)
 
 	default:
 		return nil, fmt.Errorf("unknown workflow pattern type")
 	}
+
+	// The run's SharedMemory stash is an execution artifact: drop it as soon as
+	// the run returns. A HITL suspension is no exception; the checkpoint holds
+	// the stage outputs and the resume re-seeds the keys from it.
+	o.cleanupWorkflowMemory(ctx, wfID)
 
 	if err != nil {
 		// Emit error progress

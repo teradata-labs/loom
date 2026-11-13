@@ -240,15 +240,17 @@ func formatRestartFeedback(req *loomv1.RestartRequest) string {
 	return b.String()
 }
 
-// stageOutputMemoryKeyPattern matches the executor-managed SharedMemory keys
-// that are re-seeded from checkpoint stage snapshots (excluded from the
-// generic memory snapshot to avoid storing outputs twice).
-var stageOutputMemoryKeyPattern = regexp.MustCompile(`^stage-\d+-output$`)
+// legacyStageOutputKeyPattern matches the unscoped stage-N-output keys older
+// builds wrote; never this workflow's data, so never snapshotted.
+var legacyStageOutputKeyPattern = regexp.MustCompile(`^stage-\d+-output$`)
 
-// snapshotWorkflowMemory captures agent-written WORKFLOW-namespace entries for
-// a checkpoint. Best-effort: failures are logged and skipped so a flaky memory
-// backend cannot block suspension.
-func snapshotWorkflowMemory(ctx context.Context, o *Orchestrator) []*loomv1.CheckpointMemoryEntry {
+// snapshotWorkflowMemory captures the WORKFLOW-namespace entries a resume of
+// this workflow needs: its own join / position stashes and agent-written
+// keys. Its stage outputs are re-seeded from the stage snapshots, and
+// another workflow's executor-managed keys are not its data (one store
+// serves every workflow a server runs). Best-effort: failures are logged and
+// skipped so a flaky memory backend cannot block suspension.
+func snapshotWorkflowMemory(ctx context.Context, o *Orchestrator, workflowID string) []*loomv1.CheckpointMemoryEntry {
 	if o.sharedMemory == nil {
 		return nil
 	}
@@ -262,7 +264,15 @@ func snapshotWorkflowMemory(ctx context.Context, o *Orchestrator) []*loomv1.Chec
 
 	var entries []*loomv1.CheckpointMemoryEntry
 	for _, key := range listResp.Keys {
-		if stageOutputMemoryKeyPattern.MatchString(key) {
+		// Stage outputs are re-seeded from the stage snapshots; everything
+		// else the checkpoint keeps must be this workflow's own (its managed
+		// keys and the keys its agents wrote under the workflow prefix). On a
+		// shared store an unprefixed key may be another run's, so it is not
+		// captured and not written back on resume.
+		if legacyStageOutputKeyPattern.MatchString(key) || isStageOutputKey(key, workflowID) {
+			continue
+		}
+		if !workflowOwnsKey(key, workflowID) {
 			continue
 		}
 		getResp, err := o.sharedMemory.Get(ctx, &loomv1.GetSharedMemoryRequest{
@@ -285,12 +295,30 @@ func snapshotWorkflowMemory(ctx context.Context, o *Orchestrator) []*loomv1.Chec
 	return entries
 }
 
+// trimCheckpoint returns the checkpoint with only its first keep stage
+// snapshots: a REVISE resume discards the stages from its target on, so they
+// are neither re-seeded nor replayed. Both executors' Resume go through it so
+// they cannot drift apart again. The caller's checkpoint is left untouched; a
+// clone is returned only when something is dropped.
+func trimCheckpoint(ckpt *loomv1.WorkflowCheckpoint, keep int) *loomv1.WorkflowCheckpoint {
+	if keep >= len(ckpt.StageSnapshots) {
+		return ckpt
+	}
+	trimmed := proto.Clone(ckpt).(*loomv1.WorkflowCheckpoint)
+	trimmed.StageSnapshots = trimmed.StageSnapshots[:keep]
+	return trimmed
+}
+
 // restoreWorkflowMemory writes checkpointed entries and the completed stages'
 // full outputs back into the WORKFLOW namespace before a resumed run starts,
-// so shared_memory_read and truncation notices keep working. Best-effort.
-func restoreWorkflowMemory(ctx context.Context, o *Orchestrator, ckpt *loomv1.WorkflowCheckpoint) {
+// so shared_memory_read and truncation notices keep working. The stage
+// outputs are re-seeded under this workflow's own keys. Best-effort: the
+// result says, per stage snapshot, whether its key is in the store, so the
+// resumed run points only at keys that exist and renders the rest in full.
+func restoreWorkflowMemory(ctx context.Context, o *Orchestrator, ckpt *loomv1.WorkflowCheckpoint, workflowID string) []bool {
+	seeded := make([]bool, len(ckpt.StageSnapshots))
 	if o.sharedMemory == nil {
-		return
+		return seeded
 	}
 	for _, entry := range ckpt.SharedMemory {
 		if _, err := o.sharedMemory.Put(ctx, &loomv1.PutSharedMemoryRequest{
@@ -310,7 +338,7 @@ func restoreWorkflowMemory(ctx context.Context, o *Orchestrator, ckpt *loomv1.Wo
 			// for stages whose outputs a restart discarded — nothing to seed.
 			continue
 		}
-		key := fmt.Sprintf("stage-%d-output", i+1)
+		key := stageOutputKey(workflowID, i+1)
 		if _, err := o.sharedMemory.Put(ctx, &loomv1.PutSharedMemoryRequest{
 			Namespace: loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_WORKFLOW,
 			Key:       key,
@@ -322,10 +350,13 @@ func restoreWorkflowMemory(ctx context.Context, o *Orchestrator, ckpt *loomv1.Wo
 				"full_size": fmt.Sprintf("%d", len(snap.FullOutput)),
 			},
 		}); err != nil {
-			o.logger.Warn("resume: failed to re-seed stage output in SharedMemory",
+			o.logger.Warn("resume: failed to re-seed stage output in SharedMemory; the resumed run gets that output inline in full",
 				zap.String("key", key), zap.Error(err))
+			continue
 		}
+		seeded[i] = true
 	}
+	return seeded
 }
 
 // validateGatePlacement rejects HITL gates on pattern types that cannot

@@ -274,14 +274,19 @@ func convertDebatePattern(spec map[string]interface{}) (*loomv1.WorkflowPattern,
 		}
 	}
 
-	// Extract merge_strategy (default to CONSENSUS)
-	mergeStrategy := loomv1.MergeStrategy_CONSENSUS
-	if strategyRaw, ok := spec["merge_strategy"].(string); ok {
-		mergeStrategy = parseMergeStrategy(strategyRaw)
+	// merge_strategy was accepted here for years and never read by the
+	// debate engine. Dead configuration is rejected rather than carried.
+	if _, ok := spec["merge_strategy"]; ok {
+		return nil, fmt.Errorf("%w: spec.merge_strategy has no effect on debate: the output is the moderator's synthesis when moderator_agent_id is set, else the last round's synthesis line; remove it (bound the synthesis with spec.join)", ErrInvalidWorkflow)
 	}
 
 	// Extract optional moderator_agent_id
 	moderatorID, _ := spec["moderator_agent_id"].(string)
+
+	joinPolicy, err := parseDebateJoinPolicy(spec, "spec")
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidWorkflow, err.Error())
+	}
 
 	return &loomv1.WorkflowPattern{
 		Pattern: &loomv1.WorkflowPattern_Debate{
@@ -289,8 +294,8 @@ func convertDebatePattern(spec map[string]interface{}) (*loomv1.WorkflowPattern,
 				Topic:            topic,
 				AgentIds:         agentIDs,
 				Rounds:           rounds,
-				MergeStrategy:    mergeStrategy,
 				ModeratorAgentId: moderatorID,
+				JoinPolicy:       joinPolicy,
 			},
 		},
 	}, nil
@@ -336,6 +341,11 @@ func convertForkJoinPattern(spec map[string]interface{}) (*loomv1.WorkflowPatter
 		}
 	}
 
+	joinPolicy, err := parseJoinPolicy(spec, "spec", mergeStrategy)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidWorkflow, err.Error())
+	}
+
 	return &loomv1.WorkflowPattern{
 		Pattern: &loomv1.WorkflowPattern_ForkJoin{
 			ForkJoin: &loomv1.ForkJoinPattern{
@@ -343,6 +353,7 @@ func convertForkJoinPattern(spec map[string]interface{}) (*loomv1.WorkflowPatter
 				AgentIds:       agentIDs,
 				MergeStrategy:  mergeStrategy,
 				TimeoutSeconds: timeoutSeconds,
+				JoinPolicy:     joinPolicy,
 			},
 		},
 	}, nil
@@ -418,12 +429,34 @@ func convertPipelinePattern(spec map[string]interface{}, logger *zap.Logger) (*l
 		passFullHistory = historyRaw
 	}
 
+	historyPolicy, err := parseHistoryPolicy(spec, "spec")
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidWorkflow, err.Error())
+	}
+	// Dead configuration is rejected rather than carried: the block applies
+	// only where a stage renders history, decided with the executors' own
+	// predicate (a {{history}} placeholder, or pass_full_history appending to a
+	// later stage whose template names neither placeholder).
+	if historyPolicy != nil {
+		renders := false
+		for i, st := range stages {
+			if stageRendersHistory(st, passFullHistory, i) {
+				renders = true
+				break
+			}
+		}
+		if !renders {
+			return nil, fmt.Errorf("%w: spec.history has no effect: no stage could render history (no stage with prior stages has a prompt_template using {{history}}, and pass_full_history appends history only to a later stage whose template names neither {{history}} nor {{previous}})", ErrInvalidWorkflow)
+		}
+	}
+
 	return &loomv1.WorkflowPattern{
 		Pattern: &loomv1.WorkflowPattern_Pipeline{
 			Pipeline: &loomv1.PipelinePattern{
 				InitialPrompt:   initialPrompt,
 				Stages:          stages,
 				PassFullHistory: passFullHistory,
+				HistoryPolicy:   historyPolicy,
 			},
 		},
 	}, nil
@@ -502,12 +535,18 @@ func convertParallelPattern(spec map[string]interface{}, logger *zap.Logger) (*l
 		}
 	}
 
+	joinPolicy, err := parseJoinPolicy(spec, "spec", mergeStrategy)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidWorkflow, err.Error())
+	}
+
 	return &loomv1.WorkflowPattern{
 		Pattern: &loomv1.WorkflowPattern_Parallel{
 			Parallel: &loomv1.ParallelPattern{
 				Tasks:          tasks,
 				MergeStrategy:  mergeStrategy,
 				TimeoutSeconds: timeoutSeconds,
+				JoinPolicy:     joinPolicy,
 			},
 		},
 	}, nil
@@ -682,8 +721,10 @@ func convertIterativePattern(spec map[string]interface{}, logger *zap.Logger) (*
 		}
 	}
 
-	// Extract restart_topic (optional, default: "workflow.restart")
-	restartTopic := "workflow.restart"
+	// Extract restart_topic (optional). Left empty when the YAML omits it so
+	// the executor gives the run its own topic, workflow.restart.<workflow-id>;
+	// an explicit value is a shared topic every run that sets it listens on.
+	restartTopic := ""
 	if topic, ok := spec["restart_topic"].(string); ok {
 		restartTopic = topic
 	}
@@ -1087,6 +1128,183 @@ func parseHITLGate(stageMap map[string]interface{}) (*loomv1.HITLGate, error) {
 	}
 
 	return gate, nil
+}
+
+// parseJoinPolicy parses an optional join block on a fork-join or parallel
+// spec. Returns nil when the spec has no join block.
+//
+// YAML shape:
+//
+//	join:
+//	  agent_id: presenter                  # optional: run the join through this agent
+//	  prompt_template: "...{{branches}}"   # optional: {{prompt}}, {{branches}}, {{branch_count}}
+//	  max_branch_bytes: 8192               # optional, >= 0; 0 = 8192
+//	  max_input_tokens: 60000              # optional, >= 0; 0 = derive from the join agent
+//	  overflow_strategy: pre_reduce        # optional: pre_reduce | truncate | fail
+//
+// Dead configuration is rejected: a block that sets nothing, and an
+// overflow_strategy that could never fire because no budget exists (no
+// agent_id to derive one from and no max_input_tokens). A join block without
+// agent_id on a concatenate or first merge is also rejected, since those
+// strategies build the final output from the branch text and are never cut.
+func parseJoinPolicy(spec map[string]interface{}, path string, strategy loomv1.MergeStrategy) (*loomv1.JoinPolicy, error) {
+	policy, overflowSet, err := parseJoinFields(spec, path)
+	if err != nil || policy == nil {
+		return policy, err
+	}
+	path = path + ".join"
+	if overflowSet && policy.AgentId == "" && policy.MaxInputTokens == 0 {
+		return nil, fmt.Errorf("%s.overflow_strategy can never fire: set max_input_tokens, or agent_id so the budget derives from that agent's context window", path)
+	}
+	if policy.AgentId == "" && !joinPolicyActive(policy, strategy) {
+		return nil, fmt.Errorf("%s without agent_id has no effect on merge_strategy %s: concatenate and first return the branch text itself; set agent_id or use an LLM merge strategy", path, strings.ToLower(strategy.String()))
+	}
+	return policy, nil
+}
+
+// parseDebateJoinPolicy reads spec.join for a debate. The moderator is the
+// join agent and each responding agent receives its own response prompt, so
+// agent_id is rejected, and a budget always derives from the receiver, so
+// overflow_strategy alone is meaningful.
+func parseDebateJoinPolicy(spec map[string]interface{}, path string) (*loomv1.JoinPolicy, error) {
+	policy, _, err := parseJoinFields(spec, path)
+	if err != nil || policy == nil {
+		return policy, err
+	}
+	if policy.AgentId != "" {
+		return nil, fmt.Errorf("%s.join.agent_id is not used by debate: moderator_agent_id is the join agent and each debater receives its own response prompt; remove agent_id", path)
+	}
+	return policy, nil
+}
+
+// parseHistoryPolicy reads spec.history for a pipeline: the per-entry cap,
+// token budget and overflow strategy that bound {{history}} /
+// pass_full_history. An empty block enables the budget with defaults.
+func parseHistoryPolicy(spec map[string]interface{}, path string) (*loomv1.HistoryPolicy, error) {
+	raw, ok := spec["history"]
+	if !ok {
+		return nil, nil
+	}
+	path = path + ".history"
+	if raw == nil {
+		return nil, fmt.Errorf("%s must be an object; use `history: {}` for the defaults", path)
+	}
+	block, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("%s must be an object, got %T", path, raw)
+	}
+	known := map[string]bool{"max_entry_bytes": true, "max_input_tokens": true, "overflow_strategy": true}
+	for key := range block {
+		if !known[key] {
+			return nil, fmt.Errorf("%s.%s is not a history field (known: max_entry_bytes, max_input_tokens, overflow_strategy)", path, key)
+		}
+	}
+	policy := &loomv1.HistoryPolicy{}
+	var err error
+	if policy.MaxEntryBytes, _, err = yamlInt32Field(block, path, "max_entry_bytes"); err != nil {
+		return nil, err
+	}
+	if policy.MaxEntryBytes < 0 {
+		return nil, fmt.Errorf("%s.max_entry_bytes must be >= 0, got %d", path, policy.MaxEntryBytes)
+	}
+	if policy.MaxInputTokens, _, err = yamlInt32Field(block, path, "max_input_tokens"); err != nil {
+		return nil, err
+	}
+	if policy.MaxInputTokens < 0 {
+		return nil, fmt.Errorf("%s.max_input_tokens must be >= 0, got %d", path, policy.MaxInputTokens)
+	}
+	overflowRaw, set, err := yamlStringField(block, path, "overflow_strategy")
+	if err != nil {
+		return nil, err
+	}
+	if set {
+		if policy.OverflowStrategy, err = parseJoinOverflowStrategy(overflowRaw); err != nil {
+			return nil, fmt.Errorf("%s.overflow_strategy: %w", path, err)
+		}
+	}
+	return policy, nil
+}
+
+// parseJoinFields reads a spec's join block: keys, types, ranges and the
+// overflow spelling. It returns nil when there is no block, and reports
+// whether overflow_strategy was set so the pattern-specific callers can
+// judge it.
+func parseJoinFields(spec map[string]interface{}, path string) (*loomv1.JoinPolicy, bool, error) {
+	raw, ok := spec["join"]
+	if !ok || raw == nil {
+		return nil, false, nil
+	}
+	block, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil, false, fmt.Errorf("%s.join must be an object, got %T", path, raw)
+	}
+	path = path + ".join"
+
+	known := map[string]bool{"agent_id": true, "prompt_template": true, "max_branch_bytes": true, "max_input_tokens": true, "overflow_strategy": true}
+	for key := range block {
+		if !known[key] {
+			return nil, false, fmt.Errorf("%s.%s is not a join field (known: agent_id, prompt_template, max_branch_bytes, max_input_tokens, overflow_strategy)", path, key)
+		}
+	}
+
+	policy := &loomv1.JoinPolicy{}
+	var (
+		err error
+		set bool
+		any bool
+	)
+	if policy.AgentId, set, err = yamlStringField(block, path, "agent_id"); err != nil {
+		return nil, false, err
+	}
+	any = any || set
+	if policy.PromptTemplate, set, err = yamlStringField(block, path, "prompt_template"); err != nil {
+		return nil, false, err
+	}
+	any = any || set
+	if policy.MaxBranchBytes, set, err = yamlInt32Field(block, path, "max_branch_bytes"); err != nil {
+		return nil, false, err
+	}
+	any = any || set
+	if policy.MaxBranchBytes < 0 {
+		return nil, false, fmt.Errorf("%s.max_branch_bytes must be >= 0, got %d", path, policy.MaxBranchBytes)
+	}
+	if policy.MaxInputTokens, set, err = yamlInt32Field(block, path, "max_input_tokens"); err != nil {
+		return nil, false, err
+	}
+	any = any || set
+	if policy.MaxInputTokens < 0 {
+		return nil, false, fmt.Errorf("%s.max_input_tokens must be >= 0, got %d", path, policy.MaxInputTokens)
+	}
+	overflowRaw, overflowSet, err := yamlStringField(block, path, "overflow_strategy")
+	if err != nil {
+		return nil, false, err
+	}
+	any = any || overflowSet
+	if overflowSet {
+		policy.OverflowStrategy, err = parseJoinOverflowStrategy(overflowRaw)
+		if err != nil {
+			return nil, false, fmt.Errorf("%s.overflow_strategy: %w", path, err)
+		}
+	}
+	if !any {
+		return nil, false, fmt.Errorf("%s sets nothing; remove the block or set at least one field", path)
+	}
+	return policy, overflowSet, nil
+}
+
+// parseJoinOverflowStrategy maps the YAML spelling of a join overflow
+// strategy to its enum value.
+func parseJoinOverflowStrategy(raw string) (loomv1.JoinOverflowStrategy, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "pre_reduce", "pre-reduce", "reduce":
+		return loomv1.JoinOverflowStrategy_JOIN_OVERFLOW_STRATEGY_PRE_REDUCE, nil
+	case "truncate":
+		return loomv1.JoinOverflowStrategy_JOIN_OVERFLOW_STRATEGY_TRUNCATE, nil
+	case "fail":
+		return loomv1.JoinOverflowStrategy_JOIN_OVERFLOW_STRATEGY_FAIL, nil
+	default:
+		return loomv1.JoinOverflowStrategy_JOIN_OVERFLOW_STRATEGY_UNSPECIFIED, fmt.Errorf("unknown value %q (expected pre_reduce, truncate or fail)", raw)
+	}
 }
 
 // parseMergeStrategy converts string to MergeStrategy enum

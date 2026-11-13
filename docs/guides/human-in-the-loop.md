@@ -514,10 +514,14 @@ durable suspension. Leave the handler nil to always suspend.
 ### What a checkpoint contains (and does not)
 
 The checkpoint holds completed stage outputs, cost history, iteration and
-revision counters, the pending gate request, and agent-written
-workflow-namespace SharedMemory entries. It never contains in-flight
-agent-loop state — gates only fire at stage boundaries. Checkpoints are host
-state: persist them server-side, not on untrusted clients.
+revision counters, the pending gate request, and the run's own
+workflow-namespace SharedMemory entries: the keys its agents wrote under the
+`<workflow-id>-` prefix every stage prompt asks for (one store serves every
+workflow a `looms serve` runs, so a key without that prefix is shared state
+the checkpoint does not carry, and the stage stashes are re-seeded from the
+stage outputs). It never contains in-flight agent-loop state — gates only
+fire at stage boundaries. Checkpoints are host state: persist them
+server-side, not on untrusted clients.
 
 See `examples/reference/workflows/orchestration-patterns/hitl-gated-pipeline.yaml`
 for a runnable example.

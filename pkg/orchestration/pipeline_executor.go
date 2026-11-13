@@ -35,6 +35,9 @@ type PipelineExecutor struct {
 
 	// aux collects the LLM calls this executor makes itself (run_usage.go).
 	aux auxUsage
+
+	// history aggregates what bounding {{history}} hand-offs did in this run.
+	history historyStats
 }
 
 // NewPipelineExecutor creates a new pipeline executor.
@@ -60,6 +63,11 @@ type pipelineState struct {
 
 	// Full output per completed stage of the current pass, index-aligned.
 	stageOutputs []string
+
+	// Whether each completed stage's full output is in SharedMemory,
+	// index-aligned with stageOutputs. A history entry for a stage whose
+	// stash failed is passed in full instead of cut with a pointer.
+	stashed []bool
 
 	// Input for the next stage ({{previous}}).
 	currentInput string
@@ -160,6 +168,9 @@ func (e *PipelineExecutor) Resume(ctx context.Context, ckpt *loomv1.WorkflowChec
 	if workflowID == "" {
 		workflowID = e.workflowID
 	}
+	// The resumed run is the checkpointed workflow: its SharedMemory keys
+	// and sessions carry that id.
+	e.workflowID = workflowID
 
 	ctx, workflowSpan := e.orchestrator.tracer.StartSpan(ctx, "workflow.pipeline.resume")
 	defer e.orchestrator.tracer.EndSpan(workflowSpan)
@@ -193,15 +204,15 @@ func (e *PipelineExecutor) Resume(ctx context.Context, ckpt *loomv1.WorkflowChec
 	if state.gateRevisions == nil {
 		state.gateRevisions = make(map[string]int32)
 	}
-	for _, snap := range ckpt.StageSnapshots {
-		state.stageOutputs = append(state.stageOutputs, snap.FullOutput)
-	}
-
+	// Validate the decision before anything touches the store. A REVISE
+	// discards the snapshots from its target on, so they are neither re-seeded
+	// nor carried into the resumed state (the iterative executor's Resume does
+	// the same): the store holds only the kept stages' keys when the revise
+	// target re-runs.
+	discardFrom := len(ckpt.StageSnapshots)
+	reviseTarget := -1
 	switch decision.Action {
 	case loomv1.GateAction_GATE_ACTION_APPROVE:
-		state.startIndex = gatedIndex + 1
-		state.currentInput = e.deriveInputFromOutput(gatedIndex+1, state.stageOutputs[gatedIndex])
-
 	case loomv1.GateAction_GATE_ACTION_REVISE:
 		gate := e.pattern.Stages[gatedIndex].HitlGate
 		if gate == nil {
@@ -219,23 +230,35 @@ func (e *PipelineExecutor) Resume(ctx context.Context, ckpt *loomv1.WorkflowChec
 		if state.gateRevisions[gatedAgentID] > maxGateRevisions(gate) {
 			return nil, fmt.Errorf("resume: gate on stage %s exceeded max_revisions (%d)", gatedAgentID, maxGateRevisions(gate))
 		}
-		state.startIndex = target
-		state.stageOutputs = state.stageOutputs[:target]
-		if target == 0 {
-			state.currentInput = e.pattern.InitialPrompt
-		} else {
-			state.currentInput = e.deriveInputFromOutput(target, state.stageOutputs[target-1])
-		}
-		state.revisionFeedback = decision.Feedback
-		state.revisionSource = "human reviewer"
-
+		reviseTarget, discardFrom = target, target
 	default:
 		return nil, fmt.Errorf("resume: unsupported gate decision %s", decision.Action)
 	}
+	restoreCkpt := trimCheckpoint(ckpt, discardFrom)
+	for _, snap := range restoreCkpt.StageSnapshots {
+		state.stageOutputs = append(state.stageOutputs, snap.FullOutput)
+	}
 
-	// Restore agent-written SharedMemory and re-seed stage-N-output keys so
-	// shared_memory_read and truncation notices keep working after resume.
-	restoreWorkflowMemory(ctx, e.orchestrator, ckpt)
+	// Restore agent-written SharedMemory and re-seed the kept stages'
+	// stage-N-output keys so shared_memory_read and truncation notices keep
+	// working after resume. A stage whose re-seed failed is rendered in full
+	// from here on, so the input the resumed stage gets is derived after the
+	// restore.
+	state.stashed = restoreWorkflowMemory(ctx, e.orchestrator, restoreCkpt, workflowID)
+
+	if reviseTarget < 0 {
+		state.startIndex = gatedIndex + 1
+		state.currentInput = e.resumedInput(state, gatedIndex)
+	} else {
+		state.startIndex = reviseTarget
+		if reviseTarget == 0 {
+			state.currentInput = e.pattern.InitialPrompt
+		} else {
+			state.currentInput = e.resumedInput(state, reviseTarget-1)
+		}
+		state.revisionFeedback = decision.Feedback
+		state.revisionSource = "human reviewer"
+	}
 
 	e.orchestrator.logger.Info("Resuming pipeline execution",
 		zap.String("workflow_id", workflowID),
@@ -252,8 +275,26 @@ func (e *PipelineExecutor) deriveInputFromOutput(stageNum int, fullOutput string
 	if e.orchestrator.sharedMemory == nil {
 		return fullOutput
 	}
-	out, _ := truncateStageOutput(fullOutput, MaxStageOutputBytes, fmt.Sprintf("stage-%d-output", stageNum))
+	out, _ := truncateStageOutput(fullOutput, MaxStageOutputBytes, stageOutputKey(e.workflowID, stageNum))
 	return out
+}
+
+// resumedInput is the {{previous}} copy a resumed run hands the next stage.
+func (e *PipelineExecutor) resumedInput(state *pipelineState, idx int) string {
+	return e.previousInput(state.stageOutputs, state.stashed, idx)
+}
+
+// previousInput is the {{previous}} copy the stage after idx receives: cut
+// with the key notice when stage idx's full output is in the store (its
+// stash or re-seed succeeded), the full output otherwise (no store, a stash
+// Put that failed, a re-seed that failed). Every path that derives
+// {{previous}} after the first pass (resume, in-loop revision) uses it, so a
+// notice never names a key the store does not hold.
+func (e *PipelineExecutor) previousInput(stageOutputs []string, stashed []bool, idx int) string {
+	if idx < len(stashed) && stashed[idx] {
+		return e.deriveInputFromOutput(idx+1, stageOutputs[idx])
+	}
+	return stageOutputs[idx]
 }
 
 // buildCheckpoint captures the durable suspension state at the gate on stage
@@ -282,7 +323,7 @@ func (e *PipelineExecutor) buildCheckpoint(ctx context.Context, workflowID strin
 		ValidationWarnings: state.validationWarnings,
 		GateRevisionCounts: state.gateRevisions,
 		PendingGate:        gateReq,
-		SharedMemory:       snapshotWorkflowMemory(ctx, e.orchestrator),
+		SharedMemory:       snapshotWorkflowMemory(ctx, e.orchestrator, workflowID),
 		CreatedAtMs:        time.Now().UnixMilli(),
 	}, nil
 }
@@ -292,6 +333,7 @@ func (e *PipelineExecutor) buildCheckpoint(ctx context.Context, workflowID strin
 func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time, workflowID string, state *pipelineState) (*loomv1.WorkflowResult, error) {
 	allResults := state.allResults
 	stageOutputs := state.stageOutputs
+	stashed := state.stashed
 	currentInput := state.currentInput
 	modelsUsed := state.modelsUsed
 	validationWarnings := state.validationWarnings
@@ -312,10 +354,25 @@ func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time,
 			zap.Int("total_stages", len(e.pattern.Stages)),
 			zap.String("agent_id", stage.AgentId))
 
-		// Build prompt for this stage. Revision feedback (from a HITL gate
-		// REVISE decision) is threaded into the first stage executed after
-		// the jump, then consumed; the call also blanks stray placeholders.
-		prompt := e.buildStagePrompt(stage, currentInput, stageOutputs)
+		// Build prompt for this stage. History entries are bounded like
+		// {{previous}} and, under a HistoryPolicy, fitted to the stage
+		// agent's budget. Revision feedback (from a HITL gate REVISE
+		// decision) is threaded into the first stage executed after the
+		// jump, then consumed; the call also blanks stray placeholders.
+		prompt, historyFit, err := e.boundStagePrompt(ctx, stage, stageNum, currentInput, stageOutputs, stashed, nil, e.stageHeader(stashed))
+		if err != nil {
+			e.orchestrator.tracer.EndSpan(stageSpan)
+			return nil, err
+		}
+		if historyFit != nil {
+			e.aux.add(historyFit.Usage, historyFit.LLMCalls)
+			e.history.add(historyFit)
+			if stageSpan != nil {
+				for k, v := range historyFit.metadata("history", "entries") {
+					stageSpan.SetAttribute(k, v)
+				}
+			}
+		}
 		prompt = injectRevisionFeedback(prompt, state.revisionFeedback, state.revisionSource)
 		state.revisionFeedback = ""
 
@@ -326,7 +383,6 @@ func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time,
 		var (
 			result         *loomv1.AgentResult
 			model          string
-			err            error
 			levelingReport *LevelingReport
 		)
 		if stage.GetLevelingPolicy().GetEnabled() {
@@ -403,7 +459,7 @@ func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time,
 					// Pass prior stage outputs (excluding current failed output) to avoid
 					// leaking the failed output into {{history}} in the retry prompt.
 					priorOutputs := stageOutputs[:len(stageOutputs)-1]
-					retryResult, retryModel := e.retryStage(ctx, workflowID, stage, currentInput, priorOutputs, stageNum, result.Output, validationFailure)
+					retryResult, retryModel := e.retryStage(ctx, workflowID, stage, currentInput, priorOutputs, stashed, stageNum, result.Output, validationFailure)
 					if retryResult != nil {
 						// The retry replaces the failed attempt's result; keep
 						// the replaced attempt's calls in the run's cost.
@@ -434,6 +490,7 @@ func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time,
 			// revise bookkeeping) sees the current pass, not stale slices.
 			state.allResults = allResults
 			state.stageOutputs = stageOutputs
+			state.stashed = stashed
 			state.modelsUsed = modelsUsed
 			state.validationWarnings = validationWarnings
 
@@ -480,10 +537,13 @@ func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time,
 					return nil, fmt.Errorf("gate on stage %s exceeded max_revisions (%d)", stage.AgentId, maxGateRevisions(stage.HitlGate))
 				}
 				stageOutputs = stageOutputs[:target]
+				if len(stashed) > target {
+					stashed = stashed[:target]
+				}
 				if target == 0 {
 					currentInput = e.pattern.InitialPrompt
 				} else {
-					currentInput = e.deriveInputFromOutput(target, stageOutputs[target-1])
+					currentInput = e.previousInput(stageOutputs, stashed, target-1)
 				}
 				state.revisionFeedback = decision.Feedback
 				state.revisionSource = "human reviewer"
@@ -500,24 +560,27 @@ func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time,
 		}
 
 		// Update input for next stage. Hybrid context passing: stash the FULL stage
-		// output in SharedMemory (key stage-N-output) so a later stage can fetch it
+		// output in SharedMemory (key <workflow-id>-stage-N-output) so a later stage can fetch it
 		// by reference, and pass the next stage a truncated summary when the output
 		// is large (> MaxStageOutputBytes). Small outputs pass through inline,
 		// unchanged. stageOutputs keeps the full text (final output + {{history}}).
 		// When SharedMemory is unavailable, fall back to full inline (original
 		// behavior) so no existing deployment regresses.
+		stashedThis := false
 		if e.orchestrator.sharedMemory != nil {
-			stageMemoryKey := fmt.Sprintf("stage-%d-output", stageNum)
+			stageMemoryKey := stageOutputKey(workflowID, stageNum)
 			if err := e.storeStageOutputInMemory(ctx, stageMemoryKey, stage.AgentId, result.Output); err != nil {
 				e.orchestrator.logger.Warn("failed to stash stage output in SharedMemory; passing full output inline",
 					zap.Int("stage", stageNum), zap.Error(err))
 				currentInput = result.Output
 			} else {
+				stashedThis = true
 				currentInput, _ = truncateStageOutput(result.Output, MaxStageOutputBytes, stageMemoryKey)
 			}
 		} else {
 			currentInput = result.Output
 		}
+		stashed = append(stashed, stashedThis)
 
 		i++
 	}
@@ -543,6 +606,7 @@ func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time,
 	if len(validationWarnings) > 0 {
 		metadata["validation_warnings"] = strings.Join(validationWarnings, "; ")
 	}
+	e.history.addTo(metadata)
 
 	return &loomv1.WorkflowResult{
 		PatternType:  "pipeline",
@@ -555,18 +619,17 @@ func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time,
 	}, nil
 }
 
-// buildStagePrompt constructs the prompt for a pipeline stage.
-func (e *PipelineExecutor) buildStagePrompt(stage *loomv1.PipelineStage, previousOutput string, allOutputs []string) string {
-	prompt := e.buildStagePromptWithContext(stage, previousOutput, allOutputs, nil)
-	// When prior stages' full outputs are stashed in SharedMemory, tell the agent
-	// how to fetch them by key so it can recover full upstream context even when
-	// {{previous}} was truncated. Only the plain pipeline path adds this header;
-	// the iterative executor adds its own (it calls buildStagePromptWithContext
-	// directly, bypassing this wrapper).
-	if e.orchestrator.sharedMemory != nil && len(allOutputs) > 0 {
-		return e.buildSharedMemoryContextHeader(len(allOutputs)) + prompt
+// stageHeader is the SharedMemory header prepended to a stage prompt when a
+// store is configured: the keys of the prior stages' full outputs, so the
+// agent can recover full upstream context even when {{previous}} or a
+// history entry was cut, and the write rule for its own keys; before the
+// first stage it is the write rule alone. Empty without a store. The
+// iterative executor uses the same builder.
+func (e *PipelineExecutor) stageHeader(stashed []bool) string {
+	if e.orchestrator.sharedMemory == nil {
+		return ""
 	}
-	return prompt
+	return e.buildSharedMemoryContextHeader(stashed)
 }
 
 // storeStageOutputInMemory stashes a stage's full output in the WORKFLOW
@@ -591,16 +654,35 @@ func (e *PipelineExecutor) storeStageOutputInMemory(ctx context.Context, key, ag
 }
 
 // buildSharedMemoryContextHeader lists the SharedMemory keys holding prior
-// stages' full outputs, with the call to fetch them.
-func (e *PipelineExecutor) buildSharedMemoryContextHeader(stageCount int) string {
-	var b strings.Builder
-	b.WriteString("## AVAILABLE CONTEXT (SharedMemory)\n")
-	b.WriteString("Full outputs from previous stages are stored in SharedMemory.\n")
-	b.WriteString("Use `shared_memory_read(namespace=\"workflow\", key=\"stage-N-output\")` to fetch any stage's complete output (use this if a stage's input below looks truncated).\n\n")
-	b.WriteString("Available keys:\n")
-	for i := 1; i <= stageCount; i++ {
-		b.WriteString(fmt.Sprintf("- `stage-%d-output`\n", i))
+// stages' full outputs, with the call to fetch them, and the rule for the keys
+// the agent writes itself. The first stage has no prior output to list but
+// must still hear the write rule: a key it writes without the workflow
+// prefix is shared store state that no checkpoint carries and no reset
+// clears, so the hint cannot wait for the second stage.
+func (e *PipelineExecutor) buildSharedMemoryContextHeader(stashed []bool) string {
+	// Only the keys that are in the store are listed: a stage whose stash
+	// Put failed is handed over in full and has no key to fetch.
+	var keys []string
+	for i, ok := range stashed {
+		if ok {
+			keys = append(keys, stageOutputKey(e.workflowID, i+1))
+		}
 	}
+	var b strings.Builder
+	if len(keys) == 0 {
+		b.WriteString("## SHARED MEMORY (namespace \"workflow\")\n")
+		b.WriteString(sharedMemoryWriteHint(e.workflowID))
+		b.WriteString("\n---\n\n")
+		return b.String()
+	}
+	b.WriteString("## AVAILABLE CONTEXT (SharedMemory)\n")
+	b.WriteString("Full outputs from previous stages are stored in SharedMemory namespace \"workflow\".\n")
+	b.WriteString("Use `shared_memory_read(namespace=\"workflow\", key=\"<key>\")` with one of the keys below to fetch a stage's complete output (use this if a stage's input below looks truncated).\n\n")
+	b.WriteString("Available keys:\n")
+	for _, key := range keys {
+		b.WriteString(fmt.Sprintf("- `%s`\n", key))
+	}
+	b.WriteString(sharedMemoryWriteHint(e.workflowID))
 	b.WriteString("\n---\n\n")
 	return b.String()
 }
@@ -1078,6 +1160,7 @@ func (e *PipelineExecutor) retryStage(
 	stage *loomv1.PipelineStage,
 	previousInput string,
 	allOutputs []string,
+	stashed []bool,
 	stageNum int,
 	failedOutput string,
 	validationFailure string,
@@ -1089,7 +1172,18 @@ func (e *PipelineExecutor) retryStage(
 			return nil, ""
 		}
 		// Build retry prompt with validation feedback
-		basePrompt := e.buildStagePrompt(stage, previousInput, allOutputs)
+		basePrompt, historyFit, err := e.boundStagePrompt(ctx, stage, stageNum, previousInput, allOutputs, stashed, nil, e.stageHeader(stashed))
+		if err != nil {
+			e.orchestrator.logger.Warn("Stage retry prompt could not be bounded; giving up on retries",
+				zap.Int("stage", stageNum),
+				zap.Int("attempt", attempt),
+				zap.Error(err))
+			return nil, ""
+		}
+		if historyFit != nil {
+			e.aux.add(historyFit.Usage, historyFit.LLMCalls)
+			e.history.add(historyFit)
+		}
 		retryPrompt := e.buildStageRetryPrompt(basePrompt, failedOutput, validationFailure, stage.OutputSchema, stage.RetryPolicy.IncludeValidValues, attempt, maxRetries)
 
 		// Fresh session ID for retry

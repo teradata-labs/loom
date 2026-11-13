@@ -17,7 +17,7 @@ Orchestration patterns define **how** multiple agents collaborate on a task usin
 ### 1. **debate** - Structured Debate
 **File:** `architecture-debate.yaml`
 
-Multiple agents debate a topic through structured rounds, with optional moderator.
+Multiple agents debate a topic through structured rounds, with optional moderator. The moderator writes the synthesis; without one the result is a one-line confidence summary of the last round. A `join` block bounds the moderator's synthesis prompt and each agent's round 2+ response prompt (full positions go to SharedMemory, inline copies are capped, the prompt is held to the receiving agent's token budget). `merge_strategy` is not a debate field and is rejected.
 
 ```yaml
 spec:
@@ -36,7 +36,7 @@ spec:
 ---
 
 ### 2. **pipeline** - Sequential Processing
-**File:** `feature-pipeline.yaml`
+**Files:** `feature-pipeline.yaml`, `pipeline-history-report.yaml`
 
 Agents execute sequentially, where each stage's output becomes the next stage's input.
 
@@ -56,10 +56,27 @@ spec:
 - Content refinement (draft → edit → review)
 - Sequential transformations
 
+A final stage that compiles everything reads `{{history}}`. Each entry is the same 8 KiB copy the next stage gets as `{{previous}}`, with a `<workflow-id>-stage-N-output` SharedMemory pointer for the rest. Add a `history` block to hold the whole prompt to the stage agent's token budget (`pipeline-history-report.yaml`):
+
+```yaml
+spec:
+  type: pipeline
+  initial_prompt: "Prepare the quarterly review"
+  stages:
+    - agent_id: finance-analyst
+      prompt_template: "Analyze finances: {{previous}}"
+    - agent_id: report-writer
+      prompt_template: "Write the report from: {{history}}"
+  history:
+    max_entry_bytes: 6144
+    max_input_tokens: 48000
+    overflow_strategy: pre_reduce   # pre_reduce | truncate | fail
+```
+
 ---
 
 ### 3. **fork-join** - Parallel Analysis with Merge
-**File:** (See `tests/workflows/test-data/` for examples)
+**File:** `fork-join-presentation.yaml`
 
 All agents execute in parallel on the same prompt, results are merged.
 
@@ -71,9 +88,25 @@ spec:
   merge_strategy: concatenate
 ```
 
+When a final agent has to build something from every branch (a deck, a report), add a `join` block. The join then runs as that agent with bounded input: full branch outputs go to SharedMemory, the inline copies are capped, and the whole prompt is held to a token budget. See `docs/reference/workflow-join.md`.
+
+```yaml
+spec:
+  type: fork-join
+  prompt: "Analyze Q3 results"
+  agent_ids: [finance-analyst, sales-analyst, ops-analyst]
+  join:
+    agent_id: presenter
+    prompt_template: "Build a deck for: {{prompt}}\n\n{{branches}}"
+    max_branch_bytes: 4096
+    max_input_tokens: 40000
+    overflow_strategy: pre_reduce
+```
+
 **Use Cases:**
 - Multi-perspective code reviews
 - Parallel analysis (quality, security, performance)
+- Parallel analyses joined into one deliverable by a dedicated agent
 
 ---
 

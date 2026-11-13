@@ -14,14 +14,34 @@ import (
 // context header lists each prior stage's key and tells the agent how to fetch
 // full upstream output (the recovery path when {{previous}} is truncated).
 func TestPipelineSharedMemoryHeader(t *testing.T) {
-	h := (&PipelineExecutor{}).buildSharedMemoryContextHeader(3)
-	for _, key := range []string{"stage-1-output", "stage-2-output", "stage-3-output"} {
-		if !strings.Contains(h, key) {
+	h := (&PipelineExecutor{workflowID: "pipeline-7f3a9c1e"}).buildSharedMemoryContextHeader([]bool{true, true, true})
+	for _, key := range []string{"pipeline-7f3a9c1e-stage-1-output", "pipeline-7f3a9c1e-stage-2-output", "pipeline-7f3a9c1e-stage-3-output"} {
+		if !strings.Contains(h, "`"+key+"`") {
 			t.Errorf("header missing key %q:\n%s", key, h)
 		}
 	}
+	if strings.Contains(h, "`stage-1-output`") {
+		t.Errorf("header must not name an unscoped key:\n%s", h)
+	}
 	if !strings.Contains(h, "shared_memory_read") {
 		t.Errorf("header should tell the agent to use shared_memory_read:\n%s", h)
+	}
+	if !strings.Contains(h, "should start with `pipeline-7f3a9c1e-`") {
+		t.Errorf("header should tell the agent to prefix its own keys with the workflow id:\n%s", h)
+	}
+
+	// A stage whose stash Put failed has no key to list; with none stashed
+	// the header is the write rule alone.
+	partial := (&PipelineExecutor{workflowID: "pipeline-7f3a9c1e"}).buildSharedMemoryContextHeader([]bool{true, false, true})
+	if strings.Contains(partial, "`pipeline-7f3a9c1e-stage-2-output`") {
+		t.Errorf("header must not list a key the store does not hold:\n%s", partial)
+	}
+	if !strings.Contains(partial, "`pipeline-7f3a9c1e-stage-3-output`") {
+		t.Errorf("header should still list the stashed keys:\n%s", partial)
+	}
+	none := (&PipelineExecutor{workflowID: "pipeline-7f3a9c1e"}).buildSharedMemoryContextHeader([]bool{false, false})
+	if strings.Contains(none, "Available keys") || !strings.Contains(none, "## SHARED MEMORY") {
+		t.Errorf("with nothing stashed the header is the write rule alone:\n%s", none)
 	}
 }
 
@@ -30,17 +50,17 @@ func TestPipelineSharedMemoryHeader(t *testing.T) {
 // SharedMemory key so the next stage can fetch the full text.
 func TestPipelineStageTruncationReferencesKey(t *testing.T) {
 	small := "a concise 4-claim brief"
-	out, truncated := truncateStageOutput(small, MaxStageOutputBytes, "stage-1-output")
+	out, truncated := truncateStageOutput(small, MaxStageOutputBytes, "pipeline-7f3a9c1e-stage-1-output")
 	if truncated || out != small {
 		t.Errorf("small output must pass through unchanged; got truncated=%v", truncated)
 	}
 
 	big := strings.Repeat("x\n", MaxStageOutputBytes) // > MaxStageOutputBytes
-	out2, truncated2 := truncateStageOutput(big, MaxStageOutputBytes, "stage-1-output")
+	out2, truncated2 := truncateStageOutput(big, MaxStageOutputBytes, "pipeline-7f3a9c1e-stage-1-output")
 	if !truncated2 {
 		t.Fatal("large output must be truncated")
 	}
-	if !strings.Contains(out2, "stage-1-output") || !strings.Contains(out2, "shared_memory_read") {
+	if !strings.Contains(out2, "pipeline-7f3a9c1e-stage-1-output") || !strings.Contains(out2, "shared_memory_read") {
 		t.Errorf("truncated output must reference the SharedMemory key + fetch call")
 	}
 }

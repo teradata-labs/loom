@@ -1,6 +1,6 @@
 name: debate_workflow
 title: Debate Workflow Pattern
-description: Create a debate orchestration workflow where multiple agents argue different sides of a topic and reach synthesis or consensus.
+description: Create a debate orchestration workflow where multiple agents argue different sides of a topic over rounds and a moderator writes the synthesis.
 category: weaver
 difficulty: intermediate
 backend_type: workflow
@@ -47,9 +47,12 @@ templates:
           - advocate
           - skeptic
         rounds: {{rounds}}
-        merge_strategy: synthesis
+        moderator_agent_id: moderator
+        join:
+          max_branch_bytes: 4096
+          overflow_strategy: pre_reduce
   agent:
-    description: Debate agent template
+    description: Debate agent template (one per perspective)
     sql: |
       apiVersion: loom/v1
       kind: Agent
@@ -63,6 +66,19 @@ templates:
         tools:
           - web_search
           - file_read
+  moderator:
+    description: Moderator agent template; the workflow's moderator_agent_id must name an agent that exists, so create this one with the debaters
+    sql: |
+      apiVersion: loom/v1
+      kind: Agent
+      metadata:
+        name: moderator
+      spec:
+        system_prompt: |
+          Moderate the debate. Summarize each position faithfully, then write
+          the synthesis: the points of agreement, the open disagreements and
+          the recommendation the arguments support. Fetch a full position with
+          shared_memory_read when the prompt shows a truncated copy.
 
 examples:
   - name: microservices_debate
@@ -70,7 +86,9 @@ examples:
     input: "Create a debate about microservices"
     expected_output: |
       Workflow with type: debate, topic about microservices,
-      at least 2 agents (advocate, skeptic), 3 rounds, synthesis merge.
+      at least 2 agents (advocate, skeptic), 3 rounds, a moderator_agent_id
+      whose agent writes the synthesis, and a join block that bounds the
+      synthesis and response prompts. No merge_strategy.
 
 common_errors:
   - error: "Less than 2 agents in debate"
@@ -79,11 +97,27 @@ common_errors:
   - error: "Missing topic field"
     cause: "Debate workflows require a topic"
     fix: "Add 'topic: \"Your debate question\"' under spec"
+  - error: "spec.merge_strategy has no effect on debate"
+    cause: "merge_strategy is a fork-join/parallel field; the debate engine never read it"
+    fix: "Remove merge_strategy. Set moderator_agent_id for a synthesized outcome and join: to bound it"
+  - error: "spec.join.agent_id is not used by debate"
+    cause: "On debate the moderator is the join agent"
+    fix: "Remove join.agent_id and set moderator_agent_id instead"
+  - error: "Create agent 'moderator' first"
+    cause: "moderator_agent_id names an agent that does not exist; create_workflow and the debate engine both refuse to run without it"
+    fix: "Create the moderator agent (templates.moderator) before or together with the workflow"
 
 best_practices: |
   - Give each agent a distinct viewpoint in their system_prompt
   - Use 3 rounds for thorough debate, fewer for quick decisions
-  - Use merge_strategy: synthesis for balanced outcomes
-  - Use merge_strategy: consensus for decision-making
-  - Optional: add moderator_agent_id for structured debates
+  - Set moderator_agent_id and create that agent (templates.moderator):
+    without a moderator the result is a one-line confidence summary of the
+    last round, not a written synthesis, and a moderator_agent_id whose
+    agent is missing fails the debate before the first round
+  - Add join: {max_branch_bytes, max_input_tokens, overflow_strategy,
+    prompt_template} so the moderator's synthesis prompt and each agent's
+    round 2+ response prompt stay within the receiving agent's context
+    window; full positions go to SharedMemory and the agents can fetch them
+    with shared_memory_read
+  - Never set merge_strategy on a debate; the loader rejects it
   - Use conversation_memory to track debate progression

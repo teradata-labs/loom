@@ -7,6 +7,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"github.com/teradata-labs/loom/internal/version"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/artifacts"
+	"github.com/teradata-labs/loom/pkg/collaboration"
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/evals"
 	"github.com/teradata-labs/loom/pkg/llm/factory"
@@ -358,7 +360,11 @@ func (s *MultiAgentServer) SetToolRegistry(registry *toolregistry.Registry) {
 }
 
 // SetAgentRegistry injects the agent registry for workflow execution.
-// This should be called after NewMultiAgentServer() to enable ExecuteWorkflow RPC.
+// This should be called after NewMultiAgentServer() to enable ExecuteWorkflow RPC,
+// and before the gRPC server starts serving: the agent-preparation paths
+// (prepareAgent, ConfigureCommunication, ensureCommunicationTools) read the
+// registry and the communication components without the lock and assume they
+// are fixed once requests arrive.
 func (s *MultiAgentServer) SetAgentRegistry(registry *agent.Registry) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -4087,7 +4093,13 @@ func (s *MultiAgentServer) resolveWorkflowPattern(req *loomv1.ExecuteWorkflowReq
 	}
 	pattern, err := orchestration.LoadWorkflowFromYAML(path)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to load workflow %q: %v", ref, err)
+		// A spec the loader rejects is the caller's file to fix, not a
+		// server fault.
+		code := codes.Internal
+		if errors.Is(err, orchestration.ErrInvalidWorkflow) {
+			code = codes.InvalidArgument
+		}
+		return nil, status.Errorf(code, "failed to load workflow %q: %v", ref, err)
 	}
 	return pattern, nil
 }
@@ -4177,7 +4189,7 @@ func (s *MultiAgentServer) ExecuteWorkflow(ctx context.Context, req *loomv1.Exec
 		if updateErr := s.workflowStore.UpdateStatus(executionID, WorkflowStatusFailed, err.Error()); updateErr != nil && s.logger != nil {
 			s.logger.Warn("Failed to update workflow status", zap.String("execution_id", executionID), zap.Error(updateErr))
 		}
-		return nil, status.Errorf(codes.Internal, "workflow execution failed: %v", err)
+		return nil, status.Errorf(workflowErrorCode(err), "workflow execution failed: %v", err)
 	}
 
 	// Store result
@@ -4193,6 +4205,16 @@ func (s *MultiAgentServer) ExecuteWorkflow(ctx context.Context, req *loomv1.Exec
 		ExecutionId: executionID,
 		Result:      result,
 	}, nil
+}
+
+// workflowErrorCode maps a workflow execution error to its gRPC code: a
+// pattern that exists in proto but has no execution yet (pair programming,
+// teacher-student) is Unimplemented, everything else Internal.
+func workflowErrorCode(err error) codes.Code {
+	if errors.Is(err, collaboration.ErrPatternNotImplemented) {
+		return codes.Unimplemented
+	}
+	return codes.Internal
 }
 
 // executeWorkflowInternalWithProgress executes a workflow pattern using the orchestrator with optional progress callback.
@@ -4218,7 +4240,7 @@ func (s *MultiAgentServer) executeWorkflowInternalWithProgress(ctx context.Conte
 	if tracer == nil {
 		tracer = observability.NewNoOpTracer()
 	}
-	orchestrator := createOrchestratorWithProgress(agents, registry, s.logger, tracer, progressCallback, s.taskManager)
+	orchestrator := createOrchestratorWithProgress(agents, registry, s.logger, tracer, progressCallback, s.taskManager, s.sharedMemoryComm, s.messageBus)
 
 	// Execute pattern
 	result, err := orchestrator.ExecutePattern(ctx, pattern)
@@ -4237,6 +4259,9 @@ func (s *MultiAgentServer) getOrLoadAgent(ctx context.Context, agentID string, r
 	s.mu.RUnlock()
 
 	if exists {
+		// Agents added through AddAgent carry the communication tools but
+		// not the restart tool; give every workflow agent the same set.
+		s.ensureCommunicationTools(ag, agentID)
 		return ag, nil
 	}
 
@@ -4250,11 +4275,83 @@ func (s *MultiAgentServer) getOrLoadAgent(ctx context.Context, agentID string, r
 		return nil, fmt.Errorf("failed to get agent from registry: %w", err)
 	}
 
-	// Optionally cache in server for future use
-	// (Uncomment if you want to cache loaded agents)
-	// s.AddAgent(agentID, ag)
+	// A registry-built agent has none of the server's communication tools:
+	// the registry's builtin table does not know shared_memory_read, and the
+	// server injects those tools only into agents added through AddAgent.
+	// Workflow agents need them to fetch the hand-off outputs the
+	// orchestrator stashes under <workflow-id>-… keys, so give them the same
+	// set the server's own agents get.
+	s.ensureCommunicationTools(ag, agentID)
 
 	return ag, nil
+}
+
+// ensureCommunicationTools registers the server's communication tools
+// (send_message, publish, shared_memory_read / write, top_n_query,
+// group_by_query, and publish_restart_request when a bus exists) on a
+// workflow agent that does not have them all yet. Idempotent: an agent that
+// already carries every tool the server would inject is left alone, so an
+// agent shared across workflow runs is wired once.
+func (s *MultiAgentServer) ensureCommunicationTools(ag *agent.Agent, agentID string) {
+	if ag == nil || (s.messageQueue == nil && s.messageBus == nil && s.sharedMemoryComm == nil) {
+		return
+	}
+	commTools := builtin.CommunicationTools(s.messageQueue, s.messageBus, s.sharedMemoryComm, agentID)
+	if s.messageBus != nil {
+		// publish_restart_request publishes to the topic the running
+		// iterative pipeline put on the turn's context and refuses outside a
+		// run, so it is safe on an agent the registry shares across runs.
+		commTools = append(commTools, builtin.NewPublishRestartTool(s.messageBus, agentID))
+	}
+	if len(commTools) == 0 {
+		return
+	}
+	// Once per agent: the registry caches agents across calls, so skip when
+	// every tool this server would inject is already registered or is a name
+	// the agent's config suppresses (RegisterTool skips those, so they would
+	// otherwise read as missing on every run). The check is on the agent
+	// itself, so a hot reload that replaces the instance is wired afresh and
+	// nothing outlives the instance.
+	registered := make(map[string]bool)
+	for _, name := range ag.ListTools() {
+		registered[name] = true
+	}
+	missing := false
+	for _, tool := range commTools {
+		if name := tool.Name(); !registered[name] && !ag.IsBuiltinToolSuppressed(name) {
+			missing = true
+			break
+		}
+	}
+	if !missing {
+		return
+	}
+	// The same wiring ConfigureCommunication gives the server's own agents:
+	// send_message resolves short agent names through the registry.
+	if s.registry != nil {
+		wireSendMessageRegistry(commTools, s.registry, s.logger)
+	}
+	ag.RegisterTools(commTools...)
+	if s.logger != nil {
+		s.logger.Info("Communication tools injected into workflow agent",
+			zap.String("agent_id", agentID),
+			zap.Int("num_tools", len(commTools)))
+	}
+}
+
+// wireSendMessageRegistry gives the send_message tool among tools the agent
+// registry it uses to heal short agent ids into <workflow>:<agent>; it
+// reports whether a send_message tool was there to wire. ConfigureCommunication
+// and ensureCommunicationTools use it; AddAgent, UpdateAgent and the looms
+// serve startup loop still inject plain tools (teradata-labs/loom#632).
+func wireSendMessageRegistry(tools []shuttle.Tool, registry builtin.AgentRegistry, logger *zap.Logger) bool {
+	for _, tool := range tools {
+		if sendTool, ok := tool.(*builtin.SendMessageTool); ok {
+			sendTool.SetAgentRegistry(registry, logger)
+			return true
+		}
+	}
+	return false
 }
 
 // StreamWorkflow executes a workflow and streams progress updates to the client.
@@ -4391,7 +4488,7 @@ func (s *MultiAgentServer) StreamWorkflow(req *loomv1.ExecuteWorkflowRequest, st
 					return err
 				}
 
-				return status.Errorf(codes.Internal, "workflow execution failed: %v", result.err)
+				return status.Errorf(workflowErrorCode(result.err), "workflow execution failed: %v", result.err)
 			}
 
 			// Store successful result
@@ -4423,8 +4520,13 @@ func (s *MultiAgentServer) StreamWorkflow(req *loomv1.ExecuteWorkflowRequest, st
 	}
 }
 
-// createOrchestratorWithProgress creates an orchestrator with the given agents, configuration, and optional progress callback.
-func createOrchestratorWithProgress(agents map[string]*agent.Agent, registry *agent.Registry, logger *zap.Logger, tracer observability.Tracer, progressCallback orchestration.WorkflowProgressCallback, taskManager *task.Manager) *orchestration.Orchestrator {
+// createOrchestratorWithProgress builds the orchestrator for one ExecuteWorkflow
+// call. sharedMemory and messageBus are the server's workflow communication
+// store and bus (ConfigureCommunication); the orchestrator stashes stage,
+// branch and debate outputs in that store and the agents' shared_memory_read
+// tool reads from the same one. Without them (nil) every hand-off is inline
+// only, which is what this path did before the store was passed through.
+func createOrchestratorWithProgress(agents map[string]*agent.Agent, registry *agent.Registry, logger *zap.Logger, tracer observability.Tracer, progressCallback orchestration.WorkflowProgressCallback, taskManager *task.Manager, sharedMemory *communication.SharedMemoryStore, messageBus *communication.MessageBus) *orchestration.Orchestrator {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
@@ -4440,6 +4542,8 @@ func createOrchestratorWithProgress(agents map[string]*agent.Agent, registry *ag
 		Logger:           logger,
 		ProgressCallback: progressCallback, // Wire up progress callback
 		TaskManager:      taskManager,      // Persistent workflow tracking
+		SharedMemory:     sharedMemory,     // Workflow hand-off stash (<workflow-id>-stage-N-output, branch, position keys)
+		MessageBus:       messageBus,       // Iterative restart coordination
 	})
 
 	// Register all agents with orchestrator

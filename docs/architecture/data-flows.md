@@ -658,18 +658,17 @@ spec:
   initial_prompt: "Analyze sales data"
   stages:
     - agent_id: schema-agent
-      prompt_template: "Discover schema: {{.initial}}"
+      prompt_template: "Discover schema: {{previous}}"
     - agent_id: optimizer-agent
-      prompt_template: "Optimize query: {{.previous}}"
+      prompt_template: "Optimize query: {{previous}}"
     - agent_id: executor-agent
-      prompt_template: "Execute: {{.previous}}"
+      prompt_template: "Execute: {{previous}}"
   pass_full_history: false
 ```
 
-**Variable Substitution**:
-- `{{.initial}}`: Initial prompt (first stage only)
-- `{{.previous}}`: Previous stage output
-- `{{.history}}`: All previous outputs (if pass_full_history: true)
+**Variable Substitution** (plain `{{name}}`, no leading dot):
+- `{{previous}}`: Previous stage output; for the first stage, the initial prompt. Capped at 8 KiB with a `<workflow-id>-stage-N-output` SharedMemory pointer when SharedMemory is configured.
+- `{{history}}`: All previous outputs, each capped the same way; `pass_full_history: true` appends them when a template names neither placeholder. A `history` block adds a whole-prompt token budget.
 
 **Performance Metrics**:
 - **YAML load**: 15-35ms (parse + validate + convert)

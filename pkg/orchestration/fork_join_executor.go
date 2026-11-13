@@ -70,6 +70,12 @@ func (e *ForkJoinExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 			return nil, fmt.Errorf("agent not found: %s: %w", agentID, err)
 		}
 	}
+	// The join agent too, before any branch is paid for.
+	if jp := e.pattern.JoinPolicy; jp != nil && jp.AgentId != "" {
+		if _, err := e.orchestrator.GetAgent(ctx, jp.AgentId); err != nil {
+			return nil, fmt.Errorf("join agent not found: %s: %w", jp.AgentId, err)
+		}
+	}
 
 	// Create timeout context if specified
 	executeCtx := ctx
@@ -79,27 +85,35 @@ func (e *ForkJoinExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 		defer cancel()
 	}
 
-	// Execute all agents in parallel with fork span
-	ctx, forkSpan := e.orchestrator.tracer.StartSpan(ctx, "fork_join.fork")
+	// Execute all agents in parallel with fork span. The branches run under
+	// the fork span and the pattern timeout.
+	forkCtx, forkSpan := e.orchestrator.tracer.StartSpan(executeCtx, "fork_join.fork")
 	if forkSpan != nil {
 		forkSpan.SetAttribute("branch.count", fmt.Sprintf("%d", len(e.pattern.AgentIds)))
 	}
 
-	results, modelsUsed, err := e.executeFork(executeCtx, workflowID)
+	results, modelsUsed, err := e.executeFork(forkCtx, workflowID)
 	e.orchestrator.tracer.EndSpan(forkSpan)
 
 	if err != nil {
 		return nil, fmt.Errorf("fork execution failed: %w", err)
 	}
 
-	// Merge results using specified strategy with join span
-	ctx, joinSpan := e.orchestrator.tracer.StartSpan(ctx, "fork_join.join")
+	// Merge results using specified strategy with join span. The join runs
+	// under the same timeout as the branches: with a join agent it is a tool
+	// loop plus parallel reduce calls, not one call.
+	ctx, joinSpan := e.orchestrator.tracer.StartSpan(executeCtx, "fork_join.join")
 	if joinSpan != nil {
 		joinSpan.SetAttribute("merge.strategy", e.pattern.MergeStrategy.String())
 		joinSpan.SetAttribute("branch.count", fmt.Sprintf("%d", len(results)))
 	}
 
-	mergedOutput, err := e.mergeResults(ctx, workflowID, results)
+	mergedOutput, join, err := e.mergeResults(ctx, workflowID, results)
+	if joinSpan != nil && join != nil {
+		for k, v := range join.Metadata {
+			joinSpan.SetAttribute(k, v)
+		}
+	}
 	e.orchestrator.tracer.EndSpan(joinSpan)
 
 	if err != nil {
@@ -108,6 +122,20 @@ func (e *ForkJoinExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 
 	// Calculate total cost
 	cost := e.calculateCost(results)
+	addJoinCost(cost, join)
+
+	metadata := map[string]string{
+		"agent_count":    fmt.Sprintf("%d", len(e.pattern.AgentIds)),
+		"merge_strategy": e.pattern.MergeStrategy.String(),
+	}
+	if join != nil {
+		for k, v := range join.Metadata {
+			metadata[k] = v
+		}
+		if join.AgentID != "" && join.Model != "" {
+			modelsUsed[join.AgentID] = join.Model
+		}
+	}
 
 	duration := time.Since(startTime)
 	e.orchestrator.logger.Info("Fork-join completed",
@@ -118,13 +146,10 @@ func (e *ForkJoinExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 		PatternType:  "fork_join",
 		AgentResults: results,
 		MergedOutput: mergedOutput,
-		Metadata: map[string]string{
-			"agent_count":    fmt.Sprintf("%d", len(e.pattern.AgentIds)),
-			"merge_strategy": e.pattern.MergeStrategy.String(),
-		},
-		DurationMs: duration.Milliseconds(),
-		Cost:       cost,
-		ModelsUsed: modelsUsed,
+		Metadata:     metadata,
+		DurationMs:   duration.Milliseconds(),
+		Cost:         cost,
+		ModelsUsed:   modelsUsed,
 	}, nil
 }
 
@@ -292,11 +317,28 @@ func (e *ForkJoinExecutor) executeAgentWithSpan(ctx context.Context, workflowID 
 	return result, model, nil
 }
 
-// mergeResults merges agent results using the specified strategy.
-func (e *ForkJoinExecutor) mergeResults(ctx context.Context, workflowID string, results []*loomv1.AgentResult) (string, error) {
+// mergeResults merges agent results using the specified strategy. Under an
+// active JoinPolicy the join is bounded (and, with a join agent, run through
+// that agent); the returned joinOutcome then carries its usage and metadata.
+// Without a policy the outcome is nil and the legacy paths run unchanged.
+func (e *ForkJoinExecutor) mergeResults(ctx context.Context, workflowID string, results []*loomv1.AgentResult) (string, *joinOutcome, error) {
+	if joinPolicyActive(e.pattern.JoinPolicy, e.pattern.MergeStrategy) {
+		jr := newJoiner(e.orchestrator, e.pattern.JoinPolicy, e.pattern.MergeStrategy, "fork-join", workflowID, e.pattern.Prompt)
+		outcome, err := jr.run(ctx, results)
+		if err != nil {
+			return "", nil, err
+		}
+		return outcome.Output, outcome, nil
+	}
+	if e.pattern.JoinPolicy != nil {
+		e.orchestrator.logger.Warn("join_policy without agent_id does not apply to this merge strategy; it bounds only the LLM merge strategies",
+			zap.String("workflow_id", workflowID),
+			zap.String("merge_strategy", e.pattern.MergeStrategy.String()))
+	}
+
 	switch e.pattern.MergeStrategy {
 	case loomv1.MergeStrategy_FIRST:
-		return firstSuccessfulOutput(results), nil
+		return firstSuccessfulOutput(results), nil, nil
 
 	case loomv1.MergeStrategy_CONCATENATE:
 		var builder strings.Builder
@@ -307,14 +349,15 @@ func (e *ForkJoinExecutor) mergeResults(ctx context.Context, workflowID string, 
 				builder.WriteString("\n\n")
 			}
 		}
-		return builder.String(), nil
+		return builder.String(), nil, nil
 
 	case loomv1.MergeStrategy_CONSENSUS, loomv1.MergeStrategy_SUMMARY, loomv1.MergeStrategy_VOTING, loomv1.MergeStrategy_BEST:
 		// These strategies require LLM-based merging
-		return e.llmMerge(ctx, workflowID, results)
+		out, err := e.llmMerge(ctx, workflowID, results)
+		return out, nil, err
 
 	default:
-		return "", fmt.Errorf("unsupported merge strategy: %s", e.pattern.MergeStrategy)
+		return "", nil, fmt.Errorf("unsupported merge strategy: %s", e.pattern.MergeStrategy)
 	}
 }
 

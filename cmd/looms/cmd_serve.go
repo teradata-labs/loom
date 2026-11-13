@@ -126,8 +126,9 @@ func toolsNoneActive() bool {
 //	tools.none=true    → also suppress the retrieval tools
 //	                    (query_tool_result, recall) and the agent-coupling tools
 //	                    wired by MultiAgentServer.prepareAgent /
-//	                    UpdateAgent (send_message, publish,
-//	                    shared_memory_read, shared_memory_write).
+//	                    UpdateAgent / ensureCommunicationTools (send_message,
+//	                    publish, shared_memory_read, shared_memory_write,
+//	                    top_n_query, group_by_query, publish_restart_request).
 //	                    Net effect: the agent's tool list is exactly what
 //	                    its YAML declared.
 func builtinToolsToSuppress() []string {
@@ -149,6 +150,10 @@ func builtinToolsToSuppress() []string {
 			"shared_memory_write",
 			"top_n_query",
 			"group_by_query",
+			// publish_restart_request is injected on every workflow agent by
+			// MultiAgentServer.ensureCommunicationTools when a bus exists; under
+			// tools.none the agent sees only what its YAML declares.
+			"publish_restart_request",
 			// manage_ephemeral_agents is intentionally NOT suppressed here: it is a
 			// per-session opt-in tool (agent declares it in spec.tools). Suppressing
 			// it under tools.none would silently break agents that explicitly request it.

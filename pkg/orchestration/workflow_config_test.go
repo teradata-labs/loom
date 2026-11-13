@@ -41,7 +41,6 @@ spec:
     - architect
     - pragmatist
   rounds: 3
-  merge_strategy: consensus
   moderator_agent_id: senior-architect
 `
 
@@ -56,8 +55,32 @@ spec:
 	assert.Equal(t, "Should we use microservices or monolith?", debate.Topic)
 	assert.Equal(t, []string{"architect", "pragmatist"}, debate.AgentIds)
 	assert.Equal(t, int32(3), debate.Rounds)
-	assert.Equal(t, loomv1.MergeStrategy_CONSENSUS, debate.MergeStrategy)
+	assert.Equal(t, loomv1.MergeStrategy_MERGE_STRATEGY_UNSPECIFIED, debate.MergeStrategy, "deprecated field is never set by the loader") //nolint:staticcheck // asserting the deprecated field stays unset
 	assert.Equal(t, "senior-architect", debate.ModeratorAgentId)
+	assert.Nil(t, debate.JoinPolicy)
+}
+
+// TestLoadWorkflowFromYAML_DebateRejectsMergeStrategy: merge_strategy was
+// accepted on debate for years and never read by the engine. Dead
+// configuration is rejected with a message that names the real controls.
+func TestLoadWorkflowFromYAML_DebateRejectsMergeStrategy(t *testing.T) {
+	yaml := `
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: debate-merge
+spec:
+  type: debate
+  topic: "test topic"
+  agent_ids: [agent1, agent2]
+  merge_strategy: consensus
+`
+	_, err := LoadWorkflowFromYAML(createTempYAMLFile(t, yaml))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidWorkflow)
+	assert.Contains(t, err.Error(), "spec.merge_strategy has no effect on debate")
+	assert.Contains(t, err.Error(), "moderator_agent_id")
+	assert.Contains(t, err.Error(), "spec.join")
 }
 
 func TestLoadWorkflowFromYAML_ForkJoinPattern(t *testing.T) {
@@ -564,10 +587,11 @@ spec:
 
 	// Default rounds should be 1
 	assert.Equal(t, int32(1), debate.Rounds)
-	// Default merge strategy should be CONSENSUS
-	assert.Equal(t, loomv1.MergeStrategy_CONSENSUS, debate.MergeStrategy)
+	// merge_strategy is deprecated on debate and never set by the loader
+	assert.Equal(t, loomv1.MergeStrategy_MERGE_STRATEGY_UNSPECIFIED, debate.MergeStrategy) //nolint:staticcheck // asserting the deprecated field stays unset
 	// Moderator should be empty
 	assert.Empty(t, debate.ModeratorAgentId)
+	assert.Nil(t, debate.JoinPolicy)
 }
 
 func TestLoadWorkflowFromYAML_FilePermissions(t *testing.T) {
@@ -702,9 +726,9 @@ spec:
 	require.NotNil(t, iterative)
 
 	// Verify defaults
-	assert.Equal(t, int32(3), iterative.MaxIterations)          // Default max_iterations
-	assert.Equal(t, "workflow.restart", iterative.RestartTopic) // Default topic
-	assert.Nil(t, iterative.RestartPolicy)                      // No policy specified
+	assert.Equal(t, int32(3), iterative.MaxIterations) // Default max_iterations
+	assert.Equal(t, "", iterative.RestartTopic, "omitted restart_topic stays empty so the executor gives the run its own topic")
+	assert.Nil(t, iterative.RestartPolicy) // No policy specified
 }
 
 // TestLoadWorkflowFromYAML_IterativePattern_InvalidConfig tests error handling.
