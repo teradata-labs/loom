@@ -532,3 +532,77 @@ func TestAddRowUsageIsTheOwners(t *testing.T) {
 	assert.Equal(t, 4, msgs[0].ThinkingTokens)
 	assert.Equal(t, 3, msgs[0].InputTokens, "the row's input figure is its own prompt, not the added call's")
 }
+
+// cancelAtDone is a context that is cancelled from its n-th Done call on: a
+// cancel that lands at one exact point inside a store call.
+type cancelAtDone struct {
+	context.Context
+	n, calls int32
+	mu       sync.Mutex
+	closed   chan struct{}
+}
+
+func newCancelAtDone(parent context.Context, n int32) *cancelAtDone {
+	c := &cancelAtDone{Context: parent, n: n, closed: make(chan struct{})}
+	close(c.closed)
+	return c
+}
+
+func (c *cancelAtDone) cancelled() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls >= c.n
+}
+
+func (c *cancelAtDone) Done() <-chan struct{} {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls++
+	if c.calls >= c.n {
+		return c.closed
+	}
+	return nil
+}
+
+func (c *cancelAtDone) Err() error {
+	if c.cancelled() {
+		return context.Canceled
+	}
+	return nil
+}
+
+// An error from SaveMessage must mean the row is not stored: the agent moves
+// a refused row's cost to another row, so a stored row reported as refused is
+// counted twice. A cancel can land at any point of the call; at each one,
+// either the call fails and no row is stored, or it succeeds with the row
+// stored and its id set. The INSERT and the read-back are two statements
+// (SQLite 3.33 has no RETURNING), so a cancel between them is the case that
+// matters.
+func TestSaveMessageReportsAStoredRowAsStoredWhateverTheCancel(t *testing.T) {
+	t.Parallel()
+	store, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
+	require.NoError(t, err)
+	defer func() { _ = store.Close() }()
+	ctx := context.Background()
+	require.NoError(t, store.SaveSession(ctx, &Session{ID: "s-cancel"}))
+	count := func() int {
+		msgs, err := store.LoadMessages(ctx, "s-cancel")
+		require.NoError(t, err)
+		return len(msgs)
+	}
+	stored := 0
+	for n := int32(1); n <= 40; n++ {
+		before := count()
+		msg := Message{Role: "assistant", Content: fmt.Sprintf("reply %d", n), CostUSD: 0.01, OutputTokens: 1}
+		err := store.SaveMessage(newCancelAtDone(ctx, n), "s-cancel", &msg, false)
+		after := count()
+		if err != nil {
+			assert.Equal(t, before, after, "cancel at Done call %d: SaveMessage failed, but the row is stored", n)
+			continue
+		}
+		stored++
+		assert.Equal(t, before+1, after, "cancel at Done call %d: SaveMessage succeeded, but no row is stored", n)
+		assert.NotEmpty(t, msg.ID, "cancel at Done call %d: a stored row has no id", n)
+	}
+	assert.Positive(t, stored, "no cancel point let the INSERT through; the test does not reach the read-back")
+}

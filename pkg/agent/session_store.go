@@ -853,6 +853,10 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg *M
 	// returned. An error from SaveMessage always means the row is not stored.
 	seq, err := res.LastInsertId()
 	if err != nil {
+		// The SQLite driver reads the id from the connection and does not
+		// fail here in practice. If it did, the row is stored with no id on
+		// msg: storeOnLastRow then skips it as a target (it needs a seq), so
+		// a later amount goes on an earlier stored row instead.
 		span.RecordError(err)
 		zap.L().Warn("message saved; its seq could not be read back",
 			zap.String("session_id", sessionID), zap.Error(err))
