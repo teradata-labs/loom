@@ -183,6 +183,16 @@ type SegmentedMemory struct {
 	// when fold flags a region containing a manage_skills load pair.
 	skillDeactivation func(sessionID, skillName string)
 
+	// messageLabeler runs when a message enters L1 — arrival (AddMessage) or
+	// restore (ReplayMessages) — and its result is stored on the message
+	// (WithMessageLabeler). Label values are opaque.
+	messageLabeler func(*Message) map[string]string
+
+	// labelJoin joins the labels of the messages a fold's summary replaces,
+	// applied pairwise in context order (WithLabelJoin). Nil uses
+	// defaultLabelJoin.
+	labelJoin func(a, b map[string]string) map[string]string
+
 	// Observability
 	tracer observability.Tracer
 
@@ -404,12 +414,18 @@ func (sm *SegmentedMemory) DropTurnPayloads() {
 }
 
 // AddMessage appends a message to L1 (HLD §1: arrival appends — nothing is
-// examined, sized, flagged, or transformed at arrival). The incremental token
-// caches are updated for reporting only; no mechanism here acts on them.
+// examined, sized, flagged, or transformed at arrival). The one arrival hook
+// is the labeler (WithMessageLabeler): it runs once, here, where the message
+// enters the context, and its result rides the stored row into every later
+// compile. The incremental token caches are updated for reporting only; no
+// mechanism here acts on them.
 func (sm *SegmentedMemory) AddMessage(ctx context.Context, msg Message) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
+	if sm.messageLabeler != nil && msg.Labels == nil {
+		msg.Labels = sm.messageLabeler(&msg)
+	}
 	sm.recordThinkingPrefixLocked(&msg)
 	sm.contextMessages = append(sm.contextMessages, msg)
 	sm.arrivals++
@@ -534,7 +550,10 @@ func (sm *SegmentedMemory) adjustCompressionBoundary(toCompressCount int) int {
 // ReplayMessages bulk-loads rows into L1 (reload, HLD §8): a pure append of
 // rows already filtered folded=false by the store read. T = max(Turn) over the
 // read rows — nothing else to restore; live and restored are the same read of
-// the same rows.
+// the same rows. The labeler runs on each row as it re-enters the context, so
+// a restored session carries the same labels (the rows' labels are in-memory
+// only and do not ride the store). The caller's slice is consumed: memory.go's
+// restore path hands over a dedicated copy.
 func (sm *SegmentedMemory) ReplayMessages(ctx context.Context, messages []Message) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -543,6 +562,13 @@ func (sm *SegmentedMemory) ReplayMessages(ctx context.Context, messages []Messag
 		return
 	}
 
+	if sm.messageLabeler != nil {
+		for i := range messages {
+			if messages[i].Labels == nil {
+				messages[i].Labels = sm.messageLabeler(&messages[i])
+			}
+		}
+	}
 	sm.contextMessages = append(sm.contextMessages, messages...)
 	sm.arrivals += uint64(len(messages))
 	sm.l1Dirty = true

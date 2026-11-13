@@ -92,6 +92,20 @@ type Agent struct {
 	// is unavailable (returns ErrEventLogDisabled).
 	eventLog eventlog.EventLogStore
 
+	// transientTail, when non-nil, supplies caller text that rides a
+	// <system-reminder> with the turn's built-in notes on every provider call
+	// (WithTransientTail).
+	transientTail func(ctx context.Context) string
+	// messageLabeler, when set (WithMessageLabeler), runs where a message
+	// enters a session's context — arrival or the restore replay — and its
+	// result is stored on the message. Label values are opaque.
+	messageLabeler func(*Message) map[string]string
+
+	// labelJoin, when set (WithLabelJoin), joins the labels of the messages a
+	// compaction summary replaces, applied pairwise in context order. Nil uses
+	// the default join (per key, the lexicographically greater value).
+	labelJoin func(a, b map[string]string) map[string]string
+
 	// leaseTTL overrides eventlog.DefaultSessionLeaseTTL for the session lease
 	// (session_lease.go). Zero uses the default; tests set it short.
 	leaseTTL time.Duration
