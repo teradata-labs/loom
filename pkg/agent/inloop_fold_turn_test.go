@@ -201,6 +201,7 @@ func TestInloopFold_AFoldOnTheLastLoopPassIsBilled(t *testing.T) {
 			require.NoError(t, err)
 			assert.InDelta(t, resp.TurnUsage.CostUSD, rows, 1e-9, "the rows do not sum to what the turn spent")
 			assert.InDelta(t, float64(len(model.foldAt))*callCost, rows, 1e-9, "a call the model billed is on no row")
+			assert.InDelta(t, callCost, resp.Usage.CostUSD, 1e-9, "Usage is not the final call's own")
 		})
 	}
 	assert.Positive(t, lastPassFolds, "no MaxTurns value ended the loop on a fold call; the test does not reach the case")
@@ -239,6 +240,7 @@ func TestInloopFold_ACallAfterAFoldThatWritesNoRowLosesNoCost(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 				assert.InDelta(t, resp.TurnUsage.CostUSD, rows, 1e-9, "the rows do not sum to what the turn spent")
+				assert.InDelta(t, callCost, resp.Usage.CostUSD, 1e-9, "Usage is not the final call's own")
 			}
 			assert.InDelta(t, float64(billed)*callCost, rows, 1e-9, "a call the model billed is on no row")
 		})
