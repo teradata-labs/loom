@@ -212,7 +212,8 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (_ *Respons
 	// Each call has two positions: its index in the session's batch message
 	// (what HITL park binding uses) and its index in the recorded LLM response
 	// (the batch_position its events were written under). They differ when the
-	// saved message dropped calls the response held (query_tool_result).
+	// saved message lacks calls the response held: an earlier loom did not
+	// store query_tool_result calls. This loom stores them.
 	var neverAttempted []ToolCall
 	var neverAttemptedPositions, neverAttemptedEventPositions []int
 	for j, call := range rowless {
@@ -400,8 +401,9 @@ func recordedStepForBatch(events []eventlog.ExecutionEvent, batch Message) (step
 // matchRecordedCalls maps each call in saved (the batch as the session holds
 // it) to its index in recorded (the LLM response as the event log holds it).
 // Calls match on name and input, in order. The saved batch may lack
-// query_tool_result calls, which PersistMessage drops; any other difference
-// means the two are different batches.
+// query_tool_result calls: an earlier loom did not store them, and this loom
+// does, so the skip keeps sessions stored by an earlier loom resumable. Any
+// other difference means the two are different batches.
 func matchRecordedCalls(recorded, saved []ToolCall) ([]int, bool) {
 	positions := make([]int, 0, len(saved))
 	r := 0
@@ -478,9 +480,9 @@ func unsavedBatchStep(events []eventlog.ExecutionEvent, msgs []Message) (int, er
 	for _, e := range events {
 		switch e.EventType {
 		case eventlog.EventToolCallIntent:
-			// query_tool_result only reads this turn's in-memory results and is
-			// never saved with its batch, so a step holding only those has
-			// nothing a re-run could do twice.
+			// query_tool_result only reads this turn's in-memory results, so a
+			// step holding only those has nothing a re-run could do twice. (An
+			// earlier loom also did not store those calls with their batch.)
 			if !isQueryToolResultIntent(e) {
 				dispatched[e.StepIndex] = true
 			}

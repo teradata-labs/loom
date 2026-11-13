@@ -362,7 +362,7 @@ func TestWorkloadProfilesMoveTheReliefMarks(t *testing.T) {
 
 // K — the recent turns a fold keeps — is set from an agent file
 // (memory.memory_compression.protected_recent_turns), reaches memory through
-// the compression profile, defaults to 16 as on main, and yields to a value the
+// the compression profile, defaults to 16 (unchanged), and yields to a value the
 // agent's Config sets in code.
 func TestProtectedRecentTurnsIsSetFromTheAgentFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "a.yaml")

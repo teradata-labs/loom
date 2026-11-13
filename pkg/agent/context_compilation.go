@@ -1241,7 +1241,7 @@ func foldedSkillLoads(region []Message, currentTurn int64) []string {
 	return names
 }
 
-// defaultProtectedRecentTurns is K when nothing sets it, as on main. For the
+// defaultProtectedRecentTurns is K when nothing sets it (16, unchanged). For the
 // in-loop fold it is the recent turns kept before the pending one, user
 // messages and assistant steps alike (foldSplitLocked). For the pressure
 // ladder behind it, it is the top rung; the ladder folds at K, K/2, K/4 … 1

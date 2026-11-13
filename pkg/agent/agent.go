@@ -2282,10 +2282,11 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 		return nil, fmt.Errorf("conversation loop failed: %w", err)
 	}
 
-	// Add assistant response to history. response.Usage is the final LLM
-	// call's Usage (last-turn); intermediate tool-use turns already wrote
-	// their own rows above, so SUM(messages.cost) over the session equals
-	// the whole conversation's cost.
+	// Add assistant response to history. The row stores rowUsage: the final
+	// LLM call's Usage plus what earlier calls of the turn left unbilled;
+	// intermediate tool-use turns already wrote their own rows, so
+	// SUM(messages.cost) over the session equals the whole conversation's
+	// cost.
 	row := response.rowUsage()
 	_, replyPersisted := a.appendMessage(ctx, session, Message{
 		Role: "assistant",
@@ -2712,9 +2713,10 @@ type Response struct {
 	Content string
 
 	// Usage is the token usage and cost of the FINAL LLM call of the turn —
-	// the call that produced Content. It is what the persisted assistant
-	// message carries as its own TokenCount/CostUSD, so it must stay per-call:
-	// each tool-calling assistant row in the loop already carries its own.
+	// the call that produced Content — and only that call's. The persisted
+	// final row stores rowUsage: Usage plus what earlier calls left unbilled
+	// (fold calls, a reply the loop asked again for). Each tool-calling row in
+	// the loop carries its own call and what it carried.
 	Usage Usage
 
 	// unbilled is what the turn's earlier calls cost that no row holds: fold
@@ -5713,7 +5715,7 @@ func (a *Agent) GetAllRoleLLMs() map[loomv1.LLMRole]LLMProvider {
 // enters truncated, and the tool executor's large-parameter threshold.
 // The arrival bound takes positive values only and otherwise keeps the bound
 // it has (storage.DefaultSharedMemoryThreshold unless set): it is
-// unconditional, so no input disables it. For the executor, as on main: -1 is the default, 0 stores
+// unconditional, so no input disables it. For the executor (unchanged): -1 is the default, 0 stores
 // every tool parameter by reference, >0 only those over N bytes.
 func (a *Agent) SetSharedMemoryThreshold(threshold int64) {
 	a.sharedMemoryThreshold = threshold
