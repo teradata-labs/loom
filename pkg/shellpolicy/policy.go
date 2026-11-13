@@ -289,7 +289,7 @@ func ResolvePath(dir, path string) string {
 		// ModeIrregular counts as a link: since Go 1.23 Lstat reports a
 		// Windows junction (mount point) as irregular, not as a symlink, and
 		// EvalSymlinks still follows it.
-		fi, err := os.Lstat(next)
+		fi, err := os.Lstat(next) // #nosec G703 -- resolving an untrusted path so the policy can check it is this function's job; Lstat reads metadata only and opens nothing
 		if err != nil {
 			// The rest does not exist (or is beneath a file): no symlink in
 			// it can be followed.
