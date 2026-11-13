@@ -2551,9 +2551,11 @@ func (a *Agent) appendMessage(ctx context.Context, session *Session, msg Message
 	if at, ok := occurredAtFromContext(ctx); ok {
 		msg.Timestamp = at
 	}
-	// A message an LLM call billed carries the model that answered.
-	if msg.Model == "" && msg.OutputTokens > 0 && a.llm != nil {
-		msg.Model = a.llm.Model()
+	// A message an LLM call billed carries the model that answered. The
+	// client is read under the lock (GetLLMModel): a runtime model switch
+	// (SetLLMProvider) writes it while a turn writes rows.
+	if msg.Model == "" && msg.OutputTokens > 0 {
+		msg.Model = a.GetLLMModel()
 	}
 
 	// In-memory derivation, identical arithmetic to the store's subquery — the
