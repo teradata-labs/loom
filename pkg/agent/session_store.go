@@ -31,6 +31,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/task"
 	"github.com/teradata-labs/loom/pkg/types"
+	"go.uber.org/zap"
 )
 
 // validSQLIdentifier matches only safe SQL identifiers (alphanumeric and underscores).
@@ -838,22 +839,34 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg *M
 		return fmt.Errorf("failed to save message: %w", err)
 	}
 
-	// Stamp the derived seq and turn onto the in-memory message — wiring needed
-	// anyway so the offload stub can print its message_id (HLD §4.5). The
-	// read-back runs under the store lock; a session is single-writer and
-	// messages persist sequentially (the bundled SQLite predates RETURNING).
+	// Stamp the derived seq and turn onto the in-memory message (HLD §4.5).
+	// The read-back runs under the store lock; a session is single-writer and
+	// messages persist sequentially (the bundled SQLite, 3.33, predates
+	// RETURNING, so the insert and the read-back are two statements).
+	//
+	// The row is committed from here on, so an error from here would tell the
+	// caller "not written" for a written row: the agent would then move the
+	// row's cost to another row (moveRefusedRowCost) and the stored rows would
+	// hold it twice. So the read-back does not take the caller's cancellation,
+	// and a read-back that still fails keeps the turn the caller stamped
+	// (appendMessage derives it with the same arithmetic) and is logged, not
+	// returned. An error from SaveMessage always means the row is not stored.
 	seq, err := res.LastInsertId()
 	if err != nil {
 		span.RecordError(err)
-		return fmt.Errorf("failed to read message seq: %w", err)
-	}
-	var turn int64
-	if err := s.db.QueryRowContext(ctx, "SELECT turn FROM messages WHERE id = ?", seq).Scan(&turn); err != nil {
-		span.RecordError(err)
-		return fmt.Errorf("failed to read message turn: %w", err)
+		zap.L().Warn("message saved; its seq could not be read back",
+			zap.String("session_id", sessionID), zap.Error(err))
+		return nil
 	}
 	msg.ID = fmt.Sprintf("%d", seq)
-	msg.Turn = turn
+	var turn int64
+	if err := s.db.QueryRowContext(context.WithoutCancel(ctx), "SELECT turn FROM messages WHERE id = ?", seq).Scan(&turn); err != nil {
+		span.RecordError(err)
+		zap.L().Warn("message saved; its turn could not be read back, the caller's turn stands",
+			zap.String("session_id", sessionID), zap.Int64("seq", seq), zap.Error(err))
+	} else {
+		msg.Turn = turn
+	}
 
 	span.SetAttribute("tokens", fmt.Sprintf("%d", msg.TokenCount))
 	span.SetAttribute("cost_usd", fmt.Sprintf("%.4f", msg.CostUSD))
