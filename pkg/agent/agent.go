@@ -3587,7 +3587,9 @@ func (a *Agent) runConversationLoop(ctx Context) (_ *Response, retErr error) {
 		}
 
 		// The row carries what the calls before this one left unbilled.
-		llmResp.Usage = carryFoldCost(llmResp.Usage, carried)
+		// llmResp.Usage stays the call's own: both park paths report it as
+		// TurnParkedError.Usage, the parking call's own usage.
+		row := carryFoldCost(llmResp.Usage, carried)
 		// Add assistant message with tool calls to history FIRST (required by Anthropic API)
 		_, assistantPersisted := a.appendMessage(ctx, session, Message{
 			Role:              "assistant",
@@ -3596,17 +3598,17 @@ func (a *Agent) runConversationLoop(ctx Context) (_ *Response, retErr error) {
 			Thinking:          llmResp.Thinking,
 			ThinkingBlocks:    llmResp.ThinkingBlocks,
 			AgentID:           a.GetID(), // Track which agent generated this response
-			TokenCount:        llmResp.Usage.TotalTokens,
-			CostUSD:           llmResp.Usage.CostUSD,
-			InputTokens:       llmResp.Usage.InputTokens,
-			OutputTokens:      llmResp.Usage.OutputTokens,
-			CacheReadTokens:   llmResp.Usage.CacheReadInputTokens,
-			CacheCreateTokens: llmResp.Usage.CacheCreationInputTokens,
+			TokenCount:        row.TotalTokens,
+			CostUSD:           row.CostUSD,
+			InputTokens:       row.InputTokens,
+			OutputTokens:      row.OutputTokens,
+			CacheReadTokens:   row.CacheReadInputTokens,
+			CacheCreateTokens: row.CacheCreationInputTokens,
 
-			CacheCreate1hTokens: llmResp.Usage.CacheCreation1hInputTokens,
-			CacheCreate5mTokens: llmResp.Usage.CacheCreation5mInputTokens,
-			ThinkingTokens:      llmResp.Usage.ThinkingTokens,
-			Effort:              llmResp.Usage.Effort,
+			CacheCreate1hTokens: row.CacheCreation1hInputTokens,
+			CacheCreate5mTokens: row.CacheCreation5mInputTokens,
+			ThinkingTokens:      row.ThinkingTokens,
+			Effort:              row.Effort,
 			Timestamp:           time.Now(),
 		}, false)
 		// The row holds this call's cost and what it carried. A row the store
