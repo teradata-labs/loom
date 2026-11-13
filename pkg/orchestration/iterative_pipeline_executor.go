@@ -1078,7 +1078,13 @@ func (e *IterativePipelineExecutor) subscribeToRestarts(ctx context.Context, top
 				_ = e.messageBus.Unsubscribe(ctx, sub.ID)
 				unsubscribed = true
 				return
-			case msg := <-sub.Channel:
+			case msg, ok := <-sub.Channel:
+				if !ok {
+					// The bus closed the channel (bus shutdown or the
+					// subscription was removed): nothing left to unsubscribe.
+					unsubscribed = true
+					return
+				}
 				// Decode restart request
 				var restartReq loomv1.RestartRequest
 				if err := json.Unmarshal(msg.Payload.GetValue(), &restartReq); err != nil {
