@@ -593,6 +593,46 @@ func drainWithin(t *testing.T, sub *Subscription) []*loomv1.BusMessage {
 	}
 }
 
+// TestBusSubscribeRacingClose checks that a Subscribe racing Close either
+// fails or returns a subscription whose channel Close has closed, never one
+// left open (its reader would wait forever).
+func TestBusSubscribeRacingClose(t *testing.T) {
+	ctx := context.Background()
+	rounds := 20000
+	if testing.Short() {
+		rounds = 2000
+	}
+	for i := 0; i < rounds; i++ {
+		bus := NewMessageBus(nil, nil, nil, nil)
+
+		var sub *Subscription
+		var subErr error
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			sub, subErr = bus.Subscribe(ctx, "a", "t", nil, 1)
+		}()
+		go func() {
+			defer wg.Done()
+			_ = bus.Close()
+		}()
+		wg.Wait()
+
+		if subErr != nil {
+			continue
+		}
+		// Nothing was published, so a closed channel answers at once with
+		// ok == false; an open one has nothing to give.
+		select {
+		case _, ok := <-sub.Channel:
+			require.False(t, ok, "round %d: unexpected message", i)
+		default:
+			t.Fatalf("round %d: Subscribe returned a subscription whose channel stays open after Close", i)
+		}
+	}
+}
+
 // TestBusPublishRacingClose checks that a Publish that passed the closed check
 // before Close ran never sends on a channel Close has closed ("send on closed
 // channel" panic). Each round races one Close against a few Publish calls.

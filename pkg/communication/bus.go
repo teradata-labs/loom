@@ -184,6 +184,12 @@ func (b *MessageBus) Publish(ctx context.Context, topic string, msg *loomv1.BusM
 	// still clear, no channel below is closed until this send loop is done.
 	if b.closed.Load() {
 		b.mu.RUnlock()
+		if span != nil {
+			// The span is already open: mark it failed, or a tracer that
+			// reads an unset status as success records a refused publish
+			// as delivered.
+			span.Status = observability.Status{Code: observability.StatusError, Message: "message bus is closed"}
+		}
 		return 0, 0, fmt.Errorf("message bus is closed")
 	}
 	for _, subscription := range b.subscriptions {
@@ -307,6 +313,20 @@ func (b *MessageBus) Subscribe(ctx context.Context, agentID string, topicPattern
 
 	// Store subscription for later unsubscribe
 	b.mu.Lock()
+	// Check again under the lock: a Close that ran since the check above may
+	// have closed the topic's channels before the subscriber was added (or on
+	// a broadcaster created after it), leaving this channel open forever and
+	// its reader waiting. Close sets the flag before it takes the lock, so a
+	// clear flag here means Close will see this subscriber and close it.
+	if b.closed.Load() {
+		b.mu.Unlock()
+		// Closes the channel unless Close's closeAll already did.
+		broadcaster.removeSubscriber(subID)
+		if span != nil {
+			span.Status = observability.Status{Code: observability.StatusError, Message: "message bus is closed"}
+		}
+		return nil, fmt.Errorf("message bus is closed")
+	}
 	b.subscriptions[subID] = subscription
 	b.mu.Unlock()
 
