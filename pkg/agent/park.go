@@ -1363,6 +1363,9 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 		ThinkingTokens:      row.ThinkingTokens,
 		Effort:              row.Effort,
 	}, false)
+	if !replyPersisted {
+		a.moveRefusedRowCost(ctx, sess, row, span)
+	}
 	a.pruneFinishedTurn(ctx, sess.ID, replyPersisted)
 
 	if err := a.memory.PersistSession(ctx, sess); err != nil {

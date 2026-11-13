@@ -313,13 +313,25 @@ func (a *Agent) finishResumedTurn(ctx context.Context, agentCtx *agentContext, s
 	// never reaches a terminal state and a second resume would re-run the loop.
 	row := response.rowUsage() // the final call's usage, with what the turn left unbilled
 	_, replyPersisted := a.appendMessage(ctx, sess, Message{
-		Role:       "assistant",
-		Content:    response.Content,
-		AgentID:    a.id,
-		Timestamp:  time.Now(),
-		TokenCount: row.TotalTokens,
-		CostUSD:    row.CostUSD,
+		Role:              "assistant",
+		Content:           response.Content,
+		AgentID:           a.id,
+		Timestamp:         time.Now(),
+		TokenCount:        row.TotalTokens,
+		CostUSD:           row.CostUSD,
+		InputTokens:       row.InputTokens,
+		OutputTokens:      row.OutputTokens,
+		CacheReadTokens:   row.CacheReadInputTokens,
+		CacheCreateTokens: row.CacheCreationInputTokens,
+
+		CacheCreate1hTokens: row.CacheCreation1hInputTokens,
+		CacheCreate5mTokens: row.CacheCreation5mInputTokens,
+		ThinkingTokens:      row.ThinkingTokens,
+		Effort:              row.Effort,
 	}, false)
+	if !replyPersisted {
+		a.moveRefusedRowCost(ctx, sess, row, observability.SpanFromContext(ctx))
+	}
 	a.pruneFinishedTurn(ctx, sess.ID, replyPersisted)
 
 	if perr := a.memory.PersistSession(ctx, sess); perr != nil {

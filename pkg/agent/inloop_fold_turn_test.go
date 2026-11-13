@@ -176,6 +176,70 @@ func (s roleCheckStore) SaveMessage(ctx context.Context, sessionID string, msg *
 	return fmt.Errorf("new row violates check constraint \"session_messages_role_check\": role %q", msg.Role)
 }
 
+// failingWriteStore is the SQLite store with one failed write: the n-th
+// assistant row that match selects is refused, as a transient store error
+// refuses it.
+type failingWriteStore struct {
+	*SessionStore
+	match func(*Message) bool
+	n     int
+	mu    sync.Mutex
+	seen  int
+}
+
+func (s *failingWriteStore) SaveMessage(ctx context.Context, sessionID string, msg *Message, turnStart bool) error {
+	if msg.Role == "assistant" && s.match(msg) {
+		s.mu.Lock()
+		s.seen++
+		hit := s.seen == s.n
+		s.mu.Unlock()
+		if hit {
+			return fmt.Errorf("transient store failure")
+		}
+	}
+	return s.SessionStore.SaveMessage(ctx, sessionID, msg, turnStart)
+}
+
+// A row the store refuses still holds its call's cost in memory, and the
+// session's total counts it there. The stored rows must hold that cost too,
+// on another row of the turn, and never twice: the stored rows, the session's
+// total in memory and the stored session total all equal TurnUsage.
+func TestARowTheStoreRefusesIsCountedOnce(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		match func(*Message) bool
+	}{
+		{"a tool-calling row", func(m *Message) bool { return len(m.ToolCalls) > 0 }},
+		{"the final reply's row", func(m *Message) bool { return len(m.ToolCalls) == 0 }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			model := &foldingStream{steps: 3}
+			ag, store := foldingAgentOn(t, model, nil, func(s *SessionStore) SessionStorage {
+				return &failingWriteStore{SessionStore: s, match: tc.match, n: 2}
+			})
+			if tc.name == "the final reply's row" {
+				// The final reply is the first row with no calls.
+				ag.memory.store.(*failingWriteStore).n = 1
+			}
+			resp, err := ag.Chat(ctx, "s-refused-row", "do it")
+			require.NoError(t, err)
+			require.InDelta(t, float64(model.taken+1)*callCost, resp.TurnUsage.CostUSD, 1e-9)
+			rows, err := store.SessionCost(ctx, "s-refused-row")
+			require.NoError(t, err)
+			live, ok := ag.memory.GetSession("s-refused-row")
+			require.True(t, ok)
+			stored, err := store.LoadSession(ctx, "s-refused-row")
+			require.NoError(t, err)
+			assert.InDelta(t, resp.TurnUsage.CostUSD, rows, 1e-9, "the stored rows do not hold what the turn spent")
+			assert.InDelta(t, resp.TurnUsage.CostUSD, live.TotalCostUSD, 1e-9, "the session's total counts a call twice or not at all")
+			assert.InDelta(t, resp.TurnUsage.CostUSD, stored.TotalCostUSD, 1e-9, "the stored session total counts a call twice or not at all")
+		})
+	}
+}
+
 // basicStore is a store with only the SessionStorage operations: no optional
 // operation is visible through it, as with a host that implements none.
 type basicStore struct{ SessionStorage }

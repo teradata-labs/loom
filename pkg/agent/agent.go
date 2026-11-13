@@ -2309,6 +2309,9 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 		ThinkingTokens:      row.ThinkingTokens,
 		Effort:              row.Effort,
 	}, false)
+	if !replyPersisted {
+		a.moveRefusedRowCost(ctx, session, row, span)
+	}
 	a.pruneFinishedTurn(ctx, session.ID, replyPersisted)
 
 	// Persist session
@@ -2404,61 +2407,66 @@ func (a *Agent) recordConversationMetrics(sessionID string, response *Response, 
 // after the turn's own context may have ended.
 const unbilledWriteTimeout = 5 * time.Second
 
-// billOnLastRow puts u, what the turn's calls cost that no row holds, on the
-// turn's last stored row (RowUsageAdder) and in the session's totals.
-// runConversationLoop's deferred exit calls it when the turn ends on an error
-// after such a call: a fold call, which writes no row, or a call whose row the
-// loop never reached. No row is added, so a host's role check never sees a new
-// role. The turn's user row is stored at its start, so a stored turn always
-// has a last row. The write keeps the turn's values (the caller's identity for
-// the store's row security) but not its cancellation, because the turn can end
-// when its context does.
-//
-// The session's totals get u in every case: they say what the session cost.
-// The stored row and the in-memory copy of it get u only when the store took
-// it. When it did not (no store, no stored row this turn, a store without
-// RowUsageAdder, a failed write), that amount is on no row; the loop span's
-// turn.unbilled_cost event says stored=false and why. A failed write logs at
-// error level, a store without the operation logs once.
-func (a *Agent) billOnLastRow(ctx context.Context, session *Session, u Usage, span *observability.Span) {
-	if session == nil {
-		return
-	}
+// storeOnLastRow adds u to the turn's last stored row (RowUsageAdder) and
+// reports whether the store took it, and why not when it did not: no store,
+// no stored row in this turn, a store without RowUsageAdder, or a failed
+// write. It returns that row. billOnLastRow and moveRefusedRowCost call it.
+// The turn's user row is stored at its start, so a stored turn always has a
+// last row. The write keeps the turn's values (the caller's identity for the
+// store's row security) but not its cancellation, because the turn can end
+// when its context does. A failed write logs at error level, a store without
+// the operation logs once.
+func (a *Agent) storeOnLastRow(ctx context.Context, session *Session, u Usage, span *observability.Span) (Message, bool, string) {
 	turn := sessionCurrentTurn(session)
 	last, found := session.FindMessage(func(m Message) bool {
 		seq, err := strconv.ParseInt(m.ID, 10, 64)
 		return m.Turn == turn && err == nil && seq > 0
 	})
-	stored, reason := false, ""
 	switch {
 	case a.memory == nil || !a.memory.HasStore():
-		reason = "no store"
+		return last, false, "no store"
 	case !found:
-		reason = "no stored row in this turn"
-	default:
-		seq, _ := strconv.ParseInt(last.ID, 10, 64)
-		wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), unbilledWriteTimeout)
-		err := a.memory.addRowUsage(wctx, session.ID, seq, u)
-		cancel()
-		switch {
-		case errors.Is(err, errNoRowUsageAdder):
-			reason = "the store cannot add usage to a row"
-			warnOnce("RowUsageAdder", "the store has no RowUsageAdder; a turn that ends on an error loses the cost of its unwritten calls from the stored rows",
-				zap.String("session_id", session.ID))
-		case err != nil:
-			reason = "the store write failed"
-			zap.L().Error("the turn ended on an error; the cost of its unwritten calls is on no row",
-				zap.String("session_id", session.ID),
-				zap.Int64("row", seq),
-				zap.Float64("cost_usd", u.CostUSD),
-				zap.Error(err))
-			if span != nil {
-				span.RecordError(err)
-			}
-		default:
-			stored = true
-		}
+		return last, false, "no stored row in this turn"
 	}
+	seq, _ := strconv.ParseInt(last.ID, 10, 64)
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), unbilledWriteTimeout)
+	defer cancel()
+	err := a.memory.addRowUsage(wctx, session.ID, seq, u)
+	switch {
+	case errors.Is(err, errNoRowUsageAdder):
+		warnOnce("RowUsageAdder", "the store has no RowUsageAdder; the cost of a call whose row is not stored is lost from the stored rows",
+			zap.String("session_id", session.ID))
+		return last, false, "the store cannot add usage to a row"
+	case err != nil:
+		zap.L().Error("the cost of a call whose row is not stored is on no row",
+			zap.String("session_id", session.ID),
+			zap.Int64("row", seq),
+			zap.Float64("cost_usd", u.CostUSD),
+			zap.Error(err))
+		if span != nil {
+			span.RecordError(err)
+		}
+		return last, false, "the store write failed"
+	}
+	return last, true, ""
+}
+
+// billOnLastRow puts u, what the turn's calls cost that no row holds, on the
+// turn's last stored row (storeOnLastRow) and in the session's totals.
+// runConversationLoop's deferred exit calls it when the turn ends on an error
+// after such a call: a fold call, which writes no row, or a call whose row the
+// loop never reached. No row is added, so a host's role check never sees a new
+// role.
+//
+// The session's totals get u in every case: they say what the session cost.
+// The in-memory copy of the row gets u only when the store took it. When it
+// did not, that amount is on no stored row; the loop span's
+// turn.unbilled_cost event says stored=false and why.
+func (a *Agent) billOnLastRow(ctx context.Context, session *Session, u Usage, span *observability.Span) {
+	if session == nil {
+		return
+	}
+	last, stored, reason := a.storeOnLastRow(ctx, session, u, span)
 	id := ""
 	if stored {
 		id = last.ID
@@ -2467,6 +2475,25 @@ func (a *Agent) billOnLastRow(ctx context.Context, session *Session, u Usage, sp
 	if span != nil {
 		span.SetAttribute("turn.unbilled_cost_stored", stored)
 		span.AddEvent("turn.unbilled_cost", map[string]interface{}{
+			"cost_usd": u.CostUSD, "total_tokens": u.TotalTokens, "stored": stored, "reason": reason})
+	}
+}
+
+// moveRefusedRowCost is the answer to a billed row that the store refused:
+// the row is in memory, and the session's total already counts its cost
+// (Session.AddMessage), but no stored row holds it. The cost u goes on the
+// turn's last stored row (storeOnLastRow) at once, so the stored rows and the
+// session's total count each call once. The conversation loop calls it for a
+// tool-calling row, and chat, ResumeChat and ResumeSession for the final row.
+// The span (when given) gets a turn.refused_row_cost event that says whether
+// the amount was stored.
+func (a *Agent) moveRefusedRowCost(ctx context.Context, session *Session, u Usage, span *observability.Span) {
+	if session == nil || u == (Usage{}) {
+		return
+	}
+	_, stored, reason := a.storeOnLastRow(ctx, session, u, span)
+	if span != nil {
+		span.AddEvent("turn.refused_row_cost", map[string]interface{}{
 			"cost_usd": u.CostUSD, "total_tokens": u.TotalTokens, "stored": stored, "reason": reason})
 	}
 }
@@ -3611,10 +3638,12 @@ func (a *Agent) runConversationLoop(ctx Context) (_ *Response, retErr error) {
 			Effort:              row.Effort,
 			Timestamp:           time.Now(),
 		}, false)
-		// The row holds this call's cost and what it carried. A row the store
-		// did not take leaves the amount for the next row.
-		if assistantPersisted {
-			unbilled = Usage{}
+		// The row holds this call's cost and what it carried, in memory and
+		// in the session's total. A row the store refused moves that cost to
+		// the turn's last stored row now, so it is counted once.
+		unbilled = Usage{}
+		if !assistantPersisted {
+			a.moveRefusedRowCost(ctx, session, row, span)
 		}
 
 		// HITL park pre-scan (park.go): with park enabled and the batch's
