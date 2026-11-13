@@ -432,3 +432,19 @@ func TestATurnThatLostItsLeaseDoesNotOverwriteTheNewHolder(t *testing.T) {
 	}
 	assert.True(t, skipped, "no span says that the session write was skipped for the lost lease")
 }
+
+// persistAfterFailure checks the lease and then writes, and the write drops
+// the turn's cancellation. That gap is safe only because the write ends
+// before another process can acquire the lease: holdSessionLease cancels the
+// turn at most ttl - ttl/3 after the last renewal that held, and the lease
+// lasts ttl from then, so ttl/3 is left for a write that passed the check.
+// This test pins that bound, which the comment at the check states, so a
+// change to either figure that breaks it fails here.
+func TestPersistAfterFailureWriteEndsBeforeTheLeaseCanExpire(t *testing.T) {
+	t.Parallel()
+	ttl := eventlog.DefaultSessionLeaseTTL
+	cancelBy := ttl - ttl/3 // margin in holdSessionLease
+	leftAfterCancel := ttl - cancelBy
+	assert.Less(t, unbilledWriteTimeout, leftAfterCancel,
+		"the session write after a failed turn can outlast the lease after the cancel, so a new holder could already own the session")
+}

@@ -2525,6 +2525,20 @@ func (a *Agent) persistAfterFailure(ctx context.Context, session *Session, span 
 	if a.memory == nil || session == nil {
 		return
 	}
+	// The check and the write are not atomic: the renewal goroutine can
+	// cancel ctx after this check, and the write below then still goes out,
+	// because it drops ctx's cancellation. A time bound makes that gap safe.
+	// holdSessionLease cancels ctx no later than margin = ttl - ttl/3 after
+	// the start of the last renewal that held, and the store keeps the lease
+	// until at least ttl after that start, so another process cannot acquire
+	// it for ttl/3 after the cancel (40 s at eventlog.DefaultSessionLeaseTTL,
+	// 2 min). A write that passes this check starts before the cancel and is
+	// bounded by unbilledWriteTimeout (5 s), so it ends while this process
+	// still holds the lease. A test pins unbilledWriteTimeout <
+	// DefaultSessionLeaseTTL/3:
+	// TestPersistAfterFailureWriteEndsBeforeTheLeaseCanExpire. The bound
+	// assumes that the process is not suspended between the check and the
+	// write; a stall longer than ttl/3 breaks every lease, not only this one.
 	if leaseErr := sessionLeaseLost(ctx); leaseErr != nil {
 		zap.L().Warn("the turn lost its session lease; the session is not persisted, so the new holder's row stays",
 			zap.String("session_id", session.ID), zap.Error(leaseErr))
