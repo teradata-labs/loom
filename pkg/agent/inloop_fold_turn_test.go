@@ -126,6 +126,14 @@ func foldingAgent(t *testing.T, model *foldingStream) (*Agent, *SessionStore) {
 // agent is built, for a test that needs another turn cap.
 func foldingAgentWith(t *testing.T, model *foldingStream, edit func(*Config)) (*Agent, *SessionStore) {
 	t.Helper()
+	return foldingAgentOn(t, model, edit, nil)
+}
+
+// foldingAgentOn is foldingAgentWith on the store that wrap makes of the
+// SQLite store (nil: the SQLite store itself), for a test that needs a host's
+// store. The SQLite store is returned for reading the rows.
+func foldingAgentOn(t *testing.T, model *foldingStream, edit func(*Config), wrap func(*SessionStore) SessionStorage) (*Agent, *SessionStore) {
+	t.Helper()
 	store, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
@@ -140,7 +148,11 @@ func foldingAgentWith(t *testing.T, model *foldingStream, edit func(*Config)) (*
 	if edit != nil {
 		edit(cfg)
 	}
-	ag := NewAgent(&mockBackend{}, model, WithConfig(cfg), WithMemory(NewMemoryWithStore(store)))
+	var host SessionStorage = store
+	if wrap != nil {
+		host = wrap(store)
+	}
+	ag := NewAgent(&mockBackend{}, model, WithConfig(cfg), WithMemory(NewMemoryWithStore(host)))
 	ag.RegisterTool(&shuttle.MockTool{
 		MockName: "step",
 		MockExecute: func(context.Context, map[string]interface{}) (*shuttle.Result, error) {
@@ -149,6 +161,24 @@ func foldingAgentWith(t *testing.T, model *foldingStream, edit func(*Config)) (*
 	})
 	return ag, store
 }
+
+// roleCheckStore is the SQLite store behind a host's role check: SaveMessage
+// refuses a role outside the set the host's schema admits. The set is Tera's
+// session_messages_role_check. The embedded store keeps its optional
+// operations (RowUsageAdder, CostStorage).
+type roleCheckStore struct{ *SessionStore }
+
+func (s roleCheckStore) SaveMessage(ctx context.Context, sessionID string, msg *Message, turnStart bool) error {
+	switch msg.Role {
+	case "user", "assistant", "system", "tool", roleSkillBody, roleHygieneInjection, roleEmptyResponseRetry, roleSynthesisPrompt:
+		return s.SessionStore.SaveMessage(ctx, sessionID, msg, turnStart)
+	}
+	return fmt.Errorf("new row violates check constraint \"session_messages_role_check\": role %q", msg.Role)
+}
+
+// basicStore is a store with only the SessionStorage operations: no optional
+// operation is visible through it, as with a host that implements none.
+type basicStore struct{ SessionStorage }
 
 // A turn long enough to fold: the fold's summary is the harness's and never
 // reaches the client's progress stream, and what the fold calls cost is on the
@@ -213,19 +243,32 @@ func TestInloopFold_AFoldOnTheLastLoopPassIsBilled(t *testing.T) {
 // the next row carries it and the fold cost before it.
 func TestInloopFold_ACallAfterAFoldThatWritesNoRowLosesNoCost(t *testing.T) {
 	t.Parallel()
+	roleCheck := func(s *SessionStore) SessionStorage { return roleCheckStore{s} }
+	basic := func(s *SessionStore) SessionStorage { return basicStore{s} }
 	tests := []struct {
 		name    string
 		model   *foldingStream
+		wrap    func(*SessionStore) SessionStorage
 		wantErr bool
+		// stored is whether the store holds what the failed turn left
+		// unbilled: it has no row of its own, so it goes on the turn's last
+		// row, through RowUsageAdder.
+		stored bool
 	}{
-		{name: "the call after the fold fails", model: &foldingStream{steps: 24, failAfterFold: true}, wantErr: true},
-		{name: "the call after the fold is empty", model: &foldingStream{steps: 24, emptyAfterFold: true}},
+		{name: "the call after the fold fails", model: &foldingStream{steps: 24, failAfterFold: true}, wantErr: true, stored: true},
+		{name: "the call after the fold fails, on a store that checks roles", model: &foldingStream{steps: 24, failAfterFold: true}, wrap: roleCheck, wantErr: true, stored: true},
+		{name: "the call after the fold fails, on a store that cannot add usage", model: &foldingStream{steps: 24, failAfterFold: true}, wrap: basic, wantErr: true},
+		{name: "the call after the fold is empty", model: &foldingStream{steps: 24, emptyAfterFold: true}, stored: true},
+		{name: "the call after the fold is empty, on a store that checks roles", model: &foldingStream{steps: 24, emptyAfterFold: true}, wrap: roleCheck, stored: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
 			// No retry: the failed call ends the turn at once.
-			ag, store := foldingAgentWith(t, tc.model, func(c *Config) { c.Retry.Enabled = false })
-			resp, err := ag.Chat(context.Background(), "s-after-fold", "do the long job")
+			ag, store := foldingAgentOn(t, tc.model, func(c *Config) { c.Retry.Enabled = false }, tc.wrap)
+			tracer := observability.NewMockTracer()
+			ag.tracer = tracer
+			resp, err := ag.Chat(ctx, "s-after-fold", "do the long job")
 			require.Positive(t, tc.model.folds, "the turn never folded; the test does not reach the case")
 			billed := 0
 			for i := range tc.model.foldAt {
@@ -233,8 +276,10 @@ func TestInloopFold_ACallAfterAFoldThatWritesNoRowLosesNoCost(t *testing.T) {
 					billed++
 				}
 			}
-			rows, rerr := store.SessionCost(context.Background(), "s-after-fold")
+			rows, rerr := store.SessionCost(ctx, "s-after-fold")
 			require.NoError(t, rerr)
+			sess, ok := ag.memory.GetSession("s-after-fold")
+			require.True(t, ok)
 			if tc.wantErr {
 				require.Error(t, err, "the failed call did not end the turn")
 			} else {
@@ -242,7 +287,33 @@ func TestInloopFold_ACallAfterAFoldThatWritesNoRowLosesNoCost(t *testing.T) {
 				assert.InDelta(t, resp.TurnUsage.CostUSD, rows, 1e-9, "the rows do not sum to what the turn spent")
 				assert.InDelta(t, callCost, resp.Usage.CostUSD, 1e-9, "Usage is not the final call's own")
 			}
-			assert.InDelta(t, float64(billed)*callCost, rows, 1e-9, "a call the model billed is on no row")
+			assert.InDelta(t, float64(billed)*callCost, sess.TotalCostUSD, 1e-9, "the session's total is not what the provider billed")
+			if tc.stored {
+				assert.InDelta(t, float64(billed)*callCost, rows, 1e-9, "a call the model billed is on no row")
+			} else {
+				// A store without RowUsageAdder loses only the unbilled
+				// amount: the fold call before the failure.
+				assert.InDelta(t, float64(billed-1)*callCost, rows, 1e-9, "the store lost more than the unbilled amount")
+			}
+
+			// Every stored row has a role the host admits: no row is added.
+			all, lerr := store.ListMessagesBySeqRange(ctx, "s-after-fold", 1, math.MaxInt64)
+			require.NoError(t, lerr)
+			for _, m := range all {
+				assert.Contains(t, []string{"user", "assistant", "tool", roleEmptyResponseRetry}, m.Role, "a row with a role a host does not admit was stored")
+			}
+
+			if tc.wantErr {
+				loops := tracer.GetSpansByName("agent.conversation_loop")
+				require.Len(t, loops, 1)
+				var seen []interface{}
+				for _, e := range loops[0].Events {
+					if e.Name == "turn.unbilled_cost" {
+						seen = append(seen, e.Attributes["stored"])
+					}
+				}
+				assert.Equal(t, []interface{}{tc.stored}, seen, "the loop span does not say whether the unbilled cost was stored")
+			}
 		})
 	}
 }

@@ -470,6 +470,33 @@ func (s *Session) AddMessage(ctx context.Context, msg Message) {
 	s.TotalTokens += msg.TokenCount
 }
 
+// AddRowUsage adds u to the session's totals (TotalCostUSD, TotalTokens) and
+// to the message with ID messageID in the flat list, when one has it. The
+// agent calls it when a turn ends on an error after calls that the provider
+// billed but no message holds: their cost goes on the turn's last stored row
+// (agent.RowUsageAdder), and the session must report the same figure. The
+// message gets the figures a carried row gets: cost, TokenCount (TotalTokens),
+// output and thinking tokens. An empty messageID changes only the totals.
+func (s *Session) AddRowUsage(messageID string, u Usage) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.TotalCostUSD += u.CostUSD
+	s.TotalTokens += u.TotalTokens
+	if messageID == "" {
+		return
+	}
+	for i := len(s.Messages) - 1; i >= 0; i-- {
+		if s.Messages[i].ID == messageID {
+			m := &s.Messages[i]
+			m.CostUSD += u.CostUSD
+			m.TokenCount += u.TotalTokens
+			m.OutputTokens += u.OutputTokens
+			m.ThinkingTokens += u.ThinkingTokens
+			return
+		}
+	}
+}
+
 // GetMessages returns a copy of the conversation history.
 // If SegmentedMem is configured, returns the optimized context window (ROM + Kernel + L1 + L2).
 // Otherwise returns the flat message list.

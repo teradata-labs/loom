@@ -107,6 +107,21 @@ type ResultRewriter interface {
 	RewriteToolResults(ctx context.Context, sessionID string, seqs []int64, content string) error
 }
 
+// RowUsageAdder is the optional operation a store offers to add what LLM
+// calls cost to a row it already holds. It exists for one case: a turn that
+// ends on an error after calls that the provider billed but no row holds yet
+// (a fold call, which writes no row; a reply the loop asked again for). The
+// agent then adds their cost to the turn's last stored row, so the session's
+// rows still sum to what the provider billed and no new row is written. It
+// adds the figures a carried row gets (carryFoldCost): cost_usd, token_count
+// (TotalTokens), output_tokens and thinking_tokens; the input figures stay the
+// row's own. loom's SQLite and Postgres stores implement it; a row the caller
+// does not own is left unchanged and is an error. A store without it loses
+// that amount from its rows, and the agent logs that once.
+type RowUsageAdder interface {
+	AddRowUsage(ctx context.Context, sessionID string, seq int64, u Usage) error
+}
+
 // SoftDeleteStorage defines optional soft-delete operations.
 // Not all backends support soft-delete (SQLite does hard delete).
 // Use type assertion to check if a SessionStorage supports soft-delete:

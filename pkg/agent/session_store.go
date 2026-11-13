@@ -1721,6 +1721,35 @@ func (s *SessionStore) RewriteToolResults(ctx context.Context, sessionID string,
 	return nil
 }
 
+var _ RowUsageAdder = (*SessionStore)(nil)
+
+// AddRowUsage implements RowUsageAdder: the row seq of an owned session gets
+// u's cost, total, output and thinking tokens added, in one statement. A row
+// that is not there is an error, so the caller knows the amount is on no row.
+func (s *SessionStore) AddRowUsage(ctx context.Context, sessionID string, seq int64, u Usage) error {
+	ctx, span := s.tracer.StartSpan(ctx, "session_store.add_row_usage")
+	defer s.tracer.EndSpan(span)
+	span.SetAttribute("session_id", sessionID)
+	if err := s.requireOwnedSession(ctx, sessionID); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE messages SET cost_usd = COALESCE(cost_usd, 0) + ?, token_count = COALESCE(token_count, 0) + ?,
+		 output_tokens = output_tokens + ?, thinking_tokens = thinking_tokens + ?
+		 WHERE session_id = ? AND id = ?`,
+		u.CostUSD, u.TotalTokens, u.OutputTokens, u.ThinkingTokens, sessionID, seq)
+	if err != nil {
+		span.RecordError(err)
+		return fmt.Errorf("failed to add usage to row %d: %w", seq, err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return fmt.Errorf("add usage: row %d of session %s not found", seq, sessionID)
+	}
+	return nil
+}
+
 // seqUpdateQuery builds "prefix (?, ?, …)" with sessionID + seqs as args.
 func seqUpdateQuery(prefix, sessionID string, seqs []int64) (string, []interface{}) {
 	placeholders := make([]string, len(seqs))

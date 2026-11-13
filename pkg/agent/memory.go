@@ -16,6 +16,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"strconv"
 	"strings"
@@ -569,6 +570,22 @@ func (m *Memory) reFireOnRestore(sessionID string, messages []Message,
 			zap.Int("turn", ctxDebug.turn(sessionID)),
 			zap.Int("loads_reactivated", loadsReactivated))
 	}
+}
+
+// errNoRowUsageAdder is addRowUsage's answer for a store without
+// RowUsageAdder.
+var errNoRowUsageAdder = errors.New("the store cannot add usage to a row: it has no RowUsageAdder")
+
+// addRowUsage adds u to row seq of the session through the store's
+// RowUsageAdder. Agent.billOnLastRow calls it when a turn ends on an error
+// with cost that no row holds. A store without the operation answers
+// errNoRowUsageAdder.
+func (m *Memory) addRowUsage(ctx context.Context, sessionID string, seq int64, u Usage) error {
+	adder, ok := m.store.(RowUsageAdder)
+	if !ok {
+		return errNoRowUsageAdder
+	}
+	return adder.AddRowUsage(ctx, sessionID, seq, u)
 }
 
 // dropFoldedCalls removes, from the assistant rows of a session read from the

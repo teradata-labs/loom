@@ -898,6 +898,36 @@ func (s *SessionStore) RewriteToolResults(ctx context.Context, sessionID string,
 	return nil
 }
 
+var _ agent.RowUsageAdder = (*SessionStore)(nil)
+
+// AddRowUsage implements agent.RowUsageAdder: the row seq of the caller's own
+// session gets u's cost, total, output and thinking tokens added. Owner-scoped
+// by user_id in the query, with RLS as the second fence. A row that is not
+// there, or not the caller's, is an error.
+func (s *SessionStore) AddRowUsage(ctx context.Context, sessionID string, seq int64, u agent.Usage) error {
+	ctx, span := s.tracer.StartSpan(ctx, "pg_session_store.add_row_usage")
+	defer s.tracer.EndSpan(span)
+	span.SetAttribute("session_id", sessionID)
+	var affected int64
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
+			`UPDATE messages SET cost_usd = COALESCE(cost_usd, 0) + $1, token_count = COALESCE(token_count, 0) + $2,
+			 output_tokens = output_tokens + $3, thinking_tokens = thinking_tokens + $4
+			 WHERE session_id = $5 AND user_id = $6 AND id = $7`,
+			u.CostUSD, u.TotalTokens, u.OutputTokens, u.ThinkingTokens, sessionID, UserIDFromContext(ctx), seq)
+		affected = tag.RowsAffected()
+		return err
+	})
+	if err != nil {
+		span.RecordError(err)
+		return fmt.Errorf("failed to add usage to row %d: %w", seq, err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("add usage: row %d of session %s not found", seq, sessionID)
+	}
+	return nil
+}
+
 var _ agent.CostStorage = (*SessionStore)(nil)
 
 // SessionCost implements agent.CostStorage: the sum of cost_usd over every

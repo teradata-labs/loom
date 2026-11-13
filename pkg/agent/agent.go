@@ -2400,63 +2400,74 @@ func (a *Agent) recordConversationMetrics(sessionID string, response *Response, 
 	})
 }
 
-// roleBilling is the role of a ledger row: a row that holds only what LLM
-// calls cost, written when a turn ends before any row holds that cost
-// (billUnwritten). It is stored folded, so no read of the session returns it
-// and the model never sees it.
-const roleBilling = "billing"
-
-// billUnwrittenTimeout bounds the ledger write of billUnwritten, which runs
+// unbilledWriteTimeout bounds the store write of billOnLastRow, which runs
 // after the turn's own context may have ended.
-const billUnwrittenTimeout = 5 * time.Second
+const unbilledWriteTimeout = 5 * time.Second
 
-// billUnwritten writes a ledger row (roleBilling) for u, what the turn's calls
-// cost that no row holds. runConversationLoop's deferred exit calls it when the
-// turn ends on an error after such a call: a fold call, which writes no row,
-// or a call whose row the loop never reached. CostStorage.SessionCost sums
-// every row, folded rows too, so the session's cost stays what the provider
-// billed. The write keeps the turn's values (the caller's identity for the
-// store's row security) but not its cancellation, because the turn can end
-// when its context does. A failed write is logged and recorded on span; the
-// caller still returns the turn's own error.
-func (a *Agent) billUnwritten(ctx context.Context, session *Session, u Usage, span *observability.Span) {
-	if a.memory == nil || session == nil {
+// billOnLastRow puts u, what the turn's calls cost that no row holds, on the
+// turn's last stored row (RowUsageAdder) and in the session's totals.
+// runConversationLoop's deferred exit calls it when the turn ends on an error
+// after such a call: a fold call, which writes no row, or a call whose row the
+// loop never reached. No row is added, so a host's role check never sees a new
+// role. The turn's user row is stored at its start, so a stored turn always
+// has a last row. The write keeps the turn's values (the caller's identity for
+// the store's row security) but not its cancellation, because the turn can end
+// when its context does.
+//
+// The session's totals get u in every case: they say what the session cost.
+// The stored row and the in-memory copy of it get u only when the store took
+// it. When it did not (no store, no stored row this turn, a store without
+// RowUsageAdder, a failed write), that amount is on no row; the loop span's
+// turn.unbilled_cost event says stored=false and why. A failed write logs at
+// error level, a store without the operation logs once.
+func (a *Agent) billOnLastRow(ctx context.Context, session *Session, u Usage, span *observability.Span) {
+	if session == nil {
 		return
 	}
-	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), billUnwrittenTimeout)
-	defer cancel()
-	msg := Message{
-		Role:                roleBilling,
-		Folded:              true,
-		AgentID:             a.GetID(),
-		Model:               a.GetLLMModel(),
-		Timestamp:           time.Now(),
-		TokenCount:          u.TotalTokens,
-		CostUSD:             u.CostUSD,
-		InputTokens:         u.InputTokens,
-		OutputTokens:        u.OutputTokens,
-		CacheReadTokens:     u.CacheReadInputTokens,
-		CacheCreateTokens:   u.CacheCreationInputTokens,
-		CacheCreate1hTokens: u.CacheCreation1hInputTokens,
-		CacheCreate5mTokens: u.CacheCreation5mInputTokens,
-		ThinkingTokens:      u.ThinkingTokens,
-		Effort:              u.Effort,
-	}
-	if at, ok := occurredAtFromContext(ctx); ok {
-		msg.Timestamp = at
-	}
-	if err := a.memory.PersistMessage(wctx, session.ID, &msg, false); err != nil {
-		zap.L().Error("the turn ended on an error; the cost of its unwritten calls is on no row",
-			zap.String("session_id", session.ID),
-			zap.Float64("cost_usd", u.CostUSD),
-			zap.Error(err))
-		if span != nil {
-			span.RecordError(err)
+	turn := sessionCurrentTurn(session)
+	last, found := session.FindMessage(func(m Message) bool {
+		seq, err := strconv.ParseInt(m.ID, 10, 64)
+		return m.Turn == turn && err == nil && seq > 0
+	})
+	stored, reason := false, ""
+	switch {
+	case a.memory == nil || !a.memory.HasStore():
+		reason = "no store"
+	case !found:
+		reason = "no stored row in this turn"
+	default:
+		seq, _ := strconv.ParseInt(last.ID, 10, 64)
+		wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), unbilledWriteTimeout)
+		err := a.memory.addRowUsage(wctx, session.ID, seq, u)
+		cancel()
+		switch {
+		case errors.Is(err, errNoRowUsageAdder):
+			reason = "the store cannot add usage to a row"
+			warnOnce("RowUsageAdder", "the store has no RowUsageAdder; a turn that ends on an error loses the cost of its unwritten calls from the stored rows",
+				zap.String("session_id", session.ID))
+		case err != nil:
+			reason = "the store write failed"
+			zap.L().Error("the turn ended on an error; the cost of its unwritten calls is on no row",
+				zap.String("session_id", session.ID),
+				zap.Int64("row", seq),
+				zap.Float64("cost_usd", u.CostUSD),
+				zap.Error(err))
+			if span != nil {
+				span.RecordError(err)
+			}
+		default:
+			stored = true
 		}
-		return
 	}
+	id := ""
+	if stored {
+		id = last.ID
+	}
+	session.AddRowUsage(id, u)
 	if span != nil {
-		span.AddEvent("turn.unwritten_calls_billed", map[string]interface{}{"cost_usd": u.CostUSD, "total_tokens": u.TotalTokens})
+		span.SetAttribute("turn.unbilled_cost_stored", stored)
+		span.AddEvent("turn.unbilled_cost", map[string]interface{}{
+			"cost_usd": u.CostUSD, "total_tokens": u.TotalTokens, "stored": stored, "reason": reason})
 	}
 }
 
@@ -2879,11 +2890,11 @@ func (a *Agent) runConversationLoop(ctx Context) (_ *Response, retErr error) {
 	// calls, which write none, and a reply the loop asks again for. The next
 	// row the loop writes carries it, so the session's rows sum to what the
 	// turn spent. A turn that ends on an error writes no more rows, so the
-	// amount goes on a ledger row of its own (billUnwritten).
+	// amount goes on the turn's last stored row (billOnLastRow).
 	var unbilled Usage
 	defer func() {
 		if retErr != nil && unbilled != (Usage{}) {
-			a.billUnwritten(ctx, session, unbilled, span)
+			a.billOnLastRow(ctx, session, unbilled, span)
 		}
 	}()
 

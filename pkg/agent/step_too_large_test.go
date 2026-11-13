@@ -497,3 +497,38 @@ func TestTheStepCountIsWhatItSaysItIs(t *testing.T) {
 	assert.Equal(t, cheap, sm.StepSendCount(0, cheap, 1), "a cheap count equal to the ceiling fits and is returned")
 	assert.Equal(t, exact, sm.StepSendCount(0, cheap-1, 1), "a cheap count over the ceiling is counted with the tokenizer")
 }
+
+// AddRowUsage adds the cost and the carried token figures to one owned row,
+// and the session's cost follows. Another owner's call changes nothing, and a
+// row that is not there is an error, so the caller knows the amount is lost.
+func TestAddRowUsageIsTheOwners(t *testing.T) {
+	t.Parallel()
+	store, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
+	require.NoError(t, err)
+	defer func() { _ = store.Close() }()
+	var adder RowUsageAdder = store
+	ann := llmtypes.ContextWithUserID(context.Background(), "ann")
+	require.NoError(t, store.SaveSession(ann, &Session{ID: "s-add"}))
+	user := Message{Role: "user", Content: "q", CostUSD: 0, InputTokens: 3}
+	require.NoError(t, store.SaveMessage(ann, "s-add", &user, true))
+	var seq int64
+	_, _ = fmt.Sscan(user.ID, &seq)
+	require.Positive(t, seq)
+	u := Usage{CostUSD: 0.25, TotalTokens: 110, InputTokens: 100, OutputTokens: 10, ThinkingTokens: 4}
+
+	bob := llmtypes.ContextWithUserID(context.Background(), "bob")
+	assert.Error(t, adder.AddRowUsage(bob, "s-add", seq, u), "another owner added usage")
+	assert.Error(t, adder.AddRowUsage(ann, "s-add", seq+100, u), "a missing row took the usage")
+
+	require.NoError(t, adder.AddRowUsage(ann, "s-add", seq, u))
+	cost, err := store.SessionCost(ann, "s-add")
+	require.NoError(t, err)
+	assert.InDelta(t, 0.25, cost, 1e-9, "the session cost does not hold the added usage")
+	msgs, err := store.LoadMessages(ann, "s-add")
+	require.NoError(t, err)
+	require.Len(t, msgs, 1)
+	assert.Equal(t, 110, msgs[0].TokenCount)
+	assert.Equal(t, 10, msgs[0].OutputTokens)
+	assert.Equal(t, 4, msgs[0].ThinkingTokens)
+	assert.Equal(t, 3, msgs[0].InputTokens, "the row's input figure is its own prompt, not the added call's")
+}

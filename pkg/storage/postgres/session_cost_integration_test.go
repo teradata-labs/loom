@@ -97,3 +97,37 @@ func TestRewriteToolResults_IsTheOwners(t *testing.T) {
 	require.Equal(t, "the note", msgs[2].Content)
 	require.Equal(t, "q", msgs[0].Content, "a row that is not a tool result was rewritten")
 }
+
+// AddRowUsage adds the cost and the carried token figures to the owner's row
+// only, and the session's cost follows. A row that is not there, or is
+// another owner's, is an error.
+func TestAddRowUsage_IsTheOwners(t *testing.T) {
+	pool := testPool(t)
+	store := testSessionStore(t, pool)
+	var adder agent.RowUsageAdder = store
+
+	owner := uniqueID("user-add")
+	sessionID := createTestSession(t, store, owner, uniqueID("sess-add"), "add-agent")
+	ctx := ContextWithUserID(context.Background(), owner)
+	user := agent.Message{Role: "user", Content: "q", InputTokens: 3}
+	require.NoError(t, store.SaveMessage(ctx, sessionID, &user, true))
+	seq, err := strconv.ParseInt(user.ID, 10, 64)
+	require.NoError(t, err)
+	u := agent.Usage{CostUSD: 0.25, TotalTokens: 110, InputTokens: 100, OutputTokens: 10, ThinkingTokens: 4}
+
+	other := ContextWithUserID(context.Background(), uniqueID("user-other"))
+	require.Error(t, adder.AddRowUsage(other, sessionID, seq, u), "another owner added usage")
+	require.Error(t, adder.AddRowUsage(ctx, sessionID, seq+100000, u), "a missing row took the usage")
+
+	require.NoError(t, adder.AddRowUsage(ctx, sessionID, seq, u))
+	usd, err := store.SessionCost(ctx, sessionID)
+	require.NoError(t, err)
+	require.InDelta(t, 0.25, usd, 1e-9, "the session cost does not hold the added usage")
+	msgs, err := store.LoadMessages(ctx, sessionID)
+	require.NoError(t, err)
+	require.Len(t, msgs, 1)
+	require.Equal(t, 110, msgs[0].TokenCount)
+	require.Equal(t, 10, msgs[0].OutputTokens)
+	require.Equal(t, 4, msgs[0].ThinkingTokens)
+	require.Equal(t, 3, msgs[0].InputTokens, "the row's input figure is its own prompt, not the added call's")
+}
