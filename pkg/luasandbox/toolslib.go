@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 
@@ -109,7 +110,11 @@ func (s *run) invokeTool(t *rt.Thread, c *rt.GoCont, fn string) (rt.Value, *Call
 
 // turn.result(tool_use_id | message_id) -> same shape as tools.call. A string
 // is the tool_use_id a cut result's tail names (ToolUseResultHost); an integer
-// is a message id, for a host that shows one.
+// is a message id, for a host that shows one. An all-digit string can be
+// either: a host that sends ids as JSON strings gives a message id that way,
+// and that read worked before turn.result took tool_use_ids. It is read as a
+// tool_use_id first, and as a message id when no call has that id (NOT_FOUND)
+// or the host cannot read by tool_use_id. Either way it is one budgeted call.
 func (s *run) turnResult(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 	if err := c.Check1Arg(); err != nil {
 		return nil, err
@@ -119,12 +124,19 @@ func (s *run) turnResult(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 		if useID == "" || len(useID) > maxToolUseIDLen {
 			return nil, fmt.Errorf("turn.result: bad argument #1 (expected a tool_use_id of 1 to %d bytes)", maxToolUseIDLen)
 		}
+		messageID, numeric := digitMessageID(useID)
 		byUse, ok := s.host.(ToolUseResultHost)
-		if !ok {
+		if !ok && !numeric {
 			return nil, errors.New("turn.result: this host reads results by message id only")
 		}
 		v, _, err := s.hostCall(t, "turn.result", func(ctx context.Context) (*CallResult, error) {
-			return byUse.TurnResultByToolUseID(ctx, useID)
+			if ok {
+				r, err := byUse.TurnResultByToolUseID(ctx, useID)
+				if err != nil || !numeric || r == nil || r.OK || r.Error == nil || r.Error.Code != "NOT_FOUND" {
+					return r, err
+				}
+			}
+			return s.host.TurnResult(ctx, messageID)
 		})
 		if err != nil {
 			return nil, err
@@ -142,6 +154,18 @@ func (s *run) turnResult(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 		return nil, err
 	}
 	return c.PushingNext1(t.Runtime, v), nil
+}
+
+// digitMessageID reads s as a message id when it is all ASCII digits and a
+// positive int64. turnResult calls it for a string argument.
+func digitMessageID(s string) (int64, bool) {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return 0, false
+		}
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	return n, err == nil && n > 0
 }
 
 // hostCall runs one budgeted nested call. It is the only place nested calls

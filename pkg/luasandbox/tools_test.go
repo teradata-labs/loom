@@ -232,6 +232,36 @@ func TestTurnResultByToolUseID(t *testing.T) {
 	}
 }
 
+// A message id given as a string ("42", as a host that sends ids as JSON
+// strings gives it) still reads message 42, as it did when turn.result took
+// only message ids. An all-digit string is tried as a tool_use_id first,
+// then as a message id when no call has that id.
+func TestTurnResultTakesAMessageIDGivenAsAString(t *testing.T) {
+	h := newFakeHost()
+	h.turn[42] = &CallResult{OK: true, Data: "by message id"}
+	h.turnUse["7"] = &CallResult{OK: true, Data: "by tool_use_id"}
+	h.turn[7] = &CallResult{OK: true, Data: "message 7"}
+	tests := []struct {
+		name string
+		host Host
+		src  string
+		want any
+	}{
+		{"a digit string with no such call reads the message", h, `return turn.result("42").data`, "by message id"},
+		{"a digit string that is a call's id reads the call", h, `return turn.result("7").data`, "by tool_use_id"},
+		{"a host without tool_use_id reads the message", messageIDOnlyHost{h}, `return turn.result("42").data`, "by message id"},
+		{"a digit string that is neither is not found", h, `return turn.result("99").ok`, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			res := Run(context.Background(), Program{Source: tc.src}, small(), tc.host)
+			require.Equal(t, OutcomeOK, res.Outcome, res.Error)
+			assert.Equal(t, tc.want, res.Value, "turn.result read the wrong result")
+			assert.Len(t, res.Calls, 1, "one turn.result is one budgeted call")
+		})
+	}
+}
+
 func TestProgressEvents(t *testing.T) {
 	h := newFakeHost().with("echo", echo).with("bad", failing("E", "x"))
 	res := runSrc(t, `tools.call("echo") tools.call("bad") time.sleep(1)`, h)
