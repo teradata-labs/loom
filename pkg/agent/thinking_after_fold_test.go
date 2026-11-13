@@ -64,8 +64,17 @@ type thinkingProvider struct {
 	offBeforeFold int
 }
 
-func (p *thinkingProvider) Name() string  { return "anthropic" }
-func (p *thinkingProvider) Model() string { return "thinking-model" }
+func (p *thinkingProvider) Name() string { return "anthropic" }
+
+// Model names the form the fake answers in, as the provider clients decide it
+// (llm.IsAdaptiveThinkingModel). Neither name is in the catalog, so the
+// window figures stay the configured ones.
+func (p *thinkingProvider) Model() string {
+	if p.budgetForm {
+		return "thinking-model"
+	}
+	return "thinking-model-opus-5"
+}
 
 // pastFingerprint is what a thinking block is bound to: every message before
 // it, by role, text, tool calls and tool result id.
@@ -205,6 +214,12 @@ func TestThinkingBinding_ATurnThatFoldsIsAcceptedByTheProvider(t *testing.T) {
 				case "llm.thinking_suppressed":
 					assert.True(t, folded, "thinking was marked off before any fold")
 					assert.Equal(t, "fold", e.Attributes["reason"], "the event does not say why thinking is off")
+					wantForm := "adaptive"
+					if tt.budgetForm {
+						wantForm = "budget"
+					}
+					assert.Equal(t, wantForm, e.Attributes["form"], "the event does not say which thinking form the model uses")
+					assert.Equal(t, tt.budgetForm, e.Attributes["thinking_off"], "the event does not say whether thinking was really off")
 					suppressed++
 				}
 			}

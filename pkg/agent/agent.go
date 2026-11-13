@@ -2428,6 +2428,10 @@ func (a *Agent) storeOnLastRow(ctx context.Context, session *Session, u Usage, s
 	case a.memory == nil || !a.memory.HasStore():
 		return last, false, "no store"
 	case !found:
+		zap.L().Warn("the cost of a call whose row is not stored is on no row: this turn has no stored row",
+			zap.String("session_id", session.ID),
+			zap.Int64("turn", turn),
+			zap.Float64("cost_usd", u.CostUSD))
 		return last, false, "no stored row in this turn"
 	}
 	seq, _ := strconv.ParseInt(last.ID, 10, 64)
@@ -4465,9 +4469,17 @@ func (a *Agent) foldedTurnCtx(ctx Context, session *Session, messages []Message,
 	zap.L().Debug("thinking is off for this send: a fold this turn removed the thinking blocks of the rows it kept",
 		zap.String("session_id", session.ID))
 	if span != nil {
+		// The provider clients decide the form by the model id
+		// (llm.IsAdaptiveThinkingModel), and only the budget form reads the
+		// mark: an adaptive model keeps thinking.
+		form := "budget"
+		if llm.IsAdaptiveThinkingModel(a.GetLLMModel()) {
+			form = "adaptive"
+		}
 		span.AddEvent("llm.thinking_suppressed", map[string]interface{}{
-			"reason": "fold",
-			"note":   "only the enabled+budget thinking form reads the mark; an adaptive model keeps thinking",
+			"reason":       "fold",
+			"form":         form,
+			"thinking_off": form == "budget",
 		})
 	}
 	if ac, ok := ctx.(*agentContext); ok {
@@ -4546,7 +4558,7 @@ func (a *Agent) fitStepToWindow(ctx Context, session *Session, noteKey string, e
 	provider, model := a.GetLLMProviderName(), a.GetLLMModel()
 	// A model nothing lists, with no window configured, has no ceiling here:
 	// the memory's default window is loom's own figure, not the provider's,
-	// and the refusal path answers as it does on main.
+	// and the refusal path answers as it did before this change.
 	ceiling := ProviderPromptCeiling(provider, model, reserved, a.config.MaxContextTokens, a.config.MaxModelContextTokens)
 	count := segMem.StepSendCount(extraBytes, ceiling, unsampledStepCalibration(provider, model))
 	if ceiling <= 0 || count <= ceiling {
