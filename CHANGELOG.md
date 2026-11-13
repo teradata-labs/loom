@@ -146,6 +146,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+#### Message bus: subscription IDs no longer collide within one clock tick
+- **Two `MessageBus.Subscribe` calls by the same agent on the same topic always get distinct IDs.** IDs were built from the agent, the topic and `UnixNano` alone, so on Windows two subscriptions in one clock tick shared an ID: the second overwrote the first, and unsubscribing either closed the survivor's channel. IDs now end in a per-bus sequence number, as `MessageQueue` message IDs already do.
+- **The iterative pipeline's restart listener exits when the bus closes its channel.** It used to read the closed channel's nil message and panic.
+
 #### Orchestration: workflow cost counts whole agent turns and the executor's own calls
 - **`WorkflowResult.cost` now counts every call of each agent turn, not only the final call.** Each `AgentResult.cost` takes its tokens and USD from `agent.Response.TurnUsage` (the sum of the turn's calls: tool-loop iterations, empty-response and hygiene retries, final synthesis) instead of `Response.Usage` (the final call). `agent.Response` gains `TurnLLMCalls`, the number of calls `TurnUsage` sums; a scripted replay turn (`WithScriptedResponse`) counts 0. `AgentExecutionCost` gains `llm_calls = 7` (additive). `WorkflowCost.llm_calls` is now a count of calls, not of results; a result from a producer that predates `llm_calls` counts as one call.
 - **The calls an executor makes itself are added to the totals:** the fork-join and parallel LLM merge, pipeline stage validation, the swarm judge and the judge and vote retries, the conditional classifier and its retries, and pipeline and iterative stage attempts that a retry replaced or dropped.
