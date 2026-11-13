@@ -344,6 +344,20 @@ type MaxTokensReporter interface {
 	MaxTokens() int
 }
 
+// ThinkingSuppressionReporter is an optional interface a provider implements
+// to report what it does with a request marked by llm.ContextSuppressThinking.
+// Only a client that sends the enabled+budget thinking form reads the mark,
+// and only when thinking is on; an adaptive model and a provider that never
+// reads the mark keep doing what they did. The agent asks before it records
+// a send it marked (the llm.thinking_suppressed span event), so a trace says
+// thinking was off only when it really was. A provider that does not
+// implement it reads as "the mark changes nothing".
+type ThinkingSuppressionReporter interface {
+	// ThinkingOffWhenSuppressed reports whether a marked request goes out
+	// with thinking off.
+	ThinkingOffWhenSuppressed() bool
+}
+
 // TokenCallback is called for each token/chunk during streaming.
 // Implementations should be lightweight and non-blocking.
 type TokenCallback func(token string)

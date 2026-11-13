@@ -660,6 +660,15 @@ func mergeSystemMessages(msgs []ChatMessage) []ChatMessage {
 // the only upstream that consumes cache_control. The OpenAI-shaped client
 // fronts many gateways (LiteLLM, Mistral, HuggingFace); only requests routed
 // to a claude model benefit from the marker, and only those get it.
+// ThinkingOffWhenSuppressed reports whether a request marked by
+// llm.ContextSuppressThinking goes out with thinking off
+// (types.ThinkingSuppressionReporter): a Claude model on the gateway path,
+// thinking on, and the enabled+budget form, the one form thinkingParam drops
+// for the mark. Every other model on this client ignores the mark.
+func (c *Client) ThinkingOffWhenSuppressed() bool {
+	return c.thinkingLevel != "" && c.thinkingLevel != "none" && c.emitsCacheControl() && !llm.IsAdaptiveThinkingModel(c.model)
+}
+
 func (c *Client) emitsCacheControl() bool {
 	return strings.Contains(strings.ToLower(c.model), "claude")
 }

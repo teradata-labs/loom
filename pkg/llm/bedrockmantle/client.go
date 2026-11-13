@@ -294,6 +294,17 @@ func (c *Client) MaxTokens() int {
 	return 0
 }
 
+// ThinkingOffWhenSuppressed forwards the inner client's answer
+// (types.ThinkingSuppressionReporter), or false when the inner client does
+// not report it.
+func (c *Client) ThinkingOffWhenSuppressed() bool {
+	inner, _ := c.current()
+	if r, ok := inner.(types.ThinkingSuppressionReporter); ok {
+		return r.ThinkingOffWhenSuppressed()
+	}
+	return false
+}
+
 // BaseURL returns the endpoint base URL in use.
 func (c *Client) BaseURL() string { return c.baseURL }
 

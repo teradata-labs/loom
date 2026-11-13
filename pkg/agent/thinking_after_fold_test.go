@@ -91,6 +91,22 @@ func pastFingerprint(msgs []Message) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// ThinkingOffWhenSuppressed reports what the real clients report
+// (types.ThinkingSuppressionReporter): only the enabled+budget form sends a
+// marked request with thinking off.
+func (p *thinkingProvider) ThinkingOffWhenSuppressed() bool { return p.budgetForm }
+
+// geminiProvider is the fake under another provider's name: a client that
+// never reads the suppression mark, as Gemini does not, so it reports
+// nothing (no ThinkingSuppressionReporter).
+type geminiProvider struct{ fake *thinkingProvider }
+
+func (g geminiProvider) Name() string  { return "gemini" }
+func (g geminiProvider) Model() string { return "gemini-2.5-pro" }
+func (g geminiProvider) Chat(ctx context.Context, msgs []Message, tools []shuttle.Tool) (*LLMResponse, error) {
+	return g.fake.Chat(ctx, msgs, tools)
+}
+
 func (p *thinkingProvider) Chat(ctx context.Context, msgs []Message, _ []shuttle.Tool) (*LLMResponse, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -162,13 +178,20 @@ func TestThinkingBinding_ATurnThatFoldsIsAcceptedByTheProvider(t *testing.T) {
 	tests := []struct {
 		name       string
 		budgetForm bool
+		gemini     bool
+		wantForm   string
 	}{
-		{name: "adaptive form: the binding is checked", budgetForm: false},
-		{name: "enabled+budget form: a tool-calling message needs its block", budgetForm: true},
+		{name: "adaptive form: the binding is checked", budgetForm: false, wantForm: "adaptive"},
+		{name: "enabled+budget form: a tool-calling message needs its block", budgetForm: true, wantForm: "budget"},
+		{name: "a provider that never reads the mark", gemini: true, wantForm: "none"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			model := &thinkingProvider{budgetForm: tt.budgetForm, steps: 24}
+			var provider LLMProvider = model
+			if tt.gemini {
+				provider = geminiProvider{fake: model}
+			}
 			store, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
 			require.NoError(t, err, "the session store must open")
 			t.Cleanup(func() { _ = store.Close() })
@@ -181,7 +204,7 @@ func TestThinkingBinding_ATurnThatFoldsIsAcceptedByTheProvider(t *testing.T) {
 			cfg.MaxTurns = 200
 			cfg.MaxToolExecutions = 100
 			tracer := observability.NewMockTracer()
-			ag := NewAgent(&mockBackend{}, model, WithConfig(cfg), WithMemory(NewMemoryWithStore(store)), WithTracer(tracer))
+			ag := NewAgent(&mockBackend{}, provider, WithConfig(cfg), WithMemory(NewMemoryWithStore(store)), WithTracer(tracer))
 			ag.RegisterTool(&shuttle.MockTool{
 				MockName: "step",
 				MockExecute: func(context.Context, map[string]interface{}) (*shuttle.Result, error) {
@@ -214,11 +237,7 @@ func TestThinkingBinding_ATurnThatFoldsIsAcceptedByTheProvider(t *testing.T) {
 				case "llm.thinking_suppressed":
 					assert.True(t, folded, "thinking was marked off before any fold")
 					assert.Equal(t, "fold", e.Attributes["reason"], "the event does not say why thinking is off")
-					wantForm := "adaptive"
-					if tt.budgetForm {
-						wantForm = "budget"
-					}
-					assert.Equal(t, wantForm, e.Attributes["form"], "the event does not say which thinking form the model uses")
+					assert.Equal(t, tt.wantForm, e.Attributes["form"], "the event does not say which thinking form the model uses")
 					assert.Equal(t, tt.budgetForm, e.Attributes["thinking_off"], "the event does not say whether thinking was really off")
 					suppressed++
 				}

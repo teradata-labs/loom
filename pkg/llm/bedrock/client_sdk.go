@@ -203,6 +203,14 @@ func (c *SDKClient) Model() string {
 // against the prompt the provider accepts.
 func (c *SDKClient) MaxTokens() int { return int(c.maxTokens) }
 
+// ThinkingOffWhenSuppressed reports whether a request marked by
+// llm.ContextSuppressThinking goes out with thinking off
+// (types.ThinkingSuppressionReporter): thinking is on and the model takes
+// the enabled+budget form, the one form thinkingConfig drops for the mark.
+func (c *SDKClient) ThinkingOffWhenSuppressed() bool {
+	return c.thinkingLevel != "" && c.thinkingLevel != "none" && !llm.IsAdaptiveThinkingModel(c.modelID)
+}
+
 // requiresStreaming reports whether the Anthropic SDK would reject a
 // non-streaming Messages.New call for this client's model + max_tokens.
 // The SDK pre-flights non-streaming requests via CalculateNonStreamingTimeout

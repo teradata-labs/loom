@@ -4485,17 +4485,24 @@ func (a *Agent) foldedTurnCtx(ctx Context, session *Session, messages []Message,
 	zap.L().Debug("thinking is off for this send: a fold this turn removed the thinking blocks of the rows it kept",
 		zap.String("session_id", session.ID))
 	if span != nil {
-		// The provider clients decide the form by the model id
-		// (llm.IsAdaptiveThinkingModel), and only the budget form reads the
-		// mark: an adaptive model keeps thinking.
-		form := "budget"
-		if llm.IsAdaptiveThinkingModel(a.GetLLMModel()) {
+		// Only a client on the enabled+budget form, with thinking on, sends
+		// the marked request with thinking off; the client says so
+		// (types.ThinkingSuppressionReporter). An adaptive model keeps
+		// thinking, and a provider that never reads the mark (Gemini,
+		// Ollama, Mistral and others) is unchanged: form "none".
+		a.mu.RLock()
+		client := a.llm
+		a.mu.RUnlock()
+		form, off := "none", false
+		if r, ok := client.(types.ThinkingSuppressionReporter); ok && r.ThinkingOffWhenSuppressed() {
+			form, off = "budget", true
+		} else if llm.IsAdaptiveThinkingModel(a.GetLLMModel()) {
 			form = "adaptive"
 		}
 		span.AddEvent("llm.thinking_suppressed", map[string]interface{}{
 			"reason":       "fold",
 			"form":         form,
-			"thinking_off": form == "budget",
+			"thinking_off": off,
 		})
 	}
 	if ac, ok := ctx.(*agentContext); ok {

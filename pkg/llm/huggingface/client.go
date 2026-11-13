@@ -108,6 +108,10 @@ func (c *Client) Model() string {
 // against the prompt the provider accepts.
 func (c *Client) MaxTokens() int { return c.openai.MaxTokens() }
 
+// ThinkingOffWhenSuppressed forwards the inner OpenAI-shaped client's answer
+// (types.ThinkingSuppressionReporter).
+func (c *Client) ThinkingOffWhenSuppressed() bool { return c.openai.ThinkingOffWhenSuppressed() }
+
 // Chat sends a conversation to HuggingFace and returns the response.
 // This delegates to the OpenAI client since HuggingFace uses the same API format.
 func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []shuttle.Tool) (*llmtypes.LLMResponse, error) {

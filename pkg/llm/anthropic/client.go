@@ -246,6 +246,14 @@ func (c *Client) Model() string {
 // against the prompt the provider accepts.
 func (c *Client) MaxTokens() int { return c.maxTokens }
 
+// ThinkingOffWhenSuppressed reports whether a request marked by
+// llm.ContextSuppressThinking goes out with thinking off
+// (types.ThinkingSuppressionReporter): thinking is on and the model takes
+// the enabled+budget form, the one form thinkingParam drops for the mark.
+func (c *Client) ThinkingOffWhenSuppressed() bool {
+	return c.thinkingLevel != "" && c.thinkingLevel != "none" && !llm.IsAdaptiveThinkingModel(c.model)
+}
+
 // Chat sends a conversation to Claude and returns the response.
 func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []shuttle.Tool) (*llmtypes.LLMResponse, error) {
 	// Extract system messages and convert to Anthropic format
