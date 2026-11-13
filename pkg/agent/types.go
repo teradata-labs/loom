@@ -99,7 +99,8 @@ type Agent struct {
 
 	// labelJoin, when set (WithLabelJoin), joins the labels of the messages a
 	// compaction summary replaces, applied pairwise in context order. Nil uses
-	// the default join (per key, the lexicographically greater value).
+	// the default join (per key, every distinct value sorted and
+	// comma-joined). A join must not modify its inputs.
 	labelJoin func(a, b map[string]string) map[string]string
 
 	// leaseTTL overrides eventlog.DefaultSessionLeaseTTL for the session lease

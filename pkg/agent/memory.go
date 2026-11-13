@@ -518,8 +518,9 @@ func (m *Memory) reFireOnRestore(sessionID string, messages []Message,
 }
 
 // loadSummary installs the newest 'fold' summary version from the snapshot
-// table (HLD §4.6, §8): rows are {"n","text"} JSON under snapshot_type='fold';
-// the renderer reads max(n).
+// table (HLD §4.6, §8): rows are {"n","text","labels"} JSON under
+// snapshot_type='fold'; the renderer reads max(n). Snapshots written before
+// the labels key existed unmarshal with a nil Labels — the pre-labels load.
 func (m *Memory) loadSummary(ctx context.Context, store SessionStorage, sessionID string, segMem *SegmentedMemory) {
 	if store == nil || segMem == nil {
 		return
@@ -533,10 +534,12 @@ func (m *Memory) loadSummary(ctx context.Context, store SessionStorage, sessionI
 	}
 	bestN := 0
 	bestText := ""
+	var bestLabels map[string]string
 	for _, snap := range snapshots {
 		var v struct {
-			N    int    `json:"n"`
-			Text string `json:"text"`
+			N      int               `json:"n"`
+			Text   string            `json:"text"`
+			Labels map[string]string `json:"labels"`
 		}
 		if err := json.Unmarshal([]byte(snap.Content), &v); err != nil {
 			continue
@@ -544,10 +547,11 @@ func (m *Memory) loadSummary(ctx context.Context, store SessionStorage, sessionI
 		if v.N > bestN {
 			bestN = v.N
 			bestText = v.Text
+			bestLabels = v.Labels
 		}
 	}
 	if bestN > 0 {
-		segMem.setSummary(bestN, bestText)
+		segMem.setSummary(bestN, bestText, bestLabels)
 	}
 }
 

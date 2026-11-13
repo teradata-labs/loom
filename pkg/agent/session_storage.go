@@ -64,9 +64,11 @@ type SessionStorage interface {
 	// MarkEvicted sets evicted=true on the given rows in one transaction.
 	MarkEvicted(ctx context.Context, sessionID string, seqs []int64) error
 	// FoldMessages writes summary version n (snapshot_type='fold', content =
-	// JSON {"n","text"}) and sets the region's folded flags in ONE transaction
-	// (HLD §5.4.6) — a fold never stands in memory without its row.
-	FoldMessages(ctx context.Context, sessionID string, seqs []int64, n int, text string) error
+	// JSON {"n","text","labels"}) and sets the region's folded flags in ONE
+	// transaction (HLD §5.4.6) — a fold never stands in memory without its
+	// row. labels is the summary's joined label map; a nil map marshals as
+	// null and loads as nil, so pre-labels snapshots load unchanged.
+	FoldMessages(ctx context.Context, sessionID string, seqs []int64, n int, text string, labels map[string]string) error
 
 	// Memory snapshots
 	SaveMemorySnapshot(ctx context.Context, sessionID, snapshotType, content string, tokenCount int) error

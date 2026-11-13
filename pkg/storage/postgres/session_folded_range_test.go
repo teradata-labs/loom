@@ -67,7 +67,7 @@ func TestListMessagesBySeqRange_ReturnsFoldedToolCallMessages_Postgres(t *testin
 	var assistantSeq int64
 	require.NoError(t, pool.QueryRow(ctx,
 		"SELECT id FROM messages WHERE session_id = $1 AND role = 'assistant'", sessionID).Scan(&assistantSeq))
-	require.NoError(t, store.FoldMessages(userCtx, sessionID, []int64{assistantSeq}, 1, "folded summary"))
+	require.NoError(t, store.FoldMessages(userCtx, sessionID, []int64{assistantSeq}, 1, "folded summary", nil))
 
 	live, err := store.LoadMessages(userCtx, sessionID)
 	require.NoError(t, err)
