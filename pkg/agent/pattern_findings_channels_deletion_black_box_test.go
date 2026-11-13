@@ -196,7 +196,7 @@ func TestChannelsDeleted_S1_SystemSlotROMOnlyAcrossLifecycle(t *testing.T) {
 	// fold: install a summary version directly (compaction triggers are
 	// deleted — fold is the only writer, exercised via relief elsewhere)
 	segMem := sessionSegmentedMemory(t, ag, sessionID)
-	segMem.setSummary(1, "S1-L2-SUMMARY")
+	segMem.setSummary(1, "S1-L2-SUMMARY", nil)
 	require.Contains(t, segMem.GetL2Summary(), "S1-L2-SUMMARY", "the summary version installed")
 
 	// second grant
