@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -561,7 +562,13 @@ func validateGeminiNestedComposites(schema *shuttle.JSONSchema, path string) err
 			return fmt.Errorf("unsupported Gemini tool schema %s at %s", keyword.name, path)
 		}
 	}
-	for name, property := range schema.Properties {
+	propertyNames := make([]string, 0, len(schema.Properties))
+	for name := range schema.Properties {
+		propertyNames = append(propertyNames, name)
+	}
+	sort.Strings(propertyNames)
+	for _, name := range propertyNames {
+		property := schema.Properties[name]
 		if err := validateGeminiNestedComposites(property, fmt.Sprintf("%s.properties[%q]", path, name)); err != nil {
 			return err
 		}

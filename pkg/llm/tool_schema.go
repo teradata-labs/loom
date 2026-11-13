@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"sort"
 	"sync"
 
 	"github.com/teradata-labs/loom/pkg/observability"
@@ -102,7 +103,13 @@ func validateToolSchemaNode(schema *shuttle.JSONSchema, path string) error {
 	if schema == nil {
 		return fmt.Errorf("tool schema %s is null", path)
 	}
-	for name, property := range schema.Properties {
+	propertyNames := make([]string, 0, len(schema.Properties))
+	for name := range schema.Properties {
+		propertyNames = append(propertyNames, name)
+	}
+	sort.Strings(propertyNames)
+	for _, name := range propertyNames {
+		property := schema.Properties[name]
 		if err := validateToolSchemaNode(property, fmt.Sprintf("%s.properties[%q]", path, name)); err != nil {
 			return err
 		}
@@ -159,8 +166,13 @@ func normalizeObjectSchemaRoot(root map[string]interface{}) (map[string]interfac
 		}
 		fields, _ := normalized["required"].([]string)
 		required = appendUniqueRequired(required, fields)
-		for keyword, value := range normalized {
-			if err := mergeObjectSchemaKeyword(root, keyword, value); err != nil {
+		keywords := make([]string, 0, len(normalized))
+		for keyword := range normalized {
+			keywords = append(keywords, keyword)
+		}
+		sort.Strings(keywords)
+		for _, keyword := range keywords {
+			if err := mergeObjectSchemaKeyword(root, keyword, normalized[keyword]); err != nil {
 				return nil, fmt.Errorf("tool schema allOf branch %d: %w", index, err)
 			}
 		}

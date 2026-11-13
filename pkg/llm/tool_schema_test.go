@@ -145,6 +145,65 @@ func TestToolSchemaPolicyWarnsOnce(t *testing.T) {
 	assert.Equal(t, 4, logs.Len())
 }
 
+func TestToolSchemaPolicyUsesStableReasonForMultipleInvalidProperties(t *testing.T) {
+	core, logs := observer.New(zap.WarnLevel)
+	previous := zap.L()
+	zap.ReplaceGlobals(zap.New(core))
+	t.Cleanup(func() { zap.ReplaceGlobals(previous) })
+
+	properties := map[string]*shuttle.JSONSchema{
+		"e": nil,
+		"b": nil,
+		"d": nil,
+		"a": nil,
+		"c": nil,
+	}
+	schema := &shuttle.JSONSchema{Type: "object", Properties: properties}
+	policy := &ToolSchemaPolicy{}
+
+	for attempt := 0; attempt < 200; attempt++ {
+		_, keep, err := policy.Prepare(context.Background(), "unstable_tool", schema, false)
+		require.NoError(t, err)
+		assert.False(t, keep)
+	}
+
+	require.Equal(t, 1, logs.Len())
+}
+
+func TestNormalizeObjectToolSchemaUsesStableConflictReason(t *testing.T) {
+	f := func(value float64) *float64 { return &value }
+	i := func(value int) *int { return &value }
+	schema := &shuttle.JSONSchema{
+		Type:      "object",
+		Minimum:   f(1),
+		Maximum:   f(9),
+		MinLength: i(1),
+		MaxLength: i(9),
+		Pattern:   "a",
+		Format:    "x",
+		AllOf: []*shuttle.JSONSchema{{
+			Type:      "object",
+			Minimum:   f(2),
+			Maximum:   f(8),
+			MinLength: i(2),
+			MaxLength: i(8),
+			Pattern:   "b",
+			Format:    "y",
+		}},
+	}
+
+	var want string
+	for attempt := 0; attempt < 200; attempt++ {
+		_, err := NormalizeObjectToolSchema(schema)
+		require.Error(t, err)
+		if attempt == 0 {
+			want = err.Error()
+		} else {
+			assert.Equal(t, want, err.Error())
+		}
+	}
+}
+
 func TestNormalizeObjectToolSchemaPreservesProhibition(t *testing.T) {
 	const input = `{"type":"object","properties":{"environment":{"type":"string"}},"required":["environment"],"allOf":[
 		{"not":{"properties":{"environment":{"enum":["production"]}},"required":["environment"]}}
