@@ -18,6 +18,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -95,6 +97,46 @@ func IsBedrockContextTooLong(err error) bool {
 		strings.Contains(msg, "Input is too long for requested model")
 }
 
+// windowRe and outputRes read a "maximum context length" refusal: the window
+// it states, and the output the request asked for. outputRes holds one form
+// for each wording that states the output (vLLM v0.10-v0.14, v0.17-v0.31,
+// v0.6-v0.8; the last is also OpenAI's own text).
+var (
+	windowRe  = regexp.MustCompile(`maximum context length is (\d+) tokens`)
+	outputRes = []*regexp.Regexp{
+		regexp.MustCompile(`is too large: (\d+)\.`),
+		regexp.MustCompile(`you requested (\d+) output tokens`),
+		regexp.MustCompile(`, (\d+) in the completion\)`),
+	}
+)
+
+// outputAloneFillsWindow reports whether a refusal says that the output the
+// request asked for (max_tokens) is at or over the window by itself. A fold
+// cannot answer that refusal: no prompt fits, so it is not context-too-long.
+// IsOpenAIContextTooLong calls it. vLLM releases before v0.32.0 word that
+// refusal with "maximum context length", as they word the prompt that is too
+// long; vLLM main lowers max_tokens instead, and refuses a max_tokens over
+// the window as "max_tokens=N cannot be greater than max_model_len=M", which
+// no matcher here matches. A message that states no window or no output
+// returns false.
+func outputAloneFillsWindow(msg string) bool {
+	w := windowRe.FindStringSubmatch(msg)
+	if w == nil {
+		return false
+	}
+	window, err := strconv.Atoi(w[1])
+	if err != nil || window <= 0 {
+		return false
+	}
+	for _, re := range outputRes {
+		if o := re.FindStringSubmatch(msg); o != nil {
+			output, err := strconv.Atoi(o[1])
+			return err == nil && output >= window
+		}
+	}
+	return false
+}
+
 // IsOpenAIContextTooLong positively identifies the OpenAI-shaped (LiteLLM)
 // context-length refusal from the HTTP status and raw response body.
 func IsOpenAIContextTooLong(statusCode int, body []byte) bool {
@@ -118,14 +160,17 @@ func IsOpenAIContextTooLong(statusCode int, body []byte) bool {
 	}
 	msg := resp.Message
 	if json.Unmarshal(resp.Error, &detail) == nil {
-		if code, _ := detail.Code.(string); code == "context_length_exceeded" {
-			return true
-		}
 		if detail.Message != "" {
 			msg = detail.Message
 		}
+		if code, _ := detail.Code.(string); code == "context_length_exceeded" {
+			return !outputAloneFillsWindow(msg)
+		}
 	} else {
 		_ = json.Unmarshal(resp.Error, &msg)
+	}
+	if outputAloneFillsWindow(msg) {
+		return false
 	}
 	// LiteLLM proxying a non-OpenAI upstream (Anthropic via Vertex on the company
 	// gateway) does NOT normalise to context_length_exceeded: it returns a generic
@@ -143,6 +188,9 @@ func IsOpenAIContextTooLong(statusCode int, body []byte) bool {
 	// must have less than N tokens" when the prompt alone passes
 	// --max-input-tokens. Its "`max_new_tokens` must be <= N" is about the
 	// reply size alone and is not matched: a shorter prompt cannot answer it.
+	// For the same reason a "maximum context length" refusal whose requested
+	// output alone is at or over the window is not matched
+	// (outputAloneFillsWindow, checked above).
 	return strings.Contains(msg, "prompt is too long") ||
 		strings.Contains(msg, "exceed context limit") ||
 		strings.Contains(msg, "context_length_exceeded") ||
