@@ -305,6 +305,17 @@ func (c *Client) ThinkingOffWhenSuppressed() bool {
 	return false
 }
 
+// ThinkingForm forwards the inner client's thinking form
+// (types.ThinkingSuppressionReporter), or types.ThinkingFormUnknown when the
+// inner client does not report it.
+func (c *Client) ThinkingForm() string {
+	inner, _ := c.current()
+	if r, ok := inner.(types.ThinkingSuppressionReporter); ok {
+		return r.ThinkingForm()
+	}
+	return types.ThinkingFormUnknown
+}
+
 // BaseURL returns the endpoint base URL in use.
 func (c *Client) BaseURL() string { return c.baseURL }
 

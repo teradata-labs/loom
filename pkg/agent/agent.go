@@ -4475,8 +4475,10 @@ func advertisedToolsBytes(tools []shuttle.Tool) int {
 // again. This is the same answer providerCtx gives a turn rebuilt from the
 // store; the trigger here is the fold, not a resume. Each marked send is
 // recorded on span (the loop span, which the synthesis send also gets) as
-// llm.thinking_suppressed with reason "fold", and in a debug log, so a trace
-// that shows thinking stop in the middle of a turn says why.
+// llm.thinking_suppressed with reason "fold", the thinking form the client
+// sends ("form") and whether the mark turned thinking off ("thinking_off"),
+// and in a debug log, so a trace that shows thinking stop in the middle of a
+// turn says why.
 func (a *Agent) foldedTurnCtx(ctx Context, session *Session, messages []Message, span *observability.Span) Context {
 	segMem, ok := session.SegmentedMem.(*SegmentedMemory)
 	if !ok || segMem == nil || !segMem.FoldedThisTurn() || !rebuiltToolTurn(messages) {
@@ -4485,19 +4487,20 @@ func (a *Agent) foldedTurnCtx(ctx Context, session *Session, messages []Message,
 	zap.L().Debug("thinking is off for this send: a fold this turn removed the thinking blocks of the rows it kept",
 		zap.String("session_id", session.ID))
 	if span != nil {
-		// Only a client on the enabled+budget form, with thinking on, sends
-		// the marked request with thinking off; the client says so
-		// (types.ThinkingSuppressionReporter). An adaptive model keeps
-		// thinking, and a provider that never reads the mark (Gemini,
-		// Ollama, Mistral and others) is unchanged: form "none".
+		// The client says what it sends (types.ThinkingSuppressionReporter):
+		// "form" is the thinking field of the unmarked request, as its
+		// builder writes it, and thinking_off is true only when the mark
+		// removes an enabled+budget field. Both come from the one client
+		// read here, so a SetLLMProvider in between cannot mix two clients
+		// in one event. A provider that does not report (Gemini, Ollama,
+		// Mistral and others never read the mark) is recorded as form
+		// "unknown" with thinking_off false.
 		a.mu.RLock()
 		client := a.llm
 		a.mu.RUnlock()
-		form, off := "none", false
-		if r, ok := client.(types.ThinkingSuppressionReporter); ok && r.ThinkingOffWhenSuppressed() {
-			form, off = "budget", true
-		} else if llm.IsAdaptiveThinkingModel(a.GetLLMModel()) {
-			form = "adaptive"
+		form, off := types.ThinkingFormUnknown, false
+		if r, ok := client.(types.ThinkingSuppressionReporter); ok {
+			form, off = r.ThinkingForm(), r.ThinkingOffWhenSuppressed()
 		}
 		span.AddEvent("llm.thinking_suppressed", map[string]interface{}{
 			"reason":       "fold",

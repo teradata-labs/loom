@@ -248,10 +248,33 @@ func (c *Client) MaxTokens() int { return c.maxTokens }
 
 // ThinkingOffWhenSuppressed reports whether a request marked by
 // llm.ContextSuppressThinking goes out with thinking off
-// (types.ThinkingSuppressionReporter): thinking is on and the model takes
-// the enabled+budget form, the one form thinkingParam drops for the mark.
+// (types.ThinkingSuppressionReporter). The agent asks it before it records a
+// marked send. The answer comes from thinkingParam, the builder of the
+// request's thinking field (llm.SuppressionTurnsThinkingOff): true only when
+// the unmarked request carries enabled+budget thinking and the mark removes
+// it.
 func (c *Client) ThinkingOffWhenSuppressed() bool {
-	return c.thinkingLevel != "" && c.thinkingLevel != "none" && !llm.IsAdaptiveThinkingModel(c.model)
+	return llm.SuppressionTurnsThinkingOff(c.thinkingForm)
+}
+
+// ThinkingForm returns the thinking form an unmarked request carries
+// (types.ThinkingSuppressionReporter), read from thinkingParam. The agent
+// records it on the llm.thinking_suppressed event.
+func (c *Client) ThinkingForm() string {
+	return c.thinkingForm(context.Background())
+}
+
+// thinkingForm names the thinking field that thinkingParam builds for ctx
+// (types.ThinkingForm*). ThinkingOffWhenSuppressed and ThinkingForm call it.
+func (c *Client) thinkingForm(ctx context.Context) string {
+	switch t := c.thinkingParam(ctx); {
+	case t == nil:
+		return llmtypes.ThinkingFormNone
+	case t["type"] == "adaptive":
+		return llmtypes.ThinkingFormAdaptive
+	default:
+		return llmtypes.ThinkingFormBudget
+	}
 }
 
 // Chat sends a conversation to Claude and returns the response.

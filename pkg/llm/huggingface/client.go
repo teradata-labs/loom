@@ -112,6 +112,10 @@ func (c *Client) MaxTokens() int { return c.openai.MaxTokens() }
 // (types.ThinkingSuppressionReporter).
 func (c *Client) ThinkingOffWhenSuppressed() bool { return c.openai.ThinkingOffWhenSuppressed() }
 
+// ThinkingForm forwards the inner OpenAI-shaped client's thinking form
+// (types.ThinkingSuppressionReporter).
+func (c *Client) ThinkingForm() string { return c.openai.ThinkingForm() }
+
 // Chat sends a conversation to HuggingFace and returns the response.
 // This delegates to the OpenAI client since HuggingFace uses the same API format.
 func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []shuttle.Tool) (*llmtypes.LLMResponse, error) {

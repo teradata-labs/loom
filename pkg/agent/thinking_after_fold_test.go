@@ -50,7 +50,10 @@ import (
 type thinkingProvider struct {
 	mu         sync.Mutex
 	budgetForm bool
-	steps      int
+	// sendsNoThinking makes the fake report the "none" form: an adaptive
+	// model name on a client whose request carries no thinking field.
+	sendsNoThinking bool
+	steps           int
 
 	taken int
 	folds int
@@ -95,6 +98,18 @@ func pastFingerprint(msgs []Message) string {
 // (types.ThinkingSuppressionReporter): only the enabled+budget form sends a
 // marked request with thinking off.
 func (p *thinkingProvider) ThinkingOffWhenSuppressed() bool { return p.budgetForm }
+
+// ThinkingForm reports the thinking field the fake sends with thinking on
+// (types.ThinkingSuppressionReporter).
+func (p *thinkingProvider) ThinkingForm() string {
+	if p.sendsNoThinking {
+		return llmtypes.ThinkingFormNone
+	}
+	if p.budgetForm {
+		return llmtypes.ThinkingFormBudget
+	}
+	return llmtypes.ThinkingFormAdaptive
+}
 
 // geminiProvider is the fake under another provider's name: a client that
 // never reads the suppression mark, as Gemini does not, so it reports
@@ -176,18 +191,20 @@ func (p *thinkingProvider) Chat(ctx context.Context, msgs []Message, _ []shuttle
 // no tool-calling message sent without its block while thinking is on.
 func TestThinkingBinding_ATurnThatFoldsIsAcceptedByTheProvider(t *testing.T) {
 	tests := []struct {
-		name       string
-		budgetForm bool
-		gemini     bool
-		wantForm   string
+		name            string
+		budgetForm      bool
+		sendsNoThinking bool
+		gemini          bool
+		wantForm        string
 	}{
 		{name: "adaptive form: the binding is checked", budgetForm: false, wantForm: "adaptive"},
 		{name: "enabled+budget form: a tool-calling message needs its block", budgetForm: true, wantForm: "budget"},
-		{name: "a provider that never reads the mark", gemini: true, wantForm: "none"},
+		{name: "a provider that never reads the mark", gemini: true, wantForm: "unknown"},
+		{name: "an adaptive model name whose client sends no thinking", sendsNoThinking: true, wantForm: "none"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			model := &thinkingProvider{budgetForm: tt.budgetForm, steps: 24}
+			model := &thinkingProvider{budgetForm: tt.budgetForm, sendsNoThinking: tt.sendsNoThinking, steps: 24}
 			var provider LLMProvider = model
 			if tt.gemini {
 				provider = geminiProvider{fake: model}
@@ -237,7 +254,7 @@ func TestThinkingBinding_ATurnThatFoldsIsAcceptedByTheProvider(t *testing.T) {
 				case "llm.thinking_suppressed":
 					assert.True(t, folded, "thinking was marked off before any fold")
 					assert.Equal(t, "fold", e.Attributes["reason"], "the event does not say why thinking is off")
-					assert.Equal(t, tt.wantForm, e.Attributes["form"], "the event does not say which thinking form the model uses")
+					assert.Equal(t, tt.wantForm, e.Attributes["form"], "the event does not say which thinking form the client sends")
 					assert.Equal(t, tt.budgetForm, e.Attributes["thinking_off"], "the event does not say whether thinking was really off")
 					suppressed++
 				}

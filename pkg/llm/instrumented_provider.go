@@ -561,6 +561,17 @@ func (p *InstrumentedProvider) ThinkingOffWhenSuppressed() bool {
 	return false
 }
 
+// ThinkingForm forwards the wrapped provider's thinking form
+// (llmtypes.ThinkingSuppressionReporter), or llmtypes.ThinkingFormUnknown
+// when it does not report it, so an instrumented client is traced as the
+// client it wraps.
+func (p *InstrumentedProvider) ThinkingForm() string {
+	if r, ok := p.provider.(llmtypes.ThinkingSuppressionReporter); ok {
+		return r.ThinkingForm()
+	}
+	return llmtypes.ThinkingFormUnknown
+}
+
 // SchedulerScope forwards the wrapped provider's quota-boundary scope so
 // slot scheduling keys grants to the same scope its capacity telemetry
 // calibrates. Without this forwarding, a wrapped client silently fell back

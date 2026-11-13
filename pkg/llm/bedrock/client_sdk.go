@@ -205,10 +205,34 @@ func (c *SDKClient) MaxTokens() int { return int(c.maxTokens) }
 
 // ThinkingOffWhenSuppressed reports whether a request marked by
 // llm.ContextSuppressThinking goes out with thinking off
-// (types.ThinkingSuppressionReporter): thinking is on and the model takes
-// the enabled+budget form, the one form thinkingConfig drops for the mark.
+// (types.ThinkingSuppressionReporter). The agent asks it before it records a
+// marked send. The answer comes from thinkingConfig, the builder of the
+// request's thinking field (llm.SuppressionTurnsThinkingOff): true only when
+// the unmarked request carries enabled+budget thinking and the mark removes
+// it.
 func (c *SDKClient) ThinkingOffWhenSuppressed() bool {
-	return c.thinkingLevel != "" && c.thinkingLevel != "none" && !llm.IsAdaptiveThinkingModel(c.modelID)
+	return llm.SuppressionTurnsThinkingOff(c.thinkingForm)
+}
+
+// ThinkingForm returns the thinking form an unmarked request carries
+// (types.ThinkingSuppressionReporter), read from thinkingConfig. The agent
+// records it on the llm.thinking_suppressed event.
+func (c *SDKClient) ThinkingForm() string {
+	return c.thinkingForm(context.Background())
+}
+
+// thinkingForm names the thinking field that thinkingConfig builds for ctx
+// (types.ThinkingForm*). ThinkingOffWhenSuppressed and ThinkingForm call it.
+func (c *SDKClient) thinkingForm(ctx context.Context) string {
+	t := c.thinkingConfig(ctx)
+	switch {
+	case t.OfAdaptive != nil:
+		return llmtypes.ThinkingFormAdaptive
+	case t.OfEnabled != nil:
+		return llmtypes.ThinkingFormBudget
+	default:
+		return llmtypes.ThinkingFormNone
+	}
 }
 
 // requiresStreaming reports whether the Anthropic SDK would reject a

@@ -656,19 +656,41 @@ func mergeSystemMessages(msgs []ChatMessage) []ChatMessage {
 	return append([]ChatMessage{{Role: "system", Content: strings.Join(systemTexts, "\n\n")}}, rest...)
 }
 
+// ThinkingOffWhenSuppressed reports whether a request marked by
+// llm.ContextSuppressThinking goes out with thinking off
+// (types.ThinkingSuppressionReporter). The agent asks it before it records a
+// marked send. The answer comes from thinkingParam, the builder of the
+// request's thinking field (llm.SuppressionTurnsThinkingOff): true only when
+// the unmarked request carries enabled+budget thinking and the mark removes
+// it. Only a Claude model on the gateway path can get that form.
+func (c *Client) ThinkingOffWhenSuppressed() bool {
+	return llm.SuppressionTurnsThinkingOff(c.thinkingForm)
+}
+
+// ThinkingForm returns the thinking form an unmarked request carries
+// (types.ThinkingSuppressionReporter), read from thinkingParam. The agent
+// records it on the llm.thinking_suppressed event.
+func (c *Client) ThinkingForm() string {
+	return c.thinkingForm(context.Background())
+}
+
+// thinkingForm names the thinking field that thinkingParam builds for ctx
+// (types.ThinkingForm*). ThinkingOffWhenSuppressed and ThinkingForm call it.
+func (c *Client) thinkingForm(ctx context.Context) string {
+	switch t := c.thinkingParam(ctx); {
+	case t == nil:
+		return llmtypes.ThinkingFormNone
+	case t["type"] == "adaptive":
+		return llmtypes.ThinkingFormAdaptive
+	default:
+		return llmtypes.ThinkingFormBudget
+	}
+}
+
 // emitsCacheControl reports whether the configured model is Anthropic-backed —
 // the only upstream that consumes cache_control. The OpenAI-shaped client
 // fronts many gateways (LiteLLM, Mistral, HuggingFace); only requests routed
 // to a claude model benefit from the marker, and only those get it.
-// ThinkingOffWhenSuppressed reports whether a request marked by
-// llm.ContextSuppressThinking goes out with thinking off
-// (types.ThinkingSuppressionReporter): a Claude model on the gateway path,
-// thinking on, and the enabled+budget form, the one form thinkingParam drops
-// for the mark. Every other model on this client ignores the mark.
-func (c *Client) ThinkingOffWhenSuppressed() bool {
-	return c.thinkingLevel != "" && c.thinkingLevel != "none" && c.emitsCacheControl() && !llm.IsAdaptiveThinkingModel(c.model)
-}
-
 func (c *Client) emitsCacheControl() bool {
 	return strings.Contains(strings.ToLower(c.model), "claude")
 }
