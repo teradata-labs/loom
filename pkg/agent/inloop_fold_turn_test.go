@@ -240,6 +240,24 @@ func TestARowTheStoreRefusesIsCountedOnce(t *testing.T) {
 	}
 }
 
+// A turn that ends on an error still persists its session: the stored
+// session total (sessions.total_cost_usd) is what the stored rows sum to,
+// also when the failed turn is the session's first.
+func TestAFailedTurnPersistsTheSessionTotal(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	model := &foldingStream{steps: 24, failAfterFold: true}
+	ag, store := foldingAgentWith(t, model, func(c *Config) { c.Retry.Enabled = false })
+	_, err := ag.Chat(ctx, "s-failed-total", "do the long job")
+	require.Error(t, err, "the turn did not fail; the test does not reach the case")
+	rows, err := store.SessionCost(ctx, "s-failed-total")
+	require.NoError(t, err)
+	require.Positive(t, rows)
+	stored, err := store.LoadSession(ctx, "s-failed-total")
+	require.NoError(t, err)
+	assert.InDelta(t, rows, stored.TotalCostUSD, 1e-9, "the stored session total does not match the stored rows after a failed turn")
+}
+
 // basicStore is a store with only the SessionStorage operations: no optional
 // operation is visible through it, as with a host that implements none.
 type basicStore struct{ SessionStorage }

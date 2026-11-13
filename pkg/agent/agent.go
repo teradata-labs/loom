@@ -2279,6 +2279,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 			})
 		}
 
+		a.persistAfterFailure(ctx, session)
 		return nil, fmt.Errorf("conversation loop failed: %w", err)
 	}
 
@@ -2496,6 +2497,27 @@ func (a *Agent) moveRefusedRowCost(ctx context.Context, session *Session, u Usag
 	if span != nil {
 		span.AddEvent("turn.refused_row_cost", map[string]interface{}{
 			"cost_usd": u.CostUSD, "total_tokens": u.TotalTokens, "stored": stored, "reason": reason})
+	}
+}
+
+// persistAfterFailure persists the session after a turn that ended on an
+// error. chat, ResumeChat and ResumeSession call it on their failed exit. The
+// turn's rows are already stored, and an error exit can add unbilled cost to
+// them and to the session total (billOnLastRow), so the stored session total
+// (sessions.total_cost_usd) must be written too, or it lags the rows until a
+// later turn succeeds. It is best effort: it keeps the turn's values but not
+// its cancellation (the turn may have ended because its context did), it has
+// a short timeout, and a failure is logged; the caller returns the turn's
+// own error either way.
+func (a *Agent) persistAfterFailure(ctx context.Context, session *Session) {
+	if a.memory == nil || session == nil {
+		return
+	}
+	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), unbilledWriteTimeout)
+	defer cancel()
+	if err := a.memory.PersistSession(pctx, session); err != nil {
+		zap.L().Warn("the turn ended on an error, and the session could not be persisted",
+			zap.String("session_id", session.ID), zap.Error(err))
 	}
 }
 
