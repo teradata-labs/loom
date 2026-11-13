@@ -262,6 +262,37 @@ func TestTurnResultTakesAMessageIDGivenAsAString(t *testing.T) {
 	}
 }
 
+// An all-digit string that is neither a call's tool_use_id nor a message id
+// of this turn is read both ways, so the NOT_FOUND it returns names both
+// reads. A message that names only the message id would tell the script
+// that its tool_use_id was never tried. A host that cannot read by
+// tool_use_id tried only the message id, and its own message stays.
+func TestTurnResultNotFoundAfterTheFallbackNamesBothReads(t *testing.T) {
+	t.Parallel()
+	src := `local r = turn.result("99") return {ok = r.ok, code = r.error.code, message = r.error.message}`
+	tests := []struct {
+		name        string
+		host        Host
+		wantMessage string
+	}{
+		{"both reads tried", newFakeHost(), `"99" is not a tool result from the current turn, read as a tool_use_id or as message id 99`},
+		{"a host that reads by message id only", messageIDOnlyHost{newFakeHost()}, "no such result"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			res := Run(context.Background(), Program{Source: src}, small(), tc.host)
+			require.Equal(t, OutcomeOK, res.Outcome, res.Error)
+			got, ok := res.Value.(map[string]any)
+			require.True(t, ok, "the script must return a table, got %T", res.Value)
+			assert.Equal(t, false, got["ok"], "a read of no result must fail")
+			assert.Equal(t, "NOT_FOUND", got["code"], "a read of no result must be NOT_FOUND")
+			assert.Equal(t, tc.wantMessage, got["message"], "the message must name every read that was tried")
+			assert.Len(t, res.Calls, 1, "the fallback must stay one budgeted call")
+		})
+	}
+}
+
 func TestProgressEvents(t *testing.T) {
 	h := newFakeHost().with("echo", echo).with("bad", failing("E", "x"))
 	res := runSrc(t, `tools.call("echo") tools.call("bad") time.sleep(1)`, h)

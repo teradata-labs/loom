@@ -115,6 +115,9 @@ func (s *run) invokeTool(t *rt.Thread, c *rt.GoCont, fn string) (rt.Value, *Call
 // and that read worked before turn.result took tool_use_ids. It is read as a
 // tool_use_id first, and as a message id when no call has that id (NOT_FOUND)
 // or the host cannot read by tool_use_id. Either way it is one budgeted call.
+// When both reads find nothing, the NOT_FOUND names both reads
+// (bothReadsNotFound): the host's message for the second read names only the
+// message id, and would tell the script that its tool_use_id was not tried.
 func (s *run) turnResult(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 	if err := c.Check1Arg(); err != nil {
 		return nil, err
@@ -130,13 +133,18 @@ func (s *run) turnResult(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 			return nil, errors.New("turn.result: this host reads results by message id only")
 		}
 		v, _, err := s.hostCall(t, "turn.result", func(ctx context.Context) (*CallResult, error) {
-			if ok {
-				r, err := byUse.TurnResultByToolUseID(ctx, useID)
-				if err != nil || !numeric || r == nil || r.OK || r.Error == nil || r.Error.Code != "NOT_FOUND" {
-					return r, err
-				}
+			if !ok {
+				return s.host.TurnResult(ctx, messageID)
 			}
-			return s.host.TurnResult(ctx, messageID)
+			r, err := byUse.TurnResultByToolUseID(ctx, useID)
+			if err != nil || !numeric || !isNotFound(r) {
+				return r, err
+			}
+			r, err = s.host.TurnResult(ctx, messageID)
+			if err != nil || !isNotFound(r) {
+				return r, err
+			}
+			return bothReadsNotFound(r, useID, messageID), nil
 		})
 		if err != nil {
 			return nil, err
@@ -154,6 +162,25 @@ func (s *run) turnResult(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 		return nil, err
 	}
 	return c.PushingNext1(t.Runtime, v), nil
+}
+
+// isNotFound reports whether r is a host's NOT_FOUND answer. turnResult calls
+// it to decide whether to fall back from a tool_use_id read to a message id
+// read.
+func isNotFound(r *CallResult) bool {
+	return r != nil && !r.OK && r.Error != nil && r.Error.Code == "NOT_FOUND"
+}
+
+// bothReadsNotFound returns a copy of the host's NOT_FOUND r whose message
+// names both reads that turnResult tried: id as a tool_use_id, then
+// messageID as a message id. r itself is not changed, because the host may
+// keep it. The code and the suggestion stay the host's.
+func bothReadsNotFound(r *CallResult, id string, messageID int64) *CallResult {
+	out := *r
+	e := *r.Error
+	e.Message = fmt.Sprintf("%q is not a tool result from the current turn, read as a tool_use_id or as message id %d", id, messageID)
+	out.Error = &e
+	return &out
 }
 
 // digitMessageID reads s as a message id when it is all ASCII digits and a

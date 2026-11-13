@@ -422,6 +422,27 @@ func TestLuaHost_TurnResultReadsACutResultByItsToolUseID(t *testing.T) {
 	assert.Equal(t, "NOT_FOUND", res.Error.Code)
 }
 
+// R8: turn.result("99") on the agent's host reads "99" as a tool_use_id and
+// then as message id 99. When neither is a tool result of this turn, the
+// NOT_FOUND the script gets names both reads, not only the message id that
+// the host's own TurnResult message names.
+func TestLuaHost_TurnResultFallbackMissNamesBothReads(t *testing.T) {
+	ag := newLuaTestAgent(t, shuttle.NewChain([]shuttle.Hook{&luaRecordingHook{}}, nil, nil))
+	h := newTestHost(t, ag, luaCtx([]string{}), LuaHostOptions{})
+	_, ok := h.(luasandbox.ToolUseResultHost)
+	require.True(t, ok, "the agent's Lua host must read by tool_use_id, or the fallback is not reached")
+
+	res := luasandbox.Run(context.Background(), luasandbox.Program{
+		Source: `local r = turn.result("99") return {code = r.error.code, message = r.error.message}`,
+	}, luasandbox.Limits{}, h)
+	require.Equal(t, luasandbox.OutcomeOK, res.Outcome, res.Error)
+	got, ok := res.Value.(map[string]any)
+	require.True(t, ok, "the script must return a table, got %T", res.Value)
+	assert.Equal(t, "NOT_FOUND", got["code"], "a read of no result must be NOT_FOUND")
+	assert.Equal(t, `"99" is not a tool result from the current turn, read as a tool_use_id or as message id 99`, got["message"],
+		"the message must name the tool_use_id read and the message id read")
+}
+
 func TestOneLineSummary(t *testing.T) {
 	assert.Equal(t, "Reads a file.", oneLineSummary("Reads a file. Supports offsets and limits."))
 	assert.Equal(t, "First line", oneLineSummary("First line\nsecond line"))
