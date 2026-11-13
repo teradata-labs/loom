@@ -261,8 +261,10 @@ func TestResumeSession_AFoldDoesNotHideASavedBatch(t *testing.T) {
 				if fresh {
 					ag = build()
 				}
-				_, err = ag.ResumeSession(ctx, "s-fold-resume")
-				assert.NotErrorIs(t, err, ErrBatchNotSaved, "ResumeSession refused a batch whose row is stored")
+				resp, err := ag.ResumeSession(ctx, "s-fold-resume")
+				require.NotErrorIs(t, err, ErrBatchNotSaved, "ResumeSession refused a batch whose row is stored")
+				require.NoError(t, err, "ResumeSession did not resume the turn")
+				assert.Equal(t, "final answer", resp.Content, "the resumed turn did not reach its answer")
 			})
 		}
 	}
