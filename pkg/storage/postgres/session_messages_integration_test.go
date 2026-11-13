@@ -69,7 +69,7 @@ func TestMessages_RoundTrip_ContextCompilationColumns(t *testing.T) {
 	firstSeq, err := strconv.ParseInt(msgs[0].ID, 10, 64)
 	require.NoError(t, err)
 	require.NoError(t, store.MarkEvicted(ctx, sessionID, []int64{toolSeq}))
-	require.NoError(t, store.FoldMessages(ctx, sessionID, []int64{firstSeq}, 1, "covers msg:1-1\nsummary"))
+	require.NoError(t, store.FoldMessages(ctx, sessionID, []int64{firstSeq}, 1, "covers msg:1-1\nsummary", nil))
 
 	msgs, err = store.LoadMessages(ctx, sessionID)
 	require.NoError(t, err)
@@ -111,7 +111,7 @@ func TestMessages_CrossAgentReadsFilterFolded(t *testing.T) {
 	require.Len(t, msgs, 2)
 	foldSeq, err := strconv.ParseInt(msgs[0].ID, 10, 64)
 	require.NoError(t, err)
-	require.NoError(t, store.FoldMessages(ctx, parentID, []int64{foldSeq}, 1, "covers msg:1-1\nsummary"))
+	require.NoError(t, store.FoldMessages(ctx, parentID, []int64{foldSeq}, 1, "covers msg:1-1\nsummary", nil))
 
 	// Reader 1: by agent.
 	byAgent, err := store.LoadMessagesForAgent(ctx, agentID)

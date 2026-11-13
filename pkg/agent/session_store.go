@@ -1570,9 +1570,10 @@ func (s *SessionStore) MarkEvicted(ctx context.Context, sessionID string, seqs [
 }
 
 // FoldMessages writes summary version n (snapshot_type='fold', content = JSON
-// {"n","text"}) and sets the region's folded flags in ONE transaction (HLD
-// §5.4.6) — never a fold that evaporates on reload.
-func (s *SessionStore) FoldMessages(ctx context.Context, sessionID string, seqs []int64, n int, text string) error {
+// {"n","text","labels"}) and sets the region's folded flags in ONE transaction
+// (HLD §5.4.6) — never a fold that evaporates on reload. labels is the
+// summary's joined label map; nil marshals as null and loads as nil.
+func (s *SessionStore) FoldMessages(ctx context.Context, sessionID string, seqs []int64, n int, text string, labels map[string]string) error {
 	ctx, span := s.tracer.StartSpan(ctx, "session_store.fold_messages")
 	defer s.tracer.EndSpan(span)
 	span.SetAttribute("session_id", sessionID)
@@ -1582,7 +1583,7 @@ func (s *SessionStore) FoldMessages(ctx context.Context, sessionID string, seqs 
 		return err
 	}
 
-	content, err := json.Marshal(map[string]interface{}{"n": n, "text": text})
+	content, err := json.Marshal(map[string]interface{}{"n": n, "text": text, "labels": labels})
 	if err != nil {
 		span.RecordError(err)
 		return fmt.Errorf("failed to marshal fold snapshot: %w", err)

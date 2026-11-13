@@ -591,9 +591,13 @@ func WithMemory(memory *Memory) Option {
 // WithMessageLabeler sets a per-message labeler. The agent calls fn once when
 // a message enters a session's context — arrival, or the restore replay that
 // rebuilds one after a restart — and stores the returned map on the message.
-// Label values are opaque: nothing in the agent interprets them. When a
-// compaction summary replaces labelled messages, their labels ride the
-// summary message joined by WithLabelJoin.
+// A message that already carries Labels passes through untouched: fn runs
+// only when msg.Labels is nil, at arrival and on replay. fn runs while
+// Session.AddMessage holds the session lock and SegmentedMemory.AddMessage
+// holds the memory lock; it must not call back into the session or the
+// memory — that deadlocks. Label values are opaque: nothing in the agent
+// interprets them. When a compaction summary replaces labelled messages,
+// their labels ride the summary message joined by WithLabelJoin.
 func WithMessageLabeler(fn func(msg *Message) map[string]string) Option {
 	return func(a *Agent) {
 		a.messageLabeler = fn
@@ -603,7 +607,11 @@ func WithMessageLabeler(fn func(msg *Message) map[string]string) Option {
 // WithLabelJoin sets the join used when a compaction summary replaces
 // labelled messages: fn is applied pairwise over the replaced messages'
 // labels, in context order. When unset, a default join is used: for each key
-// present in either map, the lexicographically greater value wins.
+// present in either map, every distinct value is kept, sorted and
+// comma-joined. A join must not modify its inputs: the fold clones the live
+// summary's labels before the first call, but a join that mutates the message
+// maps it receives, or stores and later mutates its own result, corrupts
+// state the summary shares by reference.
 func WithLabelJoin(fn func(a, b map[string]string) map[string]string) Option {
 	return func(a *Agent) {
 		a.labelJoin = fn
