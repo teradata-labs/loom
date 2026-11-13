@@ -352,6 +352,29 @@ func (h *luaHost) TurnResult(_ context.Context, messageID int64) (*luasandbox.Ca
 	return &luasandbox.CallResult{OK: true, Data: payload}, nil
 }
 
+var _ luasandbox.ToolUseResultHost = (*luaHost)(nil)
+
+// TurnResultByToolUseID returns the result of call toolUseID from earlier in
+// the current turn: the whole of a cut result, which the tail names by that
+// id (InTurnPayloadByToolUseID). turn.result calls it for a string argument.
+func (h *luaHost) TurnResultByToolUseID(_ context.Context, toolUseID string) (*luasandbox.CallResult, error) {
+	payload, err := h.agent.InTurnPayloadByToolUseID(h.sessionID, toolUseID)
+	if err != nil {
+		if errors.Is(err, ErrNotThisTurn) {
+			return &luasandbox.CallResult{
+				OK: false,
+				Error: &luasandbox.CallError{
+					Code:       "NOT_FOUND",
+					Message:    fmt.Sprintf("tool_use_id %q is not a tool result from the current turn", toolUseID),
+					Suggestion: "turn.result reads only this turn's tool results; call the tool again instead",
+				},
+			}, nil
+		}
+		return nil, err
+	}
+	return &luasandbox.CallResult{OK: true, Data: payload}, nil
+}
+
 // Progress forwards the script's activity to the caller's callback.
 func (h *luaHost) Progress(ev luasandbox.ProgressEvent) {
 	if h.progress != nil {

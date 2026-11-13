@@ -191,7 +191,45 @@ func TestTurnResult(t *testing.T) {
 
 	res = runSrc(t, `turn.result(0)`, h)
 	assert.Equal(t, OutcomeScriptError, res.Outcome)
-	assert.Contains(t, res.Error, "positive message id")
+	assert.Contains(t, res.Error, "a tool_use_id string or a positive message id")
+}
+
+// messageIDOnlyHost is a Host without ToolUseResultHost: only the five Host
+// methods are visible through it.
+type messageIDOnlyHost struct{ Host }
+
+// The model sees a cut result's tool_use_id, not a message id, so
+// turn.result takes that string; the integer form stays for a host that
+// shows message ids. A host that cannot read by tool_use_id refuses the
+// string form, and an empty or oversized id is a script error.
+func TestTurnResultByToolUseID(t *testing.T) {
+	h := newFakeHost()
+	h.turnUse["toolu_01"] = &CallResult{OK: true, Data: `[{"status":"ok"},{"status":"bad"}]`}
+	res := runSrc(t, `
+		local r = turn.result("toolu_01")
+		local missing = turn.result("toolu_gone")
+		return {n = #r.data, missing = missing.ok}`, h)
+	require.Equal(t, OutcomeOK, res.Outcome, res.Error)
+	assert.Equal(t, map[string]any{"n": int64(2), "missing": false}, res.Value, "turn.result did not read the result by its tool_use_id")
+	assert.Equal(t, "turn.result", res.Calls[0].Tool, "a tool_use_id read is not a budgeted call")
+
+	tests := []struct {
+		name string
+		host Host
+		src  string
+		want string
+	}{
+		{"a host without the operation", messageIDOnlyHost{h}, `turn.result("toolu_01")`, "message id only"},
+		{"an empty id", h, `turn.result("")`, "tool_use_id of 1 to"},
+		{"an oversized id", h, `turn.result(string.rep("x", 257))`, "tool_use_id of 1 to"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			res := Run(context.Background(), Program{Source: tc.src}, small(), tc.host)
+			assert.Equal(t, OutcomeScriptError, res.Outcome, "the call was not refused")
+			assert.Contains(t, res.Error, tc.want)
+		})
+	}
 }
 
 func TestProgressEvents(t *testing.T) {

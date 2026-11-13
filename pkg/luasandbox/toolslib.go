@@ -107,14 +107,33 @@ func (s *run) invokeTool(t *rt.Thread, c *rt.GoCont, fn string) (rt.Value, *Call
 	})
 }
 
-// turn.result(message_id) -> same shape as tools.call
+// turn.result(tool_use_id | message_id) -> same shape as tools.call. A string
+// is the tool_use_id a cut result's tail names (ToolUseResultHost); an integer
+// is a message id, for a host that shows one.
 func (s *run) turnResult(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 	if err := c.Check1Arg(); err != nil {
 		return nil, err
 	}
+	if c.Arg(0).Type() == rt.StringType {
+		useID, _ := c.StringArg(0)
+		if useID == "" || len(useID) > maxToolUseIDLen {
+			return nil, fmt.Errorf("turn.result: bad argument #1 (expected a tool_use_id of 1 to %d bytes)", maxToolUseIDLen)
+		}
+		byUse, ok := s.host.(ToolUseResultHost)
+		if !ok {
+			return nil, errors.New("turn.result: this host reads results by message id only")
+		}
+		v, _, err := s.hostCall(t, "turn.result", func(ctx context.Context) (*CallResult, error) {
+			return byUse.TurnResultByToolUseID(ctx, useID)
+		})
+		if err != nil {
+			return nil, err
+		}
+		return c.PushingNext1(t.Runtime, v), nil
+	}
 	id, err := c.IntArg(0)
 	if err != nil || id < 1 {
-		return nil, errors.New("turn.result: bad argument #1 (expected a positive message id)")
+		return nil, errors.New("turn.result: bad argument #1 (expected a tool_use_id string or a positive message id)")
 	}
 	v, _, err := s.hostCall(t, "turn.result", func(ctx context.Context) (*CallResult, error) {
 		return s.host.TurnResult(ctx, id)

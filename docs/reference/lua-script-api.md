@@ -404,7 +404,7 @@ A call that runs past `ToolCallTimeout` returns `ok=false` with code
 
 | Call | Returns |
 |---|---|
-| `turn.result(message_id)` | same shape as `tools.call`; reads a tool result from earlier in the current turn. `message_id` must be a positive integer. |
+| `turn.result(tool_use_id)` or `turn.result(message_id)` | same shape as `tools.call`; reads a tool result from earlier in the current turn, whole when its tail says it was cut. Pass the `tool_use_id` string that the cut result's tail names (1 to 256 bytes); that is the id the model sees. A positive integer `message_id` still works for a host that shows message ids. A host without `luasandbox.ToolUseResultHost` refuses the string form with a script error. |
 
 ### `json`
 
@@ -524,8 +524,9 @@ return {state = "still_running", id = start.id}
 ### Post-process a large result from earlier in the turn
 
 ```lua
--- args: {message_id = 42, column = "status"}
-local r = turn.result(args.message_id)
+-- args: {tool_use_id = "toolu_01", column = "status"}
+-- tool_use_id is the id that the cut result's tail names.
+local r = turn.result(args.tool_use_id)
 if not r.ok then error(r.error.message) end
 local counts = {}
 for _, row in ipairs(r.data.rows or r.data) do

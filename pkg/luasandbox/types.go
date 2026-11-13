@@ -106,6 +106,22 @@ type Host interface {
 	Progress(ev ProgressEvent)
 }
 
+// ToolUseResultHost is the optional Host operation that turn.result uses
+// for a string argument: the tool_use_id that a cut result's tail names. The
+// model sees that id and no message id, so a script that reads a cut result
+// passes it. A Host without this operation answers turn.result("...") with a
+// script error; the integer form (TurnResult) is unchanged.
+type ToolUseResultHost interface {
+	// TurnResultByToolUseID returns the result of the call toolUseID from
+	// earlier in the current turn.
+	TurnResultByToolUseID(ctx context.Context, toolUseID string) (*CallResult, error)
+}
+
+// maxToolUseIDLen bounds the tool_use_id a script may pass to turn.result.
+// Provider ids are far shorter; the bound stops a script from handing the
+// host an arbitrary string.
+const maxToolUseIDLen = 256
+
 // Outcome classifies how a run ended.
 type Outcome string
 

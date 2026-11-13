@@ -105,9 +105,9 @@ func TestExamplePollALongJob(t *testing.T) {
 
 func TestExamplePostProcessTurnResult(t *testing.T) {
 	h := newFakeHost()
-	h.turn[42] = &CallResult{OK: true, Data: `{"columns":["status"],"rows":[{"status":"open"},{"status":"open"},{"status":"closed"}]}`}
+	h.turnUse["toolu_01"] = &CallResult{OK: true, Data: `{"columns":["status"],"rows":[{"status":"open"},{"status":"open"},{"status":"closed"}]}`}
 	res := Run(context.Background(), Program{Source: `
-		local r = turn.result(args.message_id)
+		local r = turn.result(args.tool_use_id)
 		if not r.ok then error(r.error.message) end
 		local counts = {}
 		for _, row in ipairs(r.data.rows or r.data) do
@@ -117,7 +117,7 @@ func TestExamplePostProcessTurnResult(t *testing.T) {
 		local out = {}
 		for k, v in pairs(counts) do out[#out + 1] = {value = k, count = v} end
 		table.sort(out, function(a, b) return a.value < b.value end)
-		return out`, Args: map[string]any{"message_id": 42, "column": "status"}}, small(), h)
+		return out`, Args: map[string]any{"tool_use_id": "toolu_01", "column": "status"}}, small(), h)
 	require.Equal(t, OutcomeOK, res.Outcome, res.Error)
 	assert.Equal(t, []any{
 		map[string]any{"value": "closed", "count": int64(1)},
