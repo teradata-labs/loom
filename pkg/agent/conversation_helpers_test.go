@@ -523,7 +523,9 @@ func (tr *spanKeepingTracer) StartSpan(ctx context.Context, name string, opts ..
 	tr.mu.Lock()
 	tr.spans = append(tr.spans, span)
 	tr.mu.Unlock()
-	return ctx, span
+	// Attach the span like the real tracers do (hawk, mock), so
+	// observability.SpanFromContext finds it downstream.
+	return observability.ContextWithSpan(ctx, span), span
 }
 func (tr *spanKeepingTracer) EndSpan(_ *observability.Span)                                     {}
 func (tr *spanKeepingTracer) RecordMetric(_ string, _ float64, _ map[string]string)             {}
