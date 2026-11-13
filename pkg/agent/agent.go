@@ -3175,7 +3175,7 @@ func (a *Agent) runConversationLoop(ctx Context) (_ *Response, retErr error) {
 		sendChat := func(ts []shuttle.Tool) (*LLMResponse, error) {
 			if !a.config.ToolChangeNote {
 				msgs := outgoing("")
-				return a.chatWithRetry(a.foldedTurnCtx(callCtx, session, msgs), msgs, ts)
+				return a.chatWithRetry(a.foldedTurnCtx(callCtx, session, msgs, span), msgs, ts)
 			}
 			names := make([]string, 0, len(ts))
 			for _, t := range ts {
@@ -3190,7 +3190,7 @@ func (a *Agent) runConversationLoop(ctx Context) (_ *Response, retErr error) {
 				span.AddEvent("tools.changed", map[string]interface{}{"note": note})
 			}
 			msgs := outgoing(note)
-			resp, err := a.chatWithRetry(a.foldedTurnCtx(callCtx, session, msgs), msgs, ts)
+			resp, err := a.chatWithRetry(a.foldedTurnCtx(callCtx, session, msgs, span), msgs, ts)
 			if err == nil {
 				prevToolNames = names
 			}
@@ -4310,7 +4310,7 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, span *obs
 	}
 	sendSynthesis := func() (*LLMResponse, error) {
 		msgs := synthesisMessages()
-		return a.chatWithRetry(a.foldedTurnCtx(ctx, session, msgs), msgs, nil)
+		return a.chatWithRetry(a.foldedTurnCtx(ctx, session, msgs, span), msgs, nil)
 	}
 	finalResp, err := sendSynthesis()
 	if err != nil && errors.Is(err, llm.ErrContextTooLong) && segMem != nil {
@@ -4429,11 +4429,22 @@ func advertisedToolsBytes(tools []shuttle.Tool) int {
 // (llm.ContextSuppressThinking, which only that form reads; an adaptive model
 // accepts the message and keeps thinking). The next turn has thinking on
 // again. This is the same answer providerCtx gives a turn rebuilt from the
-// store; the trigger here is the fold, not a resume.
-func (a *Agent) foldedTurnCtx(ctx Context, session *Session, messages []Message) Context {
+// store; the trigger here is the fold, not a resume. Each marked send is
+// recorded on span (the loop span, which the synthesis send also gets) as
+// llm.thinking_suppressed with reason "fold", and in a debug log, so a trace
+// that shows thinking stop in the middle of a turn says why.
+func (a *Agent) foldedTurnCtx(ctx Context, session *Session, messages []Message, span *observability.Span) Context {
 	segMem, ok := session.SegmentedMem.(*SegmentedMemory)
 	if !ok || segMem == nil || !segMem.FoldedThisTurn() || !rebuiltToolTurn(messages) {
 		return ctx
+	}
+	zap.L().Debug("thinking is off for this send: a fold this turn removed the thinking blocks of the rows it kept",
+		zap.String("session_id", session.ID))
+	if span != nil {
+		span.AddEvent("llm.thinking_suppressed", map[string]interface{}{
+			"reason": "fold",
+			"note":   "only the enabled+budget thinking form reads the mark; an adaptive model keeps thinking",
+		})
 	}
 	if ac, ok := ctx.(*agentContext); ok {
 		off := *ac

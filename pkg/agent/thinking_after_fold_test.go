@@ -171,7 +171,8 @@ func TestThinkingBinding_ATurnThatFoldsIsAcceptedByTheProvider(t *testing.T) {
 			cfg.MaxIterations = 100
 			cfg.MaxTurns = 200
 			cfg.MaxToolExecutions = 100
-			ag := NewAgent(&mockBackend{}, model, WithConfig(cfg), WithMemory(NewMemoryWithStore(store)))
+			tracer := observability.NewMockTracer()
+			ag := NewAgent(&mockBackend{}, model, WithConfig(cfg), WithMemory(NewMemoryWithStore(store)), WithTracer(tracer))
 			ag.RegisterTool(&shuttle.MockTool{
 				MockName: "step",
 				MockExecute: func(context.Context, map[string]interface{}) (*shuttle.Result, error) {
@@ -191,6 +192,23 @@ func TestThinkingBinding_ATurnThatFoldsIsAcceptedByTheProvider(t *testing.T) {
 			if tt.budgetForm {
 				assert.Positive(t, model.thinkingOff, "after the fold the tool-calling message has no block, so thinking must be off for the rest of the turn")
 			}
+
+			// Hawk sees why thinking stopped: each send with thinking off
+			// records it on the loop span, and only after a fold.
+			loops := tracer.GetSpansByName("agent.conversation_loop")
+			require.Len(t, loops, 1, "the turn did not record its loop span")
+			folded, suppressed := false, 0
+			for _, e := range loops[0].Events {
+				switch e.Name {
+				case "fold.applied":
+					folded = true
+				case "llm.thinking_suppressed":
+					assert.True(t, folded, "thinking was marked off before any fold")
+					assert.Equal(t, "fold", e.Attributes["reason"], "the event does not say why thinking is off")
+					suppressed++
+				}
+			}
+			assert.Positive(t, suppressed, "no span event says that thinking was off after the fold")
 		})
 	}
 }
