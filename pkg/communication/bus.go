@@ -178,6 +178,14 @@ func (b *MessageBus) Publish(ctx context.Context, topic string, msg *loomv1.BusM
 	dropped := 0
 
 	b.mu.RLock()
+	// Check again under the lock: Close may have run since the check above.
+	// Close sets the flag before it takes the write lock and closes the
+	// channels only while holding it, so with the read lock held and the flag
+	// still clear, no channel below is closed until this send loop is done.
+	if b.closed.Load() {
+		b.mu.RUnlock()
+		return 0, 0, fmt.Errorf("message bus is closed")
+	}
 	for _, subscription := range b.subscriptions {
 		// Check if topic matches subscription pattern
 		if !matchesTopicPattern(subscription.Topic, topic) {

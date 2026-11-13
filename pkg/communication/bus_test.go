@@ -534,7 +534,7 @@ func TestSubscriptionDrain(t *testing.T) {
 	sub, err := bus.Subscribe(ctx, "agent1", "drain.topic", nil, 10)
 	require.NoError(t, err)
 
-	assert.Empty(t, sub.Drain(), "an empty subscription drains to nothing, without blocking")
+	assert.Empty(t, drainWithin(t, sub), "an empty subscription drains to nothing, without blocking")
 
 	for _, id := range []string{"m1", "m2"} {
 		_, _, err = bus.Publish(ctx, "drain.topic", &loomv1.BusMessage{
@@ -551,15 +551,74 @@ func TestSubscriptionDrain(t *testing.T) {
 	// now closed.
 	require.NoError(t, bus.Close())
 
+	got := drainWithin(t, sub)
+	require.Len(t, got, 2, "messages buffered before the close are still returned")
+	assert.Equal(t, "m1", got[0].GetId())
+	assert.Equal(t, "m2", got[1].GetId())
+	assert.Empty(t, drainWithin(t, sub), "a closed, empty subscription drains to nothing")
+}
+
+// TestSubscriptionDrainAfterUnsubscribe checks the other way a subscription
+// channel is closed: Unsubscribe.
+func TestSubscriptionDrainAfterUnsubscribe(t *testing.T) {
+	bus := NewMessageBus(nil, nil, nil, zaptest.NewLogger(t))
+	defer func() { _ = bus.Close() }()
+	ctx := context.Background()
+
+	sub, err := bus.Subscribe(ctx, "agent1", "drain.unsub", nil, 10)
+	require.NoError(t, err)
+	_, _, err = bus.Publish(ctx, "drain.unsub", &loomv1.BusMessage{Id: "m1", Topic: "drain.unsub", FromAgent: "agent0"})
+	require.NoError(t, err)
+
+	require.NoError(t, bus.Unsubscribe(ctx, sub.ID))
+
+	got := drainWithin(t, sub)
+	require.Len(t, got, 1, "the message buffered before Unsubscribe is still returned")
+	assert.Equal(t, "m1", got[0].GetId())
+	assert.Empty(t, drainWithin(t, sub), "an unsubscribed, empty subscription drains to nothing")
+}
+
+// drainWithin calls Drain and fails the test if it does not return within 5s,
+// so a Drain that loops on a closed channel fails instead of hanging the run.
+func drainWithin(t *testing.T, sub *Subscription) []*loomv1.BusMessage {
+	t.Helper()
 	done := make(chan []*loomv1.BusMessage, 1)
 	go func() { done <- sub.Drain() }()
 	select {
 	case got := <-done:
-		require.Len(t, got, 2, "messages buffered before the close are still returned")
-		assert.Equal(t, "m1", got[0].GetId())
-		assert.Equal(t, "m2", got[1].GetId())
+		return got
 	case <-time.After(5 * time.Second):
 		t.Fatal("Drain did not return on a closed subscription channel")
+		return nil
 	}
-	assert.Empty(t, sub.Drain(), "a closed, empty subscription drains to nothing")
+}
+
+// TestBusPublishRacingClose checks that a Publish that passed the closed check
+// before Close ran never sends on a channel Close has closed ("send on closed
+// channel" panic). Each round races one Close against a few Publish calls.
+func TestBusPublishRacingClose(t *testing.T) {
+	ctx := context.Background()
+	rounds := 20000
+	if testing.Short() {
+		rounds = 2000
+	}
+	for i := 0; i < rounds; i++ {
+		bus := NewMessageBus(nil, nil, nil, nil)
+		_, err := bus.Subscribe(ctx, "a", "t", nil, 1000)
+		require.NoError(t, err)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 4; j++ {
+				_, _, _ = bus.Publish(ctx, "t", &loomv1.BusMessage{Id: "x", FromAgent: "b"})
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			_ = bus.Close()
+		}()
+		wg.Wait()
+	}
 }

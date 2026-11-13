@@ -26,6 +26,8 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication/interrupt"
 	"github.com/teradata-labs/loom/pkg/observability"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // PatternReloader is an interface for pattern hot-reload functionality.
@@ -1030,7 +1032,14 @@ func (la *LearningAgent) StreamPatternMetrics(
 			span.SetAttribute("metrics_streamed", metricsStreamed)
 			return ctx.Err()
 
-		case busMsg := <-subscription.Channel:
+		case busMsg, ok := <-subscription.Channel:
+			if !ok {
+				// The bus closed the subscription (bus shutdown, or the
+				// subscription was removed): no more metrics will arrive.
+				span.SetAttribute("metrics_streamed", metricsStreamed)
+				span.Status = observability.Status{Code: observability.StatusError, Message: "message bus closed the subscription"}
+				return status.Error(codes.Unavailable, "message bus closed the pattern metrics subscription")
+			}
 			// Extract PatternMetric from payload
 			var metric loomv1.PatternMetric
 			if busMsg.Payload != nil {
