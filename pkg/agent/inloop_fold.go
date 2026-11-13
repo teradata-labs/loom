@@ -297,10 +297,12 @@ func (sm *SegmentedMemory) foldSplitLocked() (kept, excised []Message) {
 			// Recent steps: the assistant THREAD survives, its tool traffic
 			// does not. Pairs are stripped whole — the calls leave here, the
 			// results leave via the excised branch below.
-			// The row itself stays unflagged (its text must survive reload);
-			// its RESULTS are excised and flagged below, and on reload the
-			// compile's pair-atomicity fills the orphaned calls with
-			// synthetic failed results — the re-run door.
+			// The row itself stays unflagged (its text must survive reload)
+			// and its stored copy keeps the calls; its RESULTS are excised and
+			// stored folded. On reload, dropFoldedCalls (memory.go) removes
+			// each call whose result is stored folded, so the reload sends
+			// what this memory sends. Only a call with no stored result gets
+			// the compile's synthetic "did not complete" result.
 			mm := m
 			mm.ToolCalls = nil
 			kept = append(kept, mm)

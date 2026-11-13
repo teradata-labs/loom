@@ -331,7 +331,8 @@ func writeField(h hash.Hash, s string) {
 // a tool row renders with the bytes the row holds. Those bytes were bounded at
 // arrival (appendMessage, §4.1): an over-threshold result entered as core +
 // tail, and the stored row is the same bytes, so a session reloaded from the
-// store renders exactly what the producing session did.
+// store renders exactly what the producing session did. (The calls an in-loop
+// fold removed from a kept row are removed on reload too: dropFoldedCalls.)
 //
 // What compile guarantees is byte-stability: no row is ever rewritten in
 // place, so a compiled prefix stays valid and the fold is the only thing that

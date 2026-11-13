@@ -16,6 +16,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"math"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -386,6 +388,7 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 	if store != nil {
 		session, err := store.LoadSession(ctx, sessionID)
 		if err == nil && session != nil {
+			session.Messages = dropFoldedCalls(ctx, store, sessionID, session.Messages)
 			m.updateSessionMetadata(session, agentID, parentSessionID, store, ctx, logger)
 			// Sessions loaded from DB don't have SegmentedMem/FailureTracker
 			// (they aren't persisted). Recreate them so compression and error
@@ -566,6 +569,83 @@ func (m *Memory) reFireOnRestore(sessionID string, messages []Message,
 			zap.Int("turn", ctxDebug.turn(sessionID)),
 			zap.Int("loads_reactivated", loadsReactivated))
 	}
+}
+
+// dropFoldedCalls removes, from the assistant rows of a session read from the
+// store, each tool call whose result row is stored folded. GetOrCreateSession
+// calls it on reload, before the rows are replayed.
+//
+// The in-loop fold keeps the last turns' words and removes their tool
+// traffic: in memory the kept assistant rows lose their calls
+// (foldSplitLocked), and in the store their results are flagged folded, but
+// the rows keep tool_calls_json. The reload read leaves folded rows out, so
+// without this step the compile gave each such call the synthetic "did not
+// complete" result, which tells the model to run again a call that ran. The
+// reload then sends what the live session sends.
+//
+// A call with no stored result (the process stopped before the result was
+// written) is kept: the compile gives it the synthetic result, which is the
+// re-run door. The extra read runs only when a loaded call has no loaded
+// result, and starts at the first such row. A read that fails leaves the rows
+// as they are and logs; the synthetic results then stand.
+func dropFoldedCalls(ctx context.Context, store SessionStorage, sessionID string, msgs []Message) []Message {
+	answered := make(map[string]bool)
+	for i := range msgs {
+		if msgs[i].Role == "tool" && msgs[i].ToolUseID != "" {
+			answered[msgs[i].ToolUseID] = true
+		}
+	}
+	var lo int64 = math.MaxInt64
+	for i := range msgs {
+		if msgs[i].Role != "assistant" {
+			continue
+		}
+		for _, c := range msgs[i].ToolCalls {
+			if c.ID != "" && !answered[c.ID] {
+				if seq, err := strconv.ParseInt(msgs[i].ID, 10, 64); err == nil && seq < lo {
+					lo = seq
+				}
+			}
+		}
+	}
+	if lo == math.MaxInt64 {
+		return msgs // every call has its result, or no row has a durable seq
+	}
+	rows, err := store.ListMessagesBySeqRange(ctx, sessionID, lo, math.MaxInt64)
+	if err != nil {
+		zap.L().Warn("reload: cannot read the folded results; calls without a loaded result are sent as not completed",
+			zap.String("session_id", sessionID), zap.Error(err))
+		return msgs
+	}
+	folded := make(map[string]bool)
+	for i := range rows {
+		if rows[i].Folded && rows[i].Role == "tool" && rows[i].ToolUseID != "" {
+			folded[rows[i].ToolUseID] = true
+		}
+	}
+	if len(folded) == 0 {
+		return msgs
+	}
+	out := make([]Message, len(msgs))
+	copy(out, msgs)
+	for i := range out {
+		if out[i].Role != "assistant" || len(out[i].ToolCalls) == 0 {
+			continue
+		}
+		var calls []ToolCall
+		changed := false
+		for _, c := range out[i].ToolCalls {
+			if folded[c.ID] && !answered[c.ID] {
+				changed = true
+				continue
+			}
+			calls = append(calls, c)
+		}
+		if changed {
+			out[i].ToolCalls = calls
+		}
+	}
+	return out
 }
 
 // loadSummary installs the newest 'fold' summary version from the snapshot

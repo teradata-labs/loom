@@ -245,6 +245,83 @@ func TestInloopFold_ACallAfterAFoldThatWritesNoRowLosesNoCost(t *testing.T) {
 	}
 }
 
+// wireView is what a compiled message says to the model, for comparing two
+// compiles: the role, the words, the result's call id and the call ids.
+func wireView(msgs []Message) []string {
+	out := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Role == "system" {
+			continue // the prompt is the agent's, not the session's
+		}
+		ids := make([]string, 0, len(m.ToolCalls))
+		for _, c := range m.ToolCalls {
+			ids = append(ids, c.ID)
+		}
+		out = append(out, fmt.Sprintf("%s|%s|%s|%v", m.Role, m.ToolUseID, m.Content, ids))
+	}
+	return out
+}
+
+// A fold keeps the last turns' words and removes their tool traffic. The
+// stored rows keep the calls, and their results are stored folded. A session
+// reloaded from the store must send what the live session sends: the calls
+// whose results were folded are left out, as live leaves them out, and no
+// call that ran is reported as one that did not complete.
+func TestInloopFold_AReloadAfterAFoldSendsWhatTheLiveSessionSends(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	model := &foldingStream{steps: 24}
+	ag, store := foldingAgent(t, model)
+	_, err := ag.Chat(ctx, "s-reload", "do the long job")
+	require.NoError(t, err)
+	require.Positive(t, model.folds, "the turn never folded; the test does not reach the case")
+
+	live, ok := ag.memory.GetSession("s-reload")
+	require.True(t, ok)
+	liveMsgs := live.SegmentedMem.(*SegmentedMemory).GetMessagesForLLM()
+
+	reloaded := NewMemoryWithStore(store).GetOrCreateSession(ctx, "s-reload")
+	reMsgs := reloaded.SegmentedMem.(*SegmentedMemory).GetMessagesForLLM()
+
+	for _, m := range reMsgs {
+		assert.NotEqual(t, syntheticFailedResult, m.Content, "the reload reports a call that ran as one that did not complete (%s)", m.ToolUseID)
+	}
+	assert.Equal(t, wireView(liveMsgs), wireView(reMsgs), "the reloaded session does not send what the live session sends")
+}
+
+// A call with no stored result at all is a call that did not complete (the
+// process stopped between the call and its result). The reload keeps it and
+// the compile gives it the synthetic result, so the model can run it again.
+// Only a result that is stored folded removes a call.
+func TestReloadKeepsACallWhoseResultWasNeverStored(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	require.NoError(t, store.SaveSession(ctx, &Session{ID: "s-crash"}))
+	save := func(m Message, turnStart bool) {
+		t.Helper()
+		require.NoError(t, store.SaveMessage(ctx, "s-crash", &m, turnStart))
+	}
+	save(Message{Role: "user", Content: "run both"}, true)
+	save(Message{Role: "assistant", Content: "running both", ToolCalls: []ToolCall{
+		{ID: "ran", Name: "step", Input: map[string]interface{}{}},
+		{ID: "lost", Name: "step", Input: map[string]interface{}{}},
+	}}, false)
+	save(Message{Role: "tool", ToolUseID: "ran", Content: "ok"}, false)
+
+	reloaded := NewMemoryWithStore(store).GetOrCreateSession(ctx, "s-crash")
+	msgs := reloaded.SegmentedMem.(*SegmentedMemory).GetMessagesForLLM()
+	var synthetic []string
+	for _, m := range msgs {
+		if m.Role == "tool" && m.Content == syntheticFailedResult {
+			synthetic = append(synthetic, m.ToolUseID)
+		}
+	}
+	assert.Equal(t, []string{"lost"}, synthetic, "a call with no stored result lost its re-run door")
+}
+
 // A fold call refused as too long is re-sent with the fold still asked for:
 // its reply is the summary, taken as the fold, and the model's real answers
 // all reach the user.

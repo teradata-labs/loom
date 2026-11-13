@@ -18,6 +18,7 @@ import (
 	"context"
 	"math"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -86,4 +87,78 @@ func TestListMessagesBySeqRange_ReturnsFoldedToolCallMessages_Postgres(t *testin
 	require.Len(t, folded, 1, "the folded assistant row comes back from the full-range read")
 	require.Equal(t, call.ID, folded[0].ToolCalls[0].ID)
 	require.Equal(t, call.Name, folded[0].ToolCalls[0].Name)
+}
+
+// The in-loop fold keeps a turn's words and folds its results; the stored
+// assistant row keeps its calls. A reload from Postgres must leave out the
+// calls whose results are stored folded, as the live session does, and keep
+// a call with no stored result, which the compile answers with the synthetic
+// "did not complete" result. Runs in the ordinary gate: CI sets
+// TEST_POSTGRES_URL, a local run without one skips.
+func TestReloadDropsCallsWhoseResultsAreFolded_Postgres(t *testing.T) {
+	dsn := os.Getenv("TEST_POSTGRES_URL")
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_URL not set; skipping PostgreSQL store test")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	require.NoError(t, err, "failed to connect to PostgreSQL")
+	t.Cleanup(pool.Close)
+	migrator, err := NewMigrator(pool, observability.NewNoOpTracer())
+	require.NoError(t, err)
+	require.NoError(t, migrator.MigrateUp(ctx), "failed to run migrations")
+
+	store := NewSessionStore(pool, observability.NewNoOpTracer(), zap.NewNop())
+	userID := hrUniqueID("reload-user")
+	sessionID := hrUniqueID("reload-sess")
+	_, err = pool.Exec(ctx, "INSERT INTO sessions (id, agent_id, user_id) VALUES ($1, 'agent-1', $2)", sessionID, userID)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), "DELETE FROM memory_snapshots WHERE session_id = $1", sessionID)
+		_, _ = pool.Exec(context.Background(), "DELETE FROM messages WHERE user_id = $1", userID)
+		_, _ = pool.Exec(context.Background(), "DELETE FROM sessions WHERE id = $1", sessionID)
+	})
+	userCtx := ContextWithUserID(ctx, userID)
+
+	save := func(m agent.Message, turnStart bool) {
+		t.Helper()
+		require.NoError(t, store.SaveMessage(userCtx, sessionID, &m, turnStart))
+	}
+	in := map[string]interface{}{}
+	save(agent.Message{Role: "user", Content: "do the job"}, true)
+	save(agent.Message{Role: "assistant", Content: "reading both", ToolCalls: []llmtypes.ToolCall{
+		{ID: "toolu_folded_a", Name: "step", Input: in}, {ID: "toolu_folded_b", Name: "step", Input: in}}}, false)
+	save(agent.Message{Role: "tool", ToolUseID: "toolu_folded_a", Content: "ok a"}, false)
+	save(agent.Message{Role: "tool", ToolUseID: "toolu_folded_b", Content: "ok b"}, false)
+	save(agent.Message{Role: "assistant", Content: "one more", ToolCalls: []llmtypes.ToolCall{
+		{ID: "toolu_lost", Name: "step", Input: in}}}, false)
+
+	// Fold the first step's results, as the in-loop fold does for a kept turn.
+	rows, err := pool.Query(ctx, "SELECT id FROM messages WHERE session_id = $1 AND role = 'tool'", sessionID)
+	require.NoError(t, err)
+	var seqs []int64
+	for rows.Next() {
+		var seq int64
+		require.NoError(t, rows.Scan(&seq))
+		seqs = append(seqs, seq)
+	}
+	rows.Close()
+	require.NoError(t, rows.Err())
+	require.Len(t, seqs, 2)
+	require.NoError(t, store.FoldMessages(userCtx, sessionID, seqs, 1, "folded summary"))
+
+	session := agent.NewMemoryWithStore(store).GetOrCreateSession(userCtx, sessionID)
+	segMem, ok := session.SegmentedMem.(*agent.SegmentedMemory)
+	require.True(t, ok, "the reloaded session has no segmented memory")
+	var calls, synthetic []string
+	for _, m := range segMem.GetMessagesForLLM() {
+		for _, c := range m.ToolCalls {
+			calls = append(calls, c.ID)
+		}
+		if m.Role == "tool" && strings.HasPrefix(m.Content, "[no result recorded") {
+			synthetic = append(synthetic, m.ToolUseID)
+		}
+	}
+	require.Equal(t, []string{"toolu_lost"}, calls, "a reloaded row still sends a call whose result is folded")
+	require.Equal(t, []string{"toolu_lost"}, synthetic, "the reload reports a call that ran as not completed, or lost the re-run door")
 }
