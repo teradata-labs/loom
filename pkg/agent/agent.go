@@ -2279,7 +2279,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 			})
 		}
 
-		a.persistAfterFailure(ctx, session)
+		a.persistAfterFailure(ctx, session, span)
 		return nil, fmt.Errorf("conversation loop failed: %w", err)
 	}
 
@@ -2513,8 +2513,24 @@ func (a *Agent) moveRefusedRowCost(ctx context.Context, session *Session, u Usag
 // its cancellation (the turn may have ended because its context did), it has
 // a short timeout, and a failure is logged; the caller returns the turn's
 // own error either way.
-func (a *Agent) persistAfterFailure(ctx context.Context, session *Session) {
+//
+// A turn that lost its session lease (sessionLeaseLost) does not write: the
+// new holder owns the session now, and SaveSession is an absolute write of
+// the session row (context, totals, name), so it would put this turn's stale
+// copy over the new holder's. That turn logs at warn level and sets the span
+// attribute session.persist_skipped=lease_lost. Dropping the cancellation
+// stays right for an ordinary cancel: this process still holds the lease
+// until the caller's deferred release.
+func (a *Agent) persistAfterFailure(ctx context.Context, session *Session, span *observability.Span) {
 	if a.memory == nil || session == nil {
+		return
+	}
+	if leaseErr := sessionLeaseLost(ctx); leaseErr != nil {
+		zap.L().Warn("the turn lost its session lease; the session is not persisted, so the new holder's row stays",
+			zap.String("session_id", session.ID), zap.Error(leaseErr))
+		if span != nil {
+			span.SetAttribute("session.persist_skipped", "lease_lost")
+		}
 		return
 	}
 	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), unbilledWriteTimeout)

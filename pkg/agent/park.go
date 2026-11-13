@@ -1342,7 +1342,7 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 				Timestamp: time.Now(),
 			})
 		}
-		a.persistAfterFailure(ctx, sess)
+		a.persistAfterFailure(ctx, sess, span)
 		return nil, fmt.Errorf("conversation loop failed: %w", err)
 	}
 

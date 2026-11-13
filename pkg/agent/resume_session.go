@@ -306,7 +306,7 @@ func (a *Agent) finishResumedTurn(ctx context.Context, agentCtx *agentContext, s
 			}
 			return nil, err
 		}
-		a.persistAfterFailure(ctx, sess)
+		a.persistAfterFailure(ctx, sess, observability.SpanFromContext(ctx))
 		return nil, fmt.Errorf("conversation loop after resume: %w", err)
 	}
 

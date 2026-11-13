@@ -18,15 +18,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/teradata-labs/loom/pkg/eventlog"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
+	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
@@ -371,4 +374,61 @@ func TestLeaseLostError_DropsTheChainOfAStructuredError(t *testing.T) {
 	var got *SessionParkedError
 	require.False(t, errors.As(err, &got), "the structured error's chain is dropped")
 	require.Contains(t, err.Error(), parked.Error(), "its text is kept")
+}
+
+// takeoverLLM blocks the turn's LLM call until the turn loses its lease. Then
+// it writes the session row as the new holder would (a total and a context),
+// and returns the turn's error.
+type takeoverLLM struct {
+	started chan struct{}
+	store   *SessionStore
+	t       *testing.T
+}
+
+func (l *takeoverLLM) Chat(ctx context.Context, _ []llmtypes.Message, _ []shuttle.Tool) (*llmtypes.LLMResponse, error) {
+	close(l.started)
+	<-ctx.Done()
+	b, err := l.store.LoadSession(context.Background(), "s-lease-takeover")
+	require.NoError(l.t, err)
+	b.TotalCostUSD = 9.99
+	b.Context = map[string]interface{}{"written_by": "B"}
+	b.UpdatedAt = time.Now()
+	require.NoError(l.t, l.store.SaveSession(context.Background(), b))
+	return nil, ctx.Err()
+}
+func (l *takeoverLLM) Name() string  { return "blocking" }
+func (l *takeoverLLM) Model() string { return "blocking-v1" }
+
+// A turn that lost its session lease must stop writing what the new holder
+// owns. Its failed exit does not persist the session: the new holder's total
+// and context stay, and the loop span says the write was skipped.
+func TestATurnThatLostItsLeaseDoesNotOverwriteTheNewHolder(t *testing.T) {
+	store, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	log := newLeaseScriptLog()
+	llm := &takeoverLLM{started: make(chan struct{}), store: store, t: t}
+	cfg := DefaultConfig()
+	cfg.PatternConfig = DefaultPatternConfig()
+	cfg.PatternConfig.UseLLMClassifier = false
+	cfg.Retry.Enabled = false
+	tracer := observability.NewMockTracer()
+	ag := NewAgent(&mockBackend{}, llm, WithConfig(cfg), WithEventLog(log), WithMemory(NewMemoryWithStore(store)), WithTracer(tracer))
+	ag.leaseTTL = 30 * time.Millisecond
+	go func() { <-llm.started; log.renewHeld.Store(false) }()
+
+	_, err = ag.Chat(context.Background(), "s-lease-takeover", "go")
+	require.ErrorIs(t, err, ErrSessionLeaseLost, "the turn did not end on the lost lease")
+	got, err := store.LoadSession(context.Background(), "s-lease-takeover")
+	require.NoError(t, err)
+	assert.InDelta(t, 9.99, got.TotalCostUSD, 1e-9, "the turn that lost the lease overwrote the new holder's session total")
+	assert.Equal(t, "B", got.Context["written_by"], "the turn that lost the lease overwrote the new holder's session context")
+
+	skipped := false
+	for _, s := range tracer.GetSpans() {
+		if v, ok := s.Attributes["session.persist_skipped"]; ok && v == "lease_lost" {
+			skipped = true
+		}
+	}
+	assert.True(t, skipped, "no span says that the session write was skipped for the lost lease")
 }
