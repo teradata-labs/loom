@@ -170,6 +170,40 @@ func TestToolSchemaPolicyUsesStableReasonForMultipleInvalidProperties(t *testing
 	require.Equal(t, 1, logs.Len())
 }
 
+func TestNormalizeObjectToolSchemaUsesStableConflictReason(t *testing.T) {
+	f := func(value float64) *float64 { return &value }
+	i := func(value int) *int { return &value }
+	schema := &shuttle.JSONSchema{
+		Type:      "object",
+		Minimum:   f(1),
+		Maximum:   f(9),
+		MinLength: i(1),
+		MaxLength: i(9),
+		Pattern:   "a",
+		Format:    "x",
+		AllOf: []*shuttle.JSONSchema{{
+			Type:      "object",
+			Minimum:   f(2),
+			Maximum:   f(8),
+			MinLength: i(2),
+			MaxLength: i(8),
+			Pattern:   "b",
+			Format:    "y",
+		}},
+	}
+
+	var want string
+	for attempt := 0; attempt < 200; attempt++ {
+		_, err := NormalizeObjectToolSchema(schema)
+		require.Error(t, err)
+		if attempt == 0 {
+			want = err.Error()
+		} else {
+			assert.Equal(t, want, err.Error())
+		}
+	}
+}
+
 func TestNormalizeObjectToolSchemaPreservesProhibition(t *testing.T) {
 	const input = `{"type":"object","properties":{"environment":{"type":"string"}},"required":["environment"],"allOf":[
 		{"not":{"properties":{"environment":{"enum":["production"]}},"required":["environment"]}}

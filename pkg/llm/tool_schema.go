@@ -166,8 +166,13 @@ func normalizeObjectSchemaRoot(root map[string]interface{}) (map[string]interfac
 		}
 		fields, _ := normalized["required"].([]string)
 		required = appendUniqueRequired(required, fields)
-		for keyword, value := range normalized {
-			if err := mergeObjectSchemaKeyword(root, keyword, value); err != nil {
+		keywords := make([]string, 0, len(normalized))
+		for keyword := range normalized {
+			keywords = append(keywords, keyword)
+		}
+		sort.Strings(keywords)
+		for _, keyword := range keywords {
+			if err := mergeObjectSchemaKeyword(root, keyword, normalized[keyword]); err != nil {
 				return nil, fmt.Errorf("tool schema allOf branch %d: %w", index, err)
 			}
 		}
