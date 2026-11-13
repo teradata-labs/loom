@@ -69,8 +69,8 @@ These are the ONLY tools you should put in an agent's tools array:
 These are ALWAYS available — listing them is wrong and produces warnings:
 - `workspace`         — Session-scoped file management
 - `query_tool_result` — Read a large result held in memory THIS TURN, by the
-                        message_id shown on its stub; re-run the producing
-                        tool for anything older
+                        tool_use_id its truncation tail names; re-run the
+                        producing tool for anything older
 - `recall`            — Retrieve conversation cited in the session summary
                         (msg:A-B addresses)
 

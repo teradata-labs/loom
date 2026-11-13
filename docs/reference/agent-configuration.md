@@ -586,7 +586,7 @@ Under `spec.config` (k8s-style) or `agent.behavior` (legacy).
 | `timeout_seconds` | `int` | `300` | Timeout per message (seconds) |
 | `allow_code_execution` | `bool` | `false` | Allow shell execution |
 | `allowed_domains` | `[]string` | `[]` | Domain whitelist for web access |
-| `max_turns` | `int` | `25` | Max conversation turns |
+| `max_turns` | `int` | `25` | Max loop passes for one user message: the LLM calls before the final synthesis call. Each in-loop fold call uses one pass, whether its reply is usable or not. |
 | `max_tool_executions` | `int` | `50` | Max tool calls per conversation |
 | `output_token_cb_threshold` | `int` | `8` | Consecutive truncated-tool-call turns before circuit breaker fires. `0` = default (8). `-1` = disabled. |
 | `patterns` | object | optional | See [Pattern Configuration](#pattern-configuration) |

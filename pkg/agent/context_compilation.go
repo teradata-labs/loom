@@ -1333,11 +1333,11 @@ func (sm *SegmentedMemory) noteFoldedSkillsLocked(region, stays []Message, text 
 }
 
 // TurnReminder is one note the agent sends on a provider call as harness
-// state: the graph memory recall note, a soft budget reminder, the context
-// relief warning, a repeat-call hint, the tool-change note.
+// state: the graph memory recall note, a soft budget reminder, a repeat-call
+// hint, the tool-change note.
 //
 // Kind names a status reminder whose text changes from call to call (the
-// tool budget's count, the relief warning's percentage). A turn sends at most
+// tool budget's count, the turn budget's count). A turn sends at most
 // one reminder of each kind, the first: a later call can't replace it, since
 // the turn's request only grows (PinTurnNotes), and sending each new value
 // would stack contradictory copies. An empty Kind is an event note (a repeat

@@ -230,8 +230,8 @@ type Agent struct {
 	lazyToolSets []lazyToolSet
 
 	// suppressedBuiltinTools blocks agent-internal registrations (graph_memory,
-	// task_board, manage_skills, load_pattern) and the retrieval tool
-	// (recall) from surfacing to the LLM. Subsystems
+	// task_board, manage_skills, load_pattern) and the retrieval tools
+	// (query_tool_result, recall) from surfacing to the LLM. Subsystems
 	// themselves (extractor, task manager) keep running.
 	//
 	// Populated by WithoutBuiltinTool options. The server (cmd/looms) is

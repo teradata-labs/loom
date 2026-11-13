@@ -655,8 +655,8 @@ func WithoutSelfCorrection() Option {
 // disabling subsystem wiring. Pass one name per call; call repeatedly to
 // suppress multiple tools.
 //
-// Currently honoured for: graph_memory, task_board, recall, manage_skills,
-// load_pattern. Other tools either
+// Currently honoured for: graph_memory, task_board, query_tool_result,
+// recall, manage_skills, load_pattern. Other tools either
 // are registered eagerly by the caller (cmd_serve) and can be omitted there,
 // or are not subject to suppression.
 func WithoutBuiltinTool(name string) Option {
