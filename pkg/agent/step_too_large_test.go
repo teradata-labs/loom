@@ -186,10 +186,24 @@ func TestAStepThatEndsTheToolBudgetIsCheckedAtSynthesis(t *testing.T) {
 	model := &windowedModel{limit: 19000, fanOut: 40, plain: true}
 	ag, store := windowedAgent(t, model, 4000)
 	ag.config.MaxToolExecutions = 40
+	tracer := observability.NewMockTracer()
+	ag.tracer = tracer
 	resp, err := ag.Chat(context.Background(), "s-synth", "read every table")
 	require.NoError(t, err)
 	assert.Equal(t, "narrowed and done", resp.Content, "the synthesis send was not checked")
 	assert.True(t, model.told)
+
+	// Hawk sees the replacement: the loop span records it, as it does for a
+	// replacement before a loop send.
+	loops := tracer.GetSpansByName("agent.conversation_loop")
+	require.Len(t, loops, 1, "the turn did not record its loop span")
+	replaced := 0
+	for _, e := range loops[0].Events {
+		if e.Name == "turn.step_results_replaced" {
+			replaced++
+		}
+	}
+	assert.Equal(t, 1, replaced, "the replacement at synthesis left no span event")
 
 	// The final answer has no tools, so the note asks for an answer, not
 	// another call.

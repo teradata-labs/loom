@@ -2399,10 +2399,70 @@ func (a *Agent) recordConversationMetrics(sessionID string, response *Response, 
 	})
 }
 
-// addUsage folds one LLM call's usage into a running turn total.
-// carryFoldCost is a call's usage with the cost of the fold calls before it
-// added: the money and the output, so a row's cost is what was spent to reach
-// it. The input figures stay the call's own, which is the prompt it sent.
+// roleBilling is the role of a ledger row: a row that holds only what LLM
+// calls cost, written when a turn ends before any row holds that cost
+// (billUnwritten). It is stored folded, so no read of the session returns it
+// and the model never sees it.
+const roleBilling = "billing"
+
+// billUnwrittenTimeout bounds the ledger write of billUnwritten, which runs
+// after the turn's own context may have ended.
+const billUnwrittenTimeout = 5 * time.Second
+
+// billUnwritten writes a ledger row (roleBilling) for u, what the turn's calls
+// cost that no row holds. runConversationLoop's deferred exit calls it when the
+// turn ends on an error after such a call: a fold call, which writes no row,
+// or a call whose row the loop never reached. CostStorage.SessionCost sums
+// every row, folded rows too, so the session's cost stays what the provider
+// billed. The write keeps the turn's values (the caller's identity for the
+// store's row security) but not its cancellation, because the turn can end
+// when its context does. A failed write is logged and recorded on span; the
+// caller still returns the turn's own error.
+func (a *Agent) billUnwritten(ctx context.Context, session *Session, u Usage, span *observability.Span) {
+	if a.memory == nil || session == nil {
+		return
+	}
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), billUnwrittenTimeout)
+	defer cancel()
+	msg := Message{
+		Role:                roleBilling,
+		Folded:              true,
+		AgentID:             a.GetID(),
+		Model:               a.GetLLMModel(),
+		Timestamp:           time.Now(),
+		TokenCount:          u.TotalTokens,
+		CostUSD:             u.CostUSD,
+		InputTokens:         u.InputTokens,
+		OutputTokens:        u.OutputTokens,
+		CacheReadTokens:     u.CacheReadInputTokens,
+		CacheCreateTokens:   u.CacheCreationInputTokens,
+		CacheCreate1hTokens: u.CacheCreation1hInputTokens,
+		CacheCreate5mTokens: u.CacheCreation5mInputTokens,
+		ThinkingTokens:      u.ThinkingTokens,
+		Effort:              u.Effort,
+	}
+	if at, ok := occurredAtFromContext(ctx); ok {
+		msg.Timestamp = at
+	}
+	if err := a.memory.PersistMessage(wctx, session.ID, &msg, false); err != nil {
+		zap.L().Error("the turn ended on an error; the cost of its unwritten calls is on no row",
+			zap.String("session_id", session.ID),
+			zap.Float64("cost_usd", u.CostUSD),
+			zap.Error(err))
+		if span != nil {
+			span.RecordError(err)
+		}
+		return
+	}
+	if span != nil {
+		span.AddEvent("turn.unwritten_calls_billed", map[string]interface{}{"cost_usd": u.CostUSD, "total_tokens": u.TotalTokens})
+	}
+}
+
+// carryFoldCost is a call's usage with the cost of the calls before it that
+// wrote no row (fold calls, a reply the loop asked again for) added: the money
+// and the output, so a row's cost is what was spent to reach it. The input
+// figures stay the call's own, which is the prompt it sent.
 func carryFoldCost(u, fold Usage) Usage {
 	u.CostUSD += fold.CostUSD
 	u.OutputTokens += fold.OutputTokens
@@ -2793,12 +2853,24 @@ func extractHITLInfo(input map[string]interface{}) *HITLRequestInfo {
 // runConversationLoop executes the LLM-driven conversation loop.
 // This implements the core agent behavior: LLM generates tool calls,
 // we execute them, feed results back to LLM, repeat until completion.
-func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
+func (a *Agent) runConversationLoop(ctx Context) (_ *Response, retErr error) {
 	// Start trace span — always created; NoOpTracer handles disabled case
 	_, span := ctx.Tracer().StartSpan(ctx, "agent.conversation_loop")
 	defer ctx.Tracer().EndSpan(span)
 
 	session := ctx.Session()
+
+	// unbilled is what the provider billed for calls that have no row yet: fold
+	// calls, which write none, and a reply the loop asks again for. The next
+	// row the loop writes carries it, so the session's rows sum to what the
+	// turn spent. A turn that ends on an error writes no more rows, so the
+	// amount goes on a ledger row of its own (billUnwritten).
+	var unbilled Usage
+	defer func() {
+		if retErr != nil && unbilled != (Usage{}) {
+			a.billUnwritten(ctx, session, unbilled, span)
+		}
+	}()
 
 	// Freeze the base always-advertised set before any skill-required or
 	// progressive-disclosure registration can scope a tool to a session, so a
@@ -2812,7 +2884,6 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	emptyRetried := false                       // one-shot flag: retry empty LLM response at most once per conversation
 	foldPending := false                        // in-loop fold: this call carries the fold instruction; its reply is the summary
 	foldRetries := 0                            // unusable fold replies asked again once; then the step goes on unfolded
-	var foldUsage Usage                         // what fold calls cost; no row of their own, so the next row the loop writes carries it
 	hygieneRetries := 0                         // capped count of REQUIRE_FIX retries the end-of-turn auditor has triggered
 	var hygieneLast *hygiene.EnforcementOutcome // last outcome, surfaced into Response.Metadata
 	var prevToolNames []string                  // names advertised on this turn's previous provider call; nil before the first
@@ -3196,14 +3267,16 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		if !foldPending {
 			a.observePromptUsage(session, llmResp.Usage)
 		}
-		// A fold call writes no row. What it cost rides on the row this call
-		// writes, so the session's rows still sum to what the turn spent. The
-		// prompt figures stay this call's own: they measure what was sent.
+		// A fold call writes no row: what it cost waits in unbilled. Any other
+		// call carries what is unbilled (the prompt figures stay this call's
+		// own: they measure what was sent), and the whole is unbilled until
+		// the row for this call is written. Every path that writes that row
+		// clears it; a path that writes none leaves it for the next row.
 		if foldPending {
-			addUsage(&foldUsage, llmResp.Usage)
-		} else if foldUsage != (Usage{}) {
-			llmResp.Usage = carryFoldCost(llmResp.Usage, foldUsage)
-			foldUsage = Usage{}
+			addUsage(&unbilled, llmResp.Usage)
+		} else {
+			llmResp.Usage = carryFoldCost(llmResp.Usage, unbilled)
+			unbilled = llmResp.Usage
 		}
 
 		// Record LLM response on conversation_loop span
@@ -3473,6 +3546,9 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					meta["hygiene_fallthrough"] = hygieneLast.FallthroughReason
 				}
 			}
+			// The caller writes the final row with Usage, which carries the
+			// unbilled amount.
+			unbilled = Usage{}
 			return &Response{
 				Content:        content,
 				Usage:          llmResp.Usage,
@@ -3505,6 +3581,11 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			Effort:              llmResp.Usage.Effort,
 			Timestamp:           time.Now(),
 		}, false)
+		// The row holds this call's cost and what it carried. A row the store
+		// did not take leaves the amount for the next row.
+		if assistantPersisted {
+			unbilled = Usage{}
+		}
 
 		// HITL park pre-scan (park.go): with park enabled and the batch's
 		// assistant row durable, a batch needing a human decision ends the
@@ -3605,7 +3686,11 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	// If we hit max turns/executions, make one final LLM call to synthesize results
 	// This ensures the agent provides meaningful output instead of a generic error message
 	emitProgress(ctx, StageSynthesis, 90, "Synthesizing tool execution results", "")
-	return a.synthesizeFinalResponse(ctx, session, memoryNote, turnCount, toolExecutionCount, allToolExecutions, turnUsage, turnCalls)
+	resp, err := a.synthesizeFinalResponse(ctx, session, span, memoryNote, turnCount, toolExecutionCount, allToolExecutions, turnUsage, turnCalls, unbilled)
+	if err == nil {
+		unbilled = Usage{} // the final row carries it (synthesizeFinalResponse)
+	}
+	return resp, err
 }
 
 // batchState carries the loop-level state the per-call dispatch body reads
@@ -4126,9 +4211,12 @@ func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, 
 
 // synthesizeFinalResponse makes the final tool-free LLM call after the
 // conversation loop exhausts its turn/execution budget, so the agent yields
-// meaningful output instead of a generic limit error. Moved verbatim from
-// the loop tail when the batch body was extracted into dispatchOneCall.
-func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNote string, turnCount, toolExecutionCount int, allToolExecutions []ToolExecution, turnUsage Usage, turnCalls int) (*Response, error) {
+// meaningful output instead of a generic limit error. runConversationLoop
+// calls it with the loop's open span, which gets the events of this send, and
+// with unbilled: what the loop's calls cost that no row holds yet (a fold call
+// on the last pass). The returned Usage carries it, so the final row that
+// chat() writes holds it, on the synthesis fallback too.
+func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, span *observability.Span, memoryNote string, turnCount, toolExecutionCount int, allToolExecutions []ToolExecution, turnUsage Usage, turnCalls int, unbilled Usage) (*Response, error) {
 	// Add a synthesis request to the conversation
 	// Include explicit format instructions since they may have been compressed in context
 	synthesisPrompt := "You must provide your final answer NOW with whatever information you have gathered so far. Summarize your findings: what actions were taken, what results were produced, and any remaining steps the user would need to complete manually. Be concise and actionable. You MUST respond with text — do not return an empty response."
@@ -4150,7 +4238,7 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNot
 	}
 	// The loop ends here when the last step used up the tool budget, so this
 	// send can carry that step's results: the same check as a loop send.
-	a.fitStepToWindow(ctx, session, "step_results_too_large_at_synthesis", 0, nil, turnCount)
+	a.fitStepToWindow(ctx, session, "step_results_too_large_at_synthesis", 0, span, turnCount)
 	// The recall note was pinned by the loop's first call; pinning again is a
 	// no-op then, and pins it here when the loop never sent it.
 	synthesisMessages := func() []Message {
@@ -4181,7 +4269,7 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNot
 		maxTurnsMessage := a.getGuidanceMessage(ctx, "max_turns_reached", nil)
 		return &Response{
 			Content:        maxTurnsMessage,
-			Usage:          Usage{},
+			Usage:          unbilled,  // no call answered; the row still carries what the loop's calls cost
 			TurnUsage:      turnUsage, // the loop's calls were still billed
 			TurnLLMCalls:   turnCalls,
 			ToolExecutions: allToolExecutions,
@@ -4205,7 +4293,7 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNot
 	turnCalls++
 	return &Response{
 		Content:        content,
-		Usage:          finalResp.Usage,
+		Usage:          carryFoldCost(finalResp.Usage, unbilled),
 		TurnUsage:      turnUsage,
 		TurnLLMCalls:   turnCalls,
 		ToolExecutions: allToolExecutions,

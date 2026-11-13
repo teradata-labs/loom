@@ -54,6 +54,12 @@ type foldingStream struct {
 	summary string
 	// foldInput, when set, is the prompt size a fold call reports.
 	foldInput int
+	// failAfterFold, when set, fails every step call after the first fold
+	// with an error that is not a context refusal: the turn ends on it.
+	failAfterFold bool
+	// emptyAfterFold, when set, answers the first step call after a fold
+	// with an empty reply, which the loop asks again for.
+	emptyAfterFold bool
 }
 
 const callCost = 0.01
@@ -93,6 +99,13 @@ func (f *foldingStream) ChatStream(_ context.Context, msgs []Message, _ []shuttl
 		cb(reply)
 		return &LLMResponse{Content: reply, StopReason: "end_turn", Usage: usage}, nil
 	}
+	if f.folds > 0 && f.failAfterFold {
+		return nil, fmt.Errorf("API error (status 500): upstream failed")
+	}
+	if f.folds > 0 && f.emptyAfterFold {
+		f.emptyAfterFold = false
+		return &LLMResponse{Content: "", StopReason: "end_turn", Usage: usage}, nil
+	}
 	if f.taken >= f.steps {
 		cb("final answer")
 		return &LLMResponse{Content: "final answer", StopReason: "end_turn", Usage: usage}, nil
@@ -106,6 +119,13 @@ func (f *foldingStream) ChatStream(_ context.Context, msgs []Message, _ []shuttl
 
 func foldingAgent(t *testing.T, model *foldingStream) (*Agent, *SessionStore) {
 	t.Helper()
+	return foldingAgentWith(t, model, nil)
+}
+
+// foldingAgentWith is foldingAgent with the config changed by edit before the
+// agent is built, for a test that needs another turn cap.
+func foldingAgentWith(t *testing.T, model *foldingStream, edit func(*Config)) (*Agent, *SessionStore) {
+	t.Helper()
 	store, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
@@ -117,6 +137,9 @@ func foldingAgent(t *testing.T, model *foldingStream) (*Agent, *SessionStore) {
 	cfg.MaxIterations = 100
 	cfg.MaxTurns = 200 // fold calls are loop passes too: the long jobs here must not hit the turn cap
 	cfg.MaxToolExecutions = 100
+	if edit != nil {
+		edit(cfg)
+	}
 	ag := NewAgent(&mockBackend{}, model, WithConfig(cfg), WithMemory(NewMemoryWithStore(store)))
 	ag.RegisterTool(&shuttle.MockTool{
 		MockName: "step",
@@ -156,6 +179,70 @@ func TestInloopFold_ATurnThatFoldsStreamsNoSummaryAndBillsEveryCall(t *testing.T
 	calls := model.taken + 1 + model.folds
 	assert.InDelta(t, float64(calls)*callCost, resp.TurnUsage.CostUSD, 1e-9, "the turn did not count every call")
 	assert.Less(t, math.Abs(rows-float64(calls)*callCost), 1e-9)
+}
+
+// A fold call writes no row; the row written after it carries its cost. When
+// the turn ends before the loop writes another row, the cost must still reach
+// a row. Each MaxTurns value below ends the loop at a different pass, so some
+// end on a fold call and go to the synthesis send with the fold unbilled.
+func TestInloopFold_AFoldOnTheLastLoopPassIsBilled(t *testing.T) {
+	t.Parallel()
+	lastPassFolds := 0
+	for maxTurns := 6; maxTurns <= 40; maxTurns++ {
+		t.Run(fmt.Sprintf("max_turns=%d", maxTurns), func(t *testing.T) {
+			model := &foldingStream{steps: 60}
+			ag, store := foldingAgentWith(t, model, func(c *Config) { c.MaxTurns = maxTurns })
+			resp, err := ag.Chat(context.Background(), "s-last-pass", "do the long job")
+			require.NoError(t, err)
+			if len(model.foldAt) > 1 && model.foldAt[len(model.foldAt)-2] {
+				lastPassFolds++ // the synthesis call came right after a fold call
+			}
+			rows, err := store.SessionCost(context.Background(), "s-last-pass")
+			require.NoError(t, err)
+			assert.InDelta(t, resp.TurnUsage.CostUSD, rows, 1e-9, "the rows do not sum to what the turn spent")
+			assert.InDelta(t, float64(len(model.foldAt))*callCost, rows, 1e-9, "a call the model billed is on no row")
+		})
+	}
+	assert.Positive(t, lastPassFolds, "no MaxTurns value ended the loop on a fold call; the test does not reach the case")
+}
+
+// A turn can end on an error after a fold call. The turn returns no usage,
+// but the provider billed the fold call, and the session's rows must say so.
+// A reply the loop asks again for (an empty reply) writes no row either, so
+// the next row carries it and the fold cost before it.
+func TestInloopFold_ACallAfterAFoldThatWritesNoRowLosesNoCost(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		model   *foldingStream
+		wantErr bool
+	}{
+		{name: "the call after the fold fails", model: &foldingStream{steps: 24, failAfterFold: true}, wantErr: true},
+		{name: "the call after the fold is empty", model: &foldingStream{steps: 24, emptyAfterFold: true}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// No retry: the failed call ends the turn at once.
+			ag, store := foldingAgentWith(t, tc.model, func(c *Config) { c.Retry.Enabled = false })
+			resp, err := ag.Chat(context.Background(), "s-after-fold", "do the long job")
+			require.Positive(t, tc.model.folds, "the turn never folded; the test does not reach the case")
+			billed := 0
+			for i := range tc.model.foldAt {
+				if !tc.wantErr || i != len(tc.model.foldAt)-1 { // the failed call billed nothing
+					billed++
+				}
+			}
+			rows, rerr := store.SessionCost(context.Background(), "s-after-fold")
+			require.NoError(t, rerr)
+			if tc.wantErr {
+				require.Error(t, err, "the failed call did not end the turn")
+			} else {
+				require.NoError(t, err)
+				assert.InDelta(t, resp.TurnUsage.CostUSD, rows, 1e-9, "the rows do not sum to what the turn spent")
+			}
+			assert.InDelta(t, float64(billed)*callCost, rows, 1e-9, "a call the model billed is on no row")
+		})
+	}
 }
 
 // A fold call refused as too long is re-sent with the fold still asked for:
