@@ -25,6 +25,7 @@ import (
 	"go.uber.org/zap/zaptest"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/observability"
 )
 
 func TestBusPublishSubscribe(t *testing.T) {
@@ -660,5 +661,85 @@ func TestBusPublishRacingClose(t *testing.T) {
 			_ = bus.Close()
 		}()
 		wg.Wait()
+	}
+}
+
+// startSignalTracer is a MockTracer that reports each StartSpan on started, so
+// a test can act at the point where a bus operation has passed its first
+// closed check and opened its span.
+type startSignalTracer struct {
+	*observability.MockTracer
+	started chan string
+}
+
+func (s *startSignalTracer) StartSpan(ctx context.Context, name string, opts ...observability.SpanOption) (context.Context, *observability.Span) {
+	ctx, span := s.MockTracer.StartSpan(ctx, name, opts...)
+	s.started <- name
+	return ctx, span
+}
+
+// TestBusRefusedUnderLockMarksSpanError checks that a Publish or Subscribe
+// that passes the first closed check, and then finds the bus closed under the
+// lock, ends its span with an error status instead of an unset one (which a
+// tracer reads as success).
+func TestBusRefusedUnderLockMarksSpanError(t *testing.T) {
+	tests := []struct {
+		name string
+		span string
+		call func(ctx context.Context, bus *MessageBus) error
+	}{
+		{
+			name: "publish",
+			span: SpanBusPublish,
+			call: func(ctx context.Context, bus *MessageBus) error {
+				_, _, err := bus.Publish(ctx, "refused.topic", &loomv1.BusMessage{Id: "m1", Topic: "refused.topic", FromAgent: "agent0"})
+				return err
+			},
+		},
+		{
+			name: "subscribe",
+			span: SpanBusSubscribe,
+			call: func(ctx context.Context, bus *MessageBus) error {
+				_, err := bus.Subscribe(ctx, "agent1", "refused.topic", nil, 10)
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tracer := &startSignalTracer{MockTracer: observability.NewMockTracer(), started: make(chan string, 1)}
+			bus := NewMessageBus(nil, nil, tracer, zaptest.NewLogger(t))
+			ctx := context.Background()
+
+			// Hold the bus lock so the call stops right after it opens its
+			// span, then mark the bus closed the way Close does (flag first,
+			// lock second) before letting it continue.
+			bus.mu.Lock()
+			errCh := make(chan error, 1)
+			go func() { errCh <- tt.call(ctx, bus) }()
+
+			select {
+			case name := <-tracer.started:
+				require.Equal(t, tt.span, name)
+			case <-time.After(5 * time.Second):
+				bus.mu.Unlock()
+				t.Fatal("the call did not open its span")
+			}
+			bus.closed.Store(true)
+			bus.mu.Unlock()
+
+			select {
+			case err := <-errCh:
+				require.ErrorContains(t, err, "message bus is closed")
+			case <-time.After(5 * time.Second):
+				t.Fatal("the call did not return after the bus was closed")
+			}
+
+			span := tracer.GetSpanByName(tt.span)
+			require.NotNil(t, span, "the refused call's span was ended")
+			assert.Equal(t, observability.StatusError, span.Status.Code)
+			assert.Equal(t, "message bus is closed", span.Status.Message)
+		})
 	}
 }
