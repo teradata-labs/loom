@@ -204,6 +204,29 @@ func TestNormalizeObjectToolSchemaUsesStableConflictReason(t *testing.T) {
 	}
 }
 
+func TestNormalizeObjectToolSchemaProducesStableMergedOutput(t *testing.T) {
+	schema := &shuttle.JSONSchema{
+		Type: "object",
+		Enum: []interface{}{"a"},
+		AllOf: []*shuttle.JSONSchema{{
+			Type: "object",
+			Enum: []interface{}{"b"},
+			Not:  &shuttle.JSONSchema{Type: "string"},
+		}},
+	}
+
+	seen := make(map[string]struct{})
+	for attempt := 0; attempt < 200; attempt++ {
+		normalized, err := NormalizeObjectToolSchema(schema)
+		require.NoError(t, err)
+		encoded, err := json.Marshal(normalized)
+		require.NoError(t, err)
+		seen[string(encoded)] = struct{}{}
+	}
+
+	assert.Len(t, seen, 1)
+}
+
 func TestNormalizeObjectToolSchemaPreservesProhibition(t *testing.T) {
 	const input = `{"type":"object","properties":{"environment":{"type":"string"}},"required":["environment"],"allOf":[
 		{"not":{"properties":{"environment":{"enum":["production"]}},"required":["environment"]}}
