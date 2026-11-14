@@ -2194,15 +2194,9 @@ func (s *MultiAgentServer) processCoordinatorBroadcastMessages(
 	var messages []BroadcastMessage
 
 	for _, sub := range subscriptions {
-		for {
-			select {
-			case msg := <-sub.Channel:
-				messages = append(messages, BroadcastMessage{msg, sub.Topic})
-			default:
-				goto nextSubscription
-			}
+		for _, msg := range sub.Drain() {
+			messages = append(messages, BroadcastMessage{msg, sub.Topic})
 		}
-	nextSubscription:
 	}
 
 	if len(messages) == 0 {
@@ -2340,16 +2334,7 @@ func (s *MultiAgentServer) processSubAgentBroadcastMessages(
 	}
 
 	// Non-blocking drain from subscription channel
-	var messages []*loomv1.BusMessage
-	for {
-		select {
-		case msg := <-sub.Channel:
-			messages = append(messages, msg)
-		default:
-			goto done
-		}
-	}
-done:
+	messages := sub.Drain()
 
 	if len(messages) == 0 {
 		s.logger.Debug("No broadcast messages to process for sub-agent",

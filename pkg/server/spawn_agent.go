@@ -476,12 +476,10 @@ func (s *MultiAgentServer) cleanupSpawnedAgent(sessionID string, reason string) 
 		spawned.cancelFunc()
 	}
 
-	// Close notification channels
-	for _, notifyChan := range spawned.notifyChannels {
-		close(notifyChan)
-	}
-
-	// Unsubscribe from topics using subscription IDs
+	// Unsubscribe before closing the notification channels: Publish sends on a
+	// subscription's notification channel while it holds the bus lock, and
+	// Unsubscribe takes that lock, so once it returns no Publish can send on a
+	// channel closed below (a send on a closed channel panics).
 	if s.messageBus != nil {
 		for _, subID := range spawned.subscriptionIDs {
 			err := s.messageBus.Unsubscribe(context.Background(), subID)
@@ -495,6 +493,11 @@ func (s *MultiAgentServer) cleanupSpawnedAgent(sessionID string, reason string) 
 					zap.String("subscription_id", subID))
 			}
 		}
+	}
+
+	// Close notification channels
+	for _, notifyChan := range spawned.notifyChannels {
+		close(notifyChan)
 	}
 
 	logger.Info("Spawned agent cleanup complete",
@@ -599,19 +602,12 @@ func (s *MultiAgentServer) processSpawnedAgentMessages(ctx context.Context, spaw
 	// Drain all pending messages from all subscriptions
 	var messages []*BusMessage
 	for _, sub := range subscriptions {
-		// Non-blocking drain
-		for {
-			select {
-			case msg := <-sub.Channel:
-				messages = append(messages, &BusMessage{
-					msg:   msg,
-					topic: sub.Topic,
-				})
-			default:
-				goto nextSubscription
-			}
+		for _, msg := range sub.Drain() {
+			messages = append(messages, &BusMessage{
+				msg:   msg,
+				topic: sub.Topic,
+			})
 		}
-	nextSubscription:
 	}
 
 	if len(messages) == 0 {

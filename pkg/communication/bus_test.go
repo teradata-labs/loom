@@ -25,6 +25,7 @@ import (
 	"go.uber.org/zap/zaptest"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/observability"
 )
 
 func TestBusPublishSubscribe(t *testing.T) {
@@ -521,4 +522,224 @@ func TestBusValidation(t *testing.T) {
 	// Nil message
 	_, _, err = bus.Publish(ctx, "topic", nil)
 	assert.Error(t, err)
+}
+
+// TestSubscriptionDrain checks that Drain returns the buffered messages without
+// blocking, and that it stops on a closed subscription channel instead of
+// receiving nil messages forever (a closed channel is always ready).
+func TestSubscriptionDrain(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	bus := NewMessageBus(nil, nil, nil, logger)
+	ctx := context.Background()
+
+	sub, err := bus.Subscribe(ctx, "agent1", "drain.topic", nil, 10)
+	require.NoError(t, err)
+
+	assert.Empty(t, drainWithin(t, sub), "an empty subscription drains to nothing, without blocking")
+
+	for _, id := range []string{"m1", "m2"} {
+		_, _, err = bus.Publish(ctx, "drain.topic", &loomv1.BusMessage{
+			Id:        id,
+			Topic:     "drain.topic",
+			FromAgent: "agent0",
+			Payload:   &loomv1.MessagePayload{Data: &loomv1.MessagePayload_Value{Value: []byte(id)}},
+			Timestamp: time.Now().UnixMilli(),
+		})
+		require.NoError(t, err)
+	}
+
+	// Close the bus with the two messages still buffered: their channel is
+	// now closed.
+	require.NoError(t, bus.Close())
+
+	got := drainWithin(t, sub)
+	require.Len(t, got, 2, "messages buffered before the close are still returned")
+	assert.Equal(t, "m1", got[0].GetId())
+	assert.Equal(t, "m2", got[1].GetId())
+	assert.Empty(t, drainWithin(t, sub), "a closed, empty subscription drains to nothing")
+}
+
+// TestSubscriptionDrainAfterUnsubscribe checks the other way a subscription
+// channel is closed: Unsubscribe.
+func TestSubscriptionDrainAfterUnsubscribe(t *testing.T) {
+	bus := NewMessageBus(nil, nil, nil, zaptest.NewLogger(t))
+	defer func() { _ = bus.Close() }()
+	ctx := context.Background()
+
+	sub, err := bus.Subscribe(ctx, "agent1", "drain.unsub", nil, 10)
+	require.NoError(t, err)
+	_, _, err = bus.Publish(ctx, "drain.unsub", &loomv1.BusMessage{Id: "m1", Topic: "drain.unsub", FromAgent: "agent0"})
+	require.NoError(t, err)
+
+	require.NoError(t, bus.Unsubscribe(ctx, sub.ID))
+
+	got := drainWithin(t, sub)
+	require.Len(t, got, 1, "the message buffered before Unsubscribe is still returned")
+	assert.Equal(t, "m1", got[0].GetId())
+	assert.Empty(t, drainWithin(t, sub), "an unsubscribed, empty subscription drains to nothing")
+}
+
+// drainWithin calls Drain and fails the test if it does not return within 5s,
+// so a Drain that loops on a closed channel fails instead of hanging the run.
+func drainWithin(t *testing.T, sub *Subscription) []*loomv1.BusMessage {
+	t.Helper()
+	done := make(chan []*loomv1.BusMessage, 1)
+	go func() { done <- sub.Drain() }()
+	select {
+	case got := <-done:
+		return got
+	case <-time.After(5 * time.Second):
+		t.Fatal("Drain did not return on a closed subscription channel")
+		return nil
+	}
+}
+
+// TestBusSubscribeRacingClose checks that a Subscribe racing Close either
+// fails or returns a subscription whose channel Close has closed, never one
+// left open (its reader would wait forever).
+func TestBusSubscribeRacingClose(t *testing.T) {
+	ctx := context.Background()
+	rounds := 20000
+	if testing.Short() {
+		rounds = 2000
+	}
+	for i := 0; i < rounds; i++ {
+		bus := NewMessageBus(nil, nil, nil, nil)
+
+		var sub *Subscription
+		var subErr error
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			sub, subErr = bus.Subscribe(ctx, "a", "t", nil, 1)
+		}()
+		go func() {
+			defer wg.Done()
+			_ = bus.Close()
+		}()
+		wg.Wait()
+
+		if subErr != nil {
+			continue
+		}
+		// Nothing was published, so a closed channel answers at once with
+		// ok == false; an open one has nothing to give.
+		select {
+		case _, ok := <-sub.Channel:
+			require.False(t, ok, "round %d: unexpected message", i)
+		default:
+			t.Fatalf("round %d: Subscribe returned a subscription whose channel stays open after Close", i)
+		}
+	}
+}
+
+// TestBusPublishRacingClose checks that a Publish that passed the closed check
+// before Close ran never sends on a channel Close has closed ("send on closed
+// channel" panic). Each round races one Close against a few Publish calls.
+func TestBusPublishRacingClose(t *testing.T) {
+	ctx := context.Background()
+	rounds := 20000
+	if testing.Short() {
+		rounds = 2000
+	}
+	for i := 0; i < rounds; i++ {
+		bus := NewMessageBus(nil, nil, nil, nil)
+		_, err := bus.Subscribe(ctx, "a", "t", nil, 1000)
+		require.NoError(t, err)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 4; j++ {
+				_, _, _ = bus.Publish(ctx, "t", &loomv1.BusMessage{Id: "x", FromAgent: "b"})
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			_ = bus.Close()
+		}()
+		wg.Wait()
+	}
+}
+
+// startSignalTracer is a MockTracer that reports each StartSpan on started, so
+// a test can act at the point where a bus operation has passed its first
+// closed check and opened its span.
+type startSignalTracer struct {
+	*observability.MockTracer
+	started chan string
+}
+
+func (s *startSignalTracer) StartSpan(ctx context.Context, name string, opts ...observability.SpanOption) (context.Context, *observability.Span) {
+	ctx, span := s.MockTracer.StartSpan(ctx, name, opts...)
+	s.started <- name
+	return ctx, span
+}
+
+// TestBusRefusedUnderLockMarksSpanError checks that a Publish or Subscribe
+// that passes the first closed check, and then finds the bus closed under the
+// lock, ends its span with an error status instead of an unset one (which a
+// tracer reads as success).
+func TestBusRefusedUnderLockMarksSpanError(t *testing.T) {
+	tests := []struct {
+		name string
+		span string
+		call func(ctx context.Context, bus *MessageBus) error
+	}{
+		{
+			name: "publish",
+			span: SpanBusPublish,
+			call: func(ctx context.Context, bus *MessageBus) error {
+				_, _, err := bus.Publish(ctx, "refused.topic", &loomv1.BusMessage{Id: "m1", Topic: "refused.topic", FromAgent: "agent0"})
+				return err
+			},
+		},
+		{
+			name: "subscribe",
+			span: SpanBusSubscribe,
+			call: func(ctx context.Context, bus *MessageBus) error {
+				_, err := bus.Subscribe(ctx, "agent1", "refused.topic", nil, 10)
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tracer := &startSignalTracer{MockTracer: observability.NewMockTracer(), started: make(chan string, 1)}
+			bus := NewMessageBus(nil, nil, tracer, zaptest.NewLogger(t))
+			ctx := context.Background()
+
+			// Hold the bus lock so the call stops right after it opens its
+			// span, then mark the bus closed the way Close does (flag first,
+			// lock second) before letting it continue.
+			bus.mu.Lock()
+			errCh := make(chan error, 1)
+			go func() { errCh <- tt.call(ctx, bus) }()
+
+			select {
+			case name := <-tracer.started:
+				require.Equal(t, tt.span, name)
+			case <-time.After(5 * time.Second):
+				bus.mu.Unlock()
+				t.Fatal("the call did not open its span")
+			}
+			bus.closed.Store(true)
+			bus.mu.Unlock()
+
+			select {
+			case err := <-errCh:
+				require.ErrorContains(t, err, "message bus is closed")
+			case <-time.After(5 * time.Second):
+				t.Fatal("the call did not return after the bus was closed")
+			}
+
+			span := tracer.GetSpanByName(tt.span)
+			require.NotNil(t, span, "the refused call's span was ended")
+			assert.Equal(t, observability.StatusError, span.Status.Code)
+			assert.Equal(t, "message bus is closed", span.Status.Message)
+		})
+	}
 }
