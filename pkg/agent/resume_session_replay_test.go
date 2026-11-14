@@ -21,11 +21,21 @@ import (
 
 // recordLLMResponse writes the llm_call_intent and llm_call_result events the
 // loop writes around one model call.
-func recordLLMResponse(t *testing.T, log eventlog.EventLogStore, sessionID string, step int, payload []byte) {
+// recordLLMResponse records a step's LLM intent and result the way the loop
+// does: the intent names the turn the response answers (answered_turn).
+func recordLLMResponse(t *testing.T, log eventlog.EventLogStore, sessionID string, step int, answeredTurn int64, payload []byte) {
 	t.Helper()
 	ctx := context.Background()
-	require.NoError(t, log.RecordIntent(ctx, sessionID, step, 0, eventlog.EventLLMCallIntent, "", []byte(`{"model":"test"}`)))
+	intent := []byte(fmt.Sprintf(`{"model":"test","answered_turn":%d}`, answeredTurn))
+	require.NoError(t, log.RecordIntent(ctx, sessionID, step, 0, eventlog.EventLLMCallIntent, "", intent))
 	require.NoError(t, log.RecordResult(ctx, sessionID, step, 0, eventlog.EventLLMCallResult, "", payload))
+}
+
+// lastMessageTurn is the Turn of the session's last message, the turn a response
+// recorded now answers.
+func lastMessageTurn(sess *Session) int64 {
+	msgs := rawSessionMessages(sess)
+	return msgs[len(msgs)-1].Turn
 }
 
 func countToolBatches(sess *Session) (batches int) {
@@ -56,7 +66,7 @@ func TestResumeSession_RecordedResponseIsReplayedNotRequestedAgain(t *testing.T)
 		ToolCalls: []llmtypes.ToolCall{{ID: "c1", Name: "crashy", Input: map[string]interface{}{"n": 1}}},
 	})
 	require.NoError(t, err)
-	recordLLMResponse(t, recorder, "s-replay", 0, payload)
+	recordLLMResponse(t, recorder, "s-replay", 0, lastMessageTurn(sess), payload)
 
 	resp, err := ag.ResumeSession(ctx, "s-replay")
 	require.NoError(t, err)
@@ -118,7 +128,7 @@ func TestResumeSession_NotReplayed_TextOnlyOrUndecodable(t *testing.T) {
 			ctx := context.Background()
 			sess := ag.memory.GetOrCreateSessionWithAgent(ctx, "s-replay-no", ag.config.Name, "")
 			ag.appendMessage(ctx, sess, Message{Role: "user", Content: "hi"}, true)
-			recordLLMResponse(t, recorder, "s-replay-no", 0, payload)
+			recordLLMResponse(t, recorder, "s-replay-no", 0, lastMessageTurn(sess), payload)
 
 			resp, err := ag.ResumeSession(ctx, "s-replay-no")
 			require.NoError(t, err)
@@ -150,7 +160,7 @@ func TestResumeSession_RecordedResponseAfterAnAnsweredBatch_IsReplayed(t *testin
 		ToolCalls: []llmtypes.ToolCall{{ID: "c2", Name: "crashy", Input: map[string]interface{}{"n": 2}}},
 	})
 	require.NoError(t, err)
-	recordLLMResponse(t, recorder, "s-replay-2", 1, payload)
+	recordLLMResponse(t, recorder, "s-replay-2", 1, lastMessageTurn(sess), payload)
 
 	_, err = ag.ResumeSession(ctx, "s-replay-2")
 	require.NoError(t, err)
@@ -188,12 +198,15 @@ func TestResumeSession_FoldedBatchIsNotReplayedAgain(t *testing.T) {
 	}
 	shed, _, _ := sm.ReleasePressure(ctx, 0)
 	require.True(t, shed, "the conversation must be heavy enough to fold")
-	save(Message{Role: "user", Content: "turn 8: " + filler}, true) // a new turn, unanswered
+	turn8 := Message{Role: "user", Content: "turn 8: " + filler} // a new turn, unanswered
+	require.NoError(t, store.SaveMessage(ctx, sessionID, &turn8, true))
+	sm.AddMessage(ctx, turn8)
+	require.NotZero(t, turn8.Turn, "the store stamps the turn")
 
 	recorder := &recordingEventLog{}
 	payload, err := json.Marshal(LLMResponse{ToolCalls: []llmtypes.ToolCall{kept}})
 	require.NoError(t, err)
-	recordLLMResponse(t, recorder, sessionID, 0, payload) // the folded batch's response is still in the log
+	recordLLMResponse(t, recorder, sessionID, 0, turn8.Turn, payload) // the folded batch's response is still in the log
 	llm := &scriptedLLM{}
 	ag := newEventLogAgent(t, llm, store, recorder, &crashingTool{})
 
@@ -249,7 +262,7 @@ func TestResumeSession_FinishedTurnIsNotReplayedInto(t *testing.T) {
 	ag.appendMessage(ctx, sess, Message{Role: "assistant", Content: "hello"}, false)
 	payload, err := json.Marshal(LLMResponse{ToolCalls: []llmtypes.ToolCall{{ID: "c1", Name: "crashy", Input: map[string]interface{}{}}}})
 	require.NoError(t, err)
-	recordLLMResponse(t, recorder, "s-replay-finished", 0, payload)
+	recordLLMResponse(t, recorder, "s-replay-finished", 0, lastMessageTurn(sess), payload)
 
 	_, err = ag.ResumeSession(ctx, "s-replay-finished")
 	require.ErrorIs(t, err, ErrNothingParked)
@@ -283,7 +296,7 @@ func TestResumeSession_StaleResultFromEarlierTurnIsNotReplayed(t *testing.T) {
 		ToolCalls:  []llmtypes.ToolCall{{ID: "c1", Name: "crashy", Input: map[string]interface{}{"n": 1}}},
 	})
 	require.NoError(t, err)
-	recordLLMResponse(t, recorder, "s-replay-stale", 0, payload)
+	recordLLMResponse(t, recorder, "s-replay-stale", 0, lastMessageTurn(sess), payload)
 	// A later turn: the user's message is saved, its first LLM call recorded
 	// only its intent, and the process died mid-call.
 	ag.appendMessage(ctx, sess, Message{Role: "user", Content: "second turn"}, true)
@@ -361,6 +374,139 @@ func TestResumeSession_CircuitBreakerExitResultIsNotReplayed(t *testing.T) {
 	require.Zero(t, tool.calls, "resume dispatched the truncated calls the breaker refused")
 }
 
+// pruneFailingLog fails every PruneResolvedStep, the best-effort prune at the
+// breaker exit.
+type pruneFailingLog struct{ *recordingEventLog }
+
+func (l *pruneFailingLog) PruneResolvedStep(context.Context, string, int) error {
+	return errors.New("event log unavailable")
+}
+
+// The breaker exit's prune is best-effort. When it fails the refused response
+// stays in the log as the highest step, and the failed turn's own resume must
+// still not dispatch its truncated calls (review round 2, Q4).
+func TestResumeSession_BreakerPruneFailure_TruncatedBatchNotReplayed(t *testing.T) {
+	recorder := &pruneFailingLog{recordingEventLog: &recordingEventLog{}}
+	sessions := newSQLiteSessions(t)
+	tool := &cbTruncatedTool{}
+	buildAgent := func(llm *scriptedLLM) *Agent {
+		cfg := DefaultConfig()
+		cfg.PatternConfig = DefaultPatternConfig()
+		cfg.PatternConfig.UseLLMClassifier = false
+		cfg.OutputTokenCBThreshold = 1
+		ag := NewAgent(&mockBackend{}, llm, WithConfig(cfg), WithEventLog(recorder), WithMemory(NewMemoryWithStore(sessions)))
+		ag.tools.Register(tool)
+		return ag
+	}
+
+	first := buildAgent(&scriptedLLM{steps: []func(context.Context) (*llmtypes.LLMResponse, error){
+		func(context.Context) (*llmtypes.LLMResponse, error) {
+			return &llmtypes.LLMResponse{
+				StopReason: "max_tokens",
+				Content:    "runn",
+				ToolCalls:  []llmtypes.ToolCall{{ID: "c1", Name: "needs_query", Input: map[string]interface{}{}}},
+			}, nil
+		},
+	}})
+	_, err := first.Chat(context.Background(), "s-replay-cb-prune", "go")
+	require.ErrorContains(t, err, "circuit breaker")
+	events, err := recorder.LoadEvents(context.Background(), "s-replay-cb-prune")
+	require.NoError(t, err)
+	require.NotEmpty(t, events, "the failing prune must leave the refused response in the log")
+
+	second := buildAgent(&scriptedLLM{})
+	resp, err := second.ResumeSession(context.Background(), "s-replay-cb-prune")
+	require.NoError(t, err)
+	require.Equal(t, "done", resp.Content)
+	require.Zero(t, tool.calls, "resume dispatched the truncated calls the breaker refused")
+}
+
+// r2IntentFailingLog fails llm_call_intent writes on demand, standing in for
+// the turn that dies before its own intent is recorded.
+type r2IntentFailingLog struct {
+	*recordingEventLog
+	failIntent bool
+}
+
+func (l *r2IntentFailingLog) RecordIntent(ctx context.Context, sessionID string, stepIndex, batchPosition int, eventType eventlog.EventType, toolUseID string, payload []byte) error {
+	if l.failIntent && eventType == eventlog.EventLLMCallIntent {
+		return errors.New("event log unavailable")
+	}
+	return l.recordingEventLog.RecordIntent(ctx, sessionID, stepIndex, batchPosition, eventType, toolUseID, payload)
+}
+
+// A later turn whose own intent write fails leaves the earlier turn's step as
+// the highest intent, and its message as the unanswered tail: the replay must
+// still not run the earlier turn's recorded batch as the answer to the later
+// message — the model never saw it (review round 2, F5).
+func TestReview590R2_StaleCrashedTurnResultReplayedIntoLaterTurn(t *testing.T) {
+	log := &r2IntentFailingLog{recordingEventLog: &recordingEventLog{}}
+	sessions := newSQLiteSessions(t)
+	tool := &crashingTool{}
+	llm := &scriptedLLM{}
+	ag := newEventLogAgent(t, llm, sessions, log, tool)
+	ctx := context.Background()
+	sess := ag.memory.GetOrCreateSessionWithAgent(ctx, "s-r2", ag.config.Name, "")
+	ag.appendMessage(ctx, sess, Message{Role: "user", Content: "first turn"}, true)
+	payload, err := json.Marshal(LLMResponse{Content: "running it",
+		ToolCalls: []llmtypes.ToolCall{{ID: "c1", Name: "crashy", Input: map[string]interface{}{"n": 1}}}})
+	require.NoError(t, err)
+	recordLLMResponse(t, log, "s-r2", 0, lastMessageTurn(sess), payload)
+	log.failIntent = true
+	_, err = ag.Chat(ctx, "s-r2", "second turn")
+	require.Error(t, err)
+	log.failIntent = false
+	require.Zero(t, llm.calls)
+	_, _ = ag.ResumeSession(ctx, "s-r2")
+	require.Zero(t, tool.calls, "turn 1's recorded batch ran as the answer to turn 2's message")
+	require.Equal(t, 1, llm.calls, "the later turn must be answered by a fresh model call, not the replay")
+}
+
+// intentCapturingLog keeps every llm_call_intent payload, even after the step
+// is pruned.
+type intentCapturingLog struct {
+	*recordingEventLog
+	intents [][]byte
+}
+
+func (l *intentCapturingLog) RecordIntent(ctx context.Context, sessionID string, stepIndex, batchPosition int, eventType eventlog.EventType, toolUseID string, payload []byte) error {
+	if eventType == eventlog.EventLLMCallIntent {
+		l.intents = append(l.intents, append([]byte(nil), payload...))
+	}
+	return l.recordingEventLog.RecordIntent(ctx, sessionID, stepIndex, batchPosition, eventType, toolUseID, payload)
+}
+
+// The loop stamps each LLM intent with the turn it answers: a Chat with its own
+// user message's Turn, a resume with the session's tail Turn. A wrong stamp
+// would make the replay gate refuse every real replay.
+func TestRecordLLMIntent_StampsTheAnsweredTurn(t *testing.T) {
+	log := &intentCapturingLog{recordingEventLog: &recordingEventLog{}}
+	ag := newEventLogAgent(t, &scriptedLLM{}, newSQLiteSessions(t), log, &crashingTool{})
+	ctx := context.Background()
+	answered := func(i int) int64 {
+		var p struct {
+			AnsweredTurn *int64 `json:"answered_turn"`
+		}
+		require.NoError(t, json.Unmarshal(log.intents[i], &p))
+		require.NotNil(t, p.AnsweredTurn, "intent %d carries no answered_turn", i)
+		return *p.AnsweredTurn
+	}
+
+	_, err := ag.Chat(ctx, "s-stamp", "first")
+	require.NoError(t, err)
+	sess := ag.memory.GetOrCreateSessionWithAgent(ctx, "s-stamp", ag.config.Name, "")
+	require.Len(t, log.intents, 1)
+	require.Equal(t, rawSessionMessages(sess)[0].Turn, answered(0), "Chat stamps its user message's turn")
+
+	ag.appendMessage(ctx, sess, Message{Role: "user", Content: "second"}, true)
+	tail := lastMessageTurn(sess)
+	require.NotEqual(t, answered(0), tail)
+	_, err = ag.ResumeSession(ctx, "s-stamp")
+	require.NoError(t, err)
+	require.Len(t, log.intents, 2)
+	require.Equal(t, tail, answered(1), "a resume stamps the tail turn it answers")
+}
+
 // assistantRowFailingStore fails every assistant-row write, the fail-open
 // appendMessage case for the replayed message.
 type assistantRowFailingStore struct {
@@ -407,7 +553,7 @@ func TestResumeSession_UnpersistedReplaySkipsParkAndKeepsStep(t *testing.T) {
 		{ID: "c2", Name: "gated", Input: map[string]interface{}{"v": "w"}},
 	}})
 	require.NoError(t, err)
-	recordLLMResponse(t, recorder, "s-replay-nopark", 0, payload)
+	recordLLMResponse(t, recorder, "s-replay-nopark", 0, lastMessageTurn(sess), payload)
 
 	_, err = ag.ResumeSession(ctx, "s-replay-nopark")
 	require.NoError(t, err, "resume parked on a batch whose assistant message never saved")
@@ -443,7 +589,7 @@ func TestResumeSession_ReplayWithStartedQueryToolResult(t *testing.T) {
 			{ID: "c2", Name: "crashy", Input: map[string]interface{}{"n": 1}},
 		}})
 		require.NoError(t, err)
-		recordLLMResponse(t, recorder, id, 0, payload)
+		recordLLMResponse(t, recorder, id, 0, lastMessageTurn(sess), payload)
 		require.NoError(t, recorder.RecordIntent(ctx, id, 0, 0, eventlog.EventToolCallIntent, "q1", []byte(`{"tool_name":"query_tool_result"}`)))
 	}
 

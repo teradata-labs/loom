@@ -3033,7 +3033,17 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			llmResp = &LLMResponse{Content: scripted, StopReason: "end_turn"}
 			providerCalled = false
 		} else {
-			if intentErr := a.recordLLMIntent(ctx, session.ID, thisStep, len(messages), a.llm.Model()); intentErr != nil {
+			// The intent is stamped with the turn it answers — the Turn of the
+			// opening user message captured at the Chat-entry persist site and
+			// carried on the concrete agentContext. The replay gate compares
+			// it against the session's tail, so a response recorded for one
+			// turn is never replayed as the answer to a later one. Asserting
+			// rather than widening the public Context contract.
+			turnAnswered := int64(0)
+			if tc, ok := ctx.(taskTurnContext); ok {
+				turnAnswered = tc.TurnIndex()
+			}
+			if intentErr := a.recordLLMIntent(ctx, session.ID, thisStep, len(messages), a.llm.Model(), turnAnswered); intentErr != nil {
 				return nil, fmt.Errorf("recording LLM call intent: %w", intentErr)
 			}
 			llmResp, err = sendChat(tools)
