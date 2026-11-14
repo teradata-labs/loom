@@ -96,8 +96,9 @@ type Agent struct {
 	// is recorded but whose result is not. The zero value stops with an
 	// ExecutionGap, as before.
 	unknownOutcome UnknownOutcomePolicy
-	// transientTail, when non-nil, supplies caller text appended to the
-	// transient trailing reminder of every provider call (WithTransientTail).
+	// transientTail, when non-nil, supplies caller text that rides a
+	// <system-reminder> with the turn's built-in notes on every provider call
+	// (WithTransientTail).
 	transientTail func(ctx context.Context) string
 	// messageLabeler, when set (WithMessageLabeler), runs where a message
 	// enters a session's context — arrival or the restore replay — and its
