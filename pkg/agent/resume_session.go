@@ -156,7 +156,15 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (_ *Respons
 		}
 		a.leases.apply(sessionID, handleCollector.ReleaseAll(zap.L()), nil)
 	}()
-	agentCtx := &agentContext{Context: ctx, session: sess, tracer: a.tracer, progressCallback: nil}
+	// The resumed loop's recordLLMIntent stamps the turn each intent answers,
+	// the identity the replay gate compares against the session's tail. A
+	// resume answers the session's tail turn — the unanswered user message, or
+	// the tool rows awaiting the next response — not a new Chat's message.
+	var resumedTurn int64
+	if tailMsgs := rawSessionMessages(sess); len(tailMsgs) > 0 {
+		resumedTurn = tailMsgs[len(tailMsgs)-1].Turn
+	}
+	agentCtx := &agentContext{Context: ctx, session: sess, tracer: a.tracer, progressCallback: nil, turnIndex: resumedTurn}
 
 	// A recorded model response whose assistant message never saved, and none of
 	// whose tool calls were started, is replayed from the log rather than asked
@@ -477,7 +485,12 @@ func sameToolCall(a, b ToolCall) bool {
 // fact the loop's appendMessage flag carries). It replays only when all of
 // these hold, and otherwise leaves everything to the existing paths (a fresh
 // call, or the refusals):
-//   - the response has tool calls and its payload decodes;
+//   - the response has tool calls, its payload decodes, and it did not stop
+//     at max_tokens (truncated calls; the breaker's refusal holds even when
+//     its prune fails);
+//   - the recorded step's intent names the turn the session still ends in
+//     (answered_turn equals the tail message's Turn; an intent without the
+//     field is refused);
 //   - the recorded step is the highest step holding an llm_call_intent — the
 //     response must answer the LLM call the crash interrupted. A result below
 //     that step belongs to a turn that already failed after recording it (the
@@ -501,9 +514,11 @@ func (a *Agent) replayRecordedBatch(ctx context.Context, sess *Session, sessionI
 		return false, false
 	}
 	highestIntent := -1
+	var intentAtHighest *eventlog.ExecutionEvent
 	for i := range events {
 		if e := &events[i]; e.EventType == eventlog.EventLLMCallIntent && e.StepIndex > highestIntent {
 			highestIntent = e.StepIndex
+			intentAtHighest = e
 		}
 	}
 	if recorded.StepIndex != highestIntent {
@@ -513,6 +528,13 @@ func (a *Agent) replayRecordedBatch(ctx context.Context, sess *Session, sessionI
 	if err := json.Unmarshal(recorded.Payload, &resp); err != nil || len(resp.ToolCalls) == 0 {
 		return false, false
 	}
+	// A response cut off at max_tokens is never replayed: its tool calls may
+	// be truncated, and it is the response the output-token breaker refuses.
+	// Deciding from the durable payload keeps the refusal standing when the
+	// breaker exit's best-effort prune fails.
+	if resp.StopReason == "max_tokens" {
+		return false, false
+	}
 	for _, e := range events {
 		if e.EventType == eventlog.EventToolCallIntent && e.StepIndex == recorded.StepIndex && !isQueryToolResultIntent(e) {
 			return false, false
@@ -520,6 +542,19 @@ func (a *Agent) replayRecordedBatch(ctx context.Context, sess *Session, sessionI
 	}
 	msgs := rawSessionMessages(sess)
 	if len(msgs) == 0 || !(unansweredTurnTail(msgs) || msgs[len(msgs)-1].Role == "tool") {
+		return false, false
+	}
+	// The response must be the answer to the turn the session still ends in.
+	// The intent payload carries that turn (the opening user message's Turn);
+	// a later turn's message has a strictly greater Turn, so a batch chosen
+	// for an earlier, already-failed turn is refused. Intents written before
+	// this field existed carry no turn: refuse (fail closed) — the replay is
+	// an optimization, and a fresh model call is always correct.
+	var intentMeta struct {
+		AnsweredTurn *int64 `json:"answered_turn"`
+	}
+	if intentAtHighest == nil || json.Unmarshal(intentAtHighest.Payload, &intentMeta) != nil ||
+		intentMeta.AnsweredTurn == nil || *intentMeta.AnsweredTurn != msgs[len(msgs)-1].Turn {
 		return false, false
 	}
 	saved := func(list []Message) bool {

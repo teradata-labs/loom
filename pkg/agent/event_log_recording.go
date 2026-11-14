@@ -95,12 +95,15 @@ func (a *Agent) batchEventStep(ctx context.Context, sessionID string, batch Mess
 // durably recorded. A no-op (nil error) when no event log is configured.
 // Retries a bounded number of times on failure before giving up, since a
 // transient DB hiccup here should not permanently block the turn if it
-// clears within a second or two.
-func (a *Agent) recordLLMIntent(ctx context.Context, sessionID string, stepIndex int, messageCount int, model string) error {
+// clears within a second or two. answeredTurn is the Turn of the turn's
+// opening user message — the identity the replay gate compares against the
+// session's tail, so a response recorded for one turn is never replayed as
+// the answer to a later one.
+func (a *Agent) recordLLMIntent(ctx context.Context, sessionID string, stepIndex int, messageCount int, model string, answeredTurn int64) error {
 	if a.eventLog == nil {
 		return nil
 	}
-	payload, _ := json.Marshal(map[string]interface{}{"model": model, "message_count": messageCount})
+	payload, _ := json.Marshal(map[string]interface{}{"model": model, "message_count": messageCount, "answered_turn": answeredTurn})
 	return a.recordIntentWithRetry(ctx, sessionID, stepIndex, 0, eventlog.EventLLMCallIntent, "", payload)
 }
 
