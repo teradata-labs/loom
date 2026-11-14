@@ -36,48 +36,83 @@ const (
 	// the context under this share of the threshold, the fold, an LLM call, is
 	// skipped.
 	autoCompactStubOnlyPercent = 80
-
-	// autoCompactAttemptsCap bounds the process-wide attempt record.
-	autoCompactAttemptsCap = 4096
 )
 
-// autoCompactAttempts remembers, per session, the turn of the last attempt.
-// An embedder may build fresh memory for every turn, which would lose a
-// per-instance record and let a session that stays above the threshold (or
-// whose summarizer is failing) pay for an attempt on every message. The record
-// is per process: another pod may attempt once more, which is rare and bounded.
-var autoCompactAttempts = struct {
+// AutoCompactLedger remembers, per session, the turn of the last automatic
+// compaction attempt, so a session that stays above the threshold (or whose
+// summarizer is failing) does not pay for an attempt every turn even when the
+// embedder builds fresh memory each turn. Each Agent owns one and drops a
+// session's entry in DeleteSession; an embedder that builds a new Agent per
+// turn shares one across them (WithAutoCompactLedger) and calls Forget when
+// it deletes a session. Safe for concurrent use.
+type AutoCompactLedger struct {
 	mu    sync.Mutex
 	turns map[string]int64
-}{turns: map[string]int64{}}
+}
+
+// NewAutoCompactLedger returns an empty ledger.
+func NewAutoCompactLedger() *AutoCompactLedger {
+	return &AutoCompactLedger{turns: map[string]int64{}}
+}
+
+func (l *AutoCompactLedger) last(sessionID string) int64 {
+	if l == nil || sessionID == "" {
+		return 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.turns[sessionID]
+}
+
+func (l *AutoCompactLedger) note(sessionID string, turn int64) {
+	if l == nil || sessionID == "" {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.turns == nil {
+		l.turns = map[string]int64{}
+	}
+	l.turns[sessionID] = turn
+}
+
+// Forget drops the session's entry.
+func (l *AutoCompactLedger) Forget(sessionID string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.turns, sessionID)
+}
 
 // autoCompactCoolingDownLocked reports whether the last attempt on this
-// session was fewer than autoCompactMinTurnGap turns ago. A turn number below
+// memory was fewer than autoCompactMinTurnGap turns ago. A turn number below
 // the recorded one means the history was reset and numbering restarted, so the
 // old record no longer applies. Must hold lock.
 func (sm *SegmentedMemory) autoCompactCoolingDownLocked(turn int64) bool {
 	last := sm.lastAutoCompactTurn
-	if sm.sessionID != "" {
-		autoCompactAttempts.mu.Lock()
-		defer autoCompactAttempts.mu.Unlock()
-		last = autoCompactAttempts.turns[sm.sessionID]
-	}
 	since := turn - last
 	return last > 0 && since >= 0 && since < autoCompactMinTurnGap
 }
 
-// noteAutoCompactAttemptLocked records an attempt at turn. Must hold lock.
-func (sm *SegmentedMemory) noteAutoCompactAttemptLocked(turn int64) {
-	sm.lastAutoCompactTurn = turn
-	if sm.sessionID == "" {
+// autoCompactAttempt is the turn of the latest AutoCompact attempt on this
+// memory (0: none).
+func (sm *SegmentedMemory) autoCompactAttempt() int64 {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.lastAutoCompactTurn
+}
+
+// seedAutoCompactAttempt carries an attempt recorded outside this memory
+// instance (AutoCompactLedger) into it.
+func (sm *SegmentedMemory) seedAutoCompactAttempt(turn int64) {
+	if turn <= 0 {
 		return
 	}
-	autoCompactAttempts.mu.Lock()
-	defer autoCompactAttempts.mu.Unlock()
-	if len(autoCompactAttempts.turns) >= autoCompactAttemptsCap {
-		autoCompactAttempts.turns = map[string]int64{}
-	}
-	autoCompactAttempts.turns[sm.sessionID] = turn
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.lastAutoCompactTurn = turn
 }
 
 // foldableTurnsLocked counts the distinct turns up to boundary still in
@@ -130,7 +165,7 @@ func (sm *SegmentedMemory) AutoCompact(ctx context.Context, percent int) (Compac
 	sm.reliefInFlight = true
 	defer func() { sm.reliefInFlight = false }()
 	sm.compressorFailedThisPass = false
-	sm.noteAutoCompactAttemptLocked(turn)
+	sm.lastAutoCompactTurn = turn
 
 	res.ToolResultsStubbed = sm.evictLocked(ctx, boundary)
 	if sm.estimateLocked() > threshold*autoCompactStubOnlyPercent/100 &&
@@ -171,7 +206,12 @@ func (a *Agent) maybeAutoCompact(ctx context.Context, sess *Session, span *obser
 	ctx, cancel := context.WithTimeout(ctx, autoCompactTimeout)
 	defer cancel()
 
+	segMem.seedAutoCompactAttempt(a.autoCompactLedger.last(sess.ID))
+	before := segMem.autoCompactAttempt()
 	res, err := segMem.AutoCompact(ctx, a.config.AutoCompactPercent)
+	if after := segMem.autoCompactAttempt(); after != before {
+		a.autoCompactLedger.note(sess.ID, after)
+	}
 	if err != nil {
 		zap.L().Warn("auto compaction failed", zap.String("session_id", sess.ID), zap.Error(err))
 		return

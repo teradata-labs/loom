@@ -27,6 +27,7 @@ Architecture of Loom's 5-layer segmented memory system with profile-based adapti
   - [Adaptive Compression](#adaptive-compression)
   - [Memory Eviction](#memory-eviction)
   - [Session Restore](#session-restore)
+  - [Pre-flight Guard and Compaction](#pre-flight-guard-and-compaction)
 - [Data Structures](#data-structures)
 - [Algorithms](#algorithms)
   - [Token Budget Calculation](#token-budget-calculation)
@@ -900,6 +901,25 @@ Restoring a session rebuilds two things: the messages, and the runtime state tho
 | A stored `DataReference`, or the offload summary text | Re-register `query_tool_result` |
 
 Re-firing a skill load re-activates and re-registers only. It does not re-inject the skill body: the body is already in the replayed messages, at whatever position and compaction state it had reached.
+
+
+### Pre-flight Guard and Compaction
+
+Relief (`ReleasePressure`) keeps the context under its water marks. Three mechanisms sit around it for sessions that outgrow the window anyway. All are in `pkg/agent` and all reuse relief's evict and fold.
+
+**Request-size log.** Every provider call logs one `llm request: part sizes` line (`request_breakdown.go`): byte-derived token figures for the system prompt, summary, tool schemas, history, tool calls, whole tool results, stubs, skill bodies, reminders and thinking blocks, next to the provider-reported prompt size. Sizes only, never content.
+
+**Pre-flight guard** (`behavior.preflight_fit`, default off; `preflight.go`). Before every loop send, resend and synthesis call, `EnsureFits` compares the calibrated estimate with the usable window (window minus reserved output). Over it:
+
+1. Up to two deeper relief passes, each with the marks a further `pressureRecoveryPenalty` lower.
+2. A **fallback view** for the provider only: ROM, the summary, the bodies of skills still active, and the newest 4, 2 or 1 turns, the largest that fits. It is compiled (not cut from the full compile), so a settled turn keeps its thinking blocks only when they were written after this same view; the provider rejects a replayed block whose preceding context changed. Once chosen, the view holds for the rest of the turn and only narrows. `GetMessagesForSend` serves it; `GetMessagesForLLM`, history (`GetConversationHistory`), the lesson miner and the store keep every turn, so the next turn's relief can still fold the dropped turns.
+3. If the current turn alone does not fit, the turn ends with the recoverable `context_exhausted` error ("compact the conversation or start a new session") and nothing is sent. Synthesis answers with the guidance message instead.
+
+The span events `context.preflight_fallback` and `context.preflight_refused` record the second and third outcomes.
+
+**Manual compaction** (`compact.go`): `Agent.CompactSession`, the `CompactSession` RPC and `loom sessions compact`. Between turns, under the session lease and the parked-tail guard: older tool results become stubs (lossless; the call can be re-run), then turns older than the newest `keep_turns` (default 2) fold into the running summary. A fold without a real summary is skipped rather than dropping history behind a placeholder, so with no compressor, or a failing one, and nothing to stub the call fails with `ErrSummaryUnavailable` (gRPC `UNAVAILABLE`); a store write that fails leaves history unchanged and fails with `ErrCompactionNotSaved` (`UNAVAILABLE`). An optional focus (at most 2000 bytes) is handed to the compressor after the `memory.compaction_focus_preface` prompt. The call runs under an `agent.compact_session` span.
+
+**Automatic compaction** (`behavior.auto_compact_percent`, 1-99, default off; `auto_compact.go`). At the end of a turn, while the caller still holds the session, a context at or over that share of the usable window has older tool results stubbed and, only if that leaves it over 80% of the threshold and at least three turns are eligible, older turns folded (never without a summary). Attempts are at least three turns apart, recorded per session in the agent's `AutoCompactLedger` (freed by `DeleteSession`); an embedder that builds an agent per turn shares one with `WithAutoCompactLedger`. The outcome is on the response (`Metadata["auto_compaction"]`) and the span event `context.auto_compacted`. A failure never fails the turn.
 
 
 ## Data Structures

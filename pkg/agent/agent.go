@@ -98,6 +98,7 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 
 		sessionToolLedger: make(map[string]map[string]bool),
 		scopedToolNames:   make(map[string]bool),
+		autoCompactLedger: NewAutoCompactLedger(),
 	}
 
 	// Mutation-debug carrier: its closures read this agent's switch and turn
@@ -536,6 +537,17 @@ func WithTracer(tracer observability.Tracer) Option {
 func WithPrompts(registry prompts.PromptRegistry) Option {
 	return func(a *Agent) {
 		a.prompts = registry
+	}
+}
+
+// WithAutoCompactLedger shares one automatic-compaction attempt record across
+// agents. For an embedder that builds a new Agent for every turn of a session,
+// so the spacing between attempts (Config.AutoCompactPercent) still holds.
+func WithAutoCompactLedger(ledger *AutoCompactLedger) Option {
+	return func(a *Agent) {
+		if ledger != nil {
+			a.autoCompactLedger = ledger
+		}
 	}
 }
 
@@ -2887,6 +2899,9 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 						"tool_results":    o.ToolResults,
 					})
 			}
+			// The relief warning above is sent with this call: count it in the
+			// guard's estimate like the other pending reminders.
+			segMem.SetTransientTail(reminders...)
 			var pfErr error
 			if messages, tools, pfErr = a.preflightFit(ctx, session, segMem, recovery, messages, tools); pfErr != nil {
 				return nil, pfErr
@@ -2909,7 +2924,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			rs := append(reminders[:len(reminders):len(reminders)], TurnReminder{Text: toolNote})
 			if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
 				segMem.PinTurnNotes(rs...)
-				return session.GetMessages()
+				return segMem.GetMessagesForSend()
 			}
 			return withSystemReminder(msgs, reminderTexts(rs)...)
 		}
@@ -3374,7 +3389,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	// If we hit max turns/executions, make one final LLM call to synthesize results
 	// This ensures the agent provides meaningful output instead of a generic error message
 	emitProgress(ctx, StageSynthesis, 90, "Synthesizing tool execution results", "")
-	return a.synthesizeFinalResponse(ctx, session, memoryNote, turnCount, toolExecutionCount, allToolExecutions, turnUsage, turnCalls)
+	return a.synthesizeFinalResponse(ctx, span, session, memoryNote, turnCount, toolExecutionCount, allToolExecutions, turnUsage, turnCalls)
 }
 
 // batchState carries the loop-level state the per-call dispatch body reads
@@ -3897,7 +3912,7 @@ func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, 
 // conversation loop exhausts its turn/execution budget, so the agent yields
 // meaningful output instead of a generic limit error. Moved verbatim from
 // the loop tail when the batch body was extracted into dispatchOneCall.
-func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNote string, turnCount, toolExecutionCount int, allToolExecutions []ToolExecution, turnUsage Usage, turnCalls int) (*Response, error) {
+func (a *Agent) synthesizeFinalResponse(ctx Context, span *observability.Span, session *Session, memoryNote string, turnCount, toolExecutionCount int, allToolExecutions []ToolExecution, turnUsage Usage, turnCalls int) (*Response, error) {
 	// Add a synthesis request to the conversation
 	// Include explicit format instructions since they may have been compressed in context
 	synthesisPrompt := "You must provide your final answer NOW with whatever information you have gathered so far. Summarize your findings: what actions were taken, what results were produced, and any remaining steps the user would need to complete manually. Be concise and actionable. You MUST respond with text — do not return an empty response."
@@ -3925,14 +3940,16 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNot
 				zap.Int("estimate_tokens", estimate),
 				zap.Int("target_tokens", target))
 		}
-		synthesisFit = segMem.EnsureFits(ctx)
+		if a.config.PreflightFit {
+			synthesisFit = segMem.EnsureFits(ctx)
+		}
 	}
 	// The recall note was pinned by the loop's first call; pinning again is a
 	// no-op then, and pins it here when the loop never sent it.
 	synthesisMessages := func() []Message {
 		if segMem != nil {
 			segMem.PinTurnNotes(TurnReminder{Kind: ReminderGraphMemory, Text: memoryNote})
-			return session.GetMessages()
+			return segMem.GetMessagesForSend()
 		}
 		return withSystemReminder(session.GetMessages(), memoryNote)
 	}
@@ -3941,9 +3958,7 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNot
 	if synthesisFit.Fits {
 		finalResp, err = a.chatWithRetry(ctx, synthesisMessages(), nil)
 	} else {
-		// Never send what the provider would refuse; the guidance fallback below answers.
-		err = fmt.Errorf("conversation too long: synthesis request is about %d tokens against a usable window of %d",
-			synthesisFit.Estimate, synthesisFit.Usable)
+		err = synthesisTooLong(span, session.ID, synthesisFit)
 	}
 	if err != nil && errors.Is(err, llm.ErrContextTooLong) && segMem != nil {
 		_, estimate, target := segMem.ReleasePressure(ctx, pressureRecoveryPenalty)
@@ -3951,7 +3966,16 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNot
 			zap.String("session_id", session.ID),
 			zap.Int("estimate_tokens", estimate),
 			zap.Int("target_tokens", target))
-		finalResp, err = a.chatWithRetry(ctx, synthesisMessages(), nil)
+		// The resend is guarded like the first send, so it cannot be refused
+		// (and billed) a second time for the same reason.
+		if a.config.PreflightFit {
+			synthesisFit = segMem.EnsureFits(ctx)
+		}
+		if synthesisFit.Fits {
+			finalResp, err = a.chatWithRetry(ctx, synthesisMessages(), nil)
+		} else {
+			err = synthesisTooLong(span, session.ID, synthesisFit)
+		}
 	}
 	if err == nil {
 		a.observePromptUsage(session, finalResp.Usage)
@@ -4939,6 +4963,7 @@ func (a *Agent) DeleteSession(sessionID string) {
 	// Drop the lesson miner's per-session state (ledger, history-coverage
 	// marker, error-lane injection record) for the same reason.
 	a.forgetLessonSession(sessionID)
+	a.autoCompactLedger.Forget(sessionID)
 	// Release the session's decision-layer budget accounting, which is
 	// likewise bounded by live sessions only because retirement frees it.
 	a.decisionRouter.ForgetSession(sessionID)

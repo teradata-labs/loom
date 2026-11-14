@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/session"
 	"go.uber.org/zap"
 )
@@ -27,9 +28,9 @@ import (
 // leaves verbatim.
 const DefaultCompactKeepTurns = 2
 
-// maxCompactFocusBytes bounds the user's focus text so it cannot itself grow
+// MaxCompactFocusBytes bounds the user's focus text so it cannot itself grow
 // the compressor input without limit.
-const maxCompactFocusBytes = 2000
+const MaxCompactFocusBytes = 2000
 
 // ErrCompactionBusy is returned when a relief pass or another compaction is
 // already running on the session's memory.
@@ -68,6 +69,8 @@ type CompactResult struct {
 	TurnsFolded bool
 	// SummaryVersion is the session summary's version after the compaction.
 	SummaryVersion int
+	// TurnsKept is the number of newest turns left verbatim.
+	TurnsKept int
 }
 
 // TokensSaved is the estimated reduction.
@@ -92,11 +95,11 @@ func (sm *SegmentedMemory) Compact(ctx context.Context, opts CompactOptions) (Co
 	sm.reliefInFlight = true
 	defer func() { sm.reliefInFlight = false }()
 	sm.compressorFailedThisPass = false
-	sm.fallbackTurns = 0
+	sm.fallbackTurns, sm.fallbackTurn = 0, 0
 
 	focus := strings.TrimSpace(opts.Focus)
-	if len(focus) > maxCompactFocusBytes {
-		focus = strings.ToValidUTF8(focus[:maxCompactFocusBytes], "")
+	if len(focus) > MaxCompactFocusBytes {
+		focus = strings.ToValidUTF8(focus[:MaxCompactFocusBytes], "")
 	}
 	sm.compactFocus = focus
 	defer func() { sm.compactFocus = "" }()
@@ -105,6 +108,7 @@ func (sm *SegmentedMemory) Compact(ctx context.Context, opts CompactOptions) (Co
 	if keep <= 0 {
 		keep = DefaultCompactKeepTurns
 	}
+	res.TurnsKept = int(min(keep, sm.currentTurnLocked()))
 
 	res.TokensBefore = sm.estimateLocked()
 	res.TokensAfter = res.TokensBefore
@@ -152,9 +156,29 @@ func (sm *SegmentedMemory) Compact(ctx context.Context, opts CompactOptions) (Co
 
 // CompactSession compacts one session's context on user request. It takes the
 // same session lease and parked-tail guard as a new turn, so it never runs
-// against a live turn or buries a parked batch.
-func (a *Agent) CompactSession(ctx context.Context, sessionID string, opts CompactOptions) (CompactResult, error) {
+// against a live turn or buries a parked batch. It runs under its own span:
+// the fold may make an LLM call.
+func (a *Agent) CompactSession(ctx context.Context, sessionID string, opts CompactOptions) (res CompactResult, err error) {
 	ctx = session.WithSessionID(ctx, sessionID)
+	if a.tracer != nil {
+		var span *observability.Span
+		ctx, span = a.tracer.StartSpan(ctx, "agent.compact_session")
+		defer a.tracer.EndSpan(span)
+		span.SetAttribute(observability.AttrSessionID, sessionID)
+		span.SetAttribute("compaction.focus", strings.TrimSpace(opts.Focus) != "")
+		defer func() {
+			if err != nil {
+				span.RecordError(err)
+				return
+			}
+			span.SetAttribute("compaction.compacted", res.Compacted)
+			span.SetAttribute("compaction.tool_results_stubbed", res.ToolResultsStubbed)
+			span.SetAttribute("compaction.turns_folded", res.TurnsFolded)
+			span.SetAttribute("compaction.turns_kept", res.TurnsKept)
+			span.SetAttribute("compaction.tokens_before", res.TokensBefore)
+			span.SetAttribute("compaction.tokens_after", res.TokensAfter)
+		}()
+	}
 	sess := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
 
 	ctx, release, err := a.holdSessionLease(ctx, sessionID)

@@ -48,17 +48,29 @@ type summaryState struct {
 // synthetic, never strip, because the signature is the re-run door.
 const syntheticFailedResult = "[no result recorded — the call did not complete. Re-run it if needed.]"
 
+// The shared parts of every offload and evicted stub below. isOffloadStub
+// recognizes a stub from these same constants, so the request-size log cannot
+// drift from the formats.
+const (
+	// stubHeadFormat opens every stub: the tool name and the payload size.
+	stubHeadFormat = "[%s result, ~%d tokens, "
+	// stubHeldPhrase follows the head of a stub whose payload is in memory.
+	stubHeldPhrase = "held in memory this turn"
+	// stubEvictedPhrase follows the head of a stub whose payload was evicted.
+	stubEvictedPhrase = "evicted from context"
+)
+
 // offloadStubFormat is the normative offload stub of HLD §5.5 — a turn=T result
 // strictly over the threshold; the payload is in memory and queryable. The sql
 // door is advertised only for tabular payloads (offloadStubOpaqueFormat
 // otherwise) — the stub must never invite a door that errors. The final %s is
 // previewMeta's line: schema/shape metadata, not a data slice — a data preview
 // invites answering from the fragment instead of opening the door.
-const offloadStubFormat = "[%s result, ~%d tokens, held in memory this turn — query_tool_result(message_id=%d, offset=0, limit=100) to read it; sql=\"SELECT ... FROM results\" for tabular data.%s\n %s]"
+const offloadStubFormat = stubHeadFormat + stubHeldPhrase + " — query_tool_result(message_id=%d, offset=0, limit=100) to read it; sql=\"SELECT ... FROM results\" for tabular data.%s\n %s]"
 
 // offloadStubOpaqueFormat is the offload stub for non-tabular payloads: same
 // doors minus sql=, which tabularPayload would refuse.
-const offloadStubOpaqueFormat = "[%s result, ~%d tokens, held in memory this turn — query_tool_result(message_id=%d, offset=0, limit=100) to read it.%s\n %s]"
+const offloadStubOpaqueFormat = stubHeadFormat + stubHeldPhrase + " — query_tool_result(message_id=%d, offset=0, limit=100) to read it.%s\n %s]"
 
 // pressureStubFormat is the stub for a current-turn result offloaded by the
 // pressure rung rather than the size rule. The size rule stubs one oversize
@@ -67,15 +79,15 @@ const offloadStubOpaqueFormat = "[%s result, ~%d tokens, held in memory this tur
 // previews cost more than the window can give back (the rung would stub
 // everything and still miss target). So this stub is the door alone — the
 // payload is in memory, and one query_tool_result reads any of them.
-const pressureStubFormat = "[%s result, ~%d tokens, held in memory this turn — query_tool_result(message_id=%d, offset=0, limit=100) to read it.]"
+const pressureStubFormat = stubHeadFormat + stubHeldPhrase + " — query_tool_result(message_id=%d, offset=0, limit=100) to read it.]"
 
 // pressureStubTabularFormat is pressureStubFormat plus the sql door, which
 // tabularPayload accepts for this row.
-const pressureStubTabularFormat = "[%s result, ~%d tokens, held in memory this turn — query_tool_result(message_id=%d, offset=0, limit=100) to read it; sql=\"SELECT ... FROM results\" for tabular data.]"
+const pressureStubTabularFormat = stubHeadFormat + stubHeldPhrase + " — query_tool_result(message_id=%d, offset=0, limit=100) to read it; sql=\"SELECT ... FROM results\" for tabular data.]"
 
 // evictedStubFormat is the normative evicted stub of HLD §5.5 — evicted=true or
 // legacy oversize; the only door is re-run.
-const evictedStubFormat = "[%s result, ~%d tokens, evicted from context — re-run the call above if this data is needed again.%s\n %s]"
+const evictedStubFormat = stubHeadFormat + stubEvictedPhrase + " — re-run the call above if this data is needed again.%s\n %s]"
 
 // compileLocked is ContextCompilation §5.2 steps 1–7: KERNEL rides the provider
 // tools parameter (its bytes are counted via kernelBytes); ROM; the summary's
@@ -83,16 +95,42 @@ const evictedStubFormat = "[%s result, ~%d tokens, evicted from context — re-r
 // render cases, with pair atomicity restored by synthetic failed results.
 // Must hold lock.
 func (sm *SegmentedMemory) compileLocked() []Message {
+	return sm.compileViewLocked(0)
+}
+
+// compileViewLocked is compileLocked over the rows of turn minTurn onward (0:
+// all rows), plus the skill bodies of earlier turns, whose tools are still
+// advertised. The view is compiled, not cut from the full compile, so the
+// thinking fingerprint covers what is actually sent: a settled turn keeps its
+// thinking blocks only if they were written after this same view.
+// Must hold lock.
+func (sm *SegmentedMemory) compileViewLocked(minTurn int64) []Message {
 	// Fingerprinting hashes the whole context; it is only read when a
 	// settled thinking row has a recorded fingerprint to compare against.
-	out, _ := sm.compilePrefixLocked(len(sm.thinkingPrefix) > 0)
+	out, _ := sm.compilePrefixLocked(len(sm.thinkingPrefix) > 0, minTurn)
 	return out
 }
 
-// compilePrefixLocked is compileLocked plus, when fingerprint is set, the
+// rowsFromTurn keeps the rows of turn minTurn onward and every skill body.
+// A row without a turn belongs to the turn of the row before it.
+func rowsFromTurn(rows []Message, minTurn int64) []Message {
+	kept := make([]Message, 0, len(rows))
+	var turn int64
+	for i := range rows {
+		if rows[i].Turn > 0 {
+			turn = rows[i].Turn
+		}
+		if turn >= minTurn || rows[i].Role == roleSkillBody {
+			kept = append(kept, rows[i])
+		}
+	}
+	return kept
+}
+
+// compilePrefixLocked is compileViewLocked plus, when fingerprint is set, the
 // fingerprint of the compiled list (see thinkingPrefix); without it no
 // settled turn keeps its thinking blocks and the sum is zero. Must hold lock.
-func (sm *SegmentedMemory) compilePrefixLocked(fingerprint bool) ([]Message, [sha256.Size]byte) {
+func (sm *SegmentedMemory) compilePrefixLocked(fingerprint bool, minTurn int64) ([]Message, [sha256.Size]byte) {
 	out := make([]Message, 0, len(sm.contextMessages)+2)
 
 	// prefix fingerprints out as it grows: every append goes through push, so
@@ -153,6 +191,9 @@ func (sm *SegmentedMemory) compilePrefixLocked(fingerprint bool) ([]Message, [sh
 	// never persist (§4.3) and are pruned once the turn settles. Everything
 	// before the first of these is turn-stable and safe to cache.
 	msgs := sm.contextMessages
+	if minTurn > 0 {
+		msgs = rowsFromTurn(msgs, minTurn)
+	}
 	lastStable, frozen := len(out)-1, false
 	// The turn's pinned reminders (turnNotes), each after the current-turn
 	// rows that preceded it when it was sent. A reminder is gone once the turn
@@ -285,7 +326,7 @@ func (sm *SegmentedMemory) recordThinkingPrefixLocked(msg *Message) {
 	if msg.Role != "assistant" || len(msg.ThinkingBlocks) == 0 {
 		return
 	}
-	_, sum := sm.compilePrefixLocked(true)
+	_, sum := sm.compilePrefixLocked(true, sm.sendFloorLocked())
 	if sm.thinkingPrefix == nil {
 		sm.thinkingPrefix = make(map[[sha256.Size]byte][sha256.Size]byte)
 	}
@@ -1467,10 +1508,10 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 	}
 	input := make([]Message, 0, len(region)+1)
 	if sm.summary.text != "" {
-		input = append(input, Message{Role: "system", Content: "Current summary:\n" + sm.summary.text})
+		input = append(input, Message{Role: "system", Content: foldPromptText(ctx, sm.compressor, foldPromptSummaryHeading) + "\n" + sm.summary.text})
 	}
 	if sm.compactFocus != "" {
-		input = append(input, Message{Role: "system", Content: "The user asked this compaction to preserve, in priority order: " + sm.compactFocus})
+		input = append(input, Message{Role: "system", Content: foldPromptText(ctx, sm.compressor, foldPromptFocusPreface) + " " + sm.compactFocus})
 	}
 	for i := range region {
 		r := sm.renderLocked(&region[i], t, callName)

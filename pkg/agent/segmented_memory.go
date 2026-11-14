@@ -155,10 +155,13 @@ type SegmentedMemory struct {
 	// its compressor call, and this keeps a second pass from interleaving.
 	reliefInFlight bool
 
-	// fallbackTurns, when > 0, narrows what is sent to ROM, the summary and the
-	// newest fallbackTurns turns (EnsureFits). Send-side only: the store, relief
-	// and the estimate still see everything.
+	// fallbackTurns, when > 0, narrows what is sent to the provider to ROM, the
+	// summary, active skills' bodies and the newest fallbackTurns turns
+	// (EnsureFits), for the rest of turn fallbackTurn only. Provider-send only
+	// (GetMessagesForSend): history readers, the store, relief and the estimate
+	// still see everything.
 	fallbackTurns int64
+	fallbackTurn  int64
 
 	// pressureOffload names (by ToolUseID) the current-turn tool results that
 	// relief's last-resort rung renders as offload stubs (§5.2 step 6) even
@@ -694,22 +697,36 @@ func (sm *SegmentedMemory) recountKernel() {
 	sm.cachedKernelTokens = tokenFigure(sm.kernelBytes)
 }
 
-// GetMessagesForLLM builds the compiled context for the LLM call
-// (ContextCompilation, HLD §5.2 steps 1–7).
+// GetMessagesForLLM builds the compiled context (ContextCompilation, HLD §5.2
+// steps 1–7): the whole conversation, as history readers see it.
 func (sm *SegmentedMemory) GetMessagesForLLM() []Message {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.compileLocked()
+}
+
+// GetMessagesForSend is the compiled context as the provider is sent it: the
+// whole conversation, or the fallback view when the pre-flight guard narrowed
+// this turn's sends (EnsureFits). Only provider calls read it.
+func (sm *SegmentedMemory) GetMessagesForSend() []Message {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	return sm.sendViewLocked()
 }
 
-// sendViewLocked is the compiled context as sent: the whole of it, or the
-// fallback view when EnsureFits narrowed it. Must hold lock.
+// sendViewLocked is GetMessagesForSend. Must hold lock.
 func (sm *SegmentedMemory) sendViewLocked() []Message {
-	compiled := sm.compileLocked()
-	if sm.fallbackTurns > 0 {
-		return keepNewestTurns(compiled, sm.currentTurnLocked(), sm.fallbackTurns)
+	return sm.compileViewLocked(sm.sendFloorLocked())
+}
+
+// sendFloorLocked is the oldest turn the provider is sent: 0 (all of them)
+// unless EnsureFits chose the fallback view in the current turn. Must hold lock.
+func (sm *SegmentedMemory) sendFloorLocked() int64 {
+	t := sm.currentTurnLocked()
+	if sm.fallbackTurns <= 0 || sm.fallbackTurn != t {
+		return 0
 	}
-	return compiled
+	return t - sm.fallbackTurns + 1
 }
 
 // GetContextWindow renders the compiled context as a formatted string, via the
@@ -787,6 +804,8 @@ func (sm *SegmentedMemory) ResetContext() {
 	sm.thinkingPrefix = nil
 	sm.transientTail = ""
 	sm.turnNotes = nil
+	sm.fallbackTurns, sm.fallbackTurn = 0, 0
+	sm.lastAutoCompactTurn = 0
 
 	sm.fullRecount()
 	sm.tokenCountDirty = false

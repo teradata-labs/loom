@@ -21,6 +21,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
 // proseMemory builds turns 1..n of user/assistant prose, each message ~3 dense
@@ -39,8 +42,12 @@ func proseMemory(t *testing.T, maxTokens, reserved, turns int) *SegmentedMemory 
 }
 
 func sentTurns(sm *SegmentedMemory) map[int64]bool {
+	return turnsOf(sm.GetMessagesForSend())
+}
+
+func turnsOf(msgs []Message) map[int64]bool {
 	turns := map[int64]bool{}
-	for _, m := range sm.GetMessagesForLLM() {
+	for _, m := range msgs {
 		if m.Role != "system" {
 			turns[m.Turn] = true
 		}
@@ -89,12 +96,19 @@ func TestEnsureFits_FallbackKeepsNewestTurnsAndFits(t *testing.T) {
 	}
 	assert.Len(t, stored, 12)
 
-	// The next call re-evaluates from scratch: with room again, nothing is dropped.
+	// The view holds for the rest of the turn, even with room again: widening
+	// it would change what precedes the turn's own thinking blocks.
 	sm.tokenBudget.MaxTokens = 1000000
+	same := sm.EnsureFits(context.Background())
+	assert.True(t, same.Fallback)
+	assert.Equal(t, fit.TurnsKept, same.TurnsKept)
+
+	// The next turn re-evaluates from scratch: with room, nothing is dropped.
+	sm.AddMessage(context.Background(), Message{Role: "user", Content: "next", Turn: 13})
 	next := sm.EnsureFits(context.Background())
 	assert.True(t, next.Fits)
 	assert.False(t, next.Fallback)
-	assert.Len(t, sentTurns(sm), 12)
+	assert.Len(t, sentTurns(sm), 13)
 }
 
 func TestEnsureFits_CurrentTurnAloneTooBigReportsNotFitting(t *testing.T) {
@@ -114,30 +128,177 @@ func TestEnsureFits_CurrentTurnAloneTooBigReportsNotFitting(t *testing.T) {
 	assert.False(t, fit.Fallback)
 }
 
-func TestKeepNewestTurns_KeepsSystemAndSyntheticResultsWithTheirTurn(t *testing.T) {
-	compiled := []Message{
-		{Role: "system", Content: "ROM"},
-		{Role: "system", Content: "summary"},
+func TestRowsFromTurn_KeepsSkillBodiesAndRowsWithoutATurn(t *testing.T) {
+	rows := []Message{
 		{Role: "user", Content: "old", Turn: 1},
-		{Role: "assistant", Turn: 2, ToolCalls: []ToolCall{{ID: "a"}, {ID: "b"}}},
-		{Role: "tool", ToolUseID: "a", Content: "r", Turn: 2},
-		{Role: "tool", ToolUseID: "b", Content: "synthetic"}, // no Turn: belongs to turn 2
+		{Role: roleSkillBody, Content: "skill", Turn: 1},
+		{Role: "assistant", Turn: 2, ToolCalls: []ToolCall{{ID: "a"}}},
+		{Role: "tool", ToolUseID: "a", Content: "r"}, // no Turn: belongs to turn 2
 		{Role: "user", Content: "now", Turn: 3},
 	}
 
-	kept := keepNewestTurns(compiled, 3, 2)
-
 	var got []string
-	for _, m := range kept {
+	for _, m := range rowsFromTurn(rows, 2) {
 		got = append(got, fmt.Sprintf("%s:%s", m.Role, m.Content))
 	}
-	assert.Equal(t, []string{"system:ROM", "system:summary", "assistant:", "tool:r", "tool:synthetic", "user:now"}, got)
+	assert.Equal(t, []string{"skill_body:skill", "assistant:", "tool:r", "user:now"}, got)
+}
+
+// F2: the fallback view is for the provider only. History readers
+// (GetConversationHistory, the lesson miner) still see every turn.
+func TestEnsureFits_FallbackIsProviderSendOnly(t *testing.T) {
+	sm := proseMemory(t, 12000, 1000, 12)
+	sm.reliefInFlight = true
+
+	fit := sm.EnsureFits(context.Background())
+
+	require.True(t, fit.Fallback)
+	assert.Len(t, sentTurns(sm), fit.TurnsKept)
+	assert.Len(t, turnsOf(sm.GetMessagesForLLM()), 12, "history keeps every turn after a fallback send")
+}
+
+// F1: a settled turn's thinking blocks are replayed only after the context
+// they were written after; the fallback view is a different one.
+func TestEnsureFits_FallbackDropsSettledThinking(t *testing.T) {
+	ctx := context.Background()
+	sm := NewSegmentedMemory("ROM", 12000, 1000)
+	sm.SetThreshold(16384)
+	for turn := 1; turn <= 12; turn++ {
+		sm.AddMessage(ctx, Message{Role: "user", Content: denseResult(turn) + denseResult(turn+100), Turn: int64(turn)})
+		sm.AddMessage(ctx, Message{Role: "assistant", Content: denseResult(turn + 200), Turn: int64(turn),
+			ThinkingBlocks: []ThinkingBlock{{Type: "thinking", Thinking: fmt.Sprintf("t%d", turn), Signature: fmt.Sprintf("s%d", turn)}}})
+	}
+	sm.AddMessage(ctx, Message{Role: "user", Content: "now", Turn: 13})
+	sm.reliefInFlight = true
+
+	settledThinking := func(msgs []Message) []int64 {
+		var turns []int64
+		for _, m := range msgs {
+			if m.Role == "assistant" && len(m.ThinkingBlocks) > 0 {
+				turns = append(turns, m.Turn)
+			}
+		}
+		return turns
+	}
+	require.NotEmpty(t, settledThinking(sm.GetMessagesForLLM()), "unchanged full context replays settled thinking")
+
+	fit := sm.EnsureFits(ctx)
+
+	require.True(t, fit.Fallback)
+	assert.Greater(t, fit.TurnsKept, 1, "a settled turn is in the view")
+	assert.Empty(t, settledThinking(sm.GetMessagesForSend()), "no settled assistant message in the fallback view carries thinking")
+}
+
+// Q3: the fallback view keeps the bodies of skills whose tools stay advertised.
+func TestEnsureFits_FallbackKeepsSkillBodies(t *testing.T) {
+	ctx := context.Background()
+	sm := NewSegmentedMemory("ROM", 12000, 1000)
+	sm.SetThreshold(16384)
+	sm.AddMessage(ctx, Message{Role: "user", Content: "load it", Turn: 1})
+	sm.AddMessage(ctx, Message{Role: roleSkillBody, Content: "SKILL BODY", Turn: 1})
+	for turn := 2; turn <= 12; turn++ {
+		sm.AddMessage(ctx, Message{Role: "user", Content: denseResult(turn) + denseResult(turn+100), Turn: int64(turn)})
+		sm.AddMessage(ctx, Message{Role: "assistant", Content: denseResult(turn+200) + denseResult(turn+300), Turn: int64(turn)})
+	}
+	sm.reliefInFlight = true
+
+	fit := sm.EnsureFits(ctx)
+
+	require.True(t, fit.Fallback)
+	var bodies int
+	for _, m := range sm.GetMessagesForSend() {
+		if m.Role == roleSkillBody {
+			bodies++
+		}
+	}
+	assert.Equal(t, 1, bodies)
+	assert.False(t, sentTurns(sm)[2], "older prose is still dropped")
+}
+
+// D1: the guard is opt-in; without it an oversized request goes to the
+// provider as before.
+func TestChat_PreflightIsOffByDefault(t *testing.T) {
+	llm := &capturingLLM{response: "done"}
+	sm := NewSegmentedMemory("ROM", 12000, 1000)
+	ag := reliefSeamAgent(t, llm, "preflight_off", sm)
+	require.False(t, ag.config.PreflightFit)
+
+	_, err := ag.Chat(context.Background(), "preflight_off", strings.Repeat("lorem ipsum ", 6000))
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, llm.calls)
+}
+
+// calibratingRefuseLLM refuses its first call and, like a provider that counts
+// far more tokens than loom estimated, leaves loom's estimate scaled up.
+type calibratingRefuseLLM struct {
+	refuseOnceLLM
+	sm *SegmentedMemory
+}
+
+func (l *calibratingRefuseLLM) Chat(ctx context.Context, msgs []Message, tools []shuttle.Tool) (*LLMResponse, error) {
+	l.sm.mu.Lock()
+	l.sm.estimateCalibration = calibrationMax
+	l.sm.mu.Unlock()
+	return l.refuseOnceLLM.Chat(ctx, msgs, tools)
+}
+
+// F3: the synthesis resend after a refusal is guarded too, so a request relief
+// cannot fit is not sent (and billed) a second time.
+func TestSynthesis_ResendAfterRefusalIsGuarded(t *testing.T) {
+	sm := NewSegmentedMemory("ROM", 12000, 1000)
+	sm.AddMessage(context.Background(), Message{Role: "user", Content: strings.Repeat("lorem ipsum ", 3500), Turn: 1})
+	l := &calibratingRefuseLLM{sm: sm}
+	ag := reliefSeamAgent(t, l, "synth_guard", sm)
+	ag.config.PreflightFit = true
+	session, ok := ag.GetSession("synth_guard")
+	require.True(t, ok)
+
+	resp, err := ag.synthesizeFinalResponse(newCtxDumpContext("synth_guard", observability.NewNoOpTracer(), nil), nil,
+		session, "", 1, 0, nil, Usage{}, 0)
+
+	require.NoError(t, err, "the guidance message answers")
+	assert.Len(t, l.calls, 1, "exactly one provider call")
+	assert.Contains(t, resp.Metadata["synthesis_error"], "conversation too long")
+}
+
+// F4: a fallback send and a local refusal are visible on the turn's span.
+func TestPreflightFit_SpanEvents(t *testing.T) {
+	t.Run("fallback", func(t *testing.T) {
+		llm := &capturingLLM{response: "done"}
+		tracer := &spanKeepingTracer{}
+		sm := proseMemory(t, 12000, 1000, 12)
+		sm.reliefInFlight = true
+		ag := reliefSeamAgent(t, llm, "pf_span_fallback", sm, WithTracer(tracer))
+		ag.config.PreflightFit = true
+
+		_, err := ag.Chat(context.Background(), "pf_span_fallback", "hi")
+
+		require.NoError(t, err)
+		evs := tracer.eventsNamed("context.preflight_fallback")
+		require.NotEmpty(t, evs)
+		assert.Positive(t, evs[0].Attributes["turns_kept"])
+	})
+
+	t.Run("refused", func(t *testing.T) {
+		llm := &capturingLLM{response: "done"}
+		tracer := &spanKeepingTracer{}
+		sm := NewSegmentedMemory("ROM", 12000, 1000)
+		ag := reliefSeamAgent(t, llm, "pf_span_refused", sm, WithTracer(tracer))
+		ag.config.PreflightFit = true
+
+		_, err := ag.Chat(context.Background(), "pf_span_refused", strings.Repeat("lorem ipsum ", 6000))
+
+		require.Error(t, err)
+		assert.NotEmpty(t, tracer.eventsNamed("context.preflight_refused"))
+	})
 }
 
 func TestChat_PreflightRefusesOversizedRequestWithoutCallingTheProvider(t *testing.T) {
 	llm := &capturingLLM{response: "done"}
 	sm := NewSegmentedMemory("ROM", 12000, 1000)
 	ag := reliefSeamAgent(t, llm, "preflight_too_long", sm)
+	ag.config.PreflightFit = true
 
 	// Over the 11000 usable window by itself: nothing relief or the fallback can drop.
 	_, err := ag.Chat(context.Background(), "preflight_too_long", strings.Repeat("lorem ipsum ", 6000))

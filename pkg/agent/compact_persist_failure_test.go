@@ -73,11 +73,6 @@ func TestCompact_ReportsAFailedWriteInsteadOfANoOp(t *testing.T) {
 func TestAutoCompact_StaysBestEffortWhenTheWriteFails(t *testing.T) {
 	sm := proseMemory(t, 12000, 1000, 6)
 	sm.SetSessionStore(&brokenWriteStore{err: errors.New("connection refused")}, "sess-auto-broken")
-	t.Cleanup(func() {
-		autoCompactAttempts.mu.Lock()
-		delete(autoCompactAttempts.turns, "sess-auto-broken")
-		autoCompactAttempts.mu.Unlock()
-	})
 	sm.SetCompressor(&recordingCompressor{})
 
 	res, err := sm.AutoCompact(context.Background(), 65)

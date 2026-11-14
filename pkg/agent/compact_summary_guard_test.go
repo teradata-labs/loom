@@ -19,6 +19,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/teradata-labs/loom/pkg/observability"
 )
 
 // A requested compaction must never report success after dropping turns behind
@@ -62,32 +64,28 @@ func TestCompact_NeverFoldsWithoutASummary(t *testing.T) {
 	})
 }
 
-// Embedders may build fresh memory for every turn, so the cooldown must not
-// live only on the memory instance.
-func TestAutoCompact_CooldownSurvivesFreshMemoryForTheSameSession(t *testing.T) {
+// Embedders may build a fresh agent and fresh memory for every turn, so the
+// cooldown lives in a ledger the agents share, not on the memory instance.
+func TestAutoCompact_CooldownSurvivesFreshAgentAndMemoryForTheSameSession(t *testing.T) {
 	const sessionID = "sess-cooldown-survives-reload"
-	t.Cleanup(func() {
-		autoCompactAttempts.mu.Lock()
-		delete(autoCompactAttempts.turns, sessionID)
-		autoCompactAttempts.mu.Unlock()
-	})
-
-	first := proseMemory(t, 12000, 1000, 6)
-	first.sessionID = sessionID
+	ledger := NewAutoCompactLedger()
 	failing := &failingCompressor{}
-	first.SetCompressor(failing)
-	_, err := first.AutoCompact(context.Background(), 65)
-	require.NoError(t, err)
+	runTurn := func() {
+		sm := proseMemory(t, 12000, 1000, 6)
+		sm.SetCompressor(failing)
+		a := &Agent{config: &Config{AutoCompactPercent: 65}, autoCompactLedger: NewAutoCompactLedger()}
+		WithAutoCompactLedger(ledger)(a)
+		_, span := observability.NewNoOpTracer().StartSpan(context.Background(), "t")
+		a.maybeAutoCompact(context.Background(), &Session{ID: sessionID, SegmentedMem: sm}, span, &Response{})
+	}
+
+	runTurn()
 	require.Positive(t, failing.calls, "the first turn tried and failed")
 	tried := failing.calls
 
-	// The next turn loads the same session into a brand-new memory.
-	second := proseMemory(t, 12000, 1000, 6)
-	second.sessionID = sessionID
-	second.SetCompressor(failing)
-	_, err = second.AutoCompact(context.Background(), 65)
+	// The next turn builds a brand-new agent and memory for the same session.
+	runTurn()
 
-	require.NoError(t, err)
 	assert.Equal(t, tried, failing.calls, "no repeat attempt within the turn gap")
 }
 
@@ -95,26 +93,37 @@ func TestAutoCompact_CooldownSurvivesFreshMemoryForTheSameSession(t *testing.T) 
 // from the old numbering (turn 100) must not suppress the new conversation.
 func TestAutoCompact_ResetRestartsTheCooldown(t *testing.T) {
 	const sessionID = "sess-cooldown-reset"
-	t.Cleanup(func() {
-		autoCompactAttempts.mu.Lock()
-		delete(autoCompactAttempts.turns, sessionID)
-		autoCompactAttempts.mu.Unlock()
-	})
-	autoCompactAttempts.mu.Lock()
-	autoCompactAttempts.turns[sessionID] = 100
-	autoCompactAttempts.mu.Unlock()
+	ledger := NewAutoCompactLedger()
+	ledger.note(sessionID, 100)
 
 	// After the reset and a reload the same session is at turn 6 again.
 	sm := proseMemory(t, 12000, 1000, 6)
-	sm.sessionID = sessionID
 	comp := &recordingCompressor{}
 	sm.SetCompressor(comp)
+	a := &Agent{config: &Config{AutoCompactPercent: 65}, autoCompactLedger: ledger}
+	_, span := observability.NewNoOpTracer().StartSpan(context.Background(), "t")
+	resp := &Response{}
 
-	res, err := sm.AutoCompact(context.Background(), 65)
+	a.maybeAutoCompact(context.Background(), &Session{ID: sessionID, SegmentedMem: sm}, span, resp)
 
-	require.NoError(t, err)
-	assert.True(t, res.TurnsFolded, "the new conversation is not held back by the old numbering")
+	assert.Contains(t, resp.Metadata, "auto_compaction", "the new conversation is not held back by the old numbering")
 	assert.NotEmpty(t, comp.input)
+	assert.Equal(t, int64(6), ledger.last(sessionID))
+}
+
+// The ledger is per agent and freed with the session (DeleteSession).
+func TestAutoCompactLedger_ForgetDropsTheSession(t *testing.T) {
+	ledger := NewAutoCompactLedger()
+	ledger.note("a", 4)
+	ledger.note("b", 7)
+
+	ledger.Forget("a")
+
+	assert.Zero(t, ledger.last("a"))
+	assert.Equal(t, int64(7), ledger.last("b"))
+	var nilLedger *AutoCompactLedger
+	assert.NotPanics(t, func() { nilLedger.note("x", 1); nilLedger.Forget("x") })
+	assert.Zero(t, nilLedger.last("x"))
 }
 
 // Folds are batched: one summary call covers at least autoCompactMinTurnGap

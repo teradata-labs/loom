@@ -22,6 +22,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/teradata-labs/loom/pkg/observability"
 )
 
 // recordingCompressor returns a fixed summary and keeps the input it was given.
@@ -142,4 +144,29 @@ func TestCompact_RefusesWhenAPassIsAlreadyRunning(t *testing.T) {
 	_, err := sm.Compact(context.Background(), CompactOptions{})
 
 	assert.ErrorIs(t, err, ErrCompactionBusy)
+}
+
+// CompactSession runs under its own span, which says what it did.
+func TestCompactSession_RecordsASpan(t *testing.T) {
+	tracer := &spanKeepingTracer{}
+	sm := toolTurnMemory(t, 200000, 20000, 6)
+	sm.SetCompressor(&recordingCompressor{})
+	ag := reliefSeamAgent(t, &capturingLLM{}, "compact_span", sm, WithTracer(tracer))
+
+	res, err := ag.CompactSession(context.Background(), "compact_span", CompactOptions{Focus: "the SQL"})
+
+	require.NoError(t, err)
+	assert.True(t, res.Compacted)
+	assert.Equal(t, DefaultCompactKeepTurns, res.TurnsKept)
+	var span *observability.Span
+	for _, s := range tracer.spans {
+		if s.Name == "agent.compact_session" {
+			span = s
+		}
+	}
+	require.NotNil(t, span)
+	assert.Equal(t, "compact_span", span.Attributes[observability.AttrSessionID])
+	assert.Equal(t, true, span.Attributes["compaction.turns_folded"])
+	assert.Equal(t, true, span.Attributes["compaction.focus"])
+	assert.Equal(t, res.TokensAfter, span.Attributes["compaction.tokens_after"])
 }

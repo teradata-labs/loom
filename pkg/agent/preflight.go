@@ -17,6 +17,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"go.uber.org/zap"
 )
@@ -57,23 +58,34 @@ type FitResult struct {
 
 // EnsureFits makes the next request fit the usable window or reports that it
 // cannot. In order: deeper relief passes (evict/fold with lower marks), then a
-// transient send-side view of ROM + summary + the newest N turns for N in
-// preflightFallbackTurns. The fallback does not touch the store, so the next
-// call's relief can still fold the dropped turns into the summary.
+// provider-send view of ROM, the summary, active skills' bodies and the newest
+// N turns for N in preflightFallbackTurns. The fallback does not touch the
+// store, so the next turn's relief can still fold the dropped turns into the
+// summary.
+//
+// A view chosen in a turn holds for the rest of that turn and only ever
+// narrows: widening it again would change what precedes the turn's own
+// thinking blocks, which the provider rejects.
 func (sm *SegmentedMemory) EnsureFits(ctx context.Context) FitResult {
 	sm.mu.Lock()
-	sm.fallbackTurns = 0
+	var held int64
+	if sm.fallbackTurns > 0 && sm.fallbackTurn == sm.currentTurnLocked() {
+		held = sm.fallbackTurns
+	} else {
+		sm.fallbackTurns, sm.fallbackTurn = 0, 0
+	}
 	sm.mu.Unlock()
 
 	var res FitResult
 	for pass := 1; ; pass++ {
 		sm.mu.Lock()
-		est, usable := sm.estimateLocked(), sm.usableLocked()
+		est, usable := sm.viewEstimateLocked(held), sm.usableLocked()
 		sm.mu.Unlock()
 		res.Estimate, res.Usable = est, usable
 		// usable <= 0 means no window is configured: nothing to guard against.
 		if est <= usable || usable <= 0 {
 			res.Fits = true
+			res.Fallback, res.TurnsKept = held > 0, int(held)
 			return res
 		}
 		if pass > preflightReliefPasses {
@@ -88,65 +100,61 @@ func (sm *SegmentedMemory) EnsureFits(ctx context.Context) FitResult {
 
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	compiled := sm.compileLocked()
-	t := sm.currentTurnLocked()
 	for _, n := range preflightFallbackTurns {
-		kept := keepNewestTurns(compiled, t, n)
-		if est := sm.estimateCompiledLocked(kept); est <= res.Usable {
-			sm.fallbackTurns = n
+		if held > 0 && n >= held {
+			continue
+		}
+		if est := sm.viewEstimateLocked(n); est <= res.Usable {
+			sm.fallbackTurns, sm.fallbackTurn = n, sm.currentTurnLocked()
 			res.Fits, res.Fallback, res.Estimate, res.TurnsKept = true, true, est, int(n)
 			return res
 		}
 	}
 	// Report the smallest view's size: that is what could not be made to fit.
-	res.Estimate = sm.estimateCompiledLocked(keepNewestTurns(compiled, t, 1))
+	res.Estimate = sm.viewEstimateLocked(1)
 	return res
 }
 
-// keepNewestTurns keeps every system message (ROM, summary) and the messages of
-// the newest n turns up to t, in order. Turns are kept whole, so a tool call
-// and its results stay together; a synthetic failed result carries no turn and
-// follows the turn of the message before it.
-func keepNewestTurns(compiled []Message, t, n int64) []Message {
-	floor := t - n // keep turns strictly above floor
-	kept := make([]Message, 0, len(compiled))
-	var turn int64
-	for i := range compiled {
-		m := compiled[i]
-		if m.Role == "system" {
-			kept = append(kept, m)
-			continue
-		}
-		if m.Turn > 0 {
-			turn = m.Turn
-		}
-		if turn > floor {
-			kept = append(kept, m)
-		}
+// viewEstimateLocked is the estimate of the view keeping the newest n turns,
+// or of the whole context when n is 0. Must hold lock.
+func (sm *SegmentedMemory) viewEstimateLocked(n int64) int {
+	if n <= 0 {
+		return sm.estimateLocked()
 	}
-	return kept
+	return sm.estimateCompiledLocked(sm.compileViewLocked(sm.currentTurnLocked() - n + 1))
 }
 
-// preflightFit is the hard guard before a provider call. It returns the
-// messages and tools to send, or a context_exhausted error when the request
-// cannot be made to fit — raised here so the user sees an actionable message
-// instead of a provider refusal that would also be billed.
+// preflightFit is the hard guard before a provider call (behavior.preflight_fit).
+// It returns the messages and tools to send, or a context_exhausted error when
+// the request cannot be made to fit — raised here so the user sees an
+// actionable message instead of a provider refusal that would also be billed.
 func (a *Agent) preflightFit(ctx Context, session *Session, segMem *SegmentedMemory, recovery *recoveryOrchestrator,
 	messages []Message, tools []shuttle.Tool) ([]Message, []shuttle.Tool, error) {
+	if a.config == nil || !a.config.PreflightFit {
+		return messages, tools, nil
+	}
 	fit := segMem.EnsureFits(ctx)
 
 	if fit.Shed || fit.Fallback {
-		messages = session.GetMessages()
+		messages = segMem.GetMessagesForSend()
 	}
 	if fit.Shed {
 		tools = recovery.activeTools(a.advertisedTools(session))
 		a.setAdvertisedTools(segMem, tools)
 	}
+	span := recovery.span
 	if !fit.Fits {
 		zap.L().Error("preflight: request cannot fit the usable window; not sending",
 			zap.String("session_id", session.ID),
 			zap.Int("estimate_tokens", fit.Estimate),
 			zap.Int("usable_tokens", fit.Usable))
+		if span != nil {
+			span.AddEvent("context.preflight_refused", map[string]interface{}{
+				"estimate_tokens": fit.Estimate,
+				"usable_tokens":   fit.Usable,
+				"shed":            fit.Shed,
+			})
+		}
 		cause := fmt.Errorf("conversation too long: the request is about %d tokens against a usable window of %d "+
 			"even with only the current turn kept; compact the conversation or start a new session",
 			fit.Estimate, fit.Usable)
@@ -159,7 +167,14 @@ func (a *Agent) preflightFit(ctx Context, session *Session, segMem *SegmentedMem
 			zap.Int("estimate_tokens", fit.Estimate),
 			zap.Int("usable_tokens", fit.Usable),
 			zap.Int("turns_kept", fit.TurnsKept))
-
+		if span != nil {
+			span.AddEvent("context.preflight_fallback", map[string]interface{}{
+				"estimate_tokens": fit.Estimate,
+				"usable_tokens":   fit.Usable,
+				"turns_kept":      fit.TurnsKept,
+				"shed":            fit.Shed,
+			})
+		}
 	} else if fit.Shed {
 		zap.L().Info("preflight: deeper relief brought the request under the usable window",
 			zap.String("session_id", session.ID),
@@ -167,4 +182,22 @@ func (a *Agent) preflightFit(ctx Context, session *Session, segMem *SegmentedMem
 			zap.Int("usable_tokens", fit.Usable))
 	}
 	return messages, tools, nil
+}
+
+// synthesisTooLong is the error for a synthesis request the guard would not
+// send; the caller answers with the guidance message instead.
+func synthesisTooLong(span *observability.Span, sessionID string, fit FitResult) error {
+	if span != nil {
+		span.AddEvent("context.preflight_refused", map[string]interface{}{
+			"estimate_tokens": fit.Estimate,
+			"usable_tokens":   fit.Usable,
+			"synthesis":       true,
+		})
+	}
+	zap.L().Error("preflight: synthesis request cannot fit the usable window; not sending",
+		zap.String("session_id", sessionID),
+		zap.Int("estimate_tokens", fit.Estimate),
+		zap.Int("usable_tokens", fit.Usable))
+	return fmt.Errorf("conversation too long: synthesis request is about %d tokens against a usable window of %d",
+		fit.Estimate, fit.Usable)
 }

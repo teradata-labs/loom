@@ -66,9 +66,25 @@ func TestMeasureRequest_AttributesEachPart(t *testing.T) {
 		b.ToolResultTokens+b.ToolStubTokens+b.SkillBodyTokens+b.ReminderTokens+b.ThinkingTokens, b.total())
 }
 
-func TestIsOffloadStub_LongContentIsNeverAStub(t *testing.T) {
-	assert.False(t, isOffloadStub("[x held in memory this turn "+strings.Repeat("a", stubScanBytes)))
+// Every stub format is recognized from the same constants, a long preview line
+// included; a payload that merely mentions the phrases is not.
+func TestIsOffloadStub_EveryFormatAndNothingElse(t *testing.T) {
+	longMeta := strings.Repeat("col INTEGER, ", 400)
+	stubs := []string{
+		fmt.Sprintf(offloadStubFormat, "run_sql", 9000, 3, "", longMeta),
+		fmt.Sprintf(offloadStubOpaqueFormat, "read_file", 9000, 3, "", longMeta),
+		fmt.Sprintf(pressureStubFormat, "run_sql", 900, 3),
+		fmt.Sprintf(pressureStubTabularFormat, "run_sql", 900, 3),
+		fmt.Sprintf(evictedStubFormat, "run_sql", 9000, "", longMeta),
+	}
+	for _, s := range stubs {
+		assert.True(t, isOffloadStub(s), s[:60])
+	}
+	assert.Greater(t, len(stubs[0]), 2048, "a stub with a long preview is still a stub")
+
 	assert.False(t, isOffloadStub("plain tool output"))
+	assert.False(t, isOffloadStub(`["held in memory this turn", "evicted from context"]`))
+	assert.False(t, isOffloadStub("["+strings.Repeat("1,", 5000)+" tokens, held in memory this turn]"))
 }
 
 func TestChatWithRetry_LogsPartSizesOnSuccess(t *testing.T) {

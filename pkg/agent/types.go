@@ -306,6 +306,9 @@ type Agent struct {
 	// session that recorded a ledger in this process, and every session the
 	// whole-history fallback already mined. Freed by DeleteSession.
 	lessonCoveredSessions map[string]struct{}
+	// autoCompactLedger records each session's last automatic compaction
+	// attempt (auto_compact.go). Freed per session by DeleteSession.
+	autoCompactLedger *AutoCompactLedger
 	// errorLessonMu guards errorLessonState: per-session tracking for
 	// error-triggered lesson recall (graph_memory_lessons.go) — which
 	// lessons were already injected and how many injections have fired.
@@ -413,9 +416,18 @@ type Config struct {
 	// once the context reaches this percentage of the usable window, older tool
 	// results are stubbed and, if that is not enough, older turns are folded
 	// into the running summary, while there is still room to summarize well.
-	// 0 = off. It needs an LLM memory compressor to fold; without one only the
-	// lossless stubbing runs. Relief at the water marks remains the backstop.
+	// 0 = off; valid values are 0-99. It needs an LLM memory compressor to
+	// fold; without one only the lossless stubbing runs. Relief at the water
+	// marks remains the backstop. The YAML key is behavior.auto_compact_percent.
 	AutoCompactPercent int
+
+	// PreflightFit refuses, before the provider call, a request whose estimate
+	// is still over the usable window after relief: deeper relief passes run
+	// first, then the send narrows to the system prompt, the summary and the
+	// newest turns, and only then does the turn end with context_exhausted.
+	// Default false (the provider refusal and one relief resend are the only
+	// guard); the YAML key is behavior.preflight_fit.
+	PreflightFit bool
 	// PatternConfig controls pattern injection (nil = use defaults)
 	PatternConfig *PatternConfig
 

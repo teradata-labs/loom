@@ -56,18 +56,30 @@ func (b requestBreakdown) total() int {
 		b.ReminderTokens + b.ThinkingTokens
 }
 
-// stubScanBytes bounds how much of a tool row is scanned for the stub
-// marker: stubs are one short line, so a row longer than this is whole data.
-const stubScanBytes = 2048
+// stubHeadScanBytes bounds where a stub's head must end: a tool name and a
+// token count, so a payload that merely starts with "[" is ruled out after
+// this many bytes rather than scanned whole.
+const stubHeadScanBytes = 512
+
+// stubHeadEnd is the literal that closes stubHeadFormat, after the token count.
+var stubHeadEnd = stubHeadFormat[strings.LastIndex(stubHeadFormat, "%d")+len("%d"):]
 
 // isOffloadStub reports whether a tool row's content is a relief or size-rule
-// stub (offload, pressure offload or eviction) rather than the payload.
+// stub (offload, pressure offload or eviction) rather than the payload: the
+// stub head (stubHeadFormat) followed by the held or evicted phrase. Only the
+// head is examined, so a stub with a long preview line is still recognized.
 func isOffloadStub(content string) bool {
-	if len(content) > stubScanBytes || !strings.HasPrefix(content, "[") {
+	open := stubHeadFormat[:strings.Index(stubHeadFormat, "%s")]
+	if !strings.HasPrefix(content, open) {
 		return false
 	}
-	return strings.Contains(content, "held in memory this turn") ||
-		strings.Contains(content, "evicted from context")
+	head := content[:min(len(content), stubHeadScanBytes)]
+	i := strings.Index(head, stubHeadEnd)
+	if i < 0 {
+		return false
+	}
+	rest := content[i+len(stubHeadEnd):]
+	return strings.HasPrefix(rest, stubHeldPhrase) || strings.HasPrefix(rest, stubEvictedPhrase)
 }
 
 // messageTextBytes is the text a message sends: Content, or the text blocks
@@ -115,7 +127,7 @@ func measureRequest(messages []Message, tools []shuttle.Tool) requestBreakdown {
 				b.ToolResultTokens += n
 				b.LargestToolResult = max(b.LargestToolResult, n)
 			}
-		case m.Role == "user" && strings.HasPrefix(m.Content, "<system-reminder>"):
+		case IsSystemReminder(*m):
 			b.ReminderTokens += n
 		default:
 			b.HistoryTokens += n
