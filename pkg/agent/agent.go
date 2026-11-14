@@ -2899,9 +2899,11 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 						"tool_results":    o.ToolResults,
 					})
 			}
-			// The relief warning above is sent with this call: count it in the
-			// guard's estimate like the other pending reminders.
-			segMem.SetTransientTail(reminders...)
+			// The relief warning above and the tool-change note are sent with
+			// this call: count them in the guard's estimate like the other
+			// pending reminders.
+			toolNote, _ := a.toolChangeNote(prevToolNames, tools)
+			segMem.SetTransientTail(append(reminders[:len(reminders):len(reminders)], TurnReminder{Text: toolNote})...)
 			var pfErr error
 			if messages, tools, pfErr = a.preflightFit(ctx, session, segMem, recovery, messages, tools); pfErr != nil {
 				return nil, pfErr
@@ -2937,15 +2939,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			if !a.config.ToolChangeNote {
 				return a.chatWithRetry(ctx, withReminder(messages, ""), ts)
 			}
-			names := make([]string, 0, len(ts))
-			for _, t := range ts {
-				names = append(names, t.Name())
-			}
-			// nil marks "no previous successful call this turn": the first send emits nothing.
-			note := ""
-			if prevToolNames != nil {
-				note = toolDeltaNote(prevToolNames, names)
-			}
+			note, names := a.toolChangeNote(prevToolNames, ts)
 			if note != "" {
 				span.AddEvent("tools.changed", map[string]interface{}{"note": note})
 			}
@@ -4071,6 +4065,23 @@ func advertisedToolsBytes(tools []shuttle.Tool) int {
 		}
 	}
 	return bytes
+}
+
+// toolChangeNote is the behavior.tool_change_note text a send of ts carries
+// after a turn's previous successful call advertised prev, and ts's names.
+// The note is "" when the option is off or before the turn's first call (nil prev).
+func (a *Agent) toolChangeNote(prev []string, ts []shuttle.Tool) (string, []string) {
+	if a.config == nil || !a.config.ToolChangeNote {
+		return "", nil
+	}
+	names := make([]string, 0, len(ts))
+	for _, t := range ts {
+		names = append(names, t.Name())
+	}
+	if prev == nil {
+		return "", names
+	}
+	return toolDeltaNote(prev, names), names
 }
 
 // toolDeltaNote describes how the advertised tool names changed between two
