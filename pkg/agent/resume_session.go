@@ -72,6 +72,25 @@ func (e *ExecutionGap) Error() string {
 		e.SessionID, e.StepIndex, e.BatchPosition, e.ToolName, e.ToolUseID)
 }
 
+// UnknownOutcomePolicy says what ResumeSession does with a call whose intent
+// was recorded but whose result was not.
+type UnknownOutcomePolicy string
+
+const (
+	// UnknownOutcomeStop (the default) returns an ExecutionGap for an operator
+	// to resolve with ResolveExecutionGap.
+	UnknownOutcomeStop UnknownOutcomePolicy = "stop"
+	// UnknownOutcomeFail records the call as failed with "outcome unknown", and
+	// the turn goes on so the model can decide. The call is not re-run, and the
+	// result does not claim that it did or did not take effect.
+	UnknownOutcomeFail UnknownOutcomePolicy = "fail"
+)
+
+// Valid reports whether p is empty (the default) or a known policy.
+func (p UnknownOutcomePolicy) Valid() bool {
+	return p == "" || p == UnknownOutcomeStop || p == UnknownOutcomeFail
+}
+
 // ResumeSession completes a turn interrupted by a crash.
 //
 // When the session ends in an unanswered user message (the crash came before
@@ -137,7 +156,27 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (_ *Respons
 		}
 		a.leases.apply(sessionID, handleCollector.ReleaseAll(zap.L()), nil)
 	}()
-	agentCtx := &agentContext{Context: ctx, session: sess, tracer: a.tracer, progressCallback: nil}
+	// The resumed loop's recordLLMIntent stamps the turn each intent answers,
+	// the identity the replay gate compares against the session's tail. A
+	// resume answers the session's tail turn — the unanswered user message, or
+	// the tool rows awaiting the next response — not a new Chat's message.
+	var resumedTurn int64
+	if tailMsgs := rawSessionMessages(sess); len(tailMsgs) > 0 {
+		resumedTurn = tailMsgs[len(tailMsgs)-1].Turn
+	}
+	agentCtx := &agentContext{Context: ctx, session: sess, tracer: a.tracer, progressCallback: nil, turnIndex: resumedTurn}
+
+	// A recorded model response whose assistant message never saved, and none of
+	// whose tool calls were started, is replayed from the log rather than asked
+	// for again: a second call costs again and can choose different tool calls.
+	// replayPersisted is the appended message's durability — the park gate and
+	// the step prune below apply the same durability facts the loop does for its
+	// own batch: a park must never stand on an assistant row that did not save,
+	// and a step whose assistant row is missing must stay in the log.
+	replayed, replayPersisted := a.replayRecordedBatch(ctx, sess, sessionID, events)
+	if replayed {
+		span.AddEvent("resume_session.replayed_llm_response", map[string]interface{}{"persisted": replayPersisted})
+	}
 
 	// A batch whose tools ran but whose assistant message never saved leaves
 	// the session looking like an earlier batch just finished. Whatever the
@@ -239,6 +278,16 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (_ *Respons
 			}
 
 		default:
+			if a.unknownOutcome == UnknownOutcomeFail {
+				persisted, err := a.failUnknownOutcome(ctx, agentCtx, sess, span, step, eventPos, call)
+				if err != nil {
+					return nil, err
+				}
+				if !persisted {
+					st.rowNotPersisted = true
+				}
+				continue
+			}
 			// Intent with no result: outcome unknown. The gap is named by
 			// FindExecutionGap, the same function ResolveExecutionGap
 			// uses, so the gap resume reports is the gap resolve-gap resolves.
@@ -252,8 +301,10 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (_ *Respons
 	// Re-park check: a never-attempted call may be Ask-classified or a
 	// contact_human whose intent was never recorded. Classifying against each
 	// call's true batch position keeps verifyItemBinding's "seq is the call's
-	// position in the original batch" invariant for a later resume.
-	if a.hitlPark != nil && a.memory.HasStore() && len(neverAttempted) > 0 {
+	// position in the original batch" invariant for a later resume. Like the
+	// loop's park gate, parking needs the batch's assistant row durable: a
+	// replayed message that failed to persist dispatches inline instead.
+	if a.hitlPark != nil && a.memory.HasStore() && len(neverAttempted) > 0 && (!replayed || replayPersisted) {
 		items := a.classifyParkItems(agentCtx, neverAttempted, neverAttemptedPositions)
 		if parkErr := a.parkItems(agentCtx, sess, items, Usage{}, Usage{}, nil, false); parkErr != nil {
 			var parked *TurnParkedError
@@ -284,8 +335,9 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (_ *Respons
 
 	// Every call in the tail batch is now resolved (backfilled, or
 	// dispatched), so the step carries no further replay value once its rows
-	// are durable.
-	a.pruneStepIfResolved(ctx, sessionID, step, !st.rowNotPersisted)
+	// are durable — the assistant message among them, exactly as the loop's
+	// prune call requires.
+	a.pruneStepIfResolved(ctx, sessionID, step, (!replayed || replayPersisted) && !st.rowNotPersisted)
 
 	return a.finishResumedTurn(ctx, agentCtx, sess, handleCollector, &parkedAgain)
 }
@@ -423,6 +475,130 @@ const queryToolResultName = "query_tool_result"
 // responses apart.
 func sameToolCall(a, b ToolCall) bool {
 	return a.ID == b.ID && a.Name == b.Name && canonicalJSON(a.Input) == canonicalJSON(b.Input)
+}
+
+// replayRecordedBatch rebuilds the assistant message of the newest recorded LLM
+// response from its llm_call_result event, so the resume carries on with that
+// response's tool calls instead of calling the model again. It appends the
+// message to sess and reports whether it did, plus whether that append
+// persisted (the park gate and the step prune below need the same durability
+// fact the loop's appendMessage flag carries). It replays only when all of
+// these hold, and otherwise leaves everything to the existing paths (a fresh
+// call, or the refusals):
+//   - the response has tool calls, its payload decodes, and it did not stop
+//     at max_tokens (truncated calls; the breaker's refusal holds even when
+//     its prune fails);
+//   - the recorded step's intent names the turn the session still ends in
+//     (answered_turn equals the tail message's Turn; an intent without the
+//     field is refused);
+//   - the recorded step is the highest step holding an llm_call_intent — the
+//     response must answer the LLM call the crash interrupted. A result below
+//     that step belongs to a turn that already failed after recording it (the
+//     output-token circuit breaker's exit, say) and its batch must not run as
+//     the answer to a later turn's message;
+//   - no saved assistant message, in the session or folded, already holds that
+//     batch;
+//   - none of the batch's calls has an intent, so nothing ran (a batch with
+//     intents is the unsaved-batch case, which stays a refusal);
+//   - the session ends in the turn's user message, or in a finished tool batch
+//     that awaits the next response, so the message goes where it belongs.
+func (a *Agent) replayRecordedBatch(ctx context.Context, sess *Session, sessionID string, events []eventlog.ExecutionEvent) (replayed, persisted bool) {
+	var recorded *eventlog.ExecutionEvent
+	for i := range events {
+		e := &events[i]
+		if e.EventType == eventlog.EventLLMCallResult && (recorded == nil || e.StepIndex >= recorded.StepIndex) {
+			recorded = e
+		}
+	}
+	if recorded == nil {
+		return false, false
+	}
+	highestIntent := -1
+	var intentAtHighest *eventlog.ExecutionEvent
+	for i := range events {
+		if e := &events[i]; e.EventType == eventlog.EventLLMCallIntent && e.StepIndex > highestIntent {
+			highestIntent = e.StepIndex
+			intentAtHighest = e
+		}
+	}
+	if recorded.StepIndex != highestIntent {
+		return false, false
+	}
+	var resp LLMResponse
+	if err := json.Unmarshal(recorded.Payload, &resp); err != nil || len(resp.ToolCalls) == 0 {
+		return false, false
+	}
+	// A response cut off at max_tokens is never replayed: its tool calls may
+	// be truncated, and it is the response the output-token breaker refuses.
+	// Deciding from the durable payload keeps the refusal standing when the
+	// breaker exit's best-effort prune fails.
+	if resp.StopReason == "max_tokens" {
+		return false, false
+	}
+	for _, e := range events {
+		if e.EventType == eventlog.EventToolCallIntent && e.StepIndex == recorded.StepIndex && !isQueryToolResultIntent(e) {
+			return false, false
+		}
+	}
+	msgs := rawSessionMessages(sess)
+	if len(msgs) == 0 || !(unansweredTurnTail(msgs) || msgs[len(msgs)-1].Role == "tool") {
+		return false, false
+	}
+	// The response must be the answer to the turn the session still ends in.
+	// The intent payload carries that turn (the opening user message's Turn);
+	// a later turn's message has a strictly greater Turn, so a batch chosen
+	// for an earlier, already-failed turn is refused. Intents written before
+	// this field existed carry no turn: refuse (fail closed) — the replay is
+	// an optimization, and a fresh model call is always correct.
+	var intentMeta struct {
+		AnsweredTurn *int64 `json:"answered_turn"`
+	}
+	if intentAtHighest == nil || json.Unmarshal(intentAtHighest.Payload, &intentMeta) != nil ||
+		intentMeta.AnsweredTurn == nil || *intentMeta.AnsweredTurn != msgs[len(msgs)-1].Turn {
+		return false, false
+	}
+	saved := func(list []Message) bool {
+		for _, m := range list {
+			if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+				if _, match := matchRecordedCalls(resp.ToolCalls, m.ToolCalls); match {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	if saved(msgs) {
+		return false, false
+	}
+	if a.memory != nil && a.memory.store != nil {
+		rows, err := a.memory.store.ListMessagesBySeqRange(ctx, sessionID, 1, math.MaxInt64)
+		if err != nil {
+			zap.L().Warn("failed to read folded messages; not replaying the recorded response",
+				zap.String("session_id", sessionID), zap.Error(err))
+			return false, false
+		}
+		var folded []Message
+		for _, m := range rows {
+			if m.Folded {
+				folded = append(folded, m)
+			}
+		}
+		if saved(folded) {
+			return false, false
+		}
+	}
+	_, persisted = a.appendMessage(ctx, sess, Message{
+		Role:           "assistant",
+		Content:        resp.Content,
+		ToolCalls:      resp.ToolCalls,
+		Thinking:       resp.Thinking,
+		ThinkingBlocks: resp.ThinkingBlocks,
+		AgentID:        a.GetID(),
+		TokenCount:     resp.Usage.TotalTokens,
+		CostUSD:        resp.Usage.CostUSD,
+		Timestamp:      time.Now(),
+	}, false)
+	return true, persisted
 }
 
 // unansweredTurnTail reports whether msgs ends in a user message that opened
@@ -600,6 +776,40 @@ func (a *Agent) backfillFromResultEvent(ctx Context, sess *Session, call ToolCal
 		Timestamp:  time.Now(),
 	}, false)
 	return persisted, nil
+}
+
+// failUnknownOutcome closes a call whose outcome is unknown, under
+// UnknownOutcomeFail: it records a failed result (so a second resume sees a
+// known result and does not decide again) and backfills the tool row from it.
+// The call is never re-run. The decision is made visible on the resume span and
+// in the log — the synthetic result row alone reads like the tool's own
+// failure, and nothing else says an agent decided the outcome was unknown.
+func (a *Agent) failUnknownOutcome(ctx context.Context, agentCtx Context, sess *Session, span *observability.Span, step, position int, call ToolCall) (persisted bool, err error) {
+	const msg = "outcome unknown: this call was started before a crash and no result was recorded; do not assume it ran, and do not assume it did not"
+	payload, err := json.Marshal(map[string]interface{}{
+		"result": shuttle.Result{
+			Success:  false,
+			Error:    &shuttle.Error{Code: "outcome_unknown", Message: msg},
+			Metadata: map[string]interface{}{"outcome_unknown": true},
+		},
+		"error": msg,
+	})
+	if err != nil {
+		return false, fmt.Errorf("building the unknown-outcome result for call %s: %w", call.ID, err)
+	}
+	if err := a.eventLog.RecordResult(ctx, sess.ID, step, position, eventlog.EventToolCallResult, call.ID, payload); err != nil {
+		return false, fmt.Errorf("recording the unknown-outcome result for call %s: %w", call.ID, err)
+	}
+	span.AddEvent("resume_session.unknown_outcome_failed", map[string]interface{}{
+		"tool":           call.Name,
+		"call_id":        call.ID,
+		"step_index":     step,
+		"batch_position": position,
+	})
+	zap.L().Warn("unknown-outcome call closed as failed",
+		zap.String("session_id", sess.ID), zap.String("tool", call.Name),
+		zap.String("call_id", call.ID), zap.Int("step_index", step), zap.Int("batch_position", position))
+	return a.backfillFromResultEvent(agentCtx, sess, call, eventlog.ExecutionEvent{Payload: payload})
 }
 
 // ErrNoExecutionGap is returned by ResolveExecutionGap when the session has

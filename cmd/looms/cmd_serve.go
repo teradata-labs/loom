@@ -1461,6 +1461,10 @@ func runServe(cmd *cobra.Command, args []string) {
 	// below records it, so `loom sessions resume` can finish a turn a crash
 	// interrupted. Enabled on a backend without support is a startup error,
 	// not a silent no-op: resume would then refuse every turn.
+	unknownOutcome := agent.UnknownOutcomePolicy(config.ExecutionLog.UnknownOutcome)
+	if !unknownOutcome.Valid() {
+		logger.Fatal("execution_log.unknown_outcome must be \"stop\" or \"fail\"", zap.String("value", config.ExecutionLog.UnknownOutcome))
+	}
 	var executionLog eventlog.EventLogStore
 	if config.ExecutionLog.Enabled {
 		elp, ok := storageBackend.(backend.EventLogProvider)
@@ -2026,12 +2030,13 @@ func runServe(cmd *cobra.Command, args []string) {
 		// Governance travels to EVERY agent build path: the registry builds
 		// agents at runtime-create and hot-reload, and an agent rebuilt without
 		// the chain would silently become ungoverned (C-007).
-		PermissionChecker: permissionChecker,
-		AdmissionChain:    admissionChain,
-		RunLuaTool:        luaRT.registryOptions(),
-		LuaScripts:        luaRT.scriptsRegistryOptions(),
-		IdentityResolver:  postgres.UserIDFromContext,
-		EventLogStore:     executionLog,
+		PermissionChecker:    permissionChecker,
+		AdmissionChain:       admissionChain,
+		RunLuaTool:           luaRT.registryOptions(),
+		LuaScripts:           luaRT.scriptsRegistryOptions(),
+		IdentityResolver:     postgres.UserIDFromContext,
+		EventLogStore:        executionLog,
+		UnknownOutcomePolicy: unknownOutcome,
 	})
 	if err != nil {
 		logger.Warn("Failed to create agent registry", zap.Error(err))
@@ -2209,7 +2214,7 @@ func runServe(cmd *cobra.Command, args []string) {
 				// deployment. A nil chain leaves tool execution a pass-through.
 				agentOpts = append(agentOpts, agent.WithAdmissionHooks(admissionChain))
 				agentOpts = append(agentOpts, agent.WithIdentityResolver(postgres.UserIDFromContext))
-				agentOpts = append(agentOpts, agent.WithEventLog(executionLog))
+				agentOpts = append(agentOpts, agent.WithEventLog(executionLog), agent.WithUnknownOutcomePolicy(unknownOutcome))
 
 				// Determine LLM provider for this agent
 				// If agent has specific LLM config, use it; otherwise use server default
@@ -3527,7 +3532,7 @@ func runServe(cmd *cobra.Command, args []string) {
 			// deployment. A nil chain leaves tool execution a pass-through.
 			agentOpts = append(agentOpts, agent.WithAdmissionHooks(admissionChain))
 			agentOpts = append(agentOpts, agent.WithIdentityResolver(postgres.UserIDFromContext))
-			agentOpts = append(agentOpts, agent.WithEventLog(executionLog))
+			agentOpts = append(agentOpts, agent.WithEventLog(executionLog), agent.WithUnknownOutcomePolicy(unknownOutcome))
 
 			// Wrap LLM provider with instrumentation for observability
 			if tracer != nil {

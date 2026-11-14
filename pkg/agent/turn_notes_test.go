@@ -391,3 +391,83 @@ func TestTurnNotes_ToolBudgetReminderOncePerTurnInLoop(t *testing.T) {
 	assert.Equal(t, 1, reminders, "one tool-budget reminder per turn")
 	assert.Equal(t, 1, rows)
 }
+
+// TestTransientTail_CountedInReliefEstimate (review Q1, agent level): the
+// relief pass counts the caller tail as pending (SetTransientTail) before the
+// send, and pinning at the send clears it — the tail counts once as pending,
+// then as a compiled message. fn runs twice per provider call: the relief
+// pass reads what the last pin left (""), the message build reads the tail
+// the relief pass just made pending.
+func TestTransientTail_CountedInReliefEstimate(t *testing.T) {
+	sid := "tail_relief"
+	var seg *SegmentedMemory
+	var pendingAtBuild []string
+	var ag *Agent
+	llm := &recordingToolLLM{mockToolCallingLLM: &mockToolCallingLLM{
+		responses: []mockLLMResponse{
+			{toolCalls: []llmtypes.ToolCall{{ID: "c1", Name: "stub", Input: map[string]interface{}{}}}},
+			{content: "done"},
+		},
+	}}
+	ag = NewAgent(&mockBackend{}, llm,
+		WithConfig(&Config{MaxTurns: 10, MaxToolExecutions: 10, MaxIterations: 10}),
+		WithTransientTail(func(context.Context) string {
+			if s, ok := ag.GetSession(sid); ok {
+				seg, _ = s.SegmentedMem.(*SegmentedMemory)
+			}
+			if seg != nil {
+				seg.mu.RLock()
+				pendingAtBuild = append(pendingAtBuild, seg.transientTail)
+				seg.mu.RUnlock()
+			}
+			return "live-state"
+		}))
+	ag.RegisterTool(namedStubTool{name: "stub"})
+
+	_, err := ag.Chat(context.Background(), sid, "go")
+	require.NoError(t, err)
+
+	require.NotNil(t, seg)
+	assert.Equal(t, []string{
+		"",
+		systemReminderContent("live-state"),
+		"",
+		systemReminderContent("live-state"),
+	}, pendingAtBuild, "the relief pass leaves the tail pending; the build pass sees it before pinning")
+	seg.mu.RLock()
+	assert.Empty(t, seg.transientTail, "pinning cleared the pending tail at the send")
+	seg.mu.RUnlock()
+}
+
+// TestPinTurnNotes_ResendWithChangedTailPinsNewNote (review Q5): a resend
+// whose caller tail changed pins a second note — one per distinct text, in
+// send order, each after the rows so far — so the request only grows and the
+// first note stays in front of the replayed thinking. A resend with unchanged
+// text sends nothing again.
+func TestPinTurnNotes_ResendWithChangedTailPinsNewNote(t *testing.T) {
+	ctx := context.Background()
+	sm := NewSegmentedMemory("ROM", 200000, 20000)
+	sm.AddMessage(ctx, Message{Role: "user", Content: "q1", Turn: 1})
+	sm.AddMessage(ctx, Message{Role: "assistant", ToolCalls: []ToolCall{{ID: "c1", Name: "t"}}, Turn: 1})
+	sm.AddMessage(ctx, Message{Role: "tool", ToolUseID: "c1", Content: "r1", Turn: 1})
+
+	notes := func() []string {
+		var out []string
+		for _, m := range sm.GetMessagesForLLM() {
+			if IsSystemReminder(m) {
+				out = append(out, strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(m.Content, "<system-reminder>\n"), "</system-reminder>")))
+			}
+		}
+		return out
+	}
+
+	sm.PinTurnNotes(TurnReminder{Text: "tail one"})
+	// The resend: no new row since, changed text.
+	sm.PinTurnNotes(TurnReminder{Text: "tail two"})
+	assert.Equal(t, []string{"tail one", "tail two"}, notes(),
+		"one note per distinct text, in send order")
+
+	// Another resend with unchanged text sends nothing again.
+	sm.PinTurnNotes(TurnReminder{Text: "tail two"})
+	assert.Len(t, notes(), 2, "an unchanged resend is deduped by text")
+}

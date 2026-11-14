@@ -205,6 +205,18 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// existing deactivation path plus the per-session tool ledger.
 	a.memory.SetSkillDeactivationHook(a.deactivateSkillForFold)
 
+	// Per-message labels (WithMessageLabeler / WithLabelJoin): wired here, not
+	// at option time, so the labeler lands on the memory that survives a later
+	// WithMemory. Rides messages through compaction (the fold summary carries
+	// the replaced labels' join) and replay (the restore path re-runs the
+	// labeler where each row re-enters the context).
+	if a.messageLabeler != nil {
+		a.memory.SetMessageLabeler(a.messageLabeler)
+	}
+	if a.labelJoin != nil {
+		a.memory.SetLabelJoin(a.labelJoin)
+	}
+
 	// Initialize shared memory store for large tool results (#2: Persistent Global Storage)
 	// Use global singleton so references work across agent instances and survive restarts.
 	// The global store provides:
@@ -576,6 +588,28 @@ func WithMemory(memory *Memory) Option {
 	}
 }
 
+// WithMessageLabeler sets a per-message labeler. The agent calls fn once when
+// a message enters a session's context — arrival, or the restore replay that
+// rebuilds one after a restart — and stores the returned map on the message.
+// Label values are opaque: nothing in the agent interprets them. When a
+// compaction summary replaces labelled messages, their labels ride the
+// summary message joined by WithLabelJoin.
+func WithMessageLabeler(fn func(msg *Message) map[string]string) Option {
+	return func(a *Agent) {
+		a.messageLabeler = fn
+	}
+}
+
+// WithLabelJoin sets the join used when a compaction summary replaces
+// labelled messages: fn is applied pairwise over the replaced messages'
+// labels, in context order. When unset, a default join is used: for each key
+// present in either map, the lexicographically greater value wins.
+func WithLabelJoin(fn func(a, b map[string]string) map[string]string) Option {
+	return func(a *Agent) {
+		a.labelJoin = fn
+	}
+}
+
 // WithSharedMemory sets the SharedMemoryStore for large tool result storage.
 // This enables agents to store and reference large tool outputs efficiently.
 func WithSharedMemory(sharedMemory interface{}) Option {
@@ -813,6 +847,40 @@ func WithSkillTaskEmitter(e *skilltasks.Emitter) Option {
 func WithEventLog(store eventlog.EventLogStore) Option {
 	return func(a *Agent) {
 		a.eventLog = store
+	}
+}
+
+// WithUnknownOutcomePolicy sets what ResumeSession does with a call whose
+// outcome is unknown (intent recorded, no result). The default stops with an
+// ExecutionGap for an operator to resolve; UnknownOutcomeFail lets the turn go
+// on with a failed result that says the outcome is unknown.
+func WithUnknownOutcomePolicy(p UnknownOutcomePolicy) Option {
+	return func(a *Agent) {
+		a.unknownOutcome = p
+	}
+}
+
+// WithTransientTail lets the embedding application add live state to every
+// provider call. fn runs once per provider call (normal send, recovery
+// resend, the budget-exhausted synthesis call) and once per relief pass
+// before each of them; its trimmed output rides a <system-reminder> user
+// message after the turn's built-in notes. With segmented memory it is
+// pinned in place with those notes (PinTurnNotes) for the rest of the turn —
+// inside the thinking fingerprint, like the built-in notes, so a later call
+// never drops what an earlier one sent; without segmented memory it joins
+// the trailing reminder message on a copy. Empty output adds nothing; a nil
+// fn is the same as not setting the option.
+//
+// fn must be safe for concurrent use: one agent may run it for several
+// sessions at once, and session.SessionIDFromContext(ctx) identifies the
+// session a call serves. The tail is harness-authority text — it rides a
+// <system-reminder> message the model treats as harness state — so never put
+// untrusted data in it. The ReleasePressure relief estimate counts the tail
+// while it is pending (SetTransientTail) and, once pinned, as a compiled
+// message; the recovery resend carries it again: keep it small.
+func WithTransientTail(fn func(ctx context.Context) string) Option {
+	return func(a *Agent) {
+		a.transientTail = fn
 	}
 }
 
@@ -2800,10 +2868,14 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
 			a.setAdvertisedTools(segMem, tools)
 			// The reminders known before relief runs: the recall note, the soft
-			// reminders and the repeat hint. Reminders the turn already sent are
-			// compiled or not sent again; the rest count as the pending tail
-			// until sendChat pins them.
-			segMem.SetTransientTail(reminders...)
+			// reminders, the repeat hint and the caller tail. Reminders the
+			// turn already sent are compiled or not sent again; the rest count
+			// as the pending tail until sendChat pins them.
+			var tail string
+			if a.transientTail != nil {
+				tail = strings.TrimSpace(a.transientTail(ctx))
+			}
+			segMem.SetTransientTail(append(reminders[:len(reminders):len(reminders)], TurnReminder{Text: tail})...)
 		}
 
 		// Mutation-debug: the per-session tool projection about to be advertised
@@ -2898,15 +2970,25 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// replayed thinking block whose preceding messages changed). A
 		// reminder the turn already sent is not sent again (TurnReminder).
 		// Both the normal send and the recovery resend go through here.
-		// Without segmented memory the notes ride a trailing message on a copy
-		// (withSystemReminder).
+		// Without segmented memory the notes and a caller-supplied transient
+		// tail (WithTransientTail) ride a trailing message on a copy
+		// (withSystemReminder), the tail joined after the notes. With
+		// segmented memory the tail is pinned with the notes, so it stays in
+		// place for the rest of the turn like they do.
 		withReminder := func(msgs []Message, toolNote string) []Message {
+			var tail string
+			if a.transientTail != nil {
+				tail = strings.TrimSpace(a.transientTail(ctx))
+			}
+			if tail != "" {
+				span.AddEvent("transient_tail.added", map[string]interface{}{"bytes": len(tail)})
+			}
 			rs := append(reminders[:len(reminders):len(reminders)], TurnReminder{Text: toolNote})
 			if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
-				segMem.PinTurnNotes(rs...)
+				segMem.PinTurnNotes(append(rs, TurnReminder{Text: tail})...)
 				return session.GetMessages()
 			}
-			return withSystemReminder(msgs, reminderTexts(rs)...)
+			return withSystemReminder(msgs, append(reminderTexts(rs), tail)...)
 		}
 
 		// sendChat is the one provider call of this iteration. With
@@ -2957,12 +3039,24 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			llmResp = &LLMResponse{Content: scripted, StopReason: "end_turn"}
 			providerCalled = false
 		} else {
-			if intentErr := a.recordLLMIntent(ctx, session.ID, thisStep, len(messages), a.llm.Model()); intentErr != nil {
+			// The intent is stamped with the turn it answers — the Turn of the
+			// opening user message captured at the Chat-entry persist site and
+			// carried on the concrete agentContext. The replay gate compares
+			// it against the session's tail, so a response recorded for one
+			// turn is never replayed as the answer to a later one. Asserting
+			// rather than widening the public Context contract.
+			turnAnswered := int64(0)
+			if tc, ok := ctx.(taskTurnContext); ok {
+				turnAnswered = tc.TurnIndex()
+			}
+			if intentErr := a.recordLLMIntent(ctx, session.ID, thisStep, len(messages), a.llm.Model(), turnAnswered); intentErr != nil {
 				return nil, fmt.Errorf("recording LLM call intent: %w", intentErr)
 			}
 			llmResp, err = sendChat(tools)
 			if err == nil {
-				a.recordLLMResult(ctx, session.ID, thisStep, llmResp)
+				if recErr := a.recordLLMResult(ctx, session.ID, thisStep, llmResp); recErr != nil {
+					return nil, recErr
+				}
 			}
 		}
 		if err != nil && errors.Is(err, llm.ErrContextTooLong) {
@@ -2988,7 +3082,9 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				// the result.
 				llmResp, err = sendChat(tools)
 				if err == nil {
-					a.recordLLMResult(ctx, session.ID, thisStep, llmResp)
+					if recErr := a.recordLLMResult(ctx, session.ID, thisStep, llmResp); recErr != nil {
+						return nil, recErr
+					}
 				}
 				if err != nil && errors.Is(err, llm.ErrContextTooLong) {
 					zap.L().Error("context too long after relief: turn ends",
@@ -3090,6 +3186,16 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 							"threshold":          threshold,
 						})
 						span.RecordError(err)
+
+						// The response was recorded, but its truncated calls are
+						// refused here and the assistant message is never
+						// appended: drop the recorded step, so a resume cannot
+						// replay a batch the breaker refused to run. Every other
+						// exit between recordLLMResult and the append leaves
+						// nothing replayable — they run only when the send
+						// itself failed, so the log holds an intent without a
+						// result, which is never a replay candidate.
+						a.pruneStepIfResolved(ctx, session.ID, thisStep, true)
 
 						// The output-token CB error propagates on the existing
 						// recoverable channel WITHOUT touching context — a CB
@@ -3906,8 +4012,12 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNot
 	// deeper and resend once.
 	segMem, _ := session.SegmentedMem.(*SegmentedMemory)
 	if segMem != nil {
+		var tail string
+		if a.transientTail != nil {
+			tail = strings.TrimSpace(a.transientTail(ctx))
+		}
 		a.setAdvertisedTools(segMem, nil)
-		segMem.SetTransientTail(TurnReminder{Kind: ReminderGraphMemory, Text: memoryNote})
+		segMem.SetTransientTail(TurnReminder{Kind: ReminderGraphMemory, Text: memoryNote}, TurnReminder{Text: tail})
 		if shed, estimate, target := segMem.ReleasePressure(ctx, 0); shed {
 			zap.L().Info("relief: shed before synthesis",
 				zap.String("session_id", session.ID),
@@ -3916,13 +4026,26 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNot
 		}
 	}
 	// The recall note was pinned by the loop's first call; pinning again is a
-	// no-op then, and pins it here when the loop never sent it.
+	// no-op then, and pins it here when the loop never sent it. The caller-
+	// supplied transient tail (WithTransientTail) rides this call too — it
+	// writes the final answer — recomputed per call like the loop's
+	// withReminder and pinned with the notes, so it stays in place for the
+	// rest of the turn.
 	synthesisMessages := func() []Message {
+		var tail string
+		if a.transientTail != nil {
+			tail = strings.TrimSpace(a.transientTail(ctx))
+		}
+		if tail != "" {
+			if span := observability.SpanFromContext(ctx); span != nil {
+				span.AddEvent("transient_tail.added", map[string]interface{}{"bytes": len(tail)})
+			}
+		}
 		if segMem != nil {
-			segMem.PinTurnNotes(TurnReminder{Kind: ReminderGraphMemory, Text: memoryNote})
+			segMem.PinTurnNotes(TurnReminder{Kind: ReminderGraphMemory, Text: memoryNote}, TurnReminder{Text: tail})
 			return session.GetMessages()
 		}
-		return withSystemReminder(session.GetMessages(), memoryNote)
+		return withSystemReminder(session.GetMessages(), memoryNote, tail)
 	}
 	finalResp, err := a.chatWithRetry(ctx, synthesisMessages(), nil)
 	if err != nil && errors.Is(err, llm.ErrContextTooLong) && segMem != nil {

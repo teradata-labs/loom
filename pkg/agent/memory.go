@@ -85,6 +85,13 @@ type Memory struct {
 
 	// protectedRecentTurns is K (HLD §5.1), forwarded to each SegmentedMemory.
 	protectedRecentTurns int
+
+	// messageLabeler / labelJoin are forwarded to each SegmentedMemory
+	// (WithMessageLabeler / WithLabelJoin): per-message labels at the arrival
+	// and replay seams, and the join a fold's summary applies to the replaced
+	// messages' labels.
+	messageLabeler func(*Message) map[string]string
+	labelJoin      func(a, b map[string]string) map[string]string
 }
 
 // NewMemory creates a new in-memory session manager.
@@ -292,6 +299,8 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 	ctxDebug := m.ctxDebug
 	skillDeactivation := m.skillDeactivation
 	protectedTurns := m.protectedRecentTurns
+	messageLabeler := m.messageLabeler
+	labelJoin := m.labelJoin
 	m.mu.RUnlock()
 
 	// Check write-lock path: existing session that needs metadata update
@@ -404,6 +413,12 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 	segMem.SetSkillDeactivationHook(skillDeactivation)
 	if protectedTurns > 0 {
 		segMem.SetProtectedRecentTurns(protectedTurns)
+	}
+	if messageLabeler != nil {
+		segMem.SetMessageLabeler(messageLabeler)
+	}
+	if labelJoin != nil {
+		segMem.SetLabelJoin(labelJoin)
 	}
 
 	session := &Session{
@@ -566,6 +581,35 @@ func (m *Memory) SetSkillDeactivationHook(fn func(sessionID, skillName string)) 
 	}
 }
 
+// SetMessageLabeler wires the per-message labeler (WithMessageLabeler) into
+// every session's memory (existing and future): fn runs where a message
+// enters L1 — arrival or the restore replay — and its result is stored on
+// the message.
+func (m *Memory) SetMessageLabeler(fn func(*Message) map[string]string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.messageLabeler = fn
+	for _, session := range m.sessions {
+		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
+			segMem.SetMessageLabeler(fn)
+		}
+	}
+}
+
+// SetLabelJoin wires the join a fold's summary applies to the replaced
+// messages' labels (WithLabelJoin) into every session's memory (existing and
+// future). Nil restores the default join.
+func (m *Memory) SetLabelJoin(fn func(a, b map[string]string) map[string]string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.labelJoin = fn
+	for _, session := range m.sessions {
+		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
+			segMem.SetLabelJoin(fn)
+		}
+	}
+}
+
 // updateSessionMetadata updates agent/parent metadata if not already set (must hold m.mu write lock or session-specific lock).
 func (m *Memory) updateSessionMetadata(session *Session, agentID, parentSessionID string, store SessionStorage, ctx context.Context, logger *zap.Logger) {
 	updated := false
@@ -636,6 +680,12 @@ func (m *Memory) ensureSessionMemory(session *Session, sessionID string,
 		segMem.SetSkillDeactivationHook(m.skillDeactivation)
 		if m.protectedRecentTurns > 0 {
 			segMem.SetProtectedRecentTurns(m.protectedRecentTurns)
+		}
+		if m.messageLabeler != nil {
+			segMem.SetMessageLabeler(m.messageLabeler)
+		}
+		if m.labelJoin != nil {
+			segMem.SetLabelJoin(m.labelJoin)
 		}
 	}
 }

@@ -86,6 +86,7 @@ type Registry struct {
 	admissionChain    *shuttle.Chain               // Admission hook chain for tool-call admission
 	identityResolver  func(context.Context) string // Resolves AdmissionRequest.UserID from the call context
 	eventLog          eventlog.EventLogStore       // Attached to every agent built from config; nil leaves recording off
+	unknownOutcome    UnknownOutcomePolicy         // Attached with eventLog; empty stops with an ExecutionGap
 	artifactStore     interface{}                  // artifacts.Store for workspace tool
 	runLuaTool        *RunLuaToolOptions           // run_lua wiring; nil when tools.lua is disabled
 	luaScripts        *LuaScriptsOptions           // saved-script wiring; nil without a script store
@@ -170,6 +171,10 @@ type RegistryConfig struct {
 	// ResumeSession needs. Nil leaves recording off.
 	EventLogStore eventlog.EventLogStore
 
+	// UnknownOutcomePolicy is attached to every agent built from config
+	// (WithUnknownOutcomePolicy). Empty keeps the default, stop.
+	UnknownOutcomePolicy UnknownOutcomePolicy
+
 	// Agent dependencies (injected by server)
 	PermissionChecker *shuttle.PermissionChecker   // For permission validation
 	AdmissionChain    *shuttle.Chain               // Admission hook chain for tool-call admission
@@ -252,6 +257,7 @@ func NewRegistry(config RegistryConfig) (*Registry, error) {
 		admissionChain:    config.AdmissionChain,
 		identityResolver:  config.IdentityResolver,
 		eventLog:          config.EventLogStore,
+		unknownOutcome:    config.UnknownOutcomePolicy,
 		artifactStore:     config.ArtifactStore,
 		runLuaTool:        config.RunLuaTool,
 		luaScripts:        config.LuaScripts,
@@ -1027,6 +1033,7 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 	if r.eventLog != nil {
 		opts = append(opts, WithEventLog(r.eventLog))
 	}
+	opts = append(opts, WithUnknownOutcomePolicy(r.unknownOutcome))
 
 	// Create agent with configuration
 	agent := NewAgent(

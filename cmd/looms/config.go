@@ -988,6 +988,12 @@ type WebSearchEndpointsConfig struct {
 // it off cannot be resumed (resume refuses them).
 type ExecutionLogConfig struct {
 	Enabled bool `mapstructure:"enabled"`
+
+	// UnknownOutcome is what a resume does with a call that has a recorded
+	// intent and no result: "stop" (default) returns an execution gap for an
+	// operator to resolve; "fail" records the call as failed with "outcome
+	// unknown" and lets the turn go on, for agents nobody is watching.
+	UnknownOutcome string `mapstructure:"unknown_outcome"`
 }
 
 type LearningConfig struct {
@@ -1492,6 +1498,7 @@ func setDefaults() {
 	viper.SetDefault("communication.store.path", defaultDBPath) // Reuse same database as sessions
 	viper.SetDefault("communication.gc.enabled", true)
 	viper.SetDefault("execution_log.enabled", false)
+	viper.SetDefault("execution_log.unknown_outcome", "stop")
 	viper.SetDefault("communication.gc.strategy", "ref_counting")
 	viper.SetDefault("communication.gc.interval", 300) // 5 minutes
 	viper.SetDefault("communication.auto_promote.enabled", true)
