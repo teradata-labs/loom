@@ -1617,9 +1617,20 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 
 	// One transaction: the version insert and the region's folded flags
 	// (§5.4.6). A failed insert fails the step — never a fold that evaporates
-	// on reload.
+	// on reload. The summary's labels ride the snapshot only on stores that
+	// implement the optional LabeledFoldStorage interface (WithMessageLabeler);
+	// on a plain store the loss is logged and spanned, never silent.
 	if sm.sessionStore != nil && sm.sessionID != "" {
-		if err := sm.sessionStore.FoldMessages(ctx, sm.sessionID, seqs, n1, newText, joined); err != nil {
+		var err error
+		if lbs, ok := sm.sessionStore.(LabeledFoldStorage); ok {
+			err = lbs.FoldMessagesWithLabels(ctx, sm.sessionID, seqs, n1, newText, joined)
+		} else {
+			err = sm.sessionStore.FoldMessages(ctx, sm.sessionID, seqs, n1, newText)
+			if err == nil && len(joined) > 0 {
+				sm.reportFoldLabelsDropped(ctx, n1, joined)
+			}
+		}
+		if err != nil {
 			zap.L().Error("releasePressure: fold persist failed",
 				zap.String("session_id", sm.sessionID),
 				zap.Int64("boundary_turn", b),
@@ -1965,7 +1976,9 @@ func (sm *SegmentedMemory) SetMessageLabeler(fn func(*Message) map[string]string
 
 // SetLabelJoin wires the join used when a fold's summary replaces labelled
 // messages. Nil restores the default (per key, every distinct value sorted
-// and comma-joined). A join must not modify its inputs.
+// and escape-comma-joined: backslash and comma escaped, so a consumer decodes
+// a joined value by splitting on unescaped commas and unescaping each part —
+// decodeLabelParts). A join must not modify its inputs.
 func (sm *SegmentedMemory) SetLabelJoin(fn func(a, b map[string]string) map[string]string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -1983,29 +1996,33 @@ func (sm *SegmentedMemory) setSummary(n int, text string, labels map[string]stri
 }
 
 // defaultLabelJoin is WithLabelJoin's default: for each key present in either
-// map, every distinct value across both maps is kept, sorted and
-// comma-joined. Nil maps join as empty maps. It always returns a freshly
-// built map — never one of its inputs.
+// map, every distinct value is kept, sorted and joined into the key's single
+// output value. Values are opaque — nothing inside a value is a separator.
+// The output encodes the set so it decodes unambiguously: each value with
+// backslash and comma escaped, the values comma-joined (decodeLabelParts is
+// the inverse). The first argument is this join's own previous output, so its
+// values are decoded before the union — repeated folds stay one flat sorted
+// set; the second argument carries raw message values, which are taken
+// atomically. Nil maps join as empty maps. It always returns a freshly built
+// map — never one of its inputs.
 func defaultLabelJoin(a, b map[string]string) map[string]string {
 	vals := make(map[string]map[string]bool, len(a)+len(b))
-	collect := func(m map[string]string) {
-		for k, v := range m {
-			set := vals[k]
-			if set == nil {
-				set = make(map[string]bool)
-				vals[k] = set
-			}
-			// Values this join wrote are themselves comma-joined; split so
-			// repeated folds stay one flat sorted set.
-			for _, part := range strings.Split(v, ",") {
-				if part != "" {
-					set[part] = true
-				}
-			}
+	add := func(k, v string) {
+		set := vals[k]
+		if set == nil {
+			set = make(map[string]bool)
+			vals[k] = set
+		}
+		set[v] = true
+	}
+	for k, v := range a {
+		for _, part := range decodeLabelParts(v) {
+			add(k, part)
 		}
 	}
-	collect(a)
-	collect(b)
+	for k, v := range b {
+		add(k, v)
+	}
 	if len(vals) == 0 {
 		return nil
 	}
@@ -2016,9 +2033,57 @@ func defaultLabelJoin(a, b map[string]string) map[string]string {
 			parts = append(parts, p)
 		}
 		sort.Strings(parts)
-		out[k] = strings.Join(parts, ",")
+		out[k] = encodeLabelParts(parts)
 	}
 	return out
+}
+
+// encodeLabelParts renders one key's distinct values as the default join's
+// output: each value with backslash and comma escaped, the values
+// comma-joined in the given order.
+func encodeLabelParts(parts []string) string {
+	enc := make([]string, len(parts))
+	for i, p := range parts {
+		p = strings.ReplaceAll(p, `\`, `\\`)
+		p = strings.ReplaceAll(p, `,`, `\,`)
+		enc[i] = p
+	}
+	return strings.Join(enc, ",")
+}
+
+// decodeLabelParts splits a value the default join wrote back into the
+// distinct values it holds: split on unescaped commas, then unescape each
+// part. A plain value without backslashes or commas round-trips to itself.
+func decodeLabelParts(v string) []string {
+	var parts []string
+	var cur strings.Builder
+	for i := 0; i < len(v); i++ {
+		switch c := v[i]; {
+		case c == '\\' && i+1 < len(v):
+			i++
+			cur.WriteByte(v[i]) // \X stands for X: the escaped char itself
+		case c == ',':
+			parts = append(parts, cur.String())
+			cur.Reset()
+		default:
+			cur.WriteByte(c)
+		}
+	}
+	return append(parts, cur.String())
+}
+
+// reportFoldLabelsDropped makes a plain store's dropped summary labels
+// visible: the fold succeeded, but a restore will come back without them
+// (LabeledFoldStorage).
+func (sm *SegmentedMemory) reportFoldLabelsDropped(ctx context.Context, n int, joined map[string]string) {
+	zap.L().Warn("releasePressure: store does not persist fold summary labels",
+		zap.String("session_id", sm.sessionID),
+		zap.Int("version", n),
+		zap.Int("label_keys", len(joined)))
+	_, span := sm.tracer.StartSpan(ctx, "memory.fold_labels_dropped")
+	span.SetAttribute("labels_persisted", "false")
+	span.SetAttribute("label_keys", len(joined))
+	sm.tracer.EndSpan(span)
 }
 
 // joinLabelsLocked folds a label-map sequence into one with the configured

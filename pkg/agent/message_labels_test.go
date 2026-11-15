@@ -21,6 +21,10 @@ import (
 	"strings"
 	"testing"
 
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
+
 	"github.com/stretchr/testify/require"
 
 	"github.com/teradata-labs/loom/pkg/eventlog"
@@ -195,6 +199,147 @@ func TestMessageLabels_DefaultJoinSecurityValuesFailClosed(t *testing.T) {
 		"the confidential value must survive the default join")
 }
 
+// The default join keeps opaque values intact: a value's own commas (or JSON
+// braces, or backslashes) are data, never separators, and the joined output
+// decodes unambiguously — the single value a,b stays distinct from the two
+// values a and b, and repeated folds re-join the output to itself.
+func TestMessageLabels_DefaultJoinKeepsOpaqueValues(t *testing.T) {
+	// One value containing a comma must not come back split or reordered into
+	// a value that was never assigned.
+	out := defaultLabelJoin(nil, map[string]string{"owner": "Smith, John"})
+	require.Equal(t, "Smith\\, John", out["owner"],
+		`the value "Smith, John" is one opaque value: escaped, not split`)
+
+	// JSON content is opaque too.
+	out = defaultLabelJoin(nil, map[string]string{"cfg": `{"a":1,"b":2}`})
+	require.Equal(t, `{"a":1\,"b":2}`, out["cfg"])
+
+	// Backslash-and-comma content round-trips through the escape.
+	out = defaultLabelJoin(nil, map[string]string{"p": `C:\dir, file`})
+	require.Equal(t, `C:\\dir\, file`, out["p"])
+
+	// The single value a,b is not the two values a and b.
+	one := defaultLabelJoin(nil, map[string]string{"k": "a,b"})
+	two := defaultLabelJoin(defaultLabelJoin(nil, map[string]string{"k": "a"}), map[string]string{"k": "b"})
+	require.NotEqual(t, one["k"], two["k"],
+		"one value with a comma and two values must encode differently")
+
+	// Repeated folds stay one flat set: joining the output again changes nothing.
+	again := defaultLabelJoin(out, nil)
+	require.Equal(t, out["p"], again["p"])
+}
+
+// labelCommaRow labels two prose rows with comma-containing values — the
+// values the default join must never split.
+func labelCommaRow(m *Message) map[string]string {
+	if m.Role == "assistant" && strings.HasPrefix(m.Content, "analysis 0 ") {
+		return map[string]string{"owner": "Smith, John"}
+	}
+	if m.Role == "assistant" && strings.HasPrefix(m.Content, "analysis 1 ") {
+		return map[string]string{"owner": "Doe, Jane"}
+	}
+	return nil
+}
+
+// A fold → restore → fold round trip keeps a comma-containing value intact:
+// the joined output decodes back to exactly the values that were joined, the
+// value survives a restart byte for byte, and a fold on top of the restored
+// labels adds no split duplicates.
+func TestMessageLabels_FoldRestoreFoldKeepsCommaValue(t *testing.T) {
+	live, store := labeledFoldFixtureWithStore(t, nil, labelCommaRow)
+	ctx := context.Background()
+
+	shed, _, _ := live.ReleasePressure(ctx, 0)
+	require.True(t, shed, "pressure must shed via fold")
+	joined := summaryMessageOf(t, live).Labels["owner"]
+	require.Equal(t, "Doe\\, Jane,Smith\\, John", joined,
+		"two comma-containing values, each escaped, comma-joined in sort order")
+
+	// A fresh process: restore, then fold again on top of the restored labels.
+	fresh := NewSegmentedMemory("ROM", 6000, 600)
+	fresh.SetThreshold(6000)
+	fresh.SetSessionStore(store, "sess-labels")
+	fresh.SetCompressor(&foldCompressor{out: "covers msg:1-99\nsummary of the analysis prose"})
+	fresh.SetMessageLabeler(labelCommaRow)
+	rows, err := store.LoadMessages(ctx, "sess-labels")
+	require.NoError(t, err)
+	fresh.ReplayMessages(ctx, rows)
+	m := NewMemory()
+	m.loadSummary(ctx, store, "sess-labels", fresh)
+	require.Equal(t, joined, summaryMessageOf(t, fresh).Labels["owner"],
+		"the restored summary carries the pre-restart value byte for byte")
+
+	persist := func(role, content, toolUseID string, calls []ToolCall, turnStart bool) {
+		msg := Message{Role: role, Content: content, ToolUseID: toolUseID, ToolCalls: calls}
+		require.NoError(t, store.SaveMessage(ctx, "sess-labels", &msg, turnStart))
+		fresh.AddMessage(ctx, msg)
+	}
+	persist("user", "TICKET 2: build the marts", "", nil, true)
+	for i := 7; i < 12; i++ {
+		persist("assistant", strings.Repeat(fmt.Sprintf("analysis %d of models io=17 cpu=23; ", i), 120), "", nil, false)
+	}
+	persist("assistant", "", "", []ToolCall{{ID: "cLast2", Name: "bulk_scan", Input: map[string]interface{}{}}}, false)
+	persist("tool", "small result", "cLast2", nil, false)
+
+	shed2, _, _ := fresh.ReleasePressure(ctx, 0)
+	require.True(t, shed2, "the post-restore pressure must shed via fold")
+	require.Equal(t, "Doe\\, Jane,Smith\\, John", summaryMessageOf(t, fresh).Labels["owner"],
+		"the comma values survive the post-restore fold with no split duplicates")
+}
+
+// Memory.SetMessageLabeler fans out onto sessions that already exist: rows
+// arriving after the call enter an existing session's context labelled, and
+// their labels ride a fold. Replacing the fan-out with a no-op turns this
+// red: the post-wiring rows stay unlabelled and the fold summary comes back
+// without them.
+func TestMessageLabels_SetMessageLabelerReachesExistingSession(t *testing.T) {
+	m := NewMemory()
+	m.SetContextLimits(6000, 600)
+
+	ctx := context.Background()
+	sess := m.GetOrCreateSession(ctx, "sess-labeler-fanout")
+	segMem, ok := sess.SegmentedMem.(*SegmentedMemory)
+	require.True(t, ok)
+	segMem.SetThreshold(6000)
+	segMem.SetCompressor(&foldCompressor{out: "covers msg:1-99\nsummary of the analysis prose"})
+
+	// Arrive BEFORE the labeler is wired: no labeler, no labels.
+	for i := 0; i < 5; i++ {
+		segMem.AddMessage(ctx, Message{
+			Role:    "assistant",
+			Content: strings.Repeat(fmt.Sprintf("analysis %d of models io=17 cpu=23; ", i), 120),
+		})
+	}
+
+	// The labeler arrives AFTER the session exists — the fan-out under test.
+	m.SetMessageLabeler(labelProseRow)
+
+	// A row arriving after the wiring must be labelled on arrival.
+	segMem.AddMessage(ctx, Message{
+		Role:    "assistant",
+		Content: strings.Repeat("analysis 9 of models io=17 cpu=23; ", 120),
+	})
+	var t9 *Message
+	for i := range segMem.contextMessages {
+		if msg := &segMem.contextMessages[i]; strings.HasPrefix(msg.Content, "analysis 9 ") {
+			t9 = msg
+		}
+	}
+	require.NotNil(t, t9)
+	require.Equal(t, map[string]string{"tier": "t9"}, t9.Labels,
+		"SetMessageLabeler must reach a session created before the call")
+
+	segMem.AddMessage(ctx, Message{Role: "assistant", Content: "", ToolCalls: []ToolCall{{ID: "cLast", Name: "bulk_scan", Input: map[string]interface{}{}}}})
+	segMem.AddMessage(ctx, Message{Role: "tool", Content: "small result", ToolUseID: "cLast"})
+
+	// The pre-wiring rows are unlabelled, so only the post-wiring row's label
+	// may ride the summary.
+	shed, _, _ := segMem.ReleasePressure(ctx, 0)
+	require.True(t, shed, "pressure must shed via fold")
+	require.Equal(t, map[string]string{"tier": "t9"}, summaryMessageOf(t, segMem).Labels,
+		"only the post-wiring row is labelled; its label rides the fold summary")
+}
+
 // labelFirstProseRow labels only the first prose row, so the fold region has
 // exactly one labelled message.
 func labelFirstProseRow(m *Message) map[string]string {
@@ -232,7 +377,7 @@ type failFoldStore struct {
 	calls int
 }
 
-func (s *failFoldStore) FoldMessages(ctx context.Context, sessionID string, seqs []int64, n int, text string, labels map[string]string) error {
+func (s *failFoldStore) FoldMessagesWithLabels(ctx context.Context, sessionID string, seqs []int64, n int, text string, labels map[string]string) error {
 	s.calls++
 	return errors.New("fold persist down")
 }
@@ -546,6 +691,77 @@ func TestMessageLabels_SurviveRestore(t *testing.T) {
 	require.True(t, shed2, "the post-restore pressure must shed via fold")
 	require.Contains(t, summaryMessageOf(t, fresh).Labels["tier"], "t0,t1,t2,t3,t4",
 		"the pre-restart label value must survive the post-restore fold")
+}
+
+// plainFoldStore hides the wrapped store's LabeledFoldStorage capability: a
+// store that folds without persisting the summary's labels.
+type plainFoldStore struct {
+	SessionStorage
+}
+
+func (s plainFoldStore) FoldMessages(ctx context.Context, sessionID string, seqs []int64, n int, text string) error {
+	return s.SessionStorage.FoldMessages(ctx, sessionID, seqs, n, text)
+}
+
+// A store without the optional LabeledFoldStorage capability still folds: the
+// snapshot persists without a labels key, the live summary keeps the joined
+// labels in memory, and the loss is visible — one warn record and a
+// labels_persisted=false span attribute, never silent.
+func TestMessageLabels_PlainStoreFoldsAndReportsDroppedLabels(t *testing.T) {
+	store, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	tracer := observability.NewMockTracer()
+
+	core, logs := observer.New(zapcore.WarnLevel)
+	restore := zap.ReplaceGlobals(zap.New(core))
+	defer restore()
+
+	ctx := context.Background()
+	const sessionID = "sess-plain"
+	require.NoError(t, store.SaveSession(ctx, &Session{ID: sessionID, Context: map[string]interface{}{}}))
+
+	sm := NewSegmentedMemory("ROM", 6000, 600)
+	sm.SetThreshold(6000)
+	sm.SetTracer(tracer)
+	sm.SetSessionStore(plainFoldStore{SessionStorage: store}, sessionID)
+	sm.SetCompressor(&foldCompressor{out: "covers msg:1-99\nsummary of the analysis prose"})
+	sm.SetMessageLabeler(labelProseRow)
+
+	persist := func(role, content, toolUseID string, calls []ToolCall, turnStart bool) {
+		m := Message{Role: role, Content: content, ToolUseID: toolUseID, ToolCalls: calls}
+		require.NoError(t, store.SaveMessage(ctx, sessionID, &m, turnStart))
+		sm.AddMessage(ctx, m)
+	}
+	persist("user", "TICKET: build the marts", "", nil, true)
+	for i := 0; i < 5; i++ {
+		persist("assistant", strings.Repeat(fmt.Sprintf("analysis %d of models io=17 cpu=23; ", i), 120), "", nil, false)
+	}
+	persist("assistant", "", "", []ToolCall{{ID: "cLast", Name: "bulk_scan", Input: map[string]interface{}{}}}, false)
+	persist("tool", "small result", "cLast", nil, false)
+
+	shed, _, _ := sm.ReleasePressure(ctx, 0)
+	require.True(t, shed, "a plain store still folds")
+	require.Contains(t, sm.summary.text, "summary of the analysis prose")
+	require.Equal(t, map[string]string{"tier": "t0,t1,t2,t3,t4"}, sm.summary.labels,
+		"the live summary keeps the joined labels in memory")
+
+	// The loss is visible: exactly one warn record for this session...
+	entries := logs.FilterMessage("releasePressure: store does not persist fold summary labels").All()
+	require.Len(t, entries, 1)
+	require.Equal(t, sessionID, entries[0].ContextMap()["session_id"])
+
+	// ...and a span marking the labels as not persisted.
+	span := tracer.GetSpanByName("memory.fold_labels_dropped")
+	require.NotNil(t, span)
+	require.Equal(t, "false", span.Attributes["labels_persisted"])
+
+	// The snapshot itself carries no labels key: a restore comes back without
+	// them.
+	snaps, err := store.LoadMemorySnapshots(ctx, sessionID, "fold", 0)
+	require.NoError(t, err)
+	require.Len(t, snaps, 1)
+	require.NotContains(t, snaps[0].Content, `"labels"`)
 }
 
 // Old fold snapshots (written before the snapshot carried labels) load as

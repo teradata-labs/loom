@@ -597,7 +597,12 @@ func WithMemory(memory *Memory) Option {
 // holds the memory lock; it must not call back into the session or the
 // memory — that deadlocks. Label values are opaque: nothing in the agent
 // interprets them. When a compaction summary replaces labelled messages,
-// their labels ride the summary message joined by WithLabelJoin.
+// their labels ride the summary message joined by WithLabelJoin. The
+// summary's labels survive a restore only on session stores that implement
+// the optional agent.LabeledFoldStorage interface; on a plain store the fold
+// logs and spans the loss (labels_persisted=false). Row labels themselves are
+// never persisted: on a restore the labeler runs again, so a caller-set
+// Labels map does not survive unless a deterministic labeler recomputes it.
 func WithMessageLabeler(fn func(msg *Message) map[string]string) Option {
 	return func(a *Agent) {
 		a.messageLabeler = fn
