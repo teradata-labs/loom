@@ -80,7 +80,7 @@ the session's last turn:
 | State of the turn | What resume does |
 |-------------------|------------------|
 | The user's message has no reply and no tool calls were saved | Re-runs the turn's LLM call |
-| The LLM response was recorded but its assistant message never saved and none of its tool calls started | **Replays the recorded response**: its tool batch is rebuilt from the log and run; the model is not asked again |
+| The LLM response was recorded but its assistant message never saved and none of its tool calls started | **Replays the recorded response**: its tool batch is rebuilt from the log and run; the model is not asked again — unless the response stopped at `max_tokens`, or its intent carries no turn (see below) |
 | A tool call's result was recorded but its row was not saved | Saves the recorded result; the tool does not run again |
 | A tool call was never started | Runs it |
 | Every tool call has a result, but there is no reply | Asks the LLM for the reply |
@@ -88,9 +88,14 @@ the session's last turn:
 | The turn already has its reply | Nothing (`Nothing to resume`) |
 
 The replay only fires for the response to the LLM call the crash actually
-interrupted (the highest recorded `llm_call_intent` step), so a response a
-failed turn left behind — a circuit-breaker exit, say — is never replayed as
-the answer to a later turn's message.
+interrupted: the highest recorded `llm_call_intent` step, whose intent names
+the turn the session still ends in (`answered_turn`), and whose response did
+not stop at `max_tokens`. A response a failed turn left behind — a
+circuit-breaker exit, say — is never replayed as the answer to a later turn's
+message, and a response cut off at `max_tokens` is never replayed (its tool
+calls may be truncated). Intents recorded before `answered_turn` existed
+carry no turn: those responses are never replayed, and the interrupted call
+is made again (see Limitations).
 
 An execution gap means the process died while that call was running, or just
 after it ran but before its result was recorded. The two look the same, so
@@ -243,7 +248,11 @@ loom sessions resume sess_checkout_7
   tool calls never started, instead of asking the model again. The replay is
   refused for any recorded response left behind by a turn that already failed
   (a circuit-breaker exit, say), so a batch the model chose for an earlier
-  turn never runs against a later one.
+  turn never runs against a later one. It is also refused when the response
+  stopped at `max_tokens` (its tool calls may be truncated) and when the
+  recorded intent carries no turn: crashes recorded by a version before
+  intents carried a turn get a fresh model call on resume instead of a
+  replay.
 - Only agents built by `looms serve` record the log. Ephemeral sub-agents,
   `looms workflow run` agents, and agents embedded through the Go API (unless
   built with `agent.WithEventLog`) do not.

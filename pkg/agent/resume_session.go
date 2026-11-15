@@ -169,14 +169,13 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (_ *Respons
 	// A recorded model response whose assistant message never saved, and none of
 	// whose tool calls were started, is replayed from the log rather than asked
 	// for again: a second call costs again and can choose different tool calls.
-	// replayPersisted is the appended message's durability — the park gate and
-	// the step prune below apply the same durability facts the loop does for its
-	// own batch: a park must never stand on an assistant row that did not save,
-	// and a step whose assistant row is missing must stay in the log.
-	replayed, replayPersisted := a.replayRecordedBatch(ctx, sess, sessionID, events)
-	if replayed {
-		span.AddEvent("resume_session.replayed_llm_response", map[string]interface{}{"persisted": replayPersisted})
-	}
+	// The replay is decided on the log here but appended only after the
+	// refusals below pass, so a refused resume leaves the session exactly as it
+	// was. replayPersisted is the appended message's durability — the park gate
+	// and the step prune below apply the same durability facts the loop does for
+	// its own batch: a park must never stand on an assistant row that did not
+	// save, and a step whose assistant row is missing must stay in the log.
+	replayMsg, replayFound := a.replayRecordedMessage(ctx, sess, sessionID, events)
 
 	// A batch whose tools ran but whose assistant message never saved leaves
 	// the session looking like an earlier batch just finished. Whatever the
@@ -193,6 +192,14 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (_ *Respons
 		span.AddEvent(event, map[string]interface{}{"step_index": step})
 		return nil, fmt.Errorf("session %s step %d: %w", sessionID, step, err)
 	}
+
+	replayed, replayPersisted := false, false
+	if replayFound {
+		_, replayPersisted = a.appendMessage(ctx, sess, replayMsg, false)
+		replayed = true
+		span.AddEvent("resume_session.replayed_llm_response", map[string]interface{}{"persisted": replayPersisted})
+	}
+	msgs = rawSessionMessages(sess)
 	if unansweredTurnTail(msgs) {
 		span.AddEvent("resume_session.unanswered_turn", nil)
 		return a.finishResumedTurn(ctx, agentCtx, sess, handleCollector, &parkedAgain)
@@ -477,12 +484,14 @@ func sameToolCall(a, b ToolCall) bool {
 	return a.ID == b.ID && a.Name == b.Name && canonicalJSON(a.Input) == canonicalJSON(b.Input)
 }
 
-// replayRecordedBatch rebuilds the assistant message of the newest recorded LLM
-// response from its llm_call_result event, so the resume carries on with that
-// response's tool calls instead of calling the model again. It appends the
-// message to sess and reports whether it did, plus whether that append
-// persisted (the park gate and the step prune below need the same durability
-// fact the loop's appendMessage flag carries). It replays only when all of
+// replayRecordedMessage rebuilds the assistant message of the newest recorded
+// LLM response from its llm_call_result event, so the resume carries on with
+// that response's tool calls instead of calling the model again. It returns
+// the message to append and whether one was found; the caller appends it only
+// after the unsaved-batch refusals have passed, so a refused resume leaves the
+// session unchanged, and reports whether that append persisted (the park gate
+// and the step prune below need the same durability fact the loop's
+// appendMessage flag carries). It replays only when all of
 // these hold, and otherwise leaves everything to the existing paths (a fresh
 // call, or the refusals):
 //   - the response has tool calls, its payload decodes, and it did not stop
@@ -502,7 +511,7 @@ func sameToolCall(a, b ToolCall) bool {
 //     intents is the unsaved-batch case, which stays a refusal);
 //   - the session ends in the turn's user message, or in a finished tool batch
 //     that awaits the next response, so the message goes where it belongs.
-func (a *Agent) replayRecordedBatch(ctx context.Context, sess *Session, sessionID string, events []eventlog.ExecutionEvent) (replayed, persisted bool) {
+func (a *Agent) replayRecordedMessage(ctx context.Context, sess *Session, sessionID string, events []eventlog.ExecutionEvent) (Message, bool) {
 	var recorded *eventlog.ExecutionEvent
 	for i := range events {
 		e := &events[i]
@@ -511,7 +520,7 @@ func (a *Agent) replayRecordedBatch(ctx context.Context, sess *Session, sessionI
 		}
 	}
 	if recorded == nil {
-		return false, false
+		return Message{}, false
 	}
 	highestIntent := -1
 	var intentAtHighest *eventlog.ExecutionEvent
@@ -522,27 +531,27 @@ func (a *Agent) replayRecordedBatch(ctx context.Context, sess *Session, sessionI
 		}
 	}
 	if recorded.StepIndex != highestIntent {
-		return false, false
+		return Message{}, false
 	}
 	var resp LLMResponse
 	if err := json.Unmarshal(recorded.Payload, &resp); err != nil || len(resp.ToolCalls) == 0 {
-		return false, false
+		return Message{}, false
 	}
 	// A response cut off at max_tokens is never replayed: its tool calls may
 	// be truncated, and it is the response the output-token breaker refuses.
 	// Deciding from the durable payload keeps the refusal standing when the
 	// breaker exit's best-effort prune fails.
 	if resp.StopReason == "max_tokens" {
-		return false, false
+		return Message{}, false
 	}
 	for _, e := range events {
 		if e.EventType == eventlog.EventToolCallIntent && e.StepIndex == recorded.StepIndex && !isQueryToolResultIntent(e) {
-			return false, false
+			return Message{}, false
 		}
 	}
 	msgs := rawSessionMessages(sess)
 	if len(msgs) == 0 || !(unansweredTurnTail(msgs) || msgs[len(msgs)-1].Role == "tool") {
-		return false, false
+		return Message{}, false
 	}
 	// The response must be the answer to the turn the session still ends in.
 	// The intent payload carries that turn (the opening user message's Turn);
@@ -555,7 +564,7 @@ func (a *Agent) replayRecordedBatch(ctx context.Context, sess *Session, sessionI
 	}
 	if intentAtHighest == nil || json.Unmarshal(intentAtHighest.Payload, &intentMeta) != nil ||
 		intentMeta.AnsweredTurn == nil || *intentMeta.AnsweredTurn != msgs[len(msgs)-1].Turn {
-		return false, false
+		return Message{}, false
 	}
 	saved := func(list []Message) bool {
 		for _, m := range list {
@@ -568,14 +577,14 @@ func (a *Agent) replayRecordedBatch(ctx context.Context, sess *Session, sessionI
 		return false
 	}
 	if saved(msgs) {
-		return false, false
+		return Message{}, false
 	}
 	if a.memory != nil && a.memory.store != nil {
 		rows, err := a.memory.store.ListMessagesBySeqRange(ctx, sessionID, 1, math.MaxInt64)
 		if err != nil {
 			zap.L().Warn("failed to read folded messages; not replaying the recorded response",
 				zap.String("session_id", sessionID), zap.Error(err))
-			return false, false
+			return Message{}, false
 		}
 		var folded []Message
 		for _, m := range rows {
@@ -584,10 +593,10 @@ func (a *Agent) replayRecordedBatch(ctx context.Context, sess *Session, sessionI
 			}
 		}
 		if saved(folded) {
-			return false, false
+			return Message{}, false
 		}
 	}
-	_, persisted = a.appendMessage(ctx, sess, Message{
+	return Message{
 		Role:           "assistant",
 		Content:        resp.Content,
 		ToolCalls:      resp.ToolCalls,
@@ -597,8 +606,7 @@ func (a *Agent) replayRecordedBatch(ctx context.Context, sess *Session, sessionI
 		TokenCount:     resp.Usage.TotalTokens,
 		CostUSD:        resp.Usage.CostUSD,
 		Timestamp:      time.Now(),
-	}, false)
-	return true, persisted
+	}, true
 }
 
 // unansweredTurnTail reports whether msgs ends in a user message that opened
