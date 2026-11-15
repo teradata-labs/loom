@@ -75,8 +75,9 @@ func wire(calls [][]llmtypes.Message) [][]string {
 }
 
 // With segmented memory the tail is pinned with the turn's built-in notes
-// (PinTurnNotes): fn runs once per relief pass and once per provider call,
-// each call's compiled view ends with that call's tail, and the tail never
+// (PinTurnNotes): fn runs once per provider call — one value for the relief
+// estimate and the send — and a changing tail pins a note per distinct value,
+// so each call's compiled view ends with that call's tail; the tail never
 // becomes a stored row.
 func TestTransientTail_SentEveryCallNeverStored(t *testing.T) {
 	calls := 0
@@ -86,7 +87,7 @@ func TestTransientTail_SentEveryCallNeverStored(t *testing.T) {
 	}))
 
 	require.Len(t, seen, 2)
-	assert.Equal(t, 4, calls, "fn runs once per relief pass and once per provider call")
+	assert.Equal(t, 2, calls, "fn runs once per provider call")
 	for i, msgs := range seen {
 		last := msgs[len(msgs)-1]
 		assert.Equal(t, "user", last.Role, "call %d", i)
@@ -98,6 +99,88 @@ func TestTransientTail_SentEveryCallNeverStored(t *testing.T) {
 	for _, m := range rows {
 		assert.NotContains(t, m.Content, "live-state", "the tail must never be persisted")
 	}
+}
+
+// tailNotes returns the tail notes a request carries, as bare texts, in send
+// order.
+func tailNotes(msgs []llmtypes.Message, marker string) []string {
+	var out []string
+	for _, m := range msgs {
+		if IsSystemReminder(m) && strings.Contains(m.Content, marker) {
+			out = append(out, strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(m.Content, "<system-reminder>\n"), "</system-reminder>")))
+		}
+	}
+	return out
+}
+
+// TestReview589R3_TailPinnedOncePerValue (review round 3, F6): the tail is
+// live state, but the request only grows within a turn (PinTurnNotes), so a
+// call whose tail equals the turn's latest pinned tail must not stack another
+// copy — a constant tail appears exactly once in the final request of a
+// 4-call turn, and a changing tail appears once per distinct value. A note
+// per call would leave every earlier value of the "live state" at harness
+// authority next to the current one.
+func TestReview589R3_TailPinnedOncePerValue(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		tail      func(n int) string
+		wantTails []string
+	}{
+		{"constant", func(int) string { return "status: ok" }, []string{"status: ok"}},
+		{"changing", func(n int) string { return fmt.Sprintf("queue depth: %d", n) },
+			[]string{"queue depth: 1", "queue depth: 2", "queue depth: 3", "queue depth: 4"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n := 0
+			marker := "queue depth"
+			if tc.name == "constant" {
+				marker = "status:"
+			}
+			llm := &recordingToolLLM{mockToolCallingLLM: &mockToolCallingLLM{
+				responses: []mockLLMResponse{
+					{toolCalls: []llmtypes.ToolCall{{ID: "c1", Name: "stub", Input: map[string]interface{}{"n": 1}}}},
+					{toolCalls: []llmtypes.ToolCall{{ID: "c2", Name: "stub", Input: map[string]interface{}{"n": 2}}}},
+					{toolCalls: []llmtypes.ToolCall{{ID: "c3", Name: "stub", Input: map[string]interface{}{"n": 3}}}},
+					{content: "done"},
+				},
+			}}
+			ag := NewAgent(&mockBackend{}, llm,
+				WithConfig(&Config{MaxTurns: 10, MaxToolExecutions: 10, MaxIterations: 10}),
+				WithTransientTail(func(context.Context) string {
+					n++
+					return tc.tail(n)
+				}))
+			ag.RegisterTool(namedStubTool{name: "stub"})
+
+			_, err := ag.Chat(context.Background(), "tail_once_per_value", "go")
+			require.NoError(t, err)
+
+			llm.recMu.Lock()
+			defer llm.recMu.Unlock()
+			require.Len(t, llm.seen, 4, "3 tool calls, one answer")
+			assert.Equal(t, tc.wantTails, tailNotes(llm.seen[len(llm.seen)-1], marker),
+				"the final request carries one tail note per distinct value, in send order")
+		})
+	}
+}
+
+// TestReview589R3_TailFnOncePerProviderCall (review round 3, F7): fn runs
+// once per provider call — the relief estimate counts the same value the send
+// pins, so the request's tail notes carry the fn sequence itself, not the
+// even-numbered samples of a fn run twice per call.
+func TestReview589R3_TailFnOncePerProviderCall(t *testing.T) {
+	calls := 0
+	seen, _ := tailTurn(t, "tail_fn_once", WithTransientTail(func(context.Context) string {
+		calls++
+		return fmt.Sprintf("v%d", calls)
+	}))
+
+	require.Len(t, seen, 2, "one tool call, one answer")
+	assert.Equal(t, 2, calls, "fn runs once per provider call")
+	assert.Equal(t, []string{"v1"}, tailNotes(seen[0], "v"),
+		"the first request carries the value the relief estimate counted")
+	assert.Equal(t, []string{"v1", "v2"}, tailNotes(seen[1], "v"),
+		"the second request carries the values in fn order, one note each")
 }
 
 func TestTransientTail_EmptyAddsNothing(t *testing.T) {
@@ -159,7 +242,7 @@ func TestTransientTail_SynthesisCallCarriesTail(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "the synthesis call carries the tail pinned at the loop call")
-	assert.Equal(t, 4, calls, "fn runs once per relief pass and once per provider call, synthesis included")
+	assert.Equal(t, 2, calls, "fn runs once per provider call, synthesis included")
 }
 
 // Each provider call that carries a tail emits transient_tail.added with the
@@ -207,11 +290,15 @@ func TestTransientTail_SpanEvent_EmptyTailNoEvent(t *testing.T) {
 	assert.Empty(t, tracer.eventsNamed("transient_tail.added"))
 }
 
-// Without segmented memory the built-in notes and the caller tail ride ONE
-// trailing <system-reminder> message, joined (withSystemReminder) — on the
-// loop send and on the synthesis call alike. This harness has no built-in
-// notes, so the single message carries the tail.
-func TestTransientTail_NonSegmented_JoinedReminder(t *testing.T) {
+// TestTransientTail_ResetMemory_TailPinnedOnce runs a second Chat on a
+// session whose SegmentedMemory was reset between chats. Chat rebuilds the
+// memory when it is nil (ensureSessionMemory), so this exercises the pinned
+// path with a fresh memory: the loop send pins the tail after the turn's
+// rows, and the budget-exhausted synthesis call with an UNCHANGED tail adds
+// no second note (TurnReminder.Tail) — the loop-pinned note stays where it
+// was sent, before the synthesis prompt, and the request carries exactly one
+// copy of the tail.
+func TestTransientTail_ResetMemory_TailPinnedOnce(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		maxTurns     int
@@ -233,13 +320,13 @@ func TestTransientTail_NonSegmented_JoinedReminder(t *testing.T) {
 				WithTransientTail(func(context.Context) string { return "live-state" }))
 			ag.RegisterTool(namedStubTool{name: "stub"})
 
-			_, err := ag.Chat(context.Background(), "tail_nonseg", "warm up")
+			_, err := ag.Chat(context.Background(), "tail_reset_mem", "warm up")
 			require.NoError(t, err)
-			session, ok := ag.GetSession("tail_nonseg")
+			session, ok := ag.GetSession("tail_reset_mem")
 			require.True(t, ok)
 			session.SegmentedMem = nil
 
-			_, err = ag.Chat(context.Background(), "tail_nonseg", "go")
+			_, err = ag.Chat(context.Background(), "tail_reset_mem", "go")
 			require.NoError(t, err)
 
 			llm.recMu.Lock()
@@ -247,12 +334,17 @@ func TestTransientTail_NonSegmented_JoinedReminder(t *testing.T) {
 			require.Greater(t, len(llm.seen), tc.observedCall)
 			msgs := llm.seen[tc.observedCall]
 			require.NotEmpty(t, msgs)
+			assert.Equal(t, []string{"live-state"}, tailNotes(msgs, "live-state"),
+				"exactly one tail note, wherever the turn pinned it")
 			last := msgs[len(msgs)-1]
-			assert.Equal(t, "user", last.Role)
-			assert.Equal(t, "<system-reminder>\nlive-state\n</system-reminder>", last.Content,
-				"one trailing message with the notes and the tail joined")
-			require.Greater(t, len(msgs), 1)
-			assert.False(t, IsSystemReminder(msgs[len(msgs)-2]), "exactly one trailing reminder message")
+			if tc.name == "loop send" {
+				assert.Equal(t, "<system-reminder>\nlive-state\n</system-reminder>", last.Content,
+					"the loop send's tail note is the request's last message")
+			} else {
+				assert.Contains(t, last.Content, "You must provide your final answer",
+					"the synthesis prompt is the last row: an unchanged tail adds no second note")
+				assert.False(t, IsSystemReminder(last))
+			}
 		})
 	}
 }

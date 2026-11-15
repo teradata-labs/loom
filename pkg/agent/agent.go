@@ -851,23 +851,34 @@ func WithEventLog(store eventlog.EventLogStore) Option {
 }
 
 // WithTransientTail lets the embedding application add live state to every
-// provider call. fn runs once per provider call (normal send, recovery
-// resend, the budget-exhausted synthesis call) and once per relief pass
-// before each of them; its trimmed output rides a <system-reminder> user
-// message after the turn's built-in notes. With segmented memory it is
-// pinned in place with those notes (PinTurnNotes) for the rest of the turn —
-// inside the thinking fingerprint, like the built-in notes, so a later call
-// never drops what an earlier one sent; without segmented memory it joins
-// the trailing reminder message on a copy. Empty output adds nothing; a nil
-// fn is the same as not setting the option.
+// provider call. fn runs once per provider call — the conversation loop's
+// send of an iteration and the budget-exhausted synthesis call — once for
+// both the ReleasePressure relief estimate and the request build, so the
+// estimate counts the value the request carries; a recovery resend of the
+// same call reuses the value. Its trimmed output rides a <system-reminder>
+// user message after the turn's built-in notes. With segmented memory it is
+// pinned with those notes (PinTurnNotes) for the rest of the turn — inside
+// the thinking fingerprint, like the built-in notes, so a later call never
+// drops what an earlier one sent. The request only grows within a turn
+// (preserved thinking), so the tail is not re-sent per call: a call whose
+// tail equals the turn's latest pinned tail adds no note, a changed value
+// pins a new one, and earlier values stay visible until the turn settles.
+// Without segmented memory the tail joins the trailing reminder message on a
+// copy, as before. Empty output adds nothing; a nil fn is the same as not
+// setting the option.
 //
 // fn must be safe for concurrent use: one agent may run it for several
 // sessions at once, and session.SessionIDFromContext(ctx) identifies the
 // session a call serves. The tail is harness-authority text — it rides a
 // <system-reminder> message the model treats as harness state — so never put
-// untrusted data in it. The ReleasePressure relief estimate counts the tail
-// while it is pending (SetTransientTail) and, once pinned, as a compiled
-// message; the recovery resend carries it again: keep it small.
+// untrusted data in it. With the option on, every turn pins at least one
+// note: a note holds the cross-turn message breakpoint at the turn's first
+// note, and settled-turn thinking blocks written after a note are not
+// replayed once the turn settles (the note is gone), so the settled-turn
+// thinking replay stays off for every turn of such a session. The
+// ReleasePressure relief estimate counts the tail while it is pending
+// (SetTransientTail) and, once pinned, as a compiled message; the recovery
+// resend carries it again: keep it small.
 func WithTransientTail(fn func(ctx context.Context) string) Option {
 	return func(a *Agent) {
 		a.transientTail = fn
@@ -2855,17 +2866,21 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// advertised tool schemas — the provider tools parameter as built — are
 		// part of the compiled artifact and feed releasePressure's estimate.
 		// Recomputed per provider call, which covers every registration change.
+		// The caller tail is sampled once per provider call and read by both
+		// the relief estimate and the request build (review round 3, F7): the
+		// estimate must count the value the request carries. A recovery
+		// resend of the same call reuses the value.
+		var tail string
+		if a.transientTail != nil {
+			tail = strings.TrimSpace(a.transientTail(ctx))
+		}
 		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
 			a.setAdvertisedTools(segMem, tools)
 			// The reminders known before relief runs: the recall note, the soft
 			// reminders, the repeat hint and the caller tail. Reminders the
 			// turn already sent are compiled or not sent again; the rest count
 			// as the pending tail until sendChat pins them.
-			var tail string
-			if a.transientTail != nil {
-				tail = strings.TrimSpace(a.transientTail(ctx))
-			}
-			segMem.SetTransientTail(append(reminders[:len(reminders):len(reminders)], TurnReminder{Text: tail})...)
+			segMem.SetTransientTail(append(reminders[:len(reminders):len(reminders)], TurnReminder{Tail: true, Text: tail})...)
 		}
 
 		// Mutation-debug: the per-session tool projection about to be advertised
@@ -2964,18 +2979,16 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// tail (WithTransientTail) ride a trailing message on a copy
 		// (withSystemReminder), the tail joined after the notes. With
 		// segmented memory the tail is pinned with the notes, so it stays in
-		// place for the rest of the turn like they do.
+		// place for the rest of the turn like they do — once per distinct
+		// value: a call whose tail equals the turn's latest pinned tail adds
+		// no note, a changed value pins a new one (TurnReminder.Tail).
 		withReminder := func(msgs []Message, toolNote string) []Message {
-			var tail string
-			if a.transientTail != nil {
-				tail = strings.TrimSpace(a.transientTail(ctx))
-			}
 			if tail != "" {
 				span.AddEvent("transient_tail.added", map[string]interface{}{"bytes": len(tail)})
 			}
 			rs := append(reminders[:len(reminders):len(reminders)], TurnReminder{Text: toolNote})
 			if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
-				segMem.PinTurnNotes(append(rs, TurnReminder{Text: tail})...)
+				segMem.PinTurnNotes(append(rs, TurnReminder{Tail: true, Text: tail})...)
 				return session.GetMessages()
 			}
 			return withSystemReminder(msgs, append(reminderTexts(rs), tail)...)
@@ -3976,14 +3989,18 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNot
 	// so it gets the same relief as a loop send: advertise no tool bytes (this
 	// call carries none), shed before the send, and on a provider refusal shed
 	// deeper and resend once.
+	//
+	// The caller tail is sampled once for this call — the relief estimate and
+	// the request build read the same value, and the relief-resend reuses it
+	// (review round 3, F7).
+	var tail string
+	if a.transientTail != nil {
+		tail = strings.TrimSpace(a.transientTail(ctx))
+	}
 	segMem, _ := session.SegmentedMem.(*SegmentedMemory)
 	if segMem != nil {
-		var tail string
-		if a.transientTail != nil {
-			tail = strings.TrimSpace(a.transientTail(ctx))
-		}
 		a.setAdvertisedTools(segMem, nil)
-		segMem.SetTransientTail(TurnReminder{Kind: ReminderGraphMemory, Text: memoryNote}, TurnReminder{Text: tail})
+		segMem.SetTransientTail(TurnReminder{Kind: ReminderGraphMemory, Text: memoryNote}, TurnReminder{Tail: true, Text: tail})
 		if shed, estimate, target := segMem.ReleasePressure(ctx, 0); shed {
 			zap.L().Info("relief: shed before synthesis",
 				zap.String("session_id", session.ID),
@@ -3994,21 +4011,17 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNot
 	// The recall note was pinned by the loop's first call; pinning again is a
 	// no-op then, and pins it here when the loop never sent it. The caller-
 	// supplied transient tail (WithTransientTail) rides this call too — it
-	// writes the final answer — recomputed per call like the loop's
-	// withReminder and pinned with the notes, so it stays in place for the
-	// rest of the turn.
+	// writes the final answer — pinned with the notes like the loop's
+	// withReminder does, so it stays in place for the rest of the turn; a tail
+	// equal to the turn's latest pinned tail adds no note (TurnReminder.Tail).
 	synthesisMessages := func() []Message {
-		var tail string
-		if a.transientTail != nil {
-			tail = strings.TrimSpace(a.transientTail(ctx))
-		}
 		if tail != "" {
 			if span := observability.SpanFromContext(ctx); span != nil {
 				span.AddEvent("transient_tail.added", map[string]interface{}{"bytes": len(tail)})
 			}
 		}
 		if segMem != nil {
-			segMem.PinTurnNotes(TurnReminder{Kind: ReminderGraphMemory, Text: memoryNote}, TurnReminder{Text: tail})
+			segMem.PinTurnNotes(TurnReminder{Kind: ReminderGraphMemory, Text: memoryNote}, TurnReminder{Tail: true, Text: tail})
 			return session.GetMessages()
 		}
 		return withSystemReminder(session.GetMessages(), memoryNote, tail)
