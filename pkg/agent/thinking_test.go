@@ -227,7 +227,7 @@ func TestResetContext_ClearsThinkingPrefix(t *testing.T) {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	assert.Nil(t, sm.thinkingPrefix)
-	_, sum := sm.compilePrefixLocked(len(sm.thinkingPrefix) > 0)
+	_, sum := sm.compilePrefixLocked(len(sm.thinkingPrefix) > 0, 0)
 	assert.Equal(t, [32]byte{}, sum, "no recorded fingerprint: compile does not hash the context")
 }
 
