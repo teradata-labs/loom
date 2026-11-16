@@ -17,8 +17,8 @@ import (
 // every event names agentID in ProgressEvent.AgentID (an event that already
 // names an agent keeps it). Without a callback it is a plain Chat.
 //
-// The parallel and fork-join executors call this from one goroutine per
-// agent, so a callback a caller puts in the context must be safe for
+// The parallel, fork-join and swarm executors call this from one goroutine
+// per agent, so a callback a caller puts in the context must be safe for
 // concurrent use.
 func chatWithAgentProgress(ctx context.Context, ag *agent.Agent, agentID, sessionID, prompt string) (*agent.Response, error) {
 	cb := agent.ProgressCallbackFromContext(ctx)

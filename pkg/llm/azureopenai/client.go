@@ -693,6 +693,12 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		Temperature: c.temperature,
 		Stream:      true, // Enable streaming
 	}
+	// Ask for the final usage chunk (input and output tokens), as the OpenAI
+	// client does. Without it a streamed turn reports 0 input tokens and
+	// under-reports its cost.
+	if streamUsageSupported(c.apiVersion) {
+		req.StreamOptions = &openai.StreamOptions{IncludeUsage: true}
+	}
 
 	// Azure OpenAI: Newer models require max_completion_tokens instead of max_tokens
 	if c.usesMaxCompletionTokens() {
@@ -779,10 +785,17 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
-	// Check status code before streaming
+	// Check status code before streaming. Type the error as the direct path
+	// and the OpenAI stream do, so the agent sees a context-too-long refusal
+	// (the relief trigger) and does not retry a deterministic 4xx.
 	if httpResp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(httpResp.Body)
-		return nil, fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody))
+		if llm.IsOpenAIContextTooLong(httpResp.StatusCode, respBody) {
+			return nil, llm.WrapHTTPStatus(httpResp.StatusCode,
+				fmt.Errorf("API error (status %d): %s: %w", httpResp.StatusCode, string(respBody), llm.ErrContextTooLong))
+		}
+		return nil, llm.WrapHTTPStatus(httpResp.StatusCode,
+			fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody)))
 	}
 
 	// Process SSE stream (same logic as OpenAI)
@@ -964,4 +977,13 @@ var _ llmtypes.StreamingLLMProvider = (*Client)(nil)
 // capacity telemetry use.
 func (c *Client) SchedulerScope() string {
 	return "azure-openai|" + c.endpoint + "|" + c.deploymentID
+}
+
+// streamUsageSupported reports whether the Azure OpenAI api-version accepts
+// stream_options.include_usage. Azure added it in 2024-09-01-preview; the
+// default version (2024-10-21) has it. Dated versions compare as strings
+// (YYYY-MM-DD sorts by date); a non-dated version such as "v1" or "preview"
+// is newer than every dated one.
+func streamUsageSupported(apiVersion string) bool {
+	return apiVersion >= "2024-09-01"
 }

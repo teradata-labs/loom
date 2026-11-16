@@ -182,3 +182,81 @@ func TestSwarmAndConditional_ProgressEventsNameTheirAgent(t *testing.T) {
 		})
 	}
 }
+
+// runCounting runs a pattern with a progress callback on an orchestrator
+// whose agents give the listed responses in order, and returns the event
+// count per AgentID.
+func runCounting(t *testing.T, responses map[string][]string, pattern *loomv1.WorkflowPattern) map[string]int {
+	t.Helper()
+	orch := NewOrchestrator(Config{Logger: zaptest.NewLogger(t), Tracer: observability.NewNoOpTracer()})
+	for id, outs := range responses {
+		orch.RegisterAgent(id, createMockAgent(t, id, newMockLLMProvider(outs...)))
+	}
+	rec := &progressRecorder{}
+	ctx := agent.ContextWithProgressCallback(context.Background(), rec.callback)
+	_, err := orch.ExecutePattern(ctx, pattern)
+	require.NoError(t, err)
+	counts := rec.byAgent()
+	assert.Zero(t, counts[""], "an event named no agent")
+	return counts
+}
+
+// The swarm judge, the swarm vote and judge retries, and the conditional
+// retry also name their agent. A retry is a second turn of the same agent,
+// so that agent reports twice the events of an agent with one turn.
+func TestRetriesAndJudge_ProgressEventsNameTheirAgent(t *testing.T) {
+	t.Parallel()
+	retry := &loomv1.OutputRetryPolicy{MaxRetries: 1}
+	tiedSwarm := func(policy *loomv1.OutputRetryPolicy) *loomv1.WorkflowPattern {
+		return &loomv1.WorkflowPattern{Pattern: &loomv1.WorkflowPattern_Swarm{Swarm: &loomv1.SwarmPattern{
+			Question:     "ship it?",
+			AgentIds:     []string{"agent-a", "agent-b"},
+			Strategy:     loomv1.VotingStrategy_MAJORITY,
+			JudgeAgentId: "judge",
+			RetryPolicy:  policy,
+		}}}
+	}
+
+	t.Run("swarm judge", func(t *testing.T) {
+		t.Parallel()
+		counts := runCounting(t, map[string][]string{
+			"agent-a": {"VOTE: yes"}, "agent-b": {"VOTE: no"}, "judge": {"yes"},
+		}, tiedSwarm(nil))
+		assert.Equal(t, counts["agent-a"], counts["judge"], "the judge's one turn: %v", counts)
+	})
+	t.Run("swarm judge retry", func(t *testing.T) {
+		t.Parallel()
+		counts := runCounting(t, map[string][]string{
+			"agent-a": {"VOTE: yes"}, "agent-b": {"VOTE: no"}, "judge": {"maybe", "yes"},
+		}, tiedSwarm(retry))
+		assert.Equal(t, 2*counts["agent-a"], counts["judge"], "the judge's two turns: %v", counts)
+	})
+	t.Run("swarm vote retry", func(t *testing.T) {
+		t.Parallel()
+		counts := runCounting(t, map[string][]string{
+			"agent-a": {"no idea", "VOTE: yes"}, "agent-b": {"VOTE: yes"},
+		}, &loomv1.WorkflowPattern{Pattern: &loomv1.WorkflowPattern_Swarm{Swarm: &loomv1.SwarmPattern{
+			Question:    "ship it?",
+			AgentIds:    []string{"agent-a", "agent-b"},
+			Strategy:    loomv1.VotingStrategy_MAJORITY,
+			RetryPolicy: retry,
+		}}})
+		assert.Equal(t, 2*counts["agent-b"], counts["agent-a"], "agent-a's two turns: %v", counts)
+	})
+	t.Run("conditional retry", func(t *testing.T) {
+		t.Parallel()
+		counts := runCounting(t, map[string][]string{
+			"agent-a": {"unclear", "bug"}, "agent-b": {"fixed"},
+		}, &loomv1.WorkflowPattern{Pattern: &loomv1.WorkflowPattern_Conditional{Conditional: &loomv1.ConditionalPattern{
+			ConditionAgentId: "agent-a",
+			ConditionPrompt:  "classify",
+			RetryPolicy:      retry,
+			Branches: map[string]*loomv1.WorkflowPattern{
+				"bug": {Pattern: &loomv1.WorkflowPattern_ForkJoin{ForkJoin: &loomv1.ForkJoinPattern{
+					Prompt: "fix it", AgentIds: []string{"agent-b"}, MergeStrategy: loomv1.MergeStrategy_FIRST,
+				}}},
+			},
+		}}})
+		assert.Equal(t, 2*counts["agent-b"], counts["agent-a"], "the condition agent's two turns: %v", counts)
+	})
+}

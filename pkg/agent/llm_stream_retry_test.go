@@ -32,13 +32,18 @@ import (
 
 // failingStreamLLM fails its first `failures` ChatStream calls with err. Each
 // failed call first sends `tokensBeforeFail` tokens; 20 or more make the
-// streaming path flush a progress event to the caller before the failure.
+// streaming path flush a progress event to the caller before the failure,
+// fewer stay in the buffer. With toolInputBeforeFail it first reports one
+// tool-input delta, which the streaming path sends to the caller at once;
+// with activityBeforeFail it first reports one bare stream-activity pulse.
 type failingStreamLLM struct {
-	mu               sync.Mutex
-	calls            int
-	failures         int
-	tokensBeforeFail int
-	err              error
+	mu                  sync.Mutex
+	calls               int
+	failures            int
+	tokensBeforeFail    int
+	toolInputBeforeFail bool
+	activityBeforeFail  bool
+	err                 error
 }
 
 func (s *failingStreamLLM) Name() string  { return "failing-stream" }
@@ -48,18 +53,30 @@ func (s *failingStreamLLM) Chat(context.Context, []Message, []shuttle.Tool) (*LL
 	return nil, errors.New("failingStreamLLM: Chat must not be called on the streaming path")
 }
 
-func (s *failingStreamLLM) ChatStream(_ context.Context, _ []Message, _ []shuttle.Tool, cb llmtypes.TokenCallback) (*LLMResponse, error) {
+func (s *failingStreamLLM) ChatStream(ctx context.Context, _ []Message, _ []shuttle.Tool, cb llmtypes.TokenCallback) (*LLMResponse, error) {
 	s.mu.Lock()
 	s.calls++
 	n := s.calls
 	s.mu.Unlock()
 	if n <= s.failures {
+		if s.toolInputBeforeFail {
+			llmtypes.NotifyToolInputProgress(ctx, llmtypes.ToolInputProgress{Index: 0, ToolCallID: "call_1", ToolName: "files", Bytes: 10})
+		}
+		if s.activityBeforeFail {
+			llmtypes.NotifyStreamActivity(ctx)
+		}
 		for i := 0; i < s.tokensBeforeFail; i++ {
 			cb("x")
 		}
 		return nil, s.err
 	}
-	cb("ok")
+	// 20 tokens: the streaming path flushes its buffer to the caller, so a
+	// buffer left over from a failed attempt would show in PartialContent.
+	cb("o")
+	cb("k")
+	for i := 0; i < 18; i++ {
+		cb(".")
+	}
 	return &LLMResponse{Content: "ok", StopReason: "end_turn"}, nil
 }
 
@@ -91,9 +108,12 @@ func TestChatWithStreaming_RetriesFailureBeforeAnyOutput(t *testing.T) {
 		wantCalls int
 	}{
 		{
+			// The failed attempts buffer 3 tokens each (below the flush
+			// threshold): they never reach the caller, and the retry starts
+			// with an empty buffer.
 			name:      "transient failure is retried and succeeds",
 			retry:     fastRetry(3),
-			stub:      &failingStreamLLM{failures: 2, err: errConnReset},
+			stub:      &failingStreamLLM{failures: 2, tokensBeforeFail: 3, err: errConnReset},
 			wantCalls: 3,
 		},
 		{
@@ -125,6 +145,20 @@ func TestChatWithStreaming_RetriesFailureBeforeAnyOutput(t *testing.T) {
 			wantIs:    errConnReset,
 			wantCalls: 1,
 		},
+		{
+			name:      "failure after a tool-input event reached the caller is not retried",
+			retry:     fastRetry(3),
+			stub:      &failingStreamLLM{failures: 1, toolInputBeforeFail: true, err: errConnReset},
+			wantIs:    errConnReset,
+			wantCalls: 1,
+		},
+		{
+			name:      "failure after an activity pulse reached the caller is not retried",
+			retry:     fastRetry(3),
+			stub:      &failingStreamLLM{failures: 1, activityBeforeFail: true, err: errConnReset},
+			wantIs:    errConnReset,
+			wantCalls: 1,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -146,6 +180,7 @@ func TestChatWithStreaming_RetriesFailureBeforeAnyOutput(t *testing.T) {
 				assert.Equal(t, "ok", resp.Content)
 				mu.Lock()
 				defer mu.Unlock()
+				require.NotEmpty(t, events, "the successful attempt reports progress")
 				for _, e := range events {
 					assert.NotContains(t, e.PartialContent, "x", "a failed attempt's tokens must not reach the caller")
 				}
