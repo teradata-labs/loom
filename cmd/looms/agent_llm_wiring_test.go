@@ -61,6 +61,9 @@ func TestServe_ColdStartResolvesTheAgentsOwnLLMs(t *testing.T) {
 	text := readServeSource(t)
 	require.Regexp(t, `agentLLMs, err := resolveAgentLLMs\(cfg, llmProvider, config, logger\)`, text)
 	require.Regexp(t, `agentLLMProvider, staticClassifierLLM, roleOpts := agentLLMs\.instrumented\(tracer\)`, text)
+	require.Regexp(t, `ag := agent\.NewAgent\(backend, agentLLMProvider, agentOpts\.\.\.\)`, text,
+		"the cold-start agent must run on its resolved LLM, not the server default")
+	require.NotRegexp(t, `ag := agent\.NewAgent\(backend, llmProvider, `, text)
 }
 
 // The registry builds runtime-created agents with serve's builder, so server

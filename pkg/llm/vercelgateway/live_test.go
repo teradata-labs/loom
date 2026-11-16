@@ -110,6 +110,7 @@ func assertGatewayFacts(t *testing.T, resp *types.LLMResponse) {
 	assert.False(t, unpriced, "the gateway reported a cost")
 	assert.NotEmpty(t, resp.Metadata[AttrGenerationID])
 	assert.NotEmpty(t, resp.Metadata[AttrFinalProvider])
+	assert.Equal(t, "false", resp.Metadata[AttrFallbackUsed], "no fallback was configured")
 }
 
 func TestLive_HealthCheckAndCredits(t *testing.T) {

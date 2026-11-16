@@ -295,3 +295,40 @@ func TestCreateLLMProviderFromProtoConfig_MissingKeyIsAnError(t *testing.T) {
 	_, err := createLLMProviderFromProtoConfig(&loomv1.LLMConfig{Provider: "gemini", Model: "m"}, &Config{}, zap.NewNop())
 	require.NoError(t, err, "an env-only key is enough")
 }
+
+// The env fallbacks reach the built client, not only configOrEnv: an env-only
+// key builds (a missing one is an error, so reverting a fallback fails here),
+// and an env-only OLLAMA_ENDPOINT is where the request goes.
+func TestCreateLLMProviderFromProtoConfig_EnvFallbacksReachTheClient(t *testing.T) {
+	for _, env := range []string{"MISTRAL_API_KEY", "GEMINI_API_KEY", "HUGGINGFACE_API_KEY", "HUGGINGFACE_TOKEN", "OLLAMA_ENDPOINT"} {
+		t.Setenv(env, "")
+	}
+	for p, env := range map[string]string{"mistral": "MISTRAL_API_KEY", "gemini": "GEMINI_API_KEY", "huggingface": "HUGGINGFACE_API_KEY"} {
+		_, err := createLLMProviderFromProtoConfig(&loomv1.LLMConfig{Provider: p, Model: "m"}, &Config{}, zap.NewNop())
+		require.Error(t, err, "%s without a key", p)
+		t.Setenv(env, "test-not-a-real-key")
+		_, err = createLLMProviderFromProtoConfig(&loomv1.LLMConfig{Provider: p, Model: "m"}, &Config{}, zap.NewNop())
+		require.NoError(t, err, "%s with only %s set", p, env)
+	}
+	t.Setenv("HUGGINGFACE_API_KEY", "")
+	t.Setenv("HUGGINGFACE_TOKEN", "test-not-a-real-key")
+	_, err := createLLMProviderFromProtoConfig(&loomv1.LLMConfig{Provider: "huggingface", Model: "m"}, &Config{}, zap.NewNop())
+	require.NoError(t, err, "HUGGINGFACE_TOKEN is the backward-compatible name")
+
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if r.URL.Path == "/api/chat" {
+			_, _ = io.WriteString(w, `{"model":"m","message":{"role":"assistant","content":"ok"},"done":true}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer srv.Close()
+	t.Setenv("OLLAMA_ENDPOINT", srv.URL)
+	p, err := createLLMProviderFromProtoConfig(&loomv1.LLMConfig{Provider: "ollama", Model: "m"}, &Config{}, zap.NewNop())
+	require.NoError(t, err)
+	_, err = p.Chat(context.Background(), []types.Message{{Role: "user", Content: "hi"}}, nil)
+	require.NoError(t, err)
+	assert.Positive(t, hits.Load(), "an env-only OLLAMA_ENDPOINT is used")
+}

@@ -35,6 +35,7 @@ func TestInstrumentedProvider_GatewayAttributesOnSpan(t *testing.T) {
 				"gateway.generation_id":  "gen_01",
 				"gateway.fallback_used":  true,
 				MetadataCostUnpriced:     true,
+				MetadataCostEstimated:    true,
 				"gateway.ignored_number": 42, // only strings and bools are copied
 				"model":                  "vendor/model",
 			},
@@ -53,6 +54,7 @@ func TestInstrumentedProvider_GatewayAttributesOnSpan(t *testing.T) {
 	assert.Equal(t, "gen_01", attrs["gateway.generation_id"])
 	assert.Equal(t, true, attrs["gateway.fallback_used"])
 	assert.Equal(t, true, attrs[MetadataCostUnpriced])
+	assert.Equal(t, true, attrs[MetadataCostEstimated], "the estimate flag reaches the span")
 	_, hasNumber := attrs["gateway.ignored_number"]
 	assert.False(t, hasNumber)
 	_, hasModel := attrs["model"]

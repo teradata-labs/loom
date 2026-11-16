@@ -1294,17 +1294,10 @@ func configOrEnv(explicit string, envs ...string) string {
 }
 
 // customLLMFallbackAllowed reports whether `looms serve` may run an agent role
-// (primary, compressor_llm or classifier_llm) on a substitute LLM when the
-// provider that the agent YAML declares for that role cannot be built. The
-// startup agent loop calls it before it falls back. It returns false for
-// bedrock-mantle: an operator selects Mantle to keep model traffic in their
-// AWS account, so a silent move to another provider is not acceptable. The
-// loop skips such an agent and logs an error instead. Other providers keep the
-// existing fall-back-to-default behaviour.
-//
-// vercel-ai-gateway refuses too: its routing block can restrict serving to
-// named upstreams or to zero-data-retention providers, and a silent move to
-// the server's default LLM would bypass that policy.
+// (the primary or any role LLM) on a substitute LLM when the provider the
+// agent YAML declares for that role cannot be built. It is
+// agent.LLMProviderAllowsFallback, the rule the registry applies too: false
+// for bedrock-mantle and vercel-ai-gateway, true for every other provider.
 func customLLMFallbackAllowed(provider string) bool {
 	return agent.LLMProviderAllowsFallback(provider)
 }
@@ -1371,7 +1364,7 @@ func resolveAgentLLMs(cfg *loomv1.AgentConfig, def agent.LLMProvider, config *Co
 	var set agentLLMSet
 	primary, err := resolveAgentRoleLLM(cfg.GetLlm(), def, config, logger)
 	if err != nil {
-		return set, &roleLLMError{role: "llm", cfg: cfg.GetLlm(), err: err}
+		return set, fmt.Errorf("llm: %w", err)
 	}
 	set.primary = primary
 	role := func(name string, rc *loomv1.LLMConfig) (agent.LLMProvider, error) {
