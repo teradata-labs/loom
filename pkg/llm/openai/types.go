@@ -181,6 +181,9 @@ type OpenAIError struct {
 
 // ChatCompletionStreamChunk represents a chunk in a streaming response.
 type ChatCompletionStreamChunk struct {
+	// Error is set on a payload that reports a failure after the stream
+	// started (an upstream fault behind a gateway).
+	Error   *OpenAIError                 `json:"error,omitempty"`
 	ID      string                       `json:"id"`
 	Object  string                       `json:"object"` // "chat.completion.chunk"
 	Created int64                        `json:"created"`
