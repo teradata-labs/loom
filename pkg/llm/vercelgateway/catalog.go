@@ -231,7 +231,7 @@ func (s *CatalogSource) List(_ context.Context) map[string][]*loomv1.ModelInfo {
 func (s *CatalogSource) Len() int { return len(*s.snap.Load()) }
 
 // RegisterCatalog fetches the gateway catalog once, registers it with
-// catalog.RegisterNamed(CatalogProvider, …) ahead of the base catalog, and
+// catalog.RegisterNamed (one name per endpoint) ahead of the base catalog, and
 // refreshes it every interval (<= 0 = DefaultCatalogRefresh) until ctx ends.
 //
 // This is opt-in network I/O: call it at server startup only when the
@@ -248,7 +248,9 @@ func RegisterCatalog(ctx context.Context, endpoint string, interval time.Duratio
 	if err != nil {
 		return nil, err
 	}
-	catalog.RegisterNamed(CatalogProvider, src)
+	// One named source per endpoint, so a second gateway endpoint (a
+	// regional host) adds its catalog instead of replacing the first.
+	catalog.RegisterNamed(CatalogProvider+"|"+src.endpoint, src)
 	n, firstErr := src.Refresh(ctx)
 	if firstErr == nil {
 		logger.Info("vercel-ai-gateway: catalog loaded", zap.Int("models", n), zap.String("endpoint", src.endpoint))

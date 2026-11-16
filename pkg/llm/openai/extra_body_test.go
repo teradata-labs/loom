@@ -295,4 +295,13 @@ func TestReportUnpriced_EstimatesFromCreatorMedian(t *testing.T) {
 type listCatalog map[string][]*loomv1.ModelInfo
 
 func (l listCatalog) Lookup(context.Context, string, string) *loomv1.ModelInfo { return nil }
-func (l listCatalog) List(context.Context) map[string][]*loomv1.ModelInfo  { return l }
+func (l listCatalog) List(context.Context) map[string][]*loomv1.ModelInfo      { return l }
+
+func TestStreamError_CodeOnly(t *testing.T) {
+	c := ChatCompletionStreamChunk{Error: json.RawMessage(`{"code":"rate_limit_error"}`)}
+	se := c.StreamError()
+	require.NotNil(t, se)
+	assert.Equal(t, "rate_limit_error", se.Type)
+	assert.Nil(t, (&ChatCompletionStreamChunk{Error: json.RawMessage(`{}`)}).StreamError())
+	assert.Nil(t, (&ChatCompletionStreamChunk{Error: json.RawMessage(`"x"`)}).StreamError())
+}

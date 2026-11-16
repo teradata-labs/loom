@@ -16,6 +16,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -542,7 +543,9 @@ func inheritCredentials(dst, src LLMConfig) LLMConfig {
 	if dst.BedrockMantleAPIKey == "" {
 		dst.BedrockMantleAPIKey = src.BedrockMantleAPIKey
 	}
-	if dst.VercelGatewayAPIKey == "" {
+	// An entry that selects OIDC does not take the main LLM's API key: the key
+	// would win over the token.
+	if dst.VercelGatewayAPIKey == "" && !dst.VercelGatewayOIDC {
 		dst.VercelGatewayAPIKey = src.VercelGatewayAPIKey
 	}
 	if dst.VercelGatewayEndpoint == "" {
@@ -1077,7 +1080,7 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			model = serverConfig.LLM.OllamaModel
 		}
 		return ollama.NewClient(ollama.Config{
-			Endpoint:          serverConfig.LLM.OllamaEndpoint,
+			Endpoint:          configOrEnv(serverConfig.LLM.OllamaEndpoint, "OLLAMA_ENDPOINT"),
 			Model:             model,
 			MaxTokens:         maxTokens,
 			Temperature:       temperature,
@@ -1149,7 +1152,7 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			model = serverConfig.LLM.MistralModel
 		}
 		return mistral.NewClient(mistral.Config{
-			APIKey:            serverConfig.LLM.MistralAPIKey,
+			APIKey:            configOrEnv(serverConfig.LLM.MistralAPIKey, "MISTRAL_API_KEY"),
 			Model:             model,
 			MaxTokens:         maxTokens,
 			Temperature:       temperature,
@@ -1163,7 +1166,7 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			model = serverConfig.LLM.GeminiModel
 		}
 		return gemini.NewClient(gemini.Config{
-			APIKey:            serverConfig.LLM.GeminiAPIKey,
+			APIKey:            configOrEnv(serverConfig.LLM.GeminiAPIKey, "GEMINI_API_KEY"),
 			Model:             model,
 			MaxTokens:         maxTokens,
 			Temperature:       temperature,
@@ -1177,7 +1180,7 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 			model = serverConfig.LLM.HuggingFaceModel
 		}
 		return huggingface.NewClient(huggingface.Config{
-			Token:             serverConfig.LLM.HuggingFaceToken,
+			Token:             configOrEnv(serverConfig.LLM.HuggingFaceToken, "HUGGINGFACE_API_KEY", "HUGGINGFACE_TOKEN"),
 			Model:             model,
 			MaxTokens:         maxTokens,
 			Temperature:       temperature,
@@ -1227,6 +1230,43 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 	}
 }
 
+// runtimeAgentLLMConfig is the server config the registry builds runtime-
+// created and rebuilt agents' LLMs with. Their location settings keep the
+// precedence the registry had before it used serve's builder (owner's
+// decision, 2026-11-16): OLLAMA_ENDPOINT, AWS_REGION and AWS_PROFILE, when
+// set, win over llm.ollama_endpoint, llm.bedrock_region and
+// llm.bedrock_profile. Credentials keep config first, then env. It returns a
+// copy; config is not modified.
+func runtimeAgentLLMConfig(config *Config) *Config {
+	cp := *config
+	if v := os.Getenv("OLLAMA_ENDPOINT"); v != "" {
+		cp.LLM.OllamaEndpoint = v
+	}
+	if v := os.Getenv("AWS_REGION"); v != "" {
+		cp.LLM.BedrockRegion = v
+	}
+	if v := os.Getenv("AWS_PROFILE"); v != "" {
+		cp.LLM.BedrockProfile = v
+	}
+	return &cp
+}
+
+// configOrEnv returns explicit (with ${VAR} placeholders expanded) when set,
+// else the first non-empty of envs. It gives createLLMProviderFromProtoConfig
+// the same env fallbacks the registry's construction path has, so an agent
+// built through either path sees an env-only key.
+func configOrEnv(explicit string, envs ...string) string {
+	if v := loomconfig.ExpandEnvPlaceholders(explicit); v != "" {
+		return v
+	}
+	for _, e := range envs {
+		if v := os.Getenv(e); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // customLLMFallbackAllowed reports whether `looms serve` may run an agent role
 // (primary, compressor_llm or classifier_llm) on a substitute LLM when the
 // provider that the agent YAML declares for that role cannot be built. The
@@ -1240,12 +1280,7 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 // named upstreams or to zero-data-retention providers, and a silent move to
 // the server's default LLM would bypass that policy.
 func customLLMFallbackAllowed(provider string) bool {
-	switch vercelgateway.NormalizeProviderName(provider) {
-	case "bedrock-mantle", vercelgateway.ProviderName:
-		return false
-	default:
-		return true
-	}
+	return agent.LLMProviderAllowsFallback(provider)
 }
 
 // resolveAgentRoleLLM returns the LLM an agent role runs on: the role's own
@@ -1275,6 +1310,105 @@ func resolveAgentRoleLLM(roleCfg *loomv1.LLMConfig, def agent.LLMProvider, confi
 		zap.String("provider", roleCfg.Provider),
 		zap.String("model", roleCfg.Model))
 	return custom, nil
+}
+
+// agentLLMSet is the LLMs a looms serve agent runs on. A role field is nil
+// when the YAML declares no such role, or when the declared one failed to
+// build and its provider allows falling back to the primary.
+type agentLLMSet struct {
+	primary, judge, orchestrator, classifier, compressor agent.LLMProvider
+}
+
+// roleLLMError names the role whose provider failed to build and allows no
+// fallback.
+type roleLLMError struct {
+	role string
+	cfg  *loomv1.LLMConfig
+	err  error
+}
+
+func (e *roleLLMError) Error() string {
+	return fmt.Sprintf("%s: provider %s does not allow a fallback LLM: %v", e.role, e.cfg.GetProvider(), e.err)
+}
+
+func (e *roleLLMError) Unwrap() error { return e.err }
+
+// resolveAgentLLMs resolves an agent's primary and role LLMs (judge_llm,
+// orchestrator_llm, classifier_llm, compressor_llm) for looms serve, at cold
+// start and on hot reload alike: each role's own block when it names a
+// provider, the server default for an unset primary, and a *roleLLMError when
+// a role's provider cannot be built and allows no fallback
+// (customLLMFallbackAllowed). judge_llm and orchestrator_llm were not built
+// at all under serve before; YAML agents silently ran those roles on the
+// primary.
+func resolveAgentLLMs(cfg *loomv1.AgentConfig, def agent.LLMProvider, config *Config, logger *zap.Logger) (agentLLMSet, error) {
+	var set agentLLMSet
+	primary, err := resolveAgentRoleLLM(cfg.GetLlm(), def, config, logger)
+	if err != nil {
+		return set, &roleLLMError{role: "llm", cfg: cfg.GetLlm(), err: err}
+	}
+	set.primary = primary
+	role := func(name string, rc *loomv1.LLMConfig) (agent.LLMProvider, error) {
+		if rc == nil || rc.Provider == "" {
+			return nil, nil
+		}
+		p, err := createLLMProviderFromProtoConfig(rc, config, logger)
+		if err != nil {
+			if !customLLMFallbackAllowed(rc.Provider) {
+				return nil, &roleLLMError{role: name, cfg: rc, err: err}
+			}
+			logger.Warn("    Failed to create role LLM, the primary is used",
+				zap.String("role", name), zap.String("provider", rc.Provider), zap.String("model", rc.Model), zap.Error(err))
+			return nil, nil
+		}
+		logger.Info("    Role LLM configured",
+			zap.String("role", name), zap.String("provider", rc.Provider), zap.String("model", rc.Model))
+		return p, nil
+	}
+	for _, r := range []struct {
+		name string
+		cfg  *loomv1.LLMConfig
+		dst  *agent.LLMProvider
+	}{
+		{"judge_llm", cfg.GetJudgeLlm(), &set.judge},
+		{"orchestrator_llm", cfg.GetOrchestratorLlm(), &set.orchestrator},
+		{"classifier_llm", cfg.GetClassifierLlm(), &set.classifier},
+		{"compressor_llm", cfg.GetCompressorLlm(), &set.compressor},
+	} {
+		p, err := role(r.name, r.cfg)
+		if err != nil {
+			return set, err
+		}
+		*r.dst = p
+	}
+	return set, nil
+}
+
+// instrumented wraps each resolved LLM with tracing (when tracer is set) and
+// returns the primary, the classifier (nil when none) and the agent options
+// that install the role LLMs.
+func (s agentLLMSet) instrumented(tracer observability.Tracer) (primary, classifier agent.LLMProvider, opts []agent.Option) {
+	wrap := func(p agent.LLMProvider) agent.LLMProvider {
+		if p == nil || tracer == nil {
+			return p
+		}
+		return llm.NewInstrumentedProvider(p, tracer)
+	}
+	primary = wrap(s.primary)
+	if j := wrap(s.judge); j != nil {
+		opts = append(opts, agent.WithJudgeLLM(j))
+	}
+	if o := wrap(s.orchestrator); o != nil {
+		opts = append(opts, agent.WithOrchestratorLLM(o))
+	}
+	if c := wrap(s.classifier); c != nil {
+		classifier = c
+		opts = append(opts, agent.WithClassifierLLM(c))
+	}
+	if c := wrap(s.compressor); c != nil {
+		opts = append(opts, agent.WithCompressorLLM(c))
+	}
+	return primary, classifier, opts
 }
 
 // skipAgentForUnbuildableLLM is called by the `looms serve` startup agent loop
@@ -2116,7 +2250,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		// Agents created or rebuilt at runtime build their own LLM the way
 		// the startup path does: server credentials and endpoints, then env.
 		LLMProviderBuilder: func(c *loomv1.LLMConfig) (agent.LLMProvider, error) {
-			return createLLMProviderFromProtoConfig(c, config, logger)
+			return createLLMProviderFromProtoConfig(c, runtimeAgentLLMConfig(config), logger)
 		},
 		Logger:       logger,
 		Tracer:       tracer,
@@ -2312,65 +2446,23 @@ func runServe(cmd *cobra.Command, args []string) {
 
 				// Determine LLM provider for this agent
 				// If agent has specific LLM config, use it; otherwise use server default
-				agentLLMProvider, err := resolveAgentRoleLLM(cfg.Llm, llmProvider, config, logger)
+				// The agent's own llm and role LLMs (judge, orchestrator,
+				// classifier, compressor), resolved by the same function as hot
+				// reload. Role LLMs route auxiliary work to a separate provider,
+				// critical when the primary is a single-slot local model. A role
+				// whose provider allows no fallback skips the agent.
+				agentLLMs, err := resolveAgentLLMs(cfg, llmProvider, config, logger)
 				if err != nil {
-					skipAgentForUnbuildableLLM(logger, cfg.Name, "llm", cfg.Llm, backend, err)
+					var re *roleLLMError
+					if errors.As(err, &re) {
+						skipAgentForUnbuildableLLM(logger, cfg.Name, re.role, re.cfg, backend, re.err)
+					} else {
+						skipAgentForUnbuildableLLM(logger, cfg.Name, "llm", cfg.Llm, backend, err)
+					}
 					continue
 				}
-
-				// Wrap LLM provider with instrumentation for observability
-				if tracer != nil {
-					agentLLMProvider = llm.NewInstrumentedProvider(agentLLMProvider, tracer)
-				}
-
-				// Wire per-role LLMs if declared in YAML. These route auxiliary
-				// work (memory extraction, classification) to a separate provider
-				// — critical when the primary is a single-slot local model.
-				// Mirrors the registry path at pkg/agent/registry.go ~600.
-				var staticClassifierLLM agent.LLMProvider
-				if cfg.CompressorLlm != nil && cfg.CompressorLlm.Provider != "" {
-					compLLM, err := createLLMProviderFromProtoConfig(cfg.CompressorLlm, config, logger)
-					if err != nil && !customLLMFallbackAllowed(cfg.CompressorLlm.Provider) {
-						skipAgentForUnbuildableLLM(logger, cfg.Name, "compressor_llm", cfg.CompressorLlm, backend, err)
-						continue
-					}
-					if err != nil {
-						logger.Warn("    Failed to create compressor LLM, extractor will use primary",
-							zap.Error(err),
-							zap.String("provider", cfg.CompressorLlm.Provider),
-							zap.String("model", cfg.CompressorLlm.Model))
-					} else {
-						if tracer != nil {
-							compLLM = llm.NewInstrumentedProvider(compLLM, tracer)
-						}
-						agentOpts = append(agentOpts, agent.WithCompressorLLM(compLLM))
-						logger.Info("    Compressor LLM configured",
-							zap.String("provider", cfg.CompressorLlm.Provider),
-							zap.String("model", cfg.CompressorLlm.Model))
-					}
-				}
-				if cfg.ClassifierLlm != nil && cfg.ClassifierLlm.Provider != "" {
-					classLLM, err := createLLMProviderFromProtoConfig(cfg.ClassifierLlm, config, logger)
-					if err != nil && !customLLMFallbackAllowed(cfg.ClassifierLlm.Provider) {
-						skipAgentForUnbuildableLLM(logger, cfg.Name, "classifier_llm", cfg.ClassifierLlm, backend, err)
-						continue
-					}
-					if err != nil {
-						logger.Warn("    Failed to create classifier LLM, router will use primary",
-							zap.Error(err),
-							zap.String("provider", cfg.ClassifierLlm.Provider),
-							zap.String("model", cfg.ClassifierLlm.Model))
-					} else {
-						if tracer != nil {
-							classLLM = llm.NewInstrumentedProvider(classLLM, tracer)
-						}
-						staticClassifierLLM = classLLM
-						agentOpts = append(agentOpts, agent.WithClassifierLLM(classLLM))
-						logger.Info("    Classifier LLM configured",
-							zap.String("provider", cfg.ClassifierLlm.Provider),
-							zap.String("model", cfg.ClassifierLlm.Model))
-					}
-				}
+				agentLLMProvider, staticClassifierLLM, roleOpts := agentLLMs.instrumented(tracer)
+				agentOpts = append(agentOpts, roleOpts...)
 
 				// Wire skills (orchestrator + Discovery + hierarchical router)
 				// via the shared agent.BuildSkillsOptions helper. This is the
@@ -3610,64 +3702,25 @@ func runServe(cmd *cobra.Command, args []string) {
 			agentOpts = append(agentOpts, agent.WithIdentityResolver(postgres.UserIDFromContext))
 			agentOpts = append(agentOpts, agent.WithEventLog(executionLog))
 
-			// The agent's own llm block, as on the cold-start path. This used to
-			// rebuild every reloaded agent on the server default LLM, dropping
-			// a per-agent provider (and a gateway's routing policy) on the first
-			// edit. A provider that refuses a fallback refuses the reload; the
-			// running agent stays as it was.
-			reloadLLM, err := resolveAgentRoleLLM(agentConfig.Llm, llmProvider, config, logger)
+			// The agent's own llm and role LLMs, resolved exactly as on the
+			// cold-start path. This used to rebuild every reloaded agent on the
+			// server default LLM, dropping a per-agent provider (and a gateway's
+			// routing policy) on the first edit. A provider that refuses a
+			// fallback refuses the reload; the running agent stays as it was,
+			// and the backend opened for the new one is closed.
+			reloadLLMs, err := resolveAgentLLMs(agentConfig, llmProvider, config, logger)
 			if err != nil {
-				return fmt.Errorf("agent %s: llm: %w", name, err)
-			}
-			// Wrap a local copy: reassigning the captured server default here
-			// added one more instrumentation layer on every reload.
-			if tracer != nil {
-				reloadLLM = llm.NewInstrumentedProvider(reloadLLM, tracer)
-			}
-
-			// Wire per-role LLMs if declared in YAML (mirrors the cold-start path).
-			var reloadClassifierLLM agent.LLMProvider
-			if agentConfig.CompressorLlm != nil && agentConfig.CompressorLlm.Provider != "" {
-				compLLM, err := createLLMProviderFromProtoConfig(agentConfig.CompressorLlm, config, logger)
-				if err != nil && !customLLMFallbackAllowed(agentConfig.CompressorLlm.Provider) {
-					return fmt.Errorf("agent %s: compressor_llm: provider %s does not allow a fallback LLM: %w", name, agentConfig.CompressorLlm.Provider, err)
-				}
-				if err != nil {
-					logger.Warn("    Failed to create compressor LLM, extractor will use primary (hot-reload)",
-						zap.Error(err),
-						zap.String("provider", agentConfig.CompressorLlm.Provider),
-						zap.String("model", agentConfig.CompressorLlm.Model))
-				} else {
-					if tracer != nil {
-						compLLM = llm.NewInstrumentedProvider(compLLM, tracer)
+				if backend != nil {
+					if cerr := backend.Close(); cerr != nil {
+						logger.Warn("    Failed to close backend of refused reload", zap.String("agent", name), zap.Error(cerr))
 					}
-					agentOpts = append(agentOpts, agent.WithCompressorLLM(compLLM))
-					logger.Info("    Compressor LLM configured (hot-reload)",
-						zap.String("provider", agentConfig.CompressorLlm.Provider),
-						zap.String("model", agentConfig.CompressorLlm.Model))
 				}
+				return fmt.Errorf("agent %s: %w", name, err)
 			}
-			if agentConfig.ClassifierLlm != nil && agentConfig.ClassifierLlm.Provider != "" {
-				classLLM, err := createLLMProviderFromProtoConfig(agentConfig.ClassifierLlm, config, logger)
-				if err != nil && !customLLMFallbackAllowed(agentConfig.ClassifierLlm.Provider) {
-					return fmt.Errorf("agent %s: classifier_llm: provider %s does not allow a fallback LLM: %w", name, agentConfig.ClassifierLlm.Provider, err)
-				}
-				if err != nil {
-					logger.Warn("    Failed to create classifier LLM, router will use primary (hot-reload)",
-						zap.Error(err),
-						zap.String("provider", agentConfig.ClassifierLlm.Provider),
-						zap.String("model", agentConfig.ClassifierLlm.Model))
-				} else {
-					if tracer != nil {
-						classLLM = llm.NewInstrumentedProvider(classLLM, tracer)
-					}
-					reloadClassifierLLM = classLLM
-					agentOpts = append(agentOpts, agent.WithClassifierLLM(classLLM))
-					logger.Info("    Classifier LLM configured (hot-reload)",
-						zap.String("provider", agentConfig.ClassifierLlm.Provider),
-						zap.String("model", agentConfig.ClassifierLlm.Model))
-				}
-			}
+			// instrumented wraps local copies: reassigning the captured server
+			// default here added one more tracing layer on every reload.
+			reloadLLM, reloadClassifierLLM, roleOpts := reloadLLMs.instrumented(tracer)
+			agentOpts = append(agentOpts, roleOpts...)
 
 			// Wire skills (orchestrator + Discovery + hierarchical router) via
 			// the shared BuildSkillsOptions helper, matching the cold-start path.

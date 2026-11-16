@@ -15,6 +15,7 @@
 package agent
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 
@@ -196,5 +197,33 @@ func TestValidateAgentConfig_GatewayRoutingNeedsTheGateway(t *testing.T) {
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantErr)
 		})
+	}
+}
+
+// On the registry path a role LLM whose provider allows no fallback fails the
+// build instead of running on the main LLM.
+func TestRegistry_RoleLLMNoFallbackForGateway(t *testing.T) {
+	registry, _ := createTestRegistry(t)
+	t.Setenv(vercelgateway.EnvLoomAPIKey, "")
+	t.Setenv(vercelgateway.EnvAPIKey, "vck_test_not_a_real_key")
+	t.Setenv("VERCEL_AI_GATEWAY_ENDPOINT", "")
+	for _, cfg := range []*loomv1.AgentConfig{
+		{Name: "a", CompressorLlm: &loomv1.LLMConfig{Provider: "vercel", Model: "bad-id"}},
+		{Name: "a", ClassifierLlm: &loomv1.LLMConfig{Provider: "vercel-ai-gateway", Model: "bad-id"}},
+		{Name: "a", JudgeLlm: &loomv1.LLMConfig{Provider: "vercel", Model: "bad-id"}},
+		{Name: "a", OrchestratorLlm: &loomv1.LLMConfig{Provider: "vercel", Model: "bad-id"}},
+	} {
+		_, err := registry.buildAgent(context.Background(), cfg)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "does not allow a fallback LLM")
+	}
+}
+
+func TestLLMProviderAllowsFallback(t *testing.T) {
+	for p, want := range map[string]bool{
+		"vercel-ai-gateway": false, "vercel": false, " Vercel ": false, "bedrock-mantle": false,
+		"anthropic": true, "bedrock": true, "openai": true, "": true,
+	} {
+		assert.Equal(t, want, LLMProviderAllowsFallback(p), p)
 	}
 }

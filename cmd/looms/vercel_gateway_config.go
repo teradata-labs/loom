@@ -173,8 +173,9 @@ var gatewayCatalogs = struct {
 // this process. It runs on every looms path that builds one (the server's
 // main LLM, a pool entry, an agent's own llm block, a reload, looms
 // workflow), so an agent that uses the gateway only through its own YAML
-// gets catalog pricing, reasoning detection and output caps too. A failed
-// first fetch is logged; the background refresh keeps retrying.
+// gets catalog pricing, reasoning detection and output caps too. The fetch
+// does not block the caller; a failed first fetch is logged, and the
+// background refresh keeps retrying.
 func ensureVercelGatewayCatalog(endpoint string, logger *zap.Logger) {
 	base, err := vercelgateway.NormalizeEndpoint(endpoint)
 	if err != nil {
@@ -188,9 +189,15 @@ func ensureVercelGatewayCatalog(endpoint string, logger *zap.Logger) {
 	gatewayCatalogs.started[base] = true
 	gatewayCatalogs.Unlock()
 	if logger == nil {
-		logger = zap.NewNop()
+		logger = zap.L()
 	}
-	if _, err := vercelgateway.RegisterCatalog(context.Background(), base, 0, logger); err != nil {
-		logger.Warn("Vercel AI Gateway catalog fetch failed; will retry in the background", zap.Error(err))
-	}
+	// The first fetch (up to 30 s) runs in the background, so building a
+	// client on an RPC or reload path never waits for it. Calls made before it
+	// lands price Claude ids from the family table and report other ids
+	// unpriced.
+	go func() {
+		if _, err := vercelgateway.RegisterCatalog(context.Background(), base, 0, logger); err != nil {
+			logger.Warn("Vercel AI Gateway catalog fetch failed; will retry in the background", zap.Error(err))
+		}
+	}()
 }

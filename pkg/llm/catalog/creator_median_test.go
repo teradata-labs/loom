@@ -26,7 +26,7 @@ import (
 type listOnly map[string][]*loomv1.ModelInfo
 
 func (l listOnly) Lookup(context.Context, string, string) *loomv1.ModelInfo { return nil }
-func (l listOnly) List(context.Context) map[string][]*loomv1.ModelInfo  { return l }
+func (l listOnly) List(context.Context) map[string][]*loomv1.ModelInfo      { return l }
 
 func TestCreatorMedianPricing(t *testing.T) {
 	t.Cleanup(func() { Register(nil) })
@@ -37,7 +37,7 @@ func TestCreatorMedianPricing(t *testing.T) {
 	RegisterNamed("gw-test", listOnly{"gw-test": {
 		m("openai/a", 1, 4), m("openai/b", 3, 12), m("openai/c", 2, 8),
 		m("google/x", 10, 40), m("google/y", 20, 80), // google median 15/60
-		m("meta/free", 0, 0),      // unpriced rows are ignored
+		m("meta/free", 0, 0),       // unpriced rows are ignored
 		m("openai/self", 100, 400), // counts for other openai ids, excluded for its own
 	}})
 

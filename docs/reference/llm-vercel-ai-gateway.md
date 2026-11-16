@@ -69,7 +69,8 @@ There is no default model: an empty `vercel_gateway_model` fails `looms` config 
 
 A gateway client that cannot be built is never replaced by another LLM: a routing block can restrict upstreams or require zero data retention, and a silent fallback would bypass that. Concretely:
 
-- `looms serve` does not start such an agent (cold start), and refuses the reload of an edited agent YAML, keeping the running agent (hot reload). This holds for the agent's `llm` and for its `compressor_llm` / `classifier_llm`.
+- `looms serve` does not start such an agent (cold start), and refuses the reload of an edited agent YAML, keeping the running agent (hot reload). This holds for the agent's `llm` and for each role LLM (`judge_llm`, `orchestrator_llm`, `classifier_llm`, `compressor_llm`).
+- The agent registry (runtime create, rebuild) fails the agent build in the same case.
 - `looms workflow` and `looms eval` exit with the build error instead of falling back to `ANTHROPIC_API_KEY` or the Bedrock profile.
 - The same rule applies to `bedrock-mantle`.
 
@@ -159,7 +160,7 @@ Regional hosts (`eu.ai-gateway.vercel.sh`, `us.ai-gateway.vercel.sh`) carry a 5%
 
 ## Model catalog and cost
 
-In `looms` (serve, workflow, eval), the first gateway client built for an endpoint (main LLM, pool entry, an agent's own `llm` block, a reload) starts the catalog for that endpoint: `GET /v1/models` (no credential needed) once, then every hour. The registry without `looms`, `pkg/builder`, `loom-standalone` and `loom decision` do not fetch it; call `vercelgateway.RegisterCatalog` to get it there. Language models are registered under the catalog namespace `vercel-ai-gateway` with context window, max output tokens, capabilities (the entry's `tags`), `is_reasoning`, and per-1M input/output/cache-read/cache-write rates. A failed fetch is logged; serving continues, and the background refresh fills the catalog in once the gateway answers. A failed refresh keeps the previous catalog.
+In `looms` (serve, workflow, eval), the first gateway client built for an endpoint (main LLM, pool entry, an agent's own `llm` block, a reload) starts the catalog for that endpoint in the background (the build does not wait): `GET /v1/models` (no credential needed) once, then every hour. Each endpoint gets its own catalog entry, so a regional host does not replace the global one. The registry without `looms`, `pkg/builder`, `loom-standalone` and `loom decision` do not fetch it; call `vercelgateway.RegisterCatalog` to get it there. Language models are registered under the catalog namespace `vercel-ai-gateway` with context window, max output tokens, capabilities (the entry's `tags`), `is_reasoning`, and per-1M input/output/cache-read/cache-write rates. A failed fetch is logged; serving continues, and the background refresh fills the catalog in once the gateway answers. A failed refresh keeps the previous catalog.
 
 Prices in `/v1/models` are decimal strings; the docs describe them as cost per token and the sample values read as USD (*unverified unit*). Loom multiplies by 10⁶.
 

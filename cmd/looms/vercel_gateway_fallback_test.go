@@ -21,6 +21,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -48,7 +49,9 @@ func (s stubLLM) Model() string { return s.name }
 func TestResolveAgentRoleLLM(t *testing.T) {
 	isolateGatewayEnv(t)
 	def := stubLLM{name: "server-default"}
-	server := &Config{LLM: LLMConfig{VercelGatewayAPIKey: testGatewayKey}}
+	// A loopback endpoint: building a gateway client starts its catalog fetch,
+	// and a test must never dial the real gateway.
+	server := &Config{LLM: LLMConfig{VercelGatewayAPIKey: testGatewayKey, VercelGatewayEndpoint: "http://127.0.0.1:1"}}
 
 	t.Run("no llm block uses the default", func(t *testing.T) {
 		p, err := resolveAgentRoleLLM(nil, def, server, zap.NewNop())
@@ -148,9 +151,13 @@ func TestEnsureVercelGatewayCatalog_OncePerEndpoint(t *testing.T) {
 		_, err := createLLMProviderFromProtoConfig(&loomv1.LLMConfig{Provider: vercelgateway.ProviderName, Model: "acme/only-in-this-test"}, server, zap.NewNop())
 		require.NoError(t, err)
 	}
+	require.Eventually(t, func() bool {
+		_, _, ok := catalog.LookupPricing(vercelgateway.ProviderName, "acme/only-in-this-test")
+		return ok
+	}, 5*time.Second, 10*time.Millisecond, "the agent-only gateway model is priced from the catalog")
 	assert.Equal(t, int32(1), hits.Load(), "one fetch per endpoint")
 	in, out, ok := catalog.LookupPricing(vercelgateway.ProviderName, "acme/only-in-this-test")
-	require.True(t, ok, "the agent-only gateway model is priced from the catalog")
+	require.True(t, ok)
 	assert.InDelta(t, 1.0, in, 1e-9)
 	assert.InDelta(t, 2.0, out, 1e-9)
 }
@@ -180,4 +187,94 @@ func TestCreateLLMProviderFromProtoConfig_OllamaSeed(t *testing.T) {
 	_, err = p.Chat(context.Background(), []types.Message{{Role: "user", Content: "hi"}}, nil)
 	require.NoError(t, err)
 	assert.Contains(t, chatBody.Load(), `"seed":42`)
+}
+
+// resolveAgentLLMs is what both the cold-start loop and the hot-reload
+// callback run on: the agent's own llm and all four role LLMs, with one
+// fallback rule. judge_llm and orchestrator_llm were not built under serve.
+func TestResolveAgentLLMs(t *testing.T) {
+	isolateGatewayEnv(t)
+	isolateAWSEnv(t)
+	t.Setenv("BEDROCK_MANTLE_REGION", "")
+	t.Setenv("AWS_REGION", "")
+	t.Setenv("BEDROCK_MANTLE_ENDPOINT", "")
+	def := stubLLM{name: "server-default"}
+	server := &Config{LLM: LLMConfig{VercelGatewayAPIKey: testGatewayKey, VercelGatewayEndpoint: "http://127.0.0.1:1"}}
+
+	set, err := resolveAgentLLMs(&loomv1.AgentConfig{
+		Llm:             &loomv1.LLMConfig{Provider: "vercel", Model: "openai/gpt-5"},
+		CompressorLlm:   &loomv1.LLMConfig{Provider: "vercel", Model: "openai/gpt-5-mini"},
+		JudgeLlm:        &loomv1.LLMConfig{Provider: "vercel", Model: "anthropic/claude-haiku-4.5"},
+		OrchestratorLlm: &loomv1.LLMConfig{Provider: "vercel", Model: "google/gemini-3-flash"},
+	}, def, server, zap.NewNop())
+	require.NoError(t, err)
+	assert.Equal(t, "openai/gpt-5", set.primary.Model(), "the agent's own llm, not the server default")
+	require.NotNil(t, set.compressor)
+	assert.Equal(t, "openai/gpt-5-mini", set.compressor.Model())
+	require.NotNil(t, set.judge)
+	assert.Equal(t, "anthropic/claude-haiku-4.5", set.judge.Model())
+	require.NotNil(t, set.orchestrator)
+	assert.Equal(t, "google/gemini-3-flash", set.orchestrator.Model())
+	assert.Nil(t, set.classifier)
+
+	primary, classifier, opts := set.instrumented(nil)
+	assert.Equal(t, set.primary, primary)
+	assert.Nil(t, classifier)
+	assert.Len(t, opts, 3, "judge, orchestrator and compressor options")
+
+	set, err = resolveAgentLLMs(&loomv1.AgentConfig{}, def, server, zap.NewNop())
+	require.NoError(t, err)
+	assert.Equal(t, def, set.primary)
+
+	for _, cfg := range []*loomv1.AgentConfig{
+		{Llm: &loomv1.LLMConfig{Provider: "vercel", Model: "bad-id"}},
+		{CompressorLlm: &loomv1.LLMConfig{Provider: "vercel", Model: "bad-id"}},
+		{ClassifierLlm: &loomv1.LLMConfig{Provider: "bedrock-mantle", Model: "x"}},
+		{JudgeLlm: &loomv1.LLMConfig{Provider: "vercel", Model: "bad-id"}},
+		{OrchestratorLlm: &loomv1.LLMConfig{Provider: "vercel", Model: "bad-id"}},
+	} {
+		_, err := resolveAgentLLMs(cfg, def, server, zap.NewNop())
+		require.Error(t, err, "%v", cfg)
+		assert.Contains(t, err.Error(), "does not allow a fallback LLM")
+	}
+
+	// A provider that allows a fallback degrades to the primary.
+	set, err = resolveAgentLLMs(&loomv1.AgentConfig{ClassifierLlm: &loomv1.LLMConfig{Provider: "no-such-provider"}}, def, server, zap.NewNop())
+	require.NoError(t, err)
+	assert.Nil(t, set.classifier)
+}
+
+func TestConfigOrEnv(t *testing.T) {
+	t.Setenv("CFG_OR_ENV_A", "")
+	t.Setenv("CFG_OR_ENV_B", "from-b")
+	t.Setenv("CFG_OR_ENV_PH", "from-placeholder")
+	assert.Equal(t, "explicit", configOrEnv("explicit", "CFG_OR_ENV_B"))
+	assert.Equal(t, "from-placeholder", configOrEnv("${CFG_OR_ENV_PH}", "CFG_OR_ENV_B"))
+	assert.Equal(t, "from-b", configOrEnv("", "CFG_OR_ENV_A", "CFG_OR_ENV_B"))
+	assert.Equal(t, "", configOrEnv("", "CFG_OR_ENV_A"))
+}
+
+// Runtime-created agents keep env-first location settings (owner's decision).
+func TestRuntimeAgentLLMConfig_EnvFirst(t *testing.T) {
+	base := &Config{LLM: LLMConfig{OllamaEndpoint: "http://cfg:11434", BedrockRegion: "us-west-2", BedrockProfile: "cfg"}}
+	t.Setenv("OLLAMA_ENDPOINT", "")
+	t.Setenv("AWS_REGION", "")
+	t.Setenv("AWS_PROFILE", "")
+	got := runtimeAgentLLMConfig(base)
+	assert.Equal(t, "http://cfg:11434", got.LLM.OllamaEndpoint)
+	assert.Equal(t, "us-west-2", got.LLM.BedrockRegion)
+
+	t.Setenv("OLLAMA_ENDPOINT", "http://env:11434")
+	t.Setenv("AWS_REGION", "eu-west-1")
+	t.Setenv("AWS_PROFILE", "envprof")
+	got = runtimeAgentLLMConfig(base)
+	assert.Equal(t, "http://env:11434", got.LLM.OllamaEndpoint)
+	assert.Equal(t, "eu-west-1", got.LLM.BedrockRegion)
+	assert.Equal(t, "envprof", got.LLM.BedrockProfile)
+	assert.Equal(t, "http://cfg:11434", base.LLM.OllamaEndpoint, "the server config is not modified")
+}
+
+func TestInheritCredentials_OIDCEntryDoesNotTakeMainKey(t *testing.T) {
+	got := inheritCredentials(LLMConfig{VercelGatewayOIDC: true}, LLMConfig{VercelGatewayAPIKey: testGatewayKey})
+	assert.Empty(t, got.VercelGatewayAPIKey, "a key would win over the entry's OIDC token")
 }

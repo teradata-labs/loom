@@ -1540,7 +1540,6 @@ func expandEnvVars(s string) string {
 	})
 }
 
-// ValidateAgentConfig validates an agent configuration
 // validateGatewayRouting rejects a gateway_routing block that would be
 // ignored or is malformed. Only vercel-ai-gateway reads it, so a block on any
 // other provider, or on a role that names no provider (and so runs on
@@ -1559,6 +1558,7 @@ func validateGatewayRouting(role string, l *loomv1.LLMConfig) error {
 	return nil
 }
 
+// ValidateAgentConfig validates an agent configuration
 func ValidateAgentConfig(config *loomv1.AgentConfig) error {
 	for _, r := range []struct {
 		role string

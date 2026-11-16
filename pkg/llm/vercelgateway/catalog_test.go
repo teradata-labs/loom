@@ -257,3 +257,22 @@ func (s staticRows) Lookup(_ context.Context, provider, id string) *loomv1.Model
 }
 
 func (s staticRows) List(context.Context) map[string][]*loomv1.ModelInfo { return s }
+
+// Two gateway endpoints (global and regional) register two catalogs; the
+// second does not replace the first.
+func TestRegisterCatalog_TwoEndpointsCoexist(t *testing.T) {
+	t.Cleanup(func() { catalog.Register(nil) })
+	catalog.Register(nil)
+	a := &modelsServer{}
+	a.set(http.StatusOK, `{"data":[{"id":"acme/only-a","type":"language","pricing":{"input":"0.000001","output":"0.000002"}}]}`)
+	b := &modelsServer{}
+	b.set(http.StatusOK, `{"data":[{"id":"acme/only-b","type":"language","pricing":{"input":"0.000003","output":"0.000004"}}]}`)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, err := RegisterCatalog(ctx, a.start(t).URL, time.Hour, nil)
+	require.NoError(t, err)
+	_, err = RegisterCatalog(ctx, b.start(t).URL, time.Hour, nil)
+	require.NoError(t, err)
+	assert.NotNil(t, catalog.Lookup(CatalogProvider, "acme/only-a"))
+	assert.NotNil(t, catalog.Lookup(CatalogProvider, "acme/only-b"))
+}

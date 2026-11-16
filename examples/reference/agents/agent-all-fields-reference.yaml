@@ -65,7 +65,7 @@ spec:
                                        # Llama 3.1: 128000
                                        # Mistral: 32000
     reserved_output_tokens: 20000      # OPTIONAL: Tokens for output (10% of context)
-    # gateway_routing:                 # OPTIONAL: vercel-ai-gateway only (ignored by other providers)
+    # gateway_routing:                 # OPTIONAL: vercel-ai-gateway only (any other provider is a load error)
     #   order: [bedrock, anthropic]    #   upstream providers to try first, in order
     #   only: []                       #   restrict to these upstreams (no match = terminal error)
     #   sort: ""                       #   cost | ttft | tps

@@ -1469,7 +1469,7 @@ func resolveLLMProvider() (agent.LLMProvider, string, error) {
 			if err != nil {
 				return nil, "", errNoFallbackProvider(config.LLM.Provider, err)
 			}
-			ensureVercelGatewayCatalog(client.BaseURL(), zap.NewNop())
+			ensureVercelGatewayCatalog(client.BaseURL(), zap.L())
 			return client, "Vercel AI Gateway (config)", nil
 
 		case "ollama":

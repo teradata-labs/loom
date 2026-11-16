@@ -259,14 +259,21 @@ type FunctionCallDelta struct {
 
 // StreamError returns the chunk's error object, or nil when the chunk has no
 // "error" member, or one that is null or not an object (a string or a
-// boolean): only an object with a message or a type is treated as a failure.
+// boolean): only an object with a message, a type or a code is treated as a
+// failure.
 func (c *ChatCompletionStreamChunk) StreamError() *OpenAIError {
 	if len(c.Error) == 0 || c.Error[0] != '{' {
 		return nil
 	}
 	var e OpenAIError
-	if err := json.Unmarshal(c.Error, &e); err != nil || (e.Message == "" && e.Type == "") {
+	if err := json.Unmarshal(c.Error, &e); err != nil || (e.Message == "" && e.Type == "" && e.Code == nil) {
 		return nil
+	}
+	if e.Type == "" {
+		// Some gateways send only a code; classify it like a type name.
+		if code, ok := e.Code.(string); ok {
+			e.Type = code
+		}
 	}
 	return &e
 }

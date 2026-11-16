@@ -745,13 +745,11 @@ type LLMConfig struct {
 	// ignore it. The server's default LLM (looms.yaml llm:) and the provider
 	// factory carry no seed.
 	Seed *int64 `protobuf:"varint,11,opt,name=seed,proto3,oneof" json:"seed,omitempty"`
-	// Routing options for a multi-provider LLM gateway. Honored by the
-	// vercel-ai-gateway provider, which sends them as providerOptions.gateway in
-	// every request body. Other providers ignore it. Unset means the gateway's
-	// own default routing.
-	//
-	// Field 12 is left to max_model_context_tokens (PR #506), which claimed it
-	// first.
+	// Routing options for a multi-provider LLM gateway. Valid only with
+	// provider vercel-ai-gateway, which sends them as providerOptions.gateway in
+	// every request body; on any other provider, or with no provider, agent
+	// validation rejects it. Unset means the gateway's own default routing.
+	// Field 12 is reserved for another in-flight LLMConfig field.
 	GatewayRouting *LLMGatewayRouting `protobuf:"bytes,13,opt,name=gateway_routing,json=gatewayRouting,proto3" json:"gateway_routing,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache

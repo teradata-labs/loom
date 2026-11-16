@@ -842,7 +842,7 @@
         },
         "gatewayRouting": {
           "$ref": "#/definitions/v1LLMGatewayRouting",
-          "description": "Routing options for a multi-provider LLM gateway. Honored by the\nvercel-ai-gateway provider, which sends them as providerOptions.gateway in\nevery request body. Other providers ignore it. Unset means the gateway's\nown default routing.\n\nField 12 is left to max_model_context_tokens (PR #506), which claimed it\nfirst."
+          "description": "Routing options for a multi-provider LLM gateway. Valid only with\nprovider vercel-ai-gateway, which sends them as providerOptions.gateway in\nevery request body; on any other provider, or with no provider, agent\nvalidation rejects it. Unset means the gateway's own default routing.\nField 12 is reserved for another in-flight LLMConfig field."
         }
       },
       "title": "LLMConfig configures the language model provider and parameters"
