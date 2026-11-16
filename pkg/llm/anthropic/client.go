@@ -211,10 +211,25 @@ func NewClient(config Config) *Client {
 		extraBodyErr:      extraBodyErr,
 		inspector:         config.ResponseInspector,
 		httpClient: &http.Client{
-			Timeout:   config.Timeout,
-			Transport: transport,
+			Timeout:       config.Timeout,
+			Transport:     transport,
+			CheckRedirect: dropAPIKeyOnCrossHostRedirect,
 		},
 	}
+}
+
+// dropAPIKeyOnCrossHostRedirect is the client's redirect policy. Go strips
+// Authorization when a redirect leaves the original host but copies every
+// other header, so x-api-key would be sent to the new host. It is removed
+// there; the default limit of 10 redirects is kept.
+func dropAPIKeyOnCrossHostRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	if len(via) > 0 && !strings.EqualFold(req.URL.Host, via[0].URL.Host) {
+		req.Header.Del("x-api-key")
+	}
+	return nil
 }
 
 // marshalRequest encodes req and appends Config.ExtraBody.

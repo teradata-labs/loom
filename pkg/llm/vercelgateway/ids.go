@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -112,7 +113,7 @@ func NormalizeEndpoint(endpoint string) (string, error) {
 		return DefaultEndpoint, nil
 	}
 	if strings.ContainsAny(e, "?#") {
-		return "", fmt.Errorf("vercel-ai-gateway: endpoint %q must not have a query or fragment", endpoint)
+		return "", fmt.Errorf("vercel-ai-gateway: endpoint %s must not have a query or fragment", redactEndpoint(endpoint))
 	}
 	// Strip trailing slashes and surface paths until stable, so the result is
 	// a fixed point (normalising it again changes nothing).
@@ -131,27 +132,40 @@ func NormalizeEndpoint(endpoint string) (string, error) {
 	}
 	u, err := url.Parse(e)
 	if err != nil {
-		return "", fmt.Errorf("vercel-ai-gateway: invalid endpoint: %w", err)
+		return "", fmt.Errorf("vercel-ai-gateway: invalid endpoint %s", redactEndpoint(endpoint))
 	}
 	if u.Host == "" || u.Hostname() == "" {
-		return "", fmt.Errorf("vercel-ai-gateway: endpoint %q has no host", endpoint)
+		return "", fmt.Errorf("vercel-ai-gateway: endpoint %s has no host", redactEndpoint(endpoint))
 	}
 	if u.User != nil {
 		return "", fmt.Errorf("vercel-ai-gateway: endpoint must not carry credentials; use the API key setting")
 	}
 	if u.RawQuery != "" || u.Fragment != "" || u.ForceQuery {
-		return "", fmt.Errorf("vercel-ai-gateway: endpoint %q must not have a query or fragment", endpoint)
+		return "", fmt.Errorf("vercel-ai-gateway: endpoint %s must not have a query or fragment", redactEndpoint(endpoint))
 	}
 	switch u.Scheme {
 	case "https":
 	case "http":
 		if !isLoopback(u.Hostname()) {
-			return "", fmt.Errorf("vercel-ai-gateway: endpoint %q must use https (plain http is allowed only for a loopback host)", endpoint)
+			return "", fmt.Errorf("vercel-ai-gateway: endpoint %s must use https (plain http is allowed only for a loopback host)", redactEndpoint(endpoint))
 		}
 	default:
-		return "", fmt.Errorf("vercel-ai-gateway: endpoint %q must be an https URL", endpoint)
+		return "", fmt.Errorf("vercel-ai-gateway: endpoint %s must be an https URL", redactEndpoint(endpoint))
 	}
 	return u.String(), nil
+}
+
+// redactEndpoint renders a configured endpoint for an error message without
+// anything that may carry a secret: userinfo, query and fragment are dropped,
+// and an endpoint that does not parse is not echoed at all.
+func redactEndpoint(endpoint string) string {
+	u, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil {
+		return "(unparseable)"
+	}
+	u.User = nil
+	u.RawQuery, u.ForceQuery, u.Fragment, u.RawFragment = "", false, "", ""
+	return strconv.Quote(u.String())
 }
 
 func isLoopback(host string) bool {

@@ -15,12 +15,18 @@
 package factory
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/teradata-labs/loom/pkg/llm/vercelgateway"
+	"github.com/teradata-labs/loom/pkg/types"
 )
 
 func clearGatewayEnv(t *testing.T) {
@@ -68,4 +74,25 @@ func TestCreateProvider_VercelGatewayErrors(t *testing.T) {
 	t.Setenv(vercelgateway.EnvAPIKey, "vck_from_env")
 	_, err = f.CreateProvider(vercelgateway.ProviderName, "")
 	require.NoError(t, err, "AI_GATEWAY_API_KEY satisfies the credential")
+}
+
+// FactoryConfig.ThinkingLevel reaches the gateway client, as it does for the
+// anthropic and bedrock builders: a Claude id sends Anthropic thinking.
+func TestCreateProvider_VercelGatewayThinkingLevel(t *testing.T) {
+	clearGatewayEnv(t)
+	var body atomic.Value
+	body.Store("")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		body.Store(string(raw))
+		_, _ = io.WriteString(w, `{"id":"gen_1","type":"message","role":"assistant","model":"m","stop_reason":"end_turn","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	defer srv.Close()
+	f := NewProviderFactory(FactoryConfig{ThinkingLevel: "high", MaxTokens: 40000,
+		VercelGateway: vercelgateway.Config{APIKey: "vck_test_not_a_real_key", Endpoint: srv.URL}})
+	raw, err := f.CreateProvider(vercelgateway.ProviderName, "anthropic/claude-sonnet-4.5")
+	require.NoError(t, err)
+	_, err = raw.(*vercelgateway.Client).Chat(context.Background(), []types.Message{{Role: "user", Content: "hi"}}, nil)
+	require.NoError(t, err)
+	assert.Contains(t, body.Load(), `"thinking":{`)
 }

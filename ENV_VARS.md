@@ -14,6 +14,8 @@ This document describes all environment variables used in the Loom project.
   - [Mistral AI](#mistral-ai)
   - [Google Gemini](#google-gemini)
   - [HuggingFace](#huggingface)
+  - [AWS Bedrock Mantle](#aws-bedrock-mantle)
+  - [Vercel AI Gateway](#vercel-ai-gateway)
   - [looms server credential variables (`LOOM_LLM_*`)](#looms-server-credential-variables-loom_llm_)
 - [Decision Layer](#decision-layer)
 - [AWS Credentials](#aws-credentials)
@@ -495,6 +497,61 @@ looms config set-key huggingface_token
 
 ---
 
+### AWS Bedrock Mantle
+
+#### BEDROCK_MANTLE_REGION
+**Used in:** `pkg/agent/registry.go`, `pkg/llm/factory/factory.go`, `pkg/builder/builder.go`, `cmd/loom-standalone/main.go`, `cmd/looms/cmd_serve.go` (agent YAML LLMs)
+
+Region of the `bedrock-mantle` endpoint. Falls back to `AWS_REGION`.
+
+#### BEDROCK_MANTLE_ENDPOINT
+**Used in:** `pkg/agent/registry.go`, `pkg/llm/factory/factory.go`, `cmd/looms/cmd_serve.go`
+
+Base URL override (PrivateLink, tests). Empty = `https://bedrock-mantle.<region>.api.aws`.
+
+#### BEDROCK_MANTLE_API_KEY
+**Used in:** `pkg/agent/registry.go`, `pkg/llm/factory/factory.go`, `pkg/builder/builder.go`, `cmd/loom-standalone/main.go`, `cmd/looms/cmd_serve.go`
+
+Bedrock API key, sent as a bearer credential. Empty = every request is SigV4-signed from the AWS credential chain. Keyring: `looms config set-key bedrock_mantle_api_key`.
+
+#### LOOM_LLM_BEDROCK_MANTLE_MODEL
+**Used in:** `pkg/builder/builder.go` (`WithBedrockMantleLLM`); in `looms` it is the viper override of `llm.bedrock_mantle_model`
+
+Mantle model id. Default `anthropic.claude-haiku-4-5`.
+
+---
+
+### Vercel AI Gateway
+
+See `docs/reference/llm-vercel-ai-gateway.md`.
+
+#### LOOM_LLM_VERCEL_GATEWAY_API_KEY
+**Used in:** `pkg/llm/vercelgateway/client.go` (`ResolveAPIKey`), every path that builds a `vercel-ai-gateway` client; in `looms` also the viper override of `llm.vercel_gateway_api_key`
+
+Gateway API key. Checked before `AI_GATEWAY_API_KEY`. Keyring: `looms config set-key vercel_gateway_api_key`.
+
+#### AI_GATEWAY_API_KEY
+**Used in:** `pkg/llm/vercelgateway/client.go` (`ResolveAPIKey`), `pkg/decision/jev/config.go`
+
+Vercel's own key variable. Used as the `vercel-ai-gateway` LLM credential when neither the config/keyring nor `LOOM_LLM_VERCEL_GATEWAY_API_KEY` sets one, and by the Jev decision provider (see [Decision Layer](#decision-layer)).
+
+#### VERCEL_OIDC_TOKEN
+**Used in:** `pkg/llm/vercelgateway/oidc.go`
+
+Vercel OIDC token, used when `llm.vercel_gateway_oidc: true` and no token file is set. Read again on every request (Vercel rotates it). Never sent together with an API key.
+
+#### VERCEL_AI_GATEWAY_ENDPOINT
+**Used in:** `pkg/agent/registry.go`, `pkg/builder/builder.go`, `cmd/loom-standalone/main.go`, `cmd/loom/decision.go`
+
+Gateway base URL for the paths that have no `looms.yaml` (`llm.vercel_gateway_endpoint` is the `looms` setting). Empty = `https://ai-gateway.vercel.sh`. Must be https, except a loopback host.
+
+#### LOOM_LLM_VERCEL_GATEWAY_MODEL, LOOM_LLM_VERCEL_GATEWAY_ENDPOINT
+**Used in:** `cmd/looms/config.go`
+
+viper overrides of `llm.vercel_gateway_model` and `llm.vercel_gateway_endpoint`.
+
+---
+
 ### looms server credential variables (`LOOM_LLM_*`)
 
 **Used in:** `cmd/looms/config.go` (`setDefaults`, `stringToStringMapHook`, `loadSecretsFromKeyring`)
@@ -586,7 +643,7 @@ export TYPESAFE_API_KEY=your-key
 ```
 
 ### AI_GATEWAY_API_KEY
-**Used in:** `pkg/decision/jev/config.go`
+**Used in:** `pkg/decision/jev/config.go` (also the `vercel-ai-gateway` LLM credential; see [Vercel AI Gateway](#vercel-ai-gateway))
 
 Vercel AI Gateway key, consulted when `TYPESAFE_API_KEY` is unset. When no endpoint is configured it also selects the gateway URL; the gateway serves Jev only as `typesafe-ai/jev`, a floating alias, so the agent's `decision.model` must be that id (or empty) with `allow_alias: true`.
 

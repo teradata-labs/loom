@@ -15,8 +15,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"sync"
 	"time"
+
+	"go.uber.org/zap"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
@@ -156,20 +160,37 @@ func normalizeProviderNames(c *Config) {
 	}
 }
 
-// usesVercelGateway reports whether the main LLM or any pool entry selects
-// the gateway, which decides whether serve fetches the gateway catalog.
-func usesVercelGateway(c *Config) (endpoint string, ok bool) {
-	if c.LLM.Provider == vercelgateway.ProviderName {
-		return loomconfig.ExpandEnvPlaceholders(c.LLM.VercelGatewayEndpoint), true
+// gatewayCatalogs records the gateway endpoints whose catalog this process
+// has registered, so each is fetched and refreshed once however many clients
+// are built for it.
+var gatewayCatalogs = struct {
+	sync.Mutex
+	started map[string]bool
+}{started: map[string]bool{}}
+
+// ensureVercelGatewayCatalog registers the gateway catalog (GET /v1/models,
+// refreshed hourly) for endpoint the first time a gateway client is built in
+// this process. It runs on every looms path that builds one (the server's
+// main LLM, a pool entry, an agent's own llm block, a reload, looms
+// workflow), so an agent that uses the gateway only through its own YAML
+// gets catalog pricing, reasoning detection and output caps too. A failed
+// first fetch is logged; the background refresh keeps retrying.
+func ensureVercelGatewayCatalog(endpoint string, logger *zap.Logger) {
+	base, err := vercelgateway.NormalizeEndpoint(endpoint)
+	if err != nil {
+		return // NewClient has already rejected this endpoint
 	}
-	for _, e := range c.Providers {
-		if e.LLM.Provider == vercelgateway.ProviderName {
-			ep := e.LLM.VercelGatewayEndpoint
-			if ep == "" {
-				ep = c.LLM.VercelGatewayEndpoint
-			}
-			return loomconfig.ExpandEnvPlaceholders(ep), true
-		}
+	gatewayCatalogs.Lock()
+	if gatewayCatalogs.started[base] {
+		gatewayCatalogs.Unlock()
+		return
 	}
-	return "", false
+	gatewayCatalogs.started[base] = true
+	gatewayCatalogs.Unlock()
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	if _, err := vercelgateway.RegisterCatalog(context.Background(), base, 0, logger); err != nil {
+		logger.Warn("Vercel AI Gateway catalog fetch failed; will retry in the background", zap.Error(err))
+	}
 }

@@ -67,7 +67,13 @@ llm:
 
 There is no default model: an empty `vercel_gateway_model` fails `looms` config validation, because a built-in default would go stale with the gateway's catalog. The endpoint is a base URL; a pasted surface URL (`…/v1/chat/completions`) is reduced to the base. It must be `https`, except for a loopback host.
 
-`looms serve` refuses to start an agent whose gateway client cannot be built, rather than moving it to the server's default LLM: a routing block can restrict upstreams or require zero data retention, and a silent fallback would bypass that.
+A gateway client that cannot be built is never replaced by another LLM: a routing block can restrict upstreams or require zero data retention, and a silent fallback would bypass that. Concretely:
+
+- `looms serve` does not start such an agent (cold start), and refuses the reload of an edited agent YAML, keeping the running agent (hot reload). This holds for the agent's `llm` and for its `compressor_llm` / `classifier_llm`.
+- `looms workflow` and `looms eval` exit with the build error instead of falling back to `ANTHROPIC_API_KEY` or the Bedrock profile.
+- The same rule applies to `bedrock-mantle`.
+
+`gateway_routing` on an LLM whose `provider` is not `vercel-ai-gateway` (or that names no provider and so runs on the server default) is a validation error, not silently ignored.
 
 ### Agent YAML
 
@@ -81,7 +87,7 @@ agent:
       sort: ttft
 ```
 
-Under `looms serve`, credentials and the endpoint come from the server's `llm.vercel_gateway_*` settings; the agent picks the model and may replace the routing block. Through the agent registry (no `looms` config), credentials come from the environment (see below).
+Under `looms serve`, credentials and the endpoint come from the server's `llm.vercel_gateway_*` settings; the agent picks the model and may replace the routing block. This holds for agents loaded at startup, reloaded, and created or rebuilt at runtime through the registry (`RegistryConfig.LLMProviderBuilder`). An agent's `gateway_routing` replaces the server's block as a whole; it is not merged field by field. Through the agent registry without `looms serve`, credentials come from the environment (see below).
 
 ### Go
 
@@ -115,6 +121,8 @@ factory.FactoryConfig{
 | Vercel OIDC | `vercel_gateway_oidc: true`; token from `vercel_gateway_oidc_token_file`, else `VERCEL_OIDC_TOKEN` | Read fresh on every request, because Vercel rotates it and nothing refreshes it for a Go client. A token whose JWT `exp` has passed fails locally with "OIDC token expired" before any request is sent. |
 
 An API key always wins over OIDC, and the client never sends both: per Vercel's docs the gateway prefers the API key when both arrive, even an invalid one.
+
+Every request (both surfaces and the health check) must go to the configured gateway scheme and host. A redirect to another host, or to plain http, is refused before it is sent, so neither `x-api-key` (which Go copies across hosts) nor the OIDC bearer token can leave for an unconfigured host. Pool entries in `looms.yaml` inherit the main LLM's API key, endpoint and, when they set neither a key nor OIDC, its OIDC settings.
 
 ## How requests are routed
 
@@ -151,7 +159,7 @@ Regional hosts (`eu.ai-gateway.vercel.sh`, `us.ai-gateway.vercel.sh`) carry a 5%
 
 ## Model catalog and cost
 
-Under `looms serve`, when the main LLM or any pool entry uses the gateway, loom fetches `GET /v1/models` (no credential needed) at startup and every hour. Language models are registered under the catalog namespace `vercel-ai-gateway` with context window, max output tokens, capabilities (the entry's `tags`), `is_reasoning`, and per-1M input/output/cache-read/cache-write rates. A failed fetch is logged; serving continues, and the background refresh fills the catalog in once the gateway answers. A failed refresh keeps the previous catalog.
+In `looms` (serve, workflow, eval), the first gateway client built for an endpoint (main LLM, pool entry, an agent's own `llm` block, a reload) starts the catalog for that endpoint: `GET /v1/models` (no credential needed) once, then every hour. The registry without `looms`, `pkg/builder`, `loom-standalone` and `loom decision` do not fetch it; call `vercelgateway.RegisterCatalog` to get it there. Language models are registered under the catalog namespace `vercel-ai-gateway` with context window, max output tokens, capabilities (the entry's `tags`), `is_reasoning`, and per-1M input/output/cache-read/cache-write rates. A failed fetch is logged; serving continues, and the background refresh fills the catalog in once the gateway answers. A failed refresh keeps the previous catalog.
 
 Prices in `/v1/models` are decimal strings; the docs describe them as cost per token and the sample values read as USD (*unverified unit*). Loom multiplies by 10⁶.
 
@@ -159,9 +167,9 @@ Cost per call, in order:
 
 1. The cost the gateway reports in the response (`providerMetadata.gateway.cost`, also read as `provider_metadata`). The docs show this field only through the AI SDK and say the data is "also returned in providerMetadata on the chat completion response"; whether raw REST responses carry it is *unverified*.
 2. A catalog estimate: the gateway catalog's rates (published cache rates win over vendor multipliers), else the Claude family card for Claude ids.
-3. Otherwise unpriced: `CostUSD = 0` and `llm.cost_unpriced = true`. Loom does not guess with another model's rate.
+3. Otherwise, on the Chat surface, unpriced: `CostUSD = 0` and `llm.cost_unpriced = true`; loom does not guess with another model's rate. A cost of 0 means "unknown", so cost ceilings (eval `max_cost_usd`, session totals) do not count unpriced calls. On the Messages surface, a Claude id the family table does not recognise is priced at the Sonnet 4 card ($3/$15 per 1M) without the unpriced flag, as on the `anthropic` provider.
 
-`max_tokens` and the context window resolve from the gateway catalog when it lists the model. If it does not (or the fetch failed), the output cap falls back to 4096 and the context window to 128K.
+Output cap: under `looms serve` the request carries `llm.max_tokens` (looms default 4096) or the agent's `max_tokens`. Only the provider factory path reads the catalog's `max_tokens` when none is configured (fallback 4096). Context window: loom's memory budgets against `llm.max_context_tokens` when set, else its built-in default (200K); the catalog's `context_window` is stored but no serve path reads it today. Set `max_context_tokens` for models with a smaller window.
 
 ## Errors, retries and rate limits
 
@@ -206,6 +214,8 @@ The endpoint is `llm.vercel_gateway_endpoint` (default global host) plus `/v1/em
 
 ## Environment variables
 
+The full entries are in [`ENV_VARS.md`](../../ENV_VARS.md#vercel-ai-gateway).
+
 | Variable | Used by | Meaning |
 |---|---|---|
 | `LOOM_LLM_VERCEL_GATEWAY_API_KEY` | all paths | API key (checked first) |
@@ -238,6 +248,9 @@ VERCEL_GATEWAY_LIVE_CAPTURE_DIR=/tmp/vgw-captures \
 ## Limitations and unverified behaviour
 
 Each item below follows the public docs but has not been observed live. The plan's §7 lists the questions for Vercel behind them.
+
+- Whether the gateway honours `providerOptions.gateway` in a raw REST body at all, with the camelCase keys loom sends, and whether an unknown key is ignored or rejected (question 19). If it is ignored, `only` and `zero_data_retention` have no effect and loom would not notice; the live suite's unsatisfiable-`only` test is the check.
+- Whether `gateway.fallback_used` is accurate: it is `true` when the response's `model` differs from the requested id (a bare id without the creator prefix counts as the same model). If the gateway echoes the upstream's dated id (`claude-sonnet-4-5-20250929`), every call would read as a fallback.
 
 - Where raw REST responses carry cost and routing metadata (questions 1–3). If they do not, cost falls back to the catalog estimate and routing attributes are absent.
 - Whether `/v1/models` prices are USD per token (question 5).

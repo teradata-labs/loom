@@ -1395,8 +1395,36 @@ type workflowInfo struct {
 	IsValid     bool
 }
 
-// createLLMProvider creates an LLM provider using config settings (same logic as serve command)
+// createLLMProvider creates an LLM provider using config settings (same logic
+// as serve command). It exits the process when no provider can be built, or
+// when the configured provider cannot be built and refuses a fallback.
 func createLLMProvider() (agent.LLMProvider, string) {
+	p, label, err := resolveLLMProvider()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\n❌ %v\n", err)
+		os.Exit(1)
+	}
+	if p != nil {
+		return p, label
+	}
+	printNoLLMProviderHelp()
+	os.Exit(1)
+	return nil, ""
+}
+
+// errNoFallbackProvider explains why a configured provider that failed to
+// build does not fall through to the environment providers.
+func errNoFallbackProvider(provider string, err error) error {
+	return fmt.Errorf("llm.provider %s is configured but its client cannot be built: %w\n"+
+		"   Not falling back to another provider: its configuration can carry routing or data-handling policy (for example zero data retention) that another provider would not honour. Fix the configuration and run again", provider, err)
+}
+
+// resolveLLMProvider picks the provider for looms workflow and looms eval:
+// the configured llm.provider, then ANTHROPIC_API_KEY, then the Bedrock
+// "bedrock" profile. It returns nil, "", nil when none is available, and an
+// error when the configured provider fails to build and customLLMFallbackAllowed
+// refuses a substitute (bedrock-mantle, vercel-ai-gateway).
+func resolveLLMProvider() (agent.LLMProvider, string, error) {
 	// First check config file (preferred method)
 	if config.LLM.Provider != "" {
 		switch config.LLM.Provider {
@@ -1408,7 +1436,7 @@ func createLLMProvider() (agent.LLMProvider, string) {
 					Temperature: config.LLM.Temperature,
 					MaxTokens:   config.LLM.MaxTokens,
 				})
-				return client, "Anthropic (config)"
+				return client, "Anthropic (config)", nil
 			}
 
 		case "bedrock":
@@ -1424,22 +1452,25 @@ func createLLMProvider() (agent.LLMProvider, string) {
 				Temperature:     config.LLM.Temperature,
 			})
 			if err == nil {
-				return client, "AWS Bedrock (config)"
+				return client, "AWS Bedrock (config)", nil
 			}
 
 		case bedrockmantle.ProviderName:
 			client, err := bedrockmantle.NewClientForModel(mantleConfigFrom(config.LLM))
-			if err == nil {
-				return client, "AWS Bedrock Mantle (config)"
+			if err != nil {
+				return nil, "", errNoFallbackProvider(config.LLM.Provider, err)
 			}
+			return client, "AWS Bedrock Mantle (config)", nil
 
-		case vercelgateway.ProviderName:
+		case vercelgateway.ProviderName, vercelgateway.ProviderAlias:
 			gc := vercelGatewayConfigFrom(config.LLM)
 			gc.RateLimiterConfig.Enabled = true
 			client, err := vercelgateway.NewClient(gc)
-			if err == nil {
-				return client, "Vercel AI Gateway (config)"
+			if err != nil {
+				return nil, "", errNoFallbackProvider(config.LLM.Provider, err)
 			}
+			ensureVercelGatewayCatalog(client.BaseURL(), zap.NewNop())
+			return client, "Vercel AI Gateway (config)", nil
 
 		case "ollama":
 			client := ollama.NewClient(ollama.Config{
@@ -1449,7 +1480,7 @@ func createLLMProvider() (agent.LLMProvider, string) {
 				Temperature: config.LLM.Temperature,
 				Timeout:     time.Duration(config.LLM.Timeout) * time.Second,
 			})
-			return client, "Ollama (config)"
+			return client, "Ollama (config)", nil
 
 		case "openai":
 			if config.LLM.OpenAIAPIKey != "" {
@@ -1460,7 +1491,7 @@ func createLLMProvider() (agent.LLMProvider, string) {
 					Temperature: config.LLM.Temperature,
 					Timeout:     time.Duration(config.LLM.Timeout) * time.Second,
 				})
-				return client, "OpenAI (config)"
+				return client, "OpenAI (config)", nil
 			}
 
 		case "azure-openai", "azureopenai":
@@ -1474,7 +1505,7 @@ func createLLMProvider() (agent.LLMProvider, string) {
 				Timeout:      time.Duration(config.LLM.Timeout) * time.Second,
 			})
 			if err == nil {
-				return client, "Azure OpenAI (config)"
+				return client, "Azure OpenAI (config)", nil
 			}
 
 		case "mistral":
@@ -1486,7 +1517,7 @@ func createLLMProvider() (agent.LLMProvider, string) {
 					Temperature: config.LLM.Temperature,
 					Timeout:     time.Duration(config.LLM.Timeout) * time.Second,
 				})
-				return client, "Mistral AI (config)"
+				return client, "Mistral AI (config)", nil
 			}
 
 		case "gemini":
@@ -1498,7 +1529,7 @@ func createLLMProvider() (agent.LLMProvider, string) {
 					Temperature: config.LLM.Temperature,
 					Timeout:     time.Duration(config.LLM.Timeout) * time.Second,
 				})
-				return client, "Google Gemini (config)"
+				return client, "Google Gemini (config)", nil
 			}
 
 		case "huggingface":
@@ -1510,7 +1541,7 @@ func createLLMProvider() (agent.LLMProvider, string) {
 					Temperature: config.LLM.Temperature,
 					Timeout:     time.Duration(config.LLM.Timeout) * time.Second,
 				})
-				return client, "HuggingFace (config)"
+				return client, "HuggingFace (config)", nil
 			}
 		}
 	}
@@ -1524,7 +1555,7 @@ func createLLMProvider() (agent.LLMProvider, string) {
 			Temperature: 1.0,
 			MaxTokens:   4096,
 		})
-		return client, "Anthropic (env)"
+		return client, "Anthropic (env)", nil
 	}
 
 	// Try Bedrock
@@ -1534,9 +1565,14 @@ func createLLMProvider() (agent.LLMProvider, string) {
 		ModelID: "anthropic.claude-sonnet-4-5-20250929-v1:0",
 	})
 	if err == nil {
-		return bedrockClient, "AWS Bedrock (env)"
+		return bedrockClient, "AWS Bedrock (env)", nil
 	}
 
+	return nil, "", nil
+}
+
+// printNoLLMProviderHelp explains how to configure a provider.
+func printNoLLMProviderHelp() {
 	fmt.Fprint(os.Stderr, `
 ❌ No LLM provider configured!
 
@@ -1565,8 +1601,6 @@ Supported providers:
 
 Then run again.
 `)
-	os.Exit(1)
-	return nil, ""
 }
 
 // extractAgentIDs extracts all agent IDs from a workflow pattern

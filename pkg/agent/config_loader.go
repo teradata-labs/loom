@@ -1541,7 +1541,37 @@ func expandEnvVars(s string) string {
 }
 
 // ValidateAgentConfig validates an agent configuration
+// validateGatewayRouting rejects a gateway_routing block that would be
+// ignored or is malformed. Only vercel-ai-gateway reads it, so a block on any
+// other provider, or on a role that names no provider (and so runs on
+// whatever the server's default is), would be accepted and silently dropped;
+// for a block that requires zero data retention that is a policy bypass.
+func validateGatewayRouting(role string, l *loomv1.LLMConfig) error {
+	if l == nil || l.GetGatewayRouting() == nil {
+		return nil
+	}
+	if !vercelgateway.IsProviderName(l.GetProvider()) {
+		return fmt.Errorf("%s.gateway_routing is honoured only by provider %s (got provider %q); set provider: %s or remove the block", role, vercelgateway.ProviderName, l.GetProvider(), vercelgateway.ProviderName)
+	}
+	if err := vercelgateway.RoutingFromProto(l.GetGatewayRouting()).Validate(); err != nil {
+		return fmt.Errorf("%s.gateway_routing: %w", role, err)
+	}
+	return nil
+}
+
 func ValidateAgentConfig(config *loomv1.AgentConfig) error {
+	for _, r := range []struct {
+		role string
+		cfg  *loomv1.LLMConfig
+	}{
+		{"llm", config.GetLlm()}, {"judge_llm", config.GetJudgeLlm()}, {"orchestrator_llm", config.GetOrchestratorLlm()},
+		{"classifier_llm", config.GetClassifierLlm()}, {"compressor_llm", config.GetCompressorLlm()},
+	} {
+		if err := validateGatewayRouting(r.role, r.cfg); err != nil {
+			return err
+		}
+	}
+
 	if config.Name == "" {
 		return fmt.Errorf("agent name is required")
 	}
@@ -1581,11 +1611,6 @@ func ValidateAgentConfig(config *loomv1.AgentConfig) error {
 		if vercelgateway.IsProviderName(provider) {
 			if err := vercelgateway.ValidateModelID(config.Llm.Model); err != nil {
 				return err
-			}
-		}
-		if r := vercelgateway.RoutingFromProto(config.Llm.GatewayRouting); r != nil {
-			if err := r.Validate(); err != nil {
-				return fmt.Errorf("llm.gateway_routing: %w", err)
 			}
 		}
 

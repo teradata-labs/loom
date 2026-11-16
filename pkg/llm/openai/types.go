@@ -13,6 +13,8 @@
 // limitations under the License.
 package openai
 
+import "encoding/json"
+
 // OpenAI API types for chat completions
 // Reference: https://platform.openai.com/docs/api-reference/chat
 
@@ -204,8 +206,9 @@ type OpenAIError struct {
 // ChatCompletionStreamChunk represents a chunk in a streaming response.
 type ChatCompletionStreamChunk struct {
 	// Error is set on a payload that reports a failure after the stream
-	// started (an upstream fault behind a gateway).
-	Error   *OpenAIError                 `json:"error,omitempty"`
+	// started (an upstream fault behind a gateway). Kept raw so a chunk whose
+	// "error" member is not an object still decodes; StreamError reads it.
+	Error   json.RawMessage              `json:"error,omitempty"`
 	ID      string                       `json:"id"`
 	Object  string                       `json:"object"` // "chat.completion.chunk"
 	Created int64                        `json:"created"`
@@ -252,4 +255,18 @@ type ToolCallDelta struct {
 type FunctionCallDelta struct {
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"` // Partial JSON string
+}
+
+// StreamError returns the chunk's error object, or nil when the chunk has no
+// "error" member, or one that is null or not an object (a string or a
+// boolean): only an object with a message or a type is treated as a failure.
+func (c *ChatCompletionStreamChunk) StreamError() *OpenAIError {
+	if len(c.Error) == 0 || c.Error[0] != '{' {
+		return nil
+	}
+	var e OpenAIError
+	if err := json.Unmarshal(c.Error, &e); err != nil || (e.Message == "" && e.Type == "") {
+		return nil
+	}
+	return &e
 }

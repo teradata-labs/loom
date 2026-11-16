@@ -76,6 +76,8 @@ type Registry struct {
 	watcher      *fsnotify.Watcher
 	mcpMgr       *manager.Manager
 	llmProvider  LLMProvider
+	// llmBuilder, when set, builds a per-agent provider (RegistryConfig.LLMProviderBuilder).
+	llmBuilder   func(*loomv1.LLMConfig) (LLMProvider, error)
 	tracer       observability.Tracer
 	sessionStore SessionStorage         // For persistent agent session traces
 	toolRegistry *toolregistry.Registry // Tool search registry for dynamic tool discovery
@@ -157,14 +159,21 @@ type AgentInstanceInfo struct {
 
 // RegistryConfig configures the agent registry
 type RegistryConfig struct {
-	ConfigDir    string
-	DBPath       string
-	MCPManager   *manager.Manager
-	LLMProvider  LLMProvider
-	Logger       *zap.Logger
-	Tracer       observability.Tracer
-	SessionStore SessionStorage         // For persistent agent session traces
-	ToolRegistry *toolregistry.Registry // Tool search registry for dynamic tool discovery
+	ConfigDir   string
+	DBPath      string
+	MCPManager  *manager.Manager
+	LLMProvider LLMProvider
+	// LLMProviderBuilder, when set, builds the provider for an agent whose
+	// llm block names a provider that is not a pool entry, instead of the
+	// registry's environment-only construction. looms serve sets it to the
+	// same builder its startup path uses, so an agent created or rebuilt at
+	// runtime gets the server's credentials, endpoints and gateway routing,
+	// not only what the environment holds.
+	LLMProviderBuilder func(*loomv1.LLMConfig) (LLMProvider, error)
+	Logger             *zap.Logger
+	Tracer             observability.Tracer
+	SessionStore       SessionStorage         // For persistent agent session traces
+	ToolRegistry       *toolregistry.Registry // Tool search registry for dynamic tool discovery
 
 	// EventLogStore, when set, is attached to every agent built from config
 	// (WithEventLog), so each records the durable execution log that
@@ -246,6 +255,7 @@ func NewRegistry(config RegistryConfig) (*Registry, error) {
 		watcher:           watcher,
 		mcpMgr:            config.MCPManager,
 		llmProvider:       config.LLMProvider,
+		llmBuilder:        config.LLMProviderBuilder,
 		tracer:            config.Tracer,
 		sessionStore:      config.SessionStore,
 		toolRegistry:      config.ToolRegistry,
@@ -1291,6 +1301,9 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 	// Create per-agent provider
 	if config.Provider == "" {
 		return nil, fmt.Errorf("no LLM provider specified in config")
+	}
+	if r.llmBuilder != nil {
+		return r.llmBuilder(config)
 	}
 
 	r.logger.Info("Creating per-agent LLM provider",

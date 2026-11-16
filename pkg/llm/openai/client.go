@@ -1367,10 +1367,10 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		// A gateway reports an upstream failure after the stream has started
 		// as an error payload; dropping it would turn the failure into an
 		// empty, apparently successful answer.
-		if chunk.Error != nil {
-			statusCode := llm.HTTPStatusForErrorType(chunk.Error.Type)
+		if se := chunk.StreamError(); se != nil {
+			statusCode := llm.HTTPStatusForErrorType(se.Type)
 			return nil, llm.WrapHTTPStatus(statusCode,
-				fmt.Errorf("API error mid-stream: %s (type: %s)", chunk.Error.Message, chunk.Error.Type))
+				fmt.Errorf("API error mid-stream: %s (type: %s)", se.Message, se.Type))
 		}
 		if c.inspector != nil {
 			streamFacts.Merge(c.inspect(httpResp.Header, []byte(jsonData)))

@@ -157,20 +157,6 @@ func TestNormalizeProviderNames(t *testing.T) {
 	assert.Equal(t, "anthropic", c.Providers[1].LLM.Provider)
 }
 
-func TestUsesVercelGateway(t *testing.T) {
-	_, ok := usesVercelGateway(&Config{LLM: LLMConfig{Provider: "anthropic"}})
-	assert.False(t, ok)
-	ep, ok := usesVercelGateway(&Config{LLM: LLMConfig{Provider: vercelgateway.ProviderName, VercelGatewayEndpoint: "https://eu.ai-gateway.vercel.sh"}})
-	assert.True(t, ok)
-	assert.Equal(t, "https://eu.ai-gateway.vercel.sh", ep)
-	ep, ok = usesVercelGateway(&Config{
-		LLM:       LLMConfig{Provider: "anthropic", VercelGatewayEndpoint: "https://us.ai-gateway.vercel.sh"},
-		Providers: []ProviderPoolEntry{{Name: "gw", LLM: LLMConfig{Provider: vercelgateway.ProviderName}}},
-	})
-	assert.True(t, ok, "a pool entry is enough")
-	assert.Equal(t, "https://us.ai-gateway.vercel.sh", ep, "a pool entry inherits the main endpoint")
-}
-
 func TestInheritCredentials_VercelGateway(t *testing.T) {
 	src := LLMConfig{VercelGatewayAPIKey: testGatewayKey, VercelGatewayEndpoint: "https://eu.ai-gateway.vercel.sh"}
 	got := inheritCredentials(LLMConfig{Provider: vercelgateway.ProviderName}, src)

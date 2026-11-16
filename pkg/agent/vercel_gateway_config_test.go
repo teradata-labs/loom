@@ -15,10 +15,12 @@
 package agent
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
@@ -126,4 +128,73 @@ func TestResolveContextLimits_GatewayFallback(t *testing.T) {
 	// not the 8K generic floor.
 	l := ResolveContextLimits(vercelgateway.ProviderName, "acme/unknown", 0, 0)
 	assert.Equal(t, 128000, l.MaxContextTokens)
+}
+
+// looms serve hands the registry a builder so agents created or rebuilt at
+// runtime get the server's credentials and gateway routing, not only the
+// environment. Pool entries and the default still win where they apply.
+func TestRegistry_LLMProviderBuilder(t *testing.T) {
+	tmpDir := t.TempDir()
+	var built []*loomv1.LLMConfig
+	builderLLM := &mockLLMProvider{}
+	r, err := NewRegistry(RegistryConfig{
+		ConfigDir:   tmpDir,
+		DBPath:      filepath.Join(tmpDir, "reg.db"),
+		LLMProvider: &mockLLMProvider{},
+		LLMProviderBuilder: func(c *loomv1.LLMConfig) (LLMProvider, error) {
+			built = append(built, c)
+			return builderLLM, nil
+		},
+		Logger: zap.NewNop(),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = r.Close() })
+
+	p, err := r.createLLMProvider(&loomv1.LLMConfig{Provider: vercelgateway.ProviderName, Model: "openai/gpt-5"})
+	require.NoError(t, err)
+	assert.Same(t, builderLLM, p)
+	require.Len(t, built, 1)
+	assert.Equal(t, "openai/gpt-5", built[0].Model)
+
+	pooled := &mockLLMProvider{}
+	r.SetProviderPool(map[string]LLMProvider{"fast": pooled})
+	p, err = r.createLLMProvider(&loomv1.LLMConfig{Provider: "fast"})
+	require.NoError(t, err)
+	assert.Same(t, pooled, p, "a pool entry wins over the builder")
+	assert.Len(t, built, 1)
+}
+
+func TestValidateAgentConfig_GatewayRoutingNeedsTheGateway(t *testing.T) {
+	routing := &loomv1.LLMGatewayRouting{ZeroDataRetention: true}
+	tests := []struct {
+		name    string
+		cfg     *loomv1.AgentConfig
+		wantErr string
+	}{
+		{name: "routing on another provider", cfg: &loomv1.AgentConfig{Name: "a",
+			Llm: &loomv1.LLMConfig{Provider: "anthropic", Model: "claude-sonnet-4-5", GatewayRouting: routing}},
+			wantErr: "llm.gateway_routing is honoured only by provider vercel-ai-gateway"},
+		{name: "routing with no provider", cfg: &loomv1.AgentConfig{Name: "a",
+			Llm: &loomv1.LLMConfig{GatewayRouting: routing}},
+			wantErr: "llm.gateway_routing is honoured only"},
+		{name: "routing on a role LLM of another provider", cfg: &loomv1.AgentConfig{Name: "a",
+			JudgeLlm: &loomv1.LLMConfig{Provider: "openai", GatewayRouting: routing}},
+			wantErr: "judge_llm.gateway_routing"},
+		{name: "bad routing on a gateway role", cfg: &loomv1.AgentConfig{Name: "a",
+			CompressorLlm: &loomv1.LLMConfig{Provider: "vercel", GatewayRouting: &loomv1.LLMGatewayRouting{Caching: "x"}}},
+			wantErr: "compressor_llm.gateway_routing"},
+		{name: "routing on the gateway", cfg: &loomv1.AgentConfig{Name: "a",
+			Llm: &loomv1.LLMConfig{Provider: "vercel", Model: "openai/gpt-5", GatewayRouting: routing}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateAgentConfig(tt.cfg)
+			if tt.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
 }

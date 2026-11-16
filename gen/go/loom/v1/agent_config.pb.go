@@ -740,18 +740,19 @@ type LLMConfig struct {
 	// default) is distinguishable from an explicit seed of 0, which some
 	// providers accept as a real seed value.
 	//
-	// Honored by: ollama, and only on the agent-registry construction path
-	// (pkg/agent/registry.go, which passes it into ollama.Config). Providers
-	// other than ollama ignore it. The looms serve path builds clients from
-	// factory.FactoryConfig, which does not carry a seed field, so a seed set in
-	// agent YAML has no effect there — wiring it through the factory is an open
-	// follow-up, not a shipped behavior.
+	// Honored by: ollama, for an agent whose own llm block selects it (agent
+	// registry, and agent YAML under looms serve). Providers other than ollama
+	// ignore it. The server's default LLM (looms.yaml llm:) and the provider
+	// factory carry no seed.
 	Seed *int64 `protobuf:"varint,11,opt,name=seed,proto3,oneof" json:"seed,omitempty"`
 	// Routing options for a multi-provider LLM gateway. Honored by the
 	// vercel-ai-gateway provider, which sends them as providerOptions.gateway in
 	// every request body. Other providers ignore it. Unset means the gateway's
 	// own default routing.
-	GatewayRouting *LLMGatewayRouting `protobuf:"bytes,12,opt,name=gateway_routing,json=gatewayRouting,proto3" json:"gateway_routing,omitempty"`
+	//
+	// Field 12 is left to max_model_context_tokens (PR #506), which claimed it
+	// first.
+	GatewayRouting *LLMGatewayRouting `protobuf:"bytes,13,opt,name=gateway_routing,json=gatewayRouting,proto3" json:"gateway_routing,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -2589,7 +2590,7 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"rate_limit\x18\n" +
 	" \x01(\v2\x1b.loom.v1.LLMRateLimitConfigR\trateLimit\x12\x17\n" +
 	"\x04seed\x18\v \x01(\x03H\x00R\x04seed\x88\x01\x01\x12C\n" +
-	"\x0fgateway_routing\x18\f \x01(\v2\x1a.loom.v1.LLMGatewayRoutingR\x0egatewayRoutingB\a\n" +
+	"\x0fgateway_routing\x18\r \x01(\v2\x1a.loom.v1.LLMGatewayRoutingR\x0egatewayRoutingB\a\n" +
 	"\x05_seed\"\xc4\x01\n" +
 	"\x11LLMGatewayRouting\x12\x14\n" +
 	"\x05order\x18\x01 \x03(\tR\x05order\x12\x12\n" +

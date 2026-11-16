@@ -838,11 +838,11 @@
         "seed": {
           "type": "string",
           "format": "int64",
-          "description": "Sampling seed for reproducible generations.\nExplicitly optional so that \"not set\" (sampling stays random, provider\ndefault) is distinguishable from an explicit seed of 0, which some\nproviders accept as a real seed value.\n\nHonored by: ollama, and only on the agent-registry construction path\n(pkg/agent/registry.go, which passes it into ollama.Config). Providers\nother than ollama ignore it. The looms serve path builds clients from\nfactory.FactoryConfig, which does not carry a seed field, so a seed set in\nagent YAML has no effect there — wiring it through the factory is an open\nfollow-up, not a shipped behavior."
+          "description": "Sampling seed for reproducible generations.\nExplicitly optional so that \"not set\" (sampling stays random, provider\ndefault) is distinguishable from an explicit seed of 0, which some\nproviders accept as a real seed value.\n\nHonored by: ollama, for an agent whose own llm block selects it (agent\nregistry, and agent YAML under looms serve). Providers other than ollama\nignore it. The server's default LLM (looms.yaml llm:) and the provider\nfactory carry no seed."
         },
         "gatewayRouting": {
           "$ref": "#/definitions/v1LLMGatewayRouting",
-          "description": "Routing options for a multi-provider LLM gateway. Honored by the\nvercel-ai-gateway provider, which sends them as providerOptions.gateway in\nevery request body. Other providers ignore it. Unset means the gateway's\nown default routing."
+          "description": "Routing options for a multi-provider LLM gateway. Honored by the\nvercel-ai-gateway provider, which sends them as providerOptions.gateway in\nevery request body. Other providers ignore it. Unset means the gateway's\nown default routing.\n\nField 12 is left to max_model_context_tokens (PR #506), which claimed it\nfirst."
         }
       },
       "title": "LLMConfig configures the language model provider and parameters"

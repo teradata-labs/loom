@@ -577,6 +577,9 @@ func (f *ProviderFactory) createVercelGatewayProvider(model string) (interface{}
 	cfg.APIKey = vercelgateway.ResolveAPIKey(cfg.APIKey)
 	cfg.MaxTokens = f.resolveMaxOutput(vercelgateway.ProviderName, cfg.Model)
 	cfg.Temperature = f.config.Temperature
+	if cfg.ThinkingLevel == "" {
+		cfg.ThinkingLevel = f.config.ThinkingLevel
+	}
 	if f.config.Timeout > 0 {
 		cfg.Timeout = time.Duration(f.config.Timeout) * time.Second
 	}

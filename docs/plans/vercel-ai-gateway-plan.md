@@ -6,7 +6,8 @@
 - Phase 0 was moved after the code, by decision: the account is used at test time. Every behaviour the spike was to settle is implemented against the public docs, marked *unverified* in the reference doc, and exercised by `pkg/llm/vercelgateway/live_test.go` (with a redacted request/response capture mode for the spike write-up).
 - §3.5 deviation: the catalog source is a snapshot refreshed hourly in the background (`vercelgateway.RegisterCatalog`), not `catalog.NewCachedSource`, which caches per-key lookups and would put network I/O on the request path.
 - §3.4: `NewClient` on the inner clients returns no error, so a colliding `ExtraBody` fails every call (before any request is sent); `openai.ValidateExtraBody` / `anthropic.ValidateExtraBody` let `vercelgateway.NewClient` fail at construction.
-- Phase 1 docs: there is no `ENV_VARS.md` in the repo; the variables are listed in the reference doc.
+- Phase 1 docs: the variables are in the root `ENV_VARS.md` (a first draft of this note said the file did not exist; the pre-PR review found it at the repo root).
+- Proto: `gateway_routing` is `LLMConfig` field 13, not 12 as §3.3 says; PR #506 claimed 12 first.
 - Found and fixed on the way: dotted Claude ids mispriced (Opus 5.5 as Opus 5); anthropic and openai stream parsers ignored mid-stream error events; main-LLM `rate_limit` dropped on agent YAML round trip.
 **Written**: 2026-11-13, against `main` @ `ab46f76f`.
 **Scope**: a new `vercel-ai-gateway` LLM provider for agents and `looms serve`. The decision layer's existing use of the gateway for Jev (`pkg/decision/jev`) is unchanged.
@@ -157,7 +158,7 @@ Pending (needs the account; `live_test.go` + `VERCEL_GATEWAY_LIVE_CAPTURE_DIR`):
 - [x] Wire into the five switches and two validation lists in §2 gap 6, viper defaults, keyring entry, `--llm-provider` help, sample YAML, `cmd/loom/decision.go` provider list (also `looms workflow`, `looms config init`, `loom-standalone`, metaagent lists, `pkg/builder`)
 - [x] Tests: table-driven routing by model id; `httptest` Chat/ChatStream/tools on both surfaces; 402/429/5xx classification; `-race`; fuzz for model-id parsing and endpoint normalisation
 - [x] Live test behind an env gate, like `bedrockmantle/live_test.go` (written; not yet run)
-- [x] Docs: `docs/reference/llm-vercel-ai-gateway.md`, `llm-providers.md` (no `ENV_VARS.md` exists; variables are in the reference doc)
+- [x] Docs: `docs/reference/llm-vercel-ai-gateway.md`, `llm-providers.md`, `ENV_VARS.md`
 
 ### Phase 2 — Routing options
 
@@ -172,7 +173,7 @@ Pending (needs the account; `live_test.go` + `VERCEL_GATEWAY_LIVE_CAPTURE_DIR`):
 - [x] `vercelgateway.CatalogSource` + registration at serve startup (snapshot + background refresh); fuzz the `/v1/models` decoder
 - [x] Cost extractor hook on both inner clients (`llm.ResponseInspector`); gateway-reported cost preferred, catalog estimate as fallback, unpriced reported as unpriced
 - [x] `ModelInfo` cache-rate fields (added without waiting for the spike: both clients now prefer published cache rates)
-- [x] `max_tokens` and context window resolve from the gateway catalog (`resolveMaxOutput`, `ResolveContextLimits`)
+- [x] `max_tokens` resolves from the gateway catalog on the factory path (`resolveMaxOutput`). The context window does not: no serve path reads catalog context windows today (`ResolveContextLimits` has no production caller); see the reference doc.
 - [ ] Tiered (`input_tiers`/`output_tiers`) prices: not stored; base rate only
 
 ### Phase 4 — Reasoning on the Chat surface

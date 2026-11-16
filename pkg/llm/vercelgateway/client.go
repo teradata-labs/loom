@@ -45,6 +45,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -216,6 +217,10 @@ func NewClient(cfg Config) (*Client, error) {
 
 	apiKey := strings.TrimSpace(cfg.APIKey)
 	wrap := cfg.WrapTransport
+	pinned, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("vercel-ai-gateway: parse endpoint: %w", err)
+	}
 	var auth func(*http.Request) error
 	switch {
 	case apiKey != "":
@@ -238,6 +243,18 @@ func NewClient(cfg Config) (*Client, error) {
 		}
 	default:
 		return nil, fmt.Errorf("vercel-ai-gateway: no credential: set an API key (keyring vercel_gateway_api_key, %s or %s) or enable OIDC", EnvLoomAPIKey, EnvAPIKey)
+	}
+
+	// Every request, on every surface and the health check, must go to the
+	// configured gateway host. A redirect elsewhere is refused before it is
+	// sent: Go strips Authorization on a cross-host redirect but keeps
+	// x-api-key, and the OIDC transport would re-add the bearer token.
+	authWrap := wrap
+	wrap = func(base http.RoundTripper) http.RoundTripper {
+		if authWrap != nil {
+			base = authWrap(base)
+		}
+		return &hostPinTransport{scheme: pinned.Scheme, host: pinned.Host, base: base}
 	}
 
 	extra := cfg.Routing.ExtraBody()
@@ -298,6 +315,7 @@ func NewClient(cfg Config) (*Client, error) {
 	if cfg.WrapTransport != nil {
 		healthTransport = cfg.WrapTransport(healthTransport)
 	}
+	healthTransport = &hostPinTransport{scheme: pinned.Scheme, host: pinned.Host, base: healthTransport}
 	c.health = &http.Client{Timeout: cfg.Timeout, Transport: healthTransport}
 	return c, nil
 }
@@ -403,6 +421,29 @@ func (c *Client) Credits(ctx context.Context) (*Credits, error) {
 		return nil, fmt.Errorf("vercel-ai-gateway: decode credits: %w", err)
 	}
 	return &credits, nil
+}
+
+// hostPinTransport refuses any request that is not to the configured gateway
+// scheme and host (a redirect to another host, or a downgrade to http), so a
+// credential never leaves for a host the operator did not configure.
+type hostPinTransport struct {
+	scheme, host string
+	base         http.RoundTripper
+}
+
+// RoundTrip enforces the pin, then delegates.
+func (t *hostPinTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if !strings.EqualFold(r.URL.Scheme, t.scheme) || !strings.EqualFold(r.URL.Host, t.host) {
+		if r.Body != nil {
+			_ = r.Body.Close()
+		}
+		return nil, fmt.Errorf("vercel-ai-gateway: refusing request to %s://%s: not the configured gateway host %s://%s (a redirect?)", r.URL.Scheme, r.URL.Host, t.scheme, t.host)
+	}
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return base.RoundTrip(r)
 }
 
 // Ensure Client implements the provider interfaces.

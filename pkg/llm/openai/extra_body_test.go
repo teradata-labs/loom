@@ -245,3 +245,21 @@ func TestReportUnpriced(t *testing.T) {
 		})
 	}
 }
+
+// A chunk whose "error" member is not an object (a string, null) is not a
+// failure and its content is kept.
+func TestStream_NonObjectErrorMemberIsNotAFailure(t *testing.T) {
+	stream := `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","error":null,"choices":[{"index":0,"delta":{"content":"a"},"finish_reason":null}]}` + "\n\n" +
+		`data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","error":"","choices":[{"index":0,"delta":{"content":"b"},"finish_reason":null}]}` + "\n\n" +
+		`data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","error":{},"choices":[{"index":0,"delta":{"content":"c"},"finish_reason":"stop"}]}` + "\n\n" +
+		"data: [DONE]\n\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, stream)
+	}))
+	defer srv.Close()
+	c := NewClient(Config{APIKey: "k", Model: "m", Endpoint: srv.URL})
+	resp, err := c.ChatStream(context.Background(), []types.Message{{Role: "user", Content: "hi"}}, nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "abc", resp.Content)
+}

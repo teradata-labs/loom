@@ -158,19 +158,20 @@ message LLMConfig {
   // default) is distinguishable from an explicit seed of 0, which some
   // providers accept as a real seed value.
   //
-  // Honored by: ollama, and only on the agent-registry construction path
-  // (pkg/agent/registry.go, which passes it into ollama.Config). Providers
-  // other than ollama ignore it. The looms serve path builds clients from
-  // factory.FactoryConfig, which does not carry a seed field, so a seed set in
-  // agent YAML has no effect there — wiring it through the factory is an open
-  // follow-up, not a shipped behavior.
+  // Honored by: ollama, for an agent whose own llm block selects it (agent
+  // registry, and agent YAML under looms serve). Providers other than ollama
+  // ignore it. The server's default LLM (looms.yaml llm:) and the provider
+  // factory carry no seed.
   optional int64 seed = 11;
 
   // Routing options for a multi-provider LLM gateway. Honored by the
   // vercel-ai-gateway provider, which sends them as providerOptions.gateway in
   // every request body. Other providers ignore it. Unset means the gateway's
   // own default routing.
-  LLMGatewayRouting gateway_routing = 12;
+  //
+  // Field 12 is left to max_model_context_tokens (PR #506), which claimed it
+  // first.
+  LLMGatewayRouting gateway_routing = 13;
 }
 
 // LLMGatewayRouting selects and orders the upstream providers a multi-provider
