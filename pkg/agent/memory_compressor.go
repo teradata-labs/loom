@@ -26,6 +26,56 @@ import (
 // scope, open commitments, and reference/reload pointers.
 const compactionPromptKey = "memory.compaction"
 
+// Registry keys of the lines the fold puts in front of the compressor input.
+// The shipped text is in prompts/memory/compaction.yaml; foldPromptFallbacks
+// holds the same text (pinned by TestFoldPromptsShippedYAMLMatchesFallback).
+const (
+	foldPromptSummaryHeading = "memory.compaction_summary_heading"
+	foldPromptFocusPreface   = "memory.compaction_focus_preface"
+)
+
+// foldPromptFallbacks is the built-in text of the fold framing prompts.
+var foldPromptFallbacks = map[string]string{
+	foldPromptSummaryHeading: "Current summary:",
+	foldPromptFocusPreface:   "The user asked this compaction to preserve, in priority order:",
+}
+
+// foldPrompter is a compressor that sources the fold framing text from a
+// prompt registry.
+type foldPrompter interface {
+	foldPrompt(ctx context.Context, key string) string
+}
+
+// foldPromptText returns the fold framing text for key from compressor when it
+// has a registry entry, else the built-in fallback.
+func foldPromptText(ctx context.Context, compressor MemoryCompressor, key string) string {
+	if p, ok := compressor.(foldPrompter); ok {
+		return p.foldPrompt(ctx, key)
+	}
+	return foldPromptFallbacks[key]
+}
+
+// foldPrompt delegates to the LLM caller when it reads a prompt registry.
+func (c *LLMCompressor) foldPrompt(ctx context.Context, key string) string {
+	if p, ok := c.llmCaller.(foldPrompter); ok {
+		return p.foldPrompt(ctx, key)
+	}
+	return foldPromptFallbacks[key]
+}
+
+// foldPrompt returns the registry text for key, or the built-in fallback when
+// the key is missing, empty or holds an unrendered placeholder.
+func (c *promptRegistryCompressor) foldPrompt(ctx context.Context, key string) string {
+	if c.prompts != nil {
+		if text, err := c.prompts.Get(ctx, key, nil); err == nil {
+			if text = strings.TrimSpace(text); text != "" && !strings.Contains(text, "{{") {
+				return text
+			}
+		}
+	}
+	return foldPromptFallbacks[key]
+}
+
 // LLMCompressor is a concrete implementation of MemoryCompressor that uses
 // an LLM to create intelligent summaries of conversation history.
 //
