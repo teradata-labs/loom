@@ -246,8 +246,9 @@ func (e *ForkJoinExecutor) executeAgentWithSpan(ctx context.Context, workflowID 
 		agentSpan.SetAttribute("branch.number", fmt.Sprintf("%d", branchNum))
 	}
 
-	// Execute agent conversation with session ID for database persistence
-	response, err := ag.Chat(ctx, sessionID, prompt)
+	// Execute agent conversation with session ID for database persistence.
+	// A progress callback in the context gets this branch's events.
+	response, err := chatWithAgentProgress(ctx, ag, agentID, sessionID, prompt)
 	if err != nil {
 		return nil, "", fmt.Errorf("agent chat failed: %w", err)
 	}

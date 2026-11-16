@@ -278,6 +278,8 @@ type Orchestrator struct {
 }
 ```
 
+**Agent progress events.** `progressCallback` reports workflow-level events (a stage started or ended). For the events of each agent turn (tool calls, streamed text), put an `agent.ProgressCallback` in the context with `agent.ContextWithProgressCallback` before `ExecutePattern`. The pipeline, parallel and fork-join executors then run each agent with `ChatWithProgress` (`chatWithAgentProgress`, `pkg/orchestration/agent_progress.go`), and every event carries `ProgressEvent.AgentID`, the agent that emitted it. An event that already names an agent keeps its `AgentID`. The parallel and fork-join executors call the callback from one goroutine per agent, so it must be safe for concurrent use. Without a callback in the context, each agent runs with plain `Chat`.
+
 **Agent Registration**:
 ```go
 // Two-level registry:

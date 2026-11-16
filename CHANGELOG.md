@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Workflow agent progress from every executor
+- **The parallel and fork-join executors now report each agent's progress**, as the pipeline executor already did. When the context carries an `agent.ProgressCallback` (`agent.ContextWithProgressCallback`), each agent runs with `ChatWithProgress`, so its tool calls and streamed text reach the caller. Before, these two executors called plain `Chat`, and a caller saw no live events for their agents. Without a callback, nothing changes.
+- **`ProgressEvent.AgentID`** (new field, `pkg/types`) names the workflow agent that emitted the event. All three executors set it, so a caller can tell apart agents that run at the same time. An event that already names an agent keeps it. The callback is called from one goroutine per agent in a parallel or fork-join step, so it must be safe for concurrent use.
+
 #### Context compaction and a pre-flight context guard (opt-in)
 - **Request-size log.** Every provider call logs one `llm request: part sizes` line with byte-derived token figures per part (system prompt, summary, tool schemas, history, tool calls, tool results, stubs, skill bodies, reminders, thinking) and the provider-reported prompt size. Sizes only, never content. This is the only change agents see without opting in.
 - **`CompactSession` RPC (`POST /v1/sessions/{session_id}:compact`), `loom sessions compact` and `Agent.CompactSession`.** Between turns, older tool results become re-fetchable stubs and turns older than `keep_turns` (default 2) fold into the running summary, with an optional `focus` (at most 2000 bytes). It never folds without a real summary: `UNAVAILABLE` when no summary could be produced or the result could not be saved (history unchanged), `ABORTED` while a turn or another compaction runs, `FAILED_PRECONDITION` while a human decision is pending. Runs under an `agent.compact_session` span.
