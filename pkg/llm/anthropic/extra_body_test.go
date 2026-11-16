@@ -193,3 +193,26 @@ func TestStream_InputTokensFromMessageDelta(t *testing.T) {
 	assert.Equal(t, 7, resp.Usage.CacheReadInputTokens)
 	assert.Equal(t, 3, resp.Usage.CacheCreationInputTokens)
 }
+
+// The top-level message_delta usage alone (no provider_metadata) carries the
+// input and cache counts.
+func TestStream_InputTokensFromMessageDeltaUsageOnly(t *testing.T) {
+	stream := "event: message_start\n" +
+		`data: {"type":"message_start","message":{"id":"gen_1","type":"message","role":"assistant","model":"m","content":[],"usage":{"input_tokens":0,"output_tokens":0}}}` + "\n\n" +
+		"event: content_block_start\n" + `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n\n" +
+		"event: content_block_delta\n" + `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}` + "\n\n" +
+		"event: content_block_stop\n" + `data: {"type":"content_block_stop","index":0}` + "\n\n" +
+		"event: message_delta\n" +
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":3,"output_tokens":5,"cache_read_input_tokens":6008}}` + "\n\n" +
+		"event: message_stop\n" + `data: {"type":"message_stop"}` + "\n\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, stream)
+	}))
+	defer srv.Close()
+	c := NewClient(Config{APIKey: "k", Model: "m", Endpoint: srv.URL})
+	resp, err := c.ChatStream(context.Background(), []types.Message{{Role: "user", Content: "hi"}}, nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 3, resp.Usage.InputTokens)
+	assert.Equal(t, 6008, resp.Usage.CacheReadInputTokens)
+}

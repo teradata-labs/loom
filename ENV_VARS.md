@@ -480,6 +480,11 @@ looms config set-key gemini_api_key
 
 ### HuggingFace
 
+#### HUGGINGFACE_API_KEY
+**Used in:** `pkg/agent/registry.go`, `cmd/looms/cmd_serve.go`
+
+HuggingFace API token, checked before `HUGGINGFACE_TOKEN`.
+
 #### HUGGINGFACE_TOKEN
 **Required for:** HuggingFace provider
 **Used in:** `pkg/llm/factory/factory.go`, `pkg/agent/registry.go`

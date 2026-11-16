@@ -221,7 +221,19 @@ func TestLive_RoutingOptions(t *testing.T) {
 			t.Logf("unsatisfiable only: %v", err)
 			assert.True(t, llm.IsDeterministicClientError(err), "a failed only filter is terminal")
 		})
-		t.Run(model+"/sort-and-zdr", func(t *testing.T) {
+		t.Run(model+"/zero-data-retention", func(t *testing.T) {
+			cfg := liveConfig(t, model)
+			cfg.Routing = &Routing{ZeroDataRetention: true}
+			c, err := NewClient(cfg)
+			require.NoError(t, err)
+			resp, err := c.Chat(context.Background(), say("Reply OK."), nil)
+			if err != nil {
+				t.Logf("zeroDataRetention: true rejected: %v", err)
+			}
+			require.NoError(t, err, "the gateway must accept zeroDataRetention: true")
+			logFacts(t, resp)
+		})
+		t.Run(model+"/sort-and-caching", func(t *testing.T) {
 			cfg := liveConfig(t, model)
 			cfg.Routing = &Routing{Sort: SortTTFT, Caching: CachingAuto}
 			c, err := NewClient(cfg)
@@ -231,6 +243,31 @@ func TestLive_RoutingOptions(t *testing.T) {
 			logFacts(t, resp)
 		})
 	}
+}
+
+// A cached Messages stream must not count cached tokens as input too: the
+// prompt (input + cache read + cache write) is the same size on both calls.
+func TestLive_CachedStreamTokenAccounting(t *testing.T) {
+	cfg := liveConfig(t, liveClaude())
+	// The gateway places the cache breakpoint itself.
+	cfg.Routing = &Routing{Caching: CachingAuto}
+	c, err := NewClient(cfg)
+	require.NoError(t, err)
+	// Long enough to clear Haiku's minimum cacheable prefix.
+	sys := strings.Repeat("Reference text for the cache test. Each sentence adds tokens to the prefix. ", 400)
+	msgs := []types.Message{{Role: "system", Content: sys}, {Role: "user", Content: "Reply OK.", Turn: 1}}
+	var total [2]int
+	for i := 0; i < 2; i++ {
+		resp, err := c.ChatStream(context.Background(), msgs, nil, nil)
+		require.NoError(t, err)
+		logFacts(t, resp)
+		u := resp.Usage
+		total[i] = u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
+		if i == 1 {
+			t.Logf("call 2: cache_read=%d (0 means the upstream did not cache)", u.CacheReadInputTokens)
+		}
+	}
+	assert.InDelta(t, total[0], total[1], float64(total[0])*0.05, "prompt size must not change between identical calls (no double count)")
 }
 
 func TestLive_UnknownModel(t *testing.T) {

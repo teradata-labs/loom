@@ -47,6 +47,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/types"
 	"github.com/teradata-labs/loom/pkg/visualization"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"google.golang.org/protobuf/proto"
 	"gopkg.in/yaml.v3"
 )
@@ -1013,7 +1014,7 @@ func (rt *workflowRuntime) startOrchestrator(pattern *loomv1.WorkflowPattern, pr
 	logger, tracer := rt.logger, rt.tracer
 
 	// Initialize LLM provider
-	llmProvider, providerName := createLLMProvider()
+	llmProvider, providerName := createLLMProvider(logger)
 	fmt.Printf("\n🤖 LLM Provider: %s\n", providerName)
 	fmt.Printf("   Model: %s\n\n", llmProvider.Model())
 
@@ -1398,8 +1399,16 @@ type workflowInfo struct {
 // createLLMProvider creates an LLM provider using config settings (same logic
 // as serve command). It exits the process when no provider can be built, or
 // when the configured provider cannot be built and refuses a fallback.
-func createLLMProvider() (agent.LLMProvider, string) {
-	p, label, err := resolveLLMProvider()
+//
+// logger receives warnings from the provider build (a failed gateway catalog
+// fetch). The looms workflow and eval commands never replace the global zap
+// logger, so zap.L() would discard them; nil selects a warn-level logger on
+// stderr.
+func createLLMProvider(logger *zap.Logger) (agent.LLMProvider, string) {
+	if logger == nil {
+		logger = stderrWarnLogger()
+	}
+	p, label, err := resolveLLMProvider(logger)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\n❌ %v\n", err)
 		os.Exit(1)
@@ -1410,6 +1419,13 @@ func createLLMProvider() (agent.LLMProvider, string) {
 	printNoLLMProviderHelp()
 	os.Exit(1)
 	return nil, ""
+}
+
+// stderrWarnLogger is a warn-level console logger on stderr for CLI paths
+// that have no logger of their own.
+func stderrWarnLogger() *zap.Logger {
+	cfg := zap.NewDevelopmentEncoderConfig()
+	return zap.New(zapcore.NewCore(zapcore.NewConsoleEncoder(cfg), zapcore.Lock(os.Stderr), zap.WarnLevel))
 }
 
 // errNoFallbackProvider explains why a configured provider that failed to
@@ -1424,7 +1440,7 @@ func errNoFallbackProvider(provider string, err error) error {
 // "bedrock" profile. It returns nil, "", nil when none is available, and an
 // error when the configured provider fails to build and customLLMFallbackAllowed
 // refuses a substitute (bedrock-mantle, vercel-ai-gateway).
-func resolveLLMProvider() (agent.LLMProvider, string, error) {
+func resolveLLMProvider(logger *zap.Logger) (agent.LLMProvider, string, error) {
 	// First check config file (preferred method)
 	if config.LLM.Provider != "" {
 		switch config.LLM.Provider {
@@ -1469,7 +1485,7 @@ func resolveLLMProvider() (agent.LLMProvider, string, error) {
 			if err != nil {
 				return nil, "", errNoFallbackProvider(config.LLM.Provider, err)
 			}
-			ensureVercelGatewayCatalog(client.BaseURL(), zap.L())
+			ensureVercelGatewayCatalog(client.BaseURL(), logger)
 			return client, "Vercel AI Gateway (config)", nil
 
 		case "ollama":

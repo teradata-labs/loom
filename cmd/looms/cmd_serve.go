@@ -1012,6 +1012,9 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		if apiKey == "" {
 			apiKey = os.Getenv("ANTHROPIC_API_KEY")
 		}
+		if apiKey == "" {
+			return nil, errMissingLLMKey("anthropic", "llm.anthropic_api_key", "ANTHROPIC_API_KEY")
+		}
 		return anthropic.NewClient(anthropic.Config{
 			APIKey:            apiKey,
 			Model:             model,
@@ -1099,6 +1102,9 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		if apiKey == "" {
 			apiKey = os.Getenv("OPENAI_API_KEY")
 		}
+		if apiKey == "" {
+			return nil, errMissingLLMKey("openai", "llm.openai_api_key", "OPENAI_API_KEY")
+		}
 		return openai.NewClient(openai.Config{
 			APIKey:            apiKey,
 			Model:             model,
@@ -1151,8 +1157,12 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		if model == "" {
 			model = serverConfig.LLM.MistralModel
 		}
+		mistralKey := configOrEnv(serverConfig.LLM.MistralAPIKey, "MISTRAL_API_KEY")
+		if mistralKey == "" {
+			return nil, errMissingLLMKey("mistral", "llm.mistral_api_key", "MISTRAL_API_KEY")
+		}
 		return mistral.NewClient(mistral.Config{
-			APIKey:            configOrEnv(serverConfig.LLM.MistralAPIKey, "MISTRAL_API_KEY"),
+			APIKey:            mistralKey,
 			Model:             model,
 			MaxTokens:         maxTokens,
 			Temperature:       temperature,
@@ -1165,8 +1175,12 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		if model == "" {
 			model = serverConfig.LLM.GeminiModel
 		}
+		geminiKey := configOrEnv(serverConfig.LLM.GeminiAPIKey, "GEMINI_API_KEY")
+		if geminiKey == "" {
+			return nil, errMissingLLMKey("gemini", "llm.gemini_api_key", "GEMINI_API_KEY")
+		}
 		return gemini.NewClient(gemini.Config{
-			APIKey:            configOrEnv(serverConfig.LLM.GeminiAPIKey, "GEMINI_API_KEY"),
+			APIKey:            geminiKey,
 			Model:             model,
 			MaxTokens:         maxTokens,
 			Temperature:       temperature,
@@ -1179,8 +1193,12 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		if model == "" {
 			model = serverConfig.LLM.HuggingFaceModel
 		}
+		hfToken := configOrEnv(serverConfig.LLM.HuggingFaceToken, "HUGGINGFACE_API_KEY", "HUGGINGFACE_TOKEN")
+		if hfToken == "" {
+			return nil, errMissingLLMKey("huggingface", "llm.huggingface_token", "HUGGINGFACE_API_KEY")
+		}
 		return huggingface.NewClient(huggingface.Config{
-			Token:             configOrEnv(serverConfig.LLM.HuggingFaceToken, "HUGGINGFACE_API_KEY", "HUGGINGFACE_TOKEN"),
+			Token:             hfToken,
 			Model:             model,
 			MaxTokens:         maxTokens,
 			Temperature:       temperature,
@@ -1249,6 +1267,14 @@ func runtimeAgentLLMConfig(config *Config) *Config {
 		cp.LLM.BedrockProfile = v
 	}
 	return &cp
+}
+
+// errMissingLLMKey is the build error for a provider with no credential, so a
+// keyless client is never handed out: it would only fail with a 401 on its
+// first call. A role LLM then falls back to the agent's main LLM (for
+// providers that allow it), as on the registry's own construction path.
+func errMissingLLMKey(provider, configKey, env string) error {
+	return fmt.Errorf("%s API key not configured (set %s or %s)", provider, configKey, env)
 }
 
 // configOrEnv returns explicit (with ${VAR} placeholders expanded) when set,

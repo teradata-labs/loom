@@ -99,7 +99,7 @@ func TestResolveLLMProvider_NoFallbackForGatewayAndMantle(t *testing.T) {
 			t.Setenv("BEDROCK_MANTLE_REGION", "")
 			t.Setenv("AWS_REGION", "")
 			config = &Config{LLM: llm}
-			p, label, err := resolveLLMProvider()
+			p, label, err := resolveLLMProvider(zap.NewNop())
 			require.Error(t, err)
 			assert.Nil(t, p)
 			assert.Empty(t, label)
@@ -110,7 +110,7 @@ func TestResolveLLMProvider_NoFallbackForGatewayAndMantle(t *testing.T) {
 	t.Run("a buildable gateway is used", func(t *testing.T) {
 		config = &Config{LLM: LLMConfig{Provider: vercelgateway.ProviderName, VercelGatewayModel: "openai/gpt-5",
 			VercelGatewayAPIKey: testGatewayKey, VercelGatewayEndpoint: "http://127.0.0.1:1"}}
-		p, label, err := resolveLLMProvider()
+		p, label, err := resolveLLMProvider(zap.NewNop())
 		require.NoError(t, err)
 		assert.Equal(t, "Vercel AI Gateway (config)", label)
 		assert.IsType(t, &vercelgateway.Client{}, p)
@@ -277,4 +277,21 @@ func TestRuntimeAgentLLMConfig_EnvFirst(t *testing.T) {
 func TestInheritCredentials_OIDCEntryDoesNotTakeMainKey(t *testing.T) {
 	got := inheritCredentials(LLMConfig{VercelGatewayOIDC: true}, LLMConfig{VercelGatewayAPIKey: testGatewayKey})
 	assert.Empty(t, got.VercelGatewayAPIKey, "a key would win over the entry's OIDC token")
+}
+
+// A provider with no credential is a build error, never a keyless client
+// that fails on its first call: runtime-created agents then fail to create,
+// and a role LLM falls back to the main LLM, as on the registry's own path.
+func TestCreateLLMProviderFromProtoConfig_MissingKeyIsAnError(t *testing.T) {
+	for _, env := range []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "MISTRAL_API_KEY", "GEMINI_API_KEY", "HUGGINGFACE_API_KEY", "HUGGINGFACE_TOKEN"} {
+		t.Setenv(env, "")
+	}
+	for _, p := range []string{"anthropic", "openai", "mistral", "gemini", "huggingface"} {
+		_, err := createLLMProviderFromProtoConfig(&loomv1.LLMConfig{Provider: p, Model: "m"}, &Config{}, zap.NewNop())
+		require.Error(t, err, p)
+		assert.Contains(t, err.Error(), "API key not configured", p)
+	}
+	t.Setenv("GEMINI_API_KEY", "test-not-a-real-key")
+	_, err := createLLMProviderFromProtoConfig(&loomv1.LLMConfig{Provider: "gemini", Model: "m"}, &Config{}, zap.NewNop())
+	require.NoError(t, err, "an env-only key is enough")
 }

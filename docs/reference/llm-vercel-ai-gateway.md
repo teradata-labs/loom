@@ -146,7 +146,7 @@ The only beta header loom sends to Anthropic is the obsolete prompt-caching one;
 | `only` | `only` | provider slugs; no match is a terminal error |
 | `sort` | `sort` | `cost`, `ttft`, `tps` |
 | `fallback_models` | `models` | creator/model ids |
-| `zero_data_retention` | `zeroDataRetention` | `true` (accepted live; policy effect *unverified*) |
+| `zero_data_retention` | `zeroDataRetention` | `true` (accepted live on both surfaces, 2026-11-16; whether the policy was applied is not observable from the response) |
 | `caching` | `caching` | `auto` |
 
 Slugs are checked for shape only (letters, digits, `.`, `_`, `-`; no duplicates). Live slugs include camelCase ones (`vertexAnthropic`, `claudeaws`). The gateway publishes no canonical slug list a client can validate against. Unset fields are omitted; with no routing at all the request body carries no `providerOptions`.
@@ -256,7 +256,7 @@ Still unverified (the plan's §7 lists the questions behind them):
 - Whether `anthropic-beta` is accepted or forwarded (question 9). Loom sends none.
 - Thinking-signature replay when a later turn is served by a different upstream, and whether `reasoning_details` replay is required rather than merely accepted (questions 11, 14).
 - Cache usage fields when Bedrock or Vertex serves a Messages call, and cross-family fallback behaviour (questions 12–13).
-- The `zeroDataRetention` value shape and other `providerOptions` keys (question 23). Loom sends `true`; the gateway accepted the request, but no live check shows the policy was applied.
+- Whether `zeroDataRetention: true` changes routing, and the shapes of other `providerOptions` keys (question 23). The live suite sends `zeroDataRetention: true` on both surfaces and the gateway accepts it; the response does not show the policy.
 - 402, forced 429 and mid-stream failure bodies (questions 25–27).
 - The gateway's own request and stream-idle timeouts, and enterprise concurrency limits (questions 28–29). Loom's defaults: 300 s per blocking call, first-byte wait equal to that on streams.
 - OIDC: implemented and unit-tested, not run live (question 32).
