@@ -76,3 +76,27 @@ prompts:
     metadata:
       version: "v1.0"
       description: "In-loop fold ask: the model summarises its own context, replying with {\"summary\": ...} only"
+
+  - id: compaction_summary_heading
+    content: |
+      Current summary:
+    variables: {}
+    tags:
+      - memory
+      - compaction
+      - fold
+    metadata:
+      version: "v1.0"
+      description: "Heading the fold puts above the current summary in the compressor input"
+
+  - id: compaction_focus_preface
+    content: |
+      The user asked this compaction to preserve, in priority order:
+    variables: {}
+    tags:
+      - memory
+      - compaction
+      - fold
+    metadata:
+      version: "v1.0"
+      description: "Preface to the user's focus text on a manual compaction (CompactSession)"

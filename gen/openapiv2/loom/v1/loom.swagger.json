@@ -2270,6 +2270,46 @@
         ]
       }
     },
+    "/v1/sessions/{sessionId}:compact": {
+      "post": {
+        "summary": "CompactSession compacts a session's context on request, between turns:\nolder turns fold into the running summary, while the system prompt, the\nsummary and the newest keep_turns turns stay verbatim. It folds only; no\ntool result is stubbed. Folding makes an LLM call, and it never drops a\nturn without a summary. Refused while a turn runs on the session (ABORTED)\nor while it waits for a human decision (FAILED_PRECONDITION); UNAVAILABLE\nwhen no summary could be produced or the result could not be saved, in\nwhich case history is unchanged.",
+        "operationId": "LoomService_CompactSession",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1CompactSessionResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "sessionId",
+            "description": "Session ID",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/LoomServiceCompactSessionBody"
+            }
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
     "/v1/sessions/{sessionId}:resolveExecutionGap": {
       "post": {
         "summary": "ResolveExecutionGap records an operator's finding for the tool call that\nResumeSession reported as an execution gap, so ResumeSession can continue\nthe turn.",
@@ -3613,6 +3653,21 @@
       },
       "description": "CancelScheduledExecutionRequest stops a scheduled execution that is in\nflight.\n\nThe ID must be one the scheduler minted. IDs returned by ExecuteWorkflow and\nStreamWorkflow belong to a different namespace and yield NOT_FOUND."
     },
+    "LoomServiceCompactSessionBody": {
+      "type": "object",
+      "properties": {
+        "keepTurns": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Newest turns left verbatim. 0 uses the default (2); negative is invalid."
+        },
+        "focus": {
+          "type": "string",
+          "description": "Optional guidance on what the summary must keep. At most 2000 bytes."
+        }
+      },
+      "description": "CompactSessionRequest asks for a manual compaction of one session's context."
+    },
     "LoomServicePauseScheduleBody": {
       "type": "object",
       "description": "PauseScheduleRequest pauses a schedule."
@@ -4767,6 +4822,44 @@
       ],
       "default": "COMMUNICATION_TIER_UNSPECIFIED",
       "description": "CommunicationTier defines the three-tier communication model.\n\n - COMMUNICATION_TIER_ALWAYS_REFERENCE: Tier 1: Always reference (shared mutable state, workflow context)\n - COMMUNICATION_TIER_AUTO_PROMOTE: Tier 2: Auto-promote based on size (\u003e1KB default)\n - COMMUNICATION_TIER_ALWAYS_VALUE: Tier 3: Always value (control messages, pattern refs, config)"
+    },
+    "v1CompactSessionResponse": {
+      "type": "object",
+      "properties": {
+        "compacted": {
+          "type": "boolean",
+          "description": "False when nothing older than keep_turns was left to compact."
+        },
+        "toolResultsStubbed": {
+          "type": "boolean",
+          "description": "Deprecated: always false. A compaction folds only and replaces no tool\nresult with a stub. Read turns_folded. The field stays for wire\ncompatibility."
+        },
+        "turnsFolded": {
+          "type": "boolean",
+          "description": "Older turns were folded into the running summary."
+        },
+        "turnsKept": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Newest turns left verbatim."
+        },
+        "tokensBefore": {
+          "type": "string",
+          "format": "int64",
+          "description": "Estimated context size before the compaction."
+        },
+        "tokensAfter": {
+          "type": "string",
+          "format": "int64",
+          "description": "Estimated context size after the compaction."
+        },
+        "summaryVersion": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Version of the session summary after the compaction."
+        }
+      },
+      "description": "CompactSessionResponse reports what the compaction did. Token figures are\nloom's calibrated estimates of the compiled context."
     },
     "v1ComponentHealth": {
       "type": "object",

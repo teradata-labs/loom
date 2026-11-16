@@ -27,6 +27,7 @@ Architecture of Loom's 5-layer segmented memory system with profile-based adapti
   - [Adaptive Compression](#adaptive-compression)
   - [Memory Eviction](#memory-eviction)
   - [Session Restore](#session-restore)
+  - [Manual Compaction and the Request-Size Log](#manual-compaction-and-the-request-size-log)
 - [Data Structures](#data-structures)
 - [Algorithms](#algorithms)
   - [Token Budget Calculation](#token-budget-calculation)
@@ -879,6 +880,17 @@ Restoring a session rebuilds two things: the messages, and the runtime state tho
 | A stored `DataReference`, or the offload summary text | Re-register `query_tool_result` |
 
 Re-firing a skill load re-activates and re-registers only. It does not re-inject the skill body: the body is already in the replayed messages, at whatever position and compaction state it had reached.
+
+
+### Manual Compaction and the Request-Size Log
+
+The in-loop fold and the step check (`fitStepToWindow`) keep every send inside the provider's window during a turn. Two mechanisms sit beside them. Both are in `pkg/agent`.
+
+**Request-size log.** Every provider call logs one `llm request: part sizes` line (`request_breakdown.go`). It gives byte-derived token figures for the system prompt, the summary (the user-role summary reminder row), tool schemas, history, tool calls, whole tool results, tool results bounded at arrival, skill bodies, other reminders and thinking blocks, next to the provider-reported prompt size. A result counts as bounded when it ends with a write-rule §4.1 tail (`pageableTailFormat`, or `truncationTailFormat` when the threshold is too small) whose first figure is the bytes in front of it. Sizes only, never content.
+
+**Manual compaction** (`compact.go`): `Agent.CompactSession`, the `CompactSession` RPC and `loom sessions compact`. It runs between turns, under the session lease and the parked-tail guard. The turns older than the newest `keep_turns` (default 2) fold into the running summary through the relief fold (`foldLocked`). The summary is the same user-role `<system-reminder>` row that the in-loop fold writes. A compaction folds only: no tool result is stubbed, so `CompactResult.ToolResultsStubbed` and the proto's `tool_results_stubbed` are always false (deprecated). A compaction never folds without a real summary (`foldRequireSummary`). With no compressor, or a failing one, it fails with `ErrSummaryUnavailable` (gRPC `UNAVAILABLE`) and history is unchanged. A store write that fails leaves history unchanged and fails with `ErrCompactionNotSaved` (`UNAVAILABLE`). A turn or another compaction in progress gives `ABORTED`; a pending human decision gives `FAILED_PRECONDITION`. An optional focus (at most 2000 bytes, else `INVALID_ARGUMENT`) goes to the compressor after the `memory.compaction_focus_preface` prompt. The call runs under an `agent.compact_session` span.
+
+**Retired keys.** `behavior.preflight_fit` (a pre-flight guard with a narrower fallback view) and `behavior.auto_compact_percent` (end-of-turn compaction) are superseded by the in-loop fold and the step check. A file that sets either key loads with a warning and the key has no effect. `AutoCompactLedger` and `WithAutoCompactLedger` stay as deprecated exports that do nothing.
 
 
 ## Data Structures

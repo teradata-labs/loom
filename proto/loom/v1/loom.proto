@@ -161,6 +161,21 @@ service LoomService {
     option (google.api.http) = {get: "/v1/sessions/{session_id}/history"};
   }
 
+  // CompactSession compacts a session's context on request, between turns:
+  // older turns fold into the running summary, while the system prompt, the
+  // summary and the newest keep_turns turns stay verbatim. It folds only; no
+  // tool result is stubbed. Folding makes an LLM call, and it never drops a
+  // turn without a summary. Refused while a turn runs on the session (ABORTED)
+  // or while it waits for a human decision (FAILED_PRECONDITION); UNAVAILABLE
+  // when no summary could be produced or the result could not be saved, in
+  // which case history is unchanged.
+  rpc CompactSession(CompactSessionRequest) returns (CompactSessionResponse) {
+    option (google.api.http) = {
+      post: "/v1/sessions/{session_id}:compact"
+      body: "*"
+    };
+  }
+
   // RegisterTool dynamically registers a new tool.
   rpc RegisterTool(RegisterToolRequest) returns (RegisterToolResponse) {
     option (google.api.http) = {
@@ -1721,6 +1736,45 @@ message ConversationHistory {
 
   // Total message count
   int32 total_count = 3;
+}
+
+// CompactSessionRequest asks for a manual compaction of one session's context.
+message CompactSessionRequest {
+  // Session ID
+  string session_id = 1;
+
+  // Newest turns left verbatim. 0 uses the default (2); negative is invalid.
+  int32 keep_turns = 2;
+
+  // Optional guidance on what the summary must keep. At most 2000 bytes.
+  string focus = 3;
+}
+
+// CompactSessionResponse reports what the compaction did. Token figures are
+// loom's calibrated estimates of the compiled context.
+message CompactSessionResponse {
+  // False when nothing older than keep_turns was left to compact.
+  bool compacted = 1;
+
+  // Deprecated: always false. A compaction folds only and replaces no tool
+  // result with a stub. Read turns_folded. The field stays for wire
+  // compatibility.
+  bool tool_results_stubbed = 2;
+
+  // Older turns were folded into the running summary.
+  bool turns_folded = 3;
+
+  // Newest turns left verbatim.
+  int32 turns_kept = 4;
+
+  // Estimated context size before the compaction.
+  int64 tokens_before = 5;
+
+  // Estimated context size after the compaction.
+  int64 tokens_after = 6;
+
+  // Version of the session summary after the compaction.
+  int32 summary_version = 7;
 }
 
 // Message represents a conversation message.

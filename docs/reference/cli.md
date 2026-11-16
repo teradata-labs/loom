@@ -100,6 +100,7 @@ Command reference for `loom` (client) and `looms` (server).
 | `loom sessions delete` | Delete session | `<session-id>` |
 | `loom sessions resume` | Finish a turn a server crash interrupted | `<session-id>`, `--timeout` |
 | `loom sessions resolve-gap` | Record the outcome of a call resume could not determine | `<session-id>`, `--outcome`, `--result` |
+| `loom sessions compact` | Shrink a session's context between turns | `<session-id>`, `--keep-turns`, `--focus`, `--timeout` |
 | `loom artifacts list` | List artifacts | `--source`, `--content-type`, `--tags` |
 | `loom artifacts search` | Full-text search artifacts | `<query>`, `--limit` |
 | `loom artifacts show` | Show artifact details | `<artifact-id-or-name>` |
@@ -1013,6 +1014,7 @@ loom sessions <subcommand> [flags]
 | `delete <session-id>` | Delete a session and its conversation history |
 | `resume <session-id>` | Finish a turn that a server crash interrupted (needs `execution_log.enabled`) |
 | `resolve-gap <session-id>` | Record the outcome of the tool call `resume` reported as an execution gap |
+| `compact <session-id>` | Fold older turns into the summary, keeping the newest turns |
 
 **Flags (list):**
 
@@ -1076,6 +1078,33 @@ loom sessions resolve-gap sess_abc123def456 --outcome failed
 ```
 
 Exits 1 with gRPC `FAILED_PRECONDITION` when the session has no execution gap.
+
+#### loom sessions compact
+
+Calls the server's `CompactSession` RPC between turns. Older turns are folded
+into the session's running summary (one LLM call); no tool result is stubbed.
+The system prompt, the summary and the newest turns stay verbatim. Without a
+summary nothing is folded and the command fails. See
+[Memory Systems](../architecture/memory-systems.md#manual-compaction-and-the-request-size-log).
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--keep-turns` | int32 | `0` | Newest turns kept verbatim; `0` is the server default (2) |
+| `--focus` | string | | What the summary must keep, in priority order (at most 2000 bytes) |
+| `--timeout` | duration | `3m` | How long to wait |
+
+| Result | Output | Exit code |
+|--------|--------|-----------|
+| Compacted | What was folded, turns kept, estimated tokens before and after | 0 |
+| Nothing older than the kept turns | `Nothing to compact: ...` | 0 |
+| Busy (gRPC `ABORTED`) | A turn or another compaction is running on the session | 1 |
+| Refused (gRPC `FAILED_PRECONDITION`) | The session waits for a human decision | 1 |
+| Unavailable (gRPC `UNAVAILABLE`) | No summary could be produced, or the result could not be saved; history is unchanged | 1 |
+| Not found (gRPC `NOT_FOUND`) | No such session for the caller | 1 |
+
+```bash
+loom sessions compact sess_abc123def456 --focus "keep the final SQL and the open approvals"
+```
 
 
 ### loom artifacts

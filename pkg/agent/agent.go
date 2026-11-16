@@ -539,6 +539,16 @@ func WithPrompts(registry prompts.PromptRegistry) Option {
 	}
 }
 
+// WithAutoCompactLedger does nothing. It is kept so that an embedder that
+// shared one ledger across the agents it builds per turn still compiles.
+//
+// Deprecated: end-of-turn auto-compaction (behavior.auto_compact_percent) is
+// retired. The in-loop fold and the step check (fitStepToWindow) keep the
+// context inside the window, so there is no attempt record to share.
+func WithAutoCompactLedger(ledger *AutoCompactLedger) Option {
+	return func(*Agent) {}
+}
+
 // WithConfig replaces the entire agent configuration. Apply it before options
 // that set individual configuration fields.
 func WithConfig(config *Config) Option {
@@ -3235,15 +3245,7 @@ func (a *Agent) runConversationLoop(ctx Context) (_ *Response, retErr error) {
 				msgs := outgoing("")
 				return a.chatWithRetry(a.foldedTurnCtx(callCtx, session, msgs, span), msgs, ts)
 			}
-			names := make([]string, 0, len(ts))
-			for _, t := range ts {
-				names = append(names, t.Name())
-			}
-			// nil marks "no previous successful call this turn": the first send emits nothing.
-			note := ""
-			if prevToolNames != nil {
-				note = toolDeltaNote(prevToolNames, names)
-			}
+			note, names := a.toolChangeNote(prevToolNames, ts)
 			if note != "" {
 				span.AddEvent("tools.changed", map[string]interface{}{"note": note})
 			}
@@ -4614,6 +4616,23 @@ func (a *Agent) fitStepToWindow(ctx Context, session *Session, noteKey string, e
 		span.AddEvent("turn.step_results_replaced", map[string]interface{}{"turn": turnCount, "results": replaced, "before_send": true})
 	}
 	return true
+}
+
+// toolChangeNote is the behavior.tool_change_note text a send of ts carries
+// after a turn's previous successful call advertised prev, and ts's names.
+// The note is "" when the option is off or before the turn's first call (nil prev).
+func (a *Agent) toolChangeNote(prev []string, ts []shuttle.Tool) (string, []string) {
+	if a.config == nil || !a.config.ToolChangeNote {
+		return "", nil
+	}
+	names := make([]string, 0, len(ts))
+	for _, t := range ts {
+		names = append(names, t.Name())
+	}
+	if prev == nil {
+		return "", names
+	}
+	return toolDeltaNote(prev, names), names
 }
 
 // toolDeltaNote describes how the advertised tool names changed between two

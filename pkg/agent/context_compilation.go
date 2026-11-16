@@ -842,6 +842,23 @@ func (sm *SegmentedMemory) ReleasePressure(ctx context.Context, penalty int) (sh
 	sm.reliefInFlight = true
 	defer func() { sm.reliefInFlight = false }()
 
+	var appliedOps []string
+	defer func() {
+		end := estimate
+		if end < 0 {
+			end = startEstimate
+		}
+		zap.L().Info("releasePressure: complete",
+			zap.String("session_id", sm.sessionID),
+			zap.Int64("turn", sm.currentTurnLocked()),
+			zap.Bool("shed", shed),
+			zap.Int("start_estimate_tokens", startEstimate),
+			zap.Int("end_estimate_tokens", end),
+			zap.Int("tokens_saved", startEstimate-end),
+			zap.Int("target_tokens", target),
+			zap.Strings("operations", appliedOps))
+	}()
+
 	t := sm.currentTurnLocked()
 	k := int64(sm.protectedTurnsLocked())
 	target = sm.releaseMarkLocked(penalty)
@@ -885,6 +902,7 @@ func (sm *SegmentedMemory) ReleasePressure(ctx context.Context, penalty int) (sh
 			continue
 		}
 		estimate = sm.estimateLocked()
+		appliedOps = append(appliedOps, op.name)
 		zap.L().Info("releasePressure: operation complete",
 			zap.String("session_id", sm.sessionID),
 			zap.String("operation", op.name),
@@ -990,7 +1008,10 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 	t := sm.currentTurnLocked()
 	input := make([]Message, 0, len(region)+1)
 	if sm.summary.text != "" {
-		input = append(input, Message{Role: "system", Content: "Current summary:\n" + sm.summary.text})
+		input = append(input, Message{Role: "system", Content: foldPromptText(ctx, sm.compressor, foldPromptSummaryHeading) + "\n" + sm.summary.text})
+	}
+	if sm.compactFocus != "" {
+		input = append(input, Message{Role: "system", Content: foldPromptText(ctx, sm.compressor, foldPromptFocusPreface) + " " + sm.compactFocus})
 	}
 	for i := range region {
 		r := sm.renderLocked(&region[i], t)
@@ -1080,6 +1101,13 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 			zap.Error(err))
 	}
 	if newText == "" {
+		if sm.foldRequireSummary {
+			sm.foldAbortedNoSummary = true
+			zap.L().Warn("fold aborted: no summary was produced and this fold may not drop its region",
+				zap.String("session_id", sm.sessionID),
+				zap.Int64("boundary_turn", b))
+			return false
+		}
 		if askCompressor {
 			// Remember it for the rest of the pass: the next region would pay
 			// the same attempts against the same fault.
@@ -1111,6 +1139,7 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 				zap.Int64("boundary_turn", b),
 				zap.Int("version", n1),
 				zap.Error(err))
+			sm.compactPersistErr = err
 			return false
 		}
 	}

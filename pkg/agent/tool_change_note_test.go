@@ -252,3 +252,21 @@ agent:
 	// loads, and the key it does set takes effect.
 	assert.True(t, build("    tool_change_note: true\n    context_relief_warning: true\n").GetConfig().ToolChangeNote)
 }
+
+// The note the guard counts before the send is the note the send carries.
+func TestToolChangeNote_MatchesTheSentNote(t *testing.T) {
+	tool := func(name string) shuttle.Tool { return &ctxDumpStubTool{name: name} }
+	on := &Agent{config: &Config{ToolChangeNote: true}}
+
+	note, names := on.toolChangeNote(nil, []shuttle.Tool{tool("a")})
+	assert.Empty(t, note, "the turn's first call carries no note")
+	assert.Equal(t, []string{"a"}, names)
+
+	note, _ = on.toolChangeNote([]string{"a"}, []shuttle.Tool{tool("a"), tool("b")})
+	assert.Equal(t, toolDeltaNote([]string{"a"}, []string{"a", "b"}), note)
+	assert.NotEmpty(t, note)
+
+	off := &Agent{config: &Config{}}
+	note, _ = off.toolChangeNote([]string{"a"}, []shuttle.Tool{tool("b")})
+	assert.Empty(t, note)
+}
