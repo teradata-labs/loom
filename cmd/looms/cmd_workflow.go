@@ -38,6 +38,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/mistral"
 	"github.com/teradata-labs/loom/pkg/llm/ollama"
 	"github.com/teradata-labs/loom/pkg/llm/openai"
+	"github.com/teradata-labs/loom/pkg/llm/vercelgateway"
 	"github.com/teradata-labs/loom/pkg/mcp/manager"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/orchestration"
@@ -1432,6 +1433,14 @@ func createLLMProvider() (agent.LLMProvider, string) {
 				return client, "AWS Bedrock Mantle (config)"
 			}
 
+		case vercelgateway.ProviderName:
+			gc := vercelGatewayConfigFrom(config.LLM)
+			gc.RateLimiterConfig.Enabled = true
+			client, err := vercelgateway.NewClient(gc)
+			if err == nil {
+				return client, "Vercel AI Gateway (config)"
+			}
+
 		case "ollama":
 			client := ollama.NewClient(ollama.Config{
 				Endpoint:    config.LLM.OllamaEndpoint,
@@ -1546,6 +1555,7 @@ Supported providers:
   - anthropic    (Anthropic Claude API)
   - bedrock      (AWS Bedrock)
   - bedrock-mantle (AWS Bedrock Mantle endpoint)
+  - vercel-ai-gateway (Vercel AI Gateway; alias: vercel)
   - ollama       (Local Ollama)
   - openai       (OpenAI GPT models)
   - azure-openai (Azure OpenAI Service)

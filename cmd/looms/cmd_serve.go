@@ -53,6 +53,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/ollama"
 	"github.com/teradata-labs/loom/pkg/llm/openai"
 	llmscheduler "github.com/teradata-labs/loom/pkg/llm/scheduler"
+	"github.com/teradata-labs/loom/pkg/llm/vercelgateway"
 	"github.com/teradata-labs/loom/pkg/luasandbox"
 	"github.com/teradata-labs/loom/pkg/mcp/apps"
 	"github.com/teradata-labs/loom/pkg/mcp/manager"
@@ -541,6 +542,12 @@ func inheritCredentials(dst, src LLMConfig) LLMConfig {
 	if dst.BedrockMantleAPIKey == "" {
 		dst.BedrockMantleAPIKey = src.BedrockMantleAPIKey
 	}
+	if dst.VercelGatewayAPIKey == "" {
+		dst.VercelGatewayAPIKey = src.VercelGatewayAPIKey
+	}
+	if dst.VercelGatewayEndpoint == "" {
+		dst.VercelGatewayEndpoint = src.VercelGatewayEndpoint
+	}
 	if dst.OllamaEndpoint == "" {
 		dst.OllamaEndpoint = src.OllamaEndpoint
 	}
@@ -731,6 +738,15 @@ func createProviderWithRateLimit(cfg LLMConfig, logger *zap.Logger) (agent.LLMPr
 		client, err := bedrockmantle.NewClientForModel(mcfg)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", bedrockmantle.ProviderName, err)
+		}
+		return client, nil
+
+	case vercelgateway.ProviderName, vercelgateway.ProviderAlias:
+		gc := vercelGatewayConfigFrom(cfg)
+		gc.RateLimiterConfig = rlCfg
+		client, err := vercelgateway.NewClient(gc)
+		if err != nil {
+			return nil, err
 		}
 		return client, nil
 
@@ -937,6 +953,9 @@ func getDefaultModelForProvider(cfg *Config) string {
 			return cfg.LLM.LiteLLMModel
 		}
 		return litellm.DefaultModel
+	case vercelgateway.ProviderName, vercelgateway.ProviderAlias:
+		// No default model: Validate requires llm.vercel_gateway_model.
+		return cfg.LLM.VercelGatewayModel
 	default:
 		return ""
 	}
@@ -1021,6 +1040,22 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		client, err := bedrockmantle.NewClientForModel(mcfg)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", bedrockmantle.ProviderName, err)
+		}
+		return client, nil
+
+	case vercelgateway.ProviderName, vercelgateway.ProviderAlias:
+		// Credentials and endpoint come from the server; the agent YAML picks
+		// the model and may replace the server's routing.
+		gc := applyProtoGatewayOverrides(vercelGatewayConfigFrom(serverConfig.LLM), protoConfig)
+		gc.MaxTokens = maxTokens
+		gc.Temperature = temperature
+		if timeout > 0 {
+			gc.Timeout = timeout
+		}
+		gc.RateLimiterConfig = rlCfg
+		client, err := vercelgateway.NewClient(gc)
+		if err != nil {
+			return nil, err
 		}
 		return client, nil
 
@@ -1175,7 +1210,7 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 		}), nil
 
 	default:
-		return nil, fmt.Errorf("unsupported LLM provider: %s (supported: anthropic, bedrock, bedrock-mantle, ollama, openai, azure-openai, mistral, gemini, huggingface, litellm)", protoConfig.Provider)
+		return nil, fmt.Errorf("unsupported LLM provider: %s (supported: anthropic, bedrock, bedrock-mantle, ollama, openai, azure-openai, mistral, gemini, huggingface, litellm, vercel-ai-gateway)", protoConfig.Provider)
 	}
 }
 
@@ -1187,9 +1222,13 @@ func createLLMProviderFromProtoConfig(protoConfig *loomv1.LLMConfig, serverConfi
 // AWS account, so a silent move to another provider is not acceptable. The
 // loop skips such an agent and logs an error instead. Other providers keep the
 // existing fall-back-to-default behaviour.
+//
+// vercel-ai-gateway refuses too: its routing block can restrict serving to
+// named upstreams or to zero-data-retention providers, and a silent move to
+// the server's default LLM would bypass that policy.
 func customLLMFallbackAllowed(provider string) bool {
-	switch provider {
-	case "bedrock-mantle":
+	switch vercelgateway.NormalizeProviderName(provider) {
+	case "bedrock-mantle", vercelgateway.ProviderName:
 		return false
 	default:
 		return true
@@ -1533,6 +1572,16 @@ func runServe(cmd *cobra.Command, args []string) {
 			} else {
 				logger.Warn("Embedding enabled but no OpenAI API key found (set embedding.api_key, llm.openai_api_key, or OPENAI_API_KEY)")
 			}
+		case vercelgateway.ProviderName, vercelgateway.ProviderAlias:
+			emb, err := newVercelGatewayEmbedder(config)
+			if err != nil {
+				logger.Warn("Embedding enabled but the Vercel AI Gateway embedder cannot be built", zap.Error(err))
+			} else {
+				memoryEmbedder = emb
+				logger.Info("Memory embedder initialized",
+					zap.String("provider", vercelgateway.ProviderName),
+					zap.String("model", emb.Model()))
+			}
 		default:
 			logger.Warn("Unknown embedding provider", zap.String("provider", config.Embedding.Provider))
 		}
@@ -1776,6 +1825,18 @@ func runServe(cmd *cobra.Command, args []string) {
 	// to avoid sharing the system prompt function across agents.
 	// (memory := agent.NewMemoryWithStore(store) would be shared)
 
+	// The Vercel AI Gateway catalog (GET /v1/models) prices and sizes gateway
+	// ids. Fetched only when the gateway is configured; a failure is logged and
+	// serving continues (Claude ids price via the family table, others report
+	// unpriced) while the background refresh retries.
+	if endpoint, ok := usesVercelGateway(config); ok {
+		catalogCtx, cancelCatalog := context.WithCancel(context.Background())
+		defer cancelCatalog()
+		if _, err := vercelgateway.RegisterCatalog(catalogCtx, endpoint, 0, logger); err != nil {
+			logger.Warn("Vercel AI Gateway catalog fetch failed; will retry in the background", zap.Error(err))
+		}
+	}
+
 	// Create LLM provider with rate limiting always enabled.
 	// Rate limit parameters come from config.LLM.RateLimit (loom.yaml); zeros use provider defaults.
 	llmProvider, err := createProviderWithRateLimit(config.LLM, logger)
@@ -1911,6 +1972,9 @@ func runServe(cmd *cobra.Command, args []string) {
 		LiteLLMAPIKey:       config.LLM.LiteLLMAPIKey,
 		LiteLLMModel:        config.LLM.LiteLLMModel,
 		LiteLLMExtraHeaders: config.LLM.LiteLLMExtraHeaders,
+
+		// Vercel AI Gateway (API key already resolved through the env chain)
+		VercelGateway: vercelGatewayConfigFrom(config.LLM),
 
 		// Common settings
 		MaxTokens:       config.LLM.MaxTokens,

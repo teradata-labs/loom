@@ -36,6 +36,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/ollama"
 	"github.com/teradata-labs/loom/pkg/llm/openai"
 	"github.com/teradata-labs/loom/pkg/llm/scheduler"
+	"github.com/teradata-labs/loom/pkg/llm/vercelgateway"
 	"github.com/teradata-labs/loom/pkg/mcp/manager"
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/observability"
@@ -1345,6 +1346,24 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 			Model:             config.Model,
 			MaxTokens:         int(config.MaxTokens),
 			Temperature:       float64(config.Temperature),
+			RateLimiterConfig: rlCfg,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return client, nil
+
+	case vercelgateway.ProviderName, vercelgateway.ProviderAlias:
+		// Credentials from the environment, as for every provider on this path:
+		// LOOM_LLM_VERCEL_GATEWAY_API_KEY, then AI_GATEWAY_API_KEY; the
+		// endpoint from VERCEL_AI_GATEWAY_ENDPOINT (empty = global host).
+		client, err := vercelgateway.NewClient(vercelgateway.Config{
+			Endpoint:          os.Getenv("VERCEL_AI_GATEWAY_ENDPOINT"),
+			APIKey:            vercelgateway.ResolveAPIKey(""),
+			Model:             config.Model,
+			MaxTokens:         int(config.MaxTokens),
+			Temperature:       float64(config.Temperature),
+			Routing:           vercelgateway.RoutingFromProto(config.GatewayRouting),
 			RateLimiterConfig: rlCfg,
 		})
 		if err != nil {
