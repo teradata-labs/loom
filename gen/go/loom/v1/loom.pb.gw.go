@@ -606,6 +606,51 @@ func local_request_LoomService_GetConversationHistory_0(ctx context.Context, mar
 	return msg, metadata, err
 }
 
+func request_LoomService_CompactSession_0(ctx context.Context, marshaler runtime.Marshaler, client LoomServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq CompactSessionRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if req.Body != nil {
+		_, _ = io.Copy(io.Discard, req.Body)
+	}
+	val, ok := pathParams["session_id"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "session_id")
+	}
+	protoReq.SessionId, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "session_id", err)
+	}
+	msg, err := client.CompactSession(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+}
+
+func local_request_LoomService_CompactSession_0(ctx context.Context, marshaler runtime.Marshaler, server LoomServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq CompactSessionRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	val, ok := pathParams["session_id"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "session_id")
+	}
+	protoReq.SessionId, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "session_id", err)
+	}
+	msg, err := server.CompactSession(ctx, &protoReq)
+	return msg, metadata, err
+}
+
 func request_LoomService_RegisterTool_0(ctx context.Context, marshaler runtime.Marshaler, client LoomServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
 		protoReq RegisterToolRequest
@@ -3746,6 +3791,26 @@ func RegisterLoomServiceHandlerServer(ctx context.Context, mux *runtime.ServeMux
 		}
 		forward_LoomService_GetConversationHistory_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodPost, pattern_LoomService_CompactSession_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/loom.v1.LoomService/CompactSession", runtime.WithHTTPPathPattern("/v1/sessions/{session_id}:compact"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_LoomService_CompactSession_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_LoomService_CompactSession_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	mux.Handle(http.MethodPost, pattern_LoomService_RegisterTool_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -5636,6 +5701,23 @@ func RegisterLoomServiceHandlerClient(ctx context.Context, mux *runtime.ServeMux
 		}
 		forward_LoomService_GetConversationHistory_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodPost, pattern_LoomService_CompactSession_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/loom.v1.LoomService/CompactSession", runtime.WithHTTPPathPattern("/v1/sessions/{session_id}:compact"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_LoomService_CompactSession_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_LoomService_CompactSession_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	mux.Handle(http.MethodPost, pattern_LoomService_RegisterTool_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -6982,6 +7064,7 @@ var (
 	pattern_LoomService_ResolveExecutionGap_0         = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "sessions", "session_id"}, "resolveExecutionGap"))
 	pattern_LoomService_SubscribeToSession_0          = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "sessions", "session_id"}, "subscribe"))
 	pattern_LoomService_GetConversationHistory_0      = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "sessions", "session_id", "history"}, ""))
+	pattern_LoomService_CompactSession_0              = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "sessions", "session_id"}, "compact"))
 	pattern_LoomService_RegisterTool_0                = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "tools"}, "register"))
 	pattern_LoomService_ListTools_0                   = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "tools"}, ""))
 	pattern_LoomService_GetTrace_0                    = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "traces", "trace_id"}, ""))
@@ -7079,6 +7162,7 @@ var (
 	forward_LoomService_ResolveExecutionGap_0         = runtime.ForwardResponseMessage
 	forward_LoomService_SubscribeToSession_0          = runtime.ForwardResponseStream
 	forward_LoomService_GetConversationHistory_0      = runtime.ForwardResponseMessage
+	forward_LoomService_CompactSession_0              = runtime.ForwardResponseMessage
 	forward_LoomService_RegisterTool_0                = runtime.ForwardResponseMessage
 	forward_LoomService_ListTools_0                   = runtime.ForwardResponseMessage
 	forward_LoomService_GetTrace_0                    = runtime.ForwardResponseMessage
