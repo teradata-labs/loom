@@ -1,0 +1,254 @@
+# Vercel AI Gateway
+
+**Version**: v1.4.0
+**Status**: ⚠️ Partial. The provider (`pkg/llm/vercelgateway`) and its wiring are implemented and covered by unit tests against a fake gateway. They have **not yet been run against the live gateway**: the behaviours marked *unverified* below follow Vercel's public docs (read 2026-11-13/16) and are checked by the live suite (`live_test.go`), which has not run yet.
+
+The [Vercel AI Gateway](https://vercel.com/docs/ai-gateway) is one host, `https://ai-gateway.vercel.sh`, that fronts many upstream providers under creator-scoped model ids (`anthropic/claude-sonnet-4.5`, `openai/gpt-5`, `google/gemini-3.1-pro-preview`). Loom's `vercel-ai-gateway` provider (alias `vercel`) sends Claude ids to the gateway's Anthropic Messages surface and every other id to its OpenAI Chat Completions surface.
+
+## Table of Contents
+
+- [What is implemented](#what-is-implemented)
+- [Configuration](#configuration)
+- [Authentication](#authentication)
+- [How requests are routed](#how-requests-are-routed)
+- [Routing options](#routing-options)
+- [Thinking and reasoning](#thinking-and-reasoning)
+- [Model catalog and cost](#model-catalog-and-cost)
+- [Errors, retries and rate limits](#errors-retries-and-rate-limits)
+- [Observability](#observability)
+- [Embeddings](#embeddings)
+- [Environment variables](#environment-variables)
+- [Testing](#testing)
+- [Limitations and unverified behaviour](#limitations-and-unverified-behaviour)
+
+## What is implemented
+
+✅ Implemented (unit-tested; live run pending):
+
+- Dual routing: `anthropic/*` → `POST /v1/messages`, everything else → `POST /v1/chat/completions`
+- Blocking and streaming calls, tool calls, on both surfaces
+- Typed routing options (`order`, `only`, `sort`, `fallback_models`, `zero_data_retention`, `caching`) sent as `providerOptions.gateway`, from `looms.yaml` or agent YAML (`gateway_routing`, proto `LLMGatewayRouting`)
+- API key auth (keyring, `LOOM_LLM_VERCEL_GATEWAY_API_KEY`, `AI_GATEWAY_API_KEY`) and Vercel OIDC token auth
+- Health check with `GET /v1/credits` (validates the key, spends no tokens)
+- Model catalog from `GET /v1/models`: context window, max output, input/output/cache rates, reasoning tag; refreshed hourly in the background under `looms serve`
+- Gateway-reported cost and routing metadata read from responses when present; otherwise a catalog estimate; ids with no known rate reported as unpriced (cost 0, `llm.cost_unpriced=true`)
+- 402 (credits/budget) as a distinct, non-retried error
+- Chat-surface reasoning: the gateway's `reasoning` request object and `reasoning_details` parse/replay
+- Memory embeddings: `embedding.provider: vercel-ai-gateway` points loom's OpenAI-shaped embedder at the gateway's `POST /v1/embeddings` (model default `openai/text-embedding-3-small`; API key only, no OIDC)
+- Wiring: provider factory, `looms serve` (main LLM, provider pool, agent YAML LLMs), `looms workflow`, `looms config init` (option 5), agent registry, `loom-standalone`, `loom decision replay`, `pkg/builder` (`WithVercelGatewayLLM`)
+
+📋 Not implemented:
+
+- The OpenAI Responses surface (`/v1/responses`)
+- Per-request BYOK credentials, `providerTimeouts`, `sessionAffinity` (out of scope by decision; BYOK keys are configured in the Vercel dashboard)
+- Tiered (long-context) gateway prices (`input_tiers`/`output_tiers`): only the base rate is stored
+- The TUI model picker (`internal/catwalk`) lists no gateway models; its list is static and the gateway catalog is not
+
+## Configuration
+
+### `looms.yaml`
+
+```yaml
+llm:
+  provider: vercel-ai-gateway                          # alias: vercel
+  vercel_gateway_model: anthropic/claude-sonnet-4.5    # required, no default
+  vercel_gateway_endpoint: https://ai-gateway.vercel.sh  # optional; eu./us. regional hosts go here
+  # vercel_gateway_api_key: looms config set-key vercel_gateway_api_key   (or AI_GATEWAY_API_KEY)
+  # vercel_gateway_oidc: false
+  # vercel_gateway_oidc_token_file: /var/run/vercel/oidc-token
+  vercel_gateway_routing:
+    order: [bedrock, anthropic]
+    only: []
+    sort: ""                 # cost | ttft | tps
+    fallback_models: [openai/gpt-5]
+    zero_data_retention: false
+    caching: ""              # auto
+```
+
+There is no default model: an empty `vercel_gateway_model` fails `looms` config validation, because a built-in default would go stale with the gateway's catalog. The endpoint is a base URL; a pasted surface URL (`…/v1/chat/completions`) is reduced to the base. It must be `https`, except for a loopback host.
+
+`looms serve` refuses to start an agent whose gateway client cannot be built, rather than moving it to the server's default LLM: a routing block can restrict upstreams or require zero data retention, and a silent fallback would bypass that.
+
+### Agent YAML
+
+```yaml
+agent:
+  llm:
+    provider: vercel-ai-gateway
+    model: openai/gpt-5
+    gateway_routing:          # replaces the server's vercel_gateway_routing for this agent
+      only: [azure, openai]
+      sort: ttft
+```
+
+Under `looms serve`, credentials and the endpoint come from the server's `llm.vercel_gateway_*` settings; the agent picks the model and may replace the routing block. Through the agent registry (no `looms` config), credentials come from the environment (see below).
+
+### Go
+
+```go
+client, err := vercelgateway.NewClient(vercelgateway.Config{
+    APIKey:  vercelgateway.ResolveAPIKey(""), // LOOM_LLM_VERCEL_GATEWAY_API_KEY, then AI_GATEWAY_API_KEY
+    Model:   "anthropic/claude-sonnet-4.5",
+    Routing: &vercelgateway.Routing{Order: []string{"bedrock", "anthropic"}},
+    RateLimiterConfig: llm.RateLimiterConfig{Enabled: true},
+})
+```
+
+```go
+agent, err := builder.NewAgentBuilder().
+    WithBackend(backend).
+    WithVercelGatewayLLM("openai/gpt-5").
+    Build()
+```
+
+```go
+factory.FactoryConfig{
+    VercelGateway: vercelgateway.Config{Model: "openai/gpt-5"}, // key from the env chain when empty
+}
+```
+
+## Authentication
+
+| Method | How | Notes |
+|---|---|---|
+| API key | `looms config set-key vercel_gateway_api_key`, `LOOM_LLM_VERCEL_GATEWAY_API_KEY`, or `AI_GATEWAY_API_KEY` (checked in that order) | Sent as `x-api-key` on the Messages surface and `Authorization: Bearer` on Chat Completions and `/v1/credits` |
+| Vercel OIDC | `vercel_gateway_oidc: true`; token from `vercel_gateway_oidc_token_file`, else `VERCEL_OIDC_TOKEN` | Read fresh on every request, because Vercel rotates it and nothing refreshes it for a Go client. A token whose JWT `exp` has passed fails locally with "OIDC token expired" before any request is sent. |
+
+An API key always wins over OIDC, and the client never sends both: per Vercel's docs the gateway prefers the API key when both arrive, even an invalid one.
+
+## How requests are routed
+
+| Model id | Surface | Inner client |
+|---|---|---|
+| `anthropic/…` | `POST /v1/messages` | `pkg/llm/anthropic` (no `anthropic-beta` header) |
+| anything else | `POST /v1/chat/completions` | `pkg/llm/openai` (gateway reasoning shape, unpriced reporting on) |
+
+Claude ids go to the Messages surface so thinking signatures, `cache_control` breakpoints and cache-token usage keep the native Anthropic shape that loom already round-trips. A cross-family fallback (`fallback_models: [openai/gpt-5]` on a Claude primary) is still legal; the gateway translates on the surface that received the request (*unverified*).
+
+The only beta header loom sends to Anthropic is the obsolete prompt-caching one; it is suppressed for the gateway, since `cache_control` works without it.
+
+## Routing options
+
+`vercel_gateway_routing` (looms.yaml), `gateway_routing` (agent YAML) and proto `LLMGatewayRouting` map to the request body as:
+
+| Loom field | Body key under `providerOptions.gateway` | Values |
+|---|---|---|
+| `order` | `order` | provider slugs, tried first in order |
+| `only` | `only` | provider slugs; no match is a terminal error |
+| `sort` | `sort` | `cost`, `ttft`, `tps` |
+| `fallback_models` | `models` | creator/model ids |
+| `zero_data_retention` | `zeroDataRetention` | `true` (*unverified shape*) |
+| `caching` | `caching` | `auto` |
+
+Slugs are checked for shape only (lower-case letters, digits, `.`, `_`, `-`; no duplicates). The gateway publishes no canonical slug list a client can validate against. Unset fields are omitted; with no routing at all the request body carries no `providerOptions`.
+
+Regional hosts (`eu.ai-gateway.vercel.sh`, `us.ai-gateway.vercel.sh`) carry a 5% surcharge and return 403 on the free tier, per Vercel's pricing page. Set them with `vercel_gateway_endpoint`.
+
+## Thinking and reasoning
+
+- **Claude ids** (Messages surface): `thinking_level` maps to Anthropic thinking exactly as on the `anthropic` provider (adaptive on 4.6+/5, budget tiers on older models). Dotted gateway ids (`claude-sonnet-4.6`) are recognised by the adaptive-thinking and pricing matchers.
+- **Other ids** (Chat surface): when the catalog tags the model `reasoning` (or the id is Claude-family), loom sends `"reasoning": {"enabled": true, "effort": "low"|"medium"|"high"}` (`auto` sets no effort; `xhigh`/`max` map to `high`). Models the catalog does not know get no reasoning field. The response's `reasoning_details` entries are kept as thinking blocks (type `reasoning.text`, `reasoning.summary` or `reasoning.encrypted`, with signature and format) and replayed on the assistant message within the same turn. Whether the gateway requires that replay is *unverified*.
+
+## Model catalog and cost
+
+Under `looms serve`, when the main LLM or any pool entry uses the gateway, loom fetches `GET /v1/models` (no credential needed) at startup and every hour. Language models are registered under the catalog namespace `vercel-ai-gateway` with context window, max output tokens, capabilities (the entry's `tags`), `is_reasoning`, and per-1M input/output/cache-read/cache-write rates. A failed fetch is logged; serving continues, and the background refresh fills the catalog in once the gateway answers. A failed refresh keeps the previous catalog.
+
+Prices in `/v1/models` are decimal strings; the docs describe them as cost per token and the sample values read as USD (*unverified unit*). Loom multiplies by 10⁶.
+
+Cost per call, in order:
+
+1. The cost the gateway reports in the response (`providerMetadata.gateway.cost`, also read as `provider_metadata`). The docs show this field only through the AI SDK and say the data is "also returned in providerMetadata on the chat completion response"; whether raw REST responses carry it is *unverified*.
+2. A catalog estimate: the gateway catalog's rates (published cache rates win over vendor multipliers), else the Claude family card for Claude ids.
+3. Otherwise unpriced: `CostUSD = 0` and `llm.cost_unpriced = true`. Loom does not guess with another model's rate.
+
+`max_tokens` and the context window resolve from the gateway catalog when it lists the model. If it does not (or the fetch failed), the output cap falls back to 4096 and the context window to 128K.
+
+## Errors, retries and rate limits
+
+| Condition | Behaviour |
+|---|---|
+| 429, 500/502/503/504/529 | Retried by the client-side limiter with backoff, honouring `Retry-After` |
+| 402 | `vercelgateway.ErrCreditsExhausted` ("payment required … credits exhausted, budget exceeded, or BYOK without a positive credit balance"); not retried |
+| 401/403/404, unsatisfiable `only` | Terminal (deterministic client error) |
+| Error payload after a stream started | Returned as an error (status from the error type) instead of a truncated success |
+| Context too long | Detected by loom's Anthropic and OpenAI matchers; whether the gateway's body matches them is *unverified* |
+
+The limiter is on by default. The gateway does not rate limit paid-tier requests and publishes no free-tier limit, so unset limiter fields take loom's generic defaults (`llm.DefaultRateLimiterConfig`: 2 req/s, burst 5) on **both** surfaces; without this, Claude ids would inherit the anthropic client's Tier 1 limits (0.7 req/s). Raise `llm.rate_limit.*` for a large fleet on a paid team. The limiter key includes the credential scope, endpoint and model, so gateway traffic never shares a bucket with direct traffic.
+
+## Observability
+
+Every call's response metadata, and the LLM span, carry (when the response provides them):
+
+| Attribute | Value |
+|---|---|
+| `gateway.endpoint_surface` | `messages` or `chat` (always set) |
+| `gateway.generation_id` | `gen_…` id (Chat completion `id`, or `providerMetadata.gateway.generationId`) |
+| `gateway.final_model` | model the response reports |
+| `gateway.fallback_used` | `true` when the served model differs from the requested one, or more than one model was attempted |
+| `gateway.final_provider` | upstream that served the call |
+| `gateway.attempt_count` | provider attempts |
+| `llm.cost_unpriced` | `true` when no cost could be determined |
+
+No prompt content or key material is recorded.
+
+## Embeddings
+
+```yaml
+embedding:
+  enabled: true
+  provider: vercel-ai-gateway       # alias: vercel
+  model: openai/text-embedding-3-small   # creator/model id; this is the default
+  dimensions: 1536
+  # api_key: optional; defaults to the llm.vercel_gateway_* key chain
+```
+
+The endpoint is `llm.vercel_gateway_endpoint` (default global host) plus `/v1/embeddings`. The request is the OpenAI embeddings shape (`model`, `input`, `dimensions`); whether the gateway passes `dimensions` through for every upstream is *unverified*. OIDC is not supported for embeddings.
+
+## Environment variables
+
+| Variable | Used by | Meaning |
+|---|---|---|
+| `LOOM_LLM_VERCEL_GATEWAY_API_KEY` | all paths | API key (checked first) |
+| `AI_GATEWAY_API_KEY` | all paths | API key (Vercel's own name; also read by the Jev decision provider) |
+| `VERCEL_OIDC_TOKEN` | OIDC | token, read per request when no token file is set |
+| `VERCEL_AI_GATEWAY_ENDPOINT` | agent registry, `pkg/builder`, `loom-standalone`, `loom decision` | endpoint override for paths without `looms.yaml` |
+| `LOOM_LLM_VERCEL_GATEWAY_MODEL`, `LOOM_LLM_VERCEL_GATEWAY_ENDPOINT` | `looms` | viper overrides of the `llm.vercel_gateway_*` keys |
+
+## Testing
+
+Unit tests (fake gateway over `httptest`, race detector):
+
+```bash
+go test -tags fts5 -race ./pkg/llm/vercelgateway/ ./cmd/looms/ -run 'Gateway|VercelGateway'
+```
+
+Fuzz tests: `FuzzValidateModelID`, `FuzzNormalizeEndpoint`, `FuzzInspectPayload`, `FuzzDecodeModels`.
+
+Live tests (real gateway; spend a few cents):
+
+```bash
+export AI_GATEWAY_API_KEY=...            # or LOOM_LLM_VERCEL_GATEWAY_API_KEY
+VERCEL_GATEWAY_LIVE=1 \
+VERCEL_GATEWAY_LIVE_CAPTURE_DIR=/tmp/vgw-captures \
+  go test -tags "fts5 integration" -race -run TestLive ./pkg/llm/vercelgateway/ -v
+```
+
+`VERCEL_GATEWAY_LIVE_CLAUDE` / `VERCEL_GATEWAY_LIVE_OTHER` override the models (defaults `anthropic/claude-haiku-4.5`, `openai/gpt-5-mini`). The capture directory receives every request/response pair with credentials redacted, for the spike write-up.
+
+## Limitations and unverified behaviour
+
+Each item below follows the public docs but has not been observed live. The plan's §7 lists the questions for Vercel behind them.
+
+- Where raw REST responses carry cost and routing metadata (questions 1–3). If they do not, cost falls back to the catalog estimate and routing attributes are absent.
+- Whether `/v1/models` prices are USD per token (question 5).
+- Whether `/v1/messages` accepts or needs `anthropic-version` and rejects `anthropic-beta` (questions 9–10). Loom sends `anthropic-version: 2023-06-01` and no beta.
+- Thinking-signature replay across upstreams, and whether `reasoning_details` must be replayed (questions 11, 14).
+- The `zeroDataRetention` value shape (question 23).
+- Context-overflow, 402 and mid-stream error bodies (questions 24–27).
+- The gateway's own request and stream-idle timeouts (question 28). Loom's defaults: 300 s per blocking call, first-byte wait equal to that on streams.
+
+## See Also
+
+- [LLM providers](./llm-providers.md)
+- [Plan](../plans/vercel-ai-gateway-plan.md)
+- [Bedrock Mantle](./llm-bedrock-mantle.md) (the same dual-routing design on AWS)

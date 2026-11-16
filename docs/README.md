@@ -116,6 +116,7 @@ API specifications and command documentation.
 - **[Anthropic](reference/llm-anthropic.md)** - Claude configuration
 - **[AWS Bedrock](reference/llm-bedrock.md)** - Bedrock configuration
 - **[AWS Bedrock Mantle](reference/llm-bedrock-mantle.md)** - `bedrock-mantle` endpoint: Claude and open-weight models, SigV4 or API key
+- **[Vercel AI Gateway](reference/llm-vercel-ai-gateway.md)** - `vercel-ai-gateway` provider: many upstreams behind one key, typed routing options (⚠️ live run pending)
 - **[Ollama](reference/llm-ollama.md)** - Local models with Ollama
 - **[OpenAI](reference/llm-openai.md)** - GPT models configuration
 - **[Azure OpenAI](reference/llm-azure-openai.md)** - Azure OpenAI setup
