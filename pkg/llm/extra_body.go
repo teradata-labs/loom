@@ -115,8 +115,10 @@ func MergeExtraBody(body, extraJSON []byte) ([]byte, error) {
 		return nil, fmt.Errorf("extra body: extra members are not a JSON object")
 	}
 	inner := extra[1 : len(extra)-1]
-	out := make([]byte, 0, len(b)+len(inner)+1)
-	out = append(out, b[:len(b)-1]...)
+	// No precomputed capacity: summing the two lengths is an arithmetic
+	// overflow candidate (CodeQL go/allocation-size-overflow), and append
+	// grows the buffer safely.
+	out := append([]byte(nil), b[:len(b)-1]...)
 	if len(bytes.TrimSpace(b[1:len(b)-1])) > 0 {
 		out = append(out, ',')
 	}
