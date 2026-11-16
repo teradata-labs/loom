@@ -16,6 +16,7 @@ package server
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -34,7 +35,7 @@ func TestLLMCost_CarriesCostEstimated(t *testing.T) {
 		text := string(src)
 		costs := strings.Count(text, "LlmCost: &loomv1.LLMCost{")
 		require.Positive(t, costs, f)
-		require.Equal(t, costs, strings.Count(text, "CostEstimated:            resp.Usage.CostEstimated,"),
+		require.Equal(t, costs, len(regexp.MustCompile(`CostEstimated:\s+resp\.Usage\.CostEstimated,`).FindAllString(text, -1)),
 			"%s: every LLMCost built from a response must set CostEstimated", f)
 	}
 }

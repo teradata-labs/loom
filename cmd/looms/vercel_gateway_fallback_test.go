@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/llm/catalog"
@@ -331,4 +332,26 @@ func TestCreateLLMProviderFromProtoConfig_EnvFallbacksReachTheClient(t *testing.
 	_, err = p.Chat(context.Background(), []types.Message{{Role: "user", Content: "hi"}}, nil)
 	require.NoError(t, err)
 	assert.Positive(t, hits.Load(), "an env-only OLLAMA_ENDPOINT is used")
+}
+
+// looms workflow / eval: a failed gateway catalog fetch is logged on the
+// logger the command passes in. It used to go to zap.L(), a no-op there
+// because only looms serve replaces the global logger.
+func TestResolveLLMProvider_CatalogFailureIsLogged(t *testing.T) {
+	isolateGatewayEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	saved := config
+	t.Cleanup(func() { config = saved })
+	config = &Config{LLM: LLMConfig{Provider: vercelgateway.ProviderName, VercelGatewayModel: "openai/gpt-5",
+		VercelGatewayAPIKey: testGatewayKey, VercelGatewayEndpoint: srv.URL}}
+
+	core, logs := observer.New(zap.WarnLevel)
+	_, _, err := resolveLLMProvider(zap.New(core))
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return logs.FilterMessageSnippet("catalog fetch failed").Len() > 0
+	}, 5*time.Second, 10*time.Millisecond, "the catalog failure must reach the command's logger")
 }

@@ -265,7 +265,7 @@ func TestLive_CachedStreamTokenAccounting(t *testing.T) {
 		u := resp.Usage
 		total[i] = u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
 		if i == 1 {
-			t.Logf("call 2: cache_read=%d (0 means the upstream did not cache)", u.CacheReadInputTokens)
+			require.Positive(t, u.CacheReadInputTokens, "call 2 must be a cache hit, or this test proves nothing about double counting")
 		}
 	}
 	assert.InDelta(t, total[0], total[1], float64(total[0])*0.05, "prompt size must not change between identical calls (no double count)")
