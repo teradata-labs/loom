@@ -310,3 +310,64 @@ func TestChat_PreflightRefusesOversizedRequestWithoutCallingTheProvider(t *testi
 	assert.Contains(t, err.Error(), "compact the conversation or start a new session")
 	assert.Equal(t, 0, llm.calls, "an oversized request is never sent")
 }
+
+// thinkingTurn adds turn t's assistant tool call with thinking blocks and its
+// result: the turn has sent reasoning the provider checks against what precedes it.
+func thinkingTurn(sm *SegmentedMemory, t int64) {
+	ctx := context.Background()
+	sm.AddMessage(ctx, Message{Role: "assistant", Turn: t,
+		ThinkingBlocks: []ThinkingBlock{{Type: "thinking", Thinking: "plan", Signature: "sig"}},
+		ToolCalls:      []ToolCall{{ID: "tc", Name: "run_query"}}})
+	sm.AddMessage(ctx, Message{Role: "tool", ToolUseID: "tc", Content: "ok", Turn: t})
+}
+
+// Q1: once a turn has sent thinking under the full view, the guard does not
+// switch to a fallback in front of it; the request is refused instead.
+func TestEnsureFits_TurnWithThinkingKeepsItsView(t *testing.T) {
+	sm := proseMemory(t, 12000, 1000, 12)
+	thinkingTurn(sm, 12)
+	sm.reliefInFlight = true
+
+	fit := sm.EnsureFits(context.Background())
+
+	assert.False(t, fit.Fits)
+	assert.True(t, fit.ThinkingPinned)
+	assert.False(t, fit.Fallback)
+	assert.Len(t, sentTurns(sm), 12, "the view in front of the turn's thinking is unchanged")
+}
+
+// Q1: a fallback chosen before the turn's thinking holds, but does not narrow
+// once the thinking was sent after it.
+func TestEnsureFits_HeldFallbackDoesNotNarrowAfterThinking(t *testing.T) {
+	sm := proseMemory(t, 12000, 1000, 12)
+	sm.reliefInFlight = true
+	first := sm.EnsureFits(context.Background())
+	require.True(t, first.Fallback)
+	require.Greater(t, first.TurnsKept, 1, "a narrower view exists to fall back to")
+	thinkingTurn(sm, 12)
+
+	sm.tokenBudget.MaxTokens = first.Estimate // the held view no longer fits
+	fit := sm.EnsureFits(context.Background())
+
+	assert.False(t, fit.Fits)
+	assert.True(t, fit.ThinkingPinned)
+	assert.Equal(t, first.TurnsKept, fit.TurnsKept)
+	assert.Len(t, sentTurns(sm), first.TurnsKept, "the view is not narrowed")
+}
+
+// The refusal says why the conversation could not be trimmed.
+func TestPreflightFit_RefusalNamesThePinnedReasoning(t *testing.T) {
+	sm := proseMemory(t, 12000, 1000, 12)
+	thinkingTurn(sm, 12)
+	sm.reliefInFlight = true
+	a := &Agent{config: &Config{PreflightFit: true}}
+
+	_, _, err := a.preflightFit(newCtxDumpContext("pinned", observability.NewNoOpTracer(), nil), nil,
+		&Session{ID: "pinned", SegmentedMem: sm}, sm, nil, nil, nil)
+
+	var re *RecoverableError
+	require.ErrorAs(t, err, &re)
+	assert.Equal(t, "context_exhausted", re.ErrorType)
+	assert.Contains(t, err.Error(), "this turn's reasoning cannot be resent")
+	assert.Equal(t, true, re.RecoveryPayload["thinking_pinned"])
+}

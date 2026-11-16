@@ -2901,11 +2901,13 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			}
 			// The relief warning above and the tool-change note are sent with
 			// this call: count them in the guard's estimate like the other
-			// pending reminders.
+			// pending reminders. If the guard's relief then sheds tools, the sent
+			// note differs by about one line from the one counted; the refusal
+			// resend covers that.
 			toolNote, _ := a.toolChangeNote(prevToolNames, tools)
 			segMem.SetTransientTail(append(reminders[:len(reminders):len(reminders)], TurnReminder{Text: toolNote})...)
 			var pfErr error
-			if messages, tools, pfErr = a.preflightFit(ctx, session, segMem, recovery, messages, tools); pfErr != nil {
+			if messages, tools, pfErr = a.preflightFit(ctx, span, session, segMem, recovery, messages, tools); pfErr != nil {
 				return nil, pfErr
 			}
 		}
@@ -2996,7 +2998,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					a.setAdvertisedTools(segMem2, tools)
 				}
 				var pfErr error
-				if messages, tools, pfErr = a.preflightFit(ctx, session, segMem, recovery, messages, tools); pfErr != nil {
+				if messages, tools, pfErr = a.preflightFit(ctx, span, session, segMem, recovery, messages, tools); pfErr != nil {
 					return nil, pfErr
 				}
 				// Same logical step: a resend after ErrContextTooLong is the

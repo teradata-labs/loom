@@ -54,6 +54,13 @@ type FitResult struct {
 	Fallback bool
 	// TurnsKept is the number of newest turns in the fallback view.
 	TurnsKept int
+	// ThinkingPinned is true when the current turn already sent thinking blocks,
+	// so the view in front of them could not be changed (no deeper relief, no
+	// new or narrower fallback).
+	ThinkingPinned bool
+	// PendingReminderBytes is the size of the not-yet-pinned reminders the
+	// estimate counted (SetTransientTail).
+	PendingReminderBytes int
 }
 
 // EnsureFits makes the next request fit the usable window or reports that it
@@ -65,18 +72,24 @@ type FitResult struct {
 //
 // A view chosen in a turn holds for the rest of that turn and only ever
 // narrows: widening it again would change what precedes the turn's own
-// thinking blocks, which the provider rejects.
+// thinking blocks, which the provider rejects. Once the turn has sent thinking
+// blocks the view is not changed at all: a request over the window is refused
+// (Fits false, ThinkingPinned) instead of reshaped into one the provider would
+// reject.
 func (sm *SegmentedMemory) EnsureFits(ctx context.Context) FitResult {
+	var res FitResult
 	sm.mu.Lock()
+	t := sm.currentTurnLocked()
 	var held int64
-	if sm.fallbackTurns > 0 && sm.fallbackTurn == sm.currentTurnLocked() {
+	if sm.fallbackTurns > 0 && sm.fallbackTurn == t {
 		held = sm.fallbackTurns
 	} else {
 		sm.fallbackTurns, sm.fallbackTurn = 0, 0
 	}
+	res.ThinkingPinned = sm.turnSentThinkingLocked(t)
+	res.PendingReminderBytes = len(sm.transientTail)
 	sm.mu.Unlock()
 
-	var res FitResult
 	for pass := 1; ; pass++ {
 		sm.mu.Lock()
 		est, usable := sm.viewEstimateLocked(held), sm.usableLocked()
@@ -88,7 +101,7 @@ func (sm *SegmentedMemory) EnsureFits(ctx context.Context) FitResult {
 			res.Fallback, res.TurnsKept = held > 0, int(held)
 			return res
 		}
-		if pass > preflightReliefPasses {
+		if res.ThinkingPinned || pass > preflightReliefPasses {
 			break
 		}
 		shed, _, _ := sm.ReleasePressure(ctx, pass*pressureRecoveryPenalty)
@@ -96,6 +109,10 @@ func (sm *SegmentedMemory) EnsureFits(ctx context.Context) FitResult {
 			break
 		}
 		res.Shed = true
+	}
+	if res.ThinkingPinned {
+		res.Fallback, res.TurnsKept = held > 0, int(held)
+		return res
 	}
 
 	sm.mu.Lock()
@@ -124,12 +141,28 @@ func (sm *SegmentedMemory) viewEstimateLocked(n int64) int {
 	return sm.estimateCompiledLocked(sm.compileViewLocked(sm.currentTurnLocked() - n + 1))
 }
 
+// turnSentThinkingLocked reports whether turn t holds an assistant message
+// with thinking blocks, which the provider checks against what precedes it.
+// Must hold lock.
+func (sm *SegmentedMemory) turnSentThinkingLocked(t int64) bool {
+	for i := len(sm.contextMessages) - 1; i >= 0; i-- {
+		m := &sm.contextMessages[i]
+		if m.Turn > 0 && m.Turn < t {
+			break
+		}
+		if m.Turn == t && m.Role == "assistant" && len(m.ThinkingBlocks) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // preflightFit is the hard guard before a provider call (behavior.preflight_fit).
 // It returns the messages and tools to send, or a context_exhausted error when
 // the request cannot be made to fit — raised here so the user sees an
 // actionable message instead of a provider refusal that would also be billed.
-func (a *Agent) preflightFit(ctx Context, session *Session, segMem *SegmentedMemory, recovery *recoveryOrchestrator,
-	messages []Message, tools []shuttle.Tool) ([]Message, []shuttle.Tool, error) {
+func (a *Agent) preflightFit(ctx Context, span *observability.Span, session *Session, segMem *SegmentedMemory,
+	recovery *recoveryOrchestrator, messages []Message, tools []shuttle.Tool) ([]Message, []shuttle.Tool, error) {
 	if a.config == nil || !a.config.PreflightFit {
 		return messages, tools, nil
 	}
@@ -142,7 +175,6 @@ func (a *Agent) preflightFit(ctx Context, session *Session, segMem *SegmentedMem
 		tools = recovery.activeTools(a.advertisedTools(session))
 		a.setAdvertisedTools(segMem, tools)
 	}
-	span := recovery.span
 	if !fit.Fits {
 		zap.L().Error("preflight: request cannot fit the usable window; not sending",
 			zap.String("session_id", session.ID),
@@ -153,13 +185,18 @@ func (a *Agent) preflightFit(ctx Context, session *Session, segMem *SegmentedMem
 				"estimate_tokens": fit.Estimate,
 				"usable_tokens":   fit.Usable,
 				"shed":            fit.Shed,
+				"thinking_pinned": fit.ThinkingPinned,
 			})
 		}
+		why := "even with only the current turn kept"
+		if fit.ThinkingPinned {
+			why = "and this turn's reasoning cannot be resent after trimming the conversation before it"
+		}
 		cause := fmt.Errorf("conversation too long: the request is about %d tokens against a usable window of %d "+
-			"even with only the current turn kept; compact the conversation or start a new session",
-			fit.Estimate, fit.Usable)
+			"%s; compact the conversation or start a new session",
+			fit.Estimate, fit.Usable, why)
 		return nil, nil, recovery.buildRecoverableError("context_exhausted", cause, "",
-			map[string]any{"estimate": fit.Estimate, "usable": fit.Usable, "preflight": true})
+			map[string]any{"estimate": fit.Estimate, "usable": fit.Usable, "preflight": true, "thinking_pinned": fit.ThinkingPinned})
 	}
 	if fit.Fallback {
 		zap.L().Warn("preflight: sending fallback view (system prompt, summary, newest turns)",
@@ -180,6 +217,12 @@ func (a *Agent) preflightFit(ctx Context, session *Session, segMem *SegmentedMem
 			zap.String("session_id", session.ID),
 			zap.Int("estimate_tokens", fit.Estimate),
 			zap.Int("usable_tokens", fit.Usable))
+	} else {
+		zap.L().Debug("preflight: request fits",
+			zap.String("session_id", session.ID),
+			zap.Int("estimate_tokens", fit.Estimate),
+			zap.Int("usable_tokens", fit.Usable),
+			zap.Int("pending_reminder_bytes", fit.PendingReminderBytes))
 	}
 	return messages, tools, nil
 }

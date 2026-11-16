@@ -114,3 +114,22 @@ func TestCompactSessionStatus(t *testing.T) {
 		assert.Equal(t, want, status.Code(compactSessionStatus(err)), err.Error())
 	}
 }
+
+// F7: the single-agent Server serves the RPC too.
+func TestCompactSessionRPC_SingleAgentServer(t *testing.T) {
+	stores := newResumeStores(t)
+	ag := stores.compactAgent(t, true)
+	chatTurns(t, ag, "s-single", 4)
+	srv := NewServer(ag, stores.sessions)
+
+	resp, err := srv.CompactSession(context.Background(), &loomv1.CompactSessionRequest{SessionId: "s-single"})
+	require.NoError(t, err)
+	assert.True(t, resp.GetTurnsFolded())
+	assert.EqualValues(t, agent.DefaultCompactKeepTurns, resp.GetTurnsKept())
+
+	_, err = srv.CompactSession(context.Background(), &loomv1.CompactSessionRequest{SessionId: "no-such-session"})
+	assert.Equal(t, codes.NotFound, status.Code(err))
+
+	_, err = srv.CompactSession(context.Background(), &loomv1.CompactSessionRequest{})
+	assert.Equal(t, codes.InvalidArgument, status.Code(err))
+}
