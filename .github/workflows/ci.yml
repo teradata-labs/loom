@@ -315,10 +315,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
+      # Go 1.27, not the module's 1.26: Go 1.26's fuzz coordinator can report
+      # its own -fuzztime deadline as a failure ("context deadline exceeded",
+      # no failing input written), golang/go#75804. Fixed in 1.27; the 1.26
+      # backport (golang/go#82362) has not shipped. Move back to the module's
+      # version once that backport ships or go.mod moves to 1.27.
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26'
+          go-version: '1.27'
           cache: true
 
       - name: Cache buf modules
