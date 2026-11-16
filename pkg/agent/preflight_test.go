@@ -24,6 +24,9 @@ import (
 
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 // proseMemory builds turns 1..n of user/assistant prose, each message ~3 dense
@@ -362,7 +365,11 @@ func TestPreflightFit_RefusalNamesThePinnedReasoning(t *testing.T) {
 	sm.reliefInFlight = true
 	a := &Agent{config: &Config{PreflightFit: true}}
 
-	_, _, err := a.preflightFit(newCtxDumpContext("pinned", observability.NewNoOpTracer(), nil), nil,
+	core, logs := observer.New(zapcore.ErrorLevel)
+	defer zap.ReplaceGlobals(zap.New(core))()
+	span := &observability.Span{}
+
+	_, _, err := a.preflightFit(newCtxDumpContext("pinned", observability.NewNoOpTracer(), nil), span,
 		&Session{ID: "pinned", SegmentedMem: sm}, sm, nil, nil, nil)
 
 	var re *RecoverableError
@@ -370,4 +377,38 @@ func TestPreflightFit_RefusalNamesThePinnedReasoning(t *testing.T) {
 	assert.Equal(t, "context_exhausted", re.ErrorType)
 	assert.Contains(t, err.Error(), "this turn's reasoning cannot be resent")
 	assert.Equal(t, true, re.RecoveryPayload["thinking_pinned"])
+	require.Len(t, span.Events, 1)
+	assert.Equal(t, true, span.Events[0].Attributes["thinking_pinned"])
+	entries := logs.FilterMessage("preflight: request cannot fit the usable window; not sending").All()
+	require.Len(t, entries, 1)
+	assert.Equal(t, true, entries[0].ContextMap()["thinking_pinned"])
+}
+
+// #672 F9: a pinned refusal on the synthesis path is told apart from a real
+// overflow in the trace, the log and the error.
+func TestSynthesisTooLong_RecordsThePin(t *testing.T) {
+	core, logs := observer.New(zapcore.ErrorLevel)
+	defer zap.ReplaceGlobals(zap.New(core))()
+	sm := proseMemory(t, 12000, 1000, 12)
+	thinkingTurn(sm, 12)
+	sm.reliefInFlight = true
+	fit := sm.EnsureFits(context.Background())
+	require.False(t, fit.Fits)
+	require.True(t, fit.ThinkingPinned)
+	span := &observability.Span{}
+
+	err := synthesisTooLong(span, "pinned-synth", fit)
+
+	assert.Contains(t, err.Error(), "this turn's reasoning cannot be resent")
+	require.Len(t, span.Events, 1)
+	assert.Equal(t, true, span.Events[0].Attributes["synthesis"])
+	assert.Equal(t, true, span.Events[0].Attributes["thinking_pinned"])
+	entries := logs.FilterMessage("preflight: synthesis request cannot fit the usable window; not sending").All()
+	require.Len(t, entries, 1)
+	assert.Equal(t, true, entries[0].ContextMap()["thinking_pinned"])
+
+	// An ordinary overflow says so too.
+	plain := synthesisTooLong(nil, "plain-synth", FitResult{Estimate: 20000, Usable: 11000})
+	assert.NotContains(t, plain.Error(), "reasoning")
+	assert.Equal(t, false, logs.FilterMessage("preflight: synthesis request cannot fit the usable window; not sending").All()[1].ContextMap()["thinking_pinned"])
 }
