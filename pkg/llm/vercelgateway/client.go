@@ -69,9 +69,9 @@ const (
 
 	// EnvAPIKey is the gateway's own API key variable (also read by the Jev
 	// decision provider in pkg/decision/jev).
-	EnvAPIKey = "AI_GATEWAY_API_KEY"
+	EnvAPIKey = "AI_GATEWAY_API_KEY" // #nosec G101 -- environment variable name, not a credential
 	// EnvLoomAPIKey is the loom-scoped override, checked before EnvAPIKey.
-	EnvLoomAPIKey = "LOOM_LLM_VERCEL_GATEWAY_API_KEY"
+	EnvLoomAPIKey = "LOOM_LLM_VERCEL_GATEWAY_API_KEY" // #nosec G101 -- environment variable name, not a credential
 
 	healthBodyLimit = 4096
 )

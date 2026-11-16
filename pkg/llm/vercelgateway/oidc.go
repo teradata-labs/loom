@@ -25,7 +25,7 @@ import (
 )
 
 // EnvOIDCToken is the variable Vercel sets to a deployment's OIDC token.
-const EnvOIDCToken = "VERCEL_OIDC_TOKEN"
+const EnvOIDCToken = "VERCEL_OIDC_TOKEN" // #nosec G101 -- environment variable name, not a credential
 
 // maxOIDCTokenBytes bounds a token file read; a JWT is a few KB.
 const maxOIDCTokenBytes = 64 << 10
