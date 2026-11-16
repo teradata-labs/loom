@@ -2394,6 +2394,7 @@ func addUsage(dst *Usage, u Usage) {
 	dst.CacheReadInputTokens += u.CacheReadInputTokens
 	dst.CacheCreationInputTokens += u.CacheCreationInputTokens
 	dst.CostUSD += u.CostUSD
+	dst.CostEstimated = dst.CostEstimated || u.CostEstimated
 }
 
 // observePromptUsage feeds a successful call's provider-reported prompt size

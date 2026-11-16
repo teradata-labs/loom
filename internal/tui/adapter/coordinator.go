@@ -34,6 +34,7 @@ import (
 // sessionAccumulator tracks cumulative cost/token data across turns for a session.
 type sessionAccumulator struct {
 	totalCost         float64
+	costEstimated     bool
 	totalInputTokens  int64
 	totalOutputTokens int64
 }
@@ -87,6 +88,7 @@ type AgentResult struct {
 // CostInfo represents cost information.
 type CostInfo struct {
 	TotalCost    float64
+	Estimated    bool // TotalCost includes an estimate
 	InputTokens  int32
 	OutputTokens int32
 	Provider     string
@@ -253,6 +255,7 @@ func (c *CoordinatorAdapter) Run(ctx context.Context, sessionID, prompt string, 
 			if progress.Cost != nil {
 				result.Cost = &CostInfo{
 					TotalCost:    progress.Cost.TotalCostUsd,
+					Estimated:    progress.Cost.LlmCost.GetCostEstimated(),
 					InputTokens:  progress.Cost.LlmCost.GetInputTokens(),
 					OutputTokens: progress.Cost.LlmCost.GetOutputTokens(),
 					Provider:     progress.Cost.LlmCost.GetProvider(),
@@ -267,11 +270,13 @@ func (c *CoordinatorAdapter) Run(ctx context.Context, sessionID, prompt string, 
 					c.sessionAccum[sessionID] = accum
 				}
 				accum.totalCost += progress.Cost.TotalCostUsd
+				accum.costEstimated = accum.costEstimated || progress.Cost.LlmCost.GetCostEstimated()
 				accum.totalInputTokens += int64(progress.Cost.LlmCost.GetInputTokens())
 				accum.totalOutputTokens += int64(progress.Cost.LlmCost.GetOutputTokens())
 
 				// Snapshot cumulative values under lock
 				cumCost := accum.totalCost
+				cumEstimated := accum.costEstimated
 				cumInput := accum.totalInputTokens
 				cumOutput := accum.totalOutputTokens
 				c.mu.Unlock()
@@ -280,6 +285,7 @@ func (c *CoordinatorAdapter) Run(ctx context.Context, sessionID, prompt string, 
 				sessUpdate := session.Session{
 					ID:               sessionID,
 					Cost:             cumCost,
+					CostEstimated:    cumEstimated,
 					CompletionTokens: int(cumOutput),
 					PromptTokens:     int(cumInput),
 					Model:            progress.Cost.LlmCost.GetModel(),
@@ -331,14 +337,17 @@ func (c *CoordinatorAdapter) Run(ctx context.Context, sessionID, prompt string, 
 			c.mu.Lock()
 			accum := c.sessionAccum[sessionID]
 			var cumCost float64
+			var cumEstimated bool
 			var cumInput, cumOutput int64
 			if accum != nil {
 				cumCost = accum.totalCost
+				cumEstimated = accum.costEstimated
 				cumInput = accum.totalInputTokens
 				cumOutput = accum.totalOutputTokens
 			} else {
 				// No accumulator yet (error before any COMPLETED), use per-turn values
 				cumCost = result.Cost.TotalCost
+				cumEstimated = result.Cost.Estimated
 				cumInput = int64(result.Cost.InputTokens)
 				cumOutput = int64(result.Cost.OutputTokens)
 			}
@@ -349,6 +358,7 @@ func (c *CoordinatorAdapter) Run(ctx context.Context, sessionID, prompt string, 
 				Payload: session.Session{
 					ID:               sessionID,
 					Cost:             cumCost,
+					CostEstimated:    cumEstimated,
 					CompletionTokens: int(cumOutput),
 					PromptTokens:     int(cumInput),
 					Model:            result.Cost.Model,

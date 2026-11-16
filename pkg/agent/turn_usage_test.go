@@ -203,3 +203,14 @@ func TestResponse_ScriptedReplayCountsNoLLMCall(t *testing.T) {
 	assert.Zero(t, resp.TurnLLMCalls, "a replayed turn made no LLM call")
 	assert.Equal(t, Usage{}, resp.TurnUsage, "a replayed turn has no usage")
 }
+
+// An estimated call makes the turn's summed cost estimated.
+func TestAddUsage_CostEstimatedIsSticky(t *testing.T) {
+	var turn Usage
+	addUsage(&turn, Usage{CostUSD: 0.1})
+	assert.False(t, turn.CostEstimated)
+	addUsage(&turn, Usage{CostUSD: 0.2, CostEstimated: true})
+	addUsage(&turn, Usage{CostUSD: 0.3})
+	assert.True(t, turn.CostEstimated)
+	assert.InDelta(t, 0.6, turn.CostUSD, 1e-12)
+}

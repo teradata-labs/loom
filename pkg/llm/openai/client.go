@@ -313,17 +313,33 @@ func reportedCost(facts llm.ResponseFacts, h http.Header) float64 {
 }
 
 // finishCost applies the unpriced rule to a response: when nothing reported a
-// cost and no rate is known for the model, a ReportUnpriced client prices the
-// call at 0 and flags it. It returns the metadata map, possibly allocated.
+// cost and no rate is known for the model, a ReportUnpriced client flags the
+// call unpriced and, instead of the gpt-4o guess, estimates it at the median
+// rate of the same creator's catalog models (catalog.CreatorMedianPricing),
+// marking the usage CostEstimated. With no priced catalog model at all, the
+// cost is 0 and only the unpriced flag is set. It returns the metadata map,
+// possibly allocated.
 func (c *Client) finishCost(usage *llmtypes.Usage, providerCostUSD float64, md map[string]interface{}) map[string]interface{} {
 	if !c.reportUnpriced || providerCostUSD > 0 || c.isPriced(usage) {
 		return md
 	}
-	usage.CostUSD = 0
 	if md == nil {
-		md = make(map[string]interface{}, 1)
+		md = make(map[string]interface{}, 2)
 	}
 	md[llm.MetadataCostUnpriced] = true
+	usage.CostUSD = 0
+	inPerM, outPerM, ok := catalog.CreatorMedianPricing(c.catalogProvider, c.model)
+	if !ok {
+		return md
+	}
+	// OpenAI-convention usage: InputTokens excludes cached tokens. Cache reads
+	// and writes bill at the OpenAI card's multipliers of the estimated rate.
+	usage.CostUSD = (float64(usage.InputTokens)*inPerM +
+		float64(usage.CacheReadInputTokens)*inPerM*openAICacheReadMultiplier +
+		float64(usage.CacheCreationInputTokens)*inPerM*openAICacheWriteMultiplier +
+		float64(usage.OutputTokens)*outPerM) / 1_000_000
+	usage.CostEstimated = true
+	md[llm.MetadataCostEstimated] = true
 	return md
 }
 

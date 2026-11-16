@@ -28,7 +28,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/llm"
+	"github.com/teradata-labs/loom/pkg/llm/catalog"
 	"github.com/teradata-labs/loom/pkg/types"
 )
 
@@ -239,6 +241,7 @@ func TestReportUnpriced(t *testing.T) {
 			assert.Equal(t, tt.wantUnpriced, flagged)
 			if tt.wantZero {
 				assert.Zero(t, out.Usage.CostUSD)
+				assert.False(t, out.Usage.CostEstimated, "no priced catalog model: nothing to estimate from")
 			} else {
 				assert.Positive(t, out.Usage.CostUSD)
 			}
@@ -263,3 +266,33 @@ func TestStream_NonObjectErrorMemberIsNotAFailure(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "abc", resp.Content)
 }
+
+// An unpriced model is estimated at the median rate of its creator's priced
+// catalog models and flagged estimated (shown with an asterisk), so cost
+// ceilings count it; with no priced catalog model it stays 0 and unpriced.
+func TestReportUnpriced_EstimatesFromCreatorMedian(t *testing.T) {
+	ns := "estimate-test-ns"
+	catalog.RegisterNamed(ns, listCatalog{ns: {
+		{Id: "vendor/a", CostPer_1MInputUsd: 1, CostPer_1MOutputUsd: 10},
+		{Id: "vendor/b", CostPer_1MInputUsd: 3, CostPer_1MOutputUsd: 30},
+	}})
+	t.Cleanup(func() { catalog.RegisterNamed(ns, nil) })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, strings.Replace(plainChatResponse, "vendor/model-x", "vendor/new", 1))
+	}))
+	defer srv.Close()
+	c := NewClient(Config{APIKey: "k", Model: "vendor/new", Endpoint: srv.URL, CatalogProvider: ns, ReportUnpriced: true})
+	out, err := c.Chat(context.Background(), []types.Message{{Role: "user", Content: "hi"}}, nil)
+	require.NoError(t, err)
+	// median 2/20 per 1M; 1000 prompt + 100 completion tokens.
+	assert.InDelta(t, (1000*2.0+100*20.0)/1e6, out.Usage.CostUSD, 1e-12)
+	assert.True(t, out.Usage.CostEstimated)
+	assert.Equal(t, true, out.Metadata[llm.MetadataCostEstimated])
+	assert.Equal(t, true, out.Metadata[llm.MetadataCostUnpriced])
+}
+
+type listCatalog map[string][]*loomv1.ModelInfo
+
+func (l listCatalog) Lookup(context.Context, string, string) *loomv1.ModelInfo { return nil }
+func (l listCatalog) List(context.Context) map[string][]*loomv1.ModelInfo  { return l }

@@ -6346,6 +6346,10 @@
           "type": "integer",
           "format": "int32",
           "description": "Tokens written to prompt cache (billed at 1.25x input price for Anthropic)."
+        },
+        "costEstimated": {
+          "type": "boolean",
+          "description": "True when cost_usd includes an estimate: at least one call in this usage\nhad no gateway-reported cost and no published rate for its model, and was\npriced at the median rate of the same creator's models in the gateway\ncatalog (vercel-ai-gateway). Clients show such a cost with an asterisk."
         }
       },
       "description": "LLMCost tracks token usage and costs."

@@ -567,7 +567,7 @@ const gatewayAttributePrefix = "gateway."
 // facts carry ids and provider slugs, never prompt content or credentials.
 func setGatewayAttributes(span *observability.Span, md map[string]interface{}) {
 	for k, v := range md {
-		if !strings.HasPrefix(k, gatewayAttributePrefix) && k != MetadataCostUnpriced {
+		if !strings.HasPrefix(k, gatewayAttributePrefix) && k != MetadataCostUnpriced && k != MetadataCostEstimated {
 			continue
 		}
 		switch val := v.(type) {

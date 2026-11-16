@@ -1703,8 +1703,13 @@ type LLMCost struct {
 	CacheReadInputTokens int32 `protobuf:"varint,7,opt,name=cache_read_input_tokens,json=cacheReadInputTokens,proto3" json:"cache_read_input_tokens,omitempty"`
 	// Tokens written to prompt cache (billed at 1.25x input price for Anthropic).
 	CacheCreationInputTokens int32 `protobuf:"varint,8,opt,name=cache_creation_input_tokens,json=cacheCreationInputTokens,proto3" json:"cache_creation_input_tokens,omitempty"`
-	unknownFields            protoimpl.UnknownFields
-	sizeCache                protoimpl.SizeCache
+	// True when cost_usd includes an estimate: at least one call in this usage
+	// had no gateway-reported cost and no published rate for its model, and was
+	// priced at the median rate of the same creator's models in the gateway
+	// catalog (vercel-ai-gateway). Clients show such a cost with an asterisk.
+	CostEstimated bool `protobuf:"varint,9,opt,name=cost_estimated,json=costEstimated,proto3" json:"cost_estimated,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *LLMCost) Reset() {
@@ -1791,6 +1796,13 @@ func (x *LLMCost) GetCacheCreationInputTokens() int32 {
 		return x.CacheCreationInputTokens
 	}
 	return 0
+}
+
+func (x *LLMCost) GetCostEstimated() bool {
+	if x != nil {
+		return x.CostEstimated
+	}
+	return false
 }
 
 // ContextState reports the agent's memory and context window state after a response.
@@ -11626,7 +11638,7 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\bCostInfo\x12$\n" +
 	"\x0etotal_cost_usd\x18\x01 \x01(\x01R\ftotalCostUsd\x12+\n" +
 	"\bllm_cost\x18\x02 \x01(\v2\x10.loom.v1.LLMCostR\allmCost\x12(\n" +
-	"\x10backend_cost_usd\x18\x03 \x01(\x01R\x0ebackendCostUsd\"\xb7\x02\n" +
+	"\x10backend_cost_usd\x18\x03 \x01(\x01R\x0ebackendCostUsd\"\xde\x02\n" +
 	"\aLLMCost\x12!\n" +
 	"\ftotal_tokens\x18\x01 \x01(\x05R\vtotalTokens\x12!\n" +
 	"\finput_tokens\x18\x02 \x01(\x05R\vinputTokens\x12#\n" +
@@ -11635,7 +11647,8 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"\x05model\x18\x05 \x01(\tR\x05model\x12\x1a\n" +
 	"\bprovider\x18\x06 \x01(\tR\bprovider\x125\n" +
 	"\x17cache_read_input_tokens\x18\a \x01(\x05R\x14cacheReadInputTokens\x12=\n" +
-	"\x1bcache_creation_input_tokens\x18\b \x01(\x05R\x18cacheCreationInputTokens\"\xc8\x01\n" +
+	"\x1bcache_creation_input_tokens\x18\b \x01(\x05R\x18cacheCreationInputTokens\x12%\n" +
+	"\x0ecost_estimated\x18\t \x01(\bR\rcostEstimated\"\xc8\x01\n" +
 	"\fContextState\x12%\n" +
 	"\x0eactive_pattern\x18\x01 \x01(\tR\ractivePattern\x12.\n" +
 	"\x13context_tokens_used\x18\x02 \x01(\x03R\x11contextTokensUsed\x12,\n" +

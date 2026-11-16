@@ -221,6 +221,12 @@ type Usage struct {
 	// Zero means TotalTokens is the charged figure. Read it through
 	// ThroughputTokens.
 	RateLimitTokens int
+	// CostEstimated is true when CostUSD includes an estimate rather than a
+	// reported or published price: a call whose model had neither was priced
+	// at the median rate of the same creator's catalog models
+	// (catalog.CreatorMedianPricing). Summing usage keeps it set if any call
+	// set it. Shown to users as an asterisk on the cost.
+	CostEstimated bool
 }
 
 // ThroughputTokens returns the tokens the provider metered against its

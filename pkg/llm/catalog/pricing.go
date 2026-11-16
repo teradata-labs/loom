@@ -16,6 +16,8 @@ package catalog
 
 import (
 	"context"
+	"sort"
+	"strings"
 	"sync"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
@@ -160,4 +162,49 @@ func CacheRates(provider, modelID string) (readPer1M, writePer1M float64) {
 		return 0, 0
 	}
 	return info.GetCostPer_1MCacheReadUsd(), info.GetCostPer_1MCacheWriteUsd()
+}
+
+// CreatorMedianPricing estimates per-million input/output rates for a model
+// that has no published rate: the median input and the median output rate of
+// the priced models from the same creator ("openai" in "openai/gpt-x") under
+// provider, or of every priced model under provider when that creator has
+// none. found is false when provider lists no priced model at all.
+//
+// It is for gateways whose catalog spans many vendors (vercel-ai-gateway): a
+// cost computed from it is an estimate, and callers must say so
+// (llm.cost_estimated). It reads the registered source's List, so it only
+// knows what a discovered catalog has loaded.
+func CreatorMedianPricing(provider, modelID string) (inputPer1M, outputPer1M float64, found bool) {
+	provider = NormalizeProvider(provider)
+	creator, _, hasCreator := strings.Cut(strings.ToLower(modelID), "/")
+	var sameIn, sameOut, allIn, allOut []float64
+	for _, m := range DefaultSource().List(context.Background())[provider] {
+		if m == nil || m.Id == modelID || m.CostPer_1MInputUsd <= 0 || m.CostPer_1MOutputUsd <= 0 {
+			continue
+		}
+		allIn = append(allIn, m.CostPer_1MInputUsd)
+		allOut = append(allOut, m.CostPer_1MOutputUsd)
+		if c, _, ok := strings.Cut(strings.ToLower(m.Id), "/"); hasCreator && ok && c == creator {
+			sameIn = append(sameIn, m.CostPer_1MInputUsd)
+			sameOut = append(sameOut, m.CostPer_1MOutputUsd)
+		}
+	}
+	if len(sameIn) > 0 {
+		return median(sameIn), median(sameOut), true
+	}
+	if len(allIn) > 0 {
+		return median(allIn), median(allOut), true
+	}
+	return 0, 0, false
+}
+
+// median returns the median of vals (the mean of the two middle values for
+// an even count). vals must be non-empty; it is sorted in place.
+func median(vals []float64) float64 {
+	sort.Float64s(vals)
+	n := len(vals)
+	if n%2 == 1 {
+		return vals[n/2]
+	}
+	return (vals[n/2-1] + vals[n/2]) / 2
 }

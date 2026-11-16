@@ -1174,6 +1174,12 @@ message LLMCost {
 
   // Tokens written to prompt cache (billed at 1.25x input price for Anthropic).
   int32 cache_creation_input_tokens = 8;
+
+  // True when cost_usd includes an estimate: at least one call in this usage
+  // had no gateway-reported cost and no published rate for its model, and was
+  // priced at the median rate of the same creator's models in the gateway
+  // catalog (vercel-ai-gateway). Clients show such a cost with an asterisk.
+  bool cost_estimated = 9;
 }
 
 // ContextState reports the agent's memory and context window state after a response.

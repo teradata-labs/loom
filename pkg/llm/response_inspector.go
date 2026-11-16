@@ -74,3 +74,9 @@ func (f ResponseFacts) Apply(md map[string]interface{}) map[string]interface{} {
 // no cost and no rate is known for the model. CostUSD is then 0, which means
 // "unknown", not "free".
 const MetadataCostUnpriced = "llm.cost_unpriced"
+
+// MetadataCostEstimated is the LLMResponse metadata key (and span attribute)
+// set to true when the call's CostUSD is an estimate (Usage.CostEstimated):
+// no reported cost and no published rate, priced at the median rate of the
+// same creator's catalog models. It is set together with MetadataCostUnpriced.
+const MetadataCostEstimated = "llm.cost_estimated"

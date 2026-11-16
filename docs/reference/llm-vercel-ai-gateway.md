@@ -167,7 +167,7 @@ Cost per call, in order:
 
 1. The cost the gateway reports in the response (`providerMetadata.gateway.cost`, also read as `provider_metadata`). The docs show this field only through the AI SDK and say the data is "also returned in providerMetadata on the chat completion response"; whether raw REST responses carry it is *unverified*.
 2. A catalog estimate: the gateway catalog's rates (published cache rates win over vendor multipliers), else the Claude family card for Claude ids.
-3. Otherwise, on the Chat surface, unpriced: `CostUSD = 0` and `llm.cost_unpriced = true`; loom does not guess with another model's rate. A cost of 0 means "unknown", so cost ceilings (eval `max_cost_usd`, session totals) do not count unpriced calls. On the Messages surface, a Claude id the family table does not recognise is priced at the Sonnet 4 card ($3/$15 per 1M) without the unpriced flag, as on the `anthropic` provider.
+3. Otherwise, on the Chat surface, an **estimate**: the median input and median output rate of the same creator's priced models in the gateway catalog (`openai/*` for `openai/new-model`), or of every priced catalog model when the creator has none (`catalog.CreatorMedianPricing`). The call is flagged `llm.cost_unpriced = true` and `llm.cost_estimated = true`, `Usage.CostEstimated` is set, `LLMCost.cost_estimated` is true in `Weave`/`StreamWeave` responses, and the TUI sidebar and `loom chat` show the cost with an asterisk (`$0.42*`). Cost ceilings (eval `max_cost_usd`, session totals) count the estimate. The asterisk is live only: stored messages and session totals do not keep it. With no priced catalog model at all (catalog not loaded), the cost is 0 with `llm.cost_unpriced = true` only. On the Messages surface, a Claude id the family table does not recognise is priced at the Sonnet 4 card ($3/$15 per 1M) without the unpriced flag, as on the `anthropic` provider.
 
 Output cap: under `looms serve` the request carries `llm.max_tokens` (looms default 4096) or the agent's `max_tokens`. Only the provider factory path reads the catalog's `max_tokens` when none is configured (fallback 4096). Context window: loom's memory budgets against `llm.max_context_tokens` when set, else its built-in default (200K); the catalog's `context_window` is stored but no serve path reads it today. Set `max_context_tokens` for models with a smaller window.
 
@@ -195,7 +195,8 @@ Every call's response metadata, and the LLM span, carry (when the response provi
 | `gateway.fallback_used` | `true` when the served model differs from the requested one, or more than one model was attempted |
 | `gateway.final_provider` | upstream that served the call |
 | `gateway.attempt_count` | provider attempts |
-| `llm.cost_unpriced` | `true` when no cost could be determined |
+| `llm.cost_unpriced` | `true` when neither the gateway nor a published rate priced the call |
+| `llm.cost_estimated` | `true` when the cost is the creator-median estimate (shown with an asterisk) |
 
 No prompt content or key material is recorded.
 
