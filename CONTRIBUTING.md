@@ -112,10 +112,11 @@ just check
 #### After a dependency change
 
 `NOTICE` and `THIRD-PARTY-NOTICES.md` are generated from the packages compiled
-into the release binaries. Any change to `go.mod` / `go.sum` (a version bump, an
-added or removed dependency, a merge of `main` that brings one) can change them,
-and CI fails with "Third-party notices are out of date" until they are
-regenerated. Nothing regenerates them automatically, including on Dependabot PRs:
+into the release binaries. They do not record module versions, so a bump that
+changes only versions leaves them unchanged. A distributed dependency that is
+added or removed, or a changed license or NOTICE text, changes them, and CI
+fails with "Third-party notices are out of date" until they are regenerated.
+Nothing regenerates them automatically, including on Dependabot PRs:
 
 ```bash
 just notices        # rewrite NOTICE and THIRD-PARTY-NOTICES.md
