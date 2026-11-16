@@ -612,10 +612,12 @@ type ProgressEvent struct {
 	ToolCallID string
 
 	// AgentID names the workflow agent that emitted the event. The
-	// orchestration executors (pipeline, parallel, fork-join) set it, so a
-	// consumer can tell apart the events of agents that run at the same time.
-	// It is empty outside a workflow. Two tasks of one parallel step can use
-	// the same agent; their events then carry the same AgentID.
+	// pkg/orchestration executors (pipeline, parallel, fork-join, swarm,
+	// conditional) set it, so a consumer can tell apart the events of agents
+	// that run at the same time. It is empty outside a workflow, and in the
+	// pkg/collaboration patterns (debate, pair programming, teacher-student),
+	// which do not report agent progress. Two tasks of one parallel step can
+	// use the same agent; their events then carry the same AgentID.
 	AgentID string
 }
 

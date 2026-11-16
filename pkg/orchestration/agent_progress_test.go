@@ -128,3 +128,57 @@ func TestNameAgentProgress(t *testing.T) {
 	cb(agent.ProgressEvent{Message: "nested", AgentID: "inner"})
 	assert.Equal(t, map[string]int{"outer": 1, "inner": 1}, rec.byAgent())
 }
+
+// The swarm and conditional executors also name each agent's events: every
+// voter of a swarm, and both the condition agent and the branch agent of a
+// conditional.
+func TestSwarmAndConditional_ProgressEventsNameTheirAgent(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct {
+		responses map[string]string
+		pattern   *loomv1.WorkflowPattern
+	}{
+		"swarm": {
+			responses: map[string]string{"agent-a": "yes", "agent-b": "yes"},
+			pattern: &loomv1.WorkflowPattern{Pattern: &loomv1.WorkflowPattern_Swarm{Swarm: &loomv1.SwarmPattern{
+				Question: "ship it?",
+				AgentIds: []string{"agent-a", "agent-b"},
+				Strategy: loomv1.VotingStrategy_MAJORITY,
+			}}},
+		},
+		"conditional": {
+			responses: map[string]string{"agent-a": "bug", "agent-b": "fixed"},
+			pattern: &loomv1.WorkflowPattern{Pattern: &loomv1.WorkflowPattern_Conditional{Conditional: &loomv1.ConditionalPattern{
+				ConditionAgentId: "agent-a",
+				ConditionPrompt:  "classify",
+				Branches: map[string]*loomv1.WorkflowPattern{
+					"bug": {Pattern: &loomv1.WorkflowPattern_ForkJoin{ForkJoin: &loomv1.ForkJoinPattern{
+						Prompt:        "fix it",
+						AgentIds:      []string{"agent-b"},
+						MergeStrategy: loomv1.MergeStrategy_FIRST,
+					}}},
+				},
+			}}},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			orch := NewOrchestrator(Config{Logger: zaptest.NewLogger(t), Tracer: observability.NewNoOpTracer()})
+			for id, out := range tc.responses {
+				orch.RegisterAgent(id, createMockAgent(t, id, newMockLLMProvider(out)))
+			}
+			rec := &progressRecorder{}
+			ctx := agent.ContextWithProgressCallback(context.Background(), rec.callback)
+
+			_, err := orch.ExecutePattern(ctx, tc.pattern)
+			require.NoError(t, err)
+
+			counts := rec.byAgent()
+			assert.Positive(t, counts["agent-a"], "agent-a emitted no named events")
+			assert.Positive(t, counts["agent-b"], "agent-b emitted no named events")
+			assert.Zero(t, counts[""], "an event named no agent")
+			assert.Len(t, counts, 2, "an event named an unknown agent: %v", counts)
+		})
+	}
+}
