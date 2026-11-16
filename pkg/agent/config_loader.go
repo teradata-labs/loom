@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
@@ -591,6 +592,11 @@ type BehaviorConfigYAML struct {
 	// ParallelReadTools opts the agent into running consecutive
 	// concurrency-safe tool calls of one response in parallel (default off).
 	ParallelReadTools bool `yaml:"parallel_read_tools"`
+	// PreflightFit opts the agent into the pre-flight context guard (default off).
+	PreflightFit bool `yaml:"preflight_fit"`
+	// AutoCompactPercent turns on end-of-turn compaction at this percentage of
+	// the usable window: 0 (off) to 99.
+	AutoCompactPercent int `yaml:"auto_compact_percent"`
 }
 
 // SkillsConfigYAML represents skills configuration in YAML
@@ -1025,6 +1031,9 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid behavior config: %w", err)
 	}
+	if p := yaml.Agent.Behavior.AutoCompactPercent; p < 0 || p > 99 {
+		return nil, fmt.Errorf("invalid behavior config: auto_compact_percent must be 0 (off) to 99, got %d", p)
+	}
 
 	config.Behavior = &loomv1.BehaviorConfig{
 		MaxIterations:          maxIterations,
@@ -1184,17 +1193,36 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 		config.Metadata["_parallel_read_tools"] = "true"
 	}
 
+	// The pre-flight guard and end-of-turn compaction are opt-in the same way.
+	if yaml.Agent.Behavior.PreflightFit {
+		if config.Metadata == nil {
+			config.Metadata = make(map[string]string)
+		}
+		config.Metadata["_preflight_fit"] = "true"
+	}
+	if p := yaml.Agent.Behavior.AutoCompactPercent; p > 0 {
+		if config.Metadata == nil {
+			config.Metadata = make(map[string]string)
+		}
+		config.Metadata["_auto_compact_percent"] = strconv.Itoa(p)
+	}
+
 	return config, nil
 }
 
 // ApplyMetadataBehavior maps the behavior flags yamlToProto encodes in an
 // agent's metadata onto cfg. Every place that builds a Config from a
 // loomv1.AgentConfig calls it, so a YAML key cannot work in one host and be
-// ignored in another. It maps only _parallel_read_tools for now; the sibling
-// flags (_tool_change_note, _context_relief_warning, _repeat_call_hint) are
-// tracked in issue #526.
+// ignored in another. It maps _parallel_read_tools, _preflight_fit and
+// _auto_compact_percent; the sibling flags (_tool_change_note,
+// _context_relief_warning, _repeat_call_hint) are tracked in issue #526.
 func ApplyMetadataBehavior(cfg *Config, md map[string]string) {
 	cfg.ParallelReadTools = md["_parallel_read_tools"] == "true"
+	cfg.PreflightFit = md["_preflight_fit"] == "true"
+	cfg.AutoCompactPercent = 0
+	if p, err := strconv.Atoi(md["_auto_compact_percent"]); err == nil && p > 0 && p < 100 {
+		cfg.AutoCompactPercent = p
+	}
 }
 
 // parseMemoryCompressionConfig converts YAML memory compression config to proto
