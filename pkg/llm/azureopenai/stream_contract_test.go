@@ -39,8 +39,9 @@ func newStreamTestClient(t *testing.T, url, apiVersion string) *Client {
 }
 
 // ChatStream types a refused request as the direct path does: a 4xx is a
-// deterministic client error (the agent does not retry it), and a
-// context-too-long 400 carries llm.ErrContextTooLong (the relief trigger).
+// deterministic client error (the agent does not retry it), a 408 or 5xx is
+// not, and a context-too-long 400 carries llm.ErrContextTooLong (the relief
+// trigger).
 func TestClient_ChatStream_TypesHTTPErrors(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -52,7 +53,11 @@ func TestClient_ChatStream_TypesHTTPErrors(t *testing.T) {
 	}{
 		{name: "401", status: http.StatusUnauthorized, body: `{"error":{"code":"401","message":"Access denied"}}`, deterministic: true},
 		{name: "context too long", status: http.StatusBadRequest,
-			body: `{"error":{"code":"context_length_exceeded","message":"This model's maximum context length is 128000 tokens."}}`, contextTooLng: true},
+			body: `{"error":{"code":"context_length_exceeded","message":"This model's maximum context length is 128000 tokens."}}`, deterministic: true, contextTooLng: true},
+		// A 408 and a 5xx are transient: never deterministic, so the agent
+		// may retry them.
+		{name: "408", status: http.StatusRequestTimeout, body: `{"error":{"message":"timeout"}}`},
+		{name: "500", status: http.StatusInternalServerError, body: `{"error":{"message":"server error"}}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -70,28 +75,30 @@ func TestClient_ChatStream_TypesHTTPErrors(t *testing.T) {
 			require.Error(t, err)
 			assert.Equal(t, int32(1), calls.Load(), "the client itself must not retry a refused request")
 			assert.Equal(t, tc.contextTooLng, errors.Is(err, llm.ErrContextTooLong), "ErrContextTooLong in %v", err)
-			if tc.deterministic {
-				assert.True(t, llm.IsDeterministicClientError(err), "a 401 must be a deterministic client error: %v", err)
-			}
+			assert.Equal(t, tc.deterministic, llm.IsDeterministicClientError(err), "deterministic client error: %v", err)
 		})
 	}
 }
 
-// ChatStream asks for the final usage chunk on api-versions that accept
-// stream_options, so a streamed turn reports its input tokens. An older
-// api-version does not get the field.
+// ChatStream asks for the final usage chunk on the api-versions whose spec
+// lists stream_options (preview versions from 2024-09-01-preview on), so a
+// streamed turn reports its input tokens. A stable version (the default
+// 2024-10-21 included), an older preview and a non-dated version do not get
+// the field.
 func TestClient_ChatStream_RequestsUsageChunk(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		apiVersion string
 		wantOption bool
 	}{
-		{apiVersion: "2024-10-21", wantOption: true},
 		{apiVersion: "2024-09-01-preview", wantOption: true},
+		{apiVersion: "2024-10-01-preview", wantOption: true},
 		{apiVersion: "2025-04-01-preview", wantOption: true},
-		{apiVersion: "v1", wantOption: true},
+		{apiVersion: "2024-10-21", wantOption: false},
 		{apiVersion: "2024-06-01", wantOption: false},
+		{apiVersion: "2024-08-01-preview", wantOption: false},
 		{apiVersion: "2024-02-15-preview", wantOption: false},
+		{apiVersion: "v1", wantOption: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.apiVersion, func(t *testing.T) {
@@ -124,4 +131,21 @@ func TestClient_ChatStream_RequestsUsageChunk(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The direct path (Chat) also marks a context-too-long 400 with
+// llm.ErrContextTooLong, so an agent gets relief with or without a progress
+// callback.
+func TestClient_Chat_ContextTooLongIsMarked(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":{"code":"context_length_exceeded","message":"This model's maximum context length is 128000 tokens."}}`)
+	}))
+	defer server.Close()
+
+	_, err := newStreamTestClient(t, server.URL, "2024-10-21").Chat(context.Background(),
+		[]types.Message{{Role: "user", Content: "go"}}, nil)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, llm.ErrContextTooLong)
 }
