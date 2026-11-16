@@ -37,6 +37,11 @@ type ChatCompletionRequest struct {
 	// through litellm ({"type":"adaptive"} on Claude 4.6+/5). Omitted for
 	// every other model — a strict OpenAI endpoint may reject the field.
 	Thinking map[string]interface{} `json:"thinking,omitempty"`
+
+	// Reasoning is the Vercel AI Gateway's reasoning request object
+	// ({"enabled":true,"effort":"high"}), sent instead of Thinking when
+	// Config.ReasoningObject is on and the model reasons.
+	Reasoning map[string]interface{} `json:"reasoning,omitempty"`
 }
 
 // ChatMessage represents a message in the conversation.
@@ -63,6 +68,23 @@ type ChatMessage struct {
 	// Amazon Bedrock Mantle (observed live 2026-11-04). Read as a fallback for
 	// ReasoningContent; never sent.
 	Reasoning string `json:"reasoning,omitempty"`
+	// ReasoningDetails is the Vercel AI Gateway's structured reasoning trace
+	// (entries may carry an upstream signature). Read on responses and
+	// replayed on in-turn assistant messages when Config.ReasoningObject is on.
+	ReasoningDetails []WireReasoningDetail `json:"reasoning_details,omitempty"`
+}
+
+// WireReasoningDetail is one reasoning_details entry. Type is
+// "reasoning.text" (Text), "reasoning.summary" (Summary) or
+// "reasoning.encrypted" (Data). Index pairs streaming fragments.
+type WireReasoningDetail struct {
+	Type      string `json:"type,omitempty"`
+	Text      string `json:"text,omitempty"`
+	Summary   string `json:"summary,omitempty"`
+	Data      string `json:"data,omitempty"`
+	Signature string `json:"signature,omitempty"`
+	Format    string `json:"format,omitempty"`
+	Index     *int   `json:"index,omitempty"`
 }
 
 // WireThinkingBlock is litellm's thinking block shape. Index appears only in
@@ -214,6 +236,8 @@ type ChatMessageDelta struct {
 	// Amazon Bedrock Mantle (observed live 2026-11-04). Read as a fallback for
 	// ReasoningContent; never sent.
 	Reasoning string `json:"reasoning,omitempty"`
+	// ReasoningDetails fragments (Vercel AI Gateway), merged by Index.
+	ReasoningDetails []WireReasoningDetail `json:"reasoning_details,omitempty"`
 }
 
 // ToolCallDelta represents a delta in a tool call.

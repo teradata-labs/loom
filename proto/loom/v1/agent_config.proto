@@ -165,6 +165,44 @@ message LLMConfig {
   // agent YAML has no effect there — wiring it through the factory is an open
   // follow-up, not a shipped behavior.
   optional int64 seed = 11;
+
+  // Routing options for a multi-provider LLM gateway. Honored by the
+  // vercel-ai-gateway provider, which sends them as providerOptions.gateway in
+  // every request body. Other providers ignore it. Unset means the gateway's
+  // own default routing.
+  LLMGatewayRouting gateway_routing = 12;
+}
+
+// LLMGatewayRouting selects and orders the upstream providers a multi-provider
+// LLM gateway may serve a request from. It is named for gateways in general so
+// a later gateway backend can reuse it; today only vercel-ai-gateway reads it.
+//
+// Provider slugs ("anthropic", "bedrock", "vertex", "openai", ...) are the
+// gateway's own and are passed through unchanged. Per-request BYOK credentials
+// are deliberately not part of this message: they are configured in the
+// gateway's dashboard, not in agent configuration.
+message LLMGatewayRouting {
+  // Upstream providers to try, in order. Empty = gateway default order.
+  repeated string order = 1;
+
+  // Restrict serving to these upstream providers. Empty = no restriction.
+  // A request no listed provider can serve fails; it is not retried.
+  repeated string only = 2;
+
+  // Rank eligible upstreams by "cost", "ttft" (time to first token) or "tps"
+  // (tokens per second). Empty = gateway default.
+  string sort = 3;
+
+  // Model ids to fall back to, in order, when the primary model fails on
+  // every eligible upstream. May name a different model family.
+  repeated string fallback_models = 4;
+
+  // Serve only from upstreams with a zero-data-retention agreement.
+  bool zero_data_retention = 5;
+
+  // Gateway-side prompt caching mode. "" = off (explicit cache_control only),
+  // "auto" = the gateway places cache breakpoints itself.
+  string caching = 6;
 }
 
 // LLMRateLimitConfig configures client-side rate limiting for an LLM provider.

@@ -147,3 +147,17 @@ func scaleLongContextCard(modelID string, rowIn, rowOut, longIn, longOut float64
 	}
 	return longIn * (rowIn / cardIn), longOut * (rowOut / cardOut)
 }
+
+// CacheRates returns the published per-million-token prompt-cache read and
+// write rates (USD) the registered catalog holds for a model, or 0 for a
+// bucket it does not publish. Gateways that publish them (the Vercel AI
+// Gateway's /v1/models input_cache_read / input_cache_write) let a client
+// price cache tokens at the real rate instead of deriving it from the input
+// rate with a vendor multiplier that may not match the upstream.
+func CacheRates(provider, modelID string) (readPer1M, writePer1M float64) {
+	info := DefaultSource().Lookup(context.Background(), NormalizeProvider(provider), modelID)
+	if info == nil {
+		return 0, 0
+	}
+	return info.GetCostPer_1MCacheReadUsd(), info.GetCostPer_1MCacheWriteUsd()
+}

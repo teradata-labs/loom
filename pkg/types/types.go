@@ -265,9 +265,17 @@ type LLMResponse struct {
 // carried opaquely: Signature is provider-signed and never interpreted;
 // redacted blocks keep their encrypted payload in Thinking.
 type ThinkingBlock struct {
-	Type      string // "thinking" | "redacted_thinking"
+	// Type is "thinking" | "redacted_thinking" (Anthropic), or a
+	// "reasoning.*" detail type ("reasoning.text", "reasoning.summary",
+	// "reasoning.encrypted") from an OpenAI-compatible gateway's
+	// reasoning_details.
+	Type      string
 	Thinking  string
 	Signature string
+	// Format is the gateway's opaque format tag for a reasoning detail
+	// (for example "anthropic-claude-v1"), replayed unchanged. Empty for
+	// Anthropic-native blocks.
+	Format string
 }
 
 // LLMProvider defines the interface for LLM providers.

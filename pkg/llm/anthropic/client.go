@@ -709,8 +709,20 @@ func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cache
 
 	inputCost := float64(inputTokens) * inputPricePerM / 1_000_000
 	outputCost := float64(outputTokens) * outputPricePerM / 1_000_000
-	cacheWriteCost := float64(cacheCreationTokens) * inputPricePerM * catalog.ClaudeCacheWriteMultiplier / 1_000_000
-	cacheReadCost := float64(cacheReadTokens) * inputPricePerM * catalog.ClaudeCacheReadMultiplier(c.model) / 1_000_000
+	cacheWritePerM := inputPricePerM * catalog.ClaudeCacheWriteMultiplier
+	cacheReadPerM := inputPricePerM * catalog.ClaudeCacheReadMultiplier(c.model)
+	// A catalog that publishes cache rates (a gateway's /v1/models) wins over
+	// the multipliers.
+	if r, w := catalog.CacheRates(provider, c.model); r > 0 || w > 0 {
+		if r > 0 {
+			cacheReadPerM = r
+		}
+		if w > 0 {
+			cacheWritePerM = w
+		}
+	}
+	cacheWriteCost := float64(cacheCreationTokens) * cacheWritePerM / 1_000_000
+	cacheReadCost := float64(cacheReadTokens) * cacheReadPerM / 1_000_000
 	return inputCost + outputCost + cacheWriteCost + cacheReadCost
 }
 

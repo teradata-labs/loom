@@ -68,6 +68,9 @@ type Client struct {
 	// reportUnpriced: price an unknown model at 0 and flag it unpriced instead
 	// of using the gpt-4o default rate.
 	reportUnpriced bool
+	// reasoningObject: send the gateway reasoning object instead of litellm
+	// thinking, and parse/replay reasoning_details.
+	reasoningObject bool
 }
 
 // DefaultCatalogProvider is the catalog namespace the client prices under
@@ -142,6 +145,11 @@ type Config struct {
 	// catalog spans many vendors, where the gpt-4o guess is wrong more often
 	// than not.
 	ReportUnpriced bool
+	// ReasoningObject selects the Vercel AI Gateway reasoning shape: thinking
+	// is requested as "reasoning": {"enabled", "effort"} for Claude ids and
+	// for ids the catalog marks is_reasoning, and reasoning_details are parsed
+	// and replayed in-turn. Off by default; litellm requests are unchanged.
+	ReasoningObject bool
 }
 
 // ValidateExtraBody reports whether extra can be sent by this client: no key
@@ -271,6 +279,7 @@ func NewClient(config Config) *Client {
 		extraBodyErr:           extraBodyErr,
 		inspector:              config.ResponseInspector,
 		reportUnpriced:         config.ReportUnpriced,
+		reasoningObject:        config.ReasoningObject,
 	}
 }
 
@@ -521,6 +530,7 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 		Messages:    apiMessages,
 		Temperature: c.temperatureParam(ctx),
 		Thinking:    c.thinkingParam(ctx),
+		Reasoning:   c.reasoningParam(ctx),
 	}
 	if c.usesMaxCompletionTokens() {
 		req.MaxCompletionTokens = c.maxTokens
@@ -679,14 +689,24 @@ func (c *Client) convertMessages(messages []llmtypes.Message) []ChatMessage {
 			// Anthropic 400s on a thinking block with no thinking field,
 			// while a missing block is tolerated (probed).
 			if len(msg.ThinkingBlocks) > 0 && msg.Turn >= newestTurn {
-				wire := make([]WireThinkingBlock, 0, len(msg.ThinkingBlocks))
+				var wire []WireThinkingBlock
+				var details []WireReasoningDetail
 				for _, b := range msg.ThinkingBlocks {
 					if b.Thinking == "" && b.Type != "redacted_thinking" {
+						continue
+					}
+					if isReasoningDetail(b.Type) {
+						// reasoning_details go back only on the gateway shape;
+						// a litellm endpoint would not know the block type.
+						if c.reasoningObject {
+							details = append(details, blockToDetail(b, len(details)))
+						}
 						continue
 					}
 					wire = append(wire, WireThinkingBlock{Type: b.Type, Thinking: b.Thinking, Signature: b.Signature})
 				}
 				apiMsg.ThinkingBlocks = wire
+				apiMsg.ReasoningDetails = details
 			}
 
 			if apiMsg.Content == nil && len(apiMsg.ToolCalls) == 0 {
@@ -797,7 +817,7 @@ func completeThinkingBlocks(blocks []llmtypes.ThinkingBlock, text string) {
 // a 5-family model answers that enabled is not supported — so the gateway
 // path cannot send one shape for every Claude id.
 func (c *Client) thinkingParam(ctx context.Context) map[string]interface{} {
-	if c.thinkingLevel == "" || c.thinkingLevel == "none" || !c.emitsCacheControl() {
+	if c.reasoningObject || c.thinkingLevel == "" || c.thinkingLevel == "none" || !c.emitsCacheControl() {
 		return nil
 	}
 	if llm.IsAdaptiveThinkingModel(c.model) {
@@ -831,6 +851,11 @@ func (c *Client) thinkingParam(ctx context.Context) map[string]interface{} {
 // in thinkingParam, so no clamp is needed here.
 func (c *Client) temperatureParam(ctx context.Context) float64 {
 	if c.thinkingParam(ctx) != nil {
+		return 1.0
+	}
+	// The same Anthropic rule holds when the reasoning object carries a
+	// Claude request through the gateway.
+	if c.emitsCacheControl() && c.reasoningParam(ctx) != nil {
 		return 1.0
 	}
 	return c.temperature
@@ -973,6 +998,17 @@ func (c *Client) convertResponse(resp *ChatCompletionResponse, providerCostUSD f
 			llmResp.Thinking = choice.Message.Reasoning
 		}
 		completeThinkingBlocks(llmResp.ThinkingBlocks, llmResp.Thinking)
+		if c.reasoningObject {
+			var detailText strings.Builder
+			for _, d := range choice.Message.ReasoningDetails {
+				blk := detailToBlock(d)
+				llmResp.ThinkingBlocks = append(llmResp.ThinkingBlocks, blk)
+				detailText.WriteString(displayText(blk))
+			}
+			if llmResp.Thinking == "" {
+				llmResp.Thinking = detailText.String()
+			}
+		}
 
 		// Extract tool calls
 		for _, tc := range choice.Message.ToolCalls {
@@ -1101,9 +1137,20 @@ func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cache
 	if uncached < 0 {
 		uncached = 0
 	}
+	// A catalog that publishes cache rates (a gateway's /v1/models) wins over
+	// the family multiplier.
+	cacheReadPerM, cacheWritePerM := inputCostPerM*cacheReadMult, inputCostPerM*cacheWriteMult
+	if r, w := catalog.CacheRates(c.catalogProvider, c.model); r > 0 || w > 0 {
+		if r > 0 {
+			cacheReadPerM = r
+		}
+		if w > 0 {
+			cacheWritePerM = w
+		}
+	}
 	inputCost := float64(uncached) * inputCostPerM / 1_000_000
-	cacheWriteCost := float64(cacheCreationTokens) * inputCostPerM * cacheWriteMult / 1_000_000
-	cacheReadCost := float64(cacheReadTokens) * inputCostPerM * cacheReadMult / 1_000_000
+	cacheWriteCost := float64(cacheCreationTokens) * cacheWritePerM / 1_000_000
+	cacheReadCost := float64(cacheReadTokens) * cacheReadPerM / 1_000_000
 	outputCost := float64(outputTokens) * outputCostPerM / 1_000_000
 	return inputCost + cacheWriteCost + cacheReadCost + outputCost
 }
@@ -1222,6 +1269,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		Messages:      apiMessages,
 		Temperature:   c.temperatureParam(ctx),
 		Thinking:      c.thinkingParam(ctx),
+		Reasoning:     c.reasoningParam(ctx),
 		Stream:        true,                               // Enable streaming
 		StreamOptions: &StreamOptions{IncludeUsage: true}, // final usage chunk (tokens + cache)
 	}
@@ -1287,6 +1335,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	var thinkBlockOrder []int
 
 	var streamFacts llm.ResponseFacts
+	var details detailAccumulator
 
 	scanner := bufio.NewScanner(httpResp.Body)
 	// A gateway may coalesce a whole response (or an error echoing the request)
@@ -1354,6 +1403,11 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				reasoningBuffer.WriteString(choice.Delta.ReasoningContent)
 			} else if choice.Delta.Reasoning != "" {
 				reasoningBuffer.WriteString(choice.Delta.Reasoning)
+			}
+			if c.reasoningObject {
+				for _, d := range choice.Delta.ReasoningDetails {
+					details.add(d)
+				}
 			}
 			for _, tb := range choice.Delta.ThinkingBlocks {
 				idx := 0
@@ -1537,6 +1591,16 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		thinkingText = reasoningBuffer.String()
 	}
 	completeThinkingBlocks(thinkingBlocks, thinkingText)
+	if c.reasoningObject {
+		var detailText strings.Builder
+		for _, blk := range details.result() {
+			thinkingBlocks = append(thinkingBlocks, blk)
+			detailText.WriteString(displayText(blk))
+		}
+		if thinkingText == "" {
+			thinkingText = detailText.String()
+		}
+	}
 
 	md := map[string]interface{}{
 		"model":         c.model,
