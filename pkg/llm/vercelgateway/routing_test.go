@@ -38,7 +38,7 @@ func TestRouting_Validate(t *testing.T) {
 		{name: "bad sort", r: &Routing{Sort: "fast"}, wantErr: "sort"},
 		{name: "bad caching", r: &Routing{Caching: "on"}, wantErr: "caching"},
 		{name: "empty slug", r: &Routing{Order: []string{""}}, wantErr: "provider slug"},
-		{name: "upper slug", r: &Routing{Only: []string{"Bedrock"}}, wantErr: "provider slug"},
+		{name: "camelCase slug (live: vertexAnthropic)", r: &Routing{Only: []string{"vertexAnthropic", "claudeaws"}}},
 		{name: "slug with space", r: &Routing{Only: []string{"bed rock"}}, wantErr: "provider slug"},
 		{name: "duplicate order", r: &Routing{Order: []string{"a", "a"}}, wantErr: "twice"},
 		{name: "bad fallback", r: &Routing{FallbackModels: []string{"gpt-5"}}, wantErr: "fallback_models"},

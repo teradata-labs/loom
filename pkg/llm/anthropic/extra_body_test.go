@@ -167,3 +167,29 @@ func TestStream_ErrorEventIsAnError(t *testing.T) {
 	assert.Contains(t, err.Error(), "Overloaded")
 	assert.Equal(t, llm.ProviderFailureUnavailable, llm.ClassifyProviderFailure(err))
 }
+
+// The Vercel AI Gateway's Messages stream (observed live 2026-11-16) sends
+// message_start with input_tokens 0 and the real count, and the cache counts
+// under provider_metadata.anthropic.usage, on message_delta.
+func TestStream_InputTokensFromMessageDelta(t *testing.T) {
+	stream := "event: message_start\n" +
+		`data: {"type":"message_start","message":{"id":"gen_1","type":"message","role":"assistant","model":"anthropic/claude-haiku-4.5","content":[],"usage":{"input_tokens":0,"output_tokens":0}}}` + "\n\n" +
+		"event: content_block_start\n" + `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n\n" +
+		"event: content_block_delta\n" + `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}` + "\n\n" +
+		"event: content_block_stop\n" + `data: {"type":"content_block_stop","index":0}` + "\n\n" +
+		"event: message_delta\n" +
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":19,"output_tokens":17},"provider_metadata":{"anthropic":{"usage":{"input_tokens":19,"cache_read_input_tokens":7,"cache_creation_input_tokens":3,"output_tokens":17}}}}` + "\n\n" +
+		"event: message_stop\n" + `data: {"type":"message_stop"}` + "\n\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, stream)
+	}))
+	defer srv.Close()
+	c := NewClient(Config{APIKey: "k", Model: "anthropic/claude-haiku-4.5", Endpoint: srv.URL})
+	resp, err := c.ChatStream(context.Background(), []types.Message{{Role: "user", Content: "hi"}}, nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 19, resp.Usage.InputTokens)
+	assert.Equal(t, 17, resp.Usage.OutputTokens)
+	assert.Equal(t, 7, resp.Usage.CacheReadInputTokens)
+	assert.Equal(t, 3, resp.Usage.CacheCreationInputTokens)
+}

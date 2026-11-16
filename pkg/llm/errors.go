@@ -55,7 +55,11 @@ func IsAnthropicContextTooLong(statusCode int, body []byte) bool {
 	// any real output reservation: it fires first, while the prompt is still
 	// under the window). A matcher carrying only the first never triggers relief
 	// in normal operation, and fails silently (releasePressure never runs).
-	return resp.Error.Type == "invalid_request_error" &&
+	//
+	// The Vercel AI Gateway passes the upstream message through verbatim but
+	// reports its own error type, AI_APICallError (observed live 2026-11-16:
+	// "prompt is too long: 300024 tokens > 200000 maximum").
+	return (resp.Error.Type == "invalid_request_error" || resp.Error.Type == gatewayAPICallErrorType) &&
 		(strings.Contains(resp.Error.Message, "prompt is too long") ||
 			strings.Contains(resp.Error.Message, "exceed context limit"))
 }
@@ -101,8 +105,17 @@ func IsOpenAIContextTooLong(statusCode int, body []byte) bool {
 	// Matching only the OpenAI code leaves relief blind to that gateway — the
 	// refusal fires, the matcher misses it, and the turn hard-fails instead of
 	// shedding. Match the passed-through wording too.
+	//
+	// OpenAI's newer models word it "Your input exceeds the context window of
+	// this model"; the Vercel AI Gateway passes that through with its own
+	// error type and no code (observed live 2026-11-16).
 	msg := resp.Error.Message
 	return strings.Contains(msg, "prompt is too long") ||
 		strings.Contains(msg, "exceed context limit") ||
-		strings.Contains(msg, "context_length_exceeded")
+		strings.Contains(msg, "context_length_exceeded") ||
+		strings.Contains(msg, "exceeds the context window")
 }
+
+// gatewayAPICallErrorType is the error.type the Vercel AI Gateway reports
+// for an upstream refusal it passes through.
+const gatewayAPICallErrorType = "AI_APICallError"

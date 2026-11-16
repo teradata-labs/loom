@@ -1,7 +1,7 @@
 # Vercel AI Gateway
 
 **Version**: v1.4.0
-**Status**: ⚠️ Partial. The provider (`pkg/llm/vercelgateway`) and its wiring are implemented and covered by unit tests against a fake gateway. They have **not yet been run against the live gateway**: the behaviours marked *unverified* below follow Vercel's public docs (read 2026-11-13/16) and are checked by the live suite (`live_test.go`), which has not run yet.
+**Status**: ⚠️ Partial. The provider (`pkg/llm/vercelgateway`) and its wiring are implemented, unit-tested against a fake gateway, and **run against the live gateway on 2026-11-16** (`claude-haiku-4.5` on the Messages surface, `gpt-5-mini` on Chat Completions, `text-embedding-3-small`; see [the spike record](../research/vercel-ai-gateway-spike.md)). Behaviours marked *unverified* below were not exercised live.
 
 The [Vercel AI Gateway](https://vercel.com/docs/ai-gateway) is one host, `https://ai-gateway.vercel.sh`, that fronts many upstream providers under creator-scoped model ids (`anthropic/claude-sonnet-4.5`, `openai/gpt-5`, `google/gemini-3.1-pro-preview`). Loom's `vercel-ai-gateway` provider (alias `vercel`) sends Claude ids to the gateway's Anthropic Messages surface and every other id to its OpenAI Chat Completions surface.
 
@@ -23,7 +23,7 @@ The [Vercel AI Gateway](https://vercel.com/docs/ai-gateway) is one host, `https:
 
 ## What is implemented
 
-✅ Implemented (unit-tested; live run pending):
+✅ Implemented (unit-tested; live-tested 2026-11-16 unless marked):
 
 - Dual routing: `anthropic/*` → `POST /v1/messages`, everything else → `POST /v1/chat/completions`
 - Blocking and streaming calls, tool calls, on both surfaces
@@ -146,10 +146,10 @@ The only beta header loom sends to Anthropic is the obsolete prompt-caching one;
 | `only` | `only` | provider slugs; no match is a terminal error |
 | `sort` | `sort` | `cost`, `ttft`, `tps` |
 | `fallback_models` | `models` | creator/model ids |
-| `zero_data_retention` | `zeroDataRetention` | `true` (*unverified shape*) |
+| `zero_data_retention` | `zeroDataRetention` | `true` (accepted live; policy effect *unverified*) |
 | `caching` | `caching` | `auto` |
 
-Slugs are checked for shape only (lower-case letters, digits, `.`, `_`, `-`; no duplicates). The gateway publishes no canonical slug list a client can validate against. Unset fields are omitted; with no routing at all the request body carries no `providerOptions`.
+Slugs are checked for shape only (letters, digits, `.`, `_`, `-`; no duplicates). Live slugs include camelCase ones (`vertexAnthropic`, `claudeaws`). The gateway publishes no canonical slug list a client can validate against. Unset fields are omitted; with no routing at all the request body carries no `providerOptions`.
 
 Regional hosts (`eu.ai-gateway.vercel.sh`, `us.ai-gateway.vercel.sh`) carry a 5% surcharge and return 403 on the free tier, per Vercel's pricing page. Set them with `vercel_gateway_endpoint`.
 
@@ -162,11 +162,11 @@ Regional hosts (`eu.ai-gateway.vercel.sh`, `us.ai-gateway.vercel.sh`) carry a 5%
 
 In `looms` (serve, workflow, eval), the first gateway client built for an endpoint (main LLM, pool entry, an agent's own `llm` block, a reload) starts the catalog for that endpoint in the background (the build does not wait): `GET /v1/models` (no credential needed) once, then every hour. Each endpoint gets its own catalog entry, so a regional host does not replace the global one. The registry without `looms`, `pkg/builder`, `loom-standalone` and `loom decision` do not fetch it; call `vercelgateway.RegisterCatalog` to get it there. Language models are registered under the catalog namespace `vercel-ai-gateway` with context window, max output tokens, capabilities (the entry's `tags`), `is_reasoning`, and per-1M input/output/cache-read/cache-write rates. A failed fetch is logged; serving continues, and the background refresh fills the catalog in once the gateway answers. A failed refresh keeps the previous catalog.
 
-Prices in `/v1/models` are decimal strings; the docs describe them as cost per token and the sample values read as USD (*unverified unit*). Loom multiplies by 10⁶.
+Prices in `/v1/models` are decimal strings in USD per token (confirmed live: Haiku 4.5 lists `0.000001`/`0.000005`, its $1/$5 card). Loom multiplies by 10⁶.
 
 Cost per call, in order:
 
-1. The cost the gateway reports in the response (`providerMetadata.gateway.cost`, also read as `provider_metadata`). The docs show this field only through the AI SDK and say the data is "also returned in providerMetadata on the chat completion response"; whether raw REST responses carry it is *unverified*.
+1. The cost the gateway reports in the response. Observed live on every call: on the Messages surface `provider_metadata.gateway.cost` (body and the stream's `message_delta`); on Chat Completions `usage.cost` (and `choices[0].message/delta.provider_metadata.gateway.cost`).
 2. A catalog estimate: the gateway catalog's rates (published cache rates win over vendor multipliers), else the Claude family card for Claude ids.
 3. Otherwise, on the Chat surface, an **estimate**: the median input and median output rate of the same creator's priced models in the gateway catalog (`openai/*` for `openai/new-model`), or of every priced catalog model when the creator has none (`catalog.CreatorMedianPricing`). The call is flagged `llm.cost_unpriced = true` and `llm.cost_estimated = true`, `Usage.CostEstimated` is set, `LLMCost.cost_estimated` is true in `Weave`/`StreamWeave` responses, and the TUI sidebar and `loom chat` show the cost with an asterisk (`$0.42*`). Cost ceilings (eval `max_cost_usd`, session totals) count the estimate. The asterisk is live only: stored messages and session totals do not keep it. With no priced catalog model at all (catalog not loaded), the cost is 0 with `llm.cost_unpriced = true` only. On the Messages surface, a Claude id the family table does not recognise is priced at the Sonnet 4 card ($3/$15 per 1M) without the unpriced flag, as on the `anthropic` provider.
 
@@ -180,7 +180,7 @@ Output cap: under `looms serve` the request carries `llm.max_tokens` (looms defa
 | 402 | `vercelgateway.ErrCreditsExhausted` ("payment required … credits exhausted, budget exceeded, or BYOK without a positive credit balance"); not retried |
 | 401/403/404, unsatisfiable `only` | Terminal (deterministic client error) |
 | Error payload after a stream started | Returned as an error (status from the error type) instead of a truncated success |
-| Context too long | Detected by loom's Anthropic and OpenAI matchers; whether the gateway's body matches them is *unverified* |
+| Context too long | 400 with `error.type` `AI_APICallError` and the upstream message passed through (live). Loom's matchers recognise both surfaces' wording, so context relief fires. |
 
 The limiter is on by default. The gateway does not rate limit paid-tier requests and publishes no free-tier limit, so unset limiter fields take loom's generic defaults (`llm.DefaultRateLimiterConfig`: 2 req/s, burst 5) on **both** surfaces; without this, Claude ids would inherit the anthropic client's Tier 1 limits (0.7 req/s). Raise `llm.rate_limit.*` for a large fleet on a paid team. The limiter key includes the credential scope, endpoint and model, so gateway traffic never shares a bucket with direct traffic.
 
@@ -249,18 +249,17 @@ VERCEL_GATEWAY_LIVE_CAPTURE_DIR=/tmp/vgw-captures \
 
 ## Limitations and unverified behaviour
 
-Each item below follows the public docs but has not been observed live. The plan's §7 lists the questions for Vercel behind them.
+Verified live on 2026-11-16 (details in [the spike record](../research/vercel-ai-gateway-spike.md)): cost and routing metadata locations, the generation id, the pricing unit, `providerOptions.gateway` in the raw body (an unsatisfiable `only` is rejected), `gateway.fallback_used` (the gateway echoes the requested id), Claude signed-thinking replay over a 3-turn tool loop, GPT-5 mini `reasoning_details` replay, context-overflow bodies, `/v1/credits`, `/v1/embeddings`.
 
-- Whether the gateway honours `providerOptions.gateway` in a raw REST body at all, with the camelCase keys loom sends, and whether an unknown key is ignored or rejected (question 19). If it is ignored, `only` and `zero_data_retention` have no effect and loom would not notice; the live suite's unsatisfiable-`only` test is the check.
-- Whether `gateway.fallback_used` is accurate: it is `true` when the response's `model` differs from the requested id (a bare id without the creator prefix counts as the same model). If the gateway echoes the upstream's dated id (`claude-sonnet-4-5-20250929`), every call would read as a fallback.
+Still unverified (the plan's §7 lists the questions behind them):
 
-- Where raw REST responses carry cost and routing metadata (questions 1–3). If they do not, cost falls back to the catalog estimate and routing attributes are absent.
-- Whether `/v1/models` prices are USD per token (question 5).
-- Whether `/v1/messages` accepts or needs `anthropic-version` and rejects `anthropic-beta` (questions 9–10). Loom sends `anthropic-version: 2023-06-01` and no beta.
-- Thinking-signature replay across upstreams, and whether `reasoning_details` must be replayed (questions 11, 14).
-- The `zeroDataRetention` value shape (question 23).
-- Context-overflow, 402 and mid-stream error bodies (questions 24–27).
-- The gateway's own request and stream-idle timeouts (question 28). Loom's defaults: 300 s per blocking call, first-byte wait equal to that on streams.
+- Whether `anthropic-beta` is accepted or forwarded (question 9). Loom sends none.
+- Thinking-signature replay when a later turn is served by a different upstream, and whether `reasoning_details` replay is required rather than merely accepted (questions 11, 14).
+- Cache usage fields when Bedrock or Vertex serves a Messages call, and cross-family fallback behaviour (questions 12–13).
+- The `zeroDataRetention` value shape and other `providerOptions` keys (question 23). Loom sends `true`; the gateway accepted the request, but no live check shows the policy was applied.
+- 402, forced 429 and mid-stream failure bodies (questions 25–27).
+- The gateway's own request and stream-idle timeouts, and enterprise concurrency limits (questions 28–29). Loom's defaults: 300 s per blocking call, first-byte wait equal to that on streams.
+- OIDC: implemented and unit-tested, not run live (question 32).
 
 ## See Also
 

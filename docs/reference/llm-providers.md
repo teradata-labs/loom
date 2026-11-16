@@ -51,7 +51,7 @@ Reference for all supported LLM providers and their configuration.
 | **Google Gemini** | ✅ Implemented | Native | 1.05M | $0-$12/1M tokens | Long context, multimodal |
 | **HuggingFace** | ✅ Implemented | Native (model-dependent) | Varies | ~$0.20-$1.00/1M tokens (estimated) | Open-source models |
 | **AWS Bedrock Mantle** | ⚠️ Partial (GPT-5.x/6.x unpriced; Responses API planned) | Native | 4k-1M | $0.04-$55/1M tokens (53 cataloged models) | Mantle-only models, OpenAI/Anthropic-compatible AWS endpoint |
-| **Vercel AI Gateway** | ⚠️ Partial (unit-tested; live run pending) | Native (both surfaces) | From live catalog | Upstream list price, from `GET /v1/models` | One key for many upstreams, provider routing and fallback |
+| **Vercel AI Gateway** | ⚠️ Partial (live-tested 2026-11-16 on Haiku 4.5 and GPT-5 mini) | Native (both surfaces) | From live catalog | Upstream list price, from `GET /v1/models` | One key for many upstreams, provider routing and fallback |
 | **Google Vertex AI** | 📋 Planned | TBD | TBD | TBD | GCP infrastructure |
 
 ### Authentication Methods
@@ -708,7 +708,7 @@ llm:
 
 ### 10. Vercel AI Gateway
 
-**Status**: ⚠️ Partial. Implemented and unit-tested against a fake gateway: provider (`pkg/llm/vercelgateway`), provider factory, agent registry, `looms` server config (`llm.vercel_gateway_*`), agent YAML `gateway_routing`, `looms workflow`, `looms config init` (option 5), `loom-standalone`, `loom decision replay`, `pkg/builder` (`WithVercelGatewayLLM`) and memory embeddings (`embedding.provider: vercel-ai-gateway`). Not yet run against the live gateway. Not done: the Responses surface (📋), tiered long-context prices.
+**Status**: ⚠️ Partial. Implemented and unit-tested against a fake gateway: provider (`pkg/llm/vercelgateway`), provider factory, agent registry, `looms` server config (`llm.vercel_gateway_*`), agent YAML `gateway_routing`, `looms workflow`, `looms config init` (option 5), `loom-standalone`, `loom decision replay`, `pkg/builder` (`WithVercelGatewayLLM`) and memory embeddings (`embedding.provider: vercel-ai-gateway`). Live-tested 2026-11-16 (Haiku 4.5, GPT-5 mini, embeddings). Not done: the Responses surface (📋), tiered long-context prices.
 
 One host (`https://ai-gateway.vercel.sh`) in front of many upstream providers. Claude ids (`anthropic/*`) go to the gateway's Anthropic Messages surface; every other id goes to its OpenAI Chat Completions surface.
 
@@ -740,7 +740,7 @@ llm:
 
 **Limitations**:
 - Under `looms serve`, an agent whose gateway client cannot be built is not started (no fallback LLM)
-- Where raw responses carry cost and routing metadata is unverified; without it cost is a catalog estimate, and ids with no known rate are reported unpriced
+- Gateway cost and routing metadata are read from every response (verified live); 402, 429 and mid-stream failure bodies are not yet verified live
 - Default limiter is loom's generic 2 req/s per credential+model; raise `llm.rate_limit` for large fleets
 
 **Detailed Guide**: [llm-vercel-ai-gateway.md](./llm-vercel-ai-gateway.md)

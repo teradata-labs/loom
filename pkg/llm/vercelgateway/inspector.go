@@ -41,21 +41,59 @@ const (
 )
 
 // gatewayPayload is the subset of a response body or stream payload the
-// inspector reads. The documented raw REST shape (2026-11) puts the
-// generation id in the completion "id" (Chat Completions; on a stream, the
-// first content chunk) and says routing and cost data are "also returned in
-// providerMetadata on the chat completion response". Both camelCase and
-// snake_case spellings of providerMetadata are read until the live spike
-// pins the one the gateway sends.
+// inspector reads. Shapes observed live on 2026-11-16
+// (docs/research/vercel-ai-gateway-spike.md):
+//
+//   - Messages: top-level "provider_metadata.gateway" {cost, routing,
+//     generationId} on the blocking body and on the stream's message_delta.
+//   - Chat Completions: "usage.cost" (a number) and a top-level
+//     "generationId"; routing under choices[].message.provider_metadata
+//     (blocking) or choices[].delta.provider_metadata (stream).
+//
+// The completion "id" is the generation id (gen_…) on both surfaces. The
+// camelCase providerMetadata spelling from the docs is still accepted.
 type gatewayPayload struct {
-	ID      string `json:"id"`
-	Model   string `json:"model"`
-	Message *struct {
+	ID           string `json:"id"`
+	GenerationID string `json:"generationId"`
+	Model        string `json:"model"`
+	Message      *struct {
 		ID    string `json:"id"`
 		Model string `json:"model"`
 	} `json:"message"` // Anthropic message_start event
+	Usage *struct {
+		Cost json.RawMessage `json:"cost"`
+	} `json:"usage"`
+	Choices []struct {
+		Message *struct {
+			ProviderMetadata *providerMetadata `json:"provider_metadata"`
+		} `json:"message"`
+		Delta *struct {
+			ProviderMetadata *providerMetadata `json:"provider_metadata"`
+		} `json:"delta"`
+	} `json:"choices"`
 	ProviderMetadata      *providerMetadata `json:"providerMetadata"`
 	ProviderMetadataSnake *providerMetadata `json:"provider_metadata"`
+}
+
+// metadata returns the gateway provider metadata wherever this payload
+// carries it: top level (Messages; docs spelling) or inside the first choice
+// (Chat Completions).
+func (p *gatewayPayload) metadata() *providerMetadata {
+	if p.ProviderMetadataSnake != nil {
+		return p.ProviderMetadataSnake
+	}
+	if p.ProviderMetadata != nil {
+		return p.ProviderMetadata
+	}
+	for _, c := range p.Choices {
+		if c.Message != nil && c.Message.ProviderMetadata != nil {
+			return c.Message.ProviderMetadata
+		}
+		if c.Delta != nil && c.Delta.ProviderMetadata != nil {
+			return c.Delta.ProviderMetadata
+		}
+	}
+	return nil
 }
 
 type providerMetadata struct {
@@ -72,7 +110,7 @@ type providerMetadata struct {
 
 // payload markers: a payload without any of them is skipped without decoding,
 // which keeps the per-chunk cost of a stream at a few byte scans.
-var payloadMarkers = [][]byte{[]byte(`"gen_`), []byte(`roviderMetadata"`), []byte(`provider_metadata"`), []byte(`"model"`)}
+var payloadMarkers = [][]byte{[]byte(`"gen_`), []byte(`roviderMetadata"`), []byte(`provider_metadata"`), []byte(`"model"`), []byte(`"cost"`)}
 
 // newInspector returns the ResponseInspector for a client of requestedModel.
 // A served model different from the requested one means the gateway used a
@@ -103,19 +141,22 @@ func inspectPayload(requestedModel string, payload []byte) llm.ResponseFacts {
 			model = p.Message.Model
 		}
 	}
-	if strings.HasPrefix(id, generationIDPrefix) {
+	if strings.HasPrefix(p.GenerationID, generationIDPrefix) {
+		attrs[AttrGenerationID] = p.GenerationID
+	} else if strings.HasPrefix(id, generationIDPrefix) {
 		attrs[AttrGenerationID] = id
+	}
+	if p.Usage != nil {
+		if cost, ok := parseCost(p.Usage.Cost); ok {
+			facts.CostUSD = cost
+		}
 	}
 	if model != "" {
 		attrs[AttrFinalModel] = model
 		attrs[AttrFallbackUsed] = strconv.FormatBool(!sameModel(model, requestedModel))
 	}
 
-	pm := p.ProviderMetadata
-	if pm == nil {
-		pm = p.ProviderMetadataSnake
-	}
-	if pm != nil && pm.Gateway != nil {
+	if pm := p.metadata(); pm != nil && pm.Gateway != nil {
 		gw := pm.Gateway
 		if gw.GenerationID != "" {
 			attrs[AttrGenerationID] = gw.GenerationID

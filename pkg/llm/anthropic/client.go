@@ -1009,6 +1009,31 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				}
 				if event.Usage != nil {
 					usage.OutputTokens = event.Usage.OutputTokens
+					// message_delta usage is cumulative. A gateway (Vercel AI
+					// Gateway) sends message_start with input_tokens 0 and the
+					// real input count here; Anthropic repeats its own. Take
+					// any non-zero figure.
+					if event.Usage.InputTokens > 0 {
+						usage.InputTokens = event.Usage.InputTokens
+					}
+					if event.Usage.CacheReadInputTokens > 0 {
+						usage.CacheReadInputTokens = event.Usage.CacheReadInputTokens
+					}
+					if event.Usage.CacheCreationInputTokens > 0 {
+						usage.CacheCreationInputTokens = event.Usage.CacheCreationInputTokens
+					}
+				}
+				if pm := event.ProviderMetadata; pm != nil && pm.Anthropic != nil && pm.Anthropic.Usage != nil {
+					u := pm.Anthropic.Usage
+					if usage.InputTokens == 0 && u.InputTokens > 0 {
+						usage.InputTokens = u.InputTokens
+					}
+					if usage.CacheReadInputTokens == 0 && u.CacheReadInputTokens > 0 {
+						usage.CacheReadInputTokens = u.CacheReadInputTokens
+					}
+					if usage.CacheCreationInputTokens == 0 && u.CacheCreationInputTokens > 0 {
+						usage.CacheCreationInputTokens = u.CacheCreationInputTokens
+					}
 				}
 
 			case "message_stop":

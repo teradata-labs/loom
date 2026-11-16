@@ -99,6 +99,19 @@ func logFacts(t *testing.T, resp *types.LLMResponse) {
 	}
 }
 
+// assertGatewayFacts checks what the gateway reports on every call (observed
+// 2026-11-16): input tokens, its own cost (not an estimate), the generation
+// id and the upstream that served the call.
+func assertGatewayFacts(t *testing.T, resp *types.LLMResponse) {
+	t.Helper()
+	assert.Positive(t, resp.Usage.InputTokens+resp.Usage.CacheReadInputTokens+resp.Usage.CacheCreationInputTokens, "input tokens")
+	assert.Positive(t, resp.Usage.CostUSD, "gateway-reported cost")
+	_, unpriced := resp.Metadata[llm.MetadataCostUnpriced]
+	assert.False(t, unpriced, "the gateway reported a cost")
+	assert.NotEmpty(t, resp.Metadata[AttrGenerationID])
+	assert.NotEmpty(t, resp.Metadata[AttrFinalProvider])
+}
+
 func TestLive_HealthCheckAndCredits(t *testing.T) {
 	c, err := NewClient(liveConfig(t, liveOther()))
 	require.NoError(t, err)
@@ -146,6 +159,7 @@ func TestLive_ChatAndStream(t *testing.T) {
 			require.NoError(t, err)
 			assert.Contains(t, strings.ToUpper(resp.Content), "OK")
 			logFacts(t, resp)
+			assertGatewayFacts(t, resp)
 
 			var streamed strings.Builder
 			resp, err = c.ChatStream(context.Background(), say("Count from 1 to 5, comma separated."), nil,
@@ -155,6 +169,7 @@ func TestLive_ChatAndStream(t *testing.T) {
 			assert.Contains(t, resp.Content, "3")
 			assert.Positive(t, resp.Usage.OutputTokens, "stream reports usage")
 			logFacts(t, resp)
+			assertGatewayFacts(t, resp)
 		})
 	}
 }

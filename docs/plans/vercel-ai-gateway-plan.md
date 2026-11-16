@@ -1,6 +1,6 @@
 # Plan: Vercel AI Gateway as an LLM backend
 
-**Status**: ⚠️ Phases 1–5 implemented and unit-tested on `docs/vercel-ai-gateway-plan` (2026-11-16); Phase 0 (live spike) and the dogfood gate are pending the live account. Reference: `docs/reference/llm-vercel-ai-gateway.md`.
+**Status**: ⚠️ Phases 0–5 done on `docs/vercel-ai-gateway-plan` (2026-11-16): implemented, unit-tested and live-tested (spike in `docs/research/vercel-ai-gateway-spike.md`). The dogfood gate is still open. Reference: `docs/reference/llm-vercel-ai-gateway.md`.
 
 **Execution notes (2026-11-16)**:
 - Phase 0 was moved after the code, by decision: the account is used at test time. Every behaviour the spike was to settle is implemented against the public docs, marked *unverified* in the reference doc, and exercised by `pkg/llm/vercelgateway/live_test.go` (with a redacted request/response capture mode for the spike write-up).
@@ -140,16 +140,16 @@ Each phase is one PR, stacked, each passing `just check`.
 
 Output: `docs/research/vercel-ai-gateway-spike.md` with captured request/response pairs (keys redacted), and an answer or "still open" against each question in §7. Uses the enterprise gateway account.
 
-Pending (needs the account; `live_test.go` + `VERCEL_GATEWAY_LIVE_CAPTURE_DIR`):
+Run 2026-11-16; results in `docs/research/vercel-ai-gateway-spike.md`.
 
-- [ ] Raw chat response and stream: where cost, generation id and routing metadata appear; whether `stream_options.include_usage` is honoured; cached-token field names in `usage`
-- [ ] `/v1/messages`: does it accept `anthropic-beta` (decides `NoBetaHeaders`); is `anthropic-version` required; usage and cache fields
-- [ ] Claude thinking + tool loop over `/v1/messages`, 3+ turns, signatures replayed
-- [ ] Same loop over `/v1/chat/completions` to record what `reasoning_details` replay requires
-- [ ] `providerOptions.gateway` in the raw body on both surfaces: `order`, `only`, `models`, a deliberately unsatisfiable `only`
-- [ ] Error bodies: bad key, unknown model, context overflow (both surfaces), 402, forced 429; mid-stream failure shape
-- [ ] `/v1/models` live shape and pricing unit; `/v1/credits` shape
-- [ ] Dotted-id behaviour of loom's Claude matchers
+- [x] Raw chat response and stream: cost in `usage.cost`, generation id = `id` + top-level `generationId`, routing under `choices[0].message/delta.provider_metadata`; `include_usage` honoured; cached tokens in `prompt_tokens_details.cached_tokens`
+- [ ] `/v1/messages` `anthropic-beta`: not tested (loom sends none). `anthropic-version` sent and accepted; usage and cache fields recorded (stream: on `message_delta`)
+- [x] Claude thinking + tool loop over `/v1/messages`, 3 turns, signatures replayed
+- [x] Same loop over `/v1/chat/completions`: `reasoning.encrypted` details replayed and accepted
+- [x] `providerOptions.gateway` in the raw body on both surfaces: unsatisfiable `only` rejected with the available slugs; `sort`, `caching` accepted. `order`/`models` effect not observed
+- [x] Error bodies: bad key, unknown model, context overflow (both surfaces). [ ] 402, forced 429, mid-stream failure: not reproducible on demand
+- [x] `/v1/models` live shape and pricing unit (USD/token); `/v1/credits` shape
+- [x] Dotted-id behaviour of loom's Claude matchers (fixed before the spike; live Haiku 4.5 prices match)
 
 ### Phase 1 — Proto + provider + wiring
 
@@ -184,7 +184,7 @@ Pending (needs the account; `live_test.go` + `VERCEL_GATEWAY_LIVE_CAPTURE_DIR`):
 ### Phase 5 — OIDC, embeddings, regional
 
 - [x] OIDC token source
-- [x] `/v1/embeddings` through `pkg/embedding` (`embedding.provider: vercel-ai-gateway`; body shape **unverified**)
+- [x] `/v1/embeddings` through `pkg/embedding` (`embedding.provider: vercel-ai-gateway`; OpenAI shape and `dimensions` verified live)
 - [x] Regional endpoint documented with its surcharge and tier restriction
 
 ### Dogfood gate (after Phases 1, 2 and 4)

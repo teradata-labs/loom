@@ -50,9 +50,10 @@ const (
 )
 
 // providerSlugRe matches a gateway upstream slug ("anthropic", "bedrock",
-// "vertex", "azure", "deepinfra"). The gateway publishes no canonical list a
-// client can validate against, so only the shape is checked.
-var providerSlugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+// "azure", and camelCase ones such as "vertexAnthropic", observed live in the
+// gateway's own error text on 2026-11-16). The gateway publishes no canonical
+// list a client can validate against, so only the shape is checked.
+var providerSlugRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
 // RoutingFromProto converts the proto message; nil in, nil out.
 func RoutingFromProto(p *loomv1.LLMGatewayRouting) *Routing {
@@ -130,7 +131,7 @@ func validateSlugs(field string, slugs []string) error {
 	seen := make(map[string]struct{}, len(slugs))
 	for _, s := range slugs {
 		if !providerSlugRe.MatchString(s) {
-			return fmt.Errorf("vercel-ai-gateway: routing %s entry %q is not a provider slug (lower-case letters, digits, '.', '_' or '-')", field, s)
+			return fmt.Errorf("vercel-ai-gateway: routing %s entry %q is not a provider slug (letters, digits, '.', '_' or '-')", field, s)
 		}
 		if _, dup := seen[s]; dup {
 			return fmt.Errorf("vercel-ai-gateway: routing %s lists %q twice", field, s)

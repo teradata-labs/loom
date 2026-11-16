@@ -108,3 +108,38 @@ func FuzzInspectPayload(f *testing.F) {
 		}
 	})
 }
+
+// Payloads trimmed from the live gateway on 2026-11-16 (captures for
+// docs/research/vercel-ai-gateway-spike.md).
+func TestInspectPayload_LiveShapes(t *testing.T) {
+	tests := []struct {
+		name, model, payload string
+		wantCost             float64
+		wantAttrs            map[string]string
+	}{
+		{name: "chat blocking: usage.cost, top-level generationId, message.provider_metadata",
+			model:    "openai/gpt-5-mini",
+			payload:  `{"id":"gen_01M7K019","object":"chat.completion","model":"openai/gpt-5-mini","choices":[{"index":0,"message":{"role":"assistant","content":"OK","provider_metadata":{"openai":{},"gateway":{"routing":{"finalProvider":"openai","modelAttemptCount":1,"totalProviderAttemptCount":1},"cost":"0.00010925","generationId":"gen_01M7K019"}}}}],"usage":{"prompt_tokens":13,"completion_tokens":53,"cost":0.00010925,"market_cost":0.00010925},"generationId":"gen_01M7K019"}`,
+			wantCost: 0.00010925,
+			wantAttrs: map[string]string{AttrGenerationID: "gen_01M7K019", AttrFinalModel: "openai/gpt-5-mini", AttrFallbackUsed: "false",
+				AttrFinalProvider: "openai", AttrAttemptCount: "1"}},
+		{name: "chat stream: delta.provider_metadata and usage.cost on the final chunk",
+			model:    "openai/gpt-5-mini",
+			payload:  `{"id":"gen_01M7K01B","object":"chat.completion.chunk","model":"openai/gpt-5-mini","choices":[{"index":0,"delta":{"provider_metadata":{"gateway":{"routing":{"finalProvider":"openai","modelAttemptCount":1,"totalProviderAttemptCount":1},"cost":"0.00028825"}}}}],"usage":{"prompt_tokens":17,"completion_tokens":142,"cost":0.00028825},"generationId":"gen_01M7K01B"}`,
+			wantCost: 0.00028825,
+			wantAttrs: map[string]string{AttrGenerationID: "gen_01M7K01B", AttrFinalModel: "openai/gpt-5-mini", AttrFallbackUsed: "false",
+				AttrFinalProvider: "openai", AttrAttemptCount: "1"}},
+		{name: "messages stream: message_delta provider_metadata",
+			model:     "anthropic/claude-haiku-4.5",
+			payload:   `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":19,"output_tokens":17},"provider_metadata":{"anthropic":{"usage":{"input_tokens":19}},"gateway":{"routing":{"finalProvider":"anthropic","modelAttemptCount":1,"totalProviderAttemptCount":1},"cost":"0.000104","generationId":"gen_01M7K018"}}}`,
+			wantCost:  0.000104,
+			wantAttrs: map[string]string{AttrGenerationID: "gen_01M7K018", AttrFinalProvider: "anthropic", AttrAttemptCount: "1"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := inspectPayload(tt.model, []byte(tt.payload))
+			assert.InDelta(t, tt.wantCost, f.CostUSD, 1e-15)
+			assert.Equal(t, tt.wantAttrs, f.Attributes)
+		})
+	}
+}
