@@ -35,6 +35,14 @@ Still open after the spike: 4 (generation lookup consistency), 6–8 (catalog st
 - **Unknown model**: Chat returns `Model 'acme/does-not-exist-model' not found` with type `model_not_found`.
 - **Credential header**: `x-api-key` on `/v1/messages` and `Authorization: Bearer` on `/v1/chat/completions` and `/v1/credits` both work.
 
+## Dogfood gate (plan §4)
+
+`looms serve` built from `ad9a7f97`, isolated data dir, main LLM `provider: vercel` (alias), two agent YAMLs on `vercel-ai-gateway` with `gateway_routing: {sort: ttft}` and the `file_read` tool: `anthropic/claude-haiku-4.5` and `openai/gpt-5-mini`. At startup both agents built their own gateway LLM, the catalog loaded in the background (324 language models), and one limiter scope per surface and model was created.
+
+A three-turn session per agent through `loom chat --session`: read `a.txt` line 2, read `b.txt` line 2 and add, then "what two numbers did you read and what is their sum". Both answered 17, 25, 42, with the earlier turns' tool results carried in memory. Every turn's cost was the gateway-reported figure, with no asterisk: Claude $0.0009 per turn, GPT-5 mini $0.00016 to $0.0008. No errors in the server log.
+
+Not done: the comparison against the same session run direct, because no direct Anthropic or OpenAI key was available. Thinking cannot be switched on through `looms serve` configuration for any provider (no YAML setting reaches `ThinkingLevel`), so the dogfood ran without it; the live suite covered thinking.
+
 ## Code changed because of the spike
 
 Each change has a test built from the captured shape.

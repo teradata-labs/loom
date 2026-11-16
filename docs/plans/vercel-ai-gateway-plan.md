@@ -1,6 +1,6 @@
 # Plan: Vercel AI Gateway as an LLM backend
 
-**Status**: ⚠️ Phases 0–5 done on `docs/vercel-ai-gateway-plan` (2026-11-16): implemented, unit-tested and live-tested (spike in `docs/research/vercel-ai-gateway-spike.md`). The dogfood gate is still open. Reference: `docs/reference/llm-vercel-ai-gateway.md`.
+**Status**: ⚠️ Phases 0–5 done on `docs/vercel-ai-gateway-plan` (2026-11-16): implemented, unit-tested and live-tested (spike in `docs/research/vercel-ai-gateway-spike.md`). The dogfood gate ran (no direct-run comparison: no direct keys). Reference: `docs/reference/llm-vercel-ai-gateway.md`.
 
 **Execution notes (2026-11-16)**:
 - Phase 0 was moved after the code, by decision: the account is used at test time. Every behaviour the spike was to settle is implemented against the public docs, marked *unverified* in the reference doc, and exercised by `pkg/llm/vercelgateway/live_test.go` (with a redacted request/response capture mode for the spike write-up).
@@ -187,7 +187,7 @@ Run 2026-11-16; results in `docs/research/vercel-ai-gateway-spike.md`.
 - [x] `/v1/embeddings` through `pkg/embedding` (`embedding.provider: vercel-ai-gateway`; OpenAI shape and `dimensions` verified live)
 - [x] Regional endpoint documented with its surcharge and tier restriction
 
-### Dogfood gate (after Phases 1, 2 and 4)
+### Dogfood gate (after Phases 1, 2 and 4) — done 2026-11-16 (see the spike record), except the direct-run comparison (no direct keys) and thinking (not configurable under serve)
 
 Run an existing loom agent with tools and thinking on through the gateway for a multi-turn session, once on a Claude id and once on a non-Claude id, and compare token counts and cost against the same session run direct.
 
