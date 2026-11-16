@@ -1,4 +1,4 @@
-// Modified for loom, 2026: adds ClampToInt (golua PR #136).
+// Modified for loom, 2026: adds ClampToInt (golua PR #136); hexadecimal integers are accumulated digit by digit, wrapping as Lua specifies, instead of the last 16 digits being parsed with strconv.ParseUint.
 // See third_party/golua/README.md for the list of changes from upstream.
 
 package runtime
@@ -189,16 +189,24 @@ func StringToNumber(s string) (n int64, f float64, tp NumberType) {
 		return
 	}
 
-	// If s is an hex number, it is parsed as a uint of 64 bits
+	// If s is an hex number, its digits are accumulated in a uint64 that
+	// wraps around on overflow, as the Lua manual specifies for hexadecimal
+	// integers (§3.1) and as reference Lua's l_str2int does. Every digit is
+	// checked, including those that overflow out of the result.
 	if isHex {
 		us := s[2+i0:]
-		if len(us) > 16 {
-			us = us[len(us)-16:]
-		}
-		un, err := strconv.ParseUint(us, 16, 64)
-		if err != nil {
+		if len(us) == 0 {
 			tp = NaN
 			return
+		}
+		var un uint64
+		for j := 0; j < len(us); j++ {
+			d, ok := hexDigitValue(us[j])
+			if !ok {
+				tp = NaN
+				return
+			}
+			un = un<<4 | d
 		}
 		n = int64(un)
 		if s[0] == '-' {
@@ -222,4 +230,17 @@ func StringToNumber(s string) (n int64, f float64, tp NumberType) {
 	}
 	tp = IsInt
 	return
+}
+
+// hexDigitValue returns the value of the hexadecimal digit c.
+func hexDigitValue(c byte) (uint64, bool) {
+	switch {
+	case '0' <= c && c <= '9':
+		return uint64(c - '0'), true
+	case 'a' <= c && c <= 'f':
+		return uint64(c-'a') + 10, true
+	case 'A' <= c && c <= 'F':
+		return uint64(c-'A') + 10, true
+	}
+	return 0, false
 }

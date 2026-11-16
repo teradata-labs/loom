@@ -1,4 +1,4 @@
-// Modified for loom, 2026: tableStorage snapshots for allocation accounting (golua PR #135); integer keys are classified only while i-1 fits in an int (golua PR #136).
+// Modified for loom, 2026: tableStorage snapshots for allocation accounting (golua PR #135); integer keys are classified only while i-1 fits in an int (golua PR #136); the array part's uintptr length updates carry a math.MaxInt bound.
 // See third_party/golua/README.md for the list of changes from upstream.
 
 package runtime
@@ -618,7 +618,9 @@ func (a *array) setValue(i int64, v Value) (ok bool) {
 	ok = a != nil && 1 <= i && i <= int64(len(a.values))
 	if ok {
 		a.values[i-1] = v
-		if a.len < uintptr(i) {
+		// i <= len(a.values) already bounds i; the math.MaxInt check states
+		// that bound as a constant next to the narrowing (golua PR #136).
+		if i <= math.MaxInt && a.len < uintptr(i) {
 			a.len = uintptr(i)
 		}
 	}
@@ -646,6 +648,9 @@ func (a *array) remove(i int64) (ok bool, wasSet bool) {
 		return
 	}
 	a.values[i-1] = NilValue
+	if i > math.MaxInt { // unreachable: i <= len(a.values); see setValue
+		return
+	}
 	l := uintptr(i)
 	if a.len == l {
 		for l >= 1 && a.values[l-1].IsNil() {
