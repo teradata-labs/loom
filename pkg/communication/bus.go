@@ -108,6 +108,25 @@ type Subscription struct {
 	Created       time.Time
 }
 
+// Drain returns the messages waiting on the subscription, without blocking.
+// It stops when the channel is empty or closed: a closed channel (after
+// Unsubscribe or Close) still yields the messages buffered before the close,
+// and then only nil, so a loop that does not check for it never ends.
+func (s *Subscription) Drain() []*loomv1.BusMessage {
+	var messages []*loomv1.BusMessage
+	for {
+		select {
+		case msg, ok := <-s.Channel:
+			if !ok {
+				return messages
+			}
+			messages = append(messages, msg)
+		default:
+			return messages
+		}
+	}
+}
+
 // NewMessageBus creates a new message bus.
 func NewMessageBus(refStore ReferenceStore, policy *PolicyManager, tracer observability.Tracer, logger *zap.Logger) *MessageBus {
 	if policy == nil {
@@ -159,6 +178,20 @@ func (b *MessageBus) Publish(ctx context.Context, topic string, msg *loomv1.BusM
 	dropped := 0
 
 	b.mu.RLock()
+	// Check again under the lock: Close may have run since the check above.
+	// Close sets the flag before it takes the write lock and closes the
+	// channels only while holding it, so with the read lock held and the flag
+	// still clear, no channel below is closed until this send loop is done.
+	if b.closed.Load() {
+		b.mu.RUnlock()
+		if span != nil {
+			// The span is already open: mark it failed, or a tracer that
+			// reads an unset status as success records a refused publish
+			// as delivered.
+			span.Status = observability.Status{Code: observability.StatusError, Message: "message bus is closed"}
+		}
+		return 0, 0, fmt.Errorf("message bus is closed")
+	}
 	for _, subscription := range b.subscriptions {
 		// Check if topic matches subscription pattern
 		if !matchesTopicPattern(subscription.Topic, topic) {
@@ -280,6 +313,20 @@ func (b *MessageBus) Subscribe(ctx context.Context, agentID string, topicPattern
 
 	// Store subscription for later unsubscribe
 	b.mu.Lock()
+	// Check again under the lock: a Close that ran since the check above may
+	// have closed the topic's channels before the subscriber was added (or on
+	// a broadcaster created after it), leaving this channel open forever and
+	// its reader waiting. Close sets the flag before it takes the lock, so a
+	// clear flag here means Close will see this subscriber and close it.
+	if b.closed.Load() {
+		b.mu.Unlock()
+		// Closes the channel unless Close's closeAll already did.
+		broadcaster.removeSubscriber(subID)
+		if span != nil {
+			span.Status = observability.Status{Code: observability.StatusError, Message: "message bus is closed"}
+		}
+		return nil, fmt.Errorf("message bus is closed")
+	}
 	b.subscriptions[subID] = subscription
 	b.mu.Unlock()
 

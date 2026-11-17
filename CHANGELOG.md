@@ -139,6 +139,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+#### Message bus: no crash or hang on a closed subscription channel
+- **`looms` no longer crashes at shutdown with a pattern-metrics client connected.** The bus is closed before the gRPC server stops, and `StreamPatternMetrics` dereferenced the nil message of the closed subscription. The stream now ends with `codes.Unavailable`.
+- **`Publish` racing `Close` no longer panics with "send on closed channel".** `Publish` checks the closed flag again under the bus lock and returns the closed error; its `bus.publish` span ends with an error status. `Subscribe` racing `Close` returns the same error (and an error `bus.subscribe` span) instead of handing out a channel that is never closed, whose reader waited until its own context ended.
+- **Spawned-agent cleanup no longer panics on a concurrent `Publish`.** Cleanup unsubscribes before it closes the notification channels.
+- **The server's non-blocking drain loops stop at a closed subscription.** The coordinator broadcast, sub-agent broadcast and spawned-agent message loops appended nil messages forever when the subscription closed while they drained it. They now call the new `Subscription.Drain()`, which returns the messages buffered before the close and stops at an empty or closed channel.
+
 #### LLM transport
 - **The Bedrock Anthropic-SDK client sends a tool schema with no `type` as `object`**, as the raw-HTTP path already did; the top level of a tool's input is an object.
 
