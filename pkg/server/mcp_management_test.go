@@ -759,6 +759,32 @@ func TestUpdateMCPServerStreamableHTTP(t *testing.T) {
 		}
 	})
 
+	t.Run("connected_reflects_real_state", func(t *testing.T) {
+		urlA, _ := newStreamableMCPFixture(t, "alpha")
+		srv, mgr, _ := newManagementTestServer(t)
+
+		resp, err := srv.AddMCPServer(ctx, &loomv1.AddMCPServerRequest{
+			Name: "remote", Transport: "streamable-http", Url: urlA, Enabled: true, AutoStart: true,
+		})
+		require.NoError(t, err)
+		require.True(t, resp.Success, resp.Message)
+
+		info, err := srv.UpdateMCPServer(ctx, &loomv1.UpdateMCPServerRequest{
+			ServerName: "remote", Transport: "streamable-http", Url: urlA, Enabled: true,
+		})
+		require.NoError(t, err)
+		assert.True(t, info.Connected, "update without restart leaves the server running")
+
+		info, err = srv.UpdateMCPServer(ctx, &loomv1.UpdateMCPServerRequest{
+			ServerName: "remote", Transport: "streamable-http", Url: urlA, Enabled: false, RestartIfRunning: true,
+		})
+		require.NoError(t, err)
+		assert.False(t, info.Connected, "disabling with restart stops the server")
+		cfg, err := mgr.GetServerConfig("remote")
+		require.NoError(t, err)
+		assert.False(t, cfg.Enabled)
+	})
+
 	t.Run("stdio_validation_preserved", func(t *testing.T) {
 		urlA, _ := newStreamableMCPFixture(t, "alpha")
 		srv, _, _ := newManagementTestServer(t)
