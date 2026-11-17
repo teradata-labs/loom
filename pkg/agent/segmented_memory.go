@@ -156,6 +156,25 @@ type SegmentedMemory struct {
 	// still abort. Reset at the start of every pass; guarded by mu.
 	compressorFailedThisPass bool
 
+	// compactFocus is the user's steer for a manual compaction (Compact). Set
+	// only while Compact runs; the fold hands it to the compressor.
+	compactFocus string
+
+	// foldRequireSummary makes a fold abort instead of dropping its region
+	// unsummarised when the compressor fails. Set only by Compact: nothing
+	// forces that compaction, so losing history for it is never worth it.
+	foldRequireSummary bool
+
+	// foldAbortedNoSummary records that a fold aborted under foldRequireSummary
+	// because no summary was produced, so the caller can tell that apart from
+	// "nothing to fold".
+	foldAbortedNoSummary bool
+
+	// compactPersistErr records the latest failure to persist a fold
+	// (relief logs it and carries on), so a manual Compact can report that nothing
+	// was saved instead of an ordinary no-op.
+	compactPersistErr error
+
 	// estimateCalibration scales relief's tiktoken estimate toward the
 	// provider's own prompt count (ObservePromptTokens). Zero reads as 1.0.
 	estimateCalibration float64

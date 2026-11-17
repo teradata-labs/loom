@@ -2270,6 +2270,46 @@
         ]
       }
     },
+    "/v1/sessions/{sessionId}:compact": {
+      "post": {
+        "summary": "CompactSession compacts a session's context on request, between turns:\nolder tool results become re-fetchable stubs and older turns fold into the\nrunning summary, while the system prompt, the summary and the newest\nkeep_turns turns stay verbatim. Folding makes an LLM call. Refused while a\nturn runs on the session (ABORTED) or while it waits for a human decision\n(FAILED_PRECONDITION); UNAVAILABLE when no summary could be produced or the\nresult could not be saved, in which case history is unchanged.",
+        "operationId": "LoomService_CompactSession",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1CompactSessionResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "sessionId",
+            "description": "Session ID",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/LoomServiceCompactSessionBody"
+            }
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
     "/v1/sessions/{sessionId}:resolveExecutionGap": {
       "post": {
         "summary": "ResolveExecutionGap records an operator's finding for the tool call that\nResumeSession reported as an execution gap, so ResumeSession can continue\nthe turn.",
@@ -3613,6 +3653,21 @@
       },
       "description": "CancelScheduledExecutionRequest stops a scheduled execution that is in\nflight.\n\nThe ID must be one the scheduler minted. IDs returned by ExecuteWorkflow and\nStreamWorkflow belong to a different namespace and yield NOT_FOUND."
     },
+    "LoomServiceCompactSessionBody": {
+      "type": "object",
+      "properties": {
+        "keepTurns": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Newest turns left verbatim. 0 uses the default (2); negative is invalid."
+        },
+        "focus": {
+          "type": "string",
+          "description": "Optional guidance on what the summary must keep. At most 2000 bytes."
+        }
+      },
+      "description": "CompactSessionRequest asks for a manual compaction of one session's context."
+    },
     "LoomServicePauseScheduleBody": {
       "type": "object",
       "description": "PauseScheduleRequest pauses a schedule."
@@ -3766,11 +3821,11 @@
         },
         "transport": {
           "type": "string",
-          "title": "Transport type (stdio, http, sse)"
+          "title": "Transport type (stdio, http, sse, streamable-http)"
         },
         "command": {
           "type": "string",
-          "title": "Command to execute"
+          "title": "Command to execute (required for enabled stdio transport)"
         },
         "args": {
           "type": "array",
@@ -3805,7 +3860,7 @@
         },
         "url": {
           "type": "string",
-          "title": "Server URL (required for http/sse transport)"
+          "title": "Server URL (required for enabled http, sse, and streamable-http transports)"
         },
         "enableSessions": {
           "type": "boolean",
@@ -3986,11 +4041,11 @@
         },
         "transport": {
           "type": "string",
-          "title": "Transport type (stdio, http, sse)"
+          "title": "Transport type (stdio, http, sse, streamable-http)"
         },
         "command": {
           "type": "string",
-          "title": "Command to execute"
+          "title": "Command to execute (required for enabled stdio transport)"
         },
         "args": {
           "type": "array",
@@ -4020,7 +4075,7 @@
         },
         "url": {
           "type": "string",
-          "title": "Server URL (required for http/sse transport)"
+          "title": "Server URL (required for enabled http, sse, and streamable-http transports)"
         },
         "enableSessions": {
           "type": "boolean",
@@ -4767,6 +4822,44 @@
       ],
       "default": "COMMUNICATION_TIER_UNSPECIFIED",
       "description": "CommunicationTier defines the three-tier communication model.\n\n - COMMUNICATION_TIER_ALWAYS_REFERENCE: Tier 1: Always reference (shared mutable state, workflow context)\n - COMMUNICATION_TIER_AUTO_PROMOTE: Tier 2: Auto-promote based on size (\u003e1KB default)\n - COMMUNICATION_TIER_ALWAYS_VALUE: Tier 3: Always value (control messages, pattern refs, config)"
+    },
+    "v1CompactSessionResponse": {
+      "type": "object",
+      "properties": {
+        "compacted": {
+          "type": "boolean",
+          "description": "False when nothing older than keep_turns was left to compact."
+        },
+        "toolResultsStubbed": {
+          "type": "boolean",
+          "description": "Always false: a tool result is bounded as it arrives and is never\nreplaced by a stub later."
+        },
+        "turnsFolded": {
+          "type": "boolean",
+          "description": "Older turns were folded into the running summary."
+        },
+        "turnsKept": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Newest turns left verbatim."
+        },
+        "tokensBefore": {
+          "type": "string",
+          "format": "int64",
+          "description": "Estimated context size before the compaction."
+        },
+        "tokensAfter": {
+          "type": "string",
+          "format": "int64",
+          "description": "Estimated context size after the compaction."
+        },
+        "summaryVersion": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Version of the session summary after the compaction."
+        }
+      },
+      "description": "CompactSessionResponse reports what the compaction did. Token figures are\nloom's calibrated estimates of the compiled context."
     },
     "v1ComponentHealth": {
       "type": "object",
@@ -7050,11 +7143,11 @@
         },
         "transport": {
           "type": "string",
-          "title": "Transport type (stdio, http, sse)"
+          "title": "Transport type (stdio, http, sse, streamable-http)"
         },
         "command": {
           "type": "string",
-          "title": "Command to execute"
+          "title": "Command for stdio transport"
         },
         "args": {
           "type": "array",
@@ -10026,11 +10119,11 @@
       "properties": {
         "transport": {
           "type": "string",
-          "title": "Transport type (stdio, http, sse)"
+          "title": "Transport type (stdio, http, sse, streamable-http)"
         },
         "command": {
           "type": "string",
-          "title": "Command to execute"
+          "title": "Command to execute (required only for stdio transport)"
         },
         "args": {
           "type": "array",
@@ -10061,7 +10154,7 @@
         },
         "url": {
           "type": "string",
-          "title": "Server URL (required for http/sse transport)"
+          "title": "Server URL (required for http, sse, and streamable-http transports)"
         },
         "enableSessions": {
           "type": "boolean",
@@ -10915,7 +11008,7 @@
         "toolCallIndex": {
           "type": "integer",
           "format": "int32",
-          "description": "The provider's stream index for this tool call (when\nis_tool_input_stream). On providers that deliver calls in order\n(Anthropic, Bedrock, Gemini, Ollama) it matches the call's position in\nthe response's tool-call list. On OpenAI-compatible providers (OpenAI,\nAzure, LiteLLM, Mistral, HuggingFace) the final tool-call list is built\nfrom a map, so its order is not guaranteed to match this index; match a\nprogress event to its tool-started event by tool_call_id there. Gemini\nrepeats the function name in tool_call_id, so two parallel calls to the\nsame tool share an ID and only this index tells them apart. The agent's\nthrottling keys on the same index, so events for one call never\ninterleave with another's. A bare activity pulse (no tool_call_id, no\ntool_name, 0 bytes) carries index 0 without being call 0; skip pulses."
+          "description": "The provider's stream index for this tool call (when\nis_tool_input_stream). OpenAI-compatible providers (OpenAI, Azure,\nLiteLLM, Mistral, HuggingFace) return their tool calls in stream index\norder, so the index is monotonic with position but not necessarily equal\nto it: the OpenAI client (and so LiteLLM, Mistral and HuggingFace) drops\nan incomplete call with no id or name, and later calls keep their stream\nindex while shifting position. The Azure OpenAI client keeps such a\ncall, with whichever of id and name is missing left empty. Match a\nprogress event to its tool-started event\nby tool_call_id. On providers that deliver calls in order (Anthropic,\nBedrock, Gemini, Ollama) the index matches position when nothing is\ndropped. Gemini repeats the function name in tool_call_id, so two\nparallel calls to the same tool share an ID and only this index tells\nthem apart. The agent's throttling keys on the same index, so events for\none call never interleave with another's. A bare activity pulse (no\ntool_call_id, no tool_name, 0 bytes) carries index 0 without being call\n0; skip pulses."
         }
       },
       "description": "WeaveProgress streams incremental updates during execution."

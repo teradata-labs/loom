@@ -492,7 +492,41 @@ func (s *SessionStore) LoadMessages(ctx context.Context, sessionID string) ([]ag
 		defer rows.Close()
 
 		messages, err = scanMessages(rows)
-		return err
+		if err != nil {
+			return err
+		}
+		rows.Close()
+
+		// A call with no result among the loaded rows either never finished
+		// or had its result folded. The folded flag says which: a folded
+		// result's call was removed by the fold, and is removed here too.
+		orphans := agent.CallsWithoutResult(messages)
+		if len(orphans) == 0 {
+			return nil
+		}
+		foldedRows, err := tx.Query(ctx,
+			`SELECT tool_use_id FROM messages
+			 WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL AND folded = TRUE AND tool_use_id = ANY($3)`,
+			sessionID, userID, orphans,
+		)
+		if err != nil {
+			span.RecordError(err)
+			return fmt.Errorf("failed to query folded results: %w", err)
+		}
+		defer foldedRows.Close()
+		folded := make(map[string]bool)
+		for foldedRows.Next() {
+			var id string
+			if err := foldedRows.Scan(&id); err != nil {
+				return fmt.Errorf("failed to scan folded result: %w", err)
+			}
+			folded[id] = true
+		}
+		if err := foldedRows.Err(); err != nil {
+			return err
+		}
+		agent.DropFoldedCalls(messages, folded)
+		return nil
 	})
 	if err != nil {
 		return nil, err

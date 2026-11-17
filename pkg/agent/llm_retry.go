@@ -91,6 +91,10 @@ func normalizeWireRoles(messages []Message) []Message {
 // streaming and a progress callback is configured, it will use streaming
 // with token buffering to emit real-time progress.
 func (a *Agent) chatWithRetry(ctx Context, messages []Message, tools []shuttle.Tool) (resp *LLMResponse, err error) {
+	// Measured before the role fold below, which erases the skill-body role.
+	breakdown := measureRequest(messages, tools)
+	defer func() { a.logRequest(ctx, breakdown, resp, err) }()
+
 	// Fold synthetic Loom-internal roles to the wire "user" role before
 	// anything else sees this slice — including the debug dump below, which
 	// must capture the true wire-bound view, not the persisted role.

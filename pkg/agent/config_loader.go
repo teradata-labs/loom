@@ -1432,6 +1432,12 @@ func warnRemovedKeys(yamlOnly string) {
 		if _, set := b["context_relief_warning"]; set {
 			zap.L().Warn("behavior.context_relief_warning is no longer read; the setting has no effect")
 		}
+		if _, set := b["preflight_fit"]; set {
+			zap.L().Warn("behavior.preflight_fit is no longer read; to hold every request under the context window, set llm.max_model_context_tokens to it")
+		}
+		if _, set := b["auto_compact_percent"]; set {
+			zap.L().Warn("behavior.auto_compact_percent is no longer read; the in-loop fold compacts at memory.memory_compression.critical_threshold_percent")
+		}
 	}
 }
 

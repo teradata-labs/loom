@@ -27,6 +27,7 @@ Architecture of Loom's 5-layer segmented memory system with profile-based adapti
   - [Adaptive Compression](#adaptive-compression)
   - [Memory Eviction](#memory-eviction)
   - [Session Restore](#session-restore)
+  - [Compaction on Request and the Request-size Log](#compaction-on-request-and-the-request-size-log)
 - [Data Structures](#data-structures)
 - [Algorithms](#algorithms)
   - [Token Budget Calculation](#token-budget-calculation)
@@ -879,6 +880,15 @@ Restoring a session rebuilds two things: the messages, and the runtime state tho
 | A stored `DataReference`, or the offload summary text | Re-register `query_tool_result` |
 
 Re-firing a skill load re-activates and re-registers only. It does not re-inject the skill body: the body is already in the replayed messages, at whatever position and compaction state it had reached.
+
+
+### Compaction on Request and the Request-size Log
+
+The in-loop fold keeps the settled past under G, and the step check keeps the step in flight inside the provider's window. Two more pieces sit beside them, both in `pkg/agent`.
+
+**Request-size log.** Every provider call logs one `llm request: part sizes` line (`request_breakdown.go`): byte-derived token figures for the system prompt, summary, tool schemas, history, tool calls, tool results, skill bodies, reminders and thinking blocks, next to the provider-reported prompt size. Sizes only, never content.
+
+**Manual compaction** (`compact.go`): `Agent.CompactSession`, the `CompactSession` RPC and `loom sessions compact`. Between turns, under the session lease and the parked-tail guard: turns older than the newest `keep_turns` (default 2) fold into the running summary. A fold without a real summary is skipped rather than dropping history behind a placeholder, so with no compressor, or a failing one, the call fails with `ErrSummaryUnavailable` (gRPC `UNAVAILABLE`); a store write that fails leaves history unchanged and fails with `ErrCompactionNotSaved` (`UNAVAILABLE`). An optional focus (at most 2000 bytes) is handed to the compressor after the `memory.compaction_focus_preface` prompt. The call runs under an `agent.compact_session` span.
 
 
 ## Data Structures
