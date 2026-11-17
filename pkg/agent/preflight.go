@@ -54,9 +54,10 @@ type FitResult struct {
 	Fallback bool
 	// TurnsKept is the number of newest turns in the fallback view.
 	TurnsKept int
-	// ThinkingPinned is true when the current turn already sent thinking blocks,
-	// so the view in front of them could not be changed (no deeper relief, no
-	// new or narrower fallback).
+	// ThinkingPinned is true on a refusal the thinking pin caused: the current
+	// turn already sent thinking blocks, so the view in front of them could not
+	// be changed, and the current-turn-only view would have fit. A refusal where
+	// even the current turn alone is over usable leaves it false.
 	ThinkingPinned bool
 	// PendingReminderBytes is the size of the not-yet-pinned reminders the
 	// estimate counted (SetTransientTail).
@@ -74,8 +75,8 @@ type FitResult struct {
 // narrows: widening it again would change what precedes the turn's own
 // thinking blocks, which the provider rejects. Once the turn has sent thinking
 // blocks the view is not changed at all: a request over the window is refused
-// (Fits false, ThinkingPinned) instead of reshaped into one the provider would
-// reject.
+// instead of reshaped into one the provider would reject (ThinkingPinned when
+// the current-turn-only view would have fit).
 func (sm *SegmentedMemory) EnsureFits(ctx context.Context) FitResult {
 	var res FitResult
 	sm.mu.Lock()
@@ -86,8 +87,8 @@ func (sm *SegmentedMemory) EnsureFits(ctx context.Context) FitResult {
 	} else {
 		sm.fallbackTurns, sm.fallbackTurn = 0, 0
 	}
-	res.ThinkingPinned = sm.turnSentThinkingLocked(t)
 	res.PendingReminderBytes = len(sm.transientTail)
+	pinned := sm.turnSentThinkingLocked(t)
 	sm.mu.Unlock()
 
 	for pass := 1; ; pass++ {
@@ -101,7 +102,7 @@ func (sm *SegmentedMemory) EnsureFits(ctx context.Context) FitResult {
 			res.Fallback, res.TurnsKept = held > 0, int(held)
 			return res
 		}
-		if res.ThinkingPinned || pass > preflightReliefPasses {
+		if pinned || pass > preflightReliefPasses {
 			break
 		}
 		shed, _, _ := sm.ReleasePressure(ctx, pass*pressureRecoveryPenalty)
@@ -110,8 +111,16 @@ func (sm *SegmentedMemory) EnsureFits(ctx context.Context) FitResult {
 		}
 		res.Shed = true
 	}
-	if res.ThinkingPinned {
+	if pinned {
 		res.Fallback, res.TurnsKept = held > 0, int(held)
+		sm.mu.Lock()
+		defer sm.mu.Unlock()
+		if alone := sm.viewEstimateLocked(1); alone > res.Usable {
+			// The current turn overflows on its own; the pin is not the reason.
+			res.Estimate = alone
+		} else {
+			res.ThinkingPinned = true
+		}
 		return res
 	}
 

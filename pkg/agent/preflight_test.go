@@ -412,3 +412,27 @@ func TestSynthesisTooLong_RecordsThePin(t *testing.T) {
 	assert.NotContains(t, plain.Error(), "reasoning")
 	assert.Equal(t, false, logs.FilterMessage("preflight: synthesis request cannot fit the usable window; not sending").All()[1].ContextMap()["thinking_pinned"])
 }
+
+// #674: when the current turn alone is over the window, the refusal names the
+// turn's size, not the thinking pin, even though the pin is in force.
+func TestEnsureFits_OverflowingTurnIsNotBlamedOnThePin(t *testing.T) {
+	sm := NewSegmentedMemory("ROM", 12000, 1000)
+	sm.AddMessage(context.Background(), Message{Role: "user", Content: strings.Repeat("lorem ipsum ", 6000), Turn: 1})
+	thinkingTurn(sm, 1)
+
+	fit := sm.EnsureFits(context.Background())
+
+	require.False(t, fit.Fits)
+	assert.False(t, fit.ThinkingPinned)
+	assert.Greater(t, fit.Estimate, fit.Usable)
+
+	a := &Agent{config: &Config{PreflightFit: true}}
+	_, _, err := a.preflightFit(newCtxDumpContext("overflow", observability.NewNoOpTracer(), nil), nil,
+		&Session{ID: "overflow", SegmentedMem: sm}, sm, nil, nil, nil)
+	var re *RecoverableError
+	require.ErrorAs(t, err, &re)
+	assert.Contains(t, err.Error(), "even with only the current turn kept")
+	assert.NotContains(t, err.Error(), "reasoning")
+	assert.Equal(t, false, re.RecoveryPayload["thinking_pinned"])
+	assert.NotContains(t, synthesisTooLong(nil, "overflow", fit).Error(), "reasoning")
+}
