@@ -72,7 +72,6 @@ func TestCompactSessionRPC_FoldsOlderTurnsAndKeepsTheNewest(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, resp.GetCompacted())
 	assert.True(t, resp.GetTurnsFolded())
-	assert.False(t, resp.GetToolResultsStubbed(), "a compaction folds only; the deprecated field stays false")
 	assert.EqualValues(t, agent.DefaultCompactKeepTurns, resp.GetTurnsKept())
 	assert.EqualValues(t, 1, resp.GetSummaryVersion())
 	assert.Positive(t, resp.GetTokensBefore())

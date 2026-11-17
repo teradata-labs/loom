@@ -37,9 +37,8 @@ var sessionsCompactCmd = &cobra.Command{
 	Short: "Shrink a long conversation's context between turns",
 	Long: `Compact a session's context so a long conversation can keep going.
 
-Older tool results become stubs (the agent can fetch them again) and older
-turns are folded into the session's running summary, which takes one LLM
-call. The system prompt, the summary and the newest --keep-turns turns stay
+Older turns are folded into the session's running summary, which takes one
+LLM call. The system prompt, the summary and the newest --keep-turns turns stay
 as they are. Run it between turns: it is refused while a turn is running or
 while the session waits for a human decision.
 
@@ -84,18 +83,6 @@ func formatCompactResponse(sessionID string, resp *loomv1.CompactSessionResponse
 		return fmt.Sprintf("Nothing to compact: session %s has only its newest %d turns in context.\n",
 			sessionID, resp.GetTurnsKept())
 	}
-	// A server built from this branch folds only and never sets
-	// tool_results_stubbed. An older server can still set it, so the CLI
-	// keeps the wording for it.
-	var done string
-	switch {
-	case resp.GetToolResultsStubbed() && resp.GetTurnsFolded():
-		done = "older tool results stubbed and older turns folded into the summary"
-	case resp.GetTurnsFolded():
-		done = "older turns folded into the summary"
-	default:
-		done = "older tool results stubbed"
-	}
-	return fmt.Sprintf("Compacted session %s: %s; newest %d turns kept.\nContext: about %d tokens before, %d after.\n",
-		sessionID, done, resp.GetTurnsKept(), resp.GetTokensBefore(), resp.GetTokensAfter())
+	return fmt.Sprintf("Compacted session %s: older turns folded into the summary; newest %d turns kept.\nContext: about %d tokens before, %d after.\n",
+		sessionID, resp.GetTurnsKept(), resp.GetTokensBefore(), resp.GetTokensAfter())
 }

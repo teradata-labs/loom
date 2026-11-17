@@ -59,16 +59,10 @@ type CompactOptions struct {
 type CompactResult struct {
 	// Compacted is false when the session had nothing older than KeepTurns.
 	Compacted bool
-	// TokensBefore and TokensAfter are calibrated estimates of the compiled
-	// context around the compaction.
+	// TokensBefore and TokensAfter are the calibrated tokenizer counts of the
+	// compiled context around the compaction (compiledTokensLocked).
 	TokensBefore int
 	TokensAfter  int
-	// ToolResultsStubbed is always false. A manual compaction folds only: a
-	// tool result is bounded once, when it arrives, and is never stubbed
-	// later.
-	//
-	// Deprecated: kept so that callers still compile; read TurnsFolded.
-	ToolResultsStubbed bool
 	// TurnsFolded is true when older turns were folded into the running summary.
 	TurnsFolded bool
 	// SummaryVersion is the session summary's version after the compaction.
@@ -115,7 +109,7 @@ func (sm *SegmentedMemory) Compact(ctx context.Context, opts CompactOptions) (Co
 	}
 	res.TurnsKept = int(min(keep, sm.currentTurnLocked()))
 
-	res.TokensBefore = sm.estimateLocked()
+	res.TokensBefore = sm.compiledTokensLocked()
 	res.TokensAfter = res.TokensBefore
 	res.SummaryVersion = sm.summary.n
 
@@ -129,12 +123,12 @@ func (sm *SegmentedMemory) Compact(ctx context.Context, opts CompactOptions) (Co
 	// A requested compaction must not report success after dropping turns with
 	// only a placeholder line: without a real summary the fold is skipped.
 	sm.foldRequireSummary = true
+	defer func() { sm.foldRequireSummary = false }()
 	res.TurnsFolded = sm.foldLocked(ctx, boundary)
-	sm.foldRequireSummary = false
 	summaryMissing, persistErr := sm.foldAbortedNoSummary, sm.compactPersistErr
 	sm.foldAbortedNoSummary, sm.compactPersistErr = false, nil
 	res.Compacted = res.TurnsFolded
-	res.TokensAfter = sm.estimateLocked()
+	res.TokensAfter = sm.compiledTokensLocked()
 	res.SummaryVersion = sm.summary.n
 	if !res.Compacted {
 		// Nothing changed: say why rather than report an ordinary no-op.
@@ -155,6 +149,14 @@ func (sm *SegmentedMemory) Compact(ctx context.Context, opts CompactOptions) (Co
 		zap.Int("tokens_saved", res.TokensSaved()),
 		zap.Bool("focus", focus != ""))
 	return res, nil
+}
+
+// compiledTokensLocked is the tokenizer's count of the compiled context,
+// scaled by the provider calibration. Compact reports both of its figures
+// from it: the estimate answers with a byte bound under the start mark and
+// the tokenizer over it, and the two are not comparable. Must hold lock.
+func (sm *SegmentedMemory) compiledTokensLocked() int {
+	return int(float64(sm.accurateTokensLocked(sm.compileLocked())) * sm.calibrationLocked())
 }
 
 // CompactSession compacts one session's context on user request. It takes the

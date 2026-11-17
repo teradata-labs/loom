@@ -79,7 +79,7 @@ agent:
 			_, err := LoadAgentConfig(path)
 			require.NoError(t, err, "the file loads")
 			for _, key := range tt.keys {
-				assert.Equal(t, 1, logs.FilterMessage("behavior."+key+" is no longer read; the setting has no effect").Len(),
+				assert.Equal(t, 1, logs.FilterMessageSnippet("behavior."+key+" is no longer read").Len(),
 					"the retired key %s must be reported once", key)
 			}
 			assert.Equal(t, len(tt.keys), logs.Len(), "no other warning is logged")

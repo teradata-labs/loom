@@ -1415,10 +1415,16 @@ func parseImplicitTasksConfig(yaml *ImplicitTasksConfigYAML) *loomv1.ImplicitTas
 }
 
 // removedBehaviorKeys are the behavior keys the loader once read and no longer
-// does. context_relief_warning went with the relief note. preflight_fit and
+// does, each with the warning a file that still sets it gets.
+// context_relief_warning went with the relief note. preflight_fit and
 // auto_compact_percent are superseded by the in-loop fold and the step check
-// (fitStepToWindow), which keep every send inside the provider's window.
-var removedBehaviorKeys = []string{"context_relief_warning", "preflight_fit", "auto_compact_percent"}
+// (fitStepToWindow), which keep every send inside the provider's window; their
+// warnings name the setting that does the job now.
+var removedBehaviorKeys = []struct{ key, warning string }{
+	{"context_relief_warning", "behavior.context_relief_warning is no longer read; the setting has no effect"},
+	{"preflight_fit", "behavior.preflight_fit is no longer read; to hold every request under the context window, set llm.max_model_context_tokens to it"},
+	{"auto_compact_percent", "behavior.auto_compact_percent is no longer read; the in-loop fold compacts at memory.memory_compression.critical_threshold_percent"},
+}
 
 // warnRemovedKeys reports a key the loader once read and no longer does, so a
 // file that still sets it learns the setting has no effect. LoadAgentConfig
@@ -1436,9 +1442,9 @@ func warnRemovedKeys(yamlOnly string) {
 		return
 	}
 	for _, b := range []map[string]any{probe.Agent.Behavior, probe.Spec.Behavior} {
-		for _, key := range removedBehaviorKeys {
-			if _, set := b[key]; set {
-				zap.L().Warn("behavior." + key + " is no longer read; the setting has no effect")
+		for _, k := range removedBehaviorKeys {
+			if _, set := b[k.key]; set {
+				zap.L().Warn(k.warning)
 			}
 		}
 	}

@@ -4832,7 +4832,7 @@
         },
         "toolResultsStubbed": {
           "type": "boolean",
-          "description": "Deprecated: always false. A compaction folds only and replaces no tool\nresult with a stub. Read turns_folded. The field stays for wire\ncompatibility."
+          "description": "Always false: a tool result is bounded as it arrives and is never\nreplaced by a stub later."
         },
         "turnsFolded": {
           "type": "boolean",

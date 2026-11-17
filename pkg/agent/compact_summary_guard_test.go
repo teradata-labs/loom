@@ -83,9 +83,8 @@ func TestCompact_NeverFoldsWithoutASummary(t *testing.T) {
 		assert.Len(t, unfoldedTurns(sm), 6, "no turn left the context")
 	})
 
-	// Before the merge with fix/506 this case stubbed the tool results and
-	// reported a partial success. A compaction now folds only, so a failed
-	// summary with tool turns is the same refusal as with prose turns.
+	// A compaction folds only, so a failed summary with tool turns is the same
+	// refusal as with prose turns: no partial success, nothing stubbed.
 	t.Run("tool turns and a failed summary: nothing is stubbed instead", func(t *testing.T) {
 		sm := toolTurnMemory(t, 200000, 20000, 6)
 		sm.SetCompressor(&failingCompressor{})
@@ -94,24 +93,7 @@ func TestCompact_NeverFoldsWithoutASummary(t *testing.T) {
 
 		require.ErrorIs(t, err, ErrSummaryUnavailable)
 		assert.False(t, res.Compacted, "no partial success: nothing is stubbed")
-		assert.False(t, res.ToolResultsStubbed, "a compaction never stubs") //nolint:staticcheck // SA1019: pins the deprecated field at false
 		assert.False(t, res.TurnsFolded, "the fold did not run without a summary")
 		assert.Len(t, unfoldedTurns(sm), 6, "no turn left the context")
 	})
-}
-
-// The retired auto-compaction ledger stays as exports that compile and do
-// nothing, so an embedder that passed one to WithAutoCompactLedger still
-// builds and its agent behaves as if it had not.
-func TestAutoCompactLedger_DeprecatedExportsDoNothing(t *testing.T) {
-	ledger := NewAutoCompactLedger()
-	require.NotNil(t, ledger, "the constructor still returns a ledger")
-	assert.NotPanics(t, func() { ledger.Forget("s1") }, "Forget is a no-op")
-	var nilLedger *AutoCompactLedger
-	assert.NotPanics(t, func() { nilLedger.Forget("s1") }, "Forget is safe on a nil ledger")
-
-	plain := NewAgent(&mockBackend{}, &capturingLLM{})
-	shared := NewAgent(&mockBackend{}, &capturingLLM{}, WithAutoCompactLedger(ledger), WithAutoCompactLedger(nil))
-	assert.Equal(t, plain.GetConfig(), shared.GetConfig(), "the option changes no configuration")
-	assert.NotPanics(t, func() { shared.DeleteSession("s1") }, "deleting a session needs no ledger")
 }

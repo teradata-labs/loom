@@ -47,6 +47,15 @@ type SessionStorage interface {
 	// uses the same subquery without the +1. The store stamps the derived seq
 	// and turn back onto msg.
 	SaveMessage(ctx context.Context, sessionID string, msg *Message, turnStart bool) error
+
+	// LoadMessages and LoadSession return the session's unfolded rows, seq
+	// ascending, each assistant row with every call its tool_calls_json
+	// holds. A store does not repair the rows after a fold: when a fold
+	// keeps an assistant row for its words, the row's stored calls stay and
+	// only their results are folded. The agent's reload
+	// (Memory.GetOrCreateSession, dropFoldedCalls) reads the folded results
+	// through ListMessagesBySeqRange and removes those calls itself, so every
+	// SessionStorage gets the same context back.
 	LoadMessages(ctx context.Context, sessionID string) ([]Message, error)
 
 	// ListMessagesBySeqRange is the by-seq span read backing recall (HLD §6):

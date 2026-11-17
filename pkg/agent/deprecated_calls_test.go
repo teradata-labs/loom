@@ -38,3 +38,18 @@ func TestARemovedConfigKeyIsReportedOnLoad(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, logs.FilterMessageSnippet("context_relief_warning").Len(), "the removed key loaded silently")
 }
+
+// The pre-flight guard and end-of-turn compaction keys are reported the same
+// way, each naming the setting that does its job.
+func TestTheGuardAndAutoCompactKeysAreReportedOnLoad(t *testing.T) {
+	core, logs := observer.New(zapcore.WarnLevel)
+	restore := zap.ReplaceGlobals(zap.New(core))
+	defer restore()
+
+	path := filepath.Join(t.TempDir(), "a.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("agent:\n  name: a\n  behavior:\n    preflight_fit: true\n    auto_compact_percent: 65\n"), 0o600))
+	_, err := LoadAgentConfig(path)
+	require.NoError(t, err)
+	assert.Equal(t, 1, logs.FilterMessageSnippet("preflight_fit").Len(), "the removed key loaded silently")
+	assert.Equal(t, 1, logs.FilterMessageSnippet("auto_compact_percent").Len(), "the removed key loaded silently")
+}

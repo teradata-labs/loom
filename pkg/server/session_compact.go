@@ -70,7 +70,6 @@ func compactSessionResponse(res agent.CompactResult, err error) (*loomv1.Compact
 	if err != nil {
 		return nil, compactSessionStatus(err)
 	}
-	// tool_results_stubbed is left false: a compaction folds only.
 	return &loomv1.CompactSessionResponse{
 		Compacted:      res.Compacted,
 		TurnsFolded:    res.TurnsFolded,

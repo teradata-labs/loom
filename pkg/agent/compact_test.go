@@ -59,9 +59,8 @@ func toolTurnMemory(t *testing.T, maxTokens, reserved, turns int) *SegmentedMemo
 }
 
 // A compaction folds the older turns into the summary and keeps the newest
-// turns verbatim. Before the merge with fix/506 it also stubbed the older tool
-// results; it now folds only, and the summary is the user-role system-reminder
-// row (summaryRowPrefix), not a system message.
+// turns verbatim. It folds only: no tool result is stubbed. The summary is the
+// user-role system-reminder row (summaryRowPrefix), not a system message.
 func TestCompact_FoldsOldTurnsAndKeepsRecentVerbatim(t *testing.T) {
 	sm := toolTurnMemory(t, 200000, 20000, 6)
 	comp := &recordingCompressor{}
@@ -72,7 +71,6 @@ func TestCompact_FoldsOldTurnsAndKeepsRecentVerbatim(t *testing.T) {
 
 	assert.True(t, res.Compacted, "the compaction reports that it compacted")
 	assert.True(t, res.TurnsFolded, "the older turns were folded")
-	assert.False(t, res.ToolResultsStubbed, "a compaction never stubs") //nolint:staticcheck // SA1019: pins the deprecated field at false
 	assert.Greater(t, res.TokensSaved(), 0, "the fold saved tokens")
 	assert.Less(t, res.TokensAfter, res.TokensBefore, "the context is smaller after the fold")
 	assert.Equal(t, 1, res.SummaryVersion, "one fold writes summary version 1")
@@ -140,9 +138,8 @@ func TestCompact_RescuesASessionAlreadyOverItsWindow(t *testing.T) {
 
 	require.True(t, res.Compacted, "the compaction ran")
 	assert.LessOrEqual(t, res.TokensAfter, 11000, "the compacted session fits again")
-	// Before the merge with fix/506 this asserted EnsureFits, which is retired
-	// with behavior.preflight_fit. The same check, read from the memory: the
-	// estimate is under the usable window (the window less the reservation).
+	// The estimate is under the usable window (the window less the
+	// reservation).
 	sm.mu.Lock()
 	after, usable := sm.estimateLocked(), sm.usableLocked()
 	sm.mu.Unlock()
@@ -181,4 +178,74 @@ func TestCompactSession_RecordsASpan(t *testing.T) {
 	assert.Equal(t, true, span.Attributes["compaction.turns_folded"])
 	assert.Equal(t, true, span.Attributes["compaction.focus"])
 	assert.Equal(t, res.TokensAfter, span.Attributes["compaction.tokens_after"])
+}
+
+// A requested compaction and the in-loop fold are one mechanism: on a session
+// the in-loop fold has already folded, Compact hands the compressor that
+// summary, replaces it, and keeps the newest turns; the request-size log
+// counts the summary row as the summary.
+func TestCompact_BuildsOnTheSummaryOfAnInloopFold(t *testing.T) {
+	sm := toolTurnMemory(t, 200000, 20000, 8)
+	sm.SetProtectedRecentTurns(4)
+	comp := &recordingCompressor{}
+	sm.SetCompressor(comp)
+
+	applied, _ := sm.ApplyFoldReply(context.Background(), "INLOOP: tables one to four are read")
+	require.True(t, applied, "the in-loop fold did not commit")
+	require.Equal(t, 1, sm.summary.n)
+
+	res, err := sm.Compact(context.Background(), CompactOptions{KeepTurns: 2})
+	require.NoError(t, err)
+	assert.True(t, res.Compacted)
+	assert.Equal(t, 2, res.SummaryVersion, "the requested compaction wrote the next summary version")
+
+	var given []string
+	for _, m := range comp.input {
+		given = append(given, m.Content)
+	}
+	assert.Contains(t, strings.Join(given, "\n"), "INLOOP: tables one to four are read", "the compressor was not given the in-loop fold's summary")
+
+	turns := map[int64]bool{}
+	for turn := range unfoldedTurns(sm) {
+		turns[turn] = true
+	}
+	assert.Equal(t, map[int64]bool{7: true, 8: true}, turns, "the newest two turns stay verbatim")
+
+	b := measureRequest(sm.GetMessagesForLLM(), nil)
+	assert.Positive(t, b.SummaryTokens, "the log did not count the summary row")
+}
+
+// The figures before and after come from one counter: a compaction that
+// shrinks the context never reports growth, whichever side of the start mark
+// each lands on.
+func TestCompact_ReportsBeforeAndAfterFromOneCounter(t *testing.T) {
+	prose := strings.Repeat("The quarterly revenue analysis shows that customers in the northern region increased their spending considerably during the holiday season. ", 14)
+	for usable := 4000; usable <= 40000; usable += 500 {
+		sm := NewSegmentedMemory("ROM", usable+1000, 1000)
+		for turn := 1; turn <= 8; turn++ {
+			sm.AddMessage(context.Background(), Message{Role: "user", Content: fmt.Sprintf("q%d ", turn) + prose, Turn: int64(turn), ID: fmt.Sprint(turn * 10)})
+			sm.AddMessage(context.Background(), Message{Role: "assistant", Content: fmt.Sprintf("a%d ", turn) + prose, Turn: int64(turn), ID: fmt.Sprint(turn*10 + 1)})
+		}
+		sm.SetCompressor(&recordingCompressor{})
+
+		res, err := sm.Compact(context.Background(), CompactOptions{KeepTurns: 6})
+		require.NoError(t, err)
+		require.True(t, res.Compacted)
+		assert.Less(t, res.TokensAfter, res.TokensBefore, "usable window %d", usable)
+	}
+}
+
+// A compressor that panics inside a requested compaction leaves nothing set
+// for a later fold: the rule that a requested fold needs a real summary is
+// Compact's alone.
+func TestCompact_APanicLeavesNoRuleForALaterFold(t *testing.T) {
+	sm := toolTurnMemory(t, 12000, 1000, 12)
+	sm.SetCompressor(&panickingCompressor{})
+	func() {
+		defer func() { _ = recover() }()
+		_, _ = sm.Compact(context.Background(), CompactOptions{KeepTurns: 2, Focus: "keep the SQL"})
+	}()
+	assert.False(t, sm.foldRequireSummary, "the requested fold's rule outlived it")
+	assert.Empty(t, sm.compactFocus)
+	assert.False(t, sm.reliefInFlight)
 }

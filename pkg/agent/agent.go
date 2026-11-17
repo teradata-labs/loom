@@ -539,16 +539,6 @@ func WithPrompts(registry prompts.PromptRegistry) Option {
 	}
 }
 
-// WithAutoCompactLedger does nothing. It is kept so that an embedder that
-// shared one ledger across the agents it builds per turn still compiles.
-//
-// Deprecated: end-of-turn auto-compaction (behavior.auto_compact_percent) is
-// retired. The in-loop fold and the step check (fitStepToWindow) keep the
-// context inside the window, so there is no attempt record to share.
-func WithAutoCompactLedger(ledger *AutoCompactLedger) Option {
-	return func(*Agent) {}
-}
-
 // WithConfig replaces the entire agent configuration. Apply it before options
 // that set individual configuration fields.
 func WithConfig(config *Config) Option {

@@ -54,8 +54,7 @@ func TestCompact_ReportsAFailedWriteInsteadOfANoOp(t *testing.T) {
 		assert.NoError(t, sm.compactPersistErr, "the marker does not leak into relief")
 	})
 
-	// Before the merge with fix/506 this case also failed an evict write. A
-	// compaction now folds only, so tool turns meet the same fold write.
+	// A compaction folds only, so tool turns meet the same fold write.
 	t.Run("tool turns: the fold write fails", func(t *testing.T) {
 		sm := toolTurnMemory(t, 200000, 20000, 6)
 		sm.SetSessionStore(&brokenWriteStore{err: dbDown}, "sess-broken-tools")
