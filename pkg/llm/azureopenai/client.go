@@ -394,14 +394,14 @@ func (c *Client) convertResponse(resp *openai.ChatCompletionResponse, nameMap ma
 			CostUSD:      c.calculateCost(resp.Usage.PromptTokens, resp.Usage.CompletionTokens),
 		},
 		Metadata: map[string]interface{}{
-			"model":         resp.Model,
-			"deployment":    c.deploymentID,
-			"finish_reason": resp.Choices[0].FinishReason,
+			"model":      resp.Model,
+			"deployment": c.deploymentID,
 		},
 	}
 
 	if len(resp.Choices) > 0 {
 		choice := resp.Choices[0]
+		llmResp.Metadata["finish_reason"] = choice.FinishReason
 
 		// Map finish_reason to stop_reason
 		switch choice.FinishReason {
