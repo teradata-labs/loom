@@ -757,17 +757,22 @@ type WeaveProgress struct {
 	// and a size of 0; with either set, 0 means no arguments have arrived yet.
 	ToolInputBytes int64 `protobuf:"varint,23,opt,name=tool_input_bytes,json=toolInputBytes,proto3" json:"tool_input_bytes,omitempty"`
 	// The provider's stream index for this tool call (when
-	// is_tool_input_stream). On providers that deliver calls in order
-	// (Anthropic, Bedrock, Gemini, Ollama) it matches the call's position in
-	// the response's tool-call list. On OpenAI-compatible providers (OpenAI,
-	// Azure, LiteLLM, Mistral, HuggingFace) the final tool-call list is built
-	// from a map, so its order is not guaranteed to match this index; match a
-	// progress event to its tool-started event by tool_call_id there. Gemini
-	// repeats the function name in tool_call_id, so two parallel calls to the
-	// same tool share an ID and only this index tells them apart. The agent's
-	// throttling keys on the same index, so events for one call never
-	// interleave with another's. A bare activity pulse (no tool_call_id, no
-	// tool_name, 0 bytes) carries index 0 without being call 0; skip pulses.
+	// is_tool_input_stream). OpenAI-compatible providers (OpenAI, Azure,
+	// LiteLLM, Mistral, HuggingFace) return their tool calls in stream index
+	// order, so the index is monotonic with position but not necessarily equal
+	// to it: the OpenAI client (and so LiteLLM, Mistral and HuggingFace) drops
+	// an incomplete call with no id or name, and later calls keep their stream
+	// index while shifting position. The Azure OpenAI client keeps such a
+	// call, with whichever of id and name is missing left empty. Match a
+	// progress event to its tool-started event
+	// by tool_call_id. On providers that deliver calls in order (Anthropic,
+	// Bedrock, Gemini, Ollama) the index matches position when nothing is
+	// dropped. Gemini repeats the function name in tool_call_id, so two
+	// parallel calls to the same tool share an ID and only this index tells
+	// them apart. The agent's throttling keys on the same index, so events for
+	// one call never interleave with another's. A bare activity pulse (no
+	// tool_call_id, no tool_name, 0 bytes) carries index 0 without being call
+	// 0; skip pulses.
 	ToolCallIndex int32 `protobuf:"varint,24,opt,name=tool_call_index,json=toolCallIndex,proto3" json:"tool_call_index,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -9059,9 +9064,9 @@ type MCPServerInfo struct {
 	Enabled bool `protobuf:"varint,2,opt,name=enabled,proto3" json:"enabled,omitempty"`
 	// Whether server is currently connected
 	Connected bool `protobuf:"varint,3,opt,name=connected,proto3" json:"connected,omitempty"`
-	// Transport type (stdio, http, sse)
+	// Transport type (stdio, http, sse, streamable-http)
 	Transport string `protobuf:"bytes,4,opt,name=transport,proto3" json:"transport,omitempty"`
-	// Command to execute
+	// Command for stdio transport
 	Command string `protobuf:"bytes,5,opt,name=command,proto3" json:"command,omitempty"`
 	// Command arguments
 	Args []string `protobuf:"bytes,6,rep,name=args,proto3" json:"args,omitempty"`
@@ -9271,9 +9276,9 @@ type AddMCPServerRequest struct {
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// Whether to enable the server
 	Enabled bool `protobuf:"varint,2,opt,name=enabled,proto3" json:"enabled,omitempty"`
-	// Transport type (stdio, http, sse)
+	// Transport type (stdio, http, sse, streamable-http)
 	Transport string `protobuf:"bytes,3,opt,name=transport,proto3" json:"transport,omitempty"`
-	// Command to execute
+	// Command to execute (required for enabled stdio transport)
 	Command string `protobuf:"bytes,4,opt,name=command,proto3" json:"command,omitempty"`
 	// Command arguments
 	Args []string `protobuf:"bytes,5,rep,name=args,proto3" json:"args,omitempty"`
@@ -9285,7 +9290,7 @@ type AddMCPServerRequest struct {
 	AutoStart bool `protobuf:"varint,8,opt,name=auto_start,json=autoStart,proto3" json:"auto_start,omitempty"`
 	// Tool filter configuration
 	ToolFilter *ToolFilterConfig `protobuf:"bytes,9,opt,name=tool_filter,json=toolFilter,proto3" json:"tool_filter,omitempty"`
-	// Server URL (required for http/sse transport)
+	// Server URL (required for enabled http, sse, and streamable-http transports)
 	Url string `protobuf:"bytes,10,opt,name=url,proto3" json:"url,omitempty"`
 	// Enable session management (for streamable-http transport)
 	EnableSessions bool `protobuf:"varint,11,opt,name=enable_sessions,json=enableSessions,proto3" json:"enable_sessions,omitempty"`
@@ -9493,9 +9498,9 @@ type UpdateMCPServerRequest struct {
 	ServerName string `protobuf:"bytes,1,opt,name=server_name,json=serverName,proto3" json:"server_name,omitempty"`
 	// Whether to enable the server
 	Enabled bool `protobuf:"varint,2,opt,name=enabled,proto3" json:"enabled,omitempty"`
-	// Transport type (stdio, http, sse)
+	// Transport type (stdio, http, sse, streamable-http)
 	Transport string `protobuf:"bytes,3,opt,name=transport,proto3" json:"transport,omitempty"`
-	// Command to execute
+	// Command to execute (required for enabled stdio transport)
 	Command string `protobuf:"bytes,4,opt,name=command,proto3" json:"command,omitempty"`
 	// Command arguments
 	Args []string `protobuf:"bytes,5,rep,name=args,proto3" json:"args,omitempty"`
@@ -9509,7 +9514,7 @@ type UpdateMCPServerRequest struct {
 	ToolFilter *ToolFilterConfig `protobuf:"bytes,9,opt,name=tool_filter,json=toolFilter,proto3" json:"tool_filter,omitempty"`
 	// Timeout in seconds for restart operation (default: 1 second)
 	TimeoutSeconds int32 `protobuf:"varint,10,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
-	// Server URL (required for http/sse transport)
+	// Server URL (required for enabled http, sse, and streamable-http transports)
 	Url string `protobuf:"bytes,11,opt,name=url,proto3" json:"url,omitempty"`
 	// Enable session management (for streamable-http transport)
 	EnableSessions bool `protobuf:"varint,12,opt,name=enable_sessions,json=enableSessions,proto3" json:"enable_sessions,omitempty"`
@@ -9977,9 +9982,9 @@ func (x *MCPServerHealth) GetLatencyMs() int64 {
 // TestMCPServerConnectionRequest tests an MCP server configuration.
 type TestMCPServerConnectionRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Transport type (stdio, http, sse)
+	// Transport type (stdio, http, sse, streamable-http)
 	Transport string `protobuf:"bytes,1,opt,name=transport,proto3" json:"transport,omitempty"`
-	// Command to execute
+	// Command to execute (required only for stdio transport)
 	Command string `protobuf:"bytes,2,opt,name=command,proto3" json:"command,omitempty"`
 	// Command arguments
 	Args []string `protobuf:"bytes,3,rep,name=args,proto3" json:"args,omitempty"`
@@ -9991,7 +9996,7 @@ type TestMCPServerConnectionRequest struct {
 	ToolFilter *ToolFilterConfig `protobuf:"bytes,6,opt,name=tool_filter,json=toolFilter,proto3" json:"tool_filter,omitempty"`
 	// Timeout for connection test in seconds (default: 10)
 	TimeoutSeconds int32 `protobuf:"varint,7,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
-	// Server URL (required for http/sse transport)
+	// Server URL (required for http, sse, and streamable-http transports)
 	Url string `protobuf:"bytes,8,opt,name=url,proto3" json:"url,omitempty"`
 	// Enable session management (for streamable-http transport)
 	EnableSessions bool `protobuf:"varint,9,opt,name=enable_sessions,json=enableSessions,proto3" json:"enable_sessions,omitempty"`
