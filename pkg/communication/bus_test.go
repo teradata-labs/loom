@@ -522,3 +522,47 @@ func TestBusValidation(t *testing.T) {
 	_, _, err = bus.Publish(ctx, "topic", nil)
 	assert.Error(t, err)
 }
+
+// TestBusSubscribe_SameAgentAndTopicGetDistinctIDs covers two subscriptions by
+// the same agent on the same topic: each gets its own ID, so unsubscribing one
+// leaves the other's channel open and receiving. The IDs used to be built from
+// agent, topic and UnixNano alone, which collide within one clock tick on
+// Windows; the second subscription then overwrote the first, and unsubscribing
+// either closed the survivor's channel.
+func TestBusSubscribe_SameAgentAndTopicGetDistinctIDs(t *testing.T) {
+	bus := NewMessageBus(nil, nil, nil, zaptest.NewLogger(t))
+	defer func() { _ = bus.Close() }()
+	ctx := context.Background()
+
+	const n = 1000
+	seen := make(map[string]bool, n)
+	subs := make([]*Subscription, 0, n)
+	for i := 0; i < n; i++ {
+		sub, err := bus.Subscribe(ctx, "workflow-orchestrator", "workflow.restart", nil, 1)
+		require.NoError(t, err)
+		require.False(t, seen[sub.ID], "duplicate subscription ID %q", sub.ID)
+		seen[sub.ID] = true
+		subs = append(subs, sub)
+	}
+
+	// Unsubscribing every subscription but the last leaves the last one open.
+	for _, sub := range subs[:n-1] {
+		require.NoError(t, bus.Unsubscribe(ctx, sub.ID))
+	}
+	last := subs[n-1]
+	_, _, err := bus.Publish(ctx, "workflow.restart", &loomv1.BusMessage{
+		Id:        "restart-1",
+		Topic:     "workflow.restart",
+		FromAgent: "stage2",
+		Payload:   &loomv1.MessagePayload{Data: &loomv1.MessagePayload_Value{Value: []byte("{}")}},
+		Timestamp: time.Now().UnixMilli(),
+	})
+	require.NoError(t, err)
+	select {
+	case msg, ok := <-last.Channel:
+		require.True(t, ok, "surviving subscription's channel was closed")
+		assert.Equal(t, "restart-1", msg.Id)
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for message on surviving subscription")
+	}
+}

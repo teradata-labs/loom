@@ -65,6 +65,12 @@ type MessageBus struct {
 	totalDelivered atomic.Int64
 	totalDropped   atomic.Int64
 
+	// subSeq disambiguates subscription IDs minted within the same clock tick.
+	// Without it, two Subscribe calls by the same agent on the same topic in one
+	// tick (common on Windows) shared an ID, and unsubscribing one closed the
+	// other's channel.
+	subSeq atomic.Uint64
+
 	// Lifecycle
 	closed atomic.Bool
 }
@@ -252,7 +258,7 @@ func (b *MessageBus) Subscribe(ctx context.Context, agentID string, topicPattern
 	}
 
 	// Create subscriber
-	subID := fmt.Sprintf("%s-%s-%d", agentID, topicPattern, time.Now().UnixNano())
+	subID := fmt.Sprintf("%s-%s-%d-%d", agentID, topicPattern, time.Now().UnixNano(), b.subSeq.Add(1))
 	channel := make(chan *loomv1.BusMessage, bufferSize)
 
 	subscriber := &Subscriber{

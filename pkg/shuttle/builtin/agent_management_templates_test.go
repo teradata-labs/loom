@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/session"
 )
 
@@ -272,6 +273,53 @@ func TestAgentManagementTool_GuideCannotApply(t *testing.T) {
 			require.False(t, res.Success, "%s must be rejected for guide", action)
 			require.NotNil(t, res.Error)
 			assert.Equal(t, "UNAUTHORIZED", res.Error.Code)
+		})
+	}
+}
+
+// The debate branch of the YAML emitter must write moderator_agent_id and no
+// merge_strategy: the loader now rejects merge_strategy on debate, so a
+// regression here would produce a stored workflow ExecuteWorkflow refuses.
+func TestBuildWorkflowYAMLFromTemplate_Debate(t *testing.T) {
+	tests := []struct {
+		name      string
+		moderator string
+	}{
+		{name: "with moderator", moderator: "moderator"},
+		{name: "without moderator", moderator: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpl := &loomv1.WorkflowTemplateInfo{
+				DefaultWorkflowPattern: &loomv1.WorkflowPattern{Pattern: &loomv1.WorkflowPattern_Debate{Debate: &loomv1.DebatePattern{
+					Topic: "Adopt microservices?", Rounds: 2, ModeratorAgentId: tc.moderator,
+				}}},
+			}
+			out, err := buildWorkflowYAMLFromTemplate("arch-debate", tmpl, []string{"advocate", "skeptic"})
+			require.NoError(t, err)
+			assert.NotContains(t, out, "merge_strategy")
+			if tc.moderator != "" {
+				assert.Contains(t, out, "moderator_agent_id: moderator")
+			} else {
+				assert.NotContains(t, out, "moderator_agent_id")
+			}
+			var doc struct {
+				Kind string                 `yaml:"kind"`
+				Spec map[string]interface{} `yaml:"spec"`
+			}
+			require.NoError(t, yaml.Unmarshal([]byte(out), &doc), "the emitted YAML must parse:\n%s", out)
+			assert.Equal(t, "Workflow", doc.Kind)
+			assert.Equal(t, "debate", doc.Spec["type"])
+			assert.Equal(t, []interface{}{"advocate", "skeptic"}, doc.Spec["agent_ids"])
+			assert.Equal(t, 2, doc.Spec["rounds"])
+			assert.Equal(t, "Adopt microservices?", doc.Spec["topic"])
+			_, hasMerge := doc.Spec["merge_strategy"]
+			assert.False(t, hasMerge, "merge_strategy is dead configuration on debate and the loader rejects it")
+			moderator, hasModerator := doc.Spec["moderator_agent_id"]
+			assert.Equal(t, tc.moderator != "", hasModerator)
+			if tc.moderator != "" {
+				assert.Equal(t, tc.moderator, moderator)
+			}
 		})
 	}
 }

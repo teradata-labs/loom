@@ -20,10 +20,22 @@ spec:
     - architect-advocate
     - pragmatist-engineer
 
+  # Bound the two prompts that carry other agents' full positions: each
+  # debater's round 2+ response prompt and the moderator's synthesis. Full
+  # positions go to SharedMemory (key debate-<run-id>-round-R-position-<agent>; the
+  # debate engine ids every run debate-<8 hex chars>, and the prompts name the keys)
+  # and the inline copies are capped; the whole prompt is held to half the
+  # receiving agent's usable context window, pre-reducing oversize positions
+  # with its compressor LLM. See docs/reference/workflow-join.md.
+  join:
+    max_branch_bytes: 4096
+    overflow_strategy: pre_reduce
+
 # Agent configs used (from $LOOM_DATA_DIR/agents/):
 # - architect-advocate.yaml: Advocate for architectural best practices and long-term maintainability
 # - pragmatist-engineer.yaml: Pragmatist engineer for practical solutions and business constraints
 # - senior-architect.yaml: Senior architect moderator for synthesizing debate outcomes
+#   (give it shared_memory_read so it can pull any full position back)
 
 # Example usage (topic provided at runtime):
 # Should we use microservices architecture or monolithic architecture for our new e-commerce platform?

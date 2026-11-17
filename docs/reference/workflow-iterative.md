@@ -79,7 +79,7 @@ workflow_pattern:
       preserve_outputs: false
       max_validation_retries: 2
     restart_triggers: ["build_npath"]  # Analysis stage can trigger restarts
-    restart_topic: "workflow.restart"
+    # restart_topic: "my.topic"  # optional; the default is one topic per run, workflow.restart.<workflow-id>
 ```
 
 
@@ -95,7 +95,7 @@ workflow_pattern:
 | `restart_policy.preserve_outputs` | bool | true* | Keep previous iteration outputs (*YAML config default; proto3 wire default is false) |
 | `restart_policy.max_validation_retries` | int32 | 2 | Retry count with fresh agent context |
 | `restart_triggers` | []string | [] (all) | Which stages can trigger restarts |
-| `restart_topic` | string | "workflow.restart" | Pub/sub topic for restart messages |
+| `restart_topic` | string | `workflow.restart.<workflow-id>` (one per run) | Pub/sub topic for restart messages; set it only when an external publisher must know the topic in advance |
 
 **Constants** (internal, not configurable):
 - `MaxStageOutputBytes`: 8192 bytes (truncation threshold)
@@ -187,7 +187,7 @@ The **Iterative Workflow Pattern** extends the standard pipeline pattern with **
 │  Pub/Sub Infrastructure for Restart Coordination               │
 │  • Subscribe(topic, handler)                                    │
 │  • Publish(topic, message)                                      │
-│  • Topics: "workflow.restart" (default)                         │
+│  • Topics: "workflow.restart.<workflow-id>" (default, per run)  │
 └─────────────────────────────────────────────────────────────────┘
                              │
                              ▼
@@ -195,7 +195,7 @@ The **Iterative Workflow Pattern** extends the standard pipeline pattern with **
 │                      SharedMemory                               │
 │  Full Stage Output Storage                                      │
 │  • Namespace: WORKFLOW                                          │
-│  • Keys: "stage-N-output"                                       │
+│  • Keys: "<workflow-id>-stage-N-output"                                       │
 │  • Auto-compression: > 1KB                                      │
 │  • Metadata: agent_id, stored_at, full_size                     │
 └─────────────────────────────────────────────────────────────────┘
@@ -285,7 +285,7 @@ for currentIteration <= maxIterations {
 **How**:
 - Truncate outputs > 8KB in prompt context
 - Store full outputs in SharedMemory
-- Add reference message: "Full data in shared_memory_read(key='stage-N-output')"
+- Add reference message: "Full data in shared_memory_read(key='<workflow-id>-stage-N-output')"
 
 **Trade-off**: Requires SharedMemory implementation, but prevents token bloat and provides escape hatch.
 
@@ -524,7 +524,8 @@ message RestartResponse {
 
 3. **Reset SharedMemory** (if `reset_shared_memory = true`):
    ```go
-   sharedMemory.Reset(ctx, WORKFLOW namespace)
+   e.resetWorkflowNamespace(ctx)   // deletes this run's own keys only
+   e.reseedRetainedStages(ctx, targetIndex) // puts the kept stages' stashes back (the stages before targetIndex)
    ```
 
 4. **Jump to Target Stage**:
@@ -556,19 +557,27 @@ func PublishRestartRequest(ctx context.Context, req *RestartRequest) error {
         return err
     }
 
+    // The running pipeline's topic (workflow.restart.<workflow-id> unless
+    // restart_topic is set) is on the turn's context; the publish_restart_request
+    // tool reads it from there and refuses to publish outside a run.
+    topic := communication.RestartTopicFromContext(ctx)
     msg := &loomv1.BusMessage{
-        Topic: "workflow.restart",  // From pattern.restart_topic
+        Topic: topic,
         Payload: &loomv1.MessagePayload{
             Data: &loomv1.MessagePayload_Value{Value: payload},
         },
     }
 
-    _, _, err = messageBus.Publish(ctx, "workflow.restart", msg)
+    _, _, err = messageBus.Publish(ctx, topic, msg)
     return err
 }
 ```
 
-**From External Orchestrator** (programmatic):
+**From External Orchestrator** (programmatic). An external publisher must
+know the run's topic: `communication.RestartTopicFor(workflowID)` for a run
+whose pattern carries a known `workflow_id`, or the pattern's explicit
+`restart_topic`. A request published on another run's topic (or on the
+unscoped `workflow.restart`) reaches no executor.
 
 ```go
 restartReq := &loomv1.RestartRequest{
@@ -580,14 +589,15 @@ restartReq := &loomv1.RestartRequest{
 }
 
 payload, _ := json.Marshal(restartReq)
+topic := communication.RestartTopicFor(workflowID) // or pattern.RestartTopic when set
 msg := &loomv1.BusMessage{
-    Topic: "workflow.restart",
+    Topic: topic,
     Payload: &loomv1.MessagePayload{
         Data: &loomv1.MessagePayload_Value{Value: payload},
     },
 }
 
-_, _, err = messageBus.Publish(ctx, "workflow.restart", msg)
+_, _, err = messageBus.Publish(ctx, topic, msg)
 ```
 
 
@@ -855,7 +865,7 @@ func truncateStageOutput(output string, maxBytes int, memoryKey string) (string,
     // Include reference to SharedMemory key
     notice := fmt.Sprintf(
         StageOutputTruncationNoticeTemplate,
-        memoryKey,  // e.g., "stage-1-output"
+        memoryKey,  // e.g., "<workflow-id>-stage-1-output"
     )
 
     return truncated + notice, true
@@ -881,7 +891,7 @@ Truncated Output (8KB):
   "events": ["purchase", "add_to_cart", ...],  // First 200 events
   "schema": {...},
 
-[OUTPUT TRUNCATED - Full data stored in SharedMemory. Use shared_memory_read(namespace="workflow", key="stage-1-output") to fetch complete output]
+[OUTPUT TRUNCATED - Full data stored in SharedMemory. Use shared_memory_read(namespace="workflow", key="<workflow-id>-stage-1-output") to fetch complete output]
 ```
 
 
@@ -893,7 +903,7 @@ Truncated Output (8KB):
 ```go
 func (e *IterativePipelineExecutor) storeStageOutputInMemory(
     ctx context.Context,
-    key string,      // "stage-1-output", "stage-2-output", etc.
+    key string,      // "<workflow-id>-stage-1-output", "<workflow-id>-stage-2-output", etc.
     agentID string,  // Agent that produced output
     output string,   // Full output (no truncation)
 ) error {
@@ -925,20 +935,22 @@ func (e *IterativePipelineExecutor) storeStageOutputInMemory(
 
 ### Stage Key Format
 
-**Format**: `stage-{N}-output`
+**Format**: `<workflow-id>-stage-{N}-output`
+
+The unscoped `stage-{N}-output` of earlier releases is neither written nor read. A stored prompt that hardcodes it must change: use the key the stage prompt's `## AVAILABLE CONTEXT` header lists (only stashed outputs are listed), or stop naming keys in prompts.
 
 **Where**:
 - `N`: 1-based stage number (not 0-based)
 
 **Examples**:
-- Stage 1: `stage-1-output`
-- Stage 2: `stage-2-output`
-- Stage 10: `stage-10-output`
+- Stage 1: `<workflow-id>-stage-1-output`
+- Stage 2: `<workflow-id>-stage-2-output`
+- Stage 10: `<workflow-id>-stage-10-output`
 
 **Implementation**:
 ```go
 stageNum := stageIndex + 1  // Convert 0-based to 1-based
-stageKey := fmt.Sprintf("stage-%d-output", stageNum)
+stageKey := fmt.Sprintf("%s-stage-%d-output", workflowID, stageNum)
 ```
 
 
@@ -967,13 +979,13 @@ if strings.Contains(prompt, "{{structured_context}}") {
 
 **Built-in Template Variables** (substituted by pipeline executor):
 - `{{previous}}`: Last stage's output (truncated to 8KB)
-- `{{history}}`: All previous outputs formatted with stage numbers
+- `{{history}}`: All previous outputs formatted with stage numbers; each entry is the same 8KB copy `{{previous}}` carries, with the `<workflow-id>-stage-N-output` notice. A `history` block on the pipeline adds a whole-prompt token budget (see [Workflow Join Policy](workflow-join.md#pipeline-history)).
 - `{{structured_context}}`: Full structured context as JSON
 
 **User-defined Template Variables** (substituted by `InterpolateVariables` from `ExecuteWorkflowRequest.variables`):
 - `{{table_name}}`, `{{database}}`, etc. - any key in the `variables` map
 
-**Note**: There is no `{{stage-N-output}}` template variable. To access specific previous stage outputs, agents should use the `shared_memory_read` tool with key `"stage-N-output"`.
+**Note**: There is no `{{stage-N-output}}` template variable. To access specific previous stage outputs, agents should use the `shared_memory_read` tool with key `"<workflow-id>-stage-N-output"`.
 
 
 ### Retrieval Pattern
@@ -986,14 +998,14 @@ tools:
     description: "Retrieve full stage output from SharedMemory"
     parameters:
       namespace: "workflow"
-      key: "stage-1-output"
+      key: "<workflow-id>-stage-1-output"
 ```
 
 **Tool Execution**:
 ```go
 func (t *SharedMemoryReadTool) Execute(ctx context.Context, params map[string]interface{}) (*ToolResult, error) {
     namespace := params["namespace"].(string)  // "workflow"
-    key := params["key"].(string)              // "stage-1-output"
+    key := params["key"].(string)              // "<workflow-id>-stage-1-output"
 
     req := &loomv1.GetSharedMemoryRequest{
         Namespace: parseNamespace(namespace),
@@ -1019,7 +1031,7 @@ func (t *SharedMemoryReadTool) Execute(ctx context.Context, params map[string]in
 
 **Namespace Reset** (when `reset_shared_memory = true`):
 
-The actual implementation lists all keys in the WORKFLOW namespace, then deletes each one individually. There is no bulk-delete-by-prefix operation in the `DeleteSharedMemoryRequest` proto.
+The implementation lists the WORKFLOW namespace and deletes this run's own keys one by one: its `<workflow-id>-stage-N-output` stashes, the keys its agents wrote under the `<workflow-id>-` prefix the prompt header asks for, and any unscoped legacy `stage-N-output` key. Other workflows' keys, and keys with no workflow prefix, stay (one store serves every workflow a `looms serve` runs). The stashes of the stages the restart keeps are put back right after the reset, so the notices in their `{{previous}}` copies still point at a key that exists. There is no bulk-delete-by-prefix operation in the `DeleteSharedMemoryRequest` proto.
 
 ```go
 func (e *IterativePipelineExecutor) resetWorkflowNamespace(ctx context.Context) error {
@@ -1317,7 +1329,7 @@ enum SharedMemoryNamespace {
 ```go
 req := &loomv1.PutSharedMemoryRequest{
     Namespace: loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_WORKFLOW,
-    Key:       "stage-1-output",
+    Key:       "<workflow-id>-stage-1-output",
     Value:     []byte(fullOutput),
     AgentId:   "discover_events",
     Metadata: map[string]string{
@@ -1344,7 +1356,7 @@ resp, err := sharedMemory.Put(ctx, req)
 ```go
 req := &loomv1.GetSharedMemoryRequest{
     Namespace: loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_WORKFLOW,
-    Key:       "stage-1-output",
+    Key:       "<workflow-id>-stage-1-output",
 }
 
 resp, err := sharedMemory.Get(ctx, req)
@@ -1368,7 +1380,7 @@ version := resp.Value.Version               // Optimistic concurrency version
 ```go
 req := &loomv1.DeleteSharedMemoryRequest{
     Namespace: loomv1.SharedMemoryNamespace_SHARED_MEMORY_NAMESPACE_WORKFLOW,
-    Key:       "stage-1-output",
+    Key:       "<workflow-id>-stage-1-output",
 }
 
 _, err := sharedMemory.Delete(ctx, req)
@@ -1412,8 +1424,8 @@ for _, key := range resp.Keys {
 
 **Output**:
 ```
-Key: stage-1-output
-Key: stage-2-output
+Key: <workflow-id>-stage-1-output
+Key: <workflow-id>-stage-2-output
 ```
 
 **Note**: `ListSharedMemoryKeysResponse` returns key names only (not values or metadata). To get metadata for a specific key, use a separate `Get` call.
@@ -1563,14 +1575,13 @@ restart_triggers:
 ### restart_topic
 
 **Type**: `string`
-**Default**: `"workflow.restart"`
+**Default**: `workflow.restart.<workflow-id>` (a topic per run)
 **Required**: No
 
-**Description**: Pub/sub topic for restart coordination messages.
+**Description**: Pub/sub topic for restart coordination messages. One MessageBus serves every workflow a `looms serve` runs, so by default each run listens on its own topic and a request from one run cannot restart another run whose stage ids match; the YAML loader leaves an omitted `restart_topic` empty so that default applies. The `publish_restart_request` tool, which `looms workflow run` and `looms serve` both register on workflow agents, follows the running pipeline's topic and refuses outside a run; the executor publishes its verdict on `<topic>.response.<stage>` (no in-tree consumer reads it yet). Under the server's `tools.none` policy that tool is suppressed with the other workflow-injected tools (see the agent configuration reference), so an iterative run on such a server restarts only through an external publisher on its topic. Set `restart_topic` only when an external publisher must know the topic in advance.
 
 **Constraints**:
-- Must be unique per workflow (if running multiple workflows concurrently)
-- Cannot be empty
+- Leave it empty for a topic per run; every run that sets the same explicit value receives the others' requests
 
 **Example**:
 ```yaml
@@ -1684,7 +1695,7 @@ if cooldownSeconds > 0 {
 
 **Behavior**:
 - `false`: Preserve SharedMemory contents across restarts
-- `true`: Delete all keys in WORKFLOW namespace on restart
+- `true`: Delete this run's own keys in the WORKFLOW namespace on restart (its stage stashes and its agents' `<workflow-id>-`-prefixed keys; the retained stages' stashes are re-seeded); other workflows' keys and unprefixed keys stay
 
 **Example**:
 ```yaml
@@ -1706,7 +1717,7 @@ restart_policy:
 **Description**: Whether to keep previous iteration's stage outputs in `stageOutputs` map.
 
 **Behavior**:
-- `true`: Keep outputs from previous iteration (retained in the `stageOutputs` map and in SharedMemory under key `stage-N-output`; read via the `shared_memory_read` tool, not via a `{{stage-N-output}}` template variable)
+- `true`: Keep outputs from previous iteration (retained in the `stageOutputs` map and in SharedMemory under key `<workflow-id>-stage-N-output`; read via the `shared_memory_read` tool, not via a `{{stage-N-output}}` template variable)
 - `false`: Clear outputs from restarted stage onward
 
 **Example**:
@@ -1766,16 +1777,17 @@ message BusMessage {
 restartReq := &loomv1.RestartRequest{...}
 payload, _ := json.Marshal(restartReq)
 
+topic := communication.RestartTopicFor(workflowID) // the run's own topic
 msg := &loomv1.BusMessage{
     Id:    uuid.NewString(),
-    Topic: "workflow.restart",
+    Topic: topic,
     Payload: &loomv1.MessagePayload{
         Data: &loomv1.MessagePayload_Value{Value: payload},
     },
     Timestamp: time.Now().UnixMilli(),
 }
 
-_, _, err = messageBus.Publish(ctx, "workflow.restart", msg)
+_, _, err = messageBus.Publish(ctx, topic, msg)
 ```
 
 
@@ -2080,13 +2092,14 @@ func TestIterativePipeline_RestartCoordination(t *testing.T) {
         TimestampMs:      time.Now().UnixMilli(),
     }
     payload, _ := json.Marshal(restartReq)
+    topic := communication.RestartTopicFor(workflowID) // the run's own topic
     msg := &loomv1.BusMessage{
-        Topic: "workflow.restart",
+        Topic: topic,
         Payload: &loomv1.MessagePayload{
             Data: &loomv1.MessagePayload_Value{Value: payload},
         },
     }
-    _, _, _ = messageBus.Publish(ctx, "workflow.restart", msg)
+    _, _, _ = messageBus.Publish(ctx, communication.RestartTopicFor(workflowID), msg)
 
     // Verify restart executed
     // ...
@@ -2099,7 +2112,7 @@ func TestIterativePipeline_RestartCoordination(t *testing.T) {
 **Store full outputs**:
 ```go
 // Always store full output in SharedMemory
-storeStageOutputInMemory(ctx, "stage-1-output", agentID, fullOutput)
+storeStageOutputInMemory(ctx, "<workflow-id>-stage-1-output", agentID, fullOutput)
 ```
 
 **Reference in prompts**:
@@ -2109,7 +2122,7 @@ stages:
     prompt_template: |
       Analyze data from discovery stage.
 
-      **Full data available**: Use shared_memory_read(namespace="workflow", key="stage-1-output")
+      **Full data available**: Use shared_memory_read(namespace="workflow", key="<workflow-id>-stage-1-output")
       to retrieve complete output if needed.
 
       **Summary**: {{previous}}
@@ -2458,7 +2471,7 @@ grep "shared_memory" loom.log
 
 1. **Namespace Reset Between Stages**:
    ```
-   Error: key 'stage-1-output' not found after restart
+   Error: key '<workflow-id>-stage-1-output' not found after restart
    ```
    **Resolution**: Set `reset_shared_memory: false`:
    ```yaml
@@ -2468,9 +2481,9 @@ grep "shared_memory" loom.log
 
 2. **Wrong Key Format**:
    ```
-   Error: key 'stage_1_output' not found (should be 'stage-1-output')
+   Error: key 'stage_1_output' not found (should be '<workflow-id>-stage-1-output')
    ```
-   **Resolution**: Use correct key format: `stage-{N}-output` (1-based, hyphenated).
+   **Resolution**: Use correct key format: `<workflow-id>-stage-{N}-output` (1-based, hyphenated; the stage prompt's header lists the exact keys).
 
 3. **Workflow Namespace Not Initialized**:
    ```
@@ -2626,11 +2639,11 @@ Error: stage 'discovery' not authorized to trigger restarts
 
 **Example**:
 ```
-Error: shared memory key not found: stage-1-output
+Error: shared memory key not found: <workflow-id>-stage-1-output
 ```
 
 **Resolution**:
-1. Verify key format: `stage-{N}-output` (1-based)
+1. Verify key format: `<workflow-id>-stage-{N}-output` (1-based; copy it from the prompt header)
 2. Check `reset_shared_memory` not clearing needed data
 3. Ensure stage execution completed before retrieval
 

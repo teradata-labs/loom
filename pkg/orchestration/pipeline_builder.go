@@ -21,6 +21,7 @@ type PipelineBuilder struct {
 	initialPrompt   string
 	stages          []*loomv1.PipelineStage
 	passFullHistory bool
+	historyPolicy   *loomv1.HistoryPolicy
 }
 
 // WithStage adds a stage to the pipeline.
@@ -120,6 +121,15 @@ func (b *PipelineBuilder) WithFullHistory() *PipelineBuilder {
 	return b
 }
 
+// WithHistoryPolicy bounds what stages receive through {{history}} and
+// pass_full_history with a whole-prompt token budget (see HistoryPolicy).
+// Without it, history entries are still capped per stage like {{previous}},
+// but no budget check runs and no extra LLM calls are made.
+func (b *PipelineBuilder) WithHistoryPolicy(policy *loomv1.HistoryPolicy) *PipelineBuilder {
+	b.historyPolicy = policy
+	return b
+}
+
 // Execute runs the pipeline and returns the final result.
 func (b *PipelineBuilder) Execute(ctx context.Context) (*loomv1.WorkflowResult, error) {
 	// Validate configuration
@@ -137,6 +147,7 @@ func (b *PipelineBuilder) Execute(ctx context.Context) (*loomv1.WorkflowResult, 
 				InitialPrompt:   b.initialPrompt,
 				Stages:          b.stages,
 				PassFullHistory: b.passFullHistory,
+				HistoryPolicy:   b.historyPolicy,
 			},
 		},
 	}

@@ -37,10 +37,16 @@ func ExtractAgentIDs(pattern *loomv1.WorkflowPattern) []string {
 
 	case *loomv1.WorkflowPattern_ForkJoin:
 		ids = append(ids, p.ForkJoin.AgentIds...)
+		if id := p.ForkJoin.GetJoinPolicy().GetAgentId(); id != "" {
+			ids = append(ids, id)
+		}
 
 	case *loomv1.WorkflowPattern_Parallel:
 		for _, task := range p.Parallel.Tasks {
 			ids = append(ids, task.AgentId)
+		}
+		if id := p.Parallel.GetJoinPolicy().GetAgentId(); id != "" {
+			ids = append(ids, id)
 		}
 
 	case *loomv1.WorkflowPattern_Debate:

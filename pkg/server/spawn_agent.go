@@ -80,9 +80,9 @@ func (s *MultiAgentServer) SpawnSubAgent(ctx context.Context, req *builtin.Spawn
 		zap.String("agent_id", req.AgentID),
 		zap.String("sub_agent_id", subAgentID))
 
-	// IMPORTANT: Load fresh agent instance for spawned agent (not from cache)
-	// This prevents concurrent Chat() calls on the same agent instance which can cause
-	// issues with shared state (memory, sessions, etc.)
+	// The registry returns its cached instance of the agent (the same one a
+	// workflow run or a direct Chat uses); the spawned turn runs under its own
+	// session id, which is what keeps its conversation state apart.
 	if registry == nil {
 		return nil, fmt.Errorf("agent registry not configured")
 	}
@@ -92,7 +92,7 @@ func (s *MultiAgentServer) SpawnSubAgent(ctx context.Context, req *builtin.Spawn
 		return nil, fmt.Errorf("failed to load agent %s: %w", req.AgentID, err)
 	}
 
-	logger.Debug("Loaded fresh agent instance for spawned agent",
+	logger.Debug("Loaded agent for spawned sub-agent",
 		zap.String("agent_id", req.AgentID),
 		zap.String("sub_agent_id", subAgentID))
 

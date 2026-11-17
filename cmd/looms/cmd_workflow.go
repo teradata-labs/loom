@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -754,7 +756,9 @@ func printWorkflowResult(result *loomv1.WorkflowResult, duration time.Duration) 
 	fmt.Printf("\nDuration: %.2fs\n", duration.Seconds())
 	fmt.Printf("Total cost: $%.4f\n", result.Cost.TotalCostUsd)
 	fmt.Printf("Total tokens: %d\n", result.Cost.TotalTokens)
-	fmt.Printf("LLM calls: %d\n\n", result.Cost.LlmCalls)
+	fmt.Printf("LLM calls: %d\n", result.Cost.LlmCalls)
+	fmt.Print(formatWorkflowMetadata(result.Metadata))
+	fmt.Println()
 
 	// Print detailed results based on pattern type
 	if debateResult := result.GetDebateResult(); debateResult != nil {
@@ -766,6 +770,31 @@ func printWorkflowResult(result *loomv1.WorkflowResult, duration time.Duration) 
 		fmt.Println(result.MergedOutput)
 		fmt.Println(strings.Repeat("-", 80))
 	}
+}
+
+// formatWorkflowMetadata renders a result's metadata as sorted "key: value"
+// lines under a "Metadata:" heading, so the bounded hand-off counters
+// (join.*, history.*, debate.*) and the pattern's own keys are visible on
+// the CLI without a tracer. Empty when there is no metadata.
+func formatWorkflowMetadata(md map[string]string) string {
+	if len(md) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(md))
+	for k := range md {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	b.WriteString("Metadata:\n")
+	for _, k := range keys {
+		v := md[k]
+		if r := []rune(v); len(r) > 200 {
+			v = string(r[:197]) + "..."
+		}
+		b.WriteString(fmt.Sprintf("  %s: %s\n", k, v))
+	}
+	return b.String()
 }
 
 // stdinIsTTY reports whether stdin is an interactive terminal.
@@ -1126,7 +1155,7 @@ func (rt *workflowRuntime) startOrchestrator(pattern *loomv1.WorkflowPattern, pr
 	}
 
 	// Extract agent IDs from workflow
-	agentIDs := extractAgentIDs(pattern)
+	agentIDs := orchestration.ExtractAgentIDs(pattern) // one extractor for every caller: it knows the join agent and the moderator
 
 	// Check if this is an iterative workflow with restart enabled
 	isIterativeWithRestart := false
@@ -1324,41 +1353,7 @@ func runList(cmd *cobra.Command, args []string) {
 	// Scan for workflow files
 	fmt.Printf("📁 Scanning: %s\n\n", searchDir)
 
-	var workflows []workflowInfo
-	err := filepath.Walk(searchDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil // Skip errors
-		}
-
-		// Check if it's a YAML file
-		if info.IsDir() || (!strings.HasSuffix(path, ".yaml") && !strings.HasSuffix(path, ".yml")) {
-			return nil
-		}
-
-		// Try to parse as workflow
-		pattern, err := orchestration.LoadWorkflowFromYAML(path)
-		if err != nil {
-			return nil // Skip invalid files
-		}
-
-		// Extract metadata
-		relPath, _ := filepath.Rel(searchDir, path)
-		wf := workflowInfo{
-			Path:    relPath,
-			Type:    getPatternType(pattern),
-			IsValid: true,
-		}
-
-		// Try to read metadata
-		if metadata := extractMetadata(path); metadata != nil {
-			wf.Name = metadata.Name
-			wf.Description = metadata.Description
-		}
-
-		workflows = append(workflows, wf)
-		return nil
-	})
-
+	workflows, err := scanWorkflowFiles(searchDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error scanning directory: %v\n", err)
 		os.Exit(1)
@@ -1370,18 +1365,87 @@ func runList(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	fmt.Printf("Found %d workflow(s):\n\n", len(workflows))
+	fmt.Print(formatWorkflowList(workflows))
+}
+
+// scanWorkflowFiles lists every workflow YAML under dir, including the files
+// the loader rejects: a stored workflow that stops loading (for example a
+// debate YAML that still carries merge_strategy) must show up with the
+// loader's message, not vanish from the listing.
+func scanWorkflowFiles(dir string) ([]workflowInfo, error) {
+	var workflows []workflowInfo
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // Skip unreadable entries
+		}
+		if info.IsDir() || (!strings.HasSuffix(path, ".yaml") && !strings.HasSuffix(path, ".yml")) {
+			return nil
+		}
+		// Only files that declare kind: Workflow are workflow files; agent
+		// configs and other YAML in the same tree are not listed. A workflow
+		// file whose YAML does not parse is still a workflow file the
+		// operator stored: list it with the parse error.
+		relPath, _ := filepath.Rel(dir, path)
+		metadata, metaErr := extractMetadata(path)
+		if metaErr != nil {
+			if !looksLikeWorkflowFile(path) {
+				return nil
+			}
+			workflows = append(workflows, workflowInfo{Path: relPath, Error: metaErr.Error()})
+			return nil
+		}
+		if metadata.Kind != "Workflow" {
+			return nil
+		}
+		wf := workflowInfo{Path: relPath, Name: metadata.Name, Description: metadata.Description}
+		pattern, loadErr := orchestration.LoadWorkflowFromYAML(path)
+		if loadErr != nil {
+			wf.Error = loadErr.Error()
+		} else {
+			wf.Type = getPatternType(pattern)
+			wf.IsValid = true
+		}
+		workflows = append(workflows, wf)
+		return nil
+	})
+	return workflows, err
+}
+
+// formatWorkflowList renders the listing; invalid files carry the loader's
+// message so the operator sees why a workflow no longer runs.
+func formatWorkflowList(workflows []workflowInfo) string {
+	valid := 0
 	for _, wf := range workflows {
-		fmt.Printf("📝 %s\n", wf.Path)
-		if wf.Name != "" {
-			fmt.Printf("   Name: %s\n", wf.Name)
+		if wf.IsValid {
+			valid++
 		}
-		fmt.Printf("   Type: %s\n", wf.Type)
-		if wf.Description != "" {
-			fmt.Printf("   Description: %s\n", wf.Description)
-		}
-		fmt.Println()
 	}
+	var b strings.Builder
+	if invalid := len(workflows) - valid; invalid > 0 {
+		fmt.Fprintf(&b, "Found %d workflow file(s), %d valid, %d the loader rejects:\n\n", len(workflows), valid, invalid)
+	} else {
+		fmt.Fprintf(&b, "Found %d workflow(s):\n\n", len(workflows))
+	}
+	for _, wf := range workflows {
+		if wf.IsValid {
+			fmt.Fprintf(&b, "📝 %s\n", wf.Path)
+		} else {
+			fmt.Fprintf(&b, "⚠️  %s (invalid)\n", wf.Path)
+		}
+		if wf.Name != "" {
+			fmt.Fprintf(&b, "   Name: %s\n", wf.Name)
+		}
+		if wf.IsValid {
+			fmt.Fprintf(&b, "   Type: %s\n", wf.Type)
+		} else {
+			fmt.Fprintf(&b, "   Error: %s\n", wf.Error)
+		}
+		if wf.Description != "" {
+			fmt.Fprintf(&b, "   Description: %s\n", wf.Description)
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 // Helper types and functions
@@ -1392,6 +1456,7 @@ type workflowInfo struct {
 	Type        string
 	Description string
 	IsValid     bool
+	Error       string // the loader's message when IsValid is false
 }
 
 // createLLMProvider creates an LLM provider using config settings (same logic as serve command)
@@ -1559,65 +1624,6 @@ Then run again.
 	return nil, ""
 }
 
-// extractAgentIDs extracts all agent IDs from a workflow pattern
-func extractAgentIDs(pattern *loomv1.WorkflowPattern) []string {
-	ids := make(map[string]bool)
-
-	switch p := pattern.Pattern.(type) {
-	case *loomv1.WorkflowPattern_Debate:
-		for _, id := range p.Debate.AgentIds {
-			ids[id] = true
-		}
-		if p.Debate.ModeratorAgentId != "" {
-			ids[p.Debate.ModeratorAgentId] = true
-		}
-	case *loomv1.WorkflowPattern_ForkJoin:
-		for _, id := range p.ForkJoin.AgentIds {
-			ids[id] = true
-		}
-	case *loomv1.WorkflowPattern_Pipeline:
-		for _, stage := range p.Pipeline.Stages {
-			ids[stage.AgentId] = true
-		}
-	case *loomv1.WorkflowPattern_Parallel:
-		for _, task := range p.Parallel.Tasks {
-			ids[task.AgentId] = true
-		}
-	case *loomv1.WorkflowPattern_Conditional:
-		ids[p.Conditional.ConditionAgentId] = true
-		// Extract from branches (recursively)
-		for _, branch := range p.Conditional.Branches {
-			for _, id := range extractAgentIDs(branch) {
-				ids[id] = true
-			}
-		}
-		if p.Conditional.DefaultBranch != nil {
-			for _, id := range extractAgentIDs(p.Conditional.DefaultBranch) {
-				ids[id] = true
-			}
-		}
-	case *loomv1.WorkflowPattern_Swarm:
-		for _, id := range p.Swarm.AgentIds {
-			ids[id] = true
-		}
-		if p.Swarm.JudgeAgentId != "" {
-			ids[p.Swarm.JudgeAgentId] = true
-		}
-	case *loomv1.WorkflowPattern_Iterative:
-		if p.Iterative.Pipeline != nil {
-			for _, stage := range p.Iterative.Pipeline.Stages {
-				ids[stage.AgentId] = true
-			}
-		}
-	}
-
-	result := make([]string, 0, len(ids))
-	for id := range ids {
-		result = append(result, id)
-	}
-	return result
-}
-
 // getPatternType returns the pattern type as a string
 func getPatternType(pattern *loomv1.WorkflowPattern) string {
 	switch pattern.Pattern.(type) {
@@ -1643,23 +1649,31 @@ func getPatternType(pattern *loomv1.WorkflowPattern) string {
 // printPatternSummary prints a summary of the pattern
 func printPatternSummary(pattern *loomv1.WorkflowPattern) {
 	fmt.Printf("   Pattern: %s\n", getPatternType(pattern))
-	agentIDs := extractAgentIDs(pattern)
+	agentIDs := orchestration.ExtractAgentIDs(pattern) // one extractor for every caller: it knows the join agent and the moderator
 	fmt.Printf("   Agents: %d (%s)\n", len(agentIDs), strings.Join(agentIDs, ", "))
 }
 
 // extractMetadata reads metadata from YAML file
-func extractMetadata(path string) *struct {
+// workflowFileMetadata is the part of a workflow YAML the listing shows
+// without loading the pattern.
+type workflowFileMetadata struct {
+	Kind        string
 	Name        string
 	Description string
-} {
+}
+
+// extractMetadata reads the kind and metadata of a YAML file; the error is
+// the read or parse error, so a caller can show why a file is unusable.
+func extractMetadata(path string) (*workflowFileMetadata, error) {
 	cleanPath := filepath.Clean(path)
 	// #nosec G304 -- path from CLI argument, cleaned for safety
 	data, err := os.ReadFile(cleanPath)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 
 	var config struct {
+		Kind     string `yaml:"kind"`
 		Metadata struct {
 			Name        string `yaml:"name"`
 			Description string `yaml:"description"`
@@ -1667,14 +1681,33 @@ func extractMetadata(path string) *struct {
 	}
 
 	if err := yaml.Unmarshal(data, &config); err != nil {
-		return nil
+		return nil, fmt.Errorf("yaml parse: %w", err)
 	}
 
-	return &struct {
-		Name        string
-		Description string
-	}{
+	return &workflowFileMetadata{
+		Kind:        config.Kind,
 		Name:        config.Metadata.Name,
 		Description: config.Metadata.Description,
-	}
+	}, nil
 }
+
+// looksLikeWorkflowFile reports whether an unparseable YAML file declares
+// kind: Workflow in its text, so a syntax-broken workflow is listed while a
+// broken agent config in the same tree is not.
+func looksLikeWorkflowFile(path string) bool {
+	// #nosec G304 -- path from CLI argument, cleaned for safety
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if workflowKindLine.MatchString(line) {
+			return true
+		}
+	}
+	return false
+}
+
+// workflowKindLine matches `kind: Workflow` with optional quotes and a
+// trailing comment, the spellings the loader accepts.
+var workflowKindLine = regexp.MustCompile(`^\s*kind:\s*["']?Workflow["']?\s*(#.*)?$`)

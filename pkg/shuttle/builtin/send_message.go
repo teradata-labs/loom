@@ -50,6 +50,10 @@ func (t *SendMessageTool) SetAgentRegistry(registry AgentRegistry, logger *zap.L
 	}
 }
 
+// HasAgentRegistry reports whether SetAgentRegistry wired a registry, so a
+// caller that injects this tool can check the wiring it relies on.
+func (t *SendMessageTool) HasAgentRegistry() bool { return t.registry != nil }
+
 func (t *SendMessageTool) Name() string {
 	return "send_message"
 }

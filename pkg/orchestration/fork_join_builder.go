@@ -23,6 +23,7 @@ type ForkJoinBuilder struct {
 	agentIDs      []string
 	mergeStrategy loomv1.MergeStrategy
 	timeoutSecs   int32
+	joinPolicy    *loomv1.JoinPolicy
 }
 
 // WithAgents adds agents to execute in parallel.
@@ -58,6 +59,14 @@ func (b *ForkJoinBuilder) Join(strategy loomv1.MergeStrategy) *ForkJoinBuilder {
 	return b
 }
 
+// WithJoinPolicy bounds the hand-off to the join step and, when the policy
+// names an agent, runs the join through that registered agent. See
+// loomv1.JoinPolicy.
+func (b *ForkJoinBuilder) WithJoinPolicy(policy *loomv1.JoinPolicy) *ForkJoinBuilder {
+	b.joinPolicy = policy
+	return b
+}
+
 // Execute runs the fork-join pattern and returns the merged result.
 func (b *ForkJoinBuilder) Execute(ctx context.Context) (*loomv1.WorkflowResult, error) {
 	// Validate configuration
@@ -76,6 +85,7 @@ func (b *ForkJoinBuilder) Execute(ctx context.Context) (*loomv1.WorkflowResult, 
 				AgentIds:       b.agentIDs,
 				MergeStrategy:  b.mergeStrategy,
 				TimeoutSeconds: b.timeoutSecs,
+				JoinPolicy:     b.joinPolicy,
 			},
 		},
 	}

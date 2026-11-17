@@ -1,0 +1,70 @@
+# Fork-Join with a Join Agent
+# Three analysts answer the same prompt in parallel; a presenter agent turns
+# their outputs into a deck. The join block keeps the presenter's input bounded
+# however much the analysts write.
+
+apiVersion: loom/v1
+kind: Workflow
+metadata:
+  name: quarterly-review-deck
+  description: Parallel analysis of one quarter, joined into a presentation by a dedicated agent
+  labels:
+    category: reporting
+    complexity: medium
+
+spec:
+  type: fork-join
+  prompt: "Analyze Q3 results for the EMEA region: revenue, pipeline, churn and headcount. Cite every figure."
+  agent_ids:
+    - finance-analyst
+    - sales-analyst
+    - ops-analyst
+  merge_strategy: concatenate   # with join.agent_id set this only picks the default prompt
+  timeout_seconds: 900
+
+  join:
+    # The presenter does the join as a full agent turn: its own system prompt,
+    # its tools (give it shared_memory_read so it can pull any analysis back in
+    # full), context relief and the provider context-too-long backstop.
+    agent_id: presenter
+
+    # {{branches}} renders one section per analyst: an inline copy capped at
+    # max_branch_bytes, and when the copy is not the full output, the
+    # SharedMemory key that holds the rest.
+    prompt_template: |
+      Build a 10-slide deck answering: {{prompt}}
+
+      You have {{branch_count}} analyses below. Each section is a bounded copy;
+      fetch the full text with shared_memory_read when a section says it was
+      truncated or reduced and you need a figure it does not show.
+
+      {{branches}}
+
+      Write the deck as Markdown, one "## Slide N" heading per slide, speaker
+      notes under each.
+
+    # Inline cap per analysis. Full outputs are always in SharedMemory under
+    # <workflow-id>-branch-N-output when the orchestrator has a store.
+    max_branch_bytes: 4096
+
+    # Whole-input budget for the presenter's prompt. Omit it to derive half of
+    # the presenter's usable context window.
+    max_input_tokens: 40000
+
+    # Over budget: reduce each oversize analysis to a card with the presenter's
+    # compressor-role LLM first (one call per oversize branch), truncate what
+    # still does not fit. Alternatives: truncate (no extra calls), fail.
+    overflow_strategy: pre_reduce
+
+# Agent configs used (from $LOOM_DATA_DIR/agents/):
+# - finance-analyst.yaml, sales-analyst.yaml, ops-analyst.yaml: the branches
+# - presenter.yaml: the join agent. It needs shared_memory_read to follow the
+#   SharedMemory references: `looms workflow run` and `looms serve` register it
+#   on every workflow agent themselves (listing it under tools.builtin is not
+#   enough; the registry's builtin table does not know it), and an embedder
+#   must wire builtin.CommunicationTools against the store it gives the
+#   orchestrator. See docs/reference/workflow-join.md, Limits.
+#
+# Result metadata reports what the join did: join.mode, join.input_tokens,
+# join.budget_tokens, join.overflow, join.branches_stored/truncated/reduced.
+# The presenter's own LLM usage is added to the workflow cost.

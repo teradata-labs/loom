@@ -12,39 +12,22 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 )
 
-// TeacherStudentOrchestrator manages expert-to-novice knowledge transfer.
+// TeacherStudentOrchestrator is the executor slot for TeacherStudentPattern.
+// The pattern is defined in proto and routed here, but no teaching loop
+// exists yet: Execute returns ErrPatternNotImplemented so a caller gets a
+// clear failure instead of a fabricated result.
 type TeacherStudentOrchestrator struct {
 	provider AgentProvider
 }
 
-// NewTeacherStudentOrchestrator creates a new teacher-student orchestrator.
+// NewTeacherStudentOrchestrator creates the executor slot.
 func NewTeacherStudentOrchestrator(provider AgentProvider) *TeacherStudentOrchestrator {
 	return &TeacherStudentOrchestrator{
 		provider: provider,
 	}
 }
 
-// Execute runs a teacher-student learning session.
-func (t *TeacherStudentOrchestrator) Execute(ctx context.Context, config *loomv1.TeacherStudentPattern) (*loomv1.WorkflowResult, error) {
-	result := &loomv1.WorkflowResult{
-		PatternType:  "teacher_student",
-		AgentResults: make([]*loomv1.AgentResult, 0),
-		Metadata:     make(map[string]string),
-		Cost:         &loomv1.WorkflowCost{AgentCostsUsd: make(map[string]float64)},
-	}
-
-	teacherStudentResult := &loomv1.TeacherStudentResult{
-		Steps:            make([]*loomv1.StepResult, 0),
-		ConceptsMastered: make([]string, 0),
-		ImprovementAreas: make([]string, 0),
-	}
-
-	// Placeholder implementation
-	result.MergedOutput = fmt.Sprintf("Learning session for objective: %s", config.Objective)
-
-	result.CollaborationResult = &loomv1.WorkflowResult_TeacherStudentResult{
-		TeacherStudentResult: teacherStudentResult,
-	}
-
-	return result, nil
+// Execute always fails with ErrPatternNotImplemented. It makes no LLM call.
+func (t *TeacherStudentOrchestrator) Execute(_ context.Context, config *loomv1.TeacherStudentPattern) (*loomv1.WorkflowResult, error) {
+	return nil, fmt.Errorf("%w: teacher_student (objective %q)", ErrPatternNotImplemented, config.GetObjective())
 }

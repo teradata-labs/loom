@@ -518,17 +518,17 @@ graph TD
 1. **Pipeline**: Sequential execution with output chaining
 2. **Parallel**: Independent concurrent execution
 3. **Fork-Join**: Parallel execution with result merging
-4. **Debate**: Multi-agent argumentation with moderator
+4. **Debate**: Multi-agent positions over rounds with optional moderator synthesis
 5. **Conditional**: Dynamic routing based on agent decisions
-6. **Swarm**: Collaborative problem-solving with shared memory
-7. **Pair Programming**: Two agents collaborate on code (from `pkg/collaboration/`)
-8. **Teacher-Student**: Knowledge transfer pattern (from `pkg/collaboration/`)
-9. **Iterative**: Loop-based refinement workflow
+6. **Swarm**: Collective voting
+7. **Iterative**: Loop-based refinement workflow
+8. 📋 **Pair Programming** (planned): proto message only; `Execute` returns `ErrPatternNotImplemented`
+9. 📋 **Teacher-Student** (planned): proto message only; `Execute` returns `ErrPatternNotImplemented`
 
 **Key Features**:
 - Kubernetes-style YAML specifications
 - Declarative workflow definitions
-- Support for collaboration patterns (Teacher-Student, Pair Programming)
+- Bounded hand-offs between producers and the agent that consumes them (`join_policy`, `history_policy`)
 - Iterative workflow for refinement loops
 
 **See**: [Multi-Agent Architecture](multi-agent.md)

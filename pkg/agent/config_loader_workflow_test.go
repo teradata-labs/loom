@@ -93,7 +93,6 @@ spec:
     - engineer
   moderator_agent_id: senior-architect
   rounds: 3
-  merge_strategy: consensus
 `
 
 	tmpDir := t.TempDir()

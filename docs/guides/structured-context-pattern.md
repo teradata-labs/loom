@@ -389,7 +389,7 @@ err := ctx.ValidateTableReference("stage-6", db, table, "Stage 2")
 
 **Problem**: JSON context exceeds token limits
 
-**Solution**: Use selective stage outputs. The `pass_full_history` field controls whether all previous outputs are appended when no `{{previous}}` or `{{history}}` placeholder is present:
+**Solution**: Use selective stage outputs. The `pass_full_history` field controls whether all previous outputs are appended when no `{{previous}}` or `{{history}}` placeholder is present. Each history entry is capped at 8 KiB with a `<workflow-id>-stage-N-output` SharedMemory pointer (the same copy `{{previous}}` carries); a `history` block on the pipeline holds the whole stage prompt to a token budget (see [Workflow Join Policy](../reference/workflow-join.md#pipeline-history)):
 
 ```yaml
 spec:

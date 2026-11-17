@@ -49,6 +49,19 @@ func (a *auxUsage) addCall(u types.Usage) {
 	a.calls++
 }
 
+// add records usage already summed over calls LLM calls (a bounded
+// hand-off's pre-reduce calls).
+func (a *auxUsage) add(u types.Usage, calls int32) {
+	if calls == 0 {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.costUSD += u.CostUSD
+	a.tokens += u.TotalTokens
+	a.calls += int(calls)
+}
+
 // addTurn records every call of one agent turn.
 func (a *auxUsage) addTurn(r *agent.Response) {
 	a.mu.Lock()

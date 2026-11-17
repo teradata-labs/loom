@@ -1,7 +1,7 @@
 
 # Multi-Agent Orchestration Architecture
 
-Architecture of Loom's multi-agent orchestration system with 9 workflow patterns, fluent API, Kubernetes-style YAML configuration, and tri-modal communication for coordinating multiple agents.
+Architecture of Loom's multi-agent orchestration system with 7 implemented workflow patterns (2 planned), fluent API, Kubernetes-style YAML configuration, and tri-modal communication for coordinating multiple agents.
 
 **Target Audience**: Architects, academics, and advanced developers
 
@@ -45,16 +45,16 @@ Architecture of Loom's multi-agent orchestration system with 9 workflow patterns
 
 The Multi-Agent Orchestration System coordinates **multiple agents using workflow patterns** that enable complex multi-agent behaviors: debate, pipeline execution, parallel processing, fork-join synchronization, conditional routing, and iterative refinement with autonomous restart.
 
-**9 Workflow Patterns**:
+**7 implemented workflow patterns, 2 planned**:
 1. **Pipeline**: Sequential agent chaining (A -> B -> C)
 2. **Fork-Join**: Parallel execution with merge (A, B, C -> merge)
 3. **Parallel**: Independent parallel tasks (no merge required)
 4. **Conditional**: Dynamic routing based on classifier agent output
-5. **Debate**: Multi-round consensus building with optional moderator
+5. **Debate**: Multi-round positions with optional moderator synthesis
 6. **Swarm**: Collective voting with configurable strategies (majority, supermajority, ranked choice)
-7. **Pair Programming**: Driver/navigator role-based code generation and review
-8. **Teacher-Student**: Knowledge transfer from expert to learner
-9. **Iterative Pipeline**: Self-correcting pipeline with restart coordination
+7. **Iterative Pipeline**: Self-correcting pipeline with restart coordination
+8. 📋 **Pair Programming** (planned): defined in proto (`PairProgrammingPattern`) and routed by the collaboration engine, but it has no execution; `Execute` returns `collaboration.ErrPatternNotImplemented` (gRPC `Unimplemented`). The YAML loader does not accept it.
+9. 📋 **Teacher-Student** (planned): same status as pair programming (`TeacherStudentPattern`).
 
 The system provides **both programmatic (fluent API) and declarative (Kubernetes-style YAML)** workflow definition, with full observability (Hawk tracing), tri-modal communication (broadcast, queue, shared memory), and cost tracking per agent.
 
@@ -219,17 +219,16 @@ graph TB
 │  │          Collaboration Engine (Advanced Patterns)            │         │  │
 │  │                                                              │         │  │
 │  │  Debate:                                                     │         │  │
-│  │    - Multi-round consensus building                          │         │  │
-│  │    - Each round sees previous responses                      │         │  │
-│  │    - Optional moderator agent                                │         │  │
+│  │    - Multi-round positions, LLM-summarized round history     │         │  │
+│  │    - Round 2+: each agent responds to the others' positions  │         │  │
+│  │    - Optional moderator writes the synthesis; join_policy    │         │  │
+│  │      bounds the synthesis and response prompts               │         │  │
 │  │                                                              │         │  │
-│  │  Pair Programming:                                           │         │  │
-│  │    - Driver/Navigator roles                                  │         │  │
-│  │    - Turn-based code generation and review                   │         │  │
+│  │  Pair Programming (📋 planned, proto only):                  │         │  │
+│  │    - Execute returns ErrPatternNotImplemented                │         │  │
 │  │                                                              │         │  │
-│  │  Teacher-Student:                                            │         │  │
-│  │    - Knowledge transfer from expert to learner              │          │  │
-│  │    - Iterative learning with feedback                        │         │  │
+│  │  Teacher-Student (📋 planned, proto only):                   │         │  │
+│  │    - Execute returns ErrPatternNotImplemented                │         │  │
 │  └────────────────────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -645,7 +644,7 @@ func (e *IterativePipelineExecutor) Execute(ctx context.Context) (*loomv1.Workfl
     maxIterations := e.pattern.MaxIterations
 
     // Subscribe to restart topic
-    restartTopic := e.pattern.RestartTopic  // default: "workflow.restart"
+    restartTopic := e.pattern.RestartTopic  // default: "workflow.restart.<workflow-id>", one topic per run
     restartCh := e.messageBus.Subscribe(restartTopic)
 
     for iteration <= maxIterations {
@@ -847,56 +846,22 @@ func (e *Engine) Execute(ctx context.Context, pattern *loomv1.WorkflowPattern) (
 // The orchestrator routes Swarm to the orchestration executor, not the collaboration engine.
 ```
 
-**Debate Pattern** (multi-round consensus):
-```go
-func (e *Engine) executeDebate(ctx context.Context, debate *loomv1.DebatePattern) (*loomv1.WorkflowResult, error) {
-    topic := debate.Topic
-    rounds := debate.Rounds
-    agentIDs := debate.AgentIds
+**Debate Pattern** (`pkg/collaboration/debate.go`, `DebateOrchestrator.Execute`). What actually runs, per round:
 
-    allResults := make([]*loomv1.AgentResult, 0)
-    debateHistory := make([]string, 0)
+1. Every agent in `agent_ids` is asked for a position (`POSITION:` / `ARGUMENTS:` / `CONFIDENCE:`; an unformatted reply is taken whole as the position) with the topic and the **summarized** history of earlier rounds. The summaries come from the moderator agent (the first debater when no moderator is set): one LLM call per position longer than 250 characters or carrying more than two arguments, capped at 300 characters.
+2. From round 2 on, each agent is shown the **other agents' positions**, in `agent_ids` order, and asked to respond.
+3. The round's synthesis line is a heuristic (participant count, average confidence, first 100 characters of each position), and consensus is `average confidence >= 0.8` unless the moderator's decision layer has a live band for `debate.consensus`.
 
-    for round := 1; round <= int(rounds); round++ {
-        roundResults := make([]*loomv1.AgentResult, 0)
+After the rounds, a configured `moderator_agent_id` writes the synthesis from every round's positions and arguments; that text is `merged_output`. Without a moderator, `merged_output` is the last round's heuristic synthesis line.
 
-        for _, agentID := range agentIDs {
-            agent, _ := e.provider.GetAgent(ctx, agentID)
+`DebatePattern.merge_strategy` is **deprecated**: the engine never read it, the YAML loader rejects it, and `DebateBuilder.WithMergeStrategy` has no effect.
 
-            // Build prompt with debate history
-            prompt := fmt.Sprintf("Topic: %s\n\nPrevious rounds:\n%s\n\nYour position for round %d:",
-                topic, strings.Join(debateHistory, "\n---\n"), round)
-
-            // agent.Chat returns (*Response, error)
-            response, _ := agent.Chat(ctx, sessionID, prompt)
-
-            result := &loomv1.AgentResult{
-                AgentId: agentID,
-                Output:  response.Content,
-            }
-            roundResults = append(roundResults, result)
-            debateHistory = append(debateHistory, fmt.Sprintf("[%s]: %s", agentID, response.Content))
-        }
-
-        allResults = append(allResults, roundResults...)
-    }
-
-    // Apply merge strategy (consensus, voting, summary)
-    mergedOutput, _ := e.applyMergeStrategy(ctx, allResults, debate.MergeStrategy)
-
-    return &loomv1.WorkflowResult{
-        PatternType:  "debate",
-        AgentResults: allResults,
-        MergedOutput: mergedOutput,
-    }, nil
-}
-```
+**Bounded debate hand-offs (`DebatePattern.join_policy`)**: the response prompt (step 2) and the moderator synthesis each carry other agents' full positions and were unbounded. With `join_policy`, both go through the same bounded hand-off as fork-join (`collaboration.HandoffBounder`, implemented by the orchestrator): positions are stored under `<workflow-id>-round-R-position-<agent-id>`, the inline copies are capped at `max_branch_bytes`, and the prompt is held to the receiving agent's token budget with `overflow_strategy`. `agent_id` is rejected (the moderator is the join agent). See [Workflow Join Policy](../reference/workflow-join.md).
 
 **Rationale**:
 - **Separate engine**: Collaboration patterns have different coordination logic than orchestration patterns
-- **Multi-round debate**: Each agent sees previous responses, builds consensus iteratively
-- **Moderator support**: Optional moderator agent guides debate (not implemented in example above)
-- **Merge strategies**: Consensus (LLM synthesizes agreement), Voting (majority wins), Summary (LLM summarizes all positions)
+- **Summarized history**: later rounds see a 300-character summary per earlier position, not the full text, so round prompts stay small even over many rounds
+- **Moderator**: the only path to a written synthesis; the heuristic synthesis line is a status, not a conclusion
 
 
 ### Multi-Agent Server
@@ -2126,6 +2091,19 @@ func (e *ForkJoinExecutor) buildVotingPrompt(results []*loomv1.AgentResult) stri
 // pattern: build a strategy-specific prompt, call GetMergeLLM().Chat() once.
 ```
 
+**Bounded join (JoinPolicy)**: the raw merge call above puts every branch output
+inline with no size check, so chatty branches fail at the provider context
+limit after every branch has been paid for. `ForkJoinPattern.join_policy` and
+`ParallelPattern.join_policy` (`pkg/orchestration/join.go`) replace it with a
+bounded hand-off: full outputs stored in SharedMemory under
+`<workflow-id>-branch-N-output`, an inline copy capped per branch, a token
+budget on the whole rendered input enforced by pre-reducing oversize branches
+with the compressor LLM, truncating, or failing before the call, and
+optionally the join run through a registered agent's `Chat` so it has tools
+(`shared_memory_read`), context relief and the context-too-long backstop.
+Without a policy the raw path runs unchanged. See
+[Workflow Join Policy](../reference/workflow-join.md).
+
 
 ### Template Variable Substitution
 
@@ -2347,6 +2325,15 @@ Result: "Optimize query: SELECT * FROM customers WHERE age > 30"
 **Impact**: Fork-join with these strategies fails if orchestrator has no LLM provider.
 
 **Workaround**: Use CONCATENATE or FIRST merge strategy (no LLM required), or provide LLM provider to orchestrator.
+
+
+### Constraint 5: Unbounded Hand-offs Without a Policy
+
+**Description**: Without `join_policy`, the fork-join/parallel LLM merge strategies send every branch output inline in one raw call, with no size check, no tools and no context relief, and a debate's moderator synthesis and round 2+ response prompts carry every position in full. Pipeline `{{history}}` entries are always capped at 8 KiB (like `{{previous}}`) when SharedMemory is configured, but without `history_policy` there is no whole-prompt token budget, so a long pipeline can still overrun a small model.
+
+**Impact**: Enough text fails the receiving call at the provider context limit after every producer has been paid for.
+
+**Workaround**: Set `join_policy` (fork-join, parallel, debate) or `history_policy` (pipeline); see [Workflow Join Policy](../reference/workflow-join.md): the full outputs go to SharedMemory, the inline copy is capped and budgeted, and the fork-join/parallel join can run through an agent. Bound outputs at the source as well with `output_policy.output_schema`.
 
 
 ## Performance Characteristics
