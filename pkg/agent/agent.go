@@ -2586,7 +2586,7 @@ func (a *Agent) appendMessage(ctx context.Context, session *Session, msg Message
 		// record over the bound, and memory holds the same row the store does.
 		if msg.ToolResult != nil {
 			if raw, err := json.Marshal(msg.ToolResult); err != nil || len(raw) > threshold {
-				msg.ToolResult = nil
+				msg.ToolResult = endsTurnRecord(msg.ToolResult)
 			}
 		}
 	}
@@ -3816,6 +3816,19 @@ func addHygieneMeta(meta map[string]interface{}, o *hygiene.EnforcementOutcome) 
 	if o.FallthroughReason != "" {
 		meta["hygiene_fallthrough"] = o.FallthroughReason
 	}
+}
+
+// endsTurnRecord is what is kept of a result record too large to store: the
+// word that it ended the turn, when it did. A resumed turn reads that word
+// from the stored row, so it must outlive the record it came in.
+func endsTurnRecord(r *shuttle.Result) *shuttle.Result {
+	if r == nil || r.Metadata == nil {
+		return nil
+	}
+	if ends, _ := r.Metadata[EndsTurnKey].(bool); !ends {
+		return nil
+	}
+	return &shuttle.Result{Success: r.Success, Metadata: map[string]interface{}{EndsTurnKey: true}}
 }
 
 // EndsTurnKey is the result metadata a tool sets to end the turn it ran in.

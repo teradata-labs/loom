@@ -16,6 +16,8 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
@@ -75,5 +77,42 @@ func TestAToolThatEndsTheTurnEndsIt(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("the turn's words are stored %d times, want once", count)
+	}
+}
+
+// bigHandOff ends the turn and returns more than the result bound holds.
+type bigHandOff struct{ handOff }
+
+func (h *bigHandOff) Execute(context.Context, map[string]interface{}) (*shuttle.Result, error) {
+	h.calls++
+	return &shuttle.Result{Success: true, Data: strings.Repeat("handed off row\n", 20000),
+		Metadata: map[string]interface{}{EndsTurnKey: true}}, nil
+}
+
+// A tool ends the turn whatever the size of what it returned, on the resume
+// path as in a turn that never parked: the word that it ended the turn
+// outlives the record too large to store.
+func TestAnEndingToolWithALargeResultEndsTheTurnOnResume(t *testing.T) {
+	f := newParkFixture(t, []shuttle.Hook{scopedAskHook{tool: "hand_off"}}, []mockLLMResponse{
+		{content: "Taking you back.", toolCalls: []llmtypes.ToolCall{{ID: "c1", Name: "hand_off", Input: map[string]interface{}{}}}},
+		{content: "said to nobody"},
+	})
+	f.ag.RegisterTool(&bigHandOff{})
+	_, err := f.ag.Chat(context.Background(), "s1", "go")
+	var parked *TurnParkedError
+	if !errors.As(err, &parked) {
+		t.Fatalf("want a park, got %v", err)
+	}
+	hr := f.pendingParked(t, "s1")
+
+	resp, err := f.ag.ResumeChat(context.Background(), "s1", ParkDecision{RequestID: hr.ID, ItemIDs: paramKeys(hr), Approved: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Content != "Taking you back." {
+		t.Fatalf("reply = %q: the model was asked again after the tool ended the turn", resp.Content)
+	}
+	if resp.Metadata["ended_by"] != "hand_off" {
+		t.Fatalf("ended_by = %v, want hand_off", resp.Metadata["ended_by"])
 	}
 }
