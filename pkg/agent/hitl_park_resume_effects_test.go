@@ -62,11 +62,11 @@ func (m *metricRecorder) namesAfter(n int) map[string]bool {
 	return out
 }
 
-// TestPark_ResumeDoesNotReinjectGraphMemoryContext — the loop injects graph
-// memory context at ENTRY, and a resumed turn enters it a second time for the
-// same turn. Without a resume marker the block is injected twice, duplicating
-// memory text in the prompt and paying a second recall round-trip per resume.
-func TestPark_ResumeDoesNotReinjectGraphMemoryContext(t *testing.T) {
+// TestPark_GraphMemoryNoteNeverStored — the loop recalls graph memory at
+// ENTRY, and a resumed turn enters it a second time for the same turn. The
+// recall note rides each LLM call's transient tail and is never stored, so
+// re-entering cannot leave a second block in the session.
+func TestPark_GraphMemoryNoteNeverStored(t *testing.T) {
 	f := newParkFixture(t, []shuttle.Hook{scopedAskHook{tool: "export_csv"}}, twoCallBatch(),
 		"read_table", "export_csv")
 	ctx := context.Background()
@@ -96,9 +96,9 @@ func TestPark_ResumeDoesNotReinjectGraphMemoryContext(t *testing.T) {
 		t.Fatalf("ResumeChat: %v", err)
 	}
 
-	if after := countBlocks(); after != before {
-		t.Errorf("graph memory context blocks went %d → %d across a resume; "+
-			"per-turn entry work ran twice for one turn", before, after)
+	if after := countBlocks(); before != 0 || after != 0 {
+		t.Errorf("graph memory context blocks in the session: %d before the resume, %d after; "+
+			"the recall note must never be stored", before, after)
 	}
 	if !isResumedTurn(contextWithResumedTurn(ctx)) {
 		t.Error("contextWithResumedTurn/isResumedTurn do not round-trip")

@@ -25,6 +25,10 @@ class LoomServer < Formula
     bin.install "looms-darwin-arm64" => "looms" if Hardware::CPU.arm?
     bin.install "looms-darwin-amd64" => "looms" if Hardware::CPU.intel?
 
+    # The release tarball carries the attribution files at its top level;
+    # install them so the notices stay with the binary after download.
+    doc.install "LICENSE", "NOTICE", "THIRD-PARTY-NOTICES.md"
+
     # HOME is sandboxed during install, so patterns go into the keg;
     # users copy them to ~/.loom/patterns (see caveats). Config is
     # created by the binary itself via 'looms config init'.
@@ -84,6 +88,7 @@ class LoomServer < Formula
   test do
     assert_match "Usage:", shell_output("#{bin}/looms --help")
     assert_predicate pkgshare/"patterns", :directory?
+    assert_predicate doc/"THIRD-PARTY-NOTICES.md", :exist?
 
     # Test config command
     system "#{bin}/looms", "config", "list"

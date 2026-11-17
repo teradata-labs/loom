@@ -143,7 +143,7 @@ func (m *messageCmp) View() string {
 		switch m.message.Role {
 		case message.User:
 			return m.renderUserMessage()
-		case message.SkillBody, message.HygieneInjection, message.EmptyResponseRetry, message.SynthesisPrompt:
+		case message.SkillBody, message.HygieneInjection, message.EmptyResponseRetry, message.SynthesisPrompt, message.LessonReminder:
 			return m.renderSyntheticNote()
 		default:
 			return m.renderAssistantMessage()
@@ -182,7 +182,7 @@ func (msg *messageCmp) style() lipgloss.Style {
 	switch msg.message.Role {
 	case message.User:
 		style = style.PaddingLeft(1).BorderLeft(true).BorderStyle(borderStyle).BorderForeground(t.Primary)
-	case message.SkillBody, message.HygieneInjection, message.EmptyResponseRetry, message.SynthesisPrompt:
+	case message.SkillBody, message.HygieneInjection, message.EmptyResponseRetry, message.SynthesisPrompt, message.LessonReminder:
 		// Always the plain, unfocused shape — a synthetic note is never the
 		// focus target a human bubble or assistant block can be.
 		style = style.PaddingLeft(2)
@@ -278,7 +278,7 @@ func (m *messageCmp) renderUserMessage() string {
 }
 
 // renderSyntheticNote renders a skill-body, hygiene-injection,
-// empty-response-retry, or synthesis-prompt message: a muted, single-style
+// empty-response-retry, synthesis-prompt, or lesson-reminder message: a muted, single-style
 // note distinct from both the human bubble and the assistant content block,
 // since neither the user nor the assistant authored it.
 func (m *messageCmp) renderSyntheticNote() string {
@@ -291,6 +291,8 @@ func (m *messageCmp) renderSyntheticNote() string {
 		label = "Retry requested"
 	case message.SynthesisPrompt:
 		label = "Synthesis requested"
+	case message.LessonReminder:
+		label = "Lesson offered"
 	}
 	noteStyle := t.S().Base.Foreground(t.FgHalfMuted)
 	header := noteStyle.Bold(true).Render(label)

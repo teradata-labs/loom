@@ -32,4 +32,7 @@ func TestSyntheticRoles_MatchPersistedStrings(t *testing.T) {
 	if SynthesisPrompt != "synthesis_prompt" {
 		t.Fatalf("SynthesisPrompt = %q, want %q", SynthesisPrompt, "synthesis_prompt")
 	}
+	if LessonReminder != "lesson_reminder" {
+		t.Fatalf("LessonReminder = %q, want %q", LessonReminder, "lesson_reminder")
+	}
 }

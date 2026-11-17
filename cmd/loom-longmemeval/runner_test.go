@@ -195,6 +195,8 @@ type fakeLoomClient struct {
 	mu                 sync.Mutex
 	weaveReqs          []*loomv1.WeaveRequest
 	weaveErr           error
+	createSessionErr   error
+	createAgentErr     error
 	deleteAgentCtxErrs []error
 
 	// ignoreReplay simulates a server that predates replay_assistant_message
@@ -205,6 +207,9 @@ type fakeLoomClient struct {
 }
 
 func (f *fakeLoomClient) CreateSession(_ context.Context, _ *loomv1.CreateSessionRequest, _ ...grpc.CallOption) (*loomv1.Session, error) {
+	if f.createSessionErr != nil {
+		return nil, f.createSessionErr
+	}
 	return &loomv1.Session{Id: "sess-fake"}, nil
 }
 
@@ -213,10 +218,17 @@ func (f *fakeLoomClient) DeleteSession(_ context.Context, _ *loomv1.DeleteSessio
 }
 
 func (f *fakeLoomClient) CreateAgentFromConfig(_ context.Context, _ *loomv1.CreateAgentRequest, _ ...grpc.CallOption) (*loomv1.AgentInfo, error) {
+	if f.createAgentErr != nil {
+		return nil, f.createAgentErr
+	}
 	return &loomv1.AgentInfo{Id: "agent-fake"}, nil
 }
 
-func (f *fakeLoomClient) DeleteAgent(ctx context.Context, _ *loomv1.DeleteAgentRequest, _ ...grpc.CallOption) (*loomv1.DeleteAgentResponse, error) {
+func (f *fakeLoomClient) DeleteAgent(ctx context.Context, in *loomv1.DeleteAgentRequest, _ ...grpc.CallOption) (*loomv1.DeleteAgentResponse, error) {
+	if in.GetAgentId() != "agent-fake" {
+		// The stale-name sweep before create: nothing left over here.
+		return nil, status.Errorf(codes.NotFound, "agent not found: %s", in.GetAgentId())
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.deleteAgentCtxErrs = append(f.deleteAgentCtxErrs, ctx.Err())

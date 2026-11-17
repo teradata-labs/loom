@@ -190,12 +190,26 @@ const (
 	MemoryTypeFailure       = "failure"
 	MemoryTypeObservation   = "observation"
 	MemoryTypeConsolidation = "consolidation"
+	// MemoryTypeLesson is durable working knowledge an agent verified by
+	// doing: an error and the fix that observably resolved it, a schema fact
+	// learned by probing, an environment quirk. The extraction prompt only
+	// mints these when the conversation shows the fix succeeding.
+	MemoryTypeLesson = "lesson"
 )
 
 // Valid lineage relation types.
 const (
 	LineageSupersedes   = "SUPERSEDES"
 	LineageConsolidates = "CONSOLIDATES"
+)
+
+// Memory sources. For SourceAutoExtracted and SourceAgent, SourceID is the
+// agent session the memory came from (its provenance) when one was known.
+const (
+	// SourceAutoExtracted: written by the background extractor.
+	SourceAutoExtracted = "auto_extracted"
+	// SourceAgent: written by the agent through the graph_memory tool.
+	SourceAgent = "agent"
 )
 
 // Valid memory entity roles.

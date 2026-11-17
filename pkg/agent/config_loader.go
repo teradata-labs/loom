@@ -12,9 +12,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/decision"
 	"github.com/teradata-labs/loom/pkg/skills"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
@@ -129,6 +131,177 @@ func convertProtoToLLMConfigYAML(pb *loomv1.LLMConfig) *LLMConfigYAML {
 	}
 }
 
+// DecisionConfigYAML mirrors proto DecisionConfig (pkg/decision) for agent
+// YAML files.
+//
+//	decision:
+//	  provider: llm          # off | llm | mock | jev
+//	  llm_role: classifier   # which role LLM the "llm" provider adapts
+//	  model: jev-1.13.0      # pinned; aliases rejected unless allow_alias
+//	                         # (jev via the Vercel AI Gateway: typesafe-ai/jev + allow_alias: true;
+//	                         #  credentials from TYPESAFE_API_KEY / AI_GATEWAY_API_KEY, never YAML;
+//	                         #  the endpoint from looms.yaml decision.base_url, never agent YAML)
+//	  timeout_ms: 2000
+//	  max_per_session: 200
+//	  max_cost_usd_per_session: 0.05
+//	  bands:
+//	    - site: recall.rerank
+//	      act_min: 0.9
+//	      mode: replace        # replace | tighten_only; unset = tighten_only at the gate
+//	                           # sites (stage.validation, debate.consensus), replace elsewhere
+//	      shadow: true         # record only, never act
+type DecisionConfigYAML struct {
+	Provider   string `yaml:"provider"`
+	Model      string `yaml:"model"`
+	AllowAlias bool   `yaml:"allow_alias"`
+	TimeoutMs  int64  `yaml:"timeout_ms"`
+	// BaseURL is parsed only so that setting it fails loudly: the decider
+	// endpoint is server-level (decision.ValidateConfig rejects it here).
+	// omitempty keeps SaveAgentConfig from ever writing the key.
+	BaseURL              string  `yaml:"base_url,omitempty"`
+	MaxPerSession        int64   `yaml:"max_per_session"`
+	MaxCostUSDPerSession float64 `yaml:"max_cost_usd_per_session"`
+	LLMRole              string  `yaml:"llm_role"`
+	// RequestsPerMinute is the process-wide decider budget, from the tier in
+	// use (gateway free tier: 30). Agents with identical decider settings
+	// share one client, so this is a fleet figure, not a per-agent one.
+	RequestsPerMinute int64 `yaml:"requests_per_minute"`
+	// ExposeTool registers the "decide" builtin so the agent can ask the
+	// decider directly. Off by default.
+	ExposeTool bool `yaml:"expose_tool"`
+	// MaxQuestionsPerRequest splits larger requests into concurrent chunks
+	// (0 = the decider's default; Jev 16).
+	MaxQuestionsPerRequest int64                    `yaml:"max_questions_per_request"`
+	Bands                  []DecisionBandConfigYAML `yaml:"bands"`
+}
+
+// DecisionBandConfigYAML mirrors proto DecisionBand.
+type DecisionBandConfigYAML struct {
+	Site   string  `yaml:"site"`
+	ActMin float64 `yaml:"act_min"`
+	Mode   string  `yaml:"mode,omitempty"`
+	Shadow bool    `yaml:"shadow"`
+	// Aggregate: min (default) | per_question. Fan-out sites such as the
+	// reranks use per_question so one uncertain candidate cannot veto the rest.
+	Aggregate string `yaml:"aggregate"`
+	// TrueMin is the probability at or above which a yes/no answer counts as
+	// true at this site: the keep threshold at a rerank, "valid" at a stage
+	// gate. 0 means the site default (0.5). It is not act_min, which asks
+	// how decisive an answer must be before the site acts at all.
+	TrueMin float64 `yaml:"true_min"`
+}
+
+// convertProtoToDecisionConfigYAML is the inverse of
+// convertDecisionConfigYAMLToProto, used by SaveAgentConfig. base_url is never
+// written (the endpoint is server-level), and an UNSPECIFIED band mode is left
+// out so the file stays unset; the loader and the router both read that as
+// replace. A nil config converts to nil (no decision block).
+func convertProtoToDecisionConfigYAML(cfg *loomv1.DecisionConfig) *DecisionConfigYAML {
+	if cfg == nil {
+		return nil
+	}
+	y := &DecisionConfigYAML{
+		Provider:               cfg.Provider,
+		Model:                  cfg.Model,
+		AllowAlias:             cfg.AllowAlias,
+		TimeoutMs:              cfg.TimeoutMs,
+		MaxPerSession:          cfg.MaxPerSession,
+		MaxCostUSDPerSession:   cfg.MaxCostUsdPerSession,
+		LLMRole:                cfg.LlmRole,
+		RequestsPerMinute:      cfg.RequestsPerMinute,
+		ExposeTool:             cfg.ExposeTool,
+		MaxQuestionsPerRequest: cfg.MaxQuestionsPerRequest,
+	}
+	for _, b := range cfg.Bands {
+		if b == nil {
+			continue
+		}
+		var mode string
+		switch b.Mode {
+		case loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE:
+			mode = "replace"
+		case loomv1.DecisionBandMode_DECISION_BAND_MODE_TIGHTEN_ONLY:
+			mode = "tighten_only"
+		}
+		var agg string
+		if b.Aggregate == loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_PER_QUESTION {
+			agg = "per_question"
+		}
+		y.Bands = append(y.Bands, DecisionBandConfigYAML{
+			Site:      b.Site,
+			ActMin:    b.ActMin,
+			TrueMin:   b.TrueMin,
+			Mode:      mode,
+			Shadow:    b.Shadow,
+			Aggregate: agg,
+		})
+	}
+	return y
+}
+
+// convertDecisionConfigYAMLToProto normalises the YAML spellings (provider
+// case, mode aliases) and converts the decision block; the rules themselves
+// are decision.ValidateConfig, which every other config path runs too. A nil
+// block converts to nil (layer off).
+func convertDecisionConfigYAMLToProto(y *DecisionConfigYAML) (*loomv1.DecisionConfig, error) {
+	if y == nil {
+		return nil, nil
+	}
+	provider := strings.ToLower(strings.TrimSpace(y.Provider))
+	if provider == "" {
+		provider = DecisionProviderOff
+	}
+	cfg := &loomv1.DecisionConfig{
+		Provider:               provider,
+		Model:                  y.Model,
+		AllowAlias:             y.AllowAlias,
+		TimeoutMs:              y.TimeoutMs,
+		BaseUrl:                y.BaseURL,
+		MaxPerSession:          y.MaxPerSession,
+		MaxCostUsdPerSession:   y.MaxCostUSDPerSession,
+		LlmRole:                y.LLMRole,
+		RequestsPerMinute:      y.RequestsPerMinute,
+		ExposeTool:             y.ExposeTool,
+		MaxQuestionsPerRequest: y.MaxQuestionsPerRequest,
+	}
+	for i, b := range y.Bands {
+		var mode loomv1.DecisionBandMode
+		switch strings.ToLower(strings.TrimSpace(b.Mode)) {
+		case "":
+			// Unset: the site's default applies (tighten-only at the gate
+			// sites, replace elsewhere; decision.Band.ModeOr).
+			mode = loomv1.DecisionBandMode_DECISION_BAND_MODE_UNSPECIFIED
+		case "replace":
+			mode = loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE
+		case "tighten_only", "tighten-only", "tighten":
+			mode = loomv1.DecisionBandMode_DECISION_BAND_MODE_TIGHTEN_ONLY
+		default:
+			return nil, fmt.Errorf("decision.bands[%d] (%s): mode %q must be replace or tighten_only", i, b.Site, b.Mode)
+		}
+		var agg loomv1.DecisionBandAggregate
+		switch strings.ToLower(strings.TrimSpace(b.Aggregate)) {
+		case "", "min":
+			agg = loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_MIN
+		case "per_question", "per-question", "each":
+			agg = loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_PER_QUESTION
+		default:
+			return nil, fmt.Errorf("decision.bands[%d] (%s): aggregate %q must be min or per_question", i, b.Site, b.Aggregate)
+		}
+		cfg.Bands = append(cfg.Bands, &loomv1.DecisionBand{
+			Site:      b.Site,
+			ActMin:    b.ActMin,
+			TrueMin:   b.TrueMin,
+			Mode:      mode,
+			Shadow:    b.Shadow,
+			Aggregate: agg,
+		})
+	}
+	if err := decision.ValidateConfig(cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
 // AgentConfigYAML represents the YAML structure for agent configuration.
 // This struct mirrors the proto AgentConfig but uses YAML-friendly types.
 // Legacy format with "agent:" as root key.
@@ -142,6 +315,7 @@ type AgentConfigYAML struct {
 		OrchestratorLLM  *LLMConfigYAML         `yaml:"orchestrator_llm"`
 		ClassifierLLM    *LLMConfigYAML         `yaml:"classifier_llm"`
 		CompressorLLM    *LLMConfigYAML         `yaml:"compressor_llm"`
+		Decision         *DecisionConfigYAML    `yaml:"decision"`
 		ActiveProvider   string                 `yaml:"active_provider"`
 		AllowedProviders []string               `yaml:"allowed_providers"`
 		SystemPrompt     string                 `yaml:"system_prompt"`
@@ -177,6 +351,7 @@ type K8sStyleAgentConfig struct {
 		OrchestratorLLM  *LLMConfigYAML         `yaml:"orchestrator_llm"`
 		ClassifierLLM    *LLMConfigYAML         `yaml:"classifier_llm"`
 		CompressorLLM    *LLMConfigYAML         `yaml:"compressor_llm"`
+		Decision         *DecisionConfigYAML    `yaml:"decision"`
 		ActiveProvider   string                 `yaml:"active_provider"`
 		AllowedProviders []string               `yaml:"allowed_providers"`
 		Tools            interface{}            `yaml:"tools"` // Can be ToolsConfigYAML or []interface{}
@@ -317,6 +492,7 @@ type GraphMemoryConfigYAML struct {
 	MaxEntitiesPerExtraction      int     `yaml:"max_entities_per_extraction"`
 	ConversationExtractionCadence int     `yaml:"conversation_extraction_cadence"`
 	ExtractionTimeoutSeconds      int     `yaml:"extraction_timeout_seconds"`
+	FleetLessonSharing            bool    `yaml:"fleet_lesson_sharing"` // opt-in: share mined lessons across all agents
 }
 
 // MemoryCompressionConfigYAML represents memory compression configuration in YAML
@@ -358,6 +534,11 @@ type BehaviorConfigYAML struct {
 	// ParallelReadTools opts the agent into running consecutive
 	// concurrency-safe tool calls of one response in parallel (default off).
 	ParallelReadTools bool `yaml:"parallel_read_tools"`
+	// PreflightFit opts the agent into the pre-flight context guard (default off).
+	PreflightFit bool `yaml:"preflight_fit"`
+	// AutoCompactPercent turns on end-of-turn compaction at this percentage of
+	// the usable window: 0 (off) to 99.
+	AutoCompactPercent int `yaml:"auto_compact_percent"`
 }
 
 // SkillsConfigYAML represents skills configuration in YAML
@@ -510,6 +691,7 @@ func convertK8sToLegacy(k8s *K8sStyleAgentConfig) AgentConfigYAML {
 	legacy.Agent.OrchestratorLLM = k8s.Spec.OrchestratorLLM
 	legacy.Agent.ClassifierLLM = k8s.Spec.ClassifierLLM
 	legacy.Agent.CompressorLLM = k8s.Spec.CompressorLLM
+	legacy.Agent.Decision = k8s.Spec.Decision
 	legacy.Agent.ActiveProvider = k8s.Spec.ActiveProvider
 	legacy.Agent.AllowedProviders = k8s.Spec.AllowedProviders
 
@@ -700,6 +882,13 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 		config.CompressorLlm = compressorLLM
 	}
 
+	// Decision layer (pkg/decision); nil means off.
+	decisionCfg, err := convertDecisionConfigYAMLToProto(yaml.Agent.Decision)
+	if err != nil {
+		return nil, err
+	}
+	config.Decision = decisionCfg
+
 	// Provider pool fields
 	config.ActiveProvider = yaml.Agent.ActiveProvider
 	config.AllowedProviders = yaml.Agent.AllowedProviders
@@ -783,6 +972,9 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 	outputTokenCBThreshold, err := safeInt32(yaml.Agent.Behavior.OutputTokenCBThreshold, "OutputTokenCBThreshold")
 	if err != nil {
 		return nil, fmt.Errorf("invalid behavior config: %w", err)
+	}
+	if p := yaml.Agent.Behavior.AutoCompactPercent; p < 0 || p > 99 {
+		return nil, fmt.Errorf("invalid behavior config: auto_compact_percent must be 0 (off) to 99, got %d", p)
 	}
 
 	config.Behavior = &loomv1.BehaviorConfig{
@@ -943,17 +1135,36 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 		config.Metadata["_parallel_read_tools"] = "true"
 	}
 
+	// The pre-flight guard and end-of-turn compaction are opt-in the same way.
+	if yaml.Agent.Behavior.PreflightFit {
+		if config.Metadata == nil {
+			config.Metadata = make(map[string]string)
+		}
+		config.Metadata["_preflight_fit"] = "true"
+	}
+	if p := yaml.Agent.Behavior.AutoCompactPercent; p > 0 {
+		if config.Metadata == nil {
+			config.Metadata = make(map[string]string)
+		}
+		config.Metadata["_auto_compact_percent"] = strconv.Itoa(p)
+	}
+
 	return config, nil
 }
 
 // ApplyMetadataBehavior maps the behavior flags yamlToProto encodes in an
 // agent's metadata onto cfg. Every place that builds a Config from a
 // loomv1.AgentConfig calls it, so a YAML key cannot work in one host and be
-// ignored in another. It maps only _parallel_read_tools for now; the sibling
-// flags (_tool_change_note, _context_relief_warning, _repeat_call_hint) are
-// tracked in issue #526.
+// ignored in another. It maps _parallel_read_tools, _preflight_fit and
+// _auto_compact_percent; the sibling flags (_tool_change_note,
+// _context_relief_warning, _repeat_call_hint) are tracked in issue #526.
 func ApplyMetadataBehavior(cfg *Config, md map[string]string) {
 	cfg.ParallelReadTools = md["_parallel_read_tools"] == "true"
+	cfg.PreflightFit = md["_preflight_fit"] == "true"
+	cfg.AutoCompactPercent = 0
+	if p, err := strconv.Atoi(md["_auto_compact_percent"]); err == nil && p > 0 && p < 100 {
+		cfg.AutoCompactPercent = p
+	}
 }
 
 // parseMemoryCompressionConfig converts YAML memory compression config to proto
@@ -1116,6 +1327,7 @@ func parseGraphMemoryConfig(yaml *GraphMemoryConfigYAML) *loomv1.GraphMemoryConf
 		MaxEntitiesPerExtraction:      maxEntitiesPerExtraction,
 		ConversationExtractionCadence: conversationExtractionCadence,
 		ExtractionTimeoutSeconds:      extractionTimeoutSeconds,
+		FleetLessonSharing:            yaml.FleetLessonSharing,
 	}
 }
 
@@ -1318,20 +1530,21 @@ func ValidateAgentConfig(config *loomv1.AgentConfig) error {
 
 		// Validate provider is supported
 		validProviders := map[string]bool{
-			"anthropic":    true,
-			"bedrock":      true,
-			"litellm":      true,
-			"ollama":       true,
-			"openai":       true,
-			"azure-openai": true,
-			"azureopenai":  true,
-			"mistral":      true,
-			"gemini":       true,
-			"huggingface":  true,
+			"anthropic":      true,
+			"bedrock":        true,
+			"bedrock-mantle": true,
+			"litellm":        true,
+			"ollama":         true,
+			"openai":         true,
+			"azure-openai":   true,
+			"azureopenai":    true,
+			"mistral":        true,
+			"gemini":         true,
+			"huggingface":    true,
 		}
 		provider := strings.ToLower(config.Llm.Provider)
 		if !validProviders[provider] {
-			return fmt.Errorf("unsupported LLM provider: %s (must be one of: anthropic, bedrock, litellm, ollama, openai, azure-openai, mistral, gemini, huggingface)", config.Llm.Provider)
+			return fmt.Errorf("unsupported LLM provider: %s (must be one of: anthropic, bedrock, bedrock-mantle, litellm, ollama, openai, azure-openai, mistral, gemini, huggingface)", config.Llm.Provider)
 		}
 
 		// Validate temperature range
@@ -1350,6 +1563,14 @@ func ValidateAgentConfig(config *loomv1.AgentConfig) error {
 		if !validMemoryTypes[config.Memory.Type] {
 			return fmt.Errorf("unsupported memory type: %s (must be one of: memory, sqlite, postgres)", config.Memory.Type)
 		}
+	}
+
+	// Decision layer: the same rules as the YAML loader, so an inline
+	// AgentConfig (CreateAgentFromConfig, loom-mcp create_agent) cannot
+	// carry what a YAML file could not (an agent-chosen endpoint, an
+	// unacknowledged alias, an out-of-range band).
+	if err := decision.ValidateConfig(config.GetDecision()); err != nil {
+		return err
 	}
 
 	return nil
@@ -1378,6 +1599,7 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 	yaml.Agent.Name = config.Name
 	yaml.Agent.Description = config.Description
 	yaml.Agent.SystemPrompt = config.SystemPrompt
+	yaml.Agent.ROM = config.Rom
 	yaml.Agent.Metadata = convertMetadataToInterface(config.Metadata)
 
 	// Convert LLM config
@@ -1448,6 +1670,7 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 				MaxEntitiesPerExtraction:      int(config.Memory.GraphMemory.MaxEntitiesPerExtraction),
 				ConversationExtractionCadence: int(config.Memory.GraphMemory.ConversationExtractionCadence),
 				ExtractionTimeoutSeconds:      int(config.Memory.GraphMemory.ExtractionTimeoutSeconds),
+				FleetLessonSharing:            config.Memory.GraphMemory.FleetLessonSharing,
 			}
 		}
 	}
@@ -1464,6 +1687,9 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 			OutputTokenCBThreshold: int(config.Behavior.GetOutputTokenCbThreshold()),
 		}
 	}
+
+	// Decision layer; nil leaves the block out.
+	yaml.Agent.Decision = convertProtoToDecisionConfigYAML(config.Decision)
 
 	return yaml
 }

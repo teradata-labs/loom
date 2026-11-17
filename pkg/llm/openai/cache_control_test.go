@@ -92,6 +92,100 @@ func TestChatStream_CacheControlAndUsage(t *testing.T) {
 	}
 }
 
+func TestConvertMessages_SingleLeadingSystem(t *testing.T) {
+	type roleText struct{ role, text string }
+	late := []llmtypes.Message{
+		{Role: "system", Content: "ROM"},
+		{Role: "user", Content: "hello"},
+		{Role: "system", Content: "reminder"},
+		{Role: "assistant", Content: "hi"},
+	}
+	lateInPlace := []roleText{{"system", "ROM"}, {"user", "hello"}, {"system", "reminder"}, {"assistant", "hi"}}
+	tests := []struct {
+		name   string
+		model  string
+		enable bool
+		in     []llmtypes.Message
+		want   []roleText
+	}{
+		{
+			name:  "default keeps every system message in place",
+			model: "td-vllm/qwen-38-27b-fp8",
+			in:    late,
+			want:  lateInPlace,
+		},
+		{
+			name:  "default keeps consecutive leading system messages",
+			model: "td-vllm/qwen-38-27b-fp8",
+			in: []llmtypes.Message{
+				{Role: "system", Content: "ROM"},
+				{Role: "system", Content: "summary"},
+				{Role: "user", Content: "hello"},
+			},
+			want: []roleText{{"system", "ROM"}, {"system", "summary"}, {"user", "hello"}},
+		},
+		{
+			name:   "enabled folds a late system message into the leading one",
+			model:  "td-vllm/qwen-38-27b-fp8",
+			enable: true,
+			in:     late,
+			want:   []roleText{{"system", "ROM\n\nreminder"}, {"user", "hello"}, {"assistant", "hi"}},
+		},
+		{
+			name:   "enabled merges consecutive leading system messages",
+			model:  "td-vllm/qwen-38-27b-fp8",
+			enable: true,
+			in: []llmtypes.Message{
+				{Role: "system", Content: "ROM"},
+				{Role: "system", Content: "summary"},
+				{Role: "user", Content: "hello"},
+			},
+			want: []roleText{{"system", "ROM\n\nsummary"}, {"user", "hello"}},
+		},
+		{
+			name:   "enabled inserts a leading system message when none leads",
+			model:  "td-vllm/qwen-38-27b-fp8",
+			enable: true,
+			in: []llmtypes.Message{
+				{Role: "user", Content: "hello"},
+				{Role: "system", Content: "reminder"},
+			},
+			want: []roleText{{"system", "reminder"}, {"user", "hello"}},
+		},
+		{
+			name:   "enabled drops empty system messages",
+			model:  "td-vllm/qwen-38-27b-fp8",
+			enable: true,
+			in: []llmtypes.Message{
+				{Role: "user", Content: "hello"},
+				{Role: "system", Content: ""},
+			},
+			want: []roleText{{"user", "hello"}},
+		},
+		{
+			name:  "claude is unchanged by default",
+			model: "coding-agent/claude-sonnet-4-6",
+			in:    late,
+			want:  lateInPlace,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := NewClient(Config{Model: tt.model, APIKey: "test", SingleLeadingSystem: tt.enable})
+			got := c.convertMessages(tt.in)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d messages, want %d: %+v", len(got), len(tt.want), got)
+			}
+			for i, w := range tt.want {
+				if got[i].Role != w.role || got[i].Content != w.text {
+					t.Errorf("message %d: got {%s %v}, want {%s %q}", i, got[i].Role, got[i].Content, w.role, w.text)
+				}
+			}
+		})
+	}
+}
+
 // TestConvertMessages_CacheControlGatedToClaude proves cache_control is emitted
 // only for Anthropic-backed models: a non-claude model keeps plain string
 // content on marked messages — no foreign field, no block reshaping.

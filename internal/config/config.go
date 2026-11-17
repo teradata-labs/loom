@@ -128,7 +128,7 @@ type SelectedModel struct {
 }
 
 // Providers returns available model providers.
-var Providers = []string{"anthropic", "bedrock", "ollama"}
+var Providers = []string{"anthropic", "bedrock", "bedrock-mantle", "ollama"}
 
 // Models returns the model list.
 func (c *Config) Models() []Model {

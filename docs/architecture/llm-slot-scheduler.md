@@ -119,6 +119,12 @@ One scheduler per provider quota scope — the same scope keys PR #347
 introduced (`azure-openai|endpoint|deployment`, `bedrock|region|model`, …).
 The scheduler *grants call slots*; the existing `SharedRateLimiter` becomes
 its execution arm (pacing within a grant, retrying throttles within a grant).
+When the limiter's retries do not clear a throttle, the agent waits it out at
+the call level (`throttlePatience` in `pkg/agent/llm_retry.go`): it waits the
+longer of the retry-after hint and a 2 s→60 s step, then calls again, up to a
+10-minute wall-clock budget measured from the first throttled call. The budget
+covers the waits and the re-invoked calls with the limiter's retries inside
+them. That wait also happens inside the grant.
 
 The correct mental model is an **I/O scheduler** (deadline/elevator), not an
 interrupt controller in the strict sense: the scarce resource is
@@ -136,11 +142,48 @@ Priority classes, highest first:
 | `NEW` | first call of a conversation | admitted as churn allows |
 
 Within a class: weighted fair queuing per tenant/agent, FIFO within a weight.
-**Aging**: a waiter that has waited longer than `starvation_age_s` is promoted
-one class, so `NEW` cannot be starved forever by a hot fleet. One outstanding
+**Aging**: each `starvation_age_s` a waiter waits crosses one starvation tier
+(tier n after (n+1) × `starvation_age_s`). A tier raises the rank the waiter
+is *dispatched* at by one class step, capped at `RESOURCE_HOLDER`'s rank; it
+never changes the waiter's class, which keeps saying what the request is
+(`loom scheduler waiters` shows the real class, and `PROMOTIONS` counts tiers).
+So a `NEW` waiter one tier old is served with `IN_FLIGHT`, still behind a real
+`RESOURCE_HOLDER`, and after two tiers it is served with holders. Within a
+rank, the waiter that reached the rank first is served first. `NEW` therefore
+cannot be starved forever by a hot fleet. One outstanding
 slot per conversation (the conversation loop is sequential anyway).
 
-Grant lifetime: a slot covers one LLM call *including its throttle retries*.
+Grant lifetime: a slot covers one LLM call *including its retries*, both the
+rate limiter's in-grant retries and the agent-level throttle waits. In the
+limiter, throttling (429) and transient server failures (500/502/503/504/529)
+share one `max_retries` budget and one backoff, so one provider invocation
+makes at most `max_retries + 1` attempts. The exponential backoff base is
+capped at 5 minutes before ±50% jitter, so a wait without `Retry-After` can
+reach 7.5 minutes for a 429 or a 5xx. A 429 `Retry-After` is not capped, so a
+long throttle window holds the grant for as long as the provider asks. A 5xx
+`Retry-After` is capped at 5 minutes. At the limiter defaults
+(`max_retries: 5`, `retry_backoff: 1s`) one invocation therefore spends ~31 s
+of nominal backoff (±50% jitter: ~15.5–46.5 s) plus admission pacing, and up to
+5 × 5 min when the provider sends a long 5xx `Retry-After` (unbounded for a
+long 429 `Retry-After`). When the budget is spent, the limiter returns an
+`llm.RetriesExhaustedError` that wraps the last provider error, and the agent
+acts on that wrapped cause the same way on all three paths (retry enabled,
+streaming, retry disabled). An exhausted throttle is not final: the agent's
+throttle patience waits the longer of the retry-after hint and a 2 s→60 s step,
+then calls the provider again, and each new invocation spends the limiter's
+budget again. This stops at a 10-minute wall-clock budget, measured from the
+start of the first throttled invocation and checked before each wait, so a
+permanent throttle holds the grant for 10 minutes plus at most one invocation.
+An exhausted 5xx is final: the agent does not retry it again, so a provider
+outage holds each scheduled call's slot for one limiter budget rather than
+releasing it on the first 5xx. A context-too-long refusal is never waited out,
+even when its text matches the throttle message fallback (a token count that
+contains "429"); it is returned after one invocation. The grant is released
+only when the call returns, so a throttled call holds its slot for the whole
+wait. This is a design choice: the scope is throttled, so a slot given to
+another waiter would most likely get a 429 too, and the throttle has already
+halved the scope's ceiling. Size `max_retries`/`retry_backoff` with these hold
+times in mind.
 The grant carries a token reservation (§3.4); the reservation is trued-up from
 the response's actual usage when it completes.
 
@@ -166,7 +209,8 @@ a goroutine inside the limiter queue:
      priority precisely so their parks are short).
    - In-process memory: retained (parking is expected to be seconds-to-minutes).
 4. The scheduler wakes the waiter when churn creates a slot (a grant
-   completes, capacity feedback raises the ceiling, or aging promotes it).
+   completes, capacity feedback raises the ceiling, or aging raises its
+   dispatch rank).
    Wake resumes the loop at the pending LLM call.
 5. Crash recovery: parked conversations are durable. On looms restart, parked
    waiters re-register from the store; grants in flight at crash are simply
@@ -265,7 +309,8 @@ syntax = "proto3";
 package loom.v1;
 
 // Priority class of a slot request. Order is semantic: higher classes are
-// served first; aging promotes a starved waiter one class.
+// served first; aging raises a starved waiter's dispatch rank one class step
+// (its class is unchanged).
 enum SlotPriorityClass {
   SLOT_PRIORITY_CLASS_UNSPECIFIED = 0;
   SLOT_PRIORITY_CLASS_NEW = 1;              // first call of a conversation
@@ -286,7 +331,8 @@ message LLMSchedulerConfig {
   // Door-queue depth beyond which new conversations are rejected with
   // RESOURCE_EXHAUSTED instead of queued.
   int32 max_door_queue = 4;
-  // Seconds after which a waiting slot request is promoted one class.
+  // Seconds per starvation tier; each tier raises a waiting request's
+  // dispatch rank one class step.
   int32 starvation_age_s = 5;
   // Target utilization of measured capacity (0,1]; default 0.8.
   float utilization_target = 6;
@@ -325,7 +371,7 @@ YAML). The scheduler consumes it; it does not replace it.
 | `runConversationLoop` | blocks synchronously on LLM call | requests slot; on `ErrParked` suspends via the session-persistence path (same shape as HITL suspend) and resumes on wake |
 | MCP handle auto-release | at conversation end | unchanged; plus *reclaimable-under-pressure* marking while parked, and handle-holding feeds `RESOURCE_HOLDER` priority |
 | `tokens_per_minute` | metrics-only, never enforced | enforced by the scheduler, reservation-aware, header-calibrated |
-| 429 handling | in-grant blind exponential backoff (working as of PR #350) | in-grant retry with `Retry-After`-scheduled wake; storm collapses admission ceiling |
+| 429 handling | in-grant blind exponential backoff (working as of PR #350) | in-grant retry with `Retry-After`-scheduled wake; storm collapses admission ceiling; a throttle that outlasts the limiter's retries is waited out at the agent level (retry-after or 2 s→60 s steps, 10-minute wall-clock budget), still inside the grant |
 | `loom chat` under saturation | agents die mid-flight | queued at the door with visible position/estimate, or `RESOURCE_EXHAUSTED` + retry-after |
 
 ## 6. Failure modes and invariants
@@ -333,9 +379,13 @@ YAML). The scheduler consumes it; it does not replace it.
 - **No death by waiting.** Invariant: the scheduler never returns a fatal
   error for lack of capacity. Fatal outcomes come only from the
   conversation's own budget/deadline or a non-retryable provider error.
-- **Bounded starvation.** Aging guarantees any waiter reaches the top class in
-  `≤ 2 × starvation_age_s`. (Trade-off: a saturated system with aging degrades
-  toward FIFO — acceptable; aging exists for liveness, not throughput.)
+- **Bounded starvation.** Aging guarantees any waiter reaches the top dispatch
+  rank of its band in `≤ 2 × starvation_age_s` (its class label does not
+  change). A top-rank waiter that crosses a further tier and still does not
+  fit halts backfill in its band until it does. (Trade-off: a saturated system
+  with aging degrades toward FIFO — acceptable; aging exists for liveness, not
+  throughput. Class orders waiters by itself only until they cross their first
+  tier.)
 - **Bounded priority inversion.** `RESOURCE_HOLDER` inheritance is one level
   and non-transitive; a holder that parks with non-reclaimable state keeps the
   boost so its park is short.
@@ -354,7 +404,10 @@ YAML). The scheduler consumes it; it does not replace it.
 Per scope: `loom_llm_slots_active`, `loom_llm_parked`, `loom_llm_door_queue`,
 `loom_llm_effective_tpm`, `loom_llm_reserved_outstanding`,
 `loom_llm_wait_seconds` (histogram, by priority class),
-`loom_llm_promotions_total` (aging events), `loom_llm_admission_rejects_total`.
+`loom_llm_admission_rejects_total`. Starvation tiers crossed are reported only
+as the `GetSlotState.promotions_total` proto field (and per waiter as
+`SlotWaiter.promotions`); there is no `loom_llm_promotions_total`
+Prometheus/OTel metric.
 Every park/wake/grant is a span event on the conversation trace, so a slow
 agent's timeline shows *where* it waited and *why* it was woken. Scheduler
 state queryable live via `LLMSchedulerService.GetSlotState`.

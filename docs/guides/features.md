@@ -369,6 +369,13 @@ storage:
   #   database: loom
 ```
 
+### Resume a Turn After a Server Crash
+
+✅ With `execution_log.enabled: true` in `looms.yaml` (off by default),
+`loom sessions resume <session-id>` finishes a turn a server crash
+interrupted, without running a tool call again when its result was recorded.
+See the [Crash Resume Guide](crash-resume.md).
+
 ## Vision and Document Parsing
 
 ✅ Analyze images and parse documents using built-in tools.

@@ -125,3 +125,38 @@ func TestExecutorPreflight(t *testing.T) {
 		t.Fatalf("unknown-tool Preflight = %v, want NoDecision", got.Kind)
 	}
 }
+
+func TestContextWithoutAskGrant(t *testing.T) {
+	type otherKey struct{}
+	base := context.WithValue(context.Background(), otherKey{}, "kept")
+	granted := ContextWithAskGrant(base, &AskGrant{Approved: true})
+	stripped := ContextWithoutAskGrant(granted)
+
+	if AskGrantFromContext(stripped) != nil {
+		t.Fatal("grant still visible after ContextWithoutAskGrant")
+	}
+	if stripped.Value(otherKey{}) != "kept" {
+		t.Fatal("other context values must survive")
+	}
+	if ContextWithoutAskGrant(base) != base {
+		t.Fatal("a context without a grant is returned unchanged")
+	}
+
+	// End to end: the same governed call preflights Allow under the grant
+	// and Ask once the grant is hidden; Admit then fails closed.
+	reg := NewRegistry()
+	reg.Register(&MockTool{MockName: "governed"})
+	exec := NewExecutor(reg)
+	exec.SetAdmissionChain(NewChain([]Hook{verdictHook{Decision{Kind: Ask}}}, nil, nil))
+	params := map[string]interface{}{"x": 1}
+	if got := exec.Preflight(granted, "governed", params); got.Kind != Allow {
+		t.Fatalf("granted Preflight = %v, want Allow", got.Kind)
+	}
+	if got := exec.Preflight(stripped, "governed", params); got.Kind != Ask {
+		t.Fatalf("stripped Preflight = %v, want Ask", got.Kind)
+	}
+	chain := NewChain([]Hook{verdictHook{Decision{Kind: Ask}}}, nil, nil)
+	if got := chain.Admit(req(stripped)); got.Decision.Kind != Deny {
+		t.Fatalf("stripped Admit without a resolver = %v, want Deny", got.Decision.Kind)
+	}
+}

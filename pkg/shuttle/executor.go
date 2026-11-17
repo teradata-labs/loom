@@ -126,6 +126,15 @@ func (e *Executor) SetAdmissionChain(chain *Chain) {
 	e.admissionChain = chain
 }
 
+// HasAdmissionGuards reports whether calls through this executor pass any
+// guard at all: an admission chain or a permission checker. With neither,
+// Preflight and Execute admit every call. Code that makes tool calls on a
+// model's behalf without the model seeing each one (a script engine) uses this
+// to fail closed. Like the setters above, it is meant for configuration time.
+func (e *Executor) HasAdmissionGuards() bool {
+	return e.admissionChain != nil || e.permissionChecker != nil
+}
+
 // AdmissionOrderDependent reports whether admission verdicts can depend on the
 // order of the calls of one batch: the chain is order-dependent (see
 // Chain.OrderIndependent) or the executor-level permission checker may hold a
@@ -361,6 +370,9 @@ func (e *Executor) Execute(ctx context.Context, toolName string, params map[stri
 	if denied != nil {
 		return denied, nil
 	}
+	// The tool body sees the grants of an approved Ask, and never grants or an
+	// AskGrant inherited from an enclosing call.
+	ctx = toolBodyContext(ctx, admRes)
 
 	// Handle large parameters: store in shared memory to prevent context bloat
 	referencedParams, err := e.handleLargeParameters(ctx, normalizedParams)
@@ -436,6 +448,7 @@ func (e *Executor) ExecuteWithTool(ctx context.Context, tool Tool, params map[st
 	if denied != nil {
 		return denied, nil
 	}
+	ctx = toolBodyContext(ctx, admRes)
 
 	// Handle large parameters: store in shared memory to prevent context bloat
 	referencedParams, err := e.handleLargeParameters(ctx, normalizedParams)

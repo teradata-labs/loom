@@ -190,7 +190,7 @@ func (t *EditFilesTool) applyOne(path, find, replace string) error {
 		// edited in place before this change and must still be editable: the
 		// temp file is an upgrade, not a new requirement. Falling back costs
 		// the atomicity guarantee for exactly that case.
-		// #nosec G304 -- see the read above: same resolved, checked path.
+		// #nosec G304 G703 -- see the read above: same resolved, checked path.
 		if werr := os.WriteFile(cleanPath, []byte(content), info.Mode().Perm()); werr != nil {
 			return fmt.Errorf("write failed: %v", werr)
 		}

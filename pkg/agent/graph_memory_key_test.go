@@ -96,17 +96,11 @@ func graphKeyReader(store memory.GraphMemoryStore, name, id string) *Agent {
 	}
 }
 
-// graphKeyInject runs the recall path and returns the injected system message ("" when none).
+// graphKeyInject runs the recall path and returns the recall note ("" when none).
 func graphKeyInject(a *Agent) string {
 	session := &types.Session{}
 	session.AddMessage(context.Background(), types.Message{Role: "user", Content: "what do you know about fraud?"})
-	a.injectGraphMemoryContext(context.Background(), session)
-	for _, m := range session.GetMessages() {
-		if m.Role == "system" {
-			return m.Content
-		}
-	}
-	return ""
+	return a.graphMemoryNote(context.Background(), session)
 }
 
 // graphKeyToolCall runs a graph_memory tool action through the agent's registered tool.
@@ -196,9 +190,23 @@ func TestGraphMemory_RecallUsesKey(t *testing.T) {
 		ids := spy.calls[kind]
 		require.NotEmpty(t, ids, "%s was never called", kind)
 		for _, id := range ids {
+			// The lesson lane recalls from its own partition, derived from the key.
+			if kind == "Recall" && id == "u1"+lessonPartitionSuffix {
+				continue
+			}
 			assert.Equal(t, "u1", id, "%s must read under the key, not the Name", kind)
 		}
 	}
+}
+
+// Private lessons live in a partition derived from the key, so renaming an
+// agent that has a stable GraphMemoryAgentID keeps its lessons.
+func TestLessonPartition_UsesKey(t *testing.T) {
+	a := &Agent{config: &Config{Name: "renamed", GraphMemoryAgentID: "u1"}}
+	assert.Equal(t, "u1"+lessonPartitionSuffix, a.lessonPartition())
+
+	b := &Agent{config: &Config{Name: "name"}}
+	assert.Equal(t, "name"+lessonPartitionSuffix, b.lessonPartition())
 }
 
 // Extraction writes entities, edges and memories under the key.

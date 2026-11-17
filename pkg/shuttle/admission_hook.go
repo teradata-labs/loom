@@ -34,9 +34,31 @@ const (
 )
 
 // Decision is a hook's verdict plus a human-readable reason carried on Deny/Ask.
+//
+// A Decision that carries a Grant must not be compared with == or used as a
+// map key: see Grant.
 type Decision struct {
 	Kind   DecisionKind
 	Reason string
+	// Grant is what a person approves when they approve this Ask: data the
+	// hook computed from the call (for example, the programs a shell command
+	// names that are not on its allowlist). It is meaningful only on an Ask.
+	// When the call's Ask is resolved to Allow, the executor hands every
+	// matched Ask's Grant to the tool body (AdmissionGrantsFromContext), so a
+	// tool that enforces policy at run time can honor exactly what was
+	// approved. A Grant must be immutable once returned; it may be shared by
+	// concurrent readers. Every asking hook's Grant survives the fold, and the
+	// combined Ask's Reason joins every asking hook's Reason (hook order,
+	// deduplicated, "; "-separated), so the approval request a person decides
+	// names everything the grants cover.
+	//
+	// Because Grant is an interface, a Decision whose Grant holds a slice, a
+	// map, a func, or a struct containing one is not comparable: == between two
+	// such Decisions, or using one as a map key, compiles but panics at run
+	// time ("comparing uncomparable type" / "hash of unhashable type"). Compare
+	// the Kind and Reason fields instead, and do not key a map on a Decision
+	// that may carry a Grant.
+	Grant any
 }
 
 // AdmissionRequest is the immutable view of a tool call handed to every hook.
@@ -71,6 +93,14 @@ func (r AdmissionRequest) MatchesTool(scope ToolScope) bool {
 //
 // Reading mutable state is fine (the gated allowlist reads the approved set);
 // WRITING it from Evaluate is not.
+//
+// A hook that answers Ask MUST be deterministic for the same call: the same
+// tool name, Params and caller identity must yield the same Reason and an equal
+// Grant every time. A parked approval does not store the Grant; on resume the
+// chain re-evaluates the call and the tool body receives the recomputed Grant
+// (see docs/architecture/hitl-park-and-resume.md), so a Grant that varied
+// between park and resume would reach the body without the person having seen
+// it.
 type Hook interface {
 	Matches(req AdmissionRequest) bool
 	Evaluate(req AdmissionRequest) Decision

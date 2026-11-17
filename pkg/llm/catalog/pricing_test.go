@@ -106,3 +106,72 @@ func TestLookupPricing_NotFound(t *testing.T) {
 		})
 	}
 }
+
+// TestRequestPricing_LongContextFollowsPublishedRatesOnly pins pricing
+// authority: the published Haiku 5.5 long-context card replaces published base
+// rates (family fallback or built-in row) above 100K prompt tokens, and never
+// replaces a rate a registered Source supplies.
+func TestRequestPricing_LongContextFollowsPublishedRatesOnly(t *testing.T) {
+	original := DefaultSource()
+	t.Cleanup(func() { Register(original) })
+
+	const haiku = "claude-haiku-5-5"
+	for _, tc := range []struct {
+		name         string
+		prompt       int
+		wantIn, want float64
+	}{
+		{"published base card at the threshold", 100_000, 0.10, 0.50},
+		{"published long-context card above it", 100_001, 0.50, 2.50},
+	} {
+		in, out, found := RequestPricing("anthropic", haiku, tc.prompt)
+		require.True(t, found, tc.name)
+		assert.Equal(t, tc.wantIn, in, tc.name)
+		assert.Equal(t, tc.want, out, tc.name)
+	}
+
+	Register(MultiSource{
+		newFakeSource(&loomv1.ModelInfo{Id: haiku, Provider: "anthropic", CostPer_1MInputUsd: 0.25, CostPer_1MOutputUsd: 1.25}),
+		StaticSource(),
+	})
+	for _, prompt := range []int{1_000, 150_000} {
+		in, out, found := RequestPricing("anthropic", haiku, prompt)
+		require.True(t, found)
+		assert.Equal(t, 0.25, in, "registered rate kept at a %d-token prompt", prompt)
+		assert.Equal(t, 1.25, out, "registered rate kept at a %d-token prompt", prompt)
+	}
+
+	// Unregistered ids still resolve as before, and an unknown id is not found.
+	in, out, found := RequestPricing("anthropic", "us.anthropic.claude-haiku-5-5", 150_000)
+	require.True(t, found)
+	assert.Equal(t, 0.50, in, "family fallback is the published card")
+	assert.Equal(t, 2.50, out)
+	_, _, found = RequestPricing("anthropic", "not-a-model", 150_000)
+	assert.False(t, found)
+}
+
+// TestLookupPricing_PublishedThroughRegisteredChain pins the provenance check:
+// a built-in row served through a registered chain (MultiSource, CachedSource)
+// is still the published card, while a registered row for the same id is not.
+func TestLookupPricing_PublishedThroughRegisteredChain(t *testing.T) {
+	original := DefaultSource()
+	t.Cleanup(func() { Register(original) })
+
+	const id = "claude-opus-4-6"
+	_, _, published, found := lookupPricing("anthropic", id)
+	require.True(t, found)
+	assert.True(t, published, "default registration is the static source")
+
+	Register(MultiSource{newFakeSource(), NewCachedSource(StaticSource(), 0)})
+	_, _, published, found = lookupPricing("anthropic", id)
+	require.True(t, found)
+	assert.True(t, published, "static row passed through MultiSource and CachedSource")
+
+	Register(MultiSource{
+		newFakeSource(&loomv1.ModelInfo{Id: id, Provider: "anthropic", CostPer_1MInputUsd: 1, CostPer_1MOutputUsd: 2}),
+		StaticSource(),
+	})
+	_, _, published, found = lookupPricing("anthropic", id)
+	require.True(t, found)
+	assert.False(t, published, "a registered row is not the published card")
+}

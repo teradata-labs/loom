@@ -65,7 +65,7 @@ func TestModelRegistry_GetAllModels_TotalCount(t *testing.T) {
 	require.NotEmpty(t, all)
 
 	sum := 0
-	for _, provider := range []string{"anthropic", "openai", "gemini", "bedrock", "ollama", "mistral", "azure-openai"} {
+	for _, provider := range []string{"anthropic", "openai", "gemini", "bedrock", "bedrock-mantle", "ollama", "mistral", "azure-openai"} {
 		sum += len(reg.GetModelsForProvider(provider))
 	}
 	assert.Equal(t, sum, len(all), "GetAllModels must equal the sum of every provider's models")
@@ -112,7 +112,7 @@ func TestModelRegistry_NewFields(t *testing.T) {
 	})
 
 	t.Run("bedrock and azure models have ShowInDropdown=false", func(t *testing.T) {
-		for _, provider := range []string{"bedrock", "azure-openai"} {
+		for _, provider := range []string{"bedrock", "bedrock-mantle", "azure-openai"} {
 			models := reg.GetModelsForProvider(provider)
 			require.NotEmpty(t, models, "provider %s should have models", provider)
 			for _, m := range models {

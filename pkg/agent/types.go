@@ -18,10 +18,13 @@ import (
 	"database/sql"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
+	"github.com/teradata-labs/loom/pkg/decision"
+	"github.com/teradata-labs/loom/pkg/eventlog"
 	"github.com/teradata-labs/loom/pkg/fabric"
 	mcpadapter "github.com/teradata-labs/loom/pkg/mcp/adapter"
 	"github.com/teradata-labs/loom/pkg/memory"
@@ -32,6 +35,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/skills"
 	"github.com/teradata-labs/loom/pkg/skills/discovery"
 	"github.com/teradata-labs/loom/pkg/skills/hygiene"
+	skillindex "github.com/teradata-labs/loom/pkg/skills/index"
 	skilltasks "github.com/teradata-labs/loom/pkg/skills/tasks"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/task"
@@ -82,6 +86,16 @@ type Agent struct {
 	// human decision ends the turn (TurnParkedError) instead of holding it.
 	hitlPark *hitlParkConfig
 
+	// eventLog, when non-nil, enables the durable, tool-call-granularity
+	// execution log (issue #229) for crash-resumable conversation loops. Nil
+	// disables it: every write-ahead call becomes a no-op, and ResumeSession
+	// is unavailable (returns ErrEventLogDisabled).
+	eventLog eventlog.EventLogStore
+
+	// leaseTTL overrides eventlog.DefaultSessionLeaseTTL for the session lease
+	// (session_lease.go). Zero uses the default; tests set it short.
+	leaseTTL time.Duration
+
 	// resourceAwait, when non-nil (WithResourceAwait), enables resource-await
 	// park: a successful tool result carrying AwaitResource ends the turn
 	// parked until the named resource reaches a terminal state. Requires
@@ -119,6 +133,19 @@ type Agent struct {
 	orchestratorLLM LLMProvider // For merge/synthesis in fork-join orchestration
 	classifierLLM   LLMProvider // For intent classification / pattern selection
 	compressorLLM   LLMProvider // For memory compression / semantic search reranking
+
+	// Decision layer (pkg/decision). decisionCfg and decisionShadowStore come
+	// from WithDecisionConfig; initDecisionRouter builds decisionRouter and
+	// decisionRecorder from them after options are applied. decisionWG tracks
+	// background shadow evaluations so tests and shutdown can wait.
+	decisionCfg         *loomv1.DecisionConfig
+	decisionShadowStore decision.ShadowStore
+	decisionRouter      *decision.Router
+	decisionRecorder    *decision.ShadowRecorder
+	decisionWG          sync.WaitGroup
+	// skillRouteRouters are the skill routers BuildSkillsOptions built for
+	// this agent; attachSkillRouteDecision gives them decisionRouter.
+	skillRouteRouters []*skillindex.Router
 
 	// Tracer for observability
 	tracer observability.Tracer
@@ -268,6 +295,29 @@ type Agent struct {
 	graphExtractionCadence             int
 	graphToolExecutionsSinceExtraction int
 	graphExtractionWG                  sync.WaitGroup // tracks in-flight async extractions
+	// toolLedgerMu guards toolLedgers: per-session tool-execution ledgers
+	// for the lesson miner (graph_memory_lessons.go). Recorded at execution
+	// time so mining is immune to context compilation evicting early turns
+	// from the compiled message view.
+	toolLedgerMu sync.Mutex
+	toolLedgers  map[string][]minedEvent
+	// lessonCoveredSessions (also guarded by toolLedgerMu) marks the
+	// sessions whose history the lesson miner must not walk again: every
+	// session that recorded a ledger in this process, and every session the
+	// whole-history fallback already mined. Freed by DeleteSession.
+	lessonCoveredSessions map[string]struct{}
+	// autoCompactLedger records each session's last automatic compaction
+	// attempt (auto_compact.go). Freed per session by DeleteSession.
+	autoCompactLedger *AutoCompactLedger
+	// errorLessonMu guards errorLessonState: per-session tracking for
+	// error-triggered lesson recall (graph_memory_lessons.go) — which
+	// lessons were already injected and how many injections have fired.
+	errorLessonMu    sync.Mutex
+	errorLessonState map[string]*errorLessonSession
+	// lessonTrials counts error-lane lesson recalls; every
+	// lessonRetrialInterval-th one carries a demoted lesson so demotion
+	// stays reversible (graph_memory_lessons.go).
+	lessonTrials atomic.Uint64
 
 	// Conversation-turn-based graph extraction (fires on LLM responses, not tool use).
 	graphConversationExtractionCadence int // 0 = disabled
@@ -283,6 +333,11 @@ type Agent struct {
 	// Shares the context-dump switch; a no-op on the production path. See
 	// context_debug.go.
 	ctxDebug *contextDebug
+
+	// Time source of the throttle-patience budget and its waits (see
+	// throttlePatience in llm_retry.go). Nil means the real clock; tests set
+	// a fake so a 10-minute budget runs without real sleeps.
+	throttleClock throttleClock
 }
 
 // WorkflowCommunicationContext contains dynamic workflow communication info injected into prompts
@@ -357,6 +412,22 @@ type Config struct {
 	// walks toward T−1 when shedding at K is not enough. 0 = default (16).
 	ProtectedRecentTurns int
 
+	// AutoCompactPercent turns on proactive compaction at the end of a turn:
+	// once the context reaches this percentage of the usable window, older tool
+	// results are stubbed and, if that is not enough, older turns are folded
+	// into the running summary, while there is still room to summarize well.
+	// 0 = off; valid values are 0-99. It needs an LLM memory compressor to
+	// fold; without one only the lossless stubbing runs. Relief at the water
+	// marks remains the backstop. The YAML key is behavior.auto_compact_percent.
+	AutoCompactPercent int
+
+	// PreflightFit refuses, before the provider call, a request whose estimate
+	// is still over the usable window after relief: deeper relief passes run
+	// first, then the send narrows to the system prompt, the summary and the
+	// newest turns, and only then does the turn end with context_exhausted.
+	// Default false (the provider refusal and one relief resend are the only
+	// guard); the YAML key is behavior.preflight_fit.
+	PreflightFit bool
 	// PatternConfig controls pattern injection (nil = use defaults)
 	PatternConfig *PatternConfig
 
