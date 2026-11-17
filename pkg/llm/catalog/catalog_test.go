@@ -60,6 +60,14 @@ func TestLookup(t *testing.T) {
 			wantMaxOutput:  128_000,
 		},
 		{
+			name:           "anthropic claude sonnet 5: 128K output, as on Bedrock",
+			provider:       "anthropic",
+			modelID:        "claude-sonnet-5",
+			wantFound:      true,
+			wantContextWin: 1_000_000,
+			wantMaxOutput:  128_000,
+		},
+		{
 			name:      "unknown model returns nil",
 			provider:  "anthropic",
 			modelID:   "claude-9000",

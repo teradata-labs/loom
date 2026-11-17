@@ -210,12 +210,13 @@ All fields are optional. If `spec.llm` is omitted entirely, the agent inherits t
 | `provider` | `string` | (server default) | Provider name. See [LLM Providers](#llm-providers). |
 | `model` | `string` | (server default) | Model identifier |
 | `temperature` | `float64` | `0.7` | Sampling temperature (0.0 - 1.0) |
-| `max_tokens` | `int` | `4096` | Maximum response tokens |
+| `max_tokens` | `int` | `4096` | Maximum response tokens. Sent by the agent's client when the agent names a `provider`; an agent on the server's client sends the server's `llm.max_tokens`. An agent registered through the API with none set also sends the server's. It is the reply reservation a step in flight is fitted against |
 | `stop_sequences` | `[]string` | `[]` | Stop generation sequences |
 | `top_p` | `float64` | `0.0` | Nucleus sampling (0.0 - 1.0) |
 | `top_k` | `int` | `0` | Top-k sampling |
-| `max_context_tokens` | `int` | auto-detected | Context window size (e.g., 200000 for Claude) |
+| `max_context_tokens` | `int` | the model's window | The window loom budgets against: the fold keeps the settled conversation under the profile's threshold of it. May sit below the model's window to bound cost |
 | `reserved_output_tokens` | `int` | 10% of context | Tokens reserved for model output |
+| `max_model_context_tokens` | `int` | the model's listed window | The window the model is served with, when below its listed one (vLLM `--max-model-len`, TGI `--max-total-tokens`, Ollama `num_ctx`). A step in flight is fitted to it before the send |
 
 ---
 
@@ -465,7 +466,7 @@ Under `spec.memory` (k8s-style) or `agent.memory` (legacy).
 | `path` | `string` | `""` | SQLite database file path |
 | `dsn` | `string` | `""` | PostgreSQL connection string |
 | `max_history` | `int` | `50` | Max conversation messages to retain |
-| `shared_memory_threshold_bytes` | `int64` | `16384` (16 KiB) | One byte threshold, three roles: compile-time offload bound (a current-turn tool result strictly over it renders as an offload stub), persist-time row bound, and retrieval page bound — plus the tool executor's large-parameter offload. `>0` sets the bound (the compile/persist roles floor it at 256 bytes); `-1` keeps the 16 KiB default; `0` in YAML is indistinguishable from unset. `0` through the Go API `SetSharedMemoryThreshold` makes the executor store every tool parameter by reference and leaves the compile-time bound at its default. |
+| `shared_memory_threshold_bytes` | `int64` | `16384` (16 KiB) | One byte threshold, three roles: arrival bound (a tool result strictly over it enters as its first bytes plus a tail), stored-row bound, and retrieval page bound — plus the tool executor's large-parameter offload. `>0` sets the bound (the arrival and stored-row bounds floor it at 256 bytes); `-1` keeps the 16 KiB default; `0` in YAML is indistinguishable from unset. `0` through the Go API `SetSharedMemoryThreshold` makes the executor store every tool parameter by reference and leaves the arrival bound at its default. |
 | `max_tool_results` | `int` | `5` | Max tool results kept in conversation kernel |
 | `memory_compression` | object | optional | See [Memory Compression](#memory-compression-configuration) |
 | `graph_memory` | object | optional | See [Graph Memory](#graph-memory-configuration) |
@@ -477,18 +478,7 @@ redacted `AgentInfo`. `ListAgents` omits `config` entirely. Agent YAML is
 environment-expanded before loading; arbitrary fields such as `system_prompt`
 and metadata are not secret-filtered, so do not embed credentials there.
 
-**Large tool results**: a result always enters the conversation whole — offload is a render condition of context compilation, not an arrival event. When a tool row's content is strictly over the threshold, the copy compiled for the LLM is replaced by a stub. In the producing turn this is the offload stub — tool name, estimated token figure, a 160-byte preview, and a `query_tool_result(message_id=…)` door (`sql=` for tabular payloads); `query_tool_result` resolves only within that turn, and every return is bounded at the same threshold. In later turns, and for rows evicted by memory-pressure relief, it is the evicted stub, whose only door is re-running the call. Rows are persisted truncated to a bounded core plus tail at the same threshold. A session without a persistent store has no `message_id` to print, so its current-turn oversize results render the evicted stub.
-
-**Offload-exempt tools** (Go API only; no YAML field): `Agent.SetOffloadExemptTools(names []string)` names the tools whose current-turn results always render whole regardless of the threshold. Use it for tools whose full output is the product of the call — reference or lookup content the model must read inline in the turn it asked for it — where an offload stub would defeat the call.
-
-```go
-ag.SetOffloadExemptTools([]string{"reference_lookup", "get_syntax_help"})
-```
-
-- Each call replaces the whole set; `nil` or an empty slice clears it; empty-string names are skipped. No tools are exempt by default.
-- Applies to existing and future sessions. Also available on `Memory` and per-session `SegmentedMemory`. Safe for concurrent use.
-- Exemption is a render condition of the producing turn only: prior-turn oversize rows and relief-evicted rows still render the evicted stub, and the persist-time row bound is unchanged.
-- An exempt result counts at full size toward memory-pressure estimates; a very large exempt result spends a correspondingly large share of the producing turn's context window.
+**Large tool results**: a result is bounded once, at arrival. Above the threshold it enters the conversation as its first bytes plus a tail that says how much was cut and names the result's `tool_use_id`, with which `query_tool_result` pages the whole of it this turn (registered by default, as on main; when it is suppressed, the tail says to narrow the call and re-run). What enters memory, what is stored and what the model is sent are the same bytes, so a compiled prefix stays valid for the whole session and the fold — not the threshold — is what controls context size. The one exception: a step whose results together do not fit the window the model is served with has them replaced, before the send, by a note telling the model to call fewer tools at once. That window is `max_model_context_tokens` when set, else the model's listed window (catalog, then prefix table; `max_context_tokens` only when nothing lists the model). No provider has a rule of its own: an Ollama server running a smaller `num_ctx` states it in `max_model_context_tokens`.
 
 ---
 
@@ -562,6 +552,7 @@ Under `spec.memory.memory_compression`.
 | `min_l1_messages` | `int` | max_l1 / 2 | Min messages left in L1 after compression |
 | `warning_threshold_percent` | `int` | profile-dependent | Warning threshold (0-100) |
 | `critical_threshold_percent` | `int` | profile-dependent | Critical threshold (0-100) |
+| `protected_recent_turns` | `int` | `16` | Recent turns a fold keeps, user messages and assistant steps alike; the fold summarises everything before them. Also the top rung of the pressure ladder |
 | `batch_sizes.normal` | `int` | profile-dependent | Messages per batch (normal) |
 | `batch_sizes.warning` | `int` | profile-dependent | Messages per batch (warning) |
 | `batch_sizes.critical` | `int` | profile-dependent | Messages per batch (critical) |

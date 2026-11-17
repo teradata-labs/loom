@@ -162,3 +162,43 @@ func TestCalculateCost_CacheMultipliersFollowTheRateCard(t *testing.T) {
 		}
 	})
 }
+
+// OpenAI's cached-input discount differs by model: the gpt-5 family bills a
+// cached token at 0.10x, o3, o4-mini and gpt-4.1 at 0.25x, o3-mini and gpt-4o
+// at 0.5x. Since agentic runs read cache for ~90% of all input, pricing a gpt-5
+// model at the gpt-4o tier overstates a run roughly four-fold — enough to
+// invert a cheaper-model comparison.
+func TestCalculateCost_GPT5FamilyGetsNinetyPercentCacheDiscount(t *testing.T) {
+	const (
+		promptTokens = 100_000 // includes the cached bucket below
+		cacheRead    = 90_000
+		output       = 2_000
+	)
+	for _, tc := range []struct {
+		model    string
+		in, out  float64
+		readMult float64
+	}{
+		{"gpt-5", 1.25, 10.00, 0.10},
+		{"gpt-5.4", 2.50, 15.00, 0.10},
+		{"gpt-5.4-mini", 0.75, 4.50, 0.10},
+		{"o3", 2.00, 8.00, 0.25},
+		{"gpt-4.1", 2.00, 8.00, 0.25},
+		{"gpt-4o", 2.50, 10.00, 0.50},
+		{"o4-mini", 0, 0, 0.25}, // $0.275 cached against $1.10
+		{"o3-mini", 0, 0, 0.50}, // $0.55 cached against $1.10, not o3's tier
+		{"o1", 0, 0, 0.50},      // not on the price card: the default tier
+	} {
+		if got := openAICacheReadMultiplierFor(tc.model); got != tc.readMult {
+			t.Fatalf("%s: cache read multiplier = %v, want %v", tc.model, got, tc.readMult)
+		}
+		if tc.in == 0 {
+			continue
+		}
+		got := (&Client{model: tc.model}).calculateCost(promptTokens, output, cacheRead, 0)
+		want := (10_000*tc.in + 90_000*tc.in*tc.readMult + 2_000*tc.out) / 1e6
+		if math.Abs(got-want) > 1e-9 {
+			t.Fatalf("%s: cost = %.6f, want %.6f", tc.model, got, want)
+		}
+	}
+}

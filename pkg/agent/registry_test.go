@@ -15,7 +15,10 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1880,4 +1883,44 @@ func TestReloadAgentWithConfig_FailedRebuildKeepsPreviousConfig(t *testing.T) {
 	after, err := registry.GetAgent(ctx, "wf-agent")
 	require.NoError(t, err)
 	assert.Same(t, before, after)
+}
+
+// An agent the registry builds sends its own max_tokens when it sets one,
+// otherwise the server's llm.max_tokens, and reserves the same number: no
+// client falls back to a default of its own. Read off the request on the wire.
+func TestRegistry_AnAgentSendsAndReservesItsMaxTokensOrTheServers(t *testing.T) {
+	var sent []float64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		n, ok := body["max_tokens"].(float64)
+		if !ok {
+			n, _ = body["max_completion_tokens"].(float64)
+		}
+		sent = append(sent, n)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"x","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer srv.Close()
+	t.Setenv("LITELLM_ENDPOINT", srv.URL+"/v1/chat/completions")
+	t.Setenv("LITELLM_API_KEY", "test-key")
+
+	registry, _ := createTestRegistry(t)
+	registry.maxTokens = 3000
+	var reserved []int
+	for i, agentMax := range []int32{0, 2048} {
+		name := fmt.Sprintf("wire-%d", i)
+		registry.RegisterConfig(&loomv1.AgentConfig{
+			Name:         name,
+			SystemPrompt: "Answer.",
+			Llm:          &loomv1.LLMConfig{Provider: "litellm", Model: "openai/test-model", MaxTokens: agentMax},
+		})
+		ag, err := registry.CreateAgent(context.Background(), name)
+		require.NoError(t, err)
+		_, err = ag.llm.Chat(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil)
+		require.NoError(t, err)
+		reserved = append(reserved, ag.config.ReservedOutputTokens)
+	}
+	assert.Equal(t, []float64{3000, 2048}, sent)
+	assert.Equal(t, []int{3000, 2048}, reserved)
 }
