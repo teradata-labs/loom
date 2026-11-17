@@ -143,7 +143,8 @@ func (sm *SegmentedMemory) viewEstimateLocked(n int64) int {
 
 // turnSentThinkingLocked reports whether turn t holds an assistant message
 // with thinking blocks, which the provider checks against what precedes it.
-// Must hold lock.
+// Any provider's blocks count: an OpenAI-compatible gateway may front one that
+// enforces the prefix, and loom cannot tell which. Must hold lock.
 func (sm *SegmentedMemory) turnSentThinkingLocked(t int64) bool {
 	for i := len(sm.contextMessages) - 1; i >= 0; i-- {
 		m := &sm.contextMessages[i]
@@ -179,7 +180,8 @@ func (a *Agent) preflightFit(ctx Context, span *observability.Span, session *Ses
 		zap.L().Error("preflight: request cannot fit the usable window; not sending",
 			zap.String("session_id", session.ID),
 			zap.Int("estimate_tokens", fit.Estimate),
-			zap.Int("usable_tokens", fit.Usable))
+			zap.Int("usable_tokens", fit.Usable),
+			zap.Bool("thinking_pinned", fit.ThinkingPinned))
 		if span != nil {
 			span.AddEvent("context.preflight_refused", map[string]interface{}{
 				"estimate_tokens": fit.Estimate,
@@ -190,7 +192,7 @@ func (a *Agent) preflightFit(ctx Context, span *observability.Span, session *Ses
 		}
 		why := "even with only the current turn kept"
 		if fit.ThinkingPinned {
-			why = "and this turn's reasoning cannot be resent after trimming the conversation before it"
+			why = pinnedRefusalReason
 		}
 		cause := fmt.Errorf("conversation too long: the request is about %d tokens against a usable window of %d "+
 			"%s; compact the conversation or start a new session",
@@ -227,6 +229,9 @@ func (a *Agent) preflightFit(ctx Context, span *observability.Span, session *Ses
 	return messages, tools, nil
 }
 
+// pinnedRefusalReason ends a refusal caused by the thinking pin (FitResult.ThinkingPinned).
+const pinnedRefusalReason = "and this turn's reasoning cannot be resent after trimming the conversation before it"
+
 // synthesisTooLong is the error for a synthesis request the guard would not
 // send; the caller answers with the guidance message instead.
 func synthesisTooLong(span *observability.Span, sessionID string, fit FitResult) error {
@@ -235,12 +240,18 @@ func synthesisTooLong(span *observability.Span, sessionID string, fit FitResult)
 			"estimate_tokens": fit.Estimate,
 			"usable_tokens":   fit.Usable,
 			"synthesis":       true,
+			"thinking_pinned": fit.ThinkingPinned,
 		})
 	}
 	zap.L().Error("preflight: synthesis request cannot fit the usable window; not sending",
 		zap.String("session_id", sessionID),
 		zap.Int("estimate_tokens", fit.Estimate),
-		zap.Int("usable_tokens", fit.Usable))
+		zap.Int("usable_tokens", fit.Usable),
+		zap.Bool("thinking_pinned", fit.ThinkingPinned))
+	if fit.ThinkingPinned {
+		return fmt.Errorf("conversation too long: synthesis request is about %d tokens against a usable window of %d %s",
+			fit.Estimate, fit.Usable, pinnedRefusalReason)
+	}
 	return fmt.Errorf("conversation too long: synthesis request is about %d tokens against a usable window of %d",
 		fit.Estimate, fit.Usable)
 }
