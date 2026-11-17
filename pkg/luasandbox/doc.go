@@ -45,8 +45,9 @@
 //     the budget for scripts holding many small strings or closures, whose
 //     headers golua does not charge; DeriveCapacity plans for 3 times.
 //
-// The interpreter is github.com/arnodel/golua v0.3.0 with fourteen fixes, vendored
-// in third_party/golua (see its README; seven are merged upstream in v0.4.0, one
-// is open upstream, six are loom-only so far). Its types never appear in this package's exported API, so
+// The interpreter is github.com/arnodel/golua v0.3.0 with fifteen fixes, vendored
+// in third_party/golua (see its README; seven are merged upstream in v0.4.0, three
+// are merged upstream but not yet released, one is open upstream, four are
+// loom-only so far). Its types never appear in this package's exported API, so
 // the interpreter can be replaced here without touching any host.
 package luasandbox

@@ -1,4 +1,4 @@
-// Modified for loom, 2026: adds ClampToInt (golua PR #136); hexadecimal integers are accumulated digit by digit, wrapping as Lua specifies, instead of the last 16 digits being parsed with strconv.ParseUint.
+// Modified for loom, 2026: adds ClampToInt (golua PR #136); hexadecimal integers are accumulated digit by digit, wrapping as Lua specifies, instead of the last 16 digits being parsed with strconv.ParseUint; a second sign after a leading "+" is rejected.
 // See third_party/golua/README.md for the list of changes from upstream.
 
 package runtime
@@ -170,7 +170,13 @@ func StringToNumber(s string) (n int64, f float64, tp NumberType) {
 	// If the string starts with -?0[xX] then it may be an hex number
 	if s[0] == '+' {
 		s = s[1:]
-	} else if s[0] == '-' || s[0] == '+' {
+		// One sign only: strconv would accept the second one of "+-10" or
+		// "++10", which reference Lua rejects.
+		if len(s) > 0 && (s[0] == '-' || s[0] == '+') {
+			tp = NaN
+			return
+		}
+	} else if s[0] == '-' {
 		i0++
 	}
 	var isHex = len(s) >= 2+i0 && s[i0] == '0' && (s[i0+1] == 'x' || s[i0+1] == 'X')

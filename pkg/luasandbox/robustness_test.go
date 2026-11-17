@@ -169,7 +169,8 @@ func itoa(i int) string {
 // modulo 2^64 as the Lua manual specifies (§3.1), and every digit is
 // checked, including the ones that overflow out of the result. Before the
 // fix only the last 16 digits were parsed, so a bad digit further left was
-// ignored and "0xg0000000000000000" converted to 0.
+// ignored and "0xg0000000000000000" converted to 0. A second sign after a
+// leading "+" ("+-10") is rejected too; strconv used to accept it.
 func TestHexIntegersWrapAndCheckEveryDigit(t *testing.T) {
 	for _, tc := range []struct{ name, expr string }{
 		{"max uint64 wraps to -1", `tonumber("0xffffffffffffffff") == -1`},
@@ -185,6 +186,14 @@ func TestHexIntegersWrapAndCheckEveryDigit(t *testing.T) {
 		{"no digits", `tonumber("0x") == nil`},
 		{"sign after prefix", `tonumber("0x-1") == nil`},
 		{"underscore", `tonumber("0x1_0") == nil`},
+		{"plus then minus", `tonumber("+-10") == nil`},
+		{"two plus signs", `tonumber("++10") == nil`},
+		{"plus then minus float", `tonumber("+-1.5") == nil`},
+		{"minus then plus", `tonumber("-+10") == nil`},
+		{"plus then minus hex", `tonumber("+-0x10") == nil`},
+		{"single plus", `tonumber("+10") == 10`},
+		{"plus hex", `tonumber("+0x10") == 16`},
+		{"lone plus", `tonumber("+") == nil`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			res := runSrc(t, "return "+tc.expr, nil)
