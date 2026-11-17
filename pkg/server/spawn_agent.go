@@ -14,6 +14,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/metaagent"
+	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle/builtin"
 	"go.uber.org/zap"
 )
@@ -625,6 +626,10 @@ func (s *MultiAgentServer) processSpawnedAgentMessages(ctx context.Context, spaw
 
 	// Process each message
 	for _, busMsg := range messages {
+		// A stopping agent must not start another turn (#540).
+		if ctx.Err() != nil {
+			return
+		}
 		msg := busMsg.msg
 
 		// Skip messages from self
@@ -657,16 +662,13 @@ func (s *MultiAgentServer) processSpawnedAgentMessages(ctx context.Context, spaw
 			zap.String("agent", spawned.subAgentID),
 			zap.String("session", spawned.subSessionID))
 
-		resp, err := s.chatSpawnedAgentWithRetry(ctx, spawned, msg, content, logger)
+		resp, err := s.chatSpawnedAgent(ctx, spawned, msg, content, logger)
 		if err != nil {
-			// Bus messages are not persisted, so once the retries are spent the
-			// message is lost; log it at error level with its ID so it can be traced.
-			logger.Error("Spawned agent failed to process message, dropping it",
-				zap.String("agent", spawned.subAgentID),
-				zap.String("from", msg.FromAgent),
-				zap.String("message_id", msg.Id),
-				zap.Int("attempts", spawnedChatMaxAttempts),
-				zap.Error(err))
+			if ctx.Err() != nil {
+				// The spawned agent is stopping; the rest of the batch would
+				// only fail the same way (#540).
+				return
+			}
 			continue
 		}
 
@@ -716,78 +718,127 @@ func (s *MultiAgentServer) processSpawnedAgentMessages(ctx context.Context, spaw
 	}
 }
 
-// spawnedChatMaxAttempts bounds how many times a spawned agent tries to process
-// one bus message before giving up on it.
-const spawnedChatMaxAttempts = 3
+// spawnedChatTimeout bounds one spawned-agent turn for a bus message.
+const spawnedChatTimeout = 2 * time.Minute
 
-// spawnedChatRetryDelay returns how long to wait before retry number attempt
-// (1-based) of a failed spawned-agent Chat. It is a variable so tests can
-// shorten it.
-var spawnedChatRetryDelay = func(attempt int) time.Duration {
-	return time.Duration(attempt) * time.Second
-}
+// Outcomes of one bus message handed to a spawned agent, recorded on the
+// spawned_agent.message span and in the logs.
+const (
+	spawnedOutcomeReplied      = "replied"
+	spawnedOutcomeParked       = "parked"
+	spawnedOutcomeNotDelivered = "not_delivered"
+	spawnedOutcomeFailed       = "failed"
+	spawnedOutcomeCancelled    = "cancelled"
+)
 
-// chatSpawnedAgentWithRetry runs the spawned agent's Chat for one bus message,
-// retrying with a growing delay when it fails. A bus message has no queue
-// behind it to redeliver it, so without a retry a transient LLM error or a
-// timeout would silently drop it. It stops early when ctx is cancelled.
+// chatSpawnedAgent runs the spawned agent's turn for one bus message.
 //
-// Each Chat persists the user turn before the conversation loop runs. A failed
-// attempt therefore leaves an orphan user row; DiscardIncompleteTurn removes it
-// before the next attempt so a healed retry does not duplicate the prompt.
-func (s *MultiAgentServer) chatSpawnedAgentWithRetry(
+// It does not add a retry layer of its own: the agent already retries a
+// failing LLM call, and the rate limiter retries 429 and 5xx responses. The one
+// failure those layers cannot absorb, a busy session, is waited out by
+// chatInjectedResponse, which offers the prompt again only while Chat refuses
+// it before touching the conversation. A turn is therefore never run twice, so
+// the user message is stored once and tools are not run again.
+//
+// Bus messages are not persisted, so a message that still fails is answered
+// with an error reply to the sender (in_reply_to the message, metadata
+// "error") instead of being dropped silently (#532). A turn parked for a human
+// decision is not a failure: it finishes through ResumeChat, so no reply is
+// sent now.
+func (s *MultiAgentServer) chatSpawnedAgent(
 	ctx context.Context,
 	spawned *spawnedAgentContext,
 	msg *loomv1.BusMessage,
 	content string,
 	logger *zap.Logger,
 ) (*agent.Response, error) {
-	var lastErr error
-	for attempt := 1; attempt <= spawnedChatMaxAttempts; attempt++ {
-		if attempt > 1 {
-			select {
-			case <-ctx.Done():
-				return nil, lastErr
-			case <-time.After(spawnedChatRetryDelay(attempt - 1)):
-			}
-		}
+	s.mu.RLock()
+	tracer := s.tracer
+	s.mu.RUnlock()
+	var span *observability.Span
+	if tracer != nil {
+		ctx, span = tracer.StartSpan(ctx, "spawned_agent.message",
+			observability.WithAttribute("agent.id", spawned.subAgentID),
+			observability.WithAttribute(observability.AttrSessionID, spawned.subSessionID),
+			observability.WithAttribute("message.id", msg.Id),
+			observability.WithAttribute("message.from", msg.FromAgent),
+		)
+		defer tracer.EndSpan(span)
+	}
 
-		chatCtx, chatCancel := context.WithTimeout(ctx, 2*time.Minute)
-		resp, err := spawned.agent.Chat(chatCtx, spawned.subSessionID, content)
-		chatCancel()
-		if err == nil {
-			return resp, nil
-		}
-		lastErr = err
+	chatCtx, chatCancel := context.WithTimeout(ctx, spawnedChatTimeout)
+	resp, err := s.chatInjectedResponse(ctx, chatCtx, spawned.agent, spawned.subSessionID, content, 0)
+	chatCancel()
 
-		// A parked turn is waiting for a human, not a transient failure. Do not
-		// roll it back or retry — that would erase the parked batch or re-run it.
-		var turnParked *agent.TurnParkedError
-		var sessionParked *agent.SessionParkedError
-		if errors.As(err, &turnParked) || errors.As(err, &sessionParked) {
-			return nil, err
-		}
-
-		// Chat already wrote the user message for this attempt. Drop that
-		// incomplete turn so a retry appends it once, not again.
-		if discardErr := spawned.agent.DiscardIncompleteTurn(ctx, spawned.subSessionID); discardErr != nil {
-			logger.Warn("Failed to discard incomplete spawned-agent turn before retry",
-				zap.String("agent", spawned.subAgentID),
-				zap.String("session", spawned.subSessionID),
-				zap.String("message_id", msg.Id),
-				zap.Error(discardErr))
-		}
-
-		if attempt < spawnedChatMaxAttempts && ctx.Err() == nil {
-			logger.Warn("Spawned agent failed to process message, retrying",
-				zap.String("agent", spawned.subAgentID),
-				zap.String("from", msg.FromAgent),
-				zap.String("message_id", msg.Id),
-				zap.Int("attempt", attempt),
-				zap.Error(err))
+	outcome := spawnedChatOutcome(ctx, err)
+	if span != nil {
+		span.SetAttribute("spawned_agent.outcome", outcome)
+		if err != nil {
+			span.RecordError(err)
 		}
 	}
-	return nil, lastErr
+
+	fields := []zap.Field{
+		zap.String("agent", spawned.subAgentID),
+		zap.String("from", msg.FromAgent),
+		zap.String("message_id", msg.Id),
+		zap.String("outcome", outcome),
+		zap.Error(err),
+	}
+	switch outcome {
+	case spawnedOutcomeReplied:
+		return resp, nil
+	case spawnedOutcomeParked:
+		logger.Info("Spawned agent turn parked for a human decision; it replies when resumed", fields...)
+	case spawnedOutcomeCancelled:
+		logger.Info("Spawned agent stopped before finishing the message", fields...)
+	default:
+		logger.Error("Spawned agent could not process message; sending an error reply", fields...)
+		s.publishSpawnedErrorReply(ctx, spawned, msg, outcome, err, logger)
+	}
+	return nil, err
+}
+
+// spawnedChatOutcome classifies the result of a spawned-agent turn.
+func spawnedChatOutcome(ctx context.Context, err error) string {
+	var turnParked *agent.TurnParkedError
+	switch {
+	case err == nil:
+		return spawnedOutcomeReplied
+	case errors.As(err, &turnParked):
+		return spawnedOutcomeParked
+	case ctx.Err() != nil:
+		return spawnedOutcomeCancelled
+	case injectNotDelivered(err):
+		return spawnedOutcomeNotDelivered
+	default:
+		return spawnedOutcomeFailed
+	}
+}
+
+// publishSpawnedErrorReply tells the sender its message was not processed.
+func (s *MultiAgentServer) publishSpawnedErrorReply(ctx context.Context, spawned *spawnedAgentContext, msg *loomv1.BusMessage, outcome string, chatErr error, logger *zap.Logger) {
+	reply := &loomv1.BusMessage{
+		Id:        fmt.Sprintf("%s-error-%d", msg.Id, time.Now().UnixNano()),
+		Topic:     msg.Topic,
+		FromAgent: spawned.subAgentID,
+		Payload: &loomv1.MessagePayload{
+			Data: &loomv1.MessagePayload_Value{
+				Value: []byte(fmt.Sprintf("[ERROR] %s could not process message %s: %v", spawned.subAgentID, msg.Id, chatErr)),
+			},
+		},
+		Metadata: map[string]string{
+			"in_reply_to": msg.Id,
+			"error":       outcome,
+		},
+		Timestamp: time.Now().UnixMilli(),
+	}
+	if _, _, err := s.messageBus.Publish(ctx, msg.Topic, reply); err != nil {
+		logger.Error("Spawned agent failed to publish error reply; message is lost",
+			zap.String("agent", spawned.subAgentID),
+			zap.String("message_id", msg.Id),
+			zap.Error(err))
+	}
 }
 
 // BusMessage wraps a bus message with its topic for processing

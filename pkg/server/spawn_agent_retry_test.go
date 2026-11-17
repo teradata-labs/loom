@@ -8,12 +8,15 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
@@ -55,17 +58,10 @@ func (m *recoveringLLM) callCount() int {
 	return m.calls
 }
 
-func setSpawnedChatRetryDelay(t *testing.T, delay func(attempt int) time.Duration) {
-	t.Helper()
-	orig := spawnedChatRetryDelay
-	spawnedChatRetryDelay = delay
-	t.Cleanup(func() { spawnedChatRetryDelay = orig })
-}
-
 // spawnedAgentOnTopic subscribes a spawned agent and a sender to topic and
 // publishes one message from the sender. It returns the spawned agent context
 // and the sender's subscription channel.
-func spawnedAgentOnTopic(t *testing.T, srv *MultiAgentServer, llm *recoveringLLM, topic string) (*spawnedAgentContext, <-chan *loomv1.BusMessage) {
+func spawnedAgentOnTopic(t *testing.T, srv *MultiAgentServer, ag *agent.Agent, topic string) (*spawnedAgentContext, <-chan *loomv1.BusMessage) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -87,7 +83,7 @@ func spawnedAgentOnTopic(t *testing.T, srv *MultiAgentServer, llm *recoveringLLM
 	return &spawnedAgentContext{
 		subAgentID:   workerID,
 		subSessionID: "spawned-worker-session",
-		agent:        agent.NewAgent(&mockBackend{}, llm),
+		agent:        ag,
 	}, senderSub.Channel
 }
 
@@ -105,94 +101,121 @@ func replyTo(ch <-chan *loomv1.BusMessage, msgID string) *loomv1.BusMessage {
 	}
 }
 
-// TestProcessSpawnedAgentMessages_RetriesFailedChat guards against a bus
-// message being dropped when the spawned agent's Chat fails once: the message
-// must be retried and its reply published to the sender.
-func TestProcessSpawnedAgentMessages_RetriesFailedChat(t *testing.T) {
-	srv := setupBroadcastTestServer(t, map[string]*agent.Agent{}, nil)
-	llm := &recoveringLLM{}
-	spawned, senderCh := spawnedAgentOnTopic(t, srv, llm, "retry-topic")
-
-	var retries []int
-	setSpawnedChatRetryDelay(t, func(attempt int) time.Duration {
-		retries = append(retries, attempt)
-		llm.heal() // the LLM recovers before the retry
-		return time.Millisecond
-	})
-
-	srv.processSpawnedAgentMessages(context.Background(), spawned)
-
-	assert.Equal(t, []int{1}, retries, "the failed Chat should be retried once")
-	reply := replyTo(senderCh, "msg-1")
-	require.NotNil(t, reply, "the retried message should get a reply")
-	assert.Equal(t, "spawned-worker", reply.GetFromAgent())
-	assert.Equal(t, "processed", string(reply.GetPayload().GetValue()))
-
-	// A healed retry must not leave the bus prompt duplicated in the session.
-	sess, ok := spawned.agent.GetSession(spawned.subSessionID)
-	require.True(t, ok, "spawned session should exist after a successful retry")
-	userRows := 0
+func userRowCount(t *testing.T, ag *agent.Agent, sessionID string) int {
+	t.Helper()
+	sess, ok := ag.GetSession(sessionID)
+	require.True(t, ok, "the spawned session should exist")
+	n := 0
 	for _, m := range sess.GetMessages() {
 		if m.Role == "user" {
-			userRows++
+			n++
 		}
 	}
-	assert.Equal(t, 1, userRows, "session must hold the user message once after a healed retry")
+	return n
 }
 
-// TestProcessSpawnedAgentMessages_GivesUpAfterMaxAttempts checks the retry is
-// bounded: a Chat that keeps failing is tried spawnedChatMaxAttempts times and
-// no reply is published.
-func TestProcessSpawnedAgentMessages_GivesUpAfterMaxAttempts(t *testing.T) {
+// A Chat that fails after the agent's own LLM retries is not run again (that
+// would store the prompt twice and could re-run tools). The sender gets an
+// error reply instead of silence (#532), and the loss is logged once at ERROR
+// with the message ID.
+func TestProcessSpawnedAgentMessages_FailedChatSendsErrorReply(t *testing.T) {
 	srv := setupBroadcastTestServer(t, map[string]*agent.Agent{}, nil)
-	llm := &recoveringLLM{}
-	spawned, senderCh := spawnedAgentOnTopic(t, srv, llm, "giveup-topic")
+	core, logs := observer.New(zap.ErrorLevel)
+	srv.logger = zap.New(core)
 
-	var retries []int
-	setSpawnedChatRetryDelay(t, func(attempt int) time.Duration {
-		retries = append(retries, attempt)
-		return time.Millisecond
-	})
+	// Measure what one failing turn costs in LLM calls (the agent's own
+	// retries), so the test can prove exactly one turn ran.
+	probe := &recoveringLLM{}
+	_, err := agent.NewAgent(&mockBackend{}, probe).Chat(context.Background(), "probe", "x")
+	require.Error(t, err)
+	callsPerTurn := probe.callCount()
+	require.Positive(t, callsPerTurn)
+
+	llm := &recoveringLLM{} // never healed
+	ag := agent.NewAgent(&mockBackend{}, llm)
+	spawned, senderCh := spawnedAgentOnTopic(t, srv, ag, "fail-topic")
 
 	srv.processSpawnedAgentMessages(context.Background(), spawned)
 
-	assert.Equal(t, []int{1, 2}, retries, "Chat should be tried spawnedChatMaxAttempts times")
-	assert.Nil(t, replyTo(senderCh, "msg-1"), "no reply should be published when every attempt fails")
-	assert.GreaterOrEqual(t, llm.callCount(), spawnedChatMaxAttempts,
-		"each Chat attempt must reach the LLM at least once")
+	assert.Equal(t, callsPerTurn, llm.callCount(), "exactly one turn must run")
+	assert.Equal(t, 1, userRowCount(t, ag, spawned.subSessionID), "the prompt must be stored once")
 
-	// Failed attempts discard their incomplete user turns, so giving up leaves
-	// no orphan prompt behind.
-	if sess, ok := spawned.agent.GetSession(spawned.subSessionID); ok {
-		for _, m := range sess.GetMessages() {
-			assert.NotEqual(t, "user", m.Role, "give-up must not leave an incomplete user turn")
-		}
-	}
+	reply := replyTo(senderCh, "msg-1")
+	require.NotNil(t, reply, "the sender must be told the message was not processed")
+	assert.Equal(t, spawnedOutcomeFailed, reply.GetMetadata()["error"])
+	assert.Equal(t, "spawned-worker", reply.GetFromAgent())
+	assert.Contains(t, string(reply.GetPayload().GetValue()), "msg-1")
+
+	errs := logs.FilterMessage("Spawned agent could not process message; sending an error reply").All()
+	require.Len(t, errs, 1)
+	assert.Equal(t, "msg-1", errs[0].ContextMap()["message_id"])
+	assert.Len(t, logs.All(), 1, "no other ERROR")
 }
 
-// TestProcessSpawnedAgentMessages_StopsRetryingWhenCancelled checks a cancelled
-// context ends the retry loop instead of waiting out the backoff.
-func TestProcessSpawnedAgentMessages_StopsRetryingWhenCancelled(t *testing.T) {
+// A busy session refuses the prompt before the turn touches the conversation.
+// That refusal is the one failure the agent's retry layers cannot absorb, so
+// it is waited out: the turn then runs once and the reply is published.
+func TestProcessSpawnedAgentMessages_WaitsOutABusySession(t *testing.T) {
+	stores := newResumeStores(t)
+	llm := &injectionLLM{}
+	ag := stores.agent(llm, nil)
 	srv := setupBroadcastTestServer(t, map[string]*agent.Agent{}, nil)
+	srv.injectBusy = injectBusyPolicy{initial: 10 * time.Millisecond, max: 20 * time.Millisecond, total: 10 * time.Second}
+	spawned, senderCh := spawnedAgentOnTopic(t, srv, ag, "busy-topic")
+
+	release := stores.leaseSession(t, spawned.subSessionID, "user-turn")
+	time.AfterFunc(200*time.Millisecond, release)
+
+	srv.processSpawnedAgentMessages(context.Background(), spawned)
+
+	assert.Equal(t, 1, llm.saw("please handle this"), "the message must reach the session exactly once")
+	assert.Equal(t, 1, userRowCount(t, ag, spawned.subSessionID))
+	reply := replyTo(senderCh, "msg-1")
+	require.NotNil(t, reply)
+	assert.Equal(t, "ok", string(reply.GetPayload().GetValue()))
+	assert.Empty(t, reply.GetMetadata()["error"])
+}
+
+// A stopping agent ends the batch: no Chat, no error reply, no ERROR (#540).
+func TestProcessSpawnedAgentMessages_StopsWhenCancelled(t *testing.T) {
+	srv := setupBroadcastTestServer(t, map[string]*agent.Agent{}, nil)
+	core, logs := observer.New(zap.ErrorLevel)
+	srv.logger = zap.New(core)
 	llm := &recoveringLLM{}
-	spawned, senderCh := spawnedAgentOnTopic(t, srv, llm, "cancel-topic")
+	spawned, senderCh := spawnedAgentOnTopic(t, srv, agent.NewAgent(&mockBackend{}, llm), "cancel-topic")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	setSpawnedChatRetryDelay(t, func(int) time.Duration {
-		cancel()
-		return time.Hour
-	})
+	cancel()
+	srv.processSpawnedAgentMessages(ctx, spawned)
 
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		srv.processSpawnedAgentMessages(ctx, spawned)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("processSpawnedAgentMessages kept waiting after the context was cancelled")
-	}
+	assert.Zero(t, llm.callCount())
 	assert.Nil(t, replyTo(senderCh, "msg-1"))
+	assert.Empty(t, logs.All())
+}
+
+func TestSpawnedChatOutcome(t *testing.T) {
+	live := context.Background()
+	stopped, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	cases := []struct {
+		name string
+		ctx  context.Context
+		err  error
+		want string
+	}{
+		{"success", live, nil, spawnedOutcomeReplied},
+		// A parked turn finishes through ResumeChat: not a failure, no reply now.
+		{"turn parked", live, fmt.Errorf("chat: %w", &agent.TurnParkedError{RequestID: "hr-1"}), spawnedOutcomeParked},
+		{"agent stopping", stopped, context.Canceled, spawnedOutcomeCancelled},
+		{"session stayed busy", live, fmt.Errorf("%w: %w", errInjectNotDelivered, agent.ErrSessionBusy), spawnedOutcomeNotDelivered},
+		{"session parked", live, &agent.SessionParkedError{RequestID: "hr-1"}, spawnedOutcomeFailed},
+		{"turn timed out", live, context.DeadlineExceeded, spawnedOutcomeFailed},
+		{"llm error", live, errors.New("LLM unavailable"), spawnedOutcomeFailed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, spawnedChatOutcome(tc.ctx, tc.err))
+		})
+	}
 }
