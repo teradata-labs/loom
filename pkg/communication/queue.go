@@ -17,6 +17,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -66,6 +67,10 @@ type QueueMessage struct {
 	MaxRetries    int32
 	Status        QueueMessageStatus
 }
+
+// ErrMaxRetriesExceeded is returned by Requeue when the message has used up its
+// MaxRetries. The message is marked failed and will not be delivered again.
+var ErrMaxRetriesExceeded = errors.New("message exceeded max retries")
 
 // QueueMessageStatus represents the state of a queued message.
 type QueueMessageStatus int32
@@ -516,7 +521,7 @@ func (q *MessageQueue) Requeue(ctx context.Context, messageID string) error {
 			q.logger.Warn("Failed to update failed message status", zap.Error(err))
 		}
 		delete(q.inFlight, messageID)
-		return fmt.Errorf("message exceeded max retries")
+		return fmt.Errorf("%w: %s", ErrMaxRetriesExceeded, messageID)
 	}
 
 	// Return to pending
@@ -533,6 +538,66 @@ func (q *MessageQueue) Requeue(ctx context.Context, messageID string) error {
 		zap.Int32("dequeue_count", msg.DequeueCount))
 
 	return nil
+}
+
+// Release returns an in-flight message to pending without counting the
+// delivery as an attempt: its DequeueCount goes back down by one. Use it when
+// the message was not at fault, for example when the consumer stopped in the
+// middle of handling it. Unlike Requeue it never marks the message failed.
+func (q *MessageQueue) Release(ctx context.Context, messageID string) error {
+	if q.closed.Load() {
+		return fmt.Errorf("message queue is closed")
+	}
+
+	var span *observability.Span
+	if q.tracer != nil {
+		ctx, span = q.tracer.StartSpan(ctx, SpanQueueRequeue)
+		defer q.tracer.EndSpan(span)
+		span.SetAttribute("message_id", messageID)
+		span.SetAttribute("attempt_counted", false)
+	}
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	msg, exists := q.inFlight[messageID]
+	if !exists {
+		return fmt.Errorf("message not in-flight: %s", messageID)
+	}
+
+	msg.Status = QueueMessageStatusPending
+	if msg.DequeueCount > 0 {
+		msg.DequeueCount--
+	}
+	delete(q.inFlight, messageID)
+
+	now := time.Now().UnixMilli()
+	if _, err := q.db.ExecContext(ctx, `
+		UPDATE message_queue
+		SET status = ?, dequeue_count = ?, updated_at = ?
+		WHERE id = ?
+	`, QueueMessageStatusPending, msg.DequeueCount, now, messageID); err != nil {
+		q.logger.Warn("Failed to update released message in database", zap.Error(err))
+	}
+
+	q.logger.Debug("message released",
+		zap.String("message_id", messageID),
+		zap.Int32("dequeue_count", msg.DequeueCount))
+
+	return nil
+}
+
+// MessageStatus returns the stored status and dequeue count of a message.
+func (q *MessageQueue) MessageStatus(ctx context.Context, messageID string) (QueueMessageStatus, int32, error) {
+	var status QueueMessageStatus
+	var dequeueCount int32
+	err := q.db.QueryRowContext(ctx,
+		`SELECT status, dequeue_count FROM message_queue WHERE id = ?`, messageID,
+	).Scan(&status, &dequeueCount)
+	if err != nil {
+		return 0, 0, fmt.Errorf("message status %s: %w", messageID, err)
+	}
+	return status, dequeueCount, nil
 }
 
 // GetQueueDepth returns the number of pending messages for an agent.

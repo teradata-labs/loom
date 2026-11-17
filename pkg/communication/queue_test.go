@@ -192,7 +192,12 @@ func TestQueueMaxRetries(t *testing.T) {
 	// Third requeue should fail (exceeded max retries)
 	err = queue.Requeue(ctx, dequeued.ID)
 	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrMaxRetriesExceeded)
 	assert.Contains(t, err.Error(), "exceeded max retries")
+
+	status, _, err := queue.MessageStatus(ctx, dequeued.ID)
+	require.NoError(t, err)
+	assert.Equal(t, QueueMessageStatusFailed, status)
 
 	// Fourth dequeue should return nil (message marked as failed)
 	dequeued, err = queue.Dequeue(ctx, "agent1")
@@ -510,4 +515,37 @@ func TestQueueValidation(t *testing.T) {
 	// Empty agent ID for dequeue
 	_, err = queue.Dequeue(ctx, "")
 	assert.Error(t, err)
+}
+
+// Release returns a message to pending without spending one of its retries,
+// so repeated releases never mark it failed.
+func TestQueueReleaseDoesNotSpendRetries(t *testing.T) {
+	queue, err := NewMessageQueue(":memory:", nil, zaptest.NewLogger(t))
+	require.NoError(t, err)
+	defer func() { _ = queue.Close() }()
+	ctx := context.Background()
+
+	require.NoError(t, queue.Enqueue(ctx, &QueueMessage{
+		ToAgent: "agent1", FromAgent: "agent0", MessageType: "test",
+		Payload:    &loomv1.MessagePayload{Data: &loomv1.MessagePayload_Value{Value: []byte("x")}},
+		MaxRetries: 2,
+	}))
+
+	var id string
+	for i := 0; i < 5; i++ {
+		dequeued, err := queue.Dequeue(ctx, "agent1")
+		require.NoError(t, err)
+		require.NotNil(t, dequeued, "release %d must leave the message deliverable", i)
+		assert.Equal(t, int32(1), dequeued.DequeueCount, "a released delivery must not count")
+		id = dequeued.ID
+		require.NoError(t, queue.Release(ctx, id))
+	}
+
+	status, count, err := queue.MessageStatus(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, QueueMessageStatusPending, status)
+	assert.Equal(t, int32(0), count)
+	assert.Equal(t, 1, queue.GetQueueDepth("agent1"))
+
+	assert.Error(t, queue.Release(ctx, id), "a pending message is not in flight")
 }
