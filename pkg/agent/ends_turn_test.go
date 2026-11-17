@@ -116,3 +116,65 @@ func TestAnEndingToolWithALargeResultEndsTheTurnOnResume(t *testing.T) {
 		t.Fatalf("ended_by = %v, want hand_off", resp.Metadata["ended_by"])
 	}
 }
+
+// A turn a tool ended is finished. A crash resume of the session finds
+// nothing to resume, and does not ask the model for the reply the tool ended.
+func TestResumeSession_ATurnAToolEndedHasNothingToResume(t *testing.T) {
+	recorder := &recordingEventLog{}
+	llm := &mockToolCallingLLM{responses: []mockLLMResponse{
+		{content: "Taking you back.", toolCalls: []llmtypes.ToolCall{{ID: "c1", Name: "hand_off", Input: map[string]interface{}{}}}},
+		{content: "said to nobody"},
+	}}
+	cfg := DefaultConfig()
+	cfg.PatternConfig = DefaultPatternConfig()
+	cfg.PatternConfig.UseLLMClassifier = false
+	ag := NewAgent(&mockBackend{}, llm, WithConfig(cfg), WithEventLog(recorder))
+	ag.RegisterTool(&handOff{})
+	if _, err := ag.Chat(context.Background(), "s-ended", "take me back"); err != nil {
+		t.Fatal(err)
+	}
+	if llm.currentIdx != 1 {
+		t.Fatalf("fixture: the model was asked %d times", llm.currentIdx)
+	}
+
+	_, err := ag.ResumeSession(context.Background(), "s-ended")
+	if !errors.Is(err, ErrNothingParked) {
+		t.Fatalf("ResumeSession on a turn a tool ended = %v, want ErrNothingParked", err)
+	}
+	if llm.currentIdx != 1 {
+		t.Fatalf("the model was asked again after the tool ended the turn (%d calls)", llm.currentIdx)
+	}
+}
+
+// A crashed batch whose call that never ran is the ending tool: the resume
+// runs it, and the turn ends there.
+func TestResumeSession_AnEndingToolRunOnResumeEndsTheTurn(t *testing.T) {
+	recorder := &recordingEventLog{}
+	llm := &mockToolCallingLLM{responses: []mockLLMResponse{{content: "said to nobody"}}}
+	cfg := DefaultConfig()
+	cfg.PatternConfig = DefaultPatternConfig()
+	cfg.PatternConfig.UseLLMClassifier = false
+	ag := NewAgent(&mockBackend{}, llm, WithConfig(cfg), WithEventLog(recorder))
+	h := &handOff{}
+	ag.RegisterTool(h)
+	ctx := context.Background()
+	sess := ag.memory.GetOrCreateSessionWithAgent(ctx, "s-ended-on-resume", ag.config.Name, "")
+	ag.appendMessage(ctx, sess, Message{Role: "user", Content: "go"}, true)
+	ag.appendMessage(ctx, sess, Message{Role: "assistant", Content: "Taking you back.",
+		ToolCalls: []llmtypes.ToolCall{{ID: "c1", Name: "hand_off", Input: map[string]interface{}{}}}}, false)
+	recordTailBatch(t, recorder, sess, 0)
+
+	resp, err := ag.ResumeSession(ctx, "s-ended-on-resume")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.calls != 1 {
+		t.Fatalf("hand_off ran %d times", h.calls)
+	}
+	if llm.currentIdx != 0 {
+		t.Fatalf("the model was asked %d times after the ending tool ran; reply = %q", llm.currentIdx, resp.Content)
+	}
+	if resp.Content != "Taking you back." || resp.Metadata["ended_by"] != "hand_off" {
+		t.Fatalf("response = %q ended_by %v, want the batch's words and hand_off", resp.Content, resp.Metadata["ended_by"])
+	}
+}
