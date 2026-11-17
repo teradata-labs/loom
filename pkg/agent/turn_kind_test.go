@@ -129,3 +129,28 @@ func TestATurnStartedAsSomethingIsThatThroughout(t *testing.T) {
 		}
 	}
 }
+
+// Without a store there is no insert to derive it: the rows of a turn still
+// carry the turn's origin, and a turn that names none is direct.
+func TestATurnsRowsCarryItsOriginWithoutAStore(t *testing.T) {
+	a := NewAgent(nil, &gatedLLM{}, WithName("manager"))
+	ctx := context.Background()
+	if _, err := a.ChatWithProgressAs(ctx, "s1", "the loop stopped", "loop:run-1@7", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Chat(ctx, "s1", "and now me"); err != nil {
+		t.Fatal(err)
+	}
+	sess, _ := a.GetSession("s1")
+	want := map[int64]llmtypes.SessionContext{1: "loop:run-1@7", 2: llmtypes.SessionContextDirect}
+	rows := 0
+	for _, m := range rawSessionMessages(sess) {
+		rows++
+		if m.SessionContext != want[m.Turn] {
+			t.Fatalf("turn %d %s row carries origin %q, want %q", m.Turn, m.Role, m.SessionContext, want[m.Turn])
+		}
+	}
+	if rows < 4 {
+		t.Fatalf("fixture: %d rows, want the request and reply of two turns", rows)
+	}
+}

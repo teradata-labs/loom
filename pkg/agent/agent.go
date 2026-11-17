@@ -2608,6 +2608,16 @@ func (a *Agent) appendMessage(ctx context.Context, session *Session, msg Message
 		t++
 	}
 	msg.Turn = t
+	// The turn's origin, derived as the store derives it: a row that names
+	// none takes the origin of its turn's first row, and a turn's first row
+	// that names none is direct. With a store, its read-back sets the same.
+	if msg.SessionContext == "" {
+		if turnStart {
+			msg.SessionContext = types.SessionContextDirect
+		} else {
+			msg.SessionContext = turnOrigin(session, t)
+		}
+	}
 
 	persisted := true
 	if err := a.memory.PersistMessage(ctx, session.ID, &msg, turnStart); err != nil {
@@ -3829,6 +3839,17 @@ func endsTurnRecord(r *shuttle.Result) *shuttle.Result {
 		return nil
 	}
 	return &shuttle.Result{Success: r.Success, Metadata: map[string]interface{}{EndsTurnKey: true}}
+}
+
+// turnOrigin is the origin of turn t: the one its first row carries, or ""
+// when the session holds no row of the turn.
+func turnOrigin(session *Session, t int64) types.SessionContext {
+	for _, m := range rawSessionMessages(session) {
+		if m.Turn == t {
+			return m.SessionContext
+		}
+	}
+	return ""
 }
 
 // EndsTurnKey is the result metadata a tool sets to end the turn it ran in.
