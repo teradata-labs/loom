@@ -60,11 +60,16 @@ spec:
       - "\n\nAssistant:"
     top_p: 0.9                         # OPTIONAL: Nucleus sampling (0.0-1.0)
     top_k: 40                          # OPTIONAL: Top-k sampling
-    max_context_tokens: 200000         # OPTIONAL: Context window size
+    max_context_tokens: 200000         # OPTIONAL: The window loom budgets against
+                                       # (the fold keeps the conversation under it);
+                                       # may sit below the model's window
                                        # Claude Sonnet 4.5: 200000
                                        # Llama 3.1: 128000
                                        # Mistral: 32000
     reserved_output_tokens: 20000      # OPTIONAL: Tokens for output (10% of context)
+    max_model_context_tokens: 0        # OPTIONAL: The window the model is served with,
+                                       # when below its listed one (vLLM --max-model-len,
+                                       # TGI --max-total-tokens, Ollama num_ctx); 0 = listed
 
   # ==========================================================================
   # SYSTEM PROMPT (optional but recommended)
@@ -158,6 +163,7 @@ spec:
       min_l1_messages: 4               # OPTIONAL: Min messages after compression
       warning_threshold_percent: 60    # OPTIONAL: Warning threshold (0-100)
       critical_threshold_percent: 75   # OPTIONAL: Critical threshold (0-100)
+      protected_recent_turns: 16       # OPTIONAL: Recent turns of either role a fold keeps
 
       # Compression batch sizes
       batch_sizes:                     # OPTIONAL: Messages per compression batch

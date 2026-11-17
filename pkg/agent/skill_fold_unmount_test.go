@@ -171,13 +171,17 @@ func TestReleasePressure_FoldFiresSkillDeactivation(t *testing.T) {
 		Input: map[string]interface{}{"action": "load", "name": "gamma-skill"}}}, false)
 	persist("tool", "Skill loaded: gamma-skill", "load-1", nil, false)
 
-	// Compressible bulk (uniform runs tokenize cheaply, so eviction sheds
-	// nothing and the pass escalates to FOLD — the escalation this test needs).
+	// Compressible bulk that eviction cannot shed: assistant TEXT rows.
+	// Eviction only stubs tool results, so the pass must escalate to FOLD —
+	// the escalation this test needs — regardless of how much result mass
+	// the rungs reclaim. (An in-flight result no longer counts toward the
+	// estimate, so the escalation cannot lean on a pinned unconsumed result.)
 	for turn := 2; turn <= 7; turn++ {
 		persist("user", fmt.Sprintf("question %d", turn), "", nil, true)
 		callID := fmt.Sprintf("c%d", turn)
 		persist("assistant", "", "", []ToolCall{{ID: callID, Name: "bulk_scan", Input: map[string]interface{}{}}}, false)
 		persist("tool", strings.Repeat("r", 5000), callID, nil, false)
+		persist("assistant", strings.Repeat("analysis of batch results ", 300), "", nil, false)
 	}
 
 	shed, _, _ := sm.ReleasePressure(ctx, 0)

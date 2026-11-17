@@ -15,7 +15,6 @@ package agent
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -218,12 +217,6 @@ type Agent struct {
 	// Token counter for accurate token estimation
 	tokenCounter *TokenCounter
 
-	// In-turn SQLite databases backing query_tool_result's sql mode (HLD §7.1):
-	// per (session, message), lazily built, dropped at turn end. Guarded by
-	// inTurnSQLMu.
-	inTurnSQL   map[inTurnSQLKey]*sql.DB
-	inTurnSQLMu sync.Mutex
-
 	// Workflow communication context (injected dynamically for workflow agents)
 	workflowCommContext *WorkflowCommunicationContext
 
@@ -237,8 +230,8 @@ type Agent struct {
 	lazyToolSets []lazyToolSet
 
 	// suppressedBuiltinTools blocks agent-internal registrations (graph_memory,
-	// task_board, manage_skills, load_pattern) and the retrieval tools
-	// (query_tool_result, recall) from surfacing to the LLM. Subsystems
+	// task_board, manage_skills, load_pattern) and the retrieval tool
+	// (recall) from surfacing to the LLM. Subsystems
 	// themselves (extractor, task manager) keep running.
 	//
 	// Populated by WithoutBuiltinTool options. The server (cmd/looms) is
@@ -398,15 +391,30 @@ type Config struct {
 	// Retry configuration for LLM calls
 	Retry RetryConfig
 
-	// MaxContextTokens is the model's context window size (0 = use defaults/auto-detect)
+	// MaxContextTokens is the window loom budgets against: the fold keeps the
+	// settled conversation under the profile's threshold of it. It may sit
+	// below the model's window (0 = the model's window).
 	MaxContextTokens int
+
+	// MaxModelContextTokens is the window the model is served with, when it
+	// is below the model's listed window (a vLLM --max-model-len, an Ollama
+	// num_ctx). Less the reply reservation, it is the ceiling a step in flight
+	// is fitted to before the send (0 = the model's listed window).
+	MaxModelContextTokens int
 
 	// ReservedOutputTokens is the number of tokens reserved for model output (0 = use defaults, typically 10%)
 	ReservedOutputTokens int
 
-	// ProtectedRecentTurns is K (HLD §5.1): the top rung of relief's halving
-	// ladder — the newest turns relief tries hardest to keep, though the ladder
-	// walks toward T−1 when shedding at K is not enough. 0 = default (16).
+	// MaxTokens is the max_tokens the agent's client sends. The provider
+	// accepts a prompt up to its window less this, so it is what a step in
+	// flight is fitted against before the send; the fold keeps its own, wider
+	// reservation (0 = not stated, the fold's reservation is used).
+	MaxTokens int
+
+	// ProtectedRecentTurns is K: what a fold keeps of the recent thread. The
+	// in-loop fold keeps the last K turns, user messages and assistant steps
+	// alike, before the pending one; the pressure ladder behind it keeps the
+	// newest K user turns, then K/2 … 1. 0 = default (16).
 	ProtectedRecentTurns int
 
 	// PatternConfig controls pattern injection (nil = use defaults)
@@ -432,11 +440,6 @@ type Config struct {
 	// RecoveryConfig holds tunables for the self-healing orchestrator.
 	// Nil uses DefaultRecoveryConfig().
 	RecoveryConfig *RecoveryConfig
-
-	// ContextReliefWarning adds a transient note to a send where context relief
-	// ran and left the estimate over its release mark. Default false; the YAML
-	// key is behavior.context_relief_warning.
-	ContextReliefWarning bool
 
 	// ToolChangeNote adds a transient note to a provider call whose advertised
 	// tools differ from the previous successful call of the same turn. Default
