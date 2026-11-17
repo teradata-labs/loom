@@ -17,6 +17,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -121,4 +122,41 @@ func TestFoldPrompts_ComeFromTheRegistry(t *testing.T) {
 	}
 	assert.Contains(t, sent, "REGISTRY FOCUS: the settled SQL")
 	assert.NotContains(t, sent, foldPromptFallbacks[foldPromptFocusPreface])
+}
+
+// An AgentConfig stored by an earlier loom can carry _preflight_fit and
+// _auto_compact_percent in its metadata. The agent built from it gets one
+// warning per key in the process, through the registry too, and the key
+// changes nothing.
+func TestCompactionBehaviorKeys_RetiredMetadataKeysWarnOnce(t *testing.T) {
+	core, logs := observer.New(zapcore.WarnLevel)
+	restore := zap.ReplaceGlobals(zap.New(core))
+	defer restore()
+	retiredMetadataWarned = sync.Map{}
+	t.Cleanup(func() { retiredMetadataWarned = sync.Map{} })
+
+	registry, _ := createTestRegistry(t)
+	build := func(md map[string]string) *Config {
+		t.Helper()
+		cfg := createTestAgentConfig("stored")
+		cfg.Metadata = md
+		ag, err := registry.buildAgent(context.Background(), cfg)
+		require.NoError(t, err, "a retired metadata key must not stop the agent from building")
+		return ag.GetConfig()
+	}
+	baseline := build(nil)
+	require.Zero(t, logs.Len(), "an agent with no retired key logs no warning")
+
+	stored := map[string]string{"_preflight_fit": "true", "_auto_compact_percent": "65"}
+	got := build(stored)
+	_ = build(stored)
+	ApplyMetadataBehavior(&Config{Name: "direct"}, stored)
+
+	for _, key := range []string{"_preflight_fit", "_auto_compact_percent"} {
+		assert.Equal(t, 1, logs.FilterField(zap.String("metadata_key", key)).Len(), "the retired metadata key %s must be reported once", key)
+	}
+	assert.Equal(t, 2, logs.Len(), "no other warning is logged")
+	assert.Equal(t, 1, logs.FilterMessageSnippet("llm.max_model_context_tokens").Len(), "the preflight_fit warning names the setting that does its job")
+	assert.Equal(t, baseline.ParallelReadTools, got.ParallelReadTools, "the retired keys change no behavior flag")
+	assert.Equal(t, baseline.MaxTurns, got.MaxTurns, "the retired keys change no setting")
 }

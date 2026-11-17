@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/decision"
@@ -1135,8 +1136,48 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 // ignored in another. It maps only _parallel_read_tools for now; the sibling
 // flags (_tool_change_note, _repeat_call_hint) are
 // tracked in issue #526.
+//
+// A stored AgentConfig can still carry _preflight_fit or
+// _auto_compact_percent: the loader of an earlier loom wrote them for
+// behavior.preflight_fit and behavior.auto_compact_percent. They are not
+// read; warnRetiredMetadataKeys reports each one once per process.
 func ApplyMetadataBehavior(cfg *Config, md map[string]string) {
 	cfg.ParallelReadTools = md["_parallel_read_tools"] == "true"
+	warnRetiredMetadataKeys(cfg.Name, md)
+}
+
+// retiredMetadataKeys are the AgentConfig.Metadata keys an earlier loader
+// wrote and this one no longer reads, each with the behavior key it came
+// from. The warning text is that key's entry in removedBehaviorKeys.
+var retiredMetadataKeys = []struct{ metadataKey, behaviorKey string }{
+	{"_preflight_fit", "preflight_fit"},
+	{"_auto_compact_percent", "auto_compact_percent"},
+}
+
+// retiredMetadataWarned holds the retired metadata keys already reported,
+// so a host that rebuilds agents per turn logs each key once.
+var retiredMetadataWarned sync.Map
+
+// warnRetiredMetadataKeys logs, once per process for each key, that a stored
+// AgentConfig sets a metadata key this loader no longer reads.
+// ApplyMetadataBehavior calls it. The log names the key and the agent, never
+// the value.
+func warnRetiredMetadataKeys(agentName string, md map[string]string) {
+	for _, k := range retiredMetadataKeys {
+		if _, set := md[k.metadataKey]; !set {
+			continue
+		}
+		if _, seen := retiredMetadataWarned.LoadOrStore(k.metadataKey, true); seen {
+			continue
+		}
+		for _, r := range removedBehaviorKeys {
+			if r.key == k.behaviorKey {
+				zap.L().Warn("stored agent config sets a retired key: "+r.warning,
+					zap.String("metadata_key", k.metadataKey),
+					zap.String("agent", agentName))
+			}
+		}
+	}
 }
 
 // parseMemoryCompressionConfig converts YAML memory compression config to proto
