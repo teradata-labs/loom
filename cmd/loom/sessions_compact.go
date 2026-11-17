@@ -38,8 +38,9 @@ var sessionsCompactCmd = &cobra.Command{
 	Long: `Compact a session's context so a long conversation can keep going.
 
 Older turns are folded into the session's running summary, which takes one
-LLM call. The system prompt, the summary and the newest --keep-turns turns stay
-as they are. Run it between turns: it is refused while a turn is running or
+LLM call. Tool results are not changed. The system prompt, the summary and the
+newest --keep-turns turns stay as they are. Without a summary nothing is folded
+and the command fails. Run it between turns: it is refused while a turn is running or
 while the session waits for a human decision.
 
 Examples:
