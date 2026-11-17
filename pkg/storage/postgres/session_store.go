@@ -575,7 +575,7 @@ func (s *SessionStore) LoadMessagesForAgent(ctx context.Context, agentID string)
 		JOIN sessions s ON m.session_id = s.id
 		WHERE s.agent_id = $1 AND s.user_id = $2 AND s.deleted_at IS NULL AND m.deleted_at IS NULL
 		  AND m.folded = FALSE
-		ORDER BY m.timestamp ASC`,
+		ORDER BY m.timestamp ASC, m.id ASC`,
 			agentID, userID,
 		)
 		if err != nil {
@@ -626,7 +626,7 @@ func (s *SessionStore) LoadMessagesFromParentSession(ctx context.Context, sessio
 		FROM messages
 		WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL
 		  AND folded = FALSE
-		ORDER BY timestamp ASC`,
+		ORDER BY timestamp ASC, id ASC`,
 			*parentID, userID,
 		)
 		if err != nil {

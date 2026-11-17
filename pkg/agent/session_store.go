@@ -1234,7 +1234,7 @@ func (s *SessionStore) LoadMessagesForAgent(ctx context.Context, agentID string)
 			)
 			AND m.session_context IN ('coordinator', 'shared')
 		))
-		ORDER BY m.timestamp ASC
+		ORDER BY m.timestamp ASC, m.id ASC
 	`
 
 	uid := storeUserID(ctx)
@@ -1390,7 +1390,7 @@ func (s *SessionStore) LoadMessagesFromParentSession(ctx context.Context, sessio
 		WHERE session_id = ? AND folded = 0
 		AND session_context IN ('coordinator', 'shared')
 		AND EXISTS (SELECT 1 FROM sessions WHERE id = messages.session_id AND user_id = ?)
-		ORDER BY timestamp ASC
+		ORDER BY timestamp ASC, id ASC
 	`
 
 	rows, err := s.db.QueryContext(ctx, query, parentSessionID.String, storeUserID(ctx))
