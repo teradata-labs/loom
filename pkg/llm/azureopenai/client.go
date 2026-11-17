@@ -21,8 +21,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -310,6 +312,18 @@ func (c *Client) callAPI(ctx context.Context, req *openai.ChatCompletionRequest)
 				fmt.Errorf("API error (status 429): %s", string(respBody)),
 				llm.RetryAfterFromHeaders(resp.Header))
 		}
+		// A 5xx the server itself calls temporary is retried by the rate
+		// limiter under the throttle budget. The status is known before any
+		// content streams, so re-sending duplicates nothing.
+		if llm.IsTransientStatus(resp.StatusCode) {
+			// Bounded read: gateway 502/503 bodies are often multi-KB HTML
+			// pages, and this message is logged on every retry.
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, llm.MaxErrorBodyBytes))
+			_ = resp.Body.Close()
+			return nil, llm.NewTransientError(
+				fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody)),
+				resp.StatusCode, llm.RetryAfterFromHeaders(resp.Header))
+		}
 		return resp, nil
 	}
 
@@ -339,17 +353,30 @@ func (c *Client) callAPI(ctx context.Context, req *openai.ChatCompletionRequest)
 	// Parse response
 	var resp openai.ChatCompletionResponse
 	if err := json.Unmarshal(respBody, &resp); err != nil {
+		if httpResp.StatusCode != http.StatusOK {
+			return nil, llm.WrapHTTPStatus(httpResp.StatusCode,
+				fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody)))
+		}
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
 	// Check for API errors
 	if resp.Error != nil {
-		return nil, fmt.Errorf("azure OpenAI API error: %s (type: %s)", resp.Error.Message, resp.Error.Type)
+		statusCode := httpResp.StatusCode
+		if statusCode == http.StatusOK {
+			statusCode = llm.HTTPStatusForErrorType(resp.Error.Type)
+			if statusCode == 0 {
+				statusCode = http.StatusBadRequest
+			}
+		}
+		return nil, llm.WrapHTTPStatus(statusCode,
+			fmt.Errorf("azure OpenAI API error: %s (type: %s)", resp.Error.Message, resp.Error.Type))
 	}
 
 	// Check status code
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody))
+		return nil, llm.WrapHTTPStatus(httpResp.StatusCode,
+			fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody)))
 	}
 
 	return &resp, nil
@@ -722,6 +749,18 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				fmt.Errorf("API error (status 429): %s", string(respBody)),
 				llm.RetryAfterFromHeaders(resp.Header))
 		}
+		// A 5xx the server itself calls temporary is retried by the rate
+		// limiter under the throttle budget. The status is known before any
+		// content streams, so re-sending duplicates nothing.
+		if llm.IsTransientStatus(resp.StatusCode) {
+			// Bounded read: gateway 502/503 bodies are often multi-KB HTML
+			// pages, and this message is logged on every retry.
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, llm.MaxErrorBodyBytes))
+			_ = resp.Body.Close()
+			return nil, llm.NewTransientError(
+				fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody)),
+				resp.StatusCode, llm.RetryAfterFromHeaders(resp.Header))
+		}
 		return resp, nil
 	}
 
@@ -861,8 +900,10 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		return nil, fmt.Errorf("error reading stream: %w", err)
 	}
 
-	// Parse accumulated tool call arguments
-	for _, tc := range toolCallMap {
+	// Parse accumulated tool call arguments, in stream index order. Ranging
+	// over the map would hand parallel tool calls back in random order (#500).
+	for _, idx := range slices.Sorted(maps.Keys(toolCallMap)) {
+		tc := toolCallMap[idx]
 		if argsStr, ok := tc.Input["_args"].(string); ok {
 			var parsedArgs map[string]interface{}
 			if err := json.Unmarshal([]byte(argsStr), &parsedArgs); err != nil {

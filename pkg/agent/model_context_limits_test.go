@@ -140,6 +140,12 @@ func TestGetProviderDefaultLimits(t *testing.T) {
 			expectedReserved: 20000,
 		},
 		{
+			name:             "Bedrock Mantle (Claude)",
+			provider:         "bedrock-mantle",
+			expectedMax:      200000,
+			expectedReserved: 20000,
+		},
+		{
 			name:             "Ollama (conservative)",
 			provider:         "ollama",
 			expectedMax:      32000,

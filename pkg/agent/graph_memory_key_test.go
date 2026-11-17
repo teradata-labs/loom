@@ -96,17 +96,11 @@ func graphKeyReader(store memory.GraphMemoryStore, name, id string) *Agent {
 	}
 }
 
-// graphKeyInject runs the recall path and returns the injected system message ("" when none).
+// graphKeyInject runs the recall path and returns the recall note ("" when none).
 func graphKeyInject(a *Agent) string {
 	session := &types.Session{}
 	session.AddMessage(context.Background(), types.Message{Role: "user", Content: "what do you know about fraud?"})
-	a.injectGraphMemoryContext(context.Background(), session)
-	for _, m := range session.GetMessages() {
-		if m.Role == "system" {
-			return m.Content
-		}
-	}
-	return ""
+	return a.graphMemoryNote(context.Background(), session)
 }
 
 // graphKeyToolCall runs a graph_memory tool action through the agent's registered tool.

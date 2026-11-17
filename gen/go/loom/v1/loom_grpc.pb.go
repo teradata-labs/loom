@@ -50,6 +50,7 @@ const (
 	LoomService_ResolveExecutionGap_FullMethodName         = "/loom.v1.LoomService/ResolveExecutionGap"
 	LoomService_SubscribeToSession_FullMethodName          = "/loom.v1.LoomService/SubscribeToSession"
 	LoomService_GetConversationHistory_FullMethodName      = "/loom.v1.LoomService/GetConversationHistory"
+	LoomService_CompactSession_FullMethodName              = "/loom.v1.LoomService/CompactSession"
 	LoomService_RegisterTool_FullMethodName                = "/loom.v1.LoomService/RegisterTool"
 	LoomService_ListTools_FullMethodName                   = "/loom.v1.LoomService/ListTools"
 	LoomService_GetTrace_FullMethodName                    = "/loom.v1.LoomService/GetTrace"
@@ -120,6 +121,10 @@ const (
 	LoomService_CreateUIApp_FullMethodName                 = "/loom.v1.LoomService/CreateUIApp"
 	LoomService_UpdateUIApp_FullMethodName                 = "/loom.v1.LoomService/UpdateUIApp"
 	LoomService_DeleteUIApp_FullMethodName                 = "/loom.v1.LoomService/DeleteUIApp"
+	LoomService_ListLuaScripts_FullMethodName              = "/loom.v1.LoomService/ListLuaScripts"
+	LoomService_GetLuaScript_FullMethodName                = "/loom.v1.LoomService/GetLuaScript"
+	LoomService_SaveLuaScript_FullMethodName               = "/loom.v1.LoomService/SaveLuaScript"
+	LoomService_DeleteLuaScript_FullMethodName             = "/loom.v1.LoomService/DeleteLuaScript"
 	LoomService_ListComponentTypes_FullMethodName          = "/loom.v1.LoomService/ListComponentTypes"
 	LoomService_ListAgentPresets_FullMethodName            = "/loom.v1.LoomService/ListAgentPresets"
 	LoomService_ListWorkflowTemplates_FullMethodName       = "/loom.v1.LoomService/ListWorkflowTemplates"
@@ -184,6 +189,14 @@ type LoomServiceClient interface {
 	SubscribeToSession(ctx context.Context, in *SubscribeToSessionRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SessionUpdate], error)
 	// GetConversationHistory retrieves conversation history for a session.
 	GetConversationHistory(ctx context.Context, in *GetConversationHistoryRequest, opts ...grpc.CallOption) (*ConversationHistory, error)
+	// CompactSession compacts a session's context on request, between turns:
+	// older tool results become re-fetchable stubs and older turns fold into the
+	// running summary, while the system prompt, the summary and the newest
+	// keep_turns turns stay verbatim. Folding makes an LLM call. Refused while a
+	// turn runs on the session (ABORTED) or while it waits for a human decision
+	// (FAILED_PRECONDITION); UNAVAILABLE when no summary could be produced or the
+	// result could not be saved, in which case history is unchanged.
+	CompactSession(ctx context.Context, in *CompactSessionRequest, opts ...grpc.CallOption) (*CompactSessionResponse, error)
 	// RegisterTool dynamically registers a new tool.
 	RegisterTool(ctx context.Context, in *RegisterToolRequest, opts ...grpc.CallOption) (*RegisterToolResponse, error)
 	// ListTools lists all registered tools.
@@ -359,6 +372,14 @@ type LoomServiceClient interface {
 	UpdateUIApp(ctx context.Context, in *UpdateUIAppRequest, opts ...grpc.CallOption) (*UpdateUIAppResponse, error)
 	// DeleteUIApp deletes a dynamic UI app.
 	DeleteUIApp(ctx context.Context, in *DeleteUIAppRequest, opts ...grpc.CallOption) (*DeleteUIAppResponse, error)
+	// ListLuaScripts lists saved Lua scripts, without their source.
+	ListLuaScripts(ctx context.Context, in *ListLuaScriptsRequest, opts ...grpc.CallOption) (*ListLuaScriptsResponse, error)
+	// GetLuaScript reads one saved Lua script, including its source.
+	GetLuaScript(ctx context.Context, in *GetLuaScriptRequest, opts ...grpc.CallOption) (*GetLuaScriptResponse, error)
+	// SaveLuaScript saves a Lua script. The source must compile.
+	SaveLuaScript(ctx context.Context, in *SaveLuaScriptRequest, opts ...grpc.CallOption) (*SaveLuaScriptResponse, error)
+	// DeleteLuaScript deletes a saved Lua script and its attachments.
+	DeleteLuaScript(ctx context.Context, in *DeleteLuaScriptRequest, opts ...grpc.CallOption) (*DeleteLuaScriptResponse, error)
 	// ListComponentTypes returns the catalog of available component types
 	// for building dynamic UI apps.
 	ListComponentTypes(ctx context.Context, in *ListComponentTypesRequest, opts ...grpc.CallOption) (*ListComponentTypesResponse, error)
@@ -561,6 +582,16 @@ func (c *loomServiceClient) GetConversationHistory(ctx context.Context, in *GetC
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ConversationHistory)
 	err := c.cc.Invoke(ctx, LoomService_GetConversationHistory_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomServiceClient) CompactSession(ctx context.Context, in *CompactSessionRequest, opts ...grpc.CallOption) (*CompactSessionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CompactSessionResponse)
+	err := c.cc.Invoke(ctx, LoomService_CompactSession_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1303,6 +1334,46 @@ func (c *loomServiceClient) DeleteUIApp(ctx context.Context, in *DeleteUIAppRequ
 	return out, nil
 }
 
+func (c *loomServiceClient) ListLuaScripts(ctx context.Context, in *ListLuaScriptsRequest, opts ...grpc.CallOption) (*ListLuaScriptsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListLuaScriptsResponse)
+	err := c.cc.Invoke(ctx, LoomService_ListLuaScripts_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomServiceClient) GetLuaScript(ctx context.Context, in *GetLuaScriptRequest, opts ...grpc.CallOption) (*GetLuaScriptResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetLuaScriptResponse)
+	err := c.cc.Invoke(ctx, LoomService_GetLuaScript_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomServiceClient) SaveLuaScript(ctx context.Context, in *SaveLuaScriptRequest, opts ...grpc.CallOption) (*SaveLuaScriptResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SaveLuaScriptResponse)
+	err := c.cc.Invoke(ctx, LoomService_SaveLuaScript_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomServiceClient) DeleteLuaScript(ctx context.Context, in *DeleteLuaScriptRequest, opts ...grpc.CallOption) (*DeleteLuaScriptResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteLuaScriptResponse)
+	err := c.cc.Invoke(ctx, LoomService_DeleteLuaScript_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *loomServiceClient) ListComponentTypes(ctx context.Context, in *ListComponentTypesRequest, opts ...grpc.CallOption) (*ListComponentTypesResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListComponentTypesResponse)
@@ -1401,6 +1472,14 @@ type LoomServiceServer interface {
 	SubscribeToSession(*SubscribeToSessionRequest, grpc.ServerStreamingServer[SessionUpdate]) error
 	// GetConversationHistory retrieves conversation history for a session.
 	GetConversationHistory(context.Context, *GetConversationHistoryRequest) (*ConversationHistory, error)
+	// CompactSession compacts a session's context on request, between turns:
+	// older tool results become re-fetchable stubs and older turns fold into the
+	// running summary, while the system prompt, the summary and the newest
+	// keep_turns turns stay verbatim. Folding makes an LLM call. Refused while a
+	// turn runs on the session (ABORTED) or while it waits for a human decision
+	// (FAILED_PRECONDITION); UNAVAILABLE when no summary could be produced or the
+	// result could not be saved, in which case history is unchanged.
+	CompactSession(context.Context, *CompactSessionRequest) (*CompactSessionResponse, error)
 	// RegisterTool dynamically registers a new tool.
 	RegisterTool(context.Context, *RegisterToolRequest) (*RegisterToolResponse, error)
 	// ListTools lists all registered tools.
@@ -1576,6 +1655,14 @@ type LoomServiceServer interface {
 	UpdateUIApp(context.Context, *UpdateUIAppRequest) (*UpdateUIAppResponse, error)
 	// DeleteUIApp deletes a dynamic UI app.
 	DeleteUIApp(context.Context, *DeleteUIAppRequest) (*DeleteUIAppResponse, error)
+	// ListLuaScripts lists saved Lua scripts, without their source.
+	ListLuaScripts(context.Context, *ListLuaScriptsRequest) (*ListLuaScriptsResponse, error)
+	// GetLuaScript reads one saved Lua script, including its source.
+	GetLuaScript(context.Context, *GetLuaScriptRequest) (*GetLuaScriptResponse, error)
+	// SaveLuaScript saves a Lua script. The source must compile.
+	SaveLuaScript(context.Context, *SaveLuaScriptRequest) (*SaveLuaScriptResponse, error)
+	// DeleteLuaScript deletes a saved Lua script and its attachments.
+	DeleteLuaScript(context.Context, *DeleteLuaScriptRequest) (*DeleteLuaScriptResponse, error)
 	// ListComponentTypes returns the catalog of available component types
 	// for building dynamic UI apps.
 	ListComponentTypes(context.Context, *ListComponentTypesRequest) (*ListComponentTypesResponse, error)
@@ -1644,6 +1731,9 @@ func (UnimplementedLoomServiceServer) SubscribeToSession(*SubscribeToSessionRequ
 }
 func (UnimplementedLoomServiceServer) GetConversationHistory(context.Context, *GetConversationHistoryRequest) (*ConversationHistory, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetConversationHistory not implemented")
+}
+func (UnimplementedLoomServiceServer) CompactSession(context.Context, *CompactSessionRequest) (*CompactSessionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CompactSession not implemented")
 }
 func (UnimplementedLoomServiceServer) RegisterTool(context.Context, *RegisterToolRequest) (*RegisterToolResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RegisterTool not implemented")
@@ -1854,6 +1944,18 @@ func (UnimplementedLoomServiceServer) UpdateUIApp(context.Context, *UpdateUIAppR
 }
 func (UnimplementedLoomServiceServer) DeleteUIApp(context.Context, *DeleteUIAppRequest) (*DeleteUIAppResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteUIApp not implemented")
+}
+func (UnimplementedLoomServiceServer) ListLuaScripts(context.Context, *ListLuaScriptsRequest) (*ListLuaScriptsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListLuaScripts not implemented")
+}
+func (UnimplementedLoomServiceServer) GetLuaScript(context.Context, *GetLuaScriptRequest) (*GetLuaScriptResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetLuaScript not implemented")
+}
+func (UnimplementedLoomServiceServer) SaveLuaScript(context.Context, *SaveLuaScriptRequest) (*SaveLuaScriptResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SaveLuaScript not implemented")
+}
+func (UnimplementedLoomServiceServer) DeleteLuaScript(context.Context, *DeleteLuaScriptRequest) (*DeleteLuaScriptResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteLuaScript not implemented")
 }
 func (UnimplementedLoomServiceServer) ListComponentTypes(context.Context, *ListComponentTypesRequest) (*ListComponentTypesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListComponentTypes not implemented")
@@ -2151,6 +2253,24 @@ func _LoomService_GetConversationHistory_Handler(srv interface{}, ctx context.Co
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LoomServiceServer).GetConversationHistory(ctx, req.(*GetConversationHistoryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LoomService_CompactSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CompactSessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomServiceServer).CompactSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LoomService_CompactSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomServiceServer).CompactSession(ctx, req.(*CompactSessionRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3387,6 +3507,78 @@ func _LoomService_DeleteUIApp_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LoomService_ListLuaScripts_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListLuaScriptsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomServiceServer).ListLuaScripts(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LoomService_ListLuaScripts_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomServiceServer).ListLuaScripts(ctx, req.(*ListLuaScriptsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LoomService_GetLuaScript_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetLuaScriptRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomServiceServer).GetLuaScript(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LoomService_GetLuaScript_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomServiceServer).GetLuaScript(ctx, req.(*GetLuaScriptRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LoomService_SaveLuaScript_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SaveLuaScriptRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomServiceServer).SaveLuaScript(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LoomService_SaveLuaScript_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomServiceServer).SaveLuaScript(ctx, req.(*SaveLuaScriptRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LoomService_DeleteLuaScript_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteLuaScriptRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomServiceServer).DeleteLuaScript(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LoomService_DeleteLuaScript_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomServiceServer).DeleteLuaScript(ctx, req.(*DeleteLuaScriptRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _LoomService_ListComponentTypes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListComponentTypesRequest)
 	if err := dec(in); err != nil {
@@ -3517,6 +3709,10 @@ var LoomService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetConversationHistory",
 			Handler:    _LoomService_GetConversationHistory_Handler,
+		},
+		{
+			MethodName: "CompactSession",
+			Handler:    _LoomService_CompactSession_Handler,
 		},
 		{
 			MethodName: "RegisterTool",
@@ -3781,6 +3977,22 @@ var LoomService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteUIApp",
 			Handler:    _LoomService_DeleteUIApp_Handler,
+		},
+		{
+			MethodName: "ListLuaScripts",
+			Handler:    _LoomService_ListLuaScripts_Handler,
+		},
+		{
+			MethodName: "GetLuaScript",
+			Handler:    _LoomService_GetLuaScript_Handler,
+		},
+		{
+			MethodName: "SaveLuaScript",
+			Handler:    _LoomService_SaveLuaScript_Handler,
+		},
+		{
+			MethodName: "DeleteLuaScript",
+			Handler:    _LoomService_DeleteLuaScript_Handler,
 		},
 		{
 			MethodName: "ListComponentTypes",

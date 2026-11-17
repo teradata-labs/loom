@@ -15,6 +15,8 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
+	"github.com/teradata-labs/loom/pkg/decision"
+	"github.com/teradata-labs/loom/pkg/decision/sites"
 	"github.com/teradata-labs/loom/pkg/llm/catalog"
 	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
@@ -30,6 +32,9 @@ type PipelineExecutor struct {
 	// checkpoints. Set by the iterative executor's plain-pipeline fallback so
 	// suspension/resume verify against the host-visible iterative pattern.
 	fingerprintOverride string
+
+	// aux collects the LLM calls this executor makes itself (run_usage.go).
+	aux auxUsage
 }
 
 // NewPipelineExecutor creates a new pipeline executor.
@@ -48,7 +53,9 @@ type pipelineState struct {
 	// Index of the stage to execute first.
 	startIndex int
 
-	// Append-only execution history (all attempts) for cost accounting.
+	// One result per executed stage pass, in execution order. A stage
+	// attempt that a retry replaced is not here; its cost goes to the
+	// executor's aux collector (run_usage.go), which is not checkpointed.
 	allResults []*loomv1.AgentResult
 
 	// Full output per completed stage of the current pass, index-aligned.
@@ -398,6 +405,9 @@ func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time,
 					priorOutputs := stageOutputs[:len(stageOutputs)-1]
 					retryResult, retryModel := e.retryStage(ctx, workflowID, stage, currentInput, priorOutputs, stageNum, result.Output, validationFailure)
 					if retryResult != nil {
+						// The retry replaces the failed attempt's result; keep
+						// the replaced attempt's calls in the run's cost.
+						e.aux.addResultCost(result.Cost)
 						result = retryResult
 						allResults[len(allResults)-1] = result
 						stageOutputs[len(stageOutputs)-1] = result.Output
@@ -518,7 +528,7 @@ func (e *PipelineExecutor) executeFrom(ctx context.Context, startTime time.Time,
 	}
 	finalOutput := stageOutputs[len(stageOutputs)-1]
 
-	// Calculate total cost
+	// Calculate total cost (calculateCost adds the executor's own calls).
 	cost := e.calculateCost(allResults)
 
 	duration := time.Since(startTime)
@@ -748,10 +758,11 @@ func (e *PipelineExecutor) runStageAgent(
 		ConfidenceScore: 1.0,
 		DurationMs:      duration.Milliseconds(),
 		Cost: &loomv1.AgentExecutionCost{
-			TotalTokens:  types.SafeInt32(response.Usage.TotalTokens),
-			InputTokens:  types.SafeInt32(response.Usage.InputTokens),
-			OutputTokens: types.SafeInt32(response.Usage.OutputTokens),
-			CostUsd:      response.Usage.CostUSD,
+			TotalTokens:  types.SafeInt32(response.TurnUsage.TotalTokens),
+			InputTokens:  types.SafeInt32(response.TurnUsage.InputTokens),
+			OutputTokens: types.SafeInt32(response.TurnUsage.OutputTokens),
+			CostUsd:      response.TurnUsage.CostUSD,
+			LlmCalls:     types.SafeInt32(response.TurnLLMCalls),
 		},
 	}
 
@@ -863,17 +874,109 @@ func levelingStageWarnings(stage *loomv1.PipelineStage, stageNum int, report *Le
 // validateStageOutput validates a stage's output using the validation prompt.
 // Uses the orchestrator's merge LLM (GetMergeLLM) which resolves through the
 // fallback chain: explicit LLM -> orchestrator role LLM from agents -> error.
+//
+// Decision layer (site stage.validation): the stage agent's decision layer is
+// borrowed the way the conditional executor borrows the condition agent's.
+// With a live band the decider judges first and, when its band says to act,
+// the LLM validator is skipped; otherwise the LLM decides and the decider's
+// answer is recorded against the scraped verdict. A TIGHTEN_ONLY band (the
+// default when the band leaves mode unset, sites.ValidationDefaultMode) lets
+// the decider fail an output but never pass one: a confident "valid" still
+// runs the LLM. mode: replace lets it pass outputs too.
 func (e *PipelineExecutor) validateStageOutput(ctx context.Context, workflowID string, stage *loomv1.PipelineStage, output string, stageNum int) (bool, error) {
+	sessionID := fmt.Sprintf("%s-stage%d-%s-validation", workflowID, stageNum, stage.AgentId)
+
+	// The stage agent may be missing only when validation runs against a
+	// stage that was never executed; the layer is then simply off.
+	stageAgent, _ := e.orchestrator.GetAgent(ctx, stage.AgentId)
+
+	dreq, dout, verdict, acted := e.liveValidation(ctx, stageAgent, sessionID, stage.ValidationPrompt, output)
+	if acted {
+		e.orchestrator.logger.Info("Stage output judged by decision layer",
+			zap.Int("stage", stageNum),
+			zap.Bool("valid", verdict),
+			zap.Float64("confidence", dout.Confidence),
+			zap.Duration("latency", dout.Latency))
+		stageAgent.RecordDecisionAsync(ctx, sessionID, dreq, dout, nil)
+		return verdict, nil
+	}
+
+	valid, err := e.validateStageOutputLLM(ctx, sessionID, stage, output)
+	if err != nil {
+		if dreq != nil {
+			// The live answer was paid for; record it, with no reference
+			// because the validator produced none.
+			stageAgent.RecordDecisionAsync(ctx, sessionID, dreq, dout, nil)
+		}
+		return valid, err
+	}
+	refs := sites.ValidationReference(valid)
+	switch {
+	case dreq != nil:
+		// Live band, decider did not clear it (or may only tighten): reuse
+		// the answer in hand.
+		stageAgent.RecordDecisionAsync(ctx, sessionID, dreq, dout, refs)
+	case stageAgent != nil && stageAgent.DecisionRouter() != nil:
+		if req, rerr := sites.ValidationRequest(stage.ValidationPrompt, output); rerr == nil {
+			stageAgent.RunDecisionShadow(ctx, sessionID, req, refs)
+		} else {
+			e.orchestrator.logger.Debug("decision shadow: validation not asked", zap.Error(rerr))
+		}
+	}
+	return valid, nil
+}
+
+// liveValidation is the decision layer's live path for stage.validation.
+// acted is true when the stage agent's band for the site is live, the
+// decider cleared it, and the band's mode allows the verdict: REPLACE acts on
+// either verdict, TIGHTEN_ONLY (the default for an unset mode) only on
+// "invalid". When the decider answered
+// but the site must still run the LLM, req and out come back non-nil so the
+// caller records them against the LLM's verdict.
+func (e *PipelineExecutor) liveValidation(ctx context.Context, stageAgent *agent.Agent, sessionID, requirement, output string) (req *loomv1.DecisionRequest, out decision.Outcome, valid bool, acted bool) {
+	if stageAgent == nil {
+		return nil, decision.Outcome{}, false, false
+	}
+	router := stageAgent.DecisionRouter()
+	if router == nil || router.Band(sites.SiteStageValidation).Shadow {
+		return nil, decision.Outcome{}, false, false
+	}
+	req, err := sites.ValidationRequest(requirement, output)
+	if err != nil {
+		// Not asked (an over-limit requirement or output included): the LLM
+		// validator decides.
+		e.orchestrator.logger.Debug("decision: validation not asked, validator decides", zap.Error(err))
+		return nil, decision.Outcome{}, false, false
+	}
+	out = stageAgent.LiveDecide(ctx, sessionID, req)
+	if !out.Act() {
+		return req, out, false, false
+	}
+	valid, ok := sites.ValidationVerdict(out.Response, out.Band)
+	if !ok {
+		// No usable or decisive answer: the LLM validator decides.
+		out.Path = loomv1.DecisionPath_DECISION_PATH_FALLBACK
+		return req, out, false, false
+	}
+	if valid && out.Band.ModeOr(sites.ValidationDefaultMode) == loomv1.DecisionBandMode_DECISION_BAND_MODE_TIGHTEN_ONLY {
+		// A gate may only tighten: the decider cannot pass an output on its
+		// own, so the LLM still decides and the row is a fallback.
+		out.Path = loomv1.DecisionPath_DECISION_PATH_FALLBACK
+		return req, out, false, false
+	}
+	return req, out, valid, true
+}
+
+// validateStageOutputLLM is the generative validator: the stage's validation
+// prompt with the output substituted in, judged by scraping the reply.
+func (e *PipelineExecutor) validateStageOutputLLM(ctx context.Context, sessionID string, stage *loomv1.PipelineStage, output string) (bool, error) {
 	validationLLM := e.orchestrator.GetMergeLLM()
 	if validationLLM == nil {
 		return true, fmt.Errorf("LLM provider required for validation (configure orchestrator LLM or agent orchestrator role LLM)")
 	}
 
 	// Build validation prompt
-	validationPrompt := strings.ReplaceAll(stage.ValidationPrompt, "{{output}}", output)
-
-	// Generate unique session ID for validation
-	sessionID := fmt.Sprintf("%s-stage%d-%s-validation", workflowID, stageNum, stage.AgentId)
+	validationPrompt := strings.ReplaceAll(stage.ValidationPrompt, sites.OutputPlaceholder, output)
 
 	// Create a wrapper context
 	validationSession := &agent.Session{
@@ -903,6 +1006,7 @@ func (e *PipelineExecutor) validateStageOutput(ctx context.Context, workflowID s
 	if err != nil {
 		return false, fmt.Errorf("validation LLM call failed: %w", err)
 	}
+	e.aux.addCall(response.Usage)
 
 	// Simple validation: check if response contains "valid" or "yes"
 	// In a real implementation, this could be more sophisticated
@@ -920,7 +1024,7 @@ func (e *PipelineExecutor) calculateCost(results []*loomv1.AgentResult) *loomv1.
 		if result.Cost != nil {
 			cost.TotalCostUsd += result.Cost.CostUsd
 			cost.TotalTokens += result.Cost.TotalTokens
-			cost.LlmCalls++
+			cost.LlmCalls += resultLLMCalls(result.Cost)
 
 			// Aggregate by agent
 			if existing, ok := cost.AgentCostsUsd[result.AgentId]; ok {
@@ -931,6 +1035,7 @@ func (e *PipelineExecutor) calculateCost(results []*loomv1.AgentResult) *loomv1.
 		}
 	}
 
+	e.aux.applyTo(cost)
 	return cost
 }
 
@@ -1033,6 +1138,10 @@ func (e *PipelineExecutor) retryStage(
 				zap.Int("attempt", attempt))
 			return result, model
 		}
+
+		// This attempt failed validation and its result is dropped; keep its
+		// calls in the run's cost.
+		e.aux.addResultCost(result.Cost)
 
 		// Update failure info for next retry prompt
 		failedOutput = result.Output

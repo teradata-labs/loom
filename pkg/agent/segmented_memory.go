@@ -15,6 +15,7 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -97,6 +98,36 @@ type SegmentedMemory struct {
 	// a whole row, and a folded form each cache separately.
 	msgTokenCache map[string]int
 
+	// thinkingPrefix maps an assistant message's thinking blocks
+	// (thinkingBlocksKey) to the fingerprint of the compiled context it was
+	// written after, so compile can keep a settled turn's blocks while that
+	// context is unchanged (context_compilation.go). In memory only, like the
+	// blocks themselves.
+	thinkingPrefix map[[sha256.Size]byte][sha256.Size]byte
+
+	// requestModel and requestToolsDigest identify the provider call beyond
+	// its messages (SetRequestIdentity); they seed the thinkingPrefix
+	// fingerprint.
+	requestModel       string
+	requestToolsDigest [sha256.Size]byte
+
+	// transientTail is the content of the reminder the agent is about to send
+	// and has not pinned yet (SetTransientTail), counted by the estimate.
+	transientTail string
+
+	// turnNotes are the reminders sent on this turn's provider calls
+	// (PinTurnNotes). Compile emits each at the position it was sent from,
+	// for the rest of its turn, so a later call of the turn never removes
+	// what an earlier one sent (context_compilation.go). In memory only.
+	turnNotes []turnNote
+
+	// arrivals counts the rows ever appended to L1 (AddMessage,
+	// ReplayMessages). Relief removing or folding rows doesn't lower it, so
+	// two provider calls with no new row between them (a send and its resend
+	// after a refusal) see the same value. PinTurnNotes uses it to send an
+	// event note once per step (TurnReminder).
+	arrivals uint64
+
 	// Memory compression (the fold compressor)
 	compressor MemoryCompressor
 
@@ -124,6 +155,14 @@ type SegmentedMemory struct {
 	// its compressor call, and this keeps a second pass from interleaving.
 	reliefInFlight bool
 
+	// fallbackTurns, when > 0, narrows what is sent to the provider to ROM, the
+	// summary, active skills' bodies and the newest fallbackTurns turns
+	// (EnsureFits), for the rest of turn fallbackTurn only. Provider-send only
+	// (GetMessagesForSend): history readers, the store, relief and the estimate
+	// still see everything.
+	fallbackTurns int64
+	fallbackTurn  int64
+
 	// pressureOffload names (by ToolUseID) the current-turn tool results that
 	// relief's last-resort rung renders as offload stubs (§5.2 step 6) even
 	// though they are at or under the threshold — the one relief operation
@@ -143,6 +182,30 @@ type SegmentedMemory struct {
 	// without this one broken provider can hold a pass for minutes and then
 	// still abort. Reset at the start of every pass; guarded by mu.
 	compressorFailedThisPass bool
+
+	// compactFocus is the user's steer for a manual compaction (Compact). Set
+	// only while Compact runs; the fold hands it to the compressor.
+	compactFocus string
+
+	// foldRequireSummary makes a fold abort instead of dropping its region
+	// unsummarised when the compressor fails. Set only by AutoCompact: nothing
+	// forces that compaction, so losing history for it is never worth it.
+	foldRequireSummary bool
+
+	// foldAbortedNoSummary records that a fold aborted under foldRequireSummary
+	// because no summary was produced, so the caller can tell that apart from
+	// "nothing to fold".
+	foldAbortedNoSummary bool
+
+	// compactPersistErr records the latest failure to persist an evict or fold
+	// (relief logs it and carries on), so a manual Compact can report that nothing
+	// was saved instead of an ordinary no-op.
+	compactPersistErr error
+
+	// lastAutoCompactTurn is the turn of the latest AutoCompact attempt, which
+	// spaces attempts out so a context the kept turns keep above the threshold
+	// does not pay a summary call every turn.
+	lastAutoCompactTurn int64
 
 	// estimateCalibration scales relief's tiktoken estimate toward the
 	// provider's own prompt count (ObservePromptTokens). Zero reads as 1.0.
@@ -379,7 +442,9 @@ func (sm *SegmentedMemory) AddMessage(ctx context.Context, msg Message) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
+	sm.recordThinkingPrefixLocked(&msg)
 	sm.contextMessages = append(sm.contextMessages, msg)
+	sm.arrivals++
 
 	// Incremental L1 token update (reporting only).
 	msgTokens := 10 + sm.tokenCounter.CountTokens(msg.Content) // 10 = message overhead
@@ -511,6 +576,7 @@ func (sm *SegmentedMemory) ReplayMessages(ctx context.Context, messages []Messag
 	}
 
 	sm.contextMessages = append(sm.contextMessages, messages...)
+	sm.arrivals += uint64(len(messages))
 	sm.l1Dirty = true
 	sm.updateTokenCount()
 	sm.tokenCountDirty = false
@@ -631,12 +697,36 @@ func (sm *SegmentedMemory) recountKernel() {
 	sm.cachedKernelTokens = tokenFigure(sm.kernelBytes)
 }
 
-// GetMessagesForLLM builds the compiled context for the LLM call
-// (ContextCompilation, HLD §5.2 steps 1–7).
+// GetMessagesForLLM builds the compiled context (ContextCompilation, HLD §5.2
+// steps 1–7): the whole conversation, as history readers see it.
 func (sm *SegmentedMemory) GetMessagesForLLM() []Message {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	return sm.compileLocked()
+}
+
+// GetMessagesForSend is the compiled context as the provider is sent it: the
+// whole conversation, or the fallback view when the pre-flight guard narrowed
+// this turn's sends (EnsureFits). Only provider calls read it.
+func (sm *SegmentedMemory) GetMessagesForSend() []Message {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.sendViewLocked()
+}
+
+// sendViewLocked is GetMessagesForSend. Must hold lock.
+func (sm *SegmentedMemory) sendViewLocked() []Message {
+	return sm.compileViewLocked(sm.sendFloorLocked())
+}
+
+// sendFloorLocked is the oldest turn the provider is sent: 0 (all of them)
+// unless EnsureFits chose the fallback view in the current turn. Must hold lock.
+func (sm *SegmentedMemory) sendFloorLocked() int64 {
+	t := sm.currentTurnLocked()
+	if sm.fallbackTurns <= 0 || sm.fallbackTurn != t {
+		return 0
+	}
+	return t - sm.fallbackTurns + 1
 }
 
 // GetContextWindow renders the compiled context as a formatted string, via the
@@ -711,6 +801,11 @@ func (sm *SegmentedMemory) ResetContext() {
 	sm.contextMessages = sm.contextMessages[:0]
 	sm.summary = summaryState{}
 	sm.patternName = ""
+	sm.thinkingPrefix = nil
+	sm.transientTail = ""
+	sm.turnNotes = nil
+	sm.fallbackTurns, sm.fallbackTurn = 0, 0
+	sm.lastAutoCompactTurn = 0
 
 	sm.fullRecount()
 	sm.tokenCountDirty = false

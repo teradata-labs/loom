@@ -1102,6 +1102,121 @@
         ]
       }
     },
+    "/v1/lua-scripts": {
+      "get": {
+        "summary": "ListLuaScripts lists saved Lua scripts, without their source.",
+        "operationId": "LoomService_ListLuaScripts",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ListLuaScriptsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "LoomService"
+        ]
+      },
+      "post": {
+        "summary": "SaveLuaScript saves a Lua script. The source must compile.",
+        "operationId": "LoomService_SaveLuaScript",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1SaveLuaScriptResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "SaveLuaScriptRequest saves a script. The source must compile; it is never\nrun by this call.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1SaveLuaScriptRequest"
+            }
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
+    "/v1/lua-scripts/{name}": {
+      "get": {
+        "summary": "GetLuaScript reads one saved Lua script, including its source.",
+        "operationId": "LoomService_GetLuaScript",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetLuaScriptResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      },
+      "delete": {
+        "summary": "DeleteLuaScript deletes a saved Lua script and its attachments.",
+        "operationId": "LoomService_DeleteLuaScript",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1DeleteLuaScriptResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
     "/v1/mcp/servers": {
       "get": {
         "summary": "ListMCPServers lists all configured MCP servers.",
@@ -2148,6 +2263,46 @@
             "required": false,
             "type": "integer",
             "format": "int32"
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
+    "/v1/sessions/{sessionId}:compact": {
+      "post": {
+        "summary": "CompactSession compacts a session's context on request, between turns:\nolder tool results become re-fetchable stubs and older turns fold into the\nrunning summary, while the system prompt, the summary and the newest\nkeep_turns turns stay verbatim. Folding makes an LLM call. Refused while a\nturn runs on the session (ABORTED) or while it waits for a human decision\n(FAILED_PRECONDITION); UNAVAILABLE when no summary could be produced or the\nresult could not be saved, in which case history is unchanged.",
+        "operationId": "LoomService_CompactSession",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1CompactSessionResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "sessionId",
+            "description": "Session ID",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/LoomServiceCompactSessionBody"
+            }
           }
         ],
         "tags": [
@@ -3498,6 +3653,21 @@
       },
       "description": "CancelScheduledExecutionRequest stops a scheduled execution that is in\nflight.\n\nThe ID must be one the scheduler minted. IDs returned by ExecuteWorkflow and\nStreamWorkflow belong to a different namespace and yield NOT_FOUND."
     },
+    "LoomServiceCompactSessionBody": {
+      "type": "object",
+      "properties": {
+        "keepTurns": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Newest turns left verbatim. 0 uses the default (2); negative is invalid."
+        },
+        "focus": {
+          "type": "string",
+          "description": "Optional guidance on what the summary must keep. At most 2000 bytes."
+        }
+      },
+      "description": "CompactSessionRequest asks for a manual compaction of one session's context."
+    },
     "LoomServicePauseScheduleBody": {
       "type": "object",
       "description": "PauseScheduleRequest pauses a schedule."
@@ -3651,11 +3821,11 @@
         },
         "transport": {
           "type": "string",
-          "title": "Transport type (stdio, http, sse)"
+          "title": "Transport type (stdio, http, sse, streamable-http)"
         },
         "command": {
           "type": "string",
-          "title": "Command to execute"
+          "title": "Command to execute (required for enabled stdio transport)"
         },
         "args": {
           "type": "array",
@@ -3690,7 +3860,7 @@
         },
         "url": {
           "type": "string",
-          "title": "Server URL (required for http/sse transport)"
+          "title": "Server URL (required for enabled http, sse, and streamable-http transports)"
         },
         "enableSessions": {
           "type": "boolean",
@@ -3699,6 +3869,11 @@
         "enableResumption": {
           "type": "boolean",
           "title": "Enable stream resumption (for streamable-http transport)"
+        },
+        "maxResponseBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Bound on one JSON-RPC message from this server (streamable-http only).\nOver it the read stops and the response is refused, never truncated.\n0 selects the 16 MiB default (transport.DefaultMaxResponseBytes); see\nmanager.ServerConfig.MaxResponseBytes for the full semantics, including\nthe clamp at transport.MaxResponseLimit and why stdio is unbounded."
         }
       },
       "description": "UpdateMCPServerRequest updates an MCP server."
@@ -3866,11 +4041,11 @@
         },
         "transport": {
           "type": "string",
-          "title": "Transport type (stdio, http, sse)"
+          "title": "Transport type (stdio, http, sse, streamable-http)"
         },
         "command": {
           "type": "string",
-          "title": "Command to execute"
+          "title": "Command to execute (required for enabled stdio transport)"
         },
         "args": {
           "type": "array",
@@ -3900,7 +4075,7 @@
         },
         "url": {
           "type": "string",
-          "title": "Server URL (required for http/sse transport)"
+          "title": "Server URL (required for enabled http, sse, and streamable-http transports)"
         },
         "enableSessions": {
           "type": "boolean",
@@ -3909,6 +4084,11 @@
         "enableResumption": {
           "type": "boolean",
           "title": "Enable stream resumption (for streamable-http transport)"
+        },
+        "maxResponseBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Bound on one JSON-RPC message from this server (streamable-http only).\nOver it the read stops and the response is refused, never truncated.\n0 selects the 16 MiB default (transport.DefaultMaxResponseBytes); see\nmanager.ServerConfig.MaxResponseBytes for the full semantics, including\nthe clamp at transport.MaxResponseLimit and why stdio is unbounded."
         }
       },
       "description": "AddMCPServerRequest adds a new MCP server."
@@ -4025,6 +4205,10 @@
         "skills": {
           "$ref": "#/definitions/v1SkillsConfig",
           "title": "Skills configuration for this agent"
+        },
+        "decision": {
+          "$ref": "#/definitions/v1DecisionConfig",
+          "description": "Decision layer configuration (pkg/decision): which decider answers typed\nauxiliary judgments and, per call site, whether its answers are acted on\nor only shadow-recorded. Absent or provider \"off\" disables the layer."
         }
       },
       "description": "AgentConfig defines a complete agent configuration.\nThis message represents a declarative agent specification that can be\nloaded from YAML files or created programmatically."
@@ -4059,6 +4243,11 @@
         "provider": {
           "type": "string",
           "title": "Provider"
+        },
+        "llmCalls": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Successful LLM calls behind this result: the agent's whole conversation\nturn (tool-loop iterations, empty-response and hygiene retries, final\nsynthesis). 0 from producers that predate this field.\n\nNot counted: LLM calls the agent makes outside its conversation loop,\nsuch as graph-memory recall and extraction, memory compression, the\nskills router and the pattern classifier. On a leveled stage, cost_usd\ncovers the whole leveling ladder, but llm_calls and the token fields\ndescribe only the winning attempt."
         }
       },
       "description": "AgentExecutionCost tracks LLM costs for an agent in a workflow."
@@ -4174,6 +4363,23 @@
         "provider": {
           "type": "string",
           "title": "Provider name (e.g., \"anthropic\", \"bedrock\", \"ollama\")"
+        },
+        "inputTokens": {
+          "type": "integer",
+          "format": "int32",
+          "description": "LLM usage and cost of producing this position. Scalars rather than\nAgentExecutionCost because that message lives in orchestration.proto,\nwhich imports this file."
+        },
+        "outputTokens": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "totalTokens": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "costUsd": {
+          "type": "number",
+          "format": "double"
         }
       },
       "description": "AgentPosition represents an agent's argument in a debate."
@@ -4616,6 +4822,44 @@
       ],
       "default": "COMMUNICATION_TIER_UNSPECIFIED",
       "description": "CommunicationTier defines the three-tier communication model.\n\n - COMMUNICATION_TIER_ALWAYS_REFERENCE: Tier 1: Always reference (shared mutable state, workflow context)\n - COMMUNICATION_TIER_AUTO_PROMOTE: Tier 2: Auto-promote based on size (\u003e1KB default)\n - COMMUNICATION_TIER_ALWAYS_VALUE: Tier 3: Always value (control messages, pattern refs, config)"
+    },
+    "v1CompactSessionResponse": {
+      "type": "object",
+      "properties": {
+        "compacted": {
+          "type": "boolean",
+          "description": "False when nothing older than keep_turns was left to compact."
+        },
+        "toolResultsStubbed": {
+          "type": "boolean",
+          "description": "Older tool results were replaced by re-fetchable stubs."
+        },
+        "turnsFolded": {
+          "type": "boolean",
+          "description": "Older turns were folded into the running summary."
+        },
+        "turnsKept": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Newest turns left verbatim."
+        },
+        "tokensBefore": {
+          "type": "string",
+          "format": "int64",
+          "description": "Estimated context size before the compaction."
+        },
+        "tokensAfter": {
+          "type": "string",
+          "format": "int64",
+          "description": "Estimated context size after the compaction."
+        },
+        "summaryVersion": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Version of the session summary after the compaction."
+        }
+      },
+      "description": "CompactSessionResponse reports what the compaction did. Token figures are\nloom's calibrated estimates of the compiled context."
     },
     "v1ComponentHealth": {
       "type": "object",
@@ -5151,6 +5395,121 @@
       },
       "description": "DebateRound captures one round of debate discussion."
     },
+    "v1DecisionBand": {
+      "type": "object",
+      "properties": {
+        "site": {
+          "type": "string",
+          "description": "Site name this band applies to (matches DecisionRequest.site)."
+        },
+        "actMin": {
+          "type": "number",
+          "format": "double",
+          "description": "At or above this confidence the Decider's answer is used."
+        },
+        "mode": {
+          "$ref": "#/definitions/v1DecisionBandMode",
+          "description": "How the site may use the answer."
+        },
+        "shadow": {
+          "type": "boolean",
+          "description": "Shadow records the Decider's answer alongside the existing mechanism's\nwithout branching on it. Overrides act_min: the path is always FALLBACK."
+        },
+        "aggregate": {
+          "$ref": "#/definitions/v1DecisionBandAggregate",
+          "description": "How multi-question requests are judged against act_min."
+        },
+        "trueMin": {
+          "type": "number",
+          "format": "double",
+          "description": "Probability at or above which a Noul answer counts as true at this\nsite: the keep threshold at a rerank, \"valid\" at a stage gate,\n\"consensus reached\" at a debate. 0 means the site default (0.5).\n\nIt is not act_min. act_min asks how decisive an answer is (its distance\nfrom 0.5) before the site may act at all; true_min asks which side of\nthe line a decisive answer falls on. Lowering act_min makes the site\nact on more answers, including ones it will then call false; lowering\ntrue_min makes more answers count as true."
+        }
+      },
+      "description": "DecisionBand is a call site's confidence routing rule."
+    },
+    "v1DecisionBandAggregate": {
+      "type": "string",
+      "enum": [
+        "DECISION_BAND_AGGREGATE_UNSPECIFIED",
+        "DECISION_BAND_AGGREGATE_MIN",
+        "DECISION_BAND_AGGREGATE_PER_QUESTION"
+      ],
+      "default": "DECISION_BAND_AGGREGATE_UNSPECIFIED",
+      "description": "DecisionBandAggregate says how a request with several questions is judged\nagainst act_min.\n\n - DECISION_BAND_AGGREGATE_MIN: The least confident answer must clear act_min (a request is as reliable\nas its weakest judgment). Right for requests whose answers are combined\ninto one decision.\n - DECISION_BAND_AGGREGATE_PER_QUESTION: The request acts when the Decider answered at all; the call site applies\nact_min to each answer separately. Right for fan-outs (one question per\ncandidate) where one uncertain candidate must not veto the rest."
+    },
+    "v1DecisionBandMode": {
+      "type": "string",
+      "enum": [
+        "DECISION_BAND_MODE_UNSPECIFIED",
+        "DECISION_BAND_MODE_REPLACE",
+        "DECISION_BAND_MODE_TIGHTEN_ONLY"
+      ],
+      "default": "DECISION_BAND_MODE_UNSPECIFIED",
+      "description": "DecisionBandMode says how a call site may use a decider answer.\n\n - DECISION_BAND_MODE_REPLACE: The answer may replace the site's existing mechanism when confident.\n - DECISION_BAND_MODE_TIGHTEN_ONLY: The answer may only make an outcome more restrictive: add a failure\ncount, raise NoDecision to Ask. It never clears, allows, or bypasses."
+    },
+    "v1DecisionConfig": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "Provider: \"off\", \"llm\" (adapter over a configured LLM role), \"jev\", \"mock\"."
+        },
+        "model": {
+          "type": "string",
+          "description": "Model for the provider (for Jev, a pinned version; aliases are rejected\nunless allow_alias is set)."
+        },
+        "allowAlias": {
+          "type": "boolean",
+          "description": "Allow a floating alias such as \"jev-latest\". Off by default."
+        },
+        "timeoutMs": {
+          "type": "string",
+          "format": "int64",
+          "description": "Per-request timeout in milliseconds."
+        },
+        "baseUrl": {
+          "type": "string",
+          "description": "Not accepted. The decider endpoint decides where the server's decider\ncredential is sent, so it is server-level only: looms.yaml\ndecision.base_url (LOOM_DECISION_BASE_URL) or TYPESAFE_BASE_URL. Any\nnon-empty value here fails validation (agent YAML, ValidateAgentConfig,\njudge registration) and is refused again when the decider is built."
+        },
+        "maxPerSession": {
+          "type": "string",
+          "format": "int64",
+          "description": "Maximum decision requests per session before the router falls back."
+        },
+        "maxCostUsdPerSession": {
+          "type": "number",
+          "format": "double",
+          "description": "Maximum decision spend per session in USD before the router falls back."
+        },
+        "bands": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1DecisionBand"
+          },
+          "description": "Bands per call site. Sites without a band are treated as shadow."
+        },
+        "llmRole": {
+          "type": "string",
+          "description": "LLM role the \"llm\" provider adapts (for example \"classifier\",\n\"compressor\"). Empty means the agent's main LLM."
+        },
+        "requestsPerMinute": {
+          "type": "string",
+          "format": "int64",
+          "description": "Requests per minute the process may send to the decider, set from the\ntier in use (the Vercel AI Gateway free tier allows 30; TypeSafe direct\npublishes 1,200). Agents with identical decider settings share one\nclient and therefore one budget. 0 means the provider's default."
+        },
+        "exposeTool": {
+          "type": "boolean",
+          "description": "Register the \"decide\" builtin tool on the agent so it can put one typed\nquestion (yes/no, choice, scale) to the decider mid-turn and branch on\nthe probabilities. Off by default: the layer's other uses (reranks,\ngates) do not depend on it. Calls are recorded at site tool.decide."
+        },
+        "maxQuestionsPerRequest": {
+          "type": "string",
+          "format": "int64",
+          "description": "Most questions one request may carry before the router splits it into\nconcurrent chunks (see DecisionRequest.fan_out_key). 0 means the\ndecider's own default (Jev: 16; a chunk that still fails with an\noverload or size error is bisected and retried). Providers that accept\nany size may set it high; it never changes answers, only how many\nround trips carry them."
+        }
+      },
+      "description": "DecisionConfig configures the decision layer for an agent or server."
+    },
     "v1DecomposeStrategy": {
       "type": "string",
       "enum": [
@@ -5185,6 +5544,15 @@
         }
       },
       "description": "DeleteArtifactResponse confirms deletion."
+    },
+    "v1DeleteLuaScriptResponse": {
+      "type": "object",
+      "properties": {
+        "deleted": {
+          "type": "boolean"
+        }
+      },
+      "description": "DeleteLuaScriptResponse reports whether a script was deleted."
     },
     "v1DeleteMCPServerResponse": {
       "type": "object",
@@ -5546,6 +5914,15 @@
         }
       },
       "description": "GetArtifactStatsResponse returns artifact storage stats."
+    },
+    "v1GetLuaScriptResponse": {
+      "type": "object",
+      "properties": {
+        "script": {
+          "$ref": "#/definitions/v1LuaScript"
+        }
+      },
+      "description": "GetLuaScriptResponse carries the script with its source."
     },
     "v1GetScheduleHistoryResponse": {
       "type": "object",
@@ -6182,7 +6559,7 @@
         "maxCostUsd": {
           "type": "number",
           "format": "double",
-          "description": "Cost gate in USD applied between actions, not a hard cap. 0 = no gate.\n\nBefore each same-model retry, each escalation rung and each judge call\nthe spend accounted for so far is compared against this ceiling, and the\naction is skipped when the ceiling is already reached. The action in\nprogress is never interrupted, so the ceiling is normally overshot by\nthe cost of one call.\n\nThe running total is a floor on real spend rather than an exact figure:\nper-attempt cost is read from the returned AgentResult, which carries\nthe final LLM response's usage, so an attempt that ran a tool loop\nreports less than it spent and the gate can admit a call that a precise\naccounting would have blocked.\n\nA judge call skipped by the ceiling accepts the output unexamined, with\na warning in the leveling report.\n\nUse it to bound runaway escalation, not to guarantee a billing limit."
+          "description": "Cost gate in USD applied between actions, not a hard cap. 0 = no gate.\n\nBefore each same-model retry, each escalation rung and each judge call\nthe spend accounted for so far is compared against this ceiling, and the\naction is skipped when the ceiling is already reached. The action in\nprogress is never interrupted, so the ceiling is normally overshot by\nthe cost of one call.\n\nThe running total is a floor on real spend rather than an exact figure:\nper-attempt cost is read from the returned AgentResult. That cost covers\nthe agent's whole conversation turn, but not the LLM calls the agent\nmakes outside it (graph-memory recall, memory compression and similar),\nso the gate can admit a call that a precise accounting would have\nblocked.\n\nA judge call skipped by the ceiling accepts the output unexamined, with\na warning in the leveling report.\n\nUse it to bound runaway escalation, not to guarantee a billing limit."
         },
         "ladder": {
           "type": "array",
@@ -6347,6 +6724,19 @@
         }
       },
       "description": "ListComponentTypesResponse returns the full catalog of component types."
+    },
+    "v1ListLuaScriptsResponse": {
+      "type": "object",
+      "properties": {
+        "scripts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1LuaScript"
+          }
+        }
+      },
+      "description": "ListLuaScriptsResponse returns saved scripts, name-sorted, without source."
     },
     "v1ListMCPServerToolsResponse": {
       "type": "object",
@@ -6635,6 +7025,78 @@
       },
       "description": "LoadPatternsResponse confirms pattern loading."
     },
+    "v1LuaScript": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Script name: ^[a-z][a-z0-9_]{2,40}$. Unique per server."
+        },
+        "description": {
+          "type": "string",
+          "description": "One or two sentences on what the script does."
+        },
+        "source": {
+          "type": "string",
+          "description": "Lua 5.4 source. Empty in ListLuaScripts responses."
+        },
+        "manifest": {
+          "$ref": "#/definitions/v1LuaScriptManifest",
+          "description": "Inputs and needs; unset when the script has no manifest."
+        },
+        "version": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Incremented on every save."
+        },
+        "published": {
+          "type": "boolean",
+          "description": "Whether the script may be used as a tool named lua_\u003cname\u003e."
+        },
+        "owner": {
+          "type": "string",
+          "description": "The agent that saved the script, or \"server\" for scripts saved over RPC."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the script was last saved."
+        },
+        "attachedAgents": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Agents that have lua_\u003cname\u003e attached."
+        }
+      },
+      "description": "LuaScript is a saved Lua script that run_lua can run by name."
+    },
+    "v1LuaScriptManifest": {
+      "type": "object",
+      "properties": {
+        "parameters": {
+          "type": "object",
+          "description": "JSON Schema (type object) for the script's args when it runs as a tool.\nAt most 20 properties and 4 KiB; no $ref."
+        },
+        "requires": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tool names the script calls. When non-empty, or when requires_set is\ntrue, the script may call only these. Empty with requires_set false\nmeans no restriction."
+        },
+        "returns": {
+          "type": "string",
+          "description": "One line describing the return value."
+        },
+        "requiresSet": {
+          "type": "boolean",
+          "description": "When true, requires is authoritative even if empty: an empty requires\nwith requires_set true means the script may call no tool at all. proto3\ncannot tell an empty repeated field from an absent one, so this flag\ncarries the difference. Responses set it whenever the stored manifest\nlists its requires (empty included)."
+        }
+      },
+      "description": "LuaScriptManifest describes a saved script's inputs and needs. It is\nrequired before the script can be published as a tool."
+    },
     "v1MCPServerHealth": {
       "type": "object",
       "properties": {
@@ -6676,11 +7138,11 @@
         },
         "transport": {
           "type": "string",
-          "title": "Transport type (stdio, http, sse)"
+          "title": "Transport type (stdio, http, sse, streamable-http)"
         },
         "command": {
           "type": "string",
-          "title": "Command to execute"
+          "title": "Command for stdio transport"
         },
         "args": {
           "type": "array",
@@ -6713,6 +7175,11 @@
           "type": "integer",
           "format": "int32",
           "title": "Number of tools exposed by this server"
+        },
+        "maxResponseBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Bound on one JSON-RPC message from this server (streamable-http only),\nas CONFIGURED. 0 means none was set and the 16 MiB default\n(transport.DefaultMaxResponseBytes) is in force; reporting the configured\nvalue rather than the effective one keeps \"unset\" distinguishable from\n\"explicitly 16 MiB\". Reported whatever the transport, so a stdio server\nshows what its config says even though the bound does not apply there."
         }
       },
       "description": "MCPServerInfo provides information about an MCP server."
@@ -8144,6 +8611,41 @@
         }
       },
       "description": "SQLiteStorageConfig configures the SQLite storage backend."
+    },
+    "v1SaveLuaScriptRequest": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "manifest": {
+          "$ref": "#/definitions/v1LuaScriptManifest"
+        },
+        "overwrite": {
+          "type": "boolean",
+          "description": "Replace an existing script with the same name. Without it, a name that\nis taken is AlreadyExists."
+        }
+      },
+      "description": "SaveLuaScriptRequest saves a script. The source must compile; it is never\nrun by this call."
+    },
+    "v1SaveLuaScriptResponse": {
+      "type": "object",
+      "properties": {
+        "script": {
+          "$ref": "#/definitions/v1LuaScript"
+        },
+        "created": {
+          "type": "boolean",
+          "description": "Whether the name was new (false: an existing script was replaced)."
+        }
+      },
+      "description": "SaveLuaScriptResponse carries the saved script."
     },
     "v1ScheduleConfig": {
       "type": "object",
@@ -9607,11 +10109,11 @@
       "properties": {
         "transport": {
           "type": "string",
-          "title": "Transport type (stdio, http, sse)"
+          "title": "Transport type (stdio, http, sse, streamable-http)"
         },
         "command": {
           "type": "string",
-          "title": "Command to execute"
+          "title": "Command to execute (required only for stdio transport)"
         },
         "args": {
           "type": "array",
@@ -9642,7 +10144,7 @@
         },
         "url": {
           "type": "string",
-          "title": "Server URL (required for http/sse transport)"
+          "title": "Server URL (required for http, sse, and streamable-http transports)"
         },
         "enableSessions": {
           "type": "boolean",
@@ -10496,7 +10998,7 @@
         "toolCallIndex": {
           "type": "integer",
           "format": "int32",
-          "description": "The provider's stream index for this tool call (when\nis_tool_input_stream). On providers that deliver calls in order\n(Anthropic, Bedrock, Gemini, Ollama) it matches the call's position in\nthe response's tool-call list. On OpenAI-compatible providers (OpenAI,\nAzure, LiteLLM, Mistral, HuggingFace) the final tool-call list is built\nfrom a map, so its order is not guaranteed to match this index; match a\nprogress event to its tool-started event by tool_call_id there. Gemini\nrepeats the function name in tool_call_id, so two parallel calls to the\nsame tool share an ID and only this index tells them apart. The agent's\nthrottling keys on the same index, so events for one call never\ninterleave with another's. A bare activity pulse (no tool_call_id, no\ntool_name, 0 bytes) carries index 0 without being call 0; skip pulses."
+          "description": "The provider's stream index for this tool call (when\nis_tool_input_stream). OpenAI-compatible providers (OpenAI, Azure,\nLiteLLM, Mistral, HuggingFace) return their tool calls in stream index\norder, so the index is monotonic with position but not necessarily equal\nto it: the OpenAI client (and so LiteLLM, Mistral and HuggingFace) drops\nan incomplete call with no id or name, and later calls keep their stream\nindex while shifting position. The Azure OpenAI client keeps such a\ncall, with whichever of id and name is missing left empty. Match a\nprogress event to its tool-started event\nby tool_call_id. On providers that deliver calls in order (Anthropic,\nBedrock, Gemini, Ollama) the index matches position when nothing is\ndropped. Gemini repeats the function name in tool_call_id, so two\nparallel calls to the same tool share an ID and only this index tells\nthem apart. The agent's throttling keys on the same index, so events for\none call never interleave with another's. A bare activity pulse (no\ntool_call_id, no tool_name, 0 bytes) carries index 0 without being call\n0; skip pulses."
         }
       },
       "description": "WeaveProgress streams incremental updates during execution."
@@ -10629,12 +11131,12 @@
         "totalTokens": {
           "type": "integer",
           "format": "int32",
-          "title": "Total tokens used across all agents"
+          "description": "Total tokens used across all agents. It counts the same calls as\nllm_calls."
         },
         "llmCalls": {
           "type": "integer",
           "format": "int32",
-          "title": "Number of LLM calls made"
+          "description": "Number of LLM calls the run made. For the fork-join, parallel, pipeline,\niterative, swarm and conditional patterns it is the sum of each agent\nresult's llm_calls (a result with 0 counts as one call), plus the calls\nthe executor makes itself: the LLM merge, stage validation, the swarm\njudge and the judge and vote retries, the conditional classifier and its\nretries, and stage attempts that a retry replaced.\n\nNot counted:\n- LLM calls an agent makes outside its conversation loop (see\n  AgentExecutionCost.llm_calls).\n- The losing calls of a leveled stage. Their USD is in total_cost_usd;\n  their calls and tokens are not.\n- Debate, pair-programming and teacher-student runs, which report an\n  empty cost.\n- After a HITL resume, the executor's own calls made before the\n  suspension. They are not checkpointed."
         }
       },
       "description": "WorkflowCost tracks costs across all agents in a workflow."

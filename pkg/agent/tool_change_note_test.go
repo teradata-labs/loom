@@ -26,6 +26,9 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 func TestToolDeltaNote(t *testing.T) {
@@ -100,7 +103,9 @@ func TestAgent_ToolChangeNoteOnlyOnChangedCall(t *testing.T) {
 
 	session, ok := ag.GetSession(sid)
 	require.True(t, ok)
-	for _, m := range session.GetMessages() {
+	// The stored rows (the compiled view still holds the turn's pinned
+	// reminders until the next turn starts).
+	for _, m := range rawSessionMessages(session) {
 		assert.NotContains(t, m.Content, "Tools added", "the note must never be persisted")
 	}
 }
@@ -252,4 +257,57 @@ agent:
 	assert.True(t, both.ContextReliefWarning)
 	only := build("    tool_change_note: true\n").GetConfig()
 	assert.False(t, only.ContextReliefWarning)
+}
+
+// The note the guard counts before the send is the note the send carries.
+func TestToolChangeNote_MatchesTheSentNote(t *testing.T) {
+	tool := func(name string) shuttle.Tool { return &ctxDumpStubTool{name: name} }
+	on := &Agent{config: &Config{ToolChangeNote: true}}
+
+	note, names := on.toolChangeNote(nil, []shuttle.Tool{tool("a")})
+	assert.Empty(t, note, "the turn's first call carries no note")
+	assert.Equal(t, []string{"a"}, names)
+
+	note, _ = on.toolChangeNote([]string{"a"}, []shuttle.Tool{tool("a"), tool("b")})
+	assert.Equal(t, toolDeltaNote([]string{"a"}, []string{"a", "b"}), note)
+	assert.NotEmpty(t, note)
+
+	off := &Agent{config: &Config{}}
+	note, _ = off.toolChangeNote([]string{"a"}, []shuttle.Tool{tool("b")})
+	assert.Empty(t, note)
+}
+
+// F8: with the guard on, the estimate before the call that first sees a
+// changed tool set counts the note that call sends.
+func TestAgent_PreflightEstimateCountsTheToolChangeNote(t *testing.T) {
+	core, logs := observer.New(zapcore.DebugLevel)
+	defer zap.ReplaceGlobals(zap.New(core))()
+
+	const sid = "tool_change_note_preflight"
+	llm := &recordingToolLLM{mockToolCallingLLM: &mockToolCallingLLM{
+		responses: []mockLLMResponse{
+			{toolCalls: []llmtypes.ToolCall{{ID: "c1", Name: "reveal", Input: map[string]interface{}{}}}},
+			{content: "done"},
+		},
+	}}
+	ag := NewAgent(&mockBackend{}, llm, WithConfig(&Config{MaxTurns: 10, MaxToolExecutions: 10, MaxIterations: 10,
+		ToolChangeNote: true, PreflightFit: true}))
+	ag.RegisterTool(&revealTool{namedStubTool: namedStubTool{name: "reveal"}, ag: ag, sessionID: sid})
+
+	_, err := ag.Chat(context.Background(), sid, "use the tool")
+	require.NoError(t, err)
+
+	llm.recMu.Lock()
+	defer llm.recMu.Unlock()
+	require.Len(t, llm.seen, 2)
+	sent := llm.seen[1][len(llm.seen[1])-1].Content
+	require.Contains(t, sent, "Tools added: late_tool.")
+
+	var pending []int64
+	for _, e := range logs.FilterMessage("preflight: request fits").All() {
+		pending = append(pending, e.ContextMap()["pending_reminder_bytes"].(int64))
+	}
+	require.Len(t, pending, 2, "one guarded estimate per provider call")
+	assert.Zero(t, pending[0], "the first call carries no note")
+	assert.Equal(t, int64(len(sent)), pending[1], "the second estimate counted the note the call sent")
 }

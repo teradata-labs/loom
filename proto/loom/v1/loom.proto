@@ -23,6 +23,7 @@ import "loom/v1/agent_config.proto";
 import "loom/v1/apps.proto";
 import "loom/v1/bus.proto";
 import "loom/v1/communication.proto";
+import "loom/v1/lua_script.proto";
 import "loom/v1/orchestration.proto";
 import "loom/v1/server.proto";
 import "loom/v1/shared_memory.proto";
@@ -158,6 +159,20 @@ service LoomService {
   // GetConversationHistory retrieves conversation history for a session.
   rpc GetConversationHistory(GetConversationHistoryRequest) returns (ConversationHistory) {
     option (google.api.http) = {get: "/v1/sessions/{session_id}/history"};
+  }
+
+  // CompactSession compacts a session's context on request, between turns:
+  // older tool results become re-fetchable stubs and older turns fold into the
+  // running summary, while the system prompt, the summary and the newest
+  // keep_turns turns stay verbatim. Folding makes an LLM call. Refused while a
+  // turn runs on the session (ABORTED) or while it waits for a human decision
+  // (FAILED_PRECONDITION); UNAVAILABLE when no summary could be produced or the
+  // result could not be saved, in which case history is unchanged.
+  rpc CompactSession(CompactSessionRequest) returns (CompactSessionResponse) {
+    option (google.api.http) = {
+      post: "/v1/sessions/{session_id}:compact"
+      body: "*"
+    };
   }
 
   // RegisterTool dynamically registers a new tool.
@@ -665,6 +680,32 @@ service LoomService {
     option (google.api.http) = {delete: "/v1/apps/{name}"};
   }
 
+  // Lua scripts (tools.lua). Every call returns FailedPrecondition when the
+  // server has Lua scripts disabled.
+
+  // ListLuaScripts lists saved Lua scripts, without their source.
+  rpc ListLuaScripts(ListLuaScriptsRequest) returns (ListLuaScriptsResponse) {
+    option (google.api.http) = {get: "/v1/lua-scripts"};
+  }
+
+  // GetLuaScript reads one saved Lua script, including its source.
+  rpc GetLuaScript(GetLuaScriptRequest) returns (GetLuaScriptResponse) {
+    option (google.api.http) = {get: "/v1/lua-scripts/{name}"};
+  }
+
+  // SaveLuaScript saves a Lua script. The source must compile.
+  rpc SaveLuaScript(SaveLuaScriptRequest) returns (SaveLuaScriptResponse) {
+    option (google.api.http) = {
+      post: "/v1/lua-scripts"
+      body: "*"
+    };
+  }
+
+  // DeleteLuaScript deletes a saved Lua script and its attachments.
+  rpc DeleteLuaScript(DeleteLuaScriptRequest) returns (DeleteLuaScriptResponse) {
+    option (google.api.http) = {delete: "/v1/lua-scripts/{name}"};
+  }
+
   // ListComponentTypes returns the catalog of available component types
   // for building dynamic UI apps.
   rpc ListComponentTypes(ListComponentTypesRequest) returns (ListComponentTypesResponse) {
@@ -915,17 +956,22 @@ message WeaveProgress {
   int64 tool_input_bytes = 23;
 
   // The provider's stream index for this tool call (when
-  // is_tool_input_stream). On providers that deliver calls in order
-  // (Anthropic, Bedrock, Gemini, Ollama) it matches the call's position in
-  // the response's tool-call list. On OpenAI-compatible providers (OpenAI,
-  // Azure, LiteLLM, Mistral, HuggingFace) the final tool-call list is built
-  // from a map, so its order is not guaranteed to match this index; match a
-  // progress event to its tool-started event by tool_call_id there. Gemini
-  // repeats the function name in tool_call_id, so two parallel calls to the
-  // same tool share an ID and only this index tells them apart. The agent's
-  // throttling keys on the same index, so events for one call never
-  // interleave with another's. A bare activity pulse (no tool_call_id, no
-  // tool_name, 0 bytes) carries index 0 without being call 0; skip pulses.
+  // is_tool_input_stream). OpenAI-compatible providers (OpenAI, Azure,
+  // LiteLLM, Mistral, HuggingFace) return their tool calls in stream index
+  // order, so the index is monotonic with position but not necessarily equal
+  // to it: the OpenAI client (and so LiteLLM, Mistral and HuggingFace) drops
+  // an incomplete call with no id or name, and later calls keep their stream
+  // index while shifting position. The Azure OpenAI client keeps such a
+  // call, with whichever of id and name is missing left empty. Match a
+  // progress event to its tool-started event
+  // by tool_call_id. On providers that deliver calls in order (Anthropic,
+  // Bedrock, Gemini, Ollama) the index matches position when nothing is
+  // dropped. Gemini repeats the function name in tool_call_id, so two
+  // parallel calls to the same tool share an ID and only this index tells
+  // them apart. The agent's throttling keys on the same index, so events for
+  // one call never interleave with another's. A bare activity pulse (no
+  // tool_call_id, no tool_name, 0 bytes) carries index 0 without being call
+  // 0; skip pulses.
   int32 tool_call_index = 24;
 }
 
@@ -1694,6 +1740,43 @@ message ConversationHistory {
 
   // Total message count
   int32 total_count = 3;
+}
+
+// CompactSessionRequest asks for a manual compaction of one session's context.
+message CompactSessionRequest {
+  // Session ID
+  string session_id = 1;
+
+  // Newest turns left verbatim. 0 uses the default (2); negative is invalid.
+  int32 keep_turns = 2;
+
+  // Optional guidance on what the summary must keep. At most 2000 bytes.
+  string focus = 3;
+}
+
+// CompactSessionResponse reports what the compaction did. Token figures are
+// loom's calibrated estimates of the compiled context.
+message CompactSessionResponse {
+  // False when nothing older than keep_turns was left to compact.
+  bool compacted = 1;
+
+  // Older tool results were replaced by re-fetchable stubs.
+  bool tool_results_stubbed = 2;
+
+  // Older turns were folded into the running summary.
+  bool turns_folded = 3;
+
+  // Newest turns left verbatim.
+  int32 turns_kept = 4;
+
+  // Estimated context size before the compaction.
+  int64 tokens_before = 5;
+
+  // Estimated context size after the compaction.
+  int64 tokens_after = 6;
+
+  // Version of the session summary after the compaction.
+  int32 summary_version = 7;
 }
 
 // Message represents a conversation message.
@@ -2621,10 +2704,10 @@ message MCPServerInfo {
   // Whether server is currently connected
   bool connected = 3;
 
-  // Transport type (stdio, http, sse)
+  // Transport type (stdio, http, sse, streamable-http)
   string transport = 4;
 
-  // Command to execute
+  // Command for stdio transport
   string command = 5;
 
   // Command arguments
@@ -2644,6 +2727,14 @@ message MCPServerInfo {
 
   // Number of tools exposed by this server
   int32 tool_count = 11;
+
+  // Bound on one JSON-RPC message from this server (streamable-http only),
+  // as CONFIGURED. 0 means none was set and the 16 MiB default
+  // (transport.DefaultMaxResponseBytes) is in force; reporting the configured
+  // value rather than the effective one keeps "unset" distinguishable from
+  // "explicitly 16 MiB". Reported whatever the transport, so a stdio server
+  // shows what its config says even though the bound does not apply there.
+  int64 max_response_bytes = 12;
 }
 
 // ToolFilterConfig configures which tools to register from an MCP server.
@@ -2666,10 +2757,10 @@ message AddMCPServerRequest {
   // Whether to enable the server
   bool enabled = 2;
 
-  // Transport type (stdio, http, sse)
+  // Transport type (stdio, http, sse, streamable-http)
   string transport = 3;
 
-  // Command to execute
+  // Command to execute (required for enabled stdio transport)
   string command = 4;
 
   // Command arguments
@@ -2687,7 +2778,7 @@ message AddMCPServerRequest {
   // Tool filter configuration
   ToolFilterConfig tool_filter = 9;
 
-  // Server URL (required for http/sse transport)
+  // Server URL (required for enabled http, sse, and streamable-http transports)
   string url = 10;
 
   // Enable session management (for streamable-http transport)
@@ -2695,6 +2786,13 @@ message AddMCPServerRequest {
 
   // Enable stream resumption (for streamable-http transport)
   bool enable_resumption = 12;
+
+  // Bound on one JSON-RPC message from this server (streamable-http only).
+  // Over it the read stops and the response is refused, never truncated.
+  // 0 selects the 16 MiB default (transport.DefaultMaxResponseBytes); see
+  // manager.ServerConfig.MaxResponseBytes for the full semantics, including
+  // the clamp at transport.MaxResponseLimit and why stdio is unbounded.
+  int64 max_response_bytes = 13;
 }
 
 // AddMCPServerResponse confirms MCP server addition.
@@ -2717,10 +2815,10 @@ message UpdateMCPServerRequest {
   // Whether to enable the server
   bool enabled = 2;
 
-  // Transport type (stdio, http, sse)
+  // Transport type (stdio, http, sse, streamable-http)
   string transport = 3;
 
-  // Command to execute
+  // Command to execute (required for enabled stdio transport)
   string command = 4;
 
   // Command arguments
@@ -2741,7 +2839,7 @@ message UpdateMCPServerRequest {
   // Timeout in seconds for restart operation (default: 1 second)
   int32 timeout_seconds = 10;
 
-  // Server URL (required for http/sse transport)
+  // Server URL (required for enabled http, sse, and streamable-http transports)
   string url = 11;
 
   // Enable session management (for streamable-http transport)
@@ -2749,6 +2847,13 @@ message UpdateMCPServerRequest {
 
   // Enable stream resumption (for streamable-http transport)
   bool enable_resumption = 13;
+
+  // Bound on one JSON-RPC message from this server (streamable-http only).
+  // Over it the read stops and the response is refused, never truncated.
+  // 0 selects the 16 MiB default (transport.DefaultMaxResponseBytes); see
+  // manager.ServerConfig.MaxResponseBytes for the full semantics, including
+  // the clamp at transport.MaxResponseLimit and why stdio is unbounded.
+  int64 max_response_bytes = 14;
 }
 
 // DeleteMCPServerRequest deletes an MCP server.
@@ -2804,10 +2909,10 @@ message MCPServerHealth {
 
 // TestMCPServerConnectionRequest tests an MCP server configuration.
 message TestMCPServerConnectionRequest {
-  // Transport type (stdio, http, sse)
+  // Transport type (stdio, http, sse, streamable-http)
   string transport = 1;
 
-  // Command to execute
+  // Command to execute (required only for stdio transport)
   string command = 2;
 
   // Command arguments
@@ -2825,7 +2930,7 @@ message TestMCPServerConnectionRequest {
   // Timeout for connection test in seconds (default: 10)
   int32 timeout_seconds = 7;
 
-  // Server URL (required for http/sse transport)
+  // Server URL (required for http, sse, and streamable-http transports)
   string url = 8;
 
   // Enable session management (for streamable-http transport)

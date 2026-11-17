@@ -179,11 +179,12 @@ headings; only a pass in which every chunk is done removes it. See
 `deploy/longmemeval/README.md` for the full contract.
 
 Limitation: the server only recognises a 5xx that the provider client typed.
-Both Bedrock clients do (AWS SDK and Anthropic SDK errors carry the status).
-The direct HTTP clients (Anthropic API, OpenAI, Azure OpenAI, Gemini, Ollama)
-currently report a 5xx as a plain `API error (status 503)` message, which the
-server does not parse, so against those providers a 5xx outage still comes
-back as `Internal` (exit 0). Throttling is recognised for every provider:
+Both Bedrock clients do (AWS SDK and Anthropic SDK errors carry the status),
+and so do the direct HTTP clients (Anthropic API, OpenAI, Azure OpenAI, Gemini,
+Ollama) for a 5xx that arrives before any content, so against any of them a
+5xx outage that outlasts looms' retries comes back as `Unavailable` (exit 75).
+A 5xx after content has started streaming is not typed and comes back as
+`Internal` (exit 0). Throttling is recognised for every provider:
 the HTTP clients type a 429, and the SDK clients' throttling errors carry the
 status or a recognisable message.
 

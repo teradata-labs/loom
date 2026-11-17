@@ -82,6 +82,20 @@ type ServerConfig struct {
 	// Timeout for server operations (e.g., "30s", "1m")
 	Timeout string `yaml:"timeout" json:"timeout"`
 
+	// MaxResponseBytes bounds ONE JSON-RPC message read from this server over
+	// the streamable-http transport, on both the plain-JSON and the SSE path.
+	// Over it the read stops and the response is refused, never truncated.
+	//
+	// Zero selects transport.DefaultMaxResponseBytes (16 MiB). Raise it for a
+	// server whose resources/read, resource blob or wide query result
+	// legitimately exceeds that; set transport.MaxResponseLimit for
+	// effectively no limit (larger values are clamped to it, so the bound's
+	// own arithmetic cannot overflow).
+	//
+	// Ignored by the stdio transport, which is unbounded on purpose: a stdio
+	// server is a child process this host launched, not a remote peer.
+	MaxResponseBytes int64 `yaml:"max_response_bytes" json:"max_response_bytes"`
+
 	// TrustAnnotations opts this server in to having its tool annotations
 	// (readOnlyHint, destructiveHint) believed. Default false: the MCP spec
 	// treats annotations as untrusted unless the server is trusted, so with

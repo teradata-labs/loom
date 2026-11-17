@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -196,7 +197,8 @@ func (c *Client) callAPI(ctx context.Context, req *GenerateContentRequest) (*Gen
 
 	// Check status code
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody))
+		return nil, llm.WrapHTTPStatus(httpResp.StatusCode,
+			fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody)))
 	}
 
 	// Parse response
@@ -207,7 +209,8 @@ func (c *Client) callAPI(ctx context.Context, req *GenerateContentRequest) (*Gen
 
 	// Check for API errors
 	if resp.Error != nil {
-		return nil, fmt.Errorf("gemini API error: %s (code: %d)", resp.Error.Message, resp.Error.Code)
+		return nil, llm.WrapHTTPStatus(geminiErrorHTTPStatus(resp.Error.Code),
+			fmt.Errorf("gemini API error: %s (code: %d)", resp.Error.Message, resp.Error.Code))
 	}
 
 	return &resp, nil
@@ -237,6 +240,15 @@ func (c *Client) sendOnce(apiURL string, body []byte) func(context.Context) (int
 			return nil, llm.NewThrottleError(
 				fmt.Errorf("API error (status 429): %s", string(respBody)),
 				llm.RetryAfterFromHeaders(resp.Header))
+		}
+		// 500/502/503/504/529: retried by the rate limiter under the throttle
+		// budget; status known before any content streams.
+		if llm.IsTransientStatus(resp.StatusCode) {
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, llm.MaxErrorBodyBytes))
+			_ = resp.Body.Close()
+			return nil, llm.NewTransientError(
+				fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody)),
+				resp.StatusCode, llm.RetryAfterFromHeaders(resp.Header))
 		}
 		return resp, nil
 	}
@@ -550,7 +562,13 @@ func validateGeminiNestedComposites(schema *shuttle.JSONSchema, path string) err
 			return fmt.Errorf("unsupported Gemini tool schema %s at %s", keyword.name, path)
 		}
 	}
-	for name, property := range schema.Properties {
+	propertyNames := make([]string, 0, len(schema.Properties))
+	for name := range schema.Properties {
+		propertyNames = append(propertyNames, name)
+	}
+	sort.Strings(propertyNames)
+	for _, name := range propertyNames {
+		property := schema.Properties[name]
 		if err := validateGeminiNestedComposites(property, fmt.Sprintf("%s.properties[%q]", path, name)); err != nil {
 			return err
 		}
@@ -703,7 +721,8 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	// Check status code before streaming
 	if httpResp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(httpResp.Body)
-		return nil, fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody))
+		return nil, llm.WrapHTTPStatus(httpResp.StatusCode,
+			fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody)))
 	}
 
 	// 3. Process Server-Sent Events stream
@@ -740,7 +759,8 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 
 		// Check for API errors
 		if chunk.Error != nil {
-			return nil, fmt.Errorf("gemini API error: %s (code: %d)", chunk.Error.Message, chunk.Error.Code)
+			return nil, llm.WrapHTTPStatus(geminiErrorHTTPStatus(chunk.Error.Code),
+				fmt.Errorf("gemini API error: %s (code: %d)", chunk.Error.Message, chunk.Error.Code))
 		}
 
 		if len(chunk.Candidates) > 0 {
@@ -866,3 +886,10 @@ var _ llmtypes.LLMProvider = (*Client)(nil)
 
 // Ensure Client implements StreamingLLMProvider interface.
 var _ llmtypes.StreamingLLMProvider = (*Client)(nil)
+
+func geminiErrorHTTPStatus(code int) int {
+	if code >= 100 && code < 600 {
+		return code
+	}
+	return 0
+}

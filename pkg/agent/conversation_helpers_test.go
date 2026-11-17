@@ -338,7 +338,9 @@ func TestContextReminder_WarnsOnlyWhenReliefCannotReachTarget(t *testing.T) {
 
 	session, ok := ag.GetSession("ctx_reminder_warn")
 	require.True(t, ok)
-	for _, m := range session.GetMessages() {
+	// The stored rows (the compiled view still holds the turn's pinned
+	// reminders until the next turn starts).
+	for _, m := range rawSessionMessages(session) {
 		assert.NotContains(t, m.Content, reliefWarningText, "warning must not be persisted")
 	}
 }
@@ -460,7 +462,9 @@ func TestContextReminder_ResendAfterRefusalKeepsWarning(t *testing.T) {
 	}
 	session, ok := ag.GetSession("ctx_reminder_resend")
 	require.True(t, ok)
-	for _, m := range session.GetMessages() {
+	// The stored rows (the compiled view still holds the turn's pinned
+	// reminders until the next turn starts).
+	for _, m := range rawSessionMessages(session) {
 		assert.NotContains(t, m.Content, reliefWarningText, "warning must not be persisted")
 	}
 }
