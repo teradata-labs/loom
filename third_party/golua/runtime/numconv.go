@@ -1,4 +1,4 @@
-// Modified for loom, 2026: adds ClampToInt (golua PR #136); hexadecimal integers are accumulated digit by digit, wrapping as Lua specifies, instead of the last 16 digits being parsed with strconv.ParseUint; a second sign after a leading "+" is rejected.
+// Modified for loom, 2026: adds ClampToInt (golua PR #136); hexadecimal integers are accumulated digit by digit, wrapping as Lua specifies, instead of the last 16 digits being parsed with strconv.ParseUint; a second sign after a leading "+" and an underscore anywhere are rejected.
 // See third_party/golua/README.md for the list of changes from upstream.
 
 package runtime
@@ -162,7 +162,9 @@ func stringToInt(s string) (int64, NumberType) {
 func StringToNumber(s string) (n int64, f float64, tp NumberType) {
 	s = strings.TrimSpace(s)
 	var err error
-	if len(s) == 0 {
+	// A Lua numeral never contains '_', but strconv.ParseFloat accepts it
+	// between digits ("1_0.5" is 10.5 to Go, nil to reference Lua).
+	if len(s) == 0 || strings.IndexByte(s, '_') >= 0 {
 		tp = NaN
 		return
 	}
