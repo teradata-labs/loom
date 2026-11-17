@@ -3852,6 +3852,32 @@ func turnOrigin(session *Session, t int64) types.SessionContext {
 	return ""
 }
 
+// errTurnUndone is why a parked request is closed by a rewind.
+var errTurnUndone = errors.New("the turn that raised this request was undone")
+
+// retireUndoneParks closes the session's pending parked requests after a
+// rewind removed the turn that raised them: the request is closed, its parked
+// handles are released and its task is settled, as for any parked turn that
+// can no longer be resumed. Approvals already given for the turns that remain
+// are not touched.
+func (a *Agent) retireUndoneParks(ctx context.Context, sessionID string) {
+	if a.hitlPark == nil {
+		return
+	}
+	reqs, err := a.hitlPark.store.ListBySession(ctx, sessionID)
+	if err != nil {
+		zap.L().Error("rewind: listing the session's requests failed; a parked request of an undone turn may still hold the session",
+			zap.String("session_id", sessionID), zap.Error(err))
+		return
+	}
+	for _, r := range reqs {
+		if r == nil || r.RequestType != "parked" || r.Status != "pending" {
+			continue
+		}
+		a.abandonParkedRequest(ctx, r, errTurnUndone)
+	}
+}
+
 // EndsTurnKey is the result metadata a tool sets to end the turn it ran in.
 // The turn's reply is then the words the model said alongside the call, which
 // may be none, and nothing is generated after it: for a tool that hands
@@ -5967,6 +5993,11 @@ func (a *Agent) RewindSession(ctx context.Context, sessionID string, turns int) 
 	if _, err := store.TruncateFrom(ctx, sessionID, from); err != nil {
 		return 0, err
 	}
+	// A turn waiting for a person's decision is the session's last turn, so it
+	// is among the turns just undone: its request is closed with it. Left
+	// pending, it would refuse every later turn of the session, and nothing
+	// could answer it, because the batch it asked about is gone.
+	a.retireUndoneParks(ctx, sessionID)
 	// The loaded copy is now stale. Dropping it makes the next access reload
 	// the truncated history from the store.
 	//
