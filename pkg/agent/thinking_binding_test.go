@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -253,4 +254,22 @@ func (f *flakyLLM) Model() string { return "flaky-model" }
 // retryTestContext is a call with no session behind it.
 func retryTestContext() *agentContext {
 	return &agentContext{Context: context.Background(), tracer: observability.NewNoOpTracer()}
+}
+
+// Under the retry policy an agent is built with, a refused thinking block is
+// dropped and the request resent once: the refused request is not sent again
+// first, whatever form the refusal arrives in.
+func TestThinkingBinding_ARefusedBlockIsNotRetriedBeforeItIsDropped(t *testing.T) {
+	for i, refusal := range thinkingRefusals {
+		sm := midTurnMemory(t)
+		provider := &bindingLLM{refusal: refusal}
+		cfg := DefaultConfig()
+		cfg.Retry.InitialDelay = time.Millisecond
+		cfg.Retry.MaxDelay = time.Millisecond
+		a := &Agent{id: "binding-test", llm: provider, config: cfg}
+
+		_, err := a.chatWithRetry(sessionContext(sm), sm.GetMessagesForLLM(), nil)
+		require.NoError(t, err)
+		assert.Equal(t, []int{1, 0}, provider.replayed, "refusal %d: the refused request was sent again before the block was dropped", i)
+	}
 }

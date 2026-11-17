@@ -332,6 +332,12 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 			return nil, err
 		}
 
+		// A refused thinking block is refused again on every resend of the
+		// same request: the caller drops the blocks and resends once.
+		if llm.IsThinkingBlockRefused(err) {
+			return nil, err
+		}
+
 		// The rate limiter already spent its whole MaxRetries budget on this
 		// error, with backoff and Retry-After honoured. It is not a throttle
 		// (an exhausted throttle was waited out above), so it is a transient
