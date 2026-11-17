@@ -1000,8 +1000,48 @@ func (s *SessionStore) loadMessagesLocked(ctx context.Context, sessionID string)
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating messages: %w", err)
 	}
+	_ = rows.Close()
+
+	// A call with no result among the loaded rows either never finished or had
+	// its result folded. The folded flag says which: a folded result's call
+	// was removed by the fold, and is removed here too.
+	if orphans := CallsWithoutResult(messages); len(orphans) > 0 {
+		folded, err := s.foldedResultIDsLocked(ctx, sessionID, orphans)
+		if err != nil {
+			return nil, err
+		}
+		DropFoldedCalls(messages, folded)
+	}
 
 	return messages, nil
+}
+
+// foldedResultIDsLocked returns which of the tool-call ids have a folded
+// result row in the session. The caller holds s.mu.
+func (s *SessionStore) foldedResultIDsLocked(ctx context.Context, sessionID string, ids []string) (map[string]bool, error) {
+	placeholders := make([]string, len(ids))
+	args := make([]interface{}, 0, len(ids)+1)
+	args = append(args, sessionID)
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT tool_use_id FROM messages WHERE session_id = ? AND folded = 1 AND tool_use_id IN ("+strings.Join(placeholders, ", ")+")",
+		args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query folded results: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	folded := make(map[string]bool)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("failed to scan folded result: %w", err)
+		}
+		folded[id] = true
+	}
+	return folded, rows.Err()
 }
 
 var _ CostStorage = (*SessionStore)(nil)

@@ -416,3 +416,48 @@ func (sm *SegmentedMemory) ReplaceInFlightResults(ctx context.Context, note stri
 	sm.tokenCountDirty = false
 	return n
 }
+
+// CallsWithoutResult returns the ids of the tool calls in msgs that no result
+// row among them answers. A session loaded from the store has one for a call
+// that never finished, and for a call whose result a fold removed: the fold
+// keeps a recent assistant row for its words and folds the row's results, and
+// the load reads no folded row.
+func CallsWithoutResult(msgs []Message) []string {
+	answered := make(map[string]bool)
+	for i := range msgs {
+		if msgs[i].Role == "tool" && msgs[i].ToolUseID != "" {
+			answered[msgs[i].ToolUseID] = true
+		}
+	}
+	var ids []string
+	for i := range msgs {
+		for _, c := range msgs[i].ToolCalls {
+			if c.ID != "" && !answered[c.ID] {
+				ids = append(ids, c.ID)
+			}
+		}
+	}
+	return ids
+}
+
+// DropFoldedCalls removes from msgs the tool calls whose results are folded,
+// so a loaded session holds the rows the fold left in memory: the row's
+// words, without its tool traffic. A call with no folded result stays, and
+// compile answers it with the synthetic failed result.
+func DropFoldedCalls(msgs []Message, folded map[string]bool) {
+	if len(folded) == 0 {
+		return
+	}
+	for i := range msgs {
+		if len(msgs[i].ToolCalls) == 0 {
+			continue
+		}
+		var kept []ToolCall
+		for _, c := range msgs[i].ToolCalls {
+			if !folded[c.ID] {
+				kept = append(kept, c)
+			}
+		}
+		msgs[i].ToolCalls = kept
+	}
+}
