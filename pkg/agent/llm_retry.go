@@ -740,6 +740,11 @@ func (a *Agent) chatWithStreaming(ctx Context, messages []Message, tools []shutt
 		ttft = 0
 		ttftRecorded = false
 		emitted = false
+		// The flush interval and TTFT are measured from this attempt's start,
+		// not the first attempt's: a retry after a backoff would otherwise
+		// flush its first buffered token at once.
+		startTime = time.Now()
+		lastFlushTime = startTime
 		clear(toolInputCalls)
 
 		var err error

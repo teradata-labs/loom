@@ -117,6 +117,15 @@ func TestChatWithStreaming_RetriesFailureBeforeAnyOutput(t *testing.T) {
 			wantCalls: 3,
 		},
 		{
+			// The backoff (60 ms) is longer than the flush interval (50 ms).
+			// The flush clock restarts per attempt, so a retry's buffered
+			// tokens still stay buffered and the retry can go on.
+			name:      "backoff longer than the flush interval still retries",
+			retry:     RetryConfig{Enabled: true, MaxRetries: 3, InitialDelay: 60 * time.Millisecond, Multiplier: 1, MaxDelay: 60 * time.Millisecond},
+			stub:      &failingStreamLLM{failures: 2, tokensBeforeFail: 3, err: errConnReset},
+			wantCalls: 3,
+		},
+		{
 			name:      "budget spent returns the wrapped error",
 			retry:     fastRetry(2),
 			stub:      &failingStreamLLM{failures: 10, err: errConnReset},

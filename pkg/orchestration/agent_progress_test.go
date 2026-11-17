@@ -6,6 +6,7 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -15,7 +16,9 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
+	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
 // progressRecorder collects agent progress events from concurrent agents.
@@ -259,4 +262,65 @@ func TestRetriesAndJudge_ProgressEventsNameTheirAgent(t *testing.T) {
 		}}})
 		assert.Equal(t, 2*counts["agent-b"], counts["agent-a"], "the condition agent's two turns: %v", counts)
 	})
+}
+
+// streamingFlakyLLM streams its response through the token callback. Its
+// first `failures` ChatStream calls fail before any token, as a connection
+// reset before the first byte does.
+type streamingFlakyLLM struct {
+	mockLLMProvider
+	smu      sync.Mutex
+	streams  int
+	failures int
+	out      string
+}
+
+func (s *streamingFlakyLLM) ChatStream(_ context.Context, _ []llmtypes.Message, _ []shuttle.Tool, cb llmtypes.TokenCallback) (*llmtypes.LLMResponse, error) {
+	s.smu.Lock()
+	s.streams++
+	n := s.streams
+	s.smu.Unlock()
+	if n <= s.failures {
+		return nil, errors.New("read tcp: connection reset by peer")
+	}
+	cb(s.out)
+	return &llmtypes.LLMResponse{Content: s.out, StopReason: "stop"}, nil
+}
+
+func (s *streamingFlakyLLM) streamCount() int {
+	s.smu.Lock()
+	defer s.smu.Unlock()
+	return s.streams
+}
+
+// With a progress callback, the agents of a parallel step take the
+// streaming path. A stream that fails before any token is retried under the
+// agent's Retry config, the step succeeds, every event names its agent, and
+// the caller sees no event of the failed attempts.
+func TestParallel_StreamingAgentFailureBeforeOutputIsRetried(t *testing.T) {
+	t.Parallel()
+	flaky := &streamingFlakyLLM{failures: 2, out: "out a"}
+	steady := &streamingFlakyLLM{out: "out b"}
+	orch := NewOrchestrator(Config{Logger: zaptest.NewLogger(t), Tracer: observability.NewNoOpTracer()})
+	orch.RegisterAgent("agent-a", createMockAgent(t, "agent-a", flaky))
+	orch.RegisterAgent("agent-b", createMockAgent(t, "agent-b", steady))
+	rec := &progressRecorder{}
+	ctx := agent.ContextWithProgressCallback(context.Background(), rec.callback)
+
+	result, err := orch.ExecutePattern(ctx, twoAgentPatterns()["parallel"])
+	require.NoError(t, err)
+
+	assert.Equal(t, 3, flaky.streamCount(), "two failed attempts, then success")
+	assert.Equal(t, 1, steady.streamCount())
+	outputs := []string{result.AgentResults[0].Output, result.AgentResults[1].Output}
+	assert.ElementsMatch(t, []string{"out a", "out b"}, outputs)
+
+	counts := rec.byAgent()
+	assert.Zero(t, counts[""], "an event named no agent")
+	assert.Len(t, counts, 2, "an event named an unknown agent: %v", counts)
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	for _, ev := range rec.events {
+		assert.NotEqual(t, agent.StageFailed, ev.Stage, "a retried failure must not reach the caller: %+v", ev)
+	}
 }
