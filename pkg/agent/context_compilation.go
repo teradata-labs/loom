@@ -234,8 +234,7 @@ func (sm *SegmentedMemory) compilePrefixLocked(msgs []Message, t int64, fingerpr
 // everything before them is unchanged, though: the provider checks that a
 // replayed block follows the same system prompt, tools and messages it was
 // written after (an edit is a 400 on enforced accounts), and loom does edit
-// settled history — offload stubs re-render at the settle boundary, the turn
-// end drops payloads, relief evicts and folds. So AddMessage records, for each
+// settled history — a fold replaces it with a summary. So AddMessage records, for each
 // assistant message with thinking blocks, the fingerprint of the compiled
 // context the model had just been sent, and compile keeps the blocks on a
 // settled turn only while the context before them still fingerprints the
@@ -925,9 +924,9 @@ func (sm *SegmentedMemory) ReleasePressure(ctx context.Context, penalty int) (sh
 
 // foldLocked folds every folded=false row with turn ≤ b into summary version
 // n+1 (HLD §5.4): pairs fold whole; compressor input = current summary + the
-// region AS RENDERED (stubs as stubs); the version insert and the region's
-// folded flags commit in one transaction; the new version and flags are
-// mirrored into memory in the same step; skills whose manage_skills load pair
+// region as rendered (tool results as bounded at arrival); the version insert
+// and the region's folded flags commit in one transaction; the new version and
+// flags are mirrored into memory in the same step; skills whose manage_skills load pair
 // lies inside the region are deactivated. Returns whether anything changed.
 //
 // Lock contract: held at entry and exit, RELEASED across the compressor's LLM
@@ -1001,8 +1000,9 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 	}
 
 	// Compressor input: the current summary text + the region as rendered —
-	// stubs as stubs, so it summarizes conversation, never payloads — with
-	// msg: addresses visible for citation (§5.4.2/4). Built under the lock,
+	// each tool result as it was bounded at arrival, so it summarizes what the
+	// model was sent, never a whole payload — with msg: addresses visible for
+	// citation (§5.4.2/4). Built under the lock,
 	// as value copies: nothing the unlocked compress phase touches aliases
 	// shared state.
 	t := sm.currentTurnLocked()

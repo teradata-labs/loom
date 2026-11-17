@@ -3250,14 +3250,9 @@ func (a *Agent) runConversationLoop(ctx Context) (_ *Response, retErr error) {
 		// The step in flight must fit the provider's window (fitStepToWindow).
 		// A fold call does not carry it.
 		if !foldPending && !scriptedTurn(ctx) {
-			note := ""
-			if a.config.ToolChangeNote && prevToolNames != nil {
-				names := make([]string, 0, len(tools))
-				for _, t := range tools {
-					names = append(names, t.Name())
-				}
-				note = toolDeltaNote(prevToolNames, names)
-			}
+			// The same note the send carries (sendChat), so the count and the
+			// send cannot drift.
+			note, _ := a.toolChangeNote(prevToolNames, tools)
 			// The turn's other reminders are the pending tail the count already
 			// holds (SetTransientTail); the tool-change note is not among them.
 			if a.fitStepToWindow(ctx, session, "step_results_too_large", len(note), span, turnCount) {
