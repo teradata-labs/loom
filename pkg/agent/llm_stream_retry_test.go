@@ -217,3 +217,26 @@ func TestStreamFailureRetry_ContextEndsDuringBackoff(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
 }
+
+// TTFT is measured from the start of the call, so after a retry it includes
+// the backoff: the latency the caller sees, as before the retry existed.
+func TestChatWithStreaming_TTFTIncludesRetryWait(t *testing.T) {
+	t.Parallel()
+	stub := &failingStreamLLM{failures: 1, err: errConnReset}
+	var mu sync.Mutex
+	var last ProgressEvent
+	cb := func(e ProgressEvent) {
+		mu.Lock()
+		last = e
+		mu.Unlock()
+	}
+	backoff := 60 * time.Millisecond
+	a := &Agent{llm: stub, config: &Config{Retry: RetryConfig{Enabled: true, MaxRetries: 1, InitialDelay: backoff, Multiplier: 1, MaxDelay: backoff}}}
+
+	_, err := a.chatWithStreaming(newTestContextWithProgress(cb), []Message{{Role: "user", Content: "hi"}}, nil, cb)
+	require.NoError(t, err)
+	require.Equal(t, 2, stub.callCount())
+	mu.Lock()
+	defer mu.Unlock()
+	assert.GreaterOrEqual(t, last.TTFT, backoff.Milliseconds(), "TTFT must include the retry backoff")
+}
