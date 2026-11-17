@@ -2131,30 +2131,19 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// is restored by rendering that Timestamp into the compiled view only
 	// (renderLocked), never into the stored body.
 	//
-	// Redelivery after a failed turn (workflow sub-agent requeue, spawned-agent
-	// Chat retry, and similar): Chat already appended this Content before the
-	// failure, so re-appending would leave a duplicate user row, inflate turn
-	// and token counts, and show the model the task twice. When the session's
-	// last message is already that user Content, reuse it. A successful turn
-	// ends with an assistant row, so a deliberate repeat of the same text still
-	// appends. If the failed turn left tool/assistant rows after the user row,
-	// the last message is no longer that user Content and a fresh user row is
-	// appended — those mid-turn side effects may then re-run on retry.
-	var userMsg Message
-	// Use the raw L1 rows, not GetMessages(): that path renders for the LLM
-	// (timestamp stamps, folding) and would never match userMessage byte-for-byte.
-	if msgs := rawSessionMessages(session); len(msgs) > 0 {
-		last := msgs[len(msgs)-1]
-		if last.Role == "user" && last.Content == userMessage {
-			userMsg = last
-		}
-	}
-	if userMsg.Role == "" {
+	// A caller that redelivers the same work after a failed turn marks each
+	// attempt with WithRedeliveryKey. If the failed attempt's user row is still
+	// the session's last row, reuse it rather than store the prompt twice. Every
+	// other call appends, so plain Chat behaviour is unchanged.
+	redeliveryKey := redeliveryKeyFromContext(ctx)
+	userMsg, reused := redeliveredUserRow(session, redeliveryKey)
+	if !reused {
 		userMsg, _ = a.appendMessage(ctx, session, Message{
 			Role:          "user",
 			Content:       userMessage,
 			ContentBlocks: p.contentBlocks,
 			AgentID:       a.GetID(), // Track which agent received this message
+			RedeliveryKey: redeliveryKey,
 			Timestamp:     time.Now(),
 		}, true)
 	}
