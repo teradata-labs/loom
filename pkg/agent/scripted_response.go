@@ -7,6 +7,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 )
 
 // scriptedResponseKey carries a generation-free assistant turn through the
@@ -38,4 +39,12 @@ func WithScriptedResponse(ctx context.Context, text string) context.Context {
 func scriptedResponseFromContext(ctx context.Context) (string, bool) {
 	t, ok := ctx.Value(scriptedResponseKey{}).(string)
 	return t, ok
+}
+
+// scriptedTurn is whether this turn's reply is scripted. Such a turn calls no
+// model, so it cannot be asked for a fold: its scripted text would be read as
+// the summary.
+func scriptedTurn(ctx context.Context) bool {
+	t, ok := scriptedResponseFromContext(ctx)
+	return ok && strings.TrimSpace(t) != ""
 }

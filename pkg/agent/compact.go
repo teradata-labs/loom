@@ -37,13 +37,13 @@ const MaxCompactFocusBytes = 2000
 var ErrCompactionBusy = errors.New("compaction already in progress for this session")
 
 // ErrSummaryUnavailable is returned when older turns needed folding but no
-// summary could be produced (no LLM compressor, or it failed) and nothing else
-// was compacted. History is untouched; trying again later may work.
+// summary could be produced (no LLM compressor, or it failed). History is
+// untouched; trying again later may work.
 var ErrSummaryUnavailable = errors.New("could not summarize the older conversation")
 
 // ErrCompactionNotSaved is returned when compacting failed to write to the
-// session store and nothing else was compacted. The summary call may already
-// have been paid for; history is untouched.
+// session store. The summary call may already have been paid for; history is
+// untouched.
 var ErrCompactionNotSaved = errors.New("could not save the compaction")
 
 // CompactOptions steers a manual compaction.
@@ -63,8 +63,6 @@ type CompactResult struct {
 	// context around the compaction.
 	TokensBefore int
 	TokensAfter  int
-	// ToolResultsStubbed is true when older tool results became re-fetchable stubs.
-	ToolResultsStubbed bool
 	// TurnsFolded is true when older turns were folded into the running summary.
 	TurnsFolded bool
 	// SummaryVersion is the session summary's version after the compaction.
@@ -76,11 +74,8 @@ type CompactResult struct {
 // TokensSaved is the estimated reduction.
 func (r CompactResult) TokensSaved() int { return max(r.TokensBefore-r.TokensAfter, 0) }
 
-// Compact is the user-requested compaction: older tool results become stubs
-// (re-fetchable) and older turns fold into the running summary; ROM, the
-// summary and the newest KeepTurns turns stay verbatim. It works on a session
-// already over its window — eviction runs first, so the compressor's input is
-// the shrunk, stubbed rendering rather than the oversized one.
+// Compact is the user-requested compaction: older turns fold into the running
+// summary; ROM, the summary and the newest KeepTurns turns stay verbatim.
 //
 // The caller must hold the session between turns: Compact assumes no turn is
 // running on the memory.
@@ -95,7 +90,6 @@ func (sm *SegmentedMemory) Compact(ctx context.Context, opts CompactOptions) (Co
 	sm.reliefInFlight = true
 	defer func() { sm.reliefInFlight = false }()
 	sm.compressorFailedThisPass = false
-	sm.fallbackTurns, sm.fallbackTurn = 0, 0
 
 	focus := strings.TrimSpace(opts.Focus)
 	if len(focus) > MaxCompactFocusBytes {
@@ -110,7 +104,7 @@ func (sm *SegmentedMemory) Compact(ctx context.Context, opts CompactOptions) (Co
 	}
 	res.TurnsKept = int(min(keep, sm.currentTurnLocked()))
 
-	res.TokensBefore = sm.estimateLocked()
+	res.TokensBefore = sm.compiledTokensLocked()
 	res.TokensAfter = res.TokensBefore
 	res.SummaryVersion = sm.summary.n
 
@@ -121,16 +115,15 @@ func (sm *SegmentedMemory) Compact(ctx context.Context, opts CompactOptions) (Co
 	}
 
 	sm.foldAbortedNoSummary, sm.compactPersistErr = false, nil
-	res.ToolResultsStubbed = sm.evictLocked(ctx, boundary)
 	// A requested compaction must not report success after dropping turns with
 	// only a placeholder line: without a real summary the fold is skipped.
 	sm.foldRequireSummary = true
+	defer func() { sm.foldRequireSummary = false }()
 	res.TurnsFolded = sm.foldLocked(ctx, boundary)
-	sm.foldRequireSummary = false
 	summaryMissing, persistErr := sm.foldAbortedNoSummary, sm.compactPersistErr
 	sm.foldAbortedNoSummary, sm.compactPersistErr = false, nil
-	res.Compacted = res.ToolResultsStubbed || res.TurnsFolded
-	res.TokensAfter = sm.estimateLocked()
+	res.Compacted = res.TurnsFolded
+	res.TokensAfter = sm.compiledTokensLocked()
 	res.SummaryVersion = sm.summary.n
 	if !res.Compacted {
 		// Nothing changed: say why rather than report an ordinary no-op.
@@ -145,13 +138,20 @@ func (sm *SegmentedMemory) Compact(ctx context.Context, opts CompactOptions) (Co
 	zap.L().Info("compaction: manual compact complete",
 		zap.String("session_id", sm.sessionID),
 		zap.Int64("boundary_turn", boundary),
-		zap.Bool("tool_results_stubbed", res.ToolResultsStubbed),
 		zap.Bool("turns_folded", res.TurnsFolded),
 		zap.Int("tokens_before", res.TokensBefore),
 		zap.Int("tokens_after", res.TokensAfter),
 		zap.Int("tokens_saved", res.TokensSaved()),
 		zap.Bool("focus", focus != ""))
 	return res, nil
+}
+
+// compiledTokensLocked is the tokenizer's count of the compiled context,
+// scaled by the provider calibration. Compact reports both of its figures
+// from it: the estimate answers with a byte bound under the start mark and
+// the tokenizer over it, and the two are not comparable. Must hold lock.
+func (sm *SegmentedMemory) compiledTokensLocked() int {
+	return int(float64(sm.accurateTokensLocked(sm.compileLocked())) * sm.calibrationLocked())
 }
 
 // CompactSession compacts one session's context on user request. It takes the
@@ -172,7 +172,6 @@ func (a *Agent) CompactSession(ctx context.Context, sessionID string, opts Compa
 				return
 			}
 			span.SetAttribute("compaction.compacted", res.Compacted)
-			span.SetAttribute("compaction.tool_results_stubbed", res.ToolResultsStubbed)
 			span.SetAttribute("compaction.turns_folded", res.TurnsFolded)
 			span.SetAttribute("compaction.turns_kept", res.TurnsKept)
 			span.SetAttribute("compaction.tokens_before", res.TokensBefore)
@@ -194,10 +193,6 @@ func (a *Agent) CompactSession(ctx context.Context, sessionID string, opts Compa
 	if !ok || segMem == nil {
 		return CompactResult{}, fmt.Errorf("session %s has no segmented memory to compact", sessionID)
 	}
-
-	// The previous turn has ended: drop its in-memory payloads, as a new turn would.
-	segMem.DropTurnPayloads()
-	a.dropInTurnSQLite(sessionID)
 
 	return segMem.Compact(ctx, opts)
 }

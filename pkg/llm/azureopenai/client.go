@@ -21,8 +21,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -346,6 +348,13 @@ func (c *Client) callAPI(ctx context.Context, req *openai.ChatCompletionRequest)
 	respBody, err := io.ReadAll(httpResp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	// Positive identification of the provider's context-too-long refusal —
+	// the relief trigger.
+	if llm.IsOpenAIContextTooLong(httpResp.StatusCode, respBody) {
+		return nil, llm.AsContextTooLong(llm.WrapHTTPStatus(httpResp.StatusCode,
+			fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody))))
 	}
 
 	// Parse response
@@ -782,7 +791,11 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	// Check status code before streaming
 	if httpResp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(httpResp.Body)
-		return nil, fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody))
+		err := fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody))
+		if llm.IsOpenAIContextTooLong(httpResp.StatusCode, respBody) {
+			return nil, llm.AsContextTooLong(err)
+		}
+		return nil, err
 	}
 
 	// Process SSE stream (same logic as OpenAI)
@@ -898,8 +911,10 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		return nil, fmt.Errorf("error reading stream: %w", err)
 	}
 
-	// Parse accumulated tool call arguments
-	for _, tc := range toolCallMap {
+	// Parse accumulated tool call arguments, in stream index order. Ranging
+	// over the map would hand parallel tool calls back in random order (#500).
+	for _, idx := range slices.Sorted(maps.Keys(toolCallMap)) {
+		tc := toolCallMap[idx]
 		if argsStr, ok := tc.Input["_args"].(string); ok {
 			var parsedArgs map[string]interface{}
 			if err := json.Unmarshal([]byte(argsStr), &parsedArgs); err != nil {

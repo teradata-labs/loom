@@ -27,11 +27,8 @@ func TestFormatCompactResponse(t *testing.T) {
 		formatCompactResponse("s1", &loomv1.CompactSessionResponse{TurnsKept: 2}))
 
 	got := formatCompactResponse("s1", &loomv1.CompactSessionResponse{
-		Compacted: true, ToolResultsStubbed: true, TurnsFolded: true, TurnsKept: 2, TokensBefore: 90000, TokensAfter: 20000,
+		Compacted: true, TurnsFolded: true, TurnsKept: 2, TokensBefore: 90000, TokensAfter: 20000,
 	})
-	assert.Contains(t, got, "older tool results stubbed and older turns folded into the summary; newest 2 turns kept")
+	assert.Contains(t, got, "older turns folded into the summary; newest 2 turns kept")
 	assert.Contains(t, got, "about 90000 tokens before, 20000 after")
-
-	assert.Contains(t, formatCompactResponse("s1", &loomv1.CompactSessionResponse{Compacted: true, ToolResultsStubbed: true}),
-		": older tool results stubbed;")
 }
