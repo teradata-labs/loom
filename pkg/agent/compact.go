@@ -104,7 +104,7 @@ func (sm *SegmentedMemory) Compact(ctx context.Context, opts CompactOptions) (Co
 	}
 	res.TurnsKept = int(min(keep, sm.currentTurnLocked()))
 
-	res.TokensBefore = sm.estimateLocked()
+	res.TokensBefore = sm.compiledTokensLocked()
 	res.TokensAfter = res.TokensBefore
 	res.SummaryVersion = sm.summary.n
 
@@ -118,12 +118,12 @@ func (sm *SegmentedMemory) Compact(ctx context.Context, opts CompactOptions) (Co
 	// A requested compaction must not report success after dropping turns with
 	// only a placeholder line: without a real summary the fold is skipped.
 	sm.foldRequireSummary = true
+	defer func() { sm.foldRequireSummary = false }()
 	res.TurnsFolded = sm.foldLocked(ctx, boundary)
-	sm.foldRequireSummary = false
 	summaryMissing, persistErr := sm.foldAbortedNoSummary, sm.compactPersistErr
 	sm.foldAbortedNoSummary, sm.compactPersistErr = false, nil
 	res.Compacted = res.TurnsFolded
-	res.TokensAfter = sm.estimateLocked()
+	res.TokensAfter = sm.compiledTokensLocked()
 	res.SummaryVersion = sm.summary.n
 	if !res.Compacted {
 		// Nothing changed: say why rather than report an ordinary no-op.
@@ -144,6 +144,14 @@ func (sm *SegmentedMemory) Compact(ctx context.Context, opts CompactOptions) (Co
 		zap.Int("tokens_saved", res.TokensSaved()),
 		zap.Bool("focus", focus != ""))
 	return res, nil
+}
+
+// compiledTokensLocked is the tokenizer's count of the compiled context,
+// scaled by the provider calibration. Compact reports both of its figures
+// from it: the estimate answers with a byte bound under the start mark and
+// the tokenizer over it, and the two are not comparable. Must hold lock.
+func (sm *SegmentedMemory) compiledTokensLocked() int {
+	return int(float64(sm.accurateTokensLocked(sm.compileLocked())) * sm.calibrationLocked())
 }
 
 // CompactSession compacts one session's context on user request. It takes the
