@@ -178,13 +178,15 @@ func (a *Agent) CompactSession(ctx context.Context, sessionID string, opts Compa
 			span.SetAttribute("compaction.tokens_after", res.TokensAfter)
 		}()
 	}
-	sess := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
-
 	ctx, release, err := a.holdSessionLease(ctx, sessionID)
 	if err != nil {
 		return CompactResult{}, err
 	}
 	defer release()
+	// Taking the lease drops this object's copy of the session when another
+	// turn has made it stale, so the session is read here, under the lease, as
+	// a turn reads it.
+	sess := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
 
 	if err := a.guardParkedTail(ctx, sessionID, sess); err != nil {
 		return CompactResult{}, err

@@ -300,3 +300,26 @@ func TestAnAgentsOwnCopySurvivesIntoItsNextTurn(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 2, turns, "the session's turns were not counted")
 }
+
+// A requested compaction works on the session, not on a copy another object's
+// turns have made stale: taking the lease drops that copy, and the compaction
+// reads the session after it.
+func TestCompactSession_CompactsTheSessionNotAStaleCopy(t *testing.T) {
+	store := turnStore(t)
+	a, _, b, _ := twoObjects(t, store, &recordingEventLog{})
+	a.memory.SetCompressor(&recordingCompressor{})
+	ctx := context.Background()
+
+	_, err := a.Chat(ctx, "s1", "one")
+	require.NoError(t, err)
+	for _, q := range []string{"two", "three", "four", "five"} {
+		_, err = b.Chat(ctx, "s1", q)
+		require.NoError(t, err)
+	}
+
+	// a's copy holds one turn; the session has five.
+	res, err := a.CompactSession(ctx, "s1", CompactOptions{KeepTurns: 2})
+	require.NoError(t, err)
+	require.True(t, res.Compacted, "the compaction ran on a copy with nothing to fold")
+	require.Equal(t, 2, res.TurnsKept)
+}
