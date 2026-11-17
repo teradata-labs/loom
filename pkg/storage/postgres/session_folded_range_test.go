@@ -87,3 +87,61 @@ func TestListMessagesBySeqRange_ReturnsFoldedToolCallMessages_Postgres(t *testin
 	require.Equal(t, call.ID, folded[0].ToolCalls[0].ID)
 	require.Equal(t, call.Name, folded[0].ToolCalls[0].Name)
 }
+
+// A fold keeps a recent assistant row for its words and folds the row's
+// results. The reload reads no folded row, so it drops the call whose result
+// is folded, as the fold did in memory; a call with no result at all stays.
+// Runs in the ordinary gate: CI sets TEST_POSTGRES_URL, a local run without
+// one skips.
+func TestLoadMessages_DropsTheCallOfAFoldedResult_Postgres(t *testing.T) {
+	dsn := os.Getenv("TEST_POSTGRES_URL")
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_URL not set; skipping PostgreSQL store test")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	require.NoError(t, err, "failed to connect to PostgreSQL")
+	t.Cleanup(pool.Close)
+	migrator, err := NewMigrator(pool, observability.NewNoOpTracer())
+	require.NoError(t, err)
+	require.NoError(t, migrator.MigrateUp(ctx), "failed to run migrations")
+
+	store := NewSessionStore(pool, observability.NewNoOpTracer(), zap.NewNop())
+	userID := hrUniqueID("foldcall-user")
+	sessionID := hrUniqueID("foldcall-sess")
+	_, err = pool.Exec(ctx, "INSERT INTO sessions (id, agent_id, user_id) VALUES ($1, 'agent-1', $2)", sessionID, userID)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), "DELETE FROM memory_snapshots WHERE session_id = $1", sessionID)
+		_, _ = pool.Exec(context.Background(), "DELETE FROM messages WHERE user_id = $1", userID)
+		_, _ = pool.Exec(context.Background(), "DELETE FROM sessions WHERE id = $1", sessionID)
+	})
+	userCtx := ContextWithUserID(ctx, userID)
+
+	foldedCall := llmtypes.ToolCall{ID: "toolu_folded", Name: "rows", Input: map[string]interface{}{}}
+	unfinished := llmtypes.ToolCall{ID: "toolu_unfinished", Name: "rows", Input: map[string]interface{}{}}
+	require.NoError(t, store.SaveMessage(userCtx, sessionID, &agent.Message{Role: "user", Content: "go"}, true))
+	require.NoError(t, store.SaveMessage(userCtx, sessionID, &agent.Message{Role: "assistant", Content: "let me check",
+		ToolCalls: []llmtypes.ToolCall{foldedCall, unfinished}}, false))
+	require.NoError(t, store.SaveMessage(userCtx, sessionID, &agent.Message{Role: "tool", ToolUseID: foldedCall.ID, Content: "rows"}, false))
+	require.NoError(t, store.SaveMessage(userCtx, sessionID, &agent.Message{Role: "user", Content: "next"}, true))
+
+	var resultSeq int64
+	require.NoError(t, pool.QueryRow(ctx,
+		"SELECT id FROM messages WHERE session_id = $1 AND role = 'tool'", sessionID).Scan(&resultSeq))
+	require.NoError(t, store.FoldMessages(userCtx, sessionID, []int64{resultSeq}, 1, "folded summary"))
+
+	loaded, err := store.LoadMessages(userCtx, sessionID)
+	require.NoError(t, err)
+	var kept *agent.Message
+	for i := range loaded {
+		require.NotEqual(t, "tool", loaded[i].Role, "the folded result is not loaded")
+		if loaded[i].Role == "assistant" {
+			kept = &loaded[i]
+		}
+	}
+	require.NotNil(t, kept, "the assistant row is kept for its words")
+	require.Equal(t, "let me check", kept.Content)
+	require.Len(t, kept.ToolCalls, 1, "the call whose result is folded is dropped; the unfinished one stays")
+	require.Equal(t, unfinished.ID, kept.ToolCalls[0].ID)
+}

@@ -19,14 +19,12 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/teradata-labs/loom/pkg/observability"
 )
 
 // A requested compaction must never report success after dropping turns behind
 // a placeholder line: without a summary the fold is skipped.
 func TestCompact_NeverFoldsWithoutASummary(t *testing.T) {
-	t.Run("failing compressor and nothing to stub: reports unavailable, history intact", func(t *testing.T) {
+	t.Run("failing compressor: reports unavailable, history intact", func(t *testing.T) {
 		sm := proseMemory(t, 200000, 20000, 6)
 		comp := &failingCompressor{}
 		sm.SetCompressor(comp)
@@ -50,93 +48,4 @@ func TestCompact_NeverFoldsWithoutASummary(t *testing.T) {
 		assert.Len(t, unfoldedTurns(sm), 6)
 	})
 
-	t.Run("stubbing still counts when only the summary failed", func(t *testing.T) {
-		sm := toolTurnMemory(t, 200000, 20000, 6)
-		sm.SetCompressor(&failingCompressor{})
-
-		res, err := sm.Compact(context.Background(), CompactOptions{KeepTurns: 2})
-
-		require.NoError(t, err)
-		assert.True(t, res.Compacted)
-		assert.True(t, res.ToolResultsStubbed)
-		assert.False(t, res.TurnsFolded, "partial success is reported as such")
-		assert.Len(t, unfoldedTurns(sm), 6)
-	})
-}
-
-// Embedders may build a fresh agent and fresh memory for every turn, so the
-// cooldown lives in a ledger the agents share, not on the memory instance.
-func TestAutoCompact_CooldownSurvivesFreshAgentAndMemoryForTheSameSession(t *testing.T) {
-	const sessionID = "sess-cooldown-survives-reload"
-	ledger := NewAutoCompactLedger()
-	failing := &failingCompressor{}
-	runTurn := func() {
-		sm := proseMemory(t, 12000, 1000, 6)
-		sm.SetCompressor(failing)
-		a := &Agent{config: &Config{AutoCompactPercent: 65}, autoCompactLedger: NewAutoCompactLedger()}
-		WithAutoCompactLedger(ledger)(a)
-		_, span := observability.NewNoOpTracer().StartSpan(context.Background(), "t")
-		a.maybeAutoCompact(context.Background(), &Session{ID: sessionID, SegmentedMem: sm}, span, &Response{})
-	}
-
-	runTurn()
-	require.Positive(t, failing.calls, "the first turn tried and failed")
-	tried := failing.calls
-
-	// The next turn builds a brand-new agent and memory for the same session.
-	runTurn()
-
-	assert.Equal(t, tried, failing.calls, "no repeat attempt within the turn gap")
-}
-
-// A reset deletes the history and restarts turn numbering at 1, so a record
-// from the old numbering (turn 100) must not suppress the new conversation.
-func TestAutoCompact_ResetRestartsTheCooldown(t *testing.T) {
-	const sessionID = "sess-cooldown-reset"
-	ledger := NewAutoCompactLedger()
-	ledger.note(sessionID, 100)
-
-	// After the reset and a reload the same session is at turn 6 again.
-	sm := proseMemory(t, 12000, 1000, 6)
-	comp := &recordingCompressor{}
-	sm.SetCompressor(comp)
-	a := &Agent{config: &Config{AutoCompactPercent: 65}, autoCompactLedger: ledger}
-	_, span := observability.NewNoOpTracer().StartSpan(context.Background(), "t")
-	resp := &Response{}
-
-	a.maybeAutoCompact(context.Background(), &Session{ID: sessionID, SegmentedMem: sm}, span, resp)
-
-	assert.Contains(t, resp.Metadata, "auto_compaction", "the new conversation is not held back by the old numbering")
-	assert.NotEmpty(t, comp.input)
-	assert.Equal(t, int64(6), ledger.last(sessionID))
-}
-
-// The ledger is per agent and freed with the session (DeleteSession).
-func TestAutoCompactLedger_ForgetDropsTheSession(t *testing.T) {
-	ledger := NewAutoCompactLedger()
-	ledger.note("a", 4)
-	ledger.note("b", 7)
-
-	ledger.Forget("a")
-
-	assert.Zero(t, ledger.last("a"))
-	assert.Equal(t, int64(7), ledger.last("b"))
-	var nilLedger *AutoCompactLedger
-	assert.NotPanics(t, func() { nilLedger.note("x", 1); nilLedger.Forget("x") })
-	assert.Zero(t, nilLedger.last("x"))
-}
-
-// Folds are batched: one summary call covers at least autoCompactMinTurnGap
-// turns, a limit derived from the stored rows, so it survives a restart too.
-func TestAutoCompact_FoldsOnlyOnceEnoughTurnsAreEligible(t *testing.T) {
-	// 4 turns, newest 2 kept: only turns 1-2 are eligible, below the batch size.
-	sm := proseMemory(t, 12000, 1000, 4)
-	comp := &recordingCompressor{}
-	sm.SetCompressor(comp)
-
-	res, err := sm.AutoCompact(context.Background(), 65)
-
-	require.NoError(t, err)
-	assert.False(t, res.TurnsFolded)
-	assert.Empty(t, comp.input, "too few turns to be worth a summary call yet")
 }

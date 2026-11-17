@@ -5,18 +5,16 @@ namespace: loom
 prompts:
   - id: query_tool_result
     content: |
-      Read the full data of a large tool result FROM THIS TURN, by the message_id shown
-      on the result. Data is held in memory only within the turn that produced it —
-      never use a message_id from conversation history; re-run the producing tool
-      instead. (message_id, offset, limit) returns bounded pages; (message_id, sql)
-      queries tabular data as table `results`.
+      Read the full data of a large tool result FROM THIS TURN, by the tool_use_id named
+      in its truncation tail (or a message_id a host shows). Data is held in memory only
+      within the turn that produced it — never use an id from an earlier turn; re-run the
+      producing tool instead. (tool_use_id, offset, limit) returns bounded pages.
     tags:
       - tool
       - query
       - pagination
-      - sql
     metadata:
-      version: "v2.0"
+      version: "v3.0"
       description: "This turn's memory, nothing else (HLD §7.1)"
 
   - id: recall
