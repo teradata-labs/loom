@@ -22,10 +22,10 @@ import (
 
 // streamFailureRetry retries a streaming LLM call that failed with a
 // non-throttle error, under the agent's Retry config (the same budget and
-// backoff as the direct path). It retries only while the failed attempt sent
-// nothing to the progress callback: after a partial response reached the
-// caller, a retry would stream that text or tool call a second time, so the
-// error is returned as before.
+// backoff as the direct path). It retries only while no attempt of the call
+// has sent anything to the progress callback: after a partial response
+// reached the caller, a retry would stream that text or tool call a second
+// time, so the error is returned as before.
 //
 // Throttles never reach it: chatWithStreaming waits them out first, under
 // throttlePatience, without using a retry attempt.
@@ -50,7 +50,8 @@ func (a *Agent) newStreamFailureRetry() *streamFailureRetry {
 // backoff when the call should be made again, or the error that ends the call:
 // err itself when the error is final (isFinalLLMError), retry is off, or the
 // attempt already emitted progress; a wrapped err once the budget is spent or
-// the context ends.
+// the context ends. emitted is true when any attempt of the call has sent a
+// progress event.
 func (r *streamFailureRetry) wait(ctx Context, err error, emitted bool) error {
 	if emitted || isFinalLLMError(err) || !r.cfg.Enabled || r.cfg.MaxRetries <= 0 {
 		return err

@@ -240,3 +240,44 @@ func TestChatWithStreaming_TTFTIncludesRetryWait(t *testing.T) {
 	defer mu.Unlock()
 	assert.GreaterOrEqual(t, last.TTFT, backoff.Milliseconds(), "TTFT must include the retry backoff")
 }
+
+// throttleThenFailStreamLLM streams 25 tokens (enough to flush them to the
+// caller) and is then throttled; the next call fails before any token; any
+// later call succeeds.
+type throttleThenFailStreamLLM struct {
+	failingStreamLLM
+}
+
+func (s *throttleThenFailStreamLLM) ChatStream(_ context.Context, _ []Message, _ []shuttle.Tool, cb llmtypes.TokenCallback) (*LLMResponse, error) {
+	s.mu.Lock()
+	s.calls++
+	n := s.calls
+	s.mu.Unlock()
+	switch n {
+	case 1:
+		for i := 0; i < 25; i++ {
+			cb("x")
+		}
+		return nil, errors.New("API error (status 429): rate_limit_exceeded")
+	case 2:
+		return nil, errConnReset
+	}
+	cb("ok")
+	return &LLMResponse{Content: "ok", StopReason: "end_turn"}, nil
+}
+
+// Text that reached the caller in any attempt blocks a later failure retry,
+// even when the attempt in between (after a throttle) sent nothing: a retry
+// would send that text again.
+func TestChatWithStreaming_OutputFromAnEarlierAttemptBlocksFailureRetry(t *testing.T) {
+	t.Parallel()
+	stub := &throttleThenFailStreamLLM{}
+	a := &Agent{llm: stub, config: &Config{Retry: fastRetry(3)}, throttleClock: &virtualThrottleClock{}}
+	cb := func(ProgressEvent) {}
+
+	_, err := a.chatWithStreaming(newTestContextWithProgress(cb), []Message{{Role: "user", Content: "hi"}}, nil, cb)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errConnReset)
+	assert.Equal(t, 2, stub.callCount(), "throttle waited out, then the failure is returned, not retried")
+}

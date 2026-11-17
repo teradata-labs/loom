@@ -575,9 +575,11 @@ func (a *Agent) chatWithStreaming(ctx Context, messages []Message, tools []shutt
 
 	// Token buffering state
 	var buffer strings.Builder
-	// emitted is true once this attempt sent a progress event to the caller.
-	// After that, a failed attempt is not retried: a retry would stream the
-	// same text or tool call to the caller a second time.
+	// emitted is true once any attempt of this call sent a progress event to
+	// the caller. After that, a failure is not retried (streamFailureRetry): a
+	// retry would stream the same text or tool call to the caller a second
+	// time. It is never reset, so an attempt that streamed text and was then
+	// throttled still blocks a later failure retry.
 	var emitted bool
 	var tokenCount int32
 	var ttft int64
@@ -739,7 +741,8 @@ func (a *Agent) chatWithStreaming(ctx Context, messages []Message, tools []shutt
 		tokenCount = 0
 		ttft = 0
 		ttftRecorded = false
-		emitted = false
+		// emitted is not reset: it covers the whole call (see its
+		// declaration).
 		// The flush interval is measured from this attempt's start, not the
 		// first attempt's: a retry after a backoff would otherwise flush its
 		// first buffered token at once. TTFT stays measured from startTime,
