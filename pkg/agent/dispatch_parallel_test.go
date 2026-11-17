@@ -633,7 +633,6 @@ agent:
 	// Each key sets only its own field.
 	on := build("    parallel_read_tools: true\n").GetConfig()
 	assert.False(t, on.ToolChangeNote)
-	assert.False(t, on.ContextReliefWarning)
 	other := build("    tool_change_note: true\n").GetConfig()
 	assert.False(t, other.ParallelReadTools)
 }

@@ -100,7 +100,7 @@ Support:
 			"(shell_execute, workspace, tool_search, graph_memory, task_board). "+
 			"Applies to ALL agents including weaver, so a weaver agent run with this flag will not "+
 			"have shell access to LOOM_DATA_DIR/examples/reference. "+
-			"Lazy/progressive tools (query_tool_result, recall, skill required_tools) "+
+			"Lazy/progressive tools (recall, skill required_tools) "+
 			"still fire when their own conditions trigger. "+
 			"Opt-in only — defaults to false.")
 
