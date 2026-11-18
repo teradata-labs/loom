@@ -28,7 +28,15 @@ import (
 // it is written as the module's LICENSE file; notice likewise for NOTICE.
 func fakeModule(t *testing.T, root, name, license, notice string) string {
 	t.Helper()
-	dir := filepath.Join(root, name+"@v1.0.0")
+	return fakeModuleAt(t, root, name, "v1.0.0", license, notice)
+}
+
+// fakeModuleAt is fakeModule at an explicit version. The directory is named
+// name@version, as in the module cache, so two versions of one module live in
+// different directories.
+func fakeModuleAt(t *testing.T, root, name, version, license, notice string) string {
+	t.Helper()
+	dir := filepath.Join(root, name+"@"+version)
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	if license != "" {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "LICENSE"), []byte(license+"\n"), 0o644))
@@ -41,12 +49,17 @@ func fakeModule(t *testing.T, root, name, license, notice string) string {
 
 // pkg builds a pkgInfo for a third-party package rooted at its module.
 func pkg(importPath, modPath, dir string) pkgInfo {
+	return pkgAt(importPath, modPath, "v1.0.0", dir)
+}
+
+// pkgAt is pkg at an explicit module version.
+func pkgAt(importPath, modPath, version, dir string) pkgInfo {
 	p := pkgInfo{ImportPath: importPath}
 	p.Module = &struct {
 		Path    string
 		Version string
 		Dir     string
-	}{Path: modPath, Version: "v1.0.0", Dir: dir}
+	}{Path: modPath, Version: version, Dir: dir}
 	return p
 }
 
@@ -152,7 +165,9 @@ func TestCollectPkgsVendoredThirdParty(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, comps, 1, "one component per vendored directory; the own module stays excluded")
 		assert.Equal(t, ownModule+"/third_party/golua", comps[0].ImportPath)
-		assert.Equal(t, "vendored", comps[0].Version)
+		assert.True(t, comps[0].Vendored, "a third_party/ directory is marked vendored")
+		assert.Contains(t, string(renderThirdParty(comps, "GO")), "- `"+ownModule+"/third_party/golua` (vendored)\n",
+			"the component list marks vendored code")
 		assert.Equal(t, "Apache golua", comps[0].License)
 	})
 
@@ -245,7 +260,7 @@ func TestFinish(t *testing.T) {
 // TestRenderThirdPartyReproducesGoLicense checks the Go standard library's
 // license text is reproduced verbatim rather than linked.
 func TestRenderThirdPartyReproducesGoLicense(t *testing.T) {
-	comps := []component{{ImportPath: "example.com/a", Module: "example.com/a", Version: "v1.0.0", License: "MIT a"}}
+	comps := []component{{ImportPath: "example.com/a", Module: "example.com/a", License: "MIT a"}}
 	const goLicense = "Copyright 2009 The Go Authors.\n\nRedistribution and use ..."
 
 	out := string(renderThirdParty(comps, goLicense))
@@ -365,4 +380,155 @@ func TestRenderThirdPartyCgoStatement(t *testing.T) {
 	out := string(renderThirdParty([]component{{ImportPath: "example.com/a", License: "MIT"}}, "GO"))
 	assert.Contains(t, out, "Release archives are built with cgo; the runtime image is not")
 	assert.NotContains(t, out, "The binaries are built with cgo")
+}
+
+// modSpec is one module in a dependency set for TestRenderIgnoresVersions.
+type modSpec struct {
+	path, version, license, notice string
+}
+
+// renderSet builds the given modules in a fresh module cache, runs them through
+// collectPkgs and finish as `go list` output would be, and returns the two
+// generated files.
+func renderSet(t *testing.T, mods []modSpec) (thirdParty, notice string) {
+	t.Helper()
+	root := t.TempDir()
+	pkgs := make([]pkgInfo, 0, len(mods))
+	for _, m := range mods {
+		dir := fakeModuleAt(t, root, filepath.Base(m.path), m.version, m.license, m.notice)
+		pkgs = append(pkgs, pkgAt(m.path, m.path, m.version, dir))
+	}
+	seen := map[string]component{}
+	unlicensed := map[string]bool{}
+	require.NoError(t, collectPkgs(pkgs, seen, unlicensed), "collectPkgs must accept the fake modules")
+	comps, err := finish(seen, unlicensed)
+	require.NoError(t, err, "every fake module carries a license")
+	return string(renderThirdParty(comps, "GO LICENSE")), string(renderNotice(comps))
+}
+
+// TestRenderIgnoresVersions checks that NOTICE and THIRD-PARTY-NOTICES.md do
+// not depend on module versions (issue #671). A dependency bump that changes
+// only versions must render byte-identical files, so `-check` passes without a
+// regeneration. Any change the licenses care about must still change the
+// output, so `-check` fails: a module added or removed, a license text
+// changed, or a NOTICE changed, including when a version bump brings the
+// change.
+func TestRenderIgnoresVersions(t *testing.T) {
+	t.Parallel()
+	base := []modSpec{
+		{"example.com/alpha", "v1.0.0", "MIT alpha", ""},
+		{"example.com/beta", "v2.3.0", "Apache beta", "beta NOTICE"},
+		{"example.com/gamma", "v0.4.1", "BSD gamma", ""},
+	}
+
+	tests := []struct {
+		name           string
+		variant        []modSpec
+		sameThirdParty bool
+		sameNotice     bool
+	}{
+		{
+			name: "version-only bump of every module",
+			variant: []modSpec{
+				{"example.com/alpha", "v1.0.1", "MIT alpha", ""},
+				{"example.com/beta", "v2.4.0", "Apache beta", "beta NOTICE"},
+				{"example.com/gamma", "v0.5.0", "BSD gamma", ""},
+			},
+			sameThirdParty: true,
+			sameNotice:     true,
+		},
+		{
+			name: "module added",
+			variant: append(append([]modSpec{}, base...),
+				modSpec{"example.com/delta", "v1.0.0", "ISC delta", ""}),
+			sameNotice: true,
+		},
+		{
+			name: "module with a NOTICE added",
+			variant: append(append([]modSpec{}, base...),
+				modSpec{"example.com/delta", "v1.0.0", "Apache delta", "delta NOTICE"}),
+		},
+		{
+			name:       "module removed",
+			variant:    []modSpec{base[0], base[1]},
+			sameNotice: true,
+		},
+		{
+			name:    "module with a NOTICE removed",
+			variant: []modSpec{base[0], base[2]},
+		},
+		{
+			name: "license text changed at the same version",
+			variant: []modSpec{
+				base[0], base[1],
+				{"example.com/gamma", "v0.4.1", "BSD gamma, amended", ""},
+			},
+			sameNotice: true,
+		},
+		{
+			name: "version bump that changes the license text",
+			variant: []modSpec{
+				{"example.com/alpha", "v1.1.0", "Apache alpha", ""},
+				base[1], base[2],
+			},
+			sameNotice: true,
+		},
+		{
+			name: "NOTICE text changed at the same version",
+			variant: []modSpec{
+				base[0],
+				{"example.com/beta", "v2.3.0", "Apache beta", "beta NOTICE, amended"},
+				base[2],
+			},
+			sameThirdParty: true,
+		},
+		{
+			name: "version bump that changes the NOTICE text",
+			variant: []modSpec{
+				base[0],
+				{"example.com/beta", "v2.4.0", "Apache beta", "beta NOTICE 2025"},
+				base[2],
+			},
+			sameThirdParty: true,
+		},
+	}
+
+	baseThirdParty, baseNotice := renderSet(t, base)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			thirdParty, notice := renderSet(t, tt.variant)
+			if tt.sameThirdParty {
+				assert.Equal(t, baseThirdParty, thirdParty, "THIRD-PARTY-NOTICES.md must not change")
+			} else {
+				assert.NotEqual(t, baseThirdParty, thirdParty, "THIRD-PARTY-NOTICES.md must change, so -check fails")
+			}
+			if tt.sameNotice {
+				assert.Equal(t, baseNotice, notice, "NOTICE must not change")
+			} else {
+				assert.NotEqual(t, baseNotice, notice, "NOTICE must change, so -check fails")
+			}
+		})
+	}
+}
+
+// TestRenderOmitsVersions checks that no module version string reaches either
+// generated file, while each module path, its license text and its NOTICE
+// text are still reproduced.
+func TestRenderOmitsVersions(t *testing.T) {
+	t.Parallel()
+	thirdParty, notice := renderSet(t, []modSpec{
+		{"example.com/alpha", "v1.2.3", "MIT alpha", ""},
+		{"example.com/beta", "v4.5.6", "Apache beta", "beta NOTICE"},
+	})
+
+	for _, v := range []string{"v1.2.3", "v4.5.6"} {
+		assert.NotContains(t, thirdParty, v, "THIRD-PARTY-NOTICES.md must not record module versions")
+		assert.NotContains(t, notice, v, "NOTICE must not record module versions")
+	}
+	assert.Contains(t, thirdParty, "`example.com/alpha`", "each module path is listed")
+	assert.Contains(t, thirdParty, "`example.com/beta`", "each module path is listed")
+	assert.Contains(t, thirdParty, "```\nMIT alpha\n```", "license text is reproduced verbatim")
+	assert.Contains(t, thirdParty, "```\nApache beta\n```", "license text is reproduced verbatim")
+	assert.Contains(t, notice, "example.com/beta\n\nbeta NOTICE\n", "NOTICE is reproduced under its module path")
 }

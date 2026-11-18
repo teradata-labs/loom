@@ -15,7 +15,7 @@ Full license texts for every bundled component are in THIRD-PARTY-NOTICES.md.
 
 ----------------------------------------------------------------------------
 
-github.com/aws/aws-sdk-go-v2 v1.48.0
+github.com/aws/aws-sdk-go-v2
 
 AWS SDK for Go
 Copyright 2015 Amazon.com, Inc. or its affiliates. All Rights Reserved.
@@ -23,13 +23,13 @@ Copyright 2014-2015 Stripe, Inc.
 
 ----------------------------------------------------------------------------
 
-github.com/aws/smithy-go v1.28.9
+github.com/aws/smithy-go
 
 Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
 ----------------------------------------------------------------------------
 
-go.yaml.in/yaml/v3 v3.0.5
+go.yaml.in/yaml/v3
 
 Copyright 2011-2016 Canonical Ltd.
 
@@ -47,7 +47,7 @@ limitations under the License.
 
 ----------------------------------------------------------------------------
 
-go.yaml.in/yaml/v4 v4.0.0-rc.2
+go.yaml.in/yaml/v4
 
 Copyright 2011-2016 Canonical Ltd.
 
@@ -65,7 +65,7 @@ limitations under the License.
 
 ----------------------------------------------------------------------------
 
-google.golang.org/grpc v1.85.0
+google.golang.org/grpc
 
 Copyright 2014 gRPC authors.
 
@@ -83,7 +83,7 @@ limitations under the License.
 
 ----------------------------------------------------------------------------
 
-gopkg.in/yaml.v3 v3.0.1
+gopkg.in/yaml.v3
 
 Copyright 2011-2016 Canonical Ltd.
 

@@ -50,6 +50,11 @@ Three properties of the generator matter for accuracy:
 - **A component whose license cannot be found is a hard error.** The generator
   refuses to write rather than silently omitting it — a missing component is the
   exact compliance failure these files exist to prevent.
+- **Module versions are not recorded.** Each component is listed by its path
+  only, and each NOTICE is headed by its module path only. No license in the tree
+  requires a version, and `go.mod` / `go.sum` already pin the exact version for
+  every commit. A version recorded in the files would make every version-only
+  dependency bump fail `notices-check` (issue #671).
 
 ## Regenerating
 
@@ -58,11 +63,20 @@ just notices        # rewrite both files
 just notices-check  # fail if they no longer match the dependency tree
 ```
 
-`notices-check` runs as part of `just check` and in CI, so a dependency change
-that is not reflected in the notices fails the build in the same way stale
-generated proto code does. Nothing regenerates the files automatically: run
-`just notices` and commit the result after any `go.mod` / `go.sum` change,
-including Dependabot bumps and merges of `main` that bring one.
+`notices-check` runs as part of `just check` and in CI. It compares the
+committed files with freshly generated ones, in the same way the proto check
+compares generated code.
+
+| Dependency change | Effect on the files | `notices-check` |
+|---|---|---|
+| Version-only bump, license and NOTICE texts unchanged | None | Passes |
+| Distributed component added or removed | Component list changes | Fails |
+| License text changed (also when a version bump brings it) | License texts change | Fails |
+| NOTICE text added, removed or changed (also when a version bump brings it) | `NOTICE` changes | Fails |
+
+A Dependabot bump that changes only versions passes without a regeneration.
+Nothing regenerates the files automatically: when the check fails, run
+`just notices` and commit the result.
 
 ## Release packaging
 
@@ -85,9 +99,9 @@ a winget install does not leave the files on disk; the zip itself carries them.
 
 These files are a factual inventory produced from the dependency tree. They are
 not a legal opinion, and they cannot detect a dependency that has misdeclared its
-own license upstream. Treat a release as the unit of accuracy: regenerate on every
-version bump, since the inventory is true of a commit rather than of the product
-in general.
+own license upstream. The inventory is true of a commit rather than of the
+product in general: the component list and texts come from the files, and the
+versions come from that commit's `go.mod` and `go.sum`.
 
 ## Bundled C libraries
 

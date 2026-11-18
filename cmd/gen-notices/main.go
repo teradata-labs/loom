@@ -28,6 +28,14 @@
 // License text is copied VERBATIM from the dependency's own source. Nothing
 // here classifies or normalizes a license — an SPDX identifier is a summary,
 // and a summary is not what these licenses require us to ship.
+//
+// Module VERSIONS are deliberately not written. No license in the tree requires
+// them, go.mod and go.sum already pin them for every commit, and CI runs
+// `-check` on every pull request: a recorded version made every Dependabot bump
+// fail that check until someone pushed a regenerated file (issue #671). Without
+// versions a version-only bump renders byte-identical files, while a component
+// added or removed, or any change to a license or NOTICE text, still changes
+// them and fails `-check`.
 package main
 
 import (
@@ -123,10 +131,13 @@ func preferLicense(names []string) string {
 // component is one distributed unit of third-party code. It is usually a
 // module, but a package carrying its own LICENSE is listed separately — that
 // file governs it, and rolling it up to the module would attribute it wrongly.
+//
+// It carries no module version: nothing rendered from it may change on a
+// version-only bump (see the package comment).
 type component struct {
 	ImportPath  string // package path the license was found for
 	Module      string
-	Version     string
+	Vendored    bool // copied under third_party/ rather than a module of its own
 	LicensePath string
 	License     string // verbatim text
 	Notice      string // verbatim NOTICE text, when the module ships one
@@ -273,7 +284,6 @@ func collectPkgs(pkgs []pkgInfo, seen map[string]component, unlicensed map[strin
 			seen[licPath] = component{
 				ImportPath:  govern,
 				Module:      p.Module.Path,
-				Version:     p.Module.Version,
 				LicensePath: licPath,
 				License:     strings.TrimRight(string(text), "\n"),
 				Notice:      readNotice(p.Module.Dir),
@@ -326,7 +336,7 @@ func collectVendored(p pkgInfo, seen map[string]component, unlicensed map[string
 	seen[govern] = component{
 		ImportPath:  govern,
 		Module:      govern,
-		Version:     "vendored",
+		Vendored:    true,
 		LicensePath: licPath,
 		License:     strings.TrimRight(string(text), "\n"),
 		Notice:      readNotice(root),
@@ -521,9 +531,14 @@ func renderThirdParty(comps []component, goLicense string) []byte {
 
 	fmt.Fprintf(&b, "%d components, %d distinct license texts.\n\n", len(comps), len(order))
 	b.WriteString("## Components\n\n")
-	b.WriteString("| Component | Version |\n|---|---|\n")
+	b.WriteString("Versions are not listed. The `go.mod` and `go.sum` of the release commit\n")
+	b.WriteString("pin the exact version of each module.\n\n")
 	for _, c := range comps {
-		fmt.Fprintf(&b, "| `%s` | `%s` |\n", c.ImportPath, c.Version)
+		if c.Vendored {
+			fmt.Fprintf(&b, "- `%s` (vendored)\n", c.ImportPath)
+			continue
+		}
+		fmt.Fprintf(&b, "- `%s`\n", c.ImportPath)
 	}
 
 	b.WriteString("\n## The Go standard library\n\n")
@@ -586,8 +601,9 @@ func renderNotice(comps []component) []byte {
 	b.WriteString("NOTICE files of the redistributed works.\n\n")
 	b.WriteString("Full license texts for every bundled component are in THIRD-PARTY-NOTICES.md.\n")
 
-	// Only distinct module-level NOTICE files, one entry per module.
-	type nz struct{ mod, ver, text string }
+	// Only distinct module-level NOTICE files, one entry per module, headed by
+	// the module path alone so a version-only bump does not change the file.
+	type nz struct{ mod, text string }
 	seen := map[string]bool{}
 	var list []nz
 	for _, c := range comps {
@@ -595,13 +611,13 @@ func renderNotice(comps []component) []byte {
 			continue
 		}
 		seen[c.Module] = true
-		list = append(list, nz{c.Module, c.Version, c.Notice})
+		list = append(list, nz{c.Module, c.Notice})
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].mod < list[j].mod })
 
 	for _, n := range list {
 		b.WriteString("\n" + strings.Repeat("-", 76) + "\n\n")
-		fmt.Fprintf(&b, "%s %s\n\n", n.mod, n.ver)
+		fmt.Fprintf(&b, "%s\n\n", n.mod)
 		b.WriteString(n.text + "\n")
 	}
 	return []byte(b.String())
