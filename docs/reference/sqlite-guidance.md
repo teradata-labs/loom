@@ -594,6 +594,12 @@ steps:
    and waits for it under `busy_timeout`. SQLite locks are file locks, so a
    second connection in a test and a second process behave the same.
 
+When another connection holds the write lock the whole time, a script whose
+first lock-taking statement is a write (a new file) waits the busy timeout
+twice: once in the deferred attempt and once in the retry. The open fails
+after about twice the busy timeout (about 10 s for `evals.NewStore`), and the
+error holds both attempts.
+
 Two other designs were tried and rejected:
 
 - `BEGIN IMMEDIATE` on every open. It takes the write lock even when the

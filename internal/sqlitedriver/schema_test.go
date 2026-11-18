@@ -182,6 +182,28 @@ func TestExecSchema_RetriesUnderImmediateWhenTheUpgradeIsBusy(t *testing.T) {
 	assert.GreaterOrEqual(t, elapsed, hold-50*time.Millisecond, "the retry must have waited for the holder")
 }
 
+// When the write lock stays held, a write-first script fails after about two
+// busy timeouts (the deferred attempt, then the retry), and the error keeps
+// both attempts, so the caller sees that a retry ran and why.
+func TestExecSchema_HeldLockFailsWithBothAttempts(t *testing.T) {
+	t.Parallel()
+	const busyMS = 100
+	path := filepath.Join(t.TempDir(), "held-forever.db")
+	db := openTestDB(t, path, busyMS)
+	holdWriteLock(t, path)
+
+	start := time.Now()
+	err := ExecSchema(context.Background(), db, path, `CREATE TABLE IF NOT EXISTS a (id INTEGER);`)
+	elapsed := time.Since(start)
+	require.Error(t, err, "the script must fail while the write lock stays held")
+	assert.True(t, isBusy(err), "the error must still read as SQLITE_BUSY, got %v", err)
+	assert.Contains(t, err.Error(), "exec script", "the first attempt's error must be kept")
+	assert.Contains(t, err.Error(), "retry under begin immediate", "the error must say that the retry ran")
+	assert.GreaterOrEqual(t, elapsed, 2*busyMS*time.Millisecond-50*time.Millisecond,
+		"both attempts wait for the busy timeout")
+	assert.Less(t, elapsed, 10*busyMS*time.Millisecond, "the wait must stay near two busy timeouts")
+}
+
 func TestLockSchemaPath_SerializesOnePath(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "serial.db")

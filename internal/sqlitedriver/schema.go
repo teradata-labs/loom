@@ -44,6 +44,13 @@ import (
 // The connection must have a busy timeout (Options.BusyTimeoutMS); without
 // one, step 3 fails at once under contention.
 //
+// How long ExecSchema can wait: when the first statement that needs the lock
+// is a write (a new file), the deferred attempt itself waits up to the busy
+// timeout before it returns SQLITE_BUSY, and the BEGIN IMMEDIATE retry waits
+// up to the busy timeout again. So a caller whose write lock stays held fails
+// after about twice the busy timeout, not once. When the retry also fails,
+// the returned error holds both errors.
+//
 // ":memory:" and "" are private to each connection, so ExecSchema does not
 // lock them.
 func ExecSchema(ctx context.Context, db *sql.DB, path, script string) error {
@@ -53,11 +60,14 @@ func ExecSchema(ctx context.Context, db *sql.DB, path, script string) error {
 	}
 	defer unlock()
 
-	err = execScriptTx(ctx, db, "BEGIN", script)
-	if err != nil && isBusy(err) {
-		err = execScriptTx(ctx, db, "BEGIN IMMEDIATE", script)
+	first := execScriptTx(ctx, db, "BEGIN", script)
+	if first == nil || !isBusy(first) {
+		return first
 	}
-	return err
+	if retry := execScriptTx(ctx, db, "BEGIN IMMEDIATE", script); retry != nil {
+		return errors.Join(first, fmt.Errorf("sqlitedriver: retry under begin immediate: %w", retry))
+	}
+	return nil
 }
 
 // execScriptTx runs script on one connection of db inside one transaction
