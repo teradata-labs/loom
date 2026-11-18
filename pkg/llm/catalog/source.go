@@ -98,17 +98,45 @@ func staticList() map[string][]*loomv1.ModelInfo {
 	return staticByList
 }
 
-// Default source state. Writes happen via Register (intended to be called
-// once at program startup); reads happen on every Lookup call.
+// Default source state. Writes happen via Register and RegisterNamed
+// (intended for program startup and periodic refreshes); reads happen on
+// every Lookup call.
+//
+// The effective default is MultiSource{named sources in registration order...,
+// base}. Network-discovered catalogs (Ollama's installed models, the Vercel AI
+// Gateway's /v1/models) register by name so each can be refreshed without
+// evicting the others; Register sets the base and drops every named source.
 var (
 	defaultMu     sync.RWMutex
+	baseSource    Source = staticSource{}
+	namedSources  []namedSource
 	defaultSource Source = staticSource{}
 )
 
-// Register replaces the package-level default source used by Lookup. The new
-// source is consulted by every subsequent call into the package-level Lookup,
-// including calls from factory and agent that were previously hardcoded to
-// the built-in catalog.
+type namedSource struct {
+	name string
+	src  Source
+}
+
+// rebuildLocked recomputes defaultSource from base and the named sources.
+// defaultMu must be held for writing.
+func rebuildLocked() {
+	if len(namedSources) == 0 {
+		defaultSource = baseSource
+		return
+	}
+	chain := make(MultiSource, 0, len(namedSources)+1)
+	for _, n := range namedSources {
+		chain = append(chain, n.src)
+	}
+	defaultSource = append(chain, baseSource)
+}
+
+// Register replaces the package-level default source used by Lookup, and
+// removes every source added with RegisterNamed. The new source is consulted
+// by every subsequent call into the package-level Lookup, including calls
+// from factory and agent that were previously hardcoded to the built-in
+// catalog.
 //
 // Typical usage at program startup:
 //
@@ -123,8 +151,37 @@ func Register(s Source) {
 		s = staticSource{}
 	}
 	defaultMu.Lock()
-	defaultSource = s
+	baseSource = s
+	namedSources = nil
+	rebuildLocked()
 	defaultMu.Unlock()
+}
+
+// RegisterNamed installs src ahead of the base source under name. A second
+// call with the same name replaces that source in place (its position in the
+// chain is kept), so a periodic refresh never grows the chain. Different
+// names stack: the earliest registered is consulted first. RegisterNamed(name,
+// nil) removes the named source.
+func RegisterNamed(name string, src Source) {
+	defaultMu.Lock()
+	defer defaultMu.Unlock()
+	for i, n := range namedSources {
+		if n.name != name {
+			continue
+		}
+		if src == nil {
+			namedSources = append(namedSources[:i:i], namedSources[i+1:]...)
+		} else {
+			namedSources[i].src = src
+		}
+		rebuildLocked()
+		return
+	}
+	if src == nil {
+		return
+	}
+	namedSources = append(namedSources, namedSource{name: name, src: src})
+	rebuildLocked()
 }
 
 // DefaultSource returns the currently registered default Source. Tests and

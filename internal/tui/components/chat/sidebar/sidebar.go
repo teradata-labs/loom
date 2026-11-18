@@ -607,7 +607,15 @@ func (m *sidebarCmp) weaverBlock() string {
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 
-func formatTokensAndCost(tokens, contextWindow int64, cost float64) string {
+// formatCost renders a session cost; an estimated cost carries an asterisk.
+func formatCost(cost float64, estimated bool) string {
+	if estimated {
+		return fmt.Sprintf("$%.2f*", cost)
+	}
+	return fmt.Sprintf("$%.2f", cost)
+}
+
+func formatTokensAndCost(tokens, contextWindow int64, cost float64, estimated bool) string {
 	t := styles.CurrentTheme()
 	// Format tokens in human-readable format (e.g., 110K, 1.2M)
 	var formattedTokens string
@@ -632,7 +640,7 @@ func formatTokensAndCost(tokens, contextWindow int64, cost float64) string {
 
 	baseStyle := t.S().Base
 
-	formattedCost := baseStyle.Foreground(t.FgMuted).Render(fmt.Sprintf("$%.2f", cost))
+	formattedCost := baseStyle.Foreground(t.FgMuted).Render(formatCost(cost, estimated))
 
 	formattedTokens = baseStyle.Foreground(t.FgSubtle).Render(fmt.Sprintf("(%s)", formattedTokens))
 	formattedPercentage := baseStyle.Foreground(t.FgMuted).Render(fmt.Sprintf("%d%%", int(percentage)))
@@ -715,6 +723,7 @@ func (s *sidebarCmp) currentModelBlock() string {
 				ctxUsed,
 				ctxWindow,
 				s.session.Cost,
+				s.session.CostEstimated,
 			),
 		)
 	}

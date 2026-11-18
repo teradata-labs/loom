@@ -22,6 +22,7 @@ import (
 	"github.com/spf13/viper"
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
 	"github.com/teradata-labs/loom/pkg/llm/bedrockmantle"
+	"github.com/teradata-labs/loom/pkg/llm/vercelgateway"
 	"github.com/zalando/go-keyring"
 	"golang.org/x/term"
 )
@@ -96,6 +97,8 @@ Examples:
   looms config set llm.bedrock_model_id anthropic.claude-sonnet-4-5-20250929-v1:0
   looms config set llm.provider bedrock-mantle
   looms config set llm.bedrock_mantle_model anthropic.claude-haiku-4-5
+  looms config set llm.provider vercel-ai-gateway
+  looms config set llm.vercel_gateway_model anthropic/claude-sonnet-4.5
   looms config set server.port 60051
   looms config set logging.level debug`,
 	Args: cobra.ExactArgs(2),
@@ -160,7 +163,8 @@ func runConfigInit(cmd *cobra.Command, args []string) {
 	fmt.Println("  2. AWS Bedrock (AWS credentials required)")
 	fmt.Println("  3. Ollama (local inference, free)")
 	fmt.Println("  4. AWS Bedrock Mantle (AWS credentials required; bedrock-mantle endpoint)")
-	fmt.Print("Selection (1-4) [1]: ")
+	fmt.Println("  5. Vercel AI Gateway (gateway API key required; many upstream providers)")
+	fmt.Print("Selection (1-5) [1]: ")
 	var providerChoice string
 	_, _ = fmt.Scanln(&providerChoice)
 	if providerChoice == "" {
@@ -175,6 +179,8 @@ func runConfigInit(cmd *cobra.Command, args []string) {
 		llmProvider = "ollama"
 	case "4":
 		llmProvider = bedrockmantle.ProviderName
+	case "5":
+		llmProvider = vercelgateway.ProviderName
 	}
 
 	// Detect available backends
@@ -231,6 +237,11 @@ func runConfigInit(cmd *cobra.Command, args []string) {
 		fmt.Println("     looms config set-key bedrock_secret_access_key")
 		fmt.Println("   Option C - Bedrock API key instead of SigV4:")
 		fmt.Println("     looms config set-key bedrock_mantle_api_key")
+	case vercelgateway.ProviderName:
+		fmt.Println("1. Save your Vercel AI Gateway API key (or export AI_GATEWAY_API_KEY):")
+		fmt.Println("   looms config set-key vercel_gateway_api_key")
+		fmt.Println("   Then set llm.vercel_gateway_model to a creator/model id from")
+		fmt.Println("   https://ai-gateway.vercel.sh/v1/models")
 	case "ollama":
 		fmt.Println("1. Ensure Ollama is running:")
 		fmt.Println("   ollama serve")
@@ -507,6 +518,12 @@ llm:
   bedrock_mantle_region: us-west-2
   bedrock_mantle_model: ` + bedrockmantle.DefaultModel + `
   # bedrock_profile: default  # AWS profile for SigV4; or set-key bedrock_mantle_api_key for bearer auth
+`
+	case vercelgateway.ProviderName:
+		config += `  provider: vercel-ai-gateway
+  # Required: a creator/model id from https://ai-gateway.vercel.sh/v1/models (example below).
+  vercel_gateway_model: anthropic/claude-sonnet-4.5
+  # vercel_gateway_api_key: set via keyring (looms config set-key vercel_gateway_api_key) or AI_GATEWAY_API_KEY
 `
 	case "ollama":
 		config += `  provider: ollama

@@ -32,6 +32,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/mistral"
 	"github.com/teradata-labs/loom/pkg/llm/ollama"
 	"github.com/teradata-labs/loom/pkg/llm/openai"
+	"github.com/teradata-labs/loom/pkg/llm/vercelgateway"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/prompts"
 )
@@ -126,6 +127,30 @@ func (b *AgentBuilder) WithBedrockMantleLLM(region string) *AgentBuilder {
 		Region: region,
 		APIKey: os.Getenv("BEDROCK_MANTLE_API_KEY"),
 		Model:  model,
+	})
+	if err != nil {
+		b.recordErr(err)
+		return b
+	}
+	b.llm = client
+	return b
+}
+
+// WithVercelGatewayLLM configures the Vercel AI Gateway as the LLM provider
+// for model, a creator/model id from the gateway catalog
+// ("anthropic/claude-sonnet-4.5", "openai/gpt-5"). Claude ids go to the
+// Anthropic Messages surface and every other id to Chat Completions; see
+// pkg/llm/vercelgateway. The API key comes from
+// LOOM_LLM_VERCEL_GATEWAY_API_KEY, else AI_GATEWAY_API_KEY, and the endpoint
+// from VERCEL_AI_GATEWAY_ENDPOINT (empty = the global host). There is no
+// default model; an empty or malformed id, or no key, makes Build return the
+// construction error.
+func (b *AgentBuilder) WithVercelGatewayLLM(model string) *AgentBuilder {
+	client, err := vercelgateway.NewClient(vercelgateway.Config{
+		Endpoint:          os.Getenv("VERCEL_AI_GATEWAY_ENDPOINT"),
+		APIKey:            vercelgateway.ResolveAPIKey(""),
+		Model:             model,
+		RateLimiterConfig: llm.RateLimiterConfig{Enabled: true},
 	})
 	if err != nil {
 		b.recordErr(err)
