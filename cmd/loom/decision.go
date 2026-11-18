@@ -37,6 +37,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/decision/report"
 	"github.com/teradata-labs/loom/pkg/decision/sites"
 	"github.com/teradata-labs/loom/pkg/llm/factory"
+	"github.com/teradata-labs/loom/pkg/llm/vercelgateway"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/storage/sqlite"
@@ -102,7 +103,7 @@ func init() {
 	decisionReplayCmd.Flags().StringVar(&decisionDecider, "decider", "llm", "Decider to shadow: jev | llm | mock (jev reads TYPESAFE_API_KEY or AI_GATEWAY_API_KEY)")
 	decisionReplayCmd.Flags().StringVar(&decisionBaseURL, "base-url", "", "Endpoint base URL for --decider jev, https only (default: $TYPESAFE_BASE_URL, else TypeSafe direct, or the Vercel AI Gateway when only AI_GATEWAY_API_KEY is set)")
 	decisionReplayCmd.Flags().BoolVar(&decisionInsecure, "allow-insecure-http", false, "With --decider jev: allow an http:// --base-url on a loopback host (local proxy or mock decider)")
-	decisionReplayCmd.Flags().StringVar(&decisionProvider, "provider", "", "LLM provider for --decider llm: anthropic | bedrock | azure-openai | openai | gemini | mistral | ollama | litellm (default: $LOOM_LLM_PROVIDER or anthropic; credentials from the usual env vars)")
+	decisionReplayCmd.Flags().StringVar(&decisionProvider, "provider", "", "LLM provider for --decider llm: anthropic | bedrock | azure-openai | openai | gemini | mistral | ollama | litellm | vercel-ai-gateway (default: $LOOM_LLM_PROVIDER or anthropic; credentials from the usual env vars)")
 	decisionReplayCmd.Flags().StringVar(&decisionModel, "model", "", "LLM model for --decider llm (default: provider default)")
 	decisionReplayCmd.Flags().BoolVar(&decisionErrors, "errors-only", false, "Replay only executions that recorded an error")
 	decisionReplayCmd.Flags().BoolVar(&decisionDryRun, "dry-run", false, "Build requests and references but call no decider and write nothing")
@@ -506,6 +507,10 @@ func buildDecider(_ context.Context, f deciderFlags) (decision.Decider, error) {
 			AzureOpenAIEndpoint:     os.Getenv("AZURE_OPENAI_ENDPOINT"),
 			AzureOpenAIDeploymentID: os.Getenv("AZURE_OPENAI_DEPLOYMENT"),
 			AzureOpenAIAPIKey:       os.Getenv("AZURE_OPENAI_API_KEY"),
+			VercelGateway: vercelgateway.Config{
+				Endpoint: os.Getenv("VERCEL_AI_GATEWAY_ENDPOINT"),
+				APIKey:   vercelgateway.ResolveAPIKey(""),
+			},
 		})
 		raw, err := pf.CreateProvider(provider, f.model)
 		if err != nil {

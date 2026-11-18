@@ -257,6 +257,12 @@ type Usage struct {
 	// Zero means TotalTokens is the charged figure. Read it through
 	// ThroughputTokens.
 	RateLimitTokens int
+	// CostEstimated is true when CostUSD includes an estimate rather than a
+	// reported or published price: a call whose model had neither was priced
+	// at the median rate of the same creator's catalog models
+	// (catalog.CreatorMedianPricing). Summing usage keeps it set if any call
+	// set it. Shown to users as an asterisk on the cost.
+	CostEstimated bool
 }
 
 // ThroughputTokens returns the tokens the provider metered against its
@@ -301,9 +307,17 @@ type LLMResponse struct {
 // carried opaquely: Signature is provider-signed and never interpreted;
 // redacted blocks keep their encrypted payload in Thinking.
 type ThinkingBlock struct {
-	Type      string // "thinking" | "redacted_thinking"
+	// Type is "thinking" | "redacted_thinking" (Anthropic), or a
+	// "reasoning.*" detail type ("reasoning.text", "reasoning.summary",
+	// "reasoning.encrypted") from an OpenAI-compatible gateway's
+	// reasoning_details.
+	Type      string
 	Thinking  string
 	Signature string
+	// Format is the gateway's opaque format tag for a reasoning detail
+	// (for example "anthropic-claude-v1"), replayed unchanged. Empty for
+	// Anthropic-native blocks.
+	Format string
 }
 
 // LLMProvider defines the interface for LLM providers.

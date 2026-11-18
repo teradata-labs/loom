@@ -224,6 +224,23 @@ type StreamEvent struct {
 	ContentBlock *ContentBlock       `json:"content_block,omitempty"`
 	Delta        *StreamDelta        `json:"delta,omitempty"`
 	Usage        *Usage              `json:"usage,omitempty"`
+	// Error is set on an "error" event: a failure after the stream started
+	// (Anthropic's overloaded_error, or an upstream fault behind a gateway).
+	Error *StreamError `json:"error,omitempty"`
+	// ProviderMetadata carries the upstream's own usage on a gateway's
+	// message_delta (Vercel AI Gateway, observed 2026-11-16), where the
+	// top-level usage has input tokens but no cache counts.
+	ProviderMetadata *struct {
+		Anthropic *struct {
+			Usage *Usage `json:"usage"`
+		} `json:"anthropic"`
+	} `json:"provider_metadata,omitempty"`
+}
+
+// StreamError is the payload of an "error" stream event.
+type StreamError struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
 }
 
 // StreamDelta represents a delta in a streaming event.

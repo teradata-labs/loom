@@ -44,3 +44,8 @@ func TestCurrentModelBlock_NoHardcodedDefault(t *testing.T) {
 		assert.NotContains(t, out, "detecting model")
 	})
 }
+
+func TestFormatCost_AsteriskWhenEstimated(t *testing.T) {
+	assert.Equal(t, "$1.25", formatCost(1.25, false))
+	assert.Equal(t, "$1.25*", formatCost(1.25, true))
+}
