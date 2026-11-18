@@ -1766,8 +1766,9 @@ message CompactSessionResponse {
   // False when nothing older than keep_turns was left to compact.
   bool compacted = 1;
 
-  // Older tool results were replaced by re-fetchable stubs.
-  bool tool_results_stubbed = 2;
+  // Always false: a tool result is bounded as it arrives and is never
+  // replaced by a stub later.
+  bool tool_results_stubbed = 2 [deprecated = true];
 
   // Older turns were folded into the running summary.
   bool turns_folded = 3;

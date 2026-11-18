@@ -1014,7 +1014,7 @@ loom sessions <subcommand> [flags]
 | `delete <session-id>` | Delete a session and its conversation history |
 | `resume <session-id>` | Finish a turn that a server crash interrupted (needs `execution_log.enabled`) |
 | `resolve-gap <session-id>` | Record the outcome of the tool call `resume` reported as an execution gap |
-| `compact <session-id>` | Stub older tool results and fold older turns into the summary, keeping the newest turns |
+| `compact <session-id>` | Fold older turns into the summary, keeping the newest turns |
 
 **Flags (list):**
 
@@ -1081,9 +1081,8 @@ Exits 1 with gRPC `FAILED_PRECONDITION` when the session has no execution gap.
 
 #### loom sessions compact
 
-Calls the server's `CompactSession` RPC between turns. Older tool results become
-stubs the agent can fetch again, and older turns are folded into the session's
-running summary (one LLM call). The system prompt, the summary and the newest
+Calls the server's `CompactSession` RPC between turns. Older turns are folded
+into the session's running summary (one LLM call). The system prompt, the summary and the newest
 turns stay verbatim. See [Memory Systems](../architecture/memory-systems.md).
 
 | Flag | Type | Default | Description |
@@ -1094,7 +1093,7 @@ turns stay verbatim. See [Memory Systems](../architecture/memory-systems.md).
 
 | Result | Output | Exit code |
 |--------|--------|-----------|
-| Compacted | What was stubbed or folded, turns kept, estimated tokens before and after | 0 |
+| Compacted | Turns folded, turns kept, estimated tokens before and after | 0 |
 | Nothing older than the kept turns | `Nothing to compact: ...` | 0 |
 | Busy (gRPC `ABORTED`) | A turn or another compaction is running on the session | 1 |
 | Refused (gRPC `FAILED_PRECONDITION`) | The session waits for a human decision | 1 |

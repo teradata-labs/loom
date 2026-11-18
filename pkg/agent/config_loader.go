@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
@@ -70,6 +69,10 @@ func convertLLMConfigYAMLToProto(y *LLMConfigYAML) (*loomv1.LLMConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	maxModelContextTokens, err := safeInt32(y.MaxModelContextTokens, "LLM.MaxModelContextTokens")
+	if err != nil {
+		return nil, err
+	}
 	var rateLimit *loomv1.LLMRateLimitConfig
 	if y.RateLimit != nil {
 		rateLimit = &loomv1.LLMRateLimitConfig{
@@ -86,18 +89,19 @@ func convertLLMConfigYAMLToProto(y *LLMConfigYAML) (*loomv1.LLMConfig, error) {
 	return &loomv1.LLMConfig{
 		// Aliases ("vercel") become canonical names at load, so limiter keys,
 		// the catalog namespace and span attributes never see an alias.
-		Provider:             vercelgateway.NormalizeProviderName(y.Provider),
-		Model:                y.Model,
-		Temperature:          float32(y.Temperature),
-		MaxTokens:            maxTokens,
-		StopSequences:        y.StopSequences,
-		TopP:                 float32(y.TopP),
-		TopK:                 topK,
-		MaxContextTokens:     maxContextTokens,
-		ReservedOutputTokens: reservedOutputTokens,
-		RateLimit:            rateLimit,
-		Seed:                 copyInt64Ptr(y.Seed),
-		GatewayRouting:       gatewayRoutingYAMLToProto(y.GatewayRouting),
+		Provider:              vercelgateway.NormalizeProviderName(y.Provider),
+		Model:                 y.Model,
+		Temperature:           float32(y.Temperature),
+		MaxTokens:             maxTokens,
+		StopSequences:         y.StopSequences,
+		TopP:                  float32(y.TopP),
+		TopK:                  topK,
+		MaxContextTokens:      maxContextTokens,
+		ReservedOutputTokens:  reservedOutputTokens,
+		MaxModelContextTokens: maxModelContextTokens,
+		RateLimit:             rateLimit,
+		Seed:                  copyInt64Ptr(y.Seed),
+		GatewayRouting:        gatewayRoutingYAMLToProto(y.GatewayRouting),
 	}, nil
 }
 
@@ -108,18 +112,19 @@ func convertProtoToLLMConfigYAML(pb *loomv1.LLMConfig) *LLMConfigYAML {
 		return nil
 	}
 	return &LLMConfigYAML{
-		Provider:             pb.Provider,
-		Model:                pb.Model,
-		Temperature:          float64(pb.Temperature),
-		MaxTokens:            int(pb.MaxTokens),
-		StopSequences:        pb.StopSequences,
-		TopP:                 float64(pb.TopP),
-		TopK:                 int(pb.TopK),
-		MaxContextTokens:     int(pb.MaxContextTokens),
-		ReservedOutputTokens: int(pb.ReservedOutputTokens),
-		RateLimit:            rateLimitProtoToYAML(pb.RateLimit),
-		Seed:                 copyInt64Ptr(pb.Seed),
-		GatewayRouting:       gatewayRoutingProtoToYAML(pb.GatewayRouting),
+		Provider:              pb.Provider,
+		Model:                 pb.Model,
+		Temperature:           float64(pb.Temperature),
+		MaxTokens:             int(pb.MaxTokens),
+		StopSequences:         pb.StopSequences,
+		TopP:                  float64(pb.TopP),
+		TopK:                  int(pb.TopK),
+		MaxContextTokens:      int(pb.MaxContextTokens),
+		ReservedOutputTokens:  int(pb.ReservedOutputTokens),
+		MaxModelContextTokens: int(pb.MaxModelContextTokens),
+		RateLimit:             rateLimitProtoToYAML(pb.RateLimit),
+		Seed:                  copyInt64Ptr(pb.Seed),
+		GatewayRouting:        gatewayRoutingProtoToYAML(pb.GatewayRouting),
 	}
 }
 
@@ -357,16 +362,19 @@ type K8sStyleAgentConfig struct {
 
 // LLMConfigYAML represents LLM configuration in YAML
 type LLMConfigYAML struct {
-	Provider             string            `yaml:"provider"`
-	Model                string            `yaml:"model"`
-	Temperature          float64           `yaml:"temperature"`
-	MaxTokens            int               `yaml:"max_tokens"`
-	StopSequences        []string          `yaml:"stop_sequences"`
-	TopP                 float64           `yaml:"top_p"`
-	TopK                 int               `yaml:"top_k"`
-	MaxContextTokens     int               `yaml:"max_context_tokens"`
-	ReservedOutputTokens int               `yaml:"reserved_output_tokens"`
-	RateLimit            *LLMRateLimitYAML `yaml:"rate_limit"`
+	Provider             string   `yaml:"provider"`
+	Model                string   `yaml:"model"`
+	Temperature          float64  `yaml:"temperature"`
+	MaxTokens            int      `yaml:"max_tokens"`
+	StopSequences        []string `yaml:"stop_sequences"`
+	TopP                 float64  `yaml:"top_p"`
+	TopK                 int      `yaml:"top_k"`
+	MaxContextTokens     int      `yaml:"max_context_tokens"`
+	ReservedOutputTokens int      `yaml:"reserved_output_tokens"`
+	// MaxModelContextTokens is the window the model is served with, when it
+	// is below the model's listed window; see Config.MaxModelContextTokens.
+	MaxModelContextTokens int               `yaml:"max_model_context_tokens"`
+	RateLimit             *LLMRateLimitYAML `yaml:"rate_limit"`
 
 	// Seed pins the sampling seed for reproducible generations.
 	// A pointer so that an omitted key (nil → provider samples randomly) is
@@ -560,6 +568,7 @@ type MemoryCompressionConfigYAML struct {
 	MinL1Messages            int                              `yaml:"min_l1_messages"`
 	WarningThresholdPercent  int                              `yaml:"warning_threshold_percent"`
 	CriticalThresholdPercent int                              `yaml:"critical_threshold_percent"`
+	ProtectedRecentTurns     int                              `yaml:"protected_recent_turns"`
 	BatchSizes               *MemoryCompressionBatchSizesYAML `yaml:"batch_sizes"`
 }
 
@@ -586,17 +595,9 @@ type BehaviorConfigYAML struct {
 	RepeatCallHint *bool `yaml:"repeat_call_hint"`
 	// ToolChangeNote opts the agent into the tool-change note (default off).
 	ToolChangeNote bool `yaml:"tool_change_note"`
-	// ContextReliefWarning opts the agent into the context-relief warning
-	// (default off).
-	ContextReliefWarning bool `yaml:"context_relief_warning"`
 	// ParallelReadTools opts the agent into running consecutive
 	// concurrency-safe tool calls of one response in parallel (default off).
 	ParallelReadTools bool `yaml:"parallel_read_tools"`
-	// PreflightFit opts the agent into the pre-flight context guard (default off).
-	PreflightFit bool `yaml:"preflight_fit"`
-	// AutoCompactPercent turns on end-of-turn compaction at this percentage of
-	// the usable window: 0 (off) to 99.
-	AutoCompactPercent int `yaml:"auto_compact_percent"`
 }
 
 // SkillsConfigYAML represents skills configuration in YAML
@@ -693,6 +694,7 @@ func LoadConfigFromString(yamlContent string) (*loomv1.AgentConfig, error) {
 	}
 
 	warnMisnestedTaskBoard(yamlOnly)
+	warnRemovedKeys(yamlOnly)
 
 	// Validate required fields
 	if yamlConfig.Agent.Name == "" {
@@ -1031,9 +1033,6 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid behavior config: %w", err)
 	}
-	if p := yaml.Agent.Behavior.AutoCompactPercent; p < 0 || p > 99 {
-		return nil, fmt.Errorf("invalid behavior config: auto_compact_percent must be 0 (off) to 99, got %d", p)
-	}
 
 	config.Behavior = &loomv1.BehaviorConfig{
 		MaxIterations:          maxIterations,
@@ -1177,14 +1176,6 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 		config.Metadata["_tool_change_note"] = "true"
 	}
 
-	// The context-relief warning is opt-in the same way.
-	if yaml.Agent.Behavior.ContextReliefWarning {
-		if config.Metadata == nil {
-			config.Metadata = make(map[string]string)
-		}
-		config.Metadata["_context_relief_warning"] = "true"
-	}
-
 	// Parallel dispatch of read-only tool calls is opt-in the same way.
 	if yaml.Agent.Behavior.ParallelReadTools {
 		if config.Metadata == nil {
@@ -1193,36 +1184,17 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 		config.Metadata["_parallel_read_tools"] = "true"
 	}
 
-	// The pre-flight guard and end-of-turn compaction are opt-in the same way.
-	if yaml.Agent.Behavior.PreflightFit {
-		if config.Metadata == nil {
-			config.Metadata = make(map[string]string)
-		}
-		config.Metadata["_preflight_fit"] = "true"
-	}
-	if p := yaml.Agent.Behavior.AutoCompactPercent; p > 0 {
-		if config.Metadata == nil {
-			config.Metadata = make(map[string]string)
-		}
-		config.Metadata["_auto_compact_percent"] = strconv.Itoa(p)
-	}
-
 	return config, nil
 }
 
 // ApplyMetadataBehavior maps the behavior flags yamlToProto encodes in an
 // agent's metadata onto cfg. Every place that builds a Config from a
 // loomv1.AgentConfig calls it, so a YAML key cannot work in one host and be
-// ignored in another. It maps _parallel_read_tools, _preflight_fit and
-// _auto_compact_percent; the sibling flags (_tool_change_note,
-// _context_relief_warning, _repeat_call_hint) are tracked in issue #526.
+// ignored in another. It maps only _parallel_read_tools for now; the sibling
+// flags (_tool_change_note, _repeat_call_hint) are
+// tracked in issue #526.
 func ApplyMetadataBehavior(cfg *Config, md map[string]string) {
 	cfg.ParallelReadTools = md["_parallel_read_tools"] == "true"
-	cfg.PreflightFit = md["_preflight_fit"] == "true"
-	cfg.AutoCompactPercent = 0
-	if p, err := strconv.Atoi(md["_auto_compact_percent"]); err == nil && p > 0 && p < 100 {
-		cfg.AutoCompactPercent = p
-	}
 }
 
 // parseMemoryCompressionConfig converts YAML memory compression config to proto
@@ -1249,11 +1221,17 @@ func parseMemoryCompressionConfig(yaml *MemoryCompressionConfigYAML) *loomv1.Mem
 		return nil
 	}
 
+	protectedTurns, err := safeInt32(yaml.ProtectedRecentTurns, "ProtectedRecentTurns")
+	if err != nil {
+		return nil
+	}
+
 	config := &loomv1.MemoryCompressionConfig{
 		MaxL1Messages:            maxL1,
 		MinL1Messages:            minL1,
 		WarningThresholdPercent:  warningThreshold,
 		CriticalThresholdPercent: criticalThreshold,
+		ProtectedRecentTurns:     protectedTurns,
 	}
 
 	// Parse workload profile string to enum
@@ -1494,6 +1472,33 @@ func parseImplicitTasksConfig(yaml *ImplicitTasksConfigYAML) *loomv1.ImplicitTas
 	return cfg
 }
 
+// warnRemovedKeys reports a key the loader once read and no longer does, so a
+// file that still sets it learns the setting has no effect.
+func warnRemovedKeys(yamlOnly string) {
+	var probe struct {
+		Agent struct {
+			Behavior map[string]any `yaml:"behavior"`
+		} `yaml:"agent"`
+		Spec struct {
+			Behavior map[string]any `yaml:"behavior"`
+		} `yaml:"spec"`
+	}
+	if err := yaml.Unmarshal([]byte(yamlOnly), &probe); err != nil {
+		return
+	}
+	for _, b := range []map[string]any{probe.Agent.Behavior, probe.Spec.Behavior} {
+		if _, set := b["context_relief_warning"]; set {
+			zap.L().Warn("behavior.context_relief_warning is no longer read; the setting has no effect")
+		}
+		if _, set := b["preflight_fit"]; set {
+			zap.L().Warn("behavior.preflight_fit is no longer read; to hold every request under the context window, set llm.max_model_context_tokens to it")
+		}
+		if _, set := b["auto_compact_percent"]; set {
+			zap.L().Warn("behavior.auto_compact_percent is no longer read; the in-loop fold compacts at memory.memory_compression.critical_threshold_percent")
+		}
+	}
+}
+
 // warnMisnestedTaskBoard reports a task_board block written where the loader
 // does not read it.
 //
@@ -1700,15 +1705,16 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 	// Convert LLM config
 	if config.Llm != nil {
 		yaml.Agent.LLM = LLMConfigYAML{
-			Provider:             config.Llm.Provider,
-			Model:                config.Llm.Model,
-			Temperature:          float64(config.Llm.Temperature),
-			MaxTokens:            int(config.Llm.MaxTokens),
-			StopSequences:        config.Llm.StopSequences,
-			TopP:                 float64(config.Llm.TopP),
-			TopK:                 int(config.Llm.TopK),
-			MaxContextTokens:     int(config.Llm.MaxContextTokens),
-			ReservedOutputTokens: int(config.Llm.ReservedOutputTokens),
+			Provider:              config.Llm.Provider,
+			Model:                 config.Llm.Model,
+			Temperature:           float64(config.Llm.Temperature),
+			MaxTokens:             int(config.Llm.MaxTokens),
+			StopSequences:         config.Llm.StopSequences,
+			TopP:                  float64(config.Llm.TopP),
+			TopK:                  int(config.Llm.TopK),
+			MaxContextTokens:      int(config.Llm.MaxContextTokens),
+			ReservedOutputTokens:  int(config.Llm.ReservedOutputTokens),
+			MaxModelContextTokens: int(config.Llm.MaxModelContextTokens),
 			// rate_limit used to be dropped here for the main LLM (the role
 			// LLMs below kept it), so a save/load round trip lost it.
 			RateLimit:      rateLimitProtoToYAML(config.Llm.RateLimit),

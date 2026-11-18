@@ -2266,6 +2266,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		DBPath:      dbPath,
 		MCPManager:  mcpMgrForRegistry,
 		LLMProvider: llmProvider,
+		MaxTokens:   config.LLM.MaxTokens,
 		// Agents created or rebuilt at runtime build their own LLM the way
 		// the startup path does: server credentials and endpoints, then env.
 		LLMProviderBuilder: func(c *loomv1.LLMConfig) (agent.LLMProvider, error) {
@@ -2298,6 +2299,7 @@ func runServe(cmd *cobra.Command, args []string) {
 
 			// Create agents from loaded configs
 			for _, cfg := range configs {
+				cfg = agent.WithServerMaxTokens(cfg, config.LLM.MaxTokens)
 				if _, exists := agents[cfg.Name]; exists {
 					logger.Info("  Skipping agent (already loaded from looms.yaml)", zap.String("name", cfg.Name))
 					continue
@@ -3584,6 +3586,7 @@ func runServe(cmd *cobra.Command, args []string) {
 	if registry != nil {
 		// Set reload callback to update running agents
 		registry.SetReloadCallback(func(name string, guid string, agentConfig *loomv1.AgentConfig) error {
+			agentConfig = agent.WithServerMaxTokens(agentConfig, config.LLM.MaxTokens)
 			logger.Info("Reloading agent in server",
 				zap.String("agent", name),
 				zap.String("guid", guid))

@@ -15,6 +15,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -40,6 +41,39 @@ func (c *recordingCompressor) CompressMessages(_ context.Context, msgs []Message
 }
 func (c *recordingCompressor) IsEnabled() bool { return true }
 
+// failingCompressor is an enabled compressor that always errors.
+type failingCompressor struct{ calls int }
+
+func (c *failingCompressor) CompressMessages(context.Context, []Message) (string, error) {
+	c.calls++
+	return "", errors.New("provider down")
+}
+func (c *failingCompressor) IsEnabled() bool { return true }
+
+func unfoldedTurns(sm *SegmentedMemory) map[int64]bool {
+	turns := map[int64]bool{}
+	for _, m := range sm.contextMessages {
+		if !m.Folded {
+			turns[m.Turn] = true
+		}
+	}
+	return turns
+}
+
+// proseMemory builds turns 1..n of user/assistant prose, each message ~3 dense
+// rows.
+func proseMemory(t *testing.T, maxTokens, reserved, turns int) *SegmentedMemory {
+	t.Helper()
+	ctx := context.Background()
+	sm := NewSegmentedMemory("ROM", maxTokens, reserved)
+	sm.SetThreshold(16384)
+	for turn := 1; turn <= turns; turn++ {
+		sm.AddMessage(ctx, Message{Role: "user", Content: denseResult(turn) + denseResult(turn+100), Turn: int64(turn)})
+		sm.AddMessage(ctx, Message{Role: "assistant", Content: denseResult(turn+200) + denseResult(turn+300), Turn: int64(turn)})
+	}
+	return sm
+}
+
 // toolTurnMemory builds turns 1..turns, each with one tool call and a large result.
 func toolTurnMemory(t *testing.T, maxTokens, reserved, turns int) *SegmentedMemory {
 	t.Helper()
@@ -58,7 +92,7 @@ func toolTurnMemory(t *testing.T, maxTokens, reserved, turns int) *SegmentedMemo
 	return sm
 }
 
-func TestCompact_StubsOldResultsFoldsOldTurnsAndKeepsRecentVerbatim(t *testing.T) {
+func TestCompact_FoldsOldTurnsAndKeepsRecentVerbatim(t *testing.T) {
 	sm := toolTurnMemory(t, 200000, 20000, 6)
 	comp := &recordingCompressor{}
 	sm.SetCompressor(comp)
@@ -75,8 +109,9 @@ func TestCompact_StubsOldResultsFoldsOldTurnsAndKeepsRecentVerbatim(t *testing.T
 	var summary string
 	sent := map[int64]bool{}
 	for _, m := range sm.GetMessagesForLLM() {
-		if m.Role == "system" && strings.Contains(m.Content, "SUMMARY") {
+		if strings.HasPrefix(m.Content, summaryRowPrefix) {
 			summary = m.Content
+			continue
 		}
 		if m.Role != "system" {
 			sent[m.Turn] = true
@@ -85,11 +120,6 @@ func TestCompact_StubsOldResultsFoldsOldTurnsAndKeepsRecentVerbatim(t *testing.T
 	assert.Contains(t, summary, "open approvals")
 	assert.True(t, sent[5] && sent[6], "the newest two turns stay verbatim")
 	assert.False(t, sent[1] || sent[2] || sent[3] || sent[4], "older turns live in the summary")
-	for _, m := range sm.GetMessagesForLLM() {
-		if m.Role == "tool" && m.Turn >= 5 {
-			assert.NotContains(t, m.Content, "evicted from context", "kept turns keep their results whole")
-		}
-	}
 }
 
 func TestCompact_FocusReachesTheCompressor(t *testing.T) {
@@ -134,7 +164,6 @@ func TestCompact_RescuesASessionAlreadyOverItsWindow(t *testing.T) {
 
 	require.True(t, res.Compacted)
 	assert.LessOrEqual(t, res.TokensAfter, 11000, "the compacted session fits again")
-	assert.True(t, sm.EnsureFits(context.Background()).Fits)
 }
 
 func TestCompact_RefusesWhenAPassIsAlreadyRunning(t *testing.T) {
@@ -169,4 +198,74 @@ func TestCompactSession_RecordsASpan(t *testing.T) {
 	assert.Equal(t, true, span.Attributes["compaction.turns_folded"])
 	assert.Equal(t, true, span.Attributes["compaction.focus"])
 	assert.Equal(t, res.TokensAfter, span.Attributes["compaction.tokens_after"])
+}
+
+// A requested compaction and the in-loop fold are one mechanism: on a session
+// the in-loop fold has already folded, Compact hands the compressor that
+// summary, replaces it, and keeps the newest turns; the request-size log
+// counts the summary row as the summary.
+func TestCompact_BuildsOnTheSummaryOfAnInloopFold(t *testing.T) {
+	sm := toolTurnMemory(t, 200000, 20000, 8)
+	sm.SetProtectedRecentTurns(4)
+	comp := &recordingCompressor{}
+	sm.SetCompressor(comp)
+
+	applied, _ := sm.ApplyFoldReply(context.Background(), "INLOOP: tables one to four are read")
+	require.True(t, applied, "the in-loop fold did not commit")
+	require.Equal(t, 1, sm.summary.n)
+
+	res, err := sm.Compact(context.Background(), CompactOptions{KeepTurns: 2})
+	require.NoError(t, err)
+	assert.True(t, res.Compacted)
+	assert.Equal(t, 2, res.SummaryVersion, "the requested compaction wrote the next summary version")
+
+	var given []string
+	for _, m := range comp.input {
+		given = append(given, m.Content)
+	}
+	assert.Contains(t, strings.Join(given, "\n"), "INLOOP: tables one to four are read", "the compressor was not given the in-loop fold's summary")
+
+	turns := map[int64]bool{}
+	for turn := range unfoldedTurns(sm) {
+		turns[turn] = true
+	}
+	assert.Equal(t, map[int64]bool{7: true, 8: true}, turns, "the newest two turns stay verbatim")
+
+	b := measureRequest(sm.GetMessagesForLLM(), nil)
+	assert.Positive(t, b.SummaryTokens, "the log did not count the summary row")
+}
+
+// The figures before and after come from one counter: a compaction that
+// shrinks the context never reports growth, whichever side of the start mark
+// each lands on.
+func TestCompact_ReportsBeforeAndAfterFromOneCounter(t *testing.T) {
+	prose := strings.Repeat("The quarterly revenue analysis shows that customers in the northern region increased their spending considerably during the holiday season. ", 14)
+	for usable := 4000; usable <= 40000; usable += 500 {
+		sm := NewSegmentedMemory("ROM", usable+1000, 1000)
+		for turn := 1; turn <= 8; turn++ {
+			sm.AddMessage(context.Background(), Message{Role: "user", Content: fmt.Sprintf("q%d ", turn) + prose, Turn: int64(turn), ID: fmt.Sprint(turn * 10)})
+			sm.AddMessage(context.Background(), Message{Role: "assistant", Content: fmt.Sprintf("a%d ", turn) + prose, Turn: int64(turn), ID: fmt.Sprint(turn*10 + 1)})
+		}
+		sm.SetCompressor(&recordingCompressor{})
+
+		res, err := sm.Compact(context.Background(), CompactOptions{KeepTurns: 6})
+		require.NoError(t, err)
+		require.True(t, res.Compacted)
+		assert.Less(t, res.TokensAfter, res.TokensBefore, "usable window %d", usable)
+	}
+}
+
+// A compressor that panics inside a requested compaction leaves nothing set
+// for a later fold: the rule that a requested fold needs a real summary is
+// Compact's alone.
+func TestCompact_APanicLeavesNoRuleForALaterFold(t *testing.T) {
+	sm := toolTurnMemory(t, 12000, 1000, 12)
+	sm.SetCompressor(&panickingCompressor{})
+	func() {
+		defer func() { _ = recover() }()
+		_, _ = sm.Compact(context.Background(), CompactOptions{KeepTurns: 2, Focus: "keep the SQL"})
+	}()
+	assert.False(t, sm.foldRequireSummary, "the requested fold's rule outlived it")
+	assert.Empty(t, sm.compactFocus)
+	assert.False(t, sm.reliefInFlight)
 }
