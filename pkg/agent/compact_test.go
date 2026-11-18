@@ -24,7 +24,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
 // recordingCompressor returns a fixed summary and keeps the input it was given.
@@ -90,6 +92,26 @@ func toolTurnMemory(t *testing.T, maxTokens, reserved, turns int) *SegmentedMemo
 		sm.AddMessage(ctx, Message{Role: "assistant", Content: fmt.Sprintf("answer %d", turn), Turn: int64(turn)})
 	}
 	return sm
+}
+
+// reliefSeamAgent returns an agent whose session already holds sm, so the Chat
+// turn starts from a known context state (the session keeps an existing
+// SegmentedMem, see ensureSessionMemory). It lives in this untagged file
+// because both this file and the fts5-tagged turn_notes_test.go call it, and
+// it needs nothing from fts5.
+func reliefSeamAgent(t *testing.T, llm interface {
+	Chat(context.Context, []llmtypes.Message, []shuttle.Tool) (*llmtypes.LLMResponse, error)
+	Name() string
+	Model() string
+}, sessionID string, sm *SegmentedMemory, opts ...Option) *Agent {
+	t.Helper()
+	cfg := DefaultConfig()
+	cfg.PatternConfig = DefaultPatternConfig()
+	cfg.PatternConfig.UseLLMClassifier = false
+	ag := NewAgent(&mockBackend{}, llm, append([]Option{WithConfig(cfg)}, opts...)...)
+	session := ag.memory.GetOrCreateSession(context.Background(), sessionID)
+	session.SegmentedMem = sm
+	return ag
 }
 
 func TestCompact_FoldsOldTurnsAndKeepsRecentVerbatim(t *testing.T) {
