@@ -16,6 +16,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 // openTestDB opens path with the given busy timeout and one pooled
@@ -180,6 +182,37 @@ func TestExecSchema_RetriesUnderImmediateWhenTheUpgradeIsBusy(t *testing.T) {
 	require.NoError(t, err, "the script must wait for the write lock and apply")
 	assert.True(t, tableExists(t, db, "b"), "table b must exist after the retry")
 	assert.GreaterOrEqual(t, elapsed, hold-50*time.Millisecond, "the retry must have waited for the holder")
+}
+
+// A retry under BEGIN IMMEDIATE writes one Warn line with the file path
+// (query string removed) and the outcome. Not parallel: it replaces zap's
+// global logger, which parallel tests would also write to.
+func TestExecSchema_RetryIsLogged(t *testing.T) {
+	core, logs := observer.New(zap.WarnLevel)
+	t.Cleanup(zap.ReplaceGlobals(zap.New(core)))
+
+	dir := t.TempDir()
+	file := filepath.Join(dir, "logged.db")
+	path := file + "?_txlock=deferred"
+	db := openTestDB(t, path, 5000)
+	require.NoError(t, ExecSchema(context.Background(), db, path, `CREATE TABLE a (id INTEGER);`), "create table a")
+	require.Zero(t, logs.Len(), "a script that gets no SQLITE_BUSY must not log")
+
+	release := holdWriteLock(t, file)
+	timer := time.AfterFunc(200*time.Millisecond, release)
+	t.Cleanup(func() { timer.Stop() })
+	require.NoError(t, ExecSchema(context.Background(), db, path,
+		`CREATE TABLE IF NOT EXISTS a (id INTEGER); CREATE TABLE IF NOT EXISTS b (id INTEGER);`),
+		"the retry must apply the script")
+
+	entries := logs.FilterMessage("schema script busy; retried under BEGIN IMMEDIATE").All()
+	require.Len(t, entries, 1, "the retry must write exactly one Warn line")
+	fields := entries[0].ContextMap()
+	wantPath, _ := schemaLockKey(path)
+	assert.Equal(t, wantPath, fields["path"], "the log must carry the file path without the query string")
+	assert.NotContains(t, fields["path"], "?", "no DSN parameter may reach the log")
+	assert.Equal(t, true, fields["retry_succeeded"], "the log must say the retry succeeded")
+	assert.Contains(t, fields["first_error"], "database is locked", "the log must carry the first error")
 }
 
 // When the write lock stays held, a write-first script fails after about two

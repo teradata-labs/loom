@@ -594,11 +594,18 @@ steps:
    and waits for it under `busy_timeout`. SQLite locks are file locks, so a
    second connection in a test and a second process behave the same.
 
-When another connection holds the write lock the whole time, a script whose
-first lock-taking statement is a write (a new file) waits the busy timeout
-twice: once in the deferred attempt and once in the retry. The open fails
-after about twice the busy timeout (about 10 s for `evals.NewStore`), and the
-error holds both attempts.
+**How long an open can wait** when another connection holds the write lock
+the whole time:
+
+| Caller | Fails after about | Why |
+|---|---|---|
+| The caller that holds the in-process lock for the file | 2 × busy timeout (10 s for `evals.NewStore`) | A write-first script (a new file) waits once in the deferred attempt and once in the `BEGIN IMMEDIATE` retry. |
+| The k-th caller queued behind it in the same process | 2k × busy timeout | It first waits for every caller ahead of it. `evals.NewStore` uses a context with no deadline, so the queue wait has no other limit. |
+
+When the retry also fails, the error holds both attempts. Every retry writes
+one Warn line through `zap.L()` (`logger=sqlitedriver`, message `schema
+script busy; retried under BEGIN IMMEDIATE`) with the file path (no query
+string), `retry_succeeded`, `first_error` and `retry_error`.
 
 Two other designs were tried and rejected:
 

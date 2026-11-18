@@ -53,7 +53,9 @@ func openStore(dbPath string, busyTimeoutMS int) (*Store, error) {
 	// Initialize schema
 	// NewStore takes no context, so schema init runs under Background. When
 	// another connection holds the write lock the whole time, schema init
-	// fails after about twice the busy timeout (see sqlitedriver.ExecSchema).
+	// fails after about twice the busy timeout, plus the time spent queued
+	// behind other openers of the same file in this process (see
+	// sqlitedriver.ExecSchema).
 	if err := store.initSchema(context.Background()); err != nil {
 		// #nosec G104 -- best-effort cleanup on initialization failure
 		_ = db.Close()

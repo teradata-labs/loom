@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"go.uber.org/zap"
 )
 
 // ExecSchema runs a schema script for the database file at path. Stores call
@@ -44,12 +46,20 @@ import (
 // The connection must have a busy timeout (Options.BusyTimeoutMS); without
 // one, step 3 fails at once under contention.
 //
-// How long ExecSchema can wait: when the first statement that needs the lock
-// is a write (a new file), the deferred attempt itself waits up to the busy
-// timeout before it returns SQLITE_BUSY, and the BEGIN IMMEDIATE retry waits
-// up to the busy timeout again. So a caller whose write lock stays held fails
-// after about twice the busy timeout, not once. When the retry also fails,
-// the returned error holds both errors.
+// How long ExecSchema can wait while another connection holds the write lock
+// the whole time:
+//   - Once a caller holds the in-process lock, it fails after about twice the
+//     busy timeout. When the first statement that needs the lock is a write
+//     (a new file), the deferred attempt waits up to the busy timeout before
+//     it returns SQLITE_BUSY, and the BEGIN IMMEDIATE retry waits again.
+//   - Before that, a caller waits for every caller ahead of it on the same
+//     path, until ctx ends. Under a context with no deadline, the k-th caller
+//     in the queue fails after about 2k busy timeouts.
+//
+// When the retry also fails, the returned error holds both errors. Every
+// retry writes one Warn line through zap.L() (the global logger that
+// `looms serve` installs), with the file path (no query string), whether the
+// retry succeeded, and both errors.
 //
 // ":memory:" and "" are private to each connection, so ExecSchema does not
 // lock them.
@@ -64,7 +74,16 @@ func ExecSchema(ctx context.Context, db *sql.DB, path, script string) error {
 	if first == nil || !isBusy(first) {
 		return first
 	}
-	if retry := execScriptTx(ctx, db, "BEGIN IMMEDIATE", script); retry != nil {
+	retry := execScriptTx(ctx, db, "BEGIN IMMEDIATE", script)
+	// Log the lock key, not path: the key has no query string, so a DSN
+	// parameter such as _pragma_key never reaches the log.
+	file, _ := schemaLockKey(path)
+	zap.L().Named("sqlitedriver").Warn("schema script busy; retried under BEGIN IMMEDIATE",
+		zap.String("path", file),
+		zap.Bool("retry_succeeded", retry == nil),
+		zap.NamedError("first_error", first),
+		zap.NamedError("retry_error", retry))
+	if retry != nil {
 		return errors.Join(first, fmt.Errorf("sqlitedriver: retry under begin immediate: %w", retry))
 	}
 	return nil
