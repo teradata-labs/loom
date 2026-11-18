@@ -17,7 +17,7 @@ several) with control flow added.
 
 The engine is a thin, defensive layer over the pure-Go interpreter
 [`github.com/arnodel/golua`](https://github.com/arnodel/golua) v0.3.0 (Lua 5.5,
-Apache-2.0), vendored in `third_party/golua` with fourteen fixes: seven since merged upstream and released in v0.4.0, one still open upstream (#133) and six not
+Apache-2.0), vendored in `third_party/golua` with fifteen fixes: seven merged upstream and released in v0.4.0, three merged upstream but not yet released, one still open upstream (#133) and four not
 yet proposed (see "Vendored interpreter" below). Its job is to make an untrusted script safe to run in a shared process:
 bounded in time, CPU, memory and tool calls, unable to crash or block the host, and
 unable to escape through the Lua standard library.
@@ -213,9 +213,9 @@ engine loads the base library per run. The `package` library is not loaded; `str
 Building and attacking the engine (an independent adversarial review, every finding
 reproduced in a separate process) turned up six defects in golua v0.3.0 that an embedder
 cannot fix safely from outside. A seventh came from CodeQL, once the vendored source was
-inside the repository, and an eighth from `go vet`. Review of the engine found six more
-(the last six rows). All are fixed in `third_party/golua`. Of the first eight, upstream merged all but #133
-and released them in v0.4.0; #133 is still open. The last six are not yet in the `ilsiepotamus/golua` fork either. When upstream has released every fix, the directory can be replaced by the module again.
+inside the repository, and an eighth from `go vet`. Review of the engine found six more,
+and CodeQL one more (the last seven rows). All are fixed in `third_party/golua`. Of the first eight, upstream merged all but #133
+and released them in v0.4.0; #133 is still open. Of the last seven, upstream merged three (#236, #237, #238; not yet released); the other four are not yet in the `ilsiepotamus/golua` fork either. When upstream has released every fix, the directory can be replaced by the module again.
 
 | Defect in v0.3.0 (measured) | Fix | Upstream PR |
 |---|---|---|
@@ -228,11 +228,12 @@ and released them in v0.4.0; #133 is still open. The last six are not yet in the
 | 64-bit integers narrowed with a plain `int(n)`, which wraps where `int` is 32 bits (CodeQL reported 26 sites): on linux/386 integer literals were miscompiled, positions wrapped, and `select` and table growth panicked; on every platform `math.ldexp(2.0, math.maxinteger)` returned 0 | conversions saturate or compare in `int64`, `math.ldexp` bounds its exponent, and every narrowing has its bound check next to it; the Go tests and the reference suite pass on linux/386 | [#136](https://github.com/arnodel/golua/pull/136), merged, in v0.4.0 |
 | The AST dump (`HWrite`) passed name structs to `%s` and used names as format strings; `go vet` refused to build the package | names rendered as text | [#138](https://github.com/arnodel/golua/pull/138), merged, in v0.4.0 |
 | Named vararg tables (`function f(... xs)`) and `table.create` under a memory quota were not charged: 50,000 retained tables cost the same as 50,000 integers | the vararg table charges its header, array part and `n` slot; `table.create` charges its header | not yet proposed |
-| `string.match` with a start position past the end slices out of range inside the anchored matcher (a Go panic, an engine error for the run); the #136 saturation added `math.maxinteger` as a trigger | a start past the end returns no match, as in reference Lua | not yet proposed |
+| `string.match` with a start position past the end slices out of range inside the anchored matcher (a Go panic, an engine error for the run); the #136 saturation added `math.maxinteger` as a trigger | a start past the end returns no match, as in reference Lua | [#236](https://github.com/arnodel/golua/pull/236), merged 2026-11-12, not yet released |
 | Scanning, parsing and compiling never checked a limit: at the 1 MiB source ceiling they took about 0.3 s (3.4 s under the race detector) before the first limit check, whatever the wall budget or the caller's context | the scanner, the AST compiler and the IR compiler call a poll function every 256 tokens, nodes or instructions; the runtime's poll terminates the current context when its `Interrupt` has fired, it is hard-stopped or it is past its time limit | not yet proposed |
 | A string pattern match ran in Go with the whole remaining CPU budget and checked neither the `Interrupt` nor the time limit until it returned: `string.find(string.rep("a", 60), "a*a*a*a*a*a*b")` took about 3.5 s against a 200 ms wall or a cancel at 100 ms, the same for `match`, `gmatch` and `gsub` (the time grows with about the sixth power of the subject length) | the matcher calls the runtime's poll every 1024 steps, so the match ends on time; the matcher also re-raises panics other than an exhausted budget instead of swallowing them | not yet proposed |
-| `string.rep(s, n, sep)` with `s` and `sep` both empty has a result of size 0, so the memory charge sees nothing, and then loops n times in Go with no CPU charge and no `Interrupt` poll: `string.rep("", 2^62, "")` did not return within 3 s against a 300 ms wall or a cancel at 100 ms | an empty result returns `""` at once, as in reference Lua | not yet proposed |
-| Expanding a named vararg table whose `n` is larger than its array part allocated `n` values uncharged, and a script controls `n` up to 2^30 - 1: with a 32 MiB budget and `xs.n = 1 << 24`, passing `...` to a call grew the heap by 384 MiB before the memory limit fired, and `{...}` ran to completion | the expansion charges `n` values of memory and `n` CPU before it allocates | not yet proposed |
+| `string.rep(s, n, sep)` with `s` and `sep` both empty has a result of size 0, so the memory charge sees nothing, and then loops n times in Go with no CPU charge and no `Interrupt` poll: `string.rep("", 2^62, "")` did not return within 3 s against a 300 ms wall or a cancel at 100 ms | an empty result returns `""` at once, as in reference Lua | [#237](https://github.com/arnodel/golua/pull/237), merged 2026-11-12, not yet released |
+| Expanding a named vararg table whose `n` is larger than its array part allocated `n` values uncharged, and a script controls `n` up to 2^30 - 1: with a 32 MiB budget and `xs.n = 1 << 24`, passing `...` to a call grew the heap by 384 MiB before the memory limit fired, and `{...}` ran to completion | the expansion charges `n` values of memory and `n` CPU before it allocates | [#238](https://github.com/arnodel/golua/pull/238), merged 2026-11-11, not yet released |
+| Hexadecimal integer strings parsed only their last 16 digits, so a bad digit further left was ignored: `tonumber("0xg0000000000000000")` returned 0 where reference Lua 5.4.8 returns nil (CodeQL reported the `strconv.ParseUint` narrowing, and three bounded `uintptr` narrowings in the array part) | digits accumulated in a wrapping `uint64` and each one checked, as reference Lua does; a second sign after a leading `+` (`"+-10"` was -10) and an underscore (`"1_0.5"` was 10.5) are rejected; the array part's narrowings carry a constant bound next to the conversion | not yet proposed |
 
 Before the fixes were in place the engine carried workarounds: function-valued
 VM metamethods were refused, capacity planning assumed 12 times the budget, and
@@ -388,7 +389,7 @@ per-run budget is 128 MiB (about 384 MB worst case); a 4 GiB pod runs 4 at once.
 The first eight fixes above went upstream as PRs #130 to #136 and #138 from the
 `ilsiepotamus/golua` fork. arnodel/golua merged #130, #131, #132, #134, #135, #136 and #138
 on 2026-10-11 and released them in v0.4.0; #133 (`Interrupt`) is still open (checked
-2026-11-05). The vendored copy is still based on v0.3.0. The last six are not yet in the fork or proposed upstream. Not proposed: `SetStopLevel(HardStop)` on a context that is not current kills it
+2026-11-16). The vendored copy is still based on v0.3.0. Of the last seven, #236, #237 and #238 were merged on 2026-11-11 and 2026-11-12 and are not yet released; the other four are not yet in the fork or proposed upstream. Not proposed: `SetStopLevel(HardStop)` on a context that is not current kills it
 immediately, raising the termination from the current context, so a `pcall` swallows it
 and the stopped context is left killed and current. The engine does not use
 `SetStopLevel`. Upstream's coroutine data races (above) are also not addressed.

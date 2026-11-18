@@ -163,3 +163,70 @@ func itoa(i int) string {
 	}
 	return itoa(i/10) + digits[i%10:i%10+1]
 }
+
+// TestHexIntegersWrapAndCheckEveryDigit pins the vendored hexadecimal
+// string conversion (third_party/golua/runtime/numconv.go): integers wrap
+// modulo 2^64 as the Lua manual specifies (§3.1), and every digit is
+// checked, including the ones that overflow out of the result. Before the
+// fix only the last 16 digits were parsed, so a bad digit further left was
+// ignored and "0xg0000000000000000" converted to 0. A second sign after a
+// leading "+" ("+-10") and an underscore ("1_0.5") are rejected too; strconv
+// used to accept both.
+func TestHexIntegersWrapAndCheckEveryDigit(t *testing.T) {
+	for _, tc := range []struct{ name, expr string }{
+		{"max uint64 wraps to -1", `tonumber("0xffffffffffffffff") == -1`},
+		{"17 digits wrap", `tonumber("0x10000000000000001") == 1`},
+		{"maxinteger", `tonumber("0x7fffffffffffffff") == math.maxinteger`},
+		{"mininteger", `tonumber("0x8000000000000000") == math.mininteger`},
+		{"negative", `tonumber("-0x10") == -16`},
+		{"upper case digits", `tonumber("0XABCDEF") == 11259375`},
+		{"arithmetic coercion", `"0x10" + 0 == 16`},
+		{"surrounding space", `tonumber("  0x1f  ") == 31`},
+		{"bad digit beyond 16", `tonumber("0xg0000000000000000") == nil`},
+		{"bad digit within 16", `tonumber("0x1g") == nil`},
+		{"no digits", `tonumber("0x") == nil`},
+		{"sign after prefix", `tonumber("0x-1") == nil`},
+		{"underscore", `tonumber("0x1_0") == nil`},
+		{"plus then minus", `tonumber("+-10") == nil`},
+		{"two plus signs", `tonumber("++10") == nil`},
+		{"plus then minus float", `tonumber("+-1.5") == nil`},
+		{"minus then plus", `tonumber("-+10") == nil`},
+		{"plus then minus hex", `tonumber("+-0x10") == nil`},
+		{"single plus", `tonumber("+10") == 10`},
+		{"plus hex", `tonumber("+0x10") == 16`},
+		{"lone plus", `tonumber("+") == nil`},
+		{"underscore in float", `tonumber("1_0.5") == nil`},
+		{"underscore in exponent", `tonumber("1e1_0") == nil`},
+		{"underscore in hex float", `tonumber("0x1_0p0") == nil`},
+		{"underscore in hex fraction", `tonumber("0x1_0.8") == nil`},
+		{"underscore in decimal int", `tonumber("1_0") == nil`},
+		{"plain float still parses", `tonumber("10.5") == 10.5`},
+		{"hex float still parses", `tonumber("0x1p4") == 16.0`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := runSrc(t, "return "+tc.expr, nil)
+			require.Equal(t, OutcomeOK, res.Outcome, res.Error)
+			assert.Equal(t, true, res.Value, tc.expr)
+		})
+	}
+}
+
+// TestArrayLengthAfterSetAndRemove pins the array part's length updates in
+// the vendored hashtable.go, which now carry a constant bound next to their
+// uintptr conversions.
+func TestArrayLengthAfterSetAndRemove(t *testing.T) {
+	res := runSrc(t, `
+		local t = table.create and table.create(8) or {}
+		for i = 1, 8 do t[i] = i end
+		local a = #t
+		t[8] = nil
+		local b = #t
+		t[8] = 8
+		local c = #t
+		t[7] = nil t[8] = nil
+		local d = #t
+		return a == 8 and b == 7 and c == 8 and d == 6
+	`, nil)
+	require.Equal(t, OutcomeOK, res.Outcome, res.Error)
+	assert.Equal(t, true, res.Value)
+}
