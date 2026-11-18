@@ -16,6 +16,7 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/decision"
+	"github.com/teradata-labs/loom/pkg/llm/vercelgateway"
 	"github.com/teradata-labs/loom/pkg/skills"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
@@ -86,7 +87,9 @@ func convertLLMConfigYAMLToProto(y *LLMConfigYAML) (*loomv1.LLMConfig, error) {
 		}
 	}
 	return &loomv1.LLMConfig{
-		Provider:              y.Provider,
+		// Aliases ("vercel") become canonical names at load, so limiter keys,
+		// the catalog namespace and span attributes never see an alias.
+		Provider:              vercelgateway.NormalizeProviderName(y.Provider),
 		Model:                 y.Model,
 		Temperature:           float32(y.Temperature),
 		MaxTokens:             maxTokens,
@@ -98,6 +101,7 @@ func convertLLMConfigYAMLToProto(y *LLMConfigYAML) (*loomv1.LLMConfig, error) {
 		MaxModelContextTokens: maxModelContextTokens,
 		RateLimit:             rateLimit,
 		Seed:                  copyInt64Ptr(y.Seed),
+		GatewayRouting:        gatewayRoutingYAMLToProto(y.GatewayRouting),
 	}, nil
 }
 
@@ -106,19 +110,6 @@ func convertLLMConfigYAMLToProto(y *LLMConfigYAML) (*loomv1.LLMConfig, error) {
 func convertProtoToLLMConfigYAML(pb *loomv1.LLMConfig) *LLMConfigYAML {
 	if pb == nil || pb.Provider == "" {
 		return nil
-	}
-	var rateLimit *LLMRateLimitYAML
-	if pb.RateLimit != nil {
-		rateLimit = &LLMRateLimitYAML{
-			Disabled:            pb.RateLimit.Disabled,
-			RequestsPerSecond:   pb.RateLimit.RequestsPerSecond,
-			TokensPerMinute:     pb.RateLimit.TokensPerMinute,
-			BurstCapacity:       pb.RateLimit.BurstCapacity,
-			MinDelayMs:          pb.RateLimit.MinDelayMs,
-			MaxRetries:          pb.RateLimit.MaxRetries,
-			RetryBackoffMs:      pb.RateLimit.RetryBackoffMs,
-			QueueTimeoutSeconds: pb.RateLimit.QueueTimeoutSeconds,
-		}
 	}
 	return &LLMConfigYAML{
 		Provider:              pb.Provider,
@@ -131,8 +122,9 @@ func convertProtoToLLMConfigYAML(pb *loomv1.LLMConfig) *LLMConfigYAML {
 		MaxContextTokens:      int(pb.MaxContextTokens),
 		ReservedOutputTokens:  int(pb.ReservedOutputTokens),
 		MaxModelContextTokens: int(pb.MaxModelContextTokens),
-		RateLimit:             rateLimit,
+		RateLimit:             rateLimitProtoToYAML(pb.RateLimit),
 		Seed:                  copyInt64Ptr(pb.Seed),
+		GatewayRouting:        gatewayRoutingProtoToYAML(pb.GatewayRouting),
 	}
 }
 
@@ -389,6 +381,72 @@ type LLMConfigYAML struct {
 	// distinguishable from an explicit `seed: 0`, which some providers accept
 	// as a real seed. Honored by the ollama provider; others ignore it.
 	Seed *int64 `yaml:"seed"`
+
+	// GatewayRouting mirrors proto LLMGatewayRouting: upstream selection for a
+	// multi-provider gateway. Honored by vercel-ai-gateway; others ignore it.
+	GatewayRouting *LLMGatewayRoutingYAML `yaml:"gateway_routing"`
+}
+
+// LLMGatewayRoutingYAML mirrors proto LLMGatewayRouting for agent YAML.
+//
+//	llm:
+//	  provider: vercel-ai-gateway
+//	  model: anthropic/claude-sonnet-4.5
+//	  gateway_routing:
+//	    order: [bedrock, anthropic]
+//	    fallback_models: [openai/gpt-5]
+type LLMGatewayRoutingYAML struct {
+	Order             []string `yaml:"order,omitempty"`
+	Only              []string `yaml:"only,omitempty"`
+	Sort              string   `yaml:"sort,omitempty"`
+	FallbackModels    []string `yaml:"fallback_models,omitempty"`
+	ZeroDataRetention bool     `yaml:"zero_data_retention,omitempty"`
+	Caching           string   `yaml:"caching,omitempty"`
+}
+
+func gatewayRoutingYAMLToProto(y *LLMGatewayRoutingYAML) *loomv1.LLMGatewayRouting {
+	if y == nil {
+		return nil
+	}
+	return &loomv1.LLMGatewayRouting{
+		Order:             append([]string(nil), y.Order...),
+		Only:              append([]string(nil), y.Only...),
+		Sort:              y.Sort,
+		FallbackModels:    append([]string(nil), y.FallbackModels...),
+		ZeroDataRetention: y.ZeroDataRetention,
+		Caching:           y.Caching,
+	}
+}
+
+func gatewayRoutingProtoToYAML(p *loomv1.LLMGatewayRouting) *LLMGatewayRoutingYAML {
+	if p == nil {
+		return nil
+	}
+	return &LLMGatewayRoutingYAML{
+		Order:             append([]string(nil), p.GetOrder()...),
+		Only:              append([]string(nil), p.GetOnly()...),
+		Sort:              p.GetSort(),
+		FallbackModels:    append([]string(nil), p.GetFallbackModels()...),
+		ZeroDataRetention: p.GetZeroDataRetention(),
+		Caching:           p.GetCaching(),
+	}
+}
+
+// rateLimitProtoToYAML converts proto LLMRateLimitConfig; nil in, nil out.
+func rateLimitProtoToYAML(p *loomv1.LLMRateLimitConfig) *LLMRateLimitYAML {
+	if p == nil {
+		return nil
+	}
+	return &LLMRateLimitYAML{
+		Disabled:            p.Disabled,
+		RequestsPerSecond:   p.RequestsPerSecond,
+		TokensPerMinute:     p.TokensPerMinute,
+		BurstCapacity:       p.BurstCapacity,
+		MinDelayMs:          p.MinDelayMs,
+		MaxRetries:          p.MaxRetries,
+		RetryBackoffMs:      p.RetryBackoffMs,
+		QueueTimeoutSeconds: p.QueueTimeoutSeconds,
+	}
 }
 
 // LLMRateLimitYAML mirrors proto LLMRateLimitConfig for agent YAML files.
@@ -1515,8 +1573,38 @@ func expandEnvVars(s string) string {
 	})
 }
 
+// validateGatewayRouting rejects a gateway_routing block that would be
+// ignored or is malformed. Only vercel-ai-gateway reads it, so a block on any
+// other provider, or on a role that names no provider (and so runs on
+// whatever the server's default is), would be accepted and silently dropped;
+// for a block that requires zero data retention that is a policy bypass.
+func validateGatewayRouting(role string, l *loomv1.LLMConfig) error {
+	if l == nil || l.GetGatewayRouting() == nil {
+		return nil
+	}
+	if !vercelgateway.IsProviderName(l.GetProvider()) {
+		return fmt.Errorf("%s.gateway_routing is honoured only by provider %s (got provider %q); set provider: %s or remove the block", role, vercelgateway.ProviderName, l.GetProvider(), vercelgateway.ProviderName)
+	}
+	if err := vercelgateway.RoutingFromProto(l.GetGatewayRouting()).Validate(); err != nil {
+		return fmt.Errorf("%s.gateway_routing: %w", role, err)
+	}
+	return nil
+}
+
 // ValidateAgentConfig validates an agent configuration
 func ValidateAgentConfig(config *loomv1.AgentConfig) error {
+	for _, r := range []struct {
+		role string
+		cfg  *loomv1.LLMConfig
+	}{
+		{"llm", config.GetLlm()}, {"judge_llm", config.GetJudgeLlm()}, {"orchestrator_llm", config.GetOrchestratorLlm()},
+		{"classifier_llm", config.GetClassifierLlm()}, {"compressor_llm", config.GetCompressorLlm()},
+	} {
+		if err := validateGatewayRouting(r.role, r.cfg); err != nil {
+			return err
+		}
+	}
+
 	if config.Name == "" {
 		return fmt.Errorf("agent name is required")
 	}
@@ -1535,21 +1623,28 @@ func ValidateAgentConfig(config *loomv1.AgentConfig) error {
 
 		// Validate provider is supported
 		validProviders := map[string]bool{
-			"anthropic":      true,
-			"bedrock":        true,
-			"bedrock-mantle": true,
-			"litellm":        true,
-			"ollama":         true,
-			"openai":         true,
-			"azure-openai":   true,
-			"azureopenai":    true,
-			"mistral":        true,
-			"gemini":         true,
-			"huggingface":    true,
+			"anthropic":                 true,
+			"bedrock":                   true,
+			"bedrock-mantle":            true,
+			"litellm":                   true,
+			vercelgateway.ProviderName:  true,
+			vercelgateway.ProviderAlias: true,
+			"ollama":                    true,
+			"openai":                    true,
+			"azure-openai":              true,
+			"azureopenai":               true,
+			"mistral":                   true,
+			"gemini":                    true,
+			"huggingface":               true,
 		}
 		provider := strings.ToLower(config.Llm.Provider)
 		if !validProviders[provider] {
-			return fmt.Errorf("unsupported LLM provider: %s (must be one of: anthropic, bedrock, bedrock-mantle, litellm, ollama, openai, azure-openai, mistral, gemini, huggingface)", config.Llm.Provider)
+			return fmt.Errorf("unsupported LLM provider: %s (must be one of: anthropic, bedrock, bedrock-mantle, litellm, ollama, openai, azure-openai, mistral, gemini, huggingface, vercel-ai-gateway)", config.Llm.Provider)
+		}
+		if vercelgateway.IsProviderName(provider) {
+			if err := vercelgateway.ValidateModelID(config.Llm.Model); err != nil {
+				return err
+			}
 		}
 
 		// Validate temperature range
@@ -1620,7 +1715,11 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 			MaxContextTokens:      int(config.Llm.MaxContextTokens),
 			ReservedOutputTokens:  int(config.Llm.ReservedOutputTokens),
 			MaxModelContextTokens: int(config.Llm.MaxModelContextTokens),
-			Seed:                  copyInt64Ptr(config.Llm.Seed),
+			// rate_limit used to be dropped here for the main LLM (the role
+			// LLMs below kept it), so a save/load round trip lost it.
+			RateLimit:      rateLimitProtoToYAML(config.Llm.RateLimit),
+			Seed:           copyInt64Ptr(config.Llm.Seed),
+			GatewayRouting: gatewayRoutingProtoToYAML(config.Llm.GatewayRouting),
 		}
 	}
 

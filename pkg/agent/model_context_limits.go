@@ -166,6 +166,12 @@ func GetProviderDefaultLimits(provider string) ModelContextLimits {
 		return ModelContextLimits{MaxContextTokens: 1048576, ReservedOutputTokens: 65536}
 	case "azureopenai":
 		return ModelContextLimits{MaxContextTokens: 128000, ReservedOutputTokens: 12800}
+	case "vercel-ai-gateway", "vercel":
+		// Reached only when the gateway catalog (GET /v1/models, fetched at
+		// serve startup) does not list the model or could not be fetched.
+		// The gateway fronts many families; 128K is the common floor of the
+		// current ones (Claude 200K+, GPT-5 400K, Gemini 1M).
+		return ModelContextLimits{MaxContextTokens: 128000, ReservedOutputTokens: 12800}
 	default:
 		// Very conservative fallback
 		return ModelContextLimits{MaxContextTokens: 8192, ReservedOutputTokens: 819}

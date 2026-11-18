@@ -13,6 +13,8 @@
 // limitations under the License.
 package openai
 
+import "encoding/json"
+
 // OpenAI API types for chat completions
 // Reference: https://platform.openai.com/docs/api-reference/chat
 
@@ -37,6 +39,11 @@ type ChatCompletionRequest struct {
 	// through litellm ({"type":"adaptive"} on Claude 4.6+/5). Omitted for
 	// every other model — a strict OpenAI endpoint may reject the field.
 	Thinking map[string]interface{} `json:"thinking,omitempty"`
+
+	// Reasoning is the Vercel AI Gateway's reasoning request object
+	// ({"enabled":true,"effort":"high"}), sent instead of Thinking when
+	// Config.ReasoningObject is on and the model reasons.
+	Reasoning map[string]interface{} `json:"reasoning,omitempty"`
 }
 
 // ChatMessage represents a message in the conversation.
@@ -63,6 +70,23 @@ type ChatMessage struct {
 	// Amazon Bedrock Mantle (observed live 2026-11-04). Read as a fallback for
 	// ReasoningContent; never sent.
 	Reasoning string `json:"reasoning,omitempty"`
+	// ReasoningDetails is the Vercel AI Gateway's structured reasoning trace
+	// (entries may carry an upstream signature). Read on responses and
+	// replayed on in-turn assistant messages when Config.ReasoningObject is on.
+	ReasoningDetails []WireReasoningDetail `json:"reasoning_details,omitempty"`
+}
+
+// WireReasoningDetail is one reasoning_details entry. Type is
+// "reasoning.text" (Text), "reasoning.summary" (Summary) or
+// "reasoning.encrypted" (Data). Index pairs streaming fragments.
+type WireReasoningDetail struct {
+	Type      string `json:"type,omitempty"`
+	Text      string `json:"text,omitempty"`
+	Summary   string `json:"summary,omitempty"`
+	Data      string `json:"data,omitempty"`
+	Signature string `json:"signature,omitempty"`
+	Format    string `json:"format,omitempty"`
+	Index     *int   `json:"index,omitempty"`
 }
 
 // WireThinkingBlock is litellm's thinking block shape. Index appears only in
@@ -181,6 +205,10 @@ type OpenAIError struct {
 
 // ChatCompletionStreamChunk represents a chunk in a streaming response.
 type ChatCompletionStreamChunk struct {
+	// Error is set on a payload that reports a failure after the stream
+	// started (an upstream fault behind a gateway). Kept raw so a chunk whose
+	// "error" member is not an object still decodes; StreamError reads it.
+	Error   json.RawMessage              `json:"error,omitempty"`
 	ID      string                       `json:"id"`
 	Object  string                       `json:"object"` // "chat.completion.chunk"
 	Created int64                        `json:"created"`
@@ -211,6 +239,8 @@ type ChatMessageDelta struct {
 	// Amazon Bedrock Mantle (observed live 2026-11-04). Read as a fallback for
 	// ReasoningContent; never sent.
 	Reasoning string `json:"reasoning,omitempty"`
+	// ReasoningDetails fragments (Vercel AI Gateway), merged by Index.
+	ReasoningDetails []WireReasoningDetail `json:"reasoning_details,omitempty"`
 }
 
 // ToolCallDelta represents a delta in a tool call.
@@ -225,4 +255,25 @@ type ToolCallDelta struct {
 type FunctionCallDelta struct {
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"` // Partial JSON string
+}
+
+// StreamError returns the chunk's error object, or nil when the chunk has no
+// "error" member, or one that is null or not an object (a string or a
+// boolean): only an object with a message, a type or a code is treated as a
+// failure.
+func (c *ChatCompletionStreamChunk) StreamError() *OpenAIError {
+	if len(c.Error) == 0 || c.Error[0] != '{' {
+		return nil
+	}
+	var e OpenAIError
+	if err := json.Unmarshal(c.Error, &e); err != nil || (e.Message == "" && e.Type == "" && e.Code == nil) {
+		return nil
+	}
+	if e.Type == "" {
+		// Some gateways send only a code; classify it like a type name.
+		if code, ok := e.Code.(string); ok {
+			e.Type = code
+		}
+	}
+	return &e
 }

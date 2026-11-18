@@ -31,6 +31,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/mistral"
 	"github.com/teradata-labs/loom/pkg/llm/ollama"
 	"github.com/teradata-labs/loom/pkg/llm/openai"
+	"github.com/teradata-labs/loom/pkg/llm/vercelgateway"
 )
 
 // fallbackMaxOutputTokens is used when neither the caller configured MaxTokens
@@ -109,6 +110,13 @@ type FactoryConfig struct {
 	LiteLLMModel        string
 	LiteLLMExtraHeaders map[string]string
 
+	// VercelGateway configures the vercel-ai-gateway provider (endpoint, API
+	// key, OIDC, routing). Its Model is the default when CreateProvider gets
+	// none; MaxTokens, Temperature and Timeout come from the common settings
+	// below. An empty APIKey falls back to LOOM_LLM_VERCEL_GATEWAY_API_KEY,
+	// then AI_GATEWAY_API_KEY.
+	VercelGateway vercelgateway.Config
+
 	// Common settings
 	MaxTokens       int
 	Temperature     float64
@@ -157,6 +165,9 @@ func NewProviderFactory(config FactoryConfig) *ProviderFactory {
 	config.LiteLLMEndpoint = loomconfig.ExpandEnvPlaceholders(config.LiteLLMEndpoint)
 	config.LiteLLMAPIKey = loomconfig.ExpandEnvPlaceholders(config.LiteLLMAPIKey)
 	config.LiteLLMModel = loomconfig.ExpandEnvPlaceholders(config.LiteLLMModel)
+	config.VercelGateway.Endpoint = loomconfig.ExpandEnvPlaceholders(config.VercelGateway.Endpoint)
+	config.VercelGateway.APIKey = loomconfig.ExpandEnvPlaceholders(config.VercelGateway.APIKey)
+	config.VercelGateway.Model = loomconfig.ExpandEnvPlaceholders(config.VercelGateway.Model)
 	// Copy LiteLLMExtraHeaders before mutating so the caller's map is not
 	// modified in place (shared-map mutation is a race if the caller holds the
 	// original and another goroutine concurrently reads it).
@@ -199,7 +210,9 @@ func (f *ProviderFactory) CreateProvider(provider, model string) (interface{}, e
 		model = f.config.DefaultModel
 	}
 
-	switch provider {
+	switch vercelgateway.NormalizeProviderName(provider) {
+	case vercelgateway.ProviderName:
+		return f.createVercelGatewayProvider(model)
 	case "anthropic":
 		return f.createAnthropicProvider(model)
 	case "bedrock":
@@ -552,6 +565,28 @@ func (f *ProviderFactory) createLiteLLMProvider(model string) (interface{}, erro
 		Timeout:      time.Duration(f.config.Timeout) * time.Second,
 		ExtraHeaders: f.config.LiteLLMExtraHeaders,
 	}), nil
+}
+
+// createVercelGatewayProvider builds a client for the Vercel AI Gateway. The
+// model has no default: an empty model is a configuration error.
+func (f *ProviderFactory) createVercelGatewayProvider(model string) (interface{}, error) {
+	cfg := f.config.VercelGateway
+	if model != "" {
+		cfg.Model = model
+	}
+	cfg.APIKey = vercelgateway.ResolveAPIKey(cfg.APIKey)
+	cfg.MaxTokens = f.resolveMaxOutput(vercelgateway.ProviderName, cfg.Model)
+	cfg.Temperature = f.config.Temperature
+	if cfg.ThinkingLevel == "" {
+		cfg.ThinkingLevel = f.config.ThinkingLevel
+	}
+	if f.config.Timeout > 0 {
+		cfg.Timeout = time.Duration(f.config.Timeout) * time.Second
+	}
+	// Same limiter as every other gateway path; unset fields take the
+	// gateway client's defaults.
+	cfg.RateLimiterConfig.Enabled = true
+	return vercelgateway.NewClient(cfg)
 }
 
 // IsProviderAvailable checks if a provider is available (credentials/config present).

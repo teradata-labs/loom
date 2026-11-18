@@ -207,6 +207,7 @@ func (s *Server) Weave(ctx context.Context, req *loomv1.WeaveRequest) (*loomv1.W
 				CostUsd:                  resp.Usage.CostUSD,
 				CacheReadInputTokens:     types.SafeInt32(resp.Usage.CacheReadInputTokens),
 				CacheCreationInputTokens: types.SafeInt32(resp.Usage.CacheCreationInputTokens),
+				CostEstimated:            resp.Usage.CostEstimated,
 			},
 			TotalCostUsd: resp.Usage.CostUSD,
 		},
@@ -381,6 +382,7 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 				CostUsd:                  resp.Usage.CostUSD,
 				CacheReadInputTokens:     types.SafeInt32(resp.Usage.CacheReadInputTokens),
 				CacheCreationInputTokens: types.SafeInt32(resp.Usage.CacheCreationInputTokens),
+				CostEstimated:            resp.Usage.CostEstimated,
 			},
 		},
 	}
