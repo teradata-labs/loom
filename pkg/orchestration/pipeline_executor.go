@@ -708,18 +708,9 @@ func (e *PipelineExecutor) runStageAgent(
 		agentSpan.SetAttribute("stage.number", fmt.Sprintf("%d", stageNum))
 	}
 
-	// Execute agent conversation. If a progress callback exists in the
-	// context, use ChatWithProgress so tool calls and thinking stream
-	// through to the caller (e.g., workflow UI).
-	var (
-		response *agent.Response
-		err      error
-	)
-	if progressCb := agent.ProgressCallbackFromContext(ctx); progressCb != nil {
-		response, err = ag.ChatWithProgress(ctx, sessionID, prompt, progressCb)
-	} else {
-		response, err = ag.Chat(ctx, sessionID, prompt)
-	}
+	// Execute agent conversation. A progress callback in the context gets
+	// this stage's tool calls and streamed text, each event naming the agent.
+	response, err := chatWithAgentProgress(ctx, ag, stage.AgentId, sessionID, prompt)
 	if err != nil {
 		return nil, "", fmt.Errorf("agent chat failed: %w", err)
 	}

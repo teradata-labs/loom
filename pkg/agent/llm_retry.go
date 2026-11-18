@@ -210,8 +210,9 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 	progressCallback := ctx.ProgressCallback()
 	useStreaming := supportsStreaming && progressCallback != nil
 
-	// Streaming skips the failure-retry loop below: chatWithStreaming returns
-	// any non-throttle error at once, and waits out throttles itself.
+	// chatWithStreaming waits out throttles itself, and retries other
+	// failures under the same Retry config only while nothing has reached the
+	// progress callback yet (see streamFailureRetry).
 	if useStreaming {
 		return a.chatWithStreaming(ctx, messages, tools, progressCallback)
 	}
@@ -275,25 +276,7 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 			continue
 		}
 
-		// A positively-identified context-too-long refusal is returned
-		// immediately, never retried (blueprint A5): relief, not retry, is the
-		// only response to it.
-		if errors.Is(err, llm.ErrContextTooLong) {
-			return nil, err
-		}
-
-		// The rate limiter already spent its whole MaxRetries budget on this
-		// error, with backoff and Retry-After honoured. It is not a throttle
-		// (an exhausted throttle was waited out above), so it is a transient
-		// 5xx or another non-throttle cause. Re-running that budget here would
-		// only multiply the wait — one retry budget, in one place.
-		if llm.IsRetriesExhausted(err) {
-			return nil, err
-		}
-
-		// Deterministic 4xx client refusals (authentication, permission,
-		// invalid request, not found) will not succeed on retry.
-		if llm.IsDeterministicClientError(err) {
+		if isFinalLLMError(err) {
 			return nil, err
 		}
 
@@ -342,6 +325,25 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 
 	return nil, fmt.Errorf("llm call failed after %d attempts: %w",
 		a.config.Retry.MaxRetries+1, lastErr)
+}
+
+// isFinalLLMError reports whether a non-throttle LLM error must be returned
+// at once instead of retried. The retry-enabled direct path and the streaming
+// path share it, so both give up on the same errors:
+//   - a positively-identified context-too-long refusal (blueprint A5): relief,
+//     not retry, is the only response to it;
+//   - an llm.RetriesExhaustedError: the provider's rate limiter already spent
+//     its whole MaxRetries budget on this error, with backoff and Retry-After
+//     honoured. It is not a throttle (an exhausted throttle is waited out
+//     before this check), so it is a transient 5xx or another non-throttle
+//     cause. Re-running that budget here would only multiply the wait: one
+//     retry budget, in one place;
+//   - a deterministic 4xx client refusal (authentication, permission, invalid
+//     request, not found), which will not succeed on retry.
+func isFinalLLMError(err error) bool {
+	return errors.Is(err, llm.ErrContextTooLong) ||
+		llm.IsRetriesExhausted(err) ||
+		llm.IsDeterministicClientError(err)
 }
 
 // throttlePatience paces re-invocation against provider throttling (429 and
@@ -573,6 +575,12 @@ func (a *Agent) chatWithStreaming(ctx Context, messages []Message, tools []shutt
 
 	// Token buffering state
 	var buffer strings.Builder
+	// emitted is true once any attempt of this call sent a progress event to
+	// the caller. After that, a failure is not retried (streamFailureRetry): a
+	// retry would stream the same text or tool call to the caller a second
+	// time. It is never reset, so an attempt that streamed text and was then
+	// throttled still blocks a later failure retry.
+	var emitted bool
 	var tokenCount int32
 	var ttft int64
 	ttftRecorded := false
@@ -611,6 +619,7 @@ func (a *Agent) chatWithStreaming(ctx Context, messages []Message, tools []shutt
 			}
 
 			// Emit progress event with partial content
+			emitted = true
 			progressCallback(ProgressEvent{
 				Stage:          StageLLMGeneration,
 				Progress:       50, // Mid-generation
@@ -654,6 +663,7 @@ func (a *Agent) chatWithStreaming(ctx Context, messages []Message, tools []shutt
 		default:
 		}
 		lastToolInputEmit = now
+		emitted = true
 		progressCallback(ProgressEvent{
 			Stage:             StageLLMGeneration,
 			Progress:          50,
@@ -701,6 +711,7 @@ func (a *Agent) chatWithStreaming(ctx Context, messages []Message, tools []shutt
 		default:
 		}
 		call.lastEmit = now
+		emitted = true
 		progressCallback(ProgressEvent{
 			Stage:             StageLLMGeneration,
 			Progress:          50,
@@ -722,6 +733,7 @@ func (a *Agent) chatWithStreaming(ctx Context, messages []Message, tools []shutt
 	// first 429 straight up the stack and killed the conversation. Buffered
 	// state resets per attempt so a retried stream never duplicates tokens.
 	patience := a.newThrottlePatience()
+	retry := a.newStreamFailureRetry()
 	var resp *LLMResponse
 	for {
 		patience.beginAttempt()
@@ -729,6 +741,14 @@ func (a *Agent) chatWithStreaming(ctx Context, messages []Message, tools []shutt
 		tokenCount = 0
 		ttft = 0
 		ttftRecorded = false
+		// emitted is not reset: it covers the whole call (see its
+		// declaration).
+		// The flush interval is measured from this attempt's start, not the
+		// first attempt's: a retry after a backoff would otherwise flush its
+		// first buffered token at once. TTFT stays measured from startTime,
+		// the start of the call, so it still includes throttle and retry
+		// waits: the latency the caller sees.
+		lastFlushTime = time.Now()
 		clear(toolInputCalls)
 
 		var err error
@@ -742,7 +762,9 @@ func (a *Agent) chatWithStreaming(ctx Context, messages []Message, tools []shutt
 			}
 			continue
 		}
-		return nil, err
+		if waitErr := retry.wait(ctx, err, emitted); waitErr != nil {
+			return nil, waitErr
+		}
 	}
 
 	// Emit final progress event with complete content

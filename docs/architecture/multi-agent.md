@@ -278,6 +278,8 @@ type Orchestrator struct {
 }
 ```
 
+**Agent progress events.** `progressCallback` reports workflow-level events (a stage started or ended). For the events of each agent turn (tool calls, streamed text), put an `agent.ProgressCallback` in the context with `agent.ContextWithProgressCallback` before `ExecutePattern`. The pipeline, parallel, fork-join, swarm (voters and judge) and conditional (condition agent) executors then run each agent with `ChatWithProgress` (`chatWithAgentProgress`, `pkg/orchestration/agent_progress.go`), and every event carries `ProgressEvent.AgentID`, the agent that emitted it. An event that already names an agent keeps its `AgentID`. The parallel, fork-join and swarm executors call the callback from one goroutine per agent, so it must be safe for concurrent use. Without a callback in the context, each agent runs with plain `Chat`. With a callback, the agent's turn opens an `agent.chat_with_progress` span instead of `agent.chat`, and its LLM calls use the provider's streaming API when the provider has one. The streaming path retries a failure under the agent's `Retry` config while nothing has reached the callback yet; after the first progress event it returns the failure, so a failure retry never sends text to the caller twice. A throttle (429) is still waited out and the call made again, even after text went out, as before. An agent turn that fails sends `StageFailed` with that agent's `AgentID`; in a swarm or conditional step a later retry of that agent can still succeed, so `StageFailed` does not mean the workflow failed. The `pkg/collaboration` patterns (debate, pair programming, teacher-student) do not report agent progress.
+
 **Agent Registration**:
 ```go
 // Two-level registry:

@@ -287,11 +287,12 @@ func TestThrottleExhausted_SameOnAllPaths(t *testing.T) {
 // transient 5xx) never enters throttle patience on any path: no wait, no
 // patience re-invocation, and the provider error stays in the chain.
 //
-// The retry-disabled and streaming paths return it at once. The retry-enabled
-// path returns the real llm.RetriesExhaustedError at once too (the limiter
-// already spent the budget), but still runs its own failure retry over the
-// stand-in wrappers (MaxRetries+1 invocations), because only that typed error
-// is final there. The last row puts "429" and "rate limit" in the 5xx body:
+// The retry-disabled path returns it at once. The retry-enabled and
+// streaming paths return the real llm.RetriesExhaustedError at once too (the
+// limiter already spent the budget), but still run their own failure retry
+// over the stand-in wrappers (MaxRetries+1 invocations), because only that
+// typed error is final there (isFinalLLMError). The streaming stub sends no
+// progress before it fails, so the streaming path may retry it. The last row puts "429" and "rate limit" in the 5xx body:
 // the typed llm.TransientError wins over the message fallback, so it is still
 // not a throttle.
 func TestNonThrottleExhausted_NeverWaitsOnAnyPath(t *testing.T) {
@@ -302,7 +303,7 @@ func TestNonThrottleExhausted_NeverWaitsOnAnyPath(t *testing.T) {
 		cause error
 		err   error
 		// retryEnabledCalls is the provider invocations on the retry-enabled
-		// path; streaming and retry-disabled always make one.
+		// and streaming paths; retry-disabled always makes one.
 		retryEnabledCalls int
 	}{
 		{
@@ -331,7 +332,7 @@ func TestNonThrottleExhausted_NeverWaitsOnAnyPath(t *testing.T) {
 	for _, e := range errs {
 		wantCalls := map[string]int{
 			"retry-enabled":  e.retryEnabledCalls,
-			"streaming":      1,
+			"streaming":      e.retryEnabledCalls,
 			"retry-disabled": 1,
 		}
 		for _, path := range throttlePaths() {

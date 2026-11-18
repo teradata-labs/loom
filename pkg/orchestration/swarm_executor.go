@@ -270,7 +270,7 @@ func (e *SwarmExecutor) collectVoteWithContext(ctx context.Context, workflowID, 
 		agentSpan.SetAttribute("previous_votes", fmt.Sprintf("%d", len(previousVotes)))
 	}
 
-	response, err := agt.Chat(ctx, sessionID, prompt)
+	response, err := chatWithAgentProgress(ctx, agt, agentID, sessionID, prompt)
 	e.orchestrator.tracer.EndSpan(agentSpan)
 
 	if err != nil {
@@ -327,7 +327,7 @@ func (e *SwarmExecutor) collectVote(ctx context.Context, workflowID, agentID str
 		agentSpan.SetAttribute("vote.number", fmt.Sprintf("%d", voteNumber))
 	}
 
-	response, err := agt.Chat(ctx, sessionID, prompt)
+	response, err := chatWithAgentProgress(ctx, agt, agentID, sessionID, prompt)
 	e.orchestrator.tracer.EndSpan(agentSpan)
 
 	if err != nil {
@@ -744,7 +744,7 @@ func (e *SwarmExecutor) invokeJudge(ctx context.Context, judge *agent.Agent, ses
 	sb.WriteString("Make the final decision. Respond with only the choice you select, nothing else.\n")
 
 	// Execute judge
-	response, err := judge.Chat(ctx, sessionID, sb.String())
+	response, err := chatWithAgentProgress(ctx, judge, e.pattern.JudgeAgentId, sessionID, sb.String())
 	if err != nil {
 		return "", fmt.Errorf("judge chat failed: %w", err)
 	}
@@ -859,7 +859,7 @@ func (e *SwarmExecutor) retryVoteCollection(
 			zap.Int("attempt", attempt),
 			zap.Int("max_retries", maxRetries))
 
-		response, chatErr := agent.Chat(ctx, sessionID, retryPrompt)
+		response, chatErr := chatWithAgentProgress(ctx, agent, agentID, sessionID, retryPrompt)
 		if chatErr == nil {
 			e.aux.addTurn(response)
 		}
@@ -952,7 +952,7 @@ func (e *SwarmExecutor) retryJudge(
 			zap.Int("attempt", attempt),
 			zap.String("previous_decision", previousDecision))
 
-		response, chatErr := judgeAgent.Chat(ctx, sessionID, retryPrompt)
+		response, chatErr := chatWithAgentProgress(ctx, judgeAgent, e.pattern.JudgeAgentId, sessionID, retryPrompt)
 		if chatErr != nil {
 			continue
 		}

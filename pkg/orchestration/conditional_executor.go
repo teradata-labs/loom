@@ -317,7 +317,7 @@ func (e *ConditionalExecutor) evaluateConditionWithSpan(ctx context.Context, con
 	}
 
 	// Execute condition agent with deterministic session ID
-	response, err := conditionAgent.Chat(ctx, e.conditionSessionID(), e.pattern.ConditionPrompt)
+	response, err := chatWithAgentProgress(ctx, conditionAgent, e.pattern.ConditionAgentId, e.conditionSessionID(), e.pattern.ConditionPrompt)
 	if err != nil {
 		return "", "", fmt.Errorf("condition agent chat failed: %w", err)
 	}
@@ -432,7 +432,7 @@ func (e *ConditionalExecutor) retryConditionEvaluation(
 			zap.Int("max_retries", maxRetries),
 			zap.String("last_result", truncateForLog(lastResult, 100)))
 
-		response, err := conditionAgent.Chat(ctx, sessionID, retryPrompt)
+		response, err := chatWithAgentProgress(ctx, conditionAgent, e.pattern.ConditionAgentId, sessionID, retryPrompt)
 		if err != nil {
 			e.orchestrator.logger.Warn("Condition retry failed",
 				zap.Int("attempt", attempt),

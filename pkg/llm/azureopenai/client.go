@@ -702,6 +702,12 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		Temperature: c.temperature,
 		Stream:      true, // Enable streaming
 	}
+	// Ask for the final usage chunk (input and output tokens), as the OpenAI
+	// client does, on the api-versions that accept it. Without it a streamed
+	// turn reports 0 input tokens and under-reports its cost.
+	if streamUsageSupported(c.apiVersion) {
+		req.StreamOptions = &openai.StreamOptions{IncludeUsage: true}
+	}
 
 	// Azure OpenAI: Newer models require max_completion_tokens instead of max_tokens
 	if c.usesMaxCompletionTokens() {
@@ -788,10 +794,13 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
-	// Check status code before streaming
+	// Check status code before streaming. Type the error as the Azure direct
+	// path and the OpenAI stream do, so the agent sees a context-too-long
+	// refusal (the relief trigger) and does not retry a deterministic 4xx.
 	if httpResp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(httpResp.Body)
-		err := fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody))
+		err := llm.WrapHTTPStatus(httpResp.StatusCode,
+			fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody)))
 		if llm.IsOpenAIContextTooLong(httpResp.StatusCode, respBody) {
 			return nil, llm.AsContextTooLong(err)
 		}
@@ -979,4 +988,16 @@ var _ llmtypes.StreamingLLMProvider = (*Client)(nil)
 // capacity telemetry use.
 func (c *Client) SchedulerScope() string {
 	return "azure-openai|" + c.endpoint + "|" + c.deploymentID
+}
+
+// streamUsageSupported reports whether the Azure OpenAI api-version lists
+// stream_options.include_usage in its chat completions request schema
+// (Azure/azure-rest-api-specs, data-plane/OpenAIInference/<version>/
+// inference.json, checked 2026-11-16). Only the preview versions from
+// 2024-09-01-preview on list it. No stable version does, the default
+// 2024-10-21 included, so a stable or non-dated version does not get the
+// field: a service that rejects an unknown field would fail every streamed
+// turn. Dated versions compare as strings (YYYY-MM-DD sorts by date).
+func streamUsageSupported(apiVersion string) bool {
+	return strings.HasSuffix(apiVersion, "-preview") && apiVersion >= "2024-09-01"
 }

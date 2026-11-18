@@ -264,7 +264,7 @@ func (e *ParallelExecutor) runTaskAgent(
 		agentSpan.SetAttribute("task.number", fmt.Sprintf("%d", taskIndex+1))
 	}
 
-	response, err := ag.Chat(ctx, sessionID, prompt)
+	response, err := chatWithAgentProgress(ctx, ag, task.AgentId, sessionID, prompt)
 	if err != nil {
 		return nil, "", fmt.Errorf("agent chat failed: %w", err)
 	}
