@@ -18,4 +18,9 @@
 //
 // EncryptedDSN does the same for SQLCipher-encrypted databases, carrying the
 // key so every pooled connection is keyed (CGO builds only).
+//
+// ExecSchema runs a store's schema script when several goroutines or
+// processes may open the same file at once: one caller at a time for each
+// file in the process, inside one BEGIN IMMEDIATE transaction
+// (ExecImmediate).
 package sqlitedriver

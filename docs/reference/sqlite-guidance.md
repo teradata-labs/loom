@@ -567,6 +567,38 @@ with `file is not a database`. Use `sqlitedriver.EncryptedDSN(path, key,
 opts)`, which carries the key in the DSN so every pooled connection is keyed.
 `OpenDB()` in `pkg/agent/db_config.go` does this for you.
 
+### Schema init under concurrent opens
+
+A schema script of many `CREATE ... IF NOT EXISTS` statements, run with one
+`db.Exec`, runs in autocommit mode: one transaction, and one write-lock
+request, for each statement. When several goroutines or processes open the
+same file at once, an opener can lose that lock again and again until its
+`busy_timeout` runs out. The open then fails with `database is locked`
+(issue #604, `evals.NewStore` on a Windows CI runner).
+
+`sqlitedriver.ExecSchema(ctx, db, path, script)` runs the script in two steps:
+
+1. In the process, callers for the same file wait on a Go mutex and run one
+   at a time. They do not use up each other's busy timeout.
+2. The script runs in one `BEGIN IMMEDIATE` transaction
+   (`sqlitedriver.ExecImmediate`). It takes the write lock once and waits for
+   it under `busy_timeout`, which protects against openers in other
+   processes. Other openers see the whole schema or none of it.
+
+`BEGIN IMMEDIATE` alone is not enough in one process. Once the tables exist,
+an autocommit `CREATE ... IF NOT EXISTS` takes no write lock at all, but
+`BEGIN IMMEDIATE` makes every opener queue for it. In a test with 64
+goroutines and a 100 ms busy timeout, that failed more often than the
+autocommit script did.
+
+**Which stores use it** (verified against the code):
+
+| Store | Schema init |
+|---|---|
+| `evals.Store` (`pkg/evals/store.go`) | `ExecSchema` |
+| tool registry, scheduler store, agent registry, `SessionStore`, observability trace store, learning collector and `InitSelfImprovementSchema`, `SQLiteHumanRequestStore`, `SQLiteBackend` sub-stores, `communication` SQLite store and message queue, interrupt queue | autocommit `Exec` (not yet moved) |
+| versioned migrator (`pkg/storage/sqlite/migrator.go`) | each migration in a deferred `BeginTx`, behind a mutex for each `Migrator` |
+
 
 ### Performance PRAGMAs
 

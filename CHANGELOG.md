@@ -139,6 +139,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+#### Storage: concurrent opens of one SQLite file
+- **`evals.NewStore` no longer fails with "database is locked" when several callers open the same file at once** (#604). Its schema script ran in autocommit mode, so each statement took the write lock again and an opener could use up its 5 s busy timeout. The new `sqlitedriver.ExecSchema` runs a schema script for one file one opener at a time in the process, inside one `BEGIN IMMEDIATE` transaction for openers in other processes. Twelve other stores still run their schema the old way; see the "Schema init under concurrent opens" section of `docs/reference/sqlite-guidance.md`.
+
 #### LLM transport
 - **The Bedrock Anthropic-SDK client sends a tool schema with no `type` as `object`**, as the raw-HTTP path already did; the top level of a tool's input is an object.
 
