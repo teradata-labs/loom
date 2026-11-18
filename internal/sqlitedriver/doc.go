@@ -21,6 +21,7 @@
 //
 // ExecSchema runs a store's schema script when several goroutines or
 // processes may open the same file at once: one caller at a time for each
-// file in the process, inside one BEGIN IMMEDIATE transaction
-// (ExecImmediate).
+// file in the process, in one transaction that takes no write lock when the
+// schema already exists, retried under BEGIN IMMEDIATE when the write lock
+// is busy.
 package sqlitedriver

@@ -74,8 +74,8 @@ func (s *Store) Close() error {
 // to run in autocommit mode, so each of its statements took the write lock
 // again, and an opener could use up its busy timeout. That returned "database
 // is locked". sqlitedriver.ExecSchema now runs the script for one file one
-// opener at a time in this process, inside one BEGIN IMMEDIATE transaction
-// that guards against other processes.
+// opener at a time in this process, in one transaction. An existing schema
+// takes no write lock, so a read-only results file still opens.
 func (s *Store) initSchema(ctx context.Context) error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS eval_results (

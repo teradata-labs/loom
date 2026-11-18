@@ -15,16 +15,34 @@ import (
 
 // ExecSchema runs a schema script for the database file at path. Stores call
 // it from their constructor to create or migrate their tables (see
-// evals.NewStore). path is the path the caller gave to DSN.
+// evals.NewStore). path is the path the caller gave to DSN. The script must be
+// idempotent (CREATE ... IF NOT EXISTS) and must not hold its own BEGIN or
+// COMMIT; SQLite allows DDL inside a transaction.
 //
 // Several goroutines and processes can open the same file at once (issue
-// #604). ExecSchema makes that safe in two steps:
+// #604). In autocommit mode a script is one transaction for each statement,
+// and each one asks for the write lock again, so an opener could use up its
+// busy_timeout and fail with "database is locked". ExecSchema avoids that in
+// three steps:
 //
 //  1. In this process, callers for the same path run one at a time. They wait
-//     on a Go mutex, not on SQLite's busy handler, so the busy timeout is not
-//     used up by goroutines of the same process.
-//  2. The script runs in one BEGIN IMMEDIATE transaction (ExecImmediate). That
-//     protects against openers in other processes.
+//     on a Go mutex, not on SQLite's busy handler, so goroutines of one
+//     process do not use up each other's busy timeout.
+//  2. The script runs in one deferred transaction. When the schema already
+//     exists, every statement is a read, so no write lock is taken: a
+//     read-only file opens, and an open does not wait for another
+//     connection's write. When a statement must write, the transaction asks
+//     for the write lock once, and the whole script commits or none of it.
+//  3. A deferred transaction that has read and then must write gets
+//     SQLITE_BUSY at once when another connection holds the write lock;
+//     SQLite does not wait, because waiting could deadlock. ExecSchema then
+//     rolls back and runs the script again under BEGIN IMMEDIATE, which takes
+//     the write lock before the first statement and waits for it under
+//     busy_timeout. SQLite locks are file locks, so this covers other
+//     processes as well as other connections of this one.
+//
+// The connection must have a busy timeout (Options.BusyTimeoutMS); without
+// one, step 3 fails at once under contention.
 //
 // ":memory:" and "" are private to each connection, so ExecSchema does not
 // lock them.
@@ -34,28 +52,23 @@ func ExecSchema(ctx context.Context, db *sql.DB, path, script string) error {
 		return err
 	}
 	defer unlock()
-	return ExecImmediate(ctx, db, script)
+
+	err = execScriptTx(ctx, db, "BEGIN", script)
+	if err != nil && isBusy(err) {
+		err = execScriptTx(ctx, db, "BEGIN IMMEDIATE", script)
+	}
+	return err
 }
 
-// ExecImmediate runs script on one connection of db inside a single
-// BEGIN IMMEDIATE transaction, and commits it. ExecSchema calls it.
+// execScriptTx runs script on one connection of db inside one transaction
+// that begin starts ("BEGIN" or "BEGIN IMMEDIATE"), and commits it.
+// ExecSchema calls it.
 //
-// Why: a schema script that runs in autocommit mode is one transaction for
-// each statement, and each one takes the write lock again. An opener that
-// competes with others can lose that lock many times and use up its
-// busy_timeout. BEGIN IMMEDIATE takes the write lock once, before the first
-// statement, and waits for it under busy_timeout. The script then runs to the
-// end, and other openers see the whole schema or none of it.
-//
-// The connection must have a busy timeout (Options.BusyTimeoutMS); without
-// one, BEGIN IMMEDIATE fails at once when another connection holds the lock.
-// The script must not hold its own BEGIN or COMMIT. SQLite allows DDL inside
-// a transaction, so CREATE ... IF NOT EXISTS scripts work as they are.
-//
-// On failure, ExecImmediate rolls the transaction back. If the rollback also
-// fails, it discards the connection, so the pool never hands out a
-// connection that is still inside a transaction.
-func ExecImmediate(ctx context.Context, db *sql.DB, script string) error {
+// On failure it rolls the transaction back. If the rollback also fails, it
+// discards the connection, so the pool never hands out a connection that is
+// still inside a transaction. The returned error wraps the driver error, so
+// isBusy can see it.
+func execScriptTx(ctx context.Context, db *sql.DB, begin, script string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -65,8 +78,8 @@ func ExecImmediate(ctx context.Context, db *sql.DB, script string) error {
 	}
 	defer func() { _ = conn.Close() }()
 
-	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		return fmt.Errorf("sqlitedriver: begin immediate: %w", err)
+	if _, err := conn.ExecContext(ctx, begin); err != nil {
+		return fmt.Errorf("sqlitedriver: %s: %w", strings.ToLower(begin), err)
 	}
 	if _, err := conn.ExecContext(ctx, script); err != nil {
 		return errors.Join(fmt.Errorf("sqlitedriver: exec script: %w", err), rollback(ctx, conn))
@@ -147,16 +160,18 @@ func lockSchemaPath(ctx context.Context, path string) (func(), error) {
 // schemaLockKey maps a DSN path to the key of its schema lock. It drops any
 // query string and makes a plain file path absolute, so "x.db" and "./x.db"
 // share one lock. It returns false for databases that each connection holds
-// privately (":memory:", "", and "mode=memory" URIs), which need no lock.
-// Two different paths to one file (a symlink, for example) get two locks;
-// the BEGIN IMMEDIATE transaction still protects them.
+// privately (":memory:", "", and URIs whose query has "mode=memory"), which
+// need no lock. Two different paths to one file (a symlink, for example) get
+// two locks; the transaction in ExecSchema still protects them.
 func schemaLockKey(path string) (string, bool) {
-	if path == "" || path == ":memory:" || strings.Contains(path, "mode=memory") {
+	if path == "" || path == ":memory:" {
 		return "", false
 	}
-	p := path
-	if i := strings.IndexByte(p, '?'); i >= 0 {
-		p = p[:i]
+	p, query, _ := strings.Cut(path, "?")
+	for _, kv := range strings.Split(query, "&") {
+		if kv == "mode=memory" {
+			return "", false
+		}
 	}
 	p = strings.TrimPrefix(p, "file:")
 	if p == "" || p == ":memory:" {
