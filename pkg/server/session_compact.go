@@ -71,13 +71,12 @@ func compactSessionResponse(res agent.CompactResult, err error) (*loomv1.Compact
 		return nil, compactSessionStatus(err)
 	}
 	return &loomv1.CompactSessionResponse{
-		Compacted:          res.Compacted,
-		ToolResultsStubbed: res.ToolResultsStubbed,
-		TurnsFolded:        res.TurnsFolded,
-		TurnsKept:          int32(res.TurnsKept), // #nosec G115 -- at most the session's turn count
-		TokensBefore:       int64(res.TokensBefore),
-		TokensAfter:        int64(res.TokensAfter),
-		SummaryVersion:     int32(res.SummaryVersion), // #nosec G115 -- one version per fold
+		Compacted:      res.Compacted,
+		TurnsFolded:    res.TurnsFolded,
+		TurnsKept:      int32(res.TurnsKept), // #nosec G115 -- at most the session's turn count
+		TokensBefore:   int64(res.TokensBefore),
+		TokensAfter:    int64(res.TokensAfter),
+		SummaryVersion: int32(res.SummaryVersion), // #nosec G115 -- one version per fold
 	}, nil
 }
 

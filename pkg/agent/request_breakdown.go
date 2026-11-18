@@ -34,52 +34,24 @@ type requestBreakdown struct {
 	Tools    int
 
 	SystemPromptTokens int // first system message (ROM)
-	SummaryTokens      int // remaining system messages (running summary)
+	SummaryTokens      int // the running summary's row
 	ToolSchemaTokens   int // advertised tool schemas
 	HistoryTokens      int // user and assistant text
 	ToolCallTokens     int // assistant tool-call inputs
 	ToolResultTokens   int // tool results rendered whole
-	ToolStubTokens     int // tool results already offloaded or evicted to stubs
 	SkillBodyTokens    int // skill-body rows
 	ReminderTokens     int // transient system-reminder tail
 	ThinkingTokens     int // replayed thinking blocks
 
-	ToolResults        int // tool-result rows, stubs included
-	StubbedToolResults int
-	LargestToolResult  int // tokens of the biggest whole tool result
+	ToolResults       int // tool-result rows
+	LargestToolResult int // tokens of the biggest tool result
 }
 
 // total is the sum of every part.
 func (b requestBreakdown) total() int {
 	return b.SystemPromptTokens + b.SummaryTokens + b.ToolSchemaTokens + b.HistoryTokens +
-		b.ToolCallTokens + b.ToolResultTokens + b.ToolStubTokens + b.SkillBodyTokens +
+		b.ToolCallTokens + b.ToolResultTokens + b.SkillBodyTokens +
 		b.ReminderTokens + b.ThinkingTokens
-}
-
-// stubHeadScanBytes bounds where a stub's head must end: a tool name and a
-// token count, so a payload that merely starts with "[" is ruled out after
-// this many bytes rather than scanned whole.
-const stubHeadScanBytes = 512
-
-// stubHeadEnd is the literal that closes stubHeadFormat, after the token count.
-var stubHeadEnd = stubHeadFormat[strings.LastIndex(stubHeadFormat, "%d")+len("%d"):]
-
-// isOffloadStub reports whether a tool row's content is a relief or size-rule
-// stub (offload, pressure offload or eviction) rather than the payload: the
-// stub head (stubHeadFormat) followed by the held or evicted phrase. Only the
-// head is examined, so a stub with a long preview line is still recognized.
-func isOffloadStub(content string) bool {
-	open := stubHeadFormat[:strings.Index(stubHeadFormat, "%s")]
-	if !strings.HasPrefix(content, open) {
-		return false
-	}
-	head := content[:min(len(content), stubHeadScanBytes)]
-	i := strings.Index(head, stubHeadEnd)
-	if i < 0 {
-		return false
-	}
-	rest := content[i+len(stubHeadEnd):]
-	return strings.HasPrefix(rest, stubHeldPhrase) || strings.HasPrefix(rest, stubEvictedPhrase)
 }
 
 // messageTextBytes is the text a message sends: Content, or the text blocks
@@ -116,17 +88,16 @@ func measureRequest(messages []Message, tools []shuttle.Tool) requestBreakdown {
 			} else {
 				b.SummaryTokens += n
 			}
+		case m.Role == "user" && strings.HasPrefix(m.Content, summaryRowPrefix):
+			// The summary is sent as a user-role row at the head of the
+			// conversation, not as a system message.
+			b.SummaryTokens += n
 		case m.Role == roleSkillBody:
 			b.SkillBodyTokens += n
 		case m.Role == "tool":
 			b.ToolResults++
-			if isOffloadStub(m.Content) {
-				b.StubbedToolResults++
-				b.ToolStubTokens += n
-			} else {
-				b.ToolResultTokens += n
-				b.LargestToolResult = max(b.LargestToolResult, n)
-			}
+			b.ToolResultTokens += n
+			b.LargestToolResult = max(b.LargestToolResult, n)
 		case IsSystemReminder(*m):
 			b.ReminderTokens += n
 		default:
@@ -161,12 +132,10 @@ func (a *Agent) logRequest(ctx Context, b requestBreakdown, resp *LLMResponse, e
 		zap.Int("est_history_tokens", b.HistoryTokens),
 		zap.Int("est_tool_call_tokens", b.ToolCallTokens),
 		zap.Int("est_tool_result_tokens", b.ToolResultTokens),
-		zap.Int("est_tool_stub_tokens", b.ToolStubTokens),
 		zap.Int("est_skill_body_tokens", b.SkillBodyTokens),
 		zap.Int("est_reminder_tokens", b.ReminderTokens),
 		zap.Int("est_thinking_tokens", b.ThinkingTokens),
 		zap.Int("tool_results", b.ToolResults),
-		zap.Int("stubbed_tool_results", b.StubbedToolResults),
 		zap.Int("largest_tool_result_tokens", b.LargestToolResult),
 	}
 	switch {

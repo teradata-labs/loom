@@ -31,17 +31,15 @@ import (
 
 func TestMeasureRequest_AttributesEachPart(t *testing.T) {
 	whole := strings.Repeat("r", 3000)
-	stub := fmt.Sprintf(pressureStubFormat, "query", 900, 7)
 	tools := []shuttle.Tool{&ctxDumpStubTool{name: "run_sql", desc: "execute sql", schema: &shuttle.JSONSchema{Type: "object"}}}
 
 	messages := []Message{
 		{Role: "system", Content: strings.Repeat("s", 600)},
-		{Role: "system", Content: strings.Repeat("m", 300)},
+		{Role: "user", Content: summaryRowPrefix + strings.Repeat("m", 300)},
 		{Role: "user", Content: strings.Repeat("u", 90)},
 		{Role: "assistant", Content: "calling", ToolCalls: []ToolCall{{ID: "c1", Name: "run_sql", Input: map[string]interface{}{"q": "select 1"}}}},
 		{Role: "tool", ToolUseID: "c1", Content: whole},
-		{Role: "tool", ToolUseID: "c2", Content: stub},
-		{Role: "tool", ToolUseID: "c3", Content: fmt.Sprintf(evictedStubFormat, "query", 50, "", "shape: {}")},
+		{Role: "tool", ToolUseID: "c2", Content: strings.Repeat("q", 900)},
 		{Role: roleSkillBody, Content: strings.Repeat("k", 150)},
 		{Role: "user", Content: "<system-reminder>\n" + strings.Repeat("x", 60) + "\n</system-reminder>"},
 	}
@@ -51,40 +49,17 @@ func TestMeasureRequest_AttributesEachPart(t *testing.T) {
 	assert.Equal(t, len(messages), b.Messages)
 	assert.Equal(t, 1, b.Tools)
 	assert.Equal(t, tokenFigure(600), b.SystemPromptTokens)
-	assert.Equal(t, tokenFigure(300), b.SummaryTokens)
+	assert.Equal(t, tokenFigure(len(summaryRowPrefix)+300), b.SummaryTokens)
 	assert.Equal(t, tokenFigure(len("calling")+90), b.HistoryTokens)
-	assert.Equal(t, tokenFigure(3000), b.ToolResultTokens)
+	assert.Equal(t, tokenFigure(3000)+tokenFigure(900), b.ToolResultTokens)
 	assert.Equal(t, tokenFigure(3000), b.LargestToolResult)
-	assert.Equal(t, 3, b.ToolResults)
-	assert.Equal(t, 2, b.StubbedToolResults)
-	assert.Equal(t, tokenFigure(len(stub))+tokenFigure(len(messages[6].Content)), b.ToolStubTokens)
+	assert.Equal(t, 2, b.ToolResults)
 	assert.Equal(t, tokenFigure(150), b.SkillBodyTokens)
-	assert.Equal(t, tokenFigure(len(messages[8].Content)), b.ReminderTokens)
+	assert.Equal(t, tokenFigure(len(messages[7].Content)), b.ReminderTokens)
 	assert.Positive(t, b.ToolCallTokens)
 	assert.Positive(t, b.ToolSchemaTokens)
 	assert.Equal(t, b.SystemPromptTokens+b.SummaryTokens+b.ToolSchemaTokens+b.HistoryTokens+b.ToolCallTokens+
-		b.ToolResultTokens+b.ToolStubTokens+b.SkillBodyTokens+b.ReminderTokens+b.ThinkingTokens, b.total())
-}
-
-// Every stub format is recognized from the same constants, a long preview line
-// included; a payload that merely mentions the phrases is not.
-func TestIsOffloadStub_EveryFormatAndNothingElse(t *testing.T) {
-	longMeta := strings.Repeat("col INTEGER, ", 400)
-	stubs := []string{
-		fmt.Sprintf(offloadStubFormat, "run_sql", 9000, 3, "", longMeta),
-		fmt.Sprintf(offloadStubOpaqueFormat, "read_file", 9000, 3, "", longMeta),
-		fmt.Sprintf(pressureStubFormat, "run_sql", 900, 3),
-		fmt.Sprintf(pressureStubTabularFormat, "run_sql", 900, 3),
-		fmt.Sprintf(evictedStubFormat, "run_sql", 9000, "", longMeta),
-	}
-	for _, s := range stubs {
-		assert.True(t, isOffloadStub(s), s[:60])
-	}
-	assert.Greater(t, len(stubs[0]), 2048, "a stub with a long preview is still a stub")
-
-	assert.False(t, isOffloadStub("plain tool output"))
-	assert.False(t, isOffloadStub(`["held in memory this turn", "evicted from context"]`))
-	assert.False(t, isOffloadStub("["+strings.Repeat("1,", 5000)+" tokens, held in memory this turn]"))
+		b.ToolResultTokens+b.SkillBodyTokens+b.ReminderTokens+b.ThinkingTokens, b.total())
 }
 
 func TestChatWithRetry_LogsPartSizesOnSuccess(t *testing.T) {
