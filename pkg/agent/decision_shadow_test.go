@@ -72,9 +72,20 @@ func (m *memShadowStore) QueryShadow(_ context.Context, q decision.ShadowQuery) 
 	return out, nil
 }
 
+// clearJevEnv empties every environment variable that jev.FromDecisionConfig
+// reads, for the rest of t. The jev tests call it first, so a developer's
+// own TypeSafe or gateway settings cannot change their result. The jev
+// config treats an empty value as unset, so t.Setenv(k, "") is enough.
+// t.Setenv also stops t from running in parallel.
+func clearJevEnv(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{jev.EnvTypeSafeAPIKey, jev.EnvAIGatewayAPIKey, jev.EnvJevAPIKey, jev.EnvBaseURL} {
+		t.Setenv(k, "")
+	}
+}
+
 func TestInitDecisionRouterJev(t *testing.T) {
-	t.Setenv(jev.EnvTypeSafeAPIKey, "")
-	t.Setenv(jev.EnvJevAPIKey, "")
+	clearJevEnv(t)
 	t.Setenv(jev.EnvAIGatewayAPIKey, "jv_test_not_a_real_key")
 	ag := NewAgent(nil, rerankReplyLLM{reply: "none"}, WithName("dec"),
 		WithDecisionConfig(&loomv1.DecisionConfig{Provider: "jev", Model: "typesafe-ai/jev", AllowAlias: true, TimeoutMs: 1200}, nil))
@@ -98,6 +109,9 @@ func TestInitDecisionRouterJev(t *testing.T) {
 }
 
 func TestInitDecisionRouterFromConfig(t *testing.T) {
+	// The jev case must see no credentials, whatever the developer's shell
+	// exports.
+	clearJevEnv(t)
 	tests := []struct {
 		name         string
 		cfg          *loomv1.DecisionConfig
@@ -115,8 +129,7 @@ func TestInitDecisionRouterFromConfig(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Not parallel: the jev case depends on the credential env vars
-			// being absent, and TestInitDecisionRouterJev sets them.
+			// Not parallel: clearJevEnv uses t.Setenv on the parent test.
 			ag := NewAgent(nil, rerankReplyLLM{reply: "none"}, WithName("dec"), WithDecisionConfig(tt.cfg, nil))
 			if !tt.wantEnabled {
 				assert.Nil(t, ag.DecisionRouter())

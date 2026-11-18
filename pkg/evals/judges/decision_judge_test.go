@@ -29,6 +29,7 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/decision"
+	"github.com/teradata-labs/loom/pkg/decision/jev"
 	decisionmock "github.com/teradata-labs/loom/pkg/decision/mock"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/types"
@@ -247,11 +248,15 @@ func TestNewDecisionJudgeFromConfig(t *testing.T) {
 		require.Error(t, err)
 	})
 	t.Run("jev without credentials fails cleanly", func(t *testing.T) {
-		t.Setenv("AI_GATEWAY_API_KEY", "")
+		// Clear every variable jev reads, so a developer's own credentials
+		// cannot change the result. jev treats an empty value as unset.
+		for _, k := range []string{jev.EnvTypeSafeAPIKey, jev.EnvAIGatewayAPIKey, jev.EnvJevAPIKey, jev.EnvBaseURL} {
+			t.Setenv(k, "")
+		}
 		cfg := decisionJudgeConfig("ok")
 		cfg.Decision = &loomv1.DecisionConfig{Provider: "jev"}
 		_, err := NewDecisionJudgeFromConfig(cfg, llm, nil)
-		require.Error(t, err)
+		require.ErrorIs(t, err, jev.ErrNoCredentials, "the judge must fail because no key is set")
 	})
 }
 
