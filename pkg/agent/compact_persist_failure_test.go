@@ -55,7 +55,7 @@ func TestCompact_ReportsAFailedWriteInsteadOfANoOp(t *testing.T) {
 		assert.NoError(t, sm.compactPersistErr, "the marker does not leak into relief")
 	})
 
-	t.Run("evict and fold writes both fail", func(t *testing.T) {
+	t.Run("fold write fails on a session of tool results", func(t *testing.T) {
 		sm := toolTurnMemory(t, 200000, 20000, 6)
 		sm.SetSessionStore(&brokenWriteStore{err: dbDown}, "sess-broken-both")
 		sm.SetCompressor(&recordingCompressor{})
@@ -66,18 +66,4 @@ func TestCompact_ReportsAFailedWriteInsteadOfANoOp(t *testing.T) {
 		assert.False(t, res.Compacted)
 		assert.Len(t, unfoldedTurns(sm), 6)
 	})
-}
-
-// Automatic compaction stays best-effort: a failed write is logged and the turn
-// that just succeeded is untouched.
-func TestAutoCompact_StaysBestEffortWhenTheWriteFails(t *testing.T) {
-	sm := proseMemory(t, 12000, 1000, 6)
-	sm.SetSessionStore(&brokenWriteStore{err: errors.New("connection refused")}, "sess-auto-broken")
-	sm.SetCompressor(&recordingCompressor{})
-
-	res, err := sm.AutoCompact(context.Background(), 65)
-
-	require.NoError(t, err)
-	assert.False(t, res.Compacted)
-	assert.Len(t, unfoldedTurns(sm), 6)
 }

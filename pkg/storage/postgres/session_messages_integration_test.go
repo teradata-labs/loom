@@ -46,39 +46,45 @@ func TestMessages_RoundTrip_ContextCompilationColumns(t *testing.T) {
 		require.NoError(t, store.SaveMessage(ctx, sessionID, &msg, turnStart))
 	}
 	save(agent.Message{Role: "user", Content: "q1"}, true)
-	save(agent.Message{Role: "assistant", ToolCalls: []agent.ToolCall{{ID: "c1", Name: "query"}}}, false)
+	save(agent.Message{Role: "assistant", ToolCalls: []agent.ToolCall{{ID: "c1", Name: "query"}},
+		CostUSD: 0.5, InputTokens: 10, OutputTokens: 20, CacheReadTokens: 30, CacheCreateTokens: 7,
+		CacheCreate1hTokens: 4, CacheCreate5mTokens: 3, ThinkingTokens: 12, Model: "claude-opus-5-5", Effort: "high"}, false)
 	save(agent.Message{Role: "tool", ToolUseID: "c1", Content: "42 rows"}, false)
 	save(agent.Message{Role: "user", Content: "q2"}, true)
 
-	// Load back: turn must be derived-at-insert (1,1,1,2), flags false.
+	// Load back: turn must be derived-at-insert (1,1,1,2), folded false.
 	msgs, err := store.LoadMessages(ctx, sessionID)
 	require.NoError(t, err, "LoadMessages must scan every selected column")
 	require.Len(t, msgs, 4)
 	wantTurns := []int64{1, 1, 1, 2}
 	for i, m := range msgs {
 		require.Equal(t, wantTurns[i], m.Turn, "msg %d turn", i)
-		require.False(t, m.Evicted, "msg %d evicted", i)
 		require.False(t, m.Folded, "msg %d folded", i)
 	}
 	require.Equal(t, "42 rows", msgs[2].Content)
 	require.Equal(t, "c1", msgs[2].ToolUseID)
 
-	// Relief flags roundtrip: evict the tool row, fold the first user row.
-	toolSeq, err := strconv.ParseInt(msgs[2].ID, 10, 64)
-	require.NoError(t, err)
+	// What a billed row carries comes back as it was written.
+	billed := msgs[1]
+	require.Equal(t, "claude-opus-5-5", billed.Model)
+	require.Equal(t, "high", billed.Effort)
+	require.Equal(t, 4, billed.CacheCreate1hTokens)
+	require.Equal(t, 3, billed.CacheCreate5mTokens)
+	require.Equal(t, 12, billed.ThinkingTokens)
+	require.Equal(t, 7, billed.CacheCreateTokens)
+
+	// Relief roundtrip: fold the first user row.
 	firstSeq, err := strconv.ParseInt(msgs[0].ID, 10, 64)
 	require.NoError(t, err)
-	require.NoError(t, store.MarkEvicted(ctx, sessionID, []int64{toolSeq}))
 	require.NoError(t, store.FoldMessages(ctx, sessionID, []int64{firstSeq}, 1, "covers msg:1-1\nsummary"))
 
 	msgs, err = store.LoadMessages(ctx, sessionID)
 	require.NoError(t, err)
-	// The folded row is filtered at the read; the evicted row returns flagged.
+	// The folded row is filtered at the read; the rest return intact.
 	require.Len(t, msgs, 3, "folded rows are filtered at the database read")
 	for _, m := range msgs {
 		require.False(t, m.Folded)
 	}
-	require.True(t, msgs[1].Evicted, "the evicted tool row returns with its flag")
 	require.Equal(t, int64(1), msgs[1].Turn, "turn survives the roundtrip")
 
 	// LoadSession drives the same scan through its own SELECT.

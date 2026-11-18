@@ -4398,7 +4398,10 @@ type CompactSessionResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// False when nothing older than keep_turns was left to compact.
 	Compacted bool `protobuf:"varint,1,opt,name=compacted,proto3" json:"compacted,omitempty"`
-	// Older tool results were replaced by re-fetchable stubs.
+	// Always false: a tool result is bounded as it arrives and is never
+	// replaced by a stub later.
+	//
+	// Deprecated: Marked as deprecated in loom/v1/loom.proto.
 	ToolResultsStubbed bool `protobuf:"varint,2,opt,name=tool_results_stubbed,json=toolResultsStubbed,proto3" json:"tool_results_stubbed,omitempty"`
 	// Older turns were folded into the running summary.
 	TurnsFolded bool `protobuf:"varint,3,opt,name=turns_folded,json=turnsFolded,proto3" json:"turns_folded,omitempty"`
@@ -4451,6 +4454,7 @@ func (x *CompactSessionResponse) GetCompacted() bool {
 	return false
 }
 
+// Deprecated: Marked as deprecated in loom/v1/loom.proto.
 func (x *CompactSessionResponse) GetToolResultsStubbed() bool {
 	if x != nil {
 		return x.ToolResultsStubbed
@@ -11997,10 +12001,10 @@ const file_loom_v1_loom_proto_rawDesc = "" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x1d\n" +
 	"\n" +
 	"keep_turns\x18\x02 \x01(\x05R\tkeepTurns\x12\x14\n" +
-	"\x05focus\x18\x03 \x01(\tR\x05focus\"\x9b\x02\n" +
+	"\x05focus\x18\x03 \x01(\tR\x05focus\"\x9f\x02\n" +
 	"\x16CompactSessionResponse\x12\x1c\n" +
-	"\tcompacted\x18\x01 \x01(\bR\tcompacted\x120\n" +
-	"\x14tool_results_stubbed\x18\x02 \x01(\bR\x12toolResultsStubbed\x12!\n" +
+	"\tcompacted\x18\x01 \x01(\bR\tcompacted\x124\n" +
+	"\x14tool_results_stubbed\x18\x02 \x01(\bB\x02\x18\x01R\x12toolResultsStubbed\x12!\n" +
 	"\fturns_folded\x18\x03 \x01(\bR\vturnsFolded\x12\x1d\n" +
 	"\n" +
 	"turns_kept\x18\x04 \x01(\x05R\tturnsKept\x12#\n" +
