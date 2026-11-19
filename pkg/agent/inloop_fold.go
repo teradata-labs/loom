@@ -48,6 +48,16 @@ import (
 // change it without a rebuild.
 const foldPromptKey = "memory.fold"
 
+// maxFailedFoldRounds is how many fold rounds may fail in one turn before the
+// in-loop fold stops arming for the rest of it. A round fails when two replies
+// in a row are not a usable summary. Each failed round costs two full-context
+// calls and two loop passes, and before the cap the fold armed again at the
+// next seam, so a model that never answers the ask spent about two of every
+// three passes on it. One failed round is the evidence: the turn goes on
+// unfolded, and a send the provider refuses as too long is still answered by
+// ReleasePressure. A new turn arms again.
+const maxFailedFoldRounds = 1
+
 // foldInstruction is the fold ask as shipped: the transient message appended
 // to the fold call, used when no registry is wired. It is never stored; the
 // model's reply to it is consumed by the harness.

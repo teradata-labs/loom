@@ -84,3 +84,40 @@ func TestInloopFold_TheResponseSaysTheTurnFolded(t *testing.T) {
 		})
 	}
 }
+
+// A model that never answers the fold ask with a usable summary gets one
+// failed round per turn (maxFailedFoldRounds): two fold calls, then the fold
+// stays off for the rest of the turn and the work goes on. Without the cap
+// the fold armed again at every next seam and took about two of every three
+// loop passes.
+func TestInloopFold_AModelThatCannotFoldIsAskedOneRoundPerTurn(t *testing.T) {
+	t.Parallel()
+	tracer := observability.NewMockTracer()
+	model := &foldingStream{steps: 24, toolFolds: 1 << 20}
+	ag, _ := foldingAgentOn(t, model, nil, nil, WithTracer(tracer))
+
+	resp, err := ag.Chat(context.Background(), "s-fold-cap", "do the long job")
+	require.NoError(t, err, "the turn must end with a response")
+	require.Equal(t, "final answer", resp.Content, "the turn must reach its answer")
+	require.Zero(t, model.folds, "the fixture must never return a usable summary")
+
+	foldCalls := 0
+	for _, f := range model.foldAt {
+		if f {
+			foldCalls++
+		}
+	}
+	assert.Equal(t, 2*maxFailedFoldRounds, foldCalls, "the fold was asked again after its failed rounds")
+	assert.Equal(t, model.steps, model.taken, "every step of the work ran")
+	assert.NotContains(t, resp.Metadata, "auto_compaction", "a turn with no committed fold reports a compaction")
+
+	loops := tracer.GetSpansByName("agent.conversation_loop")
+	require.Len(t, loops, 1, "the turn did not record its loop span")
+	disarmed := 0
+	for _, e := range loops[0].Events {
+		if e.Name == "fold.disarmed" {
+			disarmed++
+		}
+	}
+	assert.Equal(t, 1, disarmed, "the loop span does not say once that the fold was disarmed")
+}
