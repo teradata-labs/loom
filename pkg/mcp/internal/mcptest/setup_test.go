@@ -109,9 +109,12 @@ func TestResolveEntry(t *testing.T) {
 			require.NoError(t, err)
 			server, err := parseServer(output)
 			require.NoError(t, err)
-			want, err := filepath.EvalSymlinks(tc.want)
+			want, err := os.Stat(tc.want)
 			require.NoError(t, err)
-			require.Equal(t, want, server.Entry)
+			got, err := os.Stat(server.Entry)
+			require.NoError(t, err)
+			// Node and Go can spell the same Windows path differently.
+			require.True(t, os.SameFile(want, got), "expected entry %q, got %q", tc.want, server.Entry)
 		})
 	}
 
