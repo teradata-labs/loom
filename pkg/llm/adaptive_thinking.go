@@ -22,7 +22,9 @@ var adaptiveThinkingMarkers = []string{
 
 // IsAdaptiveThinkingModel reports whether model takes adaptive thinking.
 func IsAdaptiveThinkingModel(model string) bool {
-	m := strings.ToLower(model)
+	// Dots read as hyphens so a dotted gateway id ("anthropic/claude-sonnet-4.6")
+	// matches the same marker as "claude-sonnet-4-6".
+	m := strings.ReplaceAll(strings.ToLower(model), ".", "-")
 	for _, marker := range adaptiveThinkingMarkers {
 		if strings.Contains(m, marker) {
 			return true

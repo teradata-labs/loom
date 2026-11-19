@@ -1207,6 +1207,7 @@ func (s *MultiAgentServer) Weave(ctx context.Context, req *loomv1.WeaveRequest) 
 				CostUsd:                  resp.Usage.CostUSD,
 				CacheReadInputTokens:     types.SafeInt32(resp.Usage.CacheReadInputTokens),
 				CacheCreationInputTokens: types.SafeInt32(resp.Usage.CacheCreationInputTokens),
+				CostEstimated:            resp.Usage.CostEstimated,
 			},
 			TotalCostUsd: resp.Usage.CostUSD,
 		},
@@ -1520,6 +1521,7 @@ func (s *MultiAgentServer) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.L
 				CostUsd:                  resp.Usage.CostUSD,
 				CacheReadInputTokens:     types.SafeInt32(resp.Usage.CacheReadInputTokens),
 				CacheCreationInputTokens: types.SafeInt32(resp.Usage.CacheCreationInputTokens),
+				CostEstimated:            resp.Usage.CostEstimated,
 			},
 		},
 	}

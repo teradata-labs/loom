@@ -450,10 +450,18 @@ func (s *MultiAgentServer) UpdateMCPServer(ctx context.Context, req *loomv1.Upda
 		return nil, status.Errorf(codes.Internal, "failed to update config: %v", err)
 	}
 
+	var connected bool
+	for _, srv := range s.mcpManager.ListServers() {
+		if srv.Name == req.ServerName {
+			connected = srv.Connected
+			break
+		}
+	}
+
 	return &loomv1.MCPServerInfo{
 		Name:      req.ServerName,
 		Enabled:   req.Enabled,
-		Connected: req.RestartIfRunning && wasConnected,
+		Connected: connected,
 		Status:    "updated",
 	}, nil
 }

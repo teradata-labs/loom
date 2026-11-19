@@ -838,15 +838,58 @@
         "seed": {
           "type": "string",
           "format": "int64",
-          "description": "Sampling seed for reproducible generations.\nExplicitly optional so that \"not set\" (sampling stays random, provider\ndefault) is distinguishable from an explicit seed of 0, which some\nproviders accept as a real seed value.\n\nHonored by: ollama, and only on the agent-registry construction path\n(pkg/agent/registry.go, which passes it into ollama.Config). Providers\nother than ollama ignore it. The looms serve path builds clients from\nfactory.FactoryConfig, which does not carry a seed field, so a seed set in\nagent YAML has no effect there — wiring it through the factory is an open\nfollow-up, not a shipped behavior."
+          "description": "Sampling seed for reproducible generations.\nExplicitly optional so that \"not set\" (sampling stays random, provider\ndefault) is distinguishable from an explicit seed of 0, which some\nproviders accept as a real seed value.\n\nHonored by: ollama, for an agent whose own llm block selects it (agent\nregistry, and agent YAML under looms serve). Providers other than ollama\nignore it. The server's default LLM (looms.yaml llm:) and the provider\nfactory carry no seed."
         },
         "maxModelContextTokens": {
           "type": "integer",
           "format": "int32",
           "description": "The context window the model is served with, when it is below the\nmodel's listed window: a vLLM --max-model-len, a TGI --max-total-tokens,\nan Ollama num_ctx. A step whose results together would exceed it, less\nthe reply reservation, has them replaced before the send. Taken as given,\nabove or below the listing. If not set, the model's listed window is the\nlimit, on every provider."
+        },
+        "gatewayRouting": {
+          "$ref": "#/definitions/v1LLMGatewayRouting",
+          "description": "Routing options for a multi-provider LLM gateway. Valid only with\nprovider vercel-ai-gateway, which sends them as providerOptions.gateway in\nevery request body; on any other provider, or with no provider, agent\nvalidation rejects it. Unset means the gateway's own default routing."
         }
       },
       "title": "LLMConfig configures the language model provider and parameters"
+    },
+    "v1LLMGatewayRouting": {
+      "type": "object",
+      "properties": {
+        "order": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Upstream providers to try, in order. Empty = gateway default order."
+        },
+        "only": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Restrict serving to these upstream providers. Empty = no restriction.\nA request no listed provider can serve fails; it is not retried."
+        },
+        "sort": {
+          "type": "string",
+          "description": "Rank eligible upstreams by \"cost\", \"ttft\" (time to first token) or \"tps\"\n(tokens per second). Empty = gateway default."
+        },
+        "fallbackModels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Model ids to fall back to, in order, when the primary model fails on\nevery eligible upstream. May name a different model family."
+        },
+        "zeroDataRetention": {
+          "type": "boolean",
+          "description": "Serve only from upstreams with a zero-data-retention agreement."
+        },
+        "caching": {
+          "type": "string",
+          "description": "Gateway-side prompt caching mode. \"\" = off (explicit cache_control only),\n\"auto\" = the gateway places cache breakpoints itself."
+        }
+      },
+      "description": "LLMGatewayRouting selects and orders the upstream providers a multi-provider\nLLM gateway may serve a request from. It is named for gateways in general so\na later gateway backend can reuse it; today only vercel-ai-gateway reads it.\n\nProvider slugs (\"anthropic\", \"bedrock\", \"vertex\", \"openai\", ...) are the\ngateway's own and are passed through unchanged. Per-request BYOK credentials\nare deliberately not part of this message: they are configured in the\ngateway's dashboard, not in agent configuration."
     },
     "v1LLMRateLimitConfig": {
       "type": "object",
