@@ -1,7 +1,7 @@
 # Vercel AI Gateway
 
 **Version**: v1.4.0
-**Status**: ✅ Implemented. Every feature listed under [What is implemented](#what-is-implemented) is built, unit-tested against a fake gateway, and run against the live gateway (2026-11-16 on Haiku 4.5 and GPT-5 mini; 2026-11-19 on Sonnet 5.5, GPT-5.5, Haiku 5.5 and Qwen 3.7 Flash, OIDC included, plus 372 agent runs in the [evaluation](../research/vercel-gateway-eval-results.md)). Gateway behaviours that cannot be provoked on demand are listed under [Limitations](#limitations-and-unverified-behaviour).
+**Status**: ✅ Implemented. Every feature listed under [What is implemented](#what-is-implemented) is built, unit-tested against a fake gateway, and run against the live gateway (2026-11-16 on Haiku 4.5 and GPT-5 mini; 2026-11-19 on Sonnet 5.5, GPT-5.5, Haiku 5.5 and Qwen 3.7 Flash, OIDC included, plus 372 agent runs in the gateway evaluation, whose harness and results are on branch `feat/vercel-gateway-eval`). Gateway behaviours that cannot be provoked on demand are listed under [Limitations](#limitations-and-unverified-behaviour).
 
 The [Vercel AI Gateway](https://vercel.com/docs/ai-gateway) is one host, `https://ai-gateway.vercel.sh`, that fronts many upstream providers under creator-scoped model ids (`anthropic/claude-sonnet-4.5`, `openai/gpt-5`, `google/gemini-3.1-pro-preview`). Loom's `vercel-ai-gateway` provider (alias `vercel`) by default sends Claude ids to the gateway's Anthropic Messages API and every other id to its OpenAI Chat Completions API; `gateway_api` selects the Messages, Chat Completions or OpenAI Responses API for every id instead.
 
@@ -337,7 +337,7 @@ VERCEL_GATEWAY_LIVE_CAPTURE_DIR=/tmp/vgw-captures \
 
 Verified live on 2026-11-16 (details in [the spike record](../research/vercel-ai-gateway-spike.md)): cost and routing metadata locations, the generation id, the pricing unit, `providerOptions.gateway` in the raw body (an unsatisfiable `only` is rejected), Claude signed-thinking replay over a 3-turn tool loop, GPT-5 mini `reasoning_details` replay, context-overflow bodies, `/v1/credits`, `/v1/embeddings`.
 
-Verified live on 2026-11-19 (`TestLiveComplete_*`, results in [the evaluation](../research/vercel-gateway-eval-results.md) §16): the Responses API on GPT-5.5 and Sonnet 5.5 (text, streaming, tool loop, reasoning replay, cost); every routing key in the table above; BYOK credentials reach the upstream; session affinity; `anthropic-beta` accepted; thinking replay from anthropic to bedrock and vertex; cache read/write fields from anthropic, bedrock and vertex; whole-prompt tier pricing; a 6 min 38 s stream.
+Verified live on 2026-11-19 (`TestLiveComplete_*`, results in the evaluation write-up on branch `feat/vercel-gateway-eval`, §16): the Responses API on GPT-5.5 and Sonnet 5.5 (text, streaming, tool loop, reasoning replay, cost); every routing key in the table above; BYOK credentials reach the upstream; session affinity; `anthropic-beta` accepted; thinking replay from anthropic to bedrock and vertex; cache read/write fields from anthropic, bedrock and vertex; whole-prompt tier pricing; a 6 min 38 s stream.
 
 Not verified, and why:
 
