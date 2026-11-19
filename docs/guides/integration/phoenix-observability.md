@@ -32,13 +32,13 @@ Loom's OTLP/HTTP exporter (`observability.mode: otel`) can send traces to [Arize
 - One root span per turn, and the trace ID in `Weave` responses ([#647](https://github.com/teradata-labs/loom/issues/647))
 - A nested span tree for each turn ([#648](https://github.com/teradata-labs/loom/issues/648))
 
-Until those land, Phoenix shows Loom spans with generic kinds, empty input/output panes, and without a reliable per-turn hierarchy. `WeaveResponse.trace_id` is not set, so this guide finds a turn by its session ID.
+Until those land, do not rely on Phoenix's span kinds, input/output panes, token counts or trace hierarchy for Loom spans. `WeaveResponse.trace_id` is not set, so this guide finds a turn by its session ID.
 
 ## Prerequisites
 
 - `looms` built from this repository (`go build -tags fts5 ./cmd/looms`)
 - An LLM provider. The example uses Bedrock; credentials come from `AWS_*` variables or a named profile, never from the YAML
-- Phoenix, through Docker or pip. The version used for the [verification record](#verification-record) is listed there
+- Phoenix, through Docker or pip. The [verification record](#verification-record) used Phoenix 20.22.0
 - An agent with no tools for the smoke test (below)
 
 ## Quick Start
@@ -148,7 +148,7 @@ Expected output: `1 server.Weave span(s) for phoenix-smoke-<id>`.
 
 **Traces can contain sensitive data.** Exported spans can hold prompts, responses, tool arguments and results, and error messages. With `mode: otel`, `looms serve` drops credential-named attributes and masks email, phone, SSN and card-number patterns in string attributes, but that is not a privacy guarantee: other values, including span status messages, are exported as they are. Full redaction and content bounds are planned in [#643](https://github.com/teradata-labs/loom/issues/643). Use synthetic input and inspect what Phoenix stored before sending real data.
 
-**Phoenix's OTLP/gRPC port 4317.** Phoenix also runs an OTLP/gRPC receiver on port 4317. With Docker, it is not reachable from outside the container unless you publish it (`-p`); the command above publishes only 6006, on `127.0.0.1`. With pip, check which address the listener is bound to after starting Phoenix:
+**Phoenix's OTLP/gRPC port 4317.** Phoenix also runs an OTLP/gRPC receiver on port 4317. With Docker, it is not reachable from outside the container unless you publish it (`-p`); the command above publishes only 6006, on `127.0.0.1`. With pip, `PHOENIX_HOST` moves only the HTTP listener: in the [verification record](#verification-record) run, 6006 was on `127.0.0.1` and 4317 on `::` (every interface). Check the bind after starting Phoenix:
 
 ```powershell
 Get-NetTCPConnection -State Listen -LocalPort 4317, 6006 | Select-Object LocalAddress, LocalPort
@@ -158,11 +158,21 @@ Get-NetTCPConnection -State Listen -LocalPort 4317, 6006 | Select-Object LocalAd
 ss -ltnp | grep -E ':(4317|6006)\b'
 ```
 
-If 4317 is bound to `0.0.0.0` or `::`, block inbound TCP 4317 with the host firewall, or use Docker instead. Stop Phoenix when you are done.
+If 4317 is bound to `0.0.0.0` or `::`, block inbound TCP 4317 with the host firewall (Windows, from an elevated prompt: `New-NetFirewallRule -DisplayName "Block Phoenix OTLP gRPC" -Direction Inbound -Protocol TCP -LocalPort 4317 -Action Block`), or use Docker instead. Stop Phoenix when you are done.
 
 ## Verification Record
 
-📋 Pending: the live check against Phoenix (one turn exported to an isolated project; a turn with Phoenix stopped completing within a 10-second deadline; a new span exported after Phoenix restarts) has not been recorded yet. The Loom commit, Phoenix version and results go here when it is run.
+Run on 2026-11-19, Windows 11, Loom commit `aef3f2e1` built with `go build -tags fts5 ./cmd/looms`, Phoenix 20.22.0 from pip (`PHOENIX_HOST=127.0.0.1`), the example config with a fresh project `loom-642-20261119-135834`, the `phoenix-smoke` agent and Bedrock Claude Sonnet 4.5. Each turn used the synthetic input `Say hello.` and its own session ID.
+
+| Check | Result |
+|---|---|
+| Startup log | `yolo` false, `require_approval` true, `allowed_tools` 0, `default_action` deny; Loom on `127.0.0.1:60051` and `127.0.0.1:5006` |
+| Turn 1, Phoenix up | ✅ One `server.Weave` span with that turn's `session.id` in the project, found with the REST script above (44 spans in the project) |
+| Turn 2, Phoenix stopped | ✅ Completed in 2.9 s (10-second deadline); `looms` logged `traces export: ... connection refused`; no span for that session after Phoenix returned (not replayed) |
+| Turn 3, after Phoenix restart | ✅ One `server.Weave` span with the new turn's `session.id` |
+| Phoenix listeners | 6006 on `127.0.0.1`; 4317 on `::` (every interface) despite `PHOENIX_HOST` |
+
+`WeaveResponse.traceId` was empty, as expected on this commit ([#647](https://github.com/teradata-labs/loom/issues/647)). This is one local run, not a latency guarantee.
 
 ## Troubleshooting
 
@@ -177,7 +187,7 @@ If 4317 is bound to `0.0.0.0` or `::`, block inbound TCP 4317 with the host fire
 
 **The turn fails with a tool permission error.** The agent called a tool. Use the no-tool agent from step 2; this example's policy denies every tool.
 
-**Phoenix is down.** Export runs in a background batch processor, off the request path, so turns are not supposed to wait on Phoenix. Spans the exporter cannot deliver are dropped and are not replayed when Phoenix returns.
+**Phoenix is down.** Export runs in a background batch processor, off the request path, so turns do not wait on Phoenix (see the [verification record](#verification-record)). `looms` logs `traces export: ...` errors. Spans the exporter cannot deliver are dropped and are not replayed when Phoenix returns.
 
 ## Next Steps
 
