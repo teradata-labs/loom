@@ -381,12 +381,6 @@ func TestLiveComplete_PriceTierSemantics(t *testing.T) {
 	}
 }
 
-// gatewayCost is the cost the gateway reported (the client copies it into
-// Usage.CostUSD when present).
-func gatewayCost(resp *types.LLMResponse) (float64, bool) {
-	return resp.Usage.CostUSD, resp.Usage.CostUSD > 0
-}
-
 // A long stream that keeps producing bytes is not cut off: by the gateway's
 // own limits or by loom's stream timeouts. Opt-in (VERCEL_GATEWAY_LIVE_LONG=1)
 // because it costs about $1.
