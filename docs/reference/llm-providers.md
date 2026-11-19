@@ -708,9 +708,9 @@ llm:
 
 ### 10. Vercel AI Gateway
 
-**Status**: ⚠️ Partial. Implemented and unit-tested against a fake gateway: provider (`pkg/llm/vercelgateway`), provider factory, agent registry, `looms` server config (`llm.vercel_gateway_*`), agent YAML `gateway_routing`, `looms workflow`, `looms config init` (option 5), `loom-standalone`, `loom decision replay`, `pkg/builder` (`WithVercelGatewayLLM`) and memory embeddings (`embedding.provider: vercel-ai-gateway`). Live-tested 2026-11-16 (Haiku 4.5, GPT-5 mini, embeddings). Not done: the Responses surface (📋), tiered long-context prices.
+**Status**: ⚠️ Partial. Implemented, unit-tested and live-tested: provider (`pkg/llm/vercelgateway`) on the Messages, Chat Completions and Responses APIs (`gateway_api`), every documented routing option including per-request BYOK, session affinity, catalog price tiers, provider factory, agent registry, `looms` server config (`llm.vercel_gateway_*`), agent YAML (`gateway_routing`, `gateway_api`), `looms workflow`, `looms config init` (option 5), `loom-standalone`, `loom decision replay`, `pkg/builder` (`WithVercelGatewayLLM`, `WithVercelGatewayConfig`) and memory embeddings. Live-tested 2026-11-16 (Haiku 4.5, GPT-5 mini, embeddings) and 2026-11-19 (Sonnet 5.5, GPT-5.5, Haiku 5.5, Qwen 3.7 Flash). Not yet verified live: OIDC, and a BYOK call served by the customer's key (see the reference doc).
 
-One host (`https://ai-gateway.vercel.sh`) in front of many upstream providers. Claude ids (`anthropic/*`) go to the gateway's Anthropic Messages surface; every other id goes to its OpenAI Chat Completions surface.
+One host (`https://ai-gateway.vercel.sh`) in front of many upstream providers. By default Claude ids (`anthropic/*`) go to the gateway's Anthropic Messages API and every other id to its OpenAI Chat Completions API; `gateway_api: responses` sends every id to the OpenAI Responses API.
 
 **Why the gateway**:
 - One key for Anthropic, OpenAI, Google, and other upstreams, billed at upstream list price
