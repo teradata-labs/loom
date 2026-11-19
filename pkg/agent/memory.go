@@ -398,6 +398,12 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 	loadFailed := false
 	if store != nil {
 		session, err := store.LoadSession(ctx, sessionID)
+		if err != nil && !errors.Is(err, ErrSessionNotFound) && loadErrorMeansMissing(ctx, store, sessionID) {
+			// A store that does not wrap ErrSessionNotFound (a host store with
+			// its own not-found error) and has no row for the id: a new
+			// session, created and saved below as before.
+			err = ErrSessionNotFound
+		}
 		if err != nil && !errors.Is(err, ErrSessionNotFound) {
 			// A store that failed is not a new session: the turn below starts
 			// with no history in memory. Say so, so the empty context can be
@@ -909,7 +915,37 @@ func (m *Memory) PersistSession(ctx context.Context, session *Session) error {
 	if m.store == nil {
 		return nil // No-op if no store configured
 	}
+	if m.isLoadPlaceholder(session) {
+		// The store failed to load this session, so the cached session is an
+		// empty stand-in: saving it would overwrite the stored row's name,
+		// context and totals. Its messages are still saved row by row; the
+		// next GetOrCreateSession* call loads the real session again.
+		zap.L().Info("persist: the session was not loaded from the store; its row is left as stored",
+			zap.String("session_id", session.ID))
+		return nil
+	}
 	return m.store.SaveSession(ctx, session)
+}
+
+// loadErrorMeansMissing asks the store whether a session it failed to load
+// exists at all. Only a definite "no row" makes the failure a missing session:
+// a session that exists, or a store that cannot answer, is a failed load.
+// SessionExists counts rows of any owner, so another user's session is a failed
+// load here too, and is never created over.
+func loadErrorMeansMissing(ctx context.Context, store SessionStorage, sessionID string) bool {
+	exists, err := store.SessionExists(ctx, sessionID)
+	return err == nil && !exists
+}
+
+// isLoadPlaceholder reports whether session is the empty stand-in cached after
+// a failed load (reloadPending), which must never be saved over the stored row.
+func (m *Memory) isLoadPlaceholder(session *Session) bool {
+	if session == nil {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.reloadPending[session.ID] && m.sessions[session.ID] == session
 }
 
 // PersistMessage saves a message's durable row, once, applying the fixed write

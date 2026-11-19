@@ -5598,10 +5598,9 @@ func (a *Agent) CreateSession(ctx context.Context, sessionID, name string) *Sess
 	session := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
 	if name != "" && session.Name == "" {
 		session.Name = name
-		// Persist updated name to store
-		if a.memory.store != nil {
-			_ = a.memory.store.SaveSession(ctx, session)
-		}
+		// Persist updated name to store (PersistSession leaves the stored
+		// row alone while the session is a failed-load placeholder).
+		_ = a.memory.PersistSession(ctx, session)
 	}
 	return session
 }
