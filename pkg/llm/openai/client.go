@@ -1143,7 +1143,7 @@ func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cache
 	// A catalog that publishes cache rates (a gateway's /v1/models) wins over
 	// the family multiplier.
 	cacheReadPerM, cacheWritePerM := inputCostPerM*cacheReadMult, inputCostPerM*cacheWriteMult
-	if r, w := catalog.CacheRates(c.catalogProvider, c.model); r > 0 || w > 0 {
+	if r, w := catalog.RequestCacheRates(c.catalogProvider, c.model, inputTokens); r > 0 || w > 0 {
 		if r > 0 {
 			cacheReadPerM = r
 		}

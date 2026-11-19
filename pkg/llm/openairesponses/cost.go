@@ -43,7 +43,7 @@ func (c *Client) estimateCost(inputTokens, outputTokens, cacheRead, cacheWrite i
 		readPerM = inPerM * catalog.ClaudeCacheReadMultiplier(c.model)
 		writePerM = inPerM * catalog.ClaudeCacheWriteMultiplier
 	}
-	if r, w := catalog.CacheRates(c.catalogProvider, c.model); r > 0 || w > 0 {
+	if r, w := catalog.RequestCacheRates(c.catalogProvider, c.model, inputTokens); r > 0 || w > 0 {
 		if r > 0 {
 			readPerM = r
 		}

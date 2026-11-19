@@ -7644,6 +7644,14 @@
           "type": "number",
           "format": "double",
           "description": "Cost per 1M prompt-cache write tokens (USD). 0 = not published; clients\nthen derive it from the input rate with the vendor's multiplier."
+        },
+        "priceTiers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1PriceTier"
+          },
+          "description": "Prompt-size price tiers, ascending by min_prompt_tokens. When a request's\nprompt falls in a tier, that tier's rates price the whole request (input,\noutput and cache), replacing the flat rates above. Empty = flat pricing."
         }
       },
       "description": "ModelInfo provides information about an LLM model."
@@ -8344,6 +8352,39 @@
         }
       },
       "description": "PresetDefaults carries the agent-creation defaults a preset contributes.\nField names mirror AgentConfig + BehaviorConfig + MemoryConfig so the\npreset can be flattened into a CreateAgentRequest with a simple merge.\n\nBoolean fields use proto3 optional so the merge can distinguish\n\"explicitly false\" from \"not specified by the preset\"."
+    },
+    "v1PriceTier": {
+      "type": "object",
+      "properties": {
+        "minPromptTokens": {
+          "type": "string",
+          "format": "int64",
+          "description": "Smallest prompt (input tokens, cache included) the tier applies to."
+        },
+        "maxPromptTokens": {
+          "type": "string",
+          "format": "int64",
+          "description": "First prompt size past the tier; 0 = no upper bound."
+        },
+        "inputPer1mUsd": {
+          "type": "number",
+          "format": "double",
+          "description": "Rates in USD per 1M tokens."
+        },
+        "outputPer1mUsd": {
+          "type": "number",
+          "format": "double"
+        },
+        "cacheReadPer1mUsd": {
+          "type": "number",
+          "format": "double"
+        },
+        "cacheWritePer1mUsd": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "description": "PriceTier is the pricing for requests whose prompt size is in\n[min_prompt_tokens, max_prompt_tokens). A rate of 0 means the tier does not\npublish that rate and the flat rate applies."
     },
     "v1ProviderEntry": {
       "type": "object",
