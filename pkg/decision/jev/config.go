@@ -47,11 +47,12 @@ const (
 // exposes; the same DefaultPath applies under it.
 const VercelGatewayBaseURL = "https://ai-gateway.vercel.sh/typesafe"
 
-// VercelGatewayModel is the only model id the gateway accepts for Jev. It is
-// a floating alias: the gateway does not expose pinned releases, and its
-// responses echo this id rather than a version. Config validation therefore
-// requires allow_alias for it, so a deployment states that it accepted
-// floating behaviour.
+// VercelGatewayModel is the default model id for Jev on the gateway. It is a
+// floating alias, so config validation requires allow_alias for it. The
+// gateway also accepts pinned ids in the typesafe-ai/ namespace, for example
+// typesafe-ai/jev-1.14.0 (verified live on 2026-11-18). A response echoes the
+// requested id, so a pinned response does not by itself confirm which version
+// answered.
 const VercelGatewayModel = "typesafe-ai/jev"
 
 // gatewayModelPrefix is how gateway model ids are recognised.
@@ -60,9 +61,10 @@ const gatewayModelPrefix = "typesafe-ai/"
 // ErrNoCredentials is returned when no key is configured anywhere.
 var ErrNoCredentials = errors.New("jev: no API key: set " + EnvTypeSafeAPIKey + " (TypeSafe) or " + EnvAIGatewayAPIKey + " (Vercel AI Gateway)")
 
-// ErrGatewayModel is returned when a pinned TypeSafe model id is configured
-// against the gateway, which would be rejected there.
-var ErrGatewayModel = errors.New("jev: the Vercel AI Gateway serves Jev as \"" + VercelGatewayModel + "\"; set decision.model to that (with allow_alias: true) or leave it empty")
+// ErrGatewayModel is returned when a model id without the typesafe-ai/ prefix
+// (for example jev-1.13.0, a TypeSafe direct id) is configured against the
+// gateway. The gateway's ids carry that prefix.
+var ErrGatewayModel = errors.New("jev: the Vercel AI Gateway serves Jev under typesafe-ai/ ids (for example \"" + VercelGatewayModel + "\"); set decision.model to one of those or leave it empty")
 
 // ErrInsecureEndpoint is returned when the resolved endpoint would send the
 // decider credential over plain HTTP, or to a URL that is not a plain

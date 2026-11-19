@@ -494,6 +494,12 @@ func TestFromDecisionConfig(t *testing.T) {
 	_, err = fromDecisionConfig(&loomv1.DecisionConfig{Model: "jev-1.13.0"}, env(map[string]string{EnvAIGatewayAPIKey: "gw"}))
 	assert.ErrorIs(t, err, ErrGatewayModel, "a pinned TypeSafe id is rejected against the gateway")
 
+	// A pinned gateway id is accepted (verified live: the gateway served
+	// typesafe-ai/jev-1.14.0 on 2026-11-18). It needs no allow_alias.
+	c, err = fromDecisionConfig(&loomv1.DecisionConfig{Model: "typesafe-ai/jev-1.14.0"}, env(map[string]string{EnvAIGatewayAPIKey: "gw"}))
+	require.NoError(t, err)
+	assert.Equal(t, "typesafe-ai/jev-1.14.0", c.Model)
+
 	c, err = fromDecisionConfig(&loomv1.DecisionConfig{Model: "typesafe-ai/jev"}, env(map[string]string{EnvAIGatewayAPIKey: "gw"}))
 	require.NoError(t, err)
 	assert.Equal(t, "typesafe-ai/jev", c.Model)

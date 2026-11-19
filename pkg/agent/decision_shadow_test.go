@@ -115,8 +115,13 @@ func TestInitDecisionRouterFromConfig(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Not parallel: the jev case depends on the credential env vars
-			// being absent, and TestInitDecisionRouterJev sets them.
+			// Not parallel: t.Setenv is incompatible with t.Parallel. Every
+			// jev credential variable is cleared here, so the result does not
+			// depend on the developer's shell (a gateway key in ~/.zshrc made
+			// the "without credentials" case enable the router).
+			for _, name := range []string{"TYPESAFE_API_KEY", "AI_GATEWAY_API_KEY", "JEV_API_KEY"} {
+				t.Setenv(name, "")
+			}
 			ag := NewAgent(nil, rerankReplyLLM{reply: "none"}, WithName("dec"), WithDecisionConfig(tt.cfg, nil))
 			if !tt.wantEnabled {
 				assert.Nil(t, ag.DecisionRouter())
