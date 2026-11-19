@@ -430,7 +430,7 @@ func (t *FileReadTool) executeMulti(rawPaths []interface{}, params map[string]in
 		display := filepath.ToSlash(f)
 
 		fail := func(msg string) {
-			b.WriteString(fmt.Sprintf("=== %s ===\nERROR: %s\n", display, msg))
+			fmt.Fprintf(&b, "=== %s ===\nERROR: %s\n", display, msg)
 		}
 		// A glob can expand through a symlinked directory and land outside
 		// the workspace, so every expanded file is tested, not just the
@@ -466,7 +466,7 @@ func (t *FileReadTool) executeMulti(rawPaths []interface{}, params map[string]in
 		if re != nil {
 			for i, line := range lines {
 				if re.MatchString(line) {
-					b.WriteString(fmt.Sprintf("%s:%d: %s\n", display, i+1, line))
+					fmt.Fprintf(&b, "%s:%d: %s\n", display, i+1, line)
 					matchCount++
 				}
 			}
@@ -477,9 +477,9 @@ func (t *FileReadTool) executeMulti(rawPaths []interface{}, params map[string]in
 			lines = lines[:maxLines]
 			truncated = true
 		}
-		b.WriteString(fmt.Sprintf("=== %s ===\n%s\n", display, strings.Join(lines, "\n")))
+		fmt.Fprintf(&b, "=== %s ===\n%s\n", display, strings.Join(lines, "\n"))
 		if truncated {
-			b.WriteString(fmt.Sprintf("[truncated at %d lines]\n", maxLines))
+			fmt.Fprintf(&b, "[truncated at %d lines]\n", maxLines)
 		}
 	}
 

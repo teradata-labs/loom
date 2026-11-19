@@ -451,13 +451,13 @@ func (s *SwarmOrchestrator) judgeBreakTie(ctx context.Context, config *loomv1.Sw
 
 	// Build summary of votes
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("# Decision Question\n\n%s\n\n", config.Question))
+	fmt.Fprintf(&sb, "# Decision Question\n\n%s\n\n", config.Question)
 	sb.WriteString("## All Votes\n\n")
 
 	for _, vote := range result.Votes {
-		sb.WriteString(fmt.Sprintf("**Agent %s** chose \"%s\" (confidence: %.0f%%)\n",
-			vote.AgentId, vote.Choice, vote.Confidence*100))
-		sb.WriteString(fmt.Sprintf("Reasoning: %s\n\n", vote.Reasoning))
+		fmt.Fprintf(&sb, "**Agent %s** chose \"%s\" (confidence: %.0f%%)\n",
+			vote.AgentId, vote.Choice, vote.Confidence*100)
+		fmt.Fprintf(&sb, "Reasoning: %s\n\n", vote.Reasoning)
 	}
 
 	sb.WriteString("\n## Vote Distribution\n\n")
@@ -473,7 +473,7 @@ func (s *SwarmOrchestrator) judgeBreakTie(ctx context.Context, config *loomv1.Sw
 		return counts[i].count > counts[j].count
 	})
 	for _, vc := range counts {
-		sb.WriteString(fmt.Sprintf("- %s: %d votes\n", vc.choice, vc.count))
+		fmt.Fprintf(&sb, "- %s: %d votes\n", vc.choice, vc.count)
 	}
 
 	prompt := fmt.Sprintf(`%s

@@ -130,12 +130,12 @@ func (d *Decomposer) buildPrompt(req *DecomposeRequest) string {
 	b.WriteString("Each task is a unit of cognitive work — not limited to code.\n")
 	b.WriteString("Tasks can be research, analysis, writing, decisions, reviews, investigations, or any other work.\n\n")
 
-	b.WriteString(fmt.Sprintf("Goal: %s\n", req.Goal))
+	fmt.Fprintf(&b, "Goal: %s\n", req.Goal)
 	if req.Context != "" {
-		b.WriteString(fmt.Sprintf("Context: %s\n", req.Context))
+		fmt.Fprintf(&b, "Context: %s\n", req.Context)
 	}
 	if req.ParentTask != nil {
-		b.WriteString(fmt.Sprintf("Parent task: %s (%s)\n", req.ParentTask.Title, req.ParentTask.Objective))
+		fmt.Fprintf(&b, "Parent task: %s (%s)\n", req.ParentTask.Title, req.ParentTask.Objective)
 		b.WriteString("This decomposition creates subtasks under the parent.\n")
 	}
 	b.WriteString("\n")
@@ -199,7 +199,7 @@ func (d *Decomposer) buildPrompt(req *DecomposeRequest) string {
 	b.WriteString("\n\n")
 
 	b.WriteString("Rules:\n")
-	b.WriteString(fmt.Sprintf("- Keep decomposition depth within %d levels\n", req.MaxDepth))
+	fmt.Fprintf(&b, "- Keep decomposition depth within %d levels\n", req.MaxDepth)
 	b.WriteString("- Each task must have a clear, verifiable objective\n")
 	b.WriteString("- Dependencies must be acyclic (no circular references)\n")
 	b.WriteString("- Use depends_on indices, not names\n")

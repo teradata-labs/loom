@@ -269,18 +269,18 @@ func renderQueryRows(cols []string, rows []map[string]interface{}, omitted int) 
 	}
 	var b strings.Builder
 	for i, c := range cols {
-		b.WriteString(fmt.Sprintf("%-*s  ", widths[i], c))
+		fmt.Fprintf(&b, "%-*s  ", widths[i], c)
 	}
 	b.WriteString("\n")
 	for _, r := range rows {
 		for i, c := range cols {
-			b.WriteString(fmt.Sprintf("%-*s  ", widths[i], cell(r, c)))
+			fmt.Fprintf(&b, "%-*s  ", widths[i], cell(r, c))
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString(fmt.Sprintf("(%d rows)", len(rows)))
+	fmt.Fprintf(&b, "(%d rows)", len(rows))
 	if omitted > 0 {
-		b.WriteString(fmt.Sprintf(" [+%d more not shown — narrow with WHERE or aggregate]", omitted))
+		fmt.Fprintf(&b, " [+%d more not shown — narrow with WHERE or aggregate]", omitted)
 	}
 	return b.String()
 }

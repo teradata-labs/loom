@@ -363,22 +363,22 @@ func (e *SwarmExecutor) collectVote(ctx context.Context, workflowID, agentID str
 // buildCollaborativeVotingPrompt constructs a prompt with previous votes visible.
 func (e *SwarmExecutor) buildCollaborativeVotingPrompt(agentID string, voteNumber int, previousVotes []*loomv1.SwarmVote) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Cast a vote (vote #%d) on the question below, with sight of the votes already cast.\n\n", voteNumber))
-	sb.WriteString(fmt.Sprintf("Question: %s\n\n", e.pattern.Question))
+	fmt.Fprintf(&sb, "Cast a vote (vote #%d) on the question below, with sight of the votes already cast.\n\n", voteNumber)
+	fmt.Fprintf(&sb, "Question: %s\n\n", e.pattern.Question)
 	sb.WriteString(votingStandpoint)
 
 	// Include previous votes
 	if len(previousVotes) > 0 {
 		sb.WriteString("Previous votes from other agents:\n")
 		for i, vote := range previousVotes {
-			sb.WriteString(fmt.Sprintf("%d. Agent %s voted: %s (confidence: %.2f)\n", i+1, vote.AgentId, vote.Choice, vote.Confidence))
+			fmt.Fprintf(&sb, "%d. Agent %s voted: %s (confidence: %.2f)\n", i+1, vote.AgentId, vote.Choice, vote.Confidence)
 			if vote.Reasoning != "" {
 				// Truncate long reasoning
 				reasoning := vote.Reasoning
 				if len(reasoning) > 100 {
 					reasoning = reasoning[:100] + "..."
 				}
-				sb.WriteString(fmt.Sprintf("   Reasoning: %s\n", reasoning))
+				fmt.Fprintf(&sb, "   Reasoning: %s\n", reasoning)
 			}
 		}
 		sb.WriteString("\n")
@@ -405,8 +405,8 @@ const votingStandpoint = "Vote from the standpoint set out in your own instructi
 // buildVotingPrompt constructs the prompt for an agent to cast an independent vote.
 func (e *SwarmExecutor) buildVotingPrompt(agentID string, voteNumber int) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Cast an independent vote (vote #%d) on the question below.\n\n", voteNumber))
-	sb.WriteString(fmt.Sprintf("Question: %s\n\n", e.pattern.Question))
+	fmt.Fprintf(&sb, "Cast an independent vote (vote #%d) on the question below.\n\n", voteNumber)
+	fmt.Fprintf(&sb, "Question: %s\n\n", e.pattern.Question)
 	sb.WriteString(votingStandpoint)
 	sb.WriteString("Reply in exactly this format:\n\n")
 	sb.WriteString("VOTE: <your choice>\n")
@@ -719,25 +719,25 @@ func (e *SwarmExecutor) invokeJudge(ctx context.Context, judge *agent.Agent, ses
 	// Build prompt for judge
 	var sb strings.Builder
 	sb.WriteString("Break the tie in this swarm vote.\n\n")
-	sb.WriteString(fmt.Sprintf("Question: %s\n\n", e.pattern.Question))
+	fmt.Fprintf(&sb, "Question: %s\n\n", e.pattern.Question)
 	sb.WriteString("Vote distribution (tied):\n")
 
 	// Show tied options
 	for choice, count := range distribution {
-		sb.WriteString(fmt.Sprintf("- %s: %d votes\n", choice, count))
+		fmt.Fprintf(&sb, "- %s: %d votes\n", choice, count)
 	}
 	sb.WriteString("\n")
 
 	// Show all votes with reasoning
 	sb.WriteString("Individual votes:\n")
 	for i, vote := range votes {
-		sb.WriteString(fmt.Sprintf("%d. %s (confidence: %.2f)\n", i+1, vote.Choice, vote.Confidence))
+		fmt.Fprintf(&sb, "%d. %s (confidence: %.2f)\n", i+1, vote.Choice, vote.Confidence)
 		if vote.Reasoning != "" {
 			reasoning := vote.Reasoning
 			if len(reasoning) > 150 {
 				reasoning = reasoning[:150] + "..."
 			}
-			sb.WriteString(fmt.Sprintf("   Reasoning: %s\n", reasoning))
+			fmt.Fprintf(&sb, "   Reasoning: %s\n", reasoning)
 		}
 	}
 	sb.WriteString("\n")
@@ -790,12 +790,12 @@ func (e *SwarmExecutor) invokeJudge(ctx context.Context, judge *agent.Agent, ses
 // generateConsensusAnalysis creates a summary of the voting results.
 func (e *SwarmExecutor) generateConsensusAnalysis(votes []*loomv1.SwarmVote, distribution map[string]int32, decision string) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Swarm voting completed with %d agents.\n", len(votes)))
-	sb.WriteString(fmt.Sprintf("Winning decision: %s\n\n", decision))
+	fmt.Fprintf(&sb, "Swarm voting completed with %d agents.\n", len(votes))
+	fmt.Fprintf(&sb, "Winning decision: %s\n\n", decision)
 	sb.WriteString("Vote distribution:\n")
 	for choice, count := range distribution {
 		percentage := float32(count) / float32(len(votes)) * 100
-		sb.WriteString(fmt.Sprintf("  - %s: %d votes (%.1f%%)\n", choice, count, percentage))
+		fmt.Fprintf(&sb, "  - %s: %d votes (%.1f%%)\n", choice, count, percentage)
 	}
 	return sb.String()
 }
@@ -918,8 +918,8 @@ func (e *SwarmExecutor) buildVoteRetryPrompt(previousOutput string, attempt, max
 		sb.WriteString("CONFIDENCE: 0.85\n")
 		sb.WriteString("REASONING: Option A best addresses the core issue because...\n\n")
 	}
-	sb.WriteString(fmt.Sprintf("QUESTION BEING VOTED ON:\n%s\n\n", e.pattern.Question))
-	sb.WriteString(fmt.Sprintf("This is retry %d of %d. Please respond in the exact format above.\n", attempt, maxRetries))
+	fmt.Fprintf(&sb, "QUESTION BEING VOTED ON:\n%s\n\n", e.pattern.Question)
+	fmt.Fprintf(&sb, "This is retry %d of %d. Please respond in the exact format above.\n", attempt, maxRetries)
 
 	return sb.String()
 }
@@ -989,13 +989,13 @@ func (e *SwarmExecutor) retryJudge(
 // buildJudgeRetryPrompt constructs a retry prompt for the judge that lists valid options.
 func (e *SwarmExecutor) buildJudgeRetryPrompt(distribution map[string]int32, previousDecision string, attempt, maxRetries int) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Your previous response %q does not match any of the available options.\n\n", previousDecision))
+	fmt.Fprintf(&sb, "Your previous response %q does not match any of the available options.\n\n", previousDecision)
 	sb.WriteString("VALID OPTIONS (pick exactly one):\n")
 	for choice := range distribution {
-		sb.WriteString(fmt.Sprintf("- %s\n", choice))
+		fmt.Fprintf(&sb, "- %s\n", choice)
 	}
 	sb.WriteString("\nPlease respond with exactly one of the options above and nothing else.\n")
-	sb.WriteString(fmt.Sprintf("This is retry %d of %d.\n", attempt, maxRetries))
+	fmt.Fprintf(&sb, "This is retry %d of %d.\n", attempt, maxRetries)
 	return sb.String()
 }
 

@@ -599,7 +599,7 @@ func (e *PipelineExecutor) buildSharedMemoryContextHeader(stageCount int) string
 	b.WriteString("Use `shared_memory_read(namespace=\"workflow\", key=\"stage-N-output\")` to fetch any stage's complete output (use this if a stage's input below looks truncated).\n\n")
 	b.WriteString("Available keys:\n")
 	for i := 1; i <= stageCount; i++ {
-		b.WriteString(fmt.Sprintf("- `stage-%d-output`\n", i))
+		fmt.Fprintf(&b, "- `stage-%d-output`\n", i)
 	}
 	b.WriteString("\n---\n\n")
 	return b.String()
@@ -659,7 +659,7 @@ func (e *PipelineExecutor) buildHistoryString(outputs []string) string {
 
 	var builder strings.Builder
 	for i, output := range outputs {
-		builder.WriteString(fmt.Sprintf("Stage %d output:\n%s\n\n", i+1, output))
+		fmt.Fprintf(&builder, "Stage %d output:\n%s\n\n", i+1, output)
 	}
 	return builder.String()
 }
@@ -1160,7 +1160,7 @@ func (e *PipelineExecutor) retryStage(
 func (e *PipelineExecutor) buildStageRetryPrompt(originalPrompt, failedOutput, validationFailure, schema string, includeValidValues bool, attempt, maxRetries int) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("⚠️ OUTPUT VALIDATION FAILED (retry %d of %d)\n\n", attempt, maxRetries))
+	fmt.Fprintf(&sb, "⚠️ OUTPUT VALIDATION FAILED (retry %d of %d)\n\n", attempt, maxRetries)
 
 	// Show failed output (truncated)
 	truncated := failedOutput

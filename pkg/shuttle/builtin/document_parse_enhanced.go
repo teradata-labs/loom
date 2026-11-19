@@ -399,13 +399,13 @@ func generateTeradataDDL(database string, tableName string, columnStats []Column
 	var ddl strings.Builder
 	var recommendations []string
 
-	ddl.WriteString(fmt.Sprintf("CREATE TABLE %s.%s (\n", database, tableName))
+	fmt.Fprintf(&ddl, "CREATE TABLE %s.%s (\n", database, tableName)
 
 	for i, stats := range columnStats {
 		mapping := inferTeradataType(stats)
 
 		// Column definition
-		ddl.WriteString(fmt.Sprintf("  %s %s", stats.Name, mapping.TeradataType))
+		fmt.Fprintf(&ddl, "  %s %s", stats.Name, mapping.TeradataType)
 
 		// NULL constraint
 		if !mapping.Nullable {
@@ -414,7 +414,7 @@ func generateTeradataDDL(database string, tableName string, columnStats []Column
 
 		// Default value
 		if mapping.DefaultValue != "" {
-			ddl.WriteString(fmt.Sprintf(" DEFAULT %s", mapping.DefaultValue))
+			fmt.Fprintf(&ddl, " DEFAULT %s", mapping.DefaultValue)
 		}
 
 		// Comma
@@ -449,7 +449,7 @@ func generateTeradataDDL(database string, tableName string, columnStats []Column
 	// Add PRIMARY INDEX suggestion (use first non-null column)
 	for _, stats := range columnStats {
 		if stats.NullPercentage == 0 {
-			ddl.WriteString(fmt.Sprintf("\nPRIMARY INDEX (%s)", stats.Name))
+			fmt.Fprintf(&ddl, "\nPRIMARY INDEX (%s)", stats.Name)
 			break
 		}
 	}

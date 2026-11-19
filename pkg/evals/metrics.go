@@ -255,28 +255,28 @@ func CompareEvalResults(baseline *loomv1.EvalResult, candidate *loomv1.EvalResul
 func FormatEvalResult(result *loomv1.EvalResult) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("Eval Suite: %s\n", result.SuiteName))
-	sb.WriteString(fmt.Sprintf("Agent: %s\n", result.AgentId))
-	sb.WriteString(fmt.Sprintf("Run At: %s\n", result.RunAt.AsTime().Format(time.RFC3339)))
-	sb.WriteString(fmt.Sprintf("Status: %s\n", map[bool]string{true: "✓ PASSED", false: "✗ FAILED"}[result.Passed]))
+	fmt.Fprintf(&sb, "Eval Suite: %s\n", result.SuiteName)
+	fmt.Fprintf(&sb, "Agent: %s\n", result.AgentId)
+	fmt.Fprintf(&sb, "Run At: %s\n", result.RunAt.AsTime().Format(time.RFC3339))
+	fmt.Fprintf(&sb, "Status: %s\n", map[bool]string{true: "✓ PASSED", false: "✗ FAILED"}[result.Passed])
 	sb.WriteString("\n")
 
 	// Overall metrics
 	sb.WriteString("Overall Metrics:\n")
-	sb.WriteString(fmt.Sprintf("  Tests: %d total, %d passed, %d failed\n",
+	fmt.Fprintf(&sb, "  Tests: %d total, %d passed, %d failed\n",
 		result.Overall.TotalTests,
 		result.Overall.PassedTests,
-		result.Overall.FailedTests))
-	sb.WriteString(fmt.Sprintf("  Accuracy: %.2f%%\n", result.Overall.Accuracy*100))
-	sb.WriteString(fmt.Sprintf("  Total Cost: $%.4f\n", result.Overall.TotalCostUsd))
-	sb.WriteString(fmt.Sprintf("  Total Latency: %dms\n", result.Overall.TotalLatencyMs))
-	sb.WriteString(fmt.Sprintf("  Tool Calls: %d\n", result.Overall.TotalToolCalls))
+		result.Overall.FailedTests)
+	fmt.Fprintf(&sb, "  Accuracy: %.2f%%\n", result.Overall.Accuracy*100)
+	fmt.Fprintf(&sb, "  Total Cost: $%.4f\n", result.Overall.TotalCostUsd)
+	fmt.Fprintf(&sb, "  Total Latency: %dms\n", result.Overall.TotalLatencyMs)
+	fmt.Fprintf(&sb, "  Tool Calls: %d\n", result.Overall.TotalToolCalls)
 
 	// Custom metrics
 	if len(result.Overall.CustomMetrics) > 0 {
 		sb.WriteString("\n  Custom Metrics:\n")
 		for name, value := range result.Overall.CustomMetrics {
-			sb.WriteString(fmt.Sprintf("    %s: %.2f\n", name, value))
+			fmt.Fprintf(&sb, "    %s: %.2f\n", name, value)
 		}
 	}
 
@@ -284,19 +284,19 @@ func FormatEvalResult(result *loomv1.EvalResult) string {
 	sb.WriteString("\nTest Results:\n")
 	for i, testResult := range result.TestResults {
 		status := map[bool]string{true: "✓", false: "✗"}[testResult.Passed]
-		sb.WriteString(fmt.Sprintf("  %s %s (%.2fs, $%.4f)\n",
+		fmt.Fprintf(&sb, "  %s %s (%.2fs, $%.4f)\n",
 			status,
 			testResult.TestName,
 			float64(testResult.LatencyMs)/1000.0,
-			testResult.CostUsd))
+			testResult.CostUsd)
 
 		if !testResult.Passed {
-			sb.WriteString(fmt.Sprintf("    Reason: %s\n", testResult.FailureReason))
+			fmt.Fprintf(&sb, "    Reason: %s\n", testResult.FailureReason)
 		}
 
 		// Only show details for first 5 tests to avoid clutter
 		if i >= 4 && len(result.TestResults) > 5 {
-			sb.WriteString(fmt.Sprintf("  ... and %d more tests\n", len(result.TestResults)-5))
+			fmt.Fprintf(&sb, "  ... and %d more tests\n", len(result.TestResults)-5)
 			break
 		}
 	}

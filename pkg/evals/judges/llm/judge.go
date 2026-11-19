@@ -188,10 +188,10 @@ func (j *Judge) buildJudgePromptHardcoded(evidence *Evidence) string {
 	// Execution result
 	sb.WriteString("## EXECUTION RESULT\n")
 	if evidence.Success {
-		sb.WriteString(fmt.Sprintf("✓ Success (execution time: %dms, model: %s)\n\n", evidence.ExecutionTime, evidence.Model))
+		fmt.Fprintf(&sb, "✓ Success (execution time: %dms, model: %s)\n\n", evidence.ExecutionTime, evidence.Model)
 	} else {
-		sb.WriteString(fmt.Sprintf("✗ Failed (execution time: %dms, model: %s)\n", evidence.ExecutionTime, evidence.Model))
-		sb.WriteString(fmt.Sprintf("Error: %s\n\n", evidence.ErrorMessage))
+		fmt.Fprintf(&sb, "✗ Failed (execution time: %dms, model: %s)\n", evidence.ExecutionTime, evidence.Model)
+		fmt.Fprintf(&sb, "Error: %s\n\n", evidence.ErrorMessage)
 	}
 
 	// Agent's response

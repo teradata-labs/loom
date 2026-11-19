@@ -397,9 +397,9 @@ func (e *ParallelExecutor) mergeResults(ctx context.Context, results []*loomv1.A
 			// Try to use task metadata for labeling
 			taskIndex := result.Metadata["task_index"]
 			if taskIndex != "" {
-				builder.WriteString(fmt.Sprintf("=== Task %s (Agent %s) ===\n", taskIndex, result.AgentId))
+				fmt.Fprintf(&builder, "=== Task %s (Agent %s) ===\n", taskIndex, result.AgentId)
 			} else {
-				builder.WriteString(fmt.Sprintf("=== Agent %s ===\n", result.AgentId))
+				fmt.Fprintf(&builder, "=== Agent %s ===\n", result.AgentId)
 			}
 			builder.WriteString(result.Output)
 			if i < len(results)-1 {
@@ -478,8 +478,8 @@ func (e *ParallelExecutor) buildConsensusPrompt(results []*loomv1.AgentResult) s
 	builder.WriteString("The following agents completed independent tasks:\n\n")
 
 	for i, result := range results {
-		builder.WriteString(fmt.Sprintf("Task %d (Agent %s):\n%s\n\n",
-			i+1, result.AgentId, result.Output))
+		fmt.Fprintf(&builder, "Task %d (Agent %s):\n%s\n\n",
+			i+1, result.AgentId, result.Output)
 	}
 
 	builder.WriteString("Synthesize these results into a consensus view that incorporates the key points from each task.")
@@ -492,7 +492,7 @@ func (e *ParallelExecutor) buildVotingPrompt(results []*loomv1.AgentResult) stri
 	builder.WriteString("Review these task results and select the most valuable contribution:\n\n")
 
 	for i, result := range results {
-		builder.WriteString(fmt.Sprintf("Option %d:\n%s\n\n", i+1, result.Output))
+		fmt.Fprintf(&builder, "Option %d:\n%s\n\n", i+1, result.Output)
 	}
 
 	builder.WriteString("Identify which option is most valuable and explain why.")
@@ -505,7 +505,7 @@ func (e *ParallelExecutor) buildSummaryPrompt(results []*loomv1.AgentResult) str
 	builder.WriteString("Summarize these independent task results concisely:\n\n")
 
 	for i, result := range results {
-		builder.WriteString(fmt.Sprintf("Task %d: %s\n\n", i+1, result.Output))
+		fmt.Fprintf(&builder, "Task %d: %s\n\n", i+1, result.Output)
 	}
 
 	builder.WriteString("Provide a concise summary highlighting key findings across all tasks.")
@@ -518,7 +518,7 @@ func (e *ParallelExecutor) buildBestPrompt(results []*loomv1.AgentResult) string
 	builder.WriteString("Evaluate these task results and select the highest quality one:\n\n")
 
 	for i, result := range results {
-		builder.WriteString(fmt.Sprintf("Result %d:\n%s\n\n", i+1, result.Output))
+		fmt.Fprintf(&builder, "Result %d:\n%s\n\n", i+1, result.Output)
 	}
 
 	builder.WriteString("Select and return the best result based on quality, completeness, and insight.")

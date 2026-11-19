@@ -234,7 +234,7 @@ func formatRestartFeedback(req *loomv1.RestartRequest) string {
 		sort.Strings(keys)
 		b.WriteString("\n\nParameters:")
 		for _, k := range keys {
-			b.WriteString(fmt.Sprintf("\n- %s: %s", k, req.Parameters[k]))
+			fmt.Fprintf(&b, "\n- %s: %s", k, req.Parameters[k])
 		}
 	}
 	return b.String()
