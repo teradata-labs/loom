@@ -733,11 +733,17 @@ func (c *Client) convertResponse(resp *bedrockResponse, nameMap map[string]strin
 			TotalTokens:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
 			CostUSD: c.calculateCost(resp.Usage.InputTokens, resp.Usage.OutputTokens,
 				resp.Usage.CacheReadInputTokens, resp.Usage.CacheCreationInputTokens),
+			CacheReadInputTokens:     resp.Usage.CacheReadInputTokens,
+			CacheCreationInputTokens: resp.Usage.CacheCreationInputTokens,
 		},
 		Metadata: map[string]interface{}{
 			"model":       c.modelID,
 			"stop_reason": resp.StopReason,
 		},
+	}
+	if cc := resp.Usage.CacheCreation; cc != nil {
+		llmResp.Usage.CacheCreation1hInputTokens = cc.Ephemeral1hInputTokens
+		llmResp.Usage.CacheCreation5mInputTokens = cc.Ephemeral5mInputTokens
 	}
 
 	// Extract content and tool calls
@@ -830,6 +836,12 @@ type bedrockUsage struct {
 	// must be parsed to cost the call correctly.
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	// CacheCreation splits the cache write by entry lifetime, as the
+	// Anthropic Messages body on InvokeModel reports it; nil when absent.
+	CacheCreation *struct {
+		Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
+		Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens"`
+	} `json:"cache_creation,omitempty"`
 }
 
 // bedrockStreamChunk represents a chunk from Bedrock's streaming response.

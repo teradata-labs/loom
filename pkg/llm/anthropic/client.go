@@ -622,6 +622,7 @@ func (c *Client) convertTools(ctx context.Context, tools []shuttle.Tool, nameMap
 
 // convertResponse converts Anthropic response to agent format.
 func (c *Client) convertResponse(resp *MessagesResponse, nameMap map[string]string) *llmtypes.LLMResponse {
+	oneHour, fiveMin := resp.Usage.cacheSplit()
 	llmResp := &llmtypes.LLMResponse{
 		StopReason: resp.StopReason,
 		Usage: llmtypes.Usage{
@@ -631,6 +632,9 @@ func (c *Client) convertResponse(resp *MessagesResponse, nameMap map[string]stri
 			CostUSD:                  c.calculateCost(resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Usage.CacheReadInputTokens, resp.Usage.CacheCreationInputTokens),
 			CacheReadInputTokens:     resp.Usage.CacheReadInputTokens,
 			CacheCreationInputTokens: resp.Usage.CacheCreationInputTokens,
+
+			CacheCreation1hInputTokens: oneHour,
+			CacheCreation5mInputTokens: fiveMin,
 		},
 		Metadata: map[string]interface{}{
 			"model":       resp.Model,
@@ -937,6 +941,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 					usage.InputTokens = event.Message.Usage.InputTokens
 					usage.CacheReadInputTokens = event.Message.Usage.CacheReadInputTokens
 					usage.CacheCreationInputTokens = event.Message.Usage.CacheCreationInputTokens
+					usage.CacheCreation1hInputTokens, usage.CacheCreation5mInputTokens = event.Message.Usage.cacheSplit()
 				}
 
 			case "message_delta":
@@ -961,6 +966,9 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 					}
 					if event.Usage.CacheCreationInputTokens > 0 {
 						usage.CacheCreationInputTokens = event.Usage.CacheCreationInputTokens
+					}
+					if oneHour, fiveMin := event.Usage.cacheSplit(); oneHour+fiveMin > 0 {
+						usage.CacheCreation1hInputTokens, usage.CacheCreation5mInputTokens = oneHour, fiveMin
 					}
 				}
 			}

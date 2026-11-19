@@ -206,6 +206,26 @@ type Usage struct {
 	OutputTokens             int `json:"output_tokens"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	// CacheCreation splits CacheCreationInputTokens by how long the cache
+	// entry lives. The API sends it with the cache totals; nil when absent.
+	CacheCreation *CacheCreation `json:"cache_creation,omitempty"`
+}
+
+// CacheCreation is the API's split of the cache write by entry lifetime.
+// convertResponse and the streaming reader copy it into
+// llmtypes.Usage.CacheCreation1hInputTokens and CacheCreation5mInputTokens.
+type CacheCreation struct {
+	Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
+	Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens"`
+}
+
+// cacheSplit returns the 1h and 5m parts of the cache write, 0 and 0 when
+// the API sent no split.
+func (u *Usage) cacheSplit() (oneHour, fiveMin int) {
+	if u == nil || u.CacheCreation == nil {
+		return 0, 0
+	}
+	return u.CacheCreation.Ephemeral1hInputTokens, u.CacheCreation.Ephemeral5mInputTokens
 }
 
 // StreamStartMessage is the message object in a message_start SSE event.

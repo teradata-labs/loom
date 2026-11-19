@@ -238,14 +238,18 @@ type Usage struct {
 	CacheCreationInputTokens int
 	// CacheCreation1hInputTokens and CacheCreation5mInputTokens split the cache
 	// write by how long the entry lives, as the provider reports it; both 0
-	// when it does not.
+	// when it does not. The Anthropic client, the Bedrock SDK client and the
+	// Bedrock InvokeModel non-streaming path fill them; Bedrock Converse, the
+	// InvokeModel streaming path and the OpenAI-shaped and Gemini clients do
+	// not (no split is reported, or the API has no cache-write lifetime).
 	CacheCreation1hInputTokens int
 	CacheCreation5mInputTokens int
 	// ThinkingTokens is the part of OutputTokens the model spent thinking, as
-	// the provider reports it; 0 when it does not.
+	// the provider reports it; 0 when it does not. Only the Bedrock SDK
+	// client fills it.
 	ThinkingTokens int
 	// Effort is the effort the call was made at; empty when the provider has
-	// no such setting.
+	// no such setting. Only the Bedrock SDK client fills it.
 	Effort string
 	// RateLimitTokens is the figure capacity accounting charges for this call
 	// when it differs from TotalTokens. The OpenAI-compatible and Gemini clients
