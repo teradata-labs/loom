@@ -563,3 +563,24 @@ func setNested(m map[string]any, dotted, v string) {
 	}
 	child[leaf] = v
 }
+
+// byokSecrets returns the values of every secret BYOK field (as resolved with
+// getenv), so a client can redact them from errors. Empty values are skipped.
+func (r *Routing) byokSecrets(getenv func(string) string) []string {
+	if r == nil {
+		return nil
+	}
+	var out []string
+	for _, c := range r.BYOK {
+		c = c.canonical()
+		fields := byokFields[c.Provider]
+		for name, envVar := range c.Env {
+			if f, ok := fields[name]; ok && f.secret {
+				if v := strings.TrimSpace(getenv(envVar)); v != "" {
+					out = append(out, v)
+				}
+			}
+		}
+	}
+	return out
+}

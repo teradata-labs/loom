@@ -263,6 +263,7 @@ type Client struct {
 	baseURL     string
 	surface     string
 	callTimeout time.Duration // 0 = no overall cap on a model call
+	secrets     []string      // BYOK secret values, redacted from every error
 	inner       types.StreamingLLMProvider
 	health      *http.Client
 	auth        func(*http.Request) error
@@ -370,7 +371,8 @@ func NewClient(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &Client{model: cfg.Model, baseURL: baseURL, auth: auth, callTimeout: callTimeout}
+	c := &Client{model: cfg.Model, baseURL: baseURL, auth: auth, callTimeout: callTimeout,
+		secrets: cfg.Routing.byokSecrets(os.Getenv)}
 
 	c.surface = surfaceFor(cfg.API, cfg.Model)
 	switch c.surface {
@@ -535,7 +537,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []types.Message, tools
 
 func (c *Client) finish(resp *types.LLMResponse, err error) (*types.LLMResponse, error) {
 	if err != nil {
-		return nil, classifyError(err)
+		return nil, redactSecrets(classifyError(err), c.secrets)
 	}
 	if resp != nil {
 		if resp.Metadata == nil {
@@ -675,3 +677,32 @@ var (
 	_ types.StreamingLLMProvider = (*Client)(nil)
 	_ llmtypes.HealthChecker     = (*Client)(nil)
 )
+
+// redactedError carries an error whose message had BYOK secrets removed. A
+// gateway or upstream error body that echoes the request would otherwise put
+// a request-scoped key into logs and RPC replies. errors.Is and errors.As
+// still see the original chain.
+type redactedError struct {
+	msg string
+	err error
+}
+
+func (e *redactedError) Error() string { return e.msg }
+func (e *redactedError) Unwrap() error { return e.err }
+
+// redactSecrets replaces every secret in err's message with [REDACTED]; err
+// is returned as is when none appears.
+func redactSecrets(err error, secrets []string) error {
+	if err == nil || len(secrets) == 0 {
+		return err
+	}
+	msg := err.Error()
+	redacted := msg
+	for _, s := range secrets {
+		redacted = strings.ReplaceAll(redacted, s, "[REDACTED]")
+	}
+	if redacted == msg {
+		return err
+	}
+	return &redactedError{msg: redacted, err: err}
+}

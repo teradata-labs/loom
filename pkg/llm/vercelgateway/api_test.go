@@ -15,6 +15,7 @@
 package vercelgateway
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -25,6 +26,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
@@ -179,4 +181,25 @@ func TestGatewaySessionIDIsSalted(t *testing.T) {
 	assert.NotEqual(t, hex.EncodeToString(unsalted[:16]), got)
 	assert.NotEqual(t, hex.EncodeToString(plain[:16]), got)
 	assert.Equal(t, got, gatewaySessionID("sess-abc"), "stable within the process")
+}
+
+// An error body that echoes the request (a gateway or upstream 400 quoting
+// its input) must not carry a BYOK key into logs.
+func TestClient_BYOKSecretIsRedactedFromErrors(t *testing.T) {
+	const secret = "sk-ant-api03-fake-byok-value-for-redaction-test" // fake, test only
+	t.Setenv("LOOM_BYOK_REDACT_TEST", secret)
+	g := &gateway{handler: func(w http.ResponseWriter, _ *http.Request, raw []byte) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write(append([]byte(`{"error":{"type":"invalid_request_error","message":"bad request: `), append(bytes.ReplaceAll(raw, []byte(`"`), []byte(`'`)), []byte(`"}}`)...)...))
+	}}
+	c := newTestClient(t, g.start(t).URL, "openai/gpt-5", func(cfg *Config) {
+		cfg.Routing = &Routing{BYOK: []BYOKCredential{{Provider: "openai", Env: map[string]string{"apiKey": "LOOM_BYOK_REDACT_TEST"}}}}
+	})
+	_, err := c.Chat(context.Background(), hi, nil)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), secret)
+	assert.Contains(t, err.Error(), "[REDACTED]", "the echo is still visible, without the key")
+	var sc llm.HTTPStatusCoder
+	require.ErrorAs(t, err, &sc, "the status survives redaction")
+	assert.Equal(t, http.StatusBadRequest, sc.HTTPStatusCode())
 }
