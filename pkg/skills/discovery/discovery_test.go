@@ -61,7 +61,7 @@ func TestDiscovery_DisabledConfig_ReturnsNothing(t *testing.T) {
 	d := New(lib, r)
 
 	got, err := d.Discover(context.Background(), "s", "msg",
-		&skills.SkillsConfig{Enabled: false, EnabledSkills: []string{"a"}})
+		&skills.SkillsConfig{Enabled: false, EnabledSkills: []string{"a"}}) //nolint:staticcheck // SA1019: a legacy list must not enable a disabled config
 	require.NoError(t, err)
 	assert.Empty(t, got)
 }
@@ -350,14 +350,14 @@ func TestConfigFingerprint_StableOrderInsensitive(t *testing.T) {
 	a := &skills.SkillsConfig{
 		Enabled:        true,
 		Bindings:       []skills.SkillBinding{{Name: "x"}, {Name: "y"}},
-		EnabledSkills:  []string{"a", "b"},
-		DisabledSkills: []string{"c"},
+		EnabledSkills:  []string{"a", "b"}, //nolint:staticcheck // SA1019: the fingerprint must cover the legacy lists
+		DisabledSkills: []string{"c"},      //nolint:staticcheck // SA1019: as above
 	}
 	b := &skills.SkillsConfig{
 		Enabled:        true,
 		Bindings:       []skills.SkillBinding{{Name: "x"}, {Name: "y"}},
-		EnabledSkills:  []string{"b", "a"},
-		DisabledSkills: []string{"c"},
+		EnabledSkills:  []string{"b", "a"}, //nolint:staticcheck // SA1019: the fingerprint must cover the legacy lists
+		DisabledSkills: []string{"c"},      //nolint:staticcheck // SA1019: as above
 	}
 	assert.Equal(t, configFingerprint(a), configFingerprint(b),
 		"fingerprint must ignore EnabledSkills order")
