@@ -38,7 +38,14 @@ type StdioTransport struct {
 	mu     sync.Mutex
 	closed bool
 	logger *zap.Logger
+
+	// closeGrace is how long Close waits for the server to exit after its
+	// stdin closes, before it kills the process.
+	closeGrace time.Duration
 }
+
+// stdioCloseGrace is the default for StdioTransport.closeGrace.
+const stdioCloseGrace = 5 * time.Second
 
 // StdioConfig configures the stdio transport
 type StdioConfig struct {
@@ -108,6 +115,8 @@ func NewStdioTransport(config StdioConfig) (*StdioTransport, error) {
 		stderr: stderr,
 		reader: reader,
 		logger: config.Logger,
+
+		closeGrace: stdioCloseGrace,
 	}
 
 	// Monitor stderr in background
@@ -250,16 +259,17 @@ func (s *StdioTransport) Close() error {
 		} else {
 			s.logger.Info("MCP server exited cleanly")
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(s.closeGrace):
 		// Timeout - force kill
 		s.logger.Warn("MCP server did not exit cleanly, killing process")
 		if err := s.cmd.Process.Kill(); err != nil {
 			s.logger.Error("failed to kill process", zap.Error(err))
 		}
 		// Wait reports how the killed process ended ("signal: killed" is the
-		// expected value); keep it in the log so an unexpected exit is traceable.
+		// expected value). Logged at Info, the level a default install shows,
+		// so an unexpected exit is traceable next to the warning above.
 		if waitErr := <-done; waitErr != nil {
-			s.logger.Debug("MCP server exit status after kill", zap.Error(waitErr))
+			s.logger.Info("MCP server exit status after kill", zap.Error(waitErr))
 		}
 	}
 

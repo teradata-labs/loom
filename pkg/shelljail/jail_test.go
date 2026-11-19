@@ -166,6 +166,24 @@ func TestSelfTest_FailsWhenTheBinaryIsNotAJail(t *testing.T) {
 	assert.Contains(t, err.Error(), "shelljail.Main()")
 }
 
+// A binary that never answers is killed when the deadline passes, and the
+// error says how the killed child ended.
+func TestSelfTest_TimeoutReportsHowTheKilledChildEnded(t *testing.T) {
+	hang := filepath.Join(t.TempDir(), "hang.sh")
+	require.NoError(t, os.WriteFile(hang, []byte("#!/bin/sh\nexec sleep 60\n"), 0o700)) // #nosec G306 -- a test script must be executable
+	f := newFixture(t, func(c *Config) { c.Executable = hang })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := f.r.SelfTest(ctx)
+	require.Error(t, err)
+	assert.Less(t, time.Since(start), 30*time.Second, "the hung child must be killed, not waited for")
+	assert.Contains(t, err.Error(), "did not answer within")
+	assert.Contains(t, err.Error(), "after kill: signal: killed")
+	assert.Contains(t, err.Error(), "shelljail.Main()")
+}
+
 type corpusCase struct {
 	cmd     string
 	grant   *shellpolicy.Grant
