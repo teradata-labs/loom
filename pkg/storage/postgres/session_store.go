@@ -184,24 +184,14 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*agen
 			}
 		}
 
-		// Load messages within the same transaction
-		rows, err := tx.Query(ctx, `
-		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, model, effort, cache_create_1h_tokens, cache_create_5m_tokens, thinking_tokens, evicted, folded, turn
-		FROM messages
-		WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL AND folded = FALSE
-		ORDER BY id ASC`,
-			sessionID, userID,
-		)
+		// Load messages within the same transaction, through the same read
+		// as LoadMessages: the agent restores a session from here
+		// (Memory.GetOrCreateSessionWithAgent), so the calls whose results
+		// a fold removed must be removed here too.
+		messages, err := loadLiveMessages(ctx, tx, sessionID, userID)
 		if err != nil {
 			span.RecordError(err)
-			return fmt.Errorf("failed to load messages: %w", err)
-		}
-		defer rows.Close()
-
-		messages, err := scanMessages(rows)
-		if err != nil {
-			span.RecordError(err)
-			return fmt.Errorf("failed to load messages: %w", err)
+			return err
 		}
 		// Set UserID on each message from the known user context
 		for i := range messages {
@@ -466,60 +456,70 @@ func (s *SessionStore) LoadMessages(ctx context.Context, sessionID string) ([]ag
 
 	var messages []agent.Message
 	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		userID := UserIDFromContext(ctx)
-		rows, err := tx.Query(ctx, `
-		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, model, effort, cache_create_1h_tokens, cache_create_5m_tokens, thinking_tokens, evicted, folded, turn
-		FROM messages
-		WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL AND folded = FALSE
-		ORDER BY id ASC`,
-			sessionID, userID,
-		)
+		var err error
+		messages, err = loadLiveMessages(ctx, tx, sessionID, UserIDFromContext(ctx))
 		if err != nil {
 			span.RecordError(err)
-			return fmt.Errorf("failed to load messages: %w", err)
 		}
-		defer rows.Close()
-
-		messages, err = scanMessages(rows)
-		if err != nil {
-			return err
-		}
-		rows.Close()
-
-		// A call with no result among the loaded rows either never finished
-		// or had its result folded. The folded flag says which: a folded
-		// result's call was removed by the fold, and is removed here too.
-		orphans := agent.CallsWithoutResult(messages)
-		if len(orphans) == 0 {
-			return nil
-		}
-		foldedRows, err := tx.Query(ctx,
-			`SELECT tool_use_id FROM messages
-			 WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL AND folded = TRUE AND tool_use_id = ANY($3)`,
-			sessionID, userID, orphans,
-		)
-		if err != nil {
-			span.RecordError(err)
-			return fmt.Errorf("failed to query folded results: %w", err)
-		}
-		defer foldedRows.Close()
-		folded := make(map[string]bool)
-		for foldedRows.Next() {
-			var id string
-			if err := foldedRows.Scan(&id); err != nil {
-				return fmt.Errorf("failed to scan folded result: %w", err)
-			}
-			folded[id] = true
-		}
-		if err := foldedRows.Err(); err != nil {
-			return err
-		}
-		agent.DropFoldedCalls(messages, folded)
-		return nil
+		return err
 	})
 	if err != nil {
 		return nil, err
 	}
+	return messages, nil
+}
+
+// loadLiveMessages reads a session's live (not deleted, not folded) messages
+// in id order and removes the tool calls whose results a fold removed. It is
+// the one message read behind LoadMessages and LoadSession, so both return
+// what the fold left in memory.
+func loadLiveMessages(ctx context.Context, tx pgx.Tx, sessionID, userID string) ([]agent.Message, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, model, effort, cache_create_1h_tokens, cache_create_5m_tokens, thinking_tokens, evicted, folded, turn
+		FROM messages
+		WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL AND folded = FALSE
+		ORDER BY id ASC`,
+		sessionID, userID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load messages: %w", err)
+	}
+	defer rows.Close()
+
+	messages, err := scanMessages(rows)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load messages: %w", err)
+	}
+	rows.Close()
+
+	// A call with no result among the loaded rows either never finished or
+	// had its result folded. The folded flag says which: a folded result's
+	// call was removed by the fold, and is removed here too.
+	orphans := agent.CallsWithoutResult(messages)
+	if len(orphans) == 0 {
+		return messages, nil
+	}
+	foldedRows, err := tx.Query(ctx,
+		`SELECT tool_use_id FROM messages
+		 WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL AND folded = TRUE AND tool_use_id = ANY($3)`,
+		sessionID, userID, orphans,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query folded results: %w", err)
+	}
+	defer foldedRows.Close()
+	folded := make(map[string]bool)
+	for foldedRows.Next() {
+		var id string
+		if err := foldedRows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("failed to scan folded result: %w", err)
+		}
+		folded[id] = true
+	}
+	if err := foldedRows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read folded results: %w", err)
+	}
+	agent.DropFoldedCalls(messages, folded)
 	return messages, nil
 }
 
