@@ -1,6 +1,6 @@
 # Go 1.27 and `encoding/json/v2` migration plan
 
-**Status**: 🚧 In Development. Phase 1a (linter upgrade) is done on branch `chore/golangci-lint-v2.15.0`; Phases 1b–5 are 📋 Planned. Trial measurements in §2 and §3 were taken on 2026-11-18 with Go 1.27.4 against the working tree, using a scratch copy of `go.mod`.
+**Status**: 🚧 In Development. Phase 1a (linter upgrade) is ⚠️ Partial: the code is on branch `chore/golangci-lint-v2.15.0`, and its exit criterion is not yet met: `just check` stops at `just vet` on `main` until PR #681 merges. Phases 1b–5 are 📋 Planned. Trial measurements in §2 and §3 were taken on 2026-11-18 with Go 1.27.4 against the working tree, using a scratch copy of `go.mod`.
 **Owner**: Ilsun Park
 **Scope**: Move loom from Go 1.26.7 to Go 1.27.4, then move loom's JSON code from the `encoding/json` (v1) API to `encoding/json/v2` and `encoding/json/jsontext`.
 **Proto impact**: None. No `.proto` file changes. `protojson` (11 files) is a separate encoder and is not part of this work. `buf breaking` must stay clean throughout.
@@ -152,15 +152,15 @@ Each phase is one or more PRs. Every PR passes `just check` (lint, `go test -tag
 
 Split out so the toolchain PR stays small. golangci-lint v2.15.0 lints the current `go 1.26.7` module (measured).
 
-- [x] P0: golangci-lint v2.9.0 → v2.15.0 in `ci.yml`. The Justfile now holds the version (`golangci_lint_version`); `just lint` refuses a different installed version or a `ci.yml` pin that differs, and `just verify` reports the installed version.
-- [x] P0: The 6 errcheck findings (2 production, 4 in tests). Each is a channel receive that dropped an `error`. `pkg/mcp/transport/stdio.go` logs the exit status of a force-killed server; `pkg/shelljail/host.go` puts it in the self-test timeout error; the 4 tests assert on it.
+- [x] P0: golangci-lint v2.9.0 → v2.15.0. The version is written once, in the Justfile (`golangci_lint_version`); `ci.yml` reads it from there, `just lint` refuses a different installed version (v1.x included), and `just verify` reports the installed version.
+- [x] P0: The 6 errcheck findings (2 production, 4 in tests). Each is a channel receive that dropped an `error`. `pkg/mcp/transport/stdio.go` logs the exit status of a force-killed server at Info; `pkg/shelljail/host.go` puts it in the self-test timeout error; both paths have a test. Of the 4 test sites, 3 assert on the value and the door-gate test reports it in its failure message.
 - [x] P1: The 127 `QF1012` findings (41 in `pkg/orchestration`, 17 in `pkg/patterns`, 16 in `pkg/evals`), applied with `golangci-lint run --fix` and reviewed: every changed line is `x.WriteString(fmt.Sprintf(...))` → `fmt.Fprintf(&x, ...)`.
 - [x] P1: The 9 `SA1019` findings are tests of loom's own deprecated fields. Each line carries a `//nolint:staticcheck` comment that states the reason. No blanket exclusion.
 - [x] P2: The govet `inline` finding (`cmd/loom/decision_ask_test.go:172`, `reflect.Ptr` → `reflect.Pointer`).
 
 Measured on the branch (2026-11-19, macOS arm64, Go 1.26.7): golangci-lint v2.15.0 reports 0 issues, and v2.9.0 also reports 0. Developers need the v2.15.0 release binary; a branch that has not merged `main` shows the 143 findings when linted with it.
 
-**Exit**: `just check` prints "All checks passed" with v2.15.0 on Go 1.26.7.
+**Exit**: `just check` prints "All checks passed" with v2.15.0 on Go 1.26.7. ⚠️ Not met as of 2026-11-19: `just vet` (untagged) fails on `main` at `pkg/agent/compact_test.go:183`, where a test helper sits behind the `fts5` build tag. PR #681 fixes it; this branch does not touch that file. Every other step of `just check` passes on the branch.
 
 ### Phase 1b: Toolchain to Go 1.27.4 (one PR, no JSON API changes)
 

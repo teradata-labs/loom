@@ -109,11 +109,22 @@ jobs:
             exit 1
           fi
 
+      # The Justfile is the one place the golangci-lint version is written;
+      # `just lint` checks the installed binary against the same value.
+      - name: Read the golangci-lint version from the Justfile
+        id: golangci
+        run: |
+          version="$(sed -n 's/^golangci_lint_version := "\([0-9][0-9.]*\)"$/\1/p' Justfile)"
+          if [ -z "$version" ]; then
+            echo "::error::golangci_lint_version not found in the Justfile"
+            exit 1
+          fi
+          echo "version=v$version" >> "$GITHUB_OUTPUT"
+
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          # Keep equal to golangci_lint_version in the Justfile.
-          version: v2.15.0
+          version: ${{ steps.golangci.outputs.version }}
 
       # Attribution files are generated from the dependency tree, so any
       # dependency bump can silently invalidate them. `just check` runs this,
