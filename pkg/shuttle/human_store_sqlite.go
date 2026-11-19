@@ -11,6 +11,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -636,8 +638,13 @@ func (s *SQLiteHumanRequestStore) scanRequest(row interface {
 	// existed — leaves Params nil. params_truncated carries a false default, so
 	// a pre-params row reads false rather than NULL; NULL is still tolerated.
 	if paramsJSON.Valid && paramsJSON.String != "" {
-		if err := json.Unmarshal([]byte(paramsJSON.String), &req.Params); err != nil {
+		decoder := json.NewDecoder(strings.NewReader(paramsJSON.String))
+		decoder.UseNumber()
+		if err := decoder.Decode(&req.Params); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal params: %w", err)
+		}
+		if err := decoder.Decode(&struct{}{}); err != io.EOF {
+			return nil, fmt.Errorf("failed to unmarshal params: trailing data")
 		}
 	}
 	if paramsTruncated.Valid {
