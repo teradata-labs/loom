@@ -18,6 +18,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -66,21 +67,30 @@ func newOIDCSource(cfg OIDCConfig) (*oidcSource, error) {
 	return src, nil
 }
 
+// readBounded is the OIDC token-file reader: it opens path and reads it with
+// readBoundedFrom. oidcSource calls it on every request.
 func readBounded(path string) ([]byte, error) {
 	f, err := os.Open(path) // #nosec G304 -- operator-configured token path
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
-	buf := make([]byte, maxOIDCTokenBytes+1)
-	n, err := f.Read(buf)
-	if err != nil && n == 0 {
+	return readBoundedFrom(f)
+}
+
+// readBoundedFrom reads r to EOF, up to maxOIDCTokenBytes. It keeps reading
+// across short reads, so a token served in pieces (a FUSE or network mount, a
+// pipe) is returned whole. One byte over the limit is read to tell a file at
+// the limit from a larger one.
+func readBoundedFrom(r io.Reader) ([]byte, error) {
+	b, err := io.ReadAll(io.LimitReader(r, maxOIDCTokenBytes+1))
+	if err != nil {
 		return nil, err
 	}
-	if n > maxOIDCTokenBytes {
+	if len(b) > maxOIDCTokenBytes {
 		return nil, fmt.Errorf("token file is larger than %d bytes", maxOIDCTokenBytes)
 	}
-	return buf[:n], nil
+	return b, nil
 }
 
 // token returns the current token, or an error naming the source. The token

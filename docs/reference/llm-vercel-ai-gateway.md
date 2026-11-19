@@ -119,7 +119,7 @@ factory.FactoryConfig{
 | Method | How | Notes |
 |---|---|---|
 | API key | `looms config set-key vercel_gateway_api_key`, `LOOM_LLM_VERCEL_GATEWAY_API_KEY`, or `AI_GATEWAY_API_KEY` (checked in that order) | Sent as `x-api-key` on the Messages surface and `Authorization: Bearer` on Chat Completions and `/v1/credits` |
-| Vercel OIDC | `vercel_gateway_oidc: true`; token from `vercel_gateway_oidc_token_file`, else `VERCEL_OIDC_TOKEN` | Read fresh on every request, because Vercel rotates it and nothing refreshes it for a Go client. A token whose JWT `exp` has passed fails locally with "OIDC token expired" before any request is sent. |
+| Vercel OIDC | `vercel_gateway_oidc: true`; token from `vercel_gateway_oidc_token_file`, else `VERCEL_OIDC_TOKEN` | Read fresh on every request, because Vercel rotates it and nothing refreshes it for a Go client. The token file is read whole, at most 64 KiB; a larger file is an error. A token whose JWT `exp` has passed fails locally with "OIDC token expired" before any request is sent. |
 
 An API key always wins over OIDC, and the client never sends both: per Vercel's docs the gateway prefers the API key when both arrive, even an invalid one.
 

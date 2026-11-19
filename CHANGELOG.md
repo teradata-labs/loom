@@ -45,6 +45,7 @@ Implemented, unit-tested, and live-tested on 2026-11-16 (Claude Haiku 4.5 on the
 - **Credentials stay on the gateway host**: every gateway request, including redirect hops, must go to the configured scheme and host; anything else is refused before it is sent.
 - **`gateway_routing` is validated per role**: on a provider other than `vercel-ai-gateway`, or on a role that names no provider, it is a load error instead of being ignored.
 - **Not done**: the Responses surface, tiered long-context prices.
+- **The OIDC token file is read whole.** The reader used one `Read` call, so a file served in short reads (a FUSE or network mount) could give a cut token. It now reads to EOF through `io.LimitReader`; a file over 64 KiB is still an error, and an empty file reports "is empty" instead of `EOF`.
 - **Provider-name normalisation is provider-neutral.** `llm.NormalizeProviderName`, `llm.IsVercelAIGateway`, `llm.ProviderVercelAIGateway` and `llm.ProviderVercelAIGatewayAlias` (`pkg/llm/provider_name.go`) hold the alias rule. `vercelgateway.NormalizeProviderName`, `vercelgateway.IsProviderName` and the gateway constants stay and delegate to them, so behaviour is unchanged. `pkg/agent` uses the `pkg/llm` forms for name checks; it still imports `pkg/llm/vercelgateway` for `NewClient` (the registry builds every provider client), `ValidateModelID` and `RoutingFromProto`.
 
 #### LLM provider: Amazon Bedrock Mantle (`bedrock-mantle`)
