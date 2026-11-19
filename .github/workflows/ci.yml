@@ -190,16 +190,9 @@ jobs:
         run: go run ./cmd/generate-weaver
 
       - name: Pre-warm MCP filesystem server (npm cache)
-        # Several MCP integration/conformance tests shell out to
-        # `npx -y @modelcontextprotocol/server-filesystem` and start that server
-        # under a tight (30-45s) init timeout. A cold npm download can exceed
-        # that on a slow-registry day, surfacing as "initialize failed: context
-        # deadline exceeded" — a network flake unrelated to the code under test.
-        # Fetch the package once here so the timed tests hit the npm cache
-        # instead of racing a cold download. `npm install -g` downloads and exits
-        # cleanly (no stdio server to hang on, unlike `npx ... --help`); retried
-        # for transient registry blips and never hard-fails the job (if the
-        # registry is fully down the tests degrade to the prior behaviour).
+        # Warm npm's cache before the tests prepare the filesystem server.
+        # Test setup resolves the Node entry before the protocol deadline starts.
+        # Retry transient registry failures and let the tests handle their own setup.
         run: |
           for i in 1 2 3; do
             npm install -g @modelcontextprotocol/server-filesystem && break
@@ -658,11 +651,8 @@ jobs:
         run: go run ./cmd/generate-weaver
 
       - name: Pre-warm MCP filesystem server (npm cache)
-        # Same reason as the Linux job: the MCP conformance tests start
-        # `npx -y @modelcontextprotocol/server-*` under a 45s init timeout, and a
-        # cold download on the Windows runner can exceed it ("initialize failed:
-        # context deadline exceeded"). Install the packages once so the timed
-        # tests resolve them from the global npm bin; never hard-fails the job.
+        # Warm npm's cache for the filesystem and memory servers. Tests resolve
+        # each Node entry during setup and start it directly under the protocol deadline.
         shell: bash
         run: |
           for i in 1 2 3; do

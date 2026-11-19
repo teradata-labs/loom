@@ -35,6 +35,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/teradata-labs/loom/pkg/mcp/client"
+	"github.com/teradata-labs/loom/pkg/mcp/internal/mcptest"
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
 	"github.com/teradata-labs/loom/pkg/mcp/transport"
 	"go.uber.org/zap"
@@ -46,37 +47,6 @@ func skipIfNoNPX(t *testing.T) {
 	if _, err := exec.LookPath("npx"); err != nil {
 		t.Skip("npx not found in PATH - skipping conformance test")
 	}
-}
-
-// serverContext installs the server before starting the protocol deadline.
-func serverContext(t *testing.T, server string, timeout time.Duration) context.Context {
-	t.Helper()
-	skipIfNoNPX(t)
-
-	return preparedContext(t, timeout, func(ctx context.Context) error {
-		// Run a command that exits instead of starting the stdio server. Server
-		// flags such as --version can be interpreted as filesystem paths.
-		cmd := exec.CommandContext(ctx, "npx", "--yes", "--package="+server, "--", "node", "-e", "")
-		cmd.WaitDelay = 5 * time.Second
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Logf("Preparing %s: %s", server, output)
-		}
-		return err
-	})
-}
-
-// preparedContext keeps package downloads out of the protocol timeout while
-// bounding preparation separately. Both phases still follow the test lifetime.
-func preparedContext(t *testing.T, timeout time.Duration, prepare func(context.Context) error) context.Context {
-	t.Helper()
-	setupCtx, cancelSetup := context.WithTimeout(t.Context(), 2*time.Minute)
-	defer cancelSetup()
-	require.NoError(t, prepare(setupCtx), "prepare MCP server")
-
-	ctx, cancel := context.WithTimeout(t.Context(), timeout)
-	t.Cleanup(cancel)
-	return ctx
 }
 
 // getTempDir returns the real path of the temp directory (resolving symlinks).
@@ -121,46 +91,23 @@ func getFilePathParamName(tool *protocol.Tool) string {
 	return "" // Cannot determine
 }
 
-// setupFilesystemClient creates and initializes a client connected to filesystem server
-func setupFilesystemClient(t *testing.T, ctx context.Context, logger *zap.Logger) *client.Client {
-	// Use real path to avoid symlink issues on macOS (/var -> /private/var)
-	tempDir := getTempDir()
-
-	tr, err := transport.NewStdioTransport(transport.StdioConfig{
-		Command: "npx",
-		// Preparation populated the npm cache; keep registry access out of
-		// the timed handshake, including package metadata requests.
-		Args:   []string{"--offline", "-y", "@modelcontextprotocol/server-filesystem", tempDir},
-		Logger: logger,
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = tr.Close() })
-
-	c := client.NewClient(client.Config{
-		Transport: tr,
-		Logger:    logger,
-	})
-	t.Cleanup(func() { _ = c.Close() })
-
-	clientInfo := protocol.Implementation{
-		Name:    "conformance-test",
-		Version: "1.0.0",
-	}
-	err = c.Initialize(ctx, clientInfo)
-	require.NoError(t, err)
-
-	return c
+func setupFilesystemClient(t *testing.T, timeout time.Duration) (context.Context, *client.Client) {
+	t.Helper()
+	// Use the real temp path to avoid macOS symlink issues (/var -> /private/var).
+	return setupServerClient(t, mcptest.Filesystem, timeout, getTempDir())
 }
 
-// setupMemoryClient creates and initializes a client connected to memory server
-func setupMemoryClient(t *testing.T, ctx context.Context, logger *zap.Logger) *client.Client {
+func setupServerClient(t *testing.T, packageName string, timeout time.Duration, args ...string) (context.Context, *client.Client) {
+	t.Helper()
+	skipIfNoNPX(t)
+	ctx, server := mcptest.PrepareServer(t, packageName, timeout)
+	logger := zap.NewNop()
 	tr, err := transport.NewStdioTransport(transport.StdioConfig{
-		Command: "npx",
-		Args:    []string{"--offline", "-y", "@modelcontextprotocol/server-memory"},
+		Command: server.Command,
+		Args:    server.Args(args...),
 		Logger:  logger,
 	})
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = tr.Close() })
 
 	c := client.NewClient(client.Config{
 		Transport: tr,
@@ -168,23 +115,18 @@ func setupMemoryClient(t *testing.T, ctx context.Context, logger *zap.Logger) *c
 	})
 	t.Cleanup(func() { _ = c.Close() })
 
-	clientInfo := protocol.Implementation{
+	err = c.Initialize(ctx, protocol.Implementation{
 		Name:    "conformance-test",
 		Version: "1.0.0",
-	}
-	err = c.Initialize(ctx, clientInfo)
+	})
 	require.NoError(t, err)
-
-	return c
+	return ctx, c
 }
 
 // TestConformance_Initialize verifies the initialize handshake complies with MCP spec.
 // Spec: Initialize must be the first request, server must respond with capabilities.
 func TestConformance_Initialize(t *testing.T) {
-	ctx := serverContext(t, "@modelcontextprotocol/server-filesystem", 45*time.Second)
-
-	logger := zap.NewNop()
-	c := setupFilesystemClient(t, ctx, logger)
+	_, c := setupFilesystemClient(t, 45*time.Second)
 
 	// Verify client is initialized
 	require.True(t, c.IsInitialized(), "Client must be initialized")
@@ -197,10 +139,7 @@ func TestConformance_Initialize(t *testing.T) {
 // TestConformance_ProtocolVersion verifies protocol version negotiation.
 // Spec: Client and server must agree on protocol version (2024-11-05).
 func TestConformance_ProtocolVersion(t *testing.T) {
-	ctx := serverContext(t, "@modelcontextprotocol/server-filesystem", 45*time.Second)
-
-	logger := zap.NewNop()
-	c := setupFilesystemClient(t, ctx, logger)
+	_, c := setupFilesystemClient(t, 45*time.Second)
 
 	// Verify client is initialized (which means version was negotiated successfully)
 	require.True(t, c.IsInitialized(), "Client must be initialized after protocol negotiation")
@@ -213,10 +152,7 @@ func TestConformance_ProtocolVersion(t *testing.T) {
 // TestConformance_Capabilities verifies capability negotiation.
 // Spec: Client declares capabilities, server responds with its capabilities.
 func TestConformance_Capabilities(t *testing.T) {
-	ctx := serverContext(t, "@modelcontextprotocol/server-filesystem", 45*time.Second)
-
-	logger := zap.NewNop()
-	c := setupFilesystemClient(t, ctx, logger)
+	_, c := setupFilesystemClient(t, 45*time.Second)
 
 	caps := c.ServerCapabilities()
 
@@ -232,10 +168,7 @@ func TestConformance_Capabilities(t *testing.T) {
 // TestConformance_ToolsLifecycle verifies complete tools lifecycle.
 // Spec: tools/list returns available tools, tools/call executes them.
 func TestConformance_ToolsLifecycle(t *testing.T) {
-	ctx := serverContext(t, "@modelcontextprotocol/server-filesystem", 45*time.Second)
-
-	logger := zap.NewNop()
-	c := setupFilesystemClient(t, ctx, logger)
+	ctx, c := setupFilesystemClient(t, 45*time.Second)
 
 	// 1. List tools
 	tools, err := c.ListTools(ctx)
@@ -294,10 +227,7 @@ func TestConformance_ToolsLifecycle(t *testing.T) {
 // TestConformance_ErrorHandling verifies error handling compliance.
 // Spec: Servers must return proper JSON-RPC errors for invalid requests.
 func TestConformance_ErrorHandling(t *testing.T) {
-	ctx := serverContext(t, "@modelcontextprotocol/server-filesystem", 45*time.Second)
-
-	logger := zap.NewNop()
-	c := setupFilesystemClient(t, ctx, logger)
+	ctx, c := setupFilesystemClient(t, 45*time.Second)
 
 	// Test 1: Call non-existent tool
 	_, err := c.CallTool(ctx, "non_existent_tool", map[string]interface{}{})
@@ -313,10 +243,7 @@ func TestConformance_ErrorHandling(t *testing.T) {
 // TestConformance_JSONRPCFormat verifies JSON-RPC 2.0 compliance.
 // Spec: All messages must follow JSON-RPC 2.0 format.
 func TestConformance_JSONRPCFormat(t *testing.T) {
-	ctx := serverContext(t, "@modelcontextprotocol/server-filesystem", 45*time.Second)
-
-	logger := zap.NewNop()
-	c := setupFilesystemClient(t, ctx, logger)
+	ctx, c := setupFilesystemClient(t, 45*time.Second)
 
 	// All requests should follow JSON-RPC 2.0
 	// The client and transport layers handle this - if we got here, format is correct
@@ -328,10 +255,7 @@ func TestConformance_JSONRPCFormat(t *testing.T) {
 // TestConformance_ResourcesOptional verifies resources are optional.
 // Spec: Resources capability is optional, servers may not implement it.
 func TestConformance_ResourcesOptional(t *testing.T) {
-	ctx := serverContext(t, "@modelcontextprotocol/server-filesystem", 45*time.Second)
-
-	logger := zap.NewNop()
-	c := setupFilesystemClient(t, ctx, logger)
+	ctx, c := setupFilesystemClient(t, 45*time.Second)
 
 	caps := c.ServerCapabilities()
 
@@ -350,10 +274,7 @@ func TestConformance_ResourcesOptional(t *testing.T) {
 // TestConformance_PromptsOptional verifies prompts are optional.
 // Spec: Prompts capability is optional, servers may not implement it.
 func TestConformance_PromptsOptional(t *testing.T) {
-	ctx := serverContext(t, "@modelcontextprotocol/server-filesystem", 45*time.Second)
-
-	logger := zap.NewNop()
-	c := setupFilesystemClient(t, ctx, logger)
+	ctx, c := setupFilesystemClient(t, 45*time.Second)
 
 	caps := c.ServerCapabilities()
 
@@ -371,10 +292,7 @@ func TestConformance_PromptsOptional(t *testing.T) {
 // TestConformance_ConcurrentRequests verifies concurrent request handling.
 // Spec: Servers should handle multiple concurrent requests.
 func TestConformance_ConcurrentRequests(t *testing.T) {
-	ctx := serverContext(t, "@modelcontextprotocol/server-filesystem", 60*time.Second)
-
-	logger := zap.NewNop()
-	c := setupFilesystemClient(t, ctx, logger)
+	ctx, c := setupFilesystemClient(t, 60*time.Second)
 
 	// Get tools to find read tool and its parameter name
 	tools, err := c.ListTools(ctx)
@@ -421,10 +339,7 @@ func TestConformance_ConcurrentRequests(t *testing.T) {
 // TestConformance_MemoryServer verifies conformance with memory server.
 // This tests a different server implementation for broader coverage.
 func TestConformance_MemoryServer(t *testing.T) {
-	ctx := serverContext(t, "@modelcontextprotocol/server-memory", 45*time.Second)
-
-	logger := zap.NewNop()
-	c := setupMemoryClient(t, ctx, logger)
+	ctx, c := setupServerClient(t, mcptest.Memory, 45*time.Second)
 
 	// Verify initialize
 	caps := c.ServerCapabilities()
