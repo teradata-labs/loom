@@ -1,6 +1,6 @@
 # Vercel AI Gateway: completion plan
 
-**Status**: 🚧 In progress (started 2026-11-19), branch `feat/vercel-gateway-complete` off `main` (b3a2d6ab + later).
+**Status**: ✅ Done (2026-11-19); in review as PR #691, branch `feat/vercel-gateway-complete` off `main` (b3a2d6ab + later).
 **Goal**: move the `vercel-ai-gateway` provider from ⚠️ Partial to ✅ Implemented, and fix every loom defect the 2026-11-18/19 evaluation found ([results](../research/vercel-gateway-eval-results.md)).
 
 ## Decisions (Ilsun, 2026-11-19)
@@ -12,7 +12,7 @@
 
 ## Design notes
 
-- **Secrets never sit in agent YAML.** A BYOK credential names environment variables for its secret fields (`api_key_env: LOOM_LLM_ANTHROPIC_API_KEY`); non-secret fields (`region`, `resource_name`, `project`, `location`) are literal. The variables are read when the client is built; a missing one is a build error naming the variable, never its value.
+- **Secrets never sit in agent YAML.** A BYOK credential names environment variables for its secret fields (`env: {apiKey: LOOM_BYOK_ANTHROPIC_API_KEY}`); every name must start with `LOOM_BYOK_` (owner's decision in the pre-PR review). Non-secret fields (`region`, `resourceName`, `project`, `location`) may be literal under `values`. A missing variable is a build error that names neither the variable nor a value.
 - **API surface is selectable.** New `LLMConfig` field `gateway_api`: `""`/`auto` (today's dual routing), `messages`, `chat`, `responses`. The Responses API takes any model id (verified live 2026-11-19 on `openai/gpt-5.5` and `anthropic/claude-sonnet-5.5`).
 - **Responses client is its own package** (`pkg/llm/openairesponses`), not a mode of `pkg/llm/openai`: the request and stream shapes share almost nothing with Chat Completions. `store` is always `false`; reasoning is replayed by sending back `reasoning` items with `encrypted_content` (requested with `include: ["reasoning.encrypted_content"]`), because the gateway forbids `previous_response_id` with `gen_` ids.
 
@@ -31,7 +31,7 @@
 
 ### P1 — finish the provider
 
-- [x] **Proto first**: `LLMGatewayRouting` gains `byok`, `provider_timeouts`, `session_affinity`, `session_id`, `disallow_prompt_training`, `inference_region`, `headquarters`, `user`, `tags`; `LLMConfig` gains `gateway_api`. `buf lint`, `buf breaking`, `buf generate`.
+- [x] **Proto first**: `LLMGatewayRouting` gains `byok`, `provider_timeouts_ms`, `session_affinity`, `disallow_prompt_training`, `inference_region`, `headquarters`, `user`, `tags`; `LLMConfig` gains `gateway_api`. `buf lint`, `buf breaking`, `buf generate`.
 - [x] Typed `Routing` + validation + `ExtraBody` for every new key; YAML (agent and `looms.yaml`) mapping; env-var BYOK resolution.
 - [x] `pkg/llm/openairesponses` client (Chat, ChatStream, tools, reasoning replay, usage, cost, errors, limiter, timeouts).
 - [x] Wire `gateway_api: responses` through `vercelgateway.Client`; inspector reads `response.provider_metadata`.
@@ -58,4 +58,4 @@
 ### P3 — docs and status
 
 - [x] Reference doc, providers doc, README, CLAUDE.md provider line, CHANGELOG (8f111ab8).
-- [ ] Status → ✅ only for what is implemented and verified; anything not provokable stays listed with the reason.
+- [x] Status → ✅ only for what is implemented and verified; anything not provokable stays listed with the reason.

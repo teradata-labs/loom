@@ -28,7 +28,7 @@ The [Vercel AI Gateway](https://vercel.com/docs/ai-gateway) is one host, `https:
 - API selection (`gateway_api`): `auto` (default: `anthropic/*` → `POST /v1/messages`, everything else → `POST /v1/chat/completions`), `messages`, `chat`, or `responses` (`POST /v1/responses`, through `pkg/llm/openairesponses`, any model id)
 - Streaming and tool calls on every API. `Chat` is served over a stream too, so a stalled upstream is caught by the first-byte and idle timeouts (see [Errors](#errors-retries-and-rate-limits))
 - Routing options sent as `providerOptions.gateway`: `order`, `only`, `sort`, `fallback_models`, `zero_data_retention`, `caching`, per-request BYOK credentials (`byok`), `provider_timeouts_ms`, `session_affinity`, `disallow_prompt_training`, `inference_region`, `headquarters`, `user`, `tags`. From `looms.yaml` (`vercel_gateway_routing`) or agent YAML (`gateway_routing`, proto `LLMGatewayRouting`)
-- Session affinity: every model request carries `x-session-id`, a SHA-256 digest of the loom session id (verified: the gateway reports `clientSessionIdSource: explicit`)
+- Session affinity: every model request carries `x-session-id`, an HMAC-SHA-256 of the loom session id under a random per-process key, so it cannot be matched back to a loom id (verified: the gateway reports `clientSessionIdSource: explicit`). With `session_affinity: false` no header is sent
 - API key auth (keyring, `LOOM_LLM_VERCEL_GATEWAY_API_KEY`, `AI_GATEWAY_API_KEY`) and Vercel OIDC token auth (live: a project token from `vercel env pull` on Messages, Chat Completions and Responses, and `/v1/credits`)
 - Health check with `GET /v1/credits` (validates the key, spends no tokens)
 - Model catalog from `GET /v1/models`: context window, max output, input/output/cache rates, prompt-size price tiers, reasoning tag; refreshed hourly in the background under `looms serve`; listed by `ListAvailableModels` and the TUI model picker
@@ -60,7 +60,7 @@ llm:
     caching: ""              # auto
     byok:                    # secrets come from environment variables, never from this file
       - provider: anthropic
-        env: {apiKey: LOOM_LLM_ANTHROPIC_API_KEY}
+        env: {apiKey: LOOM_BYOK_ANTHROPIC_API_KEY}
     provider_timeouts_ms: {anthropic: 15000}
     session_affinity: true   # unset = gateway default (on)
     disallow_prompt_training: false
@@ -189,16 +189,16 @@ Every key above was accepted by the live gateway on the Messages, Chat Completio
 ```yaml
 byok:
   - provider: anthropic                 # anthropic | openai | azure | bedrock | vertex
-    env: {apiKey: LOOM_LLM_ANTHROPIC_API_KEY}
+    env: {apiKey: LOOM_BYOK_ANTHROPIC_API_KEY}
   - provider: azure
-    env: {apiKey: AZURE_OPENAI_API_KEY}
+    env: {apiKey: LOOM_BYOK_AZURE_API_KEY}
     values: {resourceName: my-resource}
     model_mappings: {openai/gpt-5.5: my-gpt55-deployment}
   - provider: bedrock
-    env: {accessKeyId: AWS_ACCESS_KEY_ID, secretAccessKey: AWS_SECRET_ACCESS_KEY}
+    env: {accessKeyId: LOOM_BYOK_AWS_ACCESS_KEY_ID, secretAccessKey: LOOM_BYOK_AWS_SECRET_ACCESS_KEY}
     values: {region: us-east-1}
   - provider: vertex
-    env: {googleCredentials.privateKey: GCP_SA_PRIVATE_KEY}
+    env: {googleCredentials.privateKey: LOOM_BYOK_GCP_PRIVATE_KEY}
     values: {project: my-project, location: us-east5, googleCredentials.clientEmail: sa@my-project.iam.gserviceaccount.com}
 ```
 
@@ -209,7 +209,8 @@ byok:
 | `bedrock` | `accessKeyId`, `secretAccessKey` | `region` |
 | `vertex` | `googleCredentials.privateKey` | `project`, `location`, `googleCredentials.clientEmail` (all required) |
 
-- **Secrets never sit in YAML.** `env` maps a credential field to the *name* of the environment variable that holds it (`apiKey: ANTHROPIC_API_KEY`); the variable is read when the client is built. Do not write `${ANTHROPIC_API_KEY}` there: agent YAML expands `${…}` when it is loaded, which would put the key itself into the configuration. A secret field under `values` is a validation error. Errors about an `env` entry never print the entry or a value, since an expanded secret can look like a variable name.
+- **Only `LOOM_BYOK_*` variables.** Every variable named under `env` must start with `LOOM_BYOK_`. Agent YAML can come from `CreateAgentFromConfig` or a model's `agent_management` tool; without the prefix an agent could name any server variable (a database password) and have its value sent to the gateway. The operator decides what is exported under the prefix.
+- **Secrets never sit in YAML.** `env` maps a credential field to the *name* of the environment variable that holds it (`apiKey: LOOM_BYOK_ANTHROPIC_API_KEY`); the variable is read when the client is built. Do not write `${LOOM_BYOK_ANTHROPIC_API_KEY}` there: agent YAML expands `${…}` when it is loaded, which would put the key itself into the configuration. A secret field under `values` is a validation error. Errors about an `env` entry never print the entry or a value, since an expanded secret can look like a variable name.
 - Field names are matched without regard to case (`looms.yaml` goes through viper, which lowercases map keys).
 - Several credentials for one provider are tried in order. When any request-scoped credential is present, the gateway ignores the dashboard's BYOK keys for that request. If every BYOK credential fails, the gateway falls back to its own provider keys unless the team disabled that in the dashboard (verified: a rejected key was followed by a `system` attempt that served the call). `gateway.attempts` shows every attempt.
 
@@ -221,7 +222,7 @@ Regional hosts (`eu.ai-gateway.vercel.sh`, `us.ai-gateway.vercel.sh`) carry a 5%
 
 - **Messages API** (Claude ids by default): `thinking_level` maps to Anthropic thinking exactly as on the `anthropic` provider (adaptive on 4.6+/5, budget tiers on older models). Dotted gateway ids (`claude-sonnet-4.6`) are recognised by the adaptive-thinking and pricing matchers. Signed thinking produced on `anthropic` replays to `bedrock` and to `vertex` (verified live 2026-11-19 with `only` pinned per turn). Adaptive thinking decides per request whether to think; a trivial request may get none.
 - **Chat Completions API**: when the catalog tags the model `reasoning` (or the id is Claude-family), loom sends `"reasoning": {"enabled": true, "effort": "low"|"medium"|"high"}` (`auto` sets no effort; `xhigh`/`max` map to `high`). Models the catalog does not know get no reasoning field. The response's `reasoning_details` entries are kept as thinking blocks (type `reasoning.text`, `reasoning.summary` or `reasoning.encrypted`) and replayed within the same turn. Whether the gateway requires that replay is *unverified*.
-- **Responses API**: `thinking_level` maps to `reasoning: {effort, summary: "auto"}` (`auto` → `medium`) for every model, with `include: ["reasoning.encrypted_content"]`. Returned `reasoning` items are kept as thinking blocks (type `responses.reasoning`) and replayed before the turn's function calls (verified live on GPT-5.5 and Sonnet 5.5). GPT-5.5 returned no reasoning items on a trivial tool task even at `medium` effort; on a task that needs thought it does.
+- **Responses API**: `thinking_level` maps to `reasoning: {effort, summary: "auto"}` (`auto` → `medium`; `xhigh` and `max` → `high`, as on Chat) for every model, with `include: ["reasoning.encrypted_content"]`. Returned `reasoning` items are kept as thinking blocks (type `responses.reasoning`) and replayed before the turn's function calls (verified live on GPT-5.5 and Sonnet 5.5). GPT-5.5 returned no reasoning items on a trivial tool task even at `medium` effort; on a task that needs thought it does.
 
 ## Model catalog and cost
 
@@ -246,12 +247,20 @@ Output cap: under `looms serve` the request carries `llm.max_tokens` (looms defa
 | 429, 500/502/503/504/529 | Retried by the client-side limiter with backoff, honouring `Retry-After` |
 | 402 | `vercelgateway.ErrCreditsExhausted` ("payment required … credits exhausted, budget exceeded, or BYOK without a positive credit balance"); not retried |
 | 401/403/404, unsatisfiable `only` | Terminal (deterministic client error) |
-| No first byte within `StreamFirstByteTimeout` (default 60 s), or silence longer than `StreamIdleTimeout` (default 90 s) | Error wrapping `llm.ErrStreamTimeout`. Retried once when no token had reached the caller; after a token was delivered a retry would repeat text, so the error is returned |
-| Stream ends without `message_stop` (Messages), without `finish_reason` or `[DONE]` (Chat), or without `response.completed`/`incomplete`/`failed` (Responses) | Error (`truncated response`), not a partial answer |
+| No first byte within `StreamFirstByteTimeout` (default 60 s), or silence longer than `StreamIdleTimeout` (default 90 s) | Error wrapping `llm.ErrStreamTimeout` (gRPC `UNAVAILABLE`). Retried once when no token had reached the caller; after a token was delivered a retry would repeat text, so the error is returned |
+| Stream ends without `message_stop` (Messages), without `finish_reason` or `[DONE]` (Chat), or without `response.completed`/`incomplete`/`failed` (Responses) | `llm.ErrStreamTruncated` with HTTP 502 (gRPC `UNAVAILABLE`, never cached by Weave dedupe), not a partial answer. Retried once under the same rule as a stall |
 | Error payload after a stream started | Returned as an error (status from the error type) instead of a truncated success |
 | Context too long | 400 with `error.type` `AI_APICallError` and the upstream message passed through (live). Loom's matchers recognise every API's wording, so context relief fires. |
 
-Timeouts: every model call is streamed, `Chat` included, so a long answer that keeps producing bytes is never cut off by an overall deadline (live: a 48,000-token Sonnet 5.5 stream ran 6 min 38 s to completion). The defaults come from live measurements on 2026-11-19: response headers arrived within 6 s, and the longest silence inside a stream was 13.4 s (GPT-5.5, `xhigh` reasoning, Chat Completions). Before this change a stalled call held an agent for the full 300 s request timeout (once in 186 evaluation runs). `Timeout` (default 300 s) now bounds only the health check.
+Timeouts: every model call is streamed, `Chat` included, so a long answer that keeps producing bytes is not cut off unless `Timeout` is set (live: a 48,000-token Sonnet 5.5 stream ran 6 min 38 s to completion). The defaults come from live measurements on 2026-11-19: response headers arrived within 6 s, and the longest silence inside a stream was 13.4 s (GPT-5.5, `xhigh` reasoning, Chat Completions). Before this change a stalled call held an agent for the full 300 s request timeout (once in 186 evaluation runs).
+
+| Setting | looms.yaml | Go (`vercelgateway.Config`) | Default |
+|---|---|---|---|
+| First-byte wait | `llm.vercel_gateway_stream_first_byte_timeout_seconds` | `StreamFirstByteTimeout` | 60 s, raised to the longest `provider_timeouts_ms` + 30 s so the gateway can fail over from a slow BYOK upstream first |
+| Silence inside a stream | `llm.vercel_gateway_stream_idle_timeout_seconds` | `StreamIdleTimeout` | 90 s |
+| Whole call, retry included | `llm.timeout_seconds` | `Timeout` | none (the health check uses 300 s) |
+
+A retry is recorded in `gateway.retried` (`stall` or `truncated`). The first attempt's tokens, if the upstream billed any, are not in the call's `Usage`.
 
 The limiter is on by default. The gateway does not rate limit paid-tier requests and publishes no free-tier limit, so unset limiter fields take loom's generic defaults (`llm.DefaultRateLimiterConfig`: 2 req/s, burst 5) on **both** surfaces; without this, Claude ids would inherit the anthropic client's Tier 1 limits (0.7 req/s). Raise `llm.rate_limit.*` for a large fleet on a paid team. The limiter key includes the credential scope, endpoint and model, so gateway traffic never shares a bucket with direct traffic.
 
@@ -270,10 +279,11 @@ Every call's response metadata, and the LLM span, carry (when the response provi
 | `gateway.attempts` | every attempt in order as `provider/credential/status` (`anthropic/byok/400,anthropic/system/200`) |
 | `gateway.credential_type` | credential of the attempt that served: `byok` or `system` |
 | `gateway.session_source` | where the gateway took the affinity key: `explicit` (loom's `x-session-id`), `fingerprint`, … |
+| `gateway.retried` | `stall` or `truncated` when loom retried the call after a first attempt that produced no output |
 | `llm.cost_unpriced` | `true` when neither the gateway nor a published rate priced the call |
 | `llm.cost_estimated` | `true` when the cost is the creator-median estimate (shown with an asterisk) |
 
-No prompt content or key material is recorded. The session id sent to the gateway is a digest, not loom's session id.
+No prompt content or key material is recorded. The session id sent to the gateway is a keyed digest, not loom's session id.
 
 ## Embeddings
 

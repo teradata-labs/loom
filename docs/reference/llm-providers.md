@@ -51,7 +51,7 @@ Reference for all supported LLM providers and their configuration.
 | **Google Gemini** | ✅ Implemented | Native | 1.05M | $0-$12/1M tokens | Long context, multimodal |
 | **HuggingFace** | ✅ Implemented | Native (model-dependent) | Varies | ~$0.20-$1.00/1M tokens (estimated) | Open-source models |
 | **AWS Bedrock Mantle** | ⚠️ Partial (GPT-5.x/6.x unpriced; Responses API planned) | Native | 4k-1M | $0.04-$55/1M tokens (53 cataloged models) | Mantle-only models, OpenAI/Anthropic-compatible AWS endpoint |
-| **Vercel AI Gateway** | ⚠️ Partial (live-tested 2026-11-16 on Haiku 4.5 and GPT-5 mini) | Native (both surfaces) | From live catalog | Upstream list price, from `GET /v1/models` | One key for many upstreams, provider routing and fallback |
+| **Vercel AI Gateway** | ✅ Implemented (live-tested 2026-11-19) | Native (Messages, Chat Completions, Responses) | From live catalog | Upstream list price with prompt-size tiers, from `GET /v1/models` | One key for many upstreams, provider routing, fallback and per-request BYOK |
 | **Google Vertex AI** | 📋 Planned | TBD | TBD | TBD | GCP infrastructure |
 
 ### Authentication Methods
@@ -986,6 +986,8 @@ provider: Anthropic  # Wrong - case matters
 ```yaml
 timeout_seconds: 120  # Increase timeout
 ```
+
+For `vercel-ai-gateway`, every model call is streamed: `timeout_seconds` caps a whole call only when set, and a stall is caught by `vercel_gateway_stream_first_byte_timeout_seconds` (default 60) and `vercel_gateway_stream_idle_timeout_seconds` (default 90). Raise those for a model that stays silent longer.
 
 For Ollama (CPU inference can be very slow):
 ```yaml

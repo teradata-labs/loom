@@ -217,6 +217,8 @@ All fields are optional. If `spec.llm` is omitted entirely, the agent inherits t
 | `max_context_tokens` | `int` | the model's window | The window loom budgets against: the fold keeps the settled conversation under the profile's threshold of it. May sit below the model's window to bound cost |
 | `reserved_output_tokens` | `int` | 10% of context | Tokens reserved for model output |
 | `max_model_context_tokens` | `int` | the model's listed window | The window the model is served with, when below its listed one (vLLM `--max-model-len`, TGI `--max-total-tokens`, Ollama `num_ctx`). A step in flight is fitted to it before the send |
+| `gateway_routing` | object | (gateway default routing) | `vercel-ai-gateway` only: upstream order and filters, fallback models, zero data retention, caching, per-request BYOK (variables named `LOOM_BYOK_*`), provider timeouts, session affinity, region, headquarters, user, tags. Replaces the server's `llm.vercel_gateway_routing` for this agent. Any other provider rejects it. See [Vercel AI Gateway](llm-vercel-ai-gateway.md#routing-options) |
+| `gateway_api` | `string` | `auto` | `vercel-ai-gateway` only: `auto` (Claude ids on the Messages API, others on Chat Completions), `messages`, `chat` or `responses`. Any other provider rejects it |
 
 ---
 

@@ -52,10 +52,14 @@ Implemented, unit-tested, and live-tested on 2026-11-16 (Claude Haiku 4.5 on the
 - **Session affinity.** Every model request carries `x-session-id`, a SHA-256 digest of the loom session id; the gateway reports it as an explicit session.
 - **Price tiers.** `ModelInfo.price_tiers` (proto field 14, `PriceTier`) holds the catalog's prompt-size tiers; `catalog.RequestPricing` and the new `catalog.RequestCacheRates` apply the tier containing the prompt to the whole request (matched the gateway's billed cost exactly on two models). 95 catalog models have tiers, `openai/gpt-5.5` among them.
 - **Stalled streams.** The stream first-byte/idle reader moved to `pkg/llm` (`DoStreamHTTP`); the anthropic client can use it (`StreamFirstByteTimeout`, `StreamIdleTimeout`; off by default). The gateway client streams every call, `Chat` included, with 60 s first-byte and 90 s idle defaults, and retries a stall once when nothing reached the caller. A stalled Sonnet call had held an agent for 300 s.
-- **Truncated streams are errors.** A Messages stream without `message_stop`, or a Chat stream without `finish_reason` or `[DONE]`, is returned as an error instead of a partial answer (anthropic and openai clients).
+- **Truncated streams are errors (all anthropic- and openai-client providers).** A Messages stream without `message_stop`, or a Chat stream without both `finish_reason` and `[DONE]`, is returned as `llm.ErrStreamTruncated` (HTTP 502, gRPC `UNAVAILABLE`) instead of a partial answer. This applies to every provider on those clients (Anthropic, OpenAI, Azure OpenAI, LiteLLM, Bedrock Mantle, the gateway).
+- **A missing response header within the stream first-byte wait is `llm.ErrStreamTimeout`** on the openai client too (gRPC `UNAVAILABLE` instead of `INTERNAL`), so clients can tell it is transient.
 - **Metadata.** `gateway.attempts`, `gateway.credential_type`, `gateway.session_source`; `gateway.fallback_used` no longer fires for dated (`gpt-5.5-2026-04-23`) or dash-for-dot (`claude-sonnet-5-5`) echoes of the requested id.
 - **Model list.** `ListAvailableModels` and the TUI picker list catalogs discovered at run time, so gateway models appear.
 - **Builder.** `WithVercelGatewayConfig` takes a full `vercelgateway.Config`.
+- **BYOK variables must start with `LOOM_BYOK_`**, so an agent definition cannot have an arbitrary server variable sent upstream; errors about an `env` entry never print it.
+- **Timeouts (behaviour change).** On `vercel-ai-gateway`, `llm.timeout_seconds` now caps a whole model call only when set (before, it was the Chat first-byte wait and the Messages whole-stream limit); stalls are caught by `llm.vercel_gateway_stream_first_byte_timeout_seconds` (60) and `llm.vercel_gateway_stream_idle_timeout_seconds` (90). A retry after a stall or a truncated stream is recorded in `gateway.retried`.
+- **API change.** `vercelgateway.Routing.ExtraBody()` is replaced by `ResolveExtraBody(getenv)`, which reads BYOK variables and can fail.
 
 
 #### LLM provider: Amazon Bedrock Mantle (`bedrock-mantle`)
