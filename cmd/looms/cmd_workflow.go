@@ -1008,6 +1008,18 @@ func newWorkflowRuntime() (*workflowRuntime, error) {
 // communication infrastructure and orchestrator for the pattern, then creates
 // and registers every referenced agent with the standard auto-injected tools.
 // Everything it opens is added to rt.closers, so rt.Close releases it.
+// workflowRegistryConfig is rc with the server-level settings of cfg that
+// `looms serve` also gives its registry: MaxTokens, the server's
+// llm.max_tokens, which an agent with no max_tokens of its own sends and
+// reserves (agent.WithServerMaxTokens). startOrchestrator calls it, so a
+// workflow agent's step check reserves what its client sends.
+func workflowRegistryConfig(rc agent.RegistryConfig, cfg *Config) agent.RegistryConfig {
+	if cfg != nil {
+		rc.MaxTokens = cfg.LLM.MaxTokens
+	}
+	return rc
+}
+
 func (rt *workflowRuntime) startOrchestrator(pattern *loomv1.WorkflowPattern, promptGates bool) error {
 	logger, tracer := rt.logger, rt.tracer
 
@@ -1049,7 +1061,7 @@ func (rt *workflowRuntime) startOrchestrator(pattern *loomv1.WorkflowPattern, pr
 		mcpManager = mcpMgr.GetManager()
 	}
 
-	registry, err := agent.NewRegistry(agent.RegistryConfig{
+	registry, err := agent.NewRegistry(workflowRegistryConfig(agent.RegistryConfig{
 		ConfigDir:    configDir,
 		DBPath:       dbPath,
 		MCPManager:   mcpManager,
@@ -1057,7 +1069,7 @@ func (rt *workflowRuntime) startOrchestrator(pattern *loomv1.WorkflowPattern, pr
 		Logger:       logger,
 		Tracer:       tracer,
 		SessionStore: sessionStore,
-	})
+	}, config))
 	if err != nil {
 		return fmt.Errorf("failed to create agent registry: %w", err)
 	}
