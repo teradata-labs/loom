@@ -1422,6 +1422,7 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 			MaxTokens:         int(config.MaxTokens),
 			Temperature:       float64(config.Temperature),
 			Routing:           vercelgateway.RoutingFromProto(config.GatewayRouting),
+			API:               config.GatewayApi,
 			RateLimiterConfig: rlCfg,
 		})
 		if err != nil {

@@ -408,6 +408,7 @@ type LLMConfig struct {
 	VercelGatewayOIDC          bool                 `mapstructure:"vercel_gateway_oidc"`
 	VercelGatewayOIDCTokenFile string               `mapstructure:"vercel_gateway_oidc_token_file"`
 	VercelGatewayRouting       GatewayRoutingConfig `mapstructure:"vercel_gateway_routing"`
+	VercelGatewayAPI           string               `mapstructure:"vercel_gateway_api"` // "" / auto, messages, chat, responses
 
 	// SchedulerEnabled turns on the LLM slot scheduler: per-quota-scope
 	// admission where waiting is a state, not an error
@@ -1440,6 +1441,7 @@ func setDefaults() {
 	viper.SetDefault("llm.vercel_gateway_endpoint", "")
 	viper.SetDefault("llm.vercel_gateway_oidc", false)
 	viper.SetDefault("llm.vercel_gateway_oidc_token_file", "")
+	viper.SetDefault("llm.vercel_gateway_api", "") // "" = auto: Claude ids on Messages, others on Chat Completions
 	viper.SetDefault("llm.ollama_endpoint", "http://localhost:11434")
 	viper.SetDefault("llm.ollama_model", "llama3.1:8b")
 	viper.SetDefault("llm.openai_model", "gpt-4.1")
@@ -2261,6 +2263,7 @@ llm:
   # vercel_gateway_endpoint: https://ai-gateway.vercel.sh  # optional; regional hosts (eu./us.) go here
   # vercel_gateway_api_key: set via keyring (looms config set-key vercel_gateway_api_key) or AI_GATEWAY_API_KEY
   # vercel_gateway_oidc: false                          # true = Vercel OIDC token (VERCEL_OIDC_TOKEN) instead of a key
+  # vercel_gateway_api: ""                              # "" / auto | messages | chat | responses
   # vercel_gateway_routing:
   #   order: [bedrock, anthropic]
   #   only: []
@@ -2268,6 +2271,16 @@ llm:
   #   fallback_models: [openai/gpt-5]
   #   zero_data_retention: false
   #   caching: ""             # auto
+  #   byok:                   # secrets come from environment variables, never this file
+  #     - provider: anthropic
+  #       env: {apiKey: LOOM_LLM_ANTHROPIC_API_KEY}
+  #   provider_timeouts_ms: {anthropic: 15000}   # BYOK only, 1000-789000
+  #   session_affinity: true  # unset = gateway default (on)
+  #   disallow_prompt_training: false
+  #   inference_region: {scope: zone, geo_region: us}
+  #   headquarters: [US]      # or [!CN] to exclude
+  #   user: ""
+  #   tags: [feature:chat]
 
   # Ollama configuration (local inference)
   ollama_endpoint: http://localhost:11434

@@ -180,6 +180,12 @@ message LLMConfig {
   // every request body; on any other provider, or with no provider, agent
   // validation rejects it. Unset means the gateway's own default routing.
   LLMGatewayRouting gateway_routing = 13;
+
+  // API surface a multi-provider gateway is called on. Valid only with
+  // provider vercel-ai-gateway. "" or "auto" = Claude ids on the Anthropic
+  // Messages API and every other id on OpenAI Chat Completions; "messages",
+  // "chat" or "responses" (OpenAI Responses API) send every id to that API.
+  string gateway_api = 14;
 }
 
 // LLMGatewayRouting selects and orders the upstream providers a multi-provider
@@ -187,9 +193,9 @@ message LLMConfig {
 // a later gateway backend can reuse it; today only vercel-ai-gateway reads it.
 //
 // Provider slugs ("anthropic", "bedrock", "vertex", "openai", ...) are the
-// gateway's own and are passed through unchanged. Per-request BYOK credentials
-// are deliberately not part of this message: they are configured in the
-// gateway's dashboard, not in agent configuration.
+// gateway's own and are passed through unchanged. Secrets never appear in
+// this message: a BYOK credential names the environment variables that hold
+// them (GatewayBYOKCredential.env).
 message LLMGatewayRouting {
   // Upstream providers to try, in order. Empty = gateway default order.
   repeated string order = 1;
@@ -212,6 +218,73 @@ message LLMGatewayRouting {
   // Gateway-side prompt caching mode. "" = off (explicit cache_control only),
   // "auto" = the gateway places cache breakpoints itself.
   string caching = 6;
+
+  // Per-request bring-your-own-key credentials, tried in order per provider.
+  // When any are set the gateway ignores dashboard BYOK keys for the request.
+  // If every BYOK credential fails, the gateway falls back to its own provider
+  // keys unless the team disabled that fallback in its dashboard.
+  repeated GatewayBYOKCredential byok = 7;
+
+  // Per-provider wait for a BYOK credential's upstream to start responding,
+  // in milliseconds (1000 to 789000), keyed by provider slug. The gateway
+  // applies it to BYOK credentials only and fails over when it expires.
+  map<string, int32> provider_timeouts_ms = 8;
+
+  // Session affinity: pin a conversation to the provider that served it, for
+  // prompt-cache hits. Unset = gateway default (on). Loom sends a hashed loom
+  // session id as x-session-id whenever a session is known; false asks the
+  // gateway not to pin.
+  optional bool session_affinity = 9;
+
+  // Exclude upstreams that may train on prompts. Not applied to BYOK requests.
+  bool disallow_prompt_training = 10;
+
+  // Where inference may run. Unset = anywhere.
+  GatewayInferenceRegion inference_region = 11;
+
+  // Restrict upstreams by headquarters country (ISO 3166-1 alpha-2, "US").
+  // Prefix every entry with "!" to exclude instead; mixing is rejected.
+  repeated string headquarters = 12;
+
+  // End-user id for gateway usage reporting (at most 256 characters).
+  string user = 13;
+
+  // Usage-reporting tags ("feature:chat"); at most 10, each 1-64 characters.
+  repeated string tags = 14;
+}
+
+// GatewayBYOKCredential is one bring-your-own-key credential for an upstream
+// provider. Secret fields are read from environment variables when the client
+// is built, so agent and server YAML never hold a key.
+//
+// Field names are the gateway's: anthropic and openai take apiKey; azure
+// apiKey and resourceName; bedrock accessKeyId, secretAccessKey and optional
+// region; vertex project, location, googleCredentials.privateKey and
+// googleCredentials.clientEmail.
+message GatewayBYOKCredential {
+  // Upstream provider slug: anthropic, openai, azure, bedrock or vertex.
+  string provider = 1;
+
+  // Credential field -> environment variable that holds its value. Secret
+  // fields (apiKey, secretAccessKey, accessKeyId,
+  // googleCredentials.privateKey) must be given here.
+  map<string, string> env = 2;
+
+  // Credential field -> literal value, for non-secret fields only (region,
+  // resourceName, project, location, googleCredentials.clientEmail).
+  map<string, string> values = 3;
+
+  // azure only: gateway model slug -> the deployment's model id.
+  map<string, string> model_mappings = 4;
+}
+
+// GatewayInferenceRegion limits where a gateway runs inference.
+message GatewayInferenceRegion {
+  // "global" (any region) or "zone" (geo_region only).
+  string scope = 1;
+
+  // With scope "zone": "us", "eu", "au" or "jp".
+  string geo_region = 2;
 }
 
 // LLMRateLimitConfig configures client-side rate limiting for an LLM provider.

@@ -17,14 +17,17 @@
 // providers under creator-scoped model ids ("anthropic/claude-sonnet-4.5",
 // "openai/gpt-5").
 //
-// The gateway speaks the Anthropic Messages API and the OpenAI Chat
-// Completions API, so this package ships no wire protocol of its own. It
-// routes by model id:
+// The gateway speaks the Anthropic Messages API, the OpenAI Chat Completions
+// API and the OpenAI Responses API, so this package ships no wire protocol of
+// its own. By default (Config.API "" or "auto") it routes by model id:
 //
 //   - anthropic/* ids go to an anthropic.Client on /v1/messages, so thinking
 //     signatures, cache_control breakpoints and cache-token usage travel in
 //     the native shape loom already round-trips;
 //   - every other id goes to an openai.Client on /v1/chat/completions.
+//
+// Config.API "messages", "chat" or "responses" sends every id to that API
+// (Responses through pkg/llm/openairesponses).
 //
 // On top of the inner clients it adds typed routing options (sent as
 // providerOptions.gateway in the request body), a response inspector that
@@ -40,6 +43,8 @@ package vercelgateway
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,7 +61,9 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
 	"github.com/teradata-labs/loom/pkg/llm/openai"
+	"github.com/teradata-labs/loom/pkg/llm/openairesponses"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
+	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/types"
 )
@@ -88,6 +95,35 @@ const (
 
 	healthBodyLimit = 4096
 )
+
+// API surface values for Config.API.
+const (
+	APIAuto      = "auto"
+	APIMessages  = SurfaceMessages
+	APIChat      = SurfaceChat
+	APIResponses = SurfaceResponses
+)
+
+// ValidateAPI reports whether api is a Config.API value.
+func ValidateAPI(api string) error {
+	switch api {
+	case "", APIAuto, APIMessages, APIChat, APIResponses:
+		return nil
+	}
+	return fmt.Errorf("vercel-ai-gateway: gateway_api %q must be one of %s, %s, %s or %s", api, APIAuto, APIMessages, APIChat, APIResponses)
+}
+
+// surfaceFor resolves Config.API for model.
+func surfaceFor(api, model string) string {
+	switch api {
+	case APIMessages, APIChat, APIResponses:
+		return api
+	}
+	if IsAnthropicModel(model) {
+		return SurfaceMessages
+	}
+	return SurfaceChat
+}
 
 // ResolveAPIKey returns explicit when set, else LOOM_LLM_VERCEL_GATEWAY_API_KEY,
 // else AI_GATEWAY_API_KEY.
@@ -121,6 +157,12 @@ type Config struct {
 	// Model is the gateway model id ("creator/model"). Required: there is no
 	// default, because a default would go stale with the gateway catalog.
 	Model string
+
+	// API selects the API surface (proto LLMConfig.gateway_api). "" or
+	// APIAuto: Claude ids on the Messages API, every other id on Chat
+	// Completions. APIMessages, APIChat or APIResponses send every id there;
+	// the gateway translates between model families.
+	API string
 
 	MaxTokens   int           // Default: DefaultMaxTokens
 	Temperature float64       // Default: DefaultTemperature
@@ -222,6 +264,9 @@ func NewClient(cfg Config) (*Client, error) {
 	if err := cfg.Routing.Validate(); err != nil {
 		return nil, err
 	}
+	if err := ValidateAPI(cfg.API); err != nil {
+		return nil, err
+	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = DefaultTimeout
 	}
@@ -271,6 +316,17 @@ func NewClient(cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("vercel-ai-gateway: no credential: set an API key (keyring vercel_gateway_api_key, %s or %s) or enable OIDC", EnvLoomAPIKey, EnvAPIKey)
 	}
 
+	// Every model request carries a pseudonymous loom session id, so the
+	// gateway keeps a conversation on one upstream (prompt-cache hits) without
+	// relying on its own prompt fingerprint.
+	sessWrap := wrap
+	wrap = func(base http.RoundTripper) http.RoundTripper {
+		if sessWrap != nil {
+			base = sessWrap(base)
+		}
+		return &sessionTransport{base: base}
+	}
+
 	// Every request, on every surface and the health check, must go to the
 	// configured gateway host. A redirect elsewhere is refused before it is
 	// sent: Go strips Authorization on a cross-host redirect but keeps
@@ -283,14 +339,18 @@ func NewClient(cfg Config) (*Client, error) {
 		return &hostPinTransport{scheme: pinned.Scheme, host: pinned.Host, base: base}
 	}
 
-	extra := cfg.Routing.ExtraBody()
+	extra, err := cfg.Routing.ResolveExtraBody(nil)
+	if err != nil {
+		return nil, err
+	}
 	c := &Client{model: cfg.Model, baseURL: baseURL, auth: auth}
 
-	if IsAnthropicModel(cfg.Model) {
+	c.surface = surfaceFor(cfg.API, cfg.Model)
+	switch c.surface {
+	case SurfaceMessages:
 		if err := anthropic.ValidateExtraBody(extra); err != nil {
 			return nil, fmt.Errorf("vercel-ai-gateway: %w", err)
 		}
-		c.surface = SurfaceMessages
 		c.inner = anthropic.NewClient(anthropic.Config{
 			StrictToolSchemas:      cfg.StrictToolSchemas,
 			APIKey:                 apiKey, // sent as x-api-key; empty under OIDC (the transport adds Bearer)
@@ -312,11 +372,32 @@ func NewClient(cfg Config) (*Client, error) {
 			ExtraBody:         extra,
 			ResponseInspector: newInspector(cfg.Model),
 		})
-	} else {
+	case SurfaceResponses:
+		if err := openairesponses.ValidateExtraBody(extra); err != nil {
+			return nil, fmt.Errorf("vercel-ai-gateway: %w", err)
+		}
+		c.inner = openairesponses.NewClient(openairesponses.Config{
+			StrictToolSchemas:      cfg.StrictToolSchemas,
+			APIKey:                 apiKey,
+			Model:                  cfg.Model,
+			Endpoint:               baseURL + ResponsesPath,
+			Timeout:                cfg.Timeout,
+			StreamFirstByteTimeout: cfg.StreamFirstByteTimeout,
+			StreamIdleTimeout:      cfg.StreamIdleTimeout,
+			MaxTokens:              cfg.MaxTokens,
+			Temperature:            cfg.Temperature,
+			ThinkingLevel:          cfg.ThinkingLevel,
+			RateLimiterConfig:      cfg.RateLimiterConfig,
+			CatalogProvider:        CatalogProvider,
+			WrapTransport:          wrap,
+			ExtraBody:              extra,
+			ResponseInspector:      newInspector(cfg.Model),
+			ReportUnpriced:         true,
+		})
+	default:
 		if err := openai.ValidateExtraBody(extra); err != nil {
 			return nil, fmt.Errorf("vercel-ai-gateway: %w", err)
 		}
-		c.surface = SurfaceChat
 		c.inner = openai.NewClient(openai.Config{
 			StrictToolSchemas:      cfg.StrictToolSchemas,
 			APIKey:                 apiKey,
@@ -356,14 +437,17 @@ func (c *Client) Model() string { return c.model }
 // BaseURL returns the gateway base URL in use.
 func (c *Client) BaseURL() string { return c.baseURL }
 
-// Surface returns the API surface this model is sent on: SurfaceMessages for
-// Claude ids, SurfaceChat for every other id.
+// Surface returns the API surface this model is sent on: Config.API when
+// set, else SurfaceMessages for Claude ids and SurfaceChat for every other id.
 func (c *Client) Surface() string { return c.surface }
 
 // Endpoint returns the full URL the inner client posts to.
 func (c *Client) Endpoint() string {
-	if c.surface == SurfaceMessages {
+	switch c.surface {
+	case SurfaceMessages:
 		return c.baseURL + MessagesPath
+	case SurfaceResponses:
+		return c.baseURL + ResponsesPath
 	}
 	return c.baseURL + ChatCompletionsPath
 }
@@ -468,6 +552,36 @@ func (c *Client) Credits(ctx context.Context) (*Credits, error) {
 		return nil, fmt.Errorf("vercel-ai-gateway: decode credits: %w", err)
 	}
 	return &credits, nil
+}
+
+// HeaderSessionID is the gateway's session-affinity header.
+const HeaderSessionID = "x-session-id"
+
+// sessionTransport sets HeaderSessionID from the loom session on the request
+// context. The id is a SHA-256 digest of the loom session id, so the gateway
+// sees a stable key per conversation but never loom's own identifier. The
+// gateway hashes ids over 256 characters itself; this one is 32.
+type sessionTransport struct {
+	base http.RoundTripper
+}
+
+// RoundTrip adds the header when the context carries a session.
+func (t *sessionTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if id := session.SessionIDFromContext(r.Context()); id != "" && r.Header.Get(HeaderSessionID) == "" {
+		r = r.Clone(r.Context())
+		r.Header.Set(HeaderSessionID, gatewaySessionID(id))
+	}
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return base.RoundTrip(r)
+}
+
+// gatewaySessionID is the pseudonymous id sent for a loom session.
+func gatewaySessionID(loomSessionID string) string {
+	sum := sha256.Sum256([]byte("loom-session:" + loomSessionID))
+	return hex.EncodeToString(sum[:16])
 }
 
 // hostPinTransport refuses any request that is not to the configured gateway

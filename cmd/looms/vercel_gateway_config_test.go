@@ -33,6 +33,7 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/llm/vercelgateway"
+	"github.com/teradata-labs/loom/pkg/llm/vercelgateway/gatewaytest"
 	"github.com/teradata-labs/loom/pkg/types"
 )
 
@@ -194,11 +195,7 @@ func (g *gatewayBodies) server(t *testing.T) *httptest.Server {
 		g.paths = append(g.paths, r.URL.Path)
 		g.bodies = append(g.bodies, m)
 		g.mu.Unlock()
-		if r.URL.Path == vercelgateway.MessagesPath {
-			_, _ = io.WriteString(w, `{"id":"gen_1","type":"message","role":"assistant","model":"m","stop_reason":"end_turn","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`)
-			return
-		}
-		_, _ = io.WriteString(w, `{"id":"gen_1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+		gatewaytest.WriteSSE(w, r, "ok")
 	}))
 	t.Cleanup(srv.Close)
 	return srv
@@ -313,6 +310,54 @@ llm:
 	gc := vercelGatewayConfigFrom(cfg.LLM)
 	assert.Equal(t, testGatewayKey, gc.APIKey)
 	require.NoError(t, gc.Routing.Validate())
+}
+
+// The new routing keys and vercel_gateway_api load from looms.yaml through
+// mapstructure, and BYOK secrets resolve from the named variables.
+func TestLoadConfig_VercelGatewayFullRoutingAndAPI(t *testing.T) {
+	isolateGatewayEnv(t)
+	t.Setenv(vercelgateway.EnvAPIKey, testGatewayKey)
+	t.Setenv("TEST_BYOK_ANTHROPIC", "byok-test-value")
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	yaml := `server:
+  port: 60051
+llm:
+  provider: vercel-ai-gateway
+  vercel_gateway_model: openai/gpt-5.5
+  vercel_gateway_api: responses
+  vercel_gateway_routing:
+    byok:
+      - provider: anthropic
+        env: {apiKey: TEST_BYOK_ANTHROPIC}
+    provider_timeouts_ms: {anthropic: 15000}
+    session_affinity: false
+    disallow_prompt_training: true
+    inference_region: {scope: zone, geo_region: us}
+    headquarters: [US]
+    user: u1
+    tags: [env:test]
+`
+	path := filepath.Join(t.TempDir(), "looms.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(yaml), 0o600))
+	cfg, err := LoadConfig(path)
+	require.NoError(t, err)
+	require.NoError(t, validateVercelGatewayConfig(cfg.LLM))
+	gc := vercelGatewayConfigFrom(cfg.LLM)
+	assert.Equal(t, vercelgateway.APIResponses, gc.API)
+	require.NotNil(t, gc.Routing)
+	require.NotNil(t, gc.Routing.SessionAffinity)
+	assert.False(t, *gc.Routing.SessionAffinity)
+	assert.Equal(t, map[string]int{"anthropic": 15000}, gc.Routing.ProviderTimeoutsMS)
+	assert.Equal(t, &vercelgateway.InferenceRegion{Scope: "zone", GeoRegion: "us"}, gc.Routing.InferenceRegion)
+	body, err := gc.Routing.ResolveExtraBody(nil)
+	require.NoError(t, err)
+	gw := body["providerOptions"].(map[string]any)["gateway"].(map[string]any)
+	assert.Equal(t, map[string][]map[string]any{"anthropic": {{"apiKey": "byok-test-value"}}}, gw["byok"])
+
+	// A bad API value fails at load.
+	cfg.LLM.VercelGatewayAPI = "completions"
+	require.ErrorContains(t, validateVercelGatewayConfig(cfg.LLM), "llm.vercel_gateway_api")
 }
 
 func TestNewVercelGatewayEmbedder(t *testing.T) {

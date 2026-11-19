@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"math"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -27,15 +28,16 @@ import (
 
 // Span/metadata attribute keys this provider reports.
 const (
-	AttrEndpointSurface = "gateway.endpoint_surface" // "messages" | "chat"
+	AttrEndpointSurface = "gateway.endpoint_surface" // "messages" | "chat" | "responses"
 	AttrGenerationID    = "gateway.generation_id"
 	AttrFinalProvider   = "gateway.final_provider"
 	AttrFinalModel      = "gateway.final_model"
 	AttrFallbackUsed    = "gateway.fallback_used" // "true" | "false"
 	AttrAttemptCount    = "gateway.attempt_count"
 
-	SurfaceMessages = "messages"
-	SurfaceChat     = "chat"
+	SurfaceMessages  = "messages"
+	SurfaceChat      = "chat"
+	SurfaceResponses = "responses"
 
 	generationIDPrefix = "gen_"
 )
@@ -73,6 +75,10 @@ type gatewayPayload struct {
 	} `json:"choices"`
 	ProviderMetadata      *providerMetadata `json:"providerMetadata"`
 	ProviderMetadataSnake *providerMetadata `json:"provider_metadata"`
+	// Response is the Responses API stream envelope: response.created and
+	// response.completed carry the response object (model, id, usage and, on
+	// completion, provider_metadata.gateway) under "response".
+	Response *gatewayPayload `json:"response"`
 }
 
 // metadata returns the gateway provider metadata wherever this payload
@@ -129,6 +135,9 @@ func inspectPayload(requestedModel string, payload []byte) llm.ResponseFacts {
 	var p gatewayPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return facts
+	}
+	if p.Response != nil {
+		p = *p.Response
 	}
 	attrs := make(map[string]string, 4)
 
@@ -195,14 +204,29 @@ func hasAnyMarker(payload []byte) bool {
 
 // sameModel compares a served model id with the requested one. Upstreams may
 // echo the id without the creator prefix ("claude-sonnet-4.5" for
-// "anthropic/claude-sonnet-4.5"), which is the same model, not a fallback.
+// "anthropic/claude-sonnet-4.5") or as a dated snapshot of it
+// ("gpt-5.5-2026-04-23" for "openai/gpt-5.5", seen live on the Responses
+// stream 2026-11-19); both are the same model, not a fallback.
 func sameModel(served, requested string) bool {
 	if strings.EqualFold(served, requested) {
 		return true
 	}
-	_, bare, ok := strings.Cut(requested, "/")
-	return ok && strings.EqualFold(served, bare)
+	bare := requested
+	if _, b, ok := strings.Cut(requested, "/"); ok {
+		bare = b
+	}
+	if strings.EqualFold(served, bare) {
+		return true
+	}
+	if _, b, ok := strings.Cut(served, "/"); ok {
+		served = b
+	}
+	return len(served) == len(bare)+len("-2006-01-02") &&
+		strings.EqualFold(served[:len(bare)], bare) && datedSuffixRe.MatchString(served[len(bare):])
 }
+
+// datedSuffixRe matches the "-YYYY-MM-DD" suffix of a dated model snapshot.
+var datedSuffixRe = regexp.MustCompile(`^-\d{4}-\d{2}-\d{2}$`)
 
 // parseCost reads the gateway's cost, documented as a decimal string
 // ("0.0045405"); a JSON number is accepted too. Negative, NaN and infinite

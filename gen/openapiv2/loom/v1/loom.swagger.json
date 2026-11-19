@@ -5859,6 +5859,51 @@
       "default": "GATE_TIMEOUT_ACTION_UNSPECIFIED",
       "description": "GateTimeoutAction defines gate behavior on decision timeout.\n\n - GATE_TIMEOUT_ACTION_UNSPECIFIED: Unset — treated as GATE_TIMEOUT_ACTION_FAIL.\n - GATE_TIMEOUT_ACTION_FAIL: Fail the workflow run (safe default).\n - GATE_TIMEOUT_ACTION_REJECT: Treat as a rejection (workflow ends without executing later stages).\n - GATE_TIMEOUT_ACTION_APPROVE: Auto-approve and continue (use only for advisory gates)."
     },
+    "v1GatewayBYOKCredential": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "Upstream provider slug: anthropic, openai, azure, bedrock or vertex."
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Credential field -\u003e environment variable that holds its value. Secret\nfields (apiKey, secretAccessKey, accessKeyId,\ngoogleCredentials.privateKey) must be given here."
+        },
+        "values": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Credential field -\u003e literal value, for non-secret fields only (region,\nresourceName, project, location, googleCredentials.clientEmail)."
+        },
+        "modelMappings": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "azure only: gateway model slug -\u003e the deployment's model id."
+        }
+      },
+      "description": "GatewayBYOKCredential is one bring-your-own-key credential for an upstream\nprovider. Secret fields are read from environment variables when the client\nis built, so agent and server YAML never hold a key.\n\nField names are the gateway's: anthropic and openai take apiKey; azure\napiKey and resourceName; bedrock accessKeyId, secretAccessKey and optional\nregion; vertex project, location, googleCredentials.privateKey and\ngoogleCredentials.clientEmail."
+    },
+    "v1GatewayInferenceRegion": {
+      "type": "object",
+      "properties": {
+        "scope": {
+          "type": "string",
+          "description": "\"global\" (any region) or \"zone\" (geo_region only)."
+        },
+        "geoRegion": {
+          "type": "string",
+          "description": "With scope \"zone\": \"us\", \"eu\", \"au\" or \"jp\"."
+        }
+      },
+      "description": "GatewayInferenceRegion limits where a gateway runs inference."
+    },
     "v1GetArtifactContentResponse": {
       "type": "object",
       "properties": {
@@ -6400,6 +6445,10 @@
         "gatewayRouting": {
           "$ref": "#/definitions/v1LLMGatewayRouting",
           "description": "Routing options for a multi-provider LLM gateway. Valid only with\nprovider vercel-ai-gateway, which sends them as providerOptions.gateway in\nevery request body; on any other provider, or with no provider, agent\nvalidation rejects it. Unset means the gateway's own default routing."
+        },
+        "gatewayApi": {
+          "type": "string",
+          "description": "API surface a multi-provider gateway is called on. Valid only with\nprovider vercel-ai-gateway. \"\" or \"auto\" = Claude ids on the Anthropic\nMessages API and every other id on OpenAI Chat Completions; \"messages\",\n\"chat\" or \"responses\" (OpenAI Responses API) send every id to that API."
         }
       },
       "title": "LLMConfig configures the language model provider and parameters"
@@ -6487,9 +6536,55 @@
         "caching": {
           "type": "string",
           "description": "Gateway-side prompt caching mode. \"\" = off (explicit cache_control only),\n\"auto\" = the gateway places cache breakpoints itself."
+        },
+        "byok": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1GatewayBYOKCredential"
+          },
+          "description": "Per-request bring-your-own-key credentials, tried in order per provider.\nWhen any are set the gateway ignores dashboard BYOK keys for the request.\nIf every BYOK credential fails, the gateway falls back to its own provider\nkeys unless the team disabled that fallback in its dashboard."
+        },
+        "providerTimeoutsMs": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "description": "Per-provider wait for a BYOK credential's upstream to start responding,\nin milliseconds (1000 to 789000), keyed by provider slug. The gateway\napplies it to BYOK credentials only and fails over when it expires."
+        },
+        "sessionAffinity": {
+          "type": "boolean",
+          "description": "Session affinity: pin a conversation to the provider that served it, for\nprompt-cache hits. Unset = gateway default (on). Loom sends a hashed loom\nsession id as x-session-id whenever a session is known; false asks the\ngateway not to pin."
+        },
+        "disallowPromptTraining": {
+          "type": "boolean",
+          "description": "Exclude upstreams that may train on prompts. Not applied to BYOK requests."
+        },
+        "inferenceRegion": {
+          "$ref": "#/definitions/v1GatewayInferenceRegion",
+          "description": "Where inference may run. Unset = anywhere."
+        },
+        "headquarters": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Restrict upstreams by headquarters country (ISO 3166-1 alpha-2, \"US\").\nPrefix every entry with \"!\" to exclude instead; mixing is rejected."
+        },
+        "user": {
+          "type": "string",
+          "description": "End-user id for gateway usage reporting (at most 256 characters)."
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Usage-reporting tags (\"feature:chat\"); at most 10, each 1-64 characters."
         }
       },
-      "description": "LLMGatewayRouting selects and orders the upstream providers a multi-provider\nLLM gateway may serve a request from. It is named for gateways in general so\na later gateway backend can reuse it; today only vercel-ai-gateway reads it.\n\nProvider slugs (\"anthropic\", \"bedrock\", \"vertex\", \"openai\", ...) are the\ngateway's own and are passed through unchanged. Per-request BYOK credentials\nare deliberately not part of this message: they are configured in the\ngateway's dashboard, not in agent configuration."
+      "description": "LLMGatewayRouting selects and orders the upstream providers a multi-provider\nLLM gateway may serve a request from. It is named for gateways in general so\na later gateway backend can reuse it; today only vercel-ai-gateway reads it.\n\nProvider slugs (\"anthropic\", \"bedrock\", \"vertex\", \"openai\", ...) are the\ngateway's own and are passed through unchanged. Secrets never appear in\nthis message: a BYOK credential names the environment variables that hold\nthem (GatewayBYOKCredential.env)."
     },
     "v1LLMRateLimitConfig": {
       "type": "object",
