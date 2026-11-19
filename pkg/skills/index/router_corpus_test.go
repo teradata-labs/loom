@@ -17,6 +17,7 @@ package index
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -600,10 +601,16 @@ func (e *countingErrLLM) Model() string { return "none" }
 //     labelled judgements per configuration, which is enough to separate
 //     configurations that end-to-end numbers cannot.
 //
-// Skipped without credentials, so it never runs in CI. To run it:
+// It is a measurement that runs for tens of minutes, so it runs only when
+// asked for: a gateway key in the environment is not enough (a developer's
+// shell often has one, and the default 10-minute test timeout then failed
+// the whole package). To run it:
 //
-//	AI_GATEWAY_API_KEY=... go test -tags fts5 -run TestRouteCorpusAgainstJev -v -timeout 60m ./pkg/skills/index/
+//	LOOM_JEV_CORPUS=1 AI_GATEWAY_API_KEY=... go test -tags fts5 -run TestRouteCorpusAgainstJev -v -timeout 60m ./pkg/skills/index/
 func TestRouteCorpusAgainstJev(t *testing.T) {
+	if os.Getenv("LOOM_JEV_CORPUS") != "1" {
+		t.Skip("set LOOM_JEV_CORPUS=1 (and a Jev credential) to run the live corpus measurement")
+	}
 	cfg, err := jev.FromDecisionConfig(&loomv1.DecisionConfig{
 		Model: jev.VercelGatewayModel, AllowAlias: true, RequestsPerMinute: 120,
 	})
