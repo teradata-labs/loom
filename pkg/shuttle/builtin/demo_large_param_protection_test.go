@@ -157,7 +157,7 @@ func generateDataQualityReport(rows int) string {
 	report.WriteString("## Column Analysis\n\n")
 
 	for i := 0; i < rows; i++ {
-		report.WriteString(fmt.Sprintf("### Row %d Analysis\n", i+1))
+		fmt.Fprintf(&report, "### Row %d Analysis\n", i+1)
 		report.WriteString("- **Completeness**: 98.5%% (15 null values detected)\n")
 		report.WriteString("- **Uniqueness**: 100%% (no duplicates found)\n")
 		report.WriteString("- **Validity**: 95.2%% (12 invalid format entries)\n")

@@ -169,7 +169,7 @@ func TestDecisionSubcommandFlagsDoNotShareStorage(t *testing.T) {
 	seen := map[uintptr]bound{}
 	for _, c := range decisionCmd.Commands() {
 		c.Flags().VisitAll(func(f *pflag.Flag) {
-			if f.Value == nil || reflect.ValueOf(f.Value).Kind() != reflect.Ptr {
+			if f.Value == nil || reflect.ValueOf(f.Value).Kind() != reflect.Pointer {
 				return
 			}
 			addr := reflect.ValueOf(f.Value).Pointer()

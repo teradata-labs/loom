@@ -301,7 +301,7 @@ func (e *ForkJoinExecutor) mergeResults(ctx context.Context, workflowID string, 
 	case loomv1.MergeStrategy_CONCATENATE:
 		var builder strings.Builder
 		for i, result := range results {
-			builder.WriteString(fmt.Sprintf("=== Agent %s ===\n", result.AgentId))
+			fmt.Fprintf(&builder, "=== Agent %s ===\n", result.AgentId)
 			builder.WriteString(result.Output)
 			if i < len(results)-1 {
 				builder.WriteString("\n\n")
@@ -379,11 +379,11 @@ func (e *ForkJoinExecutor) llmMerge(ctx context.Context, workflowID string, resu
 // buildConsensusPrompt creates a prompt for consensus building.
 func (e *ForkJoinExecutor) buildConsensusPrompt(results []*loomv1.AgentResult) string {
 	var builder strings.Builder
-	builder.WriteString(fmt.Sprintf("Original prompt: %s\n\n", e.pattern.Prompt))
+	fmt.Fprintf(&builder, "Original prompt: %s\n\n", e.pattern.Prompt)
 	builder.WriteString("The following agents provided responses:\n\n")
 
 	for i, result := range results {
-		builder.WriteString(fmt.Sprintf("Agent %d:\n%s\n\n", i+1, result.Output))
+		fmt.Fprintf(&builder, "Agent %d:\n%s\n\n", i+1, result.Output)
 	}
 
 	builder.WriteString("Synthesize these perspectives into a consensus view that incorporates the strongest points from each agent.")
@@ -393,11 +393,11 @@ func (e *ForkJoinExecutor) buildConsensusPrompt(results []*loomv1.AgentResult) s
 // buildVotingPrompt creates a prompt for voting on best answer.
 func (e *ForkJoinExecutor) buildVotingPrompt(results []*loomv1.AgentResult) string {
 	var builder strings.Builder
-	builder.WriteString(fmt.Sprintf("Original prompt: %s\n\n", e.pattern.Prompt))
+	fmt.Fprintf(&builder, "Original prompt: %s\n\n", e.pattern.Prompt)
 	builder.WriteString("Review these responses and select the most compelling answer:\n\n")
 
 	for i, result := range results {
-		builder.WriteString(fmt.Sprintf("Option %d:\n%s\n\n", i+1, result.Output))
+		fmt.Fprintf(&builder, "Option %d:\n%s\n\n", i+1, result.Output)
 	}
 
 	builder.WriteString("Identify which option is most convincing and explain why.")
@@ -407,11 +407,11 @@ func (e *ForkJoinExecutor) buildVotingPrompt(results []*loomv1.AgentResult) stri
 // buildSummaryPrompt creates a prompt for summarizing results.
 func (e *ForkJoinExecutor) buildSummaryPrompt(results []*loomv1.AgentResult) string {
 	var builder strings.Builder
-	builder.WriteString(fmt.Sprintf("Original prompt: %s\n\n", e.pattern.Prompt))
+	fmt.Fprintf(&builder, "Original prompt: %s\n\n", e.pattern.Prompt)
 	builder.WriteString("Summarize these agent responses concisely:\n\n")
 
 	for i, result := range results {
-		builder.WriteString(fmt.Sprintf("Agent %d: %s\n\n", i+1, result.Output))
+		fmt.Fprintf(&builder, "Agent %d: %s\n\n", i+1, result.Output)
 	}
 
 	builder.WriteString("Provide a concise summary highlighting key points and conclusions.")
@@ -421,11 +421,11 @@ func (e *ForkJoinExecutor) buildSummaryPrompt(results []*loomv1.AgentResult) str
 // buildBestPrompt creates a prompt for selecting best response.
 func (e *ForkJoinExecutor) buildBestPrompt(results []*loomv1.AgentResult) string {
 	var builder strings.Builder
-	builder.WriteString(fmt.Sprintf("Original prompt: %s\n\n", e.pattern.Prompt))
+	fmt.Fprintf(&builder, "Original prompt: %s\n\n", e.pattern.Prompt)
 	builder.WriteString("Evaluate these responses and select the highest quality one:\n\n")
 
 	for i, result := range results {
-		builder.WriteString(fmt.Sprintf("Response %d:\n%s\n\n", i+1, result.Output))
+		fmt.Fprintf(&builder, "Response %d:\n%s\n\n", i+1, result.Output)
 	}
 
 	builder.WriteString("Select and return the best response based on clarity, accuracy, and depth.")

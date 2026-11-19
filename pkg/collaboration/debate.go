@@ -612,12 +612,12 @@ func (d *DebateOrchestrator) formatRoundHistory(ctx context.Context, workflowID 
 	for _, pos := range round.Positions {
 		// Extract key points from position using moderator for LLM-guided summarization
 		summary := d.summarizePosition(ctx, workflowID, pos.AgentId, pos.Position, pos.Arguments, moderator, cost)
-		sb.WriteString(fmt.Sprintf("**Agent %s** (confidence: %.0f%%):\n%s\n\n",
-			pos.AgentId, pos.Confidence*100, summary))
+		fmt.Fprintf(&sb, "**Agent %s** (confidence: %.0f%%):\n%s\n\n",
+			pos.AgentId, pos.Confidence*100, summary)
 	}
 
 	if round.Synthesis != "" {
-		sb.WriteString(fmt.Sprintf("**Synthesis**: %s\n", round.Synthesis))
+		fmt.Fprintf(&sb, "**Synthesis**: %s\n", round.Synthesis)
 	}
 
 	return sb.String()
@@ -725,7 +725,7 @@ func (d *DebateOrchestrator) formatArgumentsList(arguments []string) string {
 	}
 	var sb strings.Builder
 	for i, arg := range arguments {
-		sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, arg))
+		fmt.Fprintf(&sb, "%d. %s\n", i+1, arg)
 	}
 	return sb.String()
 }
@@ -757,11 +757,11 @@ func (d *DebateOrchestrator) synthesizeRound(round *loomv1.DebateRound) string {
 
 	// Summary header
 	if highConfCount == len(round.Positions) {
-		sb.WriteString(fmt.Sprintf("All %d agents expressed high confidence (avg %.0f%%). ", len(round.Positions), avgConf*100))
+		fmt.Fprintf(&sb, "All %d agents expressed high confidence (avg %.0f%%). ", len(round.Positions), avgConf*100)
 	} else if lowConfCount > len(round.Positions)/2 {
-		sb.WriteString(fmt.Sprintf("Agents showed uncertainty (avg %.0f%% confidence). ", avgConf*100))
+		fmt.Fprintf(&sb, "Agents showed uncertainty (avg %.0f%% confidence). ", avgConf*100)
 	} else {
-		sb.WriteString(fmt.Sprintf("%d agents participated (avg %.0f%% confidence). ", len(round.Positions), avgConf*100))
+		fmt.Fprintf(&sb, "%d agents participated (avg %.0f%% confidence). ", len(round.Positions), avgConf*100)
 	}
 
 	// List concise positions
@@ -779,7 +779,7 @@ func (d *DebateOrchestrator) synthesizeRound(round *loomv1.DebateRound) string {
 				posSum = posSum[:97] + "..."
 			}
 		}
-		sb.WriteString(fmt.Sprintf("%s (%.0f%%)", posSum, pos.Confidence*100))
+		fmt.Fprintf(&sb, "%s (%.0f%%)", posSum, pos.Confidence*100)
 	}
 
 	return sb.String()
@@ -815,16 +815,16 @@ func (d *DebateOrchestrator) synthesizeWithModerator(ctx context.Context, workfl
 
 	// Build synthesis prompt with all rounds
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("# Debate Topic\n%s\n\n", config.Topic))
+	fmt.Fprintf(&sb, "# Debate Topic\n%s\n\n", config.Topic)
 	sb.WriteString("# All Debate Rounds\n\n")
 
 	for _, round := range result.Rounds {
-		sb.WriteString(fmt.Sprintf("## Round %d\n", round.RoundNumber))
+		fmt.Fprintf(&sb, "## Round %d\n", round.RoundNumber)
 		for _, pos := range round.Positions {
-			sb.WriteString(fmt.Sprintf("**%s** (%.0f%% confidence):\n%s\n\n",
-				pos.AgentId, pos.Confidence*100, pos.Position))
+			fmt.Fprintf(&sb, "**%s** (%.0f%% confidence):\n%s\n\n",
+				pos.AgentId, pos.Confidence*100, pos.Position)
 			if len(pos.Arguments) > 0 {
-				sb.WriteString(fmt.Sprintf("Arguments: %s\n\n", strings.Join(pos.Arguments, "; ")))
+				fmt.Fprintf(&sb, "Arguments: %s\n\n", strings.Join(pos.Arguments, "; "))
 			}
 		}
 		sb.WriteString("\n")

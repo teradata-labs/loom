@@ -839,7 +839,7 @@ func (r *Registry) rerankWithLLMOnly(ctx context.Context, query, taskContext str
 	// Build tool descriptions for LLM
 	var toolDescs strings.Builder
 	for i, c := range candidates {
-		toolDescs.WriteString(fmt.Sprintf("%d. %s: %s\n", i+1, c.Tool.Name, c.Tool.Description))
+		fmt.Fprintf(&toolDescs, "%d. %s: %s\n", i+1, c.Tool.Name, c.Tool.Description)
 	}
 
 	prompt := fmt.Sprintf(`Rank these tools by relevance to the query: "%s"

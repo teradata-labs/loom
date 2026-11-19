@@ -512,7 +512,7 @@ func (m *toolCallCmp) formatViewResultForCopy() string {
 
 	var result strings.Builder
 	if lang != "" {
-		result.WriteString(fmt.Sprintf("```%s\n", lang))
+		fmt.Fprintf(&result, "```%s\n", lang)
 	} else {
 		result.WriteString("```\n")
 	}
@@ -544,7 +544,7 @@ func (m *toolCallCmp) formatEditResultForCopy() string {
 		}
 		diffContent, additions, removals := diff.GenerateDiff(meta.OldContent, meta.NewContent, fileName)
 
-		result.WriteString(fmt.Sprintf("Changes: +%d -%d\n", additions, removals))
+		fmt.Fprintf(&result, "Changes: +%d -%d\n", additions, removals)
 		result.WriteString("```diff\n")
 		result.WriteString(diffContent)
 		result.WriteString("\n```")
@@ -574,7 +574,7 @@ func (m *toolCallCmp) formatMultiEditResultForCopy() string {
 		}
 		diffContent, additions, removals := diff.GenerateDiff(meta.OldContent, meta.NewContent, fileName)
 
-		result.WriteString(fmt.Sprintf("Changes: +%d -%d\n", additions, removals))
+		fmt.Fprintf(&result, "Changes: +%d -%d\n", additions, removals)
 		result.WriteString("```diff\n")
 		result.WriteString(diffContent)
 		result.WriteString("\n```")
@@ -627,9 +627,9 @@ func (m *toolCallCmp) formatWriteResultForCopy() string {
 	}
 
 	var result strings.Builder
-	result.WriteString(fmt.Sprintf("File: %s\n", fsext.PrettyPath(params.FilePath)))
+	fmt.Fprintf(&result, "File: %s\n", fsext.PrettyPath(params.FilePath))
 	if lang != "" {
-		result.WriteString(fmt.Sprintf("```%s\n", lang))
+		fmt.Fprintf(&result, "```%s\n", lang)
 	} else {
 		result.WriteString("```\n")
 	}
@@ -647,13 +647,13 @@ func (m *toolCallCmp) formatFetchResultForCopy() string {
 
 	var result strings.Builder
 	if params.URL != "" {
-		result.WriteString(fmt.Sprintf("URL: %s\n", params.URL))
+		fmt.Fprintf(&result, "URL: %s\n", params.URL)
 	}
 	if params.Format != "" {
-		result.WriteString(fmt.Sprintf("Format: %s\n", params.Format))
+		fmt.Fprintf(&result, "Format: %s\n", params.Format)
 	}
 	if params.Timeout > 0 {
-		result.WriteString(fmt.Sprintf("Timeout: %ds\n", params.Timeout))
+		fmt.Fprintf(&result, "Timeout: %ds\n", params.Timeout)
 	}
 	result.WriteString("\n")
 
@@ -670,10 +670,10 @@ func (m *toolCallCmp) formatAgenticFetchResultForCopy() string {
 
 	var result strings.Builder
 	if params.URL != "" {
-		result.WriteString(fmt.Sprintf("URL: %s\n", params.URL))
+		fmt.Fprintf(&result, "URL: %s\n", params.URL)
 	}
 	if params.Prompt != "" {
-		result.WriteString(fmt.Sprintf("Prompt: %s\n\n", params.Prompt))
+		fmt.Fprintf(&result, "Prompt: %s\n\n", params.Prompt)
 	}
 
 	result.WriteString("```markdown\n")
@@ -690,7 +690,7 @@ func (m *toolCallCmp) formatWebFetchResultForCopy() string {
 	}
 
 	var result strings.Builder
-	result.WriteString(fmt.Sprintf("URL: %s\n\n", params.URL))
+	fmt.Fprintf(&result, "URL: %s\n\n", params.URL)
 	result.WriteString("```markdown\n")
 	result.WriteString(m.result.Content)
 	result.WriteString("\n```")
@@ -706,7 +706,7 @@ func (m *toolCallCmp) formatAgentResultForCopy() string {
 		for i, nestedCall := range m.nestedToolCalls {
 			nestedContent := nestedCall.(*toolCallCmp).formatToolForCopy()
 			indentedContent := strings.ReplaceAll(nestedContent, "\n", "\n  ")
-			result.WriteString(fmt.Sprintf("%d. %s\n", i+1, indentedContent))
+			fmt.Fprintf(&result, "%d. %s\n", i+1, indentedContent)
 			if i < len(m.nestedToolCalls)-1 {
 				result.WriteString("\n")
 			}
@@ -718,7 +718,7 @@ func (m *toolCallCmp) formatAgentResultForCopy() string {
 	}
 
 	if m.result.Content != "" {
-		result.WriteString(fmt.Sprintf("```markdown\n%s\n```", m.result.Content))
+		fmt.Fprintf(&result, "```markdown\n%s\n```", m.result.Content)
 	}
 
 	return result.String()

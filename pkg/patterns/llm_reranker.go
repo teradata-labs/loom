@@ -68,17 +68,17 @@ func reRankPatternsWithLLM(
 
 	for i, candidate := range candidates {
 		summary := summaries[candidate.name]
-		promptBuilder.WriteString(fmt.Sprintf("%d. %s\n", i+1, candidate.name))
-		promptBuilder.WriteString(fmt.Sprintf("   Title: %s\n", summary.Title))
-		promptBuilder.WriteString(fmt.Sprintf("   Category: %s\n", summary.Category))
-		promptBuilder.WriteString(fmt.Sprintf("   Description: %s\n", summary.Description[:min(200, len(summary.Description))]))
+		fmt.Fprintf(&promptBuilder, "%d. %s\n", i+1, candidate.name)
+		fmt.Fprintf(&promptBuilder, "   Title: %s\n", summary.Title)
+		fmt.Fprintf(&promptBuilder, "   Category: %s\n", summary.Category)
+		fmt.Fprintf(&promptBuilder, "   Description: %s\n", summary.Description[:min(200, len(summary.Description))])
 
 		if len(summary.UseCases) > 0 {
-			promptBuilder.WriteString(fmt.Sprintf("   Use Cases: %s\n",
-				strings.Join(summary.UseCases[:min(3, len(summary.UseCases))], ", ")))
+			fmt.Fprintf(&promptBuilder, "   Use Cases: %s\n",
+				strings.Join(summary.UseCases[:min(3, len(summary.UseCases))], ", "))
 		}
 
-		promptBuilder.WriteString(fmt.Sprintf("   Keyword Score: %.2f\n\n", candidate.score))
+		fmt.Fprintf(&promptBuilder, "   Keyword Score: %.2f\n\n", candidate.score)
 	}
 
 	promptBuilder.WriteString("\nTask: Select the most relevant pattern for the user's query.\n")

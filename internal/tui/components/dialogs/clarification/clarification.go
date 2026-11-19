@@ -225,7 +225,7 @@ func (c *clarificationDialogCmp) View() string {
 		content.WriteString(s.Subtle.Render("Suggested options:"))
 		content.WriteString("\n")
 		for i, opt := range c.question.Options {
-			content.WriteString(fmt.Sprintf("  %d. %s\n", i+1, opt))
+			fmt.Fprintf(&content, "  %d. %s\n", i+1, opt)
 		}
 		content.WriteString("\n")
 	}

@@ -341,7 +341,7 @@ func (s *Skill) FormatForLLM() string {
 	var sb strings.Builder
 
 	// Header
-	sb.WriteString(fmt.Sprintf("## Skill: %s\n", s.Title))
+	fmt.Fprintf(&sb, "## Skill: %s\n", s.Title)
 	sb.WriteString(s.Prompt.Instructions)
 	sb.WriteString("\n")
 
@@ -353,13 +353,13 @@ func (s *Skill) FormatForLLM() string {
 			limit = maxFormatConstraints
 		}
 		for i := 0; i < limit; i++ {
-			sb.WriteString(fmt.Sprintf("- %s\n", s.Prompt.Constraints[i]))
+			fmt.Fprintf(&sb, "- %s\n", s.Prompt.Constraints[i])
 		}
 	}
 
 	// Output format
 	if s.Prompt.OutputFormat != "" {
-		sb.WriteString(fmt.Sprintf("\n### Output Format\n%s\n", s.Prompt.OutputFormat))
+		fmt.Fprintf(&sb, "\n### Output Format\n%s\n", s.Prompt.OutputFormat)
 	}
 
 	// Examples (limit to maxFormatExamples)
@@ -371,10 +371,10 @@ func (s *Skill) FormatForLLM() string {
 		}
 		for i := 0; i < limit; i++ {
 			ex := s.Prompt.Examples[i]
-			sb.WriteString(fmt.Sprintf("**Input:** %s\n", ex.UserInput))
-			sb.WriteString(fmt.Sprintf("**Output:** %s\n", ex.ExpectedOutput))
+			fmt.Fprintf(&sb, "**Input:** %s\n", ex.UserInput)
+			fmt.Fprintf(&sb, "**Output:** %s\n", ex.ExpectedOutput)
 			if ex.Explanation != "" {
-				sb.WriteString(fmt.Sprintf("**Why:** %s\n", ex.Explanation))
+				fmt.Fprintf(&sb, "**Why:** %s\n", ex.Explanation)
 			}
 			if i < limit-1 {
 				sb.WriteString("\n")

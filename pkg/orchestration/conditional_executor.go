@@ -469,7 +469,7 @@ func (e *ConditionalExecutor) retryConditionEvaluation(
 func (e *ConditionalExecutor) buildConditionRetryPrompt(lastResult string, branchKeys []string, attempt, maxRetries int) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("Your previous response was: %q\n\n", lastResult))
+	fmt.Fprintf(&sb, "Your previous response was: %q\n\n", lastResult)
 	sb.WriteString("This output could not be matched to any valid workflow branch.\n\n")
 	sb.WriteString("REASON: The condition evaluator must respond with exactly one of the allowed\n")
 	sb.WriteString("branch values. Your response did not match any of them (even after\n")
@@ -479,13 +479,13 @@ func (e *ConditionalExecutor) buildConditionRetryPrompt(lastResult string, branc
 	// The include_valid_values field has no effect here (unlike pipeline/swarm).
 	sb.WriteString("VALID VALUES (respond with exactly one of these, nothing else):\n")
 	for _, key := range branchKeys {
-		sb.WriteString(fmt.Sprintf("- %s\n", key))
+		fmt.Fprintf(&sb, "- %s\n", key)
 	}
 	sb.WriteString("\nRULES:\n")
 	sb.WriteString("1. Respond with ONLY one of the valid values above.\n")
 	sb.WriteString("2. No explanation, no formatting, no punctuation, no quotes.\n")
 	sb.WriteString("3. Just the single word/phrase from the list.\n\n")
-	sb.WriteString(fmt.Sprintf("This is retry %d of %d.\n", attempt, maxRetries))
+	fmt.Fprintf(&sb, "This is retry %d of %d.\n", attempt, maxRetries)
 
 	return sb.String()
 }

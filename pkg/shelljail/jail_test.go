@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -164,6 +165,42 @@ func TestSelfTest_FailsWhenTheBinaryIsNotAJail(t *testing.T) {
 	err := f.r.SelfTest(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "shelljail.Main()")
+}
+
+// A binary that never answers is killed when the deadline passes, and the
+// error says how the killed child ended.
+func TestSelfTest_TimeoutReportsHowTheKilledChildEnded(t *testing.T) {
+	hang := filepath.Join(t.TempDir(), "hang.sh")
+	require.NoError(t, os.WriteFile(hang, []byte("#!/bin/sh\nexec sleep 60\n"), 0o700)) // #nosec G306 -- a test script must be executable
+	f := newFixture(t, func(c *Config) { c.Executable = hang })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := f.r.SelfTest(ctx)
+	require.Error(t, err)
+	assert.Less(t, time.Since(start), 30*time.Second, "the hung child must be killed, not waited for")
+	assert.Contains(t, err.Error(), "did not answer within")
+	assert.Contains(t, err.Error(), "after kill: signal: killed")
+	assert.Contains(t, err.Error(), "shelljail.Main()")
+}
+
+func TestEndedAfterKill(t *testing.T) {
+	tests := []struct {
+		name    string
+		waitErr error
+		want    string
+	}{
+		{name: "killed child", waitErr: errors.New("signal: killed"), want: "after kill: signal: killed"},
+		{name: "child that exited by itself at the deadline", waitErr: nil, want: "the child then exited without an error"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := endedAfterKill(tt.waitErr)
+			assert.Equal(t, tt.want, got)
+			assert.NotContains(t, got, "<nil>")
+		})
+	}
 }
 
 type corpusCase struct {

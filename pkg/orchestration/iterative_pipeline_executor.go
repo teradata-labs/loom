@@ -715,7 +715,7 @@ func (e *IterativePipelineExecutor) buildSharedMemoryContextHeader(stageCount in
 	builder.WriteString("Available keys:\n")
 
 	for i := 1; i <= stageCount; i++ {
-		builder.WriteString(fmt.Sprintf("- `stage-%d-output`\n", i))
+		fmt.Fprintf(&builder, "- `stage-%d-output`\n", i)
 	}
 
 	builder.WriteString("\n---\n\n")

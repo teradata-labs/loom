@@ -81,14 +81,14 @@ func (p *Pattern) FormatForLLM() string {
 	var sb strings.Builder
 
 	// Header
-	sb.WriteString(fmt.Sprintf("## Pattern: %s\n\n", p.Title))
-	sb.WriteString(fmt.Sprintf("%s\n\n", p.Description))
+	fmt.Fprintf(&sb, "## Pattern: %s\n\n", p.Title)
+	fmt.Fprintf(&sb, "%s\n\n", p.Description)
 
 	// Use cases
 	if len(p.UseCases) > 0 {
 		sb.WriteString("**When to use:**\n")
 		for _, useCase := range p.UseCases {
-			sb.WriteString(fmt.Sprintf("- %s\n", useCase))
+			fmt.Fprintf(&sb, "- %s\n", useCase)
 		}
 		sb.WriteString("\n")
 	}
@@ -97,12 +97,12 @@ func (p *Pattern) FormatForLLM() string {
 	if len(p.Parameters) > 0 {
 		sb.WriteString("**Required parameters:**\n")
 		for _, param := range p.Parameters {
-			sb.WriteString(fmt.Sprintf("- `%s` (%s): %s", param.Name, param.Type, param.Description))
+			fmt.Fprintf(&sb, "- `%s` (%s): %s", param.Name, param.Type, param.Description)
 			if param.Required {
 				sb.WriteString(" [REQUIRED]")
 			}
 			if param.Example != "" {
-				sb.WriteString(fmt.Sprintf(" (e.g., %s)", param.Example))
+				fmt.Fprintf(&sb, " (e.g., %s)", param.Example)
 			}
 			sb.WriteString("\n")
 		}
@@ -117,11 +117,11 @@ func (p *Pattern) FormatForLLM() string {
 			if count >= 2 {
 				break
 			}
-			sb.WriteString(fmt.Sprintf("### %s\n", name))
+			fmt.Fprintf(&sb, "### %s\n", name)
 			if template.Description != "" {
-				sb.WriteString(fmt.Sprintf("%s\n", template.Description))
+				fmt.Fprintf(&sb, "%s\n", template.Description)
 			}
-			sb.WriteString(fmt.Sprintf("```\n%s\n```\n\n", template.GetSQL()))
+			fmt.Fprintf(&sb, "```\n%s\n```\n\n", template.GetSQL())
 			count++
 		}
 	}
@@ -129,15 +129,15 @@ func (p *Pattern) FormatForLLM() string {
 	// Best practices (critical for correctness)
 	if p.BestPractices != "" {
 		sb.WriteString("**Best practices:**\n")
-		sb.WriteString(fmt.Sprintf("%s\n\n", p.BestPractices))
+		fmt.Fprintf(&sb, "%s\n\n", p.BestPractices)
 	}
 
 	// Common errors (help LLM avoid mistakes)
 	if len(p.CommonErrors) > 0 && len(p.CommonErrors) <= 3 {
 		sb.WriteString("**Common errors to avoid:**\n")
 		for _, err := range p.CommonErrors {
-			sb.WriteString(fmt.Sprintf("- Error: %s\n", err.Error))
-			sb.WriteString(fmt.Sprintf("  Solution: %s\n", err.Solution))
+			fmt.Fprintf(&sb, "- Error: %s\n", err.Error)
+			fmt.Fprintf(&sb, "  Solution: %s\n", err.Solution)
 		}
 		sb.WriteString("\n")
 	}

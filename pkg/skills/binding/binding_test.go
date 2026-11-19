@@ -193,7 +193,7 @@ func TestResolve_BindingsTakesPrecedence(t *testing.T) {
 	cfg := &skills.SkillsConfig{
 		Enabled: true,
 		// Legacy fields populated but Bindings non-empty -> ignored.
-		EnabledSkills: []string{"pr-feedback"},
+		EnabledSkills: []string{"pr-feedback"}, //nolint:staticcheck // SA1019: the legacy list is set to prove Bindings wins over it
 		Bindings: []skills.SkillBinding{
 			{Name: "sql-optimization", Mode: skills.BindingEager},
 		},
@@ -216,7 +216,7 @@ func TestResolve_LegacyEnabledSkillsShim(t *testing.T) {
 	}}
 	cfg := &skills.SkillsConfig{
 		Enabled:       true,
-		EnabledSkills: []string{"a", "c"},
+		EnabledSkills: []string{"a", "c"}, //nolint:staticcheck // SA1019: the legacy enabled_skills path is the case under test
 	}
 
 	r := NewResolver(src)
@@ -244,7 +244,7 @@ func TestResolve_LegacyDefaultShim(t *testing.T) {
 	}}
 	cfg := &skills.SkillsConfig{
 		Enabled:        true,
-		DisabledSkills: []string{"b"},
+		DisabledSkills: []string{"b"}, //nolint:staticcheck // SA1019: the legacy disabled_skills path is the case under test
 	}
 
 	r := NewResolver(src)
@@ -320,7 +320,7 @@ func TestResolve_TieBreakOnPriorityThenMode(t *testing.T) {
 
 func TestResolve_DisabledConfigYieldsNothing(t *testing.T) {
 	src := &fakeSource{skills: []*skills.Skill{mkSkill("a", "", "1.0.0", nil)}}
-	cfg := &skills.SkillsConfig{Enabled: false, EnabledSkills: []string{"a"}}
+	cfg := &skills.SkillsConfig{Enabled: false, EnabledSkills: []string{"a"}} //nolint:staticcheck // SA1019: a legacy list must not enable a disabled config
 
 	r := NewResolver(src)
 	got, err := r.Resolve(cfg)
