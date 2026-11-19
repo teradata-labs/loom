@@ -69,14 +69,15 @@ func runLatencyCmd(args []string) error {
 	if *out == "" {
 		return fmt.Errorf("-out is required")
 	}
-	if err := os.MkdirAll(*out, 0o755); err != nil {
+	if err := os.MkdirAll(*out, 0o750); err != nil {
 		return err
 	}
 	jsonlPath := filepath.Join(*out, "latency.jsonl")
 	if _, err := os.Stat(jsonlPath); err == nil {
 		return fmt.Errorf("refusing to overwrite %s", jsonlPath)
 	}
-	f, err := os.OpenFile(jsonlPath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o644)
+	// #nosec G304 -- path under the results directory the operator passed with -out, or a fixture the harness wrote; never request input
+	f, err := os.OpenFile(jsonlPath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
@@ -108,6 +109,7 @@ func runLatencyCmd(args []string) error {
 		}{a, c})
 	}
 
+	// #nosec G404 -- a seeded PRNG is required here so runs are reproducible; nothing secret depends on it
 	rng := rand.New(rand.NewSource(20261118))
 	total := *warmup + *rounds
 	var spent float64
@@ -285,7 +287,7 @@ func runLatencySummaryCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, b, 0o644); err != nil {
+	if err := os.WriteFile(path, b, 0o600); err != nil {
 		return err
 	}
 	fmt.Println("wrote", path)
@@ -293,6 +295,7 @@ func runLatencySummaryCmd(args []string) error {
 }
 
 func readSamples(path string) ([]latencySample, error) {
+	// #nosec G304 -- path under the results directory the operator passed with -out, or a fixture the harness wrote; never request input
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -334,6 +337,7 @@ func bootstrapMedianCI(xs []float64, iters int, seed int64) (float64, float64) {
 	if len(xs) == 0 {
 		return 0, 0
 	}
+	// #nosec G404 -- a seeded PRNG is required here so runs are reproducible; nothing secret depends on it
 	rng := rand.New(rand.NewSource(seed))
 	meds := make([]float64, iters)
 	buf := make([]float64, len(xs))

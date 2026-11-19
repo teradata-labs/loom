@@ -67,7 +67,7 @@ func runRoutingCmd(args []string) error {
 	if *out == "" {
 		return fmt.Errorf("-out is required")
 	}
-	if err := os.MkdirAll(*out, 0o755); err != nil {
+	if err := os.MkdirAll(*out, 0o750); err != nil {
 		return err
 	}
 	path := filepath.Join(*out, "routing.json")
@@ -91,7 +91,7 @@ func runRoutingCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, b, 0o644); err != nil {
+	if err := os.WriteFile(path, b, 0o600); err != nil {
 		return err
 	}
 	fmt.Println("wrote", path)

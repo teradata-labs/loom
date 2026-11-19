@@ -292,14 +292,14 @@ func finish(runDir string, rec *runRecord, t *task) (*runRecord, error) {
 		rec.Checks = evaluateChecks(runDir, t, rec)
 		rec.Pass = allPassed(rec.Checks)
 	}
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
+	if err := os.MkdirAll(runDir, 0o750); err != nil {
 		return nil, err
 	}
 	b, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(filepath.Join(runDir, "result.json"), b, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(runDir, "result.json"), b, 0o600); err != nil {
 		return nil, err
 	}
 	return rec, nil
@@ -328,10 +328,10 @@ func writeFiles(dir string, files map[string]string) error {
 		if _, err := os.Stat(p); err == nil {
 			return fmt.Errorf("refusing to overwrite %s", p)
 		}
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
 			return err
 		}
-		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
 			return err
 		}
 	}

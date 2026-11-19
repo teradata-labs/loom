@@ -183,6 +183,7 @@ func allocValid(spec, final string) (bool, string) {
 
 // readWorkspaceFile returns a file from the run's workspace.
 func readWorkspaceFile(ws, rel string) (string, error) {
+	// #nosec G304 -- path under the results directory the operator passed with -out, or a fixture the harness wrote; never request input
 	b, err := os.ReadFile(filepath.Join(ws, rel))
 	return string(b), err
 }

@@ -74,6 +74,7 @@ type judgement struct {
 // validatedCalibration reads calibration.json and refuses unless the gate
 // passed. Jev scores are never reported without a passing calibration.
 func validatedCalibration(path string) (*calSummary, error) {
+	// #nosec G304 -- path under the results directory the operator passed with -out, or a fixture the harness wrote; never request input
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("calibration file: %w", err)

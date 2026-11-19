@@ -73,6 +73,7 @@ func findRuns(root string) ([]string, error) {
 // run has none or was already judged.
 func judgeRun(client *jev.Client, model, runDir, file string) (bool, error) {
 	var rec runRecord
+	// #nosec G304 -- path under the results directory the operator passed with -out, or a fixture the harness wrote; never request input
 	b, err := os.ReadFile(filepath.Join(runDir, "result.json"))
 	if err != nil {
 		return false, err
@@ -134,7 +135,7 @@ func judgeRun(client *jev.Client, model, runDir, file string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if err := os.WriteFile(jPath, out, 0o644); err != nil {
+	if err := os.WriteFile(jPath, out, 0o600); err != nil {
 		return false, err
 	}
 	return true, nil

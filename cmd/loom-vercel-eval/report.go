@@ -123,7 +123,7 @@ func runReportCmd(args []string) error {
 	if _, err := os.Stat(path); err == nil {
 		return fmt.Errorf("summary already exists: %s", path)
 	}
-	if err := os.WriteFile(path, b, 0o644); err != nil {
+	if err := os.WriteFile(path, b, 0o600); err != nil {
 		return err
 	}
 	fmt.Println("wrote", path)
@@ -133,6 +133,7 @@ func runReportCmd(args []string) error {
 // verdictFor applies the judge pass to one run's deterministic result.
 func verdictFor(runDir, judgeFile string) (runVerdict, error) {
 	var rec runRecord
+	// #nosec G304 -- path under the results directory the operator passed with -out, or a fixture the harness wrote; never request input
 	b, err := os.ReadFile(filepath.Join(runDir, "result.json"))
 	if err != nil {
 		return runVerdict{}, err
@@ -154,6 +155,7 @@ func verdictFor(runDir, judgeFile string) (runVerdict, error) {
 	if !hasDeferred {
 		return v, nil
 	}
+	// #nosec G304 -- path under the results directory the operator passed with -out, or a fixture the harness wrote; never request input
 	jb, err := os.ReadFile(filepath.Join(runDir, judgeFile))
 	if err != nil {
 		v.Unjudged = true

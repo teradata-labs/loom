@@ -32,7 +32,7 @@ func sandboxHome(outDir string) error {
 		}
 	}
 	home := filepath.Join(outDir, "sandbox-home")
-	if err := os.MkdirAll(home, 0o755); err != nil {
+	if err := os.MkdirAll(home, 0o750); err != nil {
 		return err
 	}
 	return os.Setenv("HOME", home)

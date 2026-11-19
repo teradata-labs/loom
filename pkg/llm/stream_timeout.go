@@ -211,6 +211,7 @@ func DoStreamHTTP(httpClient *http.Client, req *http.Request, firstByteTimeout, 
 		req = req.Clone(streamCtx)
 	}
 	startedAt := time.Now()
+	// #nosec G704 -- the URL is the provider endpoint the calling client was configured with; this helper only adds timeouts
 	resp, err := httpClient.Do(req)
 	if err != nil && cancelStream != nil {
 		cancelStream()

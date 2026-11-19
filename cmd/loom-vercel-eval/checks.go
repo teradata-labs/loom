@@ -100,6 +100,7 @@ func evalOne(c check, ws, orig, final string, rec *runRecord) (bool, string) {
 		}
 		return a == b, ""
 	case checkFileContains, checkFileNotContain:
+		// #nosec G304 -- path under the results directory the operator passed with -out, or a fixture the harness wrote; never request input
 		data, err := os.ReadFile(filepath.Join(ws, c.Path))
 		if err != nil {
 			return false, "read: " + err.Error()
@@ -129,6 +130,7 @@ func hasTool(rec *runRecord, name string) bool {
 }
 
 func hashFile(p string) (string, error) {
+	// #nosec G304 -- path under the results directory the operator passed with -out, or a fixture the harness wrote; never request input
 	data, err := os.ReadFile(p)
 	if err != nil {
 		return "", err
@@ -143,6 +145,7 @@ func hashFile(p string) (string, error) {
 func runShell(dir, script string) (bool, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+	// #nosec G204 -- the checker script comes from the compiled-in task table (checks.go), not from model or user input
 	cmd := exec.CommandContext(ctx, "bash", "-c", script)
 	cmd.Dir = dir
 	var stderr bytes.Buffer
