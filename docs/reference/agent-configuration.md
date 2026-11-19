@@ -279,7 +279,7 @@ Source: `DecisionConfigYAML` in `pkg/agent/config_loader.go`; rules in `decision
 | `provider` | `string` | `off` | `off`, `llm` (adapter over one of the agent's LLMs), `jev` (TypeSafe System One API) or `mock`. Case-insensitive in YAML |
 | `llm_role` | `string` | main LLM | With `llm`: `classifier`, `compressor`, `judge` or `orchestrator`; an unset or unconfigured role uses the main LLM |
 | `model` | `string` | `jev-1.13.0` (jev direct), `typesafe-ai/jev` (gateway) | jev model id (the `llm` provider uses its role LLM's own model and ignores this). Floating aliases (`jev-latest`, `jev-preview`, `latest`, `typesafe-ai/jev`) are rejected unless `allow_alias: true` |
-| `allow_alias` | `bool` | `false` | Accept a floating alias. Required for the Vercel AI Gateway, whose only id is `typesafe-ai/jev` |
+| `allow_alias` | `bool` | `false` | Accept a floating alias. Required for the floating gateway id `typesafe-ai/jev`. Pinned gateway ids such as `typesafe-ai/jev-1.14.0` are accepted without it (verified live on 2026-11-18) |
 | `timeout_ms` | `int` | `0` (5 s for jev, 20 s for llm) | Per-request timeout; must be `>= 0` |
 | `max_per_session` | `int` | `0` (no cap) | Decider calls per session before the router falls back; must be `>= 0` |
 | `max_cost_usd_per_session` | `float` | `0` (no cap) | Decider spend per session in USD; must be `>= 0` |

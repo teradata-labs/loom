@@ -386,8 +386,8 @@ func TestAgent_EmptyResponseFallback(t *testing.T) {
 	if resp.Content == "" {
 		t.Error("Expected non-empty fallback response")
 	}
-	if !strings.Contains(resp.Content, "Completed") {
-		t.Errorf("Expected fallback message, got: %q", resp.Content)
+	if !strings.Contains(resp.Content, "returned no text") {
+		t.Errorf("Expected an empty-reply message that names the stop reason, got: %q", resp.Content)
 	}
 }
 
