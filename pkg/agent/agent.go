@@ -2556,6 +2556,10 @@ func (a *Agent) persistAfterFailure(ctx context.Context, session *Session, span 
 	if err := a.memory.PersistSession(pctx, session); err != nil {
 		zap.L().Warn("the turn ended on an error, and the session could not be persisted",
 			zap.String("session_id", session.ID), zap.Error(err))
+		if span != nil {
+			span.RecordError(err)
+			span.SetAttribute("session.persist_failed", true)
+		}
 	}
 }
 

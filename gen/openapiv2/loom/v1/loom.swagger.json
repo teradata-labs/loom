@@ -4841,7 +4841,7 @@
         "turnsKept": {
           "type": "integer",
           "format": "int32",
-          "description": "Newest turns left verbatim."
+          "description": "Newest turns left verbatim. A long region is folded in chunks; when a\nlater chunk cannot be summarized or saved, the earlier chunks stay folded\nand this counts every turn still verbatim, which can be more than\nkeep_turns. The call still succeeds."
         },
         "tokensBefore": {
           "type": "string",

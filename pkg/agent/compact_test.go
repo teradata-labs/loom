@@ -17,6 +17,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/teradata-labs/loom/pkg/llm/catalog"
+	"github.com/teradata-labs/loom/pkg/shuttle"
 	"strings"
 	"sync"
 	"testing"
@@ -151,6 +153,53 @@ func (c *windowedCompressor) CompressMessages(_ context.Context, msgs []Message)
 	return fmt.Sprintf("SUMMARY %d: kept the settled SQL", len(c.inputs)), nil
 }
 func (c *windowedCompressor) IsEnabled() bool { return true }
+
+// reportingCompressor is a windowedCompressor that reports its window
+// (CompressorWindow), as the LLM compressor does for a cataloged model.
+type reportingCompressor struct{ windowedCompressor }
+
+func (c *reportingCompressor) InputWindowTokens() int { return c.limit }
+
+// A dedicated compressor model can have a smaller window than the agent's.
+// The compaction asked for by #506's approval must still succeed: the fold
+// chunks to the compressor's own window, and no input is larger than it.
+func TestCompact_ChunksToACompressorWindowSmallerThanTheAgents(t *testing.T) {
+	sm := toolTurnMemory(t, 12000, 1000, 12) // agent usable window 11000
+	comp := &reportingCompressor{windowedCompressor{limit: 5000}}
+	sm.SetCompressor(comp)
+
+	res, err := sm.Compact(context.Background(), CompactOptions{KeepTurns: 2})
+
+	require.NoError(t, err, "the compaction failed on a compressor with a smaller window than the agent's")
+	assert.True(t, res.Compacted)
+	require.Greater(t, len(comp.inputs), 1, "a region larger than the compressor window was not chunked")
+	for i, n := range comp.inputs {
+		assert.LessOrEqual(t, n, 5000, "compressor input %d is larger than its window", i)
+	}
+}
+
+// fixedLLM is an LLMProvider with a name and model only.
+type fixedLLM struct{ name, model string }
+
+func (f fixedLLM) Chat(context.Context, []Message, []shuttle.Tool) (*LLMResponse, error) {
+	return nil, errors.New("not used")
+}
+func (f fixedLLM) Name() string  { return f.name }
+func (f fixedLLM) Model() string { return f.model }
+
+// The LLM compressor reports its model's usable input window for a model the
+// catalog knows, and nothing for one it does not (the agent's window then
+// applies, instead of a guessed fallback).
+func TestLLMCompressor_ReportsTheWindowOfAKnownModelOnly(t *testing.T) {
+	info := catalog.Lookup("anthropic", "claude-haiku-4-5-20251001")
+	require.NotNil(t, info, "the catalog lists the model the test uses")
+	known := NewLLMCompressor(&promptRegistryCompressor{llm: fixedLLM{"anthropic", "claude-haiku-4-5-20251001"}})
+	assert.Equal(t, int(info.ContextWindow-info.MaxOutputTokens), known.InputWindowTokens())
+
+	unknown := NewLLMCompressor(&promptRegistryCompressor{llm: fixedLLM{"ollama", "made-up-model:1b"}})
+	assert.Zero(t, unknown.InputWindowTokens())
+	assert.Zero(t, NewLLMCompressor(nil).InputWindowTokens())
+}
 
 // A session already over its window is the case a compaction must rescue.
 // Its older turns are larger than the compressor's window, so one fold call

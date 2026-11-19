@@ -1774,7 +1774,10 @@ message CompactSessionResponse {
   // Older turns were folded into the running summary.
   bool turns_folded = 3;
 
-  // Newest turns left verbatim.
+  // Newest turns left verbatim. A long region is folded in chunks; when a
+  // later chunk cannot be summarized or saved, the earlier chunks stay folded
+  // and this counts every turn still verbatim, which can be more than
+  // keep_turns. The call still succeeds.
   int32 turns_kept = 4;
 
   // Estimated context size before the compaction.

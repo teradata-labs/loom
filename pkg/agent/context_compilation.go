@@ -1005,9 +1005,10 @@ func foldInputTokens(input []Message) int {
 
 // foldBoundedLocked folds every turn up to b, as foldLocked does, but never
 // gives the compressor an input larger than the usable window. The region of
-// a requested compaction, or of a relief rung, can be larger than the window
-// the compressor reads: the session went over its window, the window was cut,
-// or the compressor model has a smaller one. foldBoundedLocked then folds in
+// a requested compaction, or of a relief rung, can be larger than that
+// window: the session went over its window, or the window was cut. The bound
+// is the smaller of the agent's usable window and the compressor's own input
+// window (CompressorWindow). foldBoundedLocked then folds in
 // chunks: the oldest turns that fit, then the next turns on top of that
 // summary, up to b. Each chunk is an ordinary fold with its own summary
 // version. No stored row changes. Compact and ReleasePressure call it.
@@ -1036,15 +1037,28 @@ func (sm *SegmentedMemory) foldBoundedLocked(ctx context.Context, b int64) bool 
 	}
 }
 
+// foldInputBudgetLocked is the largest compressor input a fold may send: the
+// agent's usable window, or the compressor's own input window when it reports
+// a smaller one (a dedicated compressor model). Must hold lock.
+func (sm *SegmentedMemory) foldInputBudgetLocked() int {
+	budget := sm.usableLocked()
+	if w, ok := sm.compressor.(CompressorWindow); ok {
+		if cw := w.InputWindowTokens(); cw > 0 && (budget <= 0 || cw < budget) {
+			budget = cw
+		}
+	}
+	return budget
+}
+
 // foldStepLocked is the boundary of the next fold toward b: b itself when
-// its compressor input fits the usable window, else the newest earlier turn
+// its compressor input fits the fold input budget (foldInputBudgetLocked), else the newest earlier turn
 // whose input fits (chunked is then true). When not even the oldest turn
 // fits, it is the oldest turn: one turn is the smallest fold there is. A
 // boundary in the current turn is never split, because the current turn's
 // region is capped by foldLocked. Must hold lock.
 func (sm *SegmentedMemory) foldStepLocked(ctx context.Context, b int64) (step int64, chunked bool) {
 	t := sm.currentTurnLocked()
-	budget := sm.usableLocked()
+	budget := sm.foldInputBudgetLocked()
 	if budget <= 0 || len(sm.contextMessages) == 0 {
 		return b, false
 	}

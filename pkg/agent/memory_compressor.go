@@ -16,6 +16,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"github.com/teradata-labs/loom/pkg/llm/catalog"
 	"strings"
 
 	"github.com/teradata-labs/loom/pkg/prompts"
@@ -98,6 +99,22 @@ type LLMCaller interface {
 	// CompressConversation takes conversation text and returns a concise summary.
 	// Should limit output to 512 tokens for cost efficiency.
 	CompressConversation(ctx context.Context, conversationText string) (string, error)
+}
+
+// CompressorWindow is implemented by a MemoryCompressor (or an LLMCaller
+// behind an LLMCompressor) that knows the largest input it can read, in
+// tokens. A fold never sends it more: a region larger than that is folded in
+// chunks. Zero means unknown, and the agent's own usable window applies.
+type CompressorWindow interface {
+	InputWindowTokens() int
+}
+
+// InputWindowTokens reports the window of the LLMCaller, when it knows one.
+func (c *LLMCompressor) InputWindowTokens() int {
+	if w, ok := c.llmCaller.(CompressorWindow); ok {
+		return w.InputWindowTokens()
+	}
+	return 0
 }
 
 // NewLLMCompressor creates a new LLM-powered memory compressor.
@@ -225,6 +242,26 @@ type promptRegistryCompressor struct {
 // its caller (the fold then drops the region with an "(unsummarized)" marker).
 func newPromptRegistryCompressor(llm LLMProvider, registry prompts.PromptRegistry) *promptRegistryCompressor {
 	return &promptRegistryCompressor{llm: llm, prompts: registry}
+}
+
+// InputWindowTokens is the compressor model's usable input window: its
+// context window less the output it reserves, from the model catalog (or the
+// legacy model table). Zero for a model neither knows. The compaction
+// prompt's own size is part of the fold input head the caller counts.
+func (c *promptRegistryCompressor) InputWindowTokens() int {
+	if c.llm == nil {
+		return 0
+	}
+	// Only a known model reports a window: the provider defaults and the
+	// conservative fallback of ResolveContextLimits would shrink every fold
+	// of an unlisted model for no measured reason.
+	if info := catalog.Lookup(c.llm.Name(), c.llm.Model()); info != nil && info.ContextWindow > info.MaxOutputTokens {
+		return int(info.ContextWindow - info.MaxOutputTokens)
+	}
+	if lim := GetModelContextLimits(c.llm.Model()); lim != nil && lim.MaxContextTokens > lim.ReservedOutputTokens {
+		return lim.MaxContextTokens - lim.ReservedOutputTokens
+	}
+	return 0
 }
 
 // CompressConversation loads the compaction prompt from the registry and asks
