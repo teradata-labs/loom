@@ -7,7 +7,7 @@
 
 ## 0. Decisions
 
-D1–D7 were answered by Ilsun Park on 2026-11-19. D1–D5 and D7 follow the recommendation. D6 was an open call and is decided as shown. D8 was found on 2026-11-19 while tracing readers for D6 and is open.
+D1–D7 were answered by Ilsun Park on 2026-11-19. D1–D5 and D7 follow the recommendation. D6 was an open call and is decided as shown. D8 was found on 2026-11-19 while tracing readers for D6 and was answered the same day, following the recommendation.
 
 | # | Decision | Decided | Why |
 |---|---|---|---|
@@ -18,7 +18,7 @@ D1–D7 were answered by Ilsun Park on 2026-11-19. D1–D5 and D7 follow the rec
 | D5 | Strictness for model-produced JSON (tool-call arguments, structured output) | Keep case-insensitive field matching permanently. Decide duplicate-name and invalid-UTF-8 rejection from an eval run, not by default. | v2 case-sensitive matching drops mismatched fields **without an error** (§3, row 7). Models do emit `Query` for `query`. |
 | D6 | `cmd/loom-longmemeval` report fields named `*_ms` hold `time.Duration` and serialise as **nanoseconds** | Emit real milliseconds under the same field names | Existing mislabel, not caused by this migration, but v2 forces a choice because it refuses to marshal `time.Duration` (§3, row 10). Result files written before the change hold nanoseconds and are not rewritten; see Phase 4, item 2 for what that means for `score`. |
 | D7 | Migrate the 154 test files too | Yes, last | Low direct value. It is what allows a repo-wide lint rule against new v1 calls (Phase 5). |
-| D8 | HITL webhook body: `HumanRequest.Timeout` (`json:"timeout"`) is sent by `JSONNotifier.Notify` (`pkg/shuttle/human_tool.go:744`) as **nanoseconds** | **Open.** Recommendation: keep nanoseconds | The receivers are outside the repo and cannot be audited, the field name carries no unit, and the same body already carries `expires_at`. Without action a v2 marshal of this struct returns an error and the webhook stops (row 10). The exported Go field stays `time.Duration` (D3); the webhook gets its own payload struct with an integer `timeout`. |
+| D8 | HITL webhook body: `HumanRequest.Timeout` (`json:"timeout"`) is sent by `JSONNotifier.Notify` (`pkg/shuttle/human_tool.go:744`) as **nanoseconds** | Keep nanoseconds | The receivers are outside the repo and cannot be audited, the field name carries no unit, and the same body already carries `expires_at`. Without action a v2 marshal of this struct returns an error and the webhook stops (row 10). The exported Go field stays `time.Duration` (D3); the webhook gets its own payload struct with an integer `timeout`. |
 
 ## 1. Where the repo is today (measured)
 
@@ -146,7 +146,7 @@ Each phase is one or more PRs. Every PR passes `just check` (lint, `go test -tag
 
 ### Phase 0: Decisions
 
-- [x] D1–D7 answered and recorded in this file (2026-11-19).
+- [x] D1–D8 answered and recorded in this file (2026-11-19).
 
 ### Phase 1a: Linter upgrade (one PR, still on Go 1.26.7)
 
@@ -163,6 +163,8 @@ Measured on the branch (2026-11-19, macOS arm64, Go 1.26.7): golangci-lint v2.15
 **Exit**: `just check` prints "All checks passed" with v2.15.0 on Go 1.26.7.
 
 ### Phase 1b: Toolchain to Go 1.27.4 (one PR, no JSON API changes)
+
+On hold by the owner's call (2026-11-19). Not started.
 
 Priority order:
 
@@ -214,7 +216,7 @@ Per PR: snapshot tests unchanged, differential tests pass, `go test -tags fts5 -
 - [ ] 2. `time.Duration` fields given an explicit unit. A `format:` tag is not available (row 10), so each field changes its Go type or gets an explicit marshal method.
   - [ ] `cmd/loom-longmemeval` (D6): `duration_ms`, `total_duration_ms`, and both `avg_duration_ms` fields become integer milliseconds (`int64`, matching the proto `*_ms` convention). `Summarize` and the text report convert at the edge.
   - [ ] Stored results are not rewritten or deleted. `loom-longmemeval score` reads a stored `[]EntryResult` file and writes the entry back inside `ScoredResult`, so scoring a file written before this change passes the nanosecond number through unchanged. The file has no version marker, so old and new files cannot be told apart by content. Record the cut-over commit and date in the longmemeval docs, and state the unit in any comparison that mixes old and new files.
-  - [ ] `pkg/shuttle/human_tool.go:57` (`HumanRequest.Timeout`): traced 2026-11-19. Both stores write a `timeout_ms` integer column and never marshal the field. The one JSON writer is the webhook body in `JSONNotifier.Notify` (`human_tool.go:744`), shown as a usable notifier in `docs/guides/human-in-the-loop.md:549`. Give `Notify` its own payload struct with an integer `timeout` in the unit D8 settles, with a test that pins the body bytes.
+  - [ ] `pkg/shuttle/human_tool.go:57` (`HumanRequest.Timeout`): traced 2026-11-19. Both stores write a `timeout_ms` integer column and never marshal the field. The one JSON writer is the webhook body in `JSONNotifier.Notify` (`human_tool.go:744`), shown as a usable notifier in `docs/guides/human-in-the-loop.md:549`. Give `Notify` its own payload struct with an integer `timeout` in nanoseconds (D8), and a test that pins the body bytes.
   - [ ] `pkg/metaagent/progress.go:67` (`Question.Timeout`): traced 2026-11-19. Nothing in the repo marshals `Question` or `ProgressEvent`; it is an in-process TUI event that also carries a channel. No wire exposure. Remove the unused `json` tags from both structs so a later marshal is a deliberate change.
 - [ ] 3. Pointer-receiver `MarshalJSON` semantics (row 11). Review each by-value use of `RequestID` and `JSONSchema`.
 - [ ] 4. nil slice and nil map output (row 4), one provider or protocol at a time. Each byte change reviewed against that API's contract.
