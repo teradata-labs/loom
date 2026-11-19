@@ -113,7 +113,7 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (_ *Respons
 	// of a still-warm session injects a second context block into the prompt.
 	ctx = contextWithResumedTurn(ctx)
 
-	sess := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
+	sess := a.memory.ReloadPendingSession(ctx, sessionID, a.config.Name)
 
 	// A session that is HITL-parked (waiting on a human, not crashed) must not
 	// be crash-resumed: parking happens before dispatch, so every call in its
@@ -692,7 +692,7 @@ func (a *Agent) ResolveExecutionGap(ctx context.Context, sessionID string, outco
 	defer a.tracer.EndSpan(span)
 	span.SetAttribute(observability.AttrSessionID, sessionID)
 
-	sess := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
+	sess := a.memory.ReloadPendingSession(ctx, sessionID, a.config.Name)
 	events, err := a.eventLog.LoadEvents(ctx, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("loading execution events: %w", err)

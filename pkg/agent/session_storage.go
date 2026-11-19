@@ -127,9 +127,15 @@ type ResultRewriter interface {
 
 // ErrSessionNotFound is the error a SessionStorage wraps when LoadSession
 // finds no session with the id for the caller. Memory.GetOrCreateSession
-// takes it as a new session and logs nothing; any other load error is
-// logged.
+// takes it as a new session and logs nothing. Any other load error is checked
+// with SessionExists: no row is a new session too; a row, or no answer, is a
+// failed load, logged and retried by the next turn.
 var ErrSessionNotFound = errors.New("session not found")
+
+// ErrSessionNotLoaded is returned by an operation that needs a session's
+// stored history (CompactSession) when the store failed to load the session
+// and it is still served as an empty stand-in. Retry once the store answers.
+var ErrSessionNotLoaded = errors.New("the session could not be loaded from the store")
 
 // ErrNoToolResultsRewritten is the error a ResultRewriter wraps when it was
 // given rows to rewrite and changed none of them: the caller does not own

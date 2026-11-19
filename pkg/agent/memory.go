@@ -55,9 +55,10 @@ type Memory struct {
 	mu       sync.RWMutex
 	sessions map[string]*Session
 	// reloadPending holds the ids of cached sessions that were created empty
-	// because the store failed to load them. The next GetOrCreateSession*
-	// call retries the load instead of serving the empty session for the
-	// rest of the process life. Guarded by mu; nil until first used.
+	// because the store failed to load them. The next ReloadPendingSession
+	// call (a turn start, under the session lease) retries the load instead
+	// of serving the empty session for the rest of the process life.
+	// Guarded by mu; nil until first used.
 	reloadPending        map[string]bool
 	store                SessionStorage             // Optional persistent storage (SQLite, PostgreSQL, etc.)
 	sharedMemory         *storage.SharedMemoryStore // Optional shared memory for large data
@@ -336,12 +337,26 @@ func (m *Memory) GetOrCreateSession(ctx context.Context, sessionID string) *Sess
 //   - agentID: Agent identity (e.g., "coordinator", "analyzer-sub-agent")
 //   - parentSessionID: Parent session ID (for sub-agents to access coordinator session)
 func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, agentID, parentSessionID string) *Session {
+	return m.getOrCreate(ctx, sessionID, agentID, parentSessionID, false)
+}
+
+// ReloadPendingSession is GetOrCreateSessionWithAgent for the caller that holds
+// the session's turn (after holdSessionLease). It also retries the load of a
+// session whose earlier load failed (reloadPending): a success replaces the
+// cached empty stand-in with the stored session. Only the turn holder retries,
+// so a session is never swapped out from under a running turn, and the stored
+// rows it loads include everything the previous turn saved.
+func (m *Memory) ReloadPendingSession(ctx context.Context, sessionID, agentID string) *Session {
+	return m.getOrCreate(ctx, sessionID, agentID, "", true)
+}
+
+func (m *Memory) getOrCreate(ctx context.Context, sessionID, agentID, parentSessionID string, retry bool) *Session {
 	// Fast path: read-lock check for existing session (most common case in
 	// multi-turn conversations). No write lock needed if session already exists
 	// and doesn't need metadata updates.
 	m.mu.RLock()
 	if session, ok := m.sessions[sessionID]; ok {
-		needsUpdate := m.reloadPending[sessionID] ||
+		needsUpdate := (retry && m.reloadPending[sessionID]) ||
 			(agentID != "" && session.AgentID == "") ||
 			(parentSessionID != "" && session.ParentSessionID == "") ||
 			session.SegmentedMem == nil ||
@@ -380,7 +395,7 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 	// case they already are (ensureSessionMemory is a no-op), but this protects against
 	// edge cases where a cached session has been stripped of these fields.
 	cached, hasCached := m.sessions[sessionID]
-	if session := cached; hasCached && !m.reloadPending[sessionID] {
+	if session := cached; hasCached && !(retry && m.reloadPending[sessionID]) {
 		m.updateSessionMetadata(session, agentID, parentSessionID, store, ctx, logger)
 		m.ensureSessionMemory(session, sessionID, sysFn, compProfile, maxCtx, reservedOut,
 			sharedMem, store, tracer, llmProv, compressor, ctx)

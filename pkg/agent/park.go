@@ -1139,7 +1139,7 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 
 	// The session is loaded only once the request has been validated: a bogus
 	// or foreign RequestID must not create and persist a session row.
-	sess := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
+	sess := a.memory.ReloadPendingSession(ctx, sessionID, a.config.Name)
 
 	// The parked turn's index and opening message, from the same tail rows
 	// locateParkedBatch anchors on — so the two cannot disagree about which turn

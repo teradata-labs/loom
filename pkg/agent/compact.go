@@ -204,6 +204,14 @@ func (a *Agent) CompactSession(ctx context.Context, sessionID string, opts Compa
 	}
 	defer release()
 
+	// The turn holder retries a session whose earlier load failed. If it still
+	// cannot be loaded, the cached session is an empty stand-in: compacting it
+	// would fold and snapshot a partial memory over the stored session.
+	sess = a.memory.ReloadPendingSession(ctx, sessionID, a.config.Name)
+	if a.memory.isLoadPlaceholder(sess) {
+		return CompactResult{}, fmt.Errorf("session %s: %w", sessionID, ErrSessionNotLoaded)
+	}
+
 	if err := a.guardParkedTail(ctx, sessionID, sess); err != nil {
 		return CompactResult{}, err
 	}

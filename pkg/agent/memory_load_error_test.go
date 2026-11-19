@@ -144,17 +144,24 @@ func TestGetOrCreateSession_RetriesAFailedLoadOnTheNextCall(t *testing.T) {
 	assert.Same(t, first, inTurn)
 	assert.Zero(t, store.saves.Load(), "the empty placeholder overwrote the stored session row")
 
-	again := mem.GetOrCreateSession(ctx, "s-flaky")
+	again := mem.ReloadPendingSession(ctx, "s-flaky", "")
 	assert.Same(t, first, again, "a retry that fails again keeps serving the same session")
-	assert.Equal(t, int32(2), store.loads.Load(), "the second call did not retry the load")
+	assert.Equal(t, int32(2), store.loads.Load(), "the turn holder did not retry the load")
 
+	// The store is back. A caller that does not hold the turn (any
+	// GetOrCreateSession*) is still served the stand-in: swapping it now
+	// would take the session from under a running turn.
 	store.down.Store(false)
-	recovered := mem.GetOrCreateSession(ctx, "s-flaky")
+	assert.Same(t, first, mem.GetOrCreateSession(ctx, "s-flaky"), "a non-holder swapped the session")
+	assert.Equal(t, int32(2), store.loads.Load(), "a non-holder retried the load")
+
+	recovered := mem.ReloadPendingSession(ctx, "s-flaky", "")
 	assert.NotSame(t, first, recovered, "the recovered load did not replace the empty session")
 	require.Len(t, recovered.Messages, 1, "the stored history is back")
 	assert.Equal(t, "earlier question", recovered.Messages[0].Content)
 
 	loads := store.loads.Load()
+	assert.Same(t, recovered, mem.ReloadPendingSession(ctx, "s-flaky", ""))
 	assert.Same(t, recovered, mem.GetOrCreateSession(ctx, "s-flaky"))
 	assert.Equal(t, loads, store.loads.Load(), "a loaded session is reloaded again")
 	assert.Zero(t, store.saves.Load(), "no placeholder save at any point")
@@ -198,11 +205,23 @@ func TestPersistSession_LeavesTheStoredRowAloneAfterAFailedLoad(t *testing.T) {
 
 	// Once the store answers, the next call loads the real session and later
 	// saves go through again.
+	_, err = ag.CompactSession(ctx, "s-keep", CompactOptions{})
+	require.ErrorIs(t, err, ErrSessionNotLoaded, "a stand-in session was compacted")
+
+	// Once the store answers, the next turn loads the real session (with
+	// both turns' messages) and its saves go through again.
 	store.down.Store(false)
+	_, err = ag.Chat(ctx, "s-keep", "next question")
+	require.NoError(t, err)
 	sess := ag.memory.GetOrCreateSession(ctx, "s-keep")
-	assert.Equal(t, "keep-me", sess.Name)
-	require.NoError(t, ag.memory.PersistSession(ctx, sess))
-	assert.Equal(t, int32(1), store.saves.Load(), "a loaded session's save was skipped")
+	assert.Equal(t, "keep-me", sess.Name, "the next turn did not load the stored session")
+	var seen []string
+	for _, m := range sess.Messages {
+		seen = append(seen, m.Content)
+	}
+	assert.Contains(t, seen, "new question", "the failed-load turn's message is missing after the reload")
+	assert.Contains(t, seen, "earlier", "the stored history is missing after the reload")
+	assert.Positive(t, store.saves.Load(), "a loaded session's save was skipped")
 }
 
 // hostNotFoundStore is a host store whose LoadSession reports a missing

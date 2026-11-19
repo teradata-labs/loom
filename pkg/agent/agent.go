@@ -2091,6 +2091,10 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	defer releaseLease()
 	defer func() { retErr = leaseLostError(ctx, retErr) }()
 
+	// The turn holder retries a session whose earlier load failed; any other
+	// caller is served the cached stand-in, so it is never swapped mid-turn.
+	session = a.memory.ReloadPendingSession(ctx, sessionID, a.config.Name)
+
 	// A session holding backend leases from a previous turn starts this turn
 	// in the RESOURCE_HOLDER class — the previous turn's SlotInfo died with
 	// it, so the ledger re-marks the fresh one the server installed.
