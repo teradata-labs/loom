@@ -1092,9 +1092,11 @@ type GatewayBYOKCredential struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Upstream provider slug: anthropic, openai, azure, bedrock or vertex.
 	Provider string `protobuf:"bytes,1,opt,name=provider,proto3" json:"provider,omitempty"`
-	// Credential field -> environment variable that holds its value. Secret
-	// fields (apiKey, secretAccessKey, accessKeyId,
-	// googleCredentials.privateKey) must be given here.
+	// Credential field -> name of the environment variable that holds its
+	// value. Every name must start with LOOM_BYOK_ (agent definitions cannot
+	// reach other server variables). Secret fields (apiKey, secretAccessKey,
+	// accessKeyId, googleCredentials.privateKey) must be given here. Write the
+	// name, not ${NAME}: agent YAML expands ${...} when it loads.
 	Env map[string]string `protobuf:"bytes,2,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Credential field -> literal value, for non-secret fields only (region,
 	// resourceName, project, location, googleCredentials.clientEmail).

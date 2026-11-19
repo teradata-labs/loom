@@ -491,7 +491,7 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Credential field -\u003e environment variable that holds its value. Secret\nfields (apiKey, secretAccessKey, accessKeyId,\ngoogleCredentials.privateKey) must be given here."
+          "description": "Credential field -\u003e name of the environment variable that holds its\nvalue. Every name must start with LOOM_BYOK_ (agent definitions cannot\nreach other server variables). Secret fields (apiKey, secretAccessKey,\naccessKeyId, googleCredentials.privateKey) must be given here. Write the\nname, not ${NAME}: agent YAML expands ${...} when it loads."
         },
         "values": {
           "type": "object",
