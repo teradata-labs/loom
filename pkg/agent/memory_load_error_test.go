@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -82,4 +83,65 @@ func TestGetOrCreateSession_LogsAStoreThatCannotLoadTheSession(t *testing.T) {
 			assert.Contains(t, fields["error"], "connection refused", "the line does not carry the store's error")
 		})
 	}
+}
+
+// flakyLoadStore fails LoadSession while down is set and counts the loads
+// and the session saves it sees.
+type flakyLoadStore struct {
+	*SessionStore
+	down  atomic.Bool
+	loads atomic.Int32
+	saves atomic.Int32
+}
+
+func (s *flakyLoadStore) LoadSession(ctx context.Context, id string) (*Session, error) {
+	s.loads.Add(1)
+	if s.down.Load() {
+		return nil, errors.New("dial tcp: connection refused")
+	}
+	return s.SessionStore.LoadSession(ctx, id)
+}
+
+func (s *flakyLoadStore) SaveSession(ctx context.Context, sess *Session) error {
+	s.saves.Add(1)
+	return s.SessionStore.SaveSession(ctx, sess)
+}
+
+// A session whose load failed is served empty for that turn only: it is
+// cached (in-turn lookups find it), it does not overwrite the stored row, the
+// next GetOrCreateSession retries the load, and a load that succeeds brings
+// the history back and ends the retries.
+func TestGetOrCreateSession_RetriesAFailedLoadOnTheNextCall(t *testing.T) {
+	ctx := context.Background()
+	sqlite, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
+	require.NoError(t, err, "the store must open")
+	t.Cleanup(func() { _ = sqlite.Close() })
+	require.NoError(t, sqlite.SaveSession(ctx, &Session{ID: "s-flaky", AgentID: "a", Context: map[string]interface{}{}}))
+	require.NoError(t, sqlite.SaveMessage(ctx, "s-flaky", &Message{Role: "user", Content: "earlier question"}, true))
+
+	store := &flakyLoadStore{SessionStore: sqlite}
+	store.down.Store(true)
+	mem := NewMemoryWithStore(store)
+
+	first := mem.GetOrCreateSession(ctx, "s-flaky")
+	assert.Empty(t, first.Messages, "a failed load starts the turn with no history")
+	inTurn, ok := mem.GetSession("s-flaky")
+	require.True(t, ok, "the turn's session is cached for in-turn lookups")
+	assert.Same(t, first, inTurn)
+	assert.Zero(t, store.saves.Load(), "the empty placeholder overwrote the stored session row")
+
+	again := mem.GetOrCreateSession(ctx, "s-flaky")
+	assert.Same(t, first, again, "a retry that fails again keeps serving the same session")
+	assert.Equal(t, int32(2), store.loads.Load(), "the second call did not retry the load")
+
+	store.down.Store(false)
+	recovered := mem.GetOrCreateSession(ctx, "s-flaky")
+	assert.NotSame(t, first, recovered, "the recovered load did not replace the empty session")
+	require.Len(t, recovered.Messages, 1, "the stored history is back")
+	assert.Equal(t, "earlier question", recovered.Messages[0].Content)
+
+	loads := store.loads.Load()
+	assert.Same(t, recovered, mem.GetOrCreateSession(ctx, "s-flaky"))
+	assert.Equal(t, loads, store.loads.Load(), "a loaded session is reloaded again")
+	assert.Zero(t, store.saves.Load(), "no placeholder save at any point")
 }

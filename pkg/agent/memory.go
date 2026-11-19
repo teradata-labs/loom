@@ -52,8 +52,13 @@ func (f MemoryObserverFunc) OnMessageAdded(agentID string, sessionID string, msg
 // Memory manages conversation sessions and history.
 // Supports optional persistent storage via SessionStorage interface.
 type Memory struct {
-	mu                   sync.RWMutex
-	sessions             map[string]*Session
+	mu       sync.RWMutex
+	sessions map[string]*Session
+	// reloadPending holds the ids of cached sessions that were created empty
+	// because the store failed to load them. The next GetOrCreateSession*
+	// call retries the load instead of serving the empty session for the
+	// rest of the process life. Guarded by mu; nil until first used.
+	reloadPending        map[string]bool
 	store                SessionStorage             // Optional persistent storage (SQLite, PostgreSQL, etc.)
 	sharedMemory         *storage.SharedMemoryStore // Optional shared memory for large data
 	systemPromptFunc     SystemPromptFunc           // Optional function to generate system prompts
@@ -336,7 +341,8 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 	// and doesn't need metadata updates.
 	m.mu.RLock()
 	if session, ok := m.sessions[sessionID]; ok {
-		needsUpdate := (agentID != "" && session.AgentID == "") ||
+		needsUpdate := m.reloadPending[sessionID] ||
+			(agentID != "" && session.AgentID == "") ||
 			(parentSessionID != "" && session.ParentSessionID == "") ||
 			session.SegmentedMem == nil ||
 			session.FailureTracker == nil
@@ -373,7 +379,8 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 	// Defensive: also ensure SegmentedMem/FailureTracker are present — in the common
 	// case they already are (ensureSessionMemory is a no-op), but this protects against
 	// edge cases where a cached session has been stripped of these fields.
-	if session, ok := m.sessions[sessionID]; ok {
+	cached, hasCached := m.sessions[sessionID]
+	if session := cached; hasCached && !m.reloadPending[sessionID] {
 		m.updateSessionMetadata(session, agentID, parentSessionID, store, ctx, logger)
 		m.ensureSessionMemory(session, sessionID, sysFn, compProfile, maxCtx, reservedOut,
 			sharedMem, store, tracer, llmProv, compressor, ctx)
@@ -385,17 +392,22 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 	}
 
 	// Try loading from persistent store (still under write lock to prevent
-	// duplicate loads, but store.LoadSession is typically fast for cache misses)
+	// duplicate loads, but store.LoadSession is typically fast for cache misses).
+	// A cached session reaches here only when an earlier load failed: the
+	// load is tried again, and a success replaces the empty session.
+	loadFailed := false
 	if store != nil {
 		session, err := store.LoadSession(ctx, sessionID)
 		if err != nil && !errors.Is(err, ErrSessionNotFound) {
 			// A store that failed is not a new session: the turn below starts
 			// with no history in memory. Say so, so the empty context can be
-			// traced to the failed read.
-			zap.L().Error("reload: the store could not load the session; it starts with no history in memory",
-				zap.String("session_id", sessionID), zap.Error(err))
+			// traced to the failed read. The next turn tries the load again.
+			loadFailed = true
+			zap.L().Error("reload: the store could not load the session; this turn has no history in memory, the next turn loads it again",
+				zap.String("session_id", sessionID), zap.Bool("retry", hasCached), zap.Error(err))
 		}
 		if err == nil && session != nil {
+			delete(m.reloadPending, sessionID)
 			session.Messages = dropFoldedCalls(ctx, store, sessionID, session.Messages)
 			m.updateSessionMetadata(session, agentID, parentSessionID, store, ctx, logger)
 			// Sessions loaded from DB don't have SegmentedMem/FailureTracker
@@ -438,6 +450,17 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 			}
 			return session
 		}
+	}
+
+	if hasCached {
+		// The retry of a failed load: still failing, keep serving this turn's
+		// session (it holds the turn's messages in memory); or the store now
+		// says the session does not exist, so the cached one is the session.
+		if !loadFailed {
+			delete(m.reloadPending, sessionID)
+		}
+		m.mu.Unlock()
+		return cached
 	}
 
 	// Not found in cache or store. Release the lock so other goroutines
@@ -510,10 +533,18 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 		return existing
 	}
 	m.sessions[sessionID] = session
+	if loadFailed {
+		if m.reloadPending == nil {
+			m.reloadPending = make(map[string]bool)
+		}
+		m.reloadPending[sessionID] = true
+	}
 	m.mu.Unlock()
 
-	// Persist to store if configured (outside lock)
-	if store != nil {
+	// Persist to store if configured (outside lock). Not after a failed
+	// load: the session most likely exists in the store, and an empty
+	// placeholder must not overwrite its row.
+	if store != nil && !loadFailed {
 		_ = store.SaveSession(ctx, session)
 	}
 
@@ -832,6 +863,7 @@ func (m *Memory) DeleteSession(sessionID string) {
 
 	delete(m.sessions, sessionID)
 	delete(m.turnPayloads, sessionID)
+	delete(m.reloadPending, sessionID)
 }
 
 // ListSessions returns all active sessions.
