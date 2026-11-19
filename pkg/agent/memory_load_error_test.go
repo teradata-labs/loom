@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/teradata-labs/loom/pkg/shuttle"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -435,4 +436,25 @@ func TestReloadPendingSession_ANewSessionSeenInAnOutageBecomesTheSession(t *test
 	got, err := sqlite.LoadSession(ctx, "s-new")
 	require.NoError(t, err)
 	assert.Equal(t, "named later", got.Name, "a later save of the session was skipped")
+}
+
+// sliceProvider is a value-type LLMProvider with a slice field: comparing two
+// of them with == panics ("comparing uncomparable type").
+type sliceProvider struct{ tags []string }
+
+func (sliceProvider) Chat(context.Context, []Message, []shuttle.Tool) (*LLMResponse, error) {
+	return &LLMResponse{Content: "ok"}, nil
+}
+func (sliceProvider) Name() string  { return "test" }
+func (sliceProvider) Model() string { return "test-model" }
+
+// Building an agent around a value-type provider must not compare providers:
+// the compressor's served window is chosen without ==.
+func TestNewAgent_AcceptsAnUncomparableValueProvider(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.PatternConfig = DefaultPatternConfig()
+	cfg.PatternConfig.UseLLMClassifier = false
+	assert.NotPanics(t, func() {
+		_ = NewAgent(&mockBackend{}, sliceProvider{tags: []string{"a"}}, WithConfig(cfg))
+	})
 }
