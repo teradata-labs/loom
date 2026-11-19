@@ -256,7 +256,11 @@ func (s *StdioTransport) Close() error {
 		if err := s.cmd.Process.Kill(); err != nil {
 			s.logger.Error("failed to kill process", zap.Error(err))
 		}
-		<-done
+		// Wait reports how the killed process ended ("signal: killed" is the
+		// expected value); keep it in the log so an unexpected exit is traceable.
+		if waitErr := <-done; waitErr != nil {
+			s.logger.Debug("MCP server exit status after kill", zap.Error(waitErr))
+		}
 	}
 
 	_ = s.stdout.Close()

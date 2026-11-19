@@ -68,7 +68,8 @@ func newStdioHarness(t *testing.T, s *MCPServer) *stdioHarness {
 		cancel()
 		_ = inW.Close()
 		select {
-		case <-done:
+		case serveErr := <-done:
+			assert.ErrorIs(t, serveErr, context.Canceled, "Serve must stop because the test cancelled it")
 		case <-time.After(2 * time.Second):
 			t.Error("Serve did not stop")
 		}

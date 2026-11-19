@@ -146,8 +146,8 @@ func TestDoorGateReleaseIdempotent(t *testing.T) {
 	}()
 	waitQueued(t, g, 1)
 	select {
-	case <-done:
-		t.Fatal("second enter must wait: double release created a phantom slot")
+	case enterErr := <-done:
+		t.Fatalf("second enter must wait: double release created a phantom slot (enter returned %v)", enterErr)
 	case <-time.After(200 * time.Millisecond):
 	}
 	r1()

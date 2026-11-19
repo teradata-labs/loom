@@ -589,8 +589,8 @@ func TestTraceCollector_Stats(t *testing.T) {
 	// Close writer to signal EOF
 	_ = writer.Close()
 
-	// Wait for collection to complete
-	<-done
+	// Wait for collection to complete. A closed pipe ends the scan with no error.
+	require.NoError(t, <-done, "collection must end cleanly when the writer closes")
 
 	// Verify stats
 	collected, errors = collector.GetStats()
@@ -752,8 +752,8 @@ func TestTraceCollector_MalformedJSON(t *testing.T) {
 			// Close writer
 			_ = writer.Close()
 
-			// Wait for collection to complete
-			<-done
+			// Wait for collection to complete. A closed pipe ends the scan with no error.
+			require.NoError(t, <-done, "collection must end cleanly when the writer closes")
 
 			// Verify stats
 			collected, errors := collector.GetStats()

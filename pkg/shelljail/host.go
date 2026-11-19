@@ -537,8 +537,8 @@ func (r *Runner) SelfTest(ctx context.Context) error {
 	case err = <-done:
 	case <-ctx.Done():
 		KillGroup(child.Cmd)
-		<-done
-		return fmt.Errorf("jail self-test: %s did not answer within %s; the binary must call shelljail.Main() first thing in main()", r.exe, selfTestTimeout)
+		waitErr := <-done // how the killed child ended; reported so a hang is diagnosable
+		return fmt.Errorf("jail self-test: %s did not answer within %s (after kill: %v); the binary must call shelljail.Main() first thing in main()", r.exe, selfTestTimeout, waitErr)
 	}
 	res := child.Result()
 	if err != nil || strings.TrimSpace(out.String()) != "shelljail-ok" {
