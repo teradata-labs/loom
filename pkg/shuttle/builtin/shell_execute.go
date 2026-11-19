@@ -798,6 +798,11 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 			result.Error.Message = "Command exited with code 0, but part of it did not run"
 		}
 		if blocked {
+			// A policy refusal is deterministic: the same command is refused
+			// again. Only a rewritten or approved command can run.
+			result.Error.Retryable = false
+		}
+		if blocked {
 			result.Error.Message += "; the shell policy blocked: " + describeBlocked(jailResult.Blocked)
 			result.Error.Suggestion = "A program that is not on the shell allowlist runs only with a person's approval, and only when the command names it literally. Call again with it written out (not computed through a variable or substitution) so it can be approved, or use an allowed program."
 		}

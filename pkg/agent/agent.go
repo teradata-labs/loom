@@ -2337,6 +2337,11 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	span.SetAttribute("conversation.tokens.output", response.TurnUsage.OutputTokens)
 	span.SetAttribute("conversation.cost.usd", response.TurnUsage.CostUSD)
 	span.SetAttribute("conversation.stop_reason", response.Metadata["stop_reason"])
+	if empty, _ := response.Metadata["empty_reply"].(bool); empty {
+		// The text is the agent's explanation, not model output: a refusal
+		// or an empty end_turn (empty_reply.go).
+		span.SetAttribute("conversation.empty_reply", true)
+	}
 	span.SetAttribute("response.length", len(response.Content))
 	span.SetAttribute("response.preview", truncatePreview(response.Content))
 

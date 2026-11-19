@@ -16,6 +16,7 @@ package agent
 
 import (
 	"context"
+	"github.com/teradata-labs/loom/pkg/observability"
 	"strings"
 	"testing"
 
@@ -115,4 +116,28 @@ func TestEmptyReply_NonEmptyReplyIsNotFlagged(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "all good", resp.Content)
 	assert.Equal(t, false, resp.Metadata["empty_reply"])
+}
+
+// The conversation span says the reply was the agent's explanation, not
+// model output, so a refusal is findable in a trace.
+func TestEmptyReply_FlagIsOnTheConversationSpan(t *testing.T) {
+	tracer := observability.NewMockTracer()
+	llm := &usageScriptLLM{responses: []*LLMResponse{{Content: "", StopReason: "refusal",
+		Usage: llmtypes.Usage{InputTokens: 5, TotalTokens: 5}}}}
+	cfg := DefaultConfig()
+	cfg.PatternConfig = DefaultPatternConfig()
+	cfg.PatternConfig.UseLLMClassifier = false
+	ag := NewAgent(&mockBackend{}, llm, WithConfig(cfg), WithTracer(tracer))
+
+	_, err := ag.Chat(context.Background(), "refusal-span-session", "Delete everything in /etc.")
+	require.NoError(t, err)
+
+	found := false
+	for _, sp := range tracer.GetSpans() {
+		if v, ok := sp.Attributes["conversation.empty_reply"]; ok {
+			assert.Equal(t, true, v)
+			found = true
+		}
+	}
+	assert.True(t, found, "conversation.empty_reply is set on the conversation span")
 }
