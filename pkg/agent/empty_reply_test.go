@@ -16,13 +16,15 @@ package agent
 
 import (
 	"context"
-	"github.com/teradata-labs/loom/pkg/observability"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
+	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
 func TestEmptyReplyText(t *testing.T) {
@@ -140,4 +142,31 @@ func TestEmptyReply_FlagIsOnTheConversationSpan(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "conversation.empty_reply is set on the conversation span")
+}
+
+// The synthesis call that ends a turn which ran out of budget gets the same
+// treatment: an empty reply names its stop reason and is flagged, instead of
+// claiming the tool work completed.
+func TestEmptyReply_SynthesisAfterMaxTurns(t *testing.T) {
+	llm := &usageScriptLLM{responses: []*LLMResponse{
+		{StopReason: "tool_use", ToolCalls: []llmtypes.ToolCall{{ID: "call-1", Name: "echo_tool", Input: map[string]interface{}{"x": 1}}},
+			Usage: llmtypes.Usage{InputTokens: 10, TotalTokens: 10}},
+		{Content: "", StopReason: "max_tokens", Usage: llmtypes.Usage{InputTokens: 20, TotalTokens: 20}},
+	}}
+	cfg := DefaultConfig()
+	cfg.PatternConfig = DefaultPatternConfig()
+	cfg.PatternConfig.UseLLMClassifier = false
+	cfg.MaxTurns = 1
+	ag := NewAgent(&mockBackend{}, llm, WithConfig(cfg))
+	ag.RegisterTool(&shuttle.MockTool{MockName: "echo_tool", MockDescription: "Echoes its input",
+		MockExecute: func(_ context.Context, p map[string]interface{}) (*shuttle.Result, error) {
+			return &shuttle.Result{Success: true, Data: p}, nil
+		}})
+
+	resp, err := ag.Chat(context.Background(), "synthesis-empty-session", "use the tool")
+	require.NoError(t, err)
+	require.Equal(t, true, resp.Metadata["synthesized"], "the turn ended through synthesis")
+	assert.Equal(t, true, resp.Metadata["empty_reply"])
+	assert.Contains(t, resp.Content, "returned no text (stop reason: max_tokens)")
+	assert.NotContains(t, resp.Content, "Completed")
 }

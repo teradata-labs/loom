@@ -793,11 +793,11 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 			Suggestion: "Check stderr output for details",
 			Retryable:  true, // Non-zero exit might be transient
 		}
-		if exitCode == 0 && blocked {
-			result.Error.Code = "POLICY_BLOCKED"
-			result.Error.Message = "Command exited with code 0, but part of it did not run"
-		}
 		if blocked {
+			if exitCode == 0 {
+				result.Error.Code = "POLICY_BLOCKED"
+				result.Error.Message = "Command exited with code 0, but part of it did not run"
+			}
 			// A policy refusal is deterministic: the same command is refused
 			// again. Only a rewritten or approved command can run.
 			result.Error.Retryable = false
