@@ -41,6 +41,9 @@ Connect to Model Context Protocol servers.
 **[Observability (Hawk) →](guides/integration/observability/)**
 Trace agent operations and track costs.
 
+**[Arize Phoenix →](guides/integration/phoenix-observability/)**
+Export traces to a local Phoenix over OTLP/HTTP and confirm they arrive.
+
 **[Prompt Management (Promptio) →](guides/integration/prompt-management/)**
 Manage prompts with YAML files, hot-reload, and A/B testing.
 
