@@ -14,6 +14,7 @@
 package factory
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -23,6 +24,7 @@ import (
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/llm/catalog"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -38,6 +40,34 @@ func NewModelRegistry() *ModelRegistry {
 	}
 }
 
+// snapshot returns the built-in models overlaid with every provider a
+// registered catalog source lists and the built-in table does not: catalogs
+// discovered at run time, such as the Vercel AI Gateway's /v1/models (loaded
+// in the background after the registry was built, and refreshed hourly).
+// Rows are de-duplicated by id when several sources list the same provider
+// (one per gateway endpoint). The returned slices are not copies.
+func (r *ModelRegistry) snapshot() map[string][]*loomv1.ModelInfo {
+	dynamic := catalog.DefaultSource().List(context.Background())
+	out := make(map[string][]*loomv1.ModelInfo, len(r.models)+len(dynamic))
+	for p, ms := range r.models {
+		out[p] = ms
+	}
+	for p, ms := range dynamic {
+		if _, builtIn := r.models[p]; builtIn {
+			continue
+		}
+		seen := make(map[string]bool, len(ms))
+		for _, m := range ms {
+			if m == nil || seen[m.GetId()] {
+				continue
+			}
+			seen[m.GetId()] = true
+			out[p] = append(out[p], m)
+		}
+	}
+	return out
+}
+
 // GetModelsForProvider returns all models for a specific provider.
 func (r *ModelRegistry) GetModelsForProvider(provider string) []*loomv1.ModelInfo {
 	// Normalize provider name
@@ -45,7 +75,7 @@ func (r *ModelRegistry) GetModelsForProvider(provider string) []*loomv1.ModelInf
 		provider = "azure-openai"
 	}
 
-	models := r.models[provider]
+	models := r.snapshot()[provider]
 	if models == nil {
 		return nil
 	}
@@ -61,7 +91,7 @@ func (r *ModelRegistry) GetModelsForProvider(provider string) []*loomv1.ModelInf
 // GetAllModels returns all models from all providers.
 func (r *ModelRegistry) GetAllModels() []*loomv1.ModelInfo {
 	var all []*loomv1.ModelInfo
-	for _, models := range r.models {
+	for _, models := range r.snapshot() {
 		for _, m := range models {
 			all = append(all, proto.Clone(m).(*loomv1.ModelInfo))
 		}
@@ -74,7 +104,7 @@ func (r *ModelRegistry) GetAllModels() []*loomv1.ModelInfo {
 func (r *ModelRegistry) GetAvailableModels(factory *ProviderFactory) []*loomv1.ModelInfo {
 	var available []*loomv1.ModelInfo
 
-	for provider, models := range r.models {
+	for provider, models := range r.snapshot() {
 		if factory.IsProviderAvailable(provider) {
 			for _, m := range models {
 				cloned := proto.Clone(m).(*loomv1.ModelInfo)
