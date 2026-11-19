@@ -92,7 +92,13 @@ func normalizeWireRoles(messages []Message) []Message {
 // with token buffering to emit real-time progress.
 func (a *Agent) chatWithRetry(ctx Context, messages []Message, tools []shuttle.Tool) (resp *LLMResponse, err error) {
 	// Measured before the role fold below, which erases the skill-body role.
-	breakdown := measureRequest(messages, tools)
+	summaryOpen := summaryRowPrefix
+	if session := ctx.Session(); session != nil {
+		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
+			summaryOpen = segMem.SummaryRowPrefix()
+		}
+	}
+	breakdown := measureRequest(messages, tools, summaryOpen)
 	defer func() { a.logRequest(ctx, breakdown, resp, err) }()
 
 	// Fold synthetic Loom-internal roles to the wire "user" role before

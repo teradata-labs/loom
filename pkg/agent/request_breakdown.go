@@ -114,7 +114,10 @@ func messageTextBytes(m *Message) int {
 
 // measureRequest sizes one provider request by part. It must see messages
 // BEFORE normalizeWireRoles, which folds the skill-body role into "user".
-func measureRequest(messages []Message, tools []shuttle.Tool) requestBreakdown {
+// summaryOpen is the opening of the summary row the session's memory sends
+// (SegmentedMemory.SummaryRowPrefix); a user row that starts with it is
+// counted as the summary.
+func measureRequest(messages []Message, tools []shuttle.Tool, summaryOpen string) requestBreakdown {
 	var b requestBreakdown
 	b.Messages = len(messages)
 	b.Tools = len(tools)
@@ -138,7 +141,7 @@ func measureRequest(messages []Message, tools []shuttle.Tool) requestBreakdown {
 				b.ToolResultTokens += n
 				b.LargestToolResult = max(b.LargestToolResult, n)
 			}
-		case m.Role == "user" && strings.HasPrefix(m.Content, summaryRowPrefix):
+		case m.Role == "user" && strings.HasPrefix(m.Content, summaryOpen):
 			// The summary row is a system-reminder too; it is counted as the
 			// summary, not as a reminder.
 			b.SummaryTokens += n

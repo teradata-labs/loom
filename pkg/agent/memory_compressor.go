@@ -32,12 +32,19 @@ const compactionPromptKey = "memory.compaction"
 const (
 	foldPromptSummaryHeading = "memory.compaction_summary_heading"
 	foldPromptFocusPreface   = "memory.compaction_focus_preface"
+	// summaryRowHeadingKey and summaryRowCaveatKey frame the summary row the
+	// compile sends after every fold (compileLocked, step 3): the heading
+	// above the summary and the caveat below it.
+	summaryRowHeadingKey = "memory.summary_row_heading"
+	summaryRowCaveatKey  = "memory.summary_row_caveat"
 )
 
 // foldPromptFallbacks is the built-in text of the fold framing prompts.
 var foldPromptFallbacks = map[string]string{
 	foldPromptSummaryHeading: "Current summary:",
 	foldPromptFocusPreface:   "The user asked this compaction to preserve, in priority order:",
+	summaryRowHeadingKey:     "Session summary — the work so far:",
+	summaryRowCaveatKey:      "Exact values quoted in this summary (expected outputs, literals, paths, interfaces) are unverified — the summary may restate them imprecisely. Before relying on one, read it from its source.",
 }
 
 // foldPrompter is a compressor that sources the fold framing text from a

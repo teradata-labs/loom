@@ -41,9 +41,46 @@ type summaryState struct {
 	text string
 }
 
-// summaryRowPrefix opens the compiled summary row; the trigger's estimate
-// recognises the row by it.
-const summaryRowPrefix = "<system-reminder>\nSession summary — the work so far:\n\n"
+// summaryRowOpen is the opening of the compiled summary row with heading as
+// its first line. The row's text comes from the prompt registry
+// (summaryRowHeadingKey, summaryRowCaveatKey; resolved by SetCompressor), so
+// the estimate and the request log recognise the row by the opening this
+// memory sends, not by a fixed string.
+func summaryRowOpen(heading string) string {
+	return "<system-reminder>\n" + heading + "\n\n"
+}
+
+// summaryRowPrefix is the opening of the summary row with the shipped
+// heading: the row of a memory whose compressor has no registry entry, and
+// the request log's default when no segmented memory is in play.
+var summaryRowPrefix = summaryRowOpen(foldPromptFallbacks[summaryRowHeadingKey])
+
+// summaryRowOpenLocked is the opening of this memory's summary row. Must
+// hold lock.
+func (sm *SegmentedMemory) summaryRowOpenLocked() string {
+	if sm.summaryHeading == "" {
+		return summaryRowPrefix
+	}
+	return summaryRowOpen(sm.summaryHeading)
+}
+
+// summaryRowCaveatLocked is the line after the summary in this memory's
+// summary row. Must hold lock.
+func (sm *SegmentedMemory) summaryRowCaveatLocked() string {
+	if sm.summaryCaveat == "" {
+		return foldPromptFallbacks[summaryRowCaveatKey]
+	}
+	return sm.summaryCaveat
+}
+
+// SummaryRowPrefix is the opening of the summary row this memory compiles.
+// chatWithRetry passes it to the request log, which counts that row as the
+// summary.
+func (sm *SegmentedMemory) SummaryRowPrefix() string {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.summaryRowOpenLocked()
+}
 
 // syntheticFailedResult is the normative text of HLD §5.2 step 7: a call with
 // no matching result row gets a synthetic failed result emitted in its place —
@@ -116,8 +153,8 @@ func (sm *SegmentedMemory) compilePrefixLocked(msgs []Message, t int64, fingerpr
 	// from HERE down — ROM and the tool schemas stay cached across folds.
 	if sm.summary.text != "" {
 		push(Message{Role: "user",
-			Content: summaryRowPrefix + sm.summary.text +
-				"\n\nExact values quoted in this summary (expected outputs, literals, paths, interfaces) are unverified — the summary may restate them imprecisely. Before relying on one, read it from its source.\n</system-reminder>"})
+			Content: sm.summaryRowOpenLocked() + sm.summary.text +
+				"\n\n" + sm.summaryRowCaveatLocked() + "\n</system-reminder>"})
 	}
 
 	// Render cases + pair atomicity. Track the message cache breakpoint: the
@@ -525,8 +562,9 @@ func (sm *SegmentedMemory) estimateLocked() int { return sm.estimateOptLocked(fa
 func (sm *SegmentedMemory) estimateOptLocked(skipSummary bool) int {
 	compiled := sm.compileLocked()
 	f := sm.calibrationLocked()
+	summaryOpen := sm.summaryRowOpenLocked()
 	isSummary := func(i int) bool {
-		return skipSummary && compiled[i].Role == "user" && strings.HasPrefix(compiled[i].Content, summaryRowPrefix)
+		return skipSummary && compiled[i].Role == "user" && strings.HasPrefix(compiled[i].Content, summaryOpen)
 	}
 
 	// The in-flight batch: tool results after the last assistant row. The

@@ -54,7 +54,7 @@ func TestMeasureRequest_AttributesEachPart(t *testing.T) {
 	require.True(t, isBoundedToolResult(bounded), "fixture: the pageable tail is bounded")
 	require.True(t, isBoundedToolResult(plainBounded), "fixture: the plain tail is bounded")
 
-	b := measureRequest(messages, tools)
+	b := measureRequest(messages, tools, summaryRowPrefix)
 
 	assert.Equal(t, len(messages), b.Messages, "every message is counted")
 	assert.Equal(t, 1, b.Tools, "every tool is counted")

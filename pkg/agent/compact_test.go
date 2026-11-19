@@ -302,7 +302,7 @@ func TestCompact_BuildsOnTheSummaryOfAnInloopFold(t *testing.T) {
 	}
 	assert.Equal(t, map[int64]bool{7: true, 8: true}, turns, "the newest two turns stay verbatim")
 
-	b := measureRequest(sm.GetMessagesForLLM(), nil)
+	b := measureRequest(sm.GetMessagesForLLM(), nil, sm.SummaryRowPrefix())
 	assert.Positive(t, b.SummaryTokens, "the log did not count the summary row")
 }
 

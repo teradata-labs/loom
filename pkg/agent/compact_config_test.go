@@ -17,6 +17,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -101,6 +102,45 @@ func TestFoldPromptsShippedYAMLMatchesFallback(t *testing.T) {
 		require.NoError(t, err, key)
 		assert.Equal(t, fallback, got, key)
 	}
+}
+
+// The summary row the compile sends after a fold takes its heading and its
+// caveat from the prompt registry. The estimate still recognises the row by
+// the heading this memory sends, so the fold trigger leaves the summary out
+// of its count, and the request log counts the row as the summary.
+func TestSummaryRow_ComesFromTheRegistry(t *testing.T) {
+	t.Parallel()
+	reg := &keyedPrompts{values: map[string]string{
+		summaryRowHeadingKey: "REGISTRY HEADING:",
+		summaryRowCaveatKey:  "REGISTRY CAVEAT.",
+	}}
+	sm := toolTurnMemory(t, 200000, 20000, 6)
+	sm.SetCompressor(NewLLMCompressor(newPromptRegistryCompressor(&capturingLLM{response: "S"}, reg)))
+	sm.mu.Lock()
+	sm.summary = summaryState{n: 1, text: strings.Repeat("the settled SQL. ", 200)}
+	sm.l1Dirty = true
+	sm.mu.Unlock()
+
+	msgs := sm.GetMessagesForLLM()
+	var row string
+	for _, m := range msgs {
+		if m.Role == "user" && strings.Contains(m.Content, "the settled SQL.") {
+			row = m.Content
+		}
+	}
+	require.NotEmpty(t, row, "the compile sent no summary row")
+	assert.True(t, strings.HasPrefix(row, "<system-reminder>\nREGISTRY HEADING:\n\n"), "the row does not open with the registry heading")
+	assert.Contains(t, row, "\n\nREGISTRY CAVEAT.\n</system-reminder>", "the row does not end with the registry caveat")
+	assert.NotContains(t, row, foldPromptFallbacks[summaryRowHeadingKey], "the shipped heading was sent")
+	assert.NotContains(t, row, foldPromptFallbacks[summaryRowCaveatKey], "the shipped caveat was sent")
+
+	sm.mu.Lock()
+	withSummary, withoutSummary := sm.estimateOptLocked(false), sm.estimateOptLocked(true)
+	sm.mu.Unlock()
+	assert.Less(t, withoutSummary, withSummary, "the fold trigger did not recognise the summary row")
+
+	b := measureRequest(msgs, nil, sm.SummaryRowPrefix())
+	assert.Positive(t, b.SummaryTokens, "the request log did not count the row as the summary")
 }
 
 // A registry entry replaces the built-in framing text the compressor sees.

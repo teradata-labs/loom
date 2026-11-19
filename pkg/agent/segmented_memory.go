@@ -165,6 +165,11 @@ type SegmentedMemory struct {
 	// compactFocus is the user's steer for a manual compaction (Compact). Set
 	// only while Compact runs; the fold hands it to the compressor.
 	compactFocus string
+	// summaryHeading and summaryCaveat frame the compiled summary row, from
+	// the prompt registry through the compressor (SetCompressor). Empty means
+	// the shipped text (foldPromptFallbacks).
+	summaryHeading string
+	summaryCaveat  string
 
 	// foldRequireSummary makes a fold abort instead of dropping its region
 	// unsummarised when the compressor fails. Set only by Compact (a manual
@@ -272,10 +277,19 @@ func NewSegmentedMemoryWithCompression(romContent string, maxContextTokens, rese
 
 // SetCompressor sets the memory compressor for fold (HLD §5.4).
 // Should be called after agent initialization to avoid dependency cycles.
+//
+// It also resolves the summary row's framing text (summaryRowHeadingKey,
+// summaryRowCaveatKey) from the compressor's prompt registry, before taking
+// the lock, so the compile never reads the registry. A compressor without a
+// registry gives the shipped text.
 func (sm *SegmentedMemory) SetCompressor(compressor MemoryCompressor) {
+	heading := strings.TrimSpace(foldPromptText(context.Background(), compressor, summaryRowHeadingKey))
+	caveat := strings.TrimSpace(foldPromptText(context.Background(), compressor, summaryRowCaveatKey))
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.compressor = compressor
+	sm.summaryHeading = heading
+	sm.summaryCaveat = caveat
 }
 
 // SetSharedMemory sets the shared memory store (backs explicit shared_memory tools).
