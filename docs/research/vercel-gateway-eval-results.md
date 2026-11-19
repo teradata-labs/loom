@@ -276,3 +276,33 @@ F3 is not comparable across the two columns. The bash run predates the refusal f
 **A stall, not a containment result**: G-S A6 rep1 (jailed) received no response from the gateway for the full 300 s task timeout, then failed with `context deadline exceeded`. The gateway client's default request timeout is also 300 s (`pkg/llm/vercelgateway/client.go`), so a stalled request holds the agent for five minutes without a retry. This is the only error in the 186 jailed runs. Shortening the first-byte timeout is a design decision for loom, not a harness change, so it is open.
 
 **Open after option 1**: the product default (`tools.shell_execute.mode`) is still bash. The chain-refusal reporting and the stall timeout are loom issues. Both are recorded here and not yet fixed.
+
+## 16. Re-run with every fix (2026-11-19)
+
+The full task set ran again in jailed mode on branch `feat/vercel-gateway-complete` (results `main-fixed/`, summary `summary-20261119T205608Z.json`, judged with the revised calibration `calibration-v2`). Everything else is unchanged: same 31 tasks, 3 reps, Sonnet 5.5 (G-S) and GPT-5.5 (G-O) through the gateway. Cost $2.77 for 186 runs.
+
+**What the fixes changed in the runs**
+
+| Finding | Before (main-jailed) | After (main-fixed) |
+|---|---|---|
+| Stalled gateway call | G-S A6 rep1 waited the full 300 s task timeout | Longest G-S run 29 s; no run errored |
+| Refused step reported as success | `mkdir /tmp/dr && … ; ls` came back as success | 6 calls came back `POLICY_BLOCKED` with exit 0. In G-S A3 rep3 the agent read the error and moved its scratch work into a subdirectory of the project |
+| Empty reply masked a refusal | F3 reported "Completed N tool executions" | 3 refusals said so ("declined to answer … stop reason: refusal") |
+| C5 checker case-sensitive | G-O C5 1/3 | 3/3 |
+| E4 note bullet judged defective | criterion v1 | criterion v2 (§6 of this doc, calibration 0.962 / 0.077) |
+
+**Scores**: G-S 84/93 (87 before), G-O 84/93 (85 before), with the v2 judgements on both runs. Per-task differences:
+
+| Arm | Task | Before | After | Cause |
+|---|---|---|---|---|
+| G-S | A3 | 3 | 1 | The agent ran `echo hello > input.txt` in the project root and overwrote the fixture (reps 1 and 2). Model behaviour inside the workspace; the jail cannot tell a scratch file from a fixture |
+| G-O | A3 | 3 | 2 | The program written in rep 2 wrote its output under `--dry-run` |
+| G-S | A6 | 2 | 3 | The stall that failed rep 1 before did not recur, and would now be retried |
+| G-O | C5 | 1 | 3 | Checker fix |
+| G-O | E4 | 3 | 1 | Two runs listed §4 ("pleasant to use") as a requirement bullet (deterministic check) |
+| G-S | B6, F2, F4 | 3 | 2 | One rep each: B6 did not name the missing ledger entry, F2 omitted the release date, F4 quoted a number while saying the file was missing |
+| G-S | C3 | 0 | 1 | One rep stopped listing M1 |
+
+None of the drops traces to a change on the branch: the failing answers do not involve the stream path, the shell result, or the reply text the fixes touched, and each moves by one or two reps out of three. At three reps per task, a 3-point total difference is within run-to-run variation (the pilot and main runs differed by similar amounts with no code change). The fixes did what they were for; the scores do not show a model or loom regression, and they do not show an improvement either.
+
+**Still open (model behaviour, not loom defects)**: writing scratch files over fixtures inside the project directory (A3), asking versus editing on an ambiguous request (F5, G-O 0/3 in both runs), and listing untestable lines as requirements (E4).
