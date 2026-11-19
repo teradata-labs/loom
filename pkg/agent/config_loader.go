@@ -570,6 +570,7 @@ type MemoryCompressionConfigYAML struct {
 	WarningThresholdPercent  int                              `yaml:"warning_threshold_percent"`
 	CriticalThresholdPercent int                              `yaml:"critical_threshold_percent"`
 	ProtectedRecentTurns     int                              `yaml:"protected_recent_turns"`
+	MaxFailedFoldRounds      *int                             `yaml:"max_failed_fold_rounds"`
 	BatchSizes               *MemoryCompressionBatchSizesYAML `yaml:"batch_sizes"`
 }
 
@@ -1273,6 +1274,13 @@ func parseMemoryCompressionConfig(yaml *MemoryCompressionConfigYAML) *loomv1.Mem
 		WarningThresholdPercent:  warningThreshold,
 		CriticalThresholdPercent: criticalThreshold,
 		ProtectedRecentTurns:     protectedTurns,
+	}
+	if yaml.MaxFailedFoldRounds != nil {
+		rounds, err := safeInt32(*yaml.MaxFailedFoldRounds, "MaxFailedFoldRounds")
+		if err != nil {
+			return nil
+		}
+		config.MaxFailedFoldRounds = &rounds
 	}
 
 	// Parse workload profile string to enum

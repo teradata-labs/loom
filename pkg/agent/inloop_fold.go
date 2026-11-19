@@ -48,15 +48,32 @@ import (
 // change it without a rebuild.
 const foldPromptKey = "memory.fold"
 
-// maxFailedFoldRounds is how many fold rounds may fail in one turn before the
-// in-loop fold stops arming for the rest of it. A round fails when two replies
+// defaultMaxFailedFoldRounds is how many fold rounds may fail in one turn before
+// the in-loop fold stops arming for the rest of it, when the compression
+// profile does not set max_failed_fold_rounds (SegmentedMemory.MaxFailedFoldRounds). A round fails when two replies
 // in a row are not a usable summary. Each failed round costs two full-context
 // calls and two loop passes, and before the cap the fold armed again at the
 // next seam, so a model that never answers the ask spent about two of every
 // three passes on it. One failed round is the evidence: the turn goes on
 // unfolded, and a send the provider refuses as too long is still answered by
 // ReleasePressure. A new turn arms again.
-const maxFailedFoldRounds = 1
+const defaultMaxFailedFoldRounds = 1
+
+// MaxFailedFoldRounds is the turn's cap on failed fold rounds: the compression
+// profile's max_failed_fold_rounds, else defaultMaxFailedFoldRounds. 0 means
+// the fold never stops arming.
+func (sm *SegmentedMemory) MaxFailedFoldRounds() int {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	if r := sm.compressionProfile.MaxFailedFoldRounds; r != nil {
+		return *r
+	}
+	return defaultMaxFailedFoldRounds
+}
+
+// foldRoundsExhausted reports whether failed rounds reached the cap (never,
+// when the cap is 0).
+func foldRoundsExhausted(failed, limit int) bool { return limit > 0 && failed >= limit }
 
 // foldInstruction is the fold ask as shipped: the transient message appended
 // to the fold call, used when no registry is wired. It is never stored; the

@@ -7331,6 +7331,11 @@
           "type": "integer",
           "format": "int32",
           "description": "Recent turns a fold keeps, counting user messages and assistant steps\nalike; the fold summarises everything before them. It is also the top rung\nof the pressure ladder. 0 means the default, 16."
+        },
+        "maxFailedFoldRounds": {
+          "type": "integer",
+          "format": "int32",
+          "description": "In-loop fold rounds that may fail in one turn before the fold stops\narming for the rest of it. A round fails when two replies in a row are not\na usable summary; each failed round costs two full-context calls. Unset\nmeans 1. 0 means never stop (a model that cannot fold then spends most of\nits loop passes on the ask). A new turn arms the fold again."
         }
       },
       "title": "MemoryCompressionConfig defines conversation history compression behavior"

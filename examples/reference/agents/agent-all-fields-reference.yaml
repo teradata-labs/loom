@@ -171,6 +171,7 @@ spec:
       warning_threshold_percent: 60    # OPTIONAL: Warning threshold (0-100)
       critical_threshold_percent: 75   # OPTIONAL: Critical threshold (0-100)
       protected_recent_turns: 16       # OPTIONAL: Recent turns of either role a fold keeps
+      max_failed_fold_rounds: 1        # OPTIONAL: Failed fold rounds per turn before the fold stops arming (0 = never stop)
 
       # Compression batch sizes
       batch_sizes:                     # OPTIONAL: Messages per compression batch

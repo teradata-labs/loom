@@ -15,6 +15,7 @@ package agent
 
 import (
 	"context"
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -86,7 +87,7 @@ func TestInloopFold_TheResponseSaysTheTurnFolded(t *testing.T) {
 }
 
 // A model that never answers the fold ask with a usable summary gets one
-// failed round per turn (maxFailedFoldRounds): two fold calls, then the fold
+// failed round per turn (defaultMaxFailedFoldRounds): two fold calls, then the fold
 // stays off for the rest of the turn and the work goes on. Without the cap
 // the fold armed again at every next seam and took about two of every three
 // loop passes.
@@ -107,7 +108,7 @@ func TestInloopFold_AModelThatCannotFoldIsAskedOneRoundPerTurn(t *testing.T) {
 			foldCalls++
 		}
 	}
-	assert.Equal(t, 2*maxFailedFoldRounds, foldCalls, "the fold was asked again after its failed rounds")
+	assert.Equal(t, 2*defaultMaxFailedFoldRounds, foldCalls, "the fold was asked again after its failed rounds")
 	assert.Equal(t, model.steps, model.taken, "every step of the work ran")
 	assert.NotContains(t, resp.Metadata, "auto_compaction", "a turn with no committed fold reports a compaction")
 
@@ -120,4 +121,39 @@ func TestInloopFold_AModelThatCannotFoldIsAskedOneRoundPerTurn(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, disarmed, "the loop span does not say once that the fold was disarmed")
+}
+
+// The cap comes from the compression profile: max_failed_fold_rounds: 2 asks
+// two rounds (four fold calls); 0 never stops asking.
+func TestInloopFold_TheFailedRoundCapFollowsTheProfile(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		rounds int
+		check  func(t *testing.T, foldCalls int)
+	}{
+		{"two rounds", 2, func(t *testing.T, n int) { assert.Equal(t, 4, n, "two failed rounds are four fold calls") }},
+		{"never stop", 0, func(t *testing.T, n int) { assert.Greater(t, n, 4, "a cap of 0 stopped the fold") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &foldingStream{steps: 24, toolFolds: 1 << 20}
+			ag, _ := foldingAgentOn(t, model, nil, nil)
+			profile := ProfileDefaults[loomv1.WorkloadProfile_WORKLOAD_PROFILE_BALANCED]
+			rounds := tc.rounds
+			profile.MaxFailedFoldRounds = &rounds
+			ag.memory.SetCompressionProfile(&profile)
+
+			resp, err := ag.Chat(context.Background(), "s-fold-cap-"+tc.name, "do the long job")
+			require.NoError(t, err)
+			require.Equal(t, "final answer", resp.Content)
+			n := 0
+			for _, f := range model.foldAt {
+				if f {
+					n++
+				}
+			}
+			tc.check(t, n)
+			assert.Equal(t, model.steps, model.taken, "every step of the work ran")
+		})
+	}
 }

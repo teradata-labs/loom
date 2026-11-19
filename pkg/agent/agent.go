@@ -3013,7 +3013,7 @@ func (a *Agent) runConversationLoop(ctx Context) (retResp *Response, retErr erro
 	emptyRetried := false                       // one-shot flag: retry empty LLM response at most once per conversation
 	foldPending := false                        // in-loop fold: this call carries the fold instruction; its reply is the summary
 	foldRetries := 0                            // unusable fold replies asked again once; then the step goes on unfolded
-	foldRoundsFailed := 0                       // fold rounds that ended with two unusable replies; at maxFailedFoldRounds the fold stays off for the turn
+	foldRoundsFailed := 0                       // fold rounds that ended with two unusable replies; at the cap (SegmentedMemory.MaxFailedFoldRounds) the fold stays off for the turn
 	hygieneRetries := 0                         // capped count of REQUIRE_FIX retries the end-of-turn auditor has triggered
 	var hygieneLast *hygiene.EnforcementOutcome // last outcome, surfaced into Response.Metadata
 	var prevToolNames []string                  // names advertised on this turn's previous provider call; nil before the first
@@ -3186,7 +3186,7 @@ func (a *Agent) runConversationLoop(ctx Context) (retResp *Response, retErr erro
 		// A prompt the provider still refuses as too long is answered where the
 		// refusal happens: one relief pass and one resend, then the step's
 		// results replaced and one more.
-		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil && !foldPending && foldRetries < 2 && foldRoundsFailed < maxFailedFoldRounds && !scriptedTurn(ctx) && segMem.NeedsFold() {
+		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil && !foldPending && foldRetries < 2 && !foldRoundsExhausted(foldRoundsFailed, segMem.MaxFailedFoldRounds()) && !scriptedTurn(ctx) && segMem.NeedsFold() {
 			foldPending = true
 			armedAt := segMem.estimate()
 			folds.armed(armedAt)
@@ -3586,7 +3586,7 @@ func (a *Agent) runConversationLoop(ctx Context) (retResp *Response, retErr erro
 				span.AddEvent("fold.unusable", map[string]interface{}{"turn": turnCount, "fold_retries": foldRetries})
 				if foldRetries >= 2 {
 					foldRoundsFailed++
-					if foldRoundsFailed >= maxFailedFoldRounds {
+					if foldRoundsExhausted(foldRoundsFailed, segMem.MaxFailedFoldRounds()) {
 						// A model that cannot answer the fold ask would
 						// otherwise spend two of every three loop passes on
 						// it. The refusal path (ReleasePressure) still sheds

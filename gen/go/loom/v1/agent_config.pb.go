@@ -1902,8 +1902,14 @@ type MemoryCompressionConfig struct {
 	// alike; the fold summarises everything before them. It is also the top rung
 	// of the pressure ladder. 0 means the default, 16.
 	ProtectedRecentTurns int32 `protobuf:"varint,7,opt,name=protected_recent_turns,json=protectedRecentTurns,proto3" json:"protected_recent_turns,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	// In-loop fold rounds that may fail in one turn before the fold stops
+	// arming for the rest of it. A round fails when two replies in a row are not
+	// a usable summary; each failed round costs two full-context calls. Unset
+	// means 1. 0 means never stop (a model that cannot fold then spends most of
+	// its loop passes on the ask). A new turn arms the fold again.
+	MaxFailedFoldRounds *int32 `protobuf:"varint,8,opt,name=max_failed_fold_rounds,json=maxFailedFoldRounds,proto3,oneof" json:"max_failed_fold_rounds,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *MemoryCompressionConfig) Reset() {
@@ -1981,6 +1987,13 @@ func (x *MemoryCompressionConfig) GetBatchSizes() *MemoryCompressionBatchSizes {
 func (x *MemoryCompressionConfig) GetProtectedRecentTurns() int32 {
 	if x != nil {
 		return x.ProtectedRecentTurns
+	}
+	return 0
+}
+
+func (x *MemoryCompressionConfig) GetMaxFailedFoldRounds() int32 {
+	if x != nil && x.MaxFailedFoldRounds != nil {
+		return *x.MaxFailedFoldRounds
 	}
 	return 0
 }
@@ -2693,7 +2706,7 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x1bMemoryCompressionBatchSizes\x12\x16\n" +
 	"\x06normal\x18\x01 \x01(\x05R\x06normal\x12\x18\n" +
 	"\awarning\x18\x02 \x01(\x05R\awarning\x12\x1a\n" +
-	"\bcritical\x18\x03 \x01(\x05R\bcritical\"\xa5\x03\n" +
+	"\bcritical\x18\x03 \x01(\x05R\bcritical\"\xfa\x03\n" +
 	"\x17MemoryCompressionConfig\x12C\n" +
 	"\x10workload_profile\x18\x01 \x01(\x0e2\x18.loom.v1.WorkloadProfileR\x0fworkloadProfile\x12&\n" +
 	"\x0fmax_l1_messages\x18\x02 \x01(\x05R\rmaxL1Messages\x12&\n" +
@@ -2702,7 +2715,9 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x1acritical_threshold_percent\x18\x05 \x01(\x05R\x18criticalThresholdPercent\x12E\n" +
 	"\vbatch_sizes\x18\x06 \x01(\v2$.loom.v1.MemoryCompressionBatchSizesR\n" +
 	"batchSizes\x124\n" +
-	"\x16protected_recent_turns\x18\a \x01(\x05R\x14protectedRecentTurns\"\xf7\x02\n" +
+	"\x16protected_recent_turns\x18\a \x01(\x05R\x14protectedRecentTurns\x128\n" +
+	"\x16max_failed_fold_rounds\x18\b \x01(\x05H\x00R\x13maxFailedFoldRounds\x88\x01\x01B\x19\n" +
+	"\x17_max_failed_fold_rounds\"\xf7\x02\n" +
 	"\x0eBehaviorConfig\x12%\n" +
 	"\x0emax_iterations\x18\x01 \x01(\x05R\rmaxIterations\x12'\n" +
 	"\x0ftimeout_seconds\x18\x02 \x01(\x05R\x0etimeoutSeconds\x120\n" +
@@ -2885,6 +2900,7 @@ func file_loom_v1_agent_config_proto_init() {
 	file_loom_v1_skill_proto_init()
 	file_loom_v1_task_proto_init()
 	file_loom_v1_agent_config_proto_msgTypes[3].OneofWrappers = []any{}
+	file_loom_v1_agent_config_proto_msgTypes[14].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

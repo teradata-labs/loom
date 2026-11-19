@@ -553,6 +553,7 @@ Under `spec.memory.memory_compression`.
 | `warning_threshold_percent` | `int` | profile-dependent | Warning threshold (0-100) |
 | `critical_threshold_percent` | `int` | profile-dependent | Critical threshold (0-100) |
 | `protected_recent_turns` | `int` | `16` | Recent turns a fold keeps, user messages and assistant steps alike; the fold summarises everything before them. Also the top rung of the pressure ladder |
+| `max_failed_fold_rounds` | `int` | `1` | In-loop fold rounds that may fail in one turn (two replies in a row that are not a usable summary) before the fold stops arming for the rest of the turn. `0` means never stop. A new turn arms the fold again. Raise it for a model that sometimes answers the fold ask badly; each failed round costs two full-context calls |
 | `batch_sizes.normal` | `int` | profile-dependent | Messages per batch (normal) |
 | `batch_sizes.warning` | `int` | profile-dependent | Messages per batch (warning) |
 | `batch_sizes.critical` | `int` | profile-dependent | Messages per batch (critical) |
