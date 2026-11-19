@@ -891,9 +891,9 @@ func (sm *SegmentedMemory) ReleasePressure(ctx context.Context, penalty int) (sh
 	}
 	ops := make([]reliefOp, 0, len(rungs)+1)
 	for _, b := range rungs {
-		ops = append(ops, reliefOp{"fold", b, sm.foldLocked})
+		ops = append(ops, reliefOp{"fold", b, sm.foldBoundedLocked})
 	}
-	ops = append(ops, reliefOp{"fold", t, sm.foldLocked})
+	ops = append(ops, reliefOp{"fold", t, sm.foldBoundedLocked})
 	for _, op := range ops {
 		if !op.run(ctx, op.boundary) {
 			// An operation that changed nothing (its rows were already flagged
@@ -920,6 +920,144 @@ func (sm *SegmentedMemory) ReleasePressure(ctx context.Context, penalty int) (sh
 		return false, sm.estimateLocked(), target
 	}
 	return true, estimate, target
+}
+
+// foldInputHeadLocked is the start of the compressor input: the current
+// summary under its heading, and the focus of a requested compaction after its
+// preface. foldLocked builds the input from it; foldStepLocked measures it.
+// Must hold lock.
+func (sm *SegmentedMemory) foldInputHeadLocked(ctx context.Context) []Message {
+	var head []Message
+	if sm.summary.text != "" {
+		head = append(head, Message{Role: "system", Content: foldPromptText(ctx, sm.compressor, foldPromptSummaryHeading) + "\n" + sm.summary.text})
+	}
+	if sm.compactFocus != "" {
+		head = append(head, Message{Role: "system", Content: foldPromptText(ctx, sm.compressor, foldPromptFocusPreface) + " " + sm.compactFocus})
+	}
+	return head
+}
+
+// foldInputRowLocked is one region row as the compressor gets it: the row as
+// rendered at turn t, with its msg: address for citation. Must hold lock.
+func (sm *SegmentedMemory) foldInputRowLocked(m *Message, t int64) Message {
+	r := sm.renderLocked(m, t)
+	if r.ID != "" {
+		r.Content = "msg:" + r.ID + " " + r.Content
+	}
+	return r
+}
+
+// foldInputTokens is the byte bound of a compressor input, in tokens: the
+// estimate's cheap tier (cheapBytesPerToken), which over-counts, so an input
+// it puts under a budget is under it.
+func foldInputTokens(input []Message) int {
+	bytes := 0
+	for i := range input {
+		bytes += len(input[i].Content) + msgFramingTokens*int(cheapBytesPerToken)
+		if len(input[i].ToolCalls) > 0 {
+			if b, err := json.Marshal(input[i].ToolCalls); err == nil {
+				bytes += len(b)
+			}
+		}
+	}
+	return int(float64(bytes) / cheapBytesPerToken)
+}
+
+// foldBoundedLocked folds every turn up to b, as foldLocked does, but never
+// gives the compressor an input larger than the usable window. The region of
+// a requested compaction, or of a relief rung, can be larger than the window
+// the compressor reads: the session went over its window, the window was cut,
+// or the compressor model has a smaller one. foldBoundedLocked then folds in
+// chunks: the oldest turns that fit, then the next turns on top of that
+// summary, up to b. Each chunk is an ordinary fold with its own summary
+// version. No stored row changes. Compact and ReleasePressure call it.
+// Returns whether anything was folded; a chunk that fails stops the walk, and
+// the chunks before it stay folded. Must hold lock.
+func (sm *SegmentedMemory) foldBoundedLocked(ctx context.Context, b int64) bool {
+	folded := false
+	for {
+		if err := ctx.Err(); err != nil {
+			return folded
+		}
+		step, chunked := sm.foldStepLocked(ctx, b)
+		if chunked {
+			zap.L().Info("fold: the region is larger than the compressor input bound; folding it in chunks",
+				zap.String("session_id", sm.sessionID),
+				zap.Int64("boundary_turn", b),
+				zap.Int64("chunk_boundary_turn", step))
+		}
+		if !sm.foldLocked(ctx, step) {
+			return folded
+		}
+		folded = true
+		if step >= b {
+			return true
+		}
+	}
+}
+
+// foldStepLocked is the boundary of the next fold toward b: b itself when
+// its compressor input fits the usable window, else the newest earlier turn
+// whose input fits (chunked is then true). When not even the oldest turn
+// fits, it is the oldest turn: one turn is the smallest fold there is. A
+// boundary in the current turn is never split, because the current turn's
+// region is capped by foldLocked. Must hold lock.
+func (sm *SegmentedMemory) foldStepLocked(ctx context.Context, b int64) (step int64, chunked bool) {
+	t := sm.currentTurnLocked()
+	budget := sm.usableLocked()
+	if budget <= 0 || len(sm.contextMessages) == 0 {
+		return b, false
+	}
+	head := foldInputTokens(sm.foldInputHeadLocked(ctx))
+	// The whole region first, counted generously (every row up to b, the
+	// pending pair of the current turn included): the common case is one
+	// fold call.
+	whole := head
+	for i := range sm.contextMessages {
+		if sm.contextMessages[i].Turn > b {
+			break
+		}
+		whole += foldInputTokens([]Message{sm.foldInputRowLocked(&sm.contextMessages[i], t)})
+	}
+	if whole <= budget {
+		return b, false
+	}
+	used := head
+	oldest := sm.contextMessages[0].Turn
+	fits := int64(0)
+	for i := 0; i < len(sm.contextMessages); {
+		turn := sm.contextMessages[i].Turn
+		if turn > b || turn >= t {
+			break
+		}
+		j := i
+		turnTokens := 0
+		for j < len(sm.contextMessages) && sm.contextMessages[j].Turn == turn {
+			row := sm.foldInputRowLocked(&sm.contextMessages[j], t)
+			turnTokens += foldInputTokens([]Message{row})
+			j++
+		}
+		if used+turnTokens > budget {
+			break
+		}
+		used += turnTokens
+		fits = turn
+		i = j
+	}
+	switch {
+	case fits >= b:
+		return b, false
+	case fits == 0 && oldest >= b:
+		// The current turn, or a region of one turn: fold as asked.
+		return b, false
+	case fits == 0 && oldest >= t:
+		// Only the current turn is left: its region is capped by foldLocked.
+		return b, false
+	case fits == 0:
+		return oldest, true
+	default:
+		return fits, true
+	}
 }
 
 // foldLocked folds every folded=false row with turn ≤ b into summary version
@@ -1006,19 +1144,9 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 	// as value copies: nothing the unlocked compress phase touches aliases
 	// shared state.
 	t := sm.currentTurnLocked()
-	input := make([]Message, 0, len(region)+1)
-	if sm.summary.text != "" {
-		input = append(input, Message{Role: "system", Content: foldPromptText(ctx, sm.compressor, foldPromptSummaryHeading) + "\n" + sm.summary.text})
-	}
-	if sm.compactFocus != "" {
-		input = append(input, Message{Role: "system", Content: foldPromptText(ctx, sm.compressor, foldPromptFocusPreface) + " " + sm.compactFocus})
-	}
+	input := sm.foldInputHeadLocked(ctx)
 	for i := range region {
-		r := sm.renderLocked(&region[i], t)
-		if r.ID != "" {
-			r.Content = "msg:" + r.ID + " " + r.Content
-		}
-		input = append(input, r)
+		input = append(input, sm.foldInputRowLocked(&region[i], t))
 	}
 
 	// The prepare snapshot: the summary version this fold builds on and the

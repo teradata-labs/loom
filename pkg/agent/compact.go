@@ -124,12 +124,25 @@ func (sm *SegmentedMemory) Compact(ctx context.Context, opts CompactOptions) (Co
 	// only a placeholder line: without a real summary the fold is skipped.
 	sm.foldRequireSummary = true
 	defer func() { sm.foldRequireSummary = false }()
-	res.TurnsFolded = sm.foldLocked(ctx, boundary)
+	res.TurnsFolded = sm.foldBoundedLocked(ctx, boundary)
 	summaryMissing, persistErr := sm.foldAbortedNoSummary, sm.compactPersistErr
 	sm.foldAbortedNoSummary, sm.compactPersistErr = false, nil
 	res.Compacted = res.TurnsFolded
 	res.TokensAfter = sm.compiledTokensLocked()
 	res.SummaryVersion = sm.summary.n
+	if res.Compacted && (summaryMissing || persistErr != nil) {
+		// A later chunk failed after an earlier one folded (foldBoundedLocked):
+		// the earlier chunks stay folded, and more turns than asked stay
+		// verbatim. Report the turns really kept.
+		if len(sm.contextMessages) > 0 {
+			res.TurnsKept = int(sm.currentTurnLocked() - sm.contextMessages[0].Turn + 1)
+		}
+		zap.L().Warn("compaction: folded only part of the older turns; a later chunk could not be summarized or saved",
+			zap.String("session_id", sm.sessionID),
+			zap.Int("turns_kept", res.TurnsKept),
+			zap.Bool("summary_missing", summaryMissing),
+			zap.Error(persistErr))
+	}
 	if !res.Compacted {
 		// Nothing changed: say why rather than report an ordinary no-op.
 		if persistErr != nil {
