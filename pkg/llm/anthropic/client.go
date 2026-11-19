@@ -212,7 +212,12 @@ func NewClient(config Config) *Client {
 
 	var streamHTTPClient *http.Client
 	if config.StreamFirstByteTimeout > 0 || config.StreamIdleTimeout > 0 {
-		streamTransport := http.DefaultTransport.(*http.Transport).Clone()
+		// http.DefaultTransport may have been replaced by the embedder (an
+		// OpenTelemetry wrapper, say); clone it only when it is the stock type.
+		streamTransport := &http.Transport{Proxy: http.ProxyFromEnvironment, ForceAttemptHTTP2: true}
+		if dt, ok := http.DefaultTransport.(*http.Transport); ok {
+			streamTransport = dt.Clone()
+		}
 		streamTransport.ResponseHeaderTimeout = config.StreamFirstByteTimeout
 		var rt http.RoundTripper = streamTransport
 		if config.WrapTransport != nil {
@@ -1108,7 +1113,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	// stream that closes without it was cut off (an upstream or proxy fault),
 	// and what arrived is a fragment, not an answer.
 	if !sawMessageStop {
-		return nil, fmt.Errorf("error reading stream: stream ended before message_stop (truncated response): %w", io.ErrUnexpectedEOF)
+		return nil, llm.TruncatedStreamError("stream ended before message_stop")
 	}
 
 	// 4. Build final response

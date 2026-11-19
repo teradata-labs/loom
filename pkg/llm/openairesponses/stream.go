@@ -53,7 +53,9 @@ const (
 // ErrTruncatedStream is returned when the SSE stream ends without
 // response.completed, response.incomplete or response.failed. The partial
 // output is discarded: it cannot be told apart from a complete answer.
-var ErrTruncatedStream = errors.New("responses API: stream ended without a terminal event")
+// It is llm.ErrStreamTruncated, so callers can test for any provider's
+// truncation with one sentinel.
+var ErrTruncatedStream = llm.ErrStreamTruncated
 
 // streamState accumulates what the stream reported before its terminal
 // event, as the fallback when the terminal response object has no output.
@@ -182,7 +184,7 @@ scan:
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		return nil, ErrTruncatedStream
+		return nil, llm.TruncatedStreamError("stream ended without response.completed, response.incomplete or response.failed")
 	}
 	if len(final.Output) == 0 {
 		final.Output = st.fallbackOutput()

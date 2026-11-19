@@ -239,3 +239,16 @@ func DoStreamHTTP(httpClient *http.Client, req *http.Request, firstByteTimeout, 
 	}
 	return resp, err
 }
+
+// ErrStreamTruncated marks a provider stream that closed before its protocol's
+// terminal event (Anthropic message_stop, Chat finish_reason or [DONE],
+// Responses response.completed). What arrived is a fragment, not an answer.
+var ErrStreamTruncated = errors.New("provider stream ended before its terminal event (truncated response)")
+
+// TruncatedStreamError reports a truncated stream. It wraps ErrStreamTruncated
+// and io.ErrUnexpectedEOF, and carries HTTP 502: the upstream or a proxy cut
+// the response, so ClassifyProviderFailure reads it as a transient provider
+// failure (retry later), not a deterministic one that may be cached.
+func TruncatedStreamError(detail string) error {
+	return WrapHTTPStatus(http.StatusBadGateway, fmt.Errorf("error reading stream: %s: %w: %w", detail, ErrStreamTruncated, io.ErrUnexpectedEOF))
+}

@@ -214,13 +214,13 @@ func TestStreamErrors(t *testing.T) {
 			name:     "truncated after deltas",
 			sse:      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"half an ans\"}\n",
 			wantIs:   ErrTruncatedStream,
-			wantText: "without a terminal event",
+			wantText: "ended before its terminal event",
 		},
 		{
 			name:     "done sentinel without terminal event",
 			sse:      "data: {\"type\":\"response.created\"}\ndata: [DONE]\n",
 			wantIs:   ErrTruncatedStream,
-			wantText: "without a terminal event",
+			wantText: "ended before its terminal event",
 		},
 		{
 			name:       "response.failed",

@@ -333,3 +333,14 @@ func TestNameModelDefaults(t *testing.T) {
 	assert.Equal(t, DefaultMaxTokens, c.maxTokens, "default max tokens")
 	assert.Equal(t, DefaultCatalogProvider, c.catalogProvider, "default catalog provider")
 }
+
+func TestReasoningEffortMapsEveryLoomLevel(t *testing.T) {
+	tests := map[string]string{
+		"": "", "none": "", "off": "",
+		"low": "low", "medium": "medium", "auto": "medium",
+		"high": "high", "xhigh": "high", "max": "high",
+	}
+	for level, want := range tests {
+		assert.Equal(t, want, reasoningEffort(level), "level %q", level)
+	}
+}

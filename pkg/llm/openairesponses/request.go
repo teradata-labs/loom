@@ -94,7 +94,9 @@ func reasoningEffort(level string) string {
 		return ""
 	case "low":
 		return "low"
-	case "high":
+	case "high", "xhigh", "max":
+		// The Responses API tops out at "high" for most models; xhigh and max
+		// map there, as they do on the Chat surface (openai.reasoning_object).
 		return "high"
 	default: // "medium", "auto"
 		return "medium"

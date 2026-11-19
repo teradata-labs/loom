@@ -1511,7 +1511,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	// One that closes with neither was cut off, and what arrived is a
 	// fragment, not an answer.
 	if !sawDone && finishReason == "" {
-		return nil, fmt.Errorf("error reading stream: stream ended without finish_reason or [DONE] (truncated response): %w", io.ErrUnexpectedEOF)
+		return nil, llm.TruncatedStreamError("stream ended without finish_reason or [DONE]")
 	}
 
 	// 4. Parse accumulated tool call arguments, in stream index order. Ranging
