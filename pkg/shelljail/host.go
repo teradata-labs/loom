@@ -505,6 +505,16 @@ func (c *Child) Settle(res *Result, stderr string) (visible, dump string) {
 	return stderr[:at] + MemoryStoppedMessage + "\n", stderr[at:]
 }
 
+// endedAfterKill words, for the self-test timeout error, how the child ended
+// once it was killed. A child that exits by itself at the deadline has no wait
+// error; that case reads as a sentence, not as "<nil>".
+func endedAfterKill(waitErr error) string {
+	if waitErr == nil {
+		return "the child then exited without an error"
+	}
+	return "after kill: " + waitErr.Error()
+}
+
 // SelfTest runs "echo" through the jail and requires its answer. A host that
 // forgot to call Main runs its normal main instead and never answers, which
 // is what this catches.
@@ -538,11 +548,7 @@ func (r *Runner) SelfTest(ctx context.Context) error {
 	case <-ctx.Done():
 		KillGroup(child.Cmd)
 		// How the killed child ended is reported so a hang is diagnosable.
-		ended := "the child then exited without an error"
-		if waitErr := <-done; waitErr != nil {
-			ended = "after kill: " + waitErr.Error()
-		}
-		return fmt.Errorf("jail self-test: %s did not answer within %s (%s); the binary must call shelljail.Main() first thing in main()", r.exe, selfTestTimeout, ended)
+		return fmt.Errorf("jail self-test: %s did not answer within %s (%s); the binary must call shelljail.Main() first thing in main()", r.exe, selfTestTimeout, endedAfterKill(<-done))
 	}
 	res := child.Result()
 	if err != nil || strings.TrimSpace(out.String()) != "shelljail-ok" {

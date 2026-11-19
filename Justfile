@@ -321,8 +321,9 @@ lint-version-check:
     #!/usr/bin/env bash
     set -euo pipefail
     want="{{golangci_lint_version}}"
-    # The release binary, not `go install`: golangci-lint must be built with a
-    # Go version at least as new as the module's `go` directive to load it.
+    # The hint names the release binary, not `go install`: golangci-lint must be
+    # built with a Go version at least as new as the module's `go` directive to
+    # load it. The check itself compares only the version number.
     install="curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b \"\$(go env GOPATH)/bin\" v${want}"
     if ! command -v golangci-lint >/dev/null 2>&1; then
         echo "❌ golangci-lint not installed. Install the v${want} release binary:" >&2

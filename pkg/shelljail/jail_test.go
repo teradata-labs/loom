@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -182,6 +183,24 @@ func TestSelfTest_TimeoutReportsHowTheKilledChildEnded(t *testing.T) {
 	assert.Contains(t, err.Error(), "did not answer within")
 	assert.Contains(t, err.Error(), "after kill: signal: killed")
 	assert.Contains(t, err.Error(), "shelljail.Main()")
+}
+
+func TestEndedAfterKill(t *testing.T) {
+	tests := []struct {
+		name    string
+		waitErr error
+		want    string
+	}{
+		{name: "killed child", waitErr: errors.New("signal: killed"), want: "after kill: signal: killed"},
+		{name: "child that exited by itself at the deadline", waitErr: nil, want: "the child then exited without an error"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := endedAfterKill(tt.waitErr)
+			assert.Equal(t, tt.want, got)
+			assert.NotContains(t, got, "<nil>")
+		})
+	}
 }
 
 type corpusCase struct {

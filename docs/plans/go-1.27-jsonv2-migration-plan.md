@@ -160,7 +160,7 @@ Split out so the toolchain PR stays small. golangci-lint v2.15.0 lints the curre
 
 Measured on the branch (2026-11-19, macOS arm64, Go 1.26.7): golangci-lint v2.15.0 reports 0 issues, and v2.9.0 also reports 0. Developers need the v2.15.0 release binary; a branch that has not merged `main` shows the 143 findings when linted with it.
 
-**Exit**: `just check` prints "All checks passed" with v2.15.0 on Go 1.26.7. ⚠️ Not met as of 2026-11-19: `just vet` (untagged) fails on `main` at `pkg/agent/compact_test.go:183`, where a test helper sits behind the `fts5` build tag. PR #681 fixes it; this branch does not touch that file. Every other step of `just check` passes on the branch.
+**Exit**: `just check` prints "All checks passed" with v2.15.0 on Go 1.26.7. ⚠️ Not met as of 2026-11-19: `just vet` (untagged) fails on `main` at `pkg/agent/compact_test.go:183`, where a test helper sits behind the `fts5` build tag. PR #681 fixes it; this branch does not touch that file. The pull request for this branch records which steps of `just check` were run on its head and their results.
 
 ### Phase 1b: Toolchain to Go 1.27.4 (one PR, no JSON API changes)
 
