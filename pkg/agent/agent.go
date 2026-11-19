@@ -242,6 +242,9 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		}
 		if compressorLLM != nil && a.prompts != nil {
 			caller := newPromptRegistryCompressor(compressorLLM, a.prompts)
+			if compressorLLM == a.llm {
+				caller.servedWindow = a.config.MaxModelContextTokens
+			}
 			a.memory.SetCompressor(NewLLMCompressor(caller))
 		}
 	}

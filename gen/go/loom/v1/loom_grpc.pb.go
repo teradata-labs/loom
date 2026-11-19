@@ -170,11 +170,12 @@ type LoomServiceClient interface {
 	// the turn ran). Calls recorded as complete are backfilled from the log,
 	// calls never started are dispatched, and the turn's reply is produced. A
 	// call whose outcome is unknown is reported as an execution gap, to be
-	// settled with ResolveExecutionGap before resuming again.
+	// settled with ResolveExecutionGap before resuming again. UNAVAILABLE when
+	// the store cannot load the session yet (retry once it answers).
 	ResumeSession(ctx context.Context, in *ResumeSessionRequest, opts ...grpc.CallOption) (*ResumeSessionResponse, error)
 	// ResolveExecutionGap records an operator's finding for the tool call that
 	// ResumeSession reported as an execution gap, so ResumeSession can continue
-	// the turn.
+	// the turn. UNAVAILABLE when the store cannot load the session yet.
 	//
 	// The recorded result is the caller's assertion, not tool output, but the
 	// agent treats it as real tool output. It is stored marked as manually
@@ -195,8 +196,8 @@ type LoomServiceClient interface {
 	// tool result is stubbed. Folding makes an LLM call, and it never drops a
 	// turn without a summary. Refused while a turn runs on the session (ABORTED)
 	// or while it waits for a human decision (FAILED_PRECONDITION); UNAVAILABLE
-	// when no summary could be produced or the result could not be saved, in
-	// which case history is unchanged.
+	// when no summary could be produced, the result could not be saved, or the
+	// store cannot load the session yet; in each case history is unchanged.
 	CompactSession(ctx context.Context, in *CompactSessionRequest, opts ...grpc.CallOption) (*CompactSessionResponse, error)
 	// RegisterTool dynamically registers a new tool.
 	RegisterTool(ctx context.Context, in *RegisterToolRequest, opts ...grpc.CallOption) (*RegisterToolResponse, error)
@@ -1454,11 +1455,12 @@ type LoomServiceServer interface {
 	// the turn ran). Calls recorded as complete are backfilled from the log,
 	// calls never started are dispatched, and the turn's reply is produced. A
 	// call whose outcome is unknown is reported as an execution gap, to be
-	// settled with ResolveExecutionGap before resuming again.
+	// settled with ResolveExecutionGap before resuming again. UNAVAILABLE when
+	// the store cannot load the session yet (retry once it answers).
 	ResumeSession(context.Context, *ResumeSessionRequest) (*ResumeSessionResponse, error)
 	// ResolveExecutionGap records an operator's finding for the tool call that
 	// ResumeSession reported as an execution gap, so ResumeSession can continue
-	// the turn.
+	// the turn. UNAVAILABLE when the store cannot load the session yet.
 	//
 	// The recorded result is the caller's assertion, not tool output, but the
 	// agent treats it as real tool output. It is stored marked as manually
@@ -1479,8 +1481,8 @@ type LoomServiceServer interface {
 	// tool result is stubbed. Folding makes an LLM call, and it never drops a
 	// turn without a summary. Refused while a turn runs on the session (ABORTED)
 	// or while it waits for a human decision (FAILED_PRECONDITION); UNAVAILABLE
-	// when no summary could be produced or the result could not be saved, in
-	// which case history is unchanged.
+	// when no summary could be produced, the result could not be saved, or the
+	// store cannot load the session yet; in each case history is unchanged.
 	CompactSession(context.Context, *CompactSessionRequest) (*CompactSessionResponse, error)
 	// RegisterTool dynamically registers a new tool.
 	RegisterTool(context.Context, *RegisterToolRequest) (*RegisterToolResponse, error)

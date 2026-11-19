@@ -1099,7 +1099,7 @@ summary nothing is folded and the command fails. See
 | Nothing older than the kept turns | `Nothing to compact: ...` | 0 |
 | Busy (gRPC `ABORTED`) | A turn or another compaction is running on the session | 1 |
 | Refused (gRPC `FAILED_PRECONDITION`) | The session waits for a human decision | 1 |
-| Unavailable (gRPC `UNAVAILABLE`) | No summary could be produced, or the result could not be saved; history is unchanged | 1 |
+| Unavailable (gRPC `UNAVAILABLE`) | No summary could be produced, the result could not be saved, or the store cannot load the session yet; history is unchanged | 1 |
 | Not found (gRPC `NOT_FOUND`) | No such session for the caller | 1 |
 
 ```bash

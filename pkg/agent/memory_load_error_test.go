@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -146,7 +147,7 @@ func TestGetOrCreateSession_RetriesAFailedLoadOnTheNextCall(t *testing.T) {
 
 	again := mem.ReloadPendingSession(ctx, "s-flaky", "")
 	assert.Same(t, first, again, "a retry that fails again keeps serving the same session")
-	assert.Equal(t, int32(2), store.loads.Load(), "the turn holder did not retry the load")
+	assert.Equal(t, int32(2), store.loads.Load(), "the turn holder did not retry the load (once, outside the lock)")
 
 	// The store is back. A caller that does not hold the turn (any
 	// GetOrCreateSession*) is still served the stand-in: swapping it now
@@ -270,4 +271,117 @@ func TestGetOrCreateSession_AHostStoresNotFoundCreatesTheSession(t *testing.T) {
 	assert.True(t, exists, "the row messages need was not created")
 	require.NoError(t, mem.PersistSession(ctx, sess))
 	assert.Equal(t, int32(2), store.saves.Load(), "a later save of the new session was skipped")
+}
+
+// Without an execution log there is no session lease, so a turn can still hold
+// the stand-in after another caller reloaded the recovered session into the
+// cache. A save of that old stand-in must still be skipped: the mark is on
+// the object, not on the cache entry.
+func TestPersistSession_SkipsAStandInThatWasReplacedInTheCache(t *testing.T) {
+	ctx := context.Background()
+	sqlite, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlite.Close() })
+	require.NoError(t, sqlite.SaveSession(ctx, &Session{ID: "s-stale", Name: "kept-name", AgentID: "a", Context: map[string]interface{}{}}))
+
+	store := &flakyLoadStore{SessionStore: sqlite}
+	store.down.Store(true)
+	mem := NewMemoryWithStore(store)
+	standIn := mem.GetOrCreateSession(ctx, "s-stale")
+
+	store.down.Store(false)
+	recovered := mem.ReloadPendingSession(ctx, "s-stale", "")
+	require.NotSame(t, standIn, recovered, "the recovered session did not replace the stand-in")
+
+	require.NoError(t, mem.PersistSession(ctx, standIn), "a stand-in save is skipped, not an error")
+	got, err := sqlite.LoadSession(ctx, "s-stale")
+	require.NoError(t, err)
+	assert.Equal(t, "kept-name", got.Name, "the replaced stand-in was saved over the recovered row")
+
+	require.NoError(t, mem.PersistSession(ctx, recovered))
+	assert.Equal(t, int32(1), store.saves.Load(), "the recovered session's save was skipped")
+}
+
+// Resuming needs the stored history: a session the store still cannot load is
+// refused with ErrSessionNotLoaded instead of resuming the empty stand-in.
+func TestResume_RefusesASessionTheStoreCannotLoad(t *testing.T) {
+	ctx := context.Background()
+	sqlite, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlite.Close() })
+	require.NoError(t, sqlite.SaveSession(ctx, &Session{ID: "s-down", AgentID: "a", Context: map[string]interface{}{}}))
+	store := &flakyLoadStore{SessionStore: sqlite}
+	store.down.Store(true)
+	cfg := DefaultConfig()
+	cfg.PatternConfig = DefaultPatternConfig()
+	cfg.PatternConfig.UseLLMClassifier = false
+	ag := NewAgent(&mockBackend{}, &mockSimpleLLM{}, WithConfig(cfg),
+		WithEventLog(&recordingEventLog{}), WithMemory(NewMemoryWithStore(store)))
+
+	_, err = ag.ResumeSession(ctx, "s-down")
+	assert.ErrorIs(t, err, ErrSessionNotLoaded, "ResumeSession")
+	_, err = ag.ResolveExecutionGap(ctx, "s-down", GapSucceeded, []byte(`{}`))
+	assert.ErrorIs(t, err, ErrSessionNotLoaded, "ResolveExecutionGap")
+	assert.Zero(t, store.saves.Load(), "a refused resume saved the stand-in")
+}
+
+// blockingLoadStore blocks LoadSession of one id until released, failing it
+// then, as a store timing out during an outage does.
+type blockingLoadStore struct {
+	*SessionStore
+	slowID  string
+	entered chan struct{}
+	release chan struct{}
+	down    atomic.Bool
+}
+
+func (s *blockingLoadStore) LoadSession(ctx context.Context, id string) (*Session, error) {
+	if id == s.slowID && s.down.Load() {
+		select {
+		case s.entered <- struct{}{}:
+		default:
+		}
+		<-s.release
+		return nil, errors.New("dial tcp: i/o timeout")
+	}
+	return s.SessionStore.LoadSession(ctx, id)
+}
+
+func (s *blockingLoadStore) SessionExists(ctx context.Context, id string) (bool, error) {
+	if id == s.slowID && s.down.Load() {
+		return false, errors.New("dial tcp: i/o timeout")
+	}
+	return s.SessionStore.SessionExists(ctx, id)
+}
+
+// A retry that waits on a slow store must not hold Memory's lock: another
+// session is served meanwhile.
+func TestReloadPendingSession_ASlowRetryDoesNotStallOtherSessions(t *testing.T) {
+	ctx := context.Background()
+	sqlite, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlite.Close() })
+	require.NoError(t, sqlite.SaveSession(ctx, &Session{ID: "s-slow", AgentID: "a", Context: map[string]interface{}{}}))
+	store := &blockingLoadStore{SessionStore: sqlite, slowID: "s-slow", entered: make(chan struct{}, 1), release: make(chan struct{})}
+	mem := NewMemoryWithStore(store)
+
+	// The first load fails at once, so the session becomes a stand-in.
+	store.down.Store(true)
+	go func() { <-store.entered; store.release <- struct{}{} }()
+	standIn := mem.GetOrCreateSession(ctx, "s-slow")
+
+	done := make(chan *Session)
+	go func() { done <- mem.ReloadPendingSession(ctx, "s-slow", "") }()
+	<-store.entered // the retry is waiting on the store
+
+	other := make(chan *Session)
+	go func() { other <- mem.GetOrCreateSession(ctx, "s-other") }()
+	select {
+	case s := <-other:
+		assert.Equal(t, "s-other", s.ID)
+	case <-time.After(5 * time.Second):
+		t.Fatal("another session stalled behind a retry waiting on the store")
+	}
+	close(store.release)
+	assert.Same(t, standIn, <-done, "a retry that fails keeps the stand-in")
 }

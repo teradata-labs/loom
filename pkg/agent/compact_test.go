@@ -178,25 +178,37 @@ func TestCompact_ChunksToACompressorWindowSmallerThanTheAgents(t *testing.T) {
 	}
 }
 
-// fixedLLM is an LLMProvider with a name and model only.
-type fixedLLM struct{ name, model string }
+// fixedLLM is an LLMProvider with a name, a model and, when maxTokens > 0,
+// the max_tokens its requests send (types.MaxTokensReporter).
+type fixedLLM struct {
+	name, model string
+	maxTokens   int
+}
 
 func (f fixedLLM) Chat(context.Context, []Message, []shuttle.Tool) (*LLMResponse, error) {
 	return nil, errors.New("not used")
 }
-func (f fixedLLM) Name() string  { return f.name }
-func (f fixedLLM) Model() string { return f.model }
+func (f fixedLLM) Name() string   { return f.name }
+func (f fixedLLM) Model() string  { return f.model }
+func (f fixedLLM) MaxTokens() int { return f.maxTokens }
 
-// The LLM compressor reports its model's usable input window for a model the
-// catalog knows, and nothing for one it does not (the agent's window then
-// applies, instead of a guessed fallback).
-func TestLLMCompressor_ReportsTheWindowOfAKnownModelOnly(t *testing.T) {
-	info := catalog.Lookup("anthropic", "claude-haiku-4-5-20251001")
+// The LLM compressor's window follows the agent's own ceiling rule
+// (ProviderPromptCeiling): the served window when one is stated, else the
+// listing, less the max_tokens the request sends; nothing for a model no
+// listing knows.
+func TestLLMCompressor_WindowFollowsTheProviderCeiling(t *testing.T) {
+	const model = "claude-haiku-4-5-20251001"
+	info := catalog.Lookup("anthropic", model)
 	require.NotNil(t, info, "the catalog lists the model the test uses")
-	known := NewLLMCompressor(&promptRegistryCompressor{llm: fixedLLM{"anthropic", "claude-haiku-4-5-20251001"}})
-	assert.Equal(t, int(info.ContextWindow-info.MaxOutputTokens), known.InputWindowTokens())
+	window := int(info.ContextWindow)
 
-	unknown := NewLLMCompressor(&promptRegistryCompressor{llm: fixedLLM{"ollama", "made-up-model:1b"}})
+	sent := NewLLMCompressor(&promptRegistryCompressor{llm: fixedLLM{"anthropic", model, 8192}})
+	assert.Equal(t, window-8192, sent.InputWindowTokens(), "the request's max_tokens is the reservation, not the model's maximum output")
+
+	served := NewLLMCompressor(&promptRegistryCompressor{llm: fixedLLM{"anthropic", model, 8192}, servedWindow: 32000})
+	assert.Equal(t, 32000-8192, served.InputWindowTokens(), "a served window comes first")
+
+	unknown := NewLLMCompressor(&promptRegistryCompressor{llm: fixedLLM{"ollama", "made-up-model:1b", 0}})
 	assert.Zero(t, unknown.InputWindowTokens())
 	assert.Zero(t, NewLLMCompressor(nil).InputWindowTokens())
 }

@@ -2272,7 +2272,7 @@
     },
     "/v1/sessions/{sessionId}:compact": {
       "post": {
-        "summary": "CompactSession compacts a session's context on request, between turns:\nolder turns fold into the running summary, while the system prompt, the\nsummary and the newest keep_turns turns stay verbatim. It folds only; no\ntool result is stubbed. Folding makes an LLM call, and it never drops a\nturn without a summary. Refused while a turn runs on the session (ABORTED)\nor while it waits for a human decision (FAILED_PRECONDITION); UNAVAILABLE\nwhen no summary could be produced or the result could not be saved, in\nwhich case history is unchanged.",
+        "summary": "CompactSession compacts a session's context on request, between turns:\nolder turns fold into the running summary, while the system prompt, the\nsummary and the newest keep_turns turns stay verbatim. It folds only; no\ntool result is stubbed. Folding makes an LLM call, and it never drops a\nturn without a summary. Refused while a turn runs on the session (ABORTED)\nor while it waits for a human decision (FAILED_PRECONDITION); UNAVAILABLE\nwhen no summary could be produced, the result could not be saved, or the\nstore cannot load the session yet; in each case history is unchanged.",
         "operationId": "LoomService_CompactSession",
         "responses": {
           "200": {
@@ -2312,7 +2312,7 @@
     },
     "/v1/sessions/{sessionId}:resolveExecutionGap": {
       "post": {
-        "summary": "ResolveExecutionGap records an operator's finding for the tool call that\nResumeSession reported as an execution gap, so ResumeSession can continue\nthe turn.",
+        "summary": "ResolveExecutionGap records an operator's finding for the tool call that\nResumeSession reported as an execution gap, so ResumeSession can continue\nthe turn. UNAVAILABLE when the store cannot load the session yet.",
         "description": "The recorded result is the caller's assertion, not tool output, but the\nagent treats it as real tool output. It is stored marked as manually\nresolved with the caller's user id. Any caller who can open the session may\ncall this; there is no operator-only role. Do not expose it to session\nowners you would not trust to set a tool's result.",
         "operationId": "LoomService_ResolveExecutionGap",
         "responses": {
@@ -2353,7 +2353,7 @@
     },
     "/v1/sessions/{sessionId}:resume": {
       "post": {
-        "summary": "ResumeSession finishes a conversation turn that a crash interrupted, using\nthe durable execution log (execution_log.enabled must have been on while\nthe turn ran). Calls recorded as complete are backfilled from the log,\ncalls never started are dispatched, and the turn's reply is produced. A\ncall whose outcome is unknown is reported as an execution gap, to be\nsettled with ResolveExecutionGap before resuming again.",
+        "summary": "ResumeSession finishes a conversation turn that a crash interrupted, using\nthe durable execution log (execution_log.enabled must have been on while\nthe turn ran). Calls recorded as complete are backfilled from the log,\ncalls never started are dispatched, and the turn's reply is produced. A\ncall whose outcome is unknown is reported as an execution gap, to be\nsettled with ResolveExecutionGap before resuming again. UNAVAILABLE when\nthe store cannot load the session yet (retry once it answers).",
         "operationId": "LoomService_ResumeSession",
         "responses": {
           "200": {

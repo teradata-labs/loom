@@ -114,6 +114,11 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (_ *Respons
 	ctx = contextWithResumedTurn(ctx)
 
 	sess := a.memory.ReloadPendingSession(ctx, sessionID, a.config.Name)
+	if a.memory.isLoadPlaceholder(sess) {
+		// The store could not load the session: resuming the empty stand-in
+		// would find no batch and could record a second turn over the real one.
+		return nil, fmt.Errorf("resume session %s: %w", sessionID, ErrSessionNotLoaded)
+	}
 
 	// A session that is HITL-parked (waiting on a human, not crashed) must not
 	// be crash-resumed: parking happens before dispatch, so every call in its
@@ -693,6 +698,9 @@ func (a *Agent) ResolveExecutionGap(ctx context.Context, sessionID string, outco
 	span.SetAttribute(observability.AttrSessionID, sessionID)
 
 	sess := a.memory.ReloadPendingSession(ctx, sessionID, a.config.Name)
+	if a.memory.isLoadPlaceholder(sess) {
+		return nil, fmt.Errorf("resolve execution gap in session %s: %w", sessionID, ErrSessionNotLoaded)
+	}
 	events, err := a.eventLog.LoadEvents(ctx, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("loading execution events: %w", err)

@@ -108,6 +108,7 @@ func TestCompactSessionStatus(t *testing.T) {
 		&agent.SessionParkedError{SessionID: "s"}: codes.FailedPrecondition,
 		agent.ErrSummaryUnavailable:               codes.Unavailable,
 		fmt.Errorf("%w: %w", agent.ErrCompactionNotSaved, errors.New("db")): codes.Unavailable,
+		fmt.Errorf("session s: %w", agent.ErrSessionNotLoaded):              codes.Unavailable,
 		context.Canceled:   codes.Canceled,
 		errors.New("boom"): codes.Internal,
 	} {

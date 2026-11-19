@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"weak"
 
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/storage"
@@ -59,7 +60,13 @@ type Memory struct {
 	// call (a turn start, under the session lease) retries the load instead
 	// of serving the empty session for the rest of the process life.
 	// Guarded by mu; nil until first used.
-	reloadPending        map[string]bool
+	reloadPending map[string]bool
+	// standIns marks every session object created empty after a failed load,
+	// by identity, for as long as anything holds it. A turn may still hold a
+	// stand-in after another caller replaced it in the cache (no session lease
+	// without an execution log), and a save of it must still be skipped.
+	// Weak keys: a stand-in nothing references is pruned. Guarded by mu.
+	standIns             map[weak.Pointer[Session]]struct{}
 	store                SessionStorage             // Optional persistent storage (SQLite, PostgreSQL, etc.)
 	sharedMemory         *storage.SharedMemoryStore // Optional shared memory for large data
 	systemPromptFunc     SystemPromptFunc           // Optional function to generate system prompts
@@ -347,6 +354,22 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 // so a session is never swapped out from under a running turn, and the stored
 // rows it loads include everything the previous turn saved.
 func (m *Memory) ReloadPendingSession(ctx context.Context, sessionID, agentID string) *Session {
+	m.mu.RLock()
+	pending := m.reloadPending[sessionID]
+	cached := m.sessions[sessionID]
+	store := m.store
+	m.mu.RUnlock()
+	if pending && cached != nil && store != nil {
+		// Probe the store without holding mu: during an outage the load (and
+		// its timeout) must not stall every other session of this Memory. Only
+		// a store that answers takes the lock and replaces the stand-in.
+		if _, err := store.LoadSession(ctx, sessionID); err != nil && !errors.Is(err, ErrSessionNotFound) &&
+			!loadErrorMeansMissing(ctx, store, sessionID) {
+			zap.L().Warn("reload: the store still cannot load the session; this turn has no history in memory",
+				zap.String("session_id", sessionID), zap.Error(err))
+			return cached
+		}
+	}
 	return m.getOrCreate(ctx, sessionID, agentID, "", true)
 }
 
@@ -428,6 +451,10 @@ func (m *Memory) getOrCreate(ctx context.Context, sessionID, agentID, parentSess
 				zap.String("session_id", sessionID), zap.Bool("retry", hasCached), zap.Error(err))
 		}
 		if err == nil && session != nil {
+			if m.reloadPending[sessionID] {
+				zap.L().Info("reload: the store loaded the session after an earlier failed load; the stand-in is replaced",
+					zap.String("session_id", sessionID))
+			}
 			delete(m.reloadPending, sessionID)
 			session.Messages = dropFoldedCalls(ctx, store, sessionID, session.Messages)
 			m.updateSessionMetadata(session, agentID, parentSessionID, store, ctx, logger)
@@ -559,6 +586,7 @@ func (m *Memory) getOrCreate(ctx context.Context, sessionID, agentID, parentSess
 			m.reloadPending = make(map[string]bool)
 		}
 		m.reloadPending[sessionID] = true
+		m.markStandInLocked(session)
 	}
 	m.mu.Unlock()
 
@@ -952,15 +980,32 @@ func loadErrorMeansMissing(ctx context.Context, store SessionStorage, sessionID 
 	return err == nil && !exists
 }
 
-// isLoadPlaceholder reports whether session is the empty stand-in cached after
-// a failed load (reloadPending), which must never be saved over the stored row.
+// isLoadPlaceholder reports whether session is an empty stand-in created after
+// a failed load, which must never be saved over the stored row. It holds for
+// the object itself, cached or not: a turn can still hold a stand-in after the
+// recovered session replaced it in the cache.
 func (m *Memory) isLoadPlaceholder(session *Session) bool {
 	if session == nil {
 		return false
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.reloadPending[session.ID] && m.sessions[session.ID] == session
+	_, ok := m.standIns[weak.Make(session)]
+	return ok
+}
+
+// markStandInLocked records session as a stand-in and prunes the marks of
+// stand-ins nothing references any more. Must hold mu for writing.
+func (m *Memory) markStandInLocked(session *Session) {
+	if m.standIns == nil {
+		m.standIns = make(map[weak.Pointer[Session]]struct{})
+	}
+	for wp := range m.standIns {
+		if wp.Value() == nil {
+			delete(m.standIns, wp)
+		}
+	}
+	m.standIns[weak.Make(session)] = struct{}{}
 }
 
 // PersistMessage saves a message's durable row, once, applying the fixed write
