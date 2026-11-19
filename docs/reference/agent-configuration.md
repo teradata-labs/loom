@@ -210,7 +210,7 @@ All fields are optional. If `spec.llm` is omitted entirely, the agent inherits t
 | `provider` | `string` | (server default) | Provider name. See [LLM Providers](#llm-providers). |
 | `model` | `string` | (server default) | Model identifier |
 | `temperature` | `float64` | `0.7` | Sampling temperature (0.0 - 1.0) |
-| `max_tokens` | `int` | `4096` | Maximum response tokens. Sent by the agent's client when the agent names a `provider`; an agent on the server's client sends the server's `llm.max_tokens`. An agent registered through the API with none set also sends the server's. It is the reply reservation a step in flight is fitted against |
+| `max_tokens` | `int` | `4096` | Maximum response tokens. Sent by the agent's client when the agent names a `provider`; an agent on the server's client sends the server's `llm.max_tokens`. An agent registered through the API with none set also sends the server's. It is the reply reservation a step in flight is fitted against. An agent on a provider pool entry, or after a runtime model switch, is fitted against the `max_tokens` that client sends |
 | `stop_sequences` | `[]string` | `[]` | Stop generation sequences |
 | `top_p` | `float64` | `0.0` | Nucleus sampling (0.0 - 1.0) |
 | `top_k` | `int` | `0` | Top-k sampling |
@@ -466,7 +466,7 @@ Under `spec.memory` (k8s-style) or `agent.memory` (legacy).
 | `path` | `string` | `""` | SQLite database file path |
 | `dsn` | `string` | `""` | PostgreSQL connection string |
 | `max_history` | `int` | `50` | Max conversation messages to retain |
-| `shared_memory_threshold_bytes` | `int64` | `16384` (16 KiB) | One byte threshold, three roles: arrival bound (a tool result strictly over it enters as its first bytes plus a tail), stored-row bound, and retrieval page bound — plus the tool executor's large-parameter offload. `>0` sets the bound (the arrival and stored-row bounds floor it at 256 bytes); `-1` keeps the 16 KiB default; `0` in YAML is indistinguishable from unset. `0` through the Go API `SetSharedMemoryThreshold` makes the executor store every tool parameter by reference and leaves the arrival bound at its default. |
+| `shared_memory_threshold_bytes` | `int64` | `16384` (16 KiB) | One byte threshold, three roles: arrival bound (a tool result strictly over it enters as its first bytes plus a tail), stored-row bound, and retrieval page bound — plus the tool executor's large-parameter offload. `>0` sets the bound (the arrival and stored-row bounds floor it at 256 bytes); `-1` keeps the 16 KiB default; `0` in YAML is indistinguishable from unset. `0` through the Go API `SetSharedMemoryThreshold` makes the executor store every tool parameter by reference and leaves the arrival bound at its default. A tool named in `Agent.SetOffloadExemptTools` is not bounded: its result enters whole and stays whole in the conversation for every later turn, until a fold summarises it, so an exempt tool with large results makes every later turn larger. |
 | `max_tool_results` | `int` | `5` | Max tool results kept in conversation kernel |
 | `memory_compression` | object | optional | See [Memory Compression](#memory-compression-configuration) |
 | `graph_memory` | object | optional | See [Graph Memory](#graph-memory-configuration) |
@@ -478,7 +478,7 @@ redacted `AgentInfo`. `ListAgents` omits `config` entirely. Agent YAML is
 environment-expanded before loading; arbitrary fields such as `system_prompt`
 and metadata are not secret-filtered, so do not embed credentials there.
 
-**Large tool results**: a result is bounded once, at arrival. Above the threshold it enters the conversation as its first bytes plus a tail that says how much was cut and names the result's `tool_use_id`, with which `query_tool_result` pages the whole of it this turn (registered by default, as on main; when it is suppressed, the tail says to narrow the call and re-run). What enters memory, what is stored and what the model is sent are the same bytes, so a compiled prefix stays valid for the whole session and the fold — not the threshold — is what controls context size. The one exception: a step whose results together do not fit the window the model is served with has them replaced, before the send, by a note telling the model to call fewer tools at once. That window is `max_model_context_tokens` when set, else the model's listed window (catalog, then prefix table; `max_context_tokens` only when nothing lists the model). No provider has a rule of its own: an Ollama server running a smaller `num_ctx` states it in `max_model_context_tokens`.
+**Large tool results**: a result is bounded once, at arrival. Above the threshold it enters the conversation as its first bytes plus a tail that says how much was cut and names the result's `tool_use_id`, with which `query_tool_result` pages the whole of it this turn (registered by default; when it is suppressed, the tail says to narrow the call and re-run). What enters memory, what is stored and what the model is sent are the same bytes, so a compiled prefix stays valid for the whole session and the fold — not the threshold — is what controls context size. The one exception: a step whose results together do not fit the window the model is served with has them replaced, before the send, by a note telling the model to call fewer tools at once. That window is `max_model_context_tokens` when set, else the model's listed window (catalog, then prefix table; `max_context_tokens` only when nothing lists the model). No provider has a rule of its own: an Ollama server running a smaller `num_ctx` states it in `max_model_context_tokens`.
 
 ---
 
@@ -553,6 +553,7 @@ Under `spec.memory.memory_compression`.
 | `warning_threshold_percent` | `int` | profile-dependent | Warning threshold (0-100) |
 | `critical_threshold_percent` | `int` | profile-dependent | Critical threshold (0-100) |
 | `protected_recent_turns` | `int` | `16` | Recent turns a fold keeps, user messages and assistant steps alike; the fold summarises everything before them. Also the top rung of the pressure ladder |
+| `max_failed_fold_rounds` | `int` | `1` | In-loop fold rounds that may fail in one turn (two replies in a row that are not a usable summary) before the fold stops arming for the rest of the turn. `0` means never stop. A new turn arms the fold again. Raise it for a model that sometimes answers the fold ask badly; each failed round costs two full-context calls |
 | `batch_sizes.normal` | `int` | profile-dependent | Messages per batch (normal) |
 | `batch_sizes.warning` | `int` | profile-dependent | Messages per batch (warning) |
 | `batch_sizes.critical` | `int` | profile-dependent | Messages per batch (critical) |
@@ -586,7 +587,7 @@ Under `spec.config` (k8s-style) or `agent.behavior` (legacy).
 | `timeout_seconds` | `int` | `300` | Timeout per message (seconds) |
 | `allow_code_execution` | `bool` | `false` | Allow shell execution |
 | `allowed_domains` | `[]string` | `[]` | Domain whitelist for web access |
-| `max_turns` | `int` | `25` | Max conversation turns |
+| `max_turns` | `int` | `25` | Max loop passes for one user message: the LLM calls before the final synthesis call. Each in-loop fold call uses one pass, whether its reply is usable or not. |
 | `max_tool_executions` | `int` | `50` | Max tool calls per conversation |
 | `output_token_cb_threshold` | `int` | `8` | Consecutive truncated-tool-call turns before circuit breaker fires. `0` = default (8). `-1` = disabled. |
 | `patterns` | object | optional | See [Pattern Configuration](#pattern-configuration) |

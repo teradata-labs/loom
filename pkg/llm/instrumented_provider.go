@@ -544,6 +544,38 @@ var _ llmtypes.LLMProvider = (*InstrumentedProvider)(nil)
 // Ensure InstrumentedProvider implements StreamingLLMProvider interface
 var _ llmtypes.StreamingLLMProvider = (*InstrumentedProvider)(nil)
 
+// MaxTokens forwards the max_tokens the wrapped provider sends on each request
+// (llmtypes.MaxTokensReporter), so an agent whose client is instrumented fits
+// a step in flight against the same figure. 0 when the wrapped provider does
+// not report it (the agent then uses its configured figure).
+func (p *InstrumentedProvider) MaxTokens() int {
+	if r, ok := p.provider.(llmtypes.MaxTokensReporter); ok {
+		return r.MaxTokens()
+	}
+	return 0
+}
+
+// ThinkingOffWhenSuppressed forwards the wrapped provider's answer
+// (llmtypes.ThinkingSuppressionReporter), or false when it does not report
+// it, so an instrumented client is traced as the client it wraps.
+func (p *InstrumentedProvider) ThinkingOffWhenSuppressed() bool {
+	if r, ok := p.provider.(llmtypes.ThinkingSuppressionReporter); ok {
+		return r.ThinkingOffWhenSuppressed()
+	}
+	return false
+}
+
+// ThinkingForm forwards the wrapped provider's thinking form
+// (llmtypes.ThinkingSuppressionReporter), or llmtypes.ThinkingFormUnknown
+// when it does not report it, so an instrumented client is traced as the
+// client it wraps.
+func (p *InstrumentedProvider) ThinkingForm() string {
+	if r, ok := p.provider.(llmtypes.ThinkingSuppressionReporter); ok {
+		return r.ThinkingForm()
+	}
+	return llmtypes.ThinkingFormUnknown
+}
+
 // SchedulerScope forwards the wrapped provider's quota-boundary scope so
 // slot scheduling keys grants to the same scope its capacity telemetry
 // calibrates. Without this forwarding, a wrapped client silently fell back

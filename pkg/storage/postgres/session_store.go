@@ -481,54 +481,12 @@ func (s *SessionStore) LoadMessages(ctx context.Context, sessionID string) ([]ag
 		defer rows.Close()
 
 		messages, err = scanMessages(rows)
-		if err != nil {
-			return err
-		}
-		rows.Close()
-
-		// A call with no result among the loaded rows either never finished
-		// or had its result folded. The folded flag says which: a folded
-		// result's call was removed by the fold, and is removed here too.
-		orphans := agent.CallsWithoutResult(messages)
-		if len(orphans) == 0 {
-			return nil
-		}
-		foldedRows, err := tx.Query(ctx,
-			`SELECT tool_use_id FROM messages
-			 WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL AND folded = TRUE AND tool_use_id = ANY($3)`,
-			sessionID, userID, orphans,
-		)
-		if err != nil {
-			span.RecordError(err)
-			return fmt.Errorf("failed to query folded results: %w", err)
-		}
-		defer foldedRows.Close()
-		folded := make(map[string]bool)
-		for foldedRows.Next() {
-			var id string
-			if err := foldedRows.Scan(&id); err != nil {
-				return fmt.Errorf("failed to scan folded result: %w", err)
-			}
-			folded[id] = true
-		}
-		if err := foldedRows.Err(); err != nil {
-			return err
-		}
-		agent.DropFoldedCalls(messages, folded)
-		return nil
+		return err
 	})
 	if err != nil {
 		return nil, err
 	}
 	return messages, nil
-}
-
-// MarkEvicted does nothing: a tool result is bounded once at arrival and
-// never evicted afterwards. It is here for SessionStorage implementations
-// written against it.
-func (s *SessionStore) MarkEvicted(ctx context.Context, sessionID string, seqs []int64) error {
-	agent.WarnDeprecatedOnce("SessionStore.MarkEvicted", "nothing is evicted; results are bounded at arrival")
-	return nil
 }
 
 // FoldMessages writes summary version n (snapshot_type='fold', content = JSON
@@ -617,7 +575,7 @@ func (s *SessionStore) LoadMessagesForAgent(ctx context.Context, agentID string)
 		JOIN sessions s ON m.session_id = s.id
 		WHERE s.agent_id = $1 AND s.user_id = $2 AND s.deleted_at IS NULL AND m.deleted_at IS NULL
 		  AND m.folded = FALSE
-		ORDER BY m.timestamp ASC`,
+		ORDER BY m.timestamp ASC, m.id ASC`,
 			agentID, userID,
 		)
 		if err != nil {
@@ -668,7 +626,7 @@ func (s *SessionStore) LoadMessagesFromParentSession(ctx context.Context, sessio
 		FROM messages
 		WHERE session_id = $1 AND user_id = $2 AND deleted_at IS NULL
 		  AND folded = FALSE
-		ORDER BY timestamp ASC`,
+		ORDER BY timestamp ASC, id ASC`,
 			*parentID, userID,
 		)
 		if err != nil {
@@ -926,16 +884,51 @@ func (s *SessionStore) RewriteToolResults(ctx context.Context, sessionID string,
 	if len(seqs) == 0 {
 		return nil
 	}
+	var affected int64
 	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := tx.Exec(ctx,
+		tag, err := tx.Exec(ctx,
 			`UPDATE messages SET content = $1, tool_result_json = NULL
 			 WHERE role = 'tool' AND session_id = $2 AND user_id = $3 AND id = ANY($4)`,
 			content, sessionID, UserIDFromContext(ctx), seqs)
+		affected = tag.RowsAffected()
 		return err
 	})
 	if err != nil {
 		span.RecordError(err)
 		return fmt.Errorf("failed to rewrite tool results: %w", err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("%w: session %s, %d rows named", agent.ErrNoToolResultsRewritten, sessionID, len(seqs))
+	}
+	return nil
+}
+
+var _ agent.RowUsageAdder = (*SessionStore)(nil)
+
+// AddRowUsage implements agent.RowUsageAdder: the row seq of the caller's own
+// session gets u's cost, total, output and thinking tokens added. Owner-scoped
+// by user_id in the query, with RLS as the second fence. A row that is not
+// there, or not the caller's, is an error.
+func (s *SessionStore) AddRowUsage(ctx context.Context, sessionID string, seq int64, u agent.Usage) error {
+	ctx, span := s.tracer.StartSpan(ctx, "pg_session_store.add_row_usage")
+	defer s.tracer.EndSpan(span)
+	span.SetAttribute("session_id", sessionID)
+	var affected int64
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
+			`UPDATE messages SET cost_usd = COALESCE(cost_usd, 0) + $1, token_count = COALESCE(token_count, 0) + $2,
+			 output_tokens = output_tokens + $3, thinking_tokens = thinking_tokens + $4
+			 WHERE session_id = $5 AND user_id = $6 AND id = $7`,
+			u.CostUSD, u.TotalTokens, u.OutputTokens, u.ThinkingTokens, sessionID, UserIDFromContext(ctx), seq)
+		affected = tag.RowsAffected()
+		return err
+	})
+	if err != nil {
+		span.RecordError(err)
+		return fmt.Errorf("failed to add usage to row %d: %w", seq, err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("add usage: row %d of session %s not found", seq, sessionID)
 	}
 	return nil
 }

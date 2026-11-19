@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/decision"
@@ -569,6 +570,7 @@ type MemoryCompressionConfigYAML struct {
 	WarningThresholdPercent  int                              `yaml:"warning_threshold_percent"`
 	CriticalThresholdPercent int                              `yaml:"critical_threshold_percent"`
 	ProtectedRecentTurns     int                              `yaml:"protected_recent_turns"`
+	MaxFailedFoldRounds      *int                             `yaml:"max_failed_fold_rounds"`
 	BatchSizes               *MemoryCompressionBatchSizesYAML `yaml:"batch_sizes"`
 }
 
@@ -1193,8 +1195,48 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 // ignored in another. It maps only _parallel_read_tools for now; the sibling
 // flags (_tool_change_note, _repeat_call_hint) are
 // tracked in issue #526.
+//
+// A stored AgentConfig can still carry _preflight_fit or
+// _auto_compact_percent: the loader of an earlier loom wrote them for
+// behavior.preflight_fit and behavior.auto_compact_percent. They are not
+// read; warnRetiredMetadataKeys reports each one once per process.
 func ApplyMetadataBehavior(cfg *Config, md map[string]string) {
 	cfg.ParallelReadTools = md["_parallel_read_tools"] == "true"
+	warnRetiredMetadataKeys(cfg.Name, md)
+}
+
+// retiredMetadataKeys are the AgentConfig.Metadata keys an earlier loader
+// wrote and this one no longer reads, each with the behavior key it came
+// from. The warning text is that key's entry in removedBehaviorKeys.
+var retiredMetadataKeys = []struct{ metadataKey, behaviorKey string }{
+	{"_preflight_fit", "preflight_fit"},
+	{"_auto_compact_percent", "auto_compact_percent"},
+}
+
+// retiredMetadataWarned holds the retired metadata keys already reported,
+// so a host that rebuilds agents per turn logs each key once.
+var retiredMetadataWarned sync.Map
+
+// warnRetiredMetadataKeys logs, once per process for each key, that a stored
+// AgentConfig sets a metadata key this loader no longer reads.
+// ApplyMetadataBehavior calls it. The log names the key and the agent, never
+// the value.
+func warnRetiredMetadataKeys(agentName string, md map[string]string) {
+	for _, k := range retiredMetadataKeys {
+		if _, set := md[k.metadataKey]; !set {
+			continue
+		}
+		if _, seen := retiredMetadataWarned.LoadOrStore(k.metadataKey, true); seen {
+			continue
+		}
+		for _, r := range removedBehaviorKeys {
+			if r.key == k.behaviorKey {
+				zap.L().Warn("stored agent config sets a retired key: "+r.warning,
+					zap.String("metadata_key", k.metadataKey),
+					zap.String("agent", agentName))
+			}
+		}
+	}
 }
 
 // parseMemoryCompressionConfig converts YAML memory compression config to proto
@@ -1232,6 +1274,13 @@ func parseMemoryCompressionConfig(yaml *MemoryCompressionConfigYAML) *loomv1.Mem
 		WarningThresholdPercent:  warningThreshold,
 		CriticalThresholdPercent: criticalThreshold,
 		ProtectedRecentTurns:     protectedTurns,
+	}
+	if yaml.MaxFailedFoldRounds != nil {
+		rounds, err := safeInt32(*yaml.MaxFailedFoldRounds, "MaxFailedFoldRounds")
+		if err != nil {
+			return nil
+		}
+		config.MaxFailedFoldRounds = &rounds
 	}
 
 	// Parse workload profile string to enum
@@ -1472,8 +1521,21 @@ func parseImplicitTasksConfig(yaml *ImplicitTasksConfigYAML) *loomv1.ImplicitTas
 	return cfg
 }
 
+// removedBehaviorKeys are the behavior keys the loader once read and no longer
+// does, each with the warning a file that still sets it gets.
+// context_relief_warning went with the relief note. preflight_fit and
+// auto_compact_percent are superseded by the in-loop fold and the step check
+// (fitStepToWindow), which keep every send inside the provider's window; their
+// warnings name the setting that does the job now.
+var removedBehaviorKeys = []struct{ key, warning string }{
+	{"context_relief_warning", "behavior.context_relief_warning is no longer read; the setting has no effect"},
+	{"preflight_fit", "behavior.preflight_fit is no longer read; to hold every request under the context window, set llm.max_model_context_tokens to it"},
+	{"auto_compact_percent", "behavior.auto_compact_percent is no longer read; the in-loop fold compacts at memory.memory_compression.critical_threshold_percent"},
+}
+
 // warnRemovedKeys reports a key the loader once read and no longer does, so a
-// file that still sets it learns the setting has no effect.
+// file that still sets it learns the setting has no effect. LoadAgentConfig
+// calls it; the file still loads.
 func warnRemovedKeys(yamlOnly string) {
 	var probe struct {
 		Agent struct {
@@ -1487,14 +1549,10 @@ func warnRemovedKeys(yamlOnly string) {
 		return
 	}
 	for _, b := range []map[string]any{probe.Agent.Behavior, probe.Spec.Behavior} {
-		if _, set := b["context_relief_warning"]; set {
-			zap.L().Warn("behavior.context_relief_warning is no longer read; the setting has no effect")
-		}
-		if _, set := b["preflight_fit"]; set {
-			zap.L().Warn("behavior.preflight_fit is no longer read; to hold every request under the context window, set llm.max_model_context_tokens to it")
-		}
-		if _, set := b["auto_compact_percent"]; set {
-			zap.L().Warn("behavior.auto_compact_percent is no longer read; the in-loop fold compacts at memory.memory_compression.critical_threshold_percent")
+		for _, k := range removedBehaviorKeys {
+			if _, set := b[k.key]; set {
+				zap.L().Warn(k.warning)
+			}
 		}
 	}
 }

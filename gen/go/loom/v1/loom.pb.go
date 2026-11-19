@@ -4417,7 +4417,10 @@ type CompactSessionResponse struct {
 	ToolResultsStubbed bool `protobuf:"varint,2,opt,name=tool_results_stubbed,json=toolResultsStubbed,proto3" json:"tool_results_stubbed,omitempty"`
 	// Older turns were folded into the running summary.
 	TurnsFolded bool `protobuf:"varint,3,opt,name=turns_folded,json=turnsFolded,proto3" json:"turns_folded,omitempty"`
-	// Newest turns left verbatim.
+	// Newest turns left verbatim. A long region is folded in chunks; when a
+	// later chunk cannot be summarized or saved, the earlier chunks stay folded
+	// and this counts every turn still verbatim, which can be more than
+	// keep_turns. The call still succeeds.
 	TurnsKept int32 `protobuf:"varint,4,opt,name=turns_kept,json=turnsKept,proto3" json:"turns_kept,omitempty"`
 	// Estimated context size before the compaction.
 	TokensBefore int64 `protobuf:"varint,5,opt,name=tokens_before,json=tokensBefore,proto3" json:"tokens_before,omitempty"`

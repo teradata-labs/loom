@@ -16,9 +16,13 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"math"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"weak"
 
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/storage"
@@ -49,8 +53,20 @@ func (f MemoryObserverFunc) OnMessageAdded(agentID string, sessionID string, msg
 // Memory manages conversation sessions and history.
 // Supports optional persistent storage via SessionStorage interface.
 type Memory struct {
-	mu                   sync.RWMutex
-	sessions             map[string]*Session
+	mu       sync.RWMutex
+	sessions map[string]*Session
+	// reloadPending holds the ids of cached sessions that were created empty
+	// because the store failed to load them. The next ReloadPendingSession
+	// call (a turn start, under the session lease) retries the load instead
+	// of serving the empty session for the rest of the process life.
+	// Guarded by mu; nil until first used.
+	reloadPending map[string]bool
+	// standIns marks every session object created empty after a failed load,
+	// by identity, for as long as anything holds it. A turn may still hold a
+	// stand-in after another caller replaced it in the cache (no session lease
+	// without an execution log), and a save of it must still be skipped.
+	// Weak keys: a stand-in nothing references is pruned. Guarded by mu.
+	standIns             map[weak.Pointer[Session]]struct{}
 	store                SessionStorage             // Optional persistent storage (SQLite, PostgreSQL, etc.)
 	sharedMemory         *storage.SharedMemoryStore // Optional shared memory for large data
 	systemPromptFunc     SystemPromptFunc           // Optional function to generate system prompts
@@ -328,12 +344,51 @@ func (m *Memory) GetOrCreateSession(ctx context.Context, sessionID string) *Sess
 //   - agentID: Agent identity (e.g., "coordinator", "analyzer-sub-agent")
 //   - parentSessionID: Parent session ID (for sub-agents to access coordinator session)
 func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, agentID, parentSessionID string) *Session {
+	return m.getOrCreate(ctx, sessionID, agentID, parentSessionID, false)
+}
+
+// ReloadPendingSession is GetOrCreateSessionWithAgent for the caller that holds
+// the session's turn (after holdSessionLease). It also retries the load of a
+// session whose earlier load failed (reloadPending): a success replaces the
+// cached empty stand-in with the stored session. Only the turn holder retries,
+// so a session is never swapped out from under a running turn, and the stored
+// rows it loads include everything the previous turn saved.
+func (m *Memory) ReloadPendingSession(ctx context.Context, sessionID, agentID string) *Session {
+	m.mu.RLock()
+	pending := m.reloadPending[sessionID]
+	cached := m.sessions[sessionID]
+	store := m.store
+	m.mu.RUnlock()
+	if pending && cached != nil && store != nil {
+		// Probe the store without holding mu: during an outage the load (and
+		// its timeout) must not stall every other session of this Memory. Only
+		// a store that answers takes the lock and replaces the stand-in.
+		if _, err := store.LoadSession(ctx, sessionID); err != nil && !errors.Is(err, ErrSessionNotFound) &&
+			!loadErrorMeansMissing(ctx, store, sessionID) {
+			zap.L().Warn("reload: the store still cannot load the session; this turn has no history in memory",
+				zap.String("session_id", sessionID), zap.Error(err))
+			// What is cached now: another caller may have replaced the
+			// stand-in while the probe waited on the store.
+			m.mu.RLock()
+			current := m.sessions[sessionID]
+			m.mu.RUnlock()
+			if current != nil {
+				return current
+			}
+			return cached
+		}
+	}
+	return m.getOrCreate(ctx, sessionID, agentID, "", true)
+}
+
+func (m *Memory) getOrCreate(ctx context.Context, sessionID, agentID, parentSessionID string, retry bool) *Session {
 	// Fast path: read-lock check for existing session (most common case in
 	// multi-turn conversations). No write lock needed if session already exists
 	// and doesn't need metadata updates.
 	m.mu.RLock()
 	if session, ok := m.sessions[sessionID]; ok {
-		needsUpdate := (agentID != "" && session.AgentID == "") ||
+		needsUpdate := (retry && m.reloadPending[sessionID]) ||
+			(agentID != "" && session.AgentID == "") ||
 			(parentSessionID != "" && session.ParentSessionID == "") ||
 			session.SegmentedMem == nil ||
 			session.FailureTracker == nil
@@ -370,7 +425,8 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 	// Defensive: also ensure SegmentedMem/FailureTracker are present — in the common
 	// case they already are (ensureSessionMemory is a no-op), but this protects against
 	// edge cases where a cached session has been stripped of these fields.
-	if session, ok := m.sessions[sessionID]; ok {
+	cached, hasCached := m.sessions[sessionID]
+	if session := cached; hasCached && !(retry && m.reloadPending[sessionID]) {
 		m.updateSessionMetadata(session, agentID, parentSessionID, store, ctx, logger)
 		m.ensureSessionMemory(session, sessionID, sysFn, compProfile, maxCtx, reservedOut,
 			sharedMem, store, tracer, llmProv, compressor, ctx)
@@ -382,10 +438,33 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 	}
 
 	// Try loading from persistent store (still under write lock to prevent
-	// duplicate loads, but store.LoadSession is typically fast for cache misses)
+	// duplicate loads, but store.LoadSession is typically fast for cache misses).
+	// A cached session reaches here only when an earlier load failed: the
+	// load is tried again, and a success replaces the empty session.
+	loadFailed := false
 	if store != nil {
 		session, err := store.LoadSession(ctx, sessionID)
+		if err != nil && !errors.Is(err, ErrSessionNotFound) && loadErrorMeansMissing(ctx, store, sessionID) {
+			// A store that does not wrap ErrSessionNotFound (a host store with
+			// its own not-found error) and has no row for the id: a new
+			// session, created and saved below as before.
+			err = ErrSessionNotFound
+		}
+		if err != nil && !errors.Is(err, ErrSessionNotFound) {
+			// A store that failed is not a new session: the turn below starts
+			// with no history in memory. Say so, so the empty context can be
+			// traced to the failed read. The next turn tries the load again.
+			loadFailed = true
+			zap.L().Error("reload: the store could not load the session; this turn has no history in memory, the next turn loads it again",
+				zap.String("session_id", sessionID), zap.Bool("retry", hasCached), zap.Error(err))
+		}
 		if err == nil && session != nil {
+			if m.reloadPending[sessionID] {
+				zap.L().Info("reload: the store loaded the session after an earlier failed load; the stand-in is replaced",
+					zap.String("session_id", sessionID))
+			}
+			delete(m.reloadPending, sessionID)
+			session.Messages = dropFoldedCalls(ctx, store, sessionID, session.Messages)
 			m.updateSessionMetadata(session, agentID, parentSessionID, store, ctx, logger)
 			// Sessions loaded from DB don't have SegmentedMem/FailureTracker
 			// (they aren't persisted). Recreate them so compression and error
@@ -427,6 +506,29 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 			}
 			return session
 		}
+	}
+
+	if hasCached {
+		// The retry of a failed load: still failing, keep serving this turn's
+		// session (it holds the turn's messages in memory); or the store now
+		// says the session does not exist, so the cached one is the session.
+		if loadFailed {
+			m.mu.Unlock()
+			return cached
+		}
+		// The store answered that there is no such session: the stand-in
+		// is the session from now on. Clear its mark and create its row,
+		// which was never saved (messages need it).
+		delete(m.reloadPending, sessionID)
+		delete(m.standIns, weak.Make(cached))
+		m.mu.Unlock()
+		if store != nil {
+			if err := store.SaveSession(ctx, cached); err != nil {
+				zap.L().Warn("reload: the store has no such session, and creating its row failed",
+					zap.String("session_id", sessionID), zap.Error(err))
+			}
+		}
+		return cached
 	}
 
 	// Not found in cache or store. Release the lock so other goroutines
@@ -499,10 +601,19 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 		return existing
 	}
 	m.sessions[sessionID] = session
+	if loadFailed {
+		if m.reloadPending == nil {
+			m.reloadPending = make(map[string]bool)
+		}
+		m.reloadPending[sessionID] = true
+		m.markStandInLocked(session)
+	}
 	m.mu.Unlock()
 
-	// Persist to store if configured (outside lock)
-	if store != nil {
+	// Persist to store if configured (outside lock). Not after a failed
+	// load: the session most likely exists in the store, and an empty
+	// placeholder must not overwrite its row.
+	if store != nil && !loadFailed {
 		_ = store.SaveSession(ctx, session)
 	}
 
@@ -566,6 +677,99 @@ func (m *Memory) reFireOnRestore(sessionID string, messages []Message,
 			zap.Int("turn", ctxDebug.turn(sessionID)),
 			zap.Int("loads_reactivated", loadsReactivated))
 	}
+}
+
+// errNoRowUsageAdder is addRowUsage's answer for a store without
+// RowUsageAdder.
+var errNoRowUsageAdder = errors.New("the store cannot add usage to a row: it has no RowUsageAdder")
+
+// addRowUsage adds u to row seq of the session through the store's
+// RowUsageAdder. Agent.billOnLastRow calls it when a turn ends on an error
+// with cost that no row holds. A store without the operation answers
+// errNoRowUsageAdder.
+func (m *Memory) addRowUsage(ctx context.Context, sessionID string, seq int64, u Usage) error {
+	adder, ok := m.store.(RowUsageAdder)
+	if !ok {
+		return errNoRowUsageAdder
+	}
+	return adder.AddRowUsage(ctx, sessionID, seq, u)
+}
+
+// dropFoldedCalls removes, from the assistant rows of a session read from the
+// store, each tool call whose result row is stored folded. GetOrCreateSession
+// calls it on reload, before the rows are replayed.
+//
+// The in-loop fold keeps the last turns' words and removes their tool
+// traffic: in memory the kept assistant rows lose their calls
+// (foldSplitLocked), and in the store their results are flagged folded, but
+// the rows keep tool_calls_json. The reload read leaves folded rows out, so
+// without this step the compile gave each such call the synthetic "did not
+// complete" result, which tells the model to run again a call that ran. The
+// reload then sends what the live session sends.
+//
+// A call with no stored result (the process stopped before the result was
+// written) is kept: the compile gives it the synthetic result, which is the
+// re-run door. The extra read runs only when a loaded call has no loaded
+// result, and starts at the first such row. A read that fails leaves the rows
+// as they are and logs; the synthetic results then stand.
+func dropFoldedCalls(ctx context.Context, store SessionStorage, sessionID string, msgs []Message) []Message {
+	answered := make(map[string]bool)
+	for i := range msgs {
+		if msgs[i].Role == "tool" && msgs[i].ToolUseID != "" {
+			answered[msgs[i].ToolUseID] = true
+		}
+	}
+	var lo int64 = math.MaxInt64
+	for i := range msgs {
+		if msgs[i].Role != "assistant" {
+			continue
+		}
+		for _, c := range msgs[i].ToolCalls {
+			if c.ID != "" && !answered[c.ID] {
+				if seq, err := strconv.ParseInt(msgs[i].ID, 10, 64); err == nil && seq < lo {
+					lo = seq
+				}
+			}
+		}
+	}
+	if lo == math.MaxInt64 {
+		return msgs // every call has its result, or no row has a durable seq
+	}
+	rows, err := store.ListMessagesBySeqRange(ctx, sessionID, lo, math.MaxInt64)
+	if err != nil {
+		zap.L().Warn("reload: cannot read the folded results; calls without a loaded result are sent as not completed",
+			zap.String("session_id", sessionID), zap.Error(err))
+		return msgs
+	}
+	folded := make(map[string]bool)
+	for i := range rows {
+		if rows[i].Folded && rows[i].Role == "tool" && rows[i].ToolUseID != "" {
+			folded[rows[i].ToolUseID] = true
+		}
+	}
+	if len(folded) == 0 {
+		return msgs
+	}
+	out := make([]Message, len(msgs))
+	copy(out, msgs)
+	for i := range out {
+		if out[i].Role != "assistant" || len(out[i].ToolCalls) == 0 {
+			continue
+		}
+		var calls []ToolCall
+		changed := false
+		for _, c := range out[i].ToolCalls {
+			if folded[c.ID] && !answered[c.ID] {
+				changed = true
+				continue
+			}
+			calls = append(calls, c)
+		}
+		if changed {
+			out[i].ToolCalls = calls
+		}
+	}
+	return out
 }
 
 // loadSummary installs the newest 'fold' summary version from the snapshot
@@ -728,6 +932,7 @@ func (m *Memory) DeleteSession(sessionID string) {
 
 	delete(m.sessions, sessionID)
 	delete(m.turnPayloads, sessionID)
+	delete(m.reloadPending, sessionID)
 }
 
 // ListSessions returns all active sessions.
@@ -773,7 +978,54 @@ func (m *Memory) PersistSession(ctx context.Context, session *Session) error {
 	if m.store == nil {
 		return nil // No-op if no store configured
 	}
+	if m.isLoadPlaceholder(session) {
+		// The store failed to load this session, so the cached session is an
+		// empty stand-in: saving it would overwrite the stored row's name,
+		// context and totals. Its messages are still saved row by row; the
+		// next turn's ReloadPendingSession loads the real session again.
+		zap.L().Info("persist: the session was not loaded from the store; its row is left as stored",
+			zap.String("session_id", session.ID))
+		return nil
+	}
 	return m.store.SaveSession(ctx, session)
+}
+
+// loadErrorMeansMissing asks the store whether a session it failed to load
+// exists at all. Only a definite "no row" makes the failure a missing session:
+// a session that exists, or a store that cannot answer, is a failed load.
+// SessionExists counts rows of any owner, so another user's session is a failed
+// load here too, and is never created over.
+func loadErrorMeansMissing(ctx context.Context, store SessionStorage, sessionID string) bool {
+	exists, err := store.SessionExists(ctx, sessionID)
+	return err == nil && !exists
+}
+
+// isLoadPlaceholder reports whether session is an empty stand-in created after
+// a failed load, which must never be saved over the stored row. It holds for
+// the object itself, cached or not: a turn can still hold a stand-in after the
+// recovered session replaced it in the cache.
+func (m *Memory) isLoadPlaceholder(session *Session) bool {
+	if session == nil {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.standIns[weak.Make(session)]
+	return ok
+}
+
+// markStandInLocked records session as a stand-in and prunes the marks of
+// stand-ins nothing references any more. Must hold mu for writing.
+func (m *Memory) markStandInLocked(session *Session) {
+	if m.standIns == nil {
+		m.standIns = make(map[weak.Pointer[Session]]struct{})
+	}
+	for wp := range m.standIns {
+		if wp.Value() == nil {
+			delete(m.standIns, wp)
+		}
+	}
+	m.standIns[weak.Make(session)] = struct{}{}
 }
 
 // PersistMessage saves a message's durable row, once, applying the fixed write

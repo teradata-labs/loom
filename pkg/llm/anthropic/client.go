@@ -313,6 +313,42 @@ func (c *Client) Model() string {
 	return c.model
 }
 
+// MaxTokens returns the max_tokens this client sends on each request
+// (types.MaxTokensReporter). The agent reads it to fit a step in flight
+// against the prompt the provider accepts.
+func (c *Client) MaxTokens() int { return c.maxTokens }
+
+// ThinkingOffWhenSuppressed reports whether a request marked by
+// llm.ContextSuppressThinking goes out with thinking off
+// (types.ThinkingSuppressionReporter). The agent asks it before it records a
+// marked send. The answer comes from thinkingParam, the builder of the
+// request's thinking field (llm.SuppressionTurnsThinkingOff): true only when
+// the unmarked request carries enabled+budget thinking and the mark removes
+// it.
+func (c *Client) ThinkingOffWhenSuppressed() bool {
+	return llm.SuppressionTurnsThinkingOff(c.thinkingForm)
+}
+
+// ThinkingForm returns the thinking form an unmarked request carries
+// (types.ThinkingSuppressionReporter), read from thinkingParam. The agent
+// records it on the llm.thinking_suppressed event.
+func (c *Client) ThinkingForm() string {
+	return c.thinkingForm(context.Background())
+}
+
+// thinkingForm names the thinking field that thinkingParam builds for ctx
+// (types.ThinkingForm*). ThinkingOffWhenSuppressed and ThinkingForm call it.
+func (c *Client) thinkingForm(ctx context.Context) string {
+	switch t := c.thinkingParam(ctx); {
+	case t == nil:
+		return llmtypes.ThinkingFormNone
+	case t["type"] == "adaptive":
+		return llmtypes.ThinkingFormAdaptive
+	default:
+		return llmtypes.ThinkingFormBudget
+	}
+}
+
 // Chat sends a conversation to Claude and returns the response.
 func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []shuttle.Tool) (*llmtypes.LLMResponse, error) {
 	// Extract system messages and convert to Anthropic format
@@ -663,6 +699,7 @@ func (c *Client) convertTools(ctx context.Context, tools []shuttle.Tool, nameMap
 
 // convertResponse converts Anthropic response to agent format.
 func (c *Client) convertResponse(resp *MessagesResponse, nameMap map[string]string) *llmtypes.LLMResponse {
+	oneHour, fiveMin := resp.Usage.cacheSplit()
 	llmResp := &llmtypes.LLMResponse{
 		StopReason: resp.StopReason,
 		Usage: llmtypes.Usage{
@@ -672,6 +709,9 @@ func (c *Client) convertResponse(resp *MessagesResponse, nameMap map[string]stri
 			CostUSD:                  c.calculateCost(resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.Usage.CacheReadInputTokens, resp.Usage.CacheCreationInputTokens),
 			CacheReadInputTokens:     resp.Usage.CacheReadInputTokens,
 			CacheCreationInputTokens: resp.Usage.CacheCreationInputTokens,
+
+			CacheCreation1hInputTokens: oneHour,
+			CacheCreation5mInputTokens: fiveMin,
 		},
 		Metadata: map[string]interface{}{
 			"model":       resp.Model,
@@ -1006,6 +1046,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 					usage.InputTokens = event.Message.Usage.InputTokens
 					usage.CacheReadInputTokens = event.Message.Usage.CacheReadInputTokens
 					usage.CacheCreationInputTokens = event.Message.Usage.CacheCreationInputTokens
+					usage.CacheCreation1hInputTokens, usage.CacheCreation5mInputTokens = event.Message.Usage.cacheSplit()
 				}
 
 			case "message_delta":
@@ -1055,6 +1096,9 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 					}
 					if event.Usage.CacheCreationInputTokens > 0 {
 						usage.CacheCreationInputTokens = event.Usage.CacheCreationInputTokens
+					}
+					if oneHour, fiveMin := event.Usage.cacheSplit(); oneHour+fiveMin > 0 {
+						usage.CacheCreation1hInputTokens, usage.CacheCreation5mInputTokens = oneHour, fiveMin
 					}
 				}
 			}

@@ -181,6 +181,9 @@ func resumeStatus(err error) error {
 		errors.Is(err, agent.ErrBatchNotSaved),
 		errors.As(err, &parked):
 		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, agent.ErrSessionNotLoaded):
+		// The store could not load the session; retry once it answers.
+		return status.Error(codes.Unavailable, err.Error())
 	case errors.Is(err, context.Canceled):
 		return status.Error(codes.Canceled, err.Error())
 	case errors.Is(err, context.DeadlineExceeded):

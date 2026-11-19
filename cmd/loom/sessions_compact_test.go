@@ -15,6 +15,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -31,4 +32,12 @@ func TestFormatCompactResponse(t *testing.T) {
 	})
 	assert.Contains(t, got, "older turns folded into the summary; newest 2 turns kept")
 	assert.Contains(t, got, "about 90000 tokens before, 20000 after")
+}
+
+// The help text describes a compaction that folds only: it never says that a
+// tool result becomes a stub.
+func TestSessionsCompactHelpSaysItFoldsOnly(t *testing.T) {
+	assert.NotContains(t, strings.ToLower(sessionsCompactCmd.Long), "stub", "the help text says that a compaction stubs tool results")
+	assert.NotContains(t, strings.ToLower(sessionsCompactCmd.Short), "stub", "the short help says that a compaction stubs tool results")
+	assert.Contains(t, sessionsCompactCmd.Long, "folded into the session's running summary", "the help text does not say what a compaction does")
 }

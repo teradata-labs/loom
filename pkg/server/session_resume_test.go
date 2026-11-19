@@ -365,3 +365,10 @@ func TestResumeStatus_LeaseErrorOutranksNoGap(t *testing.T) {
 	require.Equal(t, codes.FailedPrecondition,
 		status.Code(resumeStatus(fmt.Errorf("session s: %w", agent.ErrNoExecutionGap))))
 }
+
+// A session the store cannot load yet is a retryable condition, not an
+// internal error, for ResumeSession and ResolveExecutionGap.
+func TestResumeStatus_SessionNotLoadedIsUnavailable(t *testing.T) {
+	require.Equal(t, codes.Unavailable,
+		status.Code(resumeStatus(fmt.Errorf("resume session s: %w", agent.ErrSessionNotLoaded))))
+}

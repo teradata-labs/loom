@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -451,5 +452,51 @@ func recordTailBatch(t *testing.T, store eventlog.EventLogStore, sess *Session, 
 	}
 	if err := store.RecordResult(ctx, sess.ID, step, 0, eventlog.EventLLMCallResult, "", payload); err != nil {
 		t.Fatalf("fixture: record LLM result: %v", err)
+	}
+}
+
+// The final row of a resumed turn is a billed row like the final row of
+// Chat: it carries the model that answered, the effort and the token split,
+// not only the cost and the total.
+func TestResumeSession_TheFinalRowCarriesTheModelAndTheSplit(t *testing.T) {
+	recorder := &recordingEventLog{}
+	cfg := DefaultConfig()
+	cfg.PatternConfig = DefaultPatternConfig()
+	cfg.PatternConfig.UseLLMClassifier = false
+	usage := llmtypes.Usage{InputTokens: 120, OutputTokens: 5, TotalTokens: 125, CacheReadInputTokens: 40,
+		CacheCreationInputTokens: 9, CacheCreation1hInputTokens: 6, CacheCreation5mInputTokens: 3,
+		ThinkingTokens: 2, CostUSD: 0.02, Effort: "high"}
+	llm := &usageScriptLLM{responses: []*LLMResponse{{Content: "resumed reply", StopReason: "end_turn", Usage: usage}}}
+	ag := NewAgent(&mockBackend{}, llm, WithConfig(cfg), WithEventLog(recorder))
+
+	ctx := context.Background()
+	sess := ag.memory.GetOrCreateSessionWithAgent(ctx, "s-resume-final-row", ag.config.Name, "")
+	ag.appendMessage(ctx, sess, Message{Role: "user", Content: "run crashy"}, true)
+	ag.appendMessage(ctx, sess, Message{
+		Role:      "assistant",
+		ToolCalls: []llmtypes.ToolCall{{ID: "c1", Name: "crashy", Input: map[string]interface{}{}}},
+	}, false)
+	recordTailBatch(t, recorder, sess, 0)
+	ag.appendMessage(ctx, sess, Message{Role: "tool", ToolUseID: "c1", ToolResult: &shuttle.Result{Success: true, Data: "ok"}}, false)
+
+	resp, err := ag.ResumeSession(ctx, "s-resume-final-row")
+	if err != nil {
+		t.Fatalf("ResumeSession: %v", err)
+	}
+	if resp.Content != "resumed reply" {
+		t.Fatalf("resp.Content = %q, want the resumed reply", resp.Content)
+	}
+	final, ok := sess.FindMessage(func(m Message) bool { return m.Role == "assistant" && m.Content == "resumed reply" })
+	if !ok {
+		t.Fatal("the resumed turn wrote no final row")
+	}
+	want := Message{Model: "usage-v1", Effort: "high", InputTokens: 120, OutputTokens: 5, TokenCount: 125, CacheReadTokens: 40,
+		CacheCreateTokens: 9, CacheCreate1hTokens: 6, CacheCreate5mTokens: 3, ThinkingTokens: 2, CostUSD: 0.02}
+	got := Message{Model: final.Model, Effort: final.Effort, InputTokens: final.InputTokens, OutputTokens: final.OutputTokens,
+		TokenCount: final.TokenCount, CacheReadTokens: final.CacheReadTokens, CacheCreateTokens: final.CacheCreateTokens,
+		CacheCreate1hTokens: final.CacheCreate1hTokens, CacheCreate5mTokens: final.CacheCreate5mTokens,
+		ThinkingTokens: final.ThinkingTokens, CostUSD: final.CostUSD}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("the resumed final row = %+v, want %+v", got, want)
 	}
 }

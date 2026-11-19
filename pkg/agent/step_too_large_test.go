@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -186,10 +187,24 @@ func TestAStepThatEndsTheToolBudgetIsCheckedAtSynthesis(t *testing.T) {
 	model := &windowedModel{limit: 19000, fanOut: 40, plain: true}
 	ag, store := windowedAgent(t, model, 4000)
 	ag.config.MaxToolExecutions = 40
+	tracer := observability.NewMockTracer()
+	ag.tracer = tracer
 	resp, err := ag.Chat(context.Background(), "s-synth", "read every table")
 	require.NoError(t, err)
 	assert.Equal(t, "narrowed and done", resp.Content, "the synthesis send was not checked")
 	assert.True(t, model.told)
+
+	// Hawk sees the replacement: the loop span records it, as it does for a
+	// replacement before a loop send.
+	loops := tracer.GetSpansByName("agent.conversation_loop")
+	require.Len(t, loops, 1, "the turn did not record its loop span")
+	replaced := 0
+	for _, e := range loops[0].Events {
+		if e.Name == "turn.step_results_replaced" {
+			replaced++
+		}
+	}
+	assert.Equal(t, 1, replaced, "the replacement at synthesis left no span event")
 
 	// The final answer has no tools, so the note asks for an answer, not
 	// another call.
@@ -457,6 +472,51 @@ func TestRewriteToolResultsIsTheOwners(t *testing.T) {
 	assert.Equal(t, "q", msgs[0].Content, "a row that is not a tool result was rewritten")
 }
 
+// A rewrite that names rows and changes none is an error the caller can see
+// (ErrNoToolResultsRewritten): memory then holds the note and the store the
+// full results, and a reload would resend them. A rewrite that changes a row
+// is not an error, and naming no row is a no-op.
+func TestRewriteToolResultsThatChangesNoRowIsAnError(t *testing.T) {
+	t.Parallel()
+	store, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
+	require.NoError(t, err, "the store must open")
+	t.Cleanup(func() { _ = store.Close() })
+	ann := llmtypes.ContextWithUserID(context.Background(), "ann")
+	require.NoError(t, store.SaveSession(ann, &Session{ID: "s-rw0"}), "the session must save")
+	for _, m := range []Message{{Role: "user", Content: "q"}, {Role: "assistant", ToolCalls: []ToolCall{{ID: "c1", Name: "rows"}}}, {Role: "tool", ToolUseID: "c1", Content: "rows"}} {
+		mm := m
+		require.NoError(t, store.SaveMessage(ann, "s-rw0", &mm, m.Role == "user"), "a row must save")
+	}
+	msgs, err := store.LoadMessages(ann, "s-rw0")
+	require.NoError(t, err, "the rows must load")
+	require.Len(t, msgs, 3, "the fixture has three rows")
+	seqOf := func(m Message) int64 {
+		seq, err := strconv.ParseInt(m.ID, 10, 64)
+		require.NoError(t, err, "a stored row has a numeric id")
+		return seq
+	}
+	userSeq, toolSeq := seqOf(msgs[0]), seqOf(msgs[2])
+
+	tests := []struct {
+		name    string
+		seqs    []int64
+		wantErr bool
+	}{
+		{name: "no named row is a tool result", seqs: []int64{userSeq}, wantErr: true},
+		{name: "a named row that is not there", seqs: []int64{toolSeq + 1000}, wantErr: true},
+		{name: "no row named", seqs: nil, wantErr: false},
+		{name: "a tool row named", seqs: []int64{toolSeq}, wantErr: false},
+	}
+	for _, tt := range tests {
+		err := store.RewriteToolResults(ann, "s-rw0", tt.seqs, "the note")
+		if tt.wantErr {
+			assert.ErrorIs(t, err, ErrNoToolResultsRewritten, "%s: a rewrite that changed no row reported success", tt.name)
+		} else {
+			assert.NoError(t, err, "%s: the rewrite failed", tt.name)
+		}
+	}
+}
+
 // The cheap tier is the settled estimate plus the step's bytes once, at
 // cheapBytesPerToken; what the send adds past memory is counted in both tiers;
 // and a count equal to the ceiling fits.
@@ -482,4 +542,113 @@ func TestTheStepCountIsWhatItSaysItIs(t *testing.T) {
 
 	assert.Equal(t, cheap, sm.StepSendCount(0, cheap, 1), "a cheap count equal to the ceiling fits and is returned")
 	assert.Equal(t, exact, sm.StepSendCount(0, cheap-1, 1), "a cheap count over the ceiling is counted with the tokenizer")
+}
+
+// AddRowUsage adds the cost and the carried token figures to one owned row,
+// and the session's cost follows. Another owner's call changes nothing, and a
+// row that is not there is an error, so the caller knows the amount is lost.
+func TestAddRowUsageIsTheOwners(t *testing.T) {
+	t.Parallel()
+	store, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
+	require.NoError(t, err)
+	defer func() { _ = store.Close() }()
+	var adder RowUsageAdder = store
+	ann := llmtypes.ContextWithUserID(context.Background(), "ann")
+	require.NoError(t, store.SaveSession(ann, &Session{ID: "s-add"}))
+	user := Message{Role: "user", Content: "q", CostUSD: 0, InputTokens: 3}
+	require.NoError(t, store.SaveMessage(ann, "s-add", &user, true))
+	var seq int64
+	_, _ = fmt.Sscan(user.ID, &seq)
+	require.Positive(t, seq)
+	u := Usage{CostUSD: 0.25, TotalTokens: 110, InputTokens: 100, OutputTokens: 10, ThinkingTokens: 4}
+
+	bob := llmtypes.ContextWithUserID(context.Background(), "bob")
+	assert.Error(t, adder.AddRowUsage(bob, "s-add", seq, u), "another owner added usage")
+	assert.Error(t, adder.AddRowUsage(ann, "s-add", seq+100, u), "a missing row took the usage")
+
+	require.NoError(t, adder.AddRowUsage(ann, "s-add", seq, u))
+	cost, err := store.SessionCost(ann, "s-add")
+	require.NoError(t, err)
+	assert.InDelta(t, 0.25, cost, 1e-9, "the session cost does not hold the added usage")
+	msgs, err := store.LoadMessages(ann, "s-add")
+	require.NoError(t, err)
+	require.Len(t, msgs, 1)
+	assert.Equal(t, 110, msgs[0].TokenCount)
+	assert.Equal(t, 10, msgs[0].OutputTokens)
+	assert.Equal(t, 4, msgs[0].ThinkingTokens)
+	assert.Equal(t, 3, msgs[0].InputTokens, "the row's input figure is its own prompt, not the added call's")
+}
+
+// cancelAtDone is a context that is cancelled from its n-th Done call on: a
+// cancel that lands at one exact point inside a store call.
+type cancelAtDone struct {
+	context.Context
+	n, calls int32
+	mu       sync.Mutex
+	closed   chan struct{}
+}
+
+func newCancelAtDone(parent context.Context, n int32) *cancelAtDone {
+	c := &cancelAtDone{Context: parent, n: n, closed: make(chan struct{})}
+	close(c.closed)
+	return c
+}
+
+func (c *cancelAtDone) cancelled() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls >= c.n
+}
+
+func (c *cancelAtDone) Done() <-chan struct{} {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls++
+	if c.calls >= c.n {
+		return c.closed
+	}
+	return nil
+}
+
+func (c *cancelAtDone) Err() error {
+	if c.cancelled() {
+		return context.Canceled
+	}
+	return nil
+}
+
+// An error from SaveMessage must mean the row is not stored: the agent moves
+// a refused row's cost to another row, so a stored row reported as refused is
+// counted twice. A cancel can land at any point of the call; at each one,
+// either the call fails and no row is stored, or it succeeds with the row
+// stored and its id set. The INSERT and the read-back are two statements
+// (SQLite 3.33 has no RETURNING), so a cancel between them is the case that
+// matters.
+func TestSaveMessageReportsAStoredRowAsStoredWhateverTheCancel(t *testing.T) {
+	t.Parallel()
+	store, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
+	require.NoError(t, err)
+	defer func() { _ = store.Close() }()
+	ctx := context.Background()
+	require.NoError(t, store.SaveSession(ctx, &Session{ID: "s-cancel"}))
+	count := func() int {
+		msgs, err := store.LoadMessages(ctx, "s-cancel")
+		require.NoError(t, err)
+		return len(msgs)
+	}
+	stored := 0
+	for n := int32(1); n <= 40; n++ {
+		before := count()
+		msg := Message{Role: "assistant", Content: fmt.Sprintf("reply %d", n), CostUSD: 0.01, OutputTokens: 1}
+		err := store.SaveMessage(newCancelAtDone(ctx, n), "s-cancel", &msg, false)
+		after := count()
+		if err != nil {
+			assert.Equal(t, before, after, "cancel at Done call %d: SaveMessage failed, but the row is stored", n)
+			continue
+		}
+		stored++
+		assert.Equal(t, before+1, after, "cancel at Done call %d: SaveMessage succeeded, but no row is stored", n)
+		assert.NotEmpty(t, msg.ID, "cancel at Done call %d: a stored row has no id", n)
+	}
+	assert.Positive(t, stored, "no cancel point let the INSERT through; the test does not reach the read-back")
 }

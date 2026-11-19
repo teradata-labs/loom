@@ -41,7 +41,7 @@ var ErrCompactionBusy = errors.New("compaction already in progress for this sess
 // untouched; trying again later may work.
 var ErrSummaryUnavailable = errors.New("could not summarize the older conversation")
 
-// ErrCompactionNotSaved is returned when compacting failed to write to the
+// ErrCompactionNotSaved is returned when the fold failed to write to the
 // session store. The summary call may already have been paid for; history is
 // untouched.
 var ErrCompactionNotSaved = errors.New("could not save the compaction")
@@ -59,8 +59,8 @@ type CompactOptions struct {
 type CompactResult struct {
 	// Compacted is false when the session had nothing older than KeepTurns.
 	Compacted bool
-	// TokensBefore and TokensAfter are calibrated estimates of the compiled
-	// context around the compaction.
+	// TokensBefore and TokensAfter are the calibrated tokenizer counts of the
+	// compiled context around the compaction (compiledTokensLocked).
 	TokensBefore int
 	TokensAfter  int
 	// TurnsFolded is true when older turns were folded into the running summary.
@@ -74,8 +74,13 @@ type CompactResult struct {
 // TokensSaved is the estimated reduction.
 func (r CompactResult) TokensSaved() int { return max(r.TokensBefore-r.TokensAfter, 0) }
 
-// Compact is the user-requested compaction: older turns fold into the running
-// summary; ROM, the summary and the newest KeepTurns turns stay verbatim.
+// Compact is the user-requested compaction: the turns older than the newest
+// KeepTurns fold into the running summary (foldLocked); ROM, the summary and
+// the newest KeepTurns turns stay verbatim. It folds only. No tool result is
+// stubbed, because each result was already bounded when it arrived. The fold
+// never drops a region without a real summary (foldRequireSummary): when no
+// summary is produced, history is unchanged and Compact returns
+// ErrSummaryUnavailable. Agent.CompactSession calls it.
 //
 // The caller must hold the session between turns: Compact assumes no turn is
 // running on the memory.
@@ -119,12 +124,25 @@ func (sm *SegmentedMemory) Compact(ctx context.Context, opts CompactOptions) (Co
 	// only a placeholder line: without a real summary the fold is skipped.
 	sm.foldRequireSummary = true
 	defer func() { sm.foldRequireSummary = false }()
-	res.TurnsFolded = sm.foldLocked(ctx, boundary)
+	res.TurnsFolded = sm.foldBoundedLocked(ctx, boundary)
 	summaryMissing, persistErr := sm.foldAbortedNoSummary, sm.compactPersistErr
 	sm.foldAbortedNoSummary, sm.compactPersistErr = false, nil
 	res.Compacted = res.TurnsFolded
 	res.TokensAfter = sm.compiledTokensLocked()
 	res.SummaryVersion = sm.summary.n
+	if res.Compacted && (summaryMissing || persistErr != nil) {
+		// A later chunk failed after an earlier one folded (foldBoundedLocked):
+		// the earlier chunks stay folded, and more turns than asked stay
+		// verbatim. Report the turns really kept.
+		if len(sm.contextMessages) > 0 {
+			res.TurnsKept = int(sm.currentTurnLocked() - sm.contextMessages[0].Turn + 1)
+		}
+		zap.L().Warn("compaction: folded only part of the older turns; a later chunk could not be summarized or saved",
+			zap.String("session_id", sm.sessionID),
+			zap.Int("turns_kept", res.TurnsKept),
+			zap.Bool("summary_missing", summaryMissing),
+			zap.Error(persistErr))
+	}
 	if !res.Compacted {
 		// Nothing changed: say why rather than report an ordinary no-op.
 		if persistErr != nil {
@@ -186,6 +204,14 @@ func (a *Agent) CompactSession(ctx context.Context, sessionID string, opts Compa
 	}
 	defer release()
 
+	// The turn holder retries a session whose earlier load failed. If it still
+	// cannot be loaded, the cached session is an empty stand-in: compacting it
+	// would fold and snapshot a partial memory over the stored session.
+	sess = a.memory.ReloadPendingSession(ctx, sessionID, a.config.Name)
+	if a.memory.isLoadPlaceholder(sess) {
+		return CompactResult{}, fmt.Errorf("session %s: %w", sessionID, ErrSessionNotLoaded)
+	}
+
 	if err := a.guardParkedTail(ctx, sessionID, sess); err != nil {
 		return CompactResult{}, err
 	}
@@ -193,6 +219,5 @@ func (a *Agent) CompactSession(ctx context.Context, sessionID string, opts Compa
 	if !ok || segMem == nil {
 		return CompactResult{}, fmt.Errorf("session %s has no segmented memory to compact", sessionID)
 	}
-
 	return segMem.Compact(ctx, opts)
 }

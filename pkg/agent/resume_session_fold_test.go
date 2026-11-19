@@ -17,14 +17,17 @@ package agent
 import (
 	"context"
 	"fmt"
+	"math"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
 // Review round 3, Q1: a step the log keeps because its tool row did not
@@ -168,4 +171,102 @@ func TestResumeSession_KeptStepWhoseMessageWasFolded_IsNotRefusedAsUnsaved(t *te
 	_, err := ag.ResumeSession(ctx, sessionID)
 	require.NotErrorIs(t, err, ErrBatchNotSaved, "a folded message is saved, not lost")
 	require.ErrorIs(t, err, ErrNothingParked, "the folded step is accepted and the session tail, a finished turn, has nothing to resume")
+}
+
+// twoCallStream is foldingStream with a second call, "<id>b", added to every
+// step batch, so a step can keep one result and lose the other.
+type twoCallStream struct{ *foldingStream }
+
+func (s *twoCallStream) ChatStream(ctx context.Context, msgs []Message, tools []shuttle.Tool, cb llmtypes.TokenCallback) (*LLMResponse, error) {
+	r, err := s.foldingStream.ChatStream(ctx, msgs, tools, cb)
+	if err == nil && len(r.ToolCalls) == 1 && r.ToolCalls[0].ID != "fold-tool" {
+		r.ToolCalls = append(r.ToolCalls, ToolCall{ID: r.ToolCalls[0].ID + "b", Name: "step", Input: map[string]interface{}{"b": true}})
+	}
+	return r, err
+}
+
+func (s *twoCallStream) Chat(ctx context.Context, msgs []Message, tools []shuttle.Tool) (*LLMResponse, error) {
+	return s.ChatStream(ctx, msgs, tools, func(string) {})
+}
+
+// refuseToolRowStore is the SQLite store that refuses the tool row of one
+// call, as a transient write error refuses it.
+type refuseToolRowStore struct {
+	*SessionStore
+	id string
+}
+
+func (s *refuseToolRowStore) SaveMessage(ctx context.Context, sessionID string, m *Message, turnStart bool) error {
+	if m.Role == "tool" && m.ToolUseID == s.id {
+		return fmt.Errorf("transient store failure")
+	}
+	return s.SessionStore.SaveMessage(ctx, sessionID, m, turnStart)
+}
+
+// A step keeps its events when one of its tool rows is not stored. A later
+// in-loop fold in the same turn keeps that step's assistant row, removes its
+// calls in memory and stores the other result folded. The batch's row is
+// stored whole all the same, so ResumeSession must find it saved: on the
+// agent that ran the turn and on a fresh agent over the same store and event
+// log. Before, it refused with ErrBatchNotSaved ("the assistant message was
+// not saved"), the wrong reason for a session it can resume.
+func TestResumeSession_AFoldDoesNotHideASavedBatch(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	reached := 0
+	for k := 1; k <= 12; k++ {
+		for _, fresh := range []bool{false, true} {
+			t.Run(fmt.Sprintf("step=%d fresh=%v", k, fresh), func(t *testing.T) {
+				model := &twoCallStream{&foldingStream{steps: 24, failAfterFold: true}}
+				sqlite, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = sqlite.Close() })
+				store := &refuseToolRowStore{SessionStore: sqlite, id: fmt.Sprintf("s%db", k)}
+				log := &recordingEventLog{}
+				cfg := DefaultConfig()
+				cfg.PatternConfig = DefaultPatternConfig()
+				cfg.PatternConfig.UseLLMClassifier = false
+				cfg.MaxContextTokens = 12000
+				cfg.ReservedOutputTokens = 2000
+				cfg.MaxIterations = 100
+				cfg.MaxTurns = 200
+				cfg.MaxToolExecutions = 100
+				cfg.Retry.Enabled = false
+				build := func() *Agent {
+					ag := NewAgent(&mockBackend{}, model, WithConfig(cfg), WithMemory(NewMemoryWithStore(store)), WithEventLog(log))
+					ag.RegisterTool(&shuttle.MockTool{
+						MockName: "step",
+						MockExecute: func(context.Context, map[string]interface{}) (*shuttle.Result, error) {
+							return &shuttle.Result{Success: true, Data: "ok"}, nil
+						},
+					})
+					return ag
+				}
+				ag := build()
+				_, err = ag.Chat(ctx, "s-fold-resume", "do the long job")
+				require.Error(t, err, "the call after the fold did not fail; the turn did not end unfinished")
+
+				// The case under test: the step's first result is stored folded.
+				rows, err := sqlite.ListMessagesBySeqRange(ctx, "s-fold-resume", 1, math.MaxInt64)
+				require.NoError(t, err)
+				for _, m := range rows {
+					if m.Role == "tool" && m.ToolUseID == fmt.Sprintf("s%d", k) && m.Folded {
+						reached++
+					}
+				}
+
+				model.mu.Lock()
+				model.failAfterFold = false
+				model.mu.Unlock()
+				if fresh {
+					ag = build()
+				}
+				resp, err := ag.ResumeSession(ctx, "s-fold-resume")
+				require.NotErrorIs(t, err, ErrBatchNotSaved, "ResumeSession refused a batch whose row is stored")
+				require.NoError(t, err, "ResumeSession did not resume the turn")
+				assert.Equal(t, "final answer", resp.Content, "the resumed turn did not reach its answer")
+			})
+		}
+	}
+	assert.Positive(t, reached, "no step had a folded result; the test does not reach the case")
 }

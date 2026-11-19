@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 
@@ -107,14 +108,52 @@ func (s *run) invokeTool(t *rt.Thread, c *rt.GoCont, fn string) (rt.Value, *Call
 	})
 }
 
-// turn.result(message_id) -> same shape as tools.call
+// turn.result(tool_use_id | message_id) -> same shape as tools.call. A string
+// is the tool_use_id a cut result's tail names (ToolUseResultHost); an integer
+// is a message id, for a host that shows one. An all-digit string can be
+// either: a host that sends ids as JSON strings gives a message id that way,
+// and that read worked before turn.result took tool_use_ids. It is read as a
+// tool_use_id first, and as a message id when no call has that id (NOT_FOUND)
+// or the host cannot read by tool_use_id. Either way it is one budgeted call.
+// When both reads find nothing, the NOT_FOUND names both reads
+// (bothReadsNotFound): the host's message for the second read names only the
+// message id, and would tell the script that its tool_use_id was not tried.
 func (s *run) turnResult(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 	if err := c.Check1Arg(); err != nil {
 		return nil, err
 	}
+	if c.Arg(0).Type() == rt.StringType {
+		useID, _ := c.StringArg(0)
+		if useID == "" || len(useID) > maxToolUseIDLen {
+			return nil, fmt.Errorf("turn.result: bad argument #1 (expected a tool_use_id of 1 to %d bytes)", maxToolUseIDLen)
+		}
+		messageID, numeric := digitMessageID(useID)
+		byUse, ok := s.host.(ToolUseResultHost)
+		if !ok && !numeric {
+			return nil, errors.New("turn.result: this host reads results by message id only")
+		}
+		v, _, err := s.hostCall(t, "turn.result", func(ctx context.Context) (*CallResult, error) {
+			if !ok {
+				return s.host.TurnResult(ctx, messageID)
+			}
+			r, err := byUse.TurnResultByToolUseID(ctx, useID)
+			if err != nil || !numeric || !isNotFound(r) {
+				return r, err
+			}
+			r, err = s.host.TurnResult(ctx, messageID)
+			if err != nil || !isNotFound(r) {
+				return r, err
+			}
+			return bothReadsNotFound(r, useID, messageID), nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		return c.PushingNext1(t.Runtime, v), nil
+	}
 	id, err := c.IntArg(0)
 	if err != nil || id < 1 {
-		return nil, errors.New("turn.result: bad argument #1 (expected a positive message id)")
+		return nil, errors.New("turn.result: bad argument #1 (expected a tool_use_id string or a positive message id)")
 	}
 	v, _, err := s.hostCall(t, "turn.result", func(ctx context.Context) (*CallResult, error) {
 		return s.host.TurnResult(ctx, id)
@@ -123,6 +162,37 @@ func (s *run) turnResult(t *rt.Thread, c *rt.GoCont) (rt.Cont, error) {
 		return nil, err
 	}
 	return c.PushingNext1(t.Runtime, v), nil
+}
+
+// isNotFound reports whether r is a host's NOT_FOUND answer. turnResult calls
+// it to decide whether to fall back from a tool_use_id read to a message id
+// read.
+func isNotFound(r *CallResult) bool {
+	return r != nil && !r.OK && r.Error != nil && r.Error.Code == "NOT_FOUND"
+}
+
+// bothReadsNotFound returns a copy of the host's NOT_FOUND r whose message
+// names both reads that turnResult tried: id as a tool_use_id, then
+// messageID as a message id. r itself is not changed, because the host may
+// keep it. The code and the suggestion stay the host's.
+func bothReadsNotFound(r *CallResult, id string, messageID int64) *CallResult {
+	out := *r
+	e := *r.Error
+	e.Message = fmt.Sprintf("%q is not a tool result from the current turn, read as a tool_use_id or as message id %d", id, messageID)
+	out.Error = &e
+	return &out
+}
+
+// digitMessageID reads s as a message id when it is all ASCII digits and a
+// positive int64. turnResult calls it for a string argument.
+func digitMessageID(s string) (int64, bool) {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return 0, false
+		}
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	return n, err == nil && n > 0
 }
 
 // hostCall runs one budgeted nested call. It is the only place nested calls

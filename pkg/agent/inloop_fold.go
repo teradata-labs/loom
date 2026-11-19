@@ -48,6 +48,33 @@ import (
 // change it without a rebuild.
 const foldPromptKey = "memory.fold"
 
+// defaultMaxFailedFoldRounds is how many fold rounds may fail in one turn before
+// the in-loop fold stops arming for the rest of it, when the compression
+// profile does not set max_failed_fold_rounds (SegmentedMemory.MaxFailedFoldRounds). A round fails when two replies
+// in a row are not a usable summary. Each failed round costs two full-context
+// calls and two loop passes, and before the cap the fold armed again at the
+// next seam, so a model that never answers the ask spent about two of every
+// three passes on it. One failed round is the evidence: the turn goes on
+// unfolded, and a send the provider refuses as too long is still answered by
+// ReleasePressure. A new turn arms again.
+const defaultMaxFailedFoldRounds = 1
+
+// MaxFailedFoldRounds is the turn's cap on failed fold rounds: the compression
+// profile's max_failed_fold_rounds, else defaultMaxFailedFoldRounds. 0 means
+// the fold never stops arming.
+func (sm *SegmentedMemory) MaxFailedFoldRounds() int {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	if r := sm.compressionProfile.MaxFailedFoldRounds; r != nil {
+		return *r
+	}
+	return defaultMaxFailedFoldRounds
+}
+
+// foldRoundsExhausted reports whether failed rounds reached the cap (never,
+// when the cap is 0).
+func foldRoundsExhausted(failed, limit int) bool { return limit > 0 && failed >= limit }
+
 // foldInstruction is the fold ask as shipped: the transient message appended
 // to the fold call, used when no registry is wired. It is never stored; the
 // model's reply to it is consumed by the harness.
@@ -113,6 +140,64 @@ func (sm *SegmentedMemory) NeedsFold() bool {
 	// again at the next seam.
 	_, excised := sm.foldSplitLocked()
 	return len(excised) > 0
+}
+
+// estimate is the context estimate the pressure path compares with the
+// window: the compiled context, summary included, without the step in flight.
+// The conversation loop reads it when a fold arms (foldNotice), so the figure
+// before a fold and the one ApplyFoldReply returns after it are the same
+// measure.
+func (sm *SegmentedMemory) estimate() int {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	return sm.estimateLocked()
+}
+
+// foldNotice is what the in-loop folds of one turn did, for the host:
+// runConversationLoop fills it and reports it on the response
+// (Response.Metadata["auto_compaction"]). The keys are the ones the
+// end-of-turn auto-compaction of the nightly-20261117 build set, so a host
+// that read them reads the in-loop fold the same way.
+type foldNotice struct {
+	pendingBefore int  // the estimate when the latest fold armed
+	before, after int  // first fold's armed estimate; last fold's estimate after it
+	count         int  // folds committed this turn
+	hasBefore     bool // before is set (the first committed fold)
+}
+
+// armed records the estimate as a fold arms. Only a fold that commits uses
+// it: a reply that cannot be used arms again with a new estimate.
+func (n *foldNotice) armed(estimate int) { n.pendingBefore = estimate }
+
+// applied records a committed fold and the estimate after it. With several
+// folds in a turn, before stays the first fold's and after becomes the last
+// fold's.
+func (n *foldNotice) applied(estimate int) {
+	if !n.hasBefore {
+		n.before, n.hasBefore = n.pendingBefore, true
+	}
+	n.after = estimate
+	n.count++
+}
+
+// record puts the folds on resp: tokens_before (the estimate when the first
+// fold armed), tokens_after (the estimate after the last fold), tokens_saved,
+// turns_folded (true) and tool_results_stubbed (false: a fold stubs no tool
+// result). A turn with no committed fold adds nothing.
+func (n *foldNotice) record(resp *Response) {
+	if n.count == 0 || resp == nil {
+		return
+	}
+	if resp.Metadata == nil {
+		resp.Metadata = map[string]interface{}{}
+	}
+	resp.Metadata["auto_compaction"] = map[string]interface{}{
+		"tokens_before":        n.before,
+		"tokens_after":         n.after,
+		"tokens_saved":         max(n.before-n.after, 0),
+		"turns_folded":         true,
+		"tool_results_stubbed": false,
+	}
 }
 
 // parseFoldReply extracts the summary from the model's fold reply. Lenient:
@@ -204,11 +289,26 @@ func (sm *SegmentedMemory) ApplyFoldReply(ctx context.Context, summary string) (
 // checks the binding (claude-fable-5) refuses a request that replays it on
 // anything else. A committed fold rewrites what precedes the rows it keeps, so
 // it drops their blocks. The rows keep their words and their tool calls, and
-// the window estimate is taken from the compile, so it follows. Must hold lock.
+// the window estimate is taken from the compile, so it follows. The turn is
+// recorded (foldedTurn): the rows of the turn in flight now call tools without
+// a block, which one provider form does not accept with thinking on
+// (FoldedThisTurn). Must hold lock.
 func (sm *SegmentedMemory) dropThinkingLocked() {
 	for i := range sm.contextMessages {
 		sm.contextMessages[i].ThinkingBlocks = nil
 	}
+	sm.foldedTurn = sm.currentTurnLocked()
+}
+
+// FoldedThisTurn reports whether a committed fold dropped thinking blocks
+// during the turn in flight. The conversation loop calls it before each send
+// (Agent.foldedTurnCtx): a fold keeps the pending step without its block, and
+// the enabled+budget thinking form refuses a tool-calling message that has no
+// block while thinking is on. A later turn starts with thinking on again.
+func (sm *SegmentedMemory) FoldedThisTurn() bool {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.foldedTurn != 0 && sm.foldedTurn == sm.currentTurnLocked()
 }
 
 // foldSplitLocked is the in-loop fold's cut of the context: what a full fold
@@ -282,10 +382,12 @@ func (sm *SegmentedMemory) foldSplitLocked() (kept, excised []Message) {
 			// Recent steps: the assistant THREAD survives, its tool traffic
 			// does not. Pairs are stripped whole — the calls leave here, the
 			// results leave via the excised branch below.
-			// The row itself stays unflagged (its text must survive reload);
-			// its RESULTS are excised and flagged below, and on reload the
-			// compile's pair-atomicity fills the orphaned calls with
-			// synthetic failed results — the re-run door.
+			// The row itself stays unflagged (its text must survive reload)
+			// and its stored copy keeps the calls; its RESULTS are excised and
+			// stored folded. On reload, dropFoldedCalls (memory.go) removes
+			// each call whose result is stored folded, so the reload sends
+			// what this memory sends. Only a call with no stored result gets
+			// the compile's synthetic "did not complete" result.
 			mm := m
 			mm.ToolCalls = nil
 			kept = append(kept, mm)
@@ -405,7 +507,7 @@ func (sm *SegmentedMemory) ReplaceInFlightResults(ctx context.Context, note stri
 		if rw, ok := sm.sessionStore.(ResultRewriter); ok {
 			if err := rw.RewriteToolResults(ctx, sm.sessionID, seqs, note); err != nil {
 				zap.L().Warn("step results replaced in memory; the store could not rewrite them",
-					zap.String("session_id", sm.sessionID), zap.Error(err))
+					zap.String("session_id", sm.sessionID), zap.Int("rows", len(seqs)), zap.Error(err))
 			}
 		} else {
 			warnOnce("ResultRewriter", "the store cannot rewrite tool rows; a step replaced for being too large reloads as it was stored")
@@ -415,49 +517,4 @@ func (sm *SegmentedMemory) ReplaceInFlightResults(ctx context.Context, note stri
 	sm.updateTokenCount()
 	sm.tokenCountDirty = false
 	return n
-}
-
-// CallsWithoutResult returns the ids of the tool calls in msgs that no result
-// row among them answers. A session loaded from the store has one for a call
-// that never finished, and for a call whose result a fold removed: the fold
-// keeps a recent assistant row for its words and folds the row's results, and
-// the load reads no folded row.
-func CallsWithoutResult(msgs []Message) []string {
-	answered := make(map[string]bool)
-	for i := range msgs {
-		if msgs[i].Role == "tool" && msgs[i].ToolUseID != "" {
-			answered[msgs[i].ToolUseID] = true
-		}
-	}
-	var ids []string
-	for i := range msgs {
-		for _, c := range msgs[i].ToolCalls {
-			if c.ID != "" && !answered[c.ID] {
-				ids = append(ids, c.ID)
-			}
-		}
-	}
-	return ids
-}
-
-// DropFoldedCalls removes from msgs the tool calls whose results are folded,
-// so a loaded session holds the rows the fold left in memory: the row's
-// words, without its tool traffic. A call with no folded result stays, and
-// compile answers it with the synthetic failed result.
-func DropFoldedCalls(msgs []Message, folded map[string]bool) {
-	if len(folded) == 0 {
-		return
-	}
-	for i := range msgs {
-		if len(msgs[i].ToolCalls) == 0 {
-			continue
-		}
-		var kept []ToolCall
-		for _, c := range msgs[i].ToolCalls {
-			if !folded[c.ID] {
-				kept = append(kept, c)
-			}
-		}
-		msgs[i].ToolCalls = kept
-	}
 }

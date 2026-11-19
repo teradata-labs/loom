@@ -76,6 +76,7 @@ prompts:
     metadata:
       version: "v1.0"
       description: "In-loop fold ask: the model summarises its own context, replying with {\"summary\": ...} only"
+
   - id: compaction_summary_heading
     content: |
       Current summary:
@@ -87,6 +88,7 @@ prompts:
     metadata:
       version: "v1.0"
       description: "Heading the fold puts above the current summary in the compressor input"
+
   - id: compaction_focus_preface
     content: |
       The user asked this compaction to preserve, in priority order:
@@ -98,3 +100,25 @@ prompts:
     metadata:
       version: "v1.0"
       description: "Preface to the user's focus text on a manual compaction (CompactSession)"
+
+  - id: summary_row_heading
+    content: |
+      Session summary — the work so far:
+    variables: {}
+    tags:
+      - memory
+      - fold
+    metadata:
+      version: "v1.0"
+      description: "First line of the summary row the compile sends after a fold"
+
+  - id: summary_row_caveat
+    content: |
+      Exact values quoted in this summary (expected outputs, literals, paths, interfaces) are unverified — the summary may restate them imprecisely. Before relying on one, read it from its source.
+    variables: {}
+    tags:
+      - memory
+      - fold
+    metadata:
+      version: "v1.0"
+      description: "Line after the summary in the summary row: quoted values are to be read from their source"

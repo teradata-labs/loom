@@ -28,6 +28,9 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
@@ -672,4 +675,37 @@ func TestChat_NewTurnRefusedWhileParkPending(t *testing.T) {
 	if _, err := done.ag.Chat(ctx, "s-open", "hello again"); err != nil {
 		t.Fatalf("second turn on an unparked session refused: %v", err)
 	}
+}
+
+// TurnParkedError.Usage is the parking call's own usage, as Response.Usage
+// is the final call's own. An empty reply before the parking call writes no
+// row; its cost rides on the parking call's stored row only, and on
+// TurnUsage, never on Usage.
+func TestTheParkedUsageIsTheParkingCallsOwn(t *testing.T) {
+	t.Parallel()
+	cfg := DefaultConfig()
+	cfg.PatternConfig = DefaultPatternConfig()
+	cfg.PatternConfig.UseLLMClassifier = false
+	sessions, err := NewSessionStore(filepath.Join(t.TempDir(), "park-usage.db"), observability.NewNoOpTracer())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sessions.Close() })
+	llm := &usageScriptLLM{responses: []*LLMResponse{
+		{Content: "", StopReason: "end_turn", Usage: llmtypes.Usage{InputTokens: 100, OutputTokens: 7, TotalTokens: 107, CostUSD: 0.01}},
+		{ToolCalls: []llmtypes.ToolCall{{ID: "c1", Name: "export_csv", Input: map[string]interface{}{"v": "w"}}}, StopReason: "tool_use",
+			Usage: llmtypes.Usage{InputTokens: 120, OutputTokens: 5, TotalTokens: 125, CostUSD: 0.02}},
+	}}
+	ag := NewAgent(&mockBackend{}, llm, WithConfig(cfg), WithMemory(NewMemoryWithStore(sessions)),
+		WithHITLPark(shuttle.NewInMemoryHumanRequestStore(), 0, NewProgressNotifier()),
+		WithAdmissionHooks(shuttle.NewChain([]shuttle.Hook{scopedAskHook{tool: "export_csv"}}, nil, nil)))
+	ag.RegisterTool(&countingTool{name: "export_csv"})
+
+	_, err = ag.Chat(context.Background(), "s-park-usage", "export")
+	var parked *TurnParkedError
+	require.True(t, errors.As(err, &parked), "the turn did not park: %v", err)
+	assert.InDelta(t, 0.02, parked.Usage.CostUSD, 1e-9, "Usage is not the parking call's own")
+	assert.Equal(t, 5, parked.Usage.OutputTokens, "Usage is not the parking call's own")
+	assert.InDelta(t, 0.03, parked.TurnUsage.CostUSD, 1e-9, "TurnUsage does not hold every call")
+	rows, err := sessions.SessionCost(context.Background(), "s-park-usage")
+	require.NoError(t, err)
+	assert.InDelta(t, 0.03, rows, 1e-9, "the stored rows do not hold the empty reply's cost")
 }

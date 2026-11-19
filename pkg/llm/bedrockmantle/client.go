@@ -282,6 +282,40 @@ func (c *Client) Name() string { return ProviderName }
 // Model returns the configured Mantle model id.
 func (c *Client) Model() string { return c.model }
 
+// MaxTokens returns the max_tokens the inner client sends on each request
+// (types.MaxTokensReporter), or 0 when the inner client does not report it.
+// The agent reads it to fit a step in flight against the prompt the provider
+// accepts.
+func (c *Client) MaxTokens() int {
+	inner, _ := c.current()
+	if r, ok := inner.(types.MaxTokensReporter); ok {
+		return r.MaxTokens()
+	}
+	return 0
+}
+
+// ThinkingOffWhenSuppressed forwards the inner client's answer
+// (types.ThinkingSuppressionReporter), or false when the inner client does
+// not report it.
+func (c *Client) ThinkingOffWhenSuppressed() bool {
+	inner, _ := c.current()
+	if r, ok := inner.(types.ThinkingSuppressionReporter); ok {
+		return r.ThinkingOffWhenSuppressed()
+	}
+	return false
+}
+
+// ThinkingForm forwards the inner client's thinking form
+// (types.ThinkingSuppressionReporter), or types.ThinkingFormUnknown when the
+// inner client does not report it.
+func (c *Client) ThinkingForm() string {
+	inner, _ := c.current()
+	if r, ok := inner.(types.ThinkingSuppressionReporter); ok {
+		return r.ThinkingForm()
+	}
+	return types.ThinkingFormUnknown
+}
+
 // BaseURL returns the endpoint base URL in use.
 func (c *Client) BaseURL() string { return c.baseURL }
 

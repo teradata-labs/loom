@@ -17,6 +17,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/teradata-labs/loom/pkg/llm/catalog"
+	"github.com/teradata-labs/loom/pkg/shuttle"
 	"strings"
 	"sync"
 	"testing"
@@ -41,39 +43,6 @@ func (c *recordingCompressor) CompressMessages(_ context.Context, msgs []Message
 }
 func (c *recordingCompressor) IsEnabled() bool { return true }
 
-// failingCompressor is an enabled compressor that always errors.
-type failingCompressor struct{ calls int }
-
-func (c *failingCompressor) CompressMessages(context.Context, []Message) (string, error) {
-	c.calls++
-	return "", errors.New("provider down")
-}
-func (c *failingCompressor) IsEnabled() bool { return true }
-
-func unfoldedTurns(sm *SegmentedMemory) map[int64]bool {
-	turns := map[int64]bool{}
-	for _, m := range sm.contextMessages {
-		if !m.Folded {
-			turns[m.Turn] = true
-		}
-	}
-	return turns
-}
-
-// proseMemory builds turns 1..n of user/assistant prose, each message ~3 dense
-// rows.
-func proseMemory(t *testing.T, maxTokens, reserved, turns int) *SegmentedMemory {
-	t.Helper()
-	ctx := context.Background()
-	sm := NewSegmentedMemory("ROM", maxTokens, reserved)
-	sm.SetThreshold(16384)
-	for turn := 1; turn <= turns; turn++ {
-		sm.AddMessage(ctx, Message{Role: "user", Content: denseResult(turn) + denseResult(turn+100), Turn: int64(turn)})
-		sm.AddMessage(ctx, Message{Role: "assistant", Content: denseResult(turn+200) + denseResult(turn+300), Turn: int64(turn)})
-	}
-	return sm
-}
-
 // toolTurnMemory builds turns 1..turns, each with one tool call and a large result.
 func toolTurnMemory(t *testing.T, maxTokens, reserved, turns int) *SegmentedMemory {
 	t.Helper()
@@ -92,6 +61,9 @@ func toolTurnMemory(t *testing.T, maxTokens, reserved, turns int) *SegmentedMemo
 	return sm
 }
 
+// A compaction folds the older turns into the summary and keeps the newest
+// turns verbatim. It folds only: no tool result is stubbed. The summary is the
+// user-role system-reminder row (summaryRowPrefix), not a system message.
 func TestCompact_FoldsOldTurnsAndKeepsRecentVerbatim(t *testing.T) {
 	sm := toolTurnMemory(t, 200000, 20000, 6)
 	comp := &recordingCompressor{}
@@ -100,16 +72,16 @@ func TestCompact_FoldsOldTurnsAndKeepsRecentVerbatim(t *testing.T) {
 	res, err := sm.Compact(context.Background(), CompactOptions{KeepTurns: 2})
 	require.NoError(t, err)
 
-	assert.True(t, res.Compacted)
-	assert.True(t, res.TurnsFolded)
-	assert.Greater(t, res.TokensSaved(), 0)
-	assert.Less(t, res.TokensAfter, res.TokensBefore)
-	assert.Equal(t, 1, res.SummaryVersion)
+	assert.True(t, res.Compacted, "the compaction reports that it compacted")
+	assert.True(t, res.TurnsFolded, "the older turns were folded")
+	assert.Greater(t, res.TokensSaved(), 0, "the fold saved tokens")
+	assert.Less(t, res.TokensAfter, res.TokensBefore, "the context is smaller after the fold")
+	assert.Equal(t, 1, res.SummaryVersion, "one fold writes summary version 1")
 
 	var summary string
 	sent := map[int64]bool{}
 	for _, m := range sm.GetMessagesForLLM() {
-		if strings.HasPrefix(m.Content, summaryRowPrefix) {
+		if m.Role == "user" && strings.HasPrefix(m.Content, summaryRowPrefix) {
 			summary = m.Content
 			continue
 		}
@@ -117,9 +89,14 @@ func TestCompact_FoldsOldTurnsAndKeepsRecentVerbatim(t *testing.T) {
 			sent[m.Turn] = true
 		}
 	}
-	assert.Contains(t, summary, "open approvals")
+	assert.Contains(t, summary, "open approvals", "the summary row carries the compressor's text")
 	assert.True(t, sent[5] && sent[6], "the newest two turns stay verbatim")
 	assert.False(t, sent[1] || sent[2] || sent[3] || sent[4], "older turns live in the summary")
+	for _, m := range sm.GetMessagesForLLM() {
+		if m.Role == "tool" && m.Turn >= 5 {
+			assert.Equal(t, denseResult(int(m.Turn))+denseResult(int(m.Turn)+50), m.Content, "kept turns keep their results whole")
+		}
+	}
 }
 
 func TestCompact_FocusReachesTheCompressor(t *testing.T) {
@@ -149,21 +126,176 @@ func TestCompact_NothingOlderThanKeepTurnsIsANoOp(t *testing.T) {
 	assert.Equal(t, res.TokensBefore, res.TokensAfter)
 }
 
+// windowedCompressor refuses an input larger than its window, as a real
+// compressor model does, and records the size of each input it was given.
+// failAfter > 0 makes every call after the first failAfter calls fail.
+type windowedCompressor struct {
+	mu        sync.Mutex
+	limit     int
+	failAfter int
+	inputs    []int
+}
+
+func (c *windowedCompressor) CompressMessages(_ context.Context, msgs []Message) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, m := range msgs {
+		n += len(m.Content)
+	}
+	c.inputs = append(c.inputs, tokenFigure(n))
+	if tokenFigure(n) > c.limit {
+		return "", errors.New("context too long for the compressor")
+	}
+	if c.failAfter > 0 && len(c.inputs) > c.failAfter {
+		return "", errors.New("provider down")
+	}
+	return fmt.Sprintf("SUMMARY %d: kept the settled SQL", len(c.inputs)), nil
+}
+func (c *windowedCompressor) IsEnabled() bool { return true }
+
+// reportingCompressor is a windowedCompressor that reports its window
+// (CompressorWindow), as the LLM compressor does for a cataloged model.
+type reportingCompressor struct{ windowedCompressor }
+
+func (c *reportingCompressor) InputWindowTokens() int { return c.limit }
+
+// A dedicated compressor model can have a smaller window than the agent's.
+// The compaction asked for by #506's approval must still succeed: the fold
+// chunks to the compressor's own window, and no input is larger than it.
+func TestCompact_ChunksToACompressorWindowSmallerThanTheAgents(t *testing.T) {
+	sm := toolTurnMemory(t, 12000, 1000, 12) // agent usable window 11000
+	comp := &reportingCompressor{windowedCompressor{limit: 5000}}
+	sm.SetCompressor(comp)
+
+	res, err := sm.Compact(context.Background(), CompactOptions{KeepTurns: 2})
+
+	require.NoError(t, err, "the compaction failed on a compressor with a smaller window than the agent's")
+	assert.True(t, res.Compacted)
+	require.Greater(t, len(comp.inputs), 1, "a region larger than the compressor window was not chunked")
+	for i, n := range comp.inputs {
+		assert.LessOrEqual(t, n, 5000, "compressor input %d is larger than its window", i)
+	}
+}
+
+// fixedLLM is an LLMProvider with a name, a model and, when maxTokens > 0,
+// the max_tokens its requests send (types.MaxTokensReporter).
+type fixedLLM struct {
+	name, model string
+	maxTokens   int
+}
+
+func (f fixedLLM) Chat(context.Context, []Message, []shuttle.Tool) (*LLMResponse, error) {
+	return nil, errors.New("not used")
+}
+func (f fixedLLM) Name() string   { return f.name }
+func (f fixedLLM) Model() string  { return f.model }
+func (f fixedLLM) MaxTokens() int { return f.maxTokens }
+
+// The LLM compressor's window follows the agent's own ceiling rule
+// (ProviderPromptCeiling): the served window when one is stated, else the
+// listing, less the max_tokens the request sends; nothing for a model no
+// listing knows.
+func TestLLMCompressor_WindowFollowsTheProviderCeiling(t *testing.T) {
+	const model = "claude-haiku-4-5-20251001"
+	info := catalog.Lookup("anthropic", model)
+	require.NotNil(t, info, "the catalog lists the model the test uses")
+	window := int(info.ContextWindow)
+
+	sent := NewLLMCompressor(&promptRegistryCompressor{llm: fixedLLM{"anthropic", model, 8192}})
+	assert.Equal(t, window-8192, sent.InputWindowTokens(), "the request's max_tokens is the reservation, not the model's maximum output")
+
+	served := NewLLMCompressor(&promptRegistryCompressor{llm: fixedLLM{"anthropic", model, 8192}, servedWindow: 32000})
+	assert.Equal(t, 32000-8192, served.InputWindowTokens(), "a served window comes first")
+
+	unknown := NewLLMCompressor(&promptRegistryCompressor{llm: fixedLLM{"ollama", "made-up-model:1b", 0}})
+	assert.Zero(t, unknown.InputWindowTokens())
+	assert.Zero(t, NewLLMCompressor(nil).InputWindowTokens())
+}
+
+// A session already over its window is the case a compaction must rescue.
+// Its older turns are larger than the compressor's window, so one fold call
+// would be refused; the compaction folds them in chunks that fit. The stored
+// conversation is not changed: the newest turns keep their results whole.
 func TestCompact_RescuesASessionAlreadyOverItsWindow(t *testing.T) {
-	// usable 11000; five turns of ~1.5K-token results plus the rest is over it.
+	// usable 11000; twelve turns of ~1.5K-token results is over it.
 	sm := toolTurnMemory(t, 12000, 1000, 12)
-	sm.SetCompressor(&recordingCompressor{})
-	sm.reliefInFlight = false
+	comp := &windowedCompressor{limit: 11000}
+	sm.SetCompressor(comp)
 	sm.mu.Lock()
 	start := sm.estimateLocked()
 	sm.mu.Unlock()
 	require.Greater(t, start, 11000, "fixture must start over the window")
 
 	res, err := sm.Compact(context.Background(), CompactOptions{KeepTurns: 2})
-	require.NoError(t, err)
+	require.NoError(t, err, "the compaction must not fail on a region larger than the compressor's window")
 
-	require.True(t, res.Compacted)
+	require.True(t, res.Compacted, "the compaction ran")
+	assert.Equal(t, 2, res.TurnsKept, "the newest two turns are kept")
+	assert.Greater(t, len(comp.inputs), 1, "the region was folded in more than one call")
+	for i, n := range comp.inputs {
+		assert.LessOrEqual(t, n, comp.limit, "compressor input %d is over the compressor's window", i)
+	}
 	assert.LessOrEqual(t, res.TokensAfter, 11000, "the compacted session fits again")
+	sm.mu.Lock()
+	after, usable := sm.estimateLocked(), sm.usableLocked()
+	sm.mu.Unlock()
+	assert.LessOrEqual(t, after, usable, "the estimate is under the usable window")
+	assert.Equal(t, map[int64]bool{11: true, 12: true}, unfoldedTurns(sm), "only the newest two turns stay verbatim")
+	for _, m := range sm.GetMessagesForLLM() {
+		if m.Role == "tool" {
+			assert.Equal(t, denseResult(int(m.Turn))+denseResult(int(m.Turn)+50), m.Content, "a kept result is not whole")
+		}
+	}
+}
+
+// A region that fits the compressor's window is folded in one call, as
+// before: the bound adds no call to the common case.
+func TestCompact_FoldsARegionThatFitsInOneCall(t *testing.T) {
+	sm := toolTurnMemory(t, 200000, 20000, 6)
+	comp := &windowedCompressor{limit: 180000}
+	sm.SetCompressor(comp)
+
+	res, err := sm.Compact(context.Background(), CompactOptions{KeepTurns: 2})
+	require.NoError(t, err)
+	assert.True(t, res.Compacted)
+	assert.Len(t, comp.inputs, 1, "a region that fits took more than one compressor call")
+}
+
+// A later chunk that fails after an earlier chunk folded leaves the earlier
+// chunk folded, and the result says how many turns stay verbatim.
+func TestCompact_AFailedLaterChunkReportsTheTurnsKept(t *testing.T) {
+	sm := toolTurnMemory(t, 12000, 1000, 12)
+	comp := &windowedCompressor{limit: 11000, failAfter: 1}
+	sm.SetCompressor(comp)
+
+	res, err := sm.Compact(context.Background(), CompactOptions{KeepTurns: 2})
+	require.NoError(t, err, "the first chunk folded, so the compaction did something")
+	require.True(t, res.Compacted)
+	kept := len(unfoldedTurns(sm))
+	assert.Greater(t, kept, 2, "the fixture must leave more than the asked turns")
+	assert.Equal(t, kept, res.TurnsKept, "the result must say how many turns stay verbatim")
+	assert.False(t, sm.foldRequireSummary, "the rule does not leak into relief")
+}
+
+// The relief ladder uses the same bound: a rung whose region is larger than
+// the compressor's window is folded in chunks with real summaries, and not
+// dropped behind an "unsummarized" line.
+func TestReleasePressure_FoldsARegionLargerThanTheCompressorWindowInChunks(t *testing.T) {
+	sm := toolTurnMemory(t, 12000, 1000, 12)
+	sm.SetProtectedRecentTurns(2)
+	comp := &windowedCompressor{limit: 11000}
+	sm.SetCompressor(comp)
+
+	shed, _, _ := sm.ReleasePressure(context.Background(), pressureRecoveryPenalty)
+	require.True(t, shed, "relief shed nothing")
+	for i, n := range comp.inputs {
+		assert.LessOrEqual(t, n, comp.limit, "compressor input %d is over the compressor's window", i)
+	}
+	sm.mu.Lock()
+	summary := sm.summary.text
+	sm.mu.Unlock()
+	assert.NotContains(t, summary, "unsummarized", "relief dropped a region it could have summarized in chunks")
 }
 
 func TestCompact_RefusesWhenAPassIsAlreadyRunning(t *testing.T) {
@@ -231,7 +363,7 @@ func TestCompact_BuildsOnTheSummaryOfAnInloopFold(t *testing.T) {
 	}
 	assert.Equal(t, map[int64]bool{7: true, 8: true}, turns, "the newest two turns stay verbatim")
 
-	b := measureRequest(sm.GetMessagesForLLM(), nil)
+	b := measureRequest(sm.GetMessagesForLLM(), nil, sm.SummaryRowPrefix())
 	assert.Positive(t, b.SummaryTokens, "the log did not count the summary row")
 }
 

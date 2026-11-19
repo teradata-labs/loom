@@ -113,7 +113,15 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (_ *Respons
 	// of a still-warm session injects a second context block into the prompt.
 	ctx = contextWithResumedTurn(ctx)
 
-	sess := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
+	sess := a.memory.ReloadPendingSession(ctx, sessionID, a.config.Name)
+	if a.memory.isLoadPlaceholder(sess) {
+		// The store could not load the session: resuming the empty stand-in
+		// would find no batch and could record a second turn over the real one.
+		err := fmt.Errorf("resume session %s: %w", sessionID, ErrSessionNotLoaded)
+		span.RecordError(err)
+		span.AddEvent("resume.refused", map[string]interface{}{"reason": "session_not_loaded"})
+		return nil, err
+	}
 
 	// A session that is HITL-parked (waiting on a human, not crashed) must not
 	// be crash-resumed: parking happens before dispatch, so every call in its
@@ -212,7 +220,8 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (_ *Respons
 	// Each call has two positions: its index in the session's batch message
 	// (what HITL park binding uses) and its index in the recorded LLM response
 	// (the batch_position its events were written under). They differ when the
-	// saved message dropped calls the response held (query_tool_result).
+	// saved message lacks calls the response held: an earlier loom did not
+	// store query_tool_result calls. This loom stores them.
 	var neverAttempted []ToolCall
 	var neverAttemptedPositions, neverAttemptedEventPositions []int
 	for j, call := range rowless {
@@ -305,20 +314,34 @@ func (a *Agent) finishResumedTurn(ctx context.Context, agentCtx *agentContext, s
 			}
 			return nil, err
 		}
+		a.persistAfterFailure(ctx, sess, observability.SpanFromContext(ctx))
 		return nil, fmt.Errorf("conversation loop after resume: %w", err)
 	}
 
 	// runConversationLoop never appends its own final assistant message, so
 	// every caller must (as Chat and ResumeChat do). Without it the batch
 	// never reaches a terminal state and a second resume would re-run the loop.
+	row := response.rowUsage() // the final call's usage, with what the turn left unbilled
 	_, replyPersisted := a.appendMessage(ctx, sess, Message{
-		Role:       "assistant",
-		Content:    response.Content,
-		AgentID:    a.id,
-		Timestamp:  time.Now(),
-		TokenCount: response.Usage.TotalTokens,
-		CostUSD:    response.Usage.CostUSD,
+		Role:              "assistant",
+		Content:           response.Content,
+		AgentID:           a.id,
+		Timestamp:         time.Now(),
+		TokenCount:        row.TotalTokens,
+		CostUSD:           row.CostUSD,
+		InputTokens:       row.InputTokens,
+		OutputTokens:      row.OutputTokens,
+		CacheReadTokens:   row.CacheReadInputTokens,
+		CacheCreateTokens: row.CacheCreationInputTokens,
+
+		CacheCreate1hTokens: row.CacheCreation1hInputTokens,
+		CacheCreate5mTokens: row.CacheCreation5mInputTokens,
+		ThinkingTokens:      row.ThinkingTokens,
+		Effort:              row.Effort,
 	}, false)
+	if !replyPersisted {
+		a.moveRefusedRowCost(ctx, sess, row, observability.SpanFromContext(ctx))
+	}
 	a.pruneFinishedTurn(ctx, sess.ID, replyPersisted)
 
 	if perr := a.memory.PersistSession(ctx, sess); perr != nil {
@@ -387,8 +410,9 @@ func recordedStepForBatch(events []eventlog.ExecutionEvent, batch Message) (step
 // matchRecordedCalls maps each call in saved (the batch as the session holds
 // it) to its index in recorded (the LLM response as the event log holds it).
 // Calls match on name and input, in order. The saved batch may lack
-// query_tool_result calls, which PersistMessage drops; any other difference
-// means the two are different batches.
+// query_tool_result calls: an earlier loom did not store them, and this loom
+// does, so the skip keeps sessions stored by an earlier loom resumable. Any
+// other difference means the two are different batches.
 func matchRecordedCalls(recorded, saved []ToolCall) ([]int, bool) {
 	positions := make([]int, 0, len(saved))
 	r := 0
@@ -465,9 +489,9 @@ func unsavedBatchStep(events []eventlog.ExecutionEvent, msgs []Message) (int, er
 	for _, e := range events {
 		switch e.EventType {
 		case eventlog.EventToolCallIntent:
-			// query_tool_result only reads this turn's in-memory results and is
-			// never saved with its batch, so a step holding only those has
-			// nothing a re-run could do twice.
+			// query_tool_result only reads this turn's in-memory results, so a
+			// step holding only those has nothing a re-run could do twice. (An
+			// earlier loom also did not store those calls with their batch.)
 			if !isQueryToolResultIntent(e) {
 				dispatched[e.StepIndex] = true
 			}
@@ -508,12 +532,17 @@ func unsavedBatchStep(events []eventlog.ExecutionEvent, msgs []Message) (int, er
 	return 0, nil
 }
 
-// unsavedBatchStepWithFolded is unsavedBatchStep that also counts messages
-// compression has folded. Folded rows leave L1, which is all msgs holds, but
-// they are saved: a step the log kept because its tool row did not persist can
-// have its assistant message folded by a later turn, and it must not read as
-// lost. Only a step still unmatched is looked up, so a session without folds
-// pays no extra read; a failed read keeps the refusal.
+// unsavedBatchStepWithFolded is unsavedBatchStep checked again against the
+// store when the rows in memory do not match. msgs is L1, and L1 can show a
+// saved batch in a form that does not match its recorded response: a fold
+// removes folded rows from L1, and the in-loop fold keeps an assistant row
+// with its calls removed in memory (foldSplitLocked; on reload,
+// dropFoldedCalls). A step the log kept because one of its tool rows did not
+// persist can be in either state, and it must not read as lost. The store
+// holds every saved assistant row with its full tool_calls_json, folded or
+// not, so the second check matches the steps against those rows, in seq
+// order. Only a session with an unmatched step pays the extra read; a failed
+// read keeps the refusal.
 func (a *Agent) unsavedBatchStepWithFolded(ctx context.Context, sessionID string, events []eventlog.ExecutionEvent, msgs []Message) (int, error) {
 	step, err := unsavedBatchStep(events, msgs)
 	if !errors.Is(err, ErrBatchNotSaved) || a.memory == nil || a.memory.store == nil {
@@ -521,21 +550,20 @@ func (a *Agent) unsavedBatchStepWithFolded(ctx context.Context, sessionID string
 	}
 	rows, lerr := a.memory.store.ListMessagesBySeqRange(ctx, sessionID, 1, math.MaxInt64)
 	if lerr != nil {
-		zap.L().Warn("failed to read folded messages; keeping the unsaved-batch refusal",
+		zap.L().Warn("failed to read the stored messages; keeping the unsaved-batch refusal",
 			zap.String("session_id", sessionID), zap.Error(lerr))
 		return step, err
 	}
-	var all []Message
+	var stored []Message
 	for _, m := range rows {
-		if m.Folded && m.Role == "assistant" && len(m.ToolCalls) > 0 {
-			all = append(all, m)
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			stored = append(stored, m)
 		}
 	}
-	if len(all) == 0 {
+	if len(stored) == 0 {
 		return step, err
 	}
-	// Folded rows are older than everything in L1, and steps are matched in order.
-	return unsavedBatchStep(events, append(all, msgs...))
+	return unsavedBatchStep(events, stored)
 }
 
 // isQueryToolResultIntent reports whether a tool_call_intent event is for the
@@ -672,7 +700,13 @@ func (a *Agent) ResolveExecutionGap(ctx context.Context, sessionID string, outco
 	defer a.tracer.EndSpan(span)
 	span.SetAttribute(observability.AttrSessionID, sessionID)
 
-	sess := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
+	sess := a.memory.ReloadPendingSession(ctx, sessionID, a.config.Name)
+	if a.memory.isLoadPlaceholder(sess) {
+		err := fmt.Errorf("resolve execution gap in session %s: %w", sessionID, ErrSessionNotLoaded)
+		span.RecordError(err)
+		span.AddEvent("resume.refused", map[string]interface{}{"reason": "session_not_loaded"})
+		return nil, err
+	}
 	events, err := a.eventLog.LoadEvents(ctx, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("loading execution events: %w", err)

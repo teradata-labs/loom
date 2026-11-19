@@ -404,7 +404,7 @@ A call that runs past `ToolCallTimeout` returns `ok=false` with code
 
 | Call | Returns |
 |---|---|
-| `turn.result(message_id)` | same shape as `tools.call`; reads a tool result from earlier in the current turn. `message_id` must be a positive integer. |
+| `turn.result(tool_use_id)` or `turn.result(message_id)` | same shape as `tools.call`; reads a tool result from earlier in the current turn, whole when its tail says it was cut. Pass the `tool_use_id` string that the cut result's tail names (1 to 256 bytes); that is the id the model sees. A positive integer `message_id` still works for a host that shows message ids. An all-digit string (`"42"`) is read as a `tool_use_id` first and as a message id when no call has that id, so a message id given as a string still works. When neither read finds a result, the `NOT_FOUND` message names both reads (`"99" is not a tool result from the current turn, read as a tool_use_id or as message id 99`). Only plain digits count: a string such as `" 42"`, `"42.0"` or `"0x2a"`, which an earlier loom read as a number, is now read only as a `tool_use_id`. A host without `luasandbox.ToolUseResultHost` refuses any other string with a script error. |
 
 ### `json`
 
@@ -524,8 +524,9 @@ return {state = "still_running", id = start.id}
 ### Post-process a large result from earlier in the turn
 
 ```lua
--- args: {message_id = 42, column = "status"}
-local r = turn.result(args.message_id)
+-- args: {tool_use_id = "toolu_01", column = "status"}
+-- tool_use_id is the id that the cut result's tail names.
+local r = turn.result(args.tool_use_id)
 if not r.ok then error(r.error.message) end
 local counts = {}
 for _, row in ipairs(r.data.rows or r.data) do

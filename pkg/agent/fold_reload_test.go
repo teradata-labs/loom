@@ -138,20 +138,86 @@ func TestAnUnfinishedCallKeepsItsStandInAfterALoad(t *testing.T) {
 	assert.Contains(t, got, "tool|cut-short||"+syntheticFailedResult, "the unfinished call has no stand-in result")
 }
 
-// The two helpers the stores share.
-func TestCallsWithoutResultAndDropFoldedCalls(t *testing.T) {
-	msgs := []Message{
-		{Role: "assistant", Content: "a", ToolCalls: []ToolCall{{ID: "answered"}, {ID: "folded"}}},
-		{Role: "tool", ToolUseID: "answered", Content: "r"},
-		{Role: "assistant", Content: "b", ToolCalls: []ToolCall{{ID: "unfinished"}}},
+// rawRowStore is a SessionStorage with no reload repair of its own, as a
+// host's own store is: LoadSession returns the stored unfolded rows as they
+// are, with every call that tool_calls_json holds. Every other operation is
+// the SQLite store's.
+type rawRowStore struct {
+	*SessionStore
+}
+
+func (s rawRowStore) LoadSession(ctx context.Context, sessionID string) (*Session, error) {
+	sess, err := s.SessionStore.LoadSession(ctx, sessionID)
+	if err != nil || sess == nil {
+		return sess, err
 	}
-	assert.Equal(t, []string{"folded", "unfinished"}, CallsWithoutResult(msgs))
+	rows, err := s.ListMessagesBySeqRange(ctx, sessionID, 1, 1<<62)
+	if err != nil {
+		return nil, err
+	}
+	sess.Messages = nil
+	for _, m := range rows {
+		if !m.Folded {
+			sess.Messages = append(sess.Messages, m)
+		}
+	}
+	return sess, nil
+}
 
-	DropFoldedCalls(msgs, map[string]bool{"folded": true})
-	assert.Equal(t, []ToolCall{{ID: "answered"}}, msgs[0].ToolCalls)
-	assert.Equal(t, []ToolCall{{ID: "unfinished"}}, msgs[2].ToolCalls)
+// The repair runs in the agent's reload, so it does not depend on the store:
+// after a fold, a session reloaded from a store that returns the raw unfolded
+// rows compiles the same context as the memory that folded.
+func TestAReloadThroughAStoreWithNoRepairCompilesTheSameContext(t *testing.T) {
+	ctx := context.Background()
+	db := filepath.Join(t.TempDir(), "s.db")
+	ag, store := storedAgent(t, db, &talkingCaller{})
+	for i := 1; i <= 6; i++ {
+		_, err := ag.Chat(ctx, "s-raw", fmt.Sprintf("question %d", i))
+		require.NoError(t, err)
+	}
+	sess, ok := ag.GetSession("s-raw")
+	require.True(t, ok)
+	live := sess.SegmentedMem.(*SegmentedMemory)
+	live.SetProtectedRecentTurns(6)
+	applied, _ := live.ApplyFoldReply(ctx, "the work so far")
+	require.True(t, applied, "the fold did not commit")
+	want := contextShape(live.GetMessagesForLLM())
+	require.Contains(t, strings.Join(want, "\n"), "assistant|||let me check", "the fixture has no kept row that lost its call")
 
-	only := []Message{{Role: "assistant", Content: "c", ToolCalls: []ToolCall{{ID: "folded"}}}}
-	DropFoldedCalls(only, map[string]bool{"folded": true})
-	assert.Nil(t, only[0].ToolCalls, "a row that lost every call holds none, as the fold leaves it")
+	raw := rawRowStore{SessionStore: store}
+	stored, err := raw.LoadSession(ctx, "s-raw")
+	require.NoError(t, err)
+	require.NotEmpty(t, callsWithNoLoadedResult(stored.Messages), "the raw store must return the calls of the folded results")
+
+	cfg := DefaultConfig()
+	cfg.PatternConfig = DefaultPatternConfig()
+	cfg.PatternConfig.UseLLMClassifier = false
+	cfg.MaxContextTokens = 200000
+	cfg.ReservedOutputTokens = 1000
+	fresh := NewAgent(&mockBackend{}, &talkingCaller{}, WithConfig(cfg), WithMemory(NewMemoryWithStore(raw)))
+	reloaded, ok := fresh.memory.GetOrCreateSessionWithAgent(ctx, "s-raw", fresh.config.Name, "").SegmentedMem.(*SegmentedMemory)
+	require.True(t, ok)
+	got := contextShape(reloaded.GetMessagesForLLM())
+	assert.Equal(t, want, got, "a reload through a store with no repair compiles a different context")
+	assert.NotContains(t, strings.Join(got, "\n"), syntheticFailedResult, "a folded result is reported as a call that did not complete")
+}
+
+// callsWithNoLoadedResult is the test's own count of the calls in msgs that
+// no row among them answers.
+func callsWithNoLoadedResult(msgs []Message) []string {
+	answered := map[string]bool{}
+	for _, m := range msgs {
+		if m.Role == "tool" {
+			answered[m.ToolUseID] = true
+		}
+	}
+	var ids []string
+	for _, m := range msgs {
+		for _, c := range m.ToolCalls {
+			if !answered[c.ID] {
+				ids = append(ids, c.ID)
+			}
+		}
+	}
+	return ids
 }

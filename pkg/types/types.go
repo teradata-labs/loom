@@ -238,14 +238,18 @@ type Usage struct {
 	CacheCreationInputTokens int
 	// CacheCreation1hInputTokens and CacheCreation5mInputTokens split the cache
 	// write by how long the entry lives, as the provider reports it; both 0
-	// when it does not.
+	// when it does not. The Anthropic client, the Bedrock SDK client and the
+	// Bedrock InvokeModel non-streaming path fill them; Bedrock Converse, the
+	// InvokeModel streaming path and the OpenAI-shaped and Gemini clients do
+	// not (no split is reported, or the API has no cache-write lifetime).
 	CacheCreation1hInputTokens int
 	CacheCreation5mInputTokens int
 	// ThinkingTokens is the part of OutputTokens the model spent thinking, as
-	// the provider reports it; 0 when it does not.
+	// the provider reports it; 0 when it does not. Only the Bedrock SDK
+	// client fills it.
 	ThinkingTokens int
 	// Effort is the effort the call was made at; empty when the provider has
-	// no such setting.
+	// no such setting. Only the Bedrock SDK client fills it.
 	Effort string
 	// RateLimitTokens is the figure capacity accounting charges for this call
 	// when it differs from TotalTokens. The OpenAI-compatible and Gemini clients
@@ -343,6 +347,61 @@ type LLMProvider interface {
 // loading on providers such as Ollama.
 type HealthChecker interface {
 	HealthCheck(ctx context.Context) error
+}
+
+// MaxTokensReporter is an optional interface a provider implements to report
+// the max_tokens it puts on each request. A provider accepts a prompt up to
+// its window less that figure, so the agent fits a step in flight against it
+// before the send. The agent asks the client in use, because the figure in
+// the agent's own config is not that client's when the agent runs on a pool
+// entry or after a runtime model switch. A provider that does not implement
+// it, or reports 0, leaves the agent with its configured figure.
+type MaxTokensReporter interface {
+	// MaxTokens returns the max_tokens sent on each request, or 0 when the
+	// provider does not know it.
+	MaxTokens() int
+}
+
+// Thinking forms that ThinkingSuppressionReporter.ThinkingForm returns. They
+// name the thinking field of a request, not the model: a budget-form model
+// with thinking off, or with a max_tokens too small for a valid budget, sends
+// ThinkingFormNone.
+const (
+	// ThinkingFormNone: the request carries no thinking field.
+	ThinkingFormNone = "none"
+	// ThinkingFormAdaptive: the request carries adaptive thinking.
+	ThinkingFormAdaptive = "adaptive"
+	// ThinkingFormBudget: the request carries enabled thinking with a
+	// budget_tokens figure.
+	ThinkingFormBudget = "budget"
+	// ThinkingFormUnknown: the provider does not say what it sends. A
+	// forwarding wrapper whose inner provider does not report returns it,
+	// and the agent records it for a provider that does not report.
+	ThinkingFormUnknown = "unknown"
+)
+
+// ThinkingSuppressionReporter is an optional interface a provider implements
+// to report what it does with a request marked by llm.ContextSuppressThinking.
+// Only a client that sends the enabled+budget thinking form reads the mark;
+// an adaptive model and a provider that never reads the mark keep doing what
+// they did. The agent asks before it records a send it marked (the
+// llm.thinking_suppressed span event), so a trace says which thinking form
+// the request carries and that thinking was off only when it really was. A
+// provider that does not implement it is recorded with ThinkingFormUnknown
+// and as "the mark changes nothing".
+//
+// The loom clients answer both methods from the builder that writes the
+// request's thinking field (llm.SuppressionTurnsThinkingOff), so the answer
+// cannot differ from the wire.
+type ThinkingSuppressionReporter interface {
+	// ThinkingOffWhenSuppressed reports whether a marked request goes out
+	// with thinking off: the unmarked request carries ThinkingFormBudget and
+	// the marked one carries ThinkingFormNone.
+	ThinkingOffWhenSuppressed() bool
+	// ThinkingForm returns the thinking form an unmarked request carries:
+	// ThinkingFormNone, ThinkingFormAdaptive or ThinkingFormBudget, or
+	// ThinkingFormUnknown from a wrapper whose inner provider does not report.
+	ThinkingForm() string
 }
 
 // TokenCallback is called for each token/chunk during streaming.
@@ -469,6 +528,33 @@ func (s *Session) AddMessage(ctx context.Context, msg Message) {
 	s.UpdatedAt = time.Now()
 	s.TotalCostUSD += msg.CostUSD
 	s.TotalTokens += msg.TokenCount
+}
+
+// AddRowUsage adds u to the session's totals (TotalCostUSD, TotalTokens) and
+// to the message with ID messageID in the flat list, when one has it. The
+// agent calls it when a turn ends on an error after calls that the provider
+// billed but no message holds: their cost goes on the turn's last stored row
+// (agent.RowUsageAdder), and the session must report the same figure. The
+// message gets the figures a carried row gets: cost, TokenCount (TotalTokens),
+// output and thinking tokens. An empty messageID changes only the totals.
+func (s *Session) AddRowUsage(messageID string, u Usage) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.TotalCostUSD += u.CostUSD
+	s.TotalTokens += u.TotalTokens
+	if messageID == "" {
+		return
+	}
+	for i := len(s.Messages) - 1; i >= 0; i-- {
+		if s.Messages[i].ID == messageID {
+			m := &s.Messages[i]
+			m.CostUSD += u.CostUSD
+			m.TokenCount += u.TotalTokens
+			m.OutputTokens += u.OutputTokens
+			m.ThinkingTokens += u.ThinkingTokens
+			return
+		}
+	}
 }
 
 // GetMessages returns a copy of the conversation history.

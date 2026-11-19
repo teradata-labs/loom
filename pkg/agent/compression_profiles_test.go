@@ -362,7 +362,7 @@ func TestWorkloadProfilesMoveTheReliefMarks(t *testing.T) {
 
 // K — the recent turns a fold keeps — is set from an agent file
 // (memory.memory_compression.protected_recent_turns), reaches memory through
-// the compression profile, defaults to 16 as on main, and yields to a value the
+// the compression profile, defaults to 16 (unchanged), and yields to a value the
 // agent's Config sets in code.
 func TestProtectedRecentTurnsIsSetFromTheAgentFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "a.yaml")
@@ -398,4 +398,43 @@ func TestProtectedRecentTurnsIsSetFromTheAgentFile(t *testing.T) {
 	unset.mu.Lock()
 	assert.Equal(t, 16, unset.protectedTurnsLocked(), "the default is main's 16")
 	unset.mu.Unlock()
+}
+
+// max_failed_fold_rounds loads from an agent file with presence: unset is the
+// default (1), 0 means the fold never stops arming, and a negative value is
+// refused.
+func TestMaxFailedFoldRoundsIsSetFromTheAgentFile(t *testing.T) {
+	load := func(t *testing.T, line string) (CompressionProfile, error) {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "a.yaml")
+		require.NoError(t, os.WriteFile(path, []byte(`agent:
+  name: a
+  memory:
+    type: memory
+    memory_compression:
+      workload_profile: balanced
+`+line), 0o600))
+		cfg, err := LoadAgentConfig(path)
+		require.NoError(t, err)
+		return ResolveCompressionProfile(cfg.GetMemory().GetMemoryCompression())
+	}
+	for _, tc := range []struct {
+		name string
+		line string
+		want int
+	}{
+		{"unset is the default", "", 1},
+		{"zero never stops", "      max_failed_fold_rounds: 0\n", 0},
+		{"three", "      max_failed_fold_rounds: 3\n", 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			profile, err := load(t, tc.line)
+			require.NoError(t, err)
+			sm := NewSegmentedMemoryWithCompression("ROM", 200000, 20000, profile)
+			assert.Equal(t, tc.want, sm.MaxFailedFoldRounds())
+		})
+	}
+	_, err := load(t, "      max_failed_fold_rounds: -1\n")
+	require.Error(t, err, "a negative cap was accepted")
+	assert.Equal(t, 1, NewSegmentedMemory("ROM", 200000, 20000).MaxFailedFoldRounds(), "the default is 1")
 }

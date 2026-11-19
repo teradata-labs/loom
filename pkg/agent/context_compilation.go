@@ -41,9 +41,46 @@ type summaryState struct {
 	text string
 }
 
-// summaryRowPrefix opens the compiled summary row; the trigger's estimate
-// recognises the row by it.
-const summaryRowPrefix = "<system-reminder>\nSession summary — the work so far:\n\n"
+// summaryRowOpen is the opening of the compiled summary row with heading as
+// its first line. The row's text comes from the prompt registry
+// (summaryRowHeadingKey, summaryRowCaveatKey; resolved by SetCompressor), so
+// the estimate and the request log recognise the row by the opening this
+// memory sends, not by a fixed string.
+func summaryRowOpen(heading string) string {
+	return "<system-reminder>\n" + heading + "\n\n"
+}
+
+// summaryRowPrefix is the opening of the summary row with the shipped
+// heading: the row of a memory whose compressor has no registry entry, and
+// the request log's default when no segmented memory is in play.
+var summaryRowPrefix = summaryRowOpen(foldPromptFallbacks[summaryRowHeadingKey])
+
+// summaryRowOpenLocked is the opening of this memory's summary row. Must
+// hold lock.
+func (sm *SegmentedMemory) summaryRowOpenLocked() string {
+	if sm.summaryHeading == "" {
+		return summaryRowPrefix
+	}
+	return summaryRowOpen(sm.summaryHeading)
+}
+
+// summaryRowCaveatLocked is the line after the summary in this memory's
+// summary row. Must hold lock.
+func (sm *SegmentedMemory) summaryRowCaveatLocked() string {
+	if sm.summaryCaveat == "" {
+		return foldPromptFallbacks[summaryRowCaveatKey]
+	}
+	return sm.summaryCaveat
+}
+
+// SummaryRowPrefix is the opening of the summary row this memory compiles.
+// chatWithRetry passes it to the request log, which counts that row as the
+// summary.
+func (sm *SegmentedMemory) SummaryRowPrefix() string {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.summaryRowOpenLocked()
+}
 
 // syntheticFailedResult is the normative text of HLD §5.2 step 7: a call with
 // no matching result row gets a synthetic failed result emitted in its place —
@@ -116,8 +153,8 @@ func (sm *SegmentedMemory) compilePrefixLocked(msgs []Message, t int64, fingerpr
 	// from HERE down — ROM and the tool schemas stay cached across folds.
 	if sm.summary.text != "" {
 		push(Message{Role: "user",
-			Content: summaryRowPrefix + sm.summary.text +
-				"\n\nExact values quoted in this summary (expected outputs, literals, paths, interfaces) are unverified — the summary may restate them imprecisely. Before relying on one, read it from its source.\n</system-reminder>"})
+			Content: sm.summaryRowOpenLocked() + sm.summary.text +
+				"\n\n" + sm.summaryRowCaveatLocked() + "\n</system-reminder>"})
 	}
 
 	// Render cases + pair atomicity. Track the message cache breakpoint: the
@@ -234,8 +271,7 @@ func (sm *SegmentedMemory) compilePrefixLocked(msgs []Message, t int64, fingerpr
 // everything before them is unchanged, though: the provider checks that a
 // replayed block follows the same system prompt, tools and messages it was
 // written after (an edit is a 400 on enforced accounts), and loom does edit
-// settled history — offload stubs re-render at the settle boundary, the turn
-// end drops payloads, relief evicts and folds. So AddMessage records, for each
+// settled history — a fold replaces it with a summary. So AddMessage records, for each
 // assistant message with thinking blocks, the fingerprint of the compiled
 // context the model had just been sent, and compile keeps the blocks on a
 // settled turn only while the context before them still fingerprints the
@@ -333,7 +369,8 @@ func writeField(h hash.Hash, s string) {
 // a tool row renders with the bytes the row holds. Those bytes were bounded at
 // arrival (appendMessage, §4.1): an over-threshold result entered as core +
 // tail, and the stored row is the same bytes, so a session reloaded from the
-// store renders exactly what the producing session did.
+// store renders exactly what the producing session did. (The calls an in-loop
+// fold removed from a kept row are removed on reload too: dropFoldedCalls.)
 //
 // What compile guarantees is byte-stability: no row is ever rewritten in
 // place, so a compiled prefix stays valid and the fold is the only thing that
@@ -527,8 +564,9 @@ func (sm *SegmentedMemory) estimateLocked() int { return sm.estimateOptLocked(fa
 func (sm *SegmentedMemory) estimateOptLocked(skipSummary bool) int {
 	compiled := sm.compileLocked()
 	f := sm.calibrationLocked()
+	summaryOpen := sm.summaryRowOpenLocked()
 	isSummary := func(i int) bool {
-		return skipSummary && compiled[i].Role == "user" && strings.HasPrefix(compiled[i].Content, summaryRowPrefix)
+		return skipSummary && compiled[i].Role == "user" && strings.HasPrefix(compiled[i].Content, summaryOpen)
 	}
 
 	// The in-flight batch: tool results after the last assistant row. The
@@ -893,9 +931,9 @@ func (sm *SegmentedMemory) ReleasePressure(ctx context.Context, penalty int) (sh
 	}
 	ops := make([]reliefOp, 0, len(rungs)+1)
 	for _, b := range rungs {
-		ops = append(ops, reliefOp{"fold", b, sm.foldLocked})
+		ops = append(ops, reliefOp{"fold", b, sm.foldBoundedLocked})
 	}
-	ops = append(ops, reliefOp{"fold", t, sm.foldLocked})
+	ops = append(ops, reliefOp{"fold", t, sm.foldBoundedLocked})
 	for _, op := range ops {
 		if !op.run(ctx, op.boundary) {
 			// An operation that changed nothing (its rows were already flagged
@@ -924,11 +962,163 @@ func (sm *SegmentedMemory) ReleasePressure(ctx context.Context, penalty int) (sh
 	return true, estimate, target
 }
 
+// foldInputHeadLocked is the start of the compressor input: the current
+// summary under its heading, and the focus of a requested compaction after its
+// preface. foldLocked builds the input from it; foldStepLocked measures it.
+// Must hold lock.
+func (sm *SegmentedMemory) foldInputHeadLocked(ctx context.Context) []Message {
+	var head []Message
+	if sm.summary.text != "" {
+		head = append(head, Message{Role: "system", Content: foldPromptText(ctx, sm.compressor, foldPromptSummaryHeading) + "\n" + sm.summary.text})
+	}
+	if sm.compactFocus != "" {
+		head = append(head, Message{Role: "system", Content: foldPromptText(ctx, sm.compressor, foldPromptFocusPreface) + " " + sm.compactFocus})
+	}
+	return head
+}
+
+// foldInputRowLocked is one region row as the compressor gets it: the row as
+// rendered at turn t, with its msg: address for citation. Must hold lock.
+func (sm *SegmentedMemory) foldInputRowLocked(m *Message, t int64) Message {
+	r := sm.renderLocked(m, t)
+	if r.ID != "" {
+		r.Content = "msg:" + r.ID + " " + r.Content
+	}
+	return r
+}
+
+// foldInputTokens is the byte bound of a compressor input, in tokens: the
+// estimate's cheap tier (cheapBytesPerToken), which over-counts, so an input
+// it puts under a budget is under it.
+func foldInputTokens(input []Message) int {
+	bytes := 0
+	for i := range input {
+		bytes += len(input[i].Content) + msgFramingTokens*int(cheapBytesPerToken)
+		if len(input[i].ToolCalls) > 0 {
+			if b, err := json.Marshal(input[i].ToolCalls); err == nil {
+				bytes += len(b)
+			}
+		}
+	}
+	return int(float64(bytes) / cheapBytesPerToken)
+}
+
+// foldBoundedLocked folds every turn up to b, as foldLocked does, but never
+// gives the compressor an input larger than the usable window. The region of
+// a requested compaction, or of a relief rung, can be larger than that
+// window: the session went over its window, or the window was cut. The bound
+// is the smaller of the agent's usable window and the compressor's own input
+// window (CompressorWindow). foldBoundedLocked then folds in
+// chunks: the oldest turns that fit, then the next turns on top of that
+// summary, up to b. Each chunk is an ordinary fold with its own summary
+// version. No stored row changes. Compact and ReleasePressure call it.
+// Returns whether anything was folded; a chunk that fails stops the walk, and
+// the chunks before it stay folded. Must hold lock.
+func (sm *SegmentedMemory) foldBoundedLocked(ctx context.Context, b int64) bool {
+	folded := false
+	for {
+		if err := ctx.Err(); err != nil {
+			return folded
+		}
+		step, chunked := sm.foldStepLocked(ctx, b)
+		if chunked {
+			zap.L().Info("fold: the region is larger than the compressor input bound; folding it in chunks",
+				zap.String("session_id", sm.sessionID),
+				zap.Int64("boundary_turn", b),
+				zap.Int64("chunk_boundary_turn", step))
+		}
+		if !sm.foldLocked(ctx, step) {
+			return folded
+		}
+		folded = true
+		if step >= b {
+			return true
+		}
+	}
+}
+
+// foldInputBudgetLocked is the largest compressor input a fold may send: the
+// agent's usable window, or the compressor's own input window when it reports
+// a smaller one (a dedicated compressor model). Must hold lock.
+func (sm *SegmentedMemory) foldInputBudgetLocked() int {
+	budget := sm.usableLocked()
+	if w, ok := sm.compressor.(CompressorWindow); ok {
+		if cw := w.InputWindowTokens(); cw > 0 && (budget <= 0 || cw < budget) {
+			budget = cw
+		}
+	}
+	return budget
+}
+
+// foldStepLocked is the boundary of the next fold toward b: b itself when
+// its compressor input fits the fold input budget (foldInputBudgetLocked), else the newest earlier turn
+// whose input fits (chunked is then true). When not even the oldest turn
+// fits, it is the oldest turn: one turn is the smallest fold there is. A
+// boundary in the current turn is never split, because the current turn's
+// region is capped by foldLocked. Must hold lock.
+func (sm *SegmentedMemory) foldStepLocked(ctx context.Context, b int64) (step int64, chunked bool) {
+	t := sm.currentTurnLocked()
+	budget := sm.foldInputBudgetLocked()
+	if budget <= 0 || len(sm.contextMessages) == 0 {
+		return b, false
+	}
+	head := foldInputTokens(sm.foldInputHeadLocked(ctx))
+	// The whole region first, counted generously (every row up to b, the
+	// pending pair of the current turn included): the common case is one
+	// fold call.
+	whole := head
+	for i := range sm.contextMessages {
+		if sm.contextMessages[i].Turn > b {
+			break
+		}
+		whole += foldInputTokens([]Message{sm.foldInputRowLocked(&sm.contextMessages[i], t)})
+	}
+	if whole <= budget {
+		return b, false
+	}
+	used := head
+	oldest := sm.contextMessages[0].Turn
+	fits := int64(0)
+	for i := 0; i < len(sm.contextMessages); {
+		turn := sm.contextMessages[i].Turn
+		if turn > b || turn >= t {
+			break
+		}
+		j := i
+		turnTokens := 0
+		for j < len(sm.contextMessages) && sm.contextMessages[j].Turn == turn {
+			row := sm.foldInputRowLocked(&sm.contextMessages[j], t)
+			turnTokens += foldInputTokens([]Message{row})
+			j++
+		}
+		if used+turnTokens > budget {
+			break
+		}
+		used += turnTokens
+		fits = turn
+		i = j
+	}
+	switch {
+	case fits >= b:
+		return b, false
+	case fits == 0 && oldest >= b:
+		// The current turn, or a region of one turn: fold as asked.
+		return b, false
+	case fits == 0 && oldest >= t:
+		// Only the current turn is left: its region is capped by foldLocked.
+		return b, false
+	case fits == 0:
+		return oldest, true
+	default:
+		return fits, true
+	}
+}
+
 // foldLocked folds every folded=false row with turn ≤ b into summary version
 // n+1 (HLD §5.4): pairs fold whole; compressor input = current summary + the
-// region AS RENDERED (stubs as stubs); the version insert and the region's
-// folded flags commit in one transaction; the new version and flags are
-// mirrored into memory in the same step; skills whose manage_skills load pair
+// region as rendered (tool results as bounded at arrival); the version insert
+// and the region's folded flags commit in one transaction; the new version and
+// flags are mirrored into memory in the same step; skills whose manage_skills load pair
 // lies inside the region are deactivated. Returns whether anything changed.
 //
 // Lock contract: held at entry and exit, RELEASED across the compressor's LLM
@@ -1002,24 +1192,15 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 	}
 
 	// Compressor input: the current summary text + the region as rendered —
-	// stubs as stubs, so it summarizes conversation, never payloads — with
-	// msg: addresses visible for citation (§5.4.2/4). Built under the lock,
+	// each tool result as it was bounded at arrival, so it summarizes what the
+	// model was sent, never a whole payload — with msg: addresses visible for
+	// citation (§5.4.2/4). Built under the lock,
 	// as value copies: nothing the unlocked compress phase touches aliases
 	// shared state.
 	t := sm.currentTurnLocked()
-	input := make([]Message, 0, len(region)+1)
-	if sm.summary.text != "" {
-		input = append(input, Message{Role: "system", Content: foldPromptText(ctx, sm.compressor, foldPromptSummaryHeading) + "\n" + sm.summary.text})
-	}
-	if sm.compactFocus != "" {
-		input = append(input, Message{Role: "system", Content: foldPromptText(ctx, sm.compressor, foldPromptFocusPreface) + " " + sm.compactFocus})
-	}
+	input := sm.foldInputHeadLocked(ctx)
 	for i := range region {
-		r := sm.renderLocked(&region[i], t)
-		if r.ID != "" {
-			r.Content = "msg:" + r.ID + " " + r.Content
-		}
-		input = append(input, r)
+		input = append(input, sm.foldInputRowLocked(&region[i], t))
 	}
 
 	// The prepare snapshot: the summary version this fold builds on and the
@@ -1271,7 +1452,7 @@ func foldedSkillLoads(region []Message, currentTurn int64) []string {
 	return names
 }
 
-// defaultProtectedRecentTurns is K when nothing sets it, as on main. For the
+// defaultProtectedRecentTurns is K when nothing sets it (16, unchanged). For the
 // in-loop fold it is the recent turns kept before the pending one, user
 // messages and assistant steps alike (foldSplitLocked). For the pressure
 // ladder behind it, it is the top rung; the ladder folds at K, K/2, K/4 … 1
@@ -1315,26 +1496,6 @@ func (sm *SegmentedMemory) SetAdvertisedToolsBytes(bytes int) {
 	sm.kernelDirty = false
 	sm.updateTokenCount()
 	sm.tokenCountDirty = false
-}
-
-// CurrentTurnOverflow is kept for callers written against it.
-type CurrentTurnOverflow struct {
-	FloorTokens    int
-	StartTokens    int
-	StubbedResults int
-	ToolResults    int
-}
-
-// CurrentTurnOverflow is kept for callers written against it and reports no
-// overflow. Each tool result is bounded as it arrives, so a send that does not
-// fit is a step returning more than the window holds; that step is fitted to
-// the window before the send (fitStepToWindow), its results replaced by a note.
-//
-// Deprecated: a step that does not fit is caught before the send and its
-// results replaced; this reports nothing.
-func (sm *SegmentedMemory) CurrentTurnOverflow() (CurrentTurnOverflow, bool) {
-	warnDeprecatedOnce("SegmentedMemory.CurrentTurnOverflow", "a send that does not fit is the provider's refusal, answered by relief")
-	return CurrentTurnOverflow{}, false
 }
 
 // noteFoldedSkillsLocked is what a fold does about skills (§4.5): it returns the
@@ -1383,11 +1544,11 @@ func (sm *SegmentedMemory) noteFoldedSkillsLocked(region, stays []Message, text 
 }
 
 // TurnReminder is one note the agent sends on a provider call as harness
-// state: the graph memory recall note, a soft budget reminder, the context
-// relief warning, a repeat-call hint, the tool-change note.
+// state: the graph memory recall note, a soft budget reminder, a repeat-call
+// hint, the tool-change note.
 //
 // Kind names a status reminder whose text changes from call to call (the
-// tool budget's count, the relief warning's percentage). A turn sends at most
+// tool budget's count, the turn budget's count). A turn sends at most
 // one reminder of each kind, the first: a later call can't replace it, since
 // the turn's request only grows (PinTurnNotes), and sending each new value
 // would stack contradictory copies. An empty Kind is an event note (a repeat

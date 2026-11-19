@@ -496,6 +496,32 @@ func TestClient_ConvertResponse(t *testing.T) {
 	}
 }
 
+// The InvokeModel body is the Anthropic Messages body, which splits the cache
+// write by entry lifetime. convertResponse records the cache figures and the
+// split on the usage; a body with no split records zero for both parts.
+func TestClient_ConvertResponseRecordsTheCacheWriteSplit(t *testing.T) {
+	t.Parallel()
+	client := &Client{}
+	split := &bedrockResponse{StopReason: "end_turn", Usage: bedrockUsage{
+		InputTokens: 50, OutputTokens: 10, CacheReadInputTokens: 700, CacheCreationInputTokens: 900,
+	}}
+	split.Usage.CacheCreation = &struct {
+		Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
+		Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens"`
+	}{Ephemeral1hInputTokens: 600, Ephemeral5mInputTokens: 300}
+	noSplit := &bedrockResponse{StopReason: "end_turn", Usage: bedrockUsage{InputTokens: 50, OutputTokens: 10, CacheCreationInputTokens: 900}}
+
+	got := client.convertResponse(split, nil).Usage
+	assert.Equal(t, 700, got.CacheReadInputTokens, "the cache read figure is not recorded")
+	assert.Equal(t, 900, got.CacheCreationInputTokens, "the cache write figure is not recorded")
+	assert.Equal(t, 600, got.CacheCreation1hInputTokens, "the 1h part of the cache write is not recorded")
+	assert.Equal(t, 300, got.CacheCreation5mInputTokens, "the 5m part of the cache write is not recorded")
+
+	got = client.convertResponse(noSplit, nil).Usage
+	assert.Equal(t, 900, got.CacheCreationInputTokens, "the cache write figure is not recorded")
+	assert.Zero(t, got.CacheCreation1hInputTokens+got.CacheCreation5mInputTokens, "a body with no split recorded one")
+}
+
 func TestClient_CalculateCost(t *testing.T) {
 	// Pricing arithmetic is exercised against a catalogued model; an empty
 	// modelID now reports zero by design (see the uncatalogued-model case).

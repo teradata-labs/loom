@@ -31,6 +31,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/task"
 	"github.com/teradata-labs/loom/pkg/types"
+	"go.uber.org/zap"
 )
 
 // validSQLIdentifier matches only safe SQL identifiers (alphanumeric and underscores).
@@ -683,7 +684,7 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*Sess
 
 	if err == sql.ErrNoRows {
 		span.SetAttribute("found", "false")
-		return nil, fmt.Errorf("session not found: %s", sessionID)
+		return nil, fmt.Errorf("%w: %s", ErrSessionNotFound, sessionID)
 	}
 	if err != nil {
 		span.RecordError(err)
@@ -838,22 +839,38 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg *M
 		return fmt.Errorf("failed to save message: %w", err)
 	}
 
-	// Stamp the derived seq and turn onto the in-memory message — wiring needed
-	// anyway so the offload stub can print its message_id (HLD §4.5). The
-	// read-back runs under the store lock; a session is single-writer and
-	// messages persist sequentially (the bundled SQLite predates RETURNING).
+	// Stamp the derived seq and turn onto the in-memory message (HLD §4.5).
+	// The read-back runs under the store lock; a session is single-writer and
+	// messages persist sequentially (the bundled SQLite, 3.33, predates
+	// RETURNING, so the insert and the read-back are two statements).
+	//
+	// The row is committed from here on, so an error from here would tell the
+	// caller "not written" for a written row: the agent would then move the
+	// row's cost to another row (moveRefusedRowCost) and the stored rows would
+	// hold it twice. So the read-back does not take the caller's cancellation,
+	// and a read-back that still fails keeps the turn the caller stamped
+	// (appendMessage derives it with the same arithmetic) and is logged, not
+	// returned. An error from SaveMessage always means the row is not stored.
 	seq, err := res.LastInsertId()
 	if err != nil {
+		// The SQLite driver reads the id from the connection and does not
+		// fail here in practice. If it did, the row is stored with no id on
+		// msg: storeOnLastRow then skips it as a target (it needs a seq), so
+		// a later amount goes on an earlier stored row instead.
 		span.RecordError(err)
-		return fmt.Errorf("failed to read message seq: %w", err)
-	}
-	var turn int64
-	if err := s.db.QueryRowContext(ctx, "SELECT turn FROM messages WHERE id = ?", seq).Scan(&turn); err != nil {
-		span.RecordError(err)
-		return fmt.Errorf("failed to read message turn: %w", err)
+		zap.L().Warn("message saved; its seq could not be read back",
+			zap.String("session_id", sessionID), zap.Error(err))
+		return nil
 	}
 	msg.ID = fmt.Sprintf("%d", seq)
-	msg.Turn = turn
+	var turn int64
+	if err := s.db.QueryRowContext(context.WithoutCancel(ctx), "SELECT turn FROM messages WHERE id = ?", seq).Scan(&turn); err != nil {
+		span.RecordError(err)
+		zap.L().Warn("message saved; its turn could not be read back, the caller's turn stands",
+			zap.String("session_id", sessionID), zap.Int64("seq", seq), zap.Error(err))
+	} else {
+		msg.Turn = turn
+	}
 
 	span.SetAttribute("tokens", fmt.Sprintf("%d", msg.TokenCount))
 	span.SetAttribute("cost_usd", fmt.Sprintf("%.4f", msg.CostUSD))
@@ -1000,48 +1017,8 @@ func (s *SessionStore) loadMessagesLocked(ctx context.Context, sessionID string)
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating messages: %w", err)
 	}
-	_ = rows.Close()
-
-	// A call with no result among the loaded rows either never finished or had
-	// its result folded. The folded flag says which: a folded result's call
-	// was removed by the fold, and is removed here too.
-	if orphans := CallsWithoutResult(messages); len(orphans) > 0 {
-		folded, err := s.foldedResultIDsLocked(ctx, sessionID, orphans)
-		if err != nil {
-			return nil, err
-		}
-		DropFoldedCalls(messages, folded)
-	}
 
 	return messages, nil
-}
-
-// foldedResultIDsLocked returns which of the tool-call ids have a folded
-// result row in the session. The caller holds s.mu.
-func (s *SessionStore) foldedResultIDsLocked(ctx context.Context, sessionID string, ids []string) (map[string]bool, error) {
-	placeholders := make([]string, len(ids))
-	args := make([]interface{}, 0, len(ids)+1)
-	args = append(args, sessionID)
-	for i, id := range ids {
-		placeholders[i] = "?"
-		args = append(args, id)
-	}
-	rows, err := s.db.QueryContext(ctx,
-		"SELECT tool_use_id FROM messages WHERE session_id = ? AND folded = 1 AND tool_use_id IN ("+strings.Join(placeholders, ", ")+")",
-		args...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query folded results: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	folded := make(map[string]bool)
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("failed to scan folded result: %w", err)
-		}
-		folded[id] = true
-	}
-	return folded, rows.Err()
 }
 
 var _ CostStorage = (*SessionStore)(nil)
@@ -1257,7 +1234,7 @@ func (s *SessionStore) LoadMessagesForAgent(ctx context.Context, agentID string)
 			)
 			AND m.session_context IN ('coordinator', 'shared')
 		))
-		ORDER BY m.timestamp ASC
+		ORDER BY m.timestamp ASC, m.id ASC
 	`
 
 	uid := storeUserID(ctx)
@@ -1413,7 +1390,7 @@ func (s *SessionStore) LoadMessagesFromParentSession(ctx context.Context, sessio
 		WHERE session_id = ? AND folded = 0
 		AND session_context IN ('coordinator', 'shared')
 		AND EXISTS (SELECT 1 FROM sessions WHERE id = messages.session_id AND user_id = ?)
-		ORDER BY timestamp ASC
+		ORDER BY timestamp ASC, id ASC
 	`
 
 	rows, err := s.db.QueryContext(ctx, query, parentSessionID.String, storeUserID(ctx))
@@ -1682,14 +1659,6 @@ func (s *SessionStore) ListSessions(ctx context.Context) ([]string, error) {
 	return sessionIDs, nil
 }
 
-// MarkEvicted does nothing: a tool result is bounded once at arrival and
-// never evicted afterwards. It is here for SessionStorage implementations
-// written against it.
-func (s *SessionStore) MarkEvicted(ctx context.Context, sessionID string, seqs []int64) error {
-	warnDeprecatedOnce("SessionStore.MarkEvicted", "nothing is evicted; results are bounded at arrival")
-	return nil
-}
-
 // FoldMessages writes summary version n (snapshot_type='fold', content = JSON
 // {"n","text"}) and sets the region's folded flags in ONE transaction (HLD
 // §5.4.6) — never a fold that evaporates on reload.
@@ -1762,9 +1731,42 @@ func (s *SessionStore) RewriteToolResults(ctx context.Context, sessionID string,
 	defer s.mu.Unlock()
 	query, args := seqUpdateQuery("UPDATE messages SET content = ?, tool_result_json = NULL WHERE role = 'tool' AND session_id = ? AND id IN", sessionID, seqs)
 	args = append([]interface{}{content}, args...)
-	if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
+	res, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
 		span.RecordError(err)
 		return fmt.Errorf("failed to rewrite tool results: %w", err)
+	}
+	if n, raErr := res.RowsAffected(); raErr == nil && n == 0 {
+		return fmt.Errorf("%w: session %s, %d rows named", ErrNoToolResultsRewritten, sessionID, len(seqs))
+	}
+	return nil
+}
+
+var _ RowUsageAdder = (*SessionStore)(nil)
+
+// AddRowUsage implements RowUsageAdder: the row seq of an owned session gets
+// u's cost, total, output and thinking tokens added, in one statement. A row
+// that is not there is an error, so the caller knows the amount is on no row.
+func (s *SessionStore) AddRowUsage(ctx context.Context, sessionID string, seq int64, u Usage) error {
+	ctx, span := s.tracer.StartSpan(ctx, "session_store.add_row_usage")
+	defer s.tracer.EndSpan(span)
+	span.SetAttribute("session_id", sessionID)
+	if err := s.requireOwnedSession(ctx, sessionID); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE messages SET cost_usd = COALESCE(cost_usd, 0) + ?, token_count = COALESCE(token_count, 0) + ?,
+		 output_tokens = output_tokens + ?, thinking_tokens = thinking_tokens + ?
+		 WHERE session_id = ? AND id = ?`,
+		u.CostUSD, u.TotalTokens, u.OutputTokens, u.ThinkingTokens, sessionID, seq)
+	if err != nil {
+		span.RecordError(err)
+		return fmt.Errorf("failed to add usage to row %d: %w", seq, err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return fmt.Errorf("add usage: row %d of session %s not found", seq, sessionID)
 	}
 	return nil
 }

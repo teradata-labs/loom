@@ -5,7 +5,11 @@
 
 package llm
 
-import "context"
+import (
+	"context"
+
+	"github.com/teradata-labs/loom/pkg/types"
+)
 
 // suppressThinkingKey marks a request that must be sent with extended thinking
 // off, whatever the client is configured for.
@@ -32,4 +36,21 @@ func ContextSuppressThinking(ctx context.Context) context.Context {
 func ThinkingSuppressed(ctx context.Context) bool {
 	v, _ := ctx.Value(suppressThinkingKey{}).(bool)
 	return v
+}
+
+// SuppressionTurnsThinkingOff reports whether the suppression mark turns a
+// client's thinking off. form is the client's own request builder, read as
+// the thinking form (types.ThinkingForm*) that a request built with ctx
+// carries. The answer is true only when the unmarked request carries
+// types.ThinkingFormBudget and the marked request carries
+// types.ThinkingFormNone.
+//
+// The anthropic, Bedrock SDK and openai clients answer
+// types.ThinkingSuppressionReporter.ThinkingOffWhenSuppressed through this
+// helper, from the builder that writes the request. A copy of the builder's
+// rules would drift from it: one did, and reported thinking off for a
+// max_tokens too small for a valid budget, where no thinking was sent.
+func SuppressionTurnsThinkingOff(form func(context.Context) string) bool {
+	ctx := context.Background()
+	return form(ctx) == types.ThinkingFormBudget && form(ContextSuppressThinking(ctx)) == types.ThinkingFormNone
 }

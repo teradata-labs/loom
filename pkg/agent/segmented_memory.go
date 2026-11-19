@@ -105,6 +105,12 @@ type SegmentedMemory struct {
 	// blocks themselves.
 	thinkingPrefix map[[sha256.Size]byte][sha256.Size]byte
 
+	// foldedTurn is the turn in which a committed fold last dropped the
+	// thinking blocks of the rows it kept (dropThinkingLocked). While that
+	// turn is the current one, its tool-calling rows have no blocks
+	// (FoldedThisTurn). In memory only, like the blocks themselves.
+	foldedTurn int64
+
 	// requestModel and requestToolsDigest identify the provider call beyond
 	// its messages (SetRequestIdentity); they seed the thinkingPrefix
 	// fingerprint.
@@ -159,10 +165,16 @@ type SegmentedMemory struct {
 	// compactFocus is the user's steer for a manual compaction (Compact). Set
 	// only while Compact runs; the fold hands it to the compressor.
 	compactFocus string
+	// summaryHeading and summaryCaveat frame the compiled summary row, from
+	// the prompt registry through the compressor (SetCompressor). Empty means
+	// the shipped text (foldPromptFallbacks).
+	summaryHeading string
+	summaryCaveat  string
 
 	// foldRequireSummary makes a fold abort instead of dropping its region
-	// unsummarised when the compressor fails. Set only by Compact: nothing
-	// forces that compaction, so losing history for it is never worth it.
+	// unsummarised when the compressor fails. Set only by Compact (a manual
+	// compaction): nothing forces it, so losing history for it is never worth
+	// it. The refusal-driven relief ladder leaves it false.
 	foldRequireSummary bool
 
 	// foldAbortedNoSummary records that a fold aborted under foldRequireSummary
@@ -170,9 +182,9 @@ type SegmentedMemory struct {
 	// "nothing to fold".
 	foldAbortedNoSummary bool
 
-	// compactPersistErr records the latest failure to persist a fold
-	// (relief logs it and carries on), so a manual Compact can report that nothing
-	// was saved instead of an ordinary no-op.
+	// compactPersistErr records the latest failure to persist a fold (relief
+	// logs it and carries on), so a manual Compact can report that nothing was
+	// saved instead of an ordinary no-op.
 	compactPersistErr error
 
 	// estimateCalibration scales relief's tiktoken estimate toward the
@@ -265,10 +277,19 @@ func NewSegmentedMemoryWithCompression(romContent string, maxContextTokens, rese
 
 // SetCompressor sets the memory compressor for fold (HLD §5.4).
 // Should be called after agent initialization to avoid dependency cycles.
+//
+// It also resolves the summary row's framing text (summaryRowHeadingKey,
+// summaryRowCaveatKey) from the compressor's prompt registry, before taking
+// the lock, so the compile never reads the registry. A compressor without a
+// registry gives the shipped text.
 func (sm *SegmentedMemory) SetCompressor(compressor MemoryCompressor) {
+	heading := strings.TrimSpace(foldPromptText(context.Background(), compressor, summaryRowHeadingKey))
+	caveat := strings.TrimSpace(foldPromptText(context.Background(), compressor, summaryRowCaveatKey))
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.compressor = compressor
+	sm.summaryHeading = heading
+	sm.summaryCaveat = caveat
 }
 
 // SetSharedMemory sets the shared memory store (backs explicit shared_memory tools).
@@ -313,17 +334,6 @@ func (sm *SegmentedMemory) SetSessionStore(store SessionStorage, sessionID strin
 	sm.sessionID = sessionID
 }
 
-// SetOffloadExemptTools is kept for callers written against it. Exemption is
-// decided where a result arrives, on the agent's Memory (Memory.
-// SetOffloadExemptTools): an exempt tool's result enters whole, and no size
-// bound touches a row after that (only a step too large for the window has its
-// results replaced), so there is nothing for a session's memory to do.
-//
-// Deprecated: set the exempt tools on Memory or Agent.
-func (sm *SegmentedMemory) SetOffloadExemptTools(names []string) {
-	warnDeprecatedOnce("SegmentedMemory.SetOffloadExemptTools", "exemption is set on Memory or Agent, where a result arrives")
-}
-
 // SetThreshold sets the one threshold value in bytes (HLD §5.1: one value,
 // three roles — arrival bound, stored-row bound, retrieval page bound). Non-positive values keep the current threshold; positive values
 // below minThreshold clamp to it — the truncation tail alone runs ~150 bytes,
@@ -356,15 +366,6 @@ func (sm *SegmentedMemory) CurrentTurn() int64 {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	return sm.currentTurnLocked()
-}
-
-// DropTurnPayloads is kept for callers written against it. A tool result is
-// bounded once, when it arrives, so there is no whole payload left to drop at a
-// turn's end.
-//
-// Deprecated: nothing to drop; results are bounded at arrival.
-func (sm *SegmentedMemory) DropTurnPayloads() {
-	warnDeprecatedOnce("SegmentedMemory.DropTurnPayloads", "results are bounded at arrival; no whole payload is held to drop")
 }
 
 // currentTurnLocked computes max(Turn) over L1. Must hold lock.
@@ -523,17 +524,6 @@ func (sm *SegmentedMemory) ReplayMessages(ctx context.Context, messages []Messag
 	sm.l1Dirty = true
 	sm.updateTokenCount()
 	sm.tokenCountDirty = false
-}
-
-// RawMessages returns a copy of the L1 rows in append order — the same
-// traversal compileLocked renders from — with no rendering, no folding, and
-// no pair synthesis. Read-only view for the park resume walk.
-func (sm *SegmentedMemory) RawMessages() []Message {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-	out := make([]Message, len(sm.contextMessages))
-	copy(out, sm.contextMessages)
-	return out
 }
 
 // GetMessages returns all L1 messages for building conversation context.
@@ -750,6 +740,7 @@ func (sm *SegmentedMemory) ResetContext() {
 	sm.summary = summaryState{}
 	sm.patternName = ""
 	sm.thinkingPrefix = nil
+	sm.foldedTurn = 0
 	sm.transientTail = ""
 	sm.turnNotes = nil
 

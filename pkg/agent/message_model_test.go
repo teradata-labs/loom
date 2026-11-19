@@ -104,3 +104,31 @@ func TestABilledAnswerIsStoredWithItsEffortThinkingAndCacheLifetime(t *testing.T
 			model, effort, thinking, cw, cw1h, cw5m)
 	}
 }
+
+// A runtime model switch (SetLLMProvider) writes the agent's client under its
+// lock while a turn may be writing rows. Stamping a billed row with its model
+// reads the client, so it must take the same lock; run with -race.
+func TestStampingARowsModelDoesNotRaceAModelSwitch(t *testing.T) {
+	t.Parallel()
+	cfg := DefaultConfig()
+	cfg.PatternConfig = DefaultPatternConfig()
+	cfg.PatternConfig.UseLLMClassifier = false
+	ag := NewAgent(&mockBackend{}, &mockSimpleLLM{}, WithConfig(cfg), WithMemory(NewMemory()))
+	ctx := context.Background()
+	session := ag.memory.GetOrCreateSession(ctx, "race-s")
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			ag.SetLLMProvider(&mockSimpleLLM{})
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		msg, _ := ag.appendMessage(ctx, session, Message{Role: "assistant", Content: "billed", OutputTokens: 1}, false)
+		if msg.Model == "" {
+			t.Fatal("a billed row was stored without its model")
+		}
+	}
+	<-done
+}

@@ -29,7 +29,6 @@ type brokenWriteStore struct {
 	err error
 }
 
-func (s *brokenWriteStore) MarkEvicted(context.Context, string, []int64) error { return s.err }
 func (s *brokenWriteStore) FoldMessages(context.Context, string, []int64, int, string) error {
 	return s.err
 }
@@ -55,15 +54,16 @@ func TestCompact_ReportsAFailedWriteInsteadOfANoOp(t *testing.T) {
 		assert.NoError(t, sm.compactPersistErr, "the marker does not leak into relief")
 	})
 
-	t.Run("fold write fails on a session of tool results", func(t *testing.T) {
+	// A compaction folds only, so tool turns meet the same fold write.
+	t.Run("tool turns: the fold write fails", func(t *testing.T) {
 		sm := toolTurnMemory(t, 200000, 20000, 6)
-		sm.SetSessionStore(&brokenWriteStore{err: dbDown}, "sess-broken-both")
+		sm.SetSessionStore(&brokenWriteStore{err: dbDown}, "sess-broken-tools")
 		sm.SetCompressor(&recordingCompressor{})
 
 		res, err := sm.Compact(context.Background(), CompactOptions{KeepTurns: 2})
 
 		require.ErrorIs(t, err, ErrCompactionNotSaved)
-		assert.False(t, res.Compacted)
-		assert.Len(t, unfoldedTurns(sm), 6)
+		assert.False(t, res.Compacted, "nothing was compacted")
+		assert.Len(t, unfoldedTurns(sm), 6, "nothing was dropped from context")
 	})
 }

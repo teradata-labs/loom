@@ -395,6 +395,54 @@ func TestLuaHost_TurnResultMissIsAToolFailure(t *testing.T) {
 	assert.Equal(t, "NOT_FOUND", res.Error.Code)
 }
 
+// A script reads a cut result by the tool_use_id its tail names, the only id
+// the model sees: the host returns the whole result, not the cut one. An id
+// from no call of this turn is a tool failure.
+func TestLuaHost_TurnResultReadsACutResultByItsToolUseID(t *testing.T) {
+	ag := newLuaTestAgent(t, shuttle.NewChain([]shuttle.Hook{&luaRecordingHook{}}, nil, nil))
+	ag.SetSharedMemoryThreshold(2048)
+	ctx := context.Background()
+	sess := ag.memory.GetOrCreateSessionWithAgent(ctx, "lua-test-session", ag.config.Name, "")
+	whole := strings.Repeat("row,value\n", 3000)
+	asked(ctx, ag, sess, "tu-cut", "execute_query", true)
+	ag.appendMessage(ctx, sess, Message{Role: "tool", Content: whole, ToolUseID: "tu-cut"}, false)
+	require.NotEqual(t, whole, lastTool(sess).Content, "the result was not cut; the test does not reach the case")
+
+	h := newTestHost(t, ag, luaCtx([]string{}), LuaHostOptions{})
+	byUse, ok := h.(luasandbox.ToolUseResultHost)
+	require.True(t, ok, "the agent's Lua host cannot read a result by tool_use_id")
+	res, err := byUse.TurnResultByToolUseID(ctx, "tu-cut")
+	require.NoError(t, err)
+	require.True(t, res.OK, "the cut result was not found by its tool_use_id")
+	assert.Equal(t, whole, res.Data, "turn.result returned the cut result, not the whole one")
+
+	res, err = byUse.TurnResultByToolUseID(ctx, "tu-none")
+	require.NoError(t, err)
+	require.False(t, res.OK)
+	assert.Equal(t, "NOT_FOUND", res.Error.Code)
+}
+
+// R8: turn.result("99") on the agent's host reads "99" as a tool_use_id and
+// then as message id 99. When neither is a tool result of this turn, the
+// NOT_FOUND the script gets names both reads, not only the message id that
+// the host's own TurnResult message names.
+func TestLuaHost_TurnResultFallbackMissNamesBothReads(t *testing.T) {
+	ag := newLuaTestAgent(t, shuttle.NewChain([]shuttle.Hook{&luaRecordingHook{}}, nil, nil))
+	h := newTestHost(t, ag, luaCtx([]string{}), LuaHostOptions{})
+	_, ok := h.(luasandbox.ToolUseResultHost)
+	require.True(t, ok, "the agent's Lua host must read by tool_use_id, or the fallback is not reached")
+
+	res := luasandbox.Run(context.Background(), luasandbox.Program{
+		Source: `local r = turn.result("99") return {code = r.error.code, message = r.error.message}`,
+	}, luasandbox.Limits{}, h)
+	require.Equal(t, luasandbox.OutcomeOK, res.Outcome, res.Error)
+	got, ok := res.Value.(map[string]any)
+	require.True(t, ok, "the script must return a table, got %T", res.Value)
+	assert.Equal(t, "NOT_FOUND", got["code"], "a read of no result must be NOT_FOUND")
+	assert.Equal(t, `"99" is not a tool result from the current turn, read as a tool_use_id or as message id 99`, got["message"],
+		"the message must name the tool_use_id read and the message id read")
+}
+
 func TestOneLineSummary(t *testing.T) {
 	assert.Equal(t, "Reads a file.", oneLineSummary("Reads a file. Supports offsets and limits."))
 	assert.Equal(t, "First line", oneLineSummary("First line\nsecond line"))

@@ -21,6 +21,19 @@ type Usage = types.Usage
 type LLMResponse = types.LLMResponse
 type LLMProvider = types.LLMProvider
 type HealthChecker = types.HealthChecker
+type MaxTokensReporter = types.MaxTokensReporter
+
+// ThinkingSuppressionReporter re-exports types.ThinkingSuppressionReporter.
+type ThinkingSuppressionReporter = types.ThinkingSuppressionReporter
+
+// Thinking forms re-exported from types (ThinkingSuppressionReporter.ThinkingForm).
+const (
+	ThinkingFormNone     = types.ThinkingFormNone
+	ThinkingFormAdaptive = types.ThinkingFormAdaptive
+	ThinkingFormBudget   = types.ThinkingFormBudget
+	ThinkingFormUnknown  = types.ThinkingFormUnknown
+)
+
 type TokenCallback = types.TokenCallback
 type StreamingLLMProvider = types.StreamingLLMProvider
 

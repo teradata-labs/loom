@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/teradata-labs/loom/pkg/types"
+
 	"github.com/teradata-labs/loom/pkg/prompts"
 )
 
@@ -32,12 +34,19 @@ const compactionPromptKey = "memory.compaction"
 const (
 	foldPromptSummaryHeading = "memory.compaction_summary_heading"
 	foldPromptFocusPreface   = "memory.compaction_focus_preface"
+	// summaryRowHeadingKey and summaryRowCaveatKey frame the summary row the
+	// compile sends after every fold (compileLocked, step 3): the heading
+	// above the summary and the caveat below it.
+	summaryRowHeadingKey = "memory.summary_row_heading"
+	summaryRowCaveatKey  = "memory.summary_row_caveat"
 )
 
 // foldPromptFallbacks is the built-in text of the fold framing prompts.
 var foldPromptFallbacks = map[string]string{
 	foldPromptSummaryHeading: "Current summary:",
 	foldPromptFocusPreface:   "The user asked this compaction to preserve, in priority order:",
+	summaryRowHeadingKey:     "Session summary — the work so far:",
+	summaryRowCaveatKey:      "Exact values quoted in this summary (expected outputs, literals, paths, interfaces) are unverified — the summary may restate them imprecisely. Before relying on one, read it from its source.",
 }
 
 // foldPrompter is a compressor that sources the fold framing text from a
@@ -91,6 +100,22 @@ type LLMCaller interface {
 	// CompressConversation takes conversation text and returns a concise summary.
 	// Should limit output to 512 tokens for cost efficiency.
 	CompressConversation(ctx context.Context, conversationText string) (string, error)
+}
+
+// CompressorWindow is implemented by a MemoryCompressor (or an LLMCaller
+// behind an LLMCompressor) that knows the largest input it can read, in
+// tokens. A fold never sends it more: a region larger than that is folded in
+// chunks. Zero means unknown, and the agent's own usable window applies.
+type CompressorWindow interface {
+	InputWindowTokens() int
+}
+
+// InputWindowTokens reports the window of the LLMCaller, when it knows one.
+func (c *LLMCompressor) InputWindowTokens() int {
+	if w, ok := c.llmCaller.(CompressorWindow); ok {
+		return w.InputWindowTokens()
+	}
+	return 0
 }
 
 // NewLLMCompressor creates a new LLM-powered memory compressor.
@@ -210,6 +235,10 @@ func (c *LLMCompressor) SetLLMCaller(llmCaller LLMCaller) {
 type promptRegistryCompressor struct {
 	llm     LLMProvider
 	prompts prompts.PromptRegistry
+	// servedWindow is llm.max_model_context_tokens when the compressor is the
+	// agent's own model (a server that caps the window below the listing).
+	// A dedicated compressor model has no such setting; its listing applies.
+	servedWindow int
 }
 
 // newPromptRegistryCompressor builds an LLMCaller backed by an LLM provider and
@@ -218,6 +247,23 @@ type promptRegistryCompressor struct {
 // its caller (the fold then drops the region with an "(unsummarized)" marker).
 func newPromptRegistryCompressor(llm LLMProvider, registry prompts.PromptRegistry) *promptRegistryCompressor {
 	return &promptRegistryCompressor{llm: llm, prompts: registry}
+}
+
+// InputWindowTokens is the compressor model's largest accepted prompt
+// (CompressorWindow), from ProviderPromptCeiling.
+func (c *promptRegistryCompressor) InputWindowTokens() int {
+	if c.llm == nil {
+		return 0
+	}
+	// The same rule as the agent's own step ceiling: the window the model is
+	// served with (servedWindow, else its listing), less what the request
+	// really reserves for output (the client's max_tokens). Zero for a model
+	// nothing lists.
+	reserved := 0
+	if r, ok := c.llm.(types.MaxTokensReporter); ok {
+		reserved = r.MaxTokens()
+	}
+	return ProviderPromptCeiling(c.llm.Name(), c.llm.Model(), reserved, 0, c.servedWindow)
 }
 
 // CompressConversation loads the compaction prompt from the registry and asks

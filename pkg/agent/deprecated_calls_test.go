@@ -26,22 +26,6 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 )
 
-// A call kept only so old callers compile says, once, that it has no effect:
-// the caller learns the behavior is gone instead of losing it silently.
-func TestADeprecatedCallSaysOnceThatItDoesNothing(t *testing.T) {
-	core, logs := observer.New(zapcore.WarnLevel)
-	restore := zap.ReplaceGlobals(zap.New(core))
-	defer restore()
-	deprecatedWarned.Delete("SegmentedMemory.DropTurnPayloads")
-
-	sm := NewSegmentedMemory("ROM", 200000, 20000)
-	sm.DropTurnPayloads()
-	sm.DropTurnPayloads()
-
-	got := logs.FilterField(zap.String("call", "SegmentedMemory.DropTurnPayloads")).Len()
-	assert.Equal(t, 1, got, "a deprecated no-op should warn exactly once")
-}
-
 // A file that still sets a key the loader no longer reads is told so.
 func TestARemovedConfigKeyIsReportedOnLoad(t *testing.T) {
 	core, logs := observer.New(zapcore.WarnLevel)

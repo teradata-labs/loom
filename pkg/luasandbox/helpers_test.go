@@ -33,6 +33,7 @@ type fakeHost struct {
 	tools    map[string]toolFunc
 	schemas  map[string]map[string]any
 	turn     map[int64]*CallResult
+	turnUse  map[string]*CallResult
 	calls    []string
 	events   []ProgressEvent
 	listErr  error
@@ -41,7 +42,7 @@ type fakeHost struct {
 }
 
 func newFakeHost() *fakeHost {
-	return &fakeHost{tools: map[string]toolFunc{}, schemas: map[string]map[string]any{}, turn: map[int64]*CallResult{}}
+	return &fakeHost{tools: map[string]toolFunc{}, schemas: map[string]map[string]any{}, turn: map[int64]*CallResult{}, turnUse: map[string]*CallResult{}}
 }
 
 func (h *fakeHost) with(name string, f toolFunc) *fakeHost {
@@ -121,6 +122,15 @@ func (h *fakeHost) TurnResult(_ context.Context, id int64) (*CallResult, error) 
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if r, ok := h.turn[id]; ok {
+		return r, nil
+	}
+	return &CallResult{OK: false, Error: &CallError{Code: "NOT_FOUND", Message: "no such result"}}, nil
+}
+
+func (h *fakeHost) TurnResultByToolUseID(_ context.Context, id string) (*CallResult, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if r, ok := h.turnUse[id]; ok {
 		return r, nil
 	}
 	return &CallResult{OK: false, Error: &CallError{Code: "NOT_FOUND", Message: "no such result"}}, nil

@@ -39,6 +39,11 @@ type CompressionProfile struct {
 	// 0 means the default (defaultProtectedRecentTurns).
 	ProtectedRecentTurns int
 
+	// MaxFailedFoldRounds is how many in-loop fold rounds may fail in one
+	// turn before the fold stops arming for it. nil means the default
+	// (defaultMaxFailedFoldRounds); 0 means never stop.
+	MaxFailedFoldRounds *int
+
 	// Number of messages to compress in normal conditions
 	NormalBatchSize int
 
@@ -138,6 +143,10 @@ func ResolveCompressionProfile(config *loomv1.MemoryCompressionConfig) (Compress
 	if config.ProtectedRecentTurns > 0 {
 		profile.ProtectedRecentTurns = int(config.ProtectedRecentTurns)
 	}
+	if config.MaxFailedFoldRounds != nil {
+		rounds := int(config.GetMaxFailedFoldRounds())
+		profile.MaxFailedFoldRounds = &rounds
+	}
 
 	// Override batch sizes if specified
 	if config.BatchSizes != nil {
@@ -188,6 +197,9 @@ func (p CompressionProfile) Validate() error {
 
 	if p.ProtectedRecentTurns < 0 {
 		return fmt.Errorf("protected_recent_turns must not be negative, got %d", p.ProtectedRecentTurns)
+	}
+	if p.MaxFailedFoldRounds != nil && *p.MaxFailedFoldRounds < 0 {
+		return fmt.Errorf("max_failed_fold_rounds must not be negative, got %d", *p.MaxFailedFoldRounds)
 	}
 
 	// Critical must be higher than warning

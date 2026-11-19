@@ -20,6 +20,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -626,4 +628,30 @@ func TestPark_OperatorRetirementReleasesTheSession(t *testing.T) {
 	if _, err := f.ag.Chat(ctx, "s-retire", "carry on"); err != nil {
 		t.Errorf("session still held after the operator retired the park: %v", err)
 	}
+}
+
+// A parked turn whose session the store cannot load is refused with
+// ErrSessionNotLoaded, and the approval stays pending for a later resume.
+func TestPark_ResumeOfASessionTheStoreCannotLoadKeepsTheApproval(t *testing.T) {
+	f := newParkFixture(t, []shuttle.Hook{scopedAskHook{tool: "export_csv"}}, twoCallBatch(),
+		"read_table", "export_csv")
+	ctx := context.Background()
+	_, err := f.ag.Chat(ctx, "s-down", "go")
+	var parked *TurnParkedError
+	require.ErrorAs(t, err, &parked)
+	hr := f.pendingParked(t, "s-down")
+
+	// The store goes down and the process lost its cached session.
+	outage := &outageStore{SessionStorage: f.ag.memory.store}
+	outage.down.Store(true)
+	f.ag.memory.mu.Lock()
+	f.ag.memory.store = outage
+	delete(f.ag.memory.sessions, "s-down")
+	f.ag.memory.mu.Unlock()
+
+	_, err = f.ag.ResumeChat(ctx, "s-down", ParkDecision{RequestID: hr.ID, ItemIDs: paramKeys(hr), Approved: true}, nil)
+	require.ErrorIs(t, err, ErrSessionNotLoaded)
+	after, gerr := f.store.Get(ctx, hr.ID)
+	require.NoError(t, gerr)
+	assert.Equal(t, "pending", after.Status, "a refused resume closed the approval")
 }

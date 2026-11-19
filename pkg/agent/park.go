@@ -1139,7 +1139,15 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 
 	// The session is loaded only once the request has been validated: a bogus
 	// or foreign RequestID must not create and persist a session row.
-	sess := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
+	sess := a.memory.ReloadPendingSession(ctx, sessionID, a.config.Name)
+	if a.memory.isLoadPlaceholder(sess) {
+		// The decision stays pending (nothing is closed): the parked turn is
+		// in the store, which cannot be read yet.
+		err := fmt.Errorf("resume parked turn in session %s: %w", sessionID, ErrSessionNotLoaded)
+		span.RecordError(err)
+		span.AddEvent("resume.refused", map[string]interface{}{"reason": "session_not_loaded"})
+		return nil, err
+	}
 
 	// The parked turn's index and opening message, from the same tail rows
 	// locateParkedBatch anchors on — so the two cannot disagree about which turn
@@ -1342,26 +1350,31 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 				Timestamp: time.Now(),
 			})
 		}
+		a.persistAfterFailure(ctx, sess, span)
 		return nil, fmt.Errorf("conversation loop failed: %w", err)
 	}
 
+	row := response.rowUsage() // the final call's usage, with what the turn left unbilled
 	_, replyPersisted := a.appendMessage(ctx, sess, Message{
 		Role:              "assistant",
 		Content:           response.Content,
 		AgentID:           a.GetID(),
 		Timestamp:         time.Now(),
-		TokenCount:        response.Usage.TotalTokens,
-		CostUSD:           response.Usage.CostUSD,
-		InputTokens:       response.Usage.InputTokens,
-		OutputTokens:      response.Usage.OutputTokens,
-		CacheReadTokens:   response.Usage.CacheReadInputTokens,
-		CacheCreateTokens: response.Usage.CacheCreationInputTokens,
+		TokenCount:        row.TotalTokens,
+		CostUSD:           row.CostUSD,
+		InputTokens:       row.InputTokens,
+		OutputTokens:      row.OutputTokens,
+		CacheReadTokens:   row.CacheReadInputTokens,
+		CacheCreateTokens: row.CacheCreationInputTokens,
 
-		CacheCreate1hTokens: response.Usage.CacheCreation1hInputTokens,
-		CacheCreate5mTokens: response.Usage.CacheCreation5mInputTokens,
-		ThinkingTokens:      response.Usage.ThinkingTokens,
-		Effort:              response.Usage.Effort,
+		CacheCreate1hTokens: row.CacheCreation1hInputTokens,
+		CacheCreate5mTokens: row.CacheCreation5mInputTokens,
+		ThinkingTokens:      row.ThinkingTokens,
+		Effort:              row.Effort,
 	}, false)
+	if !replyPersisted {
+		a.moveRefusedRowCost(ctx, sess, row, span)
+	}
 	a.pruneFinishedTurn(ctx, sess.ID, replyPersisted)
 
 	if err := a.memory.PersistSession(ctx, sess); err != nil {

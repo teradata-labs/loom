@@ -89,7 +89,7 @@ func compactSessionStatus(err error) error {
 		return status.Error(codes.Aborted, err.Error())
 	case errors.As(err, &parked):
 		return status.Error(codes.FailedPrecondition, err.Error())
-	case errors.Is(err, agent.ErrSummaryUnavailable), errors.Is(err, agent.ErrCompactionNotSaved):
+	case errors.Is(err, agent.ErrSummaryUnavailable), errors.Is(err, agent.ErrCompactionNotSaved), errors.Is(err, agent.ErrSessionNotLoaded):
 		return status.Error(codes.Unavailable, err.Error())
 	case errors.Is(err, context.Canceled):
 		return status.Error(codes.Canceled, err.Error())

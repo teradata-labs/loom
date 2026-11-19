@@ -225,6 +225,26 @@ func (c *Client) Model() string {
 	return c.modelID
 }
 
+// MaxTokens returns the max_tokens this client sends on each request
+// (types.MaxTokensReporter). The agent reads it to fit a step in flight
+// against the prompt the provider accepts.
+func (c *Client) MaxTokens() int { return c.maxTokens }
+
+// runtimeCallError wraps the error of one Bedrock runtime call (InvokeModel or
+// Converse) for Chat's caller. Bedrock's refusal of a prompt over the model's
+// window is marked llm.ErrContextTooLong (llm.IsBedrockContextTooLong), as the
+// Anthropic-SDK client marks it: the agent's recovery (relief pass, then the
+// step's results replaced) runs only on that error, and without the mark a
+// refused step on a Converse model ended the turn. Any other error is wrapped
+// as before.
+func runtimeCallError(what string, err error) error {
+	wrapped := fmt.Errorf("%s: %w", what, err)
+	if llm.IsBedrockContextTooLong(err) {
+		return llm.AsContextTooLong(wrapped)
+	}
+	return wrapped
+}
+
 // Chat sends a conversation to Bedrock and returns the response.
 func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []shuttle.Tool) (*llmtypes.LLMResponse, error) {
 	// Non-Anthropic models speak Converse only; the Anthropic Messages payload
@@ -297,7 +317,7 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 			})
 		})
 		if err != nil {
-			return nil, fmt.Errorf("bedrock invocation failed: %w", err)
+			return nil, runtimeCallError("bedrock invocation failed", err)
 		}
 		output = result.(*bedrockruntime.InvokeModelOutput)
 	} else {
@@ -308,7 +328,7 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 			ContentType: aws.String("application/json"),
 		})
 		if err != nil {
-			return nil, fmt.Errorf("bedrock invocation failed: %w", err)
+			return nil, runtimeCallError("bedrock invocation failed", err)
 		}
 	}
 
@@ -713,11 +733,17 @@ func (c *Client) convertResponse(resp *bedrockResponse, nameMap map[string]strin
 			TotalTokens:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
 			CostUSD: c.calculateCost(resp.Usage.InputTokens, resp.Usage.OutputTokens,
 				resp.Usage.CacheReadInputTokens, resp.Usage.CacheCreationInputTokens),
+			CacheReadInputTokens:     resp.Usage.CacheReadInputTokens,
+			CacheCreationInputTokens: resp.Usage.CacheCreationInputTokens,
 		},
 		Metadata: map[string]interface{}{
 			"model":       c.modelID,
 			"stop_reason": resp.StopReason,
 		},
+	}
+	if cc := resp.Usage.CacheCreation; cc != nil {
+		llmResp.Usage.CacheCreation1hInputTokens = cc.Ephemeral1hInputTokens
+		llmResp.Usage.CacheCreation5mInputTokens = cc.Ephemeral5mInputTokens
 	}
 
 	// Extract content and tool calls
@@ -810,6 +836,12 @@ type bedrockUsage struct {
 	// must be parsed to cost the call correctly.
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	// CacheCreation splits the cache write by entry lifetime, as the
+	// Anthropic Messages body on InvokeModel reports it; nil when absent.
+	CacheCreation *struct {
+		Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
+		Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens"`
+	} `json:"cache_creation,omitempty"`
 }
 
 // bedrockStreamChunk represents a chunk from Bedrock's streaming response.

@@ -198,6 +198,43 @@ func (c *SDKClient) Model() string {
 	return c.modelID
 }
 
+// MaxTokens returns the max_tokens this client sends on each request
+// (types.MaxTokensReporter). The agent reads it to fit a step in flight
+// against the prompt the provider accepts.
+func (c *SDKClient) MaxTokens() int { return int(c.maxTokens) }
+
+// ThinkingOffWhenSuppressed reports whether a request marked by
+// llm.ContextSuppressThinking goes out with thinking off
+// (types.ThinkingSuppressionReporter). The agent asks it before it records a
+// marked send. The answer comes from thinkingConfig, the builder of the
+// request's thinking field (llm.SuppressionTurnsThinkingOff): true only when
+// the unmarked request carries enabled+budget thinking and the mark removes
+// it.
+func (c *SDKClient) ThinkingOffWhenSuppressed() bool {
+	return llm.SuppressionTurnsThinkingOff(c.thinkingForm)
+}
+
+// ThinkingForm returns the thinking form an unmarked request carries
+// (types.ThinkingSuppressionReporter), read from thinkingConfig. The agent
+// records it on the llm.thinking_suppressed event.
+func (c *SDKClient) ThinkingForm() string {
+	return c.thinkingForm(context.Background())
+}
+
+// thinkingForm names the thinking field that thinkingConfig builds for ctx
+// (types.ThinkingForm*). ThinkingOffWhenSuppressed and ThinkingForm call it.
+func (c *SDKClient) thinkingForm(ctx context.Context) string {
+	t := c.thinkingConfig(ctx)
+	switch {
+	case t.OfAdaptive != nil:
+		return llmtypes.ThinkingFormAdaptive
+	case t.OfEnabled != nil:
+		return llmtypes.ThinkingFormBudget
+	default:
+		return llmtypes.ThinkingFormNone
+	}
+}
+
 // requiresStreaming reports whether the Anthropic SDK would reject a
 // non-streaming Messages.New call for this client's model + max_tokens.
 // The SDK pre-flights non-streaming requests via CalculateNonStreamingTimeout

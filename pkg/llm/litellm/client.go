@@ -157,6 +157,11 @@ func (c *Client) Name() string { return "litellm" }
 // Model returns the configured model routing string.
 func (c *Client) Model() string { return c.model }
 
+// MaxTokens returns the max_tokens this client sends on each request
+// (types.MaxTokensReporter). The agent reads it to fit a step in flight
+// against the prompt the provider accepts.
+func (c *Client) MaxTokens() int { return c.inner.MaxTokens() }
+
 // Chat sends a conversation to the LiteLLM proxy and returns the response.
 func (c *Client) Chat(ctx context.Context, messages []types.Message, tools []shuttle.Tool) (*types.LLMResponse, error) {
 	return c.inner.Chat(ctx, messages, tools)

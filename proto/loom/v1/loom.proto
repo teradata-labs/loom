@@ -124,7 +124,8 @@ service LoomService {
   // the turn ran). Calls recorded as complete are backfilled from the log,
   // calls never started are dispatched, and the turn's reply is produced. A
   // call whose outcome is unknown is reported as an execution gap, to be
-  // settled with ResolveExecutionGap before resuming again.
+  // settled with ResolveExecutionGap before resuming again. UNAVAILABLE when
+  // the store cannot load the session yet (retry once it answers).
   rpc ResumeSession(ResumeSessionRequest) returns (ResumeSessionResponse) {
     option (google.api.http) = {
       post: "/v1/sessions/{session_id}:resume"
@@ -134,7 +135,7 @@ service LoomService {
 
   // ResolveExecutionGap records an operator's finding for the tool call that
   // ResumeSession reported as an execution gap, so ResumeSession can continue
-  // the turn.
+  // the turn. UNAVAILABLE when the store cannot load the session yet.
   //
   // The recorded result is the caller's assertion, not tool output, but the
   // agent treats it as real tool output. It is stored marked as manually
@@ -162,12 +163,13 @@ service LoomService {
   }
 
   // CompactSession compacts a session's context on request, between turns:
-  // older tool results become re-fetchable stubs and older turns fold into the
-  // running summary, while the system prompt, the summary and the newest
-  // keep_turns turns stay verbatim. Folding makes an LLM call. Refused while a
-  // turn runs on the session (ABORTED) or while it waits for a human decision
-  // (FAILED_PRECONDITION); UNAVAILABLE when no summary could be produced or the
-  // result could not be saved, in which case history is unchanged.
+  // older turns fold into the running summary, while the system prompt, the
+  // summary and the newest keep_turns turns stay verbatim. It folds only; no
+  // tool result is stubbed. Folding makes an LLM call, and it never drops a
+  // turn without a summary. Refused while a turn runs on the session (ABORTED)
+  // or while it waits for a human decision (FAILED_PRECONDITION); UNAVAILABLE
+  // when no summary could be produced, the result could not be saved, or the
+  // store cannot load the session yet; in each case history is unchanged.
   rpc CompactSession(CompactSessionRequest) returns (CompactSessionResponse) {
     option (google.api.http) = {
       post: "/v1/sessions/{session_id}:compact"
@@ -1773,7 +1775,10 @@ message CompactSessionResponse {
   // Older turns were folded into the running summary.
   bool turns_folded = 3;
 
-  // Newest turns left verbatim.
+  // Newest turns left verbatim. A long region is folded in chunks; when a
+  // later chunk cannot be summarized or saved, the earlier chunks stay folded
+  // and this counts every turn still verbatim, which can be more than
+  // keep_turns. The call still succeeds.
   int32 turns_kept = 4;
 
   // Estimated context size before the compaction.

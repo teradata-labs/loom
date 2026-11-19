@@ -15,6 +15,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	"go.uber.org/zap"
@@ -26,6 +27,11 @@ import (
 type SessionStorage interface {
 	// Sessions
 	SaveSession(ctx context.Context, session *Session) error
+	// LoadSession returns the caller's session. A session that is not there,
+	// or not the caller's, is (nil, nil) or an error that wraps
+	// ErrSessionNotFound; the agent's reload (Memory.GetOrCreateSession)
+	// then starts the session empty. Any other error is logged at error
+	// level, and the session also starts empty in memory.
 	LoadSession(ctx context.Context, sessionID string) (*Session, error)
 	ListSessions(ctx context.Context) ([]string, error)
 	DeleteSession(ctx context.Context, sessionID string) error
@@ -47,6 +53,15 @@ type SessionStorage interface {
 	// uses the same subquery without the +1. The store stamps the derived seq
 	// and turn back onto msg.
 	SaveMessage(ctx context.Context, sessionID string, msg *Message, turnStart bool) error
+
+	// LoadMessages and LoadSession return the session's unfolded rows, seq
+	// ascending, each assistant row with every call its tool_calls_json
+	// holds. A store does not repair the rows after a fold: when a fold
+	// keeps an assistant row for its words, the row's stored calls stay and
+	// only their results are folded. The agent's reload
+	// (Memory.GetOrCreateSession, dropFoldedCalls) reads the folded results
+	// through ListMessagesBySeqRange and removes those calls itself, so every
+	// SessionStorage gets the same context back.
 	LoadMessages(ctx context.Context, sessionID string) ([]Message, error)
 
 	// ListMessagesBySeqRange is the by-seq span read backing recall (HLD §6):
@@ -63,13 +78,9 @@ type SessionStorage interface {
 	// Tool executions
 	SaveToolExecution(ctx context.Context, sessionID string, exec ToolExecution) error
 
-	// Relief transactions (HLD §5.2 — write-once flags, one transaction per
-	// operation, set only inside releasePressure):
+	// Relief transaction (HLD §5.2 — write-once flags, one transaction per
+	// operation):
 	//
-	// MarkEvicted is kept for implementations written against it. Nothing in
-	// loom calls it: a tool result is bounded once at arrival and never evicted
-	// afterwards, so loom's own stores implement it as a no-op.
-	MarkEvicted(ctx context.Context, sessionID string, seqs []int64) error
 	// FoldMessages writes summary version n (snapshot_type='fold', content =
 	// JSON {"n","text"}) and sets the region's folded flags in ONE transaction
 	// (HLD §5.4.6) — a fold never stands in memory without its row.
@@ -106,9 +117,47 @@ type CostStorage interface {
 // together are too large for the context is answered by replacing them with a
 // note the model can act on, and the stored rows must say what the model was
 // sent. loom's SQLite and Postgres stores implement it; a row the caller does
-// not own is left unchanged.
+// not own is left unchanged. A call that names rows but changes none returns
+// an error wrapping ErrNoToolResultsRewritten, so the caller
+// (SegmentedMemory.ReplaceInFlightResults) warns that memory and store now
+// differ instead of taking the rewrite as done.
 type ResultRewriter interface {
 	RewriteToolResults(ctx context.Context, sessionID string, seqs []int64, content string) error
+}
+
+// ErrSessionNotFound is the error a SessionStorage wraps when LoadSession
+// finds no session with the id for the caller. Memory.GetOrCreateSession
+// takes it as a new session and logs nothing. Any other load error is checked
+// with SessionExists: no row is a new session too; a row, or no answer, is a
+// failed load, logged and retried by the next turn.
+var ErrSessionNotFound = errors.New("session not found")
+
+// ErrSessionNotLoaded is returned by an operation that needs a session's
+// stored history (CompactSession, ResumeSession, ResolveExecutionGap,
+// ResumeChat) when the store failed to load the session
+// and it is still served as an empty stand-in. Retry once the store answers.
+var ErrSessionNotLoaded = errors.New("the session could not be loaded from the store")
+
+// ErrNoToolResultsRewritten is the error a ResultRewriter wraps when it was
+// given rows to rewrite and changed none of them: the caller does not own
+// the session (for example a context without the owner's user id), or no
+// given row is a tool result of the session. A reload then sends the stored
+// results, not the note the model was sent.
+var ErrNoToolResultsRewritten = errors.New("no tool result row was rewritten")
+
+// RowUsageAdder is the optional operation a store offers to add what LLM
+// calls cost to a row it already holds. It exists for one case: a turn that
+// ends on an error after calls that the provider billed but no row holds yet
+// (a fold call, which writes no row; a reply the loop asked again for). The
+// agent then adds their cost to the turn's last stored row, so the session's
+// rows still sum to what the provider billed and no new row is written. It
+// adds the figures a carried row gets (carryFoldCost): cost_usd, token_count
+// (TotalTokens), output_tokens and thinking_tokens; the input figures stay the
+// row's own. loom's SQLite and Postgres stores implement it; a row the caller
+// does not own is left unchanged and is an error. A store without it loses
+// that amount from its rows, and the agent logs that once.
+type RowUsageAdder interface {
+	AddRowUsage(ctx context.Context, sessionID string, seq int64, u Usage) error
 }
 
 // SoftDeleteStorage defines optional soft-delete operations.
@@ -133,22 +182,12 @@ type SoftDeleteStorage interface {
 // Compile-time check: SessionStore (SQLite) implements SessionStorage.
 var _ SessionStorage = (*SessionStore)(nil)
 
-// warnDeprecatedOnce logs, once per process, that a deprecated call was made
-// and does nothing: a caller written against it learns the behavior is gone.
-func warnDeprecatedOnce(name, why string) {
-	warnOnce(name, "deprecated call has no effect", zap.String("call", name), zap.String("why", why))
-}
-
 // warnOnce logs msg the first time key is seen in this process.
 func warnOnce(key, msg string, fields ...zap.Field) {
-	if _, done := deprecatedWarned.LoadOrStore(key, true); done {
+	if _, done := warnedOnce.LoadOrStore(key, true); done {
 		return
 	}
 	zap.L().Warn(msg, fields...)
 }
 
-var deprecatedWarned sync.Map
-
-// WarnDeprecatedOnce is warnDeprecatedOnce for SessionStorage implementations
-// outside this package.
-func WarnDeprecatedOnce(name, why string) { warnDeprecatedOnce(name, why) }
+var warnedOnce sync.Map

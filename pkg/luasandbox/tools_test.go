@@ -191,7 +191,106 @@ func TestTurnResult(t *testing.T) {
 
 	res = runSrc(t, `turn.result(0)`, h)
 	assert.Equal(t, OutcomeScriptError, res.Outcome)
-	assert.Contains(t, res.Error, "positive message id")
+	assert.Contains(t, res.Error, "a tool_use_id string or a positive message id")
+}
+
+// messageIDOnlyHost is a Host without ToolUseResultHost: only the five Host
+// methods are visible through it.
+type messageIDOnlyHost struct{ Host }
+
+// The model sees a cut result's tool_use_id, not a message id, so
+// turn.result takes that string; the integer form stays for a host that
+// shows message ids. A host that cannot read by tool_use_id refuses the
+// string form, and an empty or oversized id is a script error.
+func TestTurnResultByToolUseID(t *testing.T) {
+	h := newFakeHost()
+	h.turnUse["toolu_01"] = &CallResult{OK: true, Data: `[{"status":"ok"},{"status":"bad"}]`}
+	res := runSrc(t, `
+		local r = turn.result("toolu_01")
+		local missing = turn.result("toolu_gone")
+		return {n = #r.data, missing = missing.ok}`, h)
+	require.Equal(t, OutcomeOK, res.Outcome, res.Error)
+	assert.Equal(t, map[string]any{"n": int64(2), "missing": false}, res.Value, "turn.result did not read the result by its tool_use_id")
+	assert.Equal(t, "turn.result", res.Calls[0].Tool, "a tool_use_id read is not a budgeted call")
+
+	tests := []struct {
+		name string
+		host Host
+		src  string
+		want string
+	}{
+		{"a host without the operation", messageIDOnlyHost{h}, `turn.result("toolu_01")`, "message id only"},
+		{"an empty id", h, `turn.result("")`, "tool_use_id of 1 to"},
+		{"an oversized id", h, `turn.result(string.rep("x", 257))`, "tool_use_id of 1 to"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			res := Run(context.Background(), Program{Source: tc.src}, small(), tc.host)
+			assert.Equal(t, OutcomeScriptError, res.Outcome, "the call was not refused")
+			assert.Contains(t, res.Error, tc.want)
+		})
+	}
+}
+
+// A message id given as a string ("42", as a host that sends ids as JSON
+// strings gives it) still reads message 42, as it did when turn.result took
+// only message ids. An all-digit string is tried as a tool_use_id first,
+// then as a message id when no call has that id.
+func TestTurnResultTakesAMessageIDGivenAsAString(t *testing.T) {
+	h := newFakeHost()
+	h.turn[42] = &CallResult{OK: true, Data: "by message id"}
+	h.turnUse["7"] = &CallResult{OK: true, Data: "by tool_use_id"}
+	h.turn[7] = &CallResult{OK: true, Data: "message 7"}
+	tests := []struct {
+		name string
+		host Host
+		src  string
+		want any
+	}{
+		{"a digit string with no such call reads the message", h, `return turn.result("42").data`, "by message id"},
+		{"a digit string that is a call's id reads the call", h, `return turn.result("7").data`, "by tool_use_id"},
+		{"a host without tool_use_id reads the message", messageIDOnlyHost{h}, `return turn.result("42").data`, "by message id"},
+		{"a digit string that is neither is not found", h, `return turn.result("99").ok`, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			res := Run(context.Background(), Program{Source: tc.src}, small(), tc.host)
+			require.Equal(t, OutcomeOK, res.Outcome, res.Error)
+			assert.Equal(t, tc.want, res.Value, "turn.result read the wrong result")
+			assert.Len(t, res.Calls, 1, "one turn.result is one budgeted call")
+		})
+	}
+}
+
+// An all-digit string that is neither a call's tool_use_id nor a message id
+// of this turn is read both ways, so the NOT_FOUND it returns names both
+// reads. A message that names only the message id would tell the script
+// that its tool_use_id was never tried. A host that cannot read by
+// tool_use_id tried only the message id, and its own message stays.
+func TestTurnResultNotFoundAfterTheFallbackNamesBothReads(t *testing.T) {
+	t.Parallel()
+	src := `local r = turn.result("99") return {ok = r.ok, code = r.error.code, message = r.error.message}`
+	tests := []struct {
+		name        string
+		host        Host
+		wantMessage string
+	}{
+		{"both reads tried", newFakeHost(), `"99" is not a tool result from the current turn, read as a tool_use_id or as message id 99`},
+		{"a host that reads by message id only", messageIDOnlyHost{newFakeHost()}, "no such result"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			res := Run(context.Background(), Program{Source: src}, small(), tc.host)
+			require.Equal(t, OutcomeOK, res.Outcome, res.Error)
+			got, ok := res.Value.(map[string]any)
+			require.True(t, ok, "the script must return a table, got %T", res.Value)
+			assert.Equal(t, false, got["ok"], "a read of no result must fail")
+			assert.Equal(t, "NOT_FOUND", got["code"], "a read of no result must be NOT_FOUND")
+			assert.Equal(t, tc.wantMessage, got["message"], "the message must name every read that was tried")
+			assert.Len(t, res.Calls, 1, "the fallback must stay one budgeted call")
+		})
+	}
 }
 
 func TestProgressEvents(t *testing.T) {
