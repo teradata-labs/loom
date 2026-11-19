@@ -146,12 +146,12 @@ func (b *AgentBuilder) WithBedrockMantleLLM(region string) *AgentBuilder {
 // default model; an empty or malformed id, or no key, makes Build return the
 // construction error.
 func (b *AgentBuilder) WithVercelGatewayLLM(model string) *AgentBuilder {
-	client, err := vercelgateway.NewClient(vercelgateway.Config{
+	client, err := vercelgateway.NewClient(vercelgateway.ApplyTimeoutEnv(vercelgateway.Config{
 		Endpoint:          os.Getenv("VERCEL_AI_GATEWAY_ENDPOINT"),
 		APIKey:            vercelgateway.ResolveAPIKey(""),
 		Model:             model,
 		RateLimiterConfig: llm.RateLimiterConfig{Enabled: true},
-	})
+	}))
 	if err != nil {
 		b.recordErr(err)
 		return b
@@ -175,7 +175,7 @@ func (b *AgentBuilder) WithVercelGatewayConfig(cfg vercelgateway.Config) *AgentB
 	if cfg.APIKey == "" && cfg.OIDC == nil {
 		cfg.APIKey = vercelgateway.ResolveAPIKey("")
 	}
-	client, err := vercelgateway.NewClient(cfg)
+	client, err := vercelgateway.NewClient(vercelgateway.ApplyTimeoutEnv(cfg))
 	if err != nil {
 		b.recordErr(err)
 		return b

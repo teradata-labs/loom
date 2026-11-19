@@ -54,6 +54,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -128,6 +130,37 @@ func surfaceFor(api, model string) string {
 		return SurfaceMessages
 	}
 	return SurfaceChat
+}
+
+// Environment variables for the timeouts, read by ApplyTimeoutEnv on the
+// paths that build a gateway client without looms.yaml (agent registry,
+// pkg/builder, loom-standalone). Whole seconds; unset or invalid = default.
+const (
+	EnvTimeoutSeconds                = "VERCEL_AI_GATEWAY_TIMEOUT_SECONDS"
+	EnvStreamFirstByteTimeoutSeconds = "VERCEL_AI_GATEWAY_STREAM_FIRST_BYTE_TIMEOUT_SECONDS"
+	EnvStreamIdleTimeoutSeconds      = "VERCEL_AI_GATEWAY_STREAM_IDLE_TIMEOUT_SECONDS"
+)
+
+// ApplyTimeoutEnv fills cfg's unset timeouts from the environment variables
+// above and returns cfg. A value that is not a positive integer is ignored.
+func ApplyTimeoutEnv(cfg Config) Config {
+	read := func(name string) time.Duration {
+		n, err := strconv.Atoi(strings.TrimSpace(os.Getenv(name)))
+		if err != nil || n <= 0 {
+			return 0
+		}
+		return time.Duration(n) * time.Second
+	}
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = read(EnvTimeoutSeconds)
+	}
+	if cfg.StreamFirstByteTimeout <= 0 {
+		cfg.StreamFirstByteTimeout = read(EnvStreamFirstByteTimeoutSeconds)
+	}
+	if cfg.StreamIdleTimeout <= 0 {
+		cfg.StreamIdleTimeout = read(EnvStreamIdleTimeoutSeconds)
+	}
+	return cfg
 }
 
 // ResolveAPIKey returns explicit when set, else LOOM_LLM_VERCEL_GATEWAY_API_KEY,
@@ -346,12 +379,13 @@ func NewClient(cfg Config) (*Client, error) {
 	// relying on its own prompt fingerprint.
 	// With session_affinity: false the header is not sent at all.
 	if cfg.Routing == nil || cfg.Routing.SessionAffinity == nil || *cfg.Routing.SessionAffinity {
+		key := sessionKey(apiKey)
 		sessWrap := wrap
 		wrap = func(base http.RoundTripper) http.RoundTripper {
 			if sessWrap != nil {
 				base = sessWrap(base)
 			}
-			return &sessionTransport{base: base}
+			return &sessionTransport{base: base, key: key}
 		}
 	}
 
@@ -371,8 +405,23 @@ func NewClient(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &Client{model: cfg.Model, baseURL: baseURL, auth: auth, callTimeout: callTimeout,
-		secrets: cfg.Routing.byokSecrets(os.Getenv)}
+	secrets := secretForms(cfg.Routing.byokSecrets(os.Getenv))
+
+	// An error response that echoes the request would carry BYOK secrets into
+	// every place that reads it: the inner client's error text, the rate
+	// limiter's retry log, the agent's logs. Error bodies are redacted here,
+	// before any of them sees the body.
+	if len(secrets) > 0 {
+		redactWrap := wrap
+		wrap = func(base http.RoundTripper) http.RoundTripper {
+			if redactWrap != nil {
+				base = redactWrap(base)
+			}
+			return &redactTransport{base: base, secrets: secrets}
+		}
+	}
+
+	c := &Client{model: cfg.Model, baseURL: baseURL, auth: auth, callTimeout: callTimeout, secrets: secrets}
 
 	c.surface = surfaceFor(cfg.API, cfg.Model)
 	switch c.surface {
@@ -528,6 +577,9 @@ func (c *Client) ChatStream(ctx context.Context, messages []types.Message, tools
 			zap.String("reason", retried), zap.Error(err))
 		resp, err = c.inner.ChatStream(ctx, messages, tools, cb)
 	}
+	if err != nil && retried != "" {
+		err = fmt.Errorf("%w (after one retry: the first attempt ended with a %s before any output)", err, retried)
+	}
 	resp, err = c.finish(resp, err)
 	if resp != nil && retried != "" {
 		resp.Metadata[AttrRetried] = retried
@@ -609,18 +661,19 @@ func (c *Client) Credits(ctx context.Context) (*Credits, error) {
 const HeaderSessionID = "x-session-id"
 
 // sessionTransport sets HeaderSessionID from the loom session on the request
-// context. The id is a SHA-256 digest of the loom session id, so the gateway
-// sees a stable key per conversation but never loom's own identifier. The
-// gateway hashes ids over 256 characters itself; this one is 32.
+// context: an HMAC-SHA-256 of the loom session id (sessionKey), so the
+// gateway sees a stable key per conversation but never loom's own
+// identifier. The gateway hashes ids over 256 characters itself; this is 32.
 type sessionTransport struct {
 	base http.RoundTripper
+	key  []byte
 }
 
 // RoundTrip adds the header when the context carries a session.
 func (t *sessionTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	if id := session.SessionIDFromContext(r.Context()); id != "" && r.Header.Get(HeaderSessionID) == "" {
 		r = r.Clone(r.Context())
-		r.Header.Set(HeaderSessionID, gatewaySessionID(id))
+		r.Header.Set(HeaderSessionID, gatewaySessionID(t.key, id))
 	}
 	base := t.base
 	if base == nil {
@@ -629,25 +682,110 @@ func (t *sessionTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	return base.RoundTrip(r)
 }
 
-// sessionSalt is random per process, so the id sent to the gateway cannot be
-// matched to a loom session id by hashing candidates. Affinity only needs the
-// id to be stable for minutes (the gateway pins for at most an hour), so a new
-// salt after a restart costs at most one re-pin.
-var sessionSalt = func() []byte {
-	b := make([]byte, 16)
+// sessionKey is the HMAC key for session ids. With an API key it is derived
+// from that key, so every loom replica sharing the key sends the same id for
+// one session (a session can move between replicas; a different id would
+// re-pin the upstream and lose prompt-cache hits). Without one (OIDC, whose
+// token rotates) it is random per process.
+func sessionKey(apiKey string) []byte {
+	if apiKey != "" {
+		sum := sha256.Sum256([]byte("loom-vercel-gateway-session-key:" + apiKey))
+		return sum[:]
+	}
+	return processSessionKey
+}
+
+var processSessionKey = func() []byte {
+	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		panic("vercel-ai-gateway: crypto/rand: " + err.Error())
 	}
 	return b
 }()
 
-// gatewaySessionID is the pseudonymous id sent for a loom session: an
-// HMAC-SHA-256 of the loom session id under the per-process salt.
-func gatewaySessionID(loomSessionID string) string {
-	m := hmac.New(sha256.New, sessionSalt)
+// gatewaySessionID is the pseudonymous id sent for a loom session.
+func gatewaySessionID(key []byte, loomSessionID string) string {
+	m := hmac.New(sha256.New, key)
 	m.Write([]byte(loomSessionID))
 	return hex.EncodeToString(m.Sum(nil)[:16])
 }
+
+// minSecretFragment is the shortest piece of a secret that is redacted on its
+// own (a line of a PEM key, or a prefix left by a truncated error body).
+const minSecretFragment = 16
+
+// secretForms expands each secret into the forms it can take in an error
+// text: as is; JSON-escaped (a PEM private key's newlines become \n in an
+// echoed request); and, for a multi-line secret, each line. Longest first, so
+// a whole secret is replaced before its parts.
+func secretForms(secrets []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(s string) {
+		if len(s) >= minSecretFragment && !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	for _, s := range secrets {
+		add(s)
+		if b, err := json.Marshal(s); err == nil {
+			add(string(b[1 : len(b)-1]))
+		}
+		for _, line := range strings.Split(s, "\n") {
+			add(strings.TrimSpace(line))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
+	return out
+}
+
+// redactText replaces every form of every secret with [REDACTED], and a
+// trailing prefix of a form (an error body cut at a size cap mid-secret).
+func redactText(s string, forms []string) string {
+	for _, f := range forms {
+		s = strings.ReplaceAll(s, f, "[REDACTED]")
+	}
+	for _, f := range forms {
+		for n := len(f) - 1; n >= minSecretFragment; n-- {
+			if strings.HasSuffix(s, f[:n]) {
+				s = s[:len(s)-n] + "[REDACTED]"
+				break
+			}
+		}
+	}
+	return s
+}
+
+// redactTransport redacts secrets from error response bodies (status >= 400)
+// before the inner client, its rate limiter or any logger reads them. Success
+// bodies, including streams, are passed through untouched.
+type redactTransport struct {
+	base    http.RoundTripper
+	secrets []string
+}
+
+// RoundTrip reads an error body whole (bounded by maxRedactedBody), redacts
+// it and hands back the result.
+func (t *redactTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(r)
+	if err != nil || resp == nil || resp.StatusCode < http.StatusBadRequest || resp.Body == nil {
+		return resp, err
+	}
+	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, maxRedactedBody))
+	_ = resp.Body.Close()
+	body := redactText(string(raw), t.secrets)
+	if readErr != nil {
+		body += " [error body unreadable: " + readErr.Error() + "]"
+	}
+	resp.Body = io.NopCloser(strings.NewReader(body))
+	resp.ContentLength = int64(len(body))
+	resp.Header.Del("Content-Length")
+	return resp, nil
+}
+
+// maxRedactedBody caps how much of an error body is read for redaction.
+const maxRedactedBody = 1 << 20
 
 // hostPinTransport refuses any request that is not to the configured gateway
 // scheme and host (a redirect to another host, or a downgrade to http), so a
@@ -697,10 +835,7 @@ func redactSecrets(err error, secrets []string) error {
 		return err
 	}
 	msg := err.Error()
-	redacted := msg
-	for _, s := range secrets {
-		redacted = strings.ReplaceAll(redacted, s, "[REDACTED]")
-	}
+	redacted := redactText(msg, secrets)
 	if redacted == msg {
 		return err
 	}

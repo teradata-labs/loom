@@ -445,7 +445,7 @@ func validateSlugs(field string, slugs []string) error {
 // {"gateway": {...}}} with the gateway's camelCase keys, reading BYOK secrets
 // with getenv (os.Getenv when nil). Unset fields are omitted, so a zero
 // Routing yields nil and the request body is unchanged. A BYOK variable that
-// is unset or empty is an error naming the variable, never its value.
+// is unset or empty is an error that names neither the variable nor a value.
 func (r *Routing) ResolveExtraBody(getenv func(string) string) (llm.ExtraBody, error) {
 	if r.IsZero() {
 		return nil, nil

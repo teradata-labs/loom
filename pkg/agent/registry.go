@@ -1415,7 +1415,7 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 		// Credentials from the environment, as for every provider on this path:
 		// LOOM_LLM_VERCEL_GATEWAY_API_KEY, then AI_GATEWAY_API_KEY; the
 		// endpoint from VERCEL_AI_GATEWAY_ENDPOINT (empty = global host).
-		client, err := vercelgateway.NewClient(vercelgateway.Config{
+		client, err := vercelgateway.NewClient(vercelgateway.ApplyTimeoutEnv(vercelgateway.Config{
 			Endpoint:          os.Getenv("VERCEL_AI_GATEWAY_ENDPOINT"),
 			APIKey:            vercelgateway.ResolveAPIKey(""),
 			Model:             config.Model,
@@ -1424,7 +1424,7 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 			Routing:           vercelgateway.RoutingFromProto(config.GatewayRouting),
 			API:               config.GatewayApi,
 			RateLimiterConfig: rlCfg,
-		})
+		}))
 		if err != nil {
 			return nil, err
 		}

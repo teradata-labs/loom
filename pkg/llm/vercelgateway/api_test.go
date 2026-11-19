@@ -19,12 +19,18 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/session"
@@ -133,7 +139,7 @@ func TestClient_SessionIDHeader(t *testing.T) {
 			got := g.last(t).Header.Get(HeaderSessionID)
 			assert.Len(t, got, 32)
 			assert.NotContains(t, got, "sess-abc", "the loom id is not sent")
-			assert.Equal(t, gatewaySessionID("sess-abc"), got)
+			assert.Equal(t, gatewaySessionID(sessionKey(fakeKey), "sess-abc"), got)
 
 			_, err = c.Chat(session.WithSessionID(context.Background(), "sess-other"), hi, nil)
 			require.NoError(t, err)
@@ -174,13 +180,16 @@ func TestClient_NoSessionHeaderWhenAffinityIsOff(t *testing.T) {
 	assert.Empty(t, g.last(t).Header.Get(HeaderSessionID))
 }
 
-func TestGatewaySessionIDIsSalted(t *testing.T) {
-	unsalted := sha256.Sum256([]byte("loom-session:sess-abc"))
+func TestGatewaySessionIDIsKeyed(t *testing.T) {
 	plain := sha256.Sum256([]byte("sess-abc"))
-	got := gatewaySessionID("sess-abc")
-	assert.NotEqual(t, hex.EncodeToString(unsalted[:16]), got)
-	assert.NotEqual(t, hex.EncodeToString(plain[:16]), got)
-	assert.Equal(t, got, gatewaySessionID("sess-abc"), "stable within the process")
+	k := sessionKey(fakeKey)
+	got := gatewaySessionID(k, "sess-abc")
+	assert.NotEqual(t, hex.EncodeToString(plain[:16]), got, "not a bare digest of the loom id")
+	assert.Equal(t, got, gatewaySessionID(sessionKey(fakeKey), "sess-abc"),
+		"replicas sharing the API key send the same id for one session")
+	assert.NotEqual(t, got, gatewaySessionID(sessionKey("vck_other_test_key"), "sess-abc"))
+	assert.Equal(t, gatewaySessionID(sessionKey(""), "sess-abc"), gatewaySessionID(sessionKey(""), "sess-abc"),
+		"without a key (OIDC) the id is stable within the process")
 }
 
 // An error body that echoes the request (a gateway or upstream 400 quoting
@@ -202,4 +211,52 @@ func TestClient_BYOKSecretIsRedactedFromErrors(t *testing.T) {
 	var sc llm.HTTPStatusCoder
 	require.ErrorAs(t, err, &sc, "the status survives redaction")
 	assert.Equal(t, http.StatusBadRequest, sc.HTTPStatusCode())
+}
+
+// Error bodies are redacted before any reader sees them, in every form a
+// secret takes: JSON-escaped (a PEM key's newlines as \n), line by line, and
+// cut off by a size cap. The rate limiter's retry log reads the same body.
+func TestRedactText_Forms(t *testing.T) {
+	const pem = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7fakefakefake\nAbCdEfGhIjKlMnOpQrStUvWxYz0123456789fakefakefakefake\n-----END PRIVATE KEY-----\n" // fake, test only
+	forms := secretForms([]string{pem, "sk-ant-api03-fake-short-test-key"})
+	escaped, _ := json.Marshal(pem)
+	tests := map[string]string{
+		"raw":       "bad request: " + pem,
+		"escaped":   `{"error":{"message":"bad request: {\"privateKey\":` + string(escaped) + `}"}}`,
+		"one line":  "line: MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7fakefakefake",
+		"truncated": "body cut at the cap: AbCdEfGhIjKlMnOpQrStUv",
+	}
+	for name, in := range tests {
+		got := redactText(in, forms)
+		assert.Contains(t, got, "[REDACTED]", name)
+		assert.NotContains(t, got, "MIIEvQIBADANBgkqhkiG9w0BAQEF", name)
+		assert.NotContains(t, got, "AbCdEfGhIjKlMnOpQrSt", name)
+	}
+	assert.Equal(t, "nothing secret here", redactText("nothing secret here", forms))
+}
+
+func TestClient_ErrorBodyIsRedactedBeforeTheRateLimiterLogsIt(t *testing.T) {
+	const secret = "sk-ant-api03-fake-byok-value-for-limiter-test" // fake, test only
+	t.Setenv("LOOM_BYOK_LIMITER_TEST", secret)
+	var calls atomic.Int32
+	g := &gateway{handler: func(w http.ResponseWriter, _ *http.Request, raw []byte) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write(raw) // a 5xx that echoes the request: retried, so the limiter logs it
+	}}
+	core, logs := observer.New(zap.WarnLevel)
+	c := newTestClient(t, g.start(t).URL, "openai/gpt-5", func(cfg *Config) {
+		cfg.Routing = &Routing{BYOK: []BYOKCredential{{Provider: "openai", Env: map[string]string{"apiKey": "LOOM_BYOK_LIMITER_TEST"}}}}
+		cfg.RateLimiterConfig = llm.RateLimiterConfig{Enabled: true, MaxRetries: 1, RetryBackoff: time.Millisecond, Logger: zap.New(core)}
+	})
+	_, err := c.Chat(context.Background(), hi, nil)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), secret)
+	require.GreaterOrEqual(t, calls.Load(), int32(2), "the 503 was retried")
+	for _, e := range logs.All() {
+		for _, f := range e.Context {
+			assert.NotContains(t, fmt.Sprint(f.Interface, f.String), secret, "log %q field %s", e.Message, f.Key)
+		}
+		assert.NotContains(t, e.Message, secret)
+	}
 }

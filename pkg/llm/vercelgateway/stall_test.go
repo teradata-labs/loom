@@ -101,6 +101,7 @@ func TestClient_StallTwiceReturnsTimeout(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, llm.ErrStreamTimeout)
 	assert.Equal(t, int32(2), calls.Load())
+	assert.Contains(t, err.Error(), "after one retry", "a failed retry is visible in the error, not only in a log")
 }
 
 func TestClient_TruncatedStreamIsAnError(t *testing.T) {
@@ -227,4 +228,17 @@ func TestClient_ProviderTimeoutRaisesFirstByteWait(t *testing.T) {
 	require.ErrorIs(t, err, llm.ErrStreamTimeout, "100 ms first-byte wait, 300 ms headers")
 	_, err = newTestClient(t, (&gateway{handler: late}).start(t).URL, "anthropic/claude-sonnet-4.5", cfg(1000)).Chat(context.Background(), hi, nil)
 	require.NoError(t, err, "a 1 s BYOK provider timeout raises the wait to 31 s")
+}
+
+func TestApplyTimeoutEnv(t *testing.T) {
+	t.Setenv(EnvTimeoutSeconds, "600")
+	t.Setenv(EnvStreamFirstByteTimeoutSeconds, "120")
+	t.Setenv(EnvStreamIdleTimeoutSeconds, "not-a-number")
+	got := ApplyTimeoutEnv(Config{StreamIdleTimeout: 5 * time.Second})
+	assert.Equal(t, 600*time.Second, got.Timeout)
+	assert.Equal(t, 120*time.Second, got.StreamFirstByteTimeout)
+	assert.Equal(t, 5*time.Second, got.StreamIdleTimeout, "a set value wins; an invalid variable is ignored")
+
+	got = ApplyTimeoutEnv(Config{Timeout: time.Second})
+	assert.Equal(t, time.Second, got.Timeout, "the environment fills only unset fields")
 }

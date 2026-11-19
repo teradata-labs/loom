@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -214,7 +215,14 @@ func NewClient(config Config) *Client {
 	if config.StreamFirstByteTimeout > 0 || config.StreamIdleTimeout > 0 {
 		// http.DefaultTransport may have been replaced by the embedder (an
 		// OpenTelemetry wrapper, say); clone it only when it is the stock type.
-		streamTransport := &http.Transport{Proxy: http.ProxyFromEnvironment, ForceAttemptHTTP2: true}
+		streamTransport := &http.Transport{
+			Proxy:               http.ProxyFromEnvironment,
+			DialContext:         (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			ForceAttemptHTTP2:   true,
+			TLSHandshakeTimeout: 10 * time.Second,
+			IdleConnTimeout:     90 * time.Second,
+			MaxIdleConns:        100,
+		}
 		if dt, ok := http.DefaultTransport.(*http.Transport); ok {
 			streamTransport = dt.Clone()
 		}
