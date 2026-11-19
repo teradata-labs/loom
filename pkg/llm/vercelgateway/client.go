@@ -48,7 +48,10 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
+
+	"go.uber.org/zap"
 
 	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
@@ -59,9 +62,18 @@ import (
 )
 
 const (
-	// DefaultTimeout bounds a single blocking request. Long thinking turns
-	// can be silent for over a minute, so it is generous.
+	// DefaultTimeout bounds the health check and is the ceiling for a single
+	// non-streamed request. Model calls are streamed (see Client.Chat), so a
+	// long answer that keeps producing bytes is not cut off by it.
 	DefaultTimeout = 300 * time.Second
+	// DefaultStreamFirstByteTimeout bounds the wait for the first response
+	// byte, headers included. Measured live on 2026-11-19: headers within 6 s
+	// for Sonnet 5.5 with thinking and GPT-5.5 at xhigh reasoning.
+	DefaultStreamFirstByteTimeout = 60 * time.Second
+	// DefaultStreamIdleTimeout bounds the silence between stream reads.
+	// Measured live on 2026-11-19: the longest gap was 13.4 s (GPT-5.5, xhigh
+	// reasoning, Chat Completions); Sonnet 5.5 with thinking 5.5 s.
+	DefaultStreamIdleTimeout = 90 * time.Second
 	// DefaultMaxTokens is the per-request output cap when none is configured
 	// and the catalog does not know the model.
 	DefaultMaxTokens = 4096
@@ -113,6 +125,14 @@ type Config struct {
 	MaxTokens   int           // Default: DefaultMaxTokens
 	Temperature float64       // Default: DefaultTemperature
 	Timeout     time.Duration // Default: DefaultTimeout
+
+	// StreamFirstByteTimeout and StreamIdleTimeout bound every model call
+	// (Chat is streamed too). A call that exceeds either fails with an error
+	// wrapping llm.ErrStreamTimeout and is retried once when nothing had been
+	// passed to the caller yet. Defaults: DefaultStreamFirstByteTimeout,
+	// DefaultStreamIdleTimeout.
+	StreamFirstByteTimeout time.Duration
+	StreamIdleTimeout      time.Duration
 
 	// ThinkingLevel requests extended thinking ("", "none" = off). Claude ids
 	// take Anthropic thinking on the Messages surface; reasoning-capable
@@ -205,6 +225,12 @@ func NewClient(cfg Config) (*Client, error) {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = DefaultTimeout
 	}
+	if cfg.StreamFirstByteTimeout <= 0 {
+		cfg.StreamFirstByteTimeout = DefaultStreamFirstByteTimeout
+	}
+	if cfg.StreamIdleTimeout <= 0 {
+		cfg.StreamIdleTimeout = DefaultStreamIdleTimeout
+	}
 	if cfg.MaxTokens <= 0 {
 		cfg.MaxTokens = DefaultMaxTokens
 	}
@@ -266,15 +292,17 @@ func NewClient(cfg Config) (*Client, error) {
 		}
 		c.surface = SurfaceMessages
 		c.inner = anthropic.NewClient(anthropic.Config{
-			StrictToolSchemas: cfg.StrictToolSchemas,
-			APIKey:            apiKey, // sent as x-api-key; empty under OIDC (the transport adds Bearer)
-			Model:             cfg.Model,
-			Endpoint:          baseURL + MessagesPath,
-			Timeout:           cfg.Timeout,
-			MaxTokens:         cfg.MaxTokens,
-			Temperature:       cfg.Temperature,
-			ThinkingLevel:     cfg.ThinkingLevel,
-			RateLimiterConfig: cfg.RateLimiterConfig,
+			StrictToolSchemas:      cfg.StrictToolSchemas,
+			APIKey:                 apiKey, // sent as x-api-key; empty under OIDC (the transport adds Bearer)
+			Model:                  cfg.Model,
+			Endpoint:               baseURL + MessagesPath,
+			Timeout:                cfg.Timeout,
+			StreamFirstByteTimeout: cfg.StreamFirstByteTimeout,
+			StreamIdleTimeout:      cfg.StreamIdleTimeout,
+			MaxTokens:              cfg.MaxTokens,
+			Temperature:            cfg.Temperature,
+			ThinkingLevel:          cfg.ThinkingLevel,
+			RateLimiterConfig:      cfg.RateLimiterConfig,
 			// The only beta loom sends is the obsolete prompt-caching one;
 			// cache_control works without it, and an Anthropic-compatible
 			// gateway may reject beta values it does not forward.
@@ -290,14 +318,13 @@ func NewClient(cfg Config) (*Client, error) {
 		}
 		c.surface = SurfaceChat
 		c.inner = openai.NewClient(openai.Config{
-			StrictToolSchemas: cfg.StrictToolSchemas,
-			APIKey:            apiKey,
-			Model:             cfg.Model,
-			Endpoint:          baseURL + ChatCompletionsPath,
-			Timeout:           cfg.Timeout,
-			// A thinking turn can be silent for a long time before its first
-			// byte; the gateway's own idle limit is unpublished.
-			StreamFirstByteTimeout: cfg.Timeout,
+			StrictToolSchemas:      cfg.StrictToolSchemas,
+			APIKey:                 apiKey,
+			Model:                  cfg.Model,
+			Endpoint:               baseURL + ChatCompletionsPath,
+			Timeout:                cfg.Timeout,
+			StreamFirstByteTimeout: cfg.StreamFirstByteTimeout,
+			StreamIdleTimeout:      cfg.StreamIdleTimeout,
 			MaxTokens:              cfg.MaxTokens,
 			Temperature:            cfg.Temperature,
 			ThinkingLevel:          cfg.ThinkingLevel,
@@ -341,15 +368,35 @@ func (c *Client) Endpoint() string {
 	return c.baseURL + ChatCompletionsPath
 }
 
-// Chat sends a conversation through the gateway.
+// Chat sends a conversation through the gateway. It is served over a stream
+// with no token callback: a blocking request gives no sign of life until the
+// whole answer is ready, so a stalled upstream could only be told apart from
+// a long answer by the overall timeout. Streaming lets the first-byte and
+// idle timeouts catch a stall within seconds (one stalled Sonnet call held an
+// agent for the full 300 s in the 2026-11-18 evaluation).
 func (c *Client) Chat(ctx context.Context, messages []types.Message, tools []shuttle.Tool) (*types.LLMResponse, error) {
-	resp, err := c.inner.Chat(ctx, messages, tools)
-	return c.finish(resp, err)
+	return c.ChatStream(ctx, messages, tools, nil)
 }
 
-// ChatStream streams a conversation through the gateway.
+// ChatStream streams a conversation through the gateway. A stream that stalls
+// (llm.ErrStreamTimeout) before any token reached tokenCallback is retried
+// once; after a token has been delivered a retry would repeat text the caller
+// already has, so the error is returned.
 func (c *Client) ChatStream(ctx context.Context, messages []types.Message, tools []shuttle.Tool, tokenCallback llmtypes.TokenCallback) (*types.LLMResponse, error) {
-	resp, err := c.inner.ChatStream(ctx, messages, tools, tokenCallback)
+	var delivered atomic.Bool
+	cb := tokenCallback
+	if tokenCallback != nil {
+		cb = func(token string) {
+			delivered.Store(true)
+			tokenCallback(token)
+		}
+	}
+	resp, err := c.inner.ChatStream(ctx, messages, tools, cb)
+	if err != nil && errors.Is(err, llm.ErrStreamTimeout) && !delivered.Load() && ctx.Err() == nil {
+		zap.L().Warn("vercel-ai-gateway: stream stalled before any output; retrying once",
+			zap.String("model", c.model), zap.String("surface", c.surface), zap.Error(err))
+		resp, err = c.inner.ChatStream(ctx, messages, tools, cb)
+	}
 	return c.finish(resp, err)
 }
 

@@ -37,13 +37,6 @@ const fakeKey = "vck_test_not_a_real_key" // fake credential for tests
 
 // Fixtures in the documented gateway shapes.
 const (
-	messagesOK = `{"id":"gen_msg1","type":"message","role":"assistant","model":"anthropic/claude-sonnet-4.5","stop_reason":"end_turn",
-"content":[{"type":"text","text":"hello"}],"usage":{"input_tokens":100,"output_tokens":10,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}`
-
-	messagesToolUse = `{"id":"gen_msg2","type":"message","role":"assistant","model":"anthropic/claude-sonnet-4.5","stop_reason":"tool_use",
-"content":[{"type":"text","text":"checking"},{"type":"tool_use","id":"toolu_1","name":"get_weather","input":{"city":"Paris"}}],
-"usage":{"input_tokens":50,"output_tokens":20}}`
-
 	messagesSSE = "event: message_start\n" +
 		`data: {"type":"message_start","message":{"id":"gen_s1","type":"message","role":"assistant","model":"anthropic/claude-sonnet-4.5","content":[],"usage":{"input_tokens":12,"output_tokens":1}}}` + "\n\n" +
 		"event: content_block_start\n" +
@@ -56,18 +49,23 @@ const (
 		"event: message_delta\n" + `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}` + "\n\n" +
 		"event: message_stop\n" + `data: {"type":"message_stop"}` + "\n\n"
 
-	chatOK = `{"id":"gen_c1","object":"chat.completion","created":1,"model":"openai/gpt-5",
-"choices":[{"index":0,"message":{"role":"assistant","content":"hi there"},"finish_reason":"stop"}],
-"usage":{"prompt_tokens":40,"completion_tokens":4,"total_tokens":44},
-"providerMetadata":{"gateway":{"cost":"0.00123","routing":{"finalProvider":"azure","modelAttemptCount":1,"totalProviderAttemptCount":1}}}}`
-
-	chatToolCall = `{"id":"gen_c2","object":"chat.completion","created":1,"model":"openai/gpt-5",
-"choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Oslo\"}"}}]},"finish_reason":"tool_calls"}],
-"usage":{"prompt_tokens":30,"completion_tokens":8,"total_tokens":38}}`
-
 	chatSSE = `data: {"id":"gen_cs","object":"chat.completion.chunk","created":1,"model":"openai/gpt-5","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}]}` + "\n\n" +
 		`data: {"id":"gen_cs","object":"chat.completion.chunk","created":1,"model":"openai/gpt-5","choices":[{"index":0,"delta":{"content":" there"},"finish_reason":"stop"}]}` + "\n\n" +
-		`data: {"id":"gen_cs","object":"chat.completion.chunk","created":1,"model":"openai/gpt-5","choices":[],"usage":{"prompt_tokens":40,"completion_tokens":4,"total_tokens":44},"providerMetadata":{"gateway":{"cost":"0.002"}}}` + "\n\n" +
+		`data: {"id":"gen_cs","object":"chat.completion.chunk","created":1,"model":"openai/gpt-5","choices":[],"usage":{"prompt_tokens":40,"completion_tokens":4,"total_tokens":44},"providerMetadata":{"gateway":{"cost":"0.002","routing":{"finalProvider":"azure","modelAttemptCount":1,"totalProviderAttemptCount":1}}}}` + "\n\n" +
+		"data: [DONE]\n\n"
+
+	messagesToolUseSSE = "event: message_start\n" +
+		`data: {"type":"message_start","message":{"id":"gen_msg2","type":"message","role":"assistant","model":"anthropic/claude-sonnet-4.5","content":[],"usage":{"input_tokens":50,"output_tokens":1}}}` + "\n\n" +
+		"event: content_block_start\n" +
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"get_weather","input":{}}}` + "\n\n" +
+		"event: content_block_delta\n" +
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"city\":\"Paris\"}"}}` + "\n\n" +
+		"event: content_block_stop\n" + `data: {"type":"content_block_stop","index":0}` + "\n\n" +
+		"event: message_delta\n" + `data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":20}}` + "\n\n" +
+		"event: message_stop\n" + `data: {"type":"message_stop"}` + "\n\n"
+
+	chatToolCallSSE = `data: {"id":"gen_c2","object":"chat.completion.chunk","created":1,"model":"openai/gpt-5","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Oslo\"}"}}]},"finish_reason":"tool_calls"}]}` + "\n\n" +
+		`data: {"id":"gen_c2","object":"chat.completion.chunk","created":1,"model":"openai/gpt-5","choices":[],"usage":{"prompt_tokens":30,"completion_tokens":8,"total_tokens":38}}` + "\n\n" +
 		"data: [DONE]\n\n"
 )
 
@@ -108,24 +106,22 @@ func (g *gateway) last(t *testing.T) recorded {
 	return g.requests[len(g.requests)-1]
 }
 
-func respondBy(path string, stream bool) string {
-	switch {
-	case path == MessagesPath && stream:
+// respondBy returns the stream fixture for a surface. Every model call the
+// client makes is streamed (Chat included), so there is no blocking fixture.
+func respondBy(path string) string {
+	if path == MessagesPath {
 		return messagesSSE
-	case path == MessagesPath:
-		return messagesOK
-	case stream:
-		return chatSSE
 	}
-	return chatOK
+	return chatSSE
 }
 
-func okHandler(w http.ResponseWriter, r *http.Request, raw []byte) {
-	stream := strings.Contains(string(raw), `"stream":true`)
-	if stream {
-		w.Header().Set("Content-Type", "text/event-stream")
+func okHandler(w http.ResponseWriter, r *http.Request, _ []byte) {
+	if r.URL.Path == CreditsPath {
+		_, _ = io.WriteString(w, `{"balance":"10.00","total_used":"1.25"}`)
+		return
 	}
-	_, _ = io.WriteString(w, respondBy(r.URL.Path, stream))
+	w.Header().Set("Content-Type", "text/event-stream")
+	_, _ = io.WriteString(w, respondBy(r.URL.Path))
 }
 
 func newTestClient(t *testing.T, url, model string, mut ...func(*Config)) *Client {
@@ -191,6 +187,7 @@ func TestClient_RoutesByModelID(t *testing.T) {
 			resp, err := c.Chat(context.Background(), hi, nil)
 			require.NoError(t, err)
 			assert.Equal(t, tt.path, g.last(t).Path)
+			assert.Equal(t, true, g.last(t).Body["stream"], "Chat is served over a stream")
 			assert.Equal(t, tt.surface, resp.Metadata[AttrEndpointSurface])
 			assert.Equal(t, tt.model, g.last(t).Body["model"], "the gateway id is sent unchanged")
 
@@ -253,20 +250,21 @@ func TestClient_GatewayCostAndRoutingMetadata(t *testing.T) {
 	g := &gateway{handler: okHandler}
 	c := newTestClient(t, g.start(t).URL, "openai/gpt-5")
 
-	resp, err := c.Chat(context.Background(), hi, nil)
-	require.NoError(t, err)
-	assert.Equal(t, "hi there", resp.Content)
-	assert.InDelta(t, 0.00123, resp.Usage.CostUSD, 1e-12, "gateway-reported cost wins")
-	assert.Equal(t, "azure", resp.Metadata[AttrFinalProvider])
-	assert.Equal(t, "gen_c1", resp.Metadata[AttrGenerationID])
-	assert.Equal(t, "false", resp.Metadata[AttrFallbackUsed])
-	assert.Equal(t, "1", resp.Metadata[AttrAttemptCount])
-
-	resp, err = c.ChatStream(context.Background(), hi, nil, nil)
-	require.NoError(t, err)
-	assert.Equal(t, "hi there", resp.Content)
-	assert.InDelta(t, 0.002, resp.Usage.CostUSD, 1e-12)
-	assert.Equal(t, "gen_cs", resp.Metadata[AttrGenerationID])
+	for name, call := range map[string]func() (*types.LLMResponse, error){
+		"Chat":       func() (*types.LLMResponse, error) { return c.Chat(context.Background(), hi, nil) },
+		"ChatStream": func() (*types.LLMResponse, error) { return c.ChatStream(context.Background(), hi, nil, nil) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp, err := call()
+			require.NoError(t, err)
+			assert.Equal(t, "hi there", resp.Content)
+			assert.InDelta(t, 0.002, resp.Usage.CostUSD, 1e-12, "gateway-reported cost wins")
+			assert.Equal(t, "azure", resp.Metadata[AttrFinalProvider])
+			assert.Equal(t, "gen_cs", resp.Metadata[AttrGenerationID])
+			assert.Equal(t, "false", resp.Metadata[AttrFallbackUsed])
+			assert.Equal(t, "1", resp.Metadata[AttrAttemptCount])
+		})
+	}
 }
 
 func TestClient_ClaudeEstimateWhenGatewayReportsNoCost(t *testing.T) {
@@ -274,16 +272,17 @@ func TestClient_ClaudeEstimateWhenGatewayReportsNoCost(t *testing.T) {
 	c := newTestClient(t, g.start(t).URL, "anthropic/claude-sonnet-4.5")
 	resp, err := c.Chat(context.Background(), hi, nil)
 	require.NoError(t, err)
-	// Sonnet 4.5 family card $3/$15: 100 in + 10 out.
-	assert.InDelta(t, (100*3.0+10*15.0)/1e6, resp.Usage.CostUSD, 1e-12)
-	assert.Equal(t, "gen_msg1", resp.Metadata[AttrGenerationID])
+	// Sonnet 4.5 family card $3/$15: 12 in + 3 out (messagesSSE).
+	assert.InDelta(t, (12*3.0+3*15.0)/1e6, resp.Usage.CostUSD, 1e-12)
+	assert.Equal(t, "gen_s1", resp.Metadata[AttrGenerationID])
 	_, unpriced := resp.Metadata[llm.MetadataCostUnpriced]
 	assert.False(t, unpriced)
 }
 
 func TestClient_UnknownNonClaudeIsUnpriced(t *testing.T) {
 	g := &gateway{handler: func(w http.ResponseWriter, _ *http.Request, _ []byte) {
-		_, _ = io.WriteString(w, strings.ReplaceAll(chatToolCall, "openai/gpt-5", "acme/unknown-model"))
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, strings.ReplaceAll(chatToolCallSSE, "openai/gpt-5", "acme/unknown-model"))
 	}}
 	c := newTestClient(t, g.start(t).URL, "acme/unknown-model")
 	resp, err := c.Chat(context.Background(), hi, nil)
@@ -298,12 +297,15 @@ func TestClient_ToolCallsOnBothSurfaces(t *testing.T) {
 		model, fixture, wantID string
 		wantInput              map[string]interface{}
 	}{
-		{"anthropic/claude-sonnet-4.5", messagesToolUse, "toolu_1", map[string]interface{}{"city": "Paris"}},
-		{"openai/gpt-5", chatToolCall, "call_1", map[string]interface{}{"city": "Oslo"}},
+		{"anthropic/claude-sonnet-4.5", messagesToolUseSSE, "toolu_1", map[string]interface{}{"city": "Paris"}},
+		{"openai/gpt-5", chatToolCallSSE, "call_1", map[string]interface{}{"city": "Oslo"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
-			g := &gateway{handler: func(w http.ResponseWriter, _ *http.Request, _ []byte) { _, _ = io.WriteString(w, tt.fixture) }}
+			g := &gateway{handler: func(w http.ResponseWriter, _ *http.Request, _ []byte) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, tt.fixture)
+			}}
 			c := newTestClient(t, g.start(t).URL, tt.model)
 			resp, err := c.Chat(context.Background(), hi, []shuttle.Tool{tool})
 			require.NoError(t, err)

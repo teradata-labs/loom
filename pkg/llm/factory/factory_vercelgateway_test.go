@@ -85,7 +85,12 @@ func TestCreateProvider_VercelGatewayThinkingLevel(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		body.Store(string(raw))
-		_, _ = io.WriteString(w, `{"id":"gen_1","type":"message","role":"assistant","model":"m","stop_reason":"end_turn","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`)
+		// The gateway client streams every call, Chat included.
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: message_start\n"+
+			`data: {"type":"message_start","message":{"id":"gen_1","type":"message","role":"assistant","model":"m","content":[],"usage":{"input_tokens":1,"output_tokens":1}}}`+"\n\n"+
+			"event: message_delta\n"+`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`+"\n\n"+
+			"event: message_stop\n"+`data: {"type":"message_stop"}`+"\n\n")
 	}))
 	defer srv.Close()
 	f := NewProviderFactory(FactoryConfig{ThinkingLevel: "high", MaxTokens: 40000,
