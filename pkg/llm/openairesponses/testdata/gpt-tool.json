@@ -1,0 +1,128 @@
+{
+  "id": "gen_01M7TM7ZY56Y7ZSVBZ4QQYWFEK",
+  "object": "response",
+  "created_at": 1795116238,
+  "status": "completed",
+  "completed_at": 1795116238,
+  "incomplete_details": null,
+  "error": null,
+  "output": [
+    {
+      "type": "function_call",
+      "id": "fc_1795116238132_6lnevbs4gwi",
+      "call_id": "call_97aBo6D1c0RiEEqpybaOlOFT",
+      "name": "get_weather",
+      "arguments": "{\"location\":\"Paris\"}",
+      "status": "completed"
+    }
+  ],
+  "usage": {
+    "input_tokens": 50,
+    "output_tokens": 18,
+    "total_tokens": 68,
+    "input_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 0
+    },
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    }
+  },
+  "model": "openai/gpt-5.5",
+  "instructions": null,
+  "previous_response_id": null,
+  "temperature": 1,
+  "top_p": 1,
+  "max_output_tokens": 400,
+  "presence_penalty": 0,
+  "frequency_penalty": 0,
+  "top_logprobs": 0,
+  "tools": [
+    {
+      "type": "function",
+      "name": "get_weather",
+      "description": "Get weather",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "location"
+        ]
+      },
+      "strict": null
+    }
+  ],
+  "tool_choice": "auto",
+  "parallel_tool_calls": true,
+  "max_tool_calls": null,
+  "text": {
+    "format": {
+      "type": "text"
+    }
+  },
+  "truncation": "disabled",
+  "reasoning": {
+    "effort": "low"
+  },
+  "store": false,
+  "background": false,
+  "service_tier": "default",
+  "metadata": {},
+  "safety_identifier": null,
+  "prompt_cache_key": null,
+  "prompt_cache_retention": null,
+  "provider_metadata": {
+    "openai": {
+      "responseId": "resp_0adae7070325c6c4016aff4ccd23c487d2b553eb22d5740c48",
+      "serviceTier": "default",
+      "reasoningContext": "current_turn"
+    },
+    "gateway": {
+      "routing": {
+        "originalModelId": "openai/gpt-5.5",
+        "resolvedProvider": "openai",
+        "fallbacksAvailable": [
+          "azure",
+          "bedrock"
+        ],
+        "canonicalSlug": "openai/gpt-5.5",
+        "finalProvider": "openai",
+        "modelAttemptCount": 1,
+        "modelAttempts": [
+          {
+            "canonicalSlug": "openai/gpt-5.5",
+            "success": true,
+            "providerAttemptCount": 1,
+            "providerAttempts": [
+              {
+                "provider": "openai",
+                "credentialType": "system",
+                "success": true,
+                "startTime": 1795116237070,
+                "endTime": 1795116238131,
+                "providerRequestId": "req_71917e9464274ef6aefba5bc28556e83",
+                "statusCode": 200,
+                "providerResponseId": "resp_0adae7070325c6c4016aff4ccd23c487d2b553eb22d5740c48"
+              }
+            ]
+          }
+        ],
+        "totalProviderAttemptCount": 1,
+        "clientSessionId": "a79033d40087c3e1ca9acd7d9bd073b1",
+        "clientSessionIdSource": "fingerprint"
+      },
+      "cost": "0.00079",
+      "marketCost": "0.00079",
+      "surchargeCost": "0",
+      "gatewayCost": "0.00079",
+      "inferenceCost": "0.00079",
+      "inputInferenceCost": "0.00025",
+      "outputInferenceCost": "0.00054",
+      "generationId": "gen_01M7TM7ZY56Y7ZSVBZ4QQYWFEK"
+    }
+  }
+}
