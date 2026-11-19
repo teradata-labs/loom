@@ -176,6 +176,12 @@ type Message struct {
 	// the context; see pkg/task.Attribution.
 	TaskID string
 
+	// RedeliveryKey is the key a redelivering caller passed with
+	// agent.WithRedeliveryKey when this user row was written. A retried Chat
+	// with the same key reuses the row instead of appending it again.
+	// Transient: never persisted, so it is empty on a reloaded session.
+	RedeliveryKey string
+
 	// Timestamp when the message was created
 	Timestamp time.Time
 

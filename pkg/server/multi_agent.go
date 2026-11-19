@@ -7,6 +7,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -2716,6 +2717,96 @@ func (s *MultiAgentServer) autoSpawnWorkflowSubAgent(ctx context.Context, agentI
 	return nil
 }
 
+// subAgentRedeliveryKey identifies one dequeued batch across redeliveries.
+func subAgentRedeliveryKey(messageIDs []string) string {
+	return "queue:" + strings.Join(messageIDs, ",")
+}
+
+// settleSubAgentBatch decides, in one place, what happens to a workflow
+// sub-agent's dequeued messages once its Chat returns. In-flight messages have
+// no timeout, so every outcome must either acknowledge or return them.
+//
+//   - Success, or a turn parked for a human decision: the turn consumed the
+//     messages, so they are acknowledged. A parked turn finishes through
+//     ResumeChat; redelivering would inject the batch a second time.
+//   - Not delivered (session busy, or the worker stopped before Chat ran):
+//     requeued, as before.
+//   - Refused because a parked turn owns the session, or the worker stopped
+//     in the middle of the turn (shutdown or reconfiguration): released
+//     without spending an attempt, since the messages were not at fault.
+//   - Any other Chat error: requeued. Requeue enforces MaxRetries; a message
+//     that hits the cap is dropped for good and logged at ERROR.
+//
+// The settle calls run on a context detached from cancellation so they still
+// reach the store when the worker is stopping.
+func (s *MultiAgentServer) settleSubAgentBatch(ctx context.Context, agentID string, messageIDs []string, chatErr error) {
+	settleCtx := turnIdentityContext(ctx)
+	var turnParked *agent.TurnParkedError
+	var sessionParked *agent.SessionParkedError
+
+	switch {
+	case chatErr == nil || errors.As(chatErr, &turnParked):
+		for _, msgID := range messageIDs {
+			if ackErr := s.messageQueue.Acknowledge(settleCtx, msgID); ackErr != nil {
+				s.logger.Warn("Failed to acknowledge message",
+					zap.String("agent", agentID),
+					zap.String("message_id", msgID),
+					zap.Error(ackErr))
+			}
+		}
+		s.logger.Info("Acknowledged all processed messages",
+			zap.String("agent", agentID),
+			zap.Int("count", len(messageIDs)),
+			zap.Bool("turn_parked", turnParked != nil))
+
+	case injectNotDelivered(chatErr):
+		// The prompt never reached the session. Put the messages back for the
+		// queue monitor to offer again.
+		s.requeueSubAgentBatch(settleCtx, agentID, messageIDs)
+		s.logger.Warn("Sub-agent session unavailable; left messages for redelivery",
+			zap.String("agent", agentID),
+			zap.Int("count", len(messageIDs)),
+			zap.Error(chatErr))
+
+	case errors.As(chatErr, &sessionParked) || ctx.Err() != nil:
+		for _, msgID := range messageIDs {
+			if relErr := s.messageQueue.Release(settleCtx, msgID); relErr != nil {
+				s.logger.Error("Message could not be returned to the queue and is lost",
+					zap.String("agent", agentID),
+					zap.String("message_id", msgID),
+					zap.Error(relErr))
+			}
+		}
+		s.logger.Info("Sub-agent turn did not run to completion; returned messages without spending a retry",
+			zap.String("agent", agentID),
+			zap.Int("count", len(messageIDs)),
+			zap.Error(chatErr))
+
+	default:
+		s.requeueSubAgentBatch(settleCtx, agentID, messageIDs)
+	}
+}
+
+// requeueSubAgentBatch requeues each message, logging any message that is
+// lost: dropped after MaxRetries, or not requeued for another reason.
+func (s *MultiAgentServer) requeueSubAgentBatch(ctx context.Context, agentID string, messageIDs []string) {
+	for _, msgID := range messageIDs {
+		reqErr := s.messageQueue.Requeue(ctx, msgID)
+		switch {
+		case reqErr == nil:
+		case errors.Is(reqErr, communication.ErrMaxRetriesExceeded):
+			s.logger.Error("Message dropped after reaching max retries",
+				zap.String("agent", agentID),
+				zap.String("message_id", msgID))
+		default:
+			s.logger.Error("Message could not be requeued and is lost",
+				zap.String("agent", agentID),
+				zap.String("message_id", msgID),
+				zap.Error(reqErr))
+		}
+	}
+}
+
 // runWorkflowSubAgent runs a workflow sub-agent that processes messages from the coordinator.
 // Uses event-driven notifications via notifyChan instead of polling.
 // subAgentKey is the composite key "coordinatorSessionID:agentID" used for registration/deregistration.
@@ -2801,42 +2892,12 @@ func (s *MultiAgentServer) runWorkflowSubAgent(ctx context.Context, ag *agent.Ag
 
 					// Use the parent context directly (no timeout) to allow sub-agent full time to process
 					// The agent's own config has max_turns and timeout_seconds configured
-					err = s.chatInjected(ctx, ctx, ag, sessionID, allMessages, 0)
-
-					if injectNotDelivered(err) {
-						// The prompt never reached the session (busy, or the
-						// worker is stopping). The messages are in flight and
-						// nothing else returns them, so put them back for the
-						// queue monitor to offer again.
-						requeueCtx := turnIdentityContext(ctx)
-						for _, msgID := range messageIDs {
-							if reqErr := s.messageQueue.Requeue(requeueCtx, msgID); reqErr != nil {
-								s.logger.Error("Message could not be requeued and is lost",
-									zap.String("agent", agentID),
-									zap.String("message_id", msgID),
-									zap.Error(reqErr))
-							}
-						}
-						s.logger.Warn("Sub-agent session unavailable; left messages for redelivery",
-							zap.String("agent", agentID),
-							zap.Int("count", len(messageIDs)),
-							zap.Error(err))
-					}
-
-					// Acknowledge all messages after successful processing
-					if err == nil {
-						for _, msgID := range messageIDs {
-							if ackErr := s.messageQueue.Acknowledge(ctx, msgID); ackErr != nil {
-								s.logger.Warn("Failed to acknowledge message",
-									zap.String("agent", agentID),
-									zap.String("message_id", msgID),
-									zap.Error(ackErr))
-							}
-						}
-						s.logger.Info("Acknowledged all processed messages",
-							zap.String("agent", agentID),
-							zap.Int("count", len(messageIDs)))
-					}
+					// Every attempt at this batch carries the same redelivery key, so a
+					// retry after a failed turn reuses the user row that turn stored
+					// instead of appending the batch again (see agent.WithRedeliveryKey).
+					chatCtx := agent.WithRedeliveryKey(ctx, subAgentRedeliveryKey(messageIDs))
+					err = s.chatInjected(ctx, chatCtx, ag, sessionID, allMessages, 0)
+					s.settleSubAgentBatch(ctx, agentID, messageIDs, err)
 				} else {
 					s.logger.Debug("No queue messages to process",
 						zap.String("agent", agentID))

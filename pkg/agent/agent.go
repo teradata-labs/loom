@@ -2126,13 +2126,23 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// in the Timestamp field; per-turn temporal grounding ("today", "this month")
 	// is restored by rendering that Timestamp into the compiled view only
 	// (renderLocked), never into the stored body.
-	userMsg, _ := a.appendMessage(ctx, session, Message{
-		Role:          "user",
-		Content:       userMessage,
-		ContentBlocks: p.contentBlocks,
-		AgentID:       a.GetID(), // Track which agent received this message
-		Timestamp:     time.Now(),
-	}, true)
+	//
+	// A caller that redelivers the same work after a failed turn marks each
+	// attempt with WithRedeliveryKey. If the failed attempt's user row is still
+	// the session's last row, reuse it rather than store the prompt twice. Every
+	// other call appends, so plain Chat behaviour is unchanged.
+	redeliveryKey := redeliveryKeyFromContext(ctx)
+	userMsg, reused := redeliveredUserRow(session, redeliveryKey)
+	if !reused {
+		userMsg, _ = a.appendMessage(ctx, session, Message{
+			Role:          "user",
+			Content:       userMessage,
+			ContentBlocks: p.contentBlocks,
+			AgentID:       a.GetID(), // Track which agent received this message
+			RedeliveryKey: redeliveryKey,
+			Timestamp:     time.Now(),
+		}, true)
+	}
 
 	// A leading slash command is the user activating a skill. It runs here,
 	// after their message is on the record and before the model reads the
