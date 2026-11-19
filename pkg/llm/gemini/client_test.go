@@ -1077,6 +1077,28 @@ func TestConvertTools_EmptyPropertyTypes(t *testing.T) {
 	assert.Equal(t, "STRING", props["tags"].Items.Type)
 }
 
+func TestValidateGeminiToolSchemaUsesStablePropertyOrder(t *testing.T) {
+	unsupported := func() *shuttle.JSONSchema {
+		return &shuttle.JSONSchema{OneOf: []*shuttle.JSONSchema{{Type: "string"}}}
+	}
+	schema := &shuttle.JSONSchema{
+		Type: "object",
+		Properties: map[string]*shuttle.JSONSchema{
+			"e": unsupported(),
+			"b": unsupported(),
+			"d": unsupported(),
+			"a": unsupported(),
+			"c": unsupported(),
+		},
+	}
+
+	for attempt := 0; attempt < 200; attempt++ {
+		err := validateGeminiToolSchema(schema)
+		require.Error(t, err)
+		assert.Equal(t, `unsupported Gemini tool schema oneOf at $.properties["a"]`, err.Error())
+	}
+}
+
 // Mock implementations for testing
 
 type mockContext struct {

@@ -176,3 +176,11 @@ func TestSessionMerge(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionMerge_CostEstimatedIsSticky(t *testing.T) {
+	s := Session{ID: "s", Cost: 1}
+	s = s.Merge(Session{Cost: 2, CostEstimated: true})
+	assert.True(t, s.CostEstimated)
+	s = s.Merge(Session{Cost: 3})
+	assert.True(t, s.CostEstimated, "a later exact turn does not clear the estimate")
+}

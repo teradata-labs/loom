@@ -476,7 +476,7 @@ func runEvalShow(cmd *cobra.Command, args []string) {
 // createLLMProviderForEval creates an LLM provider for eval runs
 // Uses the shared createLLMProvider() function to respect config file
 func createLLMProviderForEval() (agent.LLMProvider, string) {
-	return createLLMProvider()
+	return createLLMProvider(nil)
 }
 
 // agentWrapper wraps agent.Agent to implement evals.Agent interface

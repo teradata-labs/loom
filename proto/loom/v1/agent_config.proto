@@ -139,8 +139,11 @@ message LLMConfig {
   // Top-k sampling parameter
   int32 top_k = 7;
 
-  // Maximum context window tokens supported by the model
-  // If not set, will be auto-detected from model name or use provider default
+  // The context window loom budgets against: the fold keeps the settled
+  // conversation under the profile's threshold of this window less
+  // reserved_output_tokens. It may sit below the model's window to bound
+  // cost. If not set, the model's window (catalog, then model name, then
+  // provider default) is used.
   // Examples: Claude Sonnet 4.5 = 200000, Llama 3.1 = 128000, Mistral = 32000
   int32 max_context_tokens = 8;
 
@@ -158,13 +161,57 @@ message LLMConfig {
   // default) is distinguishable from an explicit seed of 0, which some
   // providers accept as a real seed value.
   //
-  // Honored by: ollama, and only on the agent-registry construction path
-  // (pkg/agent/registry.go, which passes it into ollama.Config). Providers
-  // other than ollama ignore it. The looms serve path builds clients from
-  // factory.FactoryConfig, which does not carry a seed field, so a seed set in
-  // agent YAML has no effect there — wiring it through the factory is an open
-  // follow-up, not a shipped behavior.
+  // Honored by: ollama, for an agent whose own llm block selects it (agent
+  // registry, and agent YAML under looms serve). Providers other than ollama
+  // ignore it. The server's default LLM (looms.yaml llm:) and the provider
+  // factory carry no seed.
   optional int64 seed = 11;
+
+  // The context window the model is served with, when it is below the
+  // model's listed window: a vLLM --max-model-len, a TGI --max-total-tokens,
+  // an Ollama num_ctx. A step whose results together would exceed it, less
+  // the reply reservation, has them replaced before the send. Taken as given,
+  // above or below the listing. If not set, the model's listed window is the
+  // limit, on every provider.
+  int32 max_model_context_tokens = 12;
+
+  // Routing options for a multi-provider LLM gateway. Valid only with
+  // provider vercel-ai-gateway, which sends them as providerOptions.gateway in
+  // every request body; on any other provider, or with no provider, agent
+  // validation rejects it. Unset means the gateway's own default routing.
+  LLMGatewayRouting gateway_routing = 13;
+}
+
+// LLMGatewayRouting selects and orders the upstream providers a multi-provider
+// LLM gateway may serve a request from. It is named for gateways in general so
+// a later gateway backend can reuse it; today only vercel-ai-gateway reads it.
+//
+// Provider slugs ("anthropic", "bedrock", "vertex", "openai", ...) are the
+// gateway's own and are passed through unchanged. Per-request BYOK credentials
+// are deliberately not part of this message: they are configured in the
+// gateway's dashboard, not in agent configuration.
+message LLMGatewayRouting {
+  // Upstream providers to try, in order. Empty = gateway default order.
+  repeated string order = 1;
+
+  // Restrict serving to these upstream providers. Empty = no restriction.
+  // A request no listed provider can serve fails; it is not retried.
+  repeated string only = 2;
+
+  // Rank eligible upstreams by "cost", "ttft" (time to first token) or "tps"
+  // (tokens per second). Empty = gateway default.
+  string sort = 3;
+
+  // Model ids to fall back to, in order, when the primary model fails on
+  // every eligible upstream. May name a different model family.
+  repeated string fallback_models = 4;
+
+  // Serve only from upstreams with a zero-data-retention agreement.
+  bool zero_data_retention = 5;
+
+  // Gateway-side prompt caching mode. "" = off (explicit cache_control only),
+  // "auto" = the gateway places cache breakpoints itself.
+  string caching = 6;
 }
 
 // LLMRateLimitConfig configures client-side rate limiting for an LLM provider.
@@ -529,6 +576,11 @@ message MemoryCompressionConfig {
 
   // Batch sizes for compression operations
   MemoryCompressionBatchSizes batch_sizes = 6;
+
+  // Recent turns a fold keeps, counting user messages and assistant steps
+  // alike; the fold summarises everything before them. It is also the top rung
+  // of the pressure ladder. 0 means the default, 16.
+  int32 protected_recent_turns = 7;
 }
 
 // BehaviorConfig defines agent behavior constraints
