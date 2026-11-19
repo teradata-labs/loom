@@ -5980,6 +5980,11 @@ func (a *Agent) RewindSession(ctx context.Context, sessionID string, turns int) 
 	}
 	defer releaseLease()
 
+	ctx, span := a.tracer.StartSpan(ctx, "agent.rewind_session")
+	defer a.tracer.EndSpan(span)
+	span.SetAttribute("session.id", sessionID)
+	span.SetAttribute("rewind.turns_asked", turns)
+
 	maxTurn, err := store.MaxTurn(ctx, sessionID)
 	if err != nil {
 		return 0, err
@@ -6007,5 +6012,12 @@ func (a *Agent) RewindSession(ctx context.Context, sessionID string, turns int) 
 	// exchange must not revoke permission a human gave for the turns that
 	// remain.
 	a.memory.DeleteSession(sessionID)
-	return maxTurn - from + 1, nil
+	undone := maxTurn - from + 1
+	span.SetAttribute("rewind.from_turn", from)
+	span.SetAttribute("rewind.turns_undone", undone)
+	zap.L().Info("session rewound",
+		zap.String("session_id", sessionID),
+		zap.Int("from_turn", from),
+		zap.Int("turns_undone", undone))
+	return undone, nil
 }

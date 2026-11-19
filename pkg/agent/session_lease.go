@@ -150,6 +150,11 @@ func (a *Agent) holdSessionLease(ctx context.Context, sessionID string) (context
 			if err := leases.ReleaseSessionLease(ctx, sessionID, current); err != nil {
 				return nil, nil, fmt.Errorf("releasing a dead process's session lease: %w", err)
 			}
+			zap.L().Info("session lease: taken from a holder that died on this host",
+				zap.String("session_id", sessionID),
+				zap.String("previous_holder", current),
+				zap.Duration("remaining", remaining),
+				zap.Duration("ttl", ttl))
 			current = ""
 		}
 		if current == "" {
