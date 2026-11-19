@@ -93,6 +93,21 @@ func TestJailedShell_OffListProgramIsBlockedWithAnActionableError(t *testing.T) 
 	assert.NoError(t, err, "the blocked rm deleted nothing")
 }
 
+// A refused command inside a chain whose last command succeeds still fails
+// the call (found by the 2026-11-19 gateway evaluation: "mkdir /tmp/dr && …;
+// ls" reported success although the write never happened).
+func TestJailedShell_BlockedStepInAChainFailsTheCall(t *testing.T) {
+	f := newJailedFixture(t)
+	res, err := f.tool.Execute(f.ctx, map[string]interface{}{"command": "x=rm; $x notes.txt; ls"})
+	require.NoError(t, err)
+	require.False(t, res.Success, "a refused step is not success")
+	assert.Equal(t, 0, shellData(t, res)["exit_code"], "the script itself exited 0")
+	assert.Equal(t, "POLICY_BLOCKED", res.Error.Code)
+	assert.Contains(t, res.Error.Message, "part of it did not run")
+	assert.Contains(t, res.Error.Message, "the shell policy blocked: rm")
+	assert.Contains(t, shellData(t, res)["stdout"], "notes.txt", "the rest of the chain still ran")
+}
+
 // What a person approved (the admission grants) is exactly what runs.
 func TestJailedShell_ApprovedProgramRuns(t *testing.T) {
 	f := newJailedFixture(t)

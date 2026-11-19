@@ -755,8 +755,12 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 		}, nil
 	}
 
-	// Build result
-	success := exitCode == 0
+	// Build result. A command the jail refused fails the call even when the
+	// script's last command exited 0: in "mkdir x && rm y; ls" a refused rm
+	// leaves the exit status to ls, and reporting success would tell the
+	// model the refused step happened.
+	blocked := jailResult != nil && len(jailResult.Blocked) > 0
+	success := exitCode == 0 && !blocked
 
 	result := &shuttle.Result{
 		Success: success,
@@ -789,7 +793,11 @@ func (t *ShellExecuteTool) Execute(ctx context.Context, params map[string]interf
 			Suggestion: "Check stderr output for details",
 			Retryable:  true, // Non-zero exit might be transient
 		}
-		if jailResult != nil && len(jailResult.Blocked) > 0 {
+		if exitCode == 0 && blocked {
+			result.Error.Code = "POLICY_BLOCKED"
+			result.Error.Message = "Command exited with code 0, but part of it did not run"
+		}
+		if blocked {
 			result.Error.Message += "; the shell policy blocked: " + describeBlocked(jailResult.Blocked)
 			result.Error.Suggestion = "A program that is not on the shell allowlist runs only with a person's approval, and only when the command names it literally. Call again with it written out (not computed through a variable or substitution) so it can be approved, or use an allowed program."
 		}
