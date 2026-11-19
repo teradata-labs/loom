@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"modernc.org/sqlite"
+	sqlite3lib "modernc.org/sqlite/lib"
 )
 
 func init() {
@@ -17,6 +18,15 @@ func init() {
 // EncryptionSupported indicates whether the active SQLite driver supports
 // SQLCipher encryption (PRAGMA key). False when built without CGO.
 const EncryptionSupported = false
+
+// isBusy reports whether err is SQLITE_BUSY (any extended form) from
+// modernc.org/sqlite. ExecSchema calls it to decide whether to retry a
+// schema script under BEGIN IMMEDIATE. The low byte of an extended code is
+// its primary code.
+func isBusy(err error) bool {
+	var e *sqlite.Error
+	return errors.As(err, &e) && e.Code()&0xff == sqlite3lib.SQLITE_BUSY
+}
 
 // dsnParams renders opts in modernc.org/sqlite's native "_pragma=name(value)"
 // DSN syntax, which the driver applies to every new connection at open time.

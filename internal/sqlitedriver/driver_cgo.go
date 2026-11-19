@@ -8,12 +8,20 @@ import (
 	"strconv"
 	"strings"
 
-	_ "github.com/mutecomm/go-sqlcipher/v4" // registers "sqlite3" driver with encryption
+	sqlite3 "github.com/mutecomm/go-sqlcipher/v4" // registers "sqlite3" driver with encryption
 )
 
 // EncryptionSupported indicates whether the active SQLite driver supports
 // SQLCipher encryption (PRAGMA key). True when built with CGO.
 const EncryptionSupported = true
+
+// isBusy reports whether err is SQLITE_BUSY (any extended form) from
+// go-sqlcipher. ExecSchema calls it to decide whether to retry a schema
+// script under BEGIN IMMEDIATE.
+func isBusy(err error) bool {
+	var e sqlite3.Error
+	return errors.As(err, &e) && e.Code == sqlite3.ErrBusy
+}
 
 // dsnParams renders opts in mattn/go-sqlite3 DSN syntax, which go-sqlcipher
 // (a mattn fork) applies to every new connection at open time.

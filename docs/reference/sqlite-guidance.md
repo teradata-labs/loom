@@ -567,6 +567,71 @@ with `file is not a database`. Use `sqlitedriver.EncryptedDSN(path, key,
 opts)`, which carries the key in the DSN so every pooled connection is keyed.
 `OpenDB()` in `pkg/agent/db_config.go` does this for you.
 
+### Schema init under concurrent opens
+
+A schema script of many `CREATE ... IF NOT EXISTS` statements, run with one
+`db.Exec`, runs in autocommit mode: one transaction, and one write-lock
+request, for each statement. When several goroutines or processes open the
+same file at once, an opener can lose that lock again and again until its
+`busy_timeout` runs out. The open then fails with `database is locked`
+(issue #604, `evals.NewStore` on a Windows CI runner).
+
+`sqlitedriver.ExecSchema(ctx, db, path, script)` runs the script in three
+steps:
+
+1. In the process, callers for the same file wait on a Go mutex and run one
+   at a time. They do not use up each other's busy timeout.
+2. The script runs in one deferred transaction. When the schema already
+   exists, every `CREATE ... IF NOT EXISTS` is a read, so no write lock is
+   taken: a read-only file (`chmod 444`, a read-only mount, `mode=ro`) still
+   opens, and an open does not wait for another connection's write. When a
+   statement must write, the whole script commits or none of it.
+3. A deferred transaction that has read and then must write gets
+   `SQLITE_BUSY` at once when another connection holds the write lock;
+   SQLite does not run the busy handler there, because waiting could
+   deadlock. `ExecSchema` then rolls back and runs the script again under
+   `BEGIN IMMEDIATE`, which takes the write lock before the first statement
+   and waits for it under `busy_timeout`. SQLite locks are file locks, so a
+   second connection in a test and a second process behave the same.
+
+**How long an open can wait** when another connection holds the write lock
+the whole time:
+
+| Caller | Fails after about | Why |
+|---|---|---|
+| The caller that holds the in-process lock for the file | 2 × busy timeout (10 s for `evals.NewStore`) | A write-first script (a new file) waits once in the deferred attempt and once in the `BEGIN IMMEDIATE` retry. |
+| The k-th caller queued behind it in the same process | 2k × busy timeout | It first waits for every caller ahead of it. `evals.NewStore` uses a context with no deadline, so the queue wait has no other limit. |
+
+When the retry also fails, the error holds both attempts. Every retry writes
+one Warn line through `zap.L()` (`logger=sqlitedriver`, message `schema
+script busy; retried under BEGIN IMMEDIATE`) with the file path (no query
+string), `retry_succeeded`, `first_error` and `retry_error`.
+
+Two other designs were tried and rejected:
+
+- `BEGIN IMMEDIATE` on every open. It takes the write lock even when the
+  tables exist, so a read-only results file failed to open ("attempt to write
+  a readonly database"), and an open waited for any other writer and could
+  time out. It also made every in-process opener queue for the lock: with 64
+  goroutines and a 100 ms busy timeout it failed more often than the
+  autocommit script.
+- The mutex with the old autocommit script. It fixes the in-process case,
+  but the script is not atomic.
+
+Tests: `internal/sqlitedriver/schema_test.go` (rollback, read-only open, no
+wait on another writer, the `BEGIN IMMEDIATE` retry, the mutex) and
+`pkg/evals/store_concurrent_open_test.go` (issue #604 reproducer, read-only
+results file, open during another write). A test that runs several real
+processes does not exist yet.
+
+**Which stores use it** (verified against the code):
+
+| Store | Schema init |
+|---|---|
+| `evals.Store` (`pkg/evals/store.go`) | `ExecSchema` |
+| tool registry, scheduler store, agent registry, `SessionStore`, observability trace store, learning collector and `InitSelfImprovementSchema`, `SQLiteHumanRequestStore`, `SQLiteBackend` sub-stores, `communication` SQLite store and message queue, interrupt queue | autocommit `Exec` (not yet moved) |
+| versioned migrator (`pkg/storage/sqlite/migrator.go`) | each migration in a deferred `BeginTx`, behind a mutex for each `Migrator` |
+
 
 ### Performance PRAGMAs
 

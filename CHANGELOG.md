@@ -161,6 +161,9 @@ Implemented, unit-tested, and live-tested on 2026-11-16 (Claude Haiku 4.5 on the
 - **An agent's `seed` was ignored under `looms serve`**: the serve builder now passes it to ollama, as the registry did.
 - **`x-api-key` followed cross-host redirects**: Go strips `Authorization` on a redirect to another host but copies other headers. The anthropic client (direct Anthropic, Bedrock Mantle, the gateway's Messages surface) now drops `x-api-key` when a redirect leaves the original host.
 
+#### Storage: concurrent opens of one SQLite file
+- **`evals.NewStore` no longer fails with "database is locked" when several callers open the same file at once** (#604). Its schema script ran in autocommit mode, so each statement took the write lock again and an opener could use up its 5 s busy timeout. The new `sqlitedriver.ExecSchema` runs a schema script for one file one opener at a time in the process, in one transaction. An existing schema takes no write lock, so a read-only results file still opens; a script that must write and finds the lock held is retried under `BEGIN IMMEDIATE`, which waits under the busy timeout. Twelve other stores still run their schema the old way; see the "Schema init under concurrent opens" section of `docs/reference/sqlite-guidance.md`.
+
 #### LLM transport
 - **The Bedrock Anthropic-SDK client sends a tool schema with no `type` as `object`**, as the raw-HTTP path already did; the top level of a tool's input is an object.
 

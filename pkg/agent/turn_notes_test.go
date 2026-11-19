@@ -239,24 +239,6 @@ func TestTurnNotes_SettledThinkingNotReplayedAfterToolChange(t *testing.T) {
 	})
 }
 
-// reliefSeamAgent returns an agent whose session already holds sm, so the Chat
-// turn starts from a known context state (the session keeps an existing
-// SegmentedMem, see ensureSessionMemory).
-func reliefSeamAgent(t *testing.T, llm interface {
-	Chat(context.Context, []llmtypes.Message, []shuttle.Tool) (*llmtypes.LLMResponse, error)
-	Name() string
-	Model() string
-}, sessionID string, sm *SegmentedMemory, opts ...Option) *Agent {
-	t.Helper()
-	cfg := DefaultConfig()
-	cfg.PatternConfig = DefaultPatternConfig()
-	cfg.PatternConfig.UseLLMClassifier = false
-	ag := NewAgent(&mockBackend{}, llm, append([]Option{WithConfig(cfg)}, opts...)...)
-	session := ag.memory.GetOrCreateSession(context.Background(), sessionID)
-	session.SegmentedMem = sm
-	return ag
-}
-
 // recallReliefLLM answers graph memory's side calls itself and captures the
 // main calls, which it answers with a short text reply.
 type recallReliefLLM struct {

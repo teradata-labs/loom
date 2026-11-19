@@ -19,23 +19,44 @@ import (
 
 // Store manages persistent storage of eval results
 type Store struct {
-	db *sql.DB
+	db   *sql.DB
+	path string // the dbPath given to NewStore, for sqlitedriver.ExecSchema
 }
+
+// storeBusyTimeoutMS is how long each pooled connection of a Store waits for
+// a lock that another connection or process holds before it fails with
+// SQLITE_BUSY ("database is locked").
+const storeBusyTimeoutMS = 5000
 
 // NewStore creates a new eval store
 // Use ":memory:" for in-memory database (useful for testing)
+//
+// Several callers (goroutines or processes) may call NewStore on the same
+// file at the same time; see initSchema for how that stays safe.
 func NewStore(dbPath string) (*Store, error) {
+	return openStore(dbPath, storeBusyTimeoutMS)
+}
+
+// openStore is NewStore with an explicit busy timeout. NewStore calls it with
+// storeBusyTimeoutMS. Tests call it with a short timeout to make lock
+// contention fail fast instead of after five seconds.
+func openStore(dbPath string, busyTimeoutMS int) (*Store, error) {
 	// busy_timeout rides in the DSN so every pooled connection waits on lock
 	// contention instead of failing instantly with SQLITE_BUSY.
-	db, err := sql.Open("sqlite3", sqlitedriver.DSN(dbPath, sqlitedriver.Options{BusyTimeoutMS: 5000}))
+	db, err := sql.Open("sqlite3", sqlitedriver.DSN(dbPath, sqlitedriver.Options{BusyTimeoutMS: busyTimeoutMS}))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	store := &Store{db: db}
+	store := &Store{db: db, path: dbPath}
 
 	// Initialize schema
-	if err := store.initSchema(); err != nil {
+	// NewStore takes no context, so schema init runs under Background. When
+	// another connection holds the write lock the whole time, schema init
+	// fails after about twice the busy timeout, plus the time spent queued
+	// behind other openers of the same file in this process (see
+	// sqlitedriver.ExecSchema).
+	if err := store.initSchema(context.Background()); err != nil {
 		// #nosec G104 -- best-effort cleanup on initialization failure
 		_ = db.Close()
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
@@ -49,8 +70,16 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// initSchema creates the database tables
-func (s *Store) initSchema() error {
+// initSchema creates the database tables. openStore calls it once for each
+// new Store.
+//
+// Many callers can open the same file at once (issue #604). The script used
+// to run in autocommit mode, so each of its statements took the write lock
+// again, and an opener could use up its busy timeout. That returned "database
+// is locked". sqlitedriver.ExecSchema now runs the script for one file one
+// opener at a time in this process, in one transaction. An existing schema
+// takes no write lock, so a read-only results file still opens.
+func (s *Store) initSchema(ctx context.Context) error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS eval_results (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -125,8 +154,7 @@ func (s *Store) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_ab_resp_test_id ON ab_test_responses(ab_test_id);
 	`
 
-	_, err := s.db.Exec(schema)
-	return err
+	return sqlitedriver.ExecSchema(ctx, s.db, s.path, schema)
 }
 
 // Save saves an eval result to the database
