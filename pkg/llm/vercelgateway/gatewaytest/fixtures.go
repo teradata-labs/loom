@@ -27,34 +27,50 @@ import (
 
 // MessagesSSE is a complete Anthropic Messages stream that answers text.
 func MessagesSSE(text string) string {
-	return "event: message_start\n" +
-		`data: {"type":"message_start","message":{"id":"gen_test","type":"message","role":"assistant","model":"m","content":[],"usage":{"input_tokens":1,"output_tokens":1}}}` + "\n\n" +
-		"event: content_block_start\n" +
-		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n\n" +
-		"event: content_block_delta\n" +
-		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":` + quote(text) + `}}` + "\n\n" +
-		"event: content_block_stop\n" + `data: {"type":"content_block_stop","index":0}` + "\n\n" +
-		"event: message_delta\n" + `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}` + "\n\n" +
-		"event: message_stop\n" + `data: {"type":"message_stop"}` + "\n\n"
+	return sse("message_start", map[string]any{"type": "message_start", "message": map[string]any{
+		"id": "gen_test", "type": "message", "role": "assistant", "model": "m", "content": []any{},
+		"usage": map[string]any{"input_tokens": 1, "output_tokens": 1}}}) +
+		sse("content_block_start", map[string]any{"type": "content_block_start", "index": 0,
+			"content_block": map[string]any{"type": "text", "text": ""}}) +
+		sse("content_block_delta", map[string]any{"type": "content_block_delta", "index": 0,
+			"delta": map[string]any{"type": "text_delta", "text": text}}) +
+		sse("content_block_stop", map[string]any{"type": "content_block_stop", "index": 0}) +
+		sse("message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": "end_turn"},
+			"usage": map[string]any{"output_tokens": 1}}) +
+		sse("message_stop", map[string]any{"type": "message_stop"})
 }
 
 // ChatSSE is a complete Chat Completions stream that answers text.
 func ChatSSE(text string) string {
-	return `data: {"id":"gen_test","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":` + quote(text) + `},"finish_reason":"stop"}]}` + "\n\n" +
-		`data: {"id":"gen_test","object":"chat.completion.chunk","created":1,"model":"m","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}` + "\n\n" +
+	return sse("", map[string]any{"id": "gen_test", "object": "chat.completion.chunk", "created": 1, "model": "m",
+		"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"role": "assistant", "content": text}, "finish_reason": "stop"}}}) +
+		sse("", map[string]any{"id": "gen_test", "object": "chat.completion.chunk", "created": 1, "model": "m", "choices": []any{},
+			"usage": map[string]any{"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}) +
 		"data: [DONE]\n\n"
 }
 
 // ResponsesSSE is a complete Responses API stream that answers text.
 func ResponsesSSE(text string) string {
-	item := `{"type":"message","id":"msg_test","role":"assistant","status":"completed","content":[{"type":"output_text","text":` + quote(text) + `,"annotations":[]}]}`
-	return "event: response.output_text.delta\n" +
-		`data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":` + quote(text) + `}` + "\n\n" +
-		"event: response.output_item.done\n" +
-		`data: {"type":"response.output_item.done","output_index":0,"item":` + item + `}` + "\n\n" +
-		"event: response.completed\n" +
-		`data: {"type":"response.completed","response":{"id":"gen_test","object":"response","status":"completed","model":"m","output":[` + item + `],` +
-		`"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2,"input_tokens_details":{"cached_tokens":0},"output_tokens_details":{"reasoning_tokens":0}}}}` + "\n\n"
+	item := map[string]any{"type": "message", "id": "msg_test", "role": "assistant", "status": "completed",
+		"content": []any{map[string]any{"type": "output_text", "text": text, "annotations": []any{}}}}
+	return sse("response.output_text.delta", map[string]any{"type": "response.output_text.delta", "output_index": 0, "content_index": 0, "delta": text}) +
+		sse("response.output_item.done", map[string]any{"type": "response.output_item.done", "output_index": 0, "item": item}) +
+		sse("response.completed", map[string]any{"type": "response.completed", "response": map[string]any{
+			"id": "gen_test", "object": "response", "status": "completed", "model": "m", "output": []any{item},
+			"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2,
+				"input_tokens_details": map[string]any{"cached_tokens": 0}, "output_tokens_details": map[string]any{"reasoning_tokens": 0}}}})
+}
+
+// sse renders one server-sent event; an empty event name writes only data.
+func sse(event string, data any) string {
+	b, err := json.Marshal(data)
+	if err != nil {
+		panic(err) // fixtures are static maps; a marshal error is a bug in this file
+	}
+	if event == "" {
+		return "data: " + string(b) + "\n\n"
+	}
+	return "event: " + event + "\ndata: " + string(b) + "\n\n"
 }
 
 // WriteSSE answers a model request on any surface with text, choosing the
@@ -71,9 +87,4 @@ func WriteSSE(w http.ResponseWriter, r *http.Request, text string) {
 		body = ChatSSE(text)
 	}
 	_, _ = io.WriteString(w, body)
-}
-
-func quote(s string) string {
-	b, _ := json.Marshal(s)
-	return string(b)
 }

@@ -209,7 +209,7 @@ byok:
 | `bedrock` | `accessKeyId`, `secretAccessKey` | `region` |
 | `vertex` | `googleCredentials.privateKey` | `project`, `location`, `googleCredentials.clientEmail` (all required) |
 
-- **Secrets never sit in YAML.** `env` maps a credential field to the environment variable that holds it; the variable is read when the client is built. A secret field under `values` is a validation error. A variable that is unset or empty fails the build with an error naming the variable, never its value.
+- **Secrets never sit in YAML.** `env` maps a credential field to the *name* of the environment variable that holds it (`apiKey: ANTHROPIC_API_KEY`); the variable is read when the client is built. Do not write `${ANTHROPIC_API_KEY}` there: agent YAML expands `${…}` when it is loaded, which would put the key itself into the configuration. A secret field under `values` is a validation error. Errors about an `env` entry never print the entry or a value, since an expanded secret can look like a variable name.
 - Field names are matched without regard to case (`looms.yaml` goes through viper, which lowercases map keys).
 - Several credentials for one provider are tried in order. When any request-scoped credential is present, the gateway ignores the dashboard's BYOK keys for that request. If every BYOK credential fails, the gateway falls back to its own provider keys unless the team disabled that in the dashboard (verified: a rejected key was followed by a `system` attempt that served the call). `gateway.attempts` shows every attempt.
 

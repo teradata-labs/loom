@@ -370,7 +370,10 @@ func (c BYOKCredential) validate() error {
 			return fmt.Errorf("%s credential has no field %q", c.Provider, name)
 		}
 		if !envNameRe.MatchString(envVar) {
-			return fmt.Errorf("%s.%s: %q is not an environment variable name", c.Provider, name, envVar)
+			// The entry is never echoed: agent YAML has ${VAR} expanded before it
+			// is parsed, so a mistaken "${ANTHROPIC_API_KEY}" arrives here as the
+			// key itself, and an error would carry it into logs and RPC replies.
+			return fmt.Errorf("%s.%s: the env entry is not an environment variable name (write the name, such as ANTHROPIC_API_KEY, not ${ANTHROPIC_API_KEY}; the entry is not shown)", c.Provider, name)
 		}
 	}
 	for name := range c.Values {
@@ -507,11 +510,15 @@ func (r *Routing) ResolveExtraBody(getenv func(string) string) (llm.ExtraBody, e
 // environment. Dotted field names become nested objects.
 func (c BYOKCredential) resolve(getenv func(string) string) (map[string]any, error) {
 	c = c.canonical()
-	out := make(map[string]any, len(c.Env)+len(c.Values)+1)
+	// No summed capacity hint: CodeQL flags len(a)+len(b)+1 as a possible
+	// allocation-size overflow, and the maps are a handful of entries.
+	out := map[string]any{}
 	for field, envVar := range c.Env {
 		v := strings.TrimSpace(getenv(envVar))
 		if v == "" {
-			return nil, fmt.Errorf("%s.%s: environment variable %s is not set", c.Provider, field, envVar)
+			// The name is not echoed either: an expanded secret can be shaped like
+			// a variable name (an AWS access key id is), and would pass validate.
+			return nil, fmt.Errorf("%s.%s: the environment variable named under env is not set or is empty (the name is not shown, in case ${...} expansion put a secret there)", c.Provider, field)
 		}
 		setNested(out, field, v)
 	}

@@ -169,11 +169,12 @@ func TestRouting_ResolveExtraBody(t *testing.T) {
 		"user":"user-42",
 		"tags":["feature:chat"]}}}`, raw)
 
-	// A missing variable is named; no value is printed.
+	// A missing variable fails without echoing the entry or any value.
 	_, err = render(full, map[string]string{"K1": "first-key"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "environment variable K2 is not set")
+	assert.Contains(t, err.Error(), "anthropic.apiKey: the environment variable named under env is not set")
 	assert.NotContains(t, err.Error(), "first-key")
+	assert.NotContains(t, err.Error(), "K2")
 }
 
 func TestRouting_ProtoRoundTrip(t *testing.T) {
@@ -201,4 +202,23 @@ func TestRouting_ProtoRoundTrip(t *testing.T) {
 	assert.True(t, unset.IsZero())
 	assert.True(t, (&Routing{}).IsZero())
 	assert.False(t, r.IsZero())
+}
+
+// Agent YAML expands ${VAR} before it is parsed, so a mistaken
+// env: {apiKey: ${SECRET}} delivers the secret itself as the "variable name".
+// Neither validation nor resolution may echo it.
+func TestRouting_BYOKErrorsNeverEchoTheEnvEntry(t *testing.T) {
+	const anthropicKey = "sk-ant-api03-fake-test-value-0123456789" // fake, test only
+	const awsKeyID = "AKIAFAKETESTVALUE0123"                         // fake, shaped like a variable name
+
+	err := (&Routing{BYOK: []BYOKCredential{{Provider: "anthropic", Env: map[string]string{"apiKey": anthropicKey}}}}).Validate()
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), anthropicKey)
+	assert.Contains(t, err.Error(), "not an environment variable name")
+
+	r := &Routing{BYOK: []BYOKCredential{{Provider: "bedrock", Env: map[string]string{"accessKeyId": awsKeyID, "secretAccessKey": "SK_NAME"}}}}
+	require.NoError(t, r.Validate(), "an AWS key id is shaped like a variable name, so validation cannot catch it")
+	_, err = r.ResolveExtraBody(func(string) string { return "" })
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), awsKeyID)
 }
