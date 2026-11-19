@@ -12,15 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 // Package mcp_test provides integration tests for the MCP implementation.
-// These tests require a real MCP server to be available.
-//
-// Prerequisites:
-//
-//	npm install -g @modelcontextprotocol/server-filesystem
+// These tests use npx to prepare the reference filesystem server.
 //
 // Run tests:
 //
-//	go test -v -tags=integration ./pkg/mcp/
+//	go test -v -tags=fts5 ./pkg/mcp/
 package mcp_test
 
 import (
@@ -34,6 +30,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/teradata-labs/loom/pkg/mcp/adapter"
 	"github.com/teradata-labs/loom/pkg/mcp/client"
+	"github.com/teradata-labs/loom/pkg/mcp/internal/mcptest"
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
 	"github.com/teradata-labs/loom/pkg/mcp/transport"
 	"go.uber.org/zap"
@@ -50,51 +47,12 @@ func skipIfNoNPX(t *testing.T) {
 }
 
 func TestMCPClient_Initialize_Integration(t *testing.T) {
-	skipIfNoNPX(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	logger := zap.NewNop()
-
-	// Create transport
-	trans, err := transport.NewStdioTransport(transport.StdioConfig{
-		Command: "npx",
-		Args:    []string{"-y", "@modelcontextprotocol/server-filesystem", os.TempDir()},
-		Logger:  logger,
-	})
-	require.NoError(t, err)
-	defer func() { _ = trans.Close() }()
-
-	// Create client
-	mcpClient := client.NewClient(client.Config{
-		Transport: trans,
-		Logger:    logger,
-	})
-	defer func() { _ = mcpClient.Close() }()
-
-	// Initialize
-	clientInfo := protocol.Implementation{
-		Name:    "loom-integration-test",
-		Version: "0.1.0",
-	}
-
-	err = mcpClient.Initialize(ctx, clientInfo)
-	require.NoError(t, err)
-
-	// Verify initialized
+	_, mcpClient := setupFilesystemClient(t)
 	assert.True(t, mcpClient.IsInitialized())
 }
 
 func TestMCPClient_ListTools_Integration(t *testing.T) {
-	skipIfNoNPX(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	logger := zap.NewNop()
-	mcpClient := setupFilesystemClient(t, ctx, logger)
-	defer func() { _ = mcpClient.Close() }()
+	ctx, mcpClient := setupFilesystemClient(t)
 
 	// List tools
 	tools, err := mcpClient.ListTools(ctx)
@@ -114,14 +72,7 @@ func TestMCPClient_ListTools_Integration(t *testing.T) {
 }
 
 func TestMCPClient_CallTool_Integration(t *testing.T) {
-	skipIfNoNPX(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	logger := zap.NewNop()
-	mcpClient := setupFilesystemClient(t, ctx, logger)
-	defer func() { _ = mcpClient.Close() }()
+	ctx, mcpClient := setupFilesystemClient(t)
 
 	// Create a temporary test file
 	tmpFile := filepath.Join(os.TempDir(), "loom-test-file.txt")
@@ -168,14 +119,7 @@ func TestMCPClient_CallTool_Integration(t *testing.T) {
 }
 
 func TestAdapter_Execute_Integration(t *testing.T) {
-	skipIfNoNPX(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	logger := zap.NewNop()
-	mcpClient := setupFilesystemClient(t, ctx, logger)
-	defer func() { _ = mcpClient.Close() }()
+	ctx, mcpClient := setupFilesystemClient(t)
 
 	// Create test file
 	tmpFile := filepath.Join(os.TempDir(), "loom-adapter-test.txt")
@@ -231,14 +175,7 @@ func TestAdapter_Execute_Integration(t *testing.T) {
 }
 
 func TestAdaptMCPTools_Integration(t *testing.T) {
-	skipIfNoNPX(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	logger := zap.NewNop()
-	mcpClient := setupFilesystemClient(t, ctx, logger)
-	defer func() { _ = mcpClient.Close() }()
+	ctx, mcpClient := setupFilesystemClient(t)
 
 	// Adapt all MCP tools
 	shuttleTools, err := adapter.AdaptMCPTools(ctx, mcpClient, "filesystem")
@@ -276,14 +213,7 @@ func TestAdaptMCPTools_Integration(t *testing.T) {
 }
 
 func TestMCPClient_Ping_Integration(t *testing.T) {
-	skipIfNoNPX(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	logger := zap.NewNop()
-	mcpClient := setupFilesystemClient(t, ctx, logger)
-	defer func() { _ = mcpClient.Close() }()
+	ctx, mcpClient := setupFilesystemClient(t)
 
 	// Ping the server
 	//nolint:staticcheck // frozen legacy surface keeps test coverage through the 2026-07-28 deprecation window
@@ -292,14 +222,7 @@ func TestMCPClient_Ping_Integration(t *testing.T) {
 }
 
 func TestMCPClient_ErrorHandling_Integration(t *testing.T) {
-	skipIfNoNPX(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	logger := zap.NewNop()
-	mcpClient := setupFilesystemClient(t, ctx, logger)
-	defer func() { _ = mcpClient.Close() }()
+	ctx, mcpClient := setupFilesystemClient(t)
 
 	// Try to call non-existent tool
 	resultInterface, err := mcpClient.CallTool(ctx, "nonexistent_tool", map[string]interface{}{})
@@ -315,10 +238,14 @@ func TestMCPClient_ErrorHandling_Integration(t *testing.T) {
 }
 
 // setupFilesystemClient is a helper to create and initialize a filesystem MCP client
-func setupFilesystemClient(t *testing.T, ctx context.Context, logger *zap.Logger) *client.Client {
+func setupFilesystemClient(t *testing.T) (context.Context, *client.Client) {
+	t.Helper()
+	skipIfNoNPX(t)
+	ctx, server := mcptest.PrepareServer(t, mcptest.Filesystem, 30*time.Second)
+	logger := zap.NewNop()
 	trans, err := transport.NewStdioTransport(transport.StdioConfig{
-		Command: "npx",
-		Args:    []string{"-y", "@modelcontextprotocol/server-filesystem", os.TempDir()},
+		Command: server.Command,
+		Args:    server.Args(os.TempDir()),
 		Logger:  logger,
 	})
 	require.NoError(t, err)
@@ -327,6 +254,7 @@ func setupFilesystemClient(t *testing.T, ctx context.Context, logger *zap.Logger
 		Transport: trans,
 		Logger:    logger,
 	})
+	t.Cleanup(func() { _ = mcpClient.Close() })
 
 	clientInfo := protocol.Implementation{
 		Name:    "loom-integration-test",
@@ -336,5 +264,5 @@ func setupFilesystemClient(t *testing.T, ctx context.Context, logger *zap.Logger
 	err = mcpClient.Initialize(ctx, clientInfo)
 	require.NoError(t, err)
 
-	return mcpClient
+	return ctx, mcpClient
 }

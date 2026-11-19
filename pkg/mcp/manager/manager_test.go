@@ -22,6 +22,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/teradata-labs/loom/pkg/mcp/internal/mcptest"
 	"go.uber.org/zap"
 )
 
@@ -311,14 +312,15 @@ func skipIfNoNPX(t *testing.T) {
 
 func TestManager_Integration_Lifecycle(t *testing.T) {
 	skipIfNoNPX(t)
+	ctx, server := mcptest.PrepareServer(t, mcptest.Filesystem, 45*time.Second)
 
 	config := Config{
 		Servers: map[string]ServerConfig{
 			"filesystem": {
 				Enabled:   true,
 				Transport: "stdio",
-				Command:   "npx",
-				Args:      []string{"-y", "@modelcontextprotocol/server-filesystem", os.TempDir()},
+				Command:   server.Command,
+				Args:      server.Args(os.TempDir()),
 				Timeout:   "30s",
 			},
 		},
@@ -332,13 +334,11 @@ func TestManager_Integration_Lifecycle(t *testing.T) {
 	mgr, err := NewManager(config, logger)
 	require.NoError(t, err)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-	defer cancel()
+	t.Cleanup(func() { _ = mgr.Stop() })
 
 	// Start manager
 	err = mgr.Start(ctx)
 	require.NoError(t, err)
-	defer func() { _ = mgr.Stop() }()
 
 	// Verify server is connected
 	names := mgr.ServerNames()
@@ -369,14 +369,15 @@ func TestManager_Integration_Lifecycle(t *testing.T) {
 
 func TestManager_Integration_PartialFailure(t *testing.T) {
 	skipIfNoNPX(t)
+	ctx, server := mcptest.PrepareServer(t, mcptest.Filesystem, 45*time.Second)
 
 	config := Config{
 		Servers: map[string]ServerConfig{
 			"filesystem": {
 				Enabled:   true,
 				Transport: "stdio",
-				Command:   "npx",
-				Args:      []string{"-y", "@modelcontextprotocol/server-filesystem", os.TempDir()},
+				Command:   server.Command,
+				Args:      server.Args(os.TempDir()),
 				Timeout:   "30s",
 			},
 			"invalid": {
@@ -396,13 +397,11 @@ func TestManager_Integration_PartialFailure(t *testing.T) {
 	mgr, err := NewManager(config, logger)
 	require.NoError(t, err)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-	defer cancel()
+	t.Cleanup(func() { _ = mgr.Stop() })
 
 	// Start should succeed even if one server fails
 	err = mgr.Start(ctx)
 	require.NoError(t, err) // Partial failure is OK
-	defer func() { _ = mgr.Stop() }()
 
 	// Filesystem should be connected
 	names := mgr.ServerNames()
@@ -461,6 +460,7 @@ func TestManager_Integration_DisabledServers(t *testing.T) {
 
 func TestManager_Integration_MultipleServers(t *testing.T) {
 	skipIfNoNPX(t)
+	ctx, server := mcptest.PrepareServer(t, mcptest.Filesystem, 60*time.Second)
 
 	tmpDir1 := t.TempDir()
 	tmpDir2 := t.TempDir()
@@ -470,15 +470,15 @@ func TestManager_Integration_MultipleServers(t *testing.T) {
 			"fs1": {
 				Enabled:   true,
 				Transport: "stdio",
-				Command:   "npx",
-				Args:      []string{"-y", "@modelcontextprotocol/server-filesystem", tmpDir1},
+				Command:   server.Command,
+				Args:      server.Args(tmpDir1),
 				Timeout:   "30s",
 			},
 			"fs2": {
 				Enabled:   true,
 				Transport: "stdio",
-				Command:   "npx",
-				Args:      []string{"-y", "@modelcontextprotocol/server-filesystem", tmpDir2},
+				Command:   server.Command,
+				Args:      server.Args(tmpDir2),
 				Timeout:   "30s",
 			},
 		},
@@ -492,12 +492,10 @@ func TestManager_Integration_MultipleServers(t *testing.T) {
 	mgr, err := NewManager(config, logger)
 	require.NoError(t, err)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	t.Cleanup(func() { _ = mgr.Stop() })
 
 	err = mgr.Start(ctx)
 	require.NoError(t, err)
-	defer func() { _ = mgr.Stop() }()
 
 	names := mgr.ServerNames()
 	assert.Len(t, names, 2)
