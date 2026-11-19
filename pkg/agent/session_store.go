@@ -684,7 +684,7 @@ func (s *SessionStore) LoadSession(ctx context.Context, sessionID string) (*Sess
 
 	if err == sql.ErrNoRows {
 		span.SetAttribute("found", "false")
-		return nil, fmt.Errorf("session not found: %s", sessionID)
+		return nil, fmt.Errorf("%w: %s", ErrSessionNotFound, sessionID)
 	}
 	if err != nil {
 		span.RecordError(err)

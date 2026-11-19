@@ -388,6 +388,13 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 	// duplicate loads, but store.LoadSession is typically fast for cache misses)
 	if store != nil {
 		session, err := store.LoadSession(ctx, sessionID)
+		if err != nil && !errors.Is(err, ErrSessionNotFound) {
+			// A store that failed is not a new session: the turn below starts
+			// with no history in memory. Say so, so the empty context can be
+			// traced to the failed read.
+			zap.L().Error("reload: the store could not load the session; it starts with no history in memory",
+				zap.String("session_id", sessionID), zap.Error(err))
+		}
 		if err == nil && session != nil {
 			session.Messages = dropFoldedCalls(ctx, store, sessionID, session.Messages)
 			m.updateSessionMetadata(session, agentID, parentSessionID, store, ctx, logger)

@@ -27,6 +27,11 @@ import (
 type SessionStorage interface {
 	// Sessions
 	SaveSession(ctx context.Context, session *Session) error
+	// LoadSession returns the caller's session. A session that is not there,
+	// or not the caller's, is (nil, nil) or an error that wraps
+	// ErrSessionNotFound; the agent's reload (Memory.GetOrCreateSession)
+	// then starts the session empty. Any other error is logged at error
+	// level, and the session also starts empty in memory.
 	LoadSession(ctx context.Context, sessionID string) (*Session, error)
 	ListSessions(ctx context.Context) ([]string, error)
 	DeleteSession(ctx context.Context, sessionID string) error
@@ -119,6 +124,12 @@ type CostStorage interface {
 type ResultRewriter interface {
 	RewriteToolResults(ctx context.Context, sessionID string, seqs []int64, content string) error
 }
+
+// ErrSessionNotFound is the error a SessionStorage wraps when LoadSession
+// finds no session with the id for the caller. Memory.GetOrCreateSession
+// takes it as a new session and logs nothing; any other load error is
+// logged.
+var ErrSessionNotFound = errors.New("session not found")
 
 // ErrNoToolResultsRewritten is the error a ResultRewriter wraps when it was
 // given rows to rewrite and changed none of them: the caller does not own
