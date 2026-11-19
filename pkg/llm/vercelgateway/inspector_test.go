@@ -148,3 +148,24 @@ func TestInspectPayload_LiveShapes(t *testing.T) {
 		})
 	}
 }
+
+// Routing shape captured live from the Responses API on 2026-11-19.
+func TestInspectPayload_CredentialAndSessionSource(t *testing.T) {
+	body := `{"id":"gen_01","model":"openai/gpt-5.5","provider_metadata":{"gateway":{"routing":{
+		"finalProvider":"anthropic","modelAttemptCount":1,"totalProviderAttemptCount":2,
+		"clientSessionId":"abc","clientSessionIdSource":"explicit",
+		"modelAttempts":[{"success":true,"providerAttempts":[
+			{"provider":"anthropic","credentialType":"byok","success":false,"statusCode":401},
+			{"provider":"anthropic","credentialType":"system","success":true,"statusCode":200}]}]},
+		"cost":"0.001"}}}`
+	f := inspectPayload("openai/gpt-5.5", []byte(body))
+	assert.Equal(t, "system", f.Attributes[AttrCredentialType], "the attempt that served, not the first")
+	assert.Equal(t, "anthropic/byok/401,anthropic/system/200", f.Attributes[AttrAttempts])
+	assert.Equal(t, "explicit", f.Attributes[AttrSessionSource])
+	assert.Equal(t, "2", f.Attributes[AttrAttemptCount])
+
+	// The Responses stream wraps the object in "response".
+	wrapped := inspectPayload("openai/gpt-5.5", []byte(`{"type":"response.completed","response":`+body+`}`))
+	assert.Equal(t, f.Attributes, wrapped.Attributes)
+	assert.InDelta(t, 0.001, wrapped.CostUSD, 1e-12)
+}

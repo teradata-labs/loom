@@ -152,6 +152,9 @@ func TestSameModel(t *testing.T) {
 		{"gpt-5.5-xxxx-04-23", "openai/gpt-5.5", false},
 		{"claude-sonnet-4.5", "anthropic/claude-sonnet-4.5", true},
 		{"openai/gpt-5", "openai/gpt-5.5", false},
+		{"claude-sonnet-5-5", "anthropic/claude-sonnet-5.5", true},
+		{"claude-sonnet-5", "anthropic/claude-sonnet-5.5", false},
+		{"claude-sonnet-5-5-20261001", "anthropic/claude-sonnet-5.5", false},
 	}
 	for _, tt := range tests {
 		assert.Equal(t, tt.want, sameModel(tt.served, tt.requested), "%s vs %s", tt.served, tt.requested)

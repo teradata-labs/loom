@@ -34,6 +34,18 @@ const (
 	AttrFinalModel      = "gateway.final_model"
 	AttrFallbackUsed    = "gateway.fallback_used" // "true" | "false"
 	AttrAttemptCount    = "gateway.attempt_count"
+	// AttrCredentialType is the credential the serving attempt used: "byok"
+	// or "system" (the gateway's own provider key).
+	AttrCredentialType = "gateway.credential_type"
+	// AttrSessionSource is where the gateway took the session-affinity key
+	// from: "explicit" (a session id loom sent), "fingerprint" (derived by
+	// the gateway from the prompt), or another documented source.
+	AttrSessionSource = "gateway.session_source"
+	// AttrAttempts lists every upstream attempt in order as
+	// provider/credential/status ("anthropic/byok/400,anthropic/system/200"),
+	// so a BYOK key the upstream rejected is visible even when a fallback
+	// served the call.
+	AttrAttempts = "gateway.attempts"
 
 	SurfaceMessages  = "messages"
 	SurfaceChat      = "chat"
@@ -110,6 +122,15 @@ type providerMetadata struct {
 			FinalProvider             string `json:"finalProvider"`
 			ModelAttemptCount         int    `json:"modelAttemptCount"`
 			TotalProviderAttemptCount int    `json:"totalProviderAttemptCount"`
+			ClientSessionIDSource     string `json:"clientSessionIdSource"`
+			ModelAttempts             []struct {
+				ProviderAttempts []struct {
+					Provider       string `json:"provider"`
+					CredentialType string `json:"credentialType"`
+					Success        bool   `json:"success"`
+					StatusCode     int    `json:"statusCode"`
+				} `json:"providerAttempts"`
+			} `json:"modelAttempts"`
 		} `json:"routing"`
 	} `json:"gateway"`
 }
@@ -185,6 +206,23 @@ func inspectPayload(requestedModel string, payload []byte) llm.ResponseFacts {
 			if r.ModelAttemptCount > 1 {
 				attrs[AttrFallbackUsed] = "true"
 			}
+			if r.ClientSessionIDSource != "" {
+				attrs[AttrSessionSource] = r.ClientSessionIDSource
+			}
+			var attempts []string
+			for _, ma := range r.ModelAttempts {
+				for _, pa := range ma.ProviderAttempts {
+					if pa.Success && pa.CredentialType != "" {
+						attrs[AttrCredentialType] = pa.CredentialType
+					}
+					if pa.Provider != "" {
+						attempts = append(attempts, pa.Provider+"/"+pa.CredentialType+"/"+strconv.Itoa(pa.StatusCode))
+					}
+				}
+			}
+			if len(attempts) > 0 {
+				attrs[AttrAttempts] = strings.Join(attempts, ",")
+			}
 		}
 	}
 	if len(attrs) > 0 {
@@ -206,8 +244,13 @@ func hasAnyMarker(payload []byte) bool {
 // echo the id without the creator prefix ("claude-sonnet-4.5" for
 // "anthropic/claude-sonnet-4.5") or as a dated snapshot of it
 // ("gpt-5.5-2026-04-23" for "openai/gpt-5.5", seen live on the Responses
-// stream 2026-11-19); both are the same model, not a fallback.
+// stream 2026-11-19); both are the same model, not a fallback. A different
+// version (gpt-5 for gpt-5.5) still differs: gpt-5-5 is not gpt-5.
 func sameModel(served, requested string) bool {
+	// The Responses API echoes Claude ids with dashes for dots
+	// ("claude-sonnet-5-5" for "anthropic/claude-sonnet-5.5", seen live
+	// 2026-11-19); dots and dashes are compared as equal.
+	served, requested = strings.ReplaceAll(served, ".", "-"), strings.ReplaceAll(requested, ".", "-")
 	if strings.EqualFold(served, requested) {
 		return true
 	}
