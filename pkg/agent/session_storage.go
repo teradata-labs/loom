@@ -15,6 +15,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	"go.uber.org/zap"
@@ -111,10 +112,20 @@ type CostStorage interface {
 // together are too large for the context is answered by replacing them with a
 // note the model can act on, and the stored rows must say what the model was
 // sent. loom's SQLite and Postgres stores implement it; a row the caller does
-// not own is left unchanged.
+// not own is left unchanged. A call that names rows but changes none returns
+// an error wrapping ErrNoToolResultsRewritten, so the caller
+// (SegmentedMemory.ReplaceInFlightResults) warns that memory and store now
+// differ instead of taking the rewrite as done.
 type ResultRewriter interface {
 	RewriteToolResults(ctx context.Context, sessionID string, seqs []int64, content string) error
 }
+
+// ErrNoToolResultsRewritten is the error a ResultRewriter wraps when it was
+// given rows to rewrite and changed none of them: the caller does not own
+// the session (for example a context without the owner's user id), or no
+// given row is a tool result of the session. A reload then sends the stored
+// results, not the note the model was sent.
+var ErrNoToolResultsRewritten = errors.New("no tool result row was rewritten")
 
 // RowUsageAdder is the optional operation a store offers to add what LLM
 // calls cost to a row it already holds. It exists for one case: a turn that

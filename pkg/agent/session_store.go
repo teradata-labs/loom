@@ -1731,9 +1731,13 @@ func (s *SessionStore) RewriteToolResults(ctx context.Context, sessionID string,
 	defer s.mu.Unlock()
 	query, args := seqUpdateQuery("UPDATE messages SET content = ?, tool_result_json = NULL WHERE role = 'tool' AND session_id = ? AND id IN", sessionID, seqs)
 	args = append([]interface{}{content}, args...)
-	if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
+	res, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
 		span.RecordError(err)
 		return fmt.Errorf("failed to rewrite tool results: %w", err)
+	}
+	if n, raErr := res.RowsAffected(); raErr == nil && n == 0 {
+		return fmt.Errorf("%w: session %s, %d rows named", ErrNoToolResultsRewritten, sessionID, len(seqs))
 	}
 	return nil
 }

@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -469,6 +470,51 @@ func TestRewriteToolResultsIsTheOwners(t *testing.T) {
 	msgs, _ = store.LoadMessages(ann, "s-rw")
 	assert.Equal(t, "the note", msgs[2].Content)
 	assert.Equal(t, "q", msgs[0].Content, "a row that is not a tool result was rewritten")
+}
+
+// A rewrite that names rows and changes none is an error the caller can see
+// (ErrNoToolResultsRewritten): memory then holds the note and the store the
+// full results, and a reload would resend them. A rewrite that changes a row
+// is not an error, and naming no row is a no-op.
+func TestRewriteToolResultsThatChangesNoRowIsAnError(t *testing.T) {
+	t.Parallel()
+	store, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
+	require.NoError(t, err, "the store must open")
+	t.Cleanup(func() { _ = store.Close() })
+	ann := llmtypes.ContextWithUserID(context.Background(), "ann")
+	require.NoError(t, store.SaveSession(ann, &Session{ID: "s-rw0"}), "the session must save")
+	for _, m := range []Message{{Role: "user", Content: "q"}, {Role: "assistant", ToolCalls: []ToolCall{{ID: "c1", Name: "rows"}}}, {Role: "tool", ToolUseID: "c1", Content: "rows"}} {
+		mm := m
+		require.NoError(t, store.SaveMessage(ann, "s-rw0", &mm, m.Role == "user"), "a row must save")
+	}
+	msgs, err := store.LoadMessages(ann, "s-rw0")
+	require.NoError(t, err, "the rows must load")
+	require.Len(t, msgs, 3, "the fixture has three rows")
+	seqOf := func(m Message) int64 {
+		seq, err := strconv.ParseInt(m.ID, 10, 64)
+		require.NoError(t, err, "a stored row has a numeric id")
+		return seq
+	}
+	userSeq, toolSeq := seqOf(msgs[0]), seqOf(msgs[2])
+
+	tests := []struct {
+		name    string
+		seqs    []int64
+		wantErr bool
+	}{
+		{name: "no named row is a tool result", seqs: []int64{userSeq}, wantErr: true},
+		{name: "a named row that is not there", seqs: []int64{toolSeq + 1000}, wantErr: true},
+		{name: "no row named", seqs: nil, wantErr: false},
+		{name: "a tool row named", seqs: []int64{toolSeq}, wantErr: false},
+	}
+	for _, tt := range tests {
+		err := store.RewriteToolResults(ann, "s-rw0", tt.seqs, "the note")
+		if tt.wantErr {
+			assert.ErrorIs(t, err, ErrNoToolResultsRewritten, "%s: a rewrite that changed no row reported success", tt.name)
+		} else {
+			assert.NoError(t, err, "%s: the rewrite failed", tt.name)
+		}
+	}
 }
 
 // The cheap tier is the settled estimate plus the step's bytes once, at

@@ -884,16 +884,21 @@ func (s *SessionStore) RewriteToolResults(ctx context.Context, sessionID string,
 	if len(seqs) == 0 {
 		return nil
 	}
+	var affected int64
 	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := tx.Exec(ctx,
+		tag, err := tx.Exec(ctx,
 			`UPDATE messages SET content = $1, tool_result_json = NULL
 			 WHERE role = 'tool' AND session_id = $2 AND user_id = $3 AND id = ANY($4)`,
 			content, sessionID, UserIDFromContext(ctx), seqs)
+		affected = tag.RowsAffected()
 		return err
 	})
 	if err != nil {
 		span.RecordError(err)
 		return fmt.Errorf("failed to rewrite tool results: %w", err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("%w: session %s, %d rows named", agent.ErrNoToolResultsRewritten, sessionID, len(seqs))
 	}
 	return nil
 }

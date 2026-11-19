@@ -480,7 +480,7 @@ func (sm *SegmentedMemory) ReplaceInFlightResults(ctx context.Context, note stri
 		if rw, ok := sm.sessionStore.(ResultRewriter); ok {
 			if err := rw.RewriteToolResults(ctx, sm.sessionID, seqs, note); err != nil {
 				zap.L().Warn("step results replaced in memory; the store could not rewrite them",
-					zap.String("session_id", sm.sessionID), zap.Error(err))
+					zap.String("session_id", sm.sessionID), zap.Int("rows", len(seqs)), zap.Error(err))
 			}
 		} else {
 			warnOnce("ResultRewriter", "the store cannot rewrite tool rows; a step replaced for being too large reloads as it was stored")

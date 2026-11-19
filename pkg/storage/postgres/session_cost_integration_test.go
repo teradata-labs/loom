@@ -114,7 +114,8 @@ func TestRewriteToolResults_IsTheOwners(t *testing.T) {
 	require.NoError(t, err)
 
 	other := ContextWithUserID(context.Background(), hrUniqueID("user-other"))
-	require.NoError(t, rw.RewriteToolResults(other, sessionID, []int64{toolSeq}, "not yours"))
+	require.ErrorIs(t, rw.RewriteToolResults(other, sessionID, []int64{toolSeq}, "not yours"), agent.ErrNoToolResultsRewritten,
+		"a rewrite that changed no row must say so")
 	msgs, err = store.LoadMessages(ctx, sessionID)
 	require.NoError(t, err)
 	require.Equal(t, "rows", msgs[2].Content, "another owner rewrote the row")
