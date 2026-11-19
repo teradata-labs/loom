@@ -142,11 +142,18 @@ const (
 )
 
 // ApplyTimeoutEnv fills cfg's unset timeouts from the environment variables
-// above and returns cfg. A value that is not a positive integer is ignored.
+// above and returns cfg. A value that is not a positive whole number ("600s",
+// "-1") is ignored with a warning that names the variable.
 func ApplyTimeoutEnv(cfg Config) Config {
 	read := func(name string) time.Duration {
-		n, err := strconv.Atoi(strings.TrimSpace(os.Getenv(name)))
+		v := strings.TrimSpace(os.Getenv(name))
+		if v == "" {
+			return 0
+		}
+		n, err := strconv.Atoi(v)
 		if err != nil || n <= 0 {
+			zap.L().Warn("vercel-ai-gateway: ignoring a timeout variable that is not a positive whole number of seconds; the default applies",
+				zap.String("variable", name), zap.String("value", v))
 			return 0
 		}
 		return time.Duration(n) * time.Second
@@ -317,7 +324,11 @@ func NewClient(cfg Config) (*Client, error) {
 	if err := ValidateAPI(cfg.API); err != nil {
 		return nil, err
 	}
-	callTimeout := max(cfg.Timeout, 0)
+	if cfg.Timeout < 0 || cfg.StreamFirstByteTimeout < 0 || cfg.StreamIdleTimeout < 0 {
+		return nil, fmt.Errorf("vercel-ai-gateway: timeouts must not be negative (Timeout %s, StreamFirstByteTimeout %s, StreamIdleTimeout %s)",
+			cfg.Timeout, cfg.StreamFirstByteTimeout, cfg.StreamIdleTimeout)
+	}
+	callTimeout := cfg.Timeout
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = DefaultTimeout
 	}
@@ -578,7 +589,8 @@ func (c *Client) ChatStream(ctx context.Context, messages []types.Message, tools
 		resp, err = c.inner.ChatStream(ctx, messages, tools, cb)
 	}
 	if err != nil && retried != "" {
-		err = fmt.Errorf("%w (after one retry: the first attempt ended with a %s before any output)", err, retried)
+		first := map[string]string{"stall": "stalled", "truncated": "was cut off"}[retried]
+		err = fmt.Errorf("%w (after one retry: the first attempt %s before any output)", err, first)
 	}
 	resp, err = c.finish(resp, err)
 	if resp != nil && retried != "" {
@@ -682,12 +694,22 @@ func (t *sessionTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	return base.RoundTrip(r)
 }
 
-// sessionKey is the HMAC key for session ids. With an API key it is derived
-// from that key, so every loom replica sharing the key sends the same id for
-// one session (a session can move between replicas; a different id would
-// re-pin the upstream and lose prompt-cache hits). Without one (OIDC, whose
-// token rotates) it is random per process.
+// EnvSessionKey optionally sets the HMAC key for session ids: a server-side
+// secret the gateway does not hold. Set the same value on every replica.
+const EnvSessionKey = "LOOM_VERCEL_GATEWAY_SESSION_KEY" // #nosec G101 -- environment variable name, not a credential
+
+// sessionKey is the HMAC key for session ids: EnvSessionKey when set; else
+// derived from the API key, so every loom replica sharing it sends the same
+// id for one session (a session can move between replicas; a different id
+// would re-pin the upstream and lose prompt-cache hits). The gateway holds
+// the API key, so that id is a pseudonym it could reverse by trying loom's
+// short session ids; EnvSessionKey prevents that. Without either (OIDC,
+// whose token rotates) the key is random per process.
 func sessionKey(apiKey string) []byte {
+	if k := strings.TrimSpace(os.Getenv(EnvSessionKey)); k != "" {
+		sum := sha256.Sum256([]byte("loom-vercel-gateway-session-key:" + k))
+		return sum[:]
+	}
 	if apiKey != "" {
 		sum := sha256.Sum256([]byte("loom-vercel-gateway-session-key:" + apiKey))
 		return sum[:]
@@ -715,9 +737,10 @@ func gatewaySessionID(key []byte, loomSessionID string) string {
 const minSecretFragment = 16
 
 // secretForms expands each secret into the forms it can take in an error
-// text: as is; JSON-escaped (a PEM private key's newlines become \n in an
-// echoed request); and, for a multi-line secret, each line. Longest first, so
-// a whole secret is replaced before its parts.
+// text: as is and JSON-escaped (a PEM private key's newlines become \n in an
+// echoed request; also with "/" escaped), at any length; and, for a
+// multi-line secret, each line of at least minSecretFragment bytes. Longest
+// first, so a whole secret is replaced before its parts.
 func secretForms(secrets []string) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -727,10 +750,19 @@ func secretForms(secrets []string) []string {
 			out = append(out, s)
 		}
 	}
+	addWhole := func(s string) { // a whole secret is redacted at any length
+		if s != "" && !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
 	for _, s := range secrets {
-		add(s)
+		addWhole(s)
 		if b, err := json.Marshal(s); err == nil {
-			add(string(b[1 : len(b)-1]))
+			esc := string(b[1 : len(b)-1])
+			addWhole(esc)
+			// Some encoders also escape "/" (AWS secret keys contain it).
+			addWhole(strings.ReplaceAll(esc, "/", `\/`))
 		}
 		for _, line := range strings.Split(s, "\n") {
 			add(strings.TrimSpace(line))
@@ -765,24 +797,44 @@ type redactTransport struct {
 	secrets []string
 }
 
-// RoundTrip reads an error body whole (bounded by maxRedactedBody), redacts
-// it and hands back the result.
+// RoundTrip swaps an error response's body for one that redacts on its first
+// read. The read happens when the client reads the body, after the stream
+// first-byte/idle timeouts have wrapped it, so a stalled error body is cut
+// off by those timeouts like any other.
 func (t *redactTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	resp, err := t.base.RoundTrip(r)
 	if err != nil || resp == nil || resp.StatusCode < http.StatusBadRequest || resp.Body == nil {
 		return resp, err
 	}
-	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, maxRedactedBody))
-	_ = resp.Body.Close()
-	body := redactText(string(raw), t.secrets)
-	if readErr != nil {
-		body += " [error body unreadable: " + readErr.Error() + "]"
-	}
-	resp.Body = io.NopCloser(strings.NewReader(body))
-	resp.ContentLength = int64(len(body))
+	resp.Body = &redactingBody{src: resp.Body, secrets: t.secrets}
+	resp.ContentLength = -1
 	resp.Header.Del("Content-Length")
 	return resp, nil
 }
+
+// redactingBody reads its source in full on the first Read (bounded by
+// maxRedactedBody), redacts it, and serves the result.
+type redactingBody struct {
+	src     io.ReadCloser
+	secrets []string
+	buf     *strings.Reader
+	err     error
+}
+
+func (b *redactingBody) Read(p []byte) (int, error) {
+	if b.buf == nil {
+		raw, err := io.ReadAll(io.LimitReader(b.src, maxRedactedBody))
+		b.buf = strings.NewReader(redactText(string(raw), b.secrets))
+		b.err = err // a read error (a timeout) is returned after the redacted part
+	}
+	n, err := b.buf.Read(p)
+	if err == io.EOF && b.err != nil {
+		return n, b.err
+	}
+	return n, err
+}
+
+func (b *redactingBody) Close() error { return b.src.Close() }
 
 // maxRedactedBody caps how much of an error body is read for redaction.
 const maxRedactedBody = 1 << 20

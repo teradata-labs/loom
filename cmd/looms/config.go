@@ -2271,7 +2271,8 @@ llm:
   # vercel_gateway_api: ""                              # "" / auto | messages | chat | responses
   # vercel_gateway_stream_first_byte_timeout_seconds: 60   # stalled-call detection; 0 = default
   # vercel_gateway_stream_idle_timeout_seconds: 90         # silence allowed inside a stream; 0 = default
-  # timeout_seconds (above) caps a whole gateway call when set; unset = no cap
+  # the common timeout_seconds (at the end of this llm block) also caps each whole
+  # gateway call; raise or remove it for answers that stream longer than that
   # vercel_gateway_routing:
   #   order: [bedrock, anthropic]
   #   only: []

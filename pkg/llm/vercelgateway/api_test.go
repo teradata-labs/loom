@@ -260,3 +260,64 @@ func TestClient_ErrorBodyIsRedactedBeforeTheRateLimiterLogsIt(t *testing.T) {
 		assert.NotContains(t, e.Message, secret)
 	}
 }
+
+// A stalled error body is cut off by the stream timeouts even with BYOK
+// redaction on (the redaction reads the body lazily, under those timeouts).
+func TestClient_StalledErrorBodyWithBYOKIsCutOffByStreamTimeouts(t *testing.T) {
+	t.Setenv("LOOM_BYOK_STALL_TEST", "sk-ant-api03-fake-byok-value-for-stall-test") // fake, test only
+	g := &gateway{handler: func(w http.ResponseWriter, r *http.Request, _ []byte) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = io.WriteString(w, `{"error":{"message":"partial`)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done() // the rest of the body never comes
+	}}
+	c := newTestClient(t, g.start(t).URL, "openai/gpt-5", shortStreamTimeouts, func(cfg *Config) {
+		cfg.Routing = &Routing{BYOK: []BYOKCredential{{Provider: "openai", Env: map[string]string{"apiKey": "LOOM_BYOK_STALL_TEST"}}}}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	started := time.Now()
+	_, err := c.Chat(ctx, hi, nil)
+	require.Error(t, err)
+	assert.Less(t, time.Since(started), 3*time.Second, "stopped by the 150 ms stream timeouts, not the caller's 10 s deadline")
+	assert.NoError(t, ctx.Err())
+}
+
+func TestSecretForms_EscapedShortAndSlash(t *testing.T) {
+	// A PEM whose last line is shorter than the per-line minimum: only the
+	// JSON-escaped whole form catches its tail in an echo.
+	const pem = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCfakefake\nAbC12==\n-----END PRIVATE KEY-----\n" // fake, test only
+	escaped, _ := json.Marshal(pem)
+	in := `{"echo":{"privateKey":` + string(escaped) + `}}`
+	got := redactText(in, secretForms([]string{pem}))
+	assert.NotContains(t, got, "AbC12==", "the short last line goes with the escaped whole secret")
+
+	short := "abc123short" // fake, under the fragment minimum
+	assert.Equal(t, "key=[REDACTED]", redactText("key="+short, secretForms([]string{short})), "a whole secret is redacted at any length")
+
+	aws := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" // AWS documentation example, not a real key
+	assert.NotContains(t, redactText(`{"s":"wJalrXUtnFEMI\/K7MDENG\/bPxRfiCYEXAMPLEKEY"}`, secretForms([]string{aws})), "K7MDENG")
+}
+
+func TestNewClient_RejectsNegativeTimeouts(t *testing.T) {
+	for _, mut := range []func(*Config){
+		func(c *Config) { c.Timeout = -time.Second },
+		func(c *Config) { c.StreamFirstByteTimeout = -time.Second },
+		func(c *Config) { c.StreamIdleTimeout = -time.Second },
+	} {
+		cfg := Config{APIKey: fakeKey, Model: "openai/gpt-5"}
+		mut(&cfg)
+		_, err := NewClient(cfg)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "must not be negative")
+	}
+}
+
+func TestSessionKey_ServerSecretWins(t *testing.T) {
+	t.Setenv(EnvSessionKey, "")
+	fromAPIKey := gatewaySessionID(sessionKey(fakeKey), "sess-abc")
+	t.Setenv(EnvSessionKey, "replica-shared-secret-for-test")
+	withSecret := gatewaySessionID(sessionKey(fakeKey), "sess-abc")
+	assert.NotEqual(t, fromAPIKey, withSecret, "a server-side secret replaces the API-key-derived key")
+	assert.Equal(t, withSecret, gatewaySessionID(sessionKey("vck_other_test_key"), "sess-abc"), "and does not depend on the API key")
+}
