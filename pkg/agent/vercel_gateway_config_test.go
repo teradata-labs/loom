@@ -238,9 +238,9 @@ agent:
     gateway_routing:
       byok:
         - provider: anthropic
-          env: {apiKey: LOOM_LLM_ANTHROPIC_API_KEY}
+          env: {apiKey: LOOM_BYOK_ANTHROPIC_API_KEY}
         - provider: azure
-          env: {apiKey: AZURE_OPENAI_API_KEY}
+          env: {apiKey: LOOM_BYOK_AZURE_API_KEY}
           values: {resourceName: my-resource}
           model_mappings: {openai/gpt-5.5: gpt55}
       provider_timeouts_ms: {anthropic: 15000}
@@ -261,8 +261,8 @@ func TestLoadConfig_GatewayFullRoutingAndAPIRoundTrip(t *testing.T) {
 	off := false
 	want := &loomv1.LLMGatewayRouting{
 		Byok: []*loomv1.GatewayBYOKCredential{
-			{Provider: "anthropic", Env: map[string]string{"apiKey": "LOOM_LLM_ANTHROPIC_API_KEY"}},
-			{Provider: "azure", Env: map[string]string{"apiKey": "AZURE_OPENAI_API_KEY"},
+			{Provider: "anthropic", Env: map[string]string{"apiKey": "LOOM_BYOK_ANTHROPIC_API_KEY"}},
+			{Provider: "azure", Env: map[string]string{"apiKey": "LOOM_BYOK_AZURE_API_KEY"},
 				Values: map[string]string{"resourceName": "my-resource"}, ModelMappings: map[string]string{"openai/gpt-5.5": "gpt55"}},
 		},
 		ProviderTimeoutsMs:     map[string]int32{"anthropic": 15000},

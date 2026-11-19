@@ -133,6 +133,13 @@ var byokFields = map[string]map[string]byokField{
 // list a client can validate against, so only the shape is checked.
 var providerSlugRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
+// BYOKEnvPrefix is the prefix every BYOK environment variable must carry.
+// Agent YAML can come from CreateAgentFromConfig or from a model's
+// agent_management tool; without the prefix an agent could name any server
+// variable (a database password, say) and have its value sent to the gateway
+// and its upstreams. The operator decides what exists under the prefix.
+const BYOKEnvPrefix = "LOOM_BYOK_"
+
 // envNameRe matches a portable environment variable name.
 var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
@@ -373,7 +380,10 @@ func (c BYOKCredential) validate() error {
 			// The entry is never echoed: agent YAML has ${VAR} expanded before it
 			// is parsed, so a mistaken "${ANTHROPIC_API_KEY}" arrives here as the
 			// key itself, and an error would carry it into logs and RPC replies.
-			return fmt.Errorf("%s.%s: the env entry is not an environment variable name (write the name, such as ANTHROPIC_API_KEY, not ${ANTHROPIC_API_KEY}; the entry is not shown)", c.Provider, name)
+			return fmt.Errorf("%s.%s: the env entry is not an environment variable name (write the name, such as %sANTHROPIC_API_KEY, not ${...}; the entry is not shown)", c.Provider, name, BYOKEnvPrefix)
+		}
+		if !strings.HasPrefix(envVar, BYOKEnvPrefix) {
+			return fmt.Errorf("%s.%s: BYOK credentials are read only from variables whose names start with %s (the entry is not shown)", c.Provider, name, BYOKEnvPrefix)
 		}
 	}
 	for name := range c.Values {

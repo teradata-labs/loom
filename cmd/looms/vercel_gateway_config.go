@@ -98,6 +98,12 @@ func vercelGatewayConfigFrom(cfg LLMConfig) vercelgateway.Config {
 	if cfg.Timeout > 0 {
 		gc.Timeout = time.Duration(cfg.Timeout) * time.Second
 	}
+	if cfg.VercelGatewayStreamFirstByteTimeout > 0 {
+		gc.StreamFirstByteTimeout = time.Duration(cfg.VercelGatewayStreamFirstByteTimeout) * time.Second
+	}
+	if cfg.VercelGatewayStreamIdleTimeout > 0 {
+		gc.StreamIdleTimeout = time.Duration(cfg.VercelGatewayStreamIdleTimeout) * time.Second
+	}
 	if cfg.VercelGatewayOIDC {
 		gc.OIDC = &vercelgateway.OIDCConfig{TokenFile: loomconfig.ExpandEnvPlaceholders(cfg.VercelGatewayOIDCTokenFile)}
 	}

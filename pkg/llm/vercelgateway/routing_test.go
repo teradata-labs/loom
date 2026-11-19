@@ -46,24 +46,25 @@ func TestRouting_Validate(t *testing.T) {
 		{name: "duplicate fallback", r: &Routing{FallbackModels: []string{"a/b", "a/b"}}, wantErr: "twice"},
 
 		{name: "byok field names any case (viper lowercases looms.yaml keys)", r: &Routing{BYOK: []BYOKCredential{{Provider: "vertex",
-			Env:    map[string]string{"googlecredentials.privatekey": "GCP_PK"},
+			Env:    map[string]string{"googlecredentials.privatekey": "LOOM_BYOK_GCP_PK"},
 			Values: map[string]string{"project": "p", "location": "l", "googlecredentials.clientemail": "e"}}}}},
-		{name: "byok anthropic", r: &Routing{BYOK: []BYOKCredential{{Provider: "anthropic", Env: map[string]string{"apiKey": "LOOM_LLM_ANTHROPIC_API_KEY"}}}}},
-		{name: "byok azure", r: &Routing{BYOK: []BYOKCredential{{Provider: "azure", Env: map[string]string{"apiKey": "AZ_KEY"},
+		{name: "byok anthropic", r: &Routing{BYOK: []BYOKCredential{{Provider: "anthropic", Env: map[string]string{"apiKey": "LOOM_BYOK_ANTHROPIC_API_KEY"}}}}},
+		{name: "byok azure", r: &Routing{BYOK: []BYOKCredential{{Provider: "azure", Env: map[string]string{"apiKey": "LOOM_BYOK_AZ_KEY"},
 			Values: map[string]string{"resourceName": "my-res"}, ModelMappings: map[string]string{"openai/gpt-5.5": "gpt55-deploy"}}}}},
 		{name: "byok vertex", r: &Routing{BYOK: []BYOKCredential{{Provider: "vertex",
-			Env:    map[string]string{"googleCredentials.privateKey": "GCP_PK"},
+			Env:    map[string]string{"googleCredentials.privateKey": "LOOM_BYOK_GCP_PK"},
 			Values: map[string]string{"project": "p", "location": "us-east5", "googleCredentials.clientEmail": "sa@p.iam.gserviceaccount.com"}}}}},
 		{name: "byok bedrock optional region", r: &Routing{BYOK: []BYOKCredential{{Provider: "bedrock",
-			Env: map[string]string{"accessKeyId": "AK", "secretAccessKey": "SK"}}}}},
-		{name: "byok unknown provider", r: &Routing{BYOK: []BYOKCredential{{Provider: "groq", Env: map[string]string{"apiKey": "K"}}}}, wantErr: "BYOK credentials for"},
-		{name: "byok unknown field", r: &Routing{BYOK: []BYOKCredential{{Provider: "anthropic", Env: map[string]string{"apiKey": "K", "token": "T"}}}}, wantErr: `no field "token"`},
+			Env: map[string]string{"accessKeyId": "LOOM_BYOK_AK", "secretAccessKey": "LOOM_BYOK_SK"}}}}},
+		{name: "byok unknown provider", r: &Routing{BYOK: []BYOKCredential{{Provider: "groq", Env: map[string]string{"apiKey": "LOOM_BYOK_K"}}}}, wantErr: "BYOK credentials for"},
+		{name: "byok unknown field", r: &Routing{BYOK: []BYOKCredential{{Provider: "anthropic", Env: map[string]string{"apiKey": "LOOM_BYOK_K", "token": "LOOM_BYOK_T"}}}}, wantErr: `no field "token"`},
 		{name: "byok secret as literal", r: &Routing{BYOK: []BYOKCredential{{Provider: "anthropic", Values: map[string]string{"apiKey": "sk-ant-literal"}}}}, wantErr: "is a secret"},
-		{name: "byok missing required", r: &Routing{BYOK: []BYOKCredential{{Provider: "azure", Env: map[string]string{"apiKey": "K"}}}}, wantErr: `missing required field "resourceName"`},
+		{name: "byok missing required", r: &Routing{BYOK: []BYOKCredential{{Provider: "azure", Env: map[string]string{"apiKey": "LOOM_BYOK_K"}}}}, wantErr: `missing required field "resourceName"`},
+		{name: "byok variable without the prefix", r: &Routing{BYOK: []BYOKCredential{{Provider: "anthropic", Env: map[string]string{"apiKey": "DATABASE_PASSWORD"}}}}, wantErr: "start with LOOM_BYOK_"},
 		{name: "byok bad env name", r: &Routing{BYOK: []BYOKCredential{{Provider: "openai", Env: map[string]string{"apiKey": "$KEY"}}}}, wantErr: "not an environment variable name"},
 		{name: "byok field in env and values", r: &Routing{BYOK: []BYOKCredential{{Provider: "bedrock",
-			Env: map[string]string{"accessKeyId": "AK", "secretAccessKey": "SK", "region": "R"}, Values: map[string]string{"region": "us-east-1"}}}}, wantErr: "both env and values"},
-		{name: "byok mappings off azure", r: &Routing{BYOK: []BYOKCredential{{Provider: "openai", Env: map[string]string{"apiKey": "K"},
+			Env: map[string]string{"accessKeyId": "LOOM_BYOK_AK", "secretAccessKey": "LOOM_BYOK_SK", "region": "LOOM_BYOK_R"}, Values: map[string]string{"region": "us-east-1"}}}}, wantErr: "both env and values"},
+		{name: "byok mappings off azure", r: &Routing{BYOK: []BYOKCredential{{Provider: "openai", Env: map[string]string{"apiKey": "LOOM_BYOK_K"},
 			ModelMappings: map[string]string{"a/b": "c"}}}}, wantErr: "azure credentials only"},
 		{name: "provider timeout ok", r: &Routing{ProviderTimeoutsMS: map[string]int{"anthropic": 15000}}},
 		{name: "provider timeout low", r: &Routing{ProviderTimeoutsMS: map[string]int{"anthropic": 999}}, wantErr: "between 1000 and 789000"},
@@ -136,11 +137,11 @@ func TestRouting_ResolveExtraBody(t *testing.T) {
 	off := false
 	full := &Routing{
 		BYOK: []BYOKCredential{
-			{Provider: "anthropic", Env: map[string]string{"apiKey": "K1"}},
-			{Provider: "anthropic", Env: map[string]string{"apiKey": "K2"}},
-			{Provider: "vertex", Env: map[string]string{"googleCredentials.privateKey": "PK"},
+			{Provider: "anthropic", Env: map[string]string{"apiKey": "LOOM_BYOK_K1"}},
+			{Provider: "anthropic", Env: map[string]string{"apiKey": "LOOM_BYOK_K2"}},
+			{Provider: "vertex", Env: map[string]string{"googleCredentials.privateKey": "LOOM_BYOK_PK"},
 				Values: map[string]string{"project": "p", "location": "l", "googleCredentials.clientEmail": "e"}},
-			{Provider: "azure", Env: map[string]string{"apiKey": "AZ"}, Values: map[string]string{"resourceName": "res"},
+			{Provider: "azure", Env: map[string]string{"apiKey": "LOOM_BYOK_AZ"}, Values: map[string]string{"resourceName": "res"},
 				ModelMappings: map[string]string{"openai/gpt-5.5": "dep-b", "openai/gpt-5": "dep-a"}},
 		},
 		ProviderTimeoutsMS:     map[string]int{"anthropic": 15000},
@@ -151,7 +152,7 @@ func TestRouting_ResolveExtraBody(t *testing.T) {
 		User:                   "user-42",
 		Tags:                   []string{"feature:chat"},
 	}
-	env := map[string]string{"K1": "first-key", "K2": "second-key", "PK": "pem", "AZ": "az-key"}
+	env := map[string]string{"LOOM_BYOK_K1": "first-key", "LOOM_BYOK_K2": "second-key", "LOOM_BYOK_PK": "pem", "LOOM_BYOK_AZ": "az-key"}
 	raw, err = render(full, env)
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"providerOptions":{"gateway":{
@@ -170,7 +171,7 @@ func TestRouting_ResolveExtraBody(t *testing.T) {
 		"tags":["feature:chat"]}}}`, raw)
 
 	// A missing variable fails without echoing the entry or any value.
-	_, err = render(full, map[string]string{"K1": "first-key"})
+	_, err = render(full, map[string]string{"LOOM_BYOK_K1": "first-key"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "anthropic.apiKey: the environment variable named under env is not set")
 	assert.NotContains(t, err.Error(), "first-key")
@@ -183,7 +184,7 @@ func TestRouting_ProtoRoundTrip(t *testing.T) {
 	affinity := true
 	p := &loomv1.LLMGatewayRouting{Order: []string{"a"}, Only: []string{"b"}, Sort: "ttft",
 		FallbackModels: []string{"x/y"}, ZeroDataRetention: true, Caching: "auto",
-		Byok: []*loomv1.GatewayBYOKCredential{{Provider: "azure", Env: map[string]string{"apiKey": "AZ"},
+		Byok: []*loomv1.GatewayBYOKCredential{{Provider: "azure", Env: map[string]string{"apiKey": "LOOM_BYOK_AZ"},
 			Values: map[string]string{"resourceName": "r"}, ModelMappings: map[string]string{"a/b": "c"}}},
 		ProviderTimeoutsMs: map[string]int32{"azure": 5000}, SessionAffinity: &affinity,
 		DisallowPromptTraining: true, InferenceRegion: &loomv1.GatewayInferenceRegion{Scope: "zone", GeoRegion: "eu"},
@@ -191,7 +192,7 @@ func TestRouting_ProtoRoundTrip(t *testing.T) {
 	r := RoutingFromProto(p)
 	assert.Equal(t, &Routing{Order: []string{"a"}, Only: []string{"b"}, Sort: "ttft",
 		FallbackModels: []string{"x/y"}, ZeroDataRetention: true, Caching: "auto",
-		BYOK: []BYOKCredential{{Provider: "azure", Env: map[string]string{"apiKey": "AZ"},
+		BYOK: []BYOKCredential{{Provider: "azure", Env: map[string]string{"apiKey": "LOOM_BYOK_AZ"},
 			Values: map[string]string{"resourceName": "r"}, ModelMappings: map[string]string{"a/b": "c"}}},
 		ProviderTimeoutsMS: map[string]int{"azure": 5000}, SessionAffinity: &affinity,
 		DisallowPromptTraining: true, InferenceRegion: &InferenceRegion{Scope: "zone", GeoRegion: "eu"},
@@ -209,16 +210,26 @@ func TestRouting_ProtoRoundTrip(t *testing.T) {
 // Neither validation nor resolution may echo it.
 func TestRouting_BYOKErrorsNeverEchoTheEnvEntry(t *testing.T) {
 	const anthropicKey = "sk-ant-api03-fake-test-value-0123456789" // fake, test only
-	const awsKeyID = "AKIAFAKETESTVALUE0123"                         // fake, shaped like a variable name
+	const awsKeyID = "AKIAFAKETESTVALUE0123"                       // fake, shaped like a variable name
 
 	err := (&Routing{BYOK: []BYOKCredential{{Provider: "anthropic", Env: map[string]string{"apiKey": anthropicKey}}}}).Validate()
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), anthropicKey)
 	assert.Contains(t, err.Error(), "not an environment variable name")
 
-	r := &Routing{BYOK: []BYOKCredential{{Provider: "bedrock", Env: map[string]string{"accessKeyId": awsKeyID, "secretAccessKey": "SK_NAME"}}}}
-	require.NoError(t, r.Validate(), "an AWS key id is shaped like a variable name, so validation cannot catch it")
+	// An AWS key id is shaped like a variable name; the LOOM_BYOK_ prefix
+	// rule rejects it, still without echoing it.
+	r := &Routing{BYOK: []BYOKCredential{{Provider: "bedrock", Env: map[string]string{"accessKeyId": awsKeyID, "secretAccessKey": "LOOM_BYOK_SK_NAME"}}}}
+	err = r.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "start with LOOM_BYOK_")
+	assert.NotContains(t, err.Error(), awsKeyID)
+
+	// Resolution of a prefixed name that is unset does not echo the name.
+	r = &Routing{BYOK: []BYOKCredential{{Provider: "anthropic", Env: map[string]string{"apiKey": "LOOM_BYOK_UNSET_FOR_TEST"}}}}
+	require.NoError(t, r.Validate())
 	_, err = r.ResolveExtraBody(func(string) string { return "" })
 	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "LOOM_BYOK_UNSET_FOR_TEST")
 	assert.NotContains(t, err.Error(), awsKeyID)
 }

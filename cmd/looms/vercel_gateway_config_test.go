@@ -317,7 +317,7 @@ llm:
 func TestLoadConfig_VercelGatewayFullRoutingAndAPI(t *testing.T) {
 	isolateGatewayEnv(t)
 	t.Setenv(vercelgateway.EnvAPIKey, testGatewayKey)
-	t.Setenv("TEST_BYOK_ANTHROPIC", "byok-test-value")
+	t.Setenv("LOOM_BYOK_TEST_ANTHROPIC", "byok-test-value")
 	viper.Reset()
 	t.Cleanup(viper.Reset)
 	yaml := `server:
@@ -326,10 +326,13 @@ llm:
   provider: vercel-ai-gateway
   vercel_gateway_model: openai/gpt-5.5
   vercel_gateway_api: responses
+  timeout_seconds: 600
+  vercel_gateway_stream_first_byte_timeout_seconds: 120
+  vercel_gateway_stream_idle_timeout_seconds: 45
   vercel_gateway_routing:
     byok:
       - provider: anthropic
-        env: {apiKey: TEST_BYOK_ANTHROPIC}
+        env: {apiKey: LOOM_BYOK_TEST_ANTHROPIC}
     provider_timeouts_ms: {anthropic: 15000}
     session_affinity: false
     disallow_prompt_training: true
@@ -345,6 +348,9 @@ llm:
 	require.NoError(t, validateVercelGatewayConfig(cfg.LLM))
 	gc := vercelGatewayConfigFrom(cfg.LLM)
 	assert.Equal(t, vercelgateway.APIResponses, gc.API)
+	assert.Equal(t, 600*time.Second, gc.Timeout, "timeout_seconds caps a whole gateway call")
+	assert.Equal(t, 120*time.Second, gc.StreamFirstByteTimeout)
+	assert.Equal(t, 45*time.Second, gc.StreamIdleTimeout)
 	require.NotNil(t, gc.Routing)
 	require.NotNil(t, gc.Routing.SessionAffinity)
 	assert.False(t, *gc.Routing.SessionAffinity)

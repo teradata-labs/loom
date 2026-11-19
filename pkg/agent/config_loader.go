@@ -404,7 +404,7 @@ type LLMConfigYAML struct {
 //	    fallback_models: [openai/gpt-5]
 //	    byok:
 //	      - provider: anthropic
-//	        env: {apiKey: LOOM_LLM_ANTHROPIC_API_KEY}
+//	        env: {apiKey: LOOM_BYOK_ANTHROPIC_API_KEY}
 type LLMGatewayRoutingYAML struct {
 	Order                  []string                    `yaml:"order,omitempty" mapstructure:"order"`
 	Only                   []string                    `yaml:"only,omitempty" mapstructure:"only"`

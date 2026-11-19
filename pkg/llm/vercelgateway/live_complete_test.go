@@ -40,14 +40,16 @@ import (
 // (2026-11-19): the Responses API, per-request BYOK, provider timeouts,
 // session affinity, the remaining providerOptions keys, thinking replay across
 // upstreams, cache usage per upstream, and catalog price tiers. Same switches
-// as live_test.go; BYOK tests also need LOOM_LLM_ANTHROPIC_API_KEY.
+// as live_test.go; BYOK tests also need LOOM_LLM_ANTHROPIC_API_KEY, which they
+// expose to the client under the required LOOM_BYOK_ prefix.
 //
 //	VERCEL_GATEWAY_LIVE=1 go test -tags "fts5 integration" -race -run TestLiveComplete ./pkg/llm/vercelgateway/ -v
 
 const (
 	liveSonnet55 = "anthropic/claude-sonnet-5.5"
 	liveGPT55    = "openai/gpt-5.5"
-	envBYOKKey   = "LOOM_LLM_ANTHROPIC_API_KEY" // #nosec G101 -- environment variable name, not a credential
+	envSourceKey = "LOOM_LLM_ANTHROPIC_API_KEY" // #nosec G101 -- environment variable name, not a credential
+	envBYOKKey   = "LOOM_BYOK_LIVE_ANTHROPIC"   // #nosec G101 -- environment variable name, not a credential
 )
 
 // toolLoop runs the add-tool loop used by TestLive_ToolLoopWithThinking and
@@ -123,9 +125,10 @@ func TestLiveComplete_ResponsesAPI(t *testing.T) {
 func byokConfig(t *testing.T, envVar string) Config {
 	t.Helper()
 	cfg := liveConfig(t, liveSonnet55)
-	if os.Getenv(envBYOKKey) == "" {
-		t.Skip(envBYOKKey + " not set")
+	if os.Getenv(envSourceKey) == "" {
+		t.Skip(envSourceKey + " not set")
 	}
+	t.Setenv(envBYOKKey, os.Getenv(envSourceKey))
 	cfg.Routing = &Routing{
 		Only: []string{"anthropic"},
 		BYOK: []BYOKCredential{{Provider: "anthropic", Env: map[string]string{"apiKey": envVar}}},
@@ -151,8 +154,8 @@ func TestLiveComplete_BYOK(t *testing.T) {
 		}
 	})
 	t.Run("a rejected key falls back or fails cleanly", func(t *testing.T) {
-		t.Setenv("LOOM_LIVE_BAD_BYOK", "sk-ant-api03-not-a-real-key-for-loom-live-test")
-		cfg := byokConfig(t, "LOOM_LIVE_BAD_BYOK")
+		t.Setenv("LOOM_BYOK_LIVE_BAD", "sk-ant-api03-not-a-real-key-for-loom-live-test")
+		cfg := byokConfig(t, "LOOM_BYOK_LIVE_BAD")
 		c, err := NewClient(cfg)
 		require.NoError(t, err)
 		resp, err := c.Chat(context.Background(), say("Reply OK."), nil)

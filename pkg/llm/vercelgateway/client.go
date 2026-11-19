@@ -43,6 +43,8 @@ package vercelgateway
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -81,6 +83,9 @@ const (
 	// Measured live on 2026-11-19: the longest gap was 13.4 s (GPT-5.5, xhigh
 	// reasoning, Chat Completions); Sonnet 5.5 with thinking 5.5 s.
 	DefaultStreamIdleTimeout = 90 * time.Second
+	// providerTimeoutMargin is added to the longest BYOK provider timeout when
+	// it sets the first-byte wait, leaving the gateway time to fail over.
+	providerTimeoutMargin = 30 * time.Second
 	// DefaultMaxTokens is the per-request output cap when none is configured
 	// and the catalog does not know the model.
 	DefaultMaxTokens = 4096
@@ -164,15 +169,25 @@ type Config struct {
 	// the gateway translates between model families.
 	API string
 
-	MaxTokens   int           // Default: DefaultMaxTokens
-	Temperature float64       // Default: DefaultTemperature
-	Timeout     time.Duration // Default: DefaultTimeout
+	MaxTokens   int     // Default: DefaultMaxTokens
+	Temperature float64 // Default: DefaultTemperature
+
+	// Timeout, when set, caps each model call as a whole (attempt and retry
+	// together) and bounds the health check. Zero: model calls have no overall
+	// cap, since the stream timeouts below catch a stall without cutting off a
+	// long answer that keeps producing bytes; the health check uses
+	// DefaultTimeout. looms.yaml llm.timeout_seconds sets it.
+	Timeout time.Duration
 
 	// StreamFirstByteTimeout and StreamIdleTimeout bound every model call
 	// (Chat is streamed too). A call that exceeds either fails with an error
 	// wrapping llm.ErrStreamTimeout and is retried once when nothing had been
 	// passed to the caller yet. Defaults: DefaultStreamFirstByteTimeout,
-	// DefaultStreamIdleTimeout.
+	// DefaultStreamIdleTimeout. The first-byte wait is raised to cover the
+	// longest Routing.ProviderTimeoutsMS plus 30 s, so the gateway can fail
+	// over from a slow BYOK upstream before loom gives up. looms.yaml:
+	// llm.vercel_gateway_stream_first_byte_timeout_seconds and
+	// llm.vercel_gateway_stream_idle_timeout_seconds.
 	StreamFirstByteTimeout time.Duration
 	StreamIdleTimeout      time.Duration
 
@@ -244,12 +259,13 @@ func mergeRateLimiter(cfg llm.RateLimiterConfig) llm.RateLimiterConfig {
 // one gateway model by delegating to an anthropic.Client (Claude ids) or an
 // openai.Client (every other id).
 type Client struct {
-	model   string
-	baseURL string
-	surface string
-	inner   types.StreamingLLMProvider
-	health  *http.Client
-	auth    func(*http.Request) error
+	model       string
+	baseURL     string
+	surface     string
+	callTimeout time.Duration // 0 = no overall cap on a model call
+	inner       types.StreamingLLMProvider
+	health      *http.Client
+	auth        func(*http.Request) error
 }
 
 // NewClient validates cfg and builds the client for cfg.Model.
@@ -267,11 +283,19 @@ func NewClient(cfg Config) (*Client, error) {
 	if err := ValidateAPI(cfg.API); err != nil {
 		return nil, err
 	}
+	callTimeout := max(cfg.Timeout, 0)
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = DefaultTimeout
 	}
 	if cfg.StreamFirstByteTimeout <= 0 {
 		cfg.StreamFirstByteTimeout = DefaultStreamFirstByteTimeout
+	}
+	if cfg.Routing != nil {
+		for _, ms := range cfg.Routing.ProviderTimeoutsMS {
+			if need := time.Duration(ms)*time.Millisecond + providerTimeoutMargin; need > cfg.StreamFirstByteTimeout {
+				cfg.StreamFirstByteTimeout = need
+			}
+		}
 	}
 	if cfg.StreamIdleTimeout <= 0 {
 		cfg.StreamIdleTimeout = DefaultStreamIdleTimeout
@@ -319,12 +343,15 @@ func NewClient(cfg Config) (*Client, error) {
 	// Every model request carries a pseudonymous loom session id, so the
 	// gateway keeps a conversation on one upstream (prompt-cache hits) without
 	// relying on its own prompt fingerprint.
-	sessWrap := wrap
-	wrap = func(base http.RoundTripper) http.RoundTripper {
-		if sessWrap != nil {
-			base = sessWrap(base)
+	// With session_affinity: false the header is not sent at all.
+	if cfg.Routing == nil || cfg.Routing.SessionAffinity == nil || *cfg.Routing.SessionAffinity {
+		sessWrap := wrap
+		wrap = func(base http.RoundTripper) http.RoundTripper {
+			if sessWrap != nil {
+				base = sessWrap(base)
+			}
+			return &sessionTransport{base: base}
 		}
-		return &sessionTransport{base: base}
 	}
 
 	// Every request, on every surface and the health check, must go to the
@@ -343,7 +370,7 @@ func NewClient(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &Client{model: cfg.Model, baseURL: baseURL, auth: auth}
+	c := &Client{model: cfg.Model, baseURL: baseURL, auth: auth, callTimeout: callTimeout}
 
 	c.surface = surfaceFor(cfg.API, cfg.Model)
 	switch c.surface {
@@ -463,9 +490,10 @@ func (c *Client) Chat(ctx context.Context, messages []types.Message, tools []shu
 }
 
 // ChatStream streams a conversation through the gateway. A stream that stalls
-// (llm.ErrStreamTimeout) before any token reached tokenCallback is retried
-// once; after a token has been delivered a retry would repeat text the caller
-// already has, so the error is returned.
+// (llm.ErrStreamTimeout) or is cut off (llm.ErrStreamTruncated) before any
+// token reached tokenCallback is retried once, and the response carries
+// gateway.retried; after a token has been delivered a retry would repeat text
+// the caller already has, so the error is returned.
 func (c *Client) ChatStream(ctx context.Context, messages []types.Message, tools []shuttle.Tool, tokenCallback llmtypes.TokenCallback) (*types.LLMResponse, error) {
 	var delivered atomic.Bool
 	cb := tokenCallback
@@ -475,13 +503,34 @@ func (c *Client) ChatStream(ctx context.Context, messages []types.Message, tools
 			tokenCallback(token)
 		}
 	}
+	if c.callTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.callTimeout)
+		defer cancel()
+	}
 	resp, err := c.inner.ChatStream(ctx, messages, tools, cb)
-	if err != nil && errors.Is(err, llm.ErrStreamTimeout) && !delivered.Load() && ctx.Err() == nil {
-		zap.L().Warn("vercel-ai-gateway: stream stalled before any output; retrying once",
-			zap.String("model", c.model), zap.String("surface", c.surface), zap.Error(err))
+	retried := ""
+	if err != nil && !delivered.Load() && ctx.Err() == nil {
+		switch {
+		case errors.Is(err, llm.ErrStreamTimeout):
+			retried = "stall"
+		case errors.Is(err, llm.ErrStreamTruncated):
+			retried = "truncated"
+		}
+	}
+	if retried != "" {
+		// Nothing reached the caller, so a second attempt repeats nothing. The
+		// first attempt's tokens, if the upstream billed any, are not in Usage.
+		zap.L().Warn("vercel-ai-gateway: stream failed before any output; retrying once",
+			zap.String("model", c.model), zap.String("surface", c.surface),
+			zap.String("reason", retried), zap.Error(err))
 		resp, err = c.inner.ChatStream(ctx, messages, tools, cb)
 	}
-	return c.finish(resp, err)
+	resp, err = c.finish(resp, err)
+	if resp != nil && retried != "" {
+		resp.Metadata[AttrRetried] = retried
+	}
+	return resp, err
 }
 
 func (c *Client) finish(resp *types.LLMResponse, err error) (*types.LLMResponse, error) {
@@ -578,10 +627,24 @@ func (t *sessionTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	return base.RoundTrip(r)
 }
 
-// gatewaySessionID is the pseudonymous id sent for a loom session.
+// sessionSalt is random per process, so the id sent to the gateway cannot be
+// matched to a loom session id by hashing candidates. Affinity only needs the
+// id to be stable for minutes (the gateway pins for at most an hour), so a new
+// salt after a restart costs at most one re-pin.
+var sessionSalt = func() []byte {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		panic("vercel-ai-gateway: crypto/rand: " + err.Error())
+	}
+	return b
+}()
+
+// gatewaySessionID is the pseudonymous id sent for a loom session: an
+// HMAC-SHA-256 of the loom session id under the per-process salt.
 func gatewaySessionID(loomSessionID string) string {
-	sum := sha256.Sum256([]byte("loom-session:" + loomSessionID))
-	return hex.EncodeToString(sum[:16])
+	m := hmac.New(sha256.New, sessionSalt)
+	m.Write([]byte(loomSessionID))
+	return hex.EncodeToString(m.Sum(nil)[:16])
 }
 
 // hostPinTransport refuses any request that is not to the configured gateway

@@ -46,6 +46,9 @@ const (
 	// so a BYOK key the upstream rejected is visible even when a fallback
 	// served the call.
 	AttrAttempts = "gateway.attempts"
+	// AttrRetried is set when loom retried the call itself after the first
+	// attempt failed before any output: "stall" or "truncated".
+	AttrRetried = "gateway.retried"
 
 	SurfaceMessages  = "messages"
 	SurfaceChat      = "chat"

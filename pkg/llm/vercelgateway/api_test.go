@@ -16,6 +16,8 @@ package vercelgateway
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"testing"
@@ -159,4 +161,22 @@ func TestSameModel(t *testing.T) {
 	for _, tt := range tests {
 		assert.Equal(t, tt.want, sameModel(tt.served, tt.requested), "%s vs %s", tt.served, tt.requested)
 	}
+}
+
+func TestClient_NoSessionHeaderWhenAffinityIsOff(t *testing.T) {
+	off := false
+	g := &gateway{handler: okHandler}
+	c := newTestClient(t, g.start(t).URL, "openai/gpt-5", func(cfg *Config) { cfg.Routing = &Routing{SessionAffinity: &off} })
+	_, err := c.Chat(session.WithSessionID(context.Background(), "sess-abc"), hi, nil)
+	require.NoError(t, err)
+	assert.Empty(t, g.last(t).Header.Get(HeaderSessionID))
+}
+
+func TestGatewaySessionIDIsSalted(t *testing.T) {
+	unsalted := sha256.Sum256([]byte("loom-session:sess-abc"))
+	plain := sha256.Sum256([]byte("sess-abc"))
+	got := gatewaySessionID("sess-abc")
+	assert.NotEqual(t, hex.EncodeToString(unsalted[:16]), got)
+	assert.NotEqual(t, hex.EncodeToString(plain[:16]), got)
+	assert.Equal(t, got, gatewaySessionID("sess-abc"), "stable within the process")
 }
