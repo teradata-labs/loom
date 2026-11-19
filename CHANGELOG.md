@@ -46,7 +46,7 @@ Implemented, unit-tested, and live-tested on 2026-11-16 (Claude Haiku 4.5 on the
 - **`gateway_routing` is validated per role**: on a provider other than `vercel-ai-gateway`, or on a role that names no provider, it is a load error instead of being ignored.
 - **Not done**: the Responses surface, tiered long-context prices.
 
-#### Vercel AI Gateway: completion and fixes from the 2026-11-18/19 evaluation
+#### Vercel AI Gateway: completion and fixes from the 2026-11-18/19 evaluation (status now ✅ Implemented; OIDC verified live)
 - **Responses API.** New `pkg/llm/openairesponses` client (`POST /v1/responses`; `store: false`, no `previous_response_id`, reasoning replayed from `encrypted_content`). `LLMConfig.gateway_api` (proto field 14; `gateway_api` in agent YAML, `llm.vercel_gateway_api` in `looms.yaml`) selects `auto`, `messages`, `chat` or `responses`. Live-tested on GPT-5.5 and Sonnet 5.5.
 - **All documented routing options.** `LLMGatewayRouting` gains `byok` (`GatewayBYOKCredential`; secrets named by environment variable, never written in YAML), `provider_timeouts_ms`, `session_affinity`, `disallow_prompt_training`, `inference_region` (`GatewayInferenceRegion`), `headquarters`, `user` and `tags` (fields 7–14). Every key accepted live on all three APIs. This reverses the earlier decision to leave per-request BYOK out.
 - **Session affinity.** Every model request carries `x-session-id`, a SHA-256 digest of the loom session id; the gateway reports it as an explicit session.

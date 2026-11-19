@@ -1,7 +1,7 @@
 # Vercel AI Gateway
 
 **Version**: v1.4.0
-**Status**: ⚠️ Partial. Every feature listed under [What is implemented](#what-is-implemented) is built, unit-tested against a fake gateway, and run against the live gateway (2026-11-16 on Haiku 4.5 and GPT-5 mini; 2026-11-19 on Sonnet 5.5, GPT-5.5, Haiku 5.5 and Qwen 3.7 Flash, plus 372 agent runs in the [evaluation](../research/vercel-gateway-eval-results.md)). What keeps the status at Partial is listed under [Limitations](#limitations-and-unverified-behaviour): OIDC has not been run live, and no BYOK call has yet been served by a customer key (the request-scoped key is sent and was tried upstream; the test key had no Anthropic credit).
+**Status**: ✅ Implemented. Every feature listed under [What is implemented](#what-is-implemented) is built, unit-tested against a fake gateway, and run against the live gateway (2026-11-16 on Haiku 4.5 and GPT-5 mini; 2026-11-19 on Sonnet 5.5, GPT-5.5, Haiku 5.5 and Qwen 3.7 Flash, OIDC included, plus 372 agent runs in the [evaluation](../research/vercel-gateway-eval-results.md)). Gateway behaviours that cannot be provoked on demand are listed under [Limitations](#limitations-and-unverified-behaviour).
 
 The [Vercel AI Gateway](https://vercel.com/docs/ai-gateway) is one host, `https://ai-gateway.vercel.sh`, that fronts many upstream providers under creator-scoped model ids (`anthropic/claude-sonnet-4.5`, `openai/gpt-5`, `google/gemini-3.1-pro-preview`). Loom's `vercel-ai-gateway` provider (alias `vercel`) by default sends Claude ids to the gateway's Anthropic Messages API and every other id to its OpenAI Chat Completions API; `gateway_api` selects the Messages, Chat Completions or OpenAI Responses API for every id instead.
 
@@ -29,7 +29,7 @@ The [Vercel AI Gateway](https://vercel.com/docs/ai-gateway) is one host, `https:
 - Streaming and tool calls on every API. `Chat` is served over a stream too, so a stalled upstream is caught by the first-byte and idle timeouts (see [Errors](#errors-retries-and-rate-limits))
 - Routing options sent as `providerOptions.gateway`: `order`, `only`, `sort`, `fallback_models`, `zero_data_retention`, `caching`, per-request BYOK credentials (`byok`), `provider_timeouts_ms`, `session_affinity`, `disallow_prompt_training`, `inference_region`, `headquarters`, `user`, `tags`. From `looms.yaml` (`vercel_gateway_routing`) or agent YAML (`gateway_routing`, proto `LLMGatewayRouting`)
 - Session affinity: every model request carries `x-session-id`, a SHA-256 digest of the loom session id (verified: the gateway reports `clientSessionIdSource: explicit`)
-- API key auth (keyring, `LOOM_LLM_VERCEL_GATEWAY_API_KEY`, `AI_GATEWAY_API_KEY`) and Vercel OIDC token auth (OIDC unit-tested only)
+- API key auth (keyring, `LOOM_LLM_VERCEL_GATEWAY_API_KEY`, `AI_GATEWAY_API_KEY`) and Vercel OIDC token auth (live: a project token from `vercel env pull` on Messages, Chat Completions and Responses, and `/v1/credits`)
 - Health check with `GET /v1/credits` (validates the key, spends no tokens)
 - Model catalog from `GET /v1/models`: context window, max output, input/output/cache rates, prompt-size price tiers, reasoning tag; refreshed hourly in the background under `looms serve`; listed by `ListAvailableModels` and the TUI model picker
 - Gateway-reported cost and routing metadata read from responses on all three APIs; otherwise a catalog estimate (tier-aware); ids with no known rate reported as unpriced
@@ -331,8 +331,8 @@ Verified live on 2026-11-19 (`TestLiveComplete_*`, results in [the evaluation](.
 
 Not verified, and why:
 
-- **OIDC** (question 32): implemented and unit-tested; needs a Vercel project token (`vercel env pull`), which this account has not run.
-- **A BYOK call served by the customer's key**: the key was sent and tried, but the test Anthropic key had no credit (upstream 400) and the gateway fell back to its own key.
+- **A BYOK call served by the customer's key**: the key was sent and tried upstream, but the test Anthropic key had no credit (upstream 400) and the gateway fell back to its own key. The request shape and the fallback are verified; the owner accepted this as sufficient (2026-11-19).
+- **OIDC outside Vercel** (question 32): a project token pulled with the Vercel CLI works (verified 2026-11-19); it expires after about 12 hours and nothing in loom refreshes it, so a long-running service off Vercel should use an API key.
 - **402, forced 429 and mid-stream failure bodies** (questions 25–27): none can be provoked on demand on a paid team without draining credit; the parsers are unit-tested against the documented shapes.
 - **Whether `reasoning_details` replay on Chat Completions is required** rather than merely accepted (question 14), and whether `zeroDataRetention: true` changes routing (question 23): accepted live; the response does not show the policy.
 - **Enterprise concurrency limits** (question 29).

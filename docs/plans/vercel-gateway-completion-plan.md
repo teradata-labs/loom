@@ -49,7 +49,7 @@
 - [x] `zeroDataRetention` accepted; its effect on routing is not visible in the response (recorded as unverified).
 - [x] Error bodies: 402, 429 and mid-stream failure cannot be provoked on demand on a paid team; recorded as such.
 - [x] Gateway timeouts: a 6 min 38 s stream completed; stall defaults from measured gaps.
-- [ ] OIDC token from `vercel env pull` (test `TestLiveComplete_OIDC` ready; waiting on `vercel login`).
+- [x] OIDC: project token from `vercel env pull` (empty project `loom-gateway-oidc-test` on team loom13, created 2026-11-19 with the owner's approval); `TestLiveComplete_OIDC` passes on all three APIs.
 
 ### Found along the way
 
