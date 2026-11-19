@@ -210,6 +210,12 @@ type MemoryCompressor interface {
 	IsEnabled() bool
 }
 
+// defaultContextWindowTokens is the window a session's memory budgets
+// against when no window is configured (the Claude Sonnet 4.5 window). A
+// Vercel AI Gateway agent can take a smaller window from the catalog; see
+// gatewayBudgetWindow.
+const defaultContextWindowTokens = 200000
+
 // NewSegmentedMemory creates a new segmented memory instance with ROM content.
 // If maxContextTokens or reservedOutputTokens are 0, defaults to Claude Sonnet 4.5 values (200K/20K)
 func NewSegmentedMemory(romContent string, maxContextTokens, reservedOutputTokens int) *SegmentedMemory {
@@ -226,7 +232,7 @@ func NewSegmentedMemory(romContent string, maxContextTokens, reservedOutputToken
 func NewSegmentedMemoryWithCompression(romContent string, maxContextTokens, reservedOutputTokens int, profile CompressionProfile) *SegmentedMemory {
 	// Use defaults if not specified (backwards compatibility)
 	if maxContextTokens == 0 {
-		maxContextTokens = 200000 // Claude Sonnet 4.5 default
+		maxContextTokens = defaultContextWindowTokens
 	}
 	if reservedOutputTokens == 0 {
 		reservedOutputTokens = maxContextTokens / 10 // 10% of the window, not a flat 20K

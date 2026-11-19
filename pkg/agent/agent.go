@@ -190,6 +190,10 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		return a.getSystemPrompt(ctx)
 	})
 
+	// A Vercel AI Gateway agent with no window configured budgets against
+	// the model's listed window, not the memory's default.
+	a.applyGatewayBudgetWindow()
+
 	// Set context limits for memory (if configured)
 	if a.config.MaxContextTokens > 0 || a.config.ReservedOutputTokens > 0 {
 		a.memory.SetContextLimits(a.config.MaxContextTokens, a.config.ReservedOutputTokens)
@@ -4566,6 +4570,51 @@ func (a *Agent) graphMemoryKey() string {
 		return a.config.GraphMemoryAgentID
 	}
 	return a.config.Name
+}
+
+// applyGatewayBudgetWindow sets config.MaxContextTokens, and the reply
+// reservation that follows from it, for an agent whose LLM is the Vercel AI
+// Gateway and whose llm.max_context_tokens is unset (gatewayBudgetWindow has
+// the order). NewAgent calls it once, before it hands the limits to memory.
+// The window then reaches the fold (SegmentedMemory) and the graph-memory
+// budget, as a configured max_context_tokens does.
+//
+// When the catalog has no entry for the model, it logs a warning that names
+// the model and leaves the config alone, so the memory's default window
+// applies as before. Construction never fails here.
+func (a *Agent) applyGatewayBudgetWindow() {
+	if a.config.MaxContextTokens > 0 || a.llm == nil {
+		return
+	}
+	provider, model := a.llm.Name(), a.llm.Model()
+	window, src := gatewayBudgetWindow(provider, model, a.config.MaxContextTokens, a.config.MaxModelContextTokens)
+	switch src {
+	case budgetWindowServed, budgetWindowCatalog:
+		a.config.MaxContextTokens = window
+		// The builder resolved ReservedOutputTokens with no window, so it
+		// holds no tenth-of-the-window floor. Derive the reservation as for a
+		// configured window with no reserve set, and keep the builder's value
+		// when it is larger (a configured reserved_output_tokens, or the
+		// catalog max output). The builder's value does not say whether the
+		// operator set it, so a configured reserve below a tenth of the window
+		// is raised to that tenth; a configured window would keep it.
+		reserved := EffectiveOutputReservation(provider, model, a.config.MaxTokens, 0, window)
+		if prev := a.config.ReservedOutputTokens; prev > reserved && prev < window {
+			reserved = prev
+		}
+		a.config.ReservedOutputTokens = reserved
+		zap.L().Info("vercel-ai-gateway: context window resolved",
+			zap.String("agent", a.config.Name),
+			zap.String("model", model),
+			zap.Int("max_context_tokens", window),
+			zap.Int("reserved_output_tokens", a.config.ReservedOutputTokens),
+			zap.String("source", string(src)))
+	case budgetWindowCatalogMiss:
+		zap.L().Warn("vercel-ai-gateway: the model catalog has no context window for the model; budgeting against the default window (set llm.max_context_tokens to the model's window)",
+			zap.String("agent", a.config.Name),
+			zap.String("model", model),
+			zap.Int("default_window", defaultContextWindowTokens))
+	}
 }
 
 // graphMemoryTokenBudget returns the token budget for graph memory context injection.

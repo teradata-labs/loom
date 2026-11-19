@@ -160,44 +160,100 @@ func normalizeProviderNames(c *Config) {
 	}
 }
 
-// gatewayCatalogs records the gateway endpoints whose catalog this process
-// has registered, so each is fetched and refreshed once however many clients
-// are built for it.
+// gatewayCatalogFirstFetchWait bounds how long building a gateway client
+// waits for the first catalog fetch of its endpoint. The agent built next
+// reads the model's context window from the catalog (agent.NewAgent), so the
+// wait lets the window reach the first agents at startup. The fetch itself may
+// take up to 30 s; past this bound the build goes on without the catalog.
+const gatewayCatalogFirstFetchWait = 10 * time.Second
+
+// gatewayCatalogFetch is the first catalog fetch of one gateway endpoint.
+type gatewayCatalogFetch struct {
+	// done is closed when the first fetch has finished, with or without an
+	// error.
+	done chan struct{}
+	// deadline is the latest time any build waits for done. It is set once,
+	// when the fetch starts, so all builds together wait at most one bound
+	// per endpoint.
+	deadline time.Time
+}
+
+// gatewayCatalogs records the first catalog fetch of each gateway endpoint
+// whose catalog this process has registered. Each endpoint is fetched and
+// refreshed once however many clients are built for it.
 var gatewayCatalogs = struct {
 	sync.Mutex
-	started map[string]bool
-}{started: map[string]bool{}}
+	started map[string]*gatewayCatalogFetch
+}{started: map[string]*gatewayCatalogFetch{}}
 
 // ensureVercelGatewayCatalog registers the gateway catalog (GET /v1/models,
 // refreshed hourly) for endpoint the first time a gateway client is built in
 // this process. It runs on every looms path that builds one (the server's
 // main LLM, a pool entry, an agent's own llm block, a reload, looms
 // workflow), so an agent that uses the gateway only through its own YAML
-// gets catalog pricing, reasoning detection and output caps too. The fetch
-// does not block the caller; a failed first fetch is logged, and the
-// background refresh keeps retrying.
+// gets catalog pricing, reasoning detection, output caps and its context
+// window too.
+//
+// It waits for the endpoint's first fetch to finish, so the agent built from
+// the client sees the catalog, but never past gatewayCatalogFirstFetchWait
+// after that fetch started. Builds made while the fetch runs share that one
+// deadline; once the fetch has finished or the deadline has passed, calls
+// return at once. A failed or slow first
+// fetch is logged and never fails the caller; the background refresh keeps
+// retrying.
 func ensureVercelGatewayCatalog(endpoint string, logger *zap.Logger) {
+	ensureVercelGatewayCatalogWithin(endpoint, logger, gatewayCatalogFirstFetchWait)
+}
+
+// ensureVercelGatewayCatalogWithin is ensureVercelGatewayCatalog with the
+// wait as a parameter, so tests can use a short one.
+func ensureVercelGatewayCatalogWithin(endpoint string, logger *zap.Logger, wait time.Duration) {
 	base, err := vercelgateway.NormalizeEndpoint(endpoint)
 	if err != nil {
 		return // NewClient has already rejected this endpoint
 	}
-	gatewayCatalogs.Lock()
-	if gatewayCatalogs.started[base] {
-		gatewayCatalogs.Unlock()
-		return
-	}
-	gatewayCatalogs.started[base] = true
-	gatewayCatalogs.Unlock()
 	if logger == nil {
 		logger = zap.L()
 	}
-	// The first fetch (up to 30 s) runs in the background, so building a
-	// client on an RPC or reload path never waits for it. Calls made before it
-	// lands price Claude ids from the family table and report other ids
-	// unpriced.
-	go func() {
-		if _, err := vercelgateway.RegisterCatalog(context.Background(), base, 0, logger); err != nil {
-			logger.Warn("Vercel AI Gateway catalog fetch failed; will retry in the background", zap.Error(err))
-		}
-	}()
+	gatewayCatalogs.Lock()
+	fetch, ok := gatewayCatalogs.started[base]
+	if !ok {
+		fetch = &gatewayCatalogFetch{done: make(chan struct{}), deadline: time.Now().Add(wait)}
+		gatewayCatalogs.started[base] = fetch
+		done := fetch.done
+		// The fetch runs in the background so the wait below stays bounded.
+		// Calls made before it lands price Claude ids from the family table,
+		// report other ids unpriced, and budget against the default window.
+		go func() {
+			defer close(done)
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Error("Vercel AI Gateway catalog fetch panicked; continuing without the catalog",
+						zap.String("endpoint", base), zap.Any("panic", r))
+				}
+			}()
+			if _, err := vercelgateway.RegisterCatalog(context.Background(), base, 0, logger); err != nil {
+				logger.Warn("Vercel AI Gateway catalog fetch failed; will retry in the background", zap.Error(err))
+			}
+		}()
+	}
+	gatewayCatalogs.Unlock()
+
+	select {
+	case <-fetch.done:
+		return
+	default:
+	}
+	remaining := time.Until(fetch.deadline)
+	if remaining <= 0 {
+		return // the shared deadline has passed; a build already logged it
+	}
+	timer := time.NewTimer(remaining)
+	defer timer.Stop()
+	select {
+	case <-fetch.done:
+	case <-timer.C:
+		logger.Warn("Vercel AI Gateway catalog: the first fetch has not finished; continuing without it",
+			zap.String("endpoint", base), zap.Duration("waited", remaining))
+	}
 }

@@ -214,8 +214,8 @@ All fields are optional. If `spec.llm` is omitted entirely, the agent inherits t
 | `stop_sequences` | `[]string` | `[]` | Stop generation sequences |
 | `top_p` | `float64` | `0.0` | Nucleus sampling (0.0 - 1.0) |
 | `top_k` | `int` | `0` | Top-k sampling |
-| `max_context_tokens` | `int` | the model's window | The window loom budgets against: the fold keeps the settled conversation under the profile's threshold of it. May sit below the model's window to bound cost |
-| `reserved_output_tokens` | `int` | 10% of context | Tokens reserved for model output |
+| `max_context_tokens` | `int` | 200000; on `vercel-ai-gateway`, `max_model_context_tokens` when set, else the gateway catalog's window for the model when it is below 200000 | The window loom budgets against: the fold keeps the settled conversation under the profile's threshold of it. May sit below the model's window to bound cost |
+| `reserved_output_tokens` | `int` | 10% of context, or `max_tokens` when larger; with `max_tokens` unset, the catalog's max output for the model when larger | Tokens reserved for model output |
 | `max_model_context_tokens` | `int` | the model's listed window | The window the model is served with, when below its listed one (vLLM `--max-model-len`, TGI `--max-total-tokens`, Ollama `num_ctx`). A step in flight is fitted to it before the send |
 
 ---
