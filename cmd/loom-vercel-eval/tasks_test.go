@@ -173,7 +173,7 @@ func TestAllocValid(t *testing.T) {
 
 func TestCalibrationItemsAreBalanced(t *testing.T) {
 	items := calibrationItems()
-	require.Len(t, items, 24, "plan says 24 calibration items")
+	require.Len(t, items, 26, "24 planned items plus the two E4 note items added 2026-11-19")
 	var defective, correct int
 	perType := map[string]int{}
 	for _, it := range items {
@@ -185,10 +185,10 @@ func TestCalibrationItemsAreBalanced(t *testing.T) {
 			correct++
 		}
 	}
-	assert.Equal(t, 12, defective)
-	assert.Equal(t, 12, correct)
+	assert.Equal(t, 13, defective)
+	assert.Equal(t, 13, correct)
 	assert.Equal(t, 12, perType["D5"])
-	assert.Equal(t, 12, perType["E4"])
+	assert.Equal(t, 14, perType["E4"])
 }
 
 func TestGateThresholdsMatchPlan(t *testing.T) {

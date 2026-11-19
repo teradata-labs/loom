@@ -44,8 +44,13 @@ type latencySample struct {
 	InputToks  int     `json:"input_tokens"`
 	OutputToks int     `json:"output_tokens"`
 	CostUSD    float64 `json:"cost_usd"`
-	StartedAt  string  `json:"started_at"`
-	Error      string  `json:"error,omitempty"`
+	// Cache token counts explain cost differences between rounds: the
+	// 2026-11-18 run could not show that later GPT rounds were cheaper because
+	// their input was served from cache.
+	CacheRead  int    `json:"cache_read_tokens"`
+	CacheWrite int    `json:"cache_write_tokens"`
+	StartedAt  string `json:"started_at"`
+	Error      string `json:"error,omitempty"`
 }
 
 // runLatencyCmd times streamed calls per arm and prompt size. Arm order is
@@ -168,6 +173,8 @@ func timedCall(client *vercelgateway.Client, a arm, p latencyPrompt, round int, 
 	s.InputToks = resp.Usage.InputTokens
 	s.OutputToks = resp.Usage.OutputTokens
 	s.CostUSD = resp.Usage.CostUSD
+	s.CacheRead = resp.Usage.CacheReadInputTokens
+	s.CacheWrite = resp.Usage.CacheCreationInputTokens
 	return s
 }
 

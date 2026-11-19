@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/teradata-labs/loom/pkg/decision/jev"
 )
@@ -20,6 +21,7 @@ func runJudgeCmd(args []string) error {
 	out := flags.String("out", "", "results directory (required)")
 	model := flags.String("model", defaultDeciderModel, "decider model id")
 	calPath := flags.String("calibration", "", "calibration.json; the gate must have passed (required)")
+	file := flags.String("file", "judge.json", "verdict file name in each run directory; an existing one is never overwritten, so a re-judgement takes a new name")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -40,7 +42,7 @@ func runJudgeCmd(args []string) error {
 	}
 	judged := 0
 	for _, runDir := range runs {
-		done, err := judgeRun(client, *model, runDir)
+		done, err := judgeRun(client, *model, runDir, *file)
 		if err != nil {
 			return fmt.Errorf("%s: %w", runDir, err)
 		}
@@ -69,7 +71,7 @@ func findRuns(root string) ([]string, error) {
 
 // judgeRun scores the deferred checks of one run. It returns false when the
 // run has none or was already judged.
-func judgeRun(client *jev.Client, model, runDir string) (bool, error) {
+func judgeRun(client *jev.Client, model, runDir, file string) (bool, error) {
 	var rec runRecord
 	b, err := os.ReadFile(filepath.Join(runDir, "result.json"))
 	if err != nil {
@@ -89,7 +91,10 @@ func judgeRun(client *jev.Client, model, runDir string) (bool, error) {
 		return false, nil
 	}
 
-	jPath := filepath.Join(runDir, "judge.json")
+	if file != filepath.Base(file) || !strings.HasSuffix(file, ".json") {
+		return false, fmt.Errorf("-file %q must be a bare .json file name", file)
+	}
+	jPath := filepath.Join(runDir, file)
 	if _, err := os.Stat(jPath); err == nil {
 		return false, nil // never overwrite a judgement
 	}

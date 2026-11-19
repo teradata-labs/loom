@@ -44,6 +44,7 @@ type runVerdict struct {
 func runReportCmd(args []string) error {
 	fs := flag.NewFlagSet("report", flag.ContinueOnError)
 	out := fs.String("out", "", "results directory (required)")
+	judgeFile := fs.String("judge-file", "judge.json", "verdict file the judge pass wrote (judge -file)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -57,7 +58,7 @@ func runReportCmd(args []string) error {
 	}
 	var verdicts []runVerdict
 	for _, dir := range runs {
-		v, err := verdictFor(dir)
+		v, err := verdictFor(dir, *judgeFile)
 		if err != nil {
 			return fmt.Errorf("%s: %w", dir, err)
 		}
@@ -130,7 +131,7 @@ func runReportCmd(args []string) error {
 }
 
 // verdictFor applies the judge pass to one run's deterministic result.
-func verdictFor(runDir string) (runVerdict, error) {
+func verdictFor(runDir, judgeFile string) (runVerdict, error) {
 	var rec runRecord
 	b, err := os.ReadFile(filepath.Join(runDir, "result.json"))
 	if err != nil {
@@ -153,7 +154,7 @@ func verdictFor(runDir string) (runVerdict, error) {
 	if !hasDeferred {
 		return v, nil
 	}
-	jb, err := os.ReadFile(filepath.Join(runDir, "judge.json"))
+	jb, err := os.ReadFile(filepath.Join(runDir, judgeFile))
 	if err != nil {
 		v.Unjudged = true
 		v.Pass = false

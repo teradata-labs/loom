@@ -13,11 +13,12 @@ const (
 	criterionSpecBullets = "The source is a specification and the output is a list of requirement bullets " +
 		"with section citations. The output is defective if any bullet is not testable, states a requirement " +
 		"the specification does not contain, or cites a section that does not exist or does not contain that " +
-		"requirement. Is the output defective?"
+		"requirement. A line that only notes that part of the specification is not testable or is left out is not " +
+		"a requirement bullet and does not make the output defective. Is the output defective?"
 )
 
-// calibrationItems returns the 24 known-answer items: 12 for action items
-// (D5) and 12 for spec bullets (E4). Half of each set carries one planted
+// calibrationItems returns the 26 known-answer items: 12 for action items
+// (D5) and 14 for spec bullets (E4). Half of each set carries one planted
 // defect. The label is the construction, so nobody judges these by hand.
 func calibrationItems() []calItem {
 	var out []calItem
@@ -107,6 +108,12 @@ func calibrationItems() []calItem {
 		"- Account locks after 5 failed attempts in 10 minutes (§2.1)\n" +
 			"- Reset links expire after 30 minutes (§2.2)\n" +
 			"- Audit entries record user ID, timestamp and action (§3.1)",
+		// A note about an untestable line is not a requirement (added after
+		// the 2026-11-18 run, where Jev and the reviewer disagreed on it).
+		"- Lock the account after 5 failed logins within 10 minutes (§2.1)\n" +
+			"- Expire password reset links 30 minutes after issue (§2.2)\n" +
+			"- Audit entries include user ID, timestamp, and action (§3.1)\n" +
+			"Note: §3.2 (\"should feel fast\") is not testable as written, so it is not listed.",
 	}
 	s1Bad := []calItem{
 		{Defect: "untestable", Output: "- Lock the account after 5 failed logins within 10 minutes (§2.1)\n" +
@@ -118,6 +125,10 @@ func calibrationItems() []calItem {
 		{Defect: "invented_requirement", Output: "- Lock the account after 5 failed logins within 10 minutes (§2.1)\n" +
 			"- Expire password reset links 30 minutes after issue (§2.2)\n" +
 			"- Audit logs are kept for 7 years (§3.1)"},
+		// The same note does not excuse a real defect elsewhere.
+		{Defect: "invented_requirement_with_note", Output: "- Lock the account after 5 failed logins within 10 minutes (§2.1)\n" +
+			"- Sessions expire after 15 minutes of inactivity (§2.2)\n" +
+			"Note: §3.2 (\"should feel fast\") is not testable as written, so it is not listed."},
 	}
 
 	s2Good := []string{
