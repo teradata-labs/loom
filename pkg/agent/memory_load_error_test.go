@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/teradata-labs/loom/pkg/prompts"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"path/filepath"
 	"sync/atomic"
@@ -454,7 +455,13 @@ func TestNewAgent_AcceptsAnUncomparableValueProvider(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.PatternConfig = DefaultPatternConfig()
 	cfg.PatternConfig.UseLLMClassifier = false
-	assert.NotPanics(t, func() {
-		_ = NewAgent(&mockBackend{}, sliceProvider{tags: []string{"a"}}, WithConfig(cfg))
+	// The compressor (and the window choice) is wired only with a prompt
+	// registry.
+	reg := prompts.NewFileRegistry("../../prompts")
+	require.NoError(t, reg.Reload(context.Background()))
+	var ag *Agent
+	require.NotPanics(t, func() {
+		ag = NewAgent(&mockBackend{}, sliceProvider{tags: []string{"a"}}, WithConfig(cfg), WithPrompts(reg))
 	})
+	assert.NotNil(t, ag.memory.compressor, "the test did not reach the compressor wiring")
 }
