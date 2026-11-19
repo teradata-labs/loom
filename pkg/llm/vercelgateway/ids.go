@@ -21,16 +21,18 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/teradata-labs/loom/pkg/llm"
 )
 
 const (
 	// ProviderName is the provider string used in configuration
 	// (llm.provider: vercel-ai-gateway) and returned by Client.Name.
-	ProviderName = "vercel-ai-gateway"
+	ProviderName = llm.ProviderVercelAIGateway
 	// ProviderAlias is accepted in configuration and normalised to
 	// ProviderName at load, so limiter keys, the catalog namespace and span
 	// attributes only ever see the canonical name.
-	ProviderAlias = "vercel"
+	ProviderAlias = llm.ProviderVercelAIGatewayAlias
 
 	// CatalogProvider is the pkg/llm/catalog namespace gateway model ids are
 	// registered and priced under.
@@ -52,18 +54,17 @@ const (
 
 // NormalizeProviderName maps the "vercel" alias (any case, surrounding space)
 // to ProviderName and returns every other name unchanged.
+// It delegates to llm.NormalizeProviderName, the provider-neutral form that
+// code which only compares provider names uses.
 func NormalizeProviderName(name string) string {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case ProviderName, ProviderAlias:
-		return ProviderName
-	}
-	return name
+	return llm.NormalizeProviderName(name)
 }
 
 // IsProviderName reports whether name selects this provider (canonical name
 // or alias).
+// It delegates to llm.IsVercelAIGateway.
 func IsProviderName(name string) bool {
-	return NormalizeProviderName(name) == ProviderName
+	return llm.IsVercelAIGateway(name)
 }
 
 // ValidateModelID checks a gateway model id: "creator/model", both parts

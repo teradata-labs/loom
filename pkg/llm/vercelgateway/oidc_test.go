@@ -18,10 +18,12 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -141,4 +143,41 @@ func TestOIDC_APIKeyWins(t *testing.T) {
 	_, err = c.Chat(context.Background(), hi, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "Bearer "+fakeKey, g.last(t).Header.Get("Authorization"))
+}
+
+// A token file is read whole even when the reader returns it in pieces (a
+// FUSE or network mount, a pipe). A single Read would keep only the first
+// piece and send a cut token. The size limit still holds on short reads.
+func TestReadBoundedFrom_ShortReads(t *testing.T) {
+	t.Parallel()
+	token := fakeJWT(time.Now().Add(time.Hour).Unix())
+	tests := []struct {
+		name    string
+		r       io.Reader
+		want    string
+		wantErr string
+	}{
+		{name: "whole read", r: strings.NewReader(token), want: token},
+		{name: "one byte per read", r: iotest.OneByteReader(strings.NewReader(token)), want: token},
+		{name: "half per read", r: iotest.HalfReader(strings.NewReader(token)), want: token},
+		{name: "data with EOF on the last read", r: iotest.DataErrReader(strings.NewReader(token)), want: token},
+		{name: "empty", r: strings.NewReader(""), want: ""},
+		{name: "exactly the limit", r: iotest.OneByteReader(strings.NewReader(strings.Repeat("a", maxOIDCTokenBytes))), want: strings.Repeat("a", maxOIDCTokenBytes)},
+		{name: "over the limit in short reads", r: iotest.HalfReader(strings.NewReader(strings.Repeat("a", maxOIDCTokenBytes+1))), wantErr: "larger than"},
+		{name: "read error", r: iotest.ErrReader(io.ErrUnexpectedEOF), wantErr: io.ErrUnexpectedEOF.Error()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := readBoundedFrom(tt.r)
+			if tt.wantErr != "" {
+				require.Error(t, err, "the read must fail")
+				assert.Contains(t, err.Error(), tt.wantErr, "error names the cause")
+				assert.NotContains(t, err.Error(), token, "the token never appears in an error")
+				return
+			}
+			require.NoError(t, err, "the read must succeed")
+			assert.Equal(t, tt.want, string(got), "the whole token is returned")
+		})
+	}
 }

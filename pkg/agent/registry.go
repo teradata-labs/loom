@@ -1411,7 +1411,7 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 		}
 		return client, nil
 
-	case vercelgateway.ProviderName, vercelgateway.ProviderAlias:
+	case llm.ProviderVercelAIGateway, llm.ProviderVercelAIGatewayAlias:
 		// Credentials from the environment, as for every provider on this path:
 		// LOOM_LLM_VERCEL_GATEWAY_API_KEY, then AI_GATEWAY_API_KEY; the
 		// endpoint from VERCEL_AI_GATEWAY_ENDPOINT (empty = global host).

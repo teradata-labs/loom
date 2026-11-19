@@ -17,7 +17,7 @@ package agent
 import (
 	"strings"
 
-	"github.com/teradata-labs/loom/pkg/llm/vercelgateway"
+	"github.com/teradata-labs/loom/pkg/llm"
 )
 
 // LLMProviderAllowsFallback reports whether an agent role whose LLM provider
@@ -34,8 +34,8 @@ import (
 //
 // A silent move to another provider would bypass either choice.
 func LLMProviderAllowsFallback(provider string) bool {
-	switch strings.ToLower(strings.TrimSpace(vercelgateway.NormalizeProviderName(provider))) {
-	case "bedrock-mantle", vercelgateway.ProviderName:
+	switch strings.ToLower(strings.TrimSpace(llm.NormalizeProviderName(provider))) {
+	case "bedrock-mantle", llm.ProviderVercelAIGateway:
 		return false
 	}
 	return true

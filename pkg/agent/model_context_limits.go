@@ -14,6 +14,7 @@
 package agent
 
 import (
+	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/llm/catalog"
 )
 
@@ -167,8 +168,10 @@ func GetProviderDefaultLimits(provider string) ModelContextLimits {
 	case "azureopenai":
 		return ModelContextLimits{MaxContextTokens: 128000, ReservedOutputTokens: 12800}
 	case "vercel-ai-gateway", "vercel":
-		// Reached only when the gateway catalog (GET /v1/models, fetched at
-		// serve startup) does not list the model or could not be fetched.
+		// Used only by ResolveContextLimits, when the gateway catalog does
+		// not list the model. ResolveContextLimits has no production caller:
+		// an agent's fold budget comes from gatewayBudgetWindow, which keeps
+		// the memory default (defaultContextWindowTokens) on a catalog miss.
 		// The gateway fronts many families; 128K is the common floor of the
 		// current ones (Claude 200K+, GPT-5 400K, Gemini 1M).
 		return ModelContextLimits{MaxContextTokens: 128000, ReservedOutputTokens: 12800}
@@ -254,6 +257,76 @@ func ProviderPromptCeiling(provider, model string, reserved, configuredWindow, s
 		reserved = window / 2
 	}
 	return window - reserved
+}
+
+// budgetWindowSource names where gatewayBudgetWindow took the fold window
+// from. applyGatewayBudgetWindow logs it.
+type budgetWindowSource string
+
+const (
+	// budgetWindowConfigured: llm.max_context_tokens is set; it is used as is.
+	budgetWindowConfigured budgetWindowSource = "max_context_tokens"
+	// budgetWindowNotGateway: the provider is not the Vercel AI Gateway; the
+	// memory's default window applies, as before.
+	budgetWindowNotGateway budgetWindowSource = "not_gateway"
+	// budgetWindowServed: llm.max_model_context_tokens is set; the window the
+	// model is served with wins over the catalog listing.
+	budgetWindowServed budgetWindowSource = "max_model_context_tokens"
+	// budgetWindowCatalog: the gateway catalog (GET /v1/models) lists the
+	// model's context_window below the memory default.
+	budgetWindowCatalog budgetWindowSource = "gateway_catalog"
+	// budgetWindowCatalogNotSmaller: the catalog lists a window at or above
+	// the memory default; the default applies, as before.
+	budgetWindowCatalogNotSmaller budgetWindowSource = "gateway_catalog_not_smaller"
+	// budgetWindowCatalogMiss: no catalog entry for the model (the fetch
+	// failed, has not landed, or does not list it); the memory's default
+	// window applies, as before.
+	budgetWindowCatalogMiss budgetWindowSource = "catalog_miss"
+)
+
+// gatewayBudgetWindow returns the window the fold budgets against for an
+// agent whose LLM is the Vercel AI Gateway, and where it came from. The
+// gateway fronts models whose windows differ widely, so the memory's single
+// default (defaultContextWindowTokens) over-states a smaller model's window
+// and lets the conversation grow past it.
+//
+// The order is the one ProviderPromptCeiling uses for the provider's window,
+// with the operator's settings first:
+//
+//  1. configured (llm.max_context_tokens), when > 0;
+//  2. served (llm.max_model_context_tokens), when > 0;
+//  3. the catalog's ContextWindow for provider+model, only when it is below
+//     the memory default.
+//
+// The catalog step only lowers the budget. Many gateway models list a
+// window above 200K (Claude Sonnet 4.x and Gemini at 1M, GPT-5 at 400K), but
+// whether the gateway serves that window without a provider beta header is
+// not verified, and a larger budget makes long sessions send more input per
+// call. An operator who wants the larger window sets max_context_tokens.
+//
+// It returns window 0 when the provider is not the gateway, when the catalog
+// has no entry, or when the catalog's window is not below the default, so
+// the caller keeps today's default. NewAgent calls it through
+// applyGatewayBudgetWindow. Other providers are unchanged: their budget
+// default is a separate decision.
+func gatewayBudgetWindow(provider, model string, configured, served int) (int, budgetWindowSource) {
+	if configured > 0 {
+		return configured, budgetWindowConfigured
+	}
+	if !llm.IsVercelAIGateway(provider) {
+		return 0, budgetWindowNotGateway
+	}
+	if served > 0 {
+		return served, budgetWindowServed
+	}
+	info := catalog.Lookup(llm.NormalizeProviderName(provider), model)
+	if info == nil || info.ContextWindow <= 0 {
+		return 0, budgetWindowCatalogMiss
+	}
+	if int(info.ContextWindow) >= defaultContextWindowTokens {
+		return 0, budgetWindowCatalogNotSmaller
+	}
+	return int(info.ContextWindow), budgetWindowCatalog
 }
 
 // ResolveContextLimits determines the context limits to use, with fallback precedence:
