@@ -2964,12 +2964,21 @@ func extractHITLInfo(input map[string]interface{}) *HITLRequestInfo {
 // runConversationLoop executes the LLM-driven conversation loop.
 // This implements the core agent behavior: LLM generates tool calls,
 // we execute them, feed results back to LLM, repeat until completion.
-func (a *Agent) runConversationLoop(ctx Context) (_ *Response, retErr error) {
+func (a *Agent) runConversationLoop(ctx Context) (retResp *Response, retErr error) {
 	// Start trace span — always created; NoOpTracer handles disabled case
 	_, span := ctx.Tracer().StartSpan(ctx, "agent.conversation_loop")
 	defer ctx.Tracer().EndSpan(span)
 
 	session := ctx.Session()
+
+	// folds records the in-loop folds this turn committed; a turn that ends
+	// with a response reports them in Response.Metadata["auto_compaction"].
+	var folds foldNotice
+	defer func() {
+		if retErr == nil {
+			folds.record(retResp)
+		}
+	}()
 
 	// unbilled is what the provider billed for calls that have no row yet: fold
 	// calls, which write none, and a reply the loop asks again for. The next
@@ -3169,10 +3178,13 @@ func (a *Agent) runConversationLoop(ctx Context) (_ *Response, retErr error) {
 		// results replaced and one more.
 		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil && !foldPending && foldRetries < 2 && !scriptedTurn(ctx) && segMem.NeedsFold() {
 			foldPending = true
+			armedAt := segMem.estimate()
+			folds.armed(armedAt)
 			zap.L().Info("inloopFold: armed",
 				zap.String("session_id", session.ID),
-				zap.Int("attempt", foldRetries+1))
-			span.AddEvent("fold.armed", map[string]interface{}{"turn": turnCount, "attempt": foldRetries + 1})
+				zap.Int("attempt", foldRetries+1),
+				zap.Int("estimate_tokens", armedAt))
+			span.AddEvent("fold.armed", map[string]interface{}{"turn": turnCount, "attempt": foldRetries + 1, "estimate_tokens": armedAt})
 		}
 
 		// withReminder adds the reminder notes — the graph memory recall note,
@@ -3543,6 +3555,7 @@ func (a *Agent) runConversationLoop(ctx Context) (_ *Response, retErr error) {
 					if summary, okParse := parseFoldReply(llmResp.Content); okParse {
 						if applied, estimate := segMem.ApplyFoldReply(ctx, summary); applied {
 							foldRetries = 0
+							folds.applied(estimate)
 							zap.L().Info("inloopFold: applied",
 								zap.String("session_id", session.ID),
 								zap.Int("estimate_tokens", estimate))

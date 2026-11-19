@@ -131,8 +131,9 @@ func foldingAgentWith(t *testing.T, model *foldingStream, edit func(*Config)) (*
 
 // foldingAgentOn is foldingAgentWith on the store that wrap makes of the
 // SQLite store (nil: the SQLite store itself), for a test that needs a host's
-// store. The SQLite store is returned for reading the rows.
-func foldingAgentOn(t *testing.T, model *foldingStream, edit func(*Config), wrap func(*SessionStore) SessionStorage) (*Agent, *SessionStore) {
+// store. The SQLite store is returned for reading the rows. opts are added to
+// the agent's options, for a test that needs a tracer.
+func foldingAgentOn(t *testing.T, model *foldingStream, edit func(*Config), wrap func(*SessionStore) SessionStorage, opts ...Option) (*Agent, *SessionStore) {
 	t.Helper()
 	store, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
 	require.NoError(t, err)
@@ -152,7 +153,7 @@ func foldingAgentOn(t *testing.T, model *foldingStream, edit func(*Config), wrap
 	if wrap != nil {
 		host = wrap(store)
 	}
-	ag := NewAgent(&mockBackend{}, model, WithConfig(cfg), WithMemory(NewMemoryWithStore(host)))
+	ag := NewAgent(&mockBackend{}, model, append([]Option{WithConfig(cfg), WithMemory(NewMemoryWithStore(host))}, opts...)...)
 	ag.RegisterTool(&shuttle.MockTool{
 		MockName: "step",
 		MockExecute: func(context.Context, map[string]interface{}) (*shuttle.Result, error) {

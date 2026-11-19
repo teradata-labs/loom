@@ -115,6 +115,64 @@ func (sm *SegmentedMemory) NeedsFold() bool {
 	return len(excised) > 0
 }
 
+// estimate is the context estimate the pressure path compares with the
+// window: the compiled context, summary included, without the step in flight.
+// The conversation loop reads it when a fold arms (foldNotice), so the figure
+// before a fold and the one ApplyFoldReply returns after it are the same
+// measure.
+func (sm *SegmentedMemory) estimate() int {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	return sm.estimateLocked()
+}
+
+// foldNotice is what the in-loop folds of one turn did, for the host:
+// runConversationLoop fills it and reports it on the response
+// (Response.Metadata["auto_compaction"]). The keys are the ones the
+// end-of-turn auto-compaction of the nightly-20261117 build set, so a host
+// that read them reads the in-loop fold the same way.
+type foldNotice struct {
+	pendingBefore int  // the estimate when the latest fold armed
+	before, after int  // first fold's armed estimate; last fold's estimate after it
+	count         int  // folds committed this turn
+	hasBefore     bool // before is set (the first committed fold)
+}
+
+// armed records the estimate as a fold arms. Only a fold that commits uses
+// it: a reply that cannot be used arms again with a new estimate.
+func (n *foldNotice) armed(estimate int) { n.pendingBefore = estimate }
+
+// applied records a committed fold and the estimate after it. With several
+// folds in a turn, before stays the first fold's and after becomes the last
+// fold's.
+func (n *foldNotice) applied(estimate int) {
+	if !n.hasBefore {
+		n.before, n.hasBefore = n.pendingBefore, true
+	}
+	n.after = estimate
+	n.count++
+}
+
+// record puts the folds on resp: tokens_before (the estimate when the first
+// fold armed), tokens_after (the estimate after the last fold), tokens_saved,
+// turns_folded (true) and tool_results_stubbed (false: a fold stubs no tool
+// result). A turn with no committed fold adds nothing.
+func (n *foldNotice) record(resp *Response) {
+	if n.count == 0 || resp == nil {
+		return
+	}
+	if resp.Metadata == nil {
+		resp.Metadata = map[string]interface{}{}
+	}
+	resp.Metadata["auto_compaction"] = map[string]interface{}{
+		"tokens_before":        n.before,
+		"tokens_after":         n.after,
+		"tokens_saved":         max(n.before-n.after, 0),
+		"turns_folded":         true,
+		"tool_results_stubbed": false,
+	}
+}
+
 // parseFoldReply extracts the summary from the model's fold reply. Lenient:
 // it takes the outermost JSON object in the text and reads its summary field,
 // so a model that wraps the JSON in prose still lands.
