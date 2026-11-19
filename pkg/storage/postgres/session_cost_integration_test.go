@@ -33,9 +33,12 @@ import (
 // tag, so their helpers are here and not in the tagged rls_integration_test.go.
 
 // costTestPool is a migrated pool on TEST_POSTGRES_URL, or a skip.
+// costTestPool is a pool on a role that row-level security applies to
+// (rlsSubjectPool), so the owner tests prove the policies and the user_id
+// predicate together, not the predicate alone on a superuser connection.
 func costTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	return migratedAdminPool(t)
+	return rlsSubjectPool(t, migratedAdminPool(t))
 }
 
 // costTestStore is a SessionStore on pool with a no-op tracer.

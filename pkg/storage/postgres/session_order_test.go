@@ -16,11 +16,9 @@ package postgres
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 
@@ -35,19 +33,11 @@ import (
 // so a sort on the timestamp alone returns it last. Runs in the ordinary gate:
 // CI sets TEST_POSTGRES_URL, a local run without one skips.
 func TestMessages_SameTimestampKeepsSaveOrder_Postgres(t *testing.T) {
-	dsn := os.Getenv("TEST_POSTGRES_URL")
-	if dsn == "" {
-		t.Skip("TEST_POSTGRES_URL not set; skipping PostgreSQL store test")
-	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	require.NoError(t, err, "failed to connect to PostgreSQL")
-	t.Cleanup(pool.Close)
-	migrator, err := NewMigrator(pool, observability.NewNoOpTracer())
-	require.NoError(t, err)
-	require.NoError(t, migrator.MigrateUp(ctx), "failed to run migrations")
-
-	store := NewSessionStore(pool, observability.NewNoOpTracer(), zap.NewNop())
+	pool := migratedAdminPool(t)
+	// The store runs as a role that row-level security applies to; the admin
+	// pool only moves a tuple and cleans up.
+	store := NewSessionStore(rlsSubjectPool(t, pool), observability.NewNoOpTracer(), zap.NewNop())
 	userID := hrUniqueID("order-user")
 	agentID := hrUniqueID("order-agent")
 	parentID := hrUniqueID("order-parent")
@@ -68,7 +58,7 @@ func TestMessages_SameTimestampKeepsSaveOrder_Postgres(t *testing.T) {
 			&agent.Message{Role: "user", Content: content, Timestamp: tick, SessionContext: "shared"}, i == 0))
 	}
 	// Move the first row's tuple to the end of the heap.
-	_, err = pool.Exec(ctx, "UPDATE messages SET content = content WHERE session_id = $1 AND content = 'first'", parentID)
+	_, err := pool.Exec(ctx, "UPDATE messages SET content = content WHERE session_id = $1 AND content = 'first'", parentID)
 	require.NoError(t, err)
 
 	contents := func(msgs []agent.Message) []string {

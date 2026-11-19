@@ -17,9 +17,9 @@ package postgres
 import (
 	"context"
 	"math"
-	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
@@ -30,35 +30,37 @@ import (
 	"github.com/teradata-labs/loom/pkg/observability"
 )
 
+// foldTestSession is the setup of the fold-read tests: a migrated database,
+// a store on a role that row-level security applies to (rlsSubjectPool), and
+// a session that the store itself created under the owner's user context.
+// pool is the admin pool, for the test's own reads of seqs. The session's
+// rows are removed at cleanup.
+func foldTestSession(t *testing.T, prefix string) (pool *pgxpool.Pool, store *SessionStore, userCtx context.Context, sessionID string) {
+	t.Helper()
+	pool = migratedAdminPool(t)
+	store = NewSessionStore(rlsSubjectPool(t, pool), observability.NewNoOpTracer(), zap.NewNop())
+	userID := hrUniqueID(prefix + "-user")
+	sessionID = hrUniqueID(prefix + "-sess")
+	userCtx = ContextWithUserID(context.Background(), userID)
+	now := time.Now().UTC()
+	require.NoError(t, store.SaveSession(userCtx, &agent.Session{ID: sessionID, AgentID: "agent-1", CreatedAt: now, UpdatedAt: now}),
+		"the store must create the session under the owner's context")
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), "DELETE FROM memory_snapshots WHERE session_id = $1", sessionID)
+		_, _ = pool.Exec(context.Background(), "DELETE FROM messages WHERE user_id = $1", userID)
+		_, _ = pool.Exec(context.Background(), "DELETE FROM sessions WHERE id = $1", sessionID)
+	})
+	return pool, store, userCtx, sessionID
+}
+
 // ResumeSession counts a folded assistant message as saved by reading the
 // whole session with ListMessagesBySeqRange(1, MaxInt64). That read must
 // return folded rows with their tool calls and Folded set, while the ordinary
 // reload (LoadMessages) keeps dropping them. Runs in the ordinary gate: CI
 // sets TEST_POSTGRES_URL, a local run without one skips.
 func TestListMessagesBySeqRange_ReturnsFoldedToolCallMessages_Postgres(t *testing.T) {
-	dsn := os.Getenv("TEST_POSTGRES_URL")
-	if dsn == "" {
-		t.Skip("TEST_POSTGRES_URL not set; skipping PostgreSQL store test")
-	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	require.NoError(t, err, "failed to connect to PostgreSQL")
-	t.Cleanup(pool.Close)
-	migrator, err := NewMigrator(pool, observability.NewNoOpTracer())
-	require.NoError(t, err)
-	require.NoError(t, migrator.MigrateUp(ctx), "failed to run migrations")
-
-	store := NewSessionStore(pool, observability.NewNoOpTracer(), zap.NewNop())
-	userID := hrUniqueID("fold-user")
-	sessionID := hrUniqueID("fold-sess")
-	_, err = pool.Exec(ctx, "INSERT INTO sessions (id, agent_id, user_id) VALUES ($1, 'agent-1', $2)", sessionID, userID)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), "DELETE FROM memory_snapshots WHERE session_id = $1", sessionID)
-		_, _ = pool.Exec(context.Background(), "DELETE FROM messages WHERE user_id = $1", userID)
-		_, _ = pool.Exec(context.Background(), "DELETE FROM sessions WHERE id = $1", sessionID)
-	})
-	userCtx := ContextWithUserID(ctx, userID)
+	pool, store, userCtx, sessionID := foldTestSession(t, "fold")
 
 	call := llmtypes.ToolCall{ID: "toolu_kept", Name: "crashy", Input: map[string]interface{}{"n": float64(1)}}
 	require.NoError(t, store.SaveMessage(userCtx, sessionID, &agent.Message{Role: "user", Content: "go"}, true))
@@ -96,29 +98,8 @@ func TestListMessagesBySeqRange_ReturnsFoldedToolCallMessages_Postgres(t *testin
 // "did not complete" result. Runs in the ordinary gate: CI sets
 // TEST_POSTGRES_URL, a local run without one skips.
 func TestReloadDropsCallsWhoseResultsAreFolded_Postgres(t *testing.T) {
-	dsn := os.Getenv("TEST_POSTGRES_URL")
-	if dsn == "" {
-		t.Skip("TEST_POSTGRES_URL not set; skipping PostgreSQL store test")
-	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	require.NoError(t, err, "failed to connect to PostgreSQL")
-	t.Cleanup(pool.Close)
-	migrator, err := NewMigrator(pool, observability.NewNoOpTracer())
-	require.NoError(t, err)
-	require.NoError(t, migrator.MigrateUp(ctx), "failed to run migrations")
-
-	store := NewSessionStore(pool, observability.NewNoOpTracer(), zap.NewNop())
-	userID := hrUniqueID("reload-user")
-	sessionID := hrUniqueID("reload-sess")
-	_, err = pool.Exec(ctx, "INSERT INTO sessions (id, agent_id, user_id) VALUES ($1, 'agent-1', $2)", sessionID, userID)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), "DELETE FROM memory_snapshots WHERE session_id = $1", sessionID)
-		_, _ = pool.Exec(context.Background(), "DELETE FROM messages WHERE user_id = $1", userID)
-		_, _ = pool.Exec(context.Background(), "DELETE FROM sessions WHERE id = $1", sessionID)
-	})
-	userCtx := ContextWithUserID(ctx, userID)
+	pool, store, userCtx, sessionID := foldTestSession(t, "reload")
 
 	save := func(m agent.Message, turnStart bool) {
 		t.Helper()
@@ -171,29 +152,8 @@ func TestReloadDropsCallsWhoseResultsAreFolded_Postgres(t *testing.T) {
 // the stored calls. Runs in the ordinary gate: CI sets TEST_POSTGRES_URL, a
 // local run without one skips.
 func TestReload_DropsTheCallOfAFoldedResultInAMixedRow_Postgres(t *testing.T) {
-	dsn := os.Getenv("TEST_POSTGRES_URL")
-	if dsn == "" {
-		t.Skip("TEST_POSTGRES_URL not set; skipping PostgreSQL store test")
-	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	require.NoError(t, err, "failed to connect to PostgreSQL")
-	t.Cleanup(pool.Close)
-	migrator, err := NewMigrator(pool, observability.NewNoOpTracer())
-	require.NoError(t, err)
-	require.NoError(t, migrator.MigrateUp(ctx), "failed to run migrations")
-
-	store := NewSessionStore(pool, observability.NewNoOpTracer(), zap.NewNop())
-	userID := hrUniqueID("foldcall-user")
-	sessionID := hrUniqueID("foldcall-sess")
-	_, err = pool.Exec(ctx, "INSERT INTO sessions (id, agent_id, user_id) VALUES ($1, 'agent-1', $2)", sessionID, userID)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), "DELETE FROM memory_snapshots WHERE session_id = $1", sessionID)
-		_, _ = pool.Exec(context.Background(), "DELETE FROM messages WHERE user_id = $1", userID)
-		_, _ = pool.Exec(context.Background(), "DELETE FROM sessions WHERE id = $1", sessionID)
-	})
-	userCtx := ContextWithUserID(ctx, userID)
+	pool, store, userCtx, sessionID := foldTestSession(t, "foldcall")
 
 	foldedCall := llmtypes.ToolCall{ID: "toolu_folded", Name: "rows", Input: map[string]interface{}{}}
 	unfinished := llmtypes.ToolCall{ID: "toolu_unfinished", Name: "rows", Input: map[string]interface{}{}}
