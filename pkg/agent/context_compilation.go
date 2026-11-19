@@ -319,6 +319,7 @@ func thinkingBlocksKey(blocks []ThinkingBlock) [sha256.Size]byte {
 		writeField(h, b.Type)
 		writeField(h, b.Thinking)
 		writeField(h, b.Signature)
+		writeField(h, b.Format)
 	}
 	var sum [sha256.Size]byte
 	h.Sum(sum[:0])
@@ -345,6 +346,7 @@ func writeMessageFingerprint(h hash.Hash, m *Message) {
 		writeField(h, b.Type)
 		writeField(h, b.Thinking)
 		writeField(h, b.Signature)
+		writeField(h, b.Format)
 	}
 	for _, c := range m.ToolCalls {
 		writeField(h, c.ID)

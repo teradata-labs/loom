@@ -30,6 +30,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/catalog"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"go.uber.org/zap"
 )
 
 const (
@@ -84,6 +85,12 @@ type Client struct {
 	rateLimiter       *llm.RateLimiter
 	noBetaHeaders     bool
 	catalogProvider   string
+	// extraBody holds Config.ExtraBody marshalled and validated; nil when none.
+	// extraBodyErr is the validation error, returned by every call.
+	extraBody    []byte
+	extraBodyErr error
+	// inspector reads gateway-reported cost and routing facts from responses.
+	inspector llm.ResponseInspector
 }
 
 // Config holds configuration for the Anthropic client.
@@ -116,7 +123,28 @@ type Config struct {
 	// http.DefaultTransport and returns the RoundTripper to use. Used to sign
 	// requests (AWS SigV4 for Bedrock Mantle) and to inject test doubles.
 	WrapTransport func(http.RoundTripper) http.RoundTripper
+	// ExtraBody adds top-level members to every request body (gateway options
+	// such as the Vercel AI Gateway's providerOptions). A key that names a
+	// field of MessagesRequest is rejected; check with ValidateExtraBody before
+	// NewClient to fail at construction, otherwise every call returns the
+	// validation error.
+	ExtraBody llm.ExtraBody
+	// ResponseInspector, when set, reads gateway-reported cost and routing
+	// metadata from each response (whole body, or every SSE data payload). A
+	// cost it reports replaces the local estimate; its attributes are copied
+	// into LLMResponse.Metadata.
+	ResponseInspector llm.ResponseInspector
 }
+
+// ValidateExtraBody reports whether extra can be sent by this client: no key
+// may name a field the client writes itself, and every value must marshal.
+func ValidateExtraBody(extra llm.ExtraBody) error {
+	_, err := llm.ValidateExtraBody(extra, messagesRequestFields)
+	return err
+}
+
+// messagesRequestFields are the top-level members MessagesRequest can write.
+var messagesRequestFields = llm.JSONFieldNames(MessagesRequest{})
 
 // NewClient creates a new Anthropic client.
 func NewClient(config Config) *Client {
@@ -162,6 +190,12 @@ func NewClient(config Config) *Client {
 		transport = config.WrapTransport(http.DefaultTransport)
 	}
 
+	extraBody, extraBodyErr := llm.ValidateExtraBody(config.ExtraBody, messagesRequestFields)
+	if extraBodyErr != nil {
+		zap.L().Error("anthropic: invalid ExtraBody; every request from this client will fail",
+			zap.String("endpoint", config.Endpoint), zap.Error(extraBodyErr))
+	}
+
 	return &Client{
 		strictToolSchemas: config.StrictToolSchemas,
 		apiKey:            config.APIKey,
@@ -173,11 +207,49 @@ func NewClient(config Config) *Client {
 		rateLimiter:       rateLimiter,
 		noBetaHeaders:     config.NoBetaHeaders,
 		catalogProvider:   config.CatalogProvider,
+		extraBody:         extraBody,
+		extraBodyErr:      extraBodyErr,
+		inspector:         config.ResponseInspector,
 		httpClient: &http.Client{
-			Timeout:   config.Timeout,
-			Transport: transport,
+			Timeout:       config.Timeout,
+			Transport:     transport,
+			CheckRedirect: dropAPIKeyOnCrossHostRedirect,
 		},
 	}
+}
+
+// dropAPIKeyOnCrossHostRedirect is the client's redirect policy. Go strips
+// Authorization when a redirect leaves the original host but copies every
+// other header, so x-api-key would be sent to the new host. It is removed
+// there; the default limit of 10 redirects is kept.
+func dropAPIKeyOnCrossHostRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	if len(via) > 0 && !strings.EqualFold(req.URL.Host, via[0].URL.Host) {
+		req.Header.Del("x-api-key")
+	}
+	return nil
+}
+
+// marshalRequest encodes req and appends Config.ExtraBody.
+func (c *Client) marshalRequest(req *MessagesRequest) ([]byte, error) {
+	if c.extraBodyErr != nil {
+		return nil, fmt.Errorf("anthropic: %w", c.extraBodyErr)
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+	return llm.MergeExtraBody(body, c.extraBody)
+}
+
+// inspect runs the configured ResponseInspector; zero facts without one.
+func (c *Client) inspect(h http.Header, payload []byte) llm.ResponseFacts {
+	if c.inspector == nil {
+		return llm.ResponseFacts{}
+	}
+	return c.inspector(h, payload)
 }
 
 // setRequestHeaders applies the Messages API headers. The API key is omitted
@@ -311,13 +383,18 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 	}
 
 	// Call API
-	resp, err := c.callAPI(ctx, req)
+	resp, facts, err := c.callAPI(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("API call failed: %w", err)
 	}
 
-	// Convert response
-	return c.convertResponse(resp, nameMap), nil
+	// Convert response. A gateway-reported cost replaces the estimate.
+	out := c.convertResponse(resp, nameMap)
+	if facts.CostUSD > 0 {
+		out.Usage.CostUSD = facts.CostUSD
+	}
+	out.Metadata = facts.Apply(out.Metadata)
+	return out, nil
 }
 
 // thinkingParam returns the request's thinking field, or nil (omitted) when
@@ -692,8 +769,20 @@ func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cache
 
 	inputCost := float64(inputTokens) * inputPricePerM / 1_000_000
 	outputCost := float64(outputTokens) * outputPricePerM / 1_000_000
-	cacheWriteCost := float64(cacheCreationTokens) * inputPricePerM * catalog.ClaudeCacheWriteMultiplier / 1_000_000
-	cacheReadCost := float64(cacheReadTokens) * inputPricePerM * catalog.ClaudeCacheReadMultiplier(c.model) / 1_000_000
+	cacheWritePerM := inputPricePerM * catalog.ClaudeCacheWriteMultiplier
+	cacheReadPerM := inputPricePerM * catalog.ClaudeCacheReadMultiplier(c.model)
+	// A catalog that publishes cache rates (a gateway's /v1/models) wins over
+	// the multipliers.
+	if r, w := catalog.CacheRates(provider, c.model); r > 0 || w > 0 {
+		if r > 0 {
+			cacheReadPerM = r
+		}
+		if w > 0 {
+			cacheWritePerM = w
+		}
+	}
+	cacheWriteCost := float64(cacheCreationTokens) * cacheWritePerM / 1_000_000
+	cacheReadCost := float64(cacheReadTokens) * cacheReadPerM / 1_000_000
 	return inputCost + outputCost + cacheWriteCost + cacheReadCost
 }
 
@@ -731,9 +820,9 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	}
 
 	// Marshal request
-	body, err := json.Marshal(req)
+	body, err := c.marshalRequest(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return nil, err
 	}
 
 	// 2. Send request with rate limiting if enabled.
@@ -824,6 +913,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	thinkBlocks := make(map[int]*llmtypes.ThinkingBlock)
 	var thinkOrder []int
 
+	var streamFacts llm.ResponseFacts
 	scanner := bufio.NewScanner(httpResp.Body)
 	// A gateway may coalesce a whole response (or an error echoing the request)
 	// into one SSE line; the Scanner default 64KB line cap aborts the stream.
@@ -849,8 +939,23 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				continue
 			}
 
+			if c.inspector != nil {
+				streamFacts.Merge(c.inspect(httpResp.Header, []byte(jsonData)))
+			}
+
 			// Handle different event types
 			switch event.Type {
+			case "error":
+				// A failure after the stream started (Anthropic overloaded_error,
+				// or an upstream fault behind a gateway). Without this case the
+				// stream ended "successfully" with whatever had arrived.
+				errType, errMsg := "", "stream error event"
+				if event.Error != nil {
+					errType, errMsg = event.Error.Type, event.Error.Message
+				}
+				return nil, llm.WrapHTTPStatus(llm.HTTPStatusForErrorType(errType),
+					fmt.Errorf("API error mid-stream: %s (type: %s)", errMsg, errType))
+
 			case "content_block_delta":
 				if event.Delta == nil {
 					continue
@@ -950,6 +1055,31 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				}
 				if event.Usage != nil {
 					usage.OutputTokens = event.Usage.OutputTokens
+					// message_delta usage is cumulative. A gateway (Vercel AI
+					// Gateway) sends message_start with input_tokens 0 and the
+					// real input count here; Anthropic repeats its own. Take
+					// any non-zero figure.
+					if event.Usage.InputTokens > 0 {
+						usage.InputTokens = event.Usage.InputTokens
+					}
+					if event.Usage.CacheReadInputTokens > 0 {
+						usage.CacheReadInputTokens = event.Usage.CacheReadInputTokens
+					}
+					if event.Usage.CacheCreationInputTokens > 0 {
+						usage.CacheCreationInputTokens = event.Usage.CacheCreationInputTokens
+					}
+				}
+				if pm := event.ProviderMetadata; pm != nil && pm.Anthropic != nil && pm.Anthropic.Usage != nil {
+					u := pm.Anthropic.Usage
+					if usage.InputTokens == 0 && u.InputTokens > 0 {
+						usage.InputTokens = u.InputTokens
+					}
+					if usage.CacheReadInputTokens == 0 && u.CacheReadInputTokens > 0 {
+						usage.CacheReadInputTokens = u.CacheReadInputTokens
+					}
+					if usage.CacheCreationInputTokens == 0 && u.CacheCreationInputTokens > 0 {
+						usage.CacheCreationInputTokens = u.CacheCreationInputTokens
+					}
 				}
 
 			case "message_stop":
@@ -995,6 +1125,9 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	}
 	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 	usage.CostUSD = c.calculateCost(usage.InputTokens, usage.OutputTokens, usage.CacheReadInputTokens, usage.CacheCreationInputTokens)
+	if streamFacts.CostUSD > 0 {
+		usage.CostUSD = streamFacts.CostUSD
+	}
 
 	// Record token usage for rate limiter metrics
 	if c.rateLimiter != nil {
@@ -1021,20 +1154,21 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		ToolCalls:      toolCalls,
 		Thinking:       thinkingText,
 		ThinkingBlocks: thinkingBlocks,
-		Metadata: map[string]interface{}{
+		Metadata: streamFacts.Apply(map[string]interface{}{
 			"model":       c.model,
 			"stop_reason": stopReason,
 			"streaming":   true,
-		},
+		}),
 	}, nil
 }
 
 // callAPI makes the HTTP request to Anthropic's API.
-func (c *Client) callAPI(ctx context.Context, req *MessagesRequest) (*MessagesResponse, error) {
+func (c *Client) callAPI(ctx context.Context, req *MessagesRequest) (*MessagesResponse, llm.ResponseFacts, error) {
+	var facts llm.ResponseFacts
 	// Marshal request
-	body, err := json.Marshal(req)
+	body, err := c.marshalRequest(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return nil, facts, err
 	}
 
 	// Send request with rate limiting if enabled.
@@ -1083,17 +1217,17 @@ func (c *Client) callAPI(ctx context.Context, req *MessagesRequest) (*MessagesRe
 			return resp, nil
 		})
 		if err != nil {
-			return nil, fmt.Errorf("HTTP request failed: %w", err)
+			return nil, facts, fmt.Errorf("HTTP request failed: %w", err)
 		}
 		httpResp = result.(*http.Response)
 	} else {
 		req, err := buildAPIReq(ctx)
 		if err != nil {
-			return nil, err
+			return nil, facts, err
 		}
 		httpResp, err = c.httpClient.Do(req)
 		if err != nil {
-			return nil, fmt.Errorf("HTTP request failed: %w", err)
+			return nil, facts, fmt.Errorf("HTTP request failed: %w", err)
 		}
 	}
 	defer func() { _ = httpResp.Body.Close() }()
@@ -1101,7 +1235,7 @@ func (c *Client) callAPI(ctx context.Context, req *MessagesRequest) (*MessagesRe
 	// Read response
 	respBody, err := io.ReadAll(httpResp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
+		return nil, facts, fmt.Errorf("failed to read response: %w", err)
 	}
 
 	// Check status code
@@ -1109,20 +1243,20 @@ func (c *Client) callAPI(ctx context.Context, req *MessagesRequest) (*MessagesRe
 		// Positive identification of the provider's context-too-long refusal
 		// (HLD §5.2 step 12) — the only relief trigger.
 		if llm.IsAnthropicContextTooLong(httpResp.StatusCode, respBody) {
-			return nil, llm.WrapHTTPStatus(httpResp.StatusCode,
+			return nil, facts, llm.WrapHTTPStatus(httpResp.StatusCode,
 				fmt.Errorf("API error (status %d): %s: %w", httpResp.StatusCode, string(respBody), llm.ErrContextTooLong))
 		}
-		return nil, llm.WrapHTTPStatus(httpResp.StatusCode,
+		return nil, facts, llm.WrapHTTPStatus(httpResp.StatusCode,
 			fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody)))
 	}
 
 	// Parse response
 	var resp MessagesResponse
 	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+		return nil, facts, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
-	return &resp, nil
+	return &resp, c.inspect(httpResp.Header, respBody), nil
 }
 
 // Ensure Client implements LLMProvider interface.

@@ -1194,6 +1194,12 @@ message LLMCost {
 
   // Tokens written to prompt cache (billed at 1.25x input price for Anthropic).
   int32 cache_creation_input_tokens = 8;
+
+  // True when cost_usd includes an estimate: at least one call in this usage
+  // had no gateway-reported cost and no published rate for its model, and was
+  // priced at the median rate of the same creator's models in the gateway
+  // catalog (vercel-ai-gateway). Clients show such a cost with an asterisk.
+  bool cost_estimated = 9;
 }
 
 // ContextState reports the agent's memory and context window state after a response.
@@ -2635,6 +2641,14 @@ message ModelInfo {
 
   // Whether this model should appear in UI dropdowns (false = API-only or deprecated)
   bool show_in_dropdown = 11;
+
+  // Cost per 1M prompt-cache read tokens (USD). 0 = not published; clients
+  // then derive it from the input rate with the vendor's multiplier.
+  double cost_per_1m_cache_read_usd = 12;
+
+  // Cost per 1M prompt-cache write tokens (USD). 0 = not published; clients
+  // then derive it from the input rate with the vendor's multiplier.
+  double cost_per_1m_cache_write_usd = 13;
 }
 
 // Tool Permission Messages

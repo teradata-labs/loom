@@ -146,3 +146,26 @@ func TestIsBedrockContextTooLong(t *testing.T) {
 		})
 	}
 }
+
+// Context-overflow refusals as the Vercel AI Gateway returns them (captured
+// live 2026-11-16, bodies trimmed): its own error type, the upstream message
+// passed through, no code. Relief must recognise both surfaces.
+func TestContextTooLong_VercelGatewayBodies(t *testing.T) {
+	messages := []byte(`{"error":{"message":"prompt is too long: 300024 tokens > 200000 maximum","type":"AI_APICallError","param":{"statusCode":400,"isRetryable":false}},"providerMetadata":{"gateway":{}}}`)
+	chat := []byte(`{"error":{"message":"Your input exceeds the context window of this model. Please adjust your input and try again.","type":"AI_APICallError","param":{"statusCode":400,"isRetryable":false}},"providerMetadata":{"gateway":{}}}`)
+	if !IsAnthropicContextTooLong(400, messages) {
+		t.Error("Messages-surface gateway refusal must be context-too-long")
+	}
+	if !IsOpenAIContextTooLong(400, chat) {
+		t.Error("Chat-surface gateway refusal must be context-too-long")
+	}
+	if IsAnthropicContextTooLong(400, []byte(`{"error":{"message":"Invalid model","type":"AI_APICallError"}}`)) {
+		t.Error("an unrelated gateway 400 is not context-too-long")
+	}
+	if IsAnthropicContextTooLong(500, messages) {
+		t.Error("a 500 is not this")
+	}
+	if IsOpenAIContextTooLong(400, []byte(`{"error":{"message":"No available providers match the 'only' filter","type":"invalid_request_error"}}`)) {
+		t.Error("an unsatisfiable only filter is not context-too-long")
+	}
+}
