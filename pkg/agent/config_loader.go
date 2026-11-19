@@ -16,6 +16,7 @@ import (
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/decision"
+	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/llm/vercelgateway"
 	"github.com/teradata-labs/loom/pkg/skills"
 	"go.uber.org/zap"
@@ -89,7 +90,7 @@ func convertLLMConfigYAMLToProto(y *LLMConfigYAML) (*loomv1.LLMConfig, error) {
 	return &loomv1.LLMConfig{
 		// Aliases ("vercel") become canonical names at load, so limiter keys,
 		// the catalog namespace and span attributes never see an alias.
-		Provider:              vercelgateway.NormalizeProviderName(y.Provider),
+		Provider:              llm.NormalizeProviderName(y.Provider),
 		Model:                 y.Model,
 		Temperature:           float32(y.Temperature),
 		MaxTokens:             maxTokens,
@@ -1582,8 +1583,8 @@ func validateGatewayRouting(role string, l *loomv1.LLMConfig) error {
 	if l == nil || l.GetGatewayRouting() == nil {
 		return nil
 	}
-	if !vercelgateway.IsProviderName(l.GetProvider()) {
-		return fmt.Errorf("%s.gateway_routing is honoured only by provider %s (got provider %q); set provider: %s or remove the block", role, vercelgateway.ProviderName, l.GetProvider(), vercelgateway.ProviderName)
+	if !llm.IsVercelAIGateway(l.GetProvider()) {
+		return fmt.Errorf("%s.gateway_routing is honoured only by provider %s (got provider %q); set provider: %s or remove the block", role, llm.ProviderVercelAIGateway, l.GetProvider(), llm.ProviderVercelAIGateway)
 	}
 	if err := vercelgateway.RoutingFromProto(l.GetGatewayRouting()).Validate(); err != nil {
 		return fmt.Errorf("%s.gateway_routing: %w", role, err)
@@ -1623,25 +1624,25 @@ func ValidateAgentConfig(config *loomv1.AgentConfig) error {
 
 		// Validate provider is supported
 		validProviders := map[string]bool{
-			"anthropic":                 true,
-			"bedrock":                   true,
-			"bedrock-mantle":            true,
-			"litellm":                   true,
-			vercelgateway.ProviderName:  true,
-			vercelgateway.ProviderAlias: true,
-			"ollama":                    true,
-			"openai":                    true,
-			"azure-openai":              true,
-			"azureopenai":               true,
-			"mistral":                   true,
-			"gemini":                    true,
-			"huggingface":               true,
+			"anthropic":                      true,
+			"bedrock":                        true,
+			"bedrock-mantle":                 true,
+			"litellm":                        true,
+			llm.ProviderVercelAIGateway:      true,
+			llm.ProviderVercelAIGatewayAlias: true,
+			"ollama":                         true,
+			"openai":                         true,
+			"azure-openai":                   true,
+			"azureopenai":                    true,
+			"mistral":                        true,
+			"gemini":                         true,
+			"huggingface":                    true,
 		}
 		provider := strings.ToLower(config.Llm.Provider)
 		if !validProviders[provider] {
 			return fmt.Errorf("unsupported LLM provider: %s (must be one of: anthropic, bedrock, bedrock-mantle, litellm, ollama, openai, azure-openai, mistral, gemini, huggingface, vercel-ai-gateway)", config.Llm.Provider)
 		}
-		if vercelgateway.IsProviderName(provider) {
+		if llm.IsVercelAIGateway(provider) {
 			if err := vercelgateway.ValidateModelID(config.Llm.Model); err != nil {
 				return err
 			}
