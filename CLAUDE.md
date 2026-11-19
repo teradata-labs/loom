@@ -65,7 +65,7 @@ Loom is an LLM agent framework that provides **autonomous agent creation with pa
 1. Version badge at top: `**Version**: v1.3.0`
 2. Dependency note about Hawk (optional dependency)
 3. Features split into "✅ Implemented" and "📋 Planned" sections
-4. Accurate LLM provider info (Anthropic, Bedrock, OpenAI, Azure OpenAI, Gemini, Mistral, Ollama, HuggingFace implemented; Bedrock Mantle partial (implemented; 53 cataloged models; GPT-5.x/6.x unpriced; OpenAI Responses API planned); Vercel AI Gateway partial (implemented; live-tested 2026-11-16 on Haiku 4.5 and GPT-5 mini; Responses API planned); Vertex AI planned)
+4. Accurate LLM provider info (Anthropic, Bedrock, OpenAI, Azure OpenAI, Gemini, Mistral, Ollama, HuggingFace implemented; Bedrock Mantle partial (implemented; 53 cataloged models; GPT-5.x/6.x unpriced; OpenAI Responses API planned); Vercel AI Gateway implemented (Messages, Chat and Responses APIs, BYOK, routing options, price tiers, OIDC; live-tested 2026-11-16 and 2026-11-19 on Sonnet 5.5 and GPT-5.5); Vertex AI planned)
 5. Accurate feature claims verified against codebase
 
 **Before updating README:**

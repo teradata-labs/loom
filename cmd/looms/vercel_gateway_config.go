@@ -23,6 +23,7 @@ import (
 	"go.uber.org/zap"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/agent"
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
 	"github.com/teradata-labs/loom/pkg/embedding"
 	"github.com/teradata-labs/loom/pkg/llm/vercelgateway"
@@ -65,27 +66,14 @@ func newVercelGatewayEmbedder(c *Config) (*embedding.OpenAIEmbedder, error) {
 	}), nil
 }
 
-// GatewayRoutingConfig is llm.vercel_gateway_routing in looms.yaml: the typed
-// routing options (proto LLMGatewayRouting) sent as providerOptions.gateway.
-type GatewayRoutingConfig struct {
-	Order             []string `mapstructure:"order" yaml:"order,omitempty"`
-	Only              []string `mapstructure:"only" yaml:"only,omitempty"`
-	Sort              string   `mapstructure:"sort" yaml:"sort,omitempty"`
-	FallbackModels    []string `mapstructure:"fallback_models" yaml:"fallback_models,omitempty"`
-	ZeroDataRetention bool     `mapstructure:"zero_data_retention" yaml:"zero_data_retention,omitempty"`
-	Caching           string   `mapstructure:"caching" yaml:"caching,omitempty"`
-}
+// GatewayRoutingConfig is llm.vercel_gateway_routing in looms.yaml. It is
+// the agent YAML block (proto LLMGatewayRouting), so both files take the same
+// keys.
+type GatewayRoutingConfig = agent.LLMGatewayRoutingYAML
 
-// routing converts the looms.yaml block; nil when nothing is set.
-func (g GatewayRoutingConfig) routing() *vercelgateway.Routing {
-	r := &vercelgateway.Routing{
-		Order:             append([]string(nil), g.Order...),
-		Only:              append([]string(nil), g.Only...),
-		Sort:              g.Sort,
-		FallbackModels:    append([]string(nil), g.FallbackModels...),
-		ZeroDataRetention: g.ZeroDataRetention,
-		Caching:           g.Caching,
-	}
+// gatewayRouting converts the looms.yaml block; nil when nothing is set.
+func gatewayRouting(g GatewayRoutingConfig) *vercelgateway.Routing {
+	r := vercelgateway.RoutingFromProto(g.ToProto())
 	if r.IsZero() {
 		return nil
 	}
@@ -104,10 +92,17 @@ func vercelGatewayConfigFrom(cfg LLMConfig) vercelgateway.Config {
 		Model:       loomconfig.ExpandEnvPlaceholders(cfg.VercelGatewayModel),
 		MaxTokens:   cfg.MaxTokens,
 		Temperature: cfg.Temperature,
-		Routing:     cfg.VercelGatewayRouting.routing(),
+		Routing:     gatewayRouting(cfg.VercelGatewayRouting),
+		API:         cfg.VercelGatewayAPI,
 	}
 	if cfg.Timeout > 0 {
 		gc.Timeout = time.Duration(cfg.Timeout) * time.Second
+	}
+	if cfg.VercelGatewayStreamFirstByteTimeout > 0 {
+		gc.StreamFirstByteTimeout = time.Duration(cfg.VercelGatewayStreamFirstByteTimeout) * time.Second
+	}
+	if cfg.VercelGatewayStreamIdleTimeout > 0 {
+		gc.StreamIdleTimeout = time.Duration(cfg.VercelGatewayStreamIdleTimeout) * time.Second
 	}
 	if cfg.VercelGatewayOIDC {
 		gc.OIDC = &vercelgateway.OIDCConfig{TokenFile: loomconfig.ExpandEnvPlaceholders(cfg.VercelGatewayOIDCTokenFile)}
@@ -116,8 +111,8 @@ func vercelGatewayConfigFrom(cfg LLMConfig) vercelgateway.Config {
 }
 
 // applyProtoGatewayOverrides layers an agent's LLMConfig over the server's
-// gateway config: the agent's model and, when set, its gateway_routing
-// replace the server's.
+// gateway config: the agent's model and, when set, its gateway_routing and
+// gateway_api replace the server's.
 func applyProtoGatewayOverrides(gc vercelgateway.Config, p *loomv1.LLMConfig) vercelgateway.Config {
 	if p == nil {
 		return gc
@@ -127,6 +122,9 @@ func applyProtoGatewayOverrides(gc vercelgateway.Config, p *loomv1.LLMConfig) ve
 	}
 	if r := vercelgateway.RoutingFromProto(p.GetGatewayRouting()); !r.IsZero() {
 		gc.Routing = r
+	}
+	if api := p.GetGatewayApi(); api != "" {
+		gc.API = api
 	}
 	return gc
 }
@@ -143,6 +141,9 @@ func validateVercelGatewayConfig(cfg LLMConfig) error {
 	}
 	if err := gc.Routing.Validate(); err != nil {
 		return fmt.Errorf("%w (llm.vercel_gateway_routing)", err)
+	}
+	if err := vercelgateway.ValidateAPI(gc.API); err != nil {
+		return fmt.Errorf("%w (llm.vercel_gateway_api)", err)
 	}
 	if gc.APIKey == "" && gc.OIDC == nil {
 		return fmt.Errorf("vercel-ai-gateway API key is required (save to keyring with 'looms config set-key vercel_gateway_api_key', or set %s / %s), or set llm.vercel_gateway_oidc: true", vercelgateway.EnvLoomAPIKey, vercelgateway.EnvAPIKey)

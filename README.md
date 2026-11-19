@@ -220,7 +220,7 @@ Assign different LLM providers per operational role (judge, orchestrator, classi
 
 ### LLM Providers
 
-9 providers with 126 cataloged models, plus the Vercel AI Gateway (partial; models from its live catalog), with mid-session switching:
+9 providers with 126 cataloged models, plus the Vercel AI Gateway (models from its live catalog), with mid-session switching:
 
 | Provider | Models |
 |----------|--------|
@@ -233,7 +233,7 @@ Assign different LLM providers per operational role (judge, orchestrator, classi
 | **Mistral** | Mistral Large, Mistral Large 3, Mistral Medium, Mistral Medium 3.1, Mistral Small, Magistral Medium, Magistral Small, Ministral 3 (14B/8B/3B), Codestral, Devstral Medium, Devstral Small |
 | **Ollama** | Llama 4, Llama 3.3, Llama 3.2, Llama 3.2 Vision, Llama 3.1, Qwen 3.5, Qwen 3, Qwen 2.5, DeepSeek R1, DeepSeek V3, Phi 4 Mini, Phi 4, Gemma 4, Gemma 3 (+ any local model) |
 | **HuggingFace** | Any model via HuggingFace Inference API (Llama, Mixtral, Gemma, Qwen, etc.) |
-| **Vercel AI Gateway** ⚠️ | Any language model in the gateway's live catalog (`creator/model` ids; Claude on the Messages surface, others on Chat Completions). Unit-tested and live-tested on 2026-11-16 (Claude Haiku 4.5, GPT-5 mini). See [docs/reference/llm-vercel-ai-gateway.md](docs/reference/llm-vercel-ai-gateway.md) |
+| **Vercel AI Gateway** | Any language model in the gateway's live catalog (`creator/model` ids) on the Messages, Chat Completions or Responses API, with per-request BYOK and the gateway's routing options. Live-tested 2026-11-16 and 2026-11-19 (Sonnet 5.5, GPT-5.5, OIDC). See [docs/reference/llm-vercel-ai-gateway.md](docs/reference/llm-vercel-ai-gateway.md) |
 
 ---
 

@@ -43,6 +43,7 @@ const (
 	// Surface paths, appended to the endpoint.
 	MessagesPath        = "/v1/messages"
 	ChatCompletionsPath = "/v1/chat/completions"
+	ResponsesPath       = "/v1/responses"
 	ModelsPath          = "/v1/models"
 	CreditsPath         = "/v1/credits"
 

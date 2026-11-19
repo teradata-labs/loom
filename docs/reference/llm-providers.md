@@ -4,7 +4,7 @@
 Reference for all supported LLM providers and their configuration.
 
 **Version**: v1.3.0
-**Status**: ✅ 8 providers implemented (Anthropic, Bedrock, Ollama, OpenAI, Azure OpenAI, Mistral AI, Google Gemini, HuggingFace); ⚠️ AWS Bedrock Mantle and Vercel AI Gateway partial; 📋 Google Vertex AI planned
+**Status**: ✅ 9 providers implemented (Anthropic, Bedrock, Ollama, OpenAI, Azure OpenAI, Mistral AI, Google Gemini, HuggingFace, Vercel AI Gateway); ⚠️ AWS Bedrock Mantle partial; 📋 Google Vertex AI planned
 
 
 ## Table of Contents
@@ -19,7 +19,7 @@ Reference for all supported LLM providers and their configuration.
 - [Google Gemini](#7-google-gemini) - Google AI Studio
 - [HuggingFace](#8-huggingface) - Open-source models via the HF Inference API
 - [AWS Bedrock Mantle](#9-aws-bedrock-mantle) - Claude and open-weight models via the `bedrock-mantle` endpoint
-- [Vercel AI Gateway](#10-vercel-ai-gateway) - Many upstream providers behind one key (partial)
+- [Vercel AI Gateway](#10-vercel-ai-gateway) - Many upstream providers behind one key
 
 ### Planned Providers
 - [Google Vertex AI](#11-google-vertex-ai) - GCP integration (Planned)
@@ -51,7 +51,7 @@ Reference for all supported LLM providers and their configuration.
 | **Google Gemini** | ✅ Implemented | Native | 1.05M | $0-$12/1M tokens | Long context, multimodal |
 | **HuggingFace** | ✅ Implemented | Native (model-dependent) | Varies | ~$0.20-$1.00/1M tokens (estimated) | Open-source models |
 | **AWS Bedrock Mantle** | ⚠️ Partial (GPT-5.x/6.x unpriced; Responses API planned) | Native | 4k-1M | $0.04-$55/1M tokens (53 cataloged models) | Mantle-only models, OpenAI/Anthropic-compatible AWS endpoint |
-| **Vercel AI Gateway** | ⚠️ Partial (live-tested 2026-11-16 on Haiku 4.5 and GPT-5 mini) | Native (both surfaces) | From live catalog | Upstream list price, from `GET /v1/models` | One key for many upstreams, provider routing and fallback |
+| **Vercel AI Gateway** | ✅ Implemented (live-tested 2026-11-19) | Native (Messages, Chat Completions, Responses) | From live catalog | Upstream list price with prompt-size tiers, from `GET /v1/models` | One key for many upstreams, provider routing, fallback and per-request BYOK |
 | **Google Vertex AI** | 📋 Planned | TBD | TBD | TBD | GCP infrastructure |
 
 ### Authentication Methods
@@ -708,9 +708,9 @@ llm:
 
 ### 10. Vercel AI Gateway
 
-**Status**: ⚠️ Partial. Implemented and unit-tested against a fake gateway: provider (`pkg/llm/vercelgateway`), provider factory, agent registry, `looms` server config (`llm.vercel_gateway_*`), agent YAML `gateway_routing`, `looms workflow`, `looms config init` (option 5), `loom-standalone`, `loom decision replay`, `pkg/builder` (`WithVercelGatewayLLM`) and memory embeddings (`embedding.provider: vercel-ai-gateway`). Live-tested 2026-11-16 (Haiku 4.5, GPT-5 mini, embeddings). Not done: the Responses surface (📋), tiered long-context prices.
+**Status**: ✅ Implemented. Unit-tested and live-tested: provider (`pkg/llm/vercelgateway`) on the Messages, Chat Completions and Responses APIs (`gateway_api`), every documented routing option including per-request BYOK, session affinity, catalog price tiers, provider factory, agent registry, `looms` server config (`llm.vercel_gateway_*`), agent YAML (`gateway_routing`, `gateway_api`), `looms workflow`, `looms config init` (option 5), `loom-standalone`, `loom decision replay`, `pkg/builder` (`WithVercelGatewayLLM`, `WithVercelGatewayConfig`) and memory embeddings. Live-tested 2026-11-16 (Haiku 4.5, GPT-5 mini, embeddings) and 2026-11-19 (Sonnet 5.5, GPT-5.5, Haiku 5.5, Qwen 3.7 Flash, OIDC). Gateway error bodies that cannot be provoked on demand are listed in the reference doc.
 
-One host (`https://ai-gateway.vercel.sh`) in front of many upstream providers. Claude ids (`anthropic/*`) go to the gateway's Anthropic Messages surface; every other id goes to its OpenAI Chat Completions surface.
+One host (`https://ai-gateway.vercel.sh`) in front of many upstream providers. By default Claude ids (`anthropic/*`) go to the gateway's Anthropic Messages API and every other id to its OpenAI Chat Completions API; `gateway_api: responses` sends every id to the OpenAI Responses API.
 
 **Why the gateway**:
 - One key for Anthropic, OpenAI, Google, and other upstreams, billed at upstream list price
@@ -986,6 +986,8 @@ provider: Anthropic  # Wrong - case matters
 ```yaml
 timeout_seconds: 120  # Increase timeout
 ```
+
+For `vercel-ai-gateway`, every model call is streamed: `timeout_seconds` caps a whole call only when set, and a stall is caught by `vercel_gateway_stream_first_byte_timeout_seconds` (default 60) and `vercel_gateway_stream_idle_timeout_seconds` (default 90). Raise those for a model that stays silent longer.
 
 For Ollama (CPU inference can be very slow):
 ```yaml

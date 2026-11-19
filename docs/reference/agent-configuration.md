@@ -217,6 +217,8 @@ All fields are optional. If `spec.llm` is omitted entirely, the agent inherits t
 | `max_context_tokens` | `int` | the model's window | The window loom budgets against: the fold keeps the settled conversation under the profile's threshold of it. May sit below the model's window to bound cost |
 | `reserved_output_tokens` | `int` | 10% of context | Tokens reserved for model output |
 | `max_model_context_tokens` | `int` | the model's listed window | The window the model is served with, when below its listed one (vLLM `--max-model-len`, TGI `--max-total-tokens`, Ollama `num_ctx`). A step in flight is fitted to it before the send |
+| `gateway_routing` | object | (gateway default routing) | `vercel-ai-gateway` only: upstream order and filters, fallback models, zero data retention, caching, per-request BYOK (variables named `LOOM_BYOK_*`), provider timeouts, session affinity, region, headquarters, user, tags. Replaces the server's `llm.vercel_gateway_routing` for this agent. Any other provider rejects it. See [Vercel AI Gateway](llm-vercel-ai-gateway.md#routing-options) |
+| `gateway_api` | `string` | `auto` | `vercel-ai-gateway` only: `auto` (Claude ids on the Messages API, others on Chat Completions), `messages`, `chat` or `responses`. Any other provider rejects it |
 
 ---
 
@@ -279,7 +281,7 @@ Source: `DecisionConfigYAML` in `pkg/agent/config_loader.go`; rules in `decision
 | `provider` | `string` | `off` | `off`, `llm` (adapter over one of the agent's LLMs), `jev` (TypeSafe System One API) or `mock`. Case-insensitive in YAML |
 | `llm_role` | `string` | main LLM | With `llm`: `classifier`, `compressor`, `judge` or `orchestrator`; an unset or unconfigured role uses the main LLM |
 | `model` | `string` | `jev-1.13.0` (jev direct), `typesafe-ai/jev` (gateway) | jev model id (the `llm` provider uses its role LLM's own model and ignores this). Floating aliases (`jev-latest`, `jev-preview`, `latest`, `typesafe-ai/jev`) are rejected unless `allow_alias: true` |
-| `allow_alias` | `bool` | `false` | Accept a floating alias. Required for the Vercel AI Gateway, whose only id is `typesafe-ai/jev` |
+| `allow_alias` | `bool` | `false` | Accept a floating alias. Required for the floating gateway id `typesafe-ai/jev`. Pinned gateway ids such as `typesafe-ai/jev-1.14.0` are accepted without it (verified live on 2026-11-18) |
 | `timeout_ms` | `int` | `0` (5 s for jev, 20 s for llm) | Per-request timeout; must be `>= 0` |
 | `max_per_session` | `int` | `0` (no cap) | Decider calls per session before the router falls back; must be `>= 0` |
 | `max_cost_usd_per_session` | `float` | `0` (no cap) | Decider spend per session in USD; must be `>= 0` |

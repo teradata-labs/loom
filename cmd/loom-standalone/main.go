@@ -210,14 +210,14 @@ func startEmbeddedServer(port int, llmProvider, llmAPIKey, llmModel string, temp
 	case vercelgateway.ProviderName, vercelgateway.ProviderAlias:
 		// No default model (it would go stale with the gateway catalog). Key
 		// from LOOM_LLM_VERCEL_GATEWAY_API_KEY or AI_GATEWAY_API_KEY.
-		llmProv, err = vercelgateway.NewClient(vercelgateway.Config{
+		llmProv, err = vercelgateway.NewClient(vercelgateway.ApplyTimeoutEnv(vercelgateway.Config{
 			Endpoint:          os.Getenv("VERCEL_AI_GATEWAY_ENDPOINT"),
 			APIKey:            vercelgateway.ResolveAPIKey(""),
 			Model:             llmModel,
 			MaxTokens:         maxTok,
 			Temperature:       temp,
 			RateLimiterConfig: llm.RateLimiterConfig{Enabled: true},
-		})
+		}))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create vercel-ai-gateway client: %w", err)
 		}

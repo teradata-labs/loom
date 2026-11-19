@@ -47,3 +47,23 @@ func TestAgentBuilder_WithVercelGatewayLLM_ErrorsSurface(t *testing.T) {
 	b = NewAgentBuilder().WithVercelGatewayLLM("openai/gpt-5")
 	require.ErrorContains(t, b.err, "no credential")
 }
+
+func TestAgentBuilder_WithVercelGatewayConfig(t *testing.T) {
+	t.Setenv(vercelgateway.EnvLoomAPIKey, "")
+	t.Setenv(vercelgateway.EnvAPIKey, "vck_test_not_a_real_key")
+	t.Setenv("VERCEL_AI_GATEWAY_ENDPOINT", "")
+	b := NewAgentBuilder().WithVercelGatewayConfig(vercelgateway.Config{
+		Model:   "openai/gpt-5.5",
+		API:     vercelgateway.APIResponses,
+		Routing: &vercelgateway.Routing{Only: []string{"openai"}},
+	})
+	require.NoError(t, b.err)
+	c, ok := b.llm.(*vercelgateway.Client)
+	require.True(t, ok)
+	assert.Equal(t, vercelgateway.SurfaceResponses, c.Surface())
+	assert.Equal(t, vercelgateway.DefaultEndpoint+vercelgateway.ResponsesPath, c.Endpoint())
+
+	b = NewAgentBuilder().WithVercelGatewayConfig(vercelgateway.Config{Model: "openai/gpt-5.5", API: "completions"})
+	require.Error(t, b.err)
+	assert.Contains(t, b.err.Error(), "gateway_api")
+}

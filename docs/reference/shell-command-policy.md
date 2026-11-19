@@ -304,7 +304,7 @@ In jailed mode, `serve` also:
 }
 ```
 
-`limit` is `memory`, `timeout`, or empty. When anything was blocked, the error message lists it, and the suggestion tells the model to write the program out literally so it can be approved. A program computed at run time can never be approved.
+`limit` is `memory`, `timeout`, or empty. When anything was blocked, the call fails even if the script exited 0 (a refused step earlier in a chain such as `rm x; ls` leaves the exit status to `ls`); the error code is then `POLICY_BLOCKED` instead of `EXIT_ERROR`. The error message lists what was blocked, and the suggestion tells the model to write the program out literally so it can be approved. A program computed at run time can never be approved.
 
 ## Run-time checks
 

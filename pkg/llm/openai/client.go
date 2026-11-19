@@ -429,7 +429,7 @@ func (c *Client) sendRequestWithClient(
 				if err != nil {
 					return nil, err
 				}
-				resp, err := sendHTTPRequest(httpClient, req, streamFirstByteTimeout, streamIdleTimeout)
+				resp, err := llm.DoStreamHTTP(httpClient, req, streamFirstByteTimeout, streamIdleTimeout)
 				if err != nil {
 					return nil, err
 				}
@@ -469,7 +469,7 @@ func (c *Client) sendRequestWithClient(
 		if err != nil {
 			return nil, err
 		}
-		resp, doErr := sendHTTPRequest(httpClient, req, streamFirstByteTimeout, streamIdleTimeout)
+		resp, doErr := llm.DoStreamHTTP(httpClient, req, streamFirstByteTimeout, streamIdleTimeout)
 		if doErr == nil {
 			return resp, nil
 		}
@@ -478,44 +478,6 @@ func (c *Client) sendRequestWithClient(
 		}
 	}
 	return nil, fmt.Errorf("HTTP request failed")
-}
-
-func sendHTTPRequest(
-	httpClient *http.Client,
-	req *http.Request,
-	streamFirstByteTimeout time.Duration,
-	streamIdleTimeout time.Duration,
-) (*http.Response, error) {
-	var cancelStream context.CancelFunc
-	if streamFirstByteTimeout > 0 || streamIdleTimeout > 0 {
-		streamCtx, cancel := context.WithCancel(req.Context())
-		cancelStream = cancel
-		req = req.Clone(streamCtx)
-	}
-	startedAt := time.Now()
-	resp, err := httpClient.Do(req)
-	if err != nil && cancelStream != nil {
-		cancelStream()
-	}
-	if err == nil && (streamFirstByteTimeout > 0 || streamIdleTimeout > 0) {
-		firstByteWait := streamFirstByteTimeout
-		if firstByteWait > 0 {
-			firstByteWait -= time.Since(startedAt)
-			if firstByteWait <= 0 {
-				cancelStream()
-				_ = resp.Body.Close()
-				return nil, streamIdleTimeoutError{phase: "first-byte", timeout: streamFirstByteTimeout}
-			}
-		}
-		resp.Body = newStreamReadTimeoutReadCloser(
-			resp.Body,
-			firstByteWait,
-			streamFirstByteTimeout,
-			streamIdleTimeout,
-			cancelStream,
-		)
-	}
-	return resp, err
 }
 
 // Name returns the provider name.
@@ -1181,7 +1143,7 @@ func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cache
 	// A catalog that publishes cache rates (a gateway's /v1/models) wins over
 	// the family multiplier.
 	cacheReadPerM, cacheWritePerM := inputCostPerM*cacheReadMult, inputCostPerM*cacheWriteMult
-	if r, w := catalog.CacheRates(c.catalogProvider, c.model); r > 0 || w > 0 {
+	if r, w := catalog.RequestCacheRates(c.catalogProvider, c.model, inputTokens); r > 0 || w > 0 {
 		if r > 0 {
 			cacheReadPerM = r
 		}
@@ -1377,6 +1339,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 
 	var streamFacts llm.ResponseFacts
 	var details detailAccumulator
+	sawDone := false
 
 	scanner := bufio.NewScanner(httpResp.Body)
 	// A gateway may coalesce a whole response (or an error echoing the request)
@@ -1396,6 +1359,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 
 		// Check for [DONE] message
 		if jsonData == "[DONE]" {
+			sawDone = true
 			break
 		}
 
@@ -1542,6 +1506,12 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			return nil, fmt.Errorf("error reading stream: SSE line exceeded the 8MB cap: %w", err)
 		}
 		return nil, fmt.Errorf("error reading stream: %w", err)
+	}
+	// A complete stream carries a finish_reason, a [DONE] sentinel, or both.
+	// One that closes with neither was cut off, and what arrived is a
+	// fragment, not an answer.
+	if !sawDone && finishReason == "" {
+		return nil, llm.TruncatedStreamError("stream ended without finish_reason or [DONE]")
 	}
 
 	// 4. Parse accumulated tool call arguments, in stream index order. Ranging

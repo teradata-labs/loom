@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"math"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -27,15 +28,31 @@ import (
 
 // Span/metadata attribute keys this provider reports.
 const (
-	AttrEndpointSurface = "gateway.endpoint_surface" // "messages" | "chat"
+	AttrEndpointSurface = "gateway.endpoint_surface" // "messages" | "chat" | "responses"
 	AttrGenerationID    = "gateway.generation_id"
 	AttrFinalProvider   = "gateway.final_provider"
 	AttrFinalModel      = "gateway.final_model"
 	AttrFallbackUsed    = "gateway.fallback_used" // "true" | "false"
 	AttrAttemptCount    = "gateway.attempt_count"
+	// AttrCredentialType is the credential the serving attempt used: "byok"
+	// or "system" (the gateway's own provider key).
+	AttrCredentialType = "gateway.credential_type"
+	// AttrSessionSource is where the gateway took the session-affinity key
+	// from: "explicit" (a session id loom sent), "fingerprint" (derived by
+	// the gateway from the prompt), or another documented source.
+	AttrSessionSource = "gateway.session_source"
+	// AttrAttempts lists every upstream attempt in order as
+	// provider/credential/status ("anthropic/byok/400,anthropic/system/200"),
+	// so a BYOK key the upstream rejected is visible even when a fallback
+	// served the call.
+	AttrAttempts = "gateway.attempts"
+	// AttrRetried is set when loom retried the call itself after the first
+	// attempt failed before any output: "stall" or "truncated".
+	AttrRetried = "gateway.retried"
 
-	SurfaceMessages = "messages"
-	SurfaceChat     = "chat"
+	SurfaceMessages  = "messages"
+	SurfaceChat      = "chat"
+	SurfaceResponses = "responses"
 
 	generationIDPrefix = "gen_"
 )
@@ -73,6 +90,10 @@ type gatewayPayload struct {
 	} `json:"choices"`
 	ProviderMetadata      *providerMetadata `json:"providerMetadata"`
 	ProviderMetadataSnake *providerMetadata `json:"provider_metadata"`
+	// Response is the Responses API stream envelope: response.created and
+	// response.completed carry the response object (model, id, usage and, on
+	// completion, provider_metadata.gateway) under "response".
+	Response *gatewayPayload `json:"response"`
 }
 
 // metadata returns the gateway provider metadata wherever this payload
@@ -104,6 +125,15 @@ type providerMetadata struct {
 			FinalProvider             string `json:"finalProvider"`
 			ModelAttemptCount         int    `json:"modelAttemptCount"`
 			TotalProviderAttemptCount int    `json:"totalProviderAttemptCount"`
+			ClientSessionIDSource     string `json:"clientSessionIdSource"`
+			ModelAttempts             []struct {
+				ProviderAttempts []struct {
+					Provider       string `json:"provider"`
+					CredentialType string `json:"credentialType"`
+					Success        bool   `json:"success"`
+					StatusCode     int    `json:"statusCode"`
+				} `json:"providerAttempts"`
+			} `json:"modelAttempts"`
 		} `json:"routing"`
 	} `json:"gateway"`
 }
@@ -129,6 +159,9 @@ func inspectPayload(requestedModel string, payload []byte) llm.ResponseFacts {
 	var p gatewayPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return facts
+	}
+	if p.Response != nil {
+		p = *p.Response
 	}
 	attrs := make(map[string]string, 4)
 
@@ -176,6 +209,23 @@ func inspectPayload(requestedModel string, payload []byte) llm.ResponseFacts {
 			if r.ModelAttemptCount > 1 {
 				attrs[AttrFallbackUsed] = "true"
 			}
+			if r.ClientSessionIDSource != "" {
+				attrs[AttrSessionSource] = r.ClientSessionIDSource
+			}
+			var attempts []string
+			for _, ma := range r.ModelAttempts {
+				for _, pa := range ma.ProviderAttempts {
+					if pa.Success && pa.CredentialType != "" {
+						attrs[AttrCredentialType] = pa.CredentialType
+					}
+					if pa.Provider != "" {
+						attempts = append(attempts, pa.Provider+"/"+pa.CredentialType+"/"+strconv.Itoa(pa.StatusCode))
+					}
+				}
+			}
+			if len(attempts) > 0 {
+				attrs[AttrAttempts] = strings.Join(attempts, ",")
+			}
 		}
 	}
 	if len(attrs) > 0 {
@@ -195,14 +245,34 @@ func hasAnyMarker(payload []byte) bool {
 
 // sameModel compares a served model id with the requested one. Upstreams may
 // echo the id without the creator prefix ("claude-sonnet-4.5" for
-// "anthropic/claude-sonnet-4.5"), which is the same model, not a fallback.
+// "anthropic/claude-sonnet-4.5") or as a dated snapshot of it
+// ("gpt-5.5-2026-04-23" for "openai/gpt-5.5", seen live on the Responses
+// stream 2026-11-19); both are the same model, not a fallback. A different
+// version (gpt-5 for gpt-5.5) still differs: gpt-5-5 is not gpt-5.
 func sameModel(served, requested string) bool {
+	// The Responses API echoes Claude ids with dashes for dots
+	// ("claude-sonnet-5-5" for "anthropic/claude-sonnet-5.5", seen live
+	// 2026-11-19); dots and dashes are compared as equal.
+	served, requested = strings.ReplaceAll(served, ".", "-"), strings.ReplaceAll(requested, ".", "-")
 	if strings.EqualFold(served, requested) {
 		return true
 	}
-	_, bare, ok := strings.Cut(requested, "/")
-	return ok && strings.EqualFold(served, bare)
+	bare := requested
+	if _, b, ok := strings.Cut(requested, "/"); ok {
+		bare = b
+	}
+	if strings.EqualFold(served, bare) {
+		return true
+	}
+	if _, b, ok := strings.Cut(served, "/"); ok {
+		served = b
+	}
+	return len(served) == len(bare)+len("-2006-01-02") &&
+		strings.EqualFold(served[:len(bare)], bare) && datedSuffixRe.MatchString(served[len(bare):])
 }
+
+// datedSuffixRe matches the "-YYYY-MM-DD" suffix of a dated model snapshot.
+var datedSuffixRe = regexp.MustCompile(`^-\d{4}-\d{2}-\d{2}$`)
 
 // parseCost reads the gateway's cost, documented as a decimal string
 // ("0.0045405"); a JSON number is accepted too. Negative, NaN and infinite

@@ -113,15 +113,25 @@ func isStaticEntry(provider, modelID string, info *loomv1.ModelInfo) bool {
 // any premium the row holds over the first-party card (scaleLongContextCard):
 // a bedrock-mantle row at first-party × 1.10 gets the long-context card
 // × 1.10. A rate a registered Source supplies is the embedder's pricing
-// authority and is returned unchanged at every prompt length: the
-// long-context card is part of the published price list, not of an
-// embedder's negotiated or gateway rate, and a Source row has no field to
-// express a long-context rate of its own.
+// authority: the long-context card is not applied to it. When that row
+// carries prompt-size tiers (ModelInfo.price_tiers, from the Vercel AI
+// Gateway catalog's input_tiers/output_tiers), the tier containing
+// promptTokens prices the request instead of the flat row.
 //
 // This is the one rate resolution shared by the anthropic, bedrock and
 // openai clients' cost estimates.
 func RequestPricing(provider, modelID string, promptTokens int) (inputPer1M, outputPer1M float64, found bool) {
 	inputPer1M, outputPer1M, published, found := lookupPricing(provider, modelID)
+	if found && !published {
+		if t := tierFor(provider, modelID, promptTokens); t != nil {
+			if v := t.GetInputPer_1MUsd(); v > 0 {
+				inputPer1M = v
+			}
+			if v := t.GetOutputPer_1MUsd(); v > 0 {
+				outputPer1M = v
+			}
+		}
+	}
 	if !found {
 		inputPer1M, outputPer1M, found = ClaudeFamilyPricing(modelID)
 		published = found
@@ -157,11 +167,50 @@ func scaleLongContextCard(modelID string, rowIn, rowOut, longIn, longOut float64
 // price cache tokens at the real rate instead of deriving it from the input
 // rate with a vendor multiplier that may not match the upstream.
 func CacheRates(provider, modelID string) (readPer1M, writePer1M float64) {
+	return RequestCacheRates(provider, modelID, 0)
+}
+
+// RequestCacheRates is CacheRates for one request whose prompt is
+// promptTokens long: a prompt-size tier's cache rates replace the flat ones
+// when the row has tiers (see RequestPricing).
+func RequestCacheRates(provider, modelID string, promptTokens int) (readPer1M, writePer1M float64) {
 	info := DefaultSource().Lookup(context.Background(), NormalizeProvider(provider), modelID)
 	if info == nil {
 		return 0, 0
 	}
-	return info.GetCostPer_1MCacheReadUsd(), info.GetCostPer_1MCacheWriteUsd()
+	readPer1M, writePer1M = info.GetCostPer_1MCacheReadUsd(), info.GetCostPer_1MCacheWriteUsd()
+	if t := tierIn(info, promptTokens); t != nil {
+		if v := t.GetCacheReadPer_1MUsd(); v > 0 {
+			readPer1M = v
+		}
+		if v := t.GetCacheWritePer_1MUsd(); v > 0 {
+			writePer1M = v
+		}
+	}
+	return readPer1M, writePer1M
+}
+
+// tierFor returns the price tier of (provider, modelID) that contains
+// promptTokens, or nil.
+func tierFor(provider, modelID string, promptTokens int) *loomv1.PriceTier {
+	info := DefaultSource().Lookup(context.Background(), NormalizeProvider(provider), modelID)
+	if info == nil {
+		return nil
+	}
+	return tierIn(info, promptTokens)
+}
+
+// tierIn returns the tier of info whose [min, max) range contains
+// promptTokens (max 0 = unbounded), or nil when info has no tiers or none
+// matches.
+func tierIn(info *loomv1.ModelInfo, promptTokens int) *loomv1.PriceTier {
+	n := int64(promptTokens)
+	for _, t := range info.GetPriceTiers() {
+		if n >= t.GetMinPromptTokens() && (t.GetMaxPromptTokens() == 0 || n < t.GetMaxPromptTokens()) {
+			return t
+		}
+	}
+	return nil
 }
 
 // CreatorMedianPricing estimates per-million input/output rates for a model

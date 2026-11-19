@@ -1,0 +1,26 @@
+: Synthetic fixture (not a live capture). Event shapes follow gpt-stream.sse.
+event: response.created
+data: {"type":"response.created","sequence_number":0,"response":{"id":"gen_text","status":"in_progress","output":[]}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"type":"message","id":"msg_1","status":"in_progress","role":"assistant","content":[]}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","sequence_number":2,"item_id":"msg_1","output_index":0,"content_index":0,"delta":"Hello"}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","sequence_number":3,"item_id":"msg_1","output_index":0,"content_index":0,"delta":", "}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","sequence_number":4,"item_id":"msg_1","output_index":0,"content_index":0,"delta":"world"}
+
+event: response.some_future_event
+data: {"type":"response.some_future_event","sequence_number":5}
+
+data: this line is not json
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","sequence_number":6,"output_index":0,"item":{"type":"message","id":"msg_1","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Hello, world"}]}}
+
+event: response.completed
+data: {"type":"response.completed","sequence_number":7,"response":{"id":"gen_text","status":"completed","model":"openai/gpt-5.5","output":[{"type":"message","id":"msg_1","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Hello, world"}]}],"usage":{"input_tokens":1200,"output_tokens":3,"total_tokens":1203,"input_tokens_details":{"cached_tokens":1000,"cache_write_tokens":0},"output_tokens_details":{"reasoning_tokens":0}},"provider_metadata":{"gateway":{"cost":"0.0001"}}}}

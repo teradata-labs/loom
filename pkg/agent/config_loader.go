@@ -102,6 +102,7 @@ func convertLLMConfigYAMLToProto(y *LLMConfigYAML) (*loomv1.LLMConfig, error) {
 		RateLimit:             rateLimit,
 		Seed:                  copyInt64Ptr(y.Seed),
 		GatewayRouting:        gatewayRoutingYAMLToProto(y.GatewayRouting),
+		GatewayApi:            y.GatewayAPI,
 	}, nil
 }
 
@@ -125,6 +126,7 @@ func convertProtoToLLMConfigYAML(pb *loomv1.LLMConfig) *LLMConfigYAML {
 		RateLimit:             rateLimitProtoToYAML(pb.RateLimit),
 		Seed:                  copyInt64Ptr(pb.Seed),
 		GatewayRouting:        gatewayRoutingProtoToYAML(pb.GatewayRouting),
+		GatewayAPI:            pb.GatewayApi,
 	}
 }
 
@@ -383,11 +385,16 @@ type LLMConfigYAML struct {
 	Seed *int64 `yaml:"seed"`
 
 	// GatewayRouting mirrors proto LLMGatewayRouting: upstream selection for a
-	// multi-provider gateway. Honored by vercel-ai-gateway; others ignore it.
+	// multi-provider gateway. Valid only with provider vercel-ai-gateway.
 	GatewayRouting *LLMGatewayRoutingYAML `yaml:"gateway_routing"`
+
+	// GatewayAPI mirrors proto LLMConfig.gateway_api: "" / auto, messages,
+	// chat or responses. Valid only with provider vercel-ai-gateway.
+	GatewayAPI string `yaml:"gateway_api,omitempty"`
 }
 
-// LLMGatewayRoutingYAML mirrors proto LLMGatewayRouting for agent YAML.
+// LLMGatewayRoutingYAML mirrors proto LLMGatewayRouting for agent YAML and,
+// through its mapstructure tags, for llm.vercel_gateway_routing in looms.yaml.
 //
 //	llm:
 //	  provider: vercel-ai-gateway
@@ -395,41 +402,136 @@ type LLMConfigYAML struct {
 //	  gateway_routing:
 //	    order: [bedrock, anthropic]
 //	    fallback_models: [openai/gpt-5]
+//	    byok:
+//	      - provider: anthropic
+//	        env: {apiKey: LOOM_BYOK_ANTHROPIC_API_KEY}
 type LLMGatewayRoutingYAML struct {
-	Order             []string `yaml:"order,omitempty"`
-	Only              []string `yaml:"only,omitempty"`
-	Sort              string   `yaml:"sort,omitempty"`
-	FallbackModels    []string `yaml:"fallback_models,omitempty"`
-	ZeroDataRetention bool     `yaml:"zero_data_retention,omitempty"`
-	Caching           string   `yaml:"caching,omitempty"`
+	Order                  []string                    `yaml:"order,omitempty" mapstructure:"order"`
+	Only                   []string                    `yaml:"only,omitempty" mapstructure:"only"`
+	Sort                   string                      `yaml:"sort,omitempty" mapstructure:"sort"`
+	FallbackModels         []string                    `yaml:"fallback_models,omitempty" mapstructure:"fallback_models"`
+	ZeroDataRetention      bool                        `yaml:"zero_data_retention,omitempty" mapstructure:"zero_data_retention"`
+	Caching                string                      `yaml:"caching,omitempty" mapstructure:"caching"`
+	BYOK                   []GatewayBYOKCredentialYAML `yaml:"byok,omitempty" mapstructure:"byok"`
+	ProviderTimeoutsMS     map[string]int              `yaml:"provider_timeouts_ms,omitempty" mapstructure:"provider_timeouts_ms"`
+	SessionAffinity        *bool                       `yaml:"session_affinity,omitempty" mapstructure:"session_affinity"`
+	DisallowPromptTraining bool                        `yaml:"disallow_prompt_training,omitempty" mapstructure:"disallow_prompt_training"`
+	InferenceRegion        *GatewayInferenceRegionYAML `yaml:"inference_region,omitempty" mapstructure:"inference_region"`
+	Headquarters           []string                    `yaml:"headquarters,omitempty" mapstructure:"headquarters"`
+	User                   string                      `yaml:"user,omitempty" mapstructure:"user"`
+	Tags                   []string                    `yaml:"tags,omitempty" mapstructure:"tags"`
+}
+
+// GatewayBYOKCredentialYAML mirrors proto GatewayBYOKCredential. Env maps a
+// credential field to the environment variable that holds it; secrets are
+// never written in YAML.
+type GatewayBYOKCredentialYAML struct {
+	Provider      string            `yaml:"provider" mapstructure:"provider"`
+	Env           map[string]string `yaml:"env,omitempty" mapstructure:"env"`
+	Values        map[string]string `yaml:"values,omitempty" mapstructure:"values"`
+	ModelMappings map[string]string `yaml:"model_mappings,omitempty" mapstructure:"model_mappings"`
+}
+
+// GatewayInferenceRegionYAML mirrors proto GatewayInferenceRegion.
+type GatewayInferenceRegionYAML struct {
+	Scope     string `yaml:"scope" mapstructure:"scope"`
+	GeoRegion string `yaml:"geo_region,omitempty" mapstructure:"geo_region"`
+}
+
+// ToProto converts the YAML block; nil in, nil out.
+func (y *LLMGatewayRoutingYAML) ToProto() *loomv1.LLMGatewayRouting {
+	return gatewayRoutingYAMLToProto(y)
 }
 
 func gatewayRoutingYAMLToProto(y *LLMGatewayRoutingYAML) *loomv1.LLMGatewayRouting {
 	if y == nil {
 		return nil
 	}
-	return &loomv1.LLMGatewayRouting{
-		Order:             append([]string(nil), y.Order...),
-		Only:              append([]string(nil), y.Only...),
-		Sort:              y.Sort,
-		FallbackModels:    append([]string(nil), y.FallbackModels...),
-		ZeroDataRetention: y.ZeroDataRetention,
-		Caching:           y.Caching,
+	p := &loomv1.LLMGatewayRouting{
+		Order:                  append([]string(nil), y.Order...),
+		Only:                   append([]string(nil), y.Only...),
+		Sort:                   y.Sort,
+		FallbackModels:         append([]string(nil), y.FallbackModels...),
+		ZeroDataRetention:      y.ZeroDataRetention,
+		Caching:                y.Caching,
+		DisallowPromptTraining: y.DisallowPromptTraining,
+		Headquarters:           append([]string(nil), y.Headquarters...),
+		User:                   y.User,
+		Tags:                   append([]string(nil), y.Tags...),
 	}
+	for _, c := range y.BYOK {
+		p.Byok = append(p.Byok, &loomv1.GatewayBYOKCredential{
+			Provider:      c.Provider,
+			Env:           copyStringMap(c.Env),
+			Values:        copyStringMap(c.Values),
+			ModelMappings: copyStringMap(c.ModelMappings),
+		})
+	}
+	if len(y.ProviderTimeoutsMS) > 0 {
+		p.ProviderTimeoutsMs = make(map[string]int32, len(y.ProviderTimeoutsMS))
+		for k, v := range y.ProviderTimeoutsMS {
+			p.ProviderTimeoutsMs[k] = int32(min(max(v, -1), math.MaxInt32)) // #nosec G115 -- clamped; out-of-range values are rejected by validation
+		}
+	}
+	if y.SessionAffinity != nil {
+		v := *y.SessionAffinity
+		p.SessionAffinity = &v
+	}
+	if y.InferenceRegion != nil {
+		p.InferenceRegion = &loomv1.GatewayInferenceRegion{Scope: y.InferenceRegion.Scope, GeoRegion: y.InferenceRegion.GeoRegion}
+	}
+	return p
 }
 
 func gatewayRoutingProtoToYAML(p *loomv1.LLMGatewayRouting) *LLMGatewayRoutingYAML {
 	if p == nil {
 		return nil
 	}
-	return &LLMGatewayRoutingYAML{
-		Order:             append([]string(nil), p.GetOrder()...),
-		Only:              append([]string(nil), p.GetOnly()...),
-		Sort:              p.GetSort(),
-		FallbackModels:    append([]string(nil), p.GetFallbackModels()...),
-		ZeroDataRetention: p.GetZeroDataRetention(),
-		Caching:           p.GetCaching(),
+	y := &LLMGatewayRoutingYAML{
+		Order:                  append([]string(nil), p.GetOrder()...),
+		Only:                   append([]string(nil), p.GetOnly()...),
+		Sort:                   p.GetSort(),
+		FallbackModels:         append([]string(nil), p.GetFallbackModels()...),
+		ZeroDataRetention:      p.GetZeroDataRetention(),
+		Caching:                p.GetCaching(),
+		DisallowPromptTraining: p.GetDisallowPromptTraining(),
+		Headquarters:           append([]string(nil), p.GetHeadquarters()...),
+		User:                   p.GetUser(),
+		Tags:                   append([]string(nil), p.GetTags()...),
 	}
+	for _, c := range p.GetByok() {
+		y.BYOK = append(y.BYOK, GatewayBYOKCredentialYAML{
+			Provider:      c.GetProvider(),
+			Env:           copyStringMap(c.GetEnv()),
+			Values:        copyStringMap(c.GetValues()),
+			ModelMappings: copyStringMap(c.GetModelMappings()),
+		})
+	}
+	if t := p.GetProviderTimeoutsMs(); len(t) > 0 {
+		y.ProviderTimeoutsMS = make(map[string]int, len(t))
+		for k, v := range t {
+			y.ProviderTimeoutsMS[k] = int(v)
+		}
+	}
+	if p.SessionAffinity != nil {
+		v := p.GetSessionAffinity()
+		y.SessionAffinity = &v
+	}
+	if r := p.GetInferenceRegion(); r != nil {
+		y.InferenceRegion = &GatewayInferenceRegionYAML{Scope: r.GetScope(), GeoRegion: r.GetGeoRegion()}
+	}
+	return y
+}
+
+func copyStringMap(m map[string]string) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 // rateLimitProtoToYAML converts proto LLMRateLimitConfig; nil in, nil out.
@@ -1579,7 +1681,18 @@ func expandEnvVars(s string) string {
 // whatever the server's default is), would be accepted and silently dropped;
 // for a block that requires zero data retention that is a policy bypass.
 func validateGatewayRouting(role string, l *loomv1.LLMConfig) error {
-	if l == nil || l.GetGatewayRouting() == nil {
+	if l == nil {
+		return nil
+	}
+	if api := l.GetGatewayApi(); api != "" {
+		if !vercelgateway.IsProviderName(l.GetProvider()) {
+			return fmt.Errorf("%s.gateway_api is honoured only by provider %s (got provider %q); set provider: %s or remove it", role, vercelgateway.ProviderName, l.GetProvider(), vercelgateway.ProviderName)
+		}
+		if err := vercelgateway.ValidateAPI(api); err != nil {
+			return fmt.Errorf("%s: %w", role, err)
+		}
+	}
+	if l.GetGatewayRouting() == nil {
 		return nil
 	}
 	if !vercelgateway.IsProviderName(l.GetProvider()) {
@@ -1720,6 +1833,7 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 			RateLimit:      rateLimitProtoToYAML(config.Llm.RateLimit),
 			Seed:           copyInt64Ptr(config.Llm.Seed),
 			GatewayRouting: gatewayRoutingProtoToYAML(config.Llm.GatewayRouting),
+			GatewayAPI:     config.Llm.GatewayApi,
 		}
 	}
 

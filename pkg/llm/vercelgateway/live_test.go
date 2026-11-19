@@ -28,7 +28,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -60,10 +59,11 @@ func liveConfig(t *testing.T, model string) Config {
 		t.Skip("no gateway API key in the environment")
 	}
 	return Config{
-		Endpoint:      os.Getenv("VERCEL_GATEWAY_LIVE_ENDPOINT"),
-		APIKey:        key,
-		Model:         model,
-		Timeout:       3 * time.Minute,
+		Endpoint: os.Getenv("VERCEL_GATEWAY_LIVE_ENDPOINT"),
+		APIKey:   key,
+		Model:    model,
+		// No Timeout: it would cap every call, and TestLiveComplete_LongStream
+		// runs for minutes. Stalls are caught by the stream timeouts.
 		MaxTokens:     2048,
 		WrapTransport: captureTransport(t),
 	}

@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -79,12 +80,17 @@ type Client struct {
 	model             string
 	endpoint          string
 	httpClient        *http.Client
-	maxTokens         int
-	temperature       float64
-	thinkingLevel     string
-	rateLimiter       *llm.RateLimiter
-	noBetaHeaders     bool
-	catalogProvider   string
+	// streamHTTPClient serves ChatStream when stream timeouts are configured;
+	// nil otherwise (ChatStream then uses httpClient).
+	streamHTTPClient       *http.Client
+	streamFirstByteTimeout time.Duration
+	streamIdleTimeout      time.Duration
+	maxTokens              int
+	temperature            float64
+	thinkingLevel          string
+	rateLimiter            *llm.RateLimiter
+	noBetaHeaders          bool
+	catalogProvider        string
 	// extraBody holds Config.ExtraBody marshalled and validated; nil when none.
 	// extraBodyErr is the validation error, returned by every call.
 	extraBody    []byte
@@ -100,8 +106,17 @@ type Config struct {
 	Model             string // Default: claude-sonnet-4-5-20250929
 	Endpoint          string // Default: https://api.anthropic.com/v1/messages
 	Timeout           time.Duration
-	MaxTokens         int     // Default: 4096
-	Temperature       float64 // Default: 1.0
+	// StreamFirstByteTimeout and StreamIdleTimeout bound ChatStream: the wait
+	// for the first response byte (headers included) and the silence allowed
+	// between later reads. When either is positive, streams use a client with
+	// no overall timeout, so a long stream that keeps producing bytes is not cut
+	// off at Timeout, while a stalled one fails fast with an error wrapping
+	// llm.ErrStreamTimeout. Both zero (the default) keeps the earlier behaviour:
+	// the stream is bounded by Timeout as a whole.
+	StreamFirstByteTimeout time.Duration
+	StreamIdleTimeout      time.Duration
+	MaxTokens              int     // Default: 4096
+	Temperature            float64 // Default: 1.0
 	// ThinkingLevel requests extended thinking ("", "none" = off). Non-off
 	// levels map to adaptive (display summarized) on 4.6+/5 models and to
 	// budget_tokens tiers (low 4k / medium+auto 16k / high 32k) on older ones.
@@ -196,20 +211,46 @@ func NewClient(config Config) *Client {
 			zap.String("endpoint", config.Endpoint), zap.Error(extraBodyErr))
 	}
 
+	var streamHTTPClient *http.Client
+	if config.StreamFirstByteTimeout > 0 || config.StreamIdleTimeout > 0 {
+		// http.DefaultTransport may have been replaced by the embedder (an
+		// OpenTelemetry wrapper, say); clone it only when it is the stock type.
+		streamTransport := &http.Transport{
+			Proxy:               http.ProxyFromEnvironment,
+			DialContext:         (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			ForceAttemptHTTP2:   true,
+			TLSHandshakeTimeout: 10 * time.Second,
+			IdleConnTimeout:     90 * time.Second,
+			MaxIdleConns:        100,
+		}
+		if dt, ok := http.DefaultTransport.(*http.Transport); ok {
+			streamTransport = dt.Clone()
+		}
+		streamTransport.ResponseHeaderTimeout = config.StreamFirstByteTimeout
+		var rt http.RoundTripper = streamTransport
+		if config.WrapTransport != nil {
+			rt = config.WrapTransport(streamTransport)
+		}
+		streamHTTPClient = &http.Client{Transport: rt, CheckRedirect: dropAPIKeyOnCrossHostRedirect}
+	}
+
 	return &Client{
-		strictToolSchemas: config.StrictToolSchemas,
-		apiKey:            config.APIKey,
-		model:             config.Model,
-		endpoint:          config.Endpoint,
-		maxTokens:         config.MaxTokens,
-		temperature:       config.Temperature,
-		thinkingLevel:     config.ThinkingLevel,
-		rateLimiter:       rateLimiter,
-		noBetaHeaders:     config.NoBetaHeaders,
-		catalogProvider:   config.CatalogProvider,
-		extraBody:         extraBody,
-		extraBodyErr:      extraBodyErr,
-		inspector:         config.ResponseInspector,
+		streamHTTPClient:       streamHTTPClient,
+		streamFirstByteTimeout: config.StreamFirstByteTimeout,
+		streamIdleTimeout:      config.StreamIdleTimeout,
+		strictToolSchemas:      config.StrictToolSchemas,
+		apiKey:                 config.APIKey,
+		model:                  config.Model,
+		endpoint:               config.Endpoint,
+		maxTokens:              config.MaxTokens,
+		temperature:            config.Temperature,
+		thinkingLevel:          config.ThinkingLevel,
+		rateLimiter:            rateLimiter,
+		noBetaHeaders:          config.NoBetaHeaders,
+		catalogProvider:        config.CatalogProvider,
+		extraBody:              extraBody,
+		extraBodyErr:           extraBodyErr,
+		inspector:              config.ResponseInspector,
 		httpClient: &http.Client{
 			Timeout:       config.Timeout,
 			Transport:     transport,
@@ -733,7 +774,7 @@ func (c *Client) calculateCost(inputTokens, outputTokens, cacheReadTokens, cache
 	cacheReadPerM := inputPricePerM * catalog.ClaudeCacheReadMultiplier(c.model)
 	// A catalog that publishes cache rates (a gateway's /v1/models) wins over
 	// the multipliers.
-	if r, w := catalog.CacheRates(provider, c.model); r > 0 || w > 0 {
+	if r, w := catalog.RequestCacheRates(provider, c.model, inputTokens+cacheReadTokens+cacheCreationTokens); r > 0 || w > 0 {
 		if r > 0 {
 			cacheReadPerM = r
 		}
@@ -804,7 +845,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			if err != nil {
 				return nil, err
 			}
-			resp, err := c.httpClient.Do(req)
+			resp, err := c.doStream(req)
 			if err != nil {
 				return nil, err
 			}
@@ -839,7 +880,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		if err != nil {
 			return nil, err
 		}
-		httpResp, err = c.httpClient.Do(req)
+		httpResp, err = c.doStream(req)
 		if err != nil {
 			return nil, fmt.Errorf("HTTP request failed: %w", err)
 		}
@@ -874,6 +915,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	var thinkOrder []int
 
 	var streamFacts llm.ResponseFacts
+	sawMessageStop := false
 	scanner := bufio.NewScanner(httpResp.Body)
 	// A gateway may coalesce a whole response (or an error echoing the request)
 	// into one SSE line; the Scanner default 64KB line cap aborts the stream.
@@ -1042,6 +1084,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				}
 
 			case "message_stop":
+				sawMessageStop = true
 				// Final event — usage may be updated here with cache tokens too
 				if event.Usage != nil {
 					if event.Usage.InputTokens > 0 {
@@ -1073,6 +1116,12 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			return nil, fmt.Errorf("error reading stream: SSE line exceeded the 8MB cap: %w", err)
 		}
 		return nil, fmt.Errorf("error reading stream: %w", err)
+	}
+	// The Messages protocol ends every complete stream with message_stop. A
+	// stream that closes without it was cut off (an upstream or proxy fault),
+	// and what arrived is a fragment, not an answer.
+	if !sawMessageStop {
+		return nil, llm.TruncatedStreamError("stream ended before message_stop")
 	}
 
 	// 4. Build final response
@@ -1116,6 +1165,16 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			"streaming":   true,
 		}),
 	}, nil
+}
+
+// doStream sends a streaming request. With stream timeouts configured it uses
+// the stream client and wraps the body so a stalled stream fails with an
+// error wrapping llm.ErrStreamTimeout; otherwise it uses httpClient.
+func (c *Client) doStream(req *http.Request) (*http.Response, error) {
+	if c.streamHTTPClient == nil {
+		return c.httpClient.Do(req)
+	}
+	return llm.DoStreamHTTP(c.streamHTTPClient, req, c.streamFirstByteTimeout, c.streamIdleTimeout)
 }
 
 // callAPI makes the HTTP request to Anthropic's API.

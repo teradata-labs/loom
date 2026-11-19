@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/teradata-labs/loom/pkg/llm/vercelgateway"
+	"github.com/teradata-labs/loom/pkg/llm/vercelgateway/gatewaytest"
 	"github.com/teradata-labs/loom/pkg/types"
 )
 
@@ -85,7 +86,7 @@ func TestCreateProvider_VercelGatewayThinkingLevel(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		body.Store(string(raw))
-		_, _ = io.WriteString(w, `{"id":"gen_1","type":"message","role":"assistant","model":"m","stop_reason":"end_turn","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`)
+		gatewaytest.WriteSSE(w, r, "ok")
 	}))
 	defer srv.Close()
 	f := NewProviderFactory(FactoryConfig{ThinkingLevel: "high", MaxTokens: 40000,

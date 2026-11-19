@@ -227,3 +227,84 @@ func TestLLMProviderAllowsFallback(t *testing.T) {
 		assert.Equal(t, want, LLMProviderAllowsFallback(p), p)
 	}
 }
+
+const gatewayFullAgentYAML = `
+agent:
+  name: gw-full
+  llm:
+    provider: vercel-ai-gateway
+    model: openai/gpt-5.5
+    gateway_api: responses
+    gateway_routing:
+      byok:
+        - provider: anthropic
+          env: {apiKey: LOOM_BYOK_ANTHROPIC_API_KEY}
+        - provider: azure
+          env: {apiKey: LOOM_BYOK_AZURE_API_KEY}
+          values: {resourceName: my-resource}
+          model_mappings: {openai/gpt-5.5: gpt55}
+      provider_timeouts_ms: {anthropic: 15000}
+      session_affinity: false
+      disallow_prompt_training: true
+      inference_region: {scope: zone, geo_region: eu}
+      headquarters: ["!CN"]
+      user: user-42
+      tags: [feature:chat, env:test]
+`
+
+func TestLoadConfig_GatewayFullRoutingAndAPIRoundTrip(t *testing.T) {
+	cfg, err := LoadConfigFromString(gatewayFullAgentYAML)
+	require.NoError(t, err)
+	require.NoError(t, ValidateAgentConfig(cfg))
+	assert.Equal(t, "responses", cfg.Llm.GetGatewayApi())
+
+	off := false
+	want := &loomv1.LLMGatewayRouting{
+		Byok: []*loomv1.GatewayBYOKCredential{
+			{Provider: "anthropic", Env: map[string]string{"apiKey": "LOOM_BYOK_ANTHROPIC_API_KEY"}},
+			{Provider: "azure", Env: map[string]string{"apiKey": "LOOM_BYOK_AZURE_API_KEY"},
+				Values: map[string]string{"resourceName": "my-resource"}, ModelMappings: map[string]string{"openai/gpt-5.5": "gpt55"}},
+		},
+		ProviderTimeoutsMs:     map[string]int32{"anthropic": 15000},
+		SessionAffinity:        &off,
+		DisallowPromptTraining: true,
+		InferenceRegion:        &loomv1.GatewayInferenceRegion{Scope: "zone", GeoRegion: "eu"},
+		Headquarters:           []string{"!CN"},
+		User:                   "user-42",
+		Tags:                   []string{"feature:chat", "env:test"},
+	}
+	assert.True(t, proto.Equal(want, cfg.Llm.GatewayRouting), "got %v", cfg.Llm.GatewayRouting)
+
+	// Save and reload: nothing is lost, and an unset session_affinity stays unset.
+	y := protoToYAML(cfg)
+	assert.Equal(t, "responses", y.Agent.LLM.GatewayAPI)
+	back := gatewayRoutingYAMLToProto(y.Agent.LLM.GatewayRouting)
+	assert.True(t, proto.Equal(want, back), "got %v", back)
+	assert.Nil(t, gatewayRoutingYAMLToProto(&LLMGatewayRoutingYAML{Sort: "cost"}).SessionAffinity)
+}
+
+func TestValidateAgentConfig_GatewayAPI(t *testing.T) {
+	tests := []struct {
+		name    string
+		llm     *loomv1.LLMConfig
+		wantErr string
+	}{
+		{name: "responses on the gateway", llm: &loomv1.LLMConfig{Provider: "vercel-ai-gateway", Model: "openai/gpt-5", GatewayApi: "responses"}},
+		{name: "unknown api", llm: &loomv1.LLMConfig{Provider: "vercel-ai-gateway", Model: "openai/gpt-5", GatewayApi: "completions"}, wantErr: "llm: vercel-ai-gateway: gateway_api"},
+		{name: "api on another provider", llm: &loomv1.LLMConfig{Provider: "openai", Model: "gpt-5", GatewayApi: "chat"}, wantErr: "llm.gateway_api is honoured only by provider"},
+		{name: "byok secret literal rejected", llm: &loomv1.LLMConfig{Provider: "vercel-ai-gateway", Model: "openai/gpt-5",
+			GatewayRouting: &loomv1.LLMGatewayRouting{Byok: []*loomv1.GatewayBYOKCredential{{Provider: "openai", Values: map[string]string{"apiKey": "sk-x"}}}}},
+			wantErr: "is a secret"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateAgentConfig(&loomv1.AgentConfig{Name: "a", Llm: tt.llm})
+			if tt.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}

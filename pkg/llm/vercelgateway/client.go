@@ -17,14 +17,17 @@
 // providers under creator-scoped model ids ("anthropic/claude-sonnet-4.5",
 // "openai/gpt-5").
 //
-// The gateway speaks the Anthropic Messages API and the OpenAI Chat
-// Completions API, so this package ships no wire protocol of its own. It
-// routes by model id:
+// The gateway speaks the Anthropic Messages API, the OpenAI Chat Completions
+// API and the OpenAI Responses API, so this package ships no wire protocol of
+// its own. By default (Config.API "" or "auto") it routes by model id:
 //
 //   - anthropic/* ids go to an anthropic.Client on /v1/messages, so thinking
 //     signatures, cache_control breakpoints and cache-token usage travel in
 //     the native shape loom already round-trips;
 //   - every other id goes to an openai.Client on /v1/chat/completions.
+//
+// Config.API "messages", "chat" or "responses" sends every id to that API
+// (Responses through pkg/llm/openairesponses).
 //
 // On top of the inner clients it adds typed routing options (sent as
 // providerOptions.gateway in the request body), a response inspector that
@@ -40,6 +43,10 @@ package vercelgateway
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -47,21 +54,40 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
+
+	"go.uber.org/zap"
 
 	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
 	"github.com/teradata-labs/loom/pkg/llm/openai"
+	"github.com/teradata-labs/loom/pkg/llm/openairesponses"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
+	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/teradata-labs/loom/pkg/types"
 )
 
 const (
-	// DefaultTimeout bounds a single blocking request. Long thinking turns
-	// can be silent for over a minute, so it is generous.
+	// DefaultTimeout bounds the health check and is the ceiling for a single
+	// non-streamed request. Model calls are streamed (see Client.Chat), so a
+	// long answer that keeps producing bytes is not cut off by it.
 	DefaultTimeout = 300 * time.Second
+	// DefaultStreamFirstByteTimeout bounds the wait for the first response
+	// byte, headers included. Measured live on 2026-11-19: headers within 6 s
+	// for Sonnet 5.5 with thinking and GPT-5.5 at xhigh reasoning.
+	DefaultStreamFirstByteTimeout = 60 * time.Second
+	// DefaultStreamIdleTimeout bounds the silence between stream reads.
+	// Measured live on 2026-11-19: the longest gap was 13.4 s (GPT-5.5, xhigh
+	// reasoning, Chat Completions); Sonnet 5.5 with thinking 5.5 s.
+	DefaultStreamIdleTimeout = 90 * time.Second
+	// providerTimeoutMargin is added to the longest BYOK provider timeout when
+	// it sets the first-byte wait, leaving the gateway time to fail over.
+	providerTimeoutMargin = 30 * time.Second
 	// DefaultMaxTokens is the per-request output cap when none is configured
 	// and the catalog does not know the model.
 	DefaultMaxTokens = 4096
@@ -76,6 +102,73 @@ const (
 
 	healthBodyLimit = 4096
 )
+
+// API surface values for Config.API.
+const (
+	APIAuto      = "auto"
+	APIMessages  = SurfaceMessages
+	APIChat      = SurfaceChat
+	APIResponses = SurfaceResponses
+)
+
+// ValidateAPI reports whether api is a Config.API value.
+func ValidateAPI(api string) error {
+	switch api {
+	case "", APIAuto, APIMessages, APIChat, APIResponses:
+		return nil
+	}
+	return fmt.Errorf("vercel-ai-gateway: gateway_api %q must be one of %s, %s, %s or %s", api, APIAuto, APIMessages, APIChat, APIResponses)
+}
+
+// surfaceFor resolves Config.API for model.
+func surfaceFor(api, model string) string {
+	switch api {
+	case APIMessages, APIChat, APIResponses:
+		return api
+	}
+	if IsAnthropicModel(model) {
+		return SurfaceMessages
+	}
+	return SurfaceChat
+}
+
+// Environment variables for the timeouts, read by ApplyTimeoutEnv on the
+// paths that build a gateway client without looms.yaml (agent registry,
+// pkg/builder, loom-standalone). Whole seconds; unset or invalid = default.
+const (
+	EnvTimeoutSeconds                = "VERCEL_AI_GATEWAY_TIMEOUT_SECONDS"
+	EnvStreamFirstByteTimeoutSeconds = "VERCEL_AI_GATEWAY_STREAM_FIRST_BYTE_TIMEOUT_SECONDS"
+	EnvStreamIdleTimeoutSeconds      = "VERCEL_AI_GATEWAY_STREAM_IDLE_TIMEOUT_SECONDS"
+)
+
+// ApplyTimeoutEnv fills cfg's unset timeouts from the environment variables
+// above and returns cfg. A value that is not a positive whole number ("600s",
+// "-1") is ignored with a warning that names the variable.
+func ApplyTimeoutEnv(cfg Config) Config {
+	read := func(name string) time.Duration {
+		v := strings.TrimSpace(os.Getenv(name))
+		if v == "" {
+			return 0
+		}
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			zap.L().Warn("vercel-ai-gateway: ignoring a timeout variable that is not a positive whole number of seconds; the default applies",
+				zap.String("variable", name), zap.String("value", v))
+			return 0
+		}
+		return time.Duration(n) * time.Second
+	}
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = read(EnvTimeoutSeconds)
+	}
+	if cfg.StreamFirstByteTimeout <= 0 {
+		cfg.StreamFirstByteTimeout = read(EnvStreamFirstByteTimeoutSeconds)
+	}
+	if cfg.StreamIdleTimeout <= 0 {
+		cfg.StreamIdleTimeout = read(EnvStreamIdleTimeoutSeconds)
+	}
+	return cfg
+}
 
 // ResolveAPIKey returns explicit when set, else LOOM_LLM_VERCEL_GATEWAY_API_KEY,
 // else AI_GATEWAY_API_KEY.
@@ -110,9 +203,33 @@ type Config struct {
 	// default, because a default would go stale with the gateway catalog.
 	Model string
 
-	MaxTokens   int           // Default: DefaultMaxTokens
-	Temperature float64       // Default: DefaultTemperature
-	Timeout     time.Duration // Default: DefaultTimeout
+	// API selects the API surface (proto LLMConfig.gateway_api). "" or
+	// APIAuto: Claude ids on the Messages API, every other id on Chat
+	// Completions. APIMessages, APIChat or APIResponses send every id there;
+	// the gateway translates between model families.
+	API string
+
+	MaxTokens   int     // Default: DefaultMaxTokens
+	Temperature float64 // Default: DefaultTemperature
+
+	// Timeout, when set, caps each model call as a whole (attempt and retry
+	// together) and bounds the health check. Zero: model calls have no overall
+	// cap, since the stream timeouts below catch a stall without cutting off a
+	// long answer that keeps producing bytes; the health check uses
+	// DefaultTimeout. looms.yaml llm.timeout_seconds sets it.
+	Timeout time.Duration
+
+	// StreamFirstByteTimeout and StreamIdleTimeout bound every model call
+	// (Chat is streamed too). A call that exceeds either fails with an error
+	// wrapping llm.ErrStreamTimeout and is retried once when nothing had been
+	// passed to the caller yet. Defaults: DefaultStreamFirstByteTimeout,
+	// DefaultStreamIdleTimeout. The first-byte wait is raised to cover the
+	// longest Routing.ProviderTimeoutsMS plus 30 s, so the gateway can fail
+	// over from a slow BYOK upstream before loom gives up. looms.yaml:
+	// llm.vercel_gateway_stream_first_byte_timeout_seconds and
+	// llm.vercel_gateway_stream_idle_timeout_seconds.
+	StreamFirstByteTimeout time.Duration
+	StreamIdleTimeout      time.Duration
 
 	// ThinkingLevel requests extended thinking ("", "none" = off). Claude ids
 	// take Anthropic thinking on the Messages surface; reasoning-capable
@@ -182,12 +299,14 @@ func mergeRateLimiter(cfg llm.RateLimiterConfig) llm.RateLimiterConfig {
 // one gateway model by delegating to an anthropic.Client (Claude ids) or an
 // openai.Client (every other id).
 type Client struct {
-	model   string
-	baseURL string
-	surface string
-	inner   types.StreamingLLMProvider
-	health  *http.Client
-	auth    func(*http.Request) error
+	model       string
+	baseURL     string
+	surface     string
+	callTimeout time.Duration // 0 = no overall cap on a model call
+	secrets     []string      // BYOK secret values, redacted from every error
+	inner       types.StreamingLLMProvider
+	health      *http.Client
+	auth        func(*http.Request) error
 }
 
 // NewClient validates cfg and builds the client for cfg.Model.
@@ -202,8 +321,29 @@ func NewClient(cfg Config) (*Client, error) {
 	if err := cfg.Routing.Validate(); err != nil {
 		return nil, err
 	}
+	if err := ValidateAPI(cfg.API); err != nil {
+		return nil, err
+	}
+	if cfg.Timeout < 0 || cfg.StreamFirstByteTimeout < 0 || cfg.StreamIdleTimeout < 0 {
+		return nil, fmt.Errorf("vercel-ai-gateway: timeouts must not be negative (Timeout %s, StreamFirstByteTimeout %s, StreamIdleTimeout %s)",
+			cfg.Timeout, cfg.StreamFirstByteTimeout, cfg.StreamIdleTimeout)
+	}
+	callTimeout := cfg.Timeout
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = DefaultTimeout
+	}
+	if cfg.StreamFirstByteTimeout <= 0 {
+		cfg.StreamFirstByteTimeout = DefaultStreamFirstByteTimeout
+	}
+	if cfg.Routing != nil {
+		for _, ms := range cfg.Routing.ProviderTimeoutsMS {
+			if need := time.Duration(ms)*time.Millisecond + providerTimeoutMargin; need > cfg.StreamFirstByteTimeout {
+				cfg.StreamFirstByteTimeout = need
+			}
+		}
+	}
+	if cfg.StreamIdleTimeout <= 0 {
+		cfg.StreamIdleTimeout = DefaultStreamIdleTimeout
 	}
 	if cfg.MaxTokens <= 0 {
 		cfg.MaxTokens = DefaultMaxTokens
@@ -245,6 +385,21 @@ func NewClient(cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("vercel-ai-gateway: no credential: set an API key (keyring vercel_gateway_api_key, %s or %s) or enable OIDC", EnvLoomAPIKey, EnvAPIKey)
 	}
 
+	// Every model request carries a pseudonymous loom session id, so the
+	// gateway keeps a conversation on one upstream (prompt-cache hits) without
+	// relying on its own prompt fingerprint.
+	// With session_affinity: false the header is not sent at all.
+	if cfg.Routing == nil || cfg.Routing.SessionAffinity == nil || *cfg.Routing.SessionAffinity {
+		key := sessionKey(apiKey)
+		sessWrap := wrap
+		wrap = func(base http.RoundTripper) http.RoundTripper {
+			if sessWrap != nil {
+				base = sessWrap(base)
+			}
+			return &sessionTransport{base: base, key: key}
+		}
+	}
+
 	// Every request, on every surface and the health check, must go to the
 	// configured gateway host. A redirect elsewhere is refused before it is
 	// sent: Go strips Authorization on a cross-host redirect but keeps
@@ -257,24 +412,46 @@ func NewClient(cfg Config) (*Client, error) {
 		return &hostPinTransport{scheme: pinned.Scheme, host: pinned.Host, base: base}
 	}
 
-	extra := cfg.Routing.ExtraBody()
-	c := &Client{model: cfg.Model, baseURL: baseURL, auth: auth}
+	extra, err := cfg.Routing.ResolveExtraBody(nil)
+	if err != nil {
+		return nil, err
+	}
+	secrets := secretForms(cfg.Routing.byokSecrets(os.Getenv))
 
-	if IsAnthropicModel(cfg.Model) {
+	// An error response that echoes the request would carry BYOK secrets into
+	// every place that reads it: the inner client's error text, the rate
+	// limiter's retry log, the agent's logs. Error bodies are redacted here,
+	// before any of them sees the body.
+	if len(secrets) > 0 {
+		redactWrap := wrap
+		wrap = func(base http.RoundTripper) http.RoundTripper {
+			if redactWrap != nil {
+				base = redactWrap(base)
+			}
+			return &redactTransport{base: base, secrets: secrets}
+		}
+	}
+
+	c := &Client{model: cfg.Model, baseURL: baseURL, auth: auth, callTimeout: callTimeout, secrets: secrets}
+
+	c.surface = surfaceFor(cfg.API, cfg.Model)
+	switch c.surface {
+	case SurfaceMessages:
 		if err := anthropic.ValidateExtraBody(extra); err != nil {
 			return nil, fmt.Errorf("vercel-ai-gateway: %w", err)
 		}
-		c.surface = SurfaceMessages
 		c.inner = anthropic.NewClient(anthropic.Config{
-			StrictToolSchemas: cfg.StrictToolSchemas,
-			APIKey:            apiKey, // sent as x-api-key; empty under OIDC (the transport adds Bearer)
-			Model:             cfg.Model,
-			Endpoint:          baseURL + MessagesPath,
-			Timeout:           cfg.Timeout,
-			MaxTokens:         cfg.MaxTokens,
-			Temperature:       cfg.Temperature,
-			ThinkingLevel:     cfg.ThinkingLevel,
-			RateLimiterConfig: cfg.RateLimiterConfig,
+			StrictToolSchemas:      cfg.StrictToolSchemas,
+			APIKey:                 apiKey, // sent as x-api-key; empty under OIDC (the transport adds Bearer)
+			Model:                  cfg.Model,
+			Endpoint:               baseURL + MessagesPath,
+			Timeout:                cfg.Timeout,
+			StreamFirstByteTimeout: cfg.StreamFirstByteTimeout,
+			StreamIdleTimeout:      cfg.StreamIdleTimeout,
+			MaxTokens:              cfg.MaxTokens,
+			Temperature:            cfg.Temperature,
+			ThinkingLevel:          cfg.ThinkingLevel,
+			RateLimiterConfig:      cfg.RateLimiterConfig,
 			// The only beta loom sends is the obsolete prompt-caching one;
 			// cache_control works without it, and an Anthropic-compatible
 			// gateway may reject beta values it does not forward.
@@ -284,20 +461,40 @@ func NewClient(cfg Config) (*Client, error) {
 			ExtraBody:         extra,
 			ResponseInspector: newInspector(cfg.Model),
 		})
-	} else {
+	case SurfaceResponses:
+		if err := openairesponses.ValidateExtraBody(extra); err != nil {
+			return nil, fmt.Errorf("vercel-ai-gateway: %w", err)
+		}
+		c.inner = openairesponses.NewClient(openairesponses.Config{
+			StrictToolSchemas:      cfg.StrictToolSchemas,
+			APIKey:                 apiKey,
+			Model:                  cfg.Model,
+			Endpoint:               baseURL + ResponsesPath,
+			Timeout:                cfg.Timeout,
+			StreamFirstByteTimeout: cfg.StreamFirstByteTimeout,
+			StreamIdleTimeout:      cfg.StreamIdleTimeout,
+			MaxTokens:              cfg.MaxTokens,
+			Temperature:            cfg.Temperature,
+			ThinkingLevel:          cfg.ThinkingLevel,
+			RateLimiterConfig:      cfg.RateLimiterConfig,
+			CatalogProvider:        CatalogProvider,
+			WrapTransport:          wrap,
+			ExtraBody:              extra,
+			ResponseInspector:      newInspector(cfg.Model),
+			ReportUnpriced:         true,
+		})
+	default:
 		if err := openai.ValidateExtraBody(extra); err != nil {
 			return nil, fmt.Errorf("vercel-ai-gateway: %w", err)
 		}
-		c.surface = SurfaceChat
 		c.inner = openai.NewClient(openai.Config{
-			StrictToolSchemas: cfg.StrictToolSchemas,
-			APIKey:            apiKey,
-			Model:             cfg.Model,
-			Endpoint:          baseURL + ChatCompletionsPath,
-			Timeout:           cfg.Timeout,
-			// A thinking turn can be silent for a long time before its first
-			// byte; the gateway's own idle limit is unpublished.
-			StreamFirstByteTimeout: cfg.Timeout,
+			StrictToolSchemas:      cfg.StrictToolSchemas,
+			APIKey:                 apiKey,
+			Model:                  cfg.Model,
+			Endpoint:               baseURL + ChatCompletionsPath,
+			Timeout:                cfg.Timeout,
+			StreamFirstByteTimeout: cfg.StreamFirstByteTimeout,
+			StreamIdleTimeout:      cfg.StreamIdleTimeout,
 			MaxTokens:              cfg.MaxTokens,
 			Temperature:            cfg.Temperature,
 			ThinkingLevel:          cfg.ThinkingLevel,
@@ -329,33 +526,82 @@ func (c *Client) Model() string { return c.model }
 // BaseURL returns the gateway base URL in use.
 func (c *Client) BaseURL() string { return c.baseURL }
 
-// Surface returns the API surface this model is sent on: SurfaceMessages for
-// Claude ids, SurfaceChat for every other id.
+// Surface returns the API surface this model is sent on: Config.API when
+// set, else SurfaceMessages for Claude ids and SurfaceChat for every other id.
 func (c *Client) Surface() string { return c.surface }
 
 // Endpoint returns the full URL the inner client posts to.
 func (c *Client) Endpoint() string {
-	if c.surface == SurfaceMessages {
+	switch c.surface {
+	case SurfaceMessages:
 		return c.baseURL + MessagesPath
+	case SurfaceResponses:
+		return c.baseURL + ResponsesPath
 	}
 	return c.baseURL + ChatCompletionsPath
 }
 
-// Chat sends a conversation through the gateway.
+// Chat sends a conversation through the gateway. It is served over a stream
+// with no token callback: a blocking request gives no sign of life until the
+// whole answer is ready, so a stalled upstream could only be told apart from
+// a long answer by the overall timeout. Streaming lets the first-byte and
+// idle timeouts catch a stall within seconds (one stalled Sonnet call held an
+// agent for the full 300 s in the 2026-11-18 evaluation).
 func (c *Client) Chat(ctx context.Context, messages []types.Message, tools []shuttle.Tool) (*types.LLMResponse, error) {
-	resp, err := c.inner.Chat(ctx, messages, tools)
-	return c.finish(resp, err)
+	return c.ChatStream(ctx, messages, tools, nil)
 }
 
-// ChatStream streams a conversation through the gateway.
+// ChatStream streams a conversation through the gateway. A stream that stalls
+// (llm.ErrStreamTimeout) or is cut off (llm.ErrStreamTruncated) before any
+// token reached tokenCallback is retried once, and the response carries
+// gateway.retried; after a token has been delivered a retry would repeat text
+// the caller already has, so the error is returned.
 func (c *Client) ChatStream(ctx context.Context, messages []types.Message, tools []shuttle.Tool, tokenCallback llmtypes.TokenCallback) (*types.LLMResponse, error) {
-	resp, err := c.inner.ChatStream(ctx, messages, tools, tokenCallback)
-	return c.finish(resp, err)
+	var delivered atomic.Bool
+	cb := tokenCallback
+	if tokenCallback != nil {
+		cb = func(token string) {
+			delivered.Store(true)
+			tokenCallback(token)
+		}
+	}
+	if c.callTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.callTimeout)
+		defer cancel()
+	}
+	resp, err := c.inner.ChatStream(ctx, messages, tools, cb)
+	retried := ""
+	if err != nil && !delivered.Load() && ctx.Err() == nil {
+		switch {
+		case errors.Is(err, llm.ErrStreamTimeout):
+			retried = "stall"
+		case errors.Is(err, llm.ErrStreamTruncated):
+			retried = "truncated"
+		}
+	}
+	if retried != "" {
+		// Nothing reached the caller, so a second attempt repeats nothing. The
+		// first attempt's tokens, if the upstream billed any, are not in Usage.
+		zap.L().Warn("vercel-ai-gateway: stream failed before any output; retrying once",
+			zap.String("model", c.model), zap.String("surface", c.surface),
+			zap.String("reason", retried), zap.Error(err))
+		resp, err = c.inner.ChatStream(ctx, messages, tools, cb)
+	}
+	if err != nil && retried != "" {
+		first := map[string]string{"stall": "stalled", "truncated": "was cut off"}[retried]
+		err = fmt.Errorf("%w (after one retry: the first attempt %s before any output)", err, first)
+	}
+	resp, err = c.finish(resp, err)
+	if resp != nil && retried != "" {
+		resp.Metadata[AttrRetried] = retried
+	}
+	return resp, err
 }
 
 func (c *Client) finish(resp *types.LLMResponse, err error) (*types.LLMResponse, error) {
 	if err != nil {
-		return nil, classifyError(err)
+		return nil, redactSecrets(classifyError(err), c.secrets)
 	}
 	if resp != nil {
 		if resp.Metadata == nil {
@@ -423,6 +669,183 @@ func (c *Client) Credits(ctx context.Context) (*Credits, error) {
 	return &credits, nil
 }
 
+// HeaderSessionID is the gateway's session-affinity header.
+const HeaderSessionID = "x-session-id"
+
+// sessionTransport sets HeaderSessionID from the loom session on the request
+// context: an HMAC-SHA-256 of the loom session id (sessionKey), so the
+// gateway sees a stable key per conversation but never loom's own
+// identifier. The gateway hashes ids over 256 characters itself; this is 32.
+type sessionTransport struct {
+	base http.RoundTripper
+	key  []byte
+}
+
+// RoundTrip adds the header when the context carries a session.
+func (t *sessionTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if id := session.SessionIDFromContext(r.Context()); id != "" && r.Header.Get(HeaderSessionID) == "" {
+		r = r.Clone(r.Context())
+		r.Header.Set(HeaderSessionID, gatewaySessionID(t.key, id))
+	}
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return base.RoundTrip(r)
+}
+
+// EnvSessionKey optionally sets the HMAC key for session ids: a server-side
+// secret the gateway does not hold. Set the same value on every replica.
+const EnvSessionKey = "LOOM_VERCEL_GATEWAY_SESSION_KEY" // #nosec G101 -- environment variable name, not a credential
+
+// sessionKey is the HMAC key for session ids: EnvSessionKey when set; else
+// derived from the API key, so every loom replica sharing it sends the same
+// id for one session (a session can move between replicas; a different id
+// would re-pin the upstream and lose prompt-cache hits). The gateway holds
+// the API key, so that id is a pseudonym it could reverse by trying loom's
+// short session ids; EnvSessionKey prevents that. Without either (OIDC,
+// whose token rotates) the key is random per process.
+func sessionKey(apiKey string) []byte {
+	if k := strings.TrimSpace(os.Getenv(EnvSessionKey)); k != "" {
+		return deriveSessionKey(k)
+	}
+	if apiKey != "" {
+		return deriveSessionKey(apiKey)
+	}
+	return processSessionKey
+}
+
+// deriveSessionKey turns a secret into the session-id HMAC key with
+// HMAC-SHA-256 keyed by the secret itself (a keyed derivation; a bare hash of
+// a credential is what CodeQL's weak-sensitive-data-hashing rule rejects).
+func deriveSessionKey(secret string) []byte {
+	m := hmac.New(sha256.New, []byte(secret))
+	m.Write([]byte("loom-vercel-gateway-session-key"))
+	return m.Sum(nil)
+}
+
+var processSessionKey = func() []byte {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		panic("vercel-ai-gateway: crypto/rand: " + err.Error())
+	}
+	return b
+}()
+
+// gatewaySessionID is the pseudonymous id sent for a loom session.
+func gatewaySessionID(key []byte, loomSessionID string) string {
+	m := hmac.New(sha256.New, key)
+	m.Write([]byte(loomSessionID))
+	return hex.EncodeToString(m.Sum(nil)[:16])
+}
+
+// minSecretFragment is the shortest piece of a secret that is redacted on its
+// own (a line of a PEM key, or a prefix left by a truncated error body).
+const minSecretFragment = 16
+
+// secretForms expands each secret into the forms it can take in an error
+// text: as is and JSON-escaped (a PEM private key's newlines become \n in an
+// echoed request; also with "/" escaped), at any length; and, for a
+// multi-line secret, each line of at least minSecretFragment bytes. Longest
+// first, so a whole secret is replaced before its parts.
+func secretForms(secrets []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(s string) {
+		if len(s) >= minSecretFragment && !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	addWhole := func(s string) { // a whole secret is redacted at any length
+		if s != "" && !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	for _, s := range secrets {
+		addWhole(s)
+		if b, err := json.Marshal(s); err == nil {
+			esc := string(b[1 : len(b)-1])
+			addWhole(esc)
+			// Some encoders also escape "/" (AWS secret keys contain it).
+			addWhole(strings.ReplaceAll(esc, "/", `\/`))
+		}
+		for _, line := range strings.Split(s, "\n") {
+			add(strings.TrimSpace(line))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
+	return out
+}
+
+// redactText replaces every form of every secret with [REDACTED], and a
+// trailing prefix of a form (an error body cut at a size cap mid-secret).
+func redactText(s string, forms []string) string {
+	for _, f := range forms {
+		s = strings.ReplaceAll(s, f, "[REDACTED]")
+	}
+	for _, f := range forms {
+		for n := len(f) - 1; n >= minSecretFragment; n-- {
+			if strings.HasSuffix(s, f[:n]) {
+				s = s[:len(s)-n] + "[REDACTED]"
+				break
+			}
+		}
+	}
+	return s
+}
+
+// redactTransport redacts secrets from error response bodies (status >= 400)
+// before the inner client, its rate limiter or any logger reads them. Success
+// bodies, including streams, are passed through untouched.
+type redactTransport struct {
+	base    http.RoundTripper
+	secrets []string
+}
+
+// RoundTrip swaps an error response's body for one that redacts on its first
+// read. The read happens when the client reads the body, after the stream
+// first-byte/idle timeouts have wrapped it, so a stalled error body is cut
+// off by those timeouts like any other.
+func (t *redactTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(r)
+	if err != nil || resp == nil || resp.StatusCode < http.StatusBadRequest || resp.Body == nil {
+		return resp, err
+	}
+	resp.Body = &redactingBody{src: resp.Body, secrets: t.secrets}
+	resp.ContentLength = -1
+	resp.Header.Del("Content-Length")
+	return resp, nil
+}
+
+// redactingBody reads its source in full on the first Read (bounded by
+// maxRedactedBody), redacts it, and serves the result.
+type redactingBody struct {
+	src     io.ReadCloser
+	secrets []string
+	buf     *strings.Reader
+	err     error
+}
+
+func (b *redactingBody) Read(p []byte) (int, error) {
+	if b.buf == nil {
+		raw, err := io.ReadAll(io.LimitReader(b.src, maxRedactedBody))
+		b.buf = strings.NewReader(redactText(string(raw), b.secrets))
+		b.err = err // a read error (a timeout) is returned after the redacted part
+	}
+	n, err := b.buf.Read(p)
+	if err == io.EOF && b.err != nil {
+		return n, b.err
+	}
+	return n, err
+}
+
+func (b *redactingBody) Close() error { return b.src.Close() }
+
+// maxRedactedBody caps how much of an error body is read for redaction.
+const maxRedactedBody = 1 << 20
+
 // hostPinTransport refuses any request that is not to the configured gateway
 // scheme and host (a redirect to another host, or a downgrade to http), so a
 // credential never leaves for a host the operator did not configure.
@@ -451,3 +874,29 @@ var (
 	_ types.StreamingLLMProvider = (*Client)(nil)
 	_ llmtypes.HealthChecker     = (*Client)(nil)
 )
+
+// redactedError carries an error whose message had BYOK secrets removed. A
+// gateway or upstream error body that echoes the request would otherwise put
+// a request-scoped key into logs and RPC replies. errors.Is and errors.As
+// still see the original chain.
+type redactedError struct {
+	msg string
+	err error
+}
+
+func (e *redactedError) Error() string { return e.msg }
+func (e *redactedError) Unwrap() error { return e.err }
+
+// redactSecrets replaces every secret in err's message with [REDACTED]; err
+// is returned as is when none appears.
+func redactSecrets(err error, secrets []string) error {
+	if err == nil || len(secrets) == 0 {
+		return err
+	}
+	msg := err.Error()
+	redacted := redactText(msg, secrets)
+	if redacted == msg {
+		return err
+	}
+	return &redactedError{msg: redacted, err: err}
+}

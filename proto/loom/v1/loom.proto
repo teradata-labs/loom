@@ -2648,6 +2648,28 @@ message ModelInfo {
   // Cost per 1M prompt-cache write tokens (USD). 0 = not published; clients
   // then derive it from the input rate with the vendor's multiplier.
   double cost_per_1m_cache_write_usd = 13;
+
+  // Prompt-size price tiers, ascending by min_prompt_tokens. When a request's
+  // prompt falls in a tier, that tier's rates price the whole request (input,
+  // output and cache), replacing the flat rates above. Empty = flat pricing.
+  repeated PriceTier price_tiers = 14;
+}
+
+// PriceTier is the pricing for requests whose prompt size is in
+// [min_prompt_tokens, max_prompt_tokens). A rate of 0 means the tier does not
+// publish that rate and the flat rate applies.
+message PriceTier {
+  // Smallest prompt (input tokens, cache included) the tier applies to.
+  int64 min_prompt_tokens = 1;
+
+  // First prompt size past the tier; 0 = no upper bound.
+  int64 max_prompt_tokens = 2;
+
+  // Rates in USD per 1M tokens.
+  double input_per_1m_usd = 3;
+  double output_per_1m_usd = 4;
+  double cache_read_per_1m_usd = 5;
+  double cache_write_per_1m_usd = 6;
 }
 
 // Tool Permission Messages

@@ -146,12 +146,36 @@ func (b *AgentBuilder) WithBedrockMantleLLM(region string) *AgentBuilder {
 // default model; an empty or malformed id, or no key, makes Build return the
 // construction error.
 func (b *AgentBuilder) WithVercelGatewayLLM(model string) *AgentBuilder {
-	client, err := vercelgateway.NewClient(vercelgateway.Config{
+	client, err := vercelgateway.NewClient(vercelgateway.ApplyTimeoutEnv(vercelgateway.Config{
 		Endpoint:          os.Getenv("VERCEL_AI_GATEWAY_ENDPOINT"),
 		APIKey:            vercelgateway.ResolveAPIKey(""),
 		Model:             model,
 		RateLimiterConfig: llm.RateLimiterConfig{Enabled: true},
-	})
+	}))
+	if err != nil {
+		b.recordErr(err)
+		return b
+	}
+	b.llm = client
+	return b
+}
+
+// WithVercelGatewayConfig uses the Vercel AI Gateway with a full client
+// configuration: API surface (cfg.API), routing including per-request BYOK
+// (cfg.Routing), timeouts and thinking. Empty Endpoint and APIKey are filled
+// as WithVercelGatewayLLM fills them (VERCEL_AI_GATEWAY_ENDPOINT;
+// LOOM_LLM_VERCEL_GATEWAY_API_KEY, then AI_GATEWAY_API_KEY). The limiter is
+// taken as given: set RateLimiterConfig.Enabled for loom's client-side
+// limiter (WithVercelGatewayLLM enables it). A construction error is returned
+// by Build.
+func (b *AgentBuilder) WithVercelGatewayConfig(cfg vercelgateway.Config) *AgentBuilder {
+	if cfg.Endpoint == "" {
+		cfg.Endpoint = os.Getenv("VERCEL_AI_GATEWAY_ENDPOINT")
+	}
+	if cfg.APIKey == "" && cfg.OIDC == nil {
+		cfg.APIKey = vercelgateway.ResolveAPIKey("")
+	}
+	client, err := vercelgateway.NewClient(vercelgateway.ApplyTimeoutEnv(cfg))
 	if err != nil {
 		b.recordErr(err)
 		return b

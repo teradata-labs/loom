@@ -555,6 +555,21 @@ Gateway base URL for the paths that have no `looms.yaml` (`llm.vercel_gateway_en
 
 viper overrides of `llm.vercel_gateway_model` and `llm.vercel_gateway_endpoint`.
 
+#### LOOM_BYOK_*
+**Used in:** `pkg/llm/vercelgateway/routing.go` (`ResolveExtraBody`)
+
+Per-request BYOK credentials. A `gateway_routing.byok` entry names the variable that holds each secret field (`env: {apiKey: LOOM_BYOK_ANTHROPIC_API_KEY}`); only names with this prefix are accepted, so an agent definition cannot reach any other server variable. Read when the client is built. Values are redacted from error bodies and never printed.
+
+#### LOOM_VERCEL_GATEWAY_SESSION_KEY
+**Used in:** `pkg/llm/vercelgateway/client.go` (`sessionKey`)
+
+Optional server-side secret for the HMAC that turns a loom session id into the gateway's `x-session-id`. Set the same value on every replica. Unset: the key is derived from the gateway API key (a pseudonym the gateway could reverse, since it holds that key), or random per process under OIDC.
+
+#### VERCEL_AI_GATEWAY_TIMEOUT_SECONDS, VERCEL_AI_GATEWAY_STREAM_FIRST_BYTE_TIMEOUT_SECONDS, VERCEL_AI_GATEWAY_STREAM_IDLE_TIMEOUT_SECONDS
+**Used in:** `pkg/llm/vercelgateway/client.go` (`ApplyTimeoutEnv`), from `pkg/agent/registry.go`, `pkg/builder/builder.go`, `cmd/loom-standalone/main.go`
+
+Whole seconds, for the paths without `looms.yaml`: a cap on a whole model call (unset = none), the wait for a stream's first byte (default 60) and the silence allowed inside a stream (default 90). `looms` reads `llm.timeout_seconds`, `llm.vercel_gateway_stream_first_byte_timeout_seconds` and `llm.vercel_gateway_stream_idle_timeout_seconds` instead.
+
 ---
 
 ### looms server credential variables (`LOOM_LLM_*`)

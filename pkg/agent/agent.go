@@ -2337,6 +2337,11 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	span.SetAttribute("conversation.tokens.output", response.TurnUsage.OutputTokens)
 	span.SetAttribute("conversation.cost.usd", response.TurnUsage.CostUSD)
 	span.SetAttribute("conversation.stop_reason", response.Metadata["stop_reason"])
+	if empty, _ := response.Metadata["empty_reply"].(bool); empty {
+		// The text is the agent's explanation, not model output: a refusal
+		// or an empty end_turn (empty_reply.go).
+		span.SetAttribute("conversation.empty_reply", true)
+	}
 	span.SetAttribute("response.length", len(response.Content))
 	span.SetAttribute("response.preview", truncatePreview(response.Content))
 
@@ -3409,7 +3414,9 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			// belong to this step, so there is nothing whose durability to
 			// check.
 			a.pruneStepIfResolved(ctx, session.ID, thisStep, true)
-			if strings.TrimSpace(llmResp.Content) == "" && !emptyRetried {
+			// A refusal is not retried: the model has answered, and a second
+			// request would only be billed and refused again.
+			if strings.TrimSpace(llmResp.Content) == "" && !emptyRetried && !isRefusal(llmResp.StopReason) {
 				// One-shot retry: nudge the LLM to produce a response.
 				emptyRetried = true
 				a.appendMessage(ctx, session, Message{
@@ -3422,9 +3429,16 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			}
 
 			content := llmResp.Content
-			if strings.TrimSpace(content) == "" {
-				// Already retried and still empty — use fallback.
-				content = fmt.Sprintf("Completed %d tool executions across %d turns.", toolExecutionCount, turnCount)
+			emptyFallback := strings.TrimSpace(content) == ""
+			if emptyFallback {
+				// Still empty after the retry, or a refusal. Say what happened.
+				content = emptyReplyText(llmResp.StopReason, toolExecutionCount, turnCount)
+				zap.L().Warn("agent returned an empty reply",
+					zap.String("session_id", session.ID),
+					zap.String("stop_reason", llmResp.StopReason),
+					zap.Int("tool_executions", toolExecutionCount),
+					zap.Int("turns", turnCount),
+					zap.Bool("empty_retried", emptyRetried))
 			}
 
 			// Record conversation completion on span
@@ -3461,6 +3475,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				"tool_executions": toolExecutionCount,
 				"stop_reason":     llmResp.StopReason,
 				"empty_retried":   emptyRetried,
+				"empty_reply":     emptyFallback,
 			}
 			if hygieneLast != nil {
 				meta["hygiene_policy"] = hygieneLast.Policy.String()
@@ -4192,8 +4207,14 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNot
 
 	// Return synthesized response — fall back to a brief summary if LLM returned empty
 	content := finalResp.Content
-	if strings.TrimSpace(content) == "" {
-		content = fmt.Sprintf("Completed %d tool executions across %d turns.", toolExecutionCount, turnCount)
+	emptySynthesis := strings.TrimSpace(content) == ""
+	if emptySynthesis {
+		content = emptyReplyText(finalResp.StopReason, toolExecutionCount, turnCount)
+		zap.L().Warn("agent synthesis returned an empty reply",
+			zap.String("session_id", session.ID),
+			zap.String("stop_reason", finalResp.StopReason),
+			zap.Int("tool_executions", toolExecutionCount),
+			zap.Int("turns", turnCount))
 	}
 
 	addUsage(&turnUsage, finalResp.Usage)
@@ -4211,6 +4232,8 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNot
 			"max_turns_hit":   turnCount >= a.config.MaxTurns,
 			"max_exec_hit":    toolExecutionCount >= a.config.MaxToolExecutions,
 			"synthesized":     true,
+			"empty_reply":     emptySynthesis,
+			"stop_reason":     finalResp.StopReason,
 		},
 	}, nil
 }

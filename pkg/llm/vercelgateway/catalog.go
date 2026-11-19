@@ -21,6 +21,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -61,11 +62,25 @@ type modelEntry struct {
 	MaxTokens     int64    `json:"max_tokens"`
 	Tags          []string `json:"tags"`
 	Pricing       *struct {
-		Input           string `json:"input"`
-		Output          string `json:"output"`
-		InputCacheRead  string `json:"input_cache_read"`
-		InputCacheWrite string `json:"input_cache_write"`
+		Input                string      `json:"input"`
+		Output               string      `json:"output"`
+		InputCacheRead       string      `json:"input_cache_read"`
+		InputCacheWrite      string      `json:"input_cache_write"`
+		InputTiers           []priceTier `json:"input_tiers"`
+		OutputTiers          []priceTier `json:"output_tiers"`
+		InputCacheReadTiers  []priceTier `json:"input_cache_read_tiers"`
+		InputCacheWriteTiers []priceTier `json:"input_cache_write_tiers"`
 	} `json:"pricing"`
+}
+
+// priceTier is one entry of a pricing *_tiers list: a per-token cost for
+// requests whose prompt is in [min, max); max absent = unbounded. Observed on
+// 95 catalog models on 2026-11-18 (alibaba/qwen3-max-thinking: input $1.2/M
+// up to 32,000 prompt tokens, $2.4/M to 128,000, $3/M above).
+type priceTier struct {
+	Cost string `json:"cost"`
+	Min  int64  `json:"min"`
+	Max  int64  `json:"max"`
 }
 
 // DecodeModels parses a /v1/models body into catalog rows under
@@ -105,6 +120,7 @@ func DecodeModels(body []byte) ([]*loomv1.ModelInfo, error) {
 			info.CostPer_1MOutputUsd = perTokenToPerMillion(p.Output)
 			info.CostPer_1MCacheReadUsd = perTokenToPerMillion(p.InputCacheRead)
 			info.CostPer_1MCacheWriteUsd = perTokenToPerMillion(p.InputCacheWrite)
+			info.PriceTiers = mergeTiers(p.InputTiers, p.OutputTiers, p.InputCacheReadTiers, p.InputCacheWriteTiers)
 		}
 		out = append(out, info)
 	}
@@ -278,3 +294,63 @@ func RegisterCatalog(ctx context.Context, endpoint string, interval time.Duratio
 }
 
 var _ catalog.Source = (*CatalogSource)(nil)
+
+// mergeTiers folds the four per-rate tier lists into one list of prompt-size
+// ranges, each carrying every rate published for it. Ranges are taken from
+// the boundaries of all four lists, so a list with coarser boundaries still
+// prices each finer range. A tier whose cost is missing or invalid leaves
+// that rate 0 (the flat rate applies). Nil when no list has a tier.
+func mergeTiers(input, output, cacheRead, cacheWrite []priceTier) []*loomv1.PriceTier {
+	lists := [4][]priceTier{input, output, cacheRead, cacheWrite}
+	bounds := map[int64]bool{}
+	hasTier := false
+	for _, l := range lists {
+		for _, t := range l {
+			if t.Min < 0 || (t.Max != 0 && t.Max <= t.Min) {
+				continue
+			}
+			hasTier = true
+			bounds[t.Min] = true
+			if t.Max > 0 {
+				bounds[t.Max] = true
+			}
+		}
+	}
+	if !hasTier {
+		return nil
+	}
+	starts := make([]int64, 0, len(bounds))
+	for b := range bounds {
+		starts = append(starts, b)
+	}
+	sort.Slice(starts, func(i, j int) bool { return starts[i] < starts[j] })
+
+	rateAt := func(l []priceTier, n int64) float64 {
+		for _, t := range l {
+			if n >= t.Min && (t.Max == 0 || n < t.Max) {
+				return perTokenToPerMillion(t.Cost)
+			}
+		}
+		return 0
+	}
+	out := make([]*loomv1.PriceTier, 0, len(starts))
+	for i, lo := range starts {
+		var hi int64
+		if i+1 < len(starts) {
+			hi = starts[i+1]
+		}
+		t := &loomv1.PriceTier{
+			MinPromptTokens:     lo,
+			MaxPromptTokens:     hi,
+			InputPer_1MUsd:      rateAt(input, lo),
+			OutputPer_1MUsd:     rateAt(output, lo),
+			CacheReadPer_1MUsd:  rateAt(cacheRead, lo),
+			CacheWritePer_1MUsd: rateAt(cacheWrite, lo),
+		}
+		if t.InputPer_1MUsd == 0 && t.OutputPer_1MUsd == 0 && t.CacheReadPer_1MUsd == 0 && t.CacheWritePer_1MUsd == 0 {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
+}
