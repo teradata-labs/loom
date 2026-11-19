@@ -16,8 +16,9 @@ package agent
 import (
 	"context"
 	"fmt"
-	"github.com/teradata-labs/loom/pkg/types"
 	"strings"
+
+	"github.com/teradata-labs/loom/pkg/types"
 
 	"github.com/teradata-labs/loom/pkg/prompts"
 )

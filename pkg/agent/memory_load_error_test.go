@@ -385,3 +385,54 @@ func TestReloadPendingSession_ASlowRetryDoesNotStallOtherSessions(t *testing.T) 
 	close(store.release)
 	assert.Same(t, standIn, <-done, "a retry that fails keeps the stand-in")
 }
+
+// outageStore fails both LoadSession and SessionExists while down, as a store
+// that cannot be reached does; otherwise it is the store it wraps.
+type outageStore struct {
+	SessionStorage
+	down atomic.Bool
+}
+
+func (s *outageStore) LoadSession(ctx context.Context, id string) (*Session, error) {
+	if s.down.Load() {
+		return nil, errors.New("dial tcp: connection refused")
+	}
+	return s.SessionStorage.LoadSession(ctx, id)
+}
+
+func (s *outageStore) SessionExists(ctx context.Context, id string) (bool, error) {
+	if s.down.Load() {
+		return false, errors.New("dial tcp: connection refused")
+	}
+	return s.SessionStorage.SessionExists(ctx, id)
+}
+
+// A brand-new session first seen during an outage is a stand-in; when the
+// store comes back and reports it missing, the stand-in becomes the session:
+// its mark is cleared, its row is created, and saves and compaction work.
+func TestReloadPendingSession_ANewSessionSeenInAnOutageBecomesTheSession(t *testing.T) {
+	ctx := context.Background()
+	sqlite, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlite.Close() })
+	store := &outageStore{SessionStorage: sqlite}
+	store.down.Store(true)
+	mem := NewMemoryWithStore(store)
+
+	standIn := mem.GetOrCreateSession(ctx, "s-new")
+	require.True(t, mem.isLoadPlaceholder(standIn), "a session seen in an outage is a stand-in")
+
+	store.down.Store(false)
+	sess := mem.ReloadPendingSession(ctx, "s-new", "a")
+	assert.Same(t, standIn, sess, "the stand-in is the session once the store reports it missing")
+	assert.False(t, mem.isLoadPlaceholder(sess), "the stand-in mark was not cleared")
+	exists, err := sqlite.SessionExists(ctx, "s-new")
+	require.NoError(t, err)
+	assert.True(t, exists, "the new session's row was not created")
+	require.NoError(t, sqlite.SaveMessage(ctx, "s-new", &Message{Role: "user", Content: "hello"}, true), "a message cannot be saved")
+	sess.Name = "named later"
+	require.NoError(t, mem.PersistSession(ctx, sess))
+	got, err := sqlite.LoadSession(ctx, "s-new")
+	require.NoError(t, err)
+	assert.Equal(t, "named later", got.Name, "a later save of the session was skipped")
+}

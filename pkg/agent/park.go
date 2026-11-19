@@ -1143,7 +1143,10 @@ func (a *Agent) ResumeChat(ctx context.Context, sessionID string, decision ParkD
 	if a.memory.isLoadPlaceholder(sess) {
 		// The decision stays pending (nothing is closed): the parked turn is
 		// in the store, which cannot be read yet.
-		return nil, fmt.Errorf("resume parked turn in session %s: %w", sessionID, ErrSessionNotLoaded)
+		err := fmt.Errorf("resume parked turn in session %s: %w", sessionID, ErrSessionNotLoaded)
+		span.RecordError(err)
+		span.AddEvent("resume.refused", map[string]interface{}{"reason": "session_not_loaded"})
+		return nil, err
 	}
 
 	// The parked turn's index and opening message, from the same tail rows

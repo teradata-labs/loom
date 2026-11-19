@@ -367,6 +367,14 @@ func (m *Memory) ReloadPendingSession(ctx context.Context, sessionID, agentID st
 			!loadErrorMeansMissing(ctx, store, sessionID) {
 			zap.L().Warn("reload: the store still cannot load the session; this turn has no history in memory",
 				zap.String("session_id", sessionID), zap.Error(err))
+			// What is cached now: another caller may have replaced the
+			// stand-in while the probe waited on the store.
+			m.mu.RLock()
+			current := m.sessions[sessionID]
+			m.mu.RUnlock()
+			if current != nil {
+				return current
+			}
 			return cached
 		}
 	}
@@ -504,10 +512,22 @@ func (m *Memory) getOrCreate(ctx context.Context, sessionID, agentID, parentSess
 		// The retry of a failed load: still failing, keep serving this turn's
 		// session (it holds the turn's messages in memory); or the store now
 		// says the session does not exist, so the cached one is the session.
-		if !loadFailed {
-			delete(m.reloadPending, sessionID)
+		if loadFailed {
+			m.mu.Unlock()
+			return cached
 		}
+		// The store answered that there is no such session: the stand-in
+		// is the session from now on. Clear its mark and create its row,
+		// which was never saved (messages need it).
+		delete(m.reloadPending, sessionID)
+		delete(m.standIns, weak.Make(cached))
 		m.mu.Unlock()
+		if store != nil {
+			if err := store.SaveSession(ctx, cached); err != nil {
+				zap.L().Warn("reload: the store has no such session, and creating its row failed",
+					zap.String("session_id", sessionID), zap.Error(err))
+			}
+		}
 		return cached
 	}
 
@@ -962,7 +982,7 @@ func (m *Memory) PersistSession(ctx context.Context, session *Session) error {
 		// The store failed to load this session, so the cached session is an
 		// empty stand-in: saving it would overwrite the stored row's name,
 		// context and totals. Its messages are still saved row by row; the
-		// next GetOrCreateSession* call loads the real session again.
+		// next turn's ReloadPendingSession loads the real session again.
 		zap.L().Info("persist: the session was not loaded from the store; its row is left as stored",
 			zap.String("session_id", session.ID))
 		return nil

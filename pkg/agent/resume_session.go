@@ -117,7 +117,10 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (_ *Respons
 	if a.memory.isLoadPlaceholder(sess) {
 		// The store could not load the session: resuming the empty stand-in
 		// would find no batch and could record a second turn over the real one.
-		return nil, fmt.Errorf("resume session %s: %w", sessionID, ErrSessionNotLoaded)
+		err := fmt.Errorf("resume session %s: %w", sessionID, ErrSessionNotLoaded)
+		span.RecordError(err)
+		span.AddEvent("resume.refused", map[string]interface{}{"reason": "session_not_loaded"})
+		return nil, err
 	}
 
 	// A session that is HITL-parked (waiting on a human, not crashed) must not
@@ -699,7 +702,10 @@ func (a *Agent) ResolveExecutionGap(ctx context.Context, sessionID string, outco
 
 	sess := a.memory.ReloadPendingSession(ctx, sessionID, a.config.Name)
 	if a.memory.isLoadPlaceholder(sess) {
-		return nil, fmt.Errorf("resolve execution gap in session %s: %w", sessionID, ErrSessionNotLoaded)
+		err := fmt.Errorf("resolve execution gap in session %s: %w", sessionID, ErrSessionNotLoaded)
+		span.RecordError(err)
+		span.AddEvent("resume.refused", map[string]interface{}{"reason": "session_not_loaded"})
+		return nil, err
 	}
 	events, err := a.eventLog.LoadEvents(ctx, sessionID)
 	if err != nil {
