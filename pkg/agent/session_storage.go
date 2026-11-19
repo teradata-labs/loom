@@ -130,8 +130,28 @@ type SoftDeleteStorage interface {
 	PurgeDeleted(ctx context.Context, graceInterval string) error
 }
 
+// LabeledFoldStorage is the optional fold-label capability (WithMessageLabeler):
+// a store implementing it also persists the summary's joined labels in the
+// fold snapshot, so they survive a restore. Stores without it still fold; the
+// summary's labels are then dropped at the snapshot and the loss is logged and
+// spanned (labels_persisted=false), never silent. Use type assertion to check:
+//
+//	if lfs, ok := store.(LabeledFoldStorage); ok {
+//	    lfs.FoldMessagesWithLabels(ctx, sessionID, seqs, n, text, labels)
+//	}
+type LabeledFoldStorage interface {
+	// FoldMessagesWithLabels is FoldMessages with the summary's joined label
+	// map: content = JSON {"n","text","labels"}; a nil map marshals as null
+	// and loads as nil, so pre-labels snapshots load unchanged.
+	FoldMessagesWithLabels(ctx context.Context, sessionID string, seqs []int64, n int, text string, labels map[string]string) error
+}
+
 // Compile-time check: SessionStore (SQLite) implements SessionStorage.
 var _ SessionStorage = (*SessionStore)(nil)
+
+// Compile-time check: SessionStore (SQLite) implements the optional
+// labeled-fold capability.
+var _ LabeledFoldStorage = (*SessionStore)(nil)
 
 // warnDeprecatedOnce logs, once per process, that a deprecated call was made
 // and does nothing: a caller written against it learns the behavior is gone.

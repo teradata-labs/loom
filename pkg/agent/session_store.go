@@ -1691,9 +1691,31 @@ func (s *SessionStore) MarkEvicted(ctx context.Context, sessionID string, seqs [
 }
 
 // FoldMessages writes summary version n (snapshot_type='fold', content = JSON
-// {"n","text"}) and sets the region's folded flags in ONE transaction (HLD
-// §5.4.6) — never a fold that evaporates on reload.
+// {"n","text"}) and sets the region's folded flags in ONE transaction
+// (HLD §5.4.6) — never a fold that evaporates on reload.
 func (s *SessionStore) FoldMessages(ctx context.Context, sessionID string, seqs []int64, n int, text string) error {
+	content, err := json.Marshal(map[string]interface{}{"n": n, "text": text})
+	if err != nil {
+		return fmt.Errorf("failed to marshal fold snapshot: %w", err)
+	}
+	return s.foldSnapshot(ctx, sessionID, seqs, n, text, content)
+}
+
+// FoldMessagesWithLabels is FoldMessages with the summary's joined label map
+// (LabeledFoldStorage): content = JSON {"n","text","labels"}; nil marshals as
+// null and loads as nil.
+func (s *SessionStore) FoldMessagesWithLabels(ctx context.Context, sessionID string, seqs []int64, n int, text string, labels map[string]string) error {
+	content, err := json.Marshal(map[string]interface{}{"n": n, "text": text, "labels": labels})
+	if err != nil {
+		return fmt.Errorf("failed to marshal fold snapshot: %w", err)
+	}
+	return s.foldSnapshot(ctx, sessionID, seqs, n, text, content)
+}
+
+// foldSnapshot persists a marshalled fold snapshot and the region's folded
+// flags in one transaction (HLD §5.4.6). text is the summary text the content
+// was marshalled from; the snapshot's token count derives from its length.
+func (s *SessionStore) foldSnapshot(ctx context.Context, sessionID string, seqs []int64, n int, text string, content []byte) error {
 	ctx, span := s.tracer.StartSpan(ctx, "session_store.fold_messages")
 	defer s.tracer.EndSpan(span)
 	span.SetAttribute("session_id", sessionID)
@@ -1701,12 +1723,6 @@ func (s *SessionStore) FoldMessages(ctx context.Context, sessionID string, seqs 
 
 	if err := s.requireOwnedSession(ctx, sessionID); err != nil {
 		return err
-	}
-
-	content, err := json.Marshal(map[string]interface{}{"n": n, "text": text})
-	if err != nil {
-		span.RecordError(err)
-		return fmt.Errorf("failed to marshal fold snapshot: %w", err)
 	}
 
 	s.mu.Lock()
