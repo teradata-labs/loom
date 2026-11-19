@@ -381,6 +381,53 @@ func TestLiveComplete_PriceTierSemantics(t *testing.T) {
 	}
 }
 
+// OIDC: a Vercel project token (from "vercel env pull") authenticates the
+// health check and a model call on each API, with no API key. The token is
+// read from VERCEL_OIDC_TOKEN, or from the dotenv file named by
+// VERCEL_GATEWAY_LIVE_OIDC_ENV. It is never logged.
+func TestLiveComplete_OIDC(t *testing.T) {
+	if os.Getenv("VERCEL_GATEWAY_LIVE") != "1" {
+		t.Skip("VERCEL_GATEWAY_LIVE not set")
+	}
+	token := os.Getenv("VERCEL_OIDC_TOKEN")
+	if f := os.Getenv("VERCEL_GATEWAY_LIVE_OIDC_ENV"); token == "" && f != "" {
+		raw, err := os.ReadFile(f) // #nosec G304 -- test-only path from the environment
+		require.NoError(t, err)
+		for _, line := range strings.Split(string(raw), "\n") {
+			if v, ok := strings.CutPrefix(strings.TrimSpace(line), "VERCEL_OIDC_TOKEN="); ok {
+				token = strings.Trim(v, `"'`)
+			}
+		}
+	}
+	if token == "" {
+		t.Skip("no Vercel OIDC token (VERCEL_OIDC_TOKEN or VERCEL_GATEWAY_LIVE_OIDC_ENV)")
+	}
+	t.Setenv("VERCEL_OIDC_TOKEN", token)
+	// No key anywhere: the key would win over OIDC.
+	t.Setenv(EnvAPIKey, "")
+	t.Setenv(EnvLoomAPIKey, "")
+
+	for _, tc := range []struct{ model, api string }{
+		{liveSonnet55, APIAuto}, {liveGPT55, APIAuto}, {liveGPT55, APIResponses},
+	} {
+		t.Run(tc.model+"/"+tc.api, func(t *testing.T) {
+			c, err := NewClient(Config{
+				Endpoint: os.Getenv("VERCEL_GATEWAY_LIVE_ENDPOINT"),
+				Model:    tc.model,
+				API:      tc.api,
+				OIDC:     &OIDCConfig{},
+				Timeout:  3 * time.Minute,
+			})
+			require.NoError(t, err)
+			require.NoError(t, c.HealthCheck(context.Background()), "GET /v1/credits with the OIDC token")
+			resp, err := c.Chat(context.Background(), say("Reply OK."), nil)
+			require.NoError(t, err)
+			logFacts(t, resp)
+			assert.NotEmpty(t, resp.Content)
+		})
+	}
+}
+
 // A long stream that keeps producing bytes is not cut off: by the gateway's
 // own limits or by loom's stream timeouts. Opt-in (VERCEL_GATEWAY_LIVE_LONG=1)
 // because it costs about $1.
