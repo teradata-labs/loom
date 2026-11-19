@@ -306,9 +306,39 @@ build-bin name:
 vet:
     go vet $(go list ./... | grep -v /third_party/)
 
-# Run linter
-lint:
+# golangci-lint version that CI runs. Keep it equal to `version:` under the
+# "Run golangci-lint" step in .github/workflows/ci.yml; `just lint` checks both.
+golangci_lint_version := "2.15.0"
+
+# Run linter (refuses a golangci-lint version other than the one CI runs:
+# different versions report different findings)
+lint: lint-version-check
     golangci-lint run ./...
+
+# Check the installed golangci-lint and the CI pin against golangci_lint_version
+lint-version-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    want="{{golangci_lint_version}}"
+    # The release binary, not `go install`: golangci-lint must be built with a
+    # Go version at least as new as the module's `go` directive to load it.
+    install="curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b \"\$(go env GOPATH)/bin\" v${want}"
+    if ! command -v golangci-lint >/dev/null 2>&1; then
+        echo "❌ golangci-lint not installed. Install the v${want} release binary:" >&2
+        echo "   ${install}" >&2
+        exit 1
+    fi
+    have="$(golangci-lint version --short)"
+    if [ "${have}" != "${want}" ]; then
+        echo "❌ golangci-lint ${have} is installed; CI runs v${want}. Install the v${want} release binary:" >&2
+        echo "   ${install}" >&2
+        exit 1
+    fi
+    ci_pin="$(sed -n 's/^ *version: v\([0-9][0-9.]*\) *$/\1/p' .github/workflows/ci.yml)"
+    if [ "${ci_pin}" != "${want}" ]; then
+        echo "❌ .github/workflows/ci.yml pins golangci-lint '${ci_pin}'; the Justfile says ${want}. Make them equal." >&2
+        exit 1
+    fi
 
 # Format code
 fmt:
@@ -520,6 +550,7 @@ verify:
     @command -v go >/dev/null 2>&1 && echo "✅ go installed" || echo "❌ go not installed"
     @command -v protoc-gen-go >/dev/null 2>&1 && echo "✅ protoc-gen-go installed" || echo "❌ protoc-gen-go not installed"
     @command -v protoc-gen-go-grpc >/dev/null 2>&1 && echo "✅ protoc-gen-go-grpc installed" || echo "❌ protoc-gen-go-grpc not installed"
+    @command -v golangci-lint >/dev/null 2>&1 && { [ "$(golangci-lint version --short)" = "{{golangci_lint_version}}" ] && echo "✅ golangci-lint {{golangci_lint_version}} installed" || echo "❌ golangci-lint $(golangci-lint version --short) installed; CI runs {{golangci_lint_version}}"; } || echo "❌ golangci-lint not installed"
 
 # Bootstrap project (first-time setup)
 bootstrap: deps proto-init proto-update proto

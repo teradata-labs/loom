@@ -140,6 +140,11 @@ Implemented, unit-tested, and live-tested on 2026-11-16 (Claude Haiku 4.5 on the
 
 ### Changed
 
+#### Build: golangci-lint v2.15.0
+- **CI and `just lint` run golangci-lint v2.15.0** (was v2.9.0). v2.9.0 is built with Go 1.26 and cannot load a `go 1.27` module, so this lands ahead of the Go 1.27 move (`docs/plans/go-1.27-jsonv2-migration-plan.md`, Phase 1a).
+- **`just lint` refuses any other golangci-lint version**, and refuses when the Justfile and `ci.yml` pins differ; `just verify` reports the installed version. Install the release binary: `curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.15.0`.
+- **The 143 findings v2.15.0 reports on v2.9.0-clean code are fixed.** 127 `WriteString(fmt.Sprintf(...))` calls became `fmt.Fprintf` (same output). Six channel receives dropped an `error`: the MCP stdio transport now logs how a force-killed server exited, the jail self-test timeout error states how the killed child ended, and four tests assert on the value. Nine tests of the deprecated `EnabledSkills`/`DisabledSkills` fields carry a `//nolint:staticcheck` with the reason. One `reflect.Ptr` became `reflect.Pointer`.
+
 #### Workflows: prompts and reported cost (with or without a decision layer)
 - **Debate and swarm prompts were rewritten.** The debate no longer assigns a perspective guessed from the agent id's suffix (`generatePerspectiveGuidance` is removed); each position prompt asks the agent to hold the standpoint set out in its own instructions and to answer the strongest objection rather than soften. Swarm voting prompts drop the "You are participating" framing, carry the same standpoint instruction, and ask for a VOTE spelled as the question spells it. Debate and swarm answers can therefore differ from earlier releases for the same agents.
 - **Reported workflow cost now includes auxiliary calls.** A conditional workflow's cost includes the condition agent's classifier turn, a pipeline's includes its stage-validation calls, a swarm's includes the judge's tie-break calls, and a debate reports the cost of every position, response, moderator summary and synthesis call (it reported zero before). Totals are higher than earlier releases for the same work; nothing was free before, it was uncounted.
