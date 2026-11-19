@@ -1,7 +1,7 @@
 # Vercel AI Gateway: completion plan
 
 **Status**: ✅ Done (2026-11-19); in review as PR #691, branch `feat/vercel-gateway-complete` off `main` (b3a2d6ab + later).
-**Goal**: move the `vercel-ai-gateway` provider from ⚠️ Partial to ✅ Implemented, and fix every loom defect the 2026-11-18/19 evaluation found (harness and results on branch `feat/vercel-gateway-eval`, a separate PR).
+**Goal**: move the `vercel-ai-gateway` provider from ⚠️ Partial to ✅ Implemented, and fix every loom defect the 2026-11-18/19 evaluation found ([results](../research/vercel-gateway-eval-results.md)).
 
 ## Decisions (Ilsun, 2026-11-19)
 
