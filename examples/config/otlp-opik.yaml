@@ -37,7 +37,7 @@ observability:
 
   # Self-hosted Opik does not require an auth header by default.
   # If you've enabled API key auth on your instance, uncomment and set via env:
-  #   export LOOM_OBSERVABILITY_OTLP_HEADERS="Authorization=Bearer <your-opik-api-key>"
+  #   export LOOM_OTLP_HEADERS="Authorization=Bearer <your-opik-api-key>"
   # Or pin to a specific project:
   # otlp_headers:
   #   Opik-Project-Name: "loom-dev"
