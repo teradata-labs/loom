@@ -19,6 +19,7 @@ package backend
 
 import (
 	"context"
+	"fmt"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
@@ -112,6 +113,24 @@ type CheckpointStoreProvider interface {
 // may satisfy to provide the durable, tool-call-granularity execution log
 // (issue #229). Only backends with the execution_events migration applied
 // implement this.
+// SessionLeases is the session lease store of sb when its database has the
+// execution log's tables: the lock that lets one turn at a time run in a
+// session, held whether or not events are recorded. It probes the lease table
+// once; a backend without an execution log, or a database the migrations have
+// not reached, returns nil and the reason, and the caller runs turns unlocked
+// and says so.
+func SessionLeases(ctx context.Context, sb StorageBackend) (eventlog.SessionLeaseStore, error) {
+	elp, ok := sb.(EventLogProvider)
+	if !ok || elp.EventLogStore() == nil {
+		return nil, fmt.Errorf("the storage backend has no execution log")
+	}
+	store := elp.EventLogStore()
+	if _, _, err := store.SessionLeaseHolder(ctx, ""); err != nil {
+		return nil, fmt.Errorf("the execution log's lease table is not available: %w", err)
+	}
+	return store, nil
+}
+
 type EventLogProvider interface {
 	// EventLogStore returns the event log store, or nil if not available.
 	EventLogStore() eventlog.EventLogStore

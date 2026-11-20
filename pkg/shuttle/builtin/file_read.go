@@ -108,6 +108,11 @@ func (t *FileReadTool) InputSchema() *shuttle.JSONSchema {
 }
 
 func (t *FileReadTool) Execute(ctx context.Context, params map[string]interface{}) (*shuttle.Result, error) {
+	// A turn that says where it works reads there: the same tool, standing in
+	// the turn's directory rather than the one it was built with.
+	if dir := shuttle.WorkDirFromContext(ctx); dir != "" && dir != t.baseDir {
+		return NewFileReadTool(dir).Execute(ctx, params)
+	}
 	start := time.Now()
 
 	// Multi-file / search form: paths array or pattern present.

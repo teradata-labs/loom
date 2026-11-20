@@ -130,8 +130,21 @@ type SoftDeleteStorage interface {
 	PurgeDeleted(ctx context.Context, graceInterval string) error
 }
 
+// Rewinder removes exchanges that should not have happened. Distinct from
+// relief, which shrinks what a turn costs while keeping it in the history.
+type Rewinder interface {
+	// TruncateFrom deletes every message from the given turn onward and
+	// reports the row count. Turn is the unit because a turn groups a user
+	// message with every call it caused, so a tool call is never orphaned.
+	TruncateFrom(ctx context.Context, sessionID string, turn int) (int, error)
+	// MaxTurn reports the highest turn in a session, 0 when it has none.
+	MaxTurn(ctx context.Context, sessionID string) (int, error)
+}
+
 // Compile-time check: SessionStore (SQLite) implements SessionStorage.
 var _ SessionStorage = (*SessionStore)(nil)
+
+var _ Rewinder = (*SessionStore)(nil)
 
 // warnDeprecatedOnce logs, once per process, that a deprecated call was made
 // and does nothing: a caller written against it learns the behavior is gone.

@@ -32,6 +32,7 @@ type recordingEventLog struct {
 	events    []eventlog.ExecutionEvent
 	allEvents []eventlog.ExecutionEvent
 	claims    map[string]string
+	expiry    map[string]time.Time
 }
 
 func (r *recordingEventLog) RecordIntent(ctx context.Context, sessionID string, stepIndex, batchPosition int, eventType eventlog.EventType, toolUseID string, payload []byte) error {
@@ -91,12 +92,20 @@ func (r *recordingEventLog) AcquireSessionLease(ctx context.Context, sessionID, 
 		return false, nil
 	}
 	r.claims[sessionID] = holder
+	if r.expiry == nil {
+		r.expiry = make(map[string]time.Time)
+	}
+	r.expiry[sessionID] = time.Now().Add(ttl)
 	return true, nil
 }
 func (r *recordingEventLog) RenewSessionLease(ctx context.Context, sessionID, holder string, ttl time.Duration) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.claims[sessionID] == holder, nil
+	held := r.claims[sessionID] == holder
+	if held {
+		r.expiry[sessionID] = time.Now().Add(ttl)
+	}
+	return held, nil
 }
 func (r *recordingEventLog) ReleaseSessionLease(ctx context.Context, sessionID, holder string) error {
 	r.mu.Lock()
@@ -105,6 +114,15 @@ func (r *recordingEventLog) ReleaseSessionLease(ctx context.Context, sessionID, 
 		delete(r.claims, sessionID)
 	}
 	return nil
+}
+func (r *recordingEventLog) SessionLeaseHolder(ctx context.Context, sessionID string) (string, time.Duration, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	holder := r.claims[sessionID]
+	if holder == "" {
+		return "", 0, nil
+	}
+	return holder, time.Until(r.expiry[sessionID]), nil
 }
 func (r *recordingEventLog) PruneStepsBefore(ctx context.Context, sessionID string, stepIndex int) error {
 	r.mu.Lock()

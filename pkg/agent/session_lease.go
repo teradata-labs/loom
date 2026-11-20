@@ -27,9 +27,10 @@ import (
 	"github.com/teradata-labs/loom/pkg/eventlog"
 )
 
-// ErrSessionBusy is returned by Chat, ResumeChat and ResumeSession on an agent
-// with an event log when another process holds the session's lease: a live
-// turn or a resume is already driving that session's conversation loop.
+// ErrSessionBusy is returned by Chat, ResumeChat, ResumeSession and
+// RewindSession on an agent with a session lease store when another holder,
+// in this process or another, has the session's lease: a live turn, a resume
+// or a rewind is already driving that session's conversation loop.
 var ErrSessionBusy = errors.New("session is being driven by another process")
 
 // ErrSessionLeaseLost is the cancellation cause of a turn's context when its
@@ -67,15 +68,24 @@ func (a *Agent) sessionLeaseTTL() time.Duration {
 // it. That is intended: the agent's own readers of those errors run before
 // this wrap, and the server maps the ResumeSession and ResolveExecutionGap
 // RPCs' errors through resumeSessionResponse and resumeStatus, which check for
-// a lease error first. A caller that does need the structured error from a
-// lease-lost turn should change this deliberately, keeping context.Canceled
+// a lease error first. The one structured error kept is TurnFailed, so what
+// the turn spent before the lease was lost is still reported; its chain is
+// the same flat one. A caller that does need another structured error from
+// a lease-lost turn should change this deliberately, keeping context.Canceled
 // out of the chain, not wrap err with a second %w.
 func leaseLostError(ctx context.Context, err error) error {
 	if err == nil || errors.Is(err, ErrSessionLeaseLost) {
 		return err
 	}
 	if cause := sessionLeaseLost(ctx); cause != nil {
-		return fmt.Errorf("%w: %s", cause, err.Error())
+		flat := fmt.Errorf("%w: %s", cause, err.Error())
+		// What the turn spent before the lease was lost is kept: the same
+		// flat chain under the cause, inside the TurnFailed that carried it.
+		var failed *TurnFailed
+		if errors.As(err, &failed) {
+			return &TurnFailed{Err: flat, Spent: failed.Spent}
+		}
+		return flat
 	}
 	return err
 }
@@ -86,11 +96,21 @@ func leaseLostError(ctx context.Context, err error) error {
 //
 // It returns a context that is cancelled with cause ErrSessionLeaseLost if the
 // lease is lost, and a release function the caller must defer. The lease is
-// renewed every TTL/3 while held. Without an event log it returns ctx
-// unchanged and a no-op release.
+// renewed every TTL/3 while held. Without a lease store it returns ctx
+// unchanged and a release that only counts the turn.
+//
+// Taking the lease reads the session's turn
+// count (TurnCounter) and releasing it counts the turn: an agent object whose
+// copy of the session is from fewer turns than the session has had drops it
+// and loads fresh.
 func (a *Agent) holdSessionLease(ctx context.Context, sessionID string) (context.Context, func(), error) {
-	if a.eventLog == nil {
-		return ctx, func() {}, nil
+	leases := a.leaseStore()
+	if leases == nil {
+		// No lock to hold; the turn is still counted, so this object's copy
+		// of the session is dropped when another object or process has taken
+		// a turn in it since.
+		turns := a.beginTurnCount(ctx, sessionID)
+		return ctx, func() { a.endTurnCount(context.WithoutCancel(ctx), sessionID, turns) }, nil
 	}
 	ttl := a.sessionLeaseTTL()
 	holder := uuid.NewString()
@@ -98,13 +118,14 @@ func (a *Agent) holdSessionLease(ctx context.Context, sessionID string) (context
 	// The store stamps the expiry somewhere inside the acquire call, so the
 	// lease is vouched for from before the call, not after it returns.
 	acquireBegan := time.Now()
-	won, err := a.eventLog.AcquireSessionLease(ctx, sessionID, holder, ttl)
+	won, err := leases.AcquireSessionLease(ctx, sessionID, holder, ttl)
 	if err != nil {
 		return nil, nil, fmt.Errorf("taking the session lease: %w", err)
 	}
 	if !won {
 		return nil, nil, fmt.Errorf("session %s: %w", sessionID, ErrSessionBusy)
 	}
+	turns := a.beginTurnCount(ctx, sessionID)
 
 	leaseCtx, cancel := context.WithCancelCause(ctx)
 	// Renewal and release must outlive a cancelled turn, but keep its values
@@ -141,7 +162,7 @@ func (a *Agent) holdSessionLease(ctx context.Context, sessionID string) (context
 				return
 			}
 			renewCtx, cancelRenew := context.WithTimeout(storeCtx, budget)
-			held, err := a.eventLog.RenewSessionLease(renewCtx, sessionID, holder, ttl)
+			held, err := leases.RenewSessionLease(renewCtx, sessionID, holder, ttl)
 			cancelRenew()
 			switch {
 			case err == nil && held:
@@ -170,10 +191,25 @@ func (a *Agent) holdSessionLease(ctx context.Context, sessionID string) (context
 		// lease expires on its own if the release does not land.
 		releaseCtx, cancelRelease := context.WithTimeout(storeCtx, ttl/3)
 		defer cancelRelease()
-		if err := a.eventLog.ReleaseSessionLease(releaseCtx, sessionID, holder); err != nil {
+		// The turn is counted while the lease is still held, so the count
+		// and the history it stands for change under one lock.
+		a.endTurnCount(releaseCtx, sessionID, turns)
+		if err := leases.ReleaseSessionLease(releaseCtx, sessionID, holder); err != nil {
 			zap.L().Warn("failed to release session lease; it expires on its own",
 				zap.String("session_id", sessionID), zap.Duration("ttl", ttl), zap.Error(err))
 		}
 	}
 	return leaseCtx, release, nil
+}
+
+// leaseStore is where this agent holds session leases: the store attached for
+// that (WithSessionLeases), else the event log, which carries the lease too.
+func (a *Agent) leaseStore() eventlog.SessionLeaseStore {
+	if a.sessionLeases != nil {
+		return a.sessionLeases
+	}
+	if a.eventLog != nil {
+		return a.eventLog
+	}
+	return nil
 }

@@ -475,3 +475,29 @@ func TestHygiene_FullLoop_RequireFix_AgentFixesOnRetry(t *testing.T) {
 	assert.NotContains(t, after.Notes, "[hygiene]",
 		"happy path: no hygiene note because AUTO_FIX never fired")
 }
+
+// A turn a tool ends hands its work on, so it runs no hygiene pass: the
+// board's live tasks are left as they are and the model is not asked to fix
+// them, as with a park.
+func TestHygiene_AnEndedTurnLeavesTheBoardAlone(t *testing.T) {
+	llm := &mockToolCallingLLM{responses: []mockLLMResponse{
+		{content: "Taking you back.", toolCalls: []llmtypes.ToolCall{{ID: "c1", Name: "hand_off", Input: map[string]interface{}{}}}},
+		{content: "said to nobody"},
+	}}
+	ag, mgr := newAgentWithHygieneRig(t, llm)
+	ag.RegisterTool(&handOff{})
+
+	sessionID := "loop-sess-ended"
+	ag.skillOrchestrator.ActivateSkill(sessionID, &skills.Skill{Name: "sql"}, "test", "", 1.0)
+	seeded := seedOpenUnstartedTask(t, mgr, "sql", sessionID, "design-index")
+
+	resp, err := ag.Chat(context.Background(), sessionID, "take me back")
+	require.NoError(t, err)
+	assert.Equal(t, "Taking you back.", resp.Content)
+	assert.Equal(t, 1, llm.currentIdx, "the model was asked to fix the board after the turn was ended")
+	assert.NotContains(t, resp.Metadata, "hygiene_policy", "an ended turn ran a hygiene pass")
+
+	after, err := mgr.GetTask(context.Background(), seeded.ID)
+	require.NoError(t, err)
+	assert.Equal(t, loomv1.TaskStatus_TASK_STATUS_OPEN, after.Status, "an ended turn changed the board")
+}

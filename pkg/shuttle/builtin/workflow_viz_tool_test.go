@@ -14,6 +14,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
 // Test workflow YAML content
@@ -411,4 +413,20 @@ func TestWorkflowVisualizationTool_ConcurrentExecution(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		<-done
 	}
+}
+
+// A turn that says where it works is served there: relative workflow and
+// output paths are beneath the turn's directory.
+func TestWorkflowVisualizationTool_WorksWhereTheTurnSays(t *testing.T) {
+	turn := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(turn, "wf.yaml"), []byte(testWorkflowYAML), 0644))
+	ctx := shuttle.ContextWithWorkDir(context.Background(), turn)
+	result, err := NewWorkflowVisualizationTool().Execute(ctx, map[string]interface{}{
+		"workflow_path": "wf.yaml",
+		"output_path":   "out/diagram.html",
+	})
+	require.NoError(t, err)
+	require.True(t, result.Success, "%+v", result.Error)
+	_, err = os.Stat(filepath.Join(turn, "out", "diagram.html"))
+	assert.NoError(t, err, "the diagram was not written in the turn's directory")
 }

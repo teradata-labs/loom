@@ -187,14 +187,21 @@ loom sessions resolve-gap sess_checkout_7 --outcome succeeded --result '{"charge
 loom sessions resume sess_checkout_7
 ```
 
+## One driver per session
+
+Whether or not recording is enabled, a turn, a resume, a rewind or a gap
+resolution holds a lease on its session, renewed while it runs (default TTL 2
+minutes), on every backend whose database has the execution log's tables. A
+second request on the same session while the lease is held fails with
+`session is being driven by another process` instead of running alongside it.
+The holder names its process: a lease left by a server that crashed on the
+same host is released and taken once it has gone one renewal interval without
+renewal (40 seconds by default); one left on another host blocks the session
+until the lease expires. A database the migrations have not reached
+runs turns unlocked, and `looms serve` says so at startup.
+
 ## Behavior Changes When Enabled
 
-- **One driver per session.** A turn, a resume, or a gap resolution holds a
-  lease on its session, renewed while it runs (default TTL 2 minutes). A
-  second request on the same session while the lease is held fails with
-  `session is being driven by another process` instead of running alongside
-  it. A server that crashed while holding a lease blocks the session until the
-  lease expires.
 - **Busy and lost-lease errors are gRPC `ABORTED`.** `Weave`, `StreamWeave`,
   `ResumeSession` and `ResolveExecutionGap` all report them as `ABORTED`, which
   means "retry later". A `Weave` retry that carries the same idempotency key
@@ -207,8 +214,9 @@ loom sessions resume sess_checkout_7
   worker's reply to its coordinator is delivered by running a turn on the
   coordinator's session, which the user's own turn may hold. The delivery
   retries for about 2.5 minutes (long enough to outlast a lease left by a
-  crashed server). Queue messages that still cannot be delivered go back to
-  the queue and are offered again, up to the queue's retry limit of 3
+  crashed server). Queue messages that still cannot be delivered because the
+  session is busy go back to the queue without using up a delivery and are
+  offered again; any other reason counts against the queue's retry limit of 3
   deliveries, after which the queue marks them failed. Broadcast messages have
   no queue behind them: if the session is still busy after the wait, the
   message is dropped and logged at error level.
@@ -279,9 +287,11 @@ continue with a new message.
 
 ### `session is being driven by another process`
 
-Another turn or resume holds the session's lease. Wait for it to finish, or
-for the lease to expire (2 minutes) if its server crashed, then retry. Over
-gRPC this is `ABORTED`.
+Another turn, resume or rewind holds the session's lease. Wait for it to
+finish, then retry. If its server crashed on the same host the lease is
+released on the first request after a renewal interval (40 seconds) has
+passed without renewal; on another host it expires after 2 minutes.
+Over gRPC this is `ABORTED`.
 
 ### `session lease lost`
 

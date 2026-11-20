@@ -535,6 +535,45 @@ func (q *MessageQueue) Requeue(ctx context.Context, messageID string) error {
 	return nil
 }
 
+// Defer returns an in-flight message to pending without counting the
+// delivery against its retries: the recipient could not take it now (its
+// session was busy with another turn), which is not a failed attempt. The
+// message keeps its place in the queue, and its lifetime (ExpiresAt) still
+// bounds how long it can be deferred.
+func (q *MessageQueue) Defer(ctx context.Context, messageID string) error {
+	if q.closed.Load() {
+		return fmt.Errorf("message queue is closed")
+	}
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	msg, exists := q.inFlight[messageID]
+	if !exists {
+		return fmt.Errorf("message not in-flight: %s", messageID)
+	}
+	if msg.DequeueCount > 0 {
+		msg.DequeueCount--
+	}
+	msg.Status = QueueMessageStatusPending
+	delete(q.inFlight, messageID)
+
+	// The count is written back with the status: a restart recovers it from
+	// the database.
+	if _, err := q.db.ExecContext(ctx, `
+		UPDATE message_queue
+		SET status = ?, dequeue_count = ?, updated_at = ?
+		WHERE id = ?
+	`, QueueMessageStatusPending, msg.DequeueCount, time.Now().UnixMilli(), messageID); err != nil {
+		q.logger.Warn("Failed to update deferred message in database", zap.Error(err))
+	}
+
+	q.logger.Debug("message deferred",
+		zap.String("message_id", messageID),
+		zap.Int32("dequeue_count", msg.DequeueCount))
+	return nil
+}
+
 // GetQueueDepth returns the number of pending messages for an agent.
 func (q *MessageQueue) GetQueueDepth(agentID string) int {
 	q.mu.RLock()

@@ -90,6 +90,7 @@ type Registry struct {
 	admissionChain    *shuttle.Chain               // Admission hook chain for tool-call admission
 	identityResolver  func(context.Context) string // Resolves AdmissionRequest.UserID from the call context
 	eventLog          eventlog.EventLogStore       // Attached to every agent built from config; nil leaves recording off
+	sessionLeases     eventlog.SessionLeaseStore   // The session lock, held whether or not recording is on
 	artifactStore     interface{}                  // artifacts.Store for workspace tool
 	runLuaTool        *RunLuaToolOptions           // run_lua wiring; nil when tools.lua is disabled
 	luaScripts        *LuaScriptsOptions           // saved-script wiring; nil without a script store
@@ -184,6 +185,9 @@ type RegistryConfig struct {
 	// (WithEventLog), so each records the durable execution log that
 	// ResumeSession needs. Nil leaves recording off.
 	EventLogStore eventlog.EventLogStore
+	// SessionLeaseStore is the session lock: held on every entry into the
+	// conversation loop, whether or not EventLogStore records.
+	SessionLeaseStore eventlog.SessionLeaseStore
 
 	// Agent dependencies (injected by server)
 	PermissionChecker *shuttle.PermissionChecker   // For permission validation
@@ -269,6 +273,7 @@ func NewRegistry(config RegistryConfig) (*Registry, error) {
 		admissionChain:    config.AdmissionChain,
 		identityResolver:  config.IdentityResolver,
 		eventLog:          config.EventLogStore,
+		sessionLeases:     config.SessionLeaseStore,
 		artifactStore:     config.ArtifactStore,
 		runLuaTool:        config.RunLuaTool,
 		luaScripts:        config.LuaScripts,
@@ -1082,6 +1087,9 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 	}
 	if r.eventLog != nil {
 		opts = append(opts, WithEventLog(r.eventLog))
+	}
+	if r.sessionLeases != nil {
+		opts = append(opts, WithSessionLeases(r.sessionLeases))
 	}
 
 	// Create agent with configuration

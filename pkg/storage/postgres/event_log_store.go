@@ -205,6 +205,46 @@ func (s *EventLogStore) execLease(ctx context.Context, query, sessionID, holder 
 	return changed, err
 }
 
+// SessionLeaseHolder is who holds the session's unexpired lease and how long
+// it has left by the database clock, or "" and 0.
+//
+// No session is named "": that call asks only whether the lease table is
+// there, which is how a server finds out at startup, before any user is known.
+// It is answered without a user, reading no row.
+func (s *EventLogStore) SessionLeaseHolder(ctx context.Context, sessionID string) (string, time.Duration, error) {
+	ctx, span := s.tracer.StartSpan(ctx, "pg.event_log.session_lease_holder")
+	defer s.tracer.EndSpan(span)
+
+	if sessionID == "" {
+		err := execInTxNoRLS(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, "SELECT 1 FROM execution_leases LIMIT 0")
+			return err
+		})
+		if err != nil {
+			return "", 0, recordSpanError(span, fmt.Errorf("read session lease holder: %w", err))
+		}
+		return "", 0, nil
+	}
+
+	var holder string
+	var remainingSeconds float64
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		err := tx.QueryRow(ctx,
+			`SELECT holder, EXTRACT(EPOCH FROM (expires_at - now())) FROM execution_leases
+			 WHERE user_id = $1 AND session_id = $2 AND expires_at >= now()`,
+			UserIDFromContext(ctx), sessionID).Scan(&holder, &remainingSeconds)
+		if errors.Is(err, pgx.ErrNoRows) {
+			holder, remainingSeconds = "", 0
+			return nil
+		}
+		return err
+	})
+	if err != nil {
+		return "", 0, recordSpanError(span, fmt.Errorf("read session lease holder: %w", err))
+	}
+	return holder, time.Duration(remainingSeconds * float64(time.Second)), nil
+}
+
 func (s *EventLogStore) ReleaseSessionLease(ctx context.Context, sessionID, holder string) error {
 	ctx, span := s.tracer.StartSpan(ctx, "pg.event_log.release_session_lease")
 	defer s.tracer.EndSpan(span)

@@ -170,6 +170,12 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (_ *Respons
 	// decision, so the turn just continues, exactly like ResumeChat. (The
 	// batch's step may already be pruned, since its rows are durable.)
 	if len(rowless) == 0 {
+		// A batch a tool ended has no reply to wait for: that turn finished
+		// when the tool ended it, and there is nothing to resume.
+		if batchEndedBy(sess) != "" {
+			span.AddEvent("resume_session.turn_ended", nil)
+			return nil, ErrNothingParked
+		}
 		span.AddEvent("resume_session.batch_complete", nil)
 		return a.finishResumedTurn(ctx, agentCtx, sess, handleCollector, &parkedAgain)
 	}
@@ -287,6 +293,31 @@ func (a *Agent) ResumeSession(ctx context.Context, sessionID string) (_ *Respons
 	// are durable.
 	a.pruneStepIfResolved(ctx, sessionID, step, !st.rowNotPersisted)
 
+	// A call of the batch that ended the turn (EndsTurnKey) ends it here,
+	// whether it ran now or before the crash, as on the parked path: the
+	// model is not asked for anything more, and the turn's words are the ones
+	// said with the batch.
+	endedBy := st.endedBy
+	if endedBy == "" {
+		endedBy = batchEndedBy(sess)
+	}
+	if endedBy != "" {
+		span.AddEvent("resume_session.turn_ended", map[string]interface{}{"ended_by": endedBy})
+		response := &Response{
+			Content: batch.Content,
+			Metadata: map[string]interface{}{
+				"turns":           0,
+				"tool_executions": len(rowless),
+				"ended_by":        endedBy,
+			},
+		}
+		a.pruneFinishedTurn(ctx, sessionID, false)
+		if perr := a.memory.PersistSession(ctx, sess); perr != nil {
+			zap.L().Warn("failed to persist session after resume", zap.String("session_id", sessionID), zap.Error(perr))
+		}
+		return response, nil
+	}
+
 	return a.finishResumedTurn(ctx, agentCtx, sess, handleCollector, &parkedAgain)
 }
 
@@ -311,14 +342,20 @@ func (a *Agent) finishResumedTurn(ctx context.Context, agentCtx *agentContext, s
 	// runConversationLoop never appends its own final assistant message, so
 	// every caller must (as Chat and ResumeChat do). Without it the batch
 	// never reaches a terminal state and a second resume would re-run the loop.
-	_, replyPersisted := a.appendMessage(ctx, sess, Message{
-		Role:       "assistant",
-		Content:    response.Content,
-		AgentID:    a.id,
-		Timestamp:  time.Now(),
-		TokenCount: response.Usage.TotalTokens,
-		CostUSD:    response.Usage.CostUSD,
-	}, false)
+	// A turn a tool ended is the exception on every path: it has no final
+	// call, its words were stored with the call that ended it, and that step
+	// was pruned when its rows proved durable.
+	replyPersisted := false
+	if _, ended := response.Metadata["ended_by"]; !ended {
+		_, replyPersisted = a.appendMessage(ctx, sess, Message{
+			Role:       "assistant",
+			Content:    response.Content,
+			AgentID:    a.id,
+			Timestamp:  time.Now(),
+			TokenCount: response.Usage.TotalTokens,
+			CostUSD:    response.Usage.CostUSD,
+		}, false)
+	}
 	a.pruneFinishedTurn(ctx, sess.ID, replyPersisted)
 
 	if perr := a.memory.PersistSession(ctx, sess); perr != nil {
