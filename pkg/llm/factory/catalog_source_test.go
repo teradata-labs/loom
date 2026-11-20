@@ -22,6 +22,7 @@ import (
 	"sync"
 	"testing"
 
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/llm/catalog"
 
 	"github.com/stretchr/testify/assert"
@@ -179,3 +180,29 @@ func TestCatalogSource_ConcurrentLookupsAreSafe(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// RegisterOllamaCatalogSource stacks onto the registered chain instead of
+// replacing it: a source another subsystem registered (the Vercel AI
+// Gateway's catalog) survives it.
+func TestRegisterOllamaCatalogSource_KeepsOtherNamedSources(t *testing.T) {
+	t.Cleanup(func() { catalog.Register(nil) })
+	catalog.Register(nil)
+	other := otherSource{}
+	catalog.RegisterNamed("vercel-ai-gateway", other)
+
+	srv := fakeOllamaTags(t, installedOllamaModels...)
+	require.NoError(t, RegisterOllamaCatalogSource(srv.URL))
+
+	assert.NotNil(t, catalog.Lookup("vercel-ai-gateway", "acme/other-source-model"), "the other source must survive Ollama registration")
+	assert.Equal(t, catalog.TierLocal, catalog.TierOf("ollama", installedOllamaModels[0]))
+}
+
+type otherSource struct{}
+
+func (otherSource) Lookup(_ context.Context, provider, id string) *loomv1.ModelInfo {
+	if provider == "vercel-ai-gateway" && id == "acme/other-source-model" {
+		return &loomv1.ModelInfo{Id: id, Provider: provider}
+	}
+	return nil
+}
+func (otherSource) List(context.Context) map[string][]*loomv1.ModelInfo { return nil }

@@ -68,7 +68,7 @@ Support:
 	rootCmd.PersistentFlags().Bool("reflection", true, "enable gRPC reflection")
 
 	// LLM flags
-	rootCmd.PersistentFlags().String("llm-provider", "anthropic", "LLM provider (anthropic, bedrock, bedrock-mantle, ollama, openai, azure-openai, mistral, gemini, huggingface, litellm)")
+	rootCmd.PersistentFlags().String("llm-provider", "anthropic", "LLM provider (anthropic, bedrock, bedrock-mantle, ollama, openai, azure-openai, mistral, gemini, huggingface, litellm, vercel-ai-gateway)")
 	rootCmd.PersistentFlags().String("anthropic-key", "", "Anthropic API key (or use keyring/env)")
 	rootCmd.PersistentFlags().String("anthropic-model", "claude-sonnet-4-5-20250929", "Anthropic model")
 	rootCmd.PersistentFlags().Float64("temperature", 1.0, "LLM temperature")
@@ -100,7 +100,7 @@ Support:
 			"(shell_execute, workspace, tool_search, graph_memory, task_board). "+
 			"Applies to ALL agents including weaver, so a weaver agent run with this flag will not "+
 			"have shell access to LOOM_DATA_DIR/examples/reference. "+
-			"Lazy/progressive tools (query_tool_result, recall, skill required_tools) "+
+			"Lazy/progressive tools (recall, skill required_tools) "+
 			"still fire when their own conditions trigger. "+
 			"Opt-in only — defaults to false.")
 

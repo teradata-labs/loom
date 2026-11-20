@@ -36,6 +36,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/ollama"
 	"github.com/teradata-labs/loom/pkg/llm/openai"
 	"github.com/teradata-labs/loom/pkg/llm/scheduler"
+	"github.com/teradata-labs/loom/pkg/llm/vercelgateway"
 	"github.com/teradata-labs/loom/pkg/mcp/manager"
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/observability"
@@ -75,6 +76,9 @@ type Registry struct {
 	watcher      *fsnotify.Watcher
 	mcpMgr       *manager.Manager
 	llmProvider  LLMProvider
+	// llmBuilder, when set, builds a per-agent provider (RegistryConfig.LLMProviderBuilder).
+	llmBuilder   func(*loomv1.LLMConfig) (LLMProvider, error)
+	maxTokens    int // the server's llm.max_tokens (WithServerMaxTokens)
 	tracer       observability.Tracer
 	sessionStore SessionStorage         // For persistent agent session traces
 	toolRegistry *toolregistry.Registry // Tool search registry for dynamic tool discovery
@@ -156,14 +160,25 @@ type AgentInstanceInfo struct {
 
 // RegistryConfig configures the agent registry
 type RegistryConfig struct {
-	ConfigDir    string
-	DBPath       string
-	MCPManager   *manager.Manager
-	LLMProvider  LLMProvider
-	Logger       *zap.Logger
-	Tracer       observability.Tracer
-	SessionStore SessionStorage         // For persistent agent session traces
-	ToolRegistry *toolregistry.Registry // Tool search registry for dynamic tool discovery
+	ConfigDir   string
+	DBPath      string
+	MCPManager  *manager.Manager
+	LLMProvider LLMProvider
+	// LLMProviderBuilder, when set, builds the provider for an agent whose
+	// llm block names a provider that is not a pool entry, instead of the
+	// registry's environment-only construction. looms serve sets it to the
+	// same builder its startup path uses, so an agent created or rebuilt at
+	// runtime gets the server's credentials, endpoints and gateway routing,
+	// not only what the environment holds.
+	LLMProviderBuilder func(*loomv1.LLMConfig) (LLMProvider, error)
+	Logger             *zap.Logger
+	Tracer             observability.Tracer
+	SessionStore       SessionStorage         // For persistent agent session traces
+	ToolRegistry       *toolregistry.Registry // Tool search registry for dynamic tool discovery
+
+	// MaxTokens is the server's llm.max_tokens: the max_tokens of an agent
+	// that sets none of its own (WithServerMaxTokens).
+	MaxTokens int
 
 	// EventLogStore, when set, is attached to every agent built from config
 	// (WithEventLog), so each records the durable execution log that
@@ -245,6 +260,8 @@ func NewRegistry(config RegistryConfig) (*Registry, error) {
 		watcher:           watcher,
 		mcpMgr:            config.MCPManager,
 		llmProvider:       config.LLMProvider,
+		llmBuilder:        config.LLMProviderBuilder,
+		maxTokens:         config.MaxTokens,
 		tracer:            config.Tracer,
 		sessionStore:      config.SessionStore,
 		toolRegistry:      config.ToolRegistry,
@@ -633,6 +650,28 @@ func (r *Registry) CreateAgent(ctx context.Context, name string) (*Agent, error)
 	return agent, nil
 }
 
+// WithServerMaxTokens returns config with llm.max_tokens set to what the
+// agent's client sends on a server whose llm.max_tokens is serverMaxTokens:
+// the agent's own when it names a provider and sets one, otherwise the
+// server's. An agent that names no provider runs on the server's client, so
+// the server's replaces whatever it states. Every build of an agent starts
+// here, so the client that is built and the reply reservation read one
+// number. config is not modified; with no server figure it is returned as is.
+func WithServerMaxTokens(config *loomv1.AgentConfig, serverMaxTokens int) *loomv1.AgentConfig {
+	if config == nil || serverMaxTokens <= 0 {
+		return config
+	}
+	if llm := config.GetLlm(); llm.GetProvider() != "" && llm.GetMaxTokens() > 0 {
+		return config
+	}
+	resolved := proto.Clone(config).(*loomv1.AgentConfig)
+	if resolved.Llm == nil {
+		resolved.Llm = &loomv1.LLMConfig{}
+	}
+	resolved.Llm.MaxTokens = int32(serverMaxTokens) // #nosec G115 -- a token count from config
+	return resolved
+}
+
 // RegistryAgentConfig builds the runtime Config of a registry agent:
 // DefaultConfig (LLM retry, self-healing, iteration limit), the behavior
 // limits and pattern config when the config has a behavior block, LLM context
@@ -688,10 +727,11 @@ func RegistryAgentConfig(config *loomv1.AgentConfig, skillsConfig *skills.Skills
 			int(config.Llm.MaxTokens), int(config.Llm.ReservedOutputTokens),
 			int(config.Llm.MaxContextTokens),
 		)
+		agentConfig.MaxModelContextTokens = int(config.Llm.MaxModelContextTokens)
+		agentConfig.MaxTokens = int(config.Llm.MaxTokens)
 	}
 	agentConfig.EnableSelfHealing = config.Metadata["_enable_self_healing"] != "false"
 	agentConfig.ToolChangeNote = config.Metadata["_tool_change_note"] == "true"
-	agentConfig.ContextReliefWarning = config.Metadata["_context_relief_warning"] == "true"
 	ApplyMetadataBehavior(agentConfig, config.Metadata)
 	agentConfig.RecoveryConfig = repeatHintRecoveryConfig(config.Metadata)
 	if skillsConfig == nil {
@@ -739,6 +779,8 @@ func (r *Registry) resolveSkillsConfig(config *loomv1.AgentConfig) *skills.Skill
 
 // buildAgent creates an agent instance from proto configuration
 func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (*Agent, error) {
+	config = WithServerMaxTokens(config, r.maxTokens)
+
 	// Decision layer config is validated here as well as in
 	// ValidateAgentConfig: RegisterConfig accepts a config without
 	// validating it, and an agent-chosen decider endpoint must fail the
@@ -774,10 +816,15 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 		WithName(config.Name),
 	}
 
-	// Create role-specific LLM providers (graceful degradation: warn on error, fallback to main LLM)
+	// Create role-specific LLM providers (graceful degradation: warn on error,
+	// fall back to the main LLM), except for providers that refuse a fallback
+	// (LLMProviderAllowsFallback), which fail the build.
 	if config.JudgeLlm != nil && config.JudgeLlm.Provider != "" {
 		judgeLLM, err := r.createLLMProvider(config.JudgeLlm)
 		if err != nil {
+			if !LLMProviderAllowsFallback(config.JudgeLlm.Provider) {
+				return nil, fmt.Errorf("judge_llm: provider %s does not allow a fallback LLM: %w", config.JudgeLlm.Provider, err)
+			}
 			r.logger.Warn("Failed to create judge LLM provider, falling back to main LLM",
 				zap.String("agent", config.Name),
 				zap.String("provider", config.JudgeLlm.Provider),
@@ -793,6 +840,9 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 	if config.OrchestratorLlm != nil && config.OrchestratorLlm.Provider != "" {
 		orchLLM, err := r.createLLMProvider(config.OrchestratorLlm)
 		if err != nil {
+			if !LLMProviderAllowsFallback(config.OrchestratorLlm.Provider) {
+				return nil, fmt.Errorf("orchestrator_llm: provider %s does not allow a fallback LLM: %w", config.OrchestratorLlm.Provider, err)
+			}
 			r.logger.Warn("Failed to create orchestrator LLM provider, falling back to main LLM",
 				zap.String("agent", config.Name),
 				zap.String("provider", config.OrchestratorLlm.Provider),
@@ -812,6 +862,9 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 	if config.ClassifierLlm != nil && config.ClassifierLlm.Provider != "" {
 		classLLM, err := r.createLLMProvider(config.ClassifierLlm)
 		if err != nil {
+			if !LLMProviderAllowsFallback(config.ClassifierLlm.Provider) {
+				return nil, fmt.Errorf("classifier_llm: provider %s does not allow a fallback LLM: %w", config.ClassifierLlm.Provider, err)
+			}
 			r.logger.Warn("Failed to create classifier LLM provider, falling back to main LLM",
 				zap.String("agent", config.Name),
 				zap.String("provider", config.ClassifierLlm.Provider),
@@ -828,6 +881,9 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 	if config.CompressorLlm != nil && config.CompressorLlm.Provider != "" {
 		compLLM, err := r.createLLMProvider(config.CompressorLlm)
 		if err != nil {
+			if !LLMProviderAllowsFallback(config.CompressorLlm.Provider) {
+				return nil, fmt.Errorf("compressor_llm: provider %s does not allow a fallback LLM: %w", config.CompressorLlm.Provider, err)
+			}
 			r.logger.Warn("Failed to create compressor LLM provider, falling back to main LLM",
 				zap.String("agent", config.Name),
 				zap.String("provider", config.CompressorLlm.Provider),
@@ -1291,6 +1347,9 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 	if config.Provider == "" {
 		return nil, fmt.Errorf("no LLM provider specified in config")
 	}
+	if r.llmBuilder != nil {
+		return r.llmBuilder(config)
+	}
 
 	r.logger.Info("Creating per-agent LLM provider",
 		zap.String("provider", config.Provider),
@@ -1345,6 +1404,24 @@ func (r *Registry) createLLMProvider(config *loomv1.LLMConfig) (LLMProvider, err
 			Model:             config.Model,
 			MaxTokens:         int(config.MaxTokens),
 			Temperature:       float64(config.Temperature),
+			RateLimiterConfig: rlCfg,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return client, nil
+
+	case vercelgateway.ProviderName, vercelgateway.ProviderAlias:
+		// Credentials from the environment, as for every provider on this path:
+		// LOOM_LLM_VERCEL_GATEWAY_API_KEY, then AI_GATEWAY_API_KEY; the
+		// endpoint from VERCEL_AI_GATEWAY_ENDPOINT (empty = global host).
+		client, err := vercelgateway.NewClient(vercelgateway.Config{
+			Endpoint:          os.Getenv("VERCEL_AI_GATEWAY_ENDPOINT"),
+			APIKey:            vercelgateway.ResolveAPIKey(""),
+			Model:             config.Model,
+			MaxTokens:         int(config.MaxTokens),
+			Temperature:       float64(config.Temperature),
+			Routing:           vercelgateway.RoutingFromProto(config.GatewayRouting),
 			RateLimiterConfig: rlCfg,
 		})
 		if err != nil {

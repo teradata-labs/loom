@@ -29,6 +29,7 @@ type Session struct {
 	CompletionTokens  int
 	PromptTokens      int
 	Cost              float64
+	CostEstimated     bool // Cost includes an estimate (shown with an asterisk); live only, not persisted
 	Todos             []Todo
 	Model             string // Model used in this session (e.g., "claude-sonnet-4-6")
 	Provider          string // Provider used in this session (e.g., "anthropic")
@@ -50,6 +51,8 @@ func (s Session) Merge(update Session) Session {
 	if update.Cost > 0 {
 		result.Cost = update.Cost
 	}
+	// Once any turn of the session was estimated, the cumulative cost is.
+	result.CostEstimated = result.CostEstimated || update.CostEstimated
 	if update.Model != "" {
 		result.Model = update.Model
 	}

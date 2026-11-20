@@ -128,16 +128,11 @@ func OllamaCatalogSource(endpoint string) (catalog.Source, error) {
 // activate on real Ollama models.
 //
 // This is opt-in and performs one HTTP request; call it once during startup of a
-// process that wants live Ollama metadata. It replaces the registered source
-// with catalog.MultiSource{discovered, catalog.StaticSource()} rather than
-// wrapping whatever is already registered, so repeated calls re-discover instead
-// of growing an ever-longer chain. A caller that has its own source to preserve
-// should use OllamaCatalogSource and build the chain itself:
-//
-//	src, err := factory.OllamaCatalogSource("")
-//	if err == nil {
-//	    catalog.Register(catalog.MultiSource{src, myDBSource, catalog.StaticSource()})
-//	}
+// process that wants live Ollama metadata. It registers the discovered source
+// under the name OllamaCatalogSourceName with catalog.RegisterNamed, ahead of
+// whatever base source is registered: repeated calls replace the Ollama entry
+// instead of growing the chain, and other named sources (the Vercel AI
+// Gateway's catalog) stay in place.
 //
 // On error nothing is registered and the previous source stays in place, so a
 // machine without Ollama keeps the built-in catalog.
@@ -146,6 +141,10 @@ func RegisterOllamaCatalogSource(endpoint string) error {
 	if err != nil {
 		return err
 	}
-	catalog.Register(catalog.MultiSource{src, catalog.StaticSource()})
+	catalog.RegisterNamed(OllamaCatalogSourceName, src)
 	return nil
 }
+
+// OllamaCatalogSourceName is the catalog.RegisterNamed key of the discovered
+// Ollama source.
+const OllamaCatalogSourceName = "ollama"

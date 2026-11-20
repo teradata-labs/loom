@@ -356,7 +356,7 @@ func TestWorkflowCreateLLMProvider_BedrockMantleAPIKeyFromEnv(t *testing.T) {
 				BedrockMantleModel:    "openai.gpt-oss-120b",
 			}}
 
-			p, label := createLLMProvider()
+			p, label := createLLMProvider(zap.NewNop())
 			require.Equal(t, "AWS Bedrock Mantle (config)", label)
 			client, ok := p.(*bedrockmantle.Client)
 			require.True(t, ok, "expected *bedrockmantle.Client, got %T", p)

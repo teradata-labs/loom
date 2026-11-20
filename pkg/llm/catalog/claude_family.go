@@ -37,7 +37,7 @@ import (
 // — "claude-opus-5-5" before "claude-opus-5", "claude-opus-4-1" before the
 // generic "claude-opus", "claude-sonnet-5" before the generic "claude-sonnet".
 func ClaudeFamilyPricing(modelID string) (inputPer1M, outputPer1M float64, matched bool) {
-	id := strings.ToLower(modelID)
+	id := NormalizeClaudeID(modelID)
 	switch {
 	case strings.Contains(id, "claude-fable"), strings.Contains(id, "claude-mythos"):
 		return 10.0, 50.0, true // Fable 5 / 5.1 (and the Mythos counterparts)
@@ -75,6 +75,20 @@ func ClaudeFamilyPricing(modelID string) (inputPer1M, outputPer1M float64, match
 	return 0, 0, false
 }
 
+// NormalizeClaudeID lower-cases a model id and spells version separators as
+// hyphens, so the family matchers in this file read every vendor's spelling
+// of a Claude id the same way: Anthropic's "claude-opus-5-5", Bedrock's
+// "us.anthropic.claude-opus-5-5-v1:0" and the Vercel AI Gateway's dotted
+// "anthropic/claude-opus-5.5". Without it a dotted id falls through to a
+// broader case ("claude-opus-5.5" contains "claude-opus-5") and is priced as
+// a different model.
+//
+// The result is for matching only, never for sending: a Bedrock id's "us."
+// prefix becomes "us-", which BedrockEndpointMultiplier must not see.
+func NormalizeClaudeID(modelID string) string {
+	return strings.ReplaceAll(strings.ToLower(modelID), ".", "-")
+}
+
 // Cache-tier multipliers on a Claude model's base input rate.
 const (
 	ClaudeCacheWriteMultiplier = 1.25 // 5-minute cache write, every Claude model
@@ -86,7 +100,7 @@ const (
 // and Mythos 5.1, 0.05x on Opus 5.5 and Sonnet 5.5, and 0.10x on every other
 // Claude model (including Fable 5 / Mythos 5).
 func ClaudeCacheReadMultiplier(modelID string) float64 {
-	id := strings.ToLower(modelID)
+	id := NormalizeClaudeID(modelID)
 	switch {
 	case strings.Contains(id, "claude-fable-5-1"), strings.Contains(id, "claude-mythos-5-1"):
 		return 0.025
@@ -113,7 +127,7 @@ func ClaudeLongContextPricing(modelID string, promptTokens int) (inputPer1M, out
 	if promptTokens <= claudeLongContextThreshold {
 		return 0, 0, false
 	}
-	if strings.Contains(strings.ToLower(modelID), "claude-haiku-5-5") {
+	if strings.Contains(NormalizeClaudeID(modelID), "claude-haiku-5-5") {
 		return 0.50, 2.50, true
 	}
 	return 0, 0, false
