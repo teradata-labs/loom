@@ -14,7 +14,8 @@
 package observability
 
 import (
-	"fmt"
+	"encoding/json"
+	"errors"
 	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -115,30 +116,57 @@ func translateAttrs(otelSpan oteltrace.Span, attrs map[string]interface{}) {
 		} else if !strings.HasPrefix(k, loomAttrPrefix) {
 			otelKey = loomAttrPrefix + k
 		}
-		otelSpan.SetAttributes(toOTelAttr(otelKey, v))
+		attr, err := toOTelAttr(otelKey, v)
+		if err != nil {
+			reportInvalidAttribute("span", v)
+			continue
+		}
+		otelSpan.SetAttributes(attr)
 	}
 }
 
 // toOTelAttr converts a value to a typed OTel attribute.KeyValue.
-func toOTelAttr(key string, v interface{}) attribute.KeyValue {
+func toOTelAttr(key string, v interface{}) (attribute.KeyValue, error) {
 	switch val := v.(type) {
 	case string:
-		return attribute.String(key, val)
+		return attribute.String(key, val), nil
 	case int:
-		return attribute.Int64(key, int64(val))
+		return attribute.Int64(key, int64(val)), nil
 	case int32:
-		return attribute.Int64(key, int64(val))
+		return attribute.Int64(key, int64(val)), nil
 	case int64:
-		return attribute.Int64(key, val)
+		return attribute.Int64(key, val), nil
 	case float32:
-		return attribute.Float64(key, float64(val))
+		if _, err := marshalAttributeJSON(val); err != nil {
+			return attribute.KeyValue{}, err
+		}
+		return attribute.Float64(key, float64(val)), nil
 	case float64:
-		return attribute.Float64(key, val)
+		if _, err := marshalAttributeJSON(val); err != nil {
+			return attribute.KeyValue{}, err
+		}
+		return attribute.Float64(key, val), nil
 	case bool:
-		return attribute.Bool(key, val)
+		return attribute.Bool(key, val), nil
+	case []string:
+		return attribute.StringSlice(key, val), nil
 	default:
-		return attribute.String(key, fmt.Sprintf("%v", val))
+		encoded, err := marshalAttributeJSON(val)
+		if err != nil {
+			return attribute.KeyValue{}, err
+		}
+		return attribute.String(key, string(encoded)), nil
 	}
+}
+
+func marshalAttributeJSON(v interface{}) (encoded []byte, err error) {
+	defer func() {
+		if recover() != nil {
+			encoded = nil
+			err = errors.New("attribute JSON encoding panicked")
+		}
+	}()
+	return json.Marshal(v)
 }
 
 // spanKindFor returns the OTel SpanKind for a given Loom span name.

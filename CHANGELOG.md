@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### OTLP credential redaction and bounded preview helpers (#643)
+- When enabled by `PrivacyConfig`, OTLP export drops recognized credential keys and redacts matching credential and PII patterns in span and event attributes, supported nested values, and the status message. Uninspectable values, including potentially serialized nonempty byte slices and arrays, are omitted and reported; allowed and resource attributes bypass the pass. Hawk shares the credential-key rule but has different nested-value coverage.
+- `RedactPreview` and `RedactPreviewWhole` redact a 4,096-rune window before retaining up to 200 redacted runes, plus an ellipsis if the redacted window is longer. Redaction uses at most eight passes and fails closed if the eighth changes the text. Callers must opt in; the existing agent/LLM preview call sites are not changed here.
+- Pattern matching does not find every secret or PII value. Export redaction does not change local `eval_runs` records or supply the `GetTrace` owner check tracked in #601.
+
 #### Arize Phoenix: example config, guide and OTLP receiver test (#642)
 - **`examples/config/otlp-phoenix.yaml`** exports to a local Phoenix (`http://127.0.0.1:6006/v1/traces`) and selects the Phoenix project with `otlp_headers.x-project-name`. Loom listens on the loopback address and the tool policy offers no tools (`yolo: false`, `require_approval: true`, `allowed_tools: []`, `default_action: deny`). It uses only existing config keys and holds no credentials.
 - **Guide `docs/guides/integration/phoenix-observability.md`** covers the quick start, how to find a turn's span in the Phoenix UI or through `GET /v1/projects/{project}/spans`, the security notes (overrides of the tool policy, plaintext HTTP on loopback only, sensitive trace content, Phoenix's port 4317) and troubleshooting. It also lists which Phoenix views are not yet correct and the issue planned for each.

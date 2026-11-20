@@ -23,3 +23,10 @@ var (
 	ssnPattern        = regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`)
 	creditCardPattern = regexp.MustCompile(`\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b`)
 )
+
+func redactPIIString(s string) string {
+	s = emailPattern.ReplaceAllString(s, "[EMAIL_REDACTED]")
+	s = phonePattern.ReplaceAllString(s, "[PHONE_REDACTED]")
+	s = ssnPattern.ReplaceAllString(s, "[SSN_REDACTED]")
+	return creditCardPattern.ReplaceAllString(s, "[CARD_REDACTED]")
+}

@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -350,31 +349,31 @@ func (t *HawkTracer) redact(span *Span) *Span {
 		allowed[key] = true
 	}
 
-	// Redact credential keys (remove entire attribute)
+	// Redact credential keys and recognized credentials in text.
 	if t.config.Privacy.RedactCredentials {
-		credentialKeys := []string{
-			"password", "api_key", "token", "secret", "authorization",
-			"access_token", "refresh_token", "bearer", "apikey",
-			"client_secret", "private_key", "ssh_key", "aws_secret",
-		}
-		for _, key := range credentialKeys {
-			if !allowed[key] {
+		for key, value := range span.Attributes {
+			if allowed[key] {
+				continue
+			}
+			if isCredentialField(key) {
 				delete(span.Attributes, key)
+			} else if text, ok := value.(string); ok {
+				span.Attributes[key] = redactCredentialString(text)
 			}
 		}
-
-		// Also check for credential patterns in attribute keys
-		for key := range span.Attributes {
-			keyLower := strings.ToLower(key)
-			if !allowed[key] {
-				if strings.Contains(keyLower, "password") ||
-					strings.Contains(keyLower, "secret") ||
-					strings.Contains(keyLower, "token") ||
-					strings.Contains(keyLower, "key") && strings.Contains(keyLower, "api") {
-					delete(span.Attributes, key)
+		for i := range span.Events {
+			for key, value := range span.Events[i].Attributes {
+				if allowed[key] {
+					continue
+				}
+				if isCredentialField(key) {
+					delete(span.Events[i].Attributes, key)
+				} else if text, ok := value.(string); ok {
+					span.Events[i].Attributes[key] = redactCredentialString(text)
 				}
 			}
 		}
+		span.Status.Message = redactCredentialString(span.Status.Message)
 	}
 
 	// Redact PII patterns from attribute values

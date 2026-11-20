@@ -47,7 +47,10 @@ observability:
   # fallback even without an endpoint override. Unset these variables to use
   # this file's settings.
   #
-  # Traces can contain prompts, responses and tool data. Use synthetic input.
+  # looms serve applies best-effort credential and PII redaction before OTLP
+  # export, but patterns can miss secrets and resource attributes are outside
+  # that pass. Traces can contain prompts, responses and tool data. Use
+  # synthetic input.
 
 storage:
   backend: sqlite

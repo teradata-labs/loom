@@ -23,9 +23,9 @@ Loom's OTLP/HTTP exporter (`observability.mode: otel`) can send traces to [Arize
 - Export to a local Phoenix with `otlp_endpoint: http://127.0.0.1:6006/v1/traces`
 - Project routing through `otlp_headers.x-project-name`
 - A receiver test (`TestOTelTracerExportsToOTLPReceiver` in `pkg/observability/otel_test.go`) that checks the request path, the project header and the decoded span payload, and that `mode: none` sends nothing
+- Best-effort OTLP redaction and bounded redacted-preview helpers ([#643](https://github.com/teradata-labs/loom/issues/643)); existing agent and LLM preview call sites have not yet switched to those helpers
 
 📋 Planned (Phoenix views that are not yet correct):
-- Content redaction and bounded previews for exported attributes ([#643](https://github.com/teradata-labs/loom/issues/643))
 - OpenInference span kinds and token counts, so Phoenix labels LLM, tool and agent spans ([#644](https://github.com/teradata-labs/loom/issues/644))
 - LLM and tool inputs and outputs in Phoenix's input/output panes ([#645](https://github.com/teradata-labs/loom/issues/645))
 - Exported OTel IDs on Loom spans and session grouping ([#646](https://github.com/teradata-labs/loom/issues/646))
@@ -146,7 +146,7 @@ Expected output: `1 server.Weave span(s) for phoenix-smoke-<id>`.
 
 **Plaintext HTTP on loopback only.** `otlp_insecure: true` with an `http://` endpoint sends traces unencrypted. Keep it on `127.0.0.1`. For a remote Phoenix use an `https://` endpoint and `otlp_insecure: false`. The example also binds Loom's own gRPC and HTTP servers to `127.0.0.1`.
 
-**Traces can contain sensitive data.** Exported spans can hold prompts, responses, tool arguments and results, and error messages. With `mode: otel`, `looms serve` drops credential-named attributes and masks email, phone, SSN and card-number patterns in string attributes, but that is not a privacy guarantee: other values, including span status messages, are exported as they are. Full redaction and content bounds are planned in [#643](https://github.com/teradata-labs/loom/issues/643). Use synthetic input and inspect what Phoenix stored before sending real data.
+**Traces can contain sensitive data.** Exported spans can hold prompts, responses, tool arguments and results, and error messages. With `mode: otel`, `looms serve` drops recognized credential-named span and event attributes and masks matching credential, email, phone, SSN and card-number patterns in supported values and status messages. Resource attributes are outside this pass, and allowlisted attributes bypass it. Patterns can miss secrets or PII, and existing preview call sites do not yet use the redacted-preview helpers. Use synthetic input and inspect what Phoenix stored before sending real data.
 
 **Phoenix's OTLP/gRPC port 4317.** Phoenix also runs an OTLP/gRPC receiver on port 4317. With Docker, it is not reachable from outside the container unless you publish it (`-p`); the command above publishes only 6006, on `127.0.0.1`. With pip, `PHOENIX_HOST` moves only the HTTP listener: in the [verification record](#verification-record) run, 6006 was on `127.0.0.1` and 4317 on `::` (every interface). Check the bind after starting Phoenix:
 
