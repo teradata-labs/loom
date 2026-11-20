@@ -198,6 +198,58 @@ func TestPinTurnNotes_PendingTailSkipsPinnedNotes(t *testing.T) {
 	sm.mu.RUnlock()
 }
 
+// TestPinTurnNotes_TailOncePerValuePerTurn (review round 3, F6): the caller
+// tail (WithTransientTail) is live state sampled per call, but the request
+// only grows within a turn, so a tail is sent once per distinct value: a call
+// whose tail equals the turn's latest pinned tail adds no note, a changed
+// value pins a new one, and a value the turn pinned earlier but replaced pins
+// again — the latest tail note must always carry the current value, so the
+// model never acts on stale state.
+func TestPinTurnNotes_TailOncePerValuePerTurn(t *testing.T) {
+	ctx := context.Background()
+	sm := NewSegmentedMemory("ROM", 200000, 20000)
+	sm.AddMessage(ctx, Message{Role: "user", Content: "q1", Turn: 1})
+
+	notes := func() []string {
+		var out []string
+		for _, m := range sm.GetMessagesForLLM() {
+			if IsSystemReminder(m) {
+				out = append(out, strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(m.Content, "<system-reminder>\n"), "</system-reminder>")))
+			}
+		}
+		return out
+	}
+	pin := func(text string) { sm.PinTurnNotes(TurnReminder{Tail: true, Text: text}) }
+	step := func() { sm.AddMessage(ctx, Message{Role: "assistant", Content: "a", Turn: 1}) }
+
+	pin("A")
+	assert.Equal(t, []string{"A"}, notes())
+	step()
+	pin("A")
+	assert.Equal(t, []string{"A"}, notes(), "unchanged state is not sent again")
+	step()
+	pin("B")
+	assert.Equal(t, []string{"A", "B"}, notes(), "a changed value pins a new note")
+	step()
+	pin("A")
+	assert.Equal(t, []string{"A", "B", "A"}, notes(),
+		"a value the turn replaced pins again: the latest tail note must carry the current value")
+
+	// A resend of the same call (no new row since) sends nothing again.
+	pin("A")
+	assert.Len(t, notes(), 3)
+
+	// The pending relief estimate skips a tail equal to the latest pinned one.
+	sm.SetTransientTail(TurnReminder{Tail: true, Text: "A"})
+	sm.mu.RLock()
+	assert.Empty(t, sm.transientTail, "the latest pinned tail is not pending again")
+	sm.mu.RUnlock()
+	sm.SetTransientTail(TurnReminder{Tail: true, Text: "C"})
+	sm.mu.RLock()
+	assert.Equal(t, systemReminderContent("C"), sm.transientTail, "a changed value is pending until pinned")
+	sm.mu.RUnlock()
+}
+
 // TestTurnNotes_SettledThinkingNotReplayedAfterToolChange (review F4, Q1
 // wiring): a settled turn's thinking block is replayed while the request
 // identity is unchanged, and not once the advertised tool set changes between
@@ -416,4 +468,84 @@ func TestTurnNotes_ToolBudgetReminderOncePerTurnInLoop(t *testing.T) {
 	}
 	assert.Equal(t, 1, reminders, "one tool-budget reminder per turn")
 	assert.Equal(t, 1, rows)
+}
+
+// TestTransientTail_CountedInReliefEstimate (review Q1, agent level): the
+// caller tail is sampled once per provider call and made pending for the
+// relief pass before the send, and pinning at the send clears it — the tail
+// counts once as pending, then as a compiled message. Since fn now runs once
+// per provider call, before SetTransientTail, it observes an empty pending
+// tail on every call: nothing is left pending across sends. The
+// estimate-counts-the-pending-tail property itself is pinned at unit level
+// (TestPinTurnNotes_PendingTailSkipsPinnedNotes,
+// TestPinTurnNotes_TailOncePerValuePerTurn) and for the shared SetTransientTail
+// seam by TestTurnNotes_ReliefCountsRecallNoteBeforeFirstSend.
+func TestTransientTail_CountedInReliefEstimate(t *testing.T) {
+	sid := "tail_relief"
+	var seg *SegmentedMemory
+	var pendingAtFn []string
+	var ag *Agent
+	llm := &recordingToolLLM{mockToolCallingLLM: &mockToolCallingLLM{
+		responses: []mockLLMResponse{
+			{toolCalls: []llmtypes.ToolCall{{ID: "c1", Name: "stub", Input: map[string]interface{}{}}}},
+			{content: "done"},
+		},
+	}}
+	ag = NewAgent(&mockBackend{}, llm,
+		WithConfig(&Config{MaxTurns: 10, MaxToolExecutions: 10, MaxIterations: 10}),
+		WithTransientTail(func(context.Context) string {
+			if s, ok := ag.GetSession(sid); ok {
+				seg, _ = s.SegmentedMem.(*SegmentedMemory)
+			}
+			if seg != nil {
+				seg.mu.RLock()
+				pendingAtFn = append(pendingAtFn, seg.transientTail)
+				seg.mu.RUnlock()
+			}
+			return "live-state"
+		}))
+	ag.RegisterTool(namedStubTool{name: "stub"})
+
+	_, err := ag.Chat(context.Background(), sid, "go")
+	require.NoError(t, err)
+
+	require.NotNil(t, seg)
+	assert.Equal(t, []string{"", ""}, pendingAtFn,
+		"fn runs once per provider call and nothing is left pending across sends")
+	seg.mu.RLock()
+	assert.Empty(t, seg.transientTail, "pinning cleared the pending tail at the send")
+	seg.mu.RUnlock()
+}
+
+// TestPinTurnNotes_ResendWithChangedTailPinsNewNote (review Q5): a resend
+// whose caller tail changed pins a second note — one per distinct text, in
+// send order, each after the rows so far — so the request only grows and the
+// first note stays in front of the replayed thinking. A resend with unchanged
+// text sends nothing again.
+func TestPinTurnNotes_ResendWithChangedTailPinsNewNote(t *testing.T) {
+	ctx := context.Background()
+	sm := NewSegmentedMemory("ROM", 200000, 20000)
+	sm.AddMessage(ctx, Message{Role: "user", Content: "q1", Turn: 1})
+	sm.AddMessage(ctx, Message{Role: "assistant", ToolCalls: []ToolCall{{ID: "c1", Name: "t"}}, Turn: 1})
+	sm.AddMessage(ctx, Message{Role: "tool", ToolUseID: "c1", Content: "r1", Turn: 1})
+
+	notes := func() []string {
+		var out []string
+		for _, m := range sm.GetMessagesForLLM() {
+			if IsSystemReminder(m) {
+				out = append(out, strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(m.Content, "<system-reminder>\n"), "</system-reminder>")))
+			}
+		}
+		return out
+	}
+
+	sm.PinTurnNotes(TurnReminder{Text: "tail one"})
+	// The resend: no new row since, changed text.
+	sm.PinTurnNotes(TurnReminder{Text: "tail two"})
+	assert.Equal(t, []string{"tail one", "tail two"}, notes(),
+		"one note per distinct text, in send order")
+
+	// Another resend with unchanged text sends nothing again.
+	sm.PinTurnNotes(TurnReminder{Text: "tail two"})
+	assert.Len(t, notes(), 2, "an unchanged resend is deduped by text")
 }

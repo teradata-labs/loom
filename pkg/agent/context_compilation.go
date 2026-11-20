@@ -35,10 +35,14 @@ import (
 )
 
 // summaryState is L2 — the session summary: ONE cumulative text, persisted as
-// version rows; the newest version is the summary (HLD §2, §5.4).
+// version rows; the newest version is the summary (HLD §2, §5.4). labels is
+// the join (labelJoin, default per-key lexicographically greater) of the
+// labels of every message the summary replaced; it rides the summary message
+// the compile emits. In-memory only: a restored summary carries no labels.
 type summaryState struct {
-	n    int
-	text string
+	n      int
+	text   string
+	labels map[string]string
 }
 
 // summaryRowPrefix opens the compiled summary row; the trigger's estimate
@@ -115,9 +119,11 @@ func (sm *SegmentedMemory) compilePrefixLocked(msgs []Message, t int64, fingerpr
 	// lastStable/till-NOW markers like any other row, and a fold invalidates
 	// from HERE down — ROM and the tool schemas stay cached across folds.
 	if sm.summary.text != "" {
+		// The replaced messages' labels ride the summary message (WithMessageLabeler).
 		push(Message{Role: "user",
 			Content: summaryRowPrefix + sm.summary.text +
-				"\n\nExact values quoted in this summary (expected outputs, literals, paths, interfaces) are unverified — the summary may restate them imprecisely. Before relying on one, read it from its source.\n</system-reminder>"})
+				"\n\nExact values quoted in this summary (expected outputs, literals, paths, interfaces) are unverified — the summary may restate them imprecisely. Before relying on one, read it from its source.\n</system-reminder>",
+			Labels: sm.summary.labels})
 	}
 
 	// Render cases + pair atomicity. Track the message cache breakpoint: the
@@ -1130,6 +1136,12 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 
 	n1 := sm.summary.n + 1
 
+	// The replaced messages' labels ride the summary (WithMessageLabeler):
+	// joined over the region in context order, on top of the summary's own
+	// labels, so a label survives every fold that drops its message. In-memory
+	// only — a summary restored from the store carries no labels.
+	joined := sm.joinLabelsLocked(sm.summary.labels, region)
+
 	// One transaction: the version insert and the region's folded flags
 	// (§5.4.6). A failed insert fails the step — never a fold that evaporates
 	// on reload.
@@ -1158,7 +1170,7 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 	// the folded region from L1 — the recompile that follows must see
 	// post-stage state without a re-read (folded rows are filtered at the
 	// database read on reload).
-	sm.summary = summaryState{n: n1, text: newText}
+	sm.summary = summaryState{n: n1, text: newText, labels: joined}
 	remaining := make([]Message, 0, len(protected)+len(sm.contextMessages)-count)
 	remaining = append(remaining, protected...)
 	remaining = append(remaining, sm.contextMessages[count:]...)
@@ -1395,9 +1407,16 @@ func (sm *SegmentedMemory) noteFoldedSkillsLocked(region, stays []Message, text 
 // the same text was already pinned since the turn's last new row, which is the
 // resend of a refused call. The same text on a later step is a new event (a
 // tool added again after relief removed it) and is sent again.
+//
+// Tail marks the caller transient tail (WithTransientTail): live state the
+// agent samples on every provider call. The request only grows within a turn
+// (PinTurnNotes), so it is not re-sent per call: a call whose tail equals the
+// turn's latest pinned tail adds no note, a changed value pins a new one, and
+// earlier values stay visible until the turn settles.
 type TurnReminder struct {
 	Kind string
 	Text string
+	Tail bool
 }
 
 // Reminder kinds the agent sends at most once per turn (TurnReminder.Kind).
@@ -1411,6 +1430,9 @@ const (
 // its text. A kind is matched against the whole turn, an event note only
 // against the notes pinned since the last new row (unsentRemindersLocked).
 func (r TurnReminder) key() string {
+	if r.Tail {
+		return "tail:" + r.Text
+	}
 	if r.Kind != "" {
 		return "kind:" + r.Kind
 	}
@@ -1420,20 +1442,38 @@ func (r TurnReminder) key() string {
 // unsentRemindersLocked returns the reminders of rs, trimmed, that turn t
 // has not sent yet, each key once: a status kind sent anywhere in the turn is
 // skipped, an event note only when a note pinned since the last new row
-// (same arrivals) carries the same text. Must hold lock.
+// (same arrivals) carries the same text. The caller tail (TurnReminder.Tail)
+// is skipped while it equals the turn's latest pinned tail (TurnReminder doc).
+// Must hold lock.
 func (sm *SegmentedMemory) unsentRemindersLocked(t int64, rs []TurnReminder) []TurnReminder {
+	notes := sm.turnNotesLocked(t)
 	sent := make(map[string]bool)
-	for _, n := range sm.turnNotesLocked(t) {
+	for _, n := range notes {
 		for _, k := range n.keys {
 			if strings.HasPrefix(k, "kind:") || n.arrivals == sm.arrivals {
 				sent[k] = true
 			}
 		}
 	}
+	latestTail := ""
+	for i := len(notes) - 1; i >= 0; i-- {
+		for _, k := range notes[i].keys {
+			if strings.HasPrefix(k, "tail:") {
+				latestTail = strings.TrimPrefix(k, "tail:")
+				break
+			}
+		}
+		if latestTail != "" {
+			break
+		}
+	}
 	var out []TurnReminder
 	for _, r := range rs {
 		r.Text = strings.TrimSpace(r.Text)
 		if r.Text == "" || sent[r.key()] {
+			continue
+		}
+		if r.Tail && r.Text == latestTail {
 			continue
 		}
 		sent[r.key()] = true
@@ -1476,9 +1516,9 @@ type turnNote struct {
 
 // PinTurnNotes records the reminders the agent is about to send on a
 // provider call. Reminders the turn already sent are skipped (TurnReminder:
-// a status kind once per turn, an event note once per step), and the rest
-// become one <system-reminder> user message that compile emits at this
-// position for the rest of the turn.
+// a status kind once per turn, an event note once per step, the caller tail
+// once per distinct value), and the rest become one <system-reminder> user
+// message that compile emits at this position for the rest of the turn.
 //
 // The reminder can't be a tail that each call appends and the next one
 // drops: the model's thinking blocks of this turn were written after it, and
@@ -1551,6 +1591,24 @@ func (sm *SegmentedMemory) SetSkillDeactivationHook(fn func(sessionID, skillName
 	sm.skillDeactivation = fn
 }
 
+// SetMessageLabeler wires the per-message labeler (WithMessageLabeler): fn
+// runs at the arrival seam and on the restore replay, and its result is
+// stored on the message entering L1.
+func (sm *SegmentedMemory) SetMessageLabeler(fn func(*Message) map[string]string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.messageLabeler = fn
+}
+
+// SetLabelJoin wires the join used when a fold's summary replaces labelled
+// messages. Nil restores the default (per key, the lexicographically greater
+// value).
+func (sm *SegmentedMemory) SetLabelJoin(fn func(a, b map[string]string) map[string]string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.labelJoin = fn
+}
+
 // setSummary installs a restored summary version (reload, HLD §8).
 func (sm *SegmentedMemory) setSummary(n int, text string) {
 	sm.mu.Lock()
@@ -1559,4 +1617,44 @@ func (sm *SegmentedMemory) setSummary(n int, text string) {
 	sm.cachedL2Tokens = sm.tokenCounter.CountTokens(text)
 	sm.updateTokenCount()
 	sm.tokenCountDirty = false
+}
+
+// defaultLabelJoin is WithLabelJoin's default: for each key present in either
+// map, the lexicographically greater value wins. Nil maps join as empty maps.
+func defaultLabelJoin(a, b map[string]string) map[string]string {
+	if len(a) == 0 {
+		return b
+	}
+	if len(b) == 0 {
+		return a
+	}
+	out := make(map[string]string, len(a)+len(b))
+	for k, v := range a {
+		out[k] = v
+	}
+	for k, v := range b {
+		if cur, ok := out[k]; !ok || v > cur {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// joinLabelsLocked folds a label-map sequence into one with the configured
+// join (defaultLabelJoin when none is set), in the given order — the caller
+// passes the replaced region in context order. Unlabelled messages are
+// skipped. Must hold lock.
+func (sm *SegmentedMemory) joinLabelsLocked(base map[string]string, msgs []Message) map[string]string {
+	join := sm.labelJoin
+	if join == nil {
+		join = defaultLabelJoin
+	}
+	out := base
+	for i := range msgs {
+		if len(msgs[i].Labels) == 0 {
+			continue
+		}
+		out = join(out, msgs[i].Labels)
+	}
+	return out
 }
