@@ -35,10 +35,14 @@ import (
 )
 
 // summaryState is L2 — the session summary: ONE cumulative text, persisted as
-// version rows; the newest version is the summary (HLD §2, §5.4).
+// version rows; the newest version is the summary (HLD §2, §5.4). labels is
+// the join (labelJoin, default per-key lexicographically greater) of the
+// labels of every message the summary replaced; it rides the summary message
+// the compile emits. In-memory only: a restored summary carries no labels.
 type summaryState struct {
-	n    int
-	text string
+	n      int
+	text   string
+	labels map[string]string
 }
 
 // summaryRowPrefix opens the compiled summary row; the trigger's estimate
@@ -115,9 +119,11 @@ func (sm *SegmentedMemory) compilePrefixLocked(msgs []Message, t int64, fingerpr
 	// lastStable/till-NOW markers like any other row, and a fold invalidates
 	// from HERE down — ROM and the tool schemas stay cached across folds.
 	if sm.summary.text != "" {
+		// The replaced messages' labels ride the summary message (WithMessageLabeler).
 		push(Message{Role: "user",
 			Content: summaryRowPrefix + sm.summary.text +
-				"\n\nExact values quoted in this summary (expected outputs, literals, paths, interfaces) are unverified — the summary may restate them imprecisely. Before relying on one, read it from its source.\n</system-reminder>"})
+				"\n\nExact values quoted in this summary (expected outputs, literals, paths, interfaces) are unverified — the summary may restate them imprecisely. Before relying on one, read it from its source.\n</system-reminder>",
+			Labels: sm.summary.labels})
 	}
 
 	// Render cases + pair atomicity. Track the message cache breakpoint: the
@@ -1130,6 +1136,12 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 
 	n1 := sm.summary.n + 1
 
+	// The replaced messages' labels ride the summary (WithMessageLabeler):
+	// joined over the region in context order, on top of the summary's own
+	// labels, so a label survives every fold that drops its message. In-memory
+	// only — a summary restored from the store carries no labels.
+	joined := sm.joinLabelsLocked(sm.summary.labels, region)
+
 	// One transaction: the version insert and the region's folded flags
 	// (§5.4.6). A failed insert fails the step — never a fold that evaporates
 	// on reload.
@@ -1158,7 +1170,7 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 	// the folded region from L1 — the recompile that follows must see
 	// post-stage state without a re-read (folded rows are filtered at the
 	// database read on reload).
-	sm.summary = summaryState{n: n1, text: newText}
+	sm.summary = summaryState{n: n1, text: newText, labels: joined}
 	remaining := make([]Message, 0, len(protected)+len(sm.contextMessages)-count)
 	remaining = append(remaining, protected...)
 	remaining = append(remaining, sm.contextMessages[count:]...)
@@ -1551,6 +1563,24 @@ func (sm *SegmentedMemory) SetSkillDeactivationHook(fn func(sessionID, skillName
 	sm.skillDeactivation = fn
 }
 
+// SetMessageLabeler wires the per-message labeler (WithMessageLabeler): fn
+// runs at the arrival seam and on the restore replay, and its result is
+// stored on the message entering L1.
+func (sm *SegmentedMemory) SetMessageLabeler(fn func(*Message) map[string]string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.messageLabeler = fn
+}
+
+// SetLabelJoin wires the join used when a fold's summary replaces labelled
+// messages. Nil restores the default (per key, the lexicographically greater
+// value).
+func (sm *SegmentedMemory) SetLabelJoin(fn func(a, b map[string]string) map[string]string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.labelJoin = fn
+}
+
 // setSummary installs a restored summary version (reload, HLD §8).
 func (sm *SegmentedMemory) setSummary(n int, text string) {
 	sm.mu.Lock()
@@ -1559,4 +1589,44 @@ func (sm *SegmentedMemory) setSummary(n int, text string) {
 	sm.cachedL2Tokens = sm.tokenCounter.CountTokens(text)
 	sm.updateTokenCount()
 	sm.tokenCountDirty = false
+}
+
+// defaultLabelJoin is WithLabelJoin's default: for each key present in either
+// map, the lexicographically greater value wins. Nil maps join as empty maps.
+func defaultLabelJoin(a, b map[string]string) map[string]string {
+	if len(a) == 0 {
+		return b
+	}
+	if len(b) == 0 {
+		return a
+	}
+	out := make(map[string]string, len(a)+len(b))
+	for k, v := range a {
+		out[k] = v
+	}
+	for k, v := range b {
+		if cur, ok := out[k]; !ok || v > cur {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// joinLabelsLocked folds a label-map sequence into one with the configured
+// join (defaultLabelJoin when none is set), in the given order — the caller
+// passes the replaced region in context order. Unlabelled messages are
+// skipped. Must hold lock.
+func (sm *SegmentedMemory) joinLabelsLocked(base map[string]string, msgs []Message) map[string]string {
+	join := sm.labelJoin
+	if join == nil {
+		join = defaultLabelJoin
+	}
+	out := base
+	for i := range msgs {
+		if len(msgs[i].Labels) == 0 {
+			continue
+		}
+		out = join(out, msgs[i].Labels)
+	}
+	return out
 }
