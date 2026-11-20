@@ -16,8 +16,6 @@ package agent
 
 import (
 	"context"
-	"fmt"
-	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -77,17 +75,6 @@ func TestAResumeCreatesNoSession(t *testing.T) {
 	ok, err := store.SessionExists(ctx, "never-existed")
 	require.NoError(t, err)
 	require.False(t, ok, "a resume created a session row")
-}
-
-// Only a lease held by a process that no longer runs on this host is dead
-// here: one from another host is not, nor one this code did not name, nor
-// this process's own.
-func TestOnlyALocalDeadProcessIsDead(t *testing.T) {
-	host, _ := os.Hostname()
-	require.False(t, deadHere(fmt.Sprintf("%d@%s.elsewhere/abcd", 1<<22-1, host)), "a holder from another host was judged dead")
-	require.False(t, deadHere("abcd-ef01"), "a holder without a process name was judged dead")
-	require.False(t, deadHere(fmt.Sprintf("%d@%s/abcd", os.Getpid(), host)), "this process was judged dead")
-	require.True(t, deadHere(fmt.Sprintf("%d@%s/abcd", 1<<22-1, host)), "a dead local process was not judged dead")
 }
 
 // A rewind of a session with no row does nothing and creates nothing.

@@ -19,7 +19,6 @@ package sessionlease
 import (
 	"context"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -111,7 +110,7 @@ func TestTheLeaseHoldsOnTheRealStores(t *testing.T) {
 	}
 	holder, remaining, err := sb.EventLogStore().SessionLeaseHolder(ctx, "s1")
 	require.NoError(t, err)
-	require.True(t, strings.Contains(holder, "@"), "the holder does not name its process: %q", holder)
+	require.NotEmpty(t, holder, "the running turn holds no lease")
 	require.Greater(t, remaining, time.Minute)
 	_, err = b.Chat(ctx, "s1", "three")
 	require.ErrorIs(t, err, agent.ErrSessionBusy)

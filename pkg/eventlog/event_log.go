@@ -88,9 +88,8 @@ type SessionLeaseStore interface {
 
 	// SessionLeaseHolder is who holds sessionID's lease now and how long it
 	// has left by the database clock, or "" when nobody does or the lease has
-	// expired. A holder that names a process on this host which no longer
-	// runs, and has not renewed within a renewal interval, is released by the
-	// caller and the lease taken, instead of waiting out its TTL.
+	// expired. Called with no session, it only reports whether the lease
+	// table is there, which is how a server checks at startup.
 	SessionLeaseHolder(ctx context.Context, sessionID string) (holder string, remaining time.Duration, err error)
 }
 

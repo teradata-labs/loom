@@ -230,8 +230,7 @@ func TestEventLogStore_TenantIsolation(t *testing.T) {
 	require.True(t, held, "user B released user A's lease")
 }
 
-// The holder of a live lease is readable; an expired lease has none, so a
-// dead process's lease can be told from a live one before it is released.
+// The holder of a live lease is readable; an expired lease has none.
 func TestEventLogStore_SessionLeaseHolder(t *testing.T) {
 	db := migratedDB(t)
 	store := NewEventLogStore(db, nil)

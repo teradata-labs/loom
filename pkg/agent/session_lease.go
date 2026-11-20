@@ -18,11 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"strconv"
-	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -103,9 +99,7 @@ func leaseLostError(ctx context.Context, err error) error {
 // renewed every TTL/3 while held. Without a lease store it returns ctx
 // unchanged and a release that only counts the turn.
 //
-// The holder names this process, pid@host, so a lease left by a process that
-// died on this host is released and taken within one renewal interval rather
-// than after its TTL; a holder elsewhere is waited out. Taking the lease reads the session's turn
+// Taking the lease reads the session's turn
 // count (TurnCounter) and releasing it counts the turn: an agent object whose
 // copy of the session is from fewer turns than the session has had drops it
 // and loads fresh.
@@ -119,7 +113,7 @@ func (a *Agent) holdSessionLease(ctx context.Context, sessionID string) (context
 		return ctx, func() { a.endTurnCount(context.WithoutCancel(ctx), sessionID, turns) }, nil
 	}
 	ttl := a.sessionLeaseTTL()
-	holder := thisProcess + "/" + uuid.NewString()
+	holder := uuid.NewString()
 
 	// The store stamps the expiry somewhere inside the acquire call, so the
 	// lease is vouched for from before the call, not after it returns.
@@ -129,43 +123,7 @@ func (a *Agent) holdSessionLease(ctx context.Context, sessionID string) (context
 		return nil, nil, fmt.Errorf("taking the session lease: %w", err)
 	}
 	if !won {
-		// A lease held by a process that died on this host would block the
-		// session until its TTL ran out. The holder names its process; when
-		// that process is gone from this host AND the lease has less than
-		// ttl-ttl/3 left, it is dead: release it and take the lease now. A
-		// live holder renews every ttl/3, so its lease never has less than
-		// ttl-ttl/3 left, and one whose renewals have failed that long stops
-		// itself at its next tick (the renewal loop below cancels with
-		// ErrSessionLeaseLost once time.Since(lastHeld) >= margin). So the
-		// takeover never evicts a holder that would otherwise go on: the
-		// second condition is what makes a same-named host — another machine
-		// reporting this hostname, where a live holder's pid is absent — safe.
-		// A lease that expired between the acquire and the read has no
-		// holder: taken on a second acquire.
-		current, remaining, err := leases.SessionLeaseHolder(ctx, sessionID)
-		if err != nil {
-			return nil, nil, fmt.Errorf("reading the session lease: %w", err)
-		}
-		if current != "" && deadHere(current) && remaining < ttl-ttl/3 {
-			if err := leases.ReleaseSessionLease(ctx, sessionID, current); err != nil {
-				return nil, nil, fmt.Errorf("releasing a dead process's session lease: %w", err)
-			}
-			zap.L().Info("session lease: taken from a holder that died on this host",
-				zap.String("session_id", sessionID),
-				zap.String("previous_holder", current),
-				zap.Duration("remaining", remaining),
-				zap.Duration("ttl", ttl))
-			current = ""
-		}
-		if current == "" {
-			acquireBegan = time.Now()
-			if won, err = leases.AcquireSessionLease(ctx, sessionID, holder, ttl); err != nil {
-				return nil, nil, fmt.Errorf("taking the session lease: %w", err)
-			}
-		}
-		if !won {
-			return nil, nil, fmt.Errorf("session %s: %w", sessionID, ErrSessionBusy)
-		}
+		return nil, nil, fmt.Errorf("session %s: %w", sessionID, ErrSessionBusy)
 	}
 	turns := a.beginTurnCount(ctx, sessionID)
 
@@ -242,36 +200,6 @@ func (a *Agent) holdSessionLease(ctx context.Context, sessionID string) (context
 		}
 	}
 	return leaseCtx, release, nil
-}
-
-// thisProcess is this process as a lease holder names it: pid@host.
-var thisProcess = func() string {
-	host, _ := os.Hostname()
-	return fmt.Sprintf("%d@%s", os.Getpid(), host)
-}()
-
-// deadHere is a lease holder that names a process on this host which no
-// longer exists. A holder from another host, or one this code did not name
-// (no pid@host prefix), is never dead here.
-func deadHere(holder string) bool {
-	pidHost, _, _ := strings.Cut(holder, "/")
-	pidText, host, ok := strings.Cut(pidHost, "@")
-	if !ok {
-		return false
-	}
-	if here, _ := os.Hostname(); host != here {
-		return false
-	}
-	pid, err := strconv.Atoi(pidText)
-	if err != nil || pid <= 0 || pid == os.Getpid() {
-		return false
-	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return true
-	}
-	err = proc.Signal(syscall.Signal(0))
-	return errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH)
 }
 
 // leaseStore is where this agent holds session leases: the store attached for
