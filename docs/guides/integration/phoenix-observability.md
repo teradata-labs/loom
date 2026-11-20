@@ -179,11 +179,12 @@ Run on 2026-11-19, Windows 11, Loom commit `aef3f2e1` built with `go build -tags
 **No spans in Phoenix.**
 - `otlp_endpoint` must end in `/v1/traces`.
 - Check you are viewing the project named in `x-project-name`.
-- `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_ENDPOINT` and `LOOM_OTLP_ENDPOINT` replace `otlp_endpoint`, and their `*_HEADERS` counterparts replace `otlp_headers`. Unset them.
+- `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_ENDPOINT` and `LOOM_OTLP_ENDPOINT` override `otlp_endpoint` in `looms serve`.
+- `OTEL_EXPORTER_OTLP_TRACES_HEADERS`, `OTEL_EXPORTER_OTLP_HEADERS` and `LOOM_OTLP_HEADERS` replace configured `otlp_headers` only when an endpoint env var is also set. If `otlp_headers` is empty, Loom uses environment headers as a fallback even without an endpoint override. Unset the endpoint and header env vars to use the example's settings.
 - `observability.enabled` must be `true` and `mode` must be `otel`. Loom logs `Observability enabled with OTLP export` at startup, or `Failed to create OTLP tracer, using no-op tracer` when the exporter cannot be built.
 - Spans are sent in batches; wait about 5 seconds after the turn, or stop `looms` to flush.
 
-**Spans land in the `default` project.** The `x-project-name` header did not reach Phoenix, usually because an `OTEL_EXPORTER_OTLP_*_HEADERS` variable replaced `otlp_headers`.
+**Spans land in the `default` project.** Check that `otlp_headers` sets `x-project-name` to the intended project. If both endpoint and header env vars are set, check `x-project-name` in the environment headers instead.
 
 **The turn fails with a tool permission error.** The agent called a tool. Use the no-tool agent from step 2; this example's policy denies every tool.
 

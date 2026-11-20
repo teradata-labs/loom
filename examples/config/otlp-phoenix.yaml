@@ -40,8 +40,12 @@ observability:
   # otlp_include_spans is omitted so every span is exported.
   #
   # OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, OTEL_EXPORTER_OTLP_ENDPOINT and
-  # LOOM_OTLP_ENDPOINT override otlp_endpoint (and their *_HEADERS variables
-  # override otlp_headers). Unset them when using this file.
+  # LOOM_OTLP_ENDPOINT override otlp_endpoint in looms serve.
+  # OTEL_EXPORTER_OTLP_TRACES_HEADERS, OTEL_EXPORTER_OTLP_HEADERS and
+  # LOOM_OTLP_HEADERS replace configured otlp_headers only when an endpoint
+  # env var is also set. If otlp_headers is empty, environment headers are a
+  # fallback even without an endpoint override. Unset these variables to use
+  # this file's settings.
   #
   # Traces can contain prompts, responses and tool data. Use synthetic input.
 
