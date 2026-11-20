@@ -27,10 +27,12 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/fabric"
+	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
 	"github.com/teradata-labs/loom/pkg/llm/bedrock"
 	"github.com/teradata-labs/loom/pkg/llm/bedrockmantle"
 	"github.com/teradata-labs/loom/pkg/llm/ollama"
+	"github.com/teradata-labs/loom/pkg/llm/vercelgateway"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/prompts"
 	"github.com/teradata-labs/loom/pkg/server"
@@ -71,7 +73,7 @@ and the TUI connects to it. No separate server process needed.`,
 
 func init() {
 	rootCmd.Flags().IntVar(&port, "port", 0, "Server port (0 = random available port)")
-	rootCmd.Flags().StringVar(&provider, "provider", "anthropic", "LLM provider (anthropic, bedrock, bedrock-mantle, ollama)")
+	rootCmd.Flags().StringVar(&provider, "provider", "anthropic", "LLM provider (anthropic, bedrock, bedrock-mantle, ollama, vercel-ai-gateway)")
 	rootCmd.Flags().StringVar(&apiKey, "api-key", "", "LLM API key (for anthropic)")
 	rootCmd.Flags().StringVar(&model, "model", "", "LLM model (provider-specific)")
 	rootCmd.Flags().Float64Var(&temperature, "temperature", 1.0, "LLM temperature")
@@ -203,6 +205,21 @@ func startEmbeddedServer(port int, llmProvider, llmAPIKey, llmModel string, temp
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create bedrock-mantle client: %w", err)
+		}
+
+	case vercelgateway.ProviderName, vercelgateway.ProviderAlias:
+		// No default model (it would go stale with the gateway catalog). Key
+		// from LOOM_LLM_VERCEL_GATEWAY_API_KEY or AI_GATEWAY_API_KEY.
+		llmProv, err = vercelgateway.NewClient(vercelgateway.Config{
+			Endpoint:          os.Getenv("VERCEL_AI_GATEWAY_ENDPOINT"),
+			APIKey:            vercelgateway.ResolveAPIKey(""),
+			Model:             llmModel,
+			MaxTokens:         maxTok,
+			Temperature:       temp,
+			RateLimiterConfig: llm.RateLimiterConfig{Enabled: true},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create vercel-ai-gateway client: %w", err)
 		}
 
 	case "ollama":

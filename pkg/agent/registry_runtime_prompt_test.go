@@ -189,10 +189,9 @@ func TestRegistryAgentConfig_MatchesBuildAgentRuntimeConfig(t *testing.T) {
 		},
 		Skills: &loomv1.SkillsConfig{Enabled: true, DisabledSkills: []string{"alpha"}, SkillsDir: skillsDir},
 		Metadata: map[string]string{
-			"_enable_self_healing":    "false",
-			"_tool_change_note":       "true",
-			"_context_relief_warning": "true",
-			"custom":                  "value",
+			"_enable_self_healing": "false",
+			"_tool_change_note":    "true",
+			"custom":               "value",
 		},
 	}
 
@@ -213,7 +212,6 @@ func TestRegistryAgentConfig_MatchesBuildAgentRuntimeConfig(t *testing.T) {
 	assert.Equal(t, 5, builtCfg.OutputTokenCBThreshold)
 	assert.False(t, builtCfg.EnableSelfHealing)
 	assert.True(t, builtCfg.ToolChangeNote)
-	assert.True(t, builtCfg.ContextReliefWarning)
 	assert.Equal(t, defaults.Retry, builtCfg.Retry)
 	assert.True(t, builtCfg.Retry.Enabled)
 	require.NotNil(t, builtCfg.PatternConfig)

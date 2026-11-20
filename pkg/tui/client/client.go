@@ -361,6 +361,16 @@ func (c *Client) ResolveExecutionGap(ctx context.Context, sessionID string, outc
 	})
 }
 
+// CompactSession asks the server to compact sessionID's context (see the
+// LoomService.CompactSession RPC). keepTurns 0 uses the server default.
+func (c *Client) CompactSession(ctx context.Context, sessionID string, keepTurns int32, focus string) (*loomv1.CompactSessionResponse, error) {
+	return c.client.CompactSession(ctx, &loomv1.CompactSessionRequest{
+		SessionId: sessionID,
+		KeepTurns: keepTurns,
+		Focus:     focus,
+	})
+}
+
 // GetConversationHistory retrieves conversation history for a session.
 func (c *Client) GetConversationHistory(ctx context.Context, sessionID string) ([]*loomv1.Message, error) {
 	req := &loomv1.GetConversationHistoryRequest{

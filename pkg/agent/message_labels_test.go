@@ -101,13 +101,14 @@ func labeledFoldFixture(t *testing.T, join func(a, b map[string]string) map[stri
 	return sm
 }
 
-// summaryMessageOf returns the fold summary's system message from the compiled
-// context (ROM first, summary second).
+// summaryMessageOf returns the fold summary's message from the compiled
+// context (ROM first, summary second). The summary compiles as a user-role
+// conversation row (CONVERSATION content, not system — see compile's Step 3).
 func summaryMessageOf(t *testing.T, sm *SegmentedMemory) *Message {
 	t.Helper()
 	compiled := sm.GetMessagesForLLM()
 	require.GreaterOrEqual(t, len(compiled), 2)
-	require.Equal(t, "system", compiled[1].Role)
+	require.Equal(t, "user", compiled[1].Role)
 	require.Contains(t, compiled[1].Content, "covers msg:")
 	return &compiled[1]
 }

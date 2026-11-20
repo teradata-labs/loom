@@ -29,6 +29,7 @@ import (
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
 	"github.com/teradata-labs/loom/pkg/decision/jev"
 	"github.com/teradata-labs/loom/pkg/llm/bedrockmantle"
+	"github.com/teradata-labs/loom/pkg/llm/vercelgateway"
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 	"github.com/zalando/go-keyring"
@@ -179,7 +180,10 @@ type EmbeddingConfig struct {
 	// vector similarity search during memory recall. Default: false.
 	Enabled bool `mapstructure:"enabled"`
 
-	// Provider: "openai" (default). Future: "ollama", "bedrock", "gemini".
+	// Provider: "openai" (default) or "vercel-ai-gateway" (alias "vercel";
+	// model is a creator/model id, default openai/text-embedding-3-small,
+	// endpoint and key from llm.vercel_gateway_*). Future: "ollama",
+	// "bedrock", "gemini".
 	Provider string `mapstructure:"provider"`
 
 	// Model name. Default: "text-embedding-3-small" for OpenAI.
@@ -393,6 +397,17 @@ type LLMConfig struct {
 	BedrockMantleEndpoint string `mapstructure:"bedrock_mantle_endpoint"`
 	BedrockMantleAPIKey   string `mapstructure:"bedrock_mantle_api_key"` // From CLI/env/keyring only
 	BedrockMantleModel    string `mapstructure:"bedrock_mantle_model"`
+
+	// Vercel AI Gateway-specific (provider: vercel-ai-gateway, alias vercel).
+	// The model is a creator/model id and has no default. The API key comes
+	// from the keyring, LOOM_LLM_VERCEL_GATEWAY_API_KEY or AI_GATEWAY_API_KEY;
+	// with vercel_gateway_oidc a Vercel OIDC token is used instead.
+	VercelGatewayModel         string               `mapstructure:"vercel_gateway_model"`
+	VercelGatewayEndpoint      string               `mapstructure:"vercel_gateway_endpoint"`
+	VercelGatewayAPIKey        string               `mapstructure:"vercel_gateway_api_key"` // From CLI/env/keyring only
+	VercelGatewayOIDC          bool                 `mapstructure:"vercel_gateway_oidc"`
+	VercelGatewayOIDCTokenFile string               `mapstructure:"vercel_gateway_oidc_token_file"`
+	VercelGatewayRouting       GatewayRoutingConfig `mapstructure:"vercel_gateway_routing"`
 
 	// SchedulerEnabled turns on the LLM slot scheduler: per-quota-scope
 	// admission where waiting is a state, not an error
@@ -1235,6 +1250,10 @@ func LoadConfig(cfgFile string) (*Config, error) {
 	// This must be done after unmarshal since it's not loaded from config file
 	config.DataDir = loomconfig.GetLoomDataDir()
 
+	// Provider aliases ("vercel") become canonical names here, once, so
+	// nothing downstream sees an alias.
+	normalizeProviderNames(&config)
+
 	// Load secrets from keyring if not provided via CLI/env
 	// Non-fatal: keyring might not be available - user can provide secrets via CLI/env
 	_ = loadSecretsFromKeyring(&config)
@@ -1423,6 +1442,10 @@ func setDefaults() {
 	viper.SetDefault("llm.bedrock_mantle_region", "")                                        // empty = inherit llm.bedrock_region
 	viper.SetDefault("llm.bedrock_mantle_endpoint", "")
 	viper.SetDefault("llm.bedrock_mantle_model", bedrockmantle.DefaultModel)
+	viper.SetDefault("llm.vercel_gateway_model", "") // no default: a default would go stale with the gateway catalog
+	viper.SetDefault("llm.vercel_gateway_endpoint", "")
+	viper.SetDefault("llm.vercel_gateway_oidc", false)
+	viper.SetDefault("llm.vercel_gateway_oidc_token_file", "")
 	viper.SetDefault("llm.ollama_endpoint", "http://localhost:11434")
 	viper.SetDefault("llm.ollama_model", "llama3.1:8b")
 	viper.SetDefault("llm.openai_model", "gpt-4.1")
@@ -1452,6 +1475,7 @@ func setDefaults() {
 	viper.SetDefault("llm.gemini_api_key", "")
 	viper.SetDefault("llm.huggingface_token", "")
 	viper.SetDefault("llm.litellm_api_key", "")
+	viper.SetDefault("llm.vercel_gateway_api_key", "")
 
 	// Non-secret LLM keys with no built-in value, registered for the same
 	// reason: without a known key, LOOM_LLM_BEDROCK_PROFILE etc. are dropped.
@@ -1672,6 +1696,11 @@ func GetSecretMappings() []SecretMapping {
 			KeyringKey: "bedrock_mantle_api_key",
 			Setter:     func(c *Config, val string) { c.LLM.BedrockMantleAPIKey = val },
 			IsSet:      func(c *Config) bool { return c.LLM.BedrockMantleAPIKey != "" },
+		},
+		{
+			KeyringKey: "vercel_gateway_api_key",
+			Setter:     func(c *Config, val string) { c.LLM.VercelGatewayAPIKey = val },
+			IsSet:      func(c *Config) bool { return c.LLM.VercelGatewayAPIKey != "" },
 		},
 		{
 			KeyringKey: "hawk_api_key",
@@ -2018,8 +2047,13 @@ func (c *Config) Validate() error {
 	case "litellm":
 		// endpoint and API key are optional — defaults apply
 
+	case vercelgateway.ProviderName, vercelgateway.ProviderAlias:
+		if err := validateVercelGatewayConfig(c.LLM); err != nil {
+			return err
+		}
+
 	default:
-		return fmt.Errorf("unsupported LLM provider: %s (must be anthropic, bedrock, bedrock-mantle, ollama, openai, azure-openai, mistral, gemini, huggingface, or litellm)", c.LLM.Provider)
+		return fmt.Errorf("unsupported LLM provider: %s (must be anthropic, bedrock, bedrock-mantle, ollama, openai, azure-openai, mistral, gemini, huggingface, litellm, or vercel-ai-gateway)", c.LLM.Provider)
 	}
 
 	// Door admission knobs: a negative value is a configuration error, not a
@@ -2207,7 +2241,7 @@ server:
   # allow_assistant_override: false  # Set to true to honor WeaveRequest.replay_assistant_message (generation-free conversation replay only)
 
 llm:
-  # Provider options: anthropic, bedrock, bedrock-mantle, ollama, openai, azure-openai, mistral, gemini, huggingface, litellm
+  # Provider options: anthropic, bedrock, bedrock-mantle, ollama, openai, azure-openai, mistral, gemini, huggingface, litellm, vercel-ai-gateway
   provider: anthropic
 
   # Anthropic configuration
@@ -2228,6 +2262,19 @@ llm:
   # bedrock_mantle_model: anthropic.claude-haiku-4-5
   # bedrock_mantle_endpoint: https://bedrock-mantle.us-west-2.api.aws  # PrivateLink override only
   # bedrock_mantle_api_key: set via keyring (looms config set-key bedrock_mantle_api_key); empty = SigV4 via bedrock_profile or the AWS credential chain
+
+  # Vercel AI Gateway configuration (provider: vercel-ai-gateway; docs/reference/llm-vercel-ai-gateway.md)
+  # vercel_gateway_model: anthropic/claude-sonnet-4.5   # required; creator/model id from the gateway catalog
+  # vercel_gateway_endpoint: https://ai-gateway.vercel.sh  # optional; regional hosts (eu./us.) go here
+  # vercel_gateway_api_key: set via keyring (looms config set-key vercel_gateway_api_key) or AI_GATEWAY_API_KEY
+  # vercel_gateway_oidc: false                          # true = Vercel OIDC token (VERCEL_OIDC_TOKEN) instead of a key
+  # vercel_gateway_routing:
+  #   order: [bedrock, anthropic]
+  #   only: []
+  #   sort: ""                # cost | ttft | tps
+  #   fallback_models: [openai/gpt-5]
+  #   zero_data_retention: false
+  #   caching: ""             # auto
 
   # Ollama configuration (local inference)
   ollama_endpoint: http://localhost:11434
@@ -2397,6 +2444,7 @@ mcp:
 #   looms config set-key bedrock_access_key_id
 #   looms config set-key bedrock_secret_access_key
 #   looms config set-key bedrock_mantle_api_key
+#   looms config set-key vercel_gateway_api_key
 #   looms config set-key hawk_api_key
 #   looms config set-key brave_search_api_key
 #   looms config set-key tavily_api_key

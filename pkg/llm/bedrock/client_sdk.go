@@ -370,7 +370,7 @@ func (c *SDKClient) thinkingConfig(ctx context.Context) anthropic.ThinkingConfig
 
 // outputConfig maps the thinking level to output_config.effort on
 // adaptive-thinking models (low|medium|high|xhigh|max; "auto"/empty omit
-// the field and take the API default, high). Zero value = field omitted.
+// the field and take the model's default). Zero value = field omitted.
 func (c *SDKClient) outputConfig(ctx context.Context) anthropic.OutputConfigParam {
 	switch llm.EffortForLevel(c.modelID, c.thinkingLevel) {
 	case "low":
@@ -385,6 +385,23 @@ func (c *SDKClient) outputConfig(ctx context.Context) anthropic.OutputConfigPara
 		return anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffortMax}
 	}
 	return anthropic.OutputConfigParam{}
+}
+
+// effort is the effort a call is made at: on an adaptive model the effort
+// sent, or empty when none was (the model's own default then applies); on an
+// older model the thinking level whose budget was sent, or none with thinking
+// off.
+func (c *SDKClient) effort() string {
+	if llm.IsAdaptiveThinkingModel(c.modelID) {
+		// The effort sent, or empty when none was: the API then applies the
+		// model's own default, which differs by model (high on Opus 5, medium
+		// on Opus 5.5), so naming one would record a guess.
+		return llm.EffortForLevel(c.modelID, c.thinkingLevel)
+	}
+	if c.thinkingLevel == "" || c.thinkingLevel == "none" {
+		return "none"
+	}
+	return strings.ToLower(c.thinkingLevel)
 }
 
 // convertMessagesToSDK converts agent messages to Anthropic SDK format.
@@ -513,15 +530,24 @@ func markLastBlockCacheControl(msgs []anthropic.MessageParam) {
 		return
 	}
 	blocks := msgs[len(msgs)-1].Content
-	if len(blocks) == 0 {
-		return
-	}
-	b := &blocks[len(blocks)-1]
-	switch {
-	case b.OfText != nil:
-		b.OfText.CacheControl = anthropic.NewCacheControlEphemeralParam()
-	case b.OfToolResult != nil:
-		b.OfToolResult.CacheControl = anthropic.NewCacheControlEphemeralParam()
+	// The marker goes on the last block that can carry one. Thinking blocks
+	// cannot; a tool_use block can, and it is the last block of any assistant
+	// message that speaks and then calls tools — marking only text and
+	// tool_result blocks silently dropped the breakpoint on every such
+	// message, one cold call each time lastStable landed there.
+	for i := len(blocks) - 1; i >= 0; i-- {
+		b := &blocks[i]
+		switch {
+		case b.OfText != nil:
+			b.OfText.CacheControl = anthropic.NewCacheControlEphemeralParam()
+			return
+		case b.OfToolResult != nil:
+			b.OfToolResult.CacheControl = anthropic.NewCacheControlEphemeralParam()
+			return
+		case b.OfToolUse != nil:
+			b.OfToolUse.CacheControl = anthropic.NewCacheControlEphemeralParam()
+			return
+		}
 	}
 }
 
@@ -570,6 +596,11 @@ func (c *SDKClient) convertToolsToSDK(ctx context.Context, tools []shuttle.Tool)
 
 		if schemaMap != nil {
 			// Marshal and unmarshal to get proper anthropic.ToolInputSchemaParam
+			// The top level of a tool's input is an object; a schema that
+			// names no type is one, as the raw-HTTP path already assumes.
+			if t, _ := schemaMap["type"].(string); t == "" {
+				schemaMap["type"] = "object"
+			}
 			schemaJSON, err := json.Marshal(schemaMap)
 			if err != nil {
 				return nil, nil, fmt.Errorf("tool %q schema encoding: %w", originalName, err)
@@ -602,6 +633,11 @@ func (c *SDKClient) convertResponseFromSDK(message *anthropic.Message, toolNameM
 			CostUSD:                  c.calculateCost(int(message.Usage.InputTokens), int(message.Usage.OutputTokens), cacheRead, cacheCreation),
 			CacheReadInputTokens:     cacheRead,
 			CacheCreationInputTokens: cacheCreation,
+
+			CacheCreation1hInputTokens: int(message.Usage.CacheCreation.Ephemeral1hInputTokens),
+			CacheCreation5mInputTokens: int(message.Usage.CacheCreation.Ephemeral5mInputTokens),
+			ThinkingTokens:             int(message.Usage.OutputTokensDetails.ThinkingTokens),
+			Effort:                     c.effort(),
 		},
 		Metadata: map[string]interface{}{
 			"model":       c.modelID,
@@ -740,6 +776,8 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			usage.InputTokens = int(event.Message.Usage.InputTokens)
 			usage.CacheReadInputTokens = int(event.Message.Usage.CacheReadInputTokens)
 			usage.CacheCreationInputTokens = int(event.Message.Usage.CacheCreationInputTokens)
+			usage.CacheCreation1hInputTokens = int(event.Message.Usage.CacheCreation.Ephemeral1hInputTokens)
+			usage.CacheCreation5mInputTokens = int(event.Message.Usage.CacheCreation.Ephemeral5mInputTokens)
 
 		case "content_block_start":
 			if event.ContentBlock.Type == "thinking" || event.ContentBlock.Type == "redacted_thinking" {
@@ -837,6 +875,9 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			if event.Usage.OutputTokens > 0 {
 				usage.OutputTokens = int(event.Usage.OutputTokens)
 			}
+			if event.Usage.OutputTokensDetails.ThinkingTokens > 0 {
+				usage.ThinkingTokens = int(event.Usage.OutputTokensDetails.ThinkingTokens)
+			}
 
 		case "message_stop":
 			// Final usage data
@@ -853,6 +894,7 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	}
 
 	// Build final response
+	usage.Effort = c.effort()
 	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 	usage.CostUSD = c.calculateCost(usage.InputTokens, usage.OutputTokens, usage.CacheReadInputTokens, usage.CacheCreationInputTokens)
 

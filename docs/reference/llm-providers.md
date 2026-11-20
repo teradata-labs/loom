@@ -4,7 +4,7 @@
 Reference for all supported LLM providers and their configuration.
 
 **Version**: v1.3.0
-**Status**: ✅ 8 providers implemented (Anthropic, Bedrock, Ollama, OpenAI, Azure OpenAI, Mistral AI, Google Gemini, HuggingFace); 📋 Google Vertex AI planned
+**Status**: ✅ 8 providers implemented (Anthropic, Bedrock, Ollama, OpenAI, Azure OpenAI, Mistral AI, Google Gemini, HuggingFace); ⚠️ AWS Bedrock Mantle and Vercel AI Gateway partial; 📋 Google Vertex AI planned
 
 
 ## Table of Contents
@@ -19,9 +19,10 @@ Reference for all supported LLM providers and their configuration.
 - [Google Gemini](#7-google-gemini) - Google AI Studio
 - [HuggingFace](#8-huggingface) - Open-source models via the HF Inference API
 - [AWS Bedrock Mantle](#9-aws-bedrock-mantle) - Claude and open-weight models via the `bedrock-mantle` endpoint
+- [Vercel AI Gateway](#10-vercel-ai-gateway) - Many upstream providers behind one key (partial)
 
 ### Planned Providers
-- [Google Vertex AI](#10-google-vertex-ai) - GCP integration (Planned)
+- [Google Vertex AI](#11-google-vertex-ai) - GCP integration (Planned)
 
 ### Reference
 - [Tool Schema Compatibility](#tool-schema-compatibility) - Omitted tools and library-only strict validation
@@ -50,6 +51,7 @@ Reference for all supported LLM providers and their configuration.
 | **Google Gemini** | ✅ Implemented | Native | 1.05M | $0-$12/1M tokens | Long context, multimodal |
 | **HuggingFace** | ✅ Implemented | Native (model-dependent) | Varies | ~$0.20-$1.00/1M tokens (estimated) | Open-source models |
 | **AWS Bedrock Mantle** | ⚠️ Partial (GPT-5.x/6.x unpriced; Responses API planned) | Native | 4k-1M | $0.04-$55/1M tokens (53 cataloged models) | Mantle-only models, OpenAI/Anthropic-compatible AWS endpoint |
+| **Vercel AI Gateway** | ⚠️ Partial (live-tested 2026-11-16 on Haiku 4.5 and GPT-5 mini) | Native (both surfaces) | From live catalog | Upstream list price, from `GET /v1/models` | One key for many upstreams, provider routing and fallback |
 | **Google Vertex AI** | 📋 Planned | TBD | TBD | TBD | GCP infrastructure |
 
 ### Authentication Methods
@@ -64,6 +66,7 @@ Reference for all supported LLM providers and their configuration.
 | **Mistral** | `looms config set-key mistral_api_key` | `LOOM_LLM_MISTRAL_API_KEY` / `MISTRAL_API_KEY` | None (no CLI flag) |
 | **Gemini** | `looms config set-key gemini_api_key` | `LOOM_LLM_GEMINI_API_KEY` / `GEMINI_API_KEY` | None (no CLI flag) |
 | **HuggingFace** | `looms config set-key huggingface_token` | `LOOM_LLM_HUGGINGFACE_TOKEN` / `HUGGINGFACE_API_KEY` | None (no CLI flag) |
+| **Vercel AI Gateway** | `looms config set-key vercel_gateway_api_key` | `LOOM_LLM_VERCEL_GATEWAY_API_KEY` / `AI_GATEWAY_API_KEY` | Vercel OIDC token (`llm.vercel_gateway_oidc`, `VERCEL_OIDC_TOKEN`) |
 | **Bedrock Mantle** | `bedrock_mantle_api_key` (optional) | `BEDROCK_MANTLE_API_KEY` (optional), `LOOM_LLM_BEDROCK_MANTLE_REGION` or `llm.bedrock_region` | SigV4 from the AWS credential chain (default when no API key) |
 
 **Note**: The only LLM-provider API-key CLI flag registered in the `looms` binary is `--anthropic-key` (`cmd/looms/root.go`). Some error messages reference `--openai-key` and `--mistral-key`, but those flags are not implemented — use the keyring or environment variable instead.
@@ -703,10 +706,51 @@ llm:
 
 **Reference**: [Bedrock endpoints](https://docs.aws.amazon.com/bedrock/latest/userguide/endpoints.html)
 
+### 10. Vercel AI Gateway
+
+**Status**: ⚠️ Partial. Implemented and unit-tested against a fake gateway: provider (`pkg/llm/vercelgateway`), provider factory, agent registry, `looms` server config (`llm.vercel_gateway_*`), agent YAML `gateway_routing`, `looms workflow`, `looms config init` (option 5), `loom-standalone`, `loom decision replay`, `pkg/builder` (`WithVercelGatewayLLM`) and memory embeddings (`embedding.provider: vercel-ai-gateway`). Live-tested 2026-11-16 (Haiku 4.5, GPT-5 mini, embeddings). Not done: the Responses surface (📋), tiered long-context prices.
+
+One host (`https://ai-gateway.vercel.sh`) in front of many upstream providers. Claude ids (`anthropic/*`) go to the gateway's Anthropic Messages surface; every other id goes to its OpenAI Chat Completions surface.
+
+**Why the gateway**:
+- One key for Anthropic, OpenAI, Google, and other upstreams, billed at upstream list price
+- Typed routing: `order`, `only`, `sort`, `fallback_models`, `zero_data_retention`, `caching`
+- Model metadata and prices from the live `GET /v1/models` catalog
+
+**Configuration**:
+
+```yaml
+# looms.yaml
+llm:
+  provider: vercel-ai-gateway        # alias: vercel
+  vercel_gateway_model: anthropic/claude-sonnet-4.5   # required; no default
+  vercel_gateway_routing:
+    order: [bedrock, anthropic]
+  # vercel_gateway_api_key: looms config set-key vercel_gateway_api_key (or AI_GATEWAY_API_KEY)
+```
+
+```yaml
+# agent YAML
+llm:
+  provider: vercel-ai-gateway
+  model: openai/gpt-5
+  gateway_routing:
+    sort: ttft
+```
+
+**Limitations**:
+- Under `looms serve`, an agent whose gateway client cannot be built is not started (no fallback LLM)
+- Gateway cost and routing metadata are read from every response (verified live); 402, 429 and mid-stream failure bodies are not yet verified live
+- Default limiter is loom's generic 2 req/s per credential+model; raise `llm.rate_limit` for large fleets
+
+**Detailed Guide**: [llm-vercel-ai-gateway.md](./llm-vercel-ai-gateway.md)
+
+**Reference**: [Vercel AI Gateway docs](https://vercel.com/docs/ai-gateway)
+
 
 ## Planned Providers
 
-### 10. Google Vertex AI
+### 11. Google Vertex AI
 
 **Status**: 📋 Planned
 
