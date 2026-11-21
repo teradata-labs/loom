@@ -14,7 +14,9 @@
 package observability
 
 import (
+	"compress/gzip"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -25,6 +27,8 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	oteltrace "go.opentelemetry.io/otel/trace"
+	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 // ---------------------------------------------------------------------------
@@ -736,6 +740,148 @@ func TestResolveOTelConfigInsecure(t *testing.T) {
 		cfg := resolveOTelConfig(OTelConfig{Endpoint: "http://localhost:4318", Insecure: true})
 		if !cfg.Insecure {
 			t.Error("explicit Insecure=true should not be overwritten")
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// OTLP/HTTP receiver: path, project header and payload reach the backend
+// ---------------------------------------------------------------------------
+
+type otlpRequest struct {
+	path    string
+	project string
+	body    []byte
+	err     error
+}
+
+// newOTLPReceiver starts an httptest server that records every request it gets.
+func newOTLPReceiver(t *testing.T) (*httptest.Server, <-chan otlpRequest) {
+	t.Helper()
+	reqs := make(chan otlpRequest, 16)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec := otlpRequest{path: r.URL.Path, project: r.Header.Get("x-project-name")}
+		var reader io.Reader = r.Body
+		if r.Header.Get("Content-Encoding") == "gzip" {
+			gz, err := gzip.NewReader(r.Body)
+			if err != nil {
+				rec.err = err
+				reqs <- rec
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			defer func() { _ = gz.Close() }()
+			reader = gz
+		}
+		rec.body, rec.err = io.ReadAll(reader)
+		reqs <- rec
+		w.Header().Set("Content-Type", "application/x-protobuf")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, reqs
+}
+
+func TestOTelTracerExportsToOTLPReceiver(t *testing.T) {
+	// Env headers would replace the configured ones; keep the test hermetic.
+	for _, k := range []string{"OTEL_EXPORTER_OTLP_TRACES_HEADERS", "OTEL_EXPORTER_OTLP_HEADERS", "LOOM_OTLP_HEADERS"} {
+		t.Setenv(k, "")
+	}
+
+	t.Run("mode otel sends the span to /v1/traces with x-project-name", func(t *testing.T) {
+		srv, reqs := newOTLPReceiver(t)
+
+		tr, err := NewAutoSelectTracer(&AutoSelectConfig{
+			Mode:         TracerModeOTel,
+			OTLPEndpoint: srv.URL + "/v1/traces",
+			OTLPHeaders:  map[string]string{"x-project-name": "loom-receiver-test"},
+			OTLPInsecure: true,
+			ServiceName:  "loom-test",
+		})
+		if err != nil {
+			t.Fatalf("NewAutoSelectTracer: %v", err)
+		}
+		otelTracer, ok := tr.(*OTelTracer)
+		if !ok {
+			t.Fatalf("mode otel returned %T, want *OTelTracer", tr)
+		}
+		t.Cleanup(func() { _ = otelTracer.Shutdown(context.Background()) })
+
+		_, span := tr.StartSpan(context.Background(), "agent.chat")
+		tr.EndSpan(span)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := tr.Flush(ctx); err != nil {
+			t.Fatalf("Flush: %v", err)
+		}
+
+		var rec otlpRequest
+		select {
+		case rec = <-reqs:
+		case <-time.After(5 * time.Second):
+			t.Fatal("receiver got no request after Flush")
+		}
+		if rec.err != nil {
+			t.Fatalf("reading request body: %v", rec.err)
+		}
+		if rec.path != "/v1/traces" {
+			t.Errorf("request path = %q, want /v1/traces", rec.path)
+		}
+		if rec.project != "loom-receiver-test" {
+			t.Errorf("x-project-name header = %q, want loom-receiver-test", rec.project)
+		}
+
+		var payload coltracepb.ExportTraceServiceRequest
+		if err := proto.Unmarshal(rec.body, &payload); err != nil {
+			t.Fatalf("decoding OTLP payload: %v", err)
+		}
+		var names []string
+		for _, rs := range payload.GetResourceSpans() {
+			for _, ss := range rs.GetScopeSpans() {
+				for _, s := range ss.GetSpans() {
+					names = append(names, s.GetName())
+				}
+			}
+		}
+		if len(names) == 0 {
+			t.Fatal("decoded OTLP payload has no spans")
+		}
+		found := false
+		for _, n := range names {
+			if n == "agent.chat" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("exported spans %v do not include agent.chat", names)
+		}
+	})
+
+	t.Run("mode none sends no request", func(t *testing.T) {
+		srv, reqs := newOTLPReceiver(t)
+
+		tr, err := NewAutoSelectTracer(&AutoSelectConfig{
+			Mode:         TracerModeNone,
+			OTLPEndpoint: srv.URL + "/v1/traces",
+			OTLPHeaders:  map[string]string{"x-project-name": "loom-receiver-test"},
+			OTLPInsecure: true,
+			ServiceName:  "loom-test",
+		})
+		if err != nil {
+			t.Fatalf("NewAutoSelectTracer: %v", err)
+		}
+
+		_, span := tr.StartSpan(context.Background(), "agent.chat")
+		tr.EndSpan(span)
+		if err := tr.Flush(context.Background()); err != nil {
+			t.Fatalf("Flush: %v", err)
+		}
+
+		select {
+		case rec := <-reqs:
+			t.Fatalf("mode none sent a request to %q", rec.path)
+		case <-time.After(500 * time.Millisecond):
 		}
 	})
 }
