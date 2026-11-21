@@ -56,7 +56,7 @@ The primary motivation is **backend freedom**: a Loom deployment wired for Opik 
 2. **Standard attribute mapping**: Loom attributes translate to OTel GenAI semantic conventions (`gen_ai.*`) so backends render LLM/tool spans correctly out of the box
 3. **Zero instrumentation change**: Existing `StartSpan` / `EndSpan` call sites are untouched
 4. **Consistent config pattern**: `mode: otel` follows the same `looms.yaml` / env var pattern as `mode: service` and `mode: embedded`
-5. **Privacy preservation**: PII redaction applied before export, same policy as HawkTracer
+5. **Privacy preservation**: Configured credential and PII redaction applied before OTLP export; Hawk shares the credential-key rule but has different value coverage
 6. **No new required dependencies**: OTel SDK packages are already in `go.mod` as indirect deps
 
 **Non-goals**:
@@ -522,8 +522,8 @@ EndSpan(span):
   translateAttrs(otelSpan, redacted.Attributes)
   for _, event := range redacted.Events:
     otelSpan.AddEvent(event.Name, ...)
-  if span.Status.Code == StatusError:
-    otelSpan.SetStatus(codes.Error, span.Status.Message)
+  if redacted.Status.Code == StatusError:
+    otelSpan.SetStatus(codes.Error, redacted.Status.Message)
   otelSpan.End(trace.WithTimestamp(span.EndTime))
   t.activeSpans.Delete(span.SpanID)                // cleanup (LoadAndDelete covers this)
 ```
@@ -552,7 +552,9 @@ translateAttrs(otelSpan trace.Span, attrs map[string]interface{}):
 
 `loomToGenAI` is a `map[string]string` constant defined in `otel_attrs.go`. Lookups are O(1). The table is initialised once at package init.
 
-**Invariant**: Every Loom attribute is represented in the exported OTel span — either under its canonical `gen_ai.*` name or under a `loom.*` prefixed fallback. No data is silently dropped.
+Supported, permitted attributes are exported under their canonical `gen_ai.*`
+name or a `loom.*` fallback. Privacy rules can remove attributes, and values
+that cannot be encoded are omitted and reported.
 
 
 ## Design Trade-offs
@@ -676,7 +678,7 @@ translateAttrs(otelSpan trace.Span, attrs map[string]interface{}):
 |---|---|---|
 | `StartSpan` | +2–5µs | OTel SDK span start + `sync.Map` store |
 | `EndSpan` (no redaction) | +5–15µs | Attribute translation + OTel span end + BatchProc.OnEnd |
-| `EndSpan` (with PII redaction) | +15–60µs | Regex matching added on top |
+| `EndSpan` (with redaction) | Not measured for the current implementation | Pattern matching and nested-value inspection add work |
 | Background batch export | 0 (async) | BatchSpanProcessor goroutine, does not block caller |
 
 These are additive to the existing NoOpTracer baseline (~1µs per StartSpan / EndSpan).
@@ -746,11 +748,56 @@ The `OTelTracer` follows the same best-effort strategy as `HawkTracer`:
 
 ## Security Considerations
 
-### PII Redaction
+### Export-time redaction
 
-`PrivacyConfig` is applied by `redactOTelSpan` in `OTelTracer.EndSpan` before attributes are passed to the OTel SDK. Credential and PII redaction default to enabled when no privacy configuration is supplied.
+When a privacy flag is enabled, `OTelTracer.EndSpan` applies `PrivacyConfig`
+to a copy before translating span and event attributes and exporting the
+status message. Credential redaction drops recognized credential-named span
+and event keys and replaces recognized credential values in text and supported
+JSON-marshalable nested maps and lists. PII redaction replaces supported
+email, phone, SSN and card patterns in strings, including nested map keys,
+nested values and the status message.
+Nested values are encoded as JSON for OTLP. Attributes containing nonempty
+byte slices or byte arrays that may be serialized are omitted when privacy is
+enabled, since encoding them first could hide credentials in base64 or numeric
+data; `json.RawMessage` is inspected as JSON instead. Attributes that cannot
+be inspected or encoded, including objects whose redacted keys collide, are
+omitted and reported through the OpenTelemetry error handler without their
+contents. The caller's span and event attributes are not mutated.
 
-The redaction function operates on a copy so exporting a span does not mutate the caller-owned span or event attributes.
+The shared credential-key rule normalizes separators and camelCase before
+matching. It retains counters such as `maxTokens` and keys such as
+`token_value`; an opaque secret under a retained key may not match any value
+pattern. `HawkTracer` uses the same key rule and redacts recognized credentials
+in string values, but does not apply the OTLP nested-value pass.
+
+`AllowedAttributes` bypasses both rules for the named span or event attribute.
+Resource attributes are outside this pass. `looms serve` enables both flags;
+auto-selection enables both when its privacy setting is omitted. A directly
+constructed `OTelConfig` uses its supplied flags, whose zero values are false.
+Patterns do **not** detect every secret or PII value, including secrets encoded
+in formats the patterns do not recognize.
+
+### Record-time previews and local storage
+
+`RedactPreview` and `RedactPreviewWhole` are separate record-time helpers: they
+redact at most the first 4,096 runes, with at most one rune of lookahead to
+detect additional content, then retain up to 200 redacted runes and append an
+ellipsis if the redacted window is longer.
+`RedactText` makes at most eight passes; if the eighth still changes the text,
+it returns `[REDACTED]` for the whole input. Bounding the window limits preview
+work independently of the remaining document length. An unfinished recognized
+credential value at the window edge is conservatively removed.
+
+Callers must explicitly use these helpers; existing agent and LLM preview
+callers currently truncate before export instead. The planned input/output
+instrumentation in [#645](https://github.com/teradata-labs/loom/issues/645)
+will use the helpers. Export-time redaction does not rewrite the local
+`eval_runs` record or automatically protect other stores. `GetTrace` does not
+yet have the owner access check tracked in
+[#601](https://github.com/teradata-labs/loom/issues/601); redaction is not a
+substitute for that check. The local trace-store work is tracked in
+[#649](https://github.com/teradata-labs/loom/issues/649).
 
 ### Transport Security
 

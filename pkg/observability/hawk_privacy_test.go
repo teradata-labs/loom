@@ -16,11 +16,65 @@
 package observability
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestHawkExportCredentialKeysAndTokenCounters(t *testing.T) {
+	requests := make(chan hawkExportPayload, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload hawkExportPayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode Hawk payload: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		requests <- payload
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	tracer, err := NewHawkTracer(HawkConfig{
+		Endpoint: server.URL,
+		Privacy:  PrivacyConfig{RedactCredentials: true},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tracer.Close() })
+
+	credentials := []string{"accessToken", "refreshToken", "SessionToken", "authToken", "XApiKey"}
+	counters := []string{"maxTokens", "inputTokenCount", "max_tokens", "token_value"}
+	_, span := tracer.StartSpan(context.Background(), "hawk.privacy")
+	event := make(map[string]interface{})
+	for _, key := range credentials {
+		span.SetAttribute(key, "opaque")
+		event[key] = "opaque"
+	}
+	for _, key := range counters {
+		span.SetAttribute(key, "opaque")
+		event[key] = "opaque"
+	}
+	span.AddEvent("check", event)
+	tracer.EndSpan(span)
+	require.NoError(t, tracer.Flush(context.Background()))
+
+	payload := <-requests
+	require.Len(t, payload.Spans, 1)
+	require.Len(t, payload.Spans[0].Events, 1)
+	for _, attrs := range []map[string]interface{}{payload.Spans[0].Attributes, payload.Spans[0].Events[0].Attributes} {
+		for _, key := range credentials {
+			assert.NotContains(t, attrs, key)
+		}
+		for _, key := range counters {
+			assert.Equal(t, "opaque", attrs[key], key)
+		}
+	}
+}
 
 func TestHawkTracer_EmailRedaction(t *testing.T) {
 	tests := []struct {
@@ -321,7 +375,7 @@ func TestHawkTracer_CredentialKeyPatterns(t *testing.T) {
 		// Should remove
 		{"password in key", "user_password_hash", true},
 		{"secret in key", "database_secret_key", true},
-		{"token in key", "oauth_token_value", true},
+		{"token suffix in key", "oauth_token", true},
 		{"api key pattern", "stripe_api_key", true},
 
 		// Should keep
@@ -329,6 +383,7 @@ func TestHawkTracer_CredentialKeyPatterns(t *testing.T) {
 		{"database", "database_name", false},
 		{"service", "service_url", false},
 		{"metadata", "request_metadata", false},
+		{"token value", "token_value", false},
 	}
 
 	for _, tt := range tests {

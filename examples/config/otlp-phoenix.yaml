@@ -1,0 +1,72 @@
+# Loom + Arize Phoenix OTLP configuration (Bedrock)
+#
+# Guide: docs/guides/integration/phoenix-observability.md
+#
+# Usage:
+#   Start Phoenix on the loopback address (UI and OTLP/HTTP on 127.0.0.1:6006),
+#   then:
+#   looms serve --config examples/config/otlp-phoenix.yaml
+#
+# AWS credentials come from the environment (AWS_* variables) or a named
+# profile; none belong in this file.
+#
+# Phoenix assigns spans to the project named by the x-project-name header.
+# Use a new project name per test run to isolate its spans.
+
+server:
+  port: 60051
+  http_port: 5006
+  host: 127.0.0.1
+  enable_reflection: true
+
+llm:
+  provider: bedrock
+  bedrock_region: us-west-2
+  bedrock_model_id: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+  # Uncomment to use a named AWS profile instead of AWS_* environment variables:
+  # bedrock_profile: default
+  temperature: 1.0
+  max_tokens: 4096
+
+observability:
+  enabled: true
+  mode: otel
+  # Plaintext HTTP: keep this on the loopback address. Use https:// and
+  # otlp_insecure: false for any remote Phoenix.
+  otlp_endpoint: "http://127.0.0.1:6006/v1/traces"
+  otlp_insecure: true
+  otlp_headers:
+    x-project-name: loom-dev
+  # otlp_include_spans is omitted so every span is exported.
+  #
+  # OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, OTEL_EXPORTER_OTLP_ENDPOINT and
+  # LOOM_OTLP_ENDPOINT override otlp_endpoint in looms serve.
+  # OTEL_EXPORTER_OTLP_TRACES_HEADERS, OTEL_EXPORTER_OTLP_HEADERS and
+  # LOOM_OTLP_HEADERS replace configured otlp_headers only when an endpoint
+  # env var is also set. If otlp_headers is empty, environment headers are a
+  # fallback even without an endpoint override. Unset these variables to use
+  # this file's settings.
+  #
+  # looms serve applies best-effort credential and PII redaction before OTLP
+  # export, but patterns can miss secrets and resource attributes are outside
+  # that pass. Traces can contain prompts, responses and tool data. Use
+  # synthetic input.
+
+storage:
+  backend: sqlite
+  sqlite:
+    path: ./loom-phoenix-dev.db
+
+logging:
+  level: info
+  format: text
+
+# Restrictive tool policy: no tool is offered to the model. --yolo,
+# LOOM_YOLO=true and LOOM_TOOLS_PERMISSIONS_* variables override these values;
+# check the "Tool permissions configuration" line in the startup log.
+tools:
+  permissions:
+    yolo: false
+    require_approval: true
+    allowed_tools: []
+    default_action: deny

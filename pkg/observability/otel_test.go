@@ -14,17 +14,27 @@
 package observability
 
 import (
+	"compress/gzip"
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	oteltrace "go.opentelemetry.io/otel/trace"
+	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 // ---------------------------------------------------------------------------
@@ -738,6 +748,352 @@ func TestResolveOTelConfigInsecure(t *testing.T) {
 			t.Error("explicit Insecure=true should not be overwritten")
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// OTLP/HTTP receiver: path, project header and payload reach the backend
+// ---------------------------------------------------------------------------
+
+type otlpRequest struct {
+	path    string
+	project string
+	body    []byte
+	err     error
+}
+
+// newOTLPReceiver starts an httptest server that records every request it gets.
+func newOTLPReceiver(t *testing.T) (*httptest.Server, <-chan otlpRequest) {
+	t.Helper()
+	reqs := make(chan otlpRequest, 16)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec := otlpRequest{path: r.URL.Path, project: r.Header.Get("x-project-name")}
+		var reader io.Reader = r.Body
+		if r.Header.Get("Content-Encoding") == "gzip" {
+			gz, err := gzip.NewReader(r.Body)
+			if err != nil {
+				rec.err = err
+				reqs <- rec
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			defer func() { _ = gz.Close() }()
+			reader = gz
+		}
+		rec.body, rec.err = io.ReadAll(reader)
+		reqs <- rec
+		w.Header().Set("Content-Type", "application/x-protobuf")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, reqs
+}
+
+func TestOTelTracerExportsToOTLPReceiver(t *testing.T) {
+	// Env headers would replace the configured ones; keep the test hermetic.
+	for _, k := range []string{"OTEL_EXPORTER_OTLP_TRACES_HEADERS", "OTEL_EXPORTER_OTLP_HEADERS", "LOOM_OTLP_HEADERS"} {
+		t.Setenv(k, "")
+	}
+
+	t.Run("mode otel sends the span to /v1/traces with x-project-name", func(t *testing.T) {
+		srv, reqs := newOTLPReceiver(t)
+
+		tr, err := NewAutoSelectTracer(&AutoSelectConfig{
+			Mode:         TracerModeOTel,
+			OTLPEndpoint: srv.URL + "/v1/traces",
+			OTLPHeaders:  map[string]string{"x-project-name": "loom-receiver-test"},
+			OTLPInsecure: true,
+			ServiceName:  "loom-test",
+		})
+		if err != nil {
+			t.Fatalf("NewAutoSelectTracer: %v", err)
+		}
+		otelTracer, ok := tr.(*OTelTracer)
+		if !ok {
+			t.Fatalf("mode otel returned %T, want *OTelTracer", tr)
+		}
+		t.Cleanup(func() { _ = otelTracer.Shutdown(context.Background()) })
+
+		_, span := tr.StartSpan(context.Background(), "agent.chat")
+		tr.EndSpan(span)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := tr.Flush(ctx); err != nil {
+			t.Fatalf("Flush: %v", err)
+		}
+
+		var rec otlpRequest
+		select {
+		case rec = <-reqs:
+		case <-time.After(5 * time.Second):
+			t.Fatal("receiver got no request after Flush")
+		}
+		if rec.err != nil {
+			t.Fatalf("reading request body: %v", rec.err)
+		}
+		if rec.path != "/v1/traces" {
+			t.Errorf("request path = %q, want /v1/traces", rec.path)
+		}
+		if rec.project != "loom-receiver-test" {
+			t.Errorf("x-project-name header = %q, want loom-receiver-test", rec.project)
+		}
+
+		var payload coltracepb.ExportTraceServiceRequest
+		if err := proto.Unmarshal(rec.body, &payload); err != nil {
+			t.Fatalf("decoding OTLP payload: %v", err)
+		}
+		var names []string
+		for _, rs := range payload.GetResourceSpans() {
+			for _, ss := range rs.GetScopeSpans() {
+				for _, s := range ss.GetSpans() {
+					names = append(names, s.GetName())
+				}
+			}
+		}
+		if len(names) == 0 {
+			t.Fatal("decoded OTLP payload has no spans")
+		}
+		found := false
+		for _, n := range names {
+			if n == "agent.chat" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("exported spans %v do not include agent.chat", names)
+		}
+	})
+
+	t.Run("mode none sends no request", func(t *testing.T) {
+		srv, reqs := newOTLPReceiver(t)
+
+		tr, err := NewAutoSelectTracer(&AutoSelectConfig{
+			Mode:         TracerModeNone,
+			OTLPEndpoint: srv.URL + "/v1/traces",
+			OTLPHeaders:  map[string]string{"x-project-name": "loom-receiver-test"},
+			OTLPInsecure: true,
+			ServiceName:  "loom-test",
+		})
+		if err != nil {
+			t.Fatalf("NewAutoSelectTracer: %v", err)
+		}
+
+		_, span := tr.StartSpan(context.Background(), "agent.chat")
+		tr.EndSpan(span)
+		if err := tr.Flush(context.Background()); err != nil {
+			t.Fatalf("Flush: %v", err)
+		}
+
+		select {
+		case rec := <-reqs:
+			t.Fatalf("mode none sent a request to %q", rec.path)
+		case <-time.After(500 * time.Millisecond):
+		}
+	})
+}
+
+type failingAttributeMarshaler struct{}
+
+func (failingAttributeMarshaler) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("private-marshaler-error")
+}
+
+type panickingAttributeMarshaler struct{}
+
+func (panickingAttributeMarshaler) MarshalJSON() ([]byte, error) {
+	panic("private-marshaler-panic")
+}
+
+type typedAttributeBytes []byte
+
+type attributeWithBytes struct {
+	Data []byte `json:"data"`
+}
+
+type attributeWithIgnoredBytes struct {
+	Name   string `json:"name"`
+	Secret []byte `json:"-"`
+	hidden []byte
+}
+
+type attributeWithPrivateMarshaledBytes struct {
+	secret []byte
+}
+
+func (v attributeWithPrivateMarshaledBytes) MarshalJSON() ([]byte, error) {
+	return json.Marshal(v.secret)
+}
+
+func TestOTelTracerExportsRedactedTypedValues(t *testing.T) {
+	for _, k := range []string{"OTEL_EXPORTER_OTLP_TRACES_HEADERS", "OTEL_EXPORTER_OTLP_HEADERS", "LOOM_OTLP_HEADERS"} {
+		t.Setenv(k, "")
+	}
+	var mu sync.Mutex
+	var reported []error
+	previous := otel.GetErrorHandler()
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		reported = append(reported, err)
+	}))
+	t.Cleanup(func() { otel.SetErrorHandler(previous) })
+
+	srv, reqs := newOTLPReceiver(t)
+	tr, err := NewOTelTracer(OTelConfig{
+		Endpoint:    srv.URL + "/v1/traces",
+		ServiceName: "redaction-test",
+		Insecure:    true,
+		Privacy:     PrivacyConfig{RedactCredentials: true, RedactPII: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tr.Shutdown(context.Background()) })
+
+	input := map[string]interface{}{
+		"typed": []string{"password=hunter2", "email=user@example.com"},
+		"nested": []map[string]string{{
+			"accessToken": "opaque-nested-secret",
+			"contact":     "other@example.com",
+			"safe":        "preserved",
+		}},
+		"nested_keys": map[string]string{
+			"password=secret-in-key": "safe",
+			"owner@example.com":      "safe",
+		},
+	}
+	_, span := tr.StartSpan(context.Background(), "redaction.test")
+	span.SetAttribute("payload", input)
+	span.SetAttribute("list", []string{"password=hunter2", "user@example.com"})
+	span.SetAttribute("accessToken", "opaque-key-secret")
+	span.SetAttribute("bad", make(chan int))
+	span.SetAttribute("nested_bad", map[string]interface{}{"value": make(chan int)})
+	span.SetAttribute("marshal_error", failingAttributeMarshaler{})
+	span.SetAttribute("marshal_panic", panickingAttributeMarshaler{})
+	byteSecret := []byte("password=secret-in-bytes")
+	span.SetAttribute("bytes", byteSecret)
+	span.SetAttribute("nested_bytes", map[string]interface{}{
+		"items": []interface{}{map[string]interface{}{"value": typedAttributeBytes(byteSecret)}},
+	})
+	span.SetAttribute("struct_bytes", attributeWithBytes{Data: byteSecret})
+	span.SetAttribute("embedded_bytes", struct{ attributeWithBytes }{attributeWithBytes{Data: byteSecret}})
+	span.SetAttribute("array_bytes", [4]byte{'s', 'a', 'f', 'e'})
+	overlapping := []interface{}{"safe", byteSecret}
+	span.SetAttribute("overlapping", []interface{}{overlapping[:1], overlapping[:2]})
+	span.SetAttribute("colliding_keys", map[string]string{"password=first-secret": "a", "password=second-secret": "b"})
+	span.SetAttribute("raw_json", json.RawMessage(`{"password":"raw-json-secret","safe":"preserved"}`))
+	span.SetAttribute("ignored_bytes", attributeWithIgnoredBytes{Name: "preserved", Secret: byteSecret, hidden: byteSecret})
+	span.SetAttribute("custom_bytes", attributeWithPrivateMarshaledBytes{secret: byteSecret})
+	span.SetAttribute("timestamp", time.Unix(1, 0).In(time.FixedZone("test", 0)))
+	cyclic := make(map[string]interface{})
+	cyclic["self"] = cyclic
+	span.SetAttribute("cyclic", cyclic)
+	dynamicType := reflect.StructOf([]reflect.StructField{{
+		Name: "Value",
+		Type: reflect.TypeOf(make(chan int)),
+		Tag:  `json:"password=secret-in-type-tag"`,
+	}})
+	span.SetAttribute("dynamic_bad", reflect.New(dynamicType).Elem().Interface())
+	span.AddEvent("result", map[string]interface{}{
+		"payload":      input,
+		"refreshToken": "opaque-key-secret",
+		"bad":          make(chan int),
+		"bytes":        byteSecret,
+		"nested_bytes": map[string]interface{}{"value": &attributeWithBytes{Data: byteSecret}},
+	})
+	span.Status = Status{Code: StatusError, Message: "password=hunter2 contact user@example.com"}
+	tr.EndSpan(span)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := tr.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var rec otlpRequest
+	select {
+	case rec = <-reqs:
+	case <-ctx.Done():
+		t.Fatal("receiver did not get a redacted span")
+	}
+	if rec.err != nil {
+		t.Fatal(rec.err)
+	}
+	for _, secret := range []string{"hunter2", "user@example.com", "other@example.com", "opaque-nested-secret",
+		"opaque-key-secret", "raw-json-secret", "secret-in-key", "owner@example.com", "first-secret", "second-secret",
+		string(byteSecret), base64.StdEncoding.EncodeToString(byteSecret)} {
+		if strings.Contains(string(rec.body), secret) {
+			t.Errorf("secret %q appeared in the OTLP payload", secret)
+		}
+	}
+	var payload coltracepb.ExportTraceServiceRequest
+	if err := proto.Unmarshal(rec.body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	resources := payload.GetResourceSpans()
+	if len(resources) != 1 || len(resources[0].GetScopeSpans()) != 1 || len(resources[0].GetScopeSpans()[0].GetSpans()) != 1 {
+		t.Fatal("expected exactly one exported span")
+	}
+	exported := resources[0].GetScopeSpans()[0].GetSpans()[0]
+	spanValues := make(map[string]string)
+	for _, attr := range exported.GetAttributes() {
+		spanValues[attr.GetKey()] = attr.GetValue().GetStringValue()
+	}
+	events := exported.GetEvents()
+	if len(events) != 1 {
+		t.Fatal("expected one exported event")
+	}
+	eventValues := make(map[string]string)
+	for _, attr := range events[0].GetAttributes() {
+		eventValues[attr.GetKey()] = attr.GetValue().GetStringValue()
+	}
+	for _, data := range []string{spanValues["loom.payload"], eventValues["payload"]} {
+		var decoded map[string]interface{}
+		if err := json.Unmarshal([]byte(data), &decoded); err != nil {
+			t.Fatalf("nested value is not exported as JSON: %q: %v", data, err)
+		}
+		if !strings.Contains(data, RedactedValue) || !strings.Contains(data, "[EMAIL_REDACTED]") || !strings.Contains(data, "preserved") {
+			t.Errorf("typed values were not correctly redacted: %q", data)
+		}
+	}
+	for _, key := range []string{"loom.accessToken", "loom.bad", "loom.nested_bad", "loom.marshal_error", "loom.marshal_panic",
+		"loom.bytes", "loom.nested_bytes", "loom.struct_bytes", "loom.embedded_bytes", "loom.array_bytes", "loom.overlapping", "loom.colliding_keys", "loom.cyclic", "loom.custom_bytes", "loom.dynamic_bad"} {
+		if _, ok := spanValues[key]; ok {
+			t.Errorf("unsafe span attribute %q survived", key)
+		}
+	}
+	if raw := spanValues["loom.raw_json"]; !strings.Contains(raw, RedactedValue) || !strings.Contains(raw, "preserved") {
+		t.Errorf("inspectable raw JSON was not preserved and redacted: %q", raw)
+	}
+	if ignored := spanValues["loom.ignored_bytes"]; !strings.Contains(ignored, "preserved") {
+		t.Errorf("struct with non-serialized bytes was not preserved: %q", ignored)
+	}
+	if spanValues["loom.timestamp"] != "1970-01-01T00:00:01Z" {
+		t.Errorf("inspectable marshaler was not preserved: %q", spanValues["loom.timestamp"])
+	}
+	for _, key := range []string{"refreshToken", "bad", "bytes", "nested_bytes"} {
+		if _, ok := eventValues[key]; ok {
+			t.Errorf("unsafe event attribute %q survived", key)
+		}
+	}
+	if strings.Contains(exported.GetStatus().GetMessage(), "hunter2") || strings.Contains(exported.GetStatus().GetMessage(), "user@example.com") {
+		t.Errorf("status message was not redacted: %q", exported.GetStatus().GetMessage())
+	}
+	if input["typed"].([]string)[0] != "password=hunter2" ||
+		span.Events[0].Attributes["refreshToken"] != "opaque-key-secret" {
+		t.Error("redaction modified the caller's nested values or event")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(reported) < 17 {
+		t.Errorf("reported %d conversion failures, want at least 17", len(reported))
+	}
+	for _, err := range reported {
+		for _, secret := range []string{"private-marshaler", "secret-in-bytes", "first-secret", "second-secret", "secret-in-type-tag"} {
+			if strings.Contains(err.Error(), secret) {
+				t.Errorf("error handler exposed a value or marshaler message: %v", err)
+			}
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------

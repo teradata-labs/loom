@@ -14,14 +14,21 @@
 package observability
 
 import (
+	"bytes"
 	"context"
+	"encoding"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
@@ -173,7 +180,12 @@ func (t *OTelTracer) EndSpan(span *Span) {
 	for _, ev := range redacted.Events {
 		evAttrs := make([]attribute.KeyValue, 0, len(ev.Attributes))
 		for k, v := range ev.Attributes {
-			evAttrs = append(evAttrs, toOTelAttr(k, v))
+			attr, err := toOTelAttr(k, v)
+			if err != nil {
+				reportInvalidAttribute("event", v)
+				continue
+			}
+			evAttrs = append(evAttrs, attr)
 		}
 		otelSpan.AddEvent(ev.Name,
 			oteltrace.WithTimestamp(ev.Timestamp),
@@ -246,89 +258,236 @@ func buildOTelSpanContext(loomTraceID, loomSpanID string) (oteltrace.SpanContext
 	return sc, sc.IsValid()
 }
 
-// redactOTelSpan applies privacy rules before attributes are exported.
-// PII patterns (emailPattern, phonePattern, etc.) are defined in privacy.go.
+// RedactSpan returns span with the configured privacy rules applied to a copy
+// of its attributes, events and status. Allowed and resource attributes are
+// left unchanged. Unsupported values are omitted and reported to OpenTelemetry.
+func RedactSpan(span *Span, cfg PrivacyConfig) *Span {
+	if span == nil {
+		return nil
+	}
+	return redactOTelSpan(span, cfg)
+}
+
 func redactOTelSpan(span *Span, cfg PrivacyConfig) *Span {
 	if !cfg.RedactCredentials && !cfg.RedactPII {
 		return span
 	}
-
-	redacted := *span
-	redacted.Attributes = make(map[string]interface{}, len(span.Attributes))
-	for k, v := range span.Attributes {
-		redacted.Attributes[k] = v
-	}
-	redacted.Events = make([]Event, len(span.Events))
-	for i, event := range span.Events {
-		redacted.Events[i] = event
-		redacted.Events[i].Attributes = make(map[string]interface{}, len(event.Attributes))
-		for k, v := range event.Attributes {
-			redacted.Events[i].Attributes[k] = v
-		}
-	}
-	span = &redacted
 
 	allowed := make(map[string]bool, len(cfg.AllowedAttributes))
 	for _, k := range cfg.AllowedAttributes {
 		allowed[k] = true
 	}
 
-	if cfg.RedactCredentials {
-		credKeys := []string{
-			"password", "api_key", "token", "secret", "authorization",
-			"access_token", "refresh_token", "bearer", "apikey",
-			"client_secret", "private_key", "ssh_key", "aws_secret",
-		}
-		for _, k := range credKeys {
-			if !allowed[k] {
-				delete(span.Attributes, k)
-			}
-		}
-		for k := range span.Attributes {
-			kl := strings.ToLower(k)
-			if !allowed[k] {
-				if strings.Contains(kl, "password") || strings.Contains(kl, "secret") ||
-					(strings.Contains(kl, "key") && strings.Contains(kl, "api")) {
-					delete(span.Attributes, k)
-				}
-			}
-		}
+	redacted := *span
+	redacted.Attributes = redactAttributes(span.Attributes, cfg, allowed, "span")
+	redacted.Events = make([]Event, len(span.Events))
+	for i, event := range span.Events {
+		redacted.Events[i] = event
+		redacted.Events[i].Attributes = redactAttributes(event.Attributes, cfg, allowed, "event")
 	}
+	redacted.Status.Message = redactConfiguredString(span.Status.Message, cfg)
+	return &redacted
+}
 
-	if cfg.RedactPII {
-		for k, v := range span.Attributes {
-			if allowed[k] {
+func redactAttributes(attrs map[string]interface{}, cfg PrivacyConfig, allowed map[string]bool, scope string) map[string]interface{} {
+	out := make(map[string]interface{}, len(attrs))
+	for key, value := range attrs {
+		if allowed[key] {
+			out[key] = value
+			continue
+		}
+		if cfg.RedactCredentials && isCredentialField(key) {
+			continue
+		}
+		clean, err := redactAttributeValue(value, cfg)
+		if err != nil {
+			reportInvalidAttribute(scope, value)
+			continue
+		}
+		out[key] = clean
+	}
+	return out
+}
+
+func redactConfiguredString(s string, cfg PrivacyConfig) string {
+	switch {
+	case cfg.RedactCredentials && cfg.RedactPII:
+		return RedactText(s)
+	case cfg.RedactCredentials:
+		return redactCredentialString(s)
+	case cfg.RedactPII:
+		return redactPIIString(s)
+	default:
+		return s
+	}
+}
+
+// redactAttributeValue normalizes JSON-marshalable composite values before
+// walking them, so typed maps and slices are inspected at every depth.
+func redactAttributeValue(value interface{}, cfg PrivacyConfig) (interface{}, error) {
+	switch v := value.(type) {
+	case nil, bool, int, int32, int64:
+		return value, nil
+	case float32:
+		if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
+			return nil, fmt.Errorf("non-finite float")
+		}
+		return value, nil
+	case float64:
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return nil, fmt.Errorf("non-finite float")
+		}
+		return value, nil
+	case string:
+		return redactConfiguredString(v, cfg), nil
+	case []string:
+		out := make([]string, len(v))
+		for i, s := range v {
+			out[i] = redactConfiguredString(s, cfg)
+		}
+		return out, nil
+	default:
+		if err := inspectAttributeValue(reflect.ValueOf(value), make(map[attributeVisit]struct{}), 0); err != nil {
+			return nil, err
+		}
+		encoded, err := marshalAttributeJSON(value)
+		if err != nil {
+			return nil, err
+		}
+		decoder := json.NewDecoder(bytes.NewReader(encoded))
+		decoder.UseNumber()
+		var decoded interface{}
+		if err := decoder.Decode(&decoded); err != nil {
+			return nil, err
+		}
+		return redactJSONValue(decoded, cfg)
+	}
+}
+
+type attributeVisit struct {
+	typ    reflect.Type
+	ptr    uintptr
+	length int
+}
+
+const maxAttributeInspectionDepth = 10000
+
+// Bytes would otherwise be base64-encoded before the redactor can inspect
+// them. RawMessage is different: its contents are decoded as JSON below.
+func inspectAttributeValue(value reflect.Value, seen map[attributeVisit]struct{}, depth int) error {
+	if !value.IsValid() {
+		return nil
+	}
+	if depth > maxAttributeInspectionDepth {
+		return errors.New("attribute nesting exceeds inspection limit")
+	}
+	kind := value.Kind()
+	if kind == reflect.Interface {
+		if value.IsNil() {
+			return nil
+		}
+		return inspectAttributeValue(value.Elem(), seen, depth+1)
+	}
+	if (kind == reflect.Slice || kind == reflect.Array) && value.Type().Elem().Kind() == reflect.Uint8 {
+		if value.Type() == reflect.TypeOf(json.RawMessage(nil)) || value.Len() == 0 {
+			return nil
+		}
+		return errors.New("cannot inspect opaque bytes")
+	}
+	switch kind {
+	case reflect.Pointer, reflect.Map, reflect.Slice:
+		if value.IsNil() {
+			return nil
+		}
+		visit := attributeVisit{typ: value.Type(), ptr: value.Pointer()}
+		if kind == reflect.Slice {
+			visit.length = value.Len()
+		}
+		if _, ok := seen[visit]; ok {
+			return nil
+		}
+		seen[visit] = struct{}{}
+	}
+	switch kind {
+	case reflect.Pointer:
+		return inspectAttributeValue(value.Elem(), seen, depth+1)
+	case reflect.Map:
+		iter := value.MapRange()
+		for iter.Next() {
+			if err := inspectAttributeValue(iter.Key(), seen, depth+1); err != nil {
+				return err
+			}
+			if err := inspectAttributeValue(iter.Value(), seen, depth+1); err != nil {
+				return err
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < value.Len(); i++ {
+			if err := inspectAttributeValue(value.Index(i), seen, depth+1); err != nil {
+				return err
+			}
+		}
+	case reflect.Struct:
+		typ := value.Type()
+		jsonMarshaler := reflect.TypeOf((*json.Marshaler)(nil)).Elem()
+		textMarshaler := reflect.TypeOf((*encoding.TextMarshaler)(nil)).Elem()
+		ptrType := reflect.PointerTo(typ)
+		custom := typ.Implements(jsonMarshaler) || ptrType.Implements(jsonMarshaler) ||
+			typ.Implements(textMarshaler) || ptrType.Implements(textMarshaler)
+		for i := 0; i < value.NumField(); i++ {
+			field := typ.Field(i)
+			if !custom && ((!field.IsExported() && !field.Anonymous) || field.Tag.Get("json") == "-") {
 				continue
 			}
-			if s, ok := v.(string); ok {
-				r := emailPattern.ReplaceAllString(s, "[EMAIL_REDACTED]")
-				r = phonePattern.ReplaceAllString(r, "[PHONE_REDACTED]")
-				r = ssnPattern.ReplaceAllString(r, "[SSN_REDACTED]")
-				r = creditCardPattern.ReplaceAllString(r, "[CARD_REDACTED]")
-				if r != s {
-					span.Attributes[k] = r
-				}
-			}
-		}
-		for i := range span.Events {
-			for k, v := range span.Events[i].Attributes {
-				if allowed[k] {
-					continue
-				}
-				if s, ok := v.(string); ok {
-					r := emailPattern.ReplaceAllString(s, "[EMAIL_REDACTED]")
-					r = phonePattern.ReplaceAllString(r, "[PHONE_REDACTED]")
-					r = ssnPattern.ReplaceAllString(r, "[SSN_REDACTED]")
-					r = creditCardPattern.ReplaceAllString(r, "[CARD_REDACTED]")
-					if r != s {
-						span.Events[i].Attributes[k] = r
-					}
-				}
+			if err := inspectAttributeValue(value.Field(i), seen, depth+1); err != nil {
+				return err
 			}
 		}
 	}
+	return nil
+}
 
-	return span
+func redactJSONValue(value interface{}, cfg PrivacyConfig) (interface{}, error) {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(v))
+		for key, child := range v {
+			cleanKey := redactConfiguredString(key, cfg)
+			if _, exists := out[cleanKey]; exists {
+				return nil, errors.New("redacted attribute map keys collide")
+			}
+			if cfg.RedactCredentials && isCredentialField(key) {
+				out[cleanKey] = RedactedValue
+			} else {
+				cleanChild, err := redactJSONValue(child, cfg)
+				if err != nil {
+					return nil, err
+				}
+				out[cleanKey] = cleanChild
+			}
+		}
+		return out, nil
+	case []interface{}:
+		for i, child := range v {
+			cleanChild, err := redactJSONValue(child, cfg)
+			if err != nil {
+				return nil, err
+			}
+			v[i] = cleanChild
+		}
+		return v, nil
+	case string:
+		return redactConfiguredString(v, cfg), nil
+	}
+	return value, nil
+}
+
+func reportInvalidAttribute(scope string, value interface{}) {
+	kind := "nil"
+	if typ := reflect.TypeOf(value); typ != nil {
+		kind = typ.Kind().String()
+	}
+	otel.Handle(fmt.Errorf("observability: omitted unsupported %s attribute (kind %s)", scope, kind))
 }
 
 // Ensure OTelTracer implements Tracer.
