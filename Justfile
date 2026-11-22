@@ -333,14 +333,20 @@ deps:
     go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
     go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
     go install golang.org/x/tools/cmd/goimports@latest
-    go install github.com/securego/gosec/v2/cmd/gosec@latest
+    go install github.com/securego/gosec/v2/cmd/gosec@v{{gosec_version}}
     go mod download
     go mod tidy
 
-# Run security scanner
+# gosec version. Keep it equal to the securego/gosec action pinned in
+# .github/workflows/ci.yml and nightly.yml: different gosec versions report
+# different findings, so an unpinned local gosec can fail on code CI accepts.
+gosec_version := "2.30.0"
+
+# Run security scanner (gosec at gosec_version through `go run`, not whatever
+# gosec is on PATH)
 security:
-    @echo "Running security scan..."
-    @gosec -exclude-dir=gen -exclude-dir=third_party -fmt=text ./...
+    @echo "Running security scan (gosec v{{gosec_version}})..."
+    @go run github.com/securego/gosec/v2/cmd/gosec@v{{gosec_version}} -exclude-dir=gen -exclude-dir=third_party -fmt=text ./...
 
 # Clean build artifacts
 [confirm("Remove build outputs, binaries under LOOM_BIN_DIR (default ~/.local/bin), all Loom data under LOOM_DATA_DIR (default ~/.loom), and stop looms processes? Non-interactive: just --yes clean")]

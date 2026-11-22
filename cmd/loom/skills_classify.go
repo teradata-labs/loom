@@ -179,7 +179,7 @@ func describeRPCError(prefix string, err error) error {
 func buildSkillsTLSConfig() (*tls.Config, error) {
 	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
 	if tlsInsecure {
-		cfg.InsecureSkipVerify = true //nolint:gosec // user opted into via --tls-insecure
+		cfg.InsecureSkipVerify = true // #nosec G402 -- user opted into via --tls-insecure
 		return cfg, nil
 	}
 	pool, err := x509.SystemCertPool()
