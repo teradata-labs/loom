@@ -130,7 +130,7 @@ func createTLSConfig(cfg Config) (*tls.Config, error) {
 
 	// If insecure mode, skip certificate verification
 	if cfg.TLSInsecure {
-		tlsConfig.InsecureSkipVerify = true //nolint:gosec // user opted in via --tls-insecure for self-signed certs
+		tlsConfig.InsecureSkipVerify = true // #nosec G402 -- user opted in via --tls-insecure for self-signed certs
 		return tlsConfig, nil
 	}
 
