@@ -245,19 +245,18 @@ func TestTransientTail_SynthesisCallCarriesTail(t *testing.T) {
 	assert.Equal(t, 2, calls, "fn runs once per provider call, synthesis included")
 }
 
-// Each provider call that carries a tail emits transient_tail.added with the
-// tail's byte length — never its text. The synthesis call emits it too
-// (MaxTurns=1: one loop call, one synthesis call).
+// A provider call that PINS the tail emits transient_tail.added with the
+// tail's byte length — never its text. A call whose tail equals the turn's
+// latest pinned tail adds no note and no event (review round 4, F10: the
+// dedup is visible in the trace), and a recovery resend does not re-emit.
 func TestTransientTail_SpanEventCarriesByteLength(t *testing.T) {
 	tracer := &spanKeepingTracer{}
 	_, _ = tailTurn(t, "tail_event", WithTracer(tracer),
 		WithTransientTail(func(context.Context) string { return "12345" }))
 
 	evs := tracer.eventsNamed("transient_tail.added")
-	require.Len(t, evs, 2, "one event per provider call")
-	for i, ev := range evs {
-		assert.Equal(t, 5, ev.Attributes["bytes"], "event %d", i)
-	}
+	require.Len(t, evs, 1, "a constant tail over a 2-call turn is pinned once — the second call dedupes")
+	assert.Equal(t, 5, evs[0].Attributes["bytes"])
 
 	llm := &recordingToolLLM{mockToolCallingLLM: &mockToolCallingLLM{
 		responses: []mockLLMResponse{
@@ -275,10 +274,23 @@ func TestTransientTail_SpanEventCarriesByteLength(t *testing.T) {
 	require.NoError(t, err)
 
 	evs = synthTracer.eventsNamed("transient_tail.added")
-	require.Len(t, evs, 2, "one event per provider call, synthesis included")
-	for i, ev := range evs {
-		assert.Equal(t, 5, ev.Attributes["bytes"], "event %d", i)
-	}
+	require.Len(t, evs, 1, "the loop call pins the tail; the synthesis call's unchanged tail dedupes")
+	assert.Equal(t, 5, evs[0].Attributes["bytes"])
+}
+
+// A changing tail pins a note per distinct value, so each call emits the
+// event: the trace still shows one emission per real pin.
+func TestTransientTail_SpanEvent_ChangingTailEventPerCall(t *testing.T) {
+	n := 0
+	tracer := &spanKeepingTracer{}
+	_, _ = tailTurn(t, "tail_event_changing", WithTracer(tracer),
+		WithTransientTail(func(context.Context) string {
+			n++
+			return fmt.Sprintf("v%d", n)
+		}))
+
+	evs := tracer.eventsNamed("transient_tail.added")
+	require.Len(t, evs, 2, "each call pins a new value")
 }
 
 // An empty tail adds nothing and emits no event.

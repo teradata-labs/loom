@@ -1518,8 +1518,9 @@ type turnNote struct {
 // written after them from being replayed.
 //
 // It also clears the pending tail (SetTransientTail): once pinned, the notes
-// are counted as compiled messages.
-func (sm *SegmentedMemory) PinTurnNotes(reminders ...TurnReminder) {
+// are counted as compiled messages. Returns the reminders it pinned — nil
+// when every reminder was already sent or skipped this turn.
+func (sm *SegmentedMemory) PinTurnNotes(reminders ...TurnReminder) []TurnReminder {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.transientTail = ""
@@ -1527,7 +1528,7 @@ func (sm *SegmentedMemory) PinTurnNotes(reminders ...TurnReminder) {
 	sm.turnNotes = sm.turnNotesLocked(t)
 	fresh := sm.unsentRemindersLocked(t, reminders)
 	if len(fresh) == 0 {
-		return
+		return nil
 	}
 	after := 0
 	for i := range sm.contextMessages {
@@ -1546,6 +1547,7 @@ func (sm *SegmentedMemory) PinTurnNotes(reminders ...TurnReminder) {
 		content:  systemReminderContent(reminderTexts(fresh)...),
 		arrivals: sm.arrivals,
 	})
+	return fresh
 }
 
 // turnNotesLocked returns the pinned notes of turn t, in the order they were

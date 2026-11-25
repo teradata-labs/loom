@@ -3055,13 +3055,16 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// value: a call whose tail equals the turn's latest pinned tail adds
 		// no note, a changed value pins a new one (TurnReminder.Tail).
 		withReminder := func(msgs []Message, toolNote string) []Message {
-			if tail != "" {
-				span.AddEvent("transient_tail.added", map[string]interface{}{"bytes": len(tail)})
-			}
 			rs := append(reminders[:len(reminders):len(reminders)], TurnReminder{Text: toolNote})
 			if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
-				segMem.PinTurnNotes(append(rs, TurnReminder{Tail: true, Text: tail})...)
+				fresh := segMem.PinTurnNotes(append(rs, TurnReminder{Tail: true, Text: tail})...)
+				if tailPinned(fresh) {
+					span.AddEvent("transient_tail.added", map[string]interface{}{"bytes": len(tail)})
+				}
 				return session.GetMessages()
+			}
+			if tail != "" {
+				span.AddEvent("transient_tail.added", map[string]interface{}{"bytes": len(tail)})
 			}
 			return withSystemReminder(msgs, append(reminderTexts(rs), tail)...)
 		}
@@ -4174,6 +4177,18 @@ func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, 
 	}
 }
 
+// tailPinned reports whether the reminders PinTurnNotes just pinned include
+// the caller tail (TurnReminder.Tail) — the tail text was newly pinned this
+// call, not skipped as the turn's latest pinned tail.
+func tailPinned(fresh []TurnReminder) bool {
+	for _, r := range fresh {
+		if r.Tail {
+			return true
+		}
+	}
+	return false
+}
+
 // synthesizeFinalResponse makes the final tool-free LLM call after the
 // conversation loop exhausts its turn/execution budget, so the agent yields
 // meaningful output instead of a generic limit error. Moved verbatim from
@@ -4191,9 +4206,8 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNot
 
 	// Make final LLM call WITHOUT tools to force synthesis. It reaches here
 	// exactly when the loop ran out of budget — the turn is at its largest —
-	// so it gets the same relief as a loop send: advertise no tool bytes (this
-	// call carries none), shed before the send, and on a provider refusal shed
-	// deeper and resend once.
+	// so it gets the same handling as a loop send: advertise no tool bytes
+	// (this call carries none), and on a provider refusal shed and resend once.
 	//
 	// The caller tail is sampled once for this call — the relief estimate and
 	// the request build read the same value, and the relief-resend reuses it
@@ -4206,12 +4220,6 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNot
 	if segMem != nil {
 		a.setAdvertisedTools(segMem, nil)
 		segMem.SetTransientTail(TurnReminder{Kind: ReminderGraphMemory, Text: memoryNote}, TurnReminder{Tail: true, Text: tail})
-		if shed, estimate, target := segMem.ReleasePressure(ctx, 0); shed {
-			zap.L().Info("relief: shed before synthesis",
-				zap.String("session_id", session.ID),
-				zap.Int("estimate_tokens", estimate),
-				zap.Int("target_tokens", target))
-		}
 	}
 	// The loop ends here when the last step used up the tool budget, so this
 	// send can carry that step's results: the same check as a loop send.
@@ -4223,14 +4231,17 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNot
 	// withReminder does, so it stays in place for the rest of the turn; a tail
 	// equal to the turn's latest pinned tail adds no note (TurnReminder.Tail).
 	synthesisMessages := func() []Message {
+		if segMem != nil {
+			fresh := segMem.PinTurnNotes(TurnReminder{Kind: ReminderGraphMemory, Text: memoryNote}, TurnReminder{Tail: true, Text: tail})
+			if span := observability.SpanFromContext(ctx); span != nil && tailPinned(fresh) {
+				span.AddEvent("transient_tail.added", map[string]interface{}{"bytes": len(tail)})
+			}
+			return session.GetMessages()
+		}
 		if tail != "" {
 			if span := observability.SpanFromContext(ctx); span != nil {
 				span.AddEvent("transient_tail.added", map[string]interface{}{"bytes": len(tail)})
 			}
-		}
-		if segMem != nil {
-			segMem.PinTurnNotes(TurnReminder{Kind: ReminderGraphMemory, Text: memoryNote}, TurnReminder{Tail: true, Text: tail})
-			return session.GetMessages()
 		}
 		return withSystemReminder(session.GetMessages(), memoryNote, tail)
 	}

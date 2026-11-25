@@ -27,6 +27,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/memory"
@@ -515,6 +516,196 @@ func TestTransientTail_CountedInReliefEstimate(t *testing.T) {
 	seg.mu.RLock()
 	assert.Empty(t, seg.transientTail, "pinning cleared the pending tail at the send")
 	seg.mu.RUnlock()
+}
+
+// tailReliefFixture builds a small-window memory filled well under the relief
+// marks and calibrates a caller tail whose PENDING estimate pushes the total
+// past `cross` (an absolute estimate). The fill sits at 60% of the penalized
+// start mark, so without the tail no mark is crossed. Returns the memory,
+// its counting compressor and the tail text.
+func tailReliefFixture(t *testing.T, cross func(start, synth int) int) (*SegmentedMemory, *countingCompressor, string) {
+	t.Helper()
+	ctx := context.Background()
+	sm := NewSegmentedMemory("ROM", 16000, 1000)
+	sm.SetThreshold(16384)
+	comp := &countingCompressor{}
+	sm.SetCompressor(comp)
+	sm.mu.Lock()
+	start := sm.startMarkLocked(0)
+	synth := sm.startMarkLocked(pressureRecoveryPenalty)
+	sm.mu.Unlock()
+	for turn := int64(1); ; turn++ {
+		sm.AddMessage(ctx, Message{Role: "user", Content: denseText(fmt.Sprintf("q%d", turn), 10), Turn: turn})
+		sm.AddMessage(ctx, Message{Role: "assistant", Content: denseText(fmt.Sprintf("a%d", turn), 10), Turn: turn})
+		sm.mu.Lock()
+		est := sm.estimateLocked()
+		sm.mu.Unlock()
+		if est >= synth*60/100 {
+			break
+		}
+	}
+	for reps := 1; reps <= 1<<20; reps *= 2 {
+		tail := denseText("tail", reps)
+		sm.SetTransientTail(TurnReminder{Tail: true, Text: tail})
+		sm.mu.Lock()
+		est := sm.estimateLocked()
+		sm.mu.Unlock()
+		sm.SetTransientTail()
+		if est >= cross(start, synth) {
+			return sm, comp, tail
+		}
+	}
+	t.Fatal("could not calibrate a caller tail that crosses the mark")
+	return nil, nil, ""
+}
+
+// tailReliefLLM serves the fixture turn: the fold ask is answered with a
+// summary JSON, the synthesis ask ("You must provide your final answer NOW")
+// with a refusal when refuseOnce is set and a text answer otherwise, and the
+// first toolCalls loop asks with a probe tool call ("done" after).
+type tailReliefLLM struct {
+	mu         sync.Mutex
+	calls      [][]llmtypes.Message
+	toolCalls  int
+	refuseOnce bool
+	refused    bool
+}
+
+// promptHas reports whether any message of the request carries s — the
+// synthesis request's last message is the pinned tail note, not the prompt.
+func promptHas(msgs []llmtypes.Message, s string) bool {
+	for _, m := range msgs {
+		if strings.Contains(m.Content, s) {
+			return true
+		}
+	}
+	return false
+}
+
+func (l *tailReliefLLM) Name() string  { return "mock" }
+func (l *tailReliefLLM) Model() string { return "mock-v1" }
+
+func (l *tailReliefLLM) Chat(_ context.Context, msgs []llmtypes.Message, _ []shuttle.Tool) (*llmtypes.LLMResponse, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.calls = append(l.calls, append([]llmtypes.Message(nil), msgs...))
+	usage := llmtypes.Usage{InputTokens: 10, OutputTokens: 5}
+	if promptHas(msgs, "Context maintenance: summarise the work so far") {
+		return &llmtypes.LLMResponse{Content: `{"summary": "state carried forward"}`, Usage: usage}, nil
+	}
+	if promptHas(msgs, "You must provide your final answer NOW") {
+		if l.refuseOnce && !l.refused {
+			l.refused = true
+			return nil, fmt.Errorf("API error (status 400): prompt is too long: %w", llm.ErrContextTooLong)
+		}
+		return &llmtypes.LLMResponse{Content: "final answer", Usage: usage}, nil
+	}
+	if len(l.calls) <= l.toolCalls {
+		return &llmtypes.LLMResponse{
+			ToolCalls: []llmtypes.ToolCall{{ID: "c1", Name: "probe", Input: map[string]interface{}{}}},
+			Usage:     usage,
+		}, nil
+	}
+	return &llmtypes.LLMResponse{Content: "done", Usage: usage}, nil
+}
+
+// TestTransientTail_TailPushesReliefOverTheMark (review F9): only the caller
+// tail pushes the estimate over the threshold, on both paths — the loop's
+// fold trigger and the synthesis refusal's relief pass. Dropping the tail
+// from either SetTransientTail call fails it: without the tail the estimate
+// stays under the mark, so no fold is asked and the refusal relief no-ops.
+func TestTransientTail_TailPushesReliefOverTheMark(t *testing.T) {
+	t.Run("loop: the fold trigger counts the tail", func(t *testing.T) {
+		sm, _, tail := tailReliefFixture(t, func(start, synth int) int { return start })
+		llm := &tailReliefLLM{}
+		ag := reliefSeamAgent(t, llm, "s-tail-relief", sm,
+			WithTransientTail(func(context.Context) string { return tail }))
+		ag.RegisterTool(namedStubTool{name: "probe"})
+
+		_, err := ag.Chat(context.Background(), "s-tail-relief", "What about the walrus migration?")
+		require.NoError(t, err)
+
+		llm.mu.Lock()
+		defer llm.mu.Unlock()
+		folds := 0
+		for _, call := range llm.calls {
+			if promptHas(call, foldInstruction) {
+				folds++
+			}
+		}
+		assert.Positive(t, folds, "the fold trigger must count the pending caller tail before the send")
+	})
+
+	t.Run("synthesis: the refusal relief counts the tail", func(t *testing.T) {
+		sm, comp, tail := tailReliefFixture(t, func(start, synth int) int { return synth })
+		// fn is empty during the loop's single call and returns the tail from
+		// the synthesis call on: the loop never pins it, so the pending tail
+		// set at synthesis is the only thing that can cross the mark.
+		fnCalls := 0
+		llm := &tailReliefLLM{toolCalls: 1, refuseOnce: true}
+		ag := reliefSeamAgent(t, llm, "s-tail-synth", sm,
+			WithTransientTail(func(context.Context) string {
+				fnCalls++
+				if fnCalls == 1 {
+					return ""
+				}
+				return tail
+			}))
+		ag.config.MaxTurns = 1
+		ag.RegisterTool(namedStubTool{name: "probe"})
+
+		_, err := ag.Chat(context.Background(), "s-tail-synth", "go")
+		require.NoError(t, err)
+
+		llm.mu.Lock()
+		defer llm.mu.Unlock()
+		var asks [][]llmtypes.Message
+		for _, call := range llm.calls {
+			if promptHas(call, "You must provide your final answer NOW") {
+				asks = append(asks, call)
+			}
+		}
+		require.Len(t, asks, 2, "the refused synthesis send is followed by one relief resend")
+		bytes := func(msgs []llmtypes.Message) int {
+			n := 0
+			for _, m := range msgs {
+				n += len(m.Content)
+			}
+			return n
+		}
+		assert.Positive(t, comp.calls, "the relief pass ran on the refusal")
+		assert.Less(t, bytes(asks[1]), bytes(asks[0]),
+			"the resend is smaller: relief shed because the pending tail crossed the mark")
+	})
+}
+
+// TestReview589R7_NoLadderBeforeSynthesis (review round 7, F12): the merge
+// re-added the pressure ladder before the synthesis send. The ladder answers
+// a provider refusal only (main 6f7611f4): a turn that exhausts MaxTurns with
+// the estimate at or above the start mark and NO provider refusal must not
+// run the compressor at synthesis. fn is empty during the loop's single call
+// and returns the tail from the synthesis call on, so the loop's estimate
+// stays under the start mark (no in-loop fold) and the synthesis send
+// crosses it with no refusal.
+func TestReview589R7_NoLadderBeforeSynthesis(t *testing.T) {
+	sm, comp, tail := tailReliefFixture(t, func(start, synth int) int { return start })
+	fnCalls := 0
+	llm := &tailReliefLLM{toolCalls: 1}
+	ag := reliefSeamAgent(t, llm, "s-tail-noladder", sm,
+		WithTransientTail(func(context.Context) string {
+			fnCalls++
+			if fnCalls == 1 {
+				return ""
+			}
+			return tail
+		}))
+	ag.config.MaxTurns = 1
+	ag.RegisterTool(namedStubTool{name: "probe"})
+
+	resp, err := ag.Chat(context.Background(), "s-tail-noladder", "go")
+	require.NoError(t, err)
+	assert.NotEmpty(t, resp.Content)
+	assert.Zero(t, comp.calls, "the pressure ladder must not run before the synthesis send")
 }
 
 // TestPinTurnNotes_ResendWithChangedTailPinsNewNote (review Q5): a resend
