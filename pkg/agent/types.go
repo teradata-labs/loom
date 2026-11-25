@@ -91,6 +91,11 @@ type Agent struct {
 	// is unavailable (returns ErrEventLogDisabled).
 	eventLog eventlog.EventLogStore
 
+	// transientTail, when non-nil, supplies caller text that rides a
+	// <system-reminder> with the turn's built-in notes on every provider call
+	// (WithTransientTail).
+	transientTail func(ctx context.Context) string
+
 	// leaseTTL overrides eventlog.DefaultSessionLeaseTTL for the session lease
 	// (session_lease.go). Zero uses the default; tests set it short.
 	leaseTTL time.Duration

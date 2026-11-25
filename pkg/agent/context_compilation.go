@@ -1395,9 +1395,16 @@ func (sm *SegmentedMemory) noteFoldedSkillsLocked(region, stays []Message, text 
 // the same text was already pinned since the turn's last new row, which is the
 // resend of a refused call. The same text on a later step is a new event (a
 // tool added again after relief removed it) and is sent again.
+//
+// Tail marks the caller transient tail (WithTransientTail): live state the
+// agent samples on every provider call. The request only grows within a turn
+// (PinTurnNotes), so it is not re-sent per call: a call whose tail equals the
+// turn's latest pinned tail adds no note, a changed value pins a new one, and
+// earlier values stay visible until the turn settles.
 type TurnReminder struct {
 	Kind string
 	Text string
+	Tail bool
 }
 
 // Reminder kinds the agent sends at most once per turn (TurnReminder.Kind).
@@ -1411,6 +1418,9 @@ const (
 // its text. A kind is matched against the whole turn, an event note only
 // against the notes pinned since the last new row (unsentRemindersLocked).
 func (r TurnReminder) key() string {
+	if r.Tail {
+		return "tail:" + r.Text
+	}
 	if r.Kind != "" {
 		return "kind:" + r.Kind
 	}
@@ -1420,20 +1430,38 @@ func (r TurnReminder) key() string {
 // unsentRemindersLocked returns the reminders of rs, trimmed, that turn t
 // has not sent yet, each key once: a status kind sent anywhere in the turn is
 // skipped, an event note only when a note pinned since the last new row
-// (same arrivals) carries the same text. Must hold lock.
+// (same arrivals) carries the same text. The caller tail (TurnReminder.Tail)
+// is skipped while it equals the turn's latest pinned tail (TurnReminder doc).
+// Must hold lock.
 func (sm *SegmentedMemory) unsentRemindersLocked(t int64, rs []TurnReminder) []TurnReminder {
+	notes := sm.turnNotesLocked(t)
 	sent := make(map[string]bool)
-	for _, n := range sm.turnNotesLocked(t) {
+	for _, n := range notes {
 		for _, k := range n.keys {
 			if strings.HasPrefix(k, "kind:") || n.arrivals == sm.arrivals {
 				sent[k] = true
 			}
 		}
 	}
+	latestTail := ""
+	for i := len(notes) - 1; i >= 0; i-- {
+		for _, k := range notes[i].keys {
+			if strings.HasPrefix(k, "tail:") {
+				latestTail = strings.TrimPrefix(k, "tail:")
+				break
+			}
+		}
+		if latestTail != "" {
+			break
+		}
+	}
 	var out []TurnReminder
 	for _, r := range rs {
 		r.Text = strings.TrimSpace(r.Text)
 		if r.Text == "" || sent[r.key()] {
+			continue
+		}
+		if r.Tail && r.Text == latestTail {
 			continue
 		}
 		sent[r.key()] = true
@@ -1476,9 +1504,9 @@ type turnNote struct {
 
 // PinTurnNotes records the reminders the agent is about to send on a
 // provider call. Reminders the turn already sent are skipped (TurnReminder:
-// a status kind once per turn, an event note once per step), and the rest
-// become one <system-reminder> user message that compile emits at this
-// position for the rest of the turn.
+// a status kind once per turn, an event note once per step, the caller tail
+// once per distinct value), and the rest become one <system-reminder> user
+// message that compile emits at this position for the rest of the turn.
 //
 // The reminder can't be a tail that each call appends and the next one
 // drops: the model's thinking blocks of this turn were written after it, and
