@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -690,8 +691,8 @@ func TestMessageLabels_SurviveRestore(t *testing.T) {
 
 	shed2, _, _ := fresh.ReleasePressure(ctx, 0)
 	require.True(t, shed2, "the post-restore pressure must shed via fold")
-	require.Contains(t, summaryMessageOf(t, fresh).Labels["tier"], "t0,t1,t2,t3,t4",
-		"the pre-restart label value must survive the post-restore fold")
+	require.Equal(t, "t0,t1,t2,t3,t4,t5,t6,t7,t8,t9", summaryMessageOf(t, fresh).Labels["tier"],
+		"the post-restore fold must join the restored summary's labels with the new region's, in order")
 }
 
 // plainFoldStore hides the wrapped store's LabeledFoldStorage capability: a
@@ -789,4 +790,140 @@ func TestMessageLabels_SurviveRestore_OldSnapshotLoadsAsNil(t *testing.T) {
 	require.Contains(t, compiled[1].Content, "covers msg:")
 	require.Nil(t, compiled[1].Labels,
 		"a pre-labels snapshot restores nil labels, exactly as before")
+}
+
+// The in-loop fold must obey the same label contract as the relief fold
+// (WithMessageLabeler): the excised rows' labels join on top of the prior
+// summary's, ride the fold snapshot on a LabeledFoldStorage store, and
+// survive the restore — an in-loop fold cannot launder a label out of the
+// session.
+func TestMessageLabels_InloopFoldJoinsAndPersistsLabels(t *testing.T) {
+	store, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	const sessionID = "sess-inloop-labels"
+	require.NoError(t, store.SaveSession(ctx, &Session{ID: sessionID, Context: map[string]interface{}{}}))
+
+	sm := newCompileMemory(t)
+	sm.SetProtectedRecentTurns(2)
+	sm.SetSessionStore(store, sessionID)
+	// The join is pinned so the assertion isolates label survival, not
+	// default-join semantics.
+	sm.SetLabelJoin(concatJoin)
+
+	// seedInloopSession's shape: the opening ask and thinking turns 1-6 fold,
+	// the last seeded turn and the pending pair stay. Label only the rows
+	// that fold.
+	sm.AddMessage(ctx, Message{Role: "user", Content: "the JOB", Turn: 1,
+		Labels: map[string]string{"origin": "ask"}})
+	big := strings.Repeat("r", 3000)
+	for turn := int64(1); turn <= 7; turn++ {
+		sm.AddMessage(ctx, Message{Role: "assistant", Content: "thinking turn " + string(rune('0'+turn)), Turn: turn,
+			ToolCalls: []ToolCall{{ID: "c" + string(rune('0'+turn)), Name: "shell_execute"}},
+			Labels:    map[string]string{"origin": fmt.Sprintf("thinking-%d", turn)}})
+		sm.AddMessage(ctx, Message{Role: "tool", ToolUseID: "c" + string(rune('0'+turn)), Content: big, Turn: turn})
+	}
+	sm.AddMessage(ctx, Message{Role: "user", Content: "operator ruling: keep it exact", Turn: 5})
+	sm.AddMessage(ctx, Message{Role: "assistant", Content: "current work", Turn: 8,
+		ToolCalls: []ToolCall{{ID: "c9", Name: "shell_execute"}}})
+	sm.AddMessage(ctx, Message{Role: "tool", ToolUseID: "c9", Content: "pending result", Turn: 8})
+
+	applied, _ := sm.ApplyFoldReply(ctx, "covers msg:1-99\nstate of work")
+	require.True(t, applied, "the in-loop fold must commit")
+	// Turns 1-6 fold (the last seeded turn before the pending pair stays):
+	// the summary carries their labels joined in context order.
+	const wantOrigin = "ask,thinking-1,thinking-2,thinking-3,thinking-4,thinking-5,thinking-6"
+	require.Equal(t, map[string]string{"origin": wantOrigin},
+		summaryMessageOf(t, sm).Labels,
+		"the in-loop fold must join the excised rows' labels onto the summary, in context order")
+
+	// The labels ride the snapshot: a fresh memory over the same store
+	// restores the summary with them.
+	fresh := NewSegmentedMemory("ROM", 6000, 600)
+	fresh.SetThreshold(6000)
+	fresh.SetSessionStore(store, sessionID)
+	rows, err := store.LoadMessages(ctx, sessionID)
+	require.NoError(t, err)
+	fresh.ReplayMessages(ctx, rows)
+	m := NewMemory()
+	m.loadSummary(ctx, store, sessionID, fresh)
+	require.Equal(t, map[string]string{"origin": wantOrigin},
+		summaryMessageOf(t, fresh).Labels,
+		"the restored summary must carry the in-loop fold's labels")
+}
+
+// The documented contract on WithMessageLabeler: the labeler runs under the
+// session and memory locks, so a labeler that calls back into either
+// deadlocks. This pins the contract — a re-entrant labeler never completes.
+// The goroutine the timeout abandons stays parked on this test-local
+// memory's lock; the instance is never touched again.
+func TestMessageLabels_ReentrantLabelerDeadlocks(t *testing.T) {
+	sm := NewSegmentedMemory("ROM", 6000, 600)
+	sm.SetMessageLabeler(func(m *Message) map[string]string {
+		sm.AddMessage(context.Background(), Message{Role: "user", Content: "re-entrant"})
+		return nil
+	})
+	done := make(chan struct{})
+	go func() {
+		sm.AddMessage(context.Background(), Message{Role: "user", Content: "outer"})
+		close(done)
+	}()
+	select {
+	case <-done:
+		t.Fatal("a re-entrant labeler completed; WithMessageLabeler's no-callback contract no longer holds")
+	case <-time.After(250 * time.Millisecond):
+		// Still parked on the memory lock, as documented.
+	}
+}
+
+// The in-loop fold on a plain store (no LabeledFoldStorage): the fold
+// commits, the live summary keeps the joined labels in memory, and the loss
+// is visible — one inloopFold warn record and a labels_persisted=false span,
+// never silent.
+func TestMessageLabels_InloopFoldPlainStoreReportsDroppedLabels(t *testing.T) {
+	store, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	tracer := observability.NewMockTracer()
+
+	core, logs := observer.New(zapcore.WarnLevel)
+	restore := zap.ReplaceGlobals(zap.New(core))
+	defer restore()
+
+	ctx := context.Background()
+	const sessionID = "sess-plain-inloop"
+	require.NoError(t, store.SaveSession(ctx, &Session{ID: sessionID, Context: map[string]interface{}{}}))
+
+	sm := newCompileMemory(t)
+	sm.SetProtectedRecentTurns(2)
+	sm.SetTracer(tracer)
+	sm.SetSessionStore(plainFoldStore{SessionStorage: store}, sessionID)
+	sm.SetLabelJoin(concatJoin)
+
+	sm.AddMessage(ctx, Message{Role: "user", Content: "the JOB", Turn: 1,
+		Labels: map[string]string{"origin": "ask"}})
+	big := strings.Repeat("r", 3000)
+	for turn := int64(1); turn <= 7; turn++ {
+		sm.AddMessage(ctx, Message{Role: "assistant", Content: "thinking turn " + string(rune('0'+turn)), Turn: turn,
+			ToolCalls: []ToolCall{{ID: "c" + string(rune('0'+turn)), Name: "shell_execute"}},
+			Labels:    map[string]string{"origin": fmt.Sprintf("thinking-%d", turn)}})
+		sm.AddMessage(ctx, Message{Role: "tool", ToolUseID: "c" + string(rune('0'+turn)), Content: big, Turn: turn})
+	}
+	sm.AddMessage(ctx, Message{Role: "user", Content: "operator ruling: keep it exact", Turn: 5})
+	sm.AddMessage(ctx, Message{Role: "assistant", Content: "current work", Turn: 8,
+		ToolCalls: []ToolCall{{ID: "c9", Name: "shell_execute"}}})
+	sm.AddMessage(ctx, Message{Role: "tool", ToolUseID: "c9", Content: "pending result", Turn: 8})
+
+	applied, _ := sm.ApplyFoldReply(ctx, "covers msg:1-99\nstate of work")
+	require.True(t, applied, "a plain store still folds in-loop")
+	require.Equal(t, map[string]string{"origin": "ask,thinking-1,thinking-2,thinking-3,thinking-4,thinking-5,thinking-6"},
+		sm.summary.labels, "the live summary keeps the joined labels in memory")
+
+	entries := logs.FilterMessage("inloopFold: store does not persist fold summary labels").All()
+	require.Len(t, entries, 1)
+	require.Equal(t, sessionID, entries[0].ContextMap()["session_id"])
+	span := tracer.GetSpanByName("memory.fold_labels_dropped")
+	require.NotNil(t, span)
+	require.Equal(t, "false", span.Attributes["labels_persisted"])
 }

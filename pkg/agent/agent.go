@@ -613,10 +613,16 @@ func WithMessageLabeler(fn func(msg *Message) map[string]string) Option {
 // labelled messages: fn is applied pairwise over the replaced messages'
 // labels, in context order. When unset, a default join is used: for each key
 // present in either map, every distinct value is kept, sorted and
-// comma-joined. A join must not modify its inputs: the fold clones the live
-// summary's labels before the first call, but a join that mutates the message
-// maps it receives, or stores and later mutates its own result, corrupts
-// state the summary shares by reference.
+// comma-joined — each value's comma and backslash escaped (`\,`, `\\`) in the
+// output, so a value containing a comma survives the fold intact (the stored
+// summary value decodes back to its distinct values). A join must not modify
+// its inputs: the fold clones the live summary's labels before the first
+// call, but a join that mutates the message maps it receives, or stores and
+// later mutates its own result, corrupts state the summary shares by
+// reference. A summary's stored values were written by the join in effect
+// when it folded: the default join reads the previous summary value as its
+// own output, so switching joins mid-session hands the other join's values
+// to the new one as opaque strings.
 func WithLabelJoin(fn func(a, b map[string]string) map[string]string) Option {
 	return func(a *Agent) {
 		a.labelJoin = fn

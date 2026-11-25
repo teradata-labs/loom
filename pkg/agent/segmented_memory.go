@@ -18,6 +18,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -184,8 +185,9 @@ type SegmentedMemory struct {
 	skillDeactivation func(sessionID, skillName string)
 
 	// messageLabeler runs when a message enters L1 — arrival (AddMessage) or
-	// restore (ReplayMessages) — and its result is stored on the message
-	// (WithMessageLabeler). Label values are opaque.
+	// restore (ReplayMessages) — and a clone of its result is stored on the
+	// message (WithMessageLabeler), so the labeler cannot reach live state
+	// after the call. Label values are opaque.
 	messageLabeler func(*Message) map[string]string
 
 	// labelJoin joins the labels of the messages a fold's summary replaces,
@@ -399,7 +401,9 @@ func (sm *SegmentedMemory) AddMessage(ctx context.Context, msg Message) {
 	defer sm.mu.Unlock()
 
 	if sm.messageLabeler != nil && msg.Labels == nil {
-		msg.Labels = sm.messageLabeler(&msg)
+		// Cloned: the labeler may hold onto the map it returns, and the row's
+		// labels are live state it must not reach after the call.
+		msg.Labels = maps.Clone(sm.messageLabeler(&msg))
 	}
 	sm.recordThinkingPrefixLocked(&msg)
 	sm.contextMessages = append(sm.contextMessages, msg)
@@ -540,7 +544,7 @@ func (sm *SegmentedMemory) ReplayMessages(ctx context.Context, messages []Messag
 	if sm.messageLabeler != nil {
 		for i := range messages {
 			if messages[i].Labels == nil {
-				messages[i].Labels = sm.messageLabeler(&messages[i])
+				messages[i].Labels = maps.Clone(sm.messageLabeler(&messages[i]))
 			}
 		}
 	}

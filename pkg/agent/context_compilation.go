@@ -123,7 +123,9 @@ func (sm *SegmentedMemory) compilePrefixLocked(msgs []Message, t int64, fingerpr
 		push(Message{Role: "user",
 			Content: summaryRowPrefix + sm.summary.text +
 				"\n\nExact values quoted in this summary (expected outputs, literals, paths, interfaces) are unverified — the summary may restate them imprecisely. Before relying on one, read it from its source.\n</system-reminder>",
-			Labels: sm.summary.labels})
+			// Cloned: the compiled row must not alias the live summary's map
+			// — a reader that mutates it would corrupt the summary itself.
+			Labels: maps.Clone(sm.summary.labels)})
 	}
 
 	// Render cases + pair atomicity. Track the message cache breakpoint: the
@@ -1155,7 +1157,7 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 		} else {
 			err = sm.sessionStore.FoldMessages(ctx, sm.sessionID, seqs, n1, newText)
 			if err == nil && len(joined) > 0 {
-				sm.reportFoldLabelsDropped(ctx, n1, joined)
+				sm.reportFoldLabelsDropped(ctx, "releasePressure", n1, joined)
 			}
 		}
 		if err != nil {
@@ -1684,9 +1686,10 @@ func decodeLabelParts(v string) []string {
 
 // reportFoldLabelsDropped makes a plain store's dropped summary labels
 // visible: the fold succeeded, but a restore will come back without them
-// (LabeledFoldStorage).
-func (sm *SegmentedMemory) reportFoldLabelsDropped(ctx context.Context, n int, joined map[string]string) {
-	zap.L().Warn("releasePressure: store does not persist fold summary labels",
+// (LabeledFoldStorage). path names the fold path that hit it (releasePressure
+// or inloopFold).
+func (sm *SegmentedMemory) reportFoldLabelsDropped(ctx context.Context, path string, n int, joined map[string]string) {
+	zap.L().Warn(path+": store does not persist fold summary labels",
 		zap.String("session_id", sm.sessionID),
 		zap.Int("version", n),
 		zap.Int("label_keys", len(joined)))
