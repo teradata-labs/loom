@@ -236,7 +236,7 @@ func TestCompile_SummaryEmittedAsConversationReminder(t *testing.T) {
 	// it never consumes a marker slot (a system summary block displaced the
 	// till-NOW marker and uncached the session tail after every fold).
 	sm := newCompileMemory(t)
-	sm.setSummary(2, "covers msg:1-9\nstate of work")
+	sm.setSummary(2, "covers msg:1-9\nstate of work", nil)
 	out := sm.GetMessagesForLLM()
 	require.GreaterOrEqual(t, len(out), 2)
 	assert.Equal(t, "system", out[0].Role)
@@ -471,7 +471,7 @@ func (r *racingCompressor) CompressMessages(ctx context.Context, _ []Message) (s
 		r.raced = true
 		// setSummary takes sm.mu itself: on a build holding the lock across
 		// the compressor call this self-deadlocks — which is the point.
-		r.sm.setSummary(99, "raced summary")
+		r.sm.setSummary(99, "raced summary", nil)
 	}
 	return r.out, nil
 }

@@ -165,9 +165,26 @@ func (sm *SegmentedMemory) ApplyFoldReply(ctx context.Context, summary string) (
 
 	newlyFolded, newText := sm.noteFoldedSkillsLocked(excised, kept, summary)
 
+	// The excised rows' labels ride the summary, joined on top of the prior
+	// summary's own labels (WithMessageLabeler) — the relief fold's contract,
+	// so an in-loop fold cannot launder a label out of the session. The join
+	// persists in the fold snapshot only on stores implementing the optional
+	// LabeledFoldStorage interface; on a plain store the loss is logged and
+	// spanned, never silent.
+	joined := sm.joinLabelsLocked(sm.summary.labels, excised)
+
 	n1 := sm.summary.n + 1
 	if sm.sessionStore != nil && sm.sessionID != "" {
-		if err := sm.sessionStore.FoldMessages(ctx, sm.sessionID, seqs, n1, newText); err != nil {
+		var err error
+		if lbs, ok := sm.sessionStore.(LabeledFoldStorage); ok {
+			err = lbs.FoldMessagesWithLabels(ctx, sm.sessionID, seqs, n1, newText, joined)
+		} else {
+			err = sm.sessionStore.FoldMessages(ctx, sm.sessionID, seqs, n1, newText)
+			if err == nil && len(joined) > 0 {
+				sm.reportFoldLabelsDropped(ctx, "inloopFold", n1, joined)
+			}
+		}
+		if err != nil {
 			zap.L().Error("inloopFold: persist failed",
 				zap.String("session_id", sm.sessionID), zap.Error(err))
 			return false, 0
@@ -179,7 +196,7 @@ func (sm *SegmentedMemory) ApplyFoldReply(ctx context.Context, summary string) (
 		}
 	}
 
-	sm.summary = summaryState{n: n1, text: newText}
+	sm.summary = summaryState{n: n1, text: newText, labels: joined}
 	sm.contextMessages = kept
 	// The pending pair is kept whole, on top of a past that is now a summary:
 	// its thinking block was made on the past that is gone.

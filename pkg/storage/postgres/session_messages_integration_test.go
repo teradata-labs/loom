@@ -18,6 +18,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"testing"
 
@@ -73,10 +74,26 @@ func TestMessages_RoundTrip_ContextCompilationColumns(t *testing.T) {
 	require.Equal(t, 12, billed.ThinkingTokens)
 	require.Equal(t, 7, billed.CacheCreateTokens)
 
-	// Relief roundtrip: fold the first user row.
+	// Relief roundtrip: fold the first user row, its summary carrying the
+	// labels it replaces (LabeledFoldStorage) — not nil, so the labeled path
+	// is exercised on a live database, not only the nil default.
 	firstSeq, err := strconv.ParseInt(msgs[0].ID, 10, 64)
 	require.NoError(t, err)
-	require.NoError(t, store.FoldMessages(ctx, sessionID, []int64{firstSeq}, 1, "covers msg:1-1\nsummary"))
+	require.NoError(t, store.FoldMessagesWithLabels(ctx, sessionID, []int64{firstSeq}, 1, "covers msg:1-1\nsummary",
+		map[string]string{"tier": "t0,t1"}))
+
+	// The fold snapshot persists the labels it was given.
+	snaps, err := store.LoadMemorySnapshots(ctx, sessionID, "fold", 0)
+	require.NoError(t, err)
+	require.NotEmpty(t, snaps, "the fold must leave its snapshot row")
+	var snap struct {
+		N      int               `json:"n"`
+		Text   string            `json:"text"`
+		Labels map[string]string `json:"labels"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(snaps[len(snaps)-1].Content), &snap))
+	require.Equal(t, map[string]string{"tier": "t0,t1"}, snap.Labels,
+		"the fold snapshot must carry the summary's labels")
 
 	msgs, err = store.LoadMessages(ctx, sessionID)
 	require.NoError(t, err)
@@ -117,7 +134,7 @@ func TestMessages_CrossAgentReadsFilterFolded(t *testing.T) {
 	require.Len(t, msgs, 2)
 	foldSeq, err := strconv.ParseInt(msgs[0].ID, 10, 64)
 	require.NoError(t, err)
-	require.NoError(t, store.FoldMessages(ctx, parentID, []int64{foldSeq}, 1, "covers msg:1-1\nsummary"))
+	require.NoError(t, store.FoldMessagesWithLabels(ctx, parentID, []int64{foldSeq}, 1, "covers msg:1-1\nsummary", nil))
 
 	// Reader 1: by agent.
 	byAgent, err := store.LoadMessagesForAgent(ctx, agentID)

@@ -176,6 +176,18 @@ type Message struct {
 	// the context; see pkg/task.Attribution.
 	TaskID string
 
+	// Labels carries per-message labels assigned when the message entered a
+	// session's context (agent.WithMessageLabeler); label values are opaque —
+	// nothing in the agent interprets them. A compaction summary that replaces
+	// labelled messages carries their join (agent.WithLabelJoin) instead. Row
+	// labels are never persisted: a restore brings rows back unlabelled and
+	// the labeler runs again as each re-enters the context, so labels set by a
+	// caller rather than the labeler are lost on restore unless a
+	// deterministic labeler recomputes them. The summary's joined labels ARE
+	// persisted in the fold snapshot, on stores implementing the optional
+	// agent.LabeledFoldStorage interface (agent.WithMessageLabeler).
+	Labels map[string]string
+
 	// Timestamp when the message was created
 	Timestamp time.Time
 
