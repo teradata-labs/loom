@@ -197,6 +197,13 @@ turning off graph-memory extraction (`enable_extraction: false`) for it.
 `fleet_lesson_sharing`** (it is off by default), and should strip or ignore
 tool-supplied metadata keys at the adapter boundary.
 
+The same asymmetry applies to the caller-supplied transient tail
+(`WithTransientTail`): the tail rides a `<system-reminder>` message the model
+treats as harness state, so anything an embedding application puts in it
+carries that authority for the rest of the turn. Never forward untrusted data
+through it — tool output and user-supplied text belong in tool results, where
+the model reads them as data rather than as harness guidance.
+
 
 ## PostgreSQL Row-Level Security (RLS)
 

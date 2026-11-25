@@ -27,6 +27,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/memory"
@@ -195,6 +196,58 @@ func TestPinTurnNotes_PendingTailSkipsPinnedNotes(t *testing.T) {
 	sm.SetTransientTail(TurnReminder{Kind: ReminderGraphMemory, Text: "recall"}, TurnReminder{Text: "soft"})
 	sm.mu.RLock()
 	assert.Equal(t, systemReminderContent("soft"), sm.transientTail, "the pinned note is compiled, not pending")
+	sm.mu.RUnlock()
+}
+
+// TestPinTurnNotes_TailOncePerValuePerTurn (review round 3, F6): the caller
+// tail (WithTransientTail) is live state sampled per call, but the request
+// only grows within a turn, so a tail is sent once per distinct value: a call
+// whose tail equals the turn's latest pinned tail adds no note, a changed
+// value pins a new one, and a value the turn pinned earlier but replaced pins
+// again — the latest tail note must always carry the current value, so the
+// model never acts on stale state.
+func TestPinTurnNotes_TailOncePerValuePerTurn(t *testing.T) {
+	ctx := context.Background()
+	sm := NewSegmentedMemory("ROM", 200000, 20000)
+	sm.AddMessage(ctx, Message{Role: "user", Content: "q1", Turn: 1})
+
+	notes := func() []string {
+		var out []string
+		for _, m := range sm.GetMessagesForLLM() {
+			if IsSystemReminder(m) {
+				out = append(out, strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(m.Content, "<system-reminder>\n"), "</system-reminder>")))
+			}
+		}
+		return out
+	}
+	pin := func(text string) { sm.PinTurnNotes(TurnReminder{Tail: true, Text: text}) }
+	step := func() { sm.AddMessage(ctx, Message{Role: "assistant", Content: "a", Turn: 1}) }
+
+	pin("A")
+	assert.Equal(t, []string{"A"}, notes())
+	step()
+	pin("A")
+	assert.Equal(t, []string{"A"}, notes(), "unchanged state is not sent again")
+	step()
+	pin("B")
+	assert.Equal(t, []string{"A", "B"}, notes(), "a changed value pins a new note")
+	step()
+	pin("A")
+	assert.Equal(t, []string{"A", "B", "A"}, notes(),
+		"a value the turn replaced pins again: the latest tail note must carry the current value")
+
+	// A resend of the same call (no new row since) sends nothing again.
+	pin("A")
+	assert.Len(t, notes(), 3)
+
+	// The pending relief estimate skips a tail equal to the latest pinned one.
+	sm.SetTransientTail(TurnReminder{Tail: true, Text: "A"})
+	sm.mu.RLock()
+	assert.Empty(t, sm.transientTail, "the latest pinned tail is not pending again")
+	sm.mu.RUnlock()
+	sm.SetTransientTail(TurnReminder{Tail: true, Text: "C"})
+	sm.mu.RLock()
+	assert.Equal(t, systemReminderContent("C"), sm.transientTail, "a changed value is pending until pinned")
 	sm.mu.RUnlock()
 }
 
@@ -416,4 +469,274 @@ func TestTurnNotes_ToolBudgetReminderOncePerTurnInLoop(t *testing.T) {
 	}
 	assert.Equal(t, 1, reminders, "one tool-budget reminder per turn")
 	assert.Equal(t, 1, rows)
+}
+
+// TestTransientTail_CountedInReliefEstimate (review Q1, agent level): the
+// caller tail is sampled once per provider call and made pending for the
+// relief pass before the send, and pinning at the send clears it — the tail
+// counts once as pending, then as a compiled message. Since fn now runs once
+// per provider call, before SetTransientTail, it observes an empty pending
+// tail on every call: nothing is left pending across sends. The
+// estimate-counts-the-pending-tail property itself is pinned at unit level
+// (TestPinTurnNotes_PendingTailSkipsPinnedNotes,
+// TestPinTurnNotes_TailOncePerValuePerTurn) and for the shared SetTransientTail
+// seam by TestTurnNotes_ReliefCountsRecallNoteBeforeFirstSend.
+func TestTransientTail_CountedInReliefEstimate(t *testing.T) {
+	sid := "tail_relief"
+	var seg *SegmentedMemory
+	var pendingAtFn []string
+	var ag *Agent
+	llm := &recordingToolLLM{mockToolCallingLLM: &mockToolCallingLLM{
+		responses: []mockLLMResponse{
+			{toolCalls: []llmtypes.ToolCall{{ID: "c1", Name: "stub", Input: map[string]interface{}{}}}},
+			{content: "done"},
+		},
+	}}
+	ag = NewAgent(&mockBackend{}, llm,
+		WithConfig(&Config{MaxTurns: 10, MaxToolExecutions: 10, MaxIterations: 10}),
+		WithTransientTail(func(context.Context) string {
+			if s, ok := ag.GetSession(sid); ok {
+				seg, _ = s.SegmentedMem.(*SegmentedMemory)
+			}
+			if seg != nil {
+				seg.mu.RLock()
+				pendingAtFn = append(pendingAtFn, seg.transientTail)
+				seg.mu.RUnlock()
+			}
+			return "live-state"
+		}))
+	ag.RegisterTool(namedStubTool{name: "stub"})
+
+	_, err := ag.Chat(context.Background(), sid, "go")
+	require.NoError(t, err)
+
+	require.NotNil(t, seg)
+	assert.Equal(t, []string{"", ""}, pendingAtFn,
+		"fn runs once per provider call and nothing is left pending across sends")
+	seg.mu.RLock()
+	assert.Empty(t, seg.transientTail, "pinning cleared the pending tail at the send")
+	seg.mu.RUnlock()
+}
+
+// tailReliefFixture builds a small-window memory filled well under the relief
+// marks and calibrates a caller tail whose PENDING estimate pushes the total
+// past `cross` (an absolute estimate). The fill sits at 60% of the penalized
+// start mark, so without the tail no mark is crossed. Returns the memory,
+// its counting compressor and the tail text.
+func tailReliefFixture(t *testing.T, cross func(start, synth int) int) (*SegmentedMemory, *countingCompressor, string) {
+	t.Helper()
+	ctx := context.Background()
+	sm := NewSegmentedMemory("ROM", 16000, 1000)
+	sm.SetThreshold(16384)
+	comp := &countingCompressor{}
+	sm.SetCompressor(comp)
+	sm.mu.Lock()
+	start := sm.startMarkLocked(0)
+	synth := sm.startMarkLocked(pressureRecoveryPenalty)
+	sm.mu.Unlock()
+	for turn := int64(1); ; turn++ {
+		sm.AddMessage(ctx, Message{Role: "user", Content: denseText(fmt.Sprintf("q%d", turn), 10), Turn: turn})
+		sm.AddMessage(ctx, Message{Role: "assistant", Content: denseText(fmt.Sprintf("a%d", turn), 10), Turn: turn})
+		sm.mu.Lock()
+		est := sm.estimateLocked()
+		sm.mu.Unlock()
+		if est >= synth*60/100 {
+			break
+		}
+	}
+	for reps := 1; reps <= 1<<20; reps *= 2 {
+		tail := denseText("tail", reps)
+		sm.SetTransientTail(TurnReminder{Tail: true, Text: tail})
+		sm.mu.Lock()
+		est := sm.estimateLocked()
+		sm.mu.Unlock()
+		sm.SetTransientTail()
+		if est >= cross(start, synth) {
+			return sm, comp, tail
+		}
+	}
+	t.Fatal("could not calibrate a caller tail that crosses the mark")
+	return nil, nil, ""
+}
+
+// tailReliefLLM serves the fixture turn: the fold ask is answered with a
+// summary JSON, the synthesis ask ("You must provide your final answer NOW")
+// with a refusal when refuseOnce is set and a text answer otherwise, and the
+// first toolCalls loop asks with a probe tool call ("done" after).
+type tailReliefLLM struct {
+	mu         sync.Mutex
+	calls      [][]llmtypes.Message
+	toolCalls  int
+	refuseOnce bool
+	refused    bool
+}
+
+// promptHas reports whether any message of the request carries s — the
+// synthesis request's last message is the pinned tail note, not the prompt.
+func promptHas(msgs []llmtypes.Message, s string) bool {
+	for _, m := range msgs {
+		if strings.Contains(m.Content, s) {
+			return true
+		}
+	}
+	return false
+}
+
+func (l *tailReliefLLM) Name() string  { return "mock" }
+func (l *tailReliefLLM) Model() string { return "mock-v1" }
+
+func (l *tailReliefLLM) Chat(_ context.Context, msgs []llmtypes.Message, _ []shuttle.Tool) (*llmtypes.LLMResponse, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.calls = append(l.calls, append([]llmtypes.Message(nil), msgs...))
+	usage := llmtypes.Usage{InputTokens: 10, OutputTokens: 5}
+	if promptHas(msgs, "Context maintenance: summarise the work so far") {
+		return &llmtypes.LLMResponse{Content: `{"summary": "state carried forward"}`, Usage: usage}, nil
+	}
+	if promptHas(msgs, "You must provide your final answer NOW") {
+		if l.refuseOnce && !l.refused {
+			l.refused = true
+			return nil, fmt.Errorf("API error (status 400): prompt is too long: %w", llm.ErrContextTooLong)
+		}
+		return &llmtypes.LLMResponse{Content: "final answer", Usage: usage}, nil
+	}
+	if len(l.calls) <= l.toolCalls {
+		return &llmtypes.LLMResponse{
+			ToolCalls: []llmtypes.ToolCall{{ID: "c1", Name: "probe", Input: map[string]interface{}{}}},
+			Usage:     usage,
+		}, nil
+	}
+	return &llmtypes.LLMResponse{Content: "done", Usage: usage}, nil
+}
+
+// TestTransientTail_TailPushesReliefOverTheMark (review F9): only the caller
+// tail pushes the estimate over the threshold, on both paths — the loop's
+// fold trigger and the synthesis refusal's relief pass. Dropping the tail
+// from either SetTransientTail call fails it: without the tail the estimate
+// stays under the mark, so no fold is asked and the refusal relief no-ops.
+func TestTransientTail_TailPushesReliefOverTheMark(t *testing.T) {
+	t.Run("loop: the fold trigger counts the tail", func(t *testing.T) {
+		sm, _, tail := tailReliefFixture(t, func(start, synth int) int { return start })
+		llm := &tailReliefLLM{}
+		ag := reliefSeamAgent(t, llm, "s-tail-relief", sm,
+			WithTransientTail(func(context.Context) string { return tail }))
+		ag.RegisterTool(namedStubTool{name: "probe"})
+
+		_, err := ag.Chat(context.Background(), "s-tail-relief", "What about the walrus migration?")
+		require.NoError(t, err)
+
+		llm.mu.Lock()
+		defer llm.mu.Unlock()
+		folds := 0
+		for _, call := range llm.calls {
+			if promptHas(call, foldInstruction) {
+				folds++
+			}
+		}
+		assert.Positive(t, folds, "the fold trigger must count the pending caller tail before the send")
+	})
+
+	t.Run("synthesis: the refusal relief counts the tail", func(t *testing.T) {
+		sm, comp, tail := tailReliefFixture(t, func(start, synth int) int { return synth })
+		// fn is empty during the loop's single call and returns the tail from
+		// the synthesis call on: the loop never pins it, so the pending tail
+		// set at synthesis is the only thing that can cross the mark.
+		fnCalls := 0
+		llm := &tailReliefLLM{toolCalls: 1, refuseOnce: true}
+		ag := reliefSeamAgent(t, llm, "s-tail-synth", sm,
+			WithTransientTail(func(context.Context) string {
+				fnCalls++
+				if fnCalls == 1 {
+					return ""
+				}
+				return tail
+			}))
+		ag.config.MaxTurns = 1
+		ag.RegisterTool(namedStubTool{name: "probe"})
+
+		_, err := ag.Chat(context.Background(), "s-tail-synth", "go")
+		require.NoError(t, err)
+
+		llm.mu.Lock()
+		defer llm.mu.Unlock()
+		var asks [][]llmtypes.Message
+		for _, call := range llm.calls {
+			if promptHas(call, "You must provide your final answer NOW") {
+				asks = append(asks, call)
+			}
+		}
+		require.Len(t, asks, 2, "the refused synthesis send is followed by one relief resend")
+		bytes := func(msgs []llmtypes.Message) int {
+			n := 0
+			for _, m := range msgs {
+				n += len(m.Content)
+			}
+			return n
+		}
+		assert.Positive(t, comp.calls, "the relief pass ran on the refusal")
+		assert.Less(t, bytes(asks[1]), bytes(asks[0]),
+			"the resend is smaller: relief shed because the pending tail crossed the mark")
+	})
+}
+
+// TestReview589R7_NoLadderBeforeSynthesis (review round 7, F12): the merge
+// re-added the pressure ladder before the synthesis send. The ladder answers
+// a provider refusal only (main 6f7611f4): a turn that exhausts MaxTurns with
+// the estimate at or above the start mark and NO provider refusal must not
+// run the compressor at synthesis. fn is empty during the loop's single call
+// and returns the tail from the synthesis call on, so the loop's estimate
+// stays under the start mark (no in-loop fold) and the synthesis send
+// crosses it with no refusal.
+func TestReview589R7_NoLadderBeforeSynthesis(t *testing.T) {
+	sm, comp, tail := tailReliefFixture(t, func(start, synth int) int { return start })
+	fnCalls := 0
+	llm := &tailReliefLLM{toolCalls: 1}
+	ag := reliefSeamAgent(t, llm, "s-tail-noladder", sm,
+		WithTransientTail(func(context.Context) string {
+			fnCalls++
+			if fnCalls == 1 {
+				return ""
+			}
+			return tail
+		}))
+	ag.config.MaxTurns = 1
+	ag.RegisterTool(namedStubTool{name: "probe"})
+
+	resp, err := ag.Chat(context.Background(), "s-tail-noladder", "go")
+	require.NoError(t, err)
+	assert.NotEmpty(t, resp.Content)
+	assert.Zero(t, comp.calls, "the pressure ladder must not run before the synthesis send")
+}
+
+// TestPinTurnNotes_ResendWithChangedTailPinsNewNote (review Q5): a resend
+// whose caller tail changed pins a second note — one per distinct text, in
+// send order, each after the rows so far — so the request only grows and the
+// first note stays in front of the replayed thinking. A resend with unchanged
+// text sends nothing again.
+func TestPinTurnNotes_ResendWithChangedTailPinsNewNote(t *testing.T) {
+	ctx := context.Background()
+	sm := NewSegmentedMemory("ROM", 200000, 20000)
+	sm.AddMessage(ctx, Message{Role: "user", Content: "q1", Turn: 1})
+	sm.AddMessage(ctx, Message{Role: "assistant", ToolCalls: []ToolCall{{ID: "c1", Name: "t"}}, Turn: 1})
+	sm.AddMessage(ctx, Message{Role: "tool", ToolUseID: "c1", Content: "r1", Turn: 1})
+
+	notes := func() []string {
+		var out []string
+		for _, m := range sm.GetMessagesForLLM() {
+			if IsSystemReminder(m) {
+				out = append(out, strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(m.Content, "<system-reminder>\n"), "</system-reminder>")))
+			}
+		}
+		return out
+	}
+
+	sm.PinTurnNotes(TurnReminder{Text: "tail one"})
+	// The resend: no new row since, changed text.
+	sm.PinTurnNotes(TurnReminder{Text: "tail two"})
+	assert.Equal(t, []string{"tail one", "tail two"}, notes(),
+		"one note per distinct text, in send order")
+
+	// Another resend with unchanged text sends nothing again.
+	sm.PinTurnNotes(TurnReminder{Text: "tail two"})
+	assert.Len(t, notes(), 2, "an unchanged resend is deduped by text")
 }
