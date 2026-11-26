@@ -70,7 +70,7 @@ type Config struct {
 	// Model Configuration
 	ModelID     string  // Default: us.anthropic.claude-sonnet-4-5-20250929-v1:0
 	MaxTokens   int     // Default: 4096
-	Temperature float64 // Default: 1.0
+	Temperature float64 // Sent only when set; 0 leaves it to the model
 	// ThinkingLevel requests extended thinking ("", "none" = off). Adaptive
 	// (summarized) on 4.6+/5 model ids, budget tiers on older ones.
 	ThinkingLevel string
@@ -85,10 +85,9 @@ type Config struct {
 //   - AWS_DEFAULT_REGION / LOOM_LLM_BEDROCK_REGION
 const (
 	// DefaultBedrockModelID uses Claude Sonnet 4.5 with cross-region inference profile (us.* prefix)
-	DefaultBedrockModelID     = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
-	DefaultBedrockRegion      = "us-west-2"
-	DefaultBedrockMaxTokens   = 4096
-	DefaultBedrockTemperature = 1.0
+	DefaultBedrockModelID   = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+	DefaultBedrockRegion    = "us-west-2"
+	DefaultBedrockMaxTokens = 4096
 )
 
 // NewClient creates a new Bedrock client.
@@ -114,9 +113,6 @@ func NewClient(cfg Config) (*Client, error) {
 	}
 	if cfg.MaxTokens == 0 {
 		cfg.MaxTokens = DefaultBedrockMaxTokens
-	}
-	if cfg.Temperature == 0 {
-		cfg.Temperature = DefaultBedrockTemperature
 	}
 
 	// Build AWS config.
@@ -225,6 +221,21 @@ func (c *Client) Model() string {
 	return c.modelID
 }
 
+// messagesRequest is the Anthropic Messages payload every InvokeModel call
+// starts from. A temperature is sent only when one was configured: some models
+// refuse the field outright, so an unset one is left to the model.
+func (c *Client) messagesRequest(apiMessages []map[string]interface{}) map[string]interface{} {
+	request := map[string]interface{}{
+		"anthropic_version": "bedrock-2023-05-31",
+		"max_tokens":        c.maxTokens,
+		"messages":          apiMessages,
+	}
+	if c.temperature != 0 {
+		request["temperature"] = c.temperature
+	}
+	return request
+}
+
 // Chat sends a conversation to Bedrock and returns the response.
 func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []shuttle.Tool) (*llmtypes.LLMResponse, error) {
 	// Non-Anthropic models speak Converse only; the Anthropic Messages payload
@@ -243,12 +254,7 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 
 	// Build request (Bedrock uses Anthropic's message format)
 	// AWS docs: anthropic_version MUST be "bedrock-2023-05-31" for all Claude models
-	request := map[string]interface{}{
-		"anthropic_version": "bedrock-2023-05-31",
-		"max_tokens":        c.maxTokens,
-		"temperature":       c.temperature,
-		"messages":          apiMessages,
-	}
+	request := c.messagesRequest(apiMessages)
 
 	// Add system prompt if present (Anthropic Messages API requires separate system field)
 	if systemPrompt != "" {
@@ -353,12 +359,7 @@ func (c *Client) chatStreamDisabled(ctx context.Context, messages []llmtypes.Mes
 	systemPrompt, apiMessages := c.convertMessages(messages)
 
 	// AWS docs: anthropic_version MUST be "bedrock-2023-05-31" for all Claude models
-	request := map[string]interface{}{
-		"anthropic_version": "bedrock-2023-05-31",
-		"max_tokens":        c.maxTokens,
-		"temperature":       c.temperature,
-		"messages":          apiMessages,
-	}
+	request := c.messagesRequest(apiMessages)
 
 	// Add system prompt if present (Anthropic Messages API requires separate system field)
 	if systemPrompt != "" {

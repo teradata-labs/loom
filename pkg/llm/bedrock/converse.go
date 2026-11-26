@@ -29,6 +29,20 @@ import (
 	"github.com/teradata-labs/loom/pkg/types"
 )
 
+// inferenceConfig is what a Converse call sends beside its messages. A
+// temperature is sent only when one was configured: the OpenAI GPT models on
+// Bedrock refuse any request that carries the field, so an unset one is left
+// to the model.
+func (c *Client) inferenceConfig() *bedrocktypes.InferenceConfiguration {
+	cfg := &bedrocktypes.InferenceConfiguration{
+		MaxTokens: aws.Int32(types.SafeInt32(c.maxTokens)),
+	}
+	if c.temperature != 0 {
+		cfg.Temperature = aws.Float32(float32(c.temperature))
+	}
+	return cfg
+}
+
 // ChatConverse implements non-streaming using AWS Bedrock Converse API.
 // This is the modern, unified API that properly handles tool use.
 // This method is used when streaming is not needed or disabled.
@@ -48,12 +62,9 @@ func (c *Client) ChatConverse(ctx context.Context, messages []llmtypes.Message, 
 
 	// Build Converse input
 	input := &bedrockruntime.ConverseInput{
-		ModelId:  aws.String(c.modelID),
-		Messages: converseMessages,
-		InferenceConfig: &bedrocktypes.InferenceConfiguration{
-			MaxTokens:   aws.Int32(types.SafeInt32(c.maxTokens)),
-			Temperature: aws.Float32(float32(c.temperature)),
-		},
+		ModelId:         aws.String(c.modelID),
+		Messages:        converseMessages,
+		InferenceConfig: c.inferenceConfig(),
 	}
 
 	// Debug logging if LOOM_DEBUG_BEDROCK is set
