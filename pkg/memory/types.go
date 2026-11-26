@@ -190,6 +190,12 @@ const (
 	MemoryTypeFailure       = "failure"
 	MemoryTypeObservation   = "observation"
 	MemoryTypeConsolidation = "consolidation"
+	// MemoryTypeFailureRecovery holds an abstract problem -> solution lesson
+	// learned when the agent recovers from a failure. Distinct from
+	// MemoryTypeFailure (produced by the conversation extractor, which skips
+	// tool messages): these records are failure-keyed and carry an actionable
+	// solution for reuse. See docs/plans/failure-recovery-memory-spec.md.
+	MemoryTypeFailureRecovery = "failure_recovery"
 )
 
 // Valid lineage relation types.

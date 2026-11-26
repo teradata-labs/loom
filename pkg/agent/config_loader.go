@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/failurerecovery"
 	"github.com/teradata-labs/loom/pkg/skills"
 	"gopkg.in/yaml.v3"
 )
@@ -315,6 +316,39 @@ type BehaviorConfigYAML struct {
 	Skills                 SkillsConfigYAML   `yaml:"skills"`
 	OutputTokenCBThreshold int                `yaml:"output_token_cb_threshold"`
 	EnableSelfHealing      *bool              `yaml:"enable_self_healing"`
+	// FailureRecovery configures the durable failure-recovery memory feature.
+	// Nil leaves the feature off.
+	FailureRecovery *FailureRecoveryConfigYAML `yaml:"failure_recovery"`
+}
+
+// FailureRecoveryConfigYAML represents behavior.failure_recovery in YAML. It
+// mirrors loomv1.FailureRecoveryConfig; unset numeric fields take the defaults
+// applied by the failurerecovery package.
+type FailureRecoveryConfigYAML struct {
+	Enabled             bool                     `yaml:"enabled"`
+	SimilarityThreshold float32                  `yaml:"similarity_threshold"`
+	MaxHints            int                      `yaml:"max_hints"`
+	Classes             []string                 `yaml:"classes"`
+	InitialSalience     float32                  `yaml:"initial_salience"`
+	Proactive           ProactiveConfigYAML      `yaml:"proactive"`
+	UserScoped          bool                     `yaml:"user_scoped"`
+	PreserveDetails     bool                     `yaml:"preserve_details"`
+	SemanticOnly        bool                     `yaml:"semantic_only"`
+	LLMAbstraction      LLMAbstractionConfigYAML `yaml:"llm_abstraction"`
+}
+
+// ProactiveConfigYAML represents behavior.failure_recovery.proactive in YAML.
+type ProactiveConfigYAML struct {
+	Enabled   bool    `yaml:"enabled"`
+	Threshold float32 `yaml:"threshold"`
+	LLMIntent bool    `yaml:"llm_intent"`
+}
+
+// LLMAbstractionConfigYAML represents
+// behavior.failure_recovery.llm_abstraction in YAML.
+type LLMAbstractionConfigYAML struct {
+	Enabled    bool `yaml:"enabled"`
+	TimeoutSec int  `yaml:"timeout_sec"`
 }
 
 // SkillsConfigYAML represents skills configuration in YAML
@@ -748,6 +782,14 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 		MaxTurns:               maxTurns,
 		MaxToolExecutions:      maxToolExecutions,
 		OutputTokenCbThreshold: outputTokenCBThreshold,
+	}
+
+	if fr := yaml.Agent.Behavior.FailureRecovery; fr != nil {
+		frProto, err := failureRecoveryYAMLToProto(fr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid behavior.failure_recovery config: %w", err)
+		}
+		config.Behavior.FailureRecovery = frProto
 	}
 
 	// Parse pattern config if present
@@ -1232,6 +1274,7 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 			MaxTurns:               int(config.Behavior.MaxTurns),
 			MaxToolExecutions:      int(config.Behavior.MaxToolExecutions),
 			OutputTokenCBThreshold: int(config.Behavior.GetOutputTokenCbThreshold()),
+			FailureRecovery:        failureRecoveryProtoToYAML(config.Behavior.GetFailureRecovery()),
 		}
 	}
 
@@ -1273,6 +1316,94 @@ func ExtractSkillsConfig(metadata map[string]string) *skills.SkillsConfig {
 		return nil
 	}
 	return &sc
+}
+
+// failureRecoveryYAMLToProto converts the YAML failure_recovery block to its
+// proto form, rejecting integer values that overflow int32.
+func failureRecoveryYAMLToProto(in *FailureRecoveryConfigYAML) (*loomv1.FailureRecoveryConfig, error) {
+	maxHints, err := safeInt32(in.MaxHints, "failure_recovery.max_hints")
+	if err != nil {
+		return nil, err
+	}
+	timeoutSec, err := safeInt32(in.LLMAbstraction.TimeoutSec, "failure_recovery.llm_abstraction.timeout_sec")
+	if err != nil {
+		return nil, err
+	}
+	return &loomv1.FailureRecoveryConfig{
+		Enabled:             in.Enabled,
+		SimilarityThreshold: in.SimilarityThreshold,
+		MaxHints:            maxHints,
+		Classes:             in.Classes,
+		InitialSalience:     in.InitialSalience,
+		Proactive: &loomv1.ProactiveConfig{
+			Enabled:   in.Proactive.Enabled,
+			Threshold: in.Proactive.Threshold,
+			LlmIntent: in.Proactive.LLMIntent,
+		},
+		UserScoped:      in.UserScoped,
+		PreserveDetails: in.PreserveDetails,
+		SemanticOnly:    in.SemanticOnly,
+		LlmAbstraction: &loomv1.LLMAbstractionConfig{
+			Enabled:    in.LLMAbstraction.Enabled,
+			TimeoutSec: timeoutSec,
+		},
+	}, nil
+}
+
+// failureRecoveryProtoToYAML is the inverse of failureRecoveryYAMLToProto.
+// Returns nil when the proto field is unset.
+func failureRecoveryProtoToYAML(in *loomv1.FailureRecoveryConfig) *FailureRecoveryConfigYAML {
+	if in == nil {
+		return nil
+	}
+	return &FailureRecoveryConfigYAML{
+		Enabled:             in.GetEnabled(),
+		SimilarityThreshold: in.GetSimilarityThreshold(),
+		MaxHints:            int(in.GetMaxHints()),
+		Classes:             in.GetClasses(),
+		InitialSalience:     in.GetInitialSalience(),
+		Proactive: ProactiveConfigYAML{
+			Enabled:   in.GetProactive().GetEnabled(),
+			Threshold: in.GetProactive().GetThreshold(),
+			LLMIntent: in.GetProactive().GetLlmIntent(),
+		},
+		UserScoped:      in.GetUserScoped(),
+		PreserveDetails: in.GetPreserveDetails(),
+		SemanticOnly:    in.GetSemanticOnly(),
+		LLMAbstraction: LLMAbstractionConfigYAML{
+			Enabled:    in.GetLlmAbstraction().GetEnabled(),
+			TimeoutSec: int(in.GetLlmAbstraction().GetTimeoutSec()),
+		},
+	}
+}
+
+// FailureRecoveryConfigFromProto converts the proto failure-recovery config to
+// the runtime failurerecovery.Config. Returns nil when the proto field is unset,
+// which leaves the feature off. Zero-valued numeric fields stay zero so the
+// failurerecovery package applies its documented defaults.
+func FailureRecoveryConfigFromProto(in *loomv1.FailureRecoveryConfig) *failurerecovery.Config {
+	if in == nil {
+		return nil
+	}
+	return &failurerecovery.Config{
+		Enabled:             in.GetEnabled(),
+		UserScoped:          in.GetUserScoped(),
+		PreserveDetails:     in.GetPreserveDetails(),
+		SemanticOnly:        in.GetSemanticOnly(),
+		SimilarityThreshold: in.GetSimilarityThreshold(),
+		MaxHints:            int(in.GetMaxHints()),
+		Classes:             in.GetClasses(),
+		InitialSalience:     float64(in.GetInitialSalience()),
+		Proactive: failurerecovery.ProactiveConfig{
+			Enabled:   in.GetProactive().GetEnabled(),
+			Threshold: in.GetProactive().GetThreshold(),
+			LLMIntent: in.GetProactive().GetLlmIntent(),
+		},
+		LLMAbstraction: failurerecovery.LLMAbstractionConfig{
+			Enabled:    in.GetLlmAbstraction().GetEnabled(),
+			TimeoutSec: int(in.GetLlmAbstraction().GetTimeoutSec()),
+		},
+	}
 }
 
 // LoadWorkflowAgents loads a workflow file and extracts ALL agent configs (coordinator + sub-agents).

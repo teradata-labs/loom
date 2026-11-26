@@ -282,6 +282,93 @@ func TestClient_ConvertSchemaProperties(t *testing.T) {
 	}
 }
 
+// TestClient_ConvertTools_NullableAnyOf verifies that MCP tools using the
+// composite `anyOf` keyword for nullable parameters (e.g. anyOf: [{integer},
+// {null}]) are converted into a Bedrock/JSON Schema draft 2020-12 compliant
+// input_schema. Dropping anyOf or emitting a null "properties"/"required"
+// causes Bedrock to reject the request with a schema validation error.
+func TestClient_ConvertTools_NullableAnyOf(t *testing.T) {
+	client := &Client{}
+
+	limit := 100.0
+	nullableTool := &mockTool{
+		name:        "teradata_search_tools",
+		description: "Search tools",
+		schema: &shuttle.JSONSchema{
+			Type: "object",
+			Properties: map[string]*shuttle.JSONSchema{
+				"limit": {
+					Default: nil,
+					AnyOf: []*shuttle.JSONSchema{
+						{Type: "integer", Maximum: &limit},
+						{Type: "null"},
+					},
+				},
+			},
+		},
+	}
+
+	apiTools := client.convertTools([]shuttle.Tool{nullableTool})
+	require.Len(t, apiTools, 1)
+
+	schema := apiTools[0]["input_schema"].(map[string]interface{})
+	assert.Equal(t, "object", schema["type"])
+
+	// Object schema must carry a non-null properties map.
+	props, ok := schema["properties"].(map[string]interface{})
+	require.True(t, ok, "properties must be a non-null map")
+
+	limitProp := props["limit"].(map[string]interface{})
+	// anyOf must be preserved.
+	anyOf, ok := limitProp["anyOf"].([]map[string]interface{})
+	require.True(t, ok, "anyOf must be preserved for nullable params")
+	require.Len(t, anyOf, 2)
+	assert.Equal(t, "integer", anyOf[0]["type"])
+	assert.Equal(t, "null", anyOf[1]["type"])
+	// A composite-only schema must not be forced to type "string".
+	assert.NotEqual(t, "string", limitProp["type"])
+
+	// The whole schema must marshal to valid JSON (no null properties/required).
+	raw, err := json.Marshal(schema)
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "\"properties\":null")
+	assert.NotContains(t, string(raw), "\"required\":null")
+}
+
+// TestClient_ConvertTools_EmptyProperties verifies that a tool taking no
+// parameters (empty properties) still produces a non-null "properties" object,
+// which Bedrock's draft 2020-12 validator requires for object schemas.
+func TestClient_ConvertTools_EmptyProperties(t *testing.T) {
+	client := &Client{}
+
+	// nil Properties simulates an MCP tool with `properties: {}` or none.
+	noParamTool := &mockTool{
+		name:        "teradata_list_patterns",
+		description: "List patterns",
+		schema: &shuttle.JSONSchema{
+			Type: "object",
+		},
+	}
+
+	apiTools := client.convertTools([]shuttle.Tool{noParamTool})
+	require.Len(t, apiTools, 1)
+
+	schema := apiTools[0]["input_schema"].(map[string]interface{})
+	props, ok := schema["properties"]
+	require.True(t, ok, "properties field must be present")
+	require.NotNil(t, props, "properties must not be nil")
+	assert.IsType(t, map[string]interface{}{}, props)
+
+	// required must be omitted (not null) when empty.
+	_, hasRequired := schema["required"]
+	assert.False(t, hasRequired, "required must be omitted when empty")
+
+	raw, err := json.Marshal(schema)
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "\"properties\":null")
+	assert.NotContains(t, string(raw), "\"required\":null")
+}
+
 func TestClient_ConvertResponse(t *testing.T) {
 	client := &Client{
 		modelID: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",

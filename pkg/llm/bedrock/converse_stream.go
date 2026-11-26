@@ -236,8 +236,14 @@ func (c *Client) convertToolsToConverse(tools []shuttle.Tool) *bedrocktypes.Tool
 		if schema != nil {
 			// Build JSON schema document
 			schemaMap := map[string]interface{}{
-				"type":       "object",
-				"properties": convertSchemaProperties(schema.Properties),
+				"type": "object",
+			}
+			// Object schemas MUST carry a non-null "properties" map under JSON
+			// Schema draft 2020-12 (enforced by Bedrock).
+			if props := convertSchemaProperties(schema.Properties); props != nil {
+				schemaMap["properties"] = props
+			} else {
+				schemaMap["properties"] = map[string]interface{}{}
 			}
 			if len(schema.Required) > 0 {
 				schemaMap["required"] = schema.Required

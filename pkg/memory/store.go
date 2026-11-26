@@ -78,6 +78,16 @@ type RecallOpts struct {
 	MinSalience float64
 	MaxTokens   int // 0 = no limit
 	Limit       int // max results
+	// Owner scopes recall to a single caller identity. Empty = no owner filter
+	// (matches all owners, the default agent-wide behavior). Non-empty = strict
+	// match on that owner only (per-user partitioning).
+	Owner string
+	// SharedOnly, when true and Owner is empty, restricts recall to unowned
+	// (shared) rows only — those with an empty owner. This is the fail-closed
+	// read used when per-user scoping is off: rows previously written under a
+	// concrete owner stay private and are never surfaced to other callers, even
+	// after the scoping flag is turned off. Ignored when Owner is non-empty.
+	SharedOnly bool
 }
 
 // ContextForOpts configures a composite context query.

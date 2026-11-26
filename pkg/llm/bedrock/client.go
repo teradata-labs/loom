@@ -655,11 +655,22 @@ func (c *Client) convertTools(tools []shuttle.Tool) []map[string]interface{} {
 				schemaType = "object"
 			}
 
-			apiTool["input_schema"] = map[string]interface{}{
-				"type":       schemaType,
-				"properties": convertSchemaProperties(schema.Properties),
-				"required":   schema.Required,
+			inputSchema := map[string]interface{}{
+				"type": schemaType,
 			}
+			// Object schemas MUST carry a non-null "properties" map under JSON
+			// Schema draft 2020-12 (enforced by Bedrock). A nil map here would
+			// marshal to "properties": null and be rejected.
+			if props := convertSchemaProperties(schema.Properties); props != nil {
+				inputSchema["properties"] = props
+			} else if schemaType == "object" {
+				inputSchema["properties"] = map[string]interface{}{}
+			}
+			// Only emit "required" when non-empty; "required": null is invalid.
+			if len(schema.Required) > 0 {
+				inputSchema["required"] = schema.Required
+			}
+			apiTool["input_schema"] = inputSchema
 		}
 
 		apiTools = append(apiTools, apiTool)
@@ -676,63 +687,100 @@ func convertSchemaProperties(props map[string]*shuttle.JSONSchema) map[string]in
 
 	result := make(map[string]interface{})
 	for key, schema := range props {
-		propMap := make(map[string]interface{})
-		propType := schema.Type
-		if propType == "" {
-			propType = "string" // MCP tools may omit type; default to string
-		}
-		propMap["type"] = propType
-
-		if schema.Description != "" {
-			propMap["description"] = schema.Description
-		}
-		if schema.Enum != nil {
-			propMap["enum"] = schema.Enum
-		}
-		if schema.Default != nil {
-			propMap["default"] = schema.Default
-		}
-		if schema.Properties != nil {
-			propMap["properties"] = convertSchemaProperties(schema.Properties)
-			if propType == "string" {
-				propMap["type"] = "object"
-			}
-		}
-		if schema.Items != nil {
-			propMap["items"] = convertSchemaItem(schema.Items)
-			if propType == "string" {
-				propMap["type"] = "array"
-			}
-		}
-
-		result[key] = propMap
+		result[key] = convertSchemaValue(schema)
 	}
 	return result
 }
 
-// convertSchemaItem converts a JSONSchema item for arrays.
-func convertSchemaItem(item *shuttle.JSONSchema) map[string]interface{} {
-	itemMap := make(map[string]interface{})
-	itemType := item.Type
-	if itemType == "" {
-		itemType = "string" // MCP tools may omit type; default to string
+// convertSchemaValue converts a single JSONSchema node into an
+// Anthropic/Bedrock-compatible map. It preserves the composite keywords
+// (anyOf/oneOf/allOf/not) that MCP tools commonly use for nullable parameters
+// (e.g. anyOf: [{type: "integer"}, {type: "null"}]). Bedrock validates tool
+// schemas against JSON Schema draft 2020-12, so dropping these keywords or
+// emitting a null "properties" for object schemas causes a validation error.
+func convertSchemaValue(schema *shuttle.JSONSchema) map[string]interface{} {
+	if schema == nil {
+		return map[string]interface{}{}
 	}
-	itemMap["type"] = itemType
 
-	if item.Description != "" {
-		itemMap["description"] = item.Description
+	out := make(map[string]interface{})
+
+	hasComposite := len(schema.AnyOf) > 0 || len(schema.OneOf) > 0 ||
+		len(schema.AllOf) > 0 || schema.Not != nil
+
+	propType := schema.Type
+	if propType == "" && !hasComposite {
+		propType = "string" // MCP tools may omit type; default to string
 	}
-	if item.Enum != nil {
-		itemMap["enum"] = item.Enum
+	// Infer object/array from structural keywords when the type is absent or a
+	// placeholder default.
+	if schema.Properties != nil {
+		propType = "object"
+	} else if schema.Items != nil && (propType == "" || propType == "string") {
+		propType = "array"
 	}
-	if item.Properties != nil {
-		itemMap["properties"] = convertSchemaProperties(item.Properties)
-		if itemType == "string" {
-			itemMap["type"] = "object"
+
+	if propType != "" {
+		out["type"] = propType
+	}
+	if schema.Description != "" {
+		out["description"] = schema.Description
+	}
+	if len(schema.Enum) > 0 {
+		out["enum"] = schema.Enum
+	}
+	if schema.Default != nil {
+		out["default"] = schema.Default
+	}
+	if schema.Format != "" {
+		out["format"] = schema.Format
+	}
+	if schema.Pattern != "" {
+		out["pattern"] = schema.Pattern
+	}
+	if schema.Minimum != nil {
+		out["minimum"] = schema.Minimum
+	}
+	if schema.Maximum != nil {
+		out["maximum"] = schema.Maximum
+	}
+	if propType == "object" {
+		// Object schemas must carry a non-null properties object.
+		if converted := convertSchemaProperties(schema.Properties); converted != nil {
+			out["properties"] = converted
+		} else {
+			out["properties"] = map[string]interface{}{}
+		}
+		if len(schema.Required) > 0 {
+			out["required"] = schema.Required
 		}
 	}
+	if schema.Items != nil {
+		out["items"] = convertSchemaValue(schema.Items)
+	}
+	if len(schema.AnyOf) > 0 {
+		out["anyOf"] = convertSchemaSlice(schema.AnyOf)
+	}
+	if len(schema.OneOf) > 0 {
+		out["oneOf"] = convertSchemaSlice(schema.OneOf)
+	}
+	if len(schema.AllOf) > 0 {
+		out["allOf"] = convertSchemaSlice(schema.AllOf)
+	}
+	if schema.Not != nil {
+		out["not"] = convertSchemaValue(schema.Not)
+	}
 
-	return itemMap
+	return out
+}
+
+// convertSchemaSlice converts a list of composite sub-schemas.
+func convertSchemaSlice(schemas []*shuttle.JSONSchema) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(schemas))
+	for _, s := range schemas {
+		out = append(out, convertSchemaValue(s))
+	}
+	return out
 }
 
 // convertResponse converts Bedrock response to agent format.

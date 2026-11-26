@@ -451,11 +451,27 @@ func (c *SDKClient) convertToolsToSDK(tools []shuttle.Tool) ([]anthropic.ToolPar
 
 		schema := tool.InputSchema()
 		if schema != nil {
-			// Marshal and unmarshal to get proper anthropic.ToolInputSchemaParam
+			// Build a JSON Schema draft 2020-12 compliant document. We cannot
+			// marshal schema.Properties raw: shuttle.JSONSchema.Type has no
+			// omitempty, so nullable params (anyOf with an empty top-level Type)
+			// would serialize to "type": "" and a parameterless tool would emit
+			// "properties": null / "required": null — all rejected by Bedrock.
+			// convertSchemaValue/convertSchemaProperties normalize these and
+			// preserve composite keywords (anyOf/oneOf/allOf/not).
+			schemaType := schema.Type
+			if schemaType == "" {
+				schemaType = "object"
+			}
 			schemaMap := map[string]interface{}{
-				"type":       schema.Type,
-				"properties": schema.Properties,
-				"required":   schema.Required,
+				"type": schemaType,
+			}
+			if props := convertSchemaProperties(schema.Properties); props != nil {
+				schemaMap["properties"] = props
+			} else if schemaType == "object" {
+				schemaMap["properties"] = map[string]interface{}{}
+			}
+			if len(schema.Required) > 0 {
+				schemaMap["required"] = schema.Required
 			}
 			schemaJSON, _ := json.Marshal(schemaMap)
 			var inputSchema anthropic.ToolInputSchemaParam

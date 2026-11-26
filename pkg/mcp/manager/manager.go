@@ -190,10 +190,11 @@ func (m *Manager) startServer(ctx context.Context, name string, config ServerCon
 
 	// Create client
 	mcpClient := client.NewClient(client.Config{
-		Transport:       trans,
-		Logger:          m.logger.With(zap.String("server", name)),
-		ProtocolVersion: config.ProtocolVersion,
-		MRTR:            m.config.MRTR,
+		Transport:            trans,
+		Logger:               m.logger.With(zap.String("server", name)),
+		ProtocolVersion:      config.ProtocolVersion,
+		MRTR:                 m.config.MRTR,
+		DetectEmbeddedErrors: config.DetectEmbeddedErrors,
 	})
 
 	// Connect with the timeout context: negotiates the protocol revision

@@ -16,6 +16,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -32,6 +33,7 @@ var (
 	chatMessage string
 	chatStream  bool
 	chatTimeout time.Duration
+	chatUser    string
 )
 
 var chatCmd = &cobra.Command{
@@ -51,6 +53,7 @@ func init() {
 	chatCmd.Flags().StringVarP(&chatMessage, "message", "m", "", "Message to send (if not provided, reads from stdin or args)")
 	chatCmd.Flags().BoolVar(&chatStream, "stream", false, "Stream response in real-time")
 	chatCmd.Flags().DurationVar(&chatTimeout, "timeout", 5*time.Minute, "Timeout for response")
+	chatCmd.Flags().StringVar(&chatUser, "user", "", "Caller identity sent as the x-user-id header (scopes per-user memory; omit for the server default)")
 }
 
 func runChatCommand(cmd *cobra.Command, args []string) {
@@ -135,6 +138,14 @@ func runChatCommand(cmd *cobra.Command, args []string) {
 	}
 	ctx = metadata.AppendToOutgoingContext(ctx, "loom-slot-origin", origin)
 
+	// Forward an explicit caller identity when provided. The server trusts the
+	// x-user-id header (see pkg/server/interceptors.go) and threads it into the
+	// request context, which scopes per-user memory (e.g. failure-recovery
+	// lessons under a user_scoped agent). Omitted => the server default applies.
+	if chatUser != "" {
+		ctx = metadata.AppendToOutgoingContext(ctx, "x-user-id", chatUser)
+	}
+
 	// Send message and handle response (always use StreamWeave)
 	if err := streamChat(ctx, c, message); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -189,6 +200,12 @@ func streamChat(ctx context.Context, c *client.Client, message string) error {
 				// Show tool execution
 				if progress.ToolName != "" {
 					fmt.Fprintf(os.Stderr, "[Executing Tool: %s]\n", progress.ToolName)
+				}
+				// Show the tool call parameters when the tool starts
+				if progress.IsToolStarted && progress.ToolInput != nil {
+					if params, err := json.Marshal(progress.ToolInput.AsMap()); err == nil {
+						fmt.Fprintf(os.Stderr, "  Params: %s\n", string(params))
+					}
 				}
 				if progress.Message != "" {
 					fmt.Fprintf(os.Stderr, "  %s\n", progress.Message)

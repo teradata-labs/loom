@@ -4358,6 +4358,10 @@
           "type": "integer",
           "format": "int32",
           "description": "Output token circuit breaker threshold: number of consecutive turns where\nthe LLM hits the output token limit AND returns truncated tool calls before\nthe circuit breaker fires (default: 8, was hardcoded to 3).\n\nThe circuit breaker only triggers when the agent is stuck in a tool loop\nwith truncated calls — it does NOT trigger on verbose text responses.\nSet to 0 to use the default. Set to -1 to disable entirely."
+        },
+        "failureRecovery": {
+          "$ref": "#/definitions/v1FailureRecoveryConfig",
+          "description": "Durable failure-recovery memory: learn abstract problem-\u003esolution lessons on\nrecovery and recall them reactively (on failure) and proactively (per\nquery). Requires a memory store; uses a vector embedder when configured,\nelse FTS5. Off by default. See docs/plans/failure-recovery-memory-spec.md."
         }
       },
       "title": "BehaviorConfig defines agent behavior constraints"
@@ -5317,6 +5321,58 @@
       "default": "EXECUTION_STAGE_UNSPECIFIED",
       "description": "ExecutionStage enum for tracking progress.\n\n - EXECUTION_STAGE_HUMAN_IN_THE_LOOP: Waiting for human response"
     },
+    "v1FailureRecoveryConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable learning + reactive recall of failure-recovery lessons."
+        },
+        "similarityThreshold": {
+          "type": "number",
+          "format": "float",
+          "description": "Minimum similarity for a reactive vector match (default 0.82)."
+        },
+        "maxHints": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Maximum hints injected per read (default 2)."
+        },
+        "classes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Covered failure classes (default: tool_exec, tool_args, guardrail)."
+        },
+        "initialSalience": {
+          "type": "number",
+          "format": "float",
+          "description": "Salience assigned to a newly learned lesson (default 0.6)."
+        },
+        "proactive": {
+          "$ref": "#/definitions/v1ProactiveConfig",
+          "description": "Per-query pitfall pre-warning (off by default)."
+        },
+        "userScoped": {
+          "type": "boolean",
+          "description": "Partition lessons per calling user. When false (default) every user of an\nagent shares its lessons. When true a lesson is stored under the caller's\nuser id and recall only returns that user's own lessons. Also enables the\ndeterministic pre-execution guard, which matches planned tool calls against\nstored failure signatures without an LLM or embeddings."
+        },
+        "preserveDetails": {
+          "type": "boolean",
+          "description": "Keep concrete identifiers (table, column, schema names, codes, keywords) in\nLLM-drafted lessons for sharper recall. Only takes effect when user_scoped\nis also true, because identifiers are the author's own schema and must not\nbe shown to another user. Off by default."
+        },
+        "semanticOnly": {
+          "type": "boolean",
+          "description": "Disable the deterministic signature-matching layers (resource-gated\nplanning advisory, pre-execution guard, cross-object advice) and use only\nsemantic retrieval (embedding recall with FTS5 fallback). Signatures are\nstill stored, so turning this off re-enables matching against lessons\nlearned meanwhile. Off by default."
+        },
+        "llmAbstraction": {
+          "$ref": "#/definitions/v1LLMAbstractionConfig",
+          "description": "Optional LLM-drafted lessons (off by default)."
+        }
+      },
+      "description": "FailureRecoveryConfig configures the durable failure-recovery memory feature.\nThe feature is off unless enabled is true; proactive pre-warning is gated\nseparately by proactive.enabled. Unset (zero) numeric fields take the\ndefaults noted on each field."
+    },
     "v1ForkJoinPattern": {
       "type": "object",
       "properties": {
@@ -5748,6 +5804,21 @@
         }
       },
       "description": "IterativeWorkflowPattern extends PipelinePattern with autonomous restart capabilities.\nStages can trigger restarts of earlier stages via pub/sub coordination, enabling\nagents to negotiate and self-correct without human intervention.\n\nExample use case: Stage 6 hits processing limits and requests Stage 2 to find\na different table with fewer rows."
+    },
+    "v1LLMAbstractionConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Draft lessons with the agent's LLM."
+        },
+        "timeoutSec": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Per-draft LLM timeout in seconds (default 8)."
+        }
+      },
+      "description": "LLMAbstractionConfig gates optional LLM-drafted failure-recovery lessons. A\ndrafted lesson passes a deterministic leak gate (unless preserve_details\napplies) and falls back to rule-based abstraction on any error, timeout, or\ngate failure."
     },
     "v1LLMConfig": {
       "type": "object",
@@ -7506,6 +7577,25 @@
         }
       },
       "description": "PresetDefaults carries the agent-creation defaults a preset contributes.\nField names mirror AgentConfig + BehaviorConfig + MemoryConfig so the\npreset can be flattened into a CreateAgentRequest with a simple merge.\n\nBoolean fields use proto3 optional so the merge can distinguish\n\"explicitly false\" from \"not specified by the preset\"."
+    },
+    "v1ProactiveConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Inject task pitfalls at the start of a user query."
+        },
+        "threshold": {
+          "type": "number",
+          "format": "float",
+          "description": "Soft minimum similarity for a proactive match (default 0.3). Lessons less\nsimilar than this are dropped, so the hook may return fewer than top-K\nlessons, or none. Unlike the strict reactive gate, this is advisory."
+        },
+        "llmIntent": {
+          "type": "boolean",
+          "description": "Translate the raw user intent into a predicted pitfall in failure-space\nvocabulary with one LLM call before recall. Improves proactive recall at the\ncost of one extra LLM call per user turn; best-effort, falling back to the\nraw intent on error, timeout, or a \"no pitfall\" verdict. Off by default."
+        }
+      },
+      "description": "ProactiveConfig gates per-query, intent-based pitfall pre-warning."
     },
     "v1ProviderEntry": {
       "type": "object",

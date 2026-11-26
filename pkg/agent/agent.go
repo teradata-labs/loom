@@ -27,6 +27,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
 	"github.com/teradata-labs/loom/pkg/fabric"
+	"github.com/teradata-labs/loom/pkg/failurerecovery"
 	"github.com/teradata-labs/loom/pkg/llm"
 	mcpadapter "github.com/teradata-labs/loom/pkg/mcp/adapter"
 	"github.com/teradata-labs/loom/pkg/memory"
@@ -2337,6 +2338,12 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		a.injectGraphMemoryContext(ctx, session)
 	}
 
+	// Proactive failure-recovery pitfalls (once per turn, keyed on task intent).
+	// Same resume guard as graph memory: the injected block is in-memory only.
+	if !isResumedTurn(ctx) || !hasFailureRecoveryPitfalls(session) {
+		a.injectFailureRecoveryPitfalls(ctx, session)
+	}
+
 	// Conversation loop
 	for turnCount < a.config.MaxTurns && toolExecutionCount < a.config.MaxToolExecutions {
 		turnCount++
@@ -2910,6 +2917,38 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 	_, toolSpan := ctx.Tracer().StartSpan(ctx, "agent.tool_execution")
 	toolSpan.SetAttribute("tool_name", toolCall.Name)
 
+	// Pre-execution failure-recovery guard (deterministic, LLM-free): if this
+	// planned call matches a verified past failure signature (exact replay or
+	// offending-token overlap), DO NOT run it. Inject an advisory tool result so
+	// the model revises the call on its next turn, and record it as a prevented
+	// repeat. Bounded: a match only fires on a concrete signature hit, and the
+	// advisory names the fix, so the re-planned call no longer matches. The
+	// existing reactive path still catches any genuinely new failure. Guarded
+	// so it is a no-op when the feature is off or not user-scoped.
+	if guardMsg := a.guardPlannedCall(ctx, session.ID, toolCall, span); guardMsg != "" {
+		a.appendMessage(ctx, session, Message{
+			Role:      "tool",
+			Content:   guardMsg,
+			ToolUseID: toolCall.ID,
+			ToolResult: &shuttle.Result{
+				Success: false,
+				Error: &shuttle.Error{
+					Code:    "failure_recovery_guard",
+					Message: "planned call blocked: matches a verified past failure — apply the known fix and retry",
+				},
+			},
+			AgentID:   a.id,
+			Timestamp: time.Now(),
+		}, false)
+		*st.allToolExecutions = append(*st.allToolExecutions, ToolExecution{
+			ToolName: toolCall.Name,
+			Input:    toolCall.Input,
+		})
+		toolSpan.SetAttribute("failure_recovery.guard_blocked", "true")
+		ctx.Tracer().EndSpan(toolSpan)
+		return
+	}
+
 	// Execute with self-correction (circuit breaker + SQL correction)
 	result, err := a.executeToolWithSelfCorrection(ctx, toolCall.Name, toolCall.Input, session.ID)
 
@@ -3063,10 +3102,43 @@ func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, 
 		}
 	}
 
+	// === FEATURE INTEGRATION: Failure-Recovery Memory ===
+	// Best-effort, off by default. On failure: classify the error, stage the
+	// abstracted failure, and recall any known fix (reactive). On success: learn
+	// the lesson if this tool just recovered (write-once). Uses the stable agent
+	// name so lessons persist across sessions, and classifies each failure into
+	// tool_args / guardrail / tool_exec so scoping stays sharp.
+	// See docs/plans/failure-recovery-memory-spec.md.
+	var failureRecoveryHint string
+	if a.failureRecovery.Enabled() {
+		span.SetAttribute("config.failure_recovery", true)
+		if err != nil || (result != nil && result.Error != nil) {
+			errText := failureErrorText(result, err)
+			class := failurerecovery.ClassifyError(errText)
+			a.failureRecovery.OnToolFailure(session.ID, class, toolCall.Name, errText, failurerecovery.FailedCall{
+				Tool: toolCall.Name,
+				Args: toolCall.Input,
+			})
+			if hints := a.failureRecovery.ReactiveHints(ctx, a.config.Name, session.ID, class, toolCall.Name, errText, span); len(hints) > 0 {
+				failureRecoveryHint = formatFailureRecoveryHint(toolCall.Name, hints)
+				span.AddEvent("failure_recovery.hint_injected", map[string]interface{}{
+					"failure_recovery.hook":  "reactive",
+					"failure_recovery.class": class,
+					"failure_recovery.hints": len(hints),
+				})
+			}
+		} else {
+			a.failureRecovery.OnToolSuccess(ctx, a.config.Name, session.ID, toolCall.Name, span)
+		}
+	}
+
 	// Format tool result with escalation if needed
 	formattedResult := a.formatToolResult(ctx, session.ID, toolCall.Name, result, err)
 	if escalationMsg != "" {
 		formattedResult = formatToolResultWithEscalation(formattedResult, err, escalationMsg)
+	}
+	if failureRecoveryHint != "" {
+		formattedResult += failureRecoveryHint
 	}
 
 	// Add tool result to conversation
@@ -4250,6 +4322,15 @@ func WithGraphMemoryStore(store memory.GraphMemoryStore, config *loomv1.GraphMem
 	return func(a *Agent) {
 		a.graphMemoryStore = store
 		a.graphMemoryConfig = config
+	}
+}
+
+// WithFailureRecovery installs the failure-recovery memory engine. The engine is
+// best-effort and disabled unless its own config enables it, so this option is
+// always safe to pass. See docs/plans/failure-recovery-memory-spec.md.
+func WithFailureRecovery(engine *failurerecovery.Engine) Option {
+	return func(a *Agent) {
+		a.failureRecovery = engine
 	}
 }
 

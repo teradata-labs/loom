@@ -137,6 +137,10 @@ type EmbeddingConfig struct {
 	// API key (provider-specific). Resolved: explicit > env > keyring.
 	// OpenAI: OPENAI_API_KEY env var. Ollama: not needed.
 	APIKey string `mapstructure:"api_key"`
+
+	// Region is the AWS region for the "bedrock"/"titan" provider. If empty,
+	// falls back to the LLM bedrock_region setting.
+	Region string `mapstructure:"region"`
 }
 
 // ArtifactsConfig holds artifacts storage configuration.
@@ -444,6 +448,45 @@ type StorageBackendConfig struct {
 
 	// Migration configuration
 	Migration MigrationStorageConfig `mapstructure:"migration"`
+
+	// Memory eviction configuration (backend-agnostic graph-memory growth management)
+	MemoryEviction MemoryEvictionStorageConfig `mapstructure:"memory_eviction"`
+}
+
+// MemoryEvictionStorageConfig configures the background sweep that bounds
+// graph-memory growth by decaying salience and soft-evicting stale, rarely
+// reused memories. It applies to both SQLite and PostgreSQL. Disabled by
+// default. Eviction sets expires_at (excluded from recall, reversible until a
+// later purge) rather than hard-deleting.
+type MemoryEvictionStorageConfig struct {
+	// Enable the background eviction sweep (default: false).
+	Enabled bool `mapstructure:"enabled"`
+
+	// Interval between sweeps (seconds, default: 3600 = hourly).
+	IntervalSeconds int32 `mapstructure:"interval_seconds"`
+
+	// DecayFactor applied to every agent's salience at the start of each pass,
+	// in (0,1). Values <= 0 or >= 1 skip the decay step (default: 0.98).
+	DecayFactor float64 `mapstructure:"decay_factor"`
+
+	// MinSalience floor; rows below it are eligible for eviction (default: 0.1).
+	MinSalience float64 `mapstructure:"min_salience"`
+
+	// MaxIdleSeconds: minimum time since last access for eligibility
+	// (seconds, default: 2592000 = 30 days).
+	MaxIdleSeconds int32 `mapstructure:"max_idle_seconds"`
+
+	// MinAgeSeconds: protects freshly written lessons; only rows older than this
+	// are eligible (seconds, default: 604800 = 7 days).
+	MinAgeSeconds int32 `mapstructure:"min_age_seconds"`
+
+	// MaxAccessCount: reuse ceiling for eligibility; rows accessed more than this
+	// are kept (default: 0 = evict only never-reused rows).
+	MaxAccessCount int `mapstructure:"max_access_count"`
+
+	// MaxRowsPerAgent caps live memories per agent as an overflow guard
+	// (default: 0 = disabled, predicate-only).
+	MaxRowsPerAgent int `mapstructure:"max_rows_per_agent"`
 }
 
 // SQLiteConfig holds SQLite storage configuration.
@@ -705,6 +748,12 @@ type MCPServerConfig struct {
 
 	// EnableResumption enables stream resumption (for streamable-http transport)
 	EnableResumption bool `mapstructure:"enable_resumption"`
+
+	// DetectEmbeddedErrors promotes a successful tool result whose payload
+	// encodes an application-level failure (e.g. {"ok":false,"error":"..."})
+	// to a tool error. Enable for servers that report failures as successful
+	// results instead of setting isError (e.g. Teradata). Off by default.
+	DetectEmbeddedErrors bool `mapstructure:"detect_embedded_errors"`
 
 	// Enabled controls whether this server should be started (default: true)
 	// CRITICAL: This field MUST be explicitly written during add/update operations
@@ -1201,6 +1250,17 @@ func setDefaults() {
 	viper.SetDefault("storage.migration.auto_migrate", true)
 	viper.SetDefault("storage.postgres.soft_delete.grace_period_seconds", 2592000)   // 30 days
 	viper.SetDefault("storage.postgres.soft_delete.cleanup_interval_seconds", 86400) // 1 day
+
+	// Graph-memory eviction (growth management). Disabled by default; soft-evicts
+	// (sets expires_at) stale, rarely reused memories on a schedule.
+	viper.SetDefault("storage.memory_eviction.enabled", false)
+	viper.SetDefault("storage.memory_eviction.interval_seconds", 3600) // hourly
+	viper.SetDefault("storage.memory_eviction.decay_factor", 0.98)
+	viper.SetDefault("storage.memory_eviction.min_salience", 0.1)
+	viper.SetDefault("storage.memory_eviction.max_idle_seconds", 2592000) // 30 days
+	viper.SetDefault("storage.memory_eviction.min_age_seconds", 604800)   // 7 days
+	viper.SetDefault("storage.memory_eviction.max_access_count", 0)
+	viper.SetDefault("storage.memory_eviction.max_rows_per_agent", 0) // disabled
 
 	// Communication defaults (SQLite-backed, auto-promote enabled)
 	viper.SetDefault("communication.store.backend", "sqlite")

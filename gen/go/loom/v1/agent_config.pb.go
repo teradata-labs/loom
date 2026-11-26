@@ -1585,8 +1585,13 @@ type BehaviorConfig struct {
 	// with truncated calls — it does NOT trigger on verbose text responses.
 	// Set to 0 to use the default. Set to -1 to disable entirely.
 	OutputTokenCbThreshold int32 `protobuf:"varint,8,opt,name=output_token_cb_threshold,json=outputTokenCbThreshold,proto3" json:"output_token_cb_threshold,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	// Durable failure-recovery memory: learn abstract problem->solution lessons on
+	// recovery and recall them reactively (on failure) and proactively (per
+	// query). Requires a memory store; uses a vector embedder when configured,
+	// else FTS5. Off by default. See docs/plans/failure-recovery-memory-spec.md.
+	FailureRecovery *FailureRecoveryConfig `protobuf:"bytes,9,opt,name=failure_recovery,json=failureRecovery,proto3" json:"failure_recovery,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *BehaviorConfig) Reset() {
@@ -1675,6 +1680,281 @@ func (x *BehaviorConfig) GetOutputTokenCbThreshold() int32 {
 	return 0
 }
 
+func (x *BehaviorConfig) GetFailureRecovery() *FailureRecoveryConfig {
+	if x != nil {
+		return x.FailureRecovery
+	}
+	return nil
+}
+
+// FailureRecoveryConfig configures the durable failure-recovery memory feature.
+// The feature is off unless enabled is true; proactive pre-warning is gated
+// separately by proactive.enabled. Unset (zero) numeric fields take the
+// defaults noted on each field.
+type FailureRecoveryConfig struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Enable learning + reactive recall of failure-recovery lessons.
+	Enabled bool `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	// Minimum similarity for a reactive vector match (default 0.82).
+	SimilarityThreshold float32 `protobuf:"fixed32,2,opt,name=similarity_threshold,json=similarityThreshold,proto3" json:"similarity_threshold,omitempty"`
+	// Maximum hints injected per read (default 2).
+	MaxHints int32 `protobuf:"varint,3,opt,name=max_hints,json=maxHints,proto3" json:"max_hints,omitempty"`
+	// Covered failure classes (default: tool_exec, tool_args, guardrail).
+	Classes []string `protobuf:"bytes,4,rep,name=classes,proto3" json:"classes,omitempty"`
+	// Salience assigned to a newly learned lesson (default 0.6).
+	InitialSalience float32 `protobuf:"fixed32,5,opt,name=initial_salience,json=initialSalience,proto3" json:"initial_salience,omitempty"`
+	// Per-query pitfall pre-warning (off by default).
+	Proactive *ProactiveConfig `protobuf:"bytes,6,opt,name=proactive,proto3" json:"proactive,omitempty"`
+	// Partition lessons per calling user. When false (default) every user of an
+	// agent shares its lessons. When true a lesson is stored under the caller's
+	// user id and recall only returns that user's own lessons. Also enables the
+	// deterministic pre-execution guard, which matches planned tool calls against
+	// stored failure signatures without an LLM or embeddings.
+	UserScoped bool `protobuf:"varint,7,opt,name=user_scoped,json=userScoped,proto3" json:"user_scoped,omitempty"`
+	// Keep concrete identifiers (table, column, schema names, codes, keywords) in
+	// LLM-drafted lessons for sharper recall. Only takes effect when user_scoped
+	// is also true, because identifiers are the author's own schema and must not
+	// be shown to another user. Off by default.
+	PreserveDetails bool `protobuf:"varint,8,opt,name=preserve_details,json=preserveDetails,proto3" json:"preserve_details,omitempty"`
+	// Disable the deterministic signature-matching layers (resource-gated
+	// planning advisory, pre-execution guard, cross-object advice) and use only
+	// semantic retrieval (embedding recall with FTS5 fallback). Signatures are
+	// still stored, so turning this off re-enables matching against lessons
+	// learned meanwhile. Off by default.
+	SemanticOnly bool `protobuf:"varint,9,opt,name=semantic_only,json=semanticOnly,proto3" json:"semantic_only,omitempty"`
+	// Optional LLM-drafted lessons (off by default).
+	LlmAbstraction *LLMAbstractionConfig `protobuf:"bytes,10,opt,name=llm_abstraction,json=llmAbstraction,proto3" json:"llm_abstraction,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *FailureRecoveryConfig) Reset() {
+	*x = FailureRecoveryConfig{}
+	mi := &file_loom_v1_agent_config_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FailureRecoveryConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FailureRecoveryConfig) ProtoMessage() {}
+
+func (x *FailureRecoveryConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_agent_config_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FailureRecoveryConfig.ProtoReflect.Descriptor instead.
+func (*FailureRecoveryConfig) Descriptor() ([]byte, []int) {
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *FailureRecoveryConfig) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+func (x *FailureRecoveryConfig) GetSimilarityThreshold() float32 {
+	if x != nil {
+		return x.SimilarityThreshold
+	}
+	return 0
+}
+
+func (x *FailureRecoveryConfig) GetMaxHints() int32 {
+	if x != nil {
+		return x.MaxHints
+	}
+	return 0
+}
+
+func (x *FailureRecoveryConfig) GetClasses() []string {
+	if x != nil {
+		return x.Classes
+	}
+	return nil
+}
+
+func (x *FailureRecoveryConfig) GetInitialSalience() float32 {
+	if x != nil {
+		return x.InitialSalience
+	}
+	return 0
+}
+
+func (x *FailureRecoveryConfig) GetProactive() *ProactiveConfig {
+	if x != nil {
+		return x.Proactive
+	}
+	return nil
+}
+
+func (x *FailureRecoveryConfig) GetUserScoped() bool {
+	if x != nil {
+		return x.UserScoped
+	}
+	return false
+}
+
+func (x *FailureRecoveryConfig) GetPreserveDetails() bool {
+	if x != nil {
+		return x.PreserveDetails
+	}
+	return false
+}
+
+func (x *FailureRecoveryConfig) GetSemanticOnly() bool {
+	if x != nil {
+		return x.SemanticOnly
+	}
+	return false
+}
+
+func (x *FailureRecoveryConfig) GetLlmAbstraction() *LLMAbstractionConfig {
+	if x != nil {
+		return x.LlmAbstraction
+	}
+	return nil
+}
+
+// ProactiveConfig gates per-query, intent-based pitfall pre-warning.
+type ProactiveConfig struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Inject task pitfalls at the start of a user query.
+	Enabled bool `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	// Soft minimum similarity for a proactive match (default 0.3). Lessons less
+	// similar than this are dropped, so the hook may return fewer than top-K
+	// lessons, or none. Unlike the strict reactive gate, this is advisory.
+	Threshold float32 `protobuf:"fixed32,2,opt,name=threshold,proto3" json:"threshold,omitempty"`
+	// Translate the raw user intent into a predicted pitfall in failure-space
+	// vocabulary with one LLM call before recall. Improves proactive recall at the
+	// cost of one extra LLM call per user turn; best-effort, falling back to the
+	// raw intent on error, timeout, or a "no pitfall" verdict. Off by default.
+	LlmIntent     bool `protobuf:"varint,3,opt,name=llm_intent,json=llmIntent,proto3" json:"llm_intent,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProactiveConfig) Reset() {
+	*x = ProactiveConfig{}
+	mi := &file_loom_v1_agent_config_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProactiveConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProactiveConfig) ProtoMessage() {}
+
+func (x *ProactiveConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_agent_config_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProactiveConfig.ProtoReflect.Descriptor instead.
+func (*ProactiveConfig) Descriptor() ([]byte, []int) {
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *ProactiveConfig) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+func (x *ProactiveConfig) GetThreshold() float32 {
+	if x != nil {
+		return x.Threshold
+	}
+	return 0
+}
+
+func (x *ProactiveConfig) GetLlmIntent() bool {
+	if x != nil {
+		return x.LlmIntent
+	}
+	return false
+}
+
+// LLMAbstractionConfig gates optional LLM-drafted failure-recovery lessons. A
+// drafted lesson passes a deterministic leak gate (unless preserve_details
+// applies) and falls back to rule-based abstraction on any error, timeout, or
+// gate failure.
+type LLMAbstractionConfig struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Draft lessons with the agent's LLM.
+	Enabled bool `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	// Per-draft LLM timeout in seconds (default 8).
+	TimeoutSec    int32 `protobuf:"varint,2,opt,name=timeout_sec,json=timeoutSec,proto3" json:"timeout_sec,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LLMAbstractionConfig) Reset() {
+	*x = LLMAbstractionConfig{}
+	mi := &file_loom_v1_agent_config_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LLMAbstractionConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LLMAbstractionConfig) ProtoMessage() {}
+
+func (x *LLMAbstractionConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_loom_v1_agent_config_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LLMAbstractionConfig.ProtoReflect.Descriptor instead.
+func (*LLMAbstractionConfig) Descriptor() ([]byte, []int) {
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *LLMAbstractionConfig) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+func (x *LLMAbstractionConfig) GetTimeoutSec() int32 {
+	if x != nil {
+		return x.TimeoutSec
+	}
+	return 0
+}
+
 // PatternConfig defines pattern-guided learning configuration
 // Patterns provide domain-specific templates and best practices for common tasks
 type PatternConfig struct {
@@ -1707,7 +1987,7 @@ type PatternConfig struct {
 
 func (x *PatternConfig) Reset() {
 	*x = PatternConfig{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[14]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1719,7 +1999,7 @@ func (x *PatternConfig) String() string {
 func (*PatternConfig) ProtoMessage() {}
 
 func (x *PatternConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[14]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1732,7 +2012,7 @@ func (x *PatternConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PatternConfig.ProtoReflect.Descriptor instead.
 func (*PatternConfig) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{14}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *PatternConfig) GetEnabled() bool {
@@ -1787,7 +2067,7 @@ type AgentTemplate struct {
 
 func (x *AgentTemplate) Reset() {
 	*x = AgentTemplate{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[15]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1799,7 +2079,7 @@ func (x *AgentTemplate) String() string {
 func (*AgentTemplate) ProtoMessage() {}
 
 func (x *AgentTemplate) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[15]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1812,7 +2092,7 @@ func (x *AgentTemplate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentTemplate.ProtoReflect.Descriptor instead.
 func (*AgentTemplate) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{15}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *AgentTemplate) GetName() string {
@@ -1862,7 +2142,7 @@ type TemplateParameter struct {
 
 func (x *TemplateParameter) Reset() {
 	*x = TemplateParameter{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[16]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1874,7 +2154,7 @@ func (x *TemplateParameter) String() string {
 func (*TemplateParameter) ProtoMessage() {}
 
 func (x *TemplateParameter) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[16]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1887,7 +2167,7 @@ func (x *TemplateParameter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TemplateParameter.ProtoReflect.Descriptor instead.
 func (*TemplateParameter) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{16}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *TemplateParameter) GetName() string {
@@ -1940,7 +2220,7 @@ type AgentProfile struct {
 
 func (x *AgentProfile) Reset() {
 	*x = AgentProfile{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[17]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1952,7 +2232,7 @@ func (x *AgentProfile) String() string {
 func (*AgentProfile) ProtoMessage() {}
 
 func (x *AgentProfile) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[17]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1965,7 +2245,7 @@ func (x *AgentProfile) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentProfile.ProtoReflect.Descriptor instead.
 func (*AgentProfile) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{17}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *AgentProfile) GetName() string {
@@ -2009,7 +2289,7 @@ type EphemeralAgentPolicy struct {
 
 func (x *EphemeralAgentPolicy) Reset() {
 	*x = EphemeralAgentPolicy{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[18]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2021,7 +2301,7 @@ func (x *EphemeralAgentPolicy) String() string {
 func (*EphemeralAgentPolicy) ProtoMessage() {}
 
 func (x *EphemeralAgentPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[18]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2034,7 +2314,7 @@ func (x *EphemeralAgentPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EphemeralAgentPolicy.ProtoReflect.Descriptor instead.
 func (*EphemeralAgentPolicy) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{18}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *EphemeralAgentPolicy) GetRole() string {
@@ -2087,7 +2367,7 @@ type SpawnTrigger struct {
 
 func (x *SpawnTrigger) Reset() {
 	*x = SpawnTrigger{}
-	mi := &file_loom_v1_agent_config_proto_msgTypes[19]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2099,7 +2379,7 @@ func (x *SpawnTrigger) String() string {
 func (*SpawnTrigger) ProtoMessage() {}
 
 func (x *SpawnTrigger) ProtoReflect() protoreflect.Message {
-	mi := &file_loom_v1_agent_config_proto_msgTypes[19]
+	mi := &file_loom_v1_agent_config_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2112,7 +2392,7 @@ func (x *SpawnTrigger) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SpawnTrigger.ProtoReflect.Descriptor instead.
 func (*SpawnTrigger) Descriptor() ([]byte, []int) {
-	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{19}
+	return file_loom_v1_agent_config_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *SpawnTrigger) GetType() SpawnTriggerType {
@@ -2256,7 +2536,7 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x19warning_threshold_percent\x18\x04 \x01(\x05R\x17warningThresholdPercent\x12<\n" +
 	"\x1acritical_threshold_percent\x18\x05 \x01(\x05R\x18criticalThresholdPercent\x12E\n" +
 	"\vbatch_sizes\x18\x06 \x01(\v2$.loom.v1.MemoryCompressionBatchSizesR\n" +
-	"batchSizes\"\xf7\x02\n" +
+	"batchSizes\"\xc2\x03\n" +
 	"\x0eBehaviorConfig\x12%\n" +
 	"\x0emax_iterations\x18\x01 \x01(\x05R\rmaxIterations\x12'\n" +
 	"\x0ftimeout_seconds\x18\x02 \x01(\x05R\x0etimeoutSeconds\x120\n" +
@@ -2265,7 +2545,30 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\tmax_turns\x18\x05 \x01(\x05R\bmaxTurns\x12.\n" +
 	"\x13max_tool_executions\x18\x06 \x01(\x05R\x11maxToolExecutions\x122\n" +
 	"\bpatterns\x18\a \x01(\v2\x16.loom.v1.PatternConfigR\bpatterns\x129\n" +
-	"\x19output_token_cb_threshold\x18\b \x01(\x05R\x16outputTokenCbThreshold\"\xda\x01\n" +
+	"\x19output_token_cb_threshold\x18\b \x01(\x05R\x16outputTokenCbThreshold\x12I\n" +
+	"\x10failure_recovery\x18\t \x01(\v2\x1e.loom.v1.FailureRecoveryConfigR\x0ffailureRecovery\"\xb7\x03\n" +
+	"\x15FailureRecoveryConfig\x12\x18\n" +
+	"\aenabled\x18\x01 \x01(\bR\aenabled\x121\n" +
+	"\x14similarity_threshold\x18\x02 \x01(\x02R\x13similarityThreshold\x12\x1b\n" +
+	"\tmax_hints\x18\x03 \x01(\x05R\bmaxHints\x12\x18\n" +
+	"\aclasses\x18\x04 \x03(\tR\aclasses\x12)\n" +
+	"\x10initial_salience\x18\x05 \x01(\x02R\x0finitialSalience\x126\n" +
+	"\tproactive\x18\x06 \x01(\v2\x18.loom.v1.ProactiveConfigR\tproactive\x12\x1f\n" +
+	"\vuser_scoped\x18\a \x01(\bR\n" +
+	"userScoped\x12)\n" +
+	"\x10preserve_details\x18\b \x01(\bR\x0fpreserveDetails\x12#\n" +
+	"\rsemantic_only\x18\t \x01(\bR\fsemanticOnly\x12F\n" +
+	"\x0fllm_abstraction\x18\n" +
+	" \x01(\v2\x1d.loom.v1.LLMAbstractionConfigR\x0ellmAbstraction\"h\n" +
+	"\x0fProactiveConfig\x12\x18\n" +
+	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1c\n" +
+	"\tthreshold\x18\x02 \x01(\x02R\tthreshold\x12\x1d\n" +
+	"\n" +
+	"llm_intent\x18\x03 \x01(\bR\tllmIntent\"Q\n" +
+	"\x14LLMAbstractionConfig\x12\x18\n" +
+	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1f\n" +
+	"\vtimeout_sec\x18\x02 \x01(\x05R\n" +
+	"timeoutSec\"\xda\x01\n" +
 	"\rPatternConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12%\n" +
 	"\x0emin_confidence\x18\x02 \x01(\x02R\rminConfidence\x121\n" +
@@ -2339,7 +2642,7 @@ func file_loom_v1_agent_config_proto_rawDescGZIP() []byte {
 }
 
 var file_loom_v1_agent_config_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_loom_v1_agent_config_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
+var file_loom_v1_agent_config_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
 var file_loom_v1_agent_config_proto_goTypes = []any{
 	(LLMRole)(0),                        // 0: loom.v1.LLMRole
 	(WorkloadProfile)(0),                // 1: loom.v1.WorkloadProfile
@@ -2358,29 +2661,32 @@ var file_loom_v1_agent_config_proto_goTypes = []any{
 	(*MemoryCompressionBatchSizes)(nil), // 14: loom.v1.MemoryCompressionBatchSizes
 	(*MemoryCompressionConfig)(nil),     // 15: loom.v1.MemoryCompressionConfig
 	(*BehaviorConfig)(nil),              // 16: loom.v1.BehaviorConfig
-	(*PatternConfig)(nil),               // 17: loom.v1.PatternConfig
-	(*AgentTemplate)(nil),               // 18: loom.v1.AgentTemplate
-	(*TemplateParameter)(nil),           // 19: loom.v1.TemplateParameter
-	(*AgentProfile)(nil),                // 20: loom.v1.AgentProfile
-	(*EphemeralAgentPolicy)(nil),        // 21: loom.v1.EphemeralAgentPolicy
-	(*SpawnTrigger)(nil),                // 22: loom.v1.SpawnTrigger
-	nil,                                 // 23: loom.v1.AgentConfig.MetadataEntry
-	nil,                                 // 24: loom.v1.AgentProfile.OverridesEntry
-	(*SkillsConfig)(nil),                // 25: loom.v1.SkillsConfig
-	(DecomposeStrategy)(0),              // 26: loom.v1.DecomposeStrategy
+	(*FailureRecoveryConfig)(nil),       // 17: loom.v1.FailureRecoveryConfig
+	(*ProactiveConfig)(nil),             // 18: loom.v1.ProactiveConfig
+	(*LLMAbstractionConfig)(nil),        // 19: loom.v1.LLMAbstractionConfig
+	(*PatternConfig)(nil),               // 20: loom.v1.PatternConfig
+	(*AgentTemplate)(nil),               // 21: loom.v1.AgentTemplate
+	(*TemplateParameter)(nil),           // 22: loom.v1.TemplateParameter
+	(*AgentProfile)(nil),                // 23: loom.v1.AgentProfile
+	(*EphemeralAgentPolicy)(nil),        // 24: loom.v1.EphemeralAgentPolicy
+	(*SpawnTrigger)(nil),                // 25: loom.v1.SpawnTrigger
+	nil,                                 // 26: loom.v1.AgentConfig.MetadataEntry
+	nil,                                 // 27: loom.v1.AgentProfile.OverridesEntry
+	(*SkillsConfig)(nil),                // 28: loom.v1.SkillsConfig
+	(DecomposeStrategy)(0),              // 29: loom.v1.DecomposeStrategy
 }
 var file_loom_v1_agent_config_proto_depIdxs = []int32{
 	6,  // 0: loom.v1.AgentConfig.llm:type_name -> loom.v1.LLMConfig
 	8,  // 1: loom.v1.AgentConfig.tools:type_name -> loom.v1.ToolsConfig
 	11, // 2: loom.v1.AgentConfig.memory:type_name -> loom.v1.MemoryConfig
 	16, // 3: loom.v1.AgentConfig.behavior:type_name -> loom.v1.BehaviorConfig
-	23, // 4: loom.v1.AgentConfig.metadata:type_name -> loom.v1.AgentConfig.MetadataEntry
-	21, // 5: loom.v1.AgentConfig.ephemeral_agents:type_name -> loom.v1.EphemeralAgentPolicy
+	26, // 4: loom.v1.AgentConfig.metadata:type_name -> loom.v1.AgentConfig.MetadataEntry
+	24, // 5: loom.v1.AgentConfig.ephemeral_agents:type_name -> loom.v1.EphemeralAgentPolicy
 	6,  // 6: loom.v1.AgentConfig.judge_llm:type_name -> loom.v1.LLMConfig
 	6,  // 7: loom.v1.AgentConfig.orchestrator_llm:type_name -> loom.v1.LLMConfig
 	6,  // 8: loom.v1.AgentConfig.classifier_llm:type_name -> loom.v1.LLMConfig
 	6,  // 9: loom.v1.AgentConfig.compressor_llm:type_name -> loom.v1.LLMConfig
-	25, // 10: loom.v1.AgentConfig.skills:type_name -> loom.v1.SkillsConfig
+	28, // 10: loom.v1.AgentConfig.skills:type_name -> loom.v1.SkillsConfig
 	6,  // 11: loom.v1.ProviderEntry.config:type_name -> loom.v1.LLMConfig
 	4,  // 12: loom.v1.ProviderPool.providers:type_name -> loom.v1.ProviderEntry
 	7,  // 13: loom.v1.LLMConfig.rate_limit:type_name -> loom.v1.LLMRateLimitConfig
@@ -2389,23 +2695,26 @@ var file_loom_v1_agent_config_proto_depIdxs = []int32{
 	15, // 16: loom.v1.MemoryConfig.memory_compression:type_name -> loom.v1.MemoryCompressionConfig
 	12, // 17: loom.v1.MemoryConfig.graph_memory:type_name -> loom.v1.GraphMemoryConfig
 	13, // 18: loom.v1.MemoryConfig.task_board:type_name -> loom.v1.TaskBoardConfig
-	26, // 19: loom.v1.TaskBoardConfig.default_strategy:type_name -> loom.v1.DecomposeStrategy
+	29, // 19: loom.v1.TaskBoardConfig.default_strategy:type_name -> loom.v1.DecomposeStrategy
 	1,  // 20: loom.v1.MemoryCompressionConfig.workload_profile:type_name -> loom.v1.WorkloadProfile
 	14, // 21: loom.v1.MemoryCompressionConfig.batch_sizes:type_name -> loom.v1.MemoryCompressionBatchSizes
-	17, // 22: loom.v1.BehaviorConfig.patterns:type_name -> loom.v1.PatternConfig
-	19, // 23: loom.v1.AgentTemplate.parameters:type_name -> loom.v1.TemplateParameter
-	3,  // 24: loom.v1.AgentTemplate.template_config:type_name -> loom.v1.AgentConfig
-	3,  // 25: loom.v1.AgentProfile.defaults:type_name -> loom.v1.AgentConfig
-	24, // 26: loom.v1.AgentProfile.overrides:type_name -> loom.v1.AgentProfile.OverridesEntry
-	22, // 27: loom.v1.EphemeralAgentPolicy.trigger:type_name -> loom.v1.SpawnTrigger
-	3,  // 28: loom.v1.EphemeralAgentPolicy.template:type_name -> loom.v1.AgentConfig
-	2,  // 29: loom.v1.SpawnTrigger.type:type_name -> loom.v1.SpawnTriggerType
-	3,  // 30: loom.v1.AgentProfile.OverridesEntry.value:type_name -> loom.v1.AgentConfig
-	31, // [31:31] is the sub-list for method output_type
-	31, // [31:31] is the sub-list for method input_type
-	31, // [31:31] is the sub-list for extension type_name
-	31, // [31:31] is the sub-list for extension extendee
-	0,  // [0:31] is the sub-list for field type_name
+	20, // 22: loom.v1.BehaviorConfig.patterns:type_name -> loom.v1.PatternConfig
+	17, // 23: loom.v1.BehaviorConfig.failure_recovery:type_name -> loom.v1.FailureRecoveryConfig
+	18, // 24: loom.v1.FailureRecoveryConfig.proactive:type_name -> loom.v1.ProactiveConfig
+	19, // 25: loom.v1.FailureRecoveryConfig.llm_abstraction:type_name -> loom.v1.LLMAbstractionConfig
+	22, // 26: loom.v1.AgentTemplate.parameters:type_name -> loom.v1.TemplateParameter
+	3,  // 27: loom.v1.AgentTemplate.template_config:type_name -> loom.v1.AgentConfig
+	3,  // 28: loom.v1.AgentProfile.defaults:type_name -> loom.v1.AgentConfig
+	27, // 29: loom.v1.AgentProfile.overrides:type_name -> loom.v1.AgentProfile.OverridesEntry
+	25, // 30: loom.v1.EphemeralAgentPolicy.trigger:type_name -> loom.v1.SpawnTrigger
+	3,  // 31: loom.v1.EphemeralAgentPolicy.template:type_name -> loom.v1.AgentConfig
+	2,  // 32: loom.v1.SpawnTrigger.type:type_name -> loom.v1.SpawnTriggerType
+	3,  // 33: loom.v1.AgentProfile.OverridesEntry.value:type_name -> loom.v1.AgentConfig
+	34, // [34:34] is the sub-list for method output_type
+	34, // [34:34] is the sub-list for method input_type
+	34, // [34:34] is the sub-list for extension type_name
+	34, // [34:34] is the sub-list for extension extendee
+	0,  // [0:34] is the sub-list for field type_name
 }
 
 func init() { file_loom_v1_agent_config_proto_init() }
@@ -2422,7 +2731,7 @@ func file_loom_v1_agent_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_loom_v1_agent_config_proto_rawDesc), len(file_loom_v1_agent_config_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   22,
+			NumMessages:   25,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -606,6 +606,16 @@ func (s *GraphMemoryStore) Recall(ctx context.Context, opts memory.RecallOpts) (
 			argN++
 		}
 
+		// Optional owner scope (per-user partitioning). Empty = no filter, unless
+		// SharedOnly is set, in which case only unowned (shared) rows match.
+		if opts.Owner != "" {
+			conditions = append(conditions, fmt.Sprintf("COALESCE(m.owner, '') = $%d", argN))
+			args = append(args, opts.Owner)
+			argN++
+		} else if opts.SharedOnly {
+			conditions = append(conditions, "COALESCE(m.owner, '') = ''")
+		}
+
 		// Optional entity scope.
 		if len(opts.EntityIDs) > 0 {
 			placeholders := make([]string, len(opts.EntityIDs))
@@ -880,14 +890,95 @@ func (s *GraphMemoryStore) DecayAll(ctx context.Context, agentID string, decayFa
 	ctx, span := s.tracer.StartSpan(ctx, "pg.graph_memory.decay_all")
 	defer s.tracer.EndSpan(span)
 
-	return execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+	decay := func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx,
 			`UPDATE graph_memories SET salience = GREATEST(0.0, salience * $1)
-			 WHERE agent_id = $2 AND salience > 0.01`,
+			 WHERE ($2 = '' OR agent_id = $2) AND salience > 0.01`,
 			decayFactor, agentID,
 		)
 		return err
+	}
+
+	// agentID == "" is the cross-tenant admin sweep (background eviction): it has
+	// no user in context and must bypass the per-user RLS policy to decay every
+	// user's rows. A specific agentID keeps the RLS-scoped path so existing
+	// per-tenant callers are unchanged.
+	if agentID == "" {
+		return execInTxNoRLS(ctx, s.pool, decay)
+	}
+	return execInTx(ctx, s.pool, decay)
+}
+
+// EvictStaleMemories soft-evicts (sets expires_at = NOW) memories that are
+// below the salience floor, idle, old enough, and rarely reused; it then
+// enforces an optional per-agent row cap. It mirrors Forget's soft-delete
+// semantics: evicted rows are excluded from recall but stay on disk until a
+// later purge. Returns the number of rows newly evicted.
+//
+// This is a cross-tenant admin maintenance operation run by the background
+// sweep without a user in context, so it bypasses the per-user RLS policy
+// (execInTxNoRLS) to evict across every user's rows in one pass.
+func (s *GraphMemoryStore) EvictStaleMemories(ctx context.Context, opts memory.EvictionOptions) (int, error) {
+	ctx, span := s.tracer.StartSpan(ctx, "pg.graph_memory.evict_stale")
+	defer s.tracer.EndSpan(span)
+
+	ageInterval := fmt.Sprintf("%d seconds", int64(opts.MinAge.Seconds()))
+	idleInterval := fmt.Sprintf("%d seconds", int64(opts.MaxIdle.Seconds()))
+	ageSecs := int64(opts.MinAge.Seconds())
+	idleSecs := int64(opts.MaxIdle.Seconds())
+
+	total := 0
+	err := execInTxNoRLS(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		// Phase 1: conjunctive predicate eviction. MinAge/MaxIdle <= 0 disable
+		// their respective guards via the leading "secs <= 0 OR" short-circuit.
+		tag, err := tx.Exec(ctx,
+			`UPDATE graph_memories
+			 SET expires_at = NOW()
+			 WHERE ($1 = '' OR agent_id = $1)
+			   AND deleted_at IS NULL
+			   AND (expires_at IS NULL OR expires_at > NOW())
+			   AND salience < $2
+			   AND access_count <= $3
+			   AND ($6 <= 0 OR created_at < NOW() - $4::interval)
+			   AND ($7 <= 0 OR accessed_at IS NULL OR accessed_at < NOW() - $5::interval)`,
+			opts.AgentID, opts.MinSalience, opts.MaxAccessCount, ageInterval, idleInterval, ageSecs, idleSecs,
+		)
+		if err != nil {
+			return fmt.Errorf("evict stale (predicate): %w", err)
+		}
+		total += int(tag.RowsAffected())
+
+		// Phase 2: per-agent row cap (LRU overflow guard). Keep the top MaxRows
+		// live rows per agent ranked by salience then recency; evict the rest.
+		if opts.MaxRows > 0 {
+			tag, err := tx.Exec(ctx,
+				`WITH ranked AS (
+				   SELECT id, ROW_NUMBER() OVER (
+				     PARTITION BY agent_id
+				     ORDER BY salience DESC, accessed_at DESC NULLS LAST, created_at DESC
+				   ) AS rn
+				   FROM graph_memories
+				   WHERE ($1 = '' OR agent_id = $1)
+				     AND deleted_at IS NULL
+				     AND (expires_at IS NULL OR expires_at > NOW())
+				 )
+				 UPDATE graph_memories m
+				 SET expires_at = NOW()
+				 FROM ranked
+				 WHERE m.id = ranked.id AND ranked.rn > $2`,
+				opts.AgentID, opts.MaxRows,
+			)
+			if err != nil {
+				return fmt.Errorf("evict stale (cap): %w", err)
+			}
+			total += int(tag.RowsAffected())
+		}
+		return nil
 	})
+	if err != nil {
+		return 0, err
+	}
+	return total, nil
 }
 
 // =============================================================================
@@ -1127,6 +1218,29 @@ func jsonbOrDefault(s, def string) string {
 	return s
 }
 
+// pgVectorLiteral renders an embedding as a pgvector text literal ("[0.1,0.2]")
+// suitable for casting via $n::vector, or nil when the memory has no embedding
+// (mapped to SQL NULL). Kept dimension-agnostic: the embedding column has no
+// fixed dimension, and VectorRecall filters by embedding_model so every stored
+// vector in a query shares the query vector's dimension.
+func pgVectorLiteral(emb []float32) *string {
+	if len(emb) == 0 {
+		return nil
+	}
+	var b strings.Builder
+	b.Grow(len(emb) * 8)
+	b.WriteByte('[')
+	for i, v := range emb {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(strconv.FormatFloat(float64(v), 'f', -1, 32))
+	}
+	b.WriteByte(']')
+	s := b.String()
+	return &s
+}
+
 // pgInsertMemoryTx inserts a memory row within an existing pgx transaction.
 func pgInsertMemoryTx(ctx context.Context, tx pgx.Tx, mem *memory.Memory) error {
 	tagsJSON, err := json.Marshal(mem.Tags)
@@ -1136,16 +1250,24 @@ func pgInsertMemoryTx(ctx context.Context, tx pgx.Tx, mem *memory.Memory) error 
 
 	userID := UserIDFromContext(ctx)
 
+	embLiteral := pgVectorLiteral(mem.Embedding)
+	var embModel *string
+	if embLiteral != nil && mem.EmbeddingModel != "" {
+		m := mem.EmbeddingModel
+		embModel = &m
+	}
+
 	_, err = tx.Exec(ctx,
 		`INSERT INTO graph_memories
 		 (id, agent_id, content, summary, memory_type, source, source_id, owner, memory_agent_id,
 		  tags, salience, token_count, summary_token_count, access_count, properties_json,
-		  user_id, created_at, accessed_at, expires_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 0, $14, $15, $16, NULL, $17)`,
+		  user_id, created_at, accessed_at, expires_at, embedding, embedding_model)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 0, $14, $15, $16, NULL, $17, $18::vector, $19)`,
 		mem.ID, mem.AgentID, mem.Content, mem.Summary, mem.MemoryType,
 		mem.Source, mem.SourceID, mem.Owner, mem.MemoryAgentID,
 		string(tagsJSON), mem.Salience, mem.TokenCount, mem.SummaryTokenCount,
 		jsonbOrDefault(mem.PropertiesJSON, "{}"), userID, mem.CreatedAt, mem.ExpiresAt,
+		embLiteral, embModel,
 	)
 	if err != nil {
 		return fmt.Errorf("insert memory: %w", err)
@@ -1318,11 +1440,81 @@ func pgScanMemoryFromRows(rows pgx.Rows) (*memory.Memory, error) {
 	return &m, nil
 }
 
-// VectorRecall is not yet supported by the Postgres backend. The interface
-// requires it for the sqlite brute-force cosine path; once pgvector wiring
-// lands here, replace this stub with a real implementation.
+// VectorRecall returns memories ordered by cosine similarity to the query
+// embedding, using pgvector's cosine-distance operator (<=>). It mirrors the
+// SQLite brute-force path: candidates are scoped to the agent and the exact
+// embedding model, exclude expired/superseded/soft-deleted rows, and are
+// filtered by the similarity threshold. Because every candidate shares the
+// query vector's model, the stored and query dimensions always match.
 func (s *GraphMemoryStore) VectorRecall(ctx context.Context, opts memory.VectorRecallOpts) ([]*memory.Memory, error) {
-	return nil, fmt.Errorf("VectorRecall not implemented for postgres backend yet")
+	ctx, span := s.tracer.StartSpan(ctx, "pg.graph_memory.vector_recall")
+	defer s.tracer.EndSpan(span)
+
+	if len(opts.Embedding) == 0 || opts.Model == "" {
+		return nil, nil
+	}
+	if opts.Limit <= 0 {
+		opts.Limit = 20
+	}
+
+	queryVec := pgVectorLiteral(opts.Embedding)
+	// pgvector cosine distance is in [0, 2] where 0 == identical direction, so
+	// cosine similarity = 1 - distance. Convert the similarity threshold into a
+	// maximum allowed distance.
+	maxDistance := 1.0 - float64(opts.Threshold)
+
+	var memories []*memory.Memory
+	err := execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx,
+			`SELECT m.id, m.agent_id, m.content, COALESCE(m.summary, ''), m.memory_type,
+			        COALESCE(m.source, ''), COALESCE(m.source_id, ''), COALESCE(m.owner, ''),
+			        COALESCE(m.memory_agent_id, ''), m.tags, m.salience,
+			        m.token_count, m.summary_token_count, m.access_count,
+			        COALESCE(m.properties_json::text, '{}'),
+			        m.created_at, m.accessed_at, m.expires_at
+			 FROM graph_memories m
+			 WHERE m.agent_id = $1
+			   AND m.embedding_model = $2
+			   AND m.embedding IS NOT NULL
+			   AND (m.expires_at IS NULL OR m.expires_at > NOW())
+			   AND m.deleted_at IS NULL
+			   AND ($6 = '' OR m.memory_type = $6)
+			   AND ($7 = '' OR COALESCE(m.owner, '') = $7)
+			   AND (NOT $8 OR COALESCE(m.owner, '') = '')
+			   AND m.id NOT IN (SELECT old_memory_id FROM graph_memory_lineage WHERE relation_type = 'SUPERSEDES')
+			   AND (m.embedding <=> $3::vector) <= $4
+			 ORDER BY m.embedding <=> $3::vector ASC
+			 LIMIT $5`,
+			opts.AgentID, opts.Model, queryVec, maxDistance, opts.Limit, opts.MemoryType, opts.Owner, opts.SharedOnly,
+		)
+		if err != nil {
+			return fmt.Errorf("vector recall query: %w", err)
+		}
+		defer rows.Close() //nolint:errcheck
+
+		for rows.Next() {
+			mem, err := pgScanMemoryFromRows(rows)
+			if err != nil {
+				return err
+			}
+			memories = append(memories, mem)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Touch accessed memories (best-effort).
+	if len(memories) > 0 {
+		ids := make([]string, len(memories))
+		for i, m := range memories {
+			ids[i] = m.ID
+		}
+		_ = s.TouchMemories(ctx, ids)
+	}
+
+	return memories, nil
 }
 
 func pgLoadMemoryEntityIDs(ctx context.Context, tx pgx.Tx, memoryID string) ([]string, error) {

@@ -213,6 +213,72 @@ func TestSDKClient_ToolNameMap_RequestLocal(t *testing.T) {
 	assert.Equal(t, "server_read", respNil.ToolCalls[0].Name)
 }
 
+// TestSDKClient_ConvertToolsToSDK_NullableAnyOf pins the fix for the Bedrock
+// "tools.N.custom.input_schema: JSON schema is invalid" rejection. MCP tools
+// (e.g. Teradata) declare nullable params as anyOf: [{type:integer},{type:null}]
+// with an empty top-level type. shuttle.JSONSchema.Type has no omitempty, so
+// marshaling the schema raw would emit "type": "" (invalid draft 2020-12).
+// The converter must preserve anyOf and never emit an empty type or a null
+// properties/required.
+func TestSDKClient_ConvertToolsToSDK_NullableAnyOf(t *testing.T) {
+	c := &SDKClient{modelID: "us.anthropic.claude-sonnet-4-5-20250929-v1:0", maxTokens: 1024}
+
+	limit := 100.0
+	tool := &mockTool{
+		name:        "teradata_search_tools",
+		description: "Search tools",
+		schema: &shuttle.JSONSchema{
+			Type: "object",
+			Properties: map[string]*shuttle.JSONSchema{
+				"limit": {
+					AnyOf: []*shuttle.JSONSchema{
+						{Type: "integer", Maximum: &limit},
+						{Type: "null"},
+					},
+				},
+			},
+		},
+	}
+
+	sdkTools, _ := c.convertToolsToSDK([]shuttle.Tool{tool})
+	require.Len(t, sdkTools, 1)
+
+	raw, err := json.Marshal(sdkTools[0].InputSchema)
+	require.NoError(t, err)
+	rendered := string(raw)
+
+	// No invalid empty type, no null properties/required.
+	assert.NotContains(t, rendered, `"type":""`)
+	assert.NotContains(t, rendered, `"properties":null`)
+	assert.NotContains(t, rendered, `"required":null`)
+	// anyOf must be preserved for the nullable param.
+	assert.Contains(t, rendered, `"anyOf"`)
+	assert.Contains(t, rendered, `"null"`)
+}
+
+// TestSDKClient_ConvertToolsToSDK_EmptyProperties verifies a parameterless MCP
+// tool yields a non-null properties object (required for object schemas).
+func TestSDKClient_ConvertToolsToSDK_EmptyProperties(t *testing.T) {
+	c := &SDKClient{modelID: "us.anthropic.claude-sonnet-4-5-20250929-v1:0", maxTokens: 1024}
+
+	tool := &mockTool{
+		name:        "teradata_list_patterns",
+		description: "List patterns",
+		schema:      &shuttle.JSONSchema{Type: "object"},
+	}
+
+	sdkTools, _ := c.convertToolsToSDK([]shuttle.Tool{tool})
+	require.Len(t, sdkTools, 1)
+
+	raw, err := json.Marshal(sdkTools[0].InputSchema)
+	require.NoError(t, err)
+	rendered := string(raw)
+
+	assert.NotContains(t, rendered, `"type":""`)
+	assert.NotContains(t, rendered, `"properties":null`)
+	assert.NotContains(t, rendered, `"required":null`)
+}
+
 func TestSDKClient_ChatStream_ToolNameMapRequestLocal(t *testing.T) {
 	ssePayload := `event: message_start
 data: {"type":"message_start","message":{"id":"msg_test","type":"message","role":"assistant","model":"test-model","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":0}}}

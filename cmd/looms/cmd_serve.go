@@ -38,6 +38,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/evals"
 	"github.com/teradata-labs/loom/pkg/fabric"
 	fabricfactory "github.com/teradata-labs/loom/pkg/fabric/factory"
+	"github.com/teradata-labs/loom/pkg/failurerecovery"
 	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
 	"github.com/teradata-labs/loom/pkg/llm/azureopenai"
@@ -1334,6 +1335,36 @@ func runServe(cmd *cobra.Command, args []string) {
 			} else {
 				logger.Warn("Embedding enabled but no OpenAI API key found (set embedding.api_key, llm.openai_api_key, or OPENAI_API_KEY)")
 			}
+		case "bedrock", "titan":
+			region := config.Embedding.Region
+			if region == "" {
+				region = config.LLM.BedrockRegion
+			}
+			dims := config.Embedding.Dimensions
+			if dims == 0 {
+				dims = embedding.DefaultTitanDimensions
+			}
+			bedrockEmbedder, err := embedding.NewBedrockEmbedder(context.Background(), embedding.BedrockConfig{
+				Region:          region,
+				ModelID:         config.Embedding.Model,
+				Dimensions:      dims,
+				Normalize:       true,
+				AccessKeyID:     config.LLM.BedrockAccessKeyID,
+				SecretAccessKey: config.LLM.BedrockSecretAccessKey,
+				SessionToken:    config.LLM.BedrockSessionToken,
+				Profile:         config.LLM.BedrockProfile,
+				BearerToken:     config.LLM.BedrockBearerToken,
+			})
+			if err != nil {
+				logger.Warn("Failed to initialize Bedrock embedder; falling back to keyword search",
+					zap.Error(err))
+			} else {
+				memoryEmbedder = bedrockEmbedder
+				logger.Info("Memory embedder initialized",
+					zap.String("provider", "bedrock"),
+					zap.String("model", bedrockEmbedder.Model()),
+					zap.Int("dimensions", bedrockEmbedder.Dimensions()))
+			}
 		default:
 			logger.Warn("Unknown embedding provider", zap.String("provider", config.Embedding.Provider))
 		}
@@ -2033,6 +2064,45 @@ func runServe(cmd *cobra.Command, args []string) {
 				// Wrap LLM provider with instrumentation for observability
 				if tracer != nil {
 					agentLLMProvider = llm.NewInstrumentedProvider(agentLLMProvider, tracer)
+				}
+
+				// Wire failure-recovery memory when the agent opted in via
+				// behavior.failure_recovery.enabled and a graph memory
+				// store is available to persist lessons. Mirrors the dynamic
+				// path in pkg/agent/registry.go buildAgent so static-YAML agents
+				// loaded here get the same behavior. Off unless enabled in YAML.
+				// Wired here (after agentLLMProvider is finalized) so the optional
+				// LLM abstractor can reuse the agent's own instrumented provider.
+				if graphMemoryStore != nil {
+					if frCfg := agent.FailureRecoveryConfigFromProto(cfg.GetBehavior().GetFailureRecovery()); frCfg != nil && frCfg.Enabled {
+						var frOpts []failurerecovery.EngineOption
+						agentName := cfg.Name
+						// Debug observer for engine decisions (LLM-abstractor
+						// outcomes and recall threshold/match counts). PII-safe:
+						// counts and safe categories only. Always wired so
+						// proactive/reactive threshold logs appear regardless of
+						// whether LLM abstraction is enabled.
+						frOpts = append(frOpts,
+							failurerecovery.WithLLMAbstractorDebug(func(event string, fields map[string]any) {
+								zf := make([]zap.Field, 0, len(fields)+1)
+								zf = append(zf, zap.String("agent", agentName))
+								for k, v := range fields {
+									zf = append(zf, zap.Any(k, v))
+								}
+								logger.Debug("failure-recovery "+event, zf...)
+							}),
+						)
+						if frCfg.LLMAbstraction.Enabled || frCfg.Proactive.LLMIntent {
+							frOpts = append(frOpts,
+								failurerecovery.WithLLMAbstractor(agentLLMProvider),
+							)
+						}
+						engine := failurerecovery.NewEngine(graphMemoryStore, memoryEmbedder, *frCfg, frOpts...)
+						agentOpts = append(agentOpts, agent.WithFailureRecovery(engine))
+						logger.Info("    Failure-recovery memory enabled",
+							zap.Bool("proactive", frCfg.Proactive.Enabled),
+							zap.Bool("llm_abstraction", frCfg.LLMAbstraction.Enabled))
+					}
 				}
 
 				// Wire per-role LLMs if declared in YAML. These route auxiliary
@@ -3637,6 +3707,30 @@ func runServe(cmd *cobra.Command, args []string) {
 		}
 	}
 
+	// Start graph-memory eviction sweep if enabled and the store supports it
+	// (SQLite and PostgreSQL graph-memory stores do). Bounds memory growth by
+	// decaying salience and soft-evicting stale, rarely reused memories.
+	var memoryEvictionSweeper *storage.MemoryEvictionSweeper
+	if meCfg := config.Storage.MemoryEviction; meCfg.Enabled && graphMemoryStore != nil {
+		if evictor, ok := graphMemoryStore.(storage.MemoryEvictor); ok {
+			memoryEvictionSweeper = storage.StartMemoryEvictionSweep(
+				evictor,
+				storage.MemoryEvictionConfig{
+					Interval:       time.Duration(meCfg.IntervalSeconds) * time.Second,
+					DecayFactor:    meCfg.DecayFactor,
+					MinSalience:    meCfg.MinSalience,
+					MaxIdle:        time.Duration(meCfg.MaxIdleSeconds) * time.Second,
+					MinAge:         time.Duration(meCfg.MinAgeSeconds) * time.Second,
+					MaxAccessCount: meCfg.MaxAccessCount,
+					MaxRows:        meCfg.MaxRowsPerAgent,
+				},
+				logger,
+			)
+		} else {
+			logger.Warn("memory eviction enabled but graph-memory store does not support it; skipping")
+		}
+	}
+
 	logger.Info("Ready to weave!")
 
 	// Start message queue monitor for event-driven workflow agent notifications
@@ -3704,6 +3798,12 @@ func runServe(cmd *cobra.Command, args []string) {
 		if softDeleteCleaner != nil {
 			softDeleteCleaner.Stop()
 			logger.Info("Soft-delete cleanup stopped")
+		}
+
+		// Stop graph-memory eviction sweep
+		if memoryEvictionSweeper != nil {
+			memoryEvictionSweeper.Stop()
+			logger.Info("Graph-memory eviction sweep stopped")
 		}
 
 		// Stop artifact watcher
@@ -3922,15 +4022,16 @@ func initializeMCPManager(config *Config, logger *zap.Logger) (*mcpManager, erro
 		// servers without explicit "enabled: false" in YAML default to true.
 
 		mcpConfig.Servers[serverName] = manager.ServerConfig{
-			Command:          serverConfig.Command,
-			Args:             serverConfig.Args,
-			Env:              serverConfig.Env,
-			Transport:        transport,
-			URL:              loomconfig.ExpandEnvPlaceholders(serverConfig.URL),
-			Headers:          expandMCPHeaders(serverConfig.Headers),
-			EnableSessions:   serverConfig.EnableSessions,
-			EnableResumption: serverConfig.EnableResumption,
-			Enabled:          enabled,
+			Command:              serverConfig.Command,
+			Args:                 serverConfig.Args,
+			Env:                  serverConfig.Env,
+			Transport:            transport,
+			URL:                  loomconfig.ExpandEnvPlaceholders(serverConfig.URL),
+			Headers:              expandMCPHeaders(serverConfig.Headers),
+			EnableSessions:       serverConfig.EnableSessions,
+			EnableResumption:     serverConfig.EnableResumption,
+			DetectEmbeddedErrors: serverConfig.DetectEmbeddedErrors,
+			Enabled:              enabled,
 			ToolFilter: manager.ToolFilter{
 				All: true, // Register all tools from this server
 			},

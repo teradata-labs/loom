@@ -13,6 +13,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Failure-Recovery Memory
+- Opt-in durable memory of abstract problem -> solution lessons, learned when an agent recovers from a tool failure and stored in graph memory (`pkg/failurerecovery`). Off by default.
+- Reactive recall injects a matching lesson when a tool fails; proactive recall (separately gated) pre-warns at the start of a user query.
+- Configured with the new proto field `BehaviorConfig.failure_recovery` (`FailureRecoveryConfig`, `ProactiveConfig`, `LLMAbstractionConfig`) and `behavior.failure_recovery` in agent YAML. Options: `user_scoped`, `preserve_details`, `semantic_only`, `proactive.llm_intent`, `llm_abstraction`.
+- Optional LLM-drafted lessons pass a deterministic leak gate and fall back to rule-based abstraction on error.
+- Requires a graph memory store. Uses a vector embedder when configured, otherwise FTS5.
+- Postgres migrations `000024` (pgvector embedding column) and `000025` (HNSW index). `000025` pins `graph_memories.embedding` to `vector(1024)` (Titan Text Embeddings v2 / Cohere on Bedrock); an embedder with a different dimension needs the column type and index changed. Status: Beta; see `docs/plans/failure-recovery-memory-spec.md` for limits.
+
+#### Graph-Memory Eviction
+- Optional background sweep (`storage.memory_eviction.*`, disabled by default) that decays salience and soft-evicts stale, rarely reused memories by setting `expires_at`. Works on SQLite and PostgreSQL.
+
+#### Bedrock Embeddings
+- Bedrock/Titan embedding provider (`pkg/embedding/bedrock.go`) with a configurable `embedding.region`, falling back to the LLM `bedrock_region`.
+
+#### MCP Embedded-Error Detection
+- `detect_embedded_errors` per MCP server: promotes a successful tool result whose payload encodes an application-level failure (for example `{"ok":false,"error":"..."}`) to a tool error. Off by default.
+
 #### MCP Streamable-HTTP Session & 202 Handling
 - Capture the `Mcp-Session-Id` header from MCP streamable-HTTP server responses and thread it into subsequent requests for the same session, fixing tools that require session continuity.
 - Handle HTTP 202 Accepted (async MCP responses) correctly for non-request messages; for JSON-RPC requests, 202 is now treated as an error since the spec requires a response body.

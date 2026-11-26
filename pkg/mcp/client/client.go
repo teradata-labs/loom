@@ -79,6 +79,12 @@ type Client struct {
 	// context instead — tool calls and MRTR rounds legitimately run long.
 	requestTimeout time.Duration
 
+	// detectEmbeddedErrors promotes a successful tool result whose payload
+	// encodes an application-level failure (e.g. {"ok":false,"error":"..."})
+	// to a tool error. Opt-in per server (Config.DetectEmbeddedErrors) for
+	// backends that do not set isError on failure.
+	detectEmbeddedErrors bool
+
 	// Lifecycle
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -124,6 +130,12 @@ type Config struct {
 	// MRTR elicitation rounds legitimately outlive any fixed timeout — and
 	// use the per-call context instead.
 	RequestTimeout time.Duration
+
+	// DetectEmbeddedErrors promotes a successful tool result whose payload
+	// encodes an application-level failure (e.g. {"ok":false,"error":"..."})
+	// to a tool error. Opt-in for MCP servers that report failures as
+	// successful results instead of setting isError.
+	DetectEmbeddedErrors bool
 }
 
 // SamplingHandler is called when a legacy server requests LLM completion.
@@ -158,19 +170,20 @@ func NewClient(config Config) *Client {
 	}
 
 	c := &Client{
-		transport:        config.Transport,
-		logger:           config.Logger,
-		versionPin:       config.ProtocolVersion,
-		mrtr:             config.MRTR,
-		requestTimeout:   config.RequestTimeout,
-		ctx:              ctx,
-		cancel:           cancel,
-		pending:          make(map[string]chan *protocol.Response),
-		tools:            make(map[string]protocol.Tool),
-		toolHeaderParams: make(map[string][]protocol.HeaderParam),
-		progressHandlers: make(map[string]ProgressHandler),
-		notifications:    make(chan Notification, 100),
-		subs:             make(map[string]*subscriptionEntry),
+		transport:            config.Transport,
+		logger:               config.Logger,
+		versionPin:           config.ProtocolVersion,
+		mrtr:                 config.MRTR,
+		requestTimeout:       config.RequestTimeout,
+		detectEmbeddedErrors: config.DetectEmbeddedErrors,
+		ctx:                  ctx,
+		cancel:               cancel,
+		pending:              make(map[string]chan *protocol.Response),
+		tools:                make(map[string]protocol.Tool),
+		toolHeaderParams:     make(map[string][]protocol.HeaderParam),
+		progressHandlers:     make(map[string]ProgressHandler),
+		notifications:        make(chan Notification, 100),
+		subs:                 make(map[string]*subscriptionEntry),
 	}
 
 	// Start message receiver
