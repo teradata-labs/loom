@@ -51,7 +51,7 @@ spec:
   # LLM CONFIGURATION (optional - inherits from server if not specified)
   # ==========================================================================
   llm:
-    provider: anthropic                # OPTIONAL: anthropic|bedrock|ollama|openai
+    provider: anthropic                # OPTIONAL: anthropic|bedrock|bedrock-mantle|ollama|openai|vercel-ai-gateway
     model: claude-3-5-sonnet-20241022  # OPTIONAL: Model identifier
     temperature: 0.7                   # OPTIONAL: 0.0-1.0 (default: 0.7)
     max_tokens: 4096                   # OPTIONAL: Max response tokens
@@ -60,11 +60,23 @@ spec:
       - "\n\nAssistant:"
     top_p: 0.9                         # OPTIONAL: Nucleus sampling (0.0-1.0)
     top_k: 40                          # OPTIONAL: Top-k sampling
-    max_context_tokens: 200000         # OPTIONAL: Context window size
+    max_context_tokens: 200000         # OPTIONAL: The window loom budgets against
+                                       # (the fold keeps the conversation under it);
+                                       # may sit below the model's window
                                        # Claude Sonnet 4.5: 200000
                                        # Llama 3.1: 128000
                                        # Mistral: 32000
     reserved_output_tokens: 20000      # OPTIONAL: Tokens for output (10% of context)
+    max_model_context_tokens: 0        # OPTIONAL: The window the model is served with,
+                                       # when below its listed one (vLLM --max-model-len,
+                                       # TGI --max-total-tokens, Ollama num_ctx); 0 = listed
+    # gateway_routing:                 # OPTIONAL: vercel-ai-gateway only (any other provider is a load error)
+    #   order: [bedrock, anthropic]    #   upstream providers to try first, in order
+    #   only: []                       #   restrict to these upstreams (no match = terminal error)
+    #   sort: ""                       #   cost | ttft | tps
+    #   fallback_models: [openai/gpt-5] #  models to try when the primary fails
+    #   zero_data_retention: false     #   only zero-data-retention upstreams
+    #   caching: ""                    #   auto = gateway places cache breakpoints
 
   # ==========================================================================
   # SYSTEM PROMPT (optional but recommended)
@@ -158,6 +170,7 @@ spec:
       min_l1_messages: 4               # OPTIONAL: Min messages after compression
       warning_threshold_percent: 60    # OPTIONAL: Warning threshold (0-100)
       critical_threshold_percent: 75   # OPTIONAL: Critical threshold (0-100)
+      protected_recent_turns: 16       # OPTIONAL: Recent turns of either role a fold keeps
 
       # Compression batch sizes
       batch_sizes:                     # OPTIONAL: Messages per compression batch
@@ -355,6 +368,9 @@ spec:
 # PROVIDER OPTIONS:
 #   anthropic: Claude models
 #   bedrock: AWS Bedrock (Claude, Llama, etc.)
+#   bedrock-mantle: AWS Bedrock Mantle endpoint (Claude, gpt-oss, Gemma, etc.)
+#   vercel-ai-gateway: Vercel AI Gateway (alias vercel); model is creator/model,
+#                      e.g. anthropic/claude-sonnet-4.5 or openai/gpt-5
 #   ollama: Local models
 #   openai: OpenAI models (future)
 #

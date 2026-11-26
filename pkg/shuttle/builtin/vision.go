@@ -211,6 +211,10 @@ func (t *VisionTool) Backend() string {
 	return "" // Backend-agnostic
 }
 
+// ConcurrencySafe marks this tool safe to run alongside other calls. Pure
+// read: stats and reads one image file, returns base64.
+func (t *VisionTool) ConcurrencySafe() bool { return true }
+
 // detectMediaType detects the MIME type from file extension.
 func detectMediaType(path string) string {
 	ext := strings.ToLower(filepath.Ext(path))

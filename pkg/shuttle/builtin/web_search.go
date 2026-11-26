@@ -261,6 +261,11 @@ func (t *WebSearchTool) Backend() string {
 	return "" // Backend-agnostic
 }
 
+// ConcurrencySafe marks this tool safe to run alongside other calls. A search
+// is a read: requests to a search API, no local state mutated; *http.Client is
+// goroutine-safe.
+func (t *WebSearchTool) ConcurrencySafe() bool { return true }
+
 // SearchResult represents a single search result.
 type SearchResult struct {
 	Title       string  `json:"title"`

@@ -57,15 +57,15 @@ func TestToolSchemaSize(t *testing.T) {
 		{
 			name:           "file_write",
 			tool:           NewFileWriteTool(""),
-			maxSchemaBytes: 569, // baseline=519
-			maxDescChars:   257, // baseline=207
+			maxSchemaBytes: 1068, // baseline=1018 — files batch array (tool-surface redesign)
+			maxDescChars:   409,  // baseline=359 — batch + edit_files routing
 			minDescWords:   20,
 		},
 		{
 			name:           "file_read",
 			tool:           NewFileReadTool(""),
-			maxSchemaBytes: 589, // baseline=539
-			maxDescChars:   240, // baseline=190
+			maxSchemaBytes: 1001, // baseline=951 — paths globs + pattern (tool-surface redesign)
+			maxDescChars:   330,  // baseline=280 — glob/search charter
 			minDescWords:   20,
 		},
 		{
@@ -93,7 +93,7 @@ func TestToolSchemaSize(t *testing.T) {
 			name:           "shell_execute",
 			tool:           NewShellExecuteTool(""),
 			maxSchemaBytes: 825, // baseline=775
-			maxDescChars:   313, // baseline=263
+			maxDescChars:   446, // baseline=396 — routing preferences (tool-surface redesign)
 			minDescWords:   25,
 		},
 		{

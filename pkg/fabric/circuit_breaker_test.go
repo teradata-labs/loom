@@ -876,3 +876,37 @@ func TestConcurrentMixedCircuitBreakerOperations(t *testing.T) {
 
 	wg.Wait()
 }
+
+// TestConcurrentOpenTimeoutElapsedWithResults drives one breaker from several goroutines
+// so that callers hit beforeRequest on an open breaker whose timeout has elapsed (the
+// half-open transition, which logs consecutiveOpens) while others record failures and
+// successes (which write consecutiveOpens). Run with -race: an unlocked read of
+// consecutiveOpens in beforeRequest is reported as a data race.
+func TestConcurrentOpenTimeoutElapsedWithResults(t *testing.T) {
+	cb := NewCircuitBreaker(CircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		Timeout:          time.Millisecond,
+	})
+
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 500; i++ {
+				fail := (g+i)%2 == 0
+				_ = cb.Execute(func() error {
+					if fail {
+						return errors.New("boom")
+					}
+					return nil
+				})
+				if i%50 == 0 {
+					time.Sleep(2 * time.Millisecond) // let the open timeout elapse
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+}

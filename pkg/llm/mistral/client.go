@@ -34,6 +34,7 @@ type Client struct {
 
 // Config holds configuration for the Mistral AI client.
 type Config struct {
+	StrictToolSchemas bool
 	// Required: Mistral API key from https://console.mistral.ai/
 	APIKey string
 
@@ -73,6 +74,7 @@ func NewClient(config Config) *Client {
 
 	// Create OpenAI client with Mistral endpoint
 	openaiClient := openai.NewClient(openai.Config{
+		StrictToolSchemas: config.StrictToolSchemas,
 		APIKey:            config.APIKey,
 		Model:             config.Model,
 		Endpoint:          "https://api.mistral.ai/v1/chat/completions",
@@ -108,7 +110,7 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 	}
 
 	// Recalculate cost using Mistral pricing
-	resp.Usage.CostUSD = c.calculateCost(resp.Usage.InputTokens, resp.Usage.OutputTokens)
+	resp.Usage.CostUSD = c.calculateCost(fullPromptTokens(resp.Usage), resp.Usage.OutputTokens)
 
 	// Update metadata to reflect Mistral provider
 	if resp.Metadata == nil {
@@ -117,6 +119,14 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 	resp.Metadata["provider"] = "mistral"
 
 	return resp, nil
+}
+
+// fullPromptTokens is the whole prompt the call sent. The wrapped OpenAI
+// client reports InputTokens with the cache buckets subtracted out (loom's
+// disjoint-bucket convention); this provider's calculateCost has no cache
+// rates, so it prices the full prompt at the input rate, as it always has.
+func fullPromptTokens(u llmtypes.Usage) int {
+	return u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
 }
 
 // calculateCost estimates the cost in USD based on token usage.
@@ -214,7 +224,7 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	}
 
 	// Recalculate cost using Mistral pricing
-	resp.Usage.CostUSD = c.calculateCost(resp.Usage.InputTokens, resp.Usage.OutputTokens)
+	resp.Usage.CostUSD = c.calculateCost(fullPromptTokens(resp.Usage), resp.Usage.OutputTokens)
 
 	// Update metadata to reflect Mistral provider
 	if resp.Metadata == nil {

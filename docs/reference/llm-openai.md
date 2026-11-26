@@ -54,7 +54,9 @@ client := openai.NewClient(openai.Config{
     Endpoint:    "https://api.openai.com/v1/chat/completions", // Default
     MaxTokens:   4096,                       // Default: 4096
     Temperature: 1.0,                        // Default: 1.0
-    Timeout:     60 * time.Second,           // Default: 60s
+    Timeout:                60 * time.Second, // Default: 60s
+    StreamFirstByteTimeout: 90 * time.Second, // Optional: max wait for first body bytes
+    StreamIdleTimeout:      90 * time.Second, // Optional: max blocked network-read time
 })
 ```
 
@@ -116,6 +118,17 @@ curl https://api.openai.com/v1/chat/completions \
 | `MaxTokens` | `int` | No | `4096` | 1-128000 (model dependent) |
 | `Temperature` | `float64` | No | `1.0` | 0.0-2.0 |
 | `Timeout` | `duration` | No | `60s` | 1s-10m |
+| `StreamFirstByteTimeout` | `duration` | No | `90s` | Maximum wait for the first response-body bytes in `ChatStream` |
+| `StreamIdleTimeout` | `duration` | No | `60s` | Maximum time a subsequent network read may block in `ChatStream` |
+
+Streaming requests use the two phase-specific timeouts instead of applying
+`Timeout` to the entire response. `StreamFirstByteTimeout` also bounds streaming
+response headers, while `Timeout` continues to bound non-streaming requests.
+The stream timeout fields are available through the Go API; server YAML and CLI
+configuration use their defaults. Time spent processing a received chunk does
+not count toward `StreamIdleTimeout`.
+
+**Available since**: v1.4.0
 
 
 ## Overview
@@ -254,12 +267,14 @@ import (
 
 // Create client with custom configuration
 client := openai.NewClient(openai.Config{
-    APIKey:      "sk-proj-...",
-    Model:       "gpt-4.1",
-    Endpoint:    "https://api.openai.com/v1/chat/completions", // Optional
-    MaxTokens:   8192,        // Increase for longer responses
-    Temperature: 0.7,         // Lower for more deterministic
-    Timeout:     120 * time.Second, // Longer timeout for complex tasks
+    APIKey:                  "sk-proj-...",
+    Model:                   "gpt-4.1",
+    Endpoint:                "https://api.openai.com/v1/chat/completions", // Optional
+    MaxTokens:               8192,             // Increase for longer responses
+    Temperature:             0.7,              // Lower for more deterministic
+    Timeout:                 120 * time.Second, // Non-streaming requests
+    StreamFirstByteTimeout:  90 * time.Second, // Wait for initial body bytes
+    StreamIdleTimeout:       90 * time.Second, // Blocked read after streaming starts
 })
 
 // Use as LLMProvider
@@ -314,6 +329,8 @@ agent, err := builder.NewAgentBuilder().
 | `MaxTokens` | `int` | No | `4096` | 1-128000 | Maximum tokens in response |
 | `Temperature` | `float64` | No | `1.0` | 0.0-2.0 | Sampling temperature |
 | `Timeout` | `duration` | No | `60s` | 1s-10m | Request timeout |
+| `StreamFirstByteTimeout` | `duration` | No | `90s` | >0 | Maximum wait for the first response-body bytes in `ChatStream` |
+| `StreamIdleTimeout` | `duration` | No | `60s` | >0 | Maximum time a subsequent network read may block in `ChatStream` |
 
 
 ## Model Support and Pricing
@@ -1110,7 +1127,17 @@ client := openai.NewClient(openai.Config{
 - Requests are queued and admitted at the configured request rate
   (`RequestsPerSecond`, `BurstCapacity`, `MinDelay`)
 - 429 responses are retried inside the limiter with jittered exponential
-  backoff, honoring the server's `Retry-After`
+  backoff, honoring the server's `Retry-After` uncapped (a 5xx's
+  `Retry-After` is capped at 5 minutes)
+- 500, 502, 503, 504 and 529 responses whose status is known before any
+  content streams are retried under the same budget and backoff as a 429;
+  other 4xx/5xx are not retried, and retried 5xx are counted apart from
+  throttling (`RateLimiterMetrics.TransientRequests`) and do not feed the
+  scheduler's throttle signal. Once the budget is spent the error surfaces as
+  `llm.RetriesExhaustedError`. The agent does not retry an exhausted 5xx
+  again. It waits out an exhausted 429 and calls again (throttle patience,
+  10-minute wall-clock budget), and each new call runs the limiter's budget
+  again
 - `TokensPerMinute` is **observational only today**: token consumption is
   tracked and reported in rate-limiter metrics, but it is never enforced —
   size `RequestsPerSecond` against your TPM quota instead

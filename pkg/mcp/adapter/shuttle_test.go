@@ -24,6 +24,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/mcp/client"
 	"github.com/teradata-labs/loom/pkg/mcp/protocol"
 	"github.com/teradata-labs/loom/pkg/shuttle"
@@ -970,6 +971,56 @@ func TestInputSchema_CamelCaseToSnakeCase_Conversion(t *testing.T) {
 	assert.Contains(t, schema.Required, "table_name")
 }
 
+func TestInputSchema_CompositeParameterNames(t *testing.T) {
+	const input = `{"type":"object","properties":{"userId":{"type":"string"}},"allOf":[
+		{"properties":{"userId":{"minLength":3}},"required":["userId"]},
+		{"properties":{"teamId":{"type":"integer"}},"required":["teamId"]}
+	]}`
+	var original map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(input), &original))
+	adapter := NewMCPToolAdapter(nil, protocol.Tool{Name: "composite", InputSchema: original}, "test")
+	schema := adapter.InputSchema()
+	assert.Contains(t, schema.AllOf[0].Properties, "user_id")
+	assert.NotContains(t, schema.AllOf[0].Properties, "userId")
+	assert.Equal(t, []string{"user_id"}, schema.AllOf[0].Required)
+	assert.Contains(t, schema.AllOf[1].Properties, "team_id")
+	adapted, err := llm.NormalizeObjectToolSchema(schema)
+	require.NoError(t, err)
+	properties := adapted["properties"].(map[string]interface{})
+	assert.Len(t, properties, 2)
+	assert.Contains(t, properties, "user_id")
+	assert.Contains(t, properties, "team_id")
+	assert.NotContains(t, properties, "userId")
+	assert.ElementsMatch(t, []string{"user_id", "team_id"}, adapted["required"])
+	assert.Equal(t, map[string]interface{}{"userId": "alice", "teamId": 3}, adapter.restoreParameterNames(map[string]interface{}{"user_id": "alice", "team_id": 3}))
+	for attempt := 0; attempt < 20; attempt++ {
+		assert.Equal(t, map[string]interface{}{"userId": "original"}, adapter.restoreParameterNames(map[string]interface{}{"userId": "original", "user_id": "alias"}))
+	}
+	assert.Contains(t, original["properties"], "userId")
+	assert.NotContains(t, original["properties"], "user_id")
+	for _, keyword := range []string{"anyOf", "oneOf", "not"} {
+		branch := map[string]interface{}{"required": []interface{}{"branchOnly"}}
+		root := map[string]interface{}{keyword: []interface{}{branch}}
+		if keyword == "not" {
+			root[keyword] = branch
+		}
+		adapter := NewMCPToolAdapter(nil, protocol.Tool{Name: "branch", InputSchema: root}, "test")
+		schema := adapter.InputSchema()
+		var branches []*shuttle.JSONSchema
+		switch keyword {
+		case "anyOf":
+			branches = schema.AnyOf
+		case "oneOf":
+			branches = schema.OneOf
+		default:
+			branches = []*shuttle.JSONSchema{schema.Not}
+		}
+		require.Len(t, branches, 1)
+		assert.Equal(t, []string{"branch_only"}, branches[0].Required)
+		assert.Equal(t, map[string]interface{}{"branchOnly": true}, adapter.restoreParameterNames(map[string]interface{}{"branch_only": true}))
+	}
+}
+
 func TestParamNameRoundTrip(t *testing.T) {
 	// Round-trip for a camelCase server: schema names -> snake_case
 	// (InputSchema) -> LLM params -> original names (restoreParameterNames).
@@ -1061,6 +1112,81 @@ func TestExecute_NonSchemaToolSkipsCache(t *testing.T) {
 	assert.Panics(t, func() {
 		_, _ = adapter.Execute(context.Background(), map[string]interface{}{"query": "SELECT 1"})
 	}, "non-schema tool should not hit cache and should proceed to call client")
+}
+
+func TestIsEmptySchemaResult(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+		want    bool
+	}{
+		{"empty columns object", `{"columns":[]}`, true},
+		{"cached-style prefix is not JSON", `(cached) {"columns":[]}`, false},
+		{"empty array", `[]`, true},
+		{"empty with scalar siblings", `{"columns":[],"row_count":0}`, true},
+		{"several arrays all empty", `{"tables":[],"views":[]}`, true},
+		{"one populated array", `{"tables":[],"databases":[{"database_name":"x"}]}`, false},
+		{"populated columns", `{"columns":[{"column_name":"a","column_type":"I"}]}`, false},
+		{"object without arrays", `{"row_count":0}`, false},
+		{"plain text", `no such table`, false},
+		{"whitespace-padded empty", "  {\"columns\": [ ]}  ", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isEmptySchemaResult(tt.payload))
+		})
+	}
+}
+
+// TestExecute_SchemaToolEmptyResultNotCached guards the az512 failure: a
+// describe_table that answered {"columns":[]} was cached and then served to
+// every later caller with the same arguments. An empty schema answer must miss
+// the cache so the next caller reaches the server again.
+func TestExecute_SchemaToolEmptyResultNotCached(t *testing.T) {
+	ClearSchemaCache()
+	t.Cleanup(ClearSchemaCache)
+
+	describeTool := protocol.Tool{
+		Name:        "describe_table",
+		Description: "Describe a table",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"table_name": map[string]interface{}{"type": "string"},
+			},
+		},
+	}
+	calls := 0
+	payloads := []string{`{"columns":[]}`, `{"columns":[{"column_name":"SK_ID_CURR","column_type":"I"}]}`}
+	handler := func(method string, params json.RawMessage) (interface{}, *protocol.Error) {
+		switch method {
+		case "tools/list":
+			return protocol.ToolListResult{Tools: []protocol.Tool{describeTool}}, nil
+		case "tools/call":
+			p := payloads[calls]
+			calls++
+			return protocol.CallToolResult{Content: []protocol.Content{{Type: "text", Text: p}}}, nil
+		default:
+			return nil, protocol.NewError(protocol.MethodNotFound, "unknown method: "+method, nil)
+		}
+	}
+	mcpClient, _ := newMockClientWithHandler(t, handler)
+	adapter := NewMCPToolAdapter(mcpClient, describeTool, "teradata")
+	args := map[string]interface{}{"table_name": "DEMO_CreditCard.Credit_Card"}
+
+	first, err := adapter.Execute(context.Background(), args)
+	require.NoError(t, err)
+	assert.True(t, first.Success)
+	assert.Equal(t, `{"columns":[]}`, first.Data, "the empty answer is still returned to this caller")
+	_, cached := globalSchemaCache.get(adapter.buildSchemaCacheKey(args))
+	assert.False(t, cached, "an empty schema answer must not enter the cache")
+
+	second, err := adapter.Execute(context.Background(), args)
+	require.NoError(t, err)
+	assert.Equal(t, 2, calls, "the second caller must reach the server, not the cache")
+	assert.Equal(t, payloads[1], second.Data)
+	_, cached = globalSchemaCache.get(adapter.buildSchemaCacheKey(args))
+	assert.True(t, cached, "a populated schema answer is cached as before")
 }
 
 func TestExecute_ParameterNormalization(t *testing.T) {

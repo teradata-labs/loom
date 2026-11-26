@@ -194,7 +194,7 @@ func runEval(cmd *cobra.Command, args []string) {
 
 		// Create and register judges
 		for _, judgeConfig := range suite.Spec.MultiJudge.Judges {
-			judge, err := judges.NewLLMJudge(llmProvider, judgeConfig, tracer)
+			judge, err := judges.NewJudgeFromConfig(llmProvider, judgeConfig, tracer)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "⚠️  Failed to create judge %s: %v\n", judgeConfig.Name, err)
 				continue
@@ -203,6 +203,7 @@ func runEval(cmd *cobra.Command, args []string) {
 				fmt.Fprintf(os.Stderr, "⚠️  Failed to register judge %s: %v\n", judgeConfig.Name, err)
 				continue
 			}
+			judges.LogConfigWarnings(logger, judgeConfig)
 			fmt.Printf("   ✓ %s (criticality: %s, weight: %.1f)\n",
 				judgeConfig.Name, judgeConfig.Criticality, judgeConfig.Weight)
 		}
@@ -475,7 +476,7 @@ func runEvalShow(cmd *cobra.Command, args []string) {
 // createLLMProviderForEval creates an LLM provider for eval runs
 // Uses the shared createLLMProvider() function to respect config file
 func createLLMProviderForEval() (agent.LLMProvider, string) {
-	return createLLMProvider()
+	return createLLMProvider(nil)
 }
 
 // agentWrapper wraps agent.Agent to implement evals.Agent interface

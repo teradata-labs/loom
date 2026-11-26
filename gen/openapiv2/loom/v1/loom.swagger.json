@@ -1102,6 +1102,121 @@
         ]
       }
     },
+    "/v1/lua-scripts": {
+      "get": {
+        "summary": "ListLuaScripts lists saved Lua scripts, without their source.",
+        "operationId": "LoomService_ListLuaScripts",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ListLuaScriptsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "LoomService"
+        ]
+      },
+      "post": {
+        "summary": "SaveLuaScript saves a Lua script. The source must compile.",
+        "operationId": "LoomService_SaveLuaScript",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1SaveLuaScriptResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "SaveLuaScriptRequest saves a script. The source must compile; it is never\nrun by this call.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1SaveLuaScriptRequest"
+            }
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
+    "/v1/lua-scripts/{name}": {
+      "get": {
+        "summary": "GetLuaScript reads one saved Lua script, including its source.",
+        "operationId": "LoomService_GetLuaScript",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetLuaScriptResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      },
+      "delete": {
+        "summary": "DeleteLuaScript deletes a saved Lua script and its attachments.",
+        "operationId": "LoomService_DeleteLuaScript",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1DeleteLuaScriptResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
     "/v1/mcp/servers": {
       "get": {
         "summary": "ListMCPServers lists all configured MCP servers.",
@@ -2148,6 +2263,127 @@
             "required": false,
             "type": "integer",
             "format": "int32"
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
+    "/v1/sessions/{sessionId}:compact": {
+      "post": {
+        "summary": "CompactSession compacts a session's context on request, between turns:\nolder tool results become re-fetchable stubs and older turns fold into the\nrunning summary, while the system prompt, the summary and the newest\nkeep_turns turns stay verbatim. Folding makes an LLM call. Refused while a\nturn runs on the session (ABORTED) or while it waits for a human decision\n(FAILED_PRECONDITION); UNAVAILABLE when no summary could be produced or the\nresult could not be saved, in which case history is unchanged.",
+        "operationId": "LoomService_CompactSession",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1CompactSessionResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "sessionId",
+            "description": "Session ID",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/LoomServiceCompactSessionBody"
+            }
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
+    "/v1/sessions/{sessionId}:resolveExecutionGap": {
+      "post": {
+        "summary": "ResolveExecutionGap records an operator's finding for the tool call that\nResumeSession reported as an execution gap, so ResumeSession can continue\nthe turn.",
+        "description": "The recorded result is the caller's assertion, not tool output, but the\nagent treats it as real tool output. It is stored marked as manually\nresolved with the caller's user id. Any caller who can open the session may\ncall this; there is no operator-only role. Do not expose it to session\nowners you would not trust to set a tool's result.",
+        "operationId": "LoomService_ResolveExecutionGap",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ResolveExecutionGapResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "sessionId",
+            "description": "Session ID",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/LoomServiceResolveExecutionGapBody"
+            }
+          }
+        ],
+        "tags": [
+          "LoomService"
+        ]
+      }
+    },
+    "/v1/sessions/{sessionId}:resume": {
+      "post": {
+        "summary": "ResumeSession finishes a conversation turn that a crash interrupted, using\nthe durable execution log (execution_log.enabled must have been on while\nthe turn ran). Calls recorded as complete are backfilled from the log,\ncalls never started are dispatched, and the turn's reply is produced. A\ncall whose outcome is unknown is reported as an execution gap, to be\nsettled with ResolveExecutionGap before resuming again.",
+        "operationId": "LoomService_ResumeSession",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ResumeSessionResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "sessionId",
+            "description": "Session ID",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/LoomServiceResumeSessionBody"
+            }
           }
         ],
         "tags": [
@@ -3417,6 +3653,21 @@
       },
       "description": "CancelScheduledExecutionRequest stops a scheduled execution that is in\nflight.\n\nThe ID must be one the scheduler minted. IDs returned by ExecuteWorkflow and\nStreamWorkflow belong to a different namespace and yield NOT_FOUND."
     },
+    "LoomServiceCompactSessionBody": {
+      "type": "object",
+      "properties": {
+        "keepTurns": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Newest turns left verbatim. 0 uses the default (2); negative is invalid."
+        },
+        "focus": {
+          "type": "string",
+          "description": "Optional guidance on what the summary must keep. At most 2000 bytes."
+        }
+      },
+      "description": "CompactSessionRequest asks for a manual compaction of one session's context."
+    },
     "LoomServicePauseScheduleBody": {
       "type": "object",
       "description": "PauseScheduleRequest pauses a schedule."
@@ -3466,6 +3717,20 @@
       },
       "description": "ReloadAgentRequest hot-reloads agent configuration."
     },
+    "LoomServiceResolveExecutionGapBody": {
+      "type": "object",
+      "properties": {
+        "outcome": {
+          "$ref": "#/definitions/v1ExecutionGapOutcome",
+          "title": "The operator's finding"
+        },
+        "resultJson": {
+          "type": "string",
+          "description": "The call's result as JSON. Required when outcome is\nEXECUTION_GAP_OUTCOME_SUCCEEDED."
+        }
+      },
+      "description": "ResolveExecutionGapRequest settles the session's current execution gap."
+    },
     "LoomServiceRestartMCPServerBody": {
       "type": "object",
       "properties": {
@@ -3480,6 +3745,10 @@
     "LoomServiceResumeScheduleBody": {
       "type": "object",
       "description": "ResumeScheduleRequest resumes a paused schedule."
+    },
+    "LoomServiceResumeSessionBody": {
+      "type": "object",
+      "description": "ResumeSessionRequest names the session whose interrupted turn to finish."
     },
     "LoomServiceStartAgentBody": {
       "type": "object",
@@ -3552,11 +3821,11 @@
         },
         "transport": {
           "type": "string",
-          "title": "Transport type (stdio, http, sse)"
+          "title": "Transport type (stdio, http, sse, streamable-http)"
         },
         "command": {
           "type": "string",
-          "title": "Command to execute"
+          "title": "Command to execute (required for enabled stdio transport)"
         },
         "args": {
           "type": "array",
@@ -3591,7 +3860,7 @@
         },
         "url": {
           "type": "string",
-          "title": "Server URL (required for http/sse transport)"
+          "title": "Server URL (required for enabled http, sse, and streamable-http transports)"
         },
         "enableSessions": {
           "type": "boolean",
@@ -3600,6 +3869,11 @@
         "enableResumption": {
           "type": "boolean",
           "title": "Enable stream resumption (for streamable-http transport)"
+        },
+        "maxResponseBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Bound on one JSON-RPC message from this server (streamable-http only).\nOver it the read stops and the response is refused, never truncated.\n0 selects the 16 MiB default (transport.DefaultMaxResponseBytes); see\nmanager.ServerConfig.MaxResponseBytes for the full semantics, including\nthe clamp at transport.MaxResponseLimit and why stdio is unbounded."
         }
       },
       "description": "UpdateMCPServerRequest updates an MCP server."
@@ -3767,11 +4041,11 @@
         },
         "transport": {
           "type": "string",
-          "title": "Transport type (stdio, http, sse)"
+          "title": "Transport type (stdio, http, sse, streamable-http)"
         },
         "command": {
           "type": "string",
-          "title": "Command to execute"
+          "title": "Command to execute (required for enabled stdio transport)"
         },
         "args": {
           "type": "array",
@@ -3801,7 +4075,7 @@
         },
         "url": {
           "type": "string",
-          "title": "Server URL (required for http/sse transport)"
+          "title": "Server URL (required for enabled http, sse, and streamable-http transports)"
         },
         "enableSessions": {
           "type": "boolean",
@@ -3810,6 +4084,11 @@
         "enableResumption": {
           "type": "boolean",
           "title": "Enable stream resumption (for streamable-http transport)"
+        },
+        "maxResponseBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Bound on one JSON-RPC message from this server (streamable-http only).\nOver it the read stops and the response is refused, never truncated.\n0 selects the 16 MiB default (transport.DefaultMaxResponseBytes); see\nmanager.ServerConfig.MaxResponseBytes for the full semantics, including\nthe clamp at transport.MaxResponseLimit and why stdio is unbounded."
         }
       },
       "description": "AddMCPServerRequest adds a new MCP server."
@@ -3926,6 +4205,10 @@
         "skills": {
           "$ref": "#/definitions/v1SkillsConfig",
           "title": "Skills configuration for this agent"
+        },
+        "decision": {
+          "$ref": "#/definitions/v1DecisionConfig",
+          "description": "Decision layer configuration (pkg/decision): which decider answers typed\nauxiliary judgments and, per call site, whether its answers are acted on\nor only shadow-recorded. Absent or provider \"off\" disables the layer."
         }
       },
       "description": "AgentConfig defines a complete agent configuration.\nThis message represents a declarative agent specification that can be\nloaded from YAML files or created programmatically."
@@ -3960,6 +4243,11 @@
         "provider": {
           "type": "string",
           "title": "Provider"
+        },
+        "llmCalls": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Successful LLM calls behind this result: the agent's whole conversation\nturn (tool-loop iterations, empty-response and hygiene retries, final\nsynthesis). 0 from producers that predate this field.\n\nNot counted: LLM calls the agent makes outside its conversation loop,\nsuch as graph-memory recall and extraction, memory compression, the\nskills router and the pattern classifier. On a leveled stage, cost_usd\ncovers the whole leveling ladder, but llm_calls and the token fields\ndescribe only the winning attempt."
         }
       },
       "description": "AgentExecutionCost tracks LLM costs for an agent in a workflow."
@@ -4075,6 +4363,23 @@
         "provider": {
           "type": "string",
           "title": "Provider name (e.g., \"anthropic\", \"bedrock\", \"ollama\")"
+        },
+        "inputTokens": {
+          "type": "integer",
+          "format": "int32",
+          "description": "LLM usage and cost of producing this position. Scalars rather than\nAgentExecutionCost because that message lives in orchestration.proto,\nwhich imports this file."
+        },
+        "outputTokens": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "totalTokens": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "costUsd": {
+          "type": "number",
+          "format": "double"
         }
       },
       "description": "AgentPosition represents an agent's argument in a debate."
@@ -4521,6 +4826,44 @@
       ],
       "default": "COMMUNICATION_TIER_UNSPECIFIED",
       "description": "CommunicationTier defines the three-tier communication model.\n\n - COMMUNICATION_TIER_ALWAYS_REFERENCE: Tier 1: Always reference (shared mutable state, workflow context)\n - COMMUNICATION_TIER_AUTO_PROMOTE: Tier 2: Auto-promote based on size (\u003e1KB default)\n - COMMUNICATION_TIER_ALWAYS_VALUE: Tier 3: Always value (control messages, pattern refs, config)"
+    },
+    "v1CompactSessionResponse": {
+      "type": "object",
+      "properties": {
+        "compacted": {
+          "type": "boolean",
+          "description": "False when nothing older than keep_turns was left to compact."
+        },
+        "toolResultsStubbed": {
+          "type": "boolean",
+          "description": "Always false: a tool result is bounded as it arrives and is never\nreplaced by a stub later."
+        },
+        "turnsFolded": {
+          "type": "boolean",
+          "description": "Older turns were folded into the running summary."
+        },
+        "turnsKept": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Newest turns left verbatim."
+        },
+        "tokensBefore": {
+          "type": "string",
+          "format": "int64",
+          "description": "Estimated context size before the compaction."
+        },
+        "tokensAfter": {
+          "type": "string",
+          "format": "int64",
+          "description": "Estimated context size after the compaction."
+        },
+        "summaryVersion": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Version of the session summary after the compaction."
+        }
+      },
+      "description": "CompactSessionResponse reports what the compaction did. Token figures are\nloom's calibrated estimates of the compiled context."
     },
     "v1ComponentHealth": {
       "type": "object",
@@ -5056,6 +5399,121 @@
       },
       "description": "DebateRound captures one round of debate discussion."
     },
+    "v1DecisionBand": {
+      "type": "object",
+      "properties": {
+        "site": {
+          "type": "string",
+          "description": "Site name this band applies to (matches DecisionRequest.site)."
+        },
+        "actMin": {
+          "type": "number",
+          "format": "double",
+          "description": "At or above this confidence the Decider's answer is used."
+        },
+        "mode": {
+          "$ref": "#/definitions/v1DecisionBandMode",
+          "description": "How the site may use the answer."
+        },
+        "shadow": {
+          "type": "boolean",
+          "description": "Shadow records the Decider's answer alongside the existing mechanism's\nwithout branching on it. Overrides act_min: the path is always FALLBACK."
+        },
+        "aggregate": {
+          "$ref": "#/definitions/v1DecisionBandAggregate",
+          "description": "How multi-question requests are judged against act_min."
+        },
+        "trueMin": {
+          "type": "number",
+          "format": "double",
+          "description": "Probability at or above which a Noul answer counts as true at this\nsite: the keep threshold at a rerank, \"valid\" at a stage gate,\n\"consensus reached\" at a debate. 0 means the site default (0.5).\n\nIt is not act_min. act_min asks how decisive an answer is (its distance\nfrom 0.5) before the site may act at all; true_min asks which side of\nthe line a decisive answer falls on. Lowering act_min makes the site\nact on more answers, including ones it will then call false; lowering\ntrue_min makes more answers count as true."
+        }
+      },
+      "description": "DecisionBand is a call site's confidence routing rule."
+    },
+    "v1DecisionBandAggregate": {
+      "type": "string",
+      "enum": [
+        "DECISION_BAND_AGGREGATE_UNSPECIFIED",
+        "DECISION_BAND_AGGREGATE_MIN",
+        "DECISION_BAND_AGGREGATE_PER_QUESTION"
+      ],
+      "default": "DECISION_BAND_AGGREGATE_UNSPECIFIED",
+      "description": "DecisionBandAggregate says how a request with several questions is judged\nagainst act_min.\n\n - DECISION_BAND_AGGREGATE_MIN: The least confident answer must clear act_min (a request is as reliable\nas its weakest judgment). Right for requests whose answers are combined\ninto one decision.\n - DECISION_BAND_AGGREGATE_PER_QUESTION: The request acts when the Decider answered at all; the call site applies\nact_min to each answer separately. Right for fan-outs (one question per\ncandidate) where one uncertain candidate must not veto the rest."
+    },
+    "v1DecisionBandMode": {
+      "type": "string",
+      "enum": [
+        "DECISION_BAND_MODE_UNSPECIFIED",
+        "DECISION_BAND_MODE_REPLACE",
+        "DECISION_BAND_MODE_TIGHTEN_ONLY"
+      ],
+      "default": "DECISION_BAND_MODE_UNSPECIFIED",
+      "description": "DecisionBandMode says how a call site may use a decider answer.\n\n - DECISION_BAND_MODE_REPLACE: The answer may replace the site's existing mechanism when confident.\n - DECISION_BAND_MODE_TIGHTEN_ONLY: The answer may only make an outcome more restrictive: add a failure\ncount, raise NoDecision to Ask. It never clears, allows, or bypasses."
+    },
+    "v1DecisionConfig": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "Provider: \"off\", \"llm\" (adapter over a configured LLM role), \"jev\", \"mock\"."
+        },
+        "model": {
+          "type": "string",
+          "description": "Model for the provider (for Jev, a pinned version; aliases are rejected\nunless allow_alias is set)."
+        },
+        "allowAlias": {
+          "type": "boolean",
+          "description": "Allow a floating alias such as \"jev-latest\". Off by default."
+        },
+        "timeoutMs": {
+          "type": "string",
+          "format": "int64",
+          "description": "Per-request timeout in milliseconds."
+        },
+        "baseUrl": {
+          "type": "string",
+          "description": "Not accepted. The decider endpoint decides where the server's decider\ncredential is sent, so it is server-level only: looms.yaml\ndecision.base_url (LOOM_DECISION_BASE_URL) or TYPESAFE_BASE_URL. Any\nnon-empty value here fails validation (agent YAML, ValidateAgentConfig,\njudge registration) and is refused again when the decider is built."
+        },
+        "maxPerSession": {
+          "type": "string",
+          "format": "int64",
+          "description": "Maximum decision requests per session before the router falls back."
+        },
+        "maxCostUsdPerSession": {
+          "type": "number",
+          "format": "double",
+          "description": "Maximum decision spend per session in USD before the router falls back."
+        },
+        "bands": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1DecisionBand"
+          },
+          "description": "Bands per call site. Sites without a band are treated as shadow."
+        },
+        "llmRole": {
+          "type": "string",
+          "description": "LLM role the \"llm\" provider adapts (for example \"classifier\",\n\"compressor\"). Empty means the agent's main LLM."
+        },
+        "requestsPerMinute": {
+          "type": "string",
+          "format": "int64",
+          "description": "Requests per minute the process may send to the decider, set from the\ntier in use (the Vercel AI Gateway free tier allows 30; TypeSafe direct\npublishes 1,200). Agents with identical decider settings share one\nclient and therefore one budget. 0 means the provider's default."
+        },
+        "exposeTool": {
+          "type": "boolean",
+          "description": "Register the \"decide\" builtin tool on the agent so it can put one typed\nquestion (yes/no, choice, scale) to the decider mid-turn and branch on\nthe probabilities. Off by default: the layer's other uses (reranks,\ngates) do not depend on it. Calls are recorded at site tool.decide."
+        },
+        "maxQuestionsPerRequest": {
+          "type": "string",
+          "format": "int64",
+          "description": "Most questions one request may carry before the router splits it into\nconcurrent chunks (see DecisionRequest.fan_out_key). 0 means the\ndecider's own default (Jev: 16; a chunk that still fails with an\noverload or size error is bisected and retried). Providers that accept\nany size may set it high; it never changes answers, only how many\nround trips carry them."
+        }
+      },
+      "description": "DecisionConfig configures the decision layer for an agent or server."
+    },
     "v1DecomposeStrategy": {
       "type": "string",
       "enum": [
@@ -5090,6 +5548,15 @@
         }
       },
       "description": "DeleteArtifactResponse confirms deletion."
+    },
+    "v1DeleteLuaScriptResponse": {
+      "type": "object",
+      "properties": {
+        "deleted": {
+          "type": "boolean"
+        }
+      },
+      "description": "DeleteLuaScriptResponse reports whether a script was deleted."
     },
     "v1DeleteMCPServerResponse": {
       "type": "object",
@@ -5219,6 +5686,40 @@
         }
       },
       "description": "ExecuteWorkflowResponse contains the workflow execution result."
+    },
+    "v1ExecutionGap": {
+      "type": "object",
+      "properties": {
+        "stepIndex": {
+          "type": "integer",
+          "format": "int32",
+          "description": "The step (LLM call) whose batch holds the call."
+        },
+        "batchPosition": {
+          "type": "integer",
+          "format": "int32",
+          "description": "The call's position in that step's batch."
+        },
+        "toolName": {
+          "type": "string",
+          "description": "The tool the call invoked."
+        },
+        "toolUseId": {
+          "type": "string",
+          "description": "The provider's tool call ID; informational, may be empty or repeated."
+        }
+      },
+      "description": "ExecutionGap identifies a tool call whose outcome is unknown: its intent\nwas recorded before it ran, but no result was ever recorded."
+    },
+    "v1ExecutionGapOutcome": {
+      "type": "string",
+      "enum": [
+        "EXECUTION_GAP_OUTCOME_UNSPECIFIED",
+        "EXECUTION_GAP_OUTCOME_SUCCEEDED",
+        "EXECUTION_GAP_OUTCOME_FAILED"
+      ],
+      "default": "EXECUTION_GAP_OUTCOME_UNSPECIFIED",
+      "description": "ExecutionGapOutcome is an operator's finding for an execution gap.\n\n - EXECUTION_GAP_OUTCOME_SUCCEEDED: The call ran and succeeded; result_json holds its result.\n - EXECUTION_GAP_OUTCOME_FAILED: The call did not take effect."
     },
     "v1ExecutionMetadata": {
       "type": "object",
@@ -5470,6 +5971,15 @@
       },
       "description": "GetArtifactStatsResponse returns artifact storage stats."
     },
+    "v1GetLuaScriptResponse": {
+      "type": "object",
+      "properties": {
+        "script": {
+          "$ref": "#/definitions/v1LuaScript"
+        }
+      },
+      "description": "GetLuaScriptResponse carries the script with its source."
+    },
     "v1GetScheduleHistoryResponse": {
       "type": "object",
       "properties": {
@@ -5628,6 +6138,10 @@
           "type": "integer",
           "format": "int32",
           "description": "Number of recent messages to include in each extraction window.\nDefault: 0 (auto = extraction_cadence * 3, minimum 15).\nSet higher to give the extractor more conversational context per cycle.\nUseful when extraction_cadence is low (e.g., 1) to avoid tiny windows."
+        },
+        "fleetLessonSharing": {
+          "type": "boolean",
+          "description": "Share verified lessons across all agents on this server. Opt-in.\nWhen true, lessons mined from the tool ledger (observed error-\u003efix\ntransitions) are stored in a shared partition visible to every agent,\nand each agent's dedicated lesson recall lane draws from that pool.\nWhen false (default), lessons stay private to the agent that earned\nthem: stored in a partition derived from its graph-memory key\n(\"\u003ckey\u003e__lessons\", where the key is the agent's GraphMemoryAgentID when\nset, otherwise its name) that no other writer targets, and recalled only\nby it.\n\nSECURITY: mined lessons derive from tool output and the model's own tool\ninputs, and are shown to the model as trusted guidance (the graph-memory\ncontext block at conversation start, a \u003csystem-reminder\u003e after a\nmatching error). Enabling this makes one server's output guidance for\nevery agent -- do not enable it when running untrusted tool servers, or\ntools that return text an untrusted party wrote.\nSee docs/reference/security-model.md."
         }
       },
       "description": "GraphMemoryConfig configures the salience-driven graph-backed episodic memory layer."
@@ -5702,6 +6216,22 @@
             "type": "string"
           },
           "title": "Suggested options for the user (if applicable)"
+        },
+        "kind": {
+          "type": "string",
+          "description": "Classifies the stored request at origin: \"approval\" (hook-held call or a\nparked batch containing one), \"question\" (contact_human, or a parked\nbatch of only questions), or \"resource\" (a parked resource wait). Empty\nmeans the producer did not classify it; treat it as \"question\"."
+        },
+        "summary": {
+          "type": "string",
+          "description": "Display digest of the stored request: the held tool and its arguments\nfor an approval, the question text for a question. For a parked batch it\njoins each item's tool+args digest with \"; \", cut to 200 characters."
+        },
+        "paramsJson": {
+          "type": "string",
+          "description": "The stored request's parameter map as JSON, mirroring context_json. For\nan in-turn approval it is the held call's parameters. For a parked turn\n(request_type \"parked\") it maps each held ToolCall ID to that item's\ndescriptor; an approval item's descriptor carries \"reason\", the joined\nreason of every admission hook that asked, which is what the approval's\ngrants cover. Empty when the request has no parameters (a question)."
+        },
+        "paramsTruncated": {
+          "type": "boolean",
+          "description": "True when the server's size bound cut whole entries out of params_json,\nso the card shows only part of what is being approved."
         }
       },
       "description": "HITLRequestInfo carries information about a human-in-the-loop request."
@@ -5774,6 +6304,62 @@
       ],
       "default": "HYGIENE_POLICY_UNSPECIFIED",
       "description": "HygienePolicy controls how the end-of-turn auditor handles task-board\nviolations left by an active skill.\n\n - HYGIENE_POLICY_REQUIRE_FIX: Inject a synthetic user message describing the violations and re-run the\nLLM turn so the agent resolves them itself. Capped by max_retries; on\nexhaustion the auditor falls through to AUTO_FIX so the loop terminates.\n - HYGIENE_POLICY_AUTO_FIX: Machine-transition tasks (OPEN→DEFERRED, IN_PROGRESS→OPEN, BLOCKED→HITL)\nwith reason notes. Cheaper but hides agent bugs.\n - HYGIENE_POLICY_WARN_ONLY: Emit observability events and add a violations summary to the response\nmetadata; do not change task state and do not retry."
+    },
+    "v1ImplicitTaskConfig": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "$ref": "#/definitions/v1ImplicitTaskMode",
+          "description": "Whether the runtime mints tasks. Unset means enabled."
+        },
+        "triggers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/v1ImplicitTaskTrigger"
+          },
+          "description": "Restricts minting to these triggers. Empty means the built-in default set.\nUse this for \"only these\"."
+        },
+        "excludedTriggers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/v1ImplicitTaskTrigger"
+          },
+          "description": "Subtracted from the effective set, applied after `triggers`. Use this for\n\"everything except these\", which otherwise requires enumerating the rest\nand silently opting out of any trigger added in a later release."
+        },
+        "maxPerSession": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Caps implicit tasks per session. 0 means the built-in default. Once the cap\nis hit, later turns record no implicit task rather than growing the board\nwithout bound; the count of skipped turns is exported as a metric."
+        },
+        "agentVisible": {
+          "type": "boolean",
+          "description": "Surfaces implicit tasks in the AGENT's task context block and ready front.\n\nDefault false, and that default is load-bearing. The task context block is\nrebuilt into the system prompt every turn; if each turn minted a task that\nthen appeared in that block, the prompt would accumulate the agent's own\nbookkeeping turn over turn — the exact context-window growth the task\nsystem's compaction design exists to avoid. Implicit tasks are a rendering\nartifact for humans, so by default the agent never sees them."
+        }
+      },
+      "description": "ImplicitTaskConfig tunes runtime task minting."
+    },
+    "v1ImplicitTaskMode": {
+      "type": "string",
+      "enum": [
+        "IMPLICIT_TASK_MODE_UNSPECIFIED",
+        "IMPLICIT_TASK_MODE_ENABLED",
+        "IMPLICIT_TASK_MODE_DISABLED"
+      ],
+      "default": "IMPLICIT_TASK_MODE_UNSPECIFIED",
+      "description": "ImplicitTaskMode controls whether the runtime mints tasks on its own.\n\nUNSPECIFIED maps to ENABLED rather than DISABLED. proto3 scalar bools cannot\ndefault to true, and an inverted `bool disable_x` field reads badly at every\ncall site, so the tri-state enum carries the default instead. It also means\nthe default can change later without a proto change.\n\n - IMPLICIT_TASK_MODE_UNSPECIFIED: Not set — treated as ENABLED.\n - IMPLICIT_TASK_MODE_ENABLED: The runtime mints a task on the first qualifying event of a turn.\n - IMPLICIT_TASK_MODE_DISABLED: No implicit tasks. Only the agent and explicit API calls create tasks."
+    },
+    "v1ImplicitTaskTrigger": {
+      "type": "string",
+      "enum": [
+        "IMPLICIT_TASK_TRIGGER_UNSPECIFIED",
+        "IMPLICIT_TASK_TRIGGER_TOOL_CALL",
+        "IMPLICIT_TASK_TRIGGER_SKILL_ACTIVATION",
+        "IMPLICIT_TASK_TRIGGER_HUMAN_REQUEST",
+        "IMPLICIT_TASK_TRIGGER_SUBAGENT_SPAWN",
+        "IMPLICIT_TASK_TRIGGER_WORKFLOW_STEP"
+      ],
+      "default": "IMPLICIT_TASK_TRIGGER_UNSPECIFIED",
+      "description": "ImplicitTaskTrigger is an event that can cause the runtime to mint a task.\n\nGranularity matters because the triggers have very different cardinality and\nvalue. A tool call happens dozens of times a turn; a human-in-the-loop\nrequest happens rarely but is the one a human most needs to find. An operator\ntuning board noise needs to keep the latter while dropping the former.\n\nStatus per value is stated on the value. Only the ✅ triggers are fired by the\nruntime today; the 📋 ones parse, validate and resolve, but no code path\npasses them to the emitter yet, so selecting only those records nothing (the\nagent logs a warning when the resolved set cannot fire).\n\n - IMPLICIT_TASK_TRIGGER_UNSPECIFIED: Not a trigger. Load-bearing for fail-closed config parsing: an\nunrecognised trigger name resolves to this and disables emission, and the\npolicy resolver drops it from any trigger set.\n - IMPLICIT_TASK_TRIGGER_TOOL_CALL: ✅ Fired: the agent invoked a tool.\n - IMPLICIT_TASK_TRIGGER_SKILL_ACTIVATION: 📋 Not yet fired by the runtime: a skill activated for this turn. The\nskills task emitter already creates tasks on activation, which is why this\nis outside the default set.\n - IMPLICIT_TASK_TRIGGER_HUMAN_REQUEST: ✅ Fired: the agent asked a human for approval, a decision, input, or\nreview.\n - IMPLICIT_TASK_TRIGGER_SUBAGENT_SPAWN: 📋 Not yet fired by the runtime: the agent spawned an ephemeral subagent.\n - IMPLICIT_TASK_TRIGGER_WORKFLOW_STEP: 📋 Not yet fired by the runtime: a workflow stage began executing. The\ntask-tracked orchestrator already creates a task per stage, which is why\nthis is outside the default set."
     },
     "v1IterativeWorkflowPattern": {
       "type": "object",
@@ -5861,7 +6447,7 @@
         "maxContextTokens": {
           "type": "integer",
           "format": "int32",
-          "title": "Maximum context window tokens supported by the model\nIf not set, will be auto-detected from model name or use provider default\nExamples: Claude Sonnet 4.5 = 200000, Llama 3.1 = 128000, Mistral = 32000"
+          "title": "The context window loom budgets against: the fold keeps the settled\nconversation under the profile's threshold of this window less\nreserved_output_tokens. It may sit below the model's window to bound\ncost. If not set, the model's window (catalog, then model name, then\nprovider default) is used.\nExamples: Claude Sonnet 4.5 = 200000, Llama 3.1 = 128000, Mistral = 32000"
         },
         "reservedOutputTokens": {
           "type": "integer",
@@ -5875,7 +6461,16 @@
         "seed": {
           "type": "string",
           "format": "int64",
-          "description": "Sampling seed for reproducible generations.\nExplicitly optional so that \"not set\" (sampling stays random, provider\ndefault) is distinguishable from an explicit seed of 0, which some\nproviders accept as a real seed value.\n\nHonored by: ollama, and only on the agent-registry construction path\n(pkg/agent/registry.go, which passes it into ollama.Config). Providers\nother than ollama ignore it. The looms serve path builds clients from\nfactory.FactoryConfig, which does not carry a seed field, so a seed set in\nagent YAML has no effect there — wiring it through the factory is an open\nfollow-up, not a shipped behavior."
+          "description": "Sampling seed for reproducible generations.\nExplicitly optional so that \"not set\" (sampling stays random, provider\ndefault) is distinguishable from an explicit seed of 0, which some\nproviders accept as a real seed value.\n\nHonored by: ollama, for an agent whose own llm block selects it (agent\nregistry, and agent YAML under looms serve). Providers other than ollama\nignore it. The server's default LLM (looms.yaml llm:) and the provider\nfactory carry no seed."
+        },
+        "maxModelContextTokens": {
+          "type": "integer",
+          "format": "int32",
+          "description": "The context window the model is served with, when it is below the\nmodel's listed window: a vLLM --max-model-len, a TGI --max-total-tokens,\nan Ollama num_ctx. A step whose results together would exceed it, less\nthe reply reservation, has them replaced before the send. Taken as given,\nabove or below the listing. If not set, the model's listed window is the\nlimit, on every provider."
+        },
+        "gatewayRouting": {
+          "$ref": "#/definitions/v1LLMGatewayRouting",
+          "description": "Routing options for a multi-provider LLM gateway. Valid only with\nprovider vercel-ai-gateway, which sends them as providerOptions.gateway in\nevery request body; on any other provider, or with no provider, agent\nvalidation rejects it. Unset means the gateway's own default routing."
         }
       },
       "title": "LLMConfig configures the language model provider and parameters"
@@ -5920,9 +6515,52 @@
           "type": "integer",
           "format": "int32",
           "description": "Tokens written to prompt cache (billed at 1.25x input price for Anthropic)."
+        },
+        "costEstimated": {
+          "type": "boolean",
+          "description": "True when cost_usd includes an estimate: at least one call in this usage\nhad no gateway-reported cost and no published rate for its model, and was\npriced at the median rate of the same creator's models in the gateway\ncatalog (vercel-ai-gateway). Clients show such a cost with an asterisk."
         }
       },
       "description": "LLMCost tracks token usage and costs."
+    },
+    "v1LLMGatewayRouting": {
+      "type": "object",
+      "properties": {
+        "order": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Upstream providers to try, in order. Empty = gateway default order."
+        },
+        "only": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Restrict serving to these upstream providers. Empty = no restriction.\nA request no listed provider can serve fails; it is not retried."
+        },
+        "sort": {
+          "type": "string",
+          "description": "Rank eligible upstreams by \"cost\", \"ttft\" (time to first token) or \"tps\"\n(tokens per second). Empty = gateway default."
+        },
+        "fallbackModels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Model ids to fall back to, in order, when the primary model fails on\nevery eligible upstream. May name a different model family."
+        },
+        "zeroDataRetention": {
+          "type": "boolean",
+          "description": "Serve only from upstreams with a zero-data-retention agreement."
+        },
+        "caching": {
+          "type": "string",
+          "description": "Gateway-side prompt caching mode. \"\" = off (explicit cache_control only),\n\"auto\" = the gateway places cache breakpoints itself."
+        }
+      },
+      "description": "LLMGatewayRouting selects and orders the upstream providers a multi-provider\nLLM gateway may serve a request from. It is named for gateways in general so\na later gateway backend can reuse it; today only vercel-ai-gateway reads it.\n\nProvider slugs (\"anthropic\", \"bedrock\", \"vertex\", \"openai\", ...) are the\ngateway's own and are passed through unchanged. Per-request BYOK credentials\nare deliberately not part of this message: they are configured in the\ngateway's dashboard, not in agent configuration."
     },
     "v1LLMRateLimitConfig": {
       "type": "object",
@@ -6044,7 +6682,7 @@
         "maxCostUsd": {
           "type": "number",
           "format": "double",
-          "description": "Cost gate in USD applied between actions, not a hard cap. 0 = no gate.\n\nBefore each same-model retry, each escalation rung and each judge call\nthe spend accounted for so far is compared against this ceiling, and the\naction is skipped when the ceiling is already reached. The action in\nprogress is never interrupted, so the ceiling is normally overshot by\nthe cost of one call.\n\nThe running total is a floor on real spend rather than an exact figure:\nper-attempt cost is read from the returned AgentResult, which carries\nthe final LLM response's usage, so an attempt that ran a tool loop\nreports less than it spent and the gate can admit a call that a precise\naccounting would have blocked.\n\nA judge call skipped by the ceiling accepts the output unexamined, with\na warning in the leveling report.\n\nUse it to bound runaway escalation, not to guarantee a billing limit."
+          "description": "Cost gate in USD applied between actions, not a hard cap. 0 = no gate.\n\nBefore each same-model retry, each escalation rung and each judge call\nthe spend accounted for so far is compared against this ceiling, and the\naction is skipped when the ceiling is already reached. The action in\nprogress is never interrupted, so the ceiling is normally overshot by\nthe cost of one call.\n\nThe running total is a floor on real spend rather than an exact figure:\nper-attempt cost is read from the returned AgentResult. That cost covers\nthe agent's whole conversation turn, but not the LLM calls the agent\nmakes outside it (graph-memory recall, memory compression and similar),\nso the gate can admit a call that a precise accounting would have\nblocked.\n\nA judge call skipped by the ceiling accepts the output unexamined, with\na warning in the leveling report.\n\nUse it to bound runaway escalation, not to guarantee a billing limit."
         },
         "ladder": {
           "type": "array",
@@ -6209,6 +6847,19 @@
         }
       },
       "description": "ListComponentTypesResponse returns the full catalog of component types."
+    },
+    "v1ListLuaScriptsResponse": {
+      "type": "object",
+      "properties": {
+        "scripts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1LuaScript"
+          }
+        }
+      },
+      "description": "ListLuaScriptsResponse returns saved scripts, name-sorted, without source."
     },
     "v1ListMCPServerToolsResponse": {
       "type": "object",
@@ -6497,6 +7148,78 @@
       },
       "description": "LoadPatternsResponse confirms pattern loading."
     },
+    "v1LuaScript": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Script name: ^[a-z][a-z0-9_]{2,40}$. Unique per server."
+        },
+        "description": {
+          "type": "string",
+          "description": "One or two sentences on what the script does."
+        },
+        "source": {
+          "type": "string",
+          "description": "Lua 5.4 source. Empty in ListLuaScripts responses."
+        },
+        "manifest": {
+          "$ref": "#/definitions/v1LuaScriptManifest",
+          "description": "Inputs and needs; unset when the script has no manifest."
+        },
+        "version": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Incremented on every save."
+        },
+        "published": {
+          "type": "boolean",
+          "description": "Whether the script may be used as a tool named lua_\u003cname\u003e."
+        },
+        "owner": {
+          "type": "string",
+          "description": "The agent that saved the script, or \"server\" for scripts saved over RPC."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the script was last saved."
+        },
+        "attachedAgents": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Agents that have lua_\u003cname\u003e attached."
+        }
+      },
+      "description": "LuaScript is a saved Lua script that run_lua can run by name."
+    },
+    "v1LuaScriptManifest": {
+      "type": "object",
+      "properties": {
+        "parameters": {
+          "type": "object",
+          "description": "JSON Schema (type object) for the script's args when it runs as a tool.\nAt most 20 properties and 4 KiB; no $ref."
+        },
+        "requires": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tool names the script calls. When non-empty, or when requires_set is\ntrue, the script may call only these. Empty with requires_set false\nmeans no restriction."
+        },
+        "returns": {
+          "type": "string",
+          "description": "One line describing the return value."
+        },
+        "requiresSet": {
+          "type": "boolean",
+          "description": "When true, requires is authoritative even if empty: an empty requires\nwith requires_set true means the script may call no tool at all. proto3\ncannot tell an empty repeated field from an absent one, so this flag\ncarries the difference. Responses set it whenever the stored manifest\nlists its requires (empty included)."
+        }
+      },
+      "description": "LuaScriptManifest describes a saved script's inputs and needs. It is\nrequired before the script can be published as a tool."
+    },
     "v1MCPServerHealth": {
       "type": "object",
       "properties": {
@@ -6538,11 +7261,11 @@
         },
         "transport": {
           "type": "string",
-          "title": "Transport type (stdio, http, sse)"
+          "title": "Transport type (stdio, http, sse, streamable-http)"
         },
         "command": {
           "type": "string",
-          "title": "Command to execute"
+          "title": "Command for stdio transport"
         },
         "args": {
           "type": "array",
@@ -6575,6 +7298,11 @@
           "type": "integer",
           "format": "int32",
           "title": "Number of tools exposed by this server"
+        },
+        "maxResponseBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Bound on one JSON-RPC message from this server (streamable-http only),\nas CONFIGURED. 0 means none was set and the 16 MiB default\n(transport.DefaultMaxResponseBytes) is in force; reporting the configured\nvalue rather than the effective one keeps \"unset\" distinguishable from\n\"explicitly 16 MiB\". Reported whatever the transport, so a stdio server\nshows what its config says even though the bound does not apply there."
         }
       },
       "description": "MCPServerInfo provides information about an MCP server."
@@ -6669,6 +7397,11 @@
         "batchSizes": {
           "$ref": "#/definitions/v1MemoryCompressionBatchSizes",
           "title": "Batch sizes for compression operations"
+        },
+        "protectedRecentTurns": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Recent turns a fold keeps, counting user messages and assistant steps\nalike; the fold summarises everything before them. It is also the top rung\nof the pressure ladder. 0 means the default, 16."
         }
       },
       "title": "MemoryCompressionConfig defines conversation history compression behavior"
@@ -6877,6 +7610,16 @@
         "showInDropdown": {
           "type": "boolean",
           "title": "Whether this model should appear in UI dropdowns (false = API-only or deprecated)"
+        },
+        "costPer1mCacheReadUsd": {
+          "type": "number",
+          "format": "double",
+          "description": "Cost per 1M prompt-cache read tokens (USD). 0 = not published; clients\nthen derive it from the input rate with the vendor's multiplier."
+        },
+        "costPer1mCacheWriteUsd": {
+          "type": "number",
+          "format": "double",
+          "description": "Cost per 1M prompt-cache write tokens (USD). 0 = not published; clients\nthen derive it from the input rate with the vendor's multiplier."
         }
       },
       "description": "ModelInfo provides information about an LLM model."
@@ -7820,6 +8563,16 @@
       },
       "description": "RenewalStatus reports automatic renewal status."
     },
+    "v1ResolveExecutionGapResponse": {
+      "type": "object",
+      "properties": {
+        "gap": {
+          "$ref": "#/definitions/v1ExecutionGap",
+          "title": "The settled gap"
+        }
+      },
+      "description": "ResolveExecutionGapResponse names the gap that was settled."
+    },
     "v1RestartPolicy": {
       "type": "object",
       "properties": {
@@ -7854,6 +8607,36 @@
         }
       },
       "description": "RestartPolicy defines rules for stage restart coordination."
+    },
+    "v1ResumeSessionOutcome": {
+      "type": "string",
+      "enum": [
+        "RESUME_SESSION_OUTCOME_UNSPECIFIED",
+        "RESUME_SESSION_OUTCOME_RESUMED",
+        "RESUME_SESSION_OUTCOME_NOTHING_TO_RESUME",
+        "RESUME_SESSION_OUTCOME_EXECUTION_GAP",
+        "RESUME_SESSION_OUTCOME_PARKED"
+      ],
+      "default": "RESUME_SESSION_OUTCOME_UNSPECIFIED",
+      "description": "ResumeSessionOutcome is what ResumeSession did.\n\n - RESUME_SESSION_OUTCOME_RESUMED: The interrupted turn finished; content holds its reply.\n - RESUME_SESSION_OUTCOME_NOTHING_TO_RESUME: The session's last turn is already complete; nothing ran.\n - RESUME_SESSION_OUTCOME_EXECUTION_GAP: A tool call's outcome is unknown; gap describes it. Settle it with\nResolveExecutionGap, then call ResumeSession again.\n - RESUME_SESSION_OUTCOME_PARKED: The turn stopped again to wait for a human decision."
+    },
+    "v1ResumeSessionResponse": {
+      "type": "object",
+      "properties": {
+        "outcome": {
+          "$ref": "#/definitions/v1ResumeSessionOutcome",
+          "title": "What happened"
+        },
+        "content": {
+          "type": "string",
+          "description": "The turn's reply, when outcome is RESUME_SESSION_OUTCOME_RESUMED."
+        },
+        "gap": {
+          "$ref": "#/definitions/v1ExecutionGap",
+          "description": "The unresolved call, when outcome is RESUME_SESSION_OUTCOME_EXECUTION_GAP."
+        }
+      },
+      "description": "ResumeSessionResponse reports what ResumeSession did."
     },
     "v1RetrySessionMode": {
       "type": "string",
@@ -7985,6 +8768,41 @@
         }
       },
       "description": "SQLiteStorageConfig configures the SQLite storage backend."
+    },
+    "v1SaveLuaScriptRequest": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "manifest": {
+          "$ref": "#/definitions/v1LuaScriptManifest"
+        },
+        "overwrite": {
+          "type": "boolean",
+          "description": "Replace an existing script with the same name. Without it, a name that\nis taken is AlreadyExists."
+        }
+      },
+      "description": "SaveLuaScriptRequest saves a script. The source must compile; it is never\nrun by this call."
+    },
+    "v1SaveLuaScriptResponse": {
+      "type": "object",
+      "properties": {
+        "script": {
+          "$ref": "#/definitions/v1LuaScript"
+        },
+        "created": {
+          "type": "boolean",
+          "description": "Whether the name was new (false: an existing script was replaced)."
+        }
+      },
+      "description": "SaveLuaScriptResponse carries the saved script."
     },
     "v1ScheduleConfig": {
       "type": "object",
@@ -9359,6 +10177,10 @@
           "type": "integer",
           "format": "int32",
           "description": "Maximum tokens for the task context block injected into the system prompt.\nDefault: 500. Set to 0 to disable context injection."
+        },
+        "implicitTasks": {
+          "$ref": "#/definitions/v1ImplicitTaskConfig",
+          "description": "Implicit task emission, controlled independently of `enabled` above.\n\n`enabled` governs whether the AGENT sees the task_board tool and the task\ncontext block. This governs whether the RUNTIME mints a task when a turn\ndoes real work, so that a human-facing timeline has something to attach to\neven when the agent never touches tasks itself.\n\nUnset means implicit emission is ON. It is deliberately opt-out: a task\ntimeline nobody can see by default is a feature nobody has."
         }
       },
       "description": "TaskBoardConfig configures the dependency-aware task decomposition and kanban system."
@@ -9444,11 +10266,11 @@
       "properties": {
         "transport": {
           "type": "string",
-          "title": "Transport type (stdio, http, sse)"
+          "title": "Transport type (stdio, http, sse, streamable-http)"
         },
         "command": {
           "type": "string",
-          "title": "Command to execute"
+          "title": "Command to execute (required only for stdio transport)"
         },
         "args": {
           "type": "array",
@@ -9479,7 +10301,7 @@
         },
         "url": {
           "type": "string",
-          "title": "Server URL (required for http/sse transport)"
+          "title": "Server URL (required for http, sse, and streamable-http transports)"
         },
         "enableSessions": {
           "type": "boolean",
@@ -10315,11 +11137,25 @@
         },
         "toolCallId": {
           "type": "string",
-          "title": "Unique identifier correlating started/completed events for the same tool call"
+          "description": "Unique identifier correlating started/completed events for the same tool\ncall; also set on is_tool_input_stream events so they match the later\nstarted event."
         },
         "contextState": {
           "$ref": "#/definitions/v1ContextState",
           "title": "Context window state (included in completion event)"
+        },
+        "isToolInputStream": {
+          "type": "boolean",
+          "description": "True while the model is still writing a tool call's arguments. Carries no\nargument content; tool_name, tool_call_id and tool_input_bytes identify the\ncall when the provider reports them."
+        },
+        "toolInputBytes": {
+          "type": "string",
+          "format": "int64",
+          "description": "Bytes of tool-call argument JSON received so far (when is_tool_input_stream).\nEvents are throttled, so the last value can lag the final size. A bare pulse\nfrom a provider that does not report sizes has no tool_call_id or tool_name\nand a size of 0; with either set, 0 means no arguments have arrived yet."
+        },
+        "toolCallIndex": {
+          "type": "integer",
+          "format": "int32",
+          "description": "The provider's stream index for this tool call (when\nis_tool_input_stream). OpenAI-compatible providers (OpenAI, Azure,\nLiteLLM, Mistral, HuggingFace) return their tool calls in stream index\norder, so the index is monotonic with position but not necessarily equal\nto it: the OpenAI client (and so LiteLLM, Mistral and HuggingFace) drops\nan incomplete call with no id or name, and later calls keep their stream\nindex while shifting position. The Azure OpenAI client keeps such a\ncall, with whichever of id and name is missing left empty. Match a\nprogress event to its tool-started event\nby tool_call_id. On providers that deliver calls in order (Anthropic,\nBedrock, Gemini, Ollama) the index matches position when nothing is\ndropped. Gemini repeats the function name in tool_call_id, so two\nparallel calls to the same tool share an ID and only this index tells\nthem apart. The agent's throttling keys on the same index, so events for\none call never interleave with another's. A bare activity pulse (no\ntool_call_id, no tool_name, 0 bytes) carries index 0 without being call\n0; skip pulses."
         }
       },
       "description": "WeaveProgress streams incremental updates during execution."
@@ -10379,6 +11215,10 @@
           "type": "string",
           "format": "date-time",
           "description": "Historical arrival time for replayed or imported conversations (optional).\nWhen set, every message persisted during this call — the user turn, the\nassistant reply, and tool rows — carries this timestamp instead of the\nserver wall clock, so temporal grounding (compiled-view arrival stamps,\ngraph-memory extraction anchoring) reflects when the conversation\nactually happened rather than when it was ingested.\n\nServers reject this field unless server.allow_time_override is enabled\n(FAILED_PRECONDITION), and reject values in the future beyond a small\nclock-skew allowance (INVALID_ARGUMENT). Live conversations should leave\nit unset."
+        },
+        "replayAssistantMessage": {
+          "type": "string",
+          "description": "Generation-free replay: when set, the agent does NOT call the LLM to\ngenerate a response. Instead it records this text verbatim as the\nassistant's turn and runs the full turn pipeline exactly as a live turn\nwould — context compilation, memory compression (relief/fold),\ngraph-memory extraction, and salience updates. Only generation is skipped.\n\nThis replays a pre-written conversation turn-by-turn while preserving the\nground-truth assistant content (never inventing the assistant's side), so\nthe memory system is exercised under realistic accumulation. It is used by\nthe LongMemEval conversation-replay harness and is typically paired with\noccurred_at to anchor each turn at its historical time.\n\nGated by its own server.allow_assistant_override switch\n(FAILED_PRECONDITION when disabled) — separate from occurred_at's\nserver.allow_time_override, so operators who enabled timestamp anchoring\nhave not implicitly accepted caller-supplied assistant content.\nWhitespace-only values are rejected (INVALID_ARGUMENT). Live\nconversations leave it unset."
         }
       },
       "description": "WeaveRequest initiates a query execution."
@@ -10448,12 +11288,12 @@
         "totalTokens": {
           "type": "integer",
           "format": "int32",
-          "title": "Total tokens used across all agents"
+          "description": "Total tokens used across all agents. It counts the same calls as\nllm_calls."
         },
         "llmCalls": {
           "type": "integer",
           "format": "int32",
-          "title": "Number of LLM calls made"
+          "description": "Number of LLM calls the run made. For the fork-join, parallel, pipeline,\niterative, swarm and conditional patterns it is the sum of each agent\nresult's llm_calls (a result with 0 counts as one call), plus the calls\nthe executor makes itself: the LLM merge, stage validation, the swarm\njudge and the judge and vote retries, the conditional classifier and its\nretries, and stage attempts that a retry replaced.\n\nNot counted:\n- LLM calls an agent makes outside its conversation loop (see\n  AgentExecutionCost.llm_calls).\n- The losing calls of a leveled stage. Their USD is in total_cost_usd;\n  their calls and tokens are not.\n- Debate, pair-programming and teacher-student runs, which report an\n  empty cost.\n- After a HITL resume, the executor's own calls made before the\n  suspension. They are not checkpointed."
         }
       },
       "description": "WorkflowCost tracks costs across all agents in a workflow."

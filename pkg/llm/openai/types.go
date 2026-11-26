@@ -13,6 +13,8 @@
 // limitations under the License.
 package openai
 
+import "encoding/json"
+
 // OpenAI API types for chat completions
 // Reference: https://platform.openai.com/docs/api-reference/chat
 
@@ -32,6 +34,16 @@ type ChatCompletionRequest struct {
 	StreamOptions       *StreamOptions         `json:"stream_options,omitempty"`
 	User                string                 `json:"user,omitempty"`
 	ResponseFormat      map[string]interface{} `json:"response_format,omitempty"`
+
+	// Thinking requests extended thinking for Anthropic-backed models routed
+	// through litellm ({"type":"adaptive"} on Claude 4.6+/5). Omitted for
+	// every other model — a strict OpenAI endpoint may reject the field.
+	Thinking map[string]interface{} `json:"thinking,omitempty"`
+
+	// Reasoning is the Vercel AI Gateway's reasoning request object
+	// ({"enabled":true,"effort":"high"}), sent instead of Thinking when
+	// Config.ReasoningObject is on and the model reasons.
+	Reasoning map[string]interface{} `json:"reasoning,omitempty"`
 }
 
 // ChatMessage represents a message in the conversation.
@@ -48,10 +60,42 @@ type ChatMessage struct {
 	ToolCalls  []ToolCall  `json:"tool_calls,omitempty"`
 	ToolCallID string      `json:"tool_call_id,omitempty"` // For tool role messages
 
-	// ReasoningContent carries the reasoning trace that reasoning models
-	// (DeepSeek, Qwen, ...) return through OpenAI-compatible gateways such as
-	// LiteLLM. Response-only: omitempty keeps it off outgoing requests.
-	ReasoningContent string `json:"reasoning_content,omitempty"`
+	// litellm's extended-thinking convention for Anthropic models: the
+	// response carries the thinking text in ReasoningContent and/or inside
+	// ThinkingBlocks (both shapes observed live); replay sends ThinkingBlocks
+	// back verbatim on assistant messages so signatures survive the round-trip.
+	ReasoningContent string              `json:"reasoning_content,omitempty"`
+	ThinkingBlocks   []WireThinkingBlock `json:"thinking_blocks,omitempty"`
+	// Reasoning is the field name gpt-oss models use for the same trace on
+	// Amazon Bedrock Mantle (observed live 2026-11-04). Read as a fallback for
+	// ReasoningContent; never sent.
+	Reasoning string `json:"reasoning,omitempty"`
+	// ReasoningDetails is the Vercel AI Gateway's structured reasoning trace
+	// (entries may carry an upstream signature). Read on responses and
+	// replayed on in-turn assistant messages when Config.ReasoningObject is on.
+	ReasoningDetails []WireReasoningDetail `json:"reasoning_details,omitempty"`
+}
+
+// WireReasoningDetail is one reasoning_details entry. Type is
+// "reasoning.text" (Text), "reasoning.summary" (Summary) or
+// "reasoning.encrypted" (Data). Index pairs streaming fragments.
+type WireReasoningDetail struct {
+	Type      string `json:"type,omitempty"`
+	Text      string `json:"text,omitempty"`
+	Summary   string `json:"summary,omitempty"`
+	Data      string `json:"data,omitempty"`
+	Signature string `json:"signature,omitempty"`
+	Format    string `json:"format,omitempty"`
+	Index     *int   `json:"index,omitempty"`
+}
+
+// WireThinkingBlock is litellm's thinking block shape. Index appears only in
+// streaming fragments and pairs fragments of the same block.
+type WireThinkingBlock struct {
+	Type      string `json:"type,omitempty"`
+	Thinking  string `json:"thinking,omitempty"`
+	Signature string `json:"signature,omitempty"`
+	Index     *int   `json:"index,omitempty"`
 }
 
 // ToolCall represents a function call from the assistant.
@@ -125,6 +169,32 @@ func (u ChatCompletionUsage) CacheRead() int {
 	return 0
 }
 
+// UncachedPromptTokens returns the prompt tokens that were neither read from
+// nor written to the prompt cache. OpenAI-compatible prompt_tokens INCLUDES
+// both cache buckets (OpenAI's cached_tokens, and litellm's Anthropic-shaped
+// cache_read/cache_creation fields); loom's Usage.InputTokens excludes them,
+// matching Anthropic and Bedrock, so this is what InputTokens must carry.
+// Clamped at zero for a gateway that reports the buckets outside prompt_tokens.
+func (u ChatCompletionUsage) UncachedPromptTokens() int {
+	return max(0, u.PromptTokens-u.CacheRead()-u.CacheCreationInputTokens)
+}
+
+// UncachedTotalTokens is total_tokens with the same cache buckets removed, so
+// Usage.TotalTokens = InputTokens + OutputTokens as on Anthropic and Bedrock.
+func (u ChatCompletionUsage) UncachedTotalTokens() int {
+	return max(0, u.TotalTokens-(u.PromptTokens-u.UncachedPromptTokens()))
+}
+
+// MeteredTokens is what OpenAI-style TPM limits count for the call: the raw,
+// cache-inclusive total_tokens (prompt_tokens + completion_tokens when a
+// gateway omits total_tokens). Carried as Usage.RateLimitTokens.
+func (u ChatCompletionUsage) MeteredTokens() int {
+	if u.TotalTokens > 0 {
+		return u.TotalTokens
+	}
+	return u.PromptTokens + u.CompletionTokens
+}
+
 // OpenAIError represents an error from the OpenAI API.
 type OpenAIError struct {
 	Message string      `json:"message"`
@@ -135,6 +205,10 @@ type OpenAIError struct {
 
 // ChatCompletionStreamChunk represents a chunk in a streaming response.
 type ChatCompletionStreamChunk struct {
+	// Error is set on a payload that reports a failure after the stream
+	// started (an upstream fault behind a gateway). Kept raw so a chunk whose
+	// "error" member is not an object still decodes; StreamError reads it.
+	Error   json.RawMessage              `json:"error,omitempty"`
 	ID      string                       `json:"id"`
 	Object  string                       `json:"object"` // "chat.completion.chunk"
 	Created int64                        `json:"created"`
@@ -155,6 +229,18 @@ type ChatMessageDelta struct {
 	Role      string          `json:"role,omitempty"`
 	Content   interface{}     `json:"content,omitempty"` // string or null
 	ToolCalls []ToolCallDelta `json:"tool_calls,omitempty"`
+
+	// Streaming thinking (litellm → Anthropic): text arrives as
+	// ReasoningContent deltas and/or inside ThinkingBlocks fragments; the
+	// signature arrives in a block fragment. Merge fragments by Index.
+	ReasoningContent string              `json:"reasoning_content,omitempty"`
+	ThinkingBlocks   []WireThinkingBlock `json:"thinking_blocks,omitempty"`
+	// Reasoning is the field name gpt-oss models use for the same trace on
+	// Amazon Bedrock Mantle (observed live 2026-11-04). Read as a fallback for
+	// ReasoningContent; never sent.
+	Reasoning string `json:"reasoning,omitempty"`
+	// ReasoningDetails fragments (Vercel AI Gateway), merged by Index.
+	ReasoningDetails []WireReasoningDetail `json:"reasoning_details,omitempty"`
 }
 
 // ToolCallDelta represents a delta in a tool call.
@@ -169,4 +255,25 @@ type ToolCallDelta struct {
 type FunctionCallDelta struct {
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"` // Partial JSON string
+}
+
+// StreamError returns the chunk's error object, or nil when the chunk has no
+// "error" member, or one that is null or not an object (a string or a
+// boolean): only an object with a message, a type or a code is treated as a
+// failure.
+func (c *ChatCompletionStreamChunk) StreamError() *OpenAIError {
+	if len(c.Error) == 0 || c.Error[0] != '{' {
+		return nil
+	}
+	var e OpenAIError
+	if err := json.Unmarshal(c.Error, &e); err != nil || (e.Message == "" && e.Type == "" && e.Code == nil) {
+		return nil
+	}
+	if e.Type == "" {
+		// Some gateways send only a code; classify it like a type name.
+		if code, ok := e.Code.(string); ok {
+			e.Type = code
+		}
+	}
+	return &e
 }

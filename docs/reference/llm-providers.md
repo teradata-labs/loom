@@ -4,7 +4,7 @@
 Reference for all supported LLM providers and their configuration.
 
 **Version**: v1.3.0
-**Status**: ✅ 8 providers implemented (Anthropic, Bedrock, Ollama, OpenAI, Azure OpenAI, Mistral AI, Google Gemini, HuggingFace); 📋 Google Vertex AI planned
+**Status**: ✅ 8 providers implemented (Anthropic, Bedrock, Ollama, OpenAI, Azure OpenAI, Mistral AI, Google Gemini, HuggingFace); ⚠️ AWS Bedrock Mantle and Vercel AI Gateway partial; 📋 Google Vertex AI planned
 
 
 ## Table of Contents
@@ -18,11 +18,14 @@ Reference for all supported LLM providers and their configuration.
 - [Mistral AI](#6-mistral-ai) - Open and commercial models
 - [Google Gemini](#7-google-gemini) - Google AI Studio
 - [HuggingFace](#8-huggingface) - Open-source models via the HF Inference API
+- [AWS Bedrock Mantle](#9-aws-bedrock-mantle) - Claude and open-weight models via the `bedrock-mantle` endpoint
+- [Vercel AI Gateway](#10-vercel-ai-gateway) - Many upstream providers behind one key (partial)
 
 ### Planned Providers
-- [Google Vertex AI](#9-google-vertex-ai) - GCP integration (Planned)
+- [Google Vertex AI](#11-google-vertex-ai) - GCP integration (Planned)
 
 ### Reference
+- [Tool Schema Compatibility](#tool-schema-compatibility) - Omitted tools and library-only strict validation
 - [Provider Comparison](#provider-comparison) - Feature matrix and benchmarks
 - [Configuration Reference](#configuration-reference) - Common and provider-specific parameters
 - [Security Best Practices](#security-best-practices) - Credential management
@@ -47,6 +50,8 @@ Reference for all supported LLM providers and their configuration.
 | **Mistral AI** | ✅ Implemented | Native | 128k-262k | $0.075-$8/1M tokens | Reasoning, code models |
 | **Google Gemini** | ✅ Implemented | Native | 1.05M | $0-$12/1M tokens | Long context, multimodal |
 | **HuggingFace** | ✅ Implemented | Native (model-dependent) | Varies | ~$0.20-$1.00/1M tokens (estimated) | Open-source models |
+| **AWS Bedrock Mantle** | ⚠️ Partial (GPT-5.x/6.x unpriced; Responses API planned) | Native | 4k-1M | $0.04-$55/1M tokens (53 cataloged models) | Mantle-only models, OpenAI/Anthropic-compatible AWS endpoint |
+| **Vercel AI Gateway** | ⚠️ Partial (live-tested 2026-11-16 on Haiku 4.5 and GPT-5 mini) | Native (both surfaces) | From live catalog | Upstream list price, from `GET /v1/models` | One key for many upstreams, provider routing and fallback |
 | **Google Vertex AI** | 📋 Planned | TBD | TBD | TBD | GCP infrastructure |
 
 ### Authentication Methods
@@ -61,6 +66,8 @@ Reference for all supported LLM providers and their configuration.
 | **Mistral** | `looms config set-key mistral_api_key` | `LOOM_LLM_MISTRAL_API_KEY` / `MISTRAL_API_KEY` | None (no CLI flag) |
 | **Gemini** | `looms config set-key gemini_api_key` | `LOOM_LLM_GEMINI_API_KEY` / `GEMINI_API_KEY` | None (no CLI flag) |
 | **HuggingFace** | `looms config set-key huggingface_token` | `LOOM_LLM_HUGGINGFACE_TOKEN` / `HUGGINGFACE_API_KEY` | None (no CLI flag) |
+| **Vercel AI Gateway** | `looms config set-key vercel_gateway_api_key` | `LOOM_LLM_VERCEL_GATEWAY_API_KEY` / `AI_GATEWAY_API_KEY` | Vercel OIDC token (`llm.vercel_gateway_oidc`, `VERCEL_OIDC_TOKEN`) |
+| **Bedrock Mantle** | `bedrock_mantle_api_key` (optional) | `BEDROCK_MANTLE_API_KEY` (optional), `LOOM_LLM_BEDROCK_MANTLE_REGION` or `llm.bedrock_region` | SigV4 from the AWS credential chain (default when no API key) |
 
 **Note**: The only LLM-provider API-key CLI flag registered in the `looms` binary is `--anthropic-key` (`cmd/looms/root.go`). Some error messages reference `--openai-key` and `--mistral-key`, but those flags are not implemented — use the keyring or environment variable instead.
 
@@ -91,6 +98,28 @@ Loom supports multiple LLM providers for different deployment scenarios. All pro
 - Cost tracking and observability
 - Secure credential management (system keyring)
 - Provider-agnostic agent code
+
+
+## Tool Schema Compatibility
+
+Anthropic, Bedrock, OpenAI, Azure OpenAI, Gemini, and the OpenAI-compatible wrappers validate tool schemas before sending a request. An incompatible tool is omitted by default, while the remaining tools stay available. If every tool is omitted, the request proceeds without tools. A zap warning names the tool and reason once per tool/reason pair per provider-client lifetime, so a new failure after a schema reload is logged; every omission is also recorded as `llm.tool.schema.skipped` on the active request span when tracing is enabled.
+
+Anthropic, Bedrock, OpenAI, and Azure normalize compatible object-root `allOf` schemas. Root alternatives and incompatible constraints are not approximated. OpenAI and Azure additionally reject normalized root `enum` and `not`. Gemini omits tools with root composites, root `enum`, or unsupported nested `oneOf`/`allOf`/`not`. Supported `anyOf` branch nodes keep absent types unspecified, while their properties/items resume Gemini's required type fill-in. Null nested schema nodes are incompatible on all these paths. Conflicting `default` annotations do not discard a tool: the root value wins, or the first branch value if the root has none.
+
+To adapt a root alternative, place it inside a named property, such as `properties.input.anyOf`, and update the tool to read that wrapper. This does not guarantee every provider/model supports every nested keyword. Schema handling is limited to the keywords represented by `shuttle.JSONSchema`; it does not add `$ref`/`$defs` resolution or replace tool-side argument validation.
+
+### Library-Only Strict Validation
+
+Go embedders can set `StrictToolSchemas: true` on the Anthropic, Bedrock, OpenAI, Azure OpenAI, Gemini, LiteLLM, Mistral, or HuggingFace provider's `Config` to return an error before HTTP instead of omitting an incompatible tool:
+
+```go
+client := gemini.NewClient(gemini.Config{
+  APIKey:            os.Getenv("GEMINI_API_KEY"),
+  StrictToolSchemas: true,
+})
+```
+
+This switch is **library-only**. It is not present in protobuf `LLMConfig`, the provider factory, YAML, or CLI flags; `loom` and `looms` therefore use the default omission policy. Do not add `strict_tool_schemas` to agent YAML expecting it to take effect. This switch is also separate from a provider's constrained-decoding or strict-mode API options.
 
 
 ## Implemented Providers
@@ -621,10 +650,107 @@ Any other model on the HF Inference API can be used; unlisted models fall back t
 
 **Reference**: [HuggingFace Inference API](https://huggingface.co/docs/api-inference/index)
 
+### 9. AWS Bedrock Mantle
+
+**Status**: ⚠️ Partial. Implemented: provider (`pkg/llm/bedrockmantle`), provider factory, agent registry, `looms` server config (`llm.bedrock_mantle_*`), `looms` CLI, `loom-standalone`, `quickstart.sh` (option 4) and `pkg/builder` (`WithBedrockMantleLLM`). The catalog prices 11 Claude and 42 open-weight Mantle models. Not done: GPT-5.x/6.x are served but have no published rate yet, and the OpenAI Responses API is planned (📋).
+
+Amazon Bedrock's second endpoint surface (`https://bedrock-mantle.{region}.api.aws`). It speaks the Anthropic Messages API for Claude and the OpenAI Chat Completions API for every other vendor; it does not speak Converse or InvokeModel, so the `bedrock` provider cannot reach it. Loom reuses its anthropic and openai clients behind one provider.
+
+**Why Mantle**:
+- Models served only on Mantle (Gemma 4, GPT-5.x/6.x, Claude Mythos 5 per AWS)
+- SigV4 or Bedrock API key auth; no `anthropic-beta` header (Mantle rejects it)
+- Same per-token rates as `bedrock-runtime` for the same endpoint type; a bare Mantle id is a regional (single-Region) endpoint, so Claude 4.5+ bills the 10% regional premium over `global.*` profiles
+
+**Configuration** (`looms.yaml`, factory fields or environment):
+
+```yaml
+# looms.yaml
+llm:
+  provider: bedrock-mantle
+  bedrock_mantle_model: anthropic.claude-haiku-4-5
+  # bedrock_mantle_region defaults to bedrock_region; SigV4 via bedrock_profile or the AWS credential chain
+  # bedrock_mantle_api_key: looms config set-key bedrock_mantle_api_key (optional; bearer instead of SigV4)
+```
+
+```go
+factory.FactoryConfig{
+    BedrockMantleRegion: "us-west-2",          // or BEDROCK_MANTLE_REGION / AWS_REGION
+    BedrockMantleAPIKey: "",                   // empty = SigV4 from the AWS credential chain
+    BedrockMantleModel:  "anthropic.claude-haiku-4-5",
+}
+```
+
+```go
+// pkg/builder: SigV4 from the AWS credential chain, model from
+// LOOM_LLM_BEDROCK_MANTLE_MODEL (default anthropic.claude-haiku-4-5)
+agent, err := builder.NewAgentBuilder().
+    WithBackend(backend).
+    WithBedrockMantleLLM("us-west-2").
+    Build()
+```
+
+```yaml
+# agent YAML
+llm:
+  provider: bedrock-mantle
+  model: anthropic.claude-haiku-4-5
+```
+
+**Limitations**:
+- Under `looms serve`, an agent whose Mantle client cannot be built is not started (no fallback LLM)
+- No Guardrails, cross-region inference profiles (`us.`/`global.` ids return 404), or prompt routing on Mantle
+- Model listing is not an entitlement check; unsubscribed models fail with a marketplace-subscription 401/403
+- GPT-5.x/6.x ids are served on Mantle but have no published AWS rate, so they are costed by the openai client's fallback rates; service tiers other than standard (flex, priority, batch) are not modelled
+
+**Detailed Guide**: [llm-bedrock-mantle.md](./llm-bedrock-mantle.md)
+
+**Reference**: [Bedrock endpoints](https://docs.aws.amazon.com/bedrock/latest/userguide/endpoints.html)
+
+### 10. Vercel AI Gateway
+
+**Status**: ⚠️ Partial. Implemented and unit-tested against a fake gateway: provider (`pkg/llm/vercelgateway`), provider factory, agent registry, `looms` server config (`llm.vercel_gateway_*`), agent YAML `gateway_routing`, `looms workflow`, `looms config init` (option 5), `loom-standalone`, `loom decision replay`, `pkg/builder` (`WithVercelGatewayLLM`) and memory embeddings (`embedding.provider: vercel-ai-gateway`). Live-tested 2026-11-16 (Haiku 4.5, GPT-5 mini, embeddings). Not done: the Responses surface (📋), tiered long-context prices.
+
+One host (`https://ai-gateway.vercel.sh`) in front of many upstream providers. Claude ids (`anthropic/*`) go to the gateway's Anthropic Messages surface; every other id goes to its OpenAI Chat Completions surface.
+
+**Why the gateway**:
+- One key for Anthropic, OpenAI, Google, and other upstreams, billed at upstream list price
+- Typed routing: `order`, `only`, `sort`, `fallback_models`, `zero_data_retention`, `caching`
+- Model metadata and prices from the live `GET /v1/models` catalog
+
+**Configuration**:
+
+```yaml
+# looms.yaml
+llm:
+  provider: vercel-ai-gateway        # alias: vercel
+  vercel_gateway_model: anthropic/claude-sonnet-4.5   # required; no default
+  vercel_gateway_routing:
+    order: [bedrock, anthropic]
+  # vercel_gateway_api_key: looms config set-key vercel_gateway_api_key (or AI_GATEWAY_API_KEY)
+```
+
+```yaml
+# agent YAML
+llm:
+  provider: vercel-ai-gateway
+  model: openai/gpt-5
+  gateway_routing:
+    sort: ttft
+```
+
+**Limitations**:
+- Under `looms serve`, an agent whose gateway client cannot be built is not started (no fallback LLM)
+- Gateway cost and routing metadata are read from every response (verified live); 402, 429 and mid-stream failure bodies are not yet verified live
+- Default limiter is loom's generic 2 req/s per credential+model; raise `llm.rate_limit` for large fleets
+
+**Detailed Guide**: [llm-vercel-ai-gateway.md](./llm-vercel-ai-gateway.md)
+
+**Reference**: [Vercel AI Gateway docs](https://vercel.com/docs/ai-gateway)
+
 
 ## Planned Providers
 
-### 9. Google Vertex AI
+### 11. Google Vertex AI
 
 **Status**: 📋 Planned
 
@@ -669,19 +795,19 @@ llm:
 
 ### Feature Matrix
 
-| Feature | Anthropic | Bedrock | Ollama | OpenAI | Azure OpenAI | Mistral | Gemini | HuggingFace | Vertex AI |
-|---------|-----------|---------|--------|--------|--------------|---------|--------|-------------|-----------|
-| **Status** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 📋 Planned |
-| **Native Tool Calling** | ✅ | ✅ | ✅ (auto-detect) | ✅ | ✅ | ✅ | ✅ | ✅ (model-dependent) | 📋 |
-| **Streaming** | ✅ | ✅ (Claude) | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | 📋 |
-| **Cost** | $1-$75/1M | $1-$75/1M | Free | $0.10-$180/1M | $0.40-$15/1M | $0.075-$8/1M | $0-$12/1M | ~$0.20-$1/1M | TBD |
-| **Context Window** | 200k-1M | 200k-1M | Varies | 128k-1.05M | 128k-1.05M | 128k-262k | 1.05M | Varies | TBD |
-| **Latency** | Medium | Low-Medium | Very Low (GPU) | Medium | Medium | Medium | Medium | Medium | TBD |
-| **Privacy** | Cloud | Cloud | 100% Local | Cloud | Cloud | Cloud | Cloud | Cloud | Cloud |
-| **Internet Required** | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Hardware Required** | ❌ | ❌ | GPU rec'd | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Enterprise Integration** | Basic | AWS | None | Basic | Azure | Basic | Basic | Basic | GCP |
-| **Compliance** | Anthropic | AWS | N/A | OpenAI | Microsoft | Mistral | Google | Varies | Google |
+| Feature | Anthropic | Bedrock | Bedrock Mantle | Ollama | OpenAI | Azure OpenAI | Mistral | Gemini | HuggingFace | Vertex AI |
+|---------|-----------|---------|----------------|--------|--------|--------------|---------|--------|-------------|-----------|
+| **Status** | ✅ | ✅ | ⚠️ Partial | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 📋 Planned |
+| **Native Tool Calling** | ✅ | ✅ | ✅ | ✅ (auto-detect) | ✅ | ✅ | ✅ | ✅ | ✅ (model-dependent) | 📋 |
+| **Streaming** | ✅ | ✅ (Claude) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | 📋 |
+| **Cost** | $1-$75/1M | $1-$75/1M | $0.04-$55/1M | Free | $0.10-$180/1M | $0.40-$15/1M | $0.075-$8/1M | $0-$12/1M | ~$0.20-$1/1M | TBD |
+| **Context Window** | 200k-1M | 200k-1M | 4k-1M | Varies | 128k-1.05M | 128k-1.05M | 128k-262k | 1.05M | Varies | TBD |
+| **Latency** | Medium | Low-Medium | Low-Medium (queued) | Very Low (GPU) | Medium | Medium | Medium | Medium | Medium | TBD |
+| **Privacy** | Cloud | Cloud | Cloud | 100% Local | Cloud | Cloud | Cloud | Cloud | Cloud | Cloud |
+| **Internet Required** | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Hardware Required** | ❌ | ❌ | ❌ | GPU rec'd | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Enterprise Integration** | Basic | AWS | AWS | None | Basic | Azure | Basic | Basic | Basic | GCP |
+| **Compliance** | Anthropic | AWS | AWS | N/A | OpenAI | Microsoft | Mistral | Google | Varies | Google |
 
 
 ### Cost Comparison
@@ -692,6 +818,7 @@ Based on similar quality tiers (as of 2026):
 |----------|-------|----------------|-----------------|---------------|
 | **Anthropic** | Sonnet 4.6 | $3.00 | $15.00 | $0.0165 |
 | **Bedrock** | Sonnet 4.6 | $3.00 | $15.00 | $0.0165 |
+| **Bedrock Mantle** | Sonnet 5 | $2.20 | $11.00 | $0.0121 |
 | **Ollama** | Qwen 3 | $0 | $0 | $0 |
 | **OpenAI** | GPT-4.1 | $2.00 | $8.00 | $0.009 |
 | **Azure OpenAI** | GPT-4.1 | $2.00 | $8.00 | $0.009 |

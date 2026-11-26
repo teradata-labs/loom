@@ -20,6 +20,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -28,7 +29,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
+	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"github.com/xeipuuv/gojsonschema"
 )
 
 // sdkTestServer captures whether each request asked for streaming and serves
@@ -165,6 +168,28 @@ func TestConvertMessagesToSDK_SystemBlocksCarryTheirOwnMarker(t *testing.T) {
 	}
 }
 
+// Effort rides output_config on adaptive-thinking models and only there:
+// the level names the tier, auto/empty omit the field, older models take
+// the budget tiers instead and never send effort.
+func TestSDKClientOutputConfigEffort(t *testing.T) {
+	cases := []struct {
+		model, level, want string
+	}{
+		{"us.anthropic.claude-opus-5", "xhigh", "xhigh"},
+		{"us.anthropic.claude-sonnet-5", "high", "high"},
+		{"us.anthropic.claude-opus-5", "auto", ""},
+		{"us.anthropic.claude-opus-5", "", ""},
+		{"us.anthropic.claude-sonnet-4-5-20250929-v1:0", "high", ""},
+	}
+	for _, tc := range cases {
+		c := &SDKClient{modelID: tc.model, thinkingLevel: tc.level}
+		got := string(c.outputConfig(context.Background()).Effort)
+		if got != tc.want {
+			t.Errorf("%s/%s: effort=%q want %q", tc.model, tc.level, got, tc.want)
+		}
+	}
+}
+
 // toolUseMessage builds an SDK message containing a single tool_use block
 // with the given (sanitized) tool name, as it would arrive off the wire.
 func toolUseMessage(t *testing.T, toolName string) *anthropic.Message {
@@ -188,11 +213,13 @@ func TestSDKClient_ToolNameMap_RequestLocal(t *testing.T) {
 	c := &SDKClient{modelID: "us.anthropic.claude-sonnet-4-5-20250929-v1:0", maxTokens: 1024}
 
 	// Request A: tool with a colon-namespaced name.
-	_, mapA := c.convertToolsToSDK([]shuttle.Tool{&mockTool{name: "server:read"}})
+	_, mapA, err := c.convertToolsToSDK(context.Background(), []shuttle.Tool{&mockTool{name: "server:read"}})
+	require.NoError(t, err)
 	require.Equal(t, "server:read", mapA["server_read"])
 
 	// Request B converts before A's response arrives, with a colliding name.
-	_, mapB := c.convertToolsToSDK([]shuttle.Tool{&mockTool{name: "server_read"}})
+	_, mapB, err := c.convertToolsToSDK(context.Background(), []shuttle.Tool{&mockTool{name: "server_read"}})
+	require.NoError(t, err)
 	require.Equal(t, "server_read", mapB["server_read"])
 
 	msg := toolUseMessage(t, "server_read")
@@ -213,70 +240,103 @@ func TestSDKClient_ToolNameMap_RequestLocal(t *testing.T) {
 	assert.Equal(t, "server_read", respNil.ToolCalls[0].Name)
 }
 
-// TestSDKClient_ConvertToolsToSDK_NullableAnyOf pins the fix for the Bedrock
-// "tools.N.custom.input_schema: JSON schema is invalid" rejection. MCP tools
-// (e.g. Teradata) declare nullable params as anyOf: [{type:integer},{type:null}]
-// with an empty top-level type. shuttle.JSONSchema.Type has no omitempty, so
-// marshaling the schema raw would emit "type": "" (invalid draft 2020-12).
-// The converter must preserve anyOf and never emit an empty type or a null
-// properties/required.
-func TestSDKClient_ConvertToolsToSDK_NullableAnyOf(t *testing.T) {
-	c := &SDKClient{modelID: "us.anthropic.claude-sonnet-4-5-20250929-v1:0", maxTokens: 1024}
-
-	limit := 100.0
-	tool := &mockTool{
-		name:        "teradata_search_tools",
-		description: "Search tools",
-		schema: &shuttle.JSONSchema{
-			Type: "object",
-			Properties: map[string]*shuttle.JSONSchema{
-				"limit": {
-					AnyOf: []*shuttle.JSONSchema{
-						{Type: "integer", Maximum: &limit},
-						{Type: "null"},
-					},
-				},
-			},
-		},
+func TestSDKClient_ToolSchemaRequest(t *testing.T) {
+	const schemaJSON = `{"type":"object","description":"Task input","required":["tasks"],"allOf":[{"type":"object","properties":{},"not":{"required":["forbidden"]}}],"properties":{
+		"tasks":{"type":"array","description":"Tasks","items":{"type":"object","description":"A task","required":["idx","subject"],"properties":{
+			"idx":{"type":"integer","description":"Task number","minimum":1},
+			"subject":{"type":"string","description":"Title","maxLength":80},
+			"nullable":{"anyOf":[{"type":"integer"},{"type":"null"}]}
+		}}}
+	}}`
+	for _, mode := range []string{"chat", "stream"} {
+		t.Run(mode, func(t *testing.T) {
+			captured := make(chan map[string]interface{}, 1)
+			responses := &sdkTestServer{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Error(err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				var request map[string]interface{}
+				if err := json.Unmarshal(body, &request); err != nil {
+					t.Error(err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				captured <- request
+				r.Body = io.NopCloser(strings.NewReader(string(body)))
+				responses.handler(w, r)
+			}))
+			defer server.Close()
+			schema, err := shuttle.FromJSON([]byte(schemaJSON))
+			require.NoError(t, err)
+			client := &SDKClient{
+				client:  anthropic.NewClient(option.WithBaseURL(server.URL), option.WithAPIKey("test-key")),
+				modelID: DefaultBedrockModelID, maxTokens: 1024, temperature: 1.0,
+			}
+			tools := []shuttle.Tool{
+				&mockTool{name: "create_tasks", schema: schema},
+				&mockTool{name: "no_arguments", schema: &shuttle.JSONSchema{}},
+				&mockTool{name: "description_only", schema: &shuttle.JSONSchema{Description: "No arguments"}},
+				&mockTool{name: "incompatible", schema: &shuttle.JSONSchema{AnyOf: []*shuttle.JSONSchema{{Type: "object"}}}},
+			}
+			messages := []llmtypes.Message{{Role: "user", Content: "Create tasks"}}
+			span := &observability.Span{}
+			ctx := observability.ContextWithSpan(context.Background(), span)
+			if mode == "stream" {
+				_, err = client.ChatStream(ctx, messages, tools, nil)
+			} else {
+				_, err = client.Chat(ctx, messages, tools)
+			}
+			require.NoError(t, err)
+			require.Len(t, span.Events, 1)
+			assert.Equal(t, "incompatible", span.Events[0].Attributes["tool"])
+			requestTools := (<-captured)["tools"].([]interface{})
+			require.Len(t, requestTools, 3)
+			var expected map[string]interface{}
+			require.NoError(t, json.Unmarshal([]byte(schemaJSON), &expected))
+			expected["not"] = expected["allOf"].([]interface{})[0].(map[string]interface{})["not"]
+			delete(expected, "allOf")
+			assert.Equal(t, expected, requestTools[0].(map[string]interface{})["input_schema"])
+			for _, forbidden := range []bool{false, true} {
+				sample := map[string]interface{}{"tasks": []interface{}{}}
+				if forbidden {
+					sample["forbidden"] = true
+				}
+				validation, err := gojsonschema.Validate(gojsonschema.NewGoLoader(requestTools[0].(map[string]interface{})["input_schema"]), gojsonschema.NewGoLoader(sample))
+				require.NoError(t, err)
+				assert.Equal(t, !forbidden, validation.Valid(), "outgoing schema lost its prohibition for %v", sample)
+			}
+			assert.Equal(t, map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}, requestTools[1].(map[string]interface{})["input_schema"])
+			assert.Equal(t, map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "description": "No arguments"}, requestTools[2].(map[string]interface{})["input_schema"])
+			assert.Empty(t, tools[1].InputSchema().Type)
+			assert.Empty(t, tools[2].InputSchema().Type)
+			client.strictToolSchemas = true
+			for _, keyword := range []string{"anyOf", "oneOf"} {
+				invalid, err := shuttle.FromJSON([]byte(`{"` + keyword + `":[{"type":"object"}]}`))
+				require.NoError(t, err)
+				invalidTools := []shuttle.Tool{&mockTool{name: "ambiguous", schema: invalid}}
+				if mode == "stream" {
+					_, err = client.ChatStream(context.Background(), messages, invalidTools, nil)
+				} else {
+					_, err = client.Chat(context.Background(), messages, invalidTools)
+				}
+				require.ErrorContains(t, err, `tool "ambiguous" schema:`)
+				require.ErrorContains(t, err, "root "+keyword)
+				assert.Empty(t, captured, "unsupported schema made an HTTP request")
+			}
+			client.strictToolSchemas = false
+			if mode == "stream" {
+				_, err = client.ChatStream(context.Background(), messages, tools[3:], nil)
+			} else {
+				_, err = client.Chat(context.Background(), messages, tools[3:])
+			}
+			require.NoError(t, err)
+			assert.NotContains(t, <-captured, "tools")
+		})
 	}
-
-	sdkTools, _ := c.convertToolsToSDK([]shuttle.Tool{tool})
-	require.Len(t, sdkTools, 1)
-
-	raw, err := json.Marshal(sdkTools[0].InputSchema)
-	require.NoError(t, err)
-	rendered := string(raw)
-
-	// No invalid empty type, no null properties/required.
-	assert.NotContains(t, rendered, `"type":""`)
-	assert.NotContains(t, rendered, `"properties":null`)
-	assert.NotContains(t, rendered, `"required":null`)
-	// anyOf must be preserved for the nullable param.
-	assert.Contains(t, rendered, `"anyOf"`)
-	assert.Contains(t, rendered, `"null"`)
-}
-
-// TestSDKClient_ConvertToolsToSDK_EmptyProperties verifies a parameterless MCP
-// tool yields a non-null properties object (required for object schemas).
-func TestSDKClient_ConvertToolsToSDK_EmptyProperties(t *testing.T) {
-	c := &SDKClient{modelID: "us.anthropic.claude-sonnet-4-5-20250929-v1:0", maxTokens: 1024}
-
-	tool := &mockTool{
-		name:        "teradata_list_patterns",
-		description: "List patterns",
-		schema:      &shuttle.JSONSchema{Type: "object"},
-	}
-
-	sdkTools, _ := c.convertToolsToSDK([]shuttle.Tool{tool})
-	require.Len(t, sdkTools, 1)
-
-	raw, err := json.Marshal(sdkTools[0].InputSchema)
-	require.NoError(t, err)
-	rendered := string(raw)
-
-	assert.NotContains(t, rendered, `"type":""`)
-	assert.NotContains(t, rendered, `"properties":null`)
-	assert.NotContains(t, rendered, `"required":null`)
 }
 
 func TestSDKClient_ChatStream_ToolNameMapRequestLocal(t *testing.T) {
@@ -396,5 +456,107 @@ func TestSDKClient_ConcurrentChat_ToolNames(t *testing.T) {
 	close(errs)
 	for err := range errs {
 		t.Error(err)
+	}
+}
+
+// TestMarkLastBlockCacheControl_LandsOnToolUse — an assistant message that
+// speaks and then calls a tool ends in a tool_use block; the breakpoint must
+// land there, not be dropped. Thinking blocks are skipped.
+func TestMarkLastBlockCacheControl_LandsOnToolUse(t *testing.T) {
+	msg := anthropic.MessageParam{Role: anthropic.MessageParamRoleAssistant, Content: []anthropic.ContentBlockParamUnion{
+		anthropic.NewTextBlock("I will read the file"),
+		anthropic.NewToolUseBlock("c1", map[string]any{"path": "x"}, "file_read"),
+	}}
+	markLastBlockCacheControl([]anthropic.MessageParam{msg})
+	if msg.Content[1].OfToolUse == nil || msg.Content[1].OfToolUse.CacheControl.Type == "" {
+		t.Fatalf("breakpoint not set on the trailing tool_use block")
+	}
+	if msg.Content[0].OfText.CacheControl.Type != "" {
+		t.Fatalf("text block must not be marked when a later block can carry the marker")
+	}
+	only := anthropic.MessageParam{Role: anthropic.MessageParamRoleAssistant, Content: []anthropic.ContentBlockParamUnion{
+		anthropic.NewTextBlock("done"),
+		anthropic.NewThinkingBlock("sig", "…"),
+	}}
+	markLastBlockCacheControl([]anthropic.MessageParam{only})
+	if only.Content[0].OfText.CacheControl.Type == "" {
+		t.Fatalf("marker must skip the thinking block and land on the text block")
+	}
+}
+
+// TestSDKClientEffortIsTheEffortThatApplied pins what a call records as its
+// effort: on an adaptive model the effort sent, or nothing when none is (the
+// model's own default applies, and it differs by model); on an older model the
+// thinking level, or none with thinking off.
+func TestSDKClientEffortIsTheEffortThatApplied(t *testing.T) {
+	cases := []struct {
+		model, level, want string
+	}{
+		{"us.anthropic.claude-opus-5", "xhigh", "xhigh"},
+		{"us.anthropic.claude-opus-5", "medium", "medium"},
+		{"us.anthropic.claude-opus-5", "auto", ""},
+		{"us.anthropic.claude-opus-5", "", ""},
+		{"us.anthropic.claude-sonnet-4-5-20250929-v1:0", "low", "low"},
+		{"us.anthropic.claude-sonnet-4-5-20250929-v1:0", "", "none"},
+	}
+	for _, tc := range cases {
+		c := &SDKClient{modelID: tc.model, thinkingLevel: tc.level}
+		if got := c.effort(); got != tc.want {
+			t.Errorf("%s/%q: effort %q, want %q", tc.model, tc.level, got, tc.want)
+		}
+	}
+}
+
+// TestSDKClientUsageCarriesThinkingCacheLifetimeAndEffort reads the thinking
+// tokens and the cache write split by lifetime from the provider's usage, on
+// both the plain and the streamed answer, and stamps the effort sent.
+func TestSDKClientUsageCarriesThinkingCacheLifetimeAndEffort(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req map[string]interface{}
+		_ = json.Unmarshal(body, &req)
+		if stream, _ := req["stream"].(bool); !stream {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"msg_test","type":"message","role":"assistant",` +
+				`"content":[{"type":"text","text":"ok"}],"model":"test-model","stop_reason":"end_turn",` +
+				`"usage":{"input_tokens":3,"output_tokens":500,"cache_read_input_tokens":9000,"cache_creation_input_tokens":700,` +
+				`"cache_creation":{"ephemeral_1h_input_tokens":600,"ephemeral_5m_input_tokens":100},` +
+				`"output_tokens_details":{"thinking_tokens":420}}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, ev := range []struct{ event, data string }{
+			{"message_start", `{"type":"message_start","message":{"id":"msg_test","type":"message","role":"assistant","content":[],"model":"test-model",` +
+				`"usage":{"input_tokens":3,"output_tokens":0,"cache_read_input_tokens":9000,"cache_creation_input_tokens":700,` +
+				`"cache_creation":{"ephemeral_1h_input_tokens":600,"ephemeral_5m_input_tokens":100}}}}`},
+			{"content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`},
+			{"content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`},
+			{"content_block_stop", `{"type":"content_block_stop","index":0}`},
+			{"message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},` +
+				`"usage":{"output_tokens":500,"output_tokens_details":{"thinking_tokens":420}}}`},
+			{"message_stop", `{"type":"message_stop"}`},
+		} {
+			_, _ = w.Write([]byte("event: " + ev.event + "\ndata: " + ev.data + "\n\n"))
+		}
+	}))
+	defer ts.Close()
+
+	for _, maxTokens := range []int64{4096, 64000} { // plain, then streamed
+		c := &SDKClient{
+			client:        anthropic.NewClient(option.WithBaseURL(ts.URL), option.WithAPIKey("test-key")),
+			modelID:       "us.anthropic.claude-opus-5",
+			maxTokens:     maxTokens,
+			temperature:   1.0,
+			thinkingLevel: "medium",
+		}
+		resp, err := c.Chat(context.Background(), []llmtypes.Message{{Role: "user", Content: "go"}}, nil)
+		require.NoError(t, err)
+		u := resp.Usage
+		assert.Equal(t, 500, u.OutputTokens, "max_tokens %d", maxTokens)
+		assert.Equal(t, 420, u.ThinkingTokens, "max_tokens %d: thinking tokens", maxTokens)
+		assert.Equal(t, 700, u.CacheCreationInputTokens, "max_tokens %d", maxTokens)
+		assert.Equal(t, 600, u.CacheCreation1hInputTokens, "max_tokens %d: 1-hour cache write", maxTokens)
+		assert.Equal(t, 100, u.CacheCreation5mInputTokens, "max_tokens %d: 5-minute cache write", maxTokens)
+		assert.Equal(t, "medium", u.Effort, "max_tokens %d: effort", maxTokens)
 	}
 }

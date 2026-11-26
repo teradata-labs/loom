@@ -76,8 +76,6 @@ type RecallOpts struct {
 	EntityIDs   []string // scope to entities (empty = all)
 	Tags        []string // filter by tags
 	MinSalience float64
-	MaxTokens   int // 0 = no limit
-	Limit       int // max results
 	// Owner scopes recall to a single caller identity. Empty = no owner filter
 	// (matches all owners, the default agent-wide behavior). Non-empty = strict
 	// match on that owner only (per-user partitioning).
@@ -88,6 +86,14 @@ type RecallOpts struct {
 	// concrete owner stay private and are never surfaced to other callers, even
 	// after the scoping flag is turned off. Ignored when Owner is non-empty.
 	SharedOnly bool
+	// BelowSalience is a STRICT upper bound on salience (salience < this);
+	// 0 = no ceiling. Pairs with MinSalience to select a band — the lesson
+	// lane uses it to ask for demoted lessons specifically (below the recall
+	// floor) rather than filtering a wider result set in Go, where the
+	// store's salience ordering would have truncated them away.
+	BelowSalience float64
+	MaxTokens     int // 0 = no limit
+	Limit         int // max results
 }
 
 // ContextForOpts configures a composite context query.

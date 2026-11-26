@@ -13,7 +13,11 @@
 // limitations under the License.
 package shuttle
 
-import "fmt"
+import (
+	"fmt"
+	"slices"
+	"strings"
+)
 
 // AdmissionResult is the outcome of running the chain for one tool call.
 // AuditDecision is set when a matched hook is an AuditHook and its
@@ -22,6 +26,12 @@ import "fmt"
 type AdmissionResult struct {
 	Decision      Decision
 	AuditDecision string
+	// Approved reports that the combined verdict was Ask and it was resolved to
+	// Allow, by the AskResolver or by an approved AskGrant on the context.
+	Approved bool
+	// Grants holds the Grant of every matched Ask decision, in hook order,
+	// when Approved; nil otherwise.
+	Grants []any
 }
 
 // PersistedDecision is the value the executor stamps into the tool-execution
@@ -59,6 +69,29 @@ func NewChain(hooks []Hook, postHooks []PostToolHook, askResolver AskResolver) *
 	}
 }
 
+// OrderIndependent reports whether admitting the calls of one batch in any
+// order, or at the same time, gives the same verdicts. Only a chain whose hooks
+// are all the stateless name-level permission hook, with no post-tool hook and
+// no human-approval path, qualifies; a nil chain does too. Anything else is
+// treated as order-dependent (fail closed): a post-tool hook records state a
+// later call's admission reads, an approval holds the call for a human, and an
+// unknown hook may read mutable state.
+func (c *Chain) OrderIndependent() bool {
+	if c == nil {
+		return true
+	}
+	if len(c.postHooks) > 0 {
+		return false
+	}
+	for _, h := range c.hooks {
+		ph, ok := h.(permHook)
+		if !ok || ph.mayRequireApproval() {
+			return false
+		}
+	}
+	return true
+}
+
 // Admit evaluates every hook whose Matches reports true, combines their verdicts
 // as Deny > Ask > Allow (most restrictive wins), and resolves an Ask outcome via
 // the AskResolver — with no resolver, Ask fails closed to Deny. A hook that
@@ -70,8 +103,9 @@ func (c *Chain) Admit(req AdmissionRequest) AdmissionResult {
 		return AdmissionResult{Decision: Decision{Kind: NoDecision}}
 	}
 
-	final, matched := c.combine(req)
+	final, matched, grants := c.combine(req)
 
+	approved := false
 	if final.Kind == Ask {
 		if granted, ok := applyAskGrant(req, final); ok {
 			final = granted
@@ -80,6 +114,7 @@ func (c *Chain) Admit(req AdmissionRequest) AdmissionResult {
 		} else {
 			final = Decision{Kind: Deny, Reason: "tool call requires approval but no approval resolver is configured"}
 		}
+		approved = final.Kind == Allow
 	}
 
 	auditDecision := ""
@@ -91,7 +126,11 @@ func (c *Chain) Admit(req AdmissionRequest) AdmissionResult {
 		}
 	}
 
-	return AdmissionResult{Decision: final, AuditDecision: auditDecision}
+	res := AdmissionResult{Decision: final, AuditDecision: auditDecision, Approved: approved}
+	if approved {
+		res.Grants = grants
+	}
+	return res
 }
 
 // Preflight combines hook verdicts exactly as Admit does and resolves an Ask
@@ -104,7 +143,7 @@ func (c *Chain) Preflight(req AdmissionRequest) Decision {
 	if c == nil {
 		return Decision{Kind: NoDecision}
 	}
-	final, _ := c.combine(req)
+	final, _, _ := c.combine(req)
 	if final.Kind == Ask {
 		if granted, ok := applyAskGrant(req, final); ok {
 			final = granted
@@ -115,10 +154,19 @@ func (c *Chain) Preflight(req AdmissionRequest) Decision {
 
 // combine evaluates every matching hook and folds their verdicts under
 // Deny > Ask > Allow > NoDecision — the shared first half of Admit and
-// Preflight, so the two can never drift.
-func (c *Chain) combine(req AdmissionRequest) (Decision, []Hook) {
+// Preflight, so the two can never drift. It also collects the non-nil Grant of
+// every matched Ask, in hook order: the fold keeps one decision, but a person
+// approving the call approves what every asking hook asked about. For the same
+// reason, when the combined verdict is Ask its Reason is every asking hook's
+// non-empty Reason, in hook order, deduplicated and joined with "; " — the text
+// the approval request shows the person, so the card names everything the
+// grants cover. A Deny keeps its own reason; nothing about a denied call is
+// put to a person.
+func (c *Chain) combine(req AdmissionRequest) (Decision, []Hook, []any) {
 	final := Decision{Kind: NoDecision}
 	matched := make([]Hook, 0, len(c.hooks))
+	var grants []any
+	var askReasons []string
 
 	for _, h := range c.hooks {
 		if h == nil {
@@ -129,9 +177,20 @@ func (c *Chain) combine(req AdmissionRequest) (Decision, []Hook) {
 			continue
 		}
 		matched = append(matched, h)
+		if d.Kind == Ask {
+			if d.Grant != nil {
+				grants = append(grants, d.Grant)
+			}
+			if d.Reason != "" && !slices.Contains(askReasons, d.Reason) {
+				askReasons = append(askReasons, d.Reason)
+			}
+		}
 		final = moreRestrictive(final, d)
 	}
-	return final, matched
+	if final.Kind == Ask && len(askReasons) > 0 {
+		final.Reason = strings.Join(askReasons, "; ")
+	}
+	return final, matched, grants
 }
 
 // applyAskGrant resolves an Ask from a context AskGrant when one is installed.
@@ -196,7 +255,8 @@ func resolveAsk(r AskResolver, req AdmissionRequest, d Decision) (out Decision) 
 }
 
 // moreRestrictive returns whichever decision is more restrictive under
-// Deny > Ask > Allow; ties keep the incumbent so an earlier hook's reason wins.
+// Deny > Ask > Allow; ties keep the incumbent so an earlier hook's reason wins
+// (combine then replaces a combined Ask's reason with every asking hook's).
 func moreRestrictive(a, b Decision) Decision {
 	if restrictiveness(b.Kind) > restrictiveness(a.Kind) {
 		return b

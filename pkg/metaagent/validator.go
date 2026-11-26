@@ -51,10 +51,13 @@ func NewValidator(tracer observability.Tracer) *AgentValidator {
 		antiPatterns:     antiPatterns,
 		antiPatternNames: antiPatternNames,
 		validProviders: map[string]bool{
-			"anthropic": true,
-			"openai":    true,
-			"bedrock":   true,
-			"ollama":    true,
+			"anthropic":         true,
+			"openai":            true,
+			"bedrock":           true,
+			"bedrock-mantle":    true,
+			"ollama":            true,
+			"vercel-ai-gateway": true,
+			"vercel":            true,
 		},
 		validBackendTypes: map[string]bool{
 			"postgres": true,
@@ -170,7 +173,7 @@ func (v *AgentValidator) validateRequiredFields(config *agent.AgentConfigYAML, r
 			Field:      "agent.llm.provider",
 			Message:    "LLM provider is required",
 			Type:       "required_field",
-			Suggestion: "Specify LLM provider (anthropic, openai, bedrock, ollama)",
+			Suggestion: "Specify LLM provider (anthropic, openai, bedrock, bedrock-mantle, ollama, vercel-ai-gateway)",
 		})
 	}
 

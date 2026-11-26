@@ -24,6 +24,7 @@ import (
 
 	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
+	"github.com/teradata-labs/loom/pkg/taskctx"
 )
 
 // HumanRequestStore implements shuttle.HumanRequestStore using PostgreSQL.
@@ -85,14 +86,24 @@ func (s *HumanRequestStore) Store(ctx context.Context, req *shuttle.HumanRequest
 	// Store timeout as milliseconds in the database
 	timeoutMs := req.Timeout.Milliseconds()
 
+	// Attribute the request to the task it blocks — explicit TaskID wins,
+	// ambient attribution is the fallback, the same rule both SQLite stores
+	// apply. This is what makes ResumeChat's durable identity restore work on
+	// the production Postgres shape: without the stamp, hr.TaskID read back
+	// empty forever and the resume had only the policy-gated emitter fallback.
+	taskIDValue := req.TaskID
+	if taskIDValue == "" {
+		taskIDValue = taskctx.TaskIDFromContext(ctx)
+	}
+
 	err = execInTx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		userID := UserIDFromContext(ctx)
 		_, err := tx.Exec(ctx, `
 			INSERT INTO human_requests (id, user_id, agent_id, session_id, question, context_json,
 				request_type, priority, timeout_ms, created_at, expires_at,
 				status, response, response_data_json, responded_at, responded_by,
-				kind, summary, params_json, params_truncated)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
+				kind, summary, params_json, params_truncated, task_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
 			req.ID,
 			userID,
 			req.AgentID,
@@ -113,6 +124,7 @@ func (s *HumanRequestStore) Store(ctx context.Context, req *shuttle.HumanRequest
 			nullableString(req.Summary),
 			nullableString(string(paramsJSON)),
 			req.ParamsTruncated,
+			nullableString(taskIDValue),
 		)
 		if err != nil {
 			return fmt.Errorf("failed to store human request: %w", err)
@@ -139,7 +151,7 @@ func (s *HumanRequestStore) Get(ctx context.Context, id string) (*shuttle.HumanR
 			SELECT id, agent_id, session_id, question, context_json,
 				request_type, priority, timeout_ms, created_at, expires_at,
 				status, response, response_data_json, responded_at, responded_by,
-				kind, summary, params_json, params_truncated
+				kind, summary, params_json, params_truncated, task_id
 			FROM human_requests WHERE id = $1 AND user_id = $2`,
 			id, userID,
 		)
@@ -209,7 +221,7 @@ func (s *HumanRequestStore) ListPending(ctx context.Context) ([]*shuttle.HumanRe
 			SELECT id, agent_id, session_id, question, context_json,
 				request_type, priority, timeout_ms, created_at, expires_at,
 				status, response, response_data_json, responded_at, responded_by,
-				kind, summary, params_json, params_truncated
+				kind, summary, params_json, params_truncated, task_id
 			FROM human_requests
 			WHERE status = 'pending' AND user_id = $1
 			ORDER BY created_at ASC`,
@@ -243,7 +255,7 @@ func (s *HumanRequestStore) ListBySession(ctx context.Context, sessionID string)
 			SELECT id, agent_id, session_id, question, context_json,
 				request_type, priority, timeout_ms, created_at, expires_at,
 				status, response, response_data_json, responded_at, responded_by,
-				kind, summary, params_json, params_truncated
+				kind, summary, params_json, params_truncated, task_id
 			FROM human_requests
 			WHERE session_id = $1 AND user_id = $2
 			ORDER BY created_at DESC`,
@@ -415,6 +427,7 @@ func scanHumanRequestRow(row pgx.Row) (*shuttle.HumanRequest, error) {
 		summary          *string
 		paramsJSON       *string
 		paramsTruncated  *bool
+		taskID           *string
 		timeoutMs        int64
 	)
 
@@ -422,7 +435,7 @@ func scanHumanRequestRow(row pgx.Row) (*shuttle.HumanRequest, error) {
 		&req.ID, &req.AgentID, &req.SessionID, &req.Question, &contextJSON,
 		&req.RequestType, &req.Priority, &timeoutMs, &req.CreatedAt, &req.ExpiresAt,
 		&req.Status, &response, &responseDataJSON, &req.RespondedAt, &respondedBy,
-		&kind, &summary, &paramsJSON, &paramsTruncated,
+		&kind, &summary, &paramsJSON, &paramsTruncated, &taskID,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -432,6 +445,9 @@ func scanHumanRequestRow(row pgx.Row) (*shuttle.HumanRequest, error) {
 	}
 
 	req.Timeout = durationFromMs(timeoutMs)
+	if taskID != nil {
+		req.TaskID = *taskID
+	}
 
 	if response != nil {
 		req.Response = *response

@@ -18,31 +18,44 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
+	"sync"
 	"time"
+
+	"go.uber.org/zap"
 
 	"github.com/teradata-labs/loom/pkg/llm"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
+	"github.com/teradata-labs/loom/pkg/observability"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
 // Client implements the LLMProvider interface for Ollama.
 type Client struct {
-	endpoint           string
-	model              string
-	httpClient         *http.Client
-	maxTokens          int
-	temperature        float64
-	seed               *int64 // nil = omit "seed" from options (Ollama samples randomly)
-	toolMode           ToolMode
-	rateLimiter        *llm.RateLimiter
-	nativeToolsProbed  bool              // true once we've probed the model
-	nativeToolsSupport bool              // cached result from /api/show probe
-	toolNameMap        map[string]string // sanitized name → original name
+	endpoint    string
+	model       string
+	httpClient  *http.Client
+	maxTokens   int
+	temperature float64
+	seed        *int64 // nil = omit "seed" from options (Ollama samples randomly)
+	toolMode    ToolMode
+	rateLimiter *llm.RateLimiter
+
+	// Auto tool-mode probe cache (see resolveToolMode). Guarded by probeMu:
+	// the client is shared across concurrent sessions.
+	probeMu      sync.Mutex
+	probeDone    bool             // a probe succeeded; probeResult holds its answer
+	probeResult  toolModeDecision // valid when probeDone
+	probeRetryAt time.Time        // after a failed probe, no new probe before this time
+	probeLastErr error            // the failed probe's error, reported during the backoff
+	probeBackoff time.Duration    // how long a failed probe is remembered
+	probeWait    chan struct{}    // non-nil while a probe runs; closed when it ends
 }
 
 // fallbackToolSupportedModels is used when the /api/show probe fails (e.g. Ollama
@@ -62,6 +75,8 @@ var fallbackToolSupportedModels = map[string]bool{
 	"functionary":   true,
 	"command-r":     true,
 	"phi4":          true,
+	"gemma4":        true,
+	"gpt-oss":       true,
 }
 
 // ToolMode defines how tools are handled.
@@ -158,13 +173,14 @@ func NewClient(cfg Config) *Client {
 	}
 
 	return &Client{
-		endpoint:    cfg.Endpoint,
-		model:       cfg.Model,
-		maxTokens:   cfg.MaxTokens,
-		temperature: cfg.Temperature,
-		seed:        seed,
-		toolMode:    cfg.ToolMode,
-		rateLimiter: rateLimiter,
+		endpoint:     cfg.Endpoint,
+		model:        cfg.Model,
+		maxTokens:    cfg.MaxTokens,
+		temperature:  cfg.Temperature,
+		seed:         seed,
+		toolMode:     cfg.ToolMode,
+		rateLimiter:  rateLimiter,
+		probeBackoff: defaultProbeBackoff,
 		httpClient: &http.Client{
 			Transport: &http.Transport{
 				DialContext: (&net.Dialer{
@@ -190,84 +206,245 @@ func (c *Client) Model() string {
 	return c.model
 }
 
-// supportsNativeTools checks if the model supports native tool calling.
-// In auto mode it first tries a dynamic probe via Ollama's /api/show endpoint,
-// falling back to a static model list if the probe fails.
-func (c *Client) supportsNativeTools() bool {
-	// Check if explicitly set to native or prompt mode
-	if c.toolMode == ToolModeNative {
+// Sources of a tool-mode decision, reported in the response metadata
+// ("tool_mode_source"), the debug log and the llm.ollama.tool_mode_source
+// span attribute.
+const (
+	toolModeSourceConfig       = "config"        // ToolMode set to native or prompt
+	toolModeSourceCapabilities = "capabilities"  // /api/show capabilities list included or left out "tools"
+	toolModeSourceTemplate     = "template"      // older Ollama: /api/show template checked for tool directives
+	toolModeSourceFallbackList = "fallback_list" // probe failed; the model matched fallbackToolSupportedModels
+	toolModeSourceProbeFailed  = "probe_failed"  // probe failed; the model is not in the fallback list
+	toolModeSourceNoTools      = "no_tools"      // no tools and no tool history: not probed, nothing to decide
+)
+
+// probeTimeout bounds one /api/show probe. Ollama can take several seconds to
+// answer while a model is loading or generating. The caller's context still
+// applies: a cancelled request stops its probe.
+const probeTimeout = 30 * time.Second
+
+// defaultProbeBackoff is how long a failed probe is remembered. Requests in
+// that window use the fallback list without probing, so a hung or busy
+// /api/show doesn't add a probe to every request.
+const defaultProbeBackoff = 30 * time.Second
+
+// toolModeDecision is the tool mode chosen for one request.
+type toolModeDecision struct {
+	native   bool
+	source   string // one of the toolModeSource* constants
+	cached   bool   // taken from an earlier probe or a failure backoff, without probing
+	probeErr error  // why the probe failed (sources fallback_list and probe_failed)
+}
+
+// mode returns "native" or "prompt".
+func (d toolModeDecision) mode() string {
+	if d.native {
+		return string(ToolModeNative)
+	}
+	return string(ToolModePrompt)
+}
+
+// resolveToolMode decides once per request whether tools go native or in the
+// prompt. Every part of the request (history conversion, the tools block, the
+// response metadata) uses the one decision, so a probe that fails and then
+// succeeds mid-request can't mix the two modes.
+//
+// In auto mode a successful /api/show probe is cached for the client's
+// lifetime. A failed probe falls back to fallbackToolSupportedModels and is
+// remembered for probeBackoff; the first request after that probes again. A
+// probe stopped by the caller's own cancellation is not remembered.
+func (c *Client) resolveToolMode(ctx context.Context) toolModeDecision {
+	switch c.toolMode {
+	case ToolModeNative:
+		return toolModeDecision{native: true, source: toolModeSourceConfig}
+	case ToolModePrompt:
+		return toolModeDecision{native: false, source: toolModeSourceConfig}
+	}
+
+	// The client is shared across sessions: the cache is read and written
+	// under probeMu. The probe itself runs unlocked so a slow /api/show never
+	// blocks a caller that could otherwise give up on its own context.
+	// Concurrent first requests share one probe: the rest wait for it, each
+	// still free to give up on its own context.
+	c.probeMu.Lock()
+	for {
+		if c.probeDone {
+			d := c.probeResult
+			c.probeMu.Unlock()
+			d.cached = true
+			return d
+		}
+		if time.Now().Before(c.probeRetryAt) {
+			d := c.fallbackDecision(c.probeLastErr)
+			c.probeMu.Unlock()
+			d.cached = true
+			return d
+		}
+		if c.probeWait == nil {
+			break
+		}
+		wait := c.probeWait
+		c.probeMu.Unlock()
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			d := c.fallbackDecision(ctx.Err())
+			d.cached = true
+			return d
+		}
+		c.probeMu.Lock()
+	}
+	done := make(chan struct{})
+	c.probeWait = done
+	c.probeMu.Unlock()
+
+	native, source, err := c.probeToolSupport(ctx)
+
+	c.probeMu.Lock()
+	c.probeWait = nil
+	close(done)
+	if err == nil {
+		c.probeDone = true
+		c.probeResult = toolModeDecision{native: native, source: source}
+	} else if ctx.Err() == nil {
+		// A probe stopped by the caller's own cancellation isn't remembered:
+		// a waiting request probes again.
+		c.probeRetryAt = time.Now().Add(c.probeBackoff)
+		c.probeLastErr = err
+	}
+	c.probeMu.Unlock()
+
+	if err != nil {
+		d := c.fallbackDecision(err)
+		zap.L().Debug("ollama tool mode: /api/show probe failed, using fallback list",
+			zap.String("model", c.model),
+			zap.String("tool_mode", d.mode()),
+			zap.String("source", d.source),
+			zap.Duration("retry_after", c.probeBackoff),
+			zap.Error(err))
+		return d
+	}
+
+	d := toolModeDecision{native: native, source: source}
+	zap.L().Debug("ollama tool mode: probed /api/show",
+		zap.String("model", c.model),
+		zap.String("tool_mode", d.mode()),
+		zap.String("source", d.source))
+	return d
+}
+
+// toolModeWithoutTools is the decision for a request with no tools and no
+// tool calls or results in its history. Both modes send it the same way, so
+// it isn't worth a probe: a request with nothing to do with tools never waits
+// for a slow /api/show.
+func (c *Client) toolModeWithoutTools() toolModeDecision {
+	switch c.toolMode {
+	case ToolModeNative:
+		return toolModeDecision{native: true, source: toolModeSourceConfig}
+	case ToolModePrompt:
+		return toolModeDecision{native: false, source: toolModeSourceConfig}
+	}
+	c.probeMu.Lock()
+	defer c.probeMu.Unlock()
+	if c.probeDone {
+		d := c.probeResult
+		d.cached = true
+		return d
+	}
+	return toolModeDecision{native: false, source: toolModeSourceNoTools}
+}
+
+// usesTools reports whether a request offers tools or carries tool calls or
+// results in its history.
+func usesTools(messages []llmtypes.Message, tools []shuttle.Tool) bool {
+	if len(tools) > 0 {
 		return true
 	}
-	if c.toolMode == ToolModePrompt {
-		return false
-	}
-
-	// Auto mode: use cached probe result if available
-	if c.nativeToolsProbed {
-		return c.nativeToolsSupport
-	}
-
-	// Try dynamic detection via /api/show
-	if result, ok := c.probeToolSupport(); ok {
-		c.nativeToolsProbed = true
-		c.nativeToolsSupport = result
-		return result
-	}
-
-	// Fallback: static model list (probe failed, e.g. network issue)
-	model := c.model
-	for baseModel := range fallbackToolSupportedModels {
-		if len(model) >= len(baseModel) && model[:len(baseModel)] == baseModel {
-			c.nativeToolsProbed = true
-			c.nativeToolsSupport = true
+	for _, m := range messages {
+		if m.Role == "tool" || len(m.ToolCalls) > 0 {
 			return true
 		}
 	}
-
-	c.nativeToolsProbed = true
-	c.nativeToolsSupport = false
 	return false
 }
 
-// probeToolSupport queries Ollama's /api/show endpoint to check if the model
+// fallbackDecision matches the model against fallbackToolSupportedModels by
+// prefix, for when the probe failed.
+func (c *Client) fallbackDecision(probeErr error) toolModeDecision {
+	for baseModel := range fallbackToolSupportedModels {
+		if strings.HasPrefix(c.model, baseModel) {
+			return toolModeDecision{native: true, source: toolModeSourceFallbackList, probeErr: probeErr}
+		}
+	}
+	return toolModeDecision{native: false, source: toolModeSourceProbeFailed, probeErr: probeErr}
+}
+
+// recordToolMode puts the request's tool-mode decision on the current span
+// (set by the instrumented provider wrapper), so a trace shows why tools were
+// or weren't sent.
+func recordToolMode(ctx context.Context, d toolModeDecision) {
+	span := observability.SpanFromContext(ctx)
+	if span == nil {
+		return
+	}
+	span.SetAttribute("llm.ollama.tool_mode", d.mode())
+	span.SetAttribute("llm.ollama.tool_mode_source", d.source)
+	span.SetAttribute("llm.ollama.tool_mode_cached", d.cached)
+	if d.probeErr != nil {
+		span.SetAttribute("llm.ollama.tool_probe_error", d.probeErr.Error())
+	}
+}
+
+// probeToolSupport queries Ollama's /api/show endpoint to check whether the
+// model lists the "tools" capability or, on older Ollama, whether its
 // template contains tool-handling directives (e.g. {{- if .Tools }}).
-// Returns (supportsTools, probeSucceeded).
-func (c *Client) probeToolSupport() (bool, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+// Returns whether the model supports tools and which field said so
+// (toolModeSourceCapabilities or toolModeSourceTemplate), or the error that
+// stopped the probe.
+func (c *Client) probeToolSupport(ctx context.Context) (bool, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 
 	body, err := json.Marshal(map[string]string{"name": c.model})
 	if err != nil {
-		return false, false
+		return false, "", fmt.Errorf("marshal /api/show request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", c.endpoint+"/api/show", bytes.NewReader(body))
 	if err != nil {
-		return false, false
+		return false, "", fmt.Errorf("create /api/show request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return false, false
+		return false, "", fmt.Errorf("/api/show: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return false, false
+		return false, "", fmt.Errorf("/api/show: status %d", resp.StatusCode)
 	}
 
 	var showResp struct {
-		Template string `json:"template"`
+		Template     string   `json:"template"`
+		Capabilities []string `json:"capabilities"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&showResp); err != nil {
-		return false, false
+		return false, "", fmt.Errorf("decode /api/show response: %w", err)
 	}
 
-	// Ollama models with tool support include tool-handling blocks in their template
+	// Ollama (v0.6.4+) lists what the model can do, "tools" among them. Prefer
+	// it: models on the MLX runner report a bare "{{ .Prompt }}" template
+	// even when they call tools natively.
+	if len(showResp.Capabilities) > 0 {
+		return slices.Contains(showResp.Capabilities, "tools"), toolModeSourceCapabilities, nil
+	}
+
+	// Older Ollama: models with tool support include tool-handling blocks in their template
 	hasTools := strings.Contains(showResp.Template, ".Tools") ||
 		strings.Contains(showResp.Template, "tools")
-	return hasTools, true
+	return hasTools, toolModeSourceTemplate, nil
 }
 
 // Chat sends a conversation to Ollama and returns the response.
@@ -279,16 +456,18 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 
 // convertTools converts shuttle.Tool to Ollama tool format.
 // Tool names are sanitized for provider compatibility.
-func (c *Client) convertTools(tools []shuttle.Tool) []ollamaTool {
+// nameMap, when non-nil, receives this request's sanitized → original names.
+func (c *Client) convertTools(tools []shuttle.Tool, nameMap map[string]string) []ollamaTool {
 	ollamaTools := make([]ollamaTool, len(tools))
 	for i, tool := range tools {
 		originalName := tool.Name()
 		sanitizedName := llm.SanitizeToolName(originalName)
-		if c.toolNameMap != nil {
-			c.toolNameMap[sanitizedName] = originalName
+		if nameMap != nil {
+			nameMap[sanitizedName] = originalName
 		}
-		schema := tool.InputSchema()
-		sanitizeSchemaTypes(schema)
+		// Sanitize a copy: the tool (and its schema) is shared by every session
+		// that uses it, so the request must not write into it.
+		schema := sanitizeSchemaTypes(tool.InputSchema())
 		ollamaTools[i] = ollamaTool{
 			Type: "function",
 			Function: ollamaFunction{
@@ -301,32 +480,40 @@ func (c *Client) convertTools(tools []shuttle.Tool) []ollamaTool {
 	return ollamaTools
 }
 
-// sanitizeSchemaTypes ensures all type fields in a JSONSchema are non-empty.
-// MCP tools may omit type fields which causes errors with some providers.
-func sanitizeSchemaTypes(schema *shuttle.JSONSchema) {
+// sanitizeSchemaTypes returns a copy of schema in which every type field is
+// non-empty (MCP tools may omit types, which some models reject). The input
+// is never written: tool schemas are shared across concurrent requests.
+// Properties and Items are copied recursively; leaf fields that are not
+// rewritten (Enum, Default, bounds) keep pointing at the original values.
+func sanitizeSchemaTypes(schema *shuttle.JSONSchema) *shuttle.JSONSchema {
 	if schema == nil {
-		return
+		return nil
 	}
-	if schema.Type == "" {
-		if schema.Properties != nil {
-			schema.Type = "object"
-		} else if schema.Items != nil {
-			schema.Type = "array"
-		} else {
-			schema.Type = "string"
+	cp := *schema
+	cp.Type = llm.InferSchemaType(schema)
+	if schema.Properties != nil {
+		cp.Properties = make(map[string]*shuttle.JSONSchema, len(schema.Properties))
+		for name, prop := range schema.Properties {
+			cp.Properties[name] = sanitizeSchemaTypes(prop)
 		}
 	}
-	for _, prop := range schema.Properties {
-		sanitizeSchemaTypes(prop)
-	}
 	if schema.Items != nil {
-		sanitizeSchemaTypes(schema.Items)
+		cp.Items = sanitizeSchemaTypes(schema.Items)
 	}
+	return &cp
 }
 
-// convertMessages converts agent messages to Ollama format.
-func (c *Client) convertMessages(messages []llmtypes.Message) []ollamaMessage {
+// convertMessages converts agent messages to Ollama format. native is the
+// request's tool mode (resolveToolMode): it decides whether assistant tool
+// calls are echoed and whether tool results use the "tool" role.
+func (c *Client) convertMessages(messages []llmtypes.Message, native bool) []ollamaMessage {
 	var apiMessages []ollamaMessage
+	// Tool call ID → name sent to the model, so each result can name its tool.
+	toolNames := make(map[string]string)
+	// Names of the latest assistant message's calls not yet answered by a
+	// result without an ID. Ollama before v0.12.10 returns tool calls with no
+	// ID; such results are paired with the calls by position.
+	var pending []string
 
 	for _, msg := range messages {
 		switch msg.Role {
@@ -366,19 +553,47 @@ func (c *Client) convertMessages(messages []llmtypes.Message) []ollamaMessage {
 			}
 
 		case "assistant":
-			apiMessages = append(apiMessages, ollamaMessage{
+			apiMsg := ollamaMessage{
 				Role:    msg.Role,
 				Content: msg.Content,
-			})
+			}
+			// Echo the model's own tool calls. Without them the history shows
+			// tool results nobody asked for, and the model repeats the call.
+			if native {
+				pending = pending[:0]
+				for _, tc := range msg.ToolCalls {
+					name := llm.SanitizeToolName(tc.Name)
+					if tc.ID != "" {
+						toolNames[tc.ID] = name
+					}
+					pending = append(pending, name)
+					args := tc.Input
+					if args == nil {
+						args = map[string]interface{}{}
+					}
+					apiMsg.ToolCalls = append(apiMsg.ToolCalls, ollamaToolCall{
+						ID:       tc.ID,
+						Type:     "function",
+						Function: ollamaFunctionCall{Name: name, Arguments: args},
+					})
+				}
+			}
+			apiMessages = append(apiMessages, apiMsg)
 
 		case "tool":
-			if c.supportsNativeTools() {
+			if native {
 				// Native tool format (Ollama v0.12.3+) — separate role, safe
 				// alongside a following user-role sidecar (no consecutive
 				// same-role messages).
+				name := toolNames[msg.ToolUseID]
+				if msg.ToolUseID == "" && len(pending) > 0 {
+					name, pending = pending[0], pending[1:]
+				}
 				apiMessages = append(apiMessages, ollamaMessage{
-					Role:    "tool",
-					Content: msg.Content,
+					Role:       "tool",
+					Content:    msg.Content,
+					ToolName:   name,
+					ToolCallID: msg.ToolUseID,
 				})
 			} else {
 				// Fallback path: tool_result inlined as a user message. Route
@@ -448,8 +663,17 @@ func (c *Client) cleanJSONString(s string) string {
 func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	tools []shuttle.Tool, tokenCallback llmtypes.TokenCallback) (*llmtypes.LLMResponse, error) {
 
-	// 1. Build request body (reuse existing message and tool conversion)
-	apiMessages := c.convertMessages(messages)
+	// 1. Decide the tool mode once for the whole request, then build the
+	// request body from that one decision.
+	toolMode := c.toolModeWithoutTools()
+	if usesTools(messages, tools) {
+		toolMode = c.resolveToolMode(ctx)
+	}
+	recordToolMode(ctx, toolMode)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	apiMessages := c.convertMessages(messages, toolMode.native)
 
 	req := chatRequest{
 		Model:    c.model,
@@ -467,10 +691,11 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		req.Options["seed"] = *c.seed
 	}
 
-	// Add tools if native support is available
-	if c.supportsNativeTools() && len(tools) > 0 {
-		c.toolNameMap = make(map[string]string)
-		req.Tools = c.convertTools(tools)
+	// Add tools if native support is available. The sanitized → original
+	// name map is per request: the client is shared across sessions.
+	nameMap := make(map[string]string)
+	if toolMode.native && len(tools) > 0 {
+		req.Tools = c.convertTools(tools, nameMap)
 	}
 
 	// Marshal request
@@ -503,6 +728,18 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				fmt.Errorf("API error (status 429): %s", string(respBody)),
 				llm.RetryAfterFromHeaders(resp.Header))
 		}
+		// 500/502/503/504/529 (llm.IsTransientStatus; on Ollama typically a
+		// model loading or being evicted on a shared server, or a fronting
+		// gateway's 502/503/504): retried by the rate limiter under the
+		// throttle budget, as for every other HTTP provider; status known
+		// before any content.
+		if llm.IsTransientStatus(resp.StatusCode) {
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, llm.MaxErrorBodyBytes))
+			_ = resp.Body.Close()
+			return nil, llm.NewTransientError(
+				fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody)),
+				resp.StatusCode, llm.RetryAfterFromHeaders(resp.Header))
+		}
 		return resp, nil
 	}
 
@@ -526,7 +763,8 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	// Check status code before streaming
 	if httpResp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(httpResp.Body)
-		return nil, fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody))
+		return nil, llm.WrapHTTPStatus(httpResp.StatusCode,
+			fmt.Errorf("API error (status %d): %s", httpResp.StatusCode, string(respBody)))
 	}
 
 	// 3. Process JSON lines stream (newline-delimited JSON)
@@ -536,6 +774,10 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	tokenCount := 0
 
 	scanner := bufio.NewScanner(httpResp.Body)
+	// A gateway may coalesce a whole response (or an error echoing the request)
+	// into one SSE line; the Scanner default 64KB line cap aborts the stream.
+	// Grown on demand, so steady-state memory is unchanged.
+	scanner.Buffer(make([]byte, 0, 64<<10), 8<<20)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 
@@ -558,29 +800,48 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			}
 		}
 
-		// Extract tool calls if present
+		// Extract tool calls if present. They never reach tokenCallback
+		// (text only), so report them as stream activity.
 		if len(chunk.Message.ToolCalls) > 0 {
 			for _, tc := range chunk.Message.ToolCalls {
 				// Parse function arguments
 				var params map[string]interface{}
+				var argsLen int
 				switch args := tc.Function.Arguments.(type) {
 				case string:
+					// Report the raw argument JSON as received; a string that
+					// fails to parse still has a real size.
+					argsLen = len(args)
 					cleanedArgs := c.cleanJSONString(args)
 					if err := json.Unmarshal([]byte(cleanedArgs), &params); err != nil {
 						params = make(map[string]interface{})
 					}
 				case map[string]interface{}:
 					params = args
+					// Re-marshal to approximate the JSON the model produced;
+					// Ollama parsed it for us, so the original bytes are gone.
+					if argsJSON, err := json.Marshal(args); err == nil {
+						argsLen = len(argsJSON)
+					}
 				default:
 					params = make(map[string]interface{})
 				}
 
 				toolCalls = append(toolCalls, llmtypes.ToolCall{
 					ID:    tc.ID,
-					Name:  llm.ReverseToolName(c.toolNameMap, tc.Function.Name),
+					Name:  llm.ReverseToolName(nameMap, tc.Function.Name),
 					Input: params,
 				})
+				// Ollama delivers each tool call complete in one chunk, so the
+				// progress event reports the full argument size at once.
+				llmtypes.NotifyToolInputProgress(ctx, llmtypes.ToolInputProgress{
+					Index:      len(toolCalls) - 1,
+					ToolCallID: tc.ID,
+					ToolName:   llm.ReverseToolName(nameMap, tc.Function.Name),
+					Bytes:      argsLen,
+				})
 			}
+			llmtypes.NotifyStreamActivity(ctx)
 		}
 
 		// Keep final response for metadata
@@ -597,6 +858,9 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	}
 
 	if err := scanner.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			return nil, fmt.Errorf("error reading stream: SSE line exceeded the 8MB cap: %w", err)
+		}
 		return nil, fmt.Errorf("error reading stream: %w", err)
 	}
 
@@ -612,11 +876,12 @@ func (c *Client) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			CostUSD:      0, // Ollama is free (local)
 		},
 		Metadata: map[string]interface{}{
-			"model":         lastResponse.Model,
-			"eval_duration": lastResponse.EvalDuration,
-			"native_tools":  c.supportsNativeTools(),
-			"tool_mode":     string(c.toolMode),
-			"streaming":     true,
+			"model":            lastResponse.Model,
+			"eval_duration":    lastResponse.EvalDuration,
+			"native_tools":     toolMode.native,
+			"tool_mode":        string(c.toolMode),
+			"tool_mode_source": toolMode.source,
+			"streaming":        true,
 		},
 	}, nil
 }
@@ -709,10 +974,12 @@ type ollamaFunction struct {
 }
 
 type ollamaMessage struct {
-	Role      string           `json:"role"`
-	Content   string           `json:"content"`
-	Images    []string         `json:"images,omitempty"` // Base64-encoded images for vision models
-	ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
+	Role       string           `json:"role"`
+	Content    string           `json:"content"`
+	Images     []string         `json:"images,omitempty"` // Base64-encoded images for vision models
+	ToolCalls  []ollamaToolCall `json:"tool_calls,omitempty"`
+	ToolName   string           `json:"tool_name,omitempty"`    // Tool role: which tool produced this result
+	ToolCallID string           `json:"tool_call_id,omitempty"` // Tool role: the call this result answers (Ollama v0.12.10+)
 }
 
 type ollamaToolCall struct {

@@ -56,6 +56,11 @@ func ByName(name string) shuttle.Tool {
 		return NewFileWriteTool("")
 	case "file_read":
 		return NewFileReadTool("")
+	case "edit_files":
+		return NewEditFilesTool("")
+	// execute_query is absent: it needs the agent's fabric.ExecutionBackend,
+	// which a name-only lookup cannot supply. A host that has a backend
+	// constructs it directly. See ExecuteQueryTool's doc comment.
 	case "analyze_image":
 		return NewVisionTool("")
 	case "parse_document":
@@ -84,6 +89,7 @@ func Names() []string {
 		"web_search",
 		"file_write",
 		"file_read",
+		"edit_files",
 		"analyze_image",
 		"parse_document",
 		"grpc_call",

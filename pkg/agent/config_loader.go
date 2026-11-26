@@ -15,8 +15,11 @@ import (
 	"strings"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/decision"
 	"github.com/teradata-labs/loom/pkg/failurerecovery"
+	"github.com/teradata-labs/loom/pkg/llm/vercelgateway"
 	"github.com/teradata-labs/loom/pkg/skills"
+	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 )
 
@@ -67,6 +70,10 @@ func convertLLMConfigYAMLToProto(y *LLMConfigYAML) (*loomv1.LLMConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	maxModelContextTokens, err := safeInt32(y.MaxModelContextTokens, "LLM.MaxModelContextTokens")
+	if err != nil {
+		return nil, err
+	}
 	var rateLimit *loomv1.LLMRateLimitConfig
 	if y.RateLimit != nil {
 		rateLimit = &loomv1.LLMRateLimitConfig{
@@ -81,17 +88,21 @@ func convertLLMConfigYAMLToProto(y *LLMConfigYAML) (*loomv1.LLMConfig, error) {
 		}
 	}
 	return &loomv1.LLMConfig{
-		Provider:             y.Provider,
-		Model:                y.Model,
-		Temperature:          float32(y.Temperature),
-		MaxTokens:            maxTokens,
-		StopSequences:        y.StopSequences,
-		TopP:                 float32(y.TopP),
-		TopK:                 topK,
-		MaxContextTokens:     maxContextTokens,
-		ReservedOutputTokens: reservedOutputTokens,
-		RateLimit:            rateLimit,
-		Seed:                 copyInt64Ptr(y.Seed),
+		// Aliases ("vercel") become canonical names at load, so limiter keys,
+		// the catalog namespace and span attributes never see an alias.
+		Provider:              vercelgateway.NormalizeProviderName(y.Provider),
+		Model:                 y.Model,
+		Temperature:           float32(y.Temperature),
+		MaxTokens:             maxTokens,
+		StopSequences:         y.StopSequences,
+		TopP:                  float32(y.TopP),
+		TopK:                  topK,
+		MaxContextTokens:      maxContextTokens,
+		ReservedOutputTokens:  reservedOutputTokens,
+		MaxModelContextTokens: maxModelContextTokens,
+		RateLimit:             rateLimit,
+		Seed:                  copyInt64Ptr(y.Seed),
+		GatewayRouting:        gatewayRoutingYAMLToProto(y.GatewayRouting),
 	}, nil
 }
 
@@ -101,32 +112,192 @@ func convertProtoToLLMConfigYAML(pb *loomv1.LLMConfig) *LLMConfigYAML {
 	if pb == nil || pb.Provider == "" {
 		return nil
 	}
-	var rateLimit *LLMRateLimitYAML
-	if pb.RateLimit != nil {
-		rateLimit = &LLMRateLimitYAML{
-			Disabled:            pb.RateLimit.Disabled,
-			RequestsPerSecond:   pb.RateLimit.RequestsPerSecond,
-			TokensPerMinute:     pb.RateLimit.TokensPerMinute,
-			BurstCapacity:       pb.RateLimit.BurstCapacity,
-			MinDelayMs:          pb.RateLimit.MinDelayMs,
-			MaxRetries:          pb.RateLimit.MaxRetries,
-			RetryBackoffMs:      pb.RateLimit.RetryBackoffMs,
-			QueueTimeoutSeconds: pb.RateLimit.QueueTimeoutSeconds,
-		}
-	}
 	return &LLMConfigYAML{
-		Provider:             pb.Provider,
-		Model:                pb.Model,
-		Temperature:          float64(pb.Temperature),
-		MaxTokens:            int(pb.MaxTokens),
-		StopSequences:        pb.StopSequences,
-		TopP:                 float64(pb.TopP),
-		TopK:                 int(pb.TopK),
-		MaxContextTokens:     int(pb.MaxContextTokens),
-		ReservedOutputTokens: int(pb.ReservedOutputTokens),
-		RateLimit:            rateLimit,
-		Seed:                 copyInt64Ptr(pb.Seed),
+		Provider:              pb.Provider,
+		Model:                 pb.Model,
+		Temperature:           float64(pb.Temperature),
+		MaxTokens:             int(pb.MaxTokens),
+		StopSequences:         pb.StopSequences,
+		TopP:                  float64(pb.TopP),
+		TopK:                  int(pb.TopK),
+		MaxContextTokens:      int(pb.MaxContextTokens),
+		ReservedOutputTokens:  int(pb.ReservedOutputTokens),
+		MaxModelContextTokens: int(pb.MaxModelContextTokens),
+		RateLimit:             rateLimitProtoToYAML(pb.RateLimit),
+		Seed:                  copyInt64Ptr(pb.Seed),
+		GatewayRouting:        gatewayRoutingProtoToYAML(pb.GatewayRouting),
 	}
+}
+
+// DecisionConfigYAML mirrors proto DecisionConfig (pkg/decision) for agent
+// YAML files.
+//
+//	decision:
+//	  provider: llm          # off | llm | mock | jev
+//	  llm_role: classifier   # which role LLM the "llm" provider adapts
+//	  model: jev-1.13.0      # pinned; aliases rejected unless allow_alias
+//	                         # (jev via the Vercel AI Gateway: typesafe-ai/jev + allow_alias: true;
+//	                         #  credentials from TYPESAFE_API_KEY / AI_GATEWAY_API_KEY, never YAML;
+//	                         #  the endpoint from looms.yaml decision.base_url, never agent YAML)
+//	  timeout_ms: 2000
+//	  max_per_session: 200
+//	  max_cost_usd_per_session: 0.05
+//	  bands:
+//	    - site: recall.rerank
+//	      act_min: 0.9
+//	      mode: replace        # replace | tighten_only; unset = tighten_only at the gate
+//	                           # sites (stage.validation, debate.consensus), replace elsewhere
+//	      shadow: true         # record only, never act
+type DecisionConfigYAML struct {
+	Provider   string `yaml:"provider"`
+	Model      string `yaml:"model"`
+	AllowAlias bool   `yaml:"allow_alias"`
+	TimeoutMs  int64  `yaml:"timeout_ms"`
+	// BaseURL is parsed only so that setting it fails loudly: the decider
+	// endpoint is server-level (decision.ValidateConfig rejects it here).
+	// omitempty keeps SaveAgentConfig from ever writing the key.
+	BaseURL              string  `yaml:"base_url,omitempty"`
+	MaxPerSession        int64   `yaml:"max_per_session"`
+	MaxCostUSDPerSession float64 `yaml:"max_cost_usd_per_session"`
+	LLMRole              string  `yaml:"llm_role"`
+	// RequestsPerMinute is the process-wide decider budget, from the tier in
+	// use (gateway free tier: 30). Agents with identical decider settings
+	// share one client, so this is a fleet figure, not a per-agent one.
+	RequestsPerMinute int64 `yaml:"requests_per_minute"`
+	// ExposeTool registers the "decide" builtin so the agent can ask the
+	// decider directly. Off by default.
+	ExposeTool bool `yaml:"expose_tool"`
+	// MaxQuestionsPerRequest splits larger requests into concurrent chunks
+	// (0 = the decider's default; Jev 16).
+	MaxQuestionsPerRequest int64                    `yaml:"max_questions_per_request"`
+	Bands                  []DecisionBandConfigYAML `yaml:"bands"`
+}
+
+// DecisionBandConfigYAML mirrors proto DecisionBand.
+type DecisionBandConfigYAML struct {
+	Site   string  `yaml:"site"`
+	ActMin float64 `yaml:"act_min"`
+	Mode   string  `yaml:"mode,omitempty"`
+	Shadow bool    `yaml:"shadow"`
+	// Aggregate: min (default) | per_question. Fan-out sites such as the
+	// reranks use per_question so one uncertain candidate cannot veto the rest.
+	Aggregate string `yaml:"aggregate"`
+	// TrueMin is the probability at or above which a yes/no answer counts as
+	// true at this site: the keep threshold at a rerank, "valid" at a stage
+	// gate. 0 means the site default (0.5). It is not act_min, which asks
+	// how decisive an answer must be before the site acts at all.
+	TrueMin float64 `yaml:"true_min"`
+}
+
+// convertProtoToDecisionConfigYAML is the inverse of
+// convertDecisionConfigYAMLToProto, used by SaveAgentConfig. base_url is never
+// written (the endpoint is server-level), and an UNSPECIFIED band mode is left
+// out so the file stays unset; the loader and the router both read that as
+// replace. A nil config converts to nil (no decision block).
+func convertProtoToDecisionConfigYAML(cfg *loomv1.DecisionConfig) *DecisionConfigYAML {
+	if cfg == nil {
+		return nil
+	}
+	y := &DecisionConfigYAML{
+		Provider:               cfg.Provider,
+		Model:                  cfg.Model,
+		AllowAlias:             cfg.AllowAlias,
+		TimeoutMs:              cfg.TimeoutMs,
+		MaxPerSession:          cfg.MaxPerSession,
+		MaxCostUSDPerSession:   cfg.MaxCostUsdPerSession,
+		LLMRole:                cfg.LlmRole,
+		RequestsPerMinute:      cfg.RequestsPerMinute,
+		ExposeTool:             cfg.ExposeTool,
+		MaxQuestionsPerRequest: cfg.MaxQuestionsPerRequest,
+	}
+	for _, b := range cfg.Bands {
+		if b == nil {
+			continue
+		}
+		var mode string
+		switch b.Mode {
+		case loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE:
+			mode = "replace"
+		case loomv1.DecisionBandMode_DECISION_BAND_MODE_TIGHTEN_ONLY:
+			mode = "tighten_only"
+		}
+		var agg string
+		if b.Aggregate == loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_PER_QUESTION {
+			agg = "per_question"
+		}
+		y.Bands = append(y.Bands, DecisionBandConfigYAML{
+			Site:      b.Site,
+			ActMin:    b.ActMin,
+			TrueMin:   b.TrueMin,
+			Mode:      mode,
+			Shadow:    b.Shadow,
+			Aggregate: agg,
+		})
+	}
+	return y
+}
+
+// convertDecisionConfigYAMLToProto normalises the YAML spellings (provider
+// case, mode aliases) and converts the decision block; the rules themselves
+// are decision.ValidateConfig, which every other config path runs too. A nil
+// block converts to nil (layer off).
+func convertDecisionConfigYAMLToProto(y *DecisionConfigYAML) (*loomv1.DecisionConfig, error) {
+	if y == nil {
+		return nil, nil
+	}
+	provider := strings.ToLower(strings.TrimSpace(y.Provider))
+	if provider == "" {
+		provider = DecisionProviderOff
+	}
+	cfg := &loomv1.DecisionConfig{
+		Provider:               provider,
+		Model:                  y.Model,
+		AllowAlias:             y.AllowAlias,
+		TimeoutMs:              y.TimeoutMs,
+		BaseUrl:                y.BaseURL,
+		MaxPerSession:          y.MaxPerSession,
+		MaxCostUsdPerSession:   y.MaxCostUSDPerSession,
+		LlmRole:                y.LLMRole,
+		RequestsPerMinute:      y.RequestsPerMinute,
+		ExposeTool:             y.ExposeTool,
+		MaxQuestionsPerRequest: y.MaxQuestionsPerRequest,
+	}
+	for i, b := range y.Bands {
+		var mode loomv1.DecisionBandMode
+		switch strings.ToLower(strings.TrimSpace(b.Mode)) {
+		case "":
+			// Unset: the site's default applies (tighten-only at the gate
+			// sites, replace elsewhere; decision.Band.ModeOr).
+			mode = loomv1.DecisionBandMode_DECISION_BAND_MODE_UNSPECIFIED
+		case "replace":
+			mode = loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE
+		case "tighten_only", "tighten-only", "tighten":
+			mode = loomv1.DecisionBandMode_DECISION_BAND_MODE_TIGHTEN_ONLY
+		default:
+			return nil, fmt.Errorf("decision.bands[%d] (%s): mode %q must be replace or tighten_only", i, b.Site, b.Mode)
+		}
+		var agg loomv1.DecisionBandAggregate
+		switch strings.ToLower(strings.TrimSpace(b.Aggregate)) {
+		case "", "min":
+			agg = loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_MIN
+		case "per_question", "per-question", "each":
+			agg = loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_PER_QUESTION
+		default:
+			return nil, fmt.Errorf("decision.bands[%d] (%s): aggregate %q must be min or per_question", i, b.Site, b.Aggregate)
+		}
+		cfg.Bands = append(cfg.Bands, &loomv1.DecisionBand{
+			Site:      b.Site,
+			ActMin:    b.ActMin,
+			TrueMin:   b.TrueMin,
+			Mode:      mode,
+			Shadow:    b.Shadow,
+			Aggregate: agg,
+		})
+	}
+	if err := decision.ValidateConfig(cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
 }
 
 // AgentConfigYAML represents the YAML structure for agent configuration.
@@ -142,6 +313,7 @@ type AgentConfigYAML struct {
 		OrchestratorLLM  *LLMConfigYAML         `yaml:"orchestrator_llm"`
 		ClassifierLLM    *LLMConfigYAML         `yaml:"classifier_llm"`
 		CompressorLLM    *LLMConfigYAML         `yaml:"compressor_llm"`
+		Decision         *DecisionConfigYAML    `yaml:"decision"`
 		ActiveProvider   string                 `yaml:"active_provider"`
 		AllowedProviders []string               `yaml:"allowed_providers"`
 		SystemPrompt     string                 `yaml:"system_prompt"`
@@ -177,6 +349,7 @@ type K8sStyleAgentConfig struct {
 		OrchestratorLLM  *LLMConfigYAML         `yaml:"orchestrator_llm"`
 		ClassifierLLM    *LLMConfigYAML         `yaml:"classifier_llm"`
 		CompressorLLM    *LLMConfigYAML         `yaml:"compressor_llm"`
+		Decision         *DecisionConfigYAML    `yaml:"decision"`
 		ActiveProvider   string                 `yaml:"active_provider"`
 		AllowedProviders []string               `yaml:"allowed_providers"`
 		Tools            interface{}            `yaml:"tools"` // Can be ToolsConfigYAML or []interface{}
@@ -190,22 +363,91 @@ type K8sStyleAgentConfig struct {
 
 // LLMConfigYAML represents LLM configuration in YAML
 type LLMConfigYAML struct {
-	Provider             string            `yaml:"provider"`
-	Model                string            `yaml:"model"`
-	Temperature          float64           `yaml:"temperature"`
-	MaxTokens            int               `yaml:"max_tokens"`
-	StopSequences        []string          `yaml:"stop_sequences"`
-	TopP                 float64           `yaml:"top_p"`
-	TopK                 int               `yaml:"top_k"`
-	MaxContextTokens     int               `yaml:"max_context_tokens"`
-	ReservedOutputTokens int               `yaml:"reserved_output_tokens"`
-	RateLimit            *LLMRateLimitYAML `yaml:"rate_limit"`
+	Provider             string   `yaml:"provider"`
+	Model                string   `yaml:"model"`
+	Temperature          float64  `yaml:"temperature"`
+	MaxTokens            int      `yaml:"max_tokens"`
+	StopSequences        []string `yaml:"stop_sequences"`
+	TopP                 float64  `yaml:"top_p"`
+	TopK                 int      `yaml:"top_k"`
+	MaxContextTokens     int      `yaml:"max_context_tokens"`
+	ReservedOutputTokens int      `yaml:"reserved_output_tokens"`
+	// MaxModelContextTokens is the window the model is served with, when it
+	// is below the model's listed window; see Config.MaxModelContextTokens.
+	MaxModelContextTokens int               `yaml:"max_model_context_tokens"`
+	RateLimit             *LLMRateLimitYAML `yaml:"rate_limit"`
 
 	// Seed pins the sampling seed for reproducible generations.
 	// A pointer so that an omitted key (nil → provider samples randomly) is
 	// distinguishable from an explicit `seed: 0`, which some providers accept
 	// as a real seed. Honored by the ollama provider; others ignore it.
 	Seed *int64 `yaml:"seed"`
+
+	// GatewayRouting mirrors proto LLMGatewayRouting: upstream selection for a
+	// multi-provider gateway. Honored by vercel-ai-gateway; others ignore it.
+	GatewayRouting *LLMGatewayRoutingYAML `yaml:"gateway_routing"`
+}
+
+// LLMGatewayRoutingYAML mirrors proto LLMGatewayRouting for agent YAML.
+//
+//	llm:
+//	  provider: vercel-ai-gateway
+//	  model: anthropic/claude-sonnet-4.5
+//	  gateway_routing:
+//	    order: [bedrock, anthropic]
+//	    fallback_models: [openai/gpt-5]
+type LLMGatewayRoutingYAML struct {
+	Order             []string `yaml:"order,omitempty"`
+	Only              []string `yaml:"only,omitempty"`
+	Sort              string   `yaml:"sort,omitempty"`
+	FallbackModels    []string `yaml:"fallback_models,omitempty"`
+	ZeroDataRetention bool     `yaml:"zero_data_retention,omitempty"`
+	Caching           string   `yaml:"caching,omitempty"`
+}
+
+func gatewayRoutingYAMLToProto(y *LLMGatewayRoutingYAML) *loomv1.LLMGatewayRouting {
+	if y == nil {
+		return nil
+	}
+	return &loomv1.LLMGatewayRouting{
+		Order:             append([]string(nil), y.Order...),
+		Only:              append([]string(nil), y.Only...),
+		Sort:              y.Sort,
+		FallbackModels:    append([]string(nil), y.FallbackModels...),
+		ZeroDataRetention: y.ZeroDataRetention,
+		Caching:           y.Caching,
+	}
+}
+
+func gatewayRoutingProtoToYAML(p *loomv1.LLMGatewayRouting) *LLMGatewayRoutingYAML {
+	if p == nil {
+		return nil
+	}
+	return &LLMGatewayRoutingYAML{
+		Order:             append([]string(nil), p.GetOrder()...),
+		Only:              append([]string(nil), p.GetOnly()...),
+		Sort:              p.GetSort(),
+		FallbackModels:    append([]string(nil), p.GetFallbackModels()...),
+		ZeroDataRetention: p.GetZeroDataRetention(),
+		Caching:           p.GetCaching(),
+	}
+}
+
+// rateLimitProtoToYAML converts proto LLMRateLimitConfig; nil in, nil out.
+func rateLimitProtoToYAML(p *loomv1.LLMRateLimitConfig) *LLMRateLimitYAML {
+	if p == nil {
+		return nil
+	}
+	return &LLMRateLimitYAML{
+		Disabled:            p.Disabled,
+		RequestsPerSecond:   p.RequestsPerSecond,
+		TokensPerMinute:     p.TokensPerMinute,
+		BurstCapacity:       p.BurstCapacity,
+		MinDelayMs:          p.MinDelayMs,
+		MaxRetries:          p.MaxRetries,
+		RetryBackoffMs:      p.RetryBackoffMs,
+		QueueTimeoutSeconds: p.QueueTimeoutSeconds,
+	}
 }
 
 // LLMRateLimitYAML mirrors proto LLMRateLimitConfig for agent YAML files.
@@ -260,12 +502,44 @@ type MemoryConfigYAML struct {
 
 // TaskBoardConfigYAML represents task board configuration in YAML.
 type TaskBoardConfigYAML struct {
-	Enabled             *bool  `yaml:"enabled"`
-	AutoDecompose       bool   `yaml:"auto_decompose"`
-	MaxDepth            int    `yaml:"max_depth"`
-	DefaultBoardID      string `yaml:"default_board_id"`
-	DefaultStrategy     int    `yaml:"default_strategy"`
-	ContextBudgetTokens int    `yaml:"context_budget_tokens"`
+	Enabled             *bool                    `yaml:"enabled"`
+	AutoDecompose       bool                     `yaml:"auto_decompose"`
+	MaxDepth            int                      `yaml:"max_depth"`
+	DefaultBoardID      string                   `yaml:"default_board_id"`
+	DefaultStrategy     int                      `yaml:"default_strategy"`
+	ContextBudgetTokens int                      `yaml:"context_budget_tokens"`
+	ImplicitTasks       *ImplicitTasksConfigYAML `yaml:"implicit_tasks"`
+}
+
+// ImplicitTasksConfigYAML represents runtime task minting configuration in YAML.
+//
+// It maps onto TaskBoardConfig.implicit_tasks, the proto message the runtime
+// already resolves in NewAgent. Without this struct the whole message was
+// unreachable from an agent YAML file: the documented knobs existed in the
+// proto and in the resolver and had no way in, so the only expressible policy
+// was the default.
+//
+// Note that `enabled` on the parent gates the AGENT's task_board tool and
+// context block, while this gates whether the RUNTIME mints a task at all —
+// they are deliberately independent, so a board-less agent can still be
+// recorded for a human-facing timeline.
+type ImplicitTasksConfigYAML struct {
+	// Mode is "enabled"/"on", "disabled"/"off", or empty for the proto default
+	// (which is enabled — implicit recording is opt-out).
+	Mode string `yaml:"mode"`
+	// Triggers restricts minting to these events ("only these"). Empty leaves
+	// the built-in default set.
+	Triggers []string `yaml:"triggers"`
+	// ExcludedTriggers is subtracted from the effective set after Triggers
+	// ("everything except these").
+	ExcludedTriggers []string `yaml:"excluded_triggers"`
+	// MaxPerSession caps implicit tasks per session; 0 means the built-in
+	// default.
+	MaxPerSession int `yaml:"max_per_session"`
+	// AgentVisible surfaces implicit tasks in the agent's own task context
+	// block and ready front. Default false, and that default is load-bearing —
+	// see the field's comment in agent_config.proto.
+	AgentVisible bool `yaml:"agent_visible"`
 }
 
 // GraphMemoryConfigYAML represents graph memory configuration in YAML.
@@ -285,6 +559,7 @@ type GraphMemoryConfigYAML struct {
 	MaxEntitiesPerExtraction      int     `yaml:"max_entities_per_extraction"`
 	ConversationExtractionCadence int     `yaml:"conversation_extraction_cadence"`
 	ExtractionTimeoutSeconds      int     `yaml:"extraction_timeout_seconds"`
+	FleetLessonSharing            bool    `yaml:"fleet_lesson_sharing"` // opt-in: share mined lessons across all agents
 }
 
 // MemoryCompressionConfigYAML represents memory compression configuration in YAML
@@ -294,6 +569,7 @@ type MemoryCompressionConfigYAML struct {
 	MinL1Messages            int                              `yaml:"min_l1_messages"`
 	WarningThresholdPercent  int                              `yaml:"warning_threshold_percent"`
 	CriticalThresholdPercent int                              `yaml:"critical_threshold_percent"`
+	ProtectedRecentTurns     int                              `yaml:"protected_recent_turns"`
 	BatchSizes               *MemoryCompressionBatchSizesYAML `yaml:"batch_sizes"`
 }
 
@@ -316,6 +592,13 @@ type BehaviorConfigYAML struct {
 	Skills                 SkillsConfigYAML   `yaml:"skills"`
 	OutputTokenCBThreshold int                `yaml:"output_token_cb_threshold"`
 	EnableSelfHealing      *bool              `yaml:"enable_self_healing"`
+	// RepeatCallHint opts the agent into the repeat-call note (default off).
+	RepeatCallHint *bool `yaml:"repeat_call_hint"`
+	// ToolChangeNote opts the agent into the tool-change note (default off).
+	ToolChangeNote bool `yaml:"tool_change_note"`
+	// ParallelReadTools opts the agent into running consecutive
+	// concurrency-safe tool calls of one response in parallel (default off).
+	ParallelReadTools bool `yaml:"parallel_read_tools"`
 	// FailureRecovery configures the durable failure-recovery memory feature.
 	// Nil leaves the feature off.
 	FailureRecovery *FailureRecoveryConfigYAML `yaml:"failure_recovery"`
@@ -444,6 +727,9 @@ func LoadConfigFromString(yamlContent string) (*loomv1.AgentConfig, error) {
 		}
 	}
 
+	warnMisnestedTaskBoard(yamlOnly)
+	warnRemovedKeys(yamlOnly)
+
 	// Validate required fields
 	if yamlConfig.Agent.Name == "" {
 		return nil, fmt.Errorf("agent name is required")
@@ -499,6 +785,7 @@ func convertK8sToLegacy(k8s *K8sStyleAgentConfig) AgentConfigYAML {
 	legacy.Agent.OrchestratorLLM = k8s.Spec.OrchestratorLLM
 	legacy.Agent.ClassifierLLM = k8s.Spec.ClassifierLLM
 	legacy.Agent.CompressorLLM = k8s.Spec.CompressorLLM
+	legacy.Agent.Decision = k8s.Spec.Decision
 	legacy.Agent.ActiveProvider = k8s.Spec.ActiveProvider
 	legacy.Agent.AllowedProviders = k8s.Spec.AllowedProviders
 
@@ -688,6 +975,13 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 		}
 		config.CompressorLlm = compressorLLM
 	}
+
+	// Decision layer (pkg/decision); nil means off.
+	decisionCfg, err := convertDecisionConfigYAMLToProto(yaml.Agent.Decision)
+	if err != nil {
+		return nil, err
+	}
+	config.Decision = decisionCfg
 
 	// Provider pool fields
 	config.ActiveProvider = yaml.Agent.ActiveProvider
@@ -907,7 +1201,42 @@ func yamlToProto(yaml *AgentConfigYAML) (*loomv1.AgentConfig, error) {
 		config.Metadata["_enable_self_healing"] = "false"
 	}
 
+	// Stash the repeat-call opt-in the same way; registry.go turns it into
+	// RecoveryConfig thresholds. Off unless the YAML sets it true.
+	if yaml.Agent.Behavior.RepeatCallHint != nil && *yaml.Agent.Behavior.RepeatCallHint {
+		if config.Metadata == nil {
+			config.Metadata = make(map[string]string)
+		}
+		config.Metadata["_repeat_call_hint"] = "true"
+	}
+
+	// The tool-change note is opt-in the same way.
+	if yaml.Agent.Behavior.ToolChangeNote {
+		if config.Metadata == nil {
+			config.Metadata = make(map[string]string)
+		}
+		config.Metadata["_tool_change_note"] = "true"
+	}
+
+	// Parallel dispatch of read-only tool calls is opt-in the same way.
+	if yaml.Agent.Behavior.ParallelReadTools {
+		if config.Metadata == nil {
+			config.Metadata = make(map[string]string)
+		}
+		config.Metadata["_parallel_read_tools"] = "true"
+	}
+
 	return config, nil
+}
+
+// ApplyMetadataBehavior maps the behavior flags yamlToProto encodes in an
+// agent's metadata onto cfg. Every place that builds a Config from a
+// loomv1.AgentConfig calls it, so a YAML key cannot work in one host and be
+// ignored in another. It maps only _parallel_read_tools for now; the sibling
+// flags (_tool_change_note, _repeat_call_hint) are
+// tracked in issue #526.
+func ApplyMetadataBehavior(cfg *Config, md map[string]string) {
+	cfg.ParallelReadTools = md["_parallel_read_tools"] == "true"
 }
 
 // parseMemoryCompressionConfig converts YAML memory compression config to proto
@@ -934,11 +1263,17 @@ func parseMemoryCompressionConfig(yaml *MemoryCompressionConfigYAML) *loomv1.Mem
 		return nil
 	}
 
+	protectedTurns, err := safeInt32(yaml.ProtectedRecentTurns, "ProtectedRecentTurns")
+	if err != nil {
+		return nil
+	}
+
 	config := &loomv1.MemoryCompressionConfig{
 		MaxL1Messages:            maxL1,
 		MinL1Messages:            minL1,
 		WarningThresholdPercent:  warningThreshold,
 		CriticalThresholdPercent: criticalThreshold,
+		ProtectedRecentTurns:     protectedTurns,
 	}
 
 	// Parse workload profile string to enum
@@ -1070,6 +1405,7 @@ func parseGraphMemoryConfig(yaml *GraphMemoryConfigYAML) *loomv1.GraphMemoryConf
 		MaxEntitiesPerExtraction:      maxEntitiesPerExtraction,
 		ConversationExtractionCadence: conversationExtractionCadence,
 		ExtractionTimeoutSeconds:      extractionTimeoutSeconds,
+		FleetLessonSharing:            yaml.FleetLessonSharing,
 	}
 }
 
@@ -1100,6 +1436,175 @@ func parseTaskBoardConfig(yaml *TaskBoardConfigYAML) *loomv1.TaskBoardConfig {
 		DefaultBoardId:      yaml.DefaultBoardID,
 		DefaultStrategy:     loomv1.DecomposeStrategy(yaml.DefaultStrategy),
 		ContextBudgetTokens: contextBudget,
+		ImplicitTasks:       parseImplicitTasksConfig(yaml.ImplicitTasks),
+	}
+}
+
+// parseImplicitTasksConfig converts YAML implicit task config to proto.
+//
+// nil in, nil out: an absent block must resolve to the proto default rather
+// than to a zero-valued message, because ResolveImplicitPolicy distinguishes
+// them — a present message with an empty trigger list still means "the default
+// set", but the caller has to be able to say nothing at all.
+func parseImplicitTasksConfig(yaml *ImplicitTasksConfigYAML) *loomv1.ImplicitTaskConfig {
+	if yaml == nil {
+		return nil
+	}
+
+	cfg := &loomv1.ImplicitTaskConfig{
+		AgentVisible: yaml.AgentVisible,
+	}
+
+	// This block is the OFF SWITCH for a feature that writes durable rows by
+	// default, so it fails CLOSED: any value that is present but unparseable —
+	// a typo'd mode, an unrecognised trigger name, a negative cap — disables
+	// emission entirely and warns, rather than silently resolving to some
+	// default. The earlier shape dropped unrecognised trigger names, and a
+	// list that named nothing recognisable left cfg.Triggers empty — which
+	// ResolveImplicitPolicy reads as "no override, use the defaults", so
+	// `triggers: [tol_call]` WIDENED the policy to all three default triggers:
+	// failing open, in the opposite direction from what an operator narrowing
+	// emission intended.
+	failClosed := func(field, value string) *loomv1.ImplicitTaskConfig {
+		zap.L().Warn("implicit_tasks config is unparseable; disabling implicit task emission (fail closed)",
+			zap.String("field", field), zap.String("value", value))
+		return &loomv1.ImplicitTaskConfig{Mode: loomv1.ImplicitTaskMode_IMPLICIT_TASK_MODE_DISABLED}
+	}
+
+	if yaml.MaxPerSession < 0 {
+		return failClosed("max_per_session", fmt.Sprintf("%d", yaml.MaxPerSession))
+	}
+	if yaml.MaxPerSession > 0 {
+		v, err := safeInt32(yaml.MaxPerSession, "TaskBoard.ImplicitTasks.MaxPerSession")
+		if err != nil {
+			// An int32-overflowing cap is present-but-unparseable. Swallowing
+			// the error left the field at 0, which ResolveImplicitPolicy reads
+			// as "unset" and fills with the default 100 — failing OPEN in the
+			// one block whose entire purpose is to fail closed.
+			return failClosed("max_per_session", fmt.Sprintf("%d", yaml.MaxPerSession))
+		}
+		cfg.MaxPerSession = v
+	}
+
+	switch strings.ToLower(yaml.Mode) {
+	case "enabled", "on":
+		cfg.Mode = loomv1.ImplicitTaskMode_IMPLICIT_TASK_MODE_ENABLED
+	case "disabled", "off":
+		cfg.Mode = loomv1.ImplicitTaskMode_IMPLICIT_TASK_MODE_DISABLED
+	case "":
+		cfg.Mode = loomv1.ImplicitTaskMode_IMPLICIT_TASK_MODE_UNSPECIFIED
+	default:
+		return failClosed("mode", yaml.Mode)
+	}
+
+	for _, name := range yaml.Triggers {
+		tr := parseImplicitTaskTrigger(name)
+		if tr == loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_UNSPECIFIED {
+			return failClosed("triggers", name)
+		}
+		cfg.Triggers = append(cfg.Triggers, tr)
+	}
+	for _, name := range yaml.ExcludedTriggers {
+		tr := parseImplicitTaskTrigger(name)
+		if tr == loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_UNSPECIFIED {
+			return failClosed("excluded_triggers", name)
+		}
+		cfg.ExcludedTriggers = append(cfg.ExcludedTriggers, tr)
+	}
+	return cfg
+}
+
+// warnRemovedKeys reports a key the loader once read and no longer does, so a
+// file that still sets it learns the setting has no effect.
+func warnRemovedKeys(yamlOnly string) {
+	var probe struct {
+		Agent struct {
+			Behavior map[string]any `yaml:"behavior"`
+		} `yaml:"agent"`
+		Spec struct {
+			Behavior map[string]any `yaml:"behavior"`
+		} `yaml:"spec"`
+	}
+	if err := yaml.Unmarshal([]byte(yamlOnly), &probe); err != nil {
+		return
+	}
+	for _, b := range []map[string]any{probe.Agent.Behavior, probe.Spec.Behavior} {
+		if _, set := b["context_relief_warning"]; set {
+			zap.L().Warn("behavior.context_relief_warning is no longer read; the setting has no effect")
+		}
+		if _, set := b["preflight_fit"]; set {
+			zap.L().Warn("behavior.preflight_fit is no longer read; to hold every request under the context window, set llm.max_model_context_tokens to it")
+		}
+		if _, set := b["auto_compact_percent"]; set {
+			zap.L().Warn("behavior.auto_compact_percent is no longer read; the in-loop fold compacts at memory.memory_compression.critical_threshold_percent")
+		}
+	}
+}
+
+// warnMisnestedTaskBoard reports a task_board block written where the loader
+// does not read it.
+//
+// task_board is read at agent.memory.task_board (spec.memory.task_board in
+// k8s style) and nowhere else. yaml.Unmarshal is not strict, so a block in any
+// other position is dropped in silence — and because implicit_tasks defaults
+// to ON and writes durable rows, a dropped block means an operator who wrote
+// the off switch one level too high still gets recording, with nothing
+// anywhere to say why. Warning is deliberately not an error: the block is
+// inert either way, and refusing to load an agent over a stray key would be a
+// breaking change for configs that load today.
+func warnMisnestedTaskBoard(yamlOnly string) {
+	var probe struct {
+		TaskBoard *TaskBoardConfigYAML `yaml:"task_board"`
+		Agent     struct {
+			TaskBoard *TaskBoardConfigYAML `yaml:"task_board"`
+		} `yaml:"agent"`
+		Spec struct {
+			TaskBoard *TaskBoardConfigYAML `yaml:"task_board"`
+		} `yaml:"spec"`
+	}
+	// A parse failure here is not this function's to report: the caller has
+	// already unmarshalled the same document and surfaced any syntax error.
+	if err := yaml.Unmarshal([]byte(yamlOnly), &probe); err != nil {
+		return
+	}
+
+	for _, at := range []struct {
+		where string
+		block *TaskBoardConfigYAML
+	}{
+		{"task_board", probe.TaskBoard},
+		{"agent.task_board", probe.Agent.TaskBoard},
+		{"spec.task_board", probe.Spec.TaskBoard},
+	} {
+		if at.block == nil {
+			continue
+		}
+		zap.L().Warn("task_board is configured where the loader does not read it; the block was IGNORED",
+			zap.String("found_at", at.where),
+			zap.String("expected_at", "agent.memory.task_board (spec.memory.task_board in k8s-style configs)"),
+			zap.Bool("implicit_tasks_present", at.block.ImplicitTasks != nil))
+	}
+}
+
+// parseImplicitTaskTrigger maps a YAML trigger name to its enum value. The
+// bare name and the full enum name both parse, so a config copied out of the
+// proto still loads. UNSPECIFIED means "not a trigger name".
+func parseImplicitTaskTrigger(name string) loomv1.ImplicitTaskTrigger {
+	n := strings.ToUpper(strings.TrimSpace(name))
+	n = strings.TrimPrefix(n, "IMPLICIT_TASK_TRIGGER_")
+	switch n {
+	case "TOOL_CALL":
+		return loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_TOOL_CALL
+	case "SKILL_ACTIVATION":
+		return loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_SKILL_ACTIVATION
+	case "HUMAN_REQUEST":
+		return loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_HUMAN_REQUEST
+	case "SUBAGENT_SPAWN":
+		return loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_SUBAGENT_SPAWN
+	case "WORKFLOW_STEP":
+		return loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_WORKFLOW_STEP
+	default:
+		return loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_UNSPECIFIED
 	}
 }
 
@@ -1110,8 +1615,38 @@ func expandEnvVars(s string) string {
 	})
 }
 
+// validateGatewayRouting rejects a gateway_routing block that would be
+// ignored or is malformed. Only vercel-ai-gateway reads it, so a block on any
+// other provider, or on a role that names no provider (and so runs on
+// whatever the server's default is), would be accepted and silently dropped;
+// for a block that requires zero data retention that is a policy bypass.
+func validateGatewayRouting(role string, l *loomv1.LLMConfig) error {
+	if l == nil || l.GetGatewayRouting() == nil {
+		return nil
+	}
+	if !vercelgateway.IsProviderName(l.GetProvider()) {
+		return fmt.Errorf("%s.gateway_routing is honoured only by provider %s (got provider %q); set provider: %s or remove the block", role, vercelgateway.ProviderName, l.GetProvider(), vercelgateway.ProviderName)
+	}
+	if err := vercelgateway.RoutingFromProto(l.GetGatewayRouting()).Validate(); err != nil {
+		return fmt.Errorf("%s.gateway_routing: %w", role, err)
+	}
+	return nil
+}
+
 // ValidateAgentConfig validates an agent configuration
 func ValidateAgentConfig(config *loomv1.AgentConfig) error {
+	for _, r := range []struct {
+		role string
+		cfg  *loomv1.LLMConfig
+	}{
+		{"llm", config.GetLlm()}, {"judge_llm", config.GetJudgeLlm()}, {"orchestrator_llm", config.GetOrchestratorLlm()},
+		{"classifier_llm", config.GetClassifierLlm()}, {"compressor_llm", config.GetCompressorLlm()},
+	} {
+		if err := validateGatewayRouting(r.role, r.cfg); err != nil {
+			return err
+		}
+	}
+
 	if config.Name == "" {
 		return fmt.Errorf("agent name is required")
 	}
@@ -1130,20 +1665,28 @@ func ValidateAgentConfig(config *loomv1.AgentConfig) error {
 
 		// Validate provider is supported
 		validProviders := map[string]bool{
-			"anthropic":    true,
-			"bedrock":      true,
-			"litellm":      true,
-			"ollama":       true,
-			"openai":       true,
-			"azure-openai": true,
-			"azureopenai":  true,
-			"mistral":      true,
-			"gemini":       true,
-			"huggingface":  true,
+			"anthropic":                 true,
+			"bedrock":                   true,
+			"bedrock-mantle":            true,
+			"litellm":                   true,
+			vercelgateway.ProviderName:  true,
+			vercelgateway.ProviderAlias: true,
+			"ollama":                    true,
+			"openai":                    true,
+			"azure-openai":              true,
+			"azureopenai":               true,
+			"mistral":                   true,
+			"gemini":                    true,
+			"huggingface":               true,
 		}
 		provider := strings.ToLower(config.Llm.Provider)
 		if !validProviders[provider] {
-			return fmt.Errorf("unsupported LLM provider: %s (must be one of: anthropic, bedrock, litellm, ollama, openai, azure-openai, mistral, gemini, huggingface)", config.Llm.Provider)
+			return fmt.Errorf("unsupported LLM provider: %s (must be one of: anthropic, bedrock, bedrock-mantle, litellm, ollama, openai, azure-openai, mistral, gemini, huggingface, vercel-ai-gateway)", config.Llm.Provider)
+		}
+		if vercelgateway.IsProviderName(provider) {
+			if err := vercelgateway.ValidateModelID(config.Llm.Model); err != nil {
+				return err
+			}
 		}
 
 		// Validate temperature range
@@ -1162,6 +1705,14 @@ func ValidateAgentConfig(config *loomv1.AgentConfig) error {
 		if !validMemoryTypes[config.Memory.Type] {
 			return fmt.Errorf("unsupported memory type: %s (must be one of: memory, sqlite, postgres)", config.Memory.Type)
 		}
+	}
+
+	// Decision layer: the same rules as the YAML loader, so an inline
+	// AgentConfig (CreateAgentFromConfig, loom-mcp create_agent) cannot
+	// carry what a YAML file could not (an agent-chosen endpoint, an
+	// unacknowledged alias, an out-of-range band).
+	if err := decision.ValidateConfig(config.GetDecision()); err != nil {
+		return err
 	}
 
 	return nil
@@ -1190,21 +1741,27 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 	yaml.Agent.Name = config.Name
 	yaml.Agent.Description = config.Description
 	yaml.Agent.SystemPrompt = config.SystemPrompt
+	yaml.Agent.ROM = config.Rom
 	yaml.Agent.Metadata = convertMetadataToInterface(config.Metadata)
 
 	// Convert LLM config
 	if config.Llm != nil {
 		yaml.Agent.LLM = LLMConfigYAML{
-			Provider:             config.Llm.Provider,
-			Model:                config.Llm.Model,
-			Temperature:          float64(config.Llm.Temperature),
-			MaxTokens:            int(config.Llm.MaxTokens),
-			StopSequences:        config.Llm.StopSequences,
-			TopP:                 float64(config.Llm.TopP),
-			TopK:                 int(config.Llm.TopK),
-			MaxContextTokens:     int(config.Llm.MaxContextTokens),
-			ReservedOutputTokens: int(config.Llm.ReservedOutputTokens),
-			Seed:                 copyInt64Ptr(config.Llm.Seed),
+			Provider:              config.Llm.Provider,
+			Model:                 config.Llm.Model,
+			Temperature:           float64(config.Llm.Temperature),
+			MaxTokens:             int(config.Llm.MaxTokens),
+			StopSequences:         config.Llm.StopSequences,
+			TopP:                  float64(config.Llm.TopP),
+			TopK:                  int(config.Llm.TopK),
+			MaxContextTokens:      int(config.Llm.MaxContextTokens),
+			ReservedOutputTokens:  int(config.Llm.ReservedOutputTokens),
+			MaxModelContextTokens: int(config.Llm.MaxModelContextTokens),
+			// rate_limit used to be dropped here for the main LLM (the role
+			// LLMs below kept it), so a save/load round trip lost it.
+			RateLimit:      rateLimitProtoToYAML(config.Llm.RateLimit),
+			Seed:           copyInt64Ptr(config.Llm.Seed),
+			GatewayRouting: gatewayRoutingProtoToYAML(config.Llm.GatewayRouting),
 		}
 	}
 
@@ -1260,6 +1817,7 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 				MaxEntitiesPerExtraction:      int(config.Memory.GraphMemory.MaxEntitiesPerExtraction),
 				ConversationExtractionCadence: int(config.Memory.GraphMemory.ConversationExtractionCadence),
 				ExtractionTimeoutSeconds:      int(config.Memory.GraphMemory.ExtractionTimeoutSeconds),
+				FleetLessonSharing:            config.Memory.GraphMemory.FleetLessonSharing,
 			}
 		}
 	}
@@ -1277,6 +1835,9 @@ func protoToYAML(config *loomv1.AgentConfig) *AgentConfigYAML {
 			FailureRecovery:        failureRecoveryProtoToYAML(config.Behavior.GetFailureRecovery()),
 		}
 	}
+
+	// Decision layer; nil leaves the block out.
+	yaml.Agent.Decision = convertProtoToDecisionConfigYAML(config.Decision)
 
 	return yaml
 }

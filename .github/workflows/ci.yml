@@ -102,7 +102,7 @@ jobs:
 
       - name: Run gofmt
         run: |
-          gofmt_output=$(find . -name '*.go' -not -path './vendor/*' -not -path './gen/*' -exec gofmt -l {} +)
+          gofmt_output=$(find . -name '*.go' -not -path './vendor/*' -not -path './gen/*' -not -path './third_party/*' -exec gofmt -l {} +)
           if [ -n "$gofmt_output" ]; then
             echo "The following files need formatting:"
             echo "$gofmt_output"
@@ -113,6 +113,29 @@ jobs:
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.9.0
+
+      # Attribution files are generated from the dependency tree, so any
+      # dependency bump can silently invalidate them. `just check` runs this,
+      # but a Dependabot PR never does — so without it in CI the committed
+      # NOTICE/THIRD-PARTY-NOTICES.md drift the moment a bump merges, and we
+      # ship legally inaccurate attribution.
+      - name: Check third-party notices are up to date
+        run: |
+          if ! GOWORK=off go run ./cmd/gen-notices -check; then
+            echo "::error::Third-party notices are out of date. Run 'just notices' and commit."
+            exit 1
+          fi
+          echo "Third-party notices are up to date"
+
+      # The only regression tests for a runner that spends real Bedrock money
+      # on multi-day runs. STRICT so a missing jq/pyyaml fails the job instead
+      # of printing SKIP and going green.
+      - name: LongMemEval rig regression tests
+        env:
+          LME_RIG_STRICT: "1"
+        run: |
+          bash deploy/longmemeval/render-test.sh
+          bash deploy/longmemeval/slice-loop-test.sh
 
   # ============================================================================
   # Job 3: Unit Tests with Race Detection
@@ -193,11 +216,19 @@ jobs:
           # pipefail so a non-zero `go test` exit is not masked by `tee`.
           # ./cmd/... is in the gate: the CLI is the standalone respond door,
           # and a test that does not gate is not coverage.
+          #
+          # test/context-optimiser drives the agent from outside its package —
+          # the relief machinery is exercised there and nowhere else — so
+          # -coverpkg attributes what those routes execute back to the packages
+          # that own the lines, which a per-package profile cannot do. It is
+          # named rather than ./test/..., which would also pull in the
+          # loadtest scalability routes.
           set -euo pipefail
           go test -tags fts5 -race -v -timeout=10m \
             -coverprofile=coverage.out \
             -covermode=atomic \
-            ./pkg/... ./internal/... ./cmd/... \
+            -coverpkg=./pkg/...,./internal/...,./cmd/... \
+            ./pkg/... ./internal/... ./cmd/... ./test/context-optimiser/ \
             | tee test-output.log
 
       - name: Run example tests
@@ -231,7 +262,7 @@ jobs:
 
       - name: Upload coverage
         if: matrix.go-version == '1.26'
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v5
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v5
         with:
           files: ./coverage.out
           flags: unittests
@@ -242,7 +273,7 @@ jobs:
 
       - name: Upload coverage artifacts
         if: matrix.go-version == '1.26'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-report
           path: |
@@ -334,6 +365,32 @@ jobs:
           go test -run=^$ -fuzz='^FuzzSpanTimestamps$' -fuzztime=30s ./pkg/observability
 
           echo "✅ Observability package fuzz tests completed" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run fuzz tests (decision layer)
+        run: |
+          set -euo pipefail
+          go test -run=^$ -fuzz='^FuzzToValueRoundTrip$' -fuzztime=30s ./pkg/decision
+          go test -run=^$ -fuzz='^FuzzValidateState$' -fuzztime=30s ./pkg/decision
+          go test -run=^$ -fuzz='^FuzzParseAnswers$' -fuzztime=30s ./pkg/decision/llm
+          go test -run=^$ -fuzz='^FuzzExtractObject$' -fuzztime=30s ./pkg/decision/llm
+          go test -run=^$ -fuzz='^FuzzCheckEndpoint$' -fuzztime=30s ./pkg/decision/jev
+          go test -run=^$ -fuzz='^FuzzInferErrorTypeKeepsOriginalClasses$' -fuzztime=30s ./pkg/fabric
+
+          echo "✅ Decision layer fuzz tests completed" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run fuzz tests (luasandbox package)
+        run: |
+          set -euo pipefail
+          go test -tags fts5 -run=^$ -fuzz='^FuzzRun$' -fuzztime=30s ./pkg/luasandbox
+
+          echo "✅ Lua script engine fuzz tests completed" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run fuzz tests (shellpolicy package)
+        run: |
+          set -euo pipefail
+          go test -run=^$ -fuzz='^FuzzAnalyze$' -fuzztime=30s ./pkg/shellpolicy
+
+          echo "✅ Shellpolicy package fuzz tests completed" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run fuzz tests with hawk (observability privacy)
         run: |
@@ -427,7 +484,7 @@ jobs:
           fi
 
       - name: Upload binaries
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: binaries-${{ matrix.os }}
           path: bin/
@@ -444,10 +501,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Build runtime image for supported platforms
         run: |
@@ -490,9 +547,9 @@ jobs:
         run: go run ./cmd/generate-weaver
 
       - name: Run Gosec Security Scanner
-        uses: securego/gosec@deb54465fea23d19a77f037e11e6589021f8501d # v2.29.0
+        uses: securego/gosec@5eb1d104ef85ff2c905c877eb600e8c1dee33a22 # v2.30.0
         with:
-          args: '-no-fail -fmt sarif -out results.sarif -exclude-dir=gen ./...'
+          args: '-no-fail -fmt sarif -out results.sarif -exclude-dir=gen -exclude-dir=third_party ./...'
 
       - name: Fix SARIF schema compliance
         run: |
@@ -503,7 +560,7 @@ jobs:
           mv results-fixed.sarif results.sarif
 
       - name: Upload SARIF file
-        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         continue-on-error: true  # Don't fail the build if code scanning is not enabled
         with:
           sarif_file: results.sarif
@@ -527,7 +584,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       - name: Download coverage report
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: coverage-report
         continue-on-error: true
@@ -565,6 +622,79 @@ jobs:
           echo "| pkg/observability | >80% | Check coverage.out |" >> $GITHUB_STEP_SUMMARY
 
   # ============================================================================
+  # Job 7b: Windows Unit Tests
+  # ============================================================================
+  # Guards the Windows test-suite portability fixes (path separators, open file
+  # handles blocking temp-dir removal, POSIX-only assumptions). The full suite
+  # runs without -race; -race runs only on the packages with OS-specific code
+  # that .github/scripts/windows-race-packages.sh detects. No service
+  # containers: the Linux `test` job owns the postgres-backed tests.
+  test-windows:
+    name: Unit Tests (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Cache buf modules
+        uses: ./.github/actions/buf-cache
+
+      - name: Setup Buf
+        uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate Proto Files
+        run: buf generate
+
+      - name: Generate weaver.yaml from template
+        run: go run ./cmd/generate-weaver
+
+      - name: Pre-warm MCP filesystem server (npm cache)
+        # Same reason as the Linux job: the MCP conformance tests start
+        # `npx -y @modelcontextprotocol/server-*` under a 45s init timeout, and a
+        # cold download on the Windows runner can exceed it ("initialize failed:
+        # context deadline exceeded"). Install the packages once so the timed
+        # tests resolve them from the global npm bin; never hard-fails the job.
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npm install -g @modelcontextprotocol/server-filesystem @modelcontextprotocol/server-memory && break
+            echo "npm install attempt $i failed; retrying in 5s..."
+            sleep 5
+          done || true
+
+      - name: Run tests
+        shell: bash
+        run: go test -tags fts5 -short -timeout=30m ./...
+
+      - name: Run platform-specific tests with race detection
+        # The full-repo run above has no -race because it would multiply the job
+        # time. This step runs -race on the packages with OS-specific code, found
+        # by .github/scripts/windows-race-packages.sh (files compiled for windows
+        # but not linux, and non-test code that reads runtime.GOOS), so new OS
+        # boundaries are picked up without editing this workflow. -short matches
+        # the step above and keeps test/loadtest (which only reads runtime.GOOS to
+        # report its environment) from running its scalability tests under -race.
+        shell: bash
+        run: |
+          pkgs=$(.github/scripts/windows-race-packages.sh)
+          echo "Packages with Windows-specific code:"
+          echo "$pkgs"
+          if [ -z "$pkgs" ]; then
+            echo "none found; skipping"
+            exit 0
+          fi
+          go test -tags fts5 -short -race -timeout=15m $pkgs
+
+  # ============================================================================
   # Job 8: All Checks Passed
   # ============================================================================
   ci-success:
@@ -575,6 +705,7 @@ jobs:
       - proto
       - lint
       - test
+      - test-windows
       - fuzz
       - build
       - security

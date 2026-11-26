@@ -8,12 +8,24 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// absPathFixture returns a path that is genuinely absolute per
+// filepath.IsAbs on the current OS -- "/custom/..." is rooted but not
+// absolute on Windows (no drive letter), so tests that need an
+// already-absolute input use this instead of a Unix-only literal.
+func absPathFixture(elem ...string) string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(append([]string{`C:\`}, elem...)...)
+	}
+	return filepath.Join(append([]string{"/"}, elem...)...)
+}
 
 func TestGetLoomDataDir(t *testing.T) {
 	// Save original env var
@@ -38,7 +50,7 @@ func TestGetLoomDataDir(t *testing.T) {
 	})
 
 	t.Run("use LOOM_DATA_DIR when set", func(t *testing.T) {
-		customDir := "/custom/loom/data"
+		customDir := absPathFixture("custom", "loom", "data")
 		_ = os.Setenv("LOOM_DATA_DIR", customDir)
 
 		dataDir := GetLoomDataDir()
@@ -91,7 +103,7 @@ func TestGetLoomSubDir(t *testing.T) {
 	})
 
 	t.Run("respect LOOM_DATA_DIR for subdirectories", func(t *testing.T) {
-		customDir := "/custom/loom"
+		customDir := absPathFixture("custom", "loom")
 		_ = os.Setenv("LOOM_DATA_DIR", customDir)
 
 		patternsDir := GetLoomSubDir("patterns")
@@ -117,8 +129,8 @@ func TestExpandPath(t *testing.T) {
 		},
 		{
 			name:     "absolute path unchanged",
-			input:    "/absolute/path",
-			expected: "/absolute/path",
+			input:    absPathFixture("absolute", "path"),
+			expected: absPathFixture("absolute", "path"),
 		},
 		{
 			name:  "relative path made absolute",

@@ -16,11 +16,12 @@
 // and captures the exact context handed to the provider at every call, so the
 // resulting stages can be read against what the context OUGHT to be.
 //
-// It is an instrument, not a gate: nothing in CI depends on it, and it skips
-// unless LOOM_CONTEXT_OPTIMISER=1 is set. It still compiles in CI so the routes
-// cannot rot silently when an API they drive changes.
+// The routes assert the relief machinery's behaviour — the arrival bound, the
+// fold, the cache-marker budget, skill deactivation — and run in CI. Each
+// dispatched context is also written to LOOM_DEBUG_DIR so a failing route can
+// be read stage by stage.
 //
-//	LOOM_CONTEXT_OPTIMISER=1 go test -tags fts5 ./test/context-optimiser/
+//	go test -tags fts5 ./test/context-optimiser/
 //
 // The suite drives the agent from OUTSIDE pkg/agent — only exported API — so a
 // route sees what a real consumer sees.
@@ -48,12 +49,13 @@ const (
 	envGate = "LOOM_CONTEXT_OPTIMISER"
 )
 
-// requireGate skips unless the suite was asked for explicitly. Keeps the routes
-// out of every ordinary `go test ./...` while leaving them compiled.
+// requireGate reserves a slot for a route that needs an opt-in. The suite runs
+// by default; LOOM_CONTEXT_OPTIMISER=0 holds it back where a machine cannot
+// give it the processes it spawns.
 func requireGate(t *testing.T) {
 	t.Helper()
-	if os.Getenv(envGate) == "" {
-		t.Skipf("context-optimiser is an instrument, not a gate: set %s=1 to run it", envGate)
+	if os.Getenv(envGate) == "0" {
+		t.Skipf("held back by %s=0", envGate)
 	}
 }
 
@@ -82,7 +84,7 @@ metadata:
   domain: general
   risk_level: LOW
 trigger:
-  mode: MANUAL
+  mode: HYBRID
 prompt:
   instructions: |
     ` + skillBodyMarker + `
@@ -102,7 +104,7 @@ metadata:
   domain: general
   risk_level: LOW
 trigger:
-  mode: MANUAL
+  mode: HYBRID
 prompt:
   instructions: |
     ` + auditBodyMarker + `
@@ -198,12 +200,39 @@ func emit(id string, bytes int, shape string) types.ToolCall {
 // scriptedLLM replays a fixed list of turns. Exhausting the script is a fault,
 // not a fallback: a route that runs past its script is no longer deterministic
 // and its stages mean nothing.
+//
+// The fold is answered out of band. The in-loop fold asks the agent itself for
+// the summary, so a fold turn is a provider call like any other — but it is the
+// harness's call, not the route's. Answering it from the script would consume a
+// scripted turn and desynchronise everything after it, and a scripted turn's
+// reply is a tool call with no text, which ApplyFoldReply rejects outright. So a
+// fold request is recognised and answered here with a well-formed summary, and
+// the script index does not move. foldsAnswered counts them, which is how a
+// route asserts that folding actually happened.
 type scriptedLLM struct {
-	mu      sync.Mutex
-	turns   []scriptedTurn
-	idx     int
-	over    bool // set when the script was exhausted
-	refuseN int  // next N Chat calls return the typed context-too-long error
+	mu            sync.Mutex
+	turns         []scriptedTurn
+	idx           int
+	over          bool // set when the script was exhausted
+	refuseN       int  // next N Chat calls return the typed context-too-long error
+	foldsAnswered int  // fold requests answered out of band
+}
+
+// foldRequestMarker identifies the transient fold instruction (pkg/agent's
+// foldInstruction). Matching the request rather than the turn index is what
+// keeps a route deterministic when relief fires at a moment the route did not
+// choose.
+const foldRequestMarker = "Context maintenance: summarise the work so far"
+
+// isFoldRequest reports whether this provider call is the harness asking for a
+// summary rather than the route's next turn.
+func isFoldRequest(messages []types.Message) bool {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if strings.Contains(messages[i].Content, foldRequestMarker) {
+			return true
+		}
+	}
+	return false
 }
 
 // refuse makes the next n Chat calls return llm.ErrContextTooLong — the typed
@@ -224,6 +253,16 @@ func (m *scriptedLLM) Chat(_ context.Context, messages []types.Message, _ []shut
 	if m.refuseN > 0 {
 		m.refuseN--
 		return nil, fmt.Errorf("API error (status 400): context window exceeded: %w", llm.ErrContextTooLong)
+	}
+	// A fold request is the harness's, not the route's: answer it and leave the
+	// script index alone.
+	if isFoldRequest(messages) {
+		m.foldsAnswered++
+		return &types.LLMResponse{
+			Content: `{"summary": "State of the work: the route's steps so far are folded into this line. ` +
+				`Identifiers and paths are carried forward as pointers; payloads are not."}`,
+			Usage: types.Usage{InputTokens: 10, OutputTokens: 10},
+		}, nil
 	}
 	if m.idx >= len(m.turns) {
 		m.over = true
@@ -343,6 +382,8 @@ func newRig(t *testing.T, outDir string, script []scriptedTurn, maxContext, rese
 	if err != nil {
 		t.Fatalf("session store: %v", err)
 	}
+	// Windows cannot delete an open file, so TempDir's removal needs the db closed first.
+	t.Cleanup(func() { _ = store.Close() })
 
 	llm := &scriptedLLM{turns: script}
 	a, orch, mem := buildAgentWithMemory(t, llm, store, skillsDir, patternsDir,
@@ -421,12 +462,13 @@ type dumpTool struct {
 // dumpMessage mirrors types.Message as it lands on disk. That type carries no
 // json tags, so it marshals under its Go field names — these must match exactly.
 type dumpMessage struct {
-	Role       string
-	Content    string
-	ToolUseID  string
-	ToolCalls  []types.ToolCall
-	ToolResult *json.RawMessage
-	AgentID    string
+	Role            string
+	Content         string
+	ToolUseID       string
+	ToolCalls       []types.ToolCall
+	ToolResult      *json.RawMessage
+	AgentID         string
+	CacheBreakpoint bool
 }
 
 // stage is one provider call: the exact context dispatched at that moment.

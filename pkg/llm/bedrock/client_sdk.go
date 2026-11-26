@@ -23,6 +23,7 @@ import (
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/bedrock"
+	"github.com/anthropics/anthropic-sdk-go/packages/param"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -36,12 +37,15 @@ import (
 // SDKClient implements the LLMProvider interface using the official Anthropic SDK for Bedrock.
 // This is simpler and better maintained than the direct AWS SDK approach.
 type SDKClient struct {
-	client      anthropic.Client
-	modelID     string
-	region      string
-	maxTokens   int64
-	temperature float64
-	rateLimiter *llm.RateLimiter
+	schemaPolicy      llm.ToolSchemaPolicy
+	strictToolSchemas bool
+	client            anthropic.Client
+	modelID           string
+	region            string
+	maxTokens         int64
+	temperature       float64
+	thinkingLevel     string
+	rateLimiter       *llm.RateLimiter
 }
 
 // NewSDKClient creates a new Bedrock client using the Anthropic SDK.
@@ -173,12 +177,14 @@ func NewSDKClient(cfg Config) (*SDKClient, error) {
 	)
 
 	return &SDKClient{
-		client:      client,
-		modelID:     cfg.ModelID,
-		region:      cfg.Region,
-		maxTokens:   int64(cfg.MaxTokens),
-		temperature: cfg.Temperature,
-		rateLimiter: rateLimiter,
+		strictToolSchemas: cfg.StrictToolSchemas,
+		client:            client,
+		modelID:           cfg.ModelID,
+		thinkingLevel:     cfg.ThinkingLevel,
+		region:            cfg.Region,
+		maxTokens:         int64(cfg.MaxTokens),
+		temperature:       cfg.Temperature,
+		rateLimiter:       rateLimiter,
 	}, nil
 }
 
@@ -224,10 +230,12 @@ func (c *SDKClient) Chat(ctx context.Context, messages []llmtypes.Message, tools
 
 	// Build message params
 	params := anthropic.MessageNewParams{
-		Model:       anthropic.Model(c.modelID),
-		Messages:    sdkMessages,
-		MaxTokens:   c.maxTokens,
-		Temperature: anthropic.Float(c.temperature),
+		Model:        anthropic.Model(c.modelID),
+		Messages:     sdkMessages,
+		MaxTokens:    c.maxTokens,
+		Temperature:  c.temperatureParam(ctx),
+		Thinking:     c.thinkingConfig(ctx),
+		OutputConfig: c.outputConfig(ctx),
 	}
 
 	// System blocks carry the compile's cache breakpoints, one per block.
@@ -241,7 +249,11 @@ func (c *SDKClient) Chat(ctx context.Context, messages []llmtypes.Message, tools
 	var toolNameMap map[string]string
 	if len(tools) > 0 {
 		var sdkTools []anthropic.ToolParam
-		sdkTools, toolNameMap = c.convertToolsToSDK(tools)
+		var conversionErr error
+		sdkTools, toolNameMap, conversionErr = c.convertToolsToSDK(ctx, tools)
+		if conversionErr != nil {
+			return nil, conversionErr
+		}
 		// Mark the last tool with cache_control so the entire tool list is cached
 		if len(sdkTools) > 0 {
 			sdkTools[len(sdkTools)-1].CacheControl = anthropic.NewCacheControlEphemeralParam()
@@ -253,7 +265,9 @@ func (c *SDKClient) Chat(ctx context.Context, messages []llmtypes.Message, tools
 				OfTool: &sdkTools[i],
 			}
 		}
-		params.Tools = toolUnions
+		if len(toolUnions) > 0 {
+			params.Tools = toolUnions
+		}
 	}
 
 	// Call API with rate limiting if configured
@@ -295,6 +309,101 @@ func (c *SDKClient) Chat(ctx context.Context, messages []llmtypes.Message, tools
 	return llmResp, nil
 }
 
+// thinkingEnabled reports whether this request carries thinking, in which form
+// does not matter: the API rejects temperature != 1 whenever thinking is on.
+func (c *SDKClient) thinkingEnabled(ctx context.Context) bool {
+	t := c.thinkingConfig(ctx)
+	return t.OfAdaptive != nil || t.OfEnabled != nil
+}
+
+// temperatureParam returns the request temperature, or the zero value when
+// thinking is on. Anthropic rejects any temperature other than 1 alongside
+// thinking, so a configured 0.2 would fail every request at any level above
+// off. Omitting the field takes the API default, which is the only value
+// thinking accepts.
+func (c *SDKClient) temperatureParam(ctx context.Context) param.Opt[float64] {
+	if c.thinkingEnabled(ctx) {
+		return param.Opt[float64]{}
+	}
+	return anthropic.Float(c.temperature)
+}
+
+// thinkingConfig maps the level to the SDK thinking union: adaptive with
+// summarized display on 4.6+/5 models (the level tiers collapse there — no
+// effort knob exists), enabled+budget_tokens tiers on older ones. Zero value
+// = field omitted = thinking off.
+func (c *SDKClient) thinkingConfig(ctx context.Context) anthropic.ThinkingConfigParamUnion {
+	if c.thinkingLevel == "" || c.thinkingLevel == "none" {
+		return anthropic.ThinkingConfigParamUnion{}
+	}
+	if llm.IsAdaptiveThinkingModel(c.modelID) {
+		return anthropic.ThinkingConfigParamUnion{OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{
+			Display: anthropic.ThinkingConfigAdaptiveDisplaySummarized,
+		}}
+	}
+	// Suppression applies HERE and only here — see the native client: the
+	// thinking-block requirement belongs to this enabled+budget form, and
+	// adaptive models accept a rebuilt tool_use row without one.
+	if llm.ThinkingSuppressed(ctx) {
+		return anthropic.ThinkingConfigParamUnion{}
+	}
+	budget := int64(16384)
+	switch c.thinkingLevel {
+	case "low":
+		budget = 4096
+	case "high":
+		budget = 32768
+	}
+	// The API requires budget_tokens < max_tokens. A model missing from the
+	// catalog falls back to a 4096 max_tokens, which equals the low tier and
+	// makes every request invalid, so the budget yields to the ceiling rather
+	// than the request failing. Below the API's 1024 floor there is no valid
+	// budget at all, so thinking is omitted instead of sent malformed.
+	if c.maxTokens > 0 && budget >= c.maxTokens {
+		budget = c.maxTokens - 1024
+		if budget < 1024 {
+			return anthropic.ThinkingConfigParamUnion{}
+		}
+	}
+	return anthropic.ThinkingConfigParamOfEnabled(budget)
+}
+
+// outputConfig maps the thinking level to output_config.effort on
+// adaptive-thinking models (low|medium|high|xhigh|max; "auto"/empty omit
+// the field and take the model's default). Zero value = field omitted.
+func (c *SDKClient) outputConfig(ctx context.Context) anthropic.OutputConfigParam {
+	switch llm.EffortForLevel(c.modelID, c.thinkingLevel) {
+	case "low":
+		return anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffortLow}
+	case "medium":
+		return anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffortMedium}
+	case "high":
+		return anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffortHigh}
+	case "xhigh":
+		return anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffortXhigh}
+	case "max":
+		return anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffortMax}
+	}
+	return anthropic.OutputConfigParam{}
+}
+
+// effort is the effort a call is made at: on an adaptive model the effort
+// sent, or empty when none was (the model's own default then applies); on an
+// older model the thinking level whose budget was sent, or none with thinking
+// off.
+func (c *SDKClient) effort() string {
+	if llm.IsAdaptiveThinkingModel(c.modelID) {
+		// The effort sent, or empty when none was: the API then applies the
+		// model's own default, which differs by model (high on Opus 5, medium
+		// on Opus 5.5), so naming one would record a guess.
+		return llm.EffortForLevel(c.modelID, c.thinkingLevel)
+	}
+	if c.thinkingLevel == "" || c.thinkingLevel == "none" {
+		return "none"
+	}
+	return strings.ToLower(c.thinkingLevel)
+}
+
 // convertMessagesToSDK converts agent messages to Anthropic SDK format.
 // Returns the system blocks and the API messages.
 //
@@ -306,14 +415,22 @@ func (c *SDKClient) convertMessagesToSDK(messages []llmtypes.Message) ([]anthrop
 	var systemBlocks []anthropic.TextBlockParam
 	var sdkMessages []anthropic.MessageParam
 
+	// Anthropic allows 4 cache_control blocks per request and this client
+	// spends one on the tool list, so at most 3 message markers pass through.
+	// The compile emits at most 3 — ROM, lastStable, till-NOW — so all of
+	// them reach the wire; the summary carries none.
+	const maxMessageMarkers = 3
+	marked := 0
+
 	for _, msg := range messages {
 		switch msg.Role {
 		case "system":
 			// Each system message is its own block; the marker rides with it.
 			if msg.Content != "" {
 				block := anthropic.TextBlockParam{Text: msg.Content}
-				if msg.CacheBreakpoint {
+				if msg.CacheBreakpoint && marked < maxMessageMarkers {
 					block.CacheControl = anthropic.NewCacheControlEphemeralParam()
+					marked++
 				}
 				systemBlocks = append(systemBlocks, block)
 			}
@@ -350,6 +467,17 @@ func (c *SDKClient) convertMessagesToSDK(messages []llmtypes.Message) ([]anthrop
 		case "assistant":
 			var content []anthropic.ContentBlockParamUnion
 
+			// Thinking replay: blocks ride back verbatim and FIRST (response
+			// order). A settled turn carries its blocks only while the
+			// context before them is unchanged; the compile decides.
+			for _, tb := range msg.ThinkingBlocks {
+				if tb.Type == "redacted_thinking" {
+					content = append(content, anthropic.NewRedactedThinkingBlock(tb.Thinking))
+					continue
+				}
+				content = append(content, anthropic.NewThinkingBlock(tb.Signature, tb.Thinking))
+			}
+
 			// Add text content if present
 			if msg.Content != "" {
 				content = append(content, anthropic.NewTextBlock(msg.Content))
@@ -385,8 +513,9 @@ func (c *SDKClient) convertMessagesToSDK(messages []llmtypes.Message) ([]anthrop
 		// the summary are system messages, already cached via the System block
 		// above; here we mark the message breakpoint (the last stable message
 		// before any current-turn offload stub) on the block just appended.
-		if msg.CacheBreakpoint && msg.Role != "system" {
+		if msg.CacheBreakpoint && msg.Role != "system" && marked < maxMessageMarkers {
 			markLastBlockCacheControl(sdkMessages)
+			marked++
 		}
 	}
 
@@ -401,15 +530,24 @@ func markLastBlockCacheControl(msgs []anthropic.MessageParam) {
 		return
 	}
 	blocks := msgs[len(msgs)-1].Content
-	if len(blocks) == 0 {
-		return
-	}
-	b := &blocks[len(blocks)-1]
-	switch {
-	case b.OfText != nil:
-		b.OfText.CacheControl = anthropic.NewCacheControlEphemeralParam()
-	case b.OfToolResult != nil:
-		b.OfToolResult.CacheControl = anthropic.NewCacheControlEphemeralParam()
+	// The marker goes on the last block that can carry one. Thinking blocks
+	// cannot; a tool_use block can, and it is the last block of any assistant
+	// message that speaks and then calls tools — marking only text and
+	// tool_result blocks silently dropped the breakpoint on every such
+	// message, one cold call each time lastStable landed there.
+	for i := len(blocks) - 1; i >= 0; i-- {
+		b := &blocks[i]
+		switch {
+		case b.OfText != nil:
+			b.OfText.CacheControl = anthropic.NewCacheControlEphemeralParam()
+			return
+		case b.OfToolResult != nil:
+			b.OfToolResult.CacheControl = anthropic.NewCacheControlEphemeralParam()
+			return
+		case b.OfToolUse != nil:
+			b.OfToolUse.CacheControl = anthropic.NewCacheControlEphemeralParam()
+			return
+		}
 	}
 }
 
@@ -435,12 +573,19 @@ func appendUserOrCoalesceSDK(msgs []anthropic.MessageParam, blocks []anthropic.C
 // convertToolsToSDK converts tools to SDK format and returns this request's
 // sanitized→original tool-name mapping alongside them. The mapping is returned
 // rather than stored on the client so concurrent requests stay independent.
-func (c *SDKClient) convertToolsToSDK(tools []shuttle.Tool) ([]anthropic.ToolParam, map[string]string) {
+func (c *SDKClient) convertToolsToSDK(ctx context.Context, tools []shuttle.Tool) ([]anthropic.ToolParam, map[string]string, error) {
 	var sdkTools []anthropic.ToolParam
 	toolNameMap := make(map[string]string, len(tools))
 
 	for _, tool := range tools {
 		originalName := tool.Name()
+		schemaMap, keep, err := c.schemaPolicy.Prepare(ctx, originalName, tool.InputSchema(), c.strictToolSchemas)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !keep {
+			continue
+		}
 		sanitizedName := llm.SanitizeToolName(originalName)
 		toolNameMap[sanitizedName] = originalName
 
@@ -449,40 +594,28 @@ func (c *SDKClient) convertToolsToSDK(tools []shuttle.Tool) ([]anthropic.ToolPar
 			Description: anthropic.String(tool.Description()),
 		}
 
-		schema := tool.InputSchema()
-		if schema != nil {
-			// Build a JSON Schema draft 2020-12 compliant document. We cannot
-			// marshal schema.Properties raw: shuttle.JSONSchema.Type has no
-			// omitempty, so nullable params (anyOf with an empty top-level Type)
-			// would serialize to "type": "" and a parameterless tool would emit
-			// "properties": null / "required": null — all rejected by Bedrock.
-			// convertSchemaValue/convertSchemaProperties normalize these and
-			// preserve composite keywords (anyOf/oneOf/allOf/not).
-			schemaType := schema.Type
-			if schemaType == "" {
-				schemaType = "object"
+		if schemaMap != nil {
+			// Marshal and unmarshal to get proper anthropic.ToolInputSchemaParam
+			// The top level of a tool's input is an object; a schema that
+			// names no type is one, as the raw-HTTP path already assumes.
+			if t, _ := schemaMap["type"].(string); t == "" {
+				schemaMap["type"] = "object"
 			}
-			schemaMap := map[string]interface{}{
-				"type": schemaType,
+			schemaJSON, err := json.Marshal(schemaMap)
+			if err != nil {
+				return nil, nil, fmt.Errorf("tool %q schema encoding: %w", originalName, err)
 			}
-			if props := convertSchemaProperties(schema.Properties); props != nil {
-				schemaMap["properties"] = props
-			} else if schemaType == "object" {
-				schemaMap["properties"] = map[string]interface{}{}
-			}
-			if len(schema.Required) > 0 {
-				schemaMap["required"] = schema.Required
-			}
-			schemaJSON, _ := json.Marshal(schemaMap)
 			var inputSchema anthropic.ToolInputSchemaParam
-			_ = json.Unmarshal(schemaJSON, &inputSchema)
+			if err := json.Unmarshal(schemaJSON, &inputSchema); err != nil {
+				return nil, nil, fmt.Errorf("tool %q SDK schema: %w", originalName, err)
+			}
 			sdkTool.InputSchema = inputSchema
 		}
 
 		sdkTools = append(sdkTools, sdkTool)
 	}
 
-	return sdkTools, toolNameMap
+	return sdkTools, toolNameMap, nil
 }
 
 // convertResponseFromSDK converts Anthropic SDK response to agent format.
@@ -500,6 +633,11 @@ func (c *SDKClient) convertResponseFromSDK(message *anthropic.Message, toolNameM
 			CostUSD:                  c.calculateCost(int(message.Usage.InputTokens), int(message.Usage.OutputTokens), cacheRead, cacheCreation),
 			CacheReadInputTokens:     cacheRead,
 			CacheCreationInputTokens: cacheCreation,
+
+			CacheCreation1hInputTokens: int(message.Usage.CacheCreation.Ephemeral1hInputTokens),
+			CacheCreation5mInputTokens: int(message.Usage.CacheCreation.Ephemeral5mInputTokens),
+			ThinkingTokens:             int(message.Usage.OutputTokensDetails.ThinkingTokens),
+			Effort:                     c.effort(),
 		},
 		Metadata: map[string]interface{}{
 			"model":       c.modelID,
@@ -513,6 +651,13 @@ func (c *SDKClient) convertResponseFromSDK(message *anthropic.Message, toolNameM
 		switch block.Type {
 		case "text":
 			llmResp.Content += block.Text
+		case "thinking":
+			llmResp.ThinkingBlocks = append(llmResp.ThinkingBlocks, llmtypes.ThinkingBlock{
+				Type: "thinking", Thinking: block.Thinking, Signature: block.Signature})
+			llmResp.Thinking += block.Thinking
+		case "redacted_thinking":
+			llmResp.ThinkingBlocks = append(llmResp.ThinkingBlocks, llmtypes.ThinkingBlock{
+				Type: "redacted_thinking", Thinking: block.Data})
 		case "tool_use":
 			// Parse tool input from JSON
 			var input map[string]interface{}
@@ -535,41 +680,9 @@ func (c *SDKClient) convertResponseFromSDK(message *anthropic.Message, toolNameM
 	return llmResp
 }
 
-// calculateCost estimates cost for Bedrock Claude models.
-// Cache pricing: cache_creation at 1.25x input, cache_read at 0.10x input.
+// calculateCost estimates cost for Bedrock Claude models; see bedrockClaudeCost.
 func (c *SDKClient) calculateCost(inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int) float64 {
-	var inputPricePerMillion, outputPricePerMillion float64
-
-	// IMPORTANT: check "opus-4-1" BEFORE "opus-4" because strings.Contains("opus-4-5", "opus-4") is true.
-	// Opus 4.1 is the expensive model ($15/$75); Opus 4.5/4.6 are cheaper ($5/$25).
-	switch {
-	case strings.Contains(c.modelID, "claude-opus-4-1"):
-		// Claude Opus 4.1: $15 per 1M input, $75 per 1M output
-		inputPricePerMillion = 15.0
-		outputPricePerMillion = 75.0
-	case strings.Contains(c.modelID, "claude-opus-4"):
-		// Claude Opus 4.5/4.6: $5 per 1M input, $25 per 1M output
-		inputPricePerMillion = 5.0
-		outputPricePerMillion = 25.0
-	case strings.Contains(c.modelID, "claude-haiku-4"):
-		// Claude Haiku 4: $1 per 1M input, $5 per 1M output
-		inputPricePerMillion = 1.0
-		outputPricePerMillion = 5.0
-	case strings.Contains(c.modelID, "claude-sonnet-4"):
-		// Claude Sonnet 4: $3 per 1M input, $15 per 1M output
-		inputPricePerMillion = 3.0
-		outputPricePerMillion = 15.0
-	default:
-		inputPricePerMillion = 3.0
-		outputPricePerMillion = 15.0
-	}
-
-	inputCost := float64(inputTokens) * inputPricePerMillion / 1_000_000
-	outputCost := float64(outputTokens) * outputPricePerMillion / 1_000_000
-	// Cache write at 1.25x input price, cache read at 0.10x input price
-	cacheWriteCost := float64(cacheCreationTokens) * inputPricePerMillion * 1.25 / 1_000_000
-	cacheReadCost := float64(cacheReadTokens) * inputPricePerMillion * 0.10 / 1_000_000
-	return inputCost + outputCost + cacheWriteCost + cacheReadCost
+	return bedrockClaudeCost(c.modelID, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens)
 }
 
 // ChatStream streams tokens as they're generated from Bedrock using the Anthropic SDK.
@@ -586,10 +699,12 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 
 	// Build message params
 	params := anthropic.MessageNewParams{
-		Model:       anthropic.Model(c.modelID),
-		Messages:    sdkMessages,
-		MaxTokens:   c.maxTokens,
-		Temperature: anthropic.Float(c.temperature),
+		Model:        anthropic.Model(c.modelID),
+		Messages:     sdkMessages,
+		MaxTokens:    c.maxTokens,
+		Temperature:  c.temperatureParam(ctx),
+		Thinking:     c.thinkingConfig(ctx),
+		OutputConfig: c.outputConfig(ctx),
 	}
 
 	// System blocks carry the compile's cache breakpoints, one per block.
@@ -603,7 +718,11 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	var toolNameMap map[string]string
 	if len(tools) > 0 {
 		var sdkTools []anthropic.ToolParam
-		sdkTools, toolNameMap = c.convertToolsToSDK(tools)
+		var conversionErr error
+		sdkTools, toolNameMap, conversionErr = c.convertToolsToSDK(ctx, tools)
+		if conversionErr != nil {
+			return nil, conversionErr
+		}
 		// Mark the last tool with cache_control so the entire tool list is cached
 		if len(sdkTools) > 0 {
 			sdkTools[len(sdkTools)-1].CacheControl = anthropic.NewCacheControlEphemeralParam()
@@ -614,7 +733,9 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				OfTool: &sdkTools[i],
 			}
 		}
-		params.Tools = toolUnions
+		if len(toolUnions) > 0 {
+			params.Tools = toolUnions
+		}
 	}
 
 	// Acquire rate limit slot before initiating the stream to prevent Bedrock throttling.
@@ -640,6 +761,11 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	// Map content block index to tool call index in our array
 	blockIndexToToolIndex := make(map[int64]int)
 
+	// Streaming thinking assembly: blocks open at content_block_start and
+	// accumulate thinking_delta / signature_delta fragments by block index.
+	thinkBlocks := make(map[int64]*llmtypes.ThinkingBlock)
+	var thinkOrder []int64
+
 	for stream.Next() {
 		event := stream.Current()
 
@@ -650,18 +776,30 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			usage.InputTokens = int(event.Message.Usage.InputTokens)
 			usage.CacheReadInputTokens = int(event.Message.Usage.CacheReadInputTokens)
 			usage.CacheCreationInputTokens = int(event.Message.Usage.CacheCreationInputTokens)
+			usage.CacheCreation1hInputTokens = int(event.Message.Usage.CacheCreation.Ephemeral1hInputTokens)
+			usage.CacheCreation5mInputTokens = int(event.Message.Usage.CacheCreation.Ephemeral5mInputTokens)
 
 		case "content_block_start":
+			if event.ContentBlock.Type == "thinking" || event.ContentBlock.Type == "redacted_thinking" {
+				blk := &llmtypes.ThinkingBlock{Type: event.ContentBlock.Type,
+					Thinking: event.ContentBlock.Thinking, Signature: event.ContentBlock.Signature}
+				if event.ContentBlock.Type == "redacted_thinking" {
+					blk.Thinking = event.ContentBlock.Data
+				}
+				thinkBlocks[event.Index] = blk
+				thinkOrder = append(thinkOrder, event.Index)
+			}
 			// Check if this is a tool use block
 			if event.ContentBlock.Type == "tool_use" {
-				// Start tracking a new tool call - reverse map sanitized name
-				toolCall := llmtypes.ToolCall{
+				// Start tracking a new tool call - reverse map sanitized name.
+				// The SDK path sends the call's id and name here, before any
+				// argument deltas.
+				toolCallIndex := len(toolCalls)
+				toolCalls = append(toolCalls, llmtypes.ToolCall{
 					ID:    event.ContentBlock.ID,
 					Name:  llm.ReverseToolName(toolNameMap, event.ContentBlock.Name),
 					Input: make(map[string]interface{}), // Will be populated from deltas
-				}
-				toolCallIndex := len(toolCalls)
-				toolCalls = append(toolCalls, toolCall)
+				})
 				// Initialize buffer for this tool's input JSON
 				toolInputBuffers[event.Index] = &strings.Builder{}
 				// Map block index to tool call index
@@ -680,16 +818,42 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 				}
 			}
 
-			// Handle tool input delta
-			if event.Delta.Type == "input_json_delta" {
-				// Accumulate the JSON delta (uses PartialJSON field, not Text)
-				if buf, exists := toolInputBuffers[event.Index]; exists {
-					buf.WriteString(event.Delta.PartialJSON)
+			// Handle thinking deltas — accumulated only, never forwarded to
+			// the token callback.
+			if event.Delta.Type == "thinking_delta" {
+				if blk, ok := thinkBlocks[event.Index]; ok {
+					blk.Thinking += event.Delta.Thinking
+				}
+			}
+			if event.Delta.Type == "signature_delta" {
+				if blk, ok := thinkBlocks[event.Index]; ok {
+					blk.Signature += event.Delta.Signature
 				}
 			}
 
+			// Handle tool input delta
+			if event.Delta.Type == "input_json_delta" {
+				// Tool-input deltas never reach tokenCallback (text only);
+				// report them as stream activity, then accumulate the JSON.
+				// The buffer is the only copy of the arguments: it is parsed at
+				// content_block_stop, so a call truncated mid-argument leaves
+				// ToolCall.Input empty instead of leaking a stray key.
+				if buf, exists := toolInputBuffers[event.Index]; exists && event.Delta.PartialJSON != "" {
+					buf.WriteString(event.Delta.PartialJSON)
+					if toolIdx, ok := blockIndexToToolIndex[event.Index]; ok && toolIdx < len(toolCalls) {
+						llmtypes.NotifyToolInputProgress(ctx, llmtypes.ToolInputProgress{
+							Index:      toolIdx,
+							ToolCallID: toolCalls[toolIdx].ID,
+							ToolName:   toolCalls[toolIdx].Name,
+							Bytes:      buf.Len(),
+						})
+					}
+				}
+				llmtypes.NotifyStreamActivity(ctx)
+			}
+
 		case "content_block_stop":
-			// If we have accumulated input JSON for this block, parse it
+			// Finalize tool input: parse accumulated JSON
 			if buf, exists := toolInputBuffers[event.Index]; exists && buf.Len() > 0 {
 				var input map[string]interface{}
 				if err := json.Unmarshal([]byte(buf.String()), &input); err == nil {
@@ -698,10 +862,11 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 						toolCalls[toolIdx].Input = input
 					}
 				}
-				// Clean up buffer
-				delete(toolInputBuffers, event.Index)
 			}
-
+			// Clean up state for this block — unconditionally, so a
+			// call with no arguments doesn't leave its entries behind.
+			delete(toolInputBuffers, event.Index)
+			delete(blockIndexToToolIndex, event.Index)
 		case "message_delta":
 			// Update stop reason and output tokens
 			if event.Delta.StopReason != "" {
@@ -709,6 +874,9 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 			}
 			if event.Usage.OutputTokens > 0 {
 				usage.OutputTokens = int(event.Usage.OutputTokens)
+			}
+			if event.Usage.OutputTokensDetails.ThinkingTokens > 0 {
+				usage.ThinkingTokens = int(event.Usage.OutputTokensDetails.ThinkingTokens)
 			}
 
 		case "message_stop":
@@ -726,6 +894,7 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 	}
 
 	// Build final response
+	usage.Effort = c.effort()
 	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 	usage.CostUSD = c.calculateCost(usage.InputTokens, usage.OutputTokens, usage.CacheReadInputTokens, usage.CacheCreationInputTokens)
 
@@ -735,11 +904,25 @@ func (c *SDKClient) ChatStream(ctx context.Context, messages []llmtypes.Message,
 		c.rateLimiter.RecordTokenUsage(totalTokens)
 	}
 
+	// Assemble streamed thinking in arrival order; non-redacted text feeds
+	// Thinking (display/persistence).
+	var thinkingBlocks []llmtypes.ThinkingBlock
+	thinkingText := ""
+	for _, idx := range thinkOrder {
+		blk := thinkBlocks[idx]
+		thinkingBlocks = append(thinkingBlocks, *blk)
+		if blk.Type != "redacted_thinking" {
+			thinkingText += blk.Thinking
+		}
+	}
+
 	return &llmtypes.LLMResponse{
-		Content:    contentBuffer.String(),
-		StopReason: stopReason,
-		Usage:      usage,
-		ToolCalls:  toolCalls,
+		Content:        contentBuffer.String(),
+		StopReason:     stopReason,
+		Usage:          usage,
+		ToolCalls:      toolCalls,
+		Thinking:       thinkingText,
+		ThinkingBlocks: thinkingBlocks,
 		Metadata: map[string]interface{}{
 			"model":       c.modelID,
 			"stop_reason": stopReason,

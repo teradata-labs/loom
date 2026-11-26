@@ -15,7 +15,10 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -135,6 +138,39 @@ func TestRegistry_CreateLLMProvider_LiteLLM(t *testing.T) {
 	assert.Equal(t, "openai/test-model", provider.Model())
 }
 
+func TestRegistry_CreateLLMProvider_BedrockMantle(t *testing.T) {
+	registry, _ := createTestRegistry(t)
+	t.Setenv("BEDROCK_MANTLE_REGION", "us-west-2")
+	t.Setenv("BEDROCK_MANTLE_API_KEY", "ABSKtest")
+	t.Setenv("BEDROCK_MANTLE_ENDPOINT", "")
+
+	provider, err := registry.createLLMProvider(&loomv1.LLMConfig{
+		Provider:  "bedrock-mantle",
+		Model:     "anthropic.claude-haiku-4-5",
+		MaxTokens: 2048,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, provider)
+	assert.Equal(t, "bedrock-mantle", provider.Name())
+	assert.Equal(t, "anthropic.claude-haiku-4-5", provider.Model())
+}
+
+func TestRegistry_CreateLLMProvider_BedrockMantle_MissingRegion(t *testing.T) {
+	registry, _ := createTestRegistry(t)
+	t.Setenv("BEDROCK_MANTLE_REGION", "")
+	t.Setenv("BEDROCK_MANTLE_ENDPOINT", "")
+	t.Setenv("BEDROCK_MANTLE_API_KEY", "ABSKtest")
+	t.Setenv("AWS_REGION", "")
+
+	_, err := registry.createLLMProvider(&loomv1.LLMConfig{
+		Provider: "bedrock-mantle",
+		Model:    "anthropic.claude-haiku-4-5",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "region is required")
+}
+
 func TestRegistry_LoadAgents(t *testing.T) {
 	registry, tmpDir := createTestRegistry(t)
 	ctx := context.Background()
@@ -163,6 +199,53 @@ func TestRegistry_LoadAgents(t *testing.T) {
 	assert.Contains(t, registry.configs, "agent1")
 	assert.Contains(t, registry.configs, "agent2")
 	registry.mu.RUnlock()
+}
+
+// TestRegistry_LoadAgents_BedrockMantleYAML is a regression test for the agent
+// YAML provider allowlist: an agent with `llm: provider: bedrock-mantle` must go
+// through LoadAgents (LoadAgentConfig + ValidateAgentConfig) and be creatable,
+// not be skipped as an unsupported provider.
+func TestRegistry_LoadAgents_BedrockMantleYAML(t *testing.T) {
+	registry, tmpDir := createTestRegistry(t)
+	ctx := context.Background()
+
+	empty := filepath.Join(tmpDir, "empty-aws")
+	require.NoError(t, os.WriteFile(empty, nil, 0600))
+	t.Setenv("AWS_CONFIG_FILE", empty)
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", empty)
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+	t.Setenv("BEDROCK_MANTLE_REGION", "us-west-2")
+	t.Setenv("BEDROCK_MANTLE_ENDPOINT", "")
+	t.Setenv("BEDROCK_MANTLE_API_KEY", "ABSKtest")
+
+	agentsDir := filepath.Join(tmpDir, "agents")
+	require.NoError(t, os.MkdirAll(agentsDir, 0755))
+	yaml := `apiVersion: loom/v1
+kind: Agent
+metadata:
+  name: mantle_agent
+  description: Agent on the bedrock-mantle provider
+spec:
+  system_prompt: You are a test assistant
+  llm:
+    provider: bedrock-mantle
+    model: anthropic.claude-haiku-4-5
+    max_tokens: 2048
+    temperature: 0.5
+`
+	require.NoError(t, os.WriteFile(filepath.Join(agentsDir, "mantle_agent.yaml"), []byte(yaml), 0600))
+
+	require.NoError(t, registry.LoadAgents(ctx))
+
+	registry.mu.RLock()
+	cfg, ok := registry.configs["mantle_agent"]
+	registry.mu.RUnlock()
+	require.True(t, ok, "agent with provider bedrock-mantle was skipped by LoadAgents")
+	assert.Equal(t, "bedrock-mantle", cfg.GetLlm().GetProvider())
+
+	ag, err := registry.CreateAgent(ctx, "mantle_agent")
+	require.NoError(t, err)
+	require.NotNil(t, ag)
 }
 
 func TestRegistry_CreateAgent(t *testing.T) {
@@ -325,39 +408,67 @@ func TestRegistry_DeleteAgent_Running(t *testing.T) {
 }
 
 func TestRegistry_ReloadAgent(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		running       bool
+		removeRuntime bool
+	}{
+		{name: "stopped"},
+		{name: "running", running: true},
+		{name: "running without runtime instance", running: true, removeRuntime: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			registry, tmpDir := createTestRegistry(t)
+			ctx := context.Background()
+			config := createTestAgentConfig("reload")
+			configPath := filepath.Join(tmpDir, "agents", "reload.yaml")
+			require.NoError(t, SaveAgentConfig(config, configPath))
+			require.NoError(t, registry.LoadAgents(ctx))
+
+			before, err := registry.CreateAgent(ctx, config.Name)
+			require.NoError(t, err)
+			if tt.running {
+				require.NoError(t, registry.StartAgent(ctx, config.Name))
+			}
+			if tt.removeRuntime {
+				registry.RemoveAgentRuntime(config.Name)
+			}
+
+			config.Description = "Updated description"
+			config.SystemPrompt = "Follow the updated experiment protocol."
+			require.NoError(t, SaveAgentConfig(config, configPath))
+			require.NoError(t, registry.ReloadAgent(ctx, config.Name))
+
+			after, err := registry.GetAgent(ctx, config.Name)
+			require.NoError(t, err)
+			assert.NotSame(t, before, after)
+			assert.Equal(t, before.GetID(), after.GetID())
+			assert.Equal(t, config.Description, after.GetDescription())
+			assert.Equal(t, config.SystemPrompt, after.GetConfig().SystemPrompt)
+			assert.Equal(t, config.Description, registry.GetConfig(config.Name).Description)
+		})
+	}
+}
+
+func TestRegistry_ReloadAgentRejectsRenamedConfig(t *testing.T) {
 	registry, tmpDir := createTestRegistry(t)
 	ctx := context.Background()
-
-	// Setup agent
-	agentsDir := filepath.Join(tmpDir, "agents")
-	err := os.MkdirAll(agentsDir, 0755)
-	require.NoError(t, err)
-
 	config := createTestAgentConfig("reload")
-	configPath := filepath.Join(agentsDir, "reload.yaml")
-	err = SaveAgentConfig(config, configPath)
-	require.NoError(t, err)
+	configPath := filepath.Join(tmpDir, "agents", "reload.yaml")
+	require.NoError(t, SaveAgentConfig(config, configPath))
+	require.NoError(t, registry.LoadAgents(ctx))
 
-	err = registry.LoadAgents(ctx)
+	before, err := registry.CreateAgent(ctx, config.Name)
 	require.NoError(t, err)
-
-	_, err = registry.CreateAgent(ctx, "reload")
-	require.NoError(t, err)
-
-	// Modify config
-	config.Description = "Updated description"
-	err = SaveAgentConfig(config, configPath)
-	require.NoError(t, err)
-
-	// Reload agent
+	config.Name = "different-name"
+	require.NoError(t, SaveAgentConfig(config, configPath))
 	err = registry.ReloadAgent(ctx, "reload")
-	require.NoError(t, err)
+	require.ErrorContains(t, err, "differs from agent")
 
-	// Verify config was reloaded
-	registry.mu.RLock()
-	reloadedConfig := registry.configs["reload"]
-	registry.mu.RUnlock()
-	assert.Equal(t, "Updated description", reloadedConfig.Description)
+	after, err := registry.GetAgent(ctx, "reload")
+	require.NoError(t, err)
+	assert.Same(t, before, after)
+	assert.Equal(t, "reload", registry.GetConfig("reload").Name)
 }
 
 func TestRegistry_ListAgents(t *testing.T) {
@@ -1462,4 +1573,354 @@ func TestRegistry_TaskManagerInjection(t *testing.T) {
 		assert.Nil(t, ag.skillTaskEmitter,
 			"emitter must stay nil when no manager is available (legacy v1.2.0 parity)")
 	})
+}
+
+// saveTestAgentFile writes agents/<name>.yaml under dir with the given
+// description and returns its path.
+func saveTestAgentFile(t *testing.T, dir, name, description string) string {
+	t.Helper()
+	agentsDir := filepath.Join(dir, "agents")
+	require.NoError(t, os.MkdirAll(agentsDir, 0755))
+	config := createTestAgentConfig(name)
+	config.Description = description
+	path := filepath.Join(agentsDir, name+".yaml")
+	require.NoError(t, SaveAgentConfig(config, path))
+	return path
+}
+
+// TestForceReload_CallbackErrorKeepsConfig verifies that a failed host reload
+// leaves the registry config that matches the agent still running.
+func TestForceReload_CallbackErrorKeepsConfig(t *testing.T) {
+	registry, tmpDir := createTestRegistry(t)
+	ctx := context.Background()
+	saveTestAgentFile(t, tmpDir, "keepcfg", "Before reload")
+	require.NoError(t, registry.LoadAgents(ctx))
+
+	registry.SetReloadCallback(func(name string, guid string, cfg *loomv1.AgentConfig) error {
+		return fmt.Errorf("build failed")
+	})
+	saveTestAgentFile(t, tmpDir, "keepcfg", "After reload")
+
+	err := registry.ForceReload(ctx, "keepcfg")
+	require.Error(t, err)
+	assert.Equal(t, "Before reload", registry.GetConfig("keepcfg").Description)
+}
+
+// TestReloadAgentFile_CommitsConfigOnlyAfterReload covers the file-watch path:
+// the new config is recorded only when the reload callback succeeds.
+func TestReloadAgentFile_CommitsConfigOnlyAfterReload(t *testing.T) {
+	tests := []struct {
+		name        string
+		callbackErr error
+		wantDesc    string
+	}{
+		{name: "callback succeeds", wantDesc: "After reload"},
+		{name: "callback fails", callbackErr: fmt.Errorf("build failed"), wantDesc: "Before reload"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			registry, tmpDir := createTestRegistry(t)
+			ctx := context.Background()
+			path := saveTestAgentFile(t, tmpDir, "watched", "Before reload")
+			require.NoError(t, registry.LoadAgents(ctx))
+
+			calls := 0
+			registry.SetReloadCallback(func(name string, guid string, cfg *loomv1.AgentConfig) error {
+				calls++
+				return tt.callbackErr
+			})
+			saveTestAgentFile(t, tmpDir, "watched", "After reload")
+
+			registry.reloadAgentFile(ctx, path, "watched")
+
+			assert.Equal(t, 1, calls)
+			assert.Equal(t, tt.wantDesc, registry.GetConfig("watched").Description)
+		})
+	}
+}
+
+// TestReloadAgentFile_RejectsRenamedConfig verifies that a file whose config
+// names another agent is not applied, as ForceReload and ReloadAgent reject it.
+func TestReloadAgentFile_RejectsRenamedConfig(t *testing.T) {
+	registry, tmpDir := createTestRegistry(t)
+	ctx := context.Background()
+	path := saveTestAgentFile(t, tmpDir, "original", "Before reload")
+	require.NoError(t, registry.LoadAgents(ctx))
+
+	called := false
+	registry.SetReloadCallback(func(name string, guid string, cfg *loomv1.AgentConfig) error {
+		called = true
+		return nil
+	})
+	require.NoError(t, SaveAgentConfig(createTestAgentConfig("renamed"), path))
+
+	registry.reloadAgentFile(ctx, path, "original")
+
+	assert.False(t, called, "a renamed config must not reach the reload callback")
+	assert.Equal(t, "Before reload", registry.GetConfig("original").Description)
+	assert.Nil(t, registry.GetConfig("renamed"))
+}
+
+// TestReloadAgentFile_NoCallbackRegistersNewAgentConfig verifies that, without
+// a host callback, a file for an unregistered agent records its config.
+func TestReloadAgentFile_NoCallbackRegistersNewAgentConfig(t *testing.T) {
+	registry, tmpDir := createTestRegistry(t)
+	ctx := context.Background()
+	path := saveTestAgentFile(t, tmpDir, "fresh", "New agent")
+
+	registry.reloadAgentFile(ctx, path, "fresh")
+
+	require.NotNil(t, registry.GetConfig("fresh"))
+	assert.Equal(t, "New agent", registry.GetConfig("fresh").Description)
+}
+
+// TestReloadAgentFile_NoCallbackRebuildsRegisteredAgent verifies that, without
+// a host callback, a file change rebuilds a registered agent through
+// ReloadAgent, which commits the config together with the new agent.
+func TestReloadAgentFile_NoCallbackRebuildsRegisteredAgent(t *testing.T) {
+	registry, tmpDir := createTestRegistry(t)
+	ctx := context.Background()
+	path := saveTestAgentFile(t, tmpDir, "rebuilt", "Before reload")
+	require.NoError(t, registry.LoadAgents(ctx))
+	before, err := registry.CreateAgent(ctx, "rebuilt")
+	require.NoError(t, err)
+	saveTestAgentFile(t, tmpDir, "rebuilt", "After reload")
+
+	registry.reloadAgentFile(ctx, path, "rebuilt")
+
+	assert.Equal(t, "After reload", registry.GetConfig("rebuilt").Description)
+	after, err := registry.GetAgent(ctx, "rebuilt")
+	require.NoError(t, err)
+	assert.NotSame(t, before, after, "the running agent must be replaced")
+	assert.Equal(t, before.GetID(), after.GetID(), "the rebuilt agent keeps its GUID")
+}
+
+// TestReloadAgentFile_DifferentFilenameFromConfigName verifies that an agent
+// YAML file whose filename stem differs from metadata.name (e.g.
+// sql_expert.yaml with name: sql-expert) loads and hot-reloads cleanly while
+// still rejecting a subsequent rename of metadata.name in that file.
+func TestReloadAgentFile_DifferentFilenameFromConfigName(t *testing.T) {
+	registry, tmpDir := createTestRegistry(t)
+	ctx := context.Background()
+
+	agentsDir := filepath.Join(tmpDir, "agents")
+	require.NoError(t, os.MkdirAll(agentsDir, 0755))
+	path := filepath.Join(agentsDir, "sql_expert.yaml")
+
+	cfg := createTestAgentConfig("sql-expert")
+	cfg.Description = "Initial description"
+	require.NoError(t, SaveAgentConfig(cfg, path))
+	require.NoError(t, registry.LoadAgents(ctx))
+
+	before, err := registry.CreateAgent(ctx, "sql-expert")
+	require.NoError(t, err)
+
+	// Hot-reload via reloadAgentFile using the underscore filename stem
+	cfg.Description = "Reloaded description"
+	require.NoError(t, SaveAgentConfig(cfg, path))
+	registry.reloadAgentFile(ctx, path, "sql_expert")
+
+	require.NotNil(t, registry.GetConfig("sql-expert"))
+	assert.Equal(t, "Reloaded description", registry.GetConfig("sql-expert").Description)
+	after, err := registry.GetAgent(ctx, "sql-expert")
+	require.NoError(t, err)
+	assert.NotSame(t, before, after)
+	assert.Equal(t, before.GetID(), after.GetID())
+
+	// ForceReload by agent name also uses the recorded path (sql_expert.yaml)
+	cfg.Description = "Force reloaded description"
+	require.NoError(t, SaveAgentConfig(cfg, path))
+	require.NoError(t, registry.ForceReload(ctx, "sql-expert"))
+	assert.Equal(t, "Force reloaded description", registry.GetConfig("sql-expert").Description)
+
+	// Renaming metadata.name inside sql_expert.yaml must still be rejected
+	renamed := createTestAgentConfig("renamed-expert")
+	require.NoError(t, SaveAgentConfig(renamed, path))
+	registry.reloadAgentFile(ctx, path, "sql_expert")
+	assert.Equal(t, "Force reloaded description", registry.GetConfig("sql-expert").Description)
+	assert.Nil(t, registry.GetConfig("renamed-expert"))
+}
+
+// TestReloadAgentFile_RejectsSecondFileClaimingBoundAgentName verifies that a
+// second file declaring the same metadata.name as an already-bound file cannot
+// hijack the agent's runtime, config, or recorded source path (F9).
+func TestReloadAgentFile_RejectsSecondFileClaimingBoundAgentName(t *testing.T) {
+	for _, withCallback := range []bool{false, true} {
+		name := "registry_owned"
+		if withCallback {
+			name = "callback_owned"
+		}
+		t.Run(name, func(t *testing.T) {
+			registry, tmpDir := createTestRegistry(t)
+			ctx := context.Background()
+
+			agentsDir := filepath.Join(tmpDir, "agents")
+			require.NoError(t, os.MkdirAll(agentsDir, 0755))
+			origPath := filepath.Join(agentsDir, "sql_expert.yaml")
+			draftPath := filepath.Join(agentsDir, "sql_expert_draft.yaml")
+
+			origCfg := createTestAgentConfig("sql-expert")
+			origCfg.Description = "Original sql-expert"
+			origCfg.SystemPrompt = "Original sql-expert prompt"
+			require.NoError(t, SaveAgentConfig(origCfg, origPath))
+			require.NoError(t, registry.LoadAgents(ctx))
+
+			before, err := registry.CreateAgent(ctx, "sql-expert")
+			require.NoError(t, err)
+
+			callbackCalls := 0
+			if withCallback {
+				registry.SetReloadCallback(func(cbName, guid string, cfg *loomv1.AgentConfig) error {
+					callbackCalls++
+					return nil
+				})
+			}
+
+			// Write a second file claiming the same metadata.name ("sql-expert")
+			draftCfg := createTestAgentConfig("sql-expert")
+			draftCfg.Description = "Draft impostor"
+			draftCfg.SystemPrompt = "Draft impostor prompt"
+			require.NoError(t, SaveAgentConfig(draftCfg, draftPath))
+
+			registry.reloadAgentFile(ctx, draftPath, "sql_expert_draft")
+
+			assert.Equal(t, 0, callbackCalls, "impostor file must be rejected before the reload callback runs")
+			assert.Equal(t, "Original sql-expert", registry.GetConfig("sql-expert").Description)
+			assert.Equal(t, "Original sql-expert prompt", registry.GetConfig("sql-expert").SystemPrompt)
+			registry.mu.RLock()
+			recordedPath := registry.configPaths["sql-expert"]
+			registry.mu.RUnlock()
+			assert.Equal(t, filepath.Clean(origPath), filepath.Clean(recordedPath),
+				"recorded source path must remain sql_expert.yaml")
+			current, err := registry.GetAgent(ctx, "sql-expert")
+			require.NoError(t, err)
+			assert.Same(t, before, current, "original runtime instance must survive")
+
+			// A subsequent legitimate edit to the original file must still reload
+			origCfg.Description = "Legitimate update on sql_expert.yaml"
+			require.NoError(t, SaveAgentConfig(origCfg, origPath))
+			registry.reloadAgentFile(ctx, origPath, "sql_expert")
+
+			assert.Equal(t, "Legitimate update on sql_expert.yaml", registry.GetConfig("sql-expert").Description)
+			if withCallback {
+				assert.Equal(t, 1, callbackCalls, "legitimate edit must invoke the reload callback")
+			} else {
+				reloaded, err := registry.GetAgent(ctx, "sql-expert")
+				require.NoError(t, err)
+				assert.NotSame(t, before, reloaded, "legitimate edit must rebuild the runtime agent")
+				assert.Equal(t, before.GetID(), reloaded.GetID())
+			}
+		})
+	}
+}
+
+// TestReloadAgentFile_RebindsMovedFile verifies that when an agent's bound YAML
+// file is moved/renamed on disk (so the old bound path no longer exists),
+// reloadAgentFile rebinds configPaths to the new path and ReloadAgent succeeds (F15).
+func TestReloadAgentFile_RebindsMovedFile(t *testing.T) {
+	registry, tmpDir := createTestRegistry(t)
+	ctx := context.Background()
+
+	agentsDir := filepath.Join(tmpDir, "agents")
+	require.NoError(t, os.MkdirAll(agentsDir, 0755))
+	oldPath := filepath.Join(agentsDir, "sql_expert.yaml")
+	newPath := filepath.Join(agentsDir, "sql-expert.yaml")
+
+	cfg := createTestAgentConfig("sql-expert")
+	cfg.Description = "v1"
+	cfg.SystemPrompt = "v1 prompt"
+	require.NoError(t, SaveAgentConfig(cfg, oldPath))
+	require.NoError(t, registry.LoadAgents(ctx))
+
+	before, err := registry.CreateAgent(ctx, "sql-expert")
+	require.NoError(t, err)
+
+	require.NoError(t, os.Rename(oldPath, newPath))
+	cfg.Description = "v2 after move"
+	cfg.SystemPrompt = "v2 prompt after move"
+	require.NoError(t, SaveAgentConfig(cfg, newPath))
+
+	registry.reloadAgentFile(ctx, newPath, "sql-expert")
+
+	assert.Equal(t, "v2 after move", registry.GetConfig("sql-expert").Description)
+	registry.mu.RLock()
+	recordedPath := registry.configPaths["sql-expert"]
+	registry.mu.RUnlock()
+	assert.Equal(t, filepath.Clean(newPath), filepath.Clean(recordedPath), "moved file must rebind configPaths")
+
+	// Subsequent ReloadAgent must read from the new path without error
+	cfg.Description = "v3 via ReloadAgent"
+	require.NoError(t, SaveAgentConfig(cfg, newPath))
+	require.NoError(t, registry.ReloadAgent(ctx, "sql-expert"))
+	assert.Equal(t, "v3 via ReloadAgent", registry.GetConfig("sql-expert").Description)
+	after, err := registry.GetAgent(ctx, "sql-expert")
+	require.NoError(t, err)
+	assert.NotSame(t, before, after)
+	assert.Equal(t, before.GetID(), after.GetID())
+}
+
+// reloadAgentWithConfig (used by ReloadAgent and the workflow watcher when
+// callback == nil) does not overwrite r.configs[name] if rebuilding the agent
+// fails.
+func TestReloadAgentWithConfig_FailedRebuildKeepsPreviousConfig(t *testing.T) {
+	registry, tmpDir := createTestRegistry(t)
+	ctx := context.Background()
+	saveTestAgentFile(t, tmpDir, "wf-agent", "Original description")
+	require.NoError(t, registry.LoadAgents(ctx))
+	before, err := registry.CreateAgent(ctx, "wf-agent")
+	require.NoError(t, err)
+
+	badConfig := createTestAgentConfig("wf-agent")
+	badConfig.Description = "Broken config"
+	badConfig.Llm = &loomv1.LLMConfig{
+		Provider: "unsupported-provider-xyz",
+		Model:    "bad-model",
+	}
+
+	err = registry.reloadAgentWithConfig(ctx, "wf-agent", badConfig)
+	require.Error(t, err)
+	assert.Equal(t, "Original description", registry.GetConfig("wf-agent").Description)
+	after, err := registry.GetAgent(ctx, "wf-agent")
+	require.NoError(t, err)
+	assert.Same(t, before, after)
+}
+
+// An agent the registry builds sends its own max_tokens when it sets one,
+// otherwise the server's llm.max_tokens, and reserves the same number: no
+// client falls back to a default of its own. Read off the request on the wire.
+func TestRegistry_AnAgentSendsAndReservesItsMaxTokensOrTheServers(t *testing.T) {
+	var sent []float64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		n, ok := body["max_tokens"].(float64)
+		if !ok {
+			n, _ = body["max_completion_tokens"].(float64)
+		}
+		sent = append(sent, n)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"x","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer srv.Close()
+	t.Setenv("LITELLM_ENDPOINT", srv.URL+"/v1/chat/completions")
+	t.Setenv("LITELLM_API_KEY", "test-key")
+
+	registry, _ := createTestRegistry(t)
+	registry.maxTokens = 3000
+	var reserved []int
+	for i, agentMax := range []int32{0, 2048} {
+		name := fmt.Sprintf("wire-%d", i)
+		registry.RegisterConfig(&loomv1.AgentConfig{
+			Name:         name,
+			SystemPrompt: "Answer.",
+			Llm:          &loomv1.LLMConfig{Provider: "litellm", Model: "openai/test-model", MaxTokens: agentMax},
+		})
+		ag, err := registry.CreateAgent(context.Background(), name)
+		require.NoError(t, err)
+		_, err = ag.llm.Chat(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil)
+		require.NoError(t, err)
+		reserved = append(reserved, ag.config.ReservedOutputTokens)
+	}
+	assert.Equal(t, []float64{3000, 2048}, sent)
+	assert.Equal(t, []int{3000, 2048}, reserved)
 }

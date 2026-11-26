@@ -157,6 +157,7 @@ func streamChat(ctx context.Context, c *client.Client, message string) error {
 	var lastMessage string
 	var totalTokens int32
 	var totalCost float64
+	var costEstimated bool
 	// Track streamed content length so we only print new tokens incrementally
 	var streamedLen int
 	var lastStreamedContent string // last PartialContent we streamed, for dedup at COMPLETED
@@ -170,6 +171,7 @@ func streamChat(ctx context.Context, c *client.Client, message string) error {
 		// Capture cost from progress events
 		if progress.Cost != nil && progress.Cost.TotalCostUsd > 0 {
 			totalCost = progress.Cost.TotalCostUsd
+			costEstimated = costEstimated || progress.Cost.GetLlmCost().GetCostEstimated()
 		}
 
 		// Only show progress if --stream flag is set
@@ -277,7 +279,11 @@ func streamChat(ctx context.Context, c *client.Client, message string) error {
 
 	// Print cost and token count if available
 	if totalTokens > 0 {
-		fmt.Fprintf(os.Stderr, "[Cost: $%.6f | Tokens: %d]\n", totalCost, totalTokens)
+		if costEstimated {
+			fmt.Fprintf(os.Stderr, "[Cost: $%.6f* | Tokens: %d] (* includes an estimate: a model had no published price)\n", totalCost, totalTokens)
+		} else {
+			fmt.Fprintf(os.Stderr, "[Cost: $%.6f | Tokens: %d]\n", totalCost, totalTokens)
+		}
 	}
 
 	return nil

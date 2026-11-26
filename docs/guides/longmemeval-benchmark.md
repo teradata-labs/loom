@@ -1,6 +1,6 @@
 # LongMemEval Benchmark Guide
 
-**Version**: v1.3.0 | **Status**: ✅ Implemented (merged to `main` via PR #159)
+**Version**: v1.4.0 | **Status**: ✅ Implemented (merged to `main` via PR #159)
 
 ## Table of Contents
 
@@ -37,7 +37,8 @@ The six question categories are:
 
 - Loom server running (`just build-server && ./bin/looms serve`)
 - An LLM provider configured in `~/.loom/looms.yaml` with judge access (examples in this guide use Bedrock Opus 4.6)
-- `server.allow_time_override: true` in `~/.loom/looms.yaml`. In the memory modes (`ingest`, `multi-session`) the harness sends each haystack session's date as `WeaveRequest.occurred_at` so extraction anchors memories at the historical date instead of the run day; `context-stuffing` never sends it, so the baseline runs on a stock server. Without the flag, every memory-mode entry fails with `FAILED_PRECONDITION` (pass `--occurred-at=false` to run without the override; memories then anchor to the run date instead of the historical session date. Note: the only A/B measured so far — oracle x30, temporal-reasoning — scored slightly HIGHER with the override off (100% vs 93.3%), because the extractor also reads dates from the conversation text itself; the override's value is mechanism correctness on full haystacks where the text cue may be absent, not a measured accuracy win)
+- `server.allow_time_override: true` in `~/.loom/looms.yaml`. In the memory modes (`ingest`, `multi-session`, `conversation`) the harness sends each haystack session's date as `WeaveRequest.occurred_at` so extraction anchors memories at the historical date instead of the run day; `context-stuffing` never sends it, so the baseline runs on a stock server. Without the flag, the server rejects the first memory-mode turn with `FAILED_PRECONDITION` and the harness aborts the whole run with a nonzero exit, naming the flag (pass `--occurred-at=false` to run without the override; memories then anchor to the run date instead of the historical session date. Note: the only A/B measured so far — oracle x30, temporal-reasoning — scored slightly HIGHER with the override off (100% vs 93.3%), because the extractor also reads dates from the conversation text itself; the override's value is mechanism correctness on full haystacks where the text cue may be absent, not a measured accuracy win)
+- For `--mode conversation` additionally `server.allow_assistant_override: true`. Generation-free replay sends the dataset's assistant turns verbatim (`WeaveRequest.replay_assistant_message`); it is gated separately from timestamp anchoring because it lets the caller write the assistant's side of the conversation. The harness aborts the run with a nonzero exit in two cases: the server refuses the field (`FAILED_PRECONDITION`, flag off), or the server accepts the turn but answers with text other than the scripted assistant turn. The second case means the server ignored the field. A looms build that predates generation-free replay, such as v1.4.0, drops the unknown field and generates a new assistant turn, so the run would otherwise become generative replay and still exit 0. Upgrade looms or use another `--mode`. A user turn whose dataset reply is blank (a few occur in the S set) cannot be replayed, so it is sent as a normal generating turn
 - Benchmark binary built: `just build-longmemeval`
 - Network access to `huggingface.co` for the one-time dataset download (~285 MB for the oracle set)
 
@@ -116,6 +117,12 @@ Judge-Scored Results:
 
 Files are downloaded to `./data/longmemeval/` by default and are in `.gitignore`.
 
+`download` skips a dataset file that already exists. Each file is written to
+`<name>.tmp` and renamed into place only after the whole body arrived, so an
+interrupted download leaves nothing behind and the next `download` fetches it
+again. (A truncated file written by a build older than this change is not
+detected — delete it by hand.)
+
 ### Run the Benchmark
 
 Run every question in the oracle set (500 total):
@@ -137,6 +144,49 @@ Run a specific question range (offset + limit):
   --output /tmp/range.jsonl \
   --detailed /tmp/range.json
 ```
+
+Exit status of `run` (results files are written in every case that gets as
+far as running entries):
+
+| Status | Meaning |
+|--------|---------|
+| 0 | Run finished. Entries may still have failed — check the `error` fields in `--detailed`. A user interrupt (Ctrl-C) also exits 0 unless the exit-75 rule (`ExitTransient`, `HARNESS_RC_TRANSIENT` in the AKS runner) applies. |
+| 1 | Could not start (bad flags, dataset missing, server health check failed) or aborted (the server rejects `occurred_at`). |
+| 75 | Run finished and at least one entry failed, but **every** failure carries a retryable gRPC status (`Unavailable`, `DeadlineExceeded`, `ResourceExhausted`). Retry the same range. |
+
+A provider throttle or outage that outlasts the server's own LLM retries comes
+back with a retryable status, so it counts toward 75: a throttle is
+`ResourceExhausted`; a temporary provider server fault or timeout (HTTP 408,
+500, 502, 503, 504 or 529, Bedrock `InternalServerException`/
+`ServiceUnavailableException`/`ModelNotReadyException`/`ModelTimeoutException`,
+or an `overloaded_error` from the Anthropic SDK that the Bedrock client uses
+for Claude) is `Unavailable`. A deterministic provider refusal (a validation
+error or any other 4xx except 408 and 429) is `Internal` and is an ordinary entry failure (exit 0).
+
+`DeadlineExceeded` here means a deadline inside the server elapsed. The
+harness sets no per-call deadline: it sends `timeout_seconds` on each
+`WeaveRequest`, but the server never reads that field (#481), and the
+harness puts no deadline on the call context.
+
+On AKS, `deploy/longmemeval/runner-script.yaml` runs the harness one chunk at a
+time and treats exit 75 as `HARNESS_RC_TRANSIENT`: the chunk is retried on the
+next pod restart without consuming its deterministic-failure budget. Each
+rejected attempt is kept as `runs/<run-id>/rejected/<chunk>.a<NNN>.jsonl` and
+`<chunk>.a<NNN>-detailed.json`, numbered so no attempt overwrites another. Any
+pass that ends with a chunk not done writes `runs/<run-id>/RUN-INCOMPLETE.txt`,
+listing quarantined, transient-failed and under-budget chunks under separate
+headings; only a pass in which every chunk is done removes it. See
+`deploy/longmemeval/README.md` for the full contract.
+
+Limitation: the server only recognises a 5xx that the provider client typed.
+Both Bedrock clients do (AWS SDK and Anthropic SDK errors carry the status),
+and so do the direct HTTP clients (Anthropic API, OpenAI, Azure OpenAI, Gemini,
+Ollama) for a 5xx that arrives before any content, so against any of them a
+5xx outage that outlasts looms' retries comes back as `Unavailable` (exit 75).
+A 5xx after content has started streaming is not typed and comes back as
+`Internal` (exit 0). Throttling is recognised for every provider:
+the HTTP clients type a 429, and the SDK clients' throttling errors carry the
+status or a recognisable message.
 
 ### Score Results
 
@@ -189,6 +239,15 @@ Total sessions: 948 (avg 1.9/entry)
 Total turns:    10960 (avg 11.6/session)
 ```
 
+`--json` emits the same statistics machine-readably (`entries`,
+`question_types` as an ordered `{type, count}` array, `total_sessions`,
+`total_turns`). The AKS slice loop uses it to derive its per-type chunk counts
+from the dataset instead of hardcoding them:
+
+```bash
+./bin/loom-longmemeval info --json | jq -r '.question_types[] | [.type, .count] | @tsv'
+```
+
 ## Run Modes
 
 Selected with `--mode`:
@@ -197,6 +256,7 @@ Selected with `--mode`:
 |------|----------|----------|
 | `ingest` (default) | All haystack sessions + the question run through one agent session. Memory is built during ingestion; the question is asked in the same session. | Evaluating how well graph memory builds from a contiguous stream. |
 | `multi-session` | Separate agent session per haystack conversation, then the question is asked in a fresh session. Cross-session recall via graph memory + conversation memory. | Evaluating real-world Loom usage where sessions are bounded. Note: underperforms ingest mode today (see [Results](#results-we-observed)). |
+| `conversation` | Replays every haystack turn, in order, into one continuous session — user turns as user messages and the original assistant turns recorded verbatim (generation-free), never regenerated. The question is asked in the same thread. Unlike the blob-per-session modes, this exercises the memory pipeline as a live chat would: salience accumulates turn-by-turn and context compression fires as the thread grows. Requires `server.allow_assistant_override: true` (plus `server.allow_time_override: true` for date anchoring). | Evaluating memory under realistic accumulation (salience + compression), not just retrieval over a static transcript. |
 | `context-stuffing` | All session history is injected directly into one Weave call as prompt context; no memory system involved. | Baseline comparison. |
 
 Additional run flags:

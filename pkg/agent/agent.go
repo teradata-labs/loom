@@ -15,17 +15,22 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
+	"github.com/teradata-labs/loom/pkg/decision/sites"
+	"github.com/teradata-labs/loom/pkg/eventlog"
 	"github.com/teradata-labs/loom/pkg/fabric"
 	"github.com/teradata-labs/loom/pkg/failurerecovery"
 	"github.com/teradata-labs/loom/pkg/llm"
@@ -45,6 +50,7 @@ import (
 	skilltasks "github.com/teradata-labs/loom/pkg/skills/tasks"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/task"
+	"github.com/teradata-labs/loom/pkg/taskctx"
 	"github.com/teradata-labs/loom/pkg/types"
 	"go.uber.org/zap"
 )
@@ -118,6 +124,11 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		a.config.PatternConfig = DefaultPatternConfig()
 	}
 
+	// Decision layer: resolve the configured decider against the LLMs the
+	// options just installed. Off unless configured.
+	a.initDecisionRouter()
+	a.attachSkillRouteDecision()
+
 	// Initialize automatic graph memory extraction if graph memory is enabled.
 	if a.graphMemoryStore != nil && a.graphMemoryConfig != nil &&
 		a.graphMemoryConfig.Enabled && a.graphMemoryConfig.EnableExtraction {
@@ -185,7 +196,7 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		a.memory.SetContextLimits(a.config.MaxContextTokens, a.config.ReservedOutputTokens)
 	}
 
-	// K — protected newest user turns (HLD §5.1, §9).
+	// K — the recent turns of either role a fold keeps (HLD §5.1, §9).
 	if a.config.ProtectedRecentTurns > 0 {
 		a.memory.SetProtectedRecentTurns(a.config.ProtectedRecentTurns)
 	}
@@ -223,8 +234,9 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 		// Default-on memory compression: wire an LLM-backed compressor so L2
 		// compaction preserves decisions and approvals-with-scope via the
 		// registry-sourced compaction prompt. Requires both an LLM (dedicated
-		// compressor LLM preferred) and a prompt registry; without either, the
-		// heuristic summariser remains the fallback.
+		// compressor LLM preferred) and a prompt registry; without either, no
+		// compressor is wired and the fold drops old turns with an
+		// "(unsummarized)" marker instead of summarising them.
 		compressorLLM := a.llm
 		if a.compressorLLM != nil {
 			compressorLLM = a.compressorLLM
@@ -260,9 +272,9 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// Note: tool_search is registered by AgentRegistry when a global tool registry is available
 	// Individual agents don't have access to the global tool registry during construction
 
-	// query_tool_result serves THIS TURN's memory by message_id (HLD §7.1) and
-	// recall retrieves summary-cited conversation spans (HLD §6). Registered by
-	// default — their doors are printed by the offload stub and the summary's
+	// query_tool_result pages a current-turn tool result whole and recall
+	// retrieves summary-cited conversation spans (HLD §6). Both are registered by
+	// default — their doors are printed by a cut result's tail and the summary's
 	// citations respectively — through RegisterTool, so the WithoutBuiltinTool
 	// suppression set is honoured.
 	queryTool := shuttle.Tool(NewQueryToolResultTool(a))
@@ -285,6 +297,7 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	a.checkAndRegisterTaskBoardTool()
 	a.checkAndRegisterManageSkillsTool()
 	a.checkAndRegisterLoadPatternTool()
+	a.checkAndRegisterDecideTool()
 
 	// Auto-wire the skill task emitter when both the skill subsystem AND
 	// the task subsystem are configured. The emitter is the bridge between
@@ -292,6 +305,55 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// Caller can preempt this by setting WithSkillTaskEmitter explicitly.
 	if a.skillTaskEmitter == nil && a.skillOrchestrator != nil && a.taskManager != nil {
 		a.skillTaskEmitter = skilltasks.NewEmitter(a.taskManager, a.taskDecomposer)
+	}
+
+	// Auto-wire the implicit task emitter whenever the task subsystem is
+	// configured, mirroring the skill emitter above. Without this, implicit
+	// recording only happened where a host explicitly passed
+	// WithImplicitTaskEmitter — so registry-built agents, and every subagent
+	// spawned through them, minted nothing.
+	//
+	// This wires the EMITTER, which is what registry-built agents lacked. It does
+	// not make SUBAGENT_SPAWN fire: the runtime passes TOOL_CALL (dispatchOneCall)
+	// and HUMAN_REQUEST (maybeParkBatch) and nothing else — task.RuntimeFiredTriggers
+	// is the authoritative list — so SUBAGENT_SPAWN, SKILL_ACTIVATION and
+	// WORKFLOW_STEP remain unused and no subagent-spawn task is minted from that
+	// trigger. Said plainly because the previous wording read as though this
+	// change had closed that too.
+	//
+	// The policy is resolved from the agent's OWN task board config. Passing nil
+	// here — the hardcoded default — made every knob the proto advertises inert
+	// on this path: mode, triggers, excluded_triggers and max_per_session were
+	// all ignored, so `mode: DISABLED` still minted a task. A feature that
+	// writes durable rows by default needs an off switch that works. It also
+	// split one policy in two, because buildTaskContext resolves the real config
+	// for ExcludedCreatedVia — emitter and renderer could disagree about the
+	// same setting.
+	//
+	// Reading it here needs no reordering: options are applied at the top of
+	// NewAgent, so taskBoardConfig is already final, and GetImplicitTasks is the
+	// generated nil-safe getter. An agent that says nothing about tasks still
+	// resolves to the opt-out default — recording on, capped per session, and
+	// the resulting tasks excluded from the agent's own task queries so they
+	// cost no context. A host that wants something the proto cannot express
+	// passes WithImplicitTaskEmitter explicitly, which preempts this.
+	//
+	// Cost is bounded by construction: EnsureForTurn memoizes on
+	// (session, turn) behind an in-memory check that runs before any query, so
+	// this is at most one task minted per turn that calls a tool, and nothing
+	// at all on turns that don't.
+	if a.implicitTasks == nil && a.taskManager != nil {
+		policy := task.ResolveImplicitPolicy(a.taskBoardConfig.GetImplicitTasks())
+		if policy.Enabled && !policy.CanFire() {
+			// Every knob parsed and validated, and nothing will ever be
+			// recorded: the configured triggers are ones the runtime does not
+			// fire yet. Said once, here, rather than discovered from an empty
+			// board.
+			zap.L().Warn("implicit_tasks is enabled but no configured trigger is fired by the runtime; nothing will be recorded",
+				zap.String("agent", a.config.Name),
+				zap.Strings("fired_by_runtime", triggerNames(task.RuntimeFiredTriggers())))
+		}
+		a.implicitTasks = task.NewImplicitEmitter(a.taskManager, policy, a.tracer, zap.L())
 	}
 
 	// Install the sticky-while-open-tasks checker on the orchestrator
@@ -335,7 +397,7 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 			a.taskManager,
 			hygiene.WithEnforcerTracer(a.tracer),
 			hygiene.WithEnforcerLogger(zap.L()),
-			hygiene.WithAgentID(a.id),
+			hygiene.WithAgentID(a.GetID()),
 		)
 	}
 
@@ -346,7 +408,7 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// calls — pure FTS search + TouchMemories.
 	if a.skillOrchestrator != nil && a.graphMemoryStore != nil {
 		store := a.graphMemoryStore
-		agentName := a.config.Name
+		agentName := a.graphMemoryKey()
 		a.skillOrchestrator.SetOnSkillEviction(func(sessionID string, skill *skills.Skill, activeFor time.Duration) {
 			ctx := context.Background()
 
@@ -478,9 +540,32 @@ func WithPrompts(registry prompts.PromptRegistry) Option {
 	}
 }
 
-// WithConfig sets the agent configuration.
+// WithConfig replaces the entire agent configuration. Apply it before options
+// that set individual configuration fields.
 func WithConfig(config *Config) Option {
 	return func(a *Agent) {
+		if config == nil {
+			return
+		}
+		// Identity fields that other options write (WithName, WithDescription,
+		// WithSystemPrompt) survive a later WithConfig whose copy of them is
+		// empty. Every registry- and CLI-built agent applied WithSystemPrompt
+		// and then WithConfig with a fresh Config, and lost its system prompt;
+		// agents configured to hold a stance answered on the merits instead.
+		if prev := a.config; prev != nil {
+			if config.Name == "" {
+				config.Name = prev.Name
+			}
+			if config.Description == "" {
+				config.Description = prev.Description
+			}
+			if config.SystemPrompt == "" {
+				config.SystemPrompt = prev.SystemPrompt
+			}
+			if config.SystemPromptKey == "" {
+				config.SystemPromptKey = prev.SystemPromptKey
+			}
+		}
 		a.config = config
 	}
 }
@@ -571,8 +656,8 @@ func WithoutSelfCorrection() Option {
 // disabling subsystem wiring. Pass one name per call; call repeatedly to
 // suppress multiple tools.
 //
-// Currently honoured for: graph_memory, task_board, query_tool_result,
-// recall, manage_skills, load_pattern. Other tools either
+// Currently honoured for: graph_memory, task_board, recall, manage_skills,
+// load_pattern. Other tools either
 // are registered eagerly by the caller (cmd_serve) and can be omitted there,
 // or are not subject to suppression.
 func WithoutBuiltinTool(name string) Option {
@@ -605,6 +690,14 @@ func WithName(name string) Option {
 	}
 }
 
+// WithGraphMemoryAgentID sets the stable key for graph memory reads and writes
+// (Config.GraphMemoryAgentID), so memories survive a rename of the agent.
+func WithGraphMemoryAgentID(id string) Option {
+	return func(a *Agent) {
+		a.config.GraphMemoryAgentID = id
+	}
+}
+
 // WithSystemPrompt sets the direct system prompt text.
 func WithSystemPrompt(prompt string) Option {
 	return func(a *Agent) {
@@ -616,6 +709,20 @@ func WithSystemPrompt(prompt string) Option {
 func WithDescription(description string) Option {
 	return func(a *Agent) {
 		a.config.Description = description
+	}
+}
+
+// WithROM sets the ROM identifier used to compose the system prompt.
+func WithROM(rom string) Option {
+	return func(a *Agent) {
+		a.config.Rom = rom
+	}
+}
+
+// WithMetadata sets a copy of the agent metadata.
+func WithMetadata(metadata map[string]string) Option {
+	return func(a *Agent) {
+		a.config.Metadata = maps.Clone(metadata)
 	}
 }
 
@@ -700,6 +807,16 @@ func WithSkillTaskEmitter(e *skilltasks.Emitter) Option {
 	}
 }
 
+// WithEventLog enables the durable, tool-call-granularity execution log
+// (issue #229) for crash-resumable conversation loops. A nil store leaves
+// recording disabled — every write-ahead call becomes a no-op, and
+// ResumeSession is unavailable (returns ErrEventLogDisabled).
+func WithEventLog(store eventlog.EventLogStore) Option {
+	return func(a *Agent) {
+		a.eventLog = store
+	}
+}
+
 // captureBaseTools records the always-advertised tool set — every tool present
 // before any event-driven (session-scoped) registration. Idempotent: the first
 // call wins, so it must run before the first skill-required or progressive-
@@ -727,7 +844,7 @@ func (a *Agent) registerSessionTool(sessionID string, name string) {
 		return
 	}
 	if sessionID == "" {
-		sessionID = a.id
+		sessionID = a.GetID()
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -749,7 +866,7 @@ func (a *Agent) registerSessionTool(sessionID string, name string) {
 func (a *Agent) advertisedTools(session *Session) []shuttle.Tool {
 	all := a.tools.ListTools()
 
-	sessionID := a.id
+	sessionID := a.GetID()
 	if session != nil && session.ID != "" {
 		sessionID = session.ID
 	}
@@ -797,30 +914,27 @@ func (a *Agent) enforceRequiredSkillTools(sessionID string) {
 		}
 		for _, name := range as.Skill.Tools.RequiredTools {
 			if !a.tools.IsRegistered(name) {
-				tool := builtin.ByName(name)
-				if tool == nil {
-					zap.L().Warn("skill required tool not available; skipping",
+				if tool := builtin.ByName(name); tool != nil {
+					a.tools.Register(tool)
+					zap.L().Debug("skill required tool auto-registered (builtin)",
 						zap.String("skill", as.Skill.Name),
 						zap.String("tool", name))
+				} else if err := a.resolveSkillTool(name, as.Skill.Tools.MCPServers); err != nil {
+					// A non-builtin (MCP/registry) tool that does not
+					// resolve is logged and skipped; the turn continues
+					// without it.
+					zap.L().Warn("skill required tool not resolvable; skipping",
+						zap.String("skill", as.Skill.Name),
+						zap.String("tool", name),
+						zap.Strings("mcp_servers", as.Skill.Tools.MCPServers),
+						zap.Error(err))
 					continue
 				}
-				a.tools.Register(tool)
-				zap.L().Debug("skill required tool auto-registered",
-					zap.String("skill", as.Skill.Name),
-					zap.String("tool", name))
 			}
 			// Advertise the required tool into THIS session even when another
 			// session registered the definition first. Base tools are ignored
 			// by registerSessionTool, so requiring one never hides it elsewhere.
 			a.registerSessionTool(sessionID, name)
-		}
-		// Surface MCP-server requests so operators see when a skill has
-		// declared servers that aren't yet honored. Logged once per turn
-		// per skill rather than per server to avoid log spam.
-		if len(as.Skill.Tools.MCPServers) > 0 {
-			zap.L().Debug("skill declares mcp_servers; activation not yet supported",
-				zap.String("skill", as.Skill.Name),
-				zap.Int("count", len(as.Skill.Tools.MCPServers)))
 		}
 	}
 }
@@ -877,7 +991,7 @@ func (a *Agent) applySkillExcludedTools(in []shuttle.Tool, session *Session) []s
 	}
 	sessionID := session.ID
 	if sessionID == "" {
-		sessionID = a.id
+		sessionID = a.GetID()
 	}
 	active := a.skillOrchestrator.GetActiveSkills(sessionID)
 	if len(active) == 0 {
@@ -1046,6 +1160,42 @@ func (a *Agent) SetToolRegistryForDynamicDiscovery(toolRegistry shuttle.ToolRegi
 // GetDescription returns the agent description from configuration.
 func (a *Agent) GetDescription() string {
 	return a.config.Description
+}
+
+// SetSkillMCPResolver installs a host resolver for skill-declared MCP tools.
+// The host (e.g. the cloud runtime) owns MCP resolution — per-user auth,
+// endpoint routing — which loom cannot perform itself. Safe to call after
+// construction, once the host's accessible-server map is built. When unset,
+// enforceRequiredSkillTools falls back to the executor's own resolver.
+func (a *Agent) SetSkillMCPResolver(fn func(ctx context.Context, name string, servers []string) error) {
+	a.skillMCPResolverMu.Lock()
+	defer a.skillMCPResolverMu.Unlock()
+	a.skillMCPResolver = fn
+}
+
+// skillMCPResolverFn reads the installed resolver under the lock. The host may
+// install it after construction while turns are already running, so the field
+// is never read bare.
+func (a *Agent) skillMCPResolverFn() func(ctx context.Context, name string, servers []string) error {
+	a.skillMCPResolverMu.RLock()
+	defer a.skillMCPResolverMu.RUnlock()
+	return a.skillMCPResolver
+}
+
+// resolveSkillTool mounts a non-builtin skill-required tool by name, bounded to
+// the skill's declared mcp_servers. A host resolver, if installed, owns
+// resolution; otherwise loom's executor resolves the tool from the dynamic tool
+// registry. Uses a background context: resolution is an index lookup plus a
+// cached MCP client, with no request-scoped cancellation to honor.
+func (a *Agent) resolveSkillTool(name string, servers []string) error {
+	if fn := a.skillMCPResolverFn(); fn != nil {
+		return fn(context.Background(), name, servers)
+	}
+	if a.executor == nil {
+		return fmt.Errorf("no skill tool resolver available")
+	}
+	_, err := a.executor.ResolveAndRegister(context.Background(), name, servers)
+	return err
 }
 
 // GetConfig returns a copy of the agent configuration.
@@ -1278,15 +1428,29 @@ func (a *Agent) skillMenuPromptSupplement() string {
 	var b strings.Builder
 	b.WriteString("\n\n---\n\n# Available skills\n\n")
 	b.WriteString("Bound to this agent. Load with manage_skills to bring instructions into the conversation; until then, only the name + description below are in context.\n\n")
+	listed := 0
 	for _, rb := range resolved {
 		if rb.Skill == nil {
 			continue
 		}
+		// MANUAL skills are the user's to invoke, so they are not on the menu:
+		// manage_skills(load) refuses them, and naming one here would only
+		// invite the call that gets refused. The user's slash command activates
+		// them directly (Agent.loadSkillFromSlashCommand).
+		if isManualSkill(rb.Skill) {
+			continue
+		}
+		listed++
 		if rb.Skill.Description != "" {
 			b.WriteString(fmt.Sprintf("- %s — %s\n", rb.Skill.Name, rb.Skill.Description))
 		} else {
 			b.WriteString(fmt.Sprintf("- %s\n", rb.Skill.Name))
 		}
+	}
+	// An all-MANUAL binding set leaves a heading over an empty list, which reads
+	// as a menu with nothing on it. Render nothing instead.
+	if listed == 0 {
+		return ""
 	}
 	return b.String()
 }
@@ -1340,7 +1504,7 @@ func (a *Agent) checkAndRegisterTaskBoardTool() {
 		return
 	}
 
-	tbTool := NewTaskBoardTool(a.taskManager, a.taskDecomposer, a.id, a.llm, a.taskBoardConfig)
+	tbTool := NewTaskBoardTool(a.taskManager, a.taskDecomposer, a.GetID(), a.llm, a.taskBoardConfig)
 	a.tools.Register(tbTool)
 }
 
@@ -1361,6 +1525,18 @@ func (a *Agent) checkAndRegisterManageSkillsTool() {
 		return
 	}
 
+	a.tools.Register(a.newManageSkillsTool())
+}
+
+// newManageSkillsTool builds the manage_skills tool with this agent's skill
+// wiring. Two callers share it: the registration above, and the slash-command
+// load (Agent.loadSkillFromSlashCommand), which drives the same load path the
+// model uses so both routes activate, wire tools and emit tasks identically.
+// Returns nil when the orchestrator or its library is missing.
+func (a *Agent) newManageSkillsTool() *ManageSkillsTool {
+	if a.skillOrchestrator == nil || a.skillOrchestrator.GetLibrary() == nil {
+		return nil
+	}
 	tool := NewManageSkillsTool(
 		a.skillOrchestrator,
 		a.skillOrchestrator.GetLibrary(),
@@ -1368,7 +1544,12 @@ func (a *Agent) checkAndRegisterManageSkillsTool() {
 		a.enforceRequiredSkillTools,
 	)
 	tool.ctxDebug = a.ctxDebug
-	a.tools.Register(tool)
+	// Task emission on load. A method value, not the emitter itself, so the
+	// wiring is independent of construction order: this runs before NewAgent
+	// auto-wires a.skillTaskEmitter, and emitSkillTasksAsync reads that field
+	// at call time. An agent with no emitter is a no-op at the same place.
+	tool.emitSkillTasks = a.emitSkillTasksAsync
+	return tool
 }
 
 // checkAndRegisterLoadPatternTool registers the load_pattern builtin whenever a
@@ -1411,12 +1592,25 @@ func (a *Agent) buildTaskContext(ctx context.Context) string {
 
 	boardID := a.taskBoardConfig.DefaultBoardId
 
+	// Hide runtime-minted tasks from the agent's own view of its work.
+	//
+	// This is the guard on context growth. Implicit tasks are created once per
+	// working turn, and this block is rebuilt into the system prompt EVERY
+	// turn. Without the exclusion, a long conversation would inject a growing
+	// list of its own past turns — most visibly through the "recent
+	// completions" query below, whose three slots would be permanently occupied
+	// by the last three turns' bookkeeping.
+	//
+	// Empty unless an operator sets implicit_tasks.agent_visible.
+	excludeVia := task.ResolveImplicitPolicy(a.taskBoardConfig.GetImplicitTasks()).ExcludedCreatedVia()
+
 	// Query current claimed tasks for this agent.
 	claimed, _, err := a.taskManager.ListTasks(ctx, task.ListTasksOpts{
-		AssigneeAgentID: a.id,
-		Status:          loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS,
-		BoardID:         boardID,
-		Limit:           5,
+		AssigneeAgentID:   a.GetID(),
+		Status:            loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS,
+		BoardID:           boardID,
+		Limit:             5,
+		ExcludeCreatedVia: excludeVia,
 	})
 	if err != nil {
 		zap.L().Warn("task context: failed to list claimed tasks", zap.Error(err))
@@ -1424,26 +1618,34 @@ func (a *Agent) buildTaskContext(ctx context.Context) string {
 
 	// Query ready front.
 	ready, err := a.taskManager.GetReadyFront(ctx, boardID, task.ReadyFrontOpts{
-		MaxResults: 5,
+		MaxResults:        5,
+		ExcludeCreatedVia: excludeVia,
 	})
 	if err != nil {
 		zap.L().Warn("task context: failed to get ready front", zap.Error(err))
 	}
 
-	// Query board stats.
-	allTasks, total, err := a.taskManager.ListTasks(ctx, task.ListTasksOpts{
-		BoardID: boardID,
-		Limit:   1000,
+	// Query board stats with a single aggregate.
+	//
+	// This used to fetch up to 1000 full task rows — every column, several JSON
+	// payloads each — only to increment per-status counters, on a path that runs
+	// before every LLM call. It also truncated silently: a board with more than
+	// 1000 tasks reported wrong numbers to the agent.
+	counts, err := a.taskManager.CountByStatus(ctx, task.CountByStatusOpts{
+		BoardID:           boardID,
+		ExcludeCreatedVia: excludeVia,
 	})
 	if err != nil {
-		zap.L().Warn("task context: failed to list board tasks", zap.Error(err))
+		zap.L().Warn("task context: failed to count board tasks", zap.Error(err))
 	}
+	total := counts.Total
 
 	// Query recent completions (last 3 closed tasks for momentum/context).
 	recentDone, _, _ := a.taskManager.ListTasks(ctx, task.ListTasksOpts{
-		BoardID: boardID,
-		Status:  loomv1.TaskStatus_TASK_STATUS_DONE,
-		Limit:   3,
+		BoardID:           boardID,
+		Status:            loomv1.TaskStatus_TASK_STATUS_DONE,
+		Limit:             3,
+		ExcludeCreatedVia: excludeVia,
 	})
 
 	// If no tasks exist anywhere, skip the context block entirely.
@@ -1451,10 +1653,15 @@ func (a *Agent) buildTaskContext(ctx context.Context) string {
 		return ""
 	}
 
-	// Compute stats.
-	stats := map[string]int{"total": total}
-	for _, t := range allTasks {
-		stats[task.StatusName(t.Status)]++
+	// Stats come straight from the aggregate; no per-row loop.
+	stats := map[string]int{
+		"total": counts.Total,
+		task.StatusName(loomv1.TaskStatus_TASK_STATUS_OPEN):        counts.Open,
+		task.StatusName(loomv1.TaskStatus_TASK_STATUS_IN_PROGRESS): counts.InProgress,
+		task.StatusName(loomv1.TaskStatus_TASK_STATUS_BLOCKED):     counts.Blocked,
+		task.StatusName(loomv1.TaskStatus_TASK_STATUS_DONE):        counts.Done,
+		task.StatusName(loomv1.TaskStatus_TASK_STATUS_DEFERRED):    counts.Deferred,
+		task.StatusName(loomv1.TaskStatus_TASK_STATUS_CANCELLED):   counts.Cancelled,
 	}
 
 	var b strings.Builder
@@ -1628,12 +1835,17 @@ func formatWorkflowCommunicationInstructions(ctx *WorkflowCommunicationContext) 
 // getGuidanceMessage loads a guidance message from PromptRegistry or returns default.
 // Used for user-facing messages like error recovery, max turns, etc.
 func (a *Agent) getGuidanceMessage(ctx context.Context, key string, vars map[string]interface{}) string {
-	// Try loading from PromptRegistry
+	// Try loading from PromptRegistry. The guidance files register their entries
+	// under guidance.self_correction.<id> (prompts/guidance/self_correction.yaml),
+	// so try that namespace too; the plain key stays first for callers that
+	// register one directly. A rendered message that still holds a placeholder
+	// (a variable the caller did not pass) is never shown: the fallback runs.
 	if a.prompts != nil {
-		fullKey := "guidance." + key
-		msg, err := a.prompts.Get(ctx, fullKey, vars)
-		if err == nil && msg != "" {
-			return msg
+		for _, fullKey := range []string{"guidance." + key, "guidance.self_correction." + key} {
+			msg, err := a.prompts.Get(ctx, fullKey, vars)
+			if err == nil && msg != "" && !strings.Contains(msg, "{{") {
+				return msg
+			}
 		}
 	}
 
@@ -1650,6 +1862,27 @@ func (a *Agent) getGuidanceMessage(ctx context.Context, key string, vars map[str
 			}
 		}
 		return "The tool execution failed. Let me try a different approach."
+	case "repeated_tool_call":
+		count, name := "several", "this tool"
+		if c, ok := vars["count"].(string); ok && c != "" {
+			count = c
+		}
+		if n, ok := vars["tool_name"].(string); ok && n != "" {
+			name = n
+		}
+		return fmt.Sprintf("(note: this is call %s in a row to %s with identical arguments. Read this result before calling again: change the arguments, try a different approach, or finish. Calling again is fine when the data can change between calls, for example when polling a job that is still running.)", count, name)
+	case "step_results_too_large":
+		count := "these"
+		if c, ok := vars["count"].(string); ok && c != "" {
+			count = c
+		}
+		return fmt.Sprintf("These %s tool results, from one step, were together too large for the context, so they were removed. Each call ran: do not repeat an action that changed something. Call fewer tools at once, or narrow each call (a range, a filter, LIMIT), and continue.", count)
+	case "step_results_too_large_at_synthesis":
+		count := "these"
+		if c, ok := vars["count"].(string); ok && c != "" {
+			count = c
+		}
+		return fmt.Sprintf("These %s tool results, from the last step, were together too large for the context, so they were removed. Each call ran. Answer from what you had before them, and say which of these results you could not read.", count)
 	default:
 		return "An unexpected situation occurred. Please try again."
 	}
@@ -1779,7 +2012,7 @@ func truncatePreview(s string) string {
 // telemetry — shared by the three public chat entry points. See chatParams for
 // how each entry point tailors span name, multimodal content, and progress
 // reporting.
-func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, p chatParams) (*Response, error) {
+func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, p chatParams) (_ *Response, retErr error) {
 	// Providers build the request exclusively from ContentBlocks when present,
 	// dropping Content — so an image-only block set would silently send the
 	// image without the question text. Keep userMessage truly canonical by
@@ -1848,6 +2081,17 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// Get or create session with agent metadata for proper ReferenceStore namespacing
 	session := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
 
+	// With an event log, one process at a time drives a session's loop
+	// (session_lease.go): a concurrent turn or crash resume would otherwise
+	// record events and dispatch calls at the same steps. Taken after the
+	// session exists, because the lease row references it.
+	ctx, releaseLease, err := a.holdSessionLease(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseLease()
+	defer func() { retErr = leaseLostError(ctx, retErr) }()
+
 	// A session holding backend leases from a previous turn starts this turn
 	// in the RESOURCE_HOLDER class — the previous turn's SlotInfo died with
 	// it, so the ledger re-marks the fresh one the server installed.
@@ -1864,13 +2108,9 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 		return nil, err
 	}
 
-	// TURN END for the previous turn (HLD §1, §7.3): a new turn is starting —
-	// in-memory full payloads are replaced by their persisted-row form and the
-	// in-turn SQLite is dropped. Rows and summary versions are all that remains.
-	if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
-		segMem.DropTurnPayloads()
-	}
-	a.dropInTurnSQLite(sessionID)
+	// Nothing is rewritten at the previous turn's end: every row renders the
+	// same bytes on every call, and the fold is the only thing that changes
+	// the context.
 
 	// Add user message to history. ContentBlocks (when present) take precedence
 	// over Content as providers build the request, so multimodal content reaches
@@ -1891,21 +2131,19 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 		Role:          "user",
 		Content:       userMessage,
 		ContentBlocks: p.contentBlocks,
-		AgentID:       a.id, // Track which agent received this message
+		AgentID:       a.GetID(), // Track which agent received this message
 		Timestamp:     time.Now(),
 	}, true)
-	_ = userMsg
 
-	// Fire graph memory extraction on the incoming user message immediately,
-	// in parallel with the LLM processing it. The user message is where the
-	// information lives — extract entities/facts before the response comes back.
-	if a.enableGraphMemoryExtraction {
-		a.graphExtractionWG.Add(1)
-		go func() {
-			defer a.graphExtractionWG.Done()
-			a.extractGraphMemoryAsync(ctx, sessionID)
-		}()
-	}
+	// A leading slash command is the user activating a skill. It runs here,
+	// after their message is on the record and before the model reads the
+	// conversation, so the skill's instructions are already in context for the
+	// turn that asked for them — and, for a MANUAL skill, this is the only
+	// route in. A message that names no known command is left alone.
+	a.loadSkillFromSlashCommand(ctx, session, userMessage)
+
+	// Graph memory extraction of this message starts in runConversationLoop,
+	// after recall, so the turn's own facts are never recalled as past memory.
 
 	// Store progressCallback in context so nested operations (tools, backends) can access it.
 	// This enables sub-agent progress reporting (e.g., weaver's sub-agents).
@@ -1913,16 +2151,80 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 		ctx = ContextWithProgressCallback(ctx, p.progressCallback)
 	}
 
+	// Install this turn's task binding.
+	//
+	// The runtime — not the model — decides whether a turn gets a task. The
+	// binding is an empty slot now; it is filled deterministically on the first
+	// qualifying event (see maybeRecordImplicitTask), so a turn that only talks
+	// leaves no board row while a turn that does work always gets one. Nothing
+	// here asks the agent's permission and nothing depends on the agent electing
+	// to call task_board.
+	//
+	// It must be installed BEFORE agentCtx is built: writers that capture the
+	// context before the task exists read through the binding, so they observe
+	// the attribution as soon as it is set.
+	ctx, taskBinding := taskctx.ContextWithBinding(ctx)
+	turnIndex := userMsg.Turn
+
 	// Create agent context (a nil progressCallback is fine — no events emitted)
 	agentCtx := &agentContext{
 		Context:          ctx,
 		session:          session,
 		tracer:           a.tracer,
 		progressCallback: p.progressCallback,
+		taskBinding:      taskBinding,
+		turnIndex:        turnIndex,
+		userMessage:      userMessage,
 	}
 
 	// Run conversation loop
 	response, err := a.runConversationLoop(agentCtx)
+
+	// Ledger-grounded lesson pass (PR #357): mine verified error→fix
+	// transitions from the tool ledger. Runs at the end of every Chat()
+	// call — i.e. per USER MESSAGE, not per conversation — because that is
+	// where the ledger drains, so only within-turn transitions are
+	// mineable. Runs regardless of outcome: a failed turn may still contain
+	// verified intermediate fixes.
+	if a.enableGraphMemoryExtraction {
+		a.graphExtractionWG.Add(1)
+		go func() {
+			defer a.graphExtractionWG.Done()
+			// Consumes the tool ledger AND the error-lane injection record
+			// (outcome credit) — no synchronous clear here, or the async
+			// pass would race with it and lose the credit evidence.
+			a.extractLessonsAtEnd(context.WithoutCancel(ctx), sessionID)
+		}()
+	} else {
+		// Error-triggered lesson tracking is per-conversation state.
+		a.clearErrorLessonState(sessionID)
+	}
+
+	// Close the turn's recorded task, if the runtime recorded one. Deferred
+	// until after the loop so the task spans the whole turn, and run even on
+	// error — a turn that failed still finished, and leaving the row IN_PROGRESS
+	// would misreport it as still running.
+	//
+	// A PARK is the exception, and the exception lives HERE, at the call site,
+	// rather than inside completeImplicitTask. A parked turn has not finished:
+	// it is waiting for a human, and the action they were asked to approve has
+	// not run. Closing it here reported the opposite twice over — the row went
+	// DONE, and implicitCloseReason reads TurnParkedError as a failure, so the
+	// board said "Turn ended with an error." about work that had not started.
+	// ResumeChat closes the turn when it actually terminates.
+	//
+	// Placing the exception at the call site is what preserves
+	// completeImplicitTask's own rule that it releases the per-turn memo FIRST
+	// and unconditionally. That rule is about its own early returns, which ask
+	// whether there is a task to CLOSE and never whether the turn ended; a park
+	// is the latter question, so the honest answer is not to call the function
+	// at all. Withholding the memo is required in its own right: the memo is
+	// what the resume rebinds through, so a turn that keeps running keeps its
+	// entry until the turn that finishes releases it.
+	var parkedHere *TurnParkedError
+	if !errors.As(err, &parkedHere) {
+		defer a.completeImplicitTask(ctx, taskBinding, session.ID, int(turnIndex), implicitCloseReason(response, err), err != nil)
+	}
 
 	a.checkAndRegisterGraphMemoryTool()
 	a.checkAndRegisterTaskBoardTool()
@@ -1981,15 +2283,33 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 		return nil, fmt.Errorf("conversation loop failed: %w", err)
 	}
 
-	// Add assistant response to history
-	a.appendMessage(ctx, session, Message{
-		Role:       "assistant",
-		Content:    response.Content,
-		AgentID:    a.id, // Track which agent generated this response
-		Timestamp:  time.Now(),
-		TokenCount: response.Usage.TotalTokens,
-		CostUSD:    response.Usage.CostUSD,
+	// Add assistant response to history. response.Usage is the final LLM
+	// call's Usage (last-turn); intermediate tool-use turns already wrote
+	// their own rows above, so SUM(messages.cost) over the session equals
+	// the whole conversation's cost.
+	_, replyPersisted := a.appendMessage(ctx, session, Message{
+		Role: "assistant",
+		// Turn-ending message: thinking text rides for persistence; no blocks
+		// are carried, as no later call of this turn replays them. (Settled
+		// tool-loop messages keep theirs while the context before them is
+		// unchanged: thinkingPrefix in context_compilation.go.)
+		Content:           response.Content,
+		Thinking:          response.Thinking,
+		AgentID:           a.GetID(), // Track which agent generated this response
+		Timestamp:         time.Now(),
+		TokenCount:        response.Usage.TotalTokens,
+		CostUSD:           response.Usage.CostUSD,
+		InputTokens:       response.Usage.InputTokens,
+		OutputTokens:      response.Usage.OutputTokens,
+		CacheReadTokens:   response.Usage.CacheReadInputTokens,
+		CacheCreateTokens: response.Usage.CacheCreationInputTokens,
+
+		CacheCreate1hTokens: response.Usage.CacheCreation1hInputTokens,
+		CacheCreate5mTokens: response.Usage.CacheCreation5mInputTokens,
+		ThinkingTokens:      response.Usage.ThinkingTokens,
+		Effort:              response.Usage.Effort,
 	}, false)
+	a.pruneFinishedTurn(ctx, session.ID, replyPersisted)
 
 	// Persist session
 	if err := a.memory.PersistSession(ctx, session); err != nil {
@@ -2011,10 +2331,12 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	span.SetAttribute("conversation.turns", turns)
 	span.SetAttribute("conversation.tool_executions", toolExecs)
 	span.SetAttribute("conversation.duration_ms", duration.Milliseconds())
-	span.SetAttribute("conversation.tokens.total", response.Usage.TotalTokens)
-	span.SetAttribute("conversation.tokens.input", response.Usage.InputTokens)
-	span.SetAttribute("conversation.tokens.output", response.Usage.OutputTokens)
-	span.SetAttribute("conversation.cost.usd", response.Usage.CostUSD)
+	// Conversation-level figures are the TURN total (every LLM call), not
+	// the final call's share — see Response.TurnUsage.
+	span.SetAttribute("conversation.tokens.total", response.TurnUsage.TotalTokens)
+	span.SetAttribute("conversation.tokens.input", response.TurnUsage.InputTokens)
+	span.SetAttribute("conversation.tokens.output", response.TurnUsage.OutputTokens)
+	span.SetAttribute("conversation.cost.usd", response.TurnUsage.CostUSD)
 	span.SetAttribute("conversation.stop_reason", response.Metadata["stop_reason"])
 	span.SetAttribute("response.length", len(response.Content))
 	span.SetAttribute("response.preview", truncatePreview(response.Content))
@@ -2032,8 +2354,8 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 		"duration_ms":     duration.Milliseconds(),
 		"turns":           turns,
 		"tool_executions": toolExecs,
-		"cost_usd":        response.Usage.CostUSD,
-		"tokens":          response.Usage.TotalTokens,
+		"cost_usd":        response.TurnUsage.CostUSD,
+		"tokens":          response.TurnUsage.TotalTokens,
 	})
 
 	a.recordConversationMetrics(sessionID, response, duration)
@@ -2067,27 +2389,113 @@ func (a *Agent) recordConversationMetrics(sessionID string, response *Response, 
 		observability.AttrSessionID: sessionID,
 	})
 
-	a.tracer.RecordMetric("agent.cost.usd", response.Usage.CostUSD, map[string]string{
+	// Agent-level cost/tokens describe the whole turn (every LLM call it
+	// made), so they read TurnUsage; Usage is the final call's share only.
+	a.tracer.RecordMetric("agent.cost.usd", response.TurnUsage.CostUSD, map[string]string{
 		observability.AttrSessionID: sessionID,
 	})
 
-	a.tracer.RecordMetric("agent.tokens.total", float64(response.Usage.TotalTokens), map[string]string{
+	a.tracer.RecordMetric("agent.tokens.total", float64(response.TurnUsage.TotalTokens), map[string]string{
 		observability.AttrSessionID: sessionID,
 	})
 }
 
+// addUsage folds one LLM call's usage into a running turn total.
+// carryFoldCost is a call's usage with the cost of the fold calls before it
+// added: the money and the output, so a row's cost is what was spent to reach
+// it. The input figures stay the call's own, which is the prompt it sent.
+func carryFoldCost(u, fold Usage) Usage {
+	u.CostUSD += fold.CostUSD
+	u.OutputTokens += fold.OutputTokens
+	u.TotalTokens += fold.TotalTokens
+	u.ThinkingTokens += fold.ThinkingTokens
+	return u
+}
+
+func addUsage(dst *Usage, u Usage) {
+	// RateLimitTokens stays zero until some call sets it (so a turn of calls
+	// that never set it still equals their plain sum); once any call does, it
+	// carries every call's metered figure, falling back to TotalTokens for the
+	// calls that did not. Computed before dst's TotalTokens is advanced.
+	if dst.RateLimitTokens > 0 || u.RateLimitTokens > 0 {
+		dst.RateLimitTokens = dst.ThroughputTokens() + u.ThroughputTokens()
+	}
+	dst.InputTokens += u.InputTokens
+	dst.OutputTokens += u.OutputTokens
+	dst.TotalTokens += u.TotalTokens
+	dst.CacheReadInputTokens += u.CacheReadInputTokens
+	dst.CacheCreationInputTokens += u.CacheCreationInputTokens
+	dst.CacheCreation1hInputTokens += u.CacheCreation1hInputTokens
+	dst.CacheCreation5mInputTokens += u.CacheCreation5mInputTokens
+	dst.ThinkingTokens += u.ThinkingTokens
+	dst.CostUSD += u.CostUSD
+	dst.CostEstimated = dst.CostEstimated || u.CostEstimated
+}
+
+// observePromptUsage feeds a successful call's provider-reported prompt size
+// into the session's relief calibration. The whole prompt is input + cache
+// read + cache write (types.Usage). Call before appending the response, so the
+// compiled context still matches what was sent.
+func (a *Agent) observePromptUsage(session *Session, u Usage) {
+	segMem, ok := session.SegmentedMem.(*SegmentedMemory)
+	if !ok || segMem == nil {
+		return
+	}
+	segMem.ObservePromptTokens(u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens)
+}
+
 // appendMessage is the arrival seam (HLD §1): it stamps the message's turn,
 // persists its durable row once (write rules §4; the store's RETURNING-derived
-// seq and turn override the stamp), and appends the message to the session in
-// full natural form. Nothing is examined, sized, flagged, or transformed at
-// arrival. turnStart is true only at the Chat() entry — the only
-// turn-incrementing event (HLD §4.5). Persist failures are logged, never fatal.
+// seq and turn override the stamp), and appends the message to the session.
+// turnStart is true only at the Chat() entry — the only turn-incrementing
+// event (HLD §4.5). Persist failures are logged, never fatal.
+//
+// A tool result is bounded here, at the door, and nowhere else: above the
+// threshold it enters as its first bytes plus the tail (§4.1). The whole of it
+// is kept for this turn; when query_tool_result is registered the tail names
+// the result's tool_use_id, and the agent pages the rest with it. What enters memory, what is stored and what the model is sent are
+// then the same bytes, so nothing is ever cut, stubbed or re-rendered later —
+// the context only grows, and the fold is the only thing that changes it.
 func (a *Agent) appendMessage(ctx context.Context, session *Session, msg Message, turnStart bool) (Message, bool) {
+	// A new turn frees the last turn's whole results: they are held for the
+	// turn that produced them only.
+	if turnStart && a.memory != nil {
+		a.memory.dropWhole(session.ID)
+	}
+	// The whole of a bounded result is kept for this turn, out of the context,
+	// for query_tool_result and for a host tool that stages it by id
+	// (InTurnPayload, InTurnPayloadByToolUseID).
+	var whole string
+	if msg.Role == "tool" && a.memory != nil && !a.memory.exempt(toolNameOf(session, msg.ToolUseID)) {
+		threshold := a.memory.thresholdOrDefault()
+		// The tail names query_tool_result only when the agent can call it:
+		// it is registered at construction unless suppressed.
+		pageBy := ""
+		if msg.ToolUseID != "" && a.tools != nil && a.tools.IsRegistered("query_tool_result") {
+			pageBy = msg.ToolUseID
+		}
+		bounded := boundToolRow(msg.Content, threshold, pageBy)
+		if bounded != msg.Content {
+			whole = msg.Content
+		}
+		msg.Content = bounded
+		// The raw result record is bounded with its content: the store drops a
+		// record over the bound, and memory holds the same row the store does.
+		if msg.ToolResult != nil {
+			if raw, err := json.Marshal(msg.ToolResult); err != nil || len(raw) > threshold {
+				msg.ToolResult = nil
+			}
+		}
+	}
 	// A replay/import override (WeaveRequest.occurred_at → WithOccurredAt)
 	// anchors every row persisted during the call at the conversation's
 	// historical time; without one, the caller-stamped wall clock stands.
 	if at, ok := occurredAtFromContext(ctx); ok {
 		msg.Timestamp = at
+	}
+	// A message an LLM call billed carries the model that answered.
+	if msg.Model == "" && msg.OutputTokens > 0 && a.llm != nil {
+		msg.Model = a.llm.Model()
 	}
 
 	// In-memory derivation, identical arithmetic to the store's subquery — the
@@ -2107,8 +2515,89 @@ func (a *Agent) appendMessage(ctx context.Context, session *Session, msg Message
 			zap.Error(err))
 	}
 
+	if whole != "" {
+		id, _ := strconv.ParseInt(msg.ID, 10, 64)
+		a.memory.keepWhole(session.ID, msg.Turn, id, msg.ToolUseID, whole)
+	}
+
 	session.AddMessage(ctx, msg)
 	return msg, persisted
+}
+
+// toolNameOf is the tool a result answers: the call with this id on the
+// latest assistant row that made calls.
+func toolNameOf(session *Session, toolUseID string) string {
+	if session == nil || toolUseID == "" {
+		return ""
+	}
+	var name string
+	session.FindMessage(func(m Message) bool {
+		for _, c := range m.ToolCalls {
+			if c.ID == toolUseID {
+				name = c.Name
+				return true
+			}
+		}
+		return false
+	})
+	return name
+}
+
+// ErrNotThisTurn is the typed miss for InTurnPayload: the id does not name a
+// tool result of the session's current turn. Callers turn it into their own
+// loud error and never guess: a result does not outlive its turn.
+var ErrNotThisTurn = errors.New("not a current-turn in-memory payload")
+
+// InTurnPayload returns the whole of message id's tool result iff it belongs
+// to the session's current turn. The model saw it bounded; a host tool that
+// stages it — into a sandbox, say — gets every byte. Any other case is
+// ErrNotThisTurn.
+func (a *Agent) InTurnPayload(sessionID string, messageID int64) (string, error) {
+	session, ok := a.memory.GetSession(sessionID)
+	if !ok || session == nil {
+		return "", fmt.Errorf("%w: message %d", ErrNotThisTurn, messageID)
+	}
+	turn := sessionCurrentTurn(session)
+	if whole, ok := a.memory.wholeOf(sessionID, turn, messageID); ok {
+		return whole, nil
+	}
+	id := strconv.FormatInt(messageID, 10)
+	if m, ok := session.FindMessage(func(m Message) bool {
+		return m.Role == "tool" && m.ID == id && m.Turn == turn
+	}); ok {
+		return m.Content, nil
+	}
+	return "", fmt.Errorf("%w: message %d", ErrNotThisTurn, messageID)
+}
+
+// InTurnPayloadByToolUseID returns the whole of the tool result answering
+// toolUseID iff it belongs to the session's current turn — the id the model
+// sees on the result and in its truncation tail. Any other case is
+// ErrNotThisTurn.
+func (a *Agent) InTurnPayloadByToolUseID(sessionID, toolUseID string) (string, error) {
+	session, ok := a.memory.GetSession(sessionID)
+	if !ok || session == nil || toolUseID == "" {
+		return "", fmt.Errorf("%w: tool_use_id %q", ErrNotThisTurn, toolUseID)
+	}
+	turn := sessionCurrentTurn(session)
+	if whole, ok := a.memory.wholeOfUse(sessionID, turn, toolUseID); ok {
+		return whole, nil
+	}
+	if m, ok := session.FindMessage(func(m Message) bool {
+		return m.Role == "tool" && m.ToolUseID == toolUseID && m.Turn == turn
+	}); ok {
+		return m.Content, nil
+	}
+	return "", fmt.Errorf("%w: tool_use_id %q", ErrNotThisTurn, toolUseID)
+}
+
+// SetOffloadExemptTools names the tools whose results enter the conversation
+// whole, for existing and future sessions: the arrival bound does not apply to
+// them. The set replaces the previous one.
+func (a *Agent) SetOffloadExemptTools(names []string) {
+	if a.memory != nil {
+		a.memory.SetOffloadExemptTools(names)
+	}
 }
 
 // Response represents the agent's response to a user message.
@@ -2116,8 +2605,33 @@ type Response struct {
 	// Content is the text response
 	Content string
 
-	// Usage tracks token usage and cost
+	// Usage is the token usage and cost of the FINAL LLM call of the turn —
+	// the call that produced Content. It is what the persisted assistant
+	// message carries as its own TokenCount/CostUSD, so it must stay per-call:
+	// each tool-calling assistant row in the loop already carries its own.
 	Usage Usage
+
+	// TurnUsage is the sum over EVERY successful LLM call the turn made —
+	// the tool loop's calls, the empty-response and hygiene retries, and the
+	// final synthesis — i.e. what the provider actually billed for this turn.
+	// An embedder metering a turn must read this, not Usage: a turn that ran
+	// N tool-loop iterations has N−1 calls that Usage does not represent.
+	TurnUsage Usage
+
+	// TurnLLMCalls is the number of successful LLM calls that TurnUsage sums:
+	// every call of the conversation loop (tool-loop iterations, the
+	// empty-response and hygiene retries, the final synthesis). A scripted
+	// replay turn (WithScriptedResponse) makes no call and counts 0.
+	// Orchestration reports it as the agent's LLM call count; one turn with N
+	// tool-loop iterations is N+ calls, not one.
+	//
+	// Not counted, here or in TurnUsage: LLM calls made outside the
+	// conversation loop's provider call. Examples are graph-memory recall
+	// (extractSearchQuery, rerankMemories), graph-memory extraction and lesson
+	// mining (both in the background), the memory compressor, segmented-memory
+	// reranking, the skills router, and the pattern intent classifier and
+	// reranker.
+	TurnLLMCalls int
 
 	// ToolExecutions contains tools that were executed
 	ToolExecutions []ToolExecution
@@ -2296,9 +2810,15 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	turnCount := 0
 	toolExecutionCount := 0
 	var allToolExecutions []ToolExecution
+	turnCalls := 0                              // count of the calls in turnUsage → Response.TurnLLMCalls
 	emptyRetried := false                       // one-shot flag: retry empty LLM response at most once per conversation
+	foldPending := false                        // in-loop fold: this call carries the fold instruction; its reply is the summary
+	foldRetries := 0                            // unusable fold replies asked again once; then the step goes on unfolded
+	var foldUsage Usage                         // what fold calls cost; no row of their own, so the next row the loop writes carries it
 	hygieneRetries := 0                         // capped count of REQUIRE_FIX retries the end-of-turn auditor has triggered
 	var hygieneLast *hygiene.EnforcementOutcome // last outcome, surfaced into Response.Metadata
+	var prevToolNames []string                  // names advertised on this turn's previous provider call; nil before the first
+	var turnUsage Usage                         // every LLM call of this turn, summed
 
 	// Self-healing orchestrator (Tier 1 recovery).
 	var recovery *recoveryOrchestrator
@@ -2318,24 +2838,40 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	{
 		msgs := session.GetMessages()
 		for i := len(msgs) - 1; i >= 0; i-- {
-			if msgs[i].Role == "user" {
+			if msgs[i].Role == "user" && !IsSystemReminder(msgs[i]) {
 				a.evaluateLazyTools(msgs[i].Content)
 				break
 			}
 		}
 	}
 
-	// Inject graph memory context (if enabled and available). A resumed turn
-	// skips it: the loop is being RE-entered for a turn that already got its
-	// context block before it parked, so injecting again would duplicate the
-	// block in the prompt and pay a second recall round-trip per resume.
-	// A resumed turn already ran this once — but only if the block SURVIVED.
-	// injectGraphMemoryContext appends through Session.AddMessage, which is
-	// in-memory only and never persisted, so a resume in a fresh process finds
-	// nothing there. Suppressing on "is a resume" alone would leave exactly
-	// the turn carrying the human-approved action with no recall at all.
-	if !isResumedTurn(ctx) || !hasGraphMemoryContext(session) {
-		a.injectGraphMemoryContext(ctx, session)
+	// Recall graph memory for this turn (if enabled and available). The note
+	// rides this turn's LLM calls as a <system-reminder> user message
+	// (withReminder: pinned after the turn's user message for the rest of the
+	// turn), never the stored session: it changes with every user message, and
+	// as a system message it would land in the provider's system field at the
+	// head of the request and miss the prompt cache on every call. A resumed
+	// turn recalls again, since nothing of it was stored.
+	memoryNote := a.graphMemoryNote(ctx, session)
+
+	// Extract the incoming user message only after recall, in parallel with the LLM
+	// call. A resume has no new user message, so it must not extract again.
+	// WithoutCancel: the turn may return before extraction ends; its own timeout bounds it.
+	if a.enableGraphMemoryExtraction && !isResumedTurn(ctx) {
+		extractCtx := context.WithoutCancel(ctx)
+		a.graphExtractionWG.Add(1)
+		go func() {
+			defer a.graphExtractionWG.Done()
+			a.extractGraphMemoryAsync(extractCtx, session.ID)
+		}()
+	}
+
+	// stepIndex is the durable execution-event-log step counter for this
+	// invocation, read once at loop entry (see EventLogStore.NextStepIndex)
+	// and advanced once per loop iteration (see thisStep below).
+	stepIndex, stepErr := a.currentStepIndex(ctx, session.ID)
+	if stepErr != nil {
+		return nil, fmt.Errorf("reading the execution-event step counter: %w", stepErr)
 	}
 
 	// Proactive failure-recovery pitfalls (once per turn, keyed on task intent).
@@ -2346,7 +2882,19 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 
 	// Conversation loop
 	for turnCount < a.config.MaxTurns && toolExecutionCount < a.config.MaxToolExecutions {
+		if leaseErr := sessionLeaseLost(ctx); leaseErr != nil {
+			return nil, leaseErr
+		}
 		turnCount++
+
+		// thisStep is captured once per iteration, before any branch
+		// (continue/return/fall-through) can run, so exactly one step_index
+		// is consumed per iteration regardless of which exit path it takes.
+		// See the two `continue` statements below in the zero-tool-call
+		// branch: neither reaches a loop-tail increment, so the increment
+		// must happen here instead.
+		thisStep := stepIndex
+		stepIndex++
 
 		// Record turn start on conversation_loop span
 		span.AddEvent("turn.started", map[string]interface{}{
@@ -2362,21 +2910,24 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// === FEATURE INTEGRATION: Soft Reminders ===
 		// Compute reminders if approaching limits (non-intrusive, doesn't remove
 		// tools). Thresholds: 75% of max (but minimum of 10 tools / 8 turns).
-		// The reminder is applied transiently at the provider call — appended as
-		// a trailing system message, never onto the ROM message (which would
-		// invalidate the ROM cache prefix at exactly the high-pressure moment)
-		// and never persisted, so it survives any relief recompile of messages.
-		softReminder := ""
+		// The reminder is added at the provider call (withReminder): pinned as a
+		// <system-reminder> user message for the rest of the turn, never onto
+		// the ROM message (which would invalidate the ROM cache prefix at
+		// exactly the high-pressure moment) and never persisted. Each budget
+		// reminder is sent once per turn, on the first call that crosses its
+		// threshold (TurnReminder): its count is the one at that call.
+		reminders := []TurnReminder{{Kind: ReminderGraphMemory, Text: memoryNote}}
 		if session.SegmentedMem != nil {
 			// Check tool execution reminder
 			toolReminder := buildSoftReminder(toolExecutionCount, a.config.MaxToolExecutions)
 			// Check turn count reminder
 			turnReminder := buildTurnReminder(turnCount, a.config.MaxTurns)
 
-			// Combine reminders if both are active
-			softReminder = toolReminder + turnReminder
+			reminders = append(reminders,
+				TurnReminder{Kind: ReminderToolBudget, Text: toolReminder},
+				TurnReminder{Kind: ReminderTurnBudget, Text: turnReminder})
 
-			if softReminder != "" {
+			if toolReminder != "" || turnReminder != "" {
 				span.AddEvent("soft_reminder.added", map[string]interface{}{
 					"tool_count":        toolExecutionCount,
 					"turn_count":        turnCount,
@@ -2388,6 +2939,15 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 					"has_turn_reminder": turnReminder != "",
 				})
 			}
+		}
+
+		// The repeat-call note from the last tool batch is sent on this provider
+		// call, and stays where it was sent for the rest of the turn (see
+		// withReminder). It is an event note: a later batch's hint is sent too.
+		// The orchestrator is per turn, so an unsent note cannot reach a later
+		// turn.
+		if note := recovery.takeRepeatHint(); note != "" {
+			reminders = append(reminders, TurnReminder{Text: note})
 		}
 
 		// Emit LLM generation progress
@@ -2404,7 +2964,12 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// part of the compiled artifact and feed releasePressure's estimate.
 		// Recomputed per provider call, which covers every registration change.
 		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
-			segMem.SetAdvertisedToolsBytes(advertisedToolsBytes(tools))
+			a.setAdvertisedTools(segMem, tools)
+			// The reminders known before relief runs: the recall note, the soft
+			// reminders and the repeat hint. Reminders the turn already sent are
+			// compiled or not sent again; the rest count as the pending tail
+			// until sendChat pins them.
+			segMem.SetTransientTail(reminders...)
 		}
 
 		// Mutation-debug: the per-session tool projection about to be advertised
@@ -2421,41 +2986,146 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				zap.Strings("advertised", advertised))
 		}
 
-		// Relief runs at compile, before the send: ReleasePressure self-gates on
-		// loom's own estimate (§5.1) — a no-op under the start mark, otherwise it
-		// sheds to the release mark. On a shed, recompile messages and the
-		// advertised tool set so a fold-deactivated skill's tools do not linger.
-		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
-			if shed, estimate, target := segMem.ReleasePressure(ctx, 0); shed {
-				zap.L().Info("relief: shed before send",
-					zap.String("session_id", session.ID),
-					zap.Int("estimate_tokens", estimate),
-					zap.Int("target_tokens", target))
+		// The in-loop fold sheds the settled past before a send: past G, the
+		// next call carries the fold instruction and its reply is consumed as
+		// the summary — the agent summarises itself on its own warm cache. The
+		// step in flight is fitted to the window below (fitStepToWindow).
+		// A prompt the provider still refuses as too long is answered where the
+		// refusal happens: one relief pass and one resend, then the step's
+		// results replaced and one more.
+		if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil && !foldPending && foldRetries < 2 && !scriptedTurn(ctx) && segMem.NeedsFold() {
+			foldPending = true
+			zap.L().Info("inloopFold: armed",
+				zap.String("session_id", session.ID),
+				zap.Int("attempt", foldRetries+1))
+			span.AddEvent("fold.armed", map[string]interface{}{"turn": turnCount, "attempt": foldRetries + 1})
+		}
+
+		// withReminder adds the reminder notes — the graph memory recall note,
+		// the turn's soft reminder and, with behavior.tool_change_note on, the
+		// tool-set delta — to the messages of this send. With segmented memory
+		// they are pinned (PinTurnNotes): sent as a <system-reminder> user
+		// message after the turn's rows so far, and kept at that position for
+		// the rest of the turn, so a later call never removes what an earlier
+		// one sent before the model's thinking (the provider rejects a
+		// replayed thinking block whose preceding messages changed). A
+		// reminder the turn already sent is not sent again (TurnReminder).
+		// Both the normal send and the recovery resend go through here.
+		// Without segmented memory the notes ride a trailing message on a copy
+		// (withSystemReminder).
+		withReminder := func(msgs []Message, toolNote string) []Message {
+			rs := append(reminders[:len(reminders):len(reminders)], TurnReminder{Text: toolNote})
+			if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
+				segMem.PinTurnNotes(rs...)
+				return session.GetMessages()
+			}
+			return withSystemReminder(msgs, reminderTexts(rs)...)
+		}
+
+		// sendChat is the one provider call of this iteration. With
+		// behavior.tool_change_note on, the note is computed against the tools
+		// this call sends. The baseline moves only when the call succeeds, so a
+		// refused send is reported again by the resend instead of being swallowed.
+		// A pending in-loop fold rides every send of this iteration, the
+		// context-too-long resend included: its reply is the summary.
+		// A fold call sends the settled context — everything before the
+		// pending pair — and the fold instruction. The summary covers the
+		// settled past and the fold keeps the pending pair whole, so the call
+		// need not carry the step's results: it is the previous call's request
+		// exactly, read whole from the cache, and a step that returned more
+		// than the window holds can never reach a fold call.
+		outgoing := func(toolNote string) []Message {
+			if foldPending {
+				if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
+					// No reminder is pinned on a fold call: one pinned here
+					// would sit after the pending pair, outside the previous
+					// request. The next send pins what is due.
+					return append(segMem.SettledMessagesForLLM(),
+						Message{Role: "user", Content: a.foldAsk(ctx)})
+				}
+			}
+			return withReminder(messages, toolNote)
+		}
+		// A fold call's reply is the harness's, never the user's: it is sent
+		// with no progress callback, so the summary is not streamed out.
+		callCtx := Context(ctx)
+		if foldPending {
+			if ac, ok := ctx.(*agentContext); ok {
+				quiet := *ac
+				quiet.progressCallback = nil
+				callCtx = &quiet
+			}
+		}
+		sendChat := func(ts []shuttle.Tool) (*LLMResponse, error) {
+			if !a.config.ToolChangeNote {
+				return a.chatWithRetry(callCtx, outgoing(""), ts)
+			}
+			names := make([]string, 0, len(ts))
+			for _, t := range ts {
+				names = append(names, t.Name())
+			}
+			// nil marks "no previous successful call this turn": the first send emits nothing.
+			note := ""
+			if prevToolNames != nil {
+				note = toolDeltaNote(prevToolNames, names)
+			}
+			if note != "" {
+				span.AddEvent("tools.changed", map[string]interface{}{"note": note})
+			}
+			resp, err := a.chatWithRetry(callCtx, outgoing(note), ts)
+			if err == nil {
+				prevToolNames = names
+			}
+			return resp, err
+		}
+
+		// The step in flight must fit the provider's window (fitStepToWindow).
+		// A fold call does not carry it.
+		if !foldPending && !scriptedTurn(ctx) {
+			note := ""
+			if a.config.ToolChangeNote && prevToolNames != nil {
+				names := make([]string, 0, len(tools))
+				for _, t := range tools {
+					names = append(names, t.Name())
+				}
+				note = toolDeltaNote(prevToolNames, names)
+			}
+			// The turn's other reminders are the pending tail the count already
+			// holds (SetTransientTail); the tool-change note is not among them.
+			if a.fitStepToWindow(ctx, session, "step_results_too_large", len(note), span, turnCount) {
 				messages = session.GetMessages()
-				tools = a.advertisedTools(session)
-				tools = recovery.activeTools(tools)
-				segMem.SetAdvertisedToolsBytes(advertisedToolsBytes(tools))
 			}
 		}
 
-		// withReminder appends the turn's soft reminder as a trailing system
-		// message on a copy — transient, past every cache breakpoint, never
-		// stored — so both the normal send and the recovery resend carry it.
-		withReminder := func(msgs []Message) []Message {
-			if softReminder == "" {
-				return msgs
+		// Call LLM. The in-loop fold keeps the settled context under G, and the
+		// check above keeps the step in flight inside the provider's window. The
+		// provider refusal is a backstop: on a context-too-long, shed and resend
+		// once, then replace the step's results; a refusal after that ends the
+		// turn with the recoverable context_exhausted error.
+		//
+		// Generation-free replay (WeaveRequest.replay_assistant_message): when a
+		// scripted assistant turn is threaded through the context, substitute it
+		// for the provider call. Relief/compression (above), context compilation,
+		// and graph extraction on the incoming user turn have all already run, so
+		// the memory pipeline is exercised exactly as a live turn — only
+		// generation is skipped. The scripted text carries no tool calls, so the
+		// loop finalizes this turn at the no-tool-calls branch below. An empty
+		// override is ignored (falls through to a normal provider call).
+		var llmResp *LLMResponse
+		var err error
+		providerCalled := true // false for a scripted replay: no call to count
+		if scripted, ok := scriptedResponseFromContext(ctx); ok && strings.TrimSpace(scripted) != "" {
+			llmResp = &LLMResponse{Content: scripted, StopReason: "end_turn"}
+			providerCalled = false
+		} else {
+			if intentErr := a.recordLLMIntent(ctx, session.ID, thisStep, len(messages), a.llm.Model()); intentErr != nil {
+				return nil, fmt.Errorf("recording LLM call intent: %w", intentErr)
 			}
-			out := make([]Message, len(msgs), len(msgs)+1)
-			copy(out, msgs)
-			return append(out, Message{Role: "system", Content: strings.TrimSpace(softReminder)})
+			llmResp, err = sendChat(tools)
+			if err == nil {
+				a.recordLLMResult(ctx, session.ID, thisStep, llmResp)
+			}
 		}
-
-		// Call LLM. Relief is proactive (above) — loom keeps the context under its
-		// own window. The provider refusal is only a backstop: if a clean
-		// context-too-long still comes back (loom's estimate under-counted), shed
-		// and resend once; a second refusal ends the turn with the recoverable
-		// context_exhausted error.
-		llmResp, err := a.chatWithRetry(ctx, withReminder(messages), tools)
 		if err != nil && errors.Is(err, llm.ErrContextTooLong) {
 			if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
 				_, estimate, target := segMem.ReleasePressure(ctx, pressureRecoveryPenalty)
@@ -2470,9 +3140,40 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				tools = a.advertisedTools(session)
 				tools = recovery.activeTools(tools)
 				if segMem2, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem2 != nil {
-					segMem2.SetAdvertisedToolsBytes(advertisedToolsBytes(tools))
+					a.setAdvertisedTools(segMem2, tools)
 				}
-				llmResp, err = a.chatWithRetry(ctx, withReminder(messages), tools)
+				// Same logical step: a resend after ErrContextTooLong is the
+				// same LLM call with a shorter context, so it reuses the
+				// intent already recorded at thisStep (re-recording it with
+				// the new message count would conflict) and records only
+				// the result.
+				llmResp, err = sendChat(tools)
+				if err == nil {
+					a.recordLLMResult(ctx, session.ID, thisStep, llmResp)
+				}
+				// Still refused, and the step in flight has results: they are
+				// what does not fit, and no relief may remove them. They are
+				// replaced with a note saying so — each call ran; call fewer
+				// at once, or narrower — and the model re-plans on one more
+				// send, instead of the turn ending. A fold call sends no
+				// results, so a refused fold call replaces none.
+				if err != nil && errors.Is(err, llm.ErrContextTooLong) && !foldPending {
+					if segMem3, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem3 != nil {
+						if n := segMem3.InFlightResults(); n > 0 {
+							note := a.getGuidanceMessage(ctx, "step_results_too_large", map[string]interface{}{"count": strconv.Itoa(n)})
+							replaced := segMem3.ReplaceInFlightResults(ctx, note)
+							zap.L().Warn("context too long: the step's results did not fit; replaced with a note, resending once",
+								zap.String("session_id", session.ID),
+								zap.Int("results", replaced))
+							span.AddEvent("turn.step_results_replaced", map[string]interface{}{"turn": turnCount, "results": replaced})
+							messages = session.GetMessages()
+							llmResp, err = sendChat(tools)
+							if err == nil {
+								a.recordLLMResult(ctx, session.ID, thisStep, llmResp)
+							}
+						}
+					}
+				}
 				if err != nil && errors.Is(err, llm.ErrContextTooLong) {
 					zap.L().Error("context too long after relief: turn ends",
 						zap.String("session_id", session.ID),
@@ -2490,6 +3191,25 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				"error": err.Error(),
 			})
 			return nil, fmt.Errorf("LLM call failed: %w", err)
+		}
+		addUsage(&turnUsage, llmResp.Usage)
+		if providerCalled {
+			turnCalls++
+		}
+		// Calibration compares what a call billed with loom's count of the
+		// context it sent. A fold call sends only the settled context, not the
+		// compiled whole, so it is left out rather than skew the factor.
+		if !foldPending {
+			a.observePromptUsage(session, llmResp.Usage)
+		}
+		// A fold call writes no row. What it cost rides on the row this call
+		// writes, so the session's rows still sum to what the turn spent. The
+		// prompt figures stay this call's own: they measure what was sent.
+		if foldPending {
+			addUsage(&foldUsage, llmResp.Usage)
+		} else if foldUsage != (Usage{}) {
+			llmResp.Usage = carryFoldCost(llmResp.Usage, foldUsage)
+			foldUsage = Usage{}
 		}
 
 		// Record LLM response on conversation_loop span
@@ -2646,16 +3366,63 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			}
 		}
 
+		// In-loop fold reply: consumed by the harness — parsed, applied,
+		// never appended, never streamed onward, never returned. The loop
+		// continues on the collapsed context. A reply that is not a summary —
+		// malformed, or tool calls made without the step's results the fold
+		// call left out — is discarded and asked again once; after two the
+		// step goes on unfolded and the fold re-arms at the next seam.
+		if foldPending {
+			foldPending = false
+			if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
+				if len(llmResp.ToolCalls) == 0 {
+					if summary, okParse := parseFoldReply(llmResp.Content); okParse {
+						if applied, estimate := segMem.ApplyFoldReply(ctx, summary); applied {
+							foldRetries = 0
+							zap.L().Info("inloopFold: applied",
+								zap.String("session_id", session.ID),
+								zap.Int("estimate_tokens", estimate))
+							span.AddEvent("fold.applied", map[string]interface{}{"turn": turnCount, "estimate_tokens": estimate})
+							messages = session.GetMessages()
+							tools = a.advertisedTools(session)
+							tools = recovery.activeTools(tools)
+							segMem.SetAdvertisedToolsBytes(advertisedToolsBytes(tools))
+							continue
+						}
+					}
+				}
+				foldRetries++
+				zap.L().Warn("inloopFold: reply unusable — asked again, or the step goes on unfolded",
+					zap.String("session_id", session.ID),
+					zap.Int("fold_retries", foldRetries),
+					zap.Bool("tool_calls", len(llmResp.ToolCalls) > 0))
+				span.AddEvent("fold.unusable", map[string]interface{}{"turn": turnCount, "fold_retries": foldRetries})
+				continue
+			}
+		} else {
+			// A step that went on unfolded clears the count: the fold is asked
+			// for again at the next seam.
+			foldRetries = 0
+		}
+
 		// If LLM returned text (no tool calls), we're done — unless the response
 		// is empty, in which case we retry once with a nudge message.
 		if len(llmResp.ToolCalls) == 0 {
+			// Zero tool calls means this step is fully resolved the instant
+			// the LLM responds — there is no tool_call_intent to await a
+			// result for. Prune here, before any of this branch's three
+			// exits (two `continue` retries below, or the final `return`),
+			// since none of them reach the loop-tail prune call. No tool rows
+			// belong to this step, so there is nothing whose durability to
+			// check.
+			a.pruneStepIfResolved(ctx, session.ID, thisStep, true)
 			if strings.TrimSpace(llmResp.Content) == "" && !emptyRetried {
 				// One-shot retry: nudge the LLM to produce a response.
 				emptyRetried = true
 				a.appendMessage(ctx, session, Message{
-					Role:      "user",
+					Role:      roleEmptyResponseRetry,
 					Content:   "Your previous response was empty. Please provide a response summarizing what you found or explaining what went wrong.",
-					AgentID:   a.id,
+					AgentID:   a.GetID(),
 					Timestamp: time.Now(),
 				}, false)
 				continue // re-enter conversation loop for one more LLM call
@@ -2673,13 +3440,13 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				"tool_executions": toolExecutionCount,
 				"stop_reason":     llmResp.StopReason,
 				"response_length": len(content),
-				"total_tokens":    llmResp.Usage.TotalTokens,
-				"cost_usd":        llmResp.Usage.CostUSD,
+				"total_tokens":    turnUsage.TotalTokens,
+				"cost_usd":        turnUsage.CostUSD,
 			})
 			span.SetAttribute("conversation.turns", turnCount)
 			span.SetAttribute("conversation.tool_executions", toolExecutionCount)
 			span.SetAttribute("conversation.stop_reason", llmResp.StopReason)
-			span.SetAttribute("conversation.total_tokens", llmResp.Usage.TotalTokens)
+			span.SetAttribute("conversation.total_tokens", turnUsage.TotalTokens)
 
 			// End-of-turn hygiene check for skill-emitted tasks. Audits the
 			// active skill's tasks and either injects a fixup message and
@@ -2690,7 +3457,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				hygieneLast = outcome
 			}
 			if retry {
-				// runEndOfTurnHygiene already appended the synthetic user
+				// runEndOfTurnHygiene already appended the synthetic hygiene_injection
 				// message to the session and persisted it. Re-enter the
 				// conversation loop so the LLM sees the fixup request.
 				continue
@@ -2715,6 +3482,8 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			return &Response{
 				Content:        content,
 				Usage:          llmResp.Usage,
+				TurnUsage:      turnUsage,
+				TurnLLMCalls:   turnCalls,
 				ToolExecutions: allToolExecutions,
 				Thinking:       llmResp.Thinking,
 				Metadata:       meta,
@@ -2723,13 +3492,24 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 
 		// Add assistant message with tool calls to history FIRST (required by Anthropic API)
 		_, assistantPersisted := a.appendMessage(ctx, session, Message{
-			Role:       "assistant",
-			Content:    llmResp.Content,
-			ToolCalls:  llmResp.ToolCalls,
-			AgentID:    a.id, // Track which agent generated this response
-			TokenCount: llmResp.Usage.TotalTokens,
-			CostUSD:    llmResp.Usage.CostUSD,
-			Timestamp:  time.Now(),
+			Role:              "assistant",
+			Content:           llmResp.Content,
+			ToolCalls:         llmResp.ToolCalls,
+			Thinking:          llmResp.Thinking,
+			ThinkingBlocks:    llmResp.ThinkingBlocks,
+			AgentID:           a.GetID(), // Track which agent generated this response
+			TokenCount:        llmResp.Usage.TotalTokens,
+			CostUSD:           llmResp.Usage.CostUSD,
+			InputTokens:       llmResp.Usage.InputTokens,
+			OutputTokens:      llmResp.Usage.OutputTokens,
+			CacheReadTokens:   llmResp.Usage.CacheReadInputTokens,
+			CacheCreateTokens: llmResp.Usage.CacheCreationInputTokens,
+
+			CacheCreate1hTokens: llmResp.Usage.CacheCreation1hInputTokens,
+			CacheCreate5mTokens: llmResp.Usage.CacheCreation5mInputTokens,
+			ThinkingTokens:      llmResp.Usage.ThinkingTokens,
+			Effort:              llmResp.Usage.Effort,
+			Timestamp:           time.Now(),
 		}, false)
 
 		// HITL park pre-scan (park.go): with park enabled and the batch's
@@ -2743,7 +3523,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// assistantPersisted alone reports success for a batch that was never
 		// written anywhere — exactly the stranding this gate exists to stop.
 		if a.hitlPark != nil && assistantPersisted && a.memory.HasStore() {
-			if parkErr := a.maybeParkBatch(ctx, session, llmResp); parkErr != nil {
+			if parkErr := a.maybeParkBatch(ctx, session, llmResp, turnUsage, tools); parkErr != nil {
 				return nil, parkErr
 			}
 		}
@@ -2774,16 +3554,12 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			tools:              &tools,
 			recovery:           recovery,
 			turnDedup:          make(map[string]*shuttle.Result),
+			stepIndex:          thisStep,
 			parkableTail:       a.hitlPark != nil && assistantPersisted && a.memory.HasStore(),
 			batchIDCount:       batchIDCount,
 		}
 
-		for i, toolCall := range llmResp.ToolCalls {
-			if toolExecutionCount >= a.config.MaxToolExecutions {
-				break
-			}
-			a.dispatchOneCall(ctx, session, toolCall, i, st)
-		}
+		a.dispatchBatch(ctx, session, llmResp.ToolCalls, st)
 
 		// Drain buffered text_body sidecars from this batch AFTER every
 		// tool_result is in place. Order within the batch preserved so a
@@ -2797,15 +3573,45 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 
 		// Resource-await park (park_resource.go): calls held during dispatch
 		// end the turn HERE, after every other call's row and sidecar landed.
+		// It runs before the lesson lane so the park sees the batch tail
+		// exactly as it did before lessons existed; a parked turn ends here
+		// and re-queries the lesson partition on resume instead.
 		if parkErr := a.maybeParkResourceBatch(ctx, session, st, llmResp); parkErr != nil {
 			return nil, parkErr
 		}
+
+		// Error-triggered lesson recall: failures in this batch re-query the
+		// lesson partition with the error text, so a lesson whose trigger is
+		// the error itself (invisible to the conversation-start lane, which
+		// matches task wording) lands right before the model's retry turn.
+		if len(st.errTexts) > 0 {
+			a.injectErrorLessons(ctx, session, st.errTexts)
+		}
+
+		// This step's batch finished dispatching inline (the common, non-crash
+		// path), so the step is NORMALLY fully resolved and carries no further
+		// replay value. A step that ended in an ExecutionGap or a parked HITL
+		// batch never reaches this line (the loop returns/parks earlier), so
+		// its events are correctly retained.
+		//
+		// "Normally" is the whole point: this line is also reached when the
+		// MaxToolExecutions break above stopped the per-call loop partway
+		// through the batch, so not every call got a row — and any of the
+		// fail-open result/persist writes inside dispatchOneCall can have
+		// silently failed. Whether the step is actually resolved is therefore
+		// not knowable from here, which is why pruneStepIfResolved verifies
+		// intent↔result pairing against the log itself before deleting
+		// anything rather than trusting this call site. It also needs the
+		// batch's rows to be durable: if the assistant message or a tool row
+		// failed to persist, a resume after a crash reads a session without
+		// them and must find this step's events to avoid re-running a call.
+		a.pruneStepIfResolved(ctx, session.ID, thisStep, assistantPersisted && !st.rowNotPersisted)
 	}
 
 	// If we hit max turns/executions, make one final LLM call to synthesize results
 	// This ensures the agent provides meaningful output instead of a generic error message
 	emitProgress(ctx, StageSynthesis, 90, "Synthesizing tool execution results", "")
-	return a.synthesizeFinalResponse(ctx, session, turnCount, toolExecutionCount, allToolExecutions)
+	return a.synthesizeFinalResponse(ctx, session, memoryNote, turnCount, toolExecutionCount, allToolExecutions, turnUsage, turnCalls)
 }
 
 // batchState carries the loop-level state the per-call dispatch body reads
@@ -2821,10 +3627,32 @@ type batchState struct {
 	allToolExecutions  *[]ToolExecution
 	tools              *[]shuttle.Tool
 	recovery           *recoveryOrchestrator
+	// noProjection is set by the resume path when the parked batch carries
+	// no record of the tools its provider call advertised. Calls then get no
+	// projection on their context, so a script engine refuses to run
+	// instead of trusting the resume-time set.
+	noProjection bool
 
 	turnToolCount   int
 	turnDedup       map[string]*shuttle.Result
 	pendingSidecars []Message
+
+	stepIndex int // the execution-event-log step this batch's calls are recorded under
+	// stepErr is set when stepIndex could not be resolved. No call may be
+	// recorded under a guessed step, and an unrecorded call must not run, so
+	// every dispatch fails its intent with this error.
+	stepErr error
+
+	// rowNotPersisted is set when a tool row for a call in this batch failed to
+	// persist (appendMessage is fail-open). The step's events are then the
+	// only durable record of that call, so the step must not be pruned.
+	rowNotPersisted bool
+
+	// errTexts: tool-error messages from this batch, buffered for the
+	// error-triggered lesson lane (graph_memory_lessons.go). It rides on
+	// batchState rather than the loop because dispatchOneCall — which fills
+	// it — is shared with ResumeChat's parked-batch completion.
+	errTexts []string
 
 	// Resource-await park (park_resource.go). parkableTail mirrors the
 	// pre-scan's durability gate and is set ONLY by the conversation loop —
@@ -2834,6 +3662,11 @@ type batchState struct {
 	parkableTail bool
 	batchIDCount map[string]int
 	awaitHeld    []heldAwait
+
+	// barrierReason is set by dispatchBatch (flag on) for a call it dispatches
+	// alone; prepareCall records it on that call's tool span. Empty adds no
+	// dispatch attributes.
+	barrierReason string
 }
 
 // dispatchOneCall runs one call of a tool batch through the full per-call
@@ -2842,8 +3675,69 @@ type batchState struct {
 // and sidecar buffering. The body is the conversation loop's original batch
 // body, moved verbatim; ResumeChat's parked-batch completion calls the same
 // function so the two paths cannot drift.
+//
+// The ceremony is three phases: prepareCall (caps, dedup, counters, progress,
+// span), runCall (the tool execution itself) and settleCall (everything that
+// touches session-shared state). prepareCall and settleCall must stay
+// sequential and in call order; runCall may overlap other calls only if the
+// caller knows those calls are independent (see runTool).
 func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall, i int, st *batchState) {
+	pc, finished := a.prepareCall(ctx, session, toolCall, i, st)
+	if finished {
+		return
+	}
+	var result *shuttle.Result
+	var err error
+	if !pc.skipRun() {
+		result, err = a.runCall(ctx, pc, session.ID)
+	}
+	a.settleCall(ctx, session, pc, st, result, err)
+}
+
+// preparedCall is one call that passed the per-turn cap and dedup checks: the
+// call, its batch index, its dedup key, and the open tool span that settleCall
+// ends. intentErr is set when the call's intent could not be recorded; the
+// call must then not run, and settleCall commits its error row.
+type preparedCall struct {
+	call      ToolCall
+	index     int
+	dedupKey  string
+	toolSpan  *observability.Span
+	intentErr error
+	// guardMsg is set when the failure-recovery pre-execution guard matched a
+	// verified past failure: the call must then not run, and settleCall
+	// commits the advisory as its tool row so the model revises the call.
+	guardMsg string
+	// projection is the advertised tool set runCall attaches to the call's
+	// context; noProjection means attach none (a resumed batch with no
+	// recorded projection), so a script engine fails closed.
+	projection   []shuttle.Tool
+	noProjection bool
+}
+
+// skipRun reports whether the call must not be executed: its intent could not
+// be recorded, or the failure-recovery guard replaced it with an advisory.
+func (pc *preparedCall) skipRun() bool {
+	return pc.intentErr != nil || pc.guardMsg != ""
+}
+
+// prepareCall is the sequential front half of dispatchOneCall: the per-turn
+// cap row, the dedup replay row, the two counter increments, the
+// contact_human / implicit-task / tool-started-progress block, the tool span
+// and the intent record. finished is true when the call needs nothing more:
+// a row was already committed (cap or dedup), or the session lease is lost
+// (no row); pc is then nil and the caller must not run the call. Otherwise
+// the caller runs pc unless pc.intentErr is set, then settles it.
+func (a *Agent) prepareCall(ctx Context, session *Session, toolCall ToolCall, i int, st *batchState) (pc *preparedCall, finished bool) {
 	span := st.span
+
+	// After the session lease is lost, another process may be dispatching
+	// this batch, so this one must not start the call. Returning before the
+	// intent and the tool row leaves the call "never attempted", which is how
+	// the new holder's resume will see it.
+	if sessionLeaseLost(ctx) != nil {
+		return nil, true
+	}
 
 	// Per-turn cap: skip remaining calls with an error result
 	if st.turnToolCount >= st.maxPerTurn {
@@ -2858,11 +3752,11 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 					Message: fmt.Sprintf("per-turn tool call limit (%d) reached — call %d of %d skipped", st.maxPerTurn, i+1, st.batchLen),
 				},
 			},
-			AgentID:   a.id,
+			AgentID:   a.GetID(),
 			Timestamp: time.Now(),
 		}, false)
 		*st.toolExecutionCount++
-		return
+		return nil, true
 	}
 
 	// Deduplication: compute canonical key from tool name + sorted JSON input
@@ -2873,7 +3767,7 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 			Content:    a.formatToolResult(ctx, session.ID, toolCall.Name, cachedResult, nil) + "\n(deduplicated — reused result from identical call in this turn)",
 			ToolUseID:  toolCall.ID,
 			ToolResult: cachedResult,
-			AgentID:    a.id,
+			AgentID:    a.GetID(),
 			Timestamp:  time.Now(),
 		}, false)
 		*st.allToolExecutions = append(*st.allToolExecutions, ToolExecution{
@@ -2883,7 +3777,7 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 		})
 		*st.toolExecutionCount++
 		st.turnToolCount++
-		return
+		return nil, true
 	}
 
 	st.turnToolCount++
@@ -2891,6 +3785,17 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 
 	// Check if this is a HITL request (contact_human tool)
 	if toolCall.Name == "contact_human" {
+		// Record this turn's task before the human is asked, on the trigger that
+		// names what is happening. This is the NON-PARKED path — a registered
+		// in-turn resolver answers inside the turn, so maybeParkBatch never ran
+		// and its HUMAN_REQUEST emission never fired. Without this, a supported
+		// HITL configuration never fires the default HUMAN_REQUEST trigger at
+		// all, and a turn whose FIRST action asks a human records nothing — the
+		// same first-action gap the park path had. No race with the TOOL_CALL
+		// emission below: that is the other branch of this if, and the emitter
+		// memoizes per turn regardless.
+		a.maybeRecordImplicitTask(ctx, loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_HUMAN_REQUEST)
+
 		// Extract HITL request details from tool input
 		hitlInfo := extractHITLInfo(toolCall.Input)
 
@@ -2909,6 +3814,15 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 		// Emit HITL-specific progress event
 		emitProgressWithHITL(ctx, StageHumanInTheLoop, hitlStageProgress, "Waiting for human response", toolCall.Name, hitlInfo)
 	} else {
+		// Record this turn's task before the tool runs, so the tool's own
+		// message rows are already attributable. Fixed rule, not a model
+		// decision; a no-op after the first call in a turn.
+		//
+		// Stays on the non-HITL branch after #382 moved this body into
+		// dispatchOneCall: a turn that parks at a human decision records its
+		// task from the HUMAN_REQUEST trigger instead, so emitting here too
+		// would race the two triggers for the same turn's first mint.
+		a.maybeRecordImplicitTask(ctx, loomv1.ImplicitTaskTrigger_IMPLICIT_TASK_TRIGGER_TOOL_CALL)
 		// Emit tool-started progress event
 		emitToolStarted(ctx, 50+clampInt32(*st.toolExecutionCount*5), toolCall)
 	}
@@ -2916,41 +3830,139 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 	// Execute tool with tracing — always created
 	_, toolSpan := ctx.Tracer().StartSpan(ctx, "agent.tool_execution")
 	toolSpan.SetAttribute("tool_name", toolCall.Name)
-
-	// Pre-execution failure-recovery guard (deterministic, LLM-free): if this
-	// planned call matches a verified past failure signature (exact replay or
-	// offending-token overlap), DO NOT run it. Inject an advisory tool result so
-	// the model revises the call on its next turn, and record it as a prevented
-	// repeat. Bounded: a match only fires on a concrete signature hit, and the
-	// advisory names the fix, so the re-planned call no longer matches. The
-	// existing reactive path still catches any genuinely new failure. Guarded
-	// so it is a no-op when the feature is off or not user-scoped.
-	if guardMsg := a.guardPlannedCall(ctx, session.ID, toolCall, span); guardMsg != "" {
-		a.appendMessage(ctx, session, Message{
-			Role:      "tool",
-			Content:   guardMsg,
-			ToolUseID: toolCall.ID,
-			ToolResult: &shuttle.Result{
-				Success: false,
-				Error: &shuttle.Error{
-					Code:    "failure_recovery_guard",
-					Message: "planned call blocked: matches a verified past failure — apply the known fix and retry",
-				},
-			},
-			AgentID:   a.id,
-			Timestamp: time.Now(),
-		}, false)
-		*st.allToolExecutions = append(*st.allToolExecutions, ToolExecution{
-			ToolName: toolCall.Name,
-			Input:    toolCall.Input,
-		})
-		toolSpan.SetAttribute("failure_recovery.guard_blocked", "true")
-		ctx.Tracer().EndSpan(toolSpan)
-		return
+	if st.barrierReason != "" {
+		toolSpan.SetAttribute("dispatch.parallel", false)
+		toolSpan.SetAttribute("dispatch.barrier_reason", st.barrierReason)
 	}
 
-	// Execute with self-correction (circuit breaker + SQL correction)
-	result, err := a.executeToolWithSelfCorrection(ctx, toolCall.Name, toolCall.Input, session.ID)
+	intentErr := st.stepErr
+	if intentErr == nil {
+		intentErr = a.recordToolIntent(ctx, session.ID, st.stepIndex, i, toolCall)
+	}
+	// A failed intent is returned on the prepared call, not committed here: the
+	// call must not run, and settleCall commits its error row so that a group
+	// member's row still lands after the rows of the members before it.
+	//
+	// Pre-execution failure-recovery guard (deterministic, LLM-free): if this
+	// planned call matches a verified past failure signature (exact replay or
+	// offending-token overlap), the call does not run. settleCall injects the
+	// advisory as the tool result so the model revises the call on its next
+	// turn, and records it as a prevented repeat. Bounded: a match only fires on
+	// a concrete signature hit, and the advisory names the fix, so the
+	// re-planned call no longer matches. The reactive path still catches any
+	// genuinely new failure. A no-op when the feature is off or not user-scoped.
+	// Skipped when the intent failed, since that call does not run anyway.
+	var guardMsg string
+	if intentErr == nil {
+		guardMsg = a.guardPlannedCall(ctx, session.ID, toolCall, span)
+	}
+
+	// The call's context will record the tools this provider call advertised
+	// (after recovery filtering), so a script engine never re-derives a wider
+	// set. On resume st.tools is the requesting call's recorded projection,
+	// narrowed by the resume-time set (completeParkedBatch); with no record
+	// the call gets no projection and a script engine fails closed. Read here,
+	// in the sequential front half, so a parallel group sees the same set.
+	pc = &preparedCall{call: toolCall, index: i, dedupKey: dedupKey, toolSpan: toolSpan, intentErr: intentErr, guardMsg: guardMsg, noProjection: st.noProjection}
+	if !st.noProjection && st.tools != nil {
+		pc.projection = *st.tools
+	}
+	return pc, false
+}
+
+// settleUnrecordedCall commits the row of a call whose intent could not be
+// recorded. Same treatment as an LLM-intent failure: the call never runs. The
+// batch loop has no per-call error return, so this synthesizes a tool-result
+// error like the turn_limit_exceeded path does, and the turn continues instead
+// of the whole conversation loop failing on one event-log hiccup.
+func (a *Agent) settleUnrecordedCall(ctx Context, session *Session, pc *preparedCall, st *batchState) {
+	toolCall := pc.call
+	result := &shuttle.Result{
+		Success: false,
+		Error:   &shuttle.Error{Code: "event_log_intent_failed", Message: pc.intentErr.Error()},
+	}
+	// Traced like any failed call, so the span is not read as a success.
+	addToolExecutionEvent(st, pc, result, nil)
+	endToolSpan(ctx, pc.toolSpan, result, nil)
+	a.appendMessage(ctx, session, Message{
+		Role:       "tool",
+		Content:    fmt.Sprintf("event_log_intent_failed — could not durably record this call before executing it: %v. Not executed.", pc.intentErr),
+		ToolUseID:  toolCall.ID,
+		ToolResult: result,
+		AgentID:    a.id,
+		Timestamp:  time.Now(),
+	}, false)
+	*st.allToolExecutions = append(*st.allToolExecutions, ToolExecution{ToolName: toolCall.Name, Input: toolCall.Input, Error: pc.intentErr})
+	// No *st.toolExecutionCount++ here: prepareCall already advanced the
+	// counter before the intent check. A call that never ran must consume
+	// exactly one unit of the MaxToolExecutions budget, not two.
+}
+
+// settleGuardedCall commits the row of a call the failure-recovery guard
+// stopped before it ran. The advisory is the tool result; the call's recorded
+// intent is closed with an error result so the event log has no dangling
+// intent.
+func (a *Agent) settleGuardedCall(ctx Context, session *Session, pc *preparedCall, st *batchState) {
+	toolCall := pc.call
+	result := &shuttle.Result{
+		Success: false,
+		Error: &shuttle.Error{
+			Code:    "failure_recovery_guard",
+			Message: "planned call blocked: matches a verified past failure — apply the known fix and retry",
+		},
+	}
+	a.recordToolResult(ctx, session.ID, st.stepIndex, pc.index, toolCall.ID, result, nil)
+	a.appendMessage(ctx, session, Message{
+		Role:       "tool",
+		Content:    pc.guardMsg,
+		ToolUseID:  toolCall.ID,
+		ToolResult: result,
+		AgentID:    a.id,
+		Timestamp:  time.Now(),
+	}, false)
+	*st.allToolExecutions = append(*st.allToolExecutions, ToolExecution{
+		ToolName: toolCall.Name,
+		Input:    toolCall.Input,
+	})
+	pc.toolSpan.SetAttribute("failure_recovery.guard_blocked", "true")
+	addToolExecutionEvent(st, pc, result, nil)
+	endToolSpan(ctx, pc.toolSpan, result, nil)
+}
+
+// runCall is the execution middle of dispatchOneCall: the circuit breaker and
+// the executor call, and nothing else. It must not touch the session, the
+// batch state, the lease ledger, guardrails, the failure tracker, the dedup
+// cache or the transcript — settleCall owns all of those. See runTool for the
+// shared state executor.Execute can still reach.
+func (a *Agent) runCall(ctx Context, pc *preparedCall, sessionID string) (*shuttle.Result, error) {
+	callCtx := ctx
+	if !pc.noProjection {
+		callCtx = withAdvertisedProjection(ctx, pc.projection)
+	}
+	return a.runTool(callCtx, pc.call.Name, pc.call.Input, sessionID)
+}
+
+// settleCall is the sequential back half of dispatchOneCall: lease events and
+// guardrails bookkeeping, tier-1 circuit-breaker recovery, the span events,
+// ending the tool span, the resource-await hold, and the committed tool row.
+// Calls must be settled in call order. A call whose intent was not recorded
+// (pc.intentErr) was never run; it settles as its error row alone.
+func (a *Agent) settleCall(ctx Context, session *Session, pc *preparedCall, st *batchState, result *shuttle.Result, err error) {
+	if pc.intentErr != nil {
+		a.settleUnrecordedCall(ctx, session, pc, st)
+		return
+	}
+	if pc.guardMsg != "" {
+		a.settleGuardedCall(ctx, session, pc, st)
+		return
+	}
+	span := st.span
+	toolCall := pc.call
+	i := pc.index
+	toolSpan := pc.toolSpan
+
+	a.settleExecution(ctx, session.ID, toolCall.Name, toolCall.Input, result, err)
+	a.recordToolResult(ctx, session.ID, st.stepIndex, i, toolCall.ID, result, err)
 
 	// Tier 1: if tool CB fired, disable tool and inject synthetic result.
 	if err != nil && strings.Contains(err.Error(), "circuit breaker open") && st.recovery != nil {
@@ -2959,26 +3971,7 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 		err = nil
 	}
 
-	// Record tool execution on conversation_loop span
-	{
-		toolSuccess := err == nil && (result == nil || result.Success)
-		toolEvent := map[string]interface{}{
-			"turn":      st.turnCount,
-			"tool_name": toolCall.Name,
-			"success":   toolSuccess,
-			"index":     i + 1,
-			"total":     st.batchLen,
-		}
-		if err != nil {
-			toolEvent["error"] = err.Error()
-		} else if result != nil && !result.Success && result.Error != nil {
-			toolEvent["error"] = result.Error.Message
-		}
-		if result != nil {
-			toolEvent["execution_time_ms"] = result.ExecutionTimeMs
-		}
-		span.AddEvent("turn.tool_execution", toolEvent)
-	}
+	addToolExecutionEvent(st, pc, result, err)
 
 	// Add instrumentation for HITL completion
 	if toolCall.Name == "contact_human" {
@@ -3004,24 +3997,7 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 		}
 	}
 
-	// Record tool execution results on span
-	{
-		success := err == nil && (result == nil || result.Success)
-
-		if err != nil {
-			toolSpan.RecordError(err)
-		} else if result != nil && !result.Success && result.Error != nil {
-			toolSpan.RecordError(fmt.Errorf("%s: %s", result.Error.Code, result.Error.Message))
-			toolSpan.SetAttribute("error.code", result.Error.Code)
-			toolSpan.SetAttribute("error.message", result.Error.Message)
-		}
-
-		toolSpan.SetAttribute("success", fmt.Sprintf("%t", success))
-		if result != nil {
-			toolSpan.SetAttribute("execution_time_ms", fmt.Sprintf("%d", result.ExecutionTimeMs))
-		}
-		ctx.Tracer().EndSpan(toolSpan)
-	}
+	endToolSpan(ctx, toolSpan, result, err)
 
 	// Resource-await hold (park_resource.go): a successful result asking to be
 	// awaited is withheld from the transcript — no execution record, no tool
@@ -3032,6 +4008,42 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 	}
 
 	a.commitToolRow(ctx, session, toolCall, st, result, err, toolSpan)
+}
+
+// addToolExecutionEvent records a settled call on the conversation loop span.
+func addToolExecutionEvent(st *batchState, pc *preparedCall, result *shuttle.Result, err error) {
+	toolEvent := map[string]interface{}{
+		"turn":      st.turnCount,
+		"tool_name": pc.call.Name,
+		"success":   err == nil && (result == nil || result.Success),
+		"index":     pc.index + 1,
+		"total":     st.batchLen,
+	}
+	if err != nil {
+		toolEvent["error"] = err.Error()
+	} else if result != nil && !result.Success && result.Error != nil {
+		toolEvent["error"] = result.Error.Message
+	}
+	if result != nil {
+		toolEvent["execution_time_ms"] = result.ExecutionTimeMs
+	}
+	st.span.AddEvent("turn.tool_execution", toolEvent)
+}
+
+// endToolSpan records a settled call's outcome on its tool span and ends it.
+func endToolSpan(ctx Context, toolSpan *observability.Span, result *shuttle.Result, err error) {
+	if err != nil {
+		toolSpan.RecordError(err)
+	} else if result != nil && !result.Success && result.Error != nil {
+		toolSpan.RecordError(fmt.Errorf("%s: %s", result.Error.Code, result.Error.Message))
+		toolSpan.SetAttribute("error.code", result.Error.Code)
+		toolSpan.SetAttribute("error.message", result.Error.Message)
+	}
+	toolSpan.SetAttribute("success", fmt.Sprintf("%t", err == nil && (result == nil || result.Success)))
+	if result != nil {
+		toolSpan.SetAttribute("execution_time_ms", fmt.Sprintf("%d", result.ExecutionTimeMs))
+	}
+	ctx.Tracer().EndSpan(toolSpan)
 }
 
 // commitToolRow is the commit tail of dispatchOneCall — execution record,
@@ -3141,15 +4153,42 @@ func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, 
 		formattedResult += failureRecoveryHint
 	}
 
+	// Advisory note after repeated identical calls (the call itself already ran).
+	// The note goes to the next provider call only, never into this row: a row
+	// that carries it stops parsing as JSON or tabular data, and it would be
+	// stored and replayed in later turns. A failed call gets no note; "failed"
+	// is the same test the success metric below uses, since a tool-reported
+	// failure arrives with err == nil.
+	toolOK := err == nil && (result == nil || result.Success)
+	if n, hint := st.recovery.noteToolCall(dedupKey); hint && toolOK {
+		msg := a.getGuidanceMessage(ctx, "repeated_tool_call", map[string]interface{}{
+			"count": strconv.Itoa(n), "tool_name": toolCall.Name,
+		})
+		st.recovery.setRepeatHint(strings.Join(strings.Fields(msg), " "))
+		span.AddEvent("recovery.repeat_hint", map[string]interface{}{"tool_name": toolCall.Name, "count": n})
+	}
+
 	// Add tool result to conversation
-	a.appendMessage(ctx, session, Message{
+	if _, persisted := a.appendMessage(ctx, session, Message{
 		Role:       "tool",
 		Content:    formattedResult,
 		ToolUseID:  toolCall.ID, // Store ID for Bedrock/Anthropic format conversion
 		ToolResult: result,
-		AgentID:    a.id, // Track which agent executed this tool
+		AgentID:    a.GetID(), // Track which agent executed this tool
 		Timestamp:  time.Now(),
-	}, false)
+	}, false); !persisted {
+		st.rowNotPersisted = true
+	}
+
+	// Mining ledger (graph_memory_lessons.go): record the execution now,
+	// before compilation can evict this turn.
+	a.recordToolLedger(session.ID, toolCall, result)
+
+	// Collect failure text for error-triggered lesson recall (injected AFTER
+	// the whole batch — never between a tool_use and its tool_result).
+	if result != nil && result.Error != nil && result.Error.Message != "" {
+		st.errTexts = append(st.errTexts, result.Error.Message)
+	}
 
 	// If the tool signaled a text_body sidecar (e.g. manage_skills(load)
 	// — the skill body belongs under the user-instruction slot, not the
@@ -3159,9 +4198,9 @@ func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, 
 	if result != nil && result.Metadata != nil {
 		if textBody, ok := result.Metadata["text_body"].(string); ok && textBody != "" {
 			st.pendingSidecars = append(st.pendingSidecars, Message{
-				Role:      "user",
+				Role:      roleSkillBody,
 				Content:   textBody,
-				AgentID:   a.id,
+				AgentID:   a.GetID(),
 				Timestamp: time.Now(),
 			})
 		}
@@ -3187,25 +4226,58 @@ func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, 
 // conversation loop exhausts its turn/execution budget, so the agent yields
 // meaningful output instead of a generic limit error. Moved verbatim from
 // the loop tail when the batch body was extracted into dispatchOneCall.
-func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount, toolExecutionCount int, allToolExecutions []ToolExecution) (*Response, error) {
+func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNote string, turnCount, toolExecutionCount int, allToolExecutions []ToolExecution, turnUsage Usage, turnCalls int) (*Response, error) {
 	// Add a synthesis request to the conversation
 	// Include explicit format instructions since they may have been compressed in context
 	synthesisPrompt := "You must provide your final answer NOW with whatever information you have gathered so far. Summarize your findings: what actions were taken, what results were produced, and any remaining steps the user would need to complete manually. Be concise and actionable. You MUST respond with text — do not return an empty response."
 	a.appendMessage(ctx, session, Message{
-		Role:      "user",
+		Role:      roleSynthesisPrompt,
 		Content:   synthesisPrompt,
-		AgentID:   a.id, // Track which agent created this synthesis request
+		AgentID:   a.GetID(), // Track which agent created this synthesis request
 		Timestamp: time.Now(),
 	}, false)
 
-	// Make final LLM call WITHOUT tools to force synthesis
-	finalResp, err := a.chatWithRetry(ctx, session.GetMessages(), nil)
+	// Make final LLM call WITHOUT tools to force synthesis. It reaches here
+	// exactly when the loop ran out of budget — the turn is at its largest —
+	// so it gets the same handling as a loop send: advertise no tool bytes
+	// (this call carries none), and on a provider refusal shed and resend once.
+	segMem, _ := session.SegmentedMem.(*SegmentedMemory)
+	if segMem != nil {
+		a.setAdvertisedTools(segMem, nil)
+		segMem.SetTransientTail(TurnReminder{Kind: ReminderGraphMemory, Text: memoryNote})
+	}
+	// The loop ends here when the last step used up the tool budget, so this
+	// send can carry that step's results: the same check as a loop send.
+	a.fitStepToWindow(ctx, session, "step_results_too_large_at_synthesis", 0, nil, turnCount)
+	// The recall note was pinned by the loop's first call; pinning again is a
+	// no-op then, and pins it here when the loop never sent it.
+	synthesisMessages := func() []Message {
+		if segMem != nil {
+			segMem.PinTurnNotes(TurnReminder{Kind: ReminderGraphMemory, Text: memoryNote})
+			return session.GetMessages()
+		}
+		return withSystemReminder(session.GetMessages(), memoryNote)
+	}
+	finalResp, err := a.chatWithRetry(ctx, synthesisMessages(), nil)
+	if err != nil && errors.Is(err, llm.ErrContextTooLong) && segMem != nil {
+		_, estimate, target := segMem.ReleasePressure(ctx, pressureRecoveryPenalty)
+		zap.L().Info("context too long at synthesis: relief pass complete, resending once",
+			zap.String("session_id", session.ID),
+			zap.Int("estimate_tokens", estimate),
+			zap.Int("target_tokens", target))
+		finalResp, err = a.chatWithRetry(ctx, synthesisMessages(), nil)
+	}
+	if err == nil {
+		a.observePromptUsage(session, finalResp.Usage)
+	}
 	if err != nil {
 		// Only fall back to guidance message if synthesis fails
 		maxTurnsMessage := a.getGuidanceMessage(ctx, "max_turns_reached", nil)
 		return &Response{
 			Content:        maxTurnsMessage,
 			Usage:          Usage{},
+			TurnUsage:      turnUsage, // the loop's calls were still billed
+			TurnLLMCalls:   turnCalls,
 			ToolExecutions: allToolExecutions,
 			Metadata: map[string]interface{}{
 				"turns":           turnCount,
@@ -3223,9 +4295,13 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount
 		content = fmt.Sprintf("Completed %d tool executions across %d turns.", toolExecutionCount, turnCount)
 	}
 
+	addUsage(&turnUsage, finalResp.Usage)
+	turnCalls++
 	return &Response{
 		Content:        content,
 		Usage:          finalResp.Usage,
+		TurnUsage:      turnUsage,
+		TurnLLMCalls:   turnCalls,
 		ToolExecutions: allToolExecutions,
 		Thinking:       finalResp.Thinking,
 		Metadata: map[string]interface{}{
@@ -3241,6 +4317,39 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, turnCount
 // advertisedToolsBytes measures the serialized bytes of the advertised tool
 // schemas as they ride the provider tools parameter (name + description +
 // input schema JSON).
+// advertisedToolsDigest is a digest of the advertised tool schemas in the
+// order they are sent: what a settled thinking block's fingerprint is bound
+// to besides the model and the messages (SetRequestIdentity).
+func advertisedToolsDigest(tools []shuttle.Tool) [sha256.Size]byte {
+	h := sha256.New()
+	for _, t := range tools {
+		writeField(h, t.Name())
+		writeField(h, t.Description())
+		schema := ""
+		if s := t.InputSchema(); s != nil {
+			if b, err := json.Marshal(s); err == nil {
+				schema = string(b)
+			}
+		}
+		writeField(h, schema)
+	}
+	var sum [sha256.Size]byte
+	h.Sum(sum[:0])
+	return sum
+}
+
+// setAdvertisedTools records the tools a provider call sends on the session's
+// segmented memory: their schema bytes for the relief estimate, and with the
+// model ID the request identity settled thinking is bound to.
+func (a *Agent) setAdvertisedTools(segMem *SegmentedMemory, tools []shuttle.Tool) {
+	segMem.SetAdvertisedToolsBytes(advertisedToolsBytes(tools))
+	model := ""
+	if a.llm != nil {
+		model = a.llm.Model()
+	}
+	segMem.SetRequestIdentity(model, advertisedToolsDigest(tools))
+}
+
 func advertisedToolsBytes(tools []shuttle.Tool) int {
 	bytes := 0
 	for _, t := range tools {
@@ -3252,6 +4361,108 @@ func advertisedToolsBytes(tools []shuttle.Tool) int {
 		}
 	}
 	return bytes
+}
+
+// fitStepToWindow keeps the step in flight inside the provider's window.
+// Overflow can come only from it: everything before it was in a send the
+// provider accepted, each result is bounded at arrival, and the model sets how
+// many there are. The send — with extraBytes for what it adds past memory — is
+// counted (StepSendCount) against the provider's ceiling (ProviderPromptCeiling:
+// the served window, else the listed one; max_context_tokens only when
+// nothing lists the model), less the reply reservation; past it the results
+// are replaced with the note named by noteKey, as on a refusal. Every provider
+// is covered, whether or not it labels its refusal. Reports whether it
+// replaced them.
+func (a *Agent) fitStepToWindow(ctx Context, session *Session, noteKey string, extraBytes int, span *observability.Span, turnCount int) bool {
+	segMem, ok := session.SegmentedMem.(*SegmentedMemory)
+	if !ok || segMem == nil {
+		return false
+	}
+	n := segMem.InFlightResults()
+	if n == 0 {
+		return false
+	}
+	// The reply reservation is the max_tokens the client sends: the provider
+	// accepts the prompt up to its window less that. When the builder states
+	// none, it is the fold's reservation, the larger of the config's and the
+	// memory's.
+	reserved := a.config.MaxTokens
+	if reserved <= 0 {
+		reserved = a.config.ReservedOutputTokens
+		if r := segMem.ReservedOutputTokens(); r > reserved {
+			reserved = r
+		}
+	}
+	provider, model := a.GetLLMProviderName(), a.GetLLMModel()
+	// A model nothing lists, with no window configured, has no ceiling here:
+	// the memory's default window is loom's own figure, not the provider's,
+	// and the refusal path answers as it does on main.
+	ceiling := ProviderPromptCeiling(provider, model, reserved, a.config.MaxContextTokens, a.config.MaxModelContextTokens)
+	count := segMem.StepSendCount(extraBytes, ceiling, unsampledStepCalibration(provider, model))
+	if ceiling <= 0 || count <= ceiling {
+		return false
+	}
+	replaced := segMem.ReplaceInFlightResults(ctx, a.getGuidanceMessage(ctx, noteKey, map[string]interface{}{"count": strconv.Itoa(n)}))
+	zap.L().Warn("the step's results do not fit the provider's window; replaced with a note before the send",
+		zap.String("session_id", session.ID),
+		zap.Int("results", replaced),
+		zap.Int("count_tokens", count),
+		zap.Int("ceiling_tokens", ceiling))
+	if span != nil {
+		span.AddEvent("turn.step_results_replaced", map[string]interface{}{"turn": turnCount, "results": replaced, "before_send": true})
+	}
+	return true
+}
+
+// toolDeltaNote describes how the advertised tool names changed between two
+// provider calls: "" when the sets match (order-insensitive), else the sorted
+// added and removed names.
+func toolDeltaNote(prev, cur []string) string {
+	had := make(map[string]bool, len(prev))
+	for _, n := range prev {
+		had[n] = true
+	}
+	has := make(map[string]bool, len(cur))
+	for _, n := range cur {
+		has[n] = true
+	}
+	var added, removed []string
+	for _, n := range cur {
+		if !had[n] {
+			added = append(added, n)
+		}
+	}
+	for _, n := range prev {
+		if !has[n] {
+			removed = append(removed, n)
+		}
+	}
+	if len(added) == 0 && len(removed) == 0 {
+		return ""
+	}
+	sort.Strings(added)
+	sort.Strings(removed)
+	var parts []string
+	if len(added) > 0 {
+		parts = append(parts, "Tools added: "+toolNoteList(added)+".")
+	}
+	if len(removed) > 0 {
+		parts = append(parts, "Tools removed: "+toolNoteList(removed)+".")
+	}
+	return strings.Join(parts, " ")
+}
+
+// toolNoteMaxNames bounds the names one side of the note lists, so a skill that
+// brings up an MCP server with a hundred tools cannot make the note a hundred
+// names long.
+const toolNoteMaxNames = 10
+
+// toolNoteList joins names, then counts the ones past toolNoteMaxNames.
+func toolNoteList(names []string) string {
+	if len(names) <= toolNoteMaxNames {
+		return strings.Join(names, ", ")
+	}
+	return fmt.Sprintf("%s, and %d more", strings.Join(names[:toolNoteMaxNames], ", "), len(names)-toolNoteMaxNames)
 }
 
 // canonicalJSON serializes a map to a deterministic JSON string for deduplication.
@@ -3279,10 +4490,31 @@ func (c *contextWithValue) Value(key interface{}) interface{} {
 	return c.Context.Value(key)
 }
 
-// executeToolWithSelfCorrection wraps tool execution with optional circuit breaker.
-// If circuit breaker is enabled, provides failure isolation for tools.
-// If guardrails are enabled, tracks errors for error analysis.
-func (a *Agent) executeToolWithSelfCorrection(ctx Context, toolName string, input map[string]interface{}, sessionID string) (*shuttle.Result, error) {
+// toolBreakerOpenError is the error runTool returns when the tool's circuit
+// breaker rejected the call before it ran. The message is what recovery
+// matches on; the type lets settleExecution skip the bookkeeping that only
+// applies to an executed call.
+type toolBreakerOpenError struct {
+	tool  string
+	cause error
+}
+
+func (e *toolBreakerOpenError) Error() string {
+	return fmt.Sprintf("circuit breaker open for tool %s: %v", e.tool, e.cause)
+}
+
+func (e *toolBreakerOpenError) Unwrap() error { return e.cause }
+
+// runTool executes one tool call: context wrapping plus the optional circuit
+// breaker (failure isolation) and the executor call. It touches no session,
+// batch-state, lease-ledger, guardrails, failure-tracker or transcript state.
+// executor.Execute itself can still reach shared state: the admission
+// approved-set (order-dependent: a render call followed by a gated call in
+// one batch relies on the render being recorded first), dynamic tool
+// registration, the shared-memory store, and a half-open breaker admits every
+// concurrent request. A caller that runs calls concurrently must do so only
+// for calls it knows are independent.
+func (a *Agent) runTool(ctx Context, toolName string, input map[string]interface{}, sessionID string) (*shuttle.Result, error) {
 	var result *shuttle.Result
 	var err error
 
@@ -3311,11 +4543,23 @@ func (a *Agent) executeToolWithSelfCorrection(ctx Context, toolName string, inpu
 
 		// If circuit breaker itself failed (breaker open), return that error
 		if cbErr != nil && err == nil {
-			return nil, fmt.Errorf("circuit breaker open for tool %s: %w", toolName, cbErr)
+			return nil, &toolBreakerOpenError{tool: toolName, cause: cbErr}
 		}
 	} else {
 		// No circuit breaker - execute directly
 		result, err = a.executor.Execute(ctxWithAgent, toolName, input)
+	}
+
+	return result, err
+}
+
+// settleExecution is the session-shared bookkeeping for an executed tool
+// result: lease events and guardrails error tracking. It must run sequentially
+// and in call order. A call the breaker rejected never ran, so it is skipped.
+func (a *Agent) settleExecution(ctx Context, sessionID, toolName string, input map[string]interface{}, result *shuttle.Result, err error) {
+	var breakerOpen *toolBreakerOpenError
+	if errors.As(err, &breakerOpen) {
+		return
 	}
 
 	// Backend-declared lease events ride the result's metadata: fold them
@@ -3324,6 +4568,12 @@ func (a *Agent) executeToolWithSelfCorrection(ctx Context, toolName string, inpu
 	// path replays cached results without re-executing, so replayed events
 	// are never double-applied).
 	a.applyLeaseEvents(ctx, sessionID, result)
+
+	// Decision layer shadow (plan Phase 1, site tool.failure_kind): classify
+	// this result in the background and record it against what the Success
+	// flag and InferErrorType say. Brake-only by design once live; today it
+	// only records.
+	a.shadowFailureKind(ctx, sessionID, toolName, input, result, err)
 
 	// If execution succeeded and guardrails enabled, clear error record
 	if err == nil && result != nil && result.Success && a.guardrails != nil {
@@ -3339,8 +4589,6 @@ func (a *Agent) executeToolWithSelfCorrection(ctx Context, toolName string, inpu
 		}
 		_ = a.guardrails.HandleErrorWithAnalysis(ctx, sessionID, query, errorAnalysis)
 	}
-
-	return result, err
 }
 
 // analyzeError converts execution error into ErrorAnalysisInfo for self-correction.
@@ -3406,8 +4654,17 @@ func (a *Agent) checkAndRegisterGraphMemoryTool() {
 		return
 	}
 
-	tool := shuttle.Tool(NewGraphMemoryTool(a.graphMemoryStore, a.config.Name))
+	tool := shuttle.Tool(NewGraphMemoryTool(a.graphMemoryStore, a.graphMemoryKey()))
 	a.tools.Register(tool)
+}
+
+// graphMemoryKey is the agent ID that keys graph memory reads and writes.
+// GraphMemoryAgentID wins when set; otherwise the agent Name (unchanged behaviour).
+func (a *Agent) graphMemoryKey() string {
+	if a.config.GraphMemoryAgentID != "" {
+		return a.config.GraphMemoryAgentID
+	}
+	return a.config.Name
 }
 
 // graphMemoryTokenBudget returns the token budget for graph memory context injection.
@@ -3437,33 +4694,68 @@ func (a *Agent) FlushGraphMemoryExtraction() {
 	a.graphExtractionWG.Wait()
 }
 
-// graphMemoryContextMarker opens the injected graph-memory block, and is how a
-// resumed turn tells "already injected" from "injected in a process that is
-// gone" — the block lives only in memory (Session.AddMessage is not persisted).
-const graphMemoryContextMarker = "[Graph Memory Context]"
-
-// hasGraphMemoryContext reports whether this session still carries an injected
-// graph-memory block.
-func hasGraphMemoryContext(session *types.Session) bool {
-	for _, m := range session.GetMessages() {
-		if strings.HasPrefix(m.Content, graphMemoryContextMarker) {
-			return true
-		}
+// withSystemReminder returns msgs with the non-empty notes appended as one
+// trailing user message wrapped in <system-reminder> tags (a copy; msgs is
+// not changed), or msgs itself when there are none.
+//
+// USER role, never system: providers and gateways fold system-role messages
+// into the system prompt at the HEAD of the request (Anthropic's "system"
+// field), where a note that changes with every request would invalidate
+// every cached segment after it. A trailing user message stays in place,
+// after the till-NOW breakpoint, outside every cached segment. The tag marks
+// it as harness state, not a user ask.
+func withSystemReminder(msgs []Message, notes ...string) []Message {
+	content := systemReminderContent(notes...)
+	if content == "" {
+		return msgs
 	}
-	return false
+	out := make([]Message, len(msgs), len(msgs)+1)
+	copy(out, msgs)
+	return append(out, Message{Role: "user", Content: content})
 }
 
-// injectGraphMemoryContext queries graph memory for the current topic and injects
-// relevant context into the conversation as a system message.
-func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Session) {
+// IsSystemReminder reports whether m is a reminder message (withSystemReminder,
+// PinTurnNotes) rather than something the user wrote. The compiled view of a
+// session holds the current turn's pinned reminders until the next turn, so a
+// reader that shows the conversation leaves these rows out.
+func IsSystemReminder(m Message) bool {
+	return m.Role == "user" && strings.HasPrefix(m.Content, "<system-reminder>\n")
+}
+
+// systemReminderContent is the content of the message withSystemReminder
+// appends for notes, or "" when every note is empty.
+func systemReminderContent(notes ...string) string {
+	var parts []string
+	for _, note := range notes {
+		if note = strings.TrimSpace(note); note != "" {
+			parts = append(parts, note)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "<system-reminder>\n" + strings.Join(parts, "\n\n") + "\n</system-reminder>"
+}
+
+// graphMemoryContextMarker opens the graph memory recall note.
+const graphMemoryContextMarker = "[Graph Memory Context]"
+
+// graphMemoryNote queries graph memory for the current topic and returns the
+// relevant memories as a note for this turn's LLM calls, or "" when there are
+// none. The note is never added to the stored session; it is pinned for the
+// rest of the turn only (PinTurnNotes).
+func (a *Agent) graphMemoryNote(ctx context.Context, session *types.Session) string {
 	if a.graphMemoryStore == nil || a.graphMemoryConfig == nil || !a.graphMemoryConfig.Enabled {
-		return
+		return ""
 	}
 	// The recall path had zero observability: every gate below returned
 	// silently, which is how a fleet ran with recall dead and nobody knew
 	// (az512h). One span, outcome always set.
 	ctx, span := a.tracer.StartSpan(ctx, "graph_memory.recall")
 	defer a.tracer.EndSpan(span)
+	// Which memory partition this recall queries; differs from the agent name
+	// when GraphMemoryAgentID is set.
+	span.SetAttribute("graph_memory.agent_key", a.graphMemoryKey())
 	outcome := "unknown"
 	defer func() { span.SetAttribute("recall.outcome", outcome) }()
 
@@ -3474,21 +4766,21 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 	budget := a.graphMemoryTokenBudget()
 	if budget <= 0 {
 		outcome = "no_budget"
-		return
+		return ""
 	}
 
 	// Get the last user message.
 	var userMessage string
 	msgs := session.GetMessages()
 	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == "user" && msgs[i].Content != "" {
+		if msgs[i].Role == "user" && msgs[i].Content != "" && !IsSystemReminder(msgs[i]) {
 			userMessage = msgs[i].Content
 			break
 		}
 	}
 	if userMessage == "" {
 		outcome = "no_user_message"
-		return
+		return ""
 	}
 
 	// Use LLM to distill the user message into a search query for memory recall.
@@ -3501,7 +4793,7 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 	span.SetAttribute("recall.query_source", querySource)
 	if searchQuery == "" {
 		outcome = "no_query"
-		return
+		return ""
 	}
 	span.SetAttribute("recall.query", truncatePreview(searchQuery))
 
@@ -3515,14 +4807,14 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 	storeFailed := false
 
 	// Entity-scoped recall: search entities, get their neighborhoods.
-	entities, err := a.graphMemoryStore.SearchEntities(ctx, a.config.Name, searchQuery, 5)
+	entities, err := a.graphMemoryStore.SearchEntities(ctx, a.graphMemoryKey(), searchQuery, 5)
 	if err != nil {
 		storeFailed = true
 		span.RecordError(fmt.Errorf("graph memory recall: search entities: %w", err))
 	}
 	for _, e := range entities {
 		recall, ctxErr := a.graphMemoryStore.ContextFor(ctx, memory.ContextForOpts{
-			AgentID:    a.config.Name,
+			AgentID:    a.graphMemoryKey(),
 			EntityName: e.Name,
 			Topic:      searchQuery,
 			MaxTokens:  budget,
@@ -3551,7 +4843,7 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 
 	// Unscoped recall: broad FTS5 search across all memories.
 	memories, recallErr := a.graphMemoryStore.Recall(ctx, memory.RecallOpts{
-		AgentID:   a.config.Name,
+		AgentID:   a.graphMemoryKey(),
 		Query:     searchQuery,
 		Limit:     50,
 		MaxTokens: budget,
@@ -3571,26 +4863,55 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 	// visible instead of being hidden behind a successful injection.
 	span.SetAttribute("recall.store_error", storeFailed)
 	span.SetAttribute("recall.candidates", len(candidates))
-	if len(candidates) == 0 {
+
+	// Dedicated lesson lane (PR #357): verified working knowledge rides
+	// regardless of the echo-memory ranking below. Fleet-shared only when
+	// GraphMemoryConfig.fleet_lesson_sharing is opted in; private otherwise.
+	// No probation here — nothing scores what a conversation-start injection
+	// leads to, so a demoted lesson offered here would be cost without
+	// evidence (see fleetLessons). Queried BEFORE the no-candidates return:
+	// an agent that mostly does tool work can hold lessons and no ordinary
+	// memory that matches, and its lessons must still reach the first request.
+	lessons := a.fleetLessons(ctx, searchQuery, budget, false)
+	span.SetAttribute("recall.lessons", len(lessons))
+	if len(candidates) == 0 && len(lessons) == 0 {
 		if storeFailed {
 			// Distinct from no_candidates: the store failed, this is not a miss.
 			outcome = "store_error"
 		} else {
 			outcome = "no_candidates"
 		}
-		return
+		return ""
 	}
 
-	// LLM re-rank: ask the LLM which candidates are actually relevant.
+	// LLM re-rank: ask the LLM which candidates are actually relevant
+	// (no candidates, no call — rerankMemories returns nil).
 	relevant := a.rerankMemories(ctx, userMessage, candidates)
-	if len(relevant) == 0 {
+	if len(relevant) == 0 && len(lessons) == 0 {
 		outcome = "rerank_none"
-		return
+		return ""
 	}
-	span.SetAttribute("recall.injected", len(relevant))
+	// recall.injected is the total the block carries; the two breakdowns
+	// split it the way lesson.injected / lesson.injected_verified /
+	// lesson.injected_probation split the error-time lane.
+	span.SetAttribute("recall.injected", len(relevant)+len(lessons))
+	span.SetAttribute("recall.injected_memories", len(relevant))
+	span.SetAttribute("recall.injected_lessons", len(lessons))
 
 	var sb strings.Builder
-	sb.WriteString("Relevant memories from past conversations:\n\n")
+	if len(lessons) > 0 {
+		sb.WriteString(a.lessonPrompt(ctx, lessonPromptHeadingStart))
+		sb.WriteString("\n")
+		for _, m := range lessons {
+			sb.WriteString("- ")
+			sb.WriteString(m.Content)
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
+	if len(relevant) > 0 {
+		sb.WriteString("Relevant memories from past conversations:\n\n")
+	}
 	for _, m := range relevant {
 		sb.WriteString("- ")
 		if m.EventDate != "" {
@@ -3605,11 +4926,8 @@ func (a *Agent) injectGraphMemoryContext(ctx context.Context, session *types.Ses
 		sb.WriteString("\n")
 	}
 
-	session.AddMessage(ctx, types.Message{
-		Role:    "system",
-		Content: graphMemoryContextMarker + "\n" + sb.String(),
-	})
 	outcome = "injected"
+	return graphMemoryContextMarker + "\n" + strings.TrimRight(sb.String(), "\n")
 }
 
 // multiHopRecall finds the user entity and traverses 2 hops outward to collect
@@ -3621,7 +4939,7 @@ func (a *Agent) multiHopRecall(ctx context.Context, seen map[string]bool, budget
 		return nil
 	}
 
-	agentID := a.config.Name
+	agentID := a.graphMemoryKey()
 
 	// Find the user entity (marked with is_user:true during extraction).
 	userEntity := a.findUserEntity(ctx, agentID)
@@ -3690,9 +5008,41 @@ func (a *Agent) findUserEntity(ctx context.Context, agentID string) *memory.Enti
 	return nil
 }
 
-// rerankMemories uses the LLM to select the most relevant memories for a user message
-// from a pool of FTS5 candidates. Returns only the memories the LLM deems relevant.
+// rerankMemories selects the most relevant memories for a user message from a
+// pool of FTS5 candidates (site recall.rerank).
+//
+// With a live band, the decider answers first and, when the band says to act,
+// its per-candidate relevance is the result and the generative rerank is
+// skipped. Otherwise the existing LLM rerank decides and the decider's answer
+// (already obtained on a live band, obtained in the background on a shadow
+// band) is recorded against it as shadow rows.
 func (a *Agent) rerankMemories(ctx context.Context, userMessage string, candidates []*memory.Memory) []*memory.Memory {
+	sessionID := sessionIDFromContext(ctx)
+	if kept, acted, req, out, notActed := a.liveRerank(ctx, sessionID, sites.SiteRecallRerank, userMessage, candidates); acted {
+		// Live: nothing to compare against; the row records what was acted
+		// on, with each candidate's provenance as its subject. Candidates
+		// kept without acting on their answer are recorded as FALLBACK.
+		a.recordDecisionAsync(ctx, sessionID, req, out, sites.RerankActedReferences(len(candidates), memorySubjects(candidates), notActed))
+		return kept
+	} else if req != nil {
+		// Live band, but the decider did not clear it: the LLM decides and
+		// the answer already in hand is recorded against it.
+		kept := a.rerankMemoriesLLM(ctx, userMessage, candidates)
+		a.recordDecisionAsync(ctx, sessionID, req, out,
+			sites.RerankReferenceSubjects(len(candidates), keptIndexes(candidates, kept), sites.ReferenceSourceLLMRerank, memorySubjects(candidates)))
+		return kept
+	}
+	kept := a.rerankMemoriesLLM(ctx, userMessage, candidates)
+	if a.decisionRouter != nil && len(candidates) > 0 {
+		a.shadowRerank(ctx, sessionID, sites.SiteRecallRerank, userMessage, candidates, kept, sites.ReferenceSourceLLMRerank)
+	}
+	return kept
+}
+
+// rerankMemoriesLLM is the generative rerank: a numbered candidate list and a
+// "return only the numbers" instruction. Returns only the memories the LLM
+// deems relevant; on any failure it returns every candidate.
+func (a *Agent) rerankMemoriesLLM(ctx context.Context, userMessage string, candidates []*memory.Memory) []*memory.Memory {
 	if len(candidates) == 0 {
 		return nil
 	}
@@ -3938,12 +5288,22 @@ func (a *Agent) DeleteSession(sessionID string) {
 	a.mu.Lock()
 	delete(a.sessionToolLedger, sessionID)
 	a.mu.Unlock()
-	// In-turn SQLite databases are normally dropped at the session's next turn
-	// start; a deleted session has no next turn, so drop them here.
-	a.dropInTurnSQLite(sessionID)
 	// Retire the session's resource leases: a leaked ledger entry on a
 	// deleted session would pin RESOURCE_HOLDER priority forever.
 	a.leases.forget(sessionID)
+	// Drop the implicit emitter's per-session state — its cap counter, any
+	// remaining per-turn memo, and its board entry. Like the approved set
+	// above, those maps stay bounded by live sessions only because every
+	// retirement path frees them. No nil guard: ForgetSession is
+	// nil-receiver-safe, and a.implicitTasks is nil until a task manager is
+	// wired.
+	a.implicitTasks.ForgetSession(sessionID)
+	// Drop the lesson miner's per-session state (ledger, history-coverage
+	// marker, error-lane injection record) for the same reason.
+	a.forgetLessonSession(sessionID)
+	// Release the session's decision-layer budget accounting, which is
+	// likewise bounded by live sessions only because retirement frees it.
+	a.decisionRouter.ForgetSession(sessionID)
 }
 
 // ApprovedSet returns the executor's approved-set accessor; nil until one is
@@ -3974,12 +5334,24 @@ func (a *Agent) ClearAllSessions() {
 			as.ForgetSession(s.ID)
 		}
 	}
+	// The implicit emitter's per-session maps are bounded the same way, so this
+	// sibling of DeleteSession must retire them too. Also before ClearAll: after
+	// it ListSessions is empty and there is no id left to free by.
+	//
+	// The nil check is not for safety — ForgetSession is nil-receiver-safe — it
+	// avoids walking every live session to no purpose when no task manager is
+	// wired and there is nothing to free.
+	if a.implicitTasks != nil {
+		for _, s := range a.memory.ListSessions() {
+			a.implicitTasks.ForgetSession(s.ID)
+		}
+	}
 	a.memory.ClearAll()
 	a.mu.Lock()
 	a.sessionToolLedger = make(map[string]map[string]bool)
 	a.mu.Unlock()
-	a.dropAllInTurnSQLite()
 	a.leases.reset()
+	a.decisionRouter.ForgetAllSessions()
 }
 
 // CreateSession creates a new session without sending a message to the LLM.
@@ -4211,13 +5583,14 @@ func (a *Agent) GetAllRoleLLMs() map[loomv1.LLMRole]LLMProvider {
 	return result
 }
 
-// SetSharedMemoryThreshold configures the byte threshold for storing large tool results in shared memory.
-// -1 = use storage.DefaultSharedMemoryThreshold, 0 = always reference, >0 = reference only if result exceeds N bytes.
+// SetSharedMemoryThreshold configures the byte bound above which a tool result
+// enters truncated, and the tool executor's large-parameter threshold.
+// The arrival bound takes positive values only and otherwise keeps the bound
+// it has (storage.DefaultSharedMemoryThreshold unless set): it is
+// unconditional, so no input disables it. For the executor, as on main: -1 is the default, 0 stores
+// every tool parameter by reference, >0 only those over N bytes.
 func (a *Agent) SetSharedMemoryThreshold(threshold int64) {
 	a.sharedMemoryThreshold = threshold
-	// Re-push to the executor: it captured the threshold at SetSharedMemory time,
-	// so a setter call afterwards (the registry configures it post-construction)
-	// would otherwise leave the two offload sites at different thresholds.
 	if a.executor != nil && a.sharedMemory != nil {
 		eff := int64(storage.DefaultSharedMemoryThreshold)
 		if threshold >= 0 {
@@ -4225,23 +5598,10 @@ func (a *Agent) SetSharedMemoryThreshold(threshold int64) {
 		}
 		a.executor.SetSharedMemory(a.sharedMemory, eff)
 	}
-	// One value, three roles (HLD §5.1): the same bound is the compile-time
-	// offload bound, the persist-time row bound, and the retrieval page bound.
-	if a.memory != nil && threshold > 0 {
-		a.memory.SetThresholdBytes(threshold)
-	}
-}
-
-// SetOffloadExemptTools replaces the set of tool names whose current-turn
-// results always render whole regardless of the offload threshold (§5.2
-// step 6 carve-out), for existing and future sessions. Use it for tools
-// whose full output is the product of the call — content the model must
-// read inline in the producing turn — where an offload stub would defeat
-// the call. Prior-turn and evicted rows still render stubs, so relief and
-// turn-end truncation behave identically for every tool.
-func (a *Agent) SetOffloadExemptTools(names []string) {
+	// The arrival bound takes positive values only; anything else keeps the
+	// bound it has (Memory.SetThresholdBytes ignores it).
 	if a.memory != nil {
-		a.memory.SetOffloadExemptTools(names)
+		a.memory.SetThresholdBytes(threshold)
 	}
 }
 
@@ -4410,4 +5770,45 @@ func (a *Agent) SetProviderPool(pool map[string]LLMProvider, active string, allo
 		return a.SetActiveProvider(active)
 	}
 	return nil
+}
+
+// WithImplicitTaskEmitter enables deterministic, runtime-driven task recording.
+//
+// With this set, the runtime records a task the first time a turn does something
+// worth recording — a tool call today — instead of waiting for the model to
+// decide it wants one. That is the difference between a board users can rely on
+// and a board that fills only when an LLM remembers to ask.
+//
+// Independent of WithTaskBoard: an agent can record tasks for the timeline while
+// never seeing the task_board tool, which is the common configuration.
+func WithImplicitTaskEmitter(e *task.ImplicitEmitter) Option {
+	return func(a *Agent) {
+		a.implicitTasks = e
+	}
+}
+
+// implicitCloseReason summarises how a turn ended, for the recorded task's
+// close reason. Kept short: this is a board-row caption, not a log line.
+func implicitCloseReason(resp *Response, err error) string {
+	if err != nil {
+		return "Turn ended with an error."
+	}
+	if resp != nil && resp.Metadata != nil {
+		if n, ok := resp.Metadata["tool_executions"].(int); ok && n > 0 {
+			if n == 1 {
+				return "Turn completed — 1 tool call."
+			}
+			return fmt.Sprintf("Turn completed — %d tool calls.", n)
+		}
+	}
+	return "Turn completed."
+}
+
+// triggerNames renders trigger enums as their bare YAML names for log lines.
+func triggerNames(trs []loomv1.ImplicitTaskTrigger) []string {
+	out := make([]string, 0, len(trs))
+	for _, tr := range trs {
+		out = append(out, strings.ToLower(strings.TrimPrefix(tr.String(), "IMPLICIT_TASK_TRIGGER_")))
+	}
+	return out
 }

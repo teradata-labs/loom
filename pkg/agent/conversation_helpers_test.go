@@ -16,6 +16,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -515,4 +516,40 @@ func TestEmitToolCompleted_NilCallback(t *testing.T) {
 	assert.NotPanics(t, func() {
 		emitToolCompleted(ctx, 50, tc, result, nil)
 	})
+}
+
+// spanKeepingTracer keeps every span it starts so a test can read the events
+// added to it.
+type spanKeepingTracer struct {
+	mu    sync.Mutex
+	spans []*observability.Span
+}
+
+func (tr *spanKeepingTracer) StartSpan(ctx context.Context, name string, opts ...observability.SpanOption) (context.Context, *observability.Span) {
+	span := &observability.Span{Name: name, Attributes: map[string]interface{}{}}
+	for _, o := range opts {
+		o(span)
+	}
+	tr.mu.Lock()
+	tr.spans = append(tr.spans, span)
+	tr.mu.Unlock()
+	return ctx, span
+}
+func (tr *spanKeepingTracer) EndSpan(_ *observability.Span)                                     {}
+func (tr *spanKeepingTracer) RecordMetric(_ string, _ float64, _ map[string]string)             {}
+func (tr *spanKeepingTracer) RecordEvent(_ context.Context, _ string, _ map[string]interface{}) {}
+func (tr *spanKeepingTracer) Flush(_ context.Context) error                                     { return nil }
+
+func (tr *spanKeepingTracer) eventsNamed(name string) []observability.Event {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	var out []observability.Event
+	for _, sp := range tr.spans {
+		for _, ev := range sp.Events {
+			if ev.Name == name {
+				out = append(out, ev)
+			}
+		}
+	}
+	return out
 }

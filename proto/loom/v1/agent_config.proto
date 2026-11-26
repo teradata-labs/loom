@@ -7,6 +7,7 @@ syntax = "proto3";
 
 package loom.v1;
 
+import "loom/v1/decision.proto";
 import "loom/v1/skill.proto";
 import "loom/v1/task.proto";
 
@@ -91,6 +92,11 @@ message AgentConfig {
 
   // Skills configuration for this agent
   SkillsConfig skills = 20;
+
+  // Decision layer configuration (pkg/decision): which decider answers typed
+  // auxiliary judgments and, per call site, whether its answers are acted on
+  // or only shadow-recorded. Absent or provider "off" disables the layer.
+  DecisionConfig decision = 21;
 }
 
 // ProviderEntry is a named LLM configuration in the global provider pool.
@@ -133,8 +139,11 @@ message LLMConfig {
   // Top-k sampling parameter
   int32 top_k = 7;
 
-  // Maximum context window tokens supported by the model
-  // If not set, will be auto-detected from model name or use provider default
+  // The context window loom budgets against: the fold keeps the settled
+  // conversation under the profile's threshold of this window less
+  // reserved_output_tokens. It may sit below the model's window to bound
+  // cost. If not set, the model's window (catalog, then model name, then
+  // provider default) is used.
   // Examples: Claude Sonnet 4.5 = 200000, Llama 3.1 = 128000, Mistral = 32000
   int32 max_context_tokens = 8;
 
@@ -152,13 +161,57 @@ message LLMConfig {
   // default) is distinguishable from an explicit seed of 0, which some
   // providers accept as a real seed value.
   //
-  // Honored by: ollama, and only on the agent-registry construction path
-  // (pkg/agent/registry.go, which passes it into ollama.Config). Providers
-  // other than ollama ignore it. The looms serve path builds clients from
-  // factory.FactoryConfig, which does not carry a seed field, so a seed set in
-  // agent YAML has no effect there — wiring it through the factory is an open
-  // follow-up, not a shipped behavior.
+  // Honored by: ollama, for an agent whose own llm block selects it (agent
+  // registry, and agent YAML under looms serve). Providers other than ollama
+  // ignore it. The server's default LLM (looms.yaml llm:) and the provider
+  // factory carry no seed.
   optional int64 seed = 11;
+
+  // The context window the model is served with, when it is below the
+  // model's listed window: a vLLM --max-model-len, a TGI --max-total-tokens,
+  // an Ollama num_ctx. A step whose results together would exceed it, less
+  // the reply reservation, has them replaced before the send. Taken as given,
+  // above or below the listing. If not set, the model's listed window is the
+  // limit, on every provider.
+  int32 max_model_context_tokens = 12;
+
+  // Routing options for a multi-provider LLM gateway. Valid only with
+  // provider vercel-ai-gateway, which sends them as providerOptions.gateway in
+  // every request body; on any other provider, or with no provider, agent
+  // validation rejects it. Unset means the gateway's own default routing.
+  LLMGatewayRouting gateway_routing = 13;
+}
+
+// LLMGatewayRouting selects and orders the upstream providers a multi-provider
+// LLM gateway may serve a request from. It is named for gateways in general so
+// a later gateway backend can reuse it; today only vercel-ai-gateway reads it.
+//
+// Provider slugs ("anthropic", "bedrock", "vertex", "openai", ...) are the
+// gateway's own and are passed through unchanged. Per-request BYOK credentials
+// are deliberately not part of this message: they are configured in the
+// gateway's dashboard, not in agent configuration.
+message LLMGatewayRouting {
+  // Upstream providers to try, in order. Empty = gateway default order.
+  repeated string order = 1;
+
+  // Restrict serving to these upstream providers. Empty = no restriction.
+  // A request no listed provider can serve fails; it is not retried.
+  repeated string only = 2;
+
+  // Rank eligible upstreams by "cost", "ttft" (time to first token) or "tps"
+  // (tokens per second). Empty = gateway default.
+  string sort = 3;
+
+  // Model ids to fall back to, in order, when the primary model fails on
+  // every eligible upstream. May name a different model family.
+  repeated string fallback_models = 4;
+
+  // Serve only from upstreams with a zero-data-retention agreement.
+  bool zero_data_retention = 5;
+
+  // Gateway-side prompt caching mode. "" = off (explicit cache_control only),
+  // "auto" = the gateway places cache breakpoints itself.
+  string caching = 6;
 }
 
 // LLMRateLimitConfig configures client-side rate limiting for an LLM provider.
@@ -338,6 +391,25 @@ message GraphMemoryConfig {
   // Set higher to give the extractor more conversational context per cycle.
   // Useful when extraction_cadence is low (e.g., 1) to avoid tiny windows.
   int32 extraction_window_messages = 14;
+
+  // Share verified lessons across all agents on this server. Opt-in.
+  // When true, lessons mined from the tool ledger (observed error->fix
+  // transitions) are stored in a shared partition visible to every agent,
+  // and each agent's dedicated lesson recall lane draws from that pool.
+  // When false (default), lessons stay private to the agent that earned
+  // them: stored in a partition derived from its graph-memory key
+  // ("<key>__lessons", where the key is the agent's GraphMemoryAgentID when
+  // set, otherwise its name) that no other writer targets, and recalled only
+  // by it.
+  //
+  // SECURITY: mined lessons derive from tool output and the model's own tool
+  // inputs, and are shown to the model as trusted guidance (the graph-memory
+  // context block at conversation start, a <system-reminder> after a
+  // matching error). Enabling this makes one server's output guidance for
+  // every agent -- do not enable it when running untrusted tool servers, or
+  // tools that return text an untrusted party wrote.
+  // See docs/reference/security-model.md.
+  bool fleet_lesson_sharing = 15;
 }
 
 // TaskBoardConfig configures the dependency-aware task decomposition and kanban system.
@@ -360,6 +432,95 @@ message TaskBoardConfig {
   // Maximum tokens for the task context block injected into the system prompt.
   // Default: 500. Set to 0 to disable context injection.
   int32 context_budget_tokens = 6;
+
+  // Implicit task emission, controlled independently of `enabled` above.
+  //
+  // `enabled` governs whether the AGENT sees the task_board tool and the task
+  // context block. This governs whether the RUNTIME mints a task when a turn
+  // does real work, so that a human-facing timeline has something to attach to
+  // even when the agent never touches tasks itself.
+  //
+  // Unset means implicit emission is ON. It is deliberately opt-out: a task
+  // timeline nobody can see by default is a feature nobody has.
+  ImplicitTaskConfig implicit_tasks = 7;
+}
+
+// ImplicitTaskMode controls whether the runtime mints tasks on its own.
+//
+// UNSPECIFIED maps to ENABLED rather than DISABLED. proto3 scalar bools cannot
+// default to true, and an inverted `bool disable_x` field reads badly at every
+// call site, so the tri-state enum carries the default instead. It also means
+// the default can change later without a proto change.
+enum ImplicitTaskMode {
+  // Not set — treated as ENABLED.
+  IMPLICIT_TASK_MODE_UNSPECIFIED = 0;
+  // The runtime mints a task on the first qualifying event of a turn.
+  IMPLICIT_TASK_MODE_ENABLED = 1;
+  // No implicit tasks. Only the agent and explicit API calls create tasks.
+  IMPLICIT_TASK_MODE_DISABLED = 2;
+}
+
+// ImplicitTaskTrigger is an event that can cause the runtime to mint a task.
+//
+// Granularity matters because the triggers have very different cardinality and
+// value. A tool call happens dozens of times a turn; a human-in-the-loop
+// request happens rarely but is the one a human most needs to find. An operator
+// tuning board noise needs to keep the latter while dropping the former.
+//
+// Status per value is stated on the value. Only the ✅ triggers are fired by the
+// runtime today; the 📋 ones parse, validate and resolve, but no code path
+// passes them to the emitter yet, so selecting only those records nothing (the
+// agent logs a warning when the resolved set cannot fire).
+enum ImplicitTaskTrigger {
+  // Not a trigger. Load-bearing for fail-closed config parsing: an
+  // unrecognised trigger name resolves to this and disables emission, and the
+  // policy resolver drops it from any trigger set.
+  IMPLICIT_TASK_TRIGGER_UNSPECIFIED = 0;
+  // ✅ Fired: the agent invoked a tool.
+  IMPLICIT_TASK_TRIGGER_TOOL_CALL = 1;
+  // 📋 Not yet fired by the runtime: a skill activated for this turn. The
+  // skills task emitter already creates tasks on activation, which is why this
+  // is outside the default set.
+  IMPLICIT_TASK_TRIGGER_SKILL_ACTIVATION = 2;
+  // ✅ Fired: the agent asked a human for approval, a decision, input, or
+  // review.
+  IMPLICIT_TASK_TRIGGER_HUMAN_REQUEST = 3;
+  // 📋 Not yet fired by the runtime: the agent spawned an ephemeral subagent.
+  IMPLICIT_TASK_TRIGGER_SUBAGENT_SPAWN = 4;
+  // 📋 Not yet fired by the runtime: a workflow stage began executing. The
+  // task-tracked orchestrator already creates a task per stage, which is why
+  // this is outside the default set.
+  IMPLICIT_TASK_TRIGGER_WORKFLOW_STEP = 5;
+}
+
+// ImplicitTaskConfig tunes runtime task minting.
+message ImplicitTaskConfig {
+  // Whether the runtime mints tasks. Unset means enabled.
+  ImplicitTaskMode mode = 1;
+
+  // Restricts minting to these triggers. Empty means the built-in default set.
+  // Use this for "only these".
+  repeated ImplicitTaskTrigger triggers = 2;
+
+  // Subtracted from the effective set, applied after `triggers`. Use this for
+  // "everything except these", which otherwise requires enumerating the rest
+  // and silently opting out of any trigger added in a later release.
+  repeated ImplicitTaskTrigger excluded_triggers = 3;
+
+  // Caps implicit tasks per session. 0 means the built-in default. Once the cap
+  // is hit, later turns record no implicit task rather than growing the board
+  // without bound; the count of skipped turns is exported as a metric.
+  int32 max_per_session = 4;
+
+  // Surfaces implicit tasks in the AGENT's task context block and ready front.
+  //
+  // Default false, and that default is load-bearing. The task context block is
+  // rebuilt into the system prompt every turn; if each turn minted a task that
+  // then appeared in that block, the prompt would accumulate the agent's own
+  // bookkeeping turn over turn — the exact context-window growth the task
+  // system's compaction design exists to avoid. Implicit tasks are a rendering
+  // artifact for humans, so by default the agent never sees them.
+  bool agent_visible = 5;
 }
 
 // WorkloadProfile defines memory compression behavior profiles for different use cases
@@ -415,6 +576,11 @@ message MemoryCompressionConfig {
 
   // Batch sizes for compression operations
   MemoryCompressionBatchSizes batch_sizes = 6;
+
+  // Recent turns a fold keeps, counting user messages and assistant steps
+  // alike; the fold summarises everything before them. It is also the top rung
+  // of the pressure ladder. 0 means the default, 16.
+  int32 protected_recent_turns = 7;
 }
 
 // BehaviorConfig defines agent behavior constraints

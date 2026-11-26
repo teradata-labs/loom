@@ -66,12 +66,26 @@ type Server struct {
 	// grounding, so honoring them is an explicit operator decision
 	// (server.allow_time_override). Set via SetAllowTimeOverride.
 	allowTimeOverride bool
+
+	// allowAssistantOverride accepts WeaveRequest.replay_assistant_message
+	// (generation-free conversation replay — the caller supplies the
+	// assistant's turn verbatim). Default false (server.allow_assistant_override).
+	// Set via SetAllowAssistantOverride.
+	allowAssistantOverride bool
 }
 
 // SetAllowTimeOverride configures whether WeaveRequest.occurred_at is honored
 // (server.allow_time_override). See applyOccurredAt for the gate semantics.
 func (s *Server) SetAllowTimeOverride(allow bool) {
 	s.allowTimeOverride = allow
+}
+
+// SetAllowAssistantOverride configures whether
+// WeaveRequest.replay_assistant_message is honored
+// (server.allow_assistant_override). See applyReplayAssistant for the gate
+// semantics.
+func (s *Server) SetAllowAssistantOverride(allow bool) {
+	s.allowAssistantOverride = allow
 }
 
 // SetJudgeServer wires an in-memory JudgeServer so that ABTest can resolve req.JudgeId.
@@ -124,6 +138,12 @@ func (s *Server) Weave(ctx context.Context, req *loomv1.WeaveRequest) (*loomv1.W
 	// Replay/import support: validate occurred_at and thread it through the
 	// context so persisted rows anchor at the conversation's historical time.
 	ctx, err := applyOccurredAt(ctx, req, s.allowTimeOverride)
+	if err != nil {
+		return nil, err
+	}
+	// Generation-free replay: a scripted assistant turn substitutes for the LLM
+	// call while the memory pipeline still runs (see applyReplayAssistant).
+	ctx, err = applyReplayAssistant(ctx, req, s.allowAssistantOverride)
 	if err != nil {
 		return nil, err
 	}
@@ -187,6 +207,7 @@ func (s *Server) Weave(ctx context.Context, req *loomv1.WeaveRequest) (*loomv1.W
 				CostUsd:                  resp.Usage.CostUSD,
 				CacheReadInputTokens:     types.SafeInt32(resp.Usage.CacheReadInputTokens),
 				CacheCreationInputTokens: types.SafeInt32(resp.Usage.CacheCreationInputTokens),
+				CostEstimated:            resp.Usage.CostEstimated,
 			},
 			TotalCostUsd: resp.Usage.CostUSD,
 		},
@@ -203,6 +224,12 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 	// Replay/import support: validate occurred_at and thread it through the
 	// context used for the agent call (see applyOccurredAt).
 	ctx, err := applyOccurredAt(stream.Context(), req, s.allowTimeOverride)
+	if err != nil {
+		return err
+	}
+	// Generation-free replay: a scripted assistant turn substitutes for the LLM
+	// call while the memory pipeline still runs (see applyReplayAssistant).
+	ctx, err = applyReplayAssistant(ctx, req, s.allowAssistantOverride)
 	if err != nil {
 		return err
 	}
@@ -287,6 +314,7 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 
 			// Include tool lifecycle fields if present
 			applyToolLifecycleFields(protoProgress, event)
+			applyToolInputStreamFields(protoProgress, event)
 
 			// Send to client
 			if err := stream.Send(protoProgress); err != nil {
@@ -312,7 +340,10 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 	}
 
 	if finalResult.err != nil {
-		return status.Errorf(codes.Internal, "agent error: %v", finalResult.err)
+		// Same status mapping as Weave and the multi-agent StreamWeave:
+		// cancellation, deadline, and provider capacity failures keep
+		// retryable codes instead of collapsing into Internal.
+		return wrapAgentError(finalResult.err)
 	}
 
 	// Send final completion event with result and context state
@@ -351,6 +382,7 @@ func (s *Server) StreamWeave(req *loomv1.WeaveRequest, stream loomv1.LoomService
 				CostUsd:                  resp.Usage.CostUSD,
 				CacheReadInputTokens:     types.SafeInt32(resp.Usage.CacheReadInputTokens),
 				CacheCreationInputTokens: types.SafeInt32(resp.Usage.CacheCreationInputTokens),
+				CostEstimated:            resp.Usage.CostEstimated,
 			},
 		},
 	}
@@ -386,29 +418,50 @@ func convertAgentStageToProto(stage agent.ExecutionStage) loomv1.ExecutionStage 
 	}
 }
 
-// convertHITLRequestToProto converts agent.HITLRequestInfo to proto HITLRequestInfo.
+// convertHITLRequestToProto converts agent.HITLRequestInfo to proto
+// HITLRequestInfo. Every progress stream (Weave and the multi-agent stream)
+// builds its card through here, so a gRPC client sees the same card on both:
+// Context goes to context_json, and the stored request's Kind, Summary, Params
+// and ParamsTruncated go to kind, summary, params_json and params_truncated.
+// For a parked turn, params_json is the per-item descriptor map, which carries
+// each approval item's joined admission-hook reason.
 func convertHITLRequestToProto(info *agent.HITLRequestInfo) *loomv1.HITLRequestInfo {
 	if info == nil {
 		return nil
 	}
 
-	// Serialize context to JSON
-	var contextJSON string
-	if len(info.Context) > 0 {
-		jsonBytes, err := json.Marshal(info.Context)
-		if err == nil {
-			contextJSON = string(jsonBytes)
-		}
-	}
-
 	return &loomv1.HITLRequestInfo{
-		RequestId:      info.RequestID,
-		Question:       info.Question,
-		RequestType:    info.RequestType,
-		Priority:       info.Priority,
-		TimeoutSeconds: types.SafeInt32(int(info.Timeout.Seconds())),
-		ContextJson:    contextJSON,
+		RequestId:       info.RequestID,
+		Question:        info.Question,
+		RequestType:     info.RequestType,
+		Priority:        info.Priority,
+		TimeoutSeconds:  types.SafeInt32(int(info.Timeout.Seconds())),
+		ContextJson:     hitlMapJSON(info.RequestID, "context", info.Context),
+		Kind:            info.Kind,
+		Summary:         info.Summary,
+		ParamsJson:      hitlMapJSON(info.RequestID, "params", info.Params),
+		ParamsTruncated: info.ParamsTruncated,
 	}
+}
+
+// hitlMapJSON serializes one of a HITL card's maps for its *_json field. An
+// empty map yields "". A map that cannot be serialized also yields "" (the
+// rest of the card still goes out, so the human is still asked) and is logged
+// with the request ID so the missing field can be traced; values are not
+// logged because they may hold tool arguments.
+func hitlMapJSON(requestID, field string, m map[string]interface{}) string {
+	if len(m) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		zap.L().Warn("HITL card field dropped: not serializable to JSON",
+			zap.String("request_id", requestID),
+			zap.String("field", field),
+			zap.Error(err))
+		return ""
+	}
+	return string(b)
 }
 
 // applyToolLifecycleFields populates tool lifecycle fields on a WeaveProgress proto
@@ -421,6 +474,20 @@ func sanitizeUTF8(s string) string {
 		return s
 	}
 	return strings.ToValidUTF8(s, "\uFFFD")
+}
+
+// applyToolInputStreamFields marks a tool-input stream event and carries the
+// call's id, position and argument bytes so far, so clients can show the tool
+// before it starts and tell parallel calls to the same tool apart.
+func applyToolInputStreamFields(proto *loomv1.WeaveProgress, event agent.ProgressEvent) {
+	if !event.IsToolInputStream {
+		return
+	}
+
+	proto.IsToolInputStream = true
+	proto.ToolCallId = event.ToolCallID
+	proto.ToolInputBytes = event.ToolInputBytes
+	proto.ToolCallIndex = event.ToolCallIndex
 }
 
 func applyToolLifecycleFields(proto *loomv1.WeaveProgress, event agent.ProgressEvent) {
@@ -554,10 +621,16 @@ func (s *Server) GetConversationHistory(ctx context.Context, req *loomv1.GetConv
 		return nil, status.Error(codes.NotFound, "session not found")
 	}
 
+	// The compiled view holds the current turn's <system-reminder> rows
+	// (harness state pinned for the turn's provider calls, never stored);
+	// history shows what the user and the assistant said.
 	messages := session.GetMessages()
-	protoMessages := make([]*loomv1.Message, len(messages))
-	for i, msg := range messages {
-		protoMessages[i] = ConvertMessage(&msg)
+	protoMessages := make([]*loomv1.Message, 0, len(messages))
+	for i := range messages {
+		if agent.IsSystemReminder(messages[i]) {
+			continue
+		}
+		protoMessages = append(protoMessages, ConvertMessage(&messages[i]))
 	}
 
 	return &loomv1.ConversationHistory{
@@ -980,7 +1053,7 @@ func (s *Server) runABTestSequentialScored(ctx context.Context, req *loomv1.ABTe
 		}
 		judgeConfig = cfg
 	}
-	judge, err := judges.NewLLMJudge(judgeLLM, judgeConfig, observability.NewNoOpTracer())
+	judge, err := judges.NewJudgeFromConfig(judgeLLM, judgeConfig, observability.NewNoOpTracer())
 	if err != nil {
 		return status.Errorf(codes.FailedPrecondition, "cannot create judge for scoring: %v", err)
 	}

@@ -23,6 +23,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
 	"github.com/teradata-labs/loom/pkg/llm/azureopenai"
 	"github.com/teradata-labs/loom/pkg/llm/bedrock"
+	"github.com/teradata-labs/loom/pkg/llm/bedrockmantle"
 	"github.com/teradata-labs/loom/pkg/llm/catalog"
 	"github.com/teradata-labs/loom/pkg/llm/gemini"
 	"github.com/teradata-labs/loom/pkg/llm/huggingface"
@@ -30,6 +31,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/llm/mistral"
 	"github.com/teradata-labs/loom/pkg/llm/ollama"
 	"github.com/teradata-labs/loom/pkg/llm/openai"
+	"github.com/teradata-labs/loom/pkg/llm/vercelgateway"
 )
 
 // fallbackMaxOutputTokens is used when neither the caller configured MaxTokens
@@ -49,6 +51,10 @@ type FactoryConfig struct {
 	DefaultProvider string
 	DefaultModel    string
 
+	// ThinkingLevel requests extended thinking from providers that support it
+	// ("", "none" = off). Passed through to anthropic/bedrock client configs.
+	ThinkingLevel string
+
 	// Anthropic configuration
 	AnthropicAPIKey string
 	AnthropicModel  string
@@ -61,6 +67,16 @@ type FactoryConfig struct {
 	BedrockProfile         string
 	BedrockBearerToken     string
 	BedrockModelID         string
+
+	// Bedrock Mantle configuration (bedrock-mantle endpoint). Region or
+	// Endpoint is required. APIKey selects bearer auth; when empty, requests
+	// are SigV4-signed with the Bedrock credential settings above
+	// (BedrockAccessKeyID/SecretAccessKey/SessionToken, BedrockProfile) or
+	// the default AWS credential chain.
+	BedrockMantleRegion   string
+	BedrockMantleEndpoint string
+	BedrockMantleAPIKey   string
+	BedrockMantleModel    string
 
 	// Ollama configuration
 	OllamaEndpoint string
@@ -94,6 +110,13 @@ type FactoryConfig struct {
 	LiteLLMModel        string
 	LiteLLMExtraHeaders map[string]string
 
+	// VercelGateway configures the vercel-ai-gateway provider (endpoint, API
+	// key, OIDC, routing). Its Model is the default when CreateProvider gets
+	// none; MaxTokens, Temperature and Timeout come from the common settings
+	// below. An empty APIKey falls back to LOOM_LLM_VERCEL_GATEWAY_API_KEY,
+	// then AI_GATEWAY_API_KEY.
+	VercelGateway vercelgateway.Config
+
 	// Common settings
 	MaxTokens       int
 	Temperature     float64
@@ -126,6 +149,10 @@ func NewProviderFactory(config FactoryConfig) *ProviderFactory {
 	config.BedrockSecretAccessKey = loomconfig.ExpandEnvPlaceholders(config.BedrockSecretAccessKey)
 	config.BedrockSessionToken = loomconfig.ExpandEnvPlaceholders(config.BedrockSessionToken)
 	config.BedrockBearerToken = loomconfig.ExpandEnvPlaceholders(config.BedrockBearerToken)
+	config.BedrockMantleRegion = loomconfig.ExpandEnvPlaceholders(config.BedrockMantleRegion)
+	config.BedrockMantleEndpoint = loomconfig.ExpandEnvPlaceholders(config.BedrockMantleEndpoint)
+	config.BedrockMantleAPIKey = loomconfig.ExpandEnvPlaceholders(config.BedrockMantleAPIKey)
+	config.BedrockMantleModel = loomconfig.ExpandEnvPlaceholders(config.BedrockMantleModel)
 	config.OllamaEndpoint = loomconfig.ExpandEnvPlaceholders(config.OllamaEndpoint)
 	config.OpenAIAPIKey = loomconfig.ExpandEnvPlaceholders(config.OpenAIAPIKey)
 	config.AzureOpenAIEndpoint = loomconfig.ExpandEnvPlaceholders(config.AzureOpenAIEndpoint)
@@ -138,6 +165,9 @@ func NewProviderFactory(config FactoryConfig) *ProviderFactory {
 	config.LiteLLMEndpoint = loomconfig.ExpandEnvPlaceholders(config.LiteLLMEndpoint)
 	config.LiteLLMAPIKey = loomconfig.ExpandEnvPlaceholders(config.LiteLLMAPIKey)
 	config.LiteLLMModel = loomconfig.ExpandEnvPlaceholders(config.LiteLLMModel)
+	config.VercelGateway.Endpoint = loomconfig.ExpandEnvPlaceholders(config.VercelGateway.Endpoint)
+	config.VercelGateway.APIKey = loomconfig.ExpandEnvPlaceholders(config.VercelGateway.APIKey)
+	config.VercelGateway.Model = loomconfig.ExpandEnvPlaceholders(config.VercelGateway.Model)
 	// Copy LiteLLMExtraHeaders before mutating so the caller's map is not
 	// modified in place (shared-map mutation is a race if the caller holds the
 	// original and another goroutine concurrently reads it).
@@ -180,11 +210,15 @@ func (f *ProviderFactory) CreateProvider(provider, model string) (interface{}, e
 		model = f.config.DefaultModel
 	}
 
-	switch provider {
+	switch vercelgateway.NormalizeProviderName(provider) {
+	case vercelgateway.ProviderName:
+		return f.createVercelGatewayProvider(model)
 	case "anthropic":
 		return f.createAnthropicProvider(model)
 	case "bedrock":
 		return f.createBedrockProvider(model)
+	case "bedrock-mantle":
+		return f.createBedrockMantleProvider(model)
 	case "ollama":
 		return f.createOllamaProvider(model)
 	case "openai":
@@ -221,10 +255,11 @@ func (f *ProviderFactory) createAnthropicProvider(model string) (interface{}, er
 	}
 
 	return anthropic.NewClient(anthropic.Config{
-		APIKey:      apiKey,
-		Model:       model,
-		MaxTokens:   f.resolveMaxOutput("anthropic", model),
-		Temperature: f.config.Temperature,
+		APIKey:        apiKey,
+		Model:         model,
+		MaxTokens:     f.resolveMaxOutput("anthropic", model),
+		Temperature:   f.config.Temperature,
+		ThinkingLevel: f.config.ThinkingLevel,
 	}), nil
 }
 
@@ -245,6 +280,7 @@ func (f *ProviderFactory) createBedrockProvider(model string) (interface{}, erro
 	}
 
 	cfg := bedrock.Config{
+		ThinkingLevel:   f.config.ThinkingLevel,
 		Region:          region,
 		AccessKeyID:     f.config.BedrockAccessKeyID,
 		SecretAccessKey: f.config.BedrockSecretAccessKey,
@@ -260,6 +296,59 @@ func (f *ProviderFactory) createBedrockProvider(model string) (interface{}, erro
 	// others use the AWS Converse client. Routing is centralized in the bedrock
 	// package so every construction site behaves identically (NewClientForModel).
 	return bedrock.NewClientForModel(cfg)
+}
+
+// createBedrockMantleProvider builds a client for the bedrock-mantle endpoint.
+// Region falls back to BEDROCK_MANTLE_REGION then AWS_REGION; the API key to
+// BEDROCK_MANTLE_API_KEY. An ambient AWS_BEARER_TOKEN_BEDROCK is deliberately
+// not used: Mantle rejected long-term keys in the organizations probed, so
+// bearer auth is opt-in and SigV4 is the default.
+func (f *ProviderFactory) createBedrockMantleProvider(model string) (interface{}, error) {
+	if model == "" {
+		model = f.config.BedrockMantleModel
+	}
+	if model == "" {
+		model = bedrockmantle.DefaultModel
+	}
+
+	region := f.config.BedrockMantleRegion
+	if region == "" {
+		region = os.Getenv("BEDROCK_MANTLE_REGION")
+	}
+	if region == "" {
+		region = os.Getenv("AWS_REGION")
+	}
+	endpoint := f.config.BedrockMantleEndpoint
+	if endpoint == "" {
+		endpoint = os.Getenv("BEDROCK_MANTLE_ENDPOINT")
+	}
+	if region == "" && endpoint == "" {
+		return nil, fmt.Errorf("bedrock-mantle region not configured (set BEDROCK_MANTLE_REGION or AWS_REGION, or BEDROCK_MANTLE_ENDPOINT)")
+	}
+
+	apiKey := f.config.BedrockMantleAPIKey
+	if apiKey == "" {
+		apiKey = os.Getenv("BEDROCK_MANTLE_API_KEY")
+	}
+
+	client, err := bedrockmantle.NewClientForModel(bedrockmantle.Config{
+		Region:          region,
+		Endpoint:        endpoint,
+		APIKey:          apiKey,
+		AccessKeyID:     f.config.BedrockAccessKeyID,
+		SecretAccessKey: f.config.BedrockSecretAccessKey,
+		SessionToken:    f.config.BedrockSessionToken,
+		Profile:         f.config.BedrockProfile,
+		Model:           model,
+		MaxTokens:       f.resolveMaxOutput("bedrock-mantle", model),
+		Temperature:     f.config.Temperature,
+		Timeout:         time.Duration(f.config.Timeout) * time.Second,
+		ThinkingLevel:   f.config.ThinkingLevel,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return client, nil
 }
 
 func (f *ProviderFactory) createOllamaProvider(model string) (interface{}, error) {
@@ -476,6 +565,28 @@ func (f *ProviderFactory) createLiteLLMProvider(model string) (interface{}, erro
 		Timeout:      time.Duration(f.config.Timeout) * time.Second,
 		ExtraHeaders: f.config.LiteLLMExtraHeaders,
 	}), nil
+}
+
+// createVercelGatewayProvider builds a client for the Vercel AI Gateway. The
+// model has no default: an empty model is a configuration error.
+func (f *ProviderFactory) createVercelGatewayProvider(model string) (interface{}, error) {
+	cfg := f.config.VercelGateway
+	if model != "" {
+		cfg.Model = model
+	}
+	cfg.APIKey = vercelgateway.ResolveAPIKey(cfg.APIKey)
+	cfg.MaxTokens = f.resolveMaxOutput(vercelgateway.ProviderName, cfg.Model)
+	cfg.Temperature = f.config.Temperature
+	if cfg.ThinkingLevel == "" {
+		cfg.ThinkingLevel = f.config.ThinkingLevel
+	}
+	if f.config.Timeout > 0 {
+		cfg.Timeout = time.Duration(f.config.Timeout) * time.Second
+	}
+	// Same limiter as every other gateway path; unset fields take the
+	// gateway client's defaults.
+	cfg.RateLimiterConfig.Enabled = true
+	return vercelgateway.NewClient(cfg)
 }
 
 // IsProviderAvailable checks if a provider is available (credentials/config present).

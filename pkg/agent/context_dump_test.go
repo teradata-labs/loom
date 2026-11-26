@@ -185,6 +185,28 @@ func redirectCtxDumpSink(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	t.Setenv(envDebugDirVar, root)
+	// Release every sink opened during this test before t.TempDir()'s own
+	// cleanup removes the directory it lives in -- Windows can't remove a
+	// file a still-open handle points at. The sinks are tracked per test, so
+	// this does not depend on tests running serially.
+	var (
+		mu     sync.Mutex
+		opened []*contextDumper
+	)
+	prev := onContextDumperOpened
+	onContextDumperOpened = func(d *contextDumper) {
+		mu.Lock()
+		defer mu.Unlock()
+		opened = append(opened, d)
+	}
+	t.Cleanup(func() {
+		onContextDumperOpened = prev
+		mu.Lock()
+		defer mu.Unlock()
+		for _, d := range opened {
+			_ = d.close()
+		}
+	})
 	return filepath.Join(root, "context-dumps")
 }
 
@@ -402,12 +424,14 @@ func TestContextDump_On_LocalSinkOnly_NeverTracerOrZap(t *testing.T) {
 	assert.False(t, tracer.contains(secretMsg), "dump message content must never reach the tracer/Hawk")
 	assert.False(t, tracer.contains(secretTool), "dump tool content must never reach the tracer/Hawk")
 
-	// ...nor the shared zap log: the success path logs nothing at all.
-	assert.Equal(t, 0, logs.Len(), "context dump must not emit any log on the success path")
+	// ...nor the shared zap log: the only line on the success path is the
+	// sizes-only request breakdown, which carries no message or tool content.
 	for _, e := range logs.All() {
+		assert.Equal(t, "llm request: part sizes", e.Message, "context dump must not emit any other log on the success path")
 		assert.NotContains(t, e.Message, secretMsg)
 		for _, f := range e.Context {
 			assert.NotContains(t, f.String, secretMsg)
+			assert.NotContains(t, f.String, secretTool)
 			assert.NotContains(t, fmt.Sprintf("%v", f.Interface), secretMsg)
 		}
 	}

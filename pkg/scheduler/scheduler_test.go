@@ -56,6 +56,7 @@ func setupTestScheduler(t *testing.T) *Scheduler {
 		HotReload:    false,
 	})
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = scheduler.Stop(context.Background()) })
 
 	return scheduler
 }

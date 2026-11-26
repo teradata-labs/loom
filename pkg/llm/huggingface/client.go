@@ -32,6 +32,7 @@ type Client struct {
 
 // Config holds configuration for the HuggingFace client.
 type Config struct {
+	StrictToolSchemas bool
 	// Required: HuggingFace token from https://huggingface.co/settings/tokens
 	// Note: This is a "token" not an "API key" in HuggingFace terminology
 	Token string
@@ -76,6 +77,7 @@ func NewClient(config Config) *Client {
 	// Create OpenAI client with HuggingFace endpoint
 	// Note: We use the full chat/completions path since OpenAI client expects it
 	openaiClient := openai.NewClient(openai.Config{
+		StrictToolSchemas: config.StrictToolSchemas,
 		APIKey:            config.Token, // HuggingFace calls it a "token" but it works as API key
 		Model:             config.Model,
 		Endpoint:          "https://router.huggingface.co/v1/chat/completions",
@@ -113,7 +115,7 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 	// Recalculate cost using HuggingFace pricing
 	// Note: HuggingFace pricing varies significantly by provider (Together, Cohere, Groq, etc.)
 	// We use generic estimates here. For accurate pricing, consult specific provider docs.
-	resp.Usage.CostUSD = c.calculateCost(resp.Usage.InputTokens, resp.Usage.OutputTokens)
+	resp.Usage.CostUSD = c.calculateCost(fullPromptTokens(resp.Usage), resp.Usage.OutputTokens)
 
 	// Update metadata to reflect HuggingFace provider
 	if resp.Metadata == nil {
@@ -122,6 +124,14 @@ func (c *Client) Chat(ctx context.Context, messages []llmtypes.Message, tools []
 	resp.Metadata["provider"] = "huggingface"
 
 	return resp, nil
+}
+
+// fullPromptTokens is the whole prompt the call sent. The wrapped OpenAI
+// client reports InputTokens with the cache buckets subtracted out (loom's
+// disjoint-bucket convention); this provider's calculateCost has no cache
+// rates, so it prices the full prompt at the input rate, as it always has.
+func fullPromptTokens(u llmtypes.Usage) int {
+	return u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
 }
 
 // calculateCost estimates the cost in USD based on token usage.

@@ -6,6 +6,8 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -41,8 +43,8 @@ func TestProfileDefaults(t *testing.T) {
 			profile:               loomv1.WorkloadProfile_WORKLOAD_PROFILE_DATA_INTENSIVE,
 			expectedMaxL1:         4000, // 5 messages @ 800 tokens each
 			expectedMinL1:         3,
-			expectedWarning:       60,
-			expectedCritical:      90,
+			expectedWarning:       45,
+			expectedCritical:      80,
 			expectedNormalBatch:   2,
 			expectedWarningBatch:  4,
 			expectedCriticalBatch: 6,
@@ -52,8 +54,8 @@ func TestProfileDefaults(t *testing.T) {
 			profile:               loomv1.WorkloadProfile_WORKLOAD_PROFILE_CONVERSATIONAL,
 			expectedMaxL1:         9600, // 12 messages @ 800 tokens each
 			expectedMinL1:         6,
-			expectedWarning:       60,
-			expectedCritical:      90,
+			expectedWarning:       70,
+			expectedCritical:      92,
 			expectedNormalBatch:   4,
 			expectedWarningBatch:  6,
 			expectedCriticalBatch: 8,
@@ -142,7 +144,7 @@ func TestResolveCompressionProfile_Overrides(t *testing.T) {
 
 	assert.Equal(t, 8000, profile.MaxL1Tokens, "Should use overridden value: 10 messages × 800")
 	assert.Equal(t, 3, profile.MinL1Messages, "Should use profile default")
-	assert.Equal(t, 60, profile.WarningThresholdPercent, "Should use profile default")
+	assert.Equal(t, 45, profile.WarningThresholdPercent, "Should use profile default")
 }
 
 func TestResolveCompressionProfile_FullCustomization(t *testing.T) {
@@ -317,4 +319,83 @@ func TestResolveCompressionProfile_InvalidProfileReturnsError(t *testing.T) {
 	_, err := ResolveCompressionProfile(config)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid compression profile")
+}
+
+// TestWorkloadProfilesMoveTheReliefMarks pins the point of a workload profile:
+// it selects where relief starts and how deep it sheds. The three profiles were
+// briefly identical (60/90), which made the admin-facing selector inert — the
+// dropdown turned and nothing changed. This asserts they are distinct and that
+// the distinction reaches the marks a session actually uses.
+func TestWorkloadProfilesMoveTheReliefMarks(t *testing.T) {
+	const window, reserve = 200000, 20000
+	usable := window - reserve
+
+	markFor := func(p loomv1.WorkloadProfile) (start, release int) {
+		sm := NewSegmentedMemoryWithCompression("ROM", window, reserve, ProfileDefaults[p])
+		sm.mu.Lock()
+		defer sm.mu.Unlock()
+		return sm.startMarkLocked(0), sm.releaseMarkLocked(0)
+	}
+
+	dataStart, dataRelease := markFor(loomv1.WorkloadProfile_WORKLOAD_PROFILE_DATA_INTENSIVE)
+	balStart, balRelease := markFor(loomv1.WorkloadProfile_WORKLOAD_PROFILE_BALANCED)
+	convStart, convRelease := markFor(loomv1.WorkloadProfile_WORKLOAD_PROFILE_CONVERSATIONAL)
+
+	// Bursty workloads start earliest and shed deepest; conversational starts
+	// latest and sheds least, keeping recency.
+	assert.Less(t, dataStart, balStart, "data_intensive begins relief before balanced")
+	assert.Less(t, balStart, convStart, "conversational begins relief after balanced")
+	assert.Less(t, dataRelease, balRelease, "data_intensive sheds deeper than balanced")
+	assert.Less(t, balRelease, convRelease, "conversational sheds shallower than balanced")
+
+	// Every mark stays below usable — a mark at or above it would sit beyond
+	// the provider's refusal line and never fire.
+	for _, m := range []int{dataStart, balStart, convStart} {
+		assert.Less(t, m, usable, "a start mark must stay under usable context")
+	}
+
+	// And the band never inverts.
+	assert.Less(t, dataRelease, dataStart)
+	assert.Less(t, balRelease, balStart)
+	assert.Less(t, convRelease, convStart)
+}
+
+// K — the recent turns a fold keeps — is set from an agent file
+// (memory.memory_compression.protected_recent_turns), reaches memory through
+// the compression profile, defaults to 16 as on main, and yields to a value the
+// agent's Config sets in code.
+func TestProtectedRecentTurnsIsSetFromTheAgentFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "a.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`agent:
+  name: a
+  memory:
+    type: memory
+    memory_compression:
+      workload_profile: balanced
+      protected_recent_turns: 6
+`), 0o600))
+	cfg, err := LoadAgentConfig(path)
+	require.NoError(t, err)
+	mc := cfg.GetMemory().GetMemoryCompression()
+	require.NotNil(t, mc, "the file's memory_compression did not load")
+	assert.Equal(t, int32(6), mc.GetProtectedRecentTurns())
+
+	profile, err := ResolveCompressionProfile(mc)
+	require.NoError(t, err)
+	assert.Equal(t, 6, profile.ProtectedRecentTurns)
+
+	sm := NewSegmentedMemoryWithCompression("ROM", 200000, 20000, profile)
+	sm.mu.Lock()
+	assert.Equal(t, 6, sm.protectedTurnsLocked(), "the profile's K did not reach memory")
+	sm.mu.Unlock()
+
+	sm.SetProtectedRecentTurns(3)
+	sm.mu.Lock()
+	assert.Equal(t, 3, sm.protectedTurnsLocked(), "the agent's Config does not take precedence")
+	sm.mu.Unlock()
+
+	unset := NewSegmentedMemory("ROM", 200000, 20000)
+	unset.mu.Lock()
+	assert.Equal(t, 16, unset.protectedTurnsLocked(), "the default is main's 16")
+	unset.mu.Unlock()
 }

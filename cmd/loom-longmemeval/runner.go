@@ -18,6 +18,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -26,6 +28,7 @@ import (
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/agent"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -55,16 +58,34 @@ const (
 	// ModeContextStuffing puts all session history directly into one
 	// Weave call as prompt context. Baseline comparison.
 	ModeContextStuffing RunMode = "context-stuffing"
+
+	// ModeConversation replays every haystack turn, in chronological order,
+	// into ONE continuous agent session — user turns as user messages and the
+	// pre-written assistant turns recorded verbatim (generation-free, via
+	// WeaveRequest.replay_assistant_message) rather than regenerated. Unlike the
+	// blob-per-session ingest modes, this drives the memory pipeline the way a
+	// live conversation would: salience accumulates across turns and context
+	// compression fires as the thread grows. The question is asked in the same
+	// thread, where the earliest turns have compressed out of the live window,
+	// so recall runs through graph memory + conversation_memory. Recording the
+	// original assistant turns (never inventing them) preserves the benchmark's
+	// ground truth for assistant-derived questions.
+	ModeConversation RunMode = "conversation"
 )
 
 // RunConfig holds configuration for a benchmark run.
 type RunConfig struct {
-	Mode        RunMode
-	ServerAddr  string
-	AgentID     string // target agent in multi-agent server (empty = default)
-	Concurrency int
-	Verbose     bool
-	Isolate     bool // create a fresh agent per entry for graph memory isolation
+	Mode       RunMode
+	ServerAddr string
+	AgentID    string // target agent in multi-agent server (empty = default)
+	// AgentConfigPath, when set, is an agent YAML whose config is the temp
+	// agent template in isolate mode. It takes precedence over fetching the
+	// named agent's config from the server, which is not available for
+	// agents the server loaded statically at startup.
+	AgentConfigPath string
+	Concurrency     int
+	Verbose         bool
+	Isolate         bool // create a fresh agent per entry for graph memory isolation
 
 	// UseOccurredAt sends each haystack session's date (and the question date)
 	// as WeaveRequest.occurred_at. Without it, the server anchors temporal
@@ -87,10 +108,53 @@ type EntryResult struct {
 	Sessions     int           `json:"sessions_ingested"`
 	Error        string        `json:"error,omitempty"`
 
-	// grpcCode carries the gRPC status code of a failed Weave call so the
-	// runner can decide whether to abort the whole run. Unexported — never
+	// QuestionSessionID and HaystackSessions let a decision shadow row (keyed
+	// by the agent session it was recorded in, carrying a memory's source
+	// session as its subject) be graded against the dataset's evidence
+	// sessions: a memory kept from an evidence session is a true positive.
+	QuestionSessionID string               `json:"question_session_id,omitempty"`
+	HaystackSessions  []HaystackSessionRef `json:"haystack_sessions,omitempty"`
+
+	// grpcCode carries the gRPC status code of the failed RPC (Weave,
+	// CreateSession, CreateAgentFromConfig) so the runner can decide whether
+	// to abort the whole run and the CLI can tell a transient outage from a
+	// deterministic failure (classifyOutcome). codes.OK on an entry with an
+	// Error means the failure did not come from an RPC. Unexported — never
 	// serialized to results.
 	grpcCode codes.Code
+
+	// replayIgnored records that a successful replay Weave answered with text
+	// other than the scripted assistant turn: the server ignored
+	// replay_assistant_message and generated instead. Like a refused
+	// override, it invalidates the whole run, so Runner.Run aborts on it.
+	// Unexported — never serialized to results.
+	replayIgnored bool
+}
+
+// errReplayIgnored reports that a server accepted a replay turn but did not
+// honor replay_assistant_message. A server that predates the field (e.g. a
+// released v1.4.0 looms) decodes it as an unknown proto3 field, drops it, and
+// generates a fresh assistant turn — so the Weave succeeds and only the
+// response text reveals that the dataset's assistant turn was replaced.
+var errReplayIgnored = errors.New("server ignored replay_assistant_message " +
+	"(it predates generation-free replay); upgrade looms or use another --mode")
+
+// HaystackSessionRef maps one ingested haystack session to the Loom session
+// it ran in and says whether the dataset marks it as evidence.
+type HaystackSessionRef struct {
+	LoomSessionID    string `json:"loom_session_id"`
+	DatasetSessionID string `json:"dataset_session_id"`
+	Evidence         bool   `json:"evidence"`
+}
+
+// isEvidence reports whether the dataset lists sid among the answer sessions.
+func isEvidence(entry Entry, sid string) bool {
+	for _, a := range entry.AnswerSessionIDs {
+		if a == sid {
+			return true
+		}
+	}
+	return false
 }
 
 // Runner orchestrates the benchmark execution against a running Loom server.
@@ -100,6 +164,11 @@ type Runner struct {
 	client    loomv1.LoomServiceClient
 	conn      *grpc.ClientConn
 	baseAgent *loomv1.AgentConfig // cached config for isolation mode
+	// runNonce makes every temp agent name unique to this run. Graph memory
+	// is scoped by agent name and DeleteAgent does not purge it, so a name
+	// built from the question id alone would let a rerun of the same
+	// question recall memories ingested by earlier runs.
+	runNonce string
 }
 
 // NewRunner creates a new benchmark runner that connects to a Loom gRPC server.
@@ -125,41 +194,108 @@ func NewRunner(cfg RunConfig, logger *zap.Logger) (*Runner, error) {
 	logger.Info("connected to Loom server", zap.String("addr", cfg.ServerAddr))
 
 	r := &Runner{
-		config: cfg,
-		logger: logger,
-		client: client,
-		conn:   conn,
+		config:   cfg,
+		logger:   logger,
+		client:   client,
+		conn:     conn,
+		runNonce: newRunNonce(),
 	}
 
 	// In isolate mode, build a base agent config for creating temp agents.
-	// Each temp agent gets its own graph memory scope — no cross-entry contamination.
+	// Each temp agent gets its own graph memory scope — no cross-entry
+	// contamination. When --agent names a registered agent, the temp agents
+	// are clones of it (system prompt, LLM, tools, decision layer), with the
+	// benchmark's extraction settings applied on top; before this the named
+	// agent was ignored in isolate mode and every temp agent ran a hand-built
+	// config, so nothing configured on the agent reached the benchmark.
 	if cfg.Isolate {
-		r.baseAgent = &loomv1.AgentConfig{
-			SystemPrompt: "You are a helpful assistant with excellent memory. " +
-				"Pay close attention to dates, events, preferences, and factual details " +
-				"mentioned in conversations. When asked about past conversations, " +
-				"use your memory tools to recall relevant information.",
-			Memory: &loomv1.MemoryConfig{
-				GraphMemory: &loomv1.GraphMemoryConfig{
-					Enabled:                       true,
-					EnableExtraction:              true,
-					ExtractionCadence:             1,
-					ConversationExtractionCadence: 1,
-					MaxEntitiesPerExtraction:      15,
-					ContextBudgetPercent:          30,
-					ExtractionTimeoutSeconds:      60,
-					ExtractionWindowMessages:      30,
-				},
-			},
-			Behavior: &loomv1.BehaviorConfig{
-				MaxTurns:          50,
-				MaxToolExecutions: 100,
-			},
+		r.baseAgent = defaultIsolatedBase()
+		switch {
+		case cfg.AgentConfigPath != "":
+			base, err := agent.LoadAgentConfig(cfg.AgentConfigPath)
+			if err != nil {
+				_ = conn.Close()
+				return nil, fmt.Errorf("isolate mode: load --agent-config %s: %w", cfg.AgentConfigPath, err)
+			}
+			r.baseAgent = isolatedBaseFrom(base)
+			logger.Info("isolate mode: temp agents cloned from agent config file",
+				zap.String("path", cfg.AgentConfigPath),
+				zap.Bool("decision_layer", r.baseAgent.GetDecision() != nil))
+		case cfg.AgentID != "":
+			gctx, gcancel := context.WithTimeout(context.Background(), 10*time.Second)
+			info, err := client.GetAgent(gctx, &loomv1.GetAgentRequest{AgentId: cfg.AgentID})
+			gcancel()
+			switch {
+			case err != nil:
+				logger.Warn("isolate mode: could not fetch base agent; temp agents use the built-in config",
+					zap.String("agent", cfg.AgentID), zap.Error(err))
+			case info.GetConfig() == nil:
+				logger.Warn("isolate mode: base agent has no config; temp agents use the built-in config",
+					zap.String("agent", cfg.AgentID))
+			default:
+				r.baseAgent = isolatedBaseFrom(info.GetConfig())
+				logger.Info("isolate mode: temp agents cloned from agent",
+					zap.String("agent", cfg.AgentID),
+					zap.Bool("decision_layer", r.baseAgent.GetDecision() != nil))
+			}
 		}
 		logger.Info("isolate mode: will create fresh agents per entry")
 	}
 
 	return r, nil
+}
+
+// benchmarkGraphMemory is what every isolated temp agent runs with: memory
+// on, extraction on every turn, a wide extraction window. Applied on top of
+// whatever the base agent configures.
+func benchmarkGraphMemory(gm *loomv1.GraphMemoryConfig) *loomv1.GraphMemoryConfig {
+	if gm == nil {
+		gm = &loomv1.GraphMemoryConfig{}
+	}
+	gm.Enabled = true
+	gm.EnableExtraction = true
+	gm.ExtractionCadence = 1
+	gm.ConversationExtractionCadence = 1
+	if gm.MaxEntitiesPerExtraction < 15 {
+		gm.MaxEntitiesPerExtraction = 15
+	}
+	if gm.ContextBudgetPercent == 0 {
+		gm.ContextBudgetPercent = 30
+	}
+	if gm.ExtractionTimeoutSeconds < 60 {
+		gm.ExtractionTimeoutSeconds = 60
+	}
+	if gm.ExtractionWindowMessages < 30 {
+		gm.ExtractionWindowMessages = 30
+	}
+	return gm
+}
+
+// defaultIsolatedBase is the temp-agent config when no base agent is named.
+func defaultIsolatedBase() *loomv1.AgentConfig {
+	return &loomv1.AgentConfig{
+		SystemPrompt: "Help the user with whatever they need. Remember dates, events, " +
+			"preferences and factual details from earlier conversations, and when asked " +
+			"about them, recall the relevant memories before answering.",
+		Memory:   &loomv1.MemoryConfig{GraphMemory: benchmarkGraphMemory(nil)},
+		Behavior: &loomv1.BehaviorConfig{MaxTurns: 50, MaxToolExecutions: 100},
+	}
+}
+
+// isolatedBaseFrom clones a registered agent's config for use as the temp
+// agent template. Everything the agent configures is kept (system prompt,
+// LLM, tools, decision layer, behavior); graph memory gets the benchmark's
+// extraction settings; the name and description are set per entry later.
+func isolatedBaseFrom(src *loomv1.AgentConfig) *loomv1.AgentConfig {
+	cfg := proto.Clone(src).(*loomv1.AgentConfig)
+	if cfg.Memory == nil {
+		cfg.Memory = &loomv1.MemoryConfig{}
+	}
+	cfg.Memory.GraphMemory = benchmarkGraphMemory(cfg.Memory.GraphMemory)
+	if cfg.Behavior == nil {
+		cfg.Behavior = &loomv1.BehaviorConfig{MaxTurns: 50, MaxToolExecutions: 100}
+	}
+	return cfg
 }
 
 // Close closes the gRPC connection.
@@ -195,8 +331,7 @@ loop:
 			defer func() { <-sem }()
 
 			result := r.runEntry(runCtx, e)
-			if isTimeOverrideRejection(result) {
-				msg := "server rejects occurred_at (server.allow_time_override is not enabled); aborting the run — enable it in looms.yaml or pass --occurred-at=false"
+			if msg, rejected := overrideRejection(result); rejected {
 				if abortErr.CompareAndSwap(nil, &msg) {
 					r.logger.Error(msg, zap.String("first_failed_entry", e.QuestionID))
 					abort()
@@ -226,16 +361,43 @@ loop:
 	return ctx.Err()
 }
 
-// isTimeOverrideRejection reports whether an entry failed because the server
-// rejects WeaveRequest.occurred_at (server.allow_time_override disabled). The
-// primary signal is the gRPC FailedPrecondition code from the Weave call
-// paired with a mention of occurred_at; the bare flag-name substring is kept
-// as a fallback for servers whose status code was lost in transit.
-func isTimeOverrideRejection(result EntryResult) bool {
-	if result.grpcCode == codes.FailedPrecondition && strings.Contains(result.Error, "occurred_at") {
-		return true
+// overrideRejection reports whether an entry failed because the server
+// refuses a request override this run depends on, and returns the message
+// naming the flag the operator has to change. The primary signal is the gRPC
+// FailedPrecondition code from the Weave call paired with the field name; the
+// bare flag-name substring is kept as a fallback for servers whose status
+// code was lost in transit.
+//
+// This has to cover EVERY override the run needs, not just occurred_at: a
+// refused override does not degrade the benchmark, it invalidates it. Every
+// remaining entry fails the same way, so without an abort the run writes a
+// file of error rows and exits zero — handing automation something that
+// looks like a result.
+func overrideRejection(result EntryResult) (string, bool) {
+	// A server that silently ignored the replay override is as fatal as one
+	// that refused it: every remaining replay turn would be generated, and
+	// the run would exit zero with a generative-replay result labelled as
+	// --mode conversation.
+	if result.replayIgnored {
+		return errReplayIgnored.Error() + "; aborting the run — it answered a replay turn " +
+			"with generated text instead of the scripted assistant turn", true
 	}
-	return strings.Contains(result.Error, "allow_time_override")
+
+	precondition := result.grpcCode == codes.FailedPrecondition
+
+	if (precondition && strings.Contains(result.Error, "replay_assistant_message")) ||
+		strings.Contains(result.Error, "allow_assistant_override") {
+		return "server rejects replay_assistant_message (server.allow_assistant_override is not enabled); " +
+			"aborting the run — enable it in looms.yaml, or use a mode other than --mode conversation", true
+	}
+
+	if (precondition && strings.Contains(result.Error, "occurred_at")) ||
+		strings.Contains(result.Error, "allow_time_override") {
+		return "server rejects occurred_at (server.allow_time_override is not enabled); " +
+			"aborting the run — enable it in looms.yaml or pass --occurred-at=false", true
+	}
+
+	return "", false
 }
 
 // runEntry evaluates a single LongMemEval entry.
@@ -263,6 +425,7 @@ func (r *Runner) runEntry(ctx context.Context, entry Entry) EntryResult {
 		id, err := r.createTempAgent(ctx, entry.QuestionID)
 		if err != nil {
 			result.Error = fmt.Sprintf("create temp agent: %v", err)
+			result.grpcCode = status.Code(err)
 			result.Duration = time.Since(start)
 			return result
 		}
@@ -303,6 +466,8 @@ func (r *Runner) runEntry(ctx context.Context, entry Entry) EntryResult {
 		result = r.runMultiSessionWith(ctx, entry, sessions, result, agentID, questionAt)
 	case ModeContextStuffing:
 		result = r.runContextStuffingWith(ctx, entry, sessions, result, agentID, questionAt)
+	case ModeConversation:
+		result = r.runConversationWith(ctx, entry, sessions, result, agentID, questionAt)
 	default:
 		result.Error = fmt.Sprintf("unknown mode: %s", r.config.Mode)
 	}
@@ -311,14 +476,36 @@ func (r *Runner) runEntry(ctx context.Context, entry Entry) EntryResult {
 	return result
 }
 
+// newRunNonce returns 8 hex characters of randomness for tempAgentName.
+func newRunNonce() string {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// Fall back to the clock; uniqueness across runs is what matters.
+		return fmt.Sprintf("%08x", uint32(time.Now().UnixNano()))
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// tempAgentName is the graph-memory scope of one entry in one run.
+func tempAgentName(runNonce, questionID string) string {
+	return fmt.Sprintf("lme-tmp-%s-%s", runNonce, questionID)
+}
+
 // createTempAgent creates an ephemeral agent cloned from the base config.
 // The agent gets its own graph memory store, ensuring full isolation.
 func (r *Runner) createTempAgent(ctx context.Context, questionID string) (string, error) {
 	// Clone via proto marshal/unmarshal to avoid copying the embedded
 	// MessageState / sync.Mutex by value (govet copylocks).
 	cfg := proto.Clone(r.baseAgent).(*loomv1.AgentConfig)
-	cfg.Name = fmt.Sprintf("lme-tmp-%s", questionID)
+	cfg.Name = tempAgentName(r.runNonce, questionID)
 	cfg.Description = fmt.Sprintf("LongMemEval temp agent for %s", questionID)
+
+	// A runner killed before its deferred cleanup (SIGKILL, OOM, node loss)
+	// leaves this name registered with the earlier attempt's memory, and the
+	// create below would fail "already running". Remove any such leftover.
+	if _, err := r.client.DeleteAgent(ctx, &loomv1.DeleteAgentRequest{AgentId: cfg.Name, Force: true}); err != nil && status.Code(err) != codes.NotFound {
+		return "", fmt.Errorf("remove stale temp agent %s: %w", cfg.Name, err)
+	}
 
 	info, err := r.client.CreateAgentFromConfig(ctx, &loomv1.CreateAgentRequest{
 		Config: cfg,
@@ -330,7 +517,8 @@ func (r *Runner) createTempAgent(ctx context.Context, questionID string) (string
 	return info.Id, nil
 }
 
-// deleteTempAgent removes an ephemeral agent and its graph memory.
+// deleteTempAgent removes an ephemeral agent. Its graph memory stays in the
+// store under the agent's run-unique name, where no later agent reads it.
 func (r *Runner) deleteTempAgent(ctx context.Context, agentID string) {
 	_, err := r.client.DeleteAgent(ctx, &loomv1.DeleteAgentRequest{
 		AgentId: agentID,
@@ -344,6 +532,9 @@ func (r *Runner) deleteTempAgent(ctx context.Context, agentID string) {
 // buildWeaveRequest constructs a Weave request, attaching occurred_at when
 // a non-zero time is given so replayed turns anchor at their historical date.
 func buildWeaveRequest(sessionID, query, agentID string, occurredAt time.Time) *loomv1.WeaveRequest {
+	// TimeoutSeconds is not a per-call deadline: the server never reads
+	// WeaveRequest.timeout_seconds (#481), and the harness sets no context
+	// deadline on the call either.
 	req := &loomv1.WeaveRequest{
 		Query:          query,
 		SessionId:      sessionID,
@@ -390,6 +581,43 @@ func (r *Runner) weave(ctx context.Context, sessionID, query, agentID string, oc
 	return resp, nil
 }
 
+// replayTurn records a pre-written (user, assistant) exchange generation-free:
+// the server substitutes the scripted assistant text for the LLM call
+// (WeaveRequest.replay_assistant_message) while still running the full memory
+// pipeline. Anchors both rows at occurredAt. Requires
+// server.allow_assistant_override (replay) and server.allow_time_override
+// (anchoring) on the target server.
+func (r *Runner) replayTurn(ctx context.Context, sessionID, userContent, assistantContent, agentID string, occurredAt time.Time, result *EntryResult) error {
+	req := buildWeaveRequest(sessionID, userContent, agentID, occurredAt)
+	req.ReplayAssistantMessage = assistantContent
+
+	resp, err := r.client.Weave(ctx, req)
+	if err != nil {
+		// Record the status, as weave does: without it a server that
+		// rejects the replay override is indistinguishable from a transient
+		// per-entry failure, and the run does not abort.
+		result.grpcCode = status.Code(err)
+		return err
+	}
+
+	if resp.Cost != nil && resp.Cost.LlmCost != nil {
+		result.InputTokens += int(resp.Cost.LlmCost.InputTokens)
+		result.OutputTokens += int(resp.Cost.LlmCost.OutputTokens)
+	}
+
+	// A server that honors replay_assistant_message answers with the scripted
+	// text verbatim (the conversation loop substitutes it for the provider
+	// call). Anything else means the field was ignored — a server that
+	// predates it decodes it as an unknown field and generates — so a
+	// successful Weave alone is not proof the turn was replayed.
+	if resp.GetText() != assistantContent {
+		result.replayIgnored = true
+		return errReplayIgnored
+	}
+
+	return nil
+}
+
 // createSession creates a session and returns its ID.
 func (r *Runner) createSession(ctx context.Context, name, agentID string) (string, error) {
 	req := &loomv1.CreateSessionRequest{
@@ -418,6 +646,7 @@ func (r *Runner) runIngestWith(ctx context.Context, entry Entry, sessions []Sess
 	sessionID, err := r.createSession(ctx, fmt.Sprintf("lme-%s", entry.QuestionID), agentID)
 	if err != nil {
 		result.Error = fmt.Sprintf("create session: %v", err)
+		result.grpcCode = status.Code(err)
 		return result
 	}
 
@@ -468,8 +697,12 @@ func (r *Runner) runMultiSessionWith(ctx context.Context, entry Entry, sessions 
 		sessionID, err := r.createSession(ctx, sessName, agentID)
 		if err != nil {
 			result.Error = fmt.Sprintf("create session %d: %v", i, err)
+			result.grpcCode = status.Code(err)
 			return result
 		}
+		result.HaystackSessions = append(result.HaystackSessions, HaystackSessionRef{
+			LoomSessionID: sessionID, DatasetSessionID: sess.SessionID, Evidence: isEvidence(entry, sess.SessionID),
+		})
 
 		// Feed the session content through Weave.
 		ingestMsg := fmt.Sprintf(
@@ -493,8 +726,10 @@ func (r *Runner) runMultiSessionWith(ctx context.Context, entry Entry, sessions 
 	questionSessionID, err := r.createSession(ctx, fmt.Sprintf("lme-%s-q", entry.QuestionID), agentID)
 	if err != nil {
 		result.Error = fmt.Sprintf("create question session: %v", err)
+		result.grpcCode = status.Code(err)
 		return result
 	}
+	result.QuestionSessionID = questionSessionID
 
 	questionMsg := fmt.Sprintf(
 		"Current date: %s\n\n"+
@@ -520,6 +755,7 @@ func (r *Runner) runContextStuffingWith(ctx context.Context, entry Entry, sessio
 	sessionID, err := r.createSession(ctx, fmt.Sprintf("lme-%s-cs", entry.QuestionID), agentID)
 	if err != nil {
 		result.Error = fmt.Sprintf("create session: %v", err)
+		result.grpcCode = status.Code(err)
 		return result
 	}
 	defer r.deleteSession(ctx, sessionID)
@@ -537,6 +773,85 @@ func (r *Runner) runContextStuffingWith(ctx context.Context, entry Entry, sessio
 	)
 
 	resp, err := r.weave(ctx, sessionID, prompt, agentID, questionAt, &result)
+	if err != nil {
+		result.Error = fmt.Sprintf("ask question: %v", err)
+		return result
+	}
+	result.Hypothesis = resp.Text
+
+	return result
+}
+
+// runConversationWith replays the whole haystack turn-by-turn into ONE
+// continuous agent session, then asks the question in that same thread. Each
+// pre-written (user, assistant) pair is replayed generation-free so the
+// assistant's original words are preserved (ground truth) while the memory
+// pipeline runs as it would live — salience accumulating across turns and
+// compression firing as the thread grows. See ModeConversation.
+func (r *Runner) runConversationWith(ctx context.Context, entry Entry, sessions []SessionWithDate, result EntryResult, agentID string, questionAt time.Time) EntryResult {
+	sessionID, err := r.createSession(ctx, fmt.Sprintf("lme-%s-conv", entry.QuestionID), agentID)
+	if err != nil {
+		result.Error = fmt.Sprintf("create session: %v", err)
+		result.grpcCode = status.Code(err)
+		return result
+	}
+
+	// Phase 1: replay every turn in chronological order as one thread.
+	// LongMemEval sessions alternate user/assistant; pair each user turn with
+	// the assistant turn that answered it and replay them generation-free.
+	for si, sess := range sessions {
+		occurredAt := r.sessionOccurredAt(sess)
+		turns := sess.Turns
+		i := 0
+		for i < len(turns) {
+			// Skip an anomalous leading assistant turn — a turn without a
+			// preceding user turn cannot be replayed (query is required).
+			if turns[i].Role != "user" {
+				i++
+				continue
+			}
+			user := turns[i]
+			hasReply := i+1 < len(turns) && turns[i+1].Role == "assistant"
+			if hasReply && strings.TrimSpace(turns[i+1].Content) != "" {
+				// The common case: a (user, assistant) pair replayed verbatim.
+				if err := r.replayTurn(ctx, sessionID, user.Content, turns[i+1].Content, agentID, occurredAt, &result); err != nil {
+					result.Error = fmt.Sprintf("replay session %d turn %d: %v", si, i, err)
+					return result
+				}
+				i += 2
+				continue
+			}
+			// A user turn with no assistant reply (rare): trailing, or answered
+			// by a blank assistant turn (the S set has a few). There is no
+			// ground-truth assistant content to preserve — and a server cannot
+			// replay blank text (an empty override is indistinguishable from
+			// none) — so let the agent generate one; the user content still
+			// enters memory. A blank reply is consumed with its user turn.
+			if _, err := r.weave(ctx, sessionID, user.Content, agentID, occurredAt, &result); err != nil {
+				result.Error = fmt.Sprintf("replay session %d unanswered user turn %d: %v", si, i, err)
+				return result
+			}
+			if hasReply {
+				i += 2
+			} else {
+				i++
+			}
+		}
+	}
+
+	// Phase 2: ask the question in the same thread (real generation). By now the
+	// earliest turns have compressed out of the live window, so the answer must
+	// come from graph memory + conversation_memory recall.
+	questionMsg := fmt.Sprintf(
+		"Current date: %s\n\n"+
+			"Based on everything from our conversation so far, answer the following "+
+			"question. Be specific and concise. If you don't have enough "+
+			"information to answer, say \"I don't know.\"\n\n"+
+			"Question: %s",
+		entry.QuestionDate, entry.Question,
+	)
+
+	resp, err := r.weave(ctx, sessionID, questionMsg, agentID, questionAt, &result)
 	if err != nil {
 		result.Error = fmt.Sprintf("ask question: %v", err)
 		return result

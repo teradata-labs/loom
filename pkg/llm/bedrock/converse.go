@@ -36,7 +36,10 @@ func (c *Client) ChatConverse(ctx context.Context, messages []llmtypes.Message, 
 	startTime := time.Now()
 
 	// Convert messages and tools to Converse API format (reuses same converter as streaming)
-	systemBlocks, converseMessages := c.convertMessagesToConverse(messages)
+	// The sanitized → original tool-name map is per request: the client is
+	// shared across sessions (server provider pool).
+	nameMap := make(map[string]string)
+	systemBlocks, converseMessages := c.convertMessagesToConverse(messages, nameMap)
 
 	// Validate that we have at least one message
 	if len(converseMessages) == 0 {
@@ -101,7 +104,11 @@ func (c *Client) ChatConverse(ctx context.Context, messages []llmtypes.Message, 
 
 	// Add tools if provided
 	if len(tools) > 0 {
-		input.ToolConfig = c.convertToolsToConverse(tools)
+		toolConfig, err := c.convertToolsToConverse(ctx, tools, nameMap)
+		if err != nil {
+			return nil, err
+		}
+		input.ToolConfig = toolConfig
 	}
 
 	// Execute Converse with rate limiting if configured
@@ -162,7 +169,7 @@ func (c *Client) ChatConverse(ctx context.Context, messages []llmtypes.Message, 
 					}
 
 					// Map sanitized name back to original name
-					if originalName, found := c.toolNameMap[toolCall.Name]; found {
+					if originalName, found := nameMap[toolCall.Name]; found {
 						toolCall.Name = originalName
 					}
 
@@ -178,7 +185,10 @@ func (c *Client) ChatConverse(ctx context.Context, messages []llmtypes.Message, 
 		usage.InputTokens = int(aws.ToInt32(output.Usage.InputTokens))
 		usage.OutputTokens = int(aws.ToInt32(output.Usage.OutputTokens))
 		usage.TotalTokens = int(aws.ToInt32(output.Usage.TotalTokens))
-		usage.CostUSD = c.calculateCost(usage.InputTokens, usage.OutputTokens)
+		usage.CacheReadInputTokens = int(aws.ToInt32(output.Usage.CacheReadInputTokens))
+		usage.CacheCreationInputTokens = int(aws.ToInt32(output.Usage.CacheWriteInputTokens))
+		usage.CostUSD = c.calculateCost(usage.InputTokens, usage.OutputTokens,
+			usage.CacheReadInputTokens, usage.CacheCreationInputTokens)
 	}
 
 	// Build response

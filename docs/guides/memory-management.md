@@ -78,8 +78,8 @@ memory:
 **Configuration:**
 - **Max L1 Messages:** 5 (~4000 tokens, aggressive compression)
 - **Min L1 Messages:** 3 (minimum preserved for recency)
-- **Warning Threshold:** 50% (compress early)
-- **Critical Threshold:** 70%
+- **Warning Threshold (relief low mark):** 45% (sheds deep)
+- **Critical Threshold (relief high mark):** 80% (starts early)
 - **Batch Sizes:** normal=2, warning=4, critical=6
 
 **Use Cases:**
@@ -104,8 +104,8 @@ memory:
 **Configuration:**
 - **Max L1 Messages:** 12 (~9600 tokens, preserve recent context)
 - **Min L1 Messages:** 6 (minimum preserved for recency)
-- **Warning Threshold:** 70%
-- **Critical Threshold:** 85%
+- **Warning Threshold (relief low mark):** 70% (sheds shallow)
+- **Critical Threshold (relief high mark):** 92% (starts late)
 - **Batch Sizes:** normal=4, warning=6, critical=8
 
 **Use Cases:**
@@ -131,8 +131,8 @@ memory:
 **Configuration:**
 - **Max L1 Messages:** 8 (~6400 tokens)
 - **Min L1 Messages:** 4 (minimum preserved for recency)
-- **Warning Threshold:** 60%
-- **Critical Threshold:** 75%
+- **Warning Threshold (relief low mark):** 60%
+- **Critical Threshold (relief high mark):** 90%
 - **Batch Sizes:** normal=3, warning=5, critical=7
 
 **Use Cases:**

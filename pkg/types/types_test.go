@@ -123,3 +123,22 @@ func TestSession_MessageCount_ThreadSafe(t *testing.T) {
 		t.Errorf("Final MessageCount() = %d, want 100", finalCount)
 	}
 }
+
+func TestUsage_ThroughputTokens(t *testing.T) {
+	tests := []struct {
+		name  string
+		usage Usage
+		want  int
+	}{
+		{"unset falls back to TotalTokens", Usage{InputTokens: 5, OutputTokens: 336, TotalTokens: 341}, 341},
+		{"set wins over TotalTokens", Usage{InputTokens: 5, OutputTokens: 336, TotalTokens: 341, RateLimitTokens: 17519}, 17519},
+		{"zero usage", Usage{}, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.usage.ThroughputTokens(); got != tt.want {
+				t.Fatalf("ThroughputTokens() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}

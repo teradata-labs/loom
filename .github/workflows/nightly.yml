@@ -106,7 +106,7 @@ jobs:
 
       - name: Run gofmt
         run: |
-          gofmt_output=$(find . -name '*.go' -not -path './vendor/*' -not -path './gen/*' -exec gofmt -l {} +)
+          gofmt_output=$(find . -name '*.go' -not -path './vendor/*' -not -path './gen/*' -not -path './third_party/*' -exec gofmt -l {} +)
           if [ -n "$gofmt_output" ]; then
             echo "The following files need formatting:"
             echo "$gofmt_output"
@@ -114,7 +114,8 @@ jobs:
           fi
 
       - name: Run go vet
-        run: go vet ./...
+        # third_party is vendored source kept close to upstream (see its README).
+        run: go vet $(go list ./... | grep -v /third_party/)
 
   # ============================================================================
   # Job 3: Unit Tests with Race Detection
@@ -183,7 +184,7 @@ jobs:
           echo "## Nightly Coverage: $COVERAGE" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload coverage artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nightly-coverage-${{ github.run_number }}
           path: |
@@ -298,7 +299,7 @@ jobs:
           "ZIP_FILE=$ZIP_NAME" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Upload binaries artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nightly-binaries-${{ matrix.os }}-${{ github.run_number }}
           path: |
@@ -338,9 +339,9 @@ jobs:
         run: go run ./cmd/generate-weaver
 
       - name: Run Gosec Security Scanner
-        uses: securego/gosec@deb54465fea23d19a77f037e11e6589021f8501d # v2.29.0
+        uses: securego/gosec@5eb1d104ef85ff2c905c877eb600e8c1dee33a22 # v2.30.0
         with:
-          args: '-no-fail -fmt sarif -out results.sarif -exclude-dir=gen ./...'
+          args: '-no-fail -fmt sarif -out results.sarif -exclude-dir=gen -exclude-dir=third_party ./...'
 
       - name: Fix SARIF schema compliance
         run: |
@@ -351,7 +352,7 @@ jobs:
           mv results-fixed.sarif results.sarif
 
       - name: Upload SARIF file
-        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         continue-on-error: true  # Don't fail the build if code scanning is not enabled
         with:
           sarif_file: results.sarif
@@ -367,7 +368,7 @@ jobs:
           fi
 
       - name: Upload security report artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nightly-security-report-${{ github.run_number }}
           path: results.sarif
@@ -386,7 +387,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       - name: Download all artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: nightly-binaries-*
           path: artifacts/
@@ -406,7 +407,7 @@ jobs:
           echo "RELEASE_DATE=$DATE" >> $GITHUB_ENV
 
       - name: Create nightly release
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v2
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: "Nightly Build ${{ env.RELEASE_DATE }}"

@@ -64,6 +64,12 @@ type contextDumper struct {
 	turns map[string]int // sessionID -> last emitted turn number
 }
 
+// onContextDumperOpened, when non-nil, is called with each sink as it is
+// opened. It is nil in production and exists so tests -- which construct many
+// agents per process against t.TempDir() sinks -- can release every handle
+// before their temp dir is removed. Set only from _test.go files.
+var onContextDumperOpened func(*contextDumper)
+
 // envContextDumpVar is the environment switch that enables context dumping
 // independently of Config.Debug.ContextDump.
 const envContextDumpVar = "LOOM_DEBUG_CONTEXT_DUMP"
@@ -122,7 +128,7 @@ func (a *Agent) dumpContext(ctx Context, messages []Message, tools []shuttle.Too
 // so dumping is silently disabled for the run rather than crashing it.
 func (a *Agent) contextDumperInstance() *contextDumper {
 	a.contextDumpOnce.Do(func() {
-		d, err := newContextDumper(a.id)
+		d, err := newContextDumper(a.GetID())
 		if err != nil {
 			zap.L().Warn("context dump sink init failed; dumps disabled for this run", zap.Error(err))
 			return
@@ -149,11 +155,17 @@ func newContextDumper(agentID string) (*contextDumper, error) {
 		return nil, fmt.Errorf("open context dump sink %q: %w", path, err)
 	}
 
-	return &contextDumper{
+	d := &contextDumper{
 		path:  path,
 		file:  f,
 		turns: make(map[string]int),
-	}, nil
+	}
+
+	if hook := onContextDumperOpened; hook != nil {
+		hook(d)
+	}
+
+	return d, nil
 }
 
 // contextDumpDir resolves the parent directory for per-run sinks. It honors
@@ -197,6 +209,16 @@ func (d *contextDumper) write(rec contextDumpRecord) error {
 		return fmt.Errorf("write context dump record: %w", err)
 	}
 	return nil
+}
+
+// close releases the sink file handle. Production agents run for the life of
+// the process and never call this (the OS reclaims the handle on exit); it
+// exists so tests -- which construct many agents per process against
+// t.TempDir() sinks -- can release the handle before the temp dir is removed.
+func (d *contextDumper) close() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.file.Close()
 }
 
 // dumpTools projects tools into their serializable form, skipping nil entries.

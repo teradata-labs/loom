@@ -75,15 +75,114 @@ func TestChatStream_CacheControlAndUsage(t *testing.T) {
 		}
 	}
 
-	// (2) the streamed usage chunk's cache tokens are parsed back.
-	if resp.Usage.InputTokens != 100 {
-		t.Errorf("input tokens: got %d want 100", resp.Usage.InputTokens)
+	// (2) the streamed usage chunk's cache tokens are parsed back, and
+	// InputTokens carries only the uncached remainder of prompt_tokens
+	// (100 - 80 read - 20 write).
+	if resp.Usage.InputTokens != 0 {
+		t.Errorf("input tokens: got %d want 0", resp.Usage.InputTokens)
+	}
+	if resp.Usage.TotalTokens != 5 {
+		t.Errorf("total tokens: got %d want 5", resp.Usage.TotalTokens)
 	}
 	if resp.Usage.CacheReadInputTokens != 80 {
 		t.Errorf("cache_read: got %d want 80", resp.Usage.CacheReadInputTokens)
 	}
 	if resp.Usage.CacheCreationInputTokens != 20 {
 		t.Errorf("cache_creation: got %d want 20", resp.Usage.CacheCreationInputTokens)
+	}
+}
+
+func TestConvertMessages_SingleLeadingSystem(t *testing.T) {
+	type roleText struct{ role, text string }
+	late := []llmtypes.Message{
+		{Role: "system", Content: "ROM"},
+		{Role: "user", Content: "hello"},
+		{Role: "system", Content: "reminder"},
+		{Role: "assistant", Content: "hi"},
+	}
+	lateInPlace := []roleText{{"system", "ROM"}, {"user", "hello"}, {"system", "reminder"}, {"assistant", "hi"}}
+	tests := []struct {
+		name   string
+		model  string
+		enable bool
+		in     []llmtypes.Message
+		want   []roleText
+	}{
+		{
+			name:  "default keeps every system message in place",
+			model: "td-vllm/qwen-38-27b-fp8",
+			in:    late,
+			want:  lateInPlace,
+		},
+		{
+			name:  "default keeps consecutive leading system messages",
+			model: "td-vllm/qwen-38-27b-fp8",
+			in: []llmtypes.Message{
+				{Role: "system", Content: "ROM"},
+				{Role: "system", Content: "summary"},
+				{Role: "user", Content: "hello"},
+			},
+			want: []roleText{{"system", "ROM"}, {"system", "summary"}, {"user", "hello"}},
+		},
+		{
+			name:   "enabled folds a late system message into the leading one",
+			model:  "td-vllm/qwen-38-27b-fp8",
+			enable: true,
+			in:     late,
+			want:   []roleText{{"system", "ROM\n\nreminder"}, {"user", "hello"}, {"assistant", "hi"}},
+		},
+		{
+			name:   "enabled merges consecutive leading system messages",
+			model:  "td-vllm/qwen-38-27b-fp8",
+			enable: true,
+			in: []llmtypes.Message{
+				{Role: "system", Content: "ROM"},
+				{Role: "system", Content: "summary"},
+				{Role: "user", Content: "hello"},
+			},
+			want: []roleText{{"system", "ROM\n\nsummary"}, {"user", "hello"}},
+		},
+		{
+			name:   "enabled inserts a leading system message when none leads",
+			model:  "td-vllm/qwen-38-27b-fp8",
+			enable: true,
+			in: []llmtypes.Message{
+				{Role: "user", Content: "hello"},
+				{Role: "system", Content: "reminder"},
+			},
+			want: []roleText{{"system", "reminder"}, {"user", "hello"}},
+		},
+		{
+			name:   "enabled drops empty system messages",
+			model:  "td-vllm/qwen-38-27b-fp8",
+			enable: true,
+			in: []llmtypes.Message{
+				{Role: "user", Content: "hello"},
+				{Role: "system", Content: ""},
+			},
+			want: []roleText{{"user", "hello"}},
+		},
+		{
+			name:  "claude is unchanged by default",
+			model: "coding-agent/claude-sonnet-4-6",
+			in:    late,
+			want:  lateInPlace,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := NewClient(Config{Model: tt.model, APIKey: "test", SingleLeadingSystem: tt.enable})
+			got := c.convertMessages(tt.in)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d messages, want %d: %+v", len(got), len(tt.want), got)
+			}
+			for i, w := range tt.want {
+				if got[i].Role != w.role || got[i].Content != w.text {
+					t.Errorf("message %d: got {%s %v}, want {%s %q}", i, got[i].Role, got[i].Content, w.role, w.text)
+				}
+			}
+		})
 	}
 }
 

@@ -24,6 +24,8 @@ import (
 
 	"go.uber.org/zap"
 
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/decision/sites"
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/types"
 )
@@ -151,9 +153,19 @@ func buildGraphMemoryExtractionPromptWithDate(messages []types.Message, maxEntit
 
 	var sb strings.Builder
 	sb.WriteString("Extract entities, relationships, and memories from this conversation for a knowledge graph.\n\n")
+	// Per-turn extraction is the USER-FACTS lane only. Assistant-side
+	// content is deliberately excluded HERE because mid-conversation prose
+	// is where unverified beliefs live (a fleet study measured the wrong
+	// error theory minted 58:8 against the real fix when this pass read
+	// assistant turns). Method knowledge is captured instead by the
+	// ledger-grounded lesson pass that runs at the end of each Chat() call
+	// (extractLessonsAtEnd), which only ever sees verified error→fix
+	// transitions. That lane is also the ONLY writer of MemoryTypeLesson:
+	// a lesson-typed memory returned here is dropped below.
 	sb.WriteString("IMPORTANT: Focus on factual content from the USER's messages — names, dates, events, ")
 	sb.WriteString("preferences, and real-world facts. IGNORE the assistant's process notes, tool usage ")
-	sb.WriteString("descriptions, error messages, and self-referential observations about its own behavior.\n\n")
+	sb.WriteString("descriptions, error messages, and self-referential observations about its own behavior ")
+	sb.WriteString("(working lessons are captured by a separate verified pass; do not extract them here).\n\n")
 
 	sb.WriteString(buildConversationBlock(ec))
 
@@ -279,7 +291,7 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 		return
 	}
 
-	agentID := a.config.Name
+	agentID := a.graphMemoryKey()
 
 	// Determine max entities from config.
 	maxEntities := 10
@@ -315,6 +327,36 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 		currentDate = time.Now().UTC().Format("2006-01-02")
 	}
 
+	// Typed-decision gate: extraction is a generative call fired on a
+	// counter, whether or not this window holds anything durable. On a live
+	// band the decider may skip it; it may never force one. A shadow band
+	// records its answer against what extraction actually stored, which is
+	// observed truth rather than another model's opinion.
+	window := renderExtractionWindow(recentMessages)
+	gateReq, gateOut, gateLive := a.liveExtractGate(extractCtx, sessionID, window)
+	if gateLive {
+		skip, ok := sites.ExtractVerdict(gateOut.Response, gateOut.Band)
+		if ok && skip {
+			// Info, not Debug: an operator reading the log must be able to
+			// tell "nothing durable was extracted" from "the gate said no".
+			zap.L().Info("graph memory extraction: skipped by decision gate, no durable facts in window",
+				zap.String("agent", a.config.Name), zap.String("session", sessionID),
+				zap.String("site", sites.SiteMemoryExtract), zap.Int("messages", len(recentMessages)))
+			a.recordDecisionAsync(extractCtx, sessionID, gateReq, gateOut, nil)
+			return
+		}
+		if !ok {
+			// No usable or decisive answer: extraction runs as before.
+			gateOut.Path = loomv1.DecisionPath_DECISION_PATH_FALLBACK
+		}
+	}
+	var yield extractionYield
+	defer func() {
+		// Whatever path ran, record the decider against what extraction
+		// actually yielded, or as a failure when it never got that far.
+		a.recordExtractionGate(extractCtx, sessionID, window, gateReq, gateOut, &yield)
+	}()
+
 	// Use compressorLLM for extraction (cheaper/smaller model), fall back to main LLM.
 	llmProvider := a.llm
 	if a.compressorLLM != nil {
@@ -329,11 +371,13 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 		{Role: "user", Content: prompt},
 	}, nil)
 	if err != nil {
+		yield.failed = true
 		return
 	}
 
 	data, ok := parseExtractionResponse(response.Content)
 	if !ok {
+		yield.failed = true
 		return
 	}
 
@@ -428,8 +472,20 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 		if m.Content == "" {
 			continue
 		}
+		// The lesson class belongs to the ledger miner alone. This lane reads
+		// mid-conversation prose, where unverified beliefs live (measured:
+		// the wrong error theory minted 58 times against the correct fix 8),
+		// so a memory it labels "lesson" is exactly the thing the verified
+		// lane exists to keep out. Dropped, not relabelled: relabelling would
+		// keep the same untested theory under a different type. The prompt
+		// already excludes working knowledge here; this makes it structural.
+		if isMinerOnlyMemoryType(m.MemoryType) {
+			zap.L().Debug("graph memory extraction: refused lesson-typed memory from the per-turn lane",
+				zap.String("content_preview", truncate(m.Content, 80)))
+			continue
+		}
 		memoryType := m.MemoryType
-		if !isValidMemoryType(memoryType) {
+		if !isPerTurnMemoryType(memoryType) {
 			memoryType = memory.MemoryTypeFact
 		}
 		salience := m.Salience
@@ -461,7 +517,8 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 			Content:             m.Content,
 			Summary:             m.Summary,
 			MemoryType:          memoryType,
-			Source:              "auto_extracted",
+			Source:              memory.SourceAutoExtracted,
+			SourceID:            sessionID, // provenance: the session this was extracted from
 			MemoryAgentID:       agentID,
 			Tags:                m.Tags,
 			Salience:            salience,
@@ -477,6 +534,9 @@ func (a *Agent) extractGraphMemoryAsync(ctx context.Context, sessionID string) {
 		}
 
 		_, err := a.graphMemoryStore.Remember(extractCtx, mem)
+		if err == nil {
+			yield.stored++
+		}
 		if err != nil {
 			zap.L().Debug("graph memory extraction: failed to store memory",
 				zap.String("content_preview", truncate(m.Content, 80)),
@@ -585,8 +645,11 @@ func normalizeEntityName(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))
 }
 
-// isValidMemoryType checks if a memory type is one of the known types.
-func isValidMemoryType(t string) bool {
+// isPerTurnMemoryType reports whether a memory type may be minted by the
+// per-turn (user-facts) extraction lane. MemoryTypeLesson is deliberately
+// absent: it is a valid stored type, but only the ledger miner
+// (extractLessonsAtEnd) may write it — see isMinerOnlyMemoryType.
+func isPerTurnMemoryType(t string) bool {
 	switch t {
 	case memory.MemoryTypeFact,
 		memory.MemoryTypePreference,
@@ -598,6 +661,16 @@ func isValidMemoryType(t string) bool {
 		return true
 	}
 	return false
+}
+
+// isMinerOnlyMemoryType reports whether a caller-supplied memory type is one
+// only the ledger-grounded lesson miner may write. Both other ingestion paths
+// — the per-turn extractor and the LLM-callable graph_memory tool — refuse
+// these outright, so "verified lesson" describes who wrote the row, not what
+// a prompt asked a model to do. Case- and space-insensitive because the
+// values arrive from model output and tool input.
+func isMinerOnlyMemoryType(t string) bool {
+	return strings.EqualFold(strings.TrimSpace(t), memory.MemoryTypeLesson)
 }
 
 // sanitizeEventDate validates the (date, confidence) pair the extractor

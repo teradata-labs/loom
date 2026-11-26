@@ -17,6 +17,7 @@ import (
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/task"
+	"github.com/teradata-labs/loom/pkg/taskctx"
 )
 
 // newTaskBoardToolWithMgr stitches together a TaskBoardTool over a fresh
@@ -809,4 +810,84 @@ func TestBudgetedChecklistWriter(t *testing.T) {
 		"marker must be the final content, got %q", out)
 	assert.NotContains(t, out, "tiny")
 	assert.LessOrEqual(t, len(out), 40)
+}
+
+// seedVisibilityBoard puts one implicit and one explicit task on a board and
+// returns their titles, for the visibility-contract tests below.
+func seedVisibilityBoard(t *testing.T, mgr *task.Manager, boardID string) (implicitTitle, explicitTitle string) {
+	t.Helper()
+	ctx := context.Background()
+	_, err := mgr.CreateBoard(ctx, &task.TaskBoard{ID: boardID, Name: "Visibility"})
+	require.NoError(t, err)
+
+	_, err = mgr.CreateTask(ctx, &task.Task{
+		Title:               "turn bookkeeping",
+		Status:              loomv1.TaskStatus_TASK_STATUS_OPEN,
+		Priority:            loomv1.TaskPriority_TASK_PRIORITY_MEDIUM,
+		BoardID:             boardID,
+		CreatedVia:          taskctx.CreatedViaImplicit,
+		SkillIdempotencyKey: "implicit:sess:vis|epoch:0|turn:0",
+	})
+	require.NoError(t, err)
+
+	_, err = mgr.CreateTask(ctx, &task.Task{
+		Title:    "real work item",
+		Status:   loomv1.TaskStatus_TASK_STATUS_OPEN,
+		Priority: loomv1.TaskPriority_TASK_PRIORITY_MEDIUM,
+		BoardID:  boardID,
+	})
+	require.NoError(t, err)
+	return "turn bookkeeping", "real work item"
+}
+
+// TestTaskBoardTool_HonoursAgentVisibility pins the visibility contract on the
+// agent-facing tool: with agent_visible=false (the default), list, ready and
+// board must not return or count implicit bookkeeping rows — a `task_board
+// list` call could otherwise mint a task for its own turn and immediately hand
+// that row back to the model. With agent_visible=true the same rows appear, so
+// the exclusion cannot be over-applied.
+func TestTaskBoardTool_HonoursAgentVisibility(t *testing.T) {
+	ctx := context.Background()
+
+	run := func(t *testing.T, cfg *loomv1.TaskBoardConfig, wantImplicitVisible bool) {
+		t.Helper()
+		tool, mgr := newTaskBoardToolWithMgr(t, cfg)
+		implicitTitle, explicitTitle := seedVisibilityBoard(t, mgr, "vis-board")
+
+		for _, action := range []string{"list", "ready", "board"} {
+			res, err := tool.Execute(ctx, map[string]interface{}{
+				"action": action, "board_id": "vis-board"})
+			require.NoError(t, err, action)
+			require.True(t, res.Success, "%s: %+v", action, res.Error)
+			payload := fmt.Sprintf("%v", res.Data)
+
+			if action != "board" { // board returns counts, not rows
+				assert.Contains(t, payload, explicitTitle,
+					"%s: the real task is always visible", action)
+				if wantImplicitVisible {
+					assert.Contains(t, payload, implicitTitle,
+						"%s: agent_visible=true surfaces implicit rows", action)
+				} else {
+					assert.NotContains(t, payload, implicitTitle,
+						"%s: agent_visible=false must hide implicit rows", action)
+				}
+			} else {
+				wantTotal := "total:1"
+				if wantImplicitVisible {
+					wantTotal = "total:2"
+				}
+				assert.Contains(t, payload, wantTotal,
+					"board: the stats must count exactly the visible rows")
+			}
+		}
+	}
+
+	t.Run("default hides bookkeeping", func(t *testing.T) {
+		run(t, &loomv1.TaskBoardConfig{}, false)
+	})
+	t.Run("agent_visible surfaces it", func(t *testing.T) {
+		run(t, &loomv1.TaskBoardConfig{
+			ImplicitTasks: &loomv1.ImplicitTaskConfig{AgentVisible: true},
+		}, true)
+	})
 }

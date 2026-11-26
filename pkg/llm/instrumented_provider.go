@@ -153,6 +153,8 @@ func (p *InstrumentedProvider) Chat(ctx context.Context, messages []llmtypes.Mes
 	span.SetAttribute("llm.stop_reason", resp.StopReason)
 	span.SetAttribute("llm.duration_ms", duration.Milliseconds())
 
+	setGatewayAttributes(span, resp.Metadata)
+
 	// Capture cache token metrics for observability
 	if resp.Usage.CacheReadInputTokens > 0 {
 		span.SetAttribute("llm.tokens.cache_read", resp.Usage.CacheReadInputTokens)
@@ -375,6 +377,19 @@ func (p *InstrumentedProvider) ChatStream(ctx context.Context, messages []llmtyp
 	span.SetAttribute("llm.ttft_ms", ttft.Milliseconds())
 	span.SetAttribute("llm.streaming.chunks", tokenCount)
 
+	// The client's own stamps are ground truth: the callback-based ttft above
+	// only fires on text deltas, so tool-call turns report 0. Client metadata
+	// covers every chunk type and adds the prep/generation split.
+	if resp.Metadata != nil {
+		for _, key := range []string{"ttft_ms", "prep_ms", "gen_ms", "sse_chunks"} {
+			if v, ok := resp.Metadata[key]; ok {
+				span.SetAttribute("llm.client."+key, v)
+			}
+		}
+	}
+
+	setGatewayAttributes(span, resp.Metadata)
+
 	// Capture cache token metrics for observability
 	if resp.Usage.CacheReadInputTokens > 0 {
 		span.SetAttribute("llm.tokens.cache_read", resp.Usage.CacheReadInputTokens)
@@ -540,4 +555,26 @@ func (p *InstrumentedProvider) SchedulerScope() string {
 		return sp.SchedulerScope()
 	}
 	return ""
+}
+
+// gatewayAttributePrefix marks LLMResponse metadata a gateway provider
+// reports for the span (llm.ResponseFacts attributes): which upstream served
+// the call, the generation id, whether a fallback was used.
+const gatewayAttributePrefix = "gateway."
+
+// setGatewayAttributes copies gateway routing metadata and the unpriced flag
+// from a response onto its span. Only string and bool values are copied: the
+// facts carry ids and provider slugs, never prompt content or credentials.
+func setGatewayAttributes(span *observability.Span, md map[string]interface{}) {
+	for k, v := range md {
+		if !strings.HasPrefix(k, gatewayAttributePrefix) && k != MetadataCostUnpriced && k != MetadataCostEstimated {
+			continue
+		}
+		switch val := v.(type) {
+		case string:
+			span.SetAttribute(k, val)
+		case bool:
+			span.SetAttribute(k, val)
+		}
+	}
 }

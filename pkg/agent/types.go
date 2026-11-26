@@ -15,13 +15,15 @@ package agent
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/communication"
+	"github.com/teradata-labs/loom/pkg/decision"
+	"github.com/teradata-labs/loom/pkg/eventlog"
 	"github.com/teradata-labs/loom/pkg/fabric"
 	"github.com/teradata-labs/loom/pkg/failurerecovery"
 	mcpadapter "github.com/teradata-labs/loom/pkg/mcp/adapter"
@@ -33,9 +35,11 @@ import (
 	"github.com/teradata-labs/loom/pkg/skills"
 	"github.com/teradata-labs/loom/pkg/skills/discovery"
 	"github.com/teradata-labs/loom/pkg/skills/hygiene"
+	skillindex "github.com/teradata-labs/loom/pkg/skills/index"
 	skilltasks "github.com/teradata-labs/loom/pkg/skills/tasks"
 	"github.com/teradata-labs/loom/pkg/storage"
 	"github.com/teradata-labs/loom/pkg/task"
+	"github.com/teradata-labs/loom/pkg/taskctx"
 	"github.com/teradata-labs/loom/pkg/types"
 )
 
@@ -82,6 +86,16 @@ type Agent struct {
 	// human decision ends the turn (TurnParkedError) instead of holding it.
 	hitlPark *hitlParkConfig
 
+	// eventLog, when non-nil, enables the durable, tool-call-granularity
+	// execution log (issue #229) for crash-resumable conversation loops. Nil
+	// disables it: every write-ahead call becomes a no-op, and ResumeSession
+	// is unavailable (returns ErrEventLogDisabled).
+	eventLog eventlog.EventLogStore
+
+	// leaseTTL overrides eventlog.DefaultSessionLeaseTTL for the session lease
+	// (session_lease.go). Zero uses the default; tests set it short.
+	leaseTTL time.Duration
+
 	// resourceAwait, when non-nil (WithResourceAwait), enables resource-await
 	// park: a successful tool result carrying AwaitResource ends the turn
 	// parked until the named resource reaches a terminal state. Requires
@@ -120,6 +134,19 @@ type Agent struct {
 	classifierLLM   LLMProvider // For intent classification / pattern selection
 	compressorLLM   LLMProvider // For memory compression / semantic search reranking
 
+	// Decision layer (pkg/decision). decisionCfg and decisionShadowStore come
+	// from WithDecisionConfig; initDecisionRouter builds decisionRouter and
+	// decisionRecorder from them after options are applied. decisionWG tracks
+	// background shadow evaluations so tests and shutdown can wait.
+	decisionCfg         *loomv1.DecisionConfig
+	decisionShadowStore decision.ShadowStore
+	decisionRouter      *decision.Router
+	decisionRecorder    *decision.ShadowRecorder
+	decisionWG          sync.WaitGroup
+	// skillRouteRouters are the skill routers BuildSkillsOptions built for
+	// this agent; attachSkillRouteDecision gives them decisionRouter.
+	skillRouteRouters []*skillindex.Router
+
 	// Tracer for observability
 	tracer observability.Tracer
 
@@ -143,13 +170,20 @@ type Agent struct {
 	// callers that drive it directly — the conversation loop does not.
 	skillOrchestrator *skills.Orchestrator
 	skillDiscovery    *discovery.Discovery
+	// skillMCPResolver, when set, resolves a skill-declared required tool by
+	// name (bounded to the skill's declared mcp_servers) and mounts it onto the
+	// agent. It lets a host runtime own MCP resolution — per-user auth, endpoint
+	// routing — that loom cannot perform itself. When nil, enforcement falls
+	// back to the executor's own dynamic resolver (ResolveAndRegister).
+	skillMCPResolver   func(ctx context.Context, name string, servers []string) error
+	skillMCPResolverMu sync.RWMutex
 	// skillTaskEmitter materializes tasks for newly-activated skills onto
-	// the agent's task board. nil means skill activations do not emit tasks
-	// (legacy behavior).
+	// the agent's task board. nil means skill activations do not emit tasks.
+	// Driven from the manage_skills load path via Agent.emitSkillTasksAsync.
 	skillTaskEmitter *skilltasks.Emitter
-	// skillsTurnState tracks which skills were activated in the current
-	// turn so phase D can emit tasks only for the newly-activated set.
-	skillsTurnState map[string]map[string]bool // sessionID -> skillName -> activated-this-turn
+	// skillTaskEmits counts the detached emit goroutines still in flight, so
+	// they can be joined without polling. See Agent.emitSkillTasksAsync.
+	skillTaskEmits sync.WaitGroup
 
 	// End-of-turn hygiene enforcement for skill-emitted tasks. Constructed
 	// when both skillOrchestrator and taskManager are present; runs at the
@@ -184,12 +218,6 @@ type Agent struct {
 	// Token counter for accurate token estimation
 	tokenCounter *TokenCounter
 
-	// In-turn SQLite databases backing query_tool_result's sql mode (HLD §7.1):
-	// per (session, message), lazily built, dropped at turn end. Guarded by
-	// inTurnSQLMu.
-	inTurnSQL   map[inTurnSQLKey]*sql.DB
-	inTurnSQLMu sync.Mutex
-
 	// Workflow communication context (injected dynamically for workflow agents)
 	workflowCommContext *WorkflowCommunicationContext
 
@@ -203,8 +231,8 @@ type Agent struct {
 	lazyToolSets []lazyToolSet
 
 	// suppressedBuiltinTools blocks agent-internal registrations (graph_memory,
-	// task_board, manage_skills, load_pattern) and the retrieval tools
-	// (query_tool_result, recall) from surfacing to the LLM. Subsystems
+	// task_board, manage_skills, load_pattern) and the retrieval tool
+	// (recall) from surfacing to the LLM. Subsystems
 	// themselves (extractor, task manager) keep running.
 	//
 	// Populated by WithoutBuiltinTool options. The server (cmd/looms) is
@@ -253,11 +281,40 @@ type Agent struct {
 	taskDecomposer  *task.Decomposer
 	taskBoardConfig *loomv1.TaskBoardConfig
 
+	// implicitTasks records a task per working turn, deterministically, without
+	// the model electing to call task_board. Nil disables implicit recording.
+	//
+	// Separate from taskBoardConfig on purpose: that flag governs whether the
+	// AGENT sees the board, this governs whether the RUNTIME records one. A
+	// board that only fills when a model remembers to ask is a board users
+	// cannot rely on.
+	implicitTasks *task.ImplicitEmitter
+
 	// Graph memory automatic extraction (mirrors finding extraction pattern).
 	enableGraphMemoryExtraction        bool
 	graphExtractionCadence             int
 	graphToolExecutionsSinceExtraction int
 	graphExtractionWG                  sync.WaitGroup // tracks in-flight async extractions
+	// toolLedgerMu guards toolLedgers: per-session tool-execution ledgers
+	// for the lesson miner (graph_memory_lessons.go). Recorded at execution
+	// time so mining is immune to context compilation evicting early turns
+	// from the compiled message view.
+	toolLedgerMu sync.Mutex
+	toolLedgers  map[string][]minedEvent
+	// lessonCoveredSessions (also guarded by toolLedgerMu) marks the
+	// sessions whose history the lesson miner must not walk again: every
+	// session that recorded a ledger in this process, and every session the
+	// whole-history fallback already mined. Freed by DeleteSession.
+	lessonCoveredSessions map[string]struct{}
+	// errorLessonMu guards errorLessonState: per-session tracking for
+	// error-triggered lesson recall (graph_memory_lessons.go) — which
+	// lessons were already injected and how many injections have fired.
+	errorLessonMu    sync.Mutex
+	errorLessonState map[string]*errorLessonSession
+	// lessonTrials counts error-lane lesson recalls; every
+	// lessonRetrialInterval-th one carries a demoted lesson so demotion
+	// stays reversible (graph_memory_lessons.go).
+	lessonTrials atomic.Uint64
 
 	// Conversation-turn-based graph extraction (fires on LLM responses, not tool use).
 	graphConversationExtractionCadence int // 0 = disabled
@@ -273,6 +330,11 @@ type Agent struct {
 	// Shares the context-dump switch; a no-op on the production path. See
 	// context_debug.go.
 	ctxDebug *contextDebug
+
+	// Time source of the throttle-patience budget and its waits (see
+	// throttlePatience in llm_retry.go). Nil means the real clock; tests set
+	// a fake so a 10-minute budget runs without real sleeps.
+	throttleClock throttleClock
 }
 
 // WorkflowCommunicationContext contains dynamic workflow communication info injected into prompts
@@ -291,6 +353,11 @@ type WorkflowCommunicationContext struct {
 type Config struct {
 	// Name is the agent name (used for identification and logging)
 	Name string
+
+	// GraphMemoryAgentID is the stable key for graph memory reads and writes.
+	// Empty means Name (unchanged behaviour). Use an ID that survives renames;
+	// the agent's own ID is a fresh UUID per instance and would lose memory on restart.
+	GraphMemoryAgentID string
 
 	// Description is a human-readable description of the agent's purpose
 	Description string
@@ -331,15 +398,30 @@ type Config struct {
 	// Retry configuration for LLM calls
 	Retry RetryConfig
 
-	// MaxContextTokens is the model's context window size (0 = use defaults/auto-detect)
+	// MaxContextTokens is the window loom budgets against: the fold keeps the
+	// settled conversation under the profile's threshold of it. It may sit
+	// below the model's window (0 = the model's window).
 	MaxContextTokens int
+
+	// MaxModelContextTokens is the window the model is served with, when it
+	// is below the model's listed window (a vLLM --max-model-len, an Ollama
+	// num_ctx). Less the reply reservation, it is the ceiling a step in flight
+	// is fitted to before the send (0 = the model's listed window).
+	MaxModelContextTokens int
 
 	// ReservedOutputTokens is the number of tokens reserved for model output (0 = use defaults, typically 10%)
 	ReservedOutputTokens int
 
-	// ProtectedRecentTurns is K (HLD §5.1): the top rung of relief's halving
-	// ladder — the newest turns relief tries hardest to keep, though the ladder
-	// walks toward T−1 when shedding at K is not enough. 0 = default (16).
+	// MaxTokens is the max_tokens the agent's client sends. The provider
+	// accepts a prompt up to its window less this, so it is what a step in
+	// flight is fitted against before the send; the fold keeps its own, wider
+	// reservation (0 = not stated, the fold's reservation is used).
+	MaxTokens int
+
+	// ProtectedRecentTurns is K: what a fold keeps of the recent thread. The
+	// in-loop fold keeps the last K turns, user messages and assistant steps
+	// alike, before the pending one; the pressure ladder behind it keeps the
+	// newest K user turns, then K/2 … 1. 0 = default (16).
 	ProtectedRecentTurns int
 
 	// PatternConfig controls pattern injection (nil = use defaults)
@@ -365,6 +447,17 @@ type Config struct {
 	// RecoveryConfig holds tunables for the self-healing orchestrator.
 	// Nil uses DefaultRecoveryConfig().
 	RecoveryConfig *RecoveryConfig
+
+	// ToolChangeNote adds a transient note to a provider call whose advertised
+	// tools differ from the previous successful call of the same turn. Default
+	// false; the YAML key is behavior.tool_change_note.
+	ToolChangeNote bool
+
+	// ParallelReadTools runs consecutive concurrency-safe tool calls of one
+	// model response in parallel (at most maxParallelReads at once); rows still
+	// commit in call order. Default false; the YAML key is
+	// behavior.parallel_read_tools. See dispatchBatch.
+	ParallelReadTools bool
 
 	// Debug holds opt-in diagnostic switches, all off by default.
 	Debug DebugConfig
@@ -469,6 +562,7 @@ func ValidatePatternConfig(cfg *PatternConfig) error {
 // These types are now defined in pkg/types to break import cycles.
 type Message = types.Message
 type ContentBlock = types.ContentBlock
+type ThinkingBlock = types.ThinkingBlock
 type ToolCall = types.ToolCall
 type Usage = types.Usage
 type LLMResponse = types.LLMResponse
@@ -500,6 +594,16 @@ type agentContext struct {
 	session          *Session
 	tracer           observability.Tracer
 	progressCallback ProgressCallback
+
+	// taskBinding is this turn's lazily-filled task attribution slot. Nil when
+	// implicit task recording is off or no store is wired.
+	taskBinding *taskctx.Binding
+	// turnIndex is the session turn this conversation belongs to, taken from
+	// the turn the store derived for the opening user message.
+	turnIndex int64
+	// userMessage seeds an implicit task's title, so a board reads as work
+	// rather than as a numbered log.
+	userMessage string
 }
 
 func (c *agentContext) Session() *Session {
@@ -513,3 +617,12 @@ func (c *agentContext) Tracer() observability.Tracer {
 func (c *agentContext) ProgressCallback() ProgressCallback {
 	return c.progressCallback
 }
+
+// TaskBinding returns this turn's lazily-filled task attribution slot.
+func (c *agentContext) TaskBinding() *taskctx.Binding { return c.taskBinding }
+
+// TurnIndex returns the session turn this conversation belongs to.
+func (c *agentContext) TurnIndex() int64 { return c.turnIndex }
+
+// UserMessage returns the turn's opening user message.
+func (c *agentContext) UserMessage() string { return c.userMessage }

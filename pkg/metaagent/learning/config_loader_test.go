@@ -80,7 +80,7 @@ spec:
 	assert.True(t, config.Enabled)
 	assert.Equal(t, loomv1.AutonomyLevel_AUTONOMY_HUMAN_APPROVAL, config.AutonomyLevel)
 	assert.Equal(t, "30m", config.AnalysisInterval)
-	assert.Contains(t, config.WatchEvalSuites[0], "eval-suites/test.yaml")
+	assert.Contains(t, filepath.ToSlash(config.WatchEvalSuites[0]), "eval-suites/test.yaml")
 	assert.Equal(t, []string{"sql", "rest"}, config.Domains)
 
 	// Circuit breaker

@@ -57,7 +57,9 @@ The table lists every component the revision touches and its disposition. All ro
 | Manager | `pkg/mcp/manager/manager.go:170` | Calls `Initialize` directly | Switch to `Connect` (§4.1) |
 | Conformance | `pkg/mcp/conformance` (single test file) | No dual-revision coverage | Expand to matrix (§10) |
 
-The revision also renumbers the resource-not-found error code from `-32002` to `-32602`. Checked: Loom never uses `-32002`, so no work item exists; recorded here so the check is not repeated.
+The revision also renumbers the resource-not-found error code from `-32002` to `-32602`, and the codes this draft introduced (`HeaderMismatch` `-32001`→`-32020`, `MissingRequiredClientCapability` `-32003`→`-32021`, `UnsupportedProtocolVersion` `-32004`→`-32022`), which `pkg/mcp/protocol/version.go` already carries. Loom does not emit `-32002`: it is reserved and never reused, and an implementation of this revision MUST NOT emit it. (An earlier revision of the response-bound work briefly used `-32002` for an oversized-response refusal; it now uses `-33001`, from the `-33000..-33099` block loom allocates for errors it synthesizes locally.)
+
+The revision's error-code allocation policy also bears on codes loom mints itself. `-32000` to `-32019` is legacy and new implementations SHOULD NOT use it; `-32020` to `-32099` is the specification's own and an implementation MUST NOT emit an undefined code from it. Codes for purposes the specification does not define SHOULD therefore be allocated outside `-32768`..`-32000` entirely, which is what the `-33000` block is for. One work item remains: `transport.CodeStreamLost` sits at `-32000`, inside the legacy sub-range. Its value is grandfathered and callers match on it, so moving it is a deliberate breaking change, tracked separately rather than done in passing.
 
 Three facts discovered during inventory shape the whole design.
 

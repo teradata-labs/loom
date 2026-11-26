@@ -75,13 +75,22 @@ type FunctionDeclaration struct {
 }
 
 // Schema represents a JSON schema for function parameters.
+// Gemini uses uppercase type enums and protobuf JSON strings for length bounds.
 type Schema struct {
-	Type        string            `json:"type"`
+	Type        string            `json:"type,omitempty"`
 	Description string            `json:"description,omitempty"`
 	Properties  map[string]Schema `json:"properties,omitempty"`
 	Items       *Schema           `json:"items,omitempty"`
 	Enum        []interface{}     `json:"enum,omitempty"`
 	Required    []string          `json:"required,omitempty"`
+	Default     interface{}       `json:"default,omitempty"`
+	Format      string            `json:"format,omitempty"`
+	Pattern     string            `json:"pattern,omitempty"`
+	Minimum     *float64          `json:"minimum,omitempty"`
+	Maximum     *float64          `json:"maximum,omitempty"`
+	MinLength   *int              `json:"minLength,omitempty,string"`
+	MaxLength   *int              `json:"maxLength,omitempty,string"`
+	AnyOf       []Schema          `json:"anyOf,omitempty"`
 }
 
 // GenerationConfig controls generation behavior.
@@ -107,6 +116,27 @@ type UsageMetadata struct {
 	// CachedContentTokenCount: tokens served from Gemini's implicit cache (automatic since May 2025).
 	// Note: for Gemini, cached tokens still count against rate limits (cost savings only).
 	CachedContentTokenCount int `json:"cachedContentTokenCount"`
+}
+
+// UncachedPromptTokens is promptTokenCount minus the implicit-cache hits it
+// includes. loom's Usage.InputTokens excludes cached tokens, matching
+// Anthropic and Bedrock, so this is what InputTokens must carry.
+func (u UsageMetadata) UncachedPromptTokens() int {
+	return max(0, u.PromptTokenCount-u.CachedContentTokenCount)
+}
+
+// MeteredTokens is the raw totalTokenCount: Gemini counts cached tokens
+// against its rate limits. Carried as Usage.RateLimitTokens.
+func (u UsageMetadata) MeteredTokens() int {
+	if u.TotalTokenCount > 0 {
+		return u.TotalTokenCount
+	}
+	return u.PromptTokenCount + u.CandidatesTokenCount
+}
+
+// UncachedTotalTokens is totalTokenCount with the same cached tokens removed.
+func (u UsageMetadata) UncachedTotalTokens() int {
+	return max(0, u.TotalTokenCount-(u.PromptTokenCount-u.UncachedPromptTokens()))
 }
 
 // APIError represents an error from the Gemini API.

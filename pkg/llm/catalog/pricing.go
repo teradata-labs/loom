@@ -14,12 +14,18 @@
 
 package catalog
 
-import "sync"
+import (
+	"context"
+	"sort"
+	"strings"
+	"sync"
+
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+)
 
 // priceIndex is a provider -> modelID -> {inputPer1M, outputPer1M} lookup built
-// once from BuildCatalog(). The catalog is the single source of truth for
-// pricing; calculateCost in each provider client consults this before falling
-// back to any provider-local rates.
+// once from BuildCatalog(). It is the static fallback behind LookupPricing;
+// the registered default Source is consulted first.
 var (
 	priceOnce  sync.Once
 	priceIndex map[string]map[string][2]float64
@@ -37,18 +43,168 @@ func buildPriceIndex() {
 }
 
 // LookupPricing returns the per-million-token input/output cost in USD for a
-// model in the static catalog. found is false when the provider is unknown or
-// the model is not cataloged (the caller should then use its own fallback).
+// model. found is false when the provider is unknown or the model is not
+// cataloged anywhere (the caller should then use its own fallback).
+//
+// The registered default Source (see Register) is consulted first, so an
+// embedder that registers a DB- or gateway-backed catalog prices its models
+// with the rates it actually pays — previously this read only the static
+// built-in table, and every provider client's calculateCost silently fell to
+// its hardcoded default for any id the static table did not list (a LiteLLM
+// gateway alias, for example, was billed at gpt-4o rates whatever it was).
+// A registered entry with no positive rate is treated as "unpriced" and the
+// static table is tried next, so a metadata-only row cannot zero out a price.
+//
+// Rates returned here are base (global-endpoint) rates, whichever Source
+// supplied them. The Bedrock client multiplies them by
+// BedrockEndpointMultiplier, which adds a 10% premium for regional endpoints
+// on Claude 4.5 and later — so an embedder registering Bedrock rates must
+// register the global rate, not the regional one, or the premium is counted
+// twice.
 //
 // The lookup is keyed by both provider and model id because the same id can
 // appear under multiple providers (e.g. "gpt-4.1" under openai and azure-openai)
 // with different pricing.
 func LookupPricing(provider, modelID string) (inputPer1M, outputPer1M float64, found bool) {
+	inputPer1M, outputPer1M, _, found = lookupPricing(provider, modelID)
+	return inputPer1M, outputPer1M, found
+}
+
+// lookupPricing is LookupPricing plus where the rates came from: published is
+// true when they are the built-in catalog's row (served by the registered
+// chain's StaticSource or by the static fallback below), false when a
+// registered Source supplied its own row.
+func lookupPricing(provider, modelID string) (inputPer1M, outputPer1M float64, published, found bool) {
+	provider = NormalizeProvider(provider)
+	if info := DefaultSource().Lookup(context.Background(), provider, modelID); info != nil {
+		if info.CostPer_1MInputUsd > 0 || info.CostPer_1MOutputUsd > 0 {
+			return info.CostPer_1MInputUsd, info.CostPer_1MOutputUsd, isStaticEntry(provider, modelID, info), true
+		}
+	}
 	priceOnce.Do(buildPriceIndex)
 	if models, ok := priceIndex[provider]; ok {
 		if p, ok := models[modelID]; ok {
-			return p[0], p[1], true
+			return p[0], p[1], true, true
 		}
 	}
+	return 0, 0, false, false
+}
+
+// isStaticEntry reports whether info is the built-in catalog's own row for
+// (provider, modelID). StaticSource hands out the memoized row itself, and
+// CachedSource and MultiSource pass it through, so identity holds whenever the
+// built-in table answered — however the registered chain is composed. provider
+// must already be normalized.
+func isStaticEntry(provider, modelID string, info *loomv1.ModelInfo) bool {
+	byID, ok := staticIndex()[provider]
+	return ok && byID[modelID] == info
+}
+
+// RequestPricing returns the per-million-token input/output rates in USD to
+// bill one request whose prompt is promptTokens long — every input token of
+// the request, cache reads and cache writes included. found is false when
+// neither source below prices the model; the caller then applies its own
+// default.
+//
+// Rates resolve as LookupPricing(provider, modelID) first, then
+// ClaudeFamilyPricing. When they are Anthropic's published card — the
+// built-in catalog's row or the family fallback — the published long-context
+// card replaces them above its threshold (ClaudeLongContextPricing), carrying
+// any premium the row holds over the first-party card (scaleLongContextCard):
+// a bedrock-mantle row at first-party × 1.10 gets the long-context card
+// × 1.10. A rate a registered Source supplies is the embedder's pricing
+// authority and is returned unchanged at every prompt length: the
+// long-context card is part of the published price list, not of an
+// embedder's negotiated or gateway rate, and a Source row has no field to
+// express a long-context rate of its own.
+//
+// This is the one rate resolution shared by the anthropic, bedrock and
+// openai clients' cost estimates.
+func RequestPricing(provider, modelID string, promptTokens int) (inputPer1M, outputPer1M float64, found bool) {
+	inputPer1M, outputPer1M, published, found := lookupPricing(provider, modelID)
+	if !found {
+		inputPer1M, outputPer1M, found = ClaudeFamilyPricing(modelID)
+		published = found
+	}
+	if published {
+		if in, out, long := ClaudeLongContextPricing(modelID, promptTokens); long {
+			inputPer1M, outputPer1M = scaleLongContextCard(modelID, inputPer1M, outputPer1M, in, out)
+		}
+	}
+	return inputPer1M, outputPer1M, found
+}
+
+// scaleLongContextCard returns the long-context card (longIn, longOut) scaled
+// by the ratio of a published row's base rates (rowIn, rowOut) to the model's
+// first-party card (ClaudeFamilyPricing). A row that is the first-party card
+// (the anthropic namespace, a family-fallback id, a bedrock row at the global
+// rate) has ratio 1 and gets the card unchanged. A row that already includes a
+// premium over the card (the bedrock-mantle rows, first-party × 1.10) gets the
+// same premium on the long-context card. Each bucket is scaled by its own
+// ratio. With no family card to compare against, the card is returned as is.
+func scaleLongContextCard(modelID string, rowIn, rowOut, longIn, longOut float64) (float64, float64) {
+	cardIn, cardOut, ok := ClaudeFamilyPricing(modelID)
+	if !ok || cardIn <= 0 || cardOut <= 0 {
+		return longIn, longOut
+	}
+	return longIn * (rowIn / cardIn), longOut * (rowOut / cardOut)
+}
+
+// CacheRates returns the published per-million-token prompt-cache read and
+// write rates (USD) the registered catalog holds for a model, or 0 for a
+// bucket it does not publish. Gateways that publish them (the Vercel AI
+// Gateway's /v1/models input_cache_read / input_cache_write) let a client
+// price cache tokens at the real rate instead of deriving it from the input
+// rate with a vendor multiplier that may not match the upstream.
+func CacheRates(provider, modelID string) (readPer1M, writePer1M float64) {
+	info := DefaultSource().Lookup(context.Background(), NormalizeProvider(provider), modelID)
+	if info == nil {
+		return 0, 0
+	}
+	return info.GetCostPer_1MCacheReadUsd(), info.GetCostPer_1MCacheWriteUsd()
+}
+
+// CreatorMedianPricing estimates per-million input/output rates for a model
+// that has no published rate: the median input and the median output rate of
+// the priced models from the same creator ("openai" in "openai/gpt-x") under
+// provider, or of every priced model under provider when that creator has
+// none. found is false when provider lists no priced model at all.
+//
+// It is for gateways whose catalog spans many vendors (vercel-ai-gateway): a
+// cost computed from it is an estimate, and callers must say so
+// (llm.cost_estimated). It reads the registered source's List, so it only
+// knows what a discovered catalog has loaded.
+func CreatorMedianPricing(provider, modelID string) (inputPer1M, outputPer1M float64, found bool) {
+	provider = NormalizeProvider(provider)
+	creator, _, hasCreator := strings.Cut(strings.ToLower(modelID), "/")
+	var sameIn, sameOut, allIn, allOut []float64
+	for _, m := range DefaultSource().List(context.Background())[provider] {
+		if m == nil || m.Id == modelID || m.CostPer_1MInputUsd <= 0 || m.CostPer_1MOutputUsd <= 0 {
+			continue
+		}
+		allIn = append(allIn, m.CostPer_1MInputUsd)
+		allOut = append(allOut, m.CostPer_1MOutputUsd)
+		if c, _, ok := strings.Cut(strings.ToLower(m.Id), "/"); hasCreator && ok && c == creator {
+			sameIn = append(sameIn, m.CostPer_1MInputUsd)
+			sameOut = append(sameOut, m.CostPer_1MOutputUsd)
+		}
+	}
+	if len(sameIn) > 0 {
+		return median(sameIn), median(sameOut), true
+	}
+	if len(allIn) > 0 {
+		return median(allIn), median(allOut), true
+	}
 	return 0, 0, false
+}
+
+// median returns the median of vals (the mean of the two middle values for
+// an even count). vals must be non-empty; it is sorted in place.
+func median(vals []float64) float64 {
+	sort.Float64s(vals)
+	n := len(vals)
+	if n%2 == 1 {
+		return vals[n/2]
+	}
+	return (vals[n/2-1] + vals[n/2]) / 2
 }

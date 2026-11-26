@@ -18,13 +18,18 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/agent"
 	"github.com/teradata-labs/loom/pkg/llm/litellm"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
+	"github.com/teradata-labs/loom/pkg/shuttle"
 	"go.uber.org/zap"
 )
 
@@ -223,4 +228,128 @@ func TestExpandMCPHeaders(t *testing.T) {
 			assert.Equal(t, test.expect, expandMCPHeaders(test.input))
 		})
 	}
+}
+
+// behavior.parallel_read_tools reaches the agent.Config both serve paths
+// (startup and hot reload) build through serveAgentConfig.
+func TestServeAgentConfig_ParallelReadTools(t *testing.T) {
+	build := func(behavior string) *loomv1.AgentConfig {
+		cfg, err := agent.LoadConfigFromString(`
+agent:
+  name: serve_parallel
+  llm:
+    provider: anthropic
+    model: claude-3-5-sonnet-20241022
+  behavior:
+    max_turns: 7
+` + behavior)
+		require.NoError(t, err)
+		return cfg
+	}
+
+	on := serveAgentConfig(build("    parallel_read_tools: true\n"), false)
+	assert.True(t, on.ParallelReadTools)
+	assert.Equal(t, 7, on.MaxTurns)
+	assert.Equal(t, 50, on.MaxToolExecutions)
+	assert.False(t, serveAgentConfig(build(""), false).ParallelReadTools)
+	assert.False(t, serveAgentConfig(build("    parallel_read_tools: false\n"), false).ParallelReadTools)
+}
+
+// An agent registered with no max_tokens sends the server's llm.max_tokens, so
+// that is its reply reservation, not the model's listed output size; one that
+// names a provider and sets its own reserves its own.
+func TestServeAgentConfig_ReservesTheMaxTokensItsClientSends(t *testing.T) {
+	build := func(maxTokens int32) *loomv1.AgentConfig {
+		return &loomv1.AgentConfig{Name: "reserve", Llm: &loomv1.LLMConfig{
+			Provider: "anthropic", Model: "claude-sonnet-4-5-20250929", MaxTokens: maxTokens,
+		}}
+	}
+	reserved := func(maxTokens int32) int {
+		return serveAgentConfig(agent.WithServerMaxTokens(build(maxTokens), 4096), false).ReservedOutputTokens
+	}
+	assert.Equal(t, 4096, reserved(0))
+	assert.Equal(t, 16000, reserved(16000))
+}
+
+func TestServeAgentConfig_RuntimeConfigParity(t *testing.T) {
+	skillsDir := t.TempDir()
+	cfgProto, err := agent.LoadConfigFromString(`
+agent:
+  name: serve_parity
+  description: Serve runtime config parity test
+  system_prompt: Verify concrete runtime fields.
+  rom: TD
+  llm:
+    provider: anthropic
+    model: claude-3-5-sonnet-20241022
+    max_tokens: 4096
+    max_context_tokens: 180000
+    reserved_output_tokens: 8192
+  behavior:
+    max_iterations: 18
+    max_turns: 14
+    max_tool_executions: 35
+    output_token_cb_threshold: 6
+    enable_self_healing: false
+    tool_change_note: true
+    patterns:
+      enabled: true
+      min_confidence: 0.8
+      max_patterns_per_turn: 4
+      enable_tracking: true
+      use_llm_classifier: true
+    skills:
+      enabled: true
+      disabled_skills:
+        - alpha
+      skills_dir: ` + filepath.ToSlash(skillsDir) + `
+`)
+	require.NoError(t, err)
+
+	serveCfg := serveAgentConfig(cfgProto, true)
+	defaults := agent.DefaultConfig()
+
+	assert.Equal(t, "serve_parity", serveCfg.Name)
+	assert.Equal(t, "Serve runtime config parity test", serveCfg.Description)
+	assert.Equal(t, "Verify concrete runtime fields.", serveCfg.SystemPrompt)
+	assert.Equal(t, "TD", serveCfg.Rom)
+	assert.True(t, serveCfg.EnableTracing)
+	assert.Equal(t, defaults.Retry, serveCfg.Retry)
+	assert.True(t, serveCfg.Retry.Enabled)
+	assert.Equal(t, 18, serveCfg.MaxIterations)
+	assert.Equal(t, 14, serveCfg.MaxTurns)
+	assert.Equal(t, 35, serveCfg.MaxToolExecutions)
+	assert.Equal(t, 6, serveCfg.OutputTokenCBThreshold)
+	assert.False(t, serveCfg.EnableSelfHealing)
+	assert.True(t, serveCfg.ToolChangeNote)
+	require.NotNil(t, serveCfg.PatternConfig)
+	assert.True(t, serveCfg.PatternConfig.Enabled)
+	assert.InDelta(t, 0.8, serveCfg.PatternConfig.MinConfidence, 0.0001)
+	assert.Equal(t, 4, serveCfg.PatternConfig.MaxPatternsPerTurn)
+	assert.True(t, serveCfg.PatternConfig.EnableTracking)
+	assert.True(t, serveCfg.PatternConfig.UseLLMClassifier)
+	require.NotNil(t, serveCfg.SkillsConfig)
+	assert.True(t, serveCfg.SkillsConfig.Enabled)
+	assert.Equal(t, []string{"alpha"}, serveCfg.SkillsConfig.DisabledSkills) //nolint:staticcheck // SA1019: verify legacy disabled_skills round-trip
+	assert.Equal(t, filepath.ToSlash(skillsDir), serveCfg.SkillsConfig.SkillsDir)
+	assert.Equal(t, 180000, serveCfg.MaxContextTokens)
+	assert.Equal(t, agent.EffectiveOutputReservation("anthropic", "claude-3-5-sonnet-20241022", 4096, 8192, 180000), serveCfg.ReservedOutputTokens)
+}
+
+// With the default config (tools.permissions.yolo) serve attaches an admission
+// chain holding only the permission hook. That chain is order-independent, so
+// it does not force parallel_read_tools back to sequential dispatch.
+func TestServeDefaultAdmissionChain_OrderIndependent(t *testing.T) {
+	viper.Reset()
+	cfgPath := filepath.Join(t.TempDir(), "looms.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte("server:\n  port: 60051\n"), 0o644))
+	config, err := LoadConfig(cfgPath)
+	require.NoError(t, err)
+
+	perm := createPermissionChecker(config, zap.NewNop())
+	require.NotNil(t, perm, "the yolo default yields a permission checker")
+	chain, err := createAdmissionChain(config, shuttle.ChainDeps{Perm: perm}, zap.NewNop())
+	require.NoError(t, err)
+	require.NotNil(t, chain, "serve attaches a chain by default")
+	assert.True(t, chain.OrderIndependent())
 }

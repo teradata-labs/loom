@@ -960,6 +960,10 @@
             "estimatedEffort": {
               "type": "string",
               "description": "Freeform effort estimate (e.g., \"5 min\", \"2 hours\", \"multi-session\")."
+            },
+            "createdVia": {
+              "type": "string",
+              "description": "How the task came to exist. Values are the taskctx.CreatedVia* constants:\n\"user\", \"agent\", \"decompose\", \"skill_template\", \"workflow\", or \"implicit\"\n(minted by the runtime to record a working turn). Empty on rows written\nbefore provenance was recorded. The agent's own task queries already\nexclude \"implicit\"; this field lets API and UI consumers of ListTasks and\nGetBoard draw the same line, which they could not before it existed."
             }
           },
           "description": "Task is a unit of cognitive work — domain-agnostic.\nIt can represent research, analysis, writing, decision-making, implementation,\nreview, or any decomposable objective."
@@ -1462,6 +1466,10 @@
         "estimatedEffort": {
           "type": "string",
           "description": "Freeform effort estimate (e.g., \"5 min\", \"2 hours\", \"multi-session\")."
+        },
+        "createdVia": {
+          "type": "string",
+          "description": "How the task came to exist. Values are the taskctx.CreatedVia* constants:\n\"user\", \"agent\", \"decompose\", \"skill_template\", \"workflow\", or \"implicit\"\n(minted by the runtime to record a working turn). Empty on rows written\nbefore provenance was recorded. The agent's own task queries already\nexclude \"implicit\"; this field lets API and UI consumers of ListTasks and\nGetBoard draw the same line, which they could not before it existed."
         }
       },
       "description": "Task is a unit of cognitive work — domain-agnostic.\nIt can represent research, analysis, writing, decision-making, implementation,\nreview, or any decomposable objective."

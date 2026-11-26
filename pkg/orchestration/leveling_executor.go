@@ -8,6 +8,7 @@ package orchestration
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
@@ -86,9 +87,10 @@ type LevelingPolicy struct {
 	//
 	// The running total is also a floor on real spend rather than an exact
 	// figure: per-attempt cost is read from the AgentResult the attempt
-	// returned, which carries the final LLM response's usage. An attempt that
-	// ran a tool loop inside the agent reports less than it spent, so the gate
-	// can let a call through that a precise accounting would have blocked.
+	// returned. That cost covers the agent's whole conversation turn, but not
+	// the LLM calls the agent makes outside it (graph-memory recall, memory
+	// compression and similar), so the gate can let a call through that a
+	// precise accounting would have blocked.
 	//
 	// Use it to bound runaway escalation, not to guarantee a billing limit.
 	MaxCostUSD float64
@@ -652,8 +654,21 @@ func effectiveOutputPolicy(outputPolicy *loomv1.OutputPolicy, tierPolicy TierPol
 	if !ok {
 		return outputPolicy
 	}
-	cloned.RetryPolicy = &loomv1.OutputRetryPolicy{MaxRetries: int32(tierPolicy.RetryBudget)}
+	cloned.RetryPolicy = &loomv1.OutputRetryPolicy{MaxRetries: clampInt32(tierPolicy.RetryBudget)}
 	return cloned
+}
+
+// clampInt32 narrows an int to int32 without overflow. RetryBudget is either a
+// small literal or a validated non-negative int32 from config, so the clamp
+// is a guard, not an expected path.
+func clampInt32(n int) int32 {
+	if n > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	if n < math.MinInt32 {
+		return math.MinInt32
+	}
+	return int32(n)
 }
 
 // resultCostUSD reads an agent result's spend, tolerating nil results and nil

@@ -82,7 +82,7 @@ metadata:
   domain: general
   risk_level: LOW
 trigger:
-  mode: MANUAL
+  mode: HYBRID
 prompt:
   instructions: |
     Epic basic grant instructions body.
@@ -98,7 +98,7 @@ metadata:
   domain: ops
   risk_level: HIGH
 trigger:
-  mode: MANUAL
+  mode: HYBRID
 prompt:
   instructions: |
     Epic high-risk grant instructions body.
@@ -112,7 +112,7 @@ metadata:
   domain: general
   risk_level: LOW
 trigger:
-  mode: MANUAL
+  mode: HYBRID
 prompt:
   instructions: |
     Epic tooled grant instructions body.
@@ -129,7 +129,7 @@ metadata:
   domain: analytics
   risk_level: LOW
 trigger:
-  mode: MANUAL
+  mode: HYBRID
 prompt:
   instructions: |
     Epic patterned grant instructions body.

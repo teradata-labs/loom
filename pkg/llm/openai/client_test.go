@@ -21,6 +21,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -138,7 +140,7 @@ func TestClient_ConvertResponseDropsIncompleteToolCalls(t *testing.T) {
 					Message:      ChatMessage{ToolCalls: []ToolCall{tt.call}},
 					FinishReason: "tool_calls",
 				}},
-			})
+			}, 0, nil)
 
 			assert.Empty(t, response.ToolCalls)
 			assert.Equal(t, "end_turn", response.StopReason)
@@ -421,7 +423,8 @@ func TestClient_ConvertTools(t *testing.T) {
 	}
 
 	tools := []shuttle.Tool{mockTool}
-	got := client.convertTools(tools)
+	got, err := client.convertTools(context.Background(), tools, nil)
+	require.NoError(t, err)
 
 	require.Len(t, got, 1)
 	assert.Equal(t, "function", got[0].Type)
@@ -436,6 +439,19 @@ func TestClient_ConvertTools(t *testing.T) {
 	props := params["properties"].(map[string]interface{})
 	assert.Contains(t, props, "location")
 	assert.Contains(t, props, "units")
+}
+
+func TestClient_ConvertTools_EmptySchema(t *testing.T) {
+	for _, schema := range []*shuttle.JSONSchema{{}, {Description: "No arguments"}, {Properties: map[string]*shuttle.JSONSchema{}}} {
+		client := NewClient(Config{APIKey: "test"})
+		tool := &mockShuttleTool{name: "no_arguments", schema: schema}
+		tools, err := client.convertTools(context.Background(), []shuttle.Tool{tool}, nil)
+		require.NoError(t, err)
+		require.Len(t, tools, 1)
+		assert.Equal(t, "object", tools[0].Function.Parameters["type"])
+		assert.Equal(t, map[string]interface{}{}, tools[0].Function.Parameters["properties"])
+		assert.Empty(t, schema.Type)
+	}
 }
 
 func TestClient_ConvertResponse(t *testing.T) {
@@ -555,7 +571,7 @@ func TestClient_ConvertResponse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := client.convertResponse(tt.resp)
+			got := client.convertResponse(tt.resp, 0, nil)
 
 			assert.Equal(t, tt.want.Content, got.Content)
 			assert.Equal(t, tt.want.StopReason, got.StopReason)
@@ -686,7 +702,7 @@ func TestClient_CalculateCost(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client := NewClient(Config{APIKey: "test", Model: tt.model})
-			got := client.calculateCost(tt.inputTokens, tt.outputTokens)
+			got := client.calculateCost(tt.inputTokens, tt.outputTokens, 0, 0)
 			assert.GreaterOrEqual(t, got, tt.wantMin)
 			assert.LessOrEqual(t, got, tt.wantMax)
 		})
@@ -841,6 +857,119 @@ func TestClient_Chat_WithTools(t *testing.T) {
 	assert.Equal(t, "call_123", resp.ToolCalls[0].ID)
 	assert.Equal(t, "get_weather", resp.ToolCalls[0].Name)
 	assert.Equal(t, "Boston", resp.ToolCalls[0].Input["location"])
+}
+
+func TestClient_ToolSchemaRequest(t *testing.T) {
+	const schemaJSON = `{"type":"object","description":"Task input","required":["tasks"],"allOf":[{"type":"object","properties":{}}],"properties":{
+		"tasks":{"type":"array","description":"Tasks to create","items":{
+			"type":"object","description":"A task","required":["idx","subject","details"],"properties":{
+				"idx":{"type":"integer","description":"1-based task number","minimum":0,"maximum":100},
+				"subject":{"type":"string","description":"Short task title","minLength":0,"maxLength":80,"pattern":"^[A-Z]","format":"text","enum":["Task"],"default":"Task"},
+				"details":{"type":"object","required":["active"],"properties":{"active":{"type":"boolean","default":false}}},
+				"matrix":{"type":"array","items":{"type":"array","items":{"type":"integer"}}},
+				"nullable":{"anyOf":[{"type":"integer"},{"type":"null"}]},
+				"choice":{"oneOf":[{"type":"string"},{"type":"number"}]},
+				"excluded":{"not":{"type":"null"}},
+				"empty":{"type":"object","properties":{}}
+			}
+		}}
+	}}`
+	for _, mode := range []string{"chat", "stream"} {
+		t.Run(mode, func(t *testing.T) {
+			captured := make(chan ChatCompletionRequest, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request ChatCompletionRequest
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Error(err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				captured <- request
+				if mode == "stream" {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
+				} else {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+				}
+			}))
+			defer server.Close()
+			schema, err := shuttle.FromJSON([]byte(schemaJSON))
+			require.NoError(t, err)
+			inputTools := []shuttle.Tool{
+				&mockShuttleTool{name: "create_tasks", schema: schema},
+				&mockShuttleTool{name: "no_arguments", schema: &shuttle.JSONSchema{}},
+				&mockShuttleTool{name: "description_only", schema: &shuttle.JSONSchema{Description: "No arguments"}},
+				&mockShuttleTool{name: "incompatible", schema: &shuttle.JSONSchema{AnyOf: []*shuttle.JSONSchema{{Type: "object"}}}},
+			}
+			client := NewClient(Config{APIKey: "test-key", Endpoint: server.URL, Model: "gpt-4o"})
+			messages := []types.Message{{Role: "user", Content: "Create tasks"}}
+			span := &observability.Span{}
+			ctx := observability.ContextWithSpan(context.Background(), span)
+			if mode == "stream" {
+				_, err = client.ChatStream(ctx, messages, inputTools, nil)
+			} else {
+				_, err = client.Chat(ctx, messages, inputTools)
+			}
+			require.NoError(t, err)
+			require.Len(t, span.Events, 1)
+			assert.Equal(t, "incompatible", span.Events[0].Attributes["tool"])
+			request := <-captured
+			require.Len(t, request.Tools, 3)
+			data, err := json.Marshal(request.Tools[0].Function.Parameters)
+			require.NoError(t, err)
+			var expected map[string]interface{}
+			require.NoError(t, json.Unmarshal([]byte(schemaJSON), &expected))
+			delete(expected, "allOf")
+			expectedJSON, err := json.Marshal(expected)
+			require.NoError(t, err)
+			assert.JSONEq(t, string(expectedJSON), string(data))
+			assert.Equal(t, map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}, request.Tools[1].Function.Parameters)
+			assert.Equal(t, map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "description": "No arguments"}, request.Tools[2].Function.Parameters)
+			assert.Empty(t, inputTools[1].InputSchema().Type)
+			assert.Empty(t, inputTools[2].InputSchema().Type)
+			client.strictToolSchemas = true
+			for _, input := range []string{`{"anyOf":[{}]}`, `{"oneOf":[{}]}`, `{"not":{}}`, `{"enum":[{}]}`} {
+				invalid, err := shuttle.FromJSON([]byte(input))
+				require.NoError(t, err)
+				invalidTools := []shuttle.Tool{&mockShuttleTool{name: "ambiguous", schema: invalid}}
+				if mode == "stream" {
+					_, err = client.ChatStream(context.Background(), messages, invalidTools, nil)
+				} else {
+					_, err = client.Chat(context.Background(), messages, invalidTools)
+				}
+				require.ErrorContains(t, err, `tool "ambiguous" schema:`)
+				assert.Empty(t, captured, "strict schema rejection made an HTTP request")
+			}
+			client.strictToolSchemas = false
+			if mode == "stream" {
+				_, err = client.ChatStream(context.Background(), messages, inputTools[3:], nil)
+			} else {
+				_, err = client.Chat(context.Background(), messages, inputTools[3:])
+			}
+			require.NoError(t, err)
+			assert.Empty(t, (<-captured).Tools)
+		})
+	}
+}
+
+func TestClient_LiveToolSchema(t *testing.T) {
+	if testing.Short() || os.Getenv("LOOM_LIVE_SCHEMA_TESTS") != "1" {
+		t.Skip("live schema probes require LOOM_LIVE_SCHEMA_TESTS=1 and may incur API charges")
+	}
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	if apiKey == "" {
+		t.Skip("OPENAI_API_KEY is not set")
+	}
+	schema, err := shuttle.FromJSON([]byte(`{"type":"object","properties":{"count":{"type":"integer"}},"allOf":[{"properties":{"label":{"type":"string"}},"required":["label"]}]}`))
+	require.NoError(t, err)
+	client := NewClient(Config{APIKey: apiKey, Model: os.Getenv("OPENAI_SCHEMA_TEST_MODEL"), MaxTokens: 64, StrictToolSchemas: true})
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	_, err = client.Chat(ctx, []types.Message{{Role: "user", Content: "Reply OK without calling tools."}}, []shuttle.Tool{&mockShuttleTool{name: "schema_probe", description: "Inspect a labeled count", schema: schema}})
+	if err != nil {
+		t.Fatal(strings.ReplaceAll(err.Error(), apiKey, "[redacted]"))
+	}
 }
 
 func TestClient_Chat_APIError(t *testing.T) {
@@ -1205,4 +1334,45 @@ func TestClient_ChatStream_DroppedToolCallEndsTurn(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, response.ToolCalls)
 	assert.Equal(t, "end_turn", response.StopReason)
+}
+
+// TestClient_ChatStream_ParallelToolCallsKeepStreamOrder pins that parallel
+// tool calls come back in stream index order. They used to be collected by
+// ranging over a map, so ToolCalls[0] was not always the first call (#500).
+func TestClient_ChatStream_ParallelToolCallsKeepStreamOrder(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		chunks := []string{
+			`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"read_file","arguments":"{\"path\":\"a\"}"}}]}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_b","function":{"name":"read_file","arguments":"{\"path\":"}}]}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"index":2,"id":"call_c","function":{"name":"list_dir","arguments":"{\"path\":\"c\"}"}}]}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"arguments":"\"b\"}"}}]}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"index":3,"id":"call_d","function":{"name":"read_file","arguments":"{\"path\":\"d\"}"}}]},"finish_reason":"tool_calls"}]}`,
+		}
+		for _, chunk := range chunks {
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", chunk)
+		}
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{APIKey: "test-key", Endpoint: server.URL})
+	// Map iteration order is random per range, so repeat to make an
+	// order-dependent regression fail reliably rather than occasionally.
+	for run := 0; run < 20; run++ {
+		response, err := client.ChatStream(
+			&mockContext{Context: context.Background()},
+			[]types.Message{{Role: "user", Content: "read them"}},
+			nil,
+			nil,
+		)
+		require.NoError(t, err)
+		require.Len(t, response.ToolCalls, 4)
+		ids := make([]string, 0, len(response.ToolCalls))
+		for _, tc := range response.ToolCalls {
+			ids = append(ids, tc.ID)
+		}
+		require.Equal(t, []string{"call_a", "call_b", "call_c", "call_d"}, ids, "run %d", run)
+		assert.Equal(t, "b", response.ToolCalls[1].Input["path"])
+	}
 }

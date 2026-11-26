@@ -24,6 +24,8 @@ type ParallelExecutor struct {
 	orchestrator *Orchestrator
 	pattern      *loomv1.ParallelPattern
 	workflowID   string
+	// aux collects the LLM calls this executor makes itself (run_usage.go).
+	aux auxUsage
 }
 
 // NewParallelExecutor creates a new parallel executor.
@@ -124,7 +126,10 @@ func (e *ParallelExecutor) Execute(ctx context.Context) (*loomv1.WorkflowResult,
 func (e *ParallelExecutor) executeParallel(ctx context.Context) ([]*loomv1.AgentResult, map[string]string, error) {
 	var wg sync.WaitGroup
 	var modelsMu sync.Mutex
-	resultsChan := make(chan *loomv1.AgentResult, len(e.pattern.Tasks))
+	// Each branch writes its own slot, so results keep the configured order
+	// whatever order the branches finish in. Callers map results back to
+	// their agents by index.
+	results := make([]*loomv1.AgentResult, len(e.pattern.Tasks))
 	errorsChan := make(chan error, len(e.pattern.Tasks))
 	modelsUsed := make(map[string]string)
 
@@ -184,20 +189,13 @@ func (e *ParallelExecutor) executeParallel(ctx context.Context) ([]*loomv1.Agent
 				modelsUsed[t.AgentId] = model
 				modelsMu.Unlock()
 			}
-			resultsChan <- result
+			results[taskIndex] = result
 		}(i, task)
 	}
 
 	// Wait for all goroutines to complete
 	wg.Wait()
-	close(resultsChan)
 	close(errorsChan)
-
-	// Collect results
-	results := make([]*loomv1.AgentResult, 0, len(e.pattern.Tasks))
-	for result := range resultsChan {
-		results = append(results, result)
-	}
 
 	// Check for errors
 	errs := make([]error, 0)
@@ -307,10 +305,11 @@ func (e *ParallelExecutor) runTaskAgent(
 		ConfidenceScore: 1.0,
 		DurationMs:      duration.Milliseconds(),
 		Cost: &loomv1.AgentExecutionCost{
-			TotalTokens:  types.SafeInt32(response.Usage.TotalTokens),
-			InputTokens:  types.SafeInt32(response.Usage.InputTokens),
-			OutputTokens: types.SafeInt32(response.Usage.OutputTokens),
-			CostUsd:      response.Usage.CostUSD,
+			TotalTokens:  types.SafeInt32(response.TurnUsage.TotalTokens),
+			InputTokens:  types.SafeInt32(response.TurnUsage.InputTokens),
+			OutputTokens: types.SafeInt32(response.TurnUsage.OutputTokens),
+			CostUsd:      response.TurnUsage.CostUSD,
+			LlmCalls:     types.SafeInt32(response.TurnLLMCalls),
 		},
 	}
 
@@ -390,10 +389,7 @@ func (e *ParallelExecutor) executeTaskWithLeveling(ctx context.Context, task *lo
 func (e *ParallelExecutor) mergeResults(ctx context.Context, results []*loomv1.AgentResult) (string, error) {
 	switch e.pattern.MergeStrategy {
 	case loomv1.MergeStrategy_FIRST:
-		if len(results) > 0 {
-			return results[0].Output, nil
-		}
-		return "", nil
+		return firstSuccessfulOutput(results), nil
 
 	case loomv1.MergeStrategy_CONCATENATE:
 		var builder strings.Builder
@@ -471,6 +467,7 @@ func (e *ParallelExecutor) llmMerge(ctx context.Context, results []*loomv1.Agent
 	if err != nil {
 		return "", fmt.Errorf("LLM merge failed: %w", err)
 	}
+	e.aux.addCall(response.Usage)
 
 	return response.Content, nil
 }
@@ -538,7 +535,7 @@ func (e *ParallelExecutor) calculateCost(results []*loomv1.AgentResult) *loomv1.
 		if result.Cost != nil {
 			cost.TotalCostUsd += result.Cost.CostUsd
 			cost.TotalTokens += result.Cost.TotalTokens
-			cost.LlmCalls++
+			cost.LlmCalls += resultLLMCalls(result.Cost)
 
 			// Aggregate by agent
 			if existing, ok := cost.AgentCostsUsd[result.AgentId]; ok {
@@ -549,5 +546,6 @@ func (e *ParallelExecutor) calculateCost(results []*loomv1.AgentResult) *loomv1.
 		}
 	}
 
+	e.aux.applyTo(cost)
 	return cost
 }

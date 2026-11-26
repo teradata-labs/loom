@@ -17,11 +17,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 	loomconfig "github.com/teradata-labs/loom/pkg/config"
@@ -296,18 +300,15 @@ func runHitlList(cmd *cobra.Command, args []string) {
 
 	for _, req := range requests {
 		age := time.Since(req.CreatedAt).Round(time.Second)
-		question := req.Question
-		if len(question) > 50 {
-			question = question[:47] + "..."
-		}
+		label := hitlListLabel(req)
 
 		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%v\t%s\n",
-			req.ID,
-			req.AgentID,
-			req.Priority,
-			req.RequestType,
+			escapeControlChars(req.ID),
+			escapeControlChars(req.AgentID),
+			escapeControlChars(req.Priority),
+			escapeControlChars(req.RequestType),
 			age,
-			question,
+			label,
 		)
 	}
 
@@ -353,16 +354,26 @@ func runHitlShow(cmd *cobra.Command, args []string) {
 	span.SetAttribute("priority", req.Priority)
 	span.SetAttribute("success", true)
 
-	// Print request details
-	fmt.Printf("Request ID:     %s\n", req.ID)
-	fmt.Printf("Agent ID:       %s\n", req.AgentID)
-	fmt.Printf("Session ID:     %s\n", req.SessionID)
-	fmt.Printf("Type:           %s\n", req.RequestType)
-	fmt.Printf("Priority:       %s\n", req.Priority)
-	fmt.Printf("Status:         %s\n", req.Status)
+	// Print request details. Every field is escaped: priority and type come
+	// from contact_human's tool input, the session ID from the Weave client.
+	fmt.Printf("Request ID:     %s\n", escapeControlChars(req.ID))
+	fmt.Printf("Agent ID:       %s\n", escapeControlChars(req.AgentID))
+	fmt.Printf("Session ID:     %s\n", escapeControlChars(req.SessionID))
+	fmt.Printf("Type:           %s\n", escapeControlChars(req.RequestType))
+	fmt.Printf("Priority:       %s\n", escapeControlChars(req.Priority))
+	fmt.Printf("Status:         %s\n", escapeControlChars(req.Status))
 	fmt.Printf("\n")
-	fmt.Printf("Question:       %s\n", req.Question)
+	fmt.Printf("Question:       %s\n", escapeControlChars(req.Question))
+	if req.Summary != "" && req.Summary != req.Question {
+		// The digest is built from the model's own arguments: escape control
+		// characters so a newline or terminal escape in a command cannot draw
+		// fake lines (a forged "Parameters:" block) on the approval screen.
+		fmt.Printf("Call:           %s\n", escapeControlChars(req.Summary))
+	}
 	fmt.Printf("\n")
+
+	// The held call's own parameters: what an approver is approving.
+	writeHITLParams(os.Stdout, req)
 
 	// Print timing info
 	fmt.Printf("Created:        %s (%v ago)\n", req.CreatedAt.Format(time.RFC3339), time.Since(req.CreatedAt).Round(time.Second))
@@ -374,17 +385,17 @@ func runHitlShow(cmd *cobra.Command, args []string) {
 	if len(req.Context) > 0 {
 		fmt.Println("Context:")
 		for k, v := range req.Context {
-			fmt.Printf("  %s: %v\n", k, v)
+			fmt.Printf("  %s: %s\n", escapeControlChars(k), escapeControlChars(fmt.Sprint(v)))
 		}
 		fmt.Printf("\n")
 	}
 
 	// Print response info if responded
 	if req.Status != "pending" {
-		fmt.Printf("Response Status: %s\n", req.Status)
-		fmt.Printf("Response:        %s\n", req.Response)
+		fmt.Printf("Response Status: %s\n", escapeControlChars(req.Status))
+		fmt.Printf("Response:        %s\n", escapeControlChars(req.Response))
 		if req.RespondedBy != "" {
-			fmt.Printf("Responded By:    %s\n", req.RespondedBy)
+			fmt.Printf("Responded By:    %s\n", escapeControlChars(req.RespondedBy))
 		}
 		if req.RespondedAt != nil {
 			fmt.Printf("Responded At:    %s (%v ago)\n",
@@ -395,7 +406,7 @@ func runHitlShow(cmd *cobra.Command, args []string) {
 		if len(req.ResponseData) > 0 {
 			fmt.Println("\nResponse Data:")
 			for k, v := range req.ResponseData {
-				fmt.Printf("  %s: %v\n", k, v)
+				fmt.Printf("  %s: %s\n", escapeControlChars(k), escapeControlChars(fmt.Sprint(v)))
 			}
 		}
 	}
@@ -600,4 +611,125 @@ func runHitlRespond(cmd *cobra.Command, args []string) {
 	fmt.Printf("  Status:     %s\n", after.Status)
 	fmt.Printf("  Message:    %s\n", after.Response)
 	fmt.Printf("  By:         %s\n", after.RespondedBy)
+}
+
+// hitlListLabelMax is the most characters `hitl list` shows of a label.
+const hitlListLabelMax = 70
+
+// hitlListLabel is the one-line label `hitl list` shows for a request: the
+// call digest for an approval (which names the tool and its arguments), else
+// the question, with unsafe characters escaped so it stays in one table cell,
+// cut to hitlListLabelMax characters on a rune boundary.
+func hitlListLabel(req *shuttle.HumanRequest) string {
+	label := req.Question
+	if req.Summary != "" {
+		label = req.Summary
+	}
+	escaped := escapeControlChars(label)
+	if utf8.RuneCountInString(escaped) <= hitlListLabelMax {
+		return escaped
+	}
+	// Cut rune by rune before escaping, so the cut never splits an escape.
+	var b strings.Builder
+	n := 0
+	for _, r := range label {
+		e := escapeControlChars(string(r))
+		w := utf8.RuneCountInString(e)
+		if n+w > hitlListLabelMax-3 {
+			break
+		}
+		b.WriteString(e)
+		n += w
+	}
+	return b.String() + "..."
+}
+
+// unsafeForDisplay reports whether r can change how text displays rather than
+// showing as itself: controls (Cc), format characters (Cf: bidi overrides,
+// zero-width and tag characters), and the line and paragraph separators (Zl,
+// Zp), which many terminals treat as line breaks.
+func unsafeForDisplay(r rune) bool {
+	return unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp)
+}
+
+// escapeControlChars escapes the characters that unsafeForDisplay reports, so
+// model- or responder-written text stays on its own line and reads as it runs:
+// a backslash as \\; \n, \r and \t by name; other runes up to U+FFFF as
+// \uXXXX; and runes above it as \UXXXXXXXX, so an escape cannot be read as a
+// shorter one plus a digit, and literal text never reads as an escape.
+func escapeControlChars(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r == '\n':
+			b.WriteString(`\n`)
+		case r == '\r':
+			b.WriteString(`\r`)
+		case r == '\t':
+			b.WriteString(`\t`)
+		case r == '\\':
+			// A literal backslash is doubled, so text that already reads
+			// like an escape (`\n`) never prints the same as a real one.
+			b.WriteString(`\\`)
+		case unsafeForDisplay(r) && r > 0xFFFF:
+			fmt.Fprintf(&b, `\U%08x`, r)
+		case unsafeForDisplay(r):
+			fmt.Fprintf(&b, `\u%04x`, r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// escapeJSONDisplayChars escapes, as JSON \u escapes, the runes that
+// encoding/json leaves raw but that unsafeForDisplay reports. A rune above
+// U+FFFF is written as its UTF-16 surrogate pair, which is how JSON spells it.
+// The 7-bit controls are left alone: the encoder has already escaped every one
+// inside a value, so the only ones left are the block's own newlines. The
+// result stays valid JSON and decodes to the same text.
+func escapeJSONDisplayChars(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r < 0x7f || !unsafeForDisplay(r) {
+			b.WriteRune(r)
+			continue
+		}
+		if r > 0xFFFF {
+			hi, lo := utf16.EncodeRune(r)
+			fmt.Fprintf(&b, `\u%04x\u%04x`, hi, lo)
+			continue
+		}
+		fmt.Fprintf(&b, `\u%04x`, r)
+	}
+	return b.String()
+}
+
+// writeHITLParams prints the parameters of the call an approval request holds,
+// so the person deciding sees exactly what will run (for shell_execute, the
+// whole command). Nothing is printed when the request carries none.
+func writeHITLParams(w io.Writer, req *shuttle.HumanRequest) {
+	if len(req.Params) == 0 {
+		// The size bound can drop every parameter; the person deciding must
+		// still learn the digest above is not the whole call.
+		if req.ParamsTruncated {
+			_, _ = fmt.Fprintln(w, "Parameters:     (too large for the approval record and not shown)")
+			_, _ = fmt.Fprintln(w)
+		}
+		return
+	}
+	// No HTML escaping: a shell command's "&&" must read as written.
+	var raw strings.Builder
+	enc := json.NewEncoder(&raw)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("  ", "  ")
+	if err := enc.Encode(req.Params); err != nil {
+		_, _ = fmt.Fprintf(w, "Parameters:     (cannot display: %v)\n\n", err)
+		return
+	}
+	_, _ = fmt.Fprintf(w, "Parameters:\n  %s", escapeJSONDisplayChars(raw.String()))
+	if req.ParamsTruncated {
+		_, _ = fmt.Fprintln(w, "  (some parameters were too large for the approval record and are not shown)")
+	}
+	_, _ = fmt.Fprintln(w)
 }

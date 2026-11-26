@@ -255,7 +255,7 @@ metadata:
   domain: general
 prompt:
   instructions: Do the thing.`,
-			wantMode: ActivationManual, // default
+			wantMode: ActivationHybrid, // default: an undeclared mode is model-pullable
 			wantConf: 0.7,              // default
 			wantVer:  "1.0.0",          // default
 		},
@@ -285,7 +285,7 @@ metadata:
   version: "2.0.0"
 prompt:
   instructions: Check data quality.`,
-			wantMode: ActivationManual,
+			wantMode: ActivationHybrid,
 			wantConf: 0.7,
 			wantVer:  "2.0.0",
 		},
@@ -301,7 +301,7 @@ prompt:
 skill_refs:
   - ref1
   - ref2`,
-			wantMode: ActivationManual,
+			wantMode: ActivationHybrid,
 			wantConf: 0.7,
 			wantVer:  "1.0.0",
 		},

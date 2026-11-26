@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 
 	"github.com/teradata-labs/loom/pkg/memory"
+	"github.com/teradata-labs/loom/pkg/session"
 	"github.com/teradata-labs/loom/pkg/shuttle"
 )
 
@@ -69,8 +70,9 @@ func (t *GraphMemoryTool) InputSchema() *shuttle.JSONSchema {
 				Description: "(remember/supersede/consolidate) Short summary for budget-constrained retrieval",
 			},
 			"memory_type": {
-				Type:        "string",
-				Description: "(remember/recall) Type: fact, preference, decision, experience, failure, observation",
+				Type: "string",
+				Description: "(remember/recall) Type: fact, preference, decision, experience, failure, observation. " +
+					"\"lesson\" is reserved for verified lessons mined from the tool ledger and is rejected on remember.",
 			},
 			"tags": {
 				Type:        "array",
@@ -178,13 +180,25 @@ func (t *GraphMemoryTool) executeRemember(ctx context.Context, input map[string]
 	if content == "" {
 		return errorResult("INVALID_PARAMETER", "content is required for remember"), nil
 	}
+	// The lesson class is reserved for the ledger-grounded miner, which only
+	// mints from an observed error→fix transition. Anything written here is
+	// the model's own claim at the model's own salience, which is precisely
+	// what "Verified lessons from prior work" must not contain — so this path
+	// refuses the type instead of silently rewriting it, and the model gets
+	// told why.
+	if isMinerOnlyMemoryType(getStr(input, "memory_type")) {
+		return errorResult("INVALID_PARAMETER",
+			"memory_type \"lesson\" is reserved for verified lessons mined from observed error→fix "+
+				"transitions in the tool ledger; store this as fact, observation, or decision instead"), nil
+	}
 
 	mem := &memory.Memory{
 		AgentID:        t.agentID,
 		Content:        content,
 		Summary:        getStr(input, "summary"),
 		MemoryType:     getStr(input, "memory_type"),
-		Source:         "agent",
+		Source:         memory.SourceAgent,
+		SourceID:       session.SessionIDFromContext(ctx),
 		MemoryAgentID:  t.agentID,
 		Tags:           getStrSlice(input, "tags"),
 		Salience:       getFloat(input, "salience"),
@@ -279,7 +293,8 @@ func (t *GraphMemoryTool) executeSupersede(ctx context.Context, input map[string
 		Content:        content,
 		Summary:        getStr(input, "summary"),
 		MemoryType:     memory.MemoryTypeFact,
-		Source:         "agent",
+		Source:         memory.SourceAgent,
+		SourceID:       session.SessionIDFromContext(ctx),
 		MemoryAgentID:  t.agentID,
 		Tags:           getStrSlice(input, "tags"),
 		PropertiesJSON: getStr(input, "properties_json"),
@@ -315,7 +330,8 @@ func (t *GraphMemoryTool) executeConsolidate(ctx context.Context, input map[stri
 		Summary:       getStr(input, "summary"),
 		Tags:          getStrSlice(input, "tags"),
 		Salience:      getFloat(input, "salience"),
-		Source:        "agent",
+		Source:        memory.SourceAgent,
+		SourceID:      session.SessionIDFromContext(ctx),
 		MemoryAgentID: t.agentID,
 	}
 

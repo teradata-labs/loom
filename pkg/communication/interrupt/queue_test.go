@@ -16,7 +16,7 @@ package interrupt
 import (
 	"context"
 	"fmt"
-	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -355,13 +355,7 @@ func TestPersistentQueue_Persistence(t *testing.T) {
 	defer func() { _ = router.Close() }()
 
 	// Use temp file instead of :memory: to test persistence
-	// Use unique temp file per test run to avoid collisions
-	dbPath := fmt.Sprintf("/tmp/interrupt_queue_test_%d.db", time.Now().UnixNano())
-
-	// Clean up temp file at end
-	defer func() {
-		_ = os.Remove(dbPath)
-	}()
+	dbPath := filepath.Join(t.TempDir(), "interrupt_queue_test.db")
 
 	// Create queue and enqueue
 	queue, err := NewPersistentQueue(ctx, dbPath, router)
@@ -756,7 +750,8 @@ func TestDebugWithSQL_RetryLoop(t *testing.T) {
 	router := NewRouter(ctx)
 	defer func() { _ = router.Close() }()
 
-	queue, err := NewPersistentQueue(ctx, "/tmp/test_retry.db", router)
+	dbPath := filepath.Join(t.TempDir(), "test_retry.db")
+	queue, err := NewPersistentQueue(ctx, dbPath, router)
 	require.NoError(t, err)
 	defer func() { _ = queue.Close() }()
 

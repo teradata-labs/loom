@@ -64,7 +64,7 @@ metadata:
   domain: general
   risk_level: LOW
 trigger:
-  mode: MANUAL
+  mode: HYBRID
 prompt:
   instructions: |
     Alpha skill instructions body.
@@ -80,7 +80,7 @@ metadata:
   domain: general
   risk_level: LOW
 trigger:
-  mode: MANUAL
+  mode: HYBRID
 prompt:
   instructions: |
     Beta skill instructions body.
@@ -94,7 +94,7 @@ metadata:
   domain: general
   risk_level: LOW
 trigger:
-  mode: MANUAL
+  mode: HYBRID
 prompt:
   instructions: |
     Gamma skill instructions body.
@@ -108,7 +108,7 @@ metadata:
   domain: general
   risk_level: LOW
 trigger:
-  mode: MANUAL
+  mode: HYBRID
 prompt:
   instructions: |
     Pattern skill instructions body.
@@ -125,7 +125,7 @@ metadata:
   domain: general
   risk_level: LOW
 trigger:
-  mode: MANUAL
+  mode: HYBRID
 prompt:
   instructions: |
     Tooled skill instructions body.
@@ -146,7 +146,7 @@ metadata:
   domain: general
   risk_level: LOW
 trigger:
-  mode: MANUAL
+  mode: HYBRID
 prompt:
   instructions: |
     Base tooled skill instructions body.
@@ -163,7 +163,7 @@ metadata:
   domain: ops
   risk_level: HIGH
 trigger:
-  mode: MANUAL
+  mode: HYBRID
 prompt:
   instructions: |
     Danger skill instructions body.

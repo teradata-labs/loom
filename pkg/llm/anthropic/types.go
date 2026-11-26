@@ -47,6 +47,13 @@ type MessagesRequest struct {
 	Tools       []CacheableTool  `json:"tools,omitempty"`
 	System      []TextBlockParam `json:"system,omitempty"`
 	Stream      bool             `json:"stream,omitempty"`
+
+	// Thinking requests extended thinking: {"type":"adaptive","display":"summarized"}
+	// on 4.6+/5 models, {"type":"enabled","budget_tokens":N} on older ones.
+	Thinking map[string]interface{} `json:"thinking,omitempty"`
+	// OutputConfig carries effort on adaptive-thinking models (5-family / 4.6+);
+	// omitted elsewhere.
+	OutputConfig map[string]interface{} `json:"output_config,omitempty"`
 }
 
 // MessagesResponse represents a response from the Anthropic Messages API.
@@ -77,6 +84,13 @@ type ContentBlock struct {
 	ToolUseID string                 `json:"tool_use_id,omitempty"`
 	Content   string                 `json:"content,omitempty"`
 	Source    *ImageSource           `json:"source,omitempty"` // For image content blocks
+	// Extended thinking blocks: Thinking + Signature for type "thinking",
+	// Data for type "redacted_thinking". MarshalJSON keeps the thinking field
+	// present-but-empty on thinking blocks — the API 400s when it is absent
+	// but accepts "" (observed live, 2026-08-12 native probes).
+	Thinking  string `json:"thinking,omitempty"`
+	Signature string `json:"signature,omitempty"`
+	Data      string `json:"data,omitempty"`
 	// CacheControl marks a message-level cache breakpoint (HLD §5.2 step 8).
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
 }
@@ -87,6 +101,17 @@ type ContentBlock struct {
 func (cb ContentBlock) MarshalJSON() ([]byte, error) {
 	m := map[string]interface{}{
 		"type": cb.Type,
+	}
+	if cb.Type == "thinking" {
+		// Present-but-empty law: the thinking field must exist even when the
+		// text is empty (display-omitted responses carry signature only).
+		m["thinking"] = cb.Thinking
+		if cb.Signature != "" {
+			m["signature"] = cb.Signature
+		}
+	}
+	if cb.Type == "redacted_thinking" && cb.Data != "" {
+		m["data"] = cb.Data
 	}
 	if cb.Text != "" {
 		m["text"] = cb.Text
@@ -142,6 +167,37 @@ type InputSchema struct {
 	Type       string                            `json:"type"`
 	Properties map[string]map[string]interface{} `json:"properties,omitempty"`
 	Required   []string                          `json:"required,omitempty"`
+	keywords   map[string]interface{}
+}
+
+// MarshalJSON retains all schema keywords while preserving the public input fields.
+func (s InputSchema) MarshalJSON() ([]byte, error) {
+	if s.keywords == nil {
+		type alias InputSchema
+		return json.Marshal(alias(s))
+	}
+	result := make(map[string]interface{}, len(s.keywords))
+	for keyword, value := range s.keywords {
+		result[keyword] = value
+	}
+	if s.Type != "" {
+		result["type"] = s.Type
+	} else {
+		delete(result, "type")
+	}
+	if s.Properties != nil {
+		result["properties"] = s.Properties
+	} else if s.Type == "object" {
+		result["properties"] = map[string]interface{}{}
+	} else {
+		delete(result, "properties")
+	}
+	if len(s.Required) > 0 {
+		result["required"] = s.Required
+	} else {
+		delete(result, "required")
+	}
+	return json.Marshal(result)
 }
 
 // Usage represents token usage information.
@@ -168,12 +224,31 @@ type StreamEvent struct {
 	ContentBlock *ContentBlock       `json:"content_block,omitempty"`
 	Delta        *StreamDelta        `json:"delta,omitempty"`
 	Usage        *Usage              `json:"usage,omitempty"`
+	// Error is set on an "error" event: a failure after the stream started
+	// (Anthropic's overloaded_error, or an upstream fault behind a gateway).
+	Error *StreamError `json:"error,omitempty"`
+	// ProviderMetadata carries the upstream's own usage on a gateway's
+	// message_delta (Vercel AI Gateway, observed 2026-11-16), where the
+	// top-level usage has input tokens but no cache counts.
+	ProviderMetadata *struct {
+		Anthropic *struct {
+			Usage *Usage `json:"usage"`
+		} `json:"anthropic"`
+	} `json:"provider_metadata,omitempty"`
+}
+
+// StreamError is the payload of an "error" stream event.
+type StreamError struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
 }
 
 // StreamDelta represents a delta in a streaming event.
 type StreamDelta struct {
-	Type        string `json:"type,omitempty"`         // text_delta, input_json_delta
+	Type        string `json:"type,omitempty"`         // text_delta, input_json_delta, thinking_delta, signature_delta
 	Text        string `json:"text,omitempty"`         // For text deltas
 	PartialJSON string `json:"partial_json,omitempty"` // For input_json_delta (tool input streaming)
 	StopReason  string `json:"stop_reason,omitempty"`  // For message_delta events
+	Thinking    string `json:"thinking,omitempty"`     // For thinking_delta
+	Signature   string `json:"signature,omitempty"`    // For signature_delta
 }

@@ -34,6 +34,11 @@ type CompressionProfile struct {
 	// estimate reaches this.
 	CriticalThresholdPercent int
 
+	// ProtectedRecentTurns is K: the recent turns a fold keeps, user messages
+	// and assistant steps alike, and the top rung of the pressure ladder.
+	// 0 means the default (defaultProtectedRecentTurns).
+	ProtectedRecentTurns int
+
 	// Number of messages to compress in normal conditions
 	NormalBatchSize int
 
@@ -45,12 +50,22 @@ type CompressionProfile struct {
 }
 
 // ProfileDefaults provides preset profiles for common workload types.
-// These are static fallback values - use NewSegmentedMemoryWithDynamicAllocation for adaptive sizing.
+//
+// The two thresholds are the relief water marks (HLD §5.1), percentages of
+// usable context: CriticalThresholdPercent is the HWM — where relief begins —
+// and WarningThresholdPercent is the LWM it sheds down to. The gap between
+// them is hysteresis: a wide band means rare, deep passes; a narrow band means
+// frequent, shallow ones. That is what a workload profile actually selects.
+//
+// The remaining fields (MaxL1Tokens, MinL1Messages, the batch sizes) are
+// vestiges of batch compaction and drive nothing.
 var ProfileDefaults = map[loomv1.WorkloadProfile]CompressionProfile{
 	loomv1.WorkloadProfile_WORKLOAD_PROFILE_BALANCED: {
-		Name:                     "balanced",
-		MaxL1Tokens:              6400, // ~8 messages @ 800 tokens each (static fallback)
-		MinL1Messages:            4,
+		Name:          "balanced",
+		MaxL1Tokens:   6400, // ~8 messages @ 800 tokens each (static fallback)
+		MinL1Messages: 4,
+		// The default: a 30-point band, relief roughly half as often as a
+		// 15-point band would fire, each pass shedding more.
 		WarningThresholdPercent:  60,
 		CriticalThresholdPercent: 90,
 		NormalBatchSize:          3,
@@ -58,21 +73,27 @@ var ProfileDefaults = map[loomv1.WorkloadProfile]CompressionProfile{
 		CriticalBatchSize:        7,
 	},
 	loomv1.WorkloadProfile_WORKLOAD_PROFILE_DATA_INTENSIVE: {
-		Name:                     "data_intensive",
-		MaxL1Tokens:              4000, // ~5 messages @ 800 tokens each (static fallback)
-		MinL1Messages:            3,
-		WarningThresholdPercent:  60,
-		CriticalThresholdPercent: 90,
+		Name:          "data_intensive",
+		MaxL1Tokens:   4000, // ~5 messages @ 800 tokens each (static fallback)
+		MinL1Messages: 3,
+		// Growth arrives in bursts: one tool result can add tens of points in a
+		// single call. Start early so a burst has headroom above the mark, and
+		// shed deep so one pass buys many turns instead of thrashing per call.
+		WarningThresholdPercent:  45,
+		CriticalThresholdPercent: 80,
 		NormalBatchSize:          2,
 		WarningBatchSize:         4,
 		CriticalBatchSize:        6,
 	},
 	loomv1.WorkloadProfile_WORKLOAD_PROFILE_CONVERSATIONAL: {
-		Name:                     "conversational",
-		MaxL1Tokens:              9600, // ~12 messages @ 800 tokens each (static fallback)
-		MinL1Messages:            6,
-		WarningThresholdPercent:  60,
-		CriticalThresholdPercent: 90,
+		Name:          "conversational",
+		MaxL1Tokens:   9600, // ~12 messages @ 800 tokens each (static fallback)
+		MinL1Messages: 6,
+		// Growth is small and steady, so the risk of overshooting between turns
+		// is low and recent turns are the value. Start late and shed shallow to
+		// keep as much recency as the bound allows.
+		WarningThresholdPercent:  70,
+		CriticalThresholdPercent: 92,
 		NormalBatchSize:          4,
 		WarningBatchSize:         6,
 		CriticalBatchSize:        8,
@@ -113,6 +134,9 @@ func ResolveCompressionProfile(config *loomv1.MemoryCompressionConfig) (Compress
 	}
 	if config.CriticalThresholdPercent > 0 {
 		profile.CriticalThresholdPercent = int(config.CriticalThresholdPercent)
+	}
+	if config.ProtectedRecentTurns > 0 {
+		profile.ProtectedRecentTurns = int(config.ProtectedRecentTurns)
 	}
 
 	// Override batch sizes if specified
@@ -160,6 +184,10 @@ func (p CompressionProfile) Validate() error {
 	}
 	if p.CriticalThresholdPercent < 0 || p.CriticalThresholdPercent > 100 {
 		return fmt.Errorf("critical_threshold_percent must be 0-100, got %d", p.CriticalThresholdPercent)
+	}
+
+	if p.ProtectedRecentTurns < 0 {
+		return fmt.Errorf("protected_recent_turns must not be negative, got %d", p.ProtectedRecentTurns)
 	}
 
 	// Critical must be higher than warning

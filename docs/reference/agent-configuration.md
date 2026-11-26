@@ -22,6 +22,7 @@ definitions (in `looms.yaml`) and the **standalone agent YAML** files loaded by 
   - [LLM Configuration](#llm-configuration)
   - [Role-Specific LLM Overrides](#role-specific-llm-overrides)
   - [Provider Pool](#provider-pool)
+  - [Decision Layer](#decision-layer)
   - [System Prompt and ROM](#system-prompt-and-rom)
   - [Tools Configuration](#tools-configuration)
   - [Memory Configuration](#memory-configuration)
@@ -62,6 +63,7 @@ definitions (in `looms.yaml`) and the **standalone agent YAML** files loaded by 
 | `spec.compressor_llm` | `LLMConfigYAML` | inherits main | Compressor LLM override |
 | `spec.active_provider` | `string` | optional | Named provider from global pool |
 | `spec.allowed_providers` | `[]string` | optional | Restrict to subset of pool |
+| `spec.decision` | `DecisionConfigYAML` | off | Typed decision layer: shadow by default, live per site with a band |
 
 ---
 
@@ -208,12 +210,13 @@ All fields are optional. If `spec.llm` is omitted entirely, the agent inherits t
 | `provider` | `string` | (server default) | Provider name. See [LLM Providers](#llm-providers). |
 | `model` | `string` | (server default) | Model identifier |
 | `temperature` | `float64` | `0.7` | Sampling temperature (0.0 - 1.0) |
-| `max_tokens` | `int` | `4096` | Maximum response tokens |
+| `max_tokens` | `int` | `4096` | Maximum response tokens. Sent by the agent's client when the agent names a `provider`; an agent on the server's client sends the server's `llm.max_tokens`. An agent registered through the API with none set also sends the server's. It is the reply reservation a step in flight is fitted against |
 | `stop_sequences` | `[]string` | `[]` | Stop generation sequences |
 | `top_p` | `float64` | `0.0` | Nucleus sampling (0.0 - 1.0) |
 | `top_k` | `int` | `0` | Top-k sampling |
-| `max_context_tokens` | `int` | auto-detected | Context window size (e.g., 200000 for Claude) |
+| `max_context_tokens` | `int` | the model's window | The window loom budgets against: the fold keeps the settled conversation under the profile's threshold of it. May sit below the model's window to bound cost |
 | `reserved_output_tokens` | `int` | 10% of context | Tokens reserved for model output |
+| `max_model_context_tokens` | `int` | the model's listed window | The window the model is served with, when below its listed one (vLLM `--max-model-len`, TGI `--max-total-tokens`, Ollama `num_ctx`). A step in flight is fitted to it before the send |
 
 ---
 
@@ -261,6 +264,60 @@ spec:
   allowed_providers:
     - claude-opus
     - llama-local
+```
+
+---
+
+### Decision Layer
+
+Under `spec.decision` (k8s-style) or `agent.decision` (legacy). Off when the block is absent or `provider` is empty or `off`. With a provider set, the agent runs the decider in the background at every site it reaches (`recall.rerank`, `tool_search.rerank`, `tool.failure_kind`, `memory.extract`, `skill.route`, and the workflow sites `workflow.branch`, `stage.validation`, `swarm.tie_break` and `debate.consensus` when it is a condition, stage, judge or moderator agent) and stores shadow rows beside what Loom decided. A site acts on a decider answer only where a band without `shadow: true` is configured for it (see Band fields). See [`decision-layer.md`](../architecture/decision-layer.md), including what each site sends to the decider.
+
+Source: `DecisionConfigYAML` in `pkg/agent/config_loader.go`; rules in `decision.ValidateConfig` (`pkg/decision/config.go`), which runs on every path that accepts a decision config. A configuration the agent cannot use (no LLM for `llm`, no credential for `jev`) disables the layer with a logged warning; it does not fail agent construction.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `provider` | `string` | `off` | `off`, `llm` (adapter over one of the agent's LLMs), `jev` (TypeSafe System One API) or `mock`. Case-insensitive in YAML |
+| `llm_role` | `string` | main LLM | With `llm`: `classifier`, `compressor`, `judge` or `orchestrator`; an unset or unconfigured role uses the main LLM |
+| `model` | `string` | `jev-1.13.0` (jev direct), `typesafe-ai/jev` (gateway) | jev model id (the `llm` provider uses its role LLM's own model and ignores this). Floating aliases (`jev-latest`, `jev-preview`, `latest`, `typesafe-ai/jev`) are rejected unless `allow_alias: true` |
+| `allow_alias` | `bool` | `false` | Accept a floating alias. Required for the Vercel AI Gateway, whose only id is `typesafe-ai/jev` |
+| `timeout_ms` | `int` | `0` (5 s for jev, 20 s for llm) | Per-request timeout; must be `>= 0` |
+| `max_per_session` | `int` | `0` (no cap) | Decider calls per session before the router falls back; must be `>= 0` |
+| `max_cost_usd_per_session` | `float` | `0` (no cap) | Decider spend per session in USD; must be `>= 0` |
+| `requests_per_minute` | `int` | `0` (jev default 1,000) | jev only. Process-wide: agents with the same decider settings share one client and one limit. Set from the tier in use (gateway free tier: 30) |
+| `max_questions_per_request` | `int` | `0` (decider default; Jev 16) | Most questions one request carries before the router splits it into concurrent chunks; must be `>= 0`. Changes how many round trips carry the answers, never the answers |
+| `expose_tool` | `bool` | `false` | Register the `decide` builtin so the agent can put one typed question (`yes_no`, `choice`, `scale`) to its decider mid-turn. Calls are recorded at site `tool.decide`; nothing acts on the answer automatically. `WithoutBuiltinTool("decide")` suppresses it |
+| `bands` | list | none (every site shadow) | Per-site bands, below |
+| `base_url` | `string` | — | **Rejected.** The decider endpoint is server-level only (`decision.base_url` in `looms.yaml` / `LOOM_DECISION_BASE_URL`, or `TYPESAFE_BASE_URL`; see `ENV_VARS.md`) |
+
+Credentials are never read from YAML: `jev` uses `TYPESAFE_API_KEY`, else `AI_GATEWAY_API_KEY`, else `JEV_API_KEY`.
+
+**Band fields** (`bands[]`):
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `site` | `string` | **required** | Call site, e.g. `recall.rerank`, `tool_search.rerank`, `memory.extract`, `stage.validation`. Unique within the list |
+| `act_min` | `float` | `0` | How decisive an answer must be (its distance from 0.5, for a yes/no) before the site may act on it; in `[0, 1]`. `0` acts on every answer however uncertain |
+| `true_min` | `float` | `0` (site default 0.5) | Probability at or above which a yes/no answer counts as true: the keep threshold at a rerank, "valid" at `stage.validation`, "consensus reached" at `debate.consensus`; in `[0, 1]`. Not the same as `act_min` |
+| `aggregate` | `string` | `min` | `min` (the least confident answer must clear `act_min`) or `per_question` (`per-question` and `each` also accepted: each answer is judged on its own). Fan-out reranks need `per_question`, or one uncertain candidate disables the whole answer |
+| `mode` | `string` | site default | `replace` or `tighten_only` (`tighten-only` and `tighten` also accepted). Read only by `stage.validation` and `debate.consensus`, whose default (mode unset) is tighten-only: the decider can only fail an output or keep a debate going, never pass an output or declare consensus on its own (`Band.ModeOr`). `mode: replace` lets it act on either verdict |
+| `shadow` | `bool` | `false` | Record only, never act |
+
+A site with no band is shadow. A band without `shadow: true` is **live** at the sites that act (`recall.rerank`, `tool_search.rerank`, `memory.extract`, `skill.route`, `workflow.branch`, `stage.validation`, `swarm.tie_break`, `debate.consensus`): an answer that clears `act_min` decides there instead of the existing mechanism, which remains the fallback. When the agent builds its decider it logs one `decision config` warning per non-shadow band naming the site and saying it is LIVE; at a site that only records (`tool.failure_kind`, `tool.decide`) the warning says nothing acts there. No shipped agent YAML has a `decision:` block. Read a site's shadow report (`loom decision report --site <site>`) before removing `shadow: true`.
+
+```yaml
+spec:
+  decision:
+    provider: jev
+    model: typesafe-ai/jev       # through the Vercel AI Gateway (AI_GATEWAY_API_KEY)
+    allow_alias: true
+    timeout_ms: 2000
+    max_per_session: 200
+    requests_per_minute: 28      # gateway free tier allows 30
+    bands:
+      - site: recall.rerank
+        act_min: 0.9
+        aggregate: per_question  # fan-out: judge each candidate on its own
+        shadow: true             # remove only after reading the site's shadow report
 ```
 
 ---
@@ -338,7 +395,7 @@ spec:
 
 | Category | Behavior |
 |---|---|
-| **Configurable** (list in `spec.tools`) | `http_request`, `web_search`, `file_read`, `file_write`, `analyze_image`, `parse_document`, `grpc_call`, `shell_execute`, `contact_human`, `agent_management`, `tool_search` |
+| **Configurable** (list in `spec.tools`) | `http_request`, `web_search`, `file_read`, `file_write`, `analyze_image`, `parse_document`, `grpc_call`, `shell_execute`, `contact_human`, `agent_management`, `tool_search`, `run_lua` (also needs the server's `tools.lua.enabled` and an admission chain or permission checker), `manage_lua_scripts` (also needs `run_lua` and `tools.lua.scripts.save_enabled`); see [lua-script-api.md](lua-script-api.md). A custom tool with `implementation: lua://<name>` registers the published saved script `<name>` as `lua_<name>`. |
 | **Registered at construction** (not listed in `spec.tools`; present from the first turn when their subsystem is wired) | `load_pattern` (always), `manage_skills` (skill orchestrator wired), `graph_memory` (graph memory store configured and enabled), `task_board` (task manager wired and `task_board.enabled`) |
 | **Progressively disclosed** (registered dynamically after triggering conditions) | `get_error_details` (after first error), `conversation_memory` (after first L2 swap), `session_memory` (after 3+ sessions), `query_tool_result` (after first large result or first tool result returned by reference) |
 | **Workflow-injected** (auto-added for workflow agents) | `send_message`, `publish`, `shared_memory_read`, `shared_memory_write`, `top_n_query`, `group_by_query` |
@@ -409,23 +466,19 @@ Under `spec.memory` (k8s-style) or `agent.memory` (legacy).
 | `path` | `string` | `""` | SQLite database file path |
 | `dsn` | `string` | `""` | PostgreSQL connection string |
 | `max_history` | `int` | `50` | Max conversation messages to retain |
-| `shared_memory_threshold_bytes` | `int64` | `16384` (16 KiB) | One byte threshold, three roles: compile-time offload bound (a current-turn tool result strictly over it renders as an offload stub), persist-time row bound, and retrieval page bound — plus the tool executor's large-parameter offload. `>0` sets the bound (the compile/persist roles floor it at 256 bytes); `-1` keeps the 16 KiB default; `0` in YAML is indistinguishable from unset. `0` through the Go API `SetSharedMemoryThreshold` makes the executor store every tool parameter by reference and leaves the compile-time bound at its default. |
+| `shared_memory_threshold_bytes` | `int64` | `16384` (16 KiB) | One byte threshold, three roles: arrival bound (a tool result strictly over it enters as its first bytes plus a tail), stored-row bound, and retrieval page bound — plus the tool executor's large-parameter offload. `>0` sets the bound (the arrival and stored-row bounds floor it at 256 bytes); `-1` keeps the 16 KiB default; `0` in YAML is indistinguishable from unset. `0` through the Go API `SetSharedMemoryThreshold` makes the executor store every tool parameter by reference and leaves the arrival bound at its default. |
 | `max_tool_results` | `int` | `5` | Max tool results kept in conversation kernel |
 | `memory_compression` | object | optional | See [Memory Compression](#memory-compression-configuration) |
 | `graph_memory` | object | optional | See [Graph Memory](#graph-memory-configuration) |
 
-**Large tool results**: a result always enters the conversation whole — offload is a render condition of context compilation, not an arrival event. When a tool row's content is strictly over the threshold, the copy compiled for the LLM is replaced by a stub. In the producing turn this is the offload stub — tool name, estimated token figure, a 160-byte preview, and a `query_tool_result(message_id=…)` door (`sql=` for tabular payloads); `query_tool_result` resolves only within that turn, and every return is bounded at the same threshold. In later turns, and for rows evicted by memory-pressure relief, it is the evicted stub, whose only door is re-running the call. Rows are persisted truncated to a bounded core plus tail at the same threshold. A session without a persistent store has no `message_id` to print, so its current-turn oversize results render the evicted stub.
+Single-agent lifecycle RPCs (`CreateAgentFromConfig`, `GetAgent`, `StartAgent`,
+`StopAgent`, and `ReloadAgent`) return `AgentInfo.config` with a nonempty
+`memory.dsn` replaced by `[REDACTED]`; the HTTP gateway exposes the same
+redacted `AgentInfo`. `ListAgents` omits `config` entirely. Agent YAML is
+environment-expanded before loading; arbitrary fields such as `system_prompt`
+and metadata are not secret-filtered, so do not embed credentials there.
 
-**Offload-exempt tools** (Go API only; no YAML field): `Agent.SetOffloadExemptTools(names []string)` names the tools whose current-turn results always render whole regardless of the threshold. Use it for tools whose full output is the product of the call — reference or lookup content the model must read inline in the turn it asked for it — where an offload stub would defeat the call.
-
-```go
-ag.SetOffloadExemptTools([]string{"reference_lookup", "get_syntax_help"})
-```
-
-- Each call replaces the whole set; `nil` or an empty slice clears it; empty-string names are skipped. No tools are exempt by default.
-- Applies to existing and future sessions. Also available on `Memory` and per-session `SegmentedMemory`. Safe for concurrent use.
-- Exemption is a render condition of the producing turn only: prior-turn oversize rows and relief-evicted rows still render the evicted stub, and the persist-time row bound is unchanged.
-- An exempt result counts at full size toward memory-pressure estimates; a very large exempt result spends a correspondingly large share of the producing turn's context window.
+**Large tool results**: a result is bounded once, at arrival. Above the threshold it enters the conversation as its first bytes plus a tail that says how much was cut and names the result's `tool_use_id`, with which `query_tool_result` pages the whole of it this turn (registered by default, as on main; when it is suppressed, the tail says to narrow the call and re-run). What enters memory, what is stored and what the model is sent are the same bytes, so a compiled prefix stays valid for the whole session and the fold — not the threshold — is what controls context size. The one exception: a step whose results together do not fit the window the model is served with has them replaced, before the send, by a note telling the model to call fewer tools at once. That window is `max_model_context_tokens` when set, else the model's listed window (catalog, then prefix table; `max_context_tokens` only when nothing lists the model). No provider has a rule of its own: an Ollama server running a smaller `num_ctx` states it in `max_model_context_tokens`.
 
 ---
 
@@ -445,6 +498,7 @@ Under `spec.memory.graph_memory`.
 | `min_salience_threshold` | `float64` | `0.1` | Minimum salience for recall |
 | `max_recall_candidates` | `int` | `50` | Max memories to consider during recall |
 | `default_salience` | `float64` | `0.5` | Initial salience for new memories |
+| `fleet_lesson_sharing` | `bool` | `false` (opt-in) | Store mined lessons in one partition shared by every agent on the server (`__fleet_lessons__`) instead of the agent's private `<key>__lessons` partition (key: `Config.GraphMemoryAgentID` when set, otherwise the agent name). Affects only where lessons are stored and recalled; the lesson lane below runs either way. Do not enable it with untrusted tool servers: see [Security Model](security-model.md). |
 
 ```yaml
 spec:
@@ -467,6 +521,18 @@ spec:
       enabled: false
 ```
 
+#### Lesson lane (on by default)
+
+Agents with graph memory get a lesson lane without any configuration. `fleet_lesson_sharing` changes only which partition it uses. Design: [Lesson grounding and outcome credit](../architecture/lesson-grounding-and-credit.md).
+
+- **Mining, at turn end.** When graph memory and `enable_extraction` are both on (the defaults), the end of every `Chat()` call (one user message) starts a background pass over that turn's tool ledger. It looks for a failed call followed by a later successful call of the same kind with an observable change between them. If it finds at least one such pair, it makes **one extra LLM call**, using the `compressor_llm` role if set, otherwise the agent's LLM, with a 30 s timeout. A turn with no error-then-fix pair makes no call, and a chat-only turn does not mine earlier turns again. Only a session that recorded no ledger in this process (for example, one restored from storage after a restart) is mined from its message history instead, and only once. The lessons it returns are stored with `memory_type: lesson`. A lesson that names none of the changed fragments is dropped.
+- **Recall.** At conversation start, matching lessons are added to the graph-memory context block, also when no ordinary memory matches. When a tool batch contains failures, the error text is used to query the lesson partition again, and any lessons not yet shown are appended to the conversation as a **user-role `<system-reminder>` message** before the model's retry turn. It is stored under the synthetic role `lesson_reminder` and sent to the provider as `user`, never as `system`: providers move system messages to the head of the request, so a system message added after a tool result would miss every message-level cache breakpoint. This happens at most 5 times per session. Error-time injection needs only graph memory to be enabled, not `enable_extraction`.
+- **Outcome credit.** Lessons injected at error time are scored against the rest of that turn's ledger: a later success of the failing kind of call raises salience, a failure after the injection with no recovery lowers it, and a turn that simply ends scores nothing. Credit needs a store with `AdjustSalience` (the SQLite and Postgres stores both have it).
+- **Tracing.** Each pass emits a span with its counts: `graph_memory.lesson_mining`, `graph_memory.lesson_credit` and `graph_memory.lesson_injection`. Conversation-start lessons are counted on the `graph_memory.recall` span: `recall.injected` is the total, `recall.injected_memories` and `recall.injected_lessons` split it.
+- **Prompt text.** The mining prompt and the injection headings are prompt-registry entries `memory.lesson_*` in `prompts/memory/lessons.yaml`. When the agent has a prompt registry with those keys, their text is used; otherwise the built-in text, which is identical to the shipped file, is used.
+
+Lessons come from tool output and reach the model as trusted guidance: at conversation start inside the graph-memory context block (a `system` message), at error time as a `<system-reminder>`. See [Security Model](security-model.md) for what that means with untrusted tool servers. To turn the lane off, disable graph memory (`enabled: false`). Setting `enable_extraction: false` stops mining but not recall of lessons already stored.
+
 ---
 
 ### Memory Compression Configuration
@@ -486,6 +552,7 @@ Under `spec.memory.memory_compression`.
 | `min_l1_messages` | `int` | max_l1 / 2 | Min messages left in L1 after compression |
 | `warning_threshold_percent` | `int` | profile-dependent | Warning threshold (0-100) |
 | `critical_threshold_percent` | `int` | profile-dependent | Critical threshold (0-100) |
+| `protected_recent_turns` | `int` | `16` | Recent turns a fold keeps, user messages and assistant steps alike; the fold summarises everything before them. Also the top rung of the pressure ladder |
 | `batch_sizes.normal` | `int` | profile-dependent | Messages per batch (normal) |
 | `batch_sizes.warning` | `int` | profile-dependent | Messages per batch (warning) |
 | `batch_sizes.critical` | `int` | profile-dependent | Messages per batch (critical) |
@@ -494,11 +561,18 @@ Under `spec.memory.memory_compression`.
 
 | Profile | L1 token target | min_l1 | warning | critical | batch (N/W/C) | Use case |
 |---|---|---|---|---|---|---|
-| `balanced` | 6400 | 4 | 60% | 75% | 3/5/7 | General-purpose agents |
-| `data_intensive` | 4000 | 3 | 50% | 70% | 2/4/6 | SQL, large file operations |
-| `conversational` | 9600 | 6 | 70% | 85% | 4/6/8 | Chat-heavy, minimal tool usage |
+| `balanced` | 6400 | 4 | 60% | 90% | 3/5/7 | General-purpose agents |
+| `data_intensive` | 4000 | 3 | 45% | 80% | 2/4/6 | SQL, large file operations |
+| `conversational` | 9600 | 6 | 70% | 92% | 4/6/8 | Chat-heavy, minimal tool usage |
 
-The L1 token target is a reporting figure only; `warning` is the value that triggers compression.
+The two percentages are the relief water marks, as percentages of usable context
+(window minus reserved): `critical` is the high mark where relief begins, and
+`warning` is the low mark it sheds down to. The band between them decides how
+often relief runs and how much each pass sheds — `data_intensive` starts early
+and sheds deep because one tool result can add tens of points in a single call,
+while `conversational` starts late and sheds shallow to keep recency.
+
+The L1 token target is a reporting figure only.
 
 ---
 

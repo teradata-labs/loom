@@ -33,7 +33,7 @@ import (
 const DefaultTitanModelID = "amazon.titan-embed-text-v2:0"
 
 // DefaultTitanDimensions matches the vector(1024) column used by the Postgres
-// graph_memories HNSW index (migration 000025).
+// graph_memories HNSW index (migration 000032).
 const DefaultTitanDimensions = 1024
 
 // BedrockConfig configures the Amazon Bedrock embeddings client.

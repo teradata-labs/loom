@@ -109,6 +109,22 @@ just build
 just check
 ```
 
+#### After a dependency change
+
+`NOTICE` and `THIRD-PARTY-NOTICES.md` are generated from the packages compiled
+into the release binaries. Any change to `go.mod` / `go.sum` (a version bump, an
+added or removed dependency, a merge of `main` that brings one) can change them,
+and CI fails with "Third-party notices are out of date" until they are
+regenerated. Nothing regenerates them automatically, including on Dependabot PRs:
+
+```bash
+just notices        # rewrite NOTICE and THIRD-PARTY-NOTICES.md
+just notices-check  # confirm they match (also part of `just check`)
+git add NOTICE THIRD-PARTY-NOTICES.md
+```
+
+See [docs/reference/third-party-notices.md](docs/reference/third-party-notices.md).
+
 ### 3b. Cleaning (destructive)
 
 `just clean` removes repository build outputs (`bin/`, `gen/`, coverage artifacts), binaries under **`LOOM_BIN_DIR`** (default **`$HOME/.local/bin`**), and **all data** under **`LOOM_DATA_DIR`** (default **`$HOME/.loom`**). It may send **`SIGKILL`** to processes matching `looms`. You are **prompted to confirm** before deletions run. For scripts or automation, use **`just --yes clean`** to skip the prompt.

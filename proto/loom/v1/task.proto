@@ -305,6 +305,14 @@ message Task {
 
   // Freeform effort estimate (e.g., "5 min", "2 hours", "multi-session").
   string estimated_effort = 28;
+
+  // How the task came to exist. Values are the taskctx.CreatedVia* constants:
+  // "user", "agent", "decompose", "skill_template", "workflow", or "implicit"
+  // (minted by the runtime to record a working turn). Empty on rows written
+  // before provenance was recorded. The agent's own task queries already
+  // exclude "implicit"; this field lets API and UI consumers of ListTasks and
+  // GetBoard draw the same line, which they could not before it existed.
+  string created_via = 29;
 }
 
 // TaskDependency is a directed edge in the task dependency graph.

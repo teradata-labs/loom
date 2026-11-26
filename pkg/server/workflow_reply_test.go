@@ -14,7 +14,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/zap/zaptest"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
@@ -117,7 +116,7 @@ func wovenWorkflow(t *testing.T) (*MultiAgentServer, *replyingLLM, *replyingLLM,
 		"test-workflow:worker": workerAgent,
 	}
 
-	logger := zaptest.NewLogger(t)
+	logger := newTestLogger(t)
 	registry, err := agent.NewRegistry(agent.RegistryConfig{
 		ConfigDir: t.TempDir(),
 		DBPath:    ":memory:",
@@ -257,7 +256,7 @@ func TestWovenWorkflow_FanOutRepliesReachCoordinator(t *testing.T) {
 		agents[name] = agent.NewAgent(backend, llm)
 	}
 
-	logger := zaptest.NewLogger(t)
+	logger := newTestLogger(t)
 	registry, err := agent.NewRegistry(agent.RegistryConfig{
 		ConfigDir: t.TempDir(),
 		DBPath:    ":memory:",

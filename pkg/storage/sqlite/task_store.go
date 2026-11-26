@@ -80,15 +80,15 @@ func (s *TaskStore) CreateTask(ctx context.Context, t *task.Task) (*task.Task, e
 			owner_agent_id, assignee_agent_id, claimed_by_session,
 			parent_id, board_id, entity_ids_json, metadata_json,
 			compaction_level, compacted_summary, output_policy_json, estimated_effort,
-			created_at, updated_at, close_reason, skill_idempotency_key
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime(?), datetime(?), ?, ?)`,
+			created_at, updated_at, close_reason, skill_idempotency_key, created_via
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime(?), datetime(?), ?, ?, ?)`,
 		t.ID, t.Title, t.Description, t.Objective, t.Approach, t.AcceptanceCriteria, t.Notes,
 		int32(t.Status), int32(t.Priority), int32(t.Category), string(tagsJSON),
 		t.OwnerAgentID, nilIfEmpty(t.AssigneeAgentID), nilIfEmpty(t.ClaimedBySession),
 		nilIfEmpty(t.ParentID), nilIfEmpty(t.BoardID), string(entityIDsJSON), string(metadataJSON),
 		t.CompactionLevel, t.CompactedSummary, outputPolicyJSON, t.EstimatedEffort,
 		now.Format(time.RFC3339), now.Format(time.RFC3339), t.CloseReason,
-		nilIfEmpty(t.SkillIdempotencyKey),
+		nilIfEmpty(t.SkillIdempotencyKey), t.CreatedVia,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create task: %w", err)
@@ -107,7 +107,7 @@ func (s *TaskStore) GetTask(ctx context.Context, id string) (*task.Task, error) 
 			COALESCE(parent_id,''), COALESCE(board_id,''), entity_ids_json, metadata_json,
 			compaction_level, compacted_summary, output_policy_json, estimated_effort,
 			created_at, updated_at, claimed_at, closed_at, close_reason,
-			COALESCE(skill_idempotency_key,'')
+			COALESCE(skill_idempotency_key,''), COALESCE(created_via,'')
 		FROM tasks WHERE id = ? AND deleted_at IS NULL`, id)
 
 	return scanTask(row)
@@ -160,7 +160,7 @@ func (s *TaskStore) ListBySkillRun(ctx context.Context, skillName, sessionID str
 			COALESCE(parent_id,''), COALESCE(board_id,''), entity_ids_json, metadata_json,
 			compaction_level, compacted_summary, output_policy_json, estimated_effort,
 			created_at, updated_at, claimed_at, closed_at, close_reason,
-			COALESCE(skill_idempotency_key,'')
+			COALESCE(skill_idempotency_key,''), COALESCE(created_via,'')
 		FROM tasks
 		WHERE skill_idempotency_key LIKE ?
 		  AND deleted_at IS NULL
@@ -201,7 +201,7 @@ func (s *TaskStore) GetTaskByIdempotencyKey(ctx context.Context, key string) (*t
 			COALESCE(parent_id,''), COALESCE(board_id,''), entity_ids_json, metadata_json,
 			compaction_level, compacted_summary, output_policy_json, estimated_effort,
 			created_at, updated_at, claimed_at, closed_at, close_reason,
-			COALESCE(skill_idempotency_key,'')
+			COALESCE(skill_idempotency_key,''), COALESCE(created_via,'')
 		FROM tasks
 		WHERE skill_idempotency_key = ? AND deleted_at IS NULL
 		LIMIT 1`, key)
@@ -299,13 +299,36 @@ func (s *TaskStore) SetAcceptanceCriteria(ctx context.Context, taskID, criteria 
 	}
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
-		// Disambiguate "locked" from "no such task".
-		if _, gerr := s.GetTask(ctx, taskID); gerr != nil {
-			return nil, fmt.Errorf("set acceptance criteria: task %s not found: %w", taskID, gerr)
-		}
-		return nil, fmt.Errorf("task %s: %w", taskID, task.ErrAcceptanceCriteriaLocked)
+		// Disambiguate "locked" from "no such task" — with a typed probe, not
+		// GetTask, whose not-found error is untyped prose. Only a proven
+		// missing row may report not-found: the previous shape treated ANY
+		// probe failure as absence, so an I/O error here read as "task not
+		// found" — an outage narrated as a settled fact, to the one caller
+		// (the agent's task_board tool) that repeats this message verbatim.
+		var existingID string
+		gerr := s.db.QueryRowContext(ctx,
+			`SELECT id FROM tasks WHERE id = ? AND deleted_at IS NULL`, taskID,
+		).Scan(&existingID)
+		return nil, classifyCriteriaProbe(gerr, taskID)
 	}
 	return s.GetTask(ctx, taskID)
+}
+
+// classifyCriteriaProbe maps the existence probe's outcome to the caller-facing
+// error, and is a named function so the split is unit-testable without a way to
+// fail the probe on a live database. Only a PROVEN missing row (sql.ErrNoRows)
+// may say "not found"; any other probe failure is a verification error, because
+// the one real consumer — the agent's task_board tool — repeats this message to
+// the model verbatim, and an outage narrated as an absent task made the agent
+// re-plan around work that existed.
+func classifyCriteriaProbe(gerr error, taskID string) error {
+	if errors.Is(gerr, sql.ErrNoRows) {
+		return fmt.Errorf("set acceptance criteria: task %s not found", taskID)
+	}
+	if gerr != nil {
+		return fmt.Errorf("set acceptance criteria: verifying task %s: %w", taskID, gerr)
+	}
+	return fmt.Errorf("task %s: %w", taskID, task.ErrAcceptanceCriteriaLocked)
 }
 
 func (s *TaskStore) DeleteTask(ctx context.Context, id string) error {
@@ -386,6 +409,18 @@ func (s *TaskStore) ListTasks(ctx context.Context, opts task.ListTasksOpts) ([]*
 		args = append(args, opts.Query)
 	}
 
+	// Exclude by creation source. This is what keeps runtime-minted (implicit)
+	// tasks out of the agent's per-turn context: filtering here rather than
+	// after the fetch means the caller never pays to transfer rows it discards,
+	// and the board stats it computes are not inflated by scaffolding.
+	if len(opts.ExcludeCreatedVia) > 0 {
+		where += " AND COALESCE(t.created_via,'') NOT IN (" +
+			strings.TrimSuffix(strings.Repeat("?,", len(opts.ExcludeCreatedVia)), ",") + ")"
+		for _, v := range opts.ExcludeCreatedVia {
+			args = append(args, v)
+		}
+	}
+
 	// Count total
 	var total int
 	countArgs := make([]interface{}, len(args))
@@ -397,8 +432,12 @@ func (s *TaskStore) ListTasks(ctx context.Context, opts task.ListTasksOpts) ([]*
 	}
 
 	// created_at is stored at second precision; rowid breaks ties in true
-	// insertion order so newest-first windows stay deterministic.
-	orderBy := " ORDER BY t.priority ASC, t.created_at ASC"
+	// insertion order — on BOTH paths. The default path lacked the tiebreak,
+	// and countByStatusPaged pages this ordering with OFFSET: on non-unique
+	// keys adjacent pages returned two rows twice and two rows never (the
+	// overlap this repo's own admin doc measured), so the paged fallback both
+	// double-counted and dropped rows past one page.
+	orderBy := " ORDER BY t.priority ASC, t.created_at ASC, t.rowid ASC"
 	if opts.NewestFirst {
 		orderBy = " ORDER BY t.created_at DESC, t.rowid DESC"
 	}
@@ -410,7 +449,7 @@ func (s *TaskStore) ListTasks(ctx context.Context, opts task.ListTasksOpts) ([]*
 			COALESCE(parent_id,''), COALESCE(board_id,''), entity_ids_json, metadata_json,
 			compaction_level, compacted_summary, output_policy_json, estimated_effort,
 			created_at, updated_at, claimed_at, closed_at, close_reason,
-			COALESCE(skill_idempotency_key,'')
+			COALESCE(skill_idempotency_key,''), COALESCE(created_via,'')
 		FROM tasks t WHERE ` + where + // #nosec G202 -- where is built from validated enum conditions with ? placeholders
 		orderBy
 
@@ -495,20 +534,64 @@ func (s *TaskStore) CloseTask(ctx context.Context, taskID, reason string) (*task
 	defer s.tracer.EndSpan(span)
 
 	now := time.Now().UTC()
+	// The status guard makes a double close a no-op at the row: without it,
+	// two racing closers both rewrote status/close_reason and the manager fired
+	// duplicate history, a duplicate task.completed event, and a second
+	// graph-memory completion. A no-op close reports ErrTaskAlreadyTerminal so
+	// the manager can skip those side effects.
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE tasks SET
 			status = ?, close_reason = ?, closed_at = datetime(?),
 			assignee_agent_id = NULL, claimed_by_session = NULL,
 			updated_at = datetime(?)
-		WHERE id = ? AND deleted_at IS NULL`,
+		WHERE id = ? AND deleted_at IS NULL
+		  AND status NOT IN (?, ?)`,
 		int32(loomv1.TaskStatus_TASK_STATUS_DONE), reason,
 		now.Format(time.RFC3339), now.Format(time.RFC3339), taskID,
+		int32(loomv1.TaskStatus_TASK_STATUS_DONE), int32(loomv1.TaskStatus_TASK_STATUS_CANCELLED),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("close task: %w", err)
 	}
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
+		existing, gerr := s.GetTask(ctx, taskID)
+		if gerr == nil && existing != nil && task.IsTerminal(existing.Status) {
+			return existing, fmt.Errorf("close task %s: %w", taskID, task.ErrTaskAlreadyTerminal)
+		}
+		return nil, fmt.Errorf("task %s not found or already deleted", taskID)
+	}
+	return s.GetTask(ctx, taskID)
+}
+
+// CancelTask implements task.TaskCanceller: the CANCELLED twin of CloseTask,
+// with the same status guard so a cancel racing a close is decided at the row
+// and reported as ErrTaskAlreadyTerminal, not applied over the winner.
+func (s *TaskStore) CancelTask(ctx context.Context, taskID, reason string) (*task.Task, error) {
+	ctx, span := s.tracer.StartSpan(ctx, "sqlite.task.cancel")
+	defer s.tracer.EndSpan(span)
+
+	now := time.Now().UTC()
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE tasks SET
+			status = ?, close_reason = ?, closed_at = datetime(?),
+			assignee_agent_id = NULL, claimed_by_session = NULL, claimed_at = NULL,
+			updated_at = datetime(?)
+		WHERE id = ? AND deleted_at IS NULL
+		  AND status NOT IN (?, ?)`,
+		int32(loomv1.TaskStatus_TASK_STATUS_CANCELLED), reason,
+		now.Format(time.RFC3339), now.Format(time.RFC3339), taskID,
+		int32(loomv1.TaskStatus_TASK_STATUS_DONE), int32(loomv1.TaskStatus_TASK_STATUS_CANCELLED),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("cancel task: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		existing, gerr := s.GetTask(ctx, taskID)
+		if gerr == nil && existing != nil && task.IsTerminal(existing.Status) {
+			return existing, fmt.Errorf("cancel task %s: %w", taskID, task.ErrTaskAlreadyTerminal)
+		}
 		return nil, fmt.Errorf("task %s not found or already deleted", taskID)
 	}
 	return s.GetTask(ctx, taskID)
@@ -619,6 +702,18 @@ func (s *TaskStore) GetReadyFront(ctx context.Context, boardID string, opts task
 		args = append(args, int32(opts.MinPriority))
 	}
 
+	// Exclude by creation source. Runtime-minted tasks are not work the agent
+	// should be offered — they exist so a turn's evidence has an owner, and
+	// putting them in the ready front would invite the agent to "claim" its
+	// own bookkeeping.
+	if len(opts.ExcludeCreatedVia) > 0 {
+		conditions = append(conditions, "COALESCE(t.created_via,'') NOT IN ("+
+			strings.TrimSuffix(strings.Repeat("?,", len(opts.ExcludeCreatedVia)), ",")+")")
+		for _, v := range opts.ExcludeCreatedVia {
+			args = append(args, v)
+		}
+	}
+
 	// Exclude tasks that have unfinished blocking dependencies.
 	conditions = append(conditions, `NOT EXISTS (
 		SELECT 1 FROM task_dependencies d
@@ -648,9 +743,9 @@ func (s *TaskStore) GetReadyFront(ctx context.Context, boardID string, opts task
 			COALESCE(parent_id,''), COALESCE(board_id,''), entity_ids_json, metadata_json,
 			compaction_level, compacted_summary, output_policy_json, estimated_effort,
 			created_at, updated_at, claimed_at, closed_at, close_reason,
-			COALESCE(skill_idempotency_key,'')
+			COALESCE(skill_idempotency_key,''), COALESCE(created_via,'')
 		FROM tasks t WHERE %s
-		ORDER BY t.priority ASC, t.created_at ASC
+		ORDER BY t.priority ASC, t.created_at ASC, t.rowid ASC
 		LIMIT %d`, where, limit)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -688,9 +783,9 @@ func (s *TaskStore) GetBlockedTasks(ctx context.Context, boardID string) ([]*tas
 			COALESCE(parent_id,''), COALESCE(board_id,''), entity_ids_json, metadata_json,
 			compaction_level, compacted_summary, output_policy_json, estimated_effort,
 			created_at, updated_at, claimed_at, closed_at, close_reason,
-			COALESCE(skill_idempotency_key,'')
+			COALESCE(skill_idempotency_key,''), COALESCE(created_via,'')
 		FROM tasks t WHERE t.status = ? AND t.deleted_at IS NULL %s
-		ORDER BY t.priority ASC, t.created_at ASC`, boardFilter)
+		ORDER BY t.priority ASC, t.created_at ASC, t.rowid ASC`, boardFilter)
 
 	args = append([]interface{}{int32(loomv1.TaskStatus_TASK_STATUS_BLOCKED)}, args...)
 
@@ -877,7 +972,7 @@ func scanTask(row *sql.Row) (*task.Task, error) {
 		&t.ParentID, &t.BoardID, &entityIDsJSON, &metadataJSON,
 		&t.CompactionLevel, &t.CompactedSummary, &outputPolicyJSON, &t.EstimatedEffort,
 		&createdAtStr, &updatedAtStr, &claimedAtStr, &closedAtStr, &t.CloseReason,
-		&t.SkillIdempotencyKey,
+		&t.SkillIdempotencyKey, &t.CreatedVia,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("scan task: %w", err)
@@ -925,7 +1020,7 @@ func scanTaskRows(rows *sql.Rows) (*task.Task, error) {
 		&t.ParentID, &t.BoardID, &entityIDsJSON, &metadataJSON,
 		&t.CompactionLevel, &t.CompactedSummary, &outputPolicyJSON, &t.EstimatedEffort,
 		&createdAtStr, &updatedAtStr, &claimedAtStr, &closedAtStr, &t.CloseReason,
-		&t.SkillIdempotencyKey,
+		&t.SkillIdempotencyKey, &t.CreatedVia,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("scan task: %w", err)
@@ -1014,4 +1109,57 @@ func escapeLike(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `%`, `\%`)
 	return strings.ReplaceAll(s, `_`, `\_`)
+}
+
+// CountByStatus returns per-status task counts using one aggregate query.
+//
+// Replaces the pattern of fetching up to 1000 full task rows and histogramming
+// them in Go. That was wasteful on the agent's per-turn context path — every
+// column and several JSON payloads decoded per row, to increment a counter —
+// and silently wrong above the limit, since a board with more tasks than the
+// limit reported truncated counts.
+//
+// The query returns at most one row per status, so cost is independent of how
+// many tasks the board holds.
+func (s *TaskStore) CountByStatus(ctx context.Context, opts task.CountByStatusOpts) (task.StatusCounts, error) {
+	ctx, span := s.tracer.StartSpan(ctx, "sqlite.task.count_by_status")
+	defer s.tracer.EndSpan(span)
+
+	conditions := []string{"deleted_at IS NULL"}
+	var args []interface{}
+
+	if opts.BoardID != "" {
+		conditions = append(conditions, "board_id = ?")
+		args = append(args, opts.BoardID)
+	}
+	if len(opts.ExcludeCreatedVia) > 0 {
+		conditions = append(conditions, "COALESCE(created_via,'') NOT IN ("+
+			strings.TrimSuffix(strings.Repeat("?,", len(opts.ExcludeCreatedVia)), ",")+")")
+		for _, v := range opts.ExcludeCreatedVia {
+			args = append(args, v)
+		}
+	}
+
+	var counts task.StatusCounts
+	// #nosec G202 -- conditions are literals; every value is bound via ?
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT status, COUNT(*) FROM tasks WHERE `+strings.Join(conditions, " AND ")+
+			` GROUP BY status`, args...)
+	if err != nil {
+		return counts, fmt.Errorf("count tasks by status: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck
+
+	for rows.Next() {
+		var status int32
+		var n int
+		if err := rows.Scan(&status, &n); err != nil {
+			return task.StatusCounts{}, fmt.Errorf("scan status count: %w", err)
+		}
+		counts.Add(loomv1.TaskStatus(status), n)
+	}
+	if err := rows.Err(); err != nil {
+		return task.StatusCounts{}, fmt.Errorf("count tasks by status: %w", err)
+	}
+	return counts, nil
 }

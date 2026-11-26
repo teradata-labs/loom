@@ -88,3 +88,9 @@ func (p *PromptAwareTool) Execute(ctx context.Context, params map[string]interfa
 func (p *PromptAwareTool) Backend() string {
 	return p.tool.Backend()
 }
+
+// ConcurrencySafe forwards the wrapped tool's declaration. A wrapped tool that
+// does not declare it stays not concurrency-safe (fail closed).
+func (p *PromptAwareTool) ConcurrencySafe() bool {
+	return IsConcurrencySafe(p.tool)
+}

@@ -109,6 +109,20 @@ type Message struct {
 	// ToolCalls contains tool invocations (if role is assistant)
 	ToolCalls []ToolCall
 
+	// Thinking is the assistant's extended-thinking plain text (display and
+	// persistence — lands in the store's thinking_content). Never sent to
+	// the provider; the wire form is ThinkingBlocks.
+	Thinking string
+
+	// ThinkingBlocks carries the assistant's extended-thinking blocks for
+	// replay: always within the turn (tool-loop continuations), and on a
+	// settled turn only while the compiled context before the message — with
+	// the model ID and the advertised tool schemas — fingerprints as it did
+	// when the model wrote them (pkg/agent thinkingPrefix). Opaque: signatures
+	// are provider-signed and never interpreted. Never persisted — the persist
+	// seam drops them, so a reloaded session has none to replay.
+	ThinkingBlocks []ThinkingBlock
+
 	// ToolUseID is the ID of the tool_use block this result corresponds to (if role is tool)
 	// This is used by LLM providers like Bedrock/Anthropic to match tool results to tool requests
 	ToolUseID string
@@ -124,6 +138,12 @@ type Message struct {
 	// Optional - may be empty for messages created before this field was added
 	AgentID string
 
+	// Model is the model that answered, on a message an LLM call billed; empty
+	// on every other message and on rows written before it was recorded.
+	Model string
+	// Effort is the effort that call was made at, on the same messages.
+	Effort string
+
 	// UserID identifies which user owns this message (for RLS multi-tenancy).
 	// Set from context via interceptor for PostgreSQL backends.
 	// Defaults to "default-user" for SQLite backends.
@@ -134,8 +154,10 @@ type Message struct {
 	// Chat()-entry persist site is the only turn-incrementing event.
 	Turn int64
 
-	// Evicted marks a tool row whose payload was shed under context pressure.
-	// Write-once true, set only inside releasePressure; no code path clears it.
+	// Evicted is a legacy flag. Eviction (shedding a tool payload by rewriting
+	// the row in place) was removed: nothing sets it, and a row that carries it
+	// from an older run renders its full stored content. Kept so historical
+	// rows round-trip and the 000019 column still maps onto a field.
 	Evicted bool
 
 	// Folded marks a row folded into the session summary. Write-once true, set
@@ -148,6 +170,11 @@ type Message struct {
 	// "perfect place" (ROM, summary, and the last message before any current-turn
 	// offload stub); each provider client honors it.
 	CacheBreakpoint bool
+	// TaskID attributes this message to the task that was claimed when it was
+	// written. Empty is the normal case — not every turn runs under a task —
+	// and is persisted as NULL. Stamped from the ambient task attribution on
+	// the context; see pkg/task.Attribution.
+	TaskID string
 
 	// Timestamp when the message was created
 	Timestamp time.Time
@@ -157,9 +184,48 @@ type Message struct {
 
 	// CostUSD for cost tracking
 	CostUSD float64
+
+	// Per-turn token breakdown recorded from the LLM response that produced
+	// this message. Zero on rows written before the accounting rewrite
+	// (schema default) and on non-assistant rows (tool results, user
+	// messages) whose LLM call is attributed to the adjacent assistant row.
+	// Every cost/token roll-up in the product sums these columns — no other
+	// source is authoritative.
+	InputTokens       int
+	OutputTokens      int
+	CacheReadTokens   int
+	CacheCreateTokens int
+	// CacheCreateTokens split by how long the cache entry lives, and the part
+	// of OutputTokens spent thinking, as the provider reported them; zero when
+	// it did not and on rows written before they were recorded.
+	CacheCreate1hTokens int
+	CacheCreate5mTokens int
+	ThinkingTokens      int
 }
 
 // Usage tracks LLM token usage and costs.
+//
+// Token buckets are disjoint wherever loom parses the provider's cache fields:
+// InputTokens then counts only prompt tokens that were neither read from nor
+// written to the prompt cache, and the cache buckets are reported separately,
+// so the full prompt is InputTokens + CacheReadInputTokens +
+// CacheCreationInputTokens. This is the Anthropic/Bedrock convention; the
+// OpenAI-compatible (litellm, Mistral, HuggingFace) and Gemini clients subtract
+// the cache buckets out of their cache-inclusive prompt counts to match. Azure
+// OpenAI and Ollama parse no cache fields and report the provider's prompt count.
+//
+// TotalTokens is InputTokens + OutputTokens where that sum is exact: the
+// Anthropic, Bedrock InvokeModel/SDK and Ollama clients add the two, and the
+// OpenAI-compatible clients take the provider's total minus the cache buckets,
+// which reduces to the same sum. Gemini computes total minus cache the same
+// way, but its total can exceed InputTokens + OutputTokens by tokens loom does
+// not break out (thinking tokens on thinking models, tool-use prompt tokens).
+// Two clients pass the provider's total through unchanged: Azure OpenAI
+// (cache-inclusive, consistent with its InputTokens) and Bedrock Converse,
+// whose AWS totalTokens is not documented as including or excluding the cache
+// buckets.
+//
+// Throughput limits are a separate question: see RateLimitTokens.
 type Usage struct {
 	InputTokens  int
 	OutputTokens int
@@ -170,6 +236,44 @@ type Usage struct {
 	CacheReadInputTokens int
 	// CacheCreationInputTokens: tokens written to prompt cache (billed at 1.25x for Anthropic).
 	CacheCreationInputTokens int
+	// CacheCreation1hInputTokens and CacheCreation5mInputTokens split the cache
+	// write by how long the entry lives, as the provider reports it; both 0
+	// when it does not.
+	CacheCreation1hInputTokens int
+	CacheCreation5mInputTokens int
+	// ThinkingTokens is the part of OutputTokens the model spent thinking, as
+	// the provider reports it; 0 when it does not.
+	ThinkingTokens int
+	// Effort is the effort the call was made at; empty when the provider has
+	// no such setting.
+	Effort string
+	// RateLimitTokens is the figure capacity accounting charges for this call
+	// when it differs from TotalTokens. The OpenAI-compatible and Gemini clients
+	// set it to the provider's raw, cache-inclusive total. OpenAI and Gemini
+	// count cached prompt tokens toward TPM; behind a gateway it depends on the
+	// upstream (Bedrock, for one, does not deduct cache hits from its limits),
+	// so the raw total is the conservative choice, and it is what capacity
+	// accounting charged before cache tokens were split out of InputTokens.
+	// Zero means TotalTokens is the charged figure. Read it through
+	// ThroughputTokens.
+	RateLimitTokens int
+	// CostEstimated is true when CostUSD includes an estimate rather than a
+	// reported or published price: a call whose model had neither was priced
+	// at the median rate of the same creator's catalog models
+	// (catalog.CreatorMedianPricing). Summing usage keeps it set if any call
+	// set it. Shown to users as an asterisk on the cost.
+	CostEstimated bool
+}
+
+// ThroughputTokens returns the tokens the provider metered against its
+// throughput limit for this usage: RateLimitTokens when set, else TotalTokens.
+// Capacity accounting (the slot scheduler's TPM window) must use this, never
+// TotalTokens directly.
+func (u Usage) ThroughputTokens() int {
+	if u.RateLimitTokens > 0 {
+		return u.RateLimitTokens
+	}
+	return u.TotalTokens
 }
 
 // LLMResponse represents a response from the LLM.
@@ -192,6 +296,28 @@ type LLMResponse struct {
 	// Thinking contains the agent's internal reasoning process
 	// (for models that support extended thinking like Claude with thinking blocks)
 	Thinking string
+
+	// ThinkingBlocks carries the structured thinking blocks (with provider
+	// signatures) for verbatim in-turn replay; Thinking above remains the
+	// concatenated plain text for events and display.
+	ThinkingBlocks []ThinkingBlock
+}
+
+// ThinkingBlock is one extended-thinking block of an assistant response,
+// carried opaquely: Signature is provider-signed and never interpreted;
+// redacted blocks keep their encrypted payload in Thinking.
+type ThinkingBlock struct {
+	// Type is "thinking" | "redacted_thinking" (Anthropic), or a
+	// "reasoning.*" detail type ("reasoning.text", "reasoning.summary",
+	// "reasoning.encrypted") from an OpenAI-compatible gateway's
+	// reasoning_details.
+	Type      string
+	Thinking  string
+	Signature string
+	// Format is the gateway's opaque format tag for a reasoning detail
+	// (for example "anthropic-claude-v1"), replayed unchanged. Empty for
+	// Anthropic-native blocks.
+	Format string
 }
 
 // LLMProvider defines the interface for LLM providers.
@@ -275,6 +401,18 @@ type Session struct {
 	// Defaults to "default-user" for SQLite backends.
 	UserID string
 
+	// Incarnation distinguishes INCARNATIONS of a session id across its
+	// durable lifetime: a nanosecond-resolution nonce stamped once at
+	// creation and persisted verbatim, never updated. It exists because
+	// CreatedAt persists at SECOND resolution — in memory the implicit-task
+	// epoch used CreatedAt.UnixNano(), but a store round trip truncated it,
+	// so after a restart a same-second delete-and-recreate of a session id
+	// re-derived the previous incarnation's idempotency key and the new
+	// conversation's first turn was declined against the dead task's spent
+	// key. Zero means "no persisted incarnation" (a legacy row, or a
+	// backend that does not store it) and readers fall back to CreatedAt.
+	Incarnation int64
+
 	// Messages is the conversation history (flat, for backward compatibility)
 	Messages []Message
 
@@ -351,6 +489,19 @@ func (s *Session) GetMessages() []Message {
 	messages := make([]Message, len(s.Messages))
 	copy(messages, s.Messages)
 	return messages
+}
+
+// FindMessage returns the newest message, in the flat history, for which match
+// holds. The history is read under the session's lock.
+func (s *Session) FindMessage(match func(Message) bool) (Message, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for i := len(s.Messages) - 1; i >= 0; i-- {
+		if match(s.Messages[i]) {
+			return s.Messages[i], true
+		}
+	}
+	return Message{}, false
 }
 
 // MessageCount returns the total number of messages in the session.
@@ -462,6 +613,38 @@ type ProgressEvent struct {
 
 	// IsTokenStream indicates if this event is a token streaming update
 	IsTokenStream bool
+
+	// IsToolInputStream indicates the provider is streaming tool-input
+	// (function-call argument) bytes. It carries no argument content — tool
+	// input is never rendered as partial text — and exists so a long
+	// tool-argument generation registers as activity instead of silence.
+	// ToolCallID, ToolName and ToolInputBytes identify the call when the
+	// provider reports them. Always Droppable.
+	IsToolInputStream bool
+
+	// ToolInputBytes is the length of the tool-call argument JSON received so
+	// far; set only on IsToolInputStream events. Events are throttled, so the
+	// last value a consumer sees can lag the final size until tool-started.
+	ToolInputBytes int64
+
+	// ToolCallIndex is the provider's stream index for this tool call; set
+	// only on IsToolInputStream events. OpenAI-compatible providers (OpenAI,
+	// Azure, LiteLLM, Mistral, HuggingFace) return their tool calls in stream
+	// index order, so the index is monotonic with position but not
+	// necessarily equal to it: the OpenAI client (and so LiteLLM, Mistral and
+	// HuggingFace) drops an incomplete call with no id or name, and later
+	// calls keep their stream index while shifting position. The Azure OpenAI
+	// client keeps such a call, with whichever of id and name is missing left
+	// empty. Match a progress event to
+	// its tool-started event by ToolCallID. On providers that deliver calls
+	// in order (Anthropic, Bedrock, Gemini, Ollama) the index matches
+	// position when nothing is dropped. Gemini repeats the function name in
+	// ToolCallID, so two parallel calls to the same tool share an ID and only
+	// this index tells them apart. The agent's throttling keys on the same
+	// index, so events for one call never interleave with another's. A bare
+	// activity pulse (no ToolCallID, no ToolName, 0 bytes) carries index 0
+	// without being call 0; skip pulses.
+	ToolCallIndex int32
 
 	// TokenCount is the running count of tokens received
 	TokenCount int32

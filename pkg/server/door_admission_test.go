@@ -28,6 +28,7 @@ import (
 	"github.com/stretchr/testify/require"
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
+	"github.com/teradata-labs/loom/pkg/llm"
 	llmscheduler "github.com/teradata-labs/loom/pkg/llm/scheduler"
 	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
 	"github.com/teradata-labs/loom/pkg/shuttle"
@@ -254,6 +255,8 @@ func TestIsTransientOutcomeResourceExhausted(t *testing.T) {
 	assert.True(t, isTransientOutcome(status.Error(codes.ResourceExhausted, "door queue full")))
 	assert.True(t, isTransientOutcome(context.Canceled))
 	assert.True(t, isTransientOutcome(status.Error(codes.DeadlineExceeded, "deadline")))
+	assert.True(t, isTransientOutcome(llm.ErrStreamTimeout))
+	assert.True(t, isTransientOutcome(status.Error(codes.Unavailable, "provider stream timed out")))
 	assert.False(t, isTransientOutcome(status.Error(codes.InvalidArgument, "bad query")))
 	assert.False(t, isTransientOutcome(nil))
 }

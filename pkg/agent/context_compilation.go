@@ -21,8 +21,10 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"sort"
 	"strconv"
 	"strings"
@@ -39,18 +41,14 @@ type summaryState struct {
 	text string
 }
 
+// summaryRowPrefix opens the compiled summary row; the trigger's estimate
+// recognises the row by it.
+const summaryRowPrefix = "<system-reminder>\nSession summary — the work so far:\n\n"
+
 // syntheticFailedResult is the normative text of HLD §5.2 step 7: a call with
 // no matching result row gets a synthetic failed result emitted in its place —
 // synthetic, never strip, because the signature is the re-run door.
 const syntheticFailedResult = "[no result recorded — the call did not complete. Re-run it if needed.]"
-
-// offloadStubFormat is the normative offload stub of HLD §5.5 — a turn=T result
-// strictly over the threshold; the payload is in memory and queryable.
-const offloadStubFormat = "[%s result, ~%d tokens, held in memory this turn — query_tool_result(message_id=%d, offset=0, limit=100) to read it; sql=\"SELECT ... FROM results\" for tabular data.%s\n preview: %s]"
-
-// evictedStubFormat is the normative evicted stub of HLD §5.5 — evicted=true or
-// legacy oversize; the only door is re-run.
-const evictedStubFormat = "[%s result, ~%d tokens, evicted from context — re-run the call above if this data is needed again.%s\n preview: %s]"
 
 // compileLocked is ContextCompilation §5.2 steps 1–7: KERNEL rides the provider
 // tools parameter (its bytes are counted via kernelBytes); ROM; the summary's
@@ -58,49 +56,108 @@ const evictedStubFormat = "[%s result, ~%d tokens, evicted from context — re-r
 // render cases, with pair atomicity restored by synthetic failed results.
 // Must hold lock.
 func (sm *SegmentedMemory) compileLocked() []Message {
-	out := make([]Message, 0, len(sm.contextMessages)+2)
+	// Fingerprinting hashes the whole context; it is only read when a
+	// settled thinking row has a recorded fingerprint to compare against.
+	out, _ := sm.compilePrefixLocked(sm.contextMessages, sm.currentTurnLocked(), len(sm.thinkingPrefix) > 0)
+	return out
+}
+
+// compileMessagesLocked is compileLocked over msgs, rendered for turn t. The
+// fold call compiles the settled context — everything before the pending pair
+// — through it, rendered for the same turn as the call before it, so its
+// bytes and breakpoints are that call's prefix. Must hold lock.
+func (sm *SegmentedMemory) compileMessagesLocked(msgs []Message, t int64) []Message {
+	out, _ := sm.compilePrefixLocked(msgs, t, len(sm.thinkingPrefix) > 0)
+	return out
+}
+
+// compilePrefixLocked compiles msgs, rendered for turn t, and, when
+// fingerprint is set, returns the fingerprint of the compiled list (see
+// thinkingPrefix); without it no settled turn keeps its thinking blocks and
+// the sum is zero. Must hold lock.
+func (sm *SegmentedMemory) compilePrefixLocked(msgs []Message, t int64, fingerprint bool) ([]Message, [sha256.Size]byte) {
+	out := make([]Message, 0, len(msgs)+2)
+
+	// prefix fingerprints out as it grows: every append goes through push, so
+	// prefix.Sum at any point is the fingerprint of everything before the next
+	// message. It starts from the request identity — the model and the
+	// advertised tool schemas — which the provider also checks a replayed
+	// thinking block against, and which a tool or model change alters without
+	// changing a message.
+	var prefix hash.Hash
+	if fingerprint {
+		prefix = sha256.New()
+		writeField(prefix, sm.requestModel)
+		writeField(prefix, string(sm.requestToolsDigest[:]))
+	}
+	push := func(m Message) {
+		out = append(out, m)
+		if prefix != nil {
+			writeMessageFingerprint(prefix, &out[len(out)-1])
+		}
+	}
 
 	// Step 2: ROM. Its own cache breakpoint — the most stable prefix; survives a
 	// fold, which only invalidates from the summary downward.
 	if sm.romContent != "" {
-		out = append(out, Message{Role: "system", Content: sm.romContent, CacheBreakpoint: true})
+		push(Message{Role: "system", Content: sm.romContent, CacheBreakpoint: true})
 	}
 
-	// Step 3: the summary's newest version, one system message. Its own cache
-	// breakpoint — stable until the next fold rewrites it.
+	// Step 3: the summary's newest version — CONVERSATION content, not system.
+	// The summary is the folded past, the model's own testimony; it renders as
+	// a user-role reminder at the head of the conversation region (loom's
+	// established harness-message pattern). Deliberately NO cache breakpoint
+	// and no system role: a summary block in the system region consumed a
+	// marker slot, and the client cap (4 minus the tool list) then dropped
+	// till-NOW — the only marker that caches the session tail in a one-turn
+	// (one-shot CLI) session, so every post-fold call re-billed its whole
+	// tail as raw input. As a conversation message it is covered by the
+	// lastStable/till-NOW markers like any other row, and a fold invalidates
+	// from HERE down — ROM and the tool schemas stay cached across folds.
 	if sm.summary.text != "" {
-		out = append(out, Message{Role: "system", Content: sm.summary.text, CacheBreakpoint: true})
+		push(Message{Role: "user",
+			Content: summaryRowPrefix + sm.summary.text +
+				"\n\nExact values quoted in this summary (expected outputs, literals, paths, interfaces) are unverified — the summary may restate them imprecisely. Before relying on one, read it from its source.\n</system-reminder>"})
 	}
 
-	// Step 5: T — the session's current turn number.
-	t := sm.currentTurnLocked()
-
-	// Tool names by call id, for the stub headers.
-	callName := make(map[string]string)
-	for i := range sm.contextMessages {
-		for _, c := range sm.contextMessages[i].ToolCalls {
-			if c.ID != "" {
-				callName[c.ID] = c.Name
-			}
-		}
-	}
-
-	// Step 6 render cases + step 7 pair atomicity. Track the message cache
-	// breakpoint: the last message before any CURRENT-TURN ephemeral content.
-	// Two kinds re-render differently once the turn settles, so caching either
-	// would mismatch the next call's prefix: (a) offload stubs, which re-render
-	// to evicted stubs next turn; (b) query_tool_result call/result pairs, which
-	// never persist (§4.3) and are pruned once the turn settles. Everything
-	// before the first of these is turn-stable and safe to cache.
-	msgs := sm.contextMessages
+	// Render cases + pair atomicity. Track the message cache breakpoint: the
+	// last message before any CURRENT-TURN content that can re-render at
+	// settle. An offload-exempt tool's current-turn result renders whole and
+	// re-renders truncated once the turn settles, so caching it would
+	// mismatch the next call's prefix. Non-exempt over-threshold rows render
+	// their truncated §4.1 bytes from the first compile and never change;
+	// they sit behind the same freeze conservatively.
 	lastStable, frozen := len(out)-1, false
-	emit := func(m *Message) {
-		out = append(out, sm.renderLocked(m, t, callName))
-		if m.Turn == t && ((m.Role == "tool" && !m.Evicted && len(m.Content) > sm.threshold) ||
-			(m.Role == "assistant" && hasQueryToolResultCall(m))) {
+	// The turn's pinned reminders (turnNotes), each after the current-turn
+	// rows that preceded it when it was sent. A reminder is gone once the turn
+	// settles, so like (a) and (b) it freezes the message breakpoint: the next
+	// turn can read the cache up to the row before the turn's first reminder.
+	notes := sm.turnNotesLocked(t)
+	seen := 0
+	flushNotes := func(all bool) {
+		for len(notes) > 0 && (all || notes[0].after <= seen) {
+			push(Message{Role: "user", Content: notes[0].content, Turn: t})
 			frozen = true
+			notes = notes[1:]
 		}
-		if !frozen {
+	}
+	emit := func(m *Message) {
+		if m.Turn == t {
+			seen++
+		}
+		r := sm.renderLocked(m, t)
+		if prefix != nil && m.Role == "assistant" && len(m.ThinkingBlocks) > 0 && r.ThinkingBlocks == nil &&
+			sm.thinkingPrefixMatchesLocked(m, prefix) {
+			// A settled turn keeps its thinking blocks while everything before
+			// them renders as it did when the model wrote them (thinkingPrefix).
+			r.ThinkingBlocks = m.ThinkingBlocks
+		}
+		push(r)
+		// Advance only onto messages that can carry a wire cache marker: a
+		// text-empty message (an assistant tool-call shell) gets no
+		// cache_control from the provider clients, so parking the breakpoint
+		// there silently uncaches the entire prefix for the rest of the turn.
+		if !frozen && out[len(out)-1].Content != "" {
 			lastStable = len(out) - 1
 		}
 	}
@@ -127,7 +184,7 @@ func (sm *SegmentedMemory) compileLocked() []Message {
 			}
 			for _, c := range m.ToolCalls {
 				if c.ID != "" && missing[c.ID] {
-					out = append(out, Message{
+					push(Message{
 						Role:      "tool",
 						ToolUseID: c.ID,
 						Content:   syntheticFailedResult,
@@ -139,36 +196,157 @@ func (sm *SegmentedMemory) compileLocked() []Message {
 			}
 			i = j - 1
 		}
+		flushNotes(false)
 	}
+	flushNotes(true)
 
 	// The message breakpoint (ROM/summary already carry their own).
 	if lastStable >= 0 && !out[lastStable].CacheBreakpoint {
 		out[lastStable].CacheBreakpoint = true
 	}
 
-	return out
-}
-
-// hasQueryToolResultCall reports whether an assistant message issues a
-// query_tool_result call. Its call/result pair is ephemeral (§4.3) and pruned
-// when the turn settles, so it must sit behind the cache breakpoint.
-func hasQueryToolResultCall(m *Message) bool {
-	for _, c := range m.ToolCalls {
-		if c.Name == "query_tool_result" {
-			return true
+	// The till-NOW breakpoint — the fourth marker, on the last markable
+	// message. Within a turn the region past lastStable is byte-stable:
+	// truncated renders are deterministic and arrivals append rather than
+	// rewrite, so this marker is read back by every following call of the
+	// same turn. At turn settle the region re-renders and the request falls
+	// back to the lastStable marker — cross-turn behavior unchanged. Clients
+	// that spend a marker on the tool list cap message markers at three,
+	// which skips exactly this one.
+	for i := len(out) - 1; i >= 0 && i != lastStable; i-- {
+		if out[i].Content != "" {
+			out[i].CacheBreakpoint = true
+			break
 		}
 	}
-	return false
+
+	var sum [sha256.Size]byte
+	if prefix != nil {
+		prefix.Sum(sum[:0])
+	}
+	return out, sum
 }
 
-// renderLocked applies §5.2 step 6's five render cases — first matching case
-// wins. Conversation is never stubbed; offload is a pure render condition of
-// the current turn; evicted and legacy-oversize rows render the evicted stub.
-// The offload case carves out the exempt set (SetOffloadExemptTools): an
-// exempt tool's current-turn result renders whole — exemption never reaches
-// the evicted cases, so relief and prior turns behave identically for every
-// tool.
-func (sm *SegmentedMemory) renderLocked(m *Message, t int64, callName map[string]string) Message {
+// Settled-turn thinking blocks (thinkingPrefix). Current models keep earlier
+// turns' thinking blocks in context, so leaving them out of a settled turn
+// changes the request from that turn's first assistant message on: the
+// prompt cache misses there on the next message. They may only be sent while
+// everything before them is unchanged, though: the provider checks that a
+// replayed block follows the same system prompt, tools and messages it was
+// written after (an edit is a 400 on enforced accounts), and loom does edit
+// settled history — offload stubs re-render at the settle boundary, the turn
+// end drops payloads, relief evicts and folds. So AddMessage records, for each
+// assistant message with thinking blocks, the fingerprint of the compiled
+// context the model had just been sent, and compile keeps the blocks on a
+// settled turn only while the context before them still fingerprints the
+// same. The fingerprint starts from the model ID and a digest of the
+// advertised tool schemas (SetRequestIdentity), so a tool-set change (lazy
+// disclosure, a skill load, a circuit-breaker filter) or a model switch drops
+// the blocks too; either already misses the prompt cache from the tool list
+// on, so dropping them costs no cache. The turn's reminders (turnNotes) are
+// compiled in place, so they are inside the fingerprint: a block written after
+// a reminder is not replayed once the turn settles and the reminder is gone.
+
+// recordThinkingPrefixLocked records the compiled-context fingerprint for an
+// assistant message about to be appended. Must hold the write lock.
+func (sm *SegmentedMemory) recordThinkingPrefixLocked(msg *Message) {
+	if msg.Role != "assistant" || len(msg.ThinkingBlocks) == 0 {
+		return
+	}
+	_, sum := sm.compilePrefixLocked(sm.contextMessages, sm.currentTurnLocked(), true)
+	if sm.thinkingPrefix == nil {
+		sm.thinkingPrefix = make(map[[sha256.Size]byte][sha256.Size]byte)
+	}
+	if len(sm.thinkingPrefix) > 4096 { // bound: entries for folded-away rows are never read again
+		sm.thinkingPrefix = make(map[[sha256.Size]byte][sha256.Size]byte)
+	}
+	sm.thinkingPrefix[thinkingBlocksKey(msg.ThinkingBlocks)] = sum
+}
+
+// thinkingPrefixMatchesLocked reports whether m's thinking blocks were
+// written after a context that fingerprints as prefix does now.
+func (sm *SegmentedMemory) thinkingPrefixMatchesLocked(m *Message, prefix hash.Hash) bool {
+	want, ok := sm.thinkingPrefix[thinkingBlocksKey(m.ThinkingBlocks)]
+	if !ok {
+		return false
+	}
+	var got [sha256.Size]byte
+	prefix.Sum(got[:0])
+	return got == want
+}
+
+// thinkingBlocksKey identifies an assistant message by its thinking blocks
+// (signatures are unique per response).
+func thinkingBlocksKey(blocks []ThinkingBlock) [sha256.Size]byte {
+	h := sha256.New()
+	for _, b := range blocks {
+		writeField(h, b.Type)
+		writeField(h, b.Thinking)
+		writeField(h, b.Signature)
+		writeField(h, b.Format)
+	}
+	var sum [sha256.Size]byte
+	h.Sum(sum[:0])
+	return sum
+}
+
+// writeMessageFingerprint writes every field of a compiled message that
+// reaches the provider (not CacheBreakpoint, which changes call to call
+// without changing the content).
+func writeMessageFingerprint(h hash.Hash, m *Message) {
+	writeField(h, m.Role)
+	writeField(h, m.Content)
+	for _, b := range m.ContentBlocks {
+		writeField(h, b.Type)
+		writeField(h, b.Text)
+		if b.Image != nil {
+			writeField(h, b.Image.Source.Type)
+			writeField(h, b.Image.Source.MediaType)
+			writeField(h, b.Image.Source.Data)
+			writeField(h, b.Image.Source.URL)
+		}
+	}
+	for _, b := range m.ThinkingBlocks {
+		writeField(h, b.Type)
+		writeField(h, b.Thinking)
+		writeField(h, b.Signature)
+		writeField(h, b.Format)
+	}
+	for _, c := range m.ToolCalls {
+		writeField(h, c.ID)
+		writeField(h, c.Name)
+		input, _ := json.Marshal(c.Input) // map keys marshal sorted
+		writeField(h, string(input))
+	}
+	writeField(h, m.ToolUseID)
+	writeField(h, "\x1e") // message separator
+}
+
+// writeField writes s length-prefixed, so field boundaries cannot shift.
+func writeField(h hash.Hash, s string) {
+	h.Write([]byte(strconv.Itoa(len(s)) + ":"))
+	h.Write([]byte(s))
+}
+
+// renderLocked applies the render cases — first matching case wins.
+// Conversation is never stubbed, and compile applies no size bound of its own:
+// a tool row renders with the bytes the row holds. Those bytes were bounded at
+// arrival (appendMessage, §4.1): an over-threshold result entered as core +
+// tail, and the stored row is the same bytes, so a session reloaded from the
+// store renders exactly what the producing session did.
+//
+// What compile guarantees is byte-stability: no row is ever rewritten in
+// place, so a compiled prefix stays valid and the fold is the only thing that
+// invalidates it.
+func (sm *SegmentedMemory) renderLocked(m *Message, t int64) Message {
+	if m.Role == "assistant" && len(m.ThinkingBlocks) > 0 && m.Turn < t {
+		// Settled turns render without thinking blocks here (the fold
+		// compressor's input). compileLocked puts them back while the prefix
+		// they were written after is unchanged (thinkingPrefix).
+		r := *m
+		r.ThinkingBlocks = nil
+		return r
+	}
 	// User turns carry their arrival time into the compiled view ONLY, so the
 	// model keeps per-turn temporal grounding ("today", "this month") while the
 	// stored, client-visible Content stays verbatim. Timestamp is write-once and
@@ -183,7 +361,7 @@ func (sm *SegmentedMemory) renderLocked(m *Message, t int64, callName map[string
 	// the leading text block (deep-copying so the stored row is untouched); if a
 	// turn somehow carries no text block, fall back to a stamp-only Content so
 	// grounding is never silently dropped.
-	if m.Role == "user" && !m.Timestamp.IsZero() {
+	if (m.Role == "user" || IsSyntheticWireUserRole(m.Role)) && !m.Timestamp.IsZero() {
 		stamp := "[" + m.Timestamp.UTC().Format("Mon 2006-01-02 15:04 MST") + "] "
 		r := *m
 		r.Content = stamp + m.Content
@@ -192,28 +370,10 @@ func (sm *SegmentedMemory) renderLocked(m *Message, t int64, callName map[string
 		}
 		return r
 	}
-	if m.Role != "tool" {
-		return *m
-	}
-	switch {
-	case m.Evicted:
-		r := *m
-		r.Content = sm.evictedStub(m, callName)
-		return r
-	case len(m.Content) > sm.threshold && m.Turn == t:
-		if sm.offloadExempt[callName[m.ToolUseID]] {
-			return *m
-		}
-		r := *m
-		r.Content = sm.offloadStub(m, callName)
-		return r
-	case len(m.Content) > sm.threshold && m.Turn < t:
-		r := *m
-		r.Content = sm.evictedStub(m, callName)
-		return r
-	default:
-		return *m
-	}
+	// Tool rows render as stored. Eviction (stub-in-place) was removed — see
+	// releasePressure — so nothing rewrites a row at render time and history
+	// behind the cache breakpoint is stable for the life of the session.
+	return *m
 }
 
 // stampLeadingTextBlock returns a copy of blocks with stamp prepended to the
@@ -231,41 +391,6 @@ func stampLeadingTextBlock(blocks []ContentBlock, stamp string) []ContentBlock {
 		}
 	}
 	return blocks
-}
-
-// offloadStub renders the §5.5 offload stub for a current-turn result strictly
-// over the threshold. A row with no durable ID (storeless session) has no
-// query_tool_result door — printing message_id=0 would advertise a door that
-// errors — so it renders the evicted stub, whose only door is re-run.
-func (sm *SegmentedMemory) offloadStub(m *Message, callName map[string]string) string {
-	id, _ := strconv.ParseInt(m.ID, 10, 64)
-	if id <= 0 {
-		return sm.evictedStub(m, callName)
-	}
-	return fmt.Sprintf(offloadStubFormat,
-		stubToolName(m, callName),
-		tokenFigure(len(m.Content)),
-		id,
-		harvestTails(m.Content),
-		previewOf(m.Content))
-}
-
-// evictedStub renders the §5.5 evicted stub.
-func (sm *SegmentedMemory) evictedStub(m *Message, callName map[string]string) string {
-	return fmt.Sprintf(evictedStubFormat,
-		stubToolName(m, callName),
-		tokenFigure(len(m.Content)),
-		harvestTails(m.Content),
-		previewOf(m.Content))
-}
-
-// stubToolName resolves the producing call's tool name via the paired
-// assistant row's signature.
-func stubToolName(m *Message, callName map[string]string) string {
-	if name := callName[m.ToolUseID]; name != "" {
-		return name
-	}
-	return "tool"
 }
 
 // harvestTails extracts the row's trailing [harvested: …] / [harvest failed …]
@@ -292,6 +417,12 @@ func harvestTails(content string) string {
 // every whitespace run collapsed to a single space, cut backward to a rune
 // boundary (whole runes are appended, so no rune is ever split).
 func previewOf(content string) string {
+	return collapseTo(content, 160)
+}
+
+// collapseTo is previewOf's engine at an arbitrary byte cap: whitespace runs
+// collapse to one space, whole runes only.
+func collapseTo(content string, max int) string {
 	var b strings.Builder
 	lastSpace := false
 	for _, r := range content {
@@ -306,12 +437,62 @@ func previewOf(content string) string {
 			lastSpace = false
 			s = string(r)
 		}
-		if b.Len()+len(s) > 160 {
+		if b.Len()+len(s) > max {
 			break
 		}
 		b.WriteString(s)
 	}
 	return b.String()
+}
+
+// jsonSketch renders a one-level shape sketch of a parsed JSON value — sorted
+// keys with value kinds, array lengths, nested sizes; never values. Sorted
+// iteration keeps the sketch byte-stable (cache safety).
+func jsonSketch(v interface{}) string {
+	switch t := v.(type) {
+	case map[string]interface{}:
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for i, k := range keys {
+			if i == 8 {
+				parts = append(parts, "…")
+				break
+			}
+			parts = append(parts, k+": "+jsonKind(t[k]))
+		}
+		return "{" + strings.Join(parts, ", ") + "}"
+	case []interface{}:
+		if len(t) == 0 {
+			return "[0 items]"
+		}
+		return fmt.Sprintf("[%d items of %s]", len(t), jsonKind(t[0]))
+	default:
+		return jsonKind(v)
+	}
+}
+
+// jsonKind names a JSON value's kind for the sketch.
+func jsonKind(v interface{}) string {
+	switch t := v.(type) {
+	case string:
+		return "str"
+	case float64:
+		return "num"
+	case bool:
+		return "bool"
+	case nil:
+		return "null"
+	case []interface{}:
+		return fmt.Sprintf("[%d items]", len(t))
+	case map[string]interface{}:
+		return fmt.Sprintf("{%d keys}", len(t))
+	default:
+		return "value"
+	}
 }
 
 // --- estimate & target (HLD §5.1) -------------------------------------------
@@ -324,7 +505,7 @@ const msgFramingTokens = 4
 // deliberately smaller than the real bytes-per-token of this system's content
 // (~3.3), so the byte bound OVER-counts tokens: the cheap tier may tokenize a
 // little early, but it never reports "under" when we are actually near the limit.
-const cheapBytesPerToken = 2.7
+const cheapBytesPerToken = 2.0
 
 // estimateLocked returns the token count of the compiled context (KERNEL + ROM +
 // summary + L1 view). Two tiers, so the tokenizer runs only near the limit:
@@ -334,20 +515,57 @@ const cheapBytesPerToken = 2.7
 //     message).
 //
 // Must hold lock.
-func (sm *SegmentedMemory) estimateLocked() int {
+func (sm *SegmentedMemory) estimateLocked() int { return sm.estimateOptLocked(false) }
+
+// estimateOptLocked is estimateLocked with one option: skipSummary leaves the
+// summary row out of the count. The fold trigger uses it — the summary is the
+// floor the next fold stands on, not something a fold can shed. The pressure
+// path never sets it: the summary counts there. Neither path counts the step
+// in flight, which StepSendCount fits separately.
+// Both tiers are scaled by the provider calibration factor, so the cheap
+// tier's early exit compares like with like. Must hold lock.
+func (sm *SegmentedMemory) estimateOptLocked(skipSummary bool) int {
 	compiled := sm.compileLocked()
+	f := sm.calibrationLocked()
+	isSummary := func(i int) bool {
+		return skipSummary && compiled[i].Role == "user" && strings.HasPrefix(compiled[i].Content, summaryRowPrefix)
+	}
+
+	// The in-flight batch: tool results after the last assistant row. The
+	// model has not consumed them and no fold may excise them, so no trigger
+	// may count them — an estimate inflated by unshedable mass fires folds
+	// that cannot commit (the collapse finds nothing removable), and the
+	// pressure failsafe then churns the prefix on every call. The batch is
+	// consumed by the model's next response, ages into excisable past, and
+	// counts from then on. The batch is fitted to the provider's window
+	// before the send (StepSendCount), not here.
+	lastAssistant := -1
+	for i := range compiled {
+		if compiled[i].Role == "assistant" {
+			lastAssistant = i
+		}
+	}
+	inFlight := func(i int) bool {
+		return compiled[i].Role == "tool" && i > lastAssistant
+	}
 
 	// Cheap tier — byte bound, no tokenization.
-	bytes := sm.kernelBytes
+	bytes := sm.kernelBytes + len(sm.transientTail)
 	for i := range compiled {
+		if inFlight(i) || isSummary(i) {
+			continue
+		}
 		bytes += len(compiled[i].Content)
 		if len(compiled[i].ToolCalls) > 0 {
 			if b, err := json.Marshal(compiled[i].ToolCalls); err == nil {
 				bytes += len(b)
 			}
 		}
+		for _, tb := range compiled[i].ThinkingBlocks {
+			bytes += len(tb.Thinking) + len(tb.Signature)
+		}
 	}
-	cheap := int(float64(bytes) / cheapBytesPerToken)
+	cheap := int(float64(bytes) / cheapBytesPerToken * f)
 	if limit := sm.startMarkLocked(0); limit <= 0 || cheap < limit {
 		return cheap
 	}
@@ -359,9 +577,117 @@ func (sm *SegmentedMemory) estimateLocked() int {
 	}
 	tokens := tokenFigure(sm.kernelBytes)
 	for i := range compiled {
+		if inFlight(i) || isSummary(i) {
+			continue
+		}
 		tokens += sm.msgTokensLocked(tc, &compiled[i])
 	}
+	if sm.transientTail != "" {
+		tokens += sm.msgTokensLocked(tc, &Message{Role: "user", Content: sm.transientTail})
+	}
+	return int(float64(tokens) * f)
+}
+
+// accurateTokensLocked is the uncalibrated tiktoken count of KERNEL, every
+// compiled message — the whole prompt as sent, in-flight batch, summary and
+// pinned turn notes included — and the pending tail (SetTransientTail). Must
+// hold lock.
+func (sm *SegmentedMemory) accurateTokensLocked(compiled []Message) int {
+	tc := sm.tokenCounter
+	if tc == nil {
+		tc = GetTokenCounter()
+	}
+	tokens := tokenFigure(sm.kernelBytes)
+	for i := range compiled {
+		tokens += sm.msgTokensLocked(tc, &compiled[i])
+	}
+	if sm.transientTail != "" {
+		tokens += sm.msgTokensLocked(tc, &Message{Role: "user", Content: sm.transientTail})
+	}
 	return tokens
+}
+
+// Provider calibration. The estimate tokenizes with tiktoken, which counts
+// Claude prompts ~25% low (production: 1.17M estimated, 1.46M billed), so
+// relief fired late and its recovery pass under-shed. After each successful
+// call the provider's own prompt count is compared with loom's count of the
+// same compiled context, and the running ratio scales every estimate.
+const (
+	// calibrationMin: never scale below tiktoken — a provider that counts
+	// fewer tokens must not make relief fire later than it did uncalibrated.
+	calibrationMin = 1.0
+	// calibrationMax bounds a skewed sample (e.g. image blocks the estimate
+	// does not count) to relief firing earlier, never to a runaway factor.
+	calibrationMax = 2.0
+	// calibrationAlpha is the EWMA weight of each new sample.
+	calibrationAlpha = 0.5
+	// calibrationMinSampleTokens skips small prompts, where fixed provider
+	// overhead (tool-use system text, framing) dominates the ratio.
+	calibrationMinSampleTokens = 2000
+	// claudeUnsampledStepCalibration scales a Claude model's step count
+	// (StepSendCount) until the provider's first count is observed: the
+	// undercount measured above, which is Claude's. The fold's marks sit below
+	// the window by design and start at 1.0; the step count is held against
+	// the provider's exact refusal line, where a known undercount passes a
+	// step the provider refuses.
+	claudeUnsampledStepCalibration = 1.25
+)
+
+// unsampledStepCalibration is the factor a step count runs at before the
+// provider's first count is observed: the measured undercount for the models
+// it was measured on (Claude, on any provider), and 1.0 for every other, where
+// tiktoken is the provider's own tokenizer or no undercount is known.
+func unsampledStepCalibration(provider, model string) float64 {
+	if provider == "anthropic" || strings.Contains(strings.ToLower(model), "claude") {
+		return claudeUnsampledStepCalibration
+	}
+	return 1.0
+}
+
+// calibrationLocked returns the current estimate scale factor. Must hold lock.
+func (sm *SegmentedMemory) calibrationLocked() float64 {
+	if sm.estimateCalibration < calibrationMin {
+		return calibrationMin
+	}
+	return sm.estimateCalibration
+}
+
+// EstimateCalibration returns the factor the estimate is currently scaled by.
+func (sm *SegmentedMemory) EstimateCalibration() float64 {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.calibrationLocked()
+}
+
+// ObservePromptTokens feeds one provider-reported prompt size (input + cache
+// read + cache write — the whole prompt, see types.Usage) into the calibration.
+// Call it right after a successful send, before anything is appended, so the
+// compiled context is the one that was sent.
+func (sm *SegmentedMemory) ObservePromptTokens(actual int) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if actual <= 0 {
+		return
+	}
+	counted := sm.accurateTokensLocked(sm.compileLocked())
+	if counted < calibrationMinSampleTokens {
+		return
+	}
+	ratio := min(max(float64(actual)/float64(counted), calibrationMin), calibrationMax)
+	if sm.estimateCalibration == 0 {
+		// The first sample is the calibration: averaging it with 1.0 would
+		// leave the factor below a measured undercount for the next sends.
+		sm.estimateCalibration = ratio
+	} else {
+		f := sm.calibrationLocked()
+		sm.estimateCalibration = min(max(f+calibrationAlpha*(ratio-f), calibrationMin), calibrationMax)
+	}
+	zap.L().Debug("relief: estimate calibration",
+		zap.String("session_id", sm.sessionID),
+		zap.Int("provider_prompt_tokens", actual),
+		zap.Int("counted_tokens", counted),
+		zap.Float64("sample_ratio", ratio),
+		zap.Float64("factor", sm.estimateCalibration))
 }
 
 // msgTokensLocked returns one compiled message's token count, memoising the
@@ -378,6 +704,10 @@ func (sm *SegmentedMemory) msgTokensLocked(tc *TokenCounter, m *Message) int {
 			sm.msgTokenCache = make(map[string]int)
 		}
 		sm.msgTokenCache[m.Content] = n
+	}
+	for _, tb := range m.ThinkingBlocks {
+		// Thinking rides the wire in-turn: text tokenized, signature ~4B/token.
+		n += tc.CountTokens(tb.Thinking) + len(tb.Signature)/4
 	}
 	if len(m.ToolCalls) > 0 {
 		if b, err := json.Marshal(m.ToolCalls); err == nil {
@@ -446,14 +776,21 @@ func (sm *SegmentedMemory) marksLocked() (start, release int) {
 	return start, release
 }
 
-// startMarkLocked is the HWM: begin relief when the estimate reaches it. penalty
-// (percentage points) lowers it for the recovery pass. Must hold lock.
+// startMarkLocked is G, the start mark: fold when the estimate reaches it. G is
+// the profile's critical threshold percent of the usable window — the window
+// less the reply reservation, which is where the provider refuses. The share
+// left above G is room for what the trigger does not count but the fold call
+// still sends: the summary, the batch in flight, the fold instruction, and the
+// estimate's error. A user moves G with critical_threshold_percent, or with
+// max_context_tokens. penalty (percentage points) lowers the mark for the
+// recovery pass. Must hold lock.
 func (sm *SegmentedMemory) startMarkLocked(penalty int) int {
 	start, _ := sm.marksLocked()
 	return applyPenalty(start, penalty) * sm.usableLocked() / 100
 }
 
-// releaseMarkLocked is the LWM: shed down to it. penalty lowers it in step with
+// releaseMarkLocked is the LWM: shed down to it — the profile's warning
+// threshold percent of the usable window. penalty lowers it in step with
 // startMarkLocked so the recovery pass sheds deeper. Must hold lock.
 func (sm *SegmentedMemory) releaseMarkLocked(penalty int) int {
 	_, release := sm.marksLocked()
@@ -462,12 +799,13 @@ func (sm *SegmentedMemory) releaseMarkLocked(penalty int) int {
 
 // --- releasePressure (HLD §5.2) ----------------------------------------------
 
-// ReleasePressure is the relief pass, called at compile before every send. It
-// SELF-GATES on loom's own accounting: if the estimate is under the start mark
+// ReleasePressure is the pressure ladder, run once after the provider refuses a
+// send as too long. It SELF-GATES on loom's own accounting: if the estimate is under the start mark
 // (HWM, §5.1) there is no pressure and it is a no-op. Otherwise it sheds to the
-// release mark (LWM) via the escalating evict-then-fold ladder below —
-// recompiling and re-estimating after each op, returning the instant the
-// estimate reaches the mark. Returns whether it shed and the post-pass
+// release mark (LWM) via the escalating fold ladder below — recompiling and
+// re-estimating after each op, returning the instant the estimate reaches the
+// mark. The estimate is scaled by the provider calibration
+// (ObservePromptTokens). Returns whether it shed and the post-pass
 // {estimate, target}.
 //
 // penalty (percentage points) lowers both marks. It is 0 for the normal compile
@@ -486,27 +824,60 @@ func (sm *SegmentedMemory) ReleasePressure(ctx context.Context, penalty int) (sh
 		return false, sm.estimateLocked(), sm.releaseMarkLocked(penalty)
 	}
 
-	if sm.estimateLocked() < sm.startMarkLocked(penalty) {
+	sm.compressorFailedThisPass = false
+
+	startEstimate := sm.estimateLocked()
+	if startEstimate < sm.startMarkLocked(penalty) {
 		return false, 0, 0 // under the start mark — no pressure to release
 	}
+	// The per-op lines log only post-op estimates; without the starting point
+	// two consecutive passes read as one op inflating the estimate.
+	zap.L().Info("releasePressure: start",
+		zap.String("session_id", sm.sessionID),
+		zap.Int64("turn", sm.currentTurnLocked()),
+		zap.Int("estimate_tokens", startEstimate),
+		zap.Int("start_tokens", sm.startMarkLocked(penalty)),
+		zap.Int("target_tokens", sm.releaseMarkLocked(penalty)),
+		zap.Int("penalty", penalty))
 
 	sm.reliefInFlight = true
 	defer func() { sm.reliefInFlight = false }()
 
+	var appliedOps []string
+	defer func() {
+		end := estimate
+		if end < 0 {
+			end = startEstimate
+		}
+		zap.L().Info("releasePressure: complete",
+			zap.String("session_id", sm.sessionID),
+			zap.Int64("turn", sm.currentTurnLocked()),
+			zap.Bool("shed", shed),
+			zap.Int("start_estimate_tokens", startEstimate),
+			zap.Int("end_estimate_tokens", end),
+			zap.Int("tokens_saved", startEstimate-end),
+			zap.Int("target_tokens", target),
+			zap.Strings("operations", appliedOps))
+	}()
+
 	t := sm.currentTurnLocked()
-	k := int64(sm.protectedRecentTurns)
-	if k <= 0 {
-		k = defaultProtectedRecentTurns
-	}
+	k := int64(sm.protectedTurnsLocked())
 	target = sm.releaseMarkLocked(penalty)
 	estimate = -1
 
 	// Escalation is a halving ladder (§5.2): keep the newest K turns, then K/2,
 	// K/4 … down to 1 — shed the minimum needed and preserve as much recent
 	// context as possible, instead of an all-or-nothing K-then-1 cliff. K is
-	// config (protectedRecentTurns, default 16); halving is the mechanism. All
-	// eviction (re-runnable) is tried before any fold (lossy); each op recompiles
-	// and the pass returns the instant the estimate reaches target.
+	// config (protectedRecentTurns, default 16); halving is the mechanism. Each
+	// op recompiles and the pass returns the instant the estimate reaches target.
+	//
+	// The fold is the only shedding op. Eviction — stubbing an already-cached
+	// tool result in place — was removed: rewriting history behind the cache
+	// breakpoint discards the whole cached conversation region, so a stub worth
+	// a few KB of reads cost a full-context rewrite at the write price, which is
+	// 12.5x the read price it saved. Measured on the 30K window sweep: 9 of 12
+	// prefix invalidations in one run were evictions, ~180K tokens of rewrite,
+	// and every windowed arm cost more than not shedding at all.
 	type reliefOp struct {
 		name     string
 		boundary int64
@@ -520,13 +891,11 @@ func (sm *SegmentedMemory) ReleasePressure(ctx context.Context, penalty int) (sh
 			rungs = append(rungs, b)
 		}
 	}
-	ops := make([]reliefOp, 0, 2*len(rungs))
-	for _, b := range rungs {
-		ops = append(ops, reliefOp{"evict", b, sm.evictLocked})
-	}
+	ops := make([]reliefOp, 0, len(rungs)+1)
 	for _, b := range rungs {
 		ops = append(ops, reliefOp{"fold", b, sm.foldLocked})
 	}
+	ops = append(ops, reliefOp{"fold", t, sm.foldLocked})
 	for _, op := range ops {
 		if !op.run(ctx, op.boundary) {
 			// An operation that changed nothing (its rows were already flagged
@@ -534,6 +903,7 @@ func (sm *SegmentedMemory) ReleasePressure(ctx context.Context, penalty int) (sh
 			continue
 		}
 		estimate = sm.estimateLocked()
+		appliedOps = append(appliedOps, op.name)
 		zap.L().Info("releasePressure: operation complete",
 			zap.String("session_id", sm.sessionID),
 			zap.String("operation", op.name),
@@ -554,67 +924,6 @@ func (sm *SegmentedMemory) ReleasePressure(ctx context.Context, penalty int) (sh
 	return true, estimate, target
 }
 
-// evictLocked marks evicted=true on every tool row with turn ≤ b whose stored
-// content ≥ 2× its stub (the eviction floor, §5.1) — one transaction, in-memory
-// copies updated in the same step. Returns whether anything changed. Must hold
-// lock.
-func (sm *SegmentedMemory) evictLocked(ctx context.Context, b int64) bool {
-	callName := make(map[string]string)
-	for i := range sm.contextMessages {
-		for _, c := range sm.contextMessages[i].ToolCalls {
-			if c.ID != "" {
-				callName[c.ID] = c.Name
-			}
-		}
-	}
-
-	var marked []int
-	var seqs []int64
-	for i := range sm.contextMessages {
-		m := &sm.contextMessages[i]
-		if m.Role != "tool" || m.Evicted || m.Turn > b {
-			continue
-		}
-		stub := sm.evictedStub(m, callName)
-		if len(m.Content) < 2*len(stub) {
-			// Below the floor, stubbing saves nothing or goes negative.
-			continue
-		}
-		marked = append(marked, i)
-		if seq, err := strconv.ParseInt(m.ID, 10, 64); err == nil {
-			seqs = append(seqs, seq)
-		}
-	}
-	if len(marked) == 0 {
-		return false
-	}
-
-	if sm.sessionStore != nil && sm.sessionID != "" && len(seqs) > 0 {
-		if err := sm.sessionStore.MarkEvicted(ctx, sm.sessionID, seqs); err != nil {
-			zap.L().Error("releasePressure: evict flag persist failed",
-				zap.String("session_id", sm.sessionID),
-				zap.Int64("boundary_turn", b),
-				zap.Error(err))
-			return false
-		}
-	}
-
-	// Flag mirror: update the in-memory L1 copies in the same step (§5.2).
-	for _, i := range marked {
-		sm.contextMessages[i].Evicted = true
-	}
-	sm.l1Dirty = true
-	sm.updateTokenCount()
-	sm.tokenCountDirty = false
-
-	zap.L().Info("releasePressure: evict",
-		zap.String("session_id", sm.sessionID),
-		zap.Int64("boundary_turn", b),
-		zap.Int("rows_marked", len(marked)),
-		zap.Int64s("seqs", seqs))
-	return true
-}
-
 // foldLocked folds every folded=false row with turn ≤ b into summary version
 // n+1 (HLD §5.4): pairs fold whole; compressor input = current summary + the
 // region AS RENDERED (stubs as stubs); the version insert and the region's
@@ -633,13 +942,51 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 	for count < len(sm.contextMessages) && sm.contextMessages[count].Turn <= b {
 		count++
 	}
+	if b >= sm.currentTurnLocked() {
+		// Rung 0: the region may reach into the current turn, but never the
+		// pending pair — cap it before the last assistant message (exclusive:
+		// the call signature must survive with its results). For b < t the cap
+		// is formally a no-op: the prefix ends before any turn-t row.
+		lastAssistant := -1
+		for i := range sm.contextMessages {
+			if sm.contextMessages[i].Role == "assistant" {
+				lastAssistant = i
+			}
+		}
+		if lastAssistant < 0 {
+			count = 0
+		} else if count > lastAssistant {
+			count = lastAssistant
+		}
+	}
 	count = sm.adjustCompressionBoundary(count)
 	if count <= 0 {
 		return false
 	}
-	region := sm.contextMessages[:count]
 
-	// The covered span, from the region's persisted seqs.
+	// Partition the prefix: the current turn's user-role rows — the ticket
+	// and any skill-body sidecar — are the run's INPUT and never fold. They
+	// cannot be re-derived from anything else in the session; a summary is a
+	// paraphrase of the axioms, not the axioms. They stay in L1 verbatim and
+	// re-enter the compile untouched. For b < t the predicate never fires:
+	// settled turns fold whole, user rows included.
+	tNow := sm.currentTurnLocked()
+	foldRegion := make([]Message, 0, count)
+	protected := make([]Message, 0, 2)
+	for i := 0; i < count; i++ {
+		if sm.contextMessages[i].Turn == tNow &&
+			(sm.contextMessages[i].Role == "user" || IsSyntheticWireUserRole(sm.contextMessages[i].Role)) {
+			protected = append(protected, sm.contextMessages[i])
+			continue
+		}
+		foldRegion = append(foldRegion, sm.contextMessages[i])
+	}
+	if len(foldRegion) == 0 {
+		return false
+	}
+	region := foldRegion
+
+	// The covered span, from the folded rows' persisted seqs.
 	var loSeq, hiSeq int64
 	var seqs []int64
 	for i := range region {
@@ -660,20 +1007,15 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 	// as value copies: nothing the unlocked compress phase touches aliases
 	// shared state.
 	t := sm.currentTurnLocked()
-	callName := make(map[string]string)
-	for i := range sm.contextMessages {
-		for _, c := range sm.contextMessages[i].ToolCalls {
-			if c.ID != "" {
-				callName[c.ID] = c.Name
-			}
-		}
-	}
 	input := make([]Message, 0, len(region)+1)
 	if sm.summary.text != "" {
-		input = append(input, Message{Role: "system", Content: "Current summary:\n" + sm.summary.text})
+		input = append(input, Message{Role: "system", Content: foldPromptText(ctx, sm.compressor, foldPromptSummaryHeading) + "\n" + sm.summary.text})
+	}
+	if sm.compactFocus != "" {
+		input = append(input, Message{Role: "system", Content: foldPromptText(ctx, sm.compressor, foldPromptFocusPreface) + " " + sm.compactFocus})
 	}
 	for i := range region {
-		r := sm.renderLocked(&region[i], t, callName)
+		r := sm.renderLocked(&region[i], t)
 		if r.ID != "" {
 			r.Content = "msg:" + r.ID + " " + r.Content
 		}
@@ -691,9 +1033,26 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 	// The LOCK IS RELEASED across the call: the compressor is a pure function
 	// of the snapshot built above, and holding the write lock through a
 	// network call would serialize every reader behind it for the duration.
-	newText := ""
+	// The compressor is REQUIRED: a fold without a real summary is task
+	// amnesia when a summary was possible. A compressor that is absent or
+	// still failing after retries drops the region and says so in one line,
+	// which sheds the space without claiming a summary it does not have: the
+	// summary gains one line naming the span and its first user ask. Lossy and
+	// honest, and the fold is the only rung there is, so a session with no
+	// compressor would otherwise meet the window with no rung left.
 	fallback := false
-	if sm.compressor != nil && sm.compressor.IsEnabled() {
+	askCompressor := sm.compressor != nil && sm.compressor.IsEnabled()
+	if askCompressor && sm.compressorFailedThisPass {
+		// The compressor already failed this pass; another region is another
+		// three attempts against the same fault. Drop with the marker instead.
+		askCompressor = false
+		zap.L().Warn("releasePressure: fold dropping the region unsummarised — the compressor already failed in this pass",
+			zap.String("session_id", sm.sessionID),
+			zap.Int64("boundary_turn", b))
+	}
+	newText := ""
+	const compressAttempts = 3
+	for attempt := 1; askCompressor && attempt <= compressAttempts; attempt++ {
 		sm.mu.Unlock()
 		compressCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 		// The re-lock is DEFERRED, not sequential. ReleasePressure holds a
@@ -725,7 +1084,7 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 			return false
 		}
 
-		if err == nil && compressed != "" {
+		if err == nil && strings.TrimSpace(compressed) != "" {
 			newText = strings.TrimSpace(compressed)
 			// The first line states the covered span (§5.4.4) — enforced here
 			// when the compressor omitted it OR echoed a stale line: a span
@@ -734,12 +1093,30 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 			if !coversThrough(newText, hiSeq) {
 				newText = fmt.Sprintf("covers msg:%d-%d\n", loSeq, hiSeq) + newText
 			}
+			break
 		}
+		zap.L().Warn("releasePressure: compressor attempt failed",
+			zap.String("session_id", sm.sessionID),
+			zap.Int64("boundary_turn", b),
+			zap.Int("attempt", attempt),
+			zap.Error(err))
 	}
 	if newText == "" {
-		// Compressor failure (§5.4.5): version n+1 = the previous text
-		// unchanged plus one line — coverage is never silently claimed and
-		// never lost; the next fold's compressor pass absorbs it.
+		if sm.foldRequireSummary {
+			sm.foldAbortedNoSummary = true
+			zap.L().Warn("fold aborted: no summary was produced and this fold may not drop its region",
+				zap.String("session_id", sm.sessionID),
+				zap.Int64("boundary_turn", b))
+			return false
+		}
+		if askCompressor {
+			// Remember it for the rest of the pass: the next region would pay
+			// the same attempts against the same fault.
+			sm.compressorFailedThisPass = true
+			zap.L().Error("releasePressure: compressor failed after retries; the region is dropped unsummarised",
+				zap.String("session_id", sm.sessionID),
+				zap.Int64("boundary_turn", b))
+		}
 		fallback = true
 		line := fmt.Sprintf("also covers msg:%d-%d (unsummarized): %s", loSeq, hiSeq, firstUserLine(region))
 		if sm.summary.text == "" {
@@ -749,28 +1126,7 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 		}
 	}
 
-	// Skills whose load pair folds are deactivated (§4.5). Accumulate them on the
-	// memory and re-pin the FULL set as a note at the END of the summary, so the
-	// model sees which capability went out with the folded conversation and can
-	// reload it if still in use. Tracking it as state (not just this fold's text)
-	// keeps the note alive when a later fold's compressor paraphrases the summary.
-	newlyFolded := foldedSkillLoads(region)
-	if len(newlyFolded) > 0 && sm.foldedSkills == nil {
-		sm.foldedSkills = make(map[string]bool)
-	}
-	for _, name := range newlyFolded {
-		sm.foldedSkills[name] = true
-	}
-	if len(sm.foldedSkills) > 0 {
-		names := make([]string, 0, len(sm.foldedSkills))
-		for n := range sm.foldedSkills {
-			names = append(names, n)
-		}
-		sort.Strings(names)
-		newText = strings.TrimRight(newText, "\n") +
-			fmt.Sprintf("\n\n[Folded active skill(s): %s — reload with manage_skills if still in use.]",
-				strings.Join(names, ", "))
-	}
+	newlyFolded, newText := sm.noteFoldedSkillsLocked(region, sm.contextMessages[count:], newText)
 
 	n1 := sm.summary.n + 1
 
@@ -784,6 +1140,7 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 				zap.Int64("boundary_turn", b),
 				zap.Int("version", n1),
 				zap.Error(err))
+			sm.compactPersistErr = err
 			return false
 		}
 	}
@@ -802,9 +1159,12 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 	// post-stage state without a re-read (folded rows are filtered at the
 	// database read on reload).
 	sm.summary = summaryState{n: n1, text: newText}
-	remaining := make([]Message, len(sm.contextMessages)-count)
-	copy(remaining, sm.contextMessages[count:])
+	remaining := make([]Message, 0, len(protected)+len(sm.contextMessages)-count)
+	remaining = append(remaining, protected...)
+	remaining = append(remaining, sm.contextMessages[count:]...)
 	sm.contextMessages = remaining
+	// What stays was made on the region that just left (dropThinkingLocked).
+	sm.dropThinkingLocked()
 	sm.l1Dirty = true
 	sm.updateTokenCount()
 	sm.tokenCountDirty = false
@@ -812,30 +1172,33 @@ func (sm *SegmentedMemory) foldLocked(ctx context.Context, b int64) bool {
 	zap.L().Info("releasePressure: fold",
 		zap.String("session_id", sm.sessionID),
 		zap.Int64("boundary_turn", b),
-		zap.Int("rows_folded", count),
+		zap.Int("rows_folded", len(region)),
+		zap.Int("rows_protected", len(protected)),
 		zap.Int64("seq_lo", loSeq),
 		zap.Int64("seq_hi", hiSeq),
 		zap.Int("version", n1),
 		zap.Int("output_bytes", len(newText)),
-		zap.Bool("fallback", fallback))
+		zap.Bool("unsummarised", fallback))
 	return true
 }
 
-// firstUserLine returns the first line of the region's first user message —
-// the §5.4.5 fallback citation.
+// firstUserLine returns the first line of the region's first user message, so
+// a dropped region still names what it was about.
 func firstUserLine(region []Message) string {
 	for i := range region {
-		if region[i].Role == "user" && region[i].Content != "" {
-			line, _, _ := strings.Cut(region[i].Content, "\n")
-			return line
+		if region[i].Role != "user" || region[i].Content == "" {
+			continue
 		}
+		line := region[i].Content
+		if j := strings.IndexByte(line, '\n'); j >= 0 {
+			line = line[:j]
+		}
+		line = strings.TrimSpace(line)
+		return collapseTo(line, 120)
 	}
-	return ""
+	return "(no user message in the region)"
 }
 
-// foldedSkillLoads returns the names of skills whose manage_skills load pair —
-// the load call paired with a "Skill loaded: " confirmation — lies inside the
-// region.
 // coversThrough reports whether text opens with a "covers msg:A-B" line whose
 // upper bound reaches hiSeq — i.e. the span line genuinely claims this fold's
 // coverage, not a stale echo of a previous version's line.
@@ -860,9 +1223,23 @@ func coversThrough(text string, hiSeq int64) bool {
 	return err == nil && hi >= hiSeq
 }
 
-func foldedSkillLoads(region []Message) []string {
+// foldedSkillLoads returns the names of skills whose manage_skills load pair —
+// the load call paired with a "Skill loaded: " confirmation — lies inside the
+// region AND belongs to a settled turn.
+//
+// A load pair from the CURRENT turn is skipped. Rung 0 folds the current turn,
+// so without this a turn that loaded a skill and then hit the window would
+// have that skill deactivated mid-turn: its tools leave the kernel while the
+// protected skill-body row — the instructions telling the model to use them —
+// stays in context. The model is then told how to drive tools it no longer
+// has. The load pair's text still folds away; the activation it created
+// outlives it, and the ordinary settled-turn fold deactivates it later.
+func foldedSkillLoads(region []Message, currentTurn int64) []string {
 	loadCalls := make(map[string]string) // tool_use_id → skill name
 	for i := range region {
+		if region[i].Turn == currentTurn {
+			continue
+		}
 		for _, c := range region[i].ToolCalls {
 			if c.Name != "manage_skills" || c.ID == "" {
 				continue
@@ -879,7 +1256,7 @@ func foldedSkillLoads(region []Message) []string {
 	seen := make(map[string]bool)
 	for i := range region {
 		m := &region[i]
-		if m.Role != "tool" || m.ToolUseID == "" {
+		if m.Role != "tool" || m.ToolUseID == "" || m.Turn == currentTurn {
 			continue
 		}
 		name := loadCalls[m.ToolUseID]
@@ -894,10 +1271,25 @@ func foldedSkillLoads(region []Message) []string {
 	return names
 }
 
-// defaultProtectedRecentTurns is K (HLD §5.1): the top rung of the halving
-// escalation ladder — the newest user turns relief tries hardest to keep. The
-// ladder folds/evicts at K, K/2, K/4 … 1 (§5.2).
+// defaultProtectedRecentTurns is K when nothing sets it, as on main. For the
+// in-loop fold it is the recent turns kept before the pending one, user
+// messages and assistant steps alike (foldSplitLocked). For the pressure
+// ladder behind it, it is the top rung; the ladder folds at K, K/2, K/4 … 1
+// (§5.2).
 const defaultProtectedRecentTurns = 16
+
+// protectedTurnsLocked is K: what the agent's Config set
+// (SetProtectedRecentTurns), else the compression profile's
+// protected_recent_turns, else the default. Must hold lock.
+func (sm *SegmentedMemory) protectedTurnsLocked() int {
+	if sm.protectedRecentTurns > 0 {
+		return sm.protectedRecentTurns
+	}
+	if sm.compressionProfile.ProtectedRecentTurns > 0 {
+		return sm.compressionProfile.ProtectedRecentTurns
+	}
+	return defaultProtectedRecentTurns
+}
 
 // SetProtectedRecentTurns configures K (config ProtectedRecentTurns, §9).
 func (sm *SegmentedMemory) SetProtectedRecentTurns(k int) {
@@ -923,6 +1315,232 @@ func (sm *SegmentedMemory) SetAdvertisedToolsBytes(bytes int) {
 	sm.kernelDirty = false
 	sm.updateTokenCount()
 	sm.tokenCountDirty = false
+}
+
+// CurrentTurnOverflow is kept for callers written against it.
+type CurrentTurnOverflow struct {
+	FloorTokens    int
+	StartTokens    int
+	StubbedResults int
+	ToolResults    int
+}
+
+// CurrentTurnOverflow is kept for callers written against it and reports no
+// overflow. Each tool result is bounded as it arrives, so a send that does not
+// fit is a step returning more than the window holds; that step is fitted to
+// the window before the send (fitStepToWindow), its results replaced by a note.
+//
+// Deprecated: a step that does not fit is caught before the send and its
+// results replaced; this reports nothing.
+func (sm *SegmentedMemory) CurrentTurnOverflow() (CurrentTurnOverflow, bool) {
+	warnDeprecatedOnce("SegmentedMemory.CurrentTurnOverflow", "a send that does not fit is the provider's refusal, answered by relief")
+	return CurrentTurnOverflow{}, false
+}
+
+// noteFoldedSkillsLocked is what a fold does about skills (§4.5): it returns the
+// skills whose manage_skills load pair lies in the folded region, and the
+// summary text with the full set of folded skills pinned at its end, so the
+// model sees which capability went out with the folded conversation and can
+// reload it. Tracking the set as state keeps the note alive when a later fold
+// paraphrases the summary.
+//
+// A skill whose load pair also appears in what stays was reloaded and is
+// current: it is neither deactivated nor noted, and a note an earlier fold
+// left for it is dropped. Deactivation is by name, so without this a fold of
+// an old load pair kills a reload from the very turn that asked for it. Must
+// hold lock.
+func (sm *SegmentedMemory) noteFoldedSkillsLocked(region, stays []Message, text string) ([]string, string) {
+	stillLoaded := make(map[string]bool)
+	// Pass 0, not the current turn: this asks which skills are loaded in live
+	// context, and a reload made this turn is the most live activation there is.
+	for _, name := range foldedSkillLoads(stays, 0) {
+		stillLoaded[name] = true
+		delete(sm.foldedSkills, name)
+	}
+	var newlyFolded []string
+	for _, name := range foldedSkillLoads(region, sm.currentTurnLocked()) {
+		if !stillLoaded[name] {
+			newlyFolded = append(newlyFolded, name)
+		}
+	}
+	if len(newlyFolded) > 0 && sm.foldedSkills == nil {
+		sm.foldedSkills = make(map[string]bool)
+	}
+	for _, name := range newlyFolded {
+		sm.foldedSkills[name] = true
+	}
+	if len(sm.foldedSkills) > 0 {
+		names := make([]string, 0, len(sm.foldedSkills))
+		for n := range sm.foldedSkills {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		text = strings.TrimRight(text, "\n") +
+			fmt.Sprintf("\n\n[Folded active skill(s): %s — reload with manage_skills if still in use.]",
+				strings.Join(names, ", "))
+	}
+	return newlyFolded, text
+}
+
+// TurnReminder is one note the agent sends on a provider call as harness
+// state: the graph memory recall note, a soft budget reminder, the context
+// relief warning, a repeat-call hint, the tool-change note.
+//
+// Kind names a status reminder whose text changes from call to call (the
+// tool budget's count, the relief warning's percentage). A turn sends at most
+// one reminder of each kind, the first: a later call can't replace it, since
+// the turn's request only grows (PinTurnNotes), and sending each new value
+// would stack contradictory copies. An empty Kind is an event note (a repeat
+// hint, a tool-set delta), new information each time; it is skipped only when
+// the same text was already pinned since the turn's last new row, which is the
+// resend of a refused call. The same text on a later step is a new event (a
+// tool added again after relief removed it) and is sent again.
+type TurnReminder struct {
+	Kind string
+	Text string
+}
+
+// Reminder kinds the agent sends at most once per turn (TurnReminder.Kind).
+const (
+	ReminderGraphMemory = "graph_memory"
+	ReminderToolBudget  = "tool_budget"
+	ReminderTurnBudget  = "turn_budget"
+)
+
+// key is what makes two reminders the same: the kind, or for an event note
+// its text. A kind is matched against the whole turn, an event note only
+// against the notes pinned since the last new row (unsentRemindersLocked).
+func (r TurnReminder) key() string {
+	if r.Kind != "" {
+		return "kind:" + r.Kind
+	}
+	return "text:" + r.Text
+}
+
+// unsentRemindersLocked returns the reminders of rs, trimmed, that turn t
+// has not sent yet, each key once: a status kind sent anywhere in the turn is
+// skipped, an event note only when a note pinned since the last new row
+// (same arrivals) carries the same text. Must hold lock.
+func (sm *SegmentedMemory) unsentRemindersLocked(t int64, rs []TurnReminder) []TurnReminder {
+	sent := make(map[string]bool)
+	for _, n := range sm.turnNotesLocked(t) {
+		for _, k := range n.keys {
+			if strings.HasPrefix(k, "kind:") || n.arrivals == sm.arrivals {
+				sent[k] = true
+			}
+		}
+	}
+	var out []TurnReminder
+	for _, r := range rs {
+		r.Text = strings.TrimSpace(r.Text)
+		if r.Text == "" || sent[r.key()] {
+			continue
+		}
+		sent[r.key()] = true
+		out = append(out, r)
+	}
+	return out
+}
+
+func reminderTexts(rs []TurnReminder) []string {
+	texts := make([]string, len(rs))
+	for i, r := range rs {
+		texts[i] = r.Text
+	}
+	return texts
+}
+
+// SetTransientTail records the reminders the agent is about to send on its
+// next provider call and has not pinned yet (PinTurnNotes). Reminders this
+// turn already sent are compiled, or are not sent again (TurnReminder), so
+// they are left out here. The pending reminder counts in the relief estimate
+// like the advertised tool schemas do. Set it before ReleasePressure;
+// PinTurnNotes clears it at the send.
+func (sm *SegmentedMemory) SetTransientTail(reminders ...TurnReminder) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	pending := sm.unsentRemindersLocked(sm.currentTurnLocked(), reminders)
+	sm.transientTail = systemReminderContent(reminderTexts(pending)...)
+}
+
+// turnNote is one reminder message sent on a provider call of turn (PinTurnNotes).
+type turnNote struct {
+	turn    int64
+	after   int      // current-turn rows that preceded it when it was sent
+	keys    []string // its reminders' keys (TurnReminder.key), so a later call skips them
+	content string   // the <system-reminder> message (systemReminderContent)
+	// arrivals is SegmentedMemory.arrivals when it was sent: a call with no
+	// new row since (a resend) doesn't send its event notes again.
+	arrivals uint64
+}
+
+// PinTurnNotes records the reminders the agent is about to send on a
+// provider call. Reminders the turn already sent are skipped (TurnReminder:
+// a status kind once per turn, an event note once per step), and the rest
+// become one <system-reminder> user message that compile emits at this
+// position for the rest of the turn.
+//
+// The reminder can't be a tail that each call appends and the next one
+// drops: the model's thinking blocks of this turn were written after it, and
+// the provider rejects a replayed block whose preceding messages changed
+// (preserved thinking: "a thinking block stays valid only while everything
+// you sent before it is unchanged"). Pinned in place, the request only grows
+// within the turn. When the next turn starts the notes are no longer
+// compiled, and the thinking fingerprint (thinkingPrefix) keeps the blocks
+// written after them from being replayed.
+//
+// It also clears the pending tail (SetTransientTail): once pinned, the notes
+// are counted as compiled messages.
+func (sm *SegmentedMemory) PinTurnNotes(reminders ...TurnReminder) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.transientTail = ""
+	t := sm.currentTurnLocked()
+	sm.turnNotes = sm.turnNotesLocked(t)
+	fresh := sm.unsentRemindersLocked(t, reminders)
+	if len(fresh) == 0 {
+		return
+	}
+	after := 0
+	for i := range sm.contextMessages {
+		if sm.contextMessages[i].Turn == t {
+			after++
+		}
+	}
+	keys := make([]string, len(fresh))
+	for i, r := range fresh {
+		keys[i] = r.key()
+	}
+	sm.turnNotes = append(sm.turnNotes, turnNote{
+		turn:     t,
+		after:    after,
+		keys:     keys,
+		content:  systemReminderContent(reminderTexts(fresh)...),
+		arrivals: sm.arrivals,
+	})
+}
+
+// turnNotesLocked returns the pinned notes of turn t, in the order they were
+// sent; notes of other turns are never compiled again. Must hold lock.
+func (sm *SegmentedMemory) turnNotesLocked(t int64) []turnNote {
+	var kept []turnNote
+	for _, n := range sm.turnNotes {
+		if n.turn == t {
+			kept = append(kept, n)
+		}
+	}
+	return kept
+}
+
+// SetRequestIdentity records what the provider call is made with besides the
+// compiled messages: the model ID and a digest of the advertised tool schemas
+// (advertisedToolsDigest). Settled thinking blocks are replayed only while it
+// is the one they were written under (thinkingPrefix).
+func (sm *SegmentedMemory) SetRequestIdentity(model string, toolsDigest [sha256.Size]byte) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.requestModel = model
+	sm.requestToolsDigest = toolsDigest
 }
 
 // SetSkillDeactivationHook wires the skills orchestrator's deactivation path,

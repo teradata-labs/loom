@@ -1,0 +1,319 @@
+// Copyright 2026 Teradata
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//	http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package orchestration
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/zap/zaptest"
+
+	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
+	"github.com/teradata-labs/loom/pkg/agent"
+	"github.com/teradata-labs/loom/pkg/decision"
+	decisionmock "github.com/teradata-labs/loom/pkg/decision/mock"
+	"github.com/teradata-labs/loom/pkg/decision/sites"
+	llmtypes "github.com/teradata-labs/loom/pkg/llm/types"
+	"github.com/teradata-labs/loom/pkg/observability"
+	"github.com/teradata-labs/loom/pkg/shuttle"
+)
+
+func validationBand(actMin float64, mode loomv1.DecisionBandMode) decision.RouterOption {
+	return decision.WithBands([]*loomv1.DecisionBand{{Site: sites.SiteStageValidation, ActMin: actMin, Mode: mode}})
+}
+
+// stageValidationRig runs one pipeline stage whose output is "a prose answer"
+// with a validation prompt. validator is the orchestrator's merge LLM (what
+// the generative validator calls); it is a counted mock so a test can prove
+// it was or was not consulted.
+func stageValidationRig(t *testing.T, dec decision.Decider, store decision.ShadowStore, validatorReply string, opts ...decision.RouterOption) (*loomv1.WorkflowResult, *lvlMockLLM, *lvlMockLLM, *agent.Agent, error) {
+	t.Helper()
+	return stageValidationRigOutput(t, dec, store, validatorReply, "a prose answer", opts...)
+}
+
+// stageValidationRigOutput is stageValidationRig with the stage output given.
+func stageValidationRigOutput(t *testing.T, dec decision.Decider, store decision.ShadowStore, validatorReply, output string, opts ...decision.RouterOption) (*loomv1.WorkflowResult, *lvlMockLLM, *lvlMockLLM, *agent.Agent, error) {
+	t.Helper()
+	validator := newLvlMockLLM(lvlFrontierProvider, lvlFrontierModel, 0, validatorReply)
+	orch := NewOrchestrator(Config{
+		Logger:      zaptest.NewLogger(t),
+		Tracer:      observability.NewNoOpTracer(),
+		LLMProvider: validator,
+	})
+	worker := newLvlMockLLM(lvlLowProvider, lvlLowModel, 0, output)
+	cfg := agent.DefaultConfig()
+	cfg.PatternConfig = agent.DefaultPatternConfig()
+	cfg.PatternConfig.UseLLMClassifier = false
+	ag := agent.NewAgent(&mockBackend{}, worker,
+		agent.WithName("worker"),
+		agent.WithConfig(cfg),
+		agent.WithDecisionRouter(decision.NewRouter(dec, opts...)),
+		agent.WithDecisionShadowStore(store))
+	orch.RegisterAgent("worker", ag)
+
+	res, err := runLevelingPipeline(t, orch, &loomv1.PipelineStage{
+		AgentId:          "worker",
+		PromptTemplate:   "{{previous}}",
+		ValidationPrompt: "Is {{output}} a complete answer?",
+	})
+	return res, validator, worker, ag, err
+}
+
+func TestStageValidationDecision_LiveBandSkipsValidatorLLM(t *testing.T) {
+	t.Parallel()
+	dec := decisionmock.New().AnswerNoul(sites.QOutputValid, 0.95)
+	store := &memShadowStore{}
+	res, validator, worker, ag, err := stageValidationRig(t, dec, store, "invalid", // would fail it if consulted
+		validationBand(0.8, loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE))
+	require.NoError(t, err)
+	assert.Equal(t, "a prose answer", res.MergedOutput)
+	assert.Equal(t, 0, validator.count(), "the validator LLM was skipped")
+	assert.Equal(t, 1, worker.count(), "no retry: the decider passed the output")
+	assert.NotContains(t, res.Metadata, "validation_warnings")
+
+	ag.WaitDecisionShadows()
+	rows, err := store.QueryShadow(context.Background(), decision.ShadowQuery{})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, sites.SiteStageValidation, rows[0].Site)
+	assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_DECIDER, rows[0].Path)
+	assert.Equal(t, "true", rows[0].CandidateAnswer)
+	assert.Equal(t, "", rows[0].ReferenceAnswer)
+}
+
+func TestStageValidationDecision_TightenOnlyNeverPassesOnItsOwn(t *testing.T) {
+	t.Parallel()
+	t.Run("confident valid still runs the LLM", func(t *testing.T) {
+		t.Parallel()
+		dec := decisionmock.New().AnswerNoul(sites.QOutputValid, 0.95)
+		store := &memShadowStore{}
+		res, validator, _, ag, err := stageValidationRig(t, dec, store, "valid",
+			validationBand(0.8, loomv1.DecisionBandMode_DECISION_BAND_MODE_TIGHTEN_ONLY))
+		require.NoError(t, err)
+		assert.Equal(t, "a prose answer", res.MergedOutput)
+		assert.Equal(t, 1, validator.count(), "a gate may only tighten: the LLM still decides a pass")
+
+		ag.WaitDecisionShadows()
+		rows, err := store.QueryShadow(context.Background(), decision.ShadowQuery{})
+		require.NoError(t, err)
+		require.Len(t, rows, 1)
+		assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_FALLBACK, rows[0].Path)
+		assert.Equal(t, "true", rows[0].ReferenceAnswer)
+		assert.Equal(t, 1, dec.CallCount())
+	})
+	t.Run("confident invalid acts", func(t *testing.T) {
+		t.Parallel()
+		dec := decisionmock.New().AnswerNoul(sites.QOutputValid, 0.05)
+		res, validator, _, _, err := stageValidationRig(t, dec, &memShadowStore{}, "valid", // would pass it if consulted
+			validationBand(0.8, loomv1.DecisionBandMode_DECISION_BAND_MODE_TIGHTEN_ONLY))
+		// No retry policy: a failed validation is a hard stage error, exactly
+		// as it is when the LLM validator fails an output.
+		require.Error(t, err)
+		assert.Nil(t, res)
+		assert.Contains(t, err.Error(), "output validation failed")
+		assert.Equal(t, 0, validator.count(), "the decider failed it without the LLM")
+	})
+}
+
+func TestStageValidationDecision_BelowBandFallsBackAndRecords(t *testing.T) {
+	t.Parallel()
+	dec := decisionmock.New().AnswerNoul(sites.QOutputValid, 0.55) // decisiveness 0.1
+	store := &memShadowStore{}
+	res, validator, _, ag, err := stageValidationRig(t, dec, store, "valid",
+		validationBand(0.8, loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE))
+	require.NoError(t, err)
+	assert.Equal(t, "a prose answer", res.MergedOutput)
+	assert.Equal(t, 1, validator.count(), "the LLM decided")
+	assert.Equal(t, 1, dec.CallCount(), "the live answer is recorded, not re-asked")
+	require.NotNil(t, res.Cost)
+	assert.Equal(t, int32(2), res.Cost.LlmCalls, "stage worker + validation call; validation used to be missing from the cost")
+
+	ag.WaitDecisionShadows()
+	rows, err := store.QueryShadow(context.Background(), decision.ShadowQuery{})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_FALLBACK, rows[0].Path)
+	assert.Equal(t, "true", rows[0].CandidateAnswer)
+	assert.Equal(t, "true", rows[0].ReferenceAnswer)
+	assert.Equal(t, sites.ReferenceSourceValidationLLM, rows[0].ReferenceSource)
+}
+
+func TestStageValidationDecision_ShadowBandRecordsAgainstScrapedVerdict(t *testing.T) {
+	t.Parallel()
+	dec := decisionmock.New().AnswerNoul(sites.QOutputValid, 0.1)
+	store := &memShadowStore{}
+	_, validator, _, ag, err := stageValidationRig(t, dec, store, "yes, this is fine") // no band: shadow
+	require.NoError(t, err)
+	assert.Equal(t, 1, validator.count())
+
+	ag.WaitDecisionShadows()
+	rows, err := store.QueryShadow(context.Background(), decision.ShadowQuery{})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_FALLBACK, rows[0].Path)
+	assert.Equal(t, "false", rows[0].CandidateAnswer)
+	assert.Equal(t, "true", rows[0].ReferenceAnswer, "the disagreement is recorded, not acted on")
+	req := dec.Calls()[0]
+	assert.Contains(t, req.State.String(), "Is the output a complete answer?")
+	assert.Contains(t, req.State.String(), "a prose answer")
+}
+
+func TestStageValidationDecision_DeciderErrorFallsBack(t *testing.T) {
+	t.Parallel()
+	dec := decisionmock.New().SetError(decision.ErrOverloaded)
+	res, validator, _, ag, err := stageValidationRig(t, dec, &memShadowStore{}, "valid",
+		validationBand(0.8, loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE))
+	require.NoError(t, err)
+	assert.Equal(t, "a prose answer", res.MergedOutput)
+	assert.Equal(t, 1, validator.count(), "a decider error never costs the workflow anything")
+	ag.WaitDecisionShadows()
+}
+
+// Review #410 minor: under aggregate per_question with act_min 0.9, a p=0.55
+// verdict (decisiveness 0.1) passed the stage without the validator LLM.
+// It must fall back to the LLM, and the row must say FALLBACK.
+func TestStageValidationDecision_PerQuestionHonoursActMin(t *testing.T) {
+	t.Parallel()
+	dec := decisionmock.New().AnswerNoul(sites.QOutputValid, 0.55)
+	store := &memShadowStore{}
+	_, validator, _, ag, err := stageValidationRig(t, dec, store, "valid",
+		decision.WithBands([]*loomv1.DecisionBand{{
+			Site:      sites.SiteStageValidation,
+			ActMin:    0.9,
+			Aggregate: loomv1.DecisionBandAggregate_DECISION_BAND_AGGREGATE_PER_QUESTION,
+		}}))
+	require.NoError(t, err)
+	assert.Equal(t, 1, validator.count(), "an indecisive verdict must not pass a stage on its own")
+
+	ag.WaitDecisionShadows()
+	rows, err := store.QueryShadow(context.Background(), decision.ShadowQuery{})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_FALLBACK, rows[0].Path)
+	assert.Equal(t, "true", rows[0].ReferenceAnswer, "recorded against the LLM's verdict")
+}
+
+// Review #410 M5: past maxValidationOutputRunes the decider saw a tail-cut
+// output while the LLM validator sees all of it, so a confident "invalid" on
+// the cut view failed a stage the validator would pass. An output over the
+// limit is not asked about: the validator decides, and nothing is recorded.
+func TestStageValidationDecision_OverLimitOutputGoesToValidator(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name string
+		opts []decision.RouterOption
+	}{
+		{name: "live replace band", opts: []decision.RouterOption{validationBand(0.8, loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE)}},
+		{name: "shadow band"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dec := decisionmock.New().AnswerNoul(sites.QOutputValid, 0.02) // a confident invalid
+			store := &memShadowStore{}
+			output := strings.Repeat("a", 12001)
+			res, validator, _, ag, err := stageValidationRigOutput(t, dec, store, "valid", output, tt.opts...)
+			require.NoError(t, err, "the validator passes the whole output")
+			assert.Equal(t, output, res.MergedOutput)
+			assert.Equal(t, 1, validator.count(), "the validator decides")
+			ag.WaitDecisionShadows()
+			assert.Equal(t, 0, dec.CallCount(), "the decider is not asked about an output it cannot see whole")
+			rows, err := store.QueryShadow(context.Background(), decision.ShadowQuery{})
+			require.NoError(t, err)
+			assert.Empty(t, rows)
+		})
+	}
+}
+
+// failingLLM fails every chat, standing in for a validator that is down.
+type failingLLM struct{}
+
+func (failingLLM) Chat(context.Context, []llmtypes.Message, []shuttle.Tool) (*llmtypes.LLMResponse, error) {
+	return nil, errors.New("validator unavailable")
+}
+func (failingLLM) Name() string  { return "failing" }
+func (failingLLM) Model() string { return "failing-1" }
+
+// Review #410 minor b: when the LLM validator failed, validateStageOutput
+// returned before recording, losing the decider answer it had already paid
+// for. The row is recorded (no reference: the validator produced none)
+// before the error is returned.
+func TestStageValidationDecision_ValidatorErrorStillRecordsTheLiveAnswer(t *testing.T) {
+	t.Parallel()
+	dec := decisionmock.New().AnswerNoul(sites.QOutputValid, 0.55) // below the band: the validator decides
+	store := &memShadowStore{}
+	orch := NewOrchestrator(Config{Logger: zaptest.NewLogger(t), Tracer: observability.NewNoOpTracer(), LLMProvider: failingLLM{}})
+	cfg := agent.DefaultConfig()
+	cfg.PatternConfig = agent.DefaultPatternConfig()
+	cfg.PatternConfig.UseLLMClassifier = false
+	ag := agent.NewAgent(&mockBackend{}, newLvlMockLLM(lvlLowProvider, lvlLowModel, 0, "a prose answer"),
+		agent.WithName("worker"), agent.WithConfig(cfg),
+		agent.WithDecisionRouter(decision.NewRouter(dec, validationBand(0.8, loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE))),
+		agent.WithDecisionShadowStore(store))
+	orch.RegisterAgent("worker", ag)
+	e := NewPipelineExecutor(orch, &loomv1.PipelinePattern{}, "wf")
+
+	_, err := e.validateStageOutput(context.Background(), "wf", &loomv1.PipelineStage{
+		AgentId: "worker", ValidationPrompt: "Is {{output}} a complete answer?",
+	}, "a prose answer", 1)
+	require.Error(t, err)
+	ag.WaitDecisionShadows()
+	assert.Equal(t, 1, dec.CallCount())
+	rows, err := store.QueryShadow(context.Background(), decision.ShadowQuery{})
+	require.NoError(t, err)
+	require.Len(t, rows, 1, "the billed decider answer is recorded")
+	assert.Equal(t, loomv1.DecisionPath_DECISION_PATH_FALLBACK, rows[0].Path)
+	assert.Equal(t, "", rows[0].ReferenceAnswer)
+}
+
+// stage.validation is a gate: a live band with no mode is tighten-only, so
+// the decider may fail an output but never pass one on its own. An explicit
+// mode: replace opts out and acts on either verdict.
+func TestStageValidationDecision_UnsetModeIsTightenOnly(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		mode          loomv1.DecisionBandMode
+		p             float64
+		validator     string
+		wantErr       bool
+		wantValidator int
+	}{
+		// "rejected: incomplete", not "invalid": the scraper on main reads any
+		// reply containing "valid" as a pass.
+		{"unset mode, confident valid: the validator still decides and fails it", loomv1.DecisionBandMode_DECISION_BAND_MODE_UNSPECIFIED, 0.95, "rejected: incomplete", true, 1},
+		{"unset mode, confident invalid: the decider fails it", loomv1.DecisionBandMode_DECISION_BAND_MODE_UNSPECIFIED, 0.05, "valid", true, 0},
+		{"replace, confident valid: the decider passes it", loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE, 0.95, "rejected: incomplete", false, 0},
+		{"replace, confident invalid: the decider fails it", loomv1.DecisionBandMode_DECISION_BAND_MODE_REPLACE, 0.05, "valid", true, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dec := decisionmock.New().AnswerNoul(sites.QOutputValid, tt.p)
+			_, validator, _, ag, err := stageValidationRig(t, dec, &memShadowStore{}, tt.validator, validationBand(0.8, tt.mode))
+			ag.WaitDecisionShadows()
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "output validation failed")
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tt.wantValidator, validator.count())
+		})
+	}
+}
