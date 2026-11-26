@@ -365,7 +365,7 @@ func (m *Memory) ReloadPendingSession(ctx context.Context, sessionID, agentID st
 		// a store that answers takes the lock and replaces the stand-in.
 		if _, err := store.LoadSession(ctx, sessionID); err != nil && !errors.Is(err, ErrSessionNotFound) &&
 			!loadErrorMeansMissing(ctx, store, sessionID) {
-			zap.L().Warn("reload: the store still cannot load the session; this turn has no history in memory",
+			zap.L().Warn("reload: the store still cannot load the session; it stays an empty stand-in",
 				zap.String("session_id", sessionID), zap.Error(err))
 			// What is cached now: another caller may have replaced the
 			// stand-in while the probe waited on the store.
@@ -451,11 +451,12 @@ func (m *Memory) getOrCreate(ctx context.Context, sessionID, agentID, parentSess
 			err = ErrSessionNotFound
 		}
 		if err != nil && !errors.Is(err, ErrSessionNotFound) {
-			// A store that failed is not a new session: the turn below starts
-			// with no history in memory. Say so, so the empty context can be
-			// traced to the failed read. The next turn tries the load again.
+			// A store that failed is not a new session: the session is served
+			// as an empty stand-in, which no turn runs on. Say so, so a refused
+			// turn can be traced to the failed read. The next turn tries the
+			// load again.
 			loadFailed = true
-			zap.L().Error("reload: the store could not load the session; this turn has no history in memory, the next turn loads it again",
+			zap.L().Error("reload: the store could not load the session; it is served as an empty stand-in, the next turn loads it again",
 				zap.String("session_id", sessionID), zap.Bool("retry", hasCached), zap.Error(err))
 		}
 		if err == nil && session != nil {
@@ -509,8 +510,8 @@ func (m *Memory) getOrCreate(ctx context.Context, sessionID, agentID, parentSess
 	}
 
 	if hasCached {
-		// The retry of a failed load: still failing, keep serving this turn's
-		// session (it holds the turn's messages in memory); or the store now
+		// The retry of a failed load: still failing, keep serving the
+		// stand-in; or the store now
 		// says the session does not exist, so the cached one is the session.
 		if loadFailed {
 			m.mu.Unlock()

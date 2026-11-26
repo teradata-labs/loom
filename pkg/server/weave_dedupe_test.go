@@ -243,6 +243,10 @@ func TestWrapAgentErrorMapsSessionLeaseErrorsToAborted(t *testing.T) {
 	assert.Equal(t, codes.Aborted, status.Code(wrapAgentError(lost)))
 	assert.Equal(t, codes.Aborted, status.Code(resumeStatus(lost)), "resume reports a lost lease as ABORTED too")
 
+	notLoaded := fmt.Errorf("session s: %w", agent.ErrSessionNotLoaded)
+	assert.Equal(t, codes.Unavailable, status.Code(wrapAgentError(notLoaded)), "a session the store cannot load yet is retryable")
+	assert.True(t, isTransientOutcome(wrapAgentError(notLoaded)), "the refusal was cached by the dedupe")
+
 	assert.True(t, isTransientOutcome(status.Error(codes.Aborted, "busy")))
 	assert.False(t, isTransientOutcome(status.Error(codes.FailedPrecondition, "not resumable")))
 }
