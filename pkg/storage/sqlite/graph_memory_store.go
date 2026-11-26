@@ -501,6 +501,15 @@ func (s *GraphMemoryStore) Recall(ctx context.Context, opts memory.RecallOpts) (
 		args = append(args, opts.MemoryType)
 	}
 
+	// Optional owner scope (per-user partitioning). Empty = no filter, unless
+	// SharedOnly is set, in which case only unowned (shared) rows match.
+	if opts.Owner != "" {
+		conditions = append(conditions, "COALESCE(m.owner,'') = ?")
+		args = append(args, opts.Owner)
+	} else if opts.SharedOnly {
+		conditions = append(conditions, "COALESCE(m.owner,'') = ''")
+	}
+
 	// Optional entity scope.
 	if len(opts.EntityIDs) > 0 {
 		placeholders := make([]string, len(opts.EntityIDs))
@@ -621,6 +630,11 @@ func (s *GraphMemoryStore) VectorRecall(ctx context.Context, opts memory.VectorR
 		return nil, nil // no model specified, skip vector recall
 	}
 
+	sharedOnly := 0
+	if opts.SharedOnly {
+		sharedOnly = 1
+	}
+
 	// Fetch non-expired, non-superseded memories with embeddings from the same model.
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT m.id, m.agent_id, m.content, m.summary, m.memory_type,
@@ -635,9 +649,12 @@ func (s *GraphMemoryStore) VectorRecall(ctx context.Context, opts memory.VectorR
 		   AND m.embedding_model = ?
 		   AND (m.expires_at IS NULL OR m.expires_at > datetime('now'))
 		   AND m.embedding IS NOT NULL
+		   AND (? = '' OR m.memory_type = ?)
+		   AND (? = '' OR COALESCE(m.owner,'') = ?)
+		   AND (? = 0 OR COALESCE(m.owner,'') = '')
 		   AND m.id NOT IN (SELECT old_memory_id FROM graph_memory_lineage WHERE relation_type = 'SUPERSEDES')
 		 ORDER BY m.created_at DESC`,
-		opts.AgentID, opts.Model,
+		opts.AgentID, opts.Model, opts.MemoryType, opts.MemoryType, opts.Owner, opts.Owner, sharedOnly,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("vector recall query: %w", err)
@@ -956,12 +973,79 @@ func (s *GraphMemoryStore) DecayAll(ctx context.Context, agentID string, decayFa
 	ctx, span := s.tracer.StartSpan(ctx, "sqlite.graph_memory.decay_all")
 	defer s.tracer.EndSpan(span)
 
+	// agentID == "" decays every agent (used by the background eviction sweep).
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE graph_memories SET salience = MAX(0.0, salience * ?)
-		 WHERE agent_id = ? AND salience > 0.01`,
-		decayFactor, agentID,
+		 WHERE (? = '' OR agent_id = ?) AND salience > 0.01`,
+		decayFactor, agentID, agentID,
 	)
 	return err
+}
+
+// EvictStaleMemories soft-evicts (sets expires_at = now) memories that are
+// below the salience floor, idle, old enough, and rarely reused; it then
+// enforces an optional per-agent row cap. It mirrors Forget's soft-delete
+// semantics: evicted rows are excluded from recall but stay on disk until a
+// later purge. Returns the number of rows newly evicted.
+func (s *GraphMemoryStore) EvictStaleMemories(ctx context.Context, opts memory.EvictionOptions) (int, error) {
+	ctx, span := s.tracer.StartSpan(ctx, "sqlite.graph_memory.evict_stale")
+	defer s.tracer.EndSpan(span)
+
+	idleMod := fmt.Sprintf("-%d seconds", int64(opts.MaxIdle.Seconds()))
+	ageMod := fmt.Sprintf("-%d seconds", int64(opts.MinAge.Seconds()))
+	idleSecs := int64(opts.MaxIdle.Seconds())
+	ageSecs := int64(opts.MinAge.Seconds())
+
+	total := 0
+
+	// Phase 1: conjunctive predicate eviction. MinAge/MaxIdle <= 0 disable their
+	// respective guards (via the leading "secs <= 0 OR" short-circuit).
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE graph_memories
+		 SET expires_at = datetime('now')
+		 WHERE (? = '' OR agent_id = ?)
+		   AND (expires_at IS NULL OR expires_at > datetime('now'))
+		   AND salience < ?
+		   AND access_count <= ?
+		   AND (? <= 0 OR created_at < datetime('now', ?))
+		   AND (? <= 0 OR (accessed_at IS NULL OR accessed_at < datetime('now', ?)))`,
+		opts.AgentID, opts.AgentID, opts.MinSalience, opts.MaxAccessCount,
+		ageSecs, ageMod, idleSecs, idleMod,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("evict stale (predicate): %w", err)
+	}
+	if n, err := res.RowsAffected(); err == nil {
+		total += int(n)
+	}
+
+	// Phase 2: per-agent row cap (LRU overflow guard). Keep the top MaxRows live
+	// rows per agent ranked by salience then recency; evict the remainder.
+	if opts.MaxRows > 0 {
+		res, err := s.db.ExecContext(ctx,
+			`WITH ranked AS (
+			   SELECT id, ROW_NUMBER() OVER (
+			     PARTITION BY agent_id
+			     ORDER BY salience DESC, (accessed_at IS NULL), accessed_at DESC, created_at DESC
+			   ) AS rn
+			   FROM graph_memories
+			   WHERE (? = '' OR agent_id = ?)
+			     AND (expires_at IS NULL OR expires_at > datetime('now'))
+			 )
+			 UPDATE graph_memories
+			 SET expires_at = datetime('now')
+			 WHERE id IN (SELECT id FROM ranked WHERE rn > ?)`,
+			opts.AgentID, opts.AgentID, opts.MaxRows,
+		)
+		if err != nil {
+			return total, fmt.Errorf("evict stale (cap): %w", err)
+		}
+		if n, err := res.RowsAffected(); err == nil {
+			total += int(n)
+		}
+	}
+
+	return total, nil
 }
 
 func (s *GraphMemoryStore) ContextFor(ctx context.Context, opts memory.ContextForOpts) (*memory.EntityRecall, error) {

@@ -616,6 +616,90 @@ message BehaviorConfig {
   // with truncated calls — it does NOT trigger on verbose text responses.
   // Set to 0 to use the default. Set to -1 to disable entirely.
   int32 output_token_cb_threshold = 8;
+
+  // Durable failure-recovery memory: learn abstract problem->solution lessons on
+  // recovery and recall them reactively (on failure) and proactively (per
+  // query). Requires a memory store; uses a vector embedder when configured,
+  // else FTS5. Off by default. See docs/plans/failure-recovery-memory-spec.md.
+  FailureRecoveryConfig failure_recovery = 9;
+}
+
+// FailureRecoveryConfig configures the durable failure-recovery memory feature.
+// The feature is off unless enabled is true; proactive pre-warning is gated
+// separately by proactive.enabled. Unset (zero) numeric fields take the
+// defaults noted on each field.
+message FailureRecoveryConfig {
+  // Enable learning + reactive recall of failure-recovery lessons.
+  bool enabled = 1;
+
+  // Minimum similarity for a reactive vector match (default 0.82).
+  float similarity_threshold = 2;
+
+  // Maximum hints injected per read (default 2).
+  int32 max_hints = 3;
+
+  // Covered failure classes (default: tool_exec, tool_args, guardrail).
+  repeated string classes = 4;
+
+  // Salience assigned to a newly learned lesson (default 0.6).
+  float initial_salience = 5;
+
+  // Per-query pitfall pre-warning (off by default).
+  ProactiveConfig proactive = 6;
+
+  // Partition lessons per calling user. When false (default) every user of an
+  // agent shares its lessons. When true a lesson is stored under the caller's
+  // user id and recall only returns that user's own lessons. Also enables the
+  // deterministic pre-execution guard, which matches planned tool calls against
+  // stored failure signatures without an LLM or embeddings.
+  bool user_scoped = 7;
+
+  // Keep concrete identifiers (table, column, schema names, codes, keywords) in
+  // LLM-drafted lessons for sharper recall. Only takes effect when user_scoped
+  // is also true, because identifiers are the author's own schema and must not
+  // be shown to another user. Off by default.
+  bool preserve_details = 8;
+
+  // Disable the deterministic signature-matching layers (resource-gated
+  // planning advisory, pre-execution guard, cross-object advice) and use only
+  // semantic retrieval (embedding recall with FTS5 fallback). Signatures are
+  // still stored, so turning this off re-enables matching against lessons
+  // learned meanwhile. Off by default.
+  bool semantic_only = 9;
+
+  // Optional LLM-drafted lessons (off by default).
+  LLMAbstractionConfig llm_abstraction = 10;
+}
+
+// ProactiveConfig gates per-query, intent-based pitfall pre-warning.
+message ProactiveConfig {
+  // Inject task pitfalls at the start of a user query. On when unset (while
+  // failure_recovery is enabled); set false to turn off.
+  optional bool enabled = 1;
+
+  // Soft minimum similarity for a proactive match (default 0.3). Lessons less
+  // similar than this are dropped, so the hook may return fewer than top-K
+  // lessons, or none. Unlike the strict reactive gate, this is advisory.
+  float threshold = 2;
+
+  // Translate the raw user intent into a predicted pitfall in failure-space
+  // vocabulary with one LLM call before recall. Improves proactive recall at the
+  // cost of one extra LLM call per user turn; best-effort, falling back to the
+  // raw intent on error, timeout, or a "no pitfall" verdict. On when unset;
+  // set false to use the raw intent.
+  optional bool llm_intent = 3;
+}
+
+// LLMAbstractionConfig gates optional LLM-drafted failure-recovery lessons. A
+// drafted lesson passes a deterministic leak gate (unless preserve_details
+// applies) and falls back to rule-based abstraction on any error, timeout, or
+// gate failure.
+message LLMAbstractionConfig {
+  // Draft lessons with the agent's LLM.
+  bool enabled = 1;
+
+  // Per-draft LLM timeout in seconds (default 8).
+  int32 timeout_sec = 2;
 }
 
 // PatternConfig defines pattern-guided learning configuration

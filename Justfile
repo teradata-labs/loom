@@ -119,6 +119,15 @@ test-e2e-storage-all:
 test-pkg pkg:
     GOWORK=off go test -tags fts5 -race -v ./{{pkg}}/...
 
+# Demo the failure-recovery memory POC against a live Postgres/pgvector DB.
+# Tells the two-session story (learn once, reuse across sessions) and asserts
+# every claim, including PII-safety. Uses the keyword (FTS) fallback path, so no
+# embedder is required. Override the DB with: just demo-failure-recovery postgres://user:pass@host:5432/db
+demo-failure-recovery db="postgres://chatuser:chatpass@localhost:5432/loom_test":
+    TEST_POSTGRES_URL={{db}} \
+        GOWORK=off go test -tags integration -v -count=1 \
+        ./pkg/storage/postgres/ -run TestDemo_FailureRecovery_CrossSession
+
 # Run benchmarks
 bench:
     GOWORK=off go test -tags fts5 -bench=. -benchmem ./...

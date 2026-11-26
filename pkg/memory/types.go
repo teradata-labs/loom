@@ -190,6 +190,12 @@ const (
 	MemoryTypeFailure       = "failure"
 	MemoryTypeObservation   = "observation"
 	MemoryTypeConsolidation = "consolidation"
+	// MemoryTypeFailureRecovery holds an abstract problem -> solution lesson
+	// learned when the agent recovers from a failure. Distinct from
+	// MemoryTypeFailure (produced by the conversation extractor, which skips
+	// tool messages): these records are failure-keyed and carry an actionable
+	// solution for reuse. See docs/plans/failure-recovery-memory-spec.md.
+	MemoryTypeFailureRecovery = "failure_recovery"
 	// MemoryTypeLesson is durable working knowledge an agent verified by
 	// doing: an error and the fix that observably resolved it, a schema fact
 	// learned by probing, an environment quirk. The extraction prompt only

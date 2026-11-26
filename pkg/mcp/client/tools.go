@@ -158,6 +158,19 @@ func (c *Client) CallTool(ctx context.Context, name string, arguments map[string
 		return nil, &ToolResultError{Result: &result}
 	}
 
+	// Opt-in: some servers report failures as a successful result whose
+	// payload encodes the error (e.g. {"ok":false,"error":"..."}) instead of
+	// setting isError. Promote those to a tool error so error-aware machinery
+	// (failure recovery, retries) reacts as it would for a standard failure.
+	if c.detectEmbeddedErrors {
+		if msg, ok := detectEmbeddedError(&result); ok {
+			c.logger.Debug("promoting embedded error in successful tool result",
+				zap.String("tool", name), zap.String("error", msg))
+			result.IsError = true
+			return nil, &ToolResultError{Result: &result}
+		}
+	}
+
 	return &result, nil
 }
 

@@ -25,6 +25,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/decision"
 	"github.com/teradata-labs/loom/pkg/eventlog"
 	"github.com/teradata-labs/loom/pkg/fabric"
+	"github.com/teradata-labs/loom/pkg/failurerecovery"
 	mcpadapter "github.com/teradata-labs/loom/pkg/mcp/adapter"
 	"github.com/teradata-labs/loom/pkg/memory"
 	"github.com/teradata-labs/loom/pkg/observability"
@@ -268,6 +269,12 @@ type Agent struct {
 	graphMemoryStore  memory.GraphMemoryStore
 	graphMemoryConfig *loomv1.GraphMemoryConfig
 	embedder          memory.Embedder // vector embeddings for semantic search (optional)
+
+	// Failure-recovery memory (optional). Learns abstract problem->solution
+	// lessons on recovery and recalls them reactively on failure and proactively
+	// per query. Off unless an engine is injected via WithFailureRecovery.
+	// See docs/plans/failure-recovery-memory-spec.md.
+	failureRecovery *failurerecovery.Engine
 
 	// Task decomposition and kanban (optional).
 	taskManager     *task.Manager

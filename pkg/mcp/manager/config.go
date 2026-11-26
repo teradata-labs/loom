@@ -79,6 +79,13 @@ type ServerConfig struct {
 	// to speak exactly that revision and fails without fallback.
 	ProtocolVersion string `yaml:"protocol_version" json:"protocol_version"`
 
+	// DetectEmbeddedErrors promotes a successful tool result whose payload
+	// encodes an application-level failure (e.g. {"ok":false,"error":"..."})
+	// to a tool error. Enable for MCP servers that report failures as
+	// successful results instead of setting isError (e.g. Teradata), so
+	// failure-recovery and retry logic can react. Off by default.
+	DetectEmbeddedErrors bool `yaml:"detect_embedded_errors" json:"detect_embedded_errors"`
+
 	// Timeout for server operations (e.g., "30s", "1m")
 	Timeout string `yaml:"timeout" json:"timeout"`
 

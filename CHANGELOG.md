@@ -317,6 +317,22 @@ Reported `cost_usd` figures change for the models below; compare costs across th
 
 ### Added
 
+#### Failure-Recovery Memory
+- Opt-in durable memory of abstract problem -> solution lessons, learned when an agent recovers from a tool failure and stored in graph memory (`pkg/failurerecovery`). Off by default (`failure_recovery.enabled`); once enabled, `proactive.enabled` and `proactive.llm_intent` default to true (one extra model call per user turn for `llm_intent`) and can be set to false.
+- Reactive recall injects a matching lesson when a tool fails; proactive recall (separately gated) pre-warns at the start of a user query.
+- Configured with the new proto field `BehaviorConfig.failure_recovery` (`FailureRecoveryConfig`, `ProactiveConfig`, `LLMAbstractionConfig`) and `behavior.failure_recovery` in agent YAML. Options: `user_scoped`, `preserve_details`, `semantic_only`, `proactive.llm_intent`, `llm_abstraction`.
+- Optional LLM-drafted lessons pass a deterministic leak gate and fall back to rule-based abstraction on error.
+- Requires a graph memory store. Uses a vector embedder when configured, otherwise FTS5.
+- Postgres migrations `000031` (pgvector embedding column) and `000032` (HNSW index). `000032` pins `graph_memories.embedding` to `vector(1024)` (Titan Text Embeddings v2 / Cohere on Bedrock); an embedder with a different dimension needs the column type and index changed. Status: Beta; see `docs/plans/failure-recovery-memory-spec.md` for limits.
+
+#### Graph-Memory Eviction
+- Optional background sweep (`storage.memory_eviction.*`, disabled by default) that decays salience and soft-evicts stale, rarely reused memories by setting `expires_at`. Works on SQLite and PostgreSQL.
+
+#### Bedrock Embeddings
+- Bedrock/Titan embedding provider (`pkg/embedding/bedrock.go`) with a configurable `embedding.region`, falling back to the LLM `bedrock_region`.
+
+#### MCP Embedded-Error Detection
+- `detect_embedded_errors` per MCP server: promotes a successful tool result whose payload encodes an application-level failure (for example `{"ok":false,"error":"..."}`) to a tool error. Off by default.
 - **Task attribution and timeline read model (#378)** — `taskctx.Attribution` on the context stamps `task_id` onto messages and human requests on both backends; `TimelineReader` merges `messages`, `task_history` and `human_requests` projections for a task (no RPC yet). `ImplicitTaskConfig` (`TaskBoardConfig` field 7) tunes runtime recording: `mode`, `triggers`, `excluded_triggers`, `max_per_session`, `agent_visible`; unparseable values fail closed.
 - **`Task.created_via` on the wire** (`task.proto` field 29) so API and UI consumers of `ListTasks`/`GetBoard` can tell runtime-minted tasks from an agent's own. Tasks created over the `CreateTask` RPC without an explicit value are stamped `user`.
 - **`task.TaskCanceller`** optional store capability: a status-guarded cancel, implemented by the SQLite and Postgres stores, so a cancel racing a close is decided at the row and never flips a DONE task to CANCELLED. Stores without it take a guarded read-modify-write fallback.

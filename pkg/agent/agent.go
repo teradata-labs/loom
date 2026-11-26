@@ -32,6 +32,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/decision/sites"
 	"github.com/teradata-labs/loom/pkg/eventlog"
 	"github.com/teradata-labs/loom/pkg/fabric"
+	"github.com/teradata-labs/loom/pkg/failurerecovery"
 	"github.com/teradata-labs/loom/pkg/llm"
 	mcpadapter "github.com/teradata-labs/loom/pkg/mcp/adapter"
 	"github.com/teradata-labs/loom/pkg/memory"
@@ -2873,6 +2874,12 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		return nil, fmt.Errorf("reading the execution-event step counter: %w", stepErr)
 	}
 
+	// Proactive failure-recovery pitfalls (once per turn, keyed on task intent).
+	// Same resume guard as graph memory: the injected block is in-memory only.
+	if !isResumedTurn(ctx) || !hasFailureRecoveryPitfalls(session) {
+		a.injectFailureRecoveryPitfalls(ctx, session)
+	}
+
 	// Conversation loop
 	for turnCount < a.config.MaxTurns && toolExecutionCount < a.config.MaxToolExecutions {
 		if leaseErr := sessionLeaseLost(ctx); leaseErr != nil {
@@ -3681,7 +3688,7 @@ func (a *Agent) dispatchOneCall(ctx Context, session *Session, toolCall ToolCall
 	}
 	var result *shuttle.Result
 	var err error
-	if pc.intentErr == nil {
+	if !pc.skipRun() {
 		result, err = a.runCall(ctx, pc, session.ID)
 	}
 	a.settleCall(ctx, session, pc, st, result, err)
@@ -3697,11 +3704,21 @@ type preparedCall struct {
 	dedupKey  string
 	toolSpan  *observability.Span
 	intentErr error
+	// guardMsg is set when the failure-recovery pre-execution guard matched a
+	// verified past failure: the call must then not run, and settleCall
+	// commits the advisory as its tool row so the model revises the call.
+	guardMsg string
 	// projection is the advertised tool set runCall attaches to the call's
 	// context; noProjection means attach none (a resumed batch with no
 	// recorded projection), so a script engine fails closed.
 	projection   []shuttle.Tool
 	noProjection bool
+}
+
+// skipRun reports whether the call must not be executed: its intent could not
+// be recorded, or the failure-recovery guard replaced it with an advisory.
+func (pc *preparedCall) skipRun() bool {
+	return pc.intentErr != nil || pc.guardMsg != ""
 }
 
 // prepareCall is the sequential front half of dispatchOneCall: the per-turn
@@ -3826,13 +3843,27 @@ func (a *Agent) prepareCall(ctx Context, session *Session, toolCall ToolCall, i 
 	// call must not run, and settleCall commits its error row so that a group
 	// member's row still lands after the rows of the members before it.
 	//
+	// Pre-execution failure-recovery guard (deterministic, LLM-free): if this
+	// planned call matches a verified past failure signature (exact replay or
+	// offending-token overlap), the call does not run. settleCall injects the
+	// advisory as the tool result so the model revises the call on its next
+	// turn, and records it as a prevented repeat. Bounded: a match only fires on
+	// a concrete signature hit, and the advisory names the fix, so the
+	// re-planned call no longer matches. The reactive path still catches any
+	// genuinely new failure. A no-op when the feature is off or not user-scoped.
+	// Skipped when the intent failed, since that call does not run anyway.
+	var guardMsg string
+	if intentErr == nil {
+		guardMsg = a.guardPlannedCall(ctx, session.ID, toolCall, span)
+	}
+
 	// The call's context will record the tools this provider call advertised
 	// (after recovery filtering), so a script engine never re-derives a wider
 	// set. On resume st.tools is the requesting call's recorded projection,
 	// narrowed by the resume-time set (completeParkedBatch); with no record
 	// the call gets no projection and a script engine fails closed. Read here,
 	// in the sequential front half, so a parallel group sees the same set.
-	pc = &preparedCall{call: toolCall, index: i, dedupKey: dedupKey, toolSpan: toolSpan, intentErr: intentErr, noProjection: st.noProjection}
+	pc = &preparedCall{call: toolCall, index: i, dedupKey: dedupKey, toolSpan: toolSpan, intentErr: intentErr, guardMsg: guardMsg, noProjection: st.noProjection}
 	if !st.noProjection && st.tools != nil {
 		pc.projection = *st.tools
 	}
@@ -3867,6 +3898,37 @@ func (a *Agent) settleUnrecordedCall(ctx Context, session *Session, pc *prepared
 	// exactly one unit of the MaxToolExecutions budget, not two.
 }
 
+// settleGuardedCall commits the row of a call the failure-recovery guard
+// stopped before it ran. The advisory is the tool result; the call's recorded
+// intent is closed with an error result so the event log has no dangling
+// intent.
+func (a *Agent) settleGuardedCall(ctx Context, session *Session, pc *preparedCall, st *batchState) {
+	toolCall := pc.call
+	result := &shuttle.Result{
+		Success: false,
+		Error: &shuttle.Error{
+			Code:    "failure_recovery_guard",
+			Message: "planned call blocked: matches a verified past failure — apply the known fix and retry",
+		},
+	}
+	a.recordToolResult(ctx, session.ID, st.stepIndex, pc.index, toolCall.ID, result, nil)
+	a.appendMessage(ctx, session, Message{
+		Role:       "tool",
+		Content:    pc.guardMsg,
+		ToolUseID:  toolCall.ID,
+		ToolResult: result,
+		AgentID:    a.id,
+		Timestamp:  time.Now(),
+	}, false)
+	*st.allToolExecutions = append(*st.allToolExecutions, ToolExecution{
+		ToolName: toolCall.Name,
+		Input:    toolCall.Input,
+	})
+	pc.toolSpan.SetAttribute("failure_recovery.guard_blocked", "true")
+	addToolExecutionEvent(st, pc, result, nil)
+	endToolSpan(ctx, pc.toolSpan, result, nil)
+}
+
 // runCall is the execution middle of dispatchOneCall: the circuit breaker and
 // the executor call, and nothing else. It must not touch the session, the
 // batch state, the lease ledger, guardrails, the failure tracker, the dedup
@@ -3888,6 +3950,10 @@ func (a *Agent) runCall(ctx Context, pc *preparedCall, sessionID string) (*shutt
 func (a *Agent) settleCall(ctx Context, session *Session, pc *preparedCall, st *batchState, result *shuttle.Result, err error) {
 	if pc.intentErr != nil {
 		a.settleUnrecordedCall(ctx, session, pc, st)
+		return
+	}
+	if pc.guardMsg != "" {
+		a.settleGuardedCall(ctx, session, pc, st)
 		return
 	}
 	span := st.span
@@ -4048,10 +4114,43 @@ func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, 
 		}
 	}
 
+	// === FEATURE INTEGRATION: Failure-Recovery Memory ===
+	// Best-effort, off by default. On failure: classify the error, stage the
+	// abstracted failure, and recall any known fix (reactive). On success: learn
+	// the lesson if this tool just recovered (write-once). Uses the stable agent
+	// name so lessons persist across sessions, and classifies each failure into
+	// tool_args / guardrail / tool_exec so scoping stays sharp.
+	// See docs/plans/failure-recovery-memory-spec.md.
+	var failureRecoveryHint string
+	if a.failureRecovery.Enabled() {
+		span.SetAttribute("config.failure_recovery", true)
+		if err != nil || (result != nil && result.Error != nil) {
+			errText := failureErrorText(result, err)
+			class := failurerecovery.ClassifyError(errText)
+			a.failureRecovery.OnToolFailure(session.ID, class, toolCall.Name, errText, failurerecovery.FailedCall{
+				Tool: toolCall.Name,
+				Args: toolCall.Input,
+			})
+			if hints := a.failureRecovery.ReactiveHints(ctx, a.config.Name, session.ID, class, toolCall.Name, errText, span); len(hints) > 0 {
+				failureRecoveryHint = formatFailureRecoveryHint(toolCall.Name, hints)
+				span.AddEvent("failure_recovery.hint_injected", map[string]interface{}{
+					"failure_recovery.hook":  "reactive",
+					"failure_recovery.class": class,
+					"failure_recovery.hints": len(hints),
+				})
+			}
+		} else {
+			a.failureRecovery.OnToolSuccess(ctx, a.config.Name, session.ID, toolCall.Name, span)
+		}
+	}
+
 	// Format tool result with escalation if needed
 	formattedResult := a.formatToolResult(ctx, session.ID, toolCall.Name, result, err)
 	if escalationMsg != "" {
 		formattedResult = formatToolResultWithEscalation(formattedResult, err, escalationMsg)
+	}
+	if failureRecoveryHint != "" {
+		formattedResult += failureRecoveryHint
 	}
 
 	// Advisory note after repeated identical calls (the call itself already ran).
@@ -5583,6 +5682,15 @@ func WithGraphMemoryStore(store memory.GraphMemoryStore, config *loomv1.GraphMem
 	return func(a *Agent) {
 		a.graphMemoryStore = store
 		a.graphMemoryConfig = config
+	}
+}
+
+// WithFailureRecovery installs the failure-recovery memory engine. The engine is
+// best-effort and disabled unless its own config enables it, so this option is
+// always safe to pass. See docs/plans/failure-recovery-memory-spec.md.
+func WithFailureRecovery(engine *failurerecovery.Engine) Option {
+	return func(a *Agent) {
+		a.failureRecovery = engine
 	}
 }
 

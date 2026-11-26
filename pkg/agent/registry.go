@@ -24,6 +24,7 @@ import (
 	"github.com/teradata-labs/loom/pkg/artifacts"
 	"github.com/teradata-labs/loom/pkg/decision"
 	"github.com/teradata-labs/loom/pkg/eventlog"
+	"github.com/teradata-labs/loom/pkg/failurerecovery"
 	"github.com/teradata-labs/loom/pkg/llm"
 	"github.com/teradata-labs/loom/pkg/llm/anthropic"
 	"github.com/teradata-labs/loom/pkg/llm/azureopenai"
@@ -993,6 +994,24 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 			if gmEmbedder != nil {
 				opts = append(opts, WithEmbedder(gmEmbedder))
 			}
+		}
+	}
+
+	// Wire failure-recovery memory when behavior.failure_recovery is configured
+	// and a graph memory store is available to persist lessons. Off unless
+	// enabled in YAML.
+	if gmStore != nil {
+		if frCfg := FailureRecoveryConfigFromProto(config.GetBehavior().GetFailureRecovery()); frCfg != nil && frCfg.Enabled {
+			var frOpts []failurerecovery.EngineOption
+			if frCfg.LLMAbstraction.Enabled || frCfg.Proactive.LLMIntent {
+				// Reuse the agent's already-instrumented primary LLM to draft
+				// richer lessons and predict proactive intent; the abstractor
+				// falls back to rules on any error or leak. No new data egress
+				// (same provider the agent already calls on the reactive path).
+				frOpts = append(frOpts, failurerecovery.WithLLMAbstractor(llmProvider))
+			}
+			engine := failurerecovery.NewEngine(gmStore, gmEmbedder, *frCfg, frOpts...)
+			opts = append(opts, WithFailureRecovery(engine))
 		}
 	}
 

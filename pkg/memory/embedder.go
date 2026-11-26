@@ -27,11 +27,22 @@ type Embedder interface {
 
 // VectorRecallOpts configures a vector similarity search.
 type VectorRecallOpts struct {
-	AgentID   string
-	Embedding []float32 // query vector
-	Model     string    // only match embeddings from this model (required)
-	Limit     int       // max results (default: 20)
-	Threshold float32   // minimum cosine similarity (default: 0.0)
+	AgentID    string
+	Embedding  []float32 // query vector
+	Model      string    // only match embeddings from this model (required)
+	MemoryType string    // optional: restrict to this memory_type (empty = any)
+	Limit      int       // max results (default: 20)
+	Threshold  float32   // minimum cosine similarity (default: 0.0)
+	// Owner scopes recall to a single caller identity. Empty = no owner filter
+	// (matches all owners, the default agent-wide behavior). Non-empty = strict
+	// match on that owner only (per-user partitioning).
+	Owner string
+	// SharedOnly, when true and Owner is empty, restricts recall to unowned
+	// (shared) rows only — those with an empty owner. This is the fail-closed
+	// read used when per-user scoping is off: rows previously written under a
+	// concrete owner stay private and are never surfaced to other callers, even
+	// after the scoping flag is turned off. Ignored when Owner is non-empty.
+	SharedOnly bool
 }
 
 // CosineSimilarity computes the cosine similarity between two vectors.

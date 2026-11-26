@@ -171,7 +171,7 @@ func (a *Agent) dispatchGroup(ctx Context, session *Session, calls []ToolCall, f
 			consumed = j + 1
 			break
 		}
-		if pc.intentErr != nil {
+		if pc.skipRun() {
 			unrecorded = pc
 			consumed = j + 1
 			break
