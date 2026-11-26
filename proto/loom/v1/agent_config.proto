@@ -673,8 +673,9 @@ message FailureRecoveryConfig {
 
 // ProactiveConfig gates per-query, intent-based pitfall pre-warning.
 message ProactiveConfig {
-  // Inject task pitfalls at the start of a user query.
-  bool enabled = 1;
+  // Inject task pitfalls at the start of a user query. On when unset (while
+  // failure_recovery is enabled); set false to turn off.
+  optional bool enabled = 1;
 
   // Soft minimum similarity for a proactive match (default 0.3). Lessons less
   // similar than this are dropped, so the hook may return fewer than top-K
@@ -684,8 +685,9 @@ message ProactiveConfig {
   // Translate the raw user intent into a predicted pitfall in failure-space
   // vocabulary with one LLM call before recall. Improves proactive recall at the
   // cost of one extra LLM call per user turn; best-effort, falling back to the
-  // raw intent on error, timeout, or a "no pitfall" verdict. Off by default.
-  bool llm_intent = 3;
+  // raw intent on error, timeout, or a "no pitfall" verdict. On when unset;
+  // set false to use the raw intent.
+  optional bool llm_intent = 3;
 }
 
 // LLMAbstractionConfig gates optional LLM-drafted failure-recovery lessons. A

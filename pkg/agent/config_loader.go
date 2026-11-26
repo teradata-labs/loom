@@ -622,9 +622,10 @@ type FailureRecoveryConfigYAML struct {
 
 // ProactiveConfigYAML represents behavior.failure_recovery.proactive in YAML.
 type ProactiveConfigYAML struct {
-	Enabled   bool    `yaml:"enabled"`
+	// Enabled and LLMIntent default to true when omitted; set false to opt out.
+	Enabled   *bool   `yaml:"enabled"`
 	Threshold float32 `yaml:"threshold"`
-	LLMIntent bool    `yaml:"llm_intent"`
+	LLMIntent *bool   `yaml:"llm_intent"`
 }
 
 // LLMAbstractionConfigYAML represents
@@ -1911,6 +1912,27 @@ func failureRecoveryYAMLToProto(in *FailureRecoveryConfigYAML) (*loomv1.FailureR
 	}, nil
 }
 
+// proactiveEnabledPtr returns the optional proactive.enabled value, nil-safe.
+func proactiveEnabledPtr(p *loomv1.ProactiveConfig) *bool {
+	if p == nil {
+		return nil
+	}
+	return p.Enabled
+}
+
+// proactiveLLMIntentPtr returns the optional proactive.llm_intent value, nil-safe.
+func proactiveLLMIntentPtr(p *loomv1.ProactiveConfig) *bool {
+	if p == nil {
+		return nil
+	}
+	return p.LlmIntent
+}
+
+// boolDefaultTrue resolves an optional bool: unset means true.
+func boolDefaultTrue(v *bool) bool {
+	return v == nil || *v
+}
+
 // failureRecoveryProtoToYAML is the inverse of failureRecoveryYAMLToProto.
 // Returns nil when the proto field is unset.
 func failureRecoveryProtoToYAML(in *loomv1.FailureRecoveryConfig) *FailureRecoveryConfigYAML {
@@ -1924,9 +1946,9 @@ func failureRecoveryProtoToYAML(in *loomv1.FailureRecoveryConfig) *FailureRecove
 		Classes:             in.GetClasses(),
 		InitialSalience:     in.GetInitialSalience(),
 		Proactive: ProactiveConfigYAML{
-			Enabled:   in.GetProactive().GetEnabled(),
+			Enabled:   proactiveEnabledPtr(in.GetProactive()),
 			Threshold: in.GetProactive().GetThreshold(),
-			LLMIntent: in.GetProactive().GetLlmIntent(),
+			LLMIntent: proactiveLLMIntentPtr(in.GetProactive()),
 		},
 		UserScoped:      in.GetUserScoped(),
 		PreserveDetails: in.GetPreserveDetails(),
@@ -1956,9 +1978,11 @@ func FailureRecoveryConfigFromProto(in *loomv1.FailureRecoveryConfig) *failurere
 		Classes:             in.GetClasses(),
 		InitialSalience:     float64(in.GetInitialSalience()),
 		Proactive: failurerecovery.ProactiveConfig{
-			Enabled:   in.GetProactive().GetEnabled(),
+			// Unset means on; only an explicit false opts out. The whole block
+			// is still gated by failure_recovery.enabled.
+			Enabled:   boolDefaultTrue(proactiveEnabledPtr(in.GetProactive())),
 			Threshold: in.GetProactive().GetThreshold(),
-			LLMIntent: in.GetProactive().GetLlmIntent(),
+			LLMIntent: boolDefaultTrue(proactiveLLMIntentPtr(in.GetProactive())),
 		},
 		LLMAbstraction: failurerecovery.LLMAbstractionConfig{
 			Enabled:    in.GetLlmAbstraction().GetEnabled(),

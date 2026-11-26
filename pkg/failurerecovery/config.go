@@ -152,7 +152,8 @@ type ProactiveConfig struct {
 	// aligns both sides of the comparison and sharply improves proactive recall,
 	// at the cost of one extra LLM call per user turn (best-effort: falls back to
 	// the raw intent on any error, timeout, or "no pitfall" verdict). Requires a
-	// model wired via WithLLMAbstractor. Off by default.
+	// model wired via WithLLMAbstractor. The agent YAML loader defaults this to
+	// true; the zero value here is false.
 	LLMIntent bool `json:"llm_intent,omitempty"`
 }
 

@@ -318,7 +318,7 @@ Reported `cost_usd` figures change for the models below; compare costs across th
 ### Added
 
 #### Failure-Recovery Memory
-- Opt-in durable memory of abstract problem -> solution lessons, learned when an agent recovers from a tool failure and stored in graph memory (`pkg/failurerecovery`). Off by default.
+- Opt-in durable memory of abstract problem -> solution lessons, learned when an agent recovers from a tool failure and stored in graph memory (`pkg/failurerecovery`). Off by default (`failure_recovery.enabled`); once enabled, `proactive.enabled` and `proactive.llm_intent` default to true (one extra model call per user turn for `llm_intent`) and can be set to false.
 - Reactive recall injects a matching lesson when a tool fails; proactive recall (separately gated) pre-warns at the start of a user query.
 - Configured with the new proto field `BehaviorConfig.failure_recovery` (`FailureRecoveryConfig`, `ProactiveConfig`, `LLMAbstractionConfig`) and `behavior.failure_recovery` in agent YAML. Options: `user_scoped`, `preserve_details`, `semantic_only`, `proactive.llm_intent`, `llm_abstraction`.
 - Optional LLM-drafted lessons pass a deterministic leak gate and fall back to rule-based abstraction on error.

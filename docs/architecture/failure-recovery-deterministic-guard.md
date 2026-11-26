@@ -393,17 +393,21 @@ failure_recovery:
   preserve_details: true
   similarity_threshold: 0.75
   proactive:
-    enabled: true          # REQUIRED for the planning-time advisory
+    enabled: true          # default true under failure_recovery; arms the planning-time advisory
     # No threshold: proactive always fetches the 3 nearest lessons (advisory;
     # the injected directive filters by planned action)
-    llm_intent: false      # the advisory works regardless of this
+    llm_intent: true       # default true; set false to match the raw intent (no extra model call)
   llm_abstraction:
     enabled: true
 ```
 
 - `user_scoped: true` arms signatures and both dispatch tiers.
-- `proactive.enabled: true` arms the planning-time resource-gated advisory.
-- `llm_intent` is orthogonal: the advisory is deterministic and does not need it.
+- `proactive.enabled` defaults to true once `failure_recovery.enabled` is true; it arms the
+  planning-time resource-gated advisory. Set `proactive.enabled: false` to opt out.
+- `llm_intent` defaults to true: one extra model call per user turn translates the intent into
+  failure-space before embedding recall, falling back to the raw intent on error or timeout. The
+  resource-gated advisory is deterministic and does not depend on it. Set `llm_intent: false` to
+  skip the call.
 - `semantic_only: true` (optional) disables the entire deterministic layer —
   the resource-gated advisory, the pre-exec guard, and the cross-object
   skeleton advice — leaving only semantic retrieval (embedding recall with

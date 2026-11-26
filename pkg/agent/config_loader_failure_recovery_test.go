@@ -90,8 +90,19 @@ func TestLoadAgentConfig_FailureRecovery(t *testing.T) {
 				require.NotNil(t, cfg)
 				assert.True(t, cfg.Enabled)
 				assert.Zero(t, cfg.MaxHints)
-				assert.False(t, cfg.Proactive.Enabled)
+				assert.True(t, cfg.Proactive.Enabled, "proactive defaults on under failure_recovery")
+				assert.True(t, cfg.Proactive.LLMIntent, "llm_intent defaults on")
 				assert.False(t, cfg.LLMAbstraction.Enabled)
+			},
+		},
+		{
+			name:     "explicit false opts out of proactive and llm_intent",
+			behavior: "  behavior:\n    failure_recovery:\n      enabled: true\n      proactive:\n        enabled: false\n        llm_intent: false\n",
+			check: func(t *testing.T, fr *loomv1.FailureRecoveryConfig) {
+				cfg := FailureRecoveryConfigFromProto(fr)
+				require.NotNil(t, cfg)
+				assert.False(t, cfg.Proactive.Enabled)
+				assert.False(t, cfg.Proactive.LLMIntent)
 			},
 		},
 	}

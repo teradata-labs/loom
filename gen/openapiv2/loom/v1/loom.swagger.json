@@ -8326,7 +8326,7 @@
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Inject task pitfalls at the start of a user query."
+          "description": "Inject task pitfalls at the start of a user query. On when unset (while\nfailure_recovery is enabled); set false to turn off."
         },
         "threshold": {
           "type": "number",
@@ -8335,7 +8335,7 @@
         },
         "llmIntent": {
           "type": "boolean",
-          "description": "Translate the raw user intent into a predicted pitfall in failure-space\nvocabulary with one LLM call before recall. Improves proactive recall at the\ncost of one extra LLM call per user turn; best-effort, falling back to the\nraw intent on error, timeout, or a \"no pitfall\" verdict. Off by default."
+          "description": "Translate the raw user intent into a predicted pitfall in failure-space\nvocabulary with one LLM call before recall. Improves proactive recall at the\ncost of one extra LLM call per user turn; best-effort, falling back to the\nraw intent on error, timeout, or a \"no pitfall\" verdict. On when unset;\nset false to use the raw intent."
         }
       },
       "description": "ProactiveConfig gates per-query, intent-based pitfall pre-warning."

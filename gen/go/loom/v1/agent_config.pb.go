@@ -2258,8 +2258,9 @@ func (x *FailureRecoveryConfig) GetLlmAbstraction() *LLMAbstractionConfig {
 // ProactiveConfig gates per-query, intent-based pitfall pre-warning.
 type ProactiveConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Inject task pitfalls at the start of a user query.
-	Enabled bool `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	// Inject task pitfalls at the start of a user query. On when unset (while
+	// failure_recovery is enabled); set false to turn off.
+	Enabled *bool `protobuf:"varint,1,opt,name=enabled,proto3,oneof" json:"enabled,omitempty"`
 	// Soft minimum similarity for a proactive match (default 0.3). Lessons less
 	// similar than this are dropped, so the hook may return fewer than top-K
 	// lessons, or none. Unlike the strict reactive gate, this is advisory.
@@ -2267,8 +2268,9 @@ type ProactiveConfig struct {
 	// Translate the raw user intent into a predicted pitfall in failure-space
 	// vocabulary with one LLM call before recall. Improves proactive recall at the
 	// cost of one extra LLM call per user turn; best-effort, falling back to the
-	// raw intent on error, timeout, or a "no pitfall" verdict. Off by default.
-	LlmIntent     bool `protobuf:"varint,3,opt,name=llm_intent,json=llmIntent,proto3" json:"llm_intent,omitempty"`
+	// raw intent on error, timeout, or a "no pitfall" verdict. On when unset;
+	// set false to use the raw intent.
+	LlmIntent     *bool `protobuf:"varint,3,opt,name=llm_intent,json=llmIntent,proto3,oneof" json:"llm_intent,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2304,8 +2306,8 @@ func (*ProactiveConfig) Descriptor() ([]byte, []int) {
 }
 
 func (x *ProactiveConfig) GetEnabled() bool {
-	if x != nil {
-		return x.Enabled
+	if x != nil && x.Enabled != nil {
+		return *x.Enabled
 	}
 	return false
 }
@@ -2318,8 +2320,8 @@ func (x *ProactiveConfig) GetThreshold() float32 {
 }
 
 func (x *ProactiveConfig) GetLlmIntent() bool {
-	if x != nil {
-		return x.LlmIntent
+	if x != nil && x.LlmIntent != nil {
+		return *x.LlmIntent
 	}
 	return false
 }
@@ -3005,12 +3007,15 @@ const file_loom_v1_agent_config_proto_rawDesc = "" +
 	"\x10preserve_details\x18\b \x01(\bR\x0fpreserveDetails\x12#\n" +
 	"\rsemantic_only\x18\t \x01(\bR\fsemanticOnly\x12F\n" +
 	"\x0fllm_abstraction\x18\n" +
-	" \x01(\v2\x1d.loom.v1.LLMAbstractionConfigR\x0ellmAbstraction\"h\n" +
-	"\x0fProactiveConfig\x12\x18\n" +
-	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1c\n" +
-	"\tthreshold\x18\x02 \x01(\x02R\tthreshold\x12\x1d\n" +
+	" \x01(\v2\x1d.loom.v1.LLMAbstractionConfigR\x0ellmAbstraction\"\x8d\x01\n" +
+	"\x0fProactiveConfig\x12\x1d\n" +
+	"\aenabled\x18\x01 \x01(\bH\x00R\aenabled\x88\x01\x01\x12\x1c\n" +
+	"\tthreshold\x18\x02 \x01(\x02R\tthreshold\x12\"\n" +
 	"\n" +
-	"llm_intent\x18\x03 \x01(\bR\tllmIntent\"Q\n" +
+	"llm_intent\x18\x03 \x01(\bH\x01R\tllmIntent\x88\x01\x01B\n" +
+	"\n" +
+	"\b_enabledB\r\n" +
+	"\v_llm_intent\"Q\n" +
 	"\x14LLMAbstractionConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1f\n" +
 	"\vtimeout_sec\x18\x02 \x01(\x05R\n" +
@@ -3194,6 +3199,7 @@ func file_loom_v1_agent_config_proto_init() {
 	file_loom_v1_skill_proto_init()
 	file_loom_v1_task_proto_init()
 	file_loom_v1_agent_config_proto_msgTypes[3].OneofWrappers = []any{}
+	file_loom_v1_agent_config_proto_msgTypes[17].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

@@ -383,7 +383,7 @@ New classes are additive: register a detection call site + a `class:` tag value.
 
 ## 12. Configuration
 
-A single gate on `BehaviorConfig` (proto field, append-only). Feature **off by default**; proactive gated separately.
+A single gate on `BehaviorConfig` (proto field, append-only). Feature **off by default** (`failure_recovery.enabled`); when enabled, proactive and `llm_intent` default to true and can be set false.
 
 ```proto
 message BehaviorConfig {
@@ -418,7 +418,7 @@ behavior:
     max_hints: 2
     classes: [tool_exec, tool_args, guardrail]
     proactive:
-      enabled: false   # turn on after lessons have accumulated
+      enabled: false   # default true when failure_recovery is enabled; false opts out
       threshold: 0.82
 ```
 
