@@ -2100,6 +2100,15 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// The turn holder retries a session whose earlier load failed; any other
 	// caller is served the cached stand-in, so it is never swapped mid-turn.
 	session = a.memory.ReloadPendingSession(ctx, sessionID, a.config.Name)
+	if a.memory.isLoadPlaceholder(session) {
+		// The conversation is in the store, which cannot be read yet: a turn
+		// run now would answer with no history and write into the stored
+		// session. Nothing has been appended; the caller retries.
+		err := fmt.Errorf("session %s: %w", sessionID, ErrSessionNotLoaded)
+		span.RecordError(err)
+		span.AddEvent("conversation.refused", map[string]interface{}{"reason": "session_not_loaded"})
+		return nil, err
+	}
 
 	// A session holding backend leases from a previous turn starts this turn
 	// in the RESOURCE_HOLDER class — the previous turn's SlotInfo died with

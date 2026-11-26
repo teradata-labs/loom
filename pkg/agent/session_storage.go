@@ -133,7 +133,7 @@ type ResultRewriter interface {
 var ErrSessionNotFound = errors.New("session not found")
 
 // ErrSessionNotLoaded is returned by an operation that needs a session's
-// stored history (CompactSession, ResumeSession, ResolveExecutionGap,
+// stored history (Chat, CompactSession, ResumeSession, ResolveExecutionGap,
 // ResumeChat) when the store failed to load the session
 // and it is still served as an empty stand-in. Retry once the store answers.
 var ErrSessionNotLoaded = errors.New("the session could not be loaded from the store")

@@ -144,6 +144,9 @@ func wrapAgentError(err error) error {
 	if isSessionLeaseError(err) {
 		return status.Errorf(codes.Aborted, "session is not available to this turn: %v", err)
 	}
+	if errors.Is(err, agent.ErrSessionNotLoaded) {
+		return status.Errorf(codes.Unavailable, "the store cannot load the session yet: %v", err)
+	}
 	switch llm.ClassifyProviderFailure(err) {
 	case llm.ProviderFailureThrottled:
 		return status.Errorf(codes.ResourceExhausted, "LLM provider throttled the request: %v", err)
