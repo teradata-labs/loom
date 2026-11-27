@@ -180,3 +180,50 @@ func TestAnOlderStoreGainsTheThinkingColumn(t *testing.T) {
 		t.Errorf("read back %v; want before with no thinking and after with %q", got, "kept")
 	}
 }
+
+// silentLLM thinks and says nothing, every time it is asked.
+type silentLLM struct{ calls int }
+
+func (l *silentLLM) Chat(context.Context, []llmtypes.Message, []shuttle.Tool) (*llmtypes.LLMResponse, error) {
+	l.calls++
+	thinking := "first: nothing to say yet"
+	if l.calls > 1 {
+		thinking = "second: still nothing"
+	}
+	return &llmtypes.LLMResponse{Thinking: thinking,
+		Usage: llmtypes.Usage{InputTokens: 3, OutputTokens: 40, ThinkingTokens: 40}}, nil
+}
+func (*silentLLM) Name() string  { return "silent" }
+func (*silentLLM) Model() string { return "silent-v1" }
+
+// A reply with thinking and no words is not lost: the thinking of the one
+// that is asked again is stored with the asking, and the thinking of the one
+// that ends the turn with the turn's last row.
+func TestTheThinkingOfAReplyWithNoWordsIsStored(t *testing.T) {
+	store, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	cfg := DefaultConfig()
+	cfg.PatternConfig = DefaultPatternConfig()
+	cfg.PatternConfig.UseLLMClassifier = false
+	ag := NewAgent(&mockBackend{}, &silentLLM{}, WithConfig(cfg), WithMemory(NewMemoryWithStore(store)))
+
+	if _, err := ag.Chat(context.Background(), "silent-s", "hello"); err != nil {
+		t.Fatal(err)
+	}
+	for role, want := range map[string]string{
+		roleEmptyResponseRetry: "first: nothing to say yet",
+		"assistant":            "second: still nothing",
+	} {
+		var got string
+		if err := store.db.QueryRow(`SELECT thinking_content FROM messages
+			WHERE session_id = 'silent-s' AND role = ?`, role).Scan(&got); err != nil {
+			t.Fatalf("the %s row: %v", role, err)
+		}
+		if got != want {
+			t.Errorf("the %s row was stored with thinking %q; want %q", role, got, want)
+		}
+	}
+}

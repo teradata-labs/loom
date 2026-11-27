@@ -3543,11 +3543,15 @@ func (a *Agent) runConversationLoop(ctx Context) (resp *Response, err error) {
 			// check.
 			a.pruneStepIfResolved(ctx, session.ID, thisStep, true)
 			if strings.TrimSpace(llmResp.Content) == "" && !emptyRetried {
-				// One-shot retry: nudge the LLM to produce a response.
+				// One-shot retry: nudge the LLM to produce a response. The
+				// empty reply itself is stored nowhere, so the thinking it
+				// came with rides this row to the store; a provider is never
+				// sent it.
 				emptyRetried = true
 				a.appendMessage(ctx, session, Message{
 					Role:      roleEmptyResponseRetry,
 					Content:   "Your previous response was empty. Please provide a response summarizing what you found or explaining what went wrong.",
+					Thinking:  llmResp.Thinking,
 					AgentID:   a.GetID(),
 					Timestamp: time.Now(),
 				}, false)
