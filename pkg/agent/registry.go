@@ -90,6 +90,7 @@ type Registry struct {
 	admissionChain    *shuttle.Chain               // Admission hook chain for tool-call admission
 	identityResolver  func(context.Context) string // Resolves AdmissionRequest.UserID from the call context
 	eventLog          eventlog.EventLogStore       // Attached to every agent built from config; nil leaves recording off
+	sessionLeases     eventlog.SessionLeaseStore   // The session lock, held whether or not recording is on
 	artifactStore     interface{}                  // artifacts.Store for workspace tool
 	runLuaTool        *RunLuaToolOptions           // run_lua wiring; nil when tools.lua is disabled
 	luaScripts        *LuaScriptsOptions           // saved-script wiring; nil without a script store
@@ -184,6 +185,9 @@ type RegistryConfig struct {
 	// (WithEventLog), so each records the durable execution log that
 	// ResumeSession needs. Nil leaves recording off.
 	EventLogStore eventlog.EventLogStore
+	// SessionLeaseStore is the session lock: held on every entry into the
+	// conversation loop, whether or not EventLogStore records.
+	SessionLeaseStore eventlog.SessionLeaseStore
 
 	// Agent dependencies (injected by server)
 	PermissionChecker *shuttle.PermissionChecker   // For permission validation
@@ -269,6 +273,7 @@ func NewRegistry(config RegistryConfig) (*Registry, error) {
 		admissionChain:    config.AdmissionChain,
 		identityResolver:  config.IdentityResolver,
 		eventLog:          config.EventLogStore,
+		sessionLeases:     config.SessionLeaseStore,
 		artifactStore:     config.ArtifactStore,
 		runLuaTool:        config.RunLuaTool,
 		luaScripts:        config.LuaScripts,
@@ -1005,6 +1010,9 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 	// Create memory with session storage for trace persistence
 	var memory *Memory
 	var sessionStore SessionStorage
+	// Whether the agent's sessions are in the registry's store, which is
+	// where the session lease store's database is.
+	inRegistryStore := true
 
 	// Check if per-agent memory configuration is provided
 	if config.Memory != nil && config.Memory.Type != "" {
@@ -1016,6 +1024,10 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 				zap.String("agent", config.Name),
 				zap.Error(err))
 			sessionStore = r.sessionStore
+		} else {
+			// Only the postgres type is the registry's store; the others
+			// are the agent's own file, or no store at all.
+			inRegistryStore = config.Memory.Type == "postgres"
 		}
 	} else {
 		// Use registry's default session store
@@ -1082,6 +1094,12 @@ func (r *Registry) buildAgent(ctx context.Context, config *loomv1.AgentConfig) (
 	}
 	if r.eventLog != nil {
 		opts = append(opts, WithEventLog(r.eventLog))
+	}
+	// The lease row references the session's row, so the lease is held only
+	// for an agent whose sessions are in the registry's store. An agent with
+	// its own memory store runs its turns unlocked.
+	if r.sessionLeases != nil && sessionStore != nil && inRegistryStore {
+		opts = append(opts, WithSessionLeases(r.sessionLeases))
 	}
 
 	// Create agent with configuration

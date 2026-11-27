@@ -7,6 +7,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1891,7 +1892,9 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 				// This triggers the coordinator to process the sub-agent's response and generate a synthesis.
 				// chatInjected holds an LLM slot only while Chat runs, and waits
 				// out a session another turn is driving (the user's own turn on
-				// the coordinator, or a lease left by a crashed process).
+				// the coordinator, or a lease left by a crashed process) for the
+				// inject policy's total; a session still busy after that has
+				// the message deferred below, not charged a delivery.
 				s.logger.Info("Coordinator calling Chat() for sub-agent response",
 					zap.String("coordinator", coordinatorID))
 				err = s.chatInjected(coordinatorCtx, turnIdentityCtx, coordinatorAgent, sessionID, injectedPrompt, 0) // #nosec -- intentional: background worker goroutine that must outlive request context; carries tenant identity only
@@ -1902,19 +1905,15 @@ func (s *MultiAgentServer) spawnWorkflowSubAgents(ctx context.Context, coordinat
 				if injectNotDelivered(err) {
 					// The prompt never reached the session. Acknowledging would
 					// lose the sub-agent's reply for good; put it back so the
-					// queue monitor offers it again. The queue's retry limit
-					// bounds how often that happens.
+					// queue monitor offers it again: deferred without counting
+					// when the session was busy, requeued under the queue's
+					// retry limit otherwise.
 					s.logger.Warn("Coordinator session unavailable; leaving sub-agent response for redelivery",
 						zap.String("coordinator", coordinatorID),
 						zap.String("from_agent", queueMsg.FromAgent),
 						zap.String("message_id", queueMsg.ID),
 						zap.Error(err))
-					if reqErr := s.messageQueue.Requeue(turnIdentityCtx, queueMsg.ID); reqErr != nil { // #nosec -- intentional: background worker goroutine that must outlive request context
-						s.logger.Error("Sub-agent response could not be requeued and is lost",
-							zap.String("coordinator", coordinatorID),
-							zap.String("message_id", queueMsg.ID),
-							zap.Error(reqErr))
-					}
+					returnUndelivered(turnIdentityCtx, s.messageQueue, s.logger, queueMsg.ID, err) // #nosec -- intentional: background worker goroutine that must outlive request context
 					continue
 				}
 				if err != nil {
@@ -2266,7 +2265,21 @@ func (s *MultiAgentServer) processCoordinatorBroadcastMessages(
 					zap.String("coordinator", coordinatorID))
 				return
 			}
-			// A broadcast has no queue behind it to redeliver from.
+			// A broadcast is not redelivered by a queue of its own, so a busy
+			// one is put on the message queue.
+			if errors.Is(err, agent.ErrSessionBusy) && s.messageQueue != nil {
+				// Busy past the wait: queued, delivered when the session is
+				// free, never charged a delivery for the busy refusals.
+				if qErr := queueBroadcast(turnIdentityContext(ctx), s.messageQueue, coordinatorID, msg.FromAgent, busMsg.topic, content); qErr == nil {
+					s.logger.Info("Broadcast queued: the coordinator's session is busy past the wait",
+						zap.String("coordinator", coordinatorID),
+						zap.String("from_agent", msg.FromAgent),
+						zap.String("topic", busMsg.topic))
+					continue
+				} else {
+					err = fmt.Errorf("%w; queueing it: %w", err, qErr)
+				}
+			}
 			s.logger.Error("Broadcast message dropped: the coordinator's session stayed unavailable",
 				zap.String("coordinator", coordinatorID),
 				zap.String("from_agent", msg.FromAgent),
@@ -2286,6 +2299,44 @@ func (s *MultiAgentServer) processCoordinatorBroadcastMessages(
 				zap.String("from_agent", msg.FromAgent),
 				zap.String("topic", busMsg.topic))
 		}
+	}
+}
+
+// returnUndelivered puts a queued message the session did not hear back for
+// the queue monitor to offer again. A session busy with another turn has not
+// heard it: it is deferred, without counting against its retries, since a
+// busy session is not a failed attempt; a busy session never uses up a
+// message's retries. Any other reason the prompt never arrived counts as a
+// delivery, and the queue's retry limit bounds how often that happens.
+// queueBroadcast hands a broadcast the session could not take now to the
+// durable queue, so it is delivered when the session is free. A bus message,
+// once read, cannot be put back on the bus, and a session busy with a long
+// turn outlasts the inject policy's wait; dropping the broadcast then would
+// lose it, so it joins the queue, where a busy session never uses up a
+// message. The queued path renders it as a message from its sender; the
+// topic rides in the text and the metadata.
+func queueBroadcast(ctx context.Context, q *communication.MessageQueue, toAgent, fromAgent, topic, content string) error {
+	return q.Enqueue(ctx, &communication.QueueMessage{
+		ToAgent:     toAgent,
+		FromAgent:   fromAgent,
+		MessageType: "broadcast",
+		Payload: &loomv1.MessagePayload{Data: &loomv1.MessagePayload_Value{
+			Value: []byte(fmt.Sprintf("[BROADCAST on topic '%s']:\n\n%s", topic, content))}},
+		Metadata: map[string]string{"topic": topic},
+	})
+}
+
+func returnUndelivered(ctx context.Context, q *communication.MessageQueue, logger *zap.Logger, id string, cause error) {
+	if errors.Is(cause, agent.ErrSessionBusy) {
+		if err := q.Defer(ctx, id); err != nil {
+			logger.Error("Session busy and the message could not be deferred; it is lost",
+				zap.String("message_id", id), zap.Error(err))
+		}
+		return
+	}
+	if err := q.Requeue(ctx, id); err != nil {
+		logger.Error("Message could not be requeued and is lost",
+			zap.String("message_id", id), zap.Error(err))
 	}
 }
 
@@ -2398,6 +2449,17 @@ done:
 				s.logger.Info("Context canceled while delivering broadcast injection",
 					zap.String("sub_agent", subAgentID))
 				return
+			}
+			if errors.Is(err, agent.ErrSessionBusy) && s.messageQueue != nil {
+				if qErr := queueBroadcast(turnIdentityContext(ctx), s.messageQueue, subAgentID, msg.FromAgent, sub.Topic, content); qErr == nil {
+					s.logger.Info("Broadcast queued: the sub-agent's session is busy past the wait",
+						zap.String("sub_agent", subAgentID),
+						zap.String("from_agent", msg.FromAgent),
+						zap.String("topic", sub.Topic))
+					continue
+				} else {
+					err = fmt.Errorf("%w; queueing it: %w", err, qErr)
+				}
 			}
 			s.logger.Error("Broadcast message dropped: the sub-agent's session stayed unavailable",
 				zap.String("sub_agent", subAgentID),
@@ -2810,12 +2872,7 @@ func (s *MultiAgentServer) runWorkflowSubAgent(ctx context.Context, ag *agent.Ag
 						// queue monitor to offer again.
 						requeueCtx := turnIdentityContext(ctx)
 						for _, msgID := range messageIDs {
-							if reqErr := s.messageQueue.Requeue(requeueCtx, msgID); reqErr != nil {
-								s.logger.Error("Message could not be requeued and is lost",
-									zap.String("agent", agentID),
-									zap.String("message_id", msgID),
-									zap.Error(reqErr))
-							}
+							returnUndelivered(requeueCtx, s.messageQueue, s.logger, msgID, err)
 						}
 						s.logger.Warn("Sub-agent session unavailable; left messages for redelivery",
 							zap.String("agent", agentID),

@@ -90,6 +90,9 @@ type Agent struct {
 	// disables it: every write-ahead call becomes a no-op, and ResumeSession
 	// is unavailable (returns ErrEventLogDisabled).
 	eventLog eventlog.EventLogStore
+	// sessionLeases is the session lock, held on every entry into the loop: the
+	// event log's store, or one attached on its own (WithSessionLeases).
+	sessionLeases eventlog.SessionLeaseStore
 
 	// leaseTTL overrides eventlog.DefaultSessionLeaseTTL for the session lease
 	// (session_lease.go). Zero uses the default; tests set it short.

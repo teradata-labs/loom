@@ -136,7 +136,57 @@ func (a *Agent) chatWithRetry(ctx Context, messages []Message, tools []shuttle.T
 	// shared quota (see observeSchedulerOutcome).
 	defer func() { a.observeSchedulerOutcome(err) }()
 
-	return a.dispatchChat(ctx, messages, tools)
+	resp, err = a.dispatchChat(ctx, messages, tools)
+	if err != nil && llm.IsThinkingBlockRefused(err) {
+		// The provider refused a thinking block as made on a different
+		// conversation: what preceded it changed after it was made. Sending
+		// the same request again cannot change that, and the refusal names
+		// its own remedy, so the blocks go — from this request and from the
+		// context, or every later call of the turn would be refused the same
+		// way — and the request is sent once more. A refusal with no block
+		// left to remove is returned as it came.
+		if bare, had := withoutThinking(messages); had {
+			a.dropSessionThinking(ctx)
+			zap.L().Warn("provider refused a replayed thinking block; dropped the turn's blocks and resending once",
+				zap.Error(err))
+			resp, err = a.dispatchChat(ctx, bare, tools)
+		}
+	}
+	return resp, err
+}
+
+// withoutThinking returns messages with every thinking block removed, on a
+// copy, and whether there was one to remove.
+func withoutThinking(messages []Message) ([]Message, bool) {
+	had := false
+	for i := range messages {
+		if len(messages[i].ThinkingBlocks) > 0 {
+			had = true
+			break
+		}
+	}
+	if !had {
+		return messages, false
+	}
+	out := make([]Message, len(messages))
+	copy(out, messages)
+	for i := range out {
+		out[i].ThinkingBlocks = nil
+	}
+	return out, true
+}
+
+// dropSessionThinking drops the thinking blocks the turn's context holds, so
+// the next compile carries none. A call with no session context has only the
+// request to strip.
+func (a *Agent) dropSessionThinking(ctx Context) {
+	session := ctx.Session()
+	if session == nil {
+		return
+	}
+	if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok && segMem != nil {
+		segMem.DropThinking()
+	}
 }
 
 // observeSchedulerOutcome feeds the slot scheduler's provider-agnostic AIMD
@@ -279,6 +329,12 @@ func (a *Agent) dispatchChat(ctx Context, messages []Message, tools []shuttle.To
 		// immediately, never retried (blueprint A5): relief, not retry, is the
 		// only response to it.
 		if errors.Is(err, llm.ErrContextTooLong) {
+			return nil, err
+		}
+
+		// A refused thinking block is refused again on every resend of the
+		// same request: the caller drops the blocks and resends once.
+		if llm.IsThinkingBlockRefused(err) {
 			return nil, err
 		}
 

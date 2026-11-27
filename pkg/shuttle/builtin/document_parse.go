@@ -148,6 +148,13 @@ func (t *DocumentParseTool) ConcurrencySafe() bool { return true }
 
 // Execute parses a document and returns structured data.
 func (t *DocumentParseTool) Execute(ctx context.Context, params map[string]interface{}) (*shuttle.Result, error) {
+	// A turn that says where it works is served there: the same tool,
+	// standing in the turn's directory rather than the one it was built with.
+	if dir := shuttle.WorkDirFromContext(ctx); dir != "" && dir != t.baseDir {
+		turn := *t
+		turn.baseDir = dir
+		return turn.Execute(ctx, params)
+	}
 	// Extract file path
 	filePath, ok := params["file_path"].(string)
 	if !ok || filePath == "" {

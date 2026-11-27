@@ -72,9 +72,6 @@ func NewSDKClient(cfg Config) (*SDKClient, error) {
 	if cfg.MaxTokens == 0 {
 		cfg.MaxTokens = DefaultBedrockMaxTokens
 	}
-	if cfg.Temperature == 0 {
-		cfg.Temperature = DefaultBedrockTemperature
-	}
 
 	// Build AWS config for Bedrock.
 	// Bearer token is highest priority — skip SigV4 credential loading entirely.
@@ -317,12 +314,12 @@ func (c *SDKClient) thinkingEnabled(ctx context.Context) bool {
 }
 
 // temperatureParam returns the request temperature, or the zero value when
-// thinking is on. Anthropic rejects any temperature other than 1 alongside
-// thinking, so a configured 0.2 would fail every request at any level above
-// off. Omitting the field takes the API default, which is the only value
-// thinking accepts.
+// none was configured or thinking is on. An unset temperature is left to the
+// model. Anthropic rejects any temperature other than 1 alongside thinking, so
+// a configured 0.2 would fail every request at any level above off. Omitting
+// the field takes the API default, which is the only value thinking accepts.
 func (c *SDKClient) temperatureParam(ctx context.Context) param.Opt[float64] {
-	if c.thinkingEnabled(ctx) {
+	if c.temperature == 0 || c.thinkingEnabled(ctx) {
 		return param.Opt[float64]{}
 	}
 	return anthropic.Float(c.temperature)

@@ -63,6 +63,16 @@ func ContextWithProgressCallback(ctx context.Context, callback ProgressCallback)
 	return context.WithValue(ctx, progressCallbackKey{}, callback)
 }
 
+// ContextWithoutProgressCallback drops whatever progress callback the context
+// carries. Work that outlives the call it was started from must not stream
+// into that caller's reply. It drops only the callback: the caller's
+// cancellation, its tool-approval grant and its task attribution still ride on
+// the context, and work meant to outlive its caller removes those too (for
+// cancellation, context.WithoutCancel).
+func ContextWithoutProgressCallback(ctx context.Context) context.Context {
+	return context.WithValue(ctx, progressCallbackKey{}, nil)
+}
+
 // ProgressCallbackFromContext retrieves the progress callback from context.
 // Returns nil if no callback is stored in the context.
 func ProgressCallbackFromContext(ctx context.Context) ProgressCallback {
@@ -481,7 +491,7 @@ func NewAgent(backend fabric.ExecutionBackend, llmProvider LLMProvider, opts ...
 	// implied by durable error/large-result records, so a restored session
 	// advertises the same tools and reports the same active skills as a live one.
 	if a.memory != nil {
-		a.memory.SetRestoreReFireHooks(a.reFireSkillActivation)
+		a.memory.SetRestoreReFireHooks(a.resetSessionSkills, a.reFireSkillActivation)
 		a.memory.SetContextDebug(a.ctxDebug)
 	}
 
@@ -807,12 +817,28 @@ func WithSkillTaskEmitter(e *skilltasks.Emitter) Option {
 }
 
 // WithEventLog enables the durable, tool-call-granularity execution log
-// (issue #229) for crash-resumable conversation loops. A nil store leaves
-// recording disabled — every write-ahead call becomes a no-op, and
-// ResumeSession is unavailable (returns ErrEventLogDisabled).
+// (issue #229) for crash-resumable conversation loops, and holds the session
+// lease on that store. A nil store leaves recording disabled — every
+// write-ahead call becomes a no-op, and ResumeSession is unavailable (returns
+// ErrEventLogDisabled).
 func WithEventLog(store eventlog.EventLogStore) Option {
 	return func(a *Agent) {
 		a.eventLog = store
+		if store != nil {
+			a.sessionLeases = store
+		}
+	}
+}
+
+// WithSessionLeases holds the session lease on store without recording
+// events: one turn at a time per session, whichever process or agent object
+// runs it. The lease is the lock the event log uses; a backend that has the
+// log's tables has the lock, whether or not recording is on.
+func WithSessionLeases(store eventlog.SessionLeaseStore) Option {
+	return func(a *Agent) {
+		if store != nil {
+			a.sessionLeases = store
+		}
 	}
 }
 
@@ -936,6 +962,33 @@ func (a *Agent) enforceRequiredSkillTools(sessionID string) {
 			a.registerSessionTool(sessionID, name)
 		}
 	}
+}
+
+// resetSessionSkills deactivates every active skill of a session, with the
+// tools only those skills required, ahead of a reload's re-fire, which then
+// re-activates exactly the skills loaded in the live history.
+func (a *Agent) resetSessionSkills(sessionID string) {
+	if a.skillOrchestrator == nil {
+		return
+	}
+	for _, as := range a.skillOrchestrator.GetActiveSkills(sessionID) {
+		if as != nil && as.Skill != nil && historyBackedActivation(as.TriggerType) {
+			a.deactivateSkillForFold(sessionID, as.Skill.Name)
+		}
+	}
+}
+
+// historyBackedActivation is whether a skill activation has a manage_skills
+// load row in the session's history behind it, so a reload re-fires it from
+// that row: a load the model made, a slash command, or an earlier replay. An
+// activation from elsewhere — the MCP bridge's API, a keyword or an
+// always-on rule — has no row, and a reload leaves it in place.
+func historyBackedActivation(triggerType string) bool {
+	switch triggerType {
+	case "manual_load", "slash_command", "restore_replay":
+		return true
+	}
+	return false
 }
 
 // deactivateSkillForFold is fold's skill-deactivation path (HLD §4.5): when a
@@ -1234,6 +1287,23 @@ func (a *Agent) GetContextState(sessionID string) *ContextState {
 	}
 
 	return state
+}
+
+// ContextUsage is how full a session's context is, for a meter: the context as
+// it would be sent now, and G, the size at which it is folded (see
+// SegmentedMemory.ContextUsage). ok is false for a session this agent does not
+// hold in memory, which has no context to measure.
+func (a *Agent) ContextUsage(sessionID string) (used, foldAt int, ok bool) {
+	sess, found := a.memory.GetSession(sessionID)
+	if !found {
+		return 0, 0, false
+	}
+	segMem, held := sess.SegmentedMem.(*SegmentedMemory)
+	if !held {
+		return 0, 0, false
+	}
+	used, foldAt = segMem.ContextUsage()
+	return used, foldAt, true
 }
 
 // ResetSessionContext clears the context window for a session, preserving ROM and
@@ -1934,6 +2004,22 @@ func (a *Agent) ChatWithProgress(ctx context.Context, sessionID string, userMess
 	})
 }
 
+// ChatWithProgressAs is ChatWithProgress with the input message's own context
+// stated rather than assumed.
+//
+// A turn's input is usually a person addressing this agent, which is `direct`.
+// It is sometimes machinery: a report handed back by another agent is the next
+// input, and recording that as `direct` would show it as something somebody
+// said. The agent reads it either way; only what is shown changes.
+func (a *Agent) ChatWithProgressAs(ctx context.Context, sessionID string, userMessage string, sessionContext types.SessionContext, progressCallback ProgressCallback) (*Response, error) {
+	return a.chat(ctx, sessionID, userMessage, chatParams{
+		spanName:         "agent.chat_with_progress",
+		progressCallback: progressCallback,
+		reportProgress:   true,
+		sessionContext:   sessionContext,
+	})
+}
+
 // ChatWithContentBlocks is like ChatWithProgress but the user turn carries
 // multimodal content blocks (text and/or images) alongside the plain-text
 // content. userMessage remains the canonical text (used for persistence,
@@ -1981,6 +2067,13 @@ type chatParams struct {
 	// reportContentBlocks adds the "message.content_blocks" span attribute and
 	// the "content_blocks" started-event field. ChatWithContentBlocks only.
 	reportContentBlocks bool
+
+	// sessionContext is what the turn's own input message is recorded as. Empty
+	// means `direct`: someone addressed this agent, which is every ordinary
+	// turn. Another value marks an input that machinery produced rather than a
+	// person, so a renderer showing a conversation can leave it out while the
+	// agent still reads it as its input. The rest of the turn's rows inherit it.
+	sessionContext types.SessionContext
 }
 
 // hasTextBlock reports whether any of the blocks is a text block.
@@ -2080,16 +2173,21 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// Get or create session with agent metadata for proper ReferenceStore namespacing
 	session := a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
 
-	// With an event log, one process at a time drives a session's loop
-	// (session_lease.go): a concurrent turn or crash resume would otherwise
-	// record events and dispatch calls at the same steps. Taken after the
-	// session exists, because the lease row references it.
+	// With a session lease store, one holder at a time drives a session's
+	// loop (session_lease.go): a concurrent turn, rewind or crash resume
+	// would otherwise write the same history, and record events and dispatch
+	// calls at the same steps. Taken after the session exists, because the
+	// lease row references it.
 	ctx, releaseLease, err := a.holdSessionLease(ctx, sessionID)
 	if err != nil {
 		return nil, err
 	}
 	defer releaseLease()
 	defer func() { retErr = leaseLostError(ctx, retErr) }()
+	// Taking the lease drops this object's copy of the session when another
+	// turn has made it stale (session_turns.go), so the copy is read again
+	// here, under the lease; a copy that was current is the same object.
+	session = a.memory.GetOrCreateSessionWithAgent(ctx, sessionID, a.config.Name, "")
 
 	// A session holding backend leases from a previous turn starts this turn
 	// in the RESOURCE_HOLDER class — the previous turn's SlotInfo died with
@@ -2127,11 +2225,12 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// is restored by rendering that Timestamp into the compiled view only
 	// (renderLocked), never into the stored body.
 	userMsg, _ := a.appendMessage(ctx, session, Message{
-		Role:          "user",
-		Content:       userMessage,
-		ContentBlocks: p.contentBlocks,
-		AgentID:       a.GetID(), // Track which agent received this message
-		Timestamp:     time.Now(),
+		Role:           "user",
+		Content:        userMessage,
+		ContentBlocks:  p.contentBlocks,
+		AgentID:        a.GetID(), // Track which agent received this message
+		SessionContext: p.sessionContext,
+		Timestamp:      time.Now(),
 	}, true)
 
 	// A leading slash command is the user activating a skill. It runs here,
@@ -2285,29 +2384,37 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// Add assistant response to history. response.Usage is the final LLM
 	// call's Usage (last-turn); intermediate tool-use turns already wrote
 	// their own rows above, so SUM(messages.cost) over the session equals
-	// the whole conversation's cost.
-	_, replyPersisted := a.appendMessage(ctx, session, Message{
-		Role: "assistant",
-		// Turn-ending message: thinking text rides for persistence; no blocks
-		// are carried, as no later call of this turn replays them. (Settled
-		// tool-loop messages keep theirs while the context before them is
-		// unchanged: thinkingPrefix in context_compilation.go.)
-		Content:           response.Content,
-		Thinking:          response.Thinking,
-		AgentID:           a.GetID(), // Track which agent generated this response
-		Timestamp:         time.Now(),
-		TokenCount:        response.Usage.TotalTokens,
-		CostUSD:           response.Usage.CostUSD,
-		InputTokens:       response.Usage.InputTokens,
-		OutputTokens:      response.Usage.OutputTokens,
-		CacheReadTokens:   response.Usage.CacheReadInputTokens,
-		CacheCreateTokens: response.Usage.CacheCreationInputTokens,
+	// the whole conversation's cost. A turn a tool ended has no final call:
+	// its words were stored with the call that ended it, and that step was
+	// pruned when its rows proved durable, so the finished-turn prune waits
+	// for a turn with a reply row.
+	replyPersisted := false
+	if _, ended := response.Metadata["ended_by"]; !ended {
+		stopReason, _ := response.Metadata["stop_reason"].(string)
+		_, replyPersisted = a.appendMessage(ctx, session, Message{
+			Role: "assistant",
+			// Turn-ending message: thinking text rides for persistence; no blocks
+			// are carried, as no later call of this turn replays them. (Settled
+			// tool-loop messages keep theirs while the context before them is
+			// unchanged: thinkingPrefix in context_compilation.go.)
+			Content:           response.Content,
+			Thinking:          response.Thinking,
+			StopReason:        stopReason,
+			AgentID:           a.GetID(), // Track which agent generated this response
+			Timestamp:         time.Now(),
+			TokenCount:        response.Usage.TotalTokens,
+			CostUSD:           response.Usage.CostUSD,
+			InputTokens:       response.Usage.InputTokens,
+			OutputTokens:      response.Usage.OutputTokens,
+			CacheReadTokens:   response.Usage.CacheReadInputTokens,
+			CacheCreateTokens: response.Usage.CacheCreationInputTokens,
 
-		CacheCreate1hTokens: response.Usage.CacheCreation1hInputTokens,
-		CacheCreate5mTokens: response.Usage.CacheCreation5mInputTokens,
-		ThinkingTokens:      response.Usage.ThinkingTokens,
-		Effort:              response.Usage.Effort,
-	}, false)
+			CacheCreate1hTokens: response.Usage.CacheCreation1hInputTokens,
+			CacheCreate5mTokens: response.Usage.CacheCreation5mInputTokens,
+			ThinkingTokens:      response.Usage.ThinkingTokens,
+			Effort:              response.Usage.Effort,
+		}, false)
+	}
 	a.pruneFinishedTurn(ctx, session.ID, replyPersisted)
 
 	// Persist session
@@ -2482,7 +2589,7 @@ func (a *Agent) appendMessage(ctx context.Context, session *Session, msg Message
 		// record over the bound, and memory holds the same row the store does.
 		if msg.ToolResult != nil {
 			if raw, err := json.Marshal(msg.ToolResult); err != nil || len(raw) > threshold {
-				msg.ToolResult = nil
+				msg.ToolResult = endsTurnRecord(msg.ToolResult)
 			}
 		}
 	}
@@ -2504,6 +2611,16 @@ func (a *Agent) appendMessage(ctx context.Context, session *Session, msg Message
 		t++
 	}
 	msg.Turn = t
+	// The turn's origin, derived as the store derives it: a row that names
+	// none takes the origin of its turn's first row, and a turn's first row
+	// that names none is direct. With a store, its read-back sets the same.
+	if msg.SessionContext == "" {
+		if turnStart {
+			msg.SessionContext = types.SessionContextDirect
+		} else {
+			msg.SessionContext = turnOrigin(session, t)
+		}
+	}
 
 	persisted := true
 	if err := a.memory.PersistMessage(ctx, session.ID, &msg, turnStart); err != nil {
@@ -2642,6 +2759,16 @@ type Response struct {
 	// (for models that support extended thinking)
 	Thinking string
 }
+
+// TurnFailed is a turn that failed after its calls had spent something: the
+// failure, and what the turn spent before it.
+type TurnFailed struct {
+	Err   error
+	Spent Usage
+}
+
+func (e *TurnFailed) Error() string { return e.Err.Error() }
+func (e *TurnFailed) Unwrap() error { return e.Err }
 
 // ToolExecution records a tool execution.
 type ToolExecution struct {
@@ -2794,7 +2921,7 @@ func extractHITLInfo(input map[string]interface{}) *HITLRequestInfo {
 // runConversationLoop executes the LLM-driven conversation loop.
 // This implements the core agent behavior: LLM generates tool calls,
 // we execute them, feed results back to LLM, repeat until completion.
-func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
+func (a *Agent) runConversationLoop(ctx Context) (resp *Response, err error) {
 	// Start trace span — always created; NoOpTracer handles disabled case
 	_, span := ctx.Tracer().StartSpan(ctx, "agent.conversation_loop")
 	defer ctx.Tracer().EndSpan(span)
@@ -2818,6 +2945,14 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 	var hygieneLast *hygiene.EnforcementOutcome // last outcome, surfaced into Response.Metadata
 	var prevToolNames []string                  // names advertised on this turn's previous provider call; nil before the first
 	var turnUsage Usage                         // every LLM call of this turn, summed
+
+	// A turn that fails part-way has still spent what its calls cost. The
+	// error carries it, so whoever ran the turn can count it.
+	defer func() {
+		if err != nil && (turnUsage.CostUSD > 0 || turnUsage.TotalTokens > 0) {
+			err = &TurnFailed{Err: err, Spent: turnUsage}
+		}
+	}()
 
 	// Self-healing orchestrator (Tier 1 recovery).
 	var recovery *recoveryOrchestrator
@@ -3410,13 +3545,18 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			// check.
 			a.pruneStepIfResolved(ctx, session.ID, thisStep, true)
 			if strings.TrimSpace(llmResp.Content) == "" && !emptyRetried {
-				// One-shot retry: nudge the LLM to produce a response.
+				// One-shot retry: nudge the LLM to produce a response. The
+				// empty reply itself is stored nowhere, so the thinking it
+				// came with rides this row to the store; a provider is never
+				// sent it.
 				emptyRetried = true
 				a.appendMessage(ctx, session, Message{
-					Role:      roleEmptyResponseRetry,
-					Content:   "Your previous response was empty. Please provide a response summarizing what you found or explaining what went wrong.",
-					AgentID:   a.GetID(),
-					Timestamp: time.Now(),
+					Role:       roleEmptyResponseRetry,
+					Content:    "Your previous response was empty. Please provide a response summarizing what you found or explaining what went wrong.",
+					Thinking:   llmResp.Thinking,
+					StopReason: llmResp.StopReason,
+					AgentID:    a.GetID(),
+					Timestamp:  time.Now(),
 				}, false)
 				continue // re-enter conversation loop for one more LLM call
 			}
@@ -3462,16 +3602,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 				"stop_reason":     llmResp.StopReason,
 				"empty_retried":   emptyRetried,
 			}
-			if hygieneLast != nil {
-				meta["hygiene_policy"] = hygieneLast.Policy.String()
-				meta["hygiene_violations_found"] = hygieneLast.ViolationsFound
-				meta["hygiene_by_kind"] = hygieneLast.ViolationsByKind
-				meta["hygiene_resolved"] = hygieneLast.Resolved
-				meta["hygiene_hitl_spawned"] = hygieneLast.HITLSpawned
-				if hygieneLast.FallthroughReason != "" {
-					meta["hygiene_fallthrough"] = hygieneLast.FallthroughReason
-				}
-			}
+			addHygieneMeta(meta, hygieneLast)
 			return &Response{
 				Content:        content,
 				Usage:          llmResp.Usage,
@@ -3489,6 +3620,7 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 			Content:           llmResp.Content,
 			ToolCalls:         llmResp.ToolCalls,
 			Thinking:          llmResp.Thinking,
+			StopReason:        llmResp.StopReason,
 			ThinkingBlocks:    llmResp.ThinkingBlocks,
 			AgentID:           a.GetID(), // Track which agent generated this response
 			TokenCount:        llmResp.Usage.TotalTokens,
@@ -3599,6 +3731,31 @@ func (a *Agent) runConversationLoop(ctx Context) (*Response, error) {
 		// failed to persist, a resume after a crash reads a session without
 		// them and must find this step's events to avoid re-running a call.
 		a.pruneStepIfResolved(ctx, session.ID, thisStep, assistantPersisted && !st.rowNotPersisted)
+		if st.endedBy != "" {
+			// A tool that ends the turn hands the work on, and the work goes on
+			// elsewhere: like a park, the other exit where work continues, the
+			// turn runs no end-of-turn hygiene pass, which would treat its
+			// live tasks as abandoned.
+			meta := map[string]interface{}{
+				"turns":           turnCount,
+				"tool_executions": toolExecutionCount,
+				"stop_reason":     llmResp.StopReason,
+				"ended_by":        st.endedBy,
+			}
+			span.SetAttribute("conversation.turns", turnCount)
+			span.SetAttribute("conversation.tool_executions", toolExecutionCount)
+			span.SetAttribute("conversation.stop_reason", llmResp.StopReason)
+			span.SetAttribute("conversation.ended_by", st.endedBy)
+			return &Response{
+				Content:        llmResp.Content,
+				Usage:          llmResp.Usage,
+				TurnUsage:      turnUsage,
+				TurnLLMCalls:   turnCalls,
+				ToolExecutions: allToolExecutions,
+				Thinking:       llmResp.Thinking,
+				Metadata:       meta,
+			}, nil
+		}
 	}
 
 	// If we hit max turns/executions, make one final LLM call to synthesize results
@@ -3629,6 +3786,9 @@ type batchState struct {
 	turnToolCount   int
 	turnDedup       map[string]*shuttle.Result
 	pendingSidecars []Message
+	// endedBy names a tool whose result ended the turn: the model is not
+	// asked for anything more once it is in place.
+	endedBy string
 
 	stepIndex int // the execution-event-log step this batch's calls are recorded under
 	// stepErr is set when stepIndex could not be resolved. No call may be
@@ -3661,6 +3821,78 @@ type batchState struct {
 	// dispatch attributes.
 	barrierReason string
 }
+
+// addHygieneMeta surfaces an end-of-turn hygiene outcome in a response's
+// metadata; a nil outcome adds nothing.
+func addHygieneMeta(meta map[string]interface{}, o *hygiene.EnforcementOutcome) {
+	if o == nil {
+		return
+	}
+	meta["hygiene_policy"] = o.Policy.String()
+	meta["hygiene_violations_found"] = o.ViolationsFound
+	meta["hygiene_by_kind"] = o.ViolationsByKind
+	meta["hygiene_resolved"] = o.Resolved
+	meta["hygiene_hitl_spawned"] = o.HITLSpawned
+	if o.FallthroughReason != "" {
+		meta["hygiene_fallthrough"] = o.FallthroughReason
+	}
+}
+
+// endsTurnRecord is what is kept of a result record too large to store: the
+// word that it ended the turn, when it did. A resumed turn reads that word
+// from the stored row, so it must outlive the record it came in.
+func endsTurnRecord(r *shuttle.Result) *shuttle.Result {
+	if r == nil || r.Metadata == nil {
+		return nil
+	}
+	if ends, _ := r.Metadata[EndsTurnKey].(bool); !ends {
+		return nil
+	}
+	return &shuttle.Result{Success: r.Success, Metadata: map[string]interface{}{EndsTurnKey: true}}
+}
+
+// turnOrigin is the origin of turn t: the one its first row carries, or ""
+// when the session holds no row of the turn.
+func turnOrigin(session *Session, t int64) types.SessionContext {
+	for _, m := range rawSessionMessages(session) {
+		if m.Turn == t {
+			return m.SessionContext
+		}
+	}
+	return ""
+}
+
+// errTurnUndone is why a parked request is closed by a rewind.
+var errTurnUndone = errors.New("the turn that raised this request was undone")
+
+// retireUndoneParks closes the session's pending parked requests after a
+// rewind removed the turn that raised them: the request is closed, its parked
+// handles are released and its task is settled, as for any parked turn that
+// can no longer be resumed. Approvals already given for the turns that remain
+// are not touched.
+func (a *Agent) retireUndoneParks(ctx context.Context, sessionID string) {
+	if a.hitlPark == nil {
+		return
+	}
+	reqs, err := a.hitlPark.store.ListBySession(ctx, sessionID)
+	if err != nil {
+		zap.L().Error("rewind: listing the session's requests failed; a parked request of an undone turn may still hold the session",
+			zap.String("session_id", sessionID), zap.Error(err))
+		return
+	}
+	for _, r := range reqs {
+		if r == nil || r.RequestType != "parked" || r.Status != "pending" {
+			continue
+		}
+		a.abandonParkedRequest(ctx, r, errTurnUndone)
+	}
+}
+
+// EndsTurnKey is the result metadata a tool sets to end the turn it ran in.
+// The turn's reply is then the words the model said alongside the call, which
+// may be none, and nothing is generated after it: for a tool that hands
+// something off, where anything said afterwards would be said to nobody.
+const EndsTurnKey = "end_turn"
 
 // dispatchOneCall runs one call of a tool batch through the full per-call
 // ceremony — caps, dedup, progress emits, spans, execution with
@@ -4069,6 +4301,12 @@ func (a *Agent) commitToolRow(ctx Context, session *Session, toolCall ToolCall, 
 		span.AddEvent("recovery.repeat_hint", map[string]interface{}{"tool_name": toolCall.Name, "count": n})
 	}
 
+	if result != nil && result.Metadata != nil {
+		if ends, _ := result.Metadata[EndsTurnKey].(bool); ends {
+			st.endedBy = toolCall.Name
+		}
+	}
+
 	// Add tool result to conversation
 	if _, persisted := a.appendMessage(ctx, session, Message{
 		Role:       "tool",
@@ -4211,6 +4449,7 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNot
 			"max_turns_hit":   turnCount >= a.config.MaxTurns,
 			"max_exec_hit":    toolExecutionCount >= a.config.MaxToolExecutions,
 			"synthesized":     true,
+			"stop_reason":     finalResp.StopReason,
 		},
 	}, nil
 }
@@ -5703,4 +5942,97 @@ func triggerNames(trs []loomv1.ImplicitTaskTrigger) []string {
 		out = append(out, strings.ToLower(strings.TrimPrefix(tr.String(), "IMPLICIT_TASK_TRIGGER_")))
 	}
 	return out
+}
+
+// ErrRewindUnsupported is RewindSession on a session store that does not
+// implement Rewinder.
+var ErrRewindUnsupported = errors.New("session storage does not support rewind")
+
+// RewindSession undoes the last n turns of a conversation and reports how many
+// turns it actually removed, which is fewer than asked when the session is
+// shorter than that.
+//
+// Both halves are required and neither is sufficient. Deleting the rows alone
+// leaves the loaded session in memory still holding them, so the next turn
+// compiles history that no longer exists on disk; dropping the in-memory
+// session alone makes the next access reload the very messages the user asked
+// to remove. Doing both means the reload sees the truncated history, which is
+// why the memory eviction is not an optimisation here but the point.
+//
+// A rewind holds the session lease like a turn: while a turn runs in the
+// session it is refused with ErrSessionBusy, so it never cuts under a turn
+// that would write its result back on top of the rewind. It counts as a
+// turn, so every other agent object holding the session reloads it.
+//
+// A parked request of an undone turn is closed after the turns are removed.
+// If the request store fails then, the rewind has still happened and is
+// reported as done; the failure is logged, and the request stops holding the
+// session when it expires or is closed with `looms hitl expire`.
+func (a *Agent) RewindSession(ctx context.Context, sessionID string, turns int) (int, error) {
+	if turns <= 0 {
+		return 0, fmt.Errorf("turns must be positive, got %d", turns)
+	}
+	store, ok := a.memory.GetStore().(Rewinder)
+	if !ok {
+		return 0, ErrRewindUnsupported
+	}
+	// A session with no row has no history to undo, and must get none from
+	// this: the lease row would reference a session that does not exist.
+	exists, err := a.memory.GetStore().SessionExists(ctx, sessionID)
+	if err != nil {
+		return 0, err
+	}
+	if !exists {
+		return 0, nil
+	}
+	// A rewind is a turn in the session's history like any other: it takes
+	// the session lease, so it never cuts under a running turn and is refused
+	// as busy while one runs, and it counts as a turn, so every other object
+	// holding the session reloads it.
+	ctx, releaseLease, err := a.holdSessionLease(ctx, sessionID)
+	if err != nil {
+		return 0, err
+	}
+	defer releaseLease()
+
+	ctx, span := a.tracer.StartSpan(ctx, "agent.rewind_session")
+	defer a.tracer.EndSpan(span)
+	span.SetAttribute("session.id", sessionID)
+	span.SetAttribute("rewind.turns_asked", turns)
+
+	maxTurn, err := store.MaxTurn(ctx, sessionID)
+	if err != nil {
+		return 0, err
+	}
+	if maxTurn == 0 {
+		return 0, nil
+	}
+	from := maxTurn - turns + 1
+	if from < 1 {
+		from = 1
+	}
+	if _, err := store.TruncateFrom(ctx, sessionID, from); err != nil {
+		return 0, err
+	}
+	// A turn waiting for a person's decision is the session's last turn, so it
+	// is among the turns just undone: its request is closed with it. Left
+	// pending, it would refuse every later turn of the session, and nothing
+	// could answer it, because the batch it asked about is gone.
+	a.retireUndoneParks(ctx, sessionID)
+	// The loaded copy is now stale. Dropping it makes the next access reload
+	// the truncated history from the store.
+	//
+	// Only the loaded copy: retiring the whole session here would also discard
+	// its recorded approvals, leases and in-turn databases, and a rewind of one
+	// exchange must not revoke permission a human gave for the turns that
+	// remain.
+	a.memory.DeleteSession(sessionID)
+	undone := maxTurn - from + 1
+	span.SetAttribute("rewind.from_turn", from)
+	span.SetAttribute("rewind.turns_undone", undone)
+	zap.L().Info("session rewound",
+		zap.String("session_id", sessionID),
+		zap.Int("from_turn", from),
+		zap.Int("turns_undone", undone))
+	return undone, nil
 }

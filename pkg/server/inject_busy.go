@@ -16,8 +16,8 @@ package server
 
 // Delivery of messages injected into an agent's session by the multi-agent
 // plumbing (a worker's reply to its coordinator, a broadcast). Injection runs
-// Chat on a session another turn may already be driving. With an event log
-// configured, Chat refuses that with agent.ErrSessionBusy instead of waiting,
+// Chat on a session another turn may already be driving. With a session lease
+// store, Chat refuses that with agent.ErrSessionBusy instead of waiting,
 // and the refusal happens before the turn touches the conversation, so the
 // same prompt can be offered again. Treating it like any other Chat failure
 // would acknowledge a message that was never delivered.

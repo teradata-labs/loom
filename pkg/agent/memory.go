@@ -49,8 +49,11 @@ func (f MemoryObserverFunc) OnMessageAdded(agentID string, sessionID string, msg
 // Memory manages conversation sessions and history.
 // Supports optional persistent storage via SessionStorage interface.
 type Memory struct {
-	mu                   sync.RWMutex
-	sessions             map[string]*Session
+	mu       sync.RWMutex
+	sessions map[string]*Session
+	// turnsSeen is, per session held in sessions, how many turns it had when
+	// this object's copy was last current (session_turns.go).
+	turnsSeen            map[string]int64
 	store                SessionStorage             // Optional persistent storage (SQLite, PostgreSQL, etc.)
 	sharedMemory         *storage.SharedMemoryStore // Optional shared memory for large data
 	systemPromptFunc     SystemPromptFunc           // Optional function to generate system prompts
@@ -75,6 +78,7 @@ type Memory struct {
 	// the restore walk calls these to reconstruct a session's runtime state
 	// from its durable messages. nil hooks disable the corresponding re-fire.
 	restoreActivateSkill func(sessionID, skillName string) // re-activate a loaded skill + wire its required tools
+	restoreResetSkills   func(sessionID string)            // clear a session's active skills before the re-fire rebuilds them
 
 	// Per-mutation debug carrier, forwarded to each SegmentedMemory this manager
 	// builds and read by the restore re-fire pass. nil or off is a no-op.
@@ -156,16 +160,20 @@ func (m *Memory) SetCompressionProfile(profile *CompressionProfile) {
 	m.compressionProfile = profile
 }
 
-// SetRestoreReFireHooks wires the callback the restore replay uses to rebuild
-// a session's runtime state from its durable messages: activateSkill re-fires a
-// load marker (no-evict activation + required-tool wiring). The agent layer
+// SetRestoreReFireHooks wires the callbacks the restore replay uses to rebuild
+// a session's runtime state from its durable messages: resetSkills clears the
+// session's active skills, and activateSkill re-fires each load marker in the
+// live history (no-evict activation + required-tool wiring). Active skills are
+// a function of the live history, so a reload rebuilds them rather than adding
+// to what an earlier copy left: a skill whose load was undone does not survive. The agent layer
 // supplies it because it touches the skill orchestrator and the per-session
 // tool ledger. Disclosure re-fire is deleted (HLD §8): refs never survive a
 // turn, so there is nothing to re-advertise on restore, and the error store is
 // gone.
-func (m *Memory) SetRestoreReFireHooks(activateSkill func(sessionID, skillName string)) {
+func (m *Memory) SetRestoreReFireHooks(resetSkills func(sessionID string), activateSkill func(sessionID, skillName string)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.restoreResetSkills = resetSkills
 	m.restoreActivateSkill = activateSkill
 }
 
@@ -404,6 +412,7 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 			var restoreSnapshot []Message
 			var replayInto *SegmentedMemory
 			var activateSkill func(sessionID, skillName string)
+			var resetSkills func(sessionID string)
 			if needsReplay {
 				if segMem, ok := session.SegmentedMem.(*SegmentedMemory); ok {
 					replayInto = segMem
@@ -411,6 +420,7 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 				restoreSnapshot = make([]Message, len(session.Messages))
 				copy(restoreSnapshot, session.Messages)
 				activateSkill = m.restoreActivateSkill
+				resetSkills = m.restoreResetSkills
 			}
 			m.sessions[sessionID] = session
 			m.mu.Unlock()
@@ -421,7 +431,12 @@ func (m *Memory) GetOrCreateSessionWithAgent(ctx context.Context, sessionID, age
 			}
 
 			// Restore re-fire runs after replay and outside the lock,
-			// reconstructing skill activations from the durable snapshot.
+			// reconstructing skill activations from the durable snapshot:
+			// first cleared, so a skill whose load is no longer in the live
+			// history (an undone turn) is not kept from an earlier copy.
+			if resetSkills != nil {
+				resetSkills(sessionID)
+			}
 			if activateSkill != nil {
 				m.reFireOnRestore(sessionID, restoreSnapshot, activateSkill, ctxDebug)
 			}
@@ -586,9 +601,9 @@ func (m *Memory) loadSummary(ctx context.Context, store SessionStorage, sessionI
 	}
 }
 
-// newestFold is a session's newest summary version: rows are {"n","text"}
-// JSON under snapshot_type='fold', and the newest is max(n). n is 0 when the
-// session never folded.
+// newestFold is a session's newest summary version: rows are FoldRecord JSON
+// (fold_record.go) under snapshot_type='fold', and the newest is max(n). n is
+// 0 when the session never folded.
 func newestFold(ctx context.Context, store SessionStorage, sessionID string) (int, string, error) {
 	snapshots, err := store.LoadMemorySnapshots(ctx, sessionID, "fold", 0)
 	if err != nil {
@@ -727,7 +742,32 @@ func (m *Memory) DeleteSession(sessionID string) {
 	defer m.mu.Unlock()
 
 	delete(m.sessions, sessionID)
+	delete(m.turnsSeen, sessionID)
 	delete(m.turnPayloads, sessionID)
+}
+
+// staleCopy is whether this object holds a copy of a session that may be
+// older than the session: one from a number of turns other than the
+// session's own, or one whose number it never saw.
+func (m *Memory) staleCopy(sessionID string, turns int64) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if _, held := m.sessions[sessionID]; !held {
+		return false
+	}
+	seen, known := m.turnsSeen[sessionID]
+	return !known || seen != turns
+}
+
+// sawTurns records that this object's copy of a session is current as of a
+// number of turns.
+func (m *Memory) sawTurns(sessionID string, turns int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.turnsSeen == nil {
+		m.turnsSeen = map[string]int64{}
+	}
+	m.turnsSeen[sessionID] = turns
 }
 
 // ListSessions returns all active sessions.
@@ -757,6 +797,7 @@ func (m *Memory) ClearAll() {
 	defer m.mu.Unlock()
 
 	m.sessions = make(map[string]*Session)
+	m.turnsSeen = nil
 	m.turnPayloads = nil
 }
 

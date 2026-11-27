@@ -1695,14 +1695,21 @@ func runServe(cmd *cobra.Command, args []string) {
 	// below records it, so `loom sessions resume` can finish a turn a crash
 	// interrupted. Enabled on a backend without support is a startup error,
 	// not a silent no-op: resume would then refuse every turn.
+	// The session lease is the log's lock and holds on every backend whose
+	// database has the log's tables, recording on or off: one turn at a time
+	// per session. A database the migrations have not reached runs turns
+	// unlocked, and says so once; with recording asked for it is a startup
+	// error, since resume would then refuse every turn.
 	var executionLog eventlog.EventLogStore
+	sessionLeases, leaseErr := backend.SessionLeases(context.Background(), storageBackend)
 	if config.ExecutionLog.Enabled {
-		elp, ok := storageBackend.(backend.EventLogProvider)
-		if !ok || elp.EventLogStore() == nil {
-			logger.Fatal("execution_log.enabled is set, but the storage backend does not provide an execution log")
+		if leaseErr != nil {
+			logger.Fatal("execution_log.enabled is set, but the execution log is not available", zap.Error(leaseErr))
 		}
-		executionLog = elp.EventLogStore()
+		executionLog = sessionLeases.(eventlog.EventLogStore)
 		logger.Info("Execution log enabled: agents record write-ahead events for crash resume")
+	} else if leaseErr != nil {
+		logger.Warn("Session lease unavailable; turns run unlocked. Run the storage migrations to hold one turn at a time per session", zap.Error(leaseErr))
 	}
 
 	// Extract graph memory store if available (optional interface)
@@ -2285,6 +2292,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		LuaScripts:        luaRT.scriptsRegistryOptions(),
 		IdentityResolver:  postgres.UserIDFromContext,
 		EventLogStore:     executionLog,
+		SessionLeaseStore: sessionLeases,
 	})
 	if err != nil {
 		logger.Warn("Failed to create agent registry", zap.Error(err))
@@ -2463,7 +2471,7 @@ func runServe(cmd *cobra.Command, args []string) {
 				// deployment. A nil chain leaves tool execution a pass-through.
 				agentOpts = append(agentOpts, agent.WithAdmissionHooks(admissionChain))
 				agentOpts = append(agentOpts, agent.WithIdentityResolver(postgres.UserIDFromContext))
-				agentOpts = append(agentOpts, agent.WithEventLog(executionLog))
+				agentOpts = append(agentOpts, agent.WithEventLog(executionLog), agent.WithSessionLeases(sessionLeases))
 
 				// Determine LLM provider for this agent
 				// If agent has specific LLM config, use it; otherwise use server default
@@ -3722,7 +3730,7 @@ func runServe(cmd *cobra.Command, args []string) {
 			// deployment. A nil chain leaves tool execution a pass-through.
 			agentOpts = append(agentOpts, agent.WithAdmissionHooks(admissionChain))
 			agentOpts = append(agentOpts, agent.WithIdentityResolver(postgres.UserIDFromContext))
-			agentOpts = append(agentOpts, agent.WithEventLog(executionLog))
+			agentOpts = append(agentOpts, agent.WithEventLog(executionLog), agent.WithSessionLeases(sessionLeases))
 
 			// The agent's own llm and role LLMs, resolved exactly as on the
 			// cold-start path. This used to rebuild every reloaded agent on the

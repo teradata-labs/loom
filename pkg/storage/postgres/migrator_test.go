@@ -36,8 +36,9 @@ func TestLoadMigrations(t *testing.T) {
 	// 000025_workflow_checkpoints, 000026_execution_events,
 	// 000027_decision_shadow (typed decision layer, pkg/decision),
 	// 000028_decision_shadow_error and 000029_decision_shadow_subject, then
-	// 000030_message_billing.
-	assert.Len(t, migrations, 30, "should have 30 migration versions")
+	// 000030_message_billing, then 000031_session_turns and
+	// 000032_messages_session_turn.
+	assert.Len(t, migrations, 32, "should have 32 migration versions")
 
 	// Verify ordering
 	for i := 1; i < len(migrations); i++ {
@@ -84,6 +85,8 @@ func TestLoadMigrations_SpecificVersions(t *testing.T) {
 		{28, "decision_shadow_error", "ADD COLUMN IF NOT EXISTS error"},
 		{29, "decision_shadow_subject", "ADD COLUMN IF NOT EXISTS subject"},
 		{30, "message_billing", "cache_create_1h_tokens"},
+		{31, "session_turns", "turns"},
+		{32, "messages_session_turn", "idx_messages_session_turn"},
 	}
 
 	for _, tt := range tests {

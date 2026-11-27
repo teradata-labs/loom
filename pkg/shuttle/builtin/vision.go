@@ -64,6 +64,13 @@ func (t *VisionTool) InputSchema() *shuttle.JSONSchema {
 }
 
 func (t *VisionTool) Execute(ctx context.Context, params map[string]interface{}) (*shuttle.Result, error) {
+	// A turn that says where it works is served there: the same tool,
+	// standing in the turn's directory rather than the one it was built with.
+	if dir := shuttle.WorkDirFromContext(ctx); dir != "" && dir != t.baseDir {
+		turn := *t
+		turn.baseDir = dir
+		return turn.Execute(ctx, params)
+	}
 	start := time.Now()
 
 	// Extract parameters

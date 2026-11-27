@@ -66,6 +66,33 @@ type ExecutionEvent struct {
 	CreatedAt time.Time
 }
 
+// SessionLeaseStore holds one session's lease: the lock that lets one process
+// at a time drive a session's conversation loop. It is the event log's lock,
+// and it holds whether or not the agent records events: two turns writing one
+// session's history at once interleave it, recorded or not.
+type SessionLeaseStore interface {
+	// AcquireSessionLease makes holder the only process driving sessionID's
+	// conversation loop for ttl. It succeeds when no lease exists, the
+	// existing lease has expired, or holder already holds it. Expiry uses the
+	// database clock, so replicas with skewed clocks agree.
+	AcquireSessionLease(ctx context.Context, sessionID, holder string, ttl time.Duration) (bool, error)
+
+	// RenewSessionLease extends holder's lease to now+ttl. It returns false
+	// when holder no longer holds the lease (another holder took it after it
+	// expired); the caller must then stop dispatching calls.
+	RenewSessionLease(ctx context.Context, sessionID, holder string, ttl time.Duration) (bool, error)
+
+	// ReleaseSessionLease removes holder's lease. A lease held by someone
+	// else, or no lease, is a no-op.
+	ReleaseSessionLease(ctx context.Context, sessionID, holder string) error
+
+	// SessionLeaseHolder is who holds sessionID's lease now and how long it
+	// has left by the database clock, or "" when nobody does or the lease has
+	// expired. Called with no session, it only reports whether the lease
+	// table is there, which is how a server checks at startup.
+	SessionLeaseHolder(ctx context.Context, sessionID string) (holder string, remaining time.Duration, err error)
+}
+
 // EventLogStore is the optional-capability interface for the durable,
 // tool-call-granularity execution log. A StorageBackend implements it once
 // its execution_events migration has run; callers type-assert
@@ -97,20 +124,7 @@ type EventLogStore interface {
 	// events are recorded.
 	NextStepIndex(ctx context.Context, sessionID string) (int, error)
 
-	// AcquireSessionLease makes holder the only process driving sessionID's
-	// conversation loop for ttl. It succeeds when no lease exists, the
-	// existing lease has expired, or holder already holds it. Expiry uses the
-	// database clock, so replicas with skewed clocks agree.
-	AcquireSessionLease(ctx context.Context, sessionID, holder string, ttl time.Duration) (bool, error)
-
-	// RenewSessionLease extends holder's lease to now+ttl. It returns false
-	// when holder no longer holds the lease (another holder took it after it
-	// expired); the caller must then stop dispatching calls.
-	RenewSessionLease(ctx context.Context, sessionID, holder string, ttl time.Duration) (bool, error)
-
-	// ReleaseSessionLease removes holder's lease. A lease held by someone
-	// else, or no lease, is a no-op.
-	ReleaseSessionLease(ctx context.Context, sessionID, holder string) error
+	SessionLeaseStore
 
 	// PruneResolvedStep deletes every event for one (sessionID, stepIndex),
 	// once every call in that step is confirmed complete.

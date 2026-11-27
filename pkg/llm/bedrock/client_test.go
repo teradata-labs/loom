@@ -42,7 +42,7 @@ func TestNewClient_Defaults(t *testing.T) {
 	assert.Equal(t, "us.anthropic.claude-sonnet-4-5-20250929-v1:0", client.modelID)
 	assert.Equal(t, "us-east-1", client.region)
 	assert.Equal(t, 4096, client.maxTokens)
-	assert.Equal(t, 1.0, client.temperature)
+	assert.Zero(t, client.temperature)
 }
 
 func TestClient_NameAndModel(t *testing.T) {
@@ -1215,7 +1215,7 @@ func TestConfig_Defaults(t *testing.T) {
 		assert.Equal(t, "us-west-2", client.region, "Should default to us-west-2")
 		assert.Equal(t, "us.anthropic.claude-sonnet-4-5-20250929-v1:0", client.modelID, "Should use default model")
 		assert.Equal(t, 4096, client.maxTokens, "Should default to 4096 tokens")
-		assert.Equal(t, 1.0, client.temperature, "Should default to 1.0 temperature")
+		assert.Zero(t, client.temperature, "No temperature is filled in when none is given")
 	}
 }
 

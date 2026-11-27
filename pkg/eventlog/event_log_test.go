@@ -45,6 +45,10 @@ func (f *fakeEventLogStore) ReleaseSessionLease(ctx context.Context, sessionID, 
 	return nil
 }
 
+func (f *fakeEventLogStore) SessionLeaseHolder(ctx context.Context, sessionID string) (string, time.Duration, error) {
+	return "", 0, nil
+}
+
 func (f *fakeEventLogStore) PruneResolvedStep(ctx context.Context, sessionID string, stepIndex int) error {
 	return nil
 }
