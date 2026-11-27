@@ -33,10 +33,11 @@ import (
 
 // TurnCounter is a session store that counts a session's turns.
 type TurnCounter interface {
-	// Turns is how many turns the session has had; 0 for a session with no
-	// row yet.
+	// Turns is the session's turn count; 0 for a session with no row yet.
+	// It moves whenever a turn in the session begins or ends, so two reads
+	// that agree mean no turn ran between them.
 	Turns(ctx context.Context, sessionID string) (int64, error)
-	// CountTurn counts one more turn for the session. A session with no row
+	// CountTurn moves the session's turn count by one. A session with no row
 	// is not counted: its first turn's persist gives it the row.
 	CountTurn(ctx context.Context, sessionID string) error
 }
@@ -70,16 +71,24 @@ func (a *Agent) beginTurnCount(ctx context.Context, sessionID string) int64 {
 // endTurnCount counts the turn and records that this object's copy of the
 // session is current as of the new count.
 func (a *Agent) endTurnCount(ctx context.Context, sessionID string, began int64) {
+	if a.countTurn(ctx, sessionID) {
+		a.memory.sawTurns(sessionID, began+1)
+	}
+}
+
+// countTurn counts one more turn for the session and reports whether the
+// count landed.
+func (a *Agent) countTurn(ctx context.Context, sessionID string) bool {
 	store := a.turnCounter()
 	if store == nil {
-		return
+		return false
 	}
 	if err := store.CountTurn(ctx, sessionID); err != nil {
 		zap.L().Warn("could not count the session's turn",
 			zap.String("session_id", sessionID), zap.Error(err))
-		return
+		return false
 	}
-	a.memory.sawTurns(sessionID, began+1)
+	return true
 }
 
 // turnCounter is the session store's counter, or nil for an agent without a

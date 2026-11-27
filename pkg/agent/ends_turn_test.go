@@ -67,6 +67,9 @@ func TestAToolThatEndsTheTurnEndsIt(t *testing.T) {
 	if resp.Metadata["ended_by"] != "hand_off" {
 		t.Errorf("the reply does not say what ended the turn: %v", resp.Metadata)
 	}
+	if resp.TurnLLMCalls != 1 {
+		t.Errorf("the turn reports %d LLM calls, want the one it made", resp.TurnLLMCalls)
+	}
 	// Its words are stored once, with the call.
 	msgs, _ := ag.memory.GetOrCreateSession(context.Background(), "s-ends"), 0
 	count := 0

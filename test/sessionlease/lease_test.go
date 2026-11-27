@@ -18,12 +18,14 @@ package sessionlease
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 
 	loomv1 "github.com/teradata-labs/loom/gen/go/loom/v1"
 	"github.com/teradata-labs/loom/pkg/agent"
@@ -123,7 +125,7 @@ func TestTheLeaseHoldsOnTheRealStores(t *testing.T) {
 	require.True(t, ok, "the backend's session store does not count turns")
 	turns, err := counter.Turns(ctx, "s1")
 	require.NoError(t, err)
-	require.EqualValues(t, 3, turns)
+	require.EqualValues(t, 6, turns, "three turns, each counted as it began and as it ended")
 }
 
 // A resume for a session that has no row is refused as nothing parked, not
@@ -137,4 +139,65 @@ func TestAResumeOfAnUnknownSessionIsRefusedNotFailed(t *testing.T) {
 	ok, err := store.SessionExists(context.Background(), "never-existed")
 	require.NoError(t, err)
 	require.False(t, ok)
+}
+
+// A registry gives the lease to an agent whose sessions are in the registry's
+// store, and not to an agent with its own memory store: the lease row
+// references the session's row, which for that agent is somewhere else. Each
+// of them runs its turns.
+func TestARegistryAgentWithItsOwnMemoryRunsWithoutTheLease(t *testing.T) {
+	store, sb := realStores(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o750))
+	configs := map[string]*loomv1.MemoryConfig{
+		// No path of its own: the registry's store, as the example agents
+		// are configured.
+		"shared":   {Type: "sqlite"},
+		"inmemory": {Type: "memory"},
+		"ownfile":  {Type: "sqlite", Path: filepath.Join(dir, "own.db")},
+	}
+	for name, memory := range configs {
+		require.NoError(t, agent.SaveAgentConfig(&loomv1.AgentConfig{
+			Name: name, Description: "lease test", SystemPrompt: "test", Memory: memory,
+			Llm: &loomv1.LLMConfig{MaxTokens: 1024},
+		}, filepath.Join(dir, "agents", name+".yaml")))
+	}
+	llm := &holdingLLM{}
+	registry, err := agent.NewRegistry(agent.RegistryConfig{
+		ConfigDir: dir, DBPath: filepath.Join(dir, "registry.db"), LLMProvider: llm, Logger: zap.NewNop(),
+		Tracer:       observability.NewNoOpTracer(),
+		SessionStore: store, SessionLeaseStore: sb.EventLogStore(),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = registry.Close() })
+	require.NoError(t, registry.LoadAgents(ctx))
+
+	for name := range configs {
+		_, err := registry.CreateAgent(ctx, name)
+		require.NoError(t, err, name)
+		ag, err := registry.GetAgent(ctx, name)
+		require.NoError(t, err, name)
+		_, err = ag.Chat(ctx, "s-"+name, "hello")
+		require.NoError(t, err, "agent %q could not run a turn", name)
+	}
+
+	// The agent in the registry's store holds the lease while its turn runs.
+	shared, err := registry.GetAgent(ctx, "shared")
+	require.NoError(t, err)
+	entered, release := llm.holdNext()
+	done := make(chan error, 1)
+	go func() { _, err := shared.Chat(ctx, "s-shared", "again"); done <- err }()
+	select {
+	case <-entered:
+	case err := <-done:
+		t.Fatalf("the turn ended before it reached the model: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the turn never reached the model")
+	}
+	holder, _, err := sb.EventLogStore().SessionLeaseHolder(ctx, "s-shared")
+	require.NoError(t, err)
+	require.NotEmpty(t, holder, "the agent in the registry's store ran its turn without the lease")
+	release()
+	require.NoError(t, <-done)
 }

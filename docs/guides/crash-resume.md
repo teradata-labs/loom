@@ -217,9 +217,10 @@ runs turns unlocked, and `looms serve` says so at startup.
   crashed server). Queue messages that still cannot be delivered because the
   session is busy go back to the queue without using up a delivery and are
   offered again; any other reason counts against the queue's retry limit of 3
-  deliveries, after which the queue marks them failed. Broadcast messages have
-  no queue behind them: if the session is still busy after the wait, the
-  message is dropped and logged at error level.
+  deliveries, after which the queue marks them failed. A broadcast message
+  whose session is still busy after the wait is put on the queue and delivered
+  from there. It is dropped and logged at error level only when the server has
+  no queue or the enqueue fails.
 - **A resume counts as a conversation.** `ResumeSession` waits at the same door
   as `Weave` when `max_active_conversations` is reached, and appears in traces
   as `server.ResumeSession`.

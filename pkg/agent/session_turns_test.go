@@ -223,10 +223,74 @@ func TestTheTurnIsCountedBeforeTheLeaseIsReleased(t *testing.T) {
 	require.NoError(t, err)
 	_, err = a.Chat(ctx, "s1", "two")
 	require.NoError(t, err)
-	require.Equal(t, []int64{1, 2}, countedAtRelease, "the lease was released before the turn was counted")
+	require.Equal(t, []int64{2, 4}, countedAtRelease, "the lease was released before the turn was counted")
 }
 
-// An object's own copy of a session is kept across its own turns: only a
+// A holder that dies mid-turn never releases its lease, but its turn was
+// counted when it took the lease: once the lease is gone, another object
+// loads the rows the dead holder saved instead of running on its old copy.
+func TestATurnWhoseHolderDiedIsSeenByTheNextObject(t *testing.T) {
+	store := turnStore(t)
+	leases := &recordingEventLog{}
+	a, _, b, llmB := twoObjects(t, store, leases)
+	ctx := context.Background()
+
+	_, err := a.Chat(ctx, "s1", "one")
+	require.NoError(t, err)
+	_, err = b.Chat(ctx, "s1", "two")
+	require.NoError(t, err)
+
+	// a takes the lease, saves a row and dies: release never runs.
+	_, release, err := a.holdSessionLease(ctx, "s1")
+	require.NoError(t, err)
+	t.Cleanup(release) // stops the renewal goroutine once the test is over
+	require.NoError(t, store.SaveMessage(ctx, "s1", &Message{
+		Role: "user", Content: "three, from the holder that died", Timestamp: time.Now(),
+	}, true))
+	// Its lease expires.
+	leases.mu.Lock()
+	delete(leases.claims, "s1")
+	delete(leases.expiry, "s1")
+	leases.mu.Unlock()
+
+	_, err = b.Chat(ctx, "s1", "four")
+	require.NoError(t, err)
+	require.Contains(t, llmB.lastCall(), "three, from the holder that died",
+		"the next object ran on its old copy, without the dead holder's rows")
+}
+
+// A holder whose lease ran out while it was still alive saves its rows late,
+// after another object has taken a turn: the count moves when it lets go, so
+// the other object loads those rows too.
+func TestAHolderThatOutlivedItsLeaseIsSeenByTheNextObject(t *testing.T) {
+	store := turnStore(t)
+	leases := &recordingEventLog{}
+	a, _, b, llmB := twoObjects(t, store, leases)
+	ctx := context.Background()
+
+	_, err := a.Chat(ctx, "s1", "one")
+	require.NoError(t, err)
+
+	_, release, err := a.holdSessionLease(ctx, "s1")
+	require.NoError(t, err)
+	leases.mu.Lock()
+	delete(leases.claims, "s1")
+	delete(leases.expiry, "s1")
+	leases.mu.Unlock()
+	_, err = b.Chat(ctx, "s1", "two")
+	require.NoError(t, err)
+
+	require.NoError(t, store.SaveMessage(ctx, "s1", &Message{
+		Role: "user", Content: "three, saved late", Timestamp: time.Now(),
+	}, true))
+	release()
+
+	_, err = b.Chat(ctx, "s1", "four")
+	require.NoError(t, err)
+	require.Contains(t, llmB.lastCall(), "three, saved late",
+		"the next object ran on its old copy, without the late rows")
+}
+
 // turn it did not take makes it reload.
 func TestAnAgentsOwnCopySurvivesIntoItsNextTurn(t *testing.T) {
 	store := turnStore(t)
@@ -246,7 +310,7 @@ func TestAnAgentsOwnCopySurvivesIntoItsNextTurn(t *testing.T) {
 
 	turns, err := store.Turns(ctx, "kept")
 	require.NoError(t, err)
-	require.EqualValues(t, 2, turns, "the session's turns were not counted")
+	require.EqualValues(t, 4, turns, "two turns, each counted as it began and as it ended")
 }
 
 // A requested compaction works on the session, not on a copy another object's

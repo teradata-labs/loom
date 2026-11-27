@@ -99,10 +99,12 @@ func leaseLostError(ctx context.Context, err error) error {
 // renewed every TTL/3 while held. Without a lease store it returns ctx
 // unchanged and a release that only counts the turn.
 //
-// Taking the lease reads the session's turn
-// count (TurnCounter) and releasing it counts the turn: an agent object whose
-// copy of the session is from fewer turns than the session has had drops it
-// and loads fresh.
+// Taking the lease reads the session's turn count (TurnCounter) and moves
+// it; releasing the lease moves it again. An agent object whose copy of the
+// session is from another count drops it and loads fresh. The count moves as
+// the turn begins, so the rows of a holder that dies mid-turn are loaded by
+// whoever runs the session next, and as it ends, so the rows of a holder
+// that outlived its lease are loaded too.
 func (a *Agent) holdSessionLease(ctx context.Context, sessionID string) (context.Context, func(), error) {
 	leases := a.leaseStore()
 	if leases == nil {
@@ -126,6 +128,7 @@ func (a *Agent) holdSessionLease(ctx context.Context, sessionID string) (context
 		return nil, nil, fmt.Errorf("session %s: %w", sessionID, ErrSessionBusy)
 	}
 	turns := a.beginTurnCount(ctx, sessionID)
+	counted := a.countTurn(ctx, sessionID)
 
 	leaseCtx, cancel := context.WithCancelCause(ctx)
 	// Renewal and release must outlive a cancelled turn, but keep its values
@@ -191,8 +194,11 @@ func (a *Agent) holdSessionLease(ctx context.Context, sessionID string) (context
 		// lease expires on its own if the release does not land.
 		releaseCtx, cancelRelease := context.WithTimeout(storeCtx, ttl/3)
 		defer cancelRelease()
-		// The turn is counted while the lease is still held, so the count
+		// The count moves again while the lease is still held, so the count
 		// and the history it stands for change under one lock.
+		if counted {
+			turns++
+		}
 		a.endTurnCount(releaseCtx, sessionID, turns)
 		if err := leases.ReleaseSessionLease(releaseCtx, sessionID, holder); err != nil {
 			zap.L().Warn("failed to release session lease; it expires on its own",

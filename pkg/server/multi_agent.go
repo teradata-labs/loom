@@ -2265,7 +2265,8 @@ func (s *MultiAgentServer) processCoordinatorBroadcastMessages(
 					zap.String("coordinator", coordinatorID))
 				return
 			}
-			// A broadcast has no queue behind it to redeliver from.
+			// A broadcast is not redelivered by a queue of its own, so a busy
+			// one is put on the message queue.
 			if errors.Is(err, agent.ErrSessionBusy) && s.messageQueue != nil {
 				// Busy past the wait: queued, delivered when the session is
 				// free, never charged a delivery for the busy refusals.

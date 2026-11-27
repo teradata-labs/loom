@@ -1007,6 +1007,21 @@ func newWorkflowRuntime() (*workflowRuntime, error) {
 	return rt, nil
 }
 
+// sqliteBackendAt is whether the storage backend built from cfg is the SQLite
+// file at dbPath. Both are open by the time it is asked, so both files exist.
+func sqliteBackendAt(cfg *loomv1.StorageConfig, dbPath string) bool {
+	if cfg.GetBackend() != loomv1.StorageBackendType_STORAGE_BACKEND_TYPE_SQLITE {
+		return false
+	}
+	backendPath := cfg.GetSqlite().GetPath()
+	if backendPath == "" {
+		backendPath = filepath.Join(loomconfig.GetLoomDataDir(), "loom.db")
+	}
+	a, errA := os.Stat(backendPath)
+	b, errB := os.Stat(dbPath)
+	return errA == nil && errB == nil && os.SameFile(a, b)
+}
+
 // startOrchestrator creates the LLM provider, session store, agent registry,
 // communication infrastructure and orchestrator for the pattern, then creates
 // and registers every referenced agent with the standard auto-injected tools.
@@ -1058,7 +1073,8 @@ func (rt *workflowRuntime) startOrchestrator(pattern *loomv1.WorkflowPattern, pr
 	// report` reads. Without it turns run unlocked and shadow rows are not
 	// persisted, and both are said once.
 	var sessionLeases eventlog.SessionLeaseStore
-	storageBackend, sbErr := backend.NewStorageBackend(context.Background(), config.BuildProtoStorageConfig(), tracer)
+	storageConfig := config.BuildProtoStorageConfig()
+	storageBackend, sbErr := backend.NewStorageBackend(context.Background(), storageConfig, tracer)
 	if sbErr != nil {
 		logger.Warn("Storage backend unavailable; turns run unlocked and decision shadow rows will not be persisted", zap.Error(sbErr))
 	} else {
@@ -1068,9 +1084,17 @@ func (rt *workflowRuntime) startOrchestrator(pattern *loomv1.WorkflowPattern, pr
 		if mErr := storageBackend.Migrate(context.Background()); mErr != nil {
 			logger.Warn("Storage migration failed; decision shadow rows may not be persisted", zap.Error(mErr))
 		}
-		var leaseErr error
-		if sessionLeases, leaseErr = backend.SessionLeases(context.Background(), storageBackend); leaseErr != nil {
-			logger.Warn("Session lease unavailable; turns run unlocked. Run the storage migrations to hold one turn at a time per session", zap.Error(leaseErr))
+		// The lease row references the session's row, so the lease holds
+		// only when the backend's database is the file the workflow's
+		// sessions are in.
+		if !sqliteBackendAt(storageConfig, dbPath) {
+			logger.Warn("Session lease unavailable; turns run unlocked: the storage backend is not the database the workflow's sessions are in",
+				zap.String("session_database", dbPath))
+		} else {
+			var leaseErr error
+			if sessionLeases, leaseErr = backend.SessionLeases(context.Background(), storageBackend); leaseErr != nil {
+				logger.Warn("Session lease unavailable; turns run unlocked. Run the storage migrations to hold one turn at a time per session", zap.Error(leaseErr))
+			}
 		}
 	}
 

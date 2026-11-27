@@ -3742,6 +3742,7 @@ func (a *Agent) runConversationLoop(ctx Context) (resp *Response, err error) {
 				Content:        llmResp.Content,
 				Usage:          llmResp.Usage,
 				TurnUsage:      turnUsage,
+				TurnLLMCalls:   turnCalls,
 				ToolExecutions: allToolExecutions,
 				Thinking:       llmResp.Thinking,
 				Metadata:       meta,
@@ -5953,6 +5954,11 @@ var ErrRewindUnsupported = errors.New("session storage does not support rewind")
 // session it is refused with ErrSessionBusy, so it never cuts under a turn
 // that would write its result back on top of the rewind. It counts as a
 // turn, so every other agent object holding the session reloads it.
+//
+// A parked request of an undone turn is closed after the turns are removed.
+// If the request store fails then, the rewind has still happened and is
+// reported as done; the failure is logged, and the request stops holding the
+// session when it expires or is closed with `looms hitl expire`.
 func (a *Agent) RewindSession(ctx context.Context, sessionID string, turns int) (int, error) {
 	if turns <= 0 {
 		return 0, fmt.Errorf("turns must be positive, got %d", turns)
