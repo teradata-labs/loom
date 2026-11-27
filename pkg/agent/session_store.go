@@ -202,6 +202,9 @@ func (s *SessionStore) initSchema() error {
 		cache_create_1h_tokens INTEGER NOT NULL DEFAULT 0,
 		cache_create_5m_tokens INTEGER NOT NULL DEFAULT 0,
 		thinking_tokens INTEGER NOT NULL DEFAULT 0,
+		-- The thinking text of an assistant message, as the provider returned
+		-- it. Kept for reading a session back; never sent to a provider.
+		thinking_content TEXT NOT NULL DEFAULT '',
 		evicted INTEGER NOT NULL DEFAULT 0,
 		folded INTEGER NOT NULL DEFAULT 0,
 		turn INTEGER NOT NULL DEFAULT 0,
@@ -391,6 +394,9 @@ func (s *SessionStore) initSchema() error {
 		"cache_create_1h_tokens": "ALTER TABLE messages ADD COLUMN cache_create_1h_tokens INTEGER NOT NULL DEFAULT 0",
 		"cache_create_5m_tokens": "ALTER TABLE messages ADD COLUMN cache_create_5m_tokens INTEGER NOT NULL DEFAULT 0",
 		"thinking_tokens":        "ALTER TABLE messages ADD COLUMN thinking_tokens INTEGER NOT NULL DEFAULT 0",
+		// thinking_content is the thinking text of an assistant message. '' is
+		// every existing row: its thinking was not kept.
+		"thinking_content": "ALTER TABLE messages ADD COLUMN thinking_content TEXT NOT NULL DEFAULT ''",
 		// incarnation is the session's creation nonce (nanosecond, stamped
 		// once, never updated): created_at survives the round trip at SECOND
 		// resolution only, so the implicit-task epoch needs its own column to
@@ -413,7 +419,7 @@ func (s *SessionStore) initSchema() error {
 		switch columnName {
 		case "session_context", "message_agent_id", "evicted", "folded", "turn", "task_id",
 			"input_tokens", "output_tokens", "cache_read_tokens", "cache_create_tokens", "model",
-			"effort", "cache_create_1h_tokens", "cache_create_5m_tokens", "thinking_tokens":
+			"effort", "cache_create_1h_tokens", "cache_create_5m_tokens", "thinking_tokens", "thinking_content":
 			table = "messages"
 		case "admission_decision":
 			table = "tool_executions"
@@ -819,12 +825,12 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg *M
 	}
 
 	query := `
-		INSERT INTO messages (session_id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, model, effort, cache_create_1h_tokens, cache_create_5m_tokens, thinking_tokens, evicted, folded, turn)
+		INSERT INTO messages (session_id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, model, effort, cache_create_1h_tokens, cache_create_5m_tokens, thinking_tokens, thinking_content, evicted, folded, turn)
 		VALUES (?, ?, ?, ?, ?, ?,
 			COALESCE(?, (SELECT session_context FROM messages
 				WHERE session_id = ? AND turn = (SELECT COALESCE(MAX(turn), 0) FROM messages WHERE session_id = ?)
 				ORDER BY id LIMIT 1), 'direct'),
-			?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+			?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 			(SELECT COALESCE(MAX(turn), 0) + ? FROM messages WHERE session_id = ?))
 	`
 
@@ -852,6 +858,7 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg *M
 		msg.CacheCreate1hTokens,
 		msg.CacheCreate5mTokens,
 		msg.ThinkingTokens,
+		msg.Thinking,
 		evicted,
 		folded,
 		turnIncrement,
@@ -924,7 +931,7 @@ func (s *SessionStore) loadMessagesLocked(ctx context.Context, sessionID string)
 	// The owner predicate is defense in depth: callers guard first, but this
 	// helper must not become a cross-user read if a future caller forgets.
 	query := `
-		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, model, effort, cache_create_1h_tokens, cache_create_5m_tokens, thinking_tokens, evicted, folded, turn
+		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, model, effort, cache_create_1h_tokens, cache_create_5m_tokens, thinking_tokens, thinking_content, evicted, folded, turn
 		FROM messages
 		WHERE session_id = ? AND folded = 0
 		AND EXISTS (SELECT 1 FROM sessions WHERE id = messages.session_id AND user_id = ?)
@@ -968,6 +975,7 @@ func (s *SessionStore) loadMessagesLocked(ctx context.Context, sessionID string)
 			&msg.CacheCreate1hTokens,
 			&msg.CacheCreate5mTokens,
 			&msg.ThinkingTokens,
+			&msg.Thinking,
 			&evicted,
 			&folded,
 			&msg.Turn,
@@ -1116,7 +1124,7 @@ func (s *SessionStore) ListMessagesBySeqRange(ctx context.Context, sessionID str
 	defer s.mu.RUnlock()
 
 	query := `
-		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, model, effort, cache_create_1h_tokens, cache_create_5m_tokens, thinking_tokens, evicted, folded, turn
+		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, timestamp, token_count, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, model, effort, cache_create_1h_tokens, cache_create_5m_tokens, thinking_tokens, thinking_content, evicted, folded, turn
 		FROM messages
 		WHERE session_id = ? AND id BETWEEN ? AND ?
 		ORDER BY id ASC
@@ -1159,6 +1167,7 @@ func (s *SessionStore) ListMessagesBySeqRange(ctx context.Context, sessionID str
 			&msg.CacheCreate1hTokens,
 			&msg.CacheCreate5mTokens,
 			&msg.ThinkingTokens,
+			&msg.Thinking,
 			&evicted,
 			&folded,
 			&msg.Turn,
@@ -1265,7 +1274,7 @@ func (s *SessionStore) LoadMessagesForAgent(ctx context.Context, agentID string)
 	query := `
 		SELECT DISTINCT m.id, m.role, m.content, m.tool_calls_json, m.tool_use_id,
 		       m.tool_result_json, m.session_context, m.agent_id, m.timestamp, m.token_count, m.cost_usd,
-		       m.input_tokens, m.output_tokens, m.cache_read_tokens, m.cache_create_tokens, m.model, m.effort, m.cache_create_1h_tokens, m.cache_create_5m_tokens, m.thinking_tokens,
+		       m.input_tokens, m.output_tokens, m.cache_read_tokens, m.cache_create_tokens, m.model, m.effort, m.cache_create_1h_tokens, m.cache_create_5m_tokens, m.thinking_tokens, m.thinking_content,
 		       m.evicted, m.turn, m.session_id
 		FROM messages m
 		WHERE m.folded = 0
@@ -1326,6 +1335,7 @@ func (s *SessionStore) LoadMessagesForAgent(ctx context.Context, agentID string)
 			&msg.CacheCreate1hTokens,
 			&msg.CacheCreate5mTokens,
 			&msg.ThinkingTokens,
+			&msg.Thinking,
 			&evicted,
 			&msg.Turn,
 			&sessionID,
@@ -1435,7 +1445,7 @@ func (s *SessionStore) LoadMessagesFromParentSession(ctx context.Context, sessio
 	query := `
 		SELECT id, role, content, tool_calls_json, tool_use_id, tool_result_json,
 		       session_context, agent_id, timestamp, token_count, cost_usd,
-		       input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, model, effort, cache_create_1h_tokens, cache_create_5m_tokens, thinking_tokens, evicted, turn
+		       input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, model, effort, cache_create_1h_tokens, cache_create_5m_tokens, thinking_tokens, thinking_content, evicted, turn
 		FROM messages
 		WHERE session_id = ? AND folded = 0
 		AND session_context IN ('coordinator', 'shared')
@@ -1480,6 +1490,7 @@ func (s *SessionStore) LoadMessagesFromParentSession(ctx context.Context, sessio
 			&msg.CacheCreate1hTokens,
 			&msg.CacheCreate5mTokens,
 			&msg.ThinkingTokens,
+			&msg.Thinking,
 			&evicted,
 			&msg.Turn,
 		)
@@ -2096,7 +2107,7 @@ func (s *SessionStore) SearchMessages(ctx context.Context, sessionID, query stri
 		sqlQuery = `
 			SELECT m.role, m.content, m.tool_calls_json,
 			       m.tool_use_id, m.tool_result_json, m.timestamp, m.token_count, m.cost_usd,
-			       m.input_tokens, m.output_tokens, m.cache_read_tokens, m.cache_create_tokens, m.model, m.effort, m.cache_create_1h_tokens, m.cache_create_5m_tokens, m.thinking_tokens
+			       m.input_tokens, m.output_tokens, m.cache_read_tokens, m.cache_create_tokens, m.model, m.effort, m.cache_create_1h_tokens, m.cache_create_5m_tokens, m.thinking_tokens, m.thinking_content
 			FROM messages_fts5
 			JOIN messages m ON messages_fts5.message_id = m.id
 			JOIN sessions sess ON m.session_id = sess.id
@@ -2110,7 +2121,7 @@ func (s *SessionStore) SearchMessages(ctx context.Context, sessionID, query stri
 		sqlQuery = `
 			SELECT m.role, m.content, m.tool_calls_json,
 			       m.tool_use_id, m.tool_result_json, m.timestamp, m.token_count, m.cost_usd,
-			       m.input_tokens, m.output_tokens, m.cache_read_tokens, m.cache_create_tokens, m.model, m.effort, m.cache_create_1h_tokens, m.cache_create_5m_tokens, m.thinking_tokens
+			       m.input_tokens, m.output_tokens, m.cache_read_tokens, m.cache_create_tokens, m.model, m.effort, m.cache_create_1h_tokens, m.cache_create_5m_tokens, m.thinking_tokens, m.thinking_content
 			FROM messages_fts5
 			JOIN messages m ON messages_fts5.message_id = m.id
 			JOIN sessions sess ON m.session_id = sess.id
@@ -2150,6 +2161,7 @@ func (s *SessionStore) SearchMessages(ctx context.Context, sessionID, query stri
 			&msg.CacheCreate1hTokens,
 			&msg.CacheCreate5mTokens,
 			&msg.ThinkingTokens,
+			&msg.Thinking,
 		)
 		if err != nil {
 			span.RecordError(err)
@@ -2225,7 +2237,7 @@ func (s *SessionStore) SearchMessagesByAgent(ctx context.Context, agentID, query
 	sqlQuery := `
 		SELECT m.role, m.content, m.tool_calls_json,
 		       m.tool_use_id, m.tool_result_json, m.timestamp, m.token_count, m.cost_usd,
-			       m.input_tokens, m.output_tokens, m.cache_read_tokens, m.cache_create_tokens, m.model, m.effort, m.cache_create_1h_tokens, m.cache_create_5m_tokens, m.thinking_tokens
+			       m.input_tokens, m.output_tokens, m.cache_read_tokens, m.cache_create_tokens, m.model, m.effort, m.cache_create_1h_tokens, m.cache_create_5m_tokens, m.thinking_tokens, m.thinking_content
 		FROM messages_fts5
 		JOIN messages m ON messages_fts5.message_id = m.id
 		JOIN sessions s ON m.session_id = s.id
@@ -2265,6 +2277,7 @@ func (s *SessionStore) SearchMessagesByAgent(ctx context.Context, agentID, query
 			&msg.CacheCreate1hTokens,
 			&msg.CacheCreate5mTokens,
 			&msg.ThinkingTokens,
+			&msg.Thinking,
 		)
 		if err != nil {
 			span.RecordError(err)
