@@ -205,6 +205,8 @@ func (s *SessionStore) initSchema() error {
 		-- The thinking text of an assistant message, as the provider returned
 		-- it. Kept for reading a session back; never sent to a provider.
 		thinking_content TEXT NOT NULL DEFAULT '',
+		-- Why the provider ended the reply the message was made from.
+		stop_reason TEXT NOT NULL DEFAULT '',
 		evicted INTEGER NOT NULL DEFAULT 0,
 		folded INTEGER NOT NULL DEFAULT 0,
 		turn INTEGER NOT NULL DEFAULT 0,
@@ -397,6 +399,9 @@ func (s *SessionStore) initSchema() error {
 		// thinking_content is the thinking text of an assistant message. '' is
 		// every existing row: its thinking was not kept.
 		"thinking_content": "ALTER TABLE messages ADD COLUMN thinking_content TEXT NOT NULL DEFAULT ''",
+		// stop_reason is why the provider ended the reply. '' is every existing
+		// row, and every row no reply was made from.
+		"stop_reason": "ALTER TABLE messages ADD COLUMN stop_reason TEXT NOT NULL DEFAULT ''",
 		// incarnation is the session's creation nonce (nanosecond, stamped
 		// once, never updated): created_at survives the round trip at SECOND
 		// resolution only, so the implicit-task epoch needs its own column to
@@ -419,7 +424,7 @@ func (s *SessionStore) initSchema() error {
 		switch columnName {
 		case "session_context", "message_agent_id", "evicted", "folded", "turn", "task_id",
 			"input_tokens", "output_tokens", "cache_read_tokens", "cache_create_tokens", "model",
-			"effort", "cache_create_1h_tokens", "cache_create_5m_tokens", "thinking_tokens", "thinking_content":
+			"effort", "cache_create_1h_tokens", "cache_create_5m_tokens", "thinking_tokens", "thinking_content", "stop_reason":
 			table = "messages"
 		case "admission_decision":
 			table = "tool_executions"
@@ -825,12 +830,12 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg *M
 	}
 
 	query := `
-		INSERT INTO messages (session_id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, model, effort, cache_create_1h_tokens, cache_create_5m_tokens, thinking_tokens, thinking_content, evicted, folded, turn)
+		INSERT INTO messages (session_id, role, content, tool_calls_json, tool_use_id, tool_result_json, session_context, agent_id, task_id, timestamp, token_count, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, model, effort, cache_create_1h_tokens, cache_create_5m_tokens, thinking_tokens, thinking_content, stop_reason, evicted, folded, turn)
 		VALUES (?, ?, ?, ?, ?, ?,
 			COALESCE(?, (SELECT session_context FROM messages
 				WHERE session_id = ? AND turn = (SELECT COALESCE(MAX(turn), 0) FROM messages WHERE session_id = ?)
 				ORDER BY id LIMIT 1), 'direct'),
-			?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+			?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 			(SELECT COALESCE(MAX(turn), 0) + ? FROM messages WHERE session_id = ?))
 	`
 
@@ -859,6 +864,7 @@ func (s *SessionStore) SaveMessage(ctx context.Context, sessionID string, msg *M
 		msg.CacheCreate5mTokens,
 		msg.ThinkingTokens,
 		msg.Thinking,
+		msg.StopReason,
 		evicted,
 		folded,
 		turnIncrement,

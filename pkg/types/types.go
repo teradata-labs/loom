@@ -114,6 +114,11 @@ type Message struct {
 	// the provider; the wire form is ThinkingBlocks.
 	Thinking string
 
+	// StopReason is why the provider ended the reply this message was made
+	// from (end_turn, tool_use, max_tokens, ...). Stored for reading a session
+	// back; never sent to a provider.
+	StopReason string
+
 	// ThinkingBlocks carries the assistant's extended-thinking blocks for
 	// replay: always within the turn (tool-loop continuations), and on a
 	// settled turn only while the compiled context before the message — with

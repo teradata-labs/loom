@@ -2390,6 +2390,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 	// for a turn with a reply row.
 	replyPersisted := false
 	if _, ended := response.Metadata["ended_by"]; !ended {
+		stopReason, _ := response.Metadata["stop_reason"].(string)
 		_, replyPersisted = a.appendMessage(ctx, session, Message{
 			Role: "assistant",
 			// Turn-ending message: thinking text rides for persistence; no blocks
@@ -2398,6 +2399,7 @@ func (a *Agent) chat(ctx context.Context, sessionID string, userMessage string, 
 			// unchanged: thinkingPrefix in context_compilation.go.)
 			Content:           response.Content,
 			Thinking:          response.Thinking,
+			StopReason:        stopReason,
 			AgentID:           a.GetID(), // Track which agent generated this response
 			Timestamp:         time.Now(),
 			TokenCount:        response.Usage.TotalTokens,
@@ -3549,11 +3551,12 @@ func (a *Agent) runConversationLoop(ctx Context) (resp *Response, err error) {
 				// sent it.
 				emptyRetried = true
 				a.appendMessage(ctx, session, Message{
-					Role:      roleEmptyResponseRetry,
-					Content:   "Your previous response was empty. Please provide a response summarizing what you found or explaining what went wrong.",
-					Thinking:  llmResp.Thinking,
-					AgentID:   a.GetID(),
-					Timestamp: time.Now(),
+					Role:       roleEmptyResponseRetry,
+					Content:    "Your previous response was empty. Please provide a response summarizing what you found or explaining what went wrong.",
+					Thinking:   llmResp.Thinking,
+					StopReason: llmResp.StopReason,
+					AgentID:    a.GetID(),
+					Timestamp:  time.Now(),
 				}, false)
 				continue // re-enter conversation loop for one more LLM call
 			}
@@ -3617,6 +3620,7 @@ func (a *Agent) runConversationLoop(ctx Context) (resp *Response, err error) {
 			Content:           llmResp.Content,
 			ToolCalls:         llmResp.ToolCalls,
 			Thinking:          llmResp.Thinking,
+			StopReason:        llmResp.StopReason,
 			ThinkingBlocks:    llmResp.ThinkingBlocks,
 			AgentID:           a.GetID(), // Track which agent generated this response
 			TokenCount:        llmResp.Usage.TotalTokens,
@@ -4445,6 +4449,7 @@ func (a *Agent) synthesizeFinalResponse(ctx Context, session *Session, memoryNot
 			"max_turns_hit":   turnCount >= a.config.MaxTurns,
 			"max_exec_hit":    toolExecutionCount >= a.config.MaxToolExecutions,
 			"synthesized":     true,
+			"stop_reason":     finalResp.StopReason,
 		},
 	}, nil
 }

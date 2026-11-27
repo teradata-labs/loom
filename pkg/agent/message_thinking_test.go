@@ -190,7 +190,7 @@ func (l *silentLLM) Chat(context.Context, []llmtypes.Message, []shuttle.Tool) (*
 	if l.calls > 1 {
 		thinking = "second: still nothing"
 	}
-	return &llmtypes.LLMResponse{Thinking: thinking,
+	return &llmtypes.LLMResponse{Thinking: thinking, StopReason: "end_turn",
 		Usage: llmtypes.Usage{InputTokens: 3, OutputTokens: 40, ThinkingTokens: 40}}, nil
 }
 func (*silentLLM) Name() string  { return "silent" }
@@ -198,7 +198,8 @@ func (*silentLLM) Model() string { return "silent-v1" }
 
 // A reply with thinking and no words is not lost: the thinking of the one
 // that is asked again is stored with the asking, and the thinking of the one
-// that ends the turn with the turn's last row.
+// that ends the turn with the turn's last row. Each row says why the provider
+// ended that reply.
 func TestTheThinkingOfAReplyWithNoWordsIsStored(t *testing.T) {
 	store, err := NewSessionStore(filepath.Join(t.TempDir(), "s.db"), observability.NewNoOpTracer())
 	if err != nil {
@@ -217,10 +218,13 @@ func TestTheThinkingOfAReplyWithNoWordsIsStored(t *testing.T) {
 		roleEmptyResponseRetry: "first: nothing to say yet",
 		"assistant":            "second: still nothing",
 	} {
-		var got string
-		if err := store.db.QueryRow(`SELECT thinking_content FROM messages
-			WHERE session_id = 'silent-s' AND role = ?`, role).Scan(&got); err != nil {
+		var got, stop string
+		if err := store.db.QueryRow(`SELECT thinking_content, stop_reason FROM messages
+			WHERE session_id = 'silent-s' AND role = ?`, role).Scan(&got, &stop); err != nil {
 			t.Fatalf("the %s row: %v", role, err)
+		}
+		if stop != "end_turn" {
+			t.Errorf("the %s row was stored with stop reason %q; want end_turn", role, stop)
 		}
 		if got != want {
 			t.Errorf("the %s row was stored with thinking %q; want %q", role, got, want)
