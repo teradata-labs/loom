@@ -117,29 +117,36 @@ func (s *MultiAgentServer) acquireLLMSlot(ctx context.Context, timeout time.Dura
 // An error wrapping errInjectNotDelivered means the prompt never reached the
 // conversation; any other error comes from a turn that ran.
 func (s *MultiAgentServer) chatInjected(waitCtx, chatCtx context.Context, ag *agent.Agent, sessionID, prompt string, slotTimeout time.Duration) error {
+	_, err := s.chatInjectedResponse(waitCtx, chatCtx, ag, sessionID, prompt, slotTimeout)
+	return err
+}
+
+// chatInjectedResponse is chatInjected for a caller that needs the turn's
+// response.
+func (s *MultiAgentServer) chatInjectedResponse(waitCtx, chatCtx context.Context, ag *agent.Agent, sessionID, prompt string, slotTimeout time.Duration) (*agent.Response, error) {
 	policy := s.injectPolicy()
 	deadline := time.Now().Add(policy.total)
 	delay := policy.initial
 	for {
 		release, err := s.acquireLLMSlot(waitCtx, slotTimeout)
 		if err != nil {
-			return fmt.Errorf("%w: %w", errInjectNotDelivered, err)
+			return nil, fmt.Errorf("%w: %w", errInjectNotDelivered, err)
 		}
-		_, err = ag.Chat(chatCtx, sessionID, prompt)
+		resp, err := ag.Chat(chatCtx, sessionID, prompt)
 		release()
 		if !errors.Is(err, agent.ErrSessionBusy) {
-			return err
+			return resp, err
 		}
 
 		if time.Until(deadline) <= delay {
-			return fmt.Errorf("%w: %w", errInjectNotDelivered, err)
+			return nil, fmt.Errorf("%w: %w", errInjectNotDelivered, err)
 		}
 		timer := time.NewTimer(delay)
 		select {
 		case <-timer.C:
 		case <-waitCtx.Done():
 			timer.Stop()
-			return fmt.Errorf("%w: %w", errInjectNotDelivered, err)
+			return nil, fmt.Errorf("%w: %w", errInjectNotDelivered, err)
 		}
 		delay = min(delay*2, policy.max)
 	}
